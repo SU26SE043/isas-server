@@ -1,0 +1,12 @@
+﻿services:
+  issa.authservice:
+    image: issa.authservice
+    build:
+      context: .
+      dockerfile: src/services/Issa.AuthService/Dockerfile
+
+  issa.gateway:
+    image: issa.gateway
+    build:
+      context: .
+      dockerfile: src/gateway/Issa.Gateway/Dockerfile

@@ -1,0 +1,14 @@
+## .NET build output
+bin/
+obj/
+
+## Rider
+.idea/
+*.DotSettings.user
+
+## AppSettings
+appsettings*.json
+
+## OS
+.DS_Store
+Thumbs.db
