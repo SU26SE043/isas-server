@@ -1,4 +1,4 @@
-using Issa.Shared.Extensions;
+using Isas.Shared.Extensions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
@@ -53,7 +53,7 @@ app.MapGet("/me", () =>
     Results.Ok(new
     {
         id = "user-001",
-        email = "test@issa.com",
+        email = "test@isas.com",
         role = "Candidate"
     })
 ).RequireAuthorization();

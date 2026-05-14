@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace Issa.Gateway.Services;
+namespace Isas.Gateway.Services;
 
 public class ApiServiceConfig
 {

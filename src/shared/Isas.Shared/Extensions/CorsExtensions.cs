@@ -2,7 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Issa.Shared.Extensions;
+namespace Isas.Shared.Extensions;
 
 public static class CorsExtensions
 {

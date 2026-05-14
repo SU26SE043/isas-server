@@ -1,6 +1,0 @@
-@Issa.AuthService_HostAddress = http://localhost:5174
-
-GET {{Issa.AuthService_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###

@@ -1,5 +1,5 @@
-using Issa.Gateway.Services;
-using Issa.Shared.Extensions;
+using Isas.Gateway.Services;
+using Isas.Shared.Extensions;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,7 +22,7 @@ if (app.Environment.IsDevelopment())
     // Scalar đọc từ merged doc
     app.MapScalarApiReference(options =>
     {
-        options.Title = "ISSA Platform API";
+        options.Title = "ISAS Platform API";
         options.OpenApiRoutePattern = "/openapi/merged.json";
         options.WithDefaultHttpClient(ScalarTarget.JavaScript, ScalarClient.Fetch);
         

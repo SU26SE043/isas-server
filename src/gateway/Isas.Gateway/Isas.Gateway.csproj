@@ -14,7 +14,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\shared\Issa.Shared\Issa.Shared.csproj" />
+        <ProjectReference Include="..\..\shared\Isas.Shared\Isas.Shared.csproj" />
     </ItemGroup>
    
 
