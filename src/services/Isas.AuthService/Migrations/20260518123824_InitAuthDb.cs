@@ -17,8 +17,8 @@ namespace Isas.AuthService.Migrations
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
-                    name = table.Column<string>(type: "text", nullable: true),
-                    normalized_name = table.Column<string>(type: "text", nullable: true),
+                    name = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                    normalized_name = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
                     concurrency_stamp = table.Column<string>(type: "text", nullable: true)
                 },
                 constraints: table =>
@@ -36,10 +36,10 @@ namespace Isas.AuthService.Migrations
                     title = table.Column<string>(type: "text", nullable: true),
                     created_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     updated_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
-                    user_name = table.Column<string>(type: "text", nullable: true),
-                    normalized_user_name = table.Column<string>(type: "text", nullable: true),
-                    email = table.Column<string>(type: "text", nullable: true),
-                    normalized_email = table.Column<string>(type: "text", nullable: true),
+                    user_name = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                    normalized_user_name = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                    email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
+                    normalized_email = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: true),
                     email_confirmed = table.Column<bool>(type: "boolean", nullable: false),
                     password_hash = table.Column<string>(type: "text", nullable: true),
                     security_stamp = table.Column<string>(type: "text", nullable: true),
@@ -119,6 +119,26 @@ namespace Isas.AuthService.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "user_logins",
+                columns: table => new
+                {
+                    LoginProvider = table.Column<string>(type: "text", nullable: false),
+                    ProviderKey = table.Column<string>(type: "text", nullable: false),
+                    ProviderDisplayName = table.Column<string>(type: "text", nullable: true),
+                    UserId = table.Column<Guid>(type: "uuid", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_user_logins", x => new { x.LoginProvider, x.ProviderKey });
+                    table.ForeignKey(
+                        name: "FK_user_logins_users_UserId",
+                        column: x => x.UserId,
+                        principalTable: "users",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "user_roles",
                 columns: table => new
                 {
@@ -173,14 +193,36 @@ namespace Isas.AuthService.Migrations
                 column: "role_id");
 
             migrationBuilder.CreateIndex(
+                name: "RoleNameIndex",
+                table: "roles",
+                column: "normalized_name",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_user_claims_user_id",
                 table: "user_claims",
                 column: "user_id");
 
             migrationBuilder.CreateIndex(
+                name: "IX_user_logins_UserId",
+                table: "user_logins",
+                column: "UserId");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_user_roles_role_id",
                 table: "user_roles",
                 column: "role_id");
+
+            migrationBuilder.CreateIndex(
+                name: "EmailIndex",
+                table: "users",
+                column: "normalized_email");
+
+            migrationBuilder.CreateIndex(
+                name: "UserNameIndex",
+                table: "users",
+                column: "normalized_user_name",
+                unique: true);
         }
 
         /// <inheritdoc />
@@ -194,6 +236,9 @@ namespace Isas.AuthService.Migrations
 
             migrationBuilder.DropTable(
                 name: "user_claims");
+
+            migrationBuilder.DropTable(
+                name: "user_logins");
 
             migrationBuilder.DropTable(
                 name: "user_roles");
