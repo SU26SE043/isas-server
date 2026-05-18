@@ -1,7 +1,13 @@
+using Isas.AuthService.Models;
+using Isas.AuthService.Services;
 using Isas.Shared.Extensions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Scalar.AspNetCore;
+using System.Text;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -9,20 +15,44 @@ builder.Services.AddServiceCors(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IJwtService, JwtService>();
+
+builder.Services.AddControllers().AddJsonOptions(options =>
+{
+    options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+    options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
+});
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            ValidateIssuerSigningKey = false,
-            ValidateIssuer = false,
-            ValidateAudience = false,
-            ValidateLifetime = false,
-            RequireSignedTokens = false, 
-           // SignatureValidator = (token, _) => new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(token)
+            //ValidateIssuerSigningKey = false,
+            //ValidateIssuer = false,
+            //ValidateAudience = false,
+            //ValidateLifetime = false,
+            //RequireSignedTokens = false, 
+            // SignatureValidator = (token, _) => new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(token)
+
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))
         };
     });
 builder.Services.AddAuthorization();
+
+builder.Services.AddDbContext<AuthDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddIdentity<User, Role>()
+    .AddEntityFrameworkStores<AuthDbContext>()
+    .AddDefaultTokenProviders();
 
 var app = builder.Build();
 
@@ -40,22 +70,24 @@ app.UseServiceCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapPost("/login", () =>
-    Results.Ok(new
-    {
-        accessToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ1c2VyLTAwMSIsImVtYWlsIjoidGVzdEBpc3NhLmNvbSIsInJvbGUiOiJDYW5kaWRhdGUifQ.",
-        tokenType = "Bearer",
-        expiresIn = 3600
-    })
-);
+//app.MapPost("/login", () =>
+//    Results.Ok(new
+//    {
+//        accessToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ1c2VyLTAwMSIsImVtYWlsIjoidGVzdEBpc3NhLmNvbSIsInJvbGUiOiJDYW5kaWRhdGUifQ.",
+//        tokenType = "Bearer",
+//        expiresIn = 3600
+//    })
+//);
 
-app.MapGet("/me", () =>
-    Results.Ok(new
-    {
-        id = "user-001",
-        email = "test@isas.com",
-        role = "Candidate"
-    })
-).RequireAuthorization();
+//app.MapGet("/me", () =>
+//    Results.Ok(new
+//    {
+//        id = "user-001",
+//        email = "test@isas.com",
+//        role = "Candidate"
+//    })
+//).RequireAuthorization();
+
+app.MapControllers();
 
 app.Run();
