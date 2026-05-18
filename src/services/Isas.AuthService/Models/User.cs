@@ -14,16 +14,12 @@ namespace Isas.AuthService.Models
 
         public DateTime? UpdatedAt { get; set; }
 
-        public ICollection<UserRole> UserRoles { get; set; }
-        = new List<UserRole>();
+        public ICollection<UserRole> UserRoles { get; set; } = new List<UserRole>();
 
-        public ICollection<UserClaim> UserClaims { get; set; }
-            = new List<UserClaim>();
+        public ICollection<UserClaim> UserClaims { get; set; } = new List<UserClaim>();
 
-        public ICollection<UserToken> UserTokens { get; set; }
-            = new List<UserToken>();
+        public ICollection<UserToken> UserTokens { get; set; } = new List<UserToken>();
 
-        public ICollection<RefreshToken> RefreshTokens { get; set; }
-            = new List<RefreshToken>();
+        public ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
     }
 }

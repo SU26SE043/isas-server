@@ -2,9 +2,9 @@
 using Isas.AuthService.Services;
 using Microsoft.AspNetCore.Mvc;
 
-namespace issa.AuthService.Controllers
+namespace Isas.AuthService.Controllers
 {
-    [Route("api/[controller]")]
+    [Route("auth")]
     [ApiController]
     public class AuthController : ControllerBase
     {

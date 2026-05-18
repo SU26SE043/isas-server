@@ -28,7 +28,14 @@ namespace Isas.AuthService.Services
 
             if (user is null || !await _userManager.CheckPasswordAsync(user, loginRequest.Password))
             {
-                throw new Exception("Invalid credentials");
+                throw new ("Invalid credentials");
+            }
+
+            var userRoles = await _userManager.GetRolesAsync(user);
+            
+            if(!userRoles.Any())
+            {
+                throw new Exception("Account locked");
             }
 
             return await GenerateAuthResponse(user);
@@ -83,7 +90,7 @@ namespace Isas.AuthService.Services
             return BuildAuthResponse(accessToken, newRawRefreshToken);
         }
 
-        public async Task<AuthResponse> RegisterAsync(RegisterRequest registerRequest)
+        public async Task<string> RegisterAsync(RegisterRequest registerRequest)
         {
             var existingUser = await _userManager.FindByEmailAsync(registerRequest.Email);
             if (existingUser is not null)
@@ -107,7 +114,7 @@ namespace Isas.AuthService.Services
             await EnsureRoleExistsAsync("Candidate");
             await _userManager.AddToRoleAsync(user, "Candidate");
 
-            return await GenerateAuthResponse(user);
+            return "User ID: " + user.Id;
         }
 
         private async Task EnsureRoleExistsAsync(string roleName)
