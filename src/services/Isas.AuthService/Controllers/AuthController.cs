@@ -50,15 +50,15 @@ namespace Isas.AuthService.Controllers
 
         [Authorize]
         [HttpGet("me")]
-        public async Task<ActionResult<User>> GetProfileAsync()
+        public async Task<ActionResult<UserResponse>> GetProfileAsync()
         {
             var userId = User.FindFirstValue(JwtRegisteredClaimNames.Sub);
 
             if (userId == null)
                 return Unauthorized();
 
-            var user = await _authService.GetUserAsync(Guid.Parse(userId));
-            return Ok(user);
+            var userResponse = await _authService.GetUserAsync(Guid.Parse(userId));
+            return Ok(userResponse);
         }
 
         [Authorize]

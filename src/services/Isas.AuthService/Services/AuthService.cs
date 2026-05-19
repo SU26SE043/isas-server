@@ -166,7 +166,7 @@ namespace Isas.AuthService.Services
             ExpiresAt = DateTime.UtcNow.AddMinutes(GetAccessTokenMinutes())
         };
 
-        public async Task<User> GetUserAsync(Guid userId)
+        public async Task<UserResponse> GetUserAsync(Guid userId)
         {
             var user = await _authDbContext.Users.FindAsync(userId);
 
@@ -176,10 +176,21 @@ namespace Isas.AuthService.Services
 
             }
             
-            return user;
+            var response = new UserResponse
+            {
+                Id = user.Id.ToString(),
+                FullName = user.FullName,
+                Email = user.Email,
+                Location = user.Location,
+                Title = user.Title,
+                CreatedAt = user.CreatedAt,
+                UpdatedAt = user.UpdatedAt
+            };
+
+            return response;
         }
 
-        public async Task<User> UpdateUserAsync(Guid userId, UpdateProfileRequest request)
+        public async Task<string> UpdateUserAsync(Guid userId, UpdateProfileRequest request)
         {
             var user = await GetUserAsync(userId);
 
@@ -189,7 +200,7 @@ namespace Isas.AuthService.Services
             user.UpdatedAt = DateTime.UtcNow;
 
             await _authDbContext.SaveChangesAsync();
-            return user;
+            return "Updated profile successfully";
         }
     }
 }
