@@ -1,4 +1,5 @@
 ﻿using Isas.AuthService.DTOs;
+using Isas.AuthService.Models;
 
 namespace Isas.AuthService.Services
 {
@@ -8,5 +9,7 @@ namespace Isas.AuthService.Services
         Task<AuthResponse> LoginAsync(LoginRequest loginRequest);
         Task<AuthResponse> RefreshTokenAsync(string refreshToken);
         Task LogoutAsync(string refreshToken);
+        Task<User> GetUserAsync(Guid userId);
+        Task<User> UpdateUserAsync(Guid userId, UpdateProfileRequest request);
     }
 }

@@ -1,6 +1,10 @@
 ﻿using Isas.AuthService.DTOs;
+using Isas.AuthService.Models;
 using Isas.AuthService.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 
 namespace Isas.AuthService.Controllers
 {
@@ -42,6 +46,32 @@ namespace Isas.AuthService.Controllers
         {
             await _authService.LogoutAsync(refreshTokenRequest.RefreshToken);
             return NoContent();
+        }
+
+        [Authorize]
+        [HttpGet("me")]
+        public async Task<ActionResult<User>> GetProfileAsync()
+        {
+            var userId = User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+
+            if (userId == null)
+                return Unauthorized();
+
+            var user = await _authService.GetUserAsync(Guid.Parse(userId));
+            return Ok(user);
+        }
+
+        [Authorize]
+        [HttpPut("me")]
+        public async Task<ActionResult<User>> UpdateProfileAsync(UpdateProfileRequest request)
+        {
+            var userId = User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+
+            if (userId == null)
+                return Unauthorized();
+
+            var updatedUser = await _authService.UpdateUserAsync(Guid.Parse(userId), request);
+            return Ok(updatedUser);
         }
     }
 }

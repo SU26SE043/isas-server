@@ -19,12 +19,12 @@ namespace Isas.AuthService.Services
         public string GenerateAccessToken(User user, IList<string> roles)
         {
             var claims = new List<Claim>
-        {
-            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new(JwtRegisteredClaimNames.Email, user.Email!),
-            new(ClaimTypes.Name, user.UserName!),
-            new(ClaimTypes.NameIdentifier, user.Id.ToString())
-        };
+            {
+                new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+                new(JwtRegisteredClaimNames.Email, user.Email!),
+                new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                new(ClaimTypes.Name, user.UserName!),
+            };
 
             foreach (var role in roles)
             {

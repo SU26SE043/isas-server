@@ -67,7 +67,6 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.ToTable("user_roles");
             e.Property(x => x.UserId).HasColumnName("user_id");
             e.Property(x => x.RoleId).HasColumnName("role_id");
-            // ✅ Keep these — UserRole navigation props are custom, base doesn't configure them
             e.HasOne(x => x.User)
                 .WithMany(x => x.UserRoles)
                 .HasForeignKey(x => x.UserId);
@@ -136,7 +135,6 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Property(x => x.ReplacedBy).HasColumnName("replaced_by");
             e.Property(x => x.ExpiresAt).HasColumnName("expires_at");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
-            // ✅ Keep this — RefreshToken is fully custom, base knows nothing about it
             e.HasOne(x => x.User)
                 .WithMany(x => x.RefreshTokens)
                 .HasForeignKey(x => x.UserId);

@@ -165,5 +165,31 @@ namespace Isas.AuthService.Services
             RefreshToken = refreshToken,
             ExpiresAt = DateTime.UtcNow.AddMinutes(GetAccessTokenMinutes())
         };
+
+        public async Task<User> GetUserAsync(Guid userId)
+        {
+            var user = await _authDbContext.Users.FindAsync(userId);
+
+            if (user == null)
+            {
+                throw new Exception("User not found");
+
+            }
+            
+            return user;
+        }
+
+        public async Task<User> UpdateUserAsync(Guid userId, UpdateProfileRequest request)
+        {
+            var user = await GetUserAsync(userId);
+
+            user.FullName = request.FullName ?? user.FullName;
+            user.Location = request.Location ?? user.Location;
+            user.Title = request.Title ?? user.Title;
+            user.UpdatedAt = DateTime.UtcNow;
+
+            await _authDbContext.SaveChangesAsync();
+            return user;
+        }
     }
 }
