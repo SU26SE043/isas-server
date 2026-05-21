@@ -1,5 +1,6 @@
 ﻿using Isas.AuthService.DTOs;
 using Isas.AuthService.Models;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -25,18 +26,6 @@ namespace Isas.AuthService.Services
         public async Task<AuthResponse> LoginAsync(LoginRequest loginRequest)
         {
             var user = await _userManager.FindByEmailAsync(loginRequest.Email);
-
-            if (user is null || !await _userManager.CheckPasswordAsync(user, loginRequest.Password))
-            {
-                throw new ("Invalid credentials");
-            }
-
-            var userRoles = await _userManager.GetRolesAsync(user);
-            
-            if(!userRoles.Any())
-            {
-                throw new Exception("Account locked");
-            }
 
             return await GenerateAuthResponse(user);
         }
@@ -93,23 +82,18 @@ namespace Isas.AuthService.Services
         public async Task<string> RegisterAsync(RegisterRequest registerRequest)
         {
             var existingUser = await _userManager.FindByEmailAsync(registerRequest.Email);
-            if (existingUser is not null)
-                throw new Exception("Email already exists.");
 
             var user = new User
             {
                 Id = Guid.NewGuid(),
-                UserName = registerRequest.UserName,
+                UserName = registerRequest.Email,
                 Email = registerRequest.Email,
                 FullName = registerRequest.FullName,
-                Location = registerRequest.Location,
-                Title = registerRequest.Title,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
             };
 
             var result = await _userManager.CreateAsync(user, registerRequest.Password);
-            if (!result.Succeeded)
-                throw new Exception(string.Join(", ", result.Errors.Select(x => x.Description)));
 
             await EnsureRoleExistsAsync("Candidate");
             await _userManager.AddToRoleAsync(user, "Candidate");
@@ -170,12 +154,6 @@ namespace Isas.AuthService.Services
         {
             var user = await _authDbContext.Users.FindAsync(userId);
 
-            if (user == null)
-            {
-                throw new Exception("User not found");
-
-            }
-            
             var response = new UserResponse
             {
                 Id = user.Id.ToString(),
@@ -183,8 +161,7 @@ namespace Isas.AuthService.Services
                 Email = user.Email,
                 Location = user.Location,
                 Title = user.Title,
-                CreatedAt = user.CreatedAt,
-                UpdatedAt = user.UpdatedAt
+                CreatedAt = user.CreatedAt
             };
 
             return response;
@@ -192,15 +169,22 @@ namespace Isas.AuthService.Services
 
         public async Task<string> UpdateUserAsync(Guid userId, UpdateProfileRequest request)
         {
-            var user = await GetUserAsync(userId);
+            var user = await _authDbContext.Users.FindAsync(userId);
 
             user.FullName = request.FullName ?? user.FullName;
             user.Location = request.Location ?? user.Location;
             user.Title = request.Title ?? user.Title;
             user.UpdatedAt = DateTime.UtcNow;
 
+            _authDbContext.Users.Update(user);
             await _authDbContext.SaveChangesAsync();
-            return "Updated profile successfully";
+            return "Updated profile object";
+        }
+
+        public Task<RefreshToken> GetRefreshTokenAsync(string refreshToken)
+        {
+            var refreshTokenHash = _jwtService.HashRefreshToken(refreshToken);
+            return _authDbContext.RefreshTokens.FirstOrDefaultAsync(x => x.Token == refreshTokenHash);
         }
     }
 }

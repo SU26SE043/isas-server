@@ -10,6 +10,7 @@ namespace Isas.AuthService.Services
         Task<AuthResponse> RefreshTokenAsync(string refreshToken);
         Task LogoutAsync(string refreshToken);
         Task<UserResponse> GetUserAsync(Guid userId);
-        Task<User> UpdateUserAsync(Guid userId, UpdateProfileRequest request);
+        Task<string> UpdateUserAsync(Guid userId, UpdateProfileRequest request);
+        Task<RefreshToken> GetRefreshTokenAsync(string refreshToken);
     }
 }

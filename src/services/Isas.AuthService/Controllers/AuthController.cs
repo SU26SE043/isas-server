@@ -2,6 +2,7 @@
 using Isas.AuthService.Models;
 using Isas.AuthService.Services;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
@@ -13,31 +14,71 @@ namespace Isas.AuthService.Controllers
     public class AuthController : ControllerBase
     {
         private readonly IAuthService _authService;
-        public AuthController(IAuthService authService)
+        private readonly UserManager<User> _userManager;
+        private readonly SignInManager<User> _signInManager;
+        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager)
         {
             _authService = authService;
+            _userManager = userManager;
+            _signInManager = signInManager;
         }
 
         [HttpPost("register")]
         public async Task<ActionResult<AuthResponse>> RegisterAsync(RegisterRequest registerRequest)
         {
+            var existingUser = await _userManager.FindByEmailAsync(registerRequest.Email);
+
+            if(existingUser != null)
+            {
+                return BadRequest("Email already exists");
+            }
+
             var result = await _authService.RegisterAsync(registerRequest);
 
             return Ok(result);
         }
 
         [HttpPost("login")]
-        public async Task<ActionResult<AuthResponse>> LoginAsync(LoginRequest loginRequest)
+        public async Task<IActionResult> Login(LoginRequest request)
         {
-            var result = await _authService.LoginAsync(loginRequest);
+            var user = await _userManager.FindByEmailAsync(request.Email);
 
-            return Ok(result);
+            if (user == null)
+            {
+                return Unauthorized("Invalid credentials");
+            }
+
+            var result = await _signInManager.PasswordSignInAsync(
+                user.UserName,
+                request.Password,
+                isPersistent: false,
+                lockoutOnFailure: true);
+
+            if (result.Succeeded)
+            {
+                return Ok(await _authService.LoginAsync(request));
+            }
+
+            if (result.IsLockedOut)
+            {
+                return Unauthorized("Account locked");
+            }
+
+            return Unauthorized("Invalid credentials");
         }
 
         [HttpPost("refresh")]
-        public async Task<ActionResult<AuthResponse>> RefreshTokenAsync(RefreshTokenRequest refreshTokenRequest)
+        public async Task<ActionResult<RefreshTokenResponse>> RefreshTokenAsync(RefreshTokenRequest refreshTokenRequest)
         {
+            var existingRefreshToken = await _authService.GetRefreshTokenAsync(refreshTokenRequest.RefreshToken);
+
+            if(existingRefreshToken == null || existingRefreshToken.IsRevoked || existingRefreshToken.ExpiresAt < DateTime.UtcNow)
+            {
+                return Unauthorized("Refresh token expired or revoked");
+            }
+
             var result = await _authService.RefreshTokenAsync(refreshTokenRequest.RefreshToken);
+
             return Ok(result);
         }
 
@@ -52,10 +93,10 @@ namespace Isas.AuthService.Controllers
         [HttpGet("me")]
         public async Task<ActionResult<UserResponse>> GetProfileAsync()
         {
-            var userId = User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
-            if (userId == null)
-                return Unauthorized();
+            if(userId == null)
+                return Unauthorized("Invalid email format");
 
             var userResponse = await _authService.GetUserAsync(Guid.Parse(userId));
             return Ok(userResponse);
@@ -65,10 +106,10 @@ namespace Isas.AuthService.Controllers
         [HttpPut("me")]
         public async Task<ActionResult<User>> UpdateProfileAsync(UpdateProfileRequest request)
         {
-            var userId = User.FindFirstValue(JwtRegisteredClaimNames.Sub);
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
 
             if (userId == null)
-                return Unauthorized();
+                return Unauthorized("Invalid email format");
 
             var updatedUser = await _authService.UpdateUserAsync(Guid.Parse(userId), request);
             return Ok(updatedUser);

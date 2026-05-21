@@ -24,6 +24,7 @@ namespace Isas.AuthService.Services
                 new(JwtRegisteredClaimNames.Email, user.Email!),
                 new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
                 new(ClaimTypes.Name, user.UserName!),
+                new(ClaimTypes.NameIdentifier, user.Id.ToString()),
             };
 
             foreach (var role in roles)

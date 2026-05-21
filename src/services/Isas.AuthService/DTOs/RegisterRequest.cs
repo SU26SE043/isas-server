@@ -5,9 +5,6 @@ namespace Isas.AuthService.DTOs
     public class RegisterRequest
     {
         [Required]
-        public string UserName { get; set; }
-
-        [Required]
         [EmailAddress]
         public string Email { get; set; }
 
@@ -17,11 +14,5 @@ namespace Isas.AuthService.DTOs
 
         [Required]
         public string FullName { get; set; }
-
-        [Required]
-        public string Location { get; set; }
-
-        [Required]
-        public string Title { get; set; }
     }
 }
