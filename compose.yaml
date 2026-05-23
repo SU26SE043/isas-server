@@ -4,9 +4,39 @@
     build:
       context: .
       dockerfile: src/services/Isas.AuthService/Dockerfile
+      target: final
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+    expose:
+      - "8080"
+    networks:
+      - isas-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "cat /proc/net/tcp6 | grep 1F90 || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   isas.gateway:
     image: isas.gateway
     build:
       context: .
       dockerfile: src/gateway/Isas.Gateway/Dockerfile
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ReverseProxy__Clusters__auth-cluster__Destinations__auth-node-01__Address=http://isas.authservice:8080
+      - ApiServices__0__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
+    ports:
+      - "5050:8080"
+    depends_on:
+      isas.authservice:
+        condition: service_healthy
+    networks:
+      - isas-network
+    restart: unless-stopped
+
+networks:
+  isas-network:
+    driver: bridge

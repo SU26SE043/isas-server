@@ -1,5 +1,8 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.5.11723.231 stable
+MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Isas.AuthService", "src\services\Isas.AuthService\Isas.AuthService.csproj", "{729595A6-3578-4B47-B9CE-532E6A63A6DD}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Isas.Shared", "src\shared\Isas.Shared\Isas.Shared.csproj", "{391823AC-9CB6-4FDC-BEE3-3ED008258B5F}"
@@ -29,5 +32,8 @@ Global
 		{EAB8C912-27E0-466A-BBE4-D22FE9BA7DBF}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EAB8C912-27E0-466A-BBE4-D22FE9BA7DBF}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EAB8C912-27E0-466A-BBE4-D22FE9BA7DBF}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
 	EndGlobalSection
 EndGlobal
