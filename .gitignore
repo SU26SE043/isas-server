@@ -8,7 +8,9 @@ obj/
 *.DotSettings.user
 
 ## AppSettings
-appsettings*.json
+appsettings.Development.json
+appsettings.Production.json
+appsettings.Local.json
 
 ## OS
 .DS_Store

@@ -14,7 +14,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddServiceCors(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
-
+builder.Services.AddHealthChecks();
 builder.Services.AddOpenApi(options =>
 {
     options.AddDocumentTransformer((document, context, ct) =>
@@ -118,7 +118,7 @@ app.UseAuthorization();
 //        expiresIn = 3600
 //    })
 //);
-
+app.MapHealthChecks("/health");
 //app.MapGet("/me", () =>
 //    Results.Ok(new
 //    {
