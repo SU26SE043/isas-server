@@ -1,0 +1,14 @@
+services:
+  - name: isas-authservice
+    type: web
+    runtime: docker
+    dockerfilePath: src/services/Isas.AuthService/Dockerfile
+    dockerContext: .
+    branch: main
+
+  - name: isas-gateway
+    type: web
+    runtime: docker
+    dockerfilePath: src/gateway/Isas.Gateway/Dockerfile
+    dockerContext: .
+    branch: main
