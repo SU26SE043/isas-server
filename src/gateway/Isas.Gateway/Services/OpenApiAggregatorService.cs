@@ -45,14 +45,28 @@ public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : 
                 if (paths is not null)
                 {
                     foreach (var path in paths)
-                        mergedPaths[service.Prefix + path.Key] = path.Value?.DeepClone();
+                    {
+                        var pathJson = path.Value?.ToJsonString() ?? "{}";
+                        pathJson = pathJson.Replace(
+                            "#/components/schemas/",
+                            $"#/components/schemas/{service.Name}_"
+                        );
+                        mergedPaths[service.Prefix + path.Key] = JsonNode.Parse(pathJson);
+                    }
                 }
 
                 var schemas = doc["components"]?["schemas"]?.AsObject();
                 if (schemas is not null)
                 {
                     foreach (var schema in schemas)
-                        mergedSchemas[$"{service.Name}_{schema.Key}"] = schema.Value?.DeepClone();
+                    {
+                        var schemaJson = schema.Value?.ToJsonString() ?? "{}";
+                        schemaJson = schemaJson.Replace(
+                            "#/components/schemas/",
+                            $"#/components/schemas/{service.Name}_"
+                        );
+                        mergedSchemas[$"{service.Name}_{schema.Key}"] = JsonNode.Parse(schemaJson);
+                    }
                 }
             }
             catch
@@ -63,7 +77,6 @@ public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : 
 
         if (baseDoc is null) return;
 
-        // ← Đọc từ config, không hardcode
         var gatewayUrl = config["Gateway:Url"]!;
         var title = config["Gateway:Title"]!;
         var version = config["Gateway:Version"]!;
