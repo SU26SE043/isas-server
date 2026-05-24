@@ -11,7 +11,7 @@ jobs:
     name: Run tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -28,20 +28,54 @@ jobs:
         run: dotnet test --no-build --verbosity normal
 
   docker:
-    name: Build Docker images
+    name: Build & Push Docker images
     runs-on: ubuntu-latest
     needs: test
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
-      - name: Build AuthService image
-        run: |
-          docker build \
-            -f src/services/Isas.AuthService/Dockerfile \
-            -t isas.authservice:ci .
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Gateway image
-        run: |
-          docker build \
-            -f src/gateway/Isas.Gateway/Dockerfile \
-            -t isas.gateway:ci .
+      - name: Build & Push AuthService
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: src/services/Isas.AuthService/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/isas.authservice:${{ github.ref_name }}
+
+      - name: Build & Push Gateway
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: src/gateway/Isas.Gateway/Dockerfile
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/isas.gateway:${{ github.ref_name }}
+
+  deploy:
+    name: Deploy to server
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    steps:
+      - name: Deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd ~/docker/${{ github.ref_name }}
+            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
