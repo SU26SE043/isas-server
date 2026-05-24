@@ -38,6 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Lowercase repo owner
+        run: echo "OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Login to GHCR
         uses: docker/login-action@v4
         with:
@@ -51,7 +54,7 @@ jobs:
           context: .
           file: src/services/Isas.AuthService/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/isas.authservice:${{ github.ref_name }}
+          tags: ghcr.io/${{ env.OWNER }}/isas.authservice:${{ github.ref_name }}
 
       - name: Build & Push Gateway
         uses: docker/build-push-action@v7
@@ -59,7 +62,7 @@ jobs:
           context: .
           file: src/gateway/Isas.Gateway/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/isas.gateway:${{ github.ref_name }}
+          tags: ghcr.io/${{ env.OWNER }}/isas.gateway:${{ github.ref_name }}
 
   deploy:
     name: Deploy to server
