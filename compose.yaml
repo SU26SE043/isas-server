@@ -1,14 +1,58 @@
 ﻿services:
+  # ===== DATA LAYER =====
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - isas-network
+
+  redis:
+    image: redis:7
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - isas-network
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - isas-network
+
+  # ===== .NET SERVICES =====
   isas.authservice:
     image: isas.authservice
     build:
       context: .
       dockerfile: src/services/Isas.AuthService/Dockerfile
       target: final
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
     expose:
       - "8080"
+    depends_on:
+      - postgres
+      - redis
     networks:
       - isas-network
     restart: unless-stopped
@@ -24,10 +68,6 @@
     build:
       context: .
       dockerfile: src/gateway/Isas.Gateway/Dockerfile
-    environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ReverseProxy__Clusters__auth-cluster__Destinations__auth-node-01__Address=http://isas.authservice:8080
-      - ApiServices__0__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
     ports:
       - "5050:8080"
     depends_on:
@@ -40,3 +80,8 @@
 networks:
   isas-network:
     driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
