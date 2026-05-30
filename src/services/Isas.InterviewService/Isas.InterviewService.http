@@ -1,0 +1,6 @@
+@Isas.InterviewService_HostAddress = http://localhost:5246
+
+GET {{Isas.InterviewService_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
