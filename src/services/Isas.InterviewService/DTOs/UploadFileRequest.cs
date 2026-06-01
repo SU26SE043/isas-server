@@ -8,10 +8,11 @@
     public class UploadFileResponse
     {
         public string FileId { get; init; } = default!;
-        public string StoragePath { get; init; } = default!;
-        public string PresignedUrl { get; init; } = default!;
-        public string FileName { get; init; } = default!;
-        public long SizeBytes { get; init; }
-        public CVParseResult? ParsedCv { get; init; }
+        public string FileType { get; init; } = default!;
+        public string OriginalName { get; init; } = default!;
+        public string MimeType { get; init; } = default!;
+        public long FileSize { get; init; }
+        public string ParsedStatus { get; init; } = default!;
+        public DateTime CreatedAt { get; init; } = default!;
     }
 }

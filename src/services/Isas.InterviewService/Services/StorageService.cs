@@ -2,6 +2,7 @@
 using Amazon.S3.Model;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Models;
+using Microsoft.EntityFrameworkCore;
 using System.Net.Mime;
 using static System.Net.Mime.MediaTypeNames;
 
@@ -21,14 +22,17 @@ namespace Isas.InterviewService.Services
             _db = db;
         }
 
-        public Task DeleteAsync(string storagePath, CancellationToken ct = default)
+        public async Task<Stream> DownloadAsync(string storagePath, CancellationToken ct = default)
         {
-            throw new NotImplementedException();
-        }
+            var request = new GetObjectRequest
+            {
+                BucketName = _opts.BucketName,
+                Key = storagePath
+            };
 
-        public Task<Stream> DownloadAsync(string storagePath, CancellationToken ct = default)
-        {
-            throw new NotImplementedException();
+            var response = await _s3.GetObjectAsync(request, ct);
+
+            return response.ResponseStream;
         }
 
         public string GetPresignedUrl(string storagePath, int expiryMinutes = 60)
@@ -83,6 +87,76 @@ namespace Isas.InterviewService.Services
             await _db.SaveChangesAsync(ct);
 
             return fileRecord;
+        }
+
+        public async Task<FileRecord?> GetMetadata(string fileId, CancellationToken ct = default)
+        {
+            var fileRecord = await _db.Files.FirstOrDefaultAsync(f => f.Id == Guid.Parse(fileId), ct);
+            return fileRecord;
+        }
+
+        public async Task<string> GetParseText(string fileId, CancellationToken ct = default)
+        {
+            var file = await _db.Files.FirstOrDefaultAsync(f => f.Id == Guid.Parse(fileId), ct);
+
+            var parsedText = file?.ParsedText ?? string.Empty;
+
+            return parsedText;
+        }
+
+        public async Task<List<FileRecord>> GetFilesByUserId(string userId, CancellationToken ct = default)
+        {
+            var files = await _db.Files.Where(f => f.UserId == Guid.Parse(userId)).ToListAsync(ct);
+            return files;
+        }
+
+        public async Task<FileRecord> UpdateFileRecord(string fileId, Stream stream, string originalName, long fileSize, string contentType, CVParseResult? parsedCv, CancellationToken ct = default)
+        {
+            var fileRecord = await GetMetadata(fileId, ct);
+
+            if (fileRecord == null)
+                throw new Exception("File not found");
+
+            // overwrite object using same key
+            await _s3.PutObjectAsync(
+                new PutObjectRequest
+                {
+                    BucketName = fileRecord.StorageBucket,
+                    Key = fileRecord.StoragePath,
+                    InputStream = stream,
+                    ContentType = contentType,
+                    AutoCloseStream = true
+                },
+                ct);
+
+            fileRecord.OriginalName = originalName;
+            fileRecord.FileSize = fileSize;
+            fileRecord.MimeType = contentType;
+            fileRecord.UpdatedAt = DateTime.UtcNow;
+            fileRecord.ParsedText = parsedCv?.RawText;
+
+            await _db.SaveChangesAsync(ct);
+
+            return fileRecord;
+        }
+
+        public async Task<bool> DeleteFileRecord(string fileId, CancellationToken ct = default)
+        {
+            var fileRecord = await _db.Files.FirstOrDefaultAsync(f => f.Id == Guid.Parse(fileId), ct);
+            if (fileRecord == null)
+            {
+                return false;
+            }
+
+            await _s3.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = fileRecord.StorageBucket,
+                Key = fileRecord.StoragePath
+            }, ct);
+
+            _db.Files.Remove(fileRecord);
+            await _db.SaveChangesAsync(ct);
+            return true;
         }
     }
 }
