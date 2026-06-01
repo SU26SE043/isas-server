@@ -42,29 +42,15 @@ namespace Isas.AuthService.Controllers
         public async Task<IActionResult> Login(LoginRequest request)
         {
             var user = await _userManager.FindByEmailAsync(request.Email);
-
             if (user == null)
-            {
                 return Unauthorized("Invalid credentials");
-            }
 
-            var result = await _signInManager.PasswordSignInAsync(
-                user.UserName,
-                request.Password,
-                isPersistent: false,
-                lockoutOnFailure: true);
+            var result = await _signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);
 
-            if (result.Succeeded)
-            {
-                return Ok(await _authService.LoginAsync(request));
-            }
+            if (result.IsLockedOut) return Unauthorized("Account locked");
+            if (!result.Succeeded) return Unauthorized("Invalid credentials");
 
-            if (result.IsLockedOut)
-            {
-                return Unauthorized("Account locked");
-            }
-
-            return Unauthorized("Invalid credentials");
+            return Ok(await _authService.LoginAsync(request));
         }
 
         [HttpPost("refresh")]
@@ -82,12 +68,14 @@ namespace Isas.AuthService.Controllers
             return Ok(result);
         }
 
+        [Authorize]
         [HttpPost("logout")]
         public async Task<IActionResult> LogoutAsync(RefreshTokenRequest refreshTokenRequest)
         {
             await _authService.LogoutAsync(refreshTokenRequest.RefreshToken);
             return NoContent();
         }
+
 
         [Authorize]
         [HttpGet("me")]
