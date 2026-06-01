@@ -46,7 +46,7 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 builder.Services.AddHttpContextAccessor();
 
 builder.Services
-    .AddIdentity<User, Role>(options =>
+    .AddIdentityCore<User>(options =>
     {
         // password
         options.Password.RequireDigit = true;
@@ -63,8 +63,14 @@ builder.Services
         // user
         options.User.RequireUniqueEmail = true;
     })
+    .AddRoles<Role>() // KHÔNG THỂ THIẾU dòng này khi dùng kèm RoleManager
     .AddEntityFrameworkStores<AuthDbContext>()
+    .AddSignInManager()
     .AddDefaultTokenProviders();
+
+// Check null an toàn để tránh sập app lúc mới chạy
+var jwtKey = builder.Configuration["Jwt:Key"]
+             ?? throw new InvalidOperationException("Jwt:Key is missing in configuration.");
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -73,20 +79,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            //ValidateIssuerSigningKey = false,
-            //ValidateIssuer = false,
-            //ValidateAudience = false,
-            //ValidateLifetime = false,
-            //RequireSignedTokens = false, 
-            // SignatureValidator = (token, _) => new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(token)
-
             ValidateIssuer = true,
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
         };
     });
 builder.Services.AddAuthorization();
@@ -110,23 +109,7 @@ app.UseServiceCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
-//app.MapPost("/login", () =>
-//    Results.Ok(new
-//    {
-//        accessToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ1c2VyLTAwMSIsImVtYWlsIjoidGVzdEBpc3NhLmNvbSIsInJvbGUiOiJDYW5kaWRhdGUifQ.",
-//        tokenType = "Bearer",
-//        expiresIn = 3600
-//    })
-//);
 app.MapHealthChecks("/health");
-//app.MapGet("/me", () =>
-//    Results.Ok(new
-//    {
-//        id = "user-001",
-//        email = "test@isas.com",
-//        role = "Candidate"
-//    })
-//).RequireAuthorization();
 
 app.MapControllers();
 
