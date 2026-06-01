@@ -1,6 +1,5 @@
 ﻿using Isas.AuthService.DTOs;
 using Isas.AuthService.Models;
-using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -26,6 +25,8 @@ namespace Isas.AuthService.Services
         public async Task<AuthResponse> LoginAsync(LoginRequest loginRequest)
         {
             var user = await _userManager.FindByEmailAsync(loginRequest.Email);
+            if (user is null)
+                throw new UnauthorizedAccessException("Invalid credentials");
 
             return await GenerateAuthResponse(user);
         }
@@ -52,10 +53,10 @@ namespace Isas.AuthService.Services
                 .FirstOrDefaultAsync(x => x.Token == hashedToken && !x.IsRevoked);
 
             if (existingToken is null)
-                throw new Exception("Invalid refresh token");
+                throw new UnauthorizedAccessException("Invalid refresh token");
 
             if (existingToken.ExpiresAt < DateTime.UtcNow)
-                throw new Exception("Refresh token expired");
+                throw new UnauthorizedAccessException("Refresh token expired");
 
             existingToken.IsRevoked = true;
 
@@ -81,8 +82,6 @@ namespace Isas.AuthService.Services
 
         public async Task<string> RegisterAsync(RegisterRequest registerRequest)
         {
-            var existingUser = await _userManager.FindByEmailAsync(registerRequest.Email);
-
             var user = new User
             {
                 Id = Guid.NewGuid(),
@@ -94,6 +93,8 @@ namespace Isas.AuthService.Services
             };
 
             var result = await _userManager.CreateAsync(user, registerRequest.Password);
+            if (!result.Succeeded)
+                throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
 
             await EnsureRoleExistsAsync("Candidate");
             await _userManager.AddToRoleAsync(user, "Candidate");
@@ -153,8 +154,10 @@ namespace Isas.AuthService.Services
         public async Task<UserResponse> GetUserAsync(Guid userId)
         {
             var user = await _authDbContext.Users.FindAsync(userId);
+            if (user is null)
+                throw new KeyNotFoundException("User not found");
 
-            var response = new UserResponse
+            return new UserResponse
             {
                 Id = user.Id.ToString(),
                 FullName = user.FullName,
@@ -163,13 +166,13 @@ namespace Isas.AuthService.Services
                 Title = user.Title,
                 CreatedAt = user.CreatedAt
             };
-
-            return response;
         }
 
         public async Task<string> UpdateUserAsync(Guid userId, UpdateProfileRequest request)
         {
             var user = await _authDbContext.Users.FindAsync(userId);
+            if (user is null)
+                throw new KeyNotFoundException("User not found");
 
             user.FullName = request.FullName ?? user.FullName;
             user.Location = request.Location ?? user.Location;
