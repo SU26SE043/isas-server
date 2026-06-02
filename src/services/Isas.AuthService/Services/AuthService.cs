@@ -196,29 +196,5 @@ namespace Isas.AuthService.Services
             var refreshTokenHash = _jwtService.HashRefreshToken(refreshToken);
             return _authDbContext.RefreshTokens.FirstOrDefaultAsync(x => x.Token == refreshTokenHash);
         }
-
-        //public async Task<string> ForgetPasswordAsync(ForgotPasswordRequest request)
-        //{
-            
-
-        //    var existingUser = await _userManager.FindByEmailAsync(request.Email);
-        //}
-
-        //public async Task<bool> VerifyOtpAsync(string email, string otp)
-        //{
-        //    var isValid = await _emailService.VerifyOtpAsync(email, otp);
-
-        //    if (!isValid)
-        //    {
-        //        throw new UnauthorizedAccessException("Invalid OTP");
-        //    }
-
-        //    return true;
-        //}
-
-        //public async Task<bool> ResetPasswordAsync(ResetPasswordRequest dto)
-        //{
-        //    var isValid = await _emailService.VerifyOtpAsync(email, newPassword);
-        //}
     }
 }
