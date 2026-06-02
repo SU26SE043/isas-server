@@ -12,14 +12,20 @@ namespace Isas.AuthService.Services
         private readonly UserManager<User> _userManager;
         private readonly RoleManager<Role> _roleManager;
         private readonly IConfiguration _configuration;
+        //private readonly IEmailService _emailService;
 
-        public AuthService(AuthDbContext authDbContext, IJwtService jwtService, UserManager<User> userManager, RoleManager<Role> roleManager, IConfiguration configuration)
+        public AuthService(AuthDbContext authDbContext, IJwtService jwtService,
+            UserManager<User> userManager, RoleManager<Role> roleManager,
+            IConfiguration configuration
+            //, IEmailService emailService
+            )
         {
             _authDbContext = authDbContext;
             _jwtService = jwtService;
             _userManager = userManager;
             _roleManager = roleManager;
             _configuration = configuration;
+            //_emailService = emailService;
         }
 
         public async Task<AuthResponse> LoginAsync(LoginRequest loginRequest)
@@ -164,7 +170,8 @@ namespace Isas.AuthService.Services
                 Email = user.Email,
                 Location = user.Location,
                 Title = user.Title,
-                CreatedAt = user.CreatedAt
+                CreatedAt = user.CreatedAt,
+                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role"
             };
         }
 
@@ -189,5 +196,29 @@ namespace Isas.AuthService.Services
             var refreshTokenHash = _jwtService.HashRefreshToken(refreshToken);
             return _authDbContext.RefreshTokens.FirstOrDefaultAsync(x => x.Token == refreshTokenHash);
         }
+
+        //public async Task<string> ForgetPasswordAsync(ForgotPasswordRequest request)
+        //{
+            
+
+        //    var existingUser = await _userManager.FindByEmailAsync(request.Email);
+        //}
+
+        //public async Task<bool> VerifyOtpAsync(string email, string otp)
+        //{
+        //    var isValid = await _emailService.VerifyOtpAsync(email, otp);
+
+        //    if (!isValid)
+        //    {
+        //        throw new UnauthorizedAccessException("Invalid OTP");
+        //    }
+
+        //    return true;
+        //}
+
+        //public async Task<bool> ResetPasswordAsync(ResetPasswordRequest dto)
+        //{
+        //    var isValid = await _emailService.VerifyOtpAsync(email, newPassword);
+        //}
     }
 }

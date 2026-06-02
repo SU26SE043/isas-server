@@ -3,9 +3,10 @@ using Isas.AuthService.Models;
 using Isas.AuthService.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.AspNetCore.Mvc;
-using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using static Isas.AuthService.DTOs.ForgotPasswordDtos;
 
 namespace Isas.AuthService.Controllers
 {
@@ -16,11 +17,13 @@ namespace Isas.AuthService.Controllers
         private readonly IAuthService _authService;
         private readonly UserManager<User> _userManager;
         private readonly SignInManager<User> _signInManager;
-        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager)
+        private readonly IEmailSender _emailSender;
+        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager, IEmailSender emailSender)
         {
             _authService = authService;
             _userManager = userManager;
             _signInManager = signInManager;
+            _emailSender = emailSender;
         }
 
         [HttpPost("register")]
@@ -101,6 +104,55 @@ namespace Isas.AuthService.Controllers
 
             var updatedUser = await _authService.UpdateUserAsync(Guid.Parse(userId), request);
             return Ok(updatedUser);
+        }
+
+        [HttpPost("forgot-password")]
+        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null)
+                return BadRequest("User not found");
+
+            var otp = new Random().Next(100000, 999999).ToString();
+
+            await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode", otp);
+            await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OTPExpiry", DateTime.UtcNow.AddMinutes(5).ToString());
+
+            await _emailSender.SendEmailAsync(model.Email, "Your OTP Code", $"Your OTP is {otp}");
+
+            return Ok("OTP sent to your email");
+        }
+
+        [HttpPost("verify-otp")]
+        public async Task<IActionResult> VerifyOtp([FromBody] VerifyOtpDto model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null) return BadRequest("User not found");
+
+            var storedOtp = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode");
+            var expiry = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPExpiry");
+
+            if (storedOtp == model.Otp && DateTime.Parse(expiry) > DateTime.UtcNow)
+            {
+                return Ok("OTP verified, you can reset your password");
+            }
+
+            return BadRequest("Invalid or expired OTP");
+        }
+
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null) return BadRequest("User not found");
+
+            var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+            var result = await _userManager.ResetPasswordAsync(user, token, model.NewPassword);
+
+            if (result.Succeeded)
+                return Ok("Password reset successful");
+
+            return BadRequest(result.Errors);
         }
     }
 }
