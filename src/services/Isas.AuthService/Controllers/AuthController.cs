@@ -118,7 +118,7 @@ namespace Isas.AuthService.Controllers
             await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode", otp);
             await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OTPExpiry", DateTime.UtcNow.AddMinutes(5).ToString());
 
-            await _emailSender.SendEmailAsync(model.Email, "Your OTP Code", $"Your OTP is {otp}");
+            await _emailSender.SendEmailAsync(model.Email, "Your OTP Code", BuildEmailBody(otp));
 
             return Ok("OTP sent to your email");
         }
@@ -154,5 +154,26 @@ namespace Isas.AuthService.Controllers
 
             return BadRequest(result.Errors);
         }
+
+        
+        private static string BuildEmailBody(string otp) =>
+            $"""
+            <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:32px;
+                        border:1px solid #e5e7eb;border-radius:8px">
+              <h2 style="color:#1d4ed8;margin-bottom:8px">Password Reset Request</h2>
+              <p style="color:#374151">
+                Use the code below to reset your password.
+                It expires in <strong>10 minutes</strong>.
+              </p>
+              <div style="background:#f3f4f6;border-radius:8px;padding:24px;
+                          text-align:center;margin:24px 0">
+                <span style="font-size:40px;font-weight:bold;letter-spacing:12px;
+                             color:#1d4ed8">{otp}</span>
+              </div>
+              <p style="color:#6b7280;font-size:13px">
+                If you didn't request this, you can safely ignore this email.
+              </p>
+            </div>
+            """;
     }
 }
