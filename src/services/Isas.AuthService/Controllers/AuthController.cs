@@ -56,6 +56,30 @@ namespace Isas.AuthService.Controllers
             return Ok(await _authService.LoginAsync(request));
         }
 
+        [HttpGet("login-google")]
+        public IActionResult LoginWithGoogle(string returnUrl = null)
+        {
+            var redirectUrl = Url.Action(nameof(GoogleLoginCallback), "Account", new { ReturnUrl = returnUrl });
+            var properties = _signInManager.ConfigureExternalAuthenticationProperties("Google", redirectUrl);
+
+            return Challenge(properties, "Google");
+        }
+
+        [HttpGet("login-google-callback")]
+        public async Task<IActionResult> GoogleLoginCallback(string returnUrl = null, string remoteError = null)
+        {
+            if (remoteError != null)
+                return BadRequest(new { error = $"Google login error: {remoteError}" });
+
+            var info = await _signInManager.GetExternalLoginInfoAsync();
+            if (info == null)
+                return BadRequest(new { error = "No Google login info" });
+
+            var authResponse = await _authService.LoginGoogleAsync(info);
+
+            return Ok(authResponse);
+        }
+
         [HttpPost("refresh")]
         public async Task<ActionResult<RefreshTokenResponse>> RefreshTokenAsync(RefreshTokenRequest refreshTokenRequest)
         {

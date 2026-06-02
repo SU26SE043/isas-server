@@ -2,6 +2,7 @@
 using Isas.AuthService.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace Isas.AuthService.Services
 {
@@ -12,12 +13,11 @@ namespace Isas.AuthService.Services
         private readonly UserManager<User> _userManager;
         private readonly RoleManager<Role> _roleManager;
         private readonly IConfiguration _configuration;
-        //private readonly IEmailService _emailService;
+        private readonly SignInManager<User> _signInManager;
 
         public AuthService(AuthDbContext authDbContext, IJwtService jwtService,
             UserManager<User> userManager, RoleManager<Role> roleManager,
-            IConfiguration configuration
-            //, IEmailService emailService
+            IConfiguration configuration, SignInManager<User> signInManager
             )
         {
             _authDbContext = authDbContext;
@@ -25,7 +25,7 @@ namespace Isas.AuthService.Services
             _userManager = userManager;
             _roleManager = roleManager;
             _configuration = configuration;
-            //_emailService = emailService;
+            _signInManager = signInManager;
         }
 
         public async Task<AuthResponse> LoginAsync(LoginRequest loginRequest)
@@ -35,6 +35,41 @@ namespace Isas.AuthService.Services
                 throw new UnauthorizedAccessException("Invalid credentials");
 
             return await GenerateAuthResponse(user);
+        }
+
+        public async Task<AuthResponse> LoginGoogleAsync(ExternalLoginInfo info)
+        {
+            var result = await _signInManager.ExternalLoginSignInAsync(info.LoginProvider, info.ProviderKey, false);
+
+            if (result.Succeeded)
+            {
+                var user = await _userManager.FindByLoginAsync(info.LoginProvider, info.ProviderKey);
+                return await GenerateAuthResponse(user);
+            }
+
+            var email = info.Principal.FindFirstValue(ClaimTypes.Email);
+            if (string.IsNullOrEmpty(email))
+                throw new Exception("Google account does not provide an email");
+
+            var newUser = new User
+            {
+                Id = Guid.NewGuid(),
+                UserName = email,
+                Email = email,
+                FullName = info.Principal.Identity?.Name ?? email,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            var identityResult = await _userManager.CreateAsync(newUser);
+            if (!identityResult.Succeeded)
+                throw new Exception(string.Join("; ", identityResult.Errors.Select(e => e.Description)));
+
+            await _userManager.AddLoginAsync(newUser, info);
+            await EnsureRoleExistsAsync("Candidate");
+            await _userManager.AddToRoleAsync(newUser, "Candidate");
+
+            return await GenerateAuthResponse(newUser);
         }
 
         public async Task LogoutAsync(string refreshToken)

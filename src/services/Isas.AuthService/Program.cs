@@ -89,6 +89,16 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
         };
     });
+
+var google = builder.Configuration.GetSection("Authentication:Google");
+builder.Services.AddAuthentication()
+    .AddGoogle(options =>
+    {
+        options.ClientId = google["ClientId"];
+        options.ClientSecret = google["ClientSecret"];
+        options.CallbackPath = "/auth/login-google-callback";
+    });
+
 builder.Services.AddAuthorization();
 
 builder.Services.AddDbContext<AuthDbContext>(options =>
