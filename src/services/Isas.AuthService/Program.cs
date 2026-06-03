@@ -3,6 +3,7 @@ using Isas.AuthService.Services;
 using Isas.Shared.Extensions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
@@ -36,6 +37,7 @@ builder.Services.AddOpenApi(options =>
 
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IJwtService, JwtService>();
+builder.Services.AddTransient<IEmailSender, EmailSender>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
@@ -63,12 +65,11 @@ builder.Services
         // user
         options.User.RequireUniqueEmail = true;
     })
-    .AddRoles<Role>() // KHÔNG THỂ THIẾU dòng này khi dùng kèm RoleManager
+    .AddRoles<Role>()
     .AddEntityFrameworkStores<AuthDbContext>()
     .AddSignInManager()
     .AddDefaultTokenProviders();
 
-// Check null an toàn để tránh sập app lúc mới chạy
 var jwtKey = builder.Configuration["Jwt:Key"]
              ?? throw new InvalidOperationException("Jwt:Key is missing in configuration.");
 
@@ -88,6 +89,16 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
         };
     });
+
+var google = builder.Configuration.GetSection("Authentication:Google");
+builder.Services.AddAuthentication()
+    .AddGoogle(options =>
+    {
+        options.ClientId = google["ClientId"];
+        options.ClientSecret = google["ClientSecret"];
+        options.CallbackPath = "/auth/login-google-callback";
+    });
+
 builder.Services.AddAuthorization();
 
 builder.Services.AddDbContext<AuthDbContext>(options =>
