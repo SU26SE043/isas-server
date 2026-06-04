@@ -22,6 +22,13 @@ builder.Services.AddScoped<IStorageService, StorageService>();
 builder.Services.AddHostedService<BucketInitializer>();
 
 builder.Services.AddScoped<FileStorageOptions>();
+builder.Services.AddScoped<IScoringPublisher, StubScoringPublisher>();
+builder.Services.AddScoped<IPracticeService, PracticeService>();
+builder.Services.AddHttpClient<IQuestionGenerator, AiServiceQuestionGenerator>(c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
 
 builder.Services.AddOpenApi(options =>
 {
