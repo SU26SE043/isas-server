@@ -8,7 +8,7 @@ namespace Isas.InterviewService.Controllers
 {
     [ApiController]
     [Route("api/files")]
-    [Authorize]
+    //[Authorize]
     public class InterviewController : ControllerBase
     {
         private readonly IStorageService _storage;
@@ -91,9 +91,23 @@ namespace Isas.InterviewService.Controllers
                 _logger.LogError(ex, "Storage upload failed for user={UserId} fileId={FileId}", userId, fileId);
                 return StatusCode(500, new { error = "File storage failed. Please try again." });
             }
-
+            
             // ── 5. Save metadata to DB ─────────────────────────────────────
             FileRecord fileRecord;
+            if (parsedCv != null)
+            {
+                var src = parsedCv.RawText;
+                var buf = new char[src.Length];
+                int j = 0;
+
+                for (int i = 0; i < src.Length; i++)
+                    if (src[i] != '\u0000')
+                        buf[j++] = src[i];
+
+                if (j != src.Length)
+                    parsedCv.RawText = new string(buf, 0, j);
+                // nếu j == src.Length → không có NUL, giữ nguyên, không tạo string mới
+            }
             try
             {
                 fileRecord = await _storage.SaveMetadata(

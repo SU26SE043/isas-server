@@ -79,9 +79,8 @@ builder.Services.AddSingleton<IAmazonS3>(sp => {
     var opts = sp.GetRequiredService<IOptions<FileStorageOptions>>().Value;
 
     return new AmazonS3Client(
-        //opts.AccessKey,
-        //opts.SecretKey,
-        new Amazon.Runtime.AnonymousAWSCredentials(),
+        opts.AccessKey,
+        opts.SecretKey,
         new AmazonS3Config
         {
             ServiceURL = opts.ServiceURL,
