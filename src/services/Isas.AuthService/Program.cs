@@ -99,6 +99,15 @@ builder.Services.AddAuthentication()
         options.CallbackPath = "/auth/login-google-callback";
     });
 
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowFrontend",
+        policy => policy.WithOrigins("http://localhost:7225")
+                        .AllowAnyHeader()
+                        .AllowAnyMethod()
+                        .AllowCredentials());
+});
+
 builder.Services.AddAuthorization();
 
 builder.Services.AddDbContext<AuthDbContext>(options =>
@@ -117,6 +126,8 @@ if (app.Environment.IsDevelopment())
         options.WithDefaultHttpClient(ScalarTarget.JavaScript, ScalarClient.Fetch);
     });
 }
+
+app.UseCors("AllowFrontend");
 
 app.UseServiceCors();
 app.UseAuthentication();
