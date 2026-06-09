@@ -95,7 +95,7 @@ namespace Isas.AuthService.Controllers
             return Ok(result);
         }
 
-        [Authorize]
+        [Authorize(Roles = "Candidate, Employer, Admin")]
         [HttpPost("logout")]
         public async Task<IActionResult> LogoutAsync(RefreshTokenRequest refreshTokenRequest)
         {
@@ -103,8 +103,7 @@ namespace Isas.AuthService.Controllers
             return NoContent();
         }
 
-
-        [Authorize]
+        [Authorize(Roles = "Candidate, Employer, Admin")]
         [HttpGet("me")]
         public async Task<ActionResult<UserResponse>> GetProfileAsync()
         {
@@ -117,7 +116,7 @@ namespace Isas.AuthService.Controllers
             return Ok(userResponse);
         }
 
-        [Authorize]
+        [Authorize(Roles = "Candidate, Employer, Admin")]
         [HttpPut("me")]
         public async Task<ActionResult<User>> UpdateProfileAsync(UpdateProfileRequest request)
         {
@@ -158,6 +157,7 @@ namespace Isas.AuthService.Controllers
 
             if (storedOtp == model.Otp && DateTime.Parse(expiry) > DateTime.UtcNow)
             {
+                await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OtpVerified", DateTime.UtcNow.ToString());
                 return Ok("OTP verified, you can reset your password");
             }
 
@@ -170,6 +170,10 @@ namespace Isas.AuthService.Controllers
             var user = await _userManager.FindByEmailAsync(model.Email);
             if (user == null) return BadRequest("User not found");
 
+            var verifiedOtp = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode");
+            if (string.IsNullOrEmpty(verifiedOtp) || DateTime.Parse(verifiedOtp).AddMinutes(5) < DateTime.UtcNow)
+                return BadRequest("OTP not verified or expired");
+
             var token = await _userManager.GeneratePasswordResetTokenAsync(user);
             var result = await _userManager.ResetPasswordAsync(user, token, model.NewPassword);
 
@@ -179,7 +183,6 @@ namespace Isas.AuthService.Controllers
             return BadRequest(result.Errors);
         }
 
-        
         private static string BuildEmailBody(string otp) =>
             $"""
             <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:32px;
