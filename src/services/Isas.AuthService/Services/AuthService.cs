@@ -229,7 +229,9 @@ namespace Isas.AuthService.Services
         public Task<RefreshToken> GetRefreshTokenAsync(string refreshToken)
         {
             var refreshTokenHash = _jwtService.HashRefreshToken(refreshToken);
-            return _authDbContext.RefreshTokens.FirstOrDefaultAsync(x => x.Token == refreshTokenHash);
+            return _authDbContext.RefreshTokens
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Token == refreshTokenHash);
         }
     }
 }

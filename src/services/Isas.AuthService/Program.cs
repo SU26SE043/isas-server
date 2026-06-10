@@ -8,12 +8,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Scalar.AspNetCore;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddServiceCors(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHealthChecks();
 builder.Services.AddOpenApi(options =>
@@ -84,6 +84,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+            RoleClaimType = ClaimTypes.Role,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
@@ -98,6 +99,8 @@ builder.Services.AddAuthentication()
         options.ClientSecret = google["ClientSecret"];
         options.CallbackPath = "/auth/login-google-callback";
     });
+
+
 
 builder.Services.AddAuthorization();
 
@@ -118,7 +121,7 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.UseServiceCors();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
