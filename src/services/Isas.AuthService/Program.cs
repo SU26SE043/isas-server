@@ -14,7 +14,6 @@ using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddServiceCors(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHealthChecks();
 builder.Services.AddOpenApi(options =>
@@ -101,14 +100,7 @@ builder.Services.AddAuthentication()
         options.CallbackPath = "/auth/login-google-callback";
     });
 
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("AllowFrontend",
-        policy => policy.WithOrigins("http://localhost:7225")
-                        .AllowAnyHeader()
-                        .AllowAnyMethod()
-                        .AllowCredentials());
-});
+
 
 builder.Services.AddAuthorization();
 
@@ -129,9 +121,7 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.UseCors("AllowFrontend");
 
-app.UseServiceCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
