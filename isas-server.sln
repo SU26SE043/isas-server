@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.5.11723.231 stable
+VisualStudioVersion = 18.5.11723.231
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Isas.AuthService", "src\services\Isas.AuthService\Isas.AuthService.csproj", "{729595A6-3578-4B47-B9CE-532E6A63A6DD}"
 EndProject
@@ -13,6 +13,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution 
 	ProjectSection(SolutionItems) = preProject
 		compose.yaml = compose.yaml
 	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Isas.CampaignService", "Isas.CampaignService\Isas.CampaignService.csproj", "{E5738E73-8F37-4A2D-B795-6EE2049B1543}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -32,6 +34,10 @@ Global
 		{EAB8C912-27E0-466A-BBE4-D22FE9BA7DBF}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EAB8C912-27E0-466A-BBE4-D22FE9BA7DBF}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EAB8C912-27E0-466A-BBE4-D22FE9BA7DBF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E5738E73-8F37-4A2D-B795-6EE2049B1543}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E5738E73-8F37-4A2D-B795-6EE2049B1543}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E5738E73-8F37-4A2D-B795-6EE2049B1543}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E5738E73-8F37-4A2D-B795-6EE2049B1543}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
