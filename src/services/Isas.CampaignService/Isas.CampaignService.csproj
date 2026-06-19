@@ -22,7 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\src\shared\Isas.Shared\Isas.Shared.csproj" />
+    <ProjectReference Include="..\..\shared\Isas.Shared\Isas.Shared.csproj" />
   </ItemGroup>
 
 </Project>
