@@ -1,3 +1,4 @@
+using Amazon.Runtime;
 using Amazon.S3;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
@@ -76,15 +77,15 @@ builder.Services.AddSingleton<IAmazonS3>(sp => {
     var opts = sp.GetRequiredService<IOptions<FileStorageOptions>>().Value;
 
     return new AmazonS3Client(
-        opts.AccessKey,
-        opts.SecretKey,
-        new AmazonS3Config
-        {
-            ServiceURL = opts.ServiceURL,
-            ForcePathStyle = opts.ForcePathStyle,
-            AuthenticationRegion = "us-east-1",
-            UseHttp = true
-        });
+    opts.AccessKey,
+    opts.SecretKey,
+    new AmazonS3Config
+    {
+        ServiceURL = opts.ServiceURL,
+        ForcePathStyle = opts.ForcePathStyle,
+        AuthenticationRegion = "us-east-1",
+        UseHttp = true
+    });
 });
 
 var app = builder.Build();

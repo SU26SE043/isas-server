@@ -13,7 +13,6 @@ namespace Isas.CampaignService.Services
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             };
         private const long MaxFileSizeBytes = 10 * 1024 * 1024;
 

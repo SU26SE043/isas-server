@@ -17,7 +17,7 @@
 
     public enum QuestionSource
     {
-        AiGenerated,
-        CustomHr
+        AiGenerated = 0,
+        CustomHr = 1
     }
 }

@@ -3,7 +3,9 @@ using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
+using System.Text.Json;
 
 namespace Isas.CampaignService.Controllers
 {
@@ -37,6 +39,7 @@ namespace Isas.CampaignService.Controllers
         }
 
         [HttpPost]
+        [Consumes("multipart/form-data")]
         //[Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> CreateCampaign([FromForm] CreateCampaignRequest request, CancellationToken ct)
         {
@@ -44,9 +47,13 @@ namespace Isas.CampaignService.Controllers
             if (string.IsNullOrWhiteSpace(employerId))
                 return Forbid();
 
-            // ── 1. Basic request validation before service ──────
-            if (string.IsNullOrWhiteSpace(request.Title))
-                return BadRequest("Campaign title is required.");
+            if (!string.IsNullOrWhiteSpace(request.QuestionsJson))
+            {
+                request.Questions = JsonSerializer.Deserialize<List<QuestionItem>>(
+                    request.QuestionsJson,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+                ) ?? new();
+            }
 
             if (request.Questions == null || !request.Questions.Any())
                 return BadRequest("At least one question is required.");
@@ -54,11 +61,20 @@ namespace Isas.CampaignService.Controllers
             if (request.Questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 return BadRequest("All questions must have non-empty text.");
 
-            if (request.JdFile is not null && request.JdFile.Length == 0)
-                return BadRequest("JD file is empty.");
+            if (request.StartsAt.HasValue && request.StartsAt < DateTime.UtcNow)
+                return BadRequest("StartsAt cannot be in the past.");
 
-            if (request.CriteriaFile is not null && request.CriteriaFile.Length == 0)
-                return BadRequest("Criteria file is empty.");
+            if (request.ExpiresAt.HasValue && request.ExpiresAt < DateTime.UtcNow)
+                return BadRequest("ExpiresAt cannot be in the past.");
+
+            if (request.StartsAt.HasValue && request.ExpiresAt.HasValue && request.StartsAt >= request.ExpiresAt)
+                return BadRequest("StartsAt must be before ExpiresAt.");
+
+            if (request.JdFile != null && request.JdFile.Length > 10 * 1024 * 1024)
+                return BadRequest("JD file size cannot exceed 10MB.");
+
+            if (request.CriteriaFile != null && request.CriteriaFile.Length > 10 * 1024 * 1024)
+                return BadRequest("Criteria file size cannot exceed 10MB.");
 
             try
             {
@@ -74,7 +90,6 @@ namespace Isas.CampaignService.Controllers
                 return StatusCode(500, $"Failed to create campaign: {ex.Message}");
             }
         }
-
 
         [HttpPut("{id}")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaign(Guid id, UpdateCampaignRequest request, CancellationToken ct)

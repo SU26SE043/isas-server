@@ -1,93 +1,129 @@
 ﻿using Isas.CampaignService.Models;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
+using System.ComponentModel.DataAnnotations;
 
 namespace Isas.CampaignService.DTOs
 {
-    public record QuestionItem(
-        string QuestionText,
-        QuestionSource Source,
-        int? TimeLimitSeconds,
-        bool IsRequired = true
-    );
-
-    public record CreateCampaignRequest(
-        string Title,
-        string? JobDescription,
-        string? Domain,
-        int CreditCost,
-        int? MaxCandidates,
-        int? TimeLimitMinutes,
-        bool AntiCheatEnabled,
-        DateTime? StartsAt,
-        DateTime? ExpiresAt,
-        IFormFile? JdFile,
-        IFormFile? CriteriaFile,
-        List<QuestionItem> Questions
-    );
-
-    public record UpdateCampaignRequest(
-        string Title,
-        string? JobDescription,
-        string? Domain,
-        int CreditCost,
-        int? MaxCandidates,
-        int? TimeLimitMinutes,
-        bool AntiCheatEnabled,
-        DateTime? StartsAt,
-        DateTime? ExpiresAt,
-        IFormFile? JdFile,
-        IFormFile? CriteriaFile,
-        List<QuestionItem> Questions
-    );
-
-    public record CampaignQuestionResponse(
-        Guid Id,
-        string QuestionText,
-        string Source,
-        int? TimeLimitSeconds,
-        bool IsRequired
-    );
-
-    public record CampaignResponse(
-        Guid Id,
-        Guid EmployerId,
-        string Title,
-        string? Domain,
-        string Status,
-        int? MaxCandidates,
-        int? TimeLimitMinutes,
-        bool AntiCheatEnabled,
-        DateTime? StartsAt,
-        DateTime? ExpiresAt,
-        string? JDFileUrl,
-        string? CriteriaFileUrl,
-        List<CampaignQuestionResponse> Questions,
-        DateTime CreatedAt,
-        DateTime UpdatedAt
-    )
+    public class QuestionItem
     {
-        public static CampaignResponse FromEntity(Campaign c) => new(
-            c.Id,
-            c.EmployerId,
-            c.Title,
-            c.Domain,
-            c.Status.ToString(),
-            c.MaxCandidates,
-            c.TimeLimitMinutes,
-            c.AntiCheatEnabled,
-            c.StartsAt,
-            c.ExpiresAt,
-            c.JDFileUrl,
-            c.CriteriaFileUrl,
-            c.Questions
-                .Select(q => new CampaignQuestionResponse(
-                    q.Id,
-                    q.QuestionText,
-                    q.Source.ToString(),
-                    q.TimeLimitSeconds,
-                    q.IsRequired
-                )).ToList(),
-            c.CreatedAt,
-            c.UpdatedAt
-        );
+        public string QuestionText { get; set; }
+        public QuestionSource Source { get; set; }
+        public int? TimeLimitSeconds { get; set; }
+        public bool IsRequired { get; set; } = true;
+    }
+
+    public class CreateCampaignRequest
+    {
+        [Required]
+        public string Title { get; set; }
+
+        [Required]
+        public string? Domain { get; set; }
+
+        public int? MaxCandidates { get; set; }
+
+        [Required]
+        public int? TimeLimitMinutes { get; set; }
+
+        public bool AntiCheatEnabled { get; set; }
+
+        [Required]
+        public DateTime? StartsAt { get; set; }
+
+        [Required]
+        public DateTime? ExpiresAt { get; set; }
+
+        public string? QuestionsJson { get; set; }
+
+        [BindNever]
+        public List<QuestionItem> Questions { get; set; } = new();
+
+        public IFormFile? JdFile { get; set; }
+
+        public IFormFile? CriteriaFile { get; set; }
+    }
+
+    public class UpdateCampaignRequest
+    {
+        [Required]
+        public string Title { get; set; }
+
+        [Required]
+        public string? Domain { get; set; }
+
+        public int? MaxCandidates { get; set; }
+
+        [Required]
+        public int? TimeLimitMinutes { get; set; }
+
+        public bool AntiCheatEnabled { get; set; }
+
+        [Required]
+        public DateTime? StartsAt { get; set; }
+
+        [Required]
+        public DateTime? ExpiresAt { get; set; }
+
+        public string? QuestionsJson { get; set; }
+
+        public List<QuestionItem> Questions { get; set; } = new();
+
+        public IFormFile? JdFile { get; set; }
+
+        public IFormFile? CriteriaFile { get; set; }
+    }
+
+    public class CampaignQuestionResponse
+    {
+        public Guid Id { get; set; }
+        public string QuestionText { get; set; }
+        public string Source { get; set; }
+        public int? TimeLimitSeconds { get; set; }
+        public bool IsRequired { get; set; }
+    }
+
+    public class CampaignResponse
+    {
+        public Guid Id { get; set; }
+        public Guid EmployerId { get; set; }
+        public string Title { get; set; }
+        public string? Domain { get; set; }
+        public string Status { get; set; }
+        public int? MaxCandidates { get; set; }
+        public int? TimeLimitMinutes { get; set; }
+        public bool AntiCheatEnabled { get; set; }
+        public DateTime? StartsAt { get; set; }
+        public DateTime? ExpiresAt { get; set; }
+        public string? JDFileUrl { get; set; }
+        public string? CriteriaFileUrl { get; set; }
+        public List<CampaignQuestionResponse> Questions { get; set; } = new();
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+
+        public static CampaignResponse FromEntity(Campaign c) => new CampaignResponse
+        {
+            Id = c.Id,
+            EmployerId = c.EmployerId,
+            Title = c.Title,
+            Domain = c.Domain,
+            Status = c.Status.ToString(),
+            MaxCandidates = c.MaxCandidates,
+            TimeLimitMinutes = c.TimeLimitMinutes,
+            AntiCheatEnabled = c.AntiCheatEnabled,
+            StartsAt = c.StartsAt,
+            ExpiresAt = c.ExpiresAt,
+            JDFileUrl = c.JDFileUrl,
+            CriteriaFileUrl = c.CriteriaFileUrl,
+            Questions = c.Questions.Select(q => new CampaignQuestionResponse
+            {
+                Id = q.Id,
+                QuestionText = q.QuestionText,
+                Source = q.Source.ToString(),
+                TimeLimitSeconds = q.TimeLimitSeconds,
+                IsRequired = q.IsRequired
+            }).ToList(),
+            CreatedAt = c.CreatedAt,
+            UpdatedAt = c.UpdatedAt
+        };
     }
 }

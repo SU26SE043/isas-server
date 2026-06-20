@@ -28,10 +28,19 @@ namespace Isas.CampaignService.Services
                 Key = path,
                 InputStream = stream,
                 ContentType = file.ContentType,
-                CannedACL = S3CannedACL.PublicRead
             };
 
-            await _s3.PutObjectAsync(request, ct);
+            try
+            {
+                await _s3.PutObjectAsync(request, ct);
+            }
+            catch (AmazonS3Exception ex)
+            {
+                Console.WriteLine($"Message: {ex.Message}");
+                Console.WriteLine($"ErrorCode: {ex.ErrorCode}");
+                Console.WriteLine($"StatusCode: {ex.StatusCode}");
+                throw;
+            }
             return path;
         }
 
