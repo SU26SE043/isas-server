@@ -3,16 +3,17 @@ using Isas.AuthService.Services;
 using Isas.Shared.Extensions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Scalar.AspNetCore;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddServiceCors(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHealthChecks();
 builder.Services.AddOpenApi(options =>
@@ -36,6 +37,7 @@ builder.Services.AddOpenApi(options =>
 
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IJwtService, JwtService>();
+builder.Services.AddTransient<IEmailSender, EmailSender>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
@@ -46,7 +48,7 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 builder.Services.AddHttpContextAccessor();
 
 builder.Services
-    .AddIdentity<User, Role>(options =>
+    .AddIdentityCore<User>(options =>
     {
         // password
         options.Password.RequireDigit = true;
@@ -63,8 +65,13 @@ builder.Services
         // user
         options.User.RequireUniqueEmail = true;
     })
+    .AddRoles<Role>()
     .AddEntityFrameworkStores<AuthDbContext>()
+    .AddSignInManager()
     .AddDefaultTokenProviders();
+
+var jwtKey = builder.Configuration["Jwt:Key"]
+             ?? throw new InvalidOperationException("Jwt:Key is missing in configuration.");
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -73,26 +80,34 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            //ValidateIssuerSigningKey = false,
-            //ValidateIssuer = false,
-            //ValidateAudience = false,
-            //ValidateLifetime = false,
-            //RequireSignedTokens = false, 
-            // SignatureValidator = (token, _) => new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(token)
-
             ValidateIssuer = true,
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+            RoleClaimType = ClaimTypes.Role,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
         };
     });
+
+var google = builder.Configuration.GetSection("Authentication:Google");
+builder.Services.AddAuthentication()
+    .AddGoogle(options =>
+    {
+        options.ClientId = google["ClientId"];
+        options.ClientSecret = google["ClientSecret"];
+        options.CallbackPath = "/auth/login-google-callback";
+    });
+
+
+
 builder.Services.AddAuthorization();
 
 builder.Services.AddDbContext<AuthDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        npgsql => npgsql.EnableRetryOnFailure()));
 
 var app = builder.Build();
 
@@ -106,28 +121,13 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.UseServiceCors();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
-//app.MapPost("/login", () =>
-//    Results.Ok(new
-//    {
-//        accessToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ1c2VyLTAwMSIsImVtYWlsIjoidGVzdEBpc3NhLmNvbSIsInJvbGUiOiJDYW5kaWRhdGUifQ.",
-//        tokenType = "Bearer",
-//        expiresIn = 3600
-//    })
-//);
 app.MapHealthChecks("/health");
-//app.MapGet("/me", () =>
-//    Results.Ok(new
-//    {
-//        id = "user-001",
-//        email = "test@isas.com",
-//        role = "Candidate"
-//    })
-//).RequireAuthorization();
 
 app.MapControllers();
+
 
 app.Run();
