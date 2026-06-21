@@ -1,6 +1,9 @@
-﻿using Isas.InterviewService.DTOs;
+﻿using System.Security.Claims;
+using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Entities;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
+using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -8,7 +11,7 @@ namespace Isas.InterviewService.Controllers
 {
     [ApiController]
     [Route("api/files")]
-    //[Authorize]
+    // [Authorize] // Khuyên ông nên mở cái này ra khi test xong, file phải có chủ
     public class InterviewController : ControllerBase
     {
         private readonly IStorageService _storage;
@@ -18,6 +21,7 @@ namespace Isas.InterviewService.Controllers
         private const long MaxFileSizeBytes = 10 * 1024 * 1024;
         private static readonly string[] AllowedExtensions = [".pdf"];
         private static readonly string[] ValidFileTypes = ["cv", "jd"];
+
         public InterviewController(ICVParserService cvParser, IStorageService storage, ILogger<InterviewController> logger)
         {
             _cvParser = cvParser;
@@ -29,7 +33,6 @@ namespace Isas.InterviewService.Controllers
         [RequestSizeLimit(10_485_760)]
         public async Task<IActionResult> Upload(IFormFile file, [FromQuery] string fileType, CancellationToken ct)
         {
-            // ── 1. Validate inputs ─────────────────────────────────────────
             if (file is null || file.Length == 0)
                 return BadRequest(new { error = "No file provided." });
 
@@ -44,16 +47,15 @@ namespace Isas.InterviewService.Controllers
             if (!ValidFileTypes.Contains(fileType))
                 return BadRequest(new { error = $"fileType must be one of: {string.Join(", ", ValidFileTypes)}" });
 
-            // ── 2. Resolve current user ────────────────────────────────────
-            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "anonymous";
+            // Parse claim an toàn, gán Guid.Empty nếu đang test tắt Auth
+            var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userId = Guid.TryParse(userIdString, out var uid) ? uid : Guid.Empty;
 
-            var fileId = Guid.NewGuid().ToString("N");
+            var fileId = Guid.NewGuid(); // Dùng thẳng Guid
 
             _logger.LogInformation("Upload request — user={UserId} type={FileType} file={FileName} size={Size}", userId, fileType, file.FileName, file.Length);
 
-            // ── 3. Parse CV if applicable ──────────────────────────────────
             CVParseResult? parsedCv = null;
-
             await using var stream = file.OpenReadStream();
 
             if (fileType == "cv" || fileType == "jd")
@@ -65,23 +67,20 @@ namespace Isas.InterviewService.Controllers
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Parsing failed for file {FileName}, continuing with upload.", file.FileName);
-                    // Parsing failure is non-fatal — we still store the file
                 }
 
-                // Reset stream after parsing
                 if (stream.CanSeek)
                     stream.Position = 0;
             }
 
-            // ── 4. Upload to SeaweedFS ─────────────────────────────────────
             string storagePath;
             try
             {
                 storagePath = await _storage.UploadAsync(
                     fileStream: stream,
                     fileType: fileType,
-                    userId: userId,
-                    fileId: fileId,
+                    userId: userId, // Truyền Guid
+                    fileId: fileId, // Truyền Guid
                     ext: "pdf",
                     contentType: "application/pdf",
                     ct: ct);
@@ -92,7 +91,6 @@ namespace Isas.InterviewService.Controllers
                 return StatusCode(500, new { error = "File storage failed. Please try again." });
             }
             
-            // ── 5. Save metadata to DB ─────────────────────────────────────
             FileRecord fileRecord;
             if (parsedCv != null)
             {
@@ -106,13 +104,13 @@ namespace Isas.InterviewService.Controllers
 
                 if (j != src.Length)
                     parsedCv.RawText = new string(buf, 0, j);
-                // nếu j == src.Length → không có NUL, giữ nguyên, không tạo string mới
             }
+
             try
             {
                 fileRecord = await _storage.SaveMetadata(
-                    fileId: fileId,
-                    userId: userId,
+                    fileId: fileId, // Truyền Guid
+                    userId: userId, // Truyền Guid
                     fileType: fileType,
                     originalName: file.FileName,
                     storagePath: storagePath,
@@ -125,17 +123,12 @@ namespace Isas.InterviewService.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "DB save failed for fileId={FileId} — file is stored but metadata lost.", fileId);
-                // Non-fatal: file is already in SeaweedFS, return partial response
                 return StatusCode(500, new { error = "File uploaded but metadata save failed." });
             }
 
-            // ── 6. Generate presigned URL ──────────────────────────────────
-            //var presignedUrl = _storage.GetPresignedUrl(storagePath, expiryMinutes: 60);
-
-            // ── 7. Return response ─────────────────────────────────────────
             return Ok(new UploadFileResponse
             {
-                FileId = fileId,
+                FileId = fileId.ToString(), // Trả string ra cho Client
                 FileType = fileType,
                 OriginalName = fileRecord.OriginalName,
                 FileSize = fileRecord.FileSize,
@@ -145,33 +138,28 @@ namespace Isas.InterviewService.Controllers
             });
         }
 
-        [HttpGet("{id}")]
-        public async Task<ActionResult<FileRecord>> GetFileMetadata(string id, CancellationToken ct)
+        // Đổi tham số sang Guid và kiểm tra an toàn
+        [HttpGet("{id:guid}")]
+        public async Task<ActionResult<FileRecord>> GetFileMetadata(Guid id, CancellationToken ct)
         {
-            var fileRecord = await _storage.GetMetadata(id);
+            var fileRecord = await _storage.GetMetadata(id, ct);
+            if (fileRecord == null) return NotFound("File không tồn tại");
 
-            if (fileRecord == null)
-                return NotFound("File không tồn tại");
-
-            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier).Value;
-
-            if (userId == null)
+            var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
                 return Forbid("Bạn không có quyền truy cập file này");
 
             return fileRecord;
         }
 
-        [HttpGet("{id}/download")]
-        public async Task<IActionResult> DownloadFile(string id, CancellationToken ct)
+        [HttpGet("{id:guid}/download")]
+        public async Task<IActionResult> DownloadFile(Guid id, CancellationToken ct)
         {
             var fileRecord = await _storage.GetMetadata(id, ct);
+            if (fileRecord == null) return NotFound("File không tồn tại");
 
-            if (fileRecord == null)
-                return NotFound("File không tồn tại");
-
-            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier).Value;
-
-            if (userId == null || fileRecord.UserId != Guid.Parse(userId))
+            var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
                 return Forbid("Bạn không có quyền truy cập file này");
 
             try
@@ -186,22 +174,20 @@ namespace Isas.InterviewService.Controllers
             }
         }
 
-        [HttpGet("{id}/parsed-text")]
-        public async Task<IActionResult> GetParsedText(string id, CancellationToken ct)
+        [HttpGet("{id:guid}/parsed-text")]
+        public async Task<IActionResult> GetParsedText(Guid id, CancellationToken ct)
         {
             var fileRecord = await _storage.GetMetadata(id, ct);
+            if (fileRecord == null) return NotFound("File không tồn tại");
 
-            if (fileRecord == null)
-                return NotFound("File không tồn tại");
-
-            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier).Value;
-
-            if (userId == null || fileRecord.UserId != Guid.Parse(userId))
+            var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
                 return Forbid("Bạn không có quyền truy cập file này");
 
             try
             {
-                var parsedText = await _storage.GetParseText(id, ct);
+                // Gọi hàm có hậu tố Async
+                var parsedText = await _storage.GetParseTextAsync(id, ct);
                 return Ok(new { parsedText });
             }
             catch (Exception ex)
@@ -214,9 +200,8 @@ namespace Isas.InterviewService.Controllers
         [HttpGet("files")]
         public async Task<IActionResult> GetUserFiles(CancellationToken ct)
         {
-            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier).Value;
-
-            if (userId == null)
+            var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userIdString, out var userId))
                 return Forbid("Bạn không có quyền truy cập file này");
 
             try
@@ -231,18 +216,16 @@ namespace Isas.InterviewService.Controllers
             }
         }
 
-        [HttpDelete("{id}")]
-        public async Task<IActionResult> DeleteFile(string id, CancellationToken ct)
+        [HttpDelete("{id:guid}")]
+        public async Task<IActionResult> DeleteFile(Guid id, CancellationToken ct)
         {
             var fileRecord = await _storage.GetMetadata(id, ct);
+            if (fileRecord == null) return NotFound("File không tồn tại");
 
-            if (fileRecord == null)
-                return NotFound("File không tồn tại");
-
-            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier).Value;
-
-            if (userId == null || fileRecord.UserId != Guid.Parse(userId))
+            var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
                 return Forbid("Bạn không có quyền xóa file này");
+
             try
             {
                 await _storage.DeleteFileRecord(id, ct);
@@ -255,43 +238,34 @@ namespace Isas.InterviewService.Controllers
             }
         }
 
-        [HttpPut("{id}")]
-        public async Task<IActionResult> UpdateFile(string id, IFormFile newFile, CancellationToken ct)
+        [HttpPut("{id:guid}")]
+        public async Task<IActionResult> UpdateFile(Guid id, IFormFile newFile, CancellationToken ct)
         {
             var fileRecord = await _storage.GetMetadata(id, ct);
+            if (fileRecord == null) return NotFound("File không tồn tại");
 
-            if (fileRecord == null)
-                return NotFound("File không tồn tại");
-
-            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-
-            if (userId == null || fileRecord.UserId != Guid.Parse(userId))
+            var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
                 return Forbid();
 
-            if (newFile == null || newFile.Length == 0)
-                return BadRequest("Không có file.");
+            if (newFile == null || newFile.Length == 0) return BadRequest("Không có file.");
 
             var ext = Path.GetExtension(newFile.FileName).ToLowerInvariant();
-
-            if (!AllowedExtensions.Contains(ext))
-                return BadRequest("Chỉ PDF.");
+            if (!AllowedExtensions.Contains(ext)) return BadRequest("Chỉ PDF.");
 
             CVParseResult? parsedCv = null;
-
             await using var stream = newFile.OpenReadStream();
 
             try
             {
                 if (fileRecord.FileType == "cv" || fileRecord.FileType == "jd")
                 {
-                    parsedCv = await _cvParser.ParseAsync(stream,ct);
-
-                    if (stream.CanSeek)
-                        stream.Position = 0;
+                    parsedCv = await _cvParser.ParseAsync(stream, ct);
+                    if (stream.CanSeek) stream.Position = 0;
                 }
 
                 await _storage.UpdateFileRecord(
-                    fileId: id,
+                    fileId: id, // Truyền Guid
                     stream: stream,
                     originalName: newFile.FileName,
                     fileSize: newFile.Length,
@@ -299,10 +273,7 @@ namespace Isas.InterviewService.Controllers
                     parsedCv: parsedCv,
                     ct: ct);
 
-                return Ok(new
-                {
-                    message = "Updated successfully", parsedCv
-                });
+                return Ok(new { message = "Updated successfully", parsedCv });
             }
             catch (Exception ex)
             {

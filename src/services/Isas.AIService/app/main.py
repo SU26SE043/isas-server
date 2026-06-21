@@ -1,29 +1,31 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, APIRouter
 import os
 import tempfile
 import asyncio
 from app.schemas import GenerateQuestionsRequest, GenerateQuestionsResponse
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber 
+
 app = FastAPI(title="ISAS AI Service")
 transcriber = Transcriber() 
 provider = GeminiProvider()
 
+# 1. Định nghĩa Router
+router = APIRouter(prefix="/api/v1")
 
-@app.get("/health")
+@router.get("/health")
 async def health():
     return {"status": "ok"}
 
-
-@app.post("/generate-questions", response_model=GenerateQuestionsResponse)
+@router.post("/generate-questions", response_model=GenerateQuestionsResponse)
 async def generate_questions(req: GenerateQuestionsRequest):
     try:
         questions = await provider.generate(req.jobCategory, req.cvText, req.jdText)
         return GenerateQuestionsResponse(questions=questions)
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi sinh câu hỏi: {ex}")
-    
-@app.post("/transcribe")
+
+@router.post("/transcribe")
 async def transcribe(file: UploadFile = File(...), language: str = "vi"):
     # Lưu tạm file để faster-whisper đọc (nó nhận path)
     suffix = os.path.splitext(file.filename or "")[1] or ".tmp"
@@ -33,7 +35,6 @@ async def transcribe(file: UploadFile = File(...), language: str = "vi"):
             tmp_path = tmp.name
 
         # transcribe nặng CPU → chạy trong thread, không block event loop
-        import asyncio
         text = await asyncio.to_thread(transcriber.transcribe, tmp_path, language)
 
         return {"text": text}
@@ -42,3 +43,7 @@ async def transcribe(file: UploadFile = File(...), language: str = "vi"):
     finally:
         if "tmp_path" in dir() and os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+# Kích hoạt toàn bộ route /api/v1 — đăng ký SAU khi mọi @router đã khai báo.
+app.include_router(router)

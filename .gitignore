@@ -2,18 +2,65 @@
 .vs/
 bin/
 obj/
+out/
+*.user
 
+## Test results / coverage
+[Tt]est[Rr]esults/
+*.trx
+*.coverage
+*.cobertura.xml
+coverage/
+coverage.json
+.coverlet/
 ## Rider
 .idea/
 *.DotSettings.user
+## VS Code
+.vscode/
 
-## AppSettings
+## AppSettings / Secrets
 appsettings.Development.json
 appsettings.Production.json
 appsettings.Local.json
-
 .env
+.env.*
+.env copy
+.env*copy*
+!.env.example
+s3.json
+*.pem
+*.key
+
+## Python (AIService + worker)
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+## Whisper model weights (nặng — không commit)
+*.bin
+*.pt
+*.onnx
+models/
+.cache/
+
+## File audio tạm runtime
+*.webm
+*.wav
+*.m4a
+tmp/
+
+## Docker volume data (nếu lỡ mount vào repo)
+postgres_data/
+seaweedfs_data/
+rabbitmq_data/
 
 ## OS
 .DS_Store
 Thumbs.db
+*.log

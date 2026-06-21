@@ -9,7 +9,7 @@ ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 COPY ["src/services/Isas.InterviewService/Isas.InterviewService.csproj", "src/services/Isas.InterviewService/"]
 COPY ["src/shared/Isas.Shared/Isas.Shared.csproj", "src/shared/Isas.Shared/"]
-RUN dotnet restore "src/services/Isas.InterviewService/Isas.AuthService.csproj"
+RUN dotnet restore "src/services/Isas.InterviewService/Isas.InterviewService.csproj"
 COPY . .
 WORKDIR "/src/src/services/Isas.InterviewService"
 RUN dotnet build "./Isas.InterviewService.csproj" -c $BUILD_CONFIGURATION -o /app/build

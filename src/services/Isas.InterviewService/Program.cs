@@ -1,5 +1,4 @@
 using Amazon.S3;
-using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
 using Isas.Shared.Extensions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -10,6 +9,9 @@ using Microsoft.OpenApi;
 using Scalar.AspNetCore;
 using System.Text;
 using System.Text.Json.Serialization;
+using Isas.InterviewService.ApplicationDbContext;
+using Isas.InterviewService.Models;
+using Isas.InterviewService.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,12 +21,12 @@ builder.Services.AddHealthChecks();
 
 builder.Services.AddScoped<ICVParserService, CVParserService>();
 builder.Services.AddScoped<IStorageService, StorageService>();
+builder.Services.AddScoped<IAnswerService, AnswerService>();
 builder.Services.AddHostedService<BucketInitializer>();
-
-builder.Services.AddScoped<FileStorageOptions>();
-builder.Services.AddScoped<IScoringPublisher, StubScoringPublisher>();
+builder.Services.AddSingleton<IScoringJobPublisher, ScoringJobPublisher>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
-builder.Services.AddHttpClient<IQuestionGenerator, AiServiceQuestionGenerator>(c =>
+
+builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
@@ -53,9 +55,13 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
     options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
+    options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()); 
 });
 
+
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddHostedService<StuckAnswerRepublisher>();
+
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -70,19 +76,20 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuerSigningKey = true,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!))
         };
     });
 builder.Services.AddAuthorization();
 
 builder.Services.AddDbContext<InterviewDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+        .UseSnakeCaseNamingConvention());
 
 builder.Services.Configure<FileStorageOptions>(
-    builder.Configuration.GetSection("SeaweedFS"));
+    builder.Configuration.GetSection(FileStorageOptions.SectionName));
 
-builder.Services.AddSingleton<IAmazonS3>(sp => {
-
+builder.Services.AddSingleton<IAmazonS3>(sp =>
+{
     var opts = sp.GetRequiredService<IOptions<FileStorageOptions>>().Value;
 
     return new AmazonS3Client(
@@ -92,8 +99,8 @@ builder.Services.AddSingleton<IAmazonS3>(sp => {
         {
             ServiceURL = opts.ServiceURL,
             ForcePathStyle = opts.ForcePathStyle,
-            AuthenticationRegion = "us-east-1",
-            UseHttp = true
+            RequestChecksumCalculation = Amazon.Runtime.RequestChecksumCalculation.WHEN_REQUIRED,
+            ResponseChecksumValidation = Amazon.Runtime.ResponseChecksumValidation.WHEN_REQUIRED
         });
 });
 
@@ -109,7 +116,7 @@ if (app.Environment.IsDevelopment())
     });
 }
 
-app.UseServiceCors();
+
 app.UseAuthentication();
 app.UseAuthorization();
 

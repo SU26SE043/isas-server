@@ -1,0 +1,332 @@
+# ISAS — Hướng dẫn Deploy (2 host)
+
+Kiến trúc tách **2 máy** nối nhau qua **Tailscale**:
+
+- **Server (Linux)** — chạy data layer + các .NET service: `postgres`, `redis`, `seaweedfs`, `rabbitmq`, `authservice`, `interviewservice`, `gateway`. Đây cũng là đích CI/CD (`ci.yml` build image → push GHCR → SSH deploy).
+- **Mac (Docker)** — chạy **AIService** (Python): `aiservice-api` (FastAPI sinh câu hỏi) + `aiservice-worker` (consumer chấm điểm). Để Mac vì phần ML (Whisper) nặng.
+
+> Tất cả liên lạc cross-host đi qua **IP Tailscale riêng tư**, không mở cổng public.
+
+---
+
+## 1. Sơ đồ liên lạc
+
+```
+SERVER (Linux)                              MAC (Docker)
+┌──────────────────────────┐                ┌─────────────────────┐
+│ postgres  redis          │                │ aiservice-api :8000 │◄─┐
+│ seaweedfs :8333 ◄────────┼───────┐        │  (sinh câu hỏi)     │  │
+│ rabbitmq  :5672 ◄────────┼─────┐ │        │                     │  │
+│ interviewservice :5246 ◄─┼───┐ │ │        │ aiservice-worker    │  │
+│ authservice              │   │ │ └────────│  - kéo audio (S3)   │  │
+│ gateway   :5050          │   │ └──────────│  - chấm (Gemini)    │  │
+│                          │   └────────────│  - callback kết quả │  │
+│ gateway   ai-cluster ────┼────────────────┼─────────────────────┘  │
+│ interview AiService:Base ┼────────────────┴────────────────────────┘
+└──────────────────────────┘   (server → Mac:8000 để sinh câu hỏi)
+```
+
+**Mac → Server:** worker kéo job `rabbitmq:5672`, tải audio `seaweedfs:8333`, callback `interviewservice:5246`.
+**Server → Mac:** gateway + interviewservice gọi `aiservice-api:8000` để sinh câu hỏi.
+
+---
+
+## 2. Yêu cầu trước
+
+- [ ] **Tailscale** cài trên **cả** Server và Mac, cùng tailnet. Lấy IP: `tailscale ip -4`.
+  - `<SERVER_TS_IP>` = IP Tailscale của server.
+  - `<MAC_TS_IP>` = IP Tailscale của Mac.
+- [ ] **Docker + Docker Compose** trên cả 2 máy.
+- [ ] Firewall/Tailscale ACL: cổng `5672`, `8333`, `5246` (server) và `8000` (Mac) **chỉ** cho phép tailnet — không lộ public.
+
+---
+
+## 3. Secret phải KHỚP nhau
+
+| Secret | Dùng ở | Quy tắc |
+|---|---|---|
+| `Jwt__Key` / `Jwt__Issuer` / `Jwt__Audience` | authservice ↔ interviewservice | **giống hệt** (Interview validate token do Auth phát) |
+| `Internal__Token` ↔ `INTERNAL_TOKEN` | interviewservice ↔ aiservice-worker | **giống hệt** (xác thực callback chấm điểm) |
+| SeaweedFS access/secret | interviewservice ↔ aiservice-worker | cùng giá trị (S3 dùng chung) |
+
+> Giá trị thật để trong file `.env` cạnh compose trên server / Mac — **không** ghi vào file md này.
+
+---
+
+## 4. SERVER — `~/docker/main/compose.yaml`
+
+```yaml
+services:
+  # ===== DATA LAYER =====
+  postgres:
+    image: postgres:18
+    container_name: postgres-main
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_main_data:/var/lib/postgresql
+    networks: [isas-main-network]
+
+  redis:
+    image: redis:7
+    container_name: redis-main
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_main_data:/data
+    networks: [isas-main-network]
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: seaweedfs-main
+    restart: always
+    command: "server -dir=/data -s3 -s3.port=8333"
+    ports:
+      - "8333:8333"   # S3 API (Mac kéo audio qua tailnet)
+      - "8888:8888"   # filer
+      - "9333:9333"   # master UI
+    volumes:
+      - seaweedfs_main_data:/data
+    networks: [isas-main-network]
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq-main
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    ports:
+      - "5672:5672"    # AMQP (Mac worker consume qua tailnet)
+      - "15672:15672"  # management UI
+    networks: [isas-main-network]
+
+  # ===== APP SERVICES =====
+  isas.authservice:
+    image: ghcr.io/su26se043/isas.authservice:main
+    container_name: authservice-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Jwt__RefreshTokenDays=7
+      - Jwt__AccessTokenMinutes=15
+      - EmailSettings__Host=${SMTP_HOST}
+      - EmailSettings__Port=${SMTP_PORT}
+      - EmailSettings__Username=${SMTP_USER}
+      - EmailSettings__Password=${SMTP_PASS}
+      - EmailSettings__From=${SMTP_FROM}
+      - Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
+      - Authentication__Google__ClientSecret=${GOOGLE_CLIENT_SECRET}
+    expose: ["8080"]
+    depends_on: [postgres, redis]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+  isas.interviewservice:
+    image: ghcr.io/su26se043/isas.interviewservice:main
+    container_name: interviewservice-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_interview;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}                         # KHỚP authservice
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}           # KHỚP aiservice-worker
+      - SeaweedFS__ServiceURL=http://seaweedfs:8333
+      - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
+      - SeaweedFS__SecretKey=${S3_SECRET_KEY}
+      - SeaweedFS__BucketName=isas-files
+      - SeaweedFS__ForcePathStyle=true
+      - SeaweedFS__UseHttp=true
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
+      - AiService__BaseUrl=http://<MAC_TS_IP>:8000   # sinh câu hỏi chạy trên Mac
+    ports:
+      - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet
+    depends_on: [postgres, seaweedfs, rabbitmq]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+  isas.gateway:
+    image: ghcr.io/su26se043/isas.gateway:main
+    container_name: gateway-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      # Chỉ override địa chỉ runtime; routing /api/v1 lấy từ appsettings.json trong image.
+      - ReverseProxy__Clusters__auth-cluster__Destinations__auth-node-01__Address=http://isas.authservice:8080
+      - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
+      - ReverseProxy__Clusters__ai-cluster__Destinations__ai-node-01__Address=http://<MAC_TS_IP>:8000
+      - ApiServices__0__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
+      - ApiServices__1__OpenApiUrl=http://<MAC_TS_IP>:8000/openapi.json
+      - ApiServices__2__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
+      - Gateway__Url=${GATEWAY_PUBLIC_URL}
+      - Cors__AllowedOrigins__0=http://localhost:3000
+      - Cors__AllowedOrigins__1=http://localhost:5173
+      - Cors__AllowedOrigins__2=http://localhost:5174
+      - Cors__AllowedOrigins__3=https://isas-web-client.vercel.app
+      - Cors__AllowedOrigins__4=${GATEWAY_PUBLIC_URL}
+    ports:
+      - "5050:8080"
+    depends_on: [isas.authservice, isas.interviewservice]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+networks:
+  isas-main-network:
+    driver: bridge
+
+volumes:
+  postgres_main_data:
+  redis_main_data:
+  seaweedfs_main_data:
+```
+
+### Server `.env` (cạnh compose, `chmod 600`)
+
+```env
+POSTGRES_USER=admin
+POSTGRES_PASSWORD=...
+JWT_KEY=...
+INTERNAL_TOKEN=...
+S3_ACCESS_KEY=admin
+S3_SECRET_KEY=...
+RABBITMQ_USER=guest
+RABBITMQ_PASS=guest
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=...
+SMTP_PASS=...
+SMTP_FROM=...
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
+```
+
+### Bring-up server (lần đầu — sau đó CI tự `pull && up`)
+
+```bash
+cd ~/docker/main
+# tạo DB interview (tách __EFMigrationsHistory khỏi auth)
+docker compose up -d postgres
+docker exec -it postgres-main psql -U admin -c "CREATE DATABASE isas_interview;"
+# login GHCR + chạy
+echo <GHCR_TOKEN> | docker login ghcr.io -u <github-user> --password-stdin
+docker compose pull
+docker compose up -d
+docker compose logs -f isas.gateway
+```
+
+> Migration Interview: chạy `dotnet ef database update` trỏ vào `isas_interview`, hoặc để app tự migrate lúc start nếu đã bật.
+
+---
+
+## 5. MAC — AIService trong Docker
+
+### 5a. Dockerfile — `src/services/Isas.AIService/Dockerfile`
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+# ffmpeg cho faster-whisper decode webm/opus
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+> Dùng `python:3.12` — `ctranslate2`/`faster-whisper` chưa có wheel cho 3.14.
+
+### 5b. Mac `compose.yaml`
+
+```yaml
+services:
+  aiservice-api:                       # FastAPI: sinh câu hỏi + transcribe
+    build: /path/to/Isas.AIService
+    image: isas.aiservice:local
+    container_name: aiservice-api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=gemini-2.5-flash
+    ports:
+      - "8000:8000"                    # server gọi vào đây qua tailnet
+    restart: unless-stopped
+
+  aiservice-worker:                    # consumer chấm điểm (dùng chung image)
+    image: isas.aiservice:local
+    container_name: aiservice-worker
+    command: python -m app.worker
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=gemini-2.5-flash
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@<SERVER_TS_IP>:5672/
+      - QUEUE_NAME=scoring_pipeline_queue
+      - S3_ENDPOINT=http://<SERVER_TS_IP>:8333
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+      - S3_BUCKET=isas-files
+      - DOTNET_CALLBACK_BASE=http://<SERVER_TS_IP>:5246
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN}   # KHỚP server
+    depends_on: [aiservice-api]
+    restart: unless-stopped
+```
+
+### Bring-up Mac
+
+```bash
+cd ~/ai
+docker compose up -d --build
+docker compose logs -f aiservice-worker
+```
+
+---
+
+## 6. Bảng cổng tham chiếu
+
+| Service | Host | Cổng container | Publish | Ai truy cập |
+|---|---|---|---|---|
+| gateway | server | 8080 | 5050 | public (cloudflare) |
+| interviewservice | server | 8080 | 5246 | Mac (callback) |
+| seaweedfs S3 | server | 8333 | 8333 | Mac (tải audio) |
+| rabbitmq | server | 5672 | 5672 | Mac (consume) |
+| aiservice-api | Mac | 8000 | 8000 | server (sinh câu hỏi) |
+
+---
+
+## 7. Checklist / Gotcha
+
+- [ ] **Bug path-style S3** — `worker.py` tạo boto3 client phải set path-style, nếu không SeaweedFS qua IP sẽ fail (boto3 mặc định virtual-host `isas-files.<ip>`):
+  ```python
+  from botocore.config import Config
+  s3_client = boto3.client('s3', endpoint_url=settings.s3_endpoint,
+      aws_access_key_id=settings.s3_access_key,
+      aws_secret_access_key=settings.s3_secret_key,
+      config=Config(s3={"addressing_style": "path"}))
+  ```
+- [ ] **`<MAC_TS_IP>` / `<SERVER_TS_IP>`** thay bằng IP Tailscale thật ở cả 2 phía.
+- [ ] **Routing `/api/v1`** — frontend gọi `/api/v1/auth/...`, `/api/v1/interview/...`, `/api/v1/ai/...` (KHÔNG còn `/api/auth`).
+- [ ] **Internal token** Interview ↔ Worker khớp, **Jwt** Auth ↔ Interview khớp.
+- [ ] **CI không build AIService** — Mac build tay (`up -d --build`), không pull GHCR. Muốn pull thì thêm step CI buildx multi-arch (Mac là arm64).
+- [ ] **RAM Mac**: api + worker đều load Whisper (2 model). Không dùng `/transcribe` thì bỏ `Transcriber()` trong `main.py` cho nhẹ.
+- [ ] **Bucket `isas-files`** tự tạo bởi `BucketInitializer` của Interview — không cần tạo tay.
+- [ ] Cổng tailnet (`5672/8333/5246/8000`) chặn public bằng firewall/Tailscale ACL.
+
+---
+
+## 8. Luồng end-to-end (kiểm tra nhanh)
+
+1. FE → `gateway/api/v1/interview/practice/sessions` → Interview tạo session → gọi `AiService:BaseUrl` (Mac:8000) sinh câu hỏi.
+2. FE upload answer → Interview lưu audio lên SeaweedFS → publish job lên RabbitMQ → answer = `Scoring`.
+3. Worker (Mac) consume → tải audio (SeaweedFS) → Whisper transcribe → Gemini chấm → callback `interviewservice:5246/internal/answers/{id}/result`.
+4. Interview lưu điểm → answer = `Scored`; lỗi vĩnh viễn → worker callback `/failed` → answer = `Failed`. Session đóng khi mọi answer xong.

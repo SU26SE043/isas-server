@@ -1,14 +1,14 @@
 namespace Isas.InterviewService.Enums
 
 {
-    public static class JobCategory
-    {
-        public const string BA = "BA";
-        public const string BE = "BE";
-        public const string FE = "FE";
-    }
+    // public static class JobCategory
+    // {
+    //     public const string BA = "BA";
+    //     public const string BE = "BE";
+    //     public const string FE = "FE";
+    // }
 
-    public static class SessionStatus
+    public static class SessionStatus1
     {
         public const string Draft       = "draft";
         public const string InProgress  = "in_progress";

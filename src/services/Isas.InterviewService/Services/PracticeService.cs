@@ -1,225 +1,240 @@
+using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
-using Isas.InterviewService.Models;
+using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
 
-public class PracticeService(
-    InterviewDbContext db,
-    IQuestionGenerator generator,
-    IScoringPublisher scoring) : IPracticeService
+public class PracticeService : IPracticeService
 {
-    // ---------- Phase 4: lấy câu hỏi để làm bài ----------
-    public async Task<PracticeSessionResponse?> GetSessionAsync(
-        Guid userId, Guid sessionId, CancellationToken ct = default)
+    private const int DefaultTimeLimitSec = 120; // TODO: chỉnh nếu Gemini trả kèm
+
+    private readonly InterviewDbContext _db;
+    private readonly IStorageService _storage;
+    private readonly IAiServiceQuestionGenerator _questionGenerator;
+    private readonly ILogger<PracticeService> _logger;
+
+    public PracticeService(
+        InterviewDbContext db,
+        IStorageService storage,
+        IAiServiceQuestionGenerator questionGenerator,
+        ILogger<PracticeService> logger)
     {
-        var session = await db.PracticeSessions
-            .Include(s => s.Questions.OrderBy(q => q.OrderIndex))
-                .ThenInclude(q => q.Answer)
-            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
-
-        if (session is null) return null;
-        if (session.UserId != userId)
-            throw new UnauthorizedAccessException("Phiên không thuộc về người dùng này.");
-
-        return ToResponse(session);
+        _db = db;
+        _storage = storage;
+        _questionGenerator = questionGenerator;
+        _logger = logger;
     }
 
-    public async Task<IReadOnlyList<PracticeSessionSummary>> GetHistoryAsync(
-        Guid userId, CancellationToken ct = default)
-    {
-        return await db.PracticeSessions
-            .Where(s => s.UserId == userId)
-            .OrderByDescending(s => s.CreatedAt)
-            .Select(s => new PracticeSessionSummary(
-                s.Id, s.JobCategory, s.Status, s.TotalScore, s.CreatedAt, s.ScoredAt))
-            .ToListAsync(ct);
-    }
-
-    // ---------- Phase 4: nộp câu trả lời 1 câu ----------
+    // ── CREATE: tạo session + sinh câu hỏi (1 call) ───────────────────────
     public async Task<PracticeSessionResponse> CreateSessionAsync(
-        Guid userId, CreatePracticeSessionRequest request, CancellationToken ct = default)
+        Guid candidateId, CreatePracticeSessionRequest request, CancellationToken ct = default)
     {
-        // Validate job category
-        if (request.JobCategory is not (JobCategory.BA or JobCategory.BE or JobCategory.FE))
-            throw new ArgumentException($"JobCategory không hợp lệ: '{request.JobCategory}'.");
-
-        // Nếu có CvFileId, kiểm tra file tồn tại + thuộc về user
-        if (request.CvFileId is not null)
+        // CV optional: chỉ parse khi có. Không có CV cũng luyện được (dựa JobCategory).
+        // TODO: xác nhận tên method storage (memory ghi GetParseText).
+        string? cvText = null;
+        if (request.CvId is not null)
         {
-            var cvOwned = await db.Files
-                .AnyAsync(f => f.Id == request.CvFileId && f.UserId == userId, ct);
-            if (!cvOwned)
-                throw new ArgumentException("CV không tồn tại hoặc không thuộc về người dùng này.");
+            cvText = await _storage.GetParseTextAsync(request.CvId.Value, ct);
+            if (string.IsNullOrWhiteSpace(cvText))
+                throw new InvalidOperationException("CV không đọc được nội dung");
         }
 
+        // JD optional: chỉ parse khi có.
+        string? jdText = null;
+        if (request.JdId is not null)
+        {
+            jdText = await _storage.GetParseTextAsync(request.JdId.Value, ct);
+            if (string.IsNullOrWhiteSpace(jdText))
+                throw new InvalidOperationException("JD không đọc được nội dung");
+        }
+
+        // Tạo session, commit #1. Status set bằng C# initializer của entity.
         var session = new PracticeSession
         {
             Id = Guid.NewGuid(),
-            UserId = userId,
+            CandidateId = candidateId,
+            CvId = request.CvId,           // có thể null
+            JdId = request.JdId,           // có thể null
             JobCategory = request.JobCategory,
-            Status = SessionStatus.Draft,
-            CvFileId = request.CvFileId,
-            JdText = request.JdText
+            Status = SessionStatus.GeneratingQuestions,
+            CreatedAt = DateTime.UtcNow
         };
+        _db.PracticeSessions.Add(session);
+        await _db.SaveChangesAsync(ct);
 
-        await db.PracticeSessions.AddAsync(session, ct);
-        await db.SaveChangesAsync(ct);
-
-        return ToResponse(session);
-    }
-
-    public async Task<PracticeSessionResponse> GenerateQuestionsAsync(
-        Guid userId, Guid sessionId, CancellationToken ct = default)
-    {
-        var session = await db.PracticeSessions
-                          .Include(s => s.CvFile)
-                          .FirstOrDefaultAsync(s => s.Id == sessionId, ct)   // BỎ .Include(s => s.Questions)
-                      ?? throw new KeyNotFoundException("Không tìm thấy phiên.");
-
-        if (session.UserId != userId)
-            throw new UnauthorizedAccessException("Phiên không thuộc về người dùng này.");
-
-        if (session.Status != SessionStatus.Draft)
-            throw new InvalidOperationException(
-                $"Chỉ sinh câu hỏi khi phiên đang '{SessionStatus.Draft}'. Hiện tại: '{session.Status}'.");
-
-        var cvText = session.CvFile?.ParsedText;
-
-        var generated = await generator.GenerateAsync(
-            session.JobCategory, cvText, session.JdText, ct);
-
-        if (generated.Count == 0)
-            throw new InvalidOperationException("Không sinh được câu hỏi nào.");
-
-        // ---- LẦN 1: chỉ update status session ----
-        session.Status = SessionStatus.InProgress;
-        await db.SaveChangesAsync(ct);   // nếu nổ ở ĐÂY → lỗi do UPDATE session
-
-        // ---- LẦN 2: add questions độc lập ----
-        var order = 1;
-        var questions = generated.Select(content => new PracticeQuestion
+        // Gọi Gemini NGOÀI transaction — không giữ DB connection lúc chờ AI.
+        // Prompt tự xử 3 kịch bản: có JD ưu tiên JD; chỉ CV thì bám CV; không có
+        // gì thì sinh câu hỏi chung theo JobCategory.
+        List<GeneratedQuestion> generated;
+        try
         {
-            Id = Guid.NewGuid(),
-            SessionId = session.Id,
-            OrderIndex = order++,
-            Content = content
-        }).ToList();
-
-        await db.PracticeQuestions.AddRangeAsync(questions, ct);
-        await db.SaveChangesAsync(ct);   // nếu nổ ở ĐÂY → lỗi do INSERT questions
-
-        // Load lại để trả response đầy đủ
-        return await GetSessionAsync(userId, sessionId, ct)
-               ?? throw new InvalidOperationException("Không load lại được phiên.");
-    }
-
-
-    public async Task<AnswerResponse> SubmitAnswerAsync(
-        Guid userId, Guid sessionId, SubmitAnswerRequest request, CancellationToken ct = default)
-    {
-        var session = await db.PracticeSessions
-            .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
-            ?? throw new KeyNotFoundException("Không tìm thấy phiên.");
-
-        if (session.UserId != userId)
-            throw new UnauthorizedAccessException("Phiên không thuộc về người dùng này.");
-
-        if (session.Status != SessionStatus.InProgress)
-            throw new InvalidOperationException(
-                $"Chỉ trả lời được khi phiên đang '{SessionStatus.InProgress}'. Hiện tại: '{session.Status}'.");
-
-        // Câu hỏi phải thuộc đúng phiên này
-        var question = await db.PracticeQuestions
-            .Include(q => q.Answer)
-            .FirstOrDefaultAsync(q => q.Id == request.QuestionId && q.SessionId == sessionId, ct)
-            ?? throw new KeyNotFoundException("Câu hỏi không thuộc phiên này.");
-
-        // Validate theo loại answer
-        ValidateAnswer(request);
-
-        if (question.Answer is null)
+            generated = await _questionGenerator.GenerateQuestionsAsync(
+                jobCategory: session.JobCategory.ToString(),
+                cvText: cvText,            // null nếu không có
+                jdText: jdText,            // null nếu không có
+                ct: ct);
+        }
+        catch (Exception ex)
         {
-            // Tạo mới
-            var answer = new PracticeAnswer
+            _logger.LogError(ex, "Sinh câu hỏi lỗi cho session {SessionId}", session.Id);
+            session.Status = SessionStatus.Failed;
+            await _db.SaveChangesAsync(ct);
+            throw new InvalidOperationException("Sinh câu hỏi thất bại", ex);
+        }
+
+        if (generated is null || generated.Count == 0)
+        {
+            session.Status = SessionStatus.Failed;
+            await _db.SaveChangesAsync(ct);
+            throw new InvalidOperationException("AIService không trả về câu hỏi nào");
+        }
+
+        // Lưu câu hỏi + set Ready, commit #2 (tách commit tránh concurrency).
+        var questions = generated
+            .Select((q, idx) => new PracticeQuestion
             {
                 Id = Guid.NewGuid(),
-                QuestionId = question.Id,
-                SessionId = sessionId,
-                AnswerType = request.AnswerType,
-                TextContent = request.TextContent,
-                AudioFileId = request.AudioFileId
-            };
-            await db.PracticeAnswers.AddAsync(answer, ct);
-            await db.SaveChangesAsync(ct);
-            return ToAnswerResponse(answer);
+                SessionId = session.Id,
+                OrderNo = idx + 1,
+                Content = q.Content,
+                TimeLimitSec = DefaultTimeLimitSec
+            })
+            .ToList();
+
+        _db.PracticeQuestions.AddRange(questions);
+        session.Status = SessionStatus.Ready;
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Tạo session {SessionId} ({Cat}) với {Count} câu hỏi (cv={HasCv}, jd={HasJd})",
+            session.Id, session.JobCategory, questions.Count,
+            cvText != null, jdText != null);
+
+        return MapToResponse(session, questions, new List<PracticeAnswer>());
+    }
+
+    // ── SUBMIT SESSION: chốt sổ (KHÔNG publish — chấm dần đã publish lúc upload) ──
+    public async Task SubmitSessionAsync(
+        Guid candidateId, Guid sessionId, CancellationToken ct = default)
+    {
+        var session = await _db.PracticeSessions
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
+            ?? throw new KeyNotFoundException("Session không tồn tại");
+
+        if (session.CandidateId != candidateId)
+            throw new UnauthorizedAccessException("Không phải buổi của bạn");
+
+        if (session.Status is not (SessionStatus.Ready or SessionStatus.InProgress))
+            throw new InvalidOperationException(
+                $"Buổi ở trạng thái {session.Status}, không thể nộp");
+
+        var hasAnswer = await _db.PracticeAnswers.AnyAsync(a => a.SessionId == sessionId, ct);
+        if (!hasAnswer)
+            throw new InvalidOperationException("Chưa trả lời câu nào, không thể nộp");
+
+        // Chấm dần: mỗi answer đã được publish ngay lúc upload (AnswerService).
+        // SubmitSession chỉ chốt sổ — KHÔNG publish lại để tránh chấm trùng.
+        session.Status = SessionStatus.Scoring;
+        session.CompletedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        // Race của chấm dần: answer cuối có thể đã Scored TRƯỚC khi user bấm submit,
+        // khi đó callback không đóng session (lúc đó session còn InProgress).
+        // Phải kiểm tra ngay để đóng, tránh session kẹt Scoring vì không còn callback.
+        var statuses = await _db.PracticeAnswers
+            .Where(a => a.SessionId == sessionId)
+            .Select(a => a.Status)
+            .ToListAsync(ct);
+
+        bool allDone = statuses.All(s =>
+            s is AnswerStatus.Scored or AnswerStatus.Skipped or AnswerStatus.Failed);
+
+        if (allDone)
+        {
+            session.Status = SessionStatus.Scored;
+            await _db.SaveChangesAsync(ct);
+            _logger.LogInformation(
+                "Session {SessionId} -> Scored ngay khi submit (đã chấm xong từ trước)", sessionId);
         }
         else
         {
-            // Sửa câu trả lời đã có (cho phép sửa trước khi submit)
-            question.Answer.AnswerType = request.AnswerType;
-            question.Answer.TextContent = request.TextContent;
-            question.Answer.AudioFileId = request.AudioFileId;
-            await db.SaveChangesAsync(ct);
-            return ToAnswerResponse(question.Answer);
+            _logger.LogInformation("Chốt session {SessionId} -> Scoring (đang chờ chấm nốt)", sessionId);
         }
     }
 
-    // ---------- Phase 5 (mở đầu): submit toàn phiên ----------
-    public async Task SubmitSessionAsync(Guid userId, Guid sessionId, CancellationToken ct = default)
+    // ── GET ───────────────────────────────────────────────────────────────
+    public async Task<PracticeSessionResponse?> GetSessionAsync(
+        Guid candidateId, Guid sessionId, CancellationToken ct = default)
     {
-        var session = await db.PracticeSessions
-            .Include(s => s.Questions).ThenInclude(q => q.Answer)
-            .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
-            ?? throw new KeyNotFoundException("Không tìm thấy phiên.");
+        var session = await _db.PracticeSessions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
 
-        if (session.UserId != userId)
-            throw new UnauthorizedAccessException("Phiên không thuộc về người dùng này.");
+        if (session is null) return null;
+        if (session.CandidateId != candidateId)
+            throw new UnauthorizedAccessException("Không phải buổi của bạn");
 
-        if (session.Status != SessionStatus.InProgress)
-            throw new InvalidOperationException(
-                $"Chỉ submit được khi phiên đang '{SessionStatus.InProgress}'.");
+        var questions = await _db.PracticeQuestions
+            .AsNoTracking()
+            .Where(q => q.SessionId == sessionId)
+            .OrderBy(q => q.OrderNo)
+            .ToListAsync(ct);
 
-        if (session.Questions.Count == 0)
-            throw new InvalidOperationException("Phiên chưa có câu hỏi.");
+        var answers = await _db.PracticeAnswers
+            .AsNoTracking()
+            .Include(a => a.Scores)
+            .Where(a => a.SessionId == sessionId)
+            .ToListAsync(ct);
 
-        session.Status = SessionStatus.Submitted;
-        session.SubmittedAt = DateTime.UtcNow;
-        await db.SaveChangesAsync(ct);
-
-        // Đẩy chấm điểm async (hiện stub, nối RabbitMQ sau)
-        await scoring.PublishAsync(sessionId, ct);
+        return MapToResponse(session, questions, answers);
     }
 
-    // ---------- Helpers ----------
-    private static void ValidateAnswer(SubmitAnswerRequest req)
+    // ── HISTORY ───────────────────────────────────────────────────────────
+    public async Task<IReadOnlyList<PracticeSessionSummary>> GetHistoryAsync(
+        Guid candidateId, CancellationToken ct = default)
     {
-        switch (req.AnswerType)
-        {
-            case AnswerType.Text:
-                if (string.IsNullOrWhiteSpace(req.TextContent))
-                    throw new ArgumentException("Câu trả lời text không được rỗng.");
-                break;
-            case AnswerType.Audio:
-                if (req.AudioFileId is null)
-                    throw new ArgumentException("Câu trả lời audio cần AudioFileId.");
-                break;
-            default:
-                throw new ArgumentException($"AnswerType không hợp lệ: '{req.AnswerType}'.");
-        }
+        return await _db.PracticeSessions
+            .AsNoTracking()
+            .Where(s => s.CandidateId == candidateId)
+            .OrderByDescending(s => s.CreatedAt)
+            .Select(s => new PracticeSessionSummary(
+                s.Id, s.Status.ToString(), s.JobCategory.ToString(),
+                s.CreatedAt, s.CompletedAt))
+            .ToListAsync(ct);
     }
 
-    private static AnswerResponse ToAnswerResponse(PracticeAnswer a) => new(
-        a.Id, a.AnswerType, a.TextContent, a.AudioFileId, a.Score, a.Feedback);
+    // ── helpers ───────────────────────────────────────────────────────────
+    private static PracticeSessionResponse MapToResponse(
+        PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers)
+    {
+        var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
 
-    private static PracticeSessionResponse ToResponse(PracticeSession s) => new(
-        s.Id, s.JobCategory, s.Status, s.CvFileId, s.JdText,
-        s.TotalScore, s.Feedback, s.CreatedAt, s.SubmittedAt, s.ScoredAt,
-        s.Questions
-            .OrderBy(q => q.OrderIndex)
+        var qResponses = questions
+            .OrderBy(q => q.OrderNo)
             .Select(q => new QuestionResponse(
-                q.Id, q.OrderIndex, q.Content,
-                q.Answer is null ? null : ToAnswerResponse(q.Answer)))
-            .ToList());
+                q.Id, q.OrderNo, q.Content, q.TimeLimitSec,
+                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(a) : null))
+            .ToList();
+
+        return new PracticeSessionResponse(
+            s.Id, s.Status.ToString(), s.JobCategory.ToString(),
+            s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses);
+    }
+
+    private static AnswerResponse MapAnswer(PracticeAnswer a)
+    {
+        // Mỗi tiêu chí lấy attempt mới nhất (self-consistency sau này -> nhiều attempt).
+        var latestScores = a.Scores
+            .GroupBy(sc => sc.CriterionId)
+            .Select(g => g.OrderByDescending(sc => sc.AttemptNo).First())
+            .Select(sc => new AnswerScoreResponse(
+                sc.CriterionId, sc.Score, sc.Reasoning, sc.RubricVersion))
+            .ToList();
+
+        return new AnswerResponse(
+            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, latestScores);
+    }
 }
