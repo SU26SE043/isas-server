@@ -1,11 +1,8 @@
 ﻿using Isas.CampaignService.DTOs;
-using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
-using System.Text.Json;
 
 namespace Isas.CampaignService.Controllers
 {
@@ -22,38 +19,32 @@ namespace Isas.CampaignService.Controllers
         }
 
         [HttpGet]
+        //[Authorize(Roles = "Employer")]
         public async Task<ActionResult<List<CampaignResponse>>> GetAllCampaign(CancellationToken ct)
         {
             return await _campaignService.GetCampaignsAsync(ct);
         }
 
         [HttpGet("{id}")]
+        //[Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> GetCampaignById(Guid id, CancellationToken ct)
         {
-            var campaign = await _campaignService.GetCampaignAsync(id, ct);
-            if (campaign == null)
+            try
             {
-                return NotFound();
+                var campaign = await _campaignService.GetCampaignAsync(id, ct);
+                return Ok(campaign);
             }
-            return campaign;
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get campaign: {ex.Message}"); }
         }
 
         [HttpPost]
-        [Consumes("multipart/form-data")]
         //[Authorize(Roles = "Employer")]
-        public async Task<ActionResult<CampaignResponse>> CreateCampaign([FromForm] CreateCampaignRequest request, CancellationToken ct)
+        public async Task<ActionResult<CampaignResponse>> CreateCampaign([FromBody] CreateCampaignRequest request, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(employerId))
                 return Forbid();
-
-            if (!string.IsNullOrWhiteSpace(request.QuestionsJson))
-            {
-                request.Questions = JsonSerializer.Deserialize<List<QuestionItem>>(
-                    request.QuestionsJson,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
-                ) ?? new();
-            }
 
             if (request.Questions == null || !request.Questions.Any())
                 return BadRequest("At least one question is required.");
@@ -70,12 +61,6 @@ namespace Isas.CampaignService.Controllers
             if (request.StartsAt.HasValue && request.ExpiresAt.HasValue && request.StartsAt >= request.ExpiresAt)
                 return BadRequest("StartsAt must be before ExpiresAt.");
 
-            if (request.JdFile != null && request.JdFile.Length > 10 * 1024 * 1024)
-                return BadRequest("JD file size cannot exceed 10MB.");
-
-            if (request.CriteriaFile != null && request.CriteriaFile.Length > 10 * 1024 * 1024)
-                return BadRequest("Criteria file size cannot exceed 10MB.");
-
             try
             {
                 var campaign = await _campaignService.CreateCampaignAsync(Guid.Parse(employerId), request, ct);
@@ -91,11 +76,40 @@ namespace Isas.CampaignService.Controllers
             }
         }
 
+        [HttpPost("{id:guid}/files")]
+        [Consumes("multipart/form-data")]
+        //[Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> UploadCampaignFiles(Guid id, [FromForm] UploadCampaignFilesRequest request, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            if (request.JdFile is null && request.CriteriaFile is null)
+                return BadRequest("At least one file (JdFile or CriteriaFile) must be provided.");
+
+            if (request.JdFile != null && request.JdFile.Length > 10 * 1024 * 1024)
+                return BadRequest("JD file size cannot exceed 10MB.");
+
+            if (request.CriteriaFile != null && request.CriteriaFile.Length > 10 * 1024 * 1024)
+                return BadRequest("Criteria file size cannot exceed 10MB.");
+
+            try
+            {
+                var campaign = await _campaignService.UploadCampaignFilesAsync(Guid.Parse(employerId), id, request, ct);
+                return Ok(campaign);
+            }
+            catch (KeyNotFoundException) { return NotFound($"Campaign {id} not found."); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to upload files: {ex.Message}"); }
+        }
+
         [HttpPut("{id}")]
+        //[Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaign(Guid id, UpdateCampaignRequest request, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (employerId == null)
+            if (string.IsNullOrWhiteSpace(employerId))
                 return Forbid();
 
             var campaign = await _campaignService.GetCampaignAsync(id, ct);
@@ -103,6 +117,12 @@ namespace Isas.CampaignService.Controllers
             {
                 return NotFound();
             }
+
+            if(campaign.EmployerId != Guid.Parse(employerId))
+            {
+                return Forbid();
+            }
+
             try
             {
                 var updatedCampaign = await _campaignService.UpdateCampaignAsync(id, request, ct);
@@ -114,11 +134,63 @@ namespace Isas.CampaignService.Controllers
             }
         }
 
+        [HttpPut("{id:guid}/files")]
+        [Consumes("multipart/form-data")]
+        //[Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> UpdateCampaignFiles(Guid id, [FromForm] UploadCampaignFilesRequest request, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            if (request.JdFile is null && request.CriteriaFile is null)
+                return BadRequest("At least one file must be provided.");
+
+            if (request.JdFile != null && request.JdFile.Length > 10 * 1024 * 1024)
+                return BadRequest("JD file size cannot exceed 10MB.");
+
+            if (request.CriteriaFile != null && request.CriteriaFile.Length > 10 * 1024 * 1024)
+                return BadRequest("Criteria file size cannot exceed 10MB.");
+
+            try
+            {
+                var campaign = await _campaignService.UpdateCampaignFilesAsync(id, request, ct);
+                return Ok(campaign);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to update campaign files: {ex.Message}"); }
+        }
+
+        [HttpPut("{id:guid}/questions")]
+        //[Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> UpdateCampaignQuestions(Guid id, [FromBody] List<QuestionItem> questions, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            if (questions == null || !questions.Any())
+                return BadRequest("At least one question is required.");
+
+            if (questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
+                return BadRequest("All questions must have non-empty text.");
+            try
+            {
+                var campaign = await _campaignService.UpdateCampaignQuestionsAsync(id, questions, ct);
+                return Ok(campaign);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to update campaign questions: {ex.Message}"); }
+        }
+
         [HttpDelete("{id}")]
+        //[Authorize(Roles = "Employer")]
         public async Task<IActionResult> DeleteCampaign(Guid id, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (employerId == null)
+            if (string.IsNullOrWhiteSpace(employerId))
                 return Forbid();
 
             var campaign = await _campaignService.GetCampaignAsync(id, ct);

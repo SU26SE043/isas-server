@@ -1,4 +1,5 @@
-﻿using Isas.CampaignService.DTOs;
+﻿using Amazon.S3.Model;
+using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -28,18 +29,11 @@ namespace Isas.CampaignService.Services
 
         public async Task<CampaignResponse> CreateCampaignAsync(Guid employerId, CreateCampaignRequest request, CancellationToken ct = default)
         {
-            // ── 1. Validate files ───────────────────────────────
-            if (request.JdFile is not null) 
-                ValidateFile(request.JdFile, "JD");
-
-            if (request.CriteriaFile is not null) 
-                ValidateFile(request.CriteriaFile, "Criteria");
-
-            // ── 2. Validate questions ───────────────────────────
+            // ── 1. Validate questions ───────────────────────────
             if (request.Questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 throw new ArgumentException("All questions must have non-empty text.");
 
-            // ── 3. Build campaign entity ────────────────────────
+            // ── 2. Build campaign entity ────────────────────────
             var campaign = new Campaign
             {
                 EmployerId = employerId,
@@ -53,35 +47,42 @@ namespace Isas.CampaignService.Services
                 ExpiresAt = request.ExpiresAt,
             };
 
-            // ── 4. Build questions ──────────────────────────────
+            // ── 3. Build questions ──────────────────────────────
             campaign.Questions = request.Questions
                 .Select(q => new CampaignQuestion
                 {
                     EmployerId = employerId,
                     QuestionText = q.QuestionText.Trim(),
                     Source = q.Source,
-                    TimeLimitSeconds = q.TimeLimitSeconds,
                     IsRequired = q.IsRequired,
                     CreatedAt = DateTime.UtcNow,
                 })
                 .ToList();
 
-            // ── 5. Handle file parsing + upload in parallel ─────
-            var jdTask = HandleFileAsync(request.JdFile, campaign.Id, "jd", ct);
-            var criteriaTask = HandleFileAsync(request.CriteriaFile, campaign.Id, "criteria", ct);
-
-            // ── 6. Persist campaign first (to get Id) ───────────
+            // ── 4. Persist campaign first (to get Id) ───────────
             _db.Campaigns.Add(campaign);
             await _db.SaveChangesAsync(ct);
 
-            // ── 7. Await file tasks (parallel) ──────────────────
+            return CampaignResponse.FromEntity(campaign);
+        }
+
+        public async Task<CampaignResponse> UploadCampaignFilesAsync(Guid employerId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                ?? throw new KeyNotFoundException();
+
+            if (request.JdFile is not null) ValidateFile(request.JdFile, "JD");
+            if (request.CriteriaFile is not null) ValidateFile(request.CriteriaFile, "Criteria");
+
+            var jdTask = HandleFileAsync(request.JdFile, campaign.Id, "jd", ct);
+            var criteriaTask = HandleFileAsync(request.CriteriaFile, campaign.Id, "criteria", ct);
+
             var results = await Task.WhenAll(jdTask, criteriaTask);
 
-            // Attach results if any
             foreach (var result in results.Where(r => r is not null))
             {
                 var value = result.Value;
-
                 if (value.Label == "jd")
                 {
                     campaign.JDFileUrl = value.Url;
@@ -94,34 +95,18 @@ namespace Isas.CampaignService.Services
                 }
             }
 
-            // ── 8. Save once with file URLs ─────────────────────
-            if (results.Any(r => r is not null))
-            {
-                _db.Campaigns.Update(campaign);
-                await _db.SaveChangesAsync(ct);
-            }
+            _db.Campaigns.Update(campaign);
+            await _db.SaveChangesAsync(ct);
 
             return CampaignResponse.FromEntity(campaign);
-        }
-
-        public async Task<bool> DeleteCampaignAsync(Guid id, CancellationToken ct)
-        {
-            var campaign = await _db.Campaigns.FirstOrDefaultAsync(c => c.Id == id, ct);
-            if(campaign == null)
-            {
-                return false;
-            }
-
-            _db.Campaigns.Remove(campaign);
-            await _db.SaveChangesAsync(ct);
-            return true;
         }
 
         public async Task<CampaignResponse> GetCampaignAsync(Guid id, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
-                .FirstOrDefaultAsync(c => c.Id == id, ct);
+                .FirstOrDefaultAsync(c => c.Id == id, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             return CampaignResponse.FromEntity(campaign);
         }
@@ -138,19 +123,131 @@ namespace Isas.CampaignService.Services
 
         public async Task<CampaignResponse> UpdateCampaignAsync(Guid id, UpdateCampaignRequest request, CancellationToken ct)
         {
-            var campaign = await _db.Campaigns.FirstOrDefaultAsync(c => c.Id == id, ct);
+            // ── 1. Fetch & verify ownership ─────────────────────
+            var campaign = await _db.Campaigns
+                .Include(c => c.Questions)
+                .FirstOrDefaultAsync(c => c.Id == id, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            campaign.Title = request.Title;
-            campaign.Domain = request.Domain;
-            campaign.MaxCandidates = request.MaxCandidates;
-            campaign.TimeLimitMinutes = request.TimeLimitMinutes;
+            // ── 2. Only update fields that were actually provided
+            if (request.Title is not null)
+                campaign.Title = request.Title;
+
+            if (request.Domain is not null)
+                campaign.Domain = request.Domain;
+
+            if (request.MaxCandidates.HasValue)
+                campaign.MaxCandidates = request.MaxCandidates;
+
+            if (request.TimeLimitMinutes.HasValue)
+                campaign.TimeLimitMinutes = request.TimeLimitMinutes;
+
             campaign.AntiCheatEnabled = request.AntiCheatEnabled;
-            campaign.StartsAt = request.StartsAt;
-            campaign.ExpiresAt = request.ExpiresAt;
-            campaign.UpdatedAt = DateTime.UtcNow;
 
+            if (request.StartsAt.HasValue)
+                campaign.StartsAt = request.StartsAt;
+
+            if (request.ExpiresAt.HasValue)
+                campaign.ExpiresAt = request.ExpiresAt;
+
+            // ── 3. Persist ───────────────────────────────────────
+            campaign.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+
+            return CampaignResponse.FromEntity(campaign);
+        }
+
+        public async Task<CampaignResponse> UpdateCampaignFilesAsync(Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
+        {
+            // ── 1. Fetch & verify ownership ─────────────────────
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (request.JdFile is null && request.CriteriaFile is null)
+                throw new ArgumentException("At least one file must be provided.");
+
+            if (request.JdFile is not null) ValidateFile(request.JdFile, "JD");
+            if (request.CriteriaFile is not null) ValidateFile(request.CriteriaFile, "Criteria");
+
+            // ── Delete old files from SeaweedFS before uploading ─
+            if (request.JdFile is not null && !string.IsNullOrWhiteSpace(campaign.JDFileUrl))
+                await _file.DeleteAsync(campaign.JDFileUrl, ct);
+
+            if (request.CriteriaFile is not null && !string.IsNullOrWhiteSpace(campaign.CriteriaFileUrl))
+                await _file.DeleteAsync(campaign.CriteriaFileUrl, ct);
+
+            // ── Upload new files ──────────────────────────────────
+            var jdTask = HandleFileAsync(request.JdFile, campaign.Id, "jd", ct);
+            var criteriaTask = HandleFileAsync(request.CriteriaFile, campaign.Id, "criteria", ct);
+
+            var results = await Task.WhenAll(jdTask, criteriaTask);
+
+            foreach (var result in results.Where(r => r is not null))
+            {
+                var value = result.Value;
+                if (value.Label == "jd")
+                {
+                    campaign.JDFileUrl = value.Url;
+                    campaign.JDText = value.Text;
+                }
+                else if (value.Label == "criteria")
+                {
+                    campaign.CriteriaFileUrl = value.Url;
+                    campaign.CriteriaText = value.Text;
+                }
+            }
+
+            campaign.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+
+            return CampaignResponse.FromEntity(campaign);
+        }
+
+        public async Task<CampaignResponse> UpdateCampaignQuestionsAsync(Guid id, List<QuestionItem> questions, CancellationToken ct)
+        {
+            // ── 1. Fetch & verify ownership ─────────────────────
+            var campaign = await _db.Campaigns
+                .Include(c => c.Questions)
+                .FirstOrDefaultAsync(c => c.Id == id, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+            // ── 2. Validate questions ───────────────────────────
+            if (questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
+                throw new ArgumentException("All questions must have non-empty text.");
+            // ── 3. Replace existing questions with new ones ─────
+            campaign.Questions.Clear();
+            campaign.Questions = questions.Select(q => new CampaignQuestion
+            {
+                EmployerId = campaign.EmployerId,
+                QuestionText = q.QuestionText.Trim(),
+                Source = q.Source,
+                IsRequired = q.IsRequired,
+                CreatedAt = DateTime.UtcNow,
+            }).ToList();
+            campaign.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
             return CampaignResponse.FromEntity(campaign);
+        }
+
+        public async Task<bool> DeleteCampaignAsync(Guid id, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            var questions = await _db.CampaignQuestions.Where(q => q.CampaignId == id).ToListAsync(ct);
+
+            // Delete associated files from SeaweedFS
+            if (!string.IsNullOrWhiteSpace(campaign.JDFileUrl))
+                await _file.DeleteAsync(campaign.JDFileUrl, ct);
+
+            if (!string.IsNullOrWhiteSpace(campaign.CriteriaFileUrl))
+                await _file.DeleteAsync(campaign.CriteriaFileUrl, ct);
+
+            _db.CampaignQuestions.RemoveRange(questions);
+            _db.Campaigns.Remove(campaign);
+            await _db.SaveChangesAsync(ct);
+            return true;
         }
 
         private static void ValidateFile(IFormFile file, string label)

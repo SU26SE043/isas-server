@@ -1,0 +1,15 @@
+[
+  {
+    "Name": "New Profile",
+    "Projects": [
+      {
+        "Path": "src\\services\\Isas.AuthService\\Isas.AuthService.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "src\\services\\Isas.CampaignService\\Isas.CampaignService.csproj",
+        "Action": "Start"
+      }
+    ]
+  }
+]

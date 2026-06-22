@@ -1,5 +1,4 @@
 ﻿using Isas.CampaignService.Models;
-using Microsoft.AspNetCore.Mvc.ModelBinding;
 using System.ComponentModel.DataAnnotations;
 
 namespace Isas.CampaignService.DTOs
@@ -8,7 +7,6 @@ namespace Isas.CampaignService.DTOs
     {
         public string QuestionText { get; set; }
         public QuestionSource Source { get; set; }
-        public int? TimeLimitSeconds { get; set; }
         public bool IsRequired { get; set; } = true;
     }
 
@@ -33,44 +31,30 @@ namespace Isas.CampaignService.DTOs
         [Required]
         public DateTime? ExpiresAt { get; set; }
 
-        public string? QuestionsJson { get; set; }
-
-        [BindNever]
         public List<QuestionItem> Questions { get; set; } = new();
+    }
 
+    public class UploadCampaignFilesRequest
+    {
         public IFormFile? JdFile { get; set; }
-
         public IFormFile? CriteriaFile { get; set; }
     }
 
     public class UpdateCampaignRequest
     {
-        [Required]
         public string Title { get; set; }
 
-        [Required]
         public string? Domain { get; set; }
 
         public int? MaxCandidates { get; set; }
 
-        [Required]
         public int? TimeLimitMinutes { get; set; }
 
         public bool AntiCheatEnabled { get; set; }
 
-        [Required]
         public DateTime? StartsAt { get; set; }
 
-        [Required]
         public DateTime? ExpiresAt { get; set; }
-
-        public string? QuestionsJson { get; set; }
-
-        public List<QuestionItem> Questions { get; set; } = new();
-
-        public IFormFile? JdFile { get; set; }
-
-        public IFormFile? CriteriaFile { get; set; }
     }
 
     public class CampaignQuestionResponse
@@ -78,7 +62,6 @@ namespace Isas.CampaignService.DTOs
         public Guid Id { get; set; }
         public string QuestionText { get; set; }
         public string Source { get; set; }
-        public int? TimeLimitSeconds { get; set; }
         public bool IsRequired { get; set; }
     }
 
@@ -94,9 +77,9 @@ namespace Isas.CampaignService.DTOs
         public bool AntiCheatEnabled { get; set; }
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
-        public string? JDFileUrl { get; set; }
-        public string? CriteriaFileUrl { get; set; }
-        public List<CampaignQuestionResponse> Questions { get; set; } = new();
+        public List<CampaignQuestionResponse> Questions { get; set; }
+        public string? JDText { get; set; }
+        public string? CriteriaText { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
 
@@ -112,16 +95,15 @@ namespace Isas.CampaignService.DTOs
             AntiCheatEnabled = c.AntiCheatEnabled,
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
-            JDFileUrl = c.JDFileUrl,
-            CriteriaFileUrl = c.CriteriaFileUrl,
             Questions = c.Questions.Select(q => new CampaignQuestionResponse
             {
                 Id = q.Id,
                 QuestionText = q.QuestionText,
                 Source = q.Source.ToString(),
-                TimeLimitSeconds = q.TimeLimitSeconds,
                 IsRequired = q.IsRequired
             }).ToList(),
+            JDText = c.JDText,
+            CriteriaText = c.CriteriaText,
             CreatedAt = c.CreatedAt,
             UpdatedAt = c.UpdatedAt
         };
