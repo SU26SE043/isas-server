@@ -55,6 +55,17 @@ namespace Isas.CampaignService.Services
             await _s3.DeleteObjectAsync(request, ct);
         }
 
+        public async Task<Stream> DownloadAsync(string path, CancellationToken ct = default)
+        {
+            var request = new GetObjectRequest
+            {
+                BucketName = _bucket,
+                Key = path
+            };
+            var response = await _s3.GetObjectAsync(request, ct);
+            return response.ResponseStream;
+        }
+
         public string GetUrl(string path) => $"{_serviceUrl}/{_bucket}/{path}";
     }
 }

@@ -104,6 +104,35 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to upload files: {ex.Message}"); }
         }
 
+        [HttpPost("{id:guid}/files/download")]
+        //[Authorize(Roles = "Employer")]
+        public async Task<IActionResult> DownloadCampaignFiles(Guid id, string fileType, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            if (string.IsNullOrWhiteSpace(fileType) || !(fileType.Equals("jd", StringComparison.OrdinalIgnoreCase) || fileType.Equals("criteria", StringComparison.OrdinalIgnoreCase)))
+            {
+                return BadRequest("Invalid fileType. Must be 'jd' or 'criteria'.");
+            }
+
+            try
+            {
+                var fileStream = await _campaignService.DownloadCampaignFilesAsync(id, fileType, ct);
+
+                if (fileStream == null)
+                {
+                    return NotFound($"No files found for campaign {id}.");
+                }
+
+                return File(fileStream, "application/zip", $"Campaign_{id}_Files.zip");
+            }
+            catch (KeyNotFoundException) { return NotFound($"Campaign {id} not found."); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to download files: {ex.Message}"); }
+        }
+
         [HttpPut("{id}")]
         //[Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaign(Guid id, UpdateCampaignRequest request, CancellationToken ct)

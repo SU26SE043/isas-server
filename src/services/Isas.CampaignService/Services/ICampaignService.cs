@@ -12,5 +12,6 @@ namespace Isas.CampaignService.Services
         Task<CampaignResponse> UploadCampaignFilesAsync(Guid employerId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct);
         Task<CampaignResponse> UpdateCampaignFilesAsync(Guid id, UploadCampaignFilesRequest request, CancellationToken ct);
         Task<CampaignResponse> UpdateCampaignQuestionsAsync(Guid id, List<QuestionItem> questions, CancellationToken ct);
+        Task<Stream> DownloadCampaignFilesAsync(Guid id, string fileType, CancellationToken ct);
     }
 }

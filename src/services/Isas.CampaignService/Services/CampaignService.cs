@@ -100,6 +100,25 @@ namespace Isas.CampaignService.Services
 
             return CampaignResponse.FromEntity(campaign);
         }
+         
+        public async Task<Stream> DownloadCampaignFilesAsync(Guid id, string fileType, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            string? fileUrl = fileType.ToLower() switch
+            {
+                "jd" => campaign.JDFileUrl,
+                "criteria" => campaign.CriteriaFileUrl,
+                _ => throw new ArgumentException("Invalid file type. Must be 'jd' or 'criteria'.")
+            };
+
+            if (string.IsNullOrWhiteSpace(fileUrl))
+                throw new FileNotFoundException($"No {fileType} file found for campaign {id}.");
+
+            return await _file.DownloadAsync(fileUrl, ct);
+        }
 
         public async Task<CampaignResponse> GetCampaignAsync(Guid id, CancellationToken ct)
         {
