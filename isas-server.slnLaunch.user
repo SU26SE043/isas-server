@@ -1,0 +1,19 @@
+[
+  {
+    "Name": "New Profile",
+    "Projects": [
+      {
+        "Path": "src\\services\\Isas.AuthService\\Isas.AuthService.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "src\\gateway\\Isas.Gateway\\Isas.Gateway.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "src\\services\\Isas.InterviewService\\Isas.InterviewService.csproj",
+        "Action": "Start"
+      }
+    ]
+  }
+]

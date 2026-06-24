@@ -8,6 +8,10 @@ public class ApiServiceConfig
     public string Name { get; set; } = "";
     public string OpenApiUrl { get; set; } = "";
     public string Prefix { get; set; } = "";
+    // Base path gốc của service cần cắt bỏ trước khi gắn Prefix gateway.
+    // Vd: AI service trả path "/api/v1/generate-questions", StripPrefix="/api/v1"
+    // -> cắt còn "/generate-questions" -> + Prefix "/api/v1/ai" = "/api/v1/ai/generate-questions"
+    public string StripPrefix { get; set; } = "";
 }
 
 public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : BackgroundService
@@ -51,7 +55,16 @@ public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : 
                             "#/components/schemas/",
                             $"#/components/schemas/{service.Name}_"
                         );
-                        mergedPaths[service.Prefix + path.Key] = JsonNode.Parse(pathJson);
+
+                        // Cắt base path gốc rồi mới gắn Prefix gateway, tránh double prefix.
+                        var key = path.Key;
+                        if (!string.IsNullOrEmpty(service.StripPrefix)
+                            && key.StartsWith(service.StripPrefix))
+                        {
+                            key = key[service.StripPrefix.Length..];
+                        }
+
+                        mergedPaths[service.Prefix + key] = JsonNode.Parse(pathJson);
                     }
                 }
 
