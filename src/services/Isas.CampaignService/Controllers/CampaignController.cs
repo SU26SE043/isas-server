@@ -7,7 +7,7 @@ using System.Security.Claims;
 namespace Isas.CampaignService.Controllers
 {
     [ApiController]
-    [Route("api/Campaign")]
+    [Route("campaign")]
     //[Authorize]
     public class CampaignController : Controller
     {
