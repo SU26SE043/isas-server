@@ -306,12 +306,11 @@ docker compose logs -f aiservice-worker
 
 ## 7. Checklist / Gotcha
 
-- [ ] **Bug path-style S3** — `worker.py` tạo boto3 client phải set path-style, nếu không SeaweedFS qua IP sẽ fail (boto3 mặc định virtual-host `isas-files.<ip>`):
+- [ ] **`.env` KHÔNG bọc dấu nháy khi chạy qua Docker** — `docker --env-file` / compose `env_file` truyền **nguyên cả `"..."`** vào biến môi trường (khác `python -m` chạy thẳng: pydantic/dotenv tự bỏ nháy). Vd `S3_ENDPOINT="http://ip:8333"` → boto3 báo `Invalid endpoint`. Viết **không nháy**: `S3_ENDPOINT=http://ip:8333`. *(Footgun thật, đã dính 2026-06-27.)*
+- [ ] **Path-style S3** — khi endpoint là **IP**, boto3 **tự dùng path-style** → **không cần** cấu hình thêm (verify 2026-06-27: `list_objects`/download chạy với boto3 client mặc định trên SeaweedFS qua IP). *Chỉ* khi endpoint là **hostname/domain** mới phải ép path-style:
   ```python
   from botocore.config import Config
-  s3_client = boto3.client('s3', endpoint_url=settings.s3_endpoint,
-      aws_access_key_id=settings.s3_access_key,
-      aws_secret_access_key=settings.s3_secret_key,
+  s3_client = boto3.client('s3', endpoint_url=settings.s3_endpoint, ...,
       config=Config(s3={"addressing_style": "path"}))
   ```
 - [ ] **`<MAC_TS_IP>` / `<SERVER_TS_IP>`** thay bằng IP Tailscale thật ở cả 2 phía.
