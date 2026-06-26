@@ -8,7 +8,11 @@ public class PracticeSession
  
     // Tham chiếu lỏng sang AuthService (candidate) - không FK xuyên service
     public Guid CandidateId { get; set; }
- 
+
+    // Phân biệt B2B/B2C: null = B2C luyện tập; có giá trị = bài thi của 1 campaign.
+    // Ref lỏng sang CampaignService - KHÔNG FK xuyên service (architecture §5).
+    public Guid? CampaignId { get; set; }
+
     // FK cứng tới FileRecord (B2C: file_records nằm chung interview DB)
     public Guid? CvId { get; set; }
     public Guid? JdId { get; set; }
