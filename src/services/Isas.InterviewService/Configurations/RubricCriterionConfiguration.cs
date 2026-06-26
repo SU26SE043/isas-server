@@ -24,6 +24,9 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
 
         e.HasIndex(x => new { x.JobCategory, x.Version, x.IsActive });
 
+        // B2B: đọc/materialize tiêu chí theo campaign. Non-unique, nullable.
+        e.HasIndex(x => x.CampaignId);
+
         e.HasMany(x => x.Levels)
             .WithOne(l => l.Criterion)
             .HasForeignKey(l => l.CriterionId)

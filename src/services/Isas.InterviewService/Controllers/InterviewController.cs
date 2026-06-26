@@ -11,7 +11,7 @@ namespace Isas.InterviewService.Controllers
 {
     [ApiController]
     [Route("api/files")]
-    // [Authorize] // Khuyên ông nên mở cái này ra khi test xong, file phải có chủ
+    [Authorize] // File phải có chủ (docs interview.md: Files = JWT).
     public class InterviewController : ControllerBase
     {
         private readonly IStorageService _storage;

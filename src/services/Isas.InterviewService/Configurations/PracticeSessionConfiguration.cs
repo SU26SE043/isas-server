@@ -28,6 +28,9 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
 
         e.HasIndex(x => x.CandidateId);
 
+        // B2B: lookup session theo campaign (S3/S4). Non-unique, nullable.
+        e.HasIndex(x => x.CampaignId);
+
         e.HasMany(x => x.Questions)
             .WithOne(q => q.Session)
             .HasForeignKey(q => q.SessionId)
