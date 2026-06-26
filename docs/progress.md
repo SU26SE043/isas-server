@@ -20,11 +20,11 @@
 - CampaignService: 6 bug (URL-vs-key, GET không lọc, AntiCheat ghi đè, download zip, message DOCX, Authorize comment).
 - PaymentService trên branch theo **credit cá nhân (`user_id`)** — cần refactor sang **org-credit + reserve/consume + postpaid** theo doc.
 - **AIService** (đã soi code): 🔴 endpoint `/ai/**` public không auth · 🔴 Whisper `large-v3` CPU quá chậm (trần thông lượng; đã thêm `WHISPER_MODEL` env để hạ `base/small`) · 🔴 prompt injection vào bộ chấm · 🔴 `nack` không DLQ. Chi tiết [services/ai.md](services/ai.md) §Vấn đề đã biết. *(Lõi xử-lý-lỗi/validate tốt — giữ.)*
-- **Deploy/Docker (mới, 2026-06-27):** ✅ AIService `requirements.txt` thiếu `aio-pika/boto3/aiohttp` → **đã fix** + thêm `Dockerfile` (build & import verify). · 🟡 **DEPLOYMENT.md §4 seaweed thiếu `-s3.config` + mount `seaweed-s3.json`** — lệch container thật (đang bật auth `admin/admin123456`); cần thêm flag+mount vào compose & doc. · 🟡 **Redis** khai trong compose/architecture nhưng AuthService **không dùng** (refresh token ở Postgres) → cân nhắc bỏ hoặc sửa doc.
+- **Deploy/Docker (2026-06-27, đã xử):** ✅ AIService `requirements.txt` thiếu `aio-pika/boto3/aiohttp` → fix + thêm `Dockerfile` (build & import + connect server verify). · ✅ **DEPLOYMENT.md §4 seaweed**: thêm `-s3.config` + mount + file `seaweed-s3.json` (khớp container thật bật auth `admin/admin123456`) + gotcha `.env` không bọc nháy (§7). · ✅ **Redis**: ghi đúng thực tế (architecture + work-division — provision, **chưa wire**, refresh token ở Postgres); **giữ service, không bỏ**.
 - `AGENTS.md` đang **tạm trong `docs/`** (theo convention nên đưa ra gốc khi chốt bố cục) · chưa có CI cho doc.
 
 ## Bước tiếp theo (thứ tự đề xuất)
-1. **Commit AIService Docker** (`Dockerfile` + `requirements.txt`, đang dở trên main) + đồng bộ [../DEPLOYMENT.md](../DEPLOYMENT.md) (seaweed `-s3.config` + mount `seaweed-s3.json`; gỡ/sửa Redis). *(docs B2B + campaign_id đã merge — PR #19/#20, không còn ở bước này.)*
+1. **Merge PR `chore/aiservice-docker`** (AIService Dockerfile+deps + DEPLOYMENT/work-division/progress sync) vào `main`. *(docs B2B + campaign_id đã merge — PR #19/#20.)*
 2. **Phase 0 — Foundation/Init** (TRƯỚC feature): 6 service chạy từ máy sạch · test mẫu pass cho **Campaign + Payment** (đang thiếu) · lệnh chuẩn hoá `make setup/test/check` · readiness 4 điều kiện xanh · commit checkpoint. Chi tiết [work-division.md](work-division.md) §5.
 3. **S1**: Auth thêm Organization + org-role; PaymentService refactor org-credit + reserve/consume + postpaid.
 4. **S2**: hoàn thiện CampaignService (fix 6 bug) + tiêu chí text→cấu trúc + soft-delete/audit.

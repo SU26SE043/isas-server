@@ -57,6 +57,8 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 | **PaymentService (M1)** | 🟡 **branch `features/payment-b2c`** — có Order/Package/PayOS; **cần: credit theo org, reserve/consume, postpaid + hóa đơn, active-polling** | `src/services/Isas.PaymentService` |
 | Frontend B2B | 🟡 Prototype | `isas-demo/` (demo, **không trong repo này**) |
 
+> **Hạ tầng — lưu ý:** `Redis` đã có trong compose nhưng **AuthService chưa wire** (refresh token đang lưu Postgres) — provision để dành cache/phase sau, **không phải việc của stream nào** hiện tại.
+
 ---
 
 ## 3. Kiến trúc mục tiêu (service map — Cách Engine + Orchestrator)

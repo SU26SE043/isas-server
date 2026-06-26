@@ -85,13 +85,15 @@ services:
     image: chrislusf/seaweedfs:latest
     container_name: seaweedfs-main
     restart: always
-    command: "server -dir=/data -s3 -s3.port=8333"
+    # -s3.config bật S3 auth bằng file identities (seaweed-s3.json). THIẾU nó → S3 mở toang, key bị bỏ qua.
+    command: "server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -ip.bind=0.0.0.0"
     ports:
       - "8333:8333"   # S3 API (Mac kéo audio qua tailnet)
       - "8888:8888"   # filer
       - "9333:9333"   # master UI
     volumes:
       - seaweedfs_main_data:/data
+      - ./seaweed-s3.json:/etc/seaweedfs/s3.json:ro   # identities S3 (access/secret key)
     networks: [isas-main-network]
 
   rabbitmq:
@@ -209,6 +211,20 @@ SMTP_FROM=...
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
+```
+
+### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth
+Seaweed bật auth bằng file này (`-s3.config` ở trên). `accessKey`/`secretKey` phải **khớp** `S3_ACCESS_KEY`/`S3_SECRET_KEY` trong `.env` **và** phía Mac (`aiservice-worker`).
+```json
+{
+  "identities": [
+    {
+      "name": "admin",
+      "credentials": [ { "accessKey": "admin", "secretKey": "<S3_SECRET_KEY>" } ],
+      "actions": ["Admin", "Read", "Write", "List"]
+    }
+  ]
+}
 ```
 
 ### Bring-up server (lần đầu — sau đó CI tự `pull && up`)
