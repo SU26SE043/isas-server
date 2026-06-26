@@ -1,8 +1,15 @@
 fastapi
 uvicorn[standard]
-google-genai
+python-multipart
 pydantic
 pydantic-settings
 python-dotenv
+
+# AI / ML
+google-genai
 faster-whisper
-python-multipart
+
+# Worker: RabbitMQ consume + S3 tải audio + HTTP callback
+aio-pika
+boto3
+aiohttp
