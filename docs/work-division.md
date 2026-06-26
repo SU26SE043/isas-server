@@ -48,8 +48,8 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 |---|---|---|
 | Gateway (YARP, `/api/v1/*`) | ✅ Có | `src/gateway/Isas.Gateway` |
 | AuthService (JWT, OAuth, profile) | ✅ Có — 3 role đã có; **cần thêm Organization + org-role (OrgAdmin/HrMember)** | `src/services/Isas.AuthService` |
-| InterviewService = **engine phỏng vấn** | ✅ Có (chạy B2C) — **cần thêm `campaign_id` + intake B2B** | `src/services/Isas.InterviewService` |
-| AIService (sinh câu hỏi + chấm) | ✅ Có — **cần chấm theo tiêu chí campaign** | `src/services/Isas.AIService` |
+| InterviewService = **engine phỏng vấn** | ✅ Có (chạy B2C) — **`campaign_id` (nullable) đã thêm** (PR #19, migration `AddCampaignIdToEngine`); còn **intake B2B** (create-or-get session = S3) | `src/services/Isas.InterviewService` |
+| AIService (sinh câu hỏi + chấm) | ✅ Có + **Docker-ready** (Dockerfile + requirements vá `aio-pika`/`boto3`/`aiohttp`) — còn **chấm theo tiêu chí campaign** | `src/services/Isas.AIService` |
 | Shared lib | ✅ Có | `src/shared/Isas.Shared` |
 | **CampaignService (M2)** | 🟡 Đang làm, **branch `features/campaign-service`** — còn bug (§7) | `src/services/Isas.CampaignService` |
 | **Distribution (M3 — phát link)** | ❌ Chưa | (sẽ vào CampaignService) |
