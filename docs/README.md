@@ -48,6 +48,6 @@ Mô hình **Engine + Orchestrator**: InterviewService là engine phỏng vấn d
 | InterviewService | .NET / EF Core | **Engine phỏng vấn (B2B & B2C)**: session (`campaign_id?`), câu hỏi, câu trả lời, điểm, rubric, file | ✅ (mở rộng B2B) |
 | AIService | Python / FastAPI + worker | Sinh câu hỏi + chấm điểm (Whisper, Gemini) — rubric hoặc tiêu chí campaign | ✅ (mở rộng) |
 | CampaignService | .NET / EF Core | Điều phối B2B: campaign, tiêu chí, distribution, ranking, result | 🟡 branch |
-| PaymentService | .NET / EF Core | Thanh toán PayOS, **credit theo org**, **prepaid + postpaid (trả sau)**, reserve/consume | 🟡 branch |
+| PaymentService | .NET / EF Core | Thanh toán PayOS, **credit theo chủ ví** (org/B2C — D15), **prepaid + postpaid (trả sau)**, reserve/consume | 🟡 branch |
 
 Hạ tầng: PostgreSQL · Redis · SeaweedFS (S3) · RabbitMQ.

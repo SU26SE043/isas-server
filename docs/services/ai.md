@@ -49,4 +49,4 @@ Worker consume (prefetch 1, ack/nack thủ công) → tải audio từ SeaweedFS
 | 🔴 Độ bền | `nack(requeue=False)` **không có DLQ** → mất lượt chấm nếu republisher miss | Khai báo **dead-letter exchange** hứng message lỗi |
 | 🟠 Công bằng | 1 `ValueError` (LLM lỡ thiếu tiêu chí) → answer **Failed vĩnh viễn** | **Retry N lần / self-consistency** trước khi chốt Failed |
 | 🟠 Tin cậy | Whisper sai (tiếng Việt + thuật ngữ) → điểm sai, không human-in-the-loop | **Hiện transcript cho HR** review; điểm AI là *gợi ý*, HR chốt |
-| 🟠 Khác | Chưa có **test**; `.env`/`.env copy` chứa secret | Thêm test (validate/kẹp/dedup); **`.gitignore` cho `.env*`** |
+| 🟠 Khác | Chưa có **test** (Python). *(2026-06-27: ✅ thêm `Dockerfile` + vá `requirements.txt` `aio-pika`/`boto3`/`aiohttp`; `.env` đã `.gitignore`; còn `.env copy` thừa nên xóa.)* | Thêm test (validate/kẹp/dedup). **Lưu ý:** `.env` chạy qua Docker **không bọc dấu nháy** ([DEPLOYMENT §7](../../DEPLOYMENT.md)). |
