@@ -1,3 +1,7 @@
+> **Bản sao cho agent** của [`docs/services/interview.md`](../../../docs/services/interview.md) — contract (API + DB + business rules) của InterviewService (engine B2C & B2B). **Source of truth ở `docs/`**: sửa thiết kế tại đó rồi copy lại (đừng sửa bản này lệch). Ràng buộc chung + playbook gen code: [`/AGENTS.md`](../../../AGENTS.md).
+
+---
+
 # InterviewService — Engine phỏng vấn (dùng chung B2B & B2C)
 
 > **Engine lõi**: session → câu hỏi → ghi âm trả lời → chấm điểm theo rubric/tiêu chí. Tái dùng cho cả luyện tập B2C lẫn bài thi B2B.

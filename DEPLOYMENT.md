@@ -85,13 +85,15 @@ services:
     image: chrislusf/seaweedfs:latest
     container_name: seaweedfs-main
     restart: always
-    command: "server -dir=/data -s3 -s3.port=8333"
+    # -s3.config bật S3 auth bằng file identities (seaweed-s3.json). THIẾU nó → S3 mở toang, key bị bỏ qua.
+    command: "server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -ip.bind=0.0.0.0"
     ports:
       - "8333:8333"   # S3 API (Mac kéo audio qua tailnet)
       - "8888:8888"   # filer
       - "9333:9333"   # master UI
     volumes:
       - seaweedfs_main_data:/data
+      - ./seaweed-s3.json:/etc/seaweedfs/s3.json:ro   # identities S3 (access/secret key)
     networks: [isas-main-network]
 
   rabbitmq:
@@ -211,6 +213,20 @@ GOOGLE_CLIENT_SECRET=...
 GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
 ```
 
+### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth
+Seaweed bật auth bằng file này (`-s3.config` ở trên). `accessKey`/`secretKey` phải **khớp** `S3_ACCESS_KEY`/`S3_SECRET_KEY` trong `.env` **và** phía Mac (`aiservice-worker`).
+```json
+{
+  "identities": [
+    {
+      "name": "admin",
+      "credentials": [ { "accessKey": "admin", "secretKey": "<S3_SECRET_KEY>" } ],
+      "actions": ["Admin", "Read", "Write", "List"]
+    }
+  ]
+}
+```
+
 ### Bring-up server (lần đầu — sau đó CI tự `pull && up`)
 
 ```bash
@@ -306,12 +322,11 @@ docker compose logs -f aiservice-worker
 
 ## 7. Checklist / Gotcha
 
-- [ ] **Bug path-style S3** — `worker.py` tạo boto3 client phải set path-style, nếu không SeaweedFS qua IP sẽ fail (boto3 mặc định virtual-host `isas-files.<ip>`):
+- [ ] **`.env` KHÔNG bọc dấu nháy khi chạy qua Docker** — `docker --env-file` / compose `env_file` truyền **nguyên cả `"..."`** vào biến môi trường (khác `python -m` chạy thẳng: pydantic/dotenv tự bỏ nháy). Vd `S3_ENDPOINT="http://ip:8333"` → boto3 báo `Invalid endpoint`. Viết **không nháy**: `S3_ENDPOINT=http://ip:8333`. *(Footgun thật, đã dính 2026-06-27.)*
+- [ ] **Path-style S3** — khi endpoint là **IP**, boto3 **tự dùng path-style** → **không cần** cấu hình thêm (verify 2026-06-27: `list_objects`/download chạy với boto3 client mặc định trên SeaweedFS qua IP). *Chỉ* khi endpoint là **hostname/domain** mới phải ép path-style:
   ```python
   from botocore.config import Config
-  s3_client = boto3.client('s3', endpoint_url=settings.s3_endpoint,
-      aws_access_key_id=settings.s3_access_key,
-      aws_secret_access_key=settings.s3_secret_key,
+  s3_client = boto3.client('s3', endpoint_url=settings.s3_endpoint, ...,
       config=Config(s3={"addressing_style": "path"}))
   ```
 - [ ] **`<MAC_TS_IP>` / `<SERVER_TS_IP>`** thay bằng IP Tailscale thật ở cả 2 phía.

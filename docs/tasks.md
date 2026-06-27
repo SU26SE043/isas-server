@@ -1,10 +1,10 @@
 # ISAS — Task Surface (WIP=1)
 
 > Bề mặt phạm vi máy-đọc-được (Bài 07). Mỗi task = **1 hành vi** + **lệnh xác minh chạy được** + **phụ thuộc** + **trạng thái**.
-> **WIP=1 per-người/agent**: 1 task `active` → verify `passing` → commit → mới sang task kế. Đừng mở nhiều task, đừng tiện tay refactor. Quy tắc: [AGENTS.md](AGENTS.md). Lý do thiết kế: [decisions.md](decisions.md). Phân việc: [work-division.md](work-division.md).
+> **WIP=1 per-người/agent**: 1 task `active` → verify `passing` → commit → mới sang task kế. Đừng mở nhiều task, đừng tiện tay refactor. Quy tắc: [AGENTS.md](../AGENTS.md). Lý do thiết kế: [decisions.md](decisions.md). Phân việc: [work-division.md](work-division.md).
 > **Trạng thái:** `not_started` · `active` · `blocked` · `passing`. **VCR** = passing / đã-active; chỉ mở task mới khi task đang active đã `passing`.
 > **Nguồn sự thật task-level (Bài 08):** mọi "cần làm gì" bắt nguồn từ đây — KHÔNG từ chat / TODO rải rác. §8 work-division = nhóm + lý do; file này = trạng thái thật.
-> **Pass-gating:** `passing` chỉ khi qua **3 lớp Xong** (build → runtime → end-to-end) **VÀ người khác review PR** — xem [AGENTS.md](AGENTS.md) §Định nghĩa "Xong". Lệnh ở cột *Xác minh* là **lớp 2/3** của task; lớp 1 (`dotnet build`/lint) chạy chung. Ghi **bằng chứng** vào ô Status: `passing (commit abc1234)`. Không tự nâng trạng thái.
+> **Pass-gating:** `passing` chỉ khi qua **3 lớp Xong** (build → runtime → end-to-end) **VÀ người khác review PR** — xem [AGENTS.md](../AGENTS.md) §Định nghĩa "Xong". Lệnh ở cột *Xác minh* là **lớp 2/3** của task; lớp 1 (`dotnet build`/lint) chạy chung. Ghi **bằng chứng** vào ô Status: `passing (commit abc1234)`. Không tự nâng trạng thái.
 > *(Tạm để `docs/` dạng Markdown — đủ cho team người + agent thỉnh thoảng. Khi tự động hoá (scheduler/verifier) thì chuyển `feature_list.json`. Cập nhật trạng thái lúc "tan ca".)*
 
 ---
@@ -16,7 +16,7 @@
 | P0.2 | Lệnh chuẩn hoá setup/dev/test/check | `make check` chạy lint + test, exit 0 | — | not_started |
 | P0.3 | Test project Campaign + 1 test mẫu | `dotnet test Isas.CampaignService.Tests` → 1/1 pass | — | ✅ **xong** — `Isas.CampaignService.Tests` (SQLite in-mem, xUnit+Moq), **5/5 pass** · chờ PR |
 | P0.4 | Test project Payment + 1 test mẫu | `dotnet test Isas.PaymentService.Tests` → 1/1 pass | — | not_started |
-| P0.5 | Readiness 4 điều kiện xanh + commit checkpoint | 4 điều kiện ([AGENTS.md](AGENTS.md)) xanh; `git log` có commit "init baseline" | P0.1–P0.4 | not_started |
+| P0.5 | Readiness 4 điều kiện xanh + commit checkpoint | 4 điều kiện ([AGENTS.md](../AGENTS.md)) xanh; `git log` có commit "init baseline" | P0.1–P0.4 | not_started |
 
 ## S1 — Identity & Org (AuthService)
 | ID | Hành vi | Xác minh | Dep | Status |
@@ -74,6 +74,20 @@
 | E6 | Xuất CSV/PDF | `GET …/results/export?format=csv` → file khớp ranking | E5 | not_started |
 | E7 | Payment phản ứng event (consume/release) | `SessionScored`→consume; `SessionAbandoned`→release | P5, P6, E2, E3 | not_started |
 
+## S5 — B2C Personal Practice (Payment + Interview)
+> Engine luyện + lịch sử **đã chạy** (`PracticeController`); các task dưới = **nối thanh toán ví cá nhân** vào engine. Ví dùng chung `credit_accounts(owner_type)` của S1, khác `owner_type=User`.
+
+| ID | Hành vi | Xác minh | Dep | Status |
+|---|---|---|---|---|
+| BC1 | Mua pack prepaid ví cá nhân (`owner=User`) → webhook cộng credit | order sandbox `owner=User` → webhook → ví user `remaining += credits`; webhook lần 2 **không** cộng lại | P1, P7 | not_started |
+| BC2 | Interview `CreateSession` reserve credit ví cá nhân; hết → 402 | có credit → `POST /api/practice/sessions` tạo session + `reserved+1`; ví 0 credit → **402, không có row session** | P1, P4 | not_started |
+| BC3 | Consume credit ví cá nhân khi `SessionScored` | session B2C `Scored` → `credit_transactions(Usage,-1)` ví user; 2 lần cùng `sessionId` chỉ trừ 1 | BC2, P5 | not_started |
+| BC4 | Release credit ví cá nhân khi bỏ ngang/lỗi | session B2C `Abandoned` → reservation `Released`, không trừ credit | BC2, P6, E3 | not_started |
+| BC5 | (verify) Lịch sử cá nhân đọc đúng chủ | `GET /api/practice/sessions/history` chỉ trả session của user; `GET /{id}` của người khác → 403/404 | — | not_started |
+| BC6 | AIService `POST /analyze-cv` (feedback + khớp JD) | `{ cvText, jdText?, jobCategory }` → `{ summary, strengths[], weaknesses[], suggestions[], jdMatch? }`; có `jdText` → `jdMatch.{score,matchedSkills,missingSkills}` | — | not_started |
+| BC7 | Interview `cv-analysis` endpoint + lưu `cv_analyses` | `POST …/practice/cv-analysis {cvId, jdId?}` → parse + gọi AIService → 201 + row `cv_analyses`; `GET …/cv-analysis/{id}` đọc lại đúng chủ | BC6 | not_started |
+| BC8 | Báo cáo buổi luyện thêm "CV vs câu trả lời" | session `Scored` có CV → báo cáo có mục đối chiếu CV↔transcript (chỗ CV mạnh nhưng trả lời yếu) | BC7, E1 | not_started |
+
 ---
 
-> **Lưu ý phụ thuộc chéo:** `A1` (org) mở khóa S1-Payment + S2(C2). `C8`→`I1`→toàn bộ S4. `E2/E3`→`E7` (Payment). Bám DAG này khi chọn task: ưu tiên task **không bị block** và **đang được dep cần tới**.
+> **Lưu ý phụ thuộc chéo:** `A1` (org) mở khóa S1-Payment + S2(C2). `C8`→`I1`→toàn bộ S4. `E2/E3`→`E7` (Payment). `P1`/`P4`→**S5** (BC1–BC4) — S5 **độc lập B2B** nên là luồng cho **E2E demo được sớm nhất** sau khi có ví credit. Bám DAG này khi chọn task: ưu tiên task **không bị block** và **đang được dep cần tới**.
