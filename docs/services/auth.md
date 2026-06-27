@@ -78,7 +78,7 @@ ASP.NET Identity (`IdentityUser<Guid>`), cột **snake_case**. Kiểu: `uuid·va
 ```
 users ─┬─*──* roles            (qua user_roles)
        ├─1──* refresh_tokens
-       ├─*──* organizations 🔜  (qua org_members, kèm org_role)
+       ├─*──* organizations ✅  (qua org_members, kèm org_role — migration AddOrganizations)
        └─1──* user_claims · user_tokens · user_logins   (Identity / Google OAuth)
 roles ──1──* role_claims
 ```
@@ -115,20 +115,20 @@ expires_at  timestamptz   hạn theo Jwt:RefreshTokenDays
 created_at  timestamptz   default now()
 ```
 
-### `organizations` — B2B, 🔜 chưa build
+### `organizations` — B2B ✅ (migration `AddOrganizations`, A1)
 ```
 id         uuid          PK
-name       varchar
-tax_code   varchar?      MST (xuất hóa đơn postpaid)
+name       text          NOT NULL
+tax_code   text?         MST (xuất hóa đơn postpaid)
 created_at timestamptz
 ```
 
-### `org_members` — 🔜 chưa build
+### `org_members` — ✅ (migration `AddOrganizations`, A1)
 ```
-org_id   uuid          FK → organizations
-user_id  uuid          FK → users
-org_role varchar(16)   enum: OrgAdmin · HrMember
-                       PK (org_id, user_id); JWT Employer mang kèm org_id + org_role
+org_id   uuid          FK → organizations (cascade)
+user_id  uuid          FK → users (cascade)
+org_role varchar(16)   enum(string): OrgAdmin · HrMember
+                       PK (org_id, user_id); JWT Employer mang kèm org_id + org_role (🔜 A2)
 ```
 
 + bảng Identity phụ: `role_claims` · `user_claims` · `user_tokens` · `user_logins` (Google OAuth).

@@ -21,7 +21,7 @@
 ## S1 — Identity & Org (AuthService)
 | ID | Hành vi | Xác minh | Dep | Status |
 |---|---|---|---|---|
-| A1 | Bảng `organizations` + `org_members` (migration) | migration apply; tạo 1 org + 1 member OK | — | not_started |
+| A1 | Bảng `organizations` + `org_members` (migration) | migration apply; tạo 1 org + 1 member OK | — | active · entity `Organization`/`OrgMember` (PK `(org_id,user_id)`, `org_role` enum→varchar(16)) + migration `AddOrganizations` + test ✅ (1/1, round-trip SQLite tạo org+member) · ⚠ chưa apply DB chung (Neon) + chờ PR |
 | A2 | JWT mang `org_id` + `org_role` | login → decode token có claim `org_id`, `org_role` | A1 | not_started |
 | A3 | Đăng ký tổ chức → tạo org + OrgAdmin | `POST /auth/register-org` → org tạo, user = OrgAdmin | A1 | not_started |
 | A4 | HrMember bị chặn endpoint billing | HrMember gọi `POST /payment/order` → 403 | A2, P-API | not_started |

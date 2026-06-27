@@ -21,5 +21,7 @@ namespace Isas.AuthService.Models
         public ICollection<UserToken> UserTokens { get; set; } = new List<UserToken>();
 
         public ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
+
+        public ICollection<OrgMember> OrgMembers { get; set; } = new List<OrgMember>();
     }
 }
