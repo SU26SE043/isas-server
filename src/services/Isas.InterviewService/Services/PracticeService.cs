@@ -116,6 +116,69 @@ public class PracticeService : IPracticeService
         return MapToResponse(session, questions, new List<PracticeAnswer>());
     }
 
+    // ── CREATE B2B: session gắn campaign_id + materialize tiêu chí campaign (I1) ──────
+    // Câu hỏi + tiêu chí do Campaign cấp sẵn (không gọi AI sinh). rubric_criteria keyed by
+    // campaign_id → dùng chung mọi session của campaign ⇒ materialize idempotent theo campaign.
+    public async Task<PracticeSessionResponse> CreateCampaignSessionAsync(
+        Guid candidateId, CreateCampaignSessionRequest request, CancellationToken ct = default)
+    {
+        if (request.Questions is null || request.Questions.Count == 0)
+            throw new InvalidOperationException("Campaign session cần ít nhất 1 câu hỏi");
+        if (request.Criteria is null || request.Criteria.Count == 0)
+            throw new InvalidOperationException("Campaign session cần ít nhất 1 tiêu chí");
+
+        var session = new PracticeSession
+        {
+            Id = Guid.NewGuid(),
+            CandidateId = candidateId,
+            CampaignId = request.CampaignId,
+            JobCategory = request.JobCategory,
+            Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
+            CreatedAt = DateTime.UtcNow
+        };
+        _db.PracticeSessions.Add(session);
+
+        var questions = request.Questions
+            .Select((content, idx) => new PracticeQuestion
+            {
+                Id = Guid.NewGuid(),
+                SessionId = session.Id,
+                OrderNo = idx + 1,
+                Content = content,
+                TimeLimitSec = DefaultTimeLimitSec
+            })
+            .ToList();
+        _db.PracticeQuestions.AddRange(questions);
+
+        // Materialize tiêu chí campaign → rubric_criteria(campaign_id), idempotent theo campaign.
+        var alreadyMaterialized = await _db.RubricCriteria
+            .AnyAsync(c => c.CampaignId == request.CampaignId, ct);
+        if (!alreadyMaterialized)
+        {
+            var criteria = request.Criteria.Select(c => new RubricCriterion
+            {
+                Id = Guid.NewGuid(),
+                Name = c.Name,
+                Description = c.Description,
+                Weight = c.Weight,
+                MaxScore = c.MaxScore,
+                IsActive = true,
+                JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
+                CampaignId = request.CampaignId,
+                Version = 1
+            });
+            _db.RubricCriteria.AddRange(criteria);
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Tạo session B2B {SessionId} cho campaign {CampaignId} ({Q} câu, materialize criteria={Mat})",
+            session.Id, request.CampaignId, questions.Count, !alreadyMaterialized);
+
+        return MapToResponse(session, questions, new List<PracticeAnswer>());
+    }
+
     // ── SUBMIT SESSION: chốt sổ (KHÔNG publish — chấm dần đã publish lúc upload) ──
     public async Task SubmitSessionAsync(
         Guid candidateId, Guid sessionId, CancellationToken ct = default)

@@ -315,7 +315,7 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - Sau khi lưu → thử đóng session.
 
 ### Rubric / tiêu chí & điểm
-- **Nguồn tiêu chí tùy mode:** B2C dùng **rubric theo `JobCategory`** (`version` + `is_active`; 1 nghề chung 1 version); **B2B dùng tiêu chí campaign CÓ CẤU TRÚC** — Campaign gửi kèm khi tạo session, Interview materialize thành `rubric_criteria(campaign_id)`. **Pipeline chấm + `answer_scores` giữ NGUYÊN**, chỉ đổi *nguồn tiêu chí* (không chấm trên `criteria_text` thô).
+- **Nguồn tiêu chí tùy mode:** B2C dùng **rubric theo `JobCategory`** (`version` + `is_active`; 1 nghề chung 1 version); **B2B dùng tiêu chí campaign CÓ CẤU TRÚC** — Campaign gửi kèm khi tạo session, Interview materialize thành `rubric_criteria(campaign_id)`. **Pipeline chấm + `answer_scores` giữ NGUYÊN**, chỉ đổi *nguồn tiêu chí* (không chấm trên `criteria_text` thô). **✅ I1:** `PracticeService.CreateCampaignSessionAsync(candidateId, { campaignId, jobCategory, questions[], criteria[] })` → session gắn `campaign_id` + materialize criteria → `rubric_criteria(campaign_id)`, **idempotent theo `campaign_id`** (dùng chung mọi session của campaign). HTTP entry (magic-link/internal) chờ **D2**.
 - Worker chấm đủ **mọi** tiêu chí; thiếu → lỗi vĩnh viễn. Điểm **kẹp** `[0, maxScore]`. Bỏ tiêu chí Gemini bịa; chống trùng. `answer_scores` gắn `rubric_version` lúc chấm. Hiển thị: mỗi tiêu chí lấy **attempt mới nhất**.
 - **Điểm tổng/session** (khi `Scored`) = `Σ điểm_tiêu_chí × weight` chuẩn hóa — dùng cho ranking.
 

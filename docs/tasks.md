@@ -57,7 +57,7 @@
 ## S3 — Distribution & Execution
 | ID | Hành vi | Xác minh | Dep | Status |
 |---|---|---|---|---|
-| I1 | Session nhận `campaign_id` + materialize tiêu chí | tạo session B2B → `rubric_criteria(campaign_id)` có rows | C8 | not_started |
+| I1 | Session nhận `campaign_id` + materialize tiêu chí | tạo session B2B → `rubric_criteria(campaign_id)` có rows | C8 | active · `CreateCampaignSessionAsync` (B2B: campaign cấp questions+criteria) → session gắn `campaign_id` + materialize criteria → `rubric_criteria(campaign_id)` idempotent theo campaign + test ✅ (2/2: materialize + không nhân đôi) · không cần migration (cột `campaign_id` có sẵn từ `AddCampaignIdToEngine`) · ⚠ HTTP entry chờ D2 + PR |
 | D1 | `campaign_invitations` + magic-link token | `POST …/invitations` → token tạo, email queue | C7 | not_started |
 | D2 | Mở token → account Candidate + create-or-get session | mở token → Candidate account + session gắn `campaign_id` | D1, I1 | not_started |
 | D3 | Resume — mở lại token → đúng session cũ | mở token 2 lần → cùng `session_id`; câu đã nộp giữ nguyên | D2 | not_started |

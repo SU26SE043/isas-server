@@ -7,6 +7,22 @@ public record CreatePracticeSessionRequest(
     Guid? JdId,        // optional
     JobCategory JobCategory   // BẮT BUỘC — tín hiệu tối thiểu để sinh câu hỏi
 );
+
+// I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
+public record CampaignCriterionInput(
+    string Name,
+    string? Description,
+    decimal Weight,    // Σ/campaign = 1 (chuẩn hoá phía Campaign)
+    int MaxScore
+);
+
+// I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).
+public record CreateCampaignSessionRequest(
+    Guid CampaignId,
+    JobCategory JobCategory,
+    IReadOnlyList<string> Questions,
+    IReadOnlyList<CampaignCriterionInput> Criteria
+);
 public record PracticeSessionResponse(
     Guid Id,
     string Status,
