@@ -3,9 +3,10 @@ using Isas.AuthService.Models;
 using Isas.AuthService.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.AspNetCore.Mvc;
-using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using static Isas.AuthService.DTOs.ForgotPasswordDtos;
 
 namespace Isas.AuthService.Controllers
 {
@@ -16,11 +17,13 @@ namespace Isas.AuthService.Controllers
         private readonly IAuthService _authService;
         private readonly UserManager<User> _userManager;
         private readonly SignInManager<User> _signInManager;
-        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager)
+        private readonly IEmailSender _emailSender;
+        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager, IEmailSender emailSender)
         {
             _authService = authService;
             _userManager = userManager;
             _signInManager = signInManager;
+            _emailSender = emailSender;
         }
 
         [HttpPost("register")]
@@ -42,29 +45,39 @@ namespace Isas.AuthService.Controllers
         public async Task<IActionResult> Login(LoginRequest request)
         {
             var user = await _userManager.FindByEmailAsync(request.Email);
-
             if (user == null)
-            {
                 return Unauthorized("Invalid credentials");
-            }
 
-            var result = await _signInManager.PasswordSignInAsync(
-                user.UserName,
-                request.Password,
-                isPersistent: false,
-                lockoutOnFailure: true);
+            var result = await _signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);
 
-            if (result.Succeeded)
-            {
-                return Ok(await _authService.LoginAsync(request));
-            }
+            if (result.IsLockedOut) return Unauthorized("Account locked");
+            if (!result.Succeeded) return Unauthorized("Invalid credentials");
 
-            if (result.IsLockedOut)
-            {
-                return Unauthorized("Account locked");
-            }
+            return Ok(await _authService.LoginAsync(request));
+        }
 
-            return Unauthorized("Invalid credentials");
+        [HttpGet("login-google")]
+        public IActionResult LoginWithGoogle(string returnUrl = null)
+        {
+            var redirectUrl = Url.Action(nameof(GoogleLoginCallback), "Account", new { ReturnUrl = returnUrl });
+            var properties = _signInManager.ConfigureExternalAuthenticationProperties("Google", redirectUrl);
+
+            return Challenge(properties, "Google");
+        }
+
+        [HttpGet("login-google-callback")]
+        public async Task<IActionResult> GoogleLoginCallback(string returnUrl = null, string remoteError = null)
+        {
+            if (remoteError != null)
+                return BadRequest(new { error = $"Google login error: {remoteError}" });
+
+            var info = await _signInManager.GetExternalLoginInfoAsync();
+            if (info == null)
+                return BadRequest(new { error = "No Google login info" });
+
+            var authResponse = await _authService.LoginGoogleAsync(info);
+
+            return Ok(authResponse);
         }
 
         [HttpPost("refresh")]
@@ -82,6 +95,7 @@ namespace Isas.AuthService.Controllers
             return Ok(result);
         }
 
+        [Authorize(Roles = "Candidate, Employer, Admin")]
         [HttpPost("logout")]
         public async Task<IActionResult> LogoutAsync(RefreshTokenRequest refreshTokenRequest)
         {
@@ -89,7 +103,7 @@ namespace Isas.AuthService.Controllers
             return NoContent();
         }
 
-        [Authorize]
+        [Authorize(Roles = "Candidate, Employer, Admin")]
         [HttpGet("me")]
         public async Task<ActionResult<UserResponse>> GetProfileAsync()
         {
@@ -102,7 +116,7 @@ namespace Isas.AuthService.Controllers
             return Ok(userResponse);
         }
 
-        [Authorize]
+        [Authorize(Roles = "Candidate, Employer, Admin")]
         [HttpPut("me")]
         public async Task<ActionResult<User>> UpdateProfileAsync(UpdateProfileRequest request)
         {
@@ -114,5 +128,79 @@ namespace Isas.AuthService.Controllers
             var updatedUser = await _authService.UpdateUserAsync(Guid.Parse(userId), request);
             return Ok(updatedUser);
         }
+
+        [HttpPost("forgot-password")]
+        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null)
+                return BadRequest("User not found");
+
+            var otp = new Random().Next(100000, 999999).ToString();
+
+            await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode", otp);
+            await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OTPExpiry", DateTime.UtcNow.AddMinutes(5).ToString());
+
+            await _emailSender.SendEmailAsync(model.Email, "Your OTP Code", BuildEmailBody(otp));
+
+            return Ok("OTP sent to your email");
+        }
+
+        [HttpPost("verify-otp")]
+        public async Task<IActionResult> VerifyOtp([FromBody] VerifyOtpDto model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null) return BadRequest("User not found");
+
+            var storedOtp = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode");
+            var expiry = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPExpiry");
+
+            if (storedOtp == model.Otp && DateTime.Parse(expiry) > DateTime.UtcNow)
+            {
+                await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OtpVerified", DateTime.UtcNow.ToString());
+                return Ok("OTP verified, you can reset your password");
+            }
+
+            return BadRequest("Invalid or expired OTP");
+        }
+
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto model)
+        {
+            var user = await _userManager.FindByEmailAsync(model.Email);
+            if (user == null) return BadRequest("User not found");
+
+            var verifiedOtp = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode");
+            if (string.IsNullOrEmpty(verifiedOtp) || DateTime.Parse(verifiedOtp).AddMinutes(5) < DateTime.UtcNow)
+                return BadRequest("OTP not verified or expired");
+
+            var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+            var result = await _userManager.ResetPasswordAsync(user, token, model.NewPassword);
+
+            if (result.Succeeded)
+                return Ok("Password reset successful");
+
+            return BadRequest(result.Errors);
+        }
+
+        private static string BuildEmailBody(string otp) =>
+            $"""
+            <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:32px;
+                        border:1px solid #e5e7eb;border-radius:8px">
+              <h2 style="color:#1d4ed8;margin-bottom:8px">Password Reset Request</h2>
+              <p style="color:#374151">
+                Use the code below to reset your password.
+                It expires in <strong>10 minutes</strong>.
+              </p>
+              <div style="background:#f3f4f6;border-radius:8px;padding:24px;
+                          text-align:center;margin:24px 0">
+                <span style="font-size:40px;font-weight:bold;letter-spacing:12px;
+                             color:#1d4ed8">{otp}</span>
+              </div>
+              <p style="color:#6b7280;font-size:13px">
+                If you didn't request this, you can safely ignore this email.
+              </p>
+            </div>
+            """;
     }
 }

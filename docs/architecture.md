@@ -1,0 +1,159 @@
+# ISAS — Kiến trúc hệ thống
+
+Sản phẩm **B2B tuyển dụng – phỏng vấn bằng AI**: nhà tuyển dụng tạo *chiến dịch đánh giá* từ JD → phát link cho ứng viên → AI chấm theo tiêu chí → xếp hạng. Lõi chấm điểm vốn xây cho **B2C luyện tập**, **dùng lại** cho B2B (phân biệt bằng `campaign_id`). Phạm vi & phân công: [work-division.md](work-division.md); lý do quyết định: [decisions.md](decisions.md).
+
+## 1. Tổng quan
+
+Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **không** tách mỗi module một service. Một **API Gateway** (YARP) đứng trước; **6 service** (.NET + 1 AI Python). InterviewService là **engine phỏng vấn dùng chung** (B2B & B2C); CampaignService điều phối B2B; PaymentService lo thanh toán.
+
+```
+                        ┌──────────────────────────┐
+       Frontend ──────► │  Gateway (YARP)  /api/v1 │
+       (Employer/       └─┬────┬────┬────┬────┬─────┘
+        Candidate)        │    │    │    │    │
+        /auth ────────────┘    │    │    │    └──── /ai ──► AIService (Python)
+        /payment ──► PaymentSvc │    │                       ▲
+        (credit/PayOS)          │    └── /campaign ──► CampaignService (B2B orchestrator)
+                  /interview ───┘            │  campaign, tiêu chí,   │ sinh câu hỏi từ JD
+                        │                    │  distribution, ranking └────────────┘
+              ┌─────────▼─────────┐   tạo session (campaign_id)
+              │  InterviewService │ ◄───────────────────────┘
+              │  ENGINE phỏng vấn │ ── SessionScored (event) ─► Campaign (ranking) + Payment (consume)
+              │  (B2B & B2C)      │
+              └─────────┬─────────┘
+        Postgres · SeaweedFS(S3) · RabbitMQ · Redis
+```
+
+> **Vì sao Engine + Orchestrator:** máy chấm điểm (Whisper+Gemini+RabbitMQ+state machine+republisher) đã chạy ổn ở InterviewService — chép lại cho B2B là rủi ro thời gian lớn nhất. **B2C = mode `campaign_id = null`; B2B = `campaign_id` có giá trị.** Chi tiết: [decisions.md](decisions.md) D1.
+
+## 2. Thành phần (6 service + hạ tầng)
+
+| Service | Công nghệ | Vai trò | Trạng thái |
+|---|---|---|---|
+| **Gateway** | .NET, YARP | Reverse proxy `/api/v1/*` → service; gộp OpenAPI thành 1 doc | ✅ |
+| **AuthService** | .NET, JWT, Google OAuth | Đăng nhập, JWT/refresh, profile; 3 role + **Organization (OrgAdmin/HrMember)** | ✅ (thêm Org) |
+| **InterviewService** | .NET, EF Core | **Engine dùng chung**: session (`campaign_id?`), câu hỏi, câu trả lời, điểm, rubric/tiêu chí, file | ✅ (mở rộng B2B) |
+| **AIService** | Python, FastAPI, faster-whisper, google-genai | Sinh câu hỏi + worker chấm điểm (rubric JobCategory **hoặc** tiêu chí campaign) | ✅ (mở rộng) |
+| **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | 🟡 branch |
+| **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo org**, prepaid + postpaid, reserve→consume | 🟡 branch |
+
+**Hạ tầng:** PostgreSQL 18 — DB-per-service (`isas`/`isas_interview`/`isas_campaign`/`isas_payment`) · SeaweedFS (S3, cổng 8333; CV/JD/Criteria/audio) · RabbitMQ (job chấm `scoring_pipeline_queue` + event) · Redis (cache/refresh token).
+
+## 3. Giao tiếp giữa service
+
+| Từ | Đến | Kiểu | Mục đích |
+|---|---|---|---|
+| Frontend | Gateway | HTTPS | Mọi request public, prefix `/api/v1` |
+| Interview / **Campaign** | AIService | HTTP (`AiService:BaseUrl`) | Sinh câu hỏi (đồng bộ); Campaign còn **đề xuất tiêu chí có cấu trúc** từ JD |
+| InterviewService | RabbitMQ | AMQP publish | Đẩy job chấm điểm |
+| AIService worker | RabbitMQ / SeaweedFS | AMQP consume / S3 | Nhận job; tải audio transcribe |
+| AIService worker | InterviewService | HTTP callback (`/internal/...`, `X-Internal-Token`) | Trả transcript + điểm |
+| CampaignService | InterviewService | HTTP | create-or-get session gắn `campaignId` (kèm câu hỏi + **tiêu chí có cấu trúc**) |
+| InterviewService | Campaign + Payment | **RabbitMQ event** | `SessionScored` → Campaign cập nhật **ranking read-model**, Payment **consume credit** |
+| Campaign | PaymentService | HTTP nội bộ (`X-Internal-Token`) | **reserve** credit của org khi ứng viên bắt đầu; `release` khi bỏ ngang |
+| FE/Employer | PaymentService | HTTP | Mua pack (prepaid) / tất toán hóa đơn (postpaid); **webhook PayOS + active-polling** |
+
+> **AI không ghi DB:** AIService trả kết quả qua callback về .NET — .NET là **chủ DB duy nhất**.
+> **Auth offline:** các service **validate JWT bằng chung `Jwt:Key/Issuer/Audience`, KHÔNG call Auth lúc chạy** (chỉ client gọi `login/register/refresh`; gọi Auth chỉ khi cần *dữ liệu tươi* ngoài token, vd email xuất hóa đơn).
+> **3 hợp đồng team chốt trước khi code** (Campaign↔Interview tạo session + trả điểm; Interview/Campaign→Payment credit; Campaign→AI tiêu chí): [work-division.md](work-division.md) §3. Ref user/campaign giữa service = Guid **lỏng**.
+
+## 4. Luồng chính
+
+### 4.1. Luồng B2B end-to-end
+**A. Tổ chức tạo & phát chiến dịch**
+1. Org có **credit** — prepaid (mua pack) hoặc postpaid (được duyệt trả sau) — xem §4.3.
+2. HR tạo campaign từ JD (`POST /api/v1/campaign`) → upload JD/Criteria → bấm gợi ý → **AIService sinh câu hỏi (đồng bộ) + đề xuất tiêu chí**. **Publish `Active`** → tiêu chí **có cấu trúc** (name/weight/max_score), **HR duyệt**.
+3. Distribution: phát **lời mời (magic-link)** + **email hàng loạt**.
+
+**B. Ứng viên làm bài (tái dùng engine)**
+4. Mở link → magic-link **provision/login `Candidate`** (có `candidate_id` + JWT) → CampaignService **create-or-get** session gắn `campaign_id` + **reserve 1 credit của org** (hết hạn mức → chặn ngay; mở link không tốn tiền).
+5. Trả lời (ghi âm) → **chấm dần §4.2** theo **tiêu chí campaign**. Khóa link sau **submit** (resume các câu chưa nộp).
+
+**C. Đánh giá & kết quả (event-driven)**
+6. Session `Scored` → InterviewService tính **điểm có trọng số** (`Σ điểm×weight`) + phát **`SessionScored`** (RabbitMQ).
+7. **Payment** consume reservation (trừ thật); **Campaign** upsert `campaign_rankings` → xếp hạng + pass/fail. (Bỏ ngang quá hạn → `SessionAbandoned` → release credit.)
+8. Employer xem dashboard (đọc local) → **xuất CSV/PDF**.
+
+> **B2C luyện tập** = đúng luồng này nhưng **không có campaign** (`campaign_id = null`): người dùng tự tạo session, tự trả credit; chấm theo rubric `JobCategory`.
+
+### 4.2. Chấm điểm dần (engine, bất đồng bộ — dùng chung B2B & B2C)
+1. FE upload từng câu trả lời → audio lên SeaweedFS → answer `Uploaded`.
+2. InterviewService publish job (kèm **rubric JobCategory** hoặc **tiêu chí campaign**) lên RabbitMQ → answer `Scoring`.
+3. Worker consume → tải audio → Whisper transcribe → Gemini chấm.
+4. Worker callback `/internal/answers/{id}/result` → lưu điểm → answer `Scored`. Lỗi vĩnh viễn → `/failed` → `Failed`.
+5. `POST .../submit` chốt session; mọi answer xong → session `Scored` → phát `SessionScored`.
+
+> Phục hồi: `StuckAnswerRepublisher` (background) đẩy lại job kẹt. State machine + retry + chi tiết chấm theo tiêu chí campaign: [services/interview.md](services/interview.md).
+
+### 4.3. Thanh toán PayOS — credit theo chủ ví (Org B2B / cá nhân B2C), prepaid + postpaid
+**Prepaid (trả trước):** `POST /payment/order` → link PayOS → trả → **webhook (verify) cộng credit**. FE **active-polling** `GET /order/{id}/status`: server chưa nhận webhook → **gọi PayOS đối soát ngay** (cứu webhook delay/drop). Idempotent theo `payos_order_code`.
+**Postpaid (trả sau):** Org được **PlatformAdmin duyệt** → dồn nợ tới `credit_limit` → **hóa đơn cuối kỳ** (`interview_count × unit_price`) → `POST /invoices/{id}/pay` tất toán PayOS.
+**Tiêu credit — reserve→consume:**
+```
+ứng viên bắt đầu ─► reserve {owner, sessionId}   (B2B owner=Org/Campaign gọi · B2C owner=User/Interview gọi; prepaid: remaining≥1 · postpaid CHỈ Org: nợ+giữ < credit_limit; hết → 402)
+session Scored ──(SessionScored)──► CONSUME (trừ thật)
+bỏ ngang/lỗi ───(SessionAbandoned)─► RELEASE (nhả chỗ)
+```
+> `order_code` time+random (không snowflake/auto-increment). Đình chỉ khi hết hạn mức/quá hạn → chặn hành động tương lai, **không văng người đang thi**. **Credit ≠ token LLM** (bán theo "lượt", token chỉ là giá vốn nội bộ). Chi tiết: [services/payment.md](services/payment.md).
+
+## 5. Quy ước chung (áp cho mọi service)
+
+- **Gateway:** API public đi qua `/api/v1/<service>/...` (YARP StripPrefix). **Callback nội bộ (`/internal/...`) và webhook PayOS KHÔNG qua gateway** — gọi thẳng service.
+- **DB-per-service:** mỗi service 1 database riêng, EF Core, cột **snake_case** (`UseSnakeCaseNamingConvention`), enum lưu **string** (`HasConversion<string>`). `__EFMigrationsHistory` riêng.
+- **Tham chiếu lỏng:** ref giữa service là Guid (`candidate_id`/`user_id`/`employer_id`/`org_id`/`campaign_id`/`session_id`), **không FK xuyên service**.
+- **Auth offline:** mọi service **validate JWT** bằng chung `Jwt:Key`/`Issuer`/`Audience` — **không call AuthService lúc chạy**.
+- **AI không ghi DB:** AIService chỉ trả kết quả qua **callback** về service .NET (`X-Internal-Token`). Service mới nhờ AI chấm → theo pattern publish RabbitMQ + callback.
+- **File:** lưu SeaweedFS (S3) — **lưu *key/path* trong DB, ghép URL khi đọc** (không lưu full URL).
+- **Branch:** `features/<service>` cho mảng lớn, PR vào `dev`.
+
+### 5.1. Biến ràng buộc thành check tự động (executable)
+Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **check chạy được** (grep/lint/architecture test trong CI), kèm **báo lỗi cách sửa**. Ưu tiên:
+
+| Ràng buộc | Check gợi ý |
+|---|---|
+| File lưu **key** không full URL | test: upload → DB lưu `campaigns/{id}/jd.pdf` (không phải `http://…`) — **đúng bug Campaign #1** |
+| **AIService không ghi DB** | AIService không có model/migration ghi DB; mọi thay đổi qua callback |
+| `/internal` + **webhook không qua gateway** | grep appsettings Gateway: route **không** chứa `/internal` hay `/webhook` |
+| **Controller không gọi thẳng `DbContext`** | architecture test (vd NetArchTest): Controllers chỉ phụ thuộc Services |
+| **snake_case + enum string** | test assert `UseSnakeCaseNamingConvention` bật (đặc biệt **CampaignService** — đang nghi chưa bật) |
+| Không **FK xuyên service** | architecture test/review: DbContext không ref entity của service khác |
+
+> **Thăng cấp review:** mỗi loại lỗi lặp trong PR review → thêm 1 check → harness mạnh dần. **E2E bắt buộc khi thay đổi XUYÊN service** (Campaign↔Interview↔Payment, event RabbitMQ). Mock 1 phía pass ≠ luồng thật chạy.
+
+## 6. Routing gateway & mã lỗi
+
+| Gateway path | Forward tới | Trạng thái |
+|---|---|---|
+| `/api/v1/auth/**` | AuthService `/auth/**` | ✅ |
+| `/api/v1/ai/**` | AIService `/api/v1/**` | ✅ |
+| `/api/v1/interview/practice/**`, `/files/**` | InterviewService `/api/practice/**`, `/api/files/**` | ✅ |
+| `/api/v1/campaign/**` | CampaignService `/campaign/**` | 🟡 branch |
+| `/api/v1/payment/**` | PaymentService `/order`,`/package`,… | 🟡 branch |
+
+> ⚠ **`/api/v1/ai/**` đang public + KHÔNG auth** — endpoint AI đắt (CPU/tiền) → cần chuyển **nội bộ-only** (chỉ gọi qua `AiService:BaseUrl`, không expose gateway) **+** `X-Internal-Token`. Xem [services/ai.md](services/ai.md) §Vấn đề đã biết.
+
+**Mã lỗi chung:** `200/201/204` OK · `400` sai input · `401` thiếu/sai token · `403` không có quyền · `404` không thấy · `409` xung đột trạng thái · `500` lỗi hệ thống · `502` lỗi gọi AIService.
+
+> **Chi tiết theo service** (API + DB + rules): [services/auth.md](services/auth.md) · [services/interview.md](services/interview.md) · [services/campaign.md](services/campaign.md) · [services/payment.md](services/payment.md) · [services/ai.md](services/ai.md).
+
+## 7. Chạy, kiểm thử & phạm vi demo
+
+**Chạy (local):** `docker compose up` (xem `../compose.yaml` — Postgres/Redis/SeaweedFS/RabbitMQ + service). AIService (Python) chạy riêng (xem [../DEPLOYMENT.md](../DEPLOYMENT.md)). Env cần: connection string mỗi DB, `Jwt:Key/Issuer/Audience` (giống nhau mọi service), `Internal:Token`, `AiService:BaseUrl`, SeaweedFS keys, PayOS keys.
+**Kiểm thử:** `dotnet test` (hiện chỉ có `Isas.InterviewService.Tests`). Cửa vào agent/người mới: [AGENTS.md](AGENTS.md).
+
+### Definition of Demo (chống "doc đẹp hơn sản phẩm")
+Đường đi **sẽ trình hội đồng**:
+1. Employer mua credit qua **PayOS** (OneTime) → webhook cộng credit.
+2. Tạo campaign từ JD → AI gợi ý câu hỏi + **tiêu chí có cấu trúc** → HR duyệt → publish.
+3. Phát **magic-link** → ứng viên (account Candidate) làm bài.
+4. Ứng viên bắt đầu → **reserve credit org**; AI chấm theo tiêu chí campaign → `Scored` → **consume**.
+5. **Xếp hạng** + pass/fail → xuất CSV/PDF.
+
+> Phần nào **chưa kịp build** ghi rõ trong doc service tương ứng (🟡/❌), **không** mô tả như đã chạy.
+
+## 8. Hạ tầng & Deploy
+
+- **CI/CD** ([.github/workflows/ci.yml](../.github/workflows/ci.yml)): push `main`/`dev`/`features/**` → build+test (dotnet) → build & push image lên **GHCR** → **SSH qua Tailscale vào server** → `docker compose pull && up -d`.
+  - ⚠ Hiện **chỉ build 3 service** (Auth/Interview/Gateway). **Campaign/Payment chưa có trong pipeline** — cần thêm build-push khi land. **AIService** deploy **riêng trên Mac** (Whisper nặng), **không** qua ci.yml.
+- Routing & prefix gateway: `appsettings.json` của Gateway (`/api/v1/{service}` + StripPrefix).
+- Triển khai 2 host (server + Mac cho AIService): [DEPLOYMENT.md](../DEPLOYMENT.md).

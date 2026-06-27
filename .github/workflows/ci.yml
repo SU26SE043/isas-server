@@ -56,6 +56,14 @@ jobs:
           push: true
           tags: ghcr.io/${{ env.OWNER }}/isas.authservice:${{ github.ref_name }}
 
+      - name: Build & Push InterviewService
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: src/services/Isas.InterviewService/Dockerfile
+          push: true
+          tags: ghcr.io/${{ env.OWNER }}/isas.interviewservice:${{ github.ref_name }}
+
       - name: Build & Push Gateway
         uses: docker/build-push-action@v7
         with:

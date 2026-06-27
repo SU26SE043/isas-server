@@ -1,8 +1,8 @@
 ﻿using Isas.AuthService.DTOs;
 using Isas.AuthService.Models;
-using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace Isas.AuthService.Services
 {
@@ -13,21 +13,63 @@ namespace Isas.AuthService.Services
         private readonly UserManager<User> _userManager;
         private readonly RoleManager<Role> _roleManager;
         private readonly IConfiguration _configuration;
+        private readonly SignInManager<User> _signInManager;
 
-        public AuthService(AuthDbContext authDbContext, IJwtService jwtService, UserManager<User> userManager, RoleManager<Role> roleManager, IConfiguration configuration)
+        public AuthService(AuthDbContext authDbContext, IJwtService jwtService,
+            UserManager<User> userManager, RoleManager<Role> roleManager,
+            IConfiguration configuration, SignInManager<User> signInManager
+            )
         {
             _authDbContext = authDbContext;
             _jwtService = jwtService;
             _userManager = userManager;
             _roleManager = roleManager;
             _configuration = configuration;
+            _signInManager = signInManager;
         }
 
         public async Task<AuthResponse> LoginAsync(LoginRequest loginRequest)
         {
             var user = await _userManager.FindByEmailAsync(loginRequest.Email);
+            if (user is null)
+                throw new UnauthorizedAccessException("Invalid credentials");
 
             return await GenerateAuthResponse(user);
+        }
+
+        public async Task<AuthResponse> LoginGoogleAsync(ExternalLoginInfo info)
+        {
+            var result = await _signInManager.ExternalLoginSignInAsync(info.LoginProvider, info.ProviderKey, false);
+
+            if (result.Succeeded)
+            {
+                var user = await _userManager.FindByLoginAsync(info.LoginProvider, info.ProviderKey);
+                return await GenerateAuthResponse(user);
+            }
+
+            var email = info.Principal.FindFirstValue(ClaimTypes.Email);
+            if (string.IsNullOrEmpty(email))
+                throw new Exception("Google account does not provide an email");
+
+            var newUser = new User
+            {
+                Id = Guid.NewGuid(),
+                UserName = email,
+                Email = email,
+                FullName = info.Principal.Identity?.Name ?? email,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            var identityResult = await _userManager.CreateAsync(newUser);
+            if (!identityResult.Succeeded)
+                throw new Exception(string.Join("; ", identityResult.Errors.Select(e => e.Description)));
+
+            await _userManager.AddLoginAsync(newUser, info);
+            await EnsureRoleExistsAsync("Candidate");
+            await _userManager.AddToRoleAsync(newUser, "Candidate");
+
+            return await GenerateAuthResponse(newUser);
         }
 
         public async Task LogoutAsync(string refreshToken)
@@ -52,10 +94,10 @@ namespace Isas.AuthService.Services
                 .FirstOrDefaultAsync(x => x.Token == hashedToken && !x.IsRevoked);
 
             if (existingToken is null)
-                throw new Exception("Invalid refresh token");
+                throw new UnauthorizedAccessException("Invalid refresh token");
 
             if (existingToken.ExpiresAt < DateTime.UtcNow)
-                throw new Exception("Refresh token expired");
+                throw new UnauthorizedAccessException("Refresh token expired");
 
             existingToken.IsRevoked = true;
 
@@ -81,8 +123,6 @@ namespace Isas.AuthService.Services
 
         public async Task<string> RegisterAsync(RegisterRequest registerRequest)
         {
-            var existingUser = await _userManager.FindByEmailAsync(registerRequest.Email);
-
             var user = new User
             {
                 Id = Guid.NewGuid(),
@@ -94,6 +134,8 @@ namespace Isas.AuthService.Services
             };
 
             var result = await _userManager.CreateAsync(user, registerRequest.Password);
+            if (!result.Succeeded)
+                throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
 
             await EnsureRoleExistsAsync("Candidate");
             await _userManager.AddToRoleAsync(user, "Candidate");
@@ -153,23 +195,26 @@ namespace Isas.AuthService.Services
         public async Task<UserResponse> GetUserAsync(Guid userId)
         {
             var user = await _authDbContext.Users.FindAsync(userId);
+            if (user is null)
+                throw new KeyNotFoundException("User not found");
 
-            var response = new UserResponse
+            return new UserResponse
             {
                 Id = user.Id.ToString(),
                 FullName = user.FullName,
                 Email = user.Email,
                 Location = user.Location,
                 Title = user.Title,
-                CreatedAt = user.CreatedAt
+                CreatedAt = user.CreatedAt,
+                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role"
             };
-
-            return response;
         }
 
         public async Task<string> UpdateUserAsync(Guid userId, UpdateProfileRequest request)
         {
             var user = await _authDbContext.Users.FindAsync(userId);
+            if (user is null)
+                throw new KeyNotFoundException("User not found");
 
             user.FullName = request.FullName ?? user.FullName;
             user.Location = request.Location ?? user.Location;
@@ -184,7 +229,9 @@ namespace Isas.AuthService.Services
         public Task<RefreshToken> GetRefreshTokenAsync(string refreshToken)
         {
             var refreshTokenHash = _jwtService.HashRefreshToken(refreshToken);
-            return _authDbContext.RefreshTokens.FirstOrDefaultAsync(x => x.Token == refreshTokenHash);
+            return _authDbContext.RefreshTokens
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Token == refreshTokenHash);
         }
     }
 }
