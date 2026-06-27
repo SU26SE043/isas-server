@@ -3,7 +3,7 @@ from google import genai
 from google.genai import types
 
 from app.config import settings
-from app.prompts import build_prompt, build_scoring_prompt
+from app.prompts import build_prompt, build_scoring_prompt, build_criteria_prompt
 from app.providers.base import QuestionProvider
 
 
@@ -49,6 +49,55 @@ class GeminiProvider(QuestionProvider):
             raise ValueError("LLM trả về danh sách câu hỏi rỗng sau khi lọc.")
 
         return questions[:settings.question_count]
+
+    async def suggest_criteria(self, job_category: str, jd_text: str | None,
+                               criteria_text: str | None, count: int) -> list[dict]:
+        """Đề xuất bộ tiêu chí CÓ CẤU TRÚC (C8) — weight chuẩn hoá tổng = 1."""
+        prompt = build_criteria_prompt(job_category, jd_text, criteria_text, count)
+        response = await self._client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.4,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "criteria": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "weight": {"type": "number"},
+                                    "maxScore": {"type": "integer"},
+                                },
+                                "required": ["name", "weight"],
+                            },
+                        }
+                    },
+                    "required": ["criteria"],
+                },
+            ),
+        )
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM trả JSON không hợp lệ: {text[:200]}")
+
+        items = [c for c in data.get("criteria", []) if isinstance(c, dict) and c.get("name")]
+        if not items:
+            raise ValueError("LLM không trả tiêu chí hợp lệ.")
+
+        # chuẩn hoá weight về tổng = 1
+        total = sum(float(c.get("weight", 0) or 0) for c in items) or 1.0
+        for c in items:
+            c["weight"] = round(float(c.get("weight", 0) or 0) / total, 4)
+            c["maxScore"] = int(c.get("maxScore", 5) or 5)
+            c["description"] = c.get("description")
+        return items
 
     async def score(self, question: str, transcript: str,
                     job_category: str, criteria: list[dict]) -> list[dict]:

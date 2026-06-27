@@ -1,3 +1,9 @@
+> **Bản sao cho agent** của [`docs/services/campaign.md`](../../../docs/services/campaign.md) — contract (API + DB + business rules) của CampaignService. **Source of truth ở `docs/`** (sửa thiết kế tại đó rồi copy lại, đừng sửa bản này lệch). Cửa vào + ràng buộc chung: [`docs/AGENTS.md`](../../../docs/AGENTS.md).
+>
+> **Trạng thái (2026-06-27):** ✅ ĐÃ LÀM (build sạch, 34 unit test pass): 6 bug (C1–C6) · soft-delete (C9) · lifecycle (C7) · **publish + campaign_criteria Σ=1 + AIService /suggest-criteria (Gemini), live HTTP OK** (C8) · **audit_logs** (C10) · snake_case. CÒN: rebuild image AIService cho permanent (container đang deploy tạm qua docker cp) · `org_id` (A1) · distribution/ranking/export (S3/S4).
+
+---
+
 # CampaignService — Điều phối B2B
 
 > 🟡 branch `features/campaign-service`. Code: `src/services/Isas.CampaignService`. DB: `isas_campaign`. Gateway: `/api/v1/campaign`.

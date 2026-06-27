@@ -2,7 +2,10 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, APIRouter
 import os
 import tempfile
 import asyncio
-from app.schemas import GenerateQuestionsRequest, GenerateQuestionsResponse
+from app.schemas import (
+    GenerateQuestionsRequest, GenerateQuestionsResponse,
+    SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
+)
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber 
 
@@ -24,6 +27,15 @@ async def generate_questions(req: GenerateQuestionsRequest):
         return GenerateQuestionsResponse(questions=questions)
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi sinh câu hỏi: {ex}")
+
+@router.post("/suggest-criteria", response_model=SuggestCriteriaResponse)
+async def suggest_criteria(req: SuggestCriteriaRequest):
+    try:
+        items = await provider.suggest_criteria(
+            req.jobCategory, req.jdText, req.criteriaText, req.count)
+        return SuggestCriteriaResponse(criteria=[CriterionItem(**c) for c in items])
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi đề xuất tiêu chí: {ex}")
 
 @router.post("/transcribe")
 async def transcribe(file: UploadFile = File(...), language: str = "vi"):

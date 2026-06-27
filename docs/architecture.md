@@ -53,7 +53,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | **AIService** | generate-questions, transcribe, worker chấm | **analyze-cv (BC4)**; 🔴 bỏ `/ai/**` khỏi gateway + auth nội bộ · Whisper nhẹ/GPU · chống prompt-injection · DLQ | [services/ai.md](services/ai.md) §Vấn đề |
 | **Gateway / Infra** | Reverse proxy, compose 6 service | `/api/v1/ai/**` **đang public, không auth** → chuyển nội bộ-only; **Redis chưa wire** | §6, §8 |
 | **Nền tảng (Phase 0)** | — | `docker compose up` máy sạch (verify), `make setup/test/check`, **test project Campaign/Payment**, readiness 4 điều kiện | work-division §5; tasks `P0.1`–`P0.5` |
-| **CI/CD** | Build+push Auth/Interview/Gateway → server qua Tailscale | Thêm **Campaign/Payment** vào pipeline; AIService deploy **tay trên Mac** | §8; [../DEPLOYMENT.md](../DEPLOYMENT.md) |
+| **CI/CD** | Build+push Auth/Interview/**Campaign**/Gateway → server qua Tailscale | Thêm **Payment** vào pipeline; AIService deploy **tay trên Mac** | §8; [../DEPLOYMENT.md](../DEPLOYMENT.md) |
 
 ## 3. Giao tiếp giữa service
 
@@ -165,7 +165,7 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 | `/api/v1/auth/**` | AuthService `/auth/**` | ✅ |
 | `/api/v1/ai/**` | AIService `/api/v1/**` | ✅ |
 | `/api/v1/interview/practice/**`, `/files/**` | InterviewService `/api/practice/**`, `/api/files/**` | ✅ |
-| `/api/v1/campaign/**` | CampaignService `/campaign/**` | 🟡 branch |
+| `/api/v1/campaign/**` | CampaignService `/campaign/**` | 🟡 branch (gateway đã route + CI build) |
 | `/api/v1/payment/**` | PaymentService `/order`,`/package`,… | 🟡 branch |
 
 > ⚠ **`/api/v1/ai/**` đang public + KHÔNG auth** — endpoint AI đắt (CPU/tiền) → cần chuyển **nội bộ-only** (chỉ gọi qua `AiService:BaseUrl`, không expose gateway) **+** `X-Internal-Token`. Xem [services/ai.md](services/ai.md) §Vấn đề đã biết.
@@ -200,6 +200,6 @@ Hai đường đi **sẽ trình hội đồng** — theo hướng tiến hóa B2
 ## 8. Hạ tầng & Deploy
 
 - **CI/CD** ([.github/workflows/ci.yml](../.github/workflows/ci.yml)): push `main`/`dev`/`features/**` → build+test (dotnet) → build & push image lên **GHCR** → **SSH qua Tailscale vào server** → `docker compose pull && up -d`.
-  - ⚠ Hiện **chỉ build 3 service** (Auth/Interview/Gateway). **Campaign/Payment chưa có trong pipeline** — cần thêm build-push khi land. **AIService** deploy **riêng trên Mac** (Whisper nặng), **không** qua ci.yml.
+  - ⚠ Hiện build **4 service** (Auth/Interview/**Campaign**/Gateway). **Payment chưa có trong pipeline** — cần thêm build-push khi land. **AIService** deploy **riêng trên Mac** (Whisper nặng), **không** qua ci.yml.
 - Routing & prefix gateway: `appsettings.json` của Gateway (`/api/v1/{service}` + StripPrefix).
 - Triển khai 2 host (server + Mac cho AIService): [DEPLOYMENT.md](../DEPLOYMENT.md).

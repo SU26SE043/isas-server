@@ -66,7 +66,7 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 | InterviewService = **engine phỏng vấn** | ✅ Có (chạy B2C) — **`campaign_id` (nullable) đã thêm** (PR #19, migration `AddCampaignIdToEngine`); còn **intake B2B** (create-or-get session = S3) | `src/services/Isas.InterviewService` |
 | AIService (sinh câu hỏi + chấm) | ✅ Có + **Docker-ready** (Dockerfile + requirements vá `aio-pika`/`boto3`/`aiohttp`) — còn **chấm theo tiêu chí campaign** | `src/services/Isas.AIService` |
 | Shared lib | ✅ Có | `src/shared/Isas.Shared` |
-| **CampaignService (M2)** | 🟡 Đang làm, **branch `features/campaign-service`** — còn bug (§7) | `src/services/Isas.CampaignService` |
+| **CampaignService (M2)** | 🟡 branch `features/campaign-service` — **6 bug §7 ĐÃ FIX** + soft-delete (C9) + lifecycle guard (C7) + snake_case (2026-06-27); còn `campaign_criteria`/publish, org_id, distribution/ranking | `src/services/Isas.CampaignService` |
 | **Distribution (M3 — phát link)** | ❌ Chưa | (sẽ vào CampaignService) |
 | **Ranking + Result (M4/M5)** | ❌ Chưa | (sẽ vào CampaignService) |
 | **PaymentService (M1)** | 🟡 **branch `features/payment-b2c`** — có Order/Package/PayOS; **cần: credit theo org, reserve/consume, postpaid + hóa đơn, active-polling** | `src/services/Isas.PaymentService` |
