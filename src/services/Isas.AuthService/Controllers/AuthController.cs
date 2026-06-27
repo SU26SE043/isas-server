@@ -41,6 +41,17 @@ namespace Isas.AuthService.Controllers
             return Ok(result);
         }
 
+        [HttpPost("register-org")]
+        public async Task<ActionResult<AuthResponse>> RegisterOrgAsync(RegisterOrgRequest request)
+        {
+            var existingUser = await _userManager.FindByEmailAsync(request.Email);
+            if (existingUser != null)
+                return BadRequest("Email already exists");
+
+            var result = await _authService.RegisterOrgAsync(request);
+            return Ok(result);
+        }
+
         [HttpPost("login")]
         public async Task<IActionResult> Login(LoginRequest request)
         {

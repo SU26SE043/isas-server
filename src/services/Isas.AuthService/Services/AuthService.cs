@@ -116,7 +116,8 @@ namespace Isas.AuthService.Services
             await _authDbContext.SaveChangesAsync();
 
             var roles = await _userManager.GetRolesAsync(existingToken.User);
-            var accessToken = _jwtService.GenerateAccessToken(existingToken.User, roles);
+            var membership = await GetMembershipAsync(existingToken.UserId);
+            var accessToken = _jwtService.GenerateAccessToken(existingToken.User, roles, membership);
 
             return BuildAuthResponse(accessToken, newRawRefreshToken);
         }
@@ -143,6 +144,48 @@ namespace Isas.AuthService.Services
             return "User ID: " + user.Id;
         }
 
+        // A3: đăng ký tổ chức → user (role Employer) + Organization + OrgMember(OrgAdmin); trả AuthResponse
+        // (token tự mang org_id + org_role nhờ A2 vì membership đã persist trước GenerateAuthResponse).
+        public async Task<AuthResponse> RegisterOrgAsync(RegisterOrgRequest request)
+        {
+            var user = new User
+            {
+                Id = Guid.NewGuid(),
+                UserName = request.Email,
+                Email = request.Email,
+                FullName = request.FullName,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            var result = await _userManager.CreateAsync(user, request.Password);
+            if (!result.Succeeded)
+                throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
+
+            await EnsureRoleExistsAsync("Employer");
+            await _userManager.AddToRoleAsync(user, "Employer");
+
+            var org = new Organization
+            {
+                Id = Guid.NewGuid(),
+                Name = request.OrgName,
+                TaxCode = request.TaxCode,
+                CreatedAt = DateTime.UtcNow
+            };
+            var member = new OrgMember
+            {
+                OrgId = org.Id,
+                UserId = user.Id,
+                OrgRole = OrgRole.OrgAdmin
+            };
+
+            _authDbContext.Organizations.Add(org);
+            _authDbContext.OrgMembers.Add(member);
+            await _authDbContext.SaveChangesAsync();
+
+            return await GenerateAuthResponse(user);
+        }
+
         private async Task EnsureRoleExistsAsync(string roleName)
         {
             if (!await _roleManager.RoleExistsAsync(roleName))
@@ -156,10 +199,16 @@ namespace Isas.AuthService.Services
             }
         }
 
+        // A2: 1 user thuộc ≤1 org ở phase 1 (1 org = 1 OrgAdmin) → lấy membership đầu tiên (null nếu không thuộc org)
+        private Task<OrgMember?> GetMembershipAsync(Guid userId) =>
+            _authDbContext.OrgMembers.AsNoTracking()
+                .FirstOrDefaultAsync(m => m.UserId == userId);
+
         private async Task<AuthResponse> GenerateAuthResponse(User user)
         {
             var roles = await _userManager.GetRolesAsync(user);
-            var accessToken = _jwtService.GenerateAccessToken(user, roles);
+            var membership = await GetMembershipAsync(user.Id);
+            var accessToken = _jwtService.GenerateAccessToken(user, roles, membership);
             var rawRefreshToken = _jwtService.GenerateRefreshToken();
 
             var refreshTokenEntity = new RefreshToken

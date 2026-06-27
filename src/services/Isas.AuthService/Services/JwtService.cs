@@ -16,7 +16,7 @@ namespace Isas.AuthService.Services
             _configuration = configuration;
         }
 
-        public string GenerateAccessToken(User user, IList<string> roles)
+        public string GenerateAccessToken(User user, IList<string> roles, OrgMember? membership = null)
         {
             var claims = new List<Claim>
             {
@@ -30,6 +30,13 @@ namespace Isas.AuthService.Services
             foreach (var role in roles)
             {
                 claims.Add(new Claim(ClaimTypes.Role, role));
+            }
+
+            // A2: thành viên org (Employer) mang kèm org_id + org_role; user không thuộc org (vd Candidate) → bỏ qua
+            if (membership is not null)
+            {
+                claims.Add(new Claim("org_id", membership.OrgId.ToString()));
+                claims.Add(new Claim("org_role", membership.OrgRole.ToString()));
             }
 
             var key = new SymmetricSecurityKey(

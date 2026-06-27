@@ -19,6 +19,8 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
     public DbSet<UserToken> UserTokens => Set<UserToken>();
     public DbSet<IdentityUserLogin<Guid>> UserLogins => Set<IdentityUserLogin<Guid>>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<Organization> Organizations => Set<Organization>();
+    public DbSet<OrgMember> OrgMembers => Set<OrgMember>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -137,6 +139,36 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.HasOne(x => x.User)
                 .WithMany(x => x.RefreshTokens)
+                .HasForeignKey(x => x.UserId);
+        });
+
+        // ================= ORGANIZATIONS =================
+        builder.Entity<Organization>(e =>
+        {
+            e.ToTable("organizations");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.Name).HasColumnName("name").IsRequired();
+            e.Property(x => x.TaxCode).HasColumnName("tax_code");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+        });
+
+        // ================= ORG MEMBERS =================
+        builder.Entity<OrgMember>(e =>
+        {
+            e.ToTable("org_members");
+            e.HasKey(x => new { x.OrgId, x.UserId });
+            e.Property(x => x.OrgId).HasColumnName("org_id");
+            e.Property(x => x.UserId).HasColumnName("user_id");
+            e.Property(x => x.OrgRole).HasColumnName("org_role")
+                .HasMaxLength(16)
+                .HasConversion<string>();
+
+            e.HasOne(x => x.Organization)
+                .WithMany(x => x.Members)
+                .HasForeignKey(x => x.OrgId);
+            e.HasOne(x => x.User)
+                .WithMany(x => x.OrgMembers)
                 .HasForeignKey(x => x.UserId);
         });
     }

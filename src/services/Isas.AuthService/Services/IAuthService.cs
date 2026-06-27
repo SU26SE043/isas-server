@@ -7,6 +7,7 @@ namespace Isas.AuthService.Services
     public interface IAuthService
     {
         Task<string> RegisterAsync(RegisterRequest registerRequest);
+        Task<AuthResponse> RegisterOrgAsync(RegisterOrgRequest request);
         Task<AuthResponse> LoginAsync(LoginRequest loginRequest);
         Task<AuthResponse> LoginGoogleAsync(ExternalLoginInfo info);
         Task<AuthResponse> RefreshTokenAsync(string refreshToken);
