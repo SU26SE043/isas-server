@@ -50,7 +50,7 @@
 | C5 | Chỉ nhận PDF (sửa message) | upload `.docx` → 400 "Only PDF" | — | active · fix+build ✅ · chờ runtime/PR |
 | C6 | Bật `[Authorize(Roles="Employer")]` | gọi ẩn danh → 401/403 | A5 | active · fix+build ✅ (JWT đã wired) · chờ runtime/PR |
 | C7 | Lifecycle Draft→Active→Closed→Archived | sửa câu hỏi khi `Active` → 409; transition hợp lệ pass | — | active · **guard + transition** (publish: Draft→Active; `PUT /status`: Active→Closed→Archived; bước sai → 409) + **unit test ✅** · chờ E2E/PR |
-| C8 | Publish → AI đề xuất tiêu chí có cấu trúc | publish → `campaign_criteria` có `weight`, Σweight=1 | AI-crit | active · `POST /publish` → `campaign_criteria` Σ=1 + audit · **AIService `/suggest-criteria` (Gemini) + fallback** · **unit test ✅** + **live-test Gemini ✅** (Σ=1); ⚠ rebuild container Mac (route HTTP) + HR duyệt UI |
+| C8 | Publish → AI đề xuất tiêu chí có cấu trúc | publish → `campaign_criteria` có `weight`, Σweight=1 | AI-crit | active · `POST /publish` → `campaign_criteria` Σ=1 + audit · **AIService `/suggest-criteria` (Gemini) + fallback** · **unit test ✅** + **live HTTP ✅** (container deploy qua docker cp+restart, POST trả Σ=1); ⚠ image rebuild để permanent + HR duyệt UI |
 | C9 | Soft delete + filter | DELETE → `deleted_at` set; GET không trả campaign đã xóa | — | active · fix+build + **unit test ✅** (soft+filter) · migration áp DB thật · chờ E2E/PR |
 | C10 | `audit_logs` khi mutation | đổi tiêu chí → 1 row `audit_logs(actor, action)` | — | active · `audit_logs` ghi ở Create/EditQuestions/Delete/**Publish**/Transition + **unit test ✅** · chờ E2E/PR |
 

@@ -1,6 +1,6 @@
 > **Bản sao cho agent** của [`docs/services/campaign.md`](../../../docs/services/campaign.md) — contract (API + DB + business rules) của CampaignService. **Source of truth ở `docs/`** (sửa thiết kế tại đó rồi copy lại, đừng sửa bản này lệch). Cửa vào + ràng buộc chung: [`docs/AGENTS.md`](../../../docs/AGENTS.md).
 >
-> **Trạng thái (2026-06-27):** ✅ ĐÃ LÀM (build sạch, **34 unit test pass**): 6 bug (C1–C6) · soft-delete (C9) · lifecycle (C7) · **publish + campaign_criteria Σ=1 + gọi AIService /suggest-criteria thật (fallback)** (C8) · **audit_logs** (C10) · snake_case. CÒN: live-test Gemini cho /suggest-criteria (rebuild container) · `org_id` (A1) · distribution/ranking/export (S3/S4) · invitations/integrity_events. DB 4/7 bảng.
+> **Trạng thái (2026-06-27):** ✅ ĐÃ LÀM (build sạch, 34 unit test pass): 6 bug (C1–C6) · soft-delete (C9) · lifecycle (C7) · **publish + campaign_criteria Σ=1 + AIService /suggest-criteria (Gemini), live HTTP OK** (C8) · **audit_logs** (C10) · snake_case. CÒN: rebuild image AIService cho permanent (container đang deploy tạm qua docker cp) · `org_id` (A1) · distribution/ranking/export (S3/S4).
 
 ---
 
@@ -9,7 +9,7 @@
 > 🟡 branch `features/campaign-service`. Code: `src/services/Isas.CampaignService`. DB: `isas_campaign`. Gateway: `/api/v1/campaign`.
 > Quy ước chung: [../architecture.md](../architecture.md) §5. Engine phỏng vấn: [interview.md](interview.md). Phân việc: [../work-division.md](../work-division.md).
 >
-> **Hiện trạng implement (2026-06-27):** ✅ 6 bug đã đóng · soft-delete (C9) · **lifecycle đầy đủ** (C7: guard + `POST /publish` Draft→Active + `PUT /status` Active→Closed→Archived) · **publish + `campaign_criteria` (Σweight=1)** (C8) · **`audit_logs`** (C10) · **snake_case** (§5) — build sạch, **34 unit test pass**, `isas_campaign` migrate server (4 bảng). **C8 AI thật:** publish gọi **AIService `POST /suggest-criteria`** (Gemini) → map `campaign_criteria` (chuẩn hoá Σ=1), **fallback bộ mặc định** nếu AI lỗi. ⚠ Python endpoint đã code (py_compile sạch) nhưng **chưa live-test** (container Mac chạy code cũ — rebuild để verify Gemini). Code dùng `employer_id` (**chưa có `org_id`/org** — chờ A1). ❌ chưa làm: distribution (magic-link), ranking/result/export, `session_integrity_events`, `campaign_invitations`, AI thật cho tiêu chí. DB **4/7 bảng**. *(Phần dưới mô tả thiết kế TARGET đầy đủ.)*
+> **Hiện trạng implement (2026-06-27):** ✅ 6 bug đã đóng · soft-delete (C9) · **lifecycle đầy đủ** (C7: guard + `POST /publish` Draft→Active + `PUT /status` Active→Closed→Archived) · **publish + `campaign_criteria` (Σweight=1)** (C8) · **`audit_logs`** (C10) · **snake_case** (§5) — build sạch, **34 unit test pass**, `isas_campaign` migrate server (4 bảng). **C8 AI thật:** publish gọi **AIService `POST /suggest-criteria`** (Gemini) → map `campaign_criteria` (Σ=1), **fallback** bộ mặc định nếu AI lỗi. ✅ **live HTTP OK** (container `aiapi` đã deploy code mới qua `docker cp`+`restart`; `POST /suggest-criteria` trả Σ=1.0). ⚠ Ephemeral — recreate/`compose up` container sẽ mất (image vẫn code cũ); permanent cần **rebuild image**. Code dùng `employer_id` (**chưa có `org_id`/org** — chờ A1). ❌ chưa làm: distribution (magic-link), ranking/result/export, `session_integrity_events`, `campaign_invitations`, AI thật cho tiêu chí. DB **4/7 bảng**. *(Phần dưới mô tả thiết kế TARGET đầy đủ.)*
 
 ## Vai trò
 Lớp **điều phối B2B**, không tự chạy phỏng vấn:
@@ -118,7 +118,7 @@ Draft ──► Active ──► Closed ──► Archived
 - Chỉ thành viên **org sở hữu** (`org_id` khớp; OrgAdmin/HrMember) được sửa/xóa/xem kết quả. *(Hiện enforce theo `employer_id`; org chưa có.)*
 
 ### Tiêu chí chấm — text → CÓ CẤU TRÚC (khi publish)
-> **✅ implement (C8):** `POST /campaign/{id}/publish` (Draft→Active) sinh `campaign_criteria` (Σweight=1, `source=AiSuggested`) + ghi `audit_logs`. **Gọi AIService `POST /suggest-criteria` (Gemini) thật** → chuẩn hoá weight Σ=1; **fallback** bộ mặc định 0.4/0.3/0.3 khi AI lỗi/rỗng. ⚠ Còn: live-test Gemini (rebuild container Mac), HR-edit/duyệt tiêu chí (UI) chưa có.
+> **✅ implement (C8):** `POST /campaign/{id}/publish` (Draft→Active) sinh `campaign_criteria` (Σweight=1, `source=AiSuggested`) + ghi `audit_logs`. **Gọi AIService `POST /suggest-criteria` (Gemini) thật** → chuẩn hoá weight Σ=1; **fallback** bộ mặc định 0.4/0.3/0.3 khi AI lỗi/rỗng. ✅ live-test Gemini OK. ⚠ Còn: rebuild container Mac (route HTTP), HR-edit/duyệt tiêu chí (UI).
 - **Không** chấm trên `criteria_text` thô. Khi `Draft → Active`: AI **đề xuất** bộ tiêu chí có cấu trúc từ JD/Criteria PDF (`name`, `weight`, `max_score`, mô tả mức điểm), **HR sửa/duyệt** (HR-in-the-loop).
 - Lưu thành `campaign_criteria`. Khi tạo session phỏng vấn, Campaign **gửi bộ tiêu chí** sang InterviewService → materialize thành `rubric_criteria(campaign_id)` → **chấm như rubric thường** (xem [interview.md](interview.md)).
 - Σ`weight` của 1 campaign nên = 1 (chuẩn hóa điểm tổng).
