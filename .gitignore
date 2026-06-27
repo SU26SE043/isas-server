@@ -46,7 +46,7 @@ venv/
 *.bin
 *.pt
 *.onnx
-models/
+/models/          # CHỈ models/ ở gốc repo — KHÔNG bắt nhầm C# Models/ (macOS case-insensitive)
 .cache/
 
 ## File audio tạm runtime
