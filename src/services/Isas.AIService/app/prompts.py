@@ -56,6 +56,28 @@ def build_prompt(job_category: str, cv_text: str | None,
     return "\n\n".join(parts)
 
 
+def build_criteria_prompt(job_category: str, jd_text: str | None,
+                          criteria_text: str | None, count: int) -> str:
+    role = CATEGORY_NAMES.get(job_category.upper(), job_category)
+    parts = [
+        f"Bạn là chuyên gia tuyển dụng cho vị trí {role}.",
+        f"Hãy đề xuất đúng {count} TIÊU CHÍ đánh giá ứng viên (có cấu trúc), bằng tiếng Việt.",
+        "Mỗi tiêu chí gồm: name (ngắn gọn), description (1 câu), weight (0..1), maxScore (mặc định 5).",
+        "QUAN TRỌNG: tổng weight của tất cả tiêu chí = 1.0.",
+    ]
+    if jd_text:
+        parts.append(f"Bám sát JD dưới đây để ra tiêu chí:\n---JD---\n{jd_text}\n---")
+    if criteria_text:
+        parts.append(f"Tham khảo bộ tiêu chí thô HR cung cấp:\n---CRITERIA---\n{criteria_text}\n---")
+    if not jd_text and not criteria_text:
+        parts.append(f"Không có JD/tiêu chí cụ thể → đề xuất tiêu chí cốt lõi cho vị trí {role}.")
+    parts.append(
+        'CHỈ trả JSON hợp lệ, không markdown: '
+        '{"criteria":[{"name":"...","description":"...","weight":0.4,"maxScore":5}]}'
+    )
+    return "\n\n".join(parts)
+
+
 def build_scoring_prompt(question: str, transcript: str,
                          job_category: str, criteria: list[dict]) -> str:
     # Dựng phần mô tả rubric từ criteria C# gửi sang.
