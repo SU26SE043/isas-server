@@ -10,13 +10,13 @@
 | Branch | Nội dung | Trạng thái |
 |---|---|---|
 | `dev` / `main` | engine B2C đang chạy (Auth, Interview, AI, Gateway) | ✅ |
-| `features/campaign-service` | CampaignService (CRUD + JD/Criteria + PdfPig) | 🟡 còn 6 bug (xem [services/campaign.md](services/campaign.md)) |
+| `features/campaign-service` | CampaignService (CRUD + JD/Criteria + PdfPig) · **đã merge main** (2026-06-27) | 🟡 **6 bug đã fix** + soft-delete/lifecycle/snake_case (chưa commit); còn B2B criteria/publish/distribution/ranking (xem [services/campaign.md](services/campaign.md)) |
 | `features/payment-b2c` | PaymentService (Order/Package/PayOS) | 🟡 thiếu: org-credit, reserve/consume, postpaid, active-polling |
 | `feature/candidate-b2c` (đang checkout) | docs B2B + engine thêm `campaign_id` (nullable) | 🟡 **CHƯA commit** (migration `AddCampaignIdToEngine`) |
 
 ## Vấn đề đã biết / cần xác minh
 - ⚠ **Trần `orderCode` của PayOS** chưa verify (quyết định D12 phụ thuộc cái này).
-- CampaignService: 6 bug (URL-vs-key, GET không lọc, AntiCheat ghi đè, download zip, message DOCX, Authorize comment).
+- ✅ **CampaignService: 6 bug ĐÃ FIX** (URL→key · GET lọc `employer_id` · AntiCheat `bool?` · download pdf+404 · message "Only PDF" · `[Authorize]`) **+ soft-delete (C9) + lifecycle guard (C7) + snake_case** — build sạch, `isas_campaign` migrate thật. Còn: `campaign_criteria`/publish (C8), org_id (cần A1), distribution/ranking.
 - PaymentService trên branch theo **credit cá nhân (`user_id`)** — cần refactor sang **org-credit + reserve/consume + postpaid** theo doc.
 - **AIService** (đã soi code): 🔴 endpoint `/ai/**` public không auth · 🔴 Whisper `large-v3` CPU quá chậm (trần thông lượng) · 🔴 prompt injection vào bộ chấm · 🔴 `nack` không DLQ. Chi tiết [services/ai.md](services/ai.md) §Vấn đề đã biết. *(Lõi xử-lý-lỗi/validate tốt — giữ.)*
 - `AGENTS.md` đang **tạm trong `docs/`** (theo convention nên đưa ra gốc khi chốt bố cục) · chưa có CI cho doc.

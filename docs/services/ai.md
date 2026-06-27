@@ -14,8 +14,10 @@
 | GET | `/api/v1/ai/health` | `/api/v1/health` | Health check |
 | POST | `/api/v1/ai/generate-questions` | `/api/v1/generate-questions` | Sinh câu hỏi |
 | POST | `/api/v1/ai/transcribe` | `/api/v1/transcribe` | Transcribe audio (multipart `file`, `language`) |
+| POST | `/api/v1/ai/suggest-criteria` | `/api/v1/suggest-criteria` | **Đề xuất tiêu chí có cấu trúc (Campaign C8)** — Gemini, đồng bộ |
 
 `generate-questions`: req `{ jobCategory, cvText?, jdText? }` → res `{ questions: [...] }`.
+`suggest-criteria` *(C8)*: req `{ jobCategory, jdText?, criteriaText?, count? }` → res `{ criteria: [{ name, description?, weight, maxScore }] }` (**weight chuẩn hoá Σ=1**). CampaignService gọi khi **publish**; lỗi → CampaignService **fallback** bộ mặc định. ✅ **Live-test Gemini OK (2026-06-27):** trả 4 tiêu chí đúng từ JD backend, Σweight=1.0. ⚠ Container `aiapi` trên Mac đang chạy **code cũ** → cần `up -d --build` để route khả dụng qua HTTP.
 
 > ⚠ **Bảo mật (cần sửa):** 2 endpoint này **hiện KHÔNG có auth** mà gateway vẫn route `/api/v1/ai/**` → ai cũng gọi được (đốt CPU/tiền). Xem *Vấn đề đã biết*.
 

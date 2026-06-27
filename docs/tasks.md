@@ -14,7 +14,7 @@
 |---|---|---|---|---|
 | P0.1 | 6 service + hạ tầng lên từ máy sạch | `docker compose up` → mỗi service `GET /health` trả 200 | — | not_started |
 | P0.2 | Lệnh chuẩn hoá setup/dev/test/check | `make check` chạy lint + test, exit 0 | — | not_started |
-| P0.3 | Test project Campaign + 1 test mẫu | `dotnet test Isas.CampaignService.Tests` → 1/1 pass | — | not_started |
+| P0.3 | Test project Campaign + 1 test mẫu | `dotnet test Isas.CampaignService.Tests` → 1/1 pass | — | ✅ **xong** — `Isas.CampaignService.Tests` (SQLite in-mem, xUnit+Moq), **5/5 pass** · chờ PR |
 | P0.4 | Test project Payment + 1 test mẫu | `dotnet test Isas.PaymentService.Tests` → 1/1 pass | — | not_started |
 | P0.5 | Readiness 4 điều kiện xanh + commit checkpoint | 4 điều kiện ([AGENTS.md](AGENTS.md)) xanh; `git log` có commit "init baseline" | P0.1–P0.4 | not_started |
 
@@ -43,16 +43,16 @@
 ## S2 — Campaign (CampaignService)
 | ID | Hành vi | Xác minh | Dep | Status |
 |---|---|---|---|---|
-| C1 | Lưu **key** thay full URL | upload JD → `jd_file_url == "campaigns/{id}/jd.pdf"`; download → 200 | — | not_started |
-| C2 | `GET /campaign` lọc theo chủ (org) | employer A → `GET /campaign` không thấy campaign của B | A2 | not_started |
-| C3 | `AntiCheatEnabled` → `bool?` | `PUT` không gửi field → giá trị không đổi | — | not_started |
-| C4 | Download đúng content-type + 404 | id lạ → 404; pdf → `Content-Type: application/pdf` | C1 | not_started |
-| C5 | Chỉ nhận PDF (sửa message) | upload `.docx` → 400 "Only PDF" | — | not_started |
-| C6 | Bật `[Authorize(Roles="Employer")]` | gọi ẩn danh → 401/403 | A5 | not_started |
-| C7 | Lifecycle Draft→Active→Closed→Archived | sửa câu hỏi khi `Active` → 409; transition hợp lệ pass | — | not_started |
-| C8 | Publish → AI đề xuất tiêu chí có cấu trúc | publish → `campaign_criteria` có `weight`, Σweight=1 | AI-crit | not_started |
-| C9 | Soft delete + filter | DELETE → `deleted_at` set; GET không trả campaign đã xóa | — | not_started |
-| C10 | `audit_logs` khi mutation | đổi tiêu chí → 1 row `audit_logs(actor, action)` | — | not_started |
+| C1 | Lưu **key** thay full URL | upload JD → `jd_file_url == "campaigns/{id}/jd.pdf"`; download → 200 | — | active · fix+build ✅ · chờ runtime/PR |
+| C2 | `GET /campaign` lọc theo chủ (org) | employer A → `GET /campaign` không thấy campaign của B | A2 | active · fix+build + **unit test ✅** — lọc theo **employer_id** (org chưa có) · chờ E2E/PR |
+| C3 | `AntiCheatEnabled` → `bool?` | `PUT` không gửi field → giá trị không đổi | — | active · fix+build + **unit test ✅** · chờ E2E/PR |
+| C4 | Download đúng content-type + 404 | id lạ → 404; pdf → `Content-Type: application/pdf` | C1 | active · fix+build ✅ · chờ runtime/PR |
+| C5 | Chỉ nhận PDF (sửa message) | upload `.docx` → 400 "Only PDF" | — | active · fix+build ✅ · chờ runtime/PR |
+| C6 | Bật `[Authorize(Roles="Employer")]` | gọi ẩn danh → 401/403 | A5 | active · fix+build ✅ (JWT đã wired) · chờ runtime/PR |
+| C7 | Lifecycle Draft→Active→Closed→Archived | sửa câu hỏi khi `Active` → 409; transition hợp lệ pass | — | active · **guard + transition** (publish: Draft→Active; `PUT /status`: Active→Closed→Archived; bước sai → 409) + **unit test ✅** · chờ E2E/PR |
+| C8 | Publish → AI đề xuất tiêu chí có cấu trúc | publish → `campaign_criteria` có `weight`, Σweight=1 | AI-crit | active · `POST /publish` → `campaign_criteria` Σ=1 + audit · **AIService `/suggest-criteria` (Gemini) + fallback** · **unit test ✅** + **live-test Gemini ✅** (Σ=1); ⚠ rebuild container Mac (route HTTP) + HR duyệt UI |
+| C9 | Soft delete + filter | DELETE → `deleted_at` set; GET không trả campaign đã xóa | — | active · fix+build + **unit test ✅** (soft+filter) · migration áp DB thật · chờ E2E/PR |
+| C10 | `audit_logs` khi mutation | đổi tiêu chí → 1 row `audit_logs(actor, action)` | — | active · `audit_logs` ghi ở Create/EditQuestions/Delete/**Publish**/Transition + **unit test ✅** · chờ E2E/PR |
 
 ## S3 — Distribution & Execution
 | ID | Hành vi | Xác minh | Dep | Status |

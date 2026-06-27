@@ -2,6 +2,8 @@
 
 > 🟡 branch `features/campaign-service`. Code: `src/services/Isas.CampaignService`. DB: `isas_campaign`. Gateway: `/api/v1/campaign`.
 > Quy ước chung: [../architecture.md](../architecture.md) §5. Engine phỏng vấn: [interview.md](interview.md). Phân việc: [../work-division.md](../work-division.md).
+>
+> **Hiện trạng implement (2026-06-27):** ✅ 6 bug đã đóng · soft-delete (C9) · **lifecycle đầy đủ** (C7: guard + `POST /publish` Draft→Active + `PUT /status` Active→Closed→Archived) · **publish + `campaign_criteria` (Σweight=1)** (C8) · **`audit_logs`** (C10) · **snake_case** (§5) — build sạch, **34 unit test pass**, `isas_campaign` migrate server (4 bảng). **C8 AI thật:** publish gọi **AIService `POST /suggest-criteria`** (Gemini) → map `campaign_criteria` (Σ=1), **fallback** bộ mặc định nếu AI lỗi. ✅ **live-test Gemini OK** (trả tiêu chí đúng từ JD, Σ=1.0). ⚠ Container `aiapi` Mac cần **rebuild** để route khả dụng qua HTTP (đang chạy code cũ; publish vẫn chạy nhờ fallback). Code dùng `employer_id` (**chưa có `org_id`/org** — chờ A1). ❌ chưa làm: distribution (magic-link), ranking/result/export, `session_integrity_events`, `campaign_invitations`, AI thật cho tiêu chí. DB **4/7 bảng**. *(Phần dưới mô tả thiết kế TARGET đầy đủ.)*
 
 ## Vai trò
 Lớp **điều phối B2B**, không tự chạy phỏng vấn:
@@ -14,14 +16,14 @@ Lớp **điều phối B2B**, không tự chạy phỏng vấn:
 
 ---
 
-## 🔴 Bug đang mở (sửa khi hoàn thiện)
-Code: `Services/CampaignService.cs`.
-1. **Lưu full URL nhưng download/delete dùng làm S3 key** → tải/xóa file hỏng. Lưu *key* (`campaigns/{id}/jd.pdf`), ghép URL khi trả response.
-2. **`GET /campaign` không lọc `EmployerId`** → rò rỉ campaign của employer khác.
-3. **`UpdateCampaign` luôn ghi đè `AntiCheatEnabled`** (`bool` không nullable) → đổi `bool?`.
-4. Download trả sai `application/zip`/tên `.zip` cho 1 PDF; `FileNotFoundException` không catch → 500 thay vì 404.
-5. Thông báo lỗi nói "PDF and DOCX" nhưng chỉ nhận PDF.
-6. **Bật lại `[Authorize(Roles="Employer")]`** (đang comment hết) — role đã có ở Auth.
+## ✅ Bug đã sửa (2026-06-27)
+Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build sạch.
+1. ✅ **Full URL → key**: `HandleFileAsync` lưu *key* (`campaigns/{id}/jd.pdf`); download/delete dùng key. *(Response không expose URL; cần thì ghép `_file.GetUrl(key)`.)*
+2. ✅ **Lọc `employer_id`**: đẩy `employerId` vào **mọi** method service + filter → non-owner = 404 (list + single + update + delete + download).
+3. ✅ **AntiCheat**: `UpdateCampaignRequest.AntiCheatEnabled` → `bool?`, chỉ gán khi `HasValue`.
+4. ✅ **Download**: trả `application/pdf` + tên `campaign_{id}_{type}.pdf`; `catch FileNotFoundException` → 404.
+5. ✅ **Message**: còn "Only PDF is accepted."
+6. ✅ **Authorize**: bật lại `[Authorize(Roles="Employer")]` toàn controller (JWT đã wired ở `Program.cs`).
 
 ---
 
@@ -30,7 +32,7 @@ Code: `Services/CampaignService.cs`.
 ### `/api/v1/campaign` (JWT role **Employer**; `employerId` từ claim) — JD/Criteria chỉ PDF ≤ 10MB
 | Method | Path | Mô tả |
 |---|---|---|
-| GET | `/campaign` | Danh sách *(⚠ phải lọc `employerId` — bug #2)* |
+| GET | `/campaign` | Danh sách campaign của chính mình (✅ đã lọc theo `employer_id`) |
 | GET | `/campaign/{id}` | Chi tiết (kèm câu hỏi) |
 | POST | `/campaign` | Tạo (Draft). Body `{ title, domain, maxCandidates?, timeLimitMinutes, antiCheatEnabled, startsAt, expiresAt, questions[] }` |
 | POST | `/campaign/{id}/files` | Upload JD/Criteria. `multipart`: `jdFile?`, `criteriaFile?` (parse PDF → text) |
@@ -39,6 +41,8 @@ Code: `Services/CampaignService.cs`.
 | PUT | `/campaign/{id}/files` | Thay JD/Criteria (xóa file cũ) |
 | PUT | `/campaign/{id}/questions` | Thay toàn bộ câu hỏi. Body `List<QuestionItem>` |
 | DELETE | `/campaign/{id}` | **Soft delete** (set `deleted_at`) — giữ lịch sử/audit; file SeaweedFS purge sau 90 ngày bằng cronjob |
+| POST | `/campaign/{id}/publish` | **✅ C8** Draft→Active + sinh `campaign_criteria` (Σweight=1; ⚠ AI **stub**) + ghi `audit_logs`. Sai trạng thái/thiếu câu hỏi → 409 |
+| PUT | `/campaign/{id}/status` | **✅ C7** transition Active→Closed→Archived (bước sai → 409). Body `{ status }` |
 
 `QuestionItem`: `{ questionText, source: "AiGenerated"|"CustomHr", isRequired }`.
 
@@ -62,7 +66,7 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | Cột | Kiểu | Ghi chú |
 |---|---|---|
 | id | uuid | PK (`gen_random_uuid()`) |
-| org_id | uuid | **tổ chức sở hữu** (billing/quyền theo org); ref lỏng → Auth |
+| org_id | uuid | **tổ chức sở hữu** (billing/quyền theo org); ref lỏng → Auth. ⚠ **chưa implement** — code hiện chỉ có `employer_id` (chờ Auth-Organization, A1) |
 | employer_id | uuid | HR tạo campaign; ref lỏng → Auth; **index (org_id, status)**, (org_id, created_at) |
 | title | varchar(255) | bắt buộc |
 | domain | varchar(100)? | |
@@ -104,10 +108,11 @@ token 1 lần · email ứng viên · hạn dùng · `used_at` · `session_id` (
 ```
 Draft ──► Active ──► Closed ──► Archived
 ```
-- Chỉ sửa câu hỏi/tiêu chí khi `Draft` (Active rồi nên khóa, tránh loạn kết quả).
-- Chỉ thành viên **org sở hữu** (`org_id` khớp; OrgAdmin/HrMember) được sửa/xóa/xem kết quả.
+- Chỉ sửa câu hỏi/tiêu chí khi `Draft` (Active rồi nên khóa, tránh loạn kết quả). **✅ đã enforce (C7):** `UpdateQuestions`/`UpdateFiles` → **409** nếu `Status != Draft`. **✅ transition đầy đủ:** `POST /campaign/{id}/publish` (Draft→Active) + `PUT /campaign/{id}/status` (Active→Closed→Archived; bước sai → 409).
+- Chỉ thành viên **org sở hữu** (`org_id` khớp; OrgAdmin/HrMember) được sửa/xóa/xem kết quả. *(Hiện enforce theo `employer_id`; org chưa có.)*
 
 ### Tiêu chí chấm — text → CÓ CẤU TRÚC (khi publish)
+> **✅ implement (C8):** `POST /campaign/{id}/publish` (Draft→Active) sinh `campaign_criteria` (Σweight=1, `source=AiSuggested`) + ghi `audit_logs`. **Gọi AIService `POST /suggest-criteria` (Gemini) thật** → chuẩn hoá weight Σ=1; **fallback** bộ mặc định 0.4/0.3/0.3 khi AI lỗi/rỗng. ✅ live-test Gemini OK. ⚠ Còn: rebuild container Mac (route HTTP), HR-edit/duyệt tiêu chí (UI).
 - **Không** chấm trên `criteria_text` thô. Khi `Draft → Active`: AI **đề xuất** bộ tiêu chí có cấu trúc từ JD/Criteria PDF (`name`, `weight`, `max_score`, mô tả mức điểm), **HR sửa/duyệt** (HR-in-the-loop).
 - Lưu thành `campaign_criteria`. Khi tạo session phỏng vấn, Campaign **gửi bộ tiêu chí** sang InterviewService → materialize thành `rubric_criteria(campaign_id)` → **chấm như rubric thường** (xem [interview.md](interview.md)).
 - Σ`weight` của 1 campaign nên = 1 (chuẩn hóa điểm tổng).
@@ -131,7 +136,7 @@ Draft ──► Active ──► Closed ──► Archived
 - Dashboard/đọc CSV/PDF **đọc local** từ `campaign_rankings`. Fallback: endpoint **backfill** gọi Interview nếu nghi miss event.
 
 ### Soft delete & Audit
-- **Xóa = soft** (`deleted_at`), giữ lịch sử cho **audit/đối chất** (B2B ứng viên kiện kết quả). Cronjob purge file SeaweedFS sau **90 ngày** (giữ điểm + transcript để chứng minh).
+- **Xóa = soft** (`deleted_at`), giữ lịch sử cho **audit/đối chất** (B2B ứng viên kiện kết quả). Cronjob purge file SeaweedFS sau **90 ngày** (giữ điểm + transcript để chứng minh). **✅ đã làm (C9):** `deleted_at` + **global query filter** (`DeletedAt == null` → mọi query tự ẩn campaign đã xoá); `DeleteCampaign` set `deleted_at`, **giữ** file + câu hỏi. **✅ `audit_logs` (C10):** ghi ở Create/EditQuestions/Delete/Publish/Transition (`actor_user_id`=employer, `action`, `entity_id`, `summary`). *(Cronjob purge 90 ngày chưa làm.)*
 - Mọi mutation quan trọng (tạo/sửa câu hỏi, đổi tiêu chí, publish, xóa, re-issue) ghi **`audit_logs`** (`actor_user_id`, action, entity, `at`).
 
 ### Exception — org hết credit / downgrade / quá hạn
