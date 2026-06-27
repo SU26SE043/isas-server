@@ -25,7 +25,7 @@ B2B bán cho **doanh nghiệp**, không phải cá nhân → cần khái niệm 
 
 ```
 AuthResponse {
-  accessToken:  string                 // JWT (mang role; 🔜 org_id, org_role)
+  accessToken:  string                 // JWT (mang role; + org_id, org_role nếu thuộc org ✅ A2)
   refreshToken: string
   expiresAt:    datetime               // hạn của access token
 }
@@ -128,7 +128,7 @@ created_at timestamptz
 org_id   uuid          FK → organizations (cascade)
 user_id  uuid          FK → users (cascade)
 org_role varchar(16)   enum(string): OrgAdmin · HrMember
-                       PK (org_id, user_id); JWT Employer mang kèm org_id + org_role (🔜 A2)
+                       PK (org_id, user_id); JWT Employer mang kèm org_id + org_role ✅ A2 (claim "org_id"/"org_role", chỉ thêm khi user thuộc org)
 ```
 
 + bảng Identity phụ: `role_claims` · `user_claims` · `user_tokens` · `user_logins` (Google OAuth).

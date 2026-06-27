@@ -116,7 +116,8 @@ namespace Isas.AuthService.Services
             await _authDbContext.SaveChangesAsync();
 
             var roles = await _userManager.GetRolesAsync(existingToken.User);
-            var accessToken = _jwtService.GenerateAccessToken(existingToken.User, roles);
+            var membership = await GetMembershipAsync(existingToken.UserId);
+            var accessToken = _jwtService.GenerateAccessToken(existingToken.User, roles, membership);
 
             return BuildAuthResponse(accessToken, newRawRefreshToken);
         }
@@ -156,10 +157,16 @@ namespace Isas.AuthService.Services
             }
         }
 
+        // A2: 1 user thuộc ≤1 org ở phase 1 (1 org = 1 OrgAdmin) → lấy membership đầu tiên (null nếu không thuộc org)
+        private Task<OrgMember?> GetMembershipAsync(Guid userId) =>
+            _authDbContext.OrgMembers.AsNoTracking()
+                .FirstOrDefaultAsync(m => m.UserId == userId);
+
         private async Task<AuthResponse> GenerateAuthResponse(User user)
         {
             var roles = await _userManager.GetRolesAsync(user);
-            var accessToken = _jwtService.GenerateAccessToken(user, roles);
+            var membership = await GetMembershipAsync(user.Id);
+            var accessToken = _jwtService.GenerateAccessToken(user, roles, membership);
             var rawRefreshToken = _jwtService.GenerateRefreshToken();
 
             var refreshTokenEntity = new RefreshToken
