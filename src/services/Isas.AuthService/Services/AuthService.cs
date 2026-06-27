@@ -144,6 +144,48 @@ namespace Isas.AuthService.Services
             return "User ID: " + user.Id;
         }
 
+        // A3: đăng ký tổ chức → user (role Employer) + Organization + OrgMember(OrgAdmin); trả AuthResponse
+        // (token tự mang org_id + org_role nhờ A2 vì membership đã persist trước GenerateAuthResponse).
+        public async Task<AuthResponse> RegisterOrgAsync(RegisterOrgRequest request)
+        {
+            var user = new User
+            {
+                Id = Guid.NewGuid(),
+                UserName = request.Email,
+                Email = request.Email,
+                FullName = request.FullName,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            var result = await _userManager.CreateAsync(user, request.Password);
+            if (!result.Succeeded)
+                throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
+
+            await EnsureRoleExistsAsync("Employer");
+            await _userManager.AddToRoleAsync(user, "Employer");
+
+            var org = new Organization
+            {
+                Id = Guid.NewGuid(),
+                Name = request.OrgName,
+                TaxCode = request.TaxCode,
+                CreatedAt = DateTime.UtcNow
+            };
+            var member = new OrgMember
+            {
+                OrgId = org.Id,
+                UserId = user.Id,
+                OrgRole = OrgRole.OrgAdmin
+            };
+
+            _authDbContext.Organizations.Add(org);
+            _authDbContext.OrgMembers.Add(member);
+            await _authDbContext.SaveChangesAsync();
+
+            return await GenerateAuthResponse(user);
+        }
+
         private async Task EnsureRoleExistsAsync(string roleName)
         {
             if (!await _roleManager.RoleExistsAsync(roleName))

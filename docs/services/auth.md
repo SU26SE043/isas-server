@@ -6,7 +6,7 @@
 ## Vai trò
 - Đăng ký / đăng nhập (email + mật khẩu, liên kết **Google OAuth**), phát **JWT access + refresh token**, profile.
 - **3 platform role đã có: `Candidate` / `Employer` / `Admin`** (gắn vào claim JWT). `Admin` ở đây = **PlatformAdmin** (quản trị hệ thống: duyệt postpaid, quản gói), **khác** org-admin bên dưới.
-- `register` hiện **auto gán `Candidate`**. **Gap:** luồng **cấp role Employer** (khi tạo/đăng ký tổ chức).
+- `register` **auto gán `Candidate`**; **`register-org` cấp role `Employer`** + tạo org + OrgAdmin ✅ A3.
 - Các service khác **không gọi Auth lúc chạy** — validate JWT **offline** bằng chung key.
 
 ## Organization & phân quyền nội bộ (multi-tenant) 🟡 thiết kế, RBAC đầy đủ = phase 2
@@ -51,6 +51,9 @@ UserResponse {
 **`POST /register`** — Đăng ký (role mặc định `Candidate`). Public.
 - Req: `{ email: string, password: string, fullName: string }` → Res **`200`** `AuthResponse`. Lỗi: **400** (email tồn tại / mật khẩu yếu).
 
+**`POST /register-org`** — Đăng ký tổ chức (✅ A3). Public. Tạo user role **`Employer`** + `Organization` + `OrgMember(OrgAdmin)`.
+- Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **400** (email tồn tại / mật khẩu yếu).
+
 **`POST /login`** — Đăng nhập. Public.
 - Req: `{ email: string, password: string }` → Res **`200`** `AuthResponse`. Lỗi: **400/401** (sai thông tin).
 
@@ -71,7 +74,7 @@ UserResponse {
 **🔜 Admin (PlatformAdmin) — Organization chưa build:**
 - **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
 - **`GET/POST /auth/admin/orgs…`** — xem / duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
-- *(Khi build: `register-org` → tạo `Organization` + `OrgAdmin`; JWT thêm `org_id`+`org_role` — tasks `A1`–`A5`.)*
+- *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. Còn admin-gated orgs + role-grant — A4/A5.)*
 
 ## DB — `isas`
 ASP.NET Identity (`IdentityUser<Guid>`), cột **snake_case**. Kiểu: `uuid·varchar(n)·text·bool·timestamptz·enum(string)`, `?`=nullable.

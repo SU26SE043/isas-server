@@ -23,7 +23,7 @@
 |---|---|---|---|---|
 | A1 | Bảng `organizations` + `org_members` (migration) | migration apply; tạo 1 org + 1 member OK | — | active · entity `Organization`/`OrgMember` (PK `(org_id,user_id)`, `org_role` enum→varchar(16)) + migration `AddOrganizations` + test ✅ (1/1, round-trip SQLite tạo org+member) · ⚠ chưa apply DB chung (Neon) + chờ PR |
 | A2 | JWT mang `org_id` + `org_role` | login → decode token có claim `org_id`, `org_role` | A1 | active · `JwtService` thêm claim `org_id`+`org_role` khi user thuộc org; `AuthService` lookup `OrgMember` truyền vào login+refresh + test ✅ (2/2: member có claim / non-member không) · ⚠ e2e login-HTTP cần A3 seed org-member + PR |
-| A3 | Đăng ký tổ chức → tạo org + OrgAdmin | `POST /auth/register-org` → org tạo, user = OrgAdmin | A1 | not_started |
+| A3 | Đăng ký tổ chức → tạo org + OrgAdmin | `POST /auth/register-org` → org tạo, user = OrgAdmin | A1 | active · `POST /auth/register-org` (public) → user role `Employer` + `Organization` + `OrgMember(OrgAdmin)` → trả `AuthResponse` (token mang org_id/org_role nhờ A2) + test ✅ (org tạo + OrgAdmin + token claim, mock Identity + SQLite thật) · ⚠ e2e HTTP cần service chạy + DB + PR |
 | A4 | HrMember bị chặn endpoint billing | HrMember gọi `POST /payment/order` → 403 | A2, P-API | not_started |
 | A5 | Bật lại `[Authorize(Roles)]` mọi service | gọi ẩn danh endpoint cần auth → 401 | A2 | not_started |
 
