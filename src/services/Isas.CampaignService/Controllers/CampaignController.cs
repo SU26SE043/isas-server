@@ -1,4 +1,5 @@
-﻿using Isas.CampaignService.DTOs;
+using Isas.CampaignService.DTOs;
+using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -8,7 +9,7 @@ namespace Isas.CampaignService.Controllers
 {
     [ApiController]
     [Route("campaign")]
-    //[Authorize]
+    [Authorize]
     public class CampaignController : Controller
     {
         private readonly ICampaignService _campaignService;
@@ -19,19 +20,27 @@ namespace Isas.CampaignService.Controllers
         }
 
         [HttpGet]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<List<CampaignResponse>>> GetAllCampaign(CancellationToken ct)
         {
-            return await _campaignService.GetCampaignsAsync(ct);
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            return await _campaignService.GetCampaignsAsync(Guid.Parse(employerId), ct);
         }
 
         [HttpGet("{id}")]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> GetCampaignById(Guid id, CancellationToken ct)
         {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
             try
             {
-                var campaign = await _campaignService.GetCampaignAsync(id, ct);
+                var campaign = await _campaignService.GetCampaignAsync(Guid.Parse(employerId), id, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -39,7 +48,7 @@ namespace Isas.CampaignService.Controllers
         }
 
         [HttpPost]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> CreateCampaign([FromBody] CreateCampaignRequest request, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -78,7 +87,7 @@ namespace Isas.CampaignService.Controllers
 
         [HttpPost("{id:guid}/files")]
         [Consumes("multipart/form-data")]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UploadCampaignFiles(Guid id, [FromForm] UploadCampaignFilesRequest request, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -105,7 +114,7 @@ namespace Isas.CampaignService.Controllers
         }
 
         [HttpPost("{id:guid}/files/download")]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<IActionResult> DownloadCampaignFiles(Guid id, string fileType, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -119,53 +128,38 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var fileStream = await _campaignService.DownloadCampaignFilesAsync(id, fileType, ct);
+                var fileStream = await _campaignService.DownloadCampaignFilesAsync(Guid.Parse(employerId), id, fileType, ct);
 
-                if (fileStream == null)
-                {
-                    return NotFound($"No files found for campaign {id}.");
-                }
-
-                return File(fileStream, "application/zip", $"Campaign_{id}_Files.zip");
+                // 1 file PDF → trả đúng content-type + tên thật (bug #4)
+                return File(fileStream, "application/pdf", $"campaign_{id}_{fileType.ToLower()}.pdf");
             }
             catch (KeyNotFoundException) { return NotFound($"Campaign {id} not found."); }
+            catch (FileNotFoundException ex) { return NotFound(ex.Message); }   // file chưa upload → 404, không 500 (bug #4)
             catch (ArgumentException ex) { return BadRequest(ex.Message); }
             catch (Exception ex) { return StatusCode(500, $"Failed to download files: {ex.Message}"); }
         }
 
         [HttpPut("{id}")]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaign(Guid id, UpdateCampaignRequest request, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(employerId))
                 return Forbid();
 
-            var campaign = await _campaignService.GetCampaignAsync(id, ct);
-            if (campaign == null)
-            {
-                return NotFound();
-            }
-
-            if(campaign.EmployerId != Guid.Parse(employerId))
-            {
-                return Forbid();
-            }
-
             try
             {
-                var updatedCampaign = await _campaignService.UpdateCampaignAsync(id, request, ct);
+                // ownership được enforce trong service (lọc theo employerId) → không thấy = 404
+                var updatedCampaign = await _campaignService.UpdateCampaignAsync(Guid.Parse(employerId), id, request, ct);
                 return Ok(updatedCampaign);
             }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Failed to update campaign: {ex.Message}");
-            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to update campaign: {ex.Message}"); }
         }
 
         [HttpPut("{id:guid}/files")]
         [Consumes("multipart/form-data")]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaignFiles(Guid id, [FromForm] UploadCampaignFilesRequest request, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -183,16 +177,17 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var campaign = await _campaignService.UpdateCampaignFilesAsync(id, request, ct);
+                var campaign = await _campaignService.UpdateCampaignFilesAsync(Guid.Parse(employerId), id, request, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // C7: sửa khi không Draft → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to update campaign files: {ex.Message}"); }
         }
 
         [HttpPut("{id:guid}/questions")]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaignQuestions(Guid id, [FromBody] List<QuestionItem> questions, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -206,45 +201,69 @@ namespace Isas.CampaignService.Controllers
                 return BadRequest("All questions must have non-empty text.");
             try
             {
-                var campaign = await _campaignService.UpdateCampaignQuestionsAsync(id, questions, ct);
+                var campaign = await _campaignService.UpdateCampaignQuestionsAsync(Guid.Parse(employerId), id, questions, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // C7: sửa khi không Draft → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to update campaign questions: {ex.Message}"); }
         }
 
         [HttpDelete("{id}")]
-        //[Authorize(Roles = "Employer")]
+        [Authorize(Roles = "Employer")]
         public async Task<IActionResult> DeleteCampaign(Guid id, CancellationToken ct)
         {
             var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(employerId))
                 return Forbid();
 
-            var campaign = await _campaignService.GetCampaignAsync(id, ct);
-            if (campaign == null)
+            try
             {
-                return NotFound();
+                // ownership enforce trong service → không thấy = 404
+                await _campaignService.DeleteCampaignAsync(Guid.Parse(employerId), id, ct);
+                return NoContent();
             }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to delete campaign: {ex.Message}"); }
+        }
+
+        // C8: publish Draft → Active + sinh tiêu chí có cấu trúc
+        [HttpPost("{id:guid}/publish")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> PublishCampaign(Guid id, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
 
             try
             {
-                bool deleted = await _campaignService.DeleteCampaignAsync(id, ct);
-                if (deleted)
-                {
-                    return NoContent();
-                }
-                else
-                {
-                    return StatusCode(500, "Failed to delete campaign");
-                }
+                var campaign = await _campaignService.PublishCampaignAsync(Guid.Parse(employerId), id, ct);
+                return Ok(campaign);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // sai trạng thái / thiếu câu hỏi → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to publish campaign: {ex.Message}"); }
+        }
 
-            }
-            catch (Exception ex)
+        // C7: transition Active→Closed→Archived (Draft→Active dùng /publish)
+        [HttpPut("{id:guid}/status")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> TransitionStatus(Guid id, [FromBody] TransitionStatusRequest request, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            try
             {
-                return StatusCode(500, $"Failed to delete campaign: {ex.Message}");
+                var campaign = await _campaignService.TransitionStatusAsync(Guid.Parse(employerId), id, request.Status, ct);
+                return Ok(campaign);
             }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // transition không hợp lệ → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to transition campaign: {ex.Message}"); }
         }
     }
 }

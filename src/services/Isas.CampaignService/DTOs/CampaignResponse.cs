@@ -50,11 +50,16 @@ namespace Isas.CampaignService.DTOs
 
         public int? TimeLimitMinutes { get; set; }
 
-        public bool AntiCheatEnabled { get; set; }
+        public bool? AntiCheatEnabled { get; set; }
 
         public DateTime? StartsAt { get; set; }
 
         public DateTime? ExpiresAt { get; set; }
+    }
+
+    public class TransitionStatusRequest
+    {
+        public CampaignStatus Status { get; set; }   // Active→Closed→Archived (Draft→Active dùng /publish)
     }
 
     public class CampaignQuestionResponse

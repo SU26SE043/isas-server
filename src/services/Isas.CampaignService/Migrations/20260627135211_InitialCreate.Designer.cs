@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.CampaignService.Migrations
 {
     [DbContext(typeof(CampaignDbContext))]
-    [Migration("20260619122154_InitialCreate")]
+    [Migration("20260627135211_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -30,71 +30,94 @@ namespace Isas.CampaignService.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
+                        .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
 
                     b.Property<bool>("AntiCheatEnabled")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
-                        .HasDefaultValue(true);
+                        .HasDefaultValue(true)
+                        .HasColumnName("anti_cheat_enabled");
 
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
 
                     b.Property<string>("CriteriaFileUrl")
-                        .HasColumnType("text");
+                        .HasColumnType("text")
+                        .HasColumnName("criteria_file_url");
 
                     b.Property<string>("CriteriaText")
-                        .HasColumnType("text");
+                        .HasColumnType("text")
+                        .HasColumnName("criteria_text");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
 
                     b.Property<string>("Domain")
                         .HasMaxLength(100)
-                        .HasColumnType("character varying(100)");
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("domain");
 
                     b.Property<Guid>("EmployerId")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("employer_id");
 
                     b.Property<DateTime?>("ExpiresAt")
-                        .HasColumnType("timestamp with time zone");
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
 
                     b.Property<string>("JDFileUrl")
-                        .HasColumnType("text");
+                        .HasColumnType("text")
+                        .HasColumnName("jd_file_url");
 
                     b.Property<string>("JDText")
-                        .HasColumnType("text");
+                        .HasColumnType("text")
+                        .HasColumnName("jd_text");
 
                     b.Property<int?>("MaxCandidates")
-                        .HasColumnType("integer");
+                        .HasColumnType("integer")
+                        .HasColumnName("max_candidates");
 
                     b.Property<DateTime>("StartsAt")
-                        .HasColumnType("timestamp with time zone");
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
-                        .HasDefaultValue("Draft");
+                        .HasDefaultValue("Draft")
+                        .HasColumnName("status");
 
                     b.Property<int?>("TimeLimitMinutes")
-                        .HasColumnType("integer");
+                        .HasColumnType("integer")
+                        .HasColumnName("time_limit_minutes");
 
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("title");
 
                     b.Property<DateTime>("UpdatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
                         .HasDefaultValueSql("now()");
 
-                    b.HasKey("Id");
+                    b.HasKey("Id")
+                        .HasName("pk_campaigns");
 
-                    b.HasIndex("EmployerId", "CreatedAt");
+                    b.HasIndex("EmployerId", "CreatedAt")
+                        .HasDatabaseName("ix_campaigns_employer_id_created_at");
 
-                    b.HasIndex("EmployerId", "Status");
+                    b.HasIndex("EmployerId", "Status")
+                        .HasDatabaseName("ix_campaigns_employer_id_status");
 
                     b.ToTable("campaigns", (string)null);
                 });
@@ -104,39 +127,49 @@ namespace Isas.CampaignService.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
+                        .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
 
                     b.Property<Guid>("CampaignId")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("campaign_id");
 
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
 
                     b.Property<Guid>("EmployerId")
-                        .HasColumnType("uuid");
+                        .HasColumnType("uuid")
+                        .HasColumnName("employer_id");
 
                     b.Property<bool>("IsRequired")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
-                        .HasDefaultValue(true);
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_required");
 
                     b.Property<string>("QuestionText")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasColumnType("text")
+                        .HasColumnName("question_text");
 
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(20)
-                        .HasColumnType("character varying(20)");
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("source");
 
                     b.Property<int?>("TimeLimitSeconds")
-                        .HasColumnType("integer");
+                        .HasColumnType("integer")
+                        .HasColumnName("time_limit_seconds");
 
-                    b.HasKey("Id");
+                    b.HasKey("Id")
+                        .HasName("pk_campaign_questions");
 
-                    b.HasIndex("CampaignId");
+                    b.HasIndex("CampaignId")
+                        .HasDatabaseName("ix_campaign_questions_campaign_id");
 
                     b.ToTable("campaign_questions", (string)null);
                 });
@@ -147,7 +180,8 @@ namespace Isas.CampaignService.Migrations
                         .WithMany("Questions")
                         .HasForeignKey("CampaignId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
+                        .IsRequired()
+                        .HasConstraintName("fk_campaign_questions_campaigns_campaign_id");
 
                     b.Navigation("Campaign");
                 });

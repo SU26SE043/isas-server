@@ -39,6 +39,9 @@ builder.Services.AddOpenApi(options =>
 builder.Services.AddScoped<ICampaignService, CampaignService>();
 builder.Services.AddScoped<IFileService, FileService>();
 builder.Services.AddScoped<IParserService, ParserService>();
+// C8: gọi AIService đề xuất tiêu chí (đồng bộ qua AiService:BaseUrl; có fallback)
+builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c =>
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
@@ -67,7 +70,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization();
 
 builder.Services.AddDbContext<CampaignDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+        .UseSnakeCaseNamingConvention());
 
 builder.Services.Configure<FileStorageOptions>(
     builder.Configuration.GetSection("SeaweedFS"));
