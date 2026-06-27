@@ -1,3 +1,7 @@
+> **Bản sao cho agent** của [`docs/services/auth.md`](../../../docs/services/auth.md) — contract (API + DB + business rules) của AuthService. **Source of truth ở `docs/`**: sửa thiết kế tại đó rồi copy lại (đừng sửa bản này lệch). Ràng buộc chung + playbook gen code: [`/AGENTS.md`](../../../AGENTS.md).
+
+---
+
 # AuthService
 
 > Định danh & phát JWT cho toàn hệ. Code: `src/services/Isas.AuthService`. DB: `isas`. Gateway: `/api/v1/auth`.

@@ -1,3 +1,7 @@
+> **Bản sao cho agent** của [`docs/services/ai.md`](../../../docs/services/ai.md) — contract (API + DB + business rules) của AIService. **Source of truth ở `docs/`**: sửa thiết kế tại đó rồi copy lại (đừng sửa bản này lệch). Ràng buộc chung + playbook gen code: [`/AGENTS.md`](../../../AGENTS.md).
+
+---
+
 # AIService — Sinh câu hỏi & chấm điểm (AI)
 
 > Code: `src/services/Isas.AIService` (Python / FastAPI + worker). Gateway: `/api/v1/ai`.

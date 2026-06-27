@@ -10,7 +10,7 @@ Lớp **điều phối B2B**, không tự chạy phỏng vấn:
 - **Credit**: **reserve** credit của **org** (chủ campaign) khi ứng viên bắt đầu (PaymentService) — [payment.md](payment.md).
 - **Ranking + Result**: **nghe event `SessionScored`** → cập nhật **bảng ranking read-model trong `isas_campaign`** (không gọi HTTP đọc điểm mỗi lần) → xếp hạng, pass/fail, xuất CSV/PDF.
 
-> Luồng end-to-end xuyên service ở [../architecture.md](../architecture.md) §4.1 (file này chỉ tả phần Campaign).
+> Luồng B2B end-to-end xuyên service ở [../architecture.md](../architecture.md) §4.2 (file này chỉ tả phần Campaign).
 
 ---
 
@@ -25,28 +25,94 @@ Code: `Services/CampaignService.cs`.
 
 ---
 
-## API
+## API — `/api/v1/campaign`
 
-### `/api/v1/campaign` (JWT role **Employer**; `employerId` từ claim) — JD/Criteria chỉ PDF ≤ 10MB
-| Method | Path | Mô tả |
-|---|---|---|
-| GET | `/campaign` | Danh sách *(⚠ phải lọc `employerId` — bug #2)* |
-| GET | `/campaign/{id}` | Chi tiết (kèm câu hỏi) |
-| POST | `/campaign` | Tạo (Draft). Body `{ title, domain, maxCandidates?, timeLimitMinutes, antiCheatEnabled, startsAt, expiresAt, questions[] }` |
-| POST | `/campaign/{id}/files` | Upload JD/Criteria. `multipart`: `jdFile?`, `criteriaFile?` (parse PDF → text) |
-| POST | `/campaign/{id}/files/download?fileType=jd\|criteria` | Tải file |
-| PUT | `/campaign/{id}` | Sửa campaign (check ownership) |
-| PUT | `/campaign/{id}/files` | Thay JD/Criteria (xóa file cũ) |
-| PUT | `/campaign/{id}/questions` | Thay toàn bộ câu hỏi. Body `List<QuestionItem>` |
-| DELETE | `/campaign/{id}` | **Soft delete** (set `deleted_at`) — giữ lịch sử/audit; file SeaweedFS purge sau 90 ngày bằng cronjob |
+> **Quy ước:** Base public `/api/v1/campaign/*` (gateway → service `/campaign/*`). Auth: **JWT role `Employer`** (org sở hữu; `employerId`+`org_id` từ claim) — *⚠ đang comment, bug #6*. JD/Criteria chỉ **PDF ≤ 10MB**. **Kiểu dữ liệu:** `uuid` · `string` · `int` · `bool` · `decimal(p,s)` · `datetime` · `enum(string)` · `T[]` · `?`. Mã lỗi chung: [../architecture.md](../architecture.md) §6. *(🟡 = có trên branch (kèm bug §🔴) · 🔜 = kế hoạch chưa build.)*
 
-`QuestionItem`: `{ questionText, source: "AiGenerated"|"CustomHr", isRequired }`.
+### Schemas (DTO)
 
-### Distribution / Result (❌ kế hoạch — cùng prefix `/campaign`)
-- `POST /campaign/{id}/invitations` — phát lời mời + email hàng loạt.
-- `GET /invitations/{token}` — ứng viên vào bài (→ Interview tạo/lấy session gắn `campaignId`).
-- `POST /invitations/{id}/reissue` — Employer phát lại token (vô hiệu token cũ).
-- `GET /campaign/{id}/results` + `/results/export?format=csv|pdf` — bảng kết quả, xếp hạng, xuất file.
+```
+Campaign {
+  id:                uuid
+  orgId:             uuid                // tổ chức sở hữu
+  employerId:        uuid                // HR tạo
+  title:             string
+  domain:            string?
+  status:            enum(string)        // Draft · Active · Closed · Archived
+  maxCandidates:     int?
+  timeLimitMinutes:  int?
+  antiCheatEnabled:  bool                // ⚠ bug #3 → đổi bool?
+  jdFileUrl:         string?             // ⚠ lưu KEY, không full URL (bug #1)
+  criteriaFileUrl:   string?
+  startsAt:          datetime
+  expiresAt:         datetime?
+  createdAt:         datetime
+  updatedAt:         datetime
+  deletedAt:         datetime?           // soft delete
+  questions:         QuestionItem[]      // chỉ ở GET /{id}
+}
+
+QuestionItem {
+  questionText:     string
+  source:           enum(string)         // AiGenerated · CustomHr
+  isRequired:       bool
+  timeLimitSeconds: int?
+}
+
+CampaignCriterion {                      // tiêu chí CÓ CẤU TRÚC (AI đề xuất, HR duyệt)
+  id:          uuid
+  campaignId:  uuid
+  name:        string
+  description: string?
+  weight:      decimal(5,4)              // Σ/campaign = 1
+  maxScore:    int
+  source:      enum(string)              // AiSuggested · HrEdited
+}
+
+CampaignRanking  🔜 {                    // read-model, cập nhật bằng event SessionScored
+  campaignId:  uuid
+  candidateId: uuid
+  sessionId:   uuid
+  totalScore:  decimal                   // Σ(điểm×weight) chuẩn hóa
+  rank:        int
+  result:      enum(string)              // Pass · Fail
+  updatedAt:   datetime
+}
+
+Invitation  🔜 {
+  id:             uuid
+  campaignId:     uuid
+  token:          string                 // magic-link, 1 lần NỘP
+  candidateEmail: string
+  expiresAt:      datetime
+  usedAt:         datetime?
+  sessionId:      uuid?                   // ref lỏng → Interview
+}
+```
+
+### Campaign authoring (JWT Employer) 🟡
+
+**`GET /campaign`** — Danh sách campaign của org *(⚠ phải lọc `employerId`/`org_id` — bug #2)*. → `Campaign[]`.
+**`GET /campaign/{id}`** — Chi tiết kèm câu hỏi. → `Campaign` (có `questions`). Lỗi: **403/404**.
+
+**`POST /campaign`** — Tạo (status `Draft`).
+- Req: `{ title: string, domain: string?, maxCandidates: int?, timeLimitMinutes: int, antiCheatEnabled: bool, startsAt: datetime, expiresAt: datetime, questions: QuestionItem[] }` → Res **`201`** `Campaign`. Lỗi: **400** · **401**.
+
+**`POST /campaign/{id}/files`** — Upload JD/Criteria. `multipart`: `jdFile: pdf?` · `criteriaFile: pdf?` (parse PDF→text). Lỗi: **400** (không phải PDF — *bug #5* message sai).
+**`POST /campaign/{id}/files/download?fileType=jd|criteria`** — Tải file *(⚠ bug #1/#4: dùng key sai + sai content-type)*.
+
+**`PUT /campaign/{id}`** — Sửa campaign (chỉ `Draft`; check ownership) → `Campaign`. *(⚠ bug #3: ghi đè `antiCheatEnabled`.)*
+**`PUT /campaign/{id}/files`** — Thay JD/Criteria (xóa file cũ).
+**`PUT /campaign/{id}/questions`** — Thay toàn bộ câu hỏi. Req: `QuestionItem[]`.
+**`DELETE /campaign/{id}`** — **Soft delete** (`deleted_at`) → **`204`**; file SeaweedFS purge sau 90 ngày (cronjob).
+
+### Distribution & Result (🔜 kế hoạch — cùng prefix `/campaign`)
+
+**`POST /campaign/{id}/publish`** 🔜 — `Draft→Active`: AI đề xuất `CampaignCriterion[]` từ JD/Criteria → HR duyệt → lưu.
+**`POST /campaign/{id}/invitations`** 🔜 — phát lời mời + email hàng loạt. Req: `{ emails: string[] }` → `Invitation[]`.
+**`GET /invitations/{token}`** 🔜 — ứng viên vào bài (→ Interview create-or-get session gắn `campaignId`); sau submit token `used` (**403**).
+**`POST /invitations/{id}/reissue`** 🔜 — Employer phát lại token (vô hiệu token cũ).
+**`GET /campaign/{id}/results`** 🔜 → `CampaignRanking[]` (xếp hạng + pass/fail) · **`GET /campaign/{id}/results/export?format=csv|pdf`** 🔜 → file.
 
 ---
 
@@ -58,43 +124,100 @@ campaigns ─┬─1──* campaign_questions
 campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 ```
 
+> **Quy ước kiểu DB:** `uuid·varchar(n)·text·int·numeric(p,s)·bool·timestamptz`, enum lưu **string**, `?`=nullable. Cột **snake_case**.
+
 ### `campaigns`
-| Cột | Kiểu | Ghi chú |
-|---|---|---|
-| id | uuid | PK (`gen_random_uuid()`) |
-| org_id | uuid | **tổ chức sở hữu** (billing/quyền theo org); ref lỏng → Auth |
-| employer_id | uuid | HR tạo campaign; ref lỏng → Auth; **index (org_id, status)**, (org_id, created_at) |
-| title | varchar(255) | bắt buộc |
-| domain | varchar(100)? | |
-| status | varchar(20) | enum: `Draft`/`Active`/`Closed`/`Archived` (mặc định Draft) |
-| max_candidates | int? | |
-| time_limit_minutes | int? | |
-| anti_cheat_enabled | bool | mặc định `true` |
-| jd_file_url / criteria_file_url | text? | ⚠ **lưu key, không phải full URL** (bug #1) |
-| jd_text / criteria_text | text? | text trích từ PDF — **nguồn để AI sinh câu hỏi + đề xuất tiêu chí** (không chấm trực tiếp trên text) |
-| starts_at | timestamptz | bắt buộc |
-| expires_at | timestamptz? | |
-| created_at / updated_at | timestamptz | `now()` |
-| deleted_at | timestamptz? | **soft delete** (null = còn sống); mọi query lọc `deleted_at IS NULL` |
+```
+id                 uuid          PK (gen_random_uuid())
+org_id             uuid          tổ chức sở hữu; ref lỏng → Auth
+employer_id        uuid          HR tạo; ref lỏng → Auth
+title              varchar(255)  NOT NULL
+domain             varchar(100)?
+status             varchar(20)   enum: Draft · Active · Closed · Archived (default Draft)
+max_candidates     int?
+time_limit_minutes int?
+anti_cheat_enabled bool          default true (⚠ bug #3 → nên bool?)
+jd_file_url        text?         ⚠ lưu KEY, không full URL (bug #1)
+criteria_file_url  text?
+jd_text            text?         text trích PDF — nguồn AI sinh câu hỏi + đề xuất tiêu chí
+criteria_text      text?
+starts_at          timestamptz   NOT NULL
+expires_at         timestamptz?
+created_at         timestamptz   default now()
+updated_at         timestamptz
+deleted_at         timestamptz?  soft delete (null=còn sống); query lọc deleted_at IS NULL
+                                 index (org_id, status), (org_id, created_at)
+```
 
 ### `campaign_questions`
-`id` · `campaign_id` (FK Cascade) · `employer_id` · `question_text` · `source` (enum `AiGenerated`/`CustomHr`) · `time_limit_seconds?` · `is_required` (mặc định true) · `created_at`.
+```
+id                uuid          PK
+campaign_id       uuid          FK → campaigns (Cascade)
+employer_id       uuid
+question_text     text
+source            varchar(16)   enum: AiGenerated · CustomHr
+time_limit_seconds int?
+is_required       bool          default true
+created_at        timestamptz
+```
 
-### `campaign_criteria` (tiêu chí CÓ CẤU TRÚC — AI đề xuất, HR duyệt)
-`id` · `campaign_id` (FK Cascade) · `name` · `description?` · `weight` numeric(5,4) (Σ/campaign = 1) · `max_score` · `source` (`AiSuggested`/`HrEdited`) · `created_at`.
-→ Khi tạo session, gửi sang Interview để materialize thành `rubric_criteria(campaign_id)`.
+### `campaign_criteria` — tiêu chí CÓ CẤU TRÚC (AI đề xuất, HR duyệt)
+```
+id          uuid          PK
+campaign_id uuid          FK → campaigns (Cascade)
+name        varchar
+description text?
+weight      numeric(5,4)  Σ/campaign = 1
+max_score   int
+source      varchar(16)   enum: AiSuggested · HrEdited
+created_at  timestamptz
+```
+→ Khi tạo session, gửi sang Interview materialize thành `rubric_criteria(campaign_id)`.
 
-### `campaign_invitations` (❌ kế hoạch)
-token 1 lần · email ứng viên · hạn dùng · `used_at` · `session_id` (ref lỏng → Interview).
+### `campaign_invitations` — 🔜 kế hoạch
+```
+id             uuid          PK
+campaign_id    uuid          FK → campaigns
+token          varchar       UNIQUE, magic-link 1 lần NỘP
+candidate_email varchar
+expires_at     timestamptz   ≤ campaign.expires_at
+used_at        timestamptz?
+session_id     uuid?         ref lỏng → Interview
+```
 
-### `session_integrity_events` (anti-cheat — nếu build)
-`id` · `session_id` (ref lỏng) · `type` (`tab_switch`/`focus_lost`/`paste`/`fullscreen_exit`/`multi_voice`) · `at` timestamptz.
+### `session_integrity_events` — anti-cheat (nếu build)
+```
+id         uuid          PK
+session_id uuid          ref lỏng → Interview
+type       varchar(20)   enum: tab_switch · focus_lost · paste · fullscreen_exit · multi_voice
+at         timestamptz
+```
 
 ### `campaign_rankings` — read-model (cập nhật bằng event `SessionScored`)
-`id` · `campaign_id` · `candidate_id` · `session_id` (**unique** — upsert idempotent) · `total_score` · `rank` · `result` (`Pass`/`Fail`) · `updated_at`. → dashboard đọc local, không gọi xuyên service.
+```
+id           uuid          PK
+campaign_id  uuid
+candidate_id uuid
+session_id   uuid          UNIQUE — upsert idempotent
+total_score  numeric(6,2)  Σ(điểm×weight) chuẩn hóa (Interview tính)
+rank         int
+result       varchar(8)    enum: Pass · Fail
+updated_at   timestamptz
+```
+→ dashboard đọc local, không gọi xuyên service.
 
 ### `audit_logs` — vết thao tác HR
-`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+```
+id            uuid          PK
+org_id        uuid
+actor_user_id uuid
+action        varchar(32)   enum: CreateCampaign·EditQuestions·EditCriteria·Publish·Delete·Reissue…
+entity        varchar
+entity_id     uuid
+summary       text?
+diff          jsonb?
+at            timestamptz
+```
 
 ---
 
