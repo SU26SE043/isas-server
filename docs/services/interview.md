@@ -12,37 +12,136 @@
 
 ---
 
-## API
+## API — `/api/v1/interview`
 
-### Practice — `/api/v1/interview/practice` (JWT; `candidateId` từ claim)
-| Method | Path | Mô tả |
-|---|---|---|
-| POST | `/sessions` | Tạo session + sinh câu hỏi (gọi AI). Body `{ cvId?, jdId?, jobCategory }` → 201 |
-| GET | `/sessions/history` | Lịch sử session của user |
-| GET | `/sessions/{sessionId}` | Chi tiết session (câu hỏi + bài nộp + điểm) |
-| POST | `/sessions/{sessionId}/submit` | Chốt session (đi chấm nốt) → 204 |
-| POST | `/sessions/{sessionId}/answers` | Upload audio trả lời. `multipart`: `questionId`, `file`, `durationSec`. ≤ 50MB |
+> **Quy ước:** Base public `/api/v1/interview/*` (gateway StripPrefix → service `/api/practice/*`, `/api/files/*`). **Auth: JWT Bearer** (validate offline); `candidateId` = claim `sub`; chỉ **chủ** session/file thao tác được. Callback nội bộ dùng header **`X-Internal-Token`**, **KHÔNG** qua gateway. **Kiểu dữ liệu:** `uuid` · `string` · `int` · `long` (bytes) · `decimal(p,s)` · `bool` · `datetime` (ISO-8601, `timestamptz`) · `enum` lưu **string** · `T[]` = mảng · `{…}` = object lồng · `?` = optional/nullable. Mã lỗi chung: [../architecture.md](../architecture.md) §6. *(🔜 = endpoint/field thuộc phần chưa build.)*
 
-Lỗi: 400 (AI rỗng / CV-JD không đọc được) · 401 · 403 (không phải buổi của bạn) · 404.
+### Schemas (DTO)
 
-### Files — `/api/v1/interview/files` (JWT)
-| Method | Path | Mô tả |
-|---|---|---|
-| POST | `/upload?fileType=cv\|jd` | Upload PDF (≤10MB), parse text → fileId |
-| GET | `/{id}` · `/{id}/download` · `/{id}/parsed-text` | Metadata / tải / text đã trích |
-| GET | `/files` | File của user |
-| PUT/DELETE | `/{id}` | Thay / xóa |
+```
+PracticeSessionResponse {
+  id:           uuid
+  status:       enum(string)            // GeneratingQuestions·Ready·InProgress·Scoring·Scored·Failed
+  jobCategory:  enum(string)            // BA·BE·FE
+  cvId:         uuid?                   // file CV đính kèm
+  jdId:         uuid?                   // file JD đính kèm
+  createdAt:    datetime
+  completedAt:  datetime?               // set khi submit
+  questions:    QuestionResponse[]
+}
 
-Chỉ nhận `.pdf`, `fileType ∈ {cv, jd}`.
+QuestionResponse {
+  id:           uuid
+  orderNo:      int
+  content:      string
+  timeLimitSec: int
+  answer:       AnswerResponse?         // null nếu chưa trả lời
+}
 
-### Callback nội bộ (worker → InterviewService) — **không qua gateway**
-Xác thực header **`X-Internal-Token`** (khớp `Internal:Token`).
-| Method | Path | Mô tả |
-|---|---|---|
-| POST | `/internal/answers/{answerId}/result` | Lưu transcript + điểm → answer `Scored` |
-| POST | `/internal/answers/{answerId}/failed` | Đánh dấu `Failed` (lỗi chấm vĩnh viễn) |
+AnswerResponse {
+  id:           uuid
+  status:       enum(string)            // Uploaded·Scoring·Scored·Failed·Skipped
+  durationSec:  int
+  transcript:   string?
+  scores:       AnswerScoreResponse[]
+}
 
-`result` body: `{ transcript, rubricVersion, scores:[{criterionId, score, reasoning}] }`. `failed` body: `{ reason }`.
+AnswerScoreResponse {
+  criterionId:  uuid
+  score:        decimal(5,2)
+  reasoning:    string?
+  rubricVersion: int
+}
+
+PracticeSessionSummary {
+  id:           uuid
+  status:       enum(string)
+  jobCategory:  enum(string)
+  createdAt:    datetime
+  completedAt:  datetime?
+}
+
+FileRecord {
+  id:           uuid
+  fileType:     enum(string)            // cv·jd·answer-audio
+  originalName: string
+  mimeType:     string
+  fileSize:     long                    // bytes
+  parseStatus:  enum(string)            // pending·done·failed
+  createdAt:    datetime
+}
+
+CvAnalysisResponse  🔜 {
+  id:           uuid
+  cvId:         uuid
+  jdId:         uuid?
+  jobCategory:  enum(string)
+  summary:      string
+  strengths:    string[]
+  weaknesses:   string[]
+  suggestions:  string[]
+  jdMatch: {                            // chỉ khi request có jdId
+    score:         int                  // 0–100
+    matchedSkills: string[]
+    missingSkills: string[]
+  }?
+  createdAt:    datetime
+}
+```
+
+### Practice — `/api/v1/interview/practice/sessions` (JWT Candidate)
+
+**`POST /sessions`** — Tạo session + sinh câu hỏi (gọi AI đồng bộ).
+- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE" }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc**.
+- 🔜 *B2C:* trước khi gọi AI → **reserve 1 credit ví cá nhân**; hết → **402** (không tạo session).
+- Res **`201`** `PracticeSessionResponse` (`status="Ready"`, `questions` đã sinh):
+```json
+{ "id":"…","status":"Ready","jobCategory":"BE","cvId":"…","jdId":null,
+  "createdAt":"2026-06-27T03:00:00Z","completedAt":null,
+  "questions":[{"id":"…","orderNo":1,"content":"…","timeLimitSec":120,"answer":null}] }
+```
+- Lỗi: **400** (CV/JD không đọc được nội dung · AI trả rỗng) · **401** · **402** 🔜 (hết credit) · **502** (AIService lỗi).
+
+**`GET /sessions/history`** — Lịch sử của chính user. Res **`200`** `PracticeSessionSummary[]` (mới nhất trước). Lỗi: **401**.
+
+**`GET /sessions/{sessionId}`** — Chi tiết (câu hỏi + bài nộp + điểm). Res **`200`** `PracticeSessionResponse` (mỗi câu kèm `answer` + `scores` nếu có). Lỗi: **401** · **403** (không phải buổi của bạn) · **404**.
+
+**`POST /sessions/{sessionId}/submit`** — Chốt sổ (đi chấm nốt). Res **`204`**. Lỗi: **400** (chưa trả lời câu nào · trạng thái không cho submit) · **401** · **403** · **404**.
+
+**`POST /sessions/{sessionId}/answers`** — Upload audio trả lời.
+- Req `multipart/form-data`: `questionId: uuid` · `file: audio ≤50MB` · `durationSec: int`.
+- **Idempotent**: upload lại cùng `questionId` = ghi đè (reset transcript, publish lại chấm).
+- Res **`200/201`** `AnswerResponse` (`status="Uploaded"` → publish → `Scoring`). Answer đầu tiên: session `Ready→InProgress`.
+- Lỗi: **400** (thiếu field · file quá lớn) · **401** · **403** · **404** (session/câu không có) · **409** (session đã `Scoring`/`Scored`).
+
+### Files — `/api/v1/interview/files` (JWT) — chỉ `.pdf`, `fileType ∈ {cv,jd}`
+
+**`POST /upload?fileType=cv|jd`** — Upload PDF (≤10MB) + parse text.
+- Req `multipart/form-data`: `file: pdf`. Query `fileType`.
+- Res **`201`** `FileRecord` (`parseStatus` = `done`/`pending`). Lỗi: **400** (không phải PDF · quá lớn · `fileType` sai) · **401**.
+
+**`GET /{id}`** → `FileRecord` · **`GET /{id}/download`** → bytes (`Content-Type` theo mime; **404** nếu thiếu) · **`GET /{id}/parsed-text`** → `{ id, parsedText, parseStatus }`.
+**`GET /files`** → `FileRecord[]` của user.
+**`PUT /{id}`** (multipart, thay file) → `FileRecord` mới · **`DELETE /{id}`** → **`204`** (xóa record + key S3).
+Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404**.
+
+### CV Analysis — `/api/v1/interview/practice/cv-analysis` (JWT) — **B2C BC4, 🔜 chưa build**
+
+**`POST /cv-analysis`** — Phân tích CV (parse → AIService `/analyze-cv` đồng bộ → lưu `cv_analyses`).
+- Req `application/json`: `{ "cvId": uuid, "jdId": uuid? }`. Có `jdId` → kết quả thêm `jdMatch`.
+- Res **`201`** `CvAnalysisResponse`. Lỗi: **400** (CV không đọc được) · **401** · **403** (không phải file của bạn) · **404** (`cvId`/`jdId` không có) · **502** (AI lỗi).
+- **Đồng bộ HTTP**, không qua RabbitMQ. **Miễn phí (không trừ credit) phase 1** (D17). Mục (c) "CV vs câu trả lời" sau khi `Scored` = task `BC8`.
+
+**`GET /cv-analysis/{id}`** → `CvAnalysisResponse` (403/404) · **`GET /cv-analysis`** → `CvAnalysisResponse[]` của user.
+
+### Callback nội bộ (worker → InterviewService) — **không qua gateway**, header `X-Internal-Token`
+
+**`POST /internal/answers/{answerId}/result`** — lưu transcript + điểm → answer `Scored`.
+- Req: `{ "transcript": string, "rubricVersion": int, "scores": [{ "criterionId": uuid, "score": number, "reasoning": string? }] }`.
+- **Idempotent**: xóa điểm cũ cùng `(attemptNo, rubricVersion)` rồi ghi lại. Res **`200/204`**. Lỗi: **401** (sai token) · **404**.
+
+**`POST /internal/answers/{answerId}/failed`** — đánh dấu `Failed` (lỗi chấm vĩnh viễn).
+- Req: `{ "reason": string }`. Nếu answer đã `Scored` → **bỏ qua** (không hạ `Failed`). Res **`200/204`**. Lỗi: **401** · **404**.
 
 ---
 
@@ -54,33 +153,120 @@ practice_sessions 1──* practice_questions 1──1 practice_answers 1──*
 rubric_criteria 1──* rubric_levels 1──* rubric_anchors
 ```
 
+> **Quy ước kiểu DB:** `uuid` · `varchar(n)` · `text` · `int` · `bigint` · `numeric(p,s)` · `bool` · `timestamptz` · `jsonb` · enum lưu **string**. `?` = nullable. Cột **snake_case**.
+
 ### `practice_sessions`
-| Cột | Kiểu | Ghi chú |
-|---|---|---|
-| id | uuid | PK |
-| candidate_id | uuid | bắt buộc, **indexed**; ref lỏng → Auth |
-| **campaign_id** | uuid? | **B2B**: null = B2C; có = bài thi campaign (ref lỏng → Campaign) |
-| cv_id / jd_id | uuid? | FK → file_records (Restrict), optional |
-| job_category | varchar(8) | enum: `BA`/`BE`/`FE` |
-| status | varchar(32) | enum (state machine bên dưới) |
-| created_at / completed_at | timestamptz | completed_at set khi submit |
+```
+id            uuid          PK
+candidate_id  uuid          NOT NULL, index; ref lỏng → Auth
+campaign_id   uuid?         null=B2C · có=bài thi campaign (ref lỏng → Campaign)
+cv_id         uuid?         FK → file_records (Restrict)
+jd_id         uuid?         FK → file_records (Restrict)
+job_category  varchar(8)    enum: BA·BE·FE
+status        varchar(32)   enum SessionStatus (state machine bên dưới)
+created_at    timestamptz   NOT NULL
+completed_at  timestamptz?  set khi submit
+```
 
 ### `practice_questions`
-`id` · `session_id` (FK Cascade) · `order_no` · `content` · `time_limit_sec` (mặc định 120) · `created_at`. **unique (session_id, order_no)**.
+```
+id             uuid          PK
+session_id     uuid          FK → practice_sessions (Cascade)
+order_no       int
+content        text
+time_limit_sec int           default 120
+created_at     timestamptz
+                             UNIQUE (session_id, order_no)
+```
 
 ### `practice_answers`
-`id` (= fileId audio) · `session_id` (Cascade) · `question_id` (1–1, Restrict) · `audio_object_key` · `transcript?` · `status` (AnswerStatus) · `duration_sec` · `created_at` · `last_scoring_published_at?`. **unique (session_id, question_id)** — tối đa 1 answer/câu.
+```
+id                        uuid          PK (= fileId audio)
+session_id                uuid          FK → practice_sessions (Cascade)
+question_id               uuid          FK → practice_questions (Restrict), 1–1
+audio_object_key          varchar       key SeaweedFS
+transcript                text?
+status                    varchar(32)   enum AnswerStatus
+duration_sec              int
+last_scoring_published_at timestamptz?
+created_at                timestamptz
+                                        UNIQUE (session_id, question_id) — tối đa 1 answer/câu
+```
 
 ### `answer_scores`
-`id` · `answer_id` (Cascade) · `criterion_id` (Restrict) · `attempt_no` (mặc định 1) · `score` numeric(5,2) · `reasoning?` · `rubric_version` · `created_at`. **unique (answer_id, criterion_id, attempt_no)**.
+```
+id             uuid          PK
+answer_id      uuid          FK → practice_answers (Cascade)
+criterion_id   uuid          FK → rubric_criteria (Restrict)
+attempt_no     int           default 1
+score          numeric(5,2)
+reasoning      text?
+rubric_version int
+created_at     timestamptz
+                             UNIQUE (answer_id, criterion_id, attempt_no)
+```
 
-### `rubric_criteria` / `rubric_levels` / `rubric_anchors`
-- **criteria**: `name` · `description?` · `weight` numeric(5,4) · `max_score` · `is_active` · `job_category` · **`campaign_id uuid?`** (B2B: tiêu chí theo campaign thay cho job_category; null = rubric B2C) · `version`. **index (job_category, version, is_active)**.
-- **levels**: `criterion_id` (Cascade) · `score` (0..max) · `descriptor`. **unique (criterion_id, score)**.
-- **anchors**: `level_id` (Cascade) · `example_answer`.
+### `rubric_criteria`
+```
+id           uuid          PK
+name         varchar
+description  text?
+weight       numeric(5,4)
+max_score    int
+is_active    bool
+job_category varchar(8)    enum: BA·BE·FE
+campaign_id  uuid?         B2B: tiêu chí theo campaign thay job_category · null=rubric B2C
+version      int
+                           index (job_category, version, is_active)
+```
+
+### `rubric_levels`
+```
+id           uuid   PK
+criterion_id uuid   FK → rubric_criteria (Cascade)
+score        int    0..max_score
+descriptor   text
+                    UNIQUE (criterion_id, score)
+```
+
+### `rubric_anchors`
+```
+id             uuid   PK
+level_id       uuid   FK → rubric_levels (Cascade)
+example_answer text
+```
 
 ### `file_records`
-`id` · `user_id` · `file_type` (`cv`/`jd`/`answer-audio`) · `original_name` · `storage_path` (key SeaweedFS) · `storage_bucket` (`isas-files`) · `mime_type` · `file_size` · `parsed_text?` · `parse_status` (`pending`/`done`/`failed`) · timestamps.
+```
+id             uuid          PK
+user_id        uuid          ref lỏng → Auth
+file_type      varchar(16)   enum: cv·jd·answer-audio
+original_name  varchar
+storage_path   varchar       key SeaweedFS (KHÔNG lưu full URL)
+storage_bucket varchar       isas-files
+mime_type      varchar
+file_size      bigint        bytes
+parsed_text    text?
+parse_status   varchar(16)   enum: pending·done·failed
+created_at     timestamptz
+updated_at     timestamptz
+```
+
+### `cv_analyses` — **B2C BC4, 🔜 chưa build** (D17)
+```
+id           uuid          PK
+candidate_id uuid          index; ref lỏng → Auth
+cv_id        uuid          FK → file_records (Restrict)
+jd_id        uuid?         FK → file_records
+job_category varchar(8)    enum: BA·BE·FE
+summary      text
+strengths    jsonb         string[]
+weaknesses   jsonb         string[]
+suggestions  jsonb         string[]
+jd_match     jsonb?        { score, matchedSkills[], missingSkills[] } — chỉ khi có jd_id
+created_at   timestamptz
+```
+AIService trả kết quả → InterviewService **lưu ở đây** (AI không ghi DB).
 
 ---
 
