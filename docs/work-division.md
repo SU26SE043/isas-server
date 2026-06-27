@@ -1,6 +1,7 @@
-# ISAS — Source of Truth: Phạm vi B2B & Phân chia công việc
+# ISAS — Source of Truth: Phạm vi & Phân chia công việc
 
-> **Mục đích.** Đây là **tài liệu gốc duy nhất** để team SU26SE043 (4 người) thống nhất *làm cái gì* và *ai làm mảng nào* cho sản phẩm **B2B tuyển dụng – phỏng vấn bằng AI**.
+> **Mục đích.** Đây là **tài liệu gốc duy nhất** để team SU26SE043 (4 người) thống nhất *làm cái gì* và *ai làm mảng nào*.
+> **ISAS giao 2 dòng sản phẩm dùng chung 1 engine phỏng vấn**: **(B2C)** luyện phỏng vấn cá nhân · **(B2B)** tuyển dụng theo chiến dịch. Phân biệt bằng `campaign_id` trên session; máy chấm dùng chung. **Cả hai đều là deliverable** — B2C không phải "engine phụ" của B2B.
 > Tài liệu kỹ thuật chi tiết: [architecture.md](architecture.md) (global) + `docs/services/<service>.md` (API + DB + rules mỗi service). File này không lặp lại chúng — chỉ map *scope → service → người → thứ tự build*.
 
 ---
@@ -24,13 +25,25 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 
 ## 0. Đọc trước khi chia việc
 
-- Hệ thống **đang chạy là B2C** ("luyện phỏng vấn cá nhân"): CV/JD → AI sinh câu hỏi → ghi âm → chấm rubric. Chi tiết engine: [services/interview.md](services/interview.md).
-- Sản phẩm **mục tiêu là B2B**: Employer tạo *chiến dịch đánh giá* từ JD, phát link cho ứng viên, AI chấm & xếp hạng, xuất kết quả. **Phần lớn B2B chưa build.**
-- Nguyên tắc: B2B **tái dùng engine B2C**, chỉ thêm lớp điều phối (campaign, distribution, ranking, result) + thanh toán.
+- **2 dòng sản phẩm, 1 engine.** Cả B2C lẫn B2B đều là sản phẩm phải giao; chúng **dùng chung** InterviewService (engine phỏng vấn) + AIService (chấm) + PaymentService (credit). Phân biệt bằng `campaign_id`: null = B2C, có giá trị = B2B.
+- **B2C — luyện phỏng vấn cá nhân:** người dùng tự đăng ký → mua credit prepaid → tự tạo session từ CV/JD → AI sinh câu hỏi → ghi âm → chấm rubric `JobCategory` → xem lịch sử của mình. **Engine + lịch sử đã chạy** (`POST/GET /api/practice/sessions*`); **thiếu**: ví credit cá nhân + reserve/consume khi luyện (D15). Chi tiết: [services/interview.md](services/interview.md).
+- **B2B — tuyển dụng:** Employer tạo *chiến dịch đánh giá* từ JD → phát link cho ứng viên → AI chấm theo tiêu chí & xếp hạng → xuất kết quả. **Phần lớn B2B chưa build.**
+- Nguyên tắc: B2B **tái dùng nguyên engine B2C**, chỉ thêm lớp điều phối (campaign, distribution, ranking, result). B2C chỉ thiếu lớp **thanh toán ví cá nhân** nối vào engine.
 
 ---
 
-## 1. Sản phẩm mục tiêu — 5 module SRS
+## 1. Sản phẩm — 2 dòng (B2C + B2B)
+
+### 1a. B2C — Luyện phỏng vấn cá nhân (4 module)
+
+| # | Module | Mô tả ngắn | Service phụ trách | Hiện trạng |
+|---|---|---|---|---|
+| BC1 | **Personal Account & Wallet** | Đăng ký/đăng nhập cá nhân (Candidate, không org) + mua **credit prepaid** ví cá nhân qua PayOS (`owner_type=User`, D15) | AuthService + PaymentService | 🟡 ví chưa wire |
+| BC2 | **Self-serve Practice** | Tự tạo session từ CV/JD → AI sinh câu hỏi (**bám CV/JD**, ưu tiên JD>CV>JobCategory) → ghi âm → chấm **rubric `JobCategory`**; reserve→consume credit ví cá nhân | InterviewService + AIService + PaymentService | ✅ engine + sinh câu hỏi từ CV/JD chạy · 🟡 thiếu reserve/consume |
+| BC3 | **Personal History & Results** | Xem lại các buổi luyện của mình: điểm, transcript, feedback | InterviewService (đọc local) | ✅ có (`GET /api/practice/sessions/history`) |
+| BC4 | **CV Analysis & Insights** | (a) **Feedback CV độc lập** (tóm tắt + điểm mạnh/yếu + gợi ý cải thiện); (b) **điểm khớp CV↔JD** (% phù hợp + kỹ năng thiếu/đủ); (c) mục **"CV vs câu trả lời"** trong báo cáo buổi luyện | InterviewService + AIService | ❌ chưa có (feature mới — D17) |
+
+### 1b. B2B — Tuyển dụng (5 module SRS)
 
 | # | Module | Mô tả ngắn | Service phụ trách |
 |---|---|---|---|
@@ -39,6 +52,8 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 | M3 | **Interview Distribution** | Link bảo mật, email hàng loạt, khóa 1 lần | CampaignService (phát) + InterviewService (làm bài) |
 | M4 | **AI Evaluation & Ranking** | Chấm theo tiêu chí + xếp hạng ứng viên | InterviewService/AIService (chấm) + CampaignService (ranking) |
 | M5 | **Result Mgmt** | Bảng kết quả, pass/fail, xuất CSV/PDF | CampaignService (đọc điểm từ InterviewService) |
+
+> **Dùng chung:** BC2/BC3 và M3/M4/M5 chạy trên **cùng** engine InterviewService + AIService; BC1 và M1 chạy trên **cùng** PaymentService (khác `owner_type`). B2C **không** đụng CampaignService.
 
 ---
 
@@ -85,7 +100,7 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 
 ---
 
-## 4. Phân mảng cho 4 người
+## 4. Phân mảng công việc (4 người · 5 stream)
 
 > **Stream = trách nhiệm nghiệp vụ, KHÔNG phải sở hữu độc quyền 1 service.** S3 và S4 đều chạm InterviewService + CampaignService — phân ranh theo *module* (S3 lo intake; S4 lo chấm + kết quả). Điền tên vào *Owner*.
 
@@ -95,6 +110,9 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 | **S2 — Campaign Authoring** | _____ | M2 | CampaignService | Fix bug §7; CRUD campaign, câu hỏi, JD/tiêu chí (parse PDF); bật Auth |
 | **S3 — Distribution & Execution** | _____ | M3 | CampaignService + InterviewService | Phát link 1 lần, email hàng loạt, khóa sau nộp; InterviewService nhận `campaign_id`, ứng viên vào làm bài qua token |
 | **S4 — Evaluation, Ranking & Result** | _____ | M4 + M5 | AIService + InterviewService + CampaignService | Chấm theo tiêu chí campaign; tổng hợp + **xếp hạng**; bảng kết quả, pass/fail, **xuất CSV/PDF** |
+| **S5 — B2C Product** | _____ | BC1–BC4 | PaymentService + InterviewService + AIService | Ví **credit cá nhân prepaid** (`owner=User`, D15); **reserve/consume khi luyện** (Interview gọi, hết → 402); xác minh E2E self-serve practice + lịch sử cá nhân; **phân tích CV** (feedback độc lập + khớp CV–JD + gắn báo cáo) |
+
+> **S5 là stream nhẹ** — engine luyện + lịch sử (BC2/BC3) đã chạy; việc chính là **nối thanh toán ví cá nhân** vào engine. Có thể để **người S1 kiêm** (cùng đụng PaymentService) nếu đội mỏng; nhưng phải có **một owner B2C rõ ràng** để B2C không bị coi nhẹ. Cross-dep: S5 cần `credit_accounts(owner_type)` từ S1 (task `P1`).
 
 **Việc dùng chung (luân phiên / 1 người lead):** Gateway routing, `Isas.Shared`, quy ước DB/migration, CI/CD, review chéo PR.
 
@@ -104,10 +122,11 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 
 ```
 S1 (Auth roles) ──► tất cả        (mọi nơi cần biết Employer/Candidate/Admin)
-S1 (Payment credit) ──► S3        (ứng viên bắt đầu → reserve credit của org)
+S1 (Payment credit_accounts) ──► S3, S5   (reserve credit: S3 owner=Org · S5 owner=User)
 S2 (Campaign + tiêu chí) ──► S3   (có campaign mới phát link)
 S2 (tiêu chí) ──► S4              (chấm cần tiêu chí campaign)
 S3 (session + answer) ──► S4      (có bài nộp mới chấm/xếp hạng)
+S5 (B2C) ⟂ S2/S3/S4               (độc lập — B2C không đụng campaign; chỉ cần ví credit từ S1)
 ```
 
 **Phase 0 — Foundation/Init (LÀM TRƯỚC mọi feature, tách riêng — Bài 06):**
@@ -119,10 +138,11 @@ Mục tiêu = baseline **đã xác minh + sẵn sàng bàn giao**, không viết
 - [ ] **Commit checkpoint sạch** làm mốc bắt đầu.
 
 **Thứ tự khởi động (sau Phase 0):**
-1. **S1 trước**: hoàn thiện luồng cấp role Employer (role đã có sẵn) → mở khóa mọi `[Authorize(Roles=...)]`.
+1. **S1 trước**: hoàn thiện luồng cấp role Employer (role đã có sẵn) → mở khóa mọi `[Authorize(Roles=...)]`; dựng `credit_accounts(owner_type)` (task `P1`).
 2. **S2 song song**: hoàn thiện CampaignService + fix bug (chỉ cần role từ S1).
-3. **S3** khi `GET /campaign/{id}` ổn định + chốt được hợp đồng "tạo session gắn campaign" với InterviewService.
-4. **S4** khi S3 sinh được answer thật; trước đó dựng trước phần nạp tiêu chí vào job chấm.
+3. **S5 song song**: ngay sau `P1` — nối ví prepaid cá nhân + reserve/consume vào engine luyện (engine + lịch sử đã chạy). Độc lập với S2/S3/S4 → có thể là **luồng B2B-independent đầu tiên cho ra E2E demo được**.
+4. **S3** khi `GET /campaign/{id}` ổn định + chốt được hợp đồng "tạo session gắn campaign" với InterviewService.
+5. **S4** khi S3 sinh được answer thật; trước đó dựng trước phần nạp tiêu chí vào job chấm.
 
 > Để không chặn nhau: **chốt API contract (§3) trước**, mock response khi service kia chưa xong. Mỗi task ở §8 nên có **tiêu chí chấp nhận** (definition of done) — xem dòng đầu §8.
 
@@ -160,7 +180,7 @@ Từ review branch `features/campaign-service`. Code: `src/services/Isas.Campaig
 
 ## 8. Backlog theo module (epic → việc lớn)
 
-> **WIP=1 + bằng chứng chạy được:** bóc mỗi epic thành **task nguyên tử** (1 hành vi/ task), mỗi task có **1 lệnh xác minh chạy được** (curl / `dotnet test`) + ghi **phụ thuộc**. Người/agent làm **1 task active** → verify pass → commit → mới sang task kế; **đừng** mở nhiều task cùng lúc hay tiện tay refactor việc khác (xem [AGENTS.md](AGENTS.md) §Quy tắc làm việc). Dòng **Chấp nhận** mỗi epic = đích end-to-end của cả epic. **Task nguyên tử + lệnh xác minh + trạng thái** đã liệt kê ở [tasks.md](tasks.md) (tạm; về sau đẩy sang board Jira/GitHub Projects).
+> **WIP=1 + bằng chứng chạy được:** bóc mỗi epic thành **task nguyên tử** (1 hành vi/ task), mỗi task có **1 lệnh xác minh chạy được** (curl / `dotnet test`) + ghi **phụ thuộc**. Người/agent làm **1 task active** → verify pass → commit → mới sang task kế; **đừng** mở nhiều task cùng lúc hay tiện tay refactor việc khác (xem [AGENTS.md](../AGENTS.md) §Quy tắc làm việc). Dòng **Chấp nhận** mỗi epic = đích end-to-end của cả epic. **Task nguyên tử + lệnh xác minh + trạng thái** đã liệt kê ở [tasks.md](tasks.md) (tạm; về sau đẩy sang board Jira/GitHub Projects).
 
 **M1 Payment — PaymentService (S1)** *(branch `payment-b2c`; chi tiết: [services/payment.md](services/payment.md))*:
 - **Credit theo chủ ví** (`credit_accounts(owner_type, owner_id)`): B2B = Org, B2C = User cá nhân (xem [decisions.md](decisions.md) D15). Mô hình **reserve → consume (Scored) → release** (idempotent theo `sessionId`).
@@ -184,6 +204,13 @@ Từ review branch `features/campaign-service`. Code: `src/services/Isas.Campaig
 
 **M5 Result — CampaignService (S4)**: dashboard đọc local từ `campaign_rankings` · **xuất CSV/PDF** · lọc/sắp xếp.
 - **Chấp nhận:** dashboard không gọi xuyên service; export CSV/PDF khớp ranking.
+
+**B2C Personal Practice — PaymentService + InterviewService (S5)** *(chi tiết ví: [services/payment.md](services/payment.md) §B2C)*:
+- **BC1 — ví prepaid cá nhân**: mua pack `OneTime` với `owner_type=User` (`owner_id` = `sub` JWT) → webhook PayOS cộng credit ví cá nhân. **Không** postpaid/hóa đơn (chỉ Org).
+- **BC2 — reserve/consume khi luyện**: InterviewService `CreateSession` **reserve** 1 credit ví cá nhân trước khi gọi AI; hết → **402, không tạo session**. `SessionScored` → **consume**; bỏ ngang/lỗi → **release**. Idempotent theo `sessionId`.
+- **BC3 — lịch sử cá nhân**: `GET /api/practice/sessions/history` + `GET /{id}` (đã có) — xác minh đọc đúng điểm/transcript của chính user.
+- **BC4 — phân tích CV** *(feature mới, [decisions.md](decisions.md) D17; API: [services/ai.md](services/ai.md) `/analyze-cv` + [services/interview.md](services/interview.md) `cv-analysis`)*: (a) upload CV → AI trả **tóm tắt + điểm mạnh/yếu + gợi ý**; (b) kèm JD → thêm **% khớp + kỹ năng thiếu/đủ**; (c) sau buổi luyện, báo cáo có mục **"CV nói tốt nhưng trả lời chưa tới"**. Dùng AIService đồng bộ (1 call Gemini, **không** qua pipeline chấm); AIService không ghi DB, Interview lưu `cv_analyses`. **Miễn phí (không trừ credit) phase 1** — *team xác nhận có tính phí không*.
+- **Chấp nhận:** user cá nhân nạp credit (sandbox PayOS) → ví +N; tạo session luyện reserve −1 (giữ chỗ), chấm xong consume đúng 1; hết credit → tạo session trả 402; `GET history` trả đúng buổi của mình, không thấy của người khác; **`POST cv-analysis` (chỉ cvId) → trả tóm tắt+mạnh/yếu+gợi ý; kèm jdId → có matchScore+skills; kết quả lưu `cv_analyses` đọc lại được**.
 
 ---
 
