@@ -73,6 +73,7 @@
 | E5 | Xếp hạng + pass/fail | `GET /campaign/{id}/results` → sắp theo điểm, pass/fail theo ngưỡng | E4 | not_started |
 | E6 | Xuất CSV/PDF | `GET …/results/export?format=csv` → file khớp ranking | E5 | not_started |
 | E7 | Payment phản ứng event (consume/release) | `SessionScored`→consume; `SessionAbandoned`→release | P5, P6, E2, E3 | not_started |
+| E8 | Guard điểm phía C# ở callback chấm (phòng worker lỗi / image lệch) | `POST /internal/answers/{id}/result`: score > `maxScore` → **kẹp** về maxScore; `criterionId` không thuộc rubric của session → **bỏ** (không lưu); test pass | E1 | not_started · spec: [interview.md](services/interview.md) §Đánh giá cách chấm tiêu chí #4 · defense-in-depth (worker đã kẹp/lọc nhưng C# tin 100% + AIService deploy ephemeral); áp cho cả B2B & B2C |
 
 ## S5 — B2C Personal Practice (Payment + Interview)
 > Engine luyện + lịch sử **đã chạy** (`PracticeController`); các task dưới = **nối thanh toán ví cá nhân** vào engine. Ví dùng chung `credit_accounts(owner_type)` của S1, khác `owner_type=User`.
@@ -89,6 +90,7 @@
 | BC8 | Báo cáo buổi luyện thêm "CV vs câu trả lời" | session `Scored` có CV → báo cáo có mục đối chiếu CV↔transcript (chỗ CV mạnh nhưng trả lời yếu) | BC7, E1 | not_started |
 | BC9 | Tổng kết điểm B2C sau `Scored` (điểm tổng + điểm/tiêu chí + cần cải thiện) | session B2C `Scored` → DB có `practice_sessions.overall_score` + rows `session_criterion_scores`; `GET /api/practice/sessions/{id}` trả `overallScore` (0–100) + `criteriaScores[]` (điểm/tiêu chí / `maxScore`) + `needsImprovement[]` (tiêu chí dưới ngưỡng) | — | not_started · spec đầy đủ: [interview.md](services/interview.md) §Tổng kết điểm buổi luyện B2C (BC9) · **lưu DB** (cột `overall_score`/`answered_count` + bảng `session_criterion_scores`) khi `Scored`, **CÓ migration**, không AI, chỉ B2C |
 | BC10 | Nhận xét chung buổi luyện B2C (AI sinh) | session B2C `Scored` → AIService `POST /summarize-session` sinh `overall_comment` (best-effort) → lưu `practice_sessions.overall_comment`; `GET /sessions/{id}` → `result.overallComment` có text; AI lỗi → `Scored` vẫn xong, comment null | BC9 | not_started · spec: [interview.md](services/interview.md) §Nhận xét chung buổi luyện B2C (BC10) + [ai.md](services/ai.md) `/summarize-session` · **AI sync** (D17 pattern, best-effort), cột `overall_comment` (migration), chỉ B2C |
+| BC11 | Nguồn rubric B2C theo `JobCategory` (seed mặc định + tuỳ chọn CRUD) | DB có `rubric_criteria` (`campaign_id IS NULL`) cho mỗi `JobCategory` (BA/BE/FE), Σweight=1, `is_active`; tạo session B2C → upload answer → **có publish job chấm** (hết "không có tiêu chí active") | — | not_started · spec: [interview.md](services/interview.md) §Đánh giá cách chấm tiêu chí #3 · **prerequisite cho chấm B2C** (BC2/BC9): hiện repo chưa seed/CRUD rubric B2C → answer B2C không được chấm |
 
 ---
 
