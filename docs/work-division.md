@@ -62,11 +62,11 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 | Phần | Trạng thái | Nằm ở đâu |
 |---|---|---|
 | Gateway (YARP, `/api/v1/*`) | ✅ Có | `src/gateway/Isas.Gateway` |
-| AuthService (JWT, OAuth, profile) | ✅ Có — 3 role đã có; **cần thêm Organization + org-role (OrgAdmin/HrMember)** | `src/services/Isas.AuthService` |
-| InterviewService = **engine phỏng vấn** | ✅ Có (chạy B2C) — **`campaign_id` (nullable) đã thêm** (PR #19, migration `AddCampaignIdToEngine`); còn **intake B2B** (create-or-get session = S3) | `src/services/Isas.InterviewService` |
-| AIService (sinh câu hỏi + chấm) | ✅ Có + **Docker-ready** (Dockerfile + requirements vá `aio-pika`/`boto3`/`aiohttp`) — còn **chấm theo tiêu chí campaign** | `src/services/Isas.AIService` |
+| AuthService (JWT, OAuth, profile) | ✅ Có — 3 role + **Organization + org-role (OrgAdmin/HrMember) trong JWT + `register-org`** (A1–A3, merged PR #23); còn A4/A5 | `src/services/Isas.AuthService` |
+| InterviewService = **engine phỏng vấn** | ✅ Có (B2C) — `campaign_id` (nullable) + **I1** (session B2B + materialize tiêu chí, merged PR #24) + **E1** (chấm theo tiêu chí campaign, nhánh/PR); còn **intake B2B HTTP** (create-or-get qua magic-link = S3/D2) | `src/services/Isas.InterviewService` |
+| AIService (sinh câu hỏi + chấm) | ✅ Có + Docker-ready + **`/suggest-criteria`** (C8); worker chấm dùng được tiêu chí campaign (E1 — message shape không đổi) — còn analyze-cv (BC4) + vá bảo mật/throughput | `src/services/Isas.AIService` |
 | Shared lib | ✅ Có | `src/shared/Isas.Shared` |
-| **CampaignService (M2)** | 🟡 branch `features/campaign-service` — **6 bug §7 ĐÃ FIX** + soft-delete (C9) + lifecycle guard (C7) + snake_case (2026-06-27); còn `campaign_criteria`/publish, org_id, distribution/ranking | `src/services/Isas.CampaignService` |
+| **CampaignService (M2)** | 🟢 **merged main (PR #22)** — 6 bug fix + soft-delete (C9) + lifecycle (C7) + publish/`campaign_criteria` (C8) + audit (C10) + snake_case; còn wire `org_id`, distribution/ranking | `src/services/Isas.CampaignService` |
 | **Distribution (M3 — phát link)** | ❌ Chưa | (sẽ vào CampaignService) |
 | **Ranking + Result (M4/M5)** | ❌ Chưa | (sẽ vào CampaignService) |
 | **PaymentService (M1)** | 🟡 **branch `features/payment-b2c`** — có Order/Package/PayOS; **cần: credit theo org, reserve/consume, postpaid + hóa đơn, active-polling** | `src/services/Isas.PaymentService` |
@@ -164,7 +164,7 @@ Kế thừa nguyên tắc đang dùng — chi tiết [architecture.md](architect
 
 ## 7. Việc cần dọn ngay ở CampaignService (S2)
 
-Từ review branch `features/campaign-service`. Code: `src/services/Isas.CampaignService/Services/CampaignService.cs`.
+> ✅ **ĐÃ FIX hết 6 bug dưới + merged main (PR #22)** — giữ lại để tham chiếu lịch sử review. Code: `src/services/Isas.CampaignService/Services/CampaignService.cs`.
 
 **🔴 Phải fix:**
 1. **Lưu full URL nhưng download/delete dùng làm S3 key** → tải/xóa file hỏng. Lưu *path* (`campaigns/{id}/jd.pdf`), chỉ ghép URL khi trả response.

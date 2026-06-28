@@ -26,7 +26,7 @@
 ## Pipeline chấm (worker) — queue `scoring_pipeline_queue`
 Worker consume (prefetch 1, ack/nack thủ công) → tải audio từ SeaweedFS → Whisper transcribe → Gemini chấm → callback `/internal/answers/{id}/result`.
 - **Message C# gửi:** `{ answerId, audioObjectKey, questionContent, jobCategory, criteria[], rubricVersion }`.
-- ⭐ **`criteria` do C# gửi KÈM trong message** (mỗi phần tử `{ criterionId, name, description, maxScore, weight }`) — worker **không tự đọc rubric từ DB**. → **B2B chỉ cần gửi tiêu chí campaign thay rubric JobCategory: cùng shape, worker KHÔNG đổi** (xác nhận khả thi quyết định D9).
+- ⭐ **`criteria` do C# gửi KÈM trong message** (mỗi phần tử `{ criterionId, name, description, maxScore, weight }`) — worker **không tự đọc rubric từ DB**. → **B2B chỉ cần gửi tiêu chí campaign thay rubric JobCategory: cùng shape, worker KHÔNG đổi** (xác nhận khả thi quyết định D9). **✅ E1 (đã làm):** InterviewService chọn tiêu chí theo `campaign_id` cho session B2B (theo `job_category` + `campaign_id IS NULL` cho B2C); worker Python **giữ nguyên**.
 - Callback: `result` = `{ answerId, transcript, rubricVersion, scores:[{criterionId, score, reasoning}] }`; lỗi vĩnh viễn → `failed` = `{ reason }`.
 - **Config (.env):** `gemini_api_key` · `gemini_model` · `whisper_model/device/compute_type` · `rabbitmq_url` · `queue_name` · S3 (`s3_endpoint/access/secret/bucket`) · `dotnet_callback_base` · `internal_token`.
 
