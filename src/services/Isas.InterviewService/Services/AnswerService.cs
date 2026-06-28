@@ -115,17 +115,20 @@ public class AnswerService : IAnswerService
     {
         try
         {
-            // Lấy rubric active của nghề này để đính kèm vào job.
-            var criteria = await _db.RubricCriteria
-                .AsNoTracking()
-                .Where(c => c.JobCategory == session.JobCategory && c.IsActive)
-                .ToListAsync(ct);
+            // Nguồn tiêu chí tùy mode (E1): B2B chấm theo tiêu chí campaign, B2C theo rubric nghề.
+            // Criteria materialize của campaign cũng mang JobCategory → B2C phải lọc thêm
+            // campaign_id IS NULL để không chấm nhầm bằng tiêu chí campaign cùng nghề.
+            var query = _db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
+            query = session.CampaignId is Guid campaignId
+                ? query.Where(c => c.CampaignId == campaignId)
+                : query.Where(c => c.CampaignId == null && c.JobCategory == session.JobCategory);
+            var criteria = await query.ToListAsync(ct);
 
             if (criteria.Count == 0)
             {
                 _logger.LogWarning(
-                    "Không có rubric active cho {JobCategory} — bỏ qua publish answer {AnswerId}",
-                    session.JobCategory, answer.Id);
+                    "Không có tiêu chí active (campaign={CampaignId}, nghề={JobCategory}) — bỏ qua publish answer {AnswerId}",
+                    session.CampaignId, session.JobCategory, answer.Id);
                 return;
             }
 

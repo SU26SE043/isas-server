@@ -41,26 +41,31 @@ public sealed class TestDb : IDisposable
     }
 
     // ── Seed helpers ──────────────────────────────────────────────────────
-    public static RubricCriterion Criterion(JobCategory cat, int version = 1, bool active = true)
+    public static RubricCriterion Criterion(
+        JobCategory cat, int version = 1, bool active = true,
+        Guid? campaignId = null, string name = "Clarity")
         => new()
         {
             Id = Guid.NewGuid(),
-            Name = "Clarity",
+            Name = name,
             Description = "Trình bày rõ ràng",
             Weight = 1.0m,
             MaxScore = 5,
             IsActive = active,
             JobCategory = cat,
+            CampaignId = campaignId,
             Version = version
         };
 
     public static PracticeSession Session(
-        Guid candidateId, SessionStatus status, JobCategory cat = JobCategory.BE)
+        Guid candidateId, SessionStatus status, JobCategory cat = JobCategory.BE,
+        Guid? campaignId = null)
         => new()
         {
             Id = Guid.NewGuid(),
             CandidateId = candidateId,
             JobCategory = cat,
+            CampaignId = campaignId,
             Status = status,
             CreatedAt = DateTime.UtcNow
         };

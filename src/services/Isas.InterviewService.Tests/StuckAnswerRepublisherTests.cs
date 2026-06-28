@@ -65,6 +65,34 @@ public class StuckAnswerRepublisherTests
         Assert.NotNull(saved.LastScoringPublishedAt);              // mốc được set
     }
 
+    // E1: republish job của session B2B mang ĐÚNG tiêu chí campaign (không phải rubric B2C cùng nghề).
+    [Fact]
+    public async Task PublishHut_B2BSession_RepublishesCampaignCriteria()
+    {
+        using var t = new TestDb();
+        var campaignId = Guid.NewGuid();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress, campaignId: campaignId);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        var campaignCrit = TestDb.Criterion(session.JobCategory, campaignId: campaignId, name: "Campaign-Crit");
+        var b2cCrit = TestDb.Criterion(session.JobCategory, name: "B2C-Crit");
+        t.Db.AddRange(session, q, a, campaignCrit, b2cCrit);
+        await t.Db.SaveChangesAsync();
+
+        var (r, pub) = Build(t);
+        ScoringJob? published = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.NotNull(published);
+        var crit = Assert.Single(published!.Criteria);
+        Assert.Equal(campaignCrit.Id, crit.CriterionId);
+    }
+
     [Fact]
     public async Task FreshUpload_WithinGrace_NotRepublished()
     {

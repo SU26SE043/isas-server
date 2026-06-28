@@ -66,7 +66,7 @@
 ## S4 — Evaluation, Ranking & Result
 | ID | Hành vi | Xác minh | Dep | Status |
 |---|---|---|---|---|
-| E1 | Chấm B2B theo tiêu chí campaign | session B2B `Scored` → `answer_scores` trỏ tiêu chí campaign | I1 | not_started |
+| E1 | Chấm B2B theo tiêu chí campaign | session B2B `Scored` → `answer_scores` trỏ tiêu chí campaign | I1 | active · chọn tiêu chí khi build job chấm **branch theo `campaign_id`** ở `AnswerService.TryPublishScoringJobAsync` + `StuckAnswerRepublisher` (B2B→`rubric_criteria(campaign_id)`; B2C→`job_category` + `campaign_id IS NULL`, chống rò chéo) + test ✅ (B2B publish chọn campaign / B2C isolation / republish B2B / Done: B2B `Scored`→`answer_scores` trỏ campaign) — `dotnet test` **31/31 pass** · không cần migration (cột `campaign_id` có sẵn) · worker Python KHÔNG đổi (D9) · ⚠ e2e đầy đủ chờ HTTP entry B2B (**D2**) + chờ PR review |
 | E2 | Phát event `SessionScored` | session `Scored` → RabbitMQ có message (campaign_id + điểm) | E1 | not_started |
 | E3 | Phát `SessionAbandoned` (TTL/0-answer) | `InProgress` quá hạn → message `SessionAbandoned` | — | not_started |
 | E4 | Campaign consume event → `campaign_rankings` | event → 1 row ranking (điểm có trọng số); gửi 2 lần chỉ 1 row | E2 | not_started |
