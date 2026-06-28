@@ -23,6 +23,7 @@ Kiến trúc **Engine + Orchestrator, 6 service**: `Gateway · AuthService · AI
 - **Tiền:** chỉ PaymentService ghi bảng payment; cộng credit/kích hoạt **chỉ khi webhook PayOS đã verify**.
 
 ## Quy tắc làm việc (WIP = 1)
+- **Plan trước, chờ duyệt:** mặc định **LẬP PLAN → trình người dùng → CHỜ DUYỆT** rồi mới sửa file / chạy lệnh thay đổi. Đọc–tìm–review để dựng plan thì cứ làm; **không tự thực thi thay đổi** (edit/migration/commit) khi plan chưa duyệt. *(Đồng bộ prompt doc-sync: "LẬP PLAN, DỪNG, CHỜ DUYỆT".)*
 - **Mỗi người/agent chỉ 1 task `active`** tại một thời điểm. Xong + **xác minh end-to-end pass** mới bắt task kế.
 - **KHÔNG "tiện thể tái cấu trúc"** thứ khác khi đang làm task A → thấy việc đáng làm thì **ghi vào backlog/board**, làm sau.
 - Mỗi task có **1 lệnh xác minh chạy được**; "Xong" theo **3 lớp** (mục dưới), **không phải** "code trông ổn".

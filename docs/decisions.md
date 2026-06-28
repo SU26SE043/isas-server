@@ -53,9 +53,10 @@
 **Vì sao:** B2B có thể bị **kiện/đối chất** kết quả → cần lịch sử. `deleted_at` + purge file 90 ngày (giữ điểm/transcript). `audit_logs` ghi ai sửa gì.
 **Bị loại:** hard delete (mất trắng dữ liệu pháp lý).
 
-## D12 — `order_code` = time + random (2026-06-25)
+## D12 — `order_code` = time + random (2026-06-25; trần PayOS verify 2026-06-28)
 **Vì sao:** không đoán được (chống cào) + **trong trần số của PayOS**. Đụng UNIQUE → regenerate.
-**Bị loại:** auto-increment (lộ số đơn); **snowflake 64-bit (có thể vượt trần PayOS)**. ⚠ *cần verify trần orderCode PayOS.*
+**Bị loại:** auto-increment (lộ số đơn); **snowflake 64-bit** — vượt trần PayOS nên loại.
+**✅ Trần PayOS (verify payos.vn):** `orderCode` là **số nguyên dương ≤ 9.007.199.254.740.991** (2^53−1 — PayOS xử lý như JS number), **duy nhất vĩnh viễn**. Snowflake 64-bit (tới ~9,2×10¹⁸) **vượt trần** → đúng lý do loại. Scheme `YYMMDDHHmmss`+random (giữ < 9,007×10¹⁵) **nằm trong trần**. Verify thêm: webhook ký **HMAC-SHA256** (sort key A→Z, nối `key=value&`, checksum key); `description` **ngắn** (≤25 ký tự liên kết payOS, 9 ký tự VietQR không liên kết) → đơn ISAS đặt mô tả gọn. Bảng đầy đủ: [services/payment.md](services/payment.md) §PayOS.
 
 ## D13 — Anti-cheat = FLAG cho HR, không auto-hủy (2026-06-25)
 **Vì sao:** false-positive auto-hủy giết oan ứng viên thật. Tín hiệu (tab/focus/paste/multi-voice) → cảnh báo, **HR quyết**.
@@ -75,7 +76,7 @@
 **Quyết định:** ISAS giao **2 dòng sản phẩm**: B2C (luyện phỏng vấn cá nhân) **và** B2B (tuyển dụng), cùng dùng engine InterviewService + AIService + PaymentService. B2C có **scope/module/stream/task/E2E riêng** trong doc (BC1–BC3, stream **S5**), không bị gộp ẩn vào B2B.
 **Vì sao:** trước đây doc khung "sản phẩm = B2B, B2C = engine dùng lại" → B2C biến mất khỏi [work-division.md](work-division.md) (5 module + 4 stream toàn B2B) và [tasks.md](tasks.md) (0 task B2C), kể cả path thanh toán ví cá nhân đã thiết kế ở **D15** cũng không ai sở hữu. B2C engine + lịch sử **đã chạy** nên chi phí "nâng lên sản phẩm" thấp — chủ yếu nối thanh toán ví cá nhân.
 **Bị loại:** (a) coi B2C là engine/demo (không giao) — sai phạm vi; (b) gộp B2C vào S1/S3/S4 không tách stream — B2C dễ bị coi nhẹ, không có owner.
-**Hệ quả:** thêm **S5 — B2C Product** + module BC1–BC3 + task BC1–BC5; khung "2 dòng sản phẩm" đồng bộ ở AGENTS/README/architecture; **Định nghĩa Xong** thêm luồng E2E B2C ([AGENTS.md](../AGENTS.md)).
+**Hệ quả:** thêm **S5 — B2C Product** + module BC1–BC3 + task BC1–BC5; khung "2 dòng sản phẩm" đồng bộ ở AGENTS/README/architecture; **Định nghĩa Xong** thêm luồng E2E B2C ([AGENTS.md](../AGENTS.md)). *(Cập nhật sau: D17 thêm module BC4 + task BC6–BC8; sau đó BC9–BC11 — tổng kết điểm/nhận xét + seed rubric B2C. Danh sách task hiện hành xem [tasks.md](tasks.md).)*
 
 ## D17 — B2C thêm "Phân tích CV" (BC4), dùng AIService đồng bộ (2026-06-27)
 **Quyết định:** B2C có thêm **phân tích CV** (module BC4): (a) **feedback CV độc lập** (tóm tắt + mạnh/yếu + gợi ý); (b) **điểm khớp CV↔JD** (% + kỹ năng thiếu/đủ); (c) mục **"CV vs câu trả lời"** trong báo cáo buổi luyện. Sinh câu hỏi từ CV/JD (đã có ở BC2) **giữ nguyên**. Triển khai bằng **AIService endpoint mới `/analyze-cv` — HTTP đồng bộ** (1 call Gemini, **KHÔNG** qua RabbitMQ/worker vì không có audio); AIService **vẫn stateless**, InterviewService lưu bảng `cv_analyses`. **Miễn phí (không trừ credit) trong phase 1.**

@@ -84,7 +84,7 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 |---|---|---|---|
 | **AuthService** | ✅ có 3 role | Identity: Candidate/Employer/Admin | `/api/v1/auth` |
 | **PaymentService** | 🟡 branch | M1: gói, **credit (lượt phỏng vấn)**, PayOS | `/api/v1/payment` |
-| **CampaignService** | 🟡 hoàn thiện | M2 + M3(phát) + M4(ranking) + M5: campaign, tiêu chí, distribution, kết quả | `/api/v1/campaign` |
+| **CampaignService** | 🟢 M2 merged (PR #22); M3/M4/M5 chưa | M2 + M3(phát) + M4(ranking) + M5: campaign, tiêu chí, distribution, kết quả | `/api/v1/campaign` |
 | **InterviewService** | ✅ engine | Engine phỏng vấn **B2B & B2C**: session (`campaign_id?`), answer, chấm điểm | `/api/v1/interview` |
 | **AIService** | ✅ mở rộng | Sinh câu hỏi + chấm (theo rubric B2C **hoặc** tiêu chí campaign) | `/api/v1/ai` |
 | **Gateway** | ✅ | Reverse proxy + gộp OpenAPI | — |
@@ -110,7 +110,7 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 | **S2 — Campaign Authoring** | _____ | M2 | CampaignService | Fix bug §7; CRUD campaign, câu hỏi, JD/tiêu chí (parse PDF); bật Auth |
 | **S3 — Distribution & Execution** | _____ | M3 | CampaignService + InterviewService | Phát link 1 lần, email hàng loạt, khóa sau nộp; InterviewService nhận `campaign_id`, ứng viên vào làm bài qua token |
 | **S4 — Evaluation, Ranking & Result** | _____ | M4 + M5 | AIService + InterviewService + CampaignService | Chấm theo tiêu chí campaign; tổng hợp + **xếp hạng**; bảng kết quả, pass/fail, **xuất CSV/PDF** |
-| **S5 — B2C Product** | _____ | BC1–BC4 | PaymentService + InterviewService + AIService | Ví **credit cá nhân prepaid** (`owner=User`, D15); **reserve/consume khi luyện** (Interview gọi, hết → 402); xác minh E2E self-serve practice + lịch sử cá nhân; **phân tích CV** (feedback độc lập + khớp CV–JD + gắn báo cáo) |
+| **S5 — B2C Product** | _____ | BC1–BC4 + BC9–BC11 | PaymentService + InterviewService + AIService | Ví **credit cá nhân prepaid** (`owner=User`, D15); **reserve/consume khi luyện** (Interview gọi, hết → 402); xác minh E2E self-serve practice + lịch sử cá nhân; **phân tích CV** (feedback độc lập + khớp CV–JD + gắn báo cáo); **tổng kết điểm + nhận xét buổi luyện** (BC9/BC10) + **seed rubric B2C** (BC11 — prerequisite chấm B2C) |
 
 > **S5 là stream nhẹ** — engine luyện + lịch sử (BC2/BC3) đã chạy; việc chính là **nối thanh toán ví cá nhân** vào engine. Có thể để **người S1 kiêm** (cùng đụng PaymentService) nếu đội mỏng; nhưng phải có **một owner B2C rõ ràng** để B2C không bị coi nhẹ. Cross-dep: S5 cần `credit_accounts(owner_type)` từ S1 (task `P1`).
 
@@ -210,6 +210,9 @@ Kế thừa nguyên tắc đang dùng — chi tiết [architecture.md](architect
 - **BC2 — reserve/consume khi luyện**: InterviewService `CreateSession` **reserve** 1 credit ví cá nhân trước khi gọi AI; hết → **402, không tạo session**. `SessionScored` → **consume**; bỏ ngang/lỗi → **release**. Idempotent theo `sessionId`.
 - **BC3 — lịch sử cá nhân**: `GET /api/practice/sessions/history` + `GET /{id}` (đã có) — xác minh đọc đúng điểm/transcript của chính user.
 - **BC4 — phân tích CV** *(feature mới, [decisions.md](decisions.md) D17; API: [services/ai.md](services/ai.md) `/analyze-cv` + [services/interview.md](services/interview.md) `cv-analysis`)*: (a) upload CV → AI trả **tóm tắt + điểm mạnh/yếu + gợi ý**; (b) kèm JD → thêm **% khớp + kỹ năng thiếu/đủ**; (c) sau buổi luyện, báo cáo có mục **"CV nói tốt nhưng trả lời chưa tới"**. Dùng AIService đồng bộ (1 call Gemini, **không** qua pipeline chấm); AIService không ghi DB, Interview lưu `cv_analyses`. **Miễn phí (không trừ credit) phase 1** — *team xác nhận có tính phí không*.
+- **BC9 — tổng kết điểm buổi luyện** *(spec: [services/interview.md](services/interview.md))*: session B2C `Scored` → tính `overall_score` + điểm/tiêu chí + "cần cải thiện", **lưu DB** (`session_criterion_scores`, có migration); `GET /sessions/{id}` trả `result`. Thuần engine, **không AI**.
+- **BC10 — nhận xét chung (AI sinh)**: sau BC9 → AIService `/summarize-session` sinh `overall_comment` (best-effort; AI lỗi **không** chặn `Scored`).
+- **BC11 — nguồn rubric B2C theo `JobCategory`** *(prerequisite chấm B2C)*: seed/CRUD `rubric_criteria` (`campaign_id IS NULL`) cho BA/BE/FE (Σweight=1) — chưa có thì answer B2C **không được chấm**.
 - **Chấp nhận:** user cá nhân nạp credit (sandbox PayOS) → ví +N; tạo session luyện reserve −1 (giữ chỗ), chấm xong consume đúng 1; hết credit → tạo session trả 402; `GET history` trả đúng buổi của mình, không thấy của người khác; **`POST cv-analysis` (chỉ cvId) → trả tóm tắt+mạnh/yếu+gợi ý; kèm jdId → có matchScore+skills; kết quả lưu `cv_analyses` đọc lại được**.
 
 ---

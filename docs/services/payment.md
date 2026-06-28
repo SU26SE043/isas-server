@@ -69,6 +69,7 @@ CreditAccount {                         // GET /me/account
   ownerType:        enum(string)        // Org · User
   ownerId:          uuid
   paymentMode:      enum(string)        // Prepaid · Postpaid (User luôn Prepaid)
+  status:           enum(string)        // Active · Suspended (đình chỉ nợ xấu/quá hạn)
   remainingCredits: int
   reservedCredits:  int
   creditLimit:      int?                // chỉ Org/postpaid
@@ -155,8 +156,9 @@ id               uuid          PK
 owner_type       varchar(8)    enum: Org · User
 owner_id         uuid          ref lỏng → Auth
 payment_mode     varchar(16)   enum: Prepaid · Postpaid (User LUÔN Prepaid)
-remaining_credits int          prepaid: số credit còn
-reserved_credits int           đang giữ chỗ
+status           varchar(16)   enum: Active · Suspended (mặc định Active) — đình chỉ nợ xấu/quá hạn → chặn reserve mới
+remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine)
+reserved_credits int           đang giữ chỗ (Reserved chưa Consumed/Released)
 credit_limit     int?          CHỈ Org/postpaid
 period_usage     int?          CHỈ Org/postpaid — lượt đã dùng kỳ này
 updated_at       timestamptz
@@ -181,7 +183,7 @@ owner_id   uuid
 order_id   uuid?         FK → orders
 session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
-reason     varchar(16)   enum: Purchase · Consume · Refund
+reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2)
 created_at timestamptz
 ```
 
@@ -218,7 +220,7 @@ id                  uuid          PK
 order_id            uuid          FK → orders (1–1)
 gateway             varchar(16)   "payos"
 gateway_txn_id      varchar?
-status              varchar(16)
+status              varchar(16)   soi gương kết quả PayOS (Paid/Failed…) — KHÔNG tự quyết; `orders.status` là nguồn chân lý (§State machine)
 raw_webhook_payload jsonb?        lưu để đối soát
 created_at          timestamptz
 ```
@@ -251,19 +253,95 @@ expires_at timestamptz
 
 ---
 
+## State machine & vòng đời (chốt trạng thái + transition)
+
+> Mỗi thực thể mang tiền phải có **transition tường minh + trạng thái cuối + xử lý redeliver / event ra ngoài thứ tự**. Enum trạng thái xem §DB. `★` = terminal (bất biến).
+
+### Order — vòng đời đơn mua/tất toán
+```
+            ┌─(webhook Paid + verify checksum)─► Paid       ★ → cộng credit / tất toán hóa đơn
+Pending ────┤
+            ├─(quá expired_at — job nền quét)──► Expired    ★
+            ├─(PayOS báo lỗi)─────────────────► Failed      ★
+            └─(người mua / PayOS hủy)─────────► Cancelled   ★
+```
+- **Chỉ `Pending` mới đổi trạng thái.** 4 trạng thái cuối bất biến → webhook/redeliver tới sau khi đã terminal = **bỏ qua** (idempotent theo `payos_order_code`).
+- **Webhook trả muộn sau `Expired`** (PayOS delay/drop rồi mới `Paid`): **KHÔNG tự cộng credit** — lưu `raw_webhook_payload`, gắn cờ **cần đối soát thủ công** (PlatformAdmin honor hoặc refund). Không để code tự quyết tiền trong ca mơ hồ.
+- **Ai đẩy `Pending → Expired`:** job nền quét `expired_at < now()` (**không** tính lười) → đóng đơn rác.
+- `orders.status` là **nguồn chân lý**; `payment_transactions.status` chỉ soi gương + lưu raw để đối soát, **không tự quyết**.
+
+### credit_reservations — giữ chỗ theo session
+```
+Reserved ─(SessionScored → consume)──────► Consumed  ★ (ghi ledger −1)
+        └─(SessionAbandoned/lỗi → release)► Released  ★ (không trừ)
+```
+- **Idempotent theo `session_id`** (UNIQUE 1 reservation/session) — redeliver cùng event không xử lý lại.
+- ⚠ **Event ra ngoài thứ tự** (RabbitMQ **không đảm bảo thứ tự** giữa `SessionScored`/`SessionAbandoned`) — bắt buộc xử:
+  - đã `Consumed` mà nhận `release` → **bỏ qua** (không hoàn).
+  - đã `Released` mà nhận `consume` → **bỏ qua** (không trừ).
+  - ⇒ `Consumed`/`Released` là **hấp thụ (absorbing)**: chỉ `Reserved` mới chuyển tiếp.
+- **consume/release đến mà CHƯA có reservation** (miss event reserve): **không tạo bút toán**, log cảnh báo, trả `200` (tránh kẹt retry). Reserve là điều kiện vào bài → thiếu reserve = bất thường cần điều tra, **không âm thầm trừ**.
+
+### Kế toán `remaining ↔ reserved` — bút toán ATOMIC (chống double-spend)
+> Bất biến lõi của ví. Mọi bút toán chạy trong **1 transaction + điều kiện WHERE** (optimistic), **không** đọc-rồi-ghi rời.
+```
+reserve : UPDATE … SET remaining_credits = remaining_credits − 1,
+                       reserved_credits  = reserved_credits  + 1
+          WHERE owner=… AND remaining_credits ≥ 1     ← 0 row ⇒ hết credit ⇒ 402, KHÔNG tạo session
+consume : UPDATE … SET reserved_credits  = reserved_credits − 1
+          + INSERT credit_transactions(reason=Consume, delta=−1)
+release : UPDATE … SET reserved_credits  = reserved_credits − 1,
+                       remaining_credits  = remaining_credits + 1
+```
+- **Reserve trừ `remaining` NGAY** (không chỉ tăng `reserved`) → 2 reserve song song không cùng vượt check ⇒ **chống double-spend**. `remaining` = tiêu được thật; `reserved` = đang giữ.
+- **Postpaid** (không có `remaining`): điều kiện reserve là `period_usage + reserved + 1 ≤ credit_limit` (và account `Active`, không có hóa đơn `Overdue`).
+
+### Invoice — postpaid, CHỈ Org
+```
+Issued ─(tất toán PayOS OK)─► Paid    ★
+       └─(quá due_at)───────► Overdue ─(tất toán)─► Paid
+                                    (Overdue ⇒ chặn reserve mới, KHÔNG văng in-flight)
+       (lập sai)─► Void      ★ (hủy hóa đơn, không tính nợ)
+```
+- **Chốt kỳ là 1 transaction:** snapshot `period_usage` → tạo `invoice(Issued)` → **reset `period_usage = 0` cùng transaction** (fail giữa chừng → rollback cả 2, không mất/nhân nợ).
+
+### credit_accounts — trạng thái tài khoản (cột `status`)
+```
+Active ─(admin đình chỉ: nợ xấu / hóa đơn Overdue / hết hạn)─► Suspended
+Suspended ─(admin gỡ / đã tất toán)─────────────────────────► Active
+payment_mode:  Prepaid ─(PlatformAdmin duyệt + MST)─► Postpaid   (thu hồi → Prepaid: admin)
+```
+- `Suspended` ⇒ mọi **reserve trả 402/403**; **KHÔNG** chạm reservation đang `Reserved` (in-flight được bảo vệ) — bài đang chạy vẫn consume/release bình thường.
+
+---
+
 ## Business rules
 
 ### `order_code` — duy nhất + KHÔNG đoán được
-- **Không** auto-increment (lộ số lượng đơn) cũng **không** snowflake 64-bit (**có thể vượt trần số của PayOS**).
-- Dùng **time-based + random** (vd `YYMMDDHHmmss` + vài số random) **trong phạm vi PayOS cho phép** (orderCode là số ≤ ~JS safe-int — **cần verify trần PayOS**).
+- **Không** auto-increment (lộ số lượng đơn) cũng **không** snowflake 64-bit (**vượt trần PayOS 2^53−1** — §PayOS).
+- Dùng **time-based + random** (`YYMMDDHHmmss` + vài số random), giữ **≤ 9.007.199.254.740.991** (trần PayOS, 2^53−1).
 - Đụng `UNIQUE(payos_order_code)` → **regenerate + retry**.
 
 ### Thanh toán — webhook + **active polling**
-- Cộng credit / tất toán hóa đơn **chỉ khi PayOS webhook `Paid`** (verify **checksum/signature**). **Không** kích hoạt theo return-url FE. Idempotent theo `payos_order_code`.
+- Cộng credit / tất toán hóa đơn **chỉ khi PayOS webhook `Paid`** (verify **chữ ký HMAC-SHA256** — §PayOS). **Không** kích hoạt theo return-url FE. Idempotent theo `payos_order_code`.
 - **Active polling:** FE gọi `GET /order/{id}/status`; nếu server **chưa** nhận webhook → server **chủ động gọi PayOS get-payment-info đối soát ngay** (cứu ca webhook delay/drop làm FE đứng hình). Lưu `raw_webhook_payload`.
 
-### Reserve → Consume → Release (chi tiết ở mục trên)
+### PayOS — ràng buộc cổng (đã verify payos.vn — 2026-06-28)
+> Lấy từ tài liệu chính thức **payos.vn** (VietQR/VND). **Chốt cuối theo dashboard my.payos.vn** của tài khoản thật.
+
+| Hạng mục | Ràng buộc PayOS | Hệ quả cho ISAS |
+|---|---|---|
+| `orderCode` | **số nguyên dương ≤ 9.007.199.254.740.991** (2^53−1, PayOS xử lý như JS number); **duy nhất vĩnh viễn**, không tái dùng | `payos_order_code bigint`; `YYMMDDHHmmss`+random giữ **< 9,007×10¹⁵**; **KHÔNG** snowflake 64-bit (vượt trần) — [D12](../decisions.md) |
+| `description` | **chuỗi NGẮN**: ≤ **25 ký tự** (tài khoản liên kết payOS); **9 ký tự** nếu VietQR ngân hàng không liên kết | mô tả gọn (vd `ISAS <orderCode>`); **không** nhồi tên gói/email vào `description` |
+| `amount` | số nguyên VND; tối thiểu ~**2.000đ** (theo ví dụ SDK) | `amount_vnd bigint` |
+| Field bắt buộc create | `orderCode, amount, description, cancelUrl, returnUrl, signature` | phải truyền `returnUrl`+`cancelUrl` **dù không tin** return-url để cộng tiền (chỉ webhook mới cộng) |
+| Chữ ký | **HMAC-SHA256**: sort field theo key **A→Z** → nối `key=value&…` → ký bằng **checksum key** | verify y hệt cho **cả** create lẫn webhook; checksum key ở my.payos.vn (đổi được) |
+| Trạng thái PayOS | `PENDING · PAID · PROCESSING · CANCELLED · EXPIRED` (**không có "Failed"**) | map → `Order.status`: `PROCESSING`→giữ `Pending`; `CANCELLED`/`EXPIRED`→`Cancelled`/`Expired`; **`Failed`** của ta = lỗi tạo link/nội bộ, không phải status PayOS |
+| Webhook | phải **đăng ký + confirm** URL; PayOS POST `{code, desc, success, data, signature}` | endpoint webhook **không** qua gateway; **verify signature trước** khi xử lý |
+
+### Reserve → Consume → Release
 - Reserve lúc bắt đầu, Consume lúc `Scored`, Release lúc bỏ ngang/lỗi hệ thống. Idempotent theo `session_id`.
+- **Transition + bút toán atomic + xử lý event ra ngoài thứ tự**: xem **§State machine** (`credit_reservations` + kế toán `remaining↔reserved`) — đây là phần chống double-spend & double-process, **bắt buộc** khi build.
 
 ### Postpaid (trả sau)
 - **Chỉ org được PlatformAdmin DUYỆT** mới bật `Postpaid` (cần **pháp nhân/MST** để xuất hóa đơn + đòi nợ). Mặc định org mới = `Prepaid`.
@@ -272,6 +350,6 @@ expires_at timestamptz
 - **Rủi ro nợ xấu:** AI cost đã đốt thật → hạn mức + duyệt + đình chỉ là bắt buộc.
 
 ### Đình chỉ / hết hạn (exception)
-- Hết credit (prepaid) / chạm hạn mức / hóa đơn quá hạn (postpaid) → **chỉ chặn HÀNH ĐỘNG TƯƠNG LAI** (mời mới, reserve mới). **KHÔNG văng ứng viên đang thi** — reservation đã giữ chỗ nên **in-flight được bảo vệ**.
+- Hết credit (prepaid) / chạm hạn mức / hóa đơn quá hạn (postpaid) → admin đặt account `status = Suspended` (§State machine) → **chỉ chặn HÀNH ĐỘNG TƯƠNG LAI** (mời mới, reserve mới trả 402/403). **KHÔNG văng ứng viên đang thi** — reservation đã giữ chỗ nên **in-flight được bảo vệ**.
 
 > Nguyên tắc tiền bạc: PaymentService **riêng**, không service nào khác ghi thẳng bảng payment — chỉ qua API nội bộ.
