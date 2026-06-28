@@ -7,5 +7,5 @@
 > |---|---|---|
 > | `isas` | Auth | [services/auth.md](services/auth.md) |
 > | `isas_interview` | Interview (engine) | [services/interview.md](services/interview.md) |
-> | `isas_campaign` | Campaign 🟡 | [services/campaign.md](services/campaign.md) |
+> | `isas_campaign` | Campaign 🟢 merged main (PR #22) | [services/campaign.md](services/campaign.md) |
 > | `isas_payment` | Payment 🟡 | [services/payment.md](services/payment.md) |

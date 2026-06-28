@@ -24,18 +24,18 @@
 | A1 | Bảng `organizations` + `org_members` (migration) | migration apply; tạo 1 org + 1 member OK | — | ✅ **merged main (PR #23)** · entity `Organization`/`OrgMember` (PK `(org_id,user_id)`, `org_role` varchar(16)) + migration `AddOrganizations` + test ✅ (round-trip SQLite) · ⚠ apply schema DB chung (Neon) qua pipeline trước deploy |
 | A2 | JWT mang `org_id` + `org_role` | login → decode token có claim `org_id`, `org_role` | A1 | ✅ **merged main (PR #23)** · `JwtService` thêm claim `org_id`+`org_role` khi user thuộc org; lookup `OrgMember` ở login+refresh + test ✅ (2/2) · ⚠ e2e login-HTTP chờ stack chạy |
 | A3 | Đăng ký tổ chức → tạo org + OrgAdmin | `POST /auth/register-org` → org tạo, user = OrgAdmin | A1 | ✅ **merged main (PR #23)** · `POST /auth/register-org` (public) → role `Employer` + `Organization` + `OrgMember(OrgAdmin)` → `AuthResponse` (token mang org_id/org_role) + test ✅ · ⚠ e2e HTTP chờ stack chạy |
-| A4 | HrMember bị chặn endpoint billing | HrMember gọi `POST /payment/order` → 403 | A2, P-API | not_started |
+| A4 | HrMember bị chặn endpoint billing | HrMember gọi `POST /payment/order` → 403 | A2, P2 | not_started |
 | A5 | Bật lại `[Authorize(Roles)]` mọi service | gọi ẩn danh endpoint cần auth → 401 | A2 | not_started |
 
 ## S1 — Payment (PaymentService, refactor theo doc)
 | ID | Hành vi | Xác minh | Dep | Status |
 |---|---|---|---|---|
 | P1 | `credit_accounts(owner_type)` + `credit_reservations` + `credit_transactions` | migration apply; tạo account cho org | A1 | not_started |
-| P7 | `order_code` time+random, unique + retry | sinh 10k code không trùng; ≤ trần PayOS *(verify trần!)* | — | not_started |
+| P7 | `order_code` time+random, unique + retry | sinh 10k code không trùng; **≤ 9.007.199.254.740.991** (2^53−1, trần PayOS đã verify — D12) | — | not_started |
 | P2 | Mua pack OneTime → webhook PayOS cộng credit | order (sandbox) → webhook → `remaining += interview_credits`; webhook lần 2 **không** cộng lại | P1, P7 | not_started |
 | P3 | `/order/{id}/status` active-polling đối soát | chưa có webhook → `GET status` → server gọi PayOS get-payment-info → trả Paid | P2 | not_started |
 | P4 | `/internal/credits/reserve` (chặn khi hết) | reserve → `reserved+1`; hết quota/hạn mức → 402 | P1 | not_started |
-| P5 | `/internal/credits/consume` khi `SessionScored` | consume → `credit_transactions(Usage,-1)`; gọi 2 lần cùng sessionId chỉ trừ 1 | P4, E2 | not_started |
+| P5 | `/internal/credits/consume` khi `SessionScored` | consume → `credit_transactions(Consume,-1)`; gọi 2 lần cùng sessionId chỉ trừ 1 | P4, E2 | not_started |
 | P6 | `/internal/credits/release` khi bỏ ngang/lỗi | release → reservation `Released`, không trừ credit | P4 | not_started |
 | P8a | Postpaid: hạn mức + dồn nợ | postpaid org reserve tới `credit_limit` → vượt → 402 | P1, P4 | not_started |
 | P8b | Postpaid: hóa đơn cuối kỳ + tất toán | chốt kỳ → `invoice` (`interview_count×unit_price`); `POST /invoices/{id}/pay` → PayOS → nợ về 0 | P8a, P2 | not_started |
@@ -53,6 +53,8 @@
 | C8 | Publish → AI đề xuất tiêu chí có cấu trúc | publish → `campaign_criteria` có `weight`, Σweight=1 | AI-crit | ✅ **merged main (PR #22)** · `POST /publish` → `campaign_criteria` Σ=1 + audit · AIService `/suggest-criteria` (Gemini) + fallback · unit test ✅ + live HTTP ✅; ⚠ image rebuild để permanent + HR duyệt UI |
 | C9 | Soft delete + filter | DELETE → `deleted_at` set; GET không trả campaign đã xóa | — | ✅ **merged main (PR #22)** · soft-delete + filter + unit test ✅ |
 | C10 | `audit_logs` khi mutation | đổi tiêu chí → 1 row `audit_logs(actor, action)` | — | ✅ **merged main (PR #22)** · ghi ở Create/EditQuestions/Delete/Publish/Transition + unit test ✅ |
+| C11 | JD & Criteria nhập **text trực tiếp** (`jdText`/`criteriaText`) — không cần PDF | tạo/sửa campaign với body `jdText`/`criteriaText` (không file) → `jd_text`/`criteria_text` set, `*_file_url` null; nhập **cả text+file → ưu tiên text** (bỏ file); `GET /campaign/{id}` trả JD; publish vẫn sinh `campaign_criteria` từ text | — | not_started · spec: [campaign.md](services/campaign.md) §API · code hiện chỉ nhận PDF (C5) — thêm nhánh text, AI đọc `*_text` bất kể nguồn |
+| C12 | Criteria **structured** HR khai thẳng (`criteria[]` = `CriterionItem[]`) | tạo/sửa campaign (Draft) với `criteria[]` (`{name,description?,weight,maxScore}`) → **replace-all atomic** `campaign_criteria(source=HrEdited)` (`order_no`, **UNIQUE name/campaign**); `Σweight∈[0.99,1.01]`→**chuẩn hoá Σ→1**, ngoài→**400**; `0<weight≤1`,`maxScore≥1`,name không trùng; sửa khi `Active`→**409**; **publish bỏ qua AI** khi đã có `criteria[]` | — | not_started · spec: [campaign.md](services/campaign.md) §`campaign_criteria` + §Tiêu chí chấm · **có migration** (thêm `order_no`/`updated_at` + 2 unique) · ưu tiên hơn text/PDF — HR khai đúng trường, không để AI suy từ text |
 
 ## S3 — Distribution & Execution
 | ID | Hành vi | Xác minh | Dep | Status |
@@ -74,6 +76,9 @@
 | E6 | Xuất CSV/PDF | `GET …/results/export?format=csv` → file khớp ranking | E5 | not_started |
 | E7 | Payment phản ứng event (consume/release) | `SessionScored`→consume; `SessionAbandoned`→release | P5, P6, E2, E3 | not_started |
 | E8 | Guard điểm phía C# ở callback chấm (phòng worker lỗi / image lệch) | `POST /internal/answers/{id}/result`: score > `maxScore` → **kẹp** về maxScore; `criterionId` không thuộc rubric của session → **bỏ** (không lưu); test pass | E1 | not_started · spec: [interview.md](services/interview.md) §Đánh giá cách chấm tiêu chí #4 · defense-in-depth (worker đã kẹp/lọc nhưng C# tin 100% + AIService deploy ephemeral); áp cho cả B2B & B2C |
+| E9 | Chấm **neo theo mức** (levels/anchors) → đúng mức + ổn định | message chấm có `levels:[{score,descriptor}]`(+`anchors?`); AI trả `{score, levelMatched, reasoning}` với `score=levelMatched.score`; mức lạ → **reject** (worker+C#); lưu `answer_scores.level_matched`; **B2B sinh levels khi publish/materialize** | E1 | not_started · spec: [interview.md](services/interview.md) §Chất lượng & độ nhất quán · migration `answer_scores.level_matched` · áp B2B & B2C |
+| E10 | Đo & chặn **chênh lệch** (self-consistency) | chấm N lần (`Scoring:SelfConsistencyN`) → điểm chốt = **median**/tiêu chí (attempt_no tăng); spread (max−min) > `Scoring:VarianceThreshold` → `practice_answers.needs_review=true`, không tự chốt | E9 | not_started · spec: §Chất lượng & độ nhất quán · migration `practice_answers.needs_review` · tốn N× AI → **bật chọn lọc** (throughput là trần) |
+| E11 | Chuẩn **nhận xét** + HR chốt | `reasoning`/`overall_comment` trích **≥1 dẫn chứng** transcript, chặn rỗng, **bọc chống prompt-injection** ("chấm tối đa" không lái điểm); transcript+điểm+`needs_review` hiện cho HR review (điểm AI = gợi ý) | E9, BC10 | not_started · spec: §Chất lượng & độ nhất quán + [ai.md](services/ai.md) §Reliability |
 
 ## S5 — B2C Personal Practice (Payment + Interview)
 > Engine luyện + lịch sử **đã chạy** (`PracticeController`); các task dưới = **nối thanh toán ví cá nhân** vào engine. Ví dùng chung `credit_accounts(owner_type)` của S1, khác `owner_type=User`.
@@ -82,7 +87,7 @@
 |---|---|---|---|---|
 | BC1 | Mua pack prepaid ví cá nhân (`owner=User`) → webhook cộng credit | order sandbox `owner=User` → webhook → ví user `remaining += credits`; webhook lần 2 **không** cộng lại | P1, P7 | not_started |
 | BC2 | Interview `CreateSession` reserve credit ví cá nhân; hết → 402 | có credit → `POST /api/practice/sessions` tạo session + `reserved+1`; ví 0 credit → **402, không có row session** | P1, P4 | not_started |
-| BC3 | Consume credit ví cá nhân khi `SessionScored` | session B2C `Scored` → `credit_transactions(Usage,-1)` ví user; 2 lần cùng `sessionId` chỉ trừ 1 | BC2, P5 | not_started |
+| BC3 | Consume credit ví cá nhân khi `SessionScored` | session B2C `Scored` → `credit_transactions(Consume,-1)` ví user; 2 lần cùng `sessionId` chỉ trừ 1 | BC2, P5 | not_started |
 | BC4 | Release credit ví cá nhân khi bỏ ngang/lỗi | session B2C `Abandoned` → reservation `Released`, không trừ credit | BC2, P6, E3 | not_started |
 | BC5 | (verify) Lịch sử cá nhân đọc đúng chủ | `GET /api/practice/sessions/history` chỉ trả session của user; `GET /{id}` của người khác → 403/404 | — | not_started |
 | BC6 | AIService `POST /analyze-cv` (feedback + khớp JD) | `{ cvText, jdText?, jobCategory }` → `{ summary, strengths[], weaknesses[], suggestions[], jdMatch? }`; có `jdText` → `jdMatch.{score,matchedSkills,missingSkills}` | — | not_started |
