@@ -87,6 +87,7 @@
 | BC6 | AIService `POST /analyze-cv` (feedback + khớp JD) | `{ cvText, jdText?, jobCategory }` → `{ summary, strengths[], weaknesses[], suggestions[], jdMatch? }`; có `jdText` → `jdMatch.{score,matchedSkills,missingSkills}` | — | not_started |
 | BC7 | Interview `cv-analysis` endpoint + lưu `cv_analyses` | `POST …/practice/cv-analysis {cvId, jdId?}` → parse + gọi AIService → 201 + row `cv_analyses`; `GET …/cv-analysis/{id}` đọc lại đúng chủ | BC6 | not_started |
 | BC8 | Báo cáo buổi luyện thêm "CV vs câu trả lời" | session `Scored` có CV → báo cáo có mục đối chiếu CV↔transcript (chỗ CV mạnh nhưng trả lời yếu) | BC7, E1 | not_started |
+| BC9 | Tổng kết điểm B2C sau `Scored` (điểm tổng + điểm/tiêu chí + cần cải thiện) | session B2C `Scored` → DB có `practice_sessions.overall_score` + rows `session_criterion_scores`; `GET /api/practice/sessions/{id}` trả `overallScore` (0–100) + `criteriaScores[]` (điểm/tiêu chí / `maxScore`) + `needsImprovement[]` (tiêu chí dưới ngưỡng) | — | not_started · spec đầy đủ: [interview.md](services/interview.md) §Tổng kết điểm buổi luyện B2C (BC9) · **lưu DB** (cột `overall_score`/`answered_count` + bảng `session_criterion_scores`) khi `Scored`, **CÓ migration**, không AI, chỉ B2C |
 
 ---
 

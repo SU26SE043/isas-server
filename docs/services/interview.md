@@ -28,6 +28,7 @@ PracticeSessionResponse {
   createdAt:    datetime
   completedAt:  datetime?               // set khi submit
   questions:    QuestionResponse[]
+  result:       SessionResultResponse?  // 🔜 BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa chấm xong
 }
 
 QuestionResponse {
@@ -53,12 +54,30 @@ AnswerScoreResponse {
   rubricVersion: int
 }
 
+SessionResultResponse  🔜 {           // BC9 — tổng kết cả buổi (B2C), lưu DB khi Scored, đọc lại từ DB
+  overallScore:    decimal(5,2)        // 0–100, Σ(pct_tiêu_chí × weight)/Σweight × 100
+  answeredCount:   int                 // số câu đã chấm (có scores) — kết quả tính trên bấy nhiêu câu
+  totalQuestions:  int                 // tổng số câu của buổi (vd 5)
+  criteriaScores:  CriterionScoreResponse[]
+  needsImprovement: uuid[]             // criterionId của tiêu chí dưới ngưỡng (yếu → ưu tiên cải thiện)
+}
+
+CriterionScoreResponse  🔜 {
+  criterionId:  uuid
+  name:         string
+  averageScore: decimal(5,2)           // điểm trung bình tiêu chí qua các câu đã chấm
+  maxScore:     int
+  percentage:   decimal(5,2)           // averageScore / maxScore × 100 (0–100)
+  weight:       decimal(5,4)
+}
+
 PracticeSessionSummary {
   id:           uuid
   status:       enum(string)
   jobCategory:  enum(string)
   createdAt:    datetime
   completedAt:  datetime?
+  overallScore: decimal(5,2)?           // 🔜 BC9 — điểm tổng 0–100 nếu đã Scored (B2C); null nếu chưa → list lịch sử hiện điểm
 }
 
 FileRecord {
@@ -102,9 +121,9 @@ CvAnalysisResponse  🔜 {
 ```
 - Lỗi: **400** (CV/JD không đọc được nội dung · AI trả rỗng) · **401** · **402** 🔜 (hết credit) · **502** (AIService lỗi).
 
-**`GET /sessions/history`** — Lịch sử của chính user. Res **`200`** `PracticeSessionSummary[]` (mới nhất trước). Lỗi: **401**.
+**`GET /sessions/history`** — Lịch sử của chính user. Res **`200`** `PracticeSessionSummary[]` (mới nhất trước; 🔜 BC9: kèm `overallScore` nếu buổi đã `Scored`). Lỗi: **401**.
 
-**`GET /sessions/{sessionId}`** — Chi tiết (câu hỏi + bài nộp + điểm). Res **`200`** `PracticeSessionResponse` (mỗi câu kèm `answer` + `scores` nếu có). Lỗi: **401** · **403** (không phải buổi của bạn) · **404**.
+**`GET /sessions/{sessionId}`** — Chi tiết (câu hỏi + bài nộp + điểm). Res **`200`** `PracticeSessionResponse` (mỗi câu kèm `answer` + `scores` nếu có; 🔜 BC9: kèm `result` tổng kết khi `status=Scored` & B2C). Lỗi: **401** · **403** (không phải buổi của bạn) · **404**.
 
 **`POST /sessions/{sessionId}/submit`** — Chốt sổ (đi chấm nốt). Res **`204`**. Lỗi: **400** (chưa trả lời câu nào · trạng thái không cho submit) · **401** · **403** · **404**.
 
@@ -149,7 +168,8 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 ```
 practice_sessions 1──* practice_questions 1──1 practice_answers 1──* answer_scores
         │                                                              │
-        └──*? file_records (cv_id, jd_id)            rubric_criteria ──┘
+        ├──*? file_records (cv_id, jd_id)            rubric_criteria ──┘
+        └──* session_criterion_scores (🔜 BC9, B2C)
 rubric_criteria 1──* rubric_levels 1──* rubric_anchors
 ```
 
@@ -166,6 +186,8 @@ job_category  varchar(8)    enum: BA·BE·FE
 status        varchar(32)   enum SessionStatus (state machine bên dưới)
 created_at    timestamptz   NOT NULL
 completed_at  timestamptz?  set khi submit
+overall_score numeric(5,2)? 🔜 BC9 — điểm tổng 0–100, set khi `Scored` (B2C); null khi chưa/B2B
+answered_count int?         🔜 BC9 — số câu đã chấm lúc tính kết quả (snapshot)
 ```
 
 ### `practice_questions`
@@ -205,6 +227,22 @@ rubric_version int
 created_at     timestamptz
                              UNIQUE (answer_id, criterion_id, attempt_no)
 ```
+
+### `session_criterion_scores` — 🔜 BC9 (B2C; ghi khi session `Scored`)
+```
+id                uuid          PK
+session_id        uuid          FK → practice_sessions (Cascade)
+criterion_id      uuid          FK → rubric_criteria (Restrict)
+criterion_name    varchar       snapshot tên tiêu chí lúc tính (rubric có thể đổi version)
+average_score     numeric(5,2)  điểm TB tiêu chí qua các câu đã chấm
+max_score         int           snapshot maxScore
+percentage        numeric(5,2)  average_score / max_score × 100 (0–100)
+weight            numeric(5,4)  snapshot weight
+needs_improvement bool          percentage < ngưỡng (mặc định 50%)
+created_at        timestamptz
+                                UNIQUE (session_id, criterion_id)
+```
+> Điểm tổng buổi nằm ở `practice_sessions.overall_score` (+ `answered_count`); breakdown mỗi tiêu chí ở bảng này. `needsImprovement[]` = các row `needs_improvement = true`. **Chỉ B2C** (B2B không ghi).
 
 ### `rubric_criteria`
 ```
@@ -319,6 +357,40 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
   - **✅ E1 (chọn tiêu chí khi build job chấm):** branch theo `campaign_id` của session — B2B (`campaign_id` có) → tiêu chí `rubric_criteria(campaign_id)`; B2C (`campaign_id` null) → rubric theo `job_category` **VÀ `campaign_id IS NULL`** (criteria campaign cũng mang `job_category` nên phải lọc thêm để không rò sang chấm B2C). Áp ở **cả** publish (`AnswerService.TryPublishScoringJobAsync`) lẫn republish (`StuckAnswerRepublisher`). Message shape + worker Python **KHÔNG đổi** (D9). Kết quả: session B2B `Scored` → `answer_scores.criterion_id` trỏ tiêu chí campaign.
 - Worker chấm đủ **mọi** tiêu chí; thiếu → lỗi vĩnh viễn. Điểm **kẹp** `[0, maxScore]`. Bỏ tiêu chí Gemini bịa; chống trùng. `answer_scores` gắn `rubric_version` lúc chấm. Hiển thị: mỗi tiêu chí lấy **attempt mới nhất**.
 - **Điểm tổng/session** (khi `Scored`) = `Σ điểm_tiêu_chí × weight` chuẩn hóa — dùng cho ranking.
+- **🔜 Tổng kết điểm B2C (BC9):** spec đầy đủ ở **§Tổng kết điểm buổi luyện B2C (BC9)** ngay dưới.
+
+### Tổng kết điểm buổi luyện B2C (BC9) — 🔜 chưa build
+
+**Vì sao.** Một buổi luyện có **N câu** (mặc định 5 — `QUESTION_COUNT`). Engine **chấm dần từng câu** → mỗi `answer` có điểm theo **từng tiêu chí** (`answer_scores`, kèm `reasoning`). Nhưng người luyện cần **một kết quả buổi** sau khi xong — *điểm tổng + mỗi tiêu chí được bao nhiêu + tiêu chí nào cần cải thiện* — chứ không phải tự cộng tay từ điểm rải rác trong từng câu. Đây là **feedback định hướng** của B2C; hiện engine **chưa tính** mức session.
+
+**Phạm vi.** **CHỈ B2C** (`campaign_id IS NULL`). B2B: điểm tổng phục vụ **ranking** tính ở CampaignService từ event `SessionScored` (xem dưới) — **không** dùng `result` này.
+
+**Khi nào tính & lưu.** Tính **một lần khi session chuyển sang `Scored`** (trong `AnswerService.TryCompleteSessionAsync` + nhánh đóng-ngay của `PracticeService.SubmitSessionAsync`) rồi **ghi DB**: `practice_sessions.overall_score` + `answered_count`, và breakdown vào bảng `session_criterion_scores`. **Idempotent**: đóng lại cùng session → xoá breakdown cũ rồi ghi lại (tránh nhân đôi). `GET /sessions/{id}` và `GET /sessions/history` **đọc thẳng từ DB**, không tính lại. **Cần migration** (cột + bảng mới) — apply schema lên DB chung **qua pipeline/tay trước deploy** (không auto-migrate).
+
+**Đầu vào.** (1) `answer_scores` — mỗi `(answer, criterion)` lấy **attempt mới nhất** (giống cách hiển thị hiện tại); chỉ tính answer `Scored` (có điểm). (2) `rubric_criteria` của rubric `JobCategory` **active** (`campaign_id IS NULL`) — đúng bộ tiêu chí đã chấm (theo E1): lấy `weight`, `max_score`, `name`.
+
+**Công thức.**
+1. Với mỗi tiêu chí `c`: `averageScore_c` = trung bình điểm `c` qua các **answer đã chấm**; `percentage_c = averageScore_c / max_score_c × 100`.
+2. `overallScore = ( Σ_c percentage_c × weight_c ) / ( Σ_c weight_c )` — chuẩn hoá theo `Σweight` (không phụ thuộc Σweight=1), **kẹp `[0,100]`**.
+3. `needs_improvement_c` = `percentage_c < ngưỡng` (mặc định **50%**, cấu hình `Scoring:ImprovementThresholdPct`) — lưu cột `session_criterion_scores.needs_improvement`; API `needsImprovement[]` = các row `= true`. Ngưỡng **chốt lúc tính** (đổi ngưỡng sau **không** hồi tố kết quả đã lưu).
+4. `answeredCount` / `totalQuestions`: câu `Skipped`/`Failed`/chưa trả lời **không có** `answer_scores` → **loại khỏi trung bình**; trả 2 con số để biết kết quả tính trên bao nhiêu câu (vd `4/5`).
+
+**Edge cases.**
+- `status ≠ Scored` → `result = null` (buổi chưa chốt).
+- `answeredCount = 0` (mọi câu Failed/Skipped) → `overallScore = 0`, mỗi `criteriaScores[].percentage = 0`, `needsImprovement` = **tất cả** tiêu chí.
+- `Σweight = 0` (dữ liệu rubric lỗi) → fallback **trọng số đều** `1/K` để tránh chia 0; log warning.
+- Điểm đã **kẹp `[0, maxScore]`** ở callback chấm → không âm/vượt trần.
+- Session B2B (`campaign_id` có) → **không** tính/ghi (không áp BC9); `result = null`.
+- **Chấm lại sau khi đã `Scored`** (callback đến muộn — hiếm): kết quả đã lưu **không tự cập nhật** (đóng session chỉ chạy 1 lần). Ngoài phạm vi BC9; cần thì backfill/recompute thủ công.
+
+**Ảnh hưởng (impact).**
+- **DB:** **migration mới** — thêm cột `practice_sessions.overall_score`/`answered_count` + bảng `session_criterion_scores` (xem §DB). Apply qua pipeline/tay (không auto-migrate).
+- **DTO:** `PracticeSessionResponse` thêm `result?` + `PracticeSessionSummary` thêm `overallScore?`, **đọc từ** `practice_sessions`/`session_criterion_scores`. Đều **nullable, thêm field** → **không phá** client cũ.
+- **Code:** hàm tính+ghi (vd `ComputeAndStoreSessionResult(...)`) gọi tại **điểm đóng session → `Scored`** (`AnswerService.TryCompleteSessionAsync` + `SubmitSessionAsync`), **chỉ khi** `campaign_id = null`; `GetSessionAsync`/`GetHistoryAsync` chỉ **đọc**. **Không** AI, **không** infra mới.
+- **FE:** màn kết quả buổi luyện hiển thị điểm tổng + bảng điểm/tiêu chí + danh sách "cần cải thiện"; list lịch sử hiện điểm tổng.
+- **Liên quan:** **BC8** ("CV vs câu trả lời") dùng lại `result` này. **B2B KHÔNG ảnh hưởng** (ranking tính riêng ở Campaign).
+
+**Xác minh (3 lớp).** L1 `dotnet build` (gồm migration). L2 `dotnet test` — unit test: đóng session B2C → `Scored` (2 tiêu chí weight 0.4/0.6, maxScore 5, chấm nhiều câu) → DB có `practice_sessions.overall_score` khớp tính tay + rows `session_criterion_scores` đúng (`percentage`, `needs_improvement`); **đóng lại lần 2 → không nhân đôi** row; session B2B → **không** ghi; `GET /sessions/{id}` trả `result` đọc từ DB; history có `overallScore`. L3 e2e: luyện B2C 5 câu → chấm xong → DB lưu kết quả + `GET` đọc đúng.
 
 ### Sự kiện phát ra (RabbitMQ)
 Khi session đóng, engine phát event để service khác phản ứng (event-driven, tránh Campaign gọi HTTP đọc điểm mỗi lần):
