@@ -104,6 +104,121 @@ public class AnswerServiceTests
         publisher.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    // E1: session B2B publish job mang ĐÚNG tiêu chí campaign (không phải rubric B2C cùng nghề).
+    [Fact]
+    public async Task Upload_B2BSession_PublishesCampaignCriteria_NotJobCategoryRubric()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var campaignId = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready, campaignId: campaignId);
+        var q = TestDb.Question(session.Id);
+        // Tiêu chí campaign (đúng nguồn cần chấm) + rubric B2C cùng nghề (phải bị loại).
+        var campaignCrit = TestDb.Criterion(session.JobCategory, campaignId: campaignId, name: "Campaign-Crit");
+        var b2cCrit = TestDb.Criterion(session.JobCategory, name: "B2C-Crit");
+        t.Db.AddRange(session, q, campaignCrit, b2cCrit);
+        await t.Db.SaveChangesAsync();
+
+        var publisher = new Mock<IScoringJobPublisher>();
+        ScoringJob? published = null;
+        publisher
+            .Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+            .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+            .Returns(Task.CompletedTask);
+        var svc = Build(t, publisher, out _);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
+
+        Assert.NotNull(published);
+        var crit = Assert.Single(published!.Criteria);
+        Assert.Equal(campaignCrit.Id, crit.CriterionId);   // trỏ tiêu chí campaign
+    }
+
+    // E1: session B2C KHÔNG dính tiêu chí campaign cùng nghề (chống rò ngược).
+    [Fact]
+    public async Task Upload_B2CSession_PublishesJobCategoryRubric_NotCampaignCriteria()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready);   // campaign_id = null
+        var q = TestDb.Question(session.Id);
+        var b2cCrit = TestDb.Criterion(session.JobCategory, name: "B2C-Crit");
+        var campaignCrit = TestDb.Criterion(
+            session.JobCategory, campaignId: Guid.NewGuid(), name: "Campaign-Crit");
+        t.Db.AddRange(session, q, b2cCrit, campaignCrit);
+        await t.Db.SaveChangesAsync();
+
+        var publisher = new Mock<IScoringJobPublisher>();
+        ScoringJob? published = null;
+        publisher
+            .Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+            .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+            .Returns(Task.CompletedTask);
+        var svc = Build(t, publisher, out _);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
+
+        Assert.NotNull(published);
+        var crit = Assert.Single(published!.Criteria);
+        Assert.Equal(b2cCrit.Id, crit.CriterionId);   // chỉ rubric B2C, không có campaign
+    }
+
+    // E1 Done-condition: session B2B Scored → answer_scores trỏ rubric_criteria(campaign_id).
+    [Fact]
+    public async Task B2BSession_WhenScored_AnswerScores_PointToCampaignCriteria()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var campaignId = Guid.NewGuid();
+
+        // Tạo session B2B qua đúng đường I1 (materialize tiêu chí campaign).
+        var practice = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object,
+            new Mock<IAiServiceQuestionGenerator>().Object,
+            NullLogger<PracticeService>.Instance);
+        var created = await practice.CreateCampaignSessionAsync(candidate,
+            new CreateCampaignSessionRequest(
+                campaignId, JobCategory.BE,
+                Questions: new[] { "Q1" },
+                Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) }));
+
+        var campaignCrit = await t.Db.RubricCriteria.AsNoTracking()
+            .SingleAsync(c => c.CampaignId == campaignId);
+
+        // Ứng viên nộp answer rồi submit (session -> Scoring).
+        var publisher = new Mock<IScoringJobPublisher>();
+        var svc = Build(t, publisher, out _);
+        var questionId = created.Questions[0].Id;
+        using var audio = new MemoryStream(new byte[] { 1 });
+        var up = await svc.UploadAnswerAsync(created.Id, questionId, candidate, audio, "audio/webm", 30);
+        await practice.SubmitSessionAsync(candidate, created.Id);
+
+        // Worker callback chấm theo tiêu chí campaign.
+        await svc.SaveResultAsync(up.AnswerId, new AnswerScoreCallbackRequest
+        {
+            Transcript = "trả lời",
+            RubricVersion = campaignCrit.Version,
+            Scores = { new ScoreItemDto { CriterionId = campaignCrit.Id, Score = 4m, Reasoning = "ok" } }
+        });
+
+        // Done: session Scored + mọi answer_scores trỏ rubric_criteria có campaign_id.
+        var session = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(s => s.Id == created.Id);
+        Assert.Equal(SessionStatus.Scored, session.Status);
+
+        var scoredCriterionIds = await t.Db.AnswerScores.AsNoTracking()
+            .Where(asc => asc.Answer.SessionId == created.Id)
+            .Select(asc => asc.CriterionId)
+            .ToListAsync();
+        Assert.NotEmpty(scoredCriterionIds);
+        var campaignCriterionIds = await t.Db.RubricCriteria.AsNoTracking()
+            .Where(c => c.CampaignId == campaignId)
+            .Select(c => c.Id)
+            .ToListAsync();
+        Assert.All(scoredCriterionIds, id => Assert.Contains(id, campaignCriterionIds));
+    }
+
     [Fact]
     public async Task Upload_WrongCandidate_Throws()
     {

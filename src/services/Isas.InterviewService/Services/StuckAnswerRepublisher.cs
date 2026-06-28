@@ -83,6 +83,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.SessionId,
                 a.QuestionId,
                 a.AudioObjectKey,
+                CampaignId = a.Session.CampaignId,
                 JobCategory = a.Session.JobCategory,
                 QuestionContent = a.Question.Content
             })
@@ -94,17 +95,18 @@ public class StuckAnswerRepublisher : BackgroundService
 
         foreach (var a in stuck)
         {
-            // Lấy rubric active của nghề (giống AnswerService).
-            var criteria = await db.RubricCriteria
-                .AsNoTracking()
-                .Where(c => c.JobCategory == a.JobCategory && c.IsActive)
-                .ToListAsync(ct);
+            // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
+            var query = db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
+            query = a.CampaignId is Guid campaignId
+                ? query.Where(c => c.CampaignId == campaignId)
+                : query.Where(c => c.CampaignId == null && c.JobCategory == a.JobCategory);
+            var criteria = await query.ToListAsync(ct);
 
             if (criteria.Count == 0)
             {
                 _logger.LogWarning(
-                    "Không có rubric active cho {JobCategory}, bỏ qua answer {AnswerId}",
-                    a.JobCategory, a.Id);
+                    "Không có tiêu chí active (campaign={CampaignId}, nghề={JobCategory}), bỏ qua answer {AnswerId}",
+                    a.CampaignId, a.JobCategory, a.Id);
                 continue;
             }
 

@@ -35,8 +35,8 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | **AuthService** | .NET, JWT, Google OAuth | Đăng nhập, JWT/refresh, profile; 3 role + **Organization (OrgAdmin/HrMember)** | ✅ (thêm Org) |
 | **InterviewService** | .NET, EF Core | **Engine dùng chung**: session (`campaign_id?`), câu hỏi, câu trả lời, điểm, rubric/tiêu chí, file | ✅ (mở rộng B2B) |
 | **AIService** | Python, FastAPI, faster-whisper, google-genai | Sinh câu hỏi + worker chấm điểm (rubric JobCategory **hoặc** tiêu chí campaign) | ✅ (mở rộng) |
-| **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | 🟡 branch |
-| **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo chủ ví** (org B2B / cá nhân B2C — D15), prepaid + postpaid, reserve→consume | 🟡 branch |
+| **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | 🟢 merged main (M2: CRUD + tiêu chí cấu trúc + publish/audit); M3/M4/M5 🟡 |
+| **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo chủ ví** (org B2B / cá nhân B2C — D15), prepaid + postpaid, reserve→consume | 🟡 branch (chưa vào tree main) |
 
 **Hạ tầng:** PostgreSQL 18 — DB-per-service (`isas`/`isas_interview`/`isas_campaign`/`isas_payment`) · SeaweedFS (S3, cổng 8333; CV/JD/Criteria/audio) · RabbitMQ (job chấm `scoring_pipeline_queue` + event) · Redis (provision sẵn cho cache; **lưu ý: refresh token của Auth hiện ở Postgres** — Redis chưa được wire, để dành phase sau).
 
@@ -46,13 +46,13 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | Mảng | ✅ Đã có | ❌/🟡 Chưa làm | Tracking |
 |---|---|---|---|
 | **B2C (nền)** | Engine sinh câu hỏi **bám CV/JD** + chấm rubric `JobCategory` + lịch sử | Ví **credit cá nhân** + reserve/consume khi luyện; **phân tích CV (BC4)** | tasks `BC1`–`BC8`; D15/D17 |
-| **B2B (điều phối)** | — (tái dùng engine B2C) | **Distribution** (M3 magic-link/email), **Ranking+Result** (M4/M5 + CSV/PDF), tiêu chí text→**cấu trúc**, soft-delete/audit | work-division §1b; tasks `C*`/`D*`/`E*` |
-| **AuthService** | 3 role, JWT, Google OAuth | **Organization + org-role** (OrgAdmin/HrMember) trong JWT; bật lại `[Authorize(Roles)]` | tasks `A1`–`A5` |
+| **B2B (điều phối)** | tiêu chí text→**cấu trúc** (C8) + soft-delete/audit (C9/C10) + **I1** session `campaign_id`/materialize + **E1** chấm theo tiêu chí campaign | **Distribution** (M3 magic-link/email), **Ranking+Result** (M4/M5 + CSV/PDF), wire `org_id` | work-division §1b; tasks `C*`/`D*`/`E*` |
+| **AuthService** | 3 role, JWT, Google OAuth, **Organization + org-role** (OrgAdmin/HrMember) trong JWT + `register-org` (A1–A3) | `A4` HrMember chặn billing, `A5` bật lại `[Authorize(Roles)]` mọi service | tasks `A1`–`A5` |
 | **PaymentService** 🟡 | Order/Package/PayOS (theo `user_id`) | `credit_accounts(owner_type)`, **reserve/consume/release**, **postpaid + hóa đơn**, active-polling | tasks `P1`–`P8`; [services/payment.md](services/payment.md) |
-| **CampaignService** 🟡 | CRUD campaign + JD/Criteria (PdfPig) | **6 bug** (§7 work-division), lifecycle, publish tiêu chí cấu trúc, distribution, ranking | tasks `C1`–`C10` |
-| **AIService** | generate-questions, transcribe, worker chấm | **analyze-cv (BC4)**; 🔴 bỏ `/ai/**` khỏi gateway + auth nội bộ · Whisper nhẹ/GPU · chống prompt-injection · DLQ | [services/ai.md](services/ai.md) §Vấn đề |
-| **Gateway / Infra** | Reverse proxy, compose 6 service | `/api/v1/ai/**` **đang public, không auth** → chuyển nội bộ-only; **Redis chưa wire** | §6, §8 |
-| **Nền tảng (Phase 0)** | — | `docker compose up` máy sạch (verify), `make setup/test/check`, **test project Campaign/Payment**, readiness 4 điều kiện | work-division §5; tasks `P0.1`–`P0.5` |
+| **CampaignService** 🟢 | merged main: CRUD + JD/Criteria (PdfPig) + 6 bug fix + lifecycle + publish tiêu chí cấu trúc + soft-delete/audit | distribution, ranking/result/export, wire `org_id` | tasks `C1`–`C10` |
+| **AIService** | generate-questions, transcribe, worker chấm, **suggest-criteria** (C8) | **analyze-cv (BC4)**; 🔴 bỏ `/ai/**` khỏi gateway + auth nội bộ · Whisper nhẹ/GPU · chống prompt-injection · DLQ | [services/ai.md](services/ai.md) §Vấn đề |
+| **Gateway / Infra** | Reverse proxy, compose service | `/api/v1/ai/**` **đang public, không auth** → chuyển nội bộ-only; **Redis chưa wire** | §6, §8 |
+| **Nền tảng (Phase 0)** | test project Campaign/Auth/Interview ✅ (`P0.3`) | `docker compose up` máy sạch (verify), `make setup/test/check`, **test project Payment**, readiness 4 điều kiện | work-division §5; tasks `P0.1`–`P0.5` |
 | **CI/CD** | Build+push Auth/Interview/**Campaign**/Gateway → server qua Tailscale | Thêm **Payment** vào pipeline; AIService deploy **tay trên Mac** | §8; [../DEPLOYMENT.md](../DEPLOYMENT.md) |
 
 ## 3. Giao tiếp giữa service
@@ -165,7 +165,7 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 | `/api/v1/auth/**` | AuthService `/auth/**` | ✅ |
 | `/api/v1/ai/**` | AIService `/api/v1/**` | ✅ |
 | `/api/v1/interview/practice/**`, `/files/**` | InterviewService `/api/practice/**`, `/api/files/**` | ✅ |
-| `/api/v1/campaign/**` | CampaignService `/campaign/**` | 🟡 branch (gateway đã route + CI build) |
+| `/api/v1/campaign/**` | CampaignService `/campaign/**` | ✅ merged main (gateway route + CI build) |
 | `/api/v1/payment/**` | PaymentService `/order`,`/package`,… | 🟡 branch |
 
 > ⚠ **`/api/v1/ai/**` đang public + KHÔNG auth** — endpoint AI đắt (CPU/tiền) → cần chuyển **nội bộ-only** (chỉ gọi qua `AiService:BaseUrl`, không expose gateway) **+** `X-Internal-Token`. Xem [services/ai.md](services/ai.md) §Vấn đề đã biết.
@@ -177,7 +177,7 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 ## 7. Chạy, kiểm thử & phạm vi demo
 
 **Chạy (local):** `docker compose up` (xem `../compose.yaml` — Postgres/Redis/SeaweedFS/RabbitMQ + service). AIService (Python) chạy riêng (xem [../DEPLOYMENT.md](../DEPLOYMENT.md)). Env cần: connection string mỗi DB, `Jwt:Key/Issuer/Audience` (giống nhau mọi service), `Internal:Token`, `AiService:BaseUrl`, SeaweedFS keys, PayOS keys.
-**Kiểm thử:** `dotnet test` (hiện chỉ có `Isas.InterviewService.Tests`). Cửa vào agent/người mới: [AGENTS.md](../AGENTS.md).
+**Kiểm thử:** `dotnet test` (test project: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`; Payment chưa có — `P0.4`). Cửa vào agent/người mới: [AGENTS.md](../AGENTS.md).
 
 ### Definition of Demo (chống "doc đẹp hơn sản phẩm")
 Hai đường đi **sẽ trình hội đồng** — theo hướng tiến hóa B2C → B2B:
