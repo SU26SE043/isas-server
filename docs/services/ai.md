@@ -15,8 +15,10 @@
 | POST | `/api/v1/ai/generate-questions` | `/api/v1/generate-questions` | Sinh câu hỏi |
 | POST | `/api/v1/ai/transcribe` | `/api/v1/transcribe` | Transcribe audio (multipart `file`, `language`) |
 | POST | `/api/v1/ai/suggest-criteria` | `/api/v1/suggest-criteria` | **Đề xuất tiêu chí có cấu trúc (Campaign C8)** — Gemini, đồng bộ |
+| POST | `/api/v1/ai/summarize-session` 🔜 | `/api/v1/summarize-session` | **Nhận xét chung buổi luyện (B2C BC10)** — Gemini, đồng bộ |
 
 `generate-questions`: req `{ jobCategory, cvText?, jdText? }` → res `{ questions: [...] }`.
+`summarize-session` *(🔜 BC10, B2C)*: req `{ jobCategory, overallScore, criteriaScores:[{ name, percentage, needsImprovement }] }` → res `{ overallComment }` (text tiếng Việt, vài câu: tổng quan mạnh/yếu + hướng cải thiện). InterviewService gọi **đồng bộ best-effort** khi session B2C `Scored`; AI **không ghi DB** (Interview tự lưu `overall_comment`). Lỗi/timeout → để `null`, **không** chặn `Scored`. Bọc số liệu/nội dung ứng viên trong delimiter (chống prompt-injection).
 `suggest-criteria` *(C8)*: req `{ jobCategory, jdText?, criteriaText?, count? }` → res `{ criteria: [{ name, description?, weight, maxScore }] }` (**weight chuẩn hoá Σ=1**). CampaignService gọi khi **publish**; lỗi → CampaignService **fallback** bộ mặc định. ✅ **Live qua HTTP (2026-06-27):** container `aiapi` đã cập nhật code (`docker cp app/ + docker restart` — giữ Whisper cache), `POST /suggest-criteria` trả 4 tiêu chí đúng từ JD, Σ=1.0. ⚠ **Ephemeral** — recreate/`compose up` container sẽ mất (image vẫn code cũ); muốn **permanent** phải **rebuild image** từ `Dockerfile` (Dockerfile hiện ở branch khác / cần thêm vào branch này).
 
 > ⚠ **Bảo mật (cần sửa):** 2 endpoint này **hiện KHÔNG có auth** mà gateway vẫn route `/api/v1/ai/**` → ai cũng gọi được (đốt CPU/tiền). Xem *Vấn đề đã biết*.

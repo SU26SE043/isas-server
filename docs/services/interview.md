@@ -54,21 +54,22 @@ AnswerScoreResponse {
   rubricVersion: int
 }
 
-SessionResultResponse  🔜 {           // BC9 — tổng kết cả buổi (B2C), lưu DB khi Scored, đọc lại từ DB
-  overallScore:    decimal(5,2)        // 0–100, Σ(pct_tiêu_chí × weight)/Σweight × 100
-  answeredCount:   int                 // số câu đã chấm (có scores) — kết quả tính trên bấy nhiêu câu
-  totalQuestions:  int                 // tổng số câu của buổi (vd 5)
-  criteriaScores:  CriterionScoreResponse[]
-  needsImprovement: uuid[]             // criterionId của tiêu chí dưới ngưỡng (yếu → ưu tiên cải thiện)
+SessionResultResponse  🔜 {           // BC9 (số liệu) + BC10 (nhận xét) — tổng kết cả buổi (B2C), lưu DB khi Scored
+  overallScore:    decimal(5,2)        // BC9 — 0–100, Σ(pct_tiêu_chí × weight)/Σweight × 100
+  answeredCount:   int                 // BC9 — số câu đã chấm (có scores) — kết quả tính trên bấy nhiêu câu
+  totalQuestions:  int                 // BC9 — tổng số câu của buổi (vd 5)
+  criteriaScores:  CriterionScoreResponse[]   // BC9 — mỗi tiêu chí được bao nhiêu điểm
+  needsImprovement: uuid[]             // BC9 — criterionId của tiêu chí dưới ngưỡng (yếu → ưu tiên cải thiện)
+  overallComment:  string?             // 🔜 BC10 — NHẬN XÉT CHUNG cả buổi (AI sinh); null nếu chưa sinh / AI lỗi
 }
 
-CriterionScoreResponse  🔜 {
+CriterionScoreResponse  🔜 {           // BC9 — điểm "mỗi trường tiêu chí cỡ nhiêu điểm"
   criterionId:  uuid
-  name:         string
-  averageScore: decimal(5,2)           // điểm trung bình tiêu chí qua các câu đã chấm
-  maxScore:     int
+  name:         string                 // tên tiêu chí (vd "Giao tiếp", "Chiều sâu kỹ thuật")
+  averageScore: decimal(5,2)           // điểm ĐẠT ĐƯỢC của tiêu chí (TB qua các câu đã chấm)
+  maxScore:     int                    // điểm TỐI ĐA của tiêu chí → hiển thị "averageScore/maxScore"
   percentage:   decimal(5,2)           // averageScore / maxScore × 100 (0–100)
-  weight:       decimal(5,4)
+  weight:       decimal(5,4)           // trọng số khi gộp vào overallScore
 }
 
 PracticeSessionSummary {
@@ -188,6 +189,7 @@ created_at    timestamptz   NOT NULL
 completed_at  timestamptz?  set khi submit
 overall_score numeric(5,2)? 🔜 BC9 — điểm tổng 0–100, set khi `Scored` (B2C); null khi chưa/B2B
 answered_count int?         🔜 BC9 — số câu đã chấm lúc tính kết quả (snapshot)
+overall_comment text?       🔜 BC10 — nhận xét chung (AI sinh khi `Scored`, best-effort); null nếu chưa/AI lỗi/B2B
 ```
 
 ### `practice_questions`
@@ -391,6 +393,24 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - **Liên quan:** **BC8** ("CV vs câu trả lời") dùng lại `result` này. **B2B KHÔNG ảnh hưởng** (ranking tính riêng ở Campaign).
 
 **Xác minh (3 lớp).** L1 `dotnet build` (gồm migration). L2 `dotnet test` — unit test: đóng session B2C → `Scored` (2 tiêu chí weight 0.4/0.6, maxScore 5, chấm nhiều câu) → DB có `practice_sessions.overall_score` khớp tính tay + rows `session_criterion_scores` đúng (`percentage`, `needs_improvement`); **đóng lại lần 2 → không nhân đôi** row; session B2B → **không** ghi; `GET /sessions/{id}` trả `result` đọc từ DB; history có `overallScore`. L3 e2e: luyện B2C 5 câu → chấm xong → DB lưu kết quả + `GET` đọc đúng.
+
+### Nhận xét chung buổi luyện B2C (BC10) — 🔜 chưa build
+
+**Vì sao.** Số liệu BC9 cho *điểm*; người luyện còn cần **nhận xét chung bằng lời** cho cả buổi (tổng quan làm tốt/chưa tốt ở đâu + hướng cải thiện) — giá trị định hướng của B2C. Sinh bằng **AI (Gemini)** nên **tách khỏi BC9** (BC9 giữ thuần engine, không AI).
+
+**Phạm vi.** CHỈ B2C. Phụ thuộc **BC9** (cần số liệu tổng kết) + endpoint AIService mới.
+
+**AIService (sync, không ghi DB — theo D17).** Endpoint mới `POST /summarize-session` (xem [ai.md](ai.md)): req `{ jobCategory, overallScore, criteriaScores:[{ name, percentage, needsImprovement }] }` → res `{ overallComment }` (text tiếng Việt, vài câu). Bọc nội dung ứng viên trong delimiter (chống prompt-injection — ai.md). InterviewService nhận kết quả rồi **tự lưu** (AI không ghi DB).
+
+**Khi nào sinh & lưu.** Sau khi BC9 ghi số liệu lúc đóng `Scored` (B2C) → InterviewService gọi AIService **best-effort** → lưu `practice_sessions.overall_comment`. **AI lỗi KHÔNG chặn `Scored`**: để `overall_comment = null` + log; có thể **lazy/backfill** (sinh lại khi `GET` thấy null) — không bắt buộc trong BC10.
+
+**DB / DTO.** Cột `practice_sessions.overall_comment text?` (migration BC10) · DTO `SessionResultResponse.overallComment string?`.
+
+**Ảnh hưởng.** Phá tính "không AI" của BC9 (lý do tách BC10) · thêm **endpoint AIService** + **1 call đồng bộ best-effort** lúc đóng session · thêm 1 cột (migration) · chi phí Gemini/buổi. **Không** infra mới (HTTP sync như `generate-questions`/`suggest-criteria`/`analyze-cv`).
+
+**Edge cases.** AI lỗi/timeout → `overall_comment=null`, `Scored` vẫn thành công. Session B2B → không sinh. Chưa `Scored` → null.
+
+**Xác minh (3 lớp).** L1 build (gồm migration). L2 test: AIService `/summarize-session` trả `overallComment` từ input số liệu (mock); InterviewService đóng B2C `Scored` → gọi AI (mock) → lưu `overall_comment`; AI ném lỗi → `Scored` vẫn xong + `overall_comment=null`. L3 e2e: luyện B2C → chấm xong → `GET /sessions/{id}` có `result.overallComment` (AIService thật).
 
 ### Sự kiện phát ra (RabbitMQ)
 Khi session đóng, engine phát event để service khác phản ứng (event-driven, tránh Campaign gọi HTTP đọc điểm mỗi lần):

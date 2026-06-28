@@ -88,6 +88,7 @@
 | BC7 | Interview `cv-analysis` endpoint + lưu `cv_analyses` | `POST …/practice/cv-analysis {cvId, jdId?}` → parse + gọi AIService → 201 + row `cv_analyses`; `GET …/cv-analysis/{id}` đọc lại đúng chủ | BC6 | not_started |
 | BC8 | Báo cáo buổi luyện thêm "CV vs câu trả lời" | session `Scored` có CV → báo cáo có mục đối chiếu CV↔transcript (chỗ CV mạnh nhưng trả lời yếu) | BC7, E1 | not_started |
 | BC9 | Tổng kết điểm B2C sau `Scored` (điểm tổng + điểm/tiêu chí + cần cải thiện) | session B2C `Scored` → DB có `practice_sessions.overall_score` + rows `session_criterion_scores`; `GET /api/practice/sessions/{id}` trả `overallScore` (0–100) + `criteriaScores[]` (điểm/tiêu chí / `maxScore`) + `needsImprovement[]` (tiêu chí dưới ngưỡng) | — | not_started · spec đầy đủ: [interview.md](services/interview.md) §Tổng kết điểm buổi luyện B2C (BC9) · **lưu DB** (cột `overall_score`/`answered_count` + bảng `session_criterion_scores`) khi `Scored`, **CÓ migration**, không AI, chỉ B2C |
+| BC10 | Nhận xét chung buổi luyện B2C (AI sinh) | session B2C `Scored` → AIService `POST /summarize-session` sinh `overall_comment` (best-effort) → lưu `practice_sessions.overall_comment`; `GET /sessions/{id}` → `result.overallComment` có text; AI lỗi → `Scored` vẫn xong, comment null | BC9 | not_started · spec: [interview.md](services/interview.md) §Nhận xét chung buổi luyện B2C (BC10) + [ai.md](services/ai.md) `/summarize-session` · **AI sync** (D17 pattern, best-effort), cột `overall_comment` (migration), chỉ B2C |
 
 ---
 
