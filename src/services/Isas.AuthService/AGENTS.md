@@ -10,10 +10,10 @@
 ## Vai trò
 - Đăng ký / đăng nhập (email + mật khẩu, liên kết **Google OAuth**), phát **JWT access + refresh token**, profile.
 - **3 platform role đã có: `Candidate` / `Employer` / `Admin`** (gắn vào claim JWT). `Admin` ở đây = **PlatformAdmin** (quản trị hệ thống: duyệt postpaid, quản gói), **khác** org-admin bên dưới.
-- `register` hiện **auto gán `Candidate`**. **Gap:** luồng **cấp role Employer** (khi tạo/đăng ký tổ chức).
+- `register` **auto gán `Candidate`**; **`register-org` cấp role `Employer`** + tạo org + OrgAdmin ✅ A3.
 - Các service khác **không gọi Auth lúc chạy** — validate JWT **offline** bằng chung key.
 
-## Organization & phân quyền nội bộ (multi-tenant) 🟡 thiết kế, RBAC đầy đủ = phase 2
+## Organization & phân quyền nội bộ (multi-tenant) 🟢 core A1–A3 xong; RBAC đầy đủ = phase 2
 B2B bán cho **doanh nghiệp**, không phải cá nhân → cần khái niệm **tổ chức**:
 - Một **Organization** (`org_id`) = 1 doanh nghiệp; **billing/credit gắn org** (xem [payment.md](payment.md)), **campaign gắn `org_id`**.
 - **Role nội bộ org** (claim kèm trong JWT): **`OrgAdmin`** (mua gói/trả tiền/xem billing, quản thành viên) vs **`HrMember`** (tạo & quản campaign, **không** xem billing).
@@ -23,13 +23,13 @@ B2B bán cho **doanh nghiệp**, không phải cá nhân → cần khái niệm 
 
 ## API — `/api/v1/auth`
 
-> **Quy ước:** Base public `/api/v1/auth/*` (gateway → service `/auth/*`). Auth: **JWT Bearer**; `—` = public. **Kiểu dữ liệu:** `uuid` · `string` · `int` · `bool` · `datetime` (ISO-8601) · `enum(string)` · `T[]` · `?` = optional/nullable. Mã lỗi chung: [../architecture.md](../architecture.md) §6. *(🔜 = thuộc phần Organization chưa build.)*
+> **Quy ước:** Base public `/api/v1/auth/*` (gateway → service `/auth/*`). Auth: **JWT Bearer**; `—` = public. **Kiểu dữ liệu:** `uuid` · `string` · `int` · `bool` · `datetime` (ISO-8601) · `enum(string)` · `T[]` · `?` = optional/nullable. Mã lỗi chung: [../architecture.md](../architecture.md) §6. *(🔜 = phần admin-gated Org/role chưa build — A4/A5; core Organization A1–A3 đã xong.)*
 
 ### Schemas (DTO)
 
 ```
 AuthResponse {
-  accessToken:  string                 // JWT (mang role; 🔜 org_id, org_role)
+  accessToken:  string                 // JWT (mang role; + org_id, org_role nếu thuộc org ✅ A2)
   refreshToken: string
   expiresAt:    datetime               // hạn của access token
 }
@@ -55,6 +55,9 @@ UserResponse {
 **`POST /register`** — Đăng ký (role mặc định `Candidate`). Public.
 - Req: `{ email: string, password: string, fullName: string }` → Res **`200`** `AuthResponse`. Lỗi: **400** (email tồn tại / mật khẩu yếu).
 
+**`POST /register-org`** — Đăng ký tổ chức (✅ A3). Public. Tạo user role **`Employer`** + `Organization` + `OrgMember(OrgAdmin)`.
+- Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **400** (email tồn tại / mật khẩu yếu).
+
 **`POST /login`** — Đăng nhập. Public.
 - Req: `{ email: string, password: string }` → Res **`200`** `AuthResponse`. Lỗi: **400/401** (sai thông tin).
 
@@ -72,17 +75,17 @@ UserResponse {
 
 **`POST /forgot-password`** `{ email: string }` → gửi OTP · **`POST /verify-otp`** `{ email: string, otp: string }` · **`POST /reset-password`** `{ email: string, newPassword: string }`. Public. Lỗi: **400** (OTP sai/hết hạn).
 
-**🔜 Admin (PlatformAdmin) — Organization chưa build:**
+**🔜 Admin (PlatformAdmin) — quản trị Org/role chưa build (A4/A5):**
 - **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
 - **`GET/POST /auth/admin/orgs…`** — xem / duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
-- *(Khi build: `register-org` → tạo `Organization` + `OrgAdmin`; JWT thêm `org_id`+`org_role` — tasks `A1`–`A5`.)*
+- *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. Còn admin-gated orgs + role-grant — A4/A5.)*
 
 ## DB — `isas`
 ASP.NET Identity (`IdentityUser<Guid>`), cột **snake_case**. Kiểu: `uuid·varchar(n)·text·bool·timestamptz·enum(string)`, `?`=nullable.
 ```
 users ─┬─*──* roles            (qua user_roles)
        ├─1──* refresh_tokens
-       ├─*──* organizations 🔜  (qua org_members, kèm org_role)
+       ├─*──* organizations ✅  (qua org_members, kèm org_role — migration AddOrganizations)
        └─1──* user_claims · user_tokens · user_logins   (Identity / Google OAuth)
 roles ──1──* role_claims
 ```
@@ -119,20 +122,20 @@ expires_at  timestamptz   hạn theo Jwt:RefreshTokenDays
 created_at  timestamptz   default now()
 ```
 
-### `organizations` — B2B, 🔜 chưa build
+### `organizations` — B2B ✅ (migration `AddOrganizations`, A1)
 ```
 id         uuid          PK
-name       varchar
-tax_code   varchar?      MST (xuất hóa đơn postpaid)
+name       text          NOT NULL
+tax_code   text?         MST (xuất hóa đơn postpaid)
 created_at timestamptz
 ```
 
-### `org_members` — 🔜 chưa build
+### `org_members` — ✅ (migration `AddOrganizations`, A1)
 ```
-org_id   uuid          FK → organizations
-user_id  uuid          FK → users
-org_role varchar(16)   enum: OrgAdmin · HrMember
-                       PK (org_id, user_id); JWT Employer mang kèm org_id + org_role
+org_id   uuid          FK → organizations (cascade)
+user_id  uuid          FK → users (cascade)
+org_role varchar(16)   enum(string): OrgAdmin · HrMember
+                       PK (org_id, user_id); JWT Employer mang kèm org_id + org_role ✅ A2 (claim "org_id"/"org_role", chỉ thêm khi user thuộc org)
 ```
 
 + bảng Identity phụ: `role_claims` · `user_claims` · `user_tokens` · `user_logins` (Google OAuth).
