@@ -361,6 +361,22 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - **Điểm tổng/session** (khi `Scored`) = `Σ điểm_tiêu_chí × weight` chuẩn hóa — dùng cho ranking.
 - **🔜 Tổng kết điểm B2C (BC9):** spec đầy đủ ở **§Tổng kết điểm buổi luyện B2C (BC9)** ngay dưới.
 
+#### Đánh giá cách chấm tiêu chí hiện tại (review 2026-06-28)
+**✅ Phần chắc — GIỮ NGUYÊN** (worker `gemini.score()` + callback C# `AnswerService.SaveResultAsync`):
+- Worker **kẹp điểm `[0, maxScore]`** mỗi tiêu chí, **bỏ `criterionId` Gemini bịa** (không có trong rubric gửi xuống), **chống trùng**, **bắt buộc đủ mọi tiêu chí** (thiếu → `ValueError` → answer `Failed`). Chấm `temperature=0`.
+- C# callback **idempotent** (xoá điểm cũ cùng `(attempt_no, rubric_version)` rồi ghi lại). `answer_scores.criterion_id` là **FK → rubric_criteria** ⇒ chặn id rác.
+- Nguồn tiêu chí đúng mode (E1): B2B theo `campaign_id`, B2C theo `job_category` + `campaign_id IS NULL`.
+
+**⚠ Điểm cần lưu ý / gap** (biết trước khi làm BC9/BC10/E4):
+1. **`weight` hiện CHƯA được dùng ở đâu.** Lưu trên `rubric_criteria`, gửi xuống worker — nhưng **worker chỉ dùng `maxScore`**, KHÔNG dùng `weight`; và **không có code nào tính điểm tổng**. "Điểm tổng = Σ điểm×weight" mới là **thiết kế**, sẽ hiện thực ở **BC9** (B2C) / **E4** (ranking B2B). → đừng tưởng đã có điểm tổng.
+2. **`maxScore` khác nhau giữa các tiêu chí** ⇒ **KHÔNG cộng điểm thô** (tiêu chí thang cao sẽ lấn). Phải chuẩn theo `maxScore` (percentage) như BC9. `answer_scores.score` là điểm **theo thang riêng** từng tiêu chí.
+3. **B2C chưa có nguồn `rubric_criteria` theo `JobCategory`**: repo **không** seed/migration, cũng **không** có endpoint tạo rubric B2C. ⇒ DB trống rubric thì `AnswerService` thấy "không có tiêu chí active" → **bỏ publish → answer không được chấm**. Hiện phải **insert tay**. **Cần task seed/CRUD rubric B2C** (chưa có). *(B2B ổn vì I1 materialize từ campaign.)*
+4. **C# callback tin worker 100%** — `SaveResultAsync` lưu nguyên điểm worker gửi, **không tự kẹp / không kiểm đủ tiêu chí** (chỉ FK chặn id lạ). Mà **AIService deploy ephemeral** (docker cp, image có thể lệch — [ai.md](ai.md)) ⇒ nên cân nhắc **guard phía C#** (kẹp `[0,maxScore]`, bỏ criterion ngoài rubric) cho chắc.
+5. **Thiếu 1 tiêu chí → answer `Failed` vĩnh viễn** (worker raise `ValueError`): rubric nhiều tiêu chí dễ gãy oan — đã ghi [ai.md](ai.md) §Vấn đề (🟠 nên retry/self-consistency trước khi chốt Failed).
+6. **`attempt_no` luôn = 1** (self-consistency nhiều lần chấm chưa làm) — đúng thiết kế hiện tại; schema đã chừa chỗ.
+
+> **Tóm lại:** chấm **từng tiêu chí trên mỗi câu = ổn & chắc**; phần **tổng hợp mức buổi** (weight/điểm tổng/cần cải thiện) **chưa có** (BC9/BC10/E4) và **rubric B2C chưa có nguồn dữ liệu** (#3) là 2 việc cần làm để luồng B2C chạy trọn.
+
 ### Tổng kết điểm buổi luyện B2C (BC9) — 🔜 chưa build
 
 **Vì sao.** Một buổi luyện có **N câu** (mặc định 5 — `QUESTION_COUNT`). Engine **chấm dần từng câu** → mỗi `answer` có điểm theo **từng tiêu chí** (`answer_scores`, kèm `reasoning`). Nhưng người luyện cần **một kết quả buổi** sau khi xong — *điểm tổng + mỗi tiêu chí được bao nhiêu + tiêu chí nào cần cải thiện* — chứ không phải tự cộng tay từ điểm rải rác trong từng câu. Đây là **feedback định hướng** của B2C; hiện engine **chưa tính** mức session.
