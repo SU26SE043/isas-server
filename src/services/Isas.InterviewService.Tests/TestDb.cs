@@ -59,7 +59,7 @@ public sealed class TestDb : IDisposable
 
     public static PracticeSession Session(
         Guid candidateId, SessionStatus status, JobCategory cat = JobCategory.BE,
-        Guid? campaignId = null)
+        Guid? campaignId = null, DateTime? createdAt = null)
         => new()
         {
             Id = Guid.NewGuid(),
@@ -67,7 +67,7 @@ public sealed class TestDb : IDisposable
             JobCategory = cat,
             CampaignId = campaignId,
             Status = status,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = createdAt ?? DateTime.UtcNow
         };
 
     public static PracticeQuestion Question(Guid sessionId, int order = 1)

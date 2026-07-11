@@ -46,9 +46,10 @@ public class AnswerService : IAnswerService
         if (session.CandidateId != candidateId)
             throw new UnauthorizedAccessException("Không phải buổi của bạn");
 
-        // 2. Buổi đã kết thúc thì không cho upload thêm
+        // 2. Buổi đã kết thúc thì không cho upload thêm (SessionAbandoned — E3 — cũng là trạng
+        // thái chốt/terminal, không nhận thêm answer).
         if (session.Status is SessionStatus.Completed
-            or SessionStatus.Scoring or SessionStatus.Scored)
+            or SessionStatus.Scoring or SessionStatus.Scored or SessionStatus.SessionAbandoned)
             throw new InvalidOperationException("Buổi đã kết thúc");
 
         // 3. Câu hỏi thuộc đúng buổi

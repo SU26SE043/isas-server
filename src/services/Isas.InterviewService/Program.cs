@@ -63,6 +63,7 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHostedService<StuckAnswerRepublisher>();
+builder.Services.AddHostedService<SessionAbandonSweeper>();
 
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
