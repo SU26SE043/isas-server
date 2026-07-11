@@ -105,7 +105,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 3. Distribution: phát **magic-link theo 2 đường** — **(a) mời thẳng**: HR upload **danh sách email** → validate/dedup/cap → gửi hàng loạt; **(b) từ shortlist sàng CV**: HR chọn top → hệ thống **tách email từ CV** → gửi (CV thiếu email → HR bổ sung rồi mời).
 
 **B. Ứng viên làm bài (tái dùng engine)**
-4. Mở link → magic-link **provision/login `Candidate`** (có `candidate_id` + JWT) — *(đường (b): account mới **tự gắn** vào hồ sơ CV — `campaign_candidates.candidate_id` — để kết quả phỏng vấn join được kết quả sàng)* → CampaignService **create-or-get** session gắn `campaign_id` + **reserve 1 credit của org** (hết hạn mức → chặn ngay; mở link không tốn tiền).
+4. **✅ D2 (membership model):** Mở link → xem **intro campaign** (metadata) → **Join** (magic-link **provision/login `Candidate`** — `candidate_id` + JWT; đường (b): account mới **tự gắn** vào hồ sơ CV — `campaign_candidates.candidate_id`) → campaign vào **My Campaigns** → **Start Interview** → CampaignService **create-or-get** session gắn `campaign_id`. **Session CHỈ tạo khi bấm Start**, không phải khi mở link. *(🔜 reserve 1 credit org tại Start — BK14.)*
 5. Trả lời (ghi âm) → **chấm dần §4.3** theo **tiêu chí campaign**. Khóa link sau **submit** (resume các câu chưa nộp).
 
 **C. Đánh giá & kết quả (event-driven)**
@@ -113,7 +113,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 7. **Payment** consume reservation (trừ thật); **Campaign** upsert `campaign_rankings` → xếp hạng + pass/fail. (Bỏ ngang quá hạn → `SessionAbandoned` → release credit.)
 8. Employer xem dashboard (đọc local) → **xuất CSV/PDF**.
 
-> **Vòng đời magic-link (Distribution M3) — chi tiết bước 3–5:** HR phát **invitation → magic-link** (email hàng loạt) → ứng viên mở link → **provision/login account `Candidate` nhẹ** (D8) → create-or-get session gắn `campaign_id`. **"1 lần" = 1 lần NỘP** (mở lại token cho **resume** câu chưa làm); sau **submit** → token **khóa** (403); lỗi/hết hạn → HR **re-issue** token mới (cũ vô hiệu). Tracking: tasks `D1`–`D4`; [services/interview.md](services/interview.md).
+> **Vòng đời magic-link (Distribution M3) — ✅ D2 membership model:** HR phát **invitation → magic-link** (email hàng loạt) → ứng viên mở link (**intro-only**) → **Join** → **provision account `Candidate` nhẹ** (D8) + membership `CampaignCandidate(Joined)` → **My Campaigns** → **Start** → create-or-get session gắn `campaign_id`. **Session tạo khi Start, KHÔNG khi mở link.** **"1 lần" = 1 lần NỘP** (mở lại → **resume** câu chưa làm — 🔜 D3); sau **submit** → token **khóa** (🔜 D4); lỗi/hết hạn → HR **re-issue** (🔜 D4). Tracking: `D1`✅·`D2`✅·`D3`/`D4`🔜; [services/campaign.md](services/campaign.md) §Distribution.
 
 ### 4.3. Chấm điểm dần (engine, bất đồng bộ — dùng chung B2C & B2B)
 1. FE upload từng câu trả lời → audio lên SeaweedFS → answer `Uploaded`.
