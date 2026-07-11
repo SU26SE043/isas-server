@@ -1,7 +1,7 @@
 # ISAS — Progress / Handoff
 
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
-> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) + **E7·C13·BC2** (vòng 7) + **C14·BC8·BK7** (vòng 8) passing, integrated vào `docs/sync-design-d18-d21`).
+> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) + **E7·C13·BC2** (vòng 7) + **C14·BC8·BK7** (vòng 8) + **BK11·BK1·BK12** (vòng 9 — bug-fix) passing, integrated vào `docs/sync-design-d18-d21`).
 
 ## Pha hiện tại
 **Đang code feature B2B (không còn ở pha thiết kế).** Thiết kế đã chốt (D1–D21; **mới 2026-07-02: D20 — roadmap ôn tập cá nhân hoá B2C, `BC12`–`BC15`** — mới ở doc, **chưa build**; 2026-06-30: D18/D19 — lọc CV hàng loạt B2B, `C13`–`C15` — mới ở doc, **chưa build**). Đã merge vào `main`: **S1 Auth org** (A1–A3, PR #23), **S2 Campaign** (C1–C10, PR #22 + đưa vào pipeline deploy), **S3 I1** (session B2B `campaign_id` + materialize tiêu chí, PR #24). **E1 đã merged `main`** (commit `796d8bb` — chấm B2B theo tiêu chí campaign); **tiếp theo E2** (phát `SessionScored`). **Time-limit (D21, 2026-07-11):** bỏ giới hạn tổng buổi — chỉ giới hạn từng câu, hết giờ câu → chốt câu → sang câu kế (task **I2**). PaymentService vẫn ở branch chưa refactor. **Doc (2026-06-30):** 5 service doc đã **chi tiết hoá** (req/res mẫu · validation · bảng mã lỗi · sequence · index/edge) + đồng bộ bản copy `src/services/Isas.*/AGENTS.md` (Auth/AI/Campaign/Interview; Payment ở branch).
@@ -91,6 +91,15 @@
 
 > Base test sau vòng 8: **Auth 4 · Payment 36 · Campaign 72 · Interview 83 = 195 .NET pass** (+ AIService pytest 29), `dotnet build` 0 error. Merge `--no-ff`: C14·BK7·BC8 (BC8 bỏ phần worker tự sửa tasks.md, giữ code + interview.md §BC8). Backlog +**BK10** (BC3/BC4-vs-E7 decision) +**BK11** (release postpaid remaining).
 
+### Vòng giám sát 2026-07-11 (vòng 9 — **bug-fix**) — 3 task passing (pin base `6319382`; prompt cấm sửa docs — rút kinh nghiệm BC8)
+| Task | Nội dung | Trạng thái |
+|---|---|---|
+| **BK11** | Fix `ReleaseAsync` postpaid: tách nhánh theo `payment_mode` → postpaid chỉ `reserved−1` (KHÔNG `remaining+1`); prepaid giữ P6 | ✅ **passing (28fff09)** · Payment 38/38 (+2) · không migration · khớp payment.md:373 |
+| **BK1** | Drop cột chết `rank`/`result` trên `campaign_rankings` (E4 tạo, E5 tính read-time) | ✅ **passing (9c9d450)** · Campaign 72/72 · migration `DropCampaignRankingRankResult` (reversible; không apply Neon; has-pending=No changes) |
+| **BK12** | Fix orphan credit: B2C session `Failed` sau reserve (BC2) → phát `SessionAbandoned(generation_failed)` → E7 release ví User | ✅ **passing (a08b53d)** · Interview 86/86 (+3) · không migration · chỉ B2C; E7 absorbing → an toàn |
+
+> Base test sau vòng 9: **Auth 4 · Payment 38 · Campaign 72 · Interview 86 = 200 .NET pass** (+ AIService pytest 29), `dotnet build` 0 error. Merge `--no-ff`: BK11·BK1·BK12. Cả 3 worker respect "không sửa docs" (khác BC8 vòng 8). **Backlog bug còn:** BK2 (backfill order_no ops) · BK8 (E6 PDF) · BK4 (org_id) · BK6 (ratify jobCategory) · BK9/BK5/BK10 (cần chốt).
+
 > Test project trong tree hiện có: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`. Payment **chưa** có (Phase 0 `P0.4`).
 
 ## Vấn đề đã biết / cần xác minh
@@ -112,6 +121,6 @@
 6. **AIService roadmap DB side** `BC12`→`BC14`→`BC15` (D20, cần BC13 ✅ + BC9/BC11 ✅).
 7. **Auth A4/A5**: A5 (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting**, chạy vòng ít worker; A4 cần P2.
 8. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.5` (readiness + checkpoint). *(P0.3/P0.4 ✅.)*
-9. **Backlog dọn dẹp (khi rảnh):** BK1 (drop cột rank/result) · BK7 (postpaid consume period_usage) · BK8 (E6 PDF) · BK9 (event-bus doc) · BK4 (wire org_id) · BK6 (ratify jobCategory) — xem §Backlog tasks.md.
+9. **Backlog còn (khi rảnh):** BK2 (backfill order_no ops — trước apply C12 Neon) · BK8 (E6 PDF) · BK4 (wire org_id) · BK6 (ratify jobCategory) · **cần chốt:** BK5/BK9/BK10. *(✅ done: BK1·BK7·BK11·BK12.)* — xem §Backlog tasks.md.
 
 > Quy trình **vào ca / tan ca**: xem [../AGENTS.md](../AGENTS.md).
