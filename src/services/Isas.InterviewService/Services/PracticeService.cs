@@ -11,11 +11,14 @@ public class PracticeService : IPracticeService
 {
     private const int DefaultTimeLimitSec = 120; // TODO: chỉnh nếu Gemini trả kèm
 
+    private const string GenerationFailedReason = "generation_failed"; // BK12
+
     private readonly InterviewDbContext _db;
     private readonly IStorageService _storage;
     private readonly IAiServiceQuestionGenerator _questionGenerator;
     private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ICreditReservationClient _reservationClient;   // BC2
+    private readonly ISessionEventPublisher _eventPublisher;        // BK12
     private readonly ILogger<PracticeService> _logger;
 
     public PracticeService(
@@ -24,6 +27,7 @@ public class PracticeService : IPracticeService
         IAiServiceQuestionGenerator questionGenerator,
         ISessionScoringNotifier scoringNotifier,
         ICreditReservationClient reservationClient,
+        ISessionEventPublisher eventPublisher,
         ILogger<PracticeService> logger)
     {
         _db = db;
@@ -31,6 +35,7 @@ public class PracticeService : IPracticeService
         _questionGenerator = questionGenerator;
         _scoringNotifier = scoringNotifier;
         _reservationClient = reservationClient;
+        _eventPublisher = eventPublisher;
         _logger = logger;
     }
 
@@ -99,6 +104,7 @@ public class PracticeService : IPracticeService
             _logger.LogError(ex, "Sinh câu hỏi lỗi cho session {SessionId}", session.Id);
             session.Status = SessionStatus.Failed;
             await _db.SaveChangesAsync(ct);
+            await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
             throw new InvalidOperationException("Sinh câu hỏi thất bại", ex);
         }
 
@@ -106,6 +112,7 @@ public class PracticeService : IPracticeService
         {
             session.Status = SessionStatus.Failed;
             await _db.SaveChangesAsync(ct);
+            await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
             throw new InvalidOperationException("AIService không trả về câu hỏi nào");
         }
 
@@ -311,6 +318,41 @@ public class PracticeService : IPracticeService
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
+
+    // BK12: B2C reserve credit ví cá nhân (BC2) TRƯỚC khi sinh câu hỏi. Nếu AI sinh câu hỏi lỗi →
+    // session `Failed`, credit đang bị KẸT: E3 sweeper chỉ quét `InProgress`, còn `Failed` KHÔNG tự
+    // phát `SessionAbandoned` → E7 (Payment) không release → orphan credit. Fix: phát
+    // `SessionAbandoned(reason=generation_failed)` để E7 hoàn credit ví User.
+    // Best-effort (nuốt lỗi publish): session đã `Failed` trong DB rồi, publish lỗi KHÔNG được chặn
+    // luồng (đồng pattern nuốt lỗi ở SessionScoringNotifier/SessionAbandonSweeper). E7 release
+    // absorbing (reservation không tồn tại/đã finalized → no-op) nên phát cho session không có
+    // reservation cũng an toàn. Chỉ B2C dùng path này (CreateSessionAsync); B2B không reserve (PAY-6)
+    // và không có nhánh Failed-sau-reserve.
+    private async Task PublishGenerationFailedAbandonAsync(PracticeSession session, CancellationToken ct)
+    {
+        var evt = new SessionAbandonedEvent
+        {
+            SessionId = session.Id,
+            CampaignId = session.CampaignId,   // null cho B2C
+            CandidateId = session.CandidateId,
+            Reason = GenerationFailedReason,
+            AbandonedAt = DateTime.UtcNow
+        };
+
+        try
+        {
+            await _eventPublisher.PublishSessionAbandonedAsync(evt, ct);
+            _logger.LogInformation(
+                "BK12: phát SessionAbandoned(generation_failed) cho session {SessionId} để release credit ví User",
+                session.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "BK12: phát SessionAbandoned(generation_failed) thất bại cho session {SessionId}", session.Id);
+        }
+    }
+
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
         IReadOnlyList<SessionCriterionScore>? criterionScores = null,

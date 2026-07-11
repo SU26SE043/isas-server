@@ -383,6 +383,7 @@ public class SessionResultServiceTests
             t.Db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object, notifier.Object,
             new Mock<ICreditReservationClient>().Object,   // BC2: không dùng ở nhánh B2B
+            new Mock<ISessionEventPublisher>().Object,     // BK12: không dùng ở nhánh B2B
             NullLogger<PracticeService>.Instance);
     }
 }

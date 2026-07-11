@@ -204,6 +204,7 @@ public class AnswerServiceTests
             new Mock<IAiServiceQuestionGenerator>().Object,
             notifier,
             new Mock<ICreditReservationClient>().Object,   // BC2: không dùng ở nhánh B2B
+            new Mock<ISessionEventPublisher>().Object,     // BK12: không dùng ở nhánh B2B
             NullLogger<PracticeService>.Instance);
         var created = await practice.CreateCampaignSessionAsync(candidate,
             new CreateCampaignSessionRequest(

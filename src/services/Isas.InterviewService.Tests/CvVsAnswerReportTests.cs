@@ -102,6 +102,7 @@ public class CvVsAnswerReportTests
             t.Db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object, notifier.Object,
             new Mock<ICreditReservationClient>().Object,
+            new Mock<ISessionEventPublisher>().Object,   // BK12
             NullLogger<PracticeService>.Instance);
     }
 
