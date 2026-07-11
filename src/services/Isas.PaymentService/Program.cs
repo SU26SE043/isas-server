@@ -87,6 +87,11 @@ builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<ICreditAccountService, CreditAccountService>();
 // P7: sinh order_code time+random, unique + retry (dep của P2 — Order/webhook chưa đổi ở task này).
 builder.Services.AddScoped<IOrderCodeGenerator, OrderCodeGenerator>();
+// E7: Payment phản ứng event Interview — consume (SessionScored) / release (SessionAbandoned).
+// Handler scoped (dùng DbContext qua CreditAccountService); consumer là BackgroundService bind
+// queue payment.credit ↔ exchange interview.events (E2/E3).
+builder.Services.AddScoped<ICreditEventHandler, CreditEventHandler>();
+builder.Services.AddHostedService<InterviewEventConsumer>();
 
 var app = builder.Build();
 
