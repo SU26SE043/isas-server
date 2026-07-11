@@ -28,6 +28,29 @@ public class CreditReserveServiceTests
         return acc;
     }
 
+    // Ví postpaid (chỉ Org): remaining=0 (không dùng), dồn nợ tới credit_limit; period_usage = nợ kỳ đã tiêu.
+    private static async Task<CreditAccount> SeedPostpaidAccountAsync(
+        PaymentTestDb tdb, Guid orgId, int? creditLimit, int periodUsage = 0, int reserved = 0,
+        CreditAccountStatus status = CreditAccountStatus.Active)
+    {
+        var acc = new CreditAccount
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PaymentMode = PaymentMode.Postpaid,
+            Status = status,
+            RemainingCredits = 0,          // postpaid KHÔNG dùng remaining
+            ReservedCredits = reserved,
+            CreditLimit = creditLimit,
+            PeriodUsage = periodUsage,
+            UpdatedAt = DateTime.UtcNow
+        };
+        tdb.Db.CreditAccounts.Add(acc);
+        await tdb.Db.SaveChangesAsync();
+        return acc;
+    }
+
     // (a) reserve thành công → reserved+1, remaining-1, đúng 1 reservation Reserved.
     [Fact]
     public async Task Reserve_ConCredit_GiuCho_TruRemaining()
@@ -156,5 +179,143 @@ public class CreditReserveServiceTests
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == userId);
         Assert.Equal(3, acc.RemainingCredits);
         Assert.Equal(2, acc.ReservedCredits);
+    }
+
+    // ── P8a — Postpaid: hạn mức + dồn nợ (payment.md §Kế toán POSTPAID) ──────────────────────────
+
+    // (a) postpaid org reserve tới sát credit_limit → OK; mỗi reserve tăng reserved (KHÔNG trừ remaining).
+    //     period_usage KHÔNG đổi khi reserve (doc: "Consume mới cộng period_usage, không phải reserve").
+    [Fact]
+    public async Task Reserve_Postpaid_ToiHanMuc_OK_TangReserved()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 3);
+        var svc = new CreditAccountService(tdb.NewContext());
+
+        var r1 = await svc.ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid());
+        var r2 = await svc.ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid());
+        var r3 = await svc.ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid()); // reserve thứ 3 = credit_limit
+
+        Assert.Equal(ReserveOutcome.Reserved, r1.Outcome);
+        Assert.Equal(ReserveOutcome.Reserved, r2.Outcome);
+        Assert.Equal(ReserveOutcome.Reserved, r3.Outcome);
+        Assert.Equal(3, r3.ReservedCredits);
+
+        using var read = tdb.NewContext();
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(3, acc.ReservedCredits);   // dồn tới hạn mức
+        Assert.Equal(0, acc.RemainingCredits);  // postpaid KHÔNG trừ remaining
+        Assert.Equal(0, acc.PeriodUsage);       // reserve KHÔNG cộng nợ kỳ (chỉ Consume mới cộng)
+        Assert.Equal(3, await read.CreditReservations.CountAsync(r => r.OwnerId == orgId));
+    }
+
+    // (b) reserve vượt credit_limit → Insufficient (controller→402) + KHÔNG để lại reservation (no orphan).
+    [Fact]
+    public async Task Reserve_Postpaid_VuotHanMuc_Insufficient_KhongOrphan()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 2);
+        var svc = new CreditAccountService(tdb.NewContext());
+
+        await svc.ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid()); // reserved 1
+        await svc.ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid()); // reserved 2 = credit_limit
+
+        var overSession = Guid.NewGuid();
+        var over = await svc.ReserveAsync(OwnerType.Org, orgId, overSession); // 0+2+1=3 > 2 → 402
+
+        Assert.Equal(ReserveOutcome.Insufficient, over.Outcome);
+        Assert.Null(over.ReservationId);
+
+        using var read = tdb.NewContext();
+        // session vượt hạn mức KHÔNG được để lại reservation dư (no orphan)
+        Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == overSession));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(2, acc.ReservedCredits);   // giữ nguyên ở hạn mức, không tăng
+        Assert.Equal(0, acc.RemainingCredits);
+    }
+
+    // period_usage (nợ kỳ đã tiêu) tính chung với reserved vào hạn mức: limit=3, đã dùng 2 → chỉ còn 1 chỗ.
+    [Fact]
+    public async Task Reserve_Postpaid_NoKyDaCong_TinhVaoHanMuc()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 3, periodUsage: 2);
+        var svc = new CreditAccountService(tdb.NewContext());
+
+        var ok = await svc.ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid());   // 2+0+1=3 ≤ 3 → OK
+        var over = await svc.ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid()); // 2+1+1=4 > 3 → 402
+
+        Assert.Equal(ReserveOutcome.Reserved, ok.Outcome);
+        Assert.Equal(ReserveOutcome.Insufficient, over.Outcome);
+
+        using var read = tdb.NewContext();
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(1, acc.ReservedCredits);
+        Assert.Equal(2, acc.PeriodUsage);   // reserve KHÔNG đổi period_usage
+    }
+
+    // credit_limit chưa đặt (NULL) → không được reserve (postpaid cần admin đặt hạn mức) → Insufficient.
+    [Fact]
+    public async Task Reserve_Postpaid_ChuaDatHanMuc_Insufficient()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: null);
+
+        var result = await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+
+        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        using var read = tdb.NewContext();
+        Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(0, acc.ReservedCredits);
+    }
+
+    // Account postpaid Suspended → chặn reserve mới dù còn hạn mức (payment.md §State machine).
+    [Fact]
+    public async Task Reserve_Postpaid_Suspended_Insufficient()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 5, status: CreditAccountStatus.Suspended);
+
+        var result = await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+
+        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        using var read = tdb.NewContext();
+        Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(0, acc.ReservedCredits);
+    }
+
+    // (c-postpaid) idempotent theo session_id: gọi 2 lần cùng session → 1 reservation, reserved chỉ +1.
+    [Fact]
+    public async Task Reserve_Postpaid_GoiLaiCungSession_Idempotent()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 5);
+
+        var first = await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+        var second = await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+
+        Assert.Equal(ReserveOutcome.Reserved, first.Outcome);
+        Assert.Equal(ReserveOutcome.AlreadyReserved, second.Outcome);
+        Assert.Equal(first.ReservationId, second.ReservationId);
+
+        using var read = tdb.NewContext();
+        Assert.Equal(1, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(1, acc.ReservedCredits);   // chỉ giữ 1 lần
     }
 }

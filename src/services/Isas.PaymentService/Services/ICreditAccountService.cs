@@ -14,11 +14,13 @@ namespace Isas.PaymentService.Services
         Task<CreditAccount?> GetAccountAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default);
 
         /// <summary>
-        /// P4 — giữ chỗ 1 credit cho <paramref name="sessionId"/> (Reserve trong D7). Prepaid:
+        /// P4/P8a — giữ chỗ 1 credit cho <paramref name="sessionId"/> (Reserve trong D7). Prepaid:
         /// atomic <c>remaining−1, reserved+1 WHERE remaining≥1 AND status=Active</c> (chống double-spend,
-        /// PAY-5). Idempotent theo <paramref name="sessionId"/> (PAY-4): gọi lại cùng session KHÔNG giữ
-        /// thêm. Hết credit / không có ví / bị đình chỉ → <see cref="ReserveOutcome.Insufficient"/>
-        /// (controller → 402), KHÔNG tạo reservation dư.
+        /// PAY-5). Postpaid (chỉ Org): dồn nợ tới hạn mức — atomic <c>reserved+1 WHERE status=Active AND
+        /// period_usage+reserved+1≤credit_limit</c> (KHÔNG trừ remaining; <c>period_usage</c> chỉ tăng khi
+        /// Consume). Idempotent theo <paramref name="sessionId"/> (PAY-4): gọi lại cùng session KHÔNG giữ
+        /// thêm. Hết credit / chạm hạn mức postpaid / không có ví / bị đình chỉ →
+        /// <see cref="ReserveOutcome.Insufficient"/> (controller → 402), KHÔNG tạo reservation dư.
         /// </summary>
         Task<ReserveResult> ReserveAsync(OwnerType ownerType, Guid ownerId, Guid sessionId, CancellationToken ct = default);
 
