@@ -7,7 +7,7 @@ namespace Isas.PaymentService.Controllers
 {
     /// <summary>
     /// API nội bộ Campaign/Interview → Payment (GEN-1: KHÔNG qua gateway; bảo vệ bằng X-Internal-Token).
-    /// P4 mới có /reserve; /consume, /release = P5/P6.
+    /// P4 /reserve · P5 /consume; /release = P6.
     /// </summary>
     [ApiController]
     [Route("internal/credits")]
@@ -56,6 +56,32 @@ namespace Isas.PaymentService.Controllers
                     ReservedCredits = result.ReservedCredits
                 })
             };
+        }
+
+        // P5 — trừ thật 1 credit khi session được chấm (SessionScored). Idempotent/absorbing theo
+        // sessionId (PAY-11): gọi lại / miss reserve → no-op 200 (tránh kẹt retry ở caller — §State machine).
+        [HttpPost("consume")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ConsumeAsync(
+            [FromBody] CreditOpRequest req,
+            [FromHeader(Name = "X-Internal-Token")] string? token,
+            CancellationToken ct = default)
+        {
+            if (!IsValidInternalToken(token))
+                return Unauthorized(new { error = "Invalid internal token" });
+
+            // sessionId = khoá idempotency + tra reservation; owner lấy từ reservation nên không bắt buộc ở đây.
+            if (req.SessionId == Guid.Empty)
+                return BadRequest(new { error = "sessionId is required" });
+
+            var result = await _credits.ConsumeAsync(req.SessionId, ct);
+
+            if (result.Outcome != ConsumeOutcome.Consumed)
+                _logger.LogInformation(
+                    "Consume no-op cho session {SessionId}: {Outcome}", req.SessionId, result.Outcome);
+
+            // Mọi outcome (kể cả no-op) → 200: consume best-effort, KHÔNG bắt caller retry (§State machine).
+            return Ok(new { status = result.Outcome.ToString(), reservationId = result.ReservationId });
         }
 
         private bool IsValidInternalToken(string? token)
