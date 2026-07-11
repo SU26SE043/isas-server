@@ -50,7 +50,7 @@ public class SessionSummaryTests
             .Returns(Task.CompletedTask);
         return new SessionScoringNotifier(
             t.Db, eventPub.Object, TestDb.ResultService(t.Db), summarizer,
-            NullLogger<SessionScoringNotifier>.Instance);
+            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
     }
 
     private static PracticeService BuildPractice(TestDb t)

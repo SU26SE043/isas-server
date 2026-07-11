@@ -137,4 +137,67 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
 
         return body.TheoryMarkdown;
     }
+
+    // Shape res AIService /summarize-roadmap — kết luận chi tiết + nhận xét chung.
+    private record SummarizeRoadmapApiResponse(
+        List<string>? Strengths, List<string>? Weaknesses, List<string>? Improvements, string? OverallComment);
+
+    // BC15 — POST /summarize-roadmap {jobCategory, level, criteriaProgress:[{criterionName, startPct?, endPct,
+    // levelThreshold, passed}]} → {strengths[], weaknesses[], improvements[], overallComment}. Sync như các call kia.
+    // Lỗi transport/status/JSON → AiServiceException (caller best-effort nuốt). Body 200 nhưng rỗng → trả list rỗng
+    // + comment null (KHÔNG ném) để roadmap vẫn Completed với kết luận rỗng.
+    public async Task<RoadmapSummaryAiResult> SummarizeRoadmapAsync(
+        string jobCategory, string level,
+        IReadOnlyList<RoadmapCriteriaProgress> criteriaProgress,
+        CancellationToken ct = default)
+    {
+        var payload = new
+        {
+            jobCategory,
+            level,
+            criteriaProgress = criteriaProgress.Select(c => new
+            {
+                criterionName = c.CriterionName,
+                startPct = c.StartPct,
+                endPct = c.EndPct,
+                levelThreshold = c.LevelThreshold,
+                passed = c.Passed
+            })
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.PostAsJsonAsync("/api/v1/summarize-roadmap", payload, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogError(ex, "Không gọi được AIService /summarize-roadmap");
+            throw new AiServiceException("Không gọi được AIService /summarize-roadmap", ex);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogError("AIService /summarize-roadmap lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+            throw new AiServiceException($"AIService /summarize-roadmap trả {(int)response.StatusCode}");
+        }
+
+        SummarizeRoadmapApiResponse? body;
+        try
+        {
+            body = await response.Content.ReadFromJsonAsync<SummarizeRoadmapApiResponse>(Json, ct);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "AIService /summarize-roadmap trả JSON không hợp lệ");
+            throw new AiServiceException("AIService /summarize-roadmap trả JSON không hợp lệ", ex);
+        }
+
+        return new RoadmapSummaryAiResult(
+            body?.Strengths ?? [],
+            body?.Weaknesses ?? [],
+            body?.Improvements ?? [],
+            string.IsNullOrWhiteSpace(body?.OverallComment) ? null : body!.OverallComment);
+    }
 }

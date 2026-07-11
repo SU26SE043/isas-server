@@ -12,6 +12,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
     private readonly ISessionEventPublisher _eventPublisher;
     private readonly ISessionResultService _resultService;
     private readonly IAiServiceSessionSummarizer _summarizer;   // BC10
+    private readonly IRoadmapReportService _roadmapReport;      // BC15
     private readonly ILogger<SessionScoringNotifier> _logger;
 
     public SessionScoringNotifier(
@@ -19,12 +20,14 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         ISessionEventPublisher eventPublisher,
         ISessionResultService resultService,
         IAiServiceSessionSummarizer summarizer,
+        IRoadmapReportService roadmapReport,
         ILogger<SessionScoringNotifier> logger)
     {
         _db = db;
         _eventPublisher = eventPublisher;
         _resultService = resultService;
         _summarizer = summarizer;
+        _roadmapReport = roadmapReport;
         _logger = logger;
     }
 
@@ -54,11 +57,17 @@ public class SessionScoringNotifier : ISessionScoringNotifier
                 .Where(l => l.SessionId == sessionId && l.Status == LessonStatus.Practicing)
                 .ExecuteUpdateAsync(u => u.SetProperty(l => l.Status, LessonStatus.Done), ct);
             if (doneCount > 0)
+            {
                 _logger.LogInformation("BC14: lesson của session {SessionId} -> Done", sessionId);
+
+                // BC15: lesson vừa Done → rollup hoàn tất milestone (+improvement) / roadmap (+final_report,
+                // AI comment). Best-effort trong cùng try — lỗi KHÔNG chặn đóng session (đã Scored trong DB).
+                await _roadmapReport.OnLessonDoneAsync(sessionId, ct);
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "BC14: đánh lesson Done thất bại cho session {SessionId}", sessionId);
+            _logger.LogError(ex, "BC14/BC15: xử lý lesson Done thất bại cho session {SessionId}", sessionId);
         }
 
         var session = await _db.PracticeSessions

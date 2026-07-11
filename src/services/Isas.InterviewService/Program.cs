@@ -31,6 +31,7 @@ builder.Services.AddScoped<IPracticeService, PracticeService>();
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
+builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
 
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {
@@ -122,6 +123,8 @@ builder.Services.Configure<FileStorageOptions>(
 
 builder.Services.Configure<ScoringOptions>(
     builder.Configuration.GetSection(ScoringOptions.SectionName));   // BC9
+builder.Services.Configure<RoadmapOptions>(
+    builder.Configuration.GetSection(RoadmapOptions.SectionName));   // BC15
 
 builder.Services.AddSingleton<IAmazonS3>(sp =>
 {

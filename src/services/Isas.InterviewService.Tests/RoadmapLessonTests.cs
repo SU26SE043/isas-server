@@ -78,7 +78,8 @@ public class RoadmapLessonTests
         var lessonService = new RoadmapLessonService(
             t.Db, practice, gen, NullLogger<RoadmapLessonService>.Instance);
         var controller = new RoadmapsController(
-            new Mock<IRoadmapService>().Object, lessonService, NullLogger<RoadmapsController>.Instance);
+            new Mock<IRoadmapService>().Object, lessonService,
+            new Mock<IRoadmapReportService>().Object, NullLogger<RoadmapsController>.Instance);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, userId.ToString())], "test"));
         controller.ControllerContext = new ControllerContext
@@ -295,7 +296,8 @@ public class RoadmapLessonTests
 
         var eventPub = new Mock<ISessionEventPublisher>();
         var notifier = new SessionScoringNotifier(
-            t.Db, eventPub.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(), NullLogger<SessionScoringNotifier>.Instance);
+            t.Db, eventPub.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
+            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
 
         await notifier.NotifySessionScoredAsync(session.Id);
 

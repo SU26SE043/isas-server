@@ -64,7 +64,8 @@ public class RoadmapTests
     {
         var service = new RoadmapService(t.Db, storage, gen, NullLogger<RoadmapService>.Instance);
         var controller = new RoadmapsController(
-            service, new Mock<IRoadmapLessonService>().Object, NullLogger<RoadmapsController>.Instance);
+            service, new Mock<IRoadmapLessonService>().Object,
+            new Mock<IRoadmapReportService>().Object, NullLogger<RoadmapsController>.Instance);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, userId.ToString())], "test"));
         controller.ControllerContext = new ControllerContext

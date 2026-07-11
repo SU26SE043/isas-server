@@ -351,7 +351,7 @@ public class SessionResultServiceTests
             .Returns(Task.CompletedTask);
         var notifier = new SessionScoringNotifier(
             t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
-            NullLogger<SessionScoringNotifier>.Instance);
+            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
         var svc = new AnswerService(
             t.Db, new Mock<IStorageService>().Object, new Mock<IScoringJobPublisher>().Object,
             notifier, NullLogger<AnswerService>.Instance);
