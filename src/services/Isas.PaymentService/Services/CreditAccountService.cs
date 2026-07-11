@@ -45,9 +45,11 @@ namespace Isas.PaymentService.Services
                 .FirstOrDefaultAsync(x => x.OwnerType == ownerType && x.OwnerId == ownerId, ct);
         }
 
-        // P4 — Reserve 1 credit (D7 · payment.md §State machine "kế toán remaining↔reserved").
-        // Ràng buộc: idempotent theo session_id (PAY-4), atomic chống double-spend (PAY-5),
-        // hết credit → Insufficient (402) KHÔNG để lại reservation dư.
+        // P4/P8a — Reserve 1 credit (D7 · payment.md §Kế toán remaining↔reserved / POSTPAID).
+        // Prepaid (P4): remaining−1, reserved+1 WHERE remaining≥1. Postpaid (P8a): dồn nợ tới hạn mức —
+        // chỉ reserved+1 WHERE period_usage+reserved+1≤credit_limit (KHÔNG trừ remaining).
+        // Ràng buộc chung: idempotent theo session_id (PAY-4), atomic chống double-spend (PAY-5),
+        // hết credit / chạm hạn mức → Insufficient (402) KHÔNG để lại reservation dư.
         public async Task<ReserveResult> ReserveAsync(OwnerType ownerType, Guid ownerId, Guid sessionId, CancellationToken ct = default)
         {
             // Idempotency fast-path (PAY-4): session đã có reservation → không giữ thêm, trả về nguyên trạng.
@@ -85,18 +87,47 @@ namespace Isas.PaymentService.Services
                 return ReserveResult.AlreadyReserved(raced.Id, await ReservedCreditsOf(raced.OwnerType, raced.OwnerId, ct));
             }
 
-            // Bút toán ATOMIC: 1 câu UPDATE có điều kiện (không đọc-rồi-ghi rời) → 2 reserve song song
-            // không cùng vượt check remaining≥1 ⇒ chống double-spend (PAY-5). 0 row = hết credit /
-            // không có ví / account Suspended. Postpaid (remaining=0) cũng rơi vào đây → 402 (hạn mức = P8a).
-            var rows = await _db.CreditAccounts
-                .Where(a => a.OwnerType == ownerType
-                            && a.OwnerId == ownerId
-                            && a.Status == CreditAccountStatus.Active
-                            && a.RemainingCredits >= 1)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits - 1)
-                    .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits + 1)
-                    .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+            // Đọc account chỉ để CHỌN nhánh bút toán (prepaid trừ remaining P4 · postpaid dồn nợ tới
+            // credit_limit P8a). Guard đầy đủ vẫn nằm trong WHERE của ExecuteUpdate (atomic self-consistent,
+            // gồm cả payment_mode) → đọc rời ở đây KHÔNG phá tính chống double-spend. acc=null (không có ví)
+            // rơi vào nhánh prepaid → 0 row → Insufficient (giữ hành vi no-wallet→402 của P4).
+            var acc = await _db.CreditAccounts.AsNoTracking()
+                .FirstOrDefaultAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct);
+
+            int rows;
+            if (acc?.PaymentMode == PaymentMode.Postpaid)
+            {
+                // POSTPAID (payment.md §Kế toán): KHÔNG trừ remaining (postpaid remaining=0), chỉ reserved+1;
+                // guard ATOMIC period_usage + reserved + 1 ≤ credit_limit → 0 row = chạm hạn mức ⇒ 402
+                // (PAY-5, no orphan). period_usage CHỈ tăng khi Consume (P5/P8b) — reserve KHÔNG dồn nợ kỳ
+                // (bỏ ngang/release → không tính nợ). credit_limit chưa đặt (NULL) ⇒ so sánh NULL loại row ⇒
+                // 402 (postpaid cần PlatformAdmin đặt hạn mức mới reserve được). Overdue-invoice block = P8b.
+                rows = await _db.CreditAccounts
+                    .Where(a => a.OwnerType == ownerType
+                                && a.OwnerId == ownerId
+                                && a.PaymentMode == PaymentMode.Postpaid
+                                && a.Status == CreditAccountStatus.Active
+                                && (a.PeriodUsage ?? 0) + a.ReservedCredits + 1 <= a.CreditLimit)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits + 1)
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+            }
+            else
+            {
+                // PREPAID (giữ nguyên P4): 1 câu UPDATE có điều kiện (không đọc-rồi-ghi rời) → 2 reserve song
+                // song không cùng vượt check remaining≥1 ⇒ chống double-spend (PAY-5). 0 row = hết credit /
+                // không có ví / account Suspended.
+                rows = await _db.CreditAccounts
+                    .Where(a => a.OwnerType == ownerType
+                                && a.OwnerId == ownerId
+                                && a.PaymentMode == PaymentMode.Prepaid
+                                && a.Status == CreditAccountStatus.Active
+                                && a.RemainingCredits >= 1)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits - 1)
+                        .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits + 1)
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+            }
 
             if (rows == 0)
             {

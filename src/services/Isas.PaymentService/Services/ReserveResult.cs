@@ -7,7 +7,7 @@ namespace Isas.PaymentService.Services
         Reserved,
         /// <summary>Session đã có reservation trước đó — idempotent, KHÔNG giữ thêm (PAY-4).</summary>
         AlreadyReserved,
-        /// <summary>Hết credit / không có ví / bị đình chỉ → 402 (PAY-5), KHÔNG tạo reservation.</summary>
+        /// <summary>Hết credit (prepaid) / chạm hạn mức (postpaid) / không có ví / bị đình chỉ → 402 (PAY-5), KHÔNG tạo reservation.</summary>
         Insufficient
     }
 
