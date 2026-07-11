@@ -69,6 +69,10 @@ builder.Services.AddDbContext<PaymentDbContext>(options =>
 builder.Services.Configure<PayOSSettings>(
     builder.Configuration.GetSection("PayOS"));
 
+// P8b — đơn giá 1 lượt (config Billing:UnitPrice) để lập hóa đơn postpaid cuối kỳ.
+builder.Services.Configure<BillingSettings>(
+    builder.Configuration.GetSection("Billing"));
+
 builder.Services.AddSingleton<PayOSClient>(sp =>
 {
     var settings = sp.GetRequiredService<IOptions<PayOSSettings>>().Value;
@@ -82,6 +86,8 @@ builder.Services.AddSingleton<PayOSClient>(sp =>
 
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPackageService, PackageService>();
+// P8b: hóa đơn postpaid — chốt kỳ → tất toán (reuse OrderService/PayOS) → settle qua webhook (branch Kind).
+builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 // P1: cấp phát credit_accounts (owner_type). Reserve/Consume/Release + webhook (P2/P4/P5/P6) = task sau.
 builder.Services.AddScoped<ICreditAccountService, CreditAccountService>();

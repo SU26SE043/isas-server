@@ -64,6 +64,37 @@ namespace Isas.PaymentService.Services
                 return WebhookApplyOutcome.AlreadyProcessed;
             }
 
+            // P8b — branch theo Kind: đơn InvoiceSettlement tất toán hóa đơn postpaid, KHÔNG cộng credit.
+            // Hóa đơn Issued/Overdue → Paid (guard WHERE status ∈ {Issued,Overdue} → idempotent: đã Paid/Void
+            // → 0 row → no-op). Order đã guard Pending→Paid (moved==1) ở trên nên đây chạy đúng 1 lần/đơn.
+            if (order.Kind == OrderKind.InvoiceSettlement)
+            {
+                if (order.InvoiceId is Guid invoiceId)
+                {
+                    await _db.Invoices
+                        .Where(i => i.Id == invoiceId
+                                    && (i.Status == InvoiceStatus.Issued || i.Status == InvoiceStatus.Overdue))
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(i => i.Status, InvoiceStatus.Paid), ct);
+                }
+
+                // Log sự kiện gateway (append-only) — bằng chứng đối soát, KHÔNG ghi credit_transactions.
+                _db.PaymentTransactions.Add(new PaymentTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    OrderId = order.Id,
+                    Gateway = "payos",
+                    GatewayTxnId = gatewayTxnId,
+                    Status = "success",
+                    RawWebhookPayload = rawPayload,
+                    CreatedAt = DateTime.UtcNow
+                });
+
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+                return WebhookApplyOutcome.InvoiceSettled;
+            }
+
             var credits = order.Package?.InterviewCredits ?? 0;
 
             // 2) Đảm bảo ví tồn tại (lần mua đầu của chủ ví → chưa có account). Tạo trong CÙNG transaction
