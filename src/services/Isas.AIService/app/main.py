@@ -5,6 +5,7 @@ import asyncio
 from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
+    AnalyzeCvRequest, AnalyzeCvResponse, JdMatch,
 )
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber 
@@ -36,6 +37,26 @@ async def suggest_criteria(req: SuggestCriteriaRequest):
         return SuggestCriteriaResponse(criteria=[CriterionItem(**c) for c in items])
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đề xuất tiêu chí: {ex}")
+
+@router.post("/analyze-cv", response_model=AnalyzeCvResponse, response_model_exclude_none=True)
+async def analyze_cv(req: AnalyzeCvRequest):
+    if not req.cvText or not req.cvText.strip():
+        raise HTTPException(status_code=400, detail="cvText không được rỗng")
+    try:
+        result = await provider.analyze_cv(req.cvText, req.jdText, req.jobCategory)
+        jd_match = JdMatch(**result["jdMatch"]) if result.get("jdMatch") else None
+        return AnalyzeCvResponse(
+            summary=result["summary"],
+            strengths=result["strengths"],
+            weaknesses=result["weaknesses"],
+            suggestions=result["suggestions"],
+            jdMatch=jd_match,
+        )
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi phân tích CV: {ex}")
+
 
 @router.post("/transcribe")
 async def transcribe(file: UploadFile = File(...), language: str = "vi"):

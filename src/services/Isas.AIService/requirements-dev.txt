@@ -1,0 +1,8 @@
+# Dev/test only — KHÔNG cài trong Docker image production (Dockerfile chỉ
+# dùng requirements.txt). Chạy test: pip install -r requirements-dev.txt
+# rồi `pytest` từ thư mục này.
+-r requirements.txt
+
+pytest
+pytest-asyncio
+httpx   # dùng bởi fastapi.testclient.TestClient

@@ -3,7 +3,10 @@ from google import genai
 from google.genai import types
 
 from app.config import settings
-from app.prompts import build_prompt, build_scoring_prompt, build_criteria_prompt
+from app.prompts import (
+    build_prompt, build_scoring_prompt, build_criteria_prompt,
+    build_cv_analysis_prompt,
+)
 from app.providers.base import QuestionProvider
 
 
@@ -98,6 +101,92 @@ class GeminiProvider(QuestionProvider):
             c["maxScore"] = int(c.get("maxScore", 5) or 5)
             c["description"] = c.get("description")
         return items
+
+    async def analyze_cv(self, cv_text: str, jd_text: str | None,
+                         job_category: str | None) -> dict:
+        """
+        Phân tích CV (BC6, B2C sync, D17) — feedback + khớp JD (nếu có).
+
+        Trả về dict:
+          { "summary": str, "strengths": [str], "weaknesses": [str],
+            "suggestions": [str],
+            "jdMatch"?: { "score": int, "matchedSkills": [str], "missingSkills": [str] } }
+
+        jdMatch chỉ xuất hiện khi jd_text được cung cấp.
+        """
+        prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category)
+
+        properties: dict = {
+            "summary": {"type": "string"},
+            "strengths": {"type": "array", "items": {"type": "string"}},
+            "weaknesses": {"type": "array", "items": {"type": "string"}},
+            "suggestions": {"type": "array", "items": {"type": "string"}},
+        }
+        required = ["summary", "strengths", "weaknesses", "suggestions"]
+        if jd_text:
+            properties["jdMatch"] = {
+                "type": "object",
+                "properties": {
+                    "score": {"type": "integer"},
+                    "matchedSkills": {"type": "array", "items": {"type": "string"}},
+                    "missingSkills": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["score", "matchedSkills", "missingSkills"],
+            }
+            required.append("jdMatch")
+
+        response = await self._client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,  # phân tích/chấm khớp cần nhất quán, không sáng tạo
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM phân tích CV trả về JSON không hợp lệ: {text[:200]}")
+
+        summary = str(data.get("summary", "")).strip()
+        if not summary:
+            raise ValueError("LLM không trả về tóm tắt CV hợp lệ.")
+
+        def _clean_list(items) -> list[str]:
+            if not isinstance(items, list):
+                return []
+            return [str(i).strip() for i in items if str(i).strip()]
+
+        result: dict = {
+            "summary": summary,
+            "strengths": _clean_list(data.get("strengths")),
+            "weaknesses": _clean_list(data.get("weaknesses")),
+            "suggestions": _clean_list(data.get("suggestions")),
+        }
+
+        if jd_text:
+            jd_match_raw = data.get("jdMatch")
+            if not isinstance(jd_match_raw, dict):
+                raise ValueError("LLM không trả jdMatch dù request có jdText.")
+
+            # Kẹp điểm khớp trong [0, 100] phòng LLM trả ngoài thang.
+            score = float(jd_match_raw.get("score", 0) or 0)
+            score = max(0.0, min(score, 100.0))
+
+            result["jdMatch"] = {
+                "score": int(round(score)),
+                "matchedSkills": _clean_list(jd_match_raw.get("matchedSkills")),
+                "missingSkills": _clean_list(jd_match_raw.get("missingSkills")),
+            }
+
+        return result
 
     async def score(self, question: str, transcript: str,
                     job_category: str, criteria: list[dict]) -> list[dict]:
