@@ -1,7 +1,7 @@
 # ISAS — Progress / Handoff
 
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
-> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** passing, integrated vào `docs/sync-design-d18-d21`).
+> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) passing, integrated vào `docs/sync-design-d18-d21`).
 
 ## Pha hiện tại
 **Đang code feature B2B (không còn ở pha thiết kế).** Thiết kế đã chốt (D1–D21; **mới 2026-07-02: D20 — roadmap ôn tập cá nhân hoá B2C, `BC12`–`BC15`** — mới ở doc, **chưa build**; 2026-06-30: D18/D19 — lọc CV hàng loạt B2B, `C13`–`C15` — mới ở doc, **chưa build**). Đã merge vào `main`: **S1 Auth org** (A1–A3, PR #23), **S2 Campaign** (C1–C10, PR #22 + đưa vào pipeline deploy), **S3 I1** (session B2B `campaign_id` + materialize tiêu chí, PR #24). **E1 đã merged `main`** (commit `796d8bb` — chấm B2B theo tiêu chí campaign); **tiếp theo E2** (phát `SessionScored`). **Time-limit (D21, 2026-07-11):** bỏ giới hạn tổng buổi — chỉ giới hạn từng câu, hết giờ câu → chốt câu → sang câu kế (task **I2**). PaymentService vẫn ở branch chưa refactor. **Doc (2026-06-30):** 5 service doc đã **chi tiết hoá** (req/res mẫu · validation · bảng mã lỗi · sequence · index/edge) + đồng bộ bản copy `src/services/Isas.*/AGENTS.md` (Auth/AI/Campaign/Interview; Payment ở branch).
@@ -26,6 +26,17 @@
 
 > Base test sau tích hợp: **Auth 4 · Campaign 14 · Interview 33 · Payment 4 = 55 pass**, `dotnet build` 0 error.
 
+### Vòng giám sát 2026-07-11 (vòng 2) — 4 task passing
+| Task | Nội dung | Trạng thái |
+|---|---|---|
+| **P7** | `OrderCodeGenerator` time+random (`yyMMddHHmmss`+4 random), guard ≤2^53−1, retry ≤10 khi đụng UNIQUE (index sẵn từ P1) | ✅ **passing (7ffe1c9)** · Payment 7/7 · không migration mới · chưa wire `OrderService` (P2) |
+| **E3** | `SessionAbandoned` + `SessionAbandonSweeper` (2 phút) phát key `session.abandoned` trên `interview.events` | ✅ **passing (50cab51)** · Interview 38/38 · ⚠ deadline placeholder `CreatedAt+30min` (`campaigns.expires_at` không đọc xuyên service) → I2 materialize deadline lên session; sweeper là plumbing forward |
+| **E4** | `SessionScoredConsumer` (queue `campaign.ranking`) → upsert `campaign_rankings` idempotent theo `session_id`; B2C no-op | ✅ **passing (19fb040)** · Campaign 17/17 · migration `AddCampaignRankings` (không apply Neon) · re-anchor v2 sau khi base có D1 |
+| **BC13** | AIService 3 endpoint roadmap sync (`/generate-roadmap`·`/generate-lesson-theory`·`/summarize-roadmap`), không ghi DB | ✅ **passing (b8d018f)** · pytest 29/29 (11 BC6+18) · layer trên BC6 · BC12/14/15 (DB) chưa build |
+
+> Base test sau vòng 2: **Auth 4 · Payment 7 · Campaign 17 · Interview 38 = 66 .NET pass** (+ AIService pytest 29), `dotnet build` 0 error.
+> **⚠ Lưu ý điều phối (worktree):** worker isolation tạo worktree off `a4c80d5` (merge-base), KHÔNG off tip base → 2 worker (E4/BC13) phải re-anchor onto tip (`git switch -c <br> <base-sha>`; worktree chia object store nên với tới được); P7/E3 tự nhận ra & tự sửa. **Vòng sau: brief phải ghi rõ base SHA để worker tạo nhánh off đúng tip.**
+
 > Test project trong tree hiện có: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`. Payment **chưa** có (Phase 0 `P0.4`).
 
 ## Vấn đề đã biết / cần xác minh
@@ -37,15 +48,15 @@
 - **CI/CD chung Neon (DB server):** không tự apply migration lên DB chung — schema apply qua pipeline/tay trước deploy.
 
 ## Bước tiếp theo (thứ tự đề xuất)
-> ✅ Vòng 2026-07-11 xong: **E2, D1, P1, BC6** (xem bảng trên). Frontier mới bên dưới.
-1. **D2** (S3, Campaign+Interview — **cross-service**): mở token → account Candidate + create-or-get session. **Gỡ chặn HTTP entry B2B** cho I1/E1 (D1 ✅ + I1 ✅ đã sẵn). ⚠ đụng cả Campaign lẫn Interview → không chạy song song worker Campaign/Interview khác cùng lúc.
-2. **E4** (S4, Campaign): consume `SessionScored` → `campaign_rankings` (idempotent theo `session_id`). E2 ✅. **Cần chốt tên exchange E2** trước (xem flag).
-3. **S1 Payment tiếp**: **P7** (order_code time+random — dep của P2) → **P4** (`/internal/credits/reserve|release`) → **P2** (mua pack → webhook cộng credit). Mở khoá BC1/BC2 + E7.
-4. **S5 B2C** (độc lập, E2E sớm nhất): **BC11** (seed rubric B2C — prerequisite chấm B2C) · **BC7** (Interview `cv-analysis` + `cv_analyses`, cần BC6 ✅) · rồi BC1/BC2 (cần P7/P4).
-5. **S4 còn lại**: **E3** (`SessionAbandoned`) · E5 (pass/fail) · E6 (export) · **E7** (Payment consume/release — cần P4/P5/P6 + E2/E3) · E8 (guard điểm C#).
-6. **Lọc CV B2B** (`C13`→`C14`→`C15`): C13 (bulk upload + hard-filter, Campaign) không bị chặn; C14 cần C13 + BC6 ✅.
-7. **Auth A4/A5**: A5 (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting**, chạy vòng ít worker; A4 cần P2.
-8. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.5` (readiness + checkpoint). *(P0.3/P0.4 ✅.)*
-9. **AIService roadmap** `BC13` (độc lập) → BC12/BC14/BC15 (D20).
+> ✅ Vòng 1: **E2, D1, P1, BC6**. ✅ Vòng 2: **P7, E3, E4, BC13** (xem bảng trên). Frontier mới bên dưới.
+1. **D2** (S3, Campaign+Interview — **cross-service**): mở token → account Candidate + create-or-get session. **Gỡ chặn HTTP entry B2B** cho I1/E1 (D1 ✅ + I1 ✅). ⚠ đụng Campaign+Interview (+ Auth account nhẹ) → **chạy solo**, không song song worker Campaign/Interview khác.
+2. **P4** (Payment, `/internal/credits/reserve|release`) → **P2** (mua pack → webhook cộng credit, dùng P7 ✅). Mở khoá BC1/BC2 + E7. Rồi **P5/P6** (consume/release).
+3. **S5 B2C**: **BC11** (seed rubric B2C — prerequisite chấm B2C) · **BC7** (Interview `cv-analysis` + `cv_analyses`, cần BC6 ✅) · **BC9** (tổng kết điểm) · rồi BC1/BC2 (cần P2/P4).
+4. **E5** (Campaign, xếp hạng + pass/fail — cần E4 ✅) → **E6** (export CSV/PDF) → **E7** (Payment consume/release — cần P4/P5/P6 + E2 ✅/E3 ✅).
+5. **Lọc CV B2B** (`C13`→`C14`→`C15`): C13 (bulk upload + hard-filter, Campaign) không bị chặn; C14 cần C13 + BC6 ✅.
+6. **I2** (per-question time-limit + materialize deadline lên session — gỡ design gap E3) · **E8** (guard điểm C# ở callback).
+7. **AIService roadmap DB side** `BC12`→`BC14`→`BC15` (D20, cần BC13 ✅ + BC9/BC11).
+8. **Auth A4/A5**: A5 (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting**, chạy vòng ít worker; A4 cần P2.
+9. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.5` (readiness + checkpoint). *(P0.3/P0.4 ✅.)*
 
 > Quy trình **vào ca / tan ca**: xem [../AGENTS.md](../AGENTS.md).
