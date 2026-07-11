@@ -35,6 +35,7 @@ namespace Isas.CampaignService.Services
         public async Task<CampaignSessionResult> CreateOrGetSessionAsync(
             Guid candidateId, Guid campaignId, string jobCategory,
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
+            DateTime? expiresAt = null,
             CancellationToken ct = default)
         {
             var payload = new
@@ -43,7 +44,8 @@ namespace Isas.CampaignService.Services
                 campaignId,
                 jobCategory,
                 questions,
-                criteria = criteria.Select(c => new { c.Name, c.Description, c.Weight, c.MaxScore })
+                criteria = criteria.Select(c => new { c.Name, c.Description, c.Weight, c.MaxScore }),
+                expiresAt   // BK18 — Interview map → session.Deadline (I2); null = không hard-deadline
             };
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/campaign")

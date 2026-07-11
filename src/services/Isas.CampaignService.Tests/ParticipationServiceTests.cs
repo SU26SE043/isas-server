@@ -41,7 +41,7 @@ public class ParticipationServiceTests
         m.Setup(x => x.CreateOrGetSessionAsync(
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CampaignSessionResult(FixedSession, new List<SessionQuestion>
             {
                 new(Guid.NewGuid(), 1, "Q1", 120)
@@ -410,6 +410,74 @@ public class ParticipationServiceTests
         Assert.Equal(FixedSession, detail.SessionId);
         Assert.Equal("InProgress", detail.InterviewStatus);
         Assert.Equal("Joined", detail.MembershipStatus);
+    }
+
+    // ── BK18: Campaign gửi expires_at khi tạo session B2B → Interview set session.Deadline (I2) ──────
+    // Trước BK18 B2B Deadline=null (sweeper I2 không quét). StartInterview PHẢI truyền campaign.ExpiresAt
+    // xuống CreateOrGetSessionAsync để Interview map → session.Deadline (auto-submit/abandon quá hạn).
+
+    // BK18(a): campaign có hạn → truyền đúng campaign.ExpiresAt xuống session client.
+    [Fact]
+    public async Task Start_TruyenCampaignExpiresAt_XuongSessionClient()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        var deadline = new DateTime(2026, 8, 1, 10, 0, 0, DateTimeKind.Utc);
+        camp.ExpiresAt = deadline;
+        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            FixedCandidate, camp.Id, It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            deadline, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // BK18(b): campaign không đặt hạn (ExpiresAt null) → truyền null (không hard-deadline).
+    [Fact]
+    public async Task Start_ExpiresAtNull_TruyenNull_KhongHardDeadline()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);   // ExpiresAt = null
+        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            (DateTime?)null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // BK18(c): resume (start 2×) → vẫn truyền đúng expiresAt cả 2 lần (không đổi session).
+    [Fact]
+    public async Task Start_HaiLan_VanTruyenDungExpiresAt_KhongDoiSession()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        var deadline = new DateTime(2026, 9, 15, 8, 30, 0, DateTimeKind.Utc);
+        camp.ExpiresAt = deadline;
+        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        var first = await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+        var second = await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        Assert.Equal(first.SessionId, second.SessionId);   // resume → cùng session
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            deadline, It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────────

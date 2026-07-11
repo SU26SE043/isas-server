@@ -202,8 +202,9 @@ namespace Isas.CampaignService.Services
             var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
 
             // Create-or-get session (Interview dedup theo candidate+campaign) → bấm nhiều lần vẫn ra CÙNG session.
+            // BK18 — gửi kèm campaign.ExpiresAt → Interview set session.Deadline (I2) cho sweeper auto-submit/abandon.
             var session = await _sessionClient.CreateOrGetSessionAsync(
-                candidateId, campaignId, jobCategory, questions, criteria, ct);
+                candidateId, campaignId, jobCategory, questions, criteria, campaign.ExpiresAt, ct);
 
             membership.SessionId = session.SessionId;
             if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted)
