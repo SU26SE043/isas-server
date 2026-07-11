@@ -139,7 +139,7 @@ LessonResponse  🔜 {
   status:        enum(string)          // Theory·Practicing·Done
 }
 
-RoadmapReportResponse  🔜 {            // BC15 — interim mọi lúc · final snapshot khi Completed
+RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-time · final snapshot (Completed) không tính lại
   radar:           CriterionScoreResponse[]   // avg % per tiêu chí qua các session thuộc roadmap
   levelEvaluation: { criterionName: string, percentage: decimal(5,2), levelThreshold: int, passed: bool }[]
   strengths:       string[]            // kết luận chi tiết — AI sinh (best-effort; rỗng nếu AI lỗi/interim)

@@ -78,18 +78,18 @@ CreditAccount {                         // GET /me/account
   updatedAt:        datetime
 }
 
-Invoice {                               // postpaid, chỉ Org
+Invoice {                               // ✅ P8b — postpaid, chỉ Org
   id:           uuid
-  orgId:        uuid
+  ownerType:    enum(string)            // Org (khớp credit_accounts owner model, thay orgId)
+  ownerId:      uuid
   periodStart:  datetime
   periodEnd:    datetime
   interviewCount: int
-  unitPriceVnd: long
-  amountVnd:    long
+  unitPrice:    decimal(16,2)           // = Billing:UnitPrice cấu hình
+  amount:       decimal(16,2)           // interviewCount × unitPrice
   status:       enum(string)            // Issued · Paid · Overdue · Void
-  issuedAt:     datetime
-  dueAt:        datetime
-  paidAt:       datetime?
+  createdAt:    datetime
+  // 🔜 dueAt/paidAt/issuedAt: BK17 — hiện paid-ness derive từ status=Paid + order settle
 }
 
 CreditOpRequest {                       // /internal/credits/reserve|consume|release
@@ -112,11 +112,13 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/me/account`** 🔜 — Số dư ví → `CreditAccount`. Lỗi: **401**.
 
-**`GET /payment/me/invoices`** 🔜 · **`GET /payment/me/invoices/{id}`** 🔜 — Hóa đơn postpaid → `Invoice[]`/`Invoice`.
+**`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
 
-**`POST /payment/invoices/{id}/pay`** 🔜 — Tất toán hóa đơn. Auth `OrgAdmin`. → `CreateOrderResponse` (link PayOS). Lỗi: **404**.
+**`POST /payment/invoices/{id}/pay`** ✅ P8b — Tất toán hóa đơn. Auth `OrgAdmin`, owner-scope. → `CreateOrderResponse` (Order kind=`InvoiceSettlement`, invoice_id; reuse `OrderService` tạo link PayOS). Lỗi: **404** (không tồn tại/non-owner) · **409** (đã Paid/Void).
 
-**`POST /payment/webhook/payos`** 🟡 — **Webhook PayOS** (🔒 verify checksum), **KHÔNG** qua gateway. Cộng credit/tất toán **chỉ khi** `Paid`; idempotent theo `payos_order_code`. Req: payload PayOS → Res **`200`**.
+**`POST /payment/webhook/payos`** 🟡/✅ — **Webhook PayOS** (🔒 verify checksum), **KHÔNG** qua gateway. Chỉ khi `Paid`, idempotent theo `payos_order_code`. **✅ P8b: BRANCH theo `Order.Kind`** — `CreditPack`→cộng credit (P2); `InvoiceSettlement`→invoice `Issued/Overdue→Paid` (ExecuteUpdate guard, KHÔNG cộng credit). Req: payload PayOS → Res **`200`**.
+
+**`POST /payment/admin/invoices/close`** ✅ P8b — Chốt kỳ postpaid (1 transaction): snapshot `period_usage` → `Invoice(Issued, amount=count×Billing:UnitPrice)` → reset `period_usage=0`. *(auth `[Authorize]`, role PlatformAdmin defer A5.)*
 
 ### Admin (PlatformAdmin)
 
@@ -293,20 +295,20 @@ created_at          timestamptz   index (order_id, created_at)
 ```
 > **Vì sao N–1 (không phải 1–1):** 1 order có thể nhận **nhiều** sự kiện — webhook redeliver, kết quả active-polling, **webhook trả muộn sau `Expired`** (ca phải lưu bằng chứng để PlatformAdmin đối soát thủ công — §State machine). Log **append-only**, không ghi đè → không mất vết tiền. Trạng thái đơn đọc ở `orders.status`, KHÔNG đọc row mới nhất ở đây.
 
-### `invoices` — postpaid, CHỈ Org, theo kỳ
+### `invoices` — ✅ P8b (migration `AddInvoices`) — postpaid, CHỈ Org, theo kỳ
 ```
 id             uuid          PK
-org_id         uuid          ref lỏng → Auth
+owner_type     varchar        enum: Org (khớp credit_accounts owner model, thay org_id)
+owner_id       uuid          ref lỏng → Auth
 period_start   timestamptz
 period_end     timestamptz
 interview_count int
-unit_price_vnd bigint
-amount_vnd     bigint        = interview_count × unit_price_vnd
-status         varchar(16)   enum: Issued · Paid · Overdue · Void (lập sai — không tính nợ)
-issued_at      timestamptz
-due_at         timestamptz
-paid_at        timestamptz?
+unit_price     numeric(16,2)  = Billing:UnitPrice cấu hình
+amount         numeric(16,2)  = interview_count × unit_price
+status         varchar(16)   enum: Issued · Paid · Overdue · Void
+created_at     timestamptz
 ```
+> **P8b reconcile (vòng 14):** dùng `owner_type/owner_id` + `numeric` (nhất quán schema payment còn lại) thay `org_id`+`*_vnd bigint`. Bỏ `issued_at/due_at/paid_at` — paid-ness derive từ `status=Paid` + order settle; thêm lại nếu HR cần hạn hóa đơn (**BK17**). `orders.invoice_id` (nullable FK Restrict, kind=InvoiceSettlement) + `orders.package_id`→nullable (đơn settle không gắn pack).
 
 ### `subscriptions` 🔜 *(phase 2)*
 ```
