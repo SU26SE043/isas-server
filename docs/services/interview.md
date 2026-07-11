@@ -589,6 +589,32 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 
 **Xác minh (3 lớp).** L1 `dotnet build` (gồm migration). L2 `dotnet test` — unit test: đóng session B2C → `Scored` (2 tiêu chí weight 0.4/0.6, maxScore 5, chấm nhiều câu) → DB có `practice_sessions.overall_score` khớp tính tay + rows `session_criterion_scores` đúng (`percentage`, `needs_improvement`); **đóng lại lần 2 → không nhân đôi** row; session B2B → **không** ghi; `GET /sessions/{id}` trả `result` đọc từ DB; history có `overallScore`. L3 e2e: luyện B2C 5 câu → chấm xong → DB lưu kết quả + `GET` đọc đúng.
 
+### Báo cáo "CV vs câu trả lời" (BC8) — ✅ passing
+
+**Vì sao.** Sau khi tổng kết buổi (BC9), người luyện muốn biết **chỗ nào CV thể hiện mạnh nhưng thực tế trả lời lại yếu** — để ưu tiên ôn đúng lỗ hổng. Đây là mục (c) "CV vs câu trả lời" đã hoãn ở BC7.
+
+**Phạm vi.** **CHỈ B2C** đã `Scored` **và có CV đã phân tích** (BC7). B2B / chưa `Scored` / không có CV → mục **absent** (không lỗi).
+
+**Nguồn (THUẦN ĐỌC — KHÔNG AI, KHÔNG call service ngoài).**
+- **"CV mạnh"** = `cv_analyses.strengths` **∪** `cv_analyses.jd_match.matched_skills` (BC7) — lấy bản phân tích **mới nhất** theo `(cv_id = session.cv_id, candidate_id)` (join lỏng qua `cv_id`, không FK xuyên bảng phân tích). Khử trùng, giữ thứ tự.
+- **"trả lời yếu"** = `session_criterion_scores.needs_improvement = true` (BC9 — `percentage < ngưỡng`, mặc định 50%). **Tái dùng** cờ BC9, không tính lại.
+
+**Định nghĩa "gap" (deterministic — không semantic AI).** Một tiêu chí là **"CV mạnh nhưng trả lời yếu"** khi thoả **CẢ HAI**: (1) `needs_improvement = true`, **và** (2) tên tiêu chí có **token trùng** với ≥1 chuỗi strength/skill CV. Token hoá = tách theo dấu/khoảng trắng, bỏ token < 3 ký tự + stopword generic (`and/skills/experience/knowledge/…`), so khớp **case-insensitive**. Mỗi gap trả kèm `cvEvidence[]` = các strength CV đã khớp (giải thích *vì sao* coi là "CV mạnh"). ⚠ *Khớp theo token, không hiểu ngữ nghĩa* — CV mô tả chung chung (không trùng chữ với tên tiêu chí) sẽ không tạo gap; nâng cấp semantic để sau (cần AI, ngoài phạm vi "không AI" của BC8).
+
+**Trả về (read-time — KHÔNG migration).** `SessionResultResponse` thêm field nullable `cvVsAnswer`:
+```json
+"cvVsAnswer": {
+  "cvStrengths": ["Microservice architecture", "SQL databases"],
+  "gaps": [
+    { "criterionId":"…","criterionName":"Microservice Design",
+      "percentage":40, "maxScore":5, "cvEvidence":["Microservice architecture"] }
+  ]
+}
+```
+Dựng **lúc `GET /sessions/{id}`** trong `MapResult` (nằm trong `result` BC9) qua `CvVsAnswerReportBuilder.Build(cvStrengths, criterionScores)`. Có CV nhưng không tiêu chí nào khớp → `gaps` rỗng (report vẫn có `cvStrengths`). Không CV đã phân tích → `cvVsAnswer = null`. **Field nullable, thêm mới → không phá client.**
+
+**Xác minh (3 lớp).** L1 `dotnet build`. L2 `dotnet test` (`CvVsAnswerReportTests`, +10): builder thuần (chỉ liệt kê tiêu chí VỪA yếu VỪA CV mạnh; loại tiêu chí mạnh/không khớp; không CV → null) + wiring qua `GET`: B2C Scored có CV → `cvVsAnswer` đúng gap+evidence (gộp matched skills JD); không CV/chưa phân tích → `null`; B2B/chưa Scored → `result` null. L3 e2e: buổi B2C có CV → chấm xong → `GET` thấy mục "CV mạnh trả lời yếu" đúng.
+
 ### Nhận xét chung buổi luyện B2C (BC10) — 🔜 chưa build
 
 **Vì sao.** Số liệu BC9 cho *điểm*; người luyện còn cần **nhận xét chung bằng lời** cho cả buổi (tổng quan làm tốt/chưa tốt ở đâu + hướng cải thiện) — giá trị định hướng của B2C. Sinh bằng **AI (Gemini)** nên **tách khỏi BC9** (BC9 giữ thuần engine, không AI).
