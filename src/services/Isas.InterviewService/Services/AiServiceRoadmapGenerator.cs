@@ -83,4 +83,58 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
 
         return new RoadmapGenAiResult(milestones);
     }
+
+    // Shape res AIService /generate-lesson-theory (GenerateLessonTheoryResponse) — chỉ markdown.
+    private record LessonTheoryApiResponse(string? TheoryMarkdown);
+
+    // BC14 — POST /generate-lesson-theory {jobCategory, level, lessonTitle, focusCriteria[], weaknesses?}
+    // → {theoryMarkdown}. Sync như /generate-roadmap. Lỗi → AiServiceException (→ 502).
+    public async Task<string> GenerateLessonTheoryAsync(
+        string jobCategory, string level, string lessonTitle,
+        IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses,
+        CancellationToken ct = default)
+    {
+        var payload = new
+        {
+            jobCategory,
+            level,
+            lessonTitle,
+            focusCriteria = focusCriteria ?? [],
+            weaknesses
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.PostAsJsonAsync("/api/v1/generate-lesson-theory", payload, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogError(ex, "Không gọi được AIService /generate-lesson-theory");
+            throw new AiServiceException("Không gọi được AIService /generate-lesson-theory", ex);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogError("AIService /generate-lesson-theory lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+            throw new AiServiceException($"AIService /generate-lesson-theory trả {(int)response.StatusCode}");
+        }
+
+        LessonTheoryApiResponse? body;
+        try
+        {
+            body = await response.Content.ReadFromJsonAsync<LessonTheoryApiResponse>(Json, ct);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "AIService /generate-lesson-theory trả JSON không hợp lệ");
+            throw new AiServiceException("AIService /generate-lesson-theory trả JSON không hợp lệ", ex);
+        }
+
+        if (body is null || string.IsNullOrWhiteSpace(body.TheoryMarkdown))
+            throw new AiServiceException("AIService /generate-lesson-theory trả rỗng");
+
+        return body.TheoryMarkdown;
+    }
 }
