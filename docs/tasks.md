@@ -120,6 +120,7 @@
 | BK9 | Ratify **event-bus convention** vào architecture.md §6 | doc §6 liệt kê exchange `interview.events`(topic) + key `session.scored`/`session.abandoned` + queue `campaign.ranking`(E4)/`payment.credit`(E7); code E2/E3/E4/E7 khớp doc | — | not_started · nguồn: ghi chú lặp **E2/E4/E7** (tên queue/exchange tự đặt, chưa vào doc) |
 | BK10 | **DECISION** — BC3/BC4 còn cần không sau E7? | E7 consumer generic consume/release **MỌI** session theo reservation (gồm B2C owner=User từ BC2) → chốt: BC3/BC4 = **covered-by-E7** (chỉ cần test xác minh B2C scored→consume ví User / abandoned→release ví User) HAY giữ path B2C riêng | E7, BC2 | not_started · **cần chốt** · nguồn: quan sát **vòng 7** |
 | BK11 | Fix `ReleaseAsync` postpaid **không đổi `remaining`** | release ví postpaid → chỉ `reserved−1` (KHÔNG `remaining+1`; `period_usage` giữ nguyên); prepaid giữ `remaining+1` | P6, P8a | not_started · **bug tiềm ẩn** (P6 hiện `remaining+1` mọi mode → bơm remaining 0→1 cho postpaid) · nguồn: ghi chú **BK7** |
+| BK12 | Release credit khi B2C session → `Failed` sau reserve (BC2) | B2C reserve (BC2) rồi AI sinh câu hỏi lỗi → `Failed`: phát tín hiệu release (`SessionAbandoned` reason=generation_failed, reuse `SessionEventPublisher`) → E7 hoàn credit ví User; test: session→`Failed` sau reserve → event phát (E7 release) | BC2, E7, E3 | not_started · **bug**: reserve-first orphan credit (`Failed` không phát abandoned → credit kẹt; E3 sweeper chỉ bắt `InProgress`) · nguồn: ghi chú **BC2** · liên quan BK10/BC4 |
 
 ---
 
