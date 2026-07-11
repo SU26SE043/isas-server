@@ -26,4 +26,13 @@ namespace Isas.CampaignService.DTOs
         public string? Result { get; set; }
         public DateTime ScoredAt { get; set; }
     }
+
+    // E6 — kết quả xuất file (CSV/PDF) cho `GET /campaign/{id}/results/export`.
+    // Controller trả `File(Content, ContentType, FileName)` (bám pattern DownloadCampaignFiles).
+    public class CampaignResultExport
+    {
+        public byte[] Content { get; set; } = System.Array.Empty<byte>();
+        public string ContentType { get; set; } = "text/csv";
+        public string FileName { get; set; } = "results.csv";
+    }
 }

@@ -1,9 +1,13 @@
 ﻿using Amazon.S3.Model;
+using CsvHelper;
+using CsvHelper.Configuration;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace Isas.CampaignService.Services
 {
@@ -569,6 +573,79 @@ namespace Isas.CampaignService.Services
                 TotalCandidates = results.Count,
                 Results = results
             };
+        }
+
+        // ── E6: xuất bảng kết quả (E5) ra file ──────────────────────────────
+        // Tái dùng NGUYÊN VẸN GetCampaignResultsAsync (E5) → thứ tự + rank + pass/fail y hệt bảng web,
+        // không tính lại (một nguồn sự thật). Ngoài org → E5 ném KeyNotFoundException → controller 404.
+        // format: null/"" → mặc định csv; "csv" → csv; khác (kể cả "pdf" 🔜) → ArgumentException → 400.
+        public async Task<CampaignResultExport> ExportCampaignResultsAsync(
+            Guid employerId, Guid id, string? format, CancellationToken ct)
+        {
+            var normalized = string.IsNullOrWhiteSpace(format) ? "csv" : format.Trim().ToLowerInvariant();
+            if (normalized == "pdf")
+                throw new ArgumentException("format 'pdf' chưa được hỗ trợ — dùng format=csv.");
+            if (normalized != "csv")
+                throw new ArgumentException($"format '{format}' không hợp lệ — chỉ hỗ trợ format=csv.");
+
+            var results = await GetCampaignResultsAsync(employerId, id, ct);   // có thể ném KeyNotFoundException (404)
+
+            return new CampaignResultExport
+            {
+                Content = BuildResultsCsv(results),
+                ContentType = "text/csv",
+                FileName = $"campaign_{id}_results.csv"
+            };
+        }
+
+        // Serialize bảng kết quả → CSV bằng CsvHelper (tự escape comma/quote/newline — không tự nối chuỗi).
+        // Cột snake_case (§5): rank,candidate_id,session_id,total_score,result,scored_at.
+        private static byte[] BuildResultsCsv(CampaignResultsResponse results)
+        {
+            var rows = results.Results.Select(r => new ResultCsvRow
+            {
+                Rank = r.Rank,
+                CandidateId = r.CandidateId,
+                SessionId = r.SessionId,
+                TotalScore = r.TotalScore,
+                Result = r.Result ?? string.Empty,   // ngưỡng null → ô result rỗng (HR quyết tay)
+                ScoredAt = r.ScoredAt
+            }).ToList();
+
+            using var buffer = new MemoryStream();
+            // leaveOpen: StreamWriter/CsvWriter dispose (flush) nhưng KHÔNG đóng buffer → ToArray() sau đó đọc được.
+            using (var writer = new StreamWriter(buffer, new UTF8Encoding(false), leaveOpen: true))
+            using (var csv = new CsvWriter(writer, CultureInfo.InvariantCulture))
+            {
+                csv.Context.RegisterClassMap<ResultCsvRowMap>();
+                csv.WriteRecords(rows);   // list rỗng → vẫn ghi hàng header (theo map)
+            }
+            return buffer.ToArray();
+        }
+
+        // Model dòng CSV — tách khỏi DTO API để kiểm soát header + định dạng (scoped nội bộ E6).
+        private sealed class ResultCsvRow
+        {
+            public int Rank { get; set; }
+            public Guid CandidateId { get; set; }
+            public Guid SessionId { get; set; }
+            public decimal TotalScore { get; set; }
+            public string Result { get; set; } = string.Empty;
+            public DateTime ScoredAt { get; set; }
+        }
+
+        private sealed class ResultCsvRowMap : ClassMap<ResultCsvRow>
+        {
+            public ResultCsvRowMap()
+            {
+                Map(m => m.Rank).Index(0).Name("rank");
+                Map(m => m.CandidateId).Index(1).Name("candidate_id");
+                Map(m => m.SessionId).Index(2).Name("session_id");
+                Map(m => m.TotalScore).Index(3).Name("total_score");
+                Map(m => m.Result).Index(4).Name("result");
+                // ScoredAt là UTC (UpdatedAt server) → ISO 8601 với hậu tố Z (chữ hoa = literal).
+                Map(m => m.ScoredAt).Index(5).Name("scored_at").TypeConverterOption.Format("yyyy-MM-ddTHH:mm:ssZ");
+            }
         }
 
         // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
