@@ -32,6 +32,7 @@ public class CvAnalysisController : ControllerBase
     [HttpPost]
     [ProducesResponseType(typeof(CvAnalysisResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status402PaymentRequired)]   // BC7b: ví hết credit
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status502BadGateway)]
     public async Task<IActionResult> Analyze([FromBody] CvAnalysisRequest request, CancellationToken ct)
@@ -51,6 +52,19 @@ public class CvAnalysisController : ControllerBase
         catch (UnauthorizedAccessException ex)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (InsufficientCreditException ex)
+        {
+            // BC7b: ví hết credit → 402, KHÔNG gọi AI/tạo row (reserve ném trước — PAY-5).
+            _logger.LogWarning(ex, "Ví không đủ credit để phân tích CV cho {CandidateId}", candidateId);
+            return StatusCode(StatusCodes.Status402PaymentRequired, new { error = ex.Message });
+        }
+        catch (PaymentServiceException ex)
+        {
+            // BC7b: PaymentService không phản hồi khi reserve → 502 (retry được; không tạo row).
+            _logger.LogError(ex, "PaymentService lỗi khi reserve credit phân tích CV cho {CandidateId}", candidateId);
+            return StatusCode(StatusCodes.Status502BadGateway,
+                new { error = "Dịch vụ thanh toán tạm thời không phản hồi. Vui lòng thử lại sau." });
         }
         catch (AiServiceException ex)
         {

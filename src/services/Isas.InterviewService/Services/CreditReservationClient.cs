@@ -80,4 +80,42 @@ public class CreditReservationClient : ICreditReservationClient
 
         return new CreditReservationResult(body.ReservationId, body.ReservedCredits);
     }
+
+    // BC7b — trừ credit thật (Reserved→Consumed). Nhái ReserveAsync nhưng consume/release absorbing
+    // (Payment trả 200 mọi outcome, PAY-11) → không cần đọc body, chỉ check hạ tầng.
+    public Task ConsumeAsync(Guid operationId, CancellationToken ct = default)
+        => PostCreditOpAsync("/internal/credits/consume", operationId, ct);
+
+    // BC7b — hoàn chỗ giữ (Reserved→Released). Cùng shape với consume.
+    public Task ReleaseAsync(Guid operationId, CancellationToken ct = default)
+        => PostCreditOpAsync("/internal/credits/release", operationId, ct);
+
+    // Body { sessionId } = khoá reservation (operationId). owner lấy từ reservation phía Payment nên
+    // không gửi. 402 không xảy ra ở consume/release → mọi non-2xx = lỗi hạ tầng → PaymentServiceException.
+    private async Task PostCreditOpAsync(string path, Guid operationId, CancellationToken ct)
+    {
+        using var msg = new HttpRequestMessage(HttpMethod.Post, path)
+        {
+            Content = JsonContent.Create(new { sessionId = operationId })
+        };
+        msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.SendAsync(msg, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogError(ex, "Không gọi được PaymentService {Path}", path);
+            throw new PaymentServiceException($"Không gọi được PaymentService {path}", ex);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogError("PaymentService {Path} lỗi: {StatusCode} - {Error}", path, response.StatusCode, error);
+            throw new PaymentServiceException($"PaymentService {path} trả {(int)response.StatusCode}");
+        }
+    }
 }
