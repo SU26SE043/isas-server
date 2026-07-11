@@ -290,15 +290,24 @@ public class AnswerService : IAnswerService
 
         // Đủ N → điểm chốt = median/tiêu chí (tính read-time downstream); ở đây đo SPREAD = max−min
         // mỗi tiêu chí giữa các attempt (materialize rồi tính C#) → spread > ngưỡng bất kỳ tiêu chí →
-        // needs_review (cờ soi lại). N=1 → spread = 0 → needs_review = false.
+        // needs_review (cờ soi lại). N=1 → spread = 0. E11: kèm cả Reasoning để chấm "nhận xét OK".
         var perAttempt = await _db.AnswerScores.AsNoTracking()
             .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
-            .Select(s => new { s.CriterionId, s.Score })
+            .Select(s => new { s.CriterionId, s.Score, s.Reasoning })
             .ToListAsync(ct);
 
-        var needsReview = perAttempt
+        // E10 — spread giữa các attempt vượt ngưỡng → soi lại.
+        var highSpread = perAttempt
             .GroupBy(s => s.CriterionId)
             .Any(g => g.Max(x => x.Score) - g.Min(x => x.Score) > _scoring.VarianceThreshold);
+
+        // E11 — chuẩn "NHẬN XÉT OK" (defense-in-depth): bất kỳ reasoning nào rỗng/quá ngắn (dưới
+        // MinReasoningLen ký tự sau trim) → cờ HR soi lại. KHÔNG hard-fail, KHÔNG mất điểm (điểm đã
+        // lưu ở loop trên). Opt-in: MinReasoningLen=0 (mặc định) → bỏ qua, giữ hành vi cũ.
+        var shortReasoning = _scoring.MinReasoningLen > 0
+            && perAttempt.Any(s => (s.Reasoning ?? "").Trim().Length < _scoring.MinReasoningLen);
+
+        var needsReview = highSpread || shortReasoning;
 
         answer.NeedsReview = needsReview;
         answer.Status = AnswerStatus.Scored;

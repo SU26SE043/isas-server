@@ -21,4 +21,12 @@ public class ScoringOptions
     // E10 — nhiệt độ cho attempt 2..N (tạo dao động thật để ĐO spread). Attempt 1 luôn temp=0
     // (tái lập). Không dùng khi N=1.
     public double SelfConsistencyTemperature { get; set; } = 0.4;
+
+    // E11 — chuẩn "NHẬN XÉT OK": reasoning (mỗi tiêu chí) ngắn hơn ngưỡng này (số ký tự sau trim)
+    // → answer.needs_review = true (cờ HR/người luyện soi lại). KHÔNG hard-fail, KHÔNG mất điểm —
+    // reuse cờ E10. Đây là guard MỀM defense-in-depth (worker Python đã reject reasoning RỖNG ở
+    // nguồn; .NET bắt cả "quá ngắn" + phòng worker/image lệch gửi nhận xét kém → không tin 100%).
+    // Mặc định 0 = TẮT (opt-in như SelfConsistencyN) để không hồi tố flag nhận xét ngắn hợp lệ;
+    // production bật qua cấu hình Scoring:MinReasoningLen. Điểm AI = gợi ý, HR chốt điểm cuối (E11b).
+    public int MinReasoningLen { get; set; } = 0;
 }
