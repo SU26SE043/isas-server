@@ -13,13 +13,13 @@ public class AnswerServiceTests
 {
     private static AnswerService Build(
         TestDb t, Mock<IScoringJobPublisher> publisher, out Mock<IStorageService> storage,
-        int selfConsistencyN = 1, decimal varianceThreshold = 1m)
-        => Build(t, publisher, out storage, out _, selfConsistencyN, varianceThreshold);
+        int selfConsistencyN = 1, decimal varianceThreshold = 1m, int minReasoningLen = 0)
+        => Build(t, publisher, out storage, out _, selfConsistencyN, varianceThreshold, minReasoningLen);
 
     private static AnswerService Build(
         TestDb t, Mock<IScoringJobPublisher> publisher, out Mock<IStorageService> storage,
         out Mock<ISessionScoringNotifier> scoringNotifier,
-        int selfConsistencyN = 1, decimal varianceThreshold = 1m)
+        int selfConsistencyN = 1, decimal varianceThreshold = 1m, int minReasoningLen = 0)
     {
         storage = new Mock<IStorageService>();
         storage
@@ -35,7 +35,7 @@ public class AnswerServiceTests
 
         return new AnswerService(
             t.Db, storage.Object, publisher.Object, scoringNotifier.Object,
-            TestDb.ScoringOpts(selfConsistencyN, varianceThreshold),
+            TestDb.ScoringOpts(selfConsistencyN, varianceThreshold, minReasoningLen: minReasoningLen),
             NullLogger<AnswerService>.Instance);
     }
 
@@ -983,5 +983,123 @@ public class AnswerServiceTests
         // BC9 overall_score cũng dùng median → 40%.
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(40m, s.OverallScore);
+    }
+
+    // ── E11: chuẩn "NHẬN XÉT OK" — reasoning rỗng/quá ngắn → needs_review (cờ HR, KHÔNG mất điểm) ──
+
+    // E11: reasoning quá ngắn (dưới MinReasoningLen) → needs_review=true, điểm VẪN lưu (không hard-fail).
+    [Fact]
+    public async Task SaveResult_ReasoningTooShort_SetsNeedsReview_ScoreKept()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // B2C
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore 5
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _, minReasoningLen: 15);
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4m, Reasoning = "ok" } }   // 2 ký tự < 15
+        });
+
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().Include(a => a.Scores)
+            .FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scored, saved.Status);   // KHÔNG hard-fail
+        Assert.True(saved.NeedsReview);                    // cờ HR soi lại
+        Assert.Equal(4m, saved.Scores.Single().Score);     // điểm vẫn lưu (không mất điểm)
+        Assert.Equal("ok", saved.Scores.Single().Reasoning);
+    }
+
+    // E11: reasoning RỖNG đến callback (worker/image lệch bỏ qua reject nguồn) → defense-in-depth flag.
+    [Fact]
+    public async Task SaveResult_ReasoningEmpty_SetsNeedsReview_ScoreKept()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _, minReasoningLen: 15);
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 3m, Reasoning = null } }   // rỗng
+        });
+
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().Include(a => a.Scores)
+            .FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scored, saved.Status);
+        Assert.True(saved.NeedsReview);
+        Assert.Equal(3m, saved.Scores.Single().Score);   // điểm vẫn lưu
+    }
+
+    // E11: reasoning ĐỦ dài (nhận xét có dẫn chứng) → KHÔNG flag oan.
+    [Fact]
+    public async Task SaveResult_ReasoningOk_NoFalseNeedsReview()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _, minReasoningLen: 15);
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores =
+            {
+                new ScoreItemDto
+                {
+                    CriterionId = crit.Id, Score = 4m,
+                    Reasoning = "Ứng viên nói \"DI giảm coupling\" nhưng chưa nêu ví dụ → mức 4."
+                }
+            }
+        });
+
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scored, saved.Status);
+        Assert.False(saved.NeedsReview);   // nhận xét OK → không soi oan
+    }
+
+    // E11 regression: MinReasoningLen=0 (mặc định, TẮT) → reasoning ngắn KHÔNG flag (giữ hành vi cũ).
+    [Fact]
+    public async Task SaveResult_MinReasoningLenZero_Disabled_ShortReasoning_NotFlagged()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _);   // minReasoningLen=0 mặc định
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4m, Reasoning = "ok" } }
+        });
+
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scored, saved.Status);
+        Assert.False(saved.NeedsReview);   // guard TẮT → không flag dù reasoning ngắn
     }
 }

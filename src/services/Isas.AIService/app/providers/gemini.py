@@ -291,11 +291,23 @@ class GeminiProvider(QuestionProvider):
                 # không raise/không drop -> tránh thiếu tiêu chí => answer Failed, INT-9).
                 level = min(valid_levels, key=lambda v: (abs(v - raw_score), v))
 
+            # E11 — chuẩn "NHẬN XÉT OK": reasoning RỖNG = output malformed (AI không tuân
+            # schema bắt buộc dẫn chứng) -> reject như idiom score() (missing criterion/JSON lỗi).
+            # temperature=0 nên lỗi tái lập -> worker coi là PermanentError. Chỉ chặn RỖNG ở đây
+            # (an toàn, không phá điểm hợp lệ); "quá ngắn" là cờ MỀM do .NET flag needs_review
+            # (không mất điểm — HR chốt). Xem interview.md §E11 + ScoringOptions.MinReasoningLen.
+            reasoning = str(item.get("reasoning", "")).strip()
+            if not reasoning:
+                raise ValueError(
+                    f"Tiêu chí {cid}: reasoning rỗng — nhận xét bắt buộc có dẫn chứng từ "
+                    "câu trả lời (E11)."
+                )
+
             results.append({
                 "criterionId": cid,
                 "score": float(level),   # E9: score = levelMatched.score
                 "levelMatched": level,
-                "reasoning": str(item.get("reasoning", "")).strip(),
+                "reasoning": reasoning,
             })
 
         # Đảm bảo chấm đủ mọi tiêu chí; thiếu cái nào -> coi như lỗi để retry.

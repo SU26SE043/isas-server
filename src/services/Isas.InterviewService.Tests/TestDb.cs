@@ -56,12 +56,14 @@ public sealed class TestDb : IDisposable
     // E10 — ScoringOptions cho AnswerService. Mặc định N=1 (self-consistency TẮT) → giữ hành vi cũ;
     // test self-consistency truyền N>1 + ngưỡng spread + temperature.
     public static IOptions<ScoringOptions> ScoringOpts(
-        int selfConsistencyN = 1, decimal varianceThreshold = 1m, double temperature = 0.4)
+        int selfConsistencyN = 1, decimal varianceThreshold = 1m, double temperature = 0.4,
+        int minReasoningLen = 0)   // E11 — 0 = tắt (opt-in); >0 để test cờ nhận xét quá ngắn
         => Options.Create(new ScoringOptions
         {
             SelfConsistencyN = selfConsistencyN,
             VarianceThreshold = varianceThreshold,
-            SelfConsistencyTemperature = temperature
+            SelfConsistencyTemperature = temperature,
+            MinReasoningLen = minReasoningLen
         });
 
     // BC10 — summarizer AI giả cho notifier THẬT: comment=null/"" → no-op (không lưu overall_comment);
