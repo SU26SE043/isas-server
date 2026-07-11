@@ -12,7 +12,9 @@ namespace Isas.PaymentService.DTOs
         public class OrderResponse
         {
             public Guid Id { get; set; }
-            public Guid UserId { get; set; }
+            public OwnerType OwnerType { get; set; }
+            public Guid OwnerId { get; set; }
+            public OrderKind Kind { get; set; }
             public Guid PackageId { get; set; }
             public OrderStatus Status { get; set; }
             public int AmountVnd { get; set; }
@@ -24,7 +26,9 @@ namespace Isas.PaymentService.DTOs
             public static OrderResponse ToResponse(Order order) => new OrderResponse
             {
                 Id = order.Id,
-                UserId = order.UserId,
+                OwnerType = order.OwnerType,
+                OwnerId = order.OwnerId,
+                Kind = order.Kind,
                 PackageId = order.PackageId,
                 Status = order.Status,
                 AmountVnd = order.AmountVnd,

@@ -13,15 +13,18 @@ namespace Isas.PaymentService.Services
         private readonly PaymentDbContext _db;
         private readonly PayOSClient _payos;
         private readonly IOptions<PayOSSettings> _settings;
+        private readonly IOrderCodeGenerator _orderCodes;
 
-        public OrderService(PaymentDbContext db, PayOSClient payos, IOptions<PayOSSettings> settings)
+        public OrderService(PaymentDbContext db, PayOSClient payos, IOptions<PayOSSettings> settings,
+            IOrderCodeGenerator orderCodes)
         {
             _db = db;
             _payos = payos;
             _settings = settings;
+            _orderCodes = orderCodes;
         }
 
-        public async Task<OrderResponse> CreateOrderAsync(Guid userId, CreateOrderRequest request, CancellationToken ct = default)
+        public async Task<OrderResponse> CreateOrderAsync(OwnerType ownerType, Guid ownerId, CreateOrderRequest request, CancellationToken ct = default)
         {
             // 1. Fetch package
             var package = await _db.ProductPackages.FirstOrDefaultAsync(p => p.Id == request.PackageId, ct)
@@ -30,22 +33,15 @@ namespace Isas.PaymentService.Services
             if (!package.IsActive)
                 throw new InvalidOperationException("Package is no longer available.");
 
-            var existingPending =
-                await _db.Orders
-                    .Where(x =>
-                        x.UserId == userId &&
-                        x.PackageId == request.PackageId &&
-                        x.Status == OrderStatus.Pending &&
-                        x.ExpiredAt > DateTime.UtcNow)
-                    .FirstOrDefaultAsync(ct);
-
-            // 2. Generate a unique positive long order code for PayOS
-            var orderCode = GenerateOrderCode();
+            // 2. Generate a unique positive long order code for PayOS (P7 — time+random, ≤2^53−1, UNIQUE+retry).
+            var orderCode = await _orderCodes.GenerateAsync(ct);
 
             // 3. Persist order first (pending)
             var order = new Order
             {
-                UserId = userId,
+                OwnerType = ownerType,
+                OwnerId = ownerId,
+                Kind = OrderKind.CreditPack,
                 PackageId = package.Id,
                 AmountVnd = package.PriceVnd,
                 PayosOrderCode = orderCode,
@@ -90,10 +86,10 @@ namespace Isas.PaymentService.Services
             return order is null ? null : OrderResponse.ToResponse(order);
         }
 
-        public async Task<List<OrderResponse>> GetUserOrdersAsync(Guid userId, CancellationToken ct = default)
+        public async Task<List<OrderResponse>> GetOwnerOrdersAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
         {
             return await _db.Orders
-                .Where(o => o.UserId == userId)
+                .Where(o => o.OwnerType == ownerType && o.OwnerId == ownerId)
                 .OrderByDescending(o => o.CreatedAt)
                 .Select(o => OrderResponse.ToResponse(o))
                 .ToListAsync(ct);
@@ -111,14 +107,6 @@ namespace Isas.PaymentService.Services
 
             order.Status = OrderStatus.Failed;
             await _db.SaveChangesAsync(ct);
-        }
-
-        /// Timestamp (ms) + 3-digit random suffix, stays within JS safe-integer range
-        private static long GenerateOrderCode()
-        {
-            var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % 1_000_000_000L;
-            var suffix = Random.Shared.Next(100, 999);
-            return long.Parse($"{ts}{suffix}");
         }
     }
 }

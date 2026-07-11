@@ -27,7 +27,9 @@ public class OrderCodeGeneratorTests
     private static Order NewOrder(Guid packageId, long orderCode) => new()
     {
         Id = Guid.NewGuid(),
-        UserId = Guid.NewGuid(),
+        OwnerType = OwnerType.User,
+        OwnerId = Guid.NewGuid(),
+        Kind = OrderKind.CreditPack,
         PackageId = packageId,
         Status = OrderStatus.Pending,
         AmountVnd = 10_000,
