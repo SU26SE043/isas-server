@@ -105,6 +105,15 @@
 | BC14 | Lesson: lý thuyết lazy + `/start` luyện (reserve credit) + Done khi `Scored` | mở lesson lần 1 → gọi AI sinh + lưu `theory_content` (mở lần 2 **không** gọi lại AI); `POST …/lessons/{id}/start` → reserve 1 credit (hết → **402, không tạo session**) + session gắn lesson + `Theory→Practicing`; đang `Practicing` → **409**; session `Scored` → lesson `Done`; `Abandoned` → release + lesson về `Theory` | BC12, BC2 | not_started · billing = D7/D15 nguyên vẹn (lý thuyết free — D17) |
 | BC15 | Milestone improvement + roadmap `Completed` + report | mọi lesson Done → mile `Completed` + `improvement` (avg pct mile N − mile N−1 / baseline) khớp tính tay; mọi mile xong → roadmap `Completed` + snapshot `final_report` + `overall_comment` (AI best-effort — lỗi vẫn `Completed`, comment null); `GET /roadmaps/{id}/report` → radar + `levelEvaluation` (ngưỡng Fresher 50/Junior 60/Middle 70/Senior 80) + kết luận | BC12, BC10, BC13 | not_started · spec: [interview.md](services/interview.md) §Improvement & report (BC15) |
 
+## Backlog — dọn dẹp / follow-up (sinh từ **ghi chú ⚠** của task passing)
+> Chưng cất từ note worker để lại; **không** trùng task đã có (P8a/E7/BC10/E9-E10/D2 đã là task riêng). Chọn khi rảnh giữa các feature; mỗi cái vẫn WIP=1 + 1 lệnh xác minh.
+| ID | Hành vi | Xác minh | Dep | Status |
+|---|---|---|---|---|
+| BK1 | Drop cột `rank`/`result` thừa trên `campaign_rankings` (E4 thêm nhưng E5 tính read-time → cột chết) | migration drop 2 cột; `GET /campaign/{id}/results` (E5) vẫn đúng; `has-pending`=No changes | E5 | not_started · nguồn: ghi chú **E5** |
+| BK2 | Backfill `order_no` phân biệt/`campaign` **trước khi apply** `AddCriteriaOrderAndUpdatedAt` lên Neon (tránh vỡ `UNIQUE(campaign_id,order_no)` với rows cũ) | trên DB có campaign >1 tiêu chí: chạy backfill → apply migration C12 KHÔNG lỗi unique | C12 | not_started · nguồn: **apply-caveat C12** · ops/pipeline (không phải code service) |
+| BK3 | CRUD rubric B2C admin-gated (BC11 mới seed, CRUD hoãn) | admin create/update/deactivate `rubric_criteria(campaign_id IS NULL)`; Σweight validate; ẩn danh/không-admin → 401/403 | BC11, A5 | not_started · nguồn: ghi chú **BC11** |
+| BK4 | Wire Campaign `employer_id` → `org_id` (credit/ownership theo ORG — AUTH-8/PAY-2) | campaign gắn `org_id` từ JWT claim; filter/ownership + results theo org; test | A1 | not_started · nguồn: ghi chú lặp **C2/D1/E5** "chưa wire org_id" · mở khoá credit-theo-org |
+
 ---
 
 > **Lưu ý phụ thuộc chéo:** `A1` (org) mở khóa S1-Payment + S2(C2). `C8`→`I1`→toàn bộ S4. `E2/E3`→`E7` (Payment). `P1`/`P4`→**S5** (BC1–BC4) — S5 **độc lập B2B** nên là luồng cho **E2E demo được sớm nhất** sau khi có ví credit. **Lọc CV B2B:** `C13`→`C14`→`C15`; `C14` cần **`BC6`** (engine `/analyze-cv` dùng chung B2C) + `C8` (đã có `campaign_criteria`); `C15` cần `D1` (invite). **Roadmap B2C (D20):** `BC13` độc lập → `BC12` (cần `BC9`/`BC11` cho nguồn điểm yếu + rubric) → `BC14` (cần `BC2` reserve credit) → `BC15` (cần `BC10` pattern comment). Bám DAG này khi chọn task: ưu tiên task **không bị block** và **đang được dep cần tới**.
