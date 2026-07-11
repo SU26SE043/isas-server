@@ -1,7 +1,7 @@
 # ISAS — Progress / Handoff
 
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
-> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) passing, integrated vào `docs/sync-design-d18-d21`).
+> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) + **E7·C13·BC2** (vòng 7) passing, integrated vào `docs/sync-design-d18-d21`).
 
 ## Pha hiện tại
 **Đang code feature B2B (không còn ở pha thiết kế).** Thiết kế đã chốt (D1–D21; **mới 2026-07-02: D20 — roadmap ôn tập cá nhân hoá B2C, `BC12`–`BC15`** — mới ở doc, **chưa build**; 2026-06-30: D18/D19 — lọc CV hàng loạt B2B, `C13`–`C15` — mới ở doc, **chưa build**). Đã merge vào `main`: **S1 Auth org** (A1–A3, PR #23), **S2 Campaign** (C1–C10, PR #22 + đưa vào pipeline deploy), **S3 I1** (session B2B `campaign_id` + materialize tiêu chí, PR #24). **E1 đã merged `main`** (commit `796d8bb` — chấm B2B theo tiêu chí campaign); **tiếp theo E2** (phát `SessionScored`). **Time-limit (D21, 2026-07-11):** bỏ giới hạn tổng buổi — chỉ giới hạn từng câu, hết giờ câu → chốt câu → sang câu kế (task **I2**). PaymentService vẫn ở branch chưa refactor. **Doc (2026-06-30):** 5 service doc đã **chi tiết hoá** (req/res mẫu · validation · bảng mã lỗi · sequence · index/edge) + đồng bộ bản copy `src/services/Isas.*/AGENTS.md` (Auth/AI/Campaign/Interview; Payment ở branch).
@@ -73,6 +73,15 @@
 
 > Base test sau vòng 6: **Auth 4 · Payment 27 · Campaign 46 · Interview 70 = 147 .NET pass** (+ AIService pytest 29), `dotnet build` 0 error. Merge `--no-ff`: P8a·E6·BC7. **Backlog từ ghi chú:** BK1–BK4 (dọn dẹp) + **BK5** (DECISION billing CV — cần team chốt) · **BK6** (ratify jobCategory) · **BK7** (postpaid consume period_usage) · **BK8** (E6 PDF) — xem §Backlog trong tasks.md.
 
+### Vòng giám sát 2026-07-11 (vòng 7) — 3 task passing (3 worker phiên riêng, pin base `70896db`, Context7 RabbitMQ v7/EF/HttpClient)
+| Task | Nội dung | Trạng thái |
+|---|---|---|
+| **E7** | Payment consumer `InterviewEventConsumer` (queue `payment.credit` ↔ `interview.events`) → `CreditEventHandler`: `session.scored`→consume (P5), `session.abandoned`→release (P6); handler tách class unit-test | ✅ **passing (be7b168)** · Payment 33/33 (+6) · không migration · +RabbitMQ.Client 7.2.1 (async API) · absorbing sẵn P5/P6 · ⚠ tên queue/exchange chưa vào doc → **BK9**; e2e broker chờ compose |
+| **C13** | Bulk CV `POST /campaign/{id}/candidates` → parse (ParserService) + archive PDF S3 KEY + hard-filter (required_skill/keywords/min_years) → Filtered/Rejected; dedup email; cap→400; chưa Active→409; GET cv | ✅ **passing (dc24c1a)** · Campaign 58/58 (+12) · migration `AddCampaignCandidates` (2 bảng + 3 cột rule, jsonb portable; không apply Neon; has-pending=No changes) · 0 credit (D18/D19) · ⚠ cột AI + `candidate_criterion_scores` để **C14** điền; full_name null (PATCH C14); trả 202 |
+| **BC2** | Interview `CreateSessionAsync` B2C reserve credit ví User **trước** insert (typed HttpClient→Payment P4); ví hết→402 no session (PAY-5) | ✅ **passing (916aecd)** · Interview 73/73 (+3) · không migration · reserve idempotent theo sessionId · B2B không đổi (PAY-6) · ⚠ reserve-first→AI-gen lỗi giữ credit→**BC4** release; B2C hard-dep Payment; `Payment:BaseUrl` placeholder |
+
+> Base test sau vòng 7: **Auth 4 · Payment 33 · Campaign 58 · Interview 73 = 168 .NET pass** (+ AIService pytest 29), `dotnet build` 0 error. Merge `--no-ff`: E7·C13·BC2. Backlog +**BK9** (ratify event-bus convention architecture.md §6 — ghi chú lặp E2/E4/E7).
+
 > Test project trong tree hiện có: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`. Payment **chưa** có (Phase 0 `P0.4`).
 
 ## Vấn đề đã biết / cần xác minh
@@ -84,16 +93,16 @@
 - **CI/CD chung Neon (DB server):** không tự apply migration lên DB chung — schema apply qua pipeline/tay trước deploy.
 
 ## Bước tiếp theo (thứ tự đề xuất)
-> ✅ Vòng 1: **E2, D1, P1, BC6**. ✅ Vòng 2: **P7, E3, E4, BC13**. ✅ Vòng 3: **P4, C11, E8**. ✅ Vòng 4: **P5, C12, BC11**. ✅ Vòng 5: **P6, E5, BC9**. ✅ Vòng 6: **P8a, E6, BC7** (xem bảng trên). Frontier mới bên dưới.
-> **⚠ Cần người/team chốt (không tự quyết):** **BK5** — CV analysis tính phí hay free? (rules.md BC-4 ✗ interview.md/D17 mâu thuẫn) → chặn hướng billing của BC7/BC-4/BC1–BC4.
-1. **D2** (S3, Campaign+Interview — **cross-service**): mở token → account Candidate + create-or-get session. **Gỡ chặn HTTP entry B2B** cho I1/E1 (D1 ✅ + I1 ✅). ⚠ đụng Campaign+Interview (+ Auth account nhẹ) → **chạy solo**, không song song worker Campaign/Interview khác.
-2. **P2** (Payment, mua pack → webhook PayOS cộng credit — cần P7 ✅ + P4 ✅). ⚠ cần **PayOS sandbox + webhook thật** để e2e → verify tay ngoài worker nền. Mở khoá BC1/A4. (reserve/consume/release P4/P5/P6 ✅ + postpaid P8a ✅ — credit đủ.)
-3. **S5 B2C** (BC11 ✅ rubric · BC9 ✅ tổng kết · BC7 ✅ cv-analysis): **BC2** (reserve ví cá nhân — cần P4 ✅) · **BC3** (consume — cần BC2 + P5 ✅) · **BC4** (release — cần BC2 + P6 ✅ + E3 ✅) · **BC10** (nhận xét AI buổi luyện — cần BC9 ✅) · **BC8** (báo cáo CV↔trả lời — cần BC7 ✅ + E1 ✅) · BC1 (cần P2).
-4. **E7** (Payment consume/release phản ứng event — cần P5 ✅/P6 ✅ + E2 ✅/E3 ✅; chỉ còn wire consumer RabbitMQ). (E5 ✅ ranking · E6 ✅ export xong.)
-5. **Lọc CV B2B** (`C13`→`C14`→`C15`): C13 (bulk upload + hard-filter, Campaign) không bị chặn; C14 cần C13 + BC6 ✅.
-6. **I2** (per-question time-limit + materialize deadline lên session — gỡ design gap E3).
-7. **AIService roadmap DB side** `BC12`→`BC14`→`BC15` (D20, cần BC13 ✅ + BC9/BC11 ✅).
-8. **Auth A4/A5**: A5 (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting**, chạy vòng ít worker; A4 cần P2.
-9. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.5` (readiness + checkpoint). *(P0.3/P0.4 ✅.)*
+> ✅ Vòng 1: **E2, D1, P1, BC6**. ✅ Vòng 2: **P7, E3, E4, BC13**. ✅ Vòng 3: **P4, C11, E8**. ✅ Vòng 4: **P5, C12, BC11**. ✅ Vòng 5: **P6, E5, BC9**. ✅ Vòng 6: **P8a, E6, BC7**. ✅ Vòng 7: **E7, C13, BC2** (xem bảng trên). Frontier mới bên dưới.
+> **⚠ Cần người/team chốt (không tự quyết):** **BK5** — CV analysis tính phí hay free? (rules.md BC-4 ✗ interview.md/D17 mâu thuẫn) → chặn hướng billing của BC-4/BC1. **BK9** — chốt convention event-bus (architecture.md §6).
+1. **D2** (S3, Campaign+Interview — **cross-service**): mở token → account Candidate + create-or-get session. **Gỡ chặn HTTP entry B2B** cho I1/E1 (D1 ✅ + I1 ✅). ⚠ đụng Campaign+Interview (+ Auth account nhẹ) → **chạy solo**, không song song worker Campaign/Interview khác. **Sau D2: chạy được E2E B2B thật** (compose + broker) — verify tay ngoài worker.
+2. **P2** (Payment, mua pack → webhook PayOS cộng credit — cần P7 ✅ + P4 ✅). ⚠ cần **PayOS sandbox + webhook thật** để e2e → verify tay ngoài worker nền. Mở khoá BC1/A4. (credit engine reserve/consume/release/postpaid + wire event E7 ✅ — đủ.)
+3. **S5 B2C** (BC11 ✅ rubric · BC9 ✅ tổng kết · BC7 ✅ cv-analysis · BC2 ✅ reserve): **BC3** (consume ví cá nhân — cần BC2 ✅ + P5 ✅; wire tương tự E7 nhưng phía Interview/không org) · **BC4** (release — cần BC2 ✅ + P6 ✅ + E3 ✅) · **BC10** (nhận xét AI buổi luyện — cần BC9 ✅) · **BC8** (báo cáo CV↔trả lời — cần BC7 ✅ + E1 ✅) · BC1 (cần P2).
+4. **Lọc CV B2B** (C13 ✅ → `C14` → `C15`): **C14** (async AI chấm khớp + callback + ranking — cần C13 ✅ + BC6 ✅; queue `cv_screening_queue`) → **C15** (hardening + invite handoff — cần C14 + D1 ✅).
+5. **I2** (per-question time-limit + materialize deadline lên session — gỡ design gap E3).
+6. **AIService roadmap DB side** `BC12`→`BC14`→`BC15` (D20, cần BC13 ✅ + BC9/BC11 ✅).
+7. **Auth A4/A5**: A5 (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting**, chạy vòng ít worker; A4 cần P2.
+8. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.5` (readiness + checkpoint). *(P0.3/P0.4 ✅.)*
+9. **Backlog dọn dẹp (khi rảnh):** BK1 (drop cột rank/result) · BK7 (postpaid consume period_usage) · BK8 (E6 PDF) · BK9 (event-bus doc) · BK4 (wire org_id) · BK6 (ratify jobCategory) — xem §Backlog tasks.md.
 
 > Quy trình **vào ca / tan ca**: xem [../AGENTS.md](../AGENTS.md).
