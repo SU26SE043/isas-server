@@ -382,6 +382,7 @@ public class SessionResultServiceTests
         return new PracticeService(
             t.Db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object, notifier.Object,
+            new Mock<ICreditReservationClient>().Object,   // BC2: không dùng ở nhánh B2B
             NullLogger<PracticeService>.Instance);
     }
 }

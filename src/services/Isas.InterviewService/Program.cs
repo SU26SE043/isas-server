@@ -42,6 +42,13 @@ builder.Services.AddHttpClient<IAiServiceCvAnalyzer, AiServiceCvAnalyzer>(c =>  
     c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
 });
 
+builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient>(c =>   // BC2
+{
+    // Nội bộ (KHÔNG qua gateway) → gọi thẳng PaymentService. X-Internal-Token gắn trong client.
+    c.BaseAddress = new Uri(builder.Configuration["Payment:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(10);  // reserve nhanh (DB update), không phải LLM
+});
+
 builder.Services.AddOpenApi(options =>
 {
     options.AddDocumentTransformer((document, context, ct) =>
