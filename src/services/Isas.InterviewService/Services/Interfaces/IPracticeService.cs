@@ -17,6 +17,12 @@ public interface IPracticeService
     Task<PracticeSessionResponse> CreateCampaignSessionAsync(
         Guid candidateId, CreateCampaignSessionRequest request, CancellationToken ct = default);
 
+    // D2: create-or-get session B2B idempotent theo (candidateId, campaignId). Session chưa terminal →
+    // trả session cũ (kèm câu hỏi/đáp án); chưa có → CreateCampaignSessionAsync (I1). Cho phép Campaign
+    // /start bấm nhiều lần vẫn ra CÙNG session (không đẻ trùng).
+    Task<PracticeSessionResponse> GetOrCreateCampaignSessionAsync(
+        Guid candidateId, CreateCampaignSessionRequest request, CancellationToken ct = default);
+
     Task SubmitSessionAsync(
         Guid candidateId, Guid sessionId, CancellationToken ct = default);
 

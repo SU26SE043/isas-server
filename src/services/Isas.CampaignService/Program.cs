@@ -53,6 +53,18 @@ builder.Services.AddHostedService<StuckScreeningRepublisher>();
 builder.Services.AddScoped<IRankingEventHandler, RankingEventHandler>();
 builder.Services.AddHostedService<SessionScoredConsumer>();
 
+// D2: orchestrator luồng ứng viên (invitation→join→membership→my-campaigns→start).
+// 2 typed HttpClient nội bộ (X-Internal-Token gắn trong client, KHÔNG qua gateway): Auth provision + Interview session.
+builder.Services.AddHttpClient<IAuthProvisionClient, AuthProvisionClient>(c =>
+    c.BaseAddress = new Uri(
+        string.IsNullOrWhiteSpace(builder.Configuration["Auth:BaseUrl"])
+            ? "http://localhost:5001" : builder.Configuration["Auth:BaseUrl"]!));
+builder.Services.AddHttpClient<ICampaignSessionClient, CampaignSessionClient>(c =>
+    c.BaseAddress = new Uri(
+        string.IsNullOrWhiteSpace(builder.Configuration["Interview:BaseUrl"])
+            ? "http://localhost:5002" : builder.Configuration["Interview:BaseUrl"]!));
+builder.Services.AddScoped<IParticipationService, ParticipationService>();
+
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;

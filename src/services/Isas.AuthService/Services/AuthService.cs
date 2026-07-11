@@ -186,6 +186,50 @@ namespace Isas.AuthService.Services
             return await GenerateAuthResponse(user);
         }
 
+        // D2: provision Candidate nhẹ (internal). Create-or-get theo email (chuẩn hoá qua
+        // FindByEmailAsync — Identity so khớp NormalizedEmail): chưa có → tạo User KHÔNG mật khẩu
+        // (mẫu LoginGoogle: CreateAsync(user) không password) + role Candidate; đã có → dùng lại.
+        // Trả candidateId (ref lỏng xuyên service) + JWT (mang role thật của account). Idempotent —
+        // gọi lại cùng email → cùng candidateId.
+        public async Task<ProvisionCandidateResponse> ProvisionCandidateAsync(
+            string email, string? fullName, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(email))
+                throw new ArgumentException("Email is required", nameof(email));
+
+            email = email.Trim();
+            var user = await _userManager.FindByEmailAsync(email);
+            if (user is null)
+            {
+                user = new User
+                {
+                    Id = Guid.NewGuid(),
+                    UserName = email,
+                    Email = email,
+                    FullName = string.IsNullOrWhiteSpace(fullName) ? email : fullName!.Trim(),
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+
+                var result = await _userManager.CreateAsync(user);   // KHÔNG mật khẩu (magic-link)
+                if (!result.Succeeded)
+                    throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
+
+                await EnsureRoleExistsAsync("Candidate");
+                await _userManager.AddToRoleAsync(user, "Candidate");
+            }
+
+            var roles = await _userManager.GetRolesAsync(user);
+            var membership = await GetMembershipAsync(user.Id);
+            var accessToken = _jwtService.GenerateAccessToken(user, roles, membership);
+
+            return new ProvisionCandidateResponse
+            {
+                CandidateId = user.Id,
+                AccessToken = accessToken
+            };
+        }
+
         private async Task EnsureRoleExistsAsync(string roleName)
         {
             if (!await _roleManager.RoleExistsAsync(roleName))

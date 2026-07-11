@@ -172,6 +172,9 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
                 e.Property(x => x.YearsExperience).HasColumnType("numeric(4,1)");
 
+                // D2: membership — interview_status enum string (nullable = NotStarted).
+                e.Property(x => x.InterviewStatus).HasConversion<string>().HasMaxLength(16);
+
                 e.Property(x => x.Skills).HasConversion(StringListConverter, StringListComparer);
                 if (Database.IsNpgsql())
                     e.Property(x => x.Skills).HasColumnType("jsonb");

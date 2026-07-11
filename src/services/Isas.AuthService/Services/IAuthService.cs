@@ -8,6 +8,9 @@ namespace Isas.AuthService.Services
     {
         Task<string> RegisterAsync(RegisterRequest registerRequest);
         Task<AuthResponse> RegisterOrgAsync(RegisterOrgRequest request);
+
+        // D2: tạo-hoặc-lấy account Candidate nhẹ theo email (idempotent) → { candidateId, accessToken }.
+        Task<ProvisionCandidateResponse> ProvisionCandidateAsync(string email, string? fullName, CancellationToken ct = default);
         Task<AuthResponse> LoginAsync(LoginRequest loginRequest);
         Task<AuthResponse> LoginGoogleAsync(ExternalLoginInfo info);
         Task<AuthResponse> RefreshTokenAsync(string refreshToken);
