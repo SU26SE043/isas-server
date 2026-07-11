@@ -329,5 +329,49 @@ namespace Isas.CampaignService.Controllers
             catch (ArgumentException ex) { return BadRequest(ex.Message); }         // format không hỗ trợ → 400
             catch (Exception ex) { return StatusCode(500, $"Failed to export results: {ex.Message}"); }
         }
+
+        // C13: sàng CV hàng loạt — upload nhiều PDF → parse + archive + hard-filter (0 credit).
+        // Vượt cap/thiếu file → 400; campaign chưa Active → 409; ngoài org → 404.
+        [HttpPost("{id:guid}/candidates")]
+        [Consumes("multipart/form-data")]
+        [Authorize(Roles = "Employer")]
+        public async Task<IActionResult> ScreenCandidates(Guid id, [FromForm] IFormFileCollection files, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            if (files is null || files.Count == 0)
+                return BadRequest("At least one CV file (PDF) is required.");
+
+            try
+            {
+                var result = await _campaignService.ScreenCandidatesAsync(Guid.Parse(employerId), id, files, ct);
+                return StatusCode(StatusCodes.Status202Accepted, result);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }             // vượt cap / thiếu file → 400
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }        // campaign chưa Active → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to screen candidates: {ex.Message}"); }
+        }
+
+        // C13: serve CV gốc (PDF) cho HR. cv_file_url null → 404; ngoài org → 404.
+        [HttpGet("{id:guid}/candidates/{candidateId:guid}/cv")]
+        [Authorize(Roles = "Employer")]
+        public async Task<IActionResult> DownloadCandidateCv(Guid id, Guid candidateId, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            try
+            {
+                var stream = await _campaignService.DownloadCandidateCvAsync(Guid.Parse(employerId), id, candidateId, ct);
+                return File(stream, "application/pdf", $"candidate_{candidateId}.pdf");
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (FileNotFoundException ex) { return NotFound(ex.Message); }   // chưa archive → 404
+            catch (Exception ex) { return StatusCode(500, $"Failed to download CV: {ex.Message}"); }
+        }
     }
 }
