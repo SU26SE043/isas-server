@@ -572,4 +572,160 @@ public class AnswerServiceTests
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
             svc.MarkFailedAsync(Guid.NewGuid(), "x"));
     }
+
+    // ── E9: chấm NEO theo mức (levels + anchors) ─────────────────────────────
+
+    // E9: tiêu chí KHÔNG khai rubric_levels → message mang dải mặc định 0..maxScore (không anchor).
+    [Fact]
+    public async Task Upload_CriterionWithoutLevels_PublishesDefaultBand()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore 5, không rubric_levels
+        t.Db.AddRange(session, q, crit);
+        await t.Db.SaveChangesAsync();
+
+        var publisher = new Mock<IScoringJobPublisher>();
+        ScoringJob? published = null;
+        publisher
+            .Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+            .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+            .Returns(Task.CompletedTask);
+        var svc = Build(t, publisher, out _);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
+
+        Assert.NotNull(published);
+        var c = Assert.Single(published!.Criteria);
+        Assert.Equal(new[] { 0, 1, 2, 3, 4, 5 }, c.Levels.Select(l => l.Score).ToArray());
+        Assert.All(c.Levels, l => Assert.False(string.IsNullOrWhiteSpace(l.Descriptor)));
+        Assert.Null(c.Anchors);   // dải mặc định không có câu mẫu
+    }
+
+    // E9: tiêu chí CÓ rubric_levels + anchor → message mang đúng mức khai (sort theo score) + câu mẫu.
+    [Fact]
+    public async Task Upload_CriterionWithDeclaredLevels_PublishesThoseLevelsAndAnchors()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var lvl5 = new RubricLevel { CriterionId = crit.Id, Score = 5, Descriptor = "Trả lời đầy đủ" };
+        var lvl0 = new RubricLevel { CriterionId = crit.Id, Score = 0, Descriptor = "Không trả lời" };
+        var anchor = new RubricAnchor { LevelId = lvl5.Id, ExampleAnswer = "DI là tiêm phụ thuộc..." };
+        t.Db.AddRange(session, q, crit, lvl5, lvl0, anchor);
+        await t.Db.SaveChangesAsync();
+
+        var publisher = new Mock<IScoringJobPublisher>();
+        ScoringJob? published = null;
+        publisher
+            .Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+            .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+            .Returns(Task.CompletedTask);
+        var svc = Build(t, publisher, out _);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
+
+        Assert.NotNull(published);
+        var c = Assert.Single(published!.Criteria);
+        Assert.Equal(new[] { 0, 5 }, c.Levels.Select(l => l.Score).ToArray());   // sort tăng dần
+        Assert.NotNull(c.Anchors);
+        var a = Assert.Single(c.Anchors!);
+        Assert.Equal(5, a.Score);
+        Assert.Equal("DI là tiêm phụ thuộc...", a.ExampleAnswer);
+    }
+
+    // E9: callback lưu level_matched khi worker gửi (dải mặc định, giá trị trong [0,maxScore]).
+    [Fact]
+    public async Task SaveResult_StoresLevelMatched_WhenWorkerProvides()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // B2C, default band
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore 5, không levels
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _);
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4m, LevelMatched = 4, Reasoning = "ok" } }
+        });
+
+        var saved = await t.Db.AnswerScores.AsNoTracking().SingleAsync(s => s.AnswerId == answer.Id);
+        Assert.Equal(4, saved.LevelMatched);
+        Assert.Equal(4m, saved.Score);   // dải mặc định: giữ điểm (không ép integer)
+    }
+
+    // E9: tiêu chí CÓ declared levels, worker gửi điểm lệch mức → SNAP về mức gần nhất,
+    // KHÔNG drop (giữ tiêu chí, tránh thiếu-tiêu-chí → Failed INT-9); level_matched = mức snap.
+    [Fact]
+    public async Task SaveResult_DeclaredLevels_SnapsScoreToNearestLevel_NotDropped()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // B2C
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore 5
+        var lvl0 = new RubricLevel { CriterionId = crit.Id, Score = 0, Descriptor = "Kém" };
+        var lvl2 = new RubricLevel { CriterionId = crit.Id, Score = 2, Descriptor = "TB" };
+        var lvl5 = new RubricLevel { CriterionId = crit.Id, Score = 5, Descriptor = "Tốt" };
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, lvl0, lvl2, lvl5, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _);
+        // score 4, không levelMatched → mức hợp lệ {0,2,5}, gần 4 nhất = 5 (|5-4|=1 < |2-4|=2).
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4m, LevelMatched = null, Reasoning = "x" } }
+        });
+
+        var saved = await t.Db.AnswerScores.AsNoTracking().SingleAsync(s => s.AnswerId == answer.Id);
+        Assert.Equal(crit.Id, saved.CriterionId);   // KHÔNG bị drop
+        Assert.Equal(5, saved.LevelMatched);
+        Assert.Equal(5m, saved.Score);              // score = level.score
+    }
+
+    // E9: declared levels + worker gửi levelMatched HỢP LỆ nhưng score lệch → C# tin mức,
+    // ép score = level.score (hợp đồng "score = levelMatched.score").
+    [Fact]
+    public async Task SaveResult_DeclaredLevels_UsesWorkerLevel_ForcesScoreToLevel()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // B2C
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore 5
+        var lvl0 = new RubricLevel { CriterionId = crit.Id, Score = 0, Descriptor = "Kém" };
+        var lvl2 = new RubricLevel { CriterionId = crit.Id, Score = 2, Descriptor = "TB" };
+        var lvl5 = new RubricLevel { CriterionId = crit.Id, Score = 5, Descriptor = "Tốt" };
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, lvl0, lvl2, lvl5, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _);
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            // levelMatched=2 hợp lệ; score=4 lệch → dùng mức 2, ép score=2.
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4m, LevelMatched = 2, Reasoning = "x" } }
+        });
+
+        var saved = await t.Db.AnswerScores.AsNoTracking().SingleAsync(s => s.AnswerId == answer.Id);
+        Assert.Equal(2, saved.LevelMatched);
+        Assert.Equal(2m, saved.Score);
+    }
 }

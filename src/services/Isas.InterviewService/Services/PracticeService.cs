@@ -542,7 +542,7 @@ public class PracticeService : IPracticeService
             .GroupBy(sc => sc.CriterionId)
             .Select(g => g.OrderByDescending(sc => sc.AttemptNo).First())
             .Select(sc => new AnswerScoreResponse(
-                sc.CriterionId, sc.Score, sc.Reasoning, sc.RubricVersion))
+                sc.CriterionId, sc.Score, sc.Reasoning, sc.RubricVersion, sc.LevelMatched))
             .ToList();
 
         return new AnswerResponse(
