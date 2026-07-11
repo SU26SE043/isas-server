@@ -3,7 +3,11 @@
     public class Order
     {
         public Guid Id { get; set; }
-        public Guid UserId { get; set; }
+        // P2 (D15) — chủ ví theo owner model (Org B2B / User B2C), thay cho user_id cũ. Ref lỏng → Auth
+        // (không FK xuyên service, GEN-2). Enum lưu string (GEN-2).
+        public OwnerType OwnerType { get; set; }
+        public Guid OwnerId { get; set; }
+        public OrderKind Kind { get; set; } = OrderKind.CreditPack;
         public Guid PackageId { get; set; }
         public OrderStatus Status { get; set; }
         public int AmountVnd { get; set; }
@@ -12,7 +16,9 @@
         public DateTime? PaidAt { get; set; }
         public DateTime CreatedAt { get; set; }
         public ProductPackage Package { get; set; } = null!;
-        public PaymentTransaction? PaymentTransaction { get; set; }
+        // N–1 (payment.md §payment_transactions): 1 order nhận NHIỀU sự kiện gateway (webhook redeliver /
+        // polling / webhook muộn) — log append-only, không ghi đè.
+        public ICollection<PaymentTransaction> PaymentTransactions { get; set; } = [];
         public Subscription? Subscription { get; set; }
         public ICollection<CreditTransaction> CreditTransactions { get; set; } = [];
     }
@@ -23,5 +29,17 @@
         Failed = 3,
         Expired = 4,
         Cancelled = 5,
+    }
+
+    /// <summary>
+    /// Loại đơn (payment.md §DB orders — kind varchar(20)). P2 chỉ dùng <see cref="CreditPack"/>
+    /// (mua pack prepaid); các giá trị còn lại theo doc để khớp enum tài liệu — phase 2 (postpaid/subscription).
+    /// </summary>
+    public enum OrderKind
+    {
+        CreditPack,
+        InvoiceSettlement,
+        SubscriptionPurchase,
+        SubscriptionRenewal
     }
 }

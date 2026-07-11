@@ -38,6 +38,11 @@ namespace PaymentService.Models
                 // (chặn luôn DbContext, kể cả 3 bảng credit mới cùng context). Fix tối thiểu: thêm
                 // HasConversion<string> (đúng luôn GEN-2 enum-lưu-string) — KHÔNG đổi field/behavior Order.
                 e.Property(x => x.Status).HasConversion<string>().HasDefaultValue(OrderStatus.Pending);
+                // P2 — owner model (D15): owner_type/kind lưu string (GEN-2), owner_id ref lỏng → Auth.
+                e.Property(x => x.OwnerType).HasConversion<string>().HasMaxLength(8).IsRequired();
+                e.Property(x => x.OwnerId).IsRequired();
+                e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(20)
+                 .HasDefaultValue(OrderKind.CreditPack);
                 e.Property(x => x.AmountVnd).IsRequired();
                 e.HasIndex(x => x.PayosOrderCode).IsUnique();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
@@ -56,11 +61,15 @@ namespace PaymentService.Models
                 e.Property(x => x.Gateway).HasDefaultValue("payos");
                 e.Property(x => x.Status).IsRequired();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.HasIndex(x => new { x.OrderId, x.CreatedAt });
 
+                // N–1 (payment.md): 1 order có NHIỀU payment_transactions. order_id nullable — webhook
+                // không khớp đơn nào vẫn lưu bằng chứng (order_id null). SetNull khi xoá order (giữ log).
                 e.HasOne(x => x.Order)
-                 .WithOne(x => x.PaymentTransaction)
-                 .HasForeignKey<PaymentTransaction>(x => x.OrderId)
-                 .OnDelete(DeleteBehavior.Restrict);
+                 .WithMany(x => x.PaymentTransactions)
+                 .HasForeignKey(x => x.OrderId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.SetNull);
             });
 
             // ── Subscription ──────────────────────────────────────

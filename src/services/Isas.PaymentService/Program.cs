@@ -85,8 +85,10 @@ builder.Services.AddScoped<IPackageService, PackageService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 // P1: cấp phát credit_accounts (owner_type). Reserve/Consume/Release + webhook (P2/P4/P5/P6) = task sau.
 builder.Services.AddScoped<ICreditAccountService, CreditAccountService>();
-// P7: sinh order_code time+random, unique + retry (dep của P2 — Order/webhook chưa đổi ở task này).
+// P7: sinh order_code time+random, unique + retry (dùng trong P2 CreateOrderAsync).
 builder.Services.AddScoped<IOrderCodeGenerator, OrderCodeGenerator>();
+// P2: xử lý webhook PayOS đã verify → cộng credit idempotent theo payos_order_code (PAY-8).
+builder.Services.AddScoped<IWebhookService, WebhookService>();
 // E7: Payment phản ứng event Interview — consume (SessionScored) / release (SessionAbandoned).
 // Handler scoped (dùng DbContext qua CreditAccountService); consumer là BackgroundService bind
 // queue payment.credit ↔ exchange interview.events (E2/E3).
