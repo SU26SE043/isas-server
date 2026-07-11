@@ -16,6 +16,10 @@
         public string? JDText { get; set; }
         public string? CriteriaFileUrl { get; set; }
         public string? CriteriaText { get; set; }
+        // C13: rule cứng sàng CV (hard-filter, set khi Draft). null = không áp rule đó.
+        public List<string>? RequiredSkills { get; set; }   // jsonb — phải có ĐỦ trong cv_parsed_text
+        public List<string>? KeywordsAny { get; set; }      // jsonb — có ≥1 từ khóa
+        public int? MinYearsExperience { get; set; }        // số năm KN tối thiểu
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -26,6 +30,7 @@
         public ICollection<CampaignQuestion> Questions { get; set; } = new List<CampaignQuestion>();
         public ICollection<CampaignCriterion> Criteria { get; set; } = new List<CampaignCriterion>();
         public ICollection<CampaignInvitation> Invitations { get; set; } = new List<CampaignInvitation>();
+        public ICollection<CampaignCandidate> Candidates { get; set; } = new List<CampaignCandidate>();   // C13: sàng CV
     }
 
     public enum CampaignStatus

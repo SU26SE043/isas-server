@@ -25,5 +25,11 @@ namespace Isas.CampaignService.Services
 
         // E6: xuất bảng kết quả (E5) ra file — format=csv (pdf 🔜). Ngoài org → KeyNotFoundException (404).
         Task<CampaignResultExport> ExportCampaignResultsAsync(Guid employerId, Guid id, string? format, CancellationToken ct);
+
+        // C13: sàng CV hàng loạt — parse + archive PDF (S3 KEY) + hard-filter (rule cứng, 0 credit).
+        Task<ScreenCandidatesResponse> ScreenCandidatesAsync(Guid employerId, Guid id, IFormFileCollection files, CancellationToken ct);
+
+        // C13: serve CV gốc cho HR — cv_file_url null → FileNotFoundException (404); ngoài org → 404.
+        Task<Stream> DownloadCandidateCvAsync(Guid employerId, Guid id, Guid candidateId, CancellationToken ct);
     }
 }

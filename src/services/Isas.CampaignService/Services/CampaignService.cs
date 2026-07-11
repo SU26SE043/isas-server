@@ -8,6 +8,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Isas.CampaignService.Services
 {
@@ -597,6 +598,238 @@ namespace Isas.CampaignService.Services
                 FileName = $"campaign_{id}_results.csv"
             };
         }
+
+        // ── C13: sàng CV hàng loạt — parse + archive PDF + hard-filter (rule cứng, 0 credit D18/D19) ──
+        // Đồng bộ (chưa có AI queue — đó là C14). Mỗi CV: validate → parse text → tách email → dedup →
+        // archive PDF gốc lên S3 (KEY, GEN-5) → hard-filter → Filtered | Rejected(reason). Trùng email → skip.
+        // File hỏng/parse fail → Rejected (KHÔNG chặn cả batch). Vượt cap/thiếu file → 400. Chưa Active → 409.
+        public async Task<ScreenCandidatesResponse> ScreenCandidatesAsync(
+            Guid employerId, Guid id, IFormFileCollection files, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            // Guard: chỉ sàng khi Active (đã có campaign_criteria). Draft/Closed/Archived → 409.
+            if (campaign.Status != CampaignStatus.Active)
+                throw new InvalidOperationException($"Chỉ sàng CV khi campaign đang Active (hiện: {campaign.Status}).");
+
+            if (files is null || files.Count == 0)
+                throw new ArgumentException("Cần ít nhất 1 file CV (PDF).");
+
+            // Cap số CV/campaign (chặn đốt AI vì free) — vượt → 400, chặn CẢ batch (như invitations).
+            if (campaign.MaxCandidates.HasValue)
+            {
+                var currentCount = await _db.CampaignCandidates.CountAsync(c => c.CampaignId == id, ct);
+                if (currentCount + files.Count > campaign.MaxCandidates.Value)
+                    throw new ArgumentException(
+                        $"Vượt giới hạn sàng lọc của gói (max_candidates={campaign.MaxCandidates.Value}): " +
+                        $"hiện có {currentCount} CV, đang tải thêm {files.Count}.");
+            }
+
+            // Dedup email: bộ đã có trong campaign + cộng dồn trong batch này (case-insensitive).
+            var seenEmails = new HashSet<string>(
+                await _db.CampaignCandidates
+                    .Where(c => c.CampaignId == id && c.Email != null)
+                    .Select(c => c.Email!)
+                    .ToListAsync(ct),
+                StringComparer.OrdinalIgnoreCase);
+
+            var response = new ScreenCandidatesResponse { Received = files.Count };
+            var created = new List<CampaignCandidate>();
+            var now = DateTime.UtcNow;
+
+            foreach (var file in files)
+            {
+                var candidateId = Guid.NewGuid();
+
+                // 1) Validate cơ bản (PDF, ≤10MB) — hỏng = Rejected (không chặn cả batch).
+                if (file.Length == 0 || file.Length > MaxFileSizeBytes || !AllowedMimeTypes.Contains(file.ContentType))
+                {
+                    created.Add(NewRejectedCandidate(candidateId, campaign.Id, null, null, null,
+                        "CV không hợp lệ (chỉ nhận PDF ≤ 10MB).", CvParseStatus.Failed, now));
+                    continue;
+                }
+
+                // 2) Đọc bytes 1 lần → parse.
+                byte[] buffer = await ReadFileBytesAsync(file);
+                string? parsedText = null;
+                try
+                {
+                    using var stream = new MemoryStream(buffer);
+                    var result = await _parser.ParseAsync(stream, ct);
+                    parsedText = result.RawText;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Parse CV thất bại (campaign {CampaignId}).", id);
+                }
+
+                // 3) Parse FAIL / text rỗng → Rejected; VẪN archive để HR xem file gốc.
+                if (string.IsNullOrWhiteSpace(parsedText))
+                {
+                    var failKey = await ArchiveCvAsync(buffer, file, campaign.Id, candidateId, ct);
+                    created.Add(NewRejectedCandidate(candidateId, campaign.Id, failKey, null, null,
+                        "CV không đọc được — upload lại.", CvParseStatus.Failed, now));
+                    continue;
+                }
+
+                // 4) Tách email từ CV (nguồn dedup + đường mời số 2).
+                var email = ExtractEmail(parsedText);
+
+                // 5) Dedup theo email → trùng thì BỎ QUA (không tạo row, không archive).
+                if (email is not null && !seenEmails.Add(email))
+                {
+                    response.Skipped++;
+                    continue;
+                }
+
+                // 6) Archive PDF gốc → S3 KEY (GEN-5). 7) Hard-filter → Filtered | Rejected(reason).
+                var cvKey = await ArchiveCvAsync(buffer, file, campaign.Id, candidateId, ct);
+                var reject = RunHardFilter(campaign, parsedText);
+
+                created.Add(new CampaignCandidate
+                {
+                    Id = candidateId,
+                    CampaignId = campaign.Id,
+                    FullName = null,   // parse tên không đáng tin ở C13 → HR PATCH bổ sung (C14)
+                    Email = email,
+                    CvFileUrl = cvKey,
+                    CvParsedText = parsedText,
+                    ParseStatus = CvParseStatus.Done,
+                    Status = reject is null ? CandidateStatus.Filtered : CandidateStatus.Rejected,
+                    RejectReason = reject,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+
+            if (created.Count > 0)
+            {
+                _db.CampaignCandidates.AddRange(created);
+                AddAudit(employerId, AuditAction.ScreenCandidates, campaign.Id,
+                    $"Sàng {response.Received} CV: {created.Count(c => c.Status == CandidateStatus.Filtered)} qua, " +
+                    $"{created.Count(c => c.Status == CandidateStatus.Rejected)} loại, {response.Skipped} trùng");
+                await _db.SaveChangesAsync(ct);
+            }
+
+            response.Rejected = created.Count(c => c.Status == CandidateStatus.Rejected);
+            response.Filtered = created.Count(c => c.Status == CandidateStatus.Filtered);
+            response.Candidates = created.Select(c => new ScreenedCandidateItem
+            {
+                Id = c.Id,
+                FullName = c.FullName,
+                Email = c.Email,
+                Status = c.Status.ToString(),
+                RejectReason = c.RejectReason
+            }).ToList();
+
+            return response;
+        }
+
+        // C13: serve CV gốc (PDF) cho HR. Ownership qua campaign.employer_id (join) → ngoài org = 404.
+        // cv_file_url null (chưa archive) → FileNotFoundException (404).
+        public async Task<Stream> DownloadCandidateCvAsync(Guid employerId, Guid id, Guid candidateId, CancellationToken ct)
+        {
+            var candidate = await _db.CampaignCandidates
+                .FirstOrDefaultAsync(
+                    c => c.Id == candidateId && c.CampaignId == id && c.Campaign.EmployerId == employerId, ct)
+                ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
+
+            if (string.IsNullOrWhiteSpace(candidate.CvFileUrl))
+                throw new FileNotFoundException($"No CV file archived for candidate {candidateId}.");
+
+            return await _file.DownloadAsync(candidate.CvFileUrl, ct);
+        }
+
+        // C13: archive PDF gốc → S3, trả về KEY (GEN-5: lưu key không full URL). Key deterministic theo candidate.
+        private async Task<string> ArchiveCvAsync(byte[] buffer, IFormFile file, Guid campaignId, Guid candidateId, CancellationToken ct)
+        {
+            var key = $"campaigns/{campaignId}/candidates/{candidateId}.pdf";
+            using var uploadStream = new MemoryStream(buffer);
+            await _file.UploadAsync(new FormFile(uploadStream, 0, buffer.Length, file.Name, file.FileName)
+            {
+                Headers = file.Headers,
+                ContentType = file.ContentType
+            }, key, ct);
+            return key;
+        }
+
+        // C13: hard-filter (rule cứng, 0 cost AI) — null = qua (Filtered); string = lý do loại (Rejected).
+        // Thứ tự: required_skills (phải ĐỦ) → keywords_any (≥1) → min_years_experience.
+        private static string? RunHardFilter(Campaign campaign, string cvText)
+        {
+            if (campaign.RequiredSkills is { Count: > 0 })
+            {
+                var missing = campaign.RequiredSkills
+                    .Where(s => !string.IsNullOrWhiteSpace(s) && !CvContains(cvText, s))
+                    .ToList();
+                if (missing.Count > 0)
+                    return $"Thiếu kỹ năng bắt buộc: {string.Join(", ", missing)}.";
+            }
+
+            if (campaign.KeywordsAny is { Count: > 0 })
+            {
+                var hasAny = campaign.KeywordsAny.Any(k => !string.IsNullOrWhiteSpace(k) && CvContains(cvText, k));
+                if (!hasAny)
+                    return $"Không có từ khóa nào trong: {string.Join(", ", campaign.KeywordsAny)}.";
+            }
+
+            // min_years: CHỈ loại khi parse được số năm & < ngưỡng (doc: không chắc thì nhường AI — không loại oan).
+            if (campaign.MinYearsExperience is int min && min > 0)
+            {
+                var years = TryExtractYears(cvText);
+                if (years is int y && y < min)
+                    return $"Kinh nghiệm {y} năm < yêu cầu {min} năm.";
+            }
+
+            return null;
+        }
+
+        // Match kỹ năng/từ khóa = substring case-insensitive (skill có ký tự đặc biệt: C#, ASP.NET → không dùng word-boundary).
+        private static bool CvContains(string cvText, string term)
+            => cvText.Contains(term.Trim(), StringComparison.OrdinalIgnoreCase);
+
+        private static readonly Regex EmailRegex =
+            new(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", RegexOptions.Compiled);
+
+        // C13: tách email đầu tiên từ CV (chuẩn hoá lowercase để dedup ổn định). Không có → null.
+        private static string? ExtractEmail(string text)
+        {
+            var m = EmailRegex.Match(text);
+            return m.Success ? m.Value.ToLowerInvariant() : null;
+        }
+
+        private static readonly Regex YearsRegex =
+            new(@"(\d{1,2})\s*\+?\s*(?:years|year|năm)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // C13: heuristic thô "X years"/"X năm" → số lớn nhất. Không thấy → null (doc: parse năm KN không chắc).
+        private static int? TryExtractYears(string text)
+        {
+            int? max = null;
+            foreach (Match m in YearsRegex.Matches(text))
+                if (int.TryParse(m.Groups[1].Value, out var y))
+                    max = max is null ? y : Math.Max(max.Value, y);
+            return max;
+        }
+
+        // C13: row ứng viên bị loại (file hỏng / parse fail). Id/CreatedAt set sẵn (chạy SQLite test + Postgres).
+        private static CampaignCandidate NewRejectedCandidate(
+            Guid id, Guid campaignId, string? cvKey, string? email, string? parsedText,
+            string reason, CvParseStatus parseStatus, DateTime now)
+            => new()
+            {
+                Id = id,
+                CampaignId = campaignId,
+                CvFileUrl = cvKey,
+                Email = email,
+                CvParsedText = parsedText,
+                ParseStatus = parseStatus,
+                Status = CandidateStatus.Rejected,
+                RejectReason = reason,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
 
         // Serialize bảng kết quả → CSV bằng CsvHelper (tự escape comma/quote/newline — không tự nối chuỗi).
         // Cột snake_case (§5): rank,candidate_id,session_id,total_score,result,scored_at.
