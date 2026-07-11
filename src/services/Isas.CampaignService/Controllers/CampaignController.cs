@@ -307,6 +307,26 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to create invitations: {ex.Message}"); }
         }
 
+        // D4: phát lại lời mời — vô hiệu token cũ + phát token mới + resend email.
+        // Ngoài org / invitation không thuộc campaign → 404; campaign không Active → 409.
+        [HttpPost("{id:guid}/invitations/{invitationId:guid}/reissue")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<InvitationItem>> ReissueInvitation(Guid id, Guid invitationId, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                var result = await _campaignService.ReissueInvitationAsync(orgId.Value, GetActorUserId(), id, invitationId, ct);
+                return Ok(result);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }    // campaign không Active → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to reissue invitation: {ex.Message}"); }
+        }
+
         // C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV (candidateIds → tách email từ CV).
         // Vượt max_candidates → 400; campaign không Active → 409; ngoài org → 404. Per-item lỗi vào failed[].
         [HttpPost("{id:guid}/candidates/invite")]
