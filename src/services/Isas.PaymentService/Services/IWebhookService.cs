@@ -23,6 +23,8 @@ namespace Isas.PaymentService.Services
     {
         /// <summary>Đơn Pending→Paid + đã cộng credit (lần đầu).</summary>
         Credited,
+        /// <summary>Đơn InvoiceSettlement Pending→Paid + hóa đơn Issued/Overdue→Paid (KHÔNG cộng credit) — P8b.</summary>
+        InvoiceSettled,
         /// <summary>Đơn đã terminal (Paid/Expired/…) — idempotent no-op, KHÔNG cộng lần 2.</summary>
         AlreadyProcessed,
         /// <summary>Không có đơn khớp payos_order_code — chỉ log bằng chứng, no-op.</summary>

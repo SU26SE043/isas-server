@@ -23,7 +23,8 @@ namespace Isas.PaymentService.DTOs
             public OwnerType OwnerType { get; set; }
             public Guid OwnerId { get; set; }
             public OrderKind Kind { get; set; }
-            public Guid PackageId { get; set; }
+            public Guid? PackageId { get; set; }
+            public Guid? InvoiceId { get; set; }
             public OrderStatus Status { get; set; }
             public int AmountVnd { get; set; }
             public long PayosOrderCode { get; set; }
@@ -38,6 +39,7 @@ namespace Isas.PaymentService.DTOs
                 OwnerId = order.OwnerId,
                 Kind = order.Kind,
                 PackageId = order.PackageId,
+                InvoiceId = order.InvoiceId,
                 Status = order.Status,
                 AmountVnd = order.AmountVnd,
                 PayosOrderCode = order.PayosOrderCode,

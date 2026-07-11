@@ -13,6 +13,7 @@ namespace PaymentService.Models
         public DbSet<CreditAccount> CreditAccounts => Set<CreditAccount>();
         public DbSet<CreditReservation> CreditReservations => Set<CreditReservation>();
         public DbSet<CreditTransaction> CreditTransactions => Set<CreditTransaction>();
+        public DbSet<Invoice> Invoices => Set<Invoice>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -47,9 +48,19 @@ namespace PaymentService.Models
                 e.HasIndex(x => x.PayosOrderCode).IsUnique();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
 
+                // P8b — package optional: đơn InvoiceSettlement không gắn package (gắn invoice_id).
                 e.HasOne(x => x.Package)
                  .WithMany(x => x.Orders)
                  .HasForeignKey(x => x.PackageId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                // P8b — 1 Invoice ── N Order (orders.invoice_id): N lần tất toán/retry cùng hóa đơn.
+                // Restrict: không xoá hóa đơn còn đơn tất toán tham chiếu (giữ vết tiền).
+                e.HasOne(x => x.Invoice)
+                 .WithMany(x => x.Orders)
+                 .HasForeignKey(x => x.InvoiceId)
+                 .IsRequired(false)
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
@@ -153,6 +164,28 @@ namespace PaymentService.Models
                  .HasForeignKey(x => x.OrderId)
                  .IsRequired(false)
                  .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // ── Invoice (P8b — hóa đơn postpaid, CHỈ Org) ───────────
+            modelBuilder.Entity<Invoice>(e =>
+            {
+                e.ToTable("invoices");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.OwnerType).HasConversion<string>().HasMaxLength(8).IsRequired();
+                e.Property(x => x.OwnerId).IsRequired();
+
+                // Tiền lưu numeric(16,2) (đừng để default lệch — Context7 EF Core HasPrecision).
+                e.Property(x => x.UnitPrice).HasPrecision(16, 2);
+                e.Property(x => x.Amount).HasPrecision(16, 2);
+
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16)
+                 .HasDefaultValue(InvoiceStatus.Issued);
+
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId });
             });
         }
     }

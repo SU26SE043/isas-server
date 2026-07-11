@@ -80,6 +80,59 @@ namespace Isas.PaymentService.Services
             return response;
         }
 
+        // P8b — tạo đơn tất toán hóa đơn postpaid. Cùng đường CreateOrder (order_code P7 + link PayOS),
+        // chỉ khác: kind=InvoiceSettlement, KHÔNG có package (invoice_id thay thế), amount = invoice.Amount,
+        // owner lấy từ hóa đơn (nguồn chân lý). Webhook Paid → WebhookService branch theo Kind: settle hóa đơn
+        // Issued→Paid (KHÔNG cộng credit).
+        public async Task<OrderResponse> CreateInvoiceSettlementOrderAsync(Invoice invoice, CancellationToken ct = default)
+        {
+            var orderCode = await _orderCodes.GenerateAsync(ct);
+
+            // amount_vnd là int trong schema orders (tiền lượt VND nguyên) — quy đổi từ invoice.Amount (numeric).
+            var amountVnd = (int)decimal.Round(invoice.Amount, MidpointRounding.AwayFromZero);
+
+            var order = new Order
+            {
+                OwnerType = invoice.OwnerType,
+                OwnerId = invoice.OwnerId,
+                Kind = OrderKind.InvoiceSettlement,
+                InvoiceId = invoice.Id,
+                AmountVnd = amountVnd,
+                PayosOrderCode = orderCode,
+                ExpiredAt = DateTime.UtcNow.AddMinutes(30),
+            };
+
+            _db.Orders.Add(order);
+            await _db.SaveChangesAsync(ct);
+
+            var cfg = _settings.Value;
+
+            var paymentData = new CreatePaymentLinkRequest
+            {
+                OrderCode = orderCode,
+                Amount = amountVnd,
+                Description = $"DH{order.Id:N}"[..25],  // PayOS max 25 chars
+                ReturnUrl = cfg.ReturnUrl,
+                CancelUrl = cfg.CancelUrl,
+                ExpiredAt = new DateTimeOffset(order.ExpiredAt).ToUnixTimeSeconds(),
+                Items =
+            [
+                new PaymentLinkItem
+                {
+                    Name     = "Invoice settlement",
+                    Quantity = 1,
+                    Price    = amountVnd,
+                }
+            ],
+            };
+
+            var paymentResult = await _payos.PaymentRequests.CreateAsync(paymentData);
+
+            var response = OrderResponse.ToResponse(order);
+            response.CheckoutUrl = paymentResult.CheckoutUrl;
+            return response;
+        }
+
         public async Task<OrderResponse?> GetOrderAsync(Guid id, CancellationToken ct = default)
         {
             var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == id, ct);

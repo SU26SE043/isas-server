@@ -181,4 +181,58 @@ public class WebhookServiceTests
         Assert.Equal("success", logs[0].Status);
         Assert.Equal("{\"orderCode\":999999999999}", logs[0].RawWebhookPayload);
     }
+
+    // (5) P8b — webhook Paid cho đơn InvoiceSettlement → hóa đơn Issued→Paid, KHÔNG cộng credit; idempotent ×2.
+    [Fact]
+    public async Task ApplyPaid_InvoiceSettlement_SettleHoaDon_KhongCongCredit_Idempotent()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        const long code = 260711120005;
+
+        // Hóa đơn Issued + ví Org (chứng minh KHÔNG cộng credit) + đơn InvoiceSettlement gắn invoice_id.
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PeriodStart = DateTime.UtcNow.AddDays(-30),
+            PeriodEnd = DateTime.UtcNow,
+            InterviewCount = 6,
+            UnitPrice = 50_000,
+            Amount = 300_000,
+            Status = InvoiceStatus.Issued,
+            CreatedAt = DateTime.UtcNow
+        };
+        tdb.Db.Invoices.Add(invoice);
+        await SeedAccountAsync(tdb, OwnerType.Org, orgId, remaining: 4);
+        tdb.Db.Orders.Add(new Order
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            Kind = OrderKind.InvoiceSettlement,
+            PackageId = null,
+            InvoiceId = invoice.Id,
+            Status = OrderStatus.Pending,
+            AmountVnd = 300_000,
+            PayosOrderCode = code,
+            ExpiredAt = DateTime.UtcNow.AddMinutes(30),
+            CreatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
+
+        var first = await NewService(tdb, out _).ApplyPaidWebhookAsync(code, "FT-INV1", "{\"inv\":1}");
+        var second = await NewService(tdb, out _).ApplyPaidWebhookAsync(code, "FT-INV2", "{\"inv\":2}");
+
+        Assert.Equal(WebhookApplyOutcome.InvoiceSettled, first);
+        Assert.Equal(WebhookApplyOutcome.AlreadyProcessed, second);   // terminal → idempotent no-op
+
+        using var read = tdb.NewContext();
+        Assert.Equal(InvoiceStatus.Paid, (await read.Invoices.SingleAsync(i => i.Id == invoice.Id)).Status);
+        Assert.Equal(OrderStatus.Paid, (await read.Orders.SingleAsync(o => o.PayosOrderCode == code)).Status);
+        Assert.Equal(4, (await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId)).RemainingCredits); // KHÔNG cộng
+        Assert.Equal(0, await read.CreditTransactions.CountAsync());  // KHÔNG ghi sổ cái credit
+        Assert.Equal(1, await read.PaymentTransactions.CountAsync()); // chỉ lần 1 ghi log (lần 2 no-op trước ghi)
+    }
 }
