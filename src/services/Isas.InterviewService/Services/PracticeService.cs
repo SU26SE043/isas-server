@@ -273,13 +273,27 @@ public class PracticeService : IPracticeService
             .ToListAsync(ct);
 
         // BC9: tổng kết buổi chỉ áp B2C đã Scored — đọc thẳng breakdown từ DB (không tính lại).
-        var criterionScores = session.Status == SessionStatus.Scored && session.CampaignId is null
+        var isB2CScored = session.Status == SessionStatus.Scored && session.CampaignId is null;
+        var criterionScores = isB2CScored
             ? await _db.SessionCriterionScores.AsNoTracking()
                 .Where(x => x.SessionId == sessionId)
                 .ToListAsync(ct)
             : new List<SessionCriterionScore>();
 
-        return MapToResponse(session, questions, answers, criterionScores);
+        // BC8: đối chiếu CV↔trả lời — chỉ B2C đã Scored & có CV đã phân tích (BC7). ĐỌC dữ liệu sẵn
+        // có (không AI): lấy phân tích CV mới nhất cho đúng CvId của buổi (join lỏng qua CvId+chủ).
+        IReadOnlyList<string> cvStrengths = Array.Empty<string>();
+        if (isB2CScored && session.CvId is not null)
+        {
+            var cv = await _db.CvAnalyses.AsNoTracking()
+                .Where(x => x.CvId == session.CvId && x.CandidateId == session.CandidateId)
+                .OrderByDescending(x => x.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+            if (cv is not null)
+                cvStrengths = MergeStrengths(cv);
+        }
+
+        return MapToResponse(session, questions, answers, criterionScores, cvStrengths);
     }
 
     // ── HISTORY ───────────────────────────────────────────────────────────
@@ -299,7 +313,8 @@ public class PracticeService : IPracticeService
     // ── helpers ───────────────────────────────────────────────────────────
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
-        IReadOnlyList<SessionCriterionScore>? criterionScores = null)
+        IReadOnlyList<SessionCriterionScore>? criterionScores = null,
+        IReadOnlyList<string>? cvStrengths = null)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
 
@@ -313,12 +328,13 @@ public class PracticeService : IPracticeService
         return new PracticeSessionResponse(
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
-            MapResult(s, questions.Count, criterionScores));
+            MapResult(s, questions.Count, criterionScores, cvStrengths));
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.
     private static SessionResultResponse? MapResult(
-        PracticeSession s, int totalQuestions, IReadOnlyList<SessionCriterionScore>? criterionScores)
+        PracticeSession s, int totalQuestions, IReadOnlyList<SessionCriterionScore>? criterionScores,
+        IReadOnlyList<string>? cvStrengths = null)
     {
         if (s.Status != SessionStatus.Scored || s.CampaignId is not null
             || criterionScores is not { Count: > 0 })
@@ -334,12 +350,31 @@ public class PracticeService : IPracticeService
             .Select(cs => cs.CriterionId)
             .ToList();
 
+        // BC8: mục "CV vs câu trả lời" — null nếu buổi không có CV đã phân tích (cvStrengths rỗng).
+        var cvVsAnswer = CvVsAnswerReportBuilder.Build(cvStrengths ?? Array.Empty<string>(), criterionScores);
+
         return new SessionResultResponse(
             s.OverallScore ?? 0m,
             s.AnsweredCount ?? 0,
             totalQuestions,
             criteria,
-            needsImprovement);
+            needsImprovement,
+            OverallComment: null,
+            CvVsAnswer: cvVsAnswer);
+    }
+
+    // BC8: gộp tín hiệu "CV mạnh" = strengths + matched skills (nếu có JD match), khử trùng giữ thứ tự.
+    private static IReadOnlyList<string> MergeStrengths(CvAnalysis cv)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var merged = new List<string>();
+        foreach (var s in cv.Strengths.Concat(cv.JdMatch?.MatchedSkills ?? Enumerable.Empty<string>()))
+        {
+            var v = s?.Trim();
+            if (string.IsNullOrEmpty(v)) continue;
+            if (seen.Add(v)) merged.Add(v);
+        }
+        return merged;
     }
 
     private static AnswerResponse MapAnswer(PracticeAnswer a)

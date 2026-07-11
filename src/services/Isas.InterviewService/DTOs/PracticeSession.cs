@@ -73,7 +73,25 @@ public record SessionResultResponse(
     int TotalQuestions,            // tổng số câu của buổi
     IReadOnlyList<CriterionScoreResponse> CriteriaScores,
     IReadOnlyList<Guid> NeedsImprovement,   // criterionId của tiêu chí dưới ngưỡng
-    string? OverallComment = null  // BC10 — nhận xét chung (AI); null trong BC9
+    string? OverallComment = null,  // BC10 — nhận xét chung (AI); null trong BC9
+    CvVsAnswerReportResponse? CvVsAnswer = null   // BC8 — đối chiếu CV↔trả lời; null nếu không có CV đã phân tích
+);
+
+// BC8 — báo cáo "CV vs câu trả lời": đọc dữ liệu SẴN CÓ (không AI, không call ngoài).
+// CvStrengths = strengths (+matched skills) từ cv_analyses (BC7); Gaps = tiêu chí VỪA yếu
+// (needs_improvement, BC9) VỪA được CV thể hiện mạnh (token khớp tên tiêu chí ↔ strength CV).
+public record CvVsAnswerReportResponse(
+    IReadOnlyList<string> CvStrengths,
+    IReadOnlyList<CvAnswerGapResponse> Gaps
+);
+
+// BC8 — một điểm "CV mạnh nhưng trả lời yếu": tiêu chí answer dưới ngưỡng + bằng chứng CV khớp.
+public record CvAnswerGapResponse(
+    Guid CriterionId,
+    string CriterionName,
+    decimal Percentage,          // % điểm answer đạt (dưới ngưỡng cải thiện)
+    int MaxScore,
+    IReadOnlyList<string> CvEvidence   // strength/skill CV khớp tiêu chí này (giải thích vì sao coi là "CV mạnh")
 );
 
 // BC9 — điểm mỗi tiêu chí trong buổi luyện.
