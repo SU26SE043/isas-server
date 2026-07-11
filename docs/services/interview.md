@@ -202,7 +202,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 **`POST /roadmaps`** — Tạo roadmap.
 - Req: `{ "jobCategory": "BA"|"BE"|"FE", "level": "Fresher"|"Junior"|"Middle"|"Senior", "cvId": uuid? }`.
 - Server gom **điểm yếu** từ các session `Scored` gần nhất (`session_criterion_scores.needs_improvement`) + `parsed_text` CV (nếu có) → gọi AIService `/generate-roadmap` (**sync**) → lưu `roadmaps` + `roadmap_milestones` + `roadmap_lessons`; snapshot `baseline` (% hiện tại per tiêu chí) + `source_session_ids`.
-- **Chưa có buổi nào đã chấm** → Lỗi 403  .
+- **Chưa có buổi nào đã chấm** → vẫn **`201`**: `baseline=null` + `source_session_ids=null`, AI sinh **roadmap chuẩn theo `level`** (không có điểm yếu để bám) — ✅ BC12 (khớp `tasks.md` BC12; **bỏ** quy tắc "403" cũ).
 - **Tạo roadmap KHÔNG trừ credit** — chỉ session luyện bên trong mới reserve→consume (D7/D15).
 - Res **`201`** `RoadmapResponse`. Lỗi: **400** (`jobCategory`/`level` sai · CV không đọc được) · **401** · **403** (`cvId` không phải của bạn) · **404** (`cvId`) · **502** (AI lỗi).
 
