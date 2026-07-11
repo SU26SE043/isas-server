@@ -9,6 +9,14 @@ namespace Isas.PaymentService.DTOs
             public Guid PackageId { get; set; }
         }
 
+        // P3 — active-polling đối soát (payment.md:145). Trả trạng thái sau đối soát PayOS.
+        public class OrderStatusResponse
+        {
+            public long OrderCode { get; set; }
+            public string Status { get; set; } = null!;   // enum string: Pending·Paid·Failed·Expired·Cancelled
+            public DateTime? PaidAt { get; set; }
+        }
+
         public class OrderResponse
         {
             public Guid Id { get; set; }
