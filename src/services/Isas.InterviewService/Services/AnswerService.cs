@@ -186,6 +186,20 @@ public class AnswerService : IAnswerService
             .FirstOrDefaultAsync(a => a.Id == answerId, ct)
             ?? throw new KeyNotFoundException($"Answer {answerId} không tồn tại");
 
+        // E8 — Guard điểm phía C# (defense-in-depth). Worker Python đã kẹp/lọc, NHƯNG AIService
+        // deploy ephemeral (docker cp) nên image có thể lệch → không tin worker 100%.
+        // Nạp bộ tiêu chí thuộc rubric của session (đúng nguồn đã dùng lúc publish job — E1):
+        //   B2B chấm theo tiêu chí campaign; B2C theo rubric nghề (campaign_id IS NULL).
+        // Dùng bản đồ criterionId -> maxScore để (a) BỎ criterion ngoài rubric, (b) KẸP [0, maxScore].
+        var session = await _db.PracticeSessions.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == answer.SessionId, ct);
+        var critQuery = _db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
+        critQuery = session?.CampaignId is Guid campaignId
+            ? critQuery.Where(c => c.CampaignId == campaignId)
+            : critQuery.Where(c => c.CampaignId == null && c.JobCategory == session!.JobCategory);
+        var maxScoreByCriterion = await critQuery
+            .ToDictionaryAsync(c => c.Id, c => c.MaxScore, ct);
+
         // Idempotency: worker retry có thể gửi lại cùng attempt+version.
         // Xoá điểm cũ cùng attempt+version rồi ghi lại, tránh nhân đôi.
         const int attemptNo = 1; // self-consistency nhiều attempt làm sau
@@ -199,12 +213,28 @@ public class AnswerService : IAnswerService
 
         foreach (var item in req.Scores)
         {
+            // E8: criterion không thuộc rubric của session (AI bịa / image lệch) → BỎ (không lưu).
+            if (!maxScoreByCriterion.TryGetValue(item.CriterionId, out var maxScore))
+            {
+                _logger.LogWarning(
+                    "Bỏ điểm criterion {CriterionId} không thuộc rubric session {SessionId} (answer {AnswerId})",
+                    item.CriterionId, answer.SessionId, answerId);
+                continue;
+            }
+
+            // E8: kẹp điểm về [0, maxScore] của tiêu chí (INT-9) — chống worker/image trả điểm lệch trần.
+            var clamped = Math.Clamp(item.Score, 0m, maxScore);
+            if (clamped != item.Score)
+                _logger.LogWarning(
+                    "Kẹp điểm criterion {CriterionId} answer {AnswerId}: {Raw} -> {Clamped} (maxScore={MaxScore})",
+                    item.CriterionId, answerId, item.Score, clamped, maxScore);
+
             _db.AnswerScores.Add(new AnswerScore
             {
                 Id = Guid.NewGuid(),
                 AnswerId = answer.Id,
                 CriterionId = item.CriterionId,
-                Score = item.Score,
+                Score = clamped,
                 Reasoning = item.Reasoning,
                 AttemptNo = attemptNo,
                 RubricVersion = req.RubricVersion,
