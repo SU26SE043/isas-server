@@ -13,7 +13,7 @@
 B2B bán cho **doanh nghiệp**, không phải cá nhân → cần khái niệm **tổ chức**:
 - Một **Organization** (`org_id`) = 1 doanh nghiệp; **billing/credit gắn org** (xem [payment.md](payment.md)), **campaign gắn `org_id`**.
 - **Role nội bộ org** (claim kèm trong JWT): **`OrgAdmin`** (mua gói/trả tiền/xem billing, quản thành viên) vs **`HrMember`** (tạo & quản campaign, **không** xem billing).
-- **Phase 1 (capstone):** data model có `org_id` + `org_role` từ đầu; có thể demo **1 org = 1 OrgAdmin**. **Sub-account HR đầy đủ (mời thành viên, phân quyền chi tiết) = phase 2.**
+- **Phase 1 (capstone):** data model có `org_id` + `org_role` từ đầu. **✅ A6 (vòng 19):** OrgAdmin **thêm HrMember** vào org (`POST /auth/org/members` passwordless + `GET` list) → org **nhiều thành viên** (HrMember login mang `org_role=HrMember` → A4 chặn billing). **Còn phase 2 (A6b):** đổi-role/xoá thành viên · mời qua email invitation (nay tạo trực tiếp) · attach account có sẵn (nay dup email→409) · cột `OrgMember.JoinedAt`.
 
 > **Admin KHÔNG phải service riêng.** Chức năng PlatformAdmin = endpoint **admin-gated** nằm trong service sở hữu dữ liệu — **Payment**: CRUD gói, đơn giá, duyệt/đình chỉ postpaid, xem giao dịch, cấp/hoàn credit; **Auth**: cấp role, quản tổ chức (verify MST khi duyệt postpaid) — cộng **1 FE admin dashboard**. **Giám sát/thống kê nền tảng** (#org · #campaign · #lượt phỏng vấn · doanh thu) = dashboard tổng hợp từ các service (*phase 2*). Không thêm AdminService (tránh coupling + phá Engine+Orchestrator).
 
@@ -52,6 +52,9 @@ UserResponse {
 - Req: `{ email: string, password: string, fullName: string }` → Res **`200`** `AuthResponse`. Lỗi: **400** (email tồn tại / mật khẩu yếu).
 
 **`POST /register-org`** — Đăng ký tổ chức (✅ A3). Public. Tạo user role **`Employer`** + `Organization` + `OrgMember(OrgAdmin)`.
+
+**`POST /auth/org/members`** — ✅ **A6** (chỉ OrgAdmin, org_role claim ≠OrgAdmin/thiếu org_id→403). Req `{email, fullName}` → tạo User(`Employer`) passwordless + `OrgMember(HrMember, org_id=caller)` → **201** member info. Email đã có account→**409**. HR đặt mật khẩu qua forgot/reset.
+**`GET /auth/org/members`** — ✅ **A6** (OrgAdmin) → list thành viên org (email/org_role/joinedAt).
 - Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **400** (email tồn tại / mật khẩu yếu).
 
 **`POST /login`** — Đăng nhập. Public.

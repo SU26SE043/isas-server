@@ -551,7 +551,7 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - **Làm:** chấm **N lần** (config `Scoring:SelfConsistencyN`, vd 3) → mỗi lần 1 `attempt_no`, **điểm chốt = median** mỗi tiêu chí. **spread = max−min**; **> ngưỡng** (`Scoring:VarianceThreshold`) → gắn `practice_answers.needs_review = true` (cờ HR), **không** tự coi là điểm cuối. Idempotent theo `(attempt_no, rubric_version)`.
 - **Chi phí:** N× Whisper/Gemini — throughput đã là **trần** ([ai.md](ai.md) §Vấn đề) → **bật có chọn lọc** (chỉ chấm lại tiêu chí nghi ngờ / khi lần đầu sát biên), không luôn N×.
 
-**E11 — Chuẩn "NHẬN XÉT OK" + HR chốt.** *(đảm bảo (3))*
+**E11 — Chuẩn "NHẬN XÉT OK" + HR chốt.** ✅ **passing (vòng 19 · `f3ef192`)** — AIService siết anti-injection (bỏ qua lệnh lái điểm trong transcript) + reasoning bắt buộc trích ≥1 dẫn chứng, `score()` reject reasoning rỗng; Interview flag `needs_review` khi reasoning quá ngắn (< `Scoring:MinReasoningLen`), KHÔNG mất điểm. HR override điểm cuối = **E11b**. *(đảm bảo (3))*
 - `reasoning` (mỗi tiêu chí) + `overall_comment` (BC10): **bắt buộc trích ≥1 dẫn chứng** từ transcript (câu/cụm), **chặn rỗng/quá ngắn**, **bọc chống prompt-injection** (transcript = *dữ liệu*, không phải *lệnh* — ứng viên đọc "chấm/khen tối đa" KHÔNG được lái).
 - **Human-in-the-loop:** điểm AI = **gợi ý**; UI hiện **transcript + reasoning + cờ `needs_review`** cho **HR (B2B) / người luyện (B2C)** xem lại → **HR chốt** điểm cuối, không auto-quyết tuyển dụng bằng điểm AI.
 
