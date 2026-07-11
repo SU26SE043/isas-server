@@ -16,13 +16,18 @@ public class RoadmapsController : ControllerBase
 {
     private readonly IRoadmapService _service;
     private readonly IRoadmapLessonService _lessonService;   // BC14
+    private readonly IRoadmapReportService _reportService;   // BC15
     private readonly ILogger<RoadmapsController> _logger;
 
     public RoadmapsController(
-        IRoadmapService service, IRoadmapLessonService lessonService, ILogger<RoadmapsController> logger)
+        IRoadmapService service,
+        IRoadmapLessonService lessonService,
+        IRoadmapReportService reportService,
+        ILogger<RoadmapsController> logger)
     {
         _service = service;
         _lessonService = lessonService;
+        _reportService = reportService;
         _logger = logger;
     }
 
@@ -186,6 +191,31 @@ public class RoadmapsController : ControllerBase
             // Sinh câu hỏi lỗi / CV không đọc được.
             _logger.LogWarning(ex, "Lỗi logic khi /start lesson {LessonId}", lessonId);
             return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    // GET /roadmaps/{id}/report — report roadmap. BC15. Active → interim (radar + levelEvaluation, kết luận
+    // có thể rỗng/null); Completed → snapshot final_report + overallComment (không tính lại). Chủ mới xem.
+    [HttpGet("{id:guid}/report")]
+    [ProducesResponseType(typeof(RoadmapReportResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetReport(Guid id, CancellationToken ct)
+    {
+        if (!TryGetCandidateId(out var candidateId))
+            return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
+
+        try
+        {
+            var report = await _reportService.GetReportAsync(candidateId, id, ct);
+            if (report is null)
+                return NotFound(new { error = "Không tìm thấy roadmap này." });
+
+            return Ok(report);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
         }
     }
 }

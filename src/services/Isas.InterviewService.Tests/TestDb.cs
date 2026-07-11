@@ -66,6 +66,16 @@ public sealed class TestDb : IDisposable
         return m.Object;
     }
 
+    // BC15 — RoadmapReportService THẬT cho notifier (rollup milestone/roadmap khi lesson Done). generator
+    // mặc định = mock no-op (session không gắn lesson → OnLessonDoneAsync return sớm, không gọi AI).
+    public static RoadmapReportService RoadmapReport(
+        InterviewDbContext db, IAiServiceRoadmapGenerator? generator = null)
+        => new(
+            db,
+            generator ?? new Mock<IAiServiceRoadmapGenerator>().Object,
+            Options.Create(new Isas.InterviewService.Models.RoadmapOptions()),
+            NullLogger<RoadmapReportService>.Instance);
+
     // ── Seed helpers ──────────────────────────────────────────────────────
     public static RubricCriterion Criterion(
         JobCategory cat, int version = 1, bool active = true,

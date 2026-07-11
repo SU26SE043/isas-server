@@ -22,4 +22,12 @@ public interface IAiServiceRoadmapGenerator
         IReadOnlyList<string> focusCriteria,
         IReadOnlyList<string>? weaknesses,
         CancellationToken ct = default);
+
+    // BC15 — nhận xét chung khi roadmap Completed (kết luận chi tiết theo tiến độ tiêu chí). AI KHÔNG ghi DB.
+    // best-effort: lỗi → AiServiceException; caller (RoadmapReportService) nuốt → để rỗng/null, KHÔNG chặn Completed.
+    Task<RoadmapSummaryAiResult> SummarizeRoadmapAsync(
+        string jobCategory,
+        string level,
+        IReadOnlyList<RoadmapCriteriaProgress> criteriaProgress,
+        CancellationToken ct = default);
 }
