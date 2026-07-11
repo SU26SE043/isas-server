@@ -1,7 +1,7 @@
 # ISAS — Progress / Handoff
 
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
-> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) passing, integrated vào `docs/sync-design-d18-d21`).
+> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) passing, integrated vào `docs/sync-design-d18-d21`).
 
 ## Pha hiện tại
 **Đang code feature B2B (không còn ở pha thiết kế).** Thiết kế đã chốt (D1–D21; **mới 2026-07-02: D20 — roadmap ôn tập cá nhân hoá B2C, `BC12`–`BC15`** — mới ở doc, **chưa build**; 2026-06-30: D18/D19 — lọc CV hàng loạt B2B, `C13`–`C15` — mới ở doc, **chưa build**). Đã merge vào `main`: **S1 Auth org** (A1–A3, PR #23), **S2 Campaign** (C1–C10, PR #22 + đưa vào pipeline deploy), **S3 I1** (session B2B `campaign_id` + materialize tiêu chí, PR #24). **E1 đã merged `main`** (commit `796d8bb` — chấm B2B theo tiêu chí campaign); **tiếp theo E2** (phát `SessionScored`). **Time-limit (D21, 2026-07-11):** bỏ giới hạn tổng buổi — chỉ giới hạn từng câu, hết giờ câu → chốt câu → sang câu kế (task **I2**). PaymentService vẫn ở branch chưa refactor. **Doc (2026-06-30):** 5 service doc đã **chi tiết hoá** (req/res mẫu · validation · bảng mã lỗi · sequence · index/edge) + đồng bộ bản copy `src/services/Isas.*/AGENTS.md` (Auth/AI/Campaign/Interview; Payment ở branch).
@@ -37,6 +37,15 @@
 > Base test sau vòng 2: **Auth 4 · Payment 7 · Campaign 17 · Interview 38 = 66 .NET pass** (+ AIService pytest 29), `dotnet build` 0 error.
 > **⚠ Lưu ý điều phối (worktree):** worker isolation tạo worktree off `a4c80d5` (merge-base), KHÔNG off tip base → 2 worker (E4/BC13) phải re-anchor onto tip (`git switch -c <br> <base-sha>`; worktree chia object store nên với tới được); P7/E3 tự nhận ra & tự sửa. **Vòng sau: brief phải ghi rõ base SHA để worker tạo nhánh off đúng tip.**
 
+### Vòng giám sát 2026-07-11 (vòng 3) — 3 task passing (3 worker song song, mỗi service 1 worker)
+| Task | Nội dung | Trạng thái |
+|---|---|---|
+| **P4** | `POST /internal/credits/reserve` (`X-Internal-Token`) → `CreditAccountService.ReserveAsync`: reservation chèn trước (UNIQUE(session_id)=khoá idempotency) + bút toán atomic `ExecuteUpdate WHERE remaining≥1` → hết → **402** no-orphan | ✅ **passing (0409ba4)** · Payment 13/13 (+6) · reuse schema P1 (không migration) · ⚠ no-wallet→402(block); postpaid→P8a · chưa wire P2 |
+| **C11** | JD/Criteria nhập **text trực tiếp** (`jdText`/`criteriaText`) — text ưu tiên file; publish vẫn sinh `campaign_criteria` từ text | ✅ **passing (4425461)** · Campaign 22/22 (+5) · không migration (cột có từ `InitialCreate`) · ⚠ `CreateCampaign` set `CreatedAt/UpdatedAt` trong code (SQLite-testable) |
+| **E8** | Guard điểm C# ở callback chấm: criterion ngoài rubric session → bỏ; điểm → kẹp `[0,maxScore]` (INT-9); áp B2B & B2C | ✅ **passing (2dfb3c3)** · Interview 41/41 (+3) · không migration · defense-in-depth cho callback (dùng branch rubric E1) |
+
+> Base test sau vòng 3: **Auth 4 · Payment 13 · Campaign 22 · Interview 41 = 80 .NET pass** (+ AIService pytest 29), `dotnet build` 0 error. Cả 3 worker được pin base SHA `6e1d93a` trong brief → re-anchor sạch (không lệch merge-base như vòng 2). Merge `--no-ff` vào `docs/sync-design-d18-d21`: `e45f6b6`(P4)·`dc9a25e`(C11)·`8997818`(E8).
+
 > Test project trong tree hiện có: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`. Payment **chưa** có (Phase 0 `P0.4`).
 
 ## Vấn đề đã biết / cần xác minh
@@ -48,13 +57,13 @@
 - **CI/CD chung Neon (DB server):** không tự apply migration lên DB chung — schema apply qua pipeline/tay trước deploy.
 
 ## Bước tiếp theo (thứ tự đề xuất)
-> ✅ Vòng 1: **E2, D1, P1, BC6**. ✅ Vòng 2: **P7, E3, E4, BC13** (xem bảng trên). Frontier mới bên dưới.
+> ✅ Vòng 1: **E2, D1, P1, BC6**. ✅ Vòng 2: **P7, E3, E4, BC13**. ✅ Vòng 3: **P4, C11, E8** (xem bảng trên). Frontier mới bên dưới.
 1. **D2** (S3, Campaign+Interview — **cross-service**): mở token → account Candidate + create-or-get session. **Gỡ chặn HTTP entry B2B** cho I1/E1 (D1 ✅ + I1 ✅). ⚠ đụng Campaign+Interview (+ Auth account nhẹ) → **chạy solo**, không song song worker Campaign/Interview khác.
-2. **P4** (Payment, `/internal/credits/reserve|release`) → **P2** (mua pack → webhook cộng credit, dùng P7 ✅). Mở khoá BC1/BC2 + E7. Rồi **P5/P6** (consume/release).
-3. **S5 B2C**: **BC11** (seed rubric B2C — prerequisite chấm B2C) · **BC7** (Interview `cv-analysis` + `cv_analyses`, cần BC6 ✅) · **BC9** (tổng kết điểm) · rồi BC1/BC2 (cần P2/P4).
-4. **E5** (Campaign, xếp hạng + pass/fail — cần E4 ✅) → **E6** (export CSV/PDF) → **E7** (Payment consume/release — cần P4/P5/P6 + E2 ✅/E3 ✅).
+2. **P2** (Payment, mua pack → webhook PayOS cộng credit, dùng P7 ✅ + P4 ✅). ⚠ cần **PayOS sandbox + webhook thật** để e2e → verify tay ngoài worker nền. Mở khoá BC1/A4. Rồi **P5/P6** (consume/release — cần P4 ✅ + E2 ✅/E3 ✅).
+3. **S5 B2C**: **BC11** (seed rubric B2C — prerequisite chấm B2C) · **BC7** (Interview `cv-analysis` + `cv_analyses`, cần BC6 ✅) · **BC9** (tổng kết điểm) · rồi BC1/BC2 (cần P2/P4 ✅).
+4. **E5** (Campaign, xếp hạng + pass/fail — cần E4 ✅) → **E6** (export CSV/PDF) → **E7** (Payment consume/release — cần P5/P6 + E2 ✅/E3 ✅).
 5. **Lọc CV B2B** (`C13`→`C14`→`C15`): C13 (bulk upload + hard-filter, Campaign) không bị chặn; C14 cần C13 + BC6 ✅.
-6. **I2** (per-question time-limit + materialize deadline lên session — gỡ design gap E3) · **E8** (guard điểm C# ở callback).
+6. **C12** (Campaign, criteria structured HR khai thẳng — ưu tiên hơn text/PDF, cần migration `order_no`/unique) · **I2** (per-question time-limit + materialize deadline lên session — gỡ design gap E3).
 7. **AIService roadmap DB side** `BC12`→`BC14`→`BC15` (D20, cần BC13 ✅ + BC9/BC11).
 8. **Auth A4/A5**: A5 (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting**, chạy vòng ít worker; A4 cần P2.
 9. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.5` (readiness + checkpoint). *(P0.3/P0.4 ✅.)*
