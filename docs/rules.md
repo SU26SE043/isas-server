@@ -77,7 +77,7 @@
 - **BC-1** Không org, ví credit cá nhân **prepaid**.
 - **BC-2** 🔜 Reserve khi tạo session luyện; hết → 402.
 - **BC-3** Lịch sử chỉ của chính user.
-- **BC-4** Phân tích CV (feedback + khớp JD): **TÍNH PHÍ** (trừ credit), áp cả B2C lẫn B2B. *(Bỏ "miễn phí phase 1" — đảo lại D17.)*
+- **BC-4** Phân tích CV (feedback + khớp JD): **TÍNH PHÍ** (trừ credit), áp cả B2C lẫn B2B. *(Bỏ "miễn phí phase 1" — đảo lại D17; **chốt BK5 2026-07-12**. Còn wire reserve/consume vào BC7 = task code.)*
 - **BC-5** 🔜 Tổng kết buổi (BC9) + nhận xét AI (BC10).
 - **BC-6** B2C **KHÔNG** giám sát anti-cheat (luyện tập, không phải thi).
 

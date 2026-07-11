@@ -175,6 +175,19 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 
 **Mã lỗi chung:** `200/201/204` OK · `400` sai input · `401` thiếu/sai token · `403` không có quyền · `404` không thấy · `409` xung đột trạng thái · `500` lỗi hệ thống · `502` lỗi gọi AIService.
 
+### 6.1. Event-bus convention (RabbitMQ) — chốt BK9
+
+**Job chấm (point-to-point):** InterviewService → queue **`scoring_pipeline_queue`** (durable) → AIService worker consume (1 job/answer, hoặc N job khi self-consistency E10 — mỗi job mang `attemptNo`+`temperature`). Callback kết quả về InterviewService qua **HTTP** (`X-Internal-Token`), KHÔNG qua bus.
+
+**Event buổi (pub/sub, fan-out):** InterviewService publish lên exchange **`interview.events`** (type **topic**, durable), **best-effort** (lỗi publish KHÔNG phá state `Scored`/`Abandoned` đã commit; có endpoint HTTP backfill làm fallback):
+
+| Routing key | Phát khi | Payload | Consumer (queue durable riêng) |
+|---|---|---|---|
+| `session.scored` | session `Scored` (E2) | `{sessionId, campaignId?, candidateId, totalScore, scoredAt}` | Campaign **`campaign.ranking`** (E4 → upsert ranking) · Payment **`payment.credit`** (E7 → consume credit) |
+| `session.abandoned` | session bỏ ngang/quá hạn/0-answer/Failed (E3, BK12) | `{sessionId, campaignId?, candidateId, reason, abandonedAt}` | Payment **`payment.credit`** (E7 → release credit) |
+
+> Mỗi consumer bind **queue durable riêng** vào `interview.events` → 1 event tới nhiều consumer độc lập. `campaignId=null` = B2C → Campaign no-op. Consumer **idempotent/absorbing** (redeliver / out-of-order an toàn). Tên do E2/E3/E4/E7 đặt, nay **chốt** vào doc (khớp code).
+
 > **Chi tiết theo service** (API + DB + rules): [services/auth.md](services/auth.md) · [services/interview.md](services/interview.md) · [services/campaign.md](services/campaign.md) · [services/payment.md](services/payment.md) · [services/ai.md](services/ai.md).
 
 ## 7. Chạy, kiểm thử & phạm vi demo

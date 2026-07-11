@@ -108,3 +108,12 @@
 **Vì sao:** giới hạn từng câu đủ chặn trần chi phí AI (mỗi câu có trần thời gian) + trải nghiệm rõ theo câu; tổng buổi thêm timer/state phức tạp, dễ auto-submit oan khi mạng chập chờn. Đánh dấu **🔸 tạm thời** — bật lại tổng buổi = enforce `time_limit_minutes` + khôi phục trigger ở [services/interview.md](services/interview.md) §State machine.
 **Bị loại:** (a) giữ cả tổng + từng câu — thừa, xung đột khi 1 trong 2 hết trước; (b) chỉ tổng, bỏ từng câu — mất kiểm soát 1 câu lê thê đốt Whisper/Gemini.
 **Hệ quả:** sửa `time_limit_minutes` ([services/campaign.md](services/campaign.md)) + trigger auto-submit ([services/interview.md](services/interview.md)); task **I2** ([tasks.md](tasks.md)); bỏ `timeLimitMinutes` khỏi ví dụ body (vẫn nhận optional cho tương thích).
+
+## D22 — Phân tích CV TÍNH PHÍ (chốt BK5, đảo D17 "free phase 1") (2026-07-12)
+**Quyết định:** Phân tích CV (feedback + khớp JD, `/analyze-cv` B2C — BC7) **TÍNH PHÍ**: trừ 1 credit ví cá nhân (B2C) / org (B2B) — theo rules.md **BC-4**. **Đảo** phần "miễn phí phase 1" của **D17/D19** *chỉ cho phân tích CV*. **KHÔNG đổi:** lý thuyết roadmap (D20) vẫn **miễn phí** (text-only); sàng CV hàng loạt B2B (D18/C13–C15) vẫn **không tiêu interview-credit** (funnel, chặn bằng cap) — BC-4 nói "trừ credit" áp cho *lượt phân tích CV chủ động*, không phải mỗi CV trong batch sàng.
+**Vì sao:** team chốt phân tích CV là dịch vụ có giá trị (1 Gemini call) → thu phí như 1 lượt; tránh lạm dụng free. Giữ nguyên D7/D15 (reserve→consume theo session/thao tác), không thêm cơ chế tiền mới.
+**Hệ quả:** rules.md BC-4 ✓ (đã charge) · interview.md §cv-analysis (miễn phí→tính phí) · **task code còn lại:** wire reserve/consume (P4/P5) vào BC7 `cv-analysis` (endpoint hiện chưa trừ credit) — [tasks.md](tasks.md) BC7-billing. Ngưỡng/giá = `1 credit/lượt` (như D4).
+
+## Ghi chú giải quyết backlog (2026-07-12)
+- **BK9 → doc-only (đã làm):** event-bus convention vào [architecture.md](architecture.md) §6 (exchange `interview.events` topic + key `session.scored`/`session.abandoned` + queue `campaign.ranking`(E4)/`payment.credit`(E7)). Code E2/E3/E4/E7 đã khớp — chỉ chốt doc.
+- **BK10 → BỎ:** BC3/BC4 (consume/release ví cá nhân B2C) = **covered-by-E7** — `InterviewEventConsumer` (E7) consume/release **generic mọi session** theo reservation (gồm B2C owner=User từ BC2); B2C Failed→release đã có ở BK12. Không cần path B2C riêng → BC3/BC4 đánh **covered-by-E7** (chỉ cần test e2e khi có broker).
