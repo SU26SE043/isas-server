@@ -97,11 +97,25 @@ namespace Isas.PaymentService.Services
             int rows;
             if (acc?.PaymentMode == PaymentMode.Postpaid)
             {
+                // BK17 — Overdue-block: ví Org còn hóa đơn Overdue (nợ kỳ trước chưa tất toán) → chặn reserve
+                // MỚI (payment.md:379/431 "không có hóa đơn Overdue"; §State machine "Overdue ⇒ chặn reserve
+                // mới, KHÔNG văng in-flight"). Đọc trong CÙNG transaction; reservation vừa chèn ở trên →
+                // rollback gỡ luôn ⇒ no orphan (PAY-5). Idempotency vẫn do UNIQUE(session_id) bảo đảm.
+                var hasOverdue = await _db.Invoices
+                    .AnyAsync(i => i.OwnerType == ownerType
+                                && i.OwnerId == ownerId
+                                && i.Status == InvoiceStatus.Overdue, ct);
+                if (hasOverdue)
+                {
+                    await tx.RollbackAsync(ct);
+                    return ReserveResult.Insufficient();
+                }
+
                 // POSTPAID (payment.md §Kế toán): KHÔNG trừ remaining (postpaid remaining=0), chỉ reserved+1;
                 // guard ATOMIC period_usage + reserved + 1 ≤ credit_limit → 0 row = chạm hạn mức ⇒ 402
                 // (PAY-5, no orphan). period_usage CHỈ tăng khi Consume (P5/P8b) — reserve KHÔNG dồn nợ kỳ
                 // (bỏ ngang/release → không tính nợ). credit_limit chưa đặt (NULL) ⇒ so sánh NULL loại row ⇒
-                // 402 (postpaid cần PlatformAdmin đặt hạn mức mới reserve được). Overdue-invoice block = P8b.
+                // 402 (postpaid cần PlatformAdmin đặt hạn mức mới reserve được).
                 rows = await _db.CreditAccounts
                     .Where(a => a.OwnerType == ownerType
                                 && a.OwnerId == ownerId
