@@ -171,7 +171,7 @@ Webhook PayOS (KHÔNG qua gateway): `POST /payment/webhook/payos { code, desc, s
 | 400 | gói không bán / không active · payload webhook thiếu field |
 | 401 | thiếu Bearer (order public) · sai `X-Internal-Token` (internal) |
 | 402 | **hết credit (prepaid)** / chạm `credit_limit` (postpaid) / có hóa đơn `Overdue` |
-| 403 | `HrMember` gọi billing (A4) · non-owner đọc order/invoice |
+| 403 | ✅ **A4** `HrMember` (claim `org_role`) gọi billing money-mutation (`POST /order`·`/invoices/{id}/pay`·`/admin/invoices/close`) → `Forbid()`; B2C (không claim)/OrgAdmin không chặn · non-owner đọc order/invoice |
 | 404 | order/invoice không tồn tại |
 | 409 | (admin) duyệt postpaid khi thiếu MST |
 
