@@ -109,3 +109,20 @@ class SummarizeRoadmapResponse(BaseModel):
     weaknesses: list[str]
     improvements: list[str]
     overallComment: str
+
+
+# ── Nhận xét chung buổi luyện B2C (BC10) — sync best-effort, stateless ───────
+class CriteriaScore(BaseModel):
+    name: str
+    percentage: float          # 0-100 (điểm tiêu chí quy về %)
+    needsImprovement: bool     # từ session_criterion_scores (BC9)
+
+
+class SummarizeSessionRequest(BaseModel):
+    jobCategory: str
+    overallScore: float
+    criteriaScores: list[CriteriaScore]   # rỗng vẫn ra nhận xét tổng quát theo overallScore
+
+
+class SummarizeSessionResponse(BaseModel):
+    overallComment: str        # tiếng Việt, vài câu: tổng quan mạnh/yếu + hướng cải thiện

@@ -9,6 +9,7 @@ from app.schemas import (
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
     GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
+    SummarizeSessionRequest, SummarizeSessionResponse,
 )
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber 
@@ -109,6 +110,18 @@ async def summarize_roadmap(req: SummarizeRoadmapRequest):
         raise
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi tổng kết roadmap: {ex}")
+
+
+@router.post("/summarize-session", response_model=SummarizeSessionResponse)
+async def summarize_session(req: SummarizeSessionRequest):
+    try:
+        criteria = [c.model_dump() for c in req.criteriaScores]
+        result = await provider.summarize_session(req.jobCategory, req.overallScore, criteria)
+        return SummarizeSessionResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi tổng kết buổi luyện: {ex}")
 
 
 @router.post("/transcribe")
