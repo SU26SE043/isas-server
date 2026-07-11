@@ -80,11 +80,11 @@ Sau pass: cập nhật status <ID> trong tasks.md (kèm commit) + service doc n�
 
 ## Bản đồ tài liệu (`docs/`)
 - [work-division.md](docs/work-division.md) — **source of truth**: phạm vi, phân việc 4 người, thứ tự build.
-- [decisions.md](docs/decisions.md) — **vì sao** các quyết định (D1–D17) + phương án bị loại.
+- [decisions.md](docs/decisions.md) — **vì sao** các quyết định (D1–D19) + phương án bị loại.
 - [progress.md](docs/progress.md) — trạng thái hiện tại + bước kế.
 - [tasks.md](docs/tasks.md) — **task nguyên tử + lệnh xác minh + trạng thái** (WIP=1; chọn task `not_started` không bị block).
 - [architecture.md](docs/architecture.md) — tổng quan + quy ước + routing.
-- `docs/services/<service>.md` — API + DB + business rules từng service.
+- `docs/services/<service>.md` — API + DB + business rules từng service (đã chi tiết: **req/res mẫu · validation · bảng mã lỗi · sequence · index/edge**). Bản copy cho agent ở `src/services/Isas.<Svc>/AGENTS.md` (đồng bộ từ `docs/`).
 
 ## Vào ca (bắt đầu phiên)
 1. Đọc [progress.md](docs/progress.md) (đang ở đâu, bước kế) + [decisions.md](docs/decisions.md) (đừng lật lại quyết định đã chốt).

@@ -34,7 +34,7 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 
 ## 1. Sản phẩm — 2 dòng (B2C + B2B)
 
-### 1a. B2C — Luyện phỏng vấn cá nhân (4 module)
+### 1a. B2C — Luyện phỏng vấn cá nhân (5 module)
 
 | # | Module | Mô tả ngắn | Service phụ trách | Hiện trạng |
 |---|---|---|---|---|
@@ -42,6 +42,7 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 | BC2 | **Self-serve Practice** | Tự tạo session từ CV/JD → AI sinh câu hỏi (**bám CV/JD**, ưu tiên JD>CV>JobCategory) → ghi âm → chấm **rubric `JobCategory`**; reserve→consume credit ví cá nhân | InterviewService + AIService + PaymentService | ✅ engine + sinh câu hỏi từ CV/JD chạy · 🟡 thiếu reserve/consume |
 | BC3 | **Personal History & Results** | Xem lại các buổi luyện của mình: điểm, transcript, feedback | InterviewService (đọc local) | ✅ có (`GET /api/practice/sessions/history`) |
 | BC4 | **CV Analysis & Insights** | (a) **Feedback CV độc lập** (tóm tắt + điểm mạnh/yếu + gợi ý cải thiện); (b) **điểm khớp CV↔JD** (% phù hợp + kỹ năng thiếu/đủ); (c) mục **"CV vs câu trả lời"** trong báo cáo buổi luyện | InterviewService + AIService | ❌ chưa có (feature mới — D17) |
+| BC5 | **Learning Roadmap** | **Roadmap ôn tập cá nhân hoá** (D20): chọn BA/FE/BE + level → từ report buổi đã chấm + CV → AI sinh milestone/lesson (**lý thuyết bám điểm yếu** → luyện session) → đo cải thiện mỗi mile → report cuối (radar + đánh giá theo level + kết luận) | InterviewService + AIService (+ PaymentService: session luyện tiêu credit) | ❌ chưa có (feature mới — D20, tasks `BC12`–`BC15`) |
 
 ### 1b. B2B — Tuyển dụng (5 module SRS)
 
@@ -110,7 +111,7 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 | **S2 — Campaign Authoring** | _____ | M2 | CampaignService | Fix bug §7; CRUD campaign, câu hỏi, JD/tiêu chí (parse PDF); bật Auth |
 | **S3 — Distribution & Execution** | _____ | M3 | CampaignService + InterviewService | Phát link 1 lần, email hàng loạt, khóa sau nộp; InterviewService nhận `campaign_id`, ứng viên vào làm bài qua token |
 | **S4 — Evaluation, Ranking & Result** | _____ | M4 + M5 | AIService + InterviewService + CampaignService | Chấm theo tiêu chí campaign; tổng hợp + **xếp hạng**; bảng kết quả, pass/fail, **xuất CSV/PDF** |
-| **S5 — B2C Product** | _____ | BC1–BC4 + BC9–BC11 | PaymentService + InterviewService + AIService | Ví **credit cá nhân prepaid** (`owner=User`, D15); **reserve/consume khi luyện** (Interview gọi, hết → 402); xác minh E2E self-serve practice + lịch sử cá nhân; **phân tích CV** (feedback độc lập + khớp CV–JD + gắn báo cáo); **tổng kết điểm + nhận xét buổi luyện** (BC9/BC10) + **seed rubric B2C** (BC11 — prerequisite chấm B2C) |
+| **S5 — B2C Product** | _____ | BC1–BC4 + BC9–BC15 | PaymentService + InterviewService + AIService | Ví **credit cá nhân prepaid** (`owner=User`, D15); **reserve/consume khi luyện** (Interview gọi, hết → 402); xác minh E2E self-serve practice + lịch sử cá nhân; **phân tích CV** (feedback độc lập + khớp CV–JD + gắn báo cáo); **tổng kết điểm + nhận xét buổi luyện** (BC9/BC10) + **seed rubric B2C** (BC11 — prerequisite chấm B2C); **roadmap ôn tập cá nhân hoá** (BC12–BC15 — D20: milestone/lesson lý thuyết + luyện + improvement + report radar/level) |
 
 > **S5 là stream nhẹ** — engine luyện + lịch sử (BC2/BC3) đã chạy; việc chính là **nối thanh toán ví cá nhân** vào engine. Có thể để **người S1 kiêm** (cùng đụng PaymentService) nếu đội mỏng; nhưng phải có **một owner B2C rõ ràng** để B2C không bị coi nhẹ. Cross-dep: S5 cần `credit_accounts(owner_type)` từ S1 (task `P1`).
 
@@ -193,7 +194,7 @@ Kế thừa nguyên tắc đang dùng — chi tiết [architecture.md](architect
 **Auth + Org (S1)**: thêm **Organization** (`org_id`, tax_code) + **org_members (OrgAdmin/HrMember)** vào JWT · luồng tạo/đăng ký tổ chức · bật lại `[Authorize(Roles)]`. *(Sub-account RBAC đầy đủ = phase 2.)*
 - **Chấp nhận:** JWT chứa `org_id`+`org_role`; HrMember bị chặn endpoint billing; test phân quyền pass.
 
-**M2 Campaign — CampaignService (S2)**: fix §7 · lifecycle Draft→Active→Closed→Archived · gọi AI gợi ý câu hỏi · **tiêu chí text→cấu trúc (AI+HR)** · **soft-delete + audit_logs** · publish.
+**M2 Campaign — CampaignService (S2)**: fix §7 · lifecycle Draft→Active→Closed→Archived · gọi AI gợi ý câu hỏi · **tiêu chí text→cấu trúc (AI+HR)** · **soft-delete + audit_logs** · publish · **lọc CV hàng loạt** (sàng ứng viên qua CV — `C13`–`C15`, D18/D19; hybrid filter, free phase 1, tái dùng `campaign_criteria`).
 - **Chấp nhận:** 6 bug §7 đóng (có test); publish sinh `campaign_criteria` có weight; DELETE chỉ set `deleted_at`; GET lọc theo org.
 
 **M3 Distribution (S3)**: *Campaign*: lời mời **magic-link** + email; **"1 lần" = 1 lần nộp** (resume câu chưa làm); lỗi/hết hạn → **re-issue**. *Interview*: `campaign_id`, create-or-get session từ token, **danh tính ứng viên = account Candidate nhẹ**.
@@ -213,7 +214,8 @@ Kế thừa nguyên tắc đang dùng — chi tiết [architecture.md](architect
 - **BC9 — tổng kết điểm buổi luyện** *(spec: [services/interview.md](services/interview.md))*: session B2C `Scored` → tính `overall_score` + điểm/tiêu chí + "cần cải thiện", **lưu DB** (`session_criterion_scores`, có migration); `GET /sessions/{id}` trả `result`. Thuần engine, **không AI**.
 - **BC10 — nhận xét chung (AI sinh)**: sau BC9 → AIService `/summarize-session` sinh `overall_comment` (best-effort; AI lỗi **không** chặn `Scored`).
 - **BC11 — nguồn rubric B2C theo `JobCategory`** *(prerequisite chấm B2C)*: seed/CRUD `rubric_criteria` (`campaign_id IS NULL`) cho BA/BE/FE (Σweight=1) — chưa có thì answer B2C **không được chấm**.
-- **Chấp nhận:** user cá nhân nạp credit (sandbox PayOS) → ví +N; tạo session luyện reserve −1 (giữ chỗ), chấm xong consume đúng 1; hết credit → tạo session trả 402; `GET history` trả đúng buổi của mình, không thấy của người khác; **`POST cv-analysis` (chỉ cvId) → trả tóm tắt+mạnh/yếu+gợi ý; kèm jdId → có matchScore+skills; kết quả lưu `cv_analyses` đọc lại được**.
+- **BC12–BC15 — roadmap ôn tập cá nhân hoá** *(feature mới, [decisions.md](decisions.md) D20; spec: [services/interview.md](services/interview.md) §Roadmap + [services/ai.md](services/ai.md))*: chọn BA/FE/BE + level (Fresher…) → từ **report các buổi đã chấm** + CV → AI sinh **milestone/lesson**; mỗi lesson = **lý thuyết trước** (AI sinh bám điểm yếu, free) → **luyện session** (reserve→consume credit như BC2); xong mile → **improvement**; xong roadmap → **report** (radar + đánh giá theo ngưỡng level + kết luận). 3 bảng mới `isas_interview`; AI sync stateless.
+- **Chấp nhận:** user cá nhân nạp credit (sandbox PayOS) → ví +N; tạo session luyện reserve −1 (giữ chỗ), chấm xong consume đúng 1; hết credit → tạo session trả 402; `GET history` trả đúng buổi của mình, không thấy của người khác; **`POST cv-analysis` (chỉ cvId) → trả tóm tắt+mạnh/yếu+gợi ý; kèm jdId → có matchScore+skills; kết quả lưu `cv_analyses` đọc lại được**; **tạo roadmap → có mile/lesson bám điểm yếu; luyện hết 1 mile → thấy improvement; hoàn thành → report radar/level/kết luận**.
 
 ---
 

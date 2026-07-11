@@ -2,7 +2,7 @@
 
 **Sản phẩm: phỏng vấn bằng AI — 2 dòng dùng chung 1 engine.** **(B2C)** Luyện phỏng vấn cá nhân: CV/JD → AI sinh câu hỏi → ghi âm → chấm rubric → xem lịch sử. **(B2B)** Tuyển dụng: nhà tuyển dụng tạo chiến dịch từ JD → phát link cho ứng viên → AI chấm & xếp hạng → xuất kết quả. Phân biệt bằng `campaign_id`; **cả hai đều là deliverable**.
 
-> **Trạng thái:** **B2C** — engine luyện tập + lịch sử **đã chạy**, còn thiếu ví credit cá nhân (D15) + tổng kết điểm/nhận xét (BC9–BC11). **B2B** — đã có Auth org (A1–A3), campaign authoring + tiêu chí cấu trúc (C*, merged), engine nhận `campaign_id` + chấm theo tiêu chí (I1/E1); **còn**: distribution (magic-link), ranking/result/export, thanh toán. Thanh toán (credit/PayOS) dùng chung. Phạm vi đầy đủ & phân công xem [work-division.md](work-division.md).
+> **Trạng thái:** **B2C** — engine luyện tập + lịch sử **đã chạy**, còn thiếu ví credit cá nhân (D15) + tổng kết điểm/nhận xét (BC9–BC11). **B2B** — đã có Auth org (A1–A3), campaign authoring + tiêu chí cấu trúc (C*, merged), engine nhận `campaign_id` + chấm theo tiêu chí (I1/E1); **còn**: distribution (magic-link), ranking/result/export, **lọc CV hàng loạt (C13–C15)**, thanh toán. Thanh toán (credit/PayOS) dùng chung. Phạm vi đầy đủ & phân công xem [work-division.md](work-division.md).
 
 ## Mục lục
 
@@ -12,10 +12,11 @@
 |---|---|
 | [AGENTS.md](../AGENTS.md) | **Cửa vào** — dự án là gì, chạy/test, ràng buộc cứng, quy trình vào-ca/tan-ca |
 | [work-division.md](work-division.md) | **Source of truth** — phạm vi 2 dòng SP (B2C 4 + B2B 5 module), hiện trạng, phân việc 4 người / 5 stream, thứ tự build |
-| [decisions.md](decisions.md) | **Decision log** — *vì sao* các quyết định (D1–D17) + phương án bị loại |
+| [decisions.md](decisions.md) | **Decision log** — *vì sao* các quyết định (D1–D21) + phương án bị loại |
 | [progress.md](progress.md) | **Handoff** — trạng thái hiện tại + bước kế tiếp (cập nhật mỗi phiên) |
 | [tasks.md](tasks.md) | **Task surface (WIP=1)** — task nguyên tử + lệnh xác minh + phụ thuộc + trạng thái (tạm; về sau đẩy sang board) |
 | [architecture.md](architecture.md) | Kiến trúc — thành phần, giao tiếp, các luồng + **§5 quy ước chung, §6 routing/mã lỗi** |
+| [rules.md](rules.md) | **Business rules toàn hệ thống** — danh mục quy tắc mã hóa (GEN/AUTH/INT/CAMP/PAY/AI/BC/SEC/DATA) |
 | [../DEPLOYMENT.md](../DEPLOYMENT.md) | Triển khai 2 host (server + Mac cho AIService) qua Tailscale |
 
 **Theo service** (API + DB + business rules gộp trong 1 file/service — `docs/services/`):
@@ -28,7 +29,7 @@
 | CampaignService | [services/campaign.md](services/campaign.md) | 🟢 merged main (M2) |
 | PaymentService | [services/payment.md](services/payment.md) | 🟡 branch |
 
-> `api.md` / `database.md` / `rules.md` cũ giờ chỉ là **trang chuyển hướng** sang doc service (đã tách, không gom chung nữa).
+> `api.md` / `database.md` cũ giờ chỉ là **trang chuyển hướng** sang doc service (đã tách, không gom chung nữa). `rules.md` nay là **danh mục business rules toàn hệ thống** (tham chiếu chéo doc service + decisions.md).
 
 ## Bắt đầu từ đâu
 

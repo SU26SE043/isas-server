@@ -76,6 +76,64 @@ UserResponse {
 - **`GET/POST /auth/admin/orgs…`** — xem / duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
 - *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. Còn admin-gated orgs + role-grant — A4/A5.)*
 
+### Request/Response mẫu (luồng chính)
+```
+POST /api/v1/auth/register-org
+{ "email":"hr@acme.vn", "password":"S3cret!2026", "fullName":"Nguyễn HR", "orgName":"ACME JSC", "taxCode":"0312345678" }
+→ 200  { "accessToken":"eyJ…", "refreshToken":"f3a1…", "expiresAt":"2026-06-30T09:15:00Z" }
+        // accessToken claims: sub, role="Employer", org_id, org_role="OrgAdmin"
+
+POST /api/v1/auth/login    { "email":"hr@acme.vn", "password":"S3cret!2026" }  → 200 AuthResponse
+POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 RefreshTokenResponse  (token cũ revoke + replaced_by=token mới)
+```
+
+### Validation (đầu vào)
+| Field | Ràng buộc |
+|---|---|
+| `email` | bắt buộc; format email; chuẩn hoá `normalized_email` **UNIQUE** (trùng → 400) |
+| `password` | bắt buộc; theo `PasswordOptions` Identity (độ dài ≥ 6, chữ+số…); **null chỉ** khi user Google-only |
+| `fullName` | bắt buộc khi `register`/`register-org` |
+| `orgName` | bắt buộc (register-org), non-empty (trim) |
+| `taxCode` | optional; cần khi **duyệt postpaid** (verify MST) |
+| `otp` | 6 số, TTL ngắn (~5'); sai/hết hạn → 400 |
+| `refreshToken` | bắt buộc; `is_revoked=false` + `expires_at>now` |
+
+### Bảng mã lỗi (đặc thù — mã chung [../architecture.md](../architecture.md) §6)
+| Mã | Khi nào |
+|---|---|
+| 400 | email đã tồn tại · mật khẩu yếu (policy) · OTP sai/hết hạn · `orgName` rỗng |
+| 401 | login sai email/mật khẩu · refresh hết hạn/đã revoke · thiếu/sai Bearer |
+| 403 | role/`org_role` không đủ quyền (vd `HrMember` gọi admin/billing — A4) |
+| 409 | (admin) tạo org trùng / gán role mâu thuẫn |
+| 423 | tài khoản **lockout** (quá `access_failed_count`) *(nếu bật `LockoutOptions`)* |
+
+## Luồng (sequence)
+
+**Đăng ký tổ chức (`register-org` → A3):**
+```
+FE ─POST /register-org─► Auth
+      ├─ validate (email UNIQUE · password policy · orgName)
+      ├─ tạo user(role=Employer) + Organization(org_id, tax_code) + OrgMember(OrgAdmin)   [1 transaction]
+      ├─ phát JWT access (claims: sub, role, org_id, org_role) + refresh_token (rotation)
+      └─► 200 AuthResponse
+```
+
+**Login + Refresh rotation (chống reuse):**
+```
+FE ─POST /login {email,pwd}─► Auth ─verify password_hash─► 200 {access, refresh, expiresAt}
+… access hết hạn …
+FE ─POST /refresh {refreshToken}─► Auth
+      ├─ hợp lệ? (tồn tại · is_revoked=false · expires_at>now)   ─ không ─► 401
+      ├─ revoke token cũ (is_revoked=true, replaced_by=tokenMới)   ← 1 refresh dùng 1 lần
+      └─► 200 {refresh mới, expiresAt}
+```
+
+**Validate JWT offline (mọi service khác — KHÔNG gọi Auth):**
+```
+FE ─Bearer access─► Service X ── verify chữ ký bằng Jwt:Key/Issuer/Audience (offline) ──► OK / 401
+                                 (gọi Auth CHỈ khi cần dữ liệu tươi ngoài token, vd email xuất hóa đơn)
+```
+
 ## DB — `isas`
 ASP.NET Identity (`IdentityUser<Guid>`), cột **snake_case**. Kiểu: `uuid·varchar(n)·text·bool·timestamptz·enum(string)`, `?`=nullable.
 ```
@@ -135,6 +193,15 @@ org_role varchar(16)   enum(string): OrgAdmin · HrMember
 ```
 
 + bảng Identity phụ: `role_claims` · `user_claims` · `user_tokens` · `user_logins` (Google OAuth).
+
+### Index / ràng buộc / edge case
+- **UNIQUE**: `users.normalized_email`, `users.normalized_user_name` (Identity) — chống trùng tài khoản; `org_members` PK `(org_id, user_id)`; `roles.normalized_name`; **`refresh_tokens.token`** (lookup theo token, chống trùng); **`organizations.tax_code`** (nullable-unique — 1 MST = 1 pháp nhân; trùng → 409, điều kiện để duyệt postpaid đúng org).
+- **Index / self-FK**: `refresh_tokens(user_id)` (revoke-all theo user); `refresh_tokens.replaced_by` là **self-FK → refresh_tokens.id** (chuỗi rotation — truy ngược được token nào đẻ ra token nào khi nghi trộm token).
+- **on-delete**: `user_roles` · `refresh_tokens` · `org_members` **Cascade** theo `user`; xoá `organization` → cascade `org_members`.
+- **Refresh rotation**: 1 refresh dùng 1 lần → revoke + `replaced_by`. **Dùng lại token đã revoke** = dấu hiệu trộm token → **401** (cân nhắc revoke cả chuỗi — phase 2).
+- **Lockout**: `access_failed_count` tăng mỗi login sai; chạm ngưỡng → khoá tới `lockout_end` (nếu bật `LockoutOptions`).
+- **JWT offline ⇒ thu hồi role KHÔNG tức thì**: đổi `role`/`org_role` chỉ áp khi **token mới** (login/refresh lại); access cũ vẫn hợp lệ tới `expiresAt`. Chấp nhận (đánh đổi của *auth offline* — [../architecture.md](../architecture.md) §3); cần tức thì → rút ngắn TTL access.
+- **Google-only user**: `password_hash=null` → chặn login mật khẩu, chỉ OAuth.
 
 ## Xác thực (nguồn chân lý cho cả hệ)
 - JWT phát bởi Auth, **các service khác validate bằng cùng** `Jwt:Key` / `Issuer` / `Audience` — **không** call Auth.

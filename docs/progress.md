@@ -1,10 +1,10 @@
 # ISAS — Progress / Handoff
 
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
-> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-06-28**.
+> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11**.
 
 ## Pha hiện tại
-**Đang code feature B2B (không còn ở pha thiết kế).** Thiết kế đã chốt (D1–D17). Đã merge vào `main`: **S1 Auth org** (A1–A3, PR #23), **S2 Campaign** (C1–C10, PR #22 + đưa vào pipeline deploy), **S3 I1** (session B2B `campaign_id` + materialize tiêu chí, PR #24). **Đang làm: S4 E1** — chấm B2B theo tiêu chí campaign (nhánh `features/E1-b2b-scoring-campaign-criteria`, test pass, chờ PR). PaymentService vẫn ở branch chưa refactor.
+**Đang code feature B2B (không còn ở pha thiết kế).** Thiết kế đã chốt (D1–D21; **mới 2026-07-02: D20 — roadmap ôn tập cá nhân hoá B2C, `BC12`–`BC15`** — mới ở doc, **chưa build**; 2026-06-30: D18/D19 — lọc CV hàng loạt B2B, `C13`–`C15` — mới ở doc, **chưa build**). Đã merge vào `main`: **S1 Auth org** (A1–A3, PR #23), **S2 Campaign** (C1–C10, PR #22 + đưa vào pipeline deploy), **S3 I1** (session B2B `campaign_id` + materialize tiêu chí, PR #24). **E1 đã merged `main`** (commit `796d8bb` — chấm B2B theo tiêu chí campaign); **tiếp theo E2** (phát `SessionScored`). **Time-limit (D21, 2026-07-11):** bỏ giới hạn tổng buổi — chỉ giới hạn từng câu, hết giờ câu → chốt câu → sang câu kế (task **I2**). PaymentService vẫn ở branch chưa refactor. **Doc (2026-06-30):** 5 service doc đã **chi tiết hoá** (req/res mẫu · validation · bảng mã lỗi · sequence · index/edge) + đồng bộ bản copy `src/services/Isas.*/AGENTS.md` (Auth/AI/Campaign/Interview; Payment ở branch).
 
 ## Trạng thái branch / task (so với `main`)
 | Mục | Nội dung | Trạng thái |
@@ -13,7 +13,7 @@
 | Auth org (A1–A3) | `organizations`/`org_members` (migration `AddOrganizations`) + JWT mang `org_id`/`org_role` + `POST /auth/register-org` | ✅ **merged main (PR #23)** · test ✅ · ⚠ e2e HTTP chờ stack chạy |
 | Campaign (C1–C10) | 6 bug + soft-delete (C9) + lifecycle (C7) + snake_case + publish/`campaign_criteria` Σ=1 (C8) + `audit_logs` (C10) + AI `/suggest-criteria` (Gemini + fallback) + Dockerfile/CI/gateway route | ✅ **merged main (PR #22)** · 34 unit test ✅ · thiếu M3/M4/M5 (distribution/ranking/export), `org_id` (code còn `employer_id`) |
 | I1 | session B2B nhận `campaign_id` + materialize tiêu chí → `rubric_criteria(campaign_id)` (idempotent theo campaign) | ✅ **merged main (PR #24)** · test ✅ (2/2) · ⚠ HTTP entry B2B chờ **D2** |
-| E1 | chấm B2B theo tiêu chí campaign (chọn tiêu chí branch theo `campaign_id` ở `AnswerService` + `StuckAnswerRepublisher`) | 🟡 **nhánh `features/E1-…`** · `dotnet test` 31/31 ✅ · ⚠ e2e đầy đủ chờ D2 + chờ PR review |
+| E1 | chấm B2B theo tiêu chí campaign (chọn tiêu chí branch theo `campaign_id` ở `AnswerService` + `StuckAnswerRepublisher`) | ✅ **merged main (commit 796d8bb)** · `dotnet test` 31/31 ✅ · ⚠ e2e đầy đủ chờ D2 |
 | `features/payment-b2c` | PaymentService (Order/Package/PayOS theo `user_id`) — **chưa có folder trong tree `main`** | 🟡 cần refactor: `credit_accounts(owner_type)`, reserve/consume/release, postpaid + hóa đơn, active-polling |
 
 > Test project trong tree hiện có: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`. Payment **chưa** có (Phase 0 `P0.4`).
@@ -27,12 +27,13 @@
 - **CI/CD chung Neon (DB server):** không tự apply migration lên DB chung — schema apply qua pipeline/tay trước deploy.
 
 ## Bước tiếp theo (thứ tự đề xuất)
-1. **Merge E1 → main** (PR review) → mở **E2** (phát event `SessionScored` kèm `campaign_id` + điểm).
+1. **E2** — phát event `SessionScored` kèm `campaign_id` + điểm (E1 **đã merged main**).
 2. **S3 Distribution (D1–D4)**: `campaign_invitations` + magic-link → **D2** (mở token → account Candidate + create-or-get session) — gỡ chặn HTTP entry B2B cho I1/E1.
 3. **S1 Payment (P1→P8)**: `credit_accounts(owner_type)` → reserve/consume/release → webhook + active-polling → postpaid/hóa đơn; thêm Payment vào CI.
 4. **S4 còn lại (E3–E7)**: `SessionAbandoned`, `campaign_rankings`, kết quả + pass/fail, xuất CSV/PDF, Payment phản ứng event.
 5. **Auth A4/A5**: HrMember bị chặn billing (403); bật lại `[Authorize(Roles)]` mọi service.
 6. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.4` (test project Payment), `P0.5` (readiness 4 điều kiện + checkpoint).
-7. **S5 B2C** (độc lập, ra E2E sớm): `BC1`–`BC8` — ví credit cá nhân + reserve/consume + phân tích CV.
+7. **S5 B2C** (độc lập, ra E2E sớm): `BC1`–`BC15` — ví credit cá nhân + reserve/consume + phân tích CV + tổng kết điểm/nhận xét + seed rubric B2C + **roadmap ôn tập cá nhân hoá (D20)**.
+8. **Lọc CV B2B** (`C13`–`C15`, D18/D19 — đã thiết kế doc): bulk upload + hard-filter + AI match-score (free phase 1) → shortlist. Phụ thuộc `C8` (đã xong) + `BC6` (engine `/analyze-cv`).
 
 > Quy trình **vào ca / tan ca**: xem [../AGENTS.md](../AGENTS.md).
