@@ -89,6 +89,10 @@ builder.Services.AddScoped<ICreditAccountService, CreditAccountService>();
 builder.Services.AddScoped<IOrderCodeGenerator, OrderCodeGenerator>();
 // P2: xử lý webhook PayOS đã verify → cộng credit idempotent theo payos_order_code (PAY-8).
 builder.Services.AddScoped<IWebhookService, WebhookService>();
+// P3: active-polling đối soát. PayOsQueryClient bọc SDK getPaymentLinkInformation (mockable);
+// OrderStatusService reuse WebhookService để cộng credit khi PayOS Paid (một đường cộng credit).
+builder.Services.AddScoped<IPayOsQueryClient, PayOsQueryClient>();
+builder.Services.AddScoped<IOrderStatusService, OrderStatusService>();
 // E7: Payment phản ứng event Interview — consume (SessionScored) / release (SessionAbandoned).
 // Handler scoped (dùng DbContext qua CreditAccountService); consumer là BackgroundService bind
 // queue payment.credit ↔ exchange interview.events (E2/E3).

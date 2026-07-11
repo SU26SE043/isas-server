@@ -12,9 +12,11 @@ namespace Isas.PaymentService.Controllers
     public class OrderController : ControllerBase
     {
         private readonly IOrderService _order;
-        public OrderController(IOrderService order)
+        private readonly IOrderStatusService _status;
+        public OrderController(IOrderService order, IOrderStatusService status)
         {
             _order = order;
+            _status = status;
         }
 
         // Chủ ví lấy từ JWT (D15): có claim org_id → Org (B2B, billing cấp tổ chức), không → User (B2C cá nhân).
@@ -65,6 +67,27 @@ namespace Isas.PaymentService.Controllers
                 return Forbid();
 
             return Ok(order);
+        }
+
+        // P3 — FE active-polling: server chưa nhận webhook (order Pending) → đối soát PayOS NGAY (payment.md:145).
+        // Owner-scope trong service: đơn không tồn tại HOẶC của chủ ví khác → 404 (không lộ đơn người khác).
+        [HttpGet("{id:guid}/status")]
+        [Authorize]
+        public async Task<ActionResult<OrderStatusResponse>> GetOrderStatusAsync(Guid id, CancellationToken ct = default)
+        {
+            var owner = GetOwner();
+            if (owner is null)
+                return Forbid();
+
+            var result = await _status.GetOrderStatusAsync(id, owner.Value.OwnerType, owner.Value.OwnerId, ct);
+            if (result is null) return NotFound();
+
+            return Ok(new OrderStatusResponse
+            {
+                OrderCode = result.OrderCode,
+                Status = result.Status.ToString(),
+                PaidAt = result.PaidAt
+            });
         }
 
         [HttpGet("my-orders")]
