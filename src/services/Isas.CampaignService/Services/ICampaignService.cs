@@ -16,5 +16,8 @@ namespace Isas.CampaignService.Services
         Task<Stream> DownloadCampaignFilesAsync(Guid employerId, Guid id, string fileType, CancellationToken ct);
         Task<CampaignResponse> PublishCampaignAsync(Guid employerId, Guid id, CancellationToken ct);
         Task<CampaignResponse> TransitionStatusAsync(Guid employerId, Guid id, CampaignStatus target, CancellationToken ct);
+
+        // D1: Distribution đường 1 — mời thẳng qua danh sách email
+        Task<CreateInvitationsResponse> CreateInvitationsAsync(Guid employerId, Guid id, List<string> emails, CancellationToken ct);
     }
 }

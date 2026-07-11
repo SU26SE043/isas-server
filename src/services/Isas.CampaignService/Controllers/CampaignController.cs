@@ -265,5 +265,28 @@ namespace Isas.CampaignService.Controllers
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // transition không hợp lệ → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to transition campaign: {ex.Message}"); }
         }
+
+        // D1: Distribution đường 1 — mời thẳng qua danh sách email
+        [HttpPost("{id:guid}/invitations")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CreateInvitationsResponse>> CreateInvitations(Guid id, [FromBody] CreateInvitationsRequest request, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            if (request?.Emails == null || request.Emails.Count == 0)
+                return BadRequest("At least one email is required.");
+
+            try
+            {
+                var result = await _campaignService.CreateInvitationsAsync(Guid.Parse(employerId), id, request.Emails, ct);
+                return Ok(result);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }          // vượt cap max_candidates
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }    // campaign không Active → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to create invitations: {ex.Message}"); }
+        }
     }
 }

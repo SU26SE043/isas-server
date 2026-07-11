@@ -23,6 +23,7 @@
         // Navigation
         public ICollection<CampaignQuestion> Questions { get; set; } = new List<CampaignQuestion>();
         public ICollection<CampaignCriterion> Criteria { get; set; } = new List<CampaignCriterion>();
+        public ICollection<CampaignInvitation> Invitations { get; set; } = new List<CampaignInvitation>();
     }
 
     public enum CampaignStatus

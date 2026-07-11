@@ -42,6 +42,8 @@ builder.Services.AddScoped<IParserService, ParserService>();
 // C8: gọi AIService đề xuất tiêu chí (đồng bộ qua AiService:BaseUrl; có fallback)
 builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
+// D1: đẩy job email mời (magic-link) vào RabbitMQ (cùng pattern InterviewService.ScoringJobPublisher)
+builder.Services.AddSingleton<IInvitationEmailPublisher, InvitationEmailPublisher>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {

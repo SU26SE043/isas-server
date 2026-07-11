@@ -11,6 +11,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignQuestion> CampaignQuestions => Set<CampaignQuestion>();
         public DbSet<CampaignCriterion> CampaignCriteria => Set<CampaignCriterion>();
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+        public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -93,6 +94,25 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.Action).HasConversion<string>().HasMaxLength(32);
                 e.Property(x => x.At).HasDefaultValueSql("now()");
                 e.HasIndex(x => new { x.EntityId, x.At });
+            });
+
+            // ── CampaignInvitation (magic-link mời — D1, đường 1: mời thẳng email) ──
+            modelBuilder.Entity<CampaignInvitation>(e =>
+            {
+                e.ToTable("campaign_invitations");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.Token).IsRequired().HasMaxLength(128);
+                e.Property(x => x.Email).IsRequired().HasMaxLength(255);
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                e.HasIndex(x => x.Token).IsUnique();
+                e.HasIndex(x => x.CampaignId);
+
+                e.HasOne(x => x.Campaign)
+                 .WithMany(x => x.Invitations)
+                 .HasForeignKey(x => x.CampaignId)
+                 .OnDelete(DeleteBehavior.Cascade);
             });
         }
     }

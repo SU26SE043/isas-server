@@ -23,6 +23,7 @@ namespace Isas.CampaignService.Models
         EditCriteria = 2,
         Publish = 3,
         Delete = 4,
-        TransitionStatus = 5
+        TransitionStatus = 5,
+        Invite = 6   // D1: mời ứng viên qua email (campaign_invitations)
     }
 }

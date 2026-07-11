@@ -14,7 +14,8 @@ public class CampaignServiceTests
 {
     private static CampaignSvc NewService(CampaignDbContext db, ICriteriaSuggester? suggester = null) =>
         new(db, Mock.Of<IFileService>(), Mock.Of<ILogger<CampaignSvc>>(), Mock.Of<IParserService>(),
-            suggester ?? Mock.Of<ICriteriaSuggester>());   // mock mặc định → null → fallback default criteria
+            suggester ?? Mock.Of<ICriteriaSuggester>(),    // mock mặc định → null → fallback default criteria
+            Mock.Of<IInvitationEmailPublisher>());         // D1: không dùng ở test file này
 
     // C2 + ownership: GetCampaigns chỉ trả campaign của chính employer (không rò rỉ của người khác)
     [Fact]

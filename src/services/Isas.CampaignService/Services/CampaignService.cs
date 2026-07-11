@@ -2,16 +2,19 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Microsoft.EntityFrameworkCore;
+using System.ComponentModel.DataAnnotations;
+using System.Security.Cryptography;
 
 namespace Isas.CampaignService.Services
 {
     public class CampaignService : ICampaignService
     {
         private readonly ILogger<CampaignService> _logger;
-        private readonly CampaignDbContext _db; 
+        private readonly CampaignDbContext _db;
         private readonly IFileService _file;
         private readonly IParserService _parser;
         private readonly ICriteriaSuggester _suggester;
+        private readonly IInvitationEmailPublisher _emailPublisher;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
@@ -20,13 +23,15 @@ namespace Isas.CampaignService.Services
 
         public CampaignService(CampaignDbContext db,
             IFileService file, ILogger<CampaignService> logger,
-            IParserService parser, ICriteriaSuggester suggester)
+            IParserService parser, ICriteriaSuggester suggester,
+            IInvitationEmailPublisher emailPublisher)
         {
             _db = db;
             _file = file;
             _logger = logger;
             _parser = parser;
             _suggester = suggester;
+            _emailPublisher = emailPublisher;
         }
 
         public async Task<CampaignResponse> CreateCampaignAsync(Guid employerId, CreateCampaignRequest request, CancellationToken ct = default)
@@ -331,6 +336,114 @@ namespace Isas.CampaignService.Services
             await _db.SaveChangesAsync(ct);
 
             return CampaignResponse.FromEntity(campaign);
+        }
+
+        // ── D1: Distribution đường 1 — mời thẳng qua danh sách email ────────
+        // Thứ tự xử lý (đúng doc): validate định dạng → dedup → cap max_candidates.
+        // Email hỏng/trùng/đã mời → failed[] per-item, KHÔNG chặn cả batch.
+        // Vượt cap max_candidates → chặn CẢ request (ArgumentException → 400).
+        public async Task<CreateInvitationsResponse> CreateInvitationsAsync(Guid employerId, Guid id, List<string> emails, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (campaign.Status != CampaignStatus.Active)
+                throw new InvalidOperationException($"Chỉ mời ứng viên khi campaign đang Active (hiện: {campaign.Status}).");
+
+            var response = new CreateInvitationsResponse();
+
+            // ── 1. Validate định dạng + dedup TRONG list gửi lên ─────────────
+            var seenInRequest = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var candidates = new List<string>();
+            foreach (var raw in emails ?? new List<string>())
+            {
+                var email = raw?.Trim() ?? string.Empty;
+
+                if (string.IsNullOrWhiteSpace(email) || !new EmailAddressAttribute().IsValid(email))
+                {
+                    response.Failed.Add(new FailedInvitationItem { Email = raw ?? string.Empty, Reason = "Định dạng email không hợp lệ." });
+                    continue;
+                }
+
+                if (!seenInRequest.Add(email))
+                {
+                    response.Failed.Add(new FailedInvitationItem { Email = email, Reason = "Trùng lặp trong danh sách gửi." });
+                    continue;
+                }
+
+                candidates.Add(email);
+            }
+
+            // ── 2. Dedup với invitation đã có (chưa bị revoke) của campaign ──
+            var existingEmails = await _db.CampaignInvitations
+                .Where(i => i.CampaignId == id && i.RevokedAt == null)
+                .Select(i => i.Email)
+                .ToListAsync(ct);
+            var existingSet = new HashSet<string>(existingEmails, StringComparer.OrdinalIgnoreCase);
+
+            var toCreate = new List<string>();
+            foreach (var email in candidates)
+            {
+                if (existingSet.Contains(email))
+                {
+                    response.Failed.Add(new FailedInvitationItem { Email = email, Reason = "Email đã được mời." });
+                    continue;
+                }
+                toCreate.Add(email);
+            }
+
+            // ── 3. Cap theo max_candidates — vượt → chặn CẢ request (không tạo dở dang) ──
+            if (campaign.MaxCandidates.HasValue)
+            {
+                var currentCount = existingEmails.Count;
+                if (currentCount + toCreate.Count > campaign.MaxCandidates.Value)
+                    throw new ArgumentException(
+                        $"Vượt giới hạn max_candidates ({campaign.MaxCandidates.Value}): hiện có {currentCount} lời mời, đang mời thêm {toCreate.Count}.");
+            }
+
+            // ── 4. Tạo rows + đẩy job email queue ────────────────────────────
+            var now = DateTime.UtcNow;
+            var invitations = toCreate.Select(email => new CampaignInvitation
+            {
+                Id = Guid.NewGuid(),
+                CampaignId = campaign.Id,
+                CampaignCandidateId = null,   // đường 1 (D1) — không gắn campaign_candidates
+                Token = GenerateInvitationToken(),
+                Email = email,
+                ExpiresAt = campaign.ExpiresAt,
+                CreatedAt = now,
+            }).ToList();
+
+            if (invitations.Count > 0)
+            {
+                _db.CampaignInvitations.AddRange(invitations);
+                AddAudit(employerId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên qua email");
+                await _db.SaveChangesAsync(ct);
+
+                foreach (var invitation in invitations)
+                {
+                    await _emailPublisher.PublishAsync(new InvitationEmailJob(
+                        invitation.Id, campaign.Id, invitation.Email, invitation.Token, campaign.Title, invitation.ExpiresAt), ct);
+
+                    invitation.SentAt = DateTime.UtcNow;
+                    response.Created.Add(new InvitationItem { Id = invitation.Id, Email = invitation.Email, ExpiresAt = invitation.ExpiresAt });
+                }
+
+                await _db.SaveChangesAsync(ct);   // persist SentAt sau khi đẩy queue
+            }
+
+            return response;
+        }
+
+        // Token magic-link 1 lần — 256-bit random, URL-safe base64 (không padding).
+        private static string GenerateInvitationToken()
+        {
+            var bytes = RandomNumberGenerator.GetBytes(32);
+            return Convert.ToBase64String(bytes)
+                .Replace("+", "-")
+                .Replace("/", "_")
+                .Replace("=", "");
         }
 
         // C8: gọi AIService đề xuất tiêu chí; lỗi/rỗng → fallback default. Chuẩn hoá Σweight = 1.
