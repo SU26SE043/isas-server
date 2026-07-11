@@ -343,6 +343,75 @@ public class ParticipationServiceTests
             svc.StartInterviewAsync(FixedCandidate, camp.Id, default));
     }
 
+    // ── D3: Resume — mở lại campaign (start lại) → ĐÚNG session cũ, trạng thái KHÔNG hạ cấp ──────
+    // Create-or-get (Interview dedup) đảm bảo cùng session_id; phía Campaign phải giữ SessionId ổn định
+    // và KHÔNG reset InterviewStatus InProgress → NotStarted. (Chi tiết câu-đã-nộp do Interview phục vụ.)
+
+    // D3(a): start 2× cùng candidate → membership.SessionId ổn định + InterviewStatus vẫn InProgress
+    // (khác Start_HaiLan_CungSessionId_Idempotent: test này kiểm chứng STATE membership, không chỉ return).
+    [Fact]
+    public async Task Start_HaiLan_MembershipSessionOnDinh_KhongHaCap()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+        var second = await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        Assert.Equal(FixedSession, second.SessionId);
+
+        using var check = tdb.NewContext();
+        var membership = await check.CampaignCandidates.SingleAsync(c => c.CampaignId == camp.Id);
+        Assert.Equal(FixedSession, membership.SessionId);                                  // session cũ giữ nguyên
+        Assert.Equal(InterviewProgressStatus.InProgress, membership.InterviewStatus);      // KHÔNG reset về NotStarted
+    }
+
+    // D3(b): membership đang làm dở (InProgress + đã gắn session) → start lại (resume) → giữ nguyên
+    // session + InProgress (không tạo/không đổi session, không hạ trạng thái).
+    [Fact]
+    public async Task Start_ResumeTuInProgress_GiuNguyenSessionVaTrangThai()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SessionId = FixedSession;
+        membership.InterviewStatus = InterviewProgressStatus.InProgress;   // đã bắt đầu, trả lời dở
+        tdb.Db.CampaignCandidates.Add(membership);
+        await tdb.Db.SaveChangesAsync();
+
+        var res = await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        Assert.Equal(FixedSession, res.SessionId);   // resume đúng session đang dở
+
+        using var check = tdb.NewContext();
+        var after = await check.CampaignCandidates.SingleAsync(c => c.CampaignId == camp.Id);
+        Assert.Equal(FixedSession, after.SessionId);
+        Assert.Equal(InterviewProgressStatus.InProgress, after.InterviewStatus);
+    }
+
+    // D3(c): sau start, GET /my-campaigns/{id} surface trạng thái resume — Started=true + SessionId khớp
+    // + InterviewStatus=InProgress (FE biết đang dở → cho "tiếp tục").
+    [Fact]
+    public async Task MyCampaignDetail_SauStart_Started_SessionIdKhop_InProgress()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        var detail = await NewService(tdb.NewContext())
+            .GetCandidateCampaignAsync(FixedCandidate, camp.Id, default);
+
+        Assert.True(detail.Started);
+        Assert.Equal(FixedSession, detail.SessionId);
+        Assert.Equal("InProgress", detail.InterviewStatus);
+        Assert.Equal("Joined", detail.MembershipStatus);
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────────
     private static Campaign ActiveCampaignWithQuestionAndCriterion(CampaignTestDb tdb)
     {
