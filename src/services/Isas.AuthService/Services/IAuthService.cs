@@ -11,6 +11,12 @@ namespace Isas.AuthService.Services
 
         // D2: tạo-hoặc-lấy account Candidate nhẹ theo email (idempotent) → { candidateId, accessToken }.
         Task<ProvisionCandidateResponse> ProvisionCandidateAsync(string email, string? fullName, CancellationToken ct = default);
+
+        // A6: OrgAdmin tạo HrMember (passwordless) trong org của mình; email đã có account → OrgMemberConflictException.
+        Task<OrgMemberResponse> AddOrgMemberAsync(Guid orgId, string email, string? fullName, CancellationToken ct = default);
+
+        // A6: liệt kê thành viên (email + org_role + joinedAt) của 1 org.
+        Task<IReadOnlyList<OrgMemberResponse>> ListOrgMembersAsync(Guid orgId, CancellationToken ct = default);
         Task<AuthResponse> LoginAsync(LoginRequest loginRequest);
         Task<AuthResponse> LoginGoogleAsync(ExternalLoginInfo info);
         Task<AuthResponse> RefreshTokenAsync(string refreshToken);
