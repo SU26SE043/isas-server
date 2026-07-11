@@ -318,4 +318,86 @@ public class CreditReserveServiceTests
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
         Assert.Equal(1, acc.ReservedCredits);   // chỉ giữ 1 lần
     }
+
+    // ── BK17 — Postpaid: hóa đơn Overdue chặn reserve mới (payment.md:379/431 · §State machine) ──────
+
+    private static async Task SeedInvoiceAsync(
+        PaymentTestDb tdb, OwnerType ownerType, Guid ownerId, InvoiceStatus status)
+    {
+        tdb.Db.Invoices.Add(new Invoice
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = ownerType,
+            OwnerId = ownerId,
+            PeriodStart = DateTime.UtcNow.AddDays(-30),
+            PeriodEnd = DateTime.UtcNow,
+            InterviewCount = 3,
+            UnitPrice = 50_000,
+            Amount = 150_000,
+            Status = status,
+            CreatedAt = DateTime.UtcNow.AddDays(-30)
+        });
+        await tdb.Db.SaveChangesAsync();
+    }
+
+    // Postpaid còn hóa đơn Overdue (nợ kỳ trước chưa trả) → reserve mới bị chặn (402) + no orphan.
+    [Fact]
+    public async Task Reserve_Postpaid_CoHoaDonOverdue_Insufficient_KhongOrphan()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 5); // còn hạn mức
+        await SeedInvoiceAsync(tdb, OwnerType.Org, orgId, InvoiceStatus.Overdue);
+
+        var result = await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+
+        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Null(result.ReservationId);
+
+        using var read = tdb.NewContext();
+        // no orphan: reservation vừa chèn đã rollback
+        Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(0, acc.ReservedCredits);   // KHÔNG tăng reserved
+    }
+
+    // Postpaid có hóa đơn nhưng KHÔNG Overdue (Issued/Paid) → reserve vẫn OK (chỉ Overdue mới chặn).
+    [Fact]
+    public async Task Reserve_Postpaid_HoaDonKhongOverdue_KhongChan()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 5);
+        await SeedInvoiceAsync(tdb, OwnerType.Org, orgId, InvoiceStatus.Issued);
+        await SeedInvoiceAsync(tdb, OwnerType.Org, orgId, InvoiceStatus.Paid);
+
+        var result = await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid());
+
+        Assert.Equal(ReserveOutcome.Reserved, result.Outcome);
+        using var read = tdb.NewContext();
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(1, acc.ReservedCredits);
+    }
+
+    // Overdue chỉ chặn nhánh POSTPAID: ví prepaid (dù cùng org có hóa đơn Overdue) reserve vẫn OK.
+    [Fact]
+    public async Task Reserve_Prepaid_CoHoaDonOverdue_KhongAnhHuong()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedAccountAsync(tdb, OwnerType.Org, orgId, remaining: 5); // prepaid
+        await SeedInvoiceAsync(tdb, OwnerType.Org, orgId, InvoiceStatus.Overdue);
+
+        var result = await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid());
+
+        Assert.Equal(ReserveOutcome.Reserved, result.Outcome); // prepaid KHÔNG kiểm Overdue
+        using var read = tdb.NewContext();
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(4, acc.RemainingCredits);
+        Assert.Equal(1, acc.ReservedCredits);
+    }
 }

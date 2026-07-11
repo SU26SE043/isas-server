@@ -61,11 +61,15 @@ namespace Isas.PaymentService.Services
             };
             _db.Invoices.Add(invoice);
 
-            // Reset period_usage=0 CÙNG transaction — nguồn của interview_count đã chốt vào hóa đơn.
+            // BK17 — TRỪ ĐÚNG snapshot đã chốt (period_usage − count) CÙNG transaction, KHÔNG reset=0.
+            // count = period_usage đọc lúc snapshot ở trên (đã chốt vào invoice.interview_count). Nếu có
+            // Consume commit XEN GIỮA snapshot-read và câu update này (race), reset=0 sẽ NUỐT lượt đó;
+            // trừ-snapshot giữ phần phát sinh sau snapshot lại cho kỳ sau: period_usage_hiện_tại − count.
+            // Self-referential SQL (atomic) — Context7 EF Core ExecuteUpdate.
             await _db.CreditAccounts
                 .Where(a => a.OwnerType == OwnerType.Org && a.OwnerId == orgId)
                 .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.PeriodUsage, _ => (int?)0)
+                    .SetProperty(a => a.PeriodUsage, a => (int?)((a.PeriodUsage ?? 0) - count))
                     .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
 
             await _db.SaveChangesAsync(ct);
