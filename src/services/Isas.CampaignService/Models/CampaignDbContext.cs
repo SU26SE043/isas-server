@@ -12,6 +12,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignCriterion> CampaignCriteria => Set<CampaignCriterion>();
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
         public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
+        public DbSet<CampaignRanking> CampaignRankings => Set<CampaignRanking>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -113,6 +114,21 @@ namespace Isas.CampaignService.Models
                  .WithMany(x => x.Invitations)
                  .HasForeignKey(x => x.CampaignId)
                  .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── CampaignRanking (read-model B2B — E4/D10, event SessionScored) ─────
+            modelBuilder.Entity<CampaignRanking>(e =>
+            {
+                e.ToTable("campaign_rankings");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.TotalScore).HasColumnType("numeric(5,2)");
+                e.Property(x => x.Result).HasMaxLength(16);
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+
+                // Idempotent upsert theo session_id: event tới 2 lần vẫn 1 row.
+                e.HasIndex(x => x.SessionId).IsUnique();
+                e.HasIndex(x => new { x.CampaignId, x.TotalScore });
             });
         }
     }

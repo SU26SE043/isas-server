@@ -44,6 +44,9 @@ builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 // D1: đẩy job email mời (magic-link) vào RabbitMQ (cùng pattern InterviewService.ScoringJobPublisher)
 builder.Services.AddSingleton<IInvitationEmailPublisher, InvitationEmailPublisher>();
+// E4: nghe event SessionScored (RabbitMQ) → upsert campaign_rankings (ranking read-model, D10)
+builder.Services.AddScoped<IRankingEventHandler, RankingEventHandler>();
+builder.Services.AddHostedService<SessionScoredConsumer>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
