@@ -38,6 +38,11 @@ namespace Isas.PaymentService.Controllers
         [Authorize]
         public async Task<ActionResult<OrderResponse>> CreateOrderAsync(CreateOrderRequest request, CancellationToken ct = default)
         {
+            // A4 (AUTH-6) — HrMember không có quyền billing (mua pack = money-mutation) → 403.
+            // B2C (không có org_role) + OrgAdmin qua guard xuống logic bình thường.
+            if (User.IsHrMember())
+                return Forbid();
+
             var owner = GetOwner();
             if (owner is null)
                 return Forbid();

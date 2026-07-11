@@ -24,4 +24,9 @@
     <ProjectReference Include="..\Isas.PaymentService\Isas.PaymentService.csproj" />
   </ItemGroup>
 
+  <!-- A4: test controller billing (ControllerContext/DefaultHttpContext/ClaimsPrincipal) cần shared framework ASP.NET Core. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
 </Project>

@@ -68,6 +68,10 @@ namespace Isas.PaymentService.Controllers
         [Authorize]
         public async Task<ActionResult<OrderResponse>> PayInvoiceAsync(Guid id, CancellationToken ct = default)
         {
+            // A4 (AUTH-6) — HrMember không có quyền billing (tất toán hóa đơn = money-mutation) → 403.
+            if (User.IsHrMember())
+                return Forbid();
+
             var owner = GetOwner();
             if (owner is null)
                 return Forbid();
@@ -88,6 +92,10 @@ namespace Isas.PaymentService.Controllers
         public async Task<ActionResult<InvoiceResponse>> CloseBillingPeriodAsync(
             CloseBillingPeriodRequest request, CancellationToken ct = default)
         {
+            // A4 (AUTH-6) — HrMember không có quyền billing (chốt kỳ = money-mutation) → 403.
+            if (User.IsHrMember())
+                return Forbid();
+
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrWhiteSpace(userId))
                 return Forbid();
