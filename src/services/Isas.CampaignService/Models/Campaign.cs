@@ -3,7 +3,8 @@
     public class Campaign
     {
         public Guid Id { get; set; }
-        public Guid EmployerId { get; set; }
+        // BK4: chủ sở hữu = ORG (AUTH-8/D5) — billing/campaign gắn theo org, không cá nhân HR.
+        public Guid OrgId { get; set; }
         public string Title { get; set; }
         public string? Domain { get; set; }
         public CampaignStatus Status { get; set; }

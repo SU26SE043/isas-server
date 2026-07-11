@@ -84,7 +84,7 @@ public class CampaignCandidateScreeningTests
         var camp = SeedCampaign(tdb, owner);
 
         var svc = NewService(tdb.NewContext(), new[] { "CV một a@x.com", "CV hai b@x.com" });
-        var res = await svc.ScreenCandidatesAsync(owner, camp.Id, Files(Pdf("a.pdf"), Pdf("b.pdf")), default);
+        var res = await svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf("a.pdf"), Pdf("b.pdf")), default);
 
         Assert.Equal(2, res.Received);
         Assert.Equal(2, res.Filtered);
@@ -116,7 +116,7 @@ public class CampaignCandidateScreeningTests
         var camp = SeedCampaign(tdb, owner);
 
         var svc = NewService(tdb.NewContext(), new[] { "" });   // parser trả rỗng = parse fail
-        var res = await svc.ScreenCandidatesAsync(owner, camp.Id, Files(Pdf()), default);
+        var res = await svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf()), default);
 
         Assert.Equal(1, res.Rejected);
         Assert.Equal(0, res.Filtered);
@@ -139,7 +139,7 @@ public class CampaignCandidateScreeningTests
 
         // file1 không có SQL → Rejected; file2 có SQL → Filtered.
         var svc = NewService(tdb.NewContext(), new[] { "Java Python a@x.com", "SQL Java b@x.com" });
-        var res = await svc.ScreenCandidatesAsync(owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default);
+        var res = await svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default);
 
         Assert.Equal(1, res.Rejected);
         Assert.Equal(1, res.Filtered);
@@ -161,7 +161,7 @@ public class CampaignCandidateScreeningTests
         var camp = SeedCampaign(tdb, owner, keywordsAny: new() { "React", "Angular" });
 
         var svc = NewService(tdb.NewContext(), new[] { "Backend Java a@x.com", "React dev b@x.com" });
-        var res = await svc.ScreenCandidatesAsync(owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default);
+        var res = await svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default);
 
         Assert.Equal(1, res.Rejected);
         Assert.Equal(1, res.Filtered);
@@ -177,7 +177,7 @@ public class CampaignCandidateScreeningTests
 
         // cả 2 CV cùng email → file2 skip.
         var svc = NewService(tdb.NewContext(), new[] { "CV một dup@x.com", "CV hai dup@x.com" });
-        var res = await svc.ScreenCandidatesAsync(owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default);
+        var res = await svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default);
 
         Assert.Equal(2, res.Received);
         Assert.Equal(1, res.Filtered);
@@ -203,7 +203,7 @@ public class CampaignCandidateScreeningTests
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext(), new[] { "CV trùng old@x.com" });
-        var res = await svc.ScreenCandidatesAsync(owner, camp.Id, Files(Pdf()), default);
+        var res = await svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf()), default);
 
         Assert.Equal(1, res.Skipped);
         Assert.Equal(0, res.Filtered);
@@ -221,7 +221,7 @@ public class CampaignCandidateScreeningTests
 
         var svc = NewService(tdb.NewContext(), new[] { "a@x.com", "b@x.com" });
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.ScreenCandidatesAsync(owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default));
+            svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default));
 
         using var check = tdb.NewContext();
         Assert.Equal(0, await check.CampaignCandidates.CountAsync(c => c.CampaignId == camp.Id));
@@ -237,7 +237,7 @@ public class CampaignCandidateScreeningTests
 
         var svc = NewService(tdb.NewContext(), new[] { "a@x.com" });
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.ScreenCandidatesAsync(owner, camp.Id, Files(Pdf()), default));
+            svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf()), default));
     }
 
     // (f-bis) campaign không tồn tại / ngoài org → KeyNotFoundException (→404).
@@ -250,7 +250,7 @@ public class CampaignCandidateScreeningTests
 
         var svc = NewService(tdb.NewContext(), new[] { "a@x.com" });
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
-            svc.ScreenCandidatesAsync(Guid.NewGuid() /* người khác */, camp.Id, Files(Pdf()), default));
+            svc.ScreenCandidatesAsync(Guid.NewGuid() /* người khác */, Guid.NewGuid(), camp.Id, Files(Pdf()), default));
     }
 
     // (g) GET cv: có cv_file_url → trả stream nội dung.

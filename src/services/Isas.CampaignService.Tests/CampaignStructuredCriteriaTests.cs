@@ -63,7 +63,7 @@ public class CampaignStructuredCriteriaTests
         var owner = Guid.NewGuid();
         var svc = NewService(tdb.NewContext());
 
-        var res = await svc.CreateCampaignAsync(owner, NewCreateReq(ValidCriteria()), default);
+        var res = await svc.CreateCampaignAsync(owner, owner, NewCreateReq(ValidCriteria()), default);
 
         Assert.Equal(3, res.Criteria.Count);   // response phản ánh tiêu chí
 
@@ -93,7 +93,7 @@ public class CampaignStructuredCriteriaTests
             new() { Name = "B", Weight = 0.33m, MaxScore = 5 },
             new() { Name = "C", Weight = 0.33m, MaxScore = 5 },   // Σ=0.99 (biên trong) → chuẩn hoá
         };
-        var res = await svc.CreateCampaignAsync(owner, NewCreateReq(criteria), default);
+        var res = await svc.CreateCampaignAsync(owner, owner, NewCreateReq(criteria), default);
 
         using var check = tdb.NewContext();
         var rows = await check.CampaignCriteria.Where(c => c.CampaignId == res.Id).ToListAsync();
@@ -124,7 +124,7 @@ public class CampaignStructuredCriteriaTests
                 new() { Name = "New B", Weight = 0.5m, MaxScore = 5 },
             }
         };
-        await svc.UpdateCampaignAsync(owner, camp.Id, req, default);
+        await svc.UpdateCampaignAsync(owner, owner, camp.Id, req, default);
 
         using var check = tdb.NewContext();
         var rows = await check.CampaignCriteria
@@ -152,7 +152,7 @@ public class CampaignStructuredCriteriaTests
             new() { Name = "B", Weight = (decimal)w2, MaxScore = 5 },
         };
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.CreateCampaignAsync(Guid.NewGuid(), NewCreateReq(criteria), default));
+            svc.CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), NewCreateReq(criteria), default));
     }
 
     // (c) name trùng (case-insensitive) → ArgumentException.
@@ -167,7 +167,7 @@ public class CampaignStructuredCriteriaTests
             new() { Name = "giao tiếp", Weight = 0.5m, MaxScore = 5 },   // trùng (case-insensitive)
         };
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.CreateCampaignAsync(Guid.NewGuid(), NewCreateReq(criteria), default));
+            svc.CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), NewCreateReq(criteria), default));
     }
 
     // (c) name rỗng/whitespace → ArgumentException.
@@ -182,7 +182,7 @@ public class CampaignStructuredCriteriaTests
             new() { Name = "B",   Weight = 0.5m, MaxScore = 5 },
         };
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.CreateCampaignAsync(Guid.NewGuid(), NewCreateReq(criteria), default));
+            svc.CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), NewCreateReq(criteria), default));
     }
 
     // (c) weight ngoài (0,1] → ArgumentException.
@@ -200,7 +200,7 @@ public class CampaignStructuredCriteriaTests
             new() { Name = "B", Weight = 0.5m,              MaxScore = 5 },
         };
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.CreateCampaignAsync(Guid.NewGuid(), NewCreateReq(criteria), default));
+            svc.CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), NewCreateReq(criteria), default));
     }
 
     // (c) maxScore < 1 → ArgumentException.
@@ -215,7 +215,7 @@ public class CampaignStructuredCriteriaTests
             new() { Name = "B", Weight = 0.5m, MaxScore = 5 },
         };
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.CreateCampaignAsync(Guid.NewGuid(), NewCreateReq(criteria), default));
+            svc.CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), NewCreateReq(criteria), default));
     }
 
     // (d) sửa criteria khi campaign Active → InvalidOperationException (→409). KHÔNG đụng bộ cũ.
@@ -237,7 +237,7 @@ public class CampaignStructuredCriteriaTests
         };
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.UpdateCampaignAsync(owner, camp.Id, req, default));
+            svc.UpdateCampaignAsync(owner, owner, camp.Id, req, default));
 
         // bộ cũ giữ nguyên (không nửa vời)
         using var check = tdb.NewContext();
@@ -259,7 +259,7 @@ public class CampaignStructuredCriteriaTests
             SeedCriterion(camp.Id, 1, "HR-2", 0.3m, CriterionSource.HrEdited));
         tdb.Db.CampaignQuestions.Add(new CampaignQuestion
         {
-            Id = Guid.NewGuid(), CampaignId = camp.Id, EmployerId = owner,
+            Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = owner,
             QuestionText = "Q1", Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow
         });
         await tdb.Db.SaveChangesAsync();
@@ -267,7 +267,7 @@ public class CampaignStructuredCriteriaTests
         var suggester = new Mock<ICriteriaSuggester>();
         var svc = NewService(tdb.NewContext(), suggester.Object);
 
-        var res = await svc.PublishCampaignAsync(owner, camp.Id, default);
+        var res = await svc.PublishCampaignAsync(owner, owner, camp.Id, default);
         Assert.Equal("Active", res.Status);
 
         // đã có criteria[] → publish KHÔNG gọi AIService

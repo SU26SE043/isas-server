@@ -28,13 +28,17 @@ public class CampaignResultsExportTests
             Mock.Of<IParserService>(), Mock.Of<ICriteriaSuggester>(),
             Mock.Of<IInvitationEmailPublisher>());
 
-    // Controller với ClaimsPrincipal mang employer_id → User.FindFirstValue(NameIdentifier) đọc được.
-    private static CampaignController NewController(CampaignDbContext db, Guid employerId)
+    // BK4: Controller lấy owner từ claim `org_id` (ownership theo ORG). NameIdentifier = actor (audit).
+    private static CampaignController NewController(CampaignDbContext db, Guid orgId)
     {
         var controller = new CampaignController(
             NewService(db), Mock.Of<ICvScreeningService>(), Mock.Of<ILogger<CampaignController>>());
         var identity = new ClaimsIdentity(
-            new[] { new Claim(ClaimTypes.NameIdentifier, employerId.ToString()) }, "Test");
+            new[]
+            {
+                new Claim("org_id", orgId.ToString()),
+                new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),   // HR cá nhân (khác org)
+            }, "Test");
         controller.ControllerContext = new ControllerContext
         {
             HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) }
@@ -42,9 +46,9 @@ public class CampaignResultsExportTests
         return controller;
     }
 
-    private static Campaign SeedCampaign(CampaignDbContext db, Guid employerId, int? passScorePct = null)
+    private static Campaign SeedCampaign(CampaignDbContext db, Guid orgId, int? passScorePct = null)
     {
-        var c = CampaignTestDb.NewCampaign(employerId, CampaignStatus.Active);
+        var c = CampaignTestDb.NewCampaign(orgId, CampaignStatus.Active);
         c.PassScorePct = passScorePct;
         db.Campaigns.Add(c);
         db.SaveChanges();
@@ -79,8 +83,8 @@ public class CampaignResultsExportTests
     public async Task Export_csv_content_type_va_noi_dung_khop_E5()
     {
         using var tdb = new CampaignTestDb();
-        var employerId = Guid.NewGuid();
-        var campaign = SeedCampaign(tdb.Db, employerId, passScorePct: 80);
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId, passScorePct: 80);
 
         var t0 = DateTime.UtcNow;
         SeedRanking(tdb.Db, campaign.Id, 90.00m, t0);                 // rank 1 → Pass
@@ -90,9 +94,9 @@ public class CampaignResultsExportTests
 
         // Nguồn sự thật: E5 (tính độc lập) để so từng dòng — export PHẢI khớp y hệt.
         var expected = await NewService(tdb.NewContext())
-            .GetCampaignResultsAsync(employerId, campaign.Id, default);
+            .GetCampaignResultsAsync(orgId, campaign.Id, default);
 
-        var result = await NewController(tdb.NewContext(), employerId)
+        var result = await NewController(tdb.NewContext(), orgId)
             .ExportCampaignResults(campaign.Id, "csv", default);
 
         var file = Assert.IsType<FileContentResult>(result);
@@ -127,11 +131,11 @@ public class CampaignResultsExportTests
     public async Task Export_thieu_format_mac_dinh_csv()
     {
         using var tdb = new CampaignTestDb();
-        var employerId = Guid.NewGuid();
-        var campaign = SeedCampaign(tdb.Db, employerId);
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId);
         SeedRanking(tdb.Db, campaign.Id, 88.00m, DateTime.UtcNow);
 
-        var result = await NewController(tdb.NewContext(), employerId)
+        var result = await NewController(tdb.NewContext(), orgId)
             .ExportCampaignResults(campaign.Id, null, default);
 
         var file = Assert.IsType<FileContentResult>(result);
@@ -143,11 +147,11 @@ public class CampaignResultsExportTests
     public async Task Export_nguong_null_thi_cot_result_rong()
     {
         using var tdb = new CampaignTestDb();
-        var employerId = Guid.NewGuid();
-        var campaign = SeedCampaign(tdb.Db, employerId, passScorePct: null);
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId, passScorePct: null);
         SeedRanking(tdb.Db, campaign.Id, 95.00m, DateTime.UtcNow);
 
-        var result = await NewController(tdb.NewContext(), employerId)
+        var result = await NewController(tdb.NewContext(), orgId)
             .ExportCampaignResults(campaign.Id, "csv", default);
 
         var file = Assert.IsType<FileContentResult>(result);
@@ -179,11 +183,11 @@ public class CampaignResultsExportTests
     public async Task Export_format_khong_ho_tro_tra_400(string format)
     {
         using var tdb = new CampaignTestDb();
-        var employerId = Guid.NewGuid();
-        var campaign = SeedCampaign(tdb.Db, employerId);
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId);
         SeedRanking(tdb.Db, campaign.Id, 88.00m, DateTime.UtcNow);
 
-        var result = await NewController(tdb.NewContext(), employerId)
+        var result = await NewController(tdb.NewContext(), orgId)
             .ExportCampaignResults(campaign.Id, format, default);
 
         Assert.IsType<BadRequestObjectResult>(result);

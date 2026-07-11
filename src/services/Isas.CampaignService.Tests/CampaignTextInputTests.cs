@@ -64,7 +64,7 @@ public class CampaignTextInputTests
         var owner = Guid.NewGuid();
         var svc = NewService(tdb.NewContext());
 
-        var res = await svc.CreateCampaignAsync(owner,
+        var res = await svc.CreateCampaignAsync(owner, owner,
             NewCreateReq(jdText: "  JD nhập tay  ", criteriaText: "Tiêu chí nhập tay"), default);
 
         Assert.Equal("JD nhập tay", res.JDText);              // trim
@@ -91,7 +91,7 @@ public class CampaignTextInputTests
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
-        var res = await svc.UpdateCampaignAsync(owner, camp.Id,
+        var res = await svc.UpdateCampaignAsync(owner, owner, camp.Id,
             new UpdateCampaignRequest { Title = "Tuyển BE", JdText = "JD text mới" }, default);
 
         Assert.Equal("JD text mới", res.JDText);
@@ -162,7 +162,7 @@ public class CampaignTextInputTests
         tdb.Db.Campaigns.Add(camp);
         tdb.Db.CampaignQuestions.Add(new CampaignQuestion
         {
-            Id = Guid.NewGuid(), CampaignId = camp.Id, EmployerId = owner,
+            Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = owner,
             QuestionText = "Q1", Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow
         });
         await tdb.Db.SaveChangesAsync();
@@ -173,7 +173,7 @@ public class CampaignTextInputTests
             .ReturnsAsync(new List<SuggestedCriterion> { new("C1", "d", 0.5m, 5), new("C2", "d", 0.5m, 5) });
 
         var svc = NewService(tdb.NewContext(), suggester.Object);
-        var res = await svc.PublishCampaignAsync(owner, camp.Id, default);
+        var res = await svc.PublishCampaignAsync(owner, owner, camp.Id, default);
         Assert.Equal("Active", res.Status);
 
         // AI nhận đúng *_text trực tiếp (bất kể nguồn text/PDF)

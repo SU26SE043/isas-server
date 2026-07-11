@@ -31,7 +31,7 @@ public class CampaignInvitationTests
         var publisher = new Mock<IInvitationEmailPublisher>();
         var svc = NewService(tdb.NewContext(), publisher.Object);
 
-        var result = await svc.CreateInvitationsAsync(owner, camp.Id,
+        var result = await svc.CreateInvitationsAsync(owner, owner, camp.Id,
             new List<string> { "a@example.com", "b@example.com" }, default);
 
         Assert.Equal(2, result.Created.Count);
@@ -61,7 +61,7 @@ public class CampaignInvitationTests
 
         var svc = NewService(tdb.NewContext());
 
-        var result = await svc.CreateInvitationsAsync(owner, camp.Id,
+        var result = await svc.CreateInvitationsAsync(owner, owner, camp.Id,
             new List<string> { "good@example.com", "not-an-email", "" }, default);
 
         Assert.Single(result.Created);
@@ -94,7 +94,7 @@ public class CampaignInvitationTests
 
         var svc = NewService(tdb.NewContext());
 
-        var result = await svc.CreateInvitationsAsync(owner, camp.Id,
+        var result = await svc.CreateInvitationsAsync(owner, owner, camp.Id,
             new List<string> { "dup@example.com", "DUP@example.com", "already@example.com" }, default);
 
         // chỉ "dup@example.com" (lần đầu) được tạo; "DUP@..." (trùng trong request) và
@@ -131,7 +131,7 @@ public class CampaignInvitationTests
 
         // đã có 1 invitation, cap = 2 → mời thêm 2 người nữa (tổng 3) vượt cap
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.CreateInvitationsAsync(owner, camp.Id,
+            svc.CreateInvitationsAsync(owner, owner, camp.Id,
                 new List<string> { "new1@example.com", "new2@example.com" }, default));
 
         // không tạo dở dang: vẫn chỉ có 1 invitation cũ
@@ -153,6 +153,6 @@ public class CampaignInvitationTests
         var svc = NewService(tdb.NewContext());
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.CreateInvitationsAsync(owner, camp.Id, new List<string> { "a@example.com" }, default));
+            svc.CreateInvitationsAsync(owner, owner, camp.Id, new List<string> { "a@example.com" }, default));
     }
 }

@@ -115,7 +115,7 @@ namespace Isas.CampaignService.DTOs
     public class CampaignResponse
     {
         public Guid Id { get; set; }
-        public Guid EmployerId { get; set; }
+        public Guid OrgId { get; set; }   // BK4: owner = ORG (AUTH-8)
         public string Title { get; set; }
         public string? Domain { get; set; }
         public string Status { get; set; }
@@ -135,7 +135,7 @@ namespace Isas.CampaignService.DTOs
         public static CampaignResponse FromEntity(Campaign c) => new CampaignResponse
         {
             Id = c.Id,
-            EmployerId = c.EmployerId,
+            OrgId = c.OrgId,
             Title = c.Title,
             Domain = c.Domain,
             Status = c.Status.ToString(),

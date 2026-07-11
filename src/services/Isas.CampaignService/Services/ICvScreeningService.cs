@@ -16,7 +16,7 @@ namespace Isas.CampaignService.Services
     public interface ICvScreeningService
     {
         // Mỗi candidate Filtered → publish cv_screening_queue → Analyzing (+ last_screening_published_at).
-        Task<int> PublishScreeningJobsAsync(Guid employerId, Guid campaignId, CancellationToken ct);
+        Task<int> PublishScreeningJobsAsync(Guid orgId, Guid campaignId, CancellationToken ct);
 
         // Callback cv-result: ghi candidate_criterion_scores + overall_match_score → Analyzed (idempotent).
         Task<CvResultOutcome> SaveCvResultAsync(Guid candidateId, CvResultCallbackRequest req, CancellationToken ct);
@@ -26,12 +26,12 @@ namespace Isas.CampaignService.Services
 
         // Shortlist: mặc định sort=score DESC (overall_match_score). Lọc status/minScore/skill. Ngoài org → 404.
         Task<List<CandidateListItem>> GetCandidatesAsync(
-            Guid employerId, Guid campaignId, string? status, int? minScore, string? skill, string? sort, CancellationToken ct);
+            Guid orgId, Guid campaignId, string? status, int? minScore, string? skill, string? sort, CancellationToken ct);
 
         // Chi tiết 1 ứng viên + điểm từng tiêu chí. Ngoài org / không tồn tại → 404.
-        Task<CandidateDetailResponse> GetCandidateAsync(Guid employerId, Guid campaignId, Guid candidateId, CancellationToken ct);
+        Task<CandidateDetailResponse> GetCandidateAsync(Guid orgId, Guid campaignId, Guid candidateId, CancellationToken ct);
 
-        // PATCH email/fullName (parse thiếu) → audit_logs. Đã Invited → 409. Trùng email → 400.
-        Task PatchCandidateAsync(Guid employerId, Guid campaignId, Guid candidateId, PatchCandidateRequest req, CancellationToken ct);
+        // PATCH email/fullName (parse thiếu) → audit_logs (actorUserId = cá nhân HR). Đã Invited → 409. Trùng email → 400.
+        Task PatchCandidateAsync(Guid orgId, Guid actorUserId, Guid campaignId, Guid candidateId, PatchCandidateRequest req, CancellationToken ct);
     }
 }
