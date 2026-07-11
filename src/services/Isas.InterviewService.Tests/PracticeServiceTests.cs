@@ -11,18 +11,26 @@ namespace Isas.InterviewService.Tests;
 public class PracticeServiceTests
 {
     private static PracticeService Build(TestDb t, Mock<IAiServiceQuestionGenerator> gen)
-        => Build(t, gen, out _, out _);
+        => Build(t, gen, out _, out _, out _);
 
     private static PracticeService Build(
         TestDb t, Mock<IAiServiceQuestionGenerator> gen, out Mock<ISessionScoringNotifier> scoringNotifier)
-        => Build(t, gen, out scoringNotifier, out _);
+        => Build(t, gen, out scoringNotifier, out _, out _);
 
-    // BC2: mặc định reserve (owner=User) THÀNH CÔNG → luồng tạo session chạy như cũ.
-    // Test 402/verify lấy `reservation` ra để setup/verify riêng.
     private static PracticeService Build(
         TestDb t, Mock<IAiServiceQuestionGenerator> gen,
         out Mock<ISessionScoringNotifier> scoringNotifier,
         out Mock<ICreditReservationClient> reservation)
+        => Build(t, gen, out scoringNotifier, out reservation, out _);
+
+    // BC2: mặc định reserve (owner=User) THÀNH CÔNG → luồng tạo session chạy như cũ.
+    // Test 402/verify lấy `reservation` ra để setup/verify riêng.
+    // BK12: `eventPublisher` để verify phát SessionAbandoned(generation_failed) khi session Failed.
+    private static PracticeService Build(
+        TestDb t, Mock<IAiServiceQuestionGenerator> gen,
+        out Mock<ISessionScoringNotifier> scoringNotifier,
+        out Mock<ICreditReservationClient> reservation,
+        out Mock<ISessionEventPublisher> eventPublisher)
     {
         scoringNotifier = new Mock<ISessionScoringNotifier>();
         scoringNotifier
@@ -34,9 +42,11 @@ public class PracticeServiceTests
             .Setup(r => r.ReserveAsync("User", It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
 
+        eventPublisher = new Mock<ISessionEventPublisher>();
+
         return new PracticeService(
             t.Db, new Mock<IStorageService>().Object, gen.Object, scoringNotifier.Object,
-            reservation.Object, NullLogger<PracticeService>.Instance);
+            reservation.Object, eventPublisher.Object, NullLogger<PracticeService>.Instance);
     }
 
     [Fact]
@@ -155,7 +165,7 @@ public class PracticeServiceTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion>());
 
-        var svc = Build(t, gen);
+        var svc = Build(t, gen, out _, out _, out var publisher);
         var req = new CreatePracticeSessionRequest(null, null, JobCategory.FE);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -164,6 +174,91 @@ public class PracticeServiceTests
         // Session phải được đánh dấu Failed (không để treo GeneratingQuestions).
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.CandidateId == candidate);
         Assert.Equal(SessionStatus.Failed, s.Status);
+
+        // BK12: AIService trả rỗng cũng là "sinh câu hỏi lỗi" sau reserve → phát abandoned để release credit.
+        publisher.Verify(p => p.PublishSessionAbandonedAsync(
+            It.Is<SessionAbandonedEvent>(e => e.SessionId == s.Id && e.Reason == "generation_failed"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // BK12 (a): B2C reserve → AI sinh câu hỏi NÉM lỗi → Failed → phát SessionAbandoned đúng sessionId
+    // + reason=generation_failed (E7 nghe để release credit ví User; nếu không có → orphan credit BC2).
+    [Fact]
+    public async Task Create_GeneratorThrows_SessionFailed_PublishesAbandonedToReleaseCredit()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("Gemini down"));
+
+        var svc = Build(t, gen, out _, out _, out var publisher);
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.CreateSessionAsync(candidate, req));
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.CandidateId == candidate);
+        Assert.Equal(SessionStatus.Failed, s.Status);
+
+        // B2C: campaign_id null; event mang đúng session/candidate + reason chuẩn.
+        publisher.Verify(p => p.PublishSessionAbandonedAsync(
+            It.Is<SessionAbandonedEvent>(e =>
+                e.SessionId == s.Id && e.CandidateId == candidate
+                && e.CampaignId == null && e.Reason == "generation_failed"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // BK12 (b): phát event là BEST-EFFORT — publisher ném lỗi KHÔNG được chặn luồng: session vẫn
+    // Failed trong DB và vẫn ném InvalidOperationException gốc (không nuốt mất lỗi sinh câu hỏi).
+    [Fact]
+    public async Task Create_GeneratorFails_PublishThrows_StillFailedAndThrows()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("Gemini down"));
+
+        var svc = Build(t, gen, out _, out _, out var publisher);
+        publisher
+            .Setup(p => p.PublishSessionAbandonedAsync(
+                It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("broker down"));
+
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.FE);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.CreateSessionAsync(candidate, req));
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.CandidateId == candidate);
+        Assert.Equal(SessionStatus.Failed, s.Status);
+    }
+
+    // BK12 (c): đường THÀNH CÔNG (session Ready, không Failed) KHÔNG phát SessionAbandoned.
+    [Fact]
+    public async Task Create_HappyPath_DoesNotPublishAbandoned()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
+
+        var svc = Build(t, gen, out _, out _, out var publisher);
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
+
+        var res = await svc.CreateSessionAsync(candidate, req);
+
+        Assert.Equal(nameof(SessionStatus.Ready), res.Status);
+        publisher.Verify(p => p.PublishSessionAbandonedAsync(
+            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
