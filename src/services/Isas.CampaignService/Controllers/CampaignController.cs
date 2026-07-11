@@ -309,5 +309,25 @@ namespace Isas.CampaignService.Controllers
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (Exception ex) { return StatusCode(500, $"Failed to get results: {ex.Message}"); }
         }
+
+        // E6: xuất bảng kết quả (E5) ra file. `?format=csv` (mặc định khi thiếu); `pdf`/khác → 400.
+        // Ownership giống E5 (lọc theo employer_id) → ngoài org = 404. Bám pattern `return File(...)`.
+        [HttpGet("{id:guid}/results/export")]
+        [Authorize(Roles = "Employer")]
+        public async Task<IActionResult> ExportCampaignResults(Guid id, [FromQuery] string? format, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            try
+            {
+                var export = await _campaignService.ExportCampaignResultsAsync(Guid.Parse(employerId), id, format, ct);
+                return File(export.Content, export.ContentType, export.FileName);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }        // ngoài org / không tồn tại → 404
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }         // format không hỗ trợ → 400
+            catch (Exception ex) { return StatusCode(500, $"Failed to export results: {ex.Message}"); }
+        }
     }
 }

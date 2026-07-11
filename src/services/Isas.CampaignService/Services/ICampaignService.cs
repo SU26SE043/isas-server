@@ -22,5 +22,8 @@ namespace Isas.CampaignService.Services
 
         // E5: bảng kết quả + xếp hạng + pass/fail (đọc read-model campaign_rankings — E4)
         Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid employerId, Guid id, CancellationToken ct);
+
+        // E6: xuất bảng kết quả (E5) ra file — format=csv (pdf 🔜). Ngoài org → KeyNotFoundException (404).
+        Task<CampaignResultExport> ExportCampaignResultsAsync(Guid employerId, Guid id, string? format, CancellationToken ct);
     }
 }
