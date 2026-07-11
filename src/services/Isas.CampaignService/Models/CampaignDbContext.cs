@@ -74,10 +74,15 @@ namespace Isas.CampaignService.Models
                 e.ToTable("campaign_criteria");
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
-                e.Property(x => x.Name).IsRequired();
+                e.Property(x => x.Name).IsRequired().HasMaxLength(255);
                 e.Property(x => x.Weight).HasColumnType("numeric(5,4)");
                 e.Property(x => x.Source).HasConversion<string>().HasMaxLength(20);
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");   // C12
+
+                // C12: tiêu chí structured HR khai thẳng — chống trùng + giữ thứ tự hiển thị.
+                e.HasIndex(x => new { x.CampaignId, x.OrderNo }).IsUnique();
+                e.HasIndex(x => new { x.CampaignId, x.Name }).IsUnique();
 
                 e.HasOne(x => x.Campaign)
                  .WithMany(x => x.Criteria)

@@ -154,6 +154,8 @@ namespace Isas.CampaignService.Controllers
                 return Ok(updatedCampaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }         // C12: criteria không hợp lệ → 400
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // C12: sửa criteria khi != Draft → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to update campaign: {ex.Message}"); }
         }
 

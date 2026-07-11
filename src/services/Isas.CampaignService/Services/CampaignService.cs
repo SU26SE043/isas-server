@@ -74,6 +74,14 @@ namespace Isas.CampaignService.Services
                 })
                 .ToList();
 
+            // ── 3b. C12: tiêu chí structured HR khai thẳng (nếu có) → validate + build (HrEdited).
+            // Campaign mới luôn Draft nên set trực tiếp; input hỏng → ArgumentException (→400).
+            if (request.Criteria is not null)
+            {
+                campaign.Criteria = BuildStructuredCriteria(campaign.Id, request.Criteria);
+                AddAudit(employerId, AuditAction.EditCriteria, campaign.Id, $"Khai {campaign.Criteria.Count} tiêu chí (HrEdited)");
+            }
+
             // ── 4. Persist campaign + audit (C10) ───────────────
             _db.Campaigns.Add(campaign);
             AddAudit(employerId, AuditAction.CreateCampaign, campaign.Id, $"Tạo campaign '{campaign.Title}'");
@@ -144,6 +152,7 @@ namespace Isas.CampaignService.Services
         {
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
+                .Include(c => c.Criteria)   // C12: trả tiêu chí structured để HR xem/duyệt
                 .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -166,6 +175,7 @@ namespace Isas.CampaignService.Services
             // ── 1. Fetch & verify ownership ─────────────────────
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
+                .Include(c => c.Criteria)
                 .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -198,6 +208,18 @@ namespace Isas.CampaignService.Services
                 campaign.CriteriaFileUrl = null;
             }
 
+            // C12: ghi đè tiêu chí structured. Chỉ khi Draft (Active → 409);
+            // validate → 400 (ArgumentException) TRƯỚC khi đụng DB để lỗi không để lại nửa vời.
+            List<CampaignCriterion>? rebuiltCriteria = null;
+            if (request.Criteria is not null)
+            {
+                if (campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException(
+                        $"Cannot edit criteria when campaign is {campaign.Status}. Only Draft is editable.");
+
+                rebuiltCriteria = BuildStructuredCriteria(campaign.Id, request.Criteria);
+            }
+
             if (request.StartsAt.HasValue)
                 campaign.StartsAt = request.StartsAt;
 
@@ -206,7 +228,23 @@ namespace Isas.CampaignService.Services
 
             // ── 3. Persist ───────────────────────────────────────
             campaign.UpdatedAt = DateTime.UtcNow;
-            await _db.SaveChangesAsync(ct);
+
+            if (rebuiltCriteria is null)
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            else
+            {
+                // Replace-all ATOMIC (1 SaveChanges = 1 transaction): XOÁ bộ cũ + INSERT bộ mới qua DbSet.
+                // KHÔNG đụng navigation (nav.Clear()/Add trên quan hệ required làm change-tracker sinh
+                // UPDATE "ma" → DbUpdateConcurrencyException 0 rows). EF tự xếp DELETE trước INSERT theo
+                // UNIQUE(campaign_id, order_no|name) nên bộ mới trùng khoá bộ cũ vẫn an toàn.
+                _db.CampaignCriteria.RemoveRange(campaign.Criteria);
+                _db.CampaignCriteria.AddRange(rebuiltCriteria);
+                AddAudit(employerId, AuditAction.EditCriteria, campaign.Id, $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited)");
+                await _db.SaveChangesAsync(ct);
+                campaign.Criteria = rebuiltCriteria;                 // đồng bộ nav cho response (bộ cũ đã xoá)
+            }
 
             return CampaignResponse.FromEntity(campaign);
         }
@@ -474,6 +512,59 @@ namespace Isas.CampaignService.Services
                 .Replace("=", "");
         }
 
+        // C12: validate + build tiêu chí structured HR khai thẳng (source=HrEdited).
+        // Ràng buộc (hỏng → ArgumentException → 400): ≥1 tiêu chí · name non-empty + không trùng (case-insensitive)
+        // · 0 < weight ≤ 1 · maxScore ≥ 1 · Σweight ∈ [0.99, 1.01]. Trong khoảng → chuẩn hoá Σ→1.
+        // order_no đánh theo thứ tự gửi lên (0-based).
+        private static List<CampaignCriterion> BuildStructuredCriteria(Guid campaignId, List<CriterionItem> items)
+        {
+            if (items is null || items.Count == 0)
+                throw new ArgumentException("criteria[] phải có ≥1 tiêu chí.");
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var cleaned = new List<(string Name, string? Description, decimal Weight, int MaxScore)>();
+            foreach (var item in items)
+            {
+                var name = item.Name?.Trim() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(name))
+                    throw new ArgumentException("Tên tiêu chí không được rỗng.");
+                if (!seen.Add(name))
+                    throw new ArgumentException($"Tên tiêu chí bị trùng: '{name}'.");
+                if (item.Weight <= 0m || item.Weight > 1m)
+                    throw new ArgumentException($"weight của '{name}' phải trong khoảng (0, 1] (hiện: {item.Weight}).");
+                if (item.MaxScore < 1)
+                    throw new ArgumentException($"maxScore của '{name}' phải ≥ 1 (hiện: {item.MaxScore}).");
+
+                cleaned.Add((name,
+                    string.IsNullOrWhiteSpace(item.Description) ? null : item.Description!.Trim(),
+                    item.Weight, item.MaxScore));
+            }
+
+            var total = cleaned.Sum(c => c.Weight);
+            if (total < 0.99m || total > 1.01m)
+                throw new ArgumentException(
+                    $"Σweight phải trong khoảng [0.99, 1.01] để chuẩn hoá về 1 (hiện: {total}).");
+
+            var now = DateTime.UtcNow;
+            var criteria = cleaned.Select((c, i) => new CampaignCriterion
+            {
+                Id = Guid.NewGuid(),
+                CampaignId = campaignId,
+                OrderNo = i,                          // 0-based theo thứ tự gửi lên
+                Name = c.Name,
+                Description = c.Description,
+                Weight = Math.Round(c.Weight / total, 4),   // chuẩn hoá Σ→1
+                MaxScore = c.MaxScore,
+                Source = CriterionSource.HrEdited,
+                CreatedAt = now,
+                UpdatedAt = now
+            }).ToList();
+
+            // Sửa sai số làm tròn → Σ = 1 tuyệt đối (dồn vào tiêu chí đầu, như nhánh AI).
+            criteria[0].Weight += 1m - criteria.Sum(c => c.Weight);
+            return criteria;
+        }
+
         // C8: gọi AIService đề xuất tiêu chí; lỗi/rỗng → fallback default. Chuẩn hoá Σweight = 1.
         private async Task<List<CampaignCriterion>> BuildCriteriaAsync(Campaign campaign, CancellationToken ct)
         {
@@ -485,28 +576,35 @@ namespace Isas.CampaignService.Services
 
             var total = suggested.Sum(s => s.Weight);
             if (total <= 0) total = 1m;
-            var criteria = suggested.Select(s => new CampaignCriterion
+            var now = DateTime.UtcNow;
+            var criteria = suggested.Select((s, i) => new CampaignCriterion
             {
                 Id = Guid.NewGuid(),
                 CampaignId = campaign.Id,
+                OrderNo = i,
                 Name = s.Name,
                 Description = s.Description,
                 Weight = Math.Round(s.Weight / total, 4),
                 MaxScore = s.MaxScore <= 0 ? 5 : s.MaxScore,
                 Source = CriterionSource.AiSuggested,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = now,
+                UpdatedAt = now
             }).ToList();
             criteria[0].Weight += 1m - criteria.Sum(c => c.Weight);   // sửa sai số làm tròn → Σ=1
             return criteria;
         }
 
-        // Fallback khi AIService không khả dụng — Σweight = 1 (0.4+0.3+0.3). Id/CreatedAt set sẵn.
-        private static List<CampaignCriterion> BuildDefaultCriteria(Guid campaignId) => new()
+        // Fallback khi AIService không khả dụng — Σweight = 1 (0.4+0.3+0.3). Id/CreatedAt/UpdatedAt/OrderNo set sẵn.
+        private static List<CampaignCriterion> BuildDefaultCriteria(Guid campaignId)
         {
-            new() { Id = Guid.NewGuid(), CampaignId = campaignId, Name = "Kiến thức chuyên môn", Weight = 0.4m, MaxScore = 5, Source = CriterionSource.AiSuggested, CreatedAt = DateTime.UtcNow },
-            new() { Id = Guid.NewGuid(), CampaignId = campaignId, Name = "Giao tiếp / trình bày", Weight = 0.3m, MaxScore = 5, Source = CriterionSource.AiSuggested, CreatedAt = DateTime.UtcNow },
-            new() { Id = Guid.NewGuid(), CampaignId = campaignId, Name = "Giải quyết vấn đề",     Weight = 0.3m, MaxScore = 5, Source = CriterionSource.AiSuggested, CreatedAt = DateTime.UtcNow },
-        };
+            var now = DateTime.UtcNow;
+            return new()
+            {
+                new() { Id = Guid.NewGuid(), CampaignId = campaignId, OrderNo = 0, Name = "Kiến thức chuyên môn", Weight = 0.4m, MaxScore = 5, Source = CriterionSource.AiSuggested, CreatedAt = now, UpdatedAt = now },
+                new() { Id = Guid.NewGuid(), CampaignId = campaignId, OrderNo = 1, Name = "Giao tiếp / trình bày", Weight = 0.3m, MaxScore = 5, Source = CriterionSource.AiSuggested, CreatedAt = now, UpdatedAt = now },
+                new() { Id = Guid.NewGuid(), CampaignId = campaignId, OrderNo = 2, Name = "Giải quyết vấn đề",     Weight = 0.3m, MaxScore = 5, Source = CriterionSource.AiSuggested, CreatedAt = now, UpdatedAt = now },
+            };
+        }
 
         // C10: ghi vết thao tác. Id/At set sẵn (chạy được trên SQLite test + Postgres).
         private void AddAudit(Guid actorId, AuditAction action, Guid entityId, string? summary)

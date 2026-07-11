@@ -10,6 +10,16 @@ namespace Isas.CampaignService.DTOs
         public bool IsRequired { get; set; } = true;
     }
 
+    // C12: tiêu chí chấm CÓ CẤU TRÚC — HR khai thẳng (name/weight/maxScore/description).
+    // Ưu tiên cao nhất (có thì publish bỏ qua AI). Σweight ∈ [0.99,1.01] → chuẩn hoá Σ→1.
+    public class CriterionItem
+    {
+        public string Name { get; set; } = null!;
+        public string? Description { get; set; }
+        public decimal Weight { get; set; }   // 0 < weight ≤ 1
+        public int MaxScore { get; set; }      // ≥ 1
+    }
+
     public class CreateCampaignRequest
     {
         [Required]
@@ -28,6 +38,9 @@ namespace Isas.CampaignService.DTOs
         // C11: JD & Criteria nhập TEXT trực tiếp (không bắt buộc PDF). Set *_text, *_file_url = null.
         public string? JdText { get; set; }
         public string? CriteriaText { get; set; }
+
+        // C12: tiêu chí structured HR khai thẳng — ưu tiên cao nhất (publish bỏ qua AI). Chỉ set khi Draft.
+        public List<CriterionItem>? Criteria { get; set; }
 
         [Required]
         public DateTime? StartsAt { get; set; }
@@ -60,6 +73,9 @@ namespace Isas.CampaignService.DTOs
         public string? JdText { get; set; }
         public string? CriteriaText { get; set; }
 
+        // C12: ghi đè tiêu chí structured (replace-all atomic) — chỉ khi Draft, ngược lại 409.
+        public List<CriterionItem>? Criteria { get; set; }
+
         public DateTime? StartsAt { get; set; }
 
         public DateTime? ExpiresAt { get; set; }
@@ -78,6 +94,18 @@ namespace Isas.CampaignService.DTOs
         public bool IsRequired { get; set; }
     }
 
+    // C12: tiêu chí có cấu trúc trả về (đọc/duyệt). order_no + source (HrEdited/AiSuggested).
+    public class CampaignCriterionResponse
+    {
+        public Guid Id { get; set; }
+        public int OrderNo { get; set; }
+        public string Name { get; set; } = null!;
+        public string? Description { get; set; }
+        public decimal Weight { get; set; }
+        public int MaxScore { get; set; }
+        public string Source { get; set; } = null!;
+    }
+
     public class CampaignResponse
     {
         public Guid Id { get; set; }
@@ -91,6 +119,7 @@ namespace Isas.CampaignService.DTOs
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public List<CampaignQuestionResponse> Questions { get; set; }
+        public List<CampaignCriterionResponse> Criteria { get; set; }   // C12: tiêu chí structured
         public string? JDText { get; set; }
         public string? CriteriaText { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -115,6 +144,18 @@ namespace Isas.CampaignService.DTOs
                 Source = q.Source.ToString(),
                 IsRequired = q.IsRequired
             }).ToList(),
+            Criteria = c.Criteria
+                .OrderBy(cr => cr.OrderNo)
+                .Select(cr => new CampaignCriterionResponse
+                {
+                    Id = cr.Id,
+                    OrderNo = cr.OrderNo,
+                    Name = cr.Name,
+                    Description = cr.Description,
+                    Weight = cr.Weight,
+                    MaxScore = cr.MaxScore,
+                    Source = cr.Source.ToString()
+                }).ToList(),
             JDText = c.JDText,
             CriteriaText = c.CriteriaText,
             CreatedAt = c.CreatedAt,

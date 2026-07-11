@@ -8,12 +8,14 @@ namespace Isas.CampaignService.Models
     {
         public Guid Id { get; set; }
         public Guid CampaignId { get; set; }
+        public int OrderNo { get; set; }           // C12: thứ tự hiển thị (HR sắp); UNIQUE (campaign_id, order_no)
         public string Name { get; set; } = null!;
         public string? Description { get; set; }
         public decimal Weight { get; set; }        // numeric(5,4) — Σ/campaign = 1
         public int MaxScore { get; set; }
         public CriterionSource Source { get; set; }
         public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }     // C12
 
         // Navigation
         public Campaign Campaign { get; set; } = null!;
