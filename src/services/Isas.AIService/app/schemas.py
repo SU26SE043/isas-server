@@ -49,3 +49,63 @@ class AnalyzeCvResponse(BaseModel):
     weaknesses: list[str]
     suggestions: list[str]
     jdMatch: JdMatch | None = None   # chỉ có khi request có jdText
+
+
+# ── Roadmap ôn tập cá nhân hoá B2C (BC13, D20) — 3 endpoint sync, stateless ─
+class WeaknessScore(BaseModel):
+    criterionName: str
+    percentage: float
+
+
+class GenerateRoadmapRequest(BaseModel):
+    jobCategory: str
+    level: str                                     # Fresher | Junior | Middle | Senior
+    weaknesses: list[WeaknessScore] | None = None  # từ session_criterion_scores; rỗng → roadmap chuẩn theo level
+    cvText: str | None = None
+
+
+class RoadmapLesson(BaseModel):
+    title: str
+
+
+class RoadmapMilestone(BaseModel):
+    title: str
+    focusCriteria: list[str]
+    lessons: list[RoadmapLesson]
+
+
+class GenerateRoadmapResponse(BaseModel):
+    milestones: list[RoadmapMilestone]
+
+
+class GenerateLessonTheoryRequest(BaseModel):
+    jobCategory: str
+    level: str
+    lessonTitle: str
+    focusCriteria: list[str]
+    weaknesses: list[str] | None = None
+
+
+class GenerateLessonTheoryResponse(BaseModel):
+    theoryMarkdown: str          # tiếng Việt, có ví dụ
+
+
+class CriterionProgress(BaseModel):
+    criterionName: str
+    startPct: float | None = None
+    endPct: float
+    levelThreshold: float
+    passed: bool
+
+
+class SummarizeRoadmapRequest(BaseModel):
+    jobCategory: str
+    level: str
+    criteriaProgress: list[CriterionProgress]
+
+
+class SummarizeRoadmapResponse(BaseModel):
+    strengths: list[str]
+    weaknesses: list[str]
+    improvements: list[str]
+    overallComment: str

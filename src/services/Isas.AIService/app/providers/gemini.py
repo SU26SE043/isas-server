@@ -6,6 +6,7 @@ from app.config import settings
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt,
+    build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
 )
 from app.providers.base import QuestionProvider
 
@@ -271,3 +272,177 @@ class GeminiProvider(QuestionProvider):
             raise ValueError(f"LLM chấm thiếu tiêu chí: {missing}")
 
         return results
+
+    async def generate_roadmap(self, job_category: str, level: str,
+                               weaknesses: list[dict] | None,
+                               cv_text: str | None) -> list[dict]:
+        """
+        BC13/D20 — sinh cấu trúc roadmap ôn tập (sync, stateless, KHÔNG ghi DB).
+
+        Trả về: list dict milestone
+          [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
+        """
+        prompt = build_roadmap_prompt(job_category, level, weaknesses, cv_text)
+
+        response = await self._client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.4,  # cấu trúc kế hoạch — nhất quán hơn sinh câu hỏi tự do
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "milestones": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "focusCriteria": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                    "lessons": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "title": {"type": "string"},
+                                            },
+                                            "required": ["title"],
+                                        },
+                                    },
+                                },
+                                "required": ["title", "focusCriteria", "lessons"],
+                            },
+                        }
+                    },
+                    "required": ["milestones"],
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM sinh roadmap trả về JSON không hợp lệ: {text[:200]}")
+
+        raw = data.get("milestones", [])
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("LLM không trả về milestone hợp lệ.")
+
+        milestones: list[dict] = []
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            title = str(m.get("title", "")).strip()
+            if not title:
+                continue  # bỏ milestone bịa không có title
+
+            focus = [str(f).strip() for f in (m.get("focusCriteria") or []) if str(f).strip()]
+
+            lessons: list[dict] = []
+            for l in (m.get("lessons") or []):
+                if not isinstance(l, dict):
+                    continue
+                l_title = str(l.get("title", "")).strip()
+                if l_title:
+                    lessons.append({"title": l_title})
+            if not lessons:
+                continue  # milestone không có lesson nào hợp lệ -> bỏ
+
+            milestones.append({"title": title, "focusCriteria": focus, "lessons": lessons})
+
+        if not milestones:
+            raise ValueError("LLM trả về roadmap rỗng sau khi lọc.")
+
+        return milestones
+
+    async def generate_lesson_theory(self, job_category: str, level: str,
+                                     lesson_title: str, focus_criteria: list[str],
+                                     weaknesses: list[str] | None) -> str:
+        """BC13/D20 — sinh nội dung lý thuyết (Markdown, tiếng Việt) cho 1 lesson."""
+        prompt = build_lesson_theory_prompt(
+            job_category, level, lesson_title, focus_criteria, weaknesses)
+
+        response = await self._client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "theoryMarkdown": {"type": "string"},
+                    },
+                    "required": ["theoryMarkdown"],
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM sinh lý thuyết trả về JSON không hợp lệ: {text[:200]}")
+
+        theory = str(data.get("theoryMarkdown", "")).strip()
+        if not theory:
+            raise ValueError("LLM không trả về nội dung lý thuyết hợp lệ.")
+
+        return theory
+
+    async def summarize_roadmap(self, job_category: str, level: str,
+                                criteria_progress: list[dict]) -> dict:
+        """
+        BC13/D20 — tổng kết roadmap: mạnh/yếu/cải thiện + nhận xét chung.
+
+        Trả về dict:
+          { "strengths": [str], "weaknesses": [str], "improvements": [str],
+            "overallComment": str }
+        """
+        prompt = build_summarize_roadmap_prompt(job_category, level, criteria_progress)
+
+        response = await self._client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,  # tổng kết dựa số liệu khách quan — cần nhất quán
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "strengths": {"type": "array", "items": {"type": "string"}},
+                        "weaknesses": {"type": "array", "items": {"type": "string"}},
+                        "improvements": {"type": "array", "items": {"type": "string"}},
+                        "overallComment": {"type": "string"},
+                    },
+                    "required": ["strengths", "weaknesses", "improvements", "overallComment"],
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM tổng kết roadmap trả về JSON không hợp lệ: {text[:200]}")
+
+        comment = str(data.get("overallComment", "")).strip()
+        if not comment:
+            raise ValueError("LLM không trả về nhận xét tổng kết hợp lệ.")
+
+        def _clean_list(items) -> list[str]:
+            if not isinstance(items, list):
+                return []
+            return [str(i).strip() for i in items if str(i).strip()]
+
+        return {
+            "strengths": _clean_list(data.get("strengths")),
+            "weaknesses": _clean_list(data.get("weaknesses")),
+            "improvements": _clean_list(data.get("improvements")),
+            "overallComment": comment,
+        }

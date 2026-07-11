@@ -6,6 +6,9 @@ from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
     AnalyzeCvRequest, AnalyzeCvResponse, JdMatch,
+    GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
+    GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
+    SummarizeRoadmapRequest, SummarizeRoadmapResponse,
 )
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber 
@@ -56,6 +59,56 @@ async def analyze_cv(req: AnalyzeCvRequest):
         raise
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi phân tích CV: {ex}")
+
+
+@router.post("/generate-roadmap", response_model=GenerateRoadmapResponse)
+async def generate_roadmap(req: GenerateRoadmapRequest):
+    if not req.level or not req.level.strip():
+        raise HTTPException(status_code=400, detail="level không được rỗng")
+    try:
+        weaknesses = [w.model_dump() for w in req.weaknesses] if req.weaknesses else None
+        milestones = await provider.generate_roadmap(
+            req.jobCategory, req.level, weaknesses, req.cvText)
+        return GenerateRoadmapResponse(
+            milestones=[
+                RoadmapMilestone(
+                    title=m["title"],
+                    focusCriteria=m["focusCriteria"],
+                    lessons=[RoadmapLesson(**l) for l in m["lessons"]],
+                )
+                for m in milestones
+            ]
+        )
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi sinh roadmap: {ex}")
+
+
+@router.post("/generate-lesson-theory", response_model=GenerateLessonTheoryResponse)
+async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
+    if not req.lessonTitle or not req.lessonTitle.strip():
+        raise HTTPException(status_code=400, detail="lessonTitle không được rỗng")
+    try:
+        theory = await provider.generate_lesson_theory(
+            req.jobCategory, req.level, req.lessonTitle, req.focusCriteria, req.weaknesses)
+        return GenerateLessonTheoryResponse(theoryMarkdown=theory)
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi sinh lý thuyết lesson: {ex}")
+
+
+@router.post("/summarize-roadmap", response_model=SummarizeRoadmapResponse)
+async def summarize_roadmap(req: SummarizeRoadmapRequest):
+    try:
+        progress = [c.model_dump() for c in req.criteriaProgress]
+        result = await provider.summarize_roadmap(req.jobCategory, req.level, progress)
+        return SummarizeRoadmapResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi tổng kết roadmap: {ex}")
 
 
 @router.post("/transcribe")
