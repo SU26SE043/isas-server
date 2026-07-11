@@ -643,6 +643,12 @@ Khi session đóng, engine phát event để service khác phản ứng (event-d
 | `SessionScored` | session `Scored` (kèm `campaign_id`, `candidate_id`, điểm tổng) | **Campaign** (cập nhật ranking read-model) · **Payment** (consume credit) |
 | `SessionAbandoned` | session bỏ ngang quá hạn / 0 answer | **Payment** (release reservation) |
 
+**Hợp đồng transport (pin 2026-07-11 theo E2 — E3/E4/E7 PHẢI khớp):** exchange **`interview.events`** (topic, durable); routing key **`session.scored`** (E2) · **`session.abandoned`** (E3). Mỗi consumer bind **queue durable riêng** (Campaign ranking / Payment credit) vào exchange → cùng 1 event tới nhiều consumer. Publish **best-effort** (lỗi publish KHÔNG phá state `Scored`/`Abandoned` đã commit) + giữ endpoint HTTP **backfill** làm fallback.
+
+**Shape event:**
+- `SessionScored` = `{ sessionId, campaignId?(null=B2C), candidateId, totalScore, scoredAt }`. `totalScore` (0–100) = **Σ pct×weight / Σweight** (CÓ trọng số) — là **snapshot phục vụ ranking B2B** (E4). **B2C** (`campaignId=null`): điểm hiển thị cho user = **trung bình cộng** tính riêng ở **BC9** (`result.overallScore`), **KHÔNG** đọc `totalScore` của event này (tránh lệch INT-10).
+- `SessionAbandoned` = `{ sessionId, campaignId?, candidateId, reason, abandonedAt }` → Payment release reservation.
+
 - **Credit:** Campaign **reserve** 1 credit của org khi ứng viên bắt đầu; engine phát `SessionScored` → **consume**, `SessionAbandoned` → **release** (chi tiết [payment.md](payment.md)).
 - Giữ 1 endpoint HTTP **backfill** làm fallback nếu miss event.
 
