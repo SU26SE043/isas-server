@@ -41,25 +41,26 @@ public class SessionResultService : ISessionResultService
             .Where(c => c.IsActive && c.CampaignId == null && c.JobCategory == session.JobCategory)
             .ToListAsync(ct);
 
-        // Điểm mỗi (answer, criterion) — MATERIALIZE rồi tính trung bình trong C#. KHÔNG dùng AVG SQL:
+        // Điểm mỗi (answer, criterion) — MATERIALIZE rồi tính trong C#. KHÔNG dùng AVG SQL:
         // trên SQLite (test) Average(decimal) map hàm ef_avg dễ lệch Postgres → tính LINQ-to-objects.
         var rawScores = await _db.AnswerScores.AsNoTracking()
             .Where(sc => sc.Answer.SessionId == sessionId)
-            .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.AttemptNo, sc.Score })
+            .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.Score })
             .ToListAsync(ct);
 
-        // Mỗi (answer, criterion) lấy attempt mới nhất (giống cách hiển thị; self-consistency chưa build).
-        var latest = rawScores
+        // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency),
+        // thay cho "attempt mới nhất". N=1 → median-of-1 = giá trị cũ (không đổi hành vi).
+        var median = rawScores
             .GroupBy(s => (s.AnswerId, s.CriterionId))
-            .Select(g => g.OrderByDescending(s => s.AttemptNo).First())
+            .Select(g => new { g.Key.AnswerId, g.Key.CriterionId, Score = ScoreStatistics.Median(g.Select(s => s.Score)) })
             .ToList();
 
-        var avgByCriterion = latest
+        var avgByCriterion = median
             .GroupBy(s => s.CriterionId)
             .ToDictionary(g => g.Key, g => g.Average(s => s.Score));
 
         // Câu Skipped/Failed/chưa trả lời không có answer_scores → không tính vào answeredCount.
-        var answeredCount = latest.Select(s => s.AnswerId).Distinct().Count();
+        var answeredCount = median.Select(s => s.AnswerId).Distinct().Count();
 
         // Idempotent: xoá breakdown cũ của session rồi ghi lại (đóng lại cùng session không nhân đôi).
         var existing = await _db.SessionCriterionScores

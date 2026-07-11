@@ -537,15 +537,23 @@ public class PracticeService : IPracticeService
 
     private static AnswerResponse MapAnswer(PracticeAnswer a)
     {
-        // Mỗi tiêu chí lấy attempt mới nhất (self-consistency sau này -> nhiều attempt).
-        var latestScores = a.Scores
+        // E10 — mỗi tiêu chí: điểm chốt = MEDIAN qua các attempt (self-consistency); reasoning/level
+        // lấy từ attempt ĐẠI DIỆN (điểm gần median nhất, tie-break attempt mới nhất) để nhận xét khớp
+        // điểm hiển thị. N=1 → median = giá trị attempt đó, đại diện = chính nó → giữ hiển thị cũ.
+        var perCriterion = a.Scores
             .GroupBy(sc => sc.CriterionId)
-            .Select(g => g.OrderByDescending(sc => sc.AttemptNo).First())
-            .Select(sc => new AnswerScoreResponse(
-                sc.CriterionId, sc.Score, sc.Reasoning, sc.RubricVersion, sc.LevelMatched))
+            .Select(g =>
+            {
+                var median = ScoreStatistics.Median(g.Select(s => s.Score));
+                var rep = g.OrderBy(s => Math.Abs(s.Score - median))
+                           .ThenByDescending(s => s.AttemptNo)
+                           .First();
+                return new AnswerScoreResponse(
+                    g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched);
+            })
             .ToList();
 
         return new AnswerResponse(
-            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, latestScores);
+            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview);
     }
 }

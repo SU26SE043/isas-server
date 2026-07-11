@@ -12,12 +12,14 @@ namespace Isas.InterviewService.Tests;
 public class AnswerServiceTests
 {
     private static AnswerService Build(
-        TestDb t, Mock<IScoringJobPublisher> publisher, out Mock<IStorageService> storage)
-        => Build(t, publisher, out storage, out _);
+        TestDb t, Mock<IScoringJobPublisher> publisher, out Mock<IStorageService> storage,
+        int selfConsistencyN = 1, decimal varianceThreshold = 1m)
+        => Build(t, publisher, out storage, out _, selfConsistencyN, varianceThreshold);
 
     private static AnswerService Build(
         TestDb t, Mock<IScoringJobPublisher> publisher, out Mock<IStorageService> storage,
-        out Mock<ISessionScoringNotifier> scoringNotifier)
+        out Mock<ISessionScoringNotifier> scoringNotifier,
+        int selfConsistencyN = 1, decimal varianceThreshold = 1m)
     {
         storage = new Mock<IStorageService>();
         storage
@@ -33,6 +35,7 @@ public class AnswerServiceTests
 
         return new AnswerService(
             t.Db, storage.Object, publisher.Object, scoringNotifier.Object,
+            TestDb.ScoringOpts(selfConsistencyN, varianceThreshold),
             NullLogger<AnswerService>.Instance);
     }
 
@@ -224,7 +227,8 @@ public class AnswerServiceTests
             .ReturnsAsync("answer-audio/seed.webm");
         var publisher = new Mock<IScoringJobPublisher>();
         var svc = new AnswerService(
-            t.Db, storage.Object, publisher.Object, notifier, NullLogger<AnswerService>.Instance);
+            t.Db, storage.Object, publisher.Object, notifier,
+            TestDb.ScoringOpts(), NullLogger<AnswerService>.Instance);
         var questionId = created.Questions[0].Id;
         using var audio = new MemoryStream(new byte[] { 1 });
         var up = await svc.UploadAnswerAsync(created.Id, questionId, candidate, audio, "audio/webm", 30);
@@ -391,7 +395,7 @@ public class AnswerServiceTests
         var storage = new Mock<IStorageService>();
         var svc = new AnswerService(
             t.Db, storage.Object, new Mock<IScoringJobPublisher>().Object, notifier,
-            NullLogger<AnswerService>.Instance);
+            TestDb.ScoringOpts(), NullLogger<AnswerService>.Instance);
 
         await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
         {
@@ -727,5 +731,257 @@ public class AnswerServiceTests
         var saved = await t.Db.AnswerScores.AsNoTracking().SingleAsync(s => s.AnswerId == answer.Id);
         Assert.Equal(2, saved.LevelMatched);
         Assert.Equal(2m, saved.Score);
+    }
+
+    // ── E10: self-consistency (chấm N lần → median/tiêu chí + cờ needs_review khi phân tán) ────
+
+    // E10: N=3 → upload publish 3 job (attempt 1/2/3), attempt 1 temp=0, 2..N temp=SelfConsistencyTemperature.
+    [Fact]
+    public async Task Upload_SelfConsistencyN3_PublishesThreeJobs_WithAttemptAndTemperature()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        t.Db.AddRange(session, q, crit);
+        await t.Db.SaveChangesAsync();
+
+        var publisher = new Mock<IScoringJobPublisher>();
+        var jobs = new List<ScoringJob>();
+        publisher
+            .Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+            .Callback<ScoringJob, CancellationToken>((j, _) => jobs.Add(j))
+            .Returns(Task.CompletedTask);
+        var svc = Build(t, publisher, out _, selfConsistencyN: 3);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
+
+        publisher.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Exactly(3));
+        Assert.Equal(new[] { 1, 2, 3 }, jobs.Select(j => j.AttemptNo).OrderBy(x => x).ToArray());
+        Assert.Equal(0d, jobs.Single(j => j.AttemptNo == 1).Temperature!.Value);   // tái lập
+        Assert.Equal(0.4, jobs.Single(j => j.AttemptNo == 2).Temperature!.Value);  // dao động
+        Assert.Equal(0.4, jobs.Single(j => j.AttemptNo == 3).Temperature!.Value);
+    }
+
+    // E10: chưa đủ N attempt → answer vẫn Scoring (chưa chốt Scored).
+    [Fact]
+    public async Task SaveResult_SelfConsistencyN3_NotEnoughAttempts_StaysScoring()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _, selfConsistencyN: 3);
+
+        // 2/3 attempt → chưa đủ.
+        for (var attempt = 1; attempt <= 2; attempt++)
+            await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+            {
+                Transcript = "x",
+                RubricVersion = 1,
+                AttemptNo = attempt,
+                Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 3m, Reasoning = "ok" } }
+            });
+
+        var savedAnswer = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scoring, savedAnswer.Status);   // chưa chốt
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.Scoring, s.Status);            // session cũng chưa đóng
+    }
+
+    // E10: đủ N attempt, spread > ngưỡng → Scored + needs_review=true. Median là điểm chốt.
+    [Fact]
+    public async Task SaveResult_SelfConsistencyN3_HighSpread_SetsScored_AndNeedsReview()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore 5
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _, selfConsistencyN: 3, varianceThreshold: 1m);
+
+        // 3 attempt điểm {2,4,4}: spread = 4−2 = 2 > 1 → needs_review; median = 4.
+        var scores = new[] { 2m, 4m, 4m };
+        for (var i = 0; i < 3; i++)
+            await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+            {
+                Transcript = "x",
+                RubricVersion = 1,
+                AttemptNo = i + 1,
+                Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = scores[i], Reasoning = "ok" } }
+            });
+
+        var savedAnswer = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scored, savedAnswer.Status);
+        Assert.True(savedAnswer.NeedsReview);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.Scored, s.Status);
+
+        // 3 attempt → 3 row (idempotent per attempt), điểm chốt lấy median = 4 khi đọc.
+        var rows = await t.Db.AnswerScores.AsNoTracking().Where(x => x.AnswerId == answer.Id).ToListAsync();
+        Assert.Equal(3, rows.Count);
+    }
+
+    // E10: đủ N attempt, spread ≤ ngưỡng → Scored, needs_review=false.
+    [Fact]
+    public async Task SaveResult_SelfConsistencyN3_LowSpread_NeedsReviewFalse()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _, selfConsistencyN: 3, varianceThreshold: 1m);
+
+        // 3 attempt điểm {3,4,4}: spread = 1 ≤ 1 → không cần soi.
+        var scores = new[] { 3m, 4m, 4m };
+        for (var i = 0; i < 3; i++)
+            await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+            {
+                Transcript = "x",
+                RubricVersion = 1,
+                AttemptNo = i + 1,
+                Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = scores[i], Reasoning = "ok" } }
+            });
+
+        var savedAnswer = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scored, savedAnswer.Status);
+        Assert.False(savedAnswer.NeedsReview);
+    }
+
+    // E10: resend cùng attempt → idempotent (1 row/attempt), KHÔNG chốt sớm khi trùng attempt.
+    [Fact]
+    public async Task SaveResult_SelfConsistencyN3_ResendSameAttempt_IsIdempotent_NoEarlyScore()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _, selfConsistencyN: 3);
+
+        // Gửi attempt 1 hai lần (worker retry) → vẫn chỉ 1 attempt distinct → chưa đủ N.
+        var req1 = new AnswerScoreCallbackRequest
+        {
+            Transcript = "x", RubricVersion = 1, AttemptNo = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 3m, Reasoning = "ok" } }
+        };
+        await svc.SaveResultAsync(answer.Id, req1);
+        await svc.SaveResultAsync(answer.Id, req1);
+
+        var afterDup = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scoring, afterDup.Status);   // trùng attempt không chốt sớm
+        Assert.Equal(1, await t.Db.AnswerScores.AsNoTracking().CountAsync(x => x.AnswerId == answer.Id));
+
+        // Bổ sung attempt 2, 3 → đủ N → Scored.
+        for (var attempt = 2; attempt <= 3; attempt++)
+            await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+            {
+                Transcript = "x", RubricVersion = 1, AttemptNo = attempt,
+                Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 3m, Reasoning = "ok" } }
+            });
+
+        var done = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scored, done.Status);
+        Assert.Equal(3, await t.Db.AnswerScores.AsNoTracking().CountAsync(x => x.AnswerId == answer.Id));
+    }
+
+    // E10 regression: N=1 (mặc định) → 1 attempt là đủ → Scored, needs_review=false, median = giá trị.
+    [Fact]
+    public async Task SaveResult_N1_SingleAttempt_Scored_NeedsReviewFalse()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _);   // N=1 mặc định
+
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4m, Reasoning = "ok" } }
+        });
+
+        var saved = await t.Db.PracticeAnswers.AsNoTracking()
+            .Include(a => a.Scores).FirstAsync(a => a.Id == answer.Id);
+        Assert.Equal(AnswerStatus.Scored, saved.Status);
+        Assert.False(saved.NeedsReview);
+        Assert.Equal(4m, saved.Scores.Single().Score);
+    }
+
+    // E10: median là ĐIỂM CHỐT dùng ở total (event) + BC9 overall_score. 3 attempt {2,4,4} → median 4
+    // → 4/5 = 80%. Notifier THẬT (chỉ mock transport event) + ResultService THẬT (tính BC9).
+    [Fact]
+    public async Task SaveResult_SelfConsistencyN3_MedianDrivesTotalAndBc9()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // B2C
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore 5, weight 1.0
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var eventPublisher = new Mock<ISessionEventPublisher>();
+        SessionScoredEvent? published = null;
+        eventPublisher
+            .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
+            .Callback<SessionScoredEvent, CancellationToken>((e, _) => published = e)
+            .Returns(Task.CompletedTask);
+        var notifier = new SessionScoringNotifier(
+            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
+            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
+
+        var svc = new AnswerService(
+            t.Db, new Mock<IStorageService>().Object, new Mock<IScoringJobPublisher>().Object,
+            notifier, TestDb.ScoringOpts(selfConsistencyN: 3, varianceThreshold: 1m),
+            NullLogger<AnswerService>.Instance);
+
+        // Attempt {2,2,5}: median = 2 (KHÁC "latest attempt"=5 và "trung bình"=3) → phân biệt rõ median.
+        var scores = new[] { 2m, 2m, 5m };
+        for (var i = 0; i < 3; i++)
+            await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+            {
+                Transcript = "x",
+                RubricVersion = 1,
+                AttemptNo = i + 1,
+                Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = scores[i], Reasoning = "ok" } }
+            });
+
+        // Event total = median(2,2,5)=2 → 2/5 = 40%.
+        Assert.NotNull(published);
+        Assert.Equal(40m, published!.TotalScore);
+
+        // BC9 overall_score cũng dùng median → 40%.
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(40m, s.OverallScore);
     }
 }

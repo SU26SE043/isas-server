@@ -162,18 +162,19 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         var scores = await _db.AnswerScores
             .AsNoTracking()
             .Where(sc => sc.Answer.SessionId == sessionId)
-            .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.AttemptNo, sc.Score })
+            .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.Score })
             .ToListAsync(ct);
         if (scores.Count == 0) return 0m;
 
-        // Mỗi (answer, criterion) lấy attempt mới nhất — cùng cách hiển thị hiện tại
-        // (PracticeService.MapAnswer), self-consistency (nhiều attempt) chưa build.
-        var latestPerAnswerCriterion = scores
+        // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency),
+        // thay cho "attempt mới nhất". N=1 → median-of-1 = giá trị cũ (không đổi hành vi). Median
+        // không dịch được SQL → materialize (trên) rồi tính client-side.
+        var medianPerAnswerCriterion = scores
             .GroupBy(s => (s.AnswerId, s.CriterionId))
-            .Select(g => g.OrderByDescending(s => s.AttemptNo).First());
+            .Select(g => new { g.Key.CriterionId, Score = ScoreStatistics.Median(g.Select(s => s.Score)) });
 
         // Điểm TB mỗi tiêu chí qua các answer đã chấm (BC9 §Công thức bước 1, tái dùng cho B2B).
-        var avgByCriterion = latestPerAnswerCriterion
+        var avgByCriterion = medianPerAnswerCriterion
             .GroupBy(s => s.CriterionId)
             .ToDictionary(g => g.Key, g => g.Average(s => s.Score));
 

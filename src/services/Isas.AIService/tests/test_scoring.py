@@ -149,3 +149,45 @@ async def test_score_raises_when_missing_criterion():
 
     with pytest.raises(ValueError):
         await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS, _CRIT_DEFAULT_BAND])
+
+
+# ── E10: self-consistency — temperature theo attempt + callback echo attemptNo ──────
+@pytest.mark.asyncio
+async def test_score_default_temperature_is_zero():
+    """Không truyền temperature (E9/worker cũ) → generate_content dùng temp=0 (tái lập)."""
+    provider = GeminiProvider()
+    gen = AsyncMock(return_value=_fake_gemini_response({
+        "scores": [{"criterionId": "c1", "score": 3, "levelMatched": 3, "reasoning": "x"}],
+    }))
+    provider._client.aio.models.generate_content = gen
+
+    await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
+
+    assert gen.call_args.kwargs["config"].temperature == 0.0
+
+
+@pytest.mark.asyncio
+async def test_score_passes_temperature_for_higher_attempt():
+    """E10 attempt 2..N: temperature truyền vào phải xuống thẳng generate_content (dao động thật)."""
+    provider = GeminiProvider()
+    gen = AsyncMock(return_value=_fake_gemini_response({
+        "scores": [{"criterionId": "c1", "score": 3, "levelMatched": 3, "reasoning": "x"}],
+    }))
+    provider._client.aio.models.generate_content = gen
+
+    await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS], temperature=0.4)
+
+    assert gen.call_args.kwargs["config"].temperature == 0.4
+
+
+def test_callback_payload_carries_attempt_no():
+    """Worker callback (E10) phải echo attemptNo về .NET để lưu điểm theo đúng attempt."""
+    from app.worker import make_score_payload
+
+    scores = [{"criterionId": "c1", "score": 3.0, "levelMatched": 3, "reasoning": "x"}]
+    payload = make_score_payload("answer-1", "transcript", 7, scores, attempt_no=2)
+
+    assert payload["attemptNo"] == 2
+    assert payload["answerId"] == "answer-1"
+    assert payload["rubricVersion"] == 7
+    assert payload["scores"] == scores
