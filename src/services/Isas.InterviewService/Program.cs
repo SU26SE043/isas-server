@@ -28,8 +28,15 @@ builder.Services.AddSingleton<ISessionEventPublisher, SessionEventPublisher>();
 builder.Services.AddScoped<ISessionResultService, SessionResultService>();   // BC9
 builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
+builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
 
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
+
+builder.Services.AddHttpClient<IAiServiceCvAnalyzer, AiServiceCvAnalyzer>(c =>   // BC7
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
