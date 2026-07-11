@@ -10,20 +10,36 @@ public class SessionScoringNotifier : ISessionScoringNotifier
 {
     private readonly InterviewDbContext _db;
     private readonly ISessionEventPublisher _eventPublisher;
+    private readonly ISessionResultService _resultService;
     private readonly ILogger<SessionScoringNotifier> _logger;
 
     public SessionScoringNotifier(
         InterviewDbContext db,
         ISessionEventPublisher eventPublisher,
+        ISessionResultService resultService,
         ILogger<SessionScoringNotifier> logger)
     {
         _db = db;
         _eventPublisher = eventPublisher;
+        _resultService = resultService;
         _logger = logger;
     }
 
     public async Task NotifySessionScoredAsync(Guid sessionId, CancellationToken ct = default)
     {
+        // BC9: tính + ghi tổng kết điểm buổi luyện B2C (no-op nếu B2B). Đây là hook chung của cả 2
+        // điểm đóng session (AnswerService.TryCompleteSessionAsync + PracticeService.SubmitSessionAsync).
+        // Best-effort: lỗi tính KHÔNG chặn việc đóng session (đã Scored trong DB) — overall_score để
+        // null, có thể backfill sau. ComputeAndStore tự SaveChanges nên context không rớt dở dang.
+        try
+        {
+            await _resultService.ComputeAndStoreAsync(sessionId, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "BC9: tính tổng kết điểm B2C thất bại cho session {SessionId}", sessionId);
+        }
+
         var session = await _db.PracticeSessions
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == sessionId, ct);

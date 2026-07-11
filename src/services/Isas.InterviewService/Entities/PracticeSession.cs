@@ -22,8 +22,13 @@ public class PracticeSession
  
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
- 
+
+    // BC9 — tổng kết buổi luyện B2C, set khi Scored (campaign_id null); null khi chưa chấm xong / B2B.
+    public decimal? OverallScore { get; set; }   // điểm tổng 0–100 (trung bình cộng pct các tiêu chí)
+    public int? AnsweredCount { get; set; }        // số câu đã chấm lúc tính kết quả (snapshot)
+
     // Navigation
     public ICollection<PracticeQuestion> Questions { get; set; } = [];
     public ICollection<PracticeAnswer> Answers { get; set; } = [];
+    public ICollection<SessionCriterionScore> CriterionScores { get; set; } = [];   // BC9 (B2C)
 }

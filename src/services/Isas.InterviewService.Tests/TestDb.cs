@@ -1,8 +1,12 @@
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
+using Isas.InterviewService.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Tests;
 
@@ -39,6 +43,12 @@ public sealed class TestDb : IDisposable
         Db.Dispose();
         _conn.Dispose();
     }
+
+    // BC9 — SessionResultService thật (dùng khi cần notifier THẬT tính tổng kết B2C).
+    public static SessionResultService ResultService(InterviewDbContext db, decimal thresholdPct = 50m)
+        => new(db,
+            Options.Create(new ScoringOptions { ImprovementThresholdPct = thresholdPct }),
+            NullLogger<SessionResultService>.Instance);
 
     // ── Seed helpers ──────────────────────────────────────────────────────
     public static RubricCriterion Criterion(

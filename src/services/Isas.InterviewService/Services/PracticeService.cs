@@ -258,7 +258,14 @@ public class PracticeService : IPracticeService
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 
-        return MapToResponse(session, questions, answers);
+        // BC9: tổng kết buổi chỉ áp B2C đã Scored — đọc thẳng breakdown từ DB (không tính lại).
+        var criterionScores = session.Status == SessionStatus.Scored && session.CampaignId is null
+            ? await _db.SessionCriterionScores.AsNoTracking()
+                .Where(x => x.SessionId == sessionId)
+                .ToListAsync(ct)
+            : new List<SessionCriterionScore>();
+
+        return MapToResponse(session, questions, answers, criterionScores);
     }
 
     // ── HISTORY ───────────────────────────────────────────────────────────
@@ -271,13 +278,14 @@ public class PracticeService : IPracticeService
             .OrderByDescending(s => s.CreatedAt)
             .Select(s => new PracticeSessionSummary(
                 s.Id, s.Status.ToString(), s.JobCategory.ToString(),
-                s.CreatedAt, s.CompletedAt))
+                s.CreatedAt, s.CompletedAt, s.OverallScore))   // BC9: lịch sử hiện điểm tổng
             .ToListAsync(ct);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
     private static PracticeSessionResponse MapToResponse(
-        PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers)
+        PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
+        IReadOnlyList<SessionCriterionScore>? criterionScores = null)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
 
@@ -290,7 +298,34 @@ public class PracticeService : IPracticeService
 
         return new PracticeSessionResponse(
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
-            s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses);
+            s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
+            MapResult(s, questions.Count, criterionScores));
+    }
+
+    // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.
+    private static SessionResultResponse? MapResult(
+        PracticeSession s, int totalQuestions, IReadOnlyList<SessionCriterionScore>? criterionScores)
+    {
+        if (s.Status != SessionStatus.Scored || s.CampaignId is not null
+            || criterionScores is not { Count: > 0 })
+            return null;
+
+        var criteria = criterionScores
+            .Select(cs => new CriterionScoreResponse(
+                cs.CriterionId, cs.CriterionName, cs.AverageScore, cs.MaxScore, cs.Percentage, cs.Weight))
+            .ToList();
+
+        var needsImprovement = criterionScores
+            .Where(cs => cs.NeedsImprovement)
+            .Select(cs => cs.CriterionId)
+            .ToList();
+
+        return new SessionResultResponse(
+            s.OverallScore ?? 0m,
+            s.AnsweredCount ?? 0,
+            totalQuestions,
+            criteria,
+            needsImprovement);
     }
 
     private static AnswerResponse MapAnswer(PracticeAnswer a)

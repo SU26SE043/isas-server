@@ -11,6 +11,7 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<PracticeQuestion> PracticeQuestions => Set<PracticeQuestion>();
         public DbSet<PracticeAnswer> PracticeAnswers => Set<PracticeAnswer>();
         public DbSet<AnswerScore> AnswerScores => Set<AnswerScore>();
+        public DbSet<SessionCriterionScore> SessionCriterionScores => Set<SessionCriterionScore>();  // BC9
         public DbSet<RubricCriterion> RubricCriteria => Set<RubricCriterion>();
         public DbSet<RubricLevel> RubricLevels => Set<RubricLevel>();
         public DbSet<RubricAnchor> RubricAnchors => Set<RubricAnchor>();
