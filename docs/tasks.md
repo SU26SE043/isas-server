@@ -118,6 +118,7 @@
 | BK7 | Postpaid **consume cộng `period_usage`** (dồn nợ kỳ) | postpaid session `Scored` → consume → `period_usage += 1` (P5 hiện chỉ `reserved−1`, không cộng nợ kỳ) | P5, P8a | not_started · nguồn: ghi chú **P8a** (reserve không cộng period_usage theo payment.md:377) |
 | BK8 | E6 **PDF export** (QuestPDF Community) | `format=pdf` → `application/pdf` khớp ranking; build/test KHÔNG vỡ (SkiaSharp native) | E6 | not_started · nguồn: ghi chú **E6** (hiện format=pdf→400) |
 | BK9 | Ratify **event-bus convention** vào architecture.md §6 | doc §6 liệt kê exchange `interview.events`(topic) + key `session.scored`/`session.abandoned` + queue `campaign.ranking`(E4)/`payment.credit`(E7); code E2/E3/E4/E7 khớp doc | — | not_started · nguồn: ghi chú lặp **E2/E4/E7** (tên queue/exchange tự đặt, chưa vào doc) |
+| BK10 | **DECISION** — BC3/BC4 còn cần không sau E7? | E7 consumer generic consume/release **MỌI** session theo reservation (gồm B2C owner=User từ BC2) → chốt: BC3/BC4 = **covered-by-E7** (chỉ cần test xác minh B2C scored→consume ví User / abandoned→release ví User) HAY giữ path B2C riêng | E7, BC2 | not_started · **cần chốt** · nguồn: quan sát **vòng 7** |
 
 ---
 
