@@ -295,7 +295,7 @@ job_category  varchar(8)    enum: BA·BE·FE
 status        varchar(32)   enum SessionStatus (state machine bên dưới)
 created_at    timestamptz   NOT NULL
 completed_at  timestamptz?  set khi submit
-deadline      timestamptz?  ✅ I2 (migration AddSessionDeadline) — hạn chót nhận bài (B2B=campaign expires_at qua create-session payload; B2C=null). Sweeper quá hạn → auto-submit/SessionAbandoned. 🔜 BK18: Campaign chưa gửi expires_at
+deadline      timestamptz?  ✅ I2+BK18 (migration AddSessionDeadline) — hạn chót nhận bài (B2B=campaign expires_at, Campaign gửi qua create-session payload BK18; B2C=null). Sweeper quá hạn → auto-submit/SessionAbandoned
 overall_score numeric(5,2)? 🔜 BC9 — điểm tổng 0–100, set khi `Scored` (B2C); null khi chưa/B2B
 answered_count int?         🔜 BC9 — số câu đã chấm lúc tính kết quả (snapshot)
 overall_comment text?       ✅ BC10 (migration `AddSessionOverallComment`) — nhận xét chung, AI `/summarize-session` sinh trong `SessionScoringNotifier` khi B2C `Scored` (best-effort, sau BC9); null nếu AI lỗi/timeout/rỗng / criteria rỗng / B2B
