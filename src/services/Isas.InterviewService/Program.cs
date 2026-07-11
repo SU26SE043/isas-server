@@ -29,6 +29,7 @@ builder.Services.AddScoped<ISessionResultService, SessionResultService>();   // 
 builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
+builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {
@@ -37,6 +38,12 @@ builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGene
 });
 
 builder.Services.AddHttpClient<IAiServiceCvAnalyzer, AiServiceCvAnalyzer>(c =>   // BC7
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
+
+builder.Services.AddHttpClient<IAiServiceRoadmapGenerator, AiServiceRoadmapGenerator>(c =>   // BC12
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
