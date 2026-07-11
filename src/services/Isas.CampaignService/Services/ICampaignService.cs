@@ -19,5 +19,8 @@ namespace Isas.CampaignService.Services
 
         // D1: Distribution đường 1 — mời thẳng qua danh sách email
         Task<CreateInvitationsResponse> CreateInvitationsAsync(Guid employerId, Guid id, List<string> emails, CancellationToken ct);
+
+        // E5: bảng kết quả + xếp hạng + pass/fail (đọc read-model campaign_rankings — E4)
+        Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid employerId, Guid id, CancellationToken ct);
     }
 }

@@ -290,5 +290,24 @@ namespace Isas.CampaignService.Controllers
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }    // campaign không Active → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to create invitations: {ex.Message}"); }
         }
+
+        // E5: bảng kết quả — xếp hạng + pass/fail (đọc read-model campaign_rankings, E4).
+        // Chỉ chủ org (employer_id) xem được → không phải chủ = 404.
+        [HttpGet("{id:guid}/results")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResultsResponse>> GetCampaignResults(Guid id, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            try
+            {
+                var results = await _campaignService.GetCampaignResultsAsync(Guid.Parse(employerId), id, ct);
+                return Ok(results);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get results: {ex.Message}"); }
+        }
     }
 }

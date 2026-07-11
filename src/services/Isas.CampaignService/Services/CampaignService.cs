@@ -40,6 +40,8 @@ namespace Isas.CampaignService.Services
             if (request.Questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 throw new ArgumentException("All questions must have non-empty text.");
 
+            ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
+
             // ── 2. Build campaign entity ────────────────────────
             var campaign = new Campaign
             {
@@ -51,6 +53,7 @@ namespace Isas.CampaignService.Services
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
                 AntiCheatEnabled = request.AntiCheatEnabled,
+                PassScorePct = request.PassScorePct,   // E5: ngưỡng pass/fail (null = HR quyết tay)
                 // C11: JD/Criteria nhập text trực tiếp → *_text set, *_file_url null (không file lúc tạo).
                 JDText = NormalizeText(request.JdText),
                 CriteriaText = NormalizeText(request.CriteriaText),
@@ -194,6 +197,13 @@ namespace Isas.CampaignService.Services
 
             if (request.AntiCheatEnabled.HasValue)
                 campaign.AntiCheatEnabled = request.AntiCheatEnabled.Value;
+
+            // E5: cập nhật ngưỡng pass/fail (chỉ khi gửi lên; validate ∈ [0,100]).
+            if (request.PassScorePct.HasValue)
+            {
+                ValidatePassScorePct(request.PassScorePct);
+                campaign.PassScorePct = request.PassScorePct;
+            }
 
             // C11: cập nhật JD/Criteria dạng text → set *_text, xoá *_file_url (text ưu tiên file).
             if (request.JdText is not null)
@@ -500,6 +510,72 @@ namespace Isas.CampaignService.Services
             }
 
             return response;
+        }
+
+        // ── E5: bảng kết quả + xếp hạng + pass/fail ─────────────────────────
+        // Đọc read-model LOCAL `campaign_rankings` (E4 upsert từ event SessionScored) — không gọi
+        // xuyên service. Bảng chỉ có 1 row/ứng viên đã `Scored` (row tạo khi nhận SessionScored) nên
+        // "chỉ xếp hạng Scored" (CAMP-11) tự thoả — ứng viên chưa Scored không có row → không xuất hiện.
+        // Ownership: chỉ chủ org (employer_id) xem được — không phải chủ → 404 (KeyNotFoundException).
+        public async Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid employerId, Guid id, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            // Materialize rồi sắp + gán rank TRONG BỘ NHỚ: EF Core không dịch ROW_NUMBER()/RANK() sang
+            // LINQ; và trên SQLite (test) decimal lưu dạng TEXT → ORDER BY ở SQL có thể sai thứ tự số học.
+            // Số row/1 campaign bị chặn bởi max_candidates (nhỏ) nên sort in-memory an toàn.
+            var rows = await _db.CampaignRankings
+                .Where(r => r.CampaignId == id)
+                .ToListAsync(ct);
+
+            var ordered = rows
+                .OrderByDescending(r => r.TotalScore)
+                .ThenBy(r => r.UpdatedAt)   // đồng điểm → ứng viên Scored sớm hơn đứng trước (tie-break ổn định)
+                .ThenBy(r => r.SessionId)
+                .ToList();
+
+            var threshold = campaign.PassScorePct;
+            var results = new List<CampaignResultRow>(ordered.Count);
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                var r = ordered[i];
+
+                // Đồng hạng (competition ranking): rank = số ứng viên điểm CAO HƠN + 1.
+                // Đồng điểm → cùng rank; rank kế nhảy theo vị trí (1,1,3).
+                int rank = (i > 0 && ordered[i - 1].TotalScore == r.TotalScore)
+                    ? results[i - 1].Rank
+                    : i + 1;
+
+                results.Add(new CampaignResultRow
+                {
+                    Rank = rank,
+                    CandidateId = r.CandidateId,
+                    SessionId = r.SessionId,
+                    TotalScore = r.TotalScore,
+                    // Pass/fail so ngưỡng Employer (CAMP-11); ngưỡng null → null (HR quyết tay — doc §pass_score_pct).
+                    Result = threshold is null
+                        ? null
+                        : (r.TotalScore >= threshold.Value ? "Pass" : "Fail"),
+                    ScoredAt = r.UpdatedAt
+                });
+            }
+
+            return new CampaignResultsResponse
+            {
+                CampaignId = id,
+                PassScorePct = threshold,
+                TotalCandidates = results.Count,
+                Results = results
+            };
+        }
+
+        // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
+        private static void ValidatePassScorePct(int? pct)
+        {
+            if (pct is int p && (p < 0 || p > 100))
+                throw new ArgumentException($"pass_score_pct phải trong khoảng [0, 100] (hiện: {p}).");
         }
 
         // Token magic-link 1 lần — 256-bit random, URL-safe base64 (không padding).
