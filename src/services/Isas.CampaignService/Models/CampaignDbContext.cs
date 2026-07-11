@@ -152,7 +152,6 @@ namespace Isas.CampaignService.Models
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.TotalScore).HasColumnType("numeric(5,2)");
-                e.Property(x => x.Result).HasMaxLength(16);
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
                 // Idempotent upsert theo session_id: event tới 2 lần vẫn 1 row.

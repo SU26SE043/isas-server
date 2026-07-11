@@ -4,8 +4,9 @@ namespace Isas.CampaignService.Models
     /// Ranking read-model B2B (E4/D10) — cập nhật bằng event <c>SessionScored</c> (RabbitMQ),
     /// KHÔNG gọi HTTP đọc điểm mỗi lần xem dashboard (campaign.md §campaign_rankings).
     /// Idempotent: UNIQUE(session_id) — event tới 2 lần (redelivery/duplicate) vẫn chỉ 1 row (upsert).
-    /// <c>Rank</c>/<c>Result</c> (Pass/Fail) do E5 tính khi build tính năng xếp hạng — E4 chỉ ghi
-    /// <c>TotalScore</c> (điểm có trọng số Interview đã tính sẵn), để 2 cột đó null.
+    /// Rank + Pass/Fail do E5 (<c>GetCampaignResultsAsync</c>) tính READ-TIME từ <c>TotalScore</c> —
+    /// KHÔNG lưu thành cột (BK1: đã drop cột chết <c>rank</c>/<c>result</c> mà E4 từng tạo nhưng E5 không đọc).
+    /// E4 chỉ ghi <c>TotalScore</c> (điểm có trọng số Interview đã tính sẵn).
     /// </summary>
     public class CampaignRanking
     {
@@ -14,8 +15,6 @@ namespace Isas.CampaignService.Models
         public Guid CandidateId { get; set; }
         public Guid SessionId { get; set; }   // ref lỏng → Interview; UNIQUE (upsert idempotent)
         public decimal TotalScore { get; set; }
-        public int? Rank { get; set; }        // 🔜 E5
-        public string? Result { get; set; }   // 🔜 E5: "Pass"/"Fail"
         public DateTime UpdatedAt { get; set; }
     }
 }
