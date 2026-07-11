@@ -191,13 +191,18 @@ class GeminiProvider(QuestionProvider):
         return result
 
     async def score(self, question: str, transcript: str,
-                    job_category: str, criteria: list[dict]) -> list[dict]:
+                    job_category: str, criteria: list[dict],
+                    temperature: float = 0.0) -> list[dict]:
         """
         Chấm 1 câu trả lời theo rubric.
 
         criteria: list dict từ C# gửi qua, mỗi phần tử có
           { criterionId, name, description, maxScore, weight,
             levels: [{score, descriptor}], anchors?: [{score, exampleAnswer}] }
+
+        temperature (E10 — self-consistency): nhiệt độ sinh. Attempt 1 = 0.0 (tái lập); attempt 2..N
+          = SelfConsistencyTemperature (>0) để tạo dao động THẬT giữa các lần chấm → .NET đo spread
+          (max−min) → gắn cờ needs_review khi phân tán. Mặc định 0.0 (giữ hành vi cũ / worker cũ).
 
         Trả về: list dict (E9 — neo theo mức)
           [ { "criterionId": str, "score": float, "levelMatched": int, "reasoning": str }, ... ]
@@ -227,7 +232,7 @@ class GeminiProvider(QuestionProvider):
             model=settings.gemini_model,
             contents=prompt,
             config=types.GenerateContentConfig(
-                temperature=0.0,  # chấm cần nhất quán, không sáng tạo
+                temperature=temperature,  # E9 mặc định 0 (nhất quán); E10 attempt 2..N > 0 để đo spread
                 response_mime_type="application/json",
                 response_schema={
                     "type": "object",

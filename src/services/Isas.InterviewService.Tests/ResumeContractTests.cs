@@ -70,7 +70,7 @@ public class ResumeContractTests
         // Publisher mock mặc định: PublishAsync trả completed Task → publish "thành công" → answer Scoring.
         return new AnswerService(
             db, storage.Object, new Mock<IScoringJobPublisher>().Object,
-            notifier.Object, NullLogger<AnswerService>.Instance);
+            notifier.Object, TestDb.ScoringOpts(), NullLogger<AnswerService>.Instance);
     }
 
     private static PracticeController BuildController(InterviewDbContext db, Guid candidateId)

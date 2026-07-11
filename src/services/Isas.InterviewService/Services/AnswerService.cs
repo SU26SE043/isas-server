@@ -2,8 +2,10 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
 
@@ -13,6 +15,7 @@ public class AnswerService : IAnswerService
     private readonly IStorageService _storage;
     private readonly IScoringJobPublisher _scoringPublisher;
     private readonly ISessionScoringNotifier _scoringNotifier;
+    private readonly ScoringOptions _scoring;   // E10 — self-consistency (N, ngưỡng spread, temp)
     private readonly ILogger<AnswerService> _logger;
 
     public AnswerService(
@@ -20,12 +23,14 @@ public class AnswerService : IAnswerService
         IStorageService storage,
         IScoringJobPublisher scoringPublisher,
         ISessionScoringNotifier scoringNotifier,
+        IOptions<ScoringOptions> scoringOptions,
         ILogger<AnswerService> logger)
     {
         _db = db;
         _storage = storage;
         _scoringPublisher = scoringPublisher;
         _scoringNotifier = scoringNotifier;
+        _scoring = scoringOptions.Value;
         _logger = logger;
     }
 
@@ -141,20 +146,30 @@ public class AnswerService : IAnswerService
 
             // Tất cả criterion active của 1 nghề dùng chung 1 version.
             var rubricVersion = criteria[0].Version;
+            var builtCriteria = ScoringCriteriaBuilder.Build(criteria);   // E9: kèm levels (+ anchors)
 
-            var job = new ScoringJob
+            // E10 — self-consistency: publish N job (attempt 1..N) cho cùng 1 answer để chấm N lần.
+            //   attempt 1 → temp=0 (tái lập); 2..N → SelfConsistencyTemperature (dao động thật để đo spread).
+            //   N=1 (mặc định) → đúng 1 job như cũ. Worker echo attempt_no về callback → .NET lưu theo attempt.
+            var n = Math.Max(1, _scoring.SelfConsistencyN);
+            for (int attempt = 1; attempt <= n; attempt++)
             {
-                AnswerId = answer.Id,
-                SessionId = session.Id,
-                QuestionId = question.Id,
-                AudioObjectKey = answer.AudioObjectKey!,
-                QuestionContent = question.Content,
-                JobCategory = session.JobCategory.ToString(),
-                RubricVersion = rubricVersion,
-                Criteria = ScoringCriteriaBuilder.Build(criteria)   // E9: kèm levels (+ anchors)
-            };
+                var job = new ScoringJob
+                {
+                    AnswerId = answer.Id,
+                    SessionId = session.Id,
+                    QuestionId = question.Id,
+                    AudioObjectKey = answer.AudioObjectKey!,
+                    QuestionContent = question.Content,
+                    JobCategory = session.JobCategory.ToString(),
+                    RubricVersion = rubricVersion,
+                    Criteria = builtCriteria,
+                    AttemptNo = attempt,
+                    Temperature = attempt == 1 ? 0d : _scoring.SelfConsistencyTemperature
+                };
 
-            await _scoringPublisher.PublishAsync(job, ct);
+                await _scoringPublisher.PublishAsync(job, ct);
+            }
 
             // Publish OK -> Uploaded chuyển Scoring + ghi mốc publish.
             // Republisher dựa vào đây để KHÔNG nhặt nhầm answer đang chờ worker
@@ -197,9 +212,11 @@ public class AnswerService : IAnswerService
         // KẸP [0,maxScore], và (E9) snap/lưu level_matched theo mức của tiêu chí.
         var critById = (await critQuery.ToListAsync(ct)).ToDictionary(c => c.Id);
 
+        // E10 — attempt worker vừa chấm (echo từ job). Worker cũ không gửi → DTO default 1.
+        var attemptNo = req.AttemptNo <= 0 ? 1 : req.AttemptNo;
+
         // Idempotency: worker retry có thể gửi lại cùng attempt+version.
         // Xoá điểm cũ cùng attempt+version rồi ghi lại, tránh nhân đôi.
-        const int attemptNo = 1; // self-consistency nhiều attempt làm sau
         var stale = answer.Scores
             .Where(s => s.AttemptNo == attemptNo && s.RubricVersion == req.RubricVersion)
             .ToList();
@@ -250,12 +267,46 @@ public class AnswerService : IAnswerService
             });
         }
 
+        // Persist điểm attempt này (giữ answer.Status = Scoring cho tới khi đủ N attempt).
+        await _db.SaveChangesAsync(ct);
+
+        // E10 — self-consistency: chỉ chốt answer khi đã đủ N attempt cho rubric_version hiện tại
+        //   (đếm distinct attempt_no). Chưa đủ → giữ Scoring, chờ callback attempt kế.
+        //   N=1 (mặc định) → 1 attempt là đủ → hành vi cũ.
+        var n = Math.Max(1, _scoring.SelfConsistencyN);
+        var attemptsForVersion = await _db.AnswerScores.AsNoTracking()
+            .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
+            .Select(s => s.AttemptNo)
+            .Distinct()
+            .CountAsync(ct);
+
+        if (attemptsForVersion < n)
+        {
+            _logger.LogInformation(
+                "Answer {AnswerId}: {Got}/{N} attempt (rubric v{Version}) — chờ đủ trước khi Scored",
+                answerId, attemptsForVersion, n, req.RubricVersion);
+            return;   // giữ Scoring
+        }
+
+        // Đủ N → điểm chốt = median/tiêu chí (tính read-time downstream); ở đây đo SPREAD = max−min
+        // mỗi tiêu chí giữa các attempt (materialize rồi tính C#) → spread > ngưỡng bất kỳ tiêu chí →
+        // needs_review (cờ soi lại). N=1 → spread = 0 → needs_review = false.
+        var perAttempt = await _db.AnswerScores.AsNoTracking()
+            .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
+            .Select(s => new { s.CriterionId, s.Score })
+            .ToListAsync(ct);
+
+        var needsReview = perAttempt
+            .GroupBy(s => s.CriterionId)
+            .Any(g => g.Max(x => x.Score) - g.Min(x => x.Score) > _scoring.VarianceThreshold);
+
+        answer.NeedsReview = needsReview;
         answer.Status = AnswerStatus.Scored;
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
-            "Lưu {Count} điểm cho answer {AnswerId}, status -> Scored",
-            req.Scores.Count, answerId);
+            "Answer {AnswerId} -> Scored ({N} attempt, rubric v{Version}), needs_review={NeedsReview}",
+            answerId, attemptsForVersion, req.RubricVersion, needsReview);
 
         await TryCompleteSessionAsync(answer.SessionId, ct);
     }

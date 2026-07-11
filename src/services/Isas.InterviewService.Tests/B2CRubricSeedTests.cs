@@ -139,6 +139,6 @@ public class B2CRubricSeedTests
 
         return new AnswerService(
             t.Db, storage.Object, publisher.Object, notifier.Object,
-            NullLogger<AnswerService>.Instance);
+            TestDb.ScoringOpts(), NullLogger<AnswerService>.Instance);
     }
 }

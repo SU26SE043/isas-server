@@ -12,6 +12,15 @@ public class ScoringJob
     public string JobCategory { get; set; } = null!;
     public int RubricVersion { get; set; }
     public List<ScoringCriterionDto> Criteria { get; set; } = [];
+
+    // E10 — self-consistency: 1 answer publish N job (attempt 1..N). Worker echo attempt_no về
+    // callback để .NET lưu theo đúng attempt. Mặc định 1 = 1 lần chấm (hành vi cũ, worker cũ đọc → 1).
+    public int AttemptNo { get; set; } = 1;
+
+    // E10 — nhiệt độ chấm cho attempt này (worker set generate_content temperature). Attempt 1 = 0
+    // (tái lập); 2..N = Scoring:SelfConsistencyTemperature (dao động thật để đo spread). null → worker
+    // dùng mặc định (0) — tương thích worker cũ.
+    public double? Temperature { get; set; }
 }
 
 public class ScoringCriterionDto
@@ -46,6 +55,11 @@ public class AnswerScoreCallbackRequest
 {
     public string Transcript { get; set; } = "";
     public int RubricVersion { get; set; }
+
+    // E10 — attempt worker vừa chấm (echo từ job). Idempotent theo (attempt_no, rubric_version):
+    // gửi lại cùng attempt → thay điểm cũ, không nhân đôi. Mặc định 1 (worker cũ không gửi → 1).
+    public int AttemptNo { get; set; } = 1;
+
     public List<ScoreItemDto> Scores { get; set; } = [];
 }
 

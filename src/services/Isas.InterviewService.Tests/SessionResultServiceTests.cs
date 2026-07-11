@@ -354,7 +354,7 @@ public class SessionResultServiceTests
             TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
         var svc = new AnswerService(
             t.Db, new Mock<IStorageService>().Object, new Mock<IScoringJobPublisher>().Object,
-            notifier, NullLogger<AnswerService>.Instance);
+            notifier, TestDb.ScoringOpts(), NullLogger<AnswerService>.Instance);
 
         await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
         {

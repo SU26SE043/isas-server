@@ -53,6 +53,17 @@ public sealed class TestDb : IDisposable
             Options.Create(new ScoringOptions { ImprovementThresholdPct = thresholdPct }),
             NullLogger<SessionResultService>.Instance);
 
+    // E10 — ScoringOptions cho AnswerService. Mặc định N=1 (self-consistency TẮT) → giữ hành vi cũ;
+    // test self-consistency truyền N>1 + ngưỡng spread + temperature.
+    public static IOptions<ScoringOptions> ScoringOpts(
+        int selfConsistencyN = 1, decimal varianceThreshold = 1m, double temperature = 0.4)
+        => Options.Create(new ScoringOptions
+        {
+            SelfConsistencyN = selfConsistencyN,
+            VarianceThreshold = varianceThreshold,
+            SelfConsistencyTemperature = temperature
+        });
+
     // BC10 — summarizer AI giả cho notifier THẬT: comment=null/"" → no-op (không lưu overall_comment);
     // comment có text → trả text; throws → ném (test best-effort không chặn Scored). Không cần AIService thật.
     public static IAiServiceSessionSummarizer Summarizer(string? comment = null, Exception? throws = null)

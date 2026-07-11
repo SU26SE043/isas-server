@@ -18,7 +18,12 @@ public class PracticeAnswer
     public string? Transcript { get; set; }
  
     public AnswerStatus Status { get; set; } = AnswerStatus.Uploaded;
- 
+
+    // E10 — self-consistency: chấm N lần, nếu spread điểm giữa các attempt (mỗi tiêu chí) vượt
+    // Scoring:VarianceThreshold → gắn cờ này để HR (B2B) / người luyện (B2C) xem lại. Điểm AI
+    // = gợi ý (INT-14/15/16), KHÔNG auto coi là điểm cuối. Mặc định false (N=1 → luôn false).
+    public bool NeedsReview { get; set; }
+
     public int DurationSec { get; set; }
  
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

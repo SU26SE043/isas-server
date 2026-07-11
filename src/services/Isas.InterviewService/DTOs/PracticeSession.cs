@@ -63,7 +63,8 @@ public record AnswerResponse(
     string Status,
     int DurationSec,
     string? Transcript,
-    IReadOnlyList<AnswerScoreResponse> Scores
+    IReadOnlyList<AnswerScoreResponse> Scores,
+    bool NeedsReview = false   // E10 — self-consistency: spread điểm giữa các attempt vượt ngưỡng → cần soi lại (nullable-default → không phá client)
 );
 
 public record AnswerScoreResponse(
