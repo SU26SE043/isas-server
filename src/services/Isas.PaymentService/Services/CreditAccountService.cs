@@ -186,11 +186,34 @@ namespace Isas.PaymentService.Services
 
             // reserved−1 (nhả chỗ giữ). remaining KHÔNG đổi → credit "tiêu" thật thể hiện ở ledger −1.
             // (bất biến audit prepaid: remaining + reserved = Σ credit_transactions.delta vẫn giữ.)
-            await _db.CreditAccounts
+            // POSTPAID (BK7 · payment.md §Kế toán POSTPAID): consume dồn nợ kỳ → period_usage += 1 (nguồn
+            // snapshot ra invoice.interview_count cuối kỳ); reserve KHÔNG cộng (P8a) nên nợ chỉ tính khi tiêu
+            // thật (bỏ ngang/release không dồn nợ). Đọc payment_mode rời chỉ để CHỌN nhánh — increment
+            // period_usage là SQL self-referential (atomic); transition Reserved→Consumed ở trên (guard
+            // WHERE status=Reserved) đã bảo đảm đúng 1 consume/session ⇒ KHÔNG cộng nợ oan (idempotent PAY-11).
+            var isPostpaid = await _db.CreditAccounts.AsNoTracking()
                 .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
-                    .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+                .Select(a => a.PaymentMode)
+                .FirstOrDefaultAsync(ct) == PaymentMode.Postpaid;
+
+            if (isPostpaid)
+            {
+                await _db.CreditAccounts
+                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
+                        .SetProperty(a => a.PeriodUsage, a => (int?)((a.PeriodUsage ?? 0) + 1))
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+            }
+            else
+            {
+                // PREPAID giữ nguyên (không có period_usage): chỉ reserved−1.
+                await _db.CreditAccounts
+                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+            }
 
             // Bút toán Consume −1 (sổ cái append-only). session_id ref lỏng, order_id null (không gắn order).
             _db.CreditTransactions.Add(new CreditTransaction

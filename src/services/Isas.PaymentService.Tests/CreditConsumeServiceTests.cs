@@ -30,6 +30,28 @@ public class CreditConsumeServiceTests
         return acc;
     }
 
+    private static async Task<CreditAccount> SeedPostpaidAccountAsync(
+        PaymentTestDb tdb, Guid orgId, int? creditLimit, int periodUsage = 0, int reserved = 0,
+        CreditAccountStatus status = CreditAccountStatus.Active)
+    {
+        var acc = new CreditAccount
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PaymentMode = PaymentMode.Postpaid,
+            Status = status,
+            RemainingCredits = 0,          // postpaid KHÔNG dùng remaining
+            ReservedCredits = reserved,
+            CreditLimit = creditLimit,
+            PeriodUsage = periodUsage,
+            UpdatedAt = DateTime.UtcNow
+        };
+        tdb.Db.CreditAccounts.Add(acc);
+        await tdb.Db.SaveChangesAsync();
+        return acc;
+    }
+
     private static async Task SeedReservationAsync(
         PaymentTestDb tdb, OwnerType ownerType, Guid ownerId, Guid sessionId, ReservationStatus status)
     {
@@ -145,6 +167,89 @@ public class CreditConsumeServiceTests
         Assert.Equal(0, await read.CreditTransactions.CountAsync(t => t.SessionId == sessionId));
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == userId);
         Assert.Equal(2, acc.RemainingCredits); // ví nguyên vẹn
+        Assert.Equal(0, acc.ReservedCredits);
+    }
+
+    // ── BK7 — Postpaid: consume dồn nợ kỳ (payment.md §Kế toán POSTPAID · period_usage += 1) ─────────
+
+    // (BK7-a) postpaid session Scored → consume: reserved−1, period_usage += 1 (dồn nợ kỳ), đúng 1
+    //         credit_transactions(Consume, −1); remaining vẫn 0 (postpaid không dùng remaining).
+    [Fact]
+    public async Task Consume_Postpaid_CongPeriodUsage_GhiLedger()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 5, periodUsage: 0);
+
+        // reserve trước (state thật postpaid): reserved 0→1, period_usage KHÔNG đổi (chỉ consume mới cộng).
+        await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+
+        var result = await new CreditAccountService(tdb.NewContext())
+            .ConsumeAsync(sessionId);
+
+        Assert.Equal(ConsumeOutcome.Consumed, result.Outcome);
+
+        using var read = tdb.NewContext();
+        var reservation = await read.CreditReservations.SingleAsync(r => r.SessionId == sessionId);
+        Assert.Equal(ReservationStatus.Consumed, reservation.Status);
+
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(0, acc.RemainingCredits);   // postpaid không dùng remaining
+        Assert.Equal(0, acc.ReservedCredits);    // reserved −1
+        Assert.Equal(1, acc.PeriodUsage);        // nợ kỳ += 1 (nguồn interview_count)
+
+        var ledger = await read.CreditTransactions.Where(t => t.SessionId == sessionId).ToListAsync();
+        Assert.Single(ledger);
+        Assert.Equal(-1, ledger[0].Delta);
+        Assert.Equal(CreditTransactionReason.Consume, ledger[0].Reason);
+        Assert.Equal(orgId, ledger[0].OwnerId);
+    }
+
+    // (BK7-b) gọi 2 lần cùng session → period_usage chỉ +1 (idempotent/absorbing PAY-11), đúng 1 ledger.
+    [Fact]
+    public async Task Consume_Postpaid_GoiLai2Lan_PeriodUsageChiCong1()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 5, periodUsage: 3);
+        await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+
+        var first = await new CreditAccountService(tdb.NewContext()).ConsumeAsync(sessionId);
+        var second = await new CreditAccountService(tdb.NewContext()).ConsumeAsync(sessionId);
+
+        Assert.Equal(ConsumeOutcome.Consumed, first.Outcome);
+        Assert.Equal(ConsumeOutcome.AlreadyFinalized, second.Outcome);   // absorbing PAY-11
+
+        using var read = tdb.NewContext();
+        Assert.Equal(1, await read.CreditTransactions.CountAsync(t => t.SessionId == sessionId)); // đúng 1
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(4, acc.PeriodUsage);        // 3 (seed) + 1, KHÔNG cộng lần 2
+        Assert.Equal(0, acc.ReservedCredits);    // giảm đúng 1 lần
+    }
+
+    // (BK7-c) prepaid consume → period_usage KHÔNG đổi (giữ null) — không hồi quy P5.
+    [Fact]
+    public async Task Consume_Prepaid_KhongDongDenPeriodUsage()
+    {
+        using var tdb = new PaymentTestDb();
+        var userId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedAccountAsync(tdb, OwnerType.User, userId, remaining: 5); // prepaid: period_usage = null
+
+        await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.User, userId, sessionId);
+
+        var result = await new CreditAccountService(tdb.NewContext()).ConsumeAsync(sessionId);
+
+        Assert.Equal(ConsumeOutcome.Consumed, result.Outcome);
+        using var read = tdb.NewContext();
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == userId);
+        Assert.Null(acc.PeriodUsage);            // prepaid KHÔNG chạm period_usage
+        Assert.Equal(4, acc.RemainingCredits);   // reserve −1, consume không đụng remaining
         Assert.Equal(0, acc.ReservedCredits);
     }
 }
