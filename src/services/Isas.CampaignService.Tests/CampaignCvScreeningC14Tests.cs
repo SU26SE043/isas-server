@@ -361,7 +361,7 @@ public class CampaignCvScreeningC14Tests
         var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, email: null);
 
         var svc = NewService(tdb.NewContext());
-        await svc.PatchCandidateAsync(owner, camp.Id, cand.Id,
+        await svc.PatchCandidateAsync(owner, owner, camp.Id, cand.Id,
             new PatchCandidateRequest { Email = "New@X.com", FullName = "  Nguyễn Văn A  " }, default);
 
         using var check = tdb.NewContext();
@@ -383,7 +383,7 @@ public class CampaignCvScreeningC14Tests
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.PatchCandidateAsync(owner, camp.Id, cand.Id,
+            svc.PatchCandidateAsync(owner, owner, camp.Id, cand.Id,
                 new PatchCandidateRequest { FullName = "X" }, default));
     }
 
@@ -399,7 +399,7 @@ public class CampaignCvScreeningC14Tests
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.PatchCandidateAsync(owner, camp.Id, cand.Id,
+            svc.PatchCandidateAsync(owner, owner, camp.Id, cand.Id,
                 new PatchCandidateRequest { Email = "taken@x.com" }, default));
     }
 }

@@ -39,11 +39,11 @@ public sealed class CampaignTestDb : IDisposable
     }
 
     public static Campaign NewCampaign(
-        Guid employerId, CampaignStatus status = CampaignStatus.Draft, bool antiCheat = true)
+        Guid orgId, CampaignStatus status = CampaignStatus.Draft, bool antiCheat = true)
         => new()
         {
             Id = Guid.NewGuid(),
-            EmployerId = employerId,
+            OrgId = orgId,
             Title = "Test Campaign",
             Status = status,
             AntiCheatEnabled = antiCheat,

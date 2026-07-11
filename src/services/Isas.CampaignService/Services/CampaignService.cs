@@ -39,7 +39,7 @@ namespace Isas.CampaignService.Services
             _emailPublisher = emailPublisher;
         }
 
-        public async Task<CampaignResponse> CreateCampaignAsync(Guid employerId, CreateCampaignRequest request, CancellationToken ct = default)
+        public async Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct = default)
         {
             // ── 1. Validate questions ───────────────────────────
             if (request.Questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
@@ -51,7 +51,7 @@ namespace Isas.CampaignService.Services
             var campaign = new Campaign
             {
                 Id = Guid.NewGuid(),
-                EmployerId = employerId,
+                OrgId = orgId,
                 Title = request.Title,
                 Domain = request.Domain,
                 Status = CampaignStatus.Draft,
@@ -74,7 +74,7 @@ namespace Isas.CampaignService.Services
             campaign.Questions = request.Questions
                 .Select(q => new CampaignQuestion
                 {
-                    EmployerId = employerId,
+                    OrgId = orgId,
                     QuestionText = q.QuestionText.Trim(),
                     Source = q.Source,
                     IsRequired = q.IsRequired,
@@ -87,21 +87,21 @@ namespace Isas.CampaignService.Services
             if (request.Criteria is not null)
             {
                 campaign.Criteria = BuildStructuredCriteria(campaign.Id, request.Criteria);
-                AddAudit(employerId, AuditAction.EditCriteria, campaign.Id, $"Khai {campaign.Criteria.Count} tiêu chí (HrEdited)");
+                AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id, $"Khai {campaign.Criteria.Count} tiêu chí (HrEdited)");
             }
 
             // ── 4. Persist campaign + audit (C10) ───────────────
             _db.Campaigns.Add(campaign);
-            AddAudit(employerId, AuditAction.CreateCampaign, campaign.Id, $"Tạo campaign '{campaign.Title}'");
+            AddAudit(actorUserId, orgId, AuditAction.CreateCampaign, campaign.Id, $"Tạo campaign '{campaign.Title}'");
             await _db.SaveChangesAsync(ct);
 
             return CampaignResponse.FromEntity(campaign);
         }
 
-        public async Task<CampaignResponse> UploadCampaignFilesAsync(Guid employerId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
+        public async Task<CampaignResponse> UploadCampaignFilesAsync(Guid orgId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
         {
             var campaign = await _db.Campaigns
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException();
 
             // C11: text ưu tiên file — bỏ file cho slot đã nhập text trực tiếp (*_text set, chưa gắn file).
@@ -137,10 +137,10 @@ namespace Isas.CampaignService.Services
             return CampaignResponse.FromEntity(campaign);
         }
          
-        public async Task<Stream> DownloadCampaignFilesAsync(Guid employerId, Guid id, string fileType, CancellationToken ct)
+        public async Task<Stream> DownloadCampaignFilesAsync(Guid orgId, Guid id, string fileType, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             string? fileUrl = fileType.ToLower() switch
@@ -156,21 +156,21 @@ namespace Isas.CampaignService.Services
             return await _file.DownloadAsync(fileUrl, ct);
         }
 
-        public async Task<CampaignResponse> GetCampaignAsync(Guid employerId, Guid id, CancellationToken ct)
+        public async Task<CampaignResponse> GetCampaignAsync(Guid orgId, Guid id, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
                 .Include(c => c.Criteria)   // C12: trả tiêu chí structured để HR xem/duyệt
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             return CampaignResponse.FromEntity(campaign);
         }
 
-        public async Task<List<CampaignResponse>> GetCampaignsAsync(Guid employerId, CancellationToken ct)
+        public async Task<List<CampaignResponse>> GetCampaignsAsync(Guid orgId, CancellationToken ct)
         {
             var listCampaigns = _db.Campaigns
-                .Where(c => c.EmployerId == employerId)
+                .Where(c => c.OrgId == orgId)
                 .Include(c => c.Questions)
                 .OrderByDescending(c => c.CreatedAt)
                 .ToListAsync(ct);
@@ -178,13 +178,13 @@ namespace Isas.CampaignService.Services
             return (await listCampaigns).Select(CampaignResponse.FromEntity).ToList();
         }
 
-        public async Task<CampaignResponse> UpdateCampaignAsync(Guid employerId, Guid id, UpdateCampaignRequest request, CancellationToken ct)
+        public async Task<CampaignResponse> UpdateCampaignAsync(Guid orgId, Guid actorUserId, Guid id, UpdateCampaignRequest request, CancellationToken ct)
         {
             // ── 1. Fetch & verify ownership ─────────────────────
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
                 .Include(c => c.Criteria)
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             // ── 2. Only update fields that were actually provided
@@ -256,7 +256,7 @@ namespace Isas.CampaignService.Services
                 // UNIQUE(campaign_id, order_no|name) nên bộ mới trùng khoá bộ cũ vẫn an toàn.
                 _db.CampaignCriteria.RemoveRange(campaign.Criteria);
                 _db.CampaignCriteria.AddRange(rebuiltCriteria);
-                AddAudit(employerId, AuditAction.EditCriteria, campaign.Id, $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited)");
+                AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id, $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited)");
                 await _db.SaveChangesAsync(ct);
                 campaign.Criteria = rebuiltCriteria;                 // đồng bộ nav cho response (bộ cũ đã xoá)
             }
@@ -264,11 +264,11 @@ namespace Isas.CampaignService.Services
             return CampaignResponse.FromEntity(campaign);
         }
 
-        public async Task<CampaignResponse> UpdateCampaignFilesAsync(Guid employerId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
+        public async Task<CampaignResponse> UpdateCampaignFilesAsync(Guid orgId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
         {
             // ── 1. Fetch & verify ownership ─────────────────────
             var campaign = await _db.Campaigns
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             // ── Lifecycle (C7): chỉ thay JD/Criteria khi Draft ─
@@ -319,12 +319,12 @@ namespace Isas.CampaignService.Services
             return CampaignResponse.FromEntity(campaign);
         }
 
-        public async Task<CampaignResponse> UpdateCampaignQuestionsAsync(Guid employerId, Guid id, List<QuestionItem> questions, CancellationToken ct)
+        public async Task<CampaignResponse> UpdateCampaignQuestionsAsync(Guid orgId, Guid actorUserId, Guid id, List<QuestionItem> questions, CancellationToken ct)
         {
             // ── 1. Fetch & verify ownership ─────────────────────
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             // ── Lifecycle (C7): chỉ sửa câu hỏi khi Draft (Active rồi → khóa) ─
@@ -338,40 +338,40 @@ namespace Isas.CampaignService.Services
             campaign.Questions.Clear();
             campaign.Questions = questions.Select(q => new CampaignQuestion
             {
-                EmployerId = campaign.EmployerId,
+                OrgId = campaign.OrgId,
                 QuestionText = q.QuestionText.Trim(),
                 Source = q.Source,
                 IsRequired = q.IsRequired,
                 CreatedAt = DateTime.UtcNow,
             }).ToList();
             campaign.UpdatedAt = DateTime.UtcNow;
-            AddAudit(employerId, AuditAction.EditQuestions, campaign.Id, $"Thay {questions.Count} câu hỏi");
+            AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id, $"Thay {questions.Count} câu hỏi");
             await _db.SaveChangesAsync(ct);
             return CampaignResponse.FromEntity(campaign);
         }
 
-        public async Task<bool> DeleteCampaignAsync(Guid employerId, Guid id, CancellationToken ct)
+        public async Task<bool> DeleteCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             // Soft delete (D11): giữ campaign + câu hỏi + file cho audit/đối chất.
             // KHÔNG xoá file ngay — cronjob purge SeaweedFS sau 90 ngày.
             campaign.DeletedAt = DateTime.UtcNow;
             campaign.UpdatedAt = DateTime.UtcNow;
-            AddAudit(employerId, AuditAction.Delete, campaign.Id, "Soft delete");
+            AddAudit(actorUserId, orgId, AuditAction.Delete, campaign.Id, "Soft delete");
             await _db.SaveChangesAsync(ct);
             return true;
         }
 
         // ── PUBLISH (C8): Draft → Active + sinh tiêu chí CÓ CẤU TRÚC ────────
-        public async Task<CampaignResponse> PublishCampaignAsync(Guid employerId, Guid id, CancellationToken ct)
+        public async Task<CampaignResponse> PublishCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
                 .Include(c => c.Criteria)
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             if (campaign.Status != CampaignStatus.Draft)
@@ -386,18 +386,18 @@ namespace Isas.CampaignService.Services
 
             campaign.Status = CampaignStatus.Active;
             campaign.UpdatedAt = DateTime.UtcNow;
-            AddAudit(employerId, AuditAction.Publish, campaign.Id, "Publish: Draft → Active");
+            AddAudit(actorUserId, orgId, AuditAction.Publish, campaign.Id, "Publish: Draft → Active");
             await _db.SaveChangesAsync(ct);
 
             return CampaignResponse.FromEntity(campaign);
         }
 
         // ── TRANSITION (C7): chỉ tiến Active→Closed→Archived (Draft→Active dùng publish) ──
-        public async Task<CampaignResponse> TransitionStatusAsync(Guid employerId, Guid id, CampaignStatus target, CancellationToken ct)
+        public async Task<CampaignResponse> TransitionStatusAsync(Guid orgId, Guid actorUserId, Guid id, CampaignStatus target, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             bool ok = (campaign.Status, target) switch
@@ -413,7 +413,7 @@ namespace Isas.CampaignService.Services
             var from = campaign.Status;
             campaign.Status = target;
             campaign.UpdatedAt = DateTime.UtcNow;
-            AddAudit(employerId, AuditAction.TransitionStatus, campaign.Id, $"{from} → {target}");
+            AddAudit(actorUserId, orgId, AuditAction.TransitionStatus, campaign.Id, $"{from} → {target}");
             await _db.SaveChangesAsync(ct);
 
             return CampaignResponse.FromEntity(campaign);
@@ -423,10 +423,10 @@ namespace Isas.CampaignService.Services
         // Thứ tự xử lý (đúng doc): validate định dạng → dedup → cap max_candidates.
         // Email hỏng/trùng/đã mời → failed[] per-item, KHÔNG chặn cả batch.
         // Vượt cap max_candidates → chặn CẢ request (ArgumentException → 400).
-        public async Task<CreateInvitationsResponse> CreateInvitationsAsync(Guid employerId, Guid id, List<string> emails, CancellationToken ct)
+        public async Task<CreateInvitationsResponse> CreateInvitationsAsync(Guid orgId, Guid actorUserId, Guid id, List<string> emails, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             if (campaign.Status != CampaignStatus.Active)
@@ -499,7 +499,7 @@ namespace Isas.CampaignService.Services
             if (invitations.Count > 0)
             {
                 _db.CampaignInvitations.AddRange(invitations);
-                AddAudit(employerId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên qua email");
+                AddAudit(actorUserId, orgId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên qua email");
                 await _db.SaveChangesAsync(ct);
 
                 foreach (var invitation in invitations)
@@ -524,10 +524,10 @@ namespace Isas.CampaignService.Services
         // KHÔNG chặn item khác); đã Invited → skip (absorbing). Vượt max_candidates → chặn CẢ request (400),
         // nhất quán D1. Campaign phải Active (không → 409); ngoài org → 404.
         public async Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(
-            Guid employerId, Guid id, List<Guid> candidateIds, CancellationToken ct)
+            Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             if (campaign.Status != CampaignStatus.Active)
@@ -619,7 +619,7 @@ namespace Isas.CampaignService.Services
                 invitations.Add((invitation, cand));
             }
 
-            AddAudit(employerId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên từ shortlist sàng CV");
+            AddAudit(actorUserId, orgId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên từ shortlist sàng CV");
             await _db.SaveChangesAsync(ct);
 
             foreach (var (invitation, cand) in invitations)
@@ -644,11 +644,11 @@ namespace Isas.CampaignService.Services
         // Đọc read-model LOCAL `campaign_rankings` (E4 upsert từ event SessionScored) — không gọi
         // xuyên service. Bảng chỉ có 1 row/ứng viên đã `Scored` (row tạo khi nhận SessionScored) nên
         // "chỉ xếp hạng Scored" (CAMP-11) tự thoả — ứng viên chưa Scored không có row → không xuất hiện.
-        // Ownership: chỉ chủ org (employer_id) xem được — không phải chủ → 404 (KeyNotFoundException).
-        public async Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid employerId, Guid id, CancellationToken ct)
+        // Ownership: chỉ chủ org (org_id) xem được — không phải chủ → 404 (KeyNotFoundException).
+        public async Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid orgId, Guid id, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             // Materialize rồi sắp + gán rank TRONG BỘ NHỚ: EF Core không dịch ROW_NUMBER()/RANK() sang
@@ -704,7 +704,7 @@ namespace Isas.CampaignService.Services
         // không tính lại (một nguồn sự thật). Ngoài org → E5 ném KeyNotFoundException → controller 404.
         // format: null/"" → mặc định csv; "csv" → csv; khác (kể cả "pdf" 🔜) → ArgumentException → 400.
         public async Task<CampaignResultExport> ExportCampaignResultsAsync(
-            Guid employerId, Guid id, string? format, CancellationToken ct)
+            Guid orgId, Guid id, string? format, CancellationToken ct)
         {
             var normalized = string.IsNullOrWhiteSpace(format) ? "csv" : format.Trim().ToLowerInvariant();
             if (normalized == "pdf")
@@ -712,7 +712,7 @@ namespace Isas.CampaignService.Services
             if (normalized != "csv")
                 throw new ArgumentException($"format '{format}' không hợp lệ — chỉ hỗ trợ format=csv.");
 
-            var results = await GetCampaignResultsAsync(employerId, id, ct);   // có thể ném KeyNotFoundException (404)
+            var results = await GetCampaignResultsAsync(orgId, id, ct);   // có thể ném KeyNotFoundException (404)
 
             return new CampaignResultExport
             {
@@ -727,10 +727,10 @@ namespace Isas.CampaignService.Services
         // archive PDF gốc lên S3 (KEY, GEN-5) → hard-filter → Filtered | Rejected(reason). Trùng email → skip.
         // File hỏng/parse fail → Rejected (KHÔNG chặn cả batch). Vượt cap/thiếu file → 400. Chưa Active → 409.
         public async Task<ScreenCandidatesResponse> ScreenCandidatesAsync(
-            Guid employerId, Guid id, IFormFileCollection files, CancellationToken ct)
+            Guid orgId, Guid actorUserId, Guid id, IFormFileCollection files, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
-                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             // Guard: chỉ sàng khi Active (đã có campaign_criteria). Draft/Closed/Archived → 409.
@@ -830,7 +830,7 @@ namespace Isas.CampaignService.Services
             if (created.Count > 0)
             {
                 _db.CampaignCandidates.AddRange(created);
-                AddAudit(employerId, AuditAction.ScreenCandidates, campaign.Id,
+                AddAudit(actorUserId, orgId, AuditAction.ScreenCandidates, campaign.Id,
                     $"Sàng {response.Received} CV: {created.Count(c => c.Status == CandidateStatus.Filtered)} qua, " +
                     $"{created.Count(c => c.Status == CandidateStatus.Rejected)} loại, {response.Skipped} trùng");
                 await _db.SaveChangesAsync(ct);
@@ -850,13 +850,13 @@ namespace Isas.CampaignService.Services
             return response;
         }
 
-        // C13: serve CV gốc (PDF) cho HR. Ownership qua campaign.employer_id (join) → ngoài org = 404.
+        // C13: serve CV gốc (PDF) cho HR. Ownership qua campaign.org_id (join) → ngoài org = 404.
         // cv_file_url null (chưa archive) → FileNotFoundException (404).
-        public async Task<Stream> DownloadCandidateCvAsync(Guid employerId, Guid id, Guid candidateId, CancellationToken ct)
+        public async Task<Stream> DownloadCandidateCvAsync(Guid orgId, Guid id, Guid candidateId, CancellationToken ct)
         {
             var candidate = await _db.CampaignCandidates
                 .FirstOrDefaultAsync(
-                    c => c.Id == candidateId && c.CampaignId == id && c.Campaign.EmployerId == employerId, ct)
+                    c => c.Id == candidateId && c.CampaignId == id && c.Campaign.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
 
             if (string.IsNullOrWhiteSpace(candidate.CvFileUrl))
@@ -1115,12 +1115,14 @@ namespace Isas.CampaignService.Services
             };
         }
 
-        // C10: ghi vết thao tác. Id/At set sẵn (chạy được trên SQLite test + Postgres).
-        private void AddAudit(Guid actorId, AuditAction action, Guid entityId, string? summary)
+        // C10/BK4: ghi vết thao tác. actor_user_id = cá nhân HR thao tác (user sub, giữ danh tính người);
+        // org_id = ORG sở hữu campaign (ownership context). Id/At set sẵn (chạy SQLite test + Postgres).
+        private void AddAudit(Guid actorUserId, Guid orgId, AuditAction action, Guid entityId, string? summary)
             => _db.AuditLogs.Add(new AuditLog
             {
                 Id = Guid.NewGuid(),
-                ActorUserId = actorId,
+                OrgId = orgId,
+                ActorUserId = actorUserId,
                 Action = action,
                 Entity = "Campaign",
                 EntityId = entityId,

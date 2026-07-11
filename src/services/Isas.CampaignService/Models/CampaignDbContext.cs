@@ -65,9 +65,9 @@ namespace Isas.CampaignService.Models
                     e.Property(x => x.KeywordsAny).HasColumnType("jsonb");
                 }
 
-                // Indexes
-                e.HasIndex(x => new { x.EmployerId, x.Status });
-                e.HasIndex(x => new { x.EmployerId, x.CreatedAt });
+                // Indexes — lọc theo owner ORG (BK4)
+                e.HasIndex(x => new { x.OrgId, x.Status });
+                e.HasIndex(x => new { x.OrgId, x.CreatedAt });
             });
 
             // ── CampaignQuestion ─────────────────────────────────────────

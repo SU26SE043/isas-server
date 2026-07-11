@@ -26,28 +26,37 @@ namespace Isas.CampaignService.Controllers
             _logger = logger;
         }
 
+        // BK4: chủ sở hữu campaign = ORG (AUTH-8/D5 — billing/campaign gắn theo org). JWT mang `org_id`
+        // khi user thuộc org (AUTH-5). Thiếu claim → user không thuộc org nào → không thao tác campaign được.
+        private Guid? GetOrgId()
+            => Guid.TryParse(User.FindFirstValue("org_id"), out var g) ? g : (Guid?)null;
+
+        // Cá nhân HR thao tác = audit actor (user sub — giữ danh tính người, KHÔNG phải org).
+        private Guid GetActorUserId()
+            => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var g) ? g : Guid.Empty;
+
         [HttpGet]
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<List<CampaignResponse>>> GetAllCampaign(CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
-            return await _campaignService.GetCampaignsAsync(Guid.Parse(employerId), ct);
+            return await _campaignService.GetCampaignsAsync(orgId.Value, ct);
         }
 
         [HttpGet("{id}")]
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> GetCampaignById(Guid id, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                var campaign = await _campaignService.GetCampaignAsync(Guid.Parse(employerId), id, ct);
+                var campaign = await _campaignService.GetCampaignAsync(orgId.Value, id, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -58,8 +67,8 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> CreateCampaign([FromBody] CreateCampaignRequest request, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             if (request.Questions == null || !request.Questions.Any())
@@ -79,7 +88,7 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var campaign = await _campaignService.CreateCampaignAsync(Guid.Parse(employerId), request, ct);
+                var campaign = await _campaignService.CreateCampaignAsync(orgId.Value, GetActorUserId(), request, ct);
                 return Ok(campaign);
             }
             catch (ArgumentException ex)
@@ -97,8 +106,8 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UploadCampaignFiles(Guid id, [FromForm] UploadCampaignFilesRequest request, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             if (request.JdFile is null && request.CriteriaFile is null)
@@ -112,7 +121,7 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var campaign = await _campaignService.UploadCampaignFilesAsync(Guid.Parse(employerId), id, request, ct);
+                var campaign = await _campaignService.UploadCampaignFilesAsync(orgId.Value, id, request, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException) { return NotFound($"Campaign {id} not found."); }
@@ -124,8 +133,8 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<IActionResult> DownloadCampaignFiles(Guid id, string fileType, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             if (string.IsNullOrWhiteSpace(fileType) || !(fileType.Equals("jd", StringComparison.OrdinalIgnoreCase) || fileType.Equals("criteria", StringComparison.OrdinalIgnoreCase)))
@@ -135,7 +144,7 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var fileStream = await _campaignService.DownloadCampaignFilesAsync(Guid.Parse(employerId), id, fileType, ct);
+                var fileStream = await _campaignService.DownloadCampaignFilesAsync(orgId.Value, id, fileType, ct);
 
                 // 1 file PDF → trả đúng content-type + tên thật (bug #4)
                 return File(fileStream, "application/pdf", $"campaign_{id}_{fileType.ToLower()}.pdf");
@@ -150,14 +159,14 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaign(Guid id, UpdateCampaignRequest request, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                // ownership được enforce trong service (lọc theo employerId) → không thấy = 404
-                var updatedCampaign = await _campaignService.UpdateCampaignAsync(Guid.Parse(employerId), id, request, ct);
+                // ownership được enforce trong service (lọc theo org_id) → không thấy = 404
+                var updatedCampaign = await _campaignService.UpdateCampaignAsync(orgId.Value, GetActorUserId(), id, request, ct);
                 return Ok(updatedCampaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -171,8 +180,8 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaignFiles(Guid id, [FromForm] UploadCampaignFilesRequest request, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             if (request.JdFile is null && request.CriteriaFile is null)
@@ -186,7 +195,7 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var campaign = await _campaignService.UpdateCampaignFilesAsync(Guid.Parse(employerId), id, request, ct);
+                var campaign = await _campaignService.UpdateCampaignFilesAsync(orgId.Value, id, request, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -199,8 +208,8 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> UpdateCampaignQuestions(Guid id, [FromBody] List<QuestionItem> questions, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             if (questions == null || !questions.Any())
@@ -210,7 +219,7 @@ namespace Isas.CampaignService.Controllers
                 return BadRequest("All questions must have non-empty text.");
             try
             {
-                var campaign = await _campaignService.UpdateCampaignQuestionsAsync(Guid.Parse(employerId), id, questions, ct);
+                var campaign = await _campaignService.UpdateCampaignQuestionsAsync(orgId.Value, GetActorUserId(), id, questions, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -223,14 +232,14 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<IActionResult> DeleteCampaign(Guid id, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
                 // ownership enforce trong service → không thấy = 404
-                await _campaignService.DeleteCampaignAsync(Guid.Parse(employerId), id, ct);
+                await _campaignService.DeleteCampaignAsync(orgId.Value, GetActorUserId(), id, ct);
                 return NoContent();
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -242,13 +251,13 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> PublishCampaign(Guid id, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                var campaign = await _campaignService.PublishCampaignAsync(Guid.Parse(employerId), id, ct);
+                var campaign = await _campaignService.PublishCampaignAsync(orgId.Value, GetActorUserId(), id, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -261,13 +270,13 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> TransitionStatus(Guid id, [FromBody] TransitionStatusRequest request, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                var campaign = await _campaignService.TransitionStatusAsync(Guid.Parse(employerId), id, request.Status, ct);
+                var campaign = await _campaignService.TransitionStatusAsync(orgId.Value, GetActorUserId(), id, request.Status, ct);
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -280,8 +289,8 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CreateInvitationsResponse>> CreateInvitations(Guid id, [FromBody] CreateInvitationsRequest request, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             if (request?.Emails == null || request.Emails.Count == 0)
@@ -289,7 +298,7 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var result = await _campaignService.CreateInvitationsAsync(Guid.Parse(employerId), id, request.Emails, ct);
+                var result = await _campaignService.CreateInvitationsAsync(orgId.Value, GetActorUserId(), id, request.Emails, ct);
                 return Ok(result);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -305,8 +314,8 @@ namespace Isas.CampaignService.Controllers
         public async Task<ActionResult<InviteShortlistResponse>> InviteShortlistedCandidates(
             Guid id, [FromBody] InviteShortlistRequest request, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             if (request?.CandidateIds == null || request.CandidateIds.Count == 0)
@@ -314,7 +323,7 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var result = await _campaignService.InviteShortlistedCandidatesAsync(Guid.Parse(employerId), id, request.CandidateIds, ct);
+                var result = await _campaignService.InviteShortlistedCandidatesAsync(orgId.Value, GetActorUserId(), id, request.CandidateIds, ct);
                 return Ok(result);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -324,18 +333,18 @@ namespace Isas.CampaignService.Controllers
         }
 
         // E5: bảng kết quả — xếp hạng + pass/fail (đọc read-model campaign_rankings, E4).
-        // Chỉ chủ org (employer_id) xem được → không phải chủ = 404.
+        // Chỉ chủ org (org_id) xem được → không phải chủ = 404.
         [HttpGet("{id:guid}/results")]
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResultsResponse>> GetCampaignResults(Guid id, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                var results = await _campaignService.GetCampaignResultsAsync(Guid.Parse(employerId), id, ct);
+                var results = await _campaignService.GetCampaignResultsAsync(orgId.Value, id, ct);
                 return Ok(results);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -343,18 +352,18 @@ namespace Isas.CampaignService.Controllers
         }
 
         // E6: xuất bảng kết quả (E5) ra file. `?format=csv` (mặc định khi thiếu); `pdf`/khác → 400.
-        // Ownership giống E5 (lọc theo employer_id) → ngoài org = 404. Bám pattern `return File(...)`.
+        // Ownership giống E5 (lọc theo org_id) → ngoài org = 404. Bám pattern `return File(...)`.
         [HttpGet("{id:guid}/results/export")]
         [Authorize(Roles = "Employer")]
         public async Task<IActionResult> ExportCampaignResults(Guid id, [FromQuery] string? format, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                var export = await _campaignService.ExportCampaignResultsAsync(Guid.Parse(employerId), id, format, ct);
+                var export = await _campaignService.ExportCampaignResultsAsync(orgId.Value, id, format, ct);
                 return File(export.Content, export.ContentType, export.FileName);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }        // ngoài org / không tồn tại → 404
@@ -369,8 +378,8 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<IActionResult> ScreenCandidates(Guid id, [FromForm] IFormFileCollection files, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             if (files is null || files.Count == 0)
@@ -378,12 +387,12 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var result = await _campaignService.ScreenCandidatesAsync(Guid.Parse(employerId), id, files, ct);
+                var result = await _campaignService.ScreenCandidatesAsync(orgId.Value, GetActorUserId(), id, files, ct);
 
                 // C14: đẩy job AI chấm khớp cho các ứng viên vừa Filtered (Filtered → Analyzing). Best-effort:
                 // broker down → giữ Filtered (last_screening_published_at=null) → C15 republisher đẩy lại,
                 // KHÔNG làm hỏng kết quả sàng đã lưu (202 vẫn trả).
-                try { await _screening.PublishScreeningJobsAsync(Guid.Parse(employerId), id, ct); }
+                try { await _screening.PublishScreeningJobsAsync(orgId.Value, id, ct); }
                 catch (Exception ex) { _logger.LogError(ex, "Publish job sàng CV thất bại cho campaign {CampaignId}", id); }
 
                 return StatusCode(StatusCodes.Status202Accepted, result);
@@ -395,7 +404,7 @@ namespace Isas.CampaignService.Controllers
         }
 
         // C14: shortlist — danh sách ứng viên sàng CV. `?sort=score` (mặc định) DESC theo overall_match_score;
-        // `?sort=name`; lọc `?status=&minScore=&skill=`. Chỉ chủ org (employer_id) → ngoài org = 404.
+        // `?sort=name`; lọc `?status=&minScore=&skill=`. Chỉ chủ org (org_id) → ngoài org = 404.
         [HttpGet("{id:guid}/candidates")]
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<List<CandidateListItem>>> GetCandidates(
@@ -406,13 +415,13 @@ namespace Isas.CampaignService.Controllers
             [FromQuery] string? sort,
             CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                var list = await _screening.GetCandidatesAsync(Guid.Parse(employerId), id, status, minScore, skill, sort, ct);
+                var list = await _screening.GetCandidatesAsync(orgId.Value, id, status, minScore, skill, sort, ct);
                 return Ok(list);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -424,13 +433,13 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CandidateDetailResponse>> GetCandidate(Guid id, Guid candidateId, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                var detail = await _screening.GetCandidateAsync(Guid.Parse(employerId), id, candidateId, ct);
+                var detail = await _screening.GetCandidateAsync(orgId.Value, id, candidateId, ct);
                 return Ok(detail);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -443,13 +452,13 @@ namespace Isas.CampaignService.Controllers
         public async Task<IActionResult> PatchCandidate(
             Guid id, Guid candidateId, [FromBody] PatchCandidateRequest request, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                await _screening.PatchCandidateAsync(Guid.Parse(employerId), id, candidateId, request, ct);
+                await _screening.PatchCandidateAsync(orgId.Value, GetActorUserId(), id, candidateId, request, ct);
                 return NoContent();
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -463,13 +472,13 @@ namespace Isas.CampaignService.Controllers
         [Authorize(Roles = "Employer")]
         public async Task<IActionResult> DownloadCandidateCv(Guid id, Guid candidateId, CancellationToken ct)
         {
-            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(employerId))
+            var orgId = GetOrgId();
+            if (orgId is null)
                 return Forbid();
 
             try
             {
-                var stream = await _campaignService.DownloadCandidateCvAsync(Guid.Parse(employerId), id, candidateId, ct);
+                var stream = await _campaignService.DownloadCandidateCvAsync(orgId.Value, id, candidateId, ct);
                 return File(stream, "application/pdf", $"candidate_{candidateId}.pdf");
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }

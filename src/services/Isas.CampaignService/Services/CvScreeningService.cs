@@ -33,11 +33,11 @@ namespace Isas.CampaignService.Services
         // ── Publish job sàng cho các ứng viên Filtered → Analyzing ──────────────────────────
         // Best-effort per-candidate: publish hụt → giữ Filtered (last_screening_published_at=null) →
         // C15 StuckScreeningRepublisher đẩy lại. TÁI DÙNG campaign_criteria làm rubric gửi kèm job.
-        public async Task<int> PublishScreeningJobsAsync(Guid employerId, Guid campaignId, CancellationToken ct)
+        public async Task<int> PublishScreeningJobsAsync(Guid orgId, Guid campaignId, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
                 .Include(c => c.Criteria)
-                .FirstOrDefaultAsync(c => c.Id == campaignId && c.EmployerId == employerId, ct)
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
 
             var candidates = await _db.CampaignCandidates
@@ -166,10 +166,10 @@ namespace Isas.CampaignService.Services
 
         // ── Shortlist: sort=score DESC (mặc định) — ranking derived overall_match_score ─────────────
         public async Task<List<CandidateListItem>> GetCandidatesAsync(
-            Guid employerId, Guid campaignId, string? status, int? minScore, string? skill, string? sort, CancellationToken ct)
+            Guid orgId, Guid campaignId, string? status, int? minScore, string? skill, string? sort, CancellationToken ct)
         {
-            // Ownership: campaign phải của employer (query filter loại soft-deleted) → không thấy = 404.
-            var owns = await _db.Campaigns.AnyAsync(c => c.Id == campaignId && c.EmployerId == employerId, ct);
+            // Ownership: campaign phải của org (query filter loại soft-deleted) → không thấy = 404.
+            var owns = await _db.Campaigns.AnyAsync(c => c.Id == campaignId && c.OrgId == orgId, ct);
             if (!owns)
                 throw new KeyNotFoundException($"Campaign {campaignId} not found.");
 
@@ -213,11 +213,11 @@ namespace Isas.CampaignService.Services
 
         // ── Chi tiết 1 ứng viên + điểm từng tiêu chí (reasoning) ─────────────────────────────────────
         public async Task<CandidateDetailResponse> GetCandidateAsync(
-            Guid employerId, Guid campaignId, Guid candidateId, CancellationToken ct)
+            Guid orgId, Guid campaignId, Guid candidateId, CancellationToken ct)
         {
             var candidate = await _db.CampaignCandidates
                 .FirstOrDefaultAsync(
-                    c => c.Id == candidateId && c.CampaignId == campaignId && c.Campaign.EmployerId == employerId, ct)
+                    c => c.Id == candidateId && c.CampaignId == campaignId && c.Campaign.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
 
             var scores = await (from s in _db.CandidateCriterionScores
@@ -251,11 +251,11 @@ namespace Isas.CampaignService.Services
 
         // ── PATCH email/fullName (parse thiếu) → audit_logs; đã Invited → 409; trùng email → 400 ──────
         public async Task PatchCandidateAsync(
-            Guid employerId, Guid campaignId, Guid candidateId, PatchCandidateRequest req, CancellationToken ct)
+            Guid orgId, Guid actorUserId, Guid campaignId, Guid candidateId, PatchCandidateRequest req, CancellationToken ct)
         {
             var candidate = await _db.CampaignCandidates
                 .FirstOrDefaultAsync(
-                    c => c.Id == candidateId && c.CampaignId == campaignId && c.Campaign.EmployerId == employerId, ct)
+                    c => c.Id == candidateId && c.CampaignId == campaignId && c.Campaign.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
 
             // Đã phát magic-link (email đã dùng) → khoá sửa → 409.
@@ -296,7 +296,8 @@ namespace Isas.CampaignService.Services
             _db.AuditLogs.Add(new AuditLog
             {
                 Id = Guid.NewGuid(),
-                ActorUserId = employerId,
+                OrgId = orgId,                  // BK4: ORG sở hữu campaign (ownership context)
+                ActorUserId = actorUserId,      // cá nhân HR thao tác (user sub, không phải org)
                 Action = AuditAction.EditCandidate,
                 Entity = "CampaignCandidate",
                 EntityId = candidateId,

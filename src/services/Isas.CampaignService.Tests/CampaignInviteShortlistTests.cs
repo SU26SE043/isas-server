@@ -69,7 +69,7 @@ public class CampaignInviteShortlistTests
         var publisher = new Mock<IInvitationEmailPublisher>();
         var svc = NewService(tdb.NewContext(), publisher.Object);
 
-        var result = await svc.InviteShortlistedCandidatesAsync(owner, camp.Id, new() { c1.Id, c2.Id }, default);
+        var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { c1.Id, c2.Id }, default);
 
         Assert.Equal(2, result.Invited.Count);
         Assert.Empty(result.Failed);
@@ -100,7 +100,7 @@ public class CampaignInviteShortlistTests
         var noEmail = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, null);
 
         var svc = NewService(tdb.NewContext());
-        var result = await svc.InviteShortlistedCandidatesAsync(owner, camp.Id, new() { withEmail.Id, noEmail.Id }, default);
+        var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { withEmail.Id, noEmail.Id }, default);
 
         Assert.Single(result.Invited);
         Assert.Equal(withEmail.Id, result.Invited[0].CandidateId);
@@ -124,7 +124,7 @@ public class CampaignInviteShortlistTests
 
         var publisher = new Mock<IInvitationEmailPublisher>();
         var svc = NewService(tdb.NewContext(), publisher.Object);
-        var result = await svc.InviteShortlistedCandidatesAsync(owner, camp.Id, new() { invited.Id }, default);
+        var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { invited.Id }, default);
 
         Assert.Empty(result.Invited);
         Assert.Empty(result.Failed);
@@ -144,7 +144,7 @@ public class CampaignInviteShortlistTests
         var filtered = SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered, "a@x.com");
 
         var svc = NewService(tdb.NewContext());
-        var result = await svc.InviteShortlistedCandidatesAsync(owner, camp.Id, new() { filtered.Id }, default);
+        var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { filtered.Id }, default);
 
         Assert.Empty(result.Invited);
         Assert.Single(result.Failed);
@@ -165,7 +165,7 @@ public class CampaignInviteShortlistTests
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.InviteShortlistedCandidatesAsync(owner, camp.Id, new() { cand.Id }, default));
+            svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { cand.Id }, default));
     }
 
     // (e-2) ngoài org → KeyNotFoundException (404).
@@ -179,7 +179,7 @@ public class CampaignInviteShortlistTests
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
-            svc.InviteShortlistedCandidatesAsync(Guid.NewGuid() /* org khác */, camp.Id, new() { cand.Id }, default));
+            svc.InviteShortlistedCandidatesAsync(Guid.NewGuid() /* org khác */, Guid.NewGuid(), camp.Id, new() { cand.Id }, default));
     }
 
     // (f) vượt max_candidates → ArgumentException (400); KHÔNG tạo dở dang.
@@ -194,7 +194,7 @@ public class CampaignInviteShortlistTests
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            svc.InviteShortlistedCandidatesAsync(owner, camp.Id, new() { c1.Id, c2.Id }, default));
+            svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { c1.Id, c2.Id }, default));
 
         using var check = tdb.NewContext();
         Assert.Empty(await check.CampaignInvitations.Where(i => i.CampaignId == camp.Id).ToListAsync());
@@ -222,7 +222,7 @@ public class CampaignInviteShortlistTests
         var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "a@x.com");
 
         var svc = NewService(tdb.NewContext());
-        var result = await svc.InviteShortlistedCandidatesAsync(owner, camp.Id, new() { cand.Id }, default);
+        var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { cand.Id }, default);
 
         Assert.Empty(result.Invited);
         Assert.Single(result.Failed);
@@ -243,7 +243,7 @@ public class CampaignInviteShortlistTests
 
         var svc = NewService(tdb.NewContext());
         var ghost = Guid.NewGuid();
-        var result = await svc.InviteShortlistedCandidatesAsync(owner, camp.Id, new() { ghost }, default);
+        var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { ghost }, default);
 
         Assert.Empty(result.Invited);
         Assert.Single(result.Failed);

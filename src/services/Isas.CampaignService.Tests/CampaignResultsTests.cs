@@ -15,7 +15,7 @@ namespace Isas.CampaignService.Tests;
 /// (a) sắp giảm theo total_score + gán rank đúng (đồng điểm → cùng rank: 1,1,3);
 /// (b) pass/fail đúng theo ngưỡng Employer (pass_score_pct); ngưỡng null → Result null (HR quyết tay);
 /// (c) ứng viên chưa Scored (không có row ranking) KHÔNG xuất hiện + không lẫn ranking campaign khác;
-/// (d) người ngoài org (employer_id khác) → không xem được (KeyNotFoundException → 404).
+/// (d) người ngoài org (org_id khác) → không xem được (KeyNotFoundException → 404).
 /// </summary>
 public class CampaignResultsTests
 {
@@ -24,9 +24,9 @@ public class CampaignResultsTests
             Mock.Of<IParserService>(), Mock.Of<ICriteriaSuggester>(),
             Mock.Of<IInvitationEmailPublisher>());
 
-    private static Campaign SeedCampaign(CampaignDbContext db, Guid employerId, int? passScorePct = null)
+    private static Campaign SeedCampaign(CampaignDbContext db, Guid orgId, int? passScorePct = null)
     {
-        var c = CampaignTestDb.NewCampaign(employerId, CampaignStatus.Active);
+        var c = CampaignTestDb.NewCampaign(orgId, CampaignStatus.Active);
         c.PassScorePct = passScorePct;
         db.Campaigns.Add(c);
         db.SaveChanges();
@@ -56,8 +56,8 @@ public class CampaignResultsTests
     public async Task Results_sap_giam_theo_total_score_va_rank_dong_hang_dung()
     {
         using var tdb = new CampaignTestDb();
-        var employerId = Guid.NewGuid();
-        var campaign = SeedCampaign(tdb.Db, employerId);
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId);
 
         var t0 = DateTime.UtcNow;
         var cTop = SeedRanking(tdb.Db, campaign.Id, 90.00m, t0);
@@ -66,7 +66,7 @@ public class CampaignResultsTests
         var cTieLate = SeedRanking(tdb.Db, campaign.Id, 82.50m, t0.AddMinutes(2));
         var cBottom = SeedRanking(tdb.Db, campaign.Id, 70.00m, t0.AddMinutes(3));
 
-        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(employerId, campaign.Id, default);
+        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
 
         Assert.Equal(4, res.TotalCandidates);
         Assert.Equal(4, res.Results.Count);
@@ -90,14 +90,14 @@ public class CampaignResultsTests
     public async Task Results_pass_fail_dung_theo_nguong_employer()
     {
         using var tdb = new CampaignTestDb();
-        var employerId = Guid.NewGuid();
-        var campaign = SeedCampaign(tdb.Db, employerId, passScorePct: 80);
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId, passScorePct: 80);
 
         SeedRanking(tdb.Db, campaign.Id, 85.00m);   // > ngưỡng → Pass
         SeedRanking(tdb.Db, campaign.Id, 80.00m);   // = ngưỡng → Pass (boundary)
         SeedRanking(tdb.Db, campaign.Id, 79.99m);   // < ngưỡng → Fail
 
-        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(employerId, campaign.Id, default);
+        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
 
         Assert.Equal(80, res.PassScorePct);
         Assert.Equal("Pass", res.Results.Single(r => r.TotalScore == 85.00m).Result);
@@ -110,13 +110,13 @@ public class CampaignResultsTests
     public async Task Results_nguong_null_thi_result_null()
     {
         using var tdb = new CampaignTestDb();
-        var employerId = Guid.NewGuid();
-        var campaign = SeedCampaign(tdb.Db, employerId, passScorePct: null);
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId, passScorePct: null);
 
         SeedRanking(tdb.Db, campaign.Id, 95.00m);
         SeedRanking(tdb.Db, campaign.Id, 10.00m);
 
-        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(employerId, campaign.Id, default);
+        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
 
         Assert.Null(res.PassScorePct);
         Assert.All(res.Results, r => Assert.Null(r.Result));
@@ -127,9 +127,9 @@ public class CampaignResultsTests
     public async Task Results_chi_gom_scored_cua_dung_campaign()
     {
         using var tdb = new CampaignTestDb();
-        var employerId = Guid.NewGuid();
-        var campaign = SeedCampaign(tdb.Db, employerId);
-        var other = SeedCampaign(tdb.Db, employerId);
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId);
+        var other = SeedCampaign(tdb.Db, orgId);
 
         var scored1 = SeedRanking(tdb.Db, campaign.Id, 60.00m);
         var scored2 = SeedRanking(tdb.Db, campaign.Id, 88.00m);
@@ -138,7 +138,7 @@ public class CampaignResultsTests
         // Ranking thuộc campaign khác — không được lẫn vào kết quả campaign này.
         SeedRanking(tdb.Db, other.Id, 99.00m);
 
-        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(employerId, campaign.Id, default);
+        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
 
         Assert.Equal(2, res.TotalCandidates);
         var candidateIds = res.Results.Select(r => r.CandidateId).ToHashSet();
@@ -149,7 +149,7 @@ public class CampaignResultsTests
         Assert.DoesNotContain(res.Results, r => r.TotalScore == 99.00m);
     }
 
-    // (d) Người ngoài org (employer_id khác) → không xem được kết quả (404 = KeyNotFoundException).
+    // (d) Người ngoài org (org_id khác) → không xem được kết quả (404 = KeyNotFoundException).
     [Fact]
     public async Task Results_nguoi_ngoai_org_khong_xem_duoc()
     {
