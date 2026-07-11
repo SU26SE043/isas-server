@@ -517,6 +517,129 @@ namespace Isas.CampaignService.Services
             return response;
         }
 
+        // ── C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV ──────────────────
+        // HR chọn top sau ranking (candidateIds) → mỗi ứng viên: TÁCH EMAIL TỪ CV
+        // (campaign_candidates.email, parse sẵn C13) → tạo invitation GẮN campaign_candidate_id +
+        // đẩy email queue; Analyzed → Invited. Per-item best-effort (thiếu email / sai trạng thái → failed[],
+        // KHÔNG chặn item khác); đã Invited → skip (absorbing). Vượt max_candidates → chặn CẢ request (400),
+        // nhất quán D1. Campaign phải Active (không → 409); ngoài org → 404.
+        public async Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(
+            Guid employerId, Guid id, List<Guid> candidateIds, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (campaign.Status != CampaignStatus.Active)
+                throw new InvalidOperationException($"Chỉ mời ứng viên khi campaign đang Active (hiện: {campaign.Status}).");
+
+            var response = new InviteShortlistResponse();
+            var uniqueIds = (candidateIds ?? new List<Guid>()).Distinct().ToList();
+            if (uniqueIds.Count == 0)
+                return response;
+
+            // Load ứng viên thuộc campaign này (ngoài campaign / không tồn tại → failed[]).
+            var candidates = await _db.CampaignCandidates
+                .Where(c => c.CampaignId == id && uniqueIds.Contains(c.Id))
+                .ToListAsync(ct);
+            var byId = candidates.ToDictionary(c => c.Id);
+
+            // Dedup email với invitation đã có (chưa revoke) của campaign — chống mời trùng qua 2 đường.
+            var existingEmails = await _db.CampaignInvitations
+                .Where(i => i.CampaignId == id && i.RevokedAt == null)
+                .Select(i => i.Email)
+                .ToListAsync(ct);
+            var existingSet = new HashSet<string>(existingEmails, StringComparer.OrdinalIgnoreCase);
+
+            var toInvite = new List<CampaignCandidate>();
+            foreach (var cid in uniqueIds)
+            {
+                if (!byId.TryGetValue(cid, out var cand))
+                {
+                    response.Failed.Add(new FailedInviteItem { CandidateId = cid, Reason = "Không tìm thấy ứng viên trong campaign." });
+                    continue;
+                }
+
+                // Absorbing: đã mời rồi → bỏ qua (không tạo invitation thứ 2, không lật trạng thái).
+                if (cand.Status == CandidateStatus.Invited)
+                    continue;
+
+                if (cand.Status != CandidateStatus.Analyzed)
+                {
+                    response.Failed.Add(new FailedInviteItem { CandidateId = cid, Reason = $"Chỉ mời được ứng viên Analyzed (hiện: {cand.Status})." });
+                    continue;
+                }
+
+                var email = cand.Email?.Trim();
+                if (string.IsNullOrWhiteSpace(email))
+                {
+                    response.Failed.Add(new FailedInviteItem { CandidateId = cid, Reason = "Thiếu email — PATCH bổ sung rồi mời lại." });
+                    continue;
+                }
+
+                if (!existingSet.Add(email))   // đã có invitation cho email này (đường 1 hoặc trùng batch)
+                {
+                    response.Failed.Add(new FailedInviteItem { CandidateId = cid, Reason = "Email đã được mời." });
+                    continue;
+                }
+
+                toInvite.Add(cand);
+            }
+
+            // Cap max_candidates: invitation hiện có + mời mới ≤ cap → vượt = chặn CẢ request (như D1).
+            if (campaign.MaxCandidates.HasValue && toInvite.Count > 0)
+            {
+                var currentCount = existingEmails.Count;
+                if (currentCount + toInvite.Count > campaign.MaxCandidates.Value)
+                    throw new ArgumentException(
+                        $"Vượt giới hạn max_candidates ({campaign.MaxCandidates.Value}): hiện có {currentCount} lời mời, đang mời thêm {toInvite.Count}.");
+            }
+
+            if (toInvite.Count == 0)
+                return response;
+
+            // Tạo invitation (gắn campaign_candidate_id) + set Analyzed → Invited, rồi đẩy email queue.
+            var now = DateTime.UtcNow;
+            var invitations = new List<(CampaignInvitation Inv, CampaignCandidate Cand)>();
+            foreach (var cand in toInvite)
+            {
+                var invitation = new CampaignInvitation
+                {
+                    Id = Guid.NewGuid(),
+                    CampaignId = campaign.Id,
+                    CampaignCandidateId = cand.Id,   // đường 2 — gắn shortlist (đường 1 để null)
+                    Token = GenerateInvitationToken(),
+                    Email = cand.Email!.Trim(),      // email đã chuẩn hoá lowercase từ C13/PATCH
+                    ExpiresAt = campaign.ExpiresAt,
+                    CreatedAt = now,
+                };
+                cand.Status = CandidateStatus.Invited;
+                cand.UpdatedAt = now;
+                _db.CampaignInvitations.Add(invitation);
+                invitations.Add((invitation, cand));
+            }
+
+            AddAudit(employerId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên từ shortlist sàng CV");
+            await _db.SaveChangesAsync(ct);
+
+            foreach (var (invitation, cand) in invitations)
+            {
+                await _emailPublisher.PublishAsync(new InvitationEmailJob(
+                    invitation.Id, campaign.Id, invitation.Email, invitation.Token, campaign.Title, invitation.ExpiresAt), ct);
+
+                invitation.SentAt = DateTime.UtcNow;
+                response.Invited.Add(new InvitedCandidateItem
+                {
+                    CandidateId = cand.Id,
+                    InvitationId = invitation.Id,
+                    Email = invitation.Email
+                });
+            }
+
+            await _db.SaveChangesAsync(ct);   // persist SentAt sau khi đẩy queue
+            return response;
+        }
+
         // ── E5: bảng kết quả + xếp hạng + pass/fail ─────────────────────────
         // Đọc read-model LOCAL `campaign_rankings` (E4 upsert từ event SessionScored) — không gọi
         // xuyên service. Bảng chỉ có 1 row/ứng viên đã `Scored` (row tạo khi nhận SessionScored) nên

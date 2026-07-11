@@ -13,6 +13,9 @@ public sealed class CampaignTestDb : IDisposable
     private readonly SqliteConnection _conn;
     public CampaignDbContext Db { get; }
 
+    // Connection dùng chung để BackgroundService (StuckScreeningRepublisher) tạo scope DbContext riêng.
+    public SqliteConnection Connection => _conn;
+
     public CampaignTestDb()
     {
         _conn = new SqliteConnection("DataSource=:memory:");
