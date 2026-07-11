@@ -14,17 +14,20 @@ public class PracticeService : IPracticeService
     private readonly InterviewDbContext _db;
     private readonly IStorageService _storage;
     private readonly IAiServiceQuestionGenerator _questionGenerator;
+    private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ILogger<PracticeService> _logger;
 
     public PracticeService(
         InterviewDbContext db,
         IStorageService storage,
         IAiServiceQuestionGenerator questionGenerator,
+        ISessionScoringNotifier scoringNotifier,
         ILogger<PracticeService> logger)
     {
         _db = db;
         _storage = storage;
         _questionGenerator = questionGenerator;
+        _scoringNotifier = scoringNotifier;
         _logger = logger;
     }
 
@@ -221,6 +224,9 @@ public class PracticeService : IPracticeService
             await _db.SaveChangesAsync(ct);
             _logger.LogInformation(
                 "Session {SessionId} -> Scored ngay khi submit (đã chấm xong từ trước)", sessionId);
+
+            // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
+            await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
         }
         else
         {

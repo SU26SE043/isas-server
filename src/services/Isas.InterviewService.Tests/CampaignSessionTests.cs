@@ -15,9 +15,17 @@ namespace Isas.InterviewService.Tests;
 public class CampaignSessionTests
 {
     private static PracticeService Build(TestDb t)
-        => new(t.Db, new Mock<IStorageService>().Object,
+    {
+        var scoringNotifier = new Mock<ISessionScoringNotifier>();
+        scoringNotifier
+            .Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        return new PracticeService(t.Db, new Mock<IStorageService>().Object,
                new Mock<IAiServiceQuestionGenerator>().Object,
+               scoringNotifier.Object,
                NullLogger<PracticeService>.Instance);
+    }
 
     [Fact]
     public async Task CreateCampaignSession_PersistsCampaignId_AndMaterializesCriteria()

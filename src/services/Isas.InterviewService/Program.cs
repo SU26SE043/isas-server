@@ -24,6 +24,8 @@ builder.Services.AddScoped<IStorageService, StorageService>();
 builder.Services.AddScoped<IAnswerService, AnswerService>();
 builder.Services.AddHostedService<BucketInitializer>();
 builder.Services.AddSingleton<IScoringJobPublisher, ScoringJobPublisher>();
+builder.Services.AddSingleton<ISessionEventPublisher, SessionEventPublisher>();
+builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
 
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>

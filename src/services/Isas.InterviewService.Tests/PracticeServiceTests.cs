@@ -11,8 +11,20 @@ namespace Isas.InterviewService.Tests;
 public class PracticeServiceTests
 {
     private static PracticeService Build(TestDb t, Mock<IAiServiceQuestionGenerator> gen)
-        => new(t.Db, new Mock<IStorageService>().Object, gen.Object,
-               NullLogger<PracticeService>.Instance);
+        => Build(t, gen, out _);
+
+    private static PracticeService Build(
+        TestDb t, Mock<IAiServiceQuestionGenerator> gen, out Mock<ISessionScoringNotifier> scoringNotifier)
+    {
+        scoringNotifier = new Mock<ISessionScoringNotifier>();
+        scoringNotifier
+            .Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        return new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object, scoringNotifier.Object,
+            NullLogger<PracticeService>.Instance);
+    }
 
     [Fact]
     public async Task Create_HappyPath_SessionReady_WithQuestions()
@@ -123,10 +135,15 @@ public class PracticeServiceTests
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
 
-        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>());
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out var notifier);
         await svc.SubmitSessionAsync(candidate, session.Id);
 
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.Scored, s.Status);
+
+        // E2: nhánh "đóng-ngay" của submit (mọi answer đã Scored từ trước, chấm dần xong sớm)
+        // CŨNG phải phát SessionScored — không chỉ nhánh đóng qua callback ở AnswerService.
+        notifier.Verify(n => n.NotifySessionScoredAsync(session.Id, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 }

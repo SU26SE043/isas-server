@@ -12,17 +12,20 @@ public class AnswerService : IAnswerService
     private readonly InterviewDbContext _db;
     private readonly IStorageService _storage;
     private readonly IScoringJobPublisher _scoringPublisher;
+    private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ILogger<AnswerService> _logger;
 
     public AnswerService(
         InterviewDbContext db,
         IStorageService storage,
         IScoringJobPublisher scoringPublisher,
+        ISessionScoringNotifier scoringNotifier,
         ILogger<AnswerService> logger)
     {
         _db = db;
         _storage = storage;
         _scoringPublisher = scoringPublisher;
+        _scoringNotifier = scoringNotifier;
         _logger = logger;
     }
 
@@ -267,6 +270,9 @@ public class AnswerService : IAnswerService
             session.Status = SessionStatus.Scored;
             await _db.SaveChangesAsync(ct);
             _logger.LogInformation("Session {SessionId} -> Scored", sessionId);
+
+            // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
+            await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
         }
     }
 }

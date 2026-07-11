@@ -13,6 +13,11 @@ public class AnswerServiceTests
 {
     private static AnswerService Build(
         TestDb t, Mock<IScoringJobPublisher> publisher, out Mock<IStorageService> storage)
+        => Build(t, publisher, out storage, out _);
+
+    private static AnswerService Build(
+        TestDb t, Mock<IScoringJobPublisher> publisher, out Mock<IStorageService> storage,
+        out Mock<ISessionScoringNotifier> scoringNotifier)
     {
         storage = new Mock<IStorageService>();
         storage
@@ -21,8 +26,14 @@ public class AnswerServiceTests
                 It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("answer-audio/seed.webm");
 
+        scoringNotifier = new Mock<ISessionScoringNotifier>();
+        scoringNotifier
+            .Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
         return new AnswerService(
-            t.Db, storage.Object, publisher.Object, NullLogger<AnswerService>.Instance);
+            t.Db, storage.Object, publisher.Object, scoringNotifier.Object,
+            NullLogger<AnswerService>.Instance);
     }
 
     [Fact]
@@ -166,6 +177,7 @@ public class AnswerServiceTests
     }
 
     // E1 Done-condition: session B2B Scored → answer_scores trỏ rubric_criteria(campaign_id).
+    // E2: cùng lúc session đóng Scored, phải phát SessionScored kèm campaign_id + điểm.
     [Fact]
     public async Task B2BSession_WhenScored_AnswerScores_PointToCampaignCriteria()
     {
@@ -173,10 +185,23 @@ public class AnswerServiceTests
         var candidate = Guid.NewGuid();
         var campaignId = Guid.NewGuid();
 
+        // Notifier THẬT (tính điểm bằng data thật trong DB) — chỉ mock phần transport
+        // (ISessionEventPublisher) để bắt message publish ra, đúng tinh thần "assert against
+        // the publisher abstraction" thay vì cần RabbitMQ sống.
+        var eventPublisher = new Mock<ISessionEventPublisher>();
+        SessionScoredEvent? published = null;
+        eventPublisher
+            .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
+            .Callback<SessionScoredEvent, CancellationToken>((e, _) => published = e)
+            .Returns(Task.CompletedTask);
+        var notifier = new SessionScoringNotifier(
+            t.Db, eventPublisher.Object, NullLogger<SessionScoringNotifier>.Instance);
+
         // Tạo session B2B qua đúng đường I1 (materialize tiêu chí campaign).
         var practice = new PracticeService(
             t.Db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object,
+            notifier,
             NullLogger<PracticeService>.Instance);
         var created = await practice.CreateCampaignSessionAsync(candidate,
             new CreateCampaignSessionRequest(
@@ -188,14 +213,21 @@ public class AnswerServiceTests
             .SingleAsync(c => c.CampaignId == campaignId);
 
         // Ứng viên nộp answer rồi submit (session -> Scoring).
+        var storage = new Mock<IStorageService>();
+        storage
+            .Setup(s => s.UploadAsync(
+                It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<Guid>(),
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("answer-audio/seed.webm");
         var publisher = new Mock<IScoringJobPublisher>();
-        var svc = Build(t, publisher, out _);
+        var svc = new AnswerService(
+            t.Db, storage.Object, publisher.Object, notifier, NullLogger<AnswerService>.Instance);
         var questionId = created.Questions[0].Id;
         using var audio = new MemoryStream(new byte[] { 1 });
         var up = await svc.UploadAnswerAsync(created.Id, questionId, candidate, audio, "audio/webm", 30);
         await practice.SubmitSessionAsync(candidate, created.Id);
 
-        // Worker callback chấm theo tiêu chí campaign.
+        // Worker callback chấm theo tiêu chí campaign (maxScore=5, weight=1.0 -> score=4 -> 80%).
         await svc.SaveResultAsync(up.AnswerId, new AnswerScoreCallbackRequest
         {
             Transcript = "trả lời",
@@ -217,6 +249,15 @@ public class AnswerServiceTests
             .Select(c => c.Id)
             .ToListAsync();
         Assert.All(scoredCriterionIds, id => Assert.Contains(id, campaignCriterionIds));
+
+        // E2: SessionScored phát đúng 1 lần, mang campaign_id B2B + điểm tổng (4/5 = 80%).
+        eventPublisher.Verify(p => p.PublishSessionScoredAsync(
+            It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.NotNull(published);
+        Assert.Equal(created.Id, published!.SessionId);
+        Assert.Equal(campaignId, published.CampaignId);
+        Assert.Equal(candidate, published.CandidateId);
+        Assert.Equal(80m, published.TotalScore);
     }
 
     [Fact]
@@ -285,6 +326,81 @@ public class AnswerServiceTests
         // Answer cuối Scored -> session đóng sang Scored.
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.Scored, s.Status);
+    }
+
+    // E2: session B2C (campaign_id = null) đóng Scored VẪN phải phát SessionScored
+    // (campaign_id null trong message là hợp lệ — Payment vẫn cần biết để consume credit cá nhân).
+    [Fact]
+    public async Task SaveResult_B2CSession_WhenScored_PublishesSessionScoredEvent_WithNullCampaignId()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // campaign_id = null
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _, out var notifier);
+
+        var req = new AnswerScoreCallbackRequest
+        {
+            Transcript = "Đây là câu trả lời",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4.5m, Reasoning = "ok" } }
+        };
+        await svc.SaveResultAsync(answer.Id, req);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.Scored, s.Status);
+
+        // Event phải phát đúng 1 lần cho ĐÚNG session vừa đóng, dù campaign_id = null (B2C).
+        notifier.Verify(n => n.NotifySessionScoredAsync(session.Id, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    // E2: notifier THẬT (không mock) — kiểm message SessionScored đúng shape khi B2C Scored:
+    // campaign_id null, candidate_id khớp session, điểm tổng tính đúng (1 tiêu chí, maxScore 5,
+    // score 4 -> 80%).
+    [Fact]
+    public async Task SaveResult_B2CSession_WhenScored_EventCarriesCandidateId_AndComputedScore()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // campaign_id = null
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore=5, weight=1.0
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var eventPublisher = new Mock<ISessionEventPublisher>();
+        SessionScoredEvent? published = null;
+        eventPublisher
+            .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
+            .Callback<SessionScoredEvent, CancellationToken>((e, _) => published = e)
+            .Returns(Task.CompletedTask);
+        var notifier = new SessionScoringNotifier(
+            t.Db, eventPublisher.Object, NullLogger<SessionScoringNotifier>.Instance);
+
+        var storage = new Mock<IStorageService>();
+        var svc = new AnswerService(
+            t.Db, storage.Object, new Mock<IScoringJobPublisher>().Object, notifier,
+            NullLogger<AnswerService>.Instance);
+
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "trả lời",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4m, Reasoning = "ok" } }
+        });
+
+        Assert.NotNull(published);
+        Assert.Equal(session.Id, published!.SessionId);
+        Assert.Null(published.CampaignId);            // B2C
+        Assert.Equal(candidate, published.CandidateId);
+        Assert.Equal(80m, published.TotalScore);       // 4/5 * 100 * weight(1.0) / Σweight(1.0)
     }
 
     [Fact]
