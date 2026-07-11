@@ -13,10 +13,17 @@ namespace Isas.CampaignService.Controllers
     public class CampaignController : Controller
     {
         private readonly ICampaignService _campaignService;
+        private readonly ICvScreeningService _screening;   // C14: sàng CV async (publish/shortlist/PATCH)
+        private readonly ILogger<CampaignController> _logger;
 
-        public CampaignController(ICampaignService campaignService)
+        public CampaignController(
+            ICampaignService campaignService,
+            ICvScreeningService screening,
+            ILogger<CampaignController> logger)
         {
             _campaignService = campaignService;
+            _screening = screening;
+            _logger = logger;
         }
 
         [HttpGet]
@@ -347,12 +354,83 @@ namespace Isas.CampaignService.Controllers
             try
             {
                 var result = await _campaignService.ScreenCandidatesAsync(Guid.Parse(employerId), id, files, ct);
+
+                // C14: đẩy job AI chấm khớp cho các ứng viên vừa Filtered (Filtered → Analyzing). Best-effort:
+                // broker down → giữ Filtered (last_screening_published_at=null) → C15 republisher đẩy lại,
+                // KHÔNG làm hỏng kết quả sàng đã lưu (202 vẫn trả).
+                try { await _screening.PublishScreeningJobsAsync(Guid.Parse(employerId), id, ct); }
+                catch (Exception ex) { _logger.LogError(ex, "Publish job sàng CV thất bại cho campaign {CampaignId}", id); }
+
                 return StatusCode(StatusCodes.Status202Accepted, result);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(ex.Message); }             // vượt cap / thiếu file → 400
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }        // campaign chưa Active → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to screen candidates: {ex.Message}"); }
+        }
+
+        // C14: shortlist — danh sách ứng viên sàng CV. `?sort=score` (mặc định) DESC theo overall_match_score;
+        // `?sort=name`; lọc `?status=&minScore=&skill=`. Chỉ chủ org (employer_id) → ngoài org = 404.
+        [HttpGet("{id:guid}/candidates")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<List<CandidateListItem>>> GetCandidates(
+            Guid id,
+            [FromQuery] string? status,
+            [FromQuery] int? minScore,
+            [FromQuery] string? skill,
+            [FromQuery] string? sort,
+            CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            try
+            {
+                var list = await _screening.GetCandidatesAsync(Guid.Parse(employerId), id, status, minScore, skill, sort, ct);
+                return Ok(list);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get candidates: {ex.Message}"); }
+        }
+
+        // C14: chi tiết 1 ứng viên (summary, skills, điểm + reasoning từng tiêu chí + KEY CV gốc).
+        [HttpGet("{id:guid}/candidates/{candidateId:guid}")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CandidateDetailResponse>> GetCandidate(Guid id, Guid candidateId, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            try
+            {
+                var detail = await _screening.GetCandidateAsync(Guid.Parse(employerId), id, candidateId, ct);
+                return Ok(detail);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get candidate: {ex.Message}"); }
+        }
+
+        // C14: HR bổ sung/sửa email/fullName khi CV không tách được (ghi audit_logs). Đã Invited → 409.
+        [HttpPatch("{id:guid}/candidates/{candidateId:guid}")]
+        [Authorize(Roles = "Employer")]
+        public async Task<IActionResult> PatchCandidate(
+            Guid id, Guid candidateId, [FromBody] PatchCandidateRequest request, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            try
+            {
+                await _screening.PatchCandidateAsync(Guid.Parse(employerId), id, candidateId, request, ct);
+                return NoContent();
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }             // email rỗng/sai/trùng → 400
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }        // đã Invited → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to update candidate: {ex.Message}"); }
         }
 
         // C13: serve CV gốc (PDF) cho HR. cv_file_url null → 404; ngoài org → 404.

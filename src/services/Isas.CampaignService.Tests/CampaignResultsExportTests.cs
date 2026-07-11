@@ -31,7 +31,8 @@ public class CampaignResultsExportTests
     // Controller với ClaimsPrincipal mang employer_id → User.FindFirstValue(NameIdentifier) đọc được.
     private static CampaignController NewController(CampaignDbContext db, Guid employerId)
     {
-        var controller = new CampaignController(NewService(db));
+        var controller = new CampaignController(
+            NewService(db), Mock.Of<ICvScreeningService>(), Mock.Of<ILogger<CampaignController>>());
         var identity = new ClaimsIdentity(
             new[] { new Claim(ClaimTypes.NameIdentifier, employerId.ToString()) }, "Test");
         controller.ControllerContext = new ControllerContext
