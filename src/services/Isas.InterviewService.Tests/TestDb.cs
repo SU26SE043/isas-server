@@ -1,12 +1,15 @@
 using Isas.InterviewService.ApplicationDbContext;
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
+using Isas.InterviewService.Services.Interfaces;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 
 namespace Isas.InterviewService.Tests;
 
@@ -49,6 +52,19 @@ public sealed class TestDb : IDisposable
         => new(db,
             Options.Create(new ScoringOptions { ImprovementThresholdPct = thresholdPct }),
             NullLogger<SessionResultService>.Instance);
+
+    // BC10 — summarizer AI giả cho notifier THẬT: comment=null/"" → no-op (không lưu overall_comment);
+    // comment có text → trả text; throws → ném (test best-effort không chặn Scored). Không cần AIService thật.
+    public static IAiServiceSessionSummarizer Summarizer(string? comment = null, Exception? throws = null)
+    {
+        var m = new Mock<IAiServiceSessionSummarizer>();
+        var setup = m.Setup(s => s.SummarizeAsync(
+            It.IsAny<string>(), It.IsAny<decimal>(),
+            It.IsAny<IReadOnlyList<SessionSummaryCriterion>>(), It.IsAny<CancellationToken>()));
+        if (throws is not null) setup.ThrowsAsync(throws);
+        else setup.ReturnsAsync(comment ?? string.Empty);
+        return m.Object;
+    }
 
     // ── Seed helpers ──────────────────────────────────────────────────────
     public static RubricCriterion Criterion(

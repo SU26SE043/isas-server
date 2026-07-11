@@ -350,7 +350,7 @@ public class SessionResultServiceTests
             .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
         var notifier = new SessionScoringNotifier(
-            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db),
+            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
             NullLogger<SessionScoringNotifier>.Instance);
         var svc = new AnswerService(
             t.Db, new Mock<IStorageService>().Object, new Mock<IScoringJobPublisher>().Object,

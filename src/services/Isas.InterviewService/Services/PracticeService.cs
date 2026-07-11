@@ -478,7 +478,7 @@ public class PracticeService : IPracticeService
             totalQuestions,
             criteria,
             needsImprovement,
-            OverallComment: null,
+            OverallComment: s.OverallComment,   // BC10 — nhận xét chung (AI, best-effort); null nếu chưa/AI lỗi.
             CvVsAnswer: cvVsAnswer);
     }
 

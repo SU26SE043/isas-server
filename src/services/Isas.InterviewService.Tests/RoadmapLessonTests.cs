@@ -295,7 +295,7 @@ public class RoadmapLessonTests
 
         var eventPub = new Mock<ISessionEventPublisher>();
         var notifier = new SessionScoringNotifier(
-            t.Db, eventPub.Object, TestDb.ResultService(t.Db), NullLogger<SessionScoringNotifier>.Instance);
+            t.Db, eventPub.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(), NullLogger<SessionScoringNotifier>.Instance);
 
         await notifier.NotifySessionScoredAsync(session.Id);
 

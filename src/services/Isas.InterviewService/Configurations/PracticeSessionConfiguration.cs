@@ -29,6 +29,9 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // BC9 — điểm tổng buổi B2C (nullable; set khi Scored).
         e.Property(x => x.OverallScore).HasColumnType("numeric(5,2)");
 
+        // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
+        e.Property(x => x.OverallComment).HasColumnType("text");
+
         e.HasIndex(x => x.CandidateId);
 
         // B2B: lookup session theo campaign (S3/S4). Non-unique, nullable.
