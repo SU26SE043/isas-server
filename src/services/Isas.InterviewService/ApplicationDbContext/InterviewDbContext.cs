@@ -17,7 +17,9 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<RubricAnchor> RubricAnchors => Set<RubricAnchor>();
         
         public DbSet<FileRecord> FileRecords => Set<FileRecord>();
- 
+
+        public DbSet<CvAnalysis> CvAnalyses => Set<CvAnalysis>();   // BC7
+
         protected override void OnModelCreating(ModelBuilder b)
         {
             base.OnModelCreating(b);
