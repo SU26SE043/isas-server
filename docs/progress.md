@@ -204,6 +204,6 @@
 6. **Roadmap ôn tập B2C (D20) HOÀN TẤT:** `BC12` ✅ · `BC13` ✅ · `BC14` ✅ · `BC10` ✅ · **`BC15` ✅ (b975f8c)** — engine đủ; còn e2e thật (compose + Gemini) verify tay.
 7. **Auth: A4 ✅ · A6 ✅ (ac40761)** (HrMember→403 billing; OrgAdmin thêm HrMember → org nhiều thành viên). Còn **A5** (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting toàn repo → chạy SOLO 1 vòng riêng** (đụng controller mọi service, không parallel được). A6b (đổi-role/xoá/invite-email) khi rảnh.
 8. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.5` (readiness + checkpoint). *(P0.3/P0.4 ✅.)*
-9. **Backlog còn (khi rảnh):** BK2 (backfill order_no ops — trước apply C12 Neon) · BK4b (backfill user→org ops + đồng bộ AGENTS.md copy — trước apply BK4 Neon) · BK8 (E6 PDF) · BK6 (ratify jobCategory) · BK13 (ratify migration/schema payment_transactions P2) · **BK15** (thống nhất 403/404 endpoint order) · BK17 phần (3)+(4) (amount bigint · due_at/paid_at) · **cần chốt:** BK5/BK9/BK10. *(✅ done: BK1·BK4·BK7·BK11·BK12·BK16·BK17(1+2)·BK18.)* — xem §Backlog tasks.md.
+9. **Backlog** (đã gom nhóm — xem §Backlog [tasks.md](tasks.md)): 🔴 **cần team chốt** BK5/BK9/BK10 · 📋 **ops** (trước apply Neon) BK2/BK4b · 🛠️ **cleanup** BK6/BK8/BK13/BK15/BK17(3)(4) · 🔵 **feature follow-up** BK3/BK14/E9b/E10b/E11b/A6b. *(✅ done 8: BK1·BK4·BK7·BK11·BK12·BK16·BK17(1+2)·BK18.)*
 
 > Quy trình **vào ca / tan ca**: xem [../AGENTS.md](../AGENTS.md).

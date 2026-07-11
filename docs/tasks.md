@@ -107,32 +107,41 @@
 | BC15 | Milestone improvement + roadmap `Completed` + report | mọi lesson Done → mile `Completed` + `improvement` (avg pct mile N − mile N−1 / baseline) khớp tính tay; mọi mile xong → roadmap `Completed` + snapshot `final_report` + `overall_comment` (AI best-effort — lỗi vẫn `Completed`, comment null); `GET /roadmaps/{id}/report` → radar + `levelEvaluation` (ngưỡng Fresher 50/Junior 60/Middle 70/Senior 80) + kết luận | BC12, BC10, BC13 | ✅ **passing (commit b975f8c, vòng 14)** · hook lesson-Done trong `SessionScoringNotifier`: mọi lesson của mile Done → mile `Completed` + `improvement` jsonb (deltaPct/tiêu chí = avg% mile N − avg% mile N−1; mile 1 vs `roadmaps.baseline`, baseline null → hiện điểm đạt "no delta") · mọi mile Completed → roadmap `Completed` + snapshot `final_report` (radar avg%/tiêu chí + levelEvaluation Fresher 50/Junior 60/Middle 70/Senior 80) + AIService `/summarize-roadmap` (typed HttpClient) → `overall_comment` **best-effort** (AI lỗi→vẫn Completed, comment null; AI không ghi DB GEN-4) · `GET /roadmaps/{id}/report` owner-only (403/404): Active→interim tính read-time từ `session_criterion_scores` (BC9), kết luận null; Completed→đọc snapshot không tính lại · **không migration** (cột `final_report`/`improvement` jsonb có từ BC12 `AddRoadmaps`) · `RoadmapReportService`+`RoadmapOptions` · test ✅ **120/120** (+9) · ⚠ ratify: baseline null→improvement = điểm đạt (không omit); radar reuse `CriterionScoreResponse` gộp theo tên tiêu chí · **hoàn tất S5 B2C roadmap** (BC12→BC15) |
 
 ## Backlog — dọn dẹp / follow-up (sinh từ **ghi chú ⚠** của task passing)
-> Chưng cất từ note worker để lại; **không** trùng task đã có (P8a/E7/BC10/E9-E10/D2 đã là task riêng). Chọn khi rảnh giữa các feature; mỗi cái vẫn WIP=1 + 1 lệnh xác minh.
-| ID | Hành vi | Xác minh | Dep | Status |
-|---|---|---|---|---|
-| BK1 | Drop cột `rank`/`result` thừa trên `campaign_rankings` (E4 thêm nhưng E5 tính read-time → cột chết) | migration drop 2 cột; `GET /campaign/{id}/results` (E5) vẫn đúng; `has-pending`=No changes | E5 | ✅ **done** (vòng 9 · `9c9d450`) — drop `Rank`/`Result` + migration `DropCampaignRankingRankResult`; E5 read-time không đọc cột |
-| BK2 | Backfill `order_no` phân biệt/`campaign` **trước khi apply** `AddCriteriaOrderAndUpdatedAt` lên Neon (tránh vỡ `UNIQUE(campaign_id,order_no)` với rows cũ) | trên DB có campaign >1 tiêu chí: chạy backfill → apply migration C12 KHÔNG lỗi unique | C12 | not_started · nguồn: **apply-caveat C12** · ops/pipeline (không phải code service) |
-| BK3 | CRUD rubric B2C admin-gated (BC11 mới seed, CRUD hoãn) | admin create/update/deactivate `rubric_criteria(campaign_id IS NULL)`; Σweight validate; ẩn danh/không-admin → 401/403 | BC11, A5 | not_started · nguồn: ghi chú **BC11** |
-| BK4 | Wire Campaign `employer_id` → `org_id` (credit/ownership theo ORG — AUTH-8/PAY-2) | campaign gắn `org_id` từ JWT claim; filter/ownership + results theo org; test | A1 | ✅ **done** (vòng 11 · `ea480e7`) — rename `employer_id`→`org_id` (+`campaign_questions`); owner từ claim `org_id` (thiếu→403); migration `RenameCampaignEmployerToOrg` · ⚠ backfill Neon → BK4b |
-| BK4b | Backfill `campaigns.org_id`/`campaign_questions.org_id` user→org (ops, trước apply BK4 Neon) | trên DB có campaign cũ (`org_id` = user sub sau rename): map user→org qua `org_members` → `UPDATE` `org_id` đúng org; apply BK4 rename + backfill KHÔNG để lệch ownership; + đồng bộ bản copy `Isas.CampaignService/AGENTS.md` (EmployerId→OrgId) | BK4, A1 | not_started · nguồn: ghi chú **BK4** · ops/pipeline (không phải code service) |
-| BK5 | **DECISION** — phân tích CV tính phí hay free? (rules.md **BC-4** "tính phí, đảo D17" ✗ interview.md L193/**D17** "free phase 1") | chốt 1 nguồn sự thật (sửa rules.md + interview.md + decisions.md thống nhất); nếu tính phí → wire reserve/consume (P4/P5) vào BC7 | — | not_started · **cần team/người chốt** (đừng tự quyết) · nguồn: ghi chú **BC7** |
-| BK6 | Ratify schema `cv-analysis`: thêm `jobCategory` **bắt buộc** vào request | cập nhật interview.md §cv-analysis + ai.md `/analyze-cv` khớp code BC7 (`cv_analyses.job_category` NOT NULL; AIService không trả jobCategory) | BC7 | not_started · nguồn: ghi chú **BC7** |
-| BK7 | Postpaid **consume cộng `period_usage`** (dồn nợ kỳ) | postpaid session `Scored` → consume → `period_usage += 1` (P5 hiện chỉ `reserved−1`, không cộng nợ kỳ) | P5, P8a | ✅ **done** (vòng 8 · `9b702b3`) — `ConsumeAsync` postpaid +`period_usage`; prepaid không đổi |
-| BK8 | E6 **PDF export** (QuestPDF Community) | `format=pdf` → `application/pdf` khớp ranking; build/test KHÔNG vỡ (SkiaSharp native) | E6 | not_started · nguồn: ghi chú **E6** (hiện format=pdf→400) |
-| BK9 | Ratify **event-bus convention** vào architecture.md §6 | doc §6 liệt kê exchange `interview.events`(topic) + key `session.scored`/`session.abandoned` + queue `campaign.ranking`(E4)/`payment.credit`(E7); code E2/E3/E4/E7 khớp doc | — | not_started · nguồn: ghi chú lặp **E2/E4/E7** (tên queue/exchange tự đặt, chưa vào doc) |
-| BK10 | **DECISION** — BC3/BC4 còn cần không sau E7? | E7 consumer generic consume/release **MỌI** session theo reservation (gồm B2C owner=User từ BC2) → chốt: BC3/BC4 = **covered-by-E7** (chỉ cần test xác minh B2C scored→consume ví User / abandoned→release ví User) HAY giữ path B2C riêng | E7, BC2 | not_started · **cần chốt** · nguồn: quan sát **vòng 7** |
-| BK11 | Fix `ReleaseAsync` postpaid **không đổi `remaining`** | release ví postpaid → chỉ `reserved−1` (KHÔNG `remaining+1`; `period_usage` giữ nguyên); prepaid giữ `remaining+1` | P6, P8a | ✅ **done** (vòng 9 · `28fff09`) — `ReleaseAsync` postpaid chỉ `reserved−1` (không `remaining+1`); prepaid giữ P6 |
-| BK12 | Release credit khi B2C session → `Failed` sau reserve (BC2) | B2C reserve (BC2) rồi AI sinh câu hỏi lỗi → `Failed`: phát tín hiệu release (`SessionAbandoned` reason=generation_failed, reuse `SessionEventPublisher`) → E7 hoàn credit ví User; test: session→`Failed` sau reserve → event phát (E7 release) | BC2, E7, E3 | ✅ **done** (vòng 9 · `a08b53d`) — B2C `Failed` sau reserve → phát `SessionAbandoned(generation_failed)` → E7 release ví User |
-| BK13 | Ratify schema/migration `payment_transactions` (P2) | migration `AddOrderOwner` cũng alter `payment_transactions` (`order_id` **nullable** + quan hệ 1-1→**N-1**, khớp payment.md §payment_transactions "1 order nhiều sự kiện") — hợp doc nhưng **tên migration không phản ánh**; thêm cột `event_source` (doc có, model P1 thiếu — cần cho P3 polling); `gateway_txn_id`=`Reference` (đổi `PaymentLinkId`?) | P2 | not_started · nguồn: ghi chú **P2** · doc-conforming · P3 (8b1168e) reuse `payment_transactions` không thêm `event_source` |
-| BK14 | D2 follow-ups (membership flow) | (1) **reserve credit org** tại `POST /campaign/{id}/start` (Payment, PAY-6 B2B) — hiện D2 chưa gọi Payment; (2) **DECISION retake:** sau `Completed` cho làm lại? (hiện 409) + bịt race `Scored`↔E4-lag → `/start` đẻ session mới (Interview create-or-get chỉ trả session chưa-terminal); (3) JWT provision **thêm refresh token** (buổi dài); (4) `orgName`/company ở metadata/my-campaigns = null → resolve qua Auth | D2, P2 | not_started · nguồn: ghi chú **D2** · gồm 1 DECISION (retake) cần chốt |
-| BK15 | Thống nhất mã lỗi non-owner giữa các endpoint order (403 ↔ 404) | `GET /order/{id}/status` (P3) trả **404** non-owner (không lộ tồn tại đơn) nhưng `GetOrderAsync`/`CancelOrderAsync` dùng **403** (Forbid) + payment.md bảng mã lỗi ghi 403 → chốt 1 quy ước (đề xuất 404 cho mọi read-by-id owner-scoped) + sửa doc/code khớp | P3 | not_started · nguồn: ghi chú **P3** · doc/quy-ước (không phá behavior hiện có) |
-| BK16 | Verify resume phía Interview — "câu đã nộp giữ nguyên" | mở lại session campaign (JWT Candidate) → session-endpoint trả đúng câu hỏi + answer đã nộp (không mất, không reset); test end-to-end | D3, D2 | ✅ **done** (vòng 16 · `eedfeef`) — `ResumeContractTests` (test-only) khoá resume Interview-side; **0 gap production** |
-| BK17 | P8b follow-ups (invoice postpaid) | (1) Overdue-block reserve 402; (2) close subtract-snapshot chống race consume; (3) `orders.amount_vnd` int overflow → bigint; (4) invoice thiếu `due_at`/`paid_at`/`issued_at` | P8b | ✅ **done (1)+(2)** (vòng 16 · `ee72a0d`) — Overdue-block reserve 402 no-orphan + close subtract-snapshot · **còn (3) amount bigint + (4) due_at/paid_at** |
-| BK18 | Campaign gửi `expires_at` lúc tạo session B2B (wire I2 deadline) | `StartInterviewAsync` truyền `campaign.ExpiresAt` → `CreateCampaignSessionInternalRequest.ExpiresAt` → session B2B có `Deadline` thật → sweeper I2 hoạt động | I2, D2 | ✅ **done** (vòng 16 · `00fb678`) — Campaign gửi expires_at → B2B `session.Deadline` thật (sweeper I2) |
-| E9b | Levels giàu thay dải mặc định (E9 follow-up) | B2B: mở rộng AIService `/suggest-criteria` trả `levels[{score,descriptor}]`(+anchors) mỗi tiêu chí → Campaign materialize vào `campaign_criteria`/`rubric_levels`; B2C: seed `rubric_levels` cho rubric mặc định (BC11). → E9 chấm bám descriptor/anchor thật thay dải `0..maxScore` generic | E9, C8, BC11 | not_started · nguồn: ghi chú **E9** · cross-service (Campaign+AIService+Interview) |
-| E10b | Self-consistency chọn lọc + republisher N-attempt (E10 follow-up) | (1) **selective N×:** chỉ chấm lại tiêu chí sát biên/nghi ngờ thay vì luôn N× (throughput là trần); (2) `StuckAnswerRepublisher` re-publish **đúng attempt còn thiếu** khi N>1 (hiện re-publish 1 job attempt=1 → nếu mất 1/N callback thì answer kẹt Scoring không đủ N distinct attempt) | E10 | not_started · nguồn: ghi chú **E10** · harmless khi N=1 |
-| E11b | Endpoint HR chốt/override điểm cuối (E11 follow-up) | HR (B2B) / người luyện (B2C) xem transcript+reasoning+`needs_review` → **sửa/xác nhận điểm cuối** (override AI, ghi audit ai-sửa); ranking/kết quả dùng điểm HR-chốt thay điểm AI khi có · hiện needs_review+reasoning chỉ surface qua GET, chưa có đường ghi đè | E11 | not_started · nguồn: ghi chú **E11** · human-in-the-loop (Interview + Campaign UI) |
-| A6b | OrgAdmin quản thành viên đầy đủ (A6 follow-up) | đổi org_role thành viên (OrgAdmin↔HrMember) · xoá/vô hiệu thành viên · **mời qua email invitation** (nay tạo trực tiếp không gửi mail) · attach account có sẵn vào org (nay email tồn tại→409) · cột `OrgMember.JoinedAt` (nay proxy User.CreatedAt) | A6 | not_started · nguồn: ghi chú **A6** |
+> Chưng cất từ ⚠ note của task passing (không trùng task chính). Mỗi cái WIP=1. **Bằng chứng chi tiết của item done = §Vòng tables trong [progress.md](progress.md).**
+
+**✅ Đã xong (8):** `BK1` drop rank/result (v9·9c9d450) · `BK4` employer_id→org_id (v11·ea480e7) · `BK7` postpaid consume period_usage (v8·9b702b3) · `BK11` postpaid release chỉ reserved−1 (v9·28fff09) · `BK12` B2C Failed→release ví (v9·a08b53d) · `BK16` resume Interview-side test (v16·eedfeef) · `BK17`(1)+(2) Overdue-block+close race (v16·ee72a0d) · `BK18` Campaign gửi expires_at (v16·00fb678).
+
+### 🔴 Cần TEAM CHỐT (đừng tự quyết)
+| ID | Việc | nguồn |
+|---|---|---|
+| BK5 | **CV analysis tính phí hay free?** rules.md BC-4 ("tính phí") ✗ interview.md/D17 ("free") → chốt 1 nguồn sự thật; nếu phí → wire reserve/consume (P4/P5) vào BC7 | BC7 |
+| BK9 | **Event-bus convention** vào architecture.md §6: exchange `interview.events` + key `session.scored/abandoned` + queue `campaign.ranking`(E4)/`payment.credit`(E7) — code đã chạy, chỉ chốt doc | E2/E4/E7 |
+| BK10 | **BC3/BC4 còn cần sau E7?** E7 consume/release generic mọi session (gồm B2C ví User) → covered-by-E7 (chỉ cần test) HAY giữ path B2C riêng | E7,BC2 |
+
+### 📋 Ops / pipeline (chạy TRƯỚC khi apply migration lên Neon — không phải code service)
+| ID | Việc | dep |
+|---|---|---|
+| BK2 | Backfill `order_no` trước apply C12 (tránh vỡ `UNIQUE(campaign_id,order_no)` rows cũ) | C12 |
+| BK4b | Backfill `campaigns.org_id` user→org qua `org_members` trước apply BK4 + sync `AGENTS.md` copy (EmployerId→OrgId) | BK4 |
+
+### 🛠️ Cleanup / fix (code, khi rảnh)
+| ID | Việc | dep |
+|---|---|---|
+| BK6 | Ratify `cv-analysis`: `jobCategory` bắt buộc + `cv_analyses.job_category` NOT NULL (doc↔code BC7) | BC7 |
+| BK8 | E6 **PDF export** (QuestPDF; risk SkiaSharp native) — nay `format=pdf`→400 | E6 |
+| BK13 | Ratify migration/schema `payment_transactions` (tên `AddOrderOwner` + thêm `event_source` cho P3) | P2 |
+| BK15 | Thống nhất **403↔404** non-owner endpoint order (status=404 vs GetOrder=403) | P3 |
+| BK17(3)(4) | `orders.amount_vnd` int→**bigint** (tràn >2.1e9 VND) + invoice `due_at`/`paid_at` | P8b |
+
+### 🔵 Feature follow-up (mở rộng task đã có)
+| ID | Việc | dep |
+|---|---|---|
+| BK3 | CRUD rubric B2C admin-gated (BC11 mới seed) | BC11,A5 |
+| BK14 | **D2 follow-ups:** reserve-credit-org tại `/start` · **DECISION retake** sau Completed · JWT refresh · orgName resolve | D2,P2 |
+| E9b | Levels giàu: `/suggest-criteria` sinh levels (B2B) + seed `rubric_levels` B2C — thay dải `0..maxScore` | E9 |
+| E10b | Selective N× (chỉ tiêu chí biên) + republisher re-publish đúng attempt thiếu (N>1) | E10 |
+| E11b | Endpoint **HR override điểm cuối** (transcript+reasoning+needs_review → sửa/chốt, ghi audit) | E11 |
+| A6b | Quản thành viên đầy đủ: đổi-role · xoá · **invite qua email** · attach account có sẵn · cột `OrgMember.JoinedAt` | A6 |
 
 ---
 
