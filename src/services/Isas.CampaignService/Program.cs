@@ -47,6 +47,8 @@ builder.Services.AddSingleton<IInvitationEmailPublisher, InvitationEmailPublishe
 // C14: sàng CV async — đẩy job AI chấm khớp (cv_screening_queue) + xử lý callback/shortlist/PATCH
 builder.Services.AddSingleton<ICvScreeningPublisher, CvScreeningPublisher>();
 builder.Services.AddScoped<ICvScreeningService, CvScreeningService>();
+// C15: quét CV sàng kẹt mỗi 2' → đẩy lại cv_screening_queue (publish hụt / worker mất tích)
+builder.Services.AddHostedService<StuckScreeningRepublisher>();
 // E4: nghe event SessionScored (RabbitMQ) → upsert campaign_rankings (ranking read-model, D10)
 builder.Services.AddScoped<IRankingEventHandler, RankingEventHandler>();
 builder.Services.AddHostedService<SessionScoredConsumer>();

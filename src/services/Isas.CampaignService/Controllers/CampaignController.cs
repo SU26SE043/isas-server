@@ -298,6 +298,31 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to create invitations: {ex.Message}"); }
         }
 
+        // C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV (candidateIds → tách email từ CV).
+        // Vượt max_candidates → 400; campaign không Active → 409; ngoài org → 404. Per-item lỗi vào failed[].
+        [HttpPost("{id:guid}/candidates/invite")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<InviteShortlistResponse>> InviteShortlistedCandidates(
+            Guid id, [FromBody] InviteShortlistRequest request, CancellationToken ct)
+        {
+            var employerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(employerId))
+                return Forbid();
+
+            if (request?.CandidateIds == null || request.CandidateIds.Count == 0)
+                return BadRequest("At least one candidateId is required.");
+
+            try
+            {
+                var result = await _campaignService.InviteShortlistedCandidatesAsync(Guid.Parse(employerId), id, request.CandidateIds, ct);
+                return Ok(result);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }          // vượt cap max_candidates
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }    // campaign không Active → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to invite shortlisted candidates: {ex.Message}"); }
+        }
+
         // E5: bảng kết quả — xếp hạng + pass/fail (đọc read-model campaign_rankings, E4).
         // Chỉ chủ org (employer_id) xem được → không phải chủ = 404.
         [HttpGet("{id:guid}/results")]
