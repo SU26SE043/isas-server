@@ -25,6 +25,7 @@ builder.Services.AddScoped<IAnswerService, AnswerService>();
 builder.Services.AddHostedService<BucketInitializer>();
 builder.Services.AddSingleton<IScoringJobPublisher, ScoringJobPublisher>();
 builder.Services.AddSingleton<ISessionEventPublisher, SessionEventPublisher>();
+builder.Services.AddScoped<ISessionResultService, SessionResultService>();   // BC9
 builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
 
@@ -90,6 +91,9 @@ builder.Services.AddDbContext<InterviewDbContext>(options =>
 
 builder.Services.Configure<FileStorageOptions>(
     builder.Configuration.GetSection(FileStorageOptions.SectionName));
+
+builder.Services.Configure<ScoringOptions>(
+    builder.Configuration.GetSection(ScoringOptions.SectionName));   // BC9
 
 builder.Services.AddSingleton<IAmazonS3>(sp =>
 {
