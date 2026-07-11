@@ -335,7 +335,7 @@ criterion_id   uuid          FK → rubric_criteria (Restrict)
 attempt_no     int           default 1
 score          numeric(5,2)
 reasoning      text?
-level_matched  int?          🔜 E9 — mức khớp (= score khi neo theo rubric_levels); null nếu chưa neo
+level_matched  int?          ✅ E9 (migration AddAnswerScoreLevelMatched) — mức khớp (= score khi neo theo rubric_levels/dải mặc định); null nếu chưa neo
 rubric_version int
 created_at     timestamptz
                              UNIQUE (answer_id, criterion_id, attempt_no)
@@ -539,8 +539,9 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 ### Chất lượng & độ nhất quán khi chấm (E9–E11) — 🔜 chưa build
 > Mục tiêu: **(1) chấm ĐÚNG mức · (2) chênh lệch mỗi lần/câu chấm NHỎ & ĐO ĐƯỢC · (3) nhận xét CÓ CĂN CỨ.** Áp **cả B2B & B2C**. Phần kẹp/lọc hiện có (review trên) **giữ nguyên** — đây là lớp *đảm bảo đúng*, không thay.
 
-**E9 — Chấm NEO theo mức (levels + anchors).** *(tác động lớn nhất tới (1)+(2))*
-- **Vấn đề:** worker hiện chỉ nhận `name/description/maxScore` → AI **tự bịa thang** trong đầu → cùng câu trả lời diễn đạt khác → điểm nhảy; reasoning không bám mức. `rubric_levels`(score→descriptor) + `rubric_anchors`(câu mẫu) **có trong schema nhưng KHÔNG gửi xuống worker**.
+**E9 — Chấm NEO theo mức (levels + anchors).** ✅ **passing (vòng 17 · `4b4d625`)** *(tác động lớn nhất tới (1)+(2))*
+- **✅ Đã làm:** `ScoringCriteriaBuilder` nạp `rubric_levels`(+`rubric_anchors`) mỗi tiêu chí vào message chấm; **có khai levels → dùng; KHÔNG → dải mặc định `0..maxScore`** (đúng cả B2B & B2C, chưa cần `/suggest-criteria` sinh levels — để **E9b**). AIService in levels/anchors vào prompt, AI trả `levelMatched` (score=level); C#+worker **snap mức gần nhất** khi score lệch (KHÔNG drop → tránh Failed INT-9), lưu `answer_scores.level_matched`.
+- **Vấn đề (đã giải):** worker trước chỉ nhận `name/description/maxScore` → AI **tự bịa thang** → điểm nhảy; reasoning không bám mức. `rubric_levels`/`rubric_anchors` có schema nhưng KHÔNG gửi xuống worker → nay đã gửi.
 - **Làm:** mỗi tiêu chí trong message kèm `levels:[{score,descriptor}]` (+ `anchors?:[{score,exampleAnswer}]`). AI **chọn mức khớp** → trả `{score, levelMatched, reasoning bám descriptor}`, **`score = levelMatched.score`**. Worker **+ C# (E8)** reject nếu `score` không trùng mức nào của tiêu chí. Lưu `answer_scores.level_matched`.
 - **Nguồn mức:** B2C từ `rubric_levels` (đã có). **B2B:** `campaign_criteria` **chưa có mức** → publish/materialize phải **sinh mức** (mở rộng `/suggest-criteria` trả `levels` mỗi tiêu chí, hoặc dải mặc định `0..maxScore` có descriptor). Đây là điều kiện để E9 đúng cho B2B.
 
