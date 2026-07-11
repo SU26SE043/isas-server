@@ -95,7 +95,7 @@ public sealed class TestDb : IDisposable
 
     public static PracticeSession Session(
         Guid candidateId, SessionStatus status, JobCategory cat = JobCategory.BE,
-        Guid? campaignId = null, DateTime? createdAt = null)
+        Guid? campaignId = null, DateTime? createdAt = null, DateTime? deadline = null)
         => new()
         {
             Id = Guid.NewGuid(),
@@ -103,7 +103,8 @@ public sealed class TestDb : IDisposable
             JobCategory = cat,
             CampaignId = campaignId,
             Status = status,
-            CreatedAt = createdAt ?? DateTime.UtcNow
+            CreatedAt = createdAt ?? DateTime.UtcNow,
+            Deadline = deadline   // I2: null = không hard-deadline (B2C); có giá trị = hạn chót nhận bài (B2B)
         };
 
     public static PracticeQuestion Question(Guid sessionId, int order = 1)

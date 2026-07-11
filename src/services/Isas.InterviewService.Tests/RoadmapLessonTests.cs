@@ -313,8 +313,9 @@ public class RoadmapLessonTests
         using var t = new TestDb();
         var user = Guid.NewGuid();
 
-        // session InProgress 40' trước, 0 answer → sweeper bỏ ngang.
-        var session = TestDb.Session(user, SessionStatus.InProgress, createdAt: DateTime.UtcNow.AddMinutes(-40));
+        // I2: session InProgress quá Deadline (hạn nhận bài), 0 answer → sweeper bỏ ngang.
+        var session = TestDb.Session(user, SessionStatus.InProgress,
+            deadline: DateTime.UtcNow.AddMinutes(-5));
         t.Db.PracticeSessions.Add(session);
         await t.Db.SaveChangesAsync();
 

@@ -176,7 +176,8 @@ public class PracticeService : IPracticeService
             CampaignId = request.CampaignId,
             JobCategory = request.JobCategory,
             Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            Deadline = request.ExpiresAt    // I2: hạn chót nhận bài (B2B); null → không hard-deadline
         };
         _db.PracticeSessions.Add(session);
 
@@ -271,9 +272,14 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException(
                 $"Buổi ở trạng thái {session.Status}, không thể nộp");
 
+        // INT-5: cần ≥1 câu trả lời THẬT mới nộp được (đếm trước khi tạo Skipped bên dưới).
         var hasAnswer = await _db.PracticeAnswers.AnyAsync(a => a.SessionId == sessionId, ct);
         if (!hasAnswer)
             throw new InvalidOperationException("Chưa trả lời câu nào, không thể nộp");
+
+        // I2 (D21): chốt buổi theo TỪNG CÂU — câu CHƯA có answer → đánh `Skipped` (không chặn đóng buổi;
+        // câu có audio giữ nguyên trạng thái đang chấm). Skipped tính là "done" ở allDone bên dưới.
+        await MarkUnansweredAsSkippedAsync(sessionId, ct);
 
         // Chấm dần: mỗi answer đã được publish ngay lúc upload (AnswerService).
         // SubmitSession chỉ chốt sổ — KHÔNG publish lại để tránh chấm trùng.
@@ -306,6 +312,39 @@ public class PracticeService : IPracticeService
         {
             _logger.LogInformation("Chốt session {SessionId} -> Scoring (đang chờ chấm nốt)", sessionId);
         }
+    }
+
+    // I2 (D21) per-question finalize: mọi câu của buổi CHƯA có answer → tạo answer `Skipped`
+    // (không audio, DurationSec=0). Dùng khi chốt buổi (manual submit + sweeper auto-submit) để câu
+    // trống không kẹt buổi ở Scoring. Câu đã có answer (Uploaded/Scoring/Scored/Failed) KHÔNG đụng.
+    // Add vào context (KHÔNG SaveChanges) — caller lưu chung trong lần SaveChanges chốt buổi.
+    private async Task MarkUnansweredAsSkippedAsync(Guid sessionId, CancellationToken ct)
+    {
+        var answeredQuestionIds = await _db.PracticeAnswers
+            .Where(a => a.SessionId == sessionId)
+            .Select(a => a.QuestionId)
+            .ToListAsync(ct);
+
+        var unansweredQuestionIds = await _db.PracticeQuestions
+            .Where(q => q.SessionId == sessionId && !answeredQuestionIds.Contains(q.Id))
+            .Select(q => q.Id)
+            .ToListAsync(ct);
+
+        if (unansweredQuestionIds.Count == 0) return;
+
+        var now = DateTime.UtcNow;
+        _db.PracticeAnswers.AddRange(unansweredQuestionIds.Select(qid => new PracticeAnswer
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            QuestionId = qid,
+            Status = AnswerStatus.Skipped,
+            DurationSec = 0,
+            CreatedAt = now
+        }));
+
+        _logger.LogInformation(
+            "Chốt buổi {SessionId}: đánh {Count} câu chưa trả lời là Skipped", sessionId, unansweredQuestionIds.Count);
     }
 
     // ── GET ───────────────────────────────────────────────────────────────

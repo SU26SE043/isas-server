@@ -23,6 +23,12 @@ public class PracticeSession
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
 
+    // I2 (D21) — hạn chót NHẬN BÀI của cả buổi (KHÔNG phải giới hạn tổng thời gian làm bài):
+    // B2B = campaigns.expires_at (Campaign gửi kèm lúc tạo session); B2C = null (không hard-deadline,
+    // chỉ giới hạn từng câu qua PracticeQuestion.TimeLimitSec). Quá Deadline + InProgress →
+    // SessionAbandonSweeper auto-submit (≥1 answer) hoặc SessionAbandoned (0 answer) — chống reservation treo.
+    public DateTime? Deadline { get; set; }
+
     // BC9 — tổng kết buổi luyện B2C, set khi Scored (campaign_id null); null khi chưa chấm xong / B2B.
     public decimal? OverallScore { get; set; }   // điểm tổng 0–100 (trung bình cộng pct các tiêu chí)
     public int? AnsweredCount { get; set; }        // số câu đã chấm lúc tính kết quả (snapshot)

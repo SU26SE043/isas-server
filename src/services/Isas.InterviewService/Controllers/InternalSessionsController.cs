@@ -47,7 +47,7 @@ public class InternalSessionsController : ControllerBase
             : JobCategory.BE;
 
         var request = new CreateCampaignSessionRequest(
-            req.CampaignId, jobCategory, req.Questions, req.Criteria);
+            req.CampaignId, jobCategory, req.Questions, req.Criteria, req.ExpiresAt);
 
         try
         {
