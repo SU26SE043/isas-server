@@ -51,8 +51,15 @@ namespace Isas.CampaignService.Services
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
                 AntiCheatEnabled = request.AntiCheatEnabled,
+                // C11: JD/Criteria nhập text trực tiếp → *_text set, *_file_url null (không file lúc tạo).
+                JDText = NormalizeText(request.JdText),
+                CriteriaText = NormalizeText(request.CriteriaText),
                 StartsAt = request.StartsAt,
                 ExpiresAt = request.ExpiresAt,
+                // Set trong code (như AddAudit/questions) → chạy được trên SQLite test + Postgres,
+                // không phụ thuộc default DB `now()`.
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow,
             };
 
             // ── 3. Build questions ──────────────────────────────
@@ -81,11 +88,15 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.EmployerId == employerId, ct)
                 ?? throw new KeyNotFoundException();
 
-            if (request.JdFile is not null) ValidateFile(request.JdFile, "JD");
-            if (request.CriteriaFile is not null) ValidateFile(request.CriteriaFile, "Criteria");
+            // C11: text ưu tiên file — bỏ file cho slot đã nhập text trực tiếp (*_text set, chưa gắn file).
+            var jdFile = HasDirectText(campaign.JDText, campaign.JDFileUrl) ? null : request.JdFile;
+            var criteriaFile = HasDirectText(campaign.CriteriaText, campaign.CriteriaFileUrl) ? null : request.CriteriaFile;
 
-            var jdTask = HandleFileAsync(request.JdFile, campaign.Id, "jd", ct);
-            var criteriaTask = HandleFileAsync(request.CriteriaFile, campaign.Id, "criteria", ct);
+            if (jdFile is not null) ValidateFile(jdFile, "JD");
+            if (criteriaFile is not null) ValidateFile(criteriaFile, "Criteria");
+
+            var jdTask = HandleFileAsync(jdFile, campaign.Id, "jd", ct);
+            var criteriaTask = HandleFileAsync(criteriaFile, campaign.Id, "criteria", ct);
 
             var results = await Task.WhenAll(jdTask, criteriaTask);
 
@@ -174,6 +185,19 @@ namespace Isas.CampaignService.Services
             if (request.AntiCheatEnabled.HasValue)
                 campaign.AntiCheatEnabled = request.AntiCheatEnabled.Value;
 
+            // C11: cập nhật JD/Criteria dạng text → set *_text, xoá *_file_url (text ưu tiên file).
+            if (request.JdText is not null)
+            {
+                campaign.JDText = NormalizeText(request.JdText);
+                campaign.JDFileUrl = null;
+            }
+
+            if (request.CriteriaText is not null)
+            {
+                campaign.CriteriaText = NormalizeText(request.CriteriaText);
+                campaign.CriteriaFileUrl = null;
+            }
+
             if (request.StartsAt.HasValue)
                 campaign.StartsAt = request.StartsAt;
 
@@ -201,19 +225,23 @@ namespace Isas.CampaignService.Services
             if (request.JdFile is null && request.CriteriaFile is null)
                 throw new ArgumentException("At least one file must be provided.");
 
-            if (request.JdFile is not null) ValidateFile(request.JdFile, "JD");
-            if (request.CriteriaFile is not null) ValidateFile(request.CriteriaFile, "Criteria");
+            // C11: text ưu tiên file — bỏ file cho slot đã nhập text trực tiếp (*_text set, chưa gắn file).
+            var jdFile = HasDirectText(campaign.JDText, campaign.JDFileUrl) ? null : request.JdFile;
+            var criteriaFile = HasDirectText(campaign.CriteriaText, campaign.CriteriaFileUrl) ? null : request.CriteriaFile;
+
+            if (jdFile is not null) ValidateFile(jdFile, "JD");
+            if (criteriaFile is not null) ValidateFile(criteriaFile, "Criteria");
 
             // ── Delete old files from SeaweedFS before uploading ─
-            if (request.JdFile is not null && !string.IsNullOrWhiteSpace(campaign.JDFileUrl))
+            if (jdFile is not null && !string.IsNullOrWhiteSpace(campaign.JDFileUrl))
                 await _file.DeleteAsync(campaign.JDFileUrl, ct);
 
-            if (request.CriteriaFile is not null && !string.IsNullOrWhiteSpace(campaign.CriteriaFileUrl))
+            if (criteriaFile is not null && !string.IsNullOrWhiteSpace(campaign.CriteriaFileUrl))
                 await _file.DeleteAsync(campaign.CriteriaFileUrl, ct);
 
             // ── Upload new files ──────────────────────────────────
-            var jdTask = HandleFileAsync(request.JdFile, campaign.Id, "jd", ct);
-            var criteriaTask = HandleFileAsync(request.CriteriaFile, campaign.Id, "criteria", ct);
+            var jdTask = HandleFileAsync(jdFile, campaign.Id, "jd", ct);
+            var criteriaTask = HandleFileAsync(criteriaFile, campaign.Id, "criteria", ct);
 
             var results = await Task.WhenAll(jdTask, criteriaTask);
 
@@ -492,6 +520,15 @@ namespace Isas.CampaignService.Services
                 Summary = summary,
                 At = DateTime.UtcNow
             });
+
+        // C11: chuẩn hoá JD/Criteria nhập trực tiếp — trim; rỗng/whitespace → null.
+        private static string? NormalizeText(string? text)
+            => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+
+        // C11: slot đã nhập JD/Criteria dạng TEXT trực tiếp (text có + chưa gắn file) → text ưu tiên, bỏ file.
+        // (Có file_url = nguồn từ PDF trước đó → cho phép thay bằng file mới, không coi là "text trực tiếp".)
+        private static bool HasDirectText(string? text, string? fileUrl)
+            => !string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(fileUrl);
 
         private static void ValidateFile(IFormFile file, string label)
         {

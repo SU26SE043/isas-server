@@ -25,6 +25,10 @@ namespace Isas.CampaignService.DTOs
 
         public bool AntiCheatEnabled { get; set; }
 
+        // C11: JD & Criteria nhập TEXT trực tiếp (không bắt buộc PDF). Set *_text, *_file_url = null.
+        public string? JdText { get; set; }
+        public string? CriteriaText { get; set; }
+
         [Required]
         public DateTime? StartsAt { get; set; }
 
@@ -51,6 +55,10 @@ namespace Isas.CampaignService.DTOs
         public int? TimeLimitMinutes { get; set; }
 
         public bool? AntiCheatEnabled { get; set; }
+
+        // C11: cập nhật/ghi đè JD & Criteria dạng TEXT trực tiếp (text ưu tiên file → xoá *_file_url).
+        public string? JdText { get; set; }
+        public string? CriteriaText { get; set; }
 
         public DateTime? StartsAt { get; set; }
 
