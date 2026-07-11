@@ -27,6 +27,9 @@ public class PracticeSession
     public decimal? OverallScore { get; set; }   // điểm tổng 0–100 (trung bình cộng pct các tiêu chí)
     public int? AnsweredCount { get; set; }        // số câu đã chấm lúc tính kết quả (snapshot)
 
+    // BC10 — nhận xét chung buổi (AI sinh best-effort khi Scored, chỉ B2C); null nếu chưa/AI lỗi/B2B.
+    public string? OverallComment { get; set; }
+
     // Navigation
     public ICollection<PracticeQuestion> Questions { get; set; } = [];
     public ICollection<PracticeAnswer> Answers { get; set; } = [];

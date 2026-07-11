@@ -50,6 +50,12 @@ builder.Services.AddHttpClient<IAiServiceRoadmapGenerator, AiServiceRoadmapGener
     c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
 });
 
+builder.Services.AddHttpClient<IAiServiceSessionSummarizer, AiServiceSessionSummarizer>(c =>   // BC10
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
+
 builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient>(c =>   // BC2
 {
     // Nội bộ (KHÔNG qua gateway) → gọi thẳng PaymentService. X-Internal-Token gắn trong client.

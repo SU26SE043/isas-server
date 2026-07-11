@@ -11,17 +11,20 @@ public class SessionScoringNotifier : ISessionScoringNotifier
     private readonly InterviewDbContext _db;
     private readonly ISessionEventPublisher _eventPublisher;
     private readonly ISessionResultService _resultService;
+    private readonly IAiServiceSessionSummarizer _summarizer;   // BC10
     private readonly ILogger<SessionScoringNotifier> _logger;
 
     public SessionScoringNotifier(
         InterviewDbContext db,
         ISessionEventPublisher eventPublisher,
         ISessionResultService resultService,
+        IAiServiceSessionSummarizer summarizer,
         ILogger<SessionScoringNotifier> logger)
     {
         _db = db;
         _eventPublisher = eventPublisher;
         _resultService = resultService;
+        _summarizer = summarizer;
         _logger = logger;
     }
 
@@ -63,6 +66,13 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
         if (session is null) return;
 
+        // BC10: nhận xét chung buổi luyện B2C (AI best-effort). CHỈ B2C (campaign_id null); B2B → no-op.
+        // Chạy SAU BC9 (đã lưu overall_score + session_criterion_scores) → đọc lại số liệu đó → gọi
+        // AIService /summarize-session → lưu practice_sessions.overall_comment (AI KHÔNG ghi DB — GEN-4).
+        // Best-effort: AI lỗi/timeout → overall_comment để null, KHÔNG chặn Scored (session đã Scored trong DB).
+        if (session.CampaignId is null)
+            await TrySummarizeSessionAsync(session.Id, session.JobCategory, session.OverallScore, ct);
+
         var totalScore = await ComputeWeightedTotalScoreAsync(
             session.Id, session.CampaignId, session.JobCategory, ct);
 
@@ -88,6 +98,39 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             // rồi (giống pattern nuốt lỗi publish ở AnswerService.TryPublishScoringJobAsync).
             // Miss event ở đây tạm thời làm Campaign/Payment lệch (chưa có backfill trong E2).
             _logger.LogError(ex, "Phát SessionScored thất bại cho session {SessionId}", sessionId);
+        }
+    }
+
+    // BC10 — sinh + lưu nhận xét chung buổi B2C. Đọc số liệu BC9 (overall_score + session_criterion_scores)
+    // đã lưu → gọi AIService (sync) → ExecuteUpdate overall_comment. Best-effort: bọc try/catch, lỗi AI KHÔNG
+    // chặn Scored (giống BC9/BC14). AI trả rỗng → AiServiceException → nuốt, overall_comment giữ null (backfill sau).
+    private async Task TrySummarizeSessionAsync(
+        Guid sessionId, JobCategory jobCategory, decimal? overallScore, CancellationToken ct)
+    {
+        try
+        {
+            var criteria = await _db.SessionCriterionScores
+                .AsNoTracking()
+                .Where(x => x.SessionId == sessionId)
+                .OrderBy(x => x.CreatedAt)
+                .Select(x => new SessionSummaryCriterion(x.CriterionName, x.Percentage, x.NeedsImprovement))
+                .ToListAsync(ct);
+
+            // Không có breakdown (rubric rỗng / BC9 chưa ghi) → không đủ dữ liệu để nhận xét → bỏ qua.
+            if (overallScore is not decimal overall || criteria.Count == 0) return;
+
+            var comment = await _summarizer.SummarizeAsync(jobCategory.ToString(), overall, criteria, ct);
+            if (string.IsNullOrWhiteSpace(comment)) return;
+
+            await _db.PracticeSessions
+                .Where(s => s.Id == sessionId)
+                .ExecuteUpdateAsync(u => u.SetProperty(s => s.OverallComment, comment), ct);
+
+            _logger.LogInformation("BC10: đã lưu overall_comment cho session {SessionId}", sessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "BC10: sinh/lưu overall_comment thất bại cho session {SessionId}", sessionId);
         }
     }
 

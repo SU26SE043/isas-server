@@ -195,7 +195,7 @@ public class AnswerServiceTests
             .Callback<SessionScoredEvent, CancellationToken>((e, _) => published = e)
             .Returns(Task.CompletedTask);
         var notifier = new SessionScoringNotifier(
-            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db),
+            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
             NullLogger<SessionScoringNotifier>.Instance);
 
         // Tạo session B2B qua đúng đường I1 (materialize tiêu chí campaign).
@@ -385,7 +385,7 @@ public class AnswerServiceTests
             .Callback<SessionScoredEvent, CancellationToken>((e, _) => published = e)
             .Returns(Task.CompletedTask);
         var notifier = new SessionScoringNotifier(
-            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db),
+            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
             NullLogger<SessionScoringNotifier>.Instance);
 
         var storage = new Mock<IStorageService>();
