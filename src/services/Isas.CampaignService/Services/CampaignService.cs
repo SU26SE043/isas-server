@@ -640,6 +640,57 @@ namespace Isas.CampaignService.Services
             return response;
         }
 
+        // ── D4: phát lại lời mời (re-issue) — vô hiệu token cũ + phát token mới + resend email ──
+        // Employer bấm "gửi lại" cho 1 lời mời (email nhập sai worker gửi, token lộ/hết hạn, HR huỷ+mời lại
+        // theo CAMP-3). Vô hiệu token cũ (RevokedAt → GET/join token cũ = 410 qua ValidateInvitationUsable) +
+        // tạo invitation MỚI cùng email (+ giữ campaign_candidate_id nếu là đường 2) với token mới + resend.
+        // Idempotent: token cũ đã revoke → giữ mốc revoke cũ, VẪN tạo lời mời mới.
+        // Ownership: campaign lọc theo org_id (ngoài org → 404); invitation không thuộc campaign → 404.
+        // Campaign phải Active (Draft/Closed/Archived → 409) — nhất quán với mời hiện tại (CreateInvitations).
+        // KHÔNG đụng membership CampaignCandidate (D2 — link mời chỉ để join) và KHÔNG đụng session.
+        public async Task<InvitationItem> ReissueInvitationAsync(
+            Guid orgId, Guid actorUserId, Guid id, Guid invitationId, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            var old = await _db.CampaignInvitations
+                .FirstOrDefaultAsync(i => i.Id == invitationId && i.CampaignId == id, ct)
+                ?? throw new KeyNotFoundException($"Invitation {invitationId} not found.");
+
+            if (campaign.Status != CampaignStatus.Active)
+                throw new InvalidOperationException($"Chỉ phát lại lời mời khi campaign đang Active (hiện: {campaign.Status}).");
+
+            var now = DateTime.UtcNow;
+
+            // Revoke token cũ (idempotent: đã revoke → giữ mốc cũ) + tạo invitation mới. Cả hai thay đổi
+            // đi trong 1 SaveChangesAsync = 1 transaction (như CreateInvitationsAsync) → nguyên tử.
+            old.RevokedAt ??= now;
+
+            var fresh = new CampaignInvitation
+            {
+                Id = Guid.NewGuid(),
+                CampaignId = campaign.Id,
+                CampaignCandidateId = old.CampaignCandidateId,   // giữ liên kết shortlist (đường 2); đường 1 = null
+                Token = GenerateInvitationToken(),
+                Email = old.Email,
+                ExpiresAt = campaign.ExpiresAt,
+                CreatedAt = now,
+            };
+            _db.CampaignInvitations.Add(fresh);
+            AddAudit(actorUserId, orgId, AuditAction.ReissueInvitation, campaign.Id, $"Phát lại lời mời cho {old.Email}");
+            await _db.SaveChangesAsync(ct);
+
+            // Resend email token mới (sau khi persist, như CreateInvitationsAsync — SentAt ghi sau publish).
+            await _emailPublisher.PublishAsync(new InvitationEmailJob(
+                fresh.Id, campaign.Id, fresh.Email, fresh.Token, campaign.Title, fresh.ExpiresAt), ct);
+            fresh.SentAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+
+            return new InvitationItem { Id = fresh.Id, Email = fresh.Email, ExpiresAt = fresh.ExpiresAt };
+        }
+
         // ── E5: bảng kết quả + xếp hạng + pass/fail ─────────────────────────
         // Đọc read-model LOCAL `campaign_rankings` (E4 upsert từ event SessionScored) — không gọi
         // xuyên service. Bảng chỉ có 1 row/ứng viên đã `Scored` (row tạo khi nhận SessionScored) nên

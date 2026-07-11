@@ -25,6 +25,9 @@ namespace Isas.CampaignService.Services
         // C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV (candidateIds → tách email từ CV).
         Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, CancellationToken ct);
 
+        // D4: phát lại lời mời — vô hiệu token cũ (revoke → 410) + tạo invitation mới cùng email/candidate + resend.
+        Task<InvitationItem> ReissueInvitationAsync(Guid orgId, Guid actorUserId, Guid id, Guid invitationId, CancellationToken ct);
+
         // E5: bảng kết quả + xếp hạng + pass/fail (đọc read-model campaign_rankings — E4)
         Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid orgId, Guid id, CancellationToken ct);
 

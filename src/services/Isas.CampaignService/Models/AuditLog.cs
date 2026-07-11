@@ -26,6 +26,7 @@ namespace Isas.CampaignService.Models
         TransitionStatus = 5,
         Invite = 6,           // D1: mời ứng viên qua email (campaign_invitations)
         ScreenCandidates = 7, // C13: upload + sàng CV hàng loạt (campaign_candidates)
-        EditCandidate = 8     // C14: HR sửa email/fullName ứng viên sàng CV (campaign_candidates)
+        EditCandidate = 8,    // C14: HR sửa email/fullName ứng viên sàng CV (campaign_candidates)
+        ReissueInvitation = 9 // D4: phát lại lời mời — vô hiệu token cũ + phát token mới
     }
 }
