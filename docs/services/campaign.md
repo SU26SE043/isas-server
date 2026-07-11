@@ -53,14 +53,20 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 > - **Ưu tiên khi nhập trùng:** **text ƯU TIÊN file** (gửi cả hai → dùng **text**, bỏ file); Criteria: **`criteria[]` structured ưu tiên cao nhất** (có thì bỏ qua text/file/AI). Luôn quy về `campaign_criteria` có cấu trúc — **không** chấm trên text thô.
 
 ### Distribution / Result (❌ kế hoạch — cùng prefix `/campaign`)
-> **2 đường phát lời mời, hội tụ vào CÙNG máy magic-link** (D8/D2): **(1) mời thẳng** — HR upload danh sách email; **(2) từ shortlist sàng CV** — HR chọn top, hệ thống **tách email từ CV**. Sau khi có invitation thì y hệt nhau: gửi mail → ứng viên mở link → provision account Candidate nhẹ → làm bài.
+> **2 đường phát lời mời, hội tụ vào CÙNG máy magic-link** (D8/D2): **(1) mời thẳng** — HR upload danh sách email; **(2) từ shortlist sàng CV** — HR chọn top, hệ thống **tách email từ CV**. Sau khi có invitation thì y hệt nhau: gửi mail → ứng viên mở link → **join campaign** (membership) → **start** → làm bài.
+>
+> **✅ D2 (redesign 2026-07-11 — membership model, giống Discord/Classroom):** link mời **CHỈ để tham gia campaign**, **KHÔNG tạo session lúc mở link**. `CampaignCandidate` = **Membership** giữa Candidate↔Campaign (1/(campaign,candidate)). Session phỏng vấn **chỉ tạo khi bấm Start Interview** (create-or-get idempotent theo (candidateId,campaignId)). Luồng FE: **Invitation → Join → My Campaigns → Campaign Detail → Start → Interview**. Trạng thái membership: `Joined`; tiến độ phỏng vấn `interview_status`: NotStarted→InProgress (start)→Completed (E4 khi `SessionScored`).
 
 - `POST /campaign/{id}/invitations` — **Đường 1 (mời thẳng)**: body `{ emails: string[] }` → **phân tích danh sách**: validate định dạng (item hỏng → trả trong `failed[]`, KHÔNG chặn cả batch) · dedup (trong list + với invitation đã có) · check `max_candidates` (vượt → 4xx) → tạo `campaign_invitations` + đẩy **email queue** gửi hàng loạt. Campaign phải `Active`.
 - `POST /campaign/{id}/candidates/invite` — **Đường 2 (từ shortlist, 🔜 C15)**: body `{ candidateIds: uuid[] }` (HR **chọn top** sau ranking) → mỗi candidate: **tách email từ CV** (`campaign_candidates.email` — parse sẵn ở C13) → tạo invitation **gắn `campaign_candidate_id`** + gửi; status `Analyzed → Invited`. **Email null** (CV không có / parse không ra) → **skip item + trả trong `failed[]`** ("thiếu email — PATCH bổ sung"), các item còn lại vẫn gửi bình thường.
 - `PATCH /campaign/{id}/candidates/{candidateId}` — HR **bổ sung/sửa `email`/`fullName`** khi CV không tách được (ghi `audit_logs`); đã `Invited` → **409**.
 - `GET /campaign/{id}/invitations` — danh sách + trạng thái (đã gửi / đã mở / đã nộp).
-- `GET /invitations/{token}` — ứng viên vào bài (→ Interview tạo/lấy session gắn `campaignId`).
-- `POST /invitations/{id}/reissue` — Employer phát lại token (vô hiệu token cũ).
+- `GET /invitations/{token}` — **✅ D2** (public) **metadata-only**: intro campaign (title/jobTitle/description/deadline/criteria) để hiển thị trang mời. **KHÔNG** provision account, **KHÔNG** tạo session, không side-effect. Lỗi: không tồn tại→404 · revoked/hết hạn/không Active→410.
+- `POST /invitations/{token}/join` — **✅ D2** (public) **tham gia campaign**: provision Candidate nhẹ (Auth `/internal/auth/provision-candidate`, create-or-get by email, JWT) → tạo/cập nhật membership `CampaignCandidate(status=Joined)`; đường-2 (`campaign_candidate_id` có) → **set `candidate_id`** trên row CV (join CV↔acc↔session); đường-1 → tạo row membership. Idempotent. → `{ accessToken, campaignId, candidateId, membershipStatus:"Joined" }`.
+- `GET /my-campaigns` — **✅ D2** (Candidate) — list campaign đã join của ứng viên (+ `membershipStatus` + `interviewStatus`).
+- `GET /my-campaigns/{id}` — **✅ D2** (Candidate) — chi tiết campaign cho thành viên (JD/criteria/deadline/progress + đã start chưa); không phải thành viên → 404.
+- `POST /campaign/{id}/start` — **✅ D2** (Candidate) **bắt đầu phỏng vấn**: verify membership Joined (chưa → 403) + campaign Active/chưa hết hạn (→ 409) → Interview `POST /internal/sessions/campaign` create-or-get session gắn `campaignId` → set membership `session_id`+`interview_status=InProgress`. `Completed`→409 (chưa cho retake — chờ ratify). → `{ sessionId, questions[], campaignId }`. *(🔜 reserve credit org tại đây — follow-up.)*
+- `POST /invitations/{id}/reissue` — 🔜 (D4) Employer phát lại token (vô hiệu token cũ).
 - `GET /campaign/{id}/results` + `/results/export?format=csv|pdf` — bảng kết quả, xếp hạng, xuất file.
 
 ### Lọc ứng viên qua CV — sàng lọc hàng loạt (B2B) (🔜 C13–C15 — cùng prefix `/campaign`)
