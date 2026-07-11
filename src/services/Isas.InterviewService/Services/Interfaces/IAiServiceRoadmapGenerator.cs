@@ -12,4 +12,14 @@ public interface IAiServiceRoadmapGenerator
         IReadOnlyList<RoadmapWeakness>? weaknesses,
         string? cvText,
         CancellationToken ct = default);
+
+    // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. Trả markdown; AI KHÔNG ghi DB.
+    // Lỗi → AiServiceException (→ 502; mở lại được vì chưa lưu).
+    Task<string> GenerateLessonTheoryAsync(
+        string jobCategory,
+        string level,
+        string lessonTitle,
+        IReadOnlyList<string> focusCriteria,
+        IReadOnlyList<string>? weaknesses,
+        CancellationToken ct = default);
 }

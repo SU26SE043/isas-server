@@ -19,14 +19,22 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
     // 1. SỬA TẠI ĐÂY: Định nghĩa Record nhận về mảng String thuần túy theo đúng format Python
     private record FastAPIQuestionsResponse(List<string> Questions);
 
-    public async Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
+    public Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText, CancellationToken ct = default)
+        => GenerateQuestionsAsync(jobCategory, cvText, jdText, focusCriteria: null, ct);
+
+    // BC14 — overload thêm focusCriteria (roadmap lesson). null/rỗng → hành vi cũ (không gửi field).
+    public async Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, CancellationToken ct = default)
     {
         var payload = new
         {
             jobCategory = jobCategory,
-            cvText = cvText, 
-            jdText = jdText
+            cvText = cvText,
+            jdText = jdText,
+            // Chỉ gửi khi có (lesson /start). AIService bỏ qua field lạ nếu chưa hỗ trợ (forward-compatible).
+            focusCriteria = focusCriteria is { Count: > 0 } ? focusCriteria : null
         };
 
         var response = await _httpClient.PostAsJsonAsync("/api/v1/generate-questions", payload, ct);

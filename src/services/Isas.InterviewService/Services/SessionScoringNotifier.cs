@@ -40,6 +40,24 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             _logger.LogError(ex, "BC9: tính tổng kết điểm B2C thất bại cho session {SessionId}", sessionId);
         }
 
+        // BC14: nếu session này là buổi luyện của 1 roadmap lesson (Practicing) → lesson `Done`.
+        // Đóng session Scored là chokepoint chung của cả 2 đường (AnswerService callback +
+        // PracticeService.SubmitSession) nên đặt ở đây phủ hết. Guard theo session_id + status
+        // Practicing → chỉ chạm lesson gắn đúng session này; B2B/không-lesson → no-op. Best-effort
+        // (lỗi KHÔNG chặn đóng session — session đã Scored trong DB).
+        try
+        {
+            var doneCount = await _db.RoadmapLessons
+                .Where(l => l.SessionId == sessionId && l.Status == LessonStatus.Practicing)
+                .ExecuteUpdateAsync(u => u.SetProperty(l => l.Status, LessonStatus.Done), ct);
+            if (doneCount > 0)
+                _logger.LogInformation("BC14: lesson của session {SessionId} -> Done", sessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "BC14: đánh lesson Done thất bại cho session {SessionId}", sessionId);
+        }
+
         var session = await _db.PracticeSessions
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == sessionId, ct);

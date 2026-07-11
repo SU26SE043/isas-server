@@ -30,6 +30,7 @@ builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
+builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
 
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {

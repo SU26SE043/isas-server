@@ -102,6 +102,22 @@ public class SessionAbandonSweeper : BackgroundService
 
             if (updated == 0) continue;
 
+            // BC14: session bỏ ngang mà đang gắn 1 roadmap lesson (Practicing) → trả lesson về Theory +
+            // clear session_id để user /start lại được (session bỏ ngang không có điểm — mất link chấp
+            // nhận được). Release credit do E7 lo qua event dưới (KHÔNG tự gọi Payment ở đây). Best-effort.
+            try
+            {
+                await db.RoadmapLessons
+                    .Where(l => l.SessionId == s.Id && l.Status == LessonStatus.Practicing)
+                    .ExecuteUpdateAsync(u => u
+                        .SetProperty(l => l.Status, LessonStatus.Theory)
+                        .SetProperty(l => l.SessionId, (Guid?)null), ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "BC14: revert lesson về Theory thất bại cho session {SessionId}", s.Id);
+            }
+
             var evt = new SessionAbandonedEvent
             {
                 SessionId = s.Id,

@@ -40,8 +40,22 @@ public class PracticeService : IPracticeService
     }
 
     // ── CREATE: tạo session + sinh câu hỏi (1 call) ───────────────────────
-    public async Task<PracticeSessionResponse> CreateSessionAsync(
+    public Task<PracticeSessionResponse> CreateSessionAsync(
         Guid candidateId, CreatePracticeSessionRequest request, CancellationToken ct = default)
+        => CreateSessionInternalAsync(candidateId, request, Guid.NewGuid(), focusCriteria: null, ct);
+
+    // BC14 — /start roadmap lesson: sessionId do caller cấp (link lesson sau khi tạo → thoả FK
+    // roadmap_lessons.session_id) + câu hỏi bám focusCriteria của milestone. Reserve/gen/BK12 giữ nguyên.
+    public Task<PracticeSessionResponse> CreateLessonSessionAsync(
+        Guid candidateId, CreatePracticeSessionRequest request, Guid sessionId,
+        IReadOnlyList<string>? focusCriteria, CancellationToken ct = default)
+        => CreateSessionInternalAsync(candidateId, request, sessionId, focusCriteria, ct);
+
+    // Lõi dùng chung cho CreateSessionAsync (sessionId ngẫu nhiên, không focus) và
+    // CreateLessonSessionAsync (sessionId caller cấp + focusCriteria roadmap lesson).
+    private async Task<PracticeSessionResponse> CreateSessionInternalAsync(
+        Guid candidateId, CreatePracticeSessionRequest request, Guid sessionId,
+        IReadOnlyList<string>? focusCriteria, CancellationToken ct)
     {
         // CV optional: chỉ parse khi có. Không có CV cũng luyện được (dựa JobCategory).
         // TODO: xác nhận tên method storage (memory ghi GetParseText).
@@ -63,10 +77,9 @@ public class PracticeService : IPracticeService
         }
 
         // BC2: reserve 1 credit ví cá nhân (owner=User) TRƯỚC khi tạo session row.
-        // sinh sessionId trước → reserve khoá idempotency theo đúng Id session sẽ dùng (P4).
+        // sessionId cấp trước → reserve khoá idempotency theo đúng Id session sẽ dùng (P4).
         // Ví hết credit → Payment 402 → InsufficientCreditException ném ở đây ⇒ KHÔNG có row session (PAY-5).
         // (AI sinh câu hỏi lỗi SAU reserve → session Failed nhưng credit đã giữ; BC4 release khi Abandoned/Failed.)
-        var sessionId = Guid.NewGuid();
         var reservation = await _reservationClient.ReserveAsync(
             ownerType: "User", ownerId: candidateId, sessionId: sessionId, ct: ct);
         _logger.LogInformation(
@@ -89,15 +102,20 @@ public class PracticeService : IPracticeService
 
         // Gọi Gemini NGOÀI transaction — không giữ DB connection lúc chờ AI.
         // Prompt tự xử 3 kịch bản: có JD ưu tiên JD; chỉ CV thì bám CV; không có
-        // gì thì sinh câu hỏi chung theo JobCategory.
+        // gì thì sinh câu hỏi chung theo JobCategory. focusCriteria (lesson /start) đưa thêm để bám tiêu chí.
         List<GeneratedQuestion> generated;
         try
         {
-            generated = await _questionGenerator.GenerateQuestionsAsync(
-                jobCategory: session.JobCategory.ToString(),
-                cvText: cvText,            // null nếu không có
-                jdText: jdText,            // null nếu không có
-                ct: ct);
+            // focusCriteria chỉ có ở lesson /start (BC14) → dùng overload mang focusCriteria; luồng
+            // thường (null/rỗng) giữ nguyên overload cũ (không đổi hành vi/không đổi hợp đồng mock cũ).
+            generated = focusCriteria is { Count: > 0 }
+                ? await _questionGenerator.GenerateQuestionsAsync(
+                    session.JobCategory.ToString(), cvText, jdText, focusCriteria, ct)
+                : await _questionGenerator.GenerateQuestionsAsync(
+                    jobCategory: session.JobCategory.ToString(),
+                    cvText: cvText,            // null nếu không có
+                    jdText: jdText,            // null nếu không có
+                    ct: ct);
         }
         catch (Exception ex)
         {
@@ -350,6 +368,30 @@ public class PracticeService : IPracticeService
         {
             _logger.LogError(ex,
                 "BK12: phát SessionAbandoned(generation_failed) thất bại cho session {SessionId}", session.Id);
+        }
+
+        // BC14 (defense-in-depth): nếu session này đang gắn 1 roadmap lesson (Practicing) mà sinh câu
+        // hỏi lỗi → trả lesson về Theory + clear session_id để /start lại được. Luồng /start hiện link
+        // lesson SAU khi tạo session xong (FK), nên gen-fail thường CHƯA link → no-op; giữ để an toàn
+        // nếu thứ tự đổi. Best-effort (nuốt lỗi — session đã Failed trong DB).
+        await RevertLinkedLessonAsync(session.Id, ct);
+    }
+
+    // BC14 — reset lesson đang gắn 1 session không-Scored về Theory (start lại được). Guard theo
+    // session_id + status Practicing → chỉ chạm lesson đang luyện đúng session này (no-op nếu không có).
+    private async Task RevertLinkedLessonAsync(Guid sessionId, CancellationToken ct)
+    {
+        try
+        {
+            await _db.RoadmapLessons
+                .Where(l => l.SessionId == sessionId && l.Status == LessonStatus.Practicing)
+                .ExecuteUpdateAsync(u => u
+                    .SetProperty(l => l.Status, LessonStatus.Theory)
+                    .SetProperty(l => l.SessionId, (Guid?)null), ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "BC14: revert lesson về Theory thất bại cho session {SessionId}", sessionId);
         }
     }
 
