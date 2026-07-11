@@ -27,6 +27,11 @@ namespace Isas.CampaignService.Models
         public int? OverallMatchScore { get; set; }      // 0–100 — AI trả; ORDER BY = ranking shortlist
         public DateTime? LastScreeningPublishedAt { get; set; }   // cho StuckScreeningRepublisher (C15)
 
+        // ── D2: Membership (giống Discord/Classroom) — set khi ứng viên "Join Campaign" qua magic-link ──
+        public DateTime? JoinedAt { get; set; }             // null tới khi ứng viên tham gia (D2)
+        public Guid? SessionId { get; set; }                // ref lỏng → Interview; set khi "Start Interview"
+        public InterviewProgressStatus? InterviewStatus { get; set; }   // NotStarted/InProgress/Completed (enum string)
+
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
 
@@ -46,6 +51,7 @@ namespace Isas.CampaignService.Models
     /// <summary>
     /// State machine ứng viên sàng CV (lưu string — GEN-2). C13 dùng: Pending/Filtered/Rejected.
     /// Analyzing/Analyzed/AnalysisFailed/Invited = C14/C15 (định nghĩa sẵn để state machine đủ).
+    /// Joined = D2 (ứng viên đã tham gia campaign qua magic-link — có account Candidate + membership).
     /// </summary>
     public enum CandidateStatus
     {
@@ -55,6 +61,15 @@ namespace Isas.CampaignService.Models
         Analyzing = 3,
         Analyzed = 4,
         AnalysisFailed = 5,
-        Invited = 6
+        Invited = 6,
+        Joined = 7
+    }
+
+    /// <summary>D2: tiến độ phỏng vấn của membership (lưu string — GEN-2). null = chưa Start (NotStarted).</summary>
+    public enum InterviewProgressStatus
+    {
+        NotStarted = 0,
+        InProgress = 1,
+        Completed = 2
     }
 }

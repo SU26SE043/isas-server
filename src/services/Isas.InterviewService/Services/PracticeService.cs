@@ -221,6 +221,41 @@ public class PracticeService : IPracticeService
         return MapToResponse(session, questions, new List<PracticeAnswer>());
     }
 
+    // ── CREATE-OR-GET B2B (D2): idempotent theo (candidateId, campaignId) ─────────────
+    // Campaign /start có thể gọi nhiều lần (ứng viên refresh / bấm lại) — trả CÙNG session đang mở
+    // thay vì đẻ session mới. "Đang mở" = chưa terminal (Scored/Failed/SessionAbandoned). Hết mở →
+    // tạo session mới (I1). KHÔNG dùng UNIQUE DB (race hiếm chấp nhận được ở scope này) — dedup bằng query.
+    public async Task<PracticeSessionResponse> GetOrCreateCampaignSessionAsync(
+        Guid candidateId, CreateCampaignSessionRequest request, CancellationToken ct = default)
+    {
+        var existing = await _db.PracticeSessions
+            .FirstOrDefaultAsync(s =>
+                s.CandidateId == candidateId
+                && s.CampaignId == request.CampaignId
+                && s.Status != SessionStatus.Scored
+                && s.Status != SessionStatus.Failed
+                && s.Status != SessionStatus.SessionAbandoned, ct);
+
+        if (existing is null)
+            return await CreateCampaignSessionAsync(candidateId, request, ct);
+
+        var questions = await _db.PracticeQuestions.AsNoTracking()
+            .Where(q => q.SessionId == existing.Id)
+            .OrderBy(q => q.OrderNo)
+            .ToListAsync(ct);
+
+        var answers = await _db.PracticeAnswers.AsNoTracking()
+            .Include(a => a.Scores)
+            .Where(a => a.SessionId == existing.Id)
+            .ToListAsync(ct);
+
+        _logger.LogInformation(
+            "create-or-get: trả session B2B đang mở {SessionId} (candidate {CandidateId}, campaign {CampaignId})",
+            existing.Id, candidateId, request.CampaignId);
+
+        return MapToResponse(existing, questions, answers);
+    }
+
     // ── SUBMIT SESSION: chốt sổ (KHÔNG publish — chấm dần đã publish lúc upload) ──
     public async Task SubmitSessionAsync(
         Guid candidateId, Guid sessionId, CancellationToken ct = default)

@@ -97,4 +97,43 @@ public class RankingEventHandlerTests
         using var check = tdb.NewContext();
         Assert.Empty(await check.CampaignRankings.ToListAsync());
     }
+
+    // D2: SessionScored → membership interview_status = Completed (khớp session_id) + ranking vẫn upsert.
+    [Fact]
+    public async Task SessionScored_DanhDauMembershipCompleted_VaVanUpsertRanking()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+
+        // Campaign thật (campaign_candidates có FK → campaigns)
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        var campaignId = camp.Id;
+        tdb.Db.Campaigns.Add(camp);
+
+        // membership đã start (InProgress, gắn session_id)
+        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        {
+            Id = Guid.NewGuid(), CampaignId = campaignId, CandidateId = candidateId,
+            Email = "cand@acme.test", ParseStatus = CvParseStatus.Pending, Status = CandidateStatus.Joined,
+            JoinedAt = DateTime.UtcNow, SessionId = sessionId,
+            InterviewStatus = InterviewProgressStatus.InProgress,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
+
+        await NewHandler(tdb.NewContext()).HandleSessionScoredAsync(new SessionScoredMessage
+        {
+            SessionId = sessionId,
+            CampaignId = campaignId,
+            CandidateId = candidateId,
+            TotalScore = 77.00m,
+            ScoredAt = DateTime.UtcNow
+        });
+
+        using var check = tdb.NewContext();
+        Assert.Single(await check.CampaignRankings.Where(r => r.SessionId == sessionId).ToListAsync());
+        var membership = await check.CampaignCandidates.SingleAsync(c => c.SessionId == sessionId);
+        Assert.Equal(InterviewProgressStatus.Completed, membership.InterviewStatus);
+    }
 }

@@ -23,6 +23,17 @@ public record CreateCampaignSessionRequest(
     IReadOnlyList<string> Questions,
     IReadOnlyList<CampaignCriterionInput> Criteria
 );
+
+// D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
+// "Start Interview"). candidateId đi kèm (Campaign đã provision qua Auth); jobCategory là STRING để
+// TryParse mềm (ref lỏng xuyên service — Campaign gửi Domain, không lệ thuộc enum Interview).
+public record CreateCampaignSessionInternalRequest(
+    Guid CandidateId,
+    Guid CampaignId,
+    string JobCategory,
+    IReadOnlyList<string> Questions,
+    IReadOnlyList<CampaignCriterionInput> Criteria
+);
 public record PracticeSessionResponse(
     Guid Id,
     string Status,
