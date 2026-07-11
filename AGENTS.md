@@ -9,10 +9,10 @@ Kiến trúc **Engine + Orchestrator, 6 service**: `Gateway · AuthService · AI
 
 ## Chạy & kiểm thử
 - **Chạy:** `docker compose up` (xem `compose.yaml`). AIService (Python) chạy riêng — xem [DEPLOYMENT.md](DEPLOYMENT.md).
-- **Kiểm thử:** `dotnet test` (test project: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`; Payment chưa có — `P0.4`).
+- **Kiểm thử:** `dotnet test` (4 test project **đã có**: Auth · Interview · Campaign · Payment) + AIService `pytest` (Python, `cd src/services/Isas.AIService` + `pip install -r requirements-dev.txt` — cần `pytest-asyncio`). Trạng thái số test hiện hành: [progress.md](docs/progress.md).
 - **Env cần:** connection string mỗi DB · `Jwt:Key/Issuer/Audience` (giống nhau mọi service) · `Internal:Token` · `AiService:BaseUrl` · SeaweedFS keys · PayOS keys.
 
-**Readiness (4 điều kiện cho phiên/người mới):** ✅ chạy được (compose) · ✅ thấy tiến độ ([progress.md](docs/progress.md)) · ✅ chọn bước kế ([work-division.md](docs/work-division.md) §5) · ⚠ **test được**: Auth/Interview/Campaign **đã có** test project; **Payment chưa** (`P0.4`); chưa có lệnh chuẩn hoá (`make setup/test/check`). → làm nốt **Phase 0** trong [work-division.md](docs/work-division.md) §5.
+**Readiness (4 điều kiện cho phiên/người mới):** ✅ chạy được (compose) · ✅ thấy tiến độ ([progress.md](docs/progress.md)) · ✅ chọn bước kế ([progress.md](docs/progress.md) §Bước tiếp theo) · ✅ **test được**: cả 4 service .NET + AIService pytest **đã có** (`P0.3`/`P0.4` xong). **Còn Phase 0:** `P0.1` (compose máy sạch → `/health` 200), `P0.2` (`make setup/test/check`), `P0.5` (readiness checkpoint).
 
 ## Ràng buộc cứng (PHẢI tuân — chi tiết [architecture.md](docs/architecture.md) §5)
 - API public qua Gateway `/api/v1/<service>/...`; **callback `/internal/...` + webhook PayOS KHÔNG qua gateway**.
@@ -55,8 +55,8 @@ Doc này + `docs/services/<svc>.md` + `tasks.md` là **đủ để 1 agent gen c
 | Service | Spec để code theo |
 |---|---|
 | Auth · Interview · AI | **`src/services/Isas.<Svc>/AGENTS.md`** (copy local — agent làm trong folder tự thấy) **+** `docs/services/<svc>.md` |
-| **Campaign** | ✅ **đã có folder code trong tree** (merged main, PR #22): **`src/services/Isas.CampaignService/AGENTS.md`** (copy local) **+** `docs/services/campaign.md`. |
-| **Payment** | **chưa có folder code trong tree** (ở branch `features/payment-b2c`) → spec ở `docs/services/payment.md`; **checkout branch xong copy spec vào `src/services/Isas.PaymentService/AGENTS.md`** như các service kia. |
+| **Campaign** | ✅ **trong tree**: **`src/services/Isas.CampaignService/AGENTS.md`** (copy local) **+** `docs/services/campaign.md`. |
+| **Payment** | ✅ **trong tree** (P1 đưa vào từ vòng 1, nhánh tích hợp): **`src/services/Isas.PaymentService/AGENTS.md`** (nếu chưa có bản copy → đồng bộ từ) `docs/services/payment.md`. *(Nhánh `features/payment-b2c` cũ đã obsolete — code hiện dùng owner_type/reserve/consume/postpaid.)* |
 
 > Sửa thiết kế → sửa ở `docs/services/<svc>.md` (source of truth) rồi **copy lại** xuống folder, đừng sửa bản copy lệch.
 
@@ -73,14 +73,14 @@ Sau pass: cập nhật status <ID> trong tasks.md (kèm commit) + service doc n�
 ```
 
 **Guardrail (để không "code trông ổn"):**
-- **Phase 0 còn lại** (`P0.1`,`P0.2`,`P0.4`,`P0.5`): chưa verify `docker compose up` máy sạch · Payment chưa có test project · chưa `make setup/test/check` → một số lệnh xác minh lớp 2/3 chưa chạy được. Làm nốt nền này song song feature.
-- **Branch:** working tree có Auth/Interview/AI/**Campaign** (merged main) → chỉ task `P*` (Payment) phải **checkout branch `features/payment-b2c`** trước khi gen.
+- **Phase 0 còn lại** (`P0.1`,`P0.2`,`P0.5`): chưa verify `docker compose up` máy sạch · chưa `make setup/test/check` → lớp-3 e2e thật (compose + broker + PayOS sandbox + Gemini) **verify tay ngoài worker**. (`P0.3`/`P0.4` xong — 4 test project + pytest đã có.)
+- **Nhánh làm việc:** toàn bộ feature ở nhánh tích hợp **`docs/sync-design-d18-d21`** (6 service đều trong tree; `main` mới có nền pre-vòng-1 — xem [progress.md](docs/progress.md) §Main-vs-branch). KHÔNG checkout branch cũ.
 - Agent **KHÔNG bịa ngoài doc**, **KHÔNG đổi thiết kế trong doc** (thấy sai → hỏi), **KHÔNG tự nâng `passing`** khi lệnh xác minh chưa PASS.
-- Bắt đầu mượt nhất: `A1` (Auth org) hoặc task engine Interview (code có sẵn trong tree).
+- **Bắt đầu:** đọc [progress.md](docs/progress.md) §Bước tiếp theo → chọn task `not_started` không bị block trong [tasks.md](docs/tasks.md).
 
 ## Bản đồ tài liệu (`docs/`)
 - [work-division.md](docs/work-division.md) — **source of truth**: phạm vi, phân việc 4 người, thứ tự build.
-- [decisions.md](docs/decisions.md) — **vì sao** các quyết định (D1–D19) + phương án bị loại.
+- [decisions.md](docs/decisions.md) — **vì sao** các quyết định (D1–D22) + phương án bị loại.
 - [progress.md](docs/progress.md) — trạng thái hiện tại + bước kế.
 - [tasks.md](docs/tasks.md) — **task nguyên tử + lệnh xác minh + trạng thái** (WIP=1; chọn task `not_started` không bị block).
 - [architecture.md](docs/architecture.md) — tổng quan + quy ước + routing.
