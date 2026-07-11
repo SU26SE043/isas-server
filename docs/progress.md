@@ -1,7 +1,7 @@
 # ISAS — Progress / Handoff
 
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
-> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) + **E7·C13·BC2** (vòng 7) + **C14·BC8·BK7** (vòng 8) + **BK11·BK1·BK12** (vòng 9 — bug-fix) + **P2·C15·BC12** (vòng 10) passing, integrated vào `docs/sync-design-d18-d21`).
+> **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-11** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) + **E7·C13·BC2** (vòng 7) + **C14·BC8·BK7** (vòng 8) + **BK11·BK1·BK12** (vòng 9 — bug-fix) + **P2·C15·BC12** (vòng 10) + **BC14·BK4·BC10-AI** (vòng 11) passing, integrated vào `docs/sync-design-d18-d21`).
 
 ## Pha hiện tại
 **Đang code feature B2B (không còn ở pha thiết kế).** Thiết kế đã chốt (D1–D21; **mới 2026-07-02: D20 — roadmap ôn tập cá nhân hoá B2C, `BC12`–`BC15`** — mới ở doc, **chưa build**; 2026-06-30: D18/D19 — lọc CV hàng loạt B2B, `C13`–`C15` — mới ở doc, **chưa build**). Đã merge vào `main`: **S1 Auth org** (A1–A3, PR #23), **S2 Campaign** (C1–C10, PR #22 + đưa vào pipeline deploy), **S3 I1** (session B2B `campaign_id` + materialize tiêu chí, PR #24). **E1 đã merged `main`** (commit `796d8bb` — chấm B2B theo tiêu chí campaign); **tiếp theo E2** (phát `SessionScored`). **Time-limit (D21, 2026-07-11):** bỏ giới hạn tổng buổi — chỉ giới hạn từng câu, hết giờ câu → chốt câu → sang câu kế (task **I2**). PaymentService vẫn ở branch chưa refactor. **Doc (2026-06-30):** 5 service doc đã **chi tiết hoá** (req/res mẫu · validation · bảng mã lỗi · sequence · index/edge) + đồng bộ bản copy `src/services/Isas.*/AGENTS.md` (Auth/AI/Campaign/Interview; Payment ở branch).
@@ -109,6 +109,15 @@
 
 > Base test sau vòng 10: **Auth 4 · Payment 42 · Campaign 93 · Interview 94 = 233 .NET pass** (+ AIService pytest 29), `dotnet build` 0 error. Merge `--no-ff`: P2·C15·BC12 (`c3ea069`·`f5b854a`·`225e0c3`). Backlog +**BK13** (ratify migration/schema payment_transactions P2). **⚠ P2 cần verify tay ngoài worker:** PayOS sandbox thật (payment-link + webhook HMAC) — worker chỉ chứng minh tới lớp-2 (unit test credit-add + idempotency).
 
+### Vòng giám sát 2026-07-11 (vòng 11) — 3 task passing (3 worker phiên riêng, pin base `5639a25`, Context7 EF Core; AIService theo pattern repo)
+| Task | Nội dung | Trạng thái |
+|---|---|---|
+| **BC14** | Lesson theory lazy (`GET …/lessons/{id}`→AIService `/generate-lesson-theory`, lưu 1 lần) + `POST …/lessons/{id}/start` (reserve ví User BC2, hết→402; câu hỏi bám `focusCriteria`; `Theory→Practicing`+mile InProgress; Practicing→409) + Scored→Done (`SessionScoringNotifier`) + Abandoned→Theory (`SessionAbandonSweeper`) | ✅ **passing (44a4aed)** · Interview 103/103 (+9) · **không migration** (schema roadmap_lessons từ BC12) · ⚠ `/start` link-after→race hiếm session mồ côi; `focusCriteria` chưa được `/generate-questions` consume (AIService cần thêm field); Abandoned→Theory forward-looking (sweeper quét InProgress, /start tạo Ready → chờ **I2** expire Ready session + release credit treo) |
+| **BK4** | Rename `campaigns.employer_id`→`org_id` (+`campaign_questions`) + owner từ JWT claim `org_id` (thiếu→403 AUTH-8); ownership/filter/results/invitations/candidates theo ORG; audit actor giữ = user sub | ✅ **passing (ea480e7)** · Campaign 97/97 (93 sửa + 4) · migration `RenameCampaignEmployerToOrg` (RenameColumn/RenameIndex data-preserving; không apply Neon; has-pending=No changes) · ⚠ **backfill Neon (BK4b):** rows cũ `org_id`=user sub → cần data-migration user→org (`org_members`) trước khi credit-by-org chạy thật; bản copy AGENTS.md còn EmployerId (đồng bộ ở BK4b) |
+| **BC10-AI** | AIService `POST /summarize-session` (Python sync best-effort, `{jobCategory,overallScore,criteriaScores[]}`→`{overallComment}` tiếng Việt; anti prompt-injection delimiter; AI không ghi DB) | 🟡 **nửa AI passing (7a60481)** · pytest 39/39 (29+10) · **task BC10 chưa đủ** — còn nửa Interview (gọi endpoint + lưu `overall_comment` khi Scored + migration cột + GET trả) |
+
+> Base test sau vòng 11: **Auth 4 · Payment 42 · Campaign 97 · Interview 103 = 246 .NET pass** (+ AIService pytest 39), `dotnet build` 0 error. Merge `--no-ff`: BC14·BK4·BC10-AI. Backlog +**BK4b** (backfill user→org ops + đồng bộ AGENTS.md copy). **BC10 mới xong nửa AIService** → nửa Interview (wiring `SessionScoringNotifier`) là task kế.
+
 > Test project trong tree hiện có: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`. Payment **chưa** có (Phase 0 `P0.4`).
 
 ## Vấn đề đã biết / cần xác minh
@@ -120,17 +129,17 @@
 - **CI/CD chung Neon (DB server):** không tự apply migration lên DB chung — schema apply qua pipeline/tay trước deploy.
 
 ## Bước tiếp theo (thứ tự đề xuất)
-> ✅ V1: **E2,D1,P1,BC6**. ✅ V2: **P7,E3,E4,BC13**. ✅ V3: **P4,C11,E8**. ✅ V4: **P5,C12,BC11**. ✅ V5: **P6,E5,BC9**. ✅ V6: **P8a,E6,BC7**. ✅ V7: **E7,C13,BC2**. ✅ V8: **C14,BC8,BK7**. ✅ V9: **BK11,BK1,BK12**. ✅ V10: **P2,C15,BC12** (xem bảng trên). Frontier mới bên dưới.
+> ✅ V1: **E2,D1,P1,BC6**. ✅ V2: **P7,E3,E4,BC13**. ✅ V3: **P4,C11,E8**. ✅ V4: **P5,C12,BC11**. ✅ V5: **P6,E5,BC9**. ✅ V6: **P8a,E6,BC7**. ✅ V7: **E7,C13,BC2**. ✅ V8: **C14,BC8,BK7**. ✅ V9: **BK11,BK1,BK12**. ✅ V10: **P2,C15,BC12**. ✅ V11: **BC14,BK4,BC10-AI** (xem bảng trên). Frontier mới bên dưới.
 > **⚠ P2 cần verify tay:** engine credit reserve/consume/release/purchase đủ (P4/P5/P6/P8a/BK7/BK11/E7 + **P2 webhook**), nhưng **luồng tiền thật cần PayOS sandbox** (payment-link + webhook HMAC) — verify ngoài worker trước khi coi B2C/B2B mua-credit là E2E-Xong.
 > **⚠ Cần người/team chốt (không tự quyết):** **BK5** — CV analysis tính phí/free? (rules.md BC-4 ✗ interview.md/D17). **BK9** — convention event-bus (architecture.md §6). **BK10** — BC3/BC4 còn cần sau E7? (E7 consume/release generic mọi session).
 1. **D2** (S3, Campaign+Interview — **cross-service**): mở token → account Candidate + create-or-get session. **Gỡ chặn HTTP entry B2B** cho I1/E1 (D1 ✅ + I1 ✅). ⚠ đụng Campaign+Interview (+ Auth account nhẹ) → **chạy solo**. **Sau D2: chạy được E2E B2B thật** (compose + broker) — verify tay ngoài worker.
 2. **P2 code ✅ (c3ea069)** — **còn verify tay:** PayOS sandbox (payment-link + webhook HMAC thật) ngoài worker → xong mới mở khoá **P3** (active-polling đối soát), **BC1** (mua pack ví User), **A4** (HrMember→403 billing), **P8b** (invoice postpaid).
-3. **S5 B2C** (BC11 ✅ · BC9 ✅ · BC7 ✅ · BC2 ✅ · BC8 ✅ · **BC12 ✅**): **BC10** (nhận xét AI buổi luyện — cần BC9 ✅ + AIService `/summarize-session` chưa build) · **BC14** (lesson theory lazy + `/start` reserve credit — cần BC12 ✅ + BC2 ✅) · **BC3/BC4** (consume/release ví cá nhân — **chờ BK10** chốt còn cần không sau E7) · BC1 (chờ P2 e2e).
+3. **S5 B2C** (BC11 ✅ · BC9 ✅ · BC7 ✅ · BC2 ✅ · BC8 ✅ · **BC12 ✅** · **BC14 ✅**): **BC10 nửa Interview** (AIService `/summarize-session` ✅ 7a60481 — còn wiring `SessionScoringNotifier` gọi + lưu `overall_comment` + migration cột + GET) · **BC15** (milestone improvement + roadmap Completed + report — cần BC12 ✅ + BC13 ✅ + BC10) · **BC3/BC4** (consume/release ví cá nhân — **chờ BK10** chốt còn cần không sau E7) · BC1 (chờ P2 e2e).
 4. **Lọc CV B2B** (C13 ✅ · C14 ✅ · **C15 ✅**): pipeline sàng CV → shortlist → bulk invite đã đủ; còn e2e broker thật (compose) + chốt D2 để ứng viên vào bài.
-5. **I2** (per-question time-limit + materialize deadline lên session — gỡ design gap E3).
-6. **AIService roadmap DB side** `BC12` ✅ → **`BC14`**→**`BC15`** (D20, cần BC13 ✅ + BC9/BC11 ✅ + BC12 ✅).
-7. **Auth A4/A5**: A5 (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting**, chạy vòng ít worker; A4 cần P2.
+5. **I2** (per-question time-limit + materialize deadline lên session — gỡ design gap E3; **cũng gỡ** BC14 Abandoned→Theory forward-looking + release credit lesson-session treo ở Ready).
+6. **AIService roadmap DB side** `BC12` ✅ · `BC14` ✅ → **`BC15`** (D20, cần BC13 ✅ + BC9/BC11 ✅ + BC12 ✅ + BC10 wiring).
+7. **Auth A4/A5**: A5 (bật lại `[Authorize(Roles)]` mọi service) — **cross-cutting**, chạy vòng ít worker; A4 cần P2. (BK4 ✅ đã wire org_id — credit-theo-org mở khoá.)
 8. **Phase 0 còn lại**: `P0.1` (compose máy sạch), `P0.2` (`make setup/test/check`), `P0.5` (readiness + checkpoint). *(P0.3/P0.4 ✅.)*
-9. **Backlog còn (khi rảnh):** BK2 (backfill order_no ops — trước apply C12 Neon) · BK8 (E6 PDF) · BK4 (wire org_id) · BK6 (ratify jobCategory) · BK13 (ratify migration/schema payment_transactions P2) · **cần chốt:** BK5/BK9/BK10. *(✅ done: BK1·BK7·BK11·BK12.)* — xem §Backlog tasks.md.
+9. **Backlog còn (khi rảnh):** BK2 (backfill order_no ops — trước apply C12 Neon) · BK4b (backfill user→org ops + đồng bộ AGENTS.md copy — trước apply BK4 Neon) · BK8 (E6 PDF) · BK6 (ratify jobCategory) · BK13 (ratify migration/schema payment_transactions P2) · **cần chốt:** BK5/BK9/BK10. *(✅ done: BK1·BK4·BK7·BK11·BK12.)* — xem §Backlog tasks.md.
 
 > Quy trình **vào ca / tan ca**: xem [../AGENTS.md](../AGENTS.md).
