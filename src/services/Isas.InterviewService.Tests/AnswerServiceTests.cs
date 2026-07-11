@@ -430,6 +430,96 @@ public class AnswerServiceTests
         Assert.Equal(1, count);   // không nhân đôi
     }
 
+    // E8 (a): worker/image lệch trả điểm vượt trần -> C# KẸP về maxScore (INT-9). B2C.
+    [Fact]
+    public async Task SaveResult_ScoreAboveMaxScore_IsClampedToMaxScore()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // B2C
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // maxScore = 5
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _);
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 99m, Reasoning = "worker lệch" } }
+        });
+
+        var saved = await t.Db.AnswerScores.AsNoTracking().SingleAsync(s => s.AnswerId == answer.Id);
+        Assert.Equal(5m, saved.Score);   // kẹp về maxScore, không lưu 99
+    }
+
+    // E8 (b): criterionId AI bịa (không thuộc rubric session) -> BỎ; tiêu chí hợp lệ vẫn lưu bình thường. B2C.
+    [Fact]
+    public async Task SaveResult_CriterionNotInRubric_IsDropped_ValidKept()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring);   // B2C
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);   // rubric hợp lệ, maxScore 5
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _);
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = 1,
+            Scores =
+            {
+                new ScoreItemDto { CriterionId = crit.Id, Score = 3m, Reasoning = "hợp lệ" },
+                new ScoreItemDto { CriterionId = Guid.NewGuid(), Score = 4m, Reasoning = "AI bịa" }
+            }
+        });
+
+        var saved = await t.Db.AnswerScores.AsNoTracking().Where(s => s.AnswerId == answer.Id).ToListAsync();
+        Assert.Single(saved);                        // chỉ tiêu chí hợp lệ được lưu (criterion lạ bị bỏ)
+        Assert.Equal(crit.Id, saved[0].CriterionId);
+        Assert.Equal(3m, saved[0].Score);            // trường hợp hợp lệ lưu nguyên điểm
+    }
+
+    // E8: guard áp cho CẢ B2B — criterion B2C cùng nghề (campaign_id null, ngoài rubric campaign) bị BỎ,
+    // đồng thời điểm vượt trần của tiêu chí campaign bị KẸP.
+    [Fact]
+    public async Task SaveResult_B2BSession_DropsCriterionOutsideCampaignRubric_AndClamps()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var campaignId = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scoring, campaignId: campaignId);   // B2B
+        var q = TestDb.Question(session.Id);
+        var campaignCrit = TestDb.Criterion(session.JobCategory, campaignId: campaignId, name: "Campaign-Crit"); // maxScore 5
+        var b2cCrit = TestDb.Criterion(session.JobCategory, name: "B2C-Crit");   // campaign_id null -> NGOÀI rubric B2B
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, campaignCrit, b2cCrit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IScoringJobPublisher>(), out _);
+        await svc.SaveResultAsync(answer.Id, new AnswerScoreCallbackRequest
+        {
+            Transcript = "x",
+            RubricVersion = campaignCrit.Version,
+            Scores =
+            {
+                new ScoreItemDto { CriterionId = campaignCrit.Id, Score = 9m },   // vượt trần -> kẹp về 5
+                new ScoreItemDto { CriterionId = b2cCrit.Id, Score = 4m }         // ngoài rubric B2B -> bỏ
+            }
+        });
+
+        var saved = await t.Db.AnswerScores.AsNoTracking().Where(s => s.AnswerId == answer.Id).ToListAsync();
+        Assert.Single(saved);
+        Assert.Equal(campaignCrit.Id, saved[0].CriterionId);
+        Assert.Equal(5m, saved[0].Score);   // kẹp về maxScore
+    }
+
     [Fact]
     public async Task MarkFailed_SetsFailed_AndClosesSession_WhenScoring()
     {
