@@ -60,6 +60,8 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 
 ## 2. Hiện trạng — cái gì đã có, cái gì còn thiếu
 
+> **⚠ Cột "Trạng thái" §1a/§2 đóng băng ~pre-vòng-1 (mô tả `main`).** Trạng thái SỐNG hiện hành = [progress.md](progress.md) §Vòng tables (19 vòng · 366 .NET test + 48 pytest · nhánh `docs/sync-design-d18-d21` chưa merge `main`). File này giữ đúng phần **scope/kiến trúc/phân-việc** (evergreen); đừng đọc cột trạng thái làm chuẩn — vd Payment/BC1–BC2/reserve-consume/analyze-cv/A4/D2… **đã xong** trên nhánh tích hợp.
+
 | Phần | Trạng thái | Nằm ở đâu |
 |---|---|---|
 | Gateway (YARP, `/api/v1/*`) | ✅ Có | `src/gateway/Isas.Gateway` |

@@ -1,7 +1,7 @@
 # ISAS — Business Rules (toàn hệ thống)
 
 > **Danh mục quy tắc nghiệp vụ toàn hệ thống** — mã hóa để tham chiếu (GEN/AUTH/INT/CAMP/PAY/AI/BC/SEC/DATA).
-> Chi tiết thiết kế/state machine từng service xem `docs/services/<service>.md`; **vì sao** (D1–D19) xem [decisions.md](decisions.md).
+> Chi tiết thiết kế/state machine từng service xem `docs/services/<service>.md`; **vì sao** (D1–D22) xem [decisions.md](decisions.md).
 > Ký hiệu: `🔜` = chưa làm / đang tới; `Dxx` = tham chiếu decision log.
 
 ## GEN — Ràng buộc chung (mọi service)
