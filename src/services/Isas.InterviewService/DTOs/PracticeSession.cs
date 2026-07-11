@@ -17,11 +17,13 @@ public record CampaignCriterionInput(
 );
 
 // I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).
+// I2: ExpiresAt = hạn chót nhận bài (campaigns.expires_at) → set session.Deadline; null = không hard-deadline.
 public record CreateCampaignSessionRequest(
     Guid CampaignId,
     JobCategory JobCategory,
     IReadOnlyList<string> Questions,
-    IReadOnlyList<CampaignCriterionInput> Criteria
+    IReadOnlyList<CampaignCriterionInput> Criteria,
+    DateTime? ExpiresAt = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -32,7 +34,10 @@ public record CreateCampaignSessionInternalRequest(
     Guid CampaignId,
     string JobCategory,
     IReadOnlyList<string> Questions,
-    IReadOnlyList<CampaignCriterionInput> Criteria
+    IReadOnlyList<CampaignCriterionInput> Criteria,
+    // I2: hạn chót nhận bài (campaigns.expires_at). Campaign gửi kèm → set session.Deadline; null =
+    // không hard-deadline (chỉ giới hạn từng câu). Campaign gửi field này là FOLLOW-UP nhỏ ngoài scope I2.
+    DateTime? ExpiresAt = null
 );
 public record PracticeSessionResponse(
     Guid Id,

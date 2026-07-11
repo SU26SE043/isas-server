@@ -331,4 +331,102 @@ public class PracticeServiceTests
         notifier.Verify(n => n.NotifySessionScoredAsync(session.Id, It.IsAny<CancellationToken>()),
             Times.Once);
     }
+
+    // I2 (D21): chốt buổi theo từng câu — câu CHƯA trả lời → answer `Skipped`; câu đã trả lời giữ nguyên.
+    // Mọi answer done (Scored + Skipped) → session Scored (không kẹt Scoring vì câu trống).
+    [Fact]
+    public async Task Submit_UnansweredQuestions_MarkedSkipped_AndClosesToScored()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.InProgress);
+        var q1 = TestDb.Question(session.Id, 1);
+        var q2 = TestDb.Question(session.Id, 2);
+        // q1 trả lời + đã Scored; q2 chưa trả lời.
+        var a1 = TestDb.Answer(session.Id, q1.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q1, q2, a1);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out var notifier);
+        await svc.SubmitSessionAsync(candidate, session.Id);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.Scored, s.Status);
+
+        var answers = await t.Db.PracticeAnswers.AsNoTracking()
+            .Where(x => x.SessionId == session.Id).ToListAsync();
+        Assert.Equal(2, answers.Count);
+        Assert.Contains(answers, x => x.QuestionId == q2.Id && x.Status == AnswerStatus.Skipped);
+
+        notifier.Verify(n => n.NotifySessionScoredAsync(session.Id, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // I2: câu chưa trả lời → Skipped, NHƯNG answer đang chấm (Uploaded) chưa xong → buổi giữ Scoring
+    // (chờ chấm nốt) — Skipped không "ép" đóng buổi khi còn answer thật chưa xong.
+    [Fact]
+    public async Task Submit_UnansweredQuestion_WithPendingAnswer_MarksSkipped_StaysScoring()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.InProgress);
+        var q1 = TestDb.Question(session.Id, 1);
+        var q2 = TestDb.Question(session.Id, 2);
+        // q1 đang chờ chấm (Uploaded), q2 chưa trả lời.
+        var a1 = TestDb.Answer(session.Id, q1.Id, AnswerStatus.Uploaded, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q1, q2, a1);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out var notifier);
+        await svc.SubmitSessionAsync(candidate, session.Id);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.Scoring, s.Status);   // còn a1 Uploaded → chưa đóng
+
+        var a2 = await t.Db.PracticeAnswers.AsNoTracking()
+            .FirstAsync(x => x.SessionId == session.Id && x.QuestionId == q2.Id);
+        Assert.Equal(AnswerStatus.Skipped, a2.Status);
+
+        notifier.Verify(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // I2: CreateCampaignSession nhận ExpiresAt (hạn nhận bài B2B) → set session.Deadline.
+    [Fact]
+    public async Task CreateCampaignSession_WithExpiresAt_SetsDeadline()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var expires = DateTime.UtcNow.AddHours(2);
+
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>());
+        var req = new CreateCampaignSessionRequest(
+            Guid.NewGuid(), JobCategory.BE,
+            Questions: new[] { "Q1" },
+            Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) },
+            ExpiresAt: expires);
+
+        var res = await svc.CreateCampaignSessionAsync(candidate, req);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
+        Assert.NotNull(s.Deadline);
+        Assert.True(Math.Abs((s.Deadline!.Value - expires).TotalSeconds) < 2);
+    }
+
+    // I2: ExpiresAt null (không truyền) → Deadline null (B2C hoặc B2B chưa cấu hình hạn nhận bài).
+    [Fact]
+    public async Task CreateCampaignSession_NoExpiresAt_DeadlineNull()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>());
+        var req = new CreateCampaignSessionRequest(
+            Guid.NewGuid(), JobCategory.BE,
+            Questions: new[] { "Q1" },
+            Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) });
+
+        var res = await svc.CreateCampaignSessionAsync(candidate, req);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
+        Assert.Null(s.Deadline);
+    }
 }
