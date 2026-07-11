@@ -322,7 +322,7 @@ transcript                text?
 status                    varchar(32)   enum AnswerStatus
 duration_sec              int
 last_scoring_published_at timestamptz?
-needs_review              bool          🔜 E10 — true khi spread điểm (self-consistency) > ngưỡng → HR/người luyện xem lại; default false
+needs_review              bool          ✅ E10 (migration AddPracticeAnswerNeedsReview) — true khi spread điểm (self-consistency, max−min/tiêu chí qua N attempt) > ngưỡng → HR/người luyện xem lại; default false
 created_at                timestamptz
                                         UNIQUE (session_id, question_id) — tối đa 1 answer/câu
 ```
@@ -545,8 +545,9 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - **Làm:** mỗi tiêu chí trong message kèm `levels:[{score,descriptor}]` (+ `anchors?:[{score,exampleAnswer}]`). AI **chọn mức khớp** → trả `{score, levelMatched, reasoning bám descriptor}`, **`score = levelMatched.score`**. Worker **+ C# (E8)** reject nếu `score` không trùng mức nào của tiêu chí. Lưu `answer_scores.level_matched`.
 - **Nguồn mức:** B2C từ `rubric_levels` (đã có). **B2B:** `campaign_criteria` **chưa có mức** → publish/materialize phải **sinh mức** (mở rộng `/suggest-criteria` trả `levels` mỗi tiêu chí, hoặc dải mặc định `0..maxScore` có descriptor). Đây là điều kiện để E9 đúng cho B2B.
 
-**E10 — Đo & chặn CHÊNH LỆCH (self-consistency).** *(đảm bảo (2))*
-- **Vấn đề:** `temperature=0` chỉ *tái lập* (cùng input → cùng output), **không** bảo chứng *đúng*, cũng **không** đo được dao động. `attempt_no` luôn = 1.
+**E10 — Đo & chặn CHÊNH LỆCH (self-consistency).** ✅ **passing (vòng 18 · `938bef0`)** *(đảm bảo (2))*
+- **✅ Đã làm:** `Scoring:SelfConsistencyN` (**default 1 — opt-in**, bật >1 khi cần) → publish N job/answer (attempt 1 temp=0, 2..N temp>0 để đo dao động); callback theo `attempt_no`, answer Scored khi đủ N attempt; **điểm chốt = median/tiêu chí** (client-eval, thay "latest"); **spread=max−min > `Scoring:VarianceThreshold` → `needs_review=true`** (cờ HR, điểm AI = gợi ý). N=1 → median-of-1 = hành vi cũ.
+- **Vấn đề (đã giải):** `temperature=0` chỉ *tái lập*, **không** đo được dao động; `attempt_no` trước luôn = 1 → nay 1..N.
 - **Làm:** chấm **N lần** (config `Scoring:SelfConsistencyN`, vd 3) → mỗi lần 1 `attempt_no`, **điểm chốt = median** mỗi tiêu chí. **spread = max−min**; **> ngưỡng** (`Scoring:VarianceThreshold`) → gắn `practice_answers.needs_review = true` (cờ HR), **không** tự coi là điểm cuối. Idempotent theo `(attempt_no, rubric_version)`.
 - **Chi phí:** N× Whisper/Gemini — throughput đã là **trần** ([ai.md](ai.md) §Vấn đề) → **bật có chọn lọc** (chỉ chấm lại tiêu chí nghi ngờ / khi lần đầu sát biên), không luôn N×.
 
