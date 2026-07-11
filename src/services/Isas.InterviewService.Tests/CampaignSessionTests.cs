@@ -21,9 +21,11 @@ public class CampaignSessionTests
             .Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
+        // BC2: reserve client mock KHÔNG được gọi ở nhánh B2B (reserve ví cá nhân chỉ B2C).
         return new PracticeService(t.Db, new Mock<IStorageService>().Object,
                new Mock<IAiServiceQuestionGenerator>().Object,
                scoringNotifier.Object,
+               new Mock<ICreditReservationClient>().Object,
                NullLogger<PracticeService>.Instance);
     }
 

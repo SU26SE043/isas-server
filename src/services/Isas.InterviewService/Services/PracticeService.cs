@@ -15,6 +15,7 @@ public class PracticeService : IPracticeService
     private readonly IStorageService _storage;
     private readonly IAiServiceQuestionGenerator _questionGenerator;
     private readonly ISessionScoringNotifier _scoringNotifier;
+    private readonly ICreditReservationClient _reservationClient;   // BC2
     private readonly ILogger<PracticeService> _logger;
 
     public PracticeService(
@@ -22,12 +23,14 @@ public class PracticeService : IPracticeService
         IStorageService storage,
         IAiServiceQuestionGenerator questionGenerator,
         ISessionScoringNotifier scoringNotifier,
+        ICreditReservationClient reservationClient,
         ILogger<PracticeService> logger)
     {
         _db = db;
         _storage = storage;
         _questionGenerator = questionGenerator;
         _scoringNotifier = scoringNotifier;
+        _reservationClient = reservationClient;
         _logger = logger;
     }
 
@@ -54,10 +57,21 @@ public class PracticeService : IPracticeService
                 throw new InvalidOperationException("JD không đọc được nội dung");
         }
 
+        // BC2: reserve 1 credit ví cá nhân (owner=User) TRƯỚC khi tạo session row.
+        // sinh sessionId trước → reserve khoá idempotency theo đúng Id session sẽ dùng (P4).
+        // Ví hết credit → Payment 402 → InsufficientCreditException ném ở đây ⇒ KHÔNG có row session (PAY-5).
+        // (AI sinh câu hỏi lỗi SAU reserve → session Failed nhưng credit đã giữ; BC4 release khi Abandoned/Failed.)
+        var sessionId = Guid.NewGuid();
+        var reservation = await _reservationClient.ReserveAsync(
+            ownerType: "User", ownerId: candidateId, sessionId: sessionId, ct: ct);
+        _logger.LogInformation(
+            "Reserve credit ví cá nhân cho session {SessionId} (candidate {CandidateId}, reservation {ReservationId})",
+            sessionId, candidateId, reservation.ReservationId);
+
         // Tạo session, commit #1. Status set bằng C# initializer của entity.
         var session = new PracticeSession
         {
-            Id = Guid.NewGuid(),
+            Id = sessionId,
             CandidateId = candidateId,
             CvId = request.CvId,           // có thể null
             JdId = request.JdId,           // có thể null

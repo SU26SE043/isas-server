@@ -203,6 +203,7 @@ public class AnswerServiceTests
             t.Db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object,
             notifier,
+            new Mock<ICreditReservationClient>().Object,   // BC2: không dùng ở nhánh B2B
             NullLogger<PracticeService>.Instance);
         var created = await practice.CreateCampaignSessionAsync(candidate,
             new CreateCampaignSessionRequest(
