@@ -7,6 +7,7 @@ from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
+    build_summarize_session_prompt,
 )
 from app.providers.base import QuestionProvider
 
@@ -446,3 +447,43 @@ class GeminiProvider(QuestionProvider):
             "improvements": _clean_list(data.get("improvements")),
             "overallComment": comment,
         }
+
+    async def summarize_session(self, job_category: str, overall_score: float,
+                                criteria_scores: list[dict]) -> dict:
+        """
+        BC10 — nhận xét chung 1 buổi luyện B2C (sync, best-effort, KHÔNG ghi DB).
+
+        criteria_scores: list dict từ Interview gửi qua, mỗi phần tử
+          { "name": str, "percentage": float, "needsImprovement": bool }
+
+        Trả về dict: { "overallComment": str }
+        """
+        prompt = build_summarize_session_prompt(job_category, overall_score, criteria_scores)
+
+        response = await self._client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.4,  # nhận xét tự nhiên — đủ thấp để bám số liệu, mềm hơn tổng kết
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "overallComment": {"type": "string"},
+                    },
+                    "required": ["overallComment"],
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM tổng kết buổi luyện trả về JSON không hợp lệ: {text[:200]}")
+
+        comment = str(data.get("overallComment", "")).strip()
+        if not comment:
+            raise ValueError("LLM không trả về nhận xét buổi luyện hợp lệ.")
+
+        return {"overallComment": comment}
