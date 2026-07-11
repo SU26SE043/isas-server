@@ -85,6 +85,8 @@ builder.Services.AddScoped<IPackageService, PackageService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 // P1: cấp phát credit_accounts (owner_type). Reserve/Consume/Release + webhook (P2/P4/P5/P6) = task sau.
 builder.Services.AddScoped<ICreditAccountService, CreditAccountService>();
+// P7: sinh order_code time+random, unique + retry (dep của P2 — Order/webhook chưa đổi ở task này).
+builder.Services.AddScoped<IOrderCodeGenerator, OrderCodeGenerator>();
 
 var app = builder.Build();
 
