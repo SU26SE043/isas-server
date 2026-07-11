@@ -96,7 +96,10 @@ public class StuckAnswerRepublisher : BackgroundService
         foreach (var a in stuck)
         {
             // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
-            var query = db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
+            // E9: nạp kèm rubric_levels (+ anchors) để message re-publish cũng mang mức neo.
+            var query = db.RubricCriteria.AsNoTracking()
+                .Include(c => c.Levels).ThenInclude(l => l.Anchors)
+                .Where(c => c.IsActive);
             query = a.CampaignId is Guid campaignId
                 ? query.Where(c => c.CampaignId == campaignId)
                 : query.Where(c => c.CampaignId == null && c.JobCategory == a.JobCategory);
@@ -119,14 +122,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 QuestionContent = a.QuestionContent,
                 JobCategory = a.JobCategory.ToString(),
                 RubricVersion = criteria[0].Version,
-                Criteria = criteria.Select(c => new ScoringCriterionDto
-                {
-                    CriterionId = c.Id,
-                    Name = c.Name,
-                    Description = c.Description,
-                    MaxScore = c.MaxScore,
-                    Weight = c.Weight
-                }).ToList()
+                Criteria = ScoringCriteriaBuilder.Build(criteria)   // E9: kèm levels (+ anchors)
             };
 
             try

@@ -122,7 +122,10 @@ public class AnswerService : IAnswerService
             // Nguồn tiêu chí tùy mode (E1): B2B chấm theo tiêu chí campaign, B2C theo rubric nghề.
             // Criteria materialize của campaign cũng mang JobCategory → B2C phải lọc thêm
             // campaign_id IS NULL để không chấm nhầm bằng tiêu chí campaign cùng nghề.
-            var query = _db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
+            // E9: nạp kèm rubric_levels (+ anchors) để đưa mức neo vào message chấm.
+            var query = _db.RubricCriteria.AsNoTracking()
+                .Include(c => c.Levels).ThenInclude(l => l.Anchors)
+                .Where(c => c.IsActive);
             query = session.CampaignId is Guid campaignId
                 ? query.Where(c => c.CampaignId == campaignId)
                 : query.Where(c => c.CampaignId == null && c.JobCategory == session.JobCategory);
@@ -148,14 +151,7 @@ public class AnswerService : IAnswerService
                 QuestionContent = question.Content,
                 JobCategory = session.JobCategory.ToString(),
                 RubricVersion = rubricVersion,
-                Criteria = criteria.Select(c => new ScoringCriterionDto
-                {
-                    CriterionId = c.Id,
-                    Name = c.Name,
-                    Description = c.Description,
-                    MaxScore = c.MaxScore,
-                    Weight = c.Weight
-                }).ToList()
+                Criteria = ScoringCriteriaBuilder.Build(criteria)   // E9: kèm levels (+ anchors)
             };
 
             await _scoringPublisher.PublishAsync(job, ct);
@@ -193,12 +189,13 @@ public class AnswerService : IAnswerService
         // Dùng bản đồ criterionId -> maxScore để (a) BỎ criterion ngoài rubric, (b) KẸP [0, maxScore].
         var session = await _db.PracticeSessions.AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == answer.SessionId, ct);
-        var critQuery = _db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
+        var critQuery = _db.RubricCriteria.AsNoTracking().Include(c => c.Levels).Where(c => c.IsActive);
         critQuery = session?.CampaignId is Guid campaignId
             ? critQuery.Where(c => c.CampaignId == campaignId)
             : critQuery.Where(c => c.CampaignId == null && c.JobCategory == session!.JobCategory);
-        var maxScoreByCriterion = await critQuery
-            .ToDictionaryAsync(c => c.Id, c => c.MaxScore, ct);
+        // E8/E9: bản đồ criterionId -> tiêu chí (kèm rubric_levels) để BỎ criterion ngoài rubric,
+        // KẸP [0,maxScore], và (E9) snap/lưu level_matched theo mức của tiêu chí.
+        var critById = (await critQuery.ToListAsync(ct)).ToDictionary(c => c.Id);
 
         // Idempotency: worker retry có thể gửi lại cùng attempt+version.
         // Xoá điểm cũ cùng attempt+version rồi ghi lại, tránh nhân đôi.
@@ -214,13 +211,15 @@ public class AnswerService : IAnswerService
         foreach (var item in req.Scores)
         {
             // E8: criterion không thuộc rubric của session (AI bịa / image lệch) → BỎ (không lưu).
-            if (!maxScoreByCriterion.TryGetValue(item.CriterionId, out var maxScore))
+            if (!critById.TryGetValue(item.CriterionId, out var crit))
             {
                 _logger.LogWarning(
                     "Bỏ điểm criterion {CriterionId} không thuộc rubric session {SessionId} (answer {AnswerId})",
                     item.CriterionId, answer.SessionId, answerId);
                 continue;
             }
+
+            var maxScore = crit.MaxScore;
 
             // E8: kẹp điểm về [0, maxScore] của tiêu chí (INT-9) — chống worker/image trả điểm lệch trần.
             var clamped = Math.Clamp(item.Score, 0m, maxScore);
@@ -229,12 +228,21 @@ public class AnswerService : IAnswerService
                     "Kẹp điểm criterion {CriterionId} answer {AnswerId}: {Raw} -> {Clamped} (maxScore={MaxScore})",
                     item.CriterionId, answerId, item.Score, clamped, maxScore);
 
+            // E9: neo điểm theo mức của tiêu chí.
+            //  - Tiêu chí CÓ rubric_levels khai: HARD anchor → snap điểm về mức gần nhất (KHÔNG drop,
+            //    tránh thiếu-tiêu-chí → Failed INT-9); score = level.score. Ưu tiên levelMatched worker
+            //    gửi nếu hợp lệ, ngược lại snap theo điểm đã kẹp.
+            //  - Tiêu chí dùng dải mặc định (không khai levels): giữ điểm (kẹp) như E8; chỉ LƯU
+            //    levelMatched nếu worker gửi giá trị nằm trong [0,maxScore] (tương thích worker cũ).
+            var (finalScore, levelMatched) = ResolveLevel(crit, clamped, item.LevelMatched, answerId);
+
             _db.AnswerScores.Add(new AnswerScore
             {
                 Id = Guid.NewGuid(),
                 AnswerId = answer.Id,
                 CriterionId = item.CriterionId,
-                Score = clamped,
+                Score = finalScore,
+                LevelMatched = levelMatched,
                 Reasoning = item.Reasoning,
                 AttemptNo = attemptNo,
                 RubricVersion = req.RubricVersion,
@@ -250,6 +258,40 @@ public class AnswerService : IAnswerService
             req.Scores.Count, answerId);
 
         await TryCompleteSessionAsync(answer.SessionId, ct);
+    }
+
+    // E9 — neo điểm về mức của tiêu chí. Trả (điểm lưu, level_matched).
+    //  - Tiêu chí CÓ rubric_levels khai → HARD anchor: score = level.score (snap gần nhất nếu lệch),
+    //    KHÔNG drop (INT-9). Ưu tiên levelMatched worker gửi nếu hợp lệ.
+    //  - Không khai levels (dải mặc định) → giữ điểm đã kẹp; chỉ lưu levelMatched worker gửi khi
+    //    nằm trong [0,maxScore] (tương thích worker cũ + tránh ép integer phá điểm thập phân hợp lệ).
+    private (decimal finalScore, int? levelMatched) ResolveLevel(
+        RubricCriterion crit, decimal clamped, int? workerLevel, Guid answerId)
+    {
+        if (crit.Levels is { Count: > 0 })
+        {
+            var valid = crit.Levels.Select(l => l.Score).Distinct().OrderBy(s => s).ToList();
+
+            int target;
+            if (workerLevel is int wl && valid.Contains(wl))
+            {
+                target = wl;
+            }
+            else
+            {
+                // Snap về mức hợp lệ gần điểm nhất (tie-break: mức thấp hơn cho ổn định).
+                target = valid.OrderBy(s => Math.Abs(s - clamped)).ThenBy(s => s).First();
+                _logger.LogWarning(
+                    "Snap điểm criterion {CriterionId} answer {AnswerId} về mức {Level} (điểm kẹp {Clamped}, levelMatched worker {WorkerLevel})",
+                    crit.Id, answerId, target, clamped, workerLevel);
+            }
+
+            return (target, target);   // E9: score = level.score
+        }
+
+        // Dải mặc định: giữ điểm kẹp; lưu levelMatched worker gửi nếu trong [0,maxScore].
+        int? lm = workerLevel is int w && w >= 0 && w <= crit.MaxScore ? w : null;
+        return (clamped, lm);
     }
 
     // ── Callback: worker báo chấm thất bại vĩnh viễn ──────────────────────

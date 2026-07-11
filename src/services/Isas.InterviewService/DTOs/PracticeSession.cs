@@ -70,7 +70,8 @@ public record AnswerScoreResponse(
     Guid CriterionId,
     decimal Score,
     string? Reasoning,
-    int RubricVersion
+    int RubricVersion,
+    int? LevelMatched = null   // E9 — mức khớp khi neo theo rubric_levels; null nếu chưa neo (nullable → không phá client)
 );
 
 public record PracticeSessionSummary(

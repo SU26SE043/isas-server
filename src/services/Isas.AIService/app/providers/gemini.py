@@ -196,16 +196,30 @@ class GeminiProvider(QuestionProvider):
         Chấm 1 câu trả lời theo rubric.
 
         criteria: list dict từ C# gửi qua, mỗi phần tử có
-          { criterionId, name, description, maxScore, weight }
+          { criterionId, name, description, maxScore, weight,
+            levels: [{score, descriptor}], anchors?: [{score, exampleAnswer}] }
 
-        Trả về: list dict
-          [ { "criterionId": str, "score": float, "reasoning": str }, ... ]
+        Trả về: list dict (E9 — neo theo mức)
+          [ { "criterionId": str, "score": float, "levelMatched": int, "reasoning": str }, ... ]
+        với score == levelMatched (score luôn = điểm của 1 mức HỢP LỆ của tiêu chí).
         """
-        # Map criterionId -> maxScore để validate sau (chấp cả 2 kiểu key hoa/thường).
+        # Map criterionId -> maxScore + tập điểm mức HỢP LỆ (chấp cả key hoa/thường).
+        # Nguồn mức: levels C# gửi (rubric_levels khai hoặc dải mặc định 0..maxScore).
         max_by_id: dict[str, int] = {}
+        levels_by_id: dict[str, list[int]] = {}
         for c in criteria:
             cid = str(c.get("criterionId") or c.get("CriterionId"))
-            max_by_id[cid] = int(c.get("maxScore") or c.get("MaxScore") or 5)
+            mx = int(c.get("maxScore") or c.get("MaxScore") or 5)
+            max_by_id[cid] = mx
+
+            raw_levels = c.get("levels") or c.get("Levels") or []
+            scores: set[int] = set()
+            for lv in raw_levels:
+                s = lv.get("score") if isinstance(lv, dict) else lv
+                if s is not None:
+                    scores.add(int(s))
+            # Không có levels (phòng hờ) → dải mặc định 0..maxScore.
+            levels_by_id[cid] = sorted(scores) if scores else list(range(0, mx + 1))
 
         prompt = build_scoring_prompt(question, transcript, job_category, criteria)
 
@@ -225,9 +239,10 @@ class GeminiProvider(QuestionProvider):
                                 "properties": {
                                     "criterionId": {"type": "string"},
                                     "score": {"type": "number"},
+                                    "levelMatched": {"type": "integer"},
                                     "reasoning": {"type": "string"},
                                 },
-                                "required": ["criterionId", "score", "reasoning"],
+                                "required": ["criterionId", "score", "levelMatched", "reasoning"],
                             },
                         }
                     },
@@ -257,13 +272,24 @@ class GeminiProvider(QuestionProvider):
                 continue  # tránh trùng tiêu chí
             seen.add(cid)
 
-            # Kẹp điểm trong [0, maxScore] phòng LLM trả ngoài thang.
-            score = float(item.get("score", 0))
-            score = max(0.0, min(score, float(max_by_id[cid])))
+            valid_levels = levels_by_id[cid]
+
+            # E9 — NEO theo mức: điểm phải là 1 mức HỢP LỆ của tiêu chí.
+            # Kẹp trước để snap ổn định (phòng LLM trả ngoài thang).
+            raw_score = max(0.0, min(float(item.get("score", 0)), float(max_by_id[cid])))
+            lm = item.get("levelMatched")
+
+            if isinstance(lm, (int, float)) and int(lm) in valid_levels:
+                level = int(lm)
+            else:
+                # LLM không trả mức hợp lệ -> SNAP về mức gần điểm nhất (khớp defense C#:
+                # không raise/không drop -> tránh thiếu tiêu chí => answer Failed, INT-9).
+                level = min(valid_levels, key=lambda v: (abs(v - raw_score), v))
 
             results.append({
                 "criterionId": cid,
-                "score": score,
+                "score": float(level),   # E9: score = levelMatched.score
+                "levelMatched": level,
                 "reasoning": str(item.get("reasoning", "")).strip(),
             })
 
