@@ -179,5 +179,58 @@ namespace Isas.PaymentService.Services
 
             return ConsumeResult.Consumed(reservation.Id);
         }
+
+        // P6 — Release chỗ giữ khi SessionAbandoned/lỗi (D7 · payment.md §State machine "credit_reservations" +
+        // "kế toán remaining↔reserved"). Reservation Reserved→Released + hoàn chỗ giữ (reserved−1, remaining+1);
+        // KHÔNG ghi credit_transactions — credit đã giữ được trả lại chứ không tiêu (bảo toàn bất biến audit
+        // remaining+reserved=Σledger). Idempotent/absorbing theo session_id (PAY-11): Consumed/Released đã tới
+        // trước → no-op (KHÔNG hoàn oan sau khi đã tiêu); chưa có reservation → no-op (KHÔNG hoàn oan).
+        public async Task<ReleaseResult> ReleaseAsync(Guid sessionId, CancellationToken ct = default)
+        {
+            // Chủ ví lấy từ reservation (nguồn chân lý — dựng lúc reserve), không tin owner request.
+            var reservation = await _db.CreditReservations.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.SessionId == sessionId, ct);
+
+            // Miss event reserve (reservation chưa tồn tại): không có chỗ giữ để hoàn → no-op an toàn,
+            // controller trả 200 (§State machine payment.md). KHÔNG âm thầm cộng credit.
+            if (reservation is null)
+                return ReleaseResult.NoReservation();
+
+            // Absorbing (PAY-11): đã Consumed (đã tiêu thật) → KHÔNG hoàn oan; đã Released → idempotent no-op.
+            if (reservation.Status != ReservationStatus.Reserved)
+                return ReleaseResult.AlreadyFinalized(reservation.Id);
+
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+            // Transition ATOMIC có guard WHERE status=Reserved: consume & release song song cùng session →
+            // chỉ 1 thắng (1 row) → chỉ 1 bên chuyển tiếp (chống double-process race consume↔release).
+            // 0 row = ai đó vừa consume/release trước → hấp thụ, no-op (KHÔNG hoàn oan).
+            var moved = await _db.CreditReservations
+                .Where(r => r.SessionId == sessionId && r.Status == ReservationStatus.Reserved)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(r => r.Status, ReservationStatus.Released), ct);
+
+            if (moved == 0)
+            {
+                await tx.RollbackAsync(ct);
+                var raced = await _db.CreditReservations.AsNoTracking()
+                    .FirstAsync(r => r.SessionId == sessionId, ct);
+                return ReleaseResult.AlreadyFinalized(raced.Id);
+            }
+
+            // Hoàn chỗ giữ (prepaid): reserved−1, remaining+1 (nghịch đảo của reserve) → tổng
+            // remaining+reserved bảo toàn ⇒ KHÔNG ghi ledger (payment.md §Kế toán). Postpaid (period_usage)
+            // để P8a — hiện P4 reserve prepaid-only nên reservation Reserved không tồn tại trên ví postpaid.
+            await _db.CreditAccounts
+                .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
+                    .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits + 1)
+                    .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+
+            await tx.CommitAsync(ct);
+
+            return ReleaseResult.Released(reservation.Id);
+        }
     }
 }

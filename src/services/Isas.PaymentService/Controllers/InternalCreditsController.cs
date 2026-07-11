@@ -84,6 +84,33 @@ namespace Isas.PaymentService.Controllers
             return Ok(new { status = result.Outcome.ToString(), reservationId = result.ReservationId });
         }
 
+        // P6 — nhả chỗ giữ khi session bỏ ngang/lỗi (SessionAbandoned). Hoàn reserved−1, remaining+1,
+        // KHÔNG ghi ledger. Idempotent/absorbing theo sessionId (PAY-11): gọi lại / đã Consumed / miss
+        // reserve → no-op 200 (KHÔNG hoàn oan, tránh kẹt retry ở caller — §State machine).
+        [HttpPost("release")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ReleaseAsync(
+            [FromBody] CreditOpRequest req,
+            [FromHeader(Name = "X-Internal-Token")] string? token,
+            CancellationToken ct = default)
+        {
+            if (!IsValidInternalToken(token))
+                return Unauthorized(new { error = "Invalid internal token" });
+
+            // sessionId = khoá idempotency + tra reservation; owner lấy từ reservation nên không bắt buộc ở đây.
+            if (req.SessionId == Guid.Empty)
+                return BadRequest(new { error = "sessionId is required" });
+
+            var result = await _credits.ReleaseAsync(req.SessionId, ct);
+
+            if (result.Outcome != ReleaseOutcome.Released)
+                _logger.LogInformation(
+                    "Release no-op cho session {SessionId}: {Outcome}", req.SessionId, result.Outcome);
+
+            // Mọi outcome (kể cả no-op) → 200: release best-effort, KHÔNG bắt caller retry (§State machine).
+            return Ok(new { status = result.Outcome.ToString(), reservationId = result.ReservationId });
+        }
+
         private bool IsValidInternalToken(string? token)
         {
             var expected = _config["Internal:Token"];

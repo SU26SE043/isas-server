@@ -32,5 +32,17 @@ namespace Isas.PaymentService.Services
         /// Chủ ví lấy từ reservation (nguồn chân lý), không tin owner trong request.
         /// </summary>
         Task<ConsumeResult> ConsumeAsync(Guid sessionId, CancellationToken ct = default);
+
+        /// <summary>
+        /// P6 — nhả chỗ giữ khi session <paramref name="sessionId"/> bỏ ngang/lỗi hệ thống (Release trong
+        /// D7, event SessionAbandoned). Reservation <c>Reserved→Released</c> (atomic guard WHERE status=Reserved)
+        /// + hoàn chỗ giữ <c>reserved−1, remaining+1</c> — <b>KHÔNG</b> ghi <c>credit_transactions</c>
+        /// (credit đã giữ được trả lại, không tiêu; bảo toàn bất biến audit). Idempotent/absorbing theo
+        /// <paramref name="sessionId"/> (PAY-11): reservation đã Consumed/Released →
+        /// <see cref="ReleaseOutcome.AlreadyFinalized"/> no-op (KHÔNG hoàn oan sau khi đã tiêu); chưa có
+        /// reservation (miss reserve) → <see cref="ReleaseOutcome.NoReservation"/> no-op. Chủ ví lấy từ
+        /// reservation (nguồn chân lý), không tin owner trong request.
+        /// </summary>
+        Task<ReleaseResult> ReleaseAsync(Guid sessionId, CancellationToken ct = default);
     }
 }
