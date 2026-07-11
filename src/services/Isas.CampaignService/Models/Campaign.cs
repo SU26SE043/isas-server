@@ -10,6 +10,8 @@
         public int? MaxCandidates { get; set; }
         public int? TimeLimitMinutes { get; set; }
         public bool AntiCheatEnabled { get; set; }
+        // E5: ngưỡng % điểm tổng để auto pass/fail (0–100, CAMP-11). null = không auto → HR quyết tay.
+        public int? PassScorePct { get; set; }
         public string? JDFileUrl { get; set; }
         public string? JDText { get; set; }
         public string? CriteriaFileUrl { get; set; }

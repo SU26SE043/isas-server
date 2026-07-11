@@ -35,6 +35,9 @@ namespace Isas.CampaignService.DTOs
 
         public bool AntiCheatEnabled { get; set; }
 
+        // E5: ngưỡng % pass/fail (0–100). null = HR quyết tay (không auto).
+        public int? PassScorePct { get; set; }
+
         // C11: JD & Criteria nhập TEXT trực tiếp (không bắt buộc PDF). Set *_text, *_file_url = null.
         public string? JdText { get; set; }
         public string? CriteriaText { get; set; }
@@ -68,6 +71,9 @@ namespace Isas.CampaignService.DTOs
         public int? TimeLimitMinutes { get; set; }
 
         public bool? AntiCheatEnabled { get; set; }
+
+        // E5: ngưỡng % pass/fail (0–100). null = không đổi (giữ giá trị cũ).
+        public int? PassScorePct { get; set; }
 
         // C11: cập nhật/ghi đè JD & Criteria dạng TEXT trực tiếp (text ưu tiên file → xoá *_file_url).
         public string? JdText { get; set; }
@@ -116,6 +122,7 @@ namespace Isas.CampaignService.DTOs
         public int? MaxCandidates { get; set; }
         public int? TimeLimitMinutes { get; set; }
         public bool AntiCheatEnabled { get; set; }
+        public int? PassScorePct { get; set; }   // E5: ngưỡng % pass/fail (null = HR quyết tay)
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public List<CampaignQuestionResponse> Questions { get; set; }
@@ -135,6 +142,7 @@ namespace Isas.CampaignService.DTOs
             MaxCandidates = c.MaxCandidates,
             TimeLimitMinutes = c.TimeLimitMinutes,
             AntiCheatEnabled = c.AntiCheatEnabled,
+            PassScorePct = c.PassScorePct,
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
             Questions = c.Questions.Select(q => new CampaignQuestionResponse
