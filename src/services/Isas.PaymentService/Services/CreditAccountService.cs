@@ -234,8 +234,9 @@ namespace Isas.PaymentService.Services
             return ConsumeResult.Consumed(reservation.Id);
         }
 
-        // P6 — Release chỗ giữ khi SessionAbandoned/lỗi (D7 · payment.md §State machine "credit_reservations" +
-        // "kế toán remaining↔reserved"). Reservation Reserved→Released + hoàn chỗ giữ (reserved−1, remaining+1);
+        // P6/BK11 — Release chỗ giữ khi SessionAbandoned/lỗi (D7 · payment.md §State machine "credit_reservations" +
+        // "kế toán remaining↔reserved"). Reservation Reserved→Released + hoàn chỗ giữ: prepaid = reserved−1,
+        // remaining+1 (P6); POSTPAID = CHỈ reserved−1 (BK11 — postpaid remaining=0, period_usage KHÔNG đổi).
         // KHÔNG ghi credit_transactions — credit đã giữ được trả lại chứ không tiêu (bảo toàn bất biến audit
         // remaining+reserved=Σledger). Idempotent/absorbing theo session_id (PAY-11): Consumed/Released đã tới
         // trước → no-op (KHÔNG hoàn oan sau khi đã tiêu); chưa có reservation → no-op (KHÔNG hoàn oan).
@@ -272,15 +273,37 @@ namespace Isas.PaymentService.Services
                 return ReleaseResult.AlreadyFinalized(raced.Id);
             }
 
-            // Hoàn chỗ giữ (prepaid): reserved−1, remaining+1 (nghịch đảo của reserve) → tổng
-            // remaining+reserved bảo toàn ⇒ KHÔNG ghi ledger (payment.md §Kế toán). Postpaid (period_usage)
-            // để P8a — hiện P4 reserve prepaid-only nên reservation Reserved không tồn tại trên ví postpaid.
-            await _db.CreditAccounts
+            // Hoàn chỗ giữ — KHÔNG ghi ledger cả 2 mode (chỗ giữ được trả lại chứ không tiêu →
+            // bảo toàn bất biến audit remaining+reserved=Σledger). Đọc payment_mode rời chỉ để CHỌN nhánh
+            // (mẫu BK7 ConsumeAsync); transition Reserved→Released ở trên (guard WHERE status=Reserved) đã
+            // bảo đảm đúng 1 release/session ⇒ KHÔNG hoàn oan (idempotent PAY-11).
+            var isPostpaid = await _db.CreditAccounts.AsNoTracking()
                 .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
-                    .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits + 1)
-                    .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+                .Select(a => a.PaymentMode)
+                .FirstOrDefaultAsync(ct) == PaymentMode.Postpaid;
+
+            if (isPostpaid)
+            {
+                // POSTPAID (BK11 · payment.md §Kế toán POSTPAID release): CHỈ reserved−1. KHÔNG remaining+1
+                // (postpaid remaining=0, bơm 0→1 là sai); period_usage KHÔNG đổi — chỗ giữ chưa tiêu nên
+                // không phát sinh nợ kỳ (reserve postpaid không dồn nợ P8a → release cũng không).
+                await _db.CreditAccounts
+                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+            }
+            else
+            {
+                // PREPAID (giữ nguyên P6): reserved−1, remaining+1 (nghịch đảo của reserve) → tổng
+                // remaining+reserved bảo toàn.
+                await _db.CreditAccounts
+                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
+                        .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits + 1)
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+            }
 
             await tx.CommitAsync(ct);
 

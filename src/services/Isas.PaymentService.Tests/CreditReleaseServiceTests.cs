@@ -31,6 +31,28 @@ public class CreditReleaseServiceTests
         return acc;
     }
 
+    private static async Task<CreditAccount> SeedPostpaidAccountAsync(
+        PaymentTestDb tdb, Guid orgId, int? creditLimit, int periodUsage = 0, int reserved = 0,
+        CreditAccountStatus status = CreditAccountStatus.Active)
+    {
+        var acc = new CreditAccount
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PaymentMode = PaymentMode.Postpaid,
+            Status = status,
+            RemainingCredits = 0,          // postpaid KHÔNG dùng remaining
+            ReservedCredits = reserved,
+            CreditLimit = creditLimit,
+            PeriodUsage = periodUsage,
+            UpdatedAt = DateTime.UtcNow
+        };
+        tdb.Db.CreditAccounts.Add(acc);
+        await tdb.Db.SaveChangesAsync();
+        return acc;
+    }
+
     private static async Task SeedReservationAsync(
         PaymentTestDb tdb, OwnerType ownerType, Guid ownerId, Guid sessionId, ReservationStatus status)
     {
@@ -148,5 +170,66 @@ public class CreditReleaseServiceTests
         Assert.Equal(2, acc.RemainingCredits); // ví nguyên vẹn (không hoàn oan)
         Assert.Equal(0, acc.ReservedCredits);
         Assert.Equal(0, await read.CreditTransactions.CountAsync(t => t.SessionId == sessionId));
+    }
+
+    // ── BK11 — Postpaid: release CHỈ reserved−1 (payment.md §Kế toán POSTPAID release · remaining/period_usage KHÔNG đổi) ──
+
+    // (BK11-a) postpaid session bỏ ngang → release: reserved−1, remaining VẪN 0 (KHÔNG bơm 0→1),
+    //          period_usage KHÔNG đổi (chỗ giữ chưa tiêu → không dồn nợ kỳ), KHÔNG bút toán.
+    [Fact]
+    public async Task Release_Postpaid_ChiReservedTru1_RemainingVan0_PeriodUsageKhongDoi()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 5, periodUsage: 0);
+
+        // reserve trước (state thật postpaid): reserved 0→1, remaining/period_usage KHÔNG đổi.
+        await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+
+        var result = await new CreditAccountService(tdb.NewContext())
+            .ReleaseAsync(sessionId);
+
+        Assert.Equal(ReleaseOutcome.Released, result.Outcome);
+
+        using var read = tdb.NewContext();
+        var reservation = await read.CreditReservations.SingleAsync(r => r.SessionId == sessionId);
+        Assert.Equal(ReservationStatus.Released, reservation.Status);
+
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(0, acc.RemainingCredits);   // KHÔNG bơm 0→1 (bug BK11 đã fix)
+        Assert.Equal(0, acc.ReservedCredits);     // nhả chỗ: reserved −1
+        Assert.Equal(0, acc.PeriodUsage);         // chỗ giữ chưa tiêu → nợ kỳ KHÔNG đổi
+        Assert.Equal(0, await read.CreditTransactions.CountAsync(t => t.SessionId == sessionId));
+    }
+
+    // (BK11-b) postpaid reservation đã Consumed (đã dồn nợ kỳ) → release no-op: KHÔNG hoàn oan,
+    //          period_usage/remaining giữ nguyên (absorbing PAY-11 áp cả nhánh postpaid).
+    [Fact]
+    public async Task Release_Postpaid_DaConsumed_KhongHoanOan()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, creditLimit: 5, periodUsage: 0);
+
+        // reserve → consume (dồn nợ): reserved 0 (đã nhả khi consume), period_usage 0→1.
+        await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
+        await new CreditAccountService(tdb.NewContext())
+            .ConsumeAsync(sessionId);
+
+        var result = await new CreditAccountService(tdb.NewContext()).ReleaseAsync(sessionId);
+
+        Assert.Equal(ReleaseOutcome.AlreadyFinalized, result.Outcome);
+
+        using var read = tdb.NewContext();
+        var reservation = await read.CreditReservations.SingleAsync(r => r.SessionId == sessionId);
+        Assert.Equal(ReservationStatus.Consumed, reservation.Status); // vẫn Consumed
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(0, acc.RemainingCredits);   // postpaid không dùng remaining
+        Assert.Equal(0, acc.ReservedCredits);
+        Assert.Equal(1, acc.PeriodUsage);         // nợ kỳ đã dồn khi consume, release KHÔNG gỡ oan
     }
 }
