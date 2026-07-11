@@ -8,6 +8,7 @@ using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -42,9 +43,17 @@ public class CvAnalysisTests
             JdMatch: withJdMatch ? new CvJdMatch(78, ["C#", "SQL"], ["Kubernetes"]) : null);
 
     private static CvAnalysisController Controller(
-        TestDb t, IStorageService storage, IAiServiceCvAnalyzer ai, Guid userId)
+        TestDb t, IStorageService storage, IAiServiceCvAnalyzer ai, Guid userId,
+        ICreditReservationClient? credits = null, int cvAnalysisCredits = 1)
     {
-        var service = new CvAnalysisService(t.Db, storage, ai, NullLogger<CvAnalysisService>.Instance);
+        // BC7b — config Billing:CvAnalysisCredits (mặc định 1 = tính phí); credits mock mặc định = reserve OK.
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Billing:CvAnalysisCredits"] = cvAnalysisCredits.ToString()
+        }).Build();
+        var service = new CvAnalysisService(
+            t.Db, storage, ai, credits ?? CreditsMock().Object, config,
+            NullLogger<CvAnalysisService>.Instance);
         var controller = new CvAnalysisController(service, NullLogger<CvAnalysisController>.Instance);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, userId.ToString())], "test"));
@@ -60,6 +69,15 @@ public class CvAnalysisTests
         var m = new Mock<IAiServiceCvAnalyzer>();
         m.Setup(x => x.AnalyzeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(result);
+        return m;
+    }
+
+    // BC7b — reservation client mặc định: reserve trả OK, consume/release no-op (Task.CompletedTask mặc định).
+    private static Mock<ICreditReservationClient> CreditsMock()
+    {
+        var m = new Mock<ICreditReservationClient>();
+        m.Setup(x => x.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
         return m;
     }
 
@@ -301,5 +319,132 @@ public class CvAnalysisTests
         var otherCtrl = Controller(t, storage.Object, AiMock(SampleAi(false)).Object, other);
         var otherList = Assert.IsType<OkObjectResult>(await otherCtrl.List(default));
         Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisResponse>>(otherList.Value));
+    }
+
+    // ── BC7b: CV analysis TÍNH PHÍ (BC-4/D22) — reserve/consume/release ────────────
+
+    // Có credit → reserve (owner=User, khoá=Id row) TRƯỚC gọi AI, consume SAU khi lưu row; không release.
+    [Fact]
+    public async Task Post_WithCredit_ReservesBeforeAi_ConsumesAfter()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "CV..."));
+
+        // Ghi thứ tự gọi để chốt reserve TRƯỚC AI, consume SAU.
+        var calls = new List<string>();
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("ai"))
+            .ReturnsAsync(SampleAi(withJdMatch: false));
+
+        var credits = new Mock<ICreditReservationClient>();
+        credits.Setup(x => x.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("reserve"))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+        credits.Setup(x => x.ConsumeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("consume"))
+            .Returns(Task.CompletedTask);
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, credits.Object);
+
+        var result = await ctrl.Analyze(new CvAnalysisRequest(cvId, null, JobCategory.BE), default);
+
+        Assert.IsType<CreatedResult>(result);
+        var row = await t.Db.CvAnalyses.AsNoTracking().SingleAsync();
+
+        // reserve: owner=User, ownerId=candidate, khoá=Id row cv_analyses (operationId); consume cùng khoá.
+        credits.Verify(x => x.ReserveAsync("User", user, row.Id, It.IsAny<CancellationToken>()), Times.Once);
+        credits.Verify(x => x.ConsumeAsync(row.Id, It.IsAny<CancellationToken>()), Times.Once);
+        credits.Verify(x => x.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(new[] { "reserve", "ai", "consume" }, calls);   // reserve TRƯỚC AI, consume SAU
+    }
+
+    // Ví hết (reserve ném 402/Insufficient) → 402 + KHÔNG row + AI KHÔNG gọi + KHÔNG consume (PAY-5).
+    [Fact]
+    public async Task Post_InsufficientCredit_Returns402_NoRow_NoAiCall()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "CV..."));
+
+        var ai = AiMock(SampleAi(false));
+
+        var credits = new Mock<ICreditReservationClient>();
+        credits.Setup(x => x.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InsufficientCreditException("Ví không đủ credit để phân tích CV"));
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, credits.Object);
+
+        var result = await ctrl.Analyze(new CvAnalysisRequest(cvId, null, JobCategory.BE), default);
+
+        var obj = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status402PaymentRequired, obj.StatusCode);
+        Assert.False(await t.Db.CvAnalyses.AsNoTracking().AnyAsync());   // KHÔNG lưu khi ví hết
+        ai.Verify(x => x.AnalyzeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        credits.Verify(x => x.ConsumeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // AIService lỗi (502) SAU reserve → release chỗ giữ + KHÔNG row + KHÔNG consume.
+    [Fact]
+    public async Task Post_AiFailsAfterReserve_ReleasesCredit_NoRow_NoConsume()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "CV..."));
+
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AiServiceException("AIService /analyze-cv trả 500"));
+
+        var credits = new Mock<ICreditReservationClient>();
+        credits.Setup(x => x.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, credits.Object);
+
+        var result = await ctrl.Analyze(new CvAnalysisRequest(cvId, null, JobCategory.BE), default);
+
+        var obj = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status502BadGateway, obj.StatusCode);
+        Assert.False(await t.Db.CvAnalyses.AsNoTracking().AnyAsync());   // KHÔNG lưu khi AI lỗi
+        credits.Verify(x => x.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
+        credits.Verify(x => x.ConsumeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // Kill-switch Billing:CvAnalysisCredits=0 → miễn phí: KHÔNG chạm Payment nhưng vẫn lưu row.
+    [Fact]
+    public async Task Post_BillingDisabled_SkipsCredit_StillPersists()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "CV..."));
+
+        var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);   // gọi bất kỳ → fail
+
+        var ctrl = Controller(t, storage.Object, AiMock(SampleAi(false)).Object, user,
+            credits.Object, cvAnalysisCredits: 0);
+
+        var result = await ctrl.Analyze(new CvAnalysisRequest(cvId, null, JobCategory.BE), default);
+
+        Assert.IsType<CreatedResult>(result);
+        Assert.True(await t.Db.CvAnalyses.AsNoTracking().AnyAsync());
+        credits.VerifyNoOtherCalls();   // tính phí tắt → không đụng Payment
     }
 }
