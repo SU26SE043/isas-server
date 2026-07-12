@@ -1,15 +1,18 @@
 namespace Isas.InterviewService.DTOs;
 
+using System.ComponentModel.DataAnnotations;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 
 // BC7 — request phân tích CV. Doc `{cvId, jdId?}` thiếu nguồn job_category (cột NOT NULL +
 // CvAnalysisResponse.jobCategory bắt buộc, AIService không trả jobCategory) → client cấp
 // jobCategory như CreatePracticeSessionRequest (tín hiệu tối thiểu). Xem handoff.
+// BK6 — jobCategory BẮT BUỘC: kiểu nullable để phân biệt "thiếu" với default enum BA (value 0).
+// Thiếu → 400 (Required cho model-binding HTTP + guard service TRƯỚC reserve, xem CvAnalysisService).
 public record CvAnalysisRequest(
     Guid CvId,
     Guid? JdId,
-    JobCategory JobCategory
+    [property: Required] JobCategory? JobCategory
 );
 
 // Kết quả AI đọc từ AIService `/analyze-cv` (B2C — bỏ criterionMatches/overallMatchScore của B2B).

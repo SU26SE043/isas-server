@@ -40,6 +40,13 @@ public class CvAnalysisService : ICvAnalysisService
     public async Task<CvAnalysisResponse> AnalyzeAsync(
         Guid candidateId, CvAnalysisRequest req, CancellationToken ct = default)
     {
+        // BK6 — jobCategory BẮT BUỘC. Guard NGAY ĐẦU (trước cả đọc CV/reserve) → thiếu → 400
+        // (controller map InvalidOperationException → BadRequest), KHÔNG giữ credit oan (PAY-5).
+        // (HTTP thật cũng 400 sớm hơn nhờ [Required]; test gọi controller trực tiếp nên cần guard này.)
+        if (req.JobCategory is null)
+            throw new InvalidOperationException("jobCategory là bắt buộc.");
+        var jobCategory = req.JobCategory.Value;
+
         // CV bắt buộc — đọc file (kiểm chủ sở hữu + lấy parsed_text). 404/403/400 ném TRƯỚC reserve
         // → KHÔNG trừ/giữ credit oan (mẫu BC2 PracticeService: validate → reserve).
         var cvText = await ReadOwnedParsedTextAsync(req.CvId, candidateId, "CV", ct);
@@ -68,7 +75,7 @@ public class CvAnalysisService : ICvAnalysisService
         try
         {
             // Gọi AIService (sync). Lỗi → AiServiceException (502).
-            var ai = await _analyzer.AnalyzeAsync(req.JobCategory.ToString(), cvText, jdText, ct);
+            var ai = await _analyzer.AnalyzeAsync(jobCategory.ToString(), cvText, jdText, ct);
 
             entity = new CvAnalysis
             {
@@ -76,7 +83,7 @@ public class CvAnalysisService : ICvAnalysisService
                 CandidateId = candidateId,
                 CvId = req.CvId,
                 JdId = req.JdId,
-                JobCategory = req.JobCategory,
+                JobCategory = jobCategory,
                 Summary = ai.Summary,
                 Strengths = ai.Strengths,
                 Weaknesses = ai.Weaknesses,
