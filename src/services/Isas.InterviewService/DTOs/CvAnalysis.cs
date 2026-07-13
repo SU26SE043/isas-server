@@ -9,10 +9,14 @@ using Isas.InterviewService.Enums;
 // jobCategory như CreatePracticeSessionRequest (tín hiệu tối thiểu). Xem handoff.
 // BK6 — jobCategory BẮT BUỘC: kiểu nullable để phân biệt "thiếu" với default enum BA (value 0).
 // Thiếu → 400 (Required cho model-binding HTTP + guard service TRƯỚC reserve, xem CvAnalysisService).
+// ⚠ Attribute phải nằm trên PARAMETER (KHÔNG [property:]) — ASP.NET (.NET 10) THROW
+// InvalidOperationException khi validation attribute property-targeted trên positional record
+// (metadata bị ignore) → 500 MỌI request. Bug bắt ở layer-3 API sweep 2026-07-13 (unit test gọi
+// service trực tiếp, không qua model-binding nên không thấy).
 public record CvAnalysisRequest(
     Guid CvId,
     Guid? JdId,
-    [property: Required] JobCategory? JobCategory
+    [Required] JobCategory? JobCategory
 );
 
 // Kết quả AI đọc từ AIService `/analyze-cv` (B2C — bỏ criterionMatches/overallMatchScore của B2B).

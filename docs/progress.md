@@ -4,7 +4,7 @@
 > **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-12** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) + **E7·C13·BC2** (vòng 7) + **C14·BC8·BK7** (vòng 8) + **BK11·BK1·BK12** (vòng 9 — bug-fix) + **P2·C15·BC12** (vòng 10) + **BC14·BK4·BC10-AI** (vòng 11) + **D2** (vòng 12 — solo cross-service, membership redesign) + **BC10·P3·D3** (vòng 13 — 2 worker sạch + D3 kèm) + **BC15·D4·P8b** (vòng 14 — 3 worktree thật, 0 race) + **I2·A4** (vòng 15 — 2 worker, frontier mỏng) + **BK17·BK18·BK16** (vòng 16 — BK-cleanup, 3 worktree thật) + **E9** (vòng 17 — SOLO cross-service Interview+AIService, chấm neo mức) + **E10** (vòng 18 — SOLO cross-service, self-consistency median+needs_review) + **E11·A6** (vòng 19 — E11 đóng chuỗi chất lượng chấm + A6 org nhiều thành viên) + **BC7b** (vòng 20 — wire billing CV analysis, chốt BK5) + **BK15·BK6·A6b** (vòng 21 — backlog cleanup, 3 worktree disjoint) + **A5** (vòng 22 — SOLO cross-cutting, auth gate `[Authorize(Roles)]` mọi service) + **BC16** (vòng 23 — rubric cá nhân B2C candidate-owned) passing, integrated vào `docs/sync-design-d18-d21`). Cập nhật lần cuối vòng 23: **2026-07-13**.
 
 ## Pha hiện tại
-**Feature engine cho cả 2 dòng đã đủ trên nhánh tích hợp — pha còn lại = hardening + e2e thật.** Thiết kế chốt **D1–D22**. **23 vòng giám sát** (multi-agent supervised) đã tích hợp vào nhánh **`docs/sync-design-d18-d21`** (**451 .NET test + 53 pytest**, `dotnet build` 0 error) — xem §Vòng tables bên dưới cho từng vòng.
+**Feature engine cho cả 2 dòng đã đủ trên nhánh tích hợp — pha còn lại = hardening + e2e thật.** Thiết kế chốt **D1–D23**. **23 vòng giám sát** (multi-agent supervised) đã tích hợp vào nhánh **`docs/sync-design-d18-d21`** (**451 .NET test + 53 pytest**, `dotnet build` 0 error) — xem §Vòng tables bên dưới cho từng vòng.
 
 > **⚠ Main-vs-branch:** `main` mới có nền pre-vòng-1 (**A1–A3** PR #23 · **C1–C10** PR #22 · **I1** PR #24 · **E1** `796d8bb`). **Toàn bộ 19 vòng (E2→E11 · P1–P8 · D1–D4 · C11–C15 · BC2–BC15 · A4/A6 · I2 · BK cleanup) nằm ở nhánh `docs/sync-design-d18-d21`, CHƯA merge `main`, CHƯA push.** Nhánh này là nguồn trạng thái hiện hành.
 
@@ -215,6 +215,22 @@
 | **BC16** | Rubric CÁ NHÂN B2C — candidate tự CRUD rubric theo JobCategory (KHÔNG admin; đảo hướng BK3) | ✅ **passing (c59b02d, merge 2a9521c)** · `RubricCriterion += candidate_id` (null=seed mặc định · set=rubric riêng); migration `AddRubricCandidateId` (**không apply Neon**; has-pending=No changes) · **`B2CRubricScope.ResolveOwnerAsync` dùng chung 4 site scoring** (publish · callback guard · republisher · breakdown BC9) — ưu tiên rubric riêng active else seed, publish↔callback không lệch · `RubricController` `api/practice/rubrics` (`Roles="Candidate"`, owner-scope) GET/PUT/DELETE + `RubricLibraryService` **replace-all soft-versioned** (deactivate cũ + add mới, KHÔNG hard-delete — `answer_scores` FK Restrict) + validate Σweight normalize/bounds/name-unique · **điểm tổng giữ TB cộng INT-10** (weight display-only) · reconcile rules.md BC-7 + interview.md + tasks.md (BK3 superseded) · test ✅ **Interview 183/183 (+21)**: CRUD · resolver · isolation · FK-safe · publish regression (seed-vs-custom) · breakdown BC9 · ⚠ edit-giữa-Scoring edge hiếm; weighted-total = follow-up |
 
 > Base test sau vòng 23: **Auth 51 · Payment 84 · Campaign 133 · Interview 183 = 451 .NET pass** (+ AIService pytest **53** không đổi), `dotnet build` 0 error. Merge `--no-ff`: `2a9521c`(BC16). Frontier còn: **Phase 0** (P0.1/P0.2/P0.5) · **e2e verify tay** (PayOS sandbox · compose+broker+Gemini + A5 live 401/403) · backlog nhẹ (BK8 PDF · BK13 · BK17(3)(4) · follow-up).
+
+### ✅ Verify tay LAYER-3 (2026-07-13) — API sweep server thật qua tunnel (gateway + 5 service + Mac AI)
+> Server Ubuntu deploy compose (postgres local, squash `InitialCreate` applied, seed rubric sống) + Mac AIService (image rebuild 07-13). **47 check** — log `~/Downloads/isas-api-test-*.log` + `isas-api-retest-*.log`.
+
+| Nhóm | Kết quả LIVE |
+|---|---|
+| Auth + Org | ✅ register/login/me · register-org · org members CRUD **A6/A6b** (joinedAt thật · PATCH role · DELETE · guard) · refresh |
+| **A5 gates** | ✅ **8/8**: ẩn danh→401 · sai role→403 (Candidate↔Employer · org-members · invoices Employer-only · package Admin-only) |
+| **BC16 rubric** | ✅ trọn vòng đời: GET seed (`isCustom=false`, GUID seed đúng) → PUT custom → GET custom → Σweight sai→400 → DELETE → về seed |
+| Billing B2C | ✅ tạo session ví 0 credit → **402** (BC2/PAY-5) |
+| Files S3 | ✅ upload PDF → SeaweedFS trả fileId |
+| **AI e2e** | ✅ `/ai/health` + **tạo roadmap thật** server→Mac→Gemini→DB (BC12/BC13, milestones tiếng Việt) |
+| Campaign B2B | ✅ full chain: create→publish (C12 bỏ AI)→results→**CAMP-2 409**→isolation 403→soft-delete |
+| Payment | ✅ catalog public · order/my-orders · me/invoices Employer-only |
+
+**🐛 2 bug THẬT tìm ra → fix + push (`0997030`):** (1) **cv-analysis 500 mọi request** — `[property:Required]` positional record → ASP.NET throw (hotfix `83beabc`; **cần image interview mới** → retest sau deploy); (2) **campaign invitations 500** — compose server **thiếu env RabbitMQ** cho campaignservice → fix compose + DEPLOYMENT.md (**chỉ cần `docker compose up -d` lại**, không rebuild). **Backlog mới:** BK19 (order 404-vs-doc-400) · BK20 (Campaign string-enum converter). **Còn verify:** cv-analysis + invitations retest sau deploy · PayOS sandbox webhook thật · B2B join→start→chấm→ranking trọn luồng · B2C mua-credit→luyện→chấm trọn luồng.
 
 > Test project trong tree hiện có (đủ 4): `Isas.AuthService.Tests` · `Isas.PaymentService.Tests` (✅ P0.4) · `Isas.CampaignService.Tests` · `Isas.InterviewService.Tests`.
 

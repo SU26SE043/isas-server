@@ -173,8 +173,13 @@ services:
       - SeaweedFS__SecretKey=${S3_SECRET_KEY}
       - SeaweedFS__BucketName=isas-files
       - SeaweedFS__ForcePathStyle=true
+      # RabbitMQ — Campaign publish email mời (D1) + cv-screening (C14) + consume ranking (E4).
+      # THIẾU → POST /invitations 500 "endpoints not reachable" (bắt ở API sweep 2026-07-13).
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
     expose: ["8080"]
-    depends_on: [postgres, seaweedfs]
+    depends_on: [postgres, seaweedfs, rabbitmq]
     networks: [isas-main-network]
     restart: unless-stopped
 

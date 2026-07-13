@@ -1,7 +1,7 @@
 # ISAS — Business Rules (toàn hệ thống)
 
 > **Danh mục quy tắc nghiệp vụ toàn hệ thống** — mã hóa để tham chiếu (GEN/AUTH/INT/CAMP/PAY/AI/BC/SEC/DATA).
-> Chi tiết thiết kế/state machine từng service xem `docs/services/<service>.md`; **vì sao** (D1–D22) xem [decisions.md](decisions.md).
+> Chi tiết thiết kế/state machine từng service xem `docs/services/<service>.md`; **vì sao** (D1–D23) xem [decisions.md](decisions.md).
 > Ký hiệu: `🔜` = chưa làm / đang tới; `Dxx` = tham chiếu decision log.
 
 ## GEN — Ràng buộc chung (mọi service)
@@ -17,9 +17,9 @@
 - **AUTH-1** `register` → role **Candidate** mặc định.
 - **AUTH-2** `register-org` → Employer + Organization + OrgAdmin.
 - **AUTH-3** 3 platform role: Candidate / Employer / Admin (PlatformAdmin).
-- **AUTH-4** Org-role: **OrgAdmin** (billing/mua gói/quản thành viên) vs **HrMember** (quản campaign, không billing).
-- **AUTH-5** JWT mang `org_id` + `org_role` khi user thuộc org.
-- **AUTH-6** 🔜 HrMember gọi endpoint billing → **403**.
+- **AUTH-4** Org-role: **OrgAdmin** (billing/mua gói/quản thành viên) vs **HrMember** (quản campaign, không billing). **HrMember = thành viên THUỘC org** (không phải platform role riêng) — mô hình 2-tầng chốt **D23**.
+- **AUTH-5** JWT mang `org_id` + `org_role` khi user thuộc org. *(⚠ token KHÔNG refresh khi đổi role — BK14.)*
+- **AUTH-6** ✅ HrMember gọi endpoint billing money-mutation → **403** (A4; verified live 2026-07-13). *(GET billing HrMember vẫn xem được — ratify.)*
 - **AUTH-7** PlatformAdmin = endpoint admin-gated trong service sở hữu dữ liệu (không phải service riêng).
 - **AUTH-8** Billing/credit + campaign gắn theo **ORG**, không theo cá nhân HR (D5).
 
