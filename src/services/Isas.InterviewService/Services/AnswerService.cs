@@ -2,8 +2,10 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
 
@@ -12,17 +14,23 @@ public class AnswerService : IAnswerService
     private readonly InterviewDbContext _db;
     private readonly IStorageService _storage;
     private readonly IScoringJobPublisher _scoringPublisher;
+    private readonly ISessionScoringNotifier _scoringNotifier;
+    private readonly ScoringOptions _scoring;   // E10 — self-consistency (N, ngưỡng spread, temp)
     private readonly ILogger<AnswerService> _logger;
 
     public AnswerService(
         InterviewDbContext db,
         IStorageService storage,
         IScoringJobPublisher scoringPublisher,
+        ISessionScoringNotifier scoringNotifier,
+        IOptions<ScoringOptions> scoringOptions,
         ILogger<AnswerService> logger)
     {
         _db = db;
         _storage = storage;
         _scoringPublisher = scoringPublisher;
+        _scoringNotifier = scoringNotifier;
+        _scoring = scoringOptions.Value;
         _logger = logger;
     }
 
@@ -43,9 +51,10 @@ public class AnswerService : IAnswerService
         if (session.CandidateId != candidateId)
             throw new UnauthorizedAccessException("Không phải buổi của bạn");
 
-        // 2. Buổi đã kết thúc thì không cho upload thêm
+        // 2. Buổi đã kết thúc thì không cho upload thêm (SessionAbandoned — E3 — cũng là trạng
+        // thái chốt/terminal, không nhận thêm answer).
         if (session.Status is SessionStatus.Completed
-            or SessionStatus.Scoring or SessionStatus.Scored)
+            or SessionStatus.Scoring or SessionStatus.Scored or SessionStatus.SessionAbandoned)
             throw new InvalidOperationException("Buổi đã kết thúc");
 
         // 3. Câu hỏi thuộc đúng buổi
@@ -118,10 +127,22 @@ public class AnswerService : IAnswerService
             // Nguồn tiêu chí tùy mode (E1): B2B chấm theo tiêu chí campaign, B2C theo rubric nghề.
             // Criteria materialize của campaign cũng mang JobCategory → B2C phải lọc thêm
             // campaign_id IS NULL để không chấm nhầm bằng tiêu chí campaign cùng nghề.
-            var query = _db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
-            query = session.CampaignId is Guid campaignId
-                ? query.Where(c => c.CampaignId == campaignId)
-                : query.Where(c => c.CampaignId == null && c.JobCategory == session.JobCategory);
+            // E9: nạp kèm rubric_levels (+ anchors) để đưa mức neo vào message chấm.
+            var query = _db.RubricCriteria.AsNoTracking()
+                .Include(c => c.Levels).ThenInclude(l => l.Anchors)
+                .Where(c => c.IsActive);
+            if (session.CampaignId is Guid campaignId)
+            {
+                query = query.Where(c => c.CampaignId == campaignId);
+            }
+            else
+            {
+                // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định (owner null).
+                var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, ct);
+                query = owner is Guid oid
+                    ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
+                    : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
+            }
             var criteria = await query.ToListAsync(ct);
 
             if (criteria.Count == 0)
@@ -134,27 +155,30 @@ public class AnswerService : IAnswerService
 
             // Tất cả criterion active của 1 nghề dùng chung 1 version.
             var rubricVersion = criteria[0].Version;
+            var builtCriteria = ScoringCriteriaBuilder.Build(criteria);   // E9: kèm levels (+ anchors)
 
-            var job = new ScoringJob
+            // E10 — self-consistency: publish N job (attempt 1..N) cho cùng 1 answer để chấm N lần.
+            //   attempt 1 → temp=0 (tái lập); 2..N → SelfConsistencyTemperature (dao động thật để đo spread).
+            //   N=1 (mặc định) → đúng 1 job như cũ. Worker echo attempt_no về callback → .NET lưu theo attempt.
+            var n = Math.Max(1, _scoring.SelfConsistencyN);
+            for (int attempt = 1; attempt <= n; attempt++)
             {
-                AnswerId = answer.Id,
-                SessionId = session.Id,
-                QuestionId = question.Id,
-                AudioObjectKey = answer.AudioObjectKey!,
-                QuestionContent = question.Content,
-                JobCategory = session.JobCategory.ToString(),
-                RubricVersion = rubricVersion,
-                Criteria = criteria.Select(c => new ScoringCriterionDto
+                var job = new ScoringJob
                 {
-                    CriterionId = c.Id,
-                    Name = c.Name,
-                    Description = c.Description,
-                    MaxScore = c.MaxScore,
-                    Weight = c.Weight
-                }).ToList()
-            };
+                    AnswerId = answer.Id,
+                    SessionId = session.Id,
+                    QuestionId = question.Id,
+                    AudioObjectKey = answer.AudioObjectKey!,
+                    QuestionContent = question.Content,
+                    JobCategory = session.JobCategory.ToString(),
+                    RubricVersion = rubricVersion,
+                    Criteria = builtCriteria,
+                    AttemptNo = attempt,
+                    Temperature = attempt == 1 ? 0d : _scoring.SelfConsistencyTemperature
+                };
 
-            await _scoringPublisher.PublishAsync(job, ct);
+                await _scoringPublisher.PublishAsync(job, ct);
+            }
 
             // Publish OK -> Uploaded chuyển Scoring + ghi mốc publish.
             // Republisher dựa vào đây để KHÔNG nhặt nhầm answer đang chờ worker
@@ -182,9 +206,35 @@ public class AnswerService : IAnswerService
             .FirstOrDefaultAsync(a => a.Id == answerId, ct)
             ?? throw new KeyNotFoundException($"Answer {answerId} không tồn tại");
 
+        // E8 — Guard điểm phía C# (defense-in-depth). Worker Python đã kẹp/lọc, NHƯNG AIService
+        // deploy ephemeral (docker cp) nên image có thể lệch → không tin worker 100%.
+        // Nạp bộ tiêu chí thuộc rubric của session (đúng nguồn đã dùng lúc publish job — E1):
+        //   B2B chấm theo tiêu chí campaign; B2C theo rubric nghề (campaign_id IS NULL).
+        // Dùng bản đồ criterionId -> maxScore để (a) BỎ criterion ngoài rubric, (b) KẸP [0, maxScore].
+        var session = await _db.PracticeSessions.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == answer.SessionId, ct);
+        var critQuery = _db.RubricCriteria.AsNoTracking().Include(c => c.Levels).Where(c => c.IsActive);
+        if (session?.CampaignId is Guid campaignId)
+        {
+            critQuery = critQuery.Where(c => c.CampaignId == campaignId);
+        }
+        else
+        {
+            // BC16: khớp CHÍNH XÁC nguồn đã dùng lúc publish (E1) — B2C ưu tiên rubric RIÊNG của candidate.
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session!.CandidateId, session.JobCategory, ct);
+            critQuery = owner is Guid oid
+                ? critQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
+                : critQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
+        }
+        // E8/E9: bản đồ criterionId -> tiêu chí (kèm rubric_levels) để BỎ criterion ngoài rubric,
+        // KẸP [0,maxScore], và (E9) snap/lưu level_matched theo mức của tiêu chí.
+        var critById = (await critQuery.ToListAsync(ct)).ToDictionary(c => c.Id);
+
+        // E10 — attempt worker vừa chấm (echo từ job). Worker cũ không gửi → DTO default 1.
+        var attemptNo = req.AttemptNo <= 0 ? 1 : req.AttemptNo;
+
         // Idempotency: worker retry có thể gửi lại cùng attempt+version.
         // Xoá điểm cũ cùng attempt+version rồi ghi lại, tránh nhân đôi.
-        const int attemptNo = 1; // self-consistency nhiều attempt làm sau
         var stale = answer.Scores
             .Where(s => s.AttemptNo == attemptNo && s.RubricVersion == req.RubricVersion)
             .ToList();
@@ -195,12 +245,39 @@ public class AnswerService : IAnswerService
 
         foreach (var item in req.Scores)
         {
+            // E8: criterion không thuộc rubric của session (AI bịa / image lệch) → BỎ (không lưu).
+            if (!critById.TryGetValue(item.CriterionId, out var crit))
+            {
+                _logger.LogWarning(
+                    "Bỏ điểm criterion {CriterionId} không thuộc rubric session {SessionId} (answer {AnswerId})",
+                    item.CriterionId, answer.SessionId, answerId);
+                continue;
+            }
+
+            var maxScore = crit.MaxScore;
+
+            // E8: kẹp điểm về [0, maxScore] của tiêu chí (INT-9) — chống worker/image trả điểm lệch trần.
+            var clamped = Math.Clamp(item.Score, 0m, maxScore);
+            if (clamped != item.Score)
+                _logger.LogWarning(
+                    "Kẹp điểm criterion {CriterionId} answer {AnswerId}: {Raw} -> {Clamped} (maxScore={MaxScore})",
+                    item.CriterionId, answerId, item.Score, clamped, maxScore);
+
+            // E9: neo điểm theo mức của tiêu chí.
+            //  - Tiêu chí CÓ rubric_levels khai: HARD anchor → snap điểm về mức gần nhất (KHÔNG drop,
+            //    tránh thiếu-tiêu-chí → Failed INT-9); score = level.score. Ưu tiên levelMatched worker
+            //    gửi nếu hợp lệ, ngược lại snap theo điểm đã kẹp.
+            //  - Tiêu chí dùng dải mặc định (không khai levels): giữ điểm (kẹp) như E8; chỉ LƯU
+            //    levelMatched nếu worker gửi giá trị nằm trong [0,maxScore] (tương thích worker cũ).
+            var (finalScore, levelMatched) = ResolveLevel(crit, clamped, item.LevelMatched, answerId);
+
             _db.AnswerScores.Add(new AnswerScore
             {
                 Id = Guid.NewGuid(),
                 AnswerId = answer.Id,
                 CriterionId = item.CriterionId,
-                Score = item.Score,
+                Score = finalScore,
+                LevelMatched = levelMatched,
                 Reasoning = item.Reasoning,
                 AttemptNo = attemptNo,
                 RubricVersion = req.RubricVersion,
@@ -208,14 +285,91 @@ public class AnswerService : IAnswerService
             });
         }
 
+        // Persist điểm attempt này (giữ answer.Status = Scoring cho tới khi đủ N attempt).
+        await _db.SaveChangesAsync(ct);
+
+        // E10 — self-consistency: chỉ chốt answer khi đã đủ N attempt cho rubric_version hiện tại
+        //   (đếm distinct attempt_no). Chưa đủ → giữ Scoring, chờ callback attempt kế.
+        //   N=1 (mặc định) → 1 attempt là đủ → hành vi cũ.
+        var n = Math.Max(1, _scoring.SelfConsistencyN);
+        var attemptsForVersion = await _db.AnswerScores.AsNoTracking()
+            .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
+            .Select(s => s.AttemptNo)
+            .Distinct()
+            .CountAsync(ct);
+
+        if (attemptsForVersion < n)
+        {
+            _logger.LogInformation(
+                "Answer {AnswerId}: {Got}/{N} attempt (rubric v{Version}) — chờ đủ trước khi Scored",
+                answerId, attemptsForVersion, n, req.RubricVersion);
+            return;   // giữ Scoring
+        }
+
+        // Đủ N → điểm chốt = median/tiêu chí (tính read-time downstream); ở đây đo SPREAD = max−min
+        // mỗi tiêu chí giữa các attempt (materialize rồi tính C#) → spread > ngưỡng bất kỳ tiêu chí →
+        // needs_review (cờ soi lại). N=1 → spread = 0. E11: kèm cả Reasoning để chấm "nhận xét OK".
+        var perAttempt = await _db.AnswerScores.AsNoTracking()
+            .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
+            .Select(s => new { s.CriterionId, s.Score, s.Reasoning })
+            .ToListAsync(ct);
+
+        // E10 — spread giữa các attempt vượt ngưỡng → soi lại.
+        var highSpread = perAttempt
+            .GroupBy(s => s.CriterionId)
+            .Any(g => g.Max(x => x.Score) - g.Min(x => x.Score) > _scoring.VarianceThreshold);
+
+        // E11 — chuẩn "NHẬN XÉT OK" (defense-in-depth): bất kỳ reasoning nào rỗng/quá ngắn (dưới
+        // MinReasoningLen ký tự sau trim) → cờ HR soi lại. KHÔNG hard-fail, KHÔNG mất điểm (điểm đã
+        // lưu ở loop trên). Opt-in: MinReasoningLen=0 (mặc định) → bỏ qua, giữ hành vi cũ.
+        var shortReasoning = _scoring.MinReasoningLen > 0
+            && perAttempt.Any(s => (s.Reasoning ?? "").Trim().Length < _scoring.MinReasoningLen);
+
+        var needsReview = highSpread || shortReasoning;
+
+        answer.NeedsReview = needsReview;
         answer.Status = AnswerStatus.Scored;
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
-            "Lưu {Count} điểm cho answer {AnswerId}, status -> Scored",
-            req.Scores.Count, answerId);
+            "Answer {AnswerId} -> Scored ({N} attempt, rubric v{Version}), needs_review={NeedsReview}",
+            answerId, attemptsForVersion, req.RubricVersion, needsReview);
 
         await TryCompleteSessionAsync(answer.SessionId, ct);
+    }
+
+    // E9 — neo điểm về mức của tiêu chí. Trả (điểm lưu, level_matched).
+    //  - Tiêu chí CÓ rubric_levels khai → HARD anchor: score = level.score (snap gần nhất nếu lệch),
+    //    KHÔNG drop (INT-9). Ưu tiên levelMatched worker gửi nếu hợp lệ.
+    //  - Không khai levels (dải mặc định) → giữ điểm đã kẹp; chỉ lưu levelMatched worker gửi khi
+    //    nằm trong [0,maxScore] (tương thích worker cũ + tránh ép integer phá điểm thập phân hợp lệ).
+    private (decimal finalScore, int? levelMatched) ResolveLevel(
+        RubricCriterion crit, decimal clamped, int? workerLevel, Guid answerId)
+    {
+        if (crit.Levels is { Count: > 0 })
+        {
+            var valid = crit.Levels.Select(l => l.Score).Distinct().OrderBy(s => s).ToList();
+
+            int target;
+            if (workerLevel is int wl && valid.Contains(wl))
+            {
+                target = wl;
+            }
+            else
+            {
+                // Snap về mức hợp lệ gần điểm nhất (tie-break: mức thấp hơn cho ổn định).
+                target = valid.OrderBy(s => Math.Abs(s - clamped)).ThenBy(s => s).First();
+                _logger.LogWarning(
+                    "Snap điểm criterion {CriterionId} answer {AnswerId} về mức {Level} (điểm kẹp {Clamped}, levelMatched worker {WorkerLevel})",
+                    crit.Id, answerId, target, clamped, workerLevel);
+            }
+
+            return (target, target);   // E9: score = level.score
+        }
+
+        // Dải mặc định: giữ điểm kẹp; lưu levelMatched worker gửi nếu trong [0,maxScore].
+        int? lm = workerLevel is int w && w >= 0 && w <= crit.MaxScore ? w : null;
+        return (clamped, lm);
     }
 
     // ── Callback: worker báo chấm thất bại vĩnh viễn ──────────────────────
@@ -267,6 +421,9 @@ public class AnswerService : IAnswerService
             session.Status = SessionStatus.Scored;
             await _db.SaveChangesAsync(ct);
             _logger.LogInformation("Session {SessionId} -> Scored", sessionId);
+
+            // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
+            await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
         }
     }
 }

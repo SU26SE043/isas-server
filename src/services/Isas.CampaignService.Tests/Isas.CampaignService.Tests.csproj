@@ -24,4 +24,9 @@
     <ProjectReference Include="..\Isas.CampaignService\Isas.CampaignService.csproj" />
   </ItemGroup>
 
+  <!-- C13: dựng IFormFile/FormFileCollection trong test cần shared framework ASP.NET Core. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
 </Project>

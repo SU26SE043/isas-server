@@ -26,6 +26,12 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
 
         e.Property(x => x.CreatedAt).IsRequired();
 
+        // BC9 — điểm tổng buổi B2C (nullable; set khi Scored).
+        e.Property(x => x.OverallScore).HasColumnType("numeric(5,2)");
+
+        // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
+        e.Property(x => x.OverallComment).HasColumnType("text");
+
         e.HasIndex(x => x.CandidateId);
 
         // B2B: lookup session theo campaign (S3/S4). Non-unique, nullable.
@@ -118,6 +124,37 @@ public class AnswerScoreConfiguration : IEntityTypeConfiguration<AnswerScore>
         e.HasIndex(x => new { x.AnswerId, x.CriterionId, x.AttemptNo }).IsUnique();
 
         e.HasOne(x => x.Criterion)
+            .WithMany()
+            .HasForeignKey(x => x.CriterionId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+// BC9 — breakdown điểm mỗi tiêu chí của buổi luyện B2C (ghi khi session Scored).
+public class SessionCriterionScoreConfiguration : IEntityTypeConfiguration<SessionCriterionScore>
+{
+    public void Configure(EntityTypeBuilder<SessionCriterionScore> e)
+    {
+        e.HasKey(x => x.Id);
+
+        e.Property(x => x.CriterionName).HasMaxLength(128).IsRequired();
+        e.Property(x => x.AverageScore).HasColumnType("numeric(5,2)").IsRequired();
+        e.Property(x => x.MaxScore).IsRequired();
+        e.Property(x => x.Percentage).HasColumnType("numeric(5,2)").IsRequired();
+        e.Property(x => x.Weight).HasColumnType("numeric(5,4)").IsRequired();
+        e.Property(x => x.NeedsImprovement).IsRequired();
+        e.Property(x => x.CreatedAt).IsRequired();
+
+        // 1 row / (buổi, tiêu chí) — idempotent theo session (xoá + ghi lại khi tính lại).
+        e.HasIndex(x => new { x.SessionId, x.CriterionId }).IsUnique();
+
+        e.HasOne(x => x.Session)
+            .WithMany(s => s.CriterionScores)
+            .HasForeignKey(x => x.SessionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // criterion_id → rubric_criteria (Restrict): giữ điểm lịch sử, chặn xoá tiêu chí đang tham chiếu.
+        e.HasOne<RubricCriterion>()
             .WithMany()
             .HasForeignKey(x => x.CriterionId)
             .OnDelete(DeleteBehavior.Restrict);

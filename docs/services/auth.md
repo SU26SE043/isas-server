@@ -9,11 +9,11 @@
 - `register` **auto gán `Candidate`**; **`register-org` cấp role `Employer`** + tạo org + OrgAdmin ✅ A3.
 - Các service khác **không gọi Auth lúc chạy** — validate JWT **offline** bằng chung key.
 
-## Organization & phân quyền nội bộ (multi-tenant) 🟢 core A1–A3 xong; RBAC đầy đủ = phase 2
+## Organization & phân quyền nội bộ (multi-tenant) 🟢 core A1–A3 xong; RBAC ✅ A4 (HrMember→403 billing) · A5 (`[Authorize(Roles)]` mọi service, v22)
 B2B bán cho **doanh nghiệp**, không phải cá nhân → cần khái niệm **tổ chức**:
 - Một **Organization** (`org_id`) = 1 doanh nghiệp; **billing/credit gắn org** (xem [payment.md](payment.md)), **campaign gắn `org_id`**.
 - **Role nội bộ org** (claim kèm trong JWT): **`OrgAdmin`** (mua gói/trả tiền/xem billing, quản thành viên) vs **`HrMember`** (tạo & quản campaign, **không** xem billing).
-- **Phase 1 (capstone):** data model có `org_id` + `org_role` từ đầu; có thể demo **1 org = 1 OrgAdmin**. **Sub-account HR đầy đủ (mời thành viên, phân quyền chi tiết) = phase 2.**
+- **Phase 1 (capstone):** data model có `org_id` + `org_role` từ đầu. **✅ A6 (vòng 19):** OrgAdmin **thêm HrMember** vào org (`POST /auth/org/members` passwordless + `GET` list) → org **nhiều thành viên** (HrMember login mang `org_role=HrMember` → A4 chặn billing). **✅ A6b (vòng 21):** `PATCH /auth/org/members/{userId}` đổi role + `DELETE` xoá thành viên (guard **OrgAdmin cuối cùng** + **không tự xoá mình**) + cột `org_members.joined_at` thật (thay proxy `User.CreatedAt`). **Còn phase 2:** mời qua **email invitation** (nay tạo trực tiếp) · **attach account có sẵn** (nay dup email→409).
 
 > **Admin KHÔNG phải service riêng.** Chức năng PlatformAdmin = endpoint **admin-gated** nằm trong service sở hữu dữ liệu — **Payment**: CRUD gói, đơn giá, duyệt/đình chỉ postpaid, xem giao dịch, cấp/hoàn credit; **Auth**: cấp role, quản tổ chức (verify MST khi duyệt postpaid) — cộng **1 FE admin dashboard**. **Giám sát/thống kê nền tảng** (#org · #campaign · #lượt phỏng vấn · doanh thu) = dashboard tổng hợp từ các service (*phase 2*). Không thêm AdminService (tránh coupling + phá Engine+Orchestrator).
 
@@ -52,6 +52,11 @@ UserResponse {
 - Req: `{ email: string, password: string, fullName: string }` → Res **`200`** `AuthResponse`. Lỗi: **400** (email tồn tại / mật khẩu yếu).
 
 **`POST /register-org`** — Đăng ký tổ chức (✅ A3). Public. Tạo user role **`Employer`** + `Organization` + `OrgMember(OrgAdmin)`.
+
+**`POST /auth/org/members`** — ✅ **A6** (chỉ OrgAdmin, org_role claim ≠OrgAdmin/thiếu org_id→403). Req `{email, fullName}` → tạo User(`Employer`) passwordless + `OrgMember(HrMember, org_id=caller)` → **201** member info. Email đã có account→**409**. HR đặt mật khẩu qua forgot/reset.
+**`GET /auth/org/members`** — ✅ **A6** (OrgAdmin) → list thành viên org (email/org_role/joinedAt **thật** từ `joined_at`, order theo `joined_at` — ✅ A6b).
+**`PATCH /auth/org/members/{userId}`** — ✅ **A6b** (chỉ OrgAdmin). Req `{orgRole}` đổi `OrgAdmin↔HrMember` → **200**. role sai→**400**; hạ cấp **OrgAdmin cuối cùng** của org→**409**; không phải member→**404**; caller ≠OrgAdmin/khác org→**403**.
+**`DELETE /auth/org/members/{userId}`** — ✅ **A6b** (chỉ OrgAdmin) → **hard-remove** row `org_members` (account `User` **giữ nguyên**, chỉ gỡ tư cách thành viên org) → **204**. **Không tự xoá mình**→**400**; xoá **OrgAdmin cuối**→**409**; không phải member→**404**; caller ≠OrgAdmin/khác org→**403**. *(Ratify: `org_members` **không soft-delete** — bảng cascade theo user, không có `is_deleted`; nếu cần audit/khôi phục → phase 2 thêm audit.)*
 - Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **400** (email tồn tại / mật khẩu yếu).
 
 **`POST /login`** — Đăng nhập. Public.
@@ -74,7 +79,65 @@ UserResponse {
 **🔜 Admin (PlatformAdmin) — quản trị Org/role chưa build (A4/A5):**
 - **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
 - **`GET/POST /auth/admin/orgs…`** — xem / duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
-- *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. Còn admin-gated orgs + role-grant — A4/A5.)*
+- *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. ✅ A4 HrMember→403 billing · ✅ A5 `[Authorize(Roles)]` mọi service (v22): `OrgMembers`→`Employer`, auth-entry `[AllowAnonymous]` tường minh; `RoleClaimType=ClaimTypes.Role` khớp mọi service.)*
+
+### Request/Response mẫu (luồng chính)
+```
+POST /api/v1/auth/register-org
+{ "email":"hr@acme.vn", "password":"S3cret!2026", "fullName":"Nguyễn HR", "orgName":"ACME JSC", "taxCode":"0312345678" }
+→ 200  { "accessToken":"eyJ…", "refreshToken":"f3a1…", "expiresAt":"2026-06-30T09:15:00Z" }
+        // accessToken claims: sub, role="Employer", org_id, org_role="OrgAdmin"
+
+POST /api/v1/auth/login    { "email":"hr@acme.vn", "password":"S3cret!2026" }  → 200 AuthResponse
+POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 RefreshTokenResponse  (token cũ revoke + replaced_by=token mới)
+```
+
+### Validation (đầu vào)
+| Field | Ràng buộc |
+|---|---|
+| `email` | bắt buộc; format email; chuẩn hoá `normalized_email` **UNIQUE** (trùng → 400) |
+| `password` | bắt buộc; theo `PasswordOptions` Identity (độ dài ≥ 6, chữ+số…); **null chỉ** khi user Google-only |
+| `fullName` | bắt buộc khi `register`/`register-org` |
+| `orgName` | bắt buộc (register-org), non-empty (trim) |
+| `taxCode` | optional; cần khi **duyệt postpaid** (verify MST) |
+| `otp` | 6 số, TTL ngắn (~5'); sai/hết hạn → 400 |
+| `refreshToken` | bắt buộc; `is_revoked=false` + `expires_at>now` |
+
+### Bảng mã lỗi (đặc thù — mã chung [../architecture.md](../architecture.md) §6)
+| Mã | Khi nào |
+|---|---|
+| 400 | email đã tồn tại · mật khẩu yếu (policy) · OTP sai/hết hạn · `orgName` rỗng |
+| 401 | login sai email/mật khẩu · refresh hết hạn/đã revoke · thiếu/sai Bearer |
+| 403 | role/`org_role` không đủ quyền (vd `HrMember` gọi admin/billing — A4) |
+| 409 | (admin) tạo org trùng / gán role mâu thuẫn |
+| 423 | tài khoản **lockout** (quá `access_failed_count`) *(nếu bật `LockoutOptions`)* |
+
+## Luồng (sequence)
+
+**Đăng ký tổ chức (`register-org` → A3):**
+```
+FE ─POST /register-org─► Auth
+      ├─ validate (email UNIQUE · password policy · orgName)
+      ├─ tạo user(role=Employer) + Organization(org_id, tax_code) + OrgMember(OrgAdmin)   [1 transaction]
+      ├─ phát JWT access (claims: sub, role, org_id, org_role) + refresh_token (rotation)
+      └─► 200 AuthResponse
+```
+
+**Login + Refresh rotation (chống reuse):**
+```
+FE ─POST /login {email,pwd}─► Auth ─verify password_hash─► 200 {access, refresh, expiresAt}
+… access hết hạn …
+FE ─POST /refresh {refreshToken}─► Auth
+      ├─ hợp lệ? (tồn tại · is_revoked=false · expires_at>now)   ─ không ─► 401
+      ├─ revoke token cũ (is_revoked=true, replaced_by=tokenMới)   ← 1 refresh dùng 1 lần
+      └─► 200 {refresh mới, expiresAt}
+```
+
+**Validate JWT offline (mọi service khác — KHÔNG gọi Auth):**
+```
+FE ─Bearer access─► Service X ── verify chữ ký bằng Jwt:Key/Issuer/Audience (offline) ──► OK / 401
+                                 (gọi Auth CHỈ khi cần dữ liệu tươi ngoài token, vd email xuất hóa đơn)
+```
 
 ## DB — `isas`
 ASP.NET Identity (`IdentityUser<Guid>`), cột **snake_case**. Kiểu: `uuid·varchar(n)·text·bool·timestamptz·enum(string)`, `?`=nullable.
@@ -131,10 +194,20 @@ created_at timestamptz
 org_id   uuid          FK → organizations (cascade)
 user_id  uuid          FK → users (cascade)
 org_role varchar(16)   enum(string): OrgAdmin · HrMember
+joined_at timestamptz   ✅ A6b — thời điểm vào org (set khi tạo member; rows cũ backfill defaultValueSql now() lúc apply)
                        PK (org_id, user_id); JWT Employer mang kèm org_id + org_role ✅ A2 (claim "org_id"/"org_role", chỉ thêm khi user thuộc org)
 ```
 
 + bảng Identity phụ: `role_claims` · `user_claims` · `user_tokens` · `user_logins` (Google OAuth).
+
+### Index / ràng buộc / edge case
+- **UNIQUE**: `users.normalized_email`, `users.normalized_user_name` (Identity) — chống trùng tài khoản; `org_members` PK `(org_id, user_id)`; `roles.normalized_name`; **`refresh_tokens.token`** (lookup theo token, chống trùng); **`organizations.tax_code`** (nullable-unique — 1 MST = 1 pháp nhân; trùng → 409, điều kiện để duyệt postpaid đúng org).
+- **Index / self-FK**: `refresh_tokens(user_id)` (revoke-all theo user); `refresh_tokens.replaced_by` là **self-FK → refresh_tokens.id** (chuỗi rotation — truy ngược được token nào đẻ ra token nào khi nghi trộm token).
+- **on-delete**: `user_roles` · `refresh_tokens` · `org_members` **Cascade** theo `user`; xoá `organization` → cascade `org_members`.
+- **Refresh rotation**: 1 refresh dùng 1 lần → revoke + `replaced_by`. **Dùng lại token đã revoke** = dấu hiệu trộm token → **401** (cân nhắc revoke cả chuỗi — phase 2).
+- **Lockout**: `access_failed_count` tăng mỗi login sai; chạm ngưỡng → khoá tới `lockout_end` (nếu bật `LockoutOptions`).
+- **JWT offline ⇒ thu hồi role KHÔNG tức thì**: đổi `role`/`org_role` chỉ áp khi **token mới** (login/refresh lại); access cũ vẫn hợp lệ tới `expiresAt`. Chấp nhận (đánh đổi của *auth offline* — [../architecture.md](../architecture.md) §3); cần tức thì → rút ngắn TTL access.
+- **Google-only user**: `password_hash=null` → chặn login mật khẩu, chỉ OAuth.
 
 ## Xác thực (nguồn chân lý cho cả hệ)
 - JWT phát bởi Auth, **các service khác validate bằng cùng** `Jwt:Key` / `Issuer` / `Audience` — **không** call Auth.

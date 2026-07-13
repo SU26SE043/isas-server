@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -8,7 +9,7 @@ namespace Isas.InterviewService.Controllers;
 
 [ApiController]
 [Route("api/practice/sessions")] // Giữ nguyên Route chuẩn này của ông
-[Authorize] // Bắt buộc user phải có token hợp lệ
+[Authorize(Roles = "Candidate")] // A5 — luyện phỏng vấn B2C = Candidate.
 public class PracticeController : ControllerBase
 {
     private readonly IPracticeService _practiceService;
@@ -39,6 +40,8 @@ public class PracticeController : ControllerBase
     [HttpPost]
     [ProducesResponseType(typeof(PracticeSessionResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status402PaymentRequired)]   // BC2: ví hết credit
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]        // BC2: PaymentService down
     public async Task<IActionResult> CreateSession([FromBody] CreatePracticeSessionRequest request, CancellationToken ct)
     {
 
@@ -56,6 +59,19 @@ public class PracticeController : ControllerBase
         catch (UnauthorizedAccessException ex)
         {
             return Unauthorized(new { error = ex.Message });
+        }
+        catch (InsufficientCreditException ex)
+        {
+            // BC2: ví hết credit → 402, KHÔNG tạo session (reserve ném trước khi ghi row).
+            _logger.LogWarning(ex, "Ví không đủ credit để tạo session luyện.");
+            return StatusCode(StatusCodes.Status402PaymentRequired, new { error = ex.Message });
+        }
+        catch (PaymentServiceException ex)
+        {
+            // BC2: PaymentService không phản hồi → 502 (không tạo session; retry được).
+            _logger.LogError(ex, "PaymentService lỗi khi reserve credit.");
+            return StatusCode(StatusCodes.Status502BadGateway,
+                new { error = "Dịch vụ thanh toán tạm thời không phản hồi. Vui lòng thử lại sau." });
         }
         catch (InvalidOperationException ex)
         {

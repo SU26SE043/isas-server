@@ -13,6 +13,9 @@ public sealed class CampaignTestDb : IDisposable
     private readonly SqliteConnection _conn;
     public CampaignDbContext Db { get; }
 
+    // Connection dùng chung để BackgroundService (StuckScreeningRepublisher) tạo scope DbContext riêng.
+    public SqliteConnection Connection => _conn;
+
     public CampaignTestDb()
     {
         _conn = new SqliteConnection("DataSource=:memory:");
@@ -36,11 +39,11 @@ public sealed class CampaignTestDb : IDisposable
     }
 
     public static Campaign NewCampaign(
-        Guid employerId, CampaignStatus status = CampaignStatus.Draft, bool antiCheat = true)
+        Guid orgId, CampaignStatus status = CampaignStatus.Draft, bool antiCheat = true)
         => new()
         {
             Id = Guid.NewGuid(),
-            EmployerId = employerId,
+            OrgId = orgId,
             Title = "Test Campaign",
             Status = status,
             AntiCheatEnabled = antiCheat,

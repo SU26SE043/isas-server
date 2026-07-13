@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Scalar.AspNetCore;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
 using Isas.InterviewService.ApplicationDbContext;
@@ -24,12 +25,45 @@ builder.Services.AddScoped<IStorageService, StorageService>();
 builder.Services.AddScoped<IAnswerService, AnswerService>();
 builder.Services.AddHostedService<BucketInitializer>();
 builder.Services.AddSingleton<IScoringJobPublisher, ScoringJobPublisher>();
+builder.Services.AddSingleton<ISessionEventPublisher, SessionEventPublisher>();
+builder.Services.AddScoped<ISessionResultService, SessionResultService>();   // BC9
+builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
+builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
+builder.Services.AddScoped<IRubricLibraryService, RubricLibraryService>();   // BC16 — rubric cá nhân B2C
+builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
+builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
+builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
 
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
+
+builder.Services.AddHttpClient<IAiServiceCvAnalyzer, AiServiceCvAnalyzer>(c =>   // BC7
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
+
+builder.Services.AddHttpClient<IAiServiceRoadmapGenerator, AiServiceRoadmapGenerator>(c =>   // BC12
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
+
+builder.Services.AddHttpClient<IAiServiceSessionSummarizer, AiServiceSessionSummarizer>(c =>   // BC10
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
+
+builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient>(c =>   // BC2
+{
+    // Nội bộ (KHÔNG qua gateway) → gọi thẳng PaymentService. X-Internal-Token gắn trong client.
+    c.BaseAddress = new Uri(builder.Configuration["Payment:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(10);  // reserve nhanh (DB update), không phải LLM
 });
 
 builder.Services.AddOpenApi(options =>
@@ -61,6 +95,7 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHostedService<StuckAnswerRepublisher>();
+builder.Services.AddHostedService<SessionAbandonSweeper>();
 
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -74,6 +109,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+            // A5 — role claim khớp AuthService (JwtService phát ClaimTypes.Role) để [Authorize(Roles)]
+            // enforce tất định, không phụ thuộc default của thư viện (MapInboundClaims=false ở trên).
+            RoleClaimType = ClaimTypes.Role,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!))
@@ -87,6 +125,11 @@ builder.Services.AddDbContext<InterviewDbContext>(options =>
 
 builder.Services.Configure<FileStorageOptions>(
     builder.Configuration.GetSection(FileStorageOptions.SectionName));
+
+builder.Services.Configure<ScoringOptions>(
+    builder.Configuration.GetSection(ScoringOptions.SectionName));   // BC9
+builder.Services.Configure<RoadmapOptions>(
+    builder.Configuration.GetSection(RoadmapOptions.SectionName));   // BC15
 
 builder.Services.AddSingleton<IAmazonS3>(sp =>
 {

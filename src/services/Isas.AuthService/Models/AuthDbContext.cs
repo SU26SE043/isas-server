@@ -163,6 +163,7 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Property(x => x.OrgRole).HasColumnName("org_role")
                 .HasMaxLength(16)
                 .HasConversion<string>();
+            e.Property(x => x.JoinedAt).HasColumnName("joined_at");
 
             e.HasOne(x => x.Organization)
                 .WithMany(x => x.Members)

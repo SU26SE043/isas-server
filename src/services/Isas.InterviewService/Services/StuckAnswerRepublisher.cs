@@ -84,6 +84,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.QuestionId,
                 a.AudioObjectKey,
                 CampaignId = a.Session.CampaignId,
+                CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
                 QuestionContent = a.Question.Content
             })
@@ -96,10 +97,22 @@ public class StuckAnswerRepublisher : BackgroundService
         foreach (var a in stuck)
         {
             // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
-            var query = db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
-            query = a.CampaignId is Guid campaignId
-                ? query.Where(c => c.CampaignId == campaignId)
-                : query.Where(c => c.CampaignId == null && c.JobCategory == a.JobCategory);
+            // E9: nạp kèm rubric_levels (+ anchors) để message re-publish cũng mang mức neo.
+            var query = db.RubricCriteria.AsNoTracking()
+                .Include(c => c.Levels).ThenInclude(l => l.Anchors)
+                .Where(c => c.IsActive);
+            if (a.CampaignId is Guid campaignId)
+            {
+                query = query.Where(c => c.CampaignId == campaignId);
+            }
+            else
+            {
+                // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định.
+                var owner = await B2CRubricScope.ResolveOwnerAsync(db, a.CandidateId, a.JobCategory, ct);
+                query = owner is Guid oid
+                    ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == a.JobCategory)
+                    : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == a.JobCategory);
+            }
             var criteria = await query.ToListAsync(ct);
 
             if (criteria.Count == 0)
@@ -119,14 +132,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 QuestionContent = a.QuestionContent,
                 JobCategory = a.JobCategory.ToString(),
                 RubricVersion = criteria[0].Version,
-                Criteria = criteria.Select(c => new ScoringCriterionDto
-                {
-                    CriterionId = c.Id,
-                    Name = c.Name,
-                    Description = c.Description,
-                    MaxScore = c.MaxScore,
-                    Weight = c.Weight
-                }).ToList()
+                Criteria = ScoringCriteriaBuilder.Build(criteria)   // E9: kèm levels (+ anchors)
             };
 
             try

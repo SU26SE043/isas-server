@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Scalar.AspNetCore;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
 
@@ -42,6 +43,28 @@ builder.Services.AddScoped<IParserService, ParserService>();
 // C8: gọi AIService đề xuất tiêu chí (đồng bộ qua AiService:BaseUrl; có fallback)
 builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
+// D1: đẩy job email mời (magic-link) vào RabbitMQ (cùng pattern InterviewService.ScoringJobPublisher)
+builder.Services.AddSingleton<IInvitationEmailPublisher, InvitationEmailPublisher>();
+// C14: sàng CV async — đẩy job AI chấm khớp (cv_screening_queue) + xử lý callback/shortlist/PATCH
+builder.Services.AddSingleton<ICvScreeningPublisher, CvScreeningPublisher>();
+builder.Services.AddScoped<ICvScreeningService, CvScreeningService>();
+// C15: quét CV sàng kẹt mỗi 2' → đẩy lại cv_screening_queue (publish hụt / worker mất tích)
+builder.Services.AddHostedService<StuckScreeningRepublisher>();
+// E4: nghe event SessionScored (RabbitMQ) → upsert campaign_rankings (ranking read-model, D10)
+builder.Services.AddScoped<IRankingEventHandler, RankingEventHandler>();
+builder.Services.AddHostedService<SessionScoredConsumer>();
+
+// D2: orchestrator luồng ứng viên (invitation→join→membership→my-campaigns→start).
+// 2 typed HttpClient nội bộ (X-Internal-Token gắn trong client, KHÔNG qua gateway): Auth provision + Interview session.
+builder.Services.AddHttpClient<IAuthProvisionClient, AuthProvisionClient>(c =>
+    c.BaseAddress = new Uri(
+        string.IsNullOrWhiteSpace(builder.Configuration["Auth:BaseUrl"])
+            ? "http://localhost:5001" : builder.Configuration["Auth:BaseUrl"]!));
+builder.Services.AddHttpClient<ICampaignSessionClient, CampaignSessionClient>(c =>
+    c.BaseAddress = new Uri(
+        string.IsNullOrWhiteSpace(builder.Configuration["Interview:BaseUrl"])
+            ? "http://localhost:5002" : builder.Configuration["Interview:BaseUrl"]!));
+builder.Services.AddScoped<IParticipationService, ParticipationService>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
@@ -62,6 +85,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+            // A5 — role claim khớp AuthService (JwtService phát ClaimTypes.Role) để [Authorize(Roles)]
+            // enforce tất định, không phụ thuộc default của thư viện (MapInboundClaims=false ở trên).
+            RoleClaimType = ClaimTypes.Role,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))

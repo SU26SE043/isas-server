@@ -1,8 +1,15 @@
 using Isas.InterviewService.ApplicationDbContext;
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
+using Isas.InterviewService.Services;
+using Isas.InterviewService.Services.Interfaces;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Moq;
 
 namespace Isas.InterviewService.Tests;
 
@@ -40,6 +47,48 @@ public sealed class TestDb : IDisposable
         _conn.Dispose();
     }
 
+    // BC9 — SessionResultService thật (dùng khi cần notifier THẬT tính tổng kết B2C).
+    public static SessionResultService ResultService(InterviewDbContext db, decimal thresholdPct = 50m)
+        => new(db,
+            Options.Create(new ScoringOptions { ImprovementThresholdPct = thresholdPct }),
+            NullLogger<SessionResultService>.Instance);
+
+    // E10 — ScoringOptions cho AnswerService. Mặc định N=1 (self-consistency TẮT) → giữ hành vi cũ;
+    // test self-consistency truyền N>1 + ngưỡng spread + temperature.
+    public static IOptions<ScoringOptions> ScoringOpts(
+        int selfConsistencyN = 1, decimal varianceThreshold = 1m, double temperature = 0.4,
+        int minReasoningLen = 0)   // E11 — 0 = tắt (opt-in); >0 để test cờ nhận xét quá ngắn
+        => Options.Create(new ScoringOptions
+        {
+            SelfConsistencyN = selfConsistencyN,
+            VarianceThreshold = varianceThreshold,
+            SelfConsistencyTemperature = temperature,
+            MinReasoningLen = minReasoningLen
+        });
+
+    // BC10 — summarizer AI giả cho notifier THẬT: comment=null/"" → no-op (không lưu overall_comment);
+    // comment có text → trả text; throws → ném (test best-effort không chặn Scored). Không cần AIService thật.
+    public static IAiServiceSessionSummarizer Summarizer(string? comment = null, Exception? throws = null)
+    {
+        var m = new Mock<IAiServiceSessionSummarizer>();
+        var setup = m.Setup(s => s.SummarizeAsync(
+            It.IsAny<string>(), It.IsAny<decimal>(),
+            It.IsAny<IReadOnlyList<SessionSummaryCriterion>>(), It.IsAny<CancellationToken>()));
+        if (throws is not null) setup.ThrowsAsync(throws);
+        else setup.ReturnsAsync(comment ?? string.Empty);
+        return m.Object;
+    }
+
+    // BC15 — RoadmapReportService THẬT cho notifier (rollup milestone/roadmap khi lesson Done). generator
+    // mặc định = mock no-op (session không gắn lesson → OnLessonDoneAsync return sớm, không gọi AI).
+    public static RoadmapReportService RoadmapReport(
+        InterviewDbContext db, IAiServiceRoadmapGenerator? generator = null)
+        => new(
+            db,
+            generator ?? new Mock<IAiServiceRoadmapGenerator>().Object,
+            Options.Create(new Isas.InterviewService.Models.RoadmapOptions()),
+            NullLogger<RoadmapReportService>.Instance);
+
     // ── Seed helpers ──────────────────────────────────────────────────────
     public static RubricCriterion Criterion(
         JobCategory cat, int version = 1, bool active = true,
@@ -59,7 +108,7 @@ public sealed class TestDb : IDisposable
 
     public static PracticeSession Session(
         Guid candidateId, SessionStatus status, JobCategory cat = JobCategory.BE,
-        Guid? campaignId = null)
+        Guid? campaignId = null, DateTime? createdAt = null, DateTime? deadline = null)
         => new()
         {
             Id = Guid.NewGuid(),
@@ -67,7 +116,8 @@ public sealed class TestDb : IDisposable
             JobCategory = cat,
             CampaignId = campaignId,
             Status = status,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = createdAt ?? DateTime.UtcNow,
+            Deadline = deadline   // I2: null = không hard-deadline (B2C); có giá trị = hạn chót nhận bài (B2B)
         };
 
     public static PracticeQuestion Question(Guid sessionId, int order = 1)

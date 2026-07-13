@@ -14,6 +14,9 @@ namespace Isas.AuthService.Models
 
         public OrgRole OrgRole { get; set; }
 
+        // A6b: thời điểm thật user gia nhập org (trước đây list dùng proxy User.CreatedAt).
+        public DateTime JoinedAt { get; set; }
+
         public Organization Organization { get; set; } = default!;
 
         public User User { get; set; } = default!;

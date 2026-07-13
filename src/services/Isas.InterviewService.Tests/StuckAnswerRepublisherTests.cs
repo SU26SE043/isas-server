@@ -93,6 +93,32 @@ public class StuckAnswerRepublisherTests
         Assert.Equal(campaignCrit.Id, crit.CriterionId);
     }
 
+    // E9: re-publish cũng mang mức neo — tiêu chí không khai levels → dải mặc định 0..maxScore.
+    [Fact]
+    public async Task PublishHut_CriterionWithoutLevels_RepublishesDefaultBand()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);   // maxScore 5, không rubric_levels
+
+        var (r, pub) = Build(t);
+        ScoringJob? published = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.NotNull(published);
+        var c = Assert.Single(published!.Criteria);
+        Assert.Equal(new[] { 0, 1, 2, 3, 4, 5 }, c.Levels.Select(l => l.Score).ToArray());
+    }
+
     [Fact]
     public async Task FreshUpload_WithinGrace_NotRepublished()
     {

@@ -1,8 +1,11 @@
+using Isas.InterviewService.Controllers;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -15,9 +18,20 @@ namespace Isas.InterviewService.Tests;
 public class CampaignSessionTests
 {
     private static PracticeService Build(TestDb t)
-        => new(t.Db, new Mock<IStorageService>().Object,
+    {
+        var scoringNotifier = new Mock<ISessionScoringNotifier>();
+        scoringNotifier
+            .Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        // BC2: reserve client mock KHÔNG được gọi ở nhánh B2B (reserve ví cá nhân chỉ B2C).
+        return new PracticeService(t.Db, new Mock<IStorageService>().Object,
                new Mock<IAiServiceQuestionGenerator>().Object,
+               scoringNotifier.Object,
+               new Mock<ICreditReservationClient>().Object,
+               new Mock<ISessionEventPublisher>().Object,   // BK12: abandoned publisher (không dùng ở nhánh B2B)
                NullLogger<PracticeService>.Instance);
+    }
 
     [Fact]
     public async Task CreateCampaignSession_PersistsCampaignId_AndMaterializesCriteria()
@@ -71,5 +85,94 @@ public class CampaignSessionTests
         await using var read = t.NewContext();
         Assert.Equal(1, await read.RubricCriteria.CountAsync(c => c.CampaignId == campaignId));
         Assert.Equal(2, await read.PracticeSessions.CountAsync(s => s.CampaignId == campaignId));
+    }
+
+    // D2(a): create-or-get (candidateId, campaignId) lần đầu → tạo session + materialize rubric_criteria.
+    [Fact]
+    public async Task GetOrCreate_LanDau_TaoSession_VaMaterializeCriteria()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var campaignId = Guid.NewGuid();
+        var svc = Build(t);
+
+        var req = new CreateCampaignSessionRequest(
+            campaignId, JobCategory.BE, new[] { "Q1", "Q2" },
+            new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
+
+        var res = await svc.GetOrCreateCampaignSessionAsync(candidate, req);
+
+        Assert.Equal(nameof(SessionStatus.Ready), res.Status);
+        Assert.Equal(2, res.Questions.Count);
+
+        await using var read = t.NewContext();
+        Assert.Equal(1, await read.PracticeSessions.CountAsync(s => s.CampaignId == campaignId));
+        Assert.Equal(1, await read.RubricCriteria.CountAsync(c => c.CampaignId == campaignId));
+    }
+
+    // D2(b): gọi lại cùng (candidateId, campaignId) khi session chưa terminal → CÙNG sessionId, không đẻ trùng.
+    [Fact]
+    public async Task GetOrCreate_GoiLai_TraCungSession_KhongDeTrung()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var campaignId = Guid.NewGuid();
+        var svc = Build(t);
+
+        var req = new CreateCampaignSessionRequest(
+            campaignId, JobCategory.BE, new[] { "Q1" },
+            new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
+
+        var first = await svc.GetOrCreateCampaignSessionAsync(candidate, req);
+        var second = await svc.GetOrCreateCampaignSessionAsync(candidate, req);
+
+        Assert.Equal(first.Id, second.Id);
+
+        await using var read = t.NewContext();
+        Assert.Equal(1, await read.PracticeSessions.CountAsync(s => s.CampaignId == campaignId));
+    }
+
+    // D2(c): khác candidate cùng campaign → session riêng (mỗi ứng viên 1 bài); criteria không nhân đôi.
+    [Fact]
+    public async Task GetOrCreate_KhacCandidate_SessionRieng()
+    {
+        using var t = new TestDb();
+        var campaignId = Guid.NewGuid();
+        var svc = Build(t);
+        var req = new CreateCampaignSessionRequest(
+            campaignId, JobCategory.BE, new[] { "Q1" },
+            new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
+
+        var a = await svc.GetOrCreateCampaignSessionAsync(Guid.NewGuid(), req);
+        var b = await svc.GetOrCreateCampaignSessionAsync(Guid.NewGuid(), req);
+
+        Assert.NotEqual(a.Id, b.Id);
+        await using var read = t.NewContext();
+        Assert.Equal(2, await read.PracticeSessions.CountAsync(s => s.CampaignId == campaignId));
+        Assert.Equal(1, await read.RubricCriteria.CountAsync(c => c.CampaignId == campaignId));
+    }
+
+    // D2(d): controller internal — X-Internal-Token sai → 401 (không chạm service).
+    [Fact]
+    public async Task InternalController_SaiToken_Tra401()
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Internal:Token"] = "test-internal-token"
+        }).Build();
+
+        var practice = new Mock<IPracticeService>();
+        var controller = new InternalSessionsController(
+            practice.Object, config, NullLogger<InternalSessionsController>.Instance);
+
+        var req = new CreateCampaignSessionInternalRequest(
+            Guid.NewGuid(), Guid.NewGuid(), "BE", new[] { "Q1" },
+            new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
+
+        var result = await controller.CreateOrGetCampaignSession(req, token: "wrong-token", default);
+
+        Assert.IsType<UnauthorizedObjectResult>(result);
+        practice.Verify(p => p.GetOrCreateCampaignSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<CreateCampaignSessionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

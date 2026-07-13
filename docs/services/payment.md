@@ -54,9 +54,10 @@ Order {
   id:             uuid
   ownerType:      enum(string)          // Org · User
   ownerId:        uuid
-  kind:           enum(string)          // CreditPack · InvoiceSettlement
+  kind:           enum(string)          // CreditPack · InvoiceSettlement · SubscriptionPurchase · SubscriptionRenewal 🔜(phase 2)
   packageId:      uuid?
   invoiceId:      uuid?
+  subscriptionId: uuid?                 // 🔜 phase 2
   amountVnd:      long
   payosOrderCode: long
   status:         enum(string)          // Pending · Paid · Failed · Expired · Cancelled
@@ -77,18 +78,18 @@ CreditAccount {                         // GET /me/account
   updatedAt:        datetime
 }
 
-Invoice {                               // postpaid, chỉ Org
+Invoice {                               // ✅ P8b — postpaid, chỉ Org
   id:           uuid
-  orgId:        uuid
+  ownerType:    enum(string)            // Org (khớp credit_accounts owner model, thay orgId)
+  ownerId:      uuid
   periodStart:  datetime
   periodEnd:    datetime
   interviewCount: int
-  unitPriceVnd: long
-  amountVnd:    long
-  status:       enum(string)            // Issued · Paid · Overdue
-  issuedAt:     datetime
-  dueAt:        datetime
-  paidAt:       datetime?
+  unitPrice:    decimal(16,2)           // = Billing:UnitPrice cấu hình
+  amount:       decimal(16,2)           // interviewCount × unitPrice
+  status:       enum(string)            // Issued · Paid · Overdue · Void
+  createdAt:    datetime
+  // 🔜 dueAt/paidAt/issuedAt: BK17 — hiện paid-ness derive từ status=Paid + order settle
 }
 
 CreditOpRequest {                       // /internal/credits/reserve|consume|release
@@ -105,21 +106,23 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`POST /payment/order`** 🟡 — Mua pack credit. Auth `OrgAdmin` (B2B) / `User` (B2C).
 - Req: `{ packageId: uuid }` → Res **`201`** `CreateOrderResponse`. Lỗi: **400** (gói không bán) · **401**.
 
-**`GET /payment/order/{id}`** 🟡 · **`GET /payment/my-orders`** 🟡 — Chi tiết / lịch sử đơn → `Order` / `Order[]`. Lỗi: **403/404**.
+**`GET /payment/order/{id}`** 🟡 · **`GET /payment/my-orders`** 🟡 — Chi tiết / lịch sử đơn → `Order` / `Order[]`. Lỗi: **404** (không tồn tại **hoặc** non-owner — không lộ tồn tại; BK15).
 
 **`GET /payment/order/{id}/status`** 🔜 — **FE active-polling**: server chưa nhận webhook → gọi PayOS đối soát ngay. → `{ orderCode: long, status: enum(string), paidAt: datetime? }`.
 
 **`GET /payment/me/account`** 🔜 — Số dư ví → `CreditAccount`. Lỗi: **401**.
 
-**`GET /payment/me/invoices`** 🔜 · **`GET /payment/me/invoices/{id}`** 🔜 — Hóa đơn postpaid → `Invoice[]`/`Invoice`.
+**`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
 
-**`POST /payment/invoices/{id}/pay`** 🔜 — Tất toán hóa đơn. Auth `OrgAdmin`. → `CreateOrderResponse` (link PayOS). Lỗi: **404**.
+**`POST /payment/invoices/{id}/pay`** ✅ P8b — Tất toán hóa đơn. Auth `OrgAdmin`, owner-scope. → `CreateOrderResponse` (Order kind=`InvoiceSettlement`, invoice_id; reuse `OrderService` tạo link PayOS). Lỗi: **404** (không tồn tại/non-owner) · **409** (đã Paid/Void).
 
-**`POST /payment/webhook/payos`** 🟡 — **Webhook PayOS** (🔒 verify checksum), **KHÔNG** qua gateway. Cộng credit/tất toán **chỉ khi** `Paid`; idempotent theo `payos_order_code`. Req: payload PayOS → Res **`200`**.
+**`POST /payment/webhook/payos`** 🟡/✅ — **Webhook PayOS** (🔒 verify checksum), **KHÔNG** qua gateway. Chỉ khi `Paid`, idempotent theo `payos_order_code`. **✅ P8b: BRANCH theo `Order.Kind`** — `CreditPack`→cộng credit (P2); `InvoiceSettlement`→invoice `Issued/Overdue→Paid` (ExecuteUpdate guard, KHÔNG cộng credit). Req: payload PayOS → Res **`200`**.
+
+**`POST /payment/admin/invoices/close`** ✅ P8b — Chốt kỳ postpaid (1 transaction): snapshot `period_usage` → `Invoice(Issued, amount=count×Billing:UnitPrice)` → reset `period_usage=0`. *(auth `[Authorize]`, role PlatformAdmin defer A5.)*
 
 ### Admin (PlatformAdmin)
 
-**`POST/PUT/DELETE /payment/package…`** 🟡 — CRUD gói (Req `ProductPackage`).
+**`POST/PUT/DELETE /payment/package…`** ✅ **A5** — CRUD gói (Req `ProductPackage`). Auth `Roles="Admin"` (PlatformAdmin, AUTH-3/7 — trước v22 comment hở → mở toang, nay đóng). GET catalog (trên) = Public.
 **`POST /payment/admin/orgs/{orgId}/postpaid`** 🔜 — Duyệt postpaid + đặt `credit_limit` (cần MST). Req: `{ creditLimit: int }`.
 **`POST /payment/admin/orgs/{orgId}/suspend`** 🔜 — Đình chỉ org (nợ xấu/quá hạn).
 **`GET/PUT /payment/admin/unit-price`** 🔜 — Đơn giá 1 lượt (`{ unitPriceVnd: long }`).
@@ -136,6 +139,68 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 > Có thể cho Payment **tự consume/release bằng cách nghe event `SessionScored`/`SessionAbandoned`** thay vì Campaign gọi — chốt khi build.
 
+### Request/Response mẫu
+```
+POST /api/v1/payment/order   { "packageId":"<uuid gói OneTime>" }
+→ 201 { "orderId":"…", "orderCode":260630153012, "checkoutUrl":"https://pay.payos.vn/web/…" }
+
+GET /api/v1/payment/order/{id}/status
+→ 200 { "orderCode":260630153012, "status":"Paid", "paidAt":"2026-06-30T15:32:10Z" }   // server đối soát PayOS nếu chưa có webhook
+
+GET /api/v1/payment/me/account
+→ 200 { "ownerType":"Org","ownerId":"…","paymentMode":"Prepaid","status":"Active",
+        "remainingCredits":48,"reservedCredits":2,"creditLimit":null,"periodUsage":null }
+
+POST /internal/credits/reserve  (X-Internal-Token)  { "ownerType":"Org","ownerId":"…","sessionId":"…" }
+→ 200 { "reservationId":"…","reservedCredits":3 }   |   402 nếu hết credit/hạn mức
+```
+Webhook PayOS (KHÔNG qua gateway): `POST /payment/webhook/payos { code, desc, success, data:{orderCode,amount,…}, signature }` → verify HMAC-SHA256 → nếu `Paid` + `orderCode` chưa xử lý → cộng credit (idempotent) → `200`.
+
+### Validation
+| Field | Ràng buộc |
+|---|---|
+| `packageId` | bắt buộc; gói phải `is_active=true` (không → 400) |
+| `amount` | ≥ ~2.000đ (PayOS); = `package.price_vnd` |
+| `orderCode` | time+random, ≤ 2^53−1, **UNIQUE** (đụng → regenerate) |
+| `CreditOpRequest` | `ownerType∈{Org,User}` · `ownerId` · `sessionId` (idempotency) — bắt buộc |
+| webhook | **verify chữ ký TRƯỚC**; chỉ xử lý khi `success`/`Paid` |
+
+### Bảng mã lỗi (đặc thù — chung [../architecture.md](../architecture.md) §6)
+| Mã | Khi nào |
+|---|---|
+| 400 | gói không bán / không active · payload webhook thiếu field |
+| 401 | thiếu Bearer (order public) · sai `X-Internal-Token` (internal) |
+| 402 | **hết credit (prepaid)** / chạm `credit_limit` (postpaid) / có hóa đơn `Overdue` |
+| 403 | ✅ **A4** `HrMember` (claim `org_role`) gọi billing money-mutation (`POST /order`·`/invoices/{id}/pay`·`/admin/invoices/close`) → `Forbid()`; B2C (không claim)/OrgAdmin không chặn. *(Non-owner đọc/huỷ order/invoice → **404**, không 403 — xem hàng dưới.)* |
+| 404 | order/invoice không tồn tại **hoặc** non-owner (order/invoice/status; không phân biệt được từ ngoài → không lộ tồn tại; ✅ **BK15** gom về 404 khớp P3/P8b) |
+| 409 | (admin) duyệt postpaid khi thiếu MST |
+
+## Luồng (sequence)
+
+**Mua pack prepaid (webhook + active-polling):**
+```
+FE ─POST /order {packageId}─► Payment ─tạo Order(Pending)+order_code─► PayOS ─► checkoutUrl
+… người mua trả tiền …
+PayOS ─webhook Paid (verify HMAC)─► Payment ─ Order→Paid + ledger(Purchase,+pack) + remaining_credits += credits   (idempotent /orderCode)
+[song song] FE ─GET /order/{id}/status─► Payment ─ chưa có webhook? gọi PayOS get-payment-info đối soát NGAY ─► trạng thái
+```
+
+**Tiêu credit reserve→consume (1 lượt phỏng vấn):**
+```
+ứng viên bắt đầu ─► (B2B) Campaign | (B2C) Interview ─POST /internal/credits/reserve {owner,sessionId}─► Payment
+      UPDATE … remaining−1, reserved+1 WHERE remaining≥1     ← 0 row ⇒ 402 (KHÔNG tạo session)
+session Scored ─event SessionScored─► consume: reserved−1 + ledger(Consume,−1)
+bỏ ngang/lỗi  ─event SessionAbandoned─► release: reserved−1, remaining+1
+      (idempotent theo sessionId · out-of-order: Consumed/Released hấp thụ — §State machine)
+```
+> ⚠ **Sàng CV (D18/D19) KHÔNG đi qua luồng này** — không reserve/consume; billing chỉ ở lượt phỏng vấn thật.
+
+**Postpaid chốt kỳ (chỉ Org):**
+```
+cuối kỳ ─► snapshot period_usage → tạo Invoice(Issued, count×unit_price) + reset period_usage=0   [1 transaction]
+Org ─POST /invoices/{id}/pay─► PayOS ─webhook Paid─► Invoice→Paid   (Overdue ⇒ chặn reserve mới, KHÔNG văng in-flight)
+```
+
 ---
 
 ## DB — `isas_payment`
@@ -143,9 +208,11 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 credit_accounts (1/chủ ví: Org HOẶC User)
    ├── credit_reservations (theo session_id)
    ├── credit_transactions (sổ cái)
-   ├── orders 1──1 payment_transactions   (mua pack HOẶC tất toán hóa đơn)
+   ├── orders 1──* payment_transactions   (log sự kiện gateway: webhook/polling/redeliver — mua pack · tất toán · subscription)
    └── invoices (postpaid, CHỈ Org, theo kỳ)
 product_packages 1──* orders        (owner ref lỏng → Auth: org_id hoặc user_id)
+invoices        1──* orders        (orders.invoice_id — N Order tất toán 1 Invoice, retry được)
+subscriptions   1──* orders        (orders.subscription_id — N Order gia hạn 1 Subscription) 🔜 phase 2
 ```
 
 > **Quy ước kiểu DB:** `uuid·varchar(n)·text·int·bigint`(VND)·`numeric`·`bool·timestamptz·jsonb`, enum lưu **string**, `?`=nullable. Cột **snake_case**.
@@ -203,9 +270,10 @@ is_active        bool
 id               uuid          PK
 owner_type       varchar(8)    enum: Org · User
 owner_id         uuid
-kind             varchar(20)   enum: CreditPack · InvoiceSettlement (chỉ Org)
+kind             varchar(20)   enum: CreditPack · InvoiceSettlement (chỉ Org) · SubscriptionPurchase · SubscriptionRenewal 🔜(phase 2)
 package_id       uuid?         FK → product_packages
-invoice_id       uuid?         FK → invoices
+invoice_id       uuid?         FK → invoices        (kind=InvoiceSettlement)
+subscription_id  uuid?         FK → subscriptions   (kind=SubscriptionPurchase/Renewal) 🔜(phase 2)
 amount_vnd       bigint
 payos_order_code bigint        UNIQUE (time+random — xem Business rules)
 status           varchar(16)   enum: Pending · Paid · Failed · Expired · Cancelled
@@ -214,42 +282,45 @@ paid_at          timestamptz?
 created_at       timestamptz
 ```
 
-### `payment_transactions`
+### `payment_transactions` — log sự kiện gateway (append-only)
 ```
 id                  uuid          PK
-order_id            uuid          FK → orders (1–1)
+order_id            uuid          FK → orders (N–1: 1 order có NHIỀU sự kiện gateway)
 gateway             varchar(16)   "payos"
+event_source        varchar(16)   enum: webhook · polling · create — sự kiện đến từ đâu
 gateway_txn_id      varchar?
 status              varchar(16)   soi gương kết quả PayOS (Paid/Failed…) — KHÔNG tự quyết; `orders.status` là nguồn chân lý (§State machine)
-raw_webhook_payload jsonb?        lưu để đối soát
-created_at          timestamptz
+raw_webhook_payload jsonb?        payload gốc — lưu để đối soát
+created_at          timestamptz   index (order_id, created_at)
 ```
+> **Vì sao N–1 (không phải 1–1):** 1 order có thể nhận **nhiều** sự kiện — webhook redeliver, kết quả active-polling, **webhook trả muộn sau `Expired`** (ca phải lưu bằng chứng để PlatformAdmin đối soát thủ công — §State machine). Log **append-only**, không ghi đè → không mất vết tiền. Trạng thái đơn đọc ở `orders.status`, KHÔNG đọc row mới nhất ở đây.
 
-### `invoices` — postpaid, CHỈ Org, theo kỳ
+### `invoices` — ✅ P8b (migration `AddInvoices`) — postpaid, CHỈ Org, theo kỳ
 ```
 id             uuid          PK
-org_id         uuid          ref lỏng → Auth
+owner_type     varchar        enum: Org (khớp credit_accounts owner model, thay org_id)
+owner_id       uuid          ref lỏng → Auth
 period_start   timestamptz
 period_end     timestamptz
 interview_count int
-unit_price_vnd bigint
-amount_vnd     bigint        = interview_count × unit_price_vnd
-status         varchar(16)   enum: Issued · Paid · Overdue
-issued_at      timestamptz
-due_at         timestamptz
-paid_at        timestamptz?
+unit_price     numeric(16,2)  = Billing:UnitPrice cấu hình
+amount         numeric(16,2)  = interview_count × unit_price
+status         varchar(16)   enum: Issued · Paid · Overdue · Void
+created_at     timestamptz
 ```
+> **P8b reconcile (vòng 14):** dùng `owner_type/owner_id` + `numeric` (nhất quán schema payment còn lại) thay `org_id`+`*_vnd bigint`. Bỏ `issued_at/due_at/paid_at` — paid-ness derive từ `status=Paid` + order settle; thêm lại nếu HR cần hạn hóa đơn (**BK17**). `orders.invoice_id` (nullable FK Restrict, kind=InvoiceSettlement) + `orders.package_id`→nullable (đơn settle không gắn pack).
 
 ### `subscriptions` 🔜 *(phase 2)*
 ```
 id         uuid   PK
-org_id     uuid
-order_id   uuid   FK → orders
+owner_type varchar(8)    enum: Org · User
+owner_id   uuid
 package_id uuid   FK → product_packages
-status     varchar(16)
+status     varchar(16)   enum: Active · Expired · Cancelled
 started_at timestamptz
 expires_at timestamptz
 ```
+> FK nằm ở phía **`orders.subscription_id`** (KHÔNG đặt `order_id` ở đây) → 1 Subscription nhận **N Order** theo thời gian: `SubscriptionPurchase` (mua đầu) + mỗi kỳ `SubscriptionRenewal`. Cùng pattern với `orders.invoice_id`.
 
 ---
 
@@ -285,6 +356,7 @@ Reserved ─(SessionScored → consume)──────► Consumed  ★ (ghi 
 ### Kế toán `remaining ↔ reserved` — bút toán ATOMIC (chống double-spend)
 > Bất biến lõi của ví. Mọi bút toán chạy trong **1 transaction + điều kiện WHERE** (optimistic), **không** đọc-rồi-ghi rời.
 ```
+PREPAID (có remaining):
 reserve : UPDATE … SET remaining_credits = remaining_credits − 1,
                        reserved_credits  = reserved_credits  + 1
           WHERE owner=… AND remaining_credits ≥ 1     ← 0 row ⇒ hết credit ⇒ 402, KHÔNG tạo session
@@ -292,9 +364,19 @@ consume : UPDATE … SET reserved_credits  = reserved_credits − 1
           + INSERT credit_transactions(reason=Consume, delta=−1)
 release : UPDATE … SET reserved_credits  = reserved_credits − 1,
                        remaining_credits  = remaining_credits + 1
+
+POSTPAID (không remaining, dồn nợ vào period_usage):
+reserve : UPDATE … SET reserved_credits  = reserved_credits + 1
+          WHERE owner=… AND status='Active'
+            AND period_usage + reserved_credits + 1 ≤ credit_limit   ← 0 row ⇒ 402
+consume : UPDATE … SET reserved_credits  = reserved_credits − 1,
+                       period_usage      = period_usage      + 1     ← ghi nợ kỳ (nguồn của interview_count)
+          + INSERT credit_transactions(reason=Consume, delta=−1)
+release : UPDATE … SET reserved_credits  = reserved_credits − 1      (period_usage KHÔNG đổi)
 ```
 - **Reserve trừ `remaining` NGAY** (không chỉ tăng `reserved`) → 2 reserve song song không cùng vượt check ⇒ **chống double-spend**. `remaining` = tiêu được thật; `reserved` = đang giữ.
-- **Postpaid** (không có `remaining`): điều kiện reserve là `period_usage + reserved + 1 ≤ credit_limit` (và account `Active`, không có hóa đơn `Overdue`).
+- **Bất biến audit (prepaid):** `remaining_credits + reserved_credits = Σ(credit_transactions.delta)` tại mọi thời điểm (reserve/release không ghi ledger nên bảo toàn tổng; Purchase/Consume/Refund mới đổi tổng). Job đối soát định kỳ so 2 vế → lệch = có bug bút toán.
+- **Postpaid** (không có `remaining`): điều kiện reserve là `period_usage + reserved + 1 ≤ credit_limit` (và account `Active`, không có hóa đơn `Overdue`). **Consume mới cộng `period_usage`** (không phải reserve) → bỏ ngang/release **không** dồn nợ; `period_usage` chính là nguồn snapshot ra `invoice.interview_count` cuối kỳ.
 
 ### Invoice — postpaid, CHỈ Org
 ```
@@ -342,6 +424,7 @@ payment_mode:  Prepaid ─(PlatformAdmin duyệt + MST)─► Postpaid   (thu h�
 ### Reserve → Consume → Release
 - Reserve lúc bắt đầu, Consume lúc `Scored`, Release lúc bỏ ngang/lỗi hệ thống. Idempotent theo `session_id`.
 - **Transition + bút toán atomic + xử lý event ra ngoài thứ tự**: xem **§State machine** (`credit_reservations` + kế toán `remaining↔reserved`) — đây là phần chống double-spend & double-process, **bắt buộc** khi build.
+- ⚠ **Sàng lọc CV (D18/D19) KHÔNG tiêu credit (phase 1).** `1 credit = 1 lượt phỏng vấn có audio` → đọc/chấm CV **không** phải lượt phỏng vấn ⇒ **không** reserve/consume, **không** chạm `credit_accounts`/`credit_reservations`. Chỉ **buổi phỏng vấn thật** mới reserve→consume (ứng viên sàng CV được mời → phỏng vấn = đi đúng luồng trên). Chi phí Gemini/CV là **giá vốn nội bộ**, CampaignService chặn bằng hard-filter + cap số CV/campaign ([campaign.md](campaign.md)). *(Phase 2 nếu tính phí sàng → **loại credit sàng riêng**, team xác nhận lại — như D17.)*
 
 ### Postpaid (trả sau)
 - **Chỉ org được PlatformAdmin DUYỆT** mới bật `Postpaid` (cần **pháp nhân/MST** để xuất hóa đơn + đòi nợ). Mặc định org mới = `Prepaid`.

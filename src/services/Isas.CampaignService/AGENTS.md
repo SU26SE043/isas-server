@@ -1,6 +1,6 @@
 > **Bản sao cho agent** của [`docs/services/campaign.md`](../../../docs/services/campaign.md) — contract (API + DB + business rules) của CampaignService. **Source of truth ở `docs/`** (sửa thiết kế tại đó rồi copy lại, đừng sửa bản này lệch). Cửa vào + ràng buộc chung: [`/AGENTS.md`](../../../AGENTS.md).
 >
-> **Trạng thái (2026-06-28):** ✅ ĐÃ LÀM (merged PR #22, build sạch, 34 unit test): 6 bug (C1–C6) · soft-delete (C9) · lifecycle (C7) · publish + campaign_criteria + AIService /suggest-criteria (C8) · audit_logs (C10) · snake_case. 🔜 doc TARGET mở rộng: JD/Criteria nhập text (C11) · tiêu chí structured HR khai thẳng (C12). CÒN: org_id (A1) · distribution/ranking/export (S3/S4).
+> **Trạng thái (2026-06-30):** ✅ ĐÃ LÀM (merged PR #22, build sạch, 34 unit test): 6 bug (C1–C6) · soft-delete (C9) · lifecycle (C7) · publish + campaign_criteria + AIService /suggest-criteria (C8) · audit_logs (C10) · snake_case. 🔜 doc TARGET mở rộng: JD/Criteria nhập text (C11) · tiêu chí structured HR khai thẳng (C12) · **lọc CV hàng loạt (C13–C15, D18/D19)**. CÒN: org_id (A1) · distribution/ranking/export (S3/S4). *(Doc đã chi tiết hoá: req/res mẫu · validation · bảng mã lỗi · sequence · index/edge.)*
 
 ---
 
@@ -9,7 +9,7 @@
 > 🟢 merged main (PR #22). Code: `src/services/Isas.CampaignService`. DB: `isas_campaign`. Gateway: `/api/v1/campaign`.
 > Quy ước chung: [../architecture.md](../architecture.md) §5. Engine phỏng vấn: [interview.md](interview.md). Phân việc: [../work-division.md](../work-division.md).
 >
-> **Hiện trạng implement (2026-06-27):** ✅ 6 bug đã đóng · soft-delete (C9) · **lifecycle đầy đủ** (C7: guard + `POST /publish` Draft→Active + `PUT /status` Active→Closed→Archived) · **publish + `campaign_criteria` (Σweight=1)** (C8) · **`audit_logs`** (C10) · **snake_case** (§5) — build sạch, **34 unit test pass**, `isas_campaign` migrate server (4 bảng). **C8 AI thật:** publish gọi **AIService `POST /suggest-criteria`** (Gemini) → map `campaign_criteria` (Σ=1), **fallback** bộ mặc định nếu AI lỗi. ✅ **live HTTP OK** (container `aiapi` đã deploy code mới qua `docker cp`+`restart`; `POST /suggest-criteria` trả Σ=1.0). ⚠ Ephemeral — recreate/`compose up` container sẽ mất (image vẫn code cũ); permanent cần **rebuild image**. Code dùng `employer_id` (**chưa wire `org_id`** dù A1 đã có `Organization`/`org_members` trên main). ❌ chưa làm: distribution (magic-link), ranking/result/export, `session_integrity_events`, `campaign_invitations`, **JD/Criteria nhập text (`jdText`/`criteriaText` — C11)** + **tiêu chí structured HR khai thẳng (`criteria[]` — C12)** (code hiện chỉ nhận PDF + tiêu chí chỉ từ AI). DB **4/7 bảng**. *(Phần dưới mô tả thiết kế TARGET đầy đủ.)*
+> **Hiện trạng implement (2026-06-27):** ✅ 6 bug đã đóng · soft-delete (C9) · **lifecycle đầy đủ** (C7: guard + `POST /publish` Draft→Active + `PUT /status` Active→Closed→Archived) · **publish + `campaign_criteria` (Σweight=1)** (C8) · **`audit_logs`** (C10) · **snake_case** (§5) — build sạch, **34 unit test pass**, `isas_campaign` migrate server (4 bảng). **C8 AI thật:** publish gọi **AIService `POST /suggest-criteria`** (Gemini) → map `campaign_criteria` (Σ=1), **fallback** bộ mặc định nếu AI lỗi. ✅ **live HTTP OK** (container `aiapi` đã deploy code mới qua `docker cp`+`restart`; `POST /suggest-criteria` trả Σ=1.0). ⚠ Ephemeral — recreate/`compose up` container sẽ mất (image vẫn code cũ); permanent cần **rebuild image**. Code dùng `employer_id` (**chưa wire `org_id`** dù A1 đã có `Organization`/`org_members` trên main). ❌ chưa làm: distribution (magic-link), ranking/result/export, `session_integrity_events`, `campaign_invitations`, **JD/Criteria nhập text (`jdText`/`criteriaText` — C11)** + **tiêu chí structured HR khai thẳng (`criteria[]` — C12)** (code hiện chỉ nhận PDF + tiêu chí chỉ từ AI), **lọc CV hàng loạt (C13–C15)**. DB **4/9 bảng**. *(Phần dưới mô tả thiết kế TARGET đầy đủ.)*
 
 ## Vai trò
 Lớp **điều phối B2B**, không tự chạy phỏng vấn:
@@ -64,12 +64,88 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 - `POST /invitations/{id}/reissue` — Employer phát lại token (vô hiệu token cũ).
 - `GET /campaign/{id}/results` + `/results/export?format=csv|pdf` — bảng kết quả, xếp hạng, xuất file.
 
+### Lọc ứng viên qua CV — sàng lọc hàng loạt (B2B) (🔜 C13–C15 — cùng prefix `/campaign`)
+> **1 trong 2 cách lọc của app** (cách kia: phỏng vấn AI), **tùy chọn** + **MIỄN PHÍ phase 1** (D19). HR đổ **nhiều CV** ứng viên vào campaign → **lọc hybrid** (rule cứng trước, AI chấm khớp sau) → **shortlist xếp hạng** trước khi mời phỏng vấn (tiết kiệm slot). Engine phân tích = AIService `/analyze-cv` ([ai.md](ai.md)) **dùng chung với B2C**; **TÁI DÙNG** `campaign_criteria` làm rubric — **không** đụng engine phỏng vấn. State machine + luồng tiền chi tiết: §Business rules.
+
+| Method | Path | Mô tả |
+|---|---|---|
+| POST | `/campaign/{id}/candidates` | **🔜 C13** Upload **nhiều PDF** CV (`multipart`: `files[]`, mỗi file ≤ 10MB). Parse → `cv_parsed_text`; chạy **hard-filter** (rule cứng) → mỗi ứng viên `Rejected(reason)`/`Filtered`; mỗi `Filtered` → đẩy job AI lên queue. Cần campaign `Active` + đã có `campaign_criteria`; **cap số CV/campaign** (chặn đốt AI vì free) → vượt **4xx** |
+| GET | `/campaign/{id}/candidates` | **🔜 C14** Shortlist. Query `?status=&minScore=&skill=&sort=score\|name&page=`; mặc định `sort=score` DESC (`overall_match_score`). Lọc theo `employer_id` (chủ campaign) |
+| GET | `/campaign/{id}/candidates/{candidateId}` | **🔜 C14** Chi tiết 1 ứng viên (summary, skills, điểm + reasoning từng tiêu chí) |
+| POST | `/campaign/{id}/candidates/{candidateId}/invite` | **🔜 C15** `Analyzed → Invited`, bàn giao luồng magic-link (`campaign_invitations`, **D1**) |
+
+> **Rule cứng** cấu hình trên campaign (set khi `Draft`, qua `POST`/`PUT /campaign`): `requiredSkills?` (phải có **ĐỦ**), `keywordsAny?` (có **≥1**), `minYearsExperience?` — lưu cột `required_skills`/`keywords_any`/`min_years_experience`. Chi tiết luồng ở §Business rules.
+
+**Callback nội bộ** (worker → Campaign, **không qua gateway**, header `X-Internal-Token`):
+- `POST /internal/campaign-candidates/{candidateId}/cv-result` — lưu kết quả AI lên `campaign_candidates` + `candidate_criterion_scores`; status `Analyzed`. **Idempotent** (xóa điểm cũ rồi ghi lại).
+- `POST /internal/campaign-candidates/{candidateId}/cv-failed` — `{ reason }` → status `AnalysisFailed`.
+
+### Request/Response mẫu
+```
+POST /api/v1/campaign   (JWT Employer)
+{ "title":"Tuyển BE Java","domain":"BE","jdText":"…",
+  "criteria":[{"name":"Chuyên môn","weight":0.5,"maxScore":5},{"name":"Giao tiếp","weight":0.5,"maxScore":5}],
+  "maxCandidates":50,"timeLimitMinutes":30,"antiCheatEnabled":true,
+  "startsAt":"2026-07-01T00:00:00Z","expiresAt":"2026-07-15T00:00:00Z",
+  "questions":[{"questionText":"…","source":"CustomHr","isRequired":true}] }
+→ 201 { "id":"…","status":"Draft", … }
+
+POST /campaign/{id}/publish        → 200 { "status":"Active" }          // sinh campaign_criteria (Σ=1) + audit
+POST /campaign/{id}/candidates     (multipart files[]=*.pdf)
+→ 202 { "received":12, "rejected":3, "filtered":9 }                     // hard-filter đồng bộ; 9 job AI đẩy queue
+GET  /campaign/{id}/candidates?sort=score&minScore=70
+→ 200 [ { "candidateId":"…","fullName":"…","overallMatchScore":86,"status":"Analyzed","skills":[…] }, … ]
+```
+
+### Validation
+| Field | Ràng buộc |
+|---|---|
+| `title` | bắt buộc, ≤255 |
+| `startsAt` | bắt buộc; `expiresAt` (nếu có) > `startsAt` |
+| `criteria[]` | `0<weight≤1`, `maxScore≥1`, name không trùng, `Σweight∈[0.99,1.01]`→chuẩn hoá Σ→1 (ngoài→400); sửa khi `Active`→409 |
+| `questions[]` | `source∈{AiGenerated,CustomHr}`; publish cần ≥1 câu |
+| files (candidates) | PDF, ≤10MB/file; vượt **cap CV/campaign** → 4xx; campaign phải `Active` |
+| rule cứng | `required_skills`/`keywords_any`/`min_years_experience` chỉ set khi `Draft` |
+
+### Bảng mã lỗi (đặc thù — chung [../architecture.md](../architecture.md) §6)
+| Mã | Khi nào |
+|---|---|
+| 400 | input sai · file không PDF · `Σweight` ngoài [0.99,1.01] |
+| 401/403 | thiếu/sai JWT · non-owner (lọc `employer_id`) · không phải `Employer` |
+| 404 | campaign/candidate không tồn tại (hoặc đã soft-delete) |
+| 409 | sửa câu hỏi/tiêu chí khi `Active` · publish khi thiếu câu hỏi · transition trạng thái sai |
+| 4xx | vượt cap CV/campaign (sàng CV) |
+
+## Luồng (sequence)
+
+**Publish campaign (→ tiêu chí có cấu trúc):**
+```
+HR ─POST /campaign/{id}/publish─► Campaign (Draft→Active)
+   ├─ có criteria[] (HrEdited)? → dùng thẳng (bỏ AI)
+   └─ không → AIService /suggest-criteria (Gemini) → campaign_criteria (Σ=1); AI lỗi → fallback mặc định
+   └─ ghi audit_logs(Publish)
+```
+
+**Lọc CV (tiền sàng — FREE; state machine đầy đủ ở §Business rules):**
+```
+HR ─upload PDFs─► Campaign ─parse(PdfPig)→hard-filter─► Rejected | Filtered
+   Filtered ─publish cv_screening_queue─► AIService worker ─callback cv-result─► Analyzed (+điểm)
+   HR ─GET candidates?sort=score─► shortlist ─invite top N─► Invited → D1/D2 magic-link (phỏng vấn = tính credit)
+```
+
+**Distribution (🔜 M3):**
+```
+HR ─POST /campaign/{id}/invitations─► token + email ─► ứng viên mở /invitations/{token}
+   ─► Interview create-or-get session(campaign_id) + Campaign reserve credit org ─► phỏng vấn
+```
+
 ---
 
 ## DB — `isas_campaign`
 ```
 campaigns ─┬─1──* campaign_questions
            ├─1──* campaign_criteria          (org_id, employer_id ref lỏng → Auth)
+           ├─1──* campaign_candidates ─1──* candidate_criterion_scores  (🔜 sàng CV B2B; criterion_id → campaign_criteria)
            └─1──* campaign_invitations ──► session_id (ref lỏng → Interview)
 campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 ```
@@ -88,6 +164,9 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | anti_cheat_enabled | bool | mặc định `true` |
 | jd_file_url / criteria_file_url | text? | ⚠ **lưu key, không phải full URL** (bug #1); **null nếu nhập text trực tiếp** (🔜 `jdText`/`criteriaText`) |
 | jd_text / criteria_text | text? | từ **PDF parse HOẶC nhập text trực tiếp** (🔜 `jdText`/`criteriaText`) — **nguồn để AI sinh câu hỏi + đề xuất tiêu chí** (không chấm trực tiếp trên text) |
+| required_skills | jsonb? | **🔜 C13** rule cứng sàng CV — kỹ năng **bắt buộc có ĐỦ** trong `cv_parsed_text` |
+| keywords_any | jsonb? | **🔜 C13** rule cứng sàng CV — có **≥1** từ khóa |
+| min_years_experience | int? | **🔜 C13** rule cứng sàng CV — số năm KN tối thiểu |
 | starts_at | timestamptz | bắt buộc |
 | expires_at | timestamptz? | |
 | created_at / updated_at | timestamptz | `now()` |
@@ -126,9 +205,48 @@ token 1 lần · email ứng viên · hạn dùng · `used_at` · `session_id` (
 
 ### `campaign_rankings` — read-model (cập nhật bằng event `SessionScored`)
 `id` · `campaign_id` · `candidate_id` · `session_id` (**unique** — upsert idempotent) · `total_score` · `rank` · `result` (`Pass`/`Fail`) · `updated_at`. → dashboard đọc local, không gọi xuyên service.
+> ⚠ Đây là ranking **hậu phỏng vấn** (điểm session). **KHÁC** ranking **sàng CV** (`campaign_candidates.overall_match_score` — trước phỏng vấn). Hai luồng tách bạch, không trộn.
+
+### `campaign_candidates` (🔜 C13 — sàng CV B2B; staging + kết quả AI gộp chung)
+> 1 dòng / 1 CV ứng viên HR upload. Applicant là **người ngoài (chưa có account)** → lưu `full_name`/`email` parse từ CV, **không** FK sang Auth. **Không** dùng `file_records` (bảng đó của Interview, `user_id` = ứng viên — HR up hộ không khớp).
+
+| Cột | Kiểu | Ràng buộc / ghi chú |
+|---|---|---|
+| id | uuid | PK (`gen_random_uuid()`) |
+| campaign_id | uuid | FK → `campaigns` (Cascade); **index** |
+| full_name | varchar(255)? | parse từ CV |
+| email | varchar(255)? | parse; **UNIQUE (campaign_id, email)** (bỏ qua khi null) — chống trùng trong campaign |
+| cv_file_url | text? | S3 key archival (`campaigns/{id}/candidates/{cid}.pdf`) — **tùy chọn**, null nếu không archive; critical path chỉ cần text |
+| cv_parsed_text | text? | text parse từ PDF (PdfPig) — nguồn hard-filter + gửi AI |
+| parse_status | varchar(16) | enum: `pending`·`done`·`failed` |
+| status | varchar(20) | enum `CandidateStatus` (state machine ở Business rules); **index** |
+| reject_reason | text? | lý do hard-filter loại (vd "thiếu kỹ năng: SQL") |
+| skills | jsonb? | string[] — AI trả (null tới khi `Analyzed`) |
+| years_experience | numeric(4,1)? | AI trả |
+| summary | text? | AI trả |
+| overall_match_score | int? | **0–100** — AI trả; **`ORDER BY` cột này = ranking shortlist** |
+| last_screening_published_at | timestamptz? | cho `StuckScreeningRepublisher` |
+| created_at / updated_at | timestamptz | `now()` |
+
+### `candidate_criterion_scores` (🔜 C14 — điểm khớp từng tiêu chí; mẫu `answer_scores`)
+| Cột | Kiểu | Ràng buộc / ghi chú |
+|---|---|---|
+| id | uuid | PK (`gen_random_uuid()`) |
+| candidate_id | uuid | FK → `campaign_candidates` (Cascade); **index** |
+| criterion_id | uuid | **FK → `campaign_criteria` (Restrict)** — TÁI DÙNG rubric (chặn id rác); **UNIQUE (candidate_id, criterion_id)** |
+| match_score | numeric(5,2) | AI chấm, kẹp `[0, max_score]` |
+| reasoning | text? | dẫn chứng từ CV |
+| created_at | timestamptz | `now()` |
 
 ### `audit_logs` — vết thao tác HR
-`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+
+### Index & ràng buộc (tổng hợp)
+- **Soft-delete**: `campaigns.deleted_at` + **global query filter** `IS NULL` (mọi query tự ẩn campaign đã xoá).
+- **FK on-delete**: Cascade theo `campaign_id` → `campaign_questions` · `campaign_criteria` · `campaign_candidates`. `candidate_criterion_scores` → `campaign_candidates` **Cascade**; → `campaign_criteria` **Restrict** (chặn xoá tiêu chí còn điểm tham chiếu).
+- **UNIQUE**: `campaign_criteria(campaign_id, order_no)` + `(campaign_id, name)` · `campaign_candidates(campaign_id, email)` · `candidate_criterion_scores(candidate_id, criterion_id)`.
+- **Index**: `campaigns(employer_id, status)` + `(employer_id, created_at)` · `campaign_candidates(campaign_id, status)` · `audit_logs(entity_id, at)`.
+- **Ownership**: mọi đọc/ghi lọc `employer_id` (sau wire `org_id` → lọc theo org). Non-owner → 404.
 
 ---
 
@@ -147,6 +265,41 @@ Draft ──► Active ──► Closed ──► Archived
 - **Không** chấm trên `criteria_text` thô. **Nếu KHÔNG có `criteria[]`:** khi `Draft → Active` AI **đề xuất** bộ tiêu chí có cấu trúc từ `jd_text`/`criteria_text` (PDF **hoặc** text trực tiếp — `name`, `weight`, `max_score`, mô tả mức điểm), **HR sửa/duyệt** (HR-in-the-loop).
 - Lưu thành `campaign_criteria`. Khi tạo session phỏng vấn, Campaign **gửi bộ tiêu chí** sang InterviewService → materialize thành `rubric_criteria(campaign_id)` → **chấm như rubric thường** (xem [interview.md](interview.md)).
 - Σ`weight` của 1 campaign nên = 1 (chuẩn hóa điểm tổng).
+
+### Lọc ứng viên qua CV (B2B) — hybrid filter + state machine + luồng tiền (🔜 C13–C15)
+> **1 trong 2 cách lọc của app** (cách kia: phỏng vấn AI — §4.2 [architecture.md](../architecture.md)). Tiền sàng lọc **trước** phỏng vấn: HR đổ hàng loạt CV → shortlist. **Tùy chọn** (có thể mời thẳng không sàng) và **MIỄN PHÍ phase 1** (xem *Luồng tiền* dưới — **D19**). **TÁI DÙNG** `campaign_criteria` (rubric + weight Σ=1) + AIService `/analyze-cv` ([ai.md](ai.md)); **KHÔNG** đụng engine phỏng vấn (không session/answer/audio — `practice_sessions`/`answer_scores` gắn audio nên không tái dùng được).
+
+**Lưu trữ & lọc:**
+- Parse CV **tại CampaignService** (`ParserService`/PdfPig sẵn có) → `cv_parsed_text`. Critical path chỉ cần **text**; raw PDF **archival tùy chọn** lên S3 (`IFileService`, key `campaigns/{id}/candidates/{cid}.pdf` → `cv_file_url`) cho HR mở lại — **không** tạo `file_records` (bảng đó của Interview, gắn `user_id` ứng viên; HR up hộ không khớp).
+- **Hybrid 2 tầng:** (1) **rule cứng** (`required_skills`/`keywords_any`/`min_years_experience`) chạy **đồng bộ** trên `cv_parsed_text` → rớt = `Rejected` + `reject_reason` (rẻ, **0 cost AI**); (2) **AI chấm khớp** mỗi `Filtered` theo `campaign_criteria` (**async**, [ai.md](ai.md) §queue `cv_screening_queue`) → `criterionMatches` + `overall_match_score`.
+- **Ranking = derived:** `ORDER BY overall_match_score DESC` (hoặc `Σ(match_score×weight)` chuẩn hoá — weight `campaign_criteria` Σ=1, **luôn chia Σweight** phòng sai số). **KHÔNG** dùng `campaign_rankings` (read-model điểm **hậu phỏng vấn** từ `SessionScored`, D10 — khác mục đích).
+
+**State machine — Candidate** (`campaign_candidates.status`; `★` = terminal/handoff — kỷ luật như [payment.md](payment.md) §State machine):
+```
+[POST /candidates] Pending, parse_status=pending
+  ├─ parse OK  → HARD-FILTER ─ đủ rule → Filtered
+  │                          └ rớt rule → Rejected (reject_reason="thiếu skill: SQL")
+  └─ parse FAIL → Rejected (reject_reason="CV không đọc được — upload lại")
+Filtered ─(publish cv_screening_queue; set last_screening_published_at)─► Analyzing
+Analyzing ─(callback cv-result, X-Internal-Token)──────────────────────► Analyzed
+          └─(callback cv-failed / lỗi vĩnh viễn)───────────────────────► AnalysisFailed
+Analyzed ─(HR bấm "Mời")───────────────────────────────────────────────► Invited ★ → bàn giao D1/D2 (magic-link)
+```
+- **Idempotent callback** (`/internal/campaign-candidates/{id}/cv-result`): xóa `candidate_criterion_scores` cũ rồi ghi lại → retry không nhân đôi; `criterion_id` **FK → `campaign_criteria`** chặn id Gemini bịa. Chỉ `Analyzing → Analyzed`.
+- **`Invited` hấp thụ (absorbing):** callback đến **muộn** sau khi đã `Invited` → **bỏ qua** (không hạ trạng thái) — như `answer` đã `Scored` thì bỏ `failed` ([interview.md](interview.md)).
+- **Recover ngoài thứ tự:** `cv-result` về khi đang `AnalysisFailed` (timeout rồi worker mới callback) → **vẫn ghi điểm + set `Analyzed`** (trừ khi đã `Invited`).
+- **Stuck** (`StuckScreeningRepublisher`, mẫu `StuckAnswerRepublisher`): `Filtered` quá hạn mà `last_screening_published_at=null` (publish hụt) **hoặc** `Analyzing` quá hạn không callback (worker mất tích) → đẩy lại job.
+- **Retry / Re-upload:** `AnalysisFailed` → HR retry → re-publish → `Analyzing`. `Rejected` do parse → HR upload file mới.
+- **Dedup:** `UNIQUE(campaign_id, email)` → trùng email → **bỏ qua + báo "đã tồn tại"** (không tạo row); `email` null (parse không ra) → cho qua, **không** dedup (rủi ro trùng người — chấp nhận phase 1).
+- **Guard campaign:** chỉ upload/sàng khi campaign **`Active`** (đã có `campaign_criteria`). `Closed`/`Archived` → **chặn upload mới**; job `Analyzing` in-flight **vẫn cho callback hoàn tất** (bảo vệ in-flight — như `payment.md` không văng người đang thi).
+- **Rule cứng cố định tại publish:** set khi `Draft`; sau `Active` khóa (C7). Đổi rule + sàng lại = ngoài phạm vi phase 1.
+- **Audit:** mỗi lần upload/sàng ghi `audit_logs` (`action` mới, vd `ScreenCandidates`).
+- **Giới hạn đã biết:** parse "số năm KN" từ text thô không chắc → nếu khó, **dời `min_years_experience` sang tầng AI** (`overall_match_score` đã ngầm xét KN).
+
+**Luồng tiền — sàng CV MIỄN PHÍ phase 1 (D19); billing CHỈ ở phỏng vấn thật:**
+- Sàng CV = **0 credit**, **KHÔNG** chạm `credit_accounts`/`credit_reservations` ([payment.md](payment.md)). Lý do: `1 credit = 1 lượt phỏng vấn có audio` — trừ credit cho việc *đọc CV* là **sai semantics** + **double-charge** nếu shortlist còn đi phỏng vấn.
+- **Billing phát sinh khi `Invited` → ứng viên phỏng vấn thật:** D1/D2 magic-link → create-or-get session (`campaign_id`) → **reserve 1 credit org** → `SessionScored` → **consume** (bỏ ngang → `SessionAbandoned` → release). **NGUYÊN** luồng D7 — sàng CV **không thêm** reserve/consume nào.
+- **Chặn đốt chi phí AI (vì free):** (1) **hard-filter TRƯỚC AI** (chỉ `Filtered` gọi Gemini, rớt rule = 0 cost); (2) **cap số CV/campaign** (cấu hình / gắn gói; vượt → **4xx "vượt giới hạn sàng lọc của gói"**); (3) 1 call Gemini/CV, `temperature=0`. Chi phí Gemini/CV = **giá vốn nội bộ**; phase 2 nếu lớn → cân nhắc **loại credit sàng riêng** (D19, team xác nhận lại).
 
 ### Distribution — link mời "1 lần NỘP" (không phải 1 lần mở)
 - Mỗi ứng viên 1 **token duy nhất**, hạn ≤ `expires_at` campaign.

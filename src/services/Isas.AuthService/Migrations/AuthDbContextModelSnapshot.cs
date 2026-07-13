@@ -32,6 +32,10 @@ namespace Isas.AuthService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
+                    b.Property<DateTime>("JoinedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("joined_at");
+
                     b.Property<string>("OrgRole")
                         .IsRequired()
                         .HasMaxLength(16)

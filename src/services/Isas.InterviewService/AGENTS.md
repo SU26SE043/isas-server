@@ -13,6 +13,7 @@
 - Gọi **AIService** sinh câu hỏi (đồng bộ) + publish job chấm điểm lên **RabbitMQ**; nhận kết quả qua **callback nội bộ**.
 - **Phân biệt B2B/B2C bằng `campaign_id` trên session** (null = B2C luyện tập; có giá trị = bài thi B2B của campaign). Engine + state machine **giữ nguyên** cho cả hai.
 - **Danh tính ứng viên:** B2C lấy `candidateId` từ token người luyện; **B2B** vào bằng **magic-link** → provision/login account `Candidate` nhẹ (có `candidate_id` + JWT) → ownership "chủ session" dùng đúng cơ chế cũ.
+- **Vào bài B2B — sàng CV là bước TRƯỚC, không thuộc engine này:** ứng viên có thể được mời **thẳng**, hoặc qua **sàng lọc CV** ở CampaignService rồi mới mời (`Invited` → magic-link). **Sàng CV KHÔNG chạm engine phỏng vấn này và KHÔNG tiêu credit** ([campaign.md](campaign.md) §Lọc ứng viên qua CV; **D19**). Từ magic-link trở đi (create-or-get session gắn `campaign_id` → reserve credit org → chấm → consume) = **luồng + state machine + billing NGUYÊN như cũ** — engine không phân biệt ứng viên đã qua sàng CV hay chưa.
 
 ---
 
@@ -155,6 +156,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 - Req `application/json`: `{ "cvId": uuid, "jdId": uuid? }`. Có `jdId` → kết quả thêm `jdMatch`.
 - Res **`201`** `CvAnalysisResponse`. Lỗi: **400** (CV không đọc được) · **401** · **403** (không phải file của bạn) · **404** (`cvId`/`jdId` không có) · **502** (AI lỗi).
 - **Đồng bộ HTTP**, không qua RabbitMQ. **Miễn phí (không trừ credit) phase 1** (D17). Mục (c) "CV vs câu trả lời" sau khi `Scored` = task `BC8`.
+- **Engine `/analyze-cv` dùng chung với B2B:** CampaignService tái dùng **đúng endpoint này** để **sàng lọc CV hàng loạt** (gửi kèm `criteria[]` campaign → nhận thêm `criterionMatches`/`overallMatchScore`), nhưng gọi **async qua worker** (N CV) thay vì sync — xem [campaign.md](campaign.md) §Lọc ứng viên qua CV + [ai.md](ai.md). B2C (đây) **không đổi**: sync, lưu `cv_analyses`.
 
 **`GET /cv-analysis/{id}`** → `CvAnalysisResponse` (403/404) · **`GET /cv-analysis`** → `CvAnalysisResponse[]` của user.
 
@@ -166,6 +168,48 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 
 **`POST /internal/answers/{answerId}/failed`** — đánh dấu `Failed` (lỗi chấm vĩnh viễn).
 - Req: `{ "reason": string }`. Nếu answer đã `Scored` → **bỏ qua** (không hạ `Failed`). Res **`200/204`**. Lỗi: **401** · **404**.
+
+### Validation & mã lỗi (tổng hợp — chi tiết per-endpoint ở trên)
+| Field | Ràng buộc |
+|---|---|
+| `cvId`/`jdId` (create session) | optional; `FileRecord` phải **của chính user** + có `parsed_text` (không đọc được → 400) |
+| `jobCategory` | bắt buộc, enum `BA·BE·FE` |
+| upload file | PDF (cv/jd) **≤10MB** · audio (answer) **≤50MB**; sai loại/size → 400 |
+| `questionId`/`durationSec` (answer) | bắt buộc; **1 answer/câu** (upload lại = ghi đè idempotent) |
+| callback `/internal/*` | `X-Internal-Token` đúng (sai → 401) |
+
+| Mã | Khi nào (đặc thù — chung [../architecture.md](../architecture.md) §6) |
+|---|---|
+| 400 | CV/JD không đọc được nội dung · AI trả rỗng · thiếu field · file quá lớn/sai loại |
+| 401/403 | thiếu/sai JWT · **không phải chủ** session/file |
+| 402 🔜 | hết credit ví (B2C reserve khi tạo session) |
+| 404 | session/câu/file không tồn tại |
+| 409 | upload answer khi session `Scoring`/`Scored` |
+| 502 | AIService lỗi (sinh câu hỏi / analyze-cv) |
+
+## Luồng (sequence)
+
+**Tạo session + sinh câu hỏi (sync AI):**
+```
+Candidate ─POST /sessions {cvId?,jdId?,jobCategory}─► Interview
+   ├─ (B2C 🔜) reserve 1 credit ví cá nhân — hết → 402, KHÔNG tạo session
+   ├─ đọc parsed_text(cv/jd) → AIService /generate-questions (sync) → câu hỏi
+   └─► 201 session(Ready) + questions[]    (AI lỗi → 502)
+```
+
+**Chấm dần + đóng session + phát event:**
+```
+Candidate ─POST /answers (audio)─► Interview: answer Uploaded → publish ScoringJob → Scoring (câu đầu: session→InProgress)
+AIService worker ─callback /internal/answers/{id}/result─► lưu answer_scores (idempotent) → answer Scored
+Candidate ─POST /submit─► session Scoring; mọi answer ∈{Scored,Skipped,Failed} → Scored → phát SessionScored
+   (publish hụt / worker mất tích → StuckAnswerRepublisher quét 2' đẩy lại)
+SessionScored ─RabbitMQ─► Campaign (ranking read-model) + Payment (consume credit)
+```
+
+**Phân tích CV B2C (sync, miễn phí — D17):**
+```
+Candidate ─POST /practice/cv-analysis {cvId,jdId?}─► Interview ─AIService /analyze-cv (sync)─► lưu cv_analyses → 201
+```
 
 ---
 
@@ -313,6 +357,12 @@ jd_match     jsonb?        { score, matchedSkills[], missingSkills[] } — chỉ
 created_at   timestamptz
 ```
 AIService trả kết quả → InterviewService **lưu ở đây** (AI không ghi DB).
+
+### Index & ràng buộc (tổng hợp)
+- **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels`/`rubric_anchors` Cascade.
+- **UNIQUE**: `practice_questions(session_id, order_no)` · `practice_answers(session_id, question_id)` (1 answer/câu) · `answer_scores(answer_id, criterion_id, attempt_no)` · `session_criterion_scores(session_id, criterion_id)` · `rubric_levels(criterion_id, score)`.
+- **Index**: `practice_sessions(candidate_id)` + `(campaign_id)` · `rubric_criteria(job_category, version, is_active)` · `file_records(user_id)`.
+- **Idempotency**: callback `result` xoá điểm cũ cùng `(attempt_no, rubric_version)` rồi ghi lại; `failed` bỏ qua nếu answer đã `Scored` (xem §Idempotency callback).
 
 ---
 

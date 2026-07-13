@@ -5,6 +5,11 @@ import asyncio
 from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
+    AnalyzeCvRequest, AnalyzeCvResponse, JdMatch,
+    GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
+    GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
+    SummarizeRoadmapRequest, SummarizeRoadmapResponse,
+    SummarizeSessionRequest, SummarizeSessionResponse,
 )
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber 
@@ -36,6 +41,88 @@ async def suggest_criteria(req: SuggestCriteriaRequest):
         return SuggestCriteriaResponse(criteria=[CriterionItem(**c) for c in items])
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đề xuất tiêu chí: {ex}")
+
+@router.post("/analyze-cv", response_model=AnalyzeCvResponse, response_model_exclude_none=True)
+async def analyze_cv(req: AnalyzeCvRequest):
+    if not req.cvText or not req.cvText.strip():
+        raise HTTPException(status_code=400, detail="cvText không được rỗng")
+    try:
+        result = await provider.analyze_cv(req.cvText, req.jdText, req.jobCategory)
+        jd_match = JdMatch(**result["jdMatch"]) if result.get("jdMatch") else None
+        return AnalyzeCvResponse(
+            summary=result["summary"],
+            strengths=result["strengths"],
+            weaknesses=result["weaknesses"],
+            suggestions=result["suggestions"],
+            jdMatch=jd_match,
+        )
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi phân tích CV: {ex}")
+
+
+@router.post("/generate-roadmap", response_model=GenerateRoadmapResponse)
+async def generate_roadmap(req: GenerateRoadmapRequest):
+    if not req.level or not req.level.strip():
+        raise HTTPException(status_code=400, detail="level không được rỗng")
+    try:
+        weaknesses = [w.model_dump() for w in req.weaknesses] if req.weaknesses else None
+        milestones = await provider.generate_roadmap(
+            req.jobCategory, req.level, weaknesses, req.cvText)
+        return GenerateRoadmapResponse(
+            milestones=[
+                RoadmapMilestone(
+                    title=m["title"],
+                    focusCriteria=m["focusCriteria"],
+                    lessons=[RoadmapLesson(**l) for l in m["lessons"]],
+                )
+                for m in milestones
+            ]
+        )
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi sinh roadmap: {ex}")
+
+
+@router.post("/generate-lesson-theory", response_model=GenerateLessonTheoryResponse)
+async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
+    if not req.lessonTitle or not req.lessonTitle.strip():
+        raise HTTPException(status_code=400, detail="lessonTitle không được rỗng")
+    try:
+        theory = await provider.generate_lesson_theory(
+            req.jobCategory, req.level, req.lessonTitle, req.focusCriteria, req.weaknesses)
+        return GenerateLessonTheoryResponse(theoryMarkdown=theory)
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi sinh lý thuyết lesson: {ex}")
+
+
+@router.post("/summarize-roadmap", response_model=SummarizeRoadmapResponse)
+async def summarize_roadmap(req: SummarizeRoadmapRequest):
+    try:
+        progress = [c.model_dump() for c in req.criteriaProgress]
+        result = await provider.summarize_roadmap(req.jobCategory, req.level, progress)
+        return SummarizeRoadmapResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi tổng kết roadmap: {ex}")
+
+
+@router.post("/summarize-session", response_model=SummarizeSessionResponse)
+async def summarize_session(req: SummarizeSessionRequest):
+    try:
+        criteria = [c.model_dump() for c in req.criteriaScores]
+        result = await provider.summarize_session(req.jobCategory, req.overallScore, criteria)
+        return SummarizeSessionResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi tổng kết buổi luyện: {ex}")
+
 
 @router.post("/transcribe")
 async def transcribe(file: UploadFile = File(...), language: str = "vi"):
