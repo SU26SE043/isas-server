@@ -27,6 +27,10 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
         // B2B: đọc/materialize tiêu chí theo campaign. Non-unique, nullable.
         e.HasIndex(x => x.CampaignId);
 
+        // BC16: tra rubric riêng của candidate theo nghề (resolve ưu-tiên-riêng-else-mặc-định).
+        // Non-unique, nullable (null = seed mặc định dùng chung).
+        e.HasIndex(x => new { x.CandidateId, x.JobCategory, x.IsActive });
+
         e.HasMany(x => x.Levels)
             .WithOne(l => l.Criterion)
             .HasForeignKey(l => l.CriterionId)

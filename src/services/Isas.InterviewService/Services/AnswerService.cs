@@ -131,9 +131,18 @@ public class AnswerService : IAnswerService
             var query = _db.RubricCriteria.AsNoTracking()
                 .Include(c => c.Levels).ThenInclude(l => l.Anchors)
                 .Where(c => c.IsActive);
-            query = session.CampaignId is Guid campaignId
-                ? query.Where(c => c.CampaignId == campaignId)
-                : query.Where(c => c.CampaignId == null && c.JobCategory == session.JobCategory);
+            if (session.CampaignId is Guid campaignId)
+            {
+                query = query.Where(c => c.CampaignId == campaignId);
+            }
+            else
+            {
+                // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định (owner null).
+                var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, ct);
+                query = owner is Guid oid
+                    ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
+                    : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
+            }
             var criteria = await query.ToListAsync(ct);
 
             if (criteria.Count == 0)
@@ -205,9 +214,18 @@ public class AnswerService : IAnswerService
         var session = await _db.PracticeSessions.AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == answer.SessionId, ct);
         var critQuery = _db.RubricCriteria.AsNoTracking().Include(c => c.Levels).Where(c => c.IsActive);
-        critQuery = session?.CampaignId is Guid campaignId
-            ? critQuery.Where(c => c.CampaignId == campaignId)
-            : critQuery.Where(c => c.CampaignId == null && c.JobCategory == session!.JobCategory);
+        if (session?.CampaignId is Guid campaignId)
+        {
+            critQuery = critQuery.Where(c => c.CampaignId == campaignId);
+        }
+        else
+        {
+            // BC16: khớp CHÍNH XÁC nguồn đã dùng lúc publish (E1) — B2C ưu tiên rubric RIÊNG của candidate.
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session!.CandidateId, session.JobCategory, ct);
+            critQuery = owner is Guid oid
+                ? critQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
+                : critQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
+        }
         // E8/E9: bản đồ criterionId -> tiêu chí (kèm rubric_levels) để BỎ criterion ngoài rubric,
         // KẸP [0,maxScore], và (E9) snap/lưu level_matched theo mức của tiêu chí.
         var critById = (await critQuery.ToListAsync(ct)).ToDictionary(c => c.Id);

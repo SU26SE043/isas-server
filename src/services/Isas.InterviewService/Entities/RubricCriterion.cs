@@ -23,6 +23,12 @@ public class RubricCriterion
     // Ref lỏng sang CampaignService - KHÔNG FK xuyên service.
     public Guid? CampaignId { get; set; }
 
+    // BC16 — B2C rubric CÁ NHÂN theo JobCategory. Ref lỏng sang AuthService (candidate), KHÔNG FK xuyên service.
+    //  - CandidateId == null && CampaignId == null → seed mặc định dùng chung (BC11, fallback).
+    //  - CandidateId != null && CampaignId == null → rubric riêng của candidate đó cho 1 nghề.
+    // Scoring B2C ưu tiên rubric riêng (nếu có active), else fallback seed mặc định.
+    public Guid? CandidateId { get; set; }
+
     // Navigation
     public ICollection<RubricLevel> Levels { get; set; } = [];
 }
