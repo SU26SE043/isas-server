@@ -176,7 +176,8 @@ namespace Isas.AuthService.Services
             {
                 OrgId = org.Id,
                 UserId = user.Id,
-                OrgRole = OrgRole.OrgAdmin
+                OrgRole = OrgRole.OrgAdmin,
+                JoinedAt = DateTime.UtcNow
             };
 
             _authDbContext.Organizations.Add(org);
@@ -274,7 +275,8 @@ namespace Isas.AuthService.Services
             {
                 OrgId = orgId,
                 UserId = user.Id,
-                OrgRole = OrgRole.HrMember
+                OrgRole = OrgRole.HrMember,
+                JoinedAt = DateTime.UtcNow
             };
             _authDbContext.OrgMembers.Add(member);
             await _authDbContext.SaveChangesAsync(ct);
@@ -285,11 +287,11 @@ namespace Isas.AuthService.Services
                 Email = user.Email!,
                 FullName = user.FullName,
                 OrgRole = OrgRole.HrMember.ToString(),
-                JoinedAt = user.CreatedAt
+                JoinedAt = member.JoinedAt
             };
         }
 
-        // A6: thành viên org (email + org_role + joinedAt≈account.CreatedAt). Materialize rồi project
+        // A6: thành viên org (email + org_role + joined_at thật — A6b). Materialize rồi project
         // client-side (enum→string ToString không dịch được sang SQL với mọi provider).
         public async Task<IReadOnlyList<OrgMemberResponse>> ListOrgMembersAsync(
             Guid orgId, CancellationToken ct = default)
@@ -298,7 +300,7 @@ namespace Isas.AuthService.Services
                 .AsNoTracking()
                 .Where(m => m.OrgId == orgId)
                 .Include(m => m.User)
-                .OrderBy(m => m.User.CreatedAt)
+                .OrderBy(m => m.JoinedAt)
                 .ToListAsync(ct);
 
             return rows.Select(m => new OrgMemberResponse
@@ -307,8 +309,65 @@ namespace Isas.AuthService.Services
                 Email = m.User.Email!,
                 FullName = m.User.FullName,
                 OrgRole = m.OrgRole.ToString(),
-                JoinedAt = m.User.CreatedAt
+                JoinedAt = m.JoinedAt
             }).ToList();
+        }
+
+        // A6b: OrgAdmin đổi org_role thành viên trong org của mình (AUTH-4/AUTH-8). Không thuộc org caller
+        // → OrgMemberNotFoundException (404). Bảo vệ bất biến org: hạ cấp OrgAdmin *cuối cùng* (target đang
+        // OrgAdmin, role mới ≠ OrgAdmin, còn ≤1 OrgAdmin) → OrgMemberConflictException (409) — để org luôn
+        // còn người quản (billing/thành viên). Đổi role persist → login sau mang org_role mới (A2).
+        public async Task<OrgMemberResponse> ChangeOrgMemberRoleAsync(
+            Guid orgId, Guid userId, OrgRole newRole, CancellationToken ct = default)
+        {
+            var member = await _authDbContext.OrgMembers
+                .Include(m => m.User)
+                .FirstOrDefaultAsync(m => m.OrgId == orgId && m.UserId == userId, ct);
+            if (member is null)
+                throw new OrgMemberNotFoundException("Member not found in this organization");
+
+            if (member.OrgRole == OrgRole.OrgAdmin && newRole != OrgRole.OrgAdmin)
+            {
+                var adminCount = await _authDbContext.OrgMembers
+                    .CountAsync(m => m.OrgId == orgId && m.OrgRole == OrgRole.OrgAdmin, ct);
+                if (adminCount <= 1)
+                    throw new OrgMemberConflictException("Cannot demote the last OrgAdmin of the organization");
+            }
+
+            member.OrgRole = newRole;
+            await _authDbContext.SaveChangesAsync(ct);
+
+            return new OrgMemberResponse
+            {
+                UserId = member.UserId,
+                Email = member.User.Email!,
+                FullName = member.User.FullName,
+                OrgRole = member.OrgRole.ToString(),
+                JoinedAt = member.JoinedAt
+            };
+        }
+
+        // A6b: OrgAdmin xoá thành viên khỏi org của mình. Hard-remove chỉ hàng membership (org_members) —
+        // account User giữ nguyên (email UNIQUE, có thể thuộc org khác / dùng lại). Không thuộc org →
+        // OrgMemberNotFoundException (404); xoá OrgAdmin *cuối cùng* → OrgMemberConflictException (409).
+        // Chặn "tự xoá mình" ở controller (so sánh claim sub) trước khi vào đây.
+        public async Task RemoveOrgMemberAsync(Guid orgId, Guid userId, CancellationToken ct = default)
+        {
+            var member = await _authDbContext.OrgMembers
+                .FirstOrDefaultAsync(m => m.OrgId == orgId && m.UserId == userId, ct);
+            if (member is null)
+                throw new OrgMemberNotFoundException("Member not found in this organization");
+
+            if (member.OrgRole == OrgRole.OrgAdmin)
+            {
+                var adminCount = await _authDbContext.OrgMembers
+                    .CountAsync(m => m.OrgId == orgId && m.OrgRole == OrgRole.OrgAdmin, ct);
+                if (adminCount <= 1)
+                    throw new OrgMemberConflictException("Cannot remove the last OrgAdmin of the organization");
+            }
+
+            _authDbContext.OrgMembers.Remove(member);
+            await _authDbContext.SaveChangesAsync(ct);
         }
 
         private async Task EnsureRoleExistsAsync(string roleName)

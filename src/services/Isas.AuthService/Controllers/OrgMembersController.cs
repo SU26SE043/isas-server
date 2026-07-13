@@ -1,4 +1,5 @@
 using Isas.AuthService.DTOs;
+using Isas.AuthService.Models;
 using Isas.AuthService.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -59,6 +60,72 @@ namespace Isas.AuthService.Controllers
 
             var members = await _authService.ListOrgMembersAsync(orgId.Value, ct);
             return Ok(members);
+        }
+
+        // PATCH /auth/org/members/{userId} — OrgAdmin đổi org_role thành viên (OrgAdmin↔HrMember).
+        // role sai → 400; không thuộc org → 404; hạ cấp OrgAdmin cuối → 409.
+        [HttpPatch("{userId:guid}")]
+        public async Task<ActionResult<OrgMemberResponse>> ChangeRole(
+            Guid userId, ChangeOrgMemberRoleRequest request, CancellationToken ct = default)
+        {
+            if (!User.IsOrgAdmin())
+                return Forbid();
+
+            var orgId = User.GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            if (!Enum.TryParse<OrgRole>(request.OrgRole, ignoreCase: false, out var newRole)
+                || !Enum.IsDefined(newRole))
+                return BadRequest(new { error = "orgRole must be 'OrgAdmin' or 'HrMember'" });
+
+            try
+            {
+                var member = await _authService.ChangeOrgMemberRoleAsync(orgId.Value, userId, newRole, ct);
+                return Ok(member);
+            }
+            catch (OrgMemberNotFoundException ex)
+            {
+                return NotFound(new { error = ex.Message });
+            }
+            catch (OrgMemberConflictException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
+        }
+
+        // DELETE /auth/org/members/{userId} — OrgAdmin xoá thành viên khỏi org (hard-remove membership).
+        // tự xoá mình → 400; không thuộc org → 404; xoá OrgAdmin cuối → 409; xong → 204.
+        [HttpDelete("{userId:guid}")]
+        public async Task<IActionResult> RemoveMember(Guid userId, CancellationToken ct = default)
+        {
+            if (!User.IsOrgAdmin())
+                return Forbid();
+
+            var orgId = User.GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            var actingUserId = User.GetUserId();
+            if (actingUserId is null)
+                return Forbid();
+
+            if (actingUserId.Value == userId)
+                return BadRequest(new { error = "Cannot remove yourself from the organization" });
+
+            try
+            {
+                await _authService.RemoveOrgMemberAsync(orgId.Value, userId, ct);
+                return NoContent();
+            }
+            catch (OrgMemberNotFoundException ex)
+            {
+                return NotFound(new { error = ex.Message });
+            }
+            catch (OrgMemberConflictException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
         }
     }
 }
