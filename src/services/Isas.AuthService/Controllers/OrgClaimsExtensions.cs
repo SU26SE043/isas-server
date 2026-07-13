@@ -20,5 +20,9 @@ namespace Isas.AuthService.Controllers
         /// <summary>org_id của caller (null nếu thiếu/không parse được → không thuộc org).</summary>
         public static Guid? GetOrgId(this ClaimsPrincipal user) =>
             Guid.TryParse(user.FindFirstValue(OrgIdClaim), out var orgId) ? orgId : null;
+
+        /// <summary>user-id (sub) của caller — dùng chặn tự-xoá mình (A6b). Null nếu thiếu/không parse.</summary>
+        public static Guid? GetUserId(this ClaimsPrincipal user) =>
+            Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : null;
     }
 }

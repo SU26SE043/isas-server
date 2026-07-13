@@ -17,6 +17,16 @@ namespace Isas.AuthService.DTOs
         public string FullName { get; set; } = null!;
     }
 
+    /// <summary>
+    /// A6b (AUTH-4) — OrgAdmin đổi org-role của một thành viên trong org của mình.
+    /// Giá trị hợp lệ: <c>OrgAdmin</c> | <c>HrMember</c> (sai → 400).
+    /// </summary>
+    public class ChangeOrgMemberRoleRequest
+    {
+        [Required]
+        public string OrgRole { get; set; } = null!;
+    }
+
     /// <summary>Thông tin thành viên org trả về cho OrgAdmin (create + list).</summary>
     public class OrgMemberResponse
     {
@@ -27,7 +37,7 @@ namespace Isas.AuthService.DTOs
         /// <summary>Org-role lưu string: <c>OrgAdmin</c> | <c>HrMember</c>.</summary>
         public string OrgRole { get; set; } = null!;
 
-        /// <summary>Xấp xỉ thời điểm tham gia = thời điểm tạo account (org_members chưa có cột riêng — phase 1).</summary>
+        /// <summary>Thời điểm thật user gia nhập org (cột <c>org_members.joined_at</c> — A6b).</summary>
         public DateTime JoinedAt { get; set; }
     }
 }
