@@ -106,7 +106,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`POST /payment/order`** 🟡 — Mua pack credit. Auth `OrgAdmin` (B2B) / `User` (B2C).
 - Req: `{ packageId: uuid }` → Res **`201`** `CreateOrderResponse`. Lỗi: **400** (gói không bán) · **401**.
 
-**`GET /payment/order/{id}`** 🟡 · **`GET /payment/my-orders`** 🟡 — Chi tiết / lịch sử đơn → `Order` / `Order[]`. Lỗi: **403/404**.
+**`GET /payment/order/{id}`** 🟡 · **`GET /payment/my-orders`** 🟡 — Chi tiết / lịch sử đơn → `Order` / `Order[]`. Lỗi: **404** (không tồn tại **hoặc** non-owner — không lộ tồn tại; BK15).
 
 **`GET /payment/order/{id}/status`** 🔜 — **FE active-polling**: server chưa nhận webhook → gọi PayOS đối soát ngay. → `{ orderCode: long, status: enum(string), paidAt: datetime? }`.
 
@@ -171,8 +171,8 @@ Webhook PayOS (KHÔNG qua gateway): `POST /payment/webhook/payos { code, desc, s
 | 400 | gói không bán / không active · payload webhook thiếu field |
 | 401 | thiếu Bearer (order public) · sai `X-Internal-Token` (internal) |
 | 402 | **hết credit (prepaid)** / chạm `credit_limit` (postpaid) / có hóa đơn `Overdue` |
-| 403 | ✅ **A4** `HrMember` (claim `org_role`) gọi billing money-mutation (`POST /order`·`/invoices/{id}/pay`·`/admin/invoices/close`) → `Forbid()`; B2C (không claim)/OrgAdmin không chặn · non-owner đọc order/invoice |
-| 404 | order/invoice không tồn tại |
+| 403 | ✅ **A4** `HrMember` (claim `org_role`) gọi billing money-mutation (`POST /order`·`/invoices/{id}/pay`·`/admin/invoices/close`) → `Forbid()`; B2C (không claim)/OrgAdmin không chặn. *(Non-owner đọc/huỷ order/invoice → **404**, không 403 — xem hàng dưới.)* |
+| 404 | order/invoice không tồn tại **hoặc** non-owner (order/invoice/status; không phân biệt được từ ngoài → không lộ tồn tại; ✅ **BK15** gom về 404 khớp P3/P8b) |
 | 409 | (admin) duyệt postpaid khi thiếu MST |
 
 ## Luồng (sequence)

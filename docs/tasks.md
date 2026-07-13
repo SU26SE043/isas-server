@@ -109,7 +109,8 @@
 ## Backlog — dọn dẹp / follow-up (sinh từ **ghi chú ⚠** của task passing)
 > Chưng cất từ ⚠ note của task passing (không trùng task chính). Mỗi cái WIP=1. **Bằng chứng chi tiết của item done = §Vòng tables trong [progress.md](progress.md).**
 
-**✅ Đã xong (9):** `BK1` drop rank/result (v9·9c9d450) · `BK4` employer_id→org_id (v11·ea480e7) · `BK7` postpaid consume period_usage (v8·9b702b3) · `BK9` event-bus convention → architecture.md §6.1 (v-doc 2026-07-12, doc-only) · `BK11` postpaid release chỉ reserved−1 (v9·28fff09) · `BK12` B2C Failed→release ví (v9·a08b53d) · `BK16` resume Interview-side test (v16·eedfeef) · `BK17`(1)+(2) Overdue-block+close race (v16·ee72a0d) · `BK18` Campaign gửi expires_at (v16·00fb678).
+**✅ Đã xong (12):** `BK1` drop rank/result (v9·9c9d450) · `BK4` employer_id→org_id (v11·ea480e7) · `BK6` cv-analysis jobCategory bắt buộc→400 (v21·6dfd05b; job_category **đã** NOT NULL từ BC7 → chỉ cần validate DTO, không migration) · `BK7` postpaid consume period_usage (v8·9b702b3) · `BK9` event-bus convention → architecture.md §6.1 (v-doc 2026-07-12, doc-only) · `BK11` postpaid release chỉ reserved−1 (v9·28fff09) · `BK12` B2C Failed→release ví (v9·a08b53d) · `BK15` non-owner order→404 leak-avoidance (v21·f248a6f) · `BK16` resume Interview-side test (v16·eedfeef) · `BK17`(1)+(2) Overdue-block+close race (v16·ee72a0d) · `BK18` Campaign gửi expires_at (v16·00fb678).
+> **A6b (partial, v21·0a56902):** ✅ `joined_at` thật + `PATCH` đổi role + `DELETE` xoá (guard last-OrgAdmin/self, hard-remove membership). **Còn:** mời qua email invitation · attach account có sẵn → gộp vào phase-2 (giữ ở 🔵 follow-up bên dưới, thu hẹp).
 
 **🔒 Đã CHỐT (team quyết 2026-07-12):** `BK5`→**tính phí** (D22) → **`BC7b` ✅ done** (commit 87f3367, vòng 20 · reserve trước→consume sau→release nếu AI lỗi ví User; Interview 153; không migration) · `BK10`→**bỏ** (BC3/BC4 = covered-by-E7, đã đánh dấu ở S5).
 
@@ -122,10 +123,8 @@
 ### 🛠️ Cleanup / fix (code, khi rảnh)
 | ID | Việc | dep |
 |---|---|---|
-| BK6 | Ratify `cv-analysis`: `jobCategory` bắt buộc + `cv_analyses.job_category` NOT NULL (doc↔code BC7) | BC7 |
 | BK8 | E6 **PDF export** (QuestPDF; risk SkiaSharp native) — nay `format=pdf`→400 | E6 |
 | BK13 | Ratify migration/schema `payment_transactions` (tên `AddOrderOwner` + thêm `event_source` cho P3) | P2 |
-| BK15 | Thống nhất **403↔404** non-owner endpoint order (status=404 vs GetOrder=403) | P3 |
 | BK17(3)(4) | `orders.amount_vnd` int→**bigint** (tràn >2.1e9 VND) + invoice `due_at`/`paid_at` | P8b |
 
 ### 🔵 Feature follow-up (mở rộng task đã có)
@@ -136,7 +135,7 @@
 | E9b | Levels giàu: `/suggest-criteria` sinh levels (B2B) + seed `rubric_levels` B2C — thay dải `0..maxScore` | E9 |
 | E10b | Selective N× (chỉ tiêu chí biên) + republisher re-publish đúng attempt thiếu (N>1) | E10 |
 | E11b | Endpoint **HR override điểm cuối** (transcript+reasoning+needs_review → sửa/chốt, ghi audit) | E11 |
-| A6b | Quản thành viên đầy đủ: đổi-role · xoá · **invite qua email** · attach account có sẵn · cột `OrgMember.JoinedAt` | A6 |
+| A6b | ✅ *(partial v21·0a56902: joined_at + đổi-role + xoá)* — **còn:** invite qua **email** · attach account có sẵn | A6,D1 |
 
 ---
 

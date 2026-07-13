@@ -13,7 +13,7 @@
 B2B bán cho **doanh nghiệp**, không phải cá nhân → cần khái niệm **tổ chức**:
 - Một **Organization** (`org_id`) = 1 doanh nghiệp; **billing/credit gắn org** (xem [payment.md](payment.md)), **campaign gắn `org_id`**.
 - **Role nội bộ org** (claim kèm trong JWT): **`OrgAdmin`** (mua gói/trả tiền/xem billing, quản thành viên) vs **`HrMember`** (tạo & quản campaign, **không** xem billing).
-- **Phase 1 (capstone):** data model có `org_id` + `org_role` từ đầu. **✅ A6 (vòng 19):** OrgAdmin **thêm HrMember** vào org (`POST /auth/org/members` passwordless + `GET` list) → org **nhiều thành viên** (HrMember login mang `org_role=HrMember` → A4 chặn billing). **Còn phase 2 (A6b):** đổi-role/xoá thành viên · mời qua email invitation (nay tạo trực tiếp) · attach account có sẵn (nay dup email→409) · cột `OrgMember.JoinedAt`.
+- **Phase 1 (capstone):** data model có `org_id` + `org_role` từ đầu. **✅ A6 (vòng 19):** OrgAdmin **thêm HrMember** vào org (`POST /auth/org/members` passwordless + `GET` list) → org **nhiều thành viên** (HrMember login mang `org_role=HrMember` → A4 chặn billing). **✅ A6b (vòng 21):** `PATCH /auth/org/members/{userId}` đổi role + `DELETE` xoá thành viên (guard **OrgAdmin cuối cùng** + **không tự xoá mình**) + cột `org_members.joined_at` thật (thay proxy `User.CreatedAt`). **Còn phase 2:** mời qua **email invitation** (nay tạo trực tiếp) · **attach account có sẵn** (nay dup email→409).
 
 > **Admin KHÔNG phải service riêng.** Chức năng PlatformAdmin = endpoint **admin-gated** nằm trong service sở hữu dữ liệu — **Payment**: CRUD gói, đơn giá, duyệt/đình chỉ postpaid, xem giao dịch, cấp/hoàn credit; **Auth**: cấp role, quản tổ chức (verify MST khi duyệt postpaid) — cộng **1 FE admin dashboard**. **Giám sát/thống kê nền tảng** (#org · #campaign · #lượt phỏng vấn · doanh thu) = dashboard tổng hợp từ các service (*phase 2*). Không thêm AdminService (tránh coupling + phá Engine+Orchestrator).
 
@@ -54,7 +54,9 @@ UserResponse {
 **`POST /register-org`** — Đăng ký tổ chức (✅ A3). Public. Tạo user role **`Employer`** + `Organization` + `OrgMember(OrgAdmin)`.
 
 **`POST /auth/org/members`** — ✅ **A6** (chỉ OrgAdmin, org_role claim ≠OrgAdmin/thiếu org_id→403). Req `{email, fullName}` → tạo User(`Employer`) passwordless + `OrgMember(HrMember, org_id=caller)` → **201** member info. Email đã có account→**409**. HR đặt mật khẩu qua forgot/reset.
-**`GET /auth/org/members`** — ✅ **A6** (OrgAdmin) → list thành viên org (email/org_role/joinedAt).
+**`GET /auth/org/members`** — ✅ **A6** (OrgAdmin) → list thành viên org (email/org_role/joinedAt **thật** từ `joined_at`, order theo `joined_at` — ✅ A6b).
+**`PATCH /auth/org/members/{userId}`** — ✅ **A6b** (chỉ OrgAdmin). Req `{orgRole}` đổi `OrgAdmin↔HrMember` → **200**. role sai→**400**; hạ cấp **OrgAdmin cuối cùng** của org→**409**; không phải member→**404**; caller ≠OrgAdmin/khác org→**403**.
+**`DELETE /auth/org/members/{userId}`** — ✅ **A6b** (chỉ OrgAdmin) → **hard-remove** row `org_members` (account `User` **giữ nguyên**, chỉ gỡ tư cách thành viên org) → **204**. **Không tự xoá mình**→**400**; xoá **OrgAdmin cuối**→**409**; không phải member→**404**; caller ≠OrgAdmin/khác org→**403**. *(Ratify: `org_members` **không soft-delete** — bảng cascade theo user, không có `is_deleted`; nếu cần audit/khôi phục → phase 2 thêm audit.)*
 - Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **400** (email tồn tại / mật khẩu yếu).
 
 **`POST /login`** — Đăng nhập. Public.
@@ -192,6 +194,7 @@ created_at timestamptz
 org_id   uuid          FK → organizations (cascade)
 user_id  uuid          FK → users (cascade)
 org_role varchar(16)   enum(string): OrgAdmin · HrMember
+joined_at timestamptz   ✅ A6b — thời điểm vào org (set khi tạo member; rows cũ backfill defaultValueSql now() lúc apply)
                        PK (org_id, user_id); JWT Employer mang kèm org_id + org_role ✅ A2 (claim "org_id"/"org_role", chỉ thêm khi user thuộc org)
 ```
 
