@@ -9,7 +9,7 @@ namespace Isas.InterviewService.Controllers;
 
 [ApiController]
 [Route("api/practice/sessions")] // Giữ nguyên Route chuẩn này của ông
-[Authorize] // Bắt buộc user phải có token hợp lệ
+[Authorize(Roles = "Candidate")] // A5 — luyện phỏng vấn B2C = Candidate.
 public class PracticeController : ControllerBase
 {
     private readonly IPracticeService _practiceService;

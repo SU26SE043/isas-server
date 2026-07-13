@@ -11,7 +11,7 @@ namespace Isas.InterviewService.Controllers;
 // POST/GET roadmap (BC12) + mở lesson (lý thuyết lazy) + /start luyện (BC14).
 [ApiController]
 [Route("api/practice/roadmaps")]
-[Authorize]
+[Authorize(Roles = "Candidate")] // A5 — roadmap ôn tập B2C = Candidate.
 public class RoadmapsController : ControllerBase
 {
     private readonly IRoadmapService _service;

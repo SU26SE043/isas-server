@@ -26,6 +26,8 @@ namespace Isas.AuthService.Controllers
             _emailSender = emailSender;
         }
 
+        // A5 — auth-entry công khai (chưa có JWT): AllowAnonymous tường minh (rõ ý định + phòng tương lai).
+        [AllowAnonymous]
         [HttpPost("register")]
         public async Task<ActionResult<AuthResponse>> RegisterAsync(RegisterRequest registerRequest)
         {
@@ -41,6 +43,7 @@ namespace Isas.AuthService.Controllers
             return Ok(result);
         }
 
+        [AllowAnonymous]
         [HttpPost("register-org")]
         public async Task<ActionResult<AuthResponse>> RegisterOrgAsync(RegisterOrgRequest request)
         {
@@ -52,6 +55,7 @@ namespace Isas.AuthService.Controllers
             return Ok(result);
         }
 
+        [AllowAnonymous]
         [HttpPost("login")]
         public async Task<IActionResult> Login(LoginRequest request)
         {
@@ -67,6 +71,7 @@ namespace Isas.AuthService.Controllers
             return Ok(await _authService.LoginAsync(request));
         }
 
+        [AllowAnonymous]
         [HttpGet("login-google")]
         public IActionResult LoginWithGoogle(string returnUrl = null)
         {
@@ -76,6 +81,7 @@ namespace Isas.AuthService.Controllers
             return Challenge(properties, "Google");
         }
 
+        [AllowAnonymous]
         [HttpGet("login-google-callback")]
         public async Task<IActionResult> GoogleLoginCallback(string returnUrl = null, string remoteError = null)
         {
@@ -91,6 +97,7 @@ namespace Isas.AuthService.Controllers
             return Ok(authResponse);
         }
 
+        [AllowAnonymous]
         [HttpPost("refresh")]
         public async Task<ActionResult<RefreshTokenResponse>> RefreshTokenAsync(RefreshTokenRequest refreshTokenRequest)
         {
@@ -140,6 +147,7 @@ namespace Isas.AuthService.Controllers
             return Ok(updatedUser);
         }
 
+        [AllowAnonymous]
         [HttpPost("forgot-password")]
         public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto model)
         {
@@ -157,6 +165,7 @@ namespace Isas.AuthService.Controllers
             return Ok("OTP sent to your email");
         }
 
+        [AllowAnonymous]
         [HttpPost("verify-otp")]
         public async Task<IActionResult> VerifyOtp([FromBody] VerifyOtpDto model)
         {
@@ -175,6 +184,7 @@ namespace Isas.AuthService.Controllers
             return BadRequest("Invalid or expired OTP");
         }
 
+        [AllowAnonymous]
         [HttpPost("reset-password")]
         public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto model)
         {

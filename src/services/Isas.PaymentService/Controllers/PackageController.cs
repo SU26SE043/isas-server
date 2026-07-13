@@ -18,30 +18,24 @@ namespace Isas.PaymentService.Controllers
             _package = package;
         }
 
+        // A5 — catalog gói prepaid đang bán là PUBLIC (payment.md:104): không cần đăng nhập để xem giá.
         [HttpGet]
-        //[Authorize(Roles = "Admin")]
+        [AllowAnonymous]
         public async Task<ActionResult<List<PackageResponse>>> GetAllPackageAsync(CancellationToken ct = default)
         {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(userId))
-                return Forbid();
-
             return await _package.GetAllPackagesAsync(ct);
         }
 
         [HttpGet("{id:guid}")]
-        //[Authorize(Roles = "Admin")]
+        [AllowAnonymous]
         public async Task<ActionResult<PackageResponse>> GetPackageAsync(Guid id, CancellationToken ct = default)
         {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrWhiteSpace(userId))
-                return Forbid();
-
             return await _package.GetPackageAsync(id, ct);
         }
 
+        // A5 — CRUD gói = admin-only (payment.md §Admin/PlatformAdmin). Role string "Admin" (AUTH-3).
         [HttpPost]
-        //[Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin")]
         public async Task<ActionResult<PackageResponse>> CreatePackageAsync(CreatePackageRequest request, CancellationToken ct = default)
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -60,7 +54,7 @@ namespace Isas.PaymentService.Controllers
         }
 
         [HttpPut("{id:guid}")]
-        //[Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin")]
         public async Task<ActionResult<PackageResponse>> UpdatePackageAsync(Guid id, UpdatePackageRequest request, CancellationToken ct = default)
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -80,7 +74,7 @@ namespace Isas.PaymentService.Controllers
         }
 
         [HttpDelete("{id:guid}")]
-        //[Authorize(Roles = "Admin")]
+        [Authorize(Roles = "Admin")]
         public async Task<IActionResult> DeletePackageAsync(Guid id, CancellationToken ct = default)
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);

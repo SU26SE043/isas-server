@@ -10,7 +10,7 @@ namespace Isas.InterviewService.Controllers;
 // BC7 — /api/v1/interview/practice/cv-analysis (gateway strip → api/practice/cv-analysis).
 [ApiController]
 [Route("api/practice/cv-analysis")]
-[Authorize]
+[Authorize(Roles = "Candidate")] // A5 — phân tích CV B2C = Candidate.
 public class CvAnalysisController : ControllerBase
 {
     private readonly ICvAnalysisService _service;
