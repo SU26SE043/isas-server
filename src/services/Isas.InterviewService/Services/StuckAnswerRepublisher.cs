@@ -84,6 +84,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.QuestionId,
                 a.AudioObjectKey,
                 CampaignId = a.Session.CampaignId,
+                CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
                 QuestionContent = a.Question.Content
             })
@@ -100,9 +101,18 @@ public class StuckAnswerRepublisher : BackgroundService
             var query = db.RubricCriteria.AsNoTracking()
                 .Include(c => c.Levels).ThenInclude(l => l.Anchors)
                 .Where(c => c.IsActive);
-            query = a.CampaignId is Guid campaignId
-                ? query.Where(c => c.CampaignId == campaignId)
-                : query.Where(c => c.CampaignId == null && c.JobCategory == a.JobCategory);
+            if (a.CampaignId is Guid campaignId)
+            {
+                query = query.Where(c => c.CampaignId == campaignId);
+            }
+            else
+            {
+                // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định.
+                var owner = await B2CRubricScope.ResolveOwnerAsync(db, a.CandidateId, a.JobCategory, ct);
+                query = owner is Guid oid
+                    ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == a.JobCategory)
+                    : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == a.JobCategory);
+            }
             var criteria = await query.ToListAsync(ct);
 
             if (criteria.Count == 0)
