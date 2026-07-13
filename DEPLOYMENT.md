@@ -199,6 +199,8 @@ services:
       - PayOS__ClientId=${PAYOS_CLIENT_ID}
       - PayOS__ApiKey=${PAYOS_API_KEY}
       - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
+      - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
+      - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
     ports:
       - "5271:8080"     # publish để webhook PayOS gọi vào (cần public URL/tunnel)
     depends_on: [postgres, rabbitmq]
@@ -266,6 +268,9 @@ GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
 PAYOS_CLIENT_ID=...
 PAYOS_API_KEY=...
 PAYOS_CHECKSUM_KEY=...
+# BF3 — bắt buộc: thiếu → POST /order 502 (PayOS reject "return_url null"). URL redirect sau thanh toán.
+PAYOS_RETURN_URL=https://<your-frontend-or-tunnel>/payment/success
+PAYOS_CANCEL_URL=https://<your-frontend-or-tunnel>/payment/cancel
 ```
 
 ### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth

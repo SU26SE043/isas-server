@@ -75,7 +75,7 @@ public class BillingAuthorizationTests
         var result = await ctrl.CreateOrderAsync(new CreateOrderRequest { PackageId = Guid.NewGuid() });
 
         Assert.IsNotType<ForbidResult>(result.Result);
-        Assert.IsType<CreatedAtActionResult>(result.Result);
+        Assert.IsType<CreatedAtRouteResult>(result.Result);   // BF4 — CreatedAtRoute("GetOrderById")
         order.Verify(s => s.CreateOrderAsync(It.IsAny<OwnerType>(), It.IsAny<Guid>(),
             It.IsAny<CreateOrderRequest>(), It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -89,7 +89,7 @@ public class BillingAuthorizationTests
         var result = await ctrl.CreateOrderAsync(new CreateOrderRequest { PackageId = Guid.NewGuid() });
 
         Assert.IsNotType<ForbidResult>(result.Result);
-        Assert.IsType<CreatedAtActionResult>(result.Result);
+        Assert.IsType<CreatedAtRouteResult>(result.Result);   // BF4 — CreatedAtRoute("GetOrderById")
         order.Verify(s => s.CreateOrderAsync(It.IsAny<OwnerType>(), It.IsAny<Guid>(),
             It.IsAny<CreateOrderRequest>(), It.IsAny<CancellationToken>()), Times.Once);
     }

@@ -50,13 +50,17 @@ namespace Isas.PaymentService.Controllers
             try
             {
                 var order = await _order.CreateOrderAsync(owner.Value.OwnerType, owner.Value.OwnerId, request, ct);
-                return CreatedAtAction(nameof(GetOrderAsync), new { id = order.Id }, order);
+                // BF4 — route name tường minh: 'Async' suffix bị strip mặc định nên nameof(GetOrderAsync)
+                // ('GetOrderAsync') KHÔNG khớp action 'GetOrder' → CreatedAtAction ném "No route matches".
+                return CreatedAtRoute("GetOrderById", new { id = order.Id }, order);
             }
             catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            // BF3 — PayOS misconfig/upstream reject → 502 sạch (không phải 500 stack thô).
+            catch (PaymentGatewayException ex) { return StatusCode(StatusCodes.Status502BadGateway, new { message = ex.Message }); }
         }
 
-        [HttpGet("{id:guid}")]
+        [HttpGet("{id:guid}", Name = "GetOrderById")]
         [Authorize]
         public async Task<ActionResult<OrderResponse>> GetOrderAsync(Guid id, CancellationToken ct = default)
         {
