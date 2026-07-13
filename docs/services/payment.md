@@ -104,7 +104,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`GET /payment/package`** · **`GET /payment/package/{id}`** — Gói prepaid đang bán. Public. → `ProductPackage[]` / `ProductPackage`.
 
 **`POST /payment/order`** 🟡 — Mua pack credit. Auth `OrgAdmin` (B2B) / `User` (B2C).
-- Req: `{ packageId: uuid }` → Res **`201`** `CreateOrderResponse`. Lỗi: **400** (gói không bán) · **401**.
+- Req: `{ packageId: uuid }` → Res **`201`** `CreateOrderResponse`. Lỗi: **404** (packageId không tồn tại) · **400** (gói ngừng bán, `is_active=false`) · **401**. *(BK19 ratify 2026-07-13: unknown id → 404 "Package not found"; inactive → 400 "Package is no longer available".)*
 
 **`GET /payment/order/{id}`** 🟡 · **`GET /payment/my-orders`** 🟡 — Chi tiết / lịch sử đơn → `Order` / `Order[]`. Lỗi: **404** (không tồn tại **hoặc** non-owner — không lộ tồn tại; BK15).
 
