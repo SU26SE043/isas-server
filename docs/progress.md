@@ -216,6 +216,22 @@
 
 > Base test sau vòng 23: **Auth 51 · Payment 84 · Campaign 133 · Interview 183 = 451 .NET pass** (+ AIService pytest **53** không đổi), `dotnet build` 0 error. Merge `--no-ff`: `2a9521c`(BC16). Frontier còn: **Phase 0** (P0.1/P0.2/P0.5) · **e2e verify tay** (PayOS sandbox · compose+broker+Gemini + A5 live 401/403) · backlog nhẹ (BK8 PDF · BK13 · BK17(3)(4) · follow-up).
 
+### ✅ Verify tay LAYER-3 (2026-07-13) — API sweep server thật qua tunnel (gateway + 5 service + Mac AI)
+> Server Ubuntu deploy compose (postgres local, squash `InitialCreate` applied, seed rubric sống) + Mac AIService (image rebuild 07-13). **47 check** — log `~/Downloads/isas-api-test-*.log` + `isas-api-retest-*.log`.
+
+| Nhóm | Kết quả LIVE |
+|---|---|
+| Auth + Org | ✅ register/login/me · register-org · org members CRUD **A6/A6b** (joinedAt thật · PATCH role · DELETE · guard) · refresh |
+| **A5 gates** | ✅ **8/8**: ẩn danh→401 · sai role→403 (Candidate↔Employer · org-members · invoices Employer-only · package Admin-only) |
+| **BC16 rubric** | ✅ trọn vòng đời: GET seed (`isCustom=false`, GUID seed đúng) → PUT custom → GET custom → Σweight sai→400 → DELETE → về seed |
+| Billing B2C | ✅ tạo session ví 0 credit → **402** (BC2/PAY-5) |
+| Files S3 | ✅ upload PDF → SeaweedFS trả fileId |
+| **AI e2e** | ✅ `/ai/health` + **tạo roadmap thật** server→Mac→Gemini→DB (BC12/BC13, milestones tiếng Việt) |
+| Campaign B2B | ✅ full chain: create→publish (C12 bỏ AI)→results→**CAMP-2 409**→isolation 403→soft-delete |
+| Payment | ✅ catalog public · order/my-orders · me/invoices Employer-only |
+
+**🐛 2 bug THẬT tìm ra → fix + push (`0997030`):** (1) **cv-analysis 500 mọi request** — `[property:Required]` positional record → ASP.NET throw (hotfix `83beabc`; **cần image interview mới** → retest sau deploy); (2) **campaign invitations 500** — compose server **thiếu env RabbitMQ** cho campaignservice → fix compose + DEPLOYMENT.md (**chỉ cần `docker compose up -d` lại**, không rebuild). **Backlog mới:** BK19 (order 404-vs-doc-400) · BK20 (Campaign string-enum converter). **Còn verify:** cv-analysis + invitations retest sau deploy · PayOS sandbox webhook thật · B2B join→start→chấm→ranking trọn luồng · B2C mua-credit→luyện→chấm trọn luồng.
+
 > Test project trong tree hiện có (đủ 4): `Isas.AuthService.Tests` · `Isas.PaymentService.Tests` (✅ P0.4) · `Isas.CampaignService.Tests` · `Isas.InterviewService.Tests`.
 
 ## Vấn đề đã biết / cần xác minh
