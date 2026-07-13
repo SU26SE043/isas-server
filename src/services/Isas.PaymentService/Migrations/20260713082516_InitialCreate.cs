@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Isas.PaymentService.Migrations
 {
     /// <inheritdoc />
-    public partial class InitPaymentDb : Migration
+    public partial class InitialCreate : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -48,6 +48,27 @@ namespace Isas.PaymentService.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "invoices",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "gen_random_uuid()"),
+                    owner_type = table.Column<string>(type: "character varying(8)", maxLength: 8, nullable: false),
+                    owner_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    account_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    period_start = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                    period_end = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
+                    interview_count = table.Column<int>(type: "integer", nullable: false),
+                    unit_price = table.Column<decimal>(type: "numeric(16,2)", precision: 16, scale: 2, nullable: false),
+                    amount = table.Column<decimal>(type: "numeric(16,2)", precision: 16, scale: 2, nullable: false),
+                    status = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false, defaultValue: "Issued"),
+                    created_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()")
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("pk_invoices", x => x.id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "product_packages",
                 columns: table => new
                 {
@@ -70,8 +91,11 @@ namespace Isas.PaymentService.Migrations
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "gen_random_uuid()"),
-                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    package_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    owner_type = table.Column<string>(type: "character varying(8)", maxLength: 8, nullable: false),
+                    owner_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    kind = table.Column<string>(type: "character varying(20)", maxLength: 20, nullable: false, defaultValue: "CreditPack"),
+                    package_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    invoice_id = table.Column<Guid>(type: "uuid", nullable: true),
                     status = table.Column<string>(type: "text", nullable: false, defaultValue: "Pending"),
                     amount_vnd = table.Column<int>(type: "integer", nullable: false),
                     payos_order_code = table.Column<long>(type: "bigint", nullable: false),
@@ -82,6 +106,12 @@ namespace Isas.PaymentService.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_orders", x => x.id);
+                    table.ForeignKey(
+                        name: "fk_orders_invoices_invoice_id",
+                        column: x => x.invoice_id,
+                        principalTable: "invoices",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
                         name: "fk_orders_product_packages_package_id",
                         column: x => x.package_id,
@@ -119,7 +149,7 @@ namespace Isas.PaymentService.Migrations
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "gen_random_uuid()"),
-                    order_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    order_id = table.Column<Guid>(type: "uuid", nullable: true),
                     gateway = table.Column<string>(type: "text", nullable: false, defaultValue: "payos"),
                     gateway_txn_id = table.Column<string>(type: "text", nullable: true),
                     status = table.Column<string>(type: "text", nullable: false),
@@ -134,7 +164,7 @@ namespace Isas.PaymentService.Migrations
                         column: x => x.order_id,
                         principalTable: "orders",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Restrict);
+                        onDelete: ReferentialAction.SetNull);
                 });
 
             migrationBuilder.CreateTable(
@@ -185,6 +215,16 @@ namespace Isas.PaymentService.Migrations
                 column: "order_id");
 
             migrationBuilder.CreateIndex(
+                name: "ix_invoices_owner_type_owner_id",
+                table: "invoices",
+                columns: new[] { "owner_type", "owner_id" });
+
+            migrationBuilder.CreateIndex(
+                name: "ix_orders_invoice_id",
+                table: "orders",
+                column: "invoice_id");
+
+            migrationBuilder.CreateIndex(
                 name: "ix_orders_package_id",
                 table: "orders",
                 column: "package_id");
@@ -196,10 +236,9 @@ namespace Isas.PaymentService.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "ix_payment_transactions_order_id",
+                name: "ix_payment_transactions_order_id_created_at",
                 table: "payment_transactions",
-                column: "order_id",
-                unique: true);
+                columns: new[] { "order_id", "created_at" });
 
             migrationBuilder.CreateIndex(
                 name: "ix_subscriptions_order_id",
@@ -233,6 +272,9 @@ namespace Isas.PaymentService.Migrations
 
             migrationBuilder.DropTable(
                 name: "orders");
+
+            migrationBuilder.DropTable(
+                name: "invoices");
 
             migrationBuilder.DropTable(
                 name: "product_packages");

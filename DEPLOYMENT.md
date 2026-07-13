@@ -2,7 +2,7 @@
 
 Kiến trúc tách **2 máy** nối nhau qua **Tailscale**:
 
-- **Server (Linux)** — chạy data layer + các .NET service: `postgres`, `redis`, `seaweedfs`, `rabbitmq`, `authservice`, `interviewservice`, `gateway`. Đây cũng là đích CI/CD (`ci.yml` build image → push GHCR → SSH deploy).
+- **Server (Linux)** — chạy data layer + các .NET service: `postgres`, `redis`, `seaweedfs`, `rabbitmq`, `authservice`, `interviewservice`, `campaignservice`, `paymentservice`, `gateway`. Đây cũng là đích CI/CD (`ci.yml` build **5** image → push GHCR → SSH deploy).
 - **Mac (Docker)** — chạy **AIService** (Python): `aiservice-api` (FastAPI sinh câu hỏi) + `aiservice-worker` (consumer chấm điểm). Để Mac vì phần ML (Whisper) nặng.
 
 > Tất cả liên lạc cross-host đi qua **IP Tailscale riêng tư**, không mở cổng public.
@@ -158,6 +158,48 @@ services:
     networks: [isas-main-network]
     restart: unless-stopped
 
+  isas.campaignservice:
+    image: ghcr.io/su26se043/isas.campaignservice:main
+    container_name: campaignservice-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_campaign;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - AiService__BaseUrl=http://<MAC_TS_IP>:8000
+      - SeaweedFS__ServiceURL=http://seaweedfs:8333
+      - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
+      - SeaweedFS__SecretKey=${S3_SECRET_KEY}
+      - SeaweedFS__BucketName=isas-files
+      - SeaweedFS__ForcePathStyle=true
+    expose: ["8080"]
+    depends_on: [postgres, seaweedfs]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+  isas.paymentservice:
+    image: ghcr.io/su26se043/isas.paymentservice:main
+    container_name: paymentservice-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_payment;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
+      - PayOS__ClientId=${PAYOS_CLIENT_ID}
+      - PayOS__ApiKey=${PAYOS_API_KEY}
+      - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
+    ports:
+      - "5271:8080"     # publish để webhook PayOS gọi vào (cần public URL/tunnel)
+    depends_on: [postgres, rabbitmq]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
   isas.gateway:
     image: ghcr.io/su26se043/isas.gateway:main
     container_name: gateway-main
@@ -167,9 +209,13 @@ services:
       - ReverseProxy__Clusters__auth-cluster__Destinations__auth-node-01__Address=http://isas.authservice:8080
       - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
       - ReverseProxy__Clusters__ai-cluster__Destinations__ai-node-01__Address=http://<MAC_TS_IP>:8000
+      - ReverseProxy__Clusters__campaign-cluster__Destinations__campaign-node-01__Address=http://isas.campaignservice:8080
+      - ReverseProxy__Clusters__payment-cluster__Destinations__payment-node-01__Address=http://isas.paymentservice:8080
       - ApiServices__0__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
       - ApiServices__1__OpenApiUrl=http://<MAC_TS_IP>:8000/openapi.json
       - ApiServices__2__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
+      - ApiServices__3__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
+      - ApiServices__4__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
       - Gateway__Url=${GATEWAY_PUBLIC_URL}
       - Cors__AllowedOrigins__0=http://localhost:3000
       - Cors__AllowedOrigins__1=http://localhost:5173
@@ -178,7 +224,7 @@ services:
       - Cors__AllowedOrigins__4=${GATEWAY_PUBLIC_URL}
     ports:
       - "5050:8080"
-    depends_on: [isas.authservice, isas.interviewservice]
+    depends_on: [isas.authservice, isas.interviewservice, isas.campaignservice, isas.paymentservice]
     networks: [isas-main-network]
     restart: unless-stopped
 
@@ -211,6 +257,10 @@ SMTP_FROM=...
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
+# PaymentService (PayOS) — bắt buộc để mua credit / webhook chạy
+PAYOS_CLIENT_ID=...
+PAYOS_API_KEY=...
+PAYOS_CHECKSUM_KEY=...
 ```
 
 ### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth
@@ -231,9 +281,10 @@ Seaweed bật auth bằng file này (`-s3.config` ở trên). `accessKey`/`secre
 
 ```bash
 cd ~/docker/main
-# tạo DB interview (tách __EFMigrationsHistory khỏi auth)
+# tạo 4 DB (mỗi service 1 DB, __EFMigrationsHistory tách riêng)
 docker compose up -d postgres
-docker exec -it postgres-main psql -U admin -c "CREATE DATABASE isas_interview;"
+docker exec -it postgres-main psql -U admin -c \
+  "CREATE DATABASE isas; CREATE DATABASE isas_interview; CREATE DATABASE isas_campaign; CREATE DATABASE isas_payment;"
 # login GHCR + chạy
 echo <GHCR_TOKEN> | docker login ghcr.io -u <github-user> --password-stdin
 docker compose pull
@@ -241,7 +292,16 @@ docker compose up -d
 docker compose logs -f isas.gateway
 ```
 
-> Migration Interview: chạy `dotnet ef database update` trỏ vào `isas_interview`, hoặc để app tự migrate lúc start nếu đã bật.
+> **Migration (2026-07-13 — squash):** mỗi service đã gộp về **1 `InitialCreate`**. App **KHÔNG auto-migrate** → apply schema **THỦ CÔNG** lên DB **rỗng** (seed rubric B2C bake sẵn trong Interview):
+> ```bash
+> # cách 1 — có .NET SDK: mỗi service
+> cd src/services/Isas.<Svc>
+> dotnet ef database update --connection "Host=<server>;Port=5432;Database=<isas|isas_interview|isas_campaign|isas_payment>;Username=admin;Password=<pwd>"
+> # cách 2 — không SDK: sinh SQL rồi psql
+> dotnet ef migrations script -o init_<db>.sql   # (chạy nơi có SDK)
+> docker exec -i postgres-main psql -U admin -d <db> < init_<db>.sql
+> ```
+> Đổi/reset schema → **drop & tạo lại DB** trước khi apply (squash chỉ sạch trên DB rỗng).
 
 ---
 

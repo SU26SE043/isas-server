@@ -7,11 +7,25 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.AuthService.Migrations
 {
     /// <inheritdoc />
-    public partial class InitAuthDb : Migration
+    public partial class InitialCreate : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.CreateTable(
+                name: "organizations",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    name = table.Column<string>(type: "text", nullable: false),
+                    tax_code = table.Column<string>(type: "text", nullable: true),
+                    created_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_organizations", x => x.id);
+                });
+
             migrationBuilder.CreateTable(
                 name: "roles",
                 columns: table => new
@@ -70,6 +84,32 @@ namespace Isas.AuthService.Migrations
                         name: "FK_role_claims_roles_role_id",
                         column: x => x.role_id,
                         principalTable: "roles",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "org_members",
+                columns: table => new
+                {
+                    org_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    org_role = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
+                    joined_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_org_members", x => new { x.org_id, x.user_id });
+                    table.ForeignKey(
+                        name: "FK_org_members_organizations_org_id",
+                        column: x => x.org_id,
+                        principalTable: "organizations",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_org_members_users_user_id",
+                        column: x => x.user_id,
+                        principalTable: "users",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                 });
@@ -183,6 +223,11 @@ namespace Isas.AuthService.Migrations
                 });
 
             migrationBuilder.CreateIndex(
+                name: "IX_org_members_user_id",
+                table: "org_members",
+                column: "user_id");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_refresh_tokens_user_id",
                 table: "refresh_tokens",
                 column: "user_id");
@@ -229,6 +274,9 @@ namespace Isas.AuthService.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
+                name: "org_members");
+
+            migrationBuilder.DropTable(
                 name: "refresh_tokens");
 
             migrationBuilder.DropTable(
@@ -245,6 +293,9 @@ namespace Isas.AuthService.Migrations
 
             migrationBuilder.DropTable(
                 name: "user_tokens");
+
+            migrationBuilder.DropTable(
+                name: "organizations");
 
             migrationBuilder.DropTable(
                 name: "roles");
