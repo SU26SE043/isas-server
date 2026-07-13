@@ -195,6 +195,13 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 
 **`GET /cv-analysis/{id}`** → `CvAnalysisResponse` (403/404) · **`GET /cv-analysis`** → `CvAnalysisResponse[]` của user.
 
+### Rubric cá nhân — `/api/v1/interview/practice/rubrics` (JWT Candidate) — ✅ **BC16**
+> Candidate tự chỉnh **rubric riêng theo JobCategory** (không admin — đảo hướng BK3). Owner-scope tuyệt đối theo `candidateId` trong JWT. Chưa khai → dùng seed mặc định (BC11). Điểm tổng vẫn TB cộng (INT-10), `weight` chỉ hiển thị.
+
+**`GET /rubrics/{jobCategory}`** (`BA|BE|FE`) → `RubricResponse { jobCategory, isCustom, criteria[] }` — rubric **hiệu lực**: rubric riêng nếu có (`isCustom=true`), else **seed mặc định làm template** (`isCustom=false`, FE clone rồi sửa).
+**`PUT /rubrics/{jobCategory}`** body `{ criteria: [{ name, description?, weight, maxScore }] }` → **replace-all** rubric riêng (soft-versioned, FK-safe). Validate: `0<weight≤1`, `maxScore≥1`, name không trùng (case-insensitive), `Σweight∈[0.99,1.01]`→chuẩn hoá Σ→1; rỗng/ngoài dải → **400**. Res **`200`** `RubricResponse`.
+**`DELETE /rubrics/{jobCategory}`** → reset về seed mặc định (soft-deactivate rubric riêng, idempotent). Res **`204`**.
+
 ### Roadmap ôn tập — `/api/v1/interview/practice/roadmaps` (JWT Candidate) — **B2C BC5 (BC12–BC15), 🔜 chưa build** (D20)
 
 > Nền tảng **ôn tập cá nhân hoá**: từ **report các buổi đã chấm** (`session_criterion_scores` — điểm yếu) + **CV** (upload mới hoặc hệ thống tự lấy CV có sẵn) + **level** → AI sinh **milestone roadmap**; mỗi milestone gồm các **lesson** = *lý thuyết trước* (AI sinh bám điểm yếu, lưu lại) → *luyện session* (engine chấm như thường). Xong mỗi mile → xem **độ cải thiện**; xong roadmap → `Completed` → **report cuối** (radar + đánh giá tiêu chí theo level + kết luận chi tiết). State machine + công thức: xem §Roadmap ôn tập cá nhân hoá (Business rules).
@@ -367,9 +374,11 @@ max_score    int
 is_active    bool
 job_category varchar(8)    enum: BA·BE·FE
 campaign_id  uuid?         B2B: tiêu chí theo campaign thay job_category · null=rubric B2C
+candidate_id uuid?         ✅ BC16 — B2C rubric CÁ NHÂN: null=seed mặc định dùng chung · set=rubric riêng của candidate (ref lỏng AuthService, không FK). Chỉ có nghĩa khi campaign_id IS NULL.
 version      int
-                           index (job_category, version, is_active)
+                           index (job_category, version, is_active) · index (candidate_id, job_category, is_active) [BC16]
 ```
+> **BC16 — resolve rubric B2C:** scoring chọn tiêu chí theo `(candidate_id, job_category)`: có rubric riêng active của candidate → dùng nó, **else** seed mặc định (`candidate_id IS NULL`). Dùng chung `B2CRubricScope.ResolveOwnerAsync` ở cả 4 chỗ chấm (publish · callback guard · republisher · breakdown BC9) để không lệch. Sửa rubric = **soft-versioned** (deactivate bản cũ + thêm bản mới `is_active`, KHÔNG hard-delete vì `answer_scores` FK Restrict).
 
 ### `rubric_levels`
 ```

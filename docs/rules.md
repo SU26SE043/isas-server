@@ -80,6 +80,7 @@
 - **BC-4** Phân tích CV (feedback + khớp JD): **TÍNH PHÍ** (trừ credit), áp cả B2C lẫn B2B. *(Bỏ "miễn phí phase 1" — đảo lại D17; **chốt BK5 2026-07-12**. Còn wire reserve/consume vào BC7 = task code.)*
 - **BC-5** 🔜 Tổng kết buổi (BC9) + nhận xét AI (BC10).
 - **BC-6** B2C **KHÔNG** giám sát anti-cheat (luyện tập, không phải thi).
+- **BC-7** Candidate có **rubric riêng theo JobCategory** — tự CRUD (`api/practice/rubrics`, **không** admin; đảo hướng BK3). Chưa khai → dùng **seed mặc định** (BC11). Scoring **ưu tiên rubric riêng** (active) else seed. Sửa = **soft-versioned** (deactivate bản cũ + thêm bản mới active, KHÔNG hard-delete — FK `answer_scores`). Điểm tổng vẫn **TB cộng** (INT-10); `weight` chỉ để hiển thị. **(BC16, 2026-07-13.)**
 
 ## SEC — Chống gian lận (B2B, 🔜)
 - **SEC-1** Bật theo campaign (`anti_cheat_enabled`, `face_verify_enabled`); chỉ B2B.
