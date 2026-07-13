@@ -67,9 +67,11 @@ namespace Isas.PaymentService.Controllers
             var order = await _order.GetOrderAsync(id, ct);
             if (order is null) return NotFound();
 
-            // Chủ đơn chỉ xem đơn của chính mình (khớp owner_type + owner_id)
+            // Owner-scope: đơn của chủ ví khác → 404 (BK15 — không lộ tồn tại đơn người khác; đồng nhất
+            // với GET /order/{id}/status (P3) và các endpoint invoice owner-scope (P8b)). Order-not-exist
+            // và other-owner PHẢI không phân biệt được từ ngoài.
             if (order.OwnerType != owner.Value.OwnerType || order.OwnerId != owner.Value.OwnerId)
-                return Forbid();
+                return NotFound();
 
             return Ok(order);
         }
@@ -115,11 +117,12 @@ namespace Isas.PaymentService.Controllers
             if (owner is null)
                 return Forbid();
 
-            // Ownership check before cancelling
+            // Ownership check before cancelling — order-not-exist HOẶC của chủ ví khác → 404
+            // (BK15 — không lộ tồn tại đơn người khác, thống nhất owner-scope order/invoice).
             var order = await _order.GetOrderAsync(id, ct);
             if (order is null) return NotFound();
             if (order.OwnerType != owner.Value.OwnerType || order.OwnerId != owner.Value.OwnerId)
-                return Forbid();
+                return NotFound();
 
             try
             {
