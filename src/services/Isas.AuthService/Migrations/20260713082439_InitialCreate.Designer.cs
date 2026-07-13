@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.AuthService.Migrations
 {
     [DbContext(typeof(AuthDbContext))]
-    [Migration("20260518123824_InitAuthDb")]
-    partial class InitAuthDb
+    [Migration("20260713082439_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -24,6 +24,58 @@ namespace Isas.AuthService.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("Isas.AuthService.Models.OrgMember", b =>
+                {
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("org_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<DateTime>("JoinedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("joined_at");
+
+                    b.Property<string>("OrgRole")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("org_role");
+
+                    b.HasKey("OrgId", "UserId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("org_members", (string)null);
+                });
+
+            modelBuilder.Entity("Isas.AuthService.Models.Organization", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<string>("TaxCode")
+                        .HasColumnType("text")
+                        .HasColumnName("tax_code");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("organizations", (string)null);
+                });
 
             modelBuilder.Entity("Isas.AuthService.Models.RefreshToken", b =>
                 {
@@ -300,6 +352,25 @@ namespace Isas.AuthService.Migrations
                     b.ToTable("user_logins", (string)null);
                 });
 
+            modelBuilder.Entity("Isas.AuthService.Models.OrgMember", b =>
+                {
+                    b.HasOne("Isas.AuthService.Models.Organization", "Organization")
+                        .WithMany("Members")
+                        .HasForeignKey("OrgId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Isas.AuthService.Models.User", "User")
+                        .WithMany("OrgMembers")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Organization");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("Isas.AuthService.Models.RefreshToken", b =>
                 {
                     b.HasOne("Isas.AuthService.Models.User", "User")
@@ -372,6 +443,11 @@ namespace Isas.AuthService.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Isas.AuthService.Models.Organization", b =>
+                {
+                    b.Navigation("Members");
+                });
+
             modelBuilder.Entity("Isas.AuthService.Models.Role", b =>
                 {
                     b.Navigation("RoleClaims");
@@ -381,6 +457,8 @@ namespace Isas.AuthService.Migrations
 
             modelBuilder.Entity("Isas.AuthService.Models.User", b =>
                 {
+                    b.Navigation("OrgMembers");
+
                     b.Navigation("RefreshTokens");
 
                     b.Navigation("UserClaims");

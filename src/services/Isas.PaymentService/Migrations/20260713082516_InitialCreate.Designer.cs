@@ -12,8 +12,8 @@ using PaymentService.Models;
 namespace Isas.PaymentService.Migrations
 {
     [DbContext(typeof(PaymentDbContext))]
-    [Migration("20260711092900_AddOrderOwner")]
-    partial class AddOrderOwner
+    [Migration("20260713082516_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -192,6 +192,73 @@ namespace Isas.PaymentService.Migrations
                     b.ToTable("credit_transactions", (string)null);
                 });
 
+            modelBuilder.Entity("PaymentService.Models.Invoice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<Guid?>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(16, 2)
+                        .HasColumnType("numeric(16,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<int>("InterviewCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("interview_count");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("OwnerType")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("owner_type");
+
+                    b.Property<DateTime>("PeriodEnd")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("period_end");
+
+                    b.Property<DateTime>("PeriodStart")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("period_start");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Issued")
+                        .HasColumnName("status");
+
+                    b.Property<decimal>("UnitPrice")
+                        .HasPrecision(16, 2)
+                        .HasColumnType("numeric(16,2)")
+                        .HasColumnName("unit_price");
+
+                    b.HasKey("Id")
+                        .HasName("pk_invoices");
+
+                    b.HasIndex("OwnerType", "OwnerId")
+                        .HasDatabaseName("ix_invoices_owner_type_owner_id");
+
+                    b.ToTable("invoices", (string)null);
+                });
+
             modelBuilder.Entity("PaymentService.Models.Order", b =>
                 {
                     b.Property<Guid>("Id")
@@ -214,6 +281,10 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expired_at");
 
+                    b.Property<Guid?>("InvoiceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("invoice_id");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -232,7 +303,7 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("character varying(8)")
                         .HasColumnName("owner_type");
 
-                    b.Property<Guid>("PackageId")
+                    b.Property<Guid?>("PackageId")
                         .HasColumnType("uuid")
                         .HasColumnName("package_id");
 
@@ -253,6 +324,9 @@ namespace Isas.PaymentService.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_orders");
+
+                    b.HasIndex("InvoiceId")
+                        .HasDatabaseName("ix_orders_invoice_id");
 
                     b.HasIndex("PackageId")
                         .HasDatabaseName("ix_orders_package_id");
@@ -425,12 +499,19 @@ namespace Isas.PaymentService.Migrations
 
             modelBuilder.Entity("PaymentService.Models.Order", b =>
                 {
+                    b.HasOne("PaymentService.Models.Invoice", "Invoice")
+                        .WithMany("Orders")
+                        .HasForeignKey("InvoiceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_orders_invoices_invoice_id");
+
                     b.HasOne("PaymentService.Models.ProductPackage", "Package")
                         .WithMany("Orders")
                         .HasForeignKey("PackageId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
                         .HasConstraintName("fk_orders_product_packages_package_id");
+
+                    b.Navigation("Invoice");
 
                     b.Navigation("Package");
                 });
@@ -465,6 +546,11 @@ namespace Isas.PaymentService.Migrations
                     b.Navigation("Order");
 
                     b.Navigation("Package");
+                });
+
+            modelBuilder.Entity("PaymentService.Models.Invoice", b =>
+                {
+                    b.Navigation("Orders");
                 });
 
             modelBuilder.Entity("PaymentService.Models.Order", b =>

@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.CampaignService.Migrations
 {
     [DbContext(typeof(CampaignDbContext))]
-    [Migration("20260711025009_AddCampaignInvitations")]
-    partial class AddCampaignInvitations
+    [Migration("20260713082536_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -113,10 +113,6 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("character varying(100)")
                         .HasColumnName("domain");
 
-                    b.Property<Guid>("EmployerId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("employer_id");
-
                     b.Property<DateTime?>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
@@ -129,9 +125,29 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("text")
                         .HasColumnName("jd_text");
 
+                    b.Property<string>("KeywordsAny")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("keywords_any");
+
                     b.Property<int?>("MaxCandidates")
                         .HasColumnType("integer")
                         .HasColumnName("max_candidates");
+
+                    b.Property<int?>("MinYearsExperience")
+                        .HasColumnType("integer")
+                        .HasColumnName("min_years_experience");
+
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("org_id");
+
+                    b.Property<int?>("PassScorePct")
+                        .HasColumnType("integer")
+                        .HasColumnName("pass_score_pct");
+
+                    b.Property<string>("RequiredSkills")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("required_skills");
 
                     b.Property<DateTime>("StartsAt")
                         .HasColumnType("timestamp with time zone")
@@ -164,13 +180,124 @@ namespace Isas.CampaignService.Migrations
                     b.HasKey("Id")
                         .HasName("pk_campaigns");
 
-                    b.HasIndex("EmployerId", "CreatedAt")
-                        .HasDatabaseName("ix_campaigns_employer_id_created_at");
+                    b.HasIndex("OrgId", "CreatedAt")
+                        .HasDatabaseName("ix_campaigns_org_id_created_at");
 
-                    b.HasIndex("EmployerId", "Status")
-                        .HasDatabaseName("ix_campaigns_employer_id_status");
+                    b.HasIndex("OrgId", "Status")
+                        .HasDatabaseName("ix_campaigns_org_id_status");
 
                     b.ToTable("campaigns", (string)null);
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.CampaignCandidate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<Guid>("CampaignId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("campaign_id");
+
+                    b.Property<Guid?>("CandidateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("candidate_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("CvFileUrl")
+                        .HasColumnType("text")
+                        .HasColumnName("cv_file_url");
+
+                    b.Property<string>("CvParsedText")
+                        .HasColumnType("text")
+                        .HasColumnName("cv_parsed_text");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("email");
+
+                    b.Property<string>("FullName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("full_name");
+
+                    b.Property<string>("InterviewStatus")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("interview_status");
+
+                    b.Property<DateTime?>("JoinedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("joined_at");
+
+                    b.Property<DateTime?>("LastScreeningPublishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_screening_published_at");
+
+                    b.Property<int?>("OverallMatchScore")
+                        .HasColumnType("integer")
+                        .HasColumnName("overall_match_score");
+
+                    b.Property<string>("ParseStatus")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("parse_status");
+
+                    b.Property<string>("RejectReason")
+                        .HasColumnType("text")
+                        .HasColumnName("reject_reason");
+
+                    b.Property<Guid?>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("Skills")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("skills");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Summary")
+                        .HasColumnType("text")
+                        .HasColumnName("summary");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<decimal?>("YearsExperience")
+                        .HasColumnType("numeric(4,1)")
+                        .HasColumnName("years_experience");
+
+                    b.HasKey("Id")
+                        .HasName("pk_campaign_candidates");
+
+                    b.HasIndex("CandidateId")
+                        .HasDatabaseName("ix_campaign_candidates_candidate_id");
+
+                    b.HasIndex("CampaignId", "Email")
+                        .IsUnique()
+                        .HasDatabaseName("ix_campaign_candidates_campaign_id_email");
+
+                    b.HasIndex("CampaignId", "Status")
+                        .HasDatabaseName("ix_campaign_candidates_campaign_id_status");
+
+                    b.ToTable("campaign_candidates", (string)null);
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.CampaignCriterion", b =>
@@ -201,14 +328,25 @@ namespace Isas.CampaignService.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("text")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
                         .HasColumnName("name");
+
+                    b.Property<int>("OrderNo")
+                        .HasColumnType("integer")
+                        .HasColumnName("order_no");
 
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("source");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
 
                     b.Property<decimal>("Weight")
                         .HasColumnType("numeric(5,4)")
@@ -217,8 +355,13 @@ namespace Isas.CampaignService.Migrations
                     b.HasKey("Id")
                         .HasName("pk_campaign_criteria");
 
-                    b.HasIndex("CampaignId")
-                        .HasDatabaseName("ix_campaign_criteria_campaign_id");
+                    b.HasIndex("CampaignId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_campaign_criteria_campaign_id_name");
+
+                    b.HasIndex("CampaignId", "OrderNo")
+                        .IsUnique()
+                        .HasDatabaseName("ix_campaign_criteria_campaign_id_order_no");
 
                     b.ToTable("campaign_criteria", (string)null);
                 });
@@ -308,15 +451,15 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
 
-                    b.Property<Guid>("EmployerId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("employer_id");
-
                     b.Property<bool>("IsRequired")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
                         .HasDefaultValue(true)
                         .HasColumnName("is_required");
+
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("org_id");
 
                     b.Property<string>("QuestionText")
                         .IsRequired()
@@ -340,6 +483,104 @@ namespace Isas.CampaignService.Migrations
                         .HasDatabaseName("ix_campaign_questions_campaign_id");
 
                     b.ToTable("campaign_questions", (string)null);
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.CampaignRanking", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<Guid>("CampaignId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("campaign_id");
+
+                    b.Property<Guid>("CandidateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("candidate_id");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<decimal>("TotalScore")
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("total_score");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("Id")
+                        .HasName("pk_campaign_rankings");
+
+                    b.HasIndex("SessionId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_campaign_rankings_session_id");
+
+                    b.HasIndex("CampaignId", "TotalScore")
+                        .HasDatabaseName("ix_campaign_rankings_campaign_id_total_score");
+
+                    b.ToTable("campaign_rankings", (string)null);
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.CandidateCriterionScore", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<Guid>("CandidateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("candidate_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("CriterionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("criterion_id");
+
+                    b.Property<decimal>("MatchScore")
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("match_score");
+
+                    b.Property<string>("Reasoning")
+                        .HasColumnType("text")
+                        .HasColumnName("reasoning");
+
+                    b.HasKey("Id")
+                        .HasName("pk_candidate_criterion_scores");
+
+                    b.HasIndex("CriterionId")
+                        .HasDatabaseName("ix_candidate_criterion_scores_criterion_id");
+
+                    b.HasIndex("CandidateId", "CriterionId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_candidate_criterion_scores_candidate_id_criterion_id");
+
+                    b.ToTable("candidate_criterion_scores", (string)null);
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.CampaignCandidate", b =>
+                {
+                    b.HasOne("Isas.CampaignService.Models.Campaign", "Campaign")
+                        .WithMany("Candidates")
+                        .HasForeignKey("CampaignId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_campaign_candidates_campaigns_campaign_id");
+
+                    b.Navigation("Campaign");
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.CampaignCriterion", b =>
@@ -378,13 +619,41 @@ namespace Isas.CampaignService.Migrations
                     b.Navigation("Campaign");
                 });
 
+            modelBuilder.Entity("Isas.CampaignService.Models.CandidateCriterionScore", b =>
+                {
+                    b.HasOne("Isas.CampaignService.Models.CampaignCandidate", "Candidate")
+                        .WithMany("CriterionScores")
+                        .HasForeignKey("CandidateId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_candidate_criterion_scores_campaign_candidates_candidate_id");
+
+                    b.HasOne("Isas.CampaignService.Models.CampaignCriterion", "Criterion")
+                        .WithMany()
+                        .HasForeignKey("CriterionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_candidate_criterion_scores_campaign_criteria_criterion_id");
+
+                    b.Navigation("Candidate");
+
+                    b.Navigation("Criterion");
+                });
+
             modelBuilder.Entity("Isas.CampaignService.Models.Campaign", b =>
                 {
+                    b.Navigation("Candidates");
+
                     b.Navigation("Criteria");
 
                     b.Navigation("Invitations");
 
                     b.Navigation("Questions");
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.CampaignCandidate", b =>
+                {
+                    b.Navigation("CriterionScores");
                 });
 #pragma warning restore 612, 618
         }

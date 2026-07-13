@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    [Migration("20260711120832_AddSessionOverallComment")]
-    partial class AddSessionOverallComment
+    [Migration("20260713082556_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -47,6 +47,10 @@ namespace Isas.InterviewService.Migrations
                     b.Property<Guid>("CriterionId")
                         .HasColumnType("uuid")
                         .HasColumnName("criterion_id");
+
+                    b.Property<int?>("LevelMatched")
+                        .HasColumnType("integer")
+                        .HasColumnName("level_matched");
 
                     b.Property<string>("Reasoning")
                         .HasColumnType("text")
@@ -222,6 +226,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_scoring_published_at");
 
+                    b.Property<bool>("NeedsReview")
+                        .HasColumnType("boolean")
+                        .HasColumnName("needs_review");
+
                     b.Property<Guid>("QuestionId")
                         .HasColumnType("uuid")
                         .HasColumnName("question_id");
@@ -322,6 +330,10 @@ namespace Isas.InterviewService.Migrations
                     b.Property<Guid?>("CvId")
                         .HasColumnType("uuid")
                         .HasColumnName("cv_id");
+
+                    b.Property<DateTime?>("Deadline")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deadline");
 
                     b.Property<Guid?>("JdId")
                         .HasColumnType("uuid")
@@ -572,6 +584,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("campaign_id");
 
+                    b.Property<Guid?>("CandidateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("candidate_id");
+
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");
@@ -609,6 +625,9 @@ namespace Isas.InterviewService.Migrations
 
                     b.HasIndex("CampaignId")
                         .HasDatabaseName("ix_rubric_criteria_campaign_id");
+
+                    b.HasIndex("CandidateId", "JobCategory", "IsActive")
+                        .HasDatabaseName("ix_rubric_criteria_candidate_id_job_category_is_active");
 
                     b.HasIndex("JobCategory", "Version", "IsActive")
                         .HasDatabaseName("ix_rubric_criteria_job_category_version_is_active");
