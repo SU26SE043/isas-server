@@ -11,7 +11,7 @@ namespace Isas.InterviewService.Controllers
 {
     [ApiController]
     [Route("api/files")]
-    [Authorize] // File phải có chủ (docs interview.md: Files = JWT).
+    [Authorize(Roles = "Candidate")] // A5 — Files CV/JD = ứng viên tự luyện B2C (interview.md §Files). B2B JD ở CampaignService.
     public class InterviewController : ControllerBase
     {
         private readonly IStorageService _storage;

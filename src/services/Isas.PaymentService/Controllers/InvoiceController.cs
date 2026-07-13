@@ -36,8 +36,10 @@ namespace Isas.PaymentService.Controllers
             return null;
         }
 
+        // A5 — hóa đơn CHỈ Org postpaid (payment.md §Invoice) → role Employer. HrMember vẫn xem được
+        // (chỉ pay/close mới chặn HrMember qua A4 guard). B2C (Candidate) không có hóa đơn.
         [HttpGet("me/invoices")]
-        [Authorize]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<List<InvoiceResponse>>> GetMyInvoicesAsync(CancellationToken ct = default)
         {
             var owner = GetOwner();
@@ -49,7 +51,7 @@ namespace Isas.PaymentService.Controllers
         }
 
         [HttpGet("me/invoices/{id:guid}")]
-        [Authorize]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<InvoiceResponse>> GetMyInvoiceAsync(Guid id, CancellationToken ct = default)
         {
             var owner = GetOwner();
@@ -65,7 +67,7 @@ namespace Isas.PaymentService.Controllers
         // Tất toán hóa đơn (OrgAdmin, owner-scope). Trả CreateOrderResponse (link PayOS). Cộng "tất toán"
         // chỉ khi webhook Paid (không tin return-url). 404 = không tồn tại/chủ khác · 409 = đã Paid/Void.
         [HttpPost("invoices/{id:guid}/pay")]
-        [Authorize]
+        [Authorize(Roles = "Employer")]
         public async Task<ActionResult<OrderResponse>> PayInvoiceAsync(Guid id, CancellationToken ct = default)
         {
             // A4 (AUTH-6) — HrMember không có quyền billing (tất toán hóa đơn = money-mutation) → 403.
@@ -85,10 +87,10 @@ namespace Isas.PaymentService.Controllers
             };
         }
 
-        // Chốt kỳ 1 org (PlatformAdmin — A5 bật role sau, hiện chỉ cần authenticated như PackageController).
+        // Chốt kỳ 1 org — admin-only (payment.md §Admin). Role string "Admin" (AUTH-3 = PlatformAdmin).
+        // A4 guard HrMember giữ lại (defense-in-depth; Admin role vốn không có org_role=HrMember).
         [HttpPost("admin/invoices/close")]
-        [Authorize]
-        //[Authorize(Roles = "PlatformAdmin")]
+        [Authorize(Roles = "Admin")]
         public async Task<ActionResult<InvoiceResponse>> CloseBillingPeriodAsync(
             CloseBillingPeriodRequest request, CancellationToken ct = default)
         {

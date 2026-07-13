@@ -13,7 +13,7 @@ namespace Isas.AuthService.Controllers
     /// </summary>
     [ApiController]
     [Route("auth/org/members")]
-    [Authorize]
+    [Authorize(Roles = "Employer")] // A5 — quản thành viên org = Employer; IsOrgAdmin() siết tiếp OrgAdmin trong code.
     public class OrgMembersController : ControllerBase
     {
         private readonly IAuthService _authService;

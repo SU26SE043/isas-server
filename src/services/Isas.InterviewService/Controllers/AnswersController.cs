@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace Isas.InterviewService.Controllers;
 
 [ApiController]
-[Authorize]
+[Authorize(Roles = "Candidate")] // A5 — upload answer B2C = Candidate; 2 callback internal giữ [AllowAnonymous].
 public class AnswersController : ControllerBase   // KHÔNG [Route] cấp class
 {
     private readonly IAnswerService _answerService;
