@@ -12,7 +12,7 @@
 |---|---|
 | [AGENTS.md](../AGENTS.md) | **Cửa vào** — dự án là gì, chạy/test, ràng buộc cứng, quy trình vào-ca/tan-ca |
 | [work-division.md](work-division.md) | **Source of truth** — phạm vi 2 dòng SP (B2C 4 + B2B 5 module), hiện trạng, phân việc 4 người / 5 stream, thứ tự build |
-| [decisions.md](decisions.md) | **Decision log** — *vì sao* các quyết định (D1–D22) + phương án bị loại |
+| [decisions.md](decisions.md) | **Decision log** — *vì sao* các quyết định (D1–D23) + phương án bị loại |
 | [progress.md](progress.md) | **Handoff** — trạng thái hiện tại + bước kế tiếp (cập nhật mỗi phiên) |
 | [tasks.md](tasks.md) | **Task surface (WIP=1)** — task nguyên tử + lệnh xác minh + phụ thuộc + trạng thái (tạm; về sau đẩy sang board) |
 | [architecture.md](architecture.md) | Kiến trúc — thành phần, giao tiếp, các luồng + **§5 quy ước chung, §6 routing/mã lỗi** |

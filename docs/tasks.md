@@ -130,6 +130,16 @@
 | BK19 | Ratify `POST /order` packageId không tồn tại → code trả **404** "Package not found" vs payment.md:107 ghi **400** "gói không bán" (sweep 2026-07-13) — chốt 1 trong 2, sửa doc hoặc code | P2 |
 | BK20 | Campaign bật `JsonStringEnumConverter` — `questions[].source` hiện chỉ nhận **numeric** (0/1), gửi `"CustomHr"` → 400 (sweep 2026-07-13); Interview đã string-enum, Campaign lệch convention | C* |
 
+### 🐛 Bug từ API sweep layer-3 (2026-07-13) — "bug không đáng có" (unit test xanh nhưng vỡ ở HTTP thật)
+| ID | Bug | Nguyên nhân gốc | Trạng thái |
+|---|---|---|---|
+| BF1 | `POST /cv-analysis` **500 mọi request** (thay vì 400/402) | `[property: Required]` trên **positional record** → ASP.NET (.NET 10) throw `InvalidOperationException` lúc build validation-metadata. Unit test gọi service trực tiếp (không qua model-binding) → **không bắt được** → lọt tới layer-3 | ✅ **fix code (83beabc)** `[Required]` param-level; test 183 xanh · ⏳ **cần image interview mới (merge→CI build) + retest live** |
+| BF2 | `POST /campaign/{id}/invitations` **500** "endpoints not reachable" | Compose server **thiếu env `RabbitMQ__*`** cho `campaignservice` → `InvitationEmailPublisher` (D1) không nối broker. Interview/Payment có, Campaign bị sót | ✅ **fix compose + DEPLOYMENT.md (0997030)** thêm `RabbitMQ__HostName/User/Pass` + `depends_on rabbitmq` · ⏳ **chỉ cần `docker compose up -d` lại server** (không rebuild image) + retest |
+| BK19 | `POST /order` packageId lạ → **404** "Package not found" vs payment.md:107 ghi **400** "gói không bán" | Lệch doc↔code (không phải lỗi chặn) | 🔵 ratify — sửa doc **hoặc** code (1 trong 2) |
+| BK20 | Campaign `questions[].source` chỉ nhận **numeric** (0/1); gửi `"CustomHr"` → 400 | Campaign chưa bật `JsonStringEnumConverter` (Interview đã có) → lệch convention enum-as-string | 🔵 bật converter ở Campaign `Program.cs` |
+
+> **Bài học (ghi để không lặp):** unit test SQLite gọi **service/controller trực tiếp** KHÔNG qua HTTP model-binding/DI-config/broker → **lọt** class lỗi: (1) validation-attribute binding, (2) env/config compose thiếu, (3) serialization enum. → **Phase 0 P0.1 phải gồm 1 smoke-test HTTP thật** (đăng ký→login→1 endpoint/service) sau `docker compose up`, không chỉ `/health`.
+
 ### 🔵 Feature follow-up (mở rộng task đã có)
 | ID | Việc | dep |
 |---|---|---|
