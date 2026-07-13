@@ -50,8 +50,8 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | **AuthService** | 3 role, JWT, Google OAuth, **Organization + org-role** (OrgAdmin/HrMember) trong JWT + `register-org` (A1–A3) | `A4` HrMember chặn billing, `A5` bật lại `[Authorize(Roles)]` mọi service | tasks `A1`–`A5` |
 | **PaymentService** 🟡 | Order/Package/PayOS (theo `user_id`) | `credit_accounts(owner_type)`, **reserve/consume/release**, **postpaid + hóa đơn**, active-polling | tasks `P1`–`P8`; [services/payment.md](services/payment.md) |
 | **CampaignService** 🟢 | merged main: CRUD + JD/Criteria (PdfPig) + 6 bug fix + lifecycle + publish tiêu chí cấu trúc + soft-delete/audit | distribution, ranking/result/export, wire `org_id` | tasks `C1`–`C10` |
-| **AIService** | generate-questions, transcribe, worker chấm, **suggest-criteria** (C8) | **analyze-cv (BC4)**; 🔴 bỏ `/ai/**` khỏi gateway + auth nội bộ · Whisper nhẹ/GPU · chống prompt-injection · DLQ | [services/ai.md](services/ai.md) §Vấn đề |
-| **Gateway / Infra** | Reverse proxy, compose service | `/api/v1/ai/**` **đang public, không auth** → chuyển nội bộ-only; **Redis chưa wire** | §6, §8 |
+| **AIService** | generate-questions, transcribe, worker chấm, **suggest-criteria** (C8) | **analyze-cv (BC4)**; ✅ đã bỏ `/ai/**` khỏi gateway (GEN-7) · còn `X-Internal-Token` nội bộ · Whisper nhẹ/GPU · chống prompt-injection · DLQ | [services/ai.md](services/ai.md) §Vấn đề |
+| **Gateway / Infra** | Reverse proxy, compose service | ✅ `/ai/**` đã gỡ khỏi gateway (GEN-7, internal-only); **Redis chưa wire** | §6, §8 |
 | **Nền tảng (Phase 0)** | test project Campaign/Auth/Interview ✅ (`P0.3`) | `docker compose up` máy sạch (verify), `make setup/test/check`, **test project Payment**, readiness 4 điều kiện | work-division §5; tasks `P0.1`–`P0.5` |
 | **CI/CD** | Build+push Auth/Interview/**Campaign**/Gateway → server qua Tailscale | Thêm **Payment** vào pipeline; AIService deploy **tay trên Mac** | §8; [../DEPLOYMENT.md](../DEPLOYMENT.md) |
 
@@ -166,12 +166,12 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 | Gateway path | Forward tới | Trạng thái |
 |---|---|---|
 | `/api/v1/auth/**` | AuthService `/auth/**` | ✅ |
-| `/api/v1/ai/**` | AIService `/api/v1/**` | ✅ |
 | `/api/v1/interview/practice/**`, `/files/**` | InterviewService `/api/practice/**`, `/api/files/**` | ✅ |
 | `/api/v1/campaign/**` | CampaignService `/campaign/**` | ✅ merged main (gateway route + CI build) |
 | `/api/v1/payment/**` | PaymentService `/order`,`/package`,… | 🟡 branch |
+| ~~`/api/v1/ai/**`~~ | — | ✅ **đã gỡ khỏi gateway (GEN-7, 2026-07-13)** — AI internal-only, gọi qua `AiService:BaseUrl` |
 
-> ⚠ **`/api/v1/ai/**` đang public + KHÔNG auth** — endpoint AI đắt (CPU/tiền) → cần chuyển **nội bộ-only** (chỉ gọi qua `AiService:BaseUrl`, không expose gateway) **+** `X-Internal-Token`. Xem [services/ai.md](services/ai.md) §Vấn đề đã biết.
+> ✅ **GEN-7 (2026-07-13):** `/api/v1/ai/**` **đã gỡ khỏi gateway** (route + cluster + OpenAPI aggregation) — đóng lỗ public + KHÔNG auth. AIService chỉ còn gọi **nội bộ** qua `AiService:BaseUrl` (Tailscale). Follow-up: siết thêm `X-Internal-Token` trên endpoint AIService. Xem [services/ai.md](services/ai.md) §Vấn đề đã biết.
 
 **Mã lỗi chung:** `200/201/204` OK · `400` sai input · `401` thiếu/sai token · `403` không có quyền · `404` không thấy · `409` xung đột trạng thái · `500` lỗi hệ thống · `502` lỗi gọi AIService.
 

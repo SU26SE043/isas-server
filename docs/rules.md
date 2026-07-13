@@ -11,7 +11,7 @@
 - **GEN-4** AIService **KHÔNG ghi DB** — kết quả trả qua callback (`X-Internal-Token`).
 - **GEN-5** File lưu S3: lưu **key**, không lưu full URL.
 - **GEN-6** Phân biệt B2B/B2C bằng `campaign_id` (null = B2C).
-- **GEN-7** 🔜 AIService internal-only (chỉ Interview/Campaign gọi nội bộ; bỏ `/ai` khỏi gateway).
+- **GEN-7** ✅ AIService internal-only — đã **bỏ `/ai` khỏi gateway** (2026-07-13); chỉ Interview/Campaign gọi nội bộ qua `AiService:BaseUrl` (Tailscale). *(Follow-up: thêm `X-Internal-Token` trên endpoint AIService.)*
 
 ## AUTH — Định danh & Tổ chức
 - **AUTH-1** `register` → role **Candidate** mặc định.
