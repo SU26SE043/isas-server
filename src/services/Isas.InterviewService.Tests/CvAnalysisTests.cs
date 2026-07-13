@@ -447,4 +447,31 @@ public class CvAnalysisTests
         Assert.True(await t.Db.CvAnalyses.AsNoTracking().AnyAsync());
         credits.VerifyNoOtherCalls();   // tính phí tắt → không đụng Payment
     }
+
+    // ── BK6: jobCategory BẮT BUỘC ─────────────────────────────────────────────────
+    // Thiếu jobCategory (null) → 400 TRƯỚC reserve: KHÔNG giữ credit, KHÔNG gọi AI, KHÔNG lưu row.
+    [Fact]
+    public async Task Post_MissingJobCategory_Returns400_NoReserve_NoAi_NoRow()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "CV..."));
+
+        var ai = AiMock(SampleAi(false));
+        var credits = CreditsMock();
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, credits.Object);
+
+        // jobCategory null (thiếu trong request) → 400.
+        var result = await ctrl.Analyze(new CvAnalysisRequest(cvId, null, null), default);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.False(await t.Db.CvAnalyses.AsNoTracking().AnyAsync());   // KHÔNG lưu row
+        credits.Verify(x => x.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        ai.Verify(x => x.AnalyzeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }
