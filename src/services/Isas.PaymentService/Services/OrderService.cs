@@ -33,6 +33,10 @@ namespace Isas.PaymentService.Services
             if (!package.IsActive)
                 throw new InvalidOperationException("Package is no longer available.");
 
+            // BF3 — guard PayOS config SỚM (trước khi persist) → thiếu ReturnUrl/CancelUrl thì fail
+            // 502 sạch, KHÔNG tạo order mồ côi (bug bắt ở layer-3: PayOS reject "return_url null").
+            EnsurePayosUrlsConfigured(_settings.Value);
+
             // 2. Generate a unique positive long order code for PayOS (P7 — time+random, ≤2^53−1, UNIQUE+retry).
             var orderCode = await _orderCodes.GenerateAsync(ct);
 
@@ -73,10 +77,8 @@ namespace Isas.PaymentService.Services
             ],
             };
 
-            var paymentResult = await _payos.PaymentRequests.CreateAsync(paymentData);
-
             var response = OrderResponse.ToResponse(order);
-            response.CheckoutUrl = paymentResult.CheckoutUrl;
+            response.CheckoutUrl = await CreatePayosLinkAsync(paymentData);
             return response;
         }
 
@@ -86,6 +88,9 @@ namespace Isas.PaymentService.Services
         // Issued→Paid (KHÔNG cộng credit).
         public async Task<OrderResponse> CreateInvoiceSettlementOrderAsync(Invoice invoice, CancellationToken ct = default)
         {
+            // BF3 — guard PayOS config sớm (như CreateOrderAsync): thiếu URL → 502, không order mồ côi.
+            EnsurePayosUrlsConfigured(_settings.Value);
+
             var orderCode = await _orderCodes.GenerateAsync(ct);
 
             // amount_vnd là int trong schema orders (tiền lượt VND nguyên) — quy đổi từ invoice.Amount (numeric).
@@ -126,11 +131,33 @@ namespace Isas.PaymentService.Services
             ],
             };
 
-            var paymentResult = await _payos.PaymentRequests.CreateAsync(paymentData);
-
             var response = OrderResponse.ToResponse(order);
-            response.CheckoutUrl = paymentResult.CheckoutUrl;
+            response.CheckoutUrl = await CreatePayosLinkAsync(paymentData);
             return response;
+        }
+
+        // BF3 — cấu hình PayOS bắt buộc: PayOS reject payment-link nếu return_url/cancel_url null.
+        // Thiếu → 502 sạch (không phải 500 stack thô), fail sớm trước persist để tránh order mồ côi.
+        private static void EnsurePayosUrlsConfigured(PayOSSettings cfg)
+        {
+            if (string.IsNullOrWhiteSpace(cfg.ReturnUrl) || string.IsNullOrWhiteSpace(cfg.CancelUrl))
+                throw new PaymentGatewayException(
+                    "PayOS ReturnUrl/CancelUrl chưa cấu hình (set PayOS__ReturnUrl / PayOS__CancelUrl).");
+        }
+
+        // BF3 — bọc call PayOS: ApiException (PayOS từ chối/upstream lỗi) → PaymentGatewayException
+        // → controller map 502, không để SDK exception văng thành 500 stack thô.
+        private async Task<string> CreatePayosLinkAsync(CreatePaymentLinkRequest paymentData)
+        {
+            try
+            {
+                var result = await _payos.PaymentRequests.CreateAsync(paymentData);
+                return result.CheckoutUrl;
+            }
+            catch (PayOS.Exceptions.ApiException ex)
+            {
+                throw new PaymentGatewayException($"PayOS từ chối tạo payment-link: {ex.Message}", ex);
+            }
         }
 
         public async Task<OrderResponse?> GetOrderAsync(Guid id, CancellationToken ct = default)

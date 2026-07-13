@@ -78,13 +78,18 @@ namespace Isas.PaymentService.Controllers
             if (owner is null)
                 return Forbid();
 
-            var result = await _invoices.PayInvoiceAsync(owner.Value.OwnerType, owner.Value.OwnerId, id, ct);
-            return result.Outcome switch
+            try
             {
-                PayInvoiceOutcome.Created => Ok(result.Order),
-                PayInvoiceOutcome.NotPayable => Conflict(new { message = "Invoice is not payable (already Paid or Void)." }),
-                _ => NotFound()
-            };
+                var result = await _invoices.PayInvoiceAsync(owner.Value.OwnerType, owner.Value.OwnerId, id, ct);
+                return result.Outcome switch
+                {
+                    PayInvoiceOutcome.Created => Ok(result.Order),
+                    PayInvoiceOutcome.NotPayable => Conflict(new { message = "Invoice is not payable (already Paid or Void)." }),
+                    _ => NotFound()
+                };
+            }
+            // BF3 — PayOS misconfig/upstream reject khi tạo link tất toán → 502 sạch.
+            catch (PaymentGatewayException ex) { return StatusCode(StatusCodes.Status502BadGateway, new { message = ex.Message }); }
         }
 
         // Chốt kỳ 1 org — admin-only (payment.md §Admin). Role string "Admin" (AUTH-3 = PlatformAdmin).
