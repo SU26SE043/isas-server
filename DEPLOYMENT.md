@@ -215,14 +215,14 @@ services:
       # Chỉ override địa chỉ runtime; routing /api/v1 lấy từ appsettings.json trong image.
       - ReverseProxy__Clusters__auth-cluster__Destinations__auth-node-01__Address=http://isas.authservice:8080
       - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
-      - ReverseProxy__Clusters__ai-cluster__Destinations__ai-node-01__Address=http://<MAC_TS_IP>:8000
       - ReverseProxy__Clusters__campaign-cluster__Destinations__campaign-node-01__Address=http://isas.campaignservice:8080
       - ReverseProxy__Clusters__payment-cluster__Destinations__payment-node-01__Address=http://isas.paymentservice:8080
+      # GEN-7 (2026-07-13): ai-cluster + /api/v1/ai route đã GỠ khỏi gateway (AI internal-only qua AiService:BaseUrl).
+      # → không còn override ai-cluster address / ai OpenApi. Index ApiServices dồn lại (bỏ ai=cũ-index-1).
       - ApiServices__0__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
-      - ApiServices__1__OpenApiUrl=http://<MAC_TS_IP>:8000/openapi.json
-      - ApiServices__2__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
-      - ApiServices__3__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
-      - ApiServices__4__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
+      - ApiServices__1__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
+      - ApiServices__2__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
+      - ApiServices__3__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
       - Gateway__Url=${GATEWAY_PUBLIC_URL}
       - Cors__AllowedOrigins__0=http://localhost:3000
       - Cors__AllowedOrigins__1=http://localhost:5173
@@ -400,7 +400,7 @@ docker compose logs -f aiservice-worker
       config=Config(s3={"addressing_style": "path"}))
   ```
 - [ ] **`<MAC_TS_IP>` / `<SERVER_TS_IP>`** thay bằng IP Tailscale thật ở cả 2 phía.
-- [ ] **Routing `/api/v1`** — frontend gọi `/api/v1/auth/...`, `/api/v1/interview/...`, `/api/v1/ai/...` (KHÔNG còn `/api/auth`).
+- [ ] **Routing `/api/v1`** — frontend gọi `/api/v1/auth/...`, `/api/v1/interview/...`, `/api/v1/campaign/...`, `/api/v1/payment/...` (KHÔNG còn `/api/auth`). **`/api/v1/ai/*` đã gỡ (GEN-7)** — AI internal-only, FE không gọi trực tiếp.
 - [ ] **Internal token** Interview ↔ Worker khớp, **Jwt** Auth ↔ Interview khớp.
 - [ ] **CI không build AIService** — Mac build tay (`up -d --build`), không pull GHCR. Muốn pull thì thêm step CI buildx multi-arch (Mac là arm64).
 - [ ] **RAM Mac**: api + worker đều load Whisper (2 model). Không dùng `/transcribe` thì bỏ `Transcriber()` trong `main.py` cho nhẹ.
