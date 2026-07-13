@@ -9,7 +9,7 @@
 - `register` **auto gán `Candidate`**; **`register-org` cấp role `Employer`** + tạo org + OrgAdmin ✅ A3.
 - Các service khác **không gọi Auth lúc chạy** — validate JWT **offline** bằng chung key.
 
-## Organization & phân quyền nội bộ (multi-tenant) 🟢 core A1–A3 xong; RBAC đầy đủ = phase 2
+## Organization & phân quyền nội bộ (multi-tenant) 🟢 core A1–A3 xong; RBAC ✅ A4 (HrMember→403 billing) · A5 (`[Authorize(Roles)]` mọi service, v22)
 B2B bán cho **doanh nghiệp**, không phải cá nhân → cần khái niệm **tổ chức**:
 - Một **Organization** (`org_id`) = 1 doanh nghiệp; **billing/credit gắn org** (xem [payment.md](payment.md)), **campaign gắn `org_id`**.
 - **Role nội bộ org** (claim kèm trong JWT): **`OrgAdmin`** (mua gói/trả tiền/xem billing, quản thành viên) vs **`HrMember`** (tạo & quản campaign, **không** xem billing).
@@ -79,7 +79,7 @@ UserResponse {
 **🔜 Admin (PlatformAdmin) — quản trị Org/role chưa build (A4/A5):**
 - **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
 - **`GET/POST /auth/admin/orgs…`** — xem / duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
-- *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. Còn admin-gated orgs + role-grant — A4/A5.)*
+- *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. ✅ A4 HrMember→403 billing · ✅ A5 `[Authorize(Roles)]` mọi service (v22): `OrgMembers`→`Employer`, auth-entry `[AllowAnonymous]` tường minh; `RoleClaimType=ClaimTypes.Role` khớp mọi service.)*
 
 ### Request/Response mẫu (luồng chính)
 ```
