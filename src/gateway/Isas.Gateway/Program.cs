@@ -35,6 +35,10 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseGatewayCors();
+
+// GEN-1: /internal/* không qua gateway — payment-route pass-through root nên chặn tường minh.
+app.Map("/api/v1/payment/internal/{**rest}", () => Results.NotFound()).ExcludeFromDescription();
+
 app.MapReverseProxy();
 
 app.Run();
