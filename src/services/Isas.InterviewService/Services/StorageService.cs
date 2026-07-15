@@ -46,12 +46,26 @@ public class StorageService : IStorageService
     {
         var key = BuildKey(fileType, userId, fileId, ext);
 
+        // SeaweedFS (HTTP) KHÔNG hỗ trợ AWS chunked/streaming payload signature mà SDK v4 dùng khi
+        // stream KHÔNG rõ length (upload từ browser) → "signature does not match". DisablePayloadSigning
+        // không dùng được (SeaweedFS chạy HTTP, SDK bắt buộc HTTPS). Fix: buffer vào MemoryStream
+        // (seekable + biết Length) → SDK ký single-chunk payload chuẩn → SeaweedFS chấp nhận.
+        using var buffer = new MemoryStream();
+        await fileStream.CopyToAsync(buffer, ct);
+        buffer.Position = 0;
+
+        // Content-Type từ browser có param (vd "audio/webm;codecs=opus"). Dấu ';' phá canonicalization
+        // chữ ký SigV4 của SeaweedFS → "signature does not match". Bỏ param, giữ media-type gốc.
+        var cleanContentType = string.IsNullOrWhiteSpace(contentType)
+            ? "application/octet-stream"
+            : contentType.Split(';')[0].Trim();
+
         var request = new PutObjectRequest
         {
             BucketName = _opts.BucketName,
             Key = key,
-            InputStream = fileStream,
-            ContentType = contentType,
+            InputStream = buffer,
+            ContentType = cleanContentType,
             AutoCloseStream = false,
         };
 
