@@ -10,13 +10,18 @@ from app.schemas import (
     GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
     SummarizeSessionRequest, SummarizeSessionResponse,
+    FaceVerifyRequest, FaceVerifyResponse,
 )
 from app.providers.gemini import GeminiProvider
-from app.transcriber import Transcriber 
+from app.transcriber import Transcriber
+from app.face_verify import FaceVerifier
+from app.config import settings
+from app import storage
 
 app = FastAPI(title="ISAS AI Service")
-transcriber = Transcriber() 
+transcriber = Transcriber()
 provider = GeminiProvider()
+face_verifier = FaceVerifier()
 
 # 1. Định nghĩa Router
 router = APIRouter(prefix="/api/v1")
@@ -122,6 +127,49 @@ async def summarize_session(req: SummarizeSessionRequest):
         raise
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi tổng kết buổi luyện: {ex}")
+
+
+@router.post("/face-verify", response_model=FaceVerifyResponse)
+async def face_verify(req: FaceVerifyRequest):
+    """SEC-2/3 — đối chiếu ảnh live ↔ ảnh tham chiếu + đếm mặt trên ảnh live.
+
+    Kéo 2 ảnh từ S3 theo key → detect+embed (thread, nặng CPU) → dựng cờ:
+      0 mặt → no_face · >1 mặt → multiple_faces · 1 mặt & score < threshold → face_mismatch.
+    Mọi tín hiệu = CỜ cho HR (SEC-4), KHÔNG tự chặn/hủy bài."""
+    if not req.referenceImageKey or not req.referenceImageKey.strip():
+        raise HTTPException(status_code=400, detail="referenceImageKey không được rỗng")
+    if not req.liveImageKey or not req.liveImageKey.strip():
+        raise HTTPException(status_code=400, detail="liveImageKey không được rỗng")
+
+    threshold = req.threshold if req.threshold is not None else settings.face_match_threshold
+
+    try:
+        # Tải ảnh (S3 blocking) + so khớp (model nặng CPU) → thread, không block event loop.
+        ref_bytes = await asyncio.to_thread(storage.get_object_bytes, req.referenceImageKey)
+        live_bytes = await asyncio.to_thread(storage.get_object_bytes, req.liveImageKey)
+        score, face_count = await asyncio.to_thread(
+            face_verifier.compare, ref_bytes, live_bytes)
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi đối chiếu khuôn mặt: {ex}")
+
+    signals: list[str] = []
+    if face_count == 0:
+        signals.append("no_face")
+        match = False
+    elif face_count > 1:
+        signals.append("multiple_faces")
+        match = False
+    else:
+        match = score >= threshold
+        if not match:
+            signals.append("face_mismatch")
+
+    return FaceVerifyResponse(
+        faceCount=face_count,
+        match=match,
+        score=round(float(score), 4),
+        signals=signals,
+    )
 
 
 @router.post("/transcribe")

@@ -104,8 +104,8 @@ public class CampaignResultsExportTests
         Assert.EndsWith(".csv", file.FileDownloadName);
 
         var lines = CsvLines(file.FileContents);
-        // Header snake_case + đúng số dòng dữ liệu (= số ứng viên E5).
-        Assert.Equal("rank,candidate_id,session_id,total_score,result,scored_at", lines[0]);
+        // Header snake_case + đúng số dòng dữ liệu (= số ứng viên E5). SEC-4: thêm cột `flags` cuối (additive).
+        Assert.Equal("rank,candidate_id,session_id,total_score,result,scored_at,flags", lines[0]);
         Assert.Equal(expected.Results.Count, lines.Length - 1);
 
         // Từng dòng khớp E5 theo THỨ TỰ: rank · candidate_id · total_score · result.

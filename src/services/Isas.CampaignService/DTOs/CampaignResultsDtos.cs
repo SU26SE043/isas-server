@@ -25,6 +25,18 @@ namespace Isas.CampaignService.DTOs
         // "Pass"/"Fail" so ngưỡng; null khi ngưỡng chưa đặt (HR quyết tay).
         public string? Result { get; set; }
         public DateTime ScoredAt { get; set; }
+
+        // SEC-4: cờ chống gian lận gom theo buổi (signal_type → count). Additive — mặc định rỗng
+        // (campaign không bật anti-cheat / không có cờ → []), KHÔNG phá client cũ. HR đánh giá lại (không auto-hủy).
+        public List<FlagDto> Flags { get; set; } = new();
+    }
+
+    // SEC-4: 1 loại cờ đã gom cho HR — Type=signal_type, Count=số lần trong buổi, Note=1 ghi chú đại diện (nếu có).
+    public class FlagDto
+    {
+        public string Type { get; set; } = null!;
+        public int Count { get; set; }
+        public string? Note { get; set; }
     }
 
     // E6 — kết quả xuất file (CSV/PDF) cho `GET /campaign/{id}/results/export`.

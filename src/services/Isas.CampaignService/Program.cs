@@ -43,8 +43,14 @@ builder.Services.AddScoped<IParserService, ParserService>();
 // C8: gọi AIService đề xuất tiêu chí (đồng bộ qua AiService:BaseUrl; có fallback)
 builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
+// SEC-2: gọi AIService so khớp khuôn mặt (đồng bộ qua AiService:BaseUrl; lỗi → 502 ném lên controller)
+builder.Services.AddHttpClient<IAiServiceFaceVerifyClient, AiServiceFaceVerifyClient>(c =>
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 // D1: đẩy job email mời (magic-link) vào RabbitMQ (cùng pattern InterviewService.ScoringJobPublisher)
 builder.Services.AddSingleton<IInvitationEmailPublisher, InvitationEmailPublisher>();
+// D1 (consumer): tiêu thụ campaign_invitation_email_queue → gửi email mời qua SMTP.
+builder.Services.AddScoped<ICampaignEmailSender, CampaignEmailSender>();
+builder.Services.AddHostedService<InvitationEmailConsumer>();
 // C14: sàng CV async — đẩy job AI chấm khớp (cv_screening_queue) + xử lý callback/shortlist/PATCH
 builder.Services.AddSingleton<ICvScreeningPublisher, CvScreeningPublisher>();
 builder.Services.AddScoped<ICvScreeningService, CvScreeningService>();

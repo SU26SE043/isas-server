@@ -17,6 +17,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignRanking> CampaignRankings => Set<CampaignRanking>();
         public DbSet<CampaignCandidate> CampaignCandidates => Set<CampaignCandidate>();          // C13: sàng CV
         public DbSet<CandidateCriterionScore> CandidateCriterionScores => Set<CandidateCriterionScore>();
+        public DbSet<SessionFlag> SessionFlags => Set<SessionFlag>();                            // SEC-1: cờ chống gian lận cho HR
 
         // C13: string[] ↔ JSON (jsonb trên Npgsql; text trên SQLite test). Portable — filter đọc/ghi trong C#,
         // không query trong JSON. Comparer để EF theo dõi thay đổi phần tử đúng (list là mutable reference).
@@ -47,6 +48,7 @@ namespace Isas.CampaignService.Models
                  .HasDefaultValue(CampaignStatus.Draft);
 
                 e.Property(x => x.AntiCheatEnabled).HasDefaultValue(true);
+                e.Property(x => x.FaceVerifyEnabled).HasDefaultValue(false);   // SEC-1: face-verify opt-in (B2B)
 
                 e.Property(x => x.StartsAt).IsRequired();
 
@@ -215,6 +217,20 @@ namespace Isas.CampaignService.Models
                  .WithMany()
                  .HasForeignKey(x => x.CriterionId)
                  .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── SessionFlag (cờ chống gian lận cho HR — SEC-1/D13) ─────────────────
+            modelBuilder.Entity<SessionFlag>(e =>
+            {
+                e.ToTable("session_flags");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.SignalType).IsRequired().HasMaxLength(32);
+                e.Property(x => x.DetectedAt).HasDefaultValueSql("now()");
+
+                // Gom cờ theo buổi (surface cho HR + aggregate results). Ref lỏng — KHÔNG FK xuyên service.
+                e.HasIndex(x => x.SessionId);
+                e.HasIndex(x => new { x.CampaignId, x.SessionId });
             });
         }
     }

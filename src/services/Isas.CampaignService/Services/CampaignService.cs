@@ -58,6 +58,7 @@ namespace Isas.CampaignService.Services
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
                 AntiCheatEnabled = request.AntiCheatEnabled,
+                FaceVerifyEnabled = request.FaceVerifyEnabled,   // SEC-1: face-verify opt-in (B2B)
                 PassScorePct = request.PassScorePct,   // E5: ngưỡng pass/fail (null = HR quyết tay)
                 // C11: JD/Criteria nhập text trực tiếp → *_text set, *_file_url null (không file lúc tạo).
                 JDText = NormalizeText(request.JdText),
@@ -202,6 +203,10 @@ namespace Isas.CampaignService.Services
 
             if (request.AntiCheatEnabled.HasValue)
                 campaign.AntiCheatEnabled = request.AntiCheatEnabled.Value;
+
+            // SEC-1: merge-only-if-provided (như AntiCheatEnabled C3) — null giữ nguyên giá trị cũ.
+            if (request.FaceVerifyEnabled.HasValue)
+                campaign.FaceVerifyEnabled = request.FaceVerifyEnabled.Value;
 
             // E5: cập nhật ngưỡng pass/fail (chỉ khi gửi lên; validate ∈ [0,100]).
             if (request.PassScorePct.HasValue)
@@ -715,6 +720,10 @@ namespace Isas.CampaignService.Services
                 .ThenBy(r => r.SessionId)
                 .ToList();
 
+            // SEC-4: gom cờ chống gian lận theo buổi → signal_type + count (+ 1 note đại diện) cho HR.
+            // Đọc read-model LOCAL session_flags (không xuyên service). Campaign không bật anti-cheat → không có cờ → [].
+            var flagsBySession = await GetFlagsBySessionAsync(id, ct);
+
             var threshold = campaign.PassScorePct;
             var results = new List<CampaignResultRow>(ordered.Count);
             for (int i = 0; i < ordered.Count; i++)
@@ -737,7 +746,8 @@ namespace Isas.CampaignService.Services
                     Result = threshold is null
                         ? null
                         : (r.TotalScore >= threshold.Value ? "Pass" : "Fail"),
-                    ScoredAt = r.UpdatedAt
+                    ScoredAt = r.UpdatedAt,
+                    Flags = flagsBySession.TryGetValue(r.SessionId, out var f) ? f : new List<FlagDto>()
                 });
             }
 
@@ -748,6 +758,30 @@ namespace Isas.CampaignService.Services
                 TotalCandidates = results.Count,
                 Results = results
             };
+        }
+
+        // SEC-4: gom session_flags của 1 campaign → Dictionary<session_id, List<FlagDto>>.
+        // Group theo (session_id, signal_type) → count; Note = ghi chú non-empty đầu tiên (đại diện cho HR).
+        // Materialize rồi group in-memory (số cờ/campaign nhỏ; tránh phụ thuộc dịch GROUP BY của provider).
+        private async Task<Dictionary<Guid, List<FlagDto>>> GetFlagsBySessionAsync(Guid campaignId, CancellationToken ct)
+        {
+            var flags = await _db.SessionFlags
+                .Where(f => f.CampaignId == campaignId)
+                .ToListAsync(ct);
+
+            return flags
+                .GroupBy(f => f.SessionId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.GroupBy(x => x.SignalType)
+                          .OrderBy(t => t.Key, StringComparer.Ordinal)
+                          .Select(t => new FlagDto
+                          {
+                              Type = t.Key,
+                              Count = t.Count(),
+                              Note = t.Select(x => x.Note).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))
+                          })
+                          .ToList());
         }
 
         // ── E6: xuất bảng kết quả (E5) ra file ──────────────────────────────
@@ -1016,7 +1050,9 @@ namespace Isas.CampaignService.Services
                 SessionId = r.SessionId,
                 TotalScore = r.TotalScore,
                 Result = r.Result ?? string.Empty,   // ngưỡng null → ô result rỗng (HR quyết tay)
-                ScoredAt = r.ScoredAt
+                ScoredAt = r.ScoredAt,
+                // SEC-4: tóm tắt cờ chống gian lận "type:count" ngăn bởi "; " (rỗng nếu không có cờ) cho HR đọc.
+                Flags = string.Join("; ", r.Flags.Select(f => $"{f.Type}:{f.Count}"))
             }).ToList();
 
             using var buffer = new MemoryStream();
@@ -1039,6 +1075,7 @@ namespace Isas.CampaignService.Services
             public decimal TotalScore { get; set; }
             public string Result { get; set; } = string.Empty;
             public DateTime ScoredAt { get; set; }
+            public string Flags { get; set; } = string.Empty;   // SEC-4: tóm tắt cờ chống gian lận
         }
 
         private sealed class ResultCsvRowMap : ClassMap<ResultCsvRow>
@@ -1052,6 +1089,7 @@ namespace Isas.CampaignService.Services
                 Map(m => m.Result).Index(4).Name("result");
                 // ScoredAt là UTC (UpdatedAt server) → ISO 8601 với hậu tố Z (chữ hoa = literal).
                 Map(m => m.ScoredAt).Index(5).Name("scored_at").TypeConverterOption.Format("yyyy-MM-ddTHH:mm:ssZ");
+                Map(m => m.Flags).Index(6).Name("flags");   // SEC-4: cột cờ chống gian lận (rỗng nếu không có)
             }
         }
 
