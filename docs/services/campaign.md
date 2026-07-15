@@ -326,7 +326,7 @@ Analyzed ─(HR chọn top → invite: TÁCH EMAIL TỪ CV; null → skip + PATC
 - Tôn trọng `max_candidates`.
 
 ### Anti-cheat (`anti_cheat_enabled`)
-> ❌ **0% implemented (2026-07-16):** chỉ có **cột cờ** `anti_cheat_enabled` (lưu + set + trả về response) — **KHÔNG** code nào đọc để enforce; **KHÔNG** có `face_verify_enabled`, bảng `session_integrity_events`, giám sát 2 phút, face-verify gate. Phần dưới = thiết kế TARGET (SEC-1..5, [../rules.md](../rules.md)) — **chưa build** (tasks `SEC1`).
+> 🟡 **Backend scaffold built (2026-07-16, branch `feat/b2b-email-anticheat`):** toggle `face_verify_enabled` + bảng `session_flags` + ingest endpoint (`POST /campaign/{id}/sessions/{sid}/flags` candidate-JWT cho FE signals · `POST /internal/session-flags` X-Internal-Token cho AI signals) + surface cờ cho HR (`CampaignResultRow.Flags[]` + CSV). Chỉ **NHẬN+LƯU+SURFACE** cờ (D13). ❌ **CÒN (ngoài repo):** detection thật — FE (webcam/tab-switch) + AIService (face-match/multi-voice); face-verify gate. Tracking: tasks `SEC1`.
 - **Định nghĩa "cheat" (tín hiệu, không kết luận máy móc):** FE — chuyển tab / mất focus / paste / thoát fullscreen; (tùy chọn) AI — **phát hiện nhiều giọng nói** (`multi_voice`) từ audio.
 - **Hệ quả = FLAG cho HR xem xét, KHÔNG auto-hủy bài.** False-positive auto-hủy sẽ giết oan ứng viên thật → chỉ gắn cảnh báo + số liệu vào kết quả, **HR quyết định**.
 - Không phải proctoring/webcam. Không kịp build → ghi rõ "chỉ là cờ" (đừng hứa suông).

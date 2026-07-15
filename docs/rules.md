@@ -45,7 +45,7 @@
 - **CAMP-3** Chỉ thành viên org sở hữu được sửa/xóa/xem kết quả (sau khi publish thì soft delete). Campaign đã publish muốn huỷ → cập nhật trạng thái sang **Closed** và **gửi mail lại** cho ứng viên.
 - **CAMP-4** Mỗi campaign bắt buộc 1 position/vị trí.
 - **CAMP-5** **JD** nhập bằng **PDF** (upload; AI đọc để sinh câu hỏi) — C11. **Tiêu chí** nhập **trực tiếp có cấu trúc** trong app (`criteria[]`: name/weight/maxScore/description, Σweight=1) — công ty/HR tự khai (`source=HrEdited`), **publish không cần AI** — C12. *(Không dùng template file / PDF cho tiêu chí.)*
-- **CAMP-8** ✅ Distribution membership (D1–D4): invitation → join → my-campaigns → **Start** → create-or-get session (session tạo khi Start, không khi mở link); resume tới submit (D3); reissue token (D4). *(⚠ khâu gửi **email** mời còn hở — `InvitationEmailPublisher` đẩy queue nhưng **consumer chưa build**, tasks `D5`.)*
+- **CAMP-8** ✅ Distribution membership (D1–D4): invitation → join → my-campaigns → **Start** → create-or-get session (session tạo khi Start, không khi mở link); resume tới submit (D3); reissue token (D4). *(✅ **D5**: `InvitationEmailConsumer` đã build (branch `feat/b2b-email-anticheat`) tiêu thụ queue → SMTP gửi magic-link; cần SMTP creds thật để gửi live.)*
 - **CAMP-9** Tôn trọng `max_candidates`.
 - **CAMP-10** ✅ Ranking event-driven (E4): `SessionScored` → upsert `campaign_rankings` theo `session_id` (idempotent), đọc local.
 - **CAMP-11** ✅ Pass/fail theo ngưỡng Employer `pass_score_pct` (E5); chỉ xếp hạng ứng viên `Scored`; export CSV (E6).
@@ -84,7 +84,7 @@
 - **BC-7** Candidate có **rubric riêng theo JobCategory** — tự CRUD (`api/practice/rubrics`, **không** admin; đảo hướng BK3). Chưa khai → dùng **seed mặc định** (BC11). Scoring **ưu tiên rubric riêng** (active) else seed. Sửa = **soft-versioned** (deactivate bản cũ + thêm bản mới active, KHÔNG hard-delete — FK `answer_scores`). Điểm tổng vẫn **TB cộng** (INT-10); `weight` chỉ để hiển thị. **(BC16, 2026-07-13.)**
 
 ## SEC — Chống gian lận (B2B, 🔜)
-> ❌ **0% implemented (2026-07-16)** — toàn bộ SEC-1..5 dưới là **thiết kế TARGET, chưa build**. Thực tế code: **chỉ** có cột cờ `anti_cheat_enabled` (lưu/set/trả response, **KHÔNG ai đọc để enforce**); **KHÔNG** có field `face_verify_enabled`, bảng `session_integrity_events`, giám sát 2 phút, hay face-verify gate. Tracking: tasks `SEC1`.
+> 🟡 **Backend scaffold built, detection cross-repo (2026-07-16)** — SEC-1 (toggle `face_verify_enabled` + bảng `session_flags`) + ingest endpoint (nhận cờ từ FE/AI) + SEC-4 (surface cờ cho HR: `CampaignResultRow.Flags[]`) **ĐÃ build** (branch `feat/b2b-email-anticheat`, D13 flag-cho-HR). Scaffold chỉ **NHẬN+LƯU+SURFACE** cờ. ❌ **CÒN (ngoài repo):** SEC-2/3 **detection thật** — **FE** (webcam/tab-switch/paste) + **AIService** (face-match/multi-voice); face-verify gate. Tracking: tasks `SEC1`.
 - **SEC-1** Bật theo campaign (`anti_cheat_enabled` **[chỉ cột cờ có sẵn]**, `face_verify_enabled` **[field CHƯA tồn tại]**); chỉ B2B.
 - **SEC-2** Face-verify gate trước bài (chụp live ↔ ảnh tham chiếu ≥ threshold); fail → soft-flag `identity_unverified` (HR duyệt) hoặc hard-block + re-issue.
 - **SEC-3** Giám sát mỗi 2 phút (face_mismatch / no_face / multiple_faces) + tab-switch/focus/paste → flag, **KHÔNG auto-dừng**.
