@@ -220,6 +220,9 @@ namespace Isas.CampaignService.Services
             {
                 SessionId = session.SessionId,
                 CampaignId = campaignId,
+                // SEC-2: bật face-verify + chưa có ảnh tham chiếu → FE cần nhắc enroll (KHÔNG chặn start, D13/SEC-5).
+                FaceEnrollRequired = campaign.FaceVerifyEnabled
+                    && string.IsNullOrWhiteSpace(membership.ReferenceImageKey),
                 Questions = session.Questions
                     .OrderBy(q => q.OrderNo)
                     .Select(q => new StartQuestionItem

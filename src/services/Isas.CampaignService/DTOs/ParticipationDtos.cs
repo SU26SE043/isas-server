@@ -57,6 +57,9 @@ namespace Isas.CampaignService.DTOs
         public Guid SessionId { get; set; }
         public Guid CampaignId { get; set; }
         public List<StartQuestionItem> Questions { get; set; } = new();
+        // SEC-2: campaign bật face-verify NHƯNG ứng viên chưa có ảnh tham chiếu → FE nhắc enroll trước khi làm.
+        // D13/SEC-5: chỉ là gợi ý (thiếu ảnh ≠ gian lận) — KHÔNG hard-block việc bắt đầu.
+        public bool FaceEnrollRequired { get; set; }
     }
 
     public class StartQuestionItem
