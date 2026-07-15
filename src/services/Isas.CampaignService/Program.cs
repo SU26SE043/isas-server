@@ -122,7 +122,10 @@ builder.Services.AddSingleton<IAmazonS3>(sp => {
         ServiceURL = opts.ServiceURL,
         ForcePathStyle = opts.ForcePathStyle,
         AuthenticationRegion = "us-east-1",
-        UseHttp = true
+        UseHttp = true,
+        // SeaweedFS: SDK v4 default checksum (CRC32 + streaming trailer) → "signature does not match".
+        RequestChecksumCalculation = Amazon.Runtime.RequestChecksumCalculation.WHEN_REQUIRED,
+        ResponseChecksumValidation = Amazon.Runtime.ResponseChecksumValidation.WHEN_REQUIRED
     });
 });
 

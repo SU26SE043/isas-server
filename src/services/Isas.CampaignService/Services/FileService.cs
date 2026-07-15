@@ -22,11 +22,18 @@ namespace Isas.CampaignService.Services
         {
             await using var stream = file.OpenReadStream();
 
+            // SeaweedFS (HTTP): buffer vào MemoryStream để SDK v4 biết ContentLength → ký single-chunk
+            // (không STREAMING signature mà SeaweedFS từ chối cho upload browser). DisablePayloadSigning
+            // không dùng được vì SeaweedFS chạy HTTP.
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+            buffer.Position = 0;
+
             var request = new PutObjectRequest
             {
                 BucketName = _bucket,
                 Key = path,
-                InputStream = stream,
+                InputStream = buffer,
                 ContentType = file.ContentType,
             };
 
