@@ -9,7 +9,7 @@
 Lớp **điều phối B2B**, không tự chạy phỏng vấn:
 - Tạo **campaign** từ JD + **câu hỏi** (AI gợi ý từ JD — [ai.md](ai.md)) + **tiêu chí**. Khi **publish**: AI biến tiêu chí PDF → **bộ tiêu chí CÓ CẤU TRÚC** (name/weight/max_score), **HR duyệt** (xem rules).
 - **Distribution**: phát link mời (magic-link) + email hàng loạt; ứng viên vào → gọi **InterviewService** create-or-get session gắn `campaign_id` (kèm câu hỏi + tiêu chí).
-- **Credit**: **reserve** credit của **org** (chủ campaign) khi ứng viên bắt đầu (PaymentService) — [payment.md](payment.md).
+- **Credit**: khi ứng viên bấm **Start**, Campaign gửi `campaign.OrgId` sang InterviewService → **InterviewService reserve** 1 credit ví **org** (chủ campaign) — reserve-first (**BK14**, Campaign KHÔNG gọi Payment trực tiếp); ví org hết → **402**; consume/release qua event (E7). Chi tiết [payment.md](payment.md).
 - **Ranking + Result**: **nghe event `SessionScored`** → cập nhật **bảng ranking read-model trong `isas_campaign`** (không gọi HTTP đọc điểm mỗi lần) → xếp hạng, pass/fail, xuất CSV/PDF.
 
 > Luồng end-to-end xuyên service ở [../architecture.md](../architecture.md) §4.1 (file này chỉ tả phần Campaign).
@@ -57,7 +57,7 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 >
 > **✅ D2 (redesign 2026-07-11 — membership model, giống Discord/Classroom):** link mời **CHỈ để tham gia campaign**, **KHÔNG tạo session lúc mở link**. `CampaignCandidate` = **Membership** giữa Candidate↔Campaign (1/(campaign,candidate)). Session phỏng vấn **chỉ tạo khi bấm Start Interview** (create-or-get idempotent theo (candidateId,campaignId)). Luồng FE: **Invitation → Join → My Campaigns → Campaign Detail → Start → Interview**. Trạng thái membership: `Joined`; tiến độ phỏng vấn `interview_status`: NotStarted→InProgress (start)→Completed (E4 khi `SessionScored`).
 
-- `POST /campaign/{id}/invitations` — **Đường 1 (mời thẳng)**: body `{ emails: string[] }` → **phân tích danh sách**: validate định dạng (item hỏng → trả trong `failed[]`, KHÔNG chặn cả batch) · dedup (trong list + với invitation đã có) · check `max_candidates` (vượt → 4xx) → tạo `campaign_invitations` + đẩy **email queue** gửi hàng loạt. Campaign phải `Active`.
+- `POST /campaign/{id}/invitations` — **Đường 1 (mời thẳng)**: body `{ emails: string[] }` → **phân tích danh sách**: validate định dạng (item hỏng → trả trong `failed[]`, KHÔNG chặn cả batch) · dedup (trong list + với invitation đã có) · check `max_candidates` (vượt → 4xx) → tạo `campaign_invitations` + đẩy **email queue** (`InvitationEmailPublisher` → queue `campaign_invitation_email_queue`) **(⚠ publisher-only — worker consumer gửi mail THẬT chưa build, tasks `D5`)**. Campaign phải `Active`.
 - `POST /campaign/{id}/candidates/invite` — **Đường 2 (từ shortlist, 🔜 C15)**: body `{ candidateIds: uuid[] }` (HR **chọn top** sau ranking) → mỗi candidate: **tách email từ CV** (`campaign_candidates.email` — parse sẵn ở C13) → tạo invitation **gắn `campaign_candidate_id`** + gửi; status `Analyzed → Invited`. **Email null** (CV không có / parse không ra) → **skip item + trả trong `failed[]`** ("thiếu email — PATCH bổ sung"), các item còn lại vẫn gửi bình thường.
 - `PATCH /campaign/{id}/candidates/{candidateId}` — HR **bổ sung/sửa `email`/`fullName`** khi CV không tách được (ghi `audit_logs`); đã `Invited` → **409**.
 - `GET /campaign/{id}/invitations` — danh sách + trạng thái (đã gửi / đã mở / đã nộp).
@@ -142,7 +142,7 @@ HR ─upload PDFs─► Campaign ─parse(PdfPig)→hard-filter─► Rejected |
 **Distribution (🔜 M3):**
 ```
 HR ─POST /campaign/{id}/invitations─► token + email ─► ứng viên mở /invitations/{token}
-   ─► Interview create-or-get session(campaign_id) + Campaign reserve credit org ─► phỏng vấn
+   ─► Interview create-or-get session(campaign_id) + Interview reserve credit org (BK14) ─► phỏng vấn
 ```
 
 ---
@@ -314,7 +314,7 @@ Analyzed ─(HR chọn top → invite: TÁCH EMAIL TỪ CV; null → skip + PATC
 
 **Luồng tiền — sàng CV MIỄN PHÍ phase 1 (D19); billing CHỈ ở phỏng vấn thật:**
 - Sàng CV = **0 credit**, **KHÔNG** chạm `credit_accounts`/`credit_reservations` ([payment.md](payment.md)). Lý do: `1 credit = 1 lượt phỏng vấn có audio` — trừ credit cho việc *đọc CV* là **sai semantics** + **double-charge** nếu shortlist còn đi phỏng vấn.
-- **Billing phát sinh khi `Invited` → ứng viên phỏng vấn thật:** D1/D2 magic-link → create-or-get session (`campaign_id`) → **reserve 1 credit org** → `SessionScored` → **consume** (bỏ ngang → `SessionAbandoned` → release). **NGUYÊN** luồng D7 — sàng CV **không thêm** reserve/consume nào.
+- **Billing phát sinh khi `Invited` → ứng viên phỏng vấn thật:** D1/D2 magic-link → Start → create-or-get session (`campaign_id`) → **InterviewService reserve 1 credit org** (BK14, Campaign gửi `campaign.OrgId`) → `SessionScored` → **consume** (bỏ ngang → `SessionAbandoned` → release). **NGUYÊN** luồng D7 — sàng CV **không thêm** reserve/consume nào.
 - **Chặn đốt chi phí AI (vì free):** (1) **hard-filter TRƯỚC AI** (chỉ `Filtered` gọi Gemini, rớt rule = 0 cost); (2) **cap số CV/campaign** (cấu hình / gắn gói; vượt → **4xx "vượt giới hạn sàng lọc của gói"**); (3) 1 call Gemini/CV, `temperature=0`. Chi phí Gemini/CV = **giá vốn nội bộ**; phase 2 nếu lớn → cân nhắc **loại credit sàng riêng** (D19, team xác nhận lại).
 
 ### Distribution — link mời "1 lần NỘP" (không phải 1 lần mở)
@@ -326,6 +326,7 @@ Analyzed ─(HR chọn top → invite: TÁCH EMAIL TỪ CV; null → skip + PATC
 - Tôn trọng `max_candidates`.
 
 ### Anti-cheat (`anti_cheat_enabled`)
+> ❌ **0% implemented (2026-07-16):** chỉ có **cột cờ** `anti_cheat_enabled` (lưu + set + trả về response) — **KHÔNG** code nào đọc để enforce; **KHÔNG** có `face_verify_enabled`, bảng `session_integrity_events`, giám sát 2 phút, face-verify gate. Phần dưới = thiết kế TARGET (SEC-1..5, [../rules.md](../rules.md)) — **chưa build** (tasks `SEC1`).
 - **Định nghĩa "cheat" (tín hiệu, không kết luận máy móc):** FE — chuyển tab / mất focus / paste / thoát fullscreen; (tùy chọn) AI — **phát hiện nhiều giọng nói** (`multi_voice`) từ audio.
 - **Hệ quả = FLAG cho HR xem xét, KHÔNG auto-hủy bài.** False-positive auto-hủy sẽ giết oan ứng viên thật → chỉ gắn cảnh báo + số liệu vào kết quả, **HR quyết định**.
 - Không phải proctoring/webcam. Không kịp build → ghi rõ "chỉ là cờ" (đừng hứa suông).

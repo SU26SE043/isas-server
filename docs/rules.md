@@ -37,7 +37,7 @@
 - **INT-11** Chỉ **chủ session** thao tác.
 - **INT-12** Phát event `SessionScored` / `SessionAbandoned`. *(Tạm dùng và làm tiếp phần tạm dừng B2C.)*
 - **INT-13** Danh tính B2B = magic-link → account Candidate nhẹ (D8).
-- **INT-14/15/16** 🔜 Chất lượng chấm: neo theo mức (E9), self-consistency + `needs_review` (E10), reasoning trích transcript + HR chốt (E11).
+- **INT-14/15/16** ✅ Chất lượng chấm (E9→E10→E11 xong): neo theo mức (E9), self-consistency median + `needs_review` (E10), reasoning trích transcript + chống prompt-injection + HR chốt (E11).
 
 ## CAMP — Campaign (B2B orchestrator)
 - **CAMP-1** Lifecycle: `Draft → Active → Closed → Archived`.
@@ -45,10 +45,10 @@
 - **CAMP-3** Chỉ thành viên org sở hữu được sửa/xóa/xem kết quả (sau khi publish thì soft delete). Campaign đã publish muốn huỷ → cập nhật trạng thái sang **Closed** và **gửi mail lại** cho ứng viên.
 - **CAMP-4** Mỗi campaign bắt buộc 1 position/vị trí.
 - **CAMP-5** **JD** nhập bằng **PDF** (upload; AI đọc để sinh câu hỏi) — C11. **Tiêu chí** nhập **trực tiếp có cấu trúc** trong app (`criteria[]`: name/weight/maxScore/description, Σweight=1) — công ty/HR tự khai (`source=HrEdited`), **publish không cần AI** — C12. *(Không dùng template file / PDF cho tiêu chí.)*
-- **CAMP-8** 🔜 Distribution: magic-link **"1 lần NỘP"**, resume tới submit, khoá sau submit; lỗi/hết hạn → về trang chủ.
+- **CAMP-8** ✅ Distribution membership (D1–D4): invitation → join → my-campaigns → **Start** → create-or-get session (session tạo khi Start, không khi mở link); resume tới submit (D3); reissue token (D4). *(⚠ khâu gửi **email** mời còn hở — `InvitationEmailPublisher` đẩy queue nhưng **consumer chưa build**, tasks `D5`.)*
 - **CAMP-9** Tôn trọng `max_candidates`.
-- **CAMP-10** 🔜 Ranking event-driven: `SessionScored` → upsert `campaign_rankings` theo `session_id` (idempotent), đọc local.
-- **CAMP-11** 🔜 Pass/fail theo ngưỡng Employer; chỉ xếp hạng ứng viên `Scored`.
+- **CAMP-10** ✅ Ranking event-driven (E4): `SessionScored` → upsert `campaign_rankings` theo `session_id` (idempotent), đọc local.
+- **CAMP-11** ✅ Pass/fail theo ngưỡng Employer `pass_score_pct` (E5); chỉ xếp hạng ứng viên `Scored`; export CSV (E6).
 - **CAMP-12** Anti-cheat = **FLAG cho HR**, KHÔNG auto-hủy (D13).
 - **CAMP-13** Soft-delete + `audit_logs` mọi mutation; purge file S3 sau 90 ngày (giữ điểm/transcript) (D11).
 
@@ -76,7 +76,7 @@
 
 ## BC — B2C luyện tập cá nhân
 - **BC-1** Không org, ví credit cá nhân **prepaid**.
-- **BC-2** 🔜 Reserve khi tạo session luyện; hết → 402.
+- **BC-2** ✅ Reserve ví User khi tạo session luyện (BC2); hết → 402, không tạo session.
 - **BC-3** Lịch sử chỉ của chính user.
 - **BC-4** Phân tích CV (feedback + khớp JD): **TÍNH PHÍ** (trừ credit), áp cả B2C lẫn B2B. *(Bỏ "miễn phí phase 1" — đảo lại D17; **chốt BK5 2026-07-12**. Còn wire reserve/consume vào BC7 = task code.)*
 - **BC-5** 🔜 Tổng kết buổi (BC9) + nhận xét AI (BC10).
@@ -84,7 +84,8 @@
 - **BC-7** Candidate có **rubric riêng theo JobCategory** — tự CRUD (`api/practice/rubrics`, **không** admin; đảo hướng BK3). Chưa khai → dùng **seed mặc định** (BC11). Scoring **ưu tiên rubric riêng** (active) else seed. Sửa = **soft-versioned** (deactivate bản cũ + thêm bản mới active, KHÔNG hard-delete — FK `answer_scores`). Điểm tổng vẫn **TB cộng** (INT-10); `weight` chỉ để hiển thị. **(BC16, 2026-07-13.)**
 
 ## SEC — Chống gian lận (B2B, 🔜)
-- **SEC-1** Bật theo campaign (`anti_cheat_enabled`, `face_verify_enabled`); chỉ B2B.
+> ❌ **0% implemented (2026-07-16)** — toàn bộ SEC-1..5 dưới là **thiết kế TARGET, chưa build**. Thực tế code: **chỉ** có cột cờ `anti_cheat_enabled` (lưu/set/trả response, **KHÔNG ai đọc để enforce**); **KHÔNG** có field `face_verify_enabled`, bảng `session_integrity_events`, giám sát 2 phút, hay face-verify gate. Tracking: tasks `SEC1`.
+- **SEC-1** Bật theo campaign (`anti_cheat_enabled` **[chỉ cột cờ có sẵn]**, `face_verify_enabled` **[field CHƯA tồn tại]**); chỉ B2B.
 - **SEC-2** Face-verify gate trước bài (chụp live ↔ ảnh tham chiếu ≥ threshold); fail → soft-flag `identity_unverified` (HR duyệt) hoặc hard-block + re-issue.
 - **SEC-3** Giám sát mỗi 2 phút (face_mismatch / no_face / multiple_faces) + tab-switch/focus/paste → flag, **KHÔNG auto-dừng**.
 - **SEC-4** Mọi tín hiệu = **cờ + note** summarize cho HR → HR đánh giá lại (điểm/kết quả AI = gợi ý).

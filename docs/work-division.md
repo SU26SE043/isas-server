@@ -96,7 +96,7 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 1. **CampaignService → InterviewService**: **create-or-get** session gắn `campaignId` (idempotent), kèm câu hỏi + **bộ tiêu chí CÓ CẤU TRÚC**. Ứng viên vào bằng **magic-link → account Candidate**.
 2. **InterviewService → Campaign + Payment (event `SessionScored` qua RabbitMQ)**: Campaign upsert **ranking read-model** (`campaign_rankings`), Payment **consume credit**. Giữ 1 endpoint HTTP backfill làm fallback.
 3. **Chấm theo tiêu chí**: tiêu chí campaign **chuyển từ text → có cấu trúc** (AI đề xuất + HR duyệt lúc publish) → materialize thành `rubric_criteria(campaign_id)` → chấm như rubric thường.
-4. **Campaign → PaymentService (reserve/consume/release)**: **reserve** credit của **org** khi ứng viên bắt đầu; **consume** khi `SessionScored`; **release** khi `SessionAbandoned`/lỗi. Idempotent theo `sessionId`; `X-Internal-Token`.
+4. **Interview → PaymentService (reserve/consume/release)**: khi tạo session **reserve** credit — **B2C owner=User**, **B2B owner=Org** (Campaign gửi `campaign.OrgId` lúc ứng viên **Start**, **BK14** — reserve-first, KHÔNG phải Campaign gọi Payment); **consume** khi `SessionScored`; **release** khi `SessionAbandoned`/lỗi (owner từ reservation, E7). Idempotent theo `sessionId`; `X-Internal-Token`.
 5. **CampaignService → AIService**: sinh câu hỏi + **đề xuất tiêu chí** từ JD/Criteria.
 
 > Lưu ý: các service **không call Auth lúc chạy** — validate JWT offline bằng chung key. Đừng vẽ "mọi service → Auth".

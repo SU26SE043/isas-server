@@ -9,7 +9,7 @@
 - Gọi **AIService** sinh câu hỏi (đồng bộ) + publish job chấm điểm lên **RabbitMQ**; nhận kết quả qua **callback nội bộ**.
 - **Phân biệt B2B/B2C bằng `campaign_id` trên session** (null = B2C luyện tập; có giá trị = bài thi B2B của campaign). Engine + state machine **giữ nguyên** cho cả hai.
 - **Danh tính ứng viên:** B2C lấy `candidateId` từ token người luyện; **B2B** vào bằng **magic-link** → provision/login account `Candidate` nhẹ (có `candidate_id` + JWT) → ownership "chủ session" dùng đúng cơ chế cũ.
-- **Vào bài B2B — sàng CV là bước TRƯỚC, không thuộc engine này:** ứng viên có thể được mời **thẳng**, hoặc qua **sàng lọc CV** ở CampaignService rồi mới mời (`Invited` → magic-link). **Sàng CV KHÔNG chạm engine phỏng vấn này và KHÔNG tiêu credit** ([campaign.md](campaign.md) §Lọc ứng viên qua CV; **D19**). Từ magic-link trở đi (create-or-get session gắn `campaign_id` → reserve credit org → chấm → consume) = **luồng + state machine + billing NGUYÊN như cũ** — engine không phân biệt ứng viên đã qua sàng CV hay chưa.
+- **Vào bài B2B — sàng CV là bước TRƯỚC, không thuộc engine này:** ứng viên có thể được mời **thẳng**, hoặc qua **sàng lọc CV** ở CampaignService rồi mới mời (`Invited` → magic-link). **Sàng CV KHÔNG chạm engine phỏng vấn này và KHÔNG tiêu credit** ([campaign.md](campaign.md) §Lọc ứng viên qua CV; **D19**). Từ magic-link trở đi (create-or-get session gắn `campaign_id` → **Interview reserve** credit org (BK14) → chấm → consume) = **luồng + state machine + billing NGUYÊN như cũ** — engine không phân biệt ứng viên đã qua sàng CV hay chưa.
 
 ---
 
@@ -698,7 +698,7 @@ Khi session đóng, engine phát event để service khác phản ứng (event-d
 - `SessionScored` = `{ sessionId, campaignId?(null=B2C), candidateId, totalScore, scoredAt }`. `totalScore` (0–100) = **Σ pct×weight / Σweight** (CÓ trọng số) — là **snapshot phục vụ ranking B2B** (E4). **B2C** (`campaignId=null`): điểm hiển thị cho user = **trung bình cộng** tính riêng ở **BC9** (`result.overallScore`), **KHÔNG** đọc `totalScore` của event này (tránh lệch INT-10).
 - `SessionAbandoned` = `{ sessionId, campaignId?, candidateId, reason, abandonedAt }` → Payment release reservation.
 
-- **Credit:** Campaign **reserve** 1 credit của org khi ứng viên bắt đầu; engine phát `SessionScored` → **consume**, `SessionAbandoned` → **release** (chi tiết [payment.md](payment.md)).
+- **Credit:** **InterviewService reserve** 1 credit của org khi ứng viên **Start** (owner=Org từ `campaign.OrgId` Campaign gửi kèm — **BK14**, reserve-first như B2C; ví org hết → 402 no-session); engine phát `SessionScored` → **consume**, `SessionAbandoned` → **release** (owner lấy từ reservation, E7 — chi tiết [payment.md](payment.md)).
 - Giữ 1 endpoint HTTP **backfill** làm fallback nếu miss event.
 
 ### Xác thực

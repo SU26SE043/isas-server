@@ -46,7 +46,9 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | Mảng | ✅ Đã có | ❌/🟡 Chưa làm | Tracking |
 |---|---|---|---|
 | **B2C (nền)** | Engine sinh câu hỏi **bám CV/JD** + chấm rubric `JobCategory` + lịch sử | Ví **credit cá nhân** + reserve/consume khi luyện; **phân tích CV (BC4)**; tổng kết điểm/nhận xét (BC9–BC11); **roadmap ôn tập (BC12–BC15, D20)** | tasks `BC1`–`BC15`; D15/D17/D20 |
-| **B2B (điều phối)** | tiêu chí text→**cấu trúc** (C8) + soft-delete/audit (C9/C10) + **I1** session `campaign_id`/materialize + **E1** chấm theo tiêu chí campaign | **Distribution** (M3 magic-link/email), **Ranking+Result** (M4/M5 + CSV/PDF), wire `org_id`, **lọc CV hàng loạt** (C13–C15, D18/D19) | work-division §1b; tasks `C*`/`D*`/`E*` |
+| **B2B (điều phối)** | tiêu chí text→**cấu trúc** (C8) + soft-delete/audit (C9/C10) + **I1** session `campaign_id`/materialize + **E1** chấm theo tiêu chí campaign + **distribution membership** (D1–D4: invitation/join/start/reissue) + **ranking/result/CSV** (E4/E5/E6) + **wire `org_id`** (BK4) + **reserve org credit** (BK14) + **lọc CV hàng loạt** (C13–C15) | ❌ **invitation-email consumer** (chỉ có publisher, chưa gửi mail); ❌ **SEC anti-cheat** (§dưới); PDF export (BK8) | work-division §1b; tasks `C*`/`D*`/`E*` |
+| **B2B Distribution — email** | `InvitationEmailPublisher` đẩy job vào queue `campaign_invitation_email_queue` (D1) | ❌ **KHÔNG có worker consumer** tiêu thụ queue → **chưa ai nhận được email mời thật** (magic-link flow join/start có, nhưng khâu gửi mail hở) | tasks `D5` (email consumer, đang build) |
+| **SEC — Anti-cheat B2B** | thiết kế SEC-1..5 ([rules.md](rules.md)) | ❌ **0% implement** — chỉ có cột cờ `anti_cheat_enabled` (KHÔNG code nào đọc để enforce); **KHÔNG** có `face_verify_enabled`, `session_integrity_events`, giám sát 2 phút, face-verify gate | rules SEC-1..5; tasks `SEC1` (chưa làm) |
 | **AuthService** | 3 role, JWT, Google OAuth, **Organization + org-role** (OrgAdmin/HrMember) trong JWT + `register-org` (A1–A3) | `A4` HrMember chặn billing, `A5` bật lại `[Authorize(Roles)]` mọi service | tasks `A1`–`A5` |
 | **PaymentService** ✅ | `credit_accounts(owner_type)` + **reserve/consume/release** (P4/P5/P6) + mua pack/webhook (P2) + active-polling (P3) + **postpaid + hóa đơn** (P8) — in tree, CI image, gateway route, compose | verify tay: PayOS sandbox (webhook HMAC) | tasks `P1`–`P8` ✅; [services/payment.md](services/payment.md) |
 | **CampaignService** 🟢 | merged main: CRUD + JD/Criteria (PdfPig) + 6 bug fix + lifecycle + publish tiêu chí cấu trúc + soft-delete/audit | distribution, ranking/result/export, wire `org_id` | tasks `C1`–`C10` |
@@ -64,9 +66,9 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | InterviewService | RabbitMQ | AMQP publish | Đẩy job chấm điểm |
 | AIService worker | RabbitMQ / SeaweedFS | AMQP consume / S3 | Nhận job; tải audio transcribe |
 | AIService worker | InterviewService | HTTP callback (`/internal/...`, `X-Internal-Token`) | Trả transcript + điểm |
-| CampaignService | InterviewService | HTTP | create-or-get session gắn `campaignId` (kèm câu hỏi + **tiêu chí có cấu trúc**) |
+| CampaignService | InterviewService | HTTP | create-or-get session gắn `campaignId` (kèm câu hỏi + **tiêu chí có cấu trúc** + `campaign.OrgId` để reserve — BK14) |
 | InterviewService | Campaign + Payment | **RabbitMQ event** | `SessionScored` → Campaign cập nhật **ranking read-model**, Payment **consume credit** |
-| Campaign | PaymentService | HTTP nội bộ (`X-Internal-Token`) | **reserve** credit của org khi ứng viên bắt đầu; `release` khi bỏ ngang |
+| InterviewService | PaymentService | HTTP nội bộ (`X-Internal-Token`) | **reserve** credit khi tạo session — **B2C owner=User**, **B2B owner=Org** (do Campaign gửi `campaign.OrgId` lúc Start, **BK14**). Consume/release qua **event** (E7, owner từ reservation) |
 | FE/Employer | PaymentService | HTTP | Mua pack (prepaid) / tất toán hóa đơn (postpaid); **webhook PayOS + active-polling** |
 
 > **AI không ghi DB:** AIService trả kết quả qua callback về .NET — .NET là **chủ DB duy nhất**.
@@ -95,7 +97,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 > **Hiện trạng B2C:** engine sinh câu hỏi (bám CV/JD) + chấm + lịch sử **đã chạy**; **còn thiếu**: wiring ví credit cá nhân (reserve/consume, bước 2–4) + BC4 phân tích CV + BC5 roadmap ôn tập. Xem [work-division.md](work-division.md) §1a, [decisions.md](decisions.md) D15/D17/D20.
 
 ### 4.2. Luồng B2B end-to-end (tuyển dụng) — XÂY TRÊN ENGINE B2C
-> B2B = **đúng engine + cách chấm của B2C**, thêm **CampaignService điều phối**. Khác B2C ở 4 điểm: `campaign_id` **có giá trị** · chủ ví credit = **Org** (CampaignService reserve, không phải InterviewService) · dùng **tiêu chí campaign có cấu trúc** thay rubric `JobCategory` · thêm **distribution (magic-link/email) + ranking/export**.
+> B2B = **đúng engine + cách chấm của B2C**, thêm **CampaignService điều phối**. Khác B2C ở 4 điểm: `campaign_id` **có giá trị** · chủ ví credit = **Org** (InterviewService reserve owner=Org — Campaign gửi `campaign.OrgId` lúc Start, **BK14**; **không** phải Campaign gọi Payment) · dùng **tiêu chí campaign có cấu trúc** thay rubric `JobCategory` · thêm **distribution (magic-link/email) + ranking/export**.
 >
 > **2 phương thức lọc ứng viên (app B2B):** **(1) qua CV** — *tùy chọn*, **MIỄN PHÍ** (D18/D19): HR đổ loạt CV → hard-filter (rule cứng) + AI match-score theo `campaign_criteria` → **shortlist xếp hạng** → mời top N. **(2) qua phỏng vấn AI** — bước A–C dưới, **tính credit**. Hai cách **nối nhau** (sàng CV → mời → phỏng vấn → ranking cuối) hoặc **dùng độc lập** (chỉ sàng CV; hoặc mời thẳng không sàng). Sàng CV **không** chạm engine phỏng vấn / **không** tiêu credit — chi tiết [services/campaign.md](services/campaign.md) §Lọc ứng viên qua CV.
 
@@ -105,7 +107,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 3. Distribution: phát **magic-link theo 2 đường** — **(a) mời thẳng**: HR upload **danh sách email** → validate/dedup/cap → gửi hàng loạt; **(b) từ shortlist sàng CV**: HR chọn top → hệ thống **tách email từ CV** → gửi (CV thiếu email → HR bổ sung rồi mời).
 
 **B. Ứng viên làm bài (tái dùng engine)**
-4. **✅ D2 (membership model):** Mở link → xem **intro campaign** (metadata) → **Join** (magic-link **provision/login `Candidate`** — `candidate_id` + JWT; đường (b): account mới **tự gắn** vào hồ sơ CV — `campaign_candidates.candidate_id`) → campaign vào **My Campaigns** → **Start Interview** → CampaignService **create-or-get** session gắn `campaign_id`. **Session CHỈ tạo khi bấm Start**, không phải khi mở link. *(🔜 reserve 1 credit org tại Start — BK14.)*
+4. **✅ D2 (membership model):** Mở link → xem **intro campaign** (metadata) → **Join** (magic-link **provision/login `Candidate`** — `candidate_id` + JWT; đường (b): account mới **tự gắn** vào hồ sơ CV — `campaign_candidates.candidate_id`) → campaign vào **My Campaigns** → **Start Interview** → CampaignService **create-or-get** session gắn `campaign_id`. **Session CHỈ tạo khi bấm Start**, không phải khi mở link. **✅ BK14:** tại Start, Campaign gửi `campaign.OrgId` → **InterviewService reserve** 1 credit ví **Org** (hết → **402**, không tạo session; consume/release qua event E7).
 5. Trả lời (ghi âm) → **chấm dần §4.3** theo **tiêu chí campaign**. Khóa link sau **submit** (resume các câu chưa nộp).
 
 **C. Đánh giá & kết quả (event-driven)**
@@ -130,7 +132,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 **Tiêu credit — reserve→consume:**
 ```
 ứng viên/người luyện bắt đầu ─► reserve {owner, sessionId}
-   (B2C owner=User · InterviewService gọi  |  B2B owner=Org · CampaignService gọi;
+   (InterviewService gọi reserve cho CẢ HAI — B2C owner=User · B2B owner=Org do Campaign gửi campaign.OrgId lúc Start (BK14);
     prepaid: remaining≥1 · postpaid CHỈ Org: nợ+giữ < credit_limit; hết → 402)
 session Scored ──(SessionScored)──► CONSUME (trừ thật)
 bỏ ngang/lỗi ───(SessionAbandoned)─► RELEASE (nhả chỗ)
