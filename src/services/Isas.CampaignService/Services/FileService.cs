@@ -34,7 +34,10 @@ namespace Isas.CampaignService.Services
                 BucketName = _bucket,
                 Key = path,
                 InputStream = buffer,
-                ContentType = file.ContentType,
+                // Bỏ param content-type (vd "image/png;...") — dấu ';' phá chữ ký SigV4 SeaweedFS.
+                ContentType = string.IsNullOrWhiteSpace(file.ContentType)
+                    ? "application/octet-stream"
+                    : file.ContentType.Split(';')[0].Trim(),
             };
 
             try

@@ -54,12 +54,18 @@ public class StorageService : IStorageService
         await fileStream.CopyToAsync(buffer, ct);
         buffer.Position = 0;
 
+        // Content-Type từ browser có param (vd "audio/webm;codecs=opus"). Dấu ';' phá canonicalization
+        // chữ ký SigV4 của SeaweedFS → "signature does not match". Bỏ param, giữ media-type gốc.
+        var cleanContentType = string.IsNullOrWhiteSpace(contentType)
+            ? "application/octet-stream"
+            : contentType.Split(';')[0].Trim();
+
         var request = new PutObjectRequest
         {
             BucketName = _opts.BucketName,
             Key = key,
             InputStream = buffer,
-            ContentType = contentType,
+            ContentType = cleanContentType,
             AutoCloseStream = false,
         };
 

@@ -62,8 +62,14 @@ class FaceVerifier:
         if face_count != 1:
             return 0.0, face_count
 
+        # Ảnh reference cũng cần đúng 1 mặt. Nếu enroll kém (0 hoặc nhiều mặt) → KHÔNG raise
+        # (tránh 502 chặn cả face-check), trả score 0.0 → caller cờ face_mismatch cho HR (D13, không chặn).
+        ref_faces = self._detect(ref_bytes)
+        if len(ref_faces) != 1:
+            return 0.0, face_count
+
         live_emb = live_faces[0].normed_embedding
-        ref_emb = self.embed(ref_bytes)  # ref cũng cần đúng 1 mặt để nhúng
+        ref_emb = ref_faces[0].normed_embedding
         return self._cosine(ref_emb, live_emb), face_count
 
     @staticmethod
