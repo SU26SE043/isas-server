@@ -182,6 +182,45 @@ public class PracticeServiceTests
             Times.Never);
     }
 
+    // P1-2: reserve THÀNH CÔNG (credit đã trừ) rồi bước hậu-reserve NÉM (ở đây: insert session lỗi
+    // UNIQUE PK) → phải hoàn credit (ReleaseAsync đúng sessionId, đúng 1 lần) TRƯỚC khi ném lại lỗi gốc,
+    // để credit ví User không treo. Dùng CreateLessonSessionAsync để cấp sẵn sessionId đã tồn tại trong DB.
+    [Fact]
+    public async Task Create_ReserveOk_InsertThrows_ReleasesCredit_AndRethrows()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+
+        // Chèn sẵn 1 row cùng Id qua context RIÊNG (không track ở context service dùng) → Add+SaveChanges
+        // trong CreateSessionInternalAsync sẽ đụng UNIQUE(PK) → DbUpdateException (lỗi hậu-reserve thật).
+        await using (var seed = t.NewContext())
+        {
+            var existing = TestDb.Session(candidate, SessionStatus.Ready);
+            existing.Id = sessionId;
+            seed.Add(existing);
+            await seed.SaveChangesAsync();
+        }
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        var svc = Build(t, gen, out _, out var reservation);
+        reservation
+            .Setup(r => r.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
+
+        await Assert.ThrowsAsync<DbUpdateException>(() =>
+            svc.CreateLessonSessionAsync(candidate, req, sessionId, focusCriteria: null));
+
+        // Bù trừ: credit đã reserve được hoàn đúng sessionId, đúng 1 lần.
+        reservation.Verify(r => r.ReleaseAsync(sessionId, It.IsAny<CancellationToken>()), Times.Once);
+        // Lỗi xảy ra trước khi sinh câu hỏi → generator không được gọi.
+        gen.Verify(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task Create_GeneratorReturnsEmpty_SessionFailed_Throws()
     {
