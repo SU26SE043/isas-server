@@ -170,7 +170,7 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 
 **`POST /sessions/{sessionId}/answers`** — Upload audio trả lời.
 - Req `multipart/form-data`: `questionId: uuid` · `file: audio ≤50MB` · `durationSec: int`.
-- **Idempotent**: upload lại cùng `questionId` = ghi đè (reset transcript, publish lại chấm).
+- **Idempotent**: upload lại cùng `questionId` = ghi đè (reset transcript **+ xoá điểm cũ `answer_scores` + `needs_review=false`**, publish lại chấm) — INT-3, chấm lại từ đầu sạch (không trộn điểm/rubric version cũ).
 - Res **`200/201`** `AnswerResponse` (`status="Uploaded"` → publish → `Scoring`). Answer đầu tiên: session `Ready→InProgress`.
 - Lỗi: **400** (thiếu field · file quá lớn) · **401** · **403** · **404** (session/câu không có) · **409** (session đã `Scoring`/`Scored`).
 

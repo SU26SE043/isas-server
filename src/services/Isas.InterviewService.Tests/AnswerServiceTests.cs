@@ -1,3 +1,4 @@
+using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
@@ -116,6 +117,73 @@ public class AnswerServiceTests
         Assert.Equal(AnswerStatus.Uploaded, saved.Status);
         Assert.Null(saved.LastScoringPublishedAt);
         publisher.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // INT-3: upload lại cùng câu → dọn sạch điểm cũ + reset needs_review → chấm lại từ đầu sạch
+    // (không giữ điểm bài cũ, tránh GET trả điểm cũ / trộn rubric_version khi đổi rubric BC16).
+    [Fact]
+    public async Task Upload_ReUpload_ClearsStaleScores_AndResetsNeedsReview()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        t.Db.AddRange(session, q, crit);
+        await t.Db.SaveChangesAsync();
+
+        // Mỗi upload = 1 request thật → context riêng (scoped per-request). Dùng NewContext() để không
+        // tái dùng entity đang track (che mất reset scalar giống môi trường thật).
+        AnswerService SvcOn(InterviewDbContext db)
+        {
+            var storage = new Mock<IStorageService>();
+            storage.Setup(s => s.UploadAsync(
+                    It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<Guid>(),
+                    It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync("answer-audio/seed.webm");
+            return new AnswerService(db, storage.Object, new Mock<IScoringJobPublisher>().Object,
+                new Mock<ISessionScoringNotifier>().Object, TestDb.ScoringOpts(), NullLogger<AnswerService>.Instance);
+        }
+
+        // Lần 1: upload → answer Scoring.
+        Guid answerId;
+        await using (var ctx1 = t.NewContext())
+        using (var audio1 = new MemoryStream(new byte[] { 1 }))
+            answerId = (await SvcOn(ctx1).UploadAnswerAsync(session.Id, q.Id, candidate, audio1, "audio/webm", 30)).AnswerId;
+
+        // Giả lập đã chấm xong: thêm điểm cũ + needs_review + transcript.
+        await using (var seed = t.NewContext())
+        {
+            var a = await seed.PracticeAnswers.FirstAsync(x => x.Id == answerId);
+            a.NeedsReview = true;
+            a.Transcript = "transcript bài CŨ";
+            seed.AnswerScores.Add(new AnswerScore
+            {
+                Id = Guid.NewGuid(),
+                AnswerId = answerId,
+                CriterionId = crit.Id,
+                Score = 4m,
+                Reasoning = "điểm bài CŨ",
+                AttemptNo = 1,
+                RubricVersion = 1,
+                CreatedAt = DateTime.UtcNow
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        // Lần 2: upload lại cùng câu (ghi đè) — context riêng, đọc đúng state DB.
+        await using (var ctx2 = t.NewContext())
+        using (var audio2 = new MemoryStream(new byte[] { 9, 9 }))
+            await SvcOn(ctx2).UploadAnswerAsync(session.Id, q.Id, candidate, audio2, "audio/webm", 42);
+
+        // Điểm cũ bị xoá sạch, không còn row answer_scores cho answer này.
+        Assert.Equal(0, await t.Db.AnswerScores.AsNoTracking().CountAsync(s => s.AnswerId == answerId));
+
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answerId);
+        Assert.False(saved.NeedsReview);              // cờ soi lại reset
+        Assert.Null(saved.Transcript);                // transcript cũ xoá
+        // Về lại vòng chấm mới (Scoring vì có rubric → publish; hoặc Uploaded nếu publish hụt).
+        Assert.True(saved.Status is AnswerStatus.Uploaded or AnswerStatus.Scoring);
     }
 
     // E1: session B2B publish job mang ĐÚNG tiêu chí campaign (không phải rubric B2C cùng nghề).

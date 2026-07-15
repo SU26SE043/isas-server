@@ -62,8 +62,10 @@ public class AnswerService : IAnswerService
             .FirstOrDefaultAsync(q => q.Id == questionId && q.SessionId == sessionId, ct)
             ?? throw new KeyNotFoundException("Câu hỏi không thuộc buổi này");
 
-        // 4. Tìm answer cũ (retry) - business rule: tối đa 1 answer mỗi câu
+        // 4. Tìm answer cũ (retry) - business rule: tối đa 1 answer mỗi câu.
+        //    Include(Scores) để re-upload dọn sạch điểm cũ (INT-3) — xem nhánh else bên dưới.
         var answer = await _db.PracticeAnswers
+            .Include(a => a.Scores)
             .FirstOrDefaultAsync(a => a.SessionId == sessionId && a.QuestionId == questionId, ct);
 
         // 5. fileId = answerId -> retry ghi đè đúng object (idempotent)
@@ -95,10 +97,17 @@ public class AnswerService : IAnswerService
         }
         else
         {
+            // INT-3 — upload lại = ghi đè: reset audio/transcript/status VÀ dọn sạch điểm cũ. Nếu giữ
+            // lại answer.Scores thì (a) GET trả điểm của bài CŨ tới khi có callback mới, (b) khi candidate
+            // đổi rubric riêng (BC16 → rubric_version mới) median E10 sẽ trộn điểm lệch version. Xoá điểm
+            // + reset needs_review → chấm lại từ đầu sạch (callback mới ghi điểm attempt mới).
             answer.AudioObjectKey = storagePath;
             answer.DurationSec = durationSec;
             answer.Status = AnswerStatus.Uploaded;
             answer.Transcript = null;
+            if (answer.Scores.Count > 0)
+                _db.AnswerScores.RemoveRange(answer.Scores);
+            answer.NeedsReview = false;
         }
 
         // Câu trả lời đầu tiên -> session Ready chuyển InProgress.
