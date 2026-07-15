@@ -22,14 +22,14 @@
 ```
 PracticeSessionResponse {
   id:           uuid
-  status:       enum(string)            // GeneratingQuestions·Ready·InProgress·Scoring·Scored·Failed
+  status:       enum(string)            // GeneratingQuestions·Ready·InProgress·Completed·Scoring·Scored·Failed·SessionAbandoned (Completed = reserved, chưa set; SessionAbandoned = bỏ ngang/quá hạn/0-scored, terminal)
   jobCategory:  enum(string)            // BA·BE·FE
   cvId:         uuid?                   // file CV đính kèm
   jdId:         uuid?                   // file JD đính kèm
   createdAt:    datetime
   completedAt:  datetime?               // set khi submit
   questions:    QuestionResponse[]
-  result:       SessionResultResponse?  // 🔜 BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa chấm xong
+  result:       SessionResultResponse?  // ✅ BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa chấm xong
 }
 
 QuestionResponse {
@@ -55,7 +55,7 @@ AnswerScoreResponse {
   rubricVersion: int
 }
 
-SessionResultResponse  🔜 {           // BC9 (số liệu) + BC10 (nhận xét) — tổng kết cả buổi (B2C), lưu DB khi Scored
+SessionResultResponse  ✅ {           // BC9 (số liệu) + BC10 (nhận xét) — tổng kết cả buổi (B2C), lưu DB khi Scored
   overallScore:    decimal(5,2)        // BC9 — 0–100, B2C = TRUNG BÌNH CỘNG pct các tiêu chí (equal weight, KHÔNG dùng weight); B2B ranking mới weighted (E4)
   answeredCount:   int                 // BC9 — số câu đã chấm (có scores) — kết quả tính trên bấy nhiêu câu
   totalQuestions:  int                 // BC9 — tổng số câu của buổi (vd 5)
@@ -64,7 +64,7 @@ SessionResultResponse  🔜 {           // BC9 (số liệu) + BC10 (nhận xét
   overallComment:  string?             // ✅ BC10 — NHẬN XÉT CHUNG cả buổi (AI `/summarize-session` best-effort khi B2C Scored); null nếu AI lỗi/timeout/rỗng HOẶC criteria rỗng/overallScore null (skip summarize)
 }
 
-CriterionScoreResponse  🔜 {           // BC9 — điểm "mỗi trường tiêu chí cỡ nhiêu điểm"
+CriterionScoreResponse  ✅ {           // BC9 — điểm "mỗi trường tiêu chí cỡ nhiêu điểm"
   criterionId:  uuid
   name:         string                 // tên tiêu chí (vd "Giao tiếp", "Chiều sâu kỹ thuật")
   averageScore: decimal(5,2)           // điểm ĐẠT ĐƯỢC của tiêu chí (TB qua các câu đã chấm)
@@ -79,7 +79,7 @@ PracticeSessionSummary {
   jobCategory:  enum(string)
   createdAt:    datetime
   completedAt:  datetime?
-  overallScore: decimal(5,2)?           // 🔜 BC9 — điểm tổng 0–100 nếu đã Scored (B2C); null nếu chưa → list lịch sử hiện điểm
+  overallScore: decimal(5,2)?           // ✅ BC9 — điểm tổng 0–100 nếu đã Scored (B2C); null nếu chưa → list lịch sử hiện điểm
 }
 
 FileRecord {
@@ -92,7 +92,7 @@ FileRecord {
   createdAt:    datetime
 }
 
-CvAnalysisResponse  🔜 {
+CvAnalysisResponse  ✅ {
   id:           uuid
   cvId:         uuid
   jdId:         uuid?
@@ -109,7 +109,7 @@ CvAnalysisResponse  🔜 {
   createdAt:    datetime
 }
 
-RoadmapResponse  🔜 {                  // BC5 (BC12) — roadmap ôn tập cá nhân hoá (D20)
+RoadmapResponse  ✅ {                  // BC5 (BC12) — roadmap ôn tập cá nhân hoá (D20)
   id:           uuid
   jobCategory:  enum(string)           // BA·BE·FE
   level:        enum(string)           // Fresher·Junior·Middle·Senior
@@ -120,7 +120,7 @@ RoadmapResponse  🔜 {                  // BC5 (BC12) — roadmap ôn tập cá
   completedAt:  datetime?
 }
 
-MilestoneResponse  🔜 {
+MilestoneResponse  ✅ {
   id:            uuid
   orderNo:       int
   title:         string
@@ -130,7 +130,7 @@ MilestoneResponse  🔜 {
   lessons:       LessonResponse[]
 }
 
-LessonResponse  🔜 {
+LessonResponse  ✅ {
   id:            uuid
   orderNo:       int
   title:         string
@@ -152,19 +152,19 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 ### Practice — `/api/v1/interview/practice/sessions` (JWT Candidate)
 
 **`POST /sessions`** — Tạo session + sinh câu hỏi (gọi AI đồng bộ).
-- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE" }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc**.
-- 🔜 *B2C:* trước khi gọi AI → **reserve 1 credit ví cá nhân**; hết → **402** (không tạo session).
+- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE" }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc** (Đợt-1: DTO `[Required] JobCategory?` → **thiếu/null → 400**, guard TRƯỚC reserve nên không giữ credit oan; trước đây omit im lặng thành `BA`).
+- ✅ **BC2** *B2C:* reserve **1 credit ví cá nhân** (owner=User, khoá idempotency = sessionId) **TRƯỚC** khi tạo row session; ví hết → **402** (KHÔNG tạo session — PAY-5). Reserve thành công rồi AI/DB lỗi → release best-effort (P1-2) + SessionAbandoned (BK12) hoàn credit.
 - Res **`201`** `PracticeSessionResponse` (`status="Ready"`, `questions` đã sinh):
 ```json
 { "id":"…","status":"Ready","jobCategory":"BE","cvId":"…","jdId":null,
   "createdAt":"2026-06-27T03:00:00Z","completedAt":null,
   "questions":[{"id":"…","orderNo":1,"content":"…","timeLimitSec":120,"answer":null}] }
 ```
-- Lỗi: **400** (CV/JD không đọc được nội dung · AI trả rỗng) · **401** · **402** 🔜 (hết credit) · **502** (AIService lỗi).
+- Lỗi: **400** (thiếu `jobCategory` · CV/JD không đọc được nội dung · AI trả rỗng) · **401** · **402** (hết credit ví — BC2) · **502** (AIService **gián đoạn sinh câu hỏi** → `AiServiceException`; Đợt-3: outage map **502** chứ KHÔNG phải 400, để phân biệt lỗi upstream thật với lỗi dữ liệu · Payment down cũng 502).
 
-**`GET /sessions/history`** — Lịch sử của chính user. Res **`200`** `PracticeSessionSummary[]` (mới nhất trước; 🔜 BC9: kèm `overallScore` nếu buổi đã `Scored`). Lỗi: **401**.
+**`GET /sessions/history`** — Lịch sử của chính user. Res **`200`** `PracticeSessionSummary[]` (mới nhất trước; ✅ BC9: kèm `overallScore` nếu buổi đã `Scored`). Lỗi: **401**.
 
-**`GET /sessions/{sessionId}`** — Chi tiết (câu hỏi + bài nộp + điểm). Res **`200`** `PracticeSessionResponse` (mỗi câu kèm `answer` + `scores` nếu có; 🔜 BC9: kèm `result` tổng kết khi `status=Scored` & B2C). Lỗi: **401** · **403** (không phải buổi của bạn) · **404**.
+**`GET /sessions/{sessionId}`** — Chi tiết (câu hỏi + bài nộp + điểm). Res **`200`** `PracticeSessionResponse` (mỗi câu kèm `answer` + `scores` nếu có; ✅ BC9: kèm `result` tổng kết khi `status=Scored` & B2C). Lỗi: **401** · **403** (không phải buổi của bạn) · **404**.
 
 **`POST /sessions/{sessionId}/submit`** — Chốt sổ (đi chấm nốt). Res **`204`**. Lỗi: **400** (chưa trả lời câu nào · trạng thái không cho submit) · **401** · **403** · **404**.
 
@@ -185,7 +185,7 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 **`PUT /{id}`** (multipart, thay file) → `FileRecord` mới · **`DELETE /{id}`** → **`204`** (xóa record + key S3).
 Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404**.
 
-### CV Analysis — `/api/v1/interview/practice/cv-analysis` (JWT) — **B2C BC4, 🔜 chưa build**
+### CV Analysis — `/api/v1/interview/practice/cv-analysis` (JWT Candidate) — ✅ **B2C BC4/BC7/BC7b** (D17→D22)
 
 **`POST /cv-analysis`** — Phân tích CV (parse → AIService `/analyze-cv` đồng bộ → lưu `cv_analyses`).
 - Req `application/json`: `{ "cvId": uuid, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE" }` — `jobCategory` **bắt buộc** (thiếu/null → **400**, validate **TRƯỚC** reserve credit ⇒ không giữ credit oan; ✅ **BK6**). Có `jdId` → kết quả thêm `jdMatch`.
@@ -202,7 +202,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 **`PUT /rubrics/{jobCategory}`** body `{ criteria: [{ name, description?, weight, maxScore }] }` → **replace-all** rubric riêng (soft-versioned, FK-safe). Validate: `0<weight≤1`, `maxScore≥1`, name không trùng (case-insensitive), `Σweight∈[0.99,1.01]`→chuẩn hoá Σ→1; rỗng/ngoài dải → **400**. Res **`200`** `RubricResponse`.
 **`DELETE /rubrics/{jobCategory}`** → reset về seed mặc định (soft-deactivate rubric riêng, idempotent). Res **`204`**.
 
-### Roadmap ôn tập — `/api/v1/interview/practice/roadmaps` (JWT Candidate) — **B2C BC5 (BC12–BC15), 🔜 chưa build** (D20)
+### Roadmap ôn tập — `/api/v1/interview/practice/roadmaps` (JWT Candidate) — ✅ **B2C BC5 (BC12–BC15)** (D20)
 
 > Nền tảng **ôn tập cá nhân hoá**: từ **report các buổi đã chấm** (`session_criterion_scores` — điểm yếu) + **CV** (upload mới hoặc hệ thống tự lấy CV có sẵn) + **level** → AI sinh **milestone roadmap**; mỗi milestone gồm các **lesson** = *lý thuyết trước* (AI sinh bám điểm yếu, lưu lại) → *luyện session* (engine chấm như thường). Xong mỗi mile → xem **độ cải thiện**; xong roadmap → `Completed` → **report cuối** (radar + đánh giá tiêu chí theo level + kết luận chi tiết). State machine + công thức: xem §Roadmap ôn tập cá nhân hoá (Business rules).
 
@@ -249,28 +249,33 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 |---|---|
 | 400 | CV/JD không đọc được nội dung · AI trả rỗng · thiếu field · file quá lớn/sai loại |
 | 401/403 | thiếu/sai JWT · **không phải chủ** session/file |
-| 402 🔜 | hết credit ví (B2C reserve khi tạo session) |
+| 402 | hết credit ví (B2C reserve khi tạo session / cv-analysis — BC2/BC7b) |
 | 404 | session/câu/file không tồn tại |
 | 409 | upload answer khi session `Scoring`/`Scored` |
-| 502 | AIService lỗi (sinh câu hỏi / analyze-cv) |
+| 502 | AIService **gián đoạn/outage** (sinh câu hỏi / analyze-cv → `AiServiceException`, Đợt-3) · PaymentService down khi reserve |
 
 ## Luồng (sequence)
 
 **Tạo session + sinh câu hỏi (sync AI):**
 ```
 Candidate ─POST /sessions {cvId?,jdId?,jobCategory}─► Interview
-   ├─ (B2C 🔜) reserve 1 credit ví cá nhân — hết → 402, KHÔNG tạo session
+   ├─ ✅ (B2C BC2) reserve 1 credit ví cá nhân — hết → 402, KHÔNG tạo session
    ├─ đọc parsed_text(cv/jd) → AIService /generate-questions (sync) → câu hỏi
-   └─► 201 session(Ready) + questions[]    (AI lỗi → 502)
+   └─► 201 session(Ready) + questions[]    (AI outage → 502 · gen lỗi → session Failed + release credit BK12)
 ```
 
 **Chấm dần + đóng session + phát event:**
 ```
 Candidate ─POST /answers (audio)─► Interview: answer Uploaded → publish ScoringJob → Scoring (câu đầu: session→InProgress)
+   (upload lại cùng câu = ghi đè: xoá answer_scores cũ + needs_review=false, chấm lại sạch — INT-3, Đợt-3)
 AIService worker ─callback /internal/answers/{id}/result─► lưu answer_scores (idempotent) → answer Scored
-Candidate ─POST /submit─► session Scoring; mọi answer ∈{Scored,Skipped,Failed} → Scored → phát SessionScored
+Candidate ─POST /submit─► session Scoring; mọi answer ∈{Scored,Skipped,Failed} →
+   ├─ ≥1 answer Scored → Scored → phát SessionScored  → Payment CONSUME credit
+   └─ 0 answer Scored (mọi answer Failed/Skipped) → SessionAbandoned → phát SessionAbandoned → Payment RELEASE (PAY-13, Đợt-3: không trừ credit oan)
    (publish hụt / worker mất tích → StuckAnswerRepublisher quét 2' đẩy lại)
 SessionScored ─RabbitMQ─► Campaign (ranking read-model) + Payment (consume credit)
+   ⚠ publish hụt lúc đóng session (bus rớt) → SettlementReconciler (Đợt-3b, B2C-only) quét 2' phát lại
+     session.scored/abandoned có settlement_published_at=null → Payment không kẹt reservation treo
 ```
 
 **Phân tích CV B2C (sync, TÍNH PHÍ — BC-4, chốt BK5; đảo D17):**
@@ -285,7 +290,7 @@ Candidate ─POST /practice/cv-analysis {cvId,jdId?}─► Interview ─AIServic
 practice_sessions 1──* practice_questions 1──1 practice_answers 1──* answer_scores
         │                                                              │
         ├──*? file_records (cv_id, jd_id)            rubric_criteria ──┘
-        └──* session_criterion_scores (🔜 BC9, B2C)
+        └──* session_criterion_scores (✅ BC9, B2C)
 rubric_criteria 1──* rubric_levels 1──* rubric_anchors
 ```
 
@@ -303,9 +308,10 @@ status        varchar(32)   enum SessionStatus (state machine bên dưới)
 created_at    timestamptz   NOT NULL
 completed_at  timestamptz?  set khi submit
 deadline      timestamptz?  ✅ I2+BK18 (migration AddSessionDeadline) — hạn chót nhận bài (B2B=campaign expires_at, Campaign gửi qua create-session payload BK18; B2C=null). Sweeper quá hạn → auto-submit/SessionAbandoned
-overall_score numeric(5,2)? 🔜 BC9 — điểm tổng 0–100, set khi `Scored` (B2C); null khi chưa/B2B
-answered_count int?         🔜 BC9 — số câu đã chấm lúc tính kết quả (snapshot)
+overall_score numeric(5,2)? ✅ BC9 (migration `AddSessionResultBC9`) — điểm tổng 0–100, set khi `Scored` (B2C); null khi chưa/B2B
+answered_count int?         ✅ BC9 — số câu đã chấm lúc tính kết quả (snapshot)
 overall_comment text?       ✅ BC10 (migration `AddSessionOverallComment`) — nhận xét chung, AI `/summarize-session` sinh trong `SessionScoringNotifier` khi B2C `Scored` (best-effort, sau BC9); null nếu AI lỗi/timeout/rỗng / criteria rỗng / B2B
+settlement_published_at timestamptz? ✅ Đợt-3b (migration `AddSessionSettlementPublishedAt`) — marker outbox: set khi phát thành công `session.scored`/`session.abandoned`. Null trên session terminal = publish hụt → `SettlementReconciler` (B2C-only) quét 2' phát lại (chống reservation treo ở Payment)
 ```
 
 ### `practice_questions`
@@ -348,7 +354,7 @@ created_at     timestamptz
                              UNIQUE (answer_id, criterion_id, attempt_no)
 ```
 
-### `session_criterion_scores` — 🔜 BC9 (B2C; ghi khi session `Scored`)
+### `session_criterion_scores` — ✅ BC9 (B2C; ghi khi session `Scored`)
 ```
 id                uuid          PK
 session_id        uuid          FK → practice_sessions (Cascade)
@@ -413,7 +419,7 @@ updated_at     timestamptz
 ```
 > ⚠ **Audio trả lời chỉ có MỘT nguồn: `practice_answers.audio_object_key`** — không tạo row `file_records` cho audio (2 nơi cùng giữ key = nguy cơ lệch/mồ côi khi ghi đè answer). Enum `answer-audio` + quirk `practice_answers.id (= fileId audio)` là **vết thiết kế cũ của engine**: giữ để không phá code chạy, nhưng **target** là bỏ `answer-audio` khỏi enum này; `file_records` chỉ lo **cv·jd** (file user upload + parse text).
 
-### `cv_analyses` — **B2C BC4, 🔜 chưa build** (D17)
+### `cv_analyses` — ✅ **B2C BC4/BC7** (migration `AddCvAnalyses`) (D17→D22)
 ```
 id           uuid          PK
 candidate_id uuid          index; ref lỏng → Auth
@@ -429,7 +435,7 @@ created_at   timestamptz
 ```
 AIService trả kết quả → InterviewService **lưu ở đây** (AI không ghi DB).
 
-### `roadmaps` — **B2C BC5 (BC12), 🔜 chưa build** (D20)
+### `roadmaps` — ✅ **B2C BC5 (BC12)** (migration `AddRoadmaps`) (D20)
 ```
 id                 uuid          PK
 candidate_id       uuid          NOT NULL, index; ref lỏng → Auth
@@ -445,7 +451,7 @@ created_at         timestamptz
 completed_at       timestamptz?
 ```
 
-### `roadmap_milestones` — 🔜 (BC12)
+### `roadmap_milestones` — ✅ (BC12)
 ```
 id             uuid          PK
 roadmap_id     uuid          FK → roadmaps (Cascade)
@@ -457,7 +463,7 @@ improvement    jsonb?        { criterionName: deltaPct } — set khi Completed (
 completed_at   timestamptz?
 ```
 
-### `roadmap_lessons` — 🔜 (BC12)
+### `roadmap_lessons` — ✅ (BC12)
 ```
 id                  uuid          PK
 milestone_id        uuid          FK → roadmap_milestones (Cascade)
@@ -470,9 +476,9 @@ status              varchar(16)   enum: Theory·Practicing·Done
 ```
 
 ### Index & ràng buộc (tổng hợp)
-- **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels`/`rubric_anchors` Cascade. 🔜 Roadmap: Cascade theo `roadmap_id` → `roadmap_milestones` (→ `roadmap_lessons` Cascade); `roadmaps.cv_id` → `file_records` **Restrict** · `roadmap_lessons.session_id` → `practice_sessions` **Restrict**.
-- **UNIQUE**: `practice_questions(session_id, order_no)` · `practice_answers(session_id, question_id)` (1 answer/câu) · `answer_scores(answer_id, criterion_id, attempt_no)` · `session_criterion_scores(session_id, criterion_id)` · `rubric_levels(criterion_id, score)` · 🔜 `roadmap_milestones(roadmap_id, order_no)` · `roadmap_lessons(milestone_id, order_no)`.
-- **Index**: `practice_sessions(candidate_id)` + `(campaign_id)` · `rubric_criteria(job_category, version, is_active)` · `file_records(user_id)` · 🔜 `roadmaps(candidate_id)`.
+- **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels`/`rubric_anchors` Cascade. ✅ Roadmap: Cascade theo `roadmap_id` → `roadmap_milestones` (→ `roadmap_lessons` Cascade); `roadmaps.cv_id` → `file_records` **Restrict** · `roadmap_lessons.session_id` → `practice_sessions` **Restrict**.
+- **UNIQUE**: `practice_questions(session_id, order_no)` · `practice_answers(session_id, question_id)` (1 answer/câu) · `answer_scores(answer_id, criterion_id, attempt_no)` · `session_criterion_scores(session_id, criterion_id)` · `rubric_levels(criterion_id, score)` · ✅ `roadmap_milestones(roadmap_id, order_no)` · `roadmap_lessons(milestone_id, order_no)`.
+- **Index**: `practice_sessions(candidate_id)` + `(campaign_id)` · `rubric_criteria(job_category, version, is_active)` · `file_records(user_id)` · ✅ `roadmaps(candidate_id)`.
 - **Idempotency**: callback `result` xoá điểm cũ cùng `(attempt_no, rubric_version)` rồi ghi lại; `failed` bỏ qua nếu answer đã `Scored` (xem §Idempotency callback).
 
 ---
@@ -481,14 +487,19 @@ status              varchar(16)   enum: Theory·Practicing·Done
 
 ### State machine — Session
 ```
-GeneratingQuestions ──► Ready ──► InProgress ──► Scoring ──► Scored
-        └──► Failed (sinh câu hỏi lỗi)
+GeneratingQuestions ──► Ready ──► InProgress ──► Scoring ──► Scored          ★
+        │                                            └──► SessionAbandoned   ★ (0 answer Scored — PAY-13)
+        └──► Failed (sinh câu hỏi lỗi)                                        ★
+InProgress/Ready ──► SessionAbandoned  ★ (quá deadline B2B 0-answer · B2C không hoạt động P1-1)
 ```
+- **Enum đầy đủ:** `GeneratingQuestions·Ready·InProgress·Completed·Scoring·Scored·Failed·SessionAbandoned` (`Enums/SessionStatus.cs`; API trả **chuỗi** — Interview có `JsonStringEnumConverter`).
 - Chỉ `Ready`/`InProgress` mới **submit** được; phải có ≥1 answer.
 - Submit → `Scoring` + `CompletedAt`. Nếu mọi answer đã xong → đóng thẳng `Scored`.
-- Đóng `Scored` khi đang `Scoring` **và** mọi answer ∈ {Scored, Skipped, Failed}.
-- `Completed` có trong enum nhưng **không dùng**.
-- **Giới hạn thời gian = TỪNG CÂU (áp cả B2B & B2C), KHÔNG có tổng buổi (🔸 `time_limit_minutes` tạm bỏ):** hết giờ 1 câu → **chốt riêng câu đó** (có ghi âm → nộp bình thường; chưa ghi → `Skipped`) → **sang câu kế**, KHÔNG đóng cả buổi. **Chống reservation treo (B2B):** session `InProgress` quá **`expires_at`** (hạn chót nhận bài) → **auto-submit** (≥1 answer → `Scoring`→`Scored` → consume credit) hoặc **0 answer → `SessionAbandoned`** (release credit). **Resume**: mở lại token chỉ cho làm **các câu CHƯA nộp** (1 answer/câu, câu đã nộp giữ nguyên).
+- Đóng `Scored` khi đang `Scoring` **và** mọi answer ∈ {Scored, Skipped, Failed} **và** ≥1 answer `Scored`.
+- **✅ PAY-13 (Đợt-3): 0 answer nào `Scored`** (mọi answer `Failed`/`Skipped`) → session sang **`SessionAbandoned`** + phát `SessionAbandoned` (Payment **release**, KHÔNG consume) — candidate không bị trừ credit oan khi cả buổi lỗi chấm. Áp cả 2 điểm đóng (`AnswerService` chấm dần + `PracticeService.SubmitSession`).
+- `Completed` có trong enum nhưng **CHƯA set** ở production (reserved; enum value giữ cho FE + tương lai).
+- **✅ SettlementReconciler (Đợt-3b, B2C-only):** session đã terminal (`Scored`/`SessionAbandoned`) nhưng `settlement_published_at` còn null (publish event hụt lúc bus rớt) → quét 2' phát lại `session.scored`/`session.abandoned` → Payment không kẹt reservation `Reserved` vĩnh viễn (at-least-once, Payment idempotent PAY-11).
+- **Giới hạn thời gian = TỪNG CÂU (áp cả B2B & B2C), KHÔNG có tổng buổi (🔸 `time_limit_minutes` tạm bỏ):** hết giờ 1 câu → **chốt riêng câu đó** (có ghi âm → nộp bình thường; chưa ghi → `Skipped`) → **sang câu kế**, KHÔNG đóng cả buổi. **Chống reservation treo (B2B) — `SessionAbandonSweeper` quét 2':** session `InProgress` quá **`deadline`** (= `campaigns.expires_at`, Campaign gửi qua create-session payload BK18) → **auto-submit** (≥1 answer → `Scoring`→`Scored` → consume credit) hoặc **0 answer → `SessionAbandoned`** (release credit). **✅ P1-1 (Đợt-2) B2C không hoạt động:** B2C không có hard-deadline (`deadline=null`) → nhánh quét riêng: session `Ready`/`InProgress` mà last-activity (`max(CreatedAt, answer mới nhất)`) cũ hơn `Scoring:B2CInactivityMinutes` → `SessionAbandoned` + release credit ví User (candidate đang luyện/vừa upload KHÔNG bị quét; B2B tuyệt đối không đụng). **Resume**: mở lại token chỉ cho làm **các câu CHƯA nộp** (1 answer/câu, câu đã nộp giữ nguyên).
 
 ### State machine — Answer
 ```
@@ -526,8 +537,8 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
   - **✅ E1 (chọn tiêu chí khi build job chấm):** branch theo `campaign_id` của session — B2B (`campaign_id` có) → tiêu chí `rubric_criteria(campaign_id)`; B2C (`campaign_id` null) → rubric theo `job_category` **VÀ `campaign_id IS NULL`** (criteria campaign cũng mang `job_category` nên phải lọc thêm để không rò sang chấm B2C). Áp ở **cả** publish (`AnswerService.TryPublishScoringJobAsync`) lẫn republish (`StuckAnswerRepublisher`). Message shape + worker Python **KHÔNG đổi** (D9). Kết quả: session B2B `Scored` → `answer_scores.criterion_id` trỏ tiêu chí campaign.
 - Worker chấm đủ **mọi** tiêu chí; thiếu → lỗi vĩnh viễn. Điểm **kẹp** `[0, maxScore]`. Bỏ tiêu chí Gemini bịa; chống trùng. `answer_scores` gắn `rubric_version` lúc chấm. Hiển thị: mỗi tiêu chí lấy **attempt mới nhất**.
 - **Điểm tổng/session** (khi `Scored`): **B2C = TRUNG BÌNH CỘNG** pct tiêu chí (equal weight — BC9); **B2B = `Σ điểm×weight`** chuẩn hoá (có trọng số — dùng cho ranking E4).
-- **🔜 Tổng kết điểm B2C (BC9):** spec đầy đủ ở **§Tổng kết điểm buổi luyện B2C (BC9)** ngay dưới.
-- **🔜 Chất lượng & độ nhất quán khi chấm (E9–E11):** neo theo mức (đúng) + đo/chặn chênh lệch (nhất quán) + chuẩn nhận xét — spec ở **§Chất lượng & độ nhất quán khi chấm** dưới.
+- **✅ Tổng kết điểm B2C (BC9):** spec đầy đủ ở **§Tổng kết điểm buổi luyện B2C (BC9)** ngay dưới.
+- **✅ Chất lượng & độ nhất quán khi chấm (E9–E11):** neo theo mức (đúng) + đo/chặn chênh lệch (nhất quán) + chuẩn nhận xét — spec ở **§Chất lượng & độ nhất quán khi chấm** dưới.
 
 #### Đánh giá cách chấm tiêu chí hiện tại (review 2026-06-28)
 **✅ Phần chắc — GIỮ NGUYÊN** (worker `gemini.score()` + callback C# `AnswerService.SaveResultAsync`):
@@ -545,7 +556,7 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 
 > **Tóm lại:** chấm **từng tiêu chí trên mỗi câu = ổn & chắc**; phần **tổng hợp mức buổi** (weight/điểm tổng/cần cải thiện) **chưa có** (BC9/BC10/E4) và **rubric B2C chưa có nguồn dữ liệu** (#3) là 2 việc cần làm để luồng B2C chạy trọn.
 
-### Chất lượng & độ nhất quán khi chấm (E9–E11) — 🔜 chưa build
+### Chất lượng & độ nhất quán khi chấm (E9–E11) — ✅ passing (E9 `4b4d625` · E10 `938bef0` · E11 `f3ef192`)
 > Mục tiêu: **(1) chấm ĐÚNG mức · (2) chênh lệch mỗi lần/câu chấm NHỎ & ĐO ĐƯỢC · (3) nhận xét CÓ CĂN CỨ.** Áp **cả B2B & B2C**. Phần kẹp/lọc hiện có (review trên) **giữ nguyên** — đây là lớp *đảm bảo đúng*, không thay.
 
 **E9 — Chấm NEO theo mức (levels + anchors).** ✅ **passing (vòng 17 · `4b4d625`)** *(tác động lớn nhất tới (1)+(2))*
@@ -568,7 +579,7 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 
 **Xác minh (3 lớp).** L1 build (gồm migration). L2 unit: (E9) message có `levels` → AI mock trả `levelMatched`; `score ≠` mức nào → **reject**; (E10) 3 lần chấm spread > ngưỡng → `needs_review=true`, điểm chốt = **median**; (E11) reasoning rỗng/không trích dẫn → reject; transcript chứa "hãy chấm tối đa" → **không** lái điểm. L3 e2e: 1 câu chấm thật → điểm **bám mức** + reasoning **trích transcript** + cờ review khi phân tán.
 
-### Tổng kết điểm buổi luyện B2C (BC9) — 🔜 chưa build
+### Tổng kết điểm buổi luyện B2C (BC9) — ✅ passing
 
 **Vì sao.** Một buổi luyện có **N câu** (mặc định 5 — `QUESTION_COUNT`). Engine **chấm dần từng câu** → mỗi `answer` có điểm theo **từng tiêu chí** (`answer_scores`, kèm `reasoning`). Nhưng người luyện cần **một kết quả buổi** sau khi xong — *điểm tổng + mỗi tiêu chí được bao nhiêu + tiêu chí nào cần cải thiện* — chứ không phải tự cộng tay từ điểm rải rác trong từng câu. Đây là **feedback định hướng** của B2C; hiện engine **chưa tính** mức session.
 
@@ -627,7 +638,7 @@ Dựng **lúc `GET /sessions/{id}`** trong `MapResult` (nằm trong `result` BC9
 
 **Xác minh (3 lớp).** L1 `dotnet build`. L2 `dotnet test` (`CvVsAnswerReportTests`, +10): builder thuần (chỉ liệt kê tiêu chí VỪA yếu VỪA CV mạnh; loại tiêu chí mạnh/không khớp; không CV → null) + wiring qua `GET`: B2C Scored có CV → `cvVsAnswer` đúng gap+evidence (gộp matched skills JD); không CV/chưa phân tích → `null`; B2B/chưa Scored → `result` null. L3 e2e: buổi B2C có CV → chấm xong → `GET` thấy mục "CV mạnh trả lời yếu" đúng.
 
-### Nhận xét chung buổi luyện B2C (BC10) — 🔜 chưa build
+### Nhận xét chung buổi luyện B2C (BC10) — ✅ passing
 
 **Vì sao.** Số liệu BC9 cho *điểm*; người luyện còn cần **nhận xét chung bằng lời** cho cả buổi (tổng quan làm tốt/chưa tốt ở đâu + hướng cải thiện) — giá trị định hướng của B2C. Sinh bằng **AI (Gemini)** nên **tách khỏi BC9** (BC9 giữ thuần engine, không AI).
 
@@ -645,7 +656,7 @@ Dựng **lúc `GET /sessions/{id}`** trong `MapResult` (nằm trong `result` BC9
 
 **Xác minh (3 lớp).** L1 build (gồm migration). L2 test: AIService `/summarize-session` trả `overallComment` từ input số liệu (mock); InterviewService đóng B2C `Scored` → gọi AI (mock) → lưu `overall_comment`; AI ném lỗi → `Scored` vẫn xong + `overall_comment=null`. L3 e2e: luyện B2C → chấm xong → `GET /sessions/{id}` có `result.overallComment` (AIService thật).
 
-### Roadmap ôn tập cá nhân hoá (BC5 · BC12–BC15) — 🔜 chưa build (D20)
+### Roadmap ôn tập cá nhân hoá (BC5 · BC12–BC15) — ✅ passing (D20)
 
 **Vì sao.** BC9/BC10 cho biết *yếu ở đâu* rồi dừng — người luyện không có *lộ trình luyện tiếp*. Roadmap đóng vòng lặp retention B2C: **chấm xong → biết điểm yếu → lộ trình mile/lesson (lý thuyết + luyện) → đo cải thiện → report**. Tái dùng nguyên engine chấm + BC9 (nguồn điểm yếu) + BC11 (rubric B2C) — **không** nhân đôi máy chấm, **không** infra mới.
 
