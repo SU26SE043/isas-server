@@ -126,3 +126,17 @@ class SummarizeSessionRequest(BaseModel):
 
 class SummarizeSessionResponse(BaseModel):
     overallComment: str        # tiếng Việt, vài câu: tổng quan mạnh/yếu + hướng cải thiện
+
+
+# ── Đối chiếu khuôn mặt (SEC-2/3) — sync HTTP, CampaignService gọi khi giám sát ──────
+class FaceVerifyRequest(BaseModel):
+    referenceImageKey: str        # S3 key ảnh tham chiếu (đã đăng ký/consent)
+    liveImageKey: str             # S3 key ảnh chụp live trong lúc thi
+    threshold: float | None = None  # ngưỡng cosine coi là khớp; None → face_match_threshold
+
+
+class FaceVerifyResponse(BaseModel):
+    faceCount: int                # số mặt trên ảnh LIVE
+    match: bool                   # score ≥ threshold VÀ đúng 1 mặt
+    score: float                  # cosine similarity ref↔live (0 nếu không so được)
+    signals: list[str]            # ⊂ no_face / multiple_faces / face_mismatch (cờ cho HR)

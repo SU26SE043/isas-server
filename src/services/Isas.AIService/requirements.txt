@@ -9,6 +9,12 @@ python-dotenv
 google-genai
 faster-whisper
 
+# Face verify (SEC-2/3): detect + đếm mặt + embed/cosine. onnxruntime = CPU inference.
+insightface
+onnxruntime
+opencv-python-headless
+numpy
+
 # Worker: RabbitMQ consume + S3 tải audio + HTTP callback
 aio-pika
 boto3
