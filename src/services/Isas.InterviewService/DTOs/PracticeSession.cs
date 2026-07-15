@@ -27,6 +27,7 @@ public record CampaignCriterionInput(
 // I2: ExpiresAt = hạn chót nhận bài (campaigns.expires_at) → set session.Deadline; null = không hard-deadline.
 public record CreateCampaignSessionRequest(
     Guid CampaignId,
+    Guid OrgId,        // BK14: chủ ví credit (owner=Org) để reserve khi tạo session B2B (PAY-6)
     JobCategory JobCategory,
     IReadOnlyList<string> Questions,
     IReadOnlyList<CampaignCriterionInput> Criteria,
@@ -39,6 +40,7 @@ public record CreateCampaignSessionRequest(
 public record CreateCampaignSessionInternalRequest(
     Guid CandidateId,
     Guid CampaignId,
+    Guid OrgId,        // BK14: chủ ví credit org (Campaign gửi campaign.OrgId) → reserve owner=Org (PAY-6)
     string JobCategory,
     IReadOnlyList<string> Questions,
     IReadOnlyList<CampaignCriterionInput> Criteria,

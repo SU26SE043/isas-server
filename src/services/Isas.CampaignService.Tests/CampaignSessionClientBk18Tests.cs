@@ -54,7 +54,7 @@ public class CampaignSessionClientBk18Tests
         var deadline = new DateTime(2026, 8, 1, 10, 0, 0, DateTimeKind.Utc);
 
         await client.CreateOrGetSessionAsync(
-            Guid.NewGuid(), Guid.NewGuid(), "BE", Questions, Criteria, deadline, default);
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BE", Questions, Criteria, deadline, default);
 
         Assert.NotNull(handler.CapturedBody);
         using var doc = JsonDocument.Parse(handler.CapturedBody!);
@@ -69,7 +69,7 @@ public class CampaignSessionClientBk18Tests
         var client = NewClient(handler);
 
         await client.CreateOrGetSessionAsync(
-            Guid.NewGuid(), Guid.NewGuid(), "BE", Questions, Criteria, null, default);
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BE", Questions, Criteria, null, default);
 
         Assert.NotNull(handler.CapturedBody);
         using var doc = JsonDocument.Parse(handler.CapturedBody!);

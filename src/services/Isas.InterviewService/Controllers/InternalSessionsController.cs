@@ -1,5 +1,6 @@
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -47,12 +48,19 @@ public class InternalSessionsController : ControllerBase
             : JobCategory.BE;
 
         var request = new CreateCampaignSessionRequest(
-            req.CampaignId, jobCategory, req.Questions, req.Criteria, req.ExpiresAt);
+            req.CampaignId, req.OrgId, jobCategory, req.Questions, req.Criteria, req.ExpiresAt);
 
         try
         {
             var result = await _practiceService.GetOrCreateCampaignSessionAsync(req.CandidateId, request, ct);
             return Ok(result);
+        }
+        catch (InsufficientCreditException ex)
+        {
+            // BK14: ví org hết credit → reserve 402 → KHÔNG tạo session (PAY-5). Campaign map tiếp thành 402.
+            _logger.LogWarning(ex, "create-or-get campaign session: ví org hết credit (campaign {CampaignId}, org {OrgId})",
+                req.CampaignId, req.OrgId);
+            return StatusCode(StatusCodes.Status402PaymentRequired, new { error = ex.Message });
         }
         catch (InvalidOperationException ex)
         {

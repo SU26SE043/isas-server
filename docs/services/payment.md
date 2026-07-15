@@ -19,7 +19,7 @@ Mô hình "giữ chỗ rồi mới trừ thật" (như pre-auth/capture của th
 - **Consume (trừ thật)** khi session chuyển **`Scored`** (qua event `SessionScored`).
 - **Release (nhả)** nếu bài **bỏ ngang quá hạn** (auto-submit/expire) hoặc **lỗi hệ thống** → trả lại chỗ đã giữ.
 - **Idempotent theo `session_id`** (1 reservation/session; redeliver event không trừ trùng).
-- **Ai gọi reserve:** **B2B** → CampaignService reserve `{owner=Org}` khi ứng viên bắt đầu (campaign biết org). **B2C** → **InterviewService** reserve `{owner=User=candidateId}` khi tạo session (không có orchestrator); hết credit → **402, không tạo session**. Consume/release ở cả hai vẫn theo event `SessionScored`/`SessionAbandoned`.
+- **Ai gọi reserve:** **InterviewService reserve cho cả hai dòng** khi tạo session (reserve-first). Owner do caller truyền: **B2B** → Campaign gửi `campaign.OrgId` khi ứng viên bấm Start (`/internal/sessions/campaign`) → reserve `{owner=Org}`; **B2C** → reserve `{owner=User=candidateId}`. Hết credit → **402, không tạo session**. Consume/release ở cả hai vẫn theo event `SessionScored`/`SessionAbandoned` (owner lấy từ reservation, E7). *(BK14 — B2B reserve wire tại Interview, không phải Campaign, để tránh orphan chicken-and-egg session_id.)*
 
 → Ứng viên **rớt mạng / lỗi mic / bỏ ngang** ⇒ org **không mất credit oan** (giảm bão ticket refund).
 
