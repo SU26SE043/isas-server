@@ -333,20 +333,34 @@ public class PracticeService : IPracticeService
         bool allDone = statuses.All(s =>
             s is AnswerStatus.Scored or AnswerStatus.Skipped or AnswerStatus.Failed);
 
-        if (allDone)
-        {
-            session.Status = SessionStatus.Scored;
-            await _db.SaveChangesAsync(ct);
-            _logger.LogInformation(
-                "Session {SessionId} -> Scored ngay khi submit (đã chấm xong từ trước)", sessionId);
-
-            // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
-            await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
-        }
-        else
+        if (!allDone)
         {
             _logger.LogInformation("Chốt session {SessionId} -> Scoring (đang chờ chấm nốt)", sessionId);
+            return;
         }
+
+        // PAY-13: nhánh "đóng-ngay" của submit (mọi answer đã terminal lúc submit) — nếu KHÔNG answer
+        // nào Scored (mọi answer Failed/Skipped) → phát SessionAbandoned (release), không consume credit
+        // cho buổi 0 answer chấm được (PAY-1). Đối xứng với AnswerService.TryCompleteSessionAsync.
+        var scoredCount = statuses.Count(s => s == AnswerStatus.Scored);
+        if (scoredCount == 0)
+        {
+            session.Status = SessionStatus.SessionAbandoned;
+            await _db.SaveChangesAsync(ct);
+            _logger.LogInformation(
+                "Session {SessionId} -> SessionAbandoned ngay khi submit (không answer nào Scored)", sessionId);
+
+            await _scoringNotifier.NotifySessionAbandonedAsync(sessionId, "no_scored_answer", ct);
+            return;
+        }
+
+        session.Status = SessionStatus.Scored;
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "Session {SessionId} -> Scored ngay khi submit (đã chấm xong từ trước)", sessionId);
+
+        // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
+        await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
     }
 
     // I2 (D21) per-question finalize: mọi câu của buổi CHƯA có answer → tạo answer `Skipped`

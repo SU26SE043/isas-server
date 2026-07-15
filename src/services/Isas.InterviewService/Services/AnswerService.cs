@@ -416,14 +416,28 @@ public class AnswerService : IAnswerService
         bool allDone = statuses.All(s =>
             s is AnswerStatus.Scored or AnswerStatus.Skipped or AnswerStatus.Failed);
 
-        if (allDone)
-        {
-            session.Status = SessionStatus.Scored;
-            await _db.SaveChangesAsync(ct);
-            _logger.LogInformation("Session {SessionId} -> Scored", sessionId);
+        if (!allDone) return;
 
-            // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
-            await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
+        // PAY-13: chỉ "chấm được" khi có ≥1 answer đạt Scored. Nếu MỌI answer kết thúc Failed/Skipped
+        // (scoredCount==0) → buổi không có gì để chấm → phát SessionAbandoned (Payment release, không
+        // consume) thay vì SessionScored. Tránh trừ 1 credit cho buổi 0 answer được chấm (PAY-1).
+        var scoredCount = statuses.Count(s => s == AnswerStatus.Scored);
+        if (scoredCount == 0)
+        {
+            session.Status = SessionStatus.SessionAbandoned;
+            await _db.SaveChangesAsync(ct);
+            _logger.LogInformation(
+                "Session {SessionId} -> SessionAbandoned (không answer nào Scored)", sessionId);
+
+            await _scoringNotifier.NotifySessionAbandonedAsync(sessionId, "no_scored_answer", ct);
+            return;
         }
+
+        session.Status = SessionStatus.Scored;
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation("Session {SessionId} -> Scored", sessionId);
+
+        // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
+        await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
     }
 }

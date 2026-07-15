@@ -399,6 +399,32 @@ public class PracticeServiceTests
             Times.Once);
     }
 
+    // PAY-13: submit đóng-ngay nhưng answer duy nhất đã Failed (0 answer Scored) → SessionAbandoned
+    // (phát abandon/release), KHÔNG Scored/consume. Đối xứng với AnswerService.TryCompleteSession.
+    [Fact]
+    public async Task Submit_AllAnswersFailed_NoScored_ClosesToAbandoned_PublishesAbandoned()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        // Answer đã Failed trước khi submit (chấm dần lỗi) → 0 answer Scored.
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Failed, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out var notifier);
+        await svc.SubmitSessionAsync(candidate, session.Id);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.SessionAbandoned, s.Status);
+
+        notifier.Verify(n => n.NotifySessionAbandonedAsync(session.Id, It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        notifier.Verify(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     // I2 (D21): chốt buổi theo từng câu — câu CHƯA trả lời → answer `Skipped`; câu đã trả lời giữ nguyên.
     // Mọi answer done (Scored + Skipped) → session Scored (không kẹt Scoring vì câu trống).
     [Fact]

@@ -110,6 +110,42 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         }
     }
 
+    // PAY-13 — session đóng nhưng KHÔNG có answer nào Scored (mọi answer Failed/Skipped) → phát
+    // SessionAbandoned để Payment RELEASE reservation (không consume): candidate không được chấm 1
+    // answer nào thì không trừ 1 credit (PAY-1 = 1 credit / 1 lượt phỏng vấn AI-chấm). Best-effort như
+    // NotifySessionScoredAsync/SessionAbandonSweeper: session đã terminal trong DB, publish lỗi chỉ log.
+    // KHÔNG chạy BC9/BC10/BC14 (không phải buổi "Scored" — không có breakdown/nhận xét để tính).
+    public async Task NotifySessionAbandonedAsync(Guid sessionId, string reason, CancellationToken ct = default)
+    {
+        var session = await _db.PracticeSessions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+        if (session is null) return;
+
+        var evt = new SessionAbandonedEvent
+        {
+            SessionId = session.Id,
+            CampaignId = session.CampaignId,
+            CandidateId = session.CandidateId,
+            Reason = reason,
+            AbandonedAt = DateTime.UtcNow
+        };
+
+        try
+        {
+            await _eventPublisher.PublishSessionAbandonedAsync(evt, ct);
+            _logger.LogInformation(
+                "PAY-13: phát SessionAbandoned (không answer nào Scored) cho session {SessionId} (reason={Reason})",
+                session.Id, reason);
+        }
+        catch (Exception ex)
+        {
+            // Publish lỗi KHÔNG chặn đóng session — session đã terminal trong DB (giống pattern nuốt
+            // lỗi publish ở SessionScored/SessionAbandonSweeper). Miss event tạm làm Payment lệch (giữ reservation).
+            _logger.LogError(ex, "PAY-13: phát SessionAbandoned thất bại cho session {SessionId}", session.Id);
+        }
+    }
+
     // BC10 — sinh + lưu nhận xét chung buổi B2C. Đọc số liệu BC9 (overall_score + session_criterion_scores)
     // đã lưu → gọi AIService (sync) → ExecuteUpdate overall_comment. Best-effort: bọc try/catch, lỗi AI KHÔNG
     // chặn Scored (giống BC9/BC14). AI trả rỗng → AiServiceException → nuốt, overall_comment giữ null (backfill sau).
