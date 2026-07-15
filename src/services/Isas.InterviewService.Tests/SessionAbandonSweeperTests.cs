@@ -256,6 +256,49 @@ public class SessionAbandonSweeperTests
         Assert.NotNull(saved.CompletedAt);
     }
 
+    // Settlement-outbox COMMIT 1: sweeper phát SessionAbandoned OK → set settlement_published_at
+    // (điểm phát thứ 3). SettlementReconciler dựa vào marker này để bỏ qua session đã phát.
+    [Fact]
+    public async Task InactiveB2C_AbandonPublishSuccess_SetsSettlementMarker()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready,
+            createdAt: DateTime.UtcNow.AddMinutes(-121), deadline: null);
+        t.Db.Add(session);
+        await t.Db.SaveChangesAsync();
+
+        var (sweeper, pub) = Build(t);
+        pub.Setup(p => p.PublishSessionAbandonedAsync(It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(sweeper);
+
+        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.SessionAbandoned, saved.Status);
+        Assert.NotNull(saved.SettlementPublishedAt);
+    }
+
+    // Settlement-outbox: sweeper phát HỤT → marker giữ null (reconciler sẽ backfill), không ném ra ngoài.
+    [Fact]
+    public async Task InactiveB2C_AbandonPublishThrows_MarkerStaysNull()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready,
+            createdAt: DateTime.UtcNow.AddMinutes(-121), deadline: null);
+        t.Db.Add(session);
+        await t.Db.SaveChangesAsync();
+
+        var (sweeper, pub) = Build(t);
+        pub.Setup(p => p.PublishSessionAbandonedAsync(It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
+           .ThrowsAsync(new Exception("bus down"));
+
+        await ScanOnce(sweeper);   // best-effort: không ném ra ngoài
+
+        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.SessionAbandoned, saved.Status);   // vẫn đóng session trong DB
+        Assert.Null(saved.SettlementPublishedAt);
+    }
+
     // P1-1: session B2C InProgress không hoạt động quá ngưỡng (0 answer) → cũng bỏ ngang.
     [Fact]
     public async Task InactiveB2C_InProgress_PastThreshold_Abandoned()

@@ -96,6 +96,7 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHostedService<StuckAnswerRepublisher>();
 builder.Services.AddHostedService<SessionAbandonSweeper>();
+builder.Services.AddHostedService<SettlementReconciler>();   // settlement-outbox: phát lại event B2C hụt
 
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

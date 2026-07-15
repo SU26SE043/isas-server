@@ -35,4 +35,15 @@ public class ScoringOptions
     // khi KHÔNG có hoạt động (không tạo answer mới) quá số phút này → phát SessionAbandoned để Payment
     // release credit ví User. CONSERVATIVE (mặc định 120') để KHÔNG bao giờ quét nhầm người ĐANG luyện.
     public int B2CInactivityMinutes { get; set; } = 120;
+
+    // Settlement-outbox (Option A) — SettlementReconciler phát lại settlement-event cho session B2C
+    // terminal (Scored/SessionAbandoned) mà settlement_published_at còn null (publish hụt lúc đóng session).
+    // GRACE: chờ tối thiểu sau CompletedAt trước khi phát lại — chừa cửa sổ cho publish đường-chính vừa
+    // xong nhưng marker chưa kịp commit (tránh phát trùng vô ích; Payment idempotent nên vẫn an toàn nếu
+    // trùng). <=0 = TẮT reconciler (an toàn: không tự phát lại).
+    public int SettlementRepublishGraceMinutes { get; set; } = 2;
+
+    // Settlement-outbox — chỉ ngó lại session đóng trong khung này (giới hạn khối lượng quét + tránh
+    // "hồi sinh" event quá cũ khi bật lần đầu trên DB lịch sử). <=0 = TẮT reconciler.
+    public int SettlementRepublishLookbackHours { get; set; } = 24;
 }
