@@ -132,6 +132,14 @@ services:
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__UserName=${RABBITMQ_USER}
       - RabbitMQ__Password=${RABBITMQ_PASS}
+      # SMTP — InvitationEmailConsumer gửi email mời (magic-link) khi tiêu thụ campaign_invitation_email_queue.
+      - EmailSettings__Host=${SMTP_HOST}
+      - EmailSettings__Port=${SMTP_PORT}
+      - EmailSettings__Username=${SMTP_USER}
+      - EmailSettings__Password=${SMTP_PASS}
+      - EmailSettings__From=${SMTP_FROM}
+      # Base URL magic-link ứng viên: {baseUrl}/invitations/{token} → trang join qua gateway public.
+      - Invitation__BaseUrl=${GATEWAY_PUBLIC_URL}
     expose: ["8080"]
     depends_on: [postgres, seaweedfs, rabbitmq]
     networks: [isas-main-network]
