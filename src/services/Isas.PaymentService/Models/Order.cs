@@ -13,7 +13,9 @@
         public Guid? PackageId { get; set; }
         public Guid? InvoiceId { get; set; }
         public OrderStatus Status { get; set; }
-        public int AmountVnd { get; set; }
+        // long (amount_vnd bigint — payment.md §DB): VND nguyên có thể vượt trần int (~2,1 tỷ ₫) với
+        // pack lớn / hóa đơn postpaid gộp kỳ. int cũ tràn thầm lặng ⇒ số tiền/PayOS lệch.
+        public long AmountVnd { get; set; }
         public long PayosOrderCode { get; set; }
         public DateTime ExpiredAt { get; set; }
         public DateTime? PaidAt { get; set; }

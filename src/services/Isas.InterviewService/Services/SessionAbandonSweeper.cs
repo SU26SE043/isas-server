@@ -1,8 +1,10 @@
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
 
@@ -11,11 +13,16 @@ namespace Isas.InterviewService.Services;
 // B2C = null → không hard-deadline, chỉ giới hạn từng câu). Mirror pattern background-sweep của
 // StuckAnswerRepublisher (ScanInterval 2', scope riêng cho DbContext).
 //
-// Quá Deadline + InProgress:
+// Quá Deadline + InProgress (B2B):
 //   • ≥1 answer  → AUTO-SUBMIT (reuse PracticeService.SubmitSessionAsync): chốt sổ → câu trống → Skipped
 //                  → Scoring/Scored → consume credit qua SessionScored (E7).
 //   • 0  answer  → SessionAbandoned (reuse event E3): phát để Payment release reservation (không consume).
-//   • Deadline == null (B2C) → KHÔNG đụng (không có hard-deadline).
+//
+// P1-1 — B2C (Deadline == null, CampaignId == null): KHÔNG có hard-deadline nên nhánh trên bỏ qua →
+// session B2C tạo-rồi-bỏ giữ credit reserve VĨNH VIỄN. Thêm nhánh quét KHÔNG-HOẠT-ĐỘNG: session
+// Ready/InProgress mà "last-activity" cũ hơn Scoring:B2CInactivityMinutes → SessionAbandoned + phát
+// event để Payment release credit ví User. "last-activity" = max(CreatedAt, answer mới nhất) → người
+// đang luyện (vừa upload answer) KHÔNG bao giờ bị quét. B2B (CampaignId != null) tuyệt đối không đụng.
 public class SessionAbandonSweeper : BackgroundService
 {
     private static readonly TimeSpan ScanInterval = TimeSpan.FromMinutes(2);
@@ -23,17 +30,24 @@ public class SessionAbandonSweeper : BackgroundService
     // 0 answer → bỏ ngang: reason ổn định cho Payment/observability.
     private const string AbandonReason = "expired_no_answer";
 
+    // P1-1 — B2C bỏ ngang do không hoạt động (không có hard-deadline). Reason riêng để phân biệt với
+    // "expired_no_answer" (B2B quá hạn nhận bài) khi observ/đối soát Payment.
+    private const string B2CInactivityReason = "inactivity_timeout";
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ISessionEventPublisher _eventPublisher;
+    private readonly ScoringOptions _options;
     private readonly ILogger<SessionAbandonSweeper> _logger;
 
     public SessionAbandonSweeper(
         IServiceScopeFactory scopeFactory,
         ISessionEventPublisher eventPublisher,
+        IOptions<ScoringOptions> options,
         ILogger<SessionAbandonSweeper> logger)
     {
         _scopeFactory = scopeFactory;
         _eventPublisher = eventPublisher;
+        _options = options.Value;
         _logger = logger;
     }
 
@@ -60,6 +74,13 @@ public class SessionAbandonSweeper : BackgroundService
 
     private async Task ScanOnceAsync(CancellationToken ct)
     {
+        await ScanExpiredB2BAsync(ct);
+        await ScanInactiveB2CAsync(ct);
+    }
+
+    // B2B — InProgress + có Deadline THẬT + đã quá hạn nhận bài. Deadline null → bỏ qua hoàn toàn.
+    private async Task ScanExpiredB2BAsync(CancellationToken ct)
+    {
         // Đọc danh sách session quá hạn trong 1 scope (projection, không tracking). Xử lý từng session
         // ở scope RIÊNG bên dưới để auto-submit (tracked) không lẫn với read/abandon (ExecuteUpdate).
         List<ExpiredSession> expired;
@@ -68,7 +89,6 @@ public class SessionAbandonSweeper : BackgroundService
             var db = scope.ServiceProvider.GetRequiredService<InterviewDbContext>();
             var now = DateTime.UtcNow;
 
-            // InProgress + có Deadline THẬT + đã quá hạn. Deadline null (B2C) → bỏ qua hoàn toàn.
             expired = await db.PracticeSessions
                 .Where(s => s.Status == SessionStatus.InProgress
                             && s.Deadline != null
@@ -86,6 +106,45 @@ public class SessionAbandonSweeper : BackgroundService
             await FinalizeExpiredSessionAsync(s, ct);
     }
 
+    // P1-1 — B2C không hoạt động: Ready/InProgress + Deadline null + CampaignId null (đúng B2C) mà
+    // "last-activity" cũ hơn cutoff. last-activity = max(CreatedAt, answer mới nhất): dịch sang SQL là
+    // "CreatedAt < cutoff VÀ KHÔNG có answer nào CreatedAt >= cutoff" → người vừa upload answer (đang
+    // luyện) không lọt lưới. B2C bỏ ngang thì ABANDON (release credit), KHÔNG auto-submit.
+    private async Task ScanInactiveB2CAsync(CancellationToken ct)
+    {
+        var inactivityMinutes = _options.B2CInactivityMinutes;
+        if (inactivityMinutes <= 0) return;   // 0/âm = tắt (an toàn: không tự release)
+
+        List<ExpiredSession> stale;
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<InterviewDbContext>();
+            var cutoff = DateTime.UtcNow.AddMinutes(-inactivityMinutes);
+
+            stale = await db.PracticeSessions
+                .Where(s => (s.Status == SessionStatus.Ready || s.Status == SessionStatus.InProgress)
+                            && s.Deadline == null
+                            && s.CampaignId == null
+                            && s.CreatedAt < cutoff
+                            && !db.PracticeAnswers.Any(a => a.SessionId == s.Id && a.CreatedAt >= cutoff))
+                .Select(s => new ExpiredSession(s.Id, s.CampaignId, s.CandidateId))
+                .ToListAsync(ct);
+        }
+
+        if (stale.Count == 0) return;
+
+        _logger.LogWarning(
+            "Phát hiện {Count} session B2C không hoạt động > {Minutes} phút, bỏ ngang để release credit",
+            stale.Count, inactivityMinutes);
+
+        foreach (var s in stale)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<InterviewDbContext>();
+            await AbandonAsync(db, s, B2CInactivityReason, ct);
+        }
+    }
+
     private async Task FinalizeExpiredSessionAsync(ExpiredSession s, CancellationToken ct)
     {
         // Scope riêng/session: auto-submit dùng change tracker của PracticeService; abandon dùng
@@ -98,7 +157,7 @@ public class SessionAbandonSweeper : BackgroundService
         if (hasAnswer)
             await AutoSubmitAsync(scope, s, ct);
         else
-            await AbandonAsync(db, s, ct);
+            await AbandonAsync(db, s, AbandonReason, ct);
     }
 
     // ≥1 answer → auto-submit: reuse SubmitSessionAsync (chốt sổ + câu trống Skipped + đóng Scoring/Scored
@@ -118,14 +177,18 @@ public class SessionAbandonSweeper : BackgroundService
         }
     }
 
-    // 0 answer → SessionAbandoned (E3). Guard Status == InProgress trong WHERE (ExecuteUpdate absorbing:
-    // 0 row = đã chốt bởi luồng khác → bỏ qua). Revert lesson gắn kèm (BC14) + phát event (Payment release).
-    private async Task AbandonAsync(InterviewDbContext db, ExpiredSession s, CancellationToken ct)
+    // SessionAbandoned (E3 + P1-1). Guard Status ∈ {Ready, InProgress} trong WHERE (ExecuteUpdate
+    // absorbing: 0 row = đã chốt bởi luồng khác → bỏ qua, không double-publish/re-sweep). Reason theo
+    // caller: B2B quá hạn = "expired_no_answer"; B2C không hoạt động = "inactivity_timeout".
+    // (B2B chỉ đẩy session InProgress vào đây → guard nới Ready không đổi hành vi B2B; B2C có thể Ready.)
+    // Revert lesson gắn kèm (BC14) + phát event (Payment release credit).
+    private async Task AbandonAsync(InterviewDbContext db, ExpiredSession s, string reason, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
 
         var updated = await db.PracticeSessions
-            .Where(x => x.Id == s.Id && x.Status == SessionStatus.InProgress)
+            .Where(x => x.Id == s.Id
+                        && (x.Status == SessionStatus.Ready || x.Status == SessionStatus.InProgress))
             .ExecuteUpdateAsync(u => u
                 .SetProperty(x => x.Status, SessionStatus.SessionAbandoned)
                 .SetProperty(x => x.CompletedAt, now), ct);
@@ -152,14 +215,15 @@ public class SessionAbandonSweeper : BackgroundService
             SessionId = s.Id,
             CampaignId = s.CampaignId,
             CandidateId = s.CandidateId,
-            Reason = AbandonReason,
+            Reason = reason,
             AbandonedAt = now
         };
 
         try
         {
             await _eventPublisher.PublishSessionAbandonedAsync(evt, ct);
-            _logger.LogInformation("Đã phát SessionAbandoned cho session {SessionId} (0 answer)", s.Id);
+            _logger.LogInformation(
+                "Đã phát SessionAbandoned cho session {SessionId} (reason={Reason})", s.Id, reason);
         }
         catch (Exception ex)
         {

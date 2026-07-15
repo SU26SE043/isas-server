@@ -73,9 +73,17 @@ public class PracticeController : ControllerBase
             return StatusCode(StatusCodes.Status502BadGateway,
                 new { error = "Dịch vụ thanh toán tạm thời không phản hồi. Vui lòng thử lại sau." });
         }
+        catch (AiServiceException ex)
+        {
+            // AIService lỗi thật (transport/timeout/5xx khi sinh câu hỏi) → 502, KHÔNG phải 400: đây là
+            // lỗi upstream, không phải lỗi request. Reserve credit đã được release ở service (P1-2/BK12).
+            _logger.LogError(ex, "AIService lỗi khi sinh câu hỏi.");
+            return StatusCode(StatusCodes.Status502BadGateway,
+                new { error = "Dịch vụ AI tạm thời không phản hồi. Vui lòng thử lại sau." });
+        }
         catch (InvalidOperationException ex)
         {
-            // Bắt lỗi AI trả về rỗng, hoặc CV/JD không đọc được
+            // Bắt lỗi AI trả về rỗng, hoặc CV/JD không đọc được → 400 (lỗi input, không phải upstream).
             _logger.LogWarning(ex, "Lỗi logic khi tạo session.");
             return BadRequest(new { error = ex.Message });
         }

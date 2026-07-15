@@ -5,6 +5,7 @@ using Isas.InterviewService.Controllers;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Http;
@@ -12,6 +13,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Isas.InterviewService.Tests;
@@ -408,6 +410,7 @@ public class RoadmapLessonTests
         var sweeper = new SessionAbandonSweeper(
             provider.GetRequiredService<IServiceScopeFactory>(),
             pub.Object,
+            Options.Create(new ScoringOptions()),
             NullLogger<SessionAbandonSweeper>.Instance);
         return (sweeper, pub);
     }

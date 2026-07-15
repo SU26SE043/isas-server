@@ -154,6 +154,73 @@ public class PracticeServiceTests
             Times.Never);
     }
 
+    // P1 (B2C audit): thiếu jobCategory (null) → 400 (InvalidOperationException → BadRequest) TRƯỚC
+    // reserve: KHÔNG giữ credit (ReserveAsync không được gọi), KHÔNG có row session, KHÔNG gọi AI.
+    // Trước fix: non-nullable enum omitted → BA(0) im lặng + vẫn reserve 1 credit.
+    [Fact]
+    public async Task Create_MissingJobCategory_Throws_NoReserve_NoSessionRow()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+
+        var svc = Build(t, gen, out _, out var reservation);
+        var req = new CreatePracticeSessionRequest(null, null, null);   // jobCategory thiếu
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.CreateSessionAsync(candidate, req));
+
+        // Guard chặn TRƯỚC reserve → không giữ credit oan (PAY-5).
+        reservation.Verify(r => r.ReserveAsync(
+                It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        // Không có row session, không gọi AI.
+        Assert.Equal(0, await t.Db.PracticeSessions.CountAsync());
+        gen.Verify(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // P1-2: reserve THÀNH CÔNG (credit đã trừ) rồi bước hậu-reserve NÉM (ở đây: insert session lỗi
+    // UNIQUE PK) → phải hoàn credit (ReleaseAsync đúng sessionId, đúng 1 lần) TRƯỚC khi ném lại lỗi gốc,
+    // để credit ví User không treo. Dùng CreateLessonSessionAsync để cấp sẵn sessionId đã tồn tại trong DB.
+    [Fact]
+    public async Task Create_ReserveOk_InsertThrows_ReleasesCredit_AndRethrows()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+
+        // Chèn sẵn 1 row cùng Id qua context RIÊNG (không track ở context service dùng) → Add+SaveChanges
+        // trong CreateSessionInternalAsync sẽ đụng UNIQUE(PK) → DbUpdateException (lỗi hậu-reserve thật).
+        await using (var seed = t.NewContext())
+        {
+            var existing = TestDb.Session(candidate, SessionStatus.Ready);
+            existing.Id = sessionId;
+            seed.Add(existing);
+            await seed.SaveChangesAsync();
+        }
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        var svc = Build(t, gen, out _, out var reservation);
+        reservation
+            .Setup(r => r.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
+
+        await Assert.ThrowsAsync<DbUpdateException>(() =>
+            svc.CreateLessonSessionAsync(candidate, req, sessionId, focusCriteria: null));
+
+        // Bù trừ: credit đã reserve được hoàn đúng sessionId, đúng 1 lần.
+        reservation.Verify(r => r.ReleaseAsync(sessionId, It.IsAny<CancellationToken>()), Times.Once);
+        // Lỗi xảy ra trước khi sinh câu hỏi → generator không được gọi.
+        gen.Verify(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task Create_GeneratorReturnsEmpty_SessionFailed_Throws()
     {
@@ -208,6 +275,42 @@ public class PracticeServiceTests
             It.Is<SessionAbandonedEvent>(e =>
                 e.SessionId == s.Id && e.CandidateId == candidate
                 && e.CampaignId == null && e.Reason == "generation_failed"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // COMMIT-3: AI sinh câu hỏi ném AiServiceException (upstream lỗi thật) → CreateSession propagate
+    // NGUYÊN TYPE (controller map 502), KHÔNG bọc InvalidOperationException (=400). Reserve vẫn release
+    // (Đợt-2 P1-2, không regress) + abandon phát (BK12).
+    [Fact]
+    public async Task Create_GeneratorThrowsAiServiceException_PropagatesAsIs_AndReleasesCredit()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AiServiceException("AIService /generate-questions trả 503"));
+
+        var svc = Build(t, gen, out _, out var reservation, out var publisher);
+        reservation
+            .Setup(r => r.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
+
+        // KHÔNG phải InvalidOperationException — phải là AiServiceException (→ 502 ở controller).
+        var ex = await Assert.ThrowsAsync<AiServiceException>(() => svc.CreateSessionAsync(candidate, req));
+        Assert.IsNotType<InvalidOperationException>(ex);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.CandidateId == candidate);
+        Assert.Equal(SessionStatus.Failed, s.Status);
+
+        // Đợt-2 P1-2: credit đã reserve được release (không treo credit ví User).
+        reservation.Verify(r => r.ReleaseAsync(s.Id, It.IsAny<CancellationToken>()), Times.Once);
+        // BK12: abandon phát để E7 (Payment) release.
+        publisher.Verify(p => p.PublishSessionAbandonedAsync(
+            It.Is<SessionAbandonedEvent>(e => e.SessionId == s.Id && e.Reason == "generation_failed"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -330,6 +433,32 @@ public class PracticeServiceTests
         // CŨNG phải phát SessionScored — không chỉ nhánh đóng qua callback ở AnswerService.
         notifier.Verify(n => n.NotifySessionScoredAsync(session.Id, It.IsAny<CancellationToken>()),
             Times.Once);
+    }
+
+    // PAY-13: submit đóng-ngay nhưng answer duy nhất đã Failed (0 answer Scored) → SessionAbandoned
+    // (phát abandon/release), KHÔNG Scored/consume. Đối xứng với AnswerService.TryCompleteSession.
+    [Fact]
+    public async Task Submit_AllAnswersFailed_NoScored_ClosesToAbandoned_PublishesAbandoned()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        // Answer đã Failed trước khi submit (chấm dần lỗi) → 0 answer Scored.
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Failed, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out var notifier);
+        await svc.SubmitSessionAsync(candidate, session.Id);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.SessionAbandoned, s.Status);
+
+        notifier.Verify(n => n.NotifySessionAbandonedAsync(session.Id, It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        notifier.Verify(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     // I2 (D21): chốt buổi theo từng câu — câu CHƯA trả lời → answer `Skipped`; câu đã trả lời giữ nguyên.

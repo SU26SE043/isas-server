@@ -1,11 +1,18 @@
 namespace Isas.InterviewService.DTOs;
 
+using System.ComponentModel.DataAnnotations;
 using Isas.InterviewService.Enums;
 
+// jobCategory BẮT BUỘC — tín hiệu tối thiểu để sinh câu hỏi. Kiểu nullable để phân biệt "thiếu"
+// với default enum BA (value 0): thiếu → 400 (Required cho model-binding HTTP + guard service TRƯỚC
+// reserve, xem PracticeService.CreateSessionInternalAsync) → KHÔNG giữ credit oan (PAY-5). Trước đây
+// non-nullable không [Required] → omitted im lặng thành BA(0) VÀ vẫn reserve 1 credit (B2C audit P1).
+// ⚠ Attribute phải nằm trên PARAMETER (KHÔNG [property:]) — ASP.NET (.NET 10) THROW khi validation
+// attribute property-targeted trên positional record → 500 mọi request (mẫu CvAnalysisRequest/BK6).
 public record CreatePracticeSessionRequest(
     Guid? CvId,        // optional
     Guid? JdId,        // optional
-    JobCategory JobCategory   // BẮT BUỘC — tín hiệu tối thiểu để sinh câu hỏi
+    [Required] JobCategory? JobCategory
 );
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).

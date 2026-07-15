@@ -65,6 +65,7 @@
 - **PAY-10** Order terminal (Paid/Expired/Failed/Cancelled) **bất biến**; webhook muộn sau Expired → đối soát tay, không tự cộng.
 - **PAY-11** Reservation Consumed/Released = absorbing; event ra ngoài thứ tự → bỏ qua (không trừ/hoàn oan).
 - **PAY-12** Đình chỉ (Suspended) → chặn hành động tương lai, **không văng người đang thi**.
+- **PAY-13** 1 credit = 1 lượt **được AI chấm** (PAY-1). Session đóng mà **KHÔNG answer nào đạt `Scored`** (mọi answer `Failed`/`Skipped`, `scoredCount==0`) → **KHÔNG consume**: đóng session sang `SessionAbandoned` + phát `SessionAbandoned` (E7 **release** reservation), **không** phát `SessionScored`. Áp cả 2 điểm đóng session (callback chấm dần `AnswerService` + nhánh đóng-ngay `PracticeService.SubmitSession`). Đường ≥1 answer `Scored` giữ nguyên (Scored + consume). *(B2C: candidate không bị trừ credit ví khi cả buổi lỗi chấm.)*
 
 ## AI — Độ tin cậy
 - **AI-1** Sinh câu hỏi ưu tiên JD > CV > JobCategory; chấm `temperature=0`.

@@ -29,4 +29,10 @@ public class ScoringOptions
     // Mặc định 0 = TẮT (opt-in như SelfConsistencyN) để không hồi tố flag nhận xét ngắn hợp lệ;
     // production bật qua cấu hình Scoring:MinReasoningLen. Điểm AI = gợi ý, HR chốt điểm cuối (E11b).
     public int MinReasoningLen { get; set; } = 0;
+
+    // P1-1 — B2C (Deadline null) KHÔNG có hard-deadline nên SessionAbandonSweeper (chỉ quét Deadline!=null)
+    // không bao giờ đụng → session tạo-rồi-bỏ giữ credit reserve VĨNH VIỄN. Coi buổi B2C là "bỏ ngang"
+    // khi KHÔNG có hoạt động (không tạo answer mới) quá số phút này → phát SessionAbandoned để Payment
+    // release credit ví User. CONSERVATIVE (mặc định 120') để KHÔNG bao giờ quét nhầm người ĐANG luyện.
+    public int B2CInactivityMinutes { get; set; } = 120;
 }

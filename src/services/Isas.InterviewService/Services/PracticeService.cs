@@ -57,6 +57,13 @@ public class PracticeService : IPracticeService
         Guid candidateId, CreatePracticeSessionRequest request, Guid sessionId,
         IReadOnlyList<string>? focusCriteria, CancellationToken ct)
     {
+        // jobCategory BẮT BUỘC. Guard NGAY ĐẦU (trước cả đọc CV/reserve) → thiếu → 400 (controller map
+        // InvalidOperationException → BadRequest), KHÔNG giữ credit oan (PAY-5). HTTP thật cũng 400 sớm
+        // hơn nhờ [Required]; test gọi service trực tiếp nên cần guard này (mẫu CvAnalysisService/BK6).
+        if (request.JobCategory is null)
+            throw new InvalidOperationException("jobCategory là bắt buộc.");
+        var jobCategory = request.JobCategory.Value;
+
         // CV optional: chỉ parse khi có. Không có CV cũng luyện được (dựa JobCategory).
         // TODO: xác nhận tên method storage (memory ghi GetParseText).
         string? cvText = null;
@@ -86,76 +93,109 @@ public class PracticeService : IPracticeService
             "Reserve credit ví cá nhân cho session {SessionId} (candidate {CandidateId}, reservation {ReservationId})",
             sessionId, candidateId, reservation.ReservationId);
 
-        // Tạo session, commit #1. Status set bằng C# initializer của entity.
-        var session = new PracticeSession
-        {
-            Id = sessionId,
-            CandidateId = candidateId,
-            CvId = request.CvId,           // có thể null
-            JdId = request.JdId,           // có thể null
-            JobCategory = request.JobCategory,
-            Status = SessionStatus.GeneratingQuestions,
-            CreatedAt = DateTime.UtcNow
-        };
-        _db.PracticeSessions.Add(session);
-        await _db.SaveChangesAsync(ct);
-
-        // Gọi Gemini NGOÀI transaction — không giữ DB connection lúc chờ AI.
-        // Prompt tự xử 3 kịch bản: có JD ưu tiên JD; chỉ CV thì bám CV; không có
-        // gì thì sinh câu hỏi chung theo JobCategory. focusCriteria (lesson /start) đưa thêm để bám tiêu chí.
-        List<GeneratedQuestion> generated;
+        // P1-2 — TỪ ĐÂY reserve ĐÃ THÀNH CÔNG (credit đã trừ). Nếu BẤT KỲ bước sau ném (SaveChanges,
+        // AI gen, lưu câu hỏi…) mà không hoàn chỗ giữ → reservation treo → credit MẤT. Bọc toàn bộ
+        // hậu-reserve trong try/catch: mọi lỗi → ReleaseAsync(sessionId) best-effort (idempotent PAY-11,
+        // an toàn cả khi nhánh gen-fail đã phát SessionAbandoned) TRƯỚC khi ném lại. Không đổi happy path.
         try
         {
-            // focusCriteria chỉ có ở lesson /start (BC14) → dùng overload mang focusCriteria; luồng
-            // thường (null/rỗng) giữ nguyên overload cũ (không đổi hành vi/không đổi hợp đồng mock cũ).
-            generated = focusCriteria is { Count: > 0 }
-                ? await _questionGenerator.GenerateQuestionsAsync(
-                    session.JobCategory.ToString(), cvText, jdText, focusCriteria, ct)
-                : await _questionGenerator.GenerateQuestionsAsync(
-                    jobCategory: session.JobCategory.ToString(),
-                    cvText: cvText,            // null nếu không có
-                    jdText: jdText,            // null nếu không có
-                    ct: ct);
+            // Tạo session, commit #1. Status set bằng C# initializer của entity.
+            var session = new PracticeSession
+            {
+                Id = sessionId,
+                CandidateId = candidateId,
+                CvId = request.CvId,           // có thể null
+                JdId = request.JdId,           // có thể null
+                JobCategory = jobCategory,
+                Status = SessionStatus.GeneratingQuestions,
+                CreatedAt = DateTime.UtcNow
+            };
+            _db.PracticeSessions.Add(session);
+            await _db.SaveChangesAsync(ct);
+
+            // Gọi Gemini NGOÀI transaction — không giữ DB connection lúc chờ AI.
+            // Prompt tự xử 3 kịch bản: có JD ưu tiên JD; chỉ CV thì bám CV; không có
+            // gì thì sinh câu hỏi chung theo JobCategory. focusCriteria (lesson /start) đưa thêm để bám tiêu chí.
+            List<GeneratedQuestion> generated;
+            try
+            {
+                // focusCriteria chỉ có ở lesson /start (BC14) → dùng overload mang focusCriteria; luồng
+                // thường (null/rỗng) giữ nguyên overload cũ (không đổi hành vi/không đổi hợp đồng mock cũ).
+                generated = focusCriteria is { Count: > 0 }
+                    ? await _questionGenerator.GenerateQuestionsAsync(
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, ct)
+                    : await _questionGenerator.GenerateQuestionsAsync(
+                        jobCategory: session.JobCategory.ToString(),
+                        cvText: cvText,            // null nếu không có
+                        jdText: jdText,            // null nếu không có
+                        ct: ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Sinh câu hỏi lỗi cho session {SessionId}", session.Id);
+                session.Status = SessionStatus.Failed;
+                await _db.SaveChangesAsync(ct);
+                await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
+                // AI upstream lỗi (AiServiceException = transport/timeout/non-2xx) → propagate NGUYÊN
+                // TYPE để controller map 502 (không bọc thành InvalidOperationException = 400, che lỗi
+                // thật). Reserve vẫn được release ở catch ngoài (P1-2) + abandon (BK12) — idempotent PAY-11.
+                // Lỗi khác (generic) giữ 400 như cũ.
+                if (ex is AiServiceException) throw;
+                throw new InvalidOperationException("Sinh câu hỏi thất bại", ex);
+            }
+
+            if (generated is null || generated.Count == 0)
+            {
+                session.Status = SessionStatus.Failed;
+                await _db.SaveChangesAsync(ct);
+                await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
+                throw new InvalidOperationException("AIService không trả về câu hỏi nào");
+            }
+
+            // Lưu câu hỏi + set Ready, commit #2 (tách commit tránh concurrency).
+            var questions = generated
+                .Select((q, idx) => new PracticeQuestion
+                {
+                    Id = Guid.NewGuid(),
+                    SessionId = session.Id,
+                    OrderNo = idx + 1,
+                    Content = q.Content,
+                    TimeLimitSec = DefaultTimeLimitSec
+                })
+                .ToList();
+
+            _db.PracticeQuestions.AddRange(questions);
+            session.Status = SessionStatus.Ready;
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "Tạo session {SessionId} ({Cat}) với {Count} câu hỏi (cv={HasCv}, jd={HasJd})",
+                session.Id, session.JobCategory, questions.Count,
+                cvText != null, jdText != null);
+
+            return MapToResponse(session, questions, new List<PracticeAnswer>());
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Sinh câu hỏi lỗi cho session {SessionId}", session.Id);
-            session.Status = SessionStatus.Failed;
-            await _db.SaveChangesAsync(ct);
-            await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
-            throw new InvalidOperationException("Sinh câu hỏi thất bại", ex);
-        }
-
-        if (generated is null || generated.Count == 0)
-        {
-            session.Status = SessionStatus.Failed;
-            await _db.SaveChangesAsync(ct);
-            await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
-            throw new InvalidOperationException("AIService không trả về câu hỏi nào");
-        }
-
-        // Lưu câu hỏi + set Ready, commit #2 (tách commit tránh concurrency).
-        var questions = generated
-            .Select((q, idx) => new PracticeQuestion
+            // Bù trừ credit đã reserve: hoàn chỗ giữ để không treo credit ví User (PAY-5/PAY-11).
+            // Best-effort — lỗi release chỉ log, KHÔNG che lỗi gốc (dùng CancellationToken.None để release
+            // vẫn chạy kể cả khi lỗi gốc do ct bị hủy). Release idempotent nên an toàn khi nhánh gen-fail
+            // (BK12) đã phát SessionAbandoned trước đó.
+            try
             {
-                Id = Guid.NewGuid(),
-                SessionId = session.Id,
-                OrderNo = idx + 1,
-                Content = q.Content,
-                TimeLimitSec = DefaultTimeLimitSec
-            })
-            .ToList();
+                await _reservationClient.ReleaseAsync(sessionId);
+                _logger.LogInformation(
+                    "P1-2: hoàn credit đã reserve cho session {SessionId} sau lỗi tạo session", sessionId);
+            }
+            catch (Exception releaseEx)
+            {
+                _logger.LogError(releaseEx,
+                    "P1-2: hoàn credit thất bại cho session {SessionId} (lỗi gốc vẫn ném lại)", sessionId);
+            }
 
-        _db.PracticeQuestions.AddRange(questions);
-        session.Status = SessionStatus.Ready;
-        await _db.SaveChangesAsync(ct);
-
-        _logger.LogInformation(
-            "Tạo session {SessionId} ({Cat}) với {Count} câu hỏi (cv={HasCv}, jd={HasJd})",
-            session.Id, session.JobCategory, questions.Count,
-            cvText != null, jdText != null);
-
-        return MapToResponse(session, questions, new List<PracticeAnswer>());
+            _logger.LogError(ex, "Tạo session {SessionId} thất bại sau khi reserve credit", sessionId);
+            throw;
+        }
     }
 
     // ── CREATE B2B: session gắn campaign_id + materialize tiêu chí campaign (I1) ──────
@@ -298,20 +338,34 @@ public class PracticeService : IPracticeService
         bool allDone = statuses.All(s =>
             s is AnswerStatus.Scored or AnswerStatus.Skipped or AnswerStatus.Failed);
 
-        if (allDone)
-        {
-            session.Status = SessionStatus.Scored;
-            await _db.SaveChangesAsync(ct);
-            _logger.LogInformation(
-                "Session {SessionId} -> Scored ngay khi submit (đã chấm xong từ trước)", sessionId);
-
-            // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
-            await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
-        }
-        else
+        if (!allDone)
         {
             _logger.LogInformation("Chốt session {SessionId} -> Scoring (đang chờ chấm nốt)", sessionId);
+            return;
         }
+
+        // PAY-13: nhánh "đóng-ngay" của submit (mọi answer đã terminal lúc submit) — nếu KHÔNG answer
+        // nào Scored (mọi answer Failed/Skipped) → phát SessionAbandoned (release), không consume credit
+        // cho buổi 0 answer chấm được (PAY-1). Đối xứng với AnswerService.TryCompleteSessionAsync.
+        var scoredCount = statuses.Count(s => s == AnswerStatus.Scored);
+        if (scoredCount == 0)
+        {
+            session.Status = SessionStatus.SessionAbandoned;
+            await _db.SaveChangesAsync(ct);
+            _logger.LogInformation(
+                "Session {SessionId} -> SessionAbandoned ngay khi submit (không answer nào Scored)", sessionId);
+
+            await _scoringNotifier.NotifySessionAbandonedAsync(sessionId, "no_scored_answer", ct);
+            return;
+        }
+
+        session.Status = SessionStatus.Scored;
+        await _db.SaveChangesAsync(ct);
+        _logger.LogInformation(
+            "Session {SessionId} -> Scored ngay khi submit (đã chấm xong từ trước)", sessionId);
+
+        // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
+        await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
     }
 
     // I2 (D21) per-question finalize: mọi câu của buổi CHƯA có answer → tạo answer `Skipped`
