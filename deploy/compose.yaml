@@ -1,0 +1,199 @@
+# ISAS — FULL production stack (server host). Source of truth for the runnable stack.
+# Faithful extract of DEPLOYMENT.md §4 (previously only lived as a fenced block there).
+#
+# Usage (server, e.g. ~/docker/main/ — keep .env + seaweed-s3.json NEXT TO this file):
+#   cp ../.env.example .env   # then fill real values (chmod 600 .env)
+#   docker compose -f deploy/compose.yaml up -d
+#
+# NO secret values are committed here — every credential is a ${VAR} placeholder
+# resolved from .env (keys match ../.env.example). Images come from GHCR (CI-built).
+# AIService runs SEPARATELY on the Mac (Whisper is heavy) — see DEPLOYMENT.md §5.
+# The root ../compose.yaml is a DEV-PARTIAL skeleton (Auth+Gateway+MinIO only) — use THIS for the full stack.
+
+services:
+  # ===== DATA LAYER =====
+  postgres:
+    image: postgres:18
+    container_name: postgres-main
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_main_data:/var/lib/postgresql
+    networks: [isas-main-network]
+
+  redis:
+    image: redis:7
+    container_name: redis-main
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_main_data:/data
+    networks: [isas-main-network]
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: seaweedfs-main
+    restart: always
+    # -s3.config bật S3 auth bằng file identities (seaweed-s3.json). THIẾU nó → S3 mở toang, key bị bỏ qua.
+    command: "server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -ip.bind=0.0.0.0"
+    ports:
+      - "8333:8333"   # S3 API (Mac kéo audio qua tailnet)
+      - "8888:8888"   # filer
+      - "9333:9333"   # master UI
+    volumes:
+      - seaweedfs_main_data:/data
+      - ./seaweed-s3.json:/etc/seaweedfs/s3.json:ro   # identities S3 (access/secret key)
+    networks: [isas-main-network]
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq-main
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    ports:
+      - "5672:5672"    # AMQP (Mac worker consume qua tailnet)
+      - "15672:15672"  # management UI
+    networks: [isas-main-network]
+
+  # ===== APP SERVICES =====
+  isas.authservice:
+    image: ghcr.io/su26se043/isas.authservice:main
+    container_name: authservice-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Jwt__RefreshTokenDays=7
+      - Jwt__AccessTokenMinutes=15
+      - EmailSettings__Host=${SMTP_HOST}
+      - EmailSettings__Port=${SMTP_PORT}
+      - EmailSettings__Username=${SMTP_USER}
+      - EmailSettings__Password=${SMTP_PASS}
+      - EmailSettings__From=${SMTP_FROM}
+      - Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
+      - Authentication__Google__ClientSecret=${GOOGLE_CLIENT_SECRET}
+    expose: ["8080"]
+    depends_on: [postgres, redis]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+  isas.interviewservice:
+    image: ghcr.io/su26se043/isas.interviewservice:main
+    container_name: interviewservice-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_interview;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}                         # KHỚP authservice
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}           # KHỚP aiservice-worker
+      - SeaweedFS__ServiceURL=http://seaweedfs:8333
+      - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
+      - SeaweedFS__SecretKey=${S3_SECRET_KEY}
+      - SeaweedFS__BucketName=isas-files
+      - SeaweedFS__ForcePathStyle=true
+      - SeaweedFS__UseHttp=true
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
+      - AiService__BaseUrl=http://${MAC_TS_IP}:8000   # sinh câu hỏi chạy trên Mac (Tailscale IP)
+    ports:
+      - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet
+    depends_on: [postgres, seaweedfs, rabbitmq]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+  isas.campaignservice:
+    image: ghcr.io/su26se043/isas.campaignservice:main
+    container_name: campaignservice-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_campaign;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - AiService__BaseUrl=http://${MAC_TS_IP}:8000
+      - SeaweedFS__ServiceURL=http://seaweedfs:8333
+      - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
+      - SeaweedFS__SecretKey=${S3_SECRET_KEY}
+      - SeaweedFS__BucketName=isas-files
+      - SeaweedFS__ForcePathStyle=true
+      # RabbitMQ — Campaign publish email mời (D1) + cv-screening (C14) + consume ranking (E4).
+      # THIẾU → POST /invitations 500 "endpoints not reachable" (bắt ở API sweep 2026-07-13).
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
+    expose: ["8080"]
+    depends_on: [postgres, seaweedfs, rabbitmq]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+  isas.paymentservice:
+    image: ghcr.io/su26se043/isas.paymentservice:main
+    container_name: paymentservice-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_payment;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
+      - PayOS__ClientId=${PAYOS_CLIENT_ID}
+      - PayOS__ApiKey=${PAYOS_API_KEY}
+      - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
+      - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
+      - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
+    ports:
+      - "5271:8080"     # publish để webhook PayOS gọi vào (cần public URL/tunnel)
+    depends_on: [postgres, rabbitmq]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+  isas.gateway:
+    image: ghcr.io/su26se043/isas.gateway:main
+    container_name: gateway-main
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      # Chỉ override địa chỉ runtime; routing /api/v1 lấy từ appsettings.json trong image.
+      - ReverseProxy__Clusters__auth-cluster__Destinations__auth-node-01__Address=http://isas.authservice:8080
+      - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
+      - ReverseProxy__Clusters__campaign-cluster__Destinations__campaign-node-01__Address=http://isas.campaignservice:8080
+      - ReverseProxy__Clusters__payment-cluster__Destinations__payment-node-01__Address=http://isas.paymentservice:8080
+      # GEN-7 (2026-07-13): ai-cluster + /api/v1/ai route đã GỠ khỏi gateway (AI internal-only qua AiService:BaseUrl).
+      # → không còn override ai-cluster address / ai OpenApi. Index ApiServices dồn lại (bỏ ai=cũ-index-1).
+      - ApiServices__0__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
+      - ApiServices__1__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
+      - ApiServices__2__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
+      - ApiServices__3__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
+      - Gateway__Url=${GATEWAY_PUBLIC_URL}
+      - Cors__AllowedOrigins__0=http://localhost:3000
+      - Cors__AllowedOrigins__1=http://localhost:5173
+      - Cors__AllowedOrigins__2=http://localhost:5174
+      - Cors__AllowedOrigins__3=https://isas-web-client.vercel.app
+      - Cors__AllowedOrigins__4=${GATEWAY_PUBLIC_URL}
+    ports:
+      - "5050:8080"
+    depends_on: [isas.authservice, isas.interviewservice, isas.campaignservice, isas.paymentservice]
+    networks: [isas-main-network]
+    restart: unless-stopped
+
+networks:
+  isas-main-network:
+    driver: bridge
+
+volumes:
+  postgres_main_data:
+  redis_main_data:
+  seaweedfs_main_data:

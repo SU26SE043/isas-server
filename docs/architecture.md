@@ -192,7 +192,7 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 
 ## 7. Chạy, kiểm thử & phạm vi demo
 
-**Chạy (local):** `docker compose up` (xem `../compose.yaml` — Postgres/Redis/SeaweedFS/RabbitMQ + service). AIService (Python) chạy riêng (xem [../DEPLOYMENT.md](../DEPLOYMENT.md)). Env cần: connection string mỗi DB, `Jwt:Key/Issuer/Audience` (giống nhau mọi service), `Internal:Token`, `AiService:BaseUrl`, SeaweedFS keys, PayOS keys.
+**Chạy (full stack):** `docker compose -f deploy/compose.yaml up -d` (Postgres/Redis/SeaweedFS/RabbitMQ + 5 service — cần `.env` + `seaweed-s3.json` cạnh file, xem [../DEPLOYMENT.md](../DEPLOYMENT.md) §4). Root `../compose.yaml` là **dev-partial** (Auth+Gateway+MinIO). AIService (Python) chạy riêng trên Mac. Env cần: connection string mỗi DB, `Jwt:Key/Issuer/Audience` (giống nhau mọi service), `Internal:Token`, `AiService:BaseUrl`, SeaweedFS keys, PayOS keys.
 **Kiểm thử:** `dotnet test` (4 test project: `Isas.AuthService.Tests`, `Isas.InterviewService.Tests`, `Isas.CampaignService.Tests`, `Isas.PaymentService.Tests` ✅ P0.4) + AIService `pytest`. Cửa vào agent/người mới: [AGENTS.md](../AGENTS.md).
 
 ### Definition of Demo (chống "doc đẹp hơn sản phẩm")
