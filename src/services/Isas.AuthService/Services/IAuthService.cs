@@ -6,7 +6,7 @@ namespace Isas.AuthService.Services
 {
     public interface IAuthService
     {
-        Task<string> RegisterAsync(RegisterRequest registerRequest);
+        Task<AuthResponse> RegisterAsync(RegisterRequest registerRequest);
         Task<AuthResponse> RegisterOrgAsync(RegisterOrgRequest request);
 
         // D2: tạo-hoặc-lấy account Candidate nhẹ theo email (idempotent) → { candidateId, accessToken }.

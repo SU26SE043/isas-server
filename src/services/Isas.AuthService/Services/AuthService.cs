@@ -122,7 +122,10 @@ namespace Isas.AuthService.Services
             return BuildAuthResponse(accessToken, newRawRefreshToken);
         }
 
-        public async Task<string> RegisterAsync(RegisterRequest registerRequest)
+        // AUTH-1: register → role Candidate mặc định. Trả AuthResponse {accessToken, refreshToken,
+        // expiresAt} (như Login/RegisterOrg) qua GenerateAuthResponse — frontend nhận token ngay khi
+        // đăng ký, không phải login lại. Dùng chung đường sinh token (không lặp logic JWT).
+        public async Task<AuthResponse> RegisterAsync(RegisterRequest registerRequest)
         {
             var user = new User
             {
@@ -141,7 +144,7 @@ namespace Isas.AuthService.Services
             await EnsureRoleExistsAsync("Candidate");
             await _userManager.AddToRoleAsync(user, "Candidate");
 
-            return "User ID: " + user.Id;
+            return await GenerateAuthResponse(user);
         }
 
         // A3: đăng ký tổ chức → user (role Employer) + Organization + OrgMember(OrgAdmin); trả AuthResponse
