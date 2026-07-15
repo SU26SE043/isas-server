@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
 
+    # ── FACE VERIFY (SEC-2/3) ────────────────────────────────────
+    # buffalo_l = pack insightface mặc định (detect + ArcFace embed). CPU-only.
+    face_model_name: str = "buffalo_l"
+    # Ngưỡng cosine-similarity coi là KHỚP mặt (≥ → match). Caller có thể override/request.
+    face_match_threshold: float = 0.4
+
     # ── RABBITMQ CONFIG ──────────────────────────────────────────
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
     queue_name: str = "scoring_pipeline_queue"   # TRÙNG RabbitMQ:QueueName .NET
