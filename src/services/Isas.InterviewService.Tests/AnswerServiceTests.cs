@@ -270,16 +270,21 @@ public class AnswerServiceTests
             TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
 
         // Tạo session B2B qua đúng đường I1 (materialize tiêu chí campaign).
+        // BK14: B2B reserve ví ORG khi tạo session → mock trả reservation cho mọi ownerType.
+        var reservationMock = new Mock<ICreditReservationClient>();
+        reservationMock
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
         var practice = new PracticeService(
             t.Db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object,
             notifier,
-            new Mock<ICreditReservationClient>().Object,   // BC2: không dùng ở nhánh B2B
+            reservationMock.Object,
             new Mock<ISessionEventPublisher>().Object,     // BK12: không dùng ở nhánh B2B
             NullLogger<PracticeService>.Instance);
         var created = await practice.CreateCampaignSessionAsync(candidate,
             new CreateCampaignSessionRequest(
-                campaignId, JobCategory.BE,
+                campaignId, Guid.NewGuid(), JobCategory.BE,
                 Questions: new[] { "Q1" },
                 Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) }));
 

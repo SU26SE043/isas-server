@@ -11,4 +11,10 @@ namespace Isas.CampaignService.Services
     {
         public DownstreamServiceException(string message, Exception? inner = null) : base(message, inner) { }
     }
+
+    /// <summary>402 — BK14: ví credit của tổ chức không đủ để reserve khi ứng viên bắt đầu phỏng vấn (PAY-5).</summary>
+    public class InsufficientOrgCreditException : Exception
+    {
+        public InsufficientOrgCreditException(string message) : base(message) { }
+    }
 }

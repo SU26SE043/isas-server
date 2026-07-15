@@ -39,10 +39,10 @@ public class ResumeContractTests
             .Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
-        // BC2: reserve ví cá nhân chỉ ở nhánh B2C — nhánh B2B (campaign) không gọi, mock để đủ ctor.
+        // BK14: B2B (campaign) nay reserve ví ORG khi tạo session → mock trả reservation cho mọi ownerType.
         var reservation = new Mock<ICreditReservationClient>();
         reservation
-            .Setup(r => r.ReserveAsync("User", It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
 
         return new PracticeService(
@@ -87,7 +87,7 @@ public class ResumeContractTests
 
     // Request B2B 2 câu, 1 tiêu chí (materialize khi tạo mới; resume không đụng criteria).
     private static CreateCampaignSessionRequest Req(Guid campaignId) =>
-        new(campaignId, JobCategory.BE,
+        new(campaignId, Guid.NewGuid(), JobCategory.BE,
             Questions: new[] { "Q1", "Q2" },
             Criteria: new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
 
@@ -246,7 +246,7 @@ public class ResumeContractTests
 
         // Resume: session InProgress (chưa terminal) → create-or-get trả CÙNG session (không tạo mới).
         var req = new CreateCampaignSessionRequest(
-            campaignId, JobCategory.BE,
+            campaignId, Guid.NewGuid(), JobCategory.BE,
             new[] { "Q1", "Q2" },
             new[] { new CampaignCriterionInput("Clarity", null, 1.0m, 5) });
         var resumed = await BuildPractice(t.NewContext()).GetOrCreateCampaignSessionAsync(candidate, req);

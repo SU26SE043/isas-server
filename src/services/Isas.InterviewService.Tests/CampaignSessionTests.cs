@@ -24,11 +24,16 @@ public class CampaignSessionTests
             .Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
-        // BC2: reserve client mock KHÔNG được gọi ở nhánh B2B (reserve ví cá nhân chỉ B2C).
+        // BK14: B2B reserve ví ORG khi tạo session → mock trả reservation hợp lệ cho mọi ownerType.
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
         return new PracticeService(t.Db, new Mock<IStorageService>().Object,
                new Mock<IAiServiceQuestionGenerator>().Object,
                scoringNotifier.Object,
-               new Mock<ICreditReservationClient>().Object,
+               reservation.Object,
                new Mock<ISessionEventPublisher>().Object,   // BK12: abandoned publisher (không dùng ở nhánh B2B)
                NullLogger<PracticeService>.Instance);
     }
@@ -42,7 +47,7 @@ public class CampaignSessionTests
         var svc = Build(t);
 
         var req = new CreateCampaignSessionRequest(
-            campaignId, JobCategory.BE,
+            campaignId, Guid.NewGuid(), JobCategory.BE,
             Questions: new[] { "Q1", "Q2" },
             Criteria: new[]
             {
@@ -75,7 +80,7 @@ public class CampaignSessionTests
         var campaignId = Guid.NewGuid();
         var svc = Build(t);
         var req = new CreateCampaignSessionRequest(
-            campaignId, JobCategory.BE,
+            campaignId, Guid.NewGuid(), JobCategory.BE,
             new[] { "Q1" },
             new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
 
@@ -97,7 +102,7 @@ public class CampaignSessionTests
         var svc = Build(t);
 
         var req = new CreateCampaignSessionRequest(
-            campaignId, JobCategory.BE, new[] { "Q1", "Q2" },
+            campaignId, Guid.NewGuid(), JobCategory.BE, new[] { "Q1", "Q2" },
             new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
 
         var res = await svc.GetOrCreateCampaignSessionAsync(candidate, req);
@@ -120,7 +125,7 @@ public class CampaignSessionTests
         var svc = Build(t);
 
         var req = new CreateCampaignSessionRequest(
-            campaignId, JobCategory.BE, new[] { "Q1" },
+            campaignId, Guid.NewGuid(), JobCategory.BE, new[] { "Q1" },
             new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
 
         var first = await svc.GetOrCreateCampaignSessionAsync(candidate, req);
@@ -140,7 +145,7 @@ public class CampaignSessionTests
         var campaignId = Guid.NewGuid();
         var svc = Build(t);
         var req = new CreateCampaignSessionRequest(
-            campaignId, JobCategory.BE, new[] { "Q1" },
+            campaignId, Guid.NewGuid(), JobCategory.BE, new[] { "Q1" },
             new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
 
         var a = await svc.GetOrCreateCampaignSessionAsync(Guid.NewGuid(), req);
@@ -166,7 +171,7 @@ public class CampaignSessionTests
             practice.Object, config, NullLogger<InternalSessionsController>.Instance);
 
         var req = new CreateCampaignSessionInternalRequest(
-            Guid.NewGuid(), Guid.NewGuid(), "BE", new[] { "Q1" },
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BE", new[] { "Q1" },
             new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) });
 
         var result = await controller.CreateOrGetCampaignSession(req, token: "wrong-token", default);

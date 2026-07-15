@@ -209,57 +209,90 @@ public class PracticeService : IPracticeService
         if (request.Criteria is null || request.Criteria.Count == 0)
             throw new InvalidOperationException("Campaign session cần ít nhất 1 tiêu chí");
 
-        var session = new PracticeSession
-        {
-            Id = Guid.NewGuid(),
-            CandidateId = candidateId,
-            CampaignId = request.CampaignId,
-            JobCategory = request.JobCategory,
-            Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
-            CreatedAt = DateTime.UtcNow,
-            Deadline = request.ExpiresAt    // I2: hạn chót nhận bài (B2B); null → không hard-deadline
-        };
-        _db.PracticeSessions.Add(session);
-
-        var questions = request.Questions
-            .Select((content, idx) => new PracticeQuestion
-            {
-                Id = Guid.NewGuid(),
-                SessionId = session.Id,
-                OrderNo = idx + 1,
-                Content = content,
-                TimeLimitSec = DefaultTimeLimitSec
-            })
-            .ToList();
-        _db.PracticeQuestions.AddRange(questions);
-
-        // Materialize tiêu chí campaign → rubric_criteria(campaign_id), idempotent theo campaign.
-        var alreadyMaterialized = await _db.RubricCriteria
-            .AnyAsync(c => c.CampaignId == request.CampaignId, ct);
-        if (!alreadyMaterialized)
-        {
-            var criteria = request.Criteria.Select(c => new RubricCriterion
-            {
-                Id = Guid.NewGuid(),
-                Name = c.Name,
-                Description = c.Description,
-                Weight = c.Weight,
-                MaxScore = c.MaxScore,
-                IsActive = true,
-                JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
-                CampaignId = request.CampaignId,
-                Version = 1
-            });
-            _db.RubricCriteria.AddRange(criteria);
-        }
-
-        await _db.SaveChangesAsync(ct);
-
+        // BK14: reserve 1 credit ví ORG (owner=Org, PAY-6) TRƯỚC khi tạo session row — reserve-first
+        // như B2C (BC2) để tránh orphan. sessionId cấp trước → reserve khoá idempotency theo đúng Id
+        // session sẽ dùng (P4). Ví org hết credit → Payment 402 → InsufficientCreditException ném ở đây
+        // ⇒ KHÔNG có row session (PAY-5). Consume/release sau đó do E7 xử theo owner của reservation.
+        var sessionId = Guid.NewGuid();
+        var reservation = await _reservationClient.ReserveAsync(
+            ownerType: "Org", ownerId: request.OrgId, sessionId: sessionId, ct: ct);
         _logger.LogInformation(
-            "Tạo session B2B {SessionId} cho campaign {CampaignId} ({Q} câu, materialize criteria={Mat})",
-            session.Id, request.CampaignId, questions.Count, !alreadyMaterialized);
+            "BK14: reserve credit ví org {OrgId} cho session B2B {SessionId} (reservation {ReservationId})",
+            request.OrgId, sessionId, reservation.ReservationId);
 
-        return MapToResponse(session, questions, new List<PracticeAnswer>());
+        // Reserve đã thành công (credit org đã giữ). Mọi lỗi sau đây → ReleaseAsync(sessionId) best-effort
+        // (idempotent PAY-11) TRƯỚC khi ném lại, tránh treo credit org — đồng pattern B2C (P1-2).
+        try
+        {
+            var session = new PracticeSession
+            {
+                Id = sessionId,
+                CandidateId = candidateId,
+                CampaignId = request.CampaignId,
+                JobCategory = request.JobCategory,
+                Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
+                CreatedAt = DateTime.UtcNow,
+                Deadline = request.ExpiresAt    // I2: hạn chót nhận bài (B2B); null → không hard-deadline
+            };
+            _db.PracticeSessions.Add(session);
+
+            var questions = request.Questions
+                .Select((content, idx) => new PracticeQuestion
+                {
+                    Id = Guid.NewGuid(),
+                    SessionId = session.Id,
+                    OrderNo = idx + 1,
+                    Content = content,
+                    TimeLimitSec = DefaultTimeLimitSec
+                })
+                .ToList();
+            _db.PracticeQuestions.AddRange(questions);
+
+            // Materialize tiêu chí campaign → rubric_criteria(campaign_id), idempotent theo campaign.
+            var alreadyMaterialized = await _db.RubricCriteria
+                .AnyAsync(c => c.CampaignId == request.CampaignId, ct);
+            if (!alreadyMaterialized)
+            {
+                var criteria = request.Criteria.Select(c => new RubricCriterion
+                {
+                    Id = Guid.NewGuid(),
+                    Name = c.Name,
+                    Description = c.Description,
+                    Weight = c.Weight,
+                    MaxScore = c.MaxScore,
+                    IsActive = true,
+                    JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
+                    CampaignId = request.CampaignId,
+                    Version = 1
+                });
+                _db.RubricCriteria.AddRange(criteria);
+            }
+
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "Tạo session B2B {SessionId} cho campaign {CampaignId} ({Q} câu, materialize criteria={Mat})",
+                session.Id, request.CampaignId, questions.Count, !alreadyMaterialized);
+
+            return MapToResponse(session, questions, new List<PracticeAnswer>());
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                await _reservationClient.ReleaseAsync(sessionId);
+                _logger.LogInformation(
+                    "BK14: hoàn credit org đã reserve cho session B2B {SessionId} sau lỗi tạo session", sessionId);
+            }
+            catch (Exception releaseEx)
+            {
+                _logger.LogError(releaseEx,
+                    "BK14: hoàn credit org thất bại cho session B2B {SessionId} (lỗi gốc vẫn ném lại)", sessionId);
+            }
+
+            _logger.LogError(ex, "Tạo session B2B {SessionId} thất bại sau khi reserve credit org", sessionId);
+            throw;
+        }
     }
 
     // ── CREATE-OR-GET B2B (D2): idempotent theo (candidateId, campaignId) ─────────────

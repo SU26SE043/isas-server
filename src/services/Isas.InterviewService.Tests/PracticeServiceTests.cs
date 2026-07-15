@@ -39,7 +39,8 @@ public class PracticeServiceTests
 
         reservation = new Mock<ICreditReservationClient>();
         reservation
-            .Setup(r => r.ReserveAsync("User", It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            // BK14: cả "User" (B2C) và "Org" (B2B) đều trả reservation hợp lệ.
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
 
         eventPublisher = new Mock<ISessionEventPublisher>();
@@ -133,25 +134,82 @@ public class PracticeServiceTests
             Times.Never);
     }
 
-    // BC2 (c): tạo session B2B (campaign) KHÔNG reserve ví cá nhân (B2B reserve do Campaign, PAY-6).
+    // BK14: tạo session B2B (campaign) reserve ví ORG (owner=Org theo OrgId), KHÔNG reserve ví cá nhân (User).
     [Fact]
-    public async Task CreateCampaignSession_DoesNotReservePersonalWallet()
+    public async Task CreateCampaignSession_ReservesOrgWallet_NotPersonal()
     {
         using var t = new TestDb();
         var candidate = Guid.NewGuid();
+        var orgId = Guid.NewGuid();
 
         var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out _, out var reservation);
 
         var req = new CreateCampaignSessionRequest(
-            Guid.NewGuid(), JobCategory.BE,
+            Guid.NewGuid(), orgId, JobCategory.BE,
             Questions: new[] { "Q1" },
             Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) });
 
-        await svc.CreateCampaignSessionAsync(candidate, req);
+        var res = await svc.CreateCampaignSessionAsync(candidate, req);
 
-        reservation.Verify(r => r.ReserveAsync(
-                It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+        // Reserve owner=Org, sessionId = session vừa tạo (idempotency key P4).
+        reservation.Verify(r => r.ReserveAsync("Org", orgId, res.Id, It.IsAny<CancellationToken>()), Times.Once);
+        // KHÔNG reserve ví cá nhân (User).
+        reservation.Verify(r => r.ReserveAsync("User", It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    // BK14: ví org hết credit → ReserveAsync ném InsufficientCreditException (402) TRƯỚC insert →
+    // KHÔNG có row session (PAY-5).
+    [Fact]
+    public async Task CreateCampaignSession_OrgWalletEmpty_Throws402_NoSessionRow()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var orgId = Guid.NewGuid();
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync("Org", orgId, It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InsufficientCreditException("Tổ chức không đủ credit"));
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, new Mock<IAiServiceQuestionGenerator>().Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            new Mock<ISessionEventPublisher>().Object, NullLogger<PracticeService>.Instance);
+
+        var req = new CreateCampaignSessionRequest(
+            Guid.NewGuid(), orgId, JobCategory.BE,
+            Questions: new[] { "Q1" },
+            Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) });
+
+        await Assert.ThrowsAsync<InsufficientCreditException>(() =>
+            svc.CreateCampaignSessionAsync(candidate, req));
+
+        Assert.Equal(0, await t.Db.PracticeSessions.CountAsync());
+    }
+
+    // BK14: create-or-get idempotent — session B2B đang mở → trả lại, KHÔNG reserve lần 2.
+    [Fact]
+    public async Task GetOrCreateCampaignSession_ExistingOpen_NoSecondReserve()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var orgId = Guid.NewGuid();
+        var campaignId = Guid.NewGuid();
+
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out _, out var reservation);
+
+        CreateCampaignSessionRequest Req() => new(
+            campaignId, orgId, JobCategory.BE,
+            Questions: new[] { "Q1" },
+            Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) });
+
+        var first = await svc.GetOrCreateCampaignSessionAsync(candidate, Req());
+        var second = await svc.GetOrCreateCampaignSessionAsync(candidate, Req());
+
+        Assert.Equal(first.Id, second.Id);   // cùng session
+        // Reserve chỉ 1 lần (lúc tạo mới), lần 2 (get) không reserve.
+        reservation.Verify(r => r.ReserveAsync("Org", orgId, It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     // P1 (B2C audit): thiếu jobCategory (null) → 400 (InvalidOperationException → BadRequest) TRƯỚC
@@ -528,7 +586,7 @@ public class PracticeServiceTests
 
         var svc = Build(t, new Mock<IAiServiceQuestionGenerator>());
         var req = new CreateCampaignSessionRequest(
-            Guid.NewGuid(), JobCategory.BE,
+            Guid.NewGuid(), Guid.NewGuid(), JobCategory.BE,
             Questions: new[] { "Q1" },
             Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) },
             ExpiresAt: expires);
@@ -549,7 +607,7 @@ public class PracticeServiceTests
 
         var svc = Build(t, new Mock<IAiServiceQuestionGenerator>());
         var req = new CreateCampaignSessionRequest(
-            Guid.NewGuid(), JobCategory.BE,
+            Guid.NewGuid(), Guid.NewGuid(), JobCategory.BE,
             Questions: new[] { "Q1" },
             Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) });
 

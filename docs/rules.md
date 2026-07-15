@@ -58,7 +58,7 @@
 - **PAY-3** Prepaid (pack) + Postpaid (chỉ Org, PlatformAdmin duyệt, `credit_limit`, hóa đơn cuối kỳ) (D6).
 - **PAY-4** `Reserve → Consume (Scored) → Release`; idempotent theo `session_id` (D7).
 - **PAY-5** Reserve trừ `remaining` ngay (atomic) chống double-spend; hết → **402**, không tạo session.
-- **PAY-6** Ai reserve: B2B = Campaign, B2C = Interview.
+- **PAY-6** Ai reserve: **InterviewService reserve cho CẢ HAI dòng** khi tạo session (reserve-first, tránh orphan); owner do caller truyền — **B2B = Org** (Campaign gửi `campaign.OrgId` qua `/internal/sessions/campaign`), **B2C = User** (candidateId). Hết credit → **402, không tạo session**. *(BK14 — trước đây B2B chưa wire; consume/release vẫn theo event, lấy owner từ reservation.)*
 - **PAY-7** `order_code` = time + random, ≤ 9.007.199.254.740.991 (trần PayOS, D12).
 - **PAY-8** Cộng credit/tất toán **chỉ khi** webhook Paid + verify HMAC; idempotent theo `payos_order_code`; + active-polling đối soát.
 - **PAY-9** `description` PayOS ≤ 25 ký tự.

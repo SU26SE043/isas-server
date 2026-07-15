@@ -106,6 +106,11 @@ namespace Isas.CampaignService.Controllers
             }
             catch (UnauthorizedAccessException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message }); }
             catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }   // campaign không cho phỏng vấn / đã hoàn thành → 409
+            catch (InsufficientOrgCreditException ex)
+            {
+                // BK14: ví org hết credit → reserve chặn → 402 (PAY-5), KHÔNG tạo session.
+                return StatusCode(StatusCodes.Status402PaymentRequired, new { error = ex.Message });
+            }
             catch (DownstreamServiceException ex)
             {
                 _logger.LogError(ex, "Tạo session phỏng vấn thất bại (campaign {CampaignId}).", id);

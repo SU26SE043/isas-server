@@ -33,7 +33,7 @@ namespace Isas.CampaignService.Services
         private record QuestionApiResponse(Guid Id, int OrderNo, string Content, int TimeLimitSec);
 
         public async Task<CampaignSessionResult> CreateOrGetSessionAsync(
-            Guid candidateId, Guid campaignId, string jobCategory,
+            Guid candidateId, Guid campaignId, Guid orgId, string jobCategory,
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
             CancellationToken ct = default)
@@ -42,6 +42,7 @@ namespace Isas.CampaignService.Services
             {
                 candidateId,
                 campaignId,
+                orgId,      // BK14 — Interview reserve credit owner=Org theo id này (PAY-6)
                 jobCategory,
                 questions,
                 criteria = criteria.Select(c => new { c.Name, c.Description, c.Weight, c.MaxScore }),
@@ -68,6 +69,13 @@ namespace Isas.CampaignService.Services
             if (!response.IsSuccessStatusCode)
             {
                 var error = await response.Content.ReadAsStringAsync(ct);
+                // BK14 — 402 = ví org hết credit (reserve chặn, PAY-5) → map riêng thành
+                // InsufficientOrgCreditException để controller trả 402 (không phải 502 như lỗi hạ tầng).
+                if (response.StatusCode == System.Net.HttpStatusCode.PaymentRequired)
+                {
+                    _logger.LogWarning("InterviewService create-or-get session: ví org hết credit (402) - {Error}", error);
+                    throw new InsufficientOrgCreditException("Tổ chức không đủ credit để bắt đầu phỏng vấn.");
+                }
                 _logger.LogError("InterviewService create-or-get session lỗi: {StatusCode} - {Error}", response.StatusCode, error);
                 throw new DownstreamServiceException($"InterviewService create-or-get session trả {(int)response.StatusCode}");
             }

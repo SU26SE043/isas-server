@@ -146,7 +146,7 @@
 | ID | Việc | dep |
 |---|---|---|
 | BK3 | ~~CRUD rubric B2C admin-gated~~ → **superseded bởi BC16** (candidate-owned CRUD, không admin — commit c59b02d) | BC11,A5 |
-| BK14 | **D2 follow-ups:** reserve-credit-org tại `/start` · **DECISION retake** sau Completed · JWT refresh · orgName resolve | D2,P2 |
+| BK14 | **D2 follow-ups:** ✅ **reserve-credit-org tại `/start`** (BK14 — Interview reserve owner=Org từ `campaign.OrgId`, ví org hết→402, reserve-first tránh orphan; consume/release E7 sẵn) · **còn:** DECISION retake sau Completed · JWT refresh · orgName resolve | D2,P2 |
 | E9b | Levels giàu: `/suggest-criteria` sinh levels (B2B) + seed `rubric_levels` B2C — thay dải `0..maxScore` | E9 |
 | E10b | Selective N× (chỉ tiêu chí biên) + republisher re-publish đúng attempt thiếu (N>1) | E10 |
 | E11b | Endpoint **HR override điểm cuối** (transcript+reasoning+needs_review → sửa/chốt, ghi audit) | E11 |

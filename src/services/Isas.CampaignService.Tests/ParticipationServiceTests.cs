@@ -39,7 +39,7 @@ public class ParticipationServiceTests
         var m = new Mock<ICampaignSessionClient>();
         // Idempotent: mọi lần gọi → CÙNG sessionId (mô phỏng create-or-get bên Interview).
         m.Setup(x => x.CreateOrGetSessionAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
                 It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CampaignSessionResult(FixedSession, new List<SessionQuestion>
@@ -432,7 +432,7 @@ public class ParticipationServiceTests
             .StartInterviewAsync(FixedCandidate, camp.Id, default);
 
         session.Verify(x => x.CreateOrGetSessionAsync(
-            FixedCandidate, camp.Id, It.IsAny<string>(),
+            FixedCandidate, camp.Id, It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
             deadline, It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -451,7 +451,7 @@ public class ParticipationServiceTests
             .StartInterviewAsync(FixedCandidate, camp.Id, default);
 
         session.Verify(x => x.CreateOrGetSessionAsync(
-            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
             (DateTime?)null, It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -475,9 +475,50 @@ public class ParticipationServiceTests
 
         Assert.Equal(first.SessionId, second.SessionId);   // resume → cùng session
         session.Verify(x => x.CreateOrGetSessionAsync(
-            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
             deadline, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    // BK14: Start truyền đúng campaign.OrgId xuống session client (Interview reserve owner=Org).
+    [Fact]
+    public async Task Start_TruyenCampaignOrgId_XuongSessionClient()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            FixedCandidate, camp.Id, camp.OrgId, It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // BK14: ví org hết credit → session client ném InsufficientOrgCreditException → Start propagate
+    // (controller map → 402); KHÔNG nuốt thành 502.
+    [Fact]
+    public async Task Start_ViOrgHetCredit_NemInsufficientOrgCredit()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = new Mock<ICampaignSessionClient>();
+        session.Setup(x => x.CreateOrGetSessionAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+                It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InsufficientOrgCreditException("Tổ chức không đủ credit"));
+
+        await Assert.ThrowsAsync<InsufficientOrgCreditException>(() =>
+            NewService(tdb.NewContext(), session: session)
+                .StartInterviewAsync(FixedCandidate, camp.Id, default));
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────────
