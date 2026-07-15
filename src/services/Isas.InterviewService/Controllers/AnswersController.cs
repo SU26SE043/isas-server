@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -120,11 +122,19 @@ public class AnswersController : ControllerBase   // KHÔNG [Route] cấp class
     private bool IsValidInternalToken(string? token, Guid answerId)
     {
         var expected = _config["Internal:Token"];
-        if (string.IsNullOrEmpty(expected) || token != expected)
+        // Fail-closed: token chưa cấu hình → từ chối hết (không mở toang). Loại token null/rỗng sớm.
+        if (string.IsNullOrEmpty(expected) || string.IsNullOrEmpty(token))
         {
             _logger.LogWarning("Callback bị từ chối: token sai cho answer {AnswerId}", answerId);
             return false;
         }
-        return true;
+
+        // So khớp HẰNG-THỜI-GIAN trên UTF-8 bytes — ranh giới auth DUY NHẤT cho callback ghi điểm
+        // (máy-máy). `token != expected` rò rỉ timing (thoát sớm ở byte lệch đầu tiên).
+        var ok = CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected));
+        if (!ok)
+            _logger.LogWarning("Callback bị từ chối: token sai cho answer {AnswerId}", answerId);
+        return ok;
     }
 }

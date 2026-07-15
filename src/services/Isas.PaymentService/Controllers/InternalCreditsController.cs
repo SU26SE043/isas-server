@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Isas.PaymentService.DTOs;
 using Isas.PaymentService.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -114,12 +116,22 @@ namespace Isas.PaymentService.Controllers
         private bool IsValidInternalToken(string? token)
         {
             var expected = _config["Internal:Token"];
-            if (string.IsNullOrEmpty(expected) || token != expected)
+            // Fail-closed: token chưa cấu hình → từ chối hết (không mở toang). Loại luôn token null/rỗng
+            // trước khi so khớp (FixedTimeEquals cần 2 span; guard sớm giữ nguyên hành vi cũ).
+            if (string.IsNullOrEmpty(expected) || string.IsNullOrEmpty(token))
             {
                 _logger.LogWarning("Reserve bị từ chối: X-Internal-Token sai/thiếu.");
                 return false;
             }
-            return true;
+
+            // So khớp HẰNG-THỜI-GIAN trên UTF-8 bytes — đây là ranh giới auth DUY NHẤT cho ghi tiền
+            // (reserve/consume/release). `token != expected` rò rỉ timing (string compare thoát sớm ở
+            // byte lệch đầu tiên) → kẻ tấn công có thể dò từng ký tự token nội bộ.
+            var ok = CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected));
+            if (!ok)
+                _logger.LogWarning("Reserve bị từ chối: X-Internal-Token sai/thiếu.");
+            return ok;
         }
     }
 }
