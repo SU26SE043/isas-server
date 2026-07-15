@@ -36,6 +36,13 @@ public class PracticeSession
     // BC10 — nhận xét chung buổi (AI sinh best-effort khi Scored, chỉ B2C); null nếu chưa/AI lỗi/B2B.
     public string? OverallComment { get; set; }
 
+    // Settlement-outbox marker (Option A): mốc PHÁT THÀNH CÔNG settlement-event (SessionScored/
+    // SessionAbandoned) lên RabbitMQ cho Payment. Set khi publish OK ở 3 điểm phát; giữ null khi publish
+    // HỤT (log-and-swallow). SettlementReconciler quét session terminal có marker null (B2C) để phát lại,
+    // đóng lỗ "publish hụt → Payment giữ reservation Reserved vĩnh viễn". Payment idempotent theo
+    // credit_reservations.session_id (PAY-11) nên phát lại KHÔNG double-consume/refund (at-least-once an toàn).
+    public DateTime? SettlementPublishedAt { get; set; }
+
     // Navigation
     public ICollection<PracticeQuestion> Questions { get; set; } = [];
     public ICollection<PracticeAnswer> Answers { get; set; } = [];

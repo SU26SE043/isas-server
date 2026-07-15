@@ -222,13 +222,21 @@ public class SessionAbandonSweeper : BackgroundService
         try
         {
             await _eventPublisher.PublishSessionAbandonedAsync(evt, ct);
+
+            // Settlement-outbox: phát OK → đánh dấu settlement_published_at để SettlementReconciler bỏ qua.
+            // Publish LỖI → không tới đây → marker null → reconciler phát lại (Payment release idempotent
+            // theo session_id/PAY-11 → at-least-once an toàn).
+            await db.PracticeSessions
+                .Where(x => x.Id == s.Id)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.SettlementPublishedAt, now), ct);
+
             _logger.LogInformation(
                 "Đã phát SessionAbandoned cho session {SessionId} (reason={Reason})", s.Id, reason);
         }
         catch (Exception ex)
         {
             // Publish lỗi KHÔNG được làm hỏng việc đóng session — session đã Abandoned trong DB rồi
-            // (giống pattern nuốt lỗi publish ở SessionScoringNotifier/E2). Miss event tạm làm Payment lệch.
+            // (giống pattern nuốt lỗi publish ở SessionScoringNotifier/E2). Miss event được SettlementReconciler backfill.
             _logger.LogError(ex, "Phát SessionAbandoned thất bại cho session {SessionId}", s.Id);
         }
     }

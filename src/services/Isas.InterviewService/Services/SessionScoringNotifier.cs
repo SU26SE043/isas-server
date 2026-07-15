@@ -97,6 +97,15 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         try
         {
             await _eventPublisher.PublishSessionScoredAsync(evt, ct);
+
+            // Settlement-outbox: phát OK → đánh dấu settlement_published_at để SettlementReconciler
+            // bỏ qua session này. Publish LỖI (catch dưới) → không tới đây → marker giữ null →
+            // reconciler phát lại (Payment idempotent theo session_id/PAY-11 → at-least-once an toàn).
+            // ExecuteUpdate vì session ở đây AsNoTracking (giống StuckAnswerRepublisher).
+            await _db.PracticeSessions
+                .Where(s => s.Id == session.Id)
+                .ExecuteUpdateAsync(u => u.SetProperty(s => s.SettlementPublishedAt, DateTime.UtcNow), ct);
+
             _logger.LogInformation(
                 "Phát SessionScored: session={SessionId} campaign={CampaignId} score={Score}",
                 session.Id, session.CampaignId, totalScore);
@@ -105,7 +114,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         {
             // Publish lỗi KHÔNG được làm hỏng việc đóng session — session đã Scored trong DB
             // rồi (giống pattern nuốt lỗi publish ở AnswerService.TryPublishScoringJobAsync).
-            // Miss event ở đây tạm thời làm Campaign/Payment lệch (chưa có backfill trong E2).
+            // Miss event ở đây được SettlementReconciler backfill (B2C): marker null → phát lại.
             _logger.LogError(ex, "Phát SessionScored thất bại cho session {SessionId}", sessionId);
         }
     }
@@ -134,6 +143,14 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         try
         {
             await _eventPublisher.PublishSessionAbandonedAsync(evt, ct);
+
+            // Settlement-outbox: phát OK → đánh dấu settlement_published_at (xem NotifySessionScoredAsync).
+            // Publish LỖI → không tới đây → marker null → SettlementReconciler phát lại (Payment release
+            // idempotent theo session_id/PAY-11 → at-least-once an toàn).
+            await _db.PracticeSessions
+                .Where(s => s.Id == session.Id)
+                .ExecuteUpdateAsync(u => u.SetProperty(s => s.SettlementPublishedAt, DateTime.UtcNow), ct);
+
             _logger.LogInformation(
                 "PAY-13: phát SessionAbandoned (không answer nào Scored) cho session {SessionId} (reason={Reason})",
                 session.Id, reason);
@@ -141,7 +158,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         catch (Exception ex)
         {
             // Publish lỗi KHÔNG chặn đóng session — session đã terminal trong DB (giống pattern nuốt
-            // lỗi publish ở SessionScored/SessionAbandonSweeper). Miss event tạm làm Payment lệch (giữ reservation).
+            // lỗi publish ở SessionScored/SessionAbandonSweeper). Miss event được SettlementReconciler backfill.
             _logger.LogError(ex, "PAY-13: phát SessionAbandoned thất bại cho session {SessionId}", session.Id);
         }
     }
