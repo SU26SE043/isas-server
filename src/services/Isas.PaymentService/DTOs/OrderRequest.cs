@@ -26,7 +26,7 @@ namespace Isas.PaymentService.DTOs
             public Guid? PackageId { get; set; }
             public Guid? InvoiceId { get; set; }
             public OrderStatus Status { get; set; }
-            public int AmountVnd { get; set; }
+            public long AmountVnd { get; set; }   // khớp Order.AmountVnd (amount_vnd bigint — payment.md §DB)
             public long PayosOrderCode { get; set; }
             public DateTime ExpiredAt { get; set; }
             public DateTime? PaidAt { get; set; }
