@@ -220,6 +220,8 @@ namespace Isas.CampaignService.Services
             {
                 SessionId = session.SessionId,
                 CampaignId = campaignId,
+                // SEC-1: FE kích hoạt proctoring khi campaign bật anti-cheat (độc lập face-verify).
+                AntiCheatEnabled = campaign.AntiCheatEnabled,
                 // SEC-2: bật face-verify + chưa có ảnh tham chiếu → FE cần nhắc enroll (KHÔNG chặn start, D13/SEC-5).
                 FaceEnrollRequired = campaign.FaceVerifyEnabled
                     && string.IsNullOrWhiteSpace(membership.ReferenceImageKey),
