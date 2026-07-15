@@ -1,4 +1,8 @@
-﻿services:
+﻿# ⚠ DEV-PARTIAL skeleton — Postgres/Redis/MinIO + Auth + Gateway ONLY.
+# Missing rabbitmq, seaweedfs, interviewservice, campaignservice, paymentservice
+# (and uses MinIO instead of SeaweedFS). NOT the runnable full stack.
+# → For the FULL production stack use deploy/compose.yaml (faithful to DEPLOYMENT.md §4).
+services:
   # ===== DATA LAYER =====
   postgres:
     image: postgres:16

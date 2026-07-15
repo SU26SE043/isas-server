@@ -36,7 +36,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | **InterviewService** | .NET, EF Core | **Engine dùng chung**: session (`campaign_id?`), câu hỏi, câu trả lời, điểm, rubric/tiêu chí, file | ✅ (mở rộng B2B) |
 | **AIService** | Python, FastAPI, faster-whisper, google-genai | Sinh câu hỏi + worker chấm điểm (rubric JobCategory **hoặc** tiêu chí campaign) | ✅ (mở rộng) |
 | **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | 🟢 merged main (M2: CRUD + tiêu chí cấu trúc + publish/audit); M3/M4/M5 🟡 |
-| **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo chủ ví** (org B2B / cá nhân B2C — D15), prepaid + postpaid, reserve→consume | 🟡 branch (chưa vào tree main) |
+| **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo chủ ví** (org B2B / cá nhân B2C — D15), prepaid + postpaid, reserve→consume | ✅ trong tree (CI image, gateway route live, trong compose) |
 
 **Hạ tầng:** PostgreSQL 18 — DB-per-service (`isas`/`isas_interview`/`isas_campaign`/`isas_payment`) · SeaweedFS (S3, cổng 8333; CV/JD/Criteria/audio) · RabbitMQ (job chấm `scoring_pipeline_queue` + event) · Redis (provision sẵn cho cache; **lưu ý: refresh token của Auth hiện ở Postgres** — Redis chưa được wire, để dành phase sau).
 
@@ -48,7 +48,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | **B2C (nền)** | Engine sinh câu hỏi **bám CV/JD** + chấm rubric `JobCategory` + lịch sử | Ví **credit cá nhân** + reserve/consume khi luyện; **phân tích CV (BC4)**; tổng kết điểm/nhận xét (BC9–BC11); **roadmap ôn tập (BC12–BC15, D20)** | tasks `BC1`–`BC15`; D15/D17/D20 |
 | **B2B (điều phối)** | tiêu chí text→**cấu trúc** (C8) + soft-delete/audit (C9/C10) + **I1** session `campaign_id`/materialize + **E1** chấm theo tiêu chí campaign | **Distribution** (M3 magic-link/email), **Ranking+Result** (M4/M5 + CSV/PDF), wire `org_id`, **lọc CV hàng loạt** (C13–C15, D18/D19) | work-division §1b; tasks `C*`/`D*`/`E*` |
 | **AuthService** | 3 role, JWT, Google OAuth, **Organization + org-role** (OrgAdmin/HrMember) trong JWT + `register-org` (A1–A3) | `A4` HrMember chặn billing, `A5` bật lại `[Authorize(Roles)]` mọi service | tasks `A1`–`A5` |
-| **PaymentService** 🟡 | Order/Package/PayOS (theo `user_id`) | `credit_accounts(owner_type)`, **reserve/consume/release**, **postpaid + hóa đơn**, active-polling | tasks `P1`–`P8`; [services/payment.md](services/payment.md) |
+| **PaymentService** ✅ | `credit_accounts(owner_type)` + **reserve/consume/release** (P4/P5/P6) + mua pack/webhook (P2) + active-polling (P3) + **postpaid + hóa đơn** (P8) — in tree, CI image, gateway route, compose | verify tay: PayOS sandbox (webhook HMAC) | tasks `P1`–`P8` ✅; [services/payment.md](services/payment.md) |
 | **CampaignService** 🟢 | merged main: CRUD + JD/Criteria (PdfPig) + 6 bug fix + lifecycle + publish tiêu chí cấu trúc + soft-delete/audit | distribution, ranking/result/export, wire `org_id` | tasks `C1`–`C10` |
 | **AIService** | generate-questions, transcribe, worker chấm, **suggest-criteria** (C8) | **analyze-cv (BC4)**; ✅ đã bỏ `/ai/**` khỏi gateway (GEN-7) · còn `X-Internal-Token` nội bộ · Whisper nhẹ/GPU · chống prompt-injection · DLQ | [services/ai.md](services/ai.md) §Vấn đề |
 | **Gateway / Infra** | Reverse proxy, compose service | ✅ `/ai/**` đã gỡ khỏi gateway (GEN-7, internal-only); **Redis chưa wire** | §6, §8 |
@@ -168,7 +168,7 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 | `/api/v1/auth/**` | AuthService `/auth/**` | ✅ |
 | `/api/v1/interview/practice/**`, `/files/**` | InterviewService `/api/practice/**`, `/api/files/**` | ✅ |
 | `/api/v1/campaign/**` | CampaignService `/campaign/**` | ✅ merged main (gateway route + CI build) |
-| `/api/v1/payment/**` | PaymentService `/order`,`/package`,… | 🟡 branch |
+| `/api/v1/payment/**` | PaymentService `/order`,`/package`,… | ✅ (gateway payment-cluster + CI build) |
 | ~~`/api/v1/ai/**`~~ | — | ✅ **đã gỡ khỏi gateway (GEN-7, 2026-07-13)** — AI internal-only, gọi qua `AiService:BaseUrl` |
 
 > ✅ **GEN-7 (2026-07-13):** `/api/v1/ai/**` **đã gỡ khỏi gateway** (route + cluster + OpenAPI aggregation) — đóng lỗ public + KHÔNG auth. AIService chỉ còn gọi **nội bộ** qua `AiService:BaseUrl` (Tailscale). Follow-up: siết thêm `X-Internal-Token` trên endpoint AIService. Xem [services/ai.md](services/ai.md) §Vấn đề đã biết.
@@ -192,8 +192,8 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 
 ## 7. Chạy, kiểm thử & phạm vi demo
 
-**Chạy (local):** `docker compose up` (xem `../compose.yaml` — Postgres/Redis/SeaweedFS/RabbitMQ + service). AIService (Python) chạy riêng (xem [../DEPLOYMENT.md](../DEPLOYMENT.md)). Env cần: connection string mỗi DB, `Jwt:Key/Issuer/Audience` (giống nhau mọi service), `Internal:Token`, `AiService:BaseUrl`, SeaweedFS keys, PayOS keys.
-**Kiểm thử:** `dotnet test` (test project: `Isas.InterviewService.Tests`, `Isas.AuthService.Tests`, `Isas.CampaignService.Tests`; Payment chưa có — `P0.4`). Cửa vào agent/người mới: [AGENTS.md](../AGENTS.md).
+**Chạy (full stack):** `docker compose -f deploy/compose.yaml up -d` (Postgres/Redis/SeaweedFS/RabbitMQ + 5 service — cần `.env` + `seaweed-s3.json` cạnh file, xem [../DEPLOYMENT.md](../DEPLOYMENT.md) §4). Root `../compose.yaml` là **dev-partial** (Auth+Gateway+MinIO). AIService (Python) chạy riêng trên Mac. Env cần: connection string mỗi DB, `Jwt:Key/Issuer/Audience` (giống nhau mọi service), `Internal:Token`, `AiService:BaseUrl`, SeaweedFS keys, PayOS keys.
+**Kiểm thử:** `dotnet test` (4 test project: `Isas.AuthService.Tests`, `Isas.InterviewService.Tests`, `Isas.CampaignService.Tests`, `Isas.PaymentService.Tests` ✅ P0.4) + AIService `pytest`. Cửa vào agent/người mới: [AGENTS.md](../AGENTS.md).
 
 ### Definition of Demo (chống "doc đẹp hơn sản phẩm")
 Hai đường đi **sẽ trình hội đồng** — theo hướng tiến hóa B2C → B2B:
@@ -217,6 +217,6 @@ Hai đường đi **sẽ trình hội đồng** — theo hướng tiến hóa B2
 ## 8. Hạ tầng & Deploy
 
 - **CI/CD** ([.github/workflows/ci.yml](../.github/workflows/ci.yml)): push `main`/`dev`/`features/**` → build+test (dotnet) → build & push image lên **GHCR** → **SSH qua Tailscale vào server** → `docker compose pull && up -d`.
-  - ⚠ Hiện build **4 service** (Auth/Interview/**Campaign**/Gateway). **Payment chưa có trong pipeline** — cần thêm build-push khi land. **AIService** deploy **riêng trên Mac** (Whisper nặng), **không** qua ci.yml.
+  - ✅ Hiện build **5 image** (Auth/Interview/Campaign/**Payment**/Gateway — ci.yml). **AIService** deploy **riêng trên Mac** (Whisper nặng), **không** qua ci.yml.
 - Routing & prefix gateway: `appsettings.json` của Gateway (`/api/v1/{service}` + StripPrefix).
 - Triển khai 2 host (server + Mac cho AIService): [DEPLOYMENT.md](../DEPLOYMENT.md).

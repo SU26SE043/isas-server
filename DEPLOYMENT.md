@@ -313,6 +313,42 @@ docker compose logs -f isas.gateway
 > ```
 > Đổi/reset schema → **drop & tạo lại DB** trước khi apply (squash chỉ sạch trên DB rỗng).
 
+### Seed dữ liệu ban đầu (sau khi apply schema)
+
+Schema rỗng ⇒ **thiếu 2 thứ** để luồng tiền chạy: **catalog gói credit** (`product_packages`) + **tài khoản Admin** (quản gói/duyệt postpaid). Rubric B2C đã bake sẵn trong Interview `InitialCreate`.
+
+**1. Gói credit (`product_packages`) — bắt buộc trước khi mua credit:**
+```bash
+# DB rỗng → GET /payment/package trả [] → không mua được. Seed vài gói OneTime:
+docker exec -i postgres-main psql -U admin -d isas_payment < scripts/seed-packages.sql
+```
+> `scripts/seed-packages.sql` idempotent (guard theo `name`), cột khớp migration `InitialCreate`. Sửa giá/số credit trong file trước khi chạy nếu cần.
+
+**2. Tài khoản Admin — tạo THỦ CÔNG (không có API `register-as-admin`):**
+AuthService dùng **ASP.NET Core Identity**; register chỉ cấp role `Candidate`/`Employer`. **KHÔNG** dựng user Identity bằng raw SQL (phải đúng `normalized_user_name`, `security_stamp`, `concurrency_stamp`, `password_hash`, + join `user_roles`/`roles` — sai 1 cột là login gãy âm thầm). Cách chắc chắn = **để Identity tự tạo row hợp lệ rồi nâng role bằng SQL**:
+```bash
+# (a) đăng ký user qua API (Identity tạo row + password + normalized fields đúng)
+curl -X POST https://<gateway>/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@isas.local","password":"<StrongPass>","fullName":"Platform Admin"}'
+
+# (b) nâng lên Admin trong DB Auth (tạo role Admin nếu chưa có + gán user_roles)
+docker exec -i postgres-main psql -U admin -d isas <<'SQL'
+INSERT INTO roles (id, name, normalized_name, concurrency_stamp)
+SELECT gen_random_uuid(), 'Admin', 'ADMIN', gen_random_uuid()
+WHERE NOT EXISTS (SELECT 1 FROM roles WHERE normalized_name = 'ADMIN');
+
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id
+FROM users u CROSS JOIN roles r
+WHERE u.normalized_email = 'ADMIN@ISAS.LOCAL' AND r.normalized_name = 'ADMIN'
+  AND NOT EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id AND ur.role_id = r.id);
+SQL
+```
+> (c) **Login lại** sau khi nâng role → JWT mới mang `Admin` (role gắn vào token lúc login). Xong: `admin@` gọi được `POST/PUT/DELETE /payment/package…` (A5, `Roles="Admin"`) + `admin/invoices/close`.
+>
+> ⚠ `scripts/seed-test-users.sql` **chỉ `UPDATE password_hash`** cho row **đã tồn tại** (`hr@`/`admin@`) — nó **KHÔNG tạo** user. Phải register (bước a) hoặc dùng `seed-admin.sql` riêng (không có trong repo — chứa hash prod) trước.
+
 ---
 
 ## 5. MAC — AIService trong Docker

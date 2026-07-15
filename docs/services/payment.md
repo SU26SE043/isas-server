@@ -1,7 +1,9 @@
 # PaymentService — Thanh toán PayOS (credit · prepaid + postpaid)
 
-> 🟡 branch `features/payment-b2c`. Code: `src/services/Isas.PaymentService`. DB: `isas_payment`. Gateway: `/api/v1/payment`.
+> ✅ **Trong tree**: `src/services/Isas.PaymentService` — CI build+push image `isas.paymentservice`, gateway route `/api/v1/payment/**` live, có trong compose. DB: `isas_payment`. *(Nhánh `features/payment-b2c` cũ đã obsolete — code hiện dùng owner_type/reserve/consume/postpaid.)*
 > **Billing theo chủ ví**: B2B = Org (xem Organization ở [auth.md](auth.md)), B2C = User cá nhân (xem [../decisions.md](../decisions.md) D15). Quy ước chung: [../architecture.md](../architecture.md) §5.
+>
+> ⚠ **Enum serialize dạng SỐ (integer) trên JSON** — PaymentService **KHÔNG** đăng ký `JsonStringEnumConverter` (xem `Program.cs`); các trường enum trong DTO (Order/Package/Invoice…) trả **số**, không phải chuỗi. **Ngoại lệ DUY NHẤT:** `GET /order/{id}/status` trả `status` dạng **chuỗi** (`OrderStatusResponse.Status = status.ToString()`). *(DB lưu enum dạng string qua `HasConversion<string>` — khác với JSON API; đừng nhầm.)* FE + client phụ thuộc số này (xem `isas-frontend/docs/api-spec.md` §Thanh toán + `isas-frontend/src/app/core/models/enums.ts`) → **KHÔNG** thêm converter.
 
 ## Vai trò
 - Thanh toán **PayOS** theo **mô hình credit** = **1 credit ≈ 1 lượt phỏng vấn AI chấm**. **Không** metering token LLM.
@@ -28,49 +30,46 @@ Khách hiểu "lượt phỏng vấn", không hiểu token. Bài có **time limi
 
 ## API — `/api/v1/payment`
 
-> **Quy ước:** Base public `/api/v1/payment/*` (gateway → service). Auth: **JWT** (`OrgAdmin`/`Org` = thành viên org; **B2C** = `User`, `owner_id`=`sub`); **PlatformAdmin** cho nhánh admin; webhook + `/internal/*` **KHÔNG** qua gateway. **Kiểu dữ liệu:** `uuid` · `string` · `int` · `long` (VND) · `bool` · `datetime` · `enum(string)` · `T[]` · `?`. Mã lỗi chung: [../architecture.md](../architecture.md) §6 · **402** = hết credit/hạn mức. *(🟡 = có trên branch (cần refactor owner) · 🔜 = chưa build.)*
+> **Quy ước:** Base public `/api/v1/payment/*` (gateway → service). Auth: **JWT** (`OrgAdmin`/`Org` = thành viên org; **B2C** = `User`, `owner_id`=`sub`); **PlatformAdmin** cho nhánh admin; webhook + `/internal/*` **KHÔNG** qua gateway. **Kiểu dữ liệu:** `uuid` · `string` · `int` · `long` (VND) · `bool` · `datetime` · `enum(int)` (serialize **SỐ** — xem note đầu file; ngoại lệ `/order/{id}/status`=chuỗi) · `T[]` · `?`. Mã lỗi chung: [../architecture.md](../architecture.md) §6 · **402** = hết credit/hạn mức. *(✅ = đã build · 🔜 = chưa build.)*
 > **B2C:** cùng endpoint mua pack / xem số dư / polling đơn, nhưng chủ ví = **User**; chỉ Prepaid, không hóa đơn/postpaid.
 
 ### Schemas (DTO)
 
+> ⚠ Enum serialize **SỐ** (int) — bản đồ số ở comment. `PackageResponse.priceVnd`/`interviewCredits` là **int** (model `int`, không phải long).
+
 ```
-ProductPackage {
+ProductPackage {                        // = PackageResponse (GET /package…)
   id:               uuid
   name:             string
-  type:             enum(string)        // OneTime · Subscription 🔜(phase 2)
-  priceVnd:         long
-  interviewCredits: int
+  type:             enum(int)           // 1=OneTime · 2=Subscription 🔜(phase 2)
+  priceVnd:         int
+  interviewCredits: int?
   durationDays:     int?
   isActive:         bool
+  createdAt:        datetime
 }
 
-CreateOrderResponse {                   // POST /order, /invoices/{id}/pay
-  orderId:     uuid
-  orderCode:   long                     // payos_order_code (time+random)
-  checkoutUrl: string                   // link PayOS
-}
-
-Order {
+Order {                                 // = OrderResponse — POST /order, /invoices/{id}/pay TRẢ ĐẦY ĐỦ object này
   id:             uuid
-  ownerType:      enum(string)          // Org · User
+  ownerType:      enum(int)             // 0=Org · 1=User
   ownerId:        uuid
-  kind:           enum(string)          // CreditPack · InvoiceSettlement · SubscriptionPurchase · SubscriptionRenewal 🔜(phase 2)
+  kind:           enum(int)             // 0=CreditPack · 1=InvoiceSettlement · 2=SubscriptionPurchase · 3=SubscriptionRenewal 🔜(phase 2)
   packageId:      uuid?
   invoiceId:      uuid?
-  subscriptionId: uuid?                 // 🔜 phase 2
-  amountVnd:      long
+  amountVnd:      long                  // amount_vnd bigint (long) — pack lớn/hóa đơn gộp kỳ vượt trần int
   payosOrderCode: long
-  status:         enum(string)          // Pending · Paid · Failed · Expired · Cancelled
+  status:         enum(int)             // 1=Pending · 2=Paid · 3=Failed · 4=Expired · 5=Cancelled
   expiredAt:      datetime
   paidAt:         datetime?
   createdAt:      datetime
+  checkoutUrl:    string?               // ✅ CHỈ có khi tạo đơn (POST /order · /invoices/{id}/pay) — link PayOS; null khi GET
 }
 
-CreditAccount {                         // GET /me/account
-  ownerType:        enum(string)        // Org · User
+CreditAccount {                         // GET /me/account 🔜 (chưa build) — enum cũng serialize SỐ khi build
+  ownerType:        enum(int)           // 0=Org · 1=User
   ownerId:          uuid
-  paymentMode:      enum(string)        // Prepaid · Postpaid (User luôn Prepaid)
-  status:           enum(string)        // Active · Suspended (đình chỉ nợ xấu/quá hạn)
+  paymentMode:      enum(int)           // 0=Prepaid · 1=Postpaid (User luôn Prepaid)
+  status:           enum(int)           // 0=Active · 1=Suspended (đình chỉ nợ xấu/quá hạn)
   remainingCredits: int
   reservedCredits:  int
   creditLimit:      int?                // chỉ Org/postpaid
@@ -78,22 +77,28 @@ CreditAccount {                         // GET /me/account
   updatedAt:        datetime
 }
 
-Invoice {                               // ✅ P8b — postpaid, chỉ Org
+Invoice {                               // ✅ P8b — postpaid, chỉ Org (= InvoiceResponse)
   id:           uuid
-  ownerType:    enum(string)            // Org (khớp credit_accounts owner model, thay orgId)
+  ownerType:    enum(int)               // 0=Org (khớp credit_accounts owner model, thay orgId)
   ownerId:      uuid
   periodStart:  datetime
   periodEnd:    datetime
   interviewCount: int
   unitPrice:    decimal(16,2)           // = Billing:UnitPrice cấu hình
   amount:       decimal(16,2)           // interviewCount × unitPrice
-  status:       enum(string)            // Issued · Paid · Overdue · Void
+  status:       enum(int)               // 0=Issued · 1=Paid · 2=Overdue · 3=Void
   createdAt:    datetime
   // 🔜 dueAt/paidAt/issuedAt: BK17 — hiện paid-ness derive từ status=Paid + order settle
 }
 
+OrderStatusResponse {                   // GET /order/{id}/status — NGOẠI LỆ: status là CHUỖI
+  orderCode: long
+  status:    string                     // "Pending"·"Paid"·"Failed"·"Expired"·"Cancelled" (ToString, khác các DTO khác)
+  paidAt:    datetime?
+}
+
 CreditOpRequest {                       // /internal/credits/reserve|consume|release
-  ownerType: enum(string)               // Org · User
+  ownerType: enum(int)                  // 0=Org · 1=User (nội bộ; Interview/Campaign gửi)
   ownerId:   uuid
   sessionId: uuid                       // idempotency key
 }
@@ -103,22 +108,24 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/package`** · **`GET /payment/package/{id}`** — Gói prepaid đang bán. Public. → `ProductPackage[]` / `ProductPackage`.
 
-**`POST /payment/order`** 🟡 — Mua pack credit. Auth `OrgAdmin` (B2B) / `User` (B2C).
-- Req: `{ packageId: uuid }` → Res **`201`** `CreateOrderResponse`. Lỗi: **404** (packageId không tồn tại) · **400** (gói ngừng bán, `is_active=false`) · **401**. *(BK19 ratify 2026-07-13: unknown id → 404 "Package not found"; inactive → 400 "Package is no longer available".)*
+**`POST /payment/order`** ✅ — Mua pack credit. Auth `OrgAdmin` (B2B) / `User` (B2C). Chủ ví lấy từ JWT (claim `org_id`→Org, else `sub`→User). `HrMember`→**403** (A4).
+- Req: `{ packageId: uuid }` → Res **`201`** `Order` (**đầy đủ** — id, ownerType, ownerId, kind, packageId, invoiceId, status, amountVnd, payosOrderCode, expiredAt, paidAt, createdAt, **`checkoutUrl`** = link PayOS để redirect). Lỗi: **404** (packageId không tồn tại) · **400** (gói ngừng bán, `is_active=false`) · **403** (HrMember) · **401** · **502** (PayOS reject/misconfig → `PaymentGatewayException`). *(BK19 ratify 2026-07-13: unknown id → 404 "Package not found"; inactive → 400 "Package is no longer available".)*
 
-**`GET /payment/order/{id}`** 🟡 · **`GET /payment/my-orders`** 🟡 — Chi tiết / lịch sử đơn → `Order` / `Order[]`. Lỗi: **404** (không tồn tại **hoặc** non-owner — không lộ tồn tại; BK15).
+**`GET /payment/order/{id}`** ✅ · **`GET /payment/order/my-orders`** ✅ — Chi tiết / lịch sử đơn → `Order` / `Order[]`. *(route thật = `/order/my-orders` — `[Route("order")]`+`[HttpGet("my-orders")]`, KHÔNG phải `/my-orders`.)* Lỗi: **404** (không tồn tại **hoặc** non-owner — không lộ tồn tại; BK15).
 
-**`GET /payment/order/{id}/status`** 🔜 — **FE active-polling**: server chưa nhận webhook → gọi PayOS đối soát ngay. → `{ orderCode: long, status: enum(string), paidAt: datetime? }`.
+**`DELETE /payment/order/{id}`** ✅ — Huỷ đơn `Pending` (owner-scope). Res **`204`**. Lỗi: **400** (đơn không ở trạng thái `Pending`) · **404** (không tồn tại/non-owner).
+
+**`GET /payment/order/{id}/status`** ✅ — **FE active-polling**: server chưa nhận webhook → gọi PayOS đối soát ngay. → `OrderStatusResponse` `{ orderCode: long, status: string, paidAt: datetime? }` (**ngoại lệ:** `status` là **CHUỖI** ở đây). Lỗi: **404** (không tồn tại/non-owner).
 
 **`GET /payment/me/account`** 🔜 — Số dư ví → `CreditAccount`. Lỗi: **401**.
 
 **`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
 
-**`POST /payment/invoices/{id}/pay`** ✅ P8b — Tất toán hóa đơn. Auth `OrgAdmin`, owner-scope. → `CreateOrderResponse` (Order kind=`InvoiceSettlement`, invoice_id; reuse `OrderService` tạo link PayOS). Lỗi: **404** (không tồn tại/non-owner) · **409** (đã Paid/Void).
+**`POST /payment/invoices/{id}/pay`** ✅ P8b — Tất toán hóa đơn. Auth `Employer`, owner-scope; `HrMember`→**403** (A4). → **`200`** `Order` (**đầy đủ**, kind=`InvoiceSettlement`, invoice_id, kèm `checkoutUrl`; reuse `OrderService` tạo link PayOS). Lỗi: **404** (không tồn tại/non-owner) · **409** (đã Paid/Void) · **502** (PayOS reject).
 
-**`POST /payment/webhook/payos`** 🟡/✅ — **Webhook PayOS** (🔒 verify checksum), **KHÔNG** qua gateway. Chỉ khi `Paid`, idempotent theo `payos_order_code`. **✅ P8b: BRANCH theo `Order.Kind`** — `CreditPack`→cộng credit (P2); `InvoiceSettlement`→invoice `Issued/Overdue→Paid` (ExecuteUpdate guard, KHÔNG cộng credit). Req: payload PayOS → Res **`200`**.
+**`POST /payment/webhook/payos`** ✅ — **Webhook PayOS** (🔒 verify checksum), **KHÔNG** qua gateway. Chỉ khi `Paid`, idempotent theo `payos_order_code`. **✅ P8b: BRANCH theo `Order.Kind`** — `CreditPack`→cộng credit (P2); `InvoiceSettlement`→invoice `Issued/Overdue→Paid` (ExecuteUpdate guard, KHÔNG cộng credit). Req: payload PayOS → Res **`200`**.
 
-**`POST /payment/admin/invoices/close`** ✅ P8b — Chốt kỳ postpaid (1 transaction): snapshot `period_usage` → `Invoice(Issued, amount=count×Billing:UnitPrice)` → reset `period_usage=0`. *(auth `[Authorize]`, role PlatformAdmin defer A5.)*
+**`POST /payment/admin/invoices/close`** ✅ P8b — Chốt kỳ postpaid (1 transaction): snapshot `period_usage` → `Invoice(Issued, amount=count×Billing:UnitPrice)` → reset `period_usage=0`. Auth `Roles="Admin"` (PlatformAdmin ✅ A5) + guard `HrMember`→403.
 
 ### Admin (PlatformAdmin)
 
@@ -129,7 +136,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`GET /payment/admin/transactions`** 🔜 — Giao dịch/hóa đơn toàn hệ.
 **`POST /payment/admin/orgs/{orgId}/credits/adjust`** 🔜 *(phase 2)* — Cấp/hoàn credit thủ công.
 
-### Nội bộ — Campaign/Interview → Payment — `X-Internal-Token`, **KHÔNG qua gateway** 🔜
+### Nội bộ — Campaign/Interview → Payment — `X-Internal-Token`, **KHÔNG qua gateway** ✅ (P4/P5/P6)
 
 **`POST /internal/credits/reserve`** — giữ 1 chỗ (B2B: Campaign gọi `owner=Org`; B2C: Interview gọi `owner=User`).
 - Req: `CreditOpRequest` → Res **`200`** (`{ reservationId, reservedCredits }`). Hết hạn mức/số dư → **402**. Idempotent theo `sessionId`.
@@ -142,10 +149,15 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 ### Request/Response mẫu
 ```
 POST /api/v1/payment/order   { "packageId":"<uuid gói OneTime>" }
-→ 201 { "orderId":"…", "orderCode":260630153012, "checkoutUrl":"https://pay.payos.vn/web/…" }
+→ 201 {   // OrderResponse đầy đủ — enum là SỐ; checkoutUrl để redirect PayOS
+    "id":"…", "ownerType":1, "ownerId":"…", "kind":0, "packageId":"…", "invoiceId":null,
+    "status":1, "amountVnd":200000, "payosOrderCode":260630153012,
+    "expiredAt":"2026-06-30T15:45:12Z", "paidAt":null, "createdAt":"2026-06-30T15:30:12Z",
+    "checkoutUrl":"https://pay.payos.vn/web/…"
+  }
 
 GET /api/v1/payment/order/{id}/status
-→ 200 { "orderCode":260630153012, "status":"Paid", "paidAt":"2026-06-30T15:32:10Z" }   // server đối soát PayOS nếu chưa có webhook
+→ 200 { "orderCode":260630153012, "status":"Paid", "paidAt":"2026-06-30T15:32:10Z" }   // NGOẠI LỆ: status CHUỖI · server đối soát PayOS nếu chưa có webhook
 
 GET /api/v1/payment/me/account
 → 200 { "ownerType":"Org","ownerId":"…","paymentMode":"Prepaid","status":"Active",
@@ -281,6 +293,7 @@ expired_at       timestamptz
 paid_at          timestamptz?
 created_at       timestamptz
 ```
+> ⚠ **`amount_vnd` = `bigint` (long)** — VND nguyên với pack lớn / hóa đơn postpaid gộp kỳ vượt trần `int` (~2,1 tỷ ₫). `InitialCreate` tạo cột `integer`; migration **`AmountVndToBigint`** (Đợt-3, `20260715113108`) alter → `bigint`. **Phải apply tay** trên DB server trước khi bán pack lớn (rule no-auto-migrate). `Order.AmountVnd` + `OrderResponse.AmountVnd` = `long`. *(Lưu ý: `product_packages.price_vnd` vẫn `integer` — pack đơn lẻ trong trần int, chưa đổi.)*
 
 ### `payment_transactions` — log sự kiện gateway (append-only)
 ```
