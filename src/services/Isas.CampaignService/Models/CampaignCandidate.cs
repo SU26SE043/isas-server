@@ -15,6 +15,8 @@ namespace Isas.CampaignService.Models
         public string? FullName { get; set; }           // parse từ CV; HR sửa qua PATCH (C14)
         public string? Email { get; set; }              // tách từ CV; UNIQUE(campaign_id, email) (null bỏ qua)
         public string? CvFileUrl { get; set; }          // S3 KEY (campaigns/{id}/candidates/{cid}.pdf) — không full URL (GEN-5)
+        // SEC-2/DATA-2: ảnh tham chiếu face-verify — 1 bản/ứng viên/campaign. Lưu S3 KEY (không ảnh trong DB), null tới khi có.
+        public string? ReferenceImageKey { get; set; }
         public string? CvParsedText { get; set; }       // text parse PdfPig — nguồn hard-filter + gửi AI (C14)
         public CvParseStatus ParseStatus { get; set; }  // pending·done·failed
         public CandidateStatus Status { get; set; }     // state machine; index
