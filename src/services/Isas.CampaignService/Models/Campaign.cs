@@ -11,6 +11,9 @@
         public int? MaxCandidates { get; set; }
         public int? TimeLimitMinutes { get; set; }
         public bool AntiCheatEnabled { get; set; }
+        // SEC-1: bật xác minh khuôn mặt trước bài (B2B-only, mặc định false). Gate face-verify (SEC-2) +
+        // cho phép nhận cờ danh tính (face_mismatch/no_face/multiple_faces/identity_unverified) từ AIService.
+        public bool FaceVerifyEnabled { get; set; }
         // E5: ngưỡng % điểm tổng để auto pass/fail (0–100, CAMP-11). null = không auto → HR quyết tay.
         public int? PassScorePct { get; set; }
         public string? JDFileUrl { get; set; }

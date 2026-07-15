@@ -35,6 +35,9 @@ namespace Isas.CampaignService.DTOs
 
         public bool AntiCheatEnabled { get; set; }
 
+        // SEC-1: bật face-verify (B2B-only, mặc định false). Không gửi → false.
+        public bool FaceVerifyEnabled { get; set; }
+
         // E5: ngưỡng % pass/fail (0–100). null = HR quyết tay (không auto).
         public int? PassScorePct { get; set; }
 
@@ -71,6 +74,9 @@ namespace Isas.CampaignService.DTOs
         public int? TimeLimitMinutes { get; set; }
 
         public bool? AntiCheatEnabled { get; set; }
+
+        // SEC-1: bật/tắt face-verify — null = không đổi (giữ giá trị cũ), như AntiCheatEnabled (C3).
+        public bool? FaceVerifyEnabled { get; set; }
 
         // E5: ngưỡng % pass/fail (0–100). null = không đổi (giữ giá trị cũ).
         public int? PassScorePct { get; set; }
@@ -122,6 +128,7 @@ namespace Isas.CampaignService.DTOs
         public int? MaxCandidates { get; set; }
         public int? TimeLimitMinutes { get; set; }
         public bool AntiCheatEnabled { get; set; }
+        public bool FaceVerifyEnabled { get; set; }   // SEC-1: bật face-verify (B2B-only)
         public int? PassScorePct { get; set; }   // E5: ngưỡng % pass/fail (null = HR quyết tay)
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
@@ -142,6 +149,7 @@ namespace Isas.CampaignService.DTOs
             MaxCandidates = c.MaxCandidates,
             TimeLimitMinutes = c.TimeLimitMinutes,
             AntiCheatEnabled = c.AntiCheatEnabled,
+            FaceVerifyEnabled = c.FaceVerifyEnabled,
             PassScorePct = c.PassScorePct,
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
