@@ -154,6 +154,34 @@ public class PracticeServiceTests
             Times.Never);
     }
 
+    // P1 (B2C audit): thiếu jobCategory (null) → 400 (InvalidOperationException → BadRequest) TRƯỚC
+    // reserve: KHÔNG giữ credit (ReserveAsync không được gọi), KHÔNG có row session, KHÔNG gọi AI.
+    // Trước fix: non-nullable enum omitted → BA(0) im lặng + vẫn reserve 1 credit.
+    [Fact]
+    public async Task Create_MissingJobCategory_Throws_NoReserve_NoSessionRow()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+
+        var svc = Build(t, gen, out _, out var reservation);
+        var req = new CreatePracticeSessionRequest(null, null, null);   // jobCategory thiếu
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.CreateSessionAsync(candidate, req));
+
+        // Guard chặn TRƯỚC reserve → không giữ credit oan (PAY-5).
+        reservation.Verify(r => r.ReserveAsync(
+                It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        // Không có row session, không gọi AI.
+        Assert.Equal(0, await t.Db.PracticeSessions.CountAsync());
+        gen.Verify(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task Create_GeneratorReturnsEmpty_SessionFailed_Throws()
     {

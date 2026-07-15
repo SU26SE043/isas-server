@@ -57,6 +57,13 @@ public class PracticeService : IPracticeService
         Guid candidateId, CreatePracticeSessionRequest request, Guid sessionId,
         IReadOnlyList<string>? focusCriteria, CancellationToken ct)
     {
+        // jobCategory BẮT BUỘC. Guard NGAY ĐẦU (trước cả đọc CV/reserve) → thiếu → 400 (controller map
+        // InvalidOperationException → BadRequest), KHÔNG giữ credit oan (PAY-5). HTTP thật cũng 400 sớm
+        // hơn nhờ [Required]; test gọi service trực tiếp nên cần guard này (mẫu CvAnalysisService/BK6).
+        if (request.JobCategory is null)
+            throw new InvalidOperationException("jobCategory là bắt buộc.");
+        var jobCategory = request.JobCategory.Value;
+
         // CV optional: chỉ parse khi có. Không có CV cũng luyện được (dựa JobCategory).
         // TODO: xác nhận tên method storage (memory ghi GetParseText).
         string? cvText = null;
@@ -93,7 +100,7 @@ public class PracticeService : IPracticeService
             CandidateId = candidateId,
             CvId = request.CvId,           // có thể null
             JdId = request.JdId,           // có thể null
-            JobCategory = request.JobCategory,
+            JobCategory = jobCategory,
             Status = SessionStatus.GeneratingQuestions,
             CreatedAt = DateTime.UtcNow
         };
