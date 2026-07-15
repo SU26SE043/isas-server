@@ -1,0 +1,72 @@
+using System.Security.Claims;
+using Isas.InterviewService.Controllers;
+using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Services;
+using Isas.InterviewService.Services.Interfaces;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
+
+namespace Isas.InterviewService.Tests;
+
+/// <summary>
+/// COMMIT-3 — PracticeController.CreateSession phân biệt mã lỗi: AIService lỗi thật
+/// (AiServiceException = transport/timeout/5xx khi sinh câu hỏi) → 502 (upstream), KHÔNG nuốt thành 400.
+/// InvalidOperationException (AI trả rỗng / CV-JD không đọc được) giữ 400. Verify path 502
+/// ProducesResponseType thật sự trigger.
+/// </summary>
+public class PracticeControllerErrorMappingTests
+{
+    private static PracticeController Build(Mock<IPracticeService> service, Guid candidateId)
+    {
+        var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, candidateId.ToString())
+        }, "Test"));
+
+        return new PracticeController(service.Object, NullLogger<PracticeController>.Instance)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext { User = user }
+            }
+        };
+    }
+
+    private static CreatePracticeSessionRequest Req() =>
+        new(null, null, Isas.InterviewService.Enums.JobCategory.BE);
+
+    [Fact]
+    public async Task CreateSession_AiServiceException_Returns502()
+    {
+        var candidate = Guid.NewGuid();
+        var service = new Mock<IPracticeService>();
+        service
+            .Setup(s => s.CreateSessionAsync(candidate, It.IsAny<CreatePracticeSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AiServiceException("AIService /generate-questions trả 503"));
+        var controller = Build(service, candidate);
+
+        var result = await controller.CreateSession(Req(), default);
+
+        var obj = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status502BadGateway, obj.StatusCode);
+    }
+
+    // Regression: AI trả rỗng / CV-JD không đọc được (InvalidOperationException) VẪN là 400 (lỗi input,
+    // không phải upstream) — không bị AiServiceException-branch nuốt.
+    [Fact]
+    public async Task CreateSession_InvalidOperation_Returns400()
+    {
+        var candidate = Guid.NewGuid();
+        var service = new Mock<IPracticeService>();
+        service
+            .Setup(s => s.CreateSessionAsync(candidate, It.IsAny<CreatePracticeSessionRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("AIService không trả về câu hỏi nào"));
+        var controller = Build(service, candidate);
+
+        var result = await controller.CreateSession(Req(), default);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+    }
+}

@@ -136,6 +136,11 @@ public class PracticeService : IPracticeService
                 session.Status = SessionStatus.Failed;
                 await _db.SaveChangesAsync(ct);
                 await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
+                // AI upstream lỗi (AiServiceException = transport/timeout/non-2xx) → propagate NGUYÊN
+                // TYPE để controller map 502 (không bọc thành InvalidOperationException = 400, che lỗi
+                // thật). Reserve vẫn được release ở catch ngoài (P1-2) + abandon (BK12) — idempotent PAY-11.
+                // Lỗi khác (generic) giữ 400 như cũ.
+                if (ex is AiServiceException) throw;
                 throw new InvalidOperationException("Sinh câu hỏi thất bại", ex);
             }
 

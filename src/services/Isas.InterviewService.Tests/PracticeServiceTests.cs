@@ -278,6 +278,42 @@ public class PracticeServiceTests
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    // COMMIT-3: AI sinh câu hỏi ném AiServiceException (upstream lỗi thật) → CreateSession propagate
+    // NGUYÊN TYPE (controller map 502), KHÔNG bọc InvalidOperationException (=400). Reserve vẫn release
+    // (Đợt-2 P1-2, không regress) + abandon phát (BK12).
+    [Fact]
+    public async Task Create_GeneratorThrowsAiServiceException_PropagatesAsIs_AndReleasesCredit()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AiServiceException("AIService /generate-questions trả 503"));
+
+        var svc = Build(t, gen, out _, out var reservation, out var publisher);
+        reservation
+            .Setup(r => r.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
+
+        // KHÔNG phải InvalidOperationException — phải là AiServiceException (→ 502 ở controller).
+        var ex = await Assert.ThrowsAsync<AiServiceException>(() => svc.CreateSessionAsync(candidate, req));
+        Assert.IsNotType<InvalidOperationException>(ex);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.CandidateId == candidate);
+        Assert.Equal(SessionStatus.Failed, s.Status);
+
+        // Đợt-2 P1-2: credit đã reserve được release (không treo credit ví User).
+        reservation.Verify(r => r.ReleaseAsync(s.Id, It.IsAny<CancellationToken>()), Times.Once);
+        // BK12: abandon phát để E7 (Payment) release.
+        publisher.Verify(p => p.PublishSessionAbandonedAsync(
+            It.Is<SessionAbandonedEvent>(e => e.SessionId == s.Id && e.Reason == "generation_failed"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     // BK12 (b): phát event là BEST-EFFORT — publisher ném lỗi KHÔNG được chặn luồng: session vẫn
     // Failed trong DB và vẫn ném InvalidOperationException gốc (không nuốt mất lỗi sinh câu hỏi).
     [Fact]

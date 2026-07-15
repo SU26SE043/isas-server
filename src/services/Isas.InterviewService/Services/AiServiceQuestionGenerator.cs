@@ -37,13 +37,26 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             focusCriteria = focusCriteria is { Count: > 0 } ? focusCriteria : null
         };
 
-        var response = await _httpClient.PostAsJsonAsync("/api/v1/generate-questions", payload, ct);
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.PostAsJsonAsync("/api/v1/generate-questions", payload, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            // Upstream không gọi được (transport / timeout) = AIService lỗi, KHÔNG phải lỗi request của
+            // user → AiServiceException để PracticeController map 502 (không nuốt thành 400). (Mẫu AiServiceCvAnalyzer.)
+            _logger.LogError(ex, "Không gọi được AIService /generate-questions");
+            throw new AiServiceException("Không gọi được AIService /generate-questions", ex);
+        }
 
         if (!response.IsSuccessStatusCode)
         {
             var error = await response.Content.ReadAsStringAsync(ct);
             _logger.LogError("FastAPI Error: {StatusCode} - {Error}", response.StatusCode, error);
-            throw new InvalidOperationException($"Lỗi gọi FastAPI AIService: {response.StatusCode}");
+            // Non-success (4xx/5xx) từ AIService = upstream lỗi → AiServiceException → 502 (trước: bọc
+            // InvalidOperationException khiến controller trả 400, che mất lỗi thật của AIService).
+            throw new AiServiceException($"AIService /generate-questions trả {(int)response.StatusCode}");
         }
 
         // Hứng cục JSON dạng {"questions": ["chuỗi 1", "chuỗi 2"]}
