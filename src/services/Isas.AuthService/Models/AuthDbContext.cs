@@ -51,6 +51,13 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Ignore(x => x.PhoneNumber);
             e.Ignore(x => x.PhoneNumberConfirmed);
             e.Ignore(x => x.TwoFactorEnabled);
+            // DB11: email UNIQUE — override index EmailIndex mặc định của Identity (non-unique)
+            // thành unique + filtered (chỉ áp cho email != null). Giữ tên "EmailIndex" để không
+            // sinh index trùng; kết hợp options.User.RequireUniqueEmail=true (Program.cs) chặn dupe email.
+            e.HasIndex(x => x.NormalizedEmail)
+                .HasDatabaseName("EmailIndex")
+                .IsUnique()
+                .HasFilter("normalized_email IS NOT NULL");
         });
 
         // ================= ROLES =================
