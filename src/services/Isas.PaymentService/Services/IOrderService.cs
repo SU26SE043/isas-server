@@ -16,6 +16,12 @@ namespace Isas.PaymentService.Services
         Task<OrderResponse> CreateInvoiceSettlementOrderAsync(Invoice invoice, CancellationToken ct = default);
         Task<OrderResponse?> GetOrderAsync(Guid id, CancellationToken ct = default);
         Task<List<OrderResponse>> GetOwnerOrdersAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default);
+
+        /// <summary>
+        /// AUTH-7 — PlatformAdmin oversight: MỌI đơn xuyên chủ ví (KHÔNG lọc owner), read-only.
+        /// Optional lọc status/ownerType. Cap 500, mới nhất trước.
+        /// </summary>
+        Task<List<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, CancellationToken ct = default);
         Task CancelOrderAsync(Guid id, CancellationToken ct = default);
     }
 }

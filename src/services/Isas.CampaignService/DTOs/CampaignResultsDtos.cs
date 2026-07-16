@@ -26,6 +26,14 @@ namespace Isas.CampaignService.DTOs
         public string? Result { get; set; }
         public DateTime ScoredAt { get; set; }
 
+        // E11b — HR chốt điểm cuối. Effective (đã áp override) = TotalScore/Result ở trên ĐÃ tính theo override;
+        // các cột dưới lộ override thô để FE hiện badge "HR chỉnh" + điểm AI gốc.
+        public decimal AiScore { get; set; }          // điểm AI gốc (snapshot, không đổi khi override)
+        public decimal? OverrideScore { get; set; }
+        public string? OverrideResult { get; set; }
+        public string? OverrideNote { get; set; }
+        public DateTime? OverriddenAt { get; set; }
+
         // SEC-4: cờ chống gian lận gom theo buổi (signal_type → count). Additive — mặc định rỗng
         // (campaign không bật anti-cheat / không có cờ → []), KHÔNG phá client cũ. HR đánh giá lại (không auto-hủy).
         public List<FlagDto> Flags { get; set; } = new();
@@ -37,6 +45,14 @@ namespace Isas.CampaignService.DTOs
         public string Type { get; set; } = null!;
         public int Count { get; set; }
         public string? Note { get; set; }
+    }
+
+    // E11b — HR chốt/sửa điểm cuối. Note bắt buộc (ghi audit). Score/Result đều null = CLEAR override (về AI).
+    public class OverrideResultRequest
+    {
+        public decimal? Score { get; set; }
+        public string? Result { get; set; }   // "Pass" | "Fail" | null
+        public string Note { get; set; } = null!;
     }
 
     // E6 — kết quả xuất file (CSV/PDF) cho `GET /campaign/{id}/results/export`.

@@ -26,6 +26,12 @@ namespace Isas.AuthService.Services
         // OrgMemberNotFoundException; xoá OrgAdmin cuối cùng → OrgMemberConflictException.
         Task RemoveOrgMemberAsync(Guid orgId, Guid userId, CancellationToken ct = default);
 
+        // PlatformAdmin oversight (AUTH-7) — liệt kê MỌI org (cross-org, read-only); optional lọc theo Name.
+        Task<IReadOnlyList<OrganizationResponse>> ListAllOrganizationsAsync(string? search, CancellationToken ct = default);
+
+        // PlatformAdmin oversight (AUTH-7) — liệt kê MỌI user (cross-org) + role + membership; optional lọc role/email.
+        Task<IReadOnlyList<AdminUserResponse>> ListAllUsersAsync(string? role, string? search, CancellationToken ct = default);
+
         // Thông tin tổ chức: đọc (mọi member) + sửa name/taxCode (OrgAdmin — enforce ở controller).
         // Org không tồn tại → KeyNotFoundException.
         Task<OrganizationResponse> GetOrganizationAsync(Guid orgId, CancellationToken ct = default);

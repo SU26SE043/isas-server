@@ -179,6 +179,28 @@ namespace Isas.CampaignService.Services
             return (await listCampaigns).Select(CampaignResponse.FromEntity).ToList();
         }
 
+        // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org_id, khác GetCampaignsAsync).
+        // Soft-delete (D11) tự loại nhờ global query filter (DeletedAt==null trên _db.Campaigns). Optional
+        // lọc status (parse enum; giá trị lạ → không match → rỗng) + orgId. Cap 500, mới nhất trước.
+        public async Task<List<AdminCampaignListItem>> ListAllCampaignsAsync(string? status, Guid? orgId, CancellationToken ct)
+        {
+            var query = _db.Campaigns.AsQueryable();
+
+            if (orgId is Guid oid)
+                query = query.Where(c => c.OrgId == oid);
+
+            if (!string.IsNullOrWhiteSpace(status)
+                && Enum.TryParse<CampaignStatus>(status.Trim(), ignoreCase: true, out var parsed))
+                query = query.Where(c => c.Status == parsed);
+
+            var rows = await query
+                .OrderByDescending(c => c.CreatedAt)
+                .Take(500)
+                .ToListAsync(ct);
+
+            return rows.Select(AdminCampaignListItem.FromEntity).ToList();
+        }
+
         public async Task<CampaignResponse> UpdateCampaignAsync(Guid orgId, Guid actorUserId, Guid id, UpdateCampaignRequest request, CancellationToken ct)
         {
             // ── 1. Fetch & verify ownership ─────────────────────
@@ -714,8 +736,9 @@ namespace Isas.CampaignService.Services
                 .Where(r => r.CampaignId == id)
                 .ToListAsync(ct);
 
+            // E11b — xếp hạng theo điểm EFFECTIVE (HR override ?? AI). Override đẩy ứng viên lên/xuống ranking.
             var ordered = rows
-                .OrderByDescending(r => r.TotalScore)
+                .OrderByDescending(r => r.OverrideScore ?? r.TotalScore)
                 .ThenBy(r => r.UpdatedAt)   // đồng điểm → ứng viên Scored sớm hơn đứng trước (tie-break ổn định)
                 .ThenBy(r => r.SessionId)
                 .ToList();
@@ -729,10 +752,11 @@ namespace Isas.CampaignService.Services
             for (int i = 0; i < ordered.Count; i++)
             {
                 var r = ordered[i];
+                var effectiveScore = r.OverrideScore ?? r.TotalScore;   // E11b
 
                 // Đồng hạng (competition ranking): rank = số ứng viên điểm CAO HƠN + 1.
-                // Đồng điểm → cùng rank; rank kế nhảy theo vị trí (1,1,3).
-                int rank = (i > 0 && ordered[i - 1].TotalScore == r.TotalScore)
+                // Đồng điểm (effective) → cùng rank; rank kế nhảy theo vị trí (1,1,3).
+                int rank = (i > 0 && (ordered[i - 1].OverrideScore ?? ordered[i - 1].TotalScore) == effectiveScore)
                     ? results[i - 1].Rank
                     : i + 1;
 
@@ -741,13 +765,17 @@ namespace Isas.CampaignService.Services
                     Rank = rank,
                     CandidateId = r.CandidateId,
                     SessionId = r.SessionId,
-                    TotalScore = r.TotalScore,
-                    // Pass/fail so ngưỡng Employer (CAMP-11); ngưỡng null → null (HR quyết tay — doc §pass_score_pct).
-                    Result = threshold is null
-                        ? null
-                        : (r.TotalScore >= threshold.Value ? "Pass" : "Fail"),
+                    TotalScore = effectiveScore,   // điểm effective (đã áp override); FE có AiScore để đối chiếu
+                    // Pass/fail: HR override thắng ngưỡng; else so ngưỡng Employer (CAMP-11); ngưỡng null → null.
+                    Result = r.OverrideResult
+                        ?? (threshold is null ? null : (effectiveScore >= threshold.Value ? "Pass" : "Fail")),
                     ScoredAt = r.UpdatedAt,
-                    Flags = flagsBySession.TryGetValue(r.SessionId, out var f) ? f : new List<FlagDto>()
+                    Flags = flagsBySession.TryGetValue(r.SessionId, out var f) ? f : new List<FlagDto>(),
+                    AiScore = r.TotalScore,
+                    OverrideScore = r.OverrideScore,
+                    OverrideResult = r.OverrideResult,
+                    OverrideNote = r.OverrideNote,
+                    OverriddenAt = r.OverriddenAt
                 });
             }
 
@@ -758,6 +786,42 @@ namespace Isas.CampaignService.Services
                 TotalCandidates = results.Count,
                 Results = results
             };
+        }
+
+        // E11b — HR chốt/sửa điểm-kết-quả cuối 1 ứng viên (điểm AI = gợi ý; D13 "AI = suggestion").
+        // Ghi cột override trên campaign_rankings (Campaign-owned read-model); TotalScore AI giữ nguyên.
+        // Clear (Score=null & Result=null) → về AI. Org-scoped (ngoài org → 404); audit mọi lần.
+        public async Task OverrideResultAsync(
+            Guid orgId, Guid actorUserId, Guid campaignId, Guid sessionId, OverrideResultRequest req, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            var ranking = await _db.CampaignRankings
+                .FirstOrDefaultAsync(r => r.SessionId == sessionId && r.CampaignId == campaignId, ct)
+                ?? throw new KeyNotFoundException($"Ranking cho session {sessionId} không tồn tại (ứng viên chưa được chấm).");
+
+            if (string.IsNullOrWhiteSpace(req.Note))
+                throw new ArgumentException("Ghi chú (lý do điều chỉnh) là bắt buộc.");
+
+            var result = string.IsNullOrWhiteSpace(req.Result) ? null : req.Result.Trim();
+            if (result is not null && result != "Pass" && result != "Fail")
+                throw new ArgumentException("Result chỉ nhận 'Pass' hoặc 'Fail'.");
+
+            var isClear = req.Score is null && result is null;
+
+            ranking.OverrideScore = req.Score;
+            ranking.OverrideResult = result;
+            ranking.OverrideNote = isClear ? null : req.Note.Trim();
+            ranking.OverriddenBy = isClear ? null : actorUserId;
+            ranking.OverriddenAt = isClear ? null : DateTime.UtcNow;
+
+            AddAudit(actorUserId, orgId, AuditAction.OverrideResult, campaignId,
+                isClear
+                    ? $"Huỷ override session {sessionId} (về điểm AI). Lý do: {req.Note.Trim()}"
+                    : $"Override session {sessionId}: score={req.Score?.ToString() ?? "—"}, result={result ?? "—"}. Lý do: {req.Note.Trim()}");
+            await _db.SaveChangesAsync(ct);
         }
 
         // SEC-4: gom session_flags của 1 campaign → Dictionary<session_id, List<FlagDto>>.

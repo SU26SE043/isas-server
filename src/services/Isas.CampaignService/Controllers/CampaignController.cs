@@ -371,6 +371,27 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to get results: {ex.Message}"); }
         }
 
+        // E11b: HR chốt/sửa điểm-kết-quả cuối 1 ứng viên (điểm AI = gợi ý — D13). Org-scoped → ngoài org 404.
+        // Note bắt buộc (audit); Score=null & Result=null → clear (về AI). Result chỉ 'Pass'/'Fail'.
+        [HttpPut("{id:guid}/results/{sessionId:guid}/override")]
+        [Authorize(Roles = "Employer")]
+        public async Task<IActionResult> OverrideResult(
+            Guid id, Guid sessionId, [FromBody] OverrideResultRequest request, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                await _campaignService.OverrideResultAsync(orgId.Value, GetActorUserId(), id, sessionId, request, ct);
+                return NoContent();
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to override result: {ex.Message}"); }
+        }
+
         // E6: xuất bảng kết quả (E5) ra file. `?format=csv` (mặc định khi thiếu); `pdf`/khác → 400.
         // Ownership giống E5 (lọc theo org_id) → ngoài org = 404. Bám pattern `return File(...)`.
         [HttpGet("{id:guid}/results/export")]

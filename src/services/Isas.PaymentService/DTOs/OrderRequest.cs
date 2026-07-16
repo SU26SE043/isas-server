@@ -7,6 +7,11 @@ namespace Isas.PaymentService.DTOs
         public class CreateOrderRequest
         {
             public Guid PackageId { get; set; }
+
+            // Redirect PayOS về đúng khu vực FE của người mua (candidate vs employer). Optional —
+            // thiếu/không hợp lệ → fallback PayOS:ReturnUrl/CancelUrl (config chung). Chỉ nhận URL http(s) tuyệt đối.
+            public string? ReturnUrl { get; set; }
+            public string? CancelUrl { get; set; }
         }
 
         // P3 — active-polling đối soát (payment.md:145). Trả trạng thái sau đối soát PayOS.
