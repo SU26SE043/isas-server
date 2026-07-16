@@ -173,6 +173,7 @@ namespace Isas.CampaignService.Services
             var listCampaigns = _db.Campaigns
                 .Where(c => c.OrgId == orgId)
                 .Include(c => c.Questions)
+                .Include(c => c.Criteria)   // list card hiện đúng số tiêu chí (khớp detail — C12)
                 .OrderByDescending(c => c.CreatedAt)
                 .ToListAsync(ct);
 
