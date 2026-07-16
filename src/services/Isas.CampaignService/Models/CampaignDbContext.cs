@@ -155,6 +155,9 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.TotalScore).HasColumnType("numeric(5,2)");
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                // E11b — HR override (nullable; null = chưa chốt tay).
+                e.Property(x => x.OverrideScore).HasColumnType("numeric(5,2)");
+                e.Property(x => x.OverrideResult).HasMaxLength(10);
 
                 // Idempotent upsert theo session_id: event tới 2 lần vẫn 1 row.
                 e.HasIndex(x => x.SessionId).IsUnique();

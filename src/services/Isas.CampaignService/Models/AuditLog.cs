@@ -27,6 +27,7 @@ namespace Isas.CampaignService.Models
         Invite = 6,           // D1: mời ứng viên qua email (campaign_invitations)
         ScreenCandidates = 7, // C13: upload + sàng CV hàng loạt (campaign_candidates)
         EditCandidate = 8,    // C14: HR sửa email/fullName ứng viên sàng CV (campaign_candidates)
-        ReissueInvitation = 9 // D4: phát lại lời mời — vô hiệu token cũ + phát token mới
+        ReissueInvitation = 9, // D4: phát lại lời mời — vô hiệu token cũ + phát token mới
+        OverrideResult = 10   // E11b: HR chốt/sửa điểm-kết-quả cuối của ứng viên (điểm AI = gợi ý)
     }
 }

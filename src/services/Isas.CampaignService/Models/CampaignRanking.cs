@@ -16,5 +16,14 @@ namespace Isas.CampaignService.Models
         public Guid SessionId { get; set; }   // ref lỏng → Interview; UNIQUE (upsert idempotent)
         public decimal TotalScore { get; set; }
         public DateTime UpdatedAt { get; set; }
+
+        // E11b — HR chốt điểm cuối (điểm AI = gợi ý). Null = chưa override → dùng TotalScore/ngưỡng.
+        // Điểm/kết-quả effective read-time = OverrideScore ?? TotalScore, OverrideResult ?? (theo ngưỡng).
+        // TotalScore giữ nguyên snapshot AI (E4 redelivery không đè override).
+        public decimal? OverrideScore { get; set; }
+        public string? OverrideResult { get; set; }   // "Pass" | "Fail"
+        public string? OverrideNote { get; set; }
+        public Guid? OverriddenBy { get; set; }        // user sub HR thao tác
+        public DateTime? OverriddenAt { get; set; }
     }
 }

@@ -9,6 +9,10 @@ namespace Isas.CampaignService.Services
     {
         Task<CampaignResponse> GetCampaignAsync(Guid orgId, Guid id, CancellationToken ct);
         Task<List<CampaignResponse>> GetCampaignsAsync(Guid orgId, CancellationToken ct);
+
+        // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org), read-only. Tôn trọng
+        // soft-delete (D11). Optional lọc status/orgId. Cap 500, mới nhất trước.
+        Task<List<AdminCampaignListItem>> ListAllCampaignsAsync(string? status, Guid? orgId, CancellationToken ct);
         Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct);
         Task<CampaignResponse> UpdateCampaignAsync(Guid orgId, Guid actorUserId, Guid id, UpdateCampaignRequest request, CancellationToken ct);
         Task<bool> DeleteCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
@@ -30,6 +34,9 @@ namespace Isas.CampaignService.Services
 
         // E5: bảng kết quả + xếp hạng + pass/fail (đọc read-model campaign_rankings — E4)
         Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid orgId, Guid id, CancellationToken ct);
+
+        // E11b: HR chốt/sửa điểm-kết-quả cuối 1 ứng viên (org-scoped, audit; clear = về AI).
+        Task OverrideResultAsync(Guid orgId, Guid actorUserId, Guid campaignId, Guid sessionId, OverrideResultRequest req, CancellationToken ct);
 
         // E6: xuất bảng kết quả (E5) ra file — format=csv (pdf 🔜). Ngoài org → KeyNotFoundException (404).
         Task<CampaignResultExport> ExportCampaignResultsAsync(Guid orgId, Guid id, string? format, CancellationToken ct);

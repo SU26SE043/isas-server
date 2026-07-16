@@ -325,6 +325,89 @@ namespace Isas.AuthService.Services
             return ToOrgResponse(org, memberCount);
         }
 
+        // AUTH-7: PlatformAdmin liệt kê MỌI org (cross-org, read-only). Cap 500, mới nhất trước; optional
+        // lọc theo Name (contains, case-insensitive). MemberCount đếm gộp 1 lần (GroupBy) tránh N+1.
+        public async Task<IReadOnlyList<OrganizationResponse>> ListAllOrganizationsAsync(
+            string? search, CancellationToken ct = default)
+        {
+            var query = _authDbContext.Organizations.AsNoTracking();
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim();
+                query = query.Where(o => o.Name.ToLower().Contains(term.ToLower()));
+            }
+
+            var orgs = await query
+                .OrderByDescending(o => o.CreatedAt)
+                .Take(500)
+                .ToListAsync(ct);
+
+            var orgIds = orgs.Select(o => o.Id).ToList();
+            var counts = await _authDbContext.OrgMembers
+                .AsNoTracking()
+                .Where(m => orgIds.Contains(m.OrgId))
+                .GroupBy(m => m.OrgId)
+                .Select(g => new { OrgId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.OrgId, x => x.Count, ct);
+
+            return orgs
+                .Select(o => ToOrgResponse(o, counts.TryGetValue(o.Id, out var c) ? c : 0))
+                .ToList();
+        }
+
+        // AUTH-7: PlatformAdmin liệt kê MỌI user (cross-org, read-only). Cap 500, mới nhất trước; optional
+        // lọc email (contains, case-insensitive). Role platform lấy qua GetRolesAsync (mẫu GetUserAsync);
+        // membership org (OrgId/OrgName/OrgRole) join OrgMembers ⊕ Organizations — null nếu không thuộc org.
+        // Lọc `role` áp SAU khi resolve (role không nằm sẵn trong bảng users) → trong tập ≤500 mới nhất.
+        public async Task<IReadOnlyList<AdminUserResponse>> ListAllUsersAsync(
+            string? role, string? search, CancellationToken ct = default)
+        {
+            var query = _authDbContext.Users.AsNoTracking();
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim();
+                query = query.Where(u => u.Email != null && u.Email.ToLower().Contains(term.ToLower()));
+            }
+
+            var users = await query
+                .OrderByDescending(u => u.CreatedAt)
+                .Take(500)
+                .ToListAsync(ct);
+
+            var userIds = users.Select(u => u.Id).ToList();
+            var memberships = await _authDbContext.OrgMembers
+                .AsNoTracking()
+                .Where(m => userIds.Contains(m.UserId))
+                .Include(m => m.Organization)
+                .ToListAsync(ct);
+            var membershipByUser = memberships
+                .GroupBy(m => m.UserId)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            var result = new List<AdminUserResponse>(users.Count);
+            foreach (var u in users)
+            {
+                var userRole = (await _userManager.GetRolesAsync(u)).FirstOrDefault() ?? "No role";
+                if (!string.IsNullOrWhiteSpace(role) && !string.Equals(userRole, role.Trim(), StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                membershipByUser.TryGetValue(u.Id, out var m);
+                result.Add(new AdminUserResponse
+                {
+                    Id = u.Id,
+                    Email = u.Email,
+                    FullName = u.FullName,
+                    Role = userRole,
+                    OrgId = m?.OrgId,
+                    OrgName = m?.Organization?.Name,
+                    OrgRole = m?.OrgRole.ToString(),
+                    CreatedAt = u.CreatedAt
+                });
+            }
+
+            return result;
+        }
+
         private static OrganizationResponse ToOrgResponse(Organization org, int memberCount) => new()
         {
             Id = org.Id,

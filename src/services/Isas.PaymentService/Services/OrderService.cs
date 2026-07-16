@@ -170,6 +170,24 @@ namespace Isas.PaymentService.Services
                 .ToListAsync(ct);
         }
 
+        // AUTH-7: PlatformAdmin oversight — MỌI đơn xuyên chủ ví (KHÔNG lọc owner, khác GetOwnerOrdersAsync).
+        // Optional lọc status (numeric OrderStatus) + ownerType. Cap 500, mới nhất trước.
+        public async Task<List<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, CancellationToken ct = default)
+        {
+            var query = _db.Orders.AsQueryable();
+
+            if (status is OrderStatus s)
+                query = query.Where(o => o.Status == s);
+            if (ownerType is OwnerType ot)
+                query = query.Where(o => o.OwnerType == ot);
+
+            return await query
+                .OrderByDescending(o => o.CreatedAt)
+                .Take(500)
+                .Select(o => OrderResponse.ToResponse(o))
+                .ToListAsync(ct);
+        }
+
         public async Task CancelOrderAsync(Guid id, CancellationToken ct = default)
         {
             var order = await _db.Orders.FindAsync(id, ct)

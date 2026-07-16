@@ -52,6 +52,8 @@ public class InvoiceServiceTests
             => throw new NotImplementedException();
         public Task<List<OrderResponse>> GetOwnerOrdersAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
             => throw new NotImplementedException();
+        public Task<List<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, CancellationToken ct = default)
+            => throw new NotImplementedException();
         public Task CancelOrderAsync(Guid id, CancellationToken ct = default)
             => throw new NotImplementedException();
     }
