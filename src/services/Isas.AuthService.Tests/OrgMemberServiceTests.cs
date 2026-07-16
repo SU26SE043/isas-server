@@ -145,6 +145,74 @@ public class OrgMemberServiceTests
         Assert.Equal("HrMember", decoded.Claims.Single(c => c.Type == "org_role").Value);
     }
 
+    [Fact]
+    public async Task GetOrganization_ReturnsNameTaxCode_AndMemberCount()
+    {
+        using var testDb = new AuthTestDb();
+        var db = testDb.Db;
+        var org = new Organization { Id = Guid.NewGuid(), Name = "Acme", TaxCode = "0123456789", CreatedAt = DateTime.UtcNow };
+        db.Organizations.Add(org);
+        var a = SeedUser(db, "a@acme.test");
+        var b = SeedUser(db, "b@acme.test");
+        db.OrgMembers.AddRange(
+            new OrgMember { OrgId = org.Id, UserId = a.Id, OrgRole = OrgRole.OrgAdmin },
+            new OrgMember { OrgId = org.Id, UserId = b.Id, OrgRole = OrgRole.HrMember });
+        db.SaveChanges();
+
+        var svc = NewService(db, TestConfig(), MockUserManager(db));
+        var resp = await svc.GetOrganizationAsync(org.Id);
+
+        Assert.Equal("Acme", resp.Name);
+        Assert.Equal("0123456789", resp.TaxCode);
+        Assert.Equal(2, resp.MemberCount);
+    }
+
+    [Fact]
+    public async Task GetOrganization_Missing_ThrowsKeyNotFound()
+    {
+        using var testDb = new AuthTestDb();
+        var svc = NewService(testDb.Db, TestConfig(), MockUserManager(testDb.Db));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => svc.GetOrganizationAsync(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task UpdateOrganization_ChangesNameAndTaxCode_Persists()
+    {
+        using var testDb = new AuthTestDb();
+        var db = testDb.Db;
+        var orgId = SeedOrg(db, "Old Name");
+        var svc = NewService(db, TestConfig(), MockUserManager(db));
+
+        var resp = await svc.UpdateOrganizationAsync(orgId,
+            new Isas.AuthService.DTOs.UpdateOrgRequest { Name = "New Name", TaxCode = "999" });
+
+        Assert.Equal("New Name", resp.Name);
+        Assert.Equal("999", resp.TaxCode);
+
+        using var verify = testDb.NewContext();
+        var org = verify.Organizations.Single(o => o.Id == orgId);
+        Assert.Equal("New Name", org.Name);
+        Assert.Equal("999", org.TaxCode);
+    }
+
+    [Fact]
+    public async Task UpdateOrganization_PartialName_KeepsExistingTaxCode()
+    {
+        using var testDb = new AuthTestDb();
+        var db = testDb.Db;
+        var org = new Organization { Id = Guid.NewGuid(), Name = "Acme", TaxCode = "KEEP", CreatedAt = DateTime.UtcNow };
+        db.Organizations.Add(org);
+        db.SaveChanges();
+        var svc = NewService(db, TestConfig(), MockUserManager(db));
+
+        // Chỉ gửi Name → TaxCode (null trong request) giữ nguyên.
+        var resp = await svc.UpdateOrganizationAsync(org.Id,
+            new Isas.AuthService.DTOs.UpdateOrgRequest { Name = "Acme 2" });
+
+        Assert.Equal("Acme 2", resp.Name);
+        Assert.Equal("KEEP", resp.TaxCode);
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────────
     private static Guid SeedOrg(AuthDbContext db, string name)
     {

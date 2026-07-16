@@ -25,6 +25,12 @@ namespace Isas.AuthService.Services
         // A6b: OrgAdmin xoá thành viên khỏi org mình (hard-remove row, account giữ nguyên). Không thuộc org →
         // OrgMemberNotFoundException; xoá OrgAdmin cuối cùng → OrgMemberConflictException.
         Task RemoveOrgMemberAsync(Guid orgId, Guid userId, CancellationToken ct = default);
+
+        // Thông tin tổ chức: đọc (mọi member) + sửa name/taxCode (OrgAdmin — enforce ở controller).
+        // Org không tồn tại → KeyNotFoundException.
+        Task<OrganizationResponse> GetOrganizationAsync(Guid orgId, CancellationToken ct = default);
+        Task<OrganizationResponse> UpdateOrganizationAsync(Guid orgId, UpdateOrgRequest request, CancellationToken ct = default);
+
         Task<AuthResponse> LoginAsync(LoginRequest loginRequest);
         Task<AuthResponse> LoginGoogleAsync(ExternalLoginInfo info);
         Task<AuthResponse> RefreshTokenAsync(string refreshToken);

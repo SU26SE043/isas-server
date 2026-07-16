@@ -296,6 +296,44 @@ namespace Isas.AuthService.Services
 
         // A6: thành viên org (email + org_role + joined_at thật — A6b). Materialize rồi project
         // client-side (enum→string ToString không dịch được sang SQL với mọi provider).
+        public async Task<OrganizationResponse> GetOrganizationAsync(Guid orgId, CancellationToken ct = default)
+        {
+            var org = await _authDbContext.Organizations
+                .AsNoTracking()
+                .FirstOrDefaultAsync(o => o.Id == orgId, ct)
+                ?? throw new KeyNotFoundException("Tổ chức không tồn tại.");
+
+            var memberCount = await _authDbContext.OrgMembers.CountAsync(m => m.OrgId == orgId, ct);
+            return ToOrgResponse(org, memberCount);
+        }
+
+        public async Task<OrganizationResponse> UpdateOrganizationAsync(
+            Guid orgId, UpdateOrgRequest request, CancellationToken ct = default)
+        {
+            var org = await _authDbContext.Organizations
+                .FirstOrDefaultAsync(o => o.Id == orgId, ct)
+                ?? throw new KeyNotFoundException("Tổ chức không tồn tại.");
+
+            if (!string.IsNullOrWhiteSpace(request.Name))
+                org.Name = request.Name.Trim();
+            if (request.TaxCode is not null)
+                org.TaxCode = string.IsNullOrWhiteSpace(request.TaxCode) ? null : request.TaxCode.Trim();
+
+            await _authDbContext.SaveChangesAsync(ct);
+
+            var memberCount = await _authDbContext.OrgMembers.CountAsync(m => m.OrgId == orgId, ct);
+            return ToOrgResponse(org, memberCount);
+        }
+
+        private static OrganizationResponse ToOrgResponse(Organization org, int memberCount) => new()
+        {
+            Id = org.Id,
+            Name = org.Name,
+            TaxCode = org.TaxCode,
+            CreatedAt = org.CreatedAt,
+            MemberCount = memberCount
+        };
+
         public async Task<IReadOnlyList<OrgMemberResponse>> ListOrgMembersAsync(
             Guid orgId, CancellationToken ct = default)
         {
