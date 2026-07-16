@@ -27,7 +27,7 @@ public class WebhookServiceTests
             Id = Guid.NewGuid(),
             Name = $"Pack {credits}",
             Type = PackageType.OneTime,
-            PriceVnd = (int)priceVnd,
+            PriceVnd = priceVnd,
             InterviewCredits = credits,
             IsActive = true,
             CreatedAt = DateTime.UtcNow
