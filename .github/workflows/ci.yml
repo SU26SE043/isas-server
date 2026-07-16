@@ -109,6 +109,10 @@ jobs:
           script: |
             cd ~/docker/${{ github.ref_name }}
             echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker compose pull
+            # --ignore-pull-failures: bỏ qua các service dùng image build tay/local (vd :bk14g
+            # không có trên registry) thay vì để cả `pull` chết → khi đó các service :main
+            # (auth/payment/gateway) mới thật sự được cập nhật khi deploy. Nếu không, pull nghẹn
+            # ở tag local → server đứng yên image cũ dù CI xanh (job vẫn pass vì lệnh cuối prune OK).
+            docker compose pull --ignore-pull-failures
             docker compose up -d --remove-orphans
             docker image prune -f
