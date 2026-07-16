@@ -147,6 +147,26 @@ namespace Isas.AuthService.Controllers
             return Ok(updatedUser);
         }
 
+        // Đổi mật khẩu khi ĐÃ đăng nhập — verify mật khẩu cũ (Identity). Sai old / new yếu → 400.
+        [Authorize(Roles = "Candidate, Employer, Admin")]
+        [HttpPost("change-password")]
+        public async Task<IActionResult> ChangePasswordAsync([FromBody] ChangePasswordRequest request)
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (userId == null)
+                return Unauthorized();
+
+            var user = await _userManager.FindByIdAsync(userId);
+            if (user == null)
+                return Unauthorized();
+
+            var result = await _userManager.ChangePasswordAsync(user, request.OldPassword, request.NewPassword);
+            if (!result.Succeeded)
+                return BadRequest(string.Join(" ", result.Errors.Select(e => e.Description)));
+
+            return NoContent();
+        }
+
         [AllowAnonymous]
         [HttpPost("forgot-password")]
         public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto model)
