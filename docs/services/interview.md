@@ -547,12 +547,12 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - Nguồn tiêu chí đúng mode (E1): B2B theo `campaign_id`, B2C theo `job_category` + `campaign_id IS NULL`.
 
 **⚠ Điểm cần lưu ý / gap** (biết trước khi làm BC9/BC10/E4):
-1. **`weight` hiện CHƯA được dùng ở đâu.** Lưu trên `rubric_criteria`, gửi xuống worker — nhưng **worker chỉ dùng `maxScore`**, KHÔNG dùng `weight`; và **không có code nào tính điểm tổng**. Điểm tổng mới là **thiết kế**: **B2C = trung bình cộng** (BC9, **KHÔNG** dùng `weight`) · **B2B = Σ điểm×weight** (ranking E4 — **chỉ B2B** mới dùng `weight`). → đừng tưởng đã có điểm tổng.
+1. **Điểm tổng ĐÃ CÓ (cập nhật 2026-07-17).** **B2C = trung bình cộng** tiêu chí (BC9, `SessionResultService` → `practice_sessions.overall_score`, **KHÔNG** dùng `weight`) · **B2B = Σ điểm×weight** cho ranking (E4, CampaignService qua event `SessionScored`). Worker vẫn chỉ chấm **từng câu** theo `maxScore`; tổng hợp ở service .NET. `weight` (trên `rubric_criteria`) **dùng cho ranking B2B + hiển thị**, không dùng cho điểm tổng B2C (INT-10).
 2. **`maxScore` khác nhau giữa các tiêu chí** ⇒ **KHÔNG cộng điểm thô** (tiêu chí thang cao sẽ lấn). Phải chuẩn theo `maxScore` (percentage) như BC9. `answer_scores.score` là điểm **theo thang riêng** từng tiêu chí.
 3. **B2C chưa có nguồn `rubric_criteria` theo `JobCategory`**: repo **không** seed/migration, cũng **không** có endpoint tạo rubric B2C. ⇒ DB trống rubric thì `AnswerService` thấy "không có tiêu chí active" → **bỏ publish → answer không được chấm**. Hiện phải **insert tay**. → **task BC11** (seed/CRUD rubric B2C). *(B2B ổn vì I1 materialize từ campaign.)*
 4. **C# callback tin worker 100%** — `SaveResultAsync` lưu nguyên điểm worker gửi, **không tự kẹp / không kiểm đủ tiêu chí** (chỉ FK chặn id lạ). Mà **AIService deploy ephemeral** (docker cp, image có thể lệch — [ai.md](ai.md)) ⇒ nên cân nhắc **guard phía C#** (kẹp `[0,maxScore]`, bỏ criterion ngoài rubric) cho chắc. → **task E8**.
 5. **Thiếu 1 tiêu chí → answer `Failed` vĩnh viễn** (worker raise `ValueError`): rubric nhiều tiêu chí dễ gãy oan — đã ghi [ai.md](ai.md) §Vấn đề (🟠 nên retry/self-consistency trước khi chốt Failed).
-6. **`attempt_no` luôn = 1** (self-consistency nhiều lần chấm chưa làm) — đúng thiết kế hiện tại; schema đã chừa chỗ.
+6. **`attempt_no` — self-consistency ĐÃ BUILD (E10, cập nhật 2026-07-17):** chấm **N lần** (opt-in qua `Scoring:Attempts`, default **N=1** = hành vi cũ) → điểm chốt = **median/tiêu chí**, spread>ngưỡng → `practice_answers.needs_review=true`. Vì default N=1 nên thực tế `attempt_no` thường =1; `UNIQUE(answer_id,criterion_id,attempt_no)` hỗ trợ N>1.
 
 > **Tóm lại:** chấm **từng tiêu chí trên mỗi câu = ổn & chắc**; phần **tổng hợp mức buổi** (weight/điểm tổng/cần cải thiện) **chưa có** (BC9/BC10/E4) và **rubric B2C chưa có nguồn dữ liệu** (#3) là 2 việc cần làm để luồng B2C chạy trọn.
 
