@@ -144,6 +144,10 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Property(x => x.ReplacedBy).HasColumnName("replaced_by");
             e.Property(x => x.ExpiresAt).HasColumnName("expires_at");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            // DB12: unique index trên token (đã là SHA-256 hash 32+ byte ngẫu nhiên → an toàn
+            // unique). Vừa chống trùng token vừa biến lookup `x.Token == hash` (validate refresh)
+            // từ full-scan thành index seek.
+            e.HasIndex(x => x.Token).IsUnique();
             e.HasOne(x => x.User)
                 .WithMany(x => x.RefreshTokens)
                 .HasForeignKey(x => x.UserId);
