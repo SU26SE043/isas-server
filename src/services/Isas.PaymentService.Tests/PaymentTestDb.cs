@@ -6,8 +6,10 @@ namespace Isas.PaymentService.Tests;
 
 /// <summary>
 /// PaymentDbContext chạy trên SQLite in-memory (giữ connection mở để DB sống).
-/// Không dùng UseSnakeCaseNamingConvention() ở test (SQLite provider không cần; convention chỉ
-/// đổi tên cột/bảng — không ảnh hưởng hành vi CRUD được test ở đây).
+/// DB1 — dùng UseSnakeCaseNamingConvention() để cột SQLite mang tên snake_case khớp raw SQL của
+/// model-level CHECK (remaining_credits/reserved_credits/period_usage/delta). Không có convention,
+/// EnsureCreated sinh CHECK tham chiếu cột snake_case không tồn tại → vỡ toàn bộ Payment test.
+/// Test dùng LINQ (property expression) nên đổi tên cột không ảnh hưởng hành vi CRUD.
 /// </summary>
 public sealed class PaymentTestDb : IDisposable
 {
@@ -26,6 +28,7 @@ public sealed class PaymentTestDb : IDisposable
     {
         var options = new DbContextOptionsBuilder<PaymentDbContext>()
             .UseSqlite(_conn)
+            .UseSnakeCaseNamingConvention()
             .Options;
         return new PaymentDbContext(options);
     }

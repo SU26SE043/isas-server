@@ -105,7 +105,11 @@ namespace PaymentService.Models
             // ── CreditAccount (P1 — ví của chủ sở hữu, D15) ─────────
             modelBuilder.Entity<CreditAccount>(e =>
             {
-                e.ToTable("credit_accounts");
+                // DB1 — số dư credit KHÔNG bao giờ âm (chống double-spend/bug logic tràn xuống dưới 0).
+                // period_usage nullable → phải IS NULL OR ... tường minh (NULL >= 0 = UNKNOWN, không đủ chặn).
+                e.ToTable("credit_accounts", t => t.HasCheckConstraint(
+                    "ck_credit_accounts_non_negative",
+                    "remaining_credits >= 0 AND reserved_credits >= 0 AND (period_usage IS NULL OR period_usage >= 0)"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -149,7 +153,10 @@ namespace PaymentService.Models
             // ── CreditTransaction (P1 — sổ cái, refactor owner_type) ─
             modelBuilder.Entity<CreditTransaction>(e =>
             {
-                e.ToTable("credit_transactions");
+                // DB1 — sổ cái append-only: mọi bút toán phải chuyển số dư (Purchase +N / Consume −1 / Refund).
+                // delta = 0 là bút toán vô nghĩa → chặn ở DB (dữ liệu rác/bug ghi sổ).
+                e.ToTable("credit_transactions", t => t.HasCheckConstraint(
+                    "ck_credit_transactions_delta_nonzero", "delta <> 0"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
