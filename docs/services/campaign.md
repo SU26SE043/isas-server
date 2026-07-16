@@ -32,7 +32,7 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 ### `/api/v1/campaign` (JWT role **Employer**; `employerId` từ claim) — **JD/Criteria: text trực tiếp `jdText`/`criteriaText` 🔜 HOẶC PDF ≤ 10MB**
 | Method | Path | Mô tả |
 |---|---|---|
-| GET | `/campaign` | Danh sách campaign của chính mình (✅ đã lọc theo `employer_id`) |
+| GET | `/campaign` | Danh sách campaign của org (lọc `org_id`) — **trả kèm `criteria[]` + `questions[]`** (`GetCampaignsAsync` `.Include(Questions)`+`.Include(Criteria)`; fix 2026-07-17 PR #42 — trước thiếu Include Criteria nên card FE hiện "0 tiêu chí") |
 | GET | `/campaign/{id}` | Chi tiết (kèm câu hỏi) |
 | POST | `/campaign` | Tạo (Draft). Body `{ title, domain, jdText?, criteriaText?, criteria?, maxCandidates?, timeLimitMinutes, antiCheatEnabled, startsAt, expiresAt, questions[] }`. **🔜 `jdText`/`criteriaText`** = JD/Criteria dạng text (set `*_text`, `*_file_url=null`); **🔜 `criteria`** = `CriterionItem[]` tiêu chí structured HR khai thẳng. **🔜 `domain` → thay bằng `jobCategory` enum `BA·BE·FE` bắt buộc** (code hiện nhận `domain` free-text đang gánh vai này không kiểm kiểu — xem §DB `campaigns.job_category`). **🔸 `timeLimitMinutes` TẠM BỎ** — vẫn nhận optional cho tương thích nhưng **không enforce** (chỉ giới hạn từng câu) |
 | POST | `/campaign/{id}/files` | Upload **PDF** JD/Criteria. `multipart`: `jdFile?`, `criteriaFile?` (parse PDF → `*_text`). *(Bỏ `jdFile`/`criteriaFile` nếu đã nhập `jdText`/`criteriaText`.)* |
