@@ -3,6 +3,7 @@
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
 > **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-12** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) + **E7·C13·BC2** (vòng 7) + **C14·BC8·BK7** (vòng 8) + **BK11·BK1·BK12** (vòng 9 — bug-fix) + **P2·C15·BC12** (vòng 10) + **BC14·BK4·BC10-AI** (vòng 11) + **D2** (vòng 12 — solo cross-service, membership redesign) + **BC10·P3·D3** (vòng 13 — 2 worker sạch + D3 kèm) + **BC15·D4·P8b** (vòng 14 — 3 worktree thật, 0 race) + **I2·A4** (vòng 15 — 2 worker, frontier mỏng) + **BK17·BK18·BK16** (vòng 16 — BK-cleanup, 3 worktree thật) + **E9** (vòng 17 — SOLO cross-service Interview+AIService, chấm neo mức) + **E10** (vòng 18 — SOLO cross-service, self-consistency median+needs_review) + **E11·A6** (vòng 19 — E11 đóng chuỗi chất lượng chấm + A6 org nhiều thành viên) + **BC7b** (vòng 20 — wire billing CV analysis, chốt BK5) + **BK15·BK6·A6b** (vòng 21 — backlog cleanup, 3 worktree disjoint) + **A5** (vòng 22 — SOLO cross-cutting, auth gate `[Authorize(Roles)]` mọi service) + **BC16** (vòng 23 — rubric cá nhân B2C candidate-owned) passing, integrated vào `docs/sync-design-d18-d21`). Cập nhật lần cuối vòng 23: **2026-07-13**.
 > **Cập nhật 2026-07-16 (Đợt 1–3b hardening + BK14 org-credit-reserve + live e2e B2C/B2B verified trên server deploy):** xem §Đợt 1–3b + BK14 bên dưới. **BK14 done** (commit 3399765 — B2B reserve org credit tại Start). **Luồng tiền E2E cả 2 dòng chạy thật** (B2C mua-credit→luyện→chấm→consume · B2B org-credit→campaign→invite→join→start→chấm→ranking Pass).
+> **Cập nhật 2026-07-17 (E2E toàn hệ thống trên deploy Vercel FE + tunnel BE + 2 fix qua PR→CI/CD):** e2e cả **B2C+B2B, UI thật (Chrome) + API** trên site thật → PASS; **luồng tiền PayOS→webhook→credit verify LIVE hôm nay** (order Paid + ledger `+5 Purchase`). Fix: campaign list "0 tiêu chí" (`.Include(Criteria)`, **PR #42**) + FE loading splash (PayOS-return cold-boot, deploy Vercel). CI deploy pull-tolerant (**PR #41**). Xem **§E2E 2026-07-17** bên dưới.
 
 ## Pha hiện tại
 **Feature engine cho cả 2 dòng đã đủ trên nhánh tích hợp — pha còn lại = hardening + e2e thật.** Thiết kế chốt **D1–D23**. **23 vòng giám sát** (multi-agent supervised) đã tích hợp vào nhánh **`docs/sync-design-d18-d21`** (**451 .NET test + 53 pytest**, `dotnet build` 0 error) — xem §Vòng tables bên dưới cho từng vòng.
@@ -270,6 +271,29 @@
 - **B2B trọn vòng:** org có credit → tạo campaign → invite → **join** (provision Candidate) → **Start** (**BK14 reserve org credit**) → làm bài → chấm → `SessionScored` → **consume** + upsert `campaign_rankings` → **ranking Pass/Fail** hiển thị.
 
 > Test project trong tree hiện có (đủ 4): `Isas.AuthService.Tests` · `Isas.PaymentService.Tests` (✅ P0.4) · `Isas.CampaignService.Tests` · `Isas.InterviewService.Tests`.
+
+### ✅ E2E toàn hệ thống trên deploy (2026-07-17) — Vercel FE + tunnel BE, UI + API
+> FE `sep-490-angular.vercel.app` (Angular 21) + BE gateway qua Cloudflare tunnel + Mac AI. Test **đa-agent** (Auth/Payment/Admin/B2C/B2B, mỗi mảng 1 subagent) + **UI thật bằng Chrome** cho 3 role. Cả 2 dòng sản phẩm **xanh, UI + API**. 4 tài khoản test (candidate@/employer@/hr@/admin@, pass `Test@123456`) login live OK.
+
+**Kết quả PASS:**
+- **AI pipeline khỏe:** Gemini live · `aiworker` up · `INTERNAL_TOKEN` worker == `interviewservice` `Internal__Token` (bug "callback 401 → không bao giờ chấm" 2026-07-15 KHÔNG còn).
+- **Auth/authZ 15/15** (register/login/me/refresh · org-members A6/A6b CRUD+guard 409/400 · A5 gate 401/403) · **Payment/billing 13/13** (order→`checkoutUrl` PayOS thật · owner-isolation 404 · HrMember/anon/non-admin gate) · **Admin 8/8** (package CRUD full + `admin/orders|organizations|users`, `campaign/admin`, `invoices/close` — đều gate) · **B2B engine 13/13** (create→publish (AI-free do criteria)→invite→**join**→**Start reserve org credit** (BK14: 4→3)→chấm→**ranking <60s**→consume→CSV→**HR override** giữ aiScore) · **B2C engine 11/11** (CV upload+parse→cv-analysis (JD match 90)→session (5 câu AI)→**Scored**→history→rubric CRUD (Σweight 400)→roadmap→lesson→**402 ví rỗng**).
+- **UI Chrome thật:** B2C candidate (dashboard/CV-JD/analysis/practice/roadmap/rubric/credit), **Employer B2B đầy đủ** (campaigns list/detail/criteria/questions/invite/**results+ranking+badge "HR chỉnh"**/members/org-credit), **Admin đầy đủ** (users/orgs/orders platform-wide) — render dữ liệu live, network `/api/v1` 200, không 404 runtime.
+- **Luồng tiền LIVE hôm nay:** mua credit qua UI → PayOS checkout thật → user thanh toán → order **Paid** (`paidAt`) → `credit_transactions` **`+5 Purchase`** gắn đúng `order_id`, idempotent → **PAY-8 verify live** (không chỉ historical).
+- **Chấm tự hồi phục:** 1 answer B2C kẹt ~18' vì **Gemini 503 "high demand" + worker↔RabbitMQ flap** (Errno 111 qua Tailscale) → `nack`→republish + `StuckAnswerRepublisher` tự cứu → `Scored`. Platform-wide 0 answer kẹt (Scored 16/Skipped 11/Failed 2).
+
+**Fix (đều qua branch → PR → main → CI/CD, KHÔNG deploy trực tiếp server):**
+- **Campaign list "0 tiêu chí"** — `CampaignService.GetCampaignsAsync` thiếu `.Include(c => c.Criteria)` (detail có) → list DTO trả `criteria` rỗng → card FE hiện 0. Thêm Include. **173 Campaign test pass**. **PR #42 merged → CI/CD deploy → verify LIVE** (list trả `criteria=2/4`; card Employer hiện đúng số).
+- **FE loading splash** (repo isas-frontend) — quay về từ PayOS = full cold-reload xuyên origin → app Angular boot lại → màn hình trắng/tối vài giây. Thêm splash tĩnh trong `index.html` (`#isas-splash` trong `<app-root>`, Angular tự thay khi boot). Deploy Vercel (`master`). *(Splash nền tối trên thiết bị dark-mode = **chấp nhận được**, user chốt giữ nguyên — app luôn theme sáng.)*
+- **CI deploy pull-tolerant** (**PR #41**, `148c2fe`): deploy job dùng `docker compose pull --ignore-pull-failures` → gỡ root-cause "deploy never updates" (trước kẹt vì service tag local).
+
+**Đã rà, KHÔNG phải bug:**
+- **Whisper transcript rác trong test** = audio tổng hợp (`say` WAV) + Whisper **tiny**; đuôi object-key `.webm` hardcode (`AnswerService.cs:80`) **đúng** cho ghi âm thật FE (MediaRecorder webm/opus). Muốn điểm chính xác hơn → nâng model Whisper, không liên quan object-key.
+- **Cloudflare tunnel 502** khi call AI sync lâu (~13s cv-analysis) → retry là được (tunnel timeout, không phải app).
+
+**Nit nhỏ (chưa sửa, non-blocking):** invite trả HTTP **200** (không 201); `orgName` **null** trong invitation metadata (BK14 tail — Campaign chưa resolve tên org xuyên service); campaign list card criteria giờ đúng (fix trên).
+
+**⚠ Quy trình (user chốt, cứng):** MỌI thay đổi đi qua **branch → PR vào `main` (BE) / `master` (FE)** để CI/CD test+tích hợp — **KHÔNG hotfix server trực tiếp** (`docker save|load` + compose restart). (Đã rút kinh nghiệm sau khi lỡ định hotfix + push thẳng.)
 
 ## Vấn đề đã biết / cần xác minh
 - ~~**E1 → e2e thật bị chặn bởi D2**~~ ✅ **GỠ:** D2 membership + BK14 reserve xong → luồng B2B end-to-end (campaign → join → start → làm bài → chấm → ranking) **chạy trọn thật live 2026-07-15/16** (§Đợt 1–3b).
