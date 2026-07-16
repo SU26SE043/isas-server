@@ -115,6 +115,40 @@
 |---|---|---|---|---|
 | SEC1 | **Anti-cheat B2B** (SEC-1..5): thu `session_integrity_events` (tab-switch/focus/paste/multi-voice) + (tùy chọn) face-verify gate + giám sát định kỳ → **FLAG cho HR**, KHÔNG auto-hủy (D13) | campaign bật `anti_cheat_enabled` → FE gửi tín hiệu → lưu `session_integrity_events` → surface cờ+note trong kết quả cho HR; face-verify (nếu bật) gate trước bài | C7, D2 | 🟡 **backend scaffold BUILT** (branch `feat/b2b-email-anticheat`): `face_verify_enabled` toggle + bảng `session_flags` + ingest endpoint (candidate-JWT cho FE signals tab_switch/paste/focus_lost · `X-Internal-Token` cho AI signals face_mismatch/no_face/multiple_faces/multi_voice/identity_unverified) + surface flags cho HR (`CampaignResultRow.Flags[]` + cột CSV) + migration `AddSessionFlagsAndFaceVerify`; +10 test. Scaffold chỉ **NHẬN+LƯU+SURFACE cờ** (D13 flag-cho-HR). ❌ **CÒN (ngoài repo):** detection thật — **FE** (webcam/tab-switch/paste emit) + **AIService** (face-match/multi-voice) |
 
+## S6 — DB Hardening, Integrity & Scale (từ review kiến trúc 2026-07-17)
+> Sinh từ **DB review + Tech Lead review** (2026-07-17, dựa trên schema **live 4 DB** + hành vi code cả session). Bối cảnh/lý do: memory `isas-e2e-2026-07-17`. **P0 (money-integrity) làm TRƯỚC khi scale tiền thật.** Migration giữ rule no-auto-migrate (apply tay/pipeline TRƯỚC deploy). Mỗi task = 1 branch → PR vào `main`.
+
+### P0 — Money-integrity (làm trước)
+| ID | Hành vi | Xác minh | Dep | Status |
+|---|---|---|---|---|
+| DB1 | 🔴 **Critical — CHECK số dư credit không âm**: `credit_accounts CHECK(remaining_credits>=0 AND reserved_credits>=0)` + `period_usage>=0` + `credit_transactions CHECK(delta<>0)` | migration apply local → UPDATE balance âm → **fail 23514**; `dotnet test` Payment xanh | — | ⬜ not_started |
+| DB2 | 🔴 **High — Transactional Outbox** (Interview `SessionScored/Abandoned`, Payment reserve/consume, Campaign invitation-email): ghi `outbox_messages` **cùng transaction** với state → dispatcher publish at-least-once → consumer idempotent (key `session_id`). Thay `publish best-effort` | kill broker giữa chừng → event **không mất** (dispatcher gửi lại khi broker lên); test dispatcher + idempotent | E2,E7 | ⬜ not_started |
+| DB3 | 🔴 **High — money int→bigint** (gộp `BK17(3)`): `orders.amount_vnd` + `product_packages.price_vnd` `int→bigint` (tràn >2.147e9 VND) | migration `ALTER COLUMN … TYPE bigint`; test order amount > int.max | P8b | ⬜ not_started |
+| DB4 | 🔴 **High — CreditAccount reconcile (fix aggregate vỡ)**: `reserved_credits` khớp `count(reservation Reserved)`; **reservation-reconciler** release/consume reservation mà session Interview đã terminal/không tồn tại; dọn drift Test Org hiện có (guard chống âm) | reconciler + test; chạy 1 lần → `reserved_credits == count(Reserved)` mọi ví; 0 ví âm | DB1 | ⬜ not_started |
+
+### P1 — Scale (1M user) + Integrity hygiene
+| ID | Hành vi | Xác minh | Dep | Status |
+|---|---|---|---|---|
+| DB5 | 🔴 **High — index background sweeper** (nay full-scan mỗi 2'): partial `practice_sessions(deadline) WHERE status IN('Ready','InProgress','GeneratingQuestions','Scoring')`, `practice_answers(status,last_scoring_published_at)`, `credit_reservations(owner_id,status)`, `credit_transactions(owner_id)`, `campaign_candidates(last_screening_published_at)` | migration + `EXPLAIN` query sweeper = **Index Scan** (hết Seq Scan) | — | ⬜ not_started |
+| DB6 | 🟠 **Med — partition append-only** theo tháng (`credit_transactions`/`audit_logs`/`payment_transactions`/`answer_scores`) + retention | partitioned table + insert routing; smoke insert cross-month | — | ⬜ not_started |
+| DB7 | 🟠 **Med — sweeper leader-election / queue-based** thay polling (N-replica quét trùng) | 2 replica → chỉ 1 quét/kỳ, không double-process | — | ⬜ not_started |
+| DB8 | 🟠 **Med — TEXT lớn ra khỏi row** (`campaign_candidates.cv_parsed_text`, `file_records.parsed_text` → S3 key) + `admin/*` **keyset-pagination** + read-replica report | row size giảm; admin list phân trang; report đọc replica | — | ⬜ not_started |
+| DB9 | 🟠 **Med — FK nội-service thiếu**: Payment (`credit_reservations`/`credit_transactions`/`invoices`→`credit_accounts`), Campaign (`campaign_rankings`/`session_flags`→`campaigns`, `campaign_invitations`→`campaign_candidates`) | dọn orphan → add FK; insert ref sai → fail 23503 | DB4 | ⬜ not_started |
+| DB10 | 🟠 **Med — optimistic concurrency**: Npgsql `UseXminAsConcurrencyToken()` domain tables (campaigns/credit_accounts/practice_sessions/org) — không cần cột mới | 2 update đồng thời 1 row → `DbUpdateConcurrencyException` | — | ⬜ not_started |
+| DB11 | 🟠 **Med — email UNIQUE** (Auth): `RequireUniqueEmail=true` + `UNIQUE INDEX users(normalized_email) WHERE … IS NOT NULL` | migration + register email trùng → 409/unique | — | ⬜ not_started |
+| DB12 | 🟠 **Med/Security — refresh token hash**: lưu SHA-256 thay plaintext + `UNIQUE INDEX refresh_tokens(token)` | refresh flow chạy; DB hết token thô; lookup dùng index | — | ⬜ not_started |
+| DB13 | 🟠 **Med — soft-delete vs CASCADE (Campaign)**: con thêm query-filter `DeletedAt==null` (qua nav) HOẶC FK→RESTRICT + soft-cascade app → hết EF warning + orphan-in-view | soft-delete campaign → query con bỏ; EF build 0 warning | — | ⬜ not_started |
+| DB14 | 🟡 **Low — audit cols + type/enum**: `updated_at` cho bảng mutable (orders/reservations/sessions) set ở SaveChanges; `orders.status text→varchar(20)`; ratify `product_packages.type` (enum int) | migration; `updated_at` đổi khi update | — | ⬜ not_started |
+| DB15 | 🟡 **Low — cleanup schema**: drop bảng chết `subscriptions`; gộp `rubric_anchors`→cột/jsonb; bỏ index trùng `practice_answers(session_id,question_id)`; CHECK `pass_score_pct∈[0,100]` + `weight∈[0,1]` | migration; scoring không vỡ | — | ⬜ not_started |
+
+### P2 — Redesign (khi chạm feature liên quan — đừng refactor khơi khơi, WIP=1)
+| ID | Hành vi | Xác minh | Dep | Status |
+|---|---|---|---|---|
+| DB16 | 🟠 **Med — tách God Table `campaign_candidates`** (27 cột, 4 lifecycle) → `cv_submission` (CV/parse/screening) + `campaign_membership` (candidate_id/joined_at/session_id/interview_status). Làm khi chạm screening kế | migration tách + backfill; screening + membership flow xanh | — | ⬜ not_started |
+| DB17 | 🔵 **Large — FileService ownership thống nhất**: parse CV đang **trùng** ở Campaign (`ParserService`) + Interview (`file_records`) → 1 owner, service khác ref `file_key` | 1 nơi parse; e2e upload xanh | — | ⬜ not_started |
+| DB18 | 🟠 **Med — Saga chính thức cho Start** (Campaign→Interview→Payment reserve): state machine + compensation log idempotent thay try/catch (diệt orphan reservation khi crash giữa chừng) | crash-inject giữa reserve↔insert → 0 orphan (compensation chạy) | DB2 | ⬜ not_started |
+| DB19 | 🟡 **Low — `rubric_criteria` ambiguous owner** (campaign_id/candidate_id/both-null=seed): CHECK đúng-1-owner hoặc tách concept | migration CHECK; scoring resolve owner xanh | — | ⬜ not_started |
+
 ## Backlog — dọn dẹp / follow-up (sinh từ **ghi chú ⚠** của task passing)
 > Chưng cất từ ⚠ note của task passing (không trùng task chính). Mỗi cái WIP=1. **Bằng chứng chi tiết của item done = §Vòng tables trong [progress.md](progress.md).**
 
