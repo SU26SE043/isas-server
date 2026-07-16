@@ -35,7 +35,8 @@ namespace Isas.PaymentService.Services
 
             // BF3 — guard PayOS config SỚM (trước khi persist) → thiếu ReturnUrl/CancelUrl thì fail
             // 502 sạch, KHÔNG tạo order mồ côi (bug bắt ở layer-3: PayOS reject "return_url null").
-            EnsurePayosUrlsConfigured(_settings.Value);
+            // Redirect theo khu vực FE người mua: dùng URL request (candidate/employer) nếu hợp lệ, else config.
+            var (returnUrl, cancelUrl) = PayosUrlResolver.Resolve(request.ReturnUrl, request.CancelUrl, _settings.Value);
 
             // 2. Generate a unique positive long order code for PayOS (P7 — time+random, ≤2^53−1, UNIQUE+retry).
             var orderCode = await _orderCodes.GenerateAsync(ct);
@@ -56,15 +57,13 @@ namespace Isas.PaymentService.Services
             await _db.SaveChangesAsync(ct);
 
             // 4. Create PayOS payment link
-            var cfg = _settings.Value;
-
             var paymentData = new CreatePaymentLinkRequest
             {
                 OrderCode = orderCode,
                 Amount = package.PriceVnd,
                 Description = $"DH{order.Id:N}"[..25],  // PayOS max 25 chars
-                ReturnUrl = cfg.ReturnUrl,
-                CancelUrl = cfg.CancelUrl,
+                ReturnUrl = returnUrl,
+                CancelUrl = cancelUrl,
                 ExpiredAt = new DateTimeOffset(order.ExpiredAt).ToUnixTimeSeconds(),
                 Items =
             [
@@ -137,13 +136,9 @@ namespace Isas.PaymentService.Services
         }
 
         // BF3 — cấu hình PayOS bắt buộc: PayOS reject payment-link nếu return_url/cancel_url null.
-        // Thiếu → 502 sạch (không phải 500 stack thô), fail sớm trước persist để tránh order mồ côi.
-        private static void EnsurePayosUrlsConfigured(PayOSSettings cfg)
-        {
-            if (string.IsNullOrWhiteSpace(cfg.ReturnUrl) || string.IsNullOrWhiteSpace(cfg.CancelUrl))
-                throw new PaymentGatewayException(
-                    "PayOS ReturnUrl/CancelUrl chưa cấu hình (set PayOS__ReturnUrl / PayOS__CancelUrl).");
-        }
+        // Invoice settlement không có URL request → chỉ dùng config (fallback). Thiếu → 502 sạch.
+        private static void EnsurePayosUrlsConfigured(PayOSSettings cfg) =>
+            PayosUrlResolver.Resolve(null, null, cfg);
 
         // BF3 — bọc call PayOS: ApiException (PayOS từ chối/upstream lỗi) → PaymentGatewayException
         // → controller map 502, không để SDK exception văng thành 500 stack thô.
