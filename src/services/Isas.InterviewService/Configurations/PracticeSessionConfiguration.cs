@@ -110,8 +110,12 @@ public class PracticeAnswerConfiguration : IEntityTypeConfiguration<PracticeAnsw
 
         e.Property(x => x.CreatedAt).IsRequired();
 
-        // Business rule: tối đa 1 answer mỗi câu hỏi (chống trùng khi retry upload)
-        e.HasIndex(x => new { x.SessionId, x.QuestionId }).IsUnique();
+        // DB15 — bỏ UNIQUE(session_id, question_id) THỪA: quan hệ 1-1 với câu hỏi (HasForeignKey
+        // question_id ở dưới) đã sinh UNIQUE ix_practice_answers_question_id; question_id là duy nhất
+        // toàn cục ⇒ "tối đa 1 answer/câu" đã được đảm bảo. GIỮ cột dẫn session_id bằng index NON-unique
+        // để các truy vấn EXISTS theo session_id (SessionAbandonSweeper quét mỗi 2', PracticeService
+        // kiểm ≥1 answer) không seq-scan (không có index session_id đứng riêng nào khác).
+        e.HasIndex(x => x.SessionId);
 
         // DB5 — hỗ trợ StuckAnswerRepublisher (quét mỗi 2', trước đây seq-scan cả bảng). Lọc theo
         // Status ∈ {Uploaded,Scoring} rồi so LastScoringPublishedAt (null/aged). Composite non-partial

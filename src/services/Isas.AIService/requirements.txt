@@ -16,6 +16,6 @@ opencv-python-headless
 numpy
 
 # Worker: RabbitMQ consume + S3 tải audio + HTTP callback
-aio-pika
+aio-pika==10.0.1
 boto3
 aiohttp

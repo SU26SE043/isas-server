@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
     queue_name: str = "scoring_pipeline_queue"   # TRÙNG RabbitMQ:QueueName .NET
 
+    # ── DEAD-LETTER (AI2) ────────────────────────────────────────
+    # Message bị nack(requeue=False) → broker đẩy sang DLX → DLQ thay vì XOÁ IM LẶNG.
+    # 3 tên này khai vào `arguments` của queue chính; PHẢI TRÙNG y hệt args khai ở
+    # .NET ScoringJobPublisher.cs — lệch 1 ký tự → RabbitMQ 406 PRECONDITION_FAILED
+    # khi bên còn lại redeclare cùng queue với arguments khác.
+    dlx_name: str = "scoring_pipeline_dlx"                 # dead-letter exchange (direct)
+    dead_queue_name: str = "scoring_pipeline_dead_queue"  # nơi giữ message chết
+    dead_routing_key: str = "scoring_dead"                # DLX → DLQ binding key
+
     # ── S3 / SEAWEEDFS CONFIG ────────────────────────────────────
     s3_endpoint: str = "http://localhost:8333"
     s3_access_key: str = "your-access-key"

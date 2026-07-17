@@ -97,9 +97,10 @@ public class StuckAnswerRepublisher : BackgroundService
         foreach (var a in stuck)
         {
             // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
-            // E9: nạp kèm rubric_levels (+ anchors) để message re-publish cũng mang mức neo.
+            // E9: nạp kèm rubric_levels để message re-publish cũng mang mức neo. DB15: câu mẫu
+            // (example_answers) là cột jsonb scalar trên level → nạp cùng .Include(Levels).
             var query = db.RubricCriteria.AsNoTracking()
-                .Include(c => c.Levels).ThenInclude(l => l.Anchors)
+                .Include(c => c.Levels)
                 .Where(c => c.IsActive);
             if (a.CampaignId is Guid campaignId)
             {
