@@ -35,14 +35,14 @@ Khách hiểu "lượt phỏng vấn", không hiểu token. Bài có **time limi
 
 ### Schemas (DTO)
 
-> ⚠ Enum serialize **SỐ** (int) — bản đồ số ở comment. `PackageResponse.priceVnd`/`interviewCredits` là **int** (model `int`, không phải long).
+> ⚠ Enum serialize **SỐ** (int) — bản đồ số ở comment. `PackageResponse.interviewCredits` là **int**; **`priceVnd` là `long`** (✅ DB3 2026-07-17: `product_packages.price_vnd` int→bigint chống tràn VND giá gói lớn; JSON vẫn là số).
 
 ```
 ProductPackage {                        // = PackageResponse (GET /package…)
   id:               uuid
   name:             string
   type:             enum(int)           // 1=OneTime · 2=Subscription 🔜(phase 2)
-  priceVnd:         int
+  priceVnd:         long                 // ✅ DB3: int→bigint (long)
   interviewCredits: int?
   durationDays:     int?
   isActive:         bool
