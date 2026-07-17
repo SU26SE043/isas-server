@@ -383,6 +383,7 @@ campaign_id  uuid?         B2B: tiêu chí theo campaign thay job_category · nu
 candidate_id uuid?         ✅ BC16 — B2C rubric CÁ NHÂN: null=seed mặc định dùng chung · set=rubric riêng của candidate (ref lỏng AuthService, không FK). Chỉ có nghĩa khi campaign_id IS NULL.
 version      int
                            index (job_category, version, is_active) · index (candidate_id, job_category, is_active) [BC16]
+                           CHECK ck_rubric_criteria_single_owner: campaign_id IS NULL OR candidate_id IS NULL  ✅ DB19 (2026-07-17) — cấm both-set; 3 trạng thái loại trừ (campaign-only B2B · candidate-only B2C · both-null seed)
 ```
 > **BC16 — resolve rubric B2C:** scoring chọn tiêu chí theo `(candidate_id, job_category)`: có rubric riêng active của candidate → dùng nó, **else** seed mặc định (`candidate_id IS NULL`). Dùng chung `B2CRubricScope.ResolveOwnerAsync` ở cả 4 chỗ chấm (publish · callback guard · republisher · breakdown BC9) để không lệch. Sửa rubric = **soft-versioned** (deactivate bản cũ + thêm bản mới `is_active`, KHÔNG hard-delete vì `answer_scores` FK Restrict).
 
