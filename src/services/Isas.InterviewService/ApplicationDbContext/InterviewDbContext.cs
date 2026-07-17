@@ -14,8 +14,8 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<SessionCriterionScore> SessionCriterionScores => Set<SessionCriterionScore>();  // BC9
         public DbSet<RubricCriterion> RubricCriteria => Set<RubricCriterion>();
         public DbSet<RubricLevel> RubricLevels => Set<RubricLevel>();
-        public DbSet<RubricAnchor> RubricAnchors => Set<RubricAnchor>();
-        
+        // DB15 — rubric_anchors gộp thành cột jsonb rubric_levels.example_answers (bỏ bảng/entity).
+
         public DbSet<FileRecord> FileRecords => Set<FileRecord>();
 
         public DbSet<CvAnalysis> CvAnalyses => Set<CvAnalysis>();   // BC7

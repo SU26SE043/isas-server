@@ -33,10 +33,11 @@ public static class ScoringCriteriaBuilder
             ? declared.Select(l => new ScoringLevelDto { Score = l.Score, Descriptor = l.Descriptor }).ToList()
             : DefaultBand(c.MaxScore);
 
-        // Anchor chỉ đến từ rubric_levels khai; dải mặc định không có câu mẫu.
+        // Anchor chỉ đến từ rubric_levels khai (DB15: câu mẫu nằm ở cột jsonb example_answers của mức);
+        // dải mặc định không có câu mẫu. OUTPUT giữ nguyên hợp đồng cũ: {Score, ExampleAnswer} sort theo score.
         var anchors = declared
-            .SelectMany(l => l.Anchors ?? Enumerable.Empty<RubricAnchor>(),
-                (l, a) => new ScoringAnchorDto { Score = l.Score, ExampleAnswer = a.ExampleAnswer })
+            .SelectMany(l => (l.ExampleAnswers ?? new List<string>())
+                .Select(ex => new ScoringAnchorDto { Score = l.Score, ExampleAnswer = ex }))
             .OrderBy(a => a.Score)
             .ToList();
 

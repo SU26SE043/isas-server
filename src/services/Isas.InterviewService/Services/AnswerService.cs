@@ -136,9 +136,10 @@ public class AnswerService : IAnswerService
             // Nguồn tiêu chí tùy mode (E1): B2B chấm theo tiêu chí campaign, B2C theo rubric nghề.
             // Criteria materialize của campaign cũng mang JobCategory → B2C phải lọc thêm
             // campaign_id IS NULL để không chấm nhầm bằng tiêu chí campaign cùng nghề.
-            // E9: nạp kèm rubric_levels (+ anchors) để đưa mức neo vào message chấm.
+            // E9: nạp kèm rubric_levels để đưa mức neo vào message chấm. DB15: câu mẫu (example_answers)
+            // là cột jsonb scalar trên chính level → nạp cùng .Include(Levels), không còn ThenInclude.
             var query = _db.RubricCriteria.AsNoTracking()
-                .Include(c => c.Levels).ThenInclude(l => l.Anchors)
+                .Include(c => c.Levels)
                 .Where(c => c.IsActive);
             if (session.CampaignId is Guid campaignId)
             {
