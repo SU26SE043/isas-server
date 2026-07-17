@@ -16,6 +16,10 @@ public sealed class PaymentTestDb : IDisposable
     private readonly SqliteConnection _conn;
     public PaymentDbContext Db { get; }
 
+    /// <summary>Connection dùng chung (mở suốt đời harness) — cho test cần build ServiceProvider/DbContext
+    /// riêng trên cùng DB in-memory (vd DB4 reconciler BackgroundService dùng IServiceScopeFactory).</summary>
+    public SqliteConnection Connection => _conn;
+
     public PaymentTestDb()
     {
         _conn = new SqliteConnection("DataSource=:memory:");

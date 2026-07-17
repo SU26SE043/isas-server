@@ -77,6 +77,10 @@ builder.Services.Configure<PayOSSettings>(
 builder.Services.Configure<BillingSettings>(
     builder.Configuration.GetSection("Billing"));
 
+// DB4 — cấu hình reconciler credit_accounts.reserved_credits ↔ count(reservations Reserved).
+builder.Services.Configure<ReconcileSettings>(
+    builder.Configuration.GetSection("Reconcile"));
+
 builder.Services.AddSingleton<PayOSClient>(sp =>
 {
     var settings = sp.GetRequiredService<IOptions<PayOSSettings>>().Value;
@@ -108,6 +112,9 @@ builder.Services.AddScoped<IOrderStatusService, OrderStatusService>();
 // queue payment.credit ↔ exchange interview.events (E2/E3).
 builder.Services.AddScoped<ICreditEventHandler, CreditEventHandler>();
 builder.Services.AddHostedService<InterviewEventConsumer>();
+// DB4: đối soát định kỳ credit_accounts.reserved_credits == count(reservations status=Reserved) cho
+// cùng owner → sửa drift (crash giữa reserve/consume/release, bút toán lệch). Core Payment-DB thuần.
+builder.Services.AddHostedService<CreditReservationReconciler>();
 
 var app = builder.Build();
 
