@@ -258,12 +258,12 @@ public class InvoiceServiceTests
             if (!_bumped
                 && sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
                 && sql.Contains("credit_accounts", StringComparison.OrdinalIgnoreCase)
-                && sql.Contains("PeriodUsage", StringComparison.OrdinalIgnoreCase))
+                && sql.Contains("period_usage", StringComparison.OrdinalIgnoreCase))
             {
                 _bumped = true;
                 using var bump = command.Connection!.CreateCommand();
                 bump.Transaction = command.Transaction;
-                bump.CommandText = "UPDATE \"credit_accounts\" SET \"PeriodUsage\" = \"PeriodUsage\" + 1";
+                bump.CommandText = "UPDATE \"credit_accounts\" SET \"period_usage\" = \"period_usage\" + 1";
                 await bump.ExecuteNonQueryAsync(cancellationToken);
             }
             return result;
@@ -282,6 +282,7 @@ public class InvoiceServiceTests
         var conn = (SqliteConnection)tdb.Db.Database.GetDbConnection();
         var opts = new DbContextOptionsBuilder<PaymentDbContext>()
             .UseSqlite(conn)
+            .UseSnakeCaseNamingConvention()   // DB1 — khớp schema snake_case do PaymentTestDb tạo
             .AddInterceptors(new BumpUsageBeforeResetInterceptor())
             .Options;
         using var ctx = new PaymentDbContext(opts);

@@ -6,7 +6,7 @@ namespace Isas.PaymentService.DTOs
     {
         public string Name { get; set; } = null!;
         public PackageType Type { get; set; } // "one_time" | "subscription"
-        public int PriceVnd { get; set; }
+        public long PriceVnd { get; set; }   // DB3 — bigint khớp ProductPackage.PriceVnd
         public int? InterviewCredits { get; set; } // required if Type == "one_time"
         public int? DurationDays { get; set; }     // required if Type == "subscription"
     }
@@ -14,7 +14,7 @@ namespace Isas.PaymentService.DTOs
     public class UpdatePackageRequest
     {
         public string? Name { get; set; }
-        public int? PriceVnd { get; set; }
+        public long? PriceVnd { get; set; }
         public int? InterviewCredits { get; set; }
         public int? DurationDays { get; set; }
         public bool? IsActive { get; set; }
@@ -25,7 +25,7 @@ namespace Isas.PaymentService.DTOs
         public Guid Id { get; set; }
         public string Name { get; set; } = null!;
         public PackageType Type { get; set; }
-        public int PriceVnd { get; set; }
+        public long PriceVnd { get; set; }
         public int? InterviewCredits { get; set; }
         public int? DurationDays { get; set; }
         public bool IsActive { get; set; }
