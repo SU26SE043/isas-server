@@ -156,6 +156,14 @@ namespace Isas.CampaignService.Models
                  .WithMany(x => x.Invitations)
                  .HasForeignKey(x => x.CampaignId)
                  .OnDelete(DeleteBehavior.Cascade);
+
+                // DB9: FK nội-service invitation → campaign_candidates (đường-2 từ shortlist). Optional
+                // (campaign_candidate_id nullable; đường-1 mời-thẳng = null). SetNull: xoá candidate →
+                // invitation giữ lại, chỉ mất link shortlist. Optional nav → KHÔNG cần query filter mới.
+                e.HasOne(x => x.CampaignCandidate)
+                 .WithMany()
+                 .HasForeignKey(x => x.CampaignCandidateId)
+                 .OnDelete(DeleteBehavior.SetNull);
             });
 
             // ── CampaignRanking (read-model B2B — E4/D10, event SessionScored) ─────
@@ -173,6 +181,19 @@ namespace Isas.CampaignService.Models
                 // Idempotent upsert theo session_id: event tới 2 lần vẫn 1 row.
                 e.HasIndex(x => x.SessionId).IsUnique();
                 e.HasIndex(x => new { x.CampaignId, x.TotalScore });
+
+                // DB13/DB9: required nav (CampaignId NOT NULL) tới Campaign có soft-delete filter →
+                // BẮT BUỘC khớp filter, nếu không EF phát PossibleIncorrectRequiredNavigation warning +
+                // đọc ranking mồ côi (campaign đã soft-delete). Đọc ranking join campaigns tự ẩn.
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
+
+                // DB9: FK nội-service campaign_rankings.campaign_id → campaigns.id. Restrict (bảo vệ
+                // read-model ranking; campaign vốn soft-delete nên cascade không kích hoạt). CandidateId/
+                // SessionId = ref XUYÊN service → giữ Guid lỏng (GEN-2), KHÔNG FK.
+                e.HasOne(x => x.Campaign)
+                 .WithMany()
+                 .HasForeignKey(x => x.CampaignId)
+                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── CampaignCandidate (sàng CV B2B — C13/D18) ──────────────────────
@@ -250,9 +271,22 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.SignalType).IsRequired().HasMaxLength(32);
                 e.Property(x => x.DetectedAt).HasDefaultValueSql("now()");
 
-                // Gom cờ theo buổi (surface cho HR + aggregate results). Ref lỏng — KHÔNG FK xuyên service.
+                // Gom cờ theo buổi (surface cho HR + aggregate results). SessionId/CandidateId = ref
+                // XUYÊN service → giữ Guid lỏng (GEN-2), KHÔNG FK.
                 e.HasIndex(x => x.SessionId);
                 e.HasIndex(x => new { x.CampaignId, x.SessionId });
+
+                // DB13/DB9: required nav (CampaignId NOT NULL) tới Campaign có soft-delete filter →
+                // BẮT BUỘC khớp filter, nếu không EF phát PossibleIncorrectRequiredNavigation warning +
+                // đọc cờ mồ côi (campaign đã soft-delete). Đọc cờ join campaigns tự ẩn.
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
+
+                // DB9: FK nội-service session_flags.campaign_id → campaigns.id. Restrict (bảo vệ cờ gian
+                // lận; campaign vốn soft-delete nên cascade không kích hoạt).
+                e.HasOne(x => x.Campaign)
+                 .WithMany()
+                 .HasForeignKey(x => x.CampaignId)
+                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── OutboxMessage (transactional outbox invitation-email — DB2b) ──────
