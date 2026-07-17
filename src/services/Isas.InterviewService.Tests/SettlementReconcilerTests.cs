@@ -33,7 +33,7 @@ public class SettlementReconcilerTests
         TestDb t, int graceMinutes = 2, int lookbackHours = 24)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection));
+        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
         var provider = services.BuildServiceProvider();
 
         var pub = new Mock<ISessionEventPublisher>();

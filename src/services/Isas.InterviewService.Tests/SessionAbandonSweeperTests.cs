@@ -29,7 +29,7 @@ public class SessionAbandonSweeperTests
         TestDb t, int b2cInactivityMinutes = 120)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection));
+        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
         var provider = services.BuildServiceProvider();
 
         var pub = new Mock<ISessionEventPublisher>();
@@ -193,7 +193,7 @@ public class SessionAbandonSweeperTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection));
+        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
 
         var notifier = new Mock<ISessionScoringNotifier>();
         notifier.Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
