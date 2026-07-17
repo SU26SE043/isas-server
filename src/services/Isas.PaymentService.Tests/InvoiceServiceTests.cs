@@ -84,9 +84,33 @@ public class InvoiceServiceTests
         await tdb.Db.SaveChangesAsync();
     }
 
+    // DB9 — invoices có FK (owner_type,owner_id)→credit_accounts. Đảm bảo ví Org tồn tại (idempotent:
+    // vài test seed nhiều hóa đơn cùng org → chỉ tạo 1 ví, tránh đụng UNIQUE owner). Production: hóa đơn
+    // chỉ sinh từ CloseBillingPeriodAsync khi ví đã tồn tại.
+    private static async Task EnsureOrgAccountAsync(PaymentTestDb tdb, Guid orgId)
+    {
+        if (await tdb.Db.CreditAccounts.AnyAsync(a => a.OwnerType == OwnerType.Org && a.OwnerId == orgId))
+            return;
+        tdb.Db.CreditAccounts.Add(new CreditAccount
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PaymentMode = PaymentMode.Postpaid,
+            Status = CreditAccountStatus.Active,
+            RemainingCredits = 0,
+            ReservedCredits = 0,
+            CreditLimit = 100,
+            PeriodUsage = 0,
+            UpdatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
+    }
+
     private static async Task<Invoice> SeedInvoiceAsync(
         PaymentTestDb tdb, Guid orgId, InvoiceStatus status, int count = 5, decimal unitPrice = 50_000)
     {
+        await EnsureOrgAccountAsync(tdb, orgId);
         var inv = new Invoice
         {
             Id = Guid.NewGuid(),

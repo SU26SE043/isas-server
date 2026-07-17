@@ -126,8 +126,12 @@ namespace PaymentService.Models
 
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
-                // 1 ví / (owner_type, owner_id) — §DB payment.md
-                e.HasIndex(x => new { x.OwnerType, x.OwnerId }).IsUnique();
+                // 1 ví / (owner_type, owner_id) — §DB payment.md.
+                // DB9 — ALTERNATE KEY (không chỉ UNIQUE INDEX): Postgres FK không ref được unique index,
+                // phải là UNIQUE CONSTRAINT. HasAlternateKey emit UNIQUE CONSTRAINT → làm principal key cho
+                // 3 FK nội-service (reservations/transactions/invoices → credit_accounts). Alt-key đã cho
+                // tính duy nhất nên bỏ HasIndex(...).IsUnique() cũ (tránh index+constraint trùng lặp).
+                e.HasAlternateKey(x => new { x.OwnerType, x.OwnerId });
             });
 
             // ── CreditReservation (P1 — schema only; Reserve/Consume/Release = P4/P5/P6) ─
@@ -148,6 +152,16 @@ namespace PaymentService.Models
 
                 // idempotency: 1 reservation / session (D7)
                 e.HasIndex(x => x.SessionId).IsUnique();
+
+                // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts.
+                // Không nav (CreditReservation không có prop tới account) → dạng HasOne<CreditAccount>().
+                // Restrict: owner NOT NULL không SetNull được; ví không bao giờ bị xoá.
+                // (session_id là ref XUYÊN service → Interview, giữ Guid lỏng, KHÔNG FK.)
+                e.HasOne<CreditAccount>()
+                 .WithMany()
+                 .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
+                 .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
+                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── CreditTransaction (P1 — sổ cái, refactor owner_type) ─
@@ -171,6 +185,15 @@ namespace PaymentService.Models
                  .HasForeignKey(x => x.OrderId)
                  .IsRequired(false)
                  .OnDelete(DeleteBehavior.SetNull);
+
+                // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict).
+                // Không nav; owner NOT NULL. (order_id = FK cùng-service sẵn ở trên; session_id ref XUYÊN
+                // service → Interview giữ Guid lỏng, KHÔNG FK.)
+                e.HasOne<CreditAccount>()
+                 .WithMany()
+                 .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
+                 .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
+                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── Invoice (P8b — hóa đơn postpaid, CHỈ Org) ───────────
@@ -193,6 +216,15 @@ namespace PaymentService.Models
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
 
                 e.HasIndex(x => new { x.OwnerType, x.OwnerId });
+
+                // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict).
+                // Invoice CHỈ Org — dùng owner đồng nhất (owner NOT NULL), KHÔNG dùng account_id (ref lỏng
+                // giữ nguyên cho tương thích). Không nav; ví không bao giờ bị xoá.
+                e.HasOne<CreditAccount>()
+                 .WithMany()
+                 .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
+                 .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
+                 .OnDelete(DeleteBehavior.Restrict);
             });
         }
     }

@@ -33,6 +33,21 @@ public class CreditNonNegativeCheckTests
         CreatedAt = DateTime.UtcNow
     };
 
+    // DB9 — credit_transactions có FK (owner_type,owner_id)→credit_accounts. Seed ví khớp owner của tx để
+    // test vẫn kiểm ĐÚNG check delta (không vướng FK). Production: ledger luôn gắn ví đã tồn tại.
+    private static CreditAccount AccountForOwner(CreditTransaction tx) => new()
+    {
+        Id = Guid.NewGuid(),
+        OwnerType = tx.OwnerType,
+        OwnerId = tx.OwnerId,
+        PaymentMode = PaymentMode.Prepaid,
+        Status = CreditAccountStatus.Active,
+        RemainingCredits = 0,
+        ReservedCredits = 0,
+        PeriodUsage = null,
+        UpdatedAt = DateTime.UtcNow
+    };
+
     // ── credit_accounts: remaining/reserved/period_usage ≥ 0 (period_usage NULL cho phép) ──
 
     [Fact]
@@ -91,7 +106,9 @@ public class CreditNonNegativeCheckTests
     public async Task Delta_Zero_ViPhamCheck()
     {
         using var t = new PaymentTestDb();
-        t.Db.CreditTransactions.Add(NewTransaction(delta: 0));
+        var tx = NewTransaction(delta: 0);
+        t.Db.CreditAccounts.Add(AccountForOwner(tx));  // ví tồn tại → throw đúng do check delta, không do FK
+        t.Db.CreditTransactions.Add(tx);
         await Assert.ThrowsAsync<DbUpdateException>(() => t.Db.SaveChangesAsync());
     }
 
@@ -102,6 +119,7 @@ public class CreditNonNegativeCheckTests
     {
         using var t = new PaymentTestDb();
         var tx = NewTransaction(delta);
+        t.Db.CreditAccounts.Add(AccountForOwner(tx));  // DB9 — ví khớp owner cho FK
         t.Db.CreditTransactions.Add(tx);
         await t.Db.SaveChangesAsync();   // ≠ 0 hợp lệ
 

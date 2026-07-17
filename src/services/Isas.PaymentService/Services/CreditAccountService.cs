@@ -61,6 +61,22 @@ namespace Isas.PaymentService.Services
 
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
+            // DB9 — FK composite (owner_type,owner_id)→credit_accounts CẤM chèn reservation mồ côi. Trước đây
+            // no-wallet → chèn reservation rồi ExecuteUpdate 0 row → rollback → 402 (reservation mồ côi
+            // transient); nay FK chặn NGAY lúc chèn (SaveChanges ném FK) → sẽ bị catch nhầm là race
+            // UNIQUE(session_id) rồi FirstAsync ném (không có row) → 500. Giữ NGUYÊN hành vi PAY-5
+            // (no-wallet→402, KHÔNG để lại reservation): đọc ví TRƯỚC — chưa có ví → Insufficient ngay
+            // (không chèn). Đọc account đây cũng để CHỌN nhánh bút toán (prepaid trừ remaining P4 · postpaid
+            // dồn nợ tới credit_limit P8a); guard atomic đầy đủ vẫn ở WHERE ExecuteUpdate (gồm payment_mode)
+            // → không phá chống double-spend.
+            var acc = await _db.CreditAccounts.AsNoTracking()
+                .FirstOrDefaultAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct);
+            if (acc is null)
+            {
+                await tx.RollbackAsync(ct);
+                return ReserveResult.Insufficient();
+            }
+
             // Chèn reservation TRƯỚC khi trừ số dư: UNIQUE(session_id) chặn 2 request cùng session
             // cùng trừ credit (double-spend qua race idempotency). Chỉ request thắng insert mới trừ ví.
             var reservation = new CreditReservation
@@ -87,15 +103,10 @@ namespace Isas.PaymentService.Services
                 return ReserveResult.AlreadyReserved(raced.Id, await ReservedCreditsOf(raced.OwnerType, raced.OwnerId, ct));
             }
 
-            // Đọc account chỉ để CHỌN nhánh bút toán (prepaid trừ remaining P4 · postpaid dồn nợ tới
-            // credit_limit P8a). Guard đầy đủ vẫn nằm trong WHERE của ExecuteUpdate (atomic self-consistent,
-            // gồm cả payment_mode) → đọc rời ở đây KHÔNG phá tính chống double-spend. acc=null (không có ví)
-            // rơi vào nhánh prepaid → 0 row → Insufficient (giữ hành vi no-wallet→402 của P4).
-            var acc = await _db.CreditAccounts.AsNoTracking()
-                .FirstOrDefaultAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct);
-
+            // acc đã đọc ở trên (guard no-wallet + chọn nhánh bút toán). Guard đầy đủ vẫn nằm trong WHERE
+            // của ExecuteUpdate (atomic self-consistent, gồm cả payment_mode) → không phá chống double-spend.
             int rows;
-            if (acc?.PaymentMode == PaymentMode.Postpaid)
+            if (acc.PaymentMode == PaymentMode.Postpaid)
             {
                 // BK17 — Overdue-block: ví Org còn hóa đơn Overdue (nợ kỳ trước chưa tất toán) → chặn reserve
                 // MỚI (payment.md:379/431 "không có hóa đơn Overdue"; §State machine "Overdue ⇒ chặn reserve
