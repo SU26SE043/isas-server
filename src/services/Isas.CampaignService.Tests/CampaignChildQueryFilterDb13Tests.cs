@@ -5,8 +5,8 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace Isas.CampaignService.Tests;
 
-// DB13: entity con (Question/Criterion/Invitation/Candidate) có FK required tới Campaign (đã soft-delete
-// query filter). Nếu con KHÔNG có query filter riêng → EF phát
+// DB13/DB9: entity con (Question/Criterion/Invitation/Candidate + DB9: Ranking/Flag) có FK required
+// tới Campaign (đã soft-delete query filter). Nếu con KHÔNG có query filter riêng → EF phát
 // PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning + đọc "orphan-in-view"
 // (con của campaign đã soft-delete). Test khoá: model build không còn warning + con bị lọc theo campaign.
 public class CampaignChildQueryFilterDb13Tests
@@ -101,5 +101,49 @@ public class CampaignChildQueryFilterDb13Tests
 
         using var read = tdb.NewContext();
         Assert.Single(await read.CampaignQuestions.ToListAsync());
+    }
+
+    // DB9: campaign_rankings + session_flags cũng có nav-based soft-delete filter (required nav tới
+    // Campaign, thêm ở DB9). Soft-delete campaign → cả 2 read-model của nó bị ẩn ở query thường;
+    // IgnoreQueryFilters vẫn thấy (chỉ ẩn ở view, không hard-delete).
+    [Fact]
+    public async Task Rankings_va_flags_cua_campaign_soft_deleted_bi_loc()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        tdb.Db.Campaigns.Add(camp);
+
+        var rankId = Guid.NewGuid();
+        var flagId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        tdb.Db.CampaignRankings.Add(new CampaignRanking
+        {
+            Id = rankId, CampaignId = camp.Id, CandidateId = Guid.NewGuid(),
+            SessionId = sessionId, TotalScore = 80.00m, UpdatedAt = DateTime.UtcNow
+        });
+        tdb.Db.SessionFlags.Add(new SessionFlag
+        {
+            Id = flagId, CampaignId = camp.Id, SessionId = sessionId,
+            CandidateId = Guid.NewGuid(), SignalType = "tab_switch", DetectedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
+
+        // Soft-delete campaign.
+        camp.DeletedAt = DateTime.UtcNow;
+        await tdb.Db.SaveChangesAsync();
+
+        // Query THƯỜNG → ranking + flag của campaign đã xoá đều bị ẩn (nav-based filter join campaigns).
+        using (var read = tdb.NewContext())
+        {
+            Assert.Empty(await read.CampaignRankings.ToListAsync());
+            Assert.Empty(await read.SessionFlags.ToListAsync());
+        }
+
+        // IgnoreQueryFilters → row con vẫn còn (chỉ ẩn ở view, không hard-delete).
+        using (var raw = tdb.NewContext())
+        {
+            Assert.NotNull(await raw.CampaignRankings.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == rankId));
+            Assert.NotNull(await raw.SessionFlags.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == flagId));
+        }
     }
 }

@@ -19,7 +19,12 @@ public class RankingEventHandlerTests
     public async Task SessionScored_B2B_tao_1_row_ranking_voi_diem_co_trong_so()
     {
         using var tdb = new CampaignTestDb();
-        var campaignId = Guid.NewGuid();
+        // DB9: campaign_rankings.campaign_id → campaigns.id (FK + query filter). Seed 1 campaign THẬT
+        // để ranking không bị lọc (query filter join campaigns) + FK thoả (đúng ngữ nghĩa B2B).
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        var campaignId = camp.Id;
+        tdb.Db.Campaigns.Add(camp);
+        await tdb.Db.SaveChangesAsync();
         var candidateId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
 
@@ -47,7 +52,13 @@ public class RankingEventHandlerTests
     public async Task SessionScored_cung_session_id_gui_2_lan_van_1_row()
     {
         using var tdb = new CampaignTestDb();
-        var campaignId = Guid.NewGuid();
+        // DB9: seed campaign THẬT — nếu không, query filter (join campaigns) ẩn ranking → handler
+        // upsert lần 2 không thấy row cũ → INSERT thứ 2 → vi phạm UNIQUE(session_id). Có campaign →
+        // upsert idempotent đúng.
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        var campaignId = camp.Id;
+        tdb.Db.Campaigns.Add(camp);
+        await tdb.Db.SaveChangesAsync();
         var candidateId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
 

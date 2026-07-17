@@ -17,5 +17,10 @@ namespace Isas.CampaignService.Models
         public string SignalType { get; set; } = null!;   // loại tín hiệu (whitelist ở controller)
         public string? Note { get; set; }        // chi tiết cho HR (vd "2 khuôn mặt trong khung")
         public DateTime DetectedAt { get; set; }  // thời điểm phát hiện (server nhận)
+
+        // Navigation (DB9) — FK nội-service session_flags.campaign_id → campaigns.id (Restrict).
+        // Required nav (CampaignId NOT NULL) → cần query filter khớp soft-delete Campaign (xem DbContext).
+        // Ref XUYÊN service SessionId/CandidateId → giữ Guid lỏng (GEN-2), KHÔNG FK.
+        public Campaign Campaign { get; set; } = null!;
     }
 }

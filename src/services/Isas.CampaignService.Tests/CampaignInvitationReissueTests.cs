@@ -222,7 +222,15 @@ public class CampaignInvitationReissueTests
         var owner = Guid.NewGuid();
         var camp = CampaignTestDb.NewCampaign(owner, CampaignStatus.Active);
         tdb.Db.Campaigns.Add(camp);
+        // DB9: campaign_invitations.campaign_candidate_id → campaign_candidates.id (FK). Seed candidate
+        // THẬT để invitation đường-2 (shortlist) trỏ tới row tồn tại (đúng ngữ nghĩa + thoả FK).
         var candidateRowId = Guid.NewGuid();
+        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        {
+            Id = candidateRowId, CampaignId = camp.Id, Email = "shortlist@example.com",
+            ParseStatus = CvParseStatus.Done, Status = CandidateStatus.Analyzed,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+        });
         var old = SeedInvitation(tdb.Db, camp.Id, "shortlist@example.com", campaignCandidateId: candidateRowId);
         await tdb.Db.SaveChangesAsync();
 

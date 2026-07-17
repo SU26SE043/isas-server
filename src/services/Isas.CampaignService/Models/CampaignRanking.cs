@@ -25,5 +25,10 @@ namespace Isas.CampaignService.Models
         public string? OverrideNote { get; set; }
         public Guid? OverriddenBy { get; set; }        // user sub HR thao tác
         public DateTime? OverriddenAt { get; set; }
+
+        // Navigation (DB9) — FK nội-service campaign_rankings.campaign_id → campaigns.id (Restrict).
+        // Required nav (CampaignId NOT NULL) → cần query filter khớp soft-delete Campaign (xem DbContext).
+        // Ref XUYÊN service CandidateId/SessionId → giữ Guid lỏng (GEN-2), KHÔNG FK.
+        public Campaign Campaign { get; set; } = null!;
     }
 }
