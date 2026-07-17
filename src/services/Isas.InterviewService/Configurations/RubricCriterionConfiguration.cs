@@ -12,9 +12,18 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
         // 3 trạng thái loại trừ hợp lệ: campaign-only · candidate-only · both-null (seed mặc định BC11).
         // Không đường code nào set cả 2 (RubricLibraryService=candidate-only · PracticeService=campaign-only
         // · seed=both-null) → CHECK chỉ chặn dữ liệu bẩn, không phá luồng hiện có.
-        e.ToTable("rubric_criteria", t => t.HasCheckConstraint(
-            "ck_rubric_criteria_single_owner",
-            "campaign_id IS NULL OR candidate_id IS NULL"));
+        e.ToTable("rubric_criteria", t =>
+        {
+            t.HasCheckConstraint(
+                "ck_rubric_criteria_single_owner",
+                "campaign_id IS NULL OR candidate_id IS NULL");
+
+            // DB15 — weight ∈ (0,1]: khớp code (RubricLibraryService chuẩn hoá Σweight=1 nên mỗi tiêu
+            // chí >0; seed BC11 mỗi tiêu chí ≤1). Chặn dữ liệu bẩn (weight ≤0 hoặc >1) ở tầng DB.
+            t.HasCheckConstraint(
+                "ck_rubric_criteria_weight_range",
+                "weight > 0 AND weight <= 1");
+        });
 
         e.HasKey(x => x.Id);
 
