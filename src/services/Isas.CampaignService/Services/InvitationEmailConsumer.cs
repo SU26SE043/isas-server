@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
@@ -102,7 +103,9 @@ namespace Isas.CampaignService.Services
                 {
                     using var scope = _scopeFactory.CreateScope();
                     var sender = scope.ServiceProvider.GetRequiredService<ICampaignEmailSender>();
-                    await ProcessMessageAsync(ea.Body.ToArray(), sender, stoppingToken);
+                    // DB2b — resolve DbContext để dedup (email_sent_at) + đánh dấu đã gửi TRƯỚC ack.
+                    var db = scope.ServiceProvider.GetRequiredService<Models.CampaignDbContext>();
+                    await ProcessMessageAsync(ea.Body.ToArray(), sender, db, stoppingToken);
 
                     await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                 }
@@ -126,10 +129,16 @@ namespace Isas.CampaignService.Services
         }
 
         /// <summary>
-        /// Logic 1 message: deserialize job → compose magic-link → gọi sender.
-        /// Tách ra để unit-test không cần broker/SMTP (mock <see cref="ICampaignEmailSender"/>).
+        /// Logic 1 message: deserialize job → dedup (email_sent_at) → compose magic-link → gọi sender →
+        /// đánh dấu <c>email_sent_at</c> (persist TRƯỚC ack ở caller). Tách ra để unit-test không cần
+        /// broker/SMTP (mock <see cref="ICampaignEmailSender"/>).
+        ///
+        /// DB2b — idempotent phía consumer: OutboxDispatcher at-least-once có thể redeliver → cùng
+        /// invitation gửi 2 lần. Cờ <c>email_sent_at</c> chặn gửi trùng (deliver lần 2 → bỏ, vẫn ack).
+        /// Invitation không tồn tại (đã xoá/campaign soft-delete) → cũng bỏ qua (ack, tránh nack loop).
         /// </summary>
-        public async Task ProcessMessageAsync(byte[] body, ICampaignEmailSender sender, CancellationToken ct)
+        public async Task ProcessMessageAsync(
+            byte[] body, ICampaignEmailSender sender, Models.CampaignDbContext db, CancellationToken ct)
         {
             var job = JsonSerializer.Deserialize<InvitationEmailJob>(body, JsonOptions);
             if (job is null)
@@ -140,9 +149,34 @@ namespace Isas.CampaignService.Services
                 return;
             }
 
+            var invitation = await db.CampaignInvitations
+                .FirstOrDefaultAsync(i => i.Id == job.InvitationId, ct);
+
+            if (invitation is null)
+            {
+                // Đã xoá / campaign soft-delete → không có gì để gửi. Ack bỏ qua (đừng nack loop vô hạn).
+                _logger.LogWarning(
+                    "Không tìm thấy Invitation {InvitationId} — bỏ qua (không gửi email)", job.InvitationId);
+                return;
+            }
+
+            if (invitation.EmailSentAt is not null)
+            {
+                // Redeliver (at-least-once) — email đã gửi trước đó → bỏ trùng, vẫn ack.
+                _logger.LogInformation(
+                    "Invitation {InvitationId} đã gửi email lúc {EmailSentAt} — bỏ trùng (dedup)",
+                    job.InvitationId, invitation.EmailSentAt);
+                return;
+            }
+
             var link = BuildJoinLink(job.Token);
 
             await sender.SendInvitationEmailAsync(job.Email, job.CampaignTitle, link, job.ExpiresAt, ct);
+
+            // Đánh dấu đã gửi + persist TRƯỚC BasicAckAsync (caller ack sau khi hàm này trả về) → chống
+            // gửi trùng khi redeliver. SMTP gửi 2 lần (crash giữa gửi-và-persist) hiếm & không hại như loop.
+            invitation.EmailSentAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(ct);
 
             _logger.LogInformation(
                 "Đã gửi email mời cho Invitation {InvitationId} ({Email})",

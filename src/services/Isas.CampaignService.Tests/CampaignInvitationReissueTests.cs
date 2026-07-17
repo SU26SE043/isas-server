@@ -75,8 +75,12 @@ public class CampaignInvitationReissueTests
         Assert.NotNull(fresh.SentAt);             // đã resend
         Assert.Equal("reissue@example.com", fresh.Email);
 
-        // 1 job email cho lời mời mới
-        publisher.Verify(p => p.PublishAsync(It.IsAny<InvitationEmailJob>(), It.IsAny<CancellationToken>()), Times.Once);
+        // DB2b — 1 outbox-row cho lời mời mới (ghi CÙNG transaction; KHÔNG publish trực tiếp)
+        var outbox = await check.OutboxMessages.ToListAsync();
+        Assert.Single(outbox);
+        Assert.Equal(result.Id, outbox[0].InvitationId);
+        Assert.Null(outbox[0].PublishedAt);
+        publisher.Verify(p => p.PublishAsync(It.IsAny<InvitationEmailJob>(), It.IsAny<CancellationToken>()), Times.Never);
 
         // audit ReissueInvitation
         var audit = await check.AuditLogs

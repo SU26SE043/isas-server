@@ -28,6 +28,11 @@ public sealed class CampaignTestDb : IDisposable
     {
         var options = new DbContextOptionsBuilder<CampaignDbContext>()
             .UseSqlite(_conn)
+            // DB2b — UseSnakeCaseNamingConvention() để cột SQLite mang tên snake_case, khớp partial index
+            // model-level `HasFilter("published_at IS NULL")` trên outbox_messages (raw SQL cột snake_case).
+            // Không bật → EnsureCreated sinh CREATE INDEX tham chiếu cột không tồn tại → vỡ toàn bộ test
+            // (precedent DB19 Interview với CHECK constraint). Prod đã snake_case (Program.cs).
+            .UseSnakeCaseNamingConvention()
             .Options;
         return new CampaignDbContext(options);
     }

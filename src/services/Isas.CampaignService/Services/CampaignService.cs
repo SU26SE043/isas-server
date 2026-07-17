@@ -527,19 +527,20 @@ namespace Isas.CampaignService.Services
             if (invitations.Count > 0)
             {
                 _db.CampaignInvitations.AddRange(invitations);
-                AddAudit(actorUserId, orgId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên qua email");
-                await _db.SaveChangesAsync(ct);
 
+                // DB2b — Transactional Outbox: ghi outbox-row CÙNG SaveChanges tạo invitation (thay
+                // "publish best-effort SAU commit" cũ = dual-write mất mail khi broker down giữa 2 lần
+                // SaveChanges). SentAt = "đã vào outbox" (dispatcher publish sau). Response giữ shape cũ.
                 foreach (var invitation in invitations)
                 {
-                    await _emailPublisher.PublishAsync(new InvitationEmailJob(
-                        invitation.Id, campaign.Id, invitation.Email, invitation.Token, campaign.Title, invitation.ExpiresAt), ct);
-
-                    invitation.SentAt = DateTime.UtcNow;
+                    invitation.SentAt = now;
+                    _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
+                        invitation.Id, campaign.Id, invitation.Email, invitation.Token, campaign.Title, invitation.ExpiresAt)));
                     response.Created.Add(new InvitationItem { Id = invitation.Id, Email = invitation.Email, ExpiresAt = invitation.ExpiresAt });
                 }
 
-                await _db.SaveChangesAsync(ct);   // persist SentAt sau khi đẩy queue
+                AddAudit(actorUserId, orgId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên qua email");
+                await _db.SaveChangesAsync(ct);
             }
 
             return response;
@@ -626,9 +627,8 @@ namespace Isas.CampaignService.Services
             if (toInvite.Count == 0)
                 return response;
 
-            // Tạo invitation (gắn campaign_candidate_id) + set Analyzed → Invited, rồi đẩy email queue.
+            // Tạo invitation (gắn campaign_candidate_id) + set Analyzed → Invited + outbox-row CÙNG tx.
             var now = DateTime.UtcNow;
-            var invitations = new List<(CampaignInvitation Inv, CampaignCandidate Cand)>();
             foreach (var cand in toInvite)
             {
                 var invitation = new CampaignInvitation
@@ -640,22 +640,16 @@ namespace Isas.CampaignService.Services
                     Email = cand.Email!.Trim(),      // email đã chuẩn hoá lowercase từ C13/PATCH
                     ExpiresAt = campaign.ExpiresAt,
                     CreatedAt = now,
+                    SentAt = now,                    // DB2b — "đã vào outbox" (dispatcher publish sau)
                 };
                 cand.Status = CandidateStatus.Invited;
                 cand.UpdatedAt = now;
                 _db.CampaignInvitations.Add(invitation);
-                invitations.Add((invitation, cand));
-            }
 
-            AddAudit(actorUserId, orgId, AuditAction.Invite, campaign.Id, $"Mời {invitations.Count} ứng viên từ shortlist sàng CV");
-            await _db.SaveChangesAsync(ct);
+                // DB2b — outbox-row CÙNG SaveChanges tạo invitation (không dual-write mất mail khi broker down).
+                _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
+                    invitation.Id, campaign.Id, invitation.Email, invitation.Token, campaign.Title, invitation.ExpiresAt)));
 
-            foreach (var (invitation, cand) in invitations)
-            {
-                await _emailPublisher.PublishAsync(new InvitationEmailJob(
-                    invitation.Id, campaign.Id, invitation.Email, invitation.Token, campaign.Title, invitation.ExpiresAt), ct);
-
-                invitation.SentAt = DateTime.UtcNow;
                 response.Invited.Add(new InvitedCandidateItem
                 {
                     CandidateId = cand.Id,
@@ -664,7 +658,8 @@ namespace Isas.CampaignService.Services
                 });
             }
 
-            await _db.SaveChangesAsync(ct);   // persist SentAt sau khi đẩy queue
+            AddAudit(actorUserId, orgId, AuditAction.Invite, campaign.Id, $"Mời {toInvite.Count} ứng viên từ shortlist sàng CV");
+            await _db.SaveChangesAsync(ct);
             return response;
         }
 
@@ -705,15 +700,16 @@ namespace Isas.CampaignService.Services
                 Email = old.Email,
                 ExpiresAt = campaign.ExpiresAt,
                 CreatedAt = now,
+                SentAt = now,                                    // DB2b — "đã vào outbox" (dispatcher publish sau)
             };
             _db.CampaignInvitations.Add(fresh);
-            AddAudit(actorUserId, orgId, AuditAction.ReissueInvitation, campaign.Id, $"Phát lại lời mời cho {old.Email}");
-            await _db.SaveChangesAsync(ct);
 
-            // Resend email token mới (sau khi persist, như CreateInvitationsAsync — SentAt ghi sau publish).
-            await _emailPublisher.PublishAsync(new InvitationEmailJob(
-                fresh.Id, campaign.Id, fresh.Email, fresh.Token, campaign.Title, fresh.ExpiresAt), ct);
-            fresh.SentAt = DateTime.UtcNow;
+            // DB2b — outbox-row CÙNG transaction (revoke token cũ + tạo fresh + outbox = 1 SaveChanges).
+            // Thay "resend best-effort SAU commit" cũ (mất mail khi broker down) — dispatcher publish sau.
+            _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
+                fresh.Id, campaign.Id, fresh.Email, fresh.Token, campaign.Title, fresh.ExpiresAt)));
+
+            AddAudit(actorUserId, orgId, AuditAction.ReissueInvitation, campaign.Id, $"Phát lại lời mời cho {old.Email}");
             await _db.SaveChangesAsync(ct);
 
             return new InvitationItem { Id = fresh.Id, Email = fresh.Email, ExpiresAt = fresh.ExpiresAt };

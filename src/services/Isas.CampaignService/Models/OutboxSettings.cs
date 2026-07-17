@@ -1,0 +1,17 @@
+namespace Isas.CampaignService.Models
+{
+    // DB2b — cấu hình OutboxDispatcher (BackgroundService quét outbox_messages phát invitation-email).
+    public class OutboxSettings
+    {
+        public const string SectionName = "Outbox";
+
+        // false = tắt dispatcher (an toàn: không tự publish). Mặc định bật (email thật phải được phát).
+        public bool Enabled { get; set; } = true;
+
+        // Nhịp quét (giây). Mặc định 15s (email không cần realtime nhưng cũng không nên trễ quá).
+        public int ScanIntervalSeconds { get; set; } = 15;
+
+        // Số row publish tối đa mỗi vòng (chặn ôm quá nhiều 1 lần khi tồn đọng lớn).
+        public int BatchSize { get; set; } = 100;
+    }
+}

@@ -45,8 +45,15 @@ public class CampaignInvitationTests
         // token phải duy nhất
         Assert.Equal(rows.Count, rows.Select(r => r.Token).Distinct().Count());
 
-        // mỗi invitation hợp lệ → 1 job email được đẩy queue
-        publisher.Verify(p => p.PublishAsync(It.IsAny<InvitationEmailJob>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        // DB2b — outbox: mỗi invitation hợp lệ → 1 outbox-row (ghi CÙNG transaction, KHÔNG publish trực tiếp)
+        var outbox = await check.OutboxMessages.ToListAsync();
+        Assert.Equal(2, outbox.Count);
+        Assert.All(outbox, m => Assert.Null(m.PublishedAt));   // chưa gửi (dispatcher publish sau)
+        Assert.Equal(
+            rows.Select(r => r.Id).OrderBy(x => x),
+            outbox.Select(m => m.InvitationId).OrderBy(x => x));
+        // service KHÔNG còn publish trực tiếp (dual-write) — dispatcher là đường phát duy nhất
+        publisher.Verify(p => p.PublishAsync(It.IsAny<InvitationEmailJob>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // (b) trộn email hợp lệ/hỏng → hỏng vào failed[], hợp lệ vẫn được tạo (không chặn cả batch)
