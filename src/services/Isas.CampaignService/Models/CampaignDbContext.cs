@@ -37,7 +37,11 @@ namespace Isas.CampaignService.Models
             // ── Campaign ──────────────────────────────────────────────────
             modelBuilder.Entity<Campaign>(e =>
             {
-                e.ToTable("campaigns");
+                // DB15: pass_score_pct là % điểm tổng để auto pass/fail (E5) → phải NULL (HR quyết tay)
+                // hoặc ∈ [0,100]. CHECK ở tầng DB khớp guard code ValidatePassScorePct (CampaignService.cs).
+                e.ToTable("campaigns", t => t.HasCheckConstraint(
+                    "ck_campaigns_pass_score_pct_range",
+                    "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -67,6 +71,17 @@ namespace Isas.CampaignService.Models
                 {
                     e.Property(x => x.RequiredSkills).HasColumnType("jsonb");
                     e.Property(x => x.KeywordsAny).HasColumnType("jsonb");
+
+                    // DB10: optimistic concurrency qua system column Postgres `xmin` — KHÔNG thêm DDL
+                    // (map cột hệ thống sẵn có làm concurrency token; migration generator bỏ qua xmin).
+                    // Npgsql 10 gỡ shorthand `UseXminAsConcurrencyToken()` → khai tường minh shadow
+                    // property (đúng implementation cũ của shorthand). Gated IsNpgsql (mirror jsonb):
+                    // SQLite test không có xmin → không map, không phá EnsureCreated.
+                    e.Property<uint>("xmin")
+                     .HasColumnName("xmin")
+                     .HasColumnType("xid")
+                     .ValueGeneratedOnAddOrUpdate()
+                     .IsConcurrencyToken();
                 }
 
                 // Indexes — lọc theo owner ORG (BK4)
@@ -103,7 +118,10 @@ namespace Isas.CampaignService.Models
             // ── CampaignCriterion (tiêu chí có cấu trúc — C8/D9) ─────────────
             modelBuilder.Entity<CampaignCriterion>(e =>
             {
-                e.ToTable("campaign_criteria");
+                // DB15: weight ∈ (0,1] — khớp guard code BuildStructuredCriteria (0 < weight ≤ 1).
+                e.ToTable("campaign_criteria", t => t.HasCheckConstraint(
+                    "ck_campaign_criteria_weight_range",
+                    "weight > 0 AND weight <= 1"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Name).IsRequired().HasMaxLength(255);
