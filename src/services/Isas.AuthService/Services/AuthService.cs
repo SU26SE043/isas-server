@@ -1,5 +1,6 @@
 ﻿using Isas.AuthService.DTOs;
 using Isas.AuthService.Models;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -325,21 +326,29 @@ namespace Isas.AuthService.Services
             return ToOrgResponse(org, memberCount);
         }
 
-        // AUTH-7: PlatformAdmin liệt kê MỌI org (cross-org, read-only). Cap 500, mới nhất trước; optional
-        // lọc theo Name (contains, case-insensitive). MemberCount đếm gộp 1 lần (GroupBy) tránh N+1.
-        public async Task<IReadOnlyList<OrganizationResponse>> ListAllOrganizationsAsync(
-            string? search, CancellationToken ct = default)
+        // AUTH-7: PlatformAdmin liệt kê MỌI org (cross-org, read-only). Keyset-paged (DB8): mới nhất trước
+        // theo (CreatedAt DESC, Id DESC); cursor rỗng = trang đầu; limit mặc định 500 (giữ hành vi cũ).
+        // Optional lọc theo Name (contains, case-insensitive). MemberCount đếm gộp 1 lần (GroupBy) tránh N+1.
+        public async Task<KeysetPage<OrganizationResponse>> ListAllOrganizationsAsync(
+            string? search, string? cursor, int? limit, CancellationToken ct = default)
         {
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = KeysetCursor.Decode(cursor);
+
             var query = _authDbContext.Organizations.AsNoTracking();
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var term = search.Trim();
                 query = query.Where(o => o.Name.ToLower().Contains(term.ToLower()));
             }
+            if (cur is not null)
+                query = query.Where(o => o.CreatedAt < cur.CreatedAt
+                    || (o.CreatedAt == cur.CreatedAt && o.Id.CompareTo(cur.Id) < 0));
 
             var orgs = await query
                 .OrderByDescending(o => o.CreatedAt)
-                .Take(500)
+                .ThenByDescending(o => o.Id)
+                .Take(take)
                 .ToListAsync(ct);
 
             var orgIds = orgs.Select(o => o.Id).ToList();
@@ -350,28 +359,51 @@ namespace Isas.AuthService.Services
                 .Select(g => new { OrgId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(x => x.OrgId, x => x.Count, ct);
 
-            return orgs
+            var items = orgs
                 .Select(o => ToOrgResponse(o, counts.TryGetValue(o.Id, out var c) ? c : 0))
                 .ToList();
+            var next = orgs.Count == take
+                ? new KeysetCursor(orgs[^1].CreatedAt, orgs[^1].Id).Encode()
+                : null;
+            return new KeysetPage<OrganizationResponse>(items, next);
         }
 
-        // AUTH-7: PlatformAdmin liệt kê MỌI user (cross-org, read-only). Cap 500, mới nhất trước; optional
-        // lọc email (contains, case-insensitive). Role platform lấy qua GetRolesAsync (mẫu GetUserAsync);
-        // membership org (OrgId/OrgName/OrgRole) join OrgMembers ⊕ Organizations — null nếu không thuộc org.
-        // Lọc `role` áp SAU khi resolve (role không nằm sẵn trong bảng users) → trong tập ≤500 mới nhất.
-        public async Task<IReadOnlyList<AdminUserResponse>> ListAllUsersAsync(
-            string? role, string? search, CancellationToken ct = default)
+        // AUTH-7: PlatformAdmin liệt kê MỌI user (cross-org, read-only). Keyset-paged (DB8): mới nhất trước
+        // theo (CreatedAt DESC, Id DESC); cursor rỗng = trang đầu; limit mặc định 500. Optional lọc email.
+        // Role platform hiển thị lấy qua GetRolesAsync; membership org (OrgId/OrgName/OrgRole) join OrgMembers
+        // ⊕ Organizations — null nếu không thuộc org. Lọc `role` PUSH-DOWN vào query (resolve name→id qua
+        // Identity normalizer, join UserRoles) TRƯỚC keyset+limit → phân trang đúng (cũ: lọc sau cap 500 = sai).
+        public async Task<KeysetPage<AdminUserResponse>> ListAllUsersAsync(
+            string? role, string? search, string? cursor, int? limit, CancellationToken ct = default)
         {
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = KeysetCursor.Decode(cursor);
+
+            Guid? roleId = null;
+            if (!string.IsNullOrWhiteSpace(role))
+            {
+                var roleEntity = await _roleManager.FindByNameAsync(role.Trim());
+                if (roleEntity is null)
+                    return KeysetPage<AdminUserResponse>.Empty;   // role lạ → không user nào khớp
+                roleId = roleEntity.Id;
+            }
+
             var query = _authDbContext.Users.AsNoTracking();
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var term = search.Trim();
                 query = query.Where(u => u.Email != null && u.Email.ToLower().Contains(term.ToLower()));
             }
+            if (roleId is Guid rid)
+                query = query.Where(u => _authDbContext.UserRoles.Any(ur => ur.UserId == u.Id && ur.RoleId == rid));
+            if (cur is not null)
+                query = query.Where(u => u.CreatedAt < cur.CreatedAt
+                    || (u.CreatedAt == cur.CreatedAt && u.Id.CompareTo(cur.Id) < 0));
 
             var users = await query
                 .OrderByDescending(u => u.CreatedAt)
-                .Take(500)
+                .ThenByDescending(u => u.Id)
+                .Take(take)
                 .ToListAsync(ct);
 
             var userIds = users.Select(u => u.Id).ToList();
@@ -387,9 +419,8 @@ namespace Isas.AuthService.Services
             var result = new List<AdminUserResponse>(users.Count);
             foreach (var u in users)
             {
+                // role đã lọc ở tầng query (push-down) — chỉ resolve để HIỂN THỊ (tập ≤ take, không N+1 lớn).
                 var userRole = (await _userManager.GetRolesAsync(u)).FirstOrDefault() ?? "No role";
-                if (!string.IsNullOrWhiteSpace(role) && !string.Equals(userRole, role.Trim(), StringComparison.OrdinalIgnoreCase))
-                    continue;
 
                 membershipByUser.TryGetValue(u.Id, out var m);
                 result.Add(new AdminUserResponse
@@ -405,7 +436,10 @@ namespace Isas.AuthService.Services
                 });
             }
 
-            return result;
+            var next = users.Count == take
+                ? new KeysetCursor(users[^1].CreatedAt, users[^1].Id).Encode()
+                : null;
+            return new KeysetPage<AdminUserResponse>(result, next);
         }
 
         private static OrganizationResponse ToOrgResponse(Organization org, int memberCount) => new()

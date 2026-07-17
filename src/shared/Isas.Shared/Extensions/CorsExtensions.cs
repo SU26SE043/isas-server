@@ -1,3 +1,4 @@
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,9 +16,11 @@ public static class CorsExtensions
             options.AddPolicy("GatewayOnly", policy =>
             {
                 if (string.IsNullOrEmpty(gatewayUrl))
-                    policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
+                    policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()
+                        .WithExposedHeaders(KeysetPaging.NextCursorHeader);
                 else
-                    policy.WithOrigins(gatewayUrl).AllowAnyMethod().AllowAnyHeader();
+                    policy.WithOrigins(gatewayUrl).AllowAnyMethod().AllowAnyHeader()
+                        .WithExposedHeaders(KeysetPaging.NextCursorHeader);
             });
         });
 
@@ -34,7 +37,8 @@ public static class CorsExtensions
             {
                 policy.WithOrigins(allowedOrigins)
                     .AllowAnyMethod()
-                    .AllowAnyHeader();
+                    .AllowAnyHeader()
+                    .WithExposedHeaders(KeysetPaging.NextCursorHeader);
             });
         });
 

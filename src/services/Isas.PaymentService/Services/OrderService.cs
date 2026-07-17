@@ -1,4 +1,5 @@
 ﻿using Isas.PaymentService.Models;
+using Isas.Shared.Pagination;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PaymentService.Models;
@@ -171,21 +172,35 @@ namespace Isas.PaymentService.Services
         }
 
         // AUTH-7: PlatformAdmin oversight — MỌI đơn xuyên chủ ví (KHÔNG lọc owner, khác GetOwnerOrdersAsync).
-        // Optional lọc status (numeric OrderStatus) + ownerType. Cap 500, mới nhất trước.
-        public async Task<List<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, CancellationToken ct = default)
+        // Optional lọc status (numeric OrderStatus) + ownerType. Keyset-paged (DB8): mới nhất trước
+        // theo (CreatedAt DESC, Id DESC); cursor rỗng = trang đầu; limit mặc định 500 (giữ hành vi cũ).
+        public async Task<KeysetPage<OrderResponse>> ListAllOrdersAsync(
+            OrderStatus? status, OwnerType? ownerType, string? cursor, int? limit, CancellationToken ct = default)
         {
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = KeysetCursor.Decode(cursor);
+
             var query = _db.Orders.AsQueryable();
 
             if (status is OrderStatus s)
                 query = query.Where(o => o.Status == s);
             if (ownerType is OwnerType ot)
                 query = query.Where(o => o.OwnerType == ot);
+            if (cur is not null)
+                query = query.Where(o => o.CreatedAt < cur.CreatedAt
+                    || (o.CreatedAt == cur.CreatedAt && o.Id.CompareTo(cur.Id) < 0));
 
-            return await query
+            var rows = await query
                 .OrderByDescending(o => o.CreatedAt)
-                .Take(500)
-                .Select(o => OrderResponse.ToResponse(o))
+                .ThenByDescending(o => o.Id)
+                .Take(take)
                 .ToListAsync(ct);
+
+            var items = rows.Select(OrderResponse.ToResponse).ToList();
+            var next = rows.Count == take
+                ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
+                : null;
+            return new KeysetPage<OrderResponse>(items, next);
         }
 
         public async Task CancelOrderAsync(Guid id, CancellationToken ct = default)
