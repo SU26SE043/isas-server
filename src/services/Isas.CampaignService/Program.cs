@@ -3,6 +3,7 @@ using Amazon.S3;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Isas.Shared.Extensions;
+using Isas.Shared.Files;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -39,6 +40,7 @@ builder.Services.AddOpenApi(options =>
 
 builder.Services.AddScoped<ICampaignService, CampaignService>();
 builder.Services.AddScoped<IFileService, FileService>();
+builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();   // DB17: shared PDF extractor
 builder.Services.AddScoped<IParserService, ParserService>();
 // C8: gọi AIService đề xuất tiêu chí (đồng bộ qua AiService:BaseUrl; có fallback)
 builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c =>

@@ -1,6 +1,7 @@
 using Amazon.S3;
 using Isas.InterviewService.Services;
 using Isas.Shared.Extensions;
+using Isas.Shared.Files;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -20,6 +21,7 @@ builder.Services.AddServiceCors(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHealthChecks();
 
+builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();   // DB17: shared PDF extractor
 builder.Services.AddScoped<ICVParserService, CVParserService>();
 builder.Services.AddScoped<IStorageService, StorageService>();
 builder.Services.AddScoped<IAnswerService, AnswerService>();
