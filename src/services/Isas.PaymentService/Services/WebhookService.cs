@@ -56,7 +56,9 @@ namespace Isas.PaymentService.Services
                 .Where(o => o.PayosOrderCode == payosOrderCode && o.Status == OrderStatus.Pending)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(o => o.Status, OrderStatus.Paid)
-                    .SetProperty(o => o.PaidAt, _ => DateTime.UtcNow), ct);
+                    .SetProperty(o => o.PaidAt, _ => DateTime.UtcNow)
+                    // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
+                    .SetProperty(o => o.UpdatedAt, _ => DateTime.UtcNow), ct);
 
             if (moved == 0)
             {

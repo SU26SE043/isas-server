@@ -15,6 +15,34 @@ namespace PaymentService.Models
         public DbSet<CreditTransaction> CreditTransactions => Set<CreditTransaction>();
         public DbSet<Invoice> Invoices => Set<Invoice>();
 
+        // DB14 — đóng dấu updated_at TỰ ĐỘNG cho mọi entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()
+        // parameterless của EF gọi xuống overload (bool) này nên chỉ cần override 2 overload dưới là đủ mọi
+        // đường ghi tracked. LƯU Ý: ExecuteUpdateAsync KHÔNG đi qua SaveChanges → các call set-based flip
+        // orders.status / credit_reservations.status tự thêm .SetProperty(UpdatedAt) (xem WebhookService,
+        // OrderStatusService, CreditAccountService — giống credit_accounts đã làm).
+        public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        {
+            StampUpdatedAt();
+            return base.SaveChanges(acceptAllChangesOnSuccess);
+        }
+
+        public override Task<int> SaveChangesAsync(
+            bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+        {
+            StampUpdatedAt();
+            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        }
+
+        private void StampUpdatedAt()
+        {
+            var now = DateTime.UtcNow;
+            foreach (var entry in ChangeTracker.Entries<IHasUpdatedAt>())
+            {
+                if (entry.State == EntityState.Modified)
+                    entry.Entity.UpdatedAt = now;
+            }
+        }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             // ── ProductPackage ────────────────────────────────────
@@ -23,10 +51,16 @@ namespace PaymentService.Models
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Name).IsRequired();
-                e.Property(x => x.Type).IsRequired();
+                // DB14 — enum lưu STRING (GEN-2), khớp mọi enum khác. Trước đây thiếu HasConversion →
+                // persist thành int. varchar(20) đủ chứa "OneTime"/"Subscription". Migration ALTER int→string
+                // phải hand-write USING (không auto-convert dữ liệu int cũ) — xem AddAuditColumnsAndTypes.
+                e.Property(x => x.Type).HasConversion<string>().HasMaxLength(20).IsRequired();
                 e.Property(x => x.PriceVnd).IsRequired();
                 e.Property(x => x.IsActive).HasDefaultValue(true);
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                // DB14 — audit updated_at (mirror created_at style: default now() ở DB; C# init ở entity để
+                // insert SQLite/EnsureCreated không phụ thuộc now()). Stamp tự động khi Modified (SaveChanges).
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
             });
 
             // ── Order ─────────────────────────────────────────────
@@ -38,7 +72,10 @@ namespace PaymentService.Models
                 // OrderStatus không có conversion → EF ném InvalidOperationException lúc build model
                 // (chặn luôn DbContext, kể cả 3 bảng credit mới cùng context). Fix tối thiểu: thêm
                 // HasConversion<string> (đúng luôn GEN-2 enum-lưu-string) — KHÔNG đổi field/behavior Order.
-                e.Property(x => x.Status).HasConversion<string>().HasDefaultValue(OrderStatus.Pending);
+                // DB14 — HasMaxLength(20): status trước là text (không maxlen) → varchar(20). Enum name dài
+                // nhất "Cancelled" (9) → 20 dư. Giữ nguyên HasConversion<string> + default Pending.
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20)
+                 .HasDefaultValue(OrderStatus.Pending);
                 // P2 — owner model (D15): owner_type/kind lưu string (GEN-2), owner_id ref lỏng → Auth.
                 e.Property(x => x.OwnerType).HasConversion<string>().HasMaxLength(8).IsRequired();
                 e.Property(x => x.OwnerId).IsRequired();
@@ -47,6 +84,9 @@ namespace PaymentService.Models
                 e.Property(x => x.AmountVnd).IsRequired();
                 e.HasIndex(x => x.PayosOrderCode).IsUnique();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                // DB14 — audit updated_at (stamp khi Modified: Cancel/Paid webhook flip status). ExecuteUpdate
+                // flip status tự thêm .SetProperty(UpdatedAt) (WebhookService); tracked Cancel qua SaveChanges.
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
                 // P8b — package optional: đơn InvoiceSettlement không gắn package (gắn invoice_id).
                 e.HasOne(x => x.Package)
@@ -149,6 +189,9 @@ namespace PaymentService.Models
                  .HasDefaultValue(ReservationStatus.Reserved);
 
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                // DB14 — audit updated_at (stamp khi status flip Reserved→Consumed/Released). 2 flip đó dùng
+                // ExecuteUpdate (CreditAccountService) nên tự thêm .SetProperty(UpdatedAt) tại đó.
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
                 // idempotency: 1 reservation / session (D7)
                 e.HasIndex(x => x.SessionId).IsUnique();

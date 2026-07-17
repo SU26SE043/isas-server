@@ -122,11 +122,11 @@ public class RankingEventHandlerTests
         var campaignId = camp.Id;
         tdb.Db.Campaigns.Add(camp);
 
-        // membership đã start (InProgress, gắn session_id)
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        // membership đã start (InProgress, gắn session_id) — DB16: bảng campaign_membership
+        tdb.Db.CampaignMemberships.Add(new CampaignMembership
         {
             Id = Guid.NewGuid(), CampaignId = campaignId, CandidateId = candidateId,
-            Email = "cand@acme.test", ParseStatus = CvParseStatus.Pending, Status = CandidateStatus.Joined,
+            Status = MembershipStatus.Joined,
             JoinedAt = DateTime.UtcNow, SessionId = sessionId,
             InterviewStatus = InterviewProgressStatus.InProgress,
             CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
@@ -144,7 +144,7 @@ public class RankingEventHandlerTests
 
         using var check = tdb.NewContext();
         Assert.Single(await check.CampaignRankings.Where(r => r.SessionId == sessionId).ToListAsync());
-        var membership = await check.CampaignCandidates.SingleAsync(c => c.SessionId == sessionId);
+        var membership = await check.CampaignMemberships.SingleAsync(m => m.SessionId == sessionId);
         Assert.Equal(InterviewProgressStatus.Completed, membership.InterviewStatus);
     }
 }

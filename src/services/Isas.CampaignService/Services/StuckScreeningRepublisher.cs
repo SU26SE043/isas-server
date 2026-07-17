@@ -76,12 +76,12 @@ namespace Isas.CampaignService.Services
             // Ứng viên cần (re)publish (Campaign nav có query filter DeletedAt==null → bỏ campaign đã xoá):
             //  - publish hụt: Filtered, chưa publish (null), tạo đã quá grace; HOẶC
             //  - kẹt thật: Analyzing, đã publish nhưng quá lâu (< cutoff).
-            var stuck = await db.CampaignCandidates
+            var stuck = await db.CvSubmissions
                 .Where(c =>
-                    (c.Status == CandidateStatus.Filtered
+                    (c.Status == CvSubmissionStatus.Filtered
                         && c.LastScreeningPublishedAt == null
                         && c.CreatedAt < publishGrace)
-                    || (c.Status == CandidateStatus.Analyzing
+                    || (c.Status == CvSubmissionStatus.Analyzing
                         && c.LastScreeningPublishedAt != null
                         && c.LastScreeningPublishedAt < analyzingCutoff))
                 .Select(c => new
@@ -134,10 +134,10 @@ namespace Isas.CampaignService.Services
 
                     // Đẩy lại OK → Analyzing + dời mốc publish sang now, để vòng sau không nhặt lại
                     // trong AnalyzingLostThreshold. ExecuteUpdate vì đang dùng projection (không track entity).
-                    await db.CampaignCandidates
+                    await db.CvSubmissions
                         .Where(x => x.Id == c.Id)
                         .ExecuteUpdateAsync(s => s
-                            .SetProperty(x => x.Status, CandidateStatus.Analyzing)
+                            .SetProperty(x => x.Status, CvSubmissionStatus.Analyzing)
                             .SetProperty(x => x.LastScreeningPublishedAt, now)
                             .SetProperty(x => x.UpdatedAt, now), ct);
 

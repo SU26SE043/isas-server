@@ -1,6 +1,6 @@
 ﻿namespace PaymentService.Models
 {
-    public class Order
+    public class Order : IHasUpdatedAt
     {
         public Guid Id { get; set; }
         // P2 (D15) — chủ ví theo owner model (Org B2B / User B2C), thay cho user_id cũ. Ref lỏng → Auth
@@ -20,6 +20,9 @@
         public DateTime ExpiredAt { get; set; }
         public DateTime? PaidAt { get; set; }
         public DateTime CreatedAt { get; set; }
+        // DB14 — audit: đóng dấu mỗi lần order bị sửa (status flip Cancel/Paid). C# init để insert không phụ
+        // thuộc DB default now() (SQLite/EnsureCreated không có now()); DB default now() vẫn có ở Postgres.
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
         public ProductPackage? Package { get; set; }
         // P8b — hóa đơn được tất toán bởi đơn này (kind=InvoiceSettlement). 1 Invoice ── N Order.
         public Invoice? Invoice { get; set; }

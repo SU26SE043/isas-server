@@ -8,6 +8,10 @@ namespace Isas.CampaignService.Services
     /// D2 — orchestrator luồng ứng viên: xem lời mời → tham gia (join) → membership → my-campaigns →
     /// bắt đầu phỏng vấn. Provision Candidate qua Auth (INT-13/D8), tạo session qua Interview (I1).
     /// KHÔNG FK xuyên service (candidateId/sessionId = Guid lỏng).
+    ///
+    /// DB16 — membership sống ở bảng riêng <see cref="CampaignMembership"/> (tách khỏi bảng God
+    /// cũ <c>campaign_candidates</c> = nay <see cref="CvSubmission"/>). "Đã join" = tồn tại row
+    /// membership; SessionId/InterviewStatus/ReferenceImageKey đọc/ghi TRÊN membership.
     /// </summary>
     public class ParticipationService : IParticipationService
     {
@@ -69,26 +73,26 @@ namespace Isas.CampaignService.Services
             var membership = await ResolveMembershipAsync(inv, candidateId, ct);
             if (membership is null)
             {
-                membership = new CampaignCandidate
+                membership = new CampaignMembership
                 {
                     Id = Guid.NewGuid(),
                     CampaignId = inv.CampaignId,
                     CandidateId = candidateId,
-                    Email = inv.Email,
-                    ParseStatus = CvParseStatus.Pending,   // đường 1 (email) — không có CV
-                    Status = CandidateStatus.Joined,
+                    // Đường 2 (shortlist) — link về CV đã sàng; đường 1 (mời-thẳng email) = null.
+                    CvSubmissionId = inv.CampaignCandidateId,
+                    Status = MembershipStatus.Joined,
                     JoinedAt = now,
                     CreatedAt = now,
                     UpdatedAt = now
                 };
-                _db.CampaignCandidates.Add(membership);
+                _db.CampaignMemberships.Add(membership);
             }
             else
             {
                 // Idempotent: gắn candidate + đánh Joined (không hạ cấp / không tạo row thứ 2).
                 membership.CandidateId = candidateId;
-                if (membership.Status != CandidateStatus.Joined)
-                    membership.Status = CandidateStatus.Joined;
+                if (membership.Status != MembershipStatus.Joined)
+                    membership.Status = MembershipStatus.Joined;
                 membership.JoinedAt ??= now;
                 membership.UpdatedAt = now;
             }
@@ -104,30 +108,30 @@ namespace Isas.CampaignService.Services
                 AccessToken = provisioned.AccessToken,
                 CampaignId = inv.CampaignId,
                 CandidateId = candidateId,
-                MembershipStatus = CandidateStatus.Joined.ToString()
+                MembershipStatus = membership.Status.ToString()
             };
         }
 
         // ── GET /my-campaigns ────────────────────────────────────────────────────────
         public async Task<List<MyCampaignItem>> GetMyCampaignsAsync(Guid candidateId, CancellationToken ct = default)
         {
-            var rows = await _db.CampaignCandidates
+            var rows = await _db.CampaignMemberships
                 .AsNoTracking()
-                .Include(c => c.Campaign)
-                .Where(c => c.CandidateId == candidateId)
-                .OrderByDescending(c => c.JoinedAt)
+                .Include(m => m.Campaign)
+                .Where(m => m.CandidateId == candidateId)
+                .OrderByDescending(m => m.JoinedAt)
                 .ToListAsync(ct);
 
             // Campaign soft-delete (query filter) → nav null → bỏ (không hiện campaign đã xoá).
-            return rows.Where(c => c.Campaign is not null).Select(c => new MyCampaignItem
+            return rows.Where(m => m.Campaign is not null).Select(m => new MyCampaignItem
             {
-                CampaignId = c.CampaignId,
-                Title = c.Campaign.Title,
+                CampaignId = m.CampaignId,
+                Title = m.Campaign.Title,
                 Company = null,
-                JobTitle = c.Campaign.Domain,
-                Deadline = c.Campaign.ExpiresAt,
-                MembershipStatus = c.Status.ToString(),
-                InterviewStatus = (c.InterviewStatus ?? InterviewProgressStatus.NotStarted).ToString()
+                JobTitle = m.Campaign.Domain,
+                Deadline = m.Campaign.ExpiresAt,
+                MembershipStatus = m.Status.ToString(),
+                InterviewStatus = (m.InterviewStatus ?? InterviewProgressStatus.NotStarted).ToString()
             }).ToList();
         }
 
@@ -135,10 +139,10 @@ namespace Isas.CampaignService.Services
         public async Task<CandidateCampaignDetailResponse> GetCandidateCampaignAsync(
             Guid candidateId, Guid campaignId, CancellationToken ct = default)
         {
-            var membership = await _db.CampaignCandidates
+            var membership = await _db.CampaignMemberships
                 .AsNoTracking()
-                .Include(c => c.Campaign).ThenInclude(c => c.Criteria)
-                .FirstOrDefaultAsync(c => c.CampaignId == campaignId && c.CandidateId == candidateId, ct);
+                .Include(m => m.Campaign).ThenInclude(c => c.Criteria)
+                .FirstOrDefaultAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId, ct);
 
             if (membership is null || membership.Campaign is null)
                 throw new KeyNotFoundException("Bạn không phải thành viên của chiến dịch này.");
@@ -164,10 +168,10 @@ namespace Isas.CampaignService.Services
         public async Task<StartInterviewResponse> StartInterviewAsync(
             Guid candidateId, Guid campaignId, CancellationToken ct = default)
         {
-            var membership = await _db.CampaignCandidates
-                .Include(c => c.Campaign).ThenInclude(c => c.Questions)
-                .Include(c => c.Campaign).ThenInclude(c => c.Criteria)
-                .FirstOrDefaultAsync(c => c.CampaignId == campaignId && c.CandidateId == candidateId, ct);
+            var membership = await _db.CampaignMemberships
+                .Include(m => m.Campaign).ThenInclude(c => c.Questions)
+                .Include(m => m.Campaign).ThenInclude(c => c.Criteria)
+                .FirstOrDefaultAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId, ct);
 
             // Chưa join (không có membership gắn candidate) → 403 (UnauthorizedAccessException).
             if (membership is null || membership.Campaign is null)
@@ -239,29 +243,26 @@ namespace Isas.CampaignService.Services
 
         // ── helpers ──────────────────────────────────────────────────────────────────
 
-        // Tìm membership để cập nhật khi join. Đường 2 (CV shortlist): dùng campaign_candidate_id gắn sẵn.
-        // Đường 1 (email) hoặc fallback: dedup theo (campaign, candidate) rồi (campaign, email) — chống tạo trùng
-        // & chống đụng UNIQUE(campaign_id, email).
-        private async Task<CampaignCandidate?> ResolveMembershipAsync(
+        // Tìm membership để cập nhật khi join (D2 idempotent). DB16: dedup theo (campaign, candidate) —
+        // membership KHÔNG có email nên bỏ nhánh email cũ. Đường 2 (shortlist): fallback theo cv_submission_id
+        // (link shortlist gắn sẵn trên lời mời) khi candidate chưa từng join.
+        private async Task<CampaignMembership?> ResolveMembershipAsync(
             CampaignInvitation inv, Guid candidateId, CancellationToken ct)
         {
-            if (inv.CampaignCandidateId is Guid ccid)
-            {
-                var linked = await _db.CampaignCandidates
-                    .FirstOrDefaultAsync(c => c.Id == ccid && c.CampaignId == inv.CampaignId, ct);
-                if (linked is not null)
-                    return linked;
-            }
-
-            var byCandidate = await _db.CampaignCandidates
-                .FirstOrDefaultAsync(c => c.CampaignId == inv.CampaignId && c.CandidateId == candidateId, ct);
+            var byCandidate = await _db.CampaignMemberships
+                .FirstOrDefaultAsync(m => m.CampaignId == inv.CampaignId && m.CandidateId == candidateId, ct);
             if (byCandidate is not null)
                 return byCandidate;
 
-            var email = inv.Email.ToLower();
-            return await _db.CampaignCandidates
-                .FirstOrDefaultAsync(c => c.CampaignId == inv.CampaignId
-                    && c.Email != null && c.Email.ToLower() == email, ct);
+            if (inv.CampaignCandidateId is Guid ccid)
+            {
+                var byCv = await _db.CampaignMemberships
+                    .FirstOrDefaultAsync(m => m.CampaignId == inv.CampaignId && m.CvSubmissionId == ccid, ct);
+                if (byCv is not null)
+                    return byCv;
+            }
+
+            return null;
         }
 
         // Lời mời còn dùng được: chưa revoke, chưa hết hạn, campaign còn Active. Ngược lại → 410 Gone.

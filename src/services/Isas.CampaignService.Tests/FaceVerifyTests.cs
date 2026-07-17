@@ -69,14 +69,15 @@ public class FaceVerifyTests
     private static void SeedMember(
         CampaignDbContext db, Guid campaignId, Guid candidateId, string? referenceImageKey = null)
     {
-        db.CampaignCandidates.Add(new CampaignCandidate
+        // DB16 — membership (+ ReferenceImageKey) sống ở campaign_membership.
+        db.CampaignMemberships.Add(new CampaignMembership
         {
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
             CandidateId = candidateId,
             ReferenceImageKey = referenceImageKey,
-            ParseStatus = CvParseStatus.Done,
-            Status = CandidateStatus.Joined,
+            Status = MembershipStatus.Joined,
+            JoinedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         });
@@ -225,7 +226,7 @@ public class FaceVerifyTests
         file.Verify(x => x.UploadAsync(It.IsAny<IFormFile>(), expectedKey, It.IsAny<CancellationToken>()), Times.Once);
 
         using var check = tdb.NewContext();
-        var membership = Assert.Single(check.CampaignCandidates.Where(c => c.CampaignId == campaign.Id));
+        var membership = Assert.Single(check.CampaignMemberships.Where(m => m.CampaignId == campaign.Id));
         Assert.Equal(expectedKey, membership.ReferenceImageKey);
     }
 
@@ -270,7 +271,7 @@ public class FaceVerifyTests
         var candidateId = Guid.NewGuid();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
         camp.FaceVerifyEnabled = true;
-        tdb.Db.CampaignCandidates.Add(JoinedMembership(camp.Id, candidateId, referenceImageKey: null));
+        tdb.Db.CampaignMemberships.Add(JoinedMembership(camp.Id, candidateId, referenceImageKey: null));
         await tdb.Db.SaveChangesAsync();
 
         var res = await NewParticipation(tdb.NewContext()).StartInterviewAsync(candidateId, camp.Id, default);
@@ -286,7 +287,7 @@ public class FaceVerifyTests
         var candidateId = Guid.NewGuid();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
         camp.FaceVerifyEnabled = true;
-        tdb.Db.CampaignCandidates.Add(
+        tdb.Db.CampaignMemberships.Add(
             JoinedMembership(camp.Id, candidateId, referenceImageKey: "campaigns/ref.jpg"));
         await tdb.Db.SaveChangesAsync();
 
@@ -302,7 +303,7 @@ public class FaceVerifyTests
         using var tdb = new CampaignTestDb();
         var candidateId = Guid.NewGuid();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);   // FaceVerifyEnabled default false
-        tdb.Db.CampaignCandidates.Add(JoinedMembership(camp.Id, candidateId, referenceImageKey: null));
+        tdb.Db.CampaignMemberships.Add(JoinedMembership(camp.Id, candidateId, referenceImageKey: null));
         await tdb.Db.SaveChangesAsync();
 
         var res = await NewParticipation(tdb.NewContext()).StartInterviewAsync(candidateId, camp.Id, default);
@@ -346,16 +347,14 @@ public class FaceVerifyTests
         return camp;
     }
 
-    private static CampaignCandidate JoinedMembership(Guid campaignId, Guid candidateId, string? referenceImageKey)
+    private static CampaignMembership JoinedMembership(Guid campaignId, Guid candidateId, string? referenceImageKey)
         => new()
         {
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
             CandidateId = candidateId,
-            Email = "me@acme.test",
             ReferenceImageKey = referenceImageKey,
-            ParseStatus = CvParseStatus.Pending,
-            Status = CandidateStatus.Joined,
+            Status = MembershipStatus.Joined,
             JoinedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow

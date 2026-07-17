@@ -41,7 +41,8 @@ public class CampaignChildQueryFilterDb13Tests
         var qId = Guid.NewGuid();
         var crId = Guid.NewGuid();
         var invId = Guid.NewGuid();
-        var candId = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var memId = Guid.NewGuid();
         tdb.Db.CampaignQuestions.Add(new CampaignQuestion
         {
             Id = qId, CampaignId = camp.Id, QuestionText = "Q1", CreatedAt = DateTime.UtcNow
@@ -56,9 +57,16 @@ public class CampaignChildQueryFilterDb13Tests
             Id = invId, CampaignId = camp.Id, Token = "tok-1", Email = "a@b.co",
             CreatedAt = DateTime.UtcNow
         });
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        // DB16 — cả cv_submission và campaign_membership đều required-nav Campaign (soft-delete filter).
+        tdb.Db.CvSubmissions.Add(new CvSubmission
         {
-            Id = candId, CampaignId = camp.Id, Email = "c@b.co",
+            Id = cvId, CampaignId = camp.Id, Email = "c@b.co",
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+        });
+        tdb.Db.CampaignMemberships.Add(new CampaignMembership
+        {
+            Id = memId, CampaignId = camp.Id, CandidateId = Guid.NewGuid(), CvSubmissionId = cvId,
+            Status = MembershipStatus.Joined, JoinedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
         });
         await tdb.Db.SaveChangesAsync();
@@ -73,7 +81,8 @@ public class CampaignChildQueryFilterDb13Tests
             Assert.Empty(await read.CampaignQuestions.ToListAsync());
             Assert.Empty(await read.CampaignCriteria.ToListAsync());
             Assert.Empty(await read.CampaignInvitations.ToListAsync());
-            Assert.Empty(await read.CampaignCandidates.ToListAsync());
+            Assert.Empty(await read.CvSubmissions.ToListAsync());
+            Assert.Empty(await read.CampaignMemberships.ToListAsync());
         }
 
         // IgnoreQueryFilters → row con vẫn còn (chỉ ẩn ở view, không hard-delete).
@@ -82,7 +91,8 @@ public class CampaignChildQueryFilterDb13Tests
             Assert.NotNull(await raw.CampaignQuestions.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == qId));
             Assert.NotNull(await raw.CampaignCriteria.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == crId));
             Assert.NotNull(await raw.CampaignInvitations.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == invId));
-            Assert.NotNull(await raw.CampaignCandidates.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == candId));
+            Assert.NotNull(await raw.CvSubmissions.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == cvId));
+            Assert.NotNull(await raw.CampaignMemberships.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == memId));
         }
     }
 

@@ -72,17 +72,17 @@ namespace Isas.CampaignService.Services
             await _db.SaveChangesAsync(ct);
         }
 
-        // D2: session Scored → membership (campaign_candidates) interview_status = Completed. Match theo
+        // D2/DB16: session Scored → membership (campaign_membership) interview_status = Completed. Match theo
         // session_id (chắc chắn đúng membership) rồi fallback (campaign, candidate). Idempotent (đã Completed
         // → no-op). Không có membership (luồng không qua D2) → no-op, KHÔNG phá ranking.
         private async Task MarkMembershipCompletedAsync(SessionScoredMessage evt, CancellationToken ct)
         {
-            var membership = await _db.CampaignCandidates
-                .FirstOrDefaultAsync(c => c.SessionId == evt.SessionId, ct);
+            var membership = await _db.CampaignMemberships
+                .FirstOrDefaultAsync(m => m.SessionId == evt.SessionId, ct);
 
             if (membership is null && evt.CampaignId is Guid campId)
-                membership = await _db.CampaignCandidates
-                    .FirstOrDefaultAsync(c => c.CampaignId == campId && c.CandidateId == evt.CandidateId, ct);
+                membership = await _db.CampaignMemberships
+                    .FirstOrDefaultAsync(m => m.CampaignId == campId && m.CandidateId == evt.CandidateId, ct);
 
             if (membership is null || membership.InterviewStatus == InterviewProgressStatus.Completed)
                 return;

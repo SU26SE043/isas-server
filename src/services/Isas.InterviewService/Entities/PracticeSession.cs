@@ -2,7 +2,7 @@ using Isas.InterviewService.Enums;
 
 namespace Isas.InterviewService.Entities;
 
-public class PracticeSession
+public class PracticeSession : IHasUpdatedAt
 {
     public Guid Id { get; set; } = Guid.NewGuid();
  
@@ -22,6 +22,12 @@ public class PracticeSession
  
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
+
+    // DB14 — audit: đóng dấu mỗi lần session bị sửa (status flip, chấm xong, abandon...). C# init giống
+    // CreatedAt (Interview CreatedAt do C# gán, không dùng DB now()) để insert SQLite/EnsureCreated chạy;
+    // config cũng đặt default now() ở DB. Stamp tự động khi Modified (SaveChanges override); flip qua
+    // ExecuteUpdate (SessionAbandonSweeper, SessionScoringNotifier) tự .SetProperty(UpdatedAt).
+    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     // I2 (D21) — hạn chót NHẬN BÀI của cả buổi (KHÔNG phải giới hạn tổng thời gian làm bài):
     // B2B = campaigns.expires_at (Campaign gửi kèm lúc tạo session); B2C = null (không hard-deadline,

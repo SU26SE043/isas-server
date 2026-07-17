@@ -225,10 +225,10 @@ public class CampaignInvitationReissueTests
         // DB9: campaign_invitations.campaign_candidate_id → campaign_candidates.id (FK). Seed candidate
         // THẬT để invitation đường-2 (shortlist) trỏ tới row tồn tại (đúng ngữ nghĩa + thoả FK).
         var candidateRowId = Guid.NewGuid();
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        tdb.Db.CvSubmissions.Add(new CvSubmission
         {
             Id = candidateRowId, CampaignId = camp.Id, Email = "shortlist@example.com",
-            ParseStatus = CvParseStatus.Done, Status = CandidateStatus.Analyzed,
+            ParseStatus = CvParseStatus.Done, Status = CvSubmissionStatus.Analyzed,
             CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
         });
         var old = SeedInvitation(tdb.Db, camp.Id, "shortlist@example.com", campaignCandidateId: candidateRowId);

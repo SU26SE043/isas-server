@@ -5,7 +5,7 @@ namespace PaymentService.Models
     /// việc ghi/chuyển trạng thái (Reserved/Consumed/Released) là P4/P5/P6.
     /// UNIQUE(session_id) = idempotency key — 1 reservation / session.
     /// </summary>
-    public class CreditReservation
+    public class CreditReservation : IHasUpdatedAt
     {
         public Guid Id { get; set; }
         public OwnerType OwnerType { get; set; }
@@ -13,6 +13,9 @@ namespace PaymentService.Models
         public Guid SessionId { get; set; }
         public ReservationStatus Status { get; set; } = ReservationStatus.Reserved;
         public DateTime CreatedAt { get; set; }
+        // DB14 — audit: đóng dấu khi status flip Reserved→Consumed/Released. Cả 2 flip dùng ExecuteUpdate
+        // (CreditAccountService.Consume/Release) → tự thêm .SetProperty(UpdatedAt) ở đó. C# init cho insert.
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     }
 
     public enum ReservationStatus

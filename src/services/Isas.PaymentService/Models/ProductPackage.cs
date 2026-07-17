@@ -1,6 +1,6 @@
 ﻿namespace PaymentService.Models
 {
-    public class ProductPackage
+    public class ProductPackage : IHasUpdatedAt
     {
         public Guid Id { get; set; }
         public string Name { get; set; } = null!;
@@ -10,6 +10,9 @@
         public int? DurationDays { get; set; }
         public bool IsActive { get; set; }
         public DateTime CreatedAt { get; set; }
+        // DB14 — audit: đóng dấu mỗi lần package bị sửa (Update/soft-delete IsActive qua PackageService,
+        // tracked → SaveChanges override stamp). C# init để insert SQLite không phụ thuộc DB now().
+        public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
         public ICollection<Order> Orders { get; set; } = [];
         public ICollection<Subscription> Subscriptions { get; set; } = [];
