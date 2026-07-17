@@ -35,11 +35,11 @@ public class CampaignInviteShortlistTests
         return camp;
     }
 
-    private static CampaignCandidate SeedCandidate(
-        CampaignTestDb tdb, Guid campaignId, CandidateStatus status, string? email)
+    private static CvSubmission SeedCandidate(
+        CampaignTestDb tdb, Guid campaignId, CvSubmissionStatus status, string? email)
     {
         var now = DateTime.UtcNow;
-        var cand = new CampaignCandidate
+        var cand = new CvSubmission
         {
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
@@ -51,7 +51,7 @@ public class CampaignInviteShortlistTests
             CreatedAt = now,
             UpdatedAt = now
         };
-        tdb.Db.CampaignCandidates.Add(cand);
+        tdb.Db.CvSubmissions.Add(cand);
         tdb.Db.SaveChanges();
         return cand;
     }
@@ -63,8 +63,8 @@ public class CampaignInviteShortlistTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var c1 = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "a@x.com");
-        var c2 = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "b@x.com");
+        var c1 = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "a@x.com");
+        var c2 = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "b@x.com");
 
         var publisher = new Mock<IInvitationEmailPublisher>();
         var svc = NewService(tdb.NewContext(), publisher.Object);
@@ -93,8 +93,8 @@ public class CampaignInviteShortlistTests
         Assert.Contains(invitations, i => i.CampaignCandidateId == c1.Id);
         Assert.Contains(invitations, i => i.CampaignCandidateId == c2.Id);
 
-        var cands = await check.CampaignCandidates.Where(c => c.CampaignId == camp.Id).ToListAsync();
-        Assert.All(cands, c => Assert.Equal(CandidateStatus.Invited, c.Status));
+        var cands = await check.CvSubmissions.Where(c => c.CampaignId == camp.Id).ToListAsync();
+        Assert.All(cands, c => Assert.Equal(CvSubmissionStatus.Invited, c.Status));
         Assert.True(await check.AuditLogs.AnyAsync(a => a.Action == AuditAction.Invite && a.EntityId == camp.Id));
     }
 
@@ -105,8 +105,8 @@ public class CampaignInviteShortlistTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var withEmail = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "a@x.com");
-        var noEmail = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, null);
+        var withEmail = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "a@x.com");
+        var noEmail = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, null);
 
         var svc = NewService(tdb.NewContext());
         var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { withEmail.Id, noEmail.Id }, default);
@@ -118,7 +118,7 @@ public class CampaignInviteShortlistTests
         Assert.Contains("email", result.Failed[0].Reason, StringComparison.OrdinalIgnoreCase);
 
         using var check = tdb.NewContext();
-        Assert.Equal(CandidateStatus.Analyzed, (await check.CampaignCandidates.FindAsync(noEmail.Id))!.Status);
+        Assert.Equal(CvSubmissionStatus.Analyzed, (await check.CvSubmissions.FindAsync(noEmail.Id))!.Status);
         Assert.Single(await check.CampaignInvitations.Where(i => i.CampaignId == camp.Id).ToListAsync());
     }
 
@@ -129,7 +129,7 @@ public class CampaignInviteShortlistTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var invited = SeedCandidate(tdb, camp.Id, CandidateStatus.Invited, "a@x.com");
+        var invited = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Invited, "a@x.com");
 
         var publisher = new Mock<IInvitationEmailPublisher>();
         var svc = NewService(tdb.NewContext(), publisher.Object);
@@ -152,7 +152,7 @@ public class CampaignInviteShortlistTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var filtered = SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered, "a@x.com");
+        var filtered = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, "a@x.com");
 
         var svc = NewService(tdb.NewContext());
         var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { filtered.Id }, default);
@@ -172,7 +172,7 @@ public class CampaignInviteShortlistTests
         var camp = CampaignTestDb.NewCampaign(owner, CampaignStatus.Draft);
         tdb.Db.Campaigns.Add(camp);
         await tdb.Db.SaveChangesAsync();
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "a@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "a@x.com");
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -186,7 +186,7 @@ public class CampaignInviteShortlistTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "a@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "a@x.com");
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
@@ -200,8 +200,8 @@ public class CampaignInviteShortlistTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner, maxCandidates: 1);
-        var c1 = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "a@x.com");
-        var c2 = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "b@x.com");
+        var c1 = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "a@x.com");
+        var c2 = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "b@x.com");
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<ArgumentException>(() =>
@@ -209,8 +209,8 @@ public class CampaignInviteShortlistTests
 
         using var check = tdb.NewContext();
         Assert.Empty(await check.CampaignInvitations.Where(i => i.CampaignId == camp.Id).ToListAsync());
-        Assert.All(await check.CampaignCandidates.Where(c => c.CampaignId == camp.Id).ToListAsync(),
-            c => Assert.Equal(CandidateStatus.Analyzed, c.Status));   // không lật trạng thái khi vượt cap
+        Assert.All(await check.CvSubmissions.Where(c => c.CampaignId == camp.Id).ToListAsync(),
+            c => Assert.Equal(CvSubmissionStatus.Analyzed, c.Status));   // không lật trạng thái khi vượt cap
     }
 
     // (g) email đã có invitation (đường 1 mời thẳng) → dedup → failed[].
@@ -230,7 +230,7 @@ public class CampaignInviteShortlistTests
             CreatedAt = DateTime.UtcNow
         });
         tdb.Db.SaveChanges();
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, "a@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "a@x.com");
 
         var svc = NewService(tdb.NewContext());
         var result = await svc.InviteShortlistedCandidatesAsync(owner, owner, camp.Id, new() { cand.Id }, default);
@@ -241,7 +241,7 @@ public class CampaignInviteShortlistTests
 
         using var check = tdb.NewContext();
         Assert.Single(await check.CampaignInvitations.Where(i => i.CampaignId == camp.Id).ToListAsync());  // vẫn 1
-        Assert.Equal(CandidateStatus.Analyzed, (await check.CampaignCandidates.FindAsync(cand.Id))!.Status);
+        Assert.Equal(CvSubmissionStatus.Analyzed, (await check.CvSubmissions.FindAsync(cand.Id))!.Status);
     }
 
     // (h) candidateId không thuộc campaign → failed[] "không tìm thấy".

@@ -199,7 +199,9 @@ namespace Isas.PaymentService.Services
             var moved = await _db.CreditReservations
                 .Where(r => r.SessionId == sessionId && r.Status == ReservationStatus.Reserved)
                 .ExecuteUpdateAsync(s => s
-                    .SetProperty(r => r.Status, ReservationStatus.Consumed), ct);
+                    .SetProperty(r => r.Status, ReservationStatus.Consumed)
+                    // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
+                    .SetProperty(r => r.UpdatedAt, _ => DateTime.UtcNow), ct);
 
             if (moved == 0)
             {
@@ -288,7 +290,9 @@ namespace Isas.PaymentService.Services
             var moved = await _db.CreditReservations
                 .Where(r => r.SessionId == sessionId && r.Status == ReservationStatus.Reserved)
                 .ExecuteUpdateAsync(s => s
-                    .SetProperty(r => r.Status, ReservationStatus.Released), ct);
+                    .SetProperty(r => r.Status, ReservationStatus.Released)
+                    // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
+                    .SetProperty(r => r.UpdatedAt, _ => DateTime.UtcNow), ct);
 
             if (moved == 0)
             {

@@ -15,7 +15,8 @@ namespace Isas.CampaignService.Models
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
         public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
         public DbSet<CampaignRanking> CampaignRankings => Set<CampaignRanking>();
-        public DbSet<CampaignCandidate> CampaignCandidates => Set<CampaignCandidate>();          // C13: sàng CV
+        public DbSet<CvSubmission> CvSubmissions => Set<CvSubmission>();                         // C13: sàng CV (DB16, ex campaign_candidates)
+        public DbSet<CampaignMembership> CampaignMemberships => Set<CampaignMembership>();        // D2: membership ứng viên↔campaign (DB16)
         public DbSet<CandidateCriterionScore> CandidateCriterionScores => Set<CandidateCriterionScore>();
         public DbSet<SessionFlag> SessionFlags => Set<SessionFlag>();                            // SEC-1: cờ chống gian lận cho HR
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();                      // DB2b: transactional outbox (invitation-email)
@@ -157,12 +158,14 @@ namespace Isas.CampaignService.Models
                  .HasForeignKey(x => x.CampaignId)
                  .OnDelete(DeleteBehavior.Cascade);
 
-                // DB9: FK nội-service invitation → campaign_candidates (đường-2 từ shortlist). Optional
-                // (campaign_candidate_id nullable; đường-1 mời-thẳng = null). SetNull: xoá candidate →
+                // DB9/DB16: FK nội-service invitation → cv_submission (đường-2 từ shortlist). Optional
+                // (campaign_candidate_id nullable; đường-1 mời-thẳng = null). SetNull: xoá CV →
                 // invitation giữ lại, chỉ mất link shortlist. Optional nav → KHÔNG cần query filter mới.
-                e.HasOne(x => x.CampaignCandidate)
+                // Cột DB giữ tên campaign_candidate_id (không rename cột); nav re-point về CvSubmission.
+                e.HasOne(x => x.CvSubmission)
                  .WithMany()
                  .HasForeignKey(x => x.CampaignCandidateId)
+                 .HasConstraintName("fk_campaign_invitations_cv_submission_campaign_candidate_id")
                  .OnDelete(DeleteBehavior.SetNull);
             });
 
@@ -196,10 +199,10 @@ namespace Isas.CampaignService.Models
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
-            // ── CampaignCandidate (sàng CV B2B — C13/D18) ──────────────────────
-            modelBuilder.Entity<CampaignCandidate>(e =>
+            // ── CvSubmission (sàng CV B2B — C13/D18; DB16 ex campaign_candidates) ───
+            modelBuilder.Entity<CvSubmission>(e =>
             {
-                e.ToTable("campaign_candidates");
+                e.ToTable("cv_submission");
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.FullName).HasMaxLength(255);
@@ -208,9 +211,6 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.ParseStatus).HasConversion<string>().HasMaxLength(16);
                 e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
                 e.Property(x => x.YearsExperience).HasColumnType("numeric(4,1)");
-
-                // D2: membership — interview_status enum string (nullable = NotStarted).
-                e.Property(x => x.InterviewStatus).HasConversion<string>().HasMaxLength(16);
 
                 e.Property(x => x.Skills).HasConversion(StringListConverter, StringListComparer);
                 if (Database.IsNpgsql())
@@ -223,24 +223,59 @@ namespace Isas.CampaignService.Models
                 // (Postgres & SQLite) → nhiều CV không tách được email vẫn insert được.
                 e.HasIndex(x => new { x.CampaignId, x.Email }).IsUnique();
                 e.HasIndex(x => new { x.CampaignId, x.Status });
-                e.HasIndex(x => x.CandidateId);
 
                 // DB5: index cho StuckScreeningRepublisher (C15) — sweeper quét mỗi 2' theo predicate
                 // (Status, LastScreeningPublishedAt) KHÔNG có campaign_id → index (campaign_id, status)
                 // ở trên vô dụng (leading col không khớp). Non-partial: cả 2 nhánh sweeper (Filtered+null,
                 // Analyzing+not-null) đều key theo status (cột dẫn đầu, selective — chỉ Filtered/Analyzing
                 // là hot); LastScreeningPublishedAt cột phụ để so mốc. Status lưu string (HasConversion)
-                // → không cần filter literal. Tên rút gọn (lsp) vì snake_case đầy đủ quá dài.
+                // → không cần filter literal. DB16 — đổi tên theo bảng mới (cv_submission).
                 e.HasIndex(x => new { x.Status, x.LastScreeningPublishedAt })
-                 .HasDatabaseName("ix_campaign_candidates_status_lsp");
+                 .HasDatabaseName("ix_cv_submission_status_lsp");
 
                 // DB13: khớp soft-delete filter của Campaign (required nav).
                 e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
 
                 e.HasOne(x => x.Campaign)
-                 .WithMany(x => x.Candidates)
+                 .WithMany(x => x.CvSubmissions)
                  .HasForeignKey(x => x.CampaignId)
                  .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── CampaignMembership (D2 join — DB16 tách khỏi bảng God) ─────────────
+            modelBuilder.Entity<CampaignMembership>(e =>
+            {
+                e.ToTable("campaign_membership");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20).HasDefaultValue(MembershipStatus.Joined);
+                // interview_status enum string (nullable = NotStarted).
+                e.Property(x => x.InterviewStatus).HasConversion<string>().HasMaxLength(16);
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+
+                // 1 membership / (campaign, candidate) — chống join 2 lần (D2 idempotent).
+                e.HasIndex(x => new { x.CampaignId, x.CandidateId }).IsUnique();
+                e.HasIndex(x => x.CandidateId);
+                // 1 membership / CV shortlist (đường-2). NULL distinct → nhiều đường-1 (không CV) vẫn insert.
+                e.HasIndex(x => x.CvSubmissionId).IsUnique();
+
+                // DB13: required nav → Campaign (soft-delete filter) → BẮT BUỘC khớp filter.
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
+
+                e.HasOne(x => x.Campaign)
+                 .WithMany()
+                 .HasForeignKey(x => x.CampaignId)
+                 .OnDelete(DeleteBehavior.Cascade);
+
+                // FK nội-service membership.cv_submission_id → cv_submission.id. OPTIONAL (nullable,
+                // đường-1 mời-thẳng = null) → SetNull: xoá CV chỉ mất link shortlist, membership giữ.
+                // Optional nav → KHÔNG cần query filter (D2 đường-1 không có CV).
+                e.HasOne(x => x.CvSubmission)
+                 .WithMany()
+                 .HasForeignKey(x => x.CvSubmissionId)
+                 .OnDelete(DeleteBehavior.SetNull);
             });
 
             // ── CandidateCriterionScore (điểm khớp/tiêu chí — C14, bảng tạo ở C13) ──
@@ -254,14 +289,16 @@ namespace Isas.CampaignService.Models
 
                 e.HasIndex(x => new { x.CandidateId, x.CriterionId }).IsUnique();
 
-                // DB13: CampaignCandidate + CampaignCriterion (2 required nav bên dưới) đã có soft-delete
+                // DB13: CvSubmission + CampaignCriterion (2 required nav bên dưới) đã có soft-delete
                 // filter → phải khớp filter ở đây, nếu không EF phát lại warning + đọc điểm mồ côi.
-                // Chained qua Candidate→Campaign (Criterion cùng campaign → 1 điều kiện là đủ).
-                e.HasQueryFilter(x => x.Candidate.Campaign.DeletedAt == null);
+                // Chained qua CvSubmission→Campaign (Criterion cùng campaign → 1 điều kiện là đủ).
+                e.HasQueryFilter(x => x.CvSubmission.Campaign.DeletedAt == null);
 
-                e.HasOne(x => x.Candidate)
+                // DB16 — nav re-point về CvSubmission; cột FK giữ tên candidate_id (không rename cột).
+                e.HasOne(x => x.CvSubmission)
                  .WithMany(x => x.CriterionScores)
                  .HasForeignKey(x => x.CandidateId)
+                 .HasConstraintName("fk_candidate_criterion_scores_cv_submission_candidate_id")
                  .OnDelete(DeleteBehavior.Cascade);
 
                 // Restrict: chặn xoá tiêu chí còn điểm tham chiếu (TÁI DÙNG rubric campaign_criteria).

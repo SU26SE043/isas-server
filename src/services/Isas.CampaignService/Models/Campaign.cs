@@ -34,7 +34,7 @@
         public ICollection<CampaignQuestion> Questions { get; set; } = new List<CampaignQuestion>();
         public ICollection<CampaignCriterion> Criteria { get; set; } = new List<CampaignCriterion>();
         public ICollection<CampaignInvitation> Invitations { get; set; } = new List<CampaignInvitation>();
-        public ICollection<CampaignCandidate> Candidates { get; set; } = new List<CampaignCandidate>();   // C13: sàng CV
+        public ICollection<CvSubmission> CvSubmissions { get; set; } = new List<CvSubmission>();   // C13: sàng CV (DB16)
     }
 
     public enum CampaignStatus

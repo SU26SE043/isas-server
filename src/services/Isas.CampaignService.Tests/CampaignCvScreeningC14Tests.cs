@@ -61,12 +61,12 @@ public class CampaignCvScreeningC14Tests
         return list;
     }
 
-    private static CampaignCandidate SeedCandidate(
-        CampaignTestDb tdb, Guid campaignId, CandidateStatus status,
+    private static CvSubmission SeedCandidate(
+        CampaignTestDb tdb, Guid campaignId, CvSubmissionStatus status,
         string? email = null, int? overall = null, string? parsedText = "CV text a@x.com")
     {
         var now = DateTime.UtcNow;
-        var cand = new CampaignCandidate
+        var cand = new CvSubmission
         {
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
@@ -79,7 +79,7 @@ public class CampaignCvScreeningC14Tests
             CreatedAt = now,
             UpdatedAt = now
         };
-        tdb.Db.CampaignCandidates.Add(cand);
+        tdb.Db.CvSubmissions.Add(cand);
         tdb.Db.SaveChanges();
         return cand;
     }
@@ -92,8 +92,8 @@ public class CampaignCvScreeningC14Tests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         var criteria = SeedCriteria(tdb, camp.Id, 2);
-        var c1 = SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered, email: "a@x.com");
-        var c2 = SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered, email: "b@x.com");
+        var c1 = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: "a@x.com");
+        var c2 = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: "b@x.com");
 
         var published = new List<CvScreeningJob>();
         var pub = new Mock<ICvScreeningPublisher>();
@@ -117,10 +117,10 @@ public class CampaignCvScreeningC14Tests
         Assert.Contains(published, j => j.CandidateId == c2.Id);
 
         using var check = tdb.NewContext();
-        var rows = await check.CampaignCandidates.Where(c => c.CampaignId == camp.Id).ToListAsync();
+        var rows = await check.CvSubmissions.Where(c => c.CampaignId == camp.Id).ToListAsync();
         Assert.All(rows, r =>
         {
-            Assert.Equal(CandidateStatus.Analyzing, r.Status);
+            Assert.Equal(CvSubmissionStatus.Analyzing, r.Status);
             Assert.NotNull(r.LastScreeningPublishedAt);
         });
     }
@@ -133,15 +133,15 @@ public class CampaignCvScreeningC14Tests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         SeedCriteria(tdb, camp.Id, 1);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered, email: "a@x.com");
-        var rejected = SeedCandidate(tdb, camp.Id, CandidateStatus.Rejected, email: "b@x.com");
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: "a@x.com");
+        var rejected = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Rejected, email: "b@x.com");
 
         var svc = NewService(tdb.NewContext());
         var n = await svc.PublishScreeningJobsAsync(owner, camp.Id, default);
 
         Assert.Equal(1, n);
         using var check = tdb.NewContext();
-        Assert.Equal(CandidateStatus.Rejected, (await check.CampaignCandidates.FindAsync(rejected.Id))!.Status);
+        Assert.Equal(CvSubmissionStatus.Rejected, (await check.CvSubmissions.FindAsync(rejected.Id))!.Status);
     }
 
     // (b) cv-result → ghi candidate_criterion_scores + overall_match_score + Analyzed; kẹp điểm + bỏ id bịa.
@@ -152,7 +152,7 @@ public class CampaignCvScreeningC14Tests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         var criteria = SeedCriteria(tdb, camp.Id, 2);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzing, email: "a@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
 
         var req = new CvResultCallbackRequest
         {
@@ -173,8 +173,8 @@ public class CampaignCvScreeningC14Tests
         Assert.Equal(CvResultOutcome.Analyzed, outcome);
 
         using var check = tdb.NewContext();
-        var row = await check.CampaignCandidates.FindAsync(cand.Id);
-        Assert.Equal(CandidateStatus.Analyzed, row!.Status);
+        var row = await check.CvSubmissions.FindAsync(cand.Id);
+        Assert.Equal(CvSubmissionStatus.Analyzed, row!.Status);
         Assert.Equal(100, row.OverallMatchScore);          // kẹp [0,100]
         Assert.Equal(3.5m, row.YearsExperience);
         Assert.Contains("C#", row.Skills!);
@@ -191,15 +191,15 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzing, email: "a@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
 
         var svc = NewService(tdb.NewContext());
         var outcome = await svc.MarkCvFailedAsync(cand.Id, "Gemini timeout vĩnh viễn", default);
         Assert.Equal(CvFailedOutcome.Failed, outcome);
 
         using var check = tdb.NewContext();
-        var row = await check.CampaignCandidates.FindAsync(cand.Id);
-        Assert.Equal(CandidateStatus.AnalysisFailed, row!.Status);
+        var row = await check.CvSubmissions.FindAsync(cand.Id);
+        Assert.Equal(CvSubmissionStatus.AnalysisFailed, row!.Status);
         Assert.Contains("timeout", row.RejectReason);
     }
 
@@ -210,14 +210,14 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, email: "a@x.com", overall: 80);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: "a@x.com", overall: 80);
 
         var svc = NewService(tdb.NewContext());
         var outcome = await svc.MarkCvFailedAsync(cand.Id, "late fail", default);
         Assert.Equal(CvFailedOutcome.SkippedAnalyzed, outcome);
 
         using var check = tdb.NewContext();
-        Assert.Equal(CandidateStatus.Analyzed, (await check.CampaignCandidates.FindAsync(cand.Id))!.Status);
+        Assert.Equal(CvSubmissionStatus.Analyzed, (await check.CvSubmissions.FindAsync(cand.Id))!.Status);
     }
 
     // (c-ter) cv-result về khi đang AnalysisFailed (worker callback muộn sau timeout) → recover Analyzed.
@@ -228,7 +228,7 @@ public class CampaignCvScreeningC14Tests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         var criteria = SeedCriteria(tdb, camp.Id, 1);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.AnalysisFailed, email: "a@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.AnalysisFailed, email: "a@x.com");
         cand.RejectReason = "timeout cũ";
         tdb.Db.SaveChanges();
 
@@ -242,8 +242,8 @@ public class CampaignCvScreeningC14Tests
         await svc.SaveCvResultAsync(cand.Id, req, default);
 
         using var check = tdb.NewContext();
-        var row = await check.CampaignCandidates.FindAsync(cand.Id);
-        Assert.Equal(CandidateStatus.Analyzed, row!.Status);
+        var row = await check.CvSubmissions.FindAsync(cand.Id);
+        Assert.Equal(CvSubmissionStatus.Analyzed, row!.Status);
         Assert.Null(row.RejectReason);   // xoá lý do fail cũ khi recover
     }
 
@@ -255,7 +255,7 @@ public class CampaignCvScreeningC14Tests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         var criteria = SeedCriteria(tdb, camp.Id, 2);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzing, email: "a@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
 
         CvResultCallbackRequest Req() => new()
         {
@@ -272,7 +272,7 @@ public class CampaignCvScreeningC14Tests
 
         using var check = tdb.NewContext();
         Assert.Equal(2, await check.CandidateCriterionScores.CountAsync(s => s.CandidateId == cand.Id));  // vẫn 2, không 4
-        Assert.Equal(88, (await check.CampaignCandidates.FindAsync(cand.Id))!.OverallMatchScore);
+        Assert.Equal(88, (await check.CvSubmissions.FindAsync(cand.Id))!.OverallMatchScore);
     }
 
     // (e) callback cv-result về SAU khi đã Invited → bỏ qua (không ghi điểm, giữ Invited).
@@ -283,7 +283,7 @@ public class CampaignCvScreeningC14Tests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         var criteria = SeedCriteria(tdb, camp.Id, 1);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Invited, email: "a@x.com", overall: 90);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Invited, email: "a@x.com", overall: 90);
 
         var req = new CvResultCallbackRequest
         {
@@ -296,8 +296,8 @@ public class CampaignCvScreeningC14Tests
         Assert.Equal(CvResultOutcome.SkippedInvited, outcome);
 
         using var check = tdb.NewContext();
-        var row = await check.CampaignCandidates.FindAsync(cand.Id);
-        Assert.Equal(CandidateStatus.Invited, row!.Status);      // giữ nguyên
+        var row = await check.CvSubmissions.FindAsync(cand.Id);
+        Assert.Equal(CvSubmissionStatus.Invited, row!.Status);      // giữ nguyên
         Assert.Equal(90, row.OverallMatchScore);                 // KHÔNG bị ghi đè
         Assert.Equal(0, await check.CandidateCriterionScores.CountAsync(s => s.CandidateId == cand.Id));
     }
@@ -319,9 +319,9 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, email: "mid@x.com", overall: 70);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, email: "top@x.com", overall: 90);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzing, email: "none@x.com", overall: null);
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: "mid@x.com", overall: 70);
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: "top@x.com", overall: 90);
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "none@x.com", overall: null);
 
         var svc = NewService(tdb.NewContext());
         var list = await svc.GetCandidatesAsync(owner, camp.Id, null, null, null, "score", default);
@@ -339,8 +339,8 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, email: "a@x.com", overall: 50);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, email: "b@x.com", overall: 85);
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: "a@x.com", overall: 50);
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: "b@x.com", overall: 85);
 
         var svc = NewService(tdb.NewContext());
         var filtered = await svc.GetCandidatesAsync(owner, camp.Id, null, 70, null, "score", default);
@@ -358,14 +358,14 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, email: null);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: null);
 
         var svc = NewService(tdb.NewContext());
         await svc.PatchCandidateAsync(owner, owner, camp.Id, cand.Id,
             new PatchCandidateRequest { Email = "New@X.com", FullName = "  Nguyễn Văn A  " }, default);
 
         using var check = tdb.NewContext();
-        var row = await check.CampaignCandidates.FindAsync(cand.Id);
+        var row = await check.CvSubmissions.FindAsync(cand.Id);
         Assert.Equal("new@x.com", row!.Email);        // chuẩn hoá lowercase
         Assert.Equal("Nguyễn Văn A", row.FullName);   // trim
         Assert.True(await check.AuditLogs.AnyAsync(a =>
@@ -379,7 +379,7 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Invited, email: "a@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Invited, email: "a@x.com");
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -394,8 +394,8 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzed, email: "taken@x.com");
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered, email: null);
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: "taken@x.com");
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: null);
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<ArgumentException>(() =>

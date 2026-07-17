@@ -151,7 +151,10 @@ public class SessionScoringNotifier : ISessionScoringNotifier
 
             await _db.PracticeSessions
                 .Where(s => s.Id == sessionId)
-                .ExecuteUpdateAsync(u => u.SetProperty(s => s.OverallComment, comment), ct);
+                // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at cùng overall_comment.
+                .ExecuteUpdateAsync(u => u
+                    .SetProperty(s => s.OverallComment, comment)
+                    .SetProperty(s => s.UpdatedAt, _ => DateTime.UtcNow), ct);
 
             _logger.LogInformation("BC10: đã lưu overall_comment cho session {SessionId}", sessionId);
         }

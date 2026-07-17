@@ -56,4 +56,27 @@ public sealed class CampaignTestDb : IDisposable
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
+
+    // DB16 — membership (D2 join) tách khỏi bảng God (nay cv_submission). CvSubmissionId null = đường-1.
+    public static CampaignMembership NewMembership(
+        Guid campaignId, Guid candidateId,
+        MembershipStatus status = MembershipStatus.Joined,
+        Guid? cvSubmissionId = null,
+        Guid? sessionId = null,
+        InterviewProgressStatus? interviewStatus = null,
+        string? referenceImageKey = null)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            CampaignId = campaignId,
+            CandidateId = candidateId,
+            CvSubmissionId = cvSubmissionId,
+            Status = status,
+            JoinedAt = DateTime.UtcNow,
+            SessionId = sessionId,
+            InterviewStatus = interviewStatus,
+            ReferenceImageKey = referenceImageKey,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
 }

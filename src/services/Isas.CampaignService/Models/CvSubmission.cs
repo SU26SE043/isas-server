@@ -6,20 +6,22 @@ namespace Isas.CampaignService.Models
     /// KHÔNG dùng <c>file_records</c> (bảng đó của Interview, gắn <c>user_id</c> ứng viên).
     /// State machine (C13 chỉ tới Filtered/Rejected; Analyzing→Analyzed/AnalysisFailed = C14):
     /// Pending → (parse OK + hard-filter) Filtered | Rejected(reject_reason) | (parse FAIL) Rejected.
+    ///
+    /// DB16 — bảng đổi tên <c>campaign_candidates</c> → <c>cv_submission</c>; các cột membership
+    /// (candidate_id/joined_at/session_id/interview_status/reference_image_key) tách sang
+    /// <see cref="CampaignMembership"/>. Đây là "sự thật sàng CV" (screening fact) — quan hệ ứng
+    /// viên↔campaign (D2 join) sống độc lập ngay cả khi không có CV (đường 1 mời-thẳng email).
     /// </summary>
-    public class CampaignCandidate
+    public class CvSubmission
     {
         public Guid Id { get; set; }
         public Guid CampaignId { get; set; }            // FK → campaigns (Cascade); index
-        public Guid? CandidateId { get; set; }          // ref lỏng → Auth; null tới khi mở magic-link (D2)
         public string? FullName { get; set; }           // parse từ CV; HR sửa qua PATCH (C14)
         public string? Email { get; set; }              // tách từ CV; UNIQUE(campaign_id, email) (null bỏ qua)
         public string? CvFileUrl { get; set; }          // S3 KEY (campaigns/{id}/candidates/{cid}.pdf) — không full URL (GEN-5)
-        // SEC-2/DATA-2: ảnh tham chiếu face-verify — 1 bản/ứng viên/campaign. Lưu S3 KEY (không ảnh trong DB), null tới khi có.
-        public string? ReferenceImageKey { get; set; }
         public string? CvParsedText { get; set; }       // text parse PdfPig — nguồn hard-filter + gửi AI (C14)
         public CvParseStatus ParseStatus { get; set; }  // pending·done·failed
-        public CandidateStatus Status { get; set; }     // state machine; index
+        public CvSubmissionStatus Status { get; set; }  // state machine; index
         public string? RejectReason { get; set; }       // lý do hard-filter loại (vd "thiếu kỹ năng: SQL")
 
         // ── Kết quả AI (C14 điền — cột định nghĩa sẵn ở C13) ──────────────────
@@ -28,11 +30,6 @@ namespace Isas.CampaignService.Models
         public string? Summary { get; set; }             // AI trả
         public int? OverallMatchScore { get; set; }      // 0–100 — AI trả; ORDER BY = ranking shortlist
         public DateTime? LastScreeningPublishedAt { get; set; }   // cho StuckScreeningRepublisher (C15)
-
-        // ── D2: Membership (giống Discord/Classroom) — set khi ứng viên "Join Campaign" qua magic-link ──
-        public DateTime? JoinedAt { get; set; }             // null tới khi ứng viên tham gia (D2)
-        public Guid? SessionId { get; set; }                // ref lỏng → Interview; set khi "Start Interview"
-        public InterviewProgressStatus? InterviewStatus { get; set; }   // NotStarted/InProgress/Completed (enum string)
 
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
@@ -53,9 +50,11 @@ namespace Isas.CampaignService.Models
     /// <summary>
     /// State machine ứng viên sàng CV (lưu string — GEN-2). C13 dùng: Pending/Filtered/Rejected.
     /// Analyzing/Analyzed/AnalysisFailed/Invited = C14/C15 (định nghĩa sẵn để state machine đủ).
-    /// Joined = D2 (ứng viên đã tham gia campaign qua magic-link — có account Candidate + membership).
+    /// DB16 — <c>Joined</c> KHÔNG còn là trạng thái CV: "đã tham gia" nay biểu diễn bằng SỰ TỒN TẠI của
+    /// <see cref="CampaignMembership"/>. <c>Invited</c> GIỮ trên cv_submission (là sự thật sàng CV: đã
+    /// phát magic-link từ shortlist).
     /// </summary>
-    public enum CandidateStatus
+    public enum CvSubmissionStatus
     {
         Pending = 0,
         Filtered = 1,
@@ -63,8 +62,7 @@ namespace Isas.CampaignService.Models
         Analyzing = 3,
         Analyzed = 4,
         AnalysisFailed = 5,
-        Invited = 6,
-        Joined = 7
+        Invited = 6
     }
 
     /// <summary>D2: tiến độ phỏng vấn của membership (lưu string — GEN-2). null = chưa Start (NotStarted).</summary>
