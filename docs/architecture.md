@@ -181,7 +181,7 @@ Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **
 
 **Job chấm (point-to-point):** InterviewService → queue **`scoring_pipeline_queue`** (durable) → AIService worker consume (1 job/answer, hoặc N job khi self-consistency E10 — mỗi job mang `attemptNo`+`temperature`). Callback kết quả về InterviewService qua **HTTP** (`X-Internal-Token`), KHÔNG qua bus.
 
-**Event buổi (pub/sub, fan-out):** InterviewService publish lên exchange **`interview.events`** (type **topic**, durable), **best-effort** (lỗi publish KHÔNG phá state `Scored`/`Abandoned` đã commit; có endpoint HTTP backfill làm fallback):
+**Event buổi (pub/sub, fan-out):** InterviewService publish lên exchange **`interview.events`** (type **topic**, durable) qua **Transactional Outbox at-least-once** (✅ **DB2** 2026-07-17, thay `best-effort`): khi đóng session, ghi row `outbox_messages` **CÙNG transaction với state-flip** (`Scored`/`SessionAbandoned`/`Failed`) → `OutboxDispatcher` (BackgroundService) quét `published_at IS NULL` → publish (routing=`type`, `MessageId`=outbox `id`) → set `published_at`; **broker chết → row giữ nguyên → gửi lại vòng sau (event KHÔNG mất)**. Payload lưu nguyên (weighted `totalScore`, `reason` gốc) → phủ cả **B2B + generation_failed**. *(Thay cơ chế cũ marker `settlement_published_at` + `SettlementReconciler` B2C-only — đã gỡ.)*
 
 | Routing key | Phát khi | Payload | Consumer (queue durable riêng) |
 |---|---|---|---|
