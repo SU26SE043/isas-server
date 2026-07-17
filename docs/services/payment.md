@@ -35,14 +35,14 @@ Khách hiểu "lượt phỏng vấn", không hiểu token. Bài có **time limi
 
 ### Schemas (DTO)
 
-> ⚠ Enum serialize **SỐ** (int) — bản đồ số ở comment. `PackageResponse.priceVnd`/`interviewCredits` là **int** (model `int`, không phải long).
+> ⚠ Enum serialize **SỐ** (int) — bản đồ số ở comment. `PackageResponse.interviewCredits` là **int**; **`priceVnd` là `long`** (✅ DB3 2026-07-17: `product_packages.price_vnd` int→bigint chống tràn VND giá gói lớn; JSON vẫn là số).
 
 ```
 ProductPackage {                        // = PackageResponse (GET /package…)
   id:               uuid
   name:             string
   type:             enum(int)           // 1=OneTime · 2=Subscription 🔜(phase 2)
-  priceVnd:         int
+  priceVnd:         long                 // ✅ DB3: int→bigint (long)
   interviewCredits: int?
   durationDays:     int?
   isActive:         bool
@@ -242,6 +242,7 @@ credit_limit     int?          CHỈ Org/postpaid
 period_usage     int?          CHỈ Org/postpaid — lượt đã dùng kỳ này
 updated_at       timestamptz
                                UNIQUE (owner_type, owner_id)
+                               CHECK ck_credit_accounts_non_negative: remaining_credits>=0 AND reserved_credits>=0 AND (period_usage IS NULL OR period_usage>=0)  ✅ DB1 (2026-07-17)
 ```
 
 ### `credit_reservations` — giữ chỗ theo session
@@ -264,6 +265,7 @@ session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
 reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2)
 created_at timestamptz
+                          CHECK ck_credit_transactions_delta_nonzero: delta<>0  ✅ DB1 (2026-07-17)
 ```
 
 ### `product_packages`

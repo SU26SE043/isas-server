@@ -154,6 +154,7 @@ roles ──1──* role_claims
 id              uuid          PK
 user_name       varchar       (Identity)
 email           varchar       (Identity)
+                              ✅ DB11 (2026-07-17): UNIQUE INDEX normalized_email (EmailIndex) filtered `WHERE normalized_email IS NOT NULL` — enforce email không trùng ở tầng DB (kèm RequireUniqueEmail app-level)
 password_hash   text?         null nếu chỉ đăng nhập Google OAuth
 email_confirmed bool
 full_name       varchar?
@@ -174,7 +175,7 @@ user_roles  { user_id uuid FK→users · role_id uuid FK→roles }   PK (user_id
 ```
 id          uuid          PK
 user_id     uuid          FK → users
-token       varchar       NOT NULL
+token       varchar       NOT NULL — lưu **SHA-256 hash** của refresh token (raw chỉ trả client); ✅ DB12 (2026-07-17): UNIQUE INDEX token (chống trùng + lookup index thay full-scan)
 is_revoked  bool          default false
 replaced_by uuid?         token thay thế (rotation)
 expires_at  timestamptz   hạn theo Jwt:RefreshTokenDays

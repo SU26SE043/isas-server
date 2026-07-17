@@ -339,6 +339,7 @@ Analyzed ─(HR chọn top → invite: TÁCH EMAIL TỪ CV; null → skip + PATC
 
 ### Soft delete & Audit
 - **Xóa = soft** (`deleted_at`), giữ lịch sử cho **audit/đối chất** (B2B ứng viên kiện kết quả). Cronjob purge file SeaweedFS sau **90 ngày** (giữ điểm + transcript để chứng minh). **✅ đã làm (C9):** `deleted_at` + **global query filter** (`DeletedAt == null` → mọi query tự ẩn campaign đã xoá); `DeleteCampaign` set `deleted_at`, **giữ** file + câu hỏi. **✅ `audit_logs` (C10):** ghi ở Create/EditQuestions/Delete/Publish/Transition (`actor_user_id`=employer, `action`, `entity_id`, `summary`). *(Cronjob purge 90 ngày chưa làm.)*
+- **✅ DB13 (2026-07-17):** query filter lan xuống **entity con** — nav-based `HasQueryFilter(x.Campaign.DeletedAt == null)` cho `CampaignQuestion`/`CampaignCriterion`/`CampaignInvitation`/`CampaignCandidate` + chained filter `CandidateCriterionScore` (`x.Candidate.Campaign.DeletedAt == null`) → con của campaign đã soft-delete tự ẩn khỏi query thường (hết "orphan-in-view") + hết 4 warning runtime EF `PossibleIncorrectRequiredNavigation`. Muốn đọc con của campaign đã xoá → `IgnoreQueryFilters()`. Code-only, không migration.
 - Mọi mutation quan trọng (tạo/sửa câu hỏi, đổi tiêu chí, publish, xóa, re-issue) ghi **`audit_logs`** (`actor_user_id`, action, entity, `at`).
 
 ### Exception — org hết credit / downgrade / quá hạn
