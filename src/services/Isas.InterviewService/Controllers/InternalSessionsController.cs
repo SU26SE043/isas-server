@@ -90,6 +90,28 @@ public class InternalSessionsController : ControllerBase
         return Ok(new SessionExistsResponse(existing));
     }
 
+    // AI4 — CampaignService (HR) gọi (máy-máy, X-Internal-Token, KHÔNG qua gateway, KHÔNG JWT) để đọc
+    // transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi B2B → surface cho HR bên bảng
+    // kết quả. KHÔNG check chủ session (Campaign đã gate org sở hữu campaign + ranking row thuộc campaign).
+    // Session không tồn tại → 404. Trả per-question list (QuestionResponse) kèm answer đầy đủ (transcript/
+    // Scores/reasoning/needsReview) — cùng shape con của PracticeSessionResponse.
+    [HttpGet("internal/sessions/{sessionId:guid}/answers")]
+    [AllowAnonymous]
+    public async Task<IActionResult> GetSessionAnswers(
+        Guid sessionId,
+        [FromHeader(Name = "X-Internal-Token")] string? token,
+        CancellationToken ct)
+    {
+        if (!IsValidInternalToken(token))
+            return Unauthorized(new { error = "Invalid internal token" });
+
+        var answers = await _practiceService.GetSessionAnswersInternalAsync(sessionId, ct);
+        if (answers is null)
+            return NotFound(new { error = $"Session {sessionId} không tồn tại" });
+
+        return Ok(answers);
+    }
+
     private bool IsValidInternalToken(string? token)
     {
         var expected = _config["Internal:Token"];

@@ -42,6 +42,11 @@ namespace Isas.CampaignService.Services
         // E6: xuất bảng kết quả (E5) ra file — format=csv (pdf 🔜). Ngoài org → KeyNotFoundException (404).
         Task<CampaignResultExport> ExportCampaignResultsAsync(Guid orgId, Guid id, string? format, CancellationToken ct);
 
+        // AI4: HR xem transcript + nhận xét AI per-criterion + needs_review 1 buổi (đối chiếu điểm ranking).
+        // Gating GIỐNG OverrideResultAsync (org sở hữu campaign + ranking row thuộc campaign) → 404 nếu sai.
+        // Transcript OWNED bởi Interview (GEN-2) → đọc xuyên-service qua internal client; Interview lỗi → 502.
+        Task<SessionTranscriptResponse> GetSessionTranscriptAsync(Guid orgId, Guid campaignId, Guid sessionId, CancellationToken ct);
+
         // C13: sàng CV hàng loạt — parse + archive PDF (S3 KEY) + hard-filter (rule cứng, 0 credit).
         Task<ScreenCandidatesResponse> ScreenCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, IFormFileCollection files, CancellationToken ct);
 

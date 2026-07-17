@@ -392,6 +392,31 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to override result: {ex.Message}"); }
         }
 
+        // AI4: HR xem chi tiết transcript + nhận xét AI per-criterion + cờ needs_review 1 buổi (đối chiếu điểm
+        // ranking). Org-scoped GIỐNG override (org sở hữu campaign + ranking row thuộc campaign) → ngoài org /
+        // session chưa chấm = 404. Transcript đọc xuyên-service từ Interview (internal); Interview lỗi → 502.
+        [HttpGet("{id:guid}/results/{sessionId:guid}/transcript")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<SessionTranscriptResponse>> GetSessionTranscript(
+            Guid id, Guid sessionId, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                var detail = await _campaignService.GetSessionTranscriptAsync(orgId.Value, id, sessionId, ct);
+                return Ok(detail);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (DownstreamServiceException ex)
+            {
+                return StatusCode(StatusCodes.Status502BadGateway, new { error = ex.Message });
+            }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get transcript: {ex.Message}"); }
+        }
+
         // E6: xuất bảng kết quả (E5) ra file. `?format=csv` (mặc định khi thiếu); `pdf`/khác → 400.
         // Ownership giống E5 (lọc theo org_id) → ngoài org = 404. Bám pattern `return File(...)`.
         [HttpGet("{id:guid}/results/export")]

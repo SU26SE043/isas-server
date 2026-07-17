@@ -37,4 +37,11 @@ public interface IPracticeService
     // reserve↔insert lúc Start) là orphan → Payment release. Chỉ đọc, không phân biệt owner/campaign.
     Task<IReadOnlyList<Guid>> GetExistingSessionIdsAsync(
         IReadOnlyList<Guid> sessionIds, CancellationToken ct = default);
+
+    // AI4 — CampaignService (HR, internal) đọc transcript + nhận xét AI per-criterion + cờ needs_review
+    // của 1 buổi để surface cho HR. CÙNG truy vấn như GetSessionAsync (questions→answers→Scores + MapAnswer)
+    // NHƯNG KHÔNG check chủ session (máy-máy, X-Internal-Token; Campaign đã gate org+ranking phía nó).
+    // Session không tồn tại → null (controller 404). Không phân biệt B2B/B2C (dùng cho bảng kết quả B2B).
+    Task<IReadOnlyList<QuestionResponse>?> GetSessionAnswersInternalAsync(
+        Guid sessionId, CancellationToken ct = default);
 }
