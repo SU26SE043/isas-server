@@ -274,8 +274,8 @@ Candidate ─POST /submit─► session Scoring; mọi answer ∈{Scored,Skipped
    └─ 0 answer Scored (mọi answer Failed/Skipped) → SessionAbandoned → phát SessionAbandoned → Payment RELEASE (PAY-13, Đợt-3: không trừ credit oan)
    (publish hụt / worker mất tích → StuckAnswerRepublisher quét 2' đẩy lại)
 SessionScored ─RabbitMQ─► Campaign (ranking read-model) + Payment (consume credit)
-   ⚠ publish hụt lúc đóng session (bus rớt) → SettlementReconciler (Đợt-3b, B2C-only) quét 2' phát lại
-     session.scored/abandoned có settlement_published_at=null → Payment không kẹt reservation treo
+   ✅ DB2: outbox-row ghi CÙNG transaction đóng session → OutboxDispatcher publish at-least-once
+     (bus rớt → row published_at=null → gửi lại; event không mất) → Payment không kẹt reservation treo
 ```
 
 **Phân tích CV B2C (sync, TÍNH PHÍ — BC-4, chốt BK5; đảo D17):**
@@ -311,8 +311,21 @@ deadline      timestamptz?  ✅ I2+BK18 (migration AddSessionDeadline) — hạn
 overall_score numeric(5,2)? ✅ BC9 (migration `AddSessionResultBC9`) — điểm tổng 0–100, set khi `Scored` (B2C); null khi chưa/B2B
 answered_count int?         ✅ BC9 — số câu đã chấm lúc tính kết quả (snapshot)
 overall_comment text?       ✅ BC10 (migration `AddSessionOverallComment`) — nhận xét chung, AI `/summarize-session` sinh trong `SessionScoringNotifier` khi B2C `Scored` (best-effort, sau BC9); null nếu AI lỗi/timeout/rỗng / criteria rỗng / B2B
-settlement_published_at timestamptz? ✅ Đợt-3b (migration `AddSessionSettlementPublishedAt`) — marker outbox: set khi phát thành công `session.scored`/`session.abandoned`. Null trên session terminal = publish hụt → `SettlementReconciler` (B2C-only) quét 2' phát lại (chống reservation treo ở Payment)
+                            ⚠ cột `settlement_published_at` (Đợt-3b) đã **DROP** ở ✅ **DB2** (migration `AddOutboxMessages`) — thay bằng bảng `outbox_messages` (Transactional Outbox, xem dưới)
 ```
+
+### `outbox_messages` — ✅ DB2 (Transactional Outbox, migration `AddOutboxMessages`)
+```
+id           uuid          PK — cũng là message-id (BasicProperties.MessageId, consumer dedup)
+type         varchar(64)   routing key: session.scored · session.abandoned
+payload      jsonb         JSON nguyên của SessionScoredEvent/SessionAbandonedEvent (giữ totalScore weighted, reason gốc)
+session_id   uuid          tra cứu/idempotency
+occurred_at  timestamptz   thứ tự phát
+published_at timestamptz?  null=chưa gửi (dispatcher set khi publish OK); broker down → giữ null → gửi lại
+attempts     int           số lần thử publish
+                           index (published_at) WHERE published_at IS NULL — dispatcher scan
+```
+> **Cơ chế:** khi đóng session (`Scored`/`SessionAbandoned`/`Failed`-generation_failed), 5 site ghi outbox-row **CÙNG transaction với state-flip** (sweeper bọc `BeginTransactionAsync`; các nơi khác cùng `SaveChanges` với state) → `OutboxDispatcher` (BackgroundService, `Outbox:Enabled/ScanIntervalSeconds`) publish at-least-once lên `interview.events` → set `published_at`. **Thay hẳn** marker `settlement_published_at` + `SettlementReconciler` (B2C-only, bỏ sót B2B + generation_failed — nay outbox phủ cả). Payment/Campaign consumer idempotent (PAY-11/CAMP-10) → at-least-once an toàn.
 
 ### `practice_questions`
 ```
@@ -499,7 +512,7 @@ InProgress/Ready ──► SessionAbandoned  ★ (quá deadline B2B 0-answer · 
 - Đóng `Scored` khi đang `Scoring` **và** mọi answer ∈ {Scored, Skipped, Failed} **và** ≥1 answer `Scored`.
 - **✅ PAY-13 (Đợt-3): 0 answer nào `Scored`** (mọi answer `Failed`/`Skipped`) → session sang **`SessionAbandoned`** + phát `SessionAbandoned` (Payment **release**, KHÔNG consume) — candidate không bị trừ credit oan khi cả buổi lỗi chấm. Áp cả 2 điểm đóng (`AnswerService` chấm dần + `PracticeService.SubmitSession`).
 - `Completed` có trong enum nhưng **CHƯA set** ở production (reserved; enum value giữ cho FE + tương lai).
-- **✅ SettlementReconciler (Đợt-3b, B2C-only):** session đã terminal (`Scored`/`SessionAbandoned`) nhưng `settlement_published_at` còn null (publish event hụt lúc bus rớt) → quét 2' phát lại `session.scored`/`session.abandoned` → Payment không kẹt reservation `Reserved` vĩnh viễn (at-least-once, Payment idempotent PAY-11).
+- **✅ DB2 Transactional Outbox (thay `SettlementReconciler` Đợt-3b):** đóng session ghi row `outbox_messages` CÙNG transaction với state-flip → `OutboxDispatcher` publish at-least-once `session.scored`/`session.abandoned`; bus rớt → `published_at` null → gửi lại vòng sau → Payment không kẹt reservation `Reserved` vĩnh viễn (Payment idempotent PAY-11). Phủ CẢ B2C + **B2B** + **generation_failed** (SettlementReconciler cũ bỏ sót 2 cái sau); payload giữ nguyên (không reconstruct điểm).
 - **Giới hạn thời gian = TỪNG CÂU (áp cả B2B & B2C), KHÔNG có tổng buổi (🔸 `time_limit_minutes` tạm bỏ):** hết giờ 1 câu → **chốt riêng câu đó** (có ghi âm → nộp bình thường; chưa ghi → `Skipped`) → **sang câu kế**, KHÔNG đóng cả buổi. **Chống reservation treo (B2B) — `SessionAbandonSweeper` quét 2':** session `InProgress` quá **`deadline`** (= `campaigns.expires_at`, Campaign gửi qua create-session payload BK18) → **auto-submit** (≥1 answer → `Scoring`→`Scored` → consume credit) hoặc **0 answer → `SessionAbandoned`** (release credit). **✅ P1-1 (Đợt-2) B2C không hoạt động:** B2C không có hard-deadline (`deadline=null`) → nhánh quét riêng: session `Ready`/`InProgress` mà last-activity (`max(CreatedAt, answer mới nhất)`) cũ hơn `Scoring:B2CInactivityMinutes` → `SessionAbandoned` + release credit ví User (candidate đang luyện/vừa upload KHÔNG bị quét; B2B tuyệt đối không đụng). **Resume**: mở lại token chỉ cho làm **các câu CHƯA nộp** (1 answer/câu, câu đã nộp giữ nguyên).
 
 ### State machine — Answer
