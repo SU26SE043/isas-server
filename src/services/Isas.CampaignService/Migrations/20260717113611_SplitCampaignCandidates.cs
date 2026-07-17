@@ -89,8 +89,11 @@ namespace Isas.CampaignService.Migrations
             migrationBuilder.DropColumn(name: "reference_image_key", table: "cv_submission");
 
             // 4.5) Chuẩn hoá status='Joined' (giá trị cũ trên bảng God — KHÔNG còn trong CvSubmissionStatus).
-            //      "Đã join" nay biểu diễn bằng row campaign_membership; các dòng CV này về Pending (hợp lệ).
-            migrationBuilder.Sql("UPDATE cv_submission SET status = 'Pending' WHERE status = 'Joined';");
+            //      "Đã join" nay biểu diễn bằng row campaign_membership. Map về 'Invited' (KHÔNG 'Pending'):
+            //      mọi join đều theo sau 1 invitation (magic-link), và sau khi tách, ứng viên join giữ
+            //      cv_submission.status='Invited' (join chỉ tạo membership, không đụng cv_submission) → backfill
+            //      dòng Joined cũ về 'Invited' để đồng nhất với hành vi forward + giữ được "đã shortlist/mời".
+            migrationBuilder.Sql("UPDATE cv_submission SET status = 'Invited' WHERE status = 'Joined';");
 
             // 5) Đổi tên PK/FK/index còn sống cho khớp snapshot (cv_submission + 2 inbound FK).
             migrationBuilder.Sql(@"ALTER TABLE cv_submission RENAME CONSTRAINT ""pk_campaign_candidates"" TO ""pk_cv_submission"";");
