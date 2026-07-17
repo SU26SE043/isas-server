@@ -157,13 +157,46 @@ async def process_message(message: aio_pika.IncomingMessage):
         await message.ack()  # body hỏng, ack để khỏi kẹt queue
 
 
+async def declare_topology(channel):
+    """AI2 — khai DLX + DLQ + queue chính (mang args dead-letter) và trả queue chính.
+
+    Message bị ``nack(requeue=False)`` (2 chỗ trong process_message) TRƯỚC ĐÂY bị broker
+    XOÁ IM LẶNG (queue không có DLX). Nay queue chính trỏ dead-letter về DLX
+    ``scoring_pipeline_dlx`` → DLQ ``scoring_pipeline_dead_queue`` để giữ lại soi/replay tay.
+
+    HÀNH VI dead-letter (1 DLX gắn trên queue → CẢ HAI nack site đều rơi vào DLQ):
+      • worker.py `except PermanentError` → nack: lỗi VĨNH VIỄN mà báo Failed cho .NET
+        cũng fail (mạng) — đây là giá trị CHÍNH của DLQ (không thì mất hẳn).
+      • worker.py nhánh Exception tạm thời → nack: message này CŨNG vào DLQ, NHƯNG
+        `StuckAnswerRepublisher` (.NET, quét mỗi 2') vẫn publish lại bản MỚI → answer vẫn
+        được chấm; bản trong DLQ chỉ là bản sao để soi. CHẤP NHẬN overlap này (đơn giản,
+        đúng — không tách 2 DLX chỉ để loại bản sao transient).
+
+    Tách hàm để unit-test topology bằng AsyncMock channel (không cần broker sống).
+    args PHẢI trùng khai ở .NET ScoringJobPublisher.cs, nếu không → 406 khi redeclare queue.
+    """
+    dlx = await channel.declare_exchange(
+        settings.dlx_name, aio_pika.ExchangeType.DIRECT, durable=True)
+    dead_queue = await channel.declare_queue(settings.dead_queue_name, durable=True)
+    await dead_queue.bind(dlx, routing_key=settings.dead_routing_key)
+    queue = await channel.declare_queue(
+        settings.queue_name,
+        durable=True,
+        arguments={
+            "x-dead-letter-exchange": settings.dlx_name,
+            "x-dead-letter-routing-key": settings.dead_routing_key,
+        },
+    )
+    return queue
+
+
 async def main():
     print("[*] Kết nối RabbitMQ...")
     connection = await aio_pika.connect_robust(settings.rabbitmq_url)
     async with connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1)  # chấm nặng -> xử lý 1 lúc 1 message
-        queue = await channel.declare_queue(settings.queue_name, durable=True)
+        queue = await declare_topology(channel)  # AI2: DLX/DLQ + queue chính (args dead-letter)
         await queue.consume(process_message)
         print(f"[✅] Worker chạy, nghe queue '{settings.queue_name}' (CTRL+C để thoát)")
         await asyncio.Future()
