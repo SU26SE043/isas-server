@@ -70,6 +70,26 @@ public class InternalSessionsController : ControllerBase
         }
     }
 
+    // DB18 — Payment gọi (máy-máy, X-Internal-Token) để phát hiện orphan reservation: gửi danh sách
+    // session_id đang giữ chỗ (Reserved) → trả về TẬP CON thực sự có row practice_sessions. Payment coi
+    // phần còn lại là orphan (crash giữa reserve↔insert lúc Start) → release. Input null/rỗng → trả rỗng.
+    [HttpPost("internal/sessions/exists")]
+    [AllowAnonymous]
+    public async Task<IActionResult> SessionsExist(
+        [FromBody] SessionExistsRequest req,
+        [FromHeader(Name = "X-Internal-Token")] string? token,
+        CancellationToken ct)
+    {
+        if (!IsValidInternalToken(token))
+            return Unauthorized(new { error = "Invalid internal token" });
+
+        if (req?.SessionIds is null || req.SessionIds.Count == 0)
+            return Ok(new SessionExistsResponse(Array.Empty<Guid>()));
+
+        var existing = await _practiceService.GetExistingSessionIdsAsync(req.SessionIds, ct);
+        return Ok(new SessionExistsResponse(existing));
+    }
+
     private bool IsValidInternalToken(string? token)
     {
         var expected = _config["Internal:Token"];

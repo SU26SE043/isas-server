@@ -31,4 +31,10 @@ public interface IPracticeService
 
     Task<IReadOnlyList<PracticeSessionSummary>> GetHistoryAsync(
         Guid candidateId, CancellationToken ct = default);
+
+    // DB18 — Payment gọi (internal) để phát hiện orphan reservation: trả TẬP CON sessionIds thực sự có
+    // row practice_sessions (bất kể status). Reservation Reserved mà session KHÔNG tồn tại (crash giữa
+    // reserve↔insert lúc Start) là orphan → Payment release. Chỉ đọc, không phân biệt owner/campaign.
+    Task<IReadOnlyList<Guid>> GetExistingSessionIdsAsync(
+        IReadOnlyList<Guid> sessionIds, CancellationToken ct = default);
 }
