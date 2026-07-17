@@ -242,6 +242,7 @@ credit_limit     int?          CHỈ Org/postpaid
 period_usage     int?          CHỈ Org/postpaid — lượt đã dùng kỳ này
 updated_at       timestamptz
                                UNIQUE (owner_type, owner_id)
+                               CHECK ck_credit_accounts_non_negative: remaining_credits>=0 AND reserved_credits>=0 AND (period_usage IS NULL OR period_usage>=0)  ✅ DB1 (2026-07-17)
 ```
 
 ### `credit_reservations` — giữ chỗ theo session
@@ -264,6 +265,7 @@ session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
 reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2)
 created_at timestamptz
+                          CHECK ck_credit_transactions_delta_nonzero: delta<>0  ✅ DB1 (2026-07-17)
 ```
 
 ### `product_packages`
