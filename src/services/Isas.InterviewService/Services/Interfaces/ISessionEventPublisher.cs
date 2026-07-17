@@ -1,13 +1,13 @@
-using Isas.InterviewService.DTOs;
-
 namespace Isas.InterviewService.Services.Interfaces;
 
-// Transport thuần: chỉ đẩy message (SessionScored/SessionAbandoned) lên RabbitMQ — không có
-// business logic (giống IScoringJobPublisher; nơi gọi tự build message rồi mới publish).
+// Transport thuần: đẩy 1 message đã-serialize (từ outbox_messages) lên exchange "interview.events".
+// DB2 — không còn method typed (SessionScored/SessionAbandoned) publish trực tiếp: mọi settlement-event
+// đi qua Transactional Outbox → OutboxDispatcher là ĐƯỜNG DUY NHẤT publish (tránh double-publish). Nơi
+// đóng session chỉ GHI outbox-row (cùng transaction với state-flip), không publish.
 public interface ISessionEventPublisher
 {
-    Task PublishSessionScoredAsync(SessionScoredEvent evt, CancellationToken ct = default);
-
-    // E3: session InProgress quá hạn, 0 answer -> bỏ ngang. Payment nghe để release reservation.
-    Task PublishSessionAbandonedAsync(SessionAbandonedEvent evt, CancellationToken ct = default);
+    // Publish payload NGUYÊN (không reconstruct) lên "interview.events" với routing key = message Type.
+    // messageId → BasicProperties.MessageId (khoá idempotency phía consumer). Lỗi (broker down) → ném ra
+    // để dispatcher giữ published_at null + Attempts++ (gửi lại vòng sau, event không mất).
+    Task PublishRawAsync(string routingKey, string payloadJson, string messageId, CancellationToken ct = default);
 }

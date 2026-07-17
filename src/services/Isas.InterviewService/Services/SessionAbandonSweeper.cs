@@ -1,5 +1,6 @@
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
@@ -35,18 +36,15 @@ public class SessionAbandonSweeper : BackgroundService
     private const string B2CInactivityReason = "inactivity_timeout";
 
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly ISessionEventPublisher _eventPublisher;
     private readonly ScoringOptions _options;
     private readonly ILogger<SessionAbandonSweeper> _logger;
 
     public SessionAbandonSweeper(
         IServiceScopeFactory scopeFactory,
-        ISessionEventPublisher eventPublisher,
         IOptions<ScoringOptions> options,
         ILogger<SessionAbandonSweeper> logger)
     {
         _scopeFactory = scopeFactory;
-        _eventPublisher = eventPublisher;
         _options = options.Value;
         _logger = logger;
     }
@@ -178,13 +176,18 @@ public class SessionAbandonSweeper : BackgroundService
     }
 
     // SessionAbandoned (E3 + P1-1). Guard Status ∈ {Ready, InProgress} trong WHERE (ExecuteUpdate
-    // absorbing: 0 row = đã chốt bởi luồng khác → bỏ qua, không double-publish/re-sweep). Reason theo
+    // absorbing: 0 row = đã chốt bởi luồng khác → bỏ qua, không double-enqueue/re-sweep). Reason theo
     // caller: B2B quá hạn = "expired_no_answer"; B2C không hoạt động = "inactivity_timeout".
     // (B2B chỉ đẩy session InProgress vào đây → guard nới Ready không đổi hành vi B2B; B2C có thể Ready.)
-    // Revert lesson gắn kèm (BC14) + phát event (Payment release credit).
+    //
+    // DB2: state-flip (ExecuteUpdate) + ghi outbox-row abandoned CÙNG 1 transaction tường minh (sweeper
+    // KHÔNG dùng change-tracker cho state-flip nên phải BeginTransaction để atomic). 0 row → rollback, bỏ
+    // qua. Revert lesson (BC14) best-effort SAU commit (không atomic với abandon — chỉ dọn dẹp).
     private async Task AbandonAsync(InterviewDbContext db, ExpiredSession s, string reason, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
 
         var updated = await db.PracticeSessions
             .Where(x => x.Id == s.Id
@@ -193,10 +196,30 @@ public class SessionAbandonSweeper : BackgroundService
                 .SetProperty(x => x.Status, SessionStatus.SessionAbandoned)
                 .SetProperty(x => x.CompletedAt, now), ct);
 
-        if (updated == 0) return;
+        if (updated == 0)
+        {
+            await tx.RollbackAsync(ct);   // đã chốt bởi luồng khác → không đóng/không enqueue
+            return;
+        }
+
+        // Ghi outbox-row (Payment release credit) CÙNG transaction với state-flip: broker chết vẫn còn row
+        // để OutboxDispatcher gửi lại (at-least-once; Payment idempotent theo session_id/PAY-11).
+        db.OutboxMessages.Add(OutboxMessage.ForAbandoned(new SessionAbandonedEvent
+        {
+            SessionId = s.Id,
+            CampaignId = s.CampaignId,
+            CandidateId = s.CandidateId,
+            Reason = reason,
+            AbandonedAt = now
+        }));
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+
+        _logger.LogInformation(
+            "Đã đóng SessionAbandoned + ghi outbox cho session {SessionId} (reason={Reason})", s.Id, reason);
 
         // BC14: session bỏ ngang đang gắn 1 roadmap lesson (Practicing) → trả lesson về Theory +
-        // clear session_id để user /start lại được. Release credit do E7 lo qua event dưới. Best-effort.
+        // clear session_id để user /start lại được. Best-effort, SAU commit (không atomic với abandon).
         try
         {
             await db.RoadmapLessons
@@ -208,36 +231,6 @@ public class SessionAbandonSweeper : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "BC14: revert lesson về Theory thất bại cho session {SessionId}", s.Id);
-        }
-
-        var evt = new SessionAbandonedEvent
-        {
-            SessionId = s.Id,
-            CampaignId = s.CampaignId,
-            CandidateId = s.CandidateId,
-            Reason = reason,
-            AbandonedAt = now
-        };
-
-        try
-        {
-            await _eventPublisher.PublishSessionAbandonedAsync(evt, ct);
-
-            // Settlement-outbox: phát OK → đánh dấu settlement_published_at để SettlementReconciler bỏ qua.
-            // Publish LỖI → không tới đây → marker null → reconciler phát lại (Payment release idempotent
-            // theo session_id/PAY-11 → at-least-once an toàn).
-            await db.PracticeSessions
-                .Where(x => x.Id == s.Id)
-                .ExecuteUpdateAsync(u => u.SetProperty(x => x.SettlementPublishedAt, now), ct);
-
-            _logger.LogInformation(
-                "Đã phát SessionAbandoned cho session {SessionId} (reason={Reason})", s.Id, reason);
-        }
-        catch (Exception ex)
-        {
-            // Publish lỗi KHÔNG được làm hỏng việc đóng session — session đã Abandoned trong DB rồi
-            // (giống pattern nuốt lỗi publish ở SessionScoringNotifier/E2). Miss event được SettlementReconciler backfill.
-            _logger.LogError(ex, "Phát SessionAbandoned thất bại cho session {SessionId}", s.Id);
         }
     }
 

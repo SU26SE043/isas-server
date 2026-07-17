@@ -49,7 +49,6 @@ public class ResumeContractTests
             db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object,
             notifier.Object, reservation.Object,
-            new Mock<ISessionEventPublisher>().Object,
             NullLogger<PracticeService>.Instance);
     }
 

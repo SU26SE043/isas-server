@@ -18,7 +18,6 @@ public class PracticeService : IPracticeService
     private readonly IAiServiceQuestionGenerator _questionGenerator;
     private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ICreditReservationClient _reservationClient;   // BC2
-    private readonly ISessionEventPublisher _eventPublisher;        // BK12
     private readonly ILogger<PracticeService> _logger;
 
     public PracticeService(
@@ -27,7 +26,6 @@ public class PracticeService : IPracticeService
         IAiServiceQuestionGenerator questionGenerator,
         ISessionScoringNotifier scoringNotifier,
         ICreditReservationClient reservationClient,
-        ISessionEventPublisher eventPublisher,
         ILogger<PracticeService> logger)
     {
         _db = db;
@@ -35,7 +33,6 @@ public class PracticeService : IPracticeService
         _questionGenerator = questionGenerator;
         _scoringNotifier = scoringNotifier;
         _reservationClient = reservationClient;
-        _eventPublisher = eventPublisher;
         _logger = logger;
     }
 
@@ -134,8 +131,7 @@ public class PracticeService : IPracticeService
             {
                 _logger.LogError(ex, "Sinh câu hỏi lỗi cho session {SessionId}", session.Id);
                 session.Status = SessionStatus.Failed;
-                await _db.SaveChangesAsync(ct);
-                await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
+                await EnqueueGenerationFailedAbandonAsync(session, ct);   // BK12: outbox release credit (atomic Failed)
                 // AI upstream lỗi (AiServiceException = transport/timeout/non-2xx) → propagate NGUYÊN
                 // TYPE để controller map 502 (không bọc thành InvalidOperationException = 400, che lỗi
                 // thật). Reserve vẫn được release ở catch ngoài (P1-2) + abandon (BK12) — idempotent PAY-11.
@@ -147,8 +143,7 @@ public class PracticeService : IPracticeService
             if (generated is null || generated.Count == 0)
             {
                 session.Status = SessionStatus.Failed;
-                await _db.SaveChangesAsync(ct);
-                await PublishGenerationFailedAbandonAsync(session, ct);   // BK12: release credit đã reserve
+                await EnqueueGenerationFailedAbandonAsync(session, ct);   // BK12: outbox release credit (atomic Failed)
                 throw new InvalidOperationException("AIService không trả về câu hỏi nào");
             }
 
@@ -383,21 +378,23 @@ public class PracticeService : IPracticeService
         var scoredCount = statuses.Count(s => s == AnswerStatus.Scored);
         if (scoredCount == 0)
         {
+            // DB2: đóng session (state) + ghi outbox-row abandoned CÙNG 1 SaveChanges (atomic).
             session.Status = SessionStatus.SessionAbandoned;
+            await _scoringNotifier.EnqueueSessionAbandonedAsync(sessionId, "no_scored_answer", ct);
             await _db.SaveChangesAsync(ct);
             _logger.LogInformation(
                 "Session {SessionId} -> SessionAbandoned ngay khi submit (không answer nào Scored)", sessionId);
-
-            await _scoringNotifier.NotifySessionAbandonedAsync(sessionId, "no_scored_answer", ct);
             return;
         }
 
+        // DB2: đóng session Scored (state) + ghi outbox-row SessionScored CÙNG 1 SaveChanges (atomic).
         session.Status = SessionStatus.Scored;
+        await _scoringNotifier.EnqueueSessionScoredAsync(sessionId, ct);
         await _db.SaveChangesAsync(ct);
         _logger.LogInformation(
             "Session {SessionId} -> Scored ngay khi submit (đã chấm xong từ trước)", sessionId);
 
-        // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
+        // BC9/BC10/BC14/BC15: side-effect best-effort SAU khi đã commit (không chặn đóng session).
         await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
     }
 
@@ -500,36 +497,18 @@ public class PracticeService : IPracticeService
 
     // BK12: B2C reserve credit ví cá nhân (BC2) TRƯỚC khi sinh câu hỏi. Nếu AI sinh câu hỏi lỗi →
     // session `Failed`, credit đang bị KẸT: E3 sweeper chỉ quét `InProgress`, còn `Failed` KHÔNG tự
-    // phát `SessionAbandoned` → E7 (Payment) không release → orphan credit. Fix: phát
-    // `SessionAbandoned(reason=generation_failed)` để E7 hoàn credit ví User.
-    // Best-effort (nuốt lỗi publish): session đã `Failed` trong DB rồi, publish lỗi KHÔNG được chặn
-    // luồng (đồng pattern nuốt lỗi ở SessionScoringNotifier/SessionAbandonSweeper). E7 release
-    // absorbing (reservation không tồn tại/đã finalized → no-op) nên phát cho session không có
-    // reservation cũng an toàn. Chỉ B2C dùng path này (CreateSessionAsync); B2B không reserve (PAY-6)
-    // và không có nhánh Failed-sau-reserve.
-    private async Task PublishGenerationFailedAbandonAsync(PracticeSession session, CancellationToken ct)
+    // phát `SessionAbandoned` → E7 (Payment) không release → orphan credit. Fix: ghi outbox-row
+    // `SessionAbandoned(reason=generation_failed)` để OutboxDispatcher phát → E7 hoàn credit ví User.
+    // DB2: ghi outbox-row CÙNG SaveChanges với state=Failed (atomic — broker chết vẫn còn row để gửi lại).
+    // SettlementReconciler cũ BỎ SÓT site này (chỉ quét Scored/SessionAbandoned); outbox phủ cả nó. Chỉ
+    // B2C dùng path này (CreateSessionAsync); B2B không reserve (PAY-6) và không có nhánh Failed-sau-reserve.
+    private async Task EnqueueGenerationFailedAbandonAsync(PracticeSession session, CancellationToken ct)
     {
-        var evt = new SessionAbandonedEvent
-        {
-            SessionId = session.Id,
-            CampaignId = session.CampaignId,   // null cho B2C
-            CandidateId = session.CandidateId,
-            Reason = GenerationFailedReason,
-            AbandonedAt = DateTime.UtcNow
-        };
-
-        try
-        {
-            await _eventPublisher.PublishSessionAbandonedAsync(evt, ct);
-            _logger.LogInformation(
-                "BK12: phát SessionAbandoned(generation_failed) cho session {SessionId} để release credit ví User",
-                session.Id);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "BK12: phát SessionAbandoned(generation_failed) thất bại cho session {SessionId}", session.Id);
-        }
+        await _scoringNotifier.EnqueueSessionAbandonedAsync(session.Id, GenerationFailedReason, ct);
+        await _db.SaveChangesAsync(ct);   // atomic: state=Failed + outbox-row
+        _logger.LogInformation(
+            "BK12: ghi outbox SessionAbandoned(generation_failed) cho session {SessionId} để release credit ví User",
+            session.Id);
 
         // BC14 (defense-in-depth): nếu session này đang gắn 1 roadmap lesson (Practicing) mà sinh câu
         // hỏi lỗi → trả lesson về Theory + clear session_id để /start lại được. Luồng /start hiện link

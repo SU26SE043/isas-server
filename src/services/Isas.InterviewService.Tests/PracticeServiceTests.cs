@@ -11,26 +11,19 @@ namespace Isas.InterviewService.Tests;
 public class PracticeServiceTests
 {
     private static PracticeService Build(TestDb t, Mock<IAiServiceQuestionGenerator> gen)
-        => Build(t, gen, out _, out _, out _);
+        => Build(t, gen, out _, out _);
 
     private static PracticeService Build(
         TestDb t, Mock<IAiServiceQuestionGenerator> gen, out Mock<ISessionScoringNotifier> scoringNotifier)
-        => Build(t, gen, out scoringNotifier, out _, out _);
+        => Build(t, gen, out scoringNotifier, out _);
 
+    // BC2: mặc định reserve (owner=User) THÀNH CÔNG → luồng tạo session chạy như cũ.
+    // Test 402/verify lấy `reservation` ra để setup/verify riêng.
+    // DB2/BK12: `scoringNotifier` để verify ghi outbox SessionAbandoned(generation_failed) khi session Failed.
     private static PracticeService Build(
         TestDb t, Mock<IAiServiceQuestionGenerator> gen,
         out Mock<ISessionScoringNotifier> scoringNotifier,
         out Mock<ICreditReservationClient> reservation)
-        => Build(t, gen, out scoringNotifier, out reservation, out _);
-
-    // BC2: mặc định reserve (owner=User) THÀNH CÔNG → luồng tạo session chạy như cũ.
-    // Test 402/verify lấy `reservation` ra để setup/verify riêng.
-    // BK12: `eventPublisher` để verify phát SessionAbandoned(generation_failed) khi session Failed.
-    private static PracticeService Build(
-        TestDb t, Mock<IAiServiceQuestionGenerator> gen,
-        out Mock<ISessionScoringNotifier> scoringNotifier,
-        out Mock<ICreditReservationClient> reservation,
-        out Mock<ISessionEventPublisher> eventPublisher)
     {
         scoringNotifier = new Mock<ISessionScoringNotifier>();
         scoringNotifier
@@ -43,11 +36,9 @@ public class PracticeServiceTests
             .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
 
-        eventPublisher = new Mock<ISessionEventPublisher>();
-
         return new PracticeService(
             t.Db, new Mock<IStorageService>().Object, gen.Object, scoringNotifier.Object,
-            reservation.Object, eventPublisher.Object, NullLogger<PracticeService>.Instance);
+            reservation.Object, NullLogger<PracticeService>.Instance);
     }
 
     [Fact]
@@ -174,7 +165,7 @@ public class PracticeServiceTests
         var svc = new PracticeService(
             t.Db, new Mock<IStorageService>().Object, new Mock<IAiServiceQuestionGenerator>().Object,
             new Mock<ISessionScoringNotifier>().Object, reservation.Object,
-            new Mock<ISessionEventPublisher>().Object, NullLogger<PracticeService>.Instance);
+            NullLogger<PracticeService>.Instance);
 
         var req = new CreateCampaignSessionRequest(
             Guid.NewGuid(), orgId, JobCategory.BE,
@@ -290,7 +281,7 @@ public class PracticeServiceTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion>());
 
-        var svc = Build(t, gen, out _, out _, out var publisher);
+        var svc = Build(t, gen, out var notifier, out _);
         var req = new CreatePracticeSessionRequest(null, null, JobCategory.FE);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -300,10 +291,9 @@ public class PracticeServiceTests
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.CandidateId == candidate);
         Assert.Equal(SessionStatus.Failed, s.Status);
 
-        // BK12: AIService trả rỗng cũng là "sinh câu hỏi lỗi" sau reserve → phát abandoned để release credit.
-        publisher.Verify(p => p.PublishSessionAbandonedAsync(
-            It.Is<SessionAbandonedEvent>(e => e.SessionId == s.Id && e.Reason == "generation_failed"),
-            It.IsAny<CancellationToken>()), Times.Once);
+        // DB2/BK12: AIService trả rỗng cũng là "sinh câu hỏi lỗi" sau reserve → ghi outbox abandoned để release credit.
+        notifier.Verify(n => n.EnqueueSessionAbandonedAsync(
+            s.Id, "generation_failed", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // BK12 (a): B2C reserve → AI sinh câu hỏi NÉM lỗi → Failed → phát SessionAbandoned đúng sessionId
@@ -319,7 +309,7 @@ public class PracticeServiceTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new Exception("Gemini down"));
 
-        var svc = Build(t, gen, out _, out _, out var publisher);
+        var svc = Build(t, gen, out var notifier, out _);
         var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -328,12 +318,10 @@ public class PracticeServiceTests
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.CandidateId == candidate);
         Assert.Equal(SessionStatus.Failed, s.Status);
 
-        // B2C: campaign_id null; event mang đúng session/candidate + reason chuẩn.
-        publisher.Verify(p => p.PublishSessionAbandonedAsync(
-            It.Is<SessionAbandonedEvent>(e =>
-                e.SessionId == s.Id && e.CandidateId == candidate
-                && e.CampaignId == null && e.Reason == "generation_failed"),
-            It.IsAny<CancellationToken>()), Times.Once);
+        // DB2/BK12: ghi outbox abandoned reason=generation_failed (OutboxDispatcher → E7 release ví User).
+        // Event shape (campaign_id null B2C) khoá bởi test outbox real-notifier riêng; ở đây verify enqueue.
+        notifier.Verify(n => n.EnqueueSessionAbandonedAsync(
+            s.Id, "generation_failed", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // COMMIT-3: AI sinh câu hỏi ném AiServiceException (upstream lỗi thật) → CreateSession propagate
@@ -350,7 +338,7 @@ public class PracticeServiceTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-questions trả 503"));
 
-        var svc = Build(t, gen, out _, out var reservation, out var publisher);
+        var svc = Build(t, gen, out var notifier, out var reservation);
         reservation
             .Setup(r => r.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -366,10 +354,9 @@ public class PracticeServiceTests
 
         // Đợt-2 P1-2: credit đã reserve được release (không treo credit ví User).
         reservation.Verify(r => r.ReleaseAsync(s.Id, It.IsAny<CancellationToken>()), Times.Once);
-        // BK12: abandon phát để E7 (Payment) release.
-        publisher.Verify(p => p.PublishSessionAbandonedAsync(
-            It.Is<SessionAbandonedEvent>(e => e.SessionId == s.Id && e.Reason == "generation_failed"),
-            It.IsAny<CancellationToken>()), Times.Once);
+        // DB2/BK12: ghi outbox abandoned để OutboxDispatcher → E7 (Payment) release.
+        notifier.Verify(n => n.EnqueueSessionAbandonedAsync(
+            s.Id, "generation_failed", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // BK12 (b): phát event là BEST-EFFORT — publisher ném lỗi KHÔNG được chặn luồng: session vẫn
@@ -385,11 +372,18 @@ public class PracticeServiceTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new Exception("Gemini down"));
 
-        var svc = Build(t, gen, out _, out _, out var publisher);
-        publisher
-            .Setup(p => p.PublishSessionAbandonedAsync(
-                It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new Exception("broker down"));
+        // DB2 (real notifier): sinh câu hỏi lỗi → session Failed + ghi outbox abandoned(generation_failed)
+        // CÙNG transaction, và VẪN ném InvalidOperationException gốc (không nuốt lỗi sinh câu hỏi).
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+        reservation
+            .Setup(r => r.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            TestDb.Notifier(t.Db), reservation.Object, NullLogger<PracticeService>.Instance);
 
         var req = new CreatePracticeSessionRequest(null, null, JobCategory.FE);
 
@@ -398,9 +392,15 @@ public class PracticeServiceTests
 
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.CandidateId == candidate);
         Assert.Equal(SessionStatus.Failed, s.Status);
+
+        // Outbox abandoned(generation_failed) ghi atomic với Failed → OutboxDispatcher phát để E7 release.
+        using var read = t.NewContext();
+        Assert.Equal(1, TestDb.OutboxCount(read, s.Id, "session.abandoned"));
+        var abandoned = TestDb.AbandonedOutbox(read, s.Id);
+        Assert.Equal("generation_failed", abandoned!.Reason);
     }
 
-    // BK12 (c): đường THÀNH CÔNG (session Ready, không Failed) KHÔNG phát SessionAbandoned.
+    // BK12 (c): đường THÀNH CÔNG (session Ready, không Failed) KHÔNG ghi outbox SessionAbandoned.
     [Fact]
     public async Task Create_HappyPath_DoesNotPublishAbandoned()
     {
@@ -412,14 +412,14 @@ public class PracticeServiceTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
 
-        var svc = Build(t, gen, out _, out _, out var publisher);
+        var svc = Build(t, gen, out var notifier, out _);
         var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
 
         var res = await svc.CreateSessionAsync(candidate, req);
 
         Assert.Equal(nameof(SessionStatus.Ready), res.Status);
-        publisher.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        notifier.Verify(n => n.EnqueueSessionAbandonedAsync(
+            It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -513,8 +513,11 @@ public class PracticeServiceTests
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.SessionAbandoned, s.Status);
 
-        notifier.Verify(n => n.NotifySessionAbandonedAsync(session.Id, It.IsAny<string>(), It.IsAny<CancellationToken>()),
+        // DB2: ghi outbox abandoned (release), KHÔNG ghi/notify scored (consume).
+        notifier.Verify(n => n.EnqueueSessionAbandonedAsync(session.Id, It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Once);
+        notifier.Verify(n => n.EnqueueSessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
         notifier.Verify(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -546,6 +549,44 @@ public class PracticeServiceTests
         Assert.Contains(answers, x => x.QuestionId == q2.Id && x.Status == AnswerStatus.Skipped);
 
         notifier.Verify(n => n.NotifySessionScoredAsync(session.Id, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // DB2 (real notifier): submit đóng-ngay Scored → ghi outbox SessionScored CÙNG transaction với state-flip
+    // (OutboxDispatcher phát để E7 consume). Đối xứng nhánh callback chấm dần.
+    [Fact]
+    public async Task Submit_ClosesToScored_WritesScoredOutbox_RealNotifier()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.InProgress, JobCategory.BE);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(JobCategory.BE);   // maxScore 5, weight 1.0
+        crit.MaxScore = 5; crit.Weight = 1.0m;
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, a);
+        await t.Db.SaveChangesAsync();
+        t.Db.AnswerScores.Add(new Isas.InterviewService.Entities.AnswerScore
+        {
+            Id = Guid.NewGuid(), AnswerId = a.Id, CriterionId = crit.Id,
+            AttemptNo = 1, Score = 4m, Reasoning = "ok", RubricVersion = 1, CreatedAt = DateTime.UtcNow
+        });
+        await t.Db.SaveChangesAsync();
+
+        var reservation = new Mock<ICreditReservationClient>();
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, new Mock<IAiServiceQuestionGenerator>().Object,
+            TestDb.Notifier(t.Db), reservation.Object, NullLogger<PracticeService>.Instance);
+
+        await svc.SubmitSessionAsync(candidate, session.Id);
+
+        var s = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.Scored, s.Status);
+
+        using var read = t.NewContext();
+        Assert.Equal(1, TestDb.OutboxCount(read, session.Id, "session.scored"));
+        var scored = TestDb.ScoredOutbox(read, session.Id);
+        Assert.Equal(candidate, scored!.CandidateId);
+        Assert.Equal(80m, scored.TotalScore);   // 4/5 = 80%
     }
 
     // I2: câu chưa trả lời → Skipped, NHƯNG answer đang chấm (Uploaded) chưa xong → buổi giữ Scoring

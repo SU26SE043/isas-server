@@ -34,7 +34,6 @@ public class CampaignSessionTests
                new Mock<IAiServiceQuestionGenerator>().Object,
                scoringNotifier.Object,
                reservation.Object,
-               new Mock<ISessionEventPublisher>().Object,   // BK12: abandoned publisher (không dùng ở nhánh B2B)
                NullLogger<PracticeService>.Instance);
     }
 

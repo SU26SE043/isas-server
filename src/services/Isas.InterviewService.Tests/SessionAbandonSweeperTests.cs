@@ -13,8 +13,12 @@ using Moq;
 
 namespace Isas.InterviewService.Tests;
 
+// DB2 — sweeper đóng session bỏ ngang GHI outbox-row abandoned (CÙNG transaction với state-flip), thay
+// cho publish trực tiếp + marker settlement_published_at cũ. Publish thật do OutboxDispatcher (test riêng).
 public class SessionAbandonSweeperTests
 {
+    private const string AbandonedType = "session.abandoned";
+
     // Gọi ScanOnceAsync (private) một nhịp.
     private static async Task ScanOnce(SessionAbandonSweeper s)
     {
@@ -25,24 +29,34 @@ public class SessionAbandonSweeperTests
 
     // ServiceProvider thật để CreateScope() trả về DbContext dùng chung connection (giống
     // StuckAnswerRepublisherTests.Build). P1-1: b2cInactivityMinutes tùy chỉnh ngưỡng quét B2C.
-    private static (SessionAbandonSweeper sweeper, Mock<ISessionEventPublisher> pub) Build(
-        TestDb t, int b2cInactivityMinutes = 120)
+    // DB2: sweeper KHÔNG còn giữ publisher (ghi outbox-row vào DbContext của scope).
+    private static SessionAbandonSweeper Build(TestDb t, int b2cInactivityMinutes = 120)
     {
         var services = new ServiceCollection();
         services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
         var provider = services.BuildServiceProvider();
 
-        var pub = new Mock<ISessionEventPublisher>();
-        var sweeper = new SessionAbandonSweeper(
+        return new SessionAbandonSweeper(
             provider.GetRequiredService<IServiceScopeFactory>(),
-            pub.Object,
             Options.Create(new ScoringOptions { B2CInactivityMinutes = b2cInactivityMinutes }),
             NullLogger<SessionAbandonSweeper>.Instance);
-        return (sweeper, pub);
+    }
+
+    // Số outbox-row abandoned của session (đọc bản đã commit qua NewContext).
+    private static int AbandonedRows(TestDb t, Guid sessionId)
+    {
+        using var db = t.NewContext();
+        return TestDb.OutboxCount(db, sessionId, AbandonedType);
+    }
+
+    private static SessionAbandonedEvent? AbandonedEvent(TestDb t, Guid sessionId)
+    {
+        using var db = t.NewContext();
+        return TestDb.AbandonedOutbox(db, sessionId);
     }
 
     [Fact]
-    public async Task InProgress_PastDeadline_ZeroAnswers_PublishesSessionAbandoned_AndClosesSession()
+    public async Task InProgress_PastDeadline_ZeroAnswers_WritesAbandonedOutbox_AndClosesSession()
     {
         using var t = new TestDb();
         var candidateId = Guid.NewGuid();
@@ -53,17 +67,11 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
-        SessionAbandonedEvent? published = null;
-        pub.Setup(p => p.PublishSessionAbandonedAsync(It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
-           .Callback<SessionAbandonedEvent, CancellationToken>((e, _) => published = e)
-           .Returns(Task.CompletedTask);
-
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Once);
-
+        Assert.Equal(1, AbandonedRows(t, session.Id));
+        var published = AbandonedEvent(t, session.Id);
         Assert.NotNull(published);
         Assert.Equal(session.Id, published!.SessionId);
         Assert.Equal(campaignId, published.CampaignId);
@@ -90,11 +98,10 @@ public class SessionAbandonSweeperTests
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, AbandonedRows(t, session.Id));
 
         var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.InProgress, saved.Status);   // không auto-submit, không abandon
@@ -110,11 +117,10 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, AbandonedRows(t, session.Id));
 
         var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.InProgress, saved.Status);
@@ -130,11 +136,10 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, AbandonedRows(t, session.Id));
     }
 
     [Fact]
@@ -146,15 +151,14 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, AbandonedRows(t, session.Id));
     }
 
     // I2: session B2B quá Deadline + ≥1 answer → AUTO-SUBMIT (reuse SubmitSessionAsync). Câu chưa trả
-    // lời → Skipped; mọi answer done (Scored + Skipped) → session Scored + phát SessionScored.
+    // lời → Skipped; mọi answer done (Scored + Skipped) → session Scored + ghi outbox SessionScored.
     [Fact]
     public async Task InProgress_PastDeadline_WithAnswer_AutoSubmits_SkipsUnanswered_AndCloses()
     {
@@ -183,7 +187,9 @@ public class SessionAbandonSweeperTests
         Assert.Equal(2, answers.Count);   // a1 (Scored) + a2 (Skipped) cho câu chưa trả lời
         Assert.Contains(answers, x => x.QuestionId == q2.Id && x.Status == AnswerStatus.Skipped);
 
-        // E2: auto-submit đóng Scored → phát SessionScored (E7 nghe để consume credit).
+        // DB2: auto-submit đóng Scored → ghi outbox SessionScored (E7 nghe để consume credit) +
+        // notifier side-effect (BC9…). Mock notifier verify enqueue + notify được gọi.
+        notifier.Verify(n => n.EnqueueSessionScoredAsync(session.Id, It.IsAny<CancellationToken>()), Times.Once);
         notifier.Verify(n => n.NotifySessionScoredAsync(session.Id, It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -198,6 +204,8 @@ public class SessionAbandonSweeperTests
         var notifier = new Mock<ISessionScoringNotifier>();
         notifier.Setup(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
+        notifier.Setup(n => n.EnqueueSessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
 
         var reservation = new Mock<ICreditReservationClient>();
         reservation.Setup(r => r.ReserveAsync(
@@ -208,24 +216,21 @@ public class SessionAbandonSweeperTests
         services.AddSingleton(new Mock<IAiServiceQuestionGenerator>().Object);
         services.AddSingleton(notifier.Object);
         services.AddSingleton(reservation.Object);
-        services.AddSingleton(new Mock<ISessionEventPublisher>().Object);
         services.AddScoped<IPracticeService, PracticeService>();
 
         var provider = services.BuildServiceProvider();
 
-        var pub = new Mock<ISessionEventPublisher>();
         var sweeper = new SessionAbandonSweeper(
             provider.GetRequiredService<IServiceScopeFactory>(),
-            pub.Object,
             Options.Create(new ScoringOptions()),
             NullLogger<SessionAbandonSweeper>.Instance);
         return (sweeper, notifier);
     }
 
     // P1-1: session B2C (Deadline null, CampaignId null) Ready & không hoạt động quá ngưỡng → bỏ ngang +
-    // phát SessionAbandoned (reason=inactivity_timeout) để Payment release credit ví User.
+    // ghi outbox SessionAbandoned (reason=inactivity_timeout) để Payment release credit ví User.
     [Fact]
-    public async Task InactiveB2C_Ready_PastThreshold_Abandoned_AndPublishesEvent()
+    public async Task InactiveB2C_Ready_PastThreshold_Abandoned_AndWritesOutbox()
     {
         using var t = new TestDb();
         var candidate = Guid.NewGuid();
@@ -235,16 +240,11 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
-        SessionAbandonedEvent? published = null;
-        pub.Setup(p => p.PublishSessionAbandonedAsync(It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
-           .Callback<SessionAbandonedEvent, CancellationToken>((e, _) => published = e)
-           .Returns(Task.CompletedTask);
-
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(1, AbandonedRows(t, session.Id));
+        var published = AbandonedEvent(t, session.Id);
         Assert.NotNull(published);
         Assert.Equal(session.Id, published!.SessionId);
         Assert.Equal(candidate, published.CandidateId);
@@ -256,10 +256,10 @@ public class SessionAbandonSweeperTests
         Assert.NotNull(saved.CompletedAt);
     }
 
-    // Settlement-outbox COMMIT 1: sweeper phát SessionAbandoned OK → set settlement_published_at
-    // (điểm phát thứ 3). SettlementReconciler dựa vào marker này để bỏ qua session đã phát.
+    // DB2: outbox-row abandoned ghi CÙNG transaction với đóng session, published_at còn NULL (OutboxDispatcher
+    // sẽ phát sau). Thay cho marker settlement_published_at cũ.
     [Fact]
-    public async Task InactiveB2C_AbandonPublishSuccess_SetsSettlementMarker()
+    public async Task InactiveB2C_Abandon_WritesUnpublishedOutboxRow()
     {
         using var t = new TestDb();
         var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready,
@@ -267,36 +267,17 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
-        pub.Setup(p => p.PublishSessionAbandonedAsync(It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
-           .Returns(Task.CompletedTask);
-
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
-        Assert.Equal(SessionStatus.SessionAbandoned, saved.Status);
-        Assert.NotNull(saved.SettlementPublishedAt);
-    }
+        using var db = t.NewContext();
+        var row = await db.OutboxMessages.AsNoTracking()
+            .SingleAsync(m => m.SessionId == session.Id && m.Type == AbandonedType);
+        Assert.Null(row.PublishedAt);      // chưa publish (dispatcher lo)
+        Assert.Equal(0, row.Attempts);
 
-    // Settlement-outbox: sweeper phát HỤT → marker giữ null (reconciler sẽ backfill), không ném ra ngoài.
-    [Fact]
-    public async Task InactiveB2C_AbandonPublishThrows_MarkerStaysNull()
-    {
-        using var t = new TestDb();
-        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready,
-            createdAt: DateTime.UtcNow.AddMinutes(-121), deadline: null);
-        t.Db.Add(session);
-        await t.Db.SaveChangesAsync();
-
-        var (sweeper, pub) = Build(t);
-        pub.Setup(p => p.PublishSessionAbandonedAsync(It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
-           .ThrowsAsync(new Exception("bus down"));
-
-        await ScanOnce(sweeper);   // best-effort: không ném ra ngoài
-
-        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
-        Assert.Equal(SessionStatus.SessionAbandoned, saved.Status);   // vẫn đóng session trong DB
-        Assert.Null(saved.SettlementPublishedAt);
+        var saved = await db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.SessionAbandoned, saved.Status);   // state-flip + outbox atomic
     }
 
     // P1-1: session B2C InProgress không hoạt động quá ngưỡng (0 answer) → cũng bỏ ngang.
@@ -310,11 +291,10 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(1, AbandonedRows(t, session.Id));
         var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.SessionAbandoned, saved.Status);
     }
@@ -335,11 +315,10 @@ public class SessionAbandonSweeperTests
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, AbandonedRows(t, session.Id));
         var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.InProgress, saved.Status);
     }
@@ -354,11 +333,10 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, AbandonedRows(t, session.Id));
         var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.Ready, saved.Status);
     }
@@ -375,11 +353,10 @@ public class SessionAbandonSweeperTests
         t.Db.Add(session);
         await t.Db.SaveChangesAsync();
 
-        var (sweeper, pub) = Build(t);
+        var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        pub.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, AbandonedRows(t, session.Id));
         var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.InProgress, saved.Status);
     }

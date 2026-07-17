@@ -433,20 +433,23 @@ public class AnswerService : IAnswerService
         var scoredCount = statuses.Count(s => s == AnswerStatus.Scored);
         if (scoredCount == 0)
         {
+            // DB2: đóng session (state) + ghi outbox-row abandoned CÙNG 1 SaveChanges (atomic) — broker
+            // chết vẫn còn row để OutboxDispatcher gửi lại (Payment release), không mất event.
             session.Status = SessionStatus.SessionAbandoned;
+            await _scoringNotifier.EnqueueSessionAbandonedAsync(sessionId, "no_scored_answer", ct);
             await _db.SaveChangesAsync(ct);
             _logger.LogInformation(
                 "Session {SessionId} -> SessionAbandoned (không answer nào Scored)", sessionId);
-
-            await _scoringNotifier.NotifySessionAbandonedAsync(sessionId, "no_scored_answer", ct);
             return;
         }
 
+        // DB2: đóng session Scored (state) + ghi outbox-row SessionScored CÙNG 1 SaveChanges (atomic).
         session.Status = SessionStatus.Scored;
+        await _scoringNotifier.EnqueueSessionScoredAsync(sessionId, ct);
         await _db.SaveChangesAsync(ct);
         _logger.LogInformation("Session {SessionId} -> Scored", sessionId);
 
-        // E2: phát SessionScored (campaign_id + điểm tổng) khi session vừa đóng.
+        // BC9/BC10/BC14/BC15: side-effect best-effort SAU khi đã commit (không chặn đóng session).
         await _scoringNotifier.NotifySessionScoredAsync(sessionId, ct);
     }
 }
