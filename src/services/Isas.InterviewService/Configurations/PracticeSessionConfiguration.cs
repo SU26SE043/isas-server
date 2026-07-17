@@ -37,6 +37,20 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // B2B: lookup session theo campaign (S3/S4). Non-unique, nullable.
         e.HasIndex(x => x.CampaignId);
 
+        // DB5 — hỗ trợ SessionAbandonSweeper (quét mỗi 2', trước đây seq-scan cả bảng).
+        // (1) B2B quá hạn nhận bài (ScanExpiredB2BAsync): status=InProgress + deadline != null + deadline < now.
+        // Partial index trên deadline (chỉ row CÓ deadline = B2B) → sweeper không quét row B2C (deadline null).
+        e.HasIndex(x => x.Deadline)
+            .HasDatabaseName("ix_practice_sessions_deadline")
+            .HasFilter("deadline IS NOT NULL");
+
+        // (2) B2C không hoạt động (ScanInactiveB2CAsync): status Ready|InProgress + deadline == null +
+        // campaign_id == null + created_at < cutoff. Partial index trên created_at (chỉ row B2C không-deadline)
+        // → tránh seq-scan; range-scan created_at trong tập B2C. Filter snake_case (SQLite test dùng snake_case).
+        e.HasIndex(x => x.CreatedAt)
+            .HasDatabaseName("ix_practice_sessions_b2c_active")
+            .HasFilter("campaign_id IS NULL AND deadline IS NULL");
+
         e.HasMany(x => x.Questions)
             .WithOne(q => q.Session)
             .HasForeignKey(q => q.SessionId)
@@ -94,6 +108,12 @@ public class PracticeAnswerConfiguration : IEntityTypeConfiguration<PracticeAnsw
 
         // Business rule: tối đa 1 answer mỗi câu hỏi (chống trùng khi retry upload)
         e.HasIndex(x => new { x.SessionId, x.QuestionId }).IsUnique();
+
+        // DB5 — hỗ trợ StuckAnswerRepublisher (quét mỗi 2', trước đây seq-scan cả bảng). Lọc theo
+        // Status ∈ {Uploaded,Scoring} rồi so LastScoringPublishedAt (null/aged). Composite non-partial
+        // (status, last_scoring_published_at) → leading col status thu hẹp tập, col 2 phục vụ so mốc thời gian.
+        e.HasIndex(x => new { x.Status, x.LastScoringPublishedAt })
+            .HasDatabaseName("ix_practice_answers_status_lsp");
 
         // Restrict (KHÔNG Cascade): tránh multiple cascade paths.
         // Answer vẫn bị xóa khi session xóa qua đường session -> answers ở trên.
