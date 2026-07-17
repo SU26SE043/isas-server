@@ -510,6 +510,35 @@ public class PracticeService : IPracticeService
             .ToListAsync(ct);
     }
 
+    // AI4 — INTERNAL (Campaign/HR): trả per-question list kèm transcript + nhận xét AI per-criterion +
+    // cờ needs_review (E10/E11). Tái dùng NGUYÊN VẸN truy vấn + MapAnswer của GetSessionAsync (một nguồn
+    // sự thật cho transcript/điểm) NHƯNG BỎ check chủ session — caller là máy-máy (X-Internal-Token) và
+    // Campaign đã gate org+ranking. MapToResponse với criterionScores/cvStrengths mặc định null → phần
+    // Result (BC9/BC8) = null; ta chỉ lấy .Questions. Session không tồn tại → null (controller 404).
+    public async Task<IReadOnlyList<QuestionResponse>?> GetSessionAnswersInternalAsync(
+        Guid sessionId, CancellationToken ct = default)
+    {
+        var session = await _db.PracticeSessions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+
+        if (session is null) return null;
+
+        var questions = await _db.PracticeQuestions
+            .AsNoTracking()
+            .Where(q => q.SessionId == sessionId)
+            .OrderBy(q => q.OrderNo)
+            .ToListAsync(ct);
+
+        var answers = await _db.PracticeAnswers
+            .AsNoTracking()
+            .Include(a => a.Scores)
+            .Where(a => a.SessionId == sessionId)
+            .ToListAsync(ct);
+
+        return MapToResponse(session, questions, answers).Questions;
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
 
     // BK12: B2C reserve credit ví cá nhân (BC2) TRƯỚC khi sinh câu hỏi. Nếu AI sinh câu hỏi lỗi →

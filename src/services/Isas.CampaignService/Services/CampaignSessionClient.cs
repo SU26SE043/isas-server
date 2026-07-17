@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Isas.CampaignService.DTOs;
 
 namespace Isas.CampaignService.Services
 {
@@ -99,6 +100,73 @@ namespace Isas.CampaignService.Services
                 .ToList();
 
             return new CampaignSessionResult(body.Id, mapped);
+        }
+
+        // AI4 — shape khớp Interview QuestionResponse/AnswerResponse (chỉ field HR cần: câu hỏi + transcript
+        // + per-criterion score/reasoning + needsReview). Unknown field bị bỏ qua (case-insensitive).
+        private record TranscriptApiQuestion(
+            Guid Id, int OrderNo, string Content, int TimeLimitSec, TranscriptApiAnswer? Answer);
+        private record TranscriptApiAnswer(
+            Guid Id, string Status, int DurationSec, string? Transcript,
+            List<TranscriptApiScore>? Scores, bool NeedsReview);
+        private record TranscriptApiScore(Guid CriterionId, decimal Score, string? Reasoning);
+
+        public async Task<SessionTranscriptResponse> GetSessionTranscriptAsync(
+            Guid sessionId, CancellationToken ct = default)
+        {
+            using var msg = new HttpRequestMessage(
+                HttpMethod.Get, $"/internal/sessions/{sessionId}/answers");
+            msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _http.SendAsync(msg, ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                _logger.LogError(ex, "Không gọi được InterviewService /internal/sessions/{SessionId}/answers", sessionId);
+                throw new DownstreamServiceException("Không gọi được InterviewService (transcript)", ex);
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogError("InterviewService transcript lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+                throw new DownstreamServiceException($"InterviewService transcript trả {(int)response.StatusCode}");
+            }
+
+            List<TranscriptApiQuestion>? body;
+            try
+            {
+                body = await response.Content.ReadFromJsonAsync<List<TranscriptApiQuestion>>(Json, ct);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "InterviewService transcript trả JSON không hợp lệ");
+                throw new DownstreamServiceException("InterviewService transcript trả JSON không hợp lệ", ex);
+            }
+
+            var questions = (body ?? new List<TranscriptApiQuestion>())
+                .Select(q => new TranscriptQuestion
+                {
+                    QuestionId = q.Id,
+                    OrderNo = q.OrderNo,
+                    Content = q.Content,
+                    Transcript = q.Answer?.Transcript,
+                    NeedsReview = q.Answer?.NeedsReview ?? false,
+                    Scores = (q.Answer?.Scores ?? new List<TranscriptApiScore>())
+                        .Select(s => new TranscriptCriterionScore
+                        {
+                            CriterionId = s.CriterionId,
+                            Score = s.Score,
+                            Reasoning = s.Reasoning
+                        })
+                        .ToList()
+                })
+                .ToList();
+
+            return new SessionTranscriptResponse { SessionId = sessionId, Questions = questions };
         }
     }
 }

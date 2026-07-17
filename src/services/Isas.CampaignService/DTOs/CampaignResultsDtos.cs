@@ -63,4 +63,35 @@ namespace Isas.CampaignService.DTOs
         public string ContentType { get; set; } = "text/csv";
         public string FileName { get; set; } = "results.csv";
     }
+
+    // AI4 — chi tiết transcript 1 buổi phỏng vấn cho HR (`GET /campaign/{id}/results/{sessionId}/transcript`).
+    // Đọc XUYÊN SERVICE từ Interview (`/internal/sessions/{sessionId}/answers`, GEN-2 ref lỏng) — HR đối chiếu
+    // điểm ranking (E5) với transcript thật + dẫn chứng AI (E11) + cờ needs_review (E10). KHÔNG lưu Campaign DB.
+    public class SessionTranscriptResponse
+    {
+        public System.Guid SessionId { get; set; }
+        public List<TranscriptQuestion> Questions { get; set; } = new();
+    }
+
+    // 1 câu hỏi + câu trả lời (transcript) + điểm/nhận xét AI per-criterion. answer trống (chưa nộp/Skipped)
+    // → Transcript null, Scores rỗng, NeedsReview false.
+    public class TranscriptQuestion
+    {
+        public System.Guid QuestionId { get; set; }
+        public int OrderNo { get; set; }
+        public string Content { get; set; } = null!;
+        public string? Transcript { get; set; }
+        // E10 — self-consistency spread vượt ngưỡng → HR nên soi lại (điểm AI = gợi ý, D13).
+        public bool NeedsReview { get; set; }
+        public List<TranscriptCriterionScore> Scores { get; set; } = new();
+    }
+
+    // Điểm + nhận xét (reasoning, E11 trích dẫn transcript) của 1 tiêu chí. CriterionId = ref lỏng
+    // (rubric_criteria phía Interview) — HR đối chiếu theo thứ tự/điểm, Campaign không map tên tiêu chí.
+    public class TranscriptCriterionScore
+    {
+        public System.Guid CriterionId { get; set; }
+        public decimal Score { get; set; }
+        public string? Reasoning { get; set; }
+    }
 }
