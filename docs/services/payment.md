@@ -327,17 +327,8 @@ created_at     timestamptz
 ```
 > **P8b reconcile (vòng 14):** dùng `owner_type/owner_id` + `numeric` (nhất quán schema payment còn lại) thay `org_id`+`*_vnd bigint`. Bỏ `issued_at/due_at/paid_at` — paid-ness derive từ `status=Paid` + order settle; thêm lại nếu HR cần hạn hóa đơn (**BK17**). `orders.invoice_id` (nullable FK Restrict, kind=InvoiceSettlement) + `orders.package_id`→nullable (đơn settle không gắn pack).
 
-### `subscriptions` 🔜 *(phase 2)*
-```
-id         uuid   PK
-owner_type varchar(8)    enum: Org · User
-owner_id   uuid
-package_id uuid   FK → product_packages
-status     varchar(16)   enum: Active · Expired · Cancelled
-started_at timestamptz
-expires_at timestamptz
-```
-> FK nằm ở phía **`orders.subscription_id`** (KHÔNG đặt `order_id` ở đây) → 1 Subscription nhận **N Order** theo thời gian: `SubscriptionPurchase` (mua đầu) + mỗi kỳ `SubscriptionRenewal`. Cùng pattern với `orders.invoice_id`.
+### ~~`subscriptions`~~ ✅ **DB15 (2026-07-17) — bảng + entity `Subscription` đã DROP (dead scaffold, 0 query dùng)**
+> Bảng/entity/`DbSet`/2 nav (`Order.Subscription`, `ProductPackage.Subscriptions`) đã gỡ (migration `DropSubscriptionsTable`, reversible). **Enum members giữ nguyên** cho phase-2: `PackageType.Subscription`, `OrderKind.SubscriptionPurchase/Renewal` (chỉ là giá trị enum, không có bảng). Khi làm subscription phase-2 → tái tạo bảng qua migration mới. *(Shape cũ để tham khảo: `id · owner_type Org/User · owner_id · package_id · status Active/Expired/Cancelled · started_at · expires_at`; FK dự kiến `orders.subscription_id`.)*
 
 ---
 

@@ -169,7 +169,7 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | max_candidates | int? | **cap số ứng viên** (mời M3 + sàng CV C13 enforce) — chặn burn credit/chi phí AI; null = không giới hạn |
 | time_limit_minutes | int? | 🔸 **TẠM BỎ — không enforce (áp cả B2B & B2C)**: KHÔNG giới hạn tổng buổi, **chỉ giới hạn TỪNG CÂU** (`campaign_questions.time_limit_seconds` → `practice_questions.time_limit_sec`). Giữ cột nullable cho tương thích API/schema nhưng **bỏ qua khi xử lý**; muốn bật lại tổng buổi thì enforce cột này + khôi phục trigger auto-submit ở [interview.md](interview.md) §State machine — Session |
 | anti_cheat_enabled | bool | mặc định `true` — bật thu `session_integrity_events` (D13: flag cho HR, không auto-hủy) |
-| pass_score_pct 🔜 | int? | ngưỡng % điểm tổng → `campaign_rankings.result` Pass/Fail (M4); **null = không auto pass/fail, HR quyết tay** — thiếu trường này thì `result` không có nguồn ngưỡng |
+| pass_score_pct 🔜 | int? | ngưỡng % điểm tổng → `campaign_rankings.result` Pass/Fail (M4); **null = không auto pass/fail, HR quyết tay** — thiếu trường này thì `result` không có nguồn ngưỡng. ✅ **DB15 CHECK `ck_campaigns_pass_score_pct_range` (`pass_score_pct IS NULL OR pass_score_pct BETWEEN 0 AND 100`)** |
 | jd_file_url / criteria_file_url | text? | ⚠ **lưu key, không phải full URL** (bug #1); **null nếu nhập text trực tiếp** (🔜 `jdText`/`criteriaText`) |
 | jd_text / criteria_text | text? | từ **PDF parse HOẶC nhập text trực tiếp** (🔜 `jdText`/`criteriaText`) — **nguồn để AI sinh câu hỏi + đề xuất tiêu chí** (không chấm trực tiếp trên text) |
 | required_skills | jsonb? | **🔜 C13** rule cứng sàng CV — kỹ năng **bắt buộc có ĐỦ** trong `cv_parsed_text` |
@@ -193,7 +193,7 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | order_no | int | thứ tự hiển thị (HR sắp); **UNIQUE (campaign_id, order_no)** |
 | name | varchar(255) | bắt buộc, non-empty (trim); **UNIQUE (campaign_id, name)** — chống trùng tiêu chí |
 | description | text? | mô tả mức điểm (optional) |
-| weight | numeric(5,4) | **0 < weight ≤ 1**; Σ/campaign **≈ 1** — **KHÔNG ép DB = 1** (làm tròn 4 chữ số khó khít, vd 0.3333×3 = 0.9999); điểm tổng **chuẩn hoá chia Σweight** ([interview.md](interview.md) §BC9) nên Σ lệch ±ε vẫn đúng |
+| weight | numeric(5,4) | **0 < weight ≤ 1** — ✅ **DB15 CHECK `ck_campaign_criteria_weight_range` (`weight > 0 AND weight <= 1`)** enforce tầng DB; Σ/campaign **≈ 1** — **KHÔNG ép DB = 1** (làm tròn 4 chữ số khó khít, vd 0.3333×3 = 0.9999); điểm tổng **chuẩn hoá chia Σweight** ([interview.md](interview.md) §BC9) nên Σ lệch ±ε vẫn đúng. ⚠ follow-up: normalize làm tròn có thể ra `0.0000` (input tiêu chí lệch cực đoan) → vi phạm CHECK; hiện chưa có đường code tạo được |
 | max_score | int | **≥ 1** |
 | source | varchar(16) | enum: `AiSuggested` · `HrEdited` (HR khai `criteria[]` structured 🔜 = `HrEdited`) |
 | created_at / updated_at | timestamptz | `now()` |

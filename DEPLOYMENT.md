@@ -313,6 +313,10 @@ docker compose logs -f isas.gateway
 > ```
 > Đổi/reset schema → **drop & tạo lại DB** trước khi apply (squash chỉ sạch trên DB rỗng).
 
+> **S6 hardening rounds — apply migration TĂNG DẦN (DB đã có data, KHÔNG drop):** dùng **idempotent script** (`dotnet ef migrations script --idempotent -o up.sql` → `docker exec -i postgres-main psql -U admin -d <db> < up.sql`) hoặc `dotnet ef database update`. **Preflight bắt buộc theo round (dọn TRƯỚC khi apply, không migration nào tự dọn):**
+> - **S6 đợt 9 (DB10/DB15):** ⚠ CHECK constraints fail nếu data ngoài miền → trước apply: `UPDATE`/dọn row `campaign_criteria.weight`/`rubric_criteria.weight` ngoài **(0,1]** và `campaigns.pass_score_pct` ngoài **[0,100]**; bảng `subscriptions` phải **rỗng** (DROP TABLE). `rubric_anchors`→`rubric_levels.example_answers` backfill đã **L3 Postgres verify 0-loss** (throwaway PG) — an toàn. xmin = model-only, **0 DDL** (system column), không cần dọn.
+> - **AI2 (RabbitMQ DLX/DLQ):** queue `scoring_pipeline_queue` LIVE khai `arguments=None` → **KHÔNG redeclare được** với arg `x-dead-letter-exchange` mới (PRECONDITION_FAILED 406, cả `aiworker` lẫn `interviewservice` fail khởi động). **Chọn 1:** (a) **recreate queue** — dừng consumer/publisher → `rabbitmqadmin delete queue name=scoring_pipeline_queue` (đảm bảo drain hết) → khởi động lại (2 bên tự redeclare với DLX arg); HOẶC (b) **RabbitMQ policy** không đụng queue arg: `rabbitmqctl set_policy scoring-dlx "^scoring_pipeline_queue$" '{"dead-letter-exchange":"scoring_pipeline_dlx","dead-letter-routing-key":"scoring_dead"}' --apply-to queues` (vẫn phải khai DLX `scoring_pipeline_dlx` + DLQ `scoring_pipeline_dead_queue` trước). Cách (b) **an toàn hơn** (không mất message đang chờ).
+
 ### Seed dữ liệu ban đầu (sau khi apply schema)
 
 Schema rỗng ⇒ **thiếu 2 thứ** để luồng tiền chạy: **catalog gói credit** (`product_packages`) + **tài khoản Admin** (quản gói/duyệt postpaid). Rubric B2C đã bake sẵn trong Interview `InitialCreate`.
