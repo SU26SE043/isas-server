@@ -74,7 +74,7 @@ Sau pass: cập nhật status <ID> trong tasks.md (kèm commit) + service doc n�
 
 **Guardrail (để không "code trông ổn"):**
 - **Phase 0 còn lại** (`P0.1`,`P0.2`,`P0.5`): chưa verify `docker compose up` máy sạch · chưa `make setup/test/check` → lớp-3 e2e thật (compose + broker + PayOS sandbox + Gemini) **verify tay ngoài worker**. (`P0.3`/`P0.4` xong — 4 test project + pytest đã có.)
-- **Nhánh làm việc:** `main` = **full system** (toàn bộ 6 service + S6 DB-hardening + S7 AIService + SEC scaffold đã merged + deploy live). Làm việc theo **feature-branch → PR vào `main`** (CI/CD test+deploy); nhánh tích hợp cũ `docs/sync-design-d18-d21` **đã hoàn thành sứ mệnh**, không còn là nguồn trạng thái. KHÔNG hotfix server trực tiếp.
+- **Nhánh làm việc:** toàn bộ feature ở nhánh tích hợp **`docs/sync-design-d18-d21`** (6 service đều trong tree; `main` mới có nền pre-vòng-1 — xem [progress.md](docs/progress.md) §Main-vs-branch). KHÔNG checkout branch cũ.
 - Agent **KHÔNG bịa ngoài doc**, **KHÔNG đổi thiết kế trong doc** (thấy sai → hỏi), **KHÔNG tự nâng `passing`** khi lệnh xác minh chưa PASS.
 - **Bắt đầu:** đọc [progress.md](docs/progress.md) §Bước tiếp theo → chọn task `not_started` không bị block trong [tasks.md](docs/tasks.md).
 

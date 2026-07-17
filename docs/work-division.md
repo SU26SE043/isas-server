@@ -26,8 +26,8 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 ## 0. Đọc trước khi chia việc
 
 - **2 dòng sản phẩm, 1 engine.** Cả B2C lẫn B2B đều là sản phẩm phải giao; chúng **dùng chung** InterviewService (engine phỏng vấn) + AIService (chấm) + PaymentService (credit). Phân biệt bằng `campaign_id`: null = B2C, có giá trị = B2B.
-- **B2C — luyện phỏng vấn cá nhân:** người dùng tự đăng ký → mua credit prepaid → tự tạo session từ CV/JD → AI sinh câu hỏi → ghi âm → chấm rubric `JobCategory` → xem lịch sử của mình. **✅ Engine + lịch sử + ví credit + reserve/consume + phân tích CV + roadmap đã chạy** (BC1–BC16, merged main). Chi tiết: [services/interview.md](services/interview.md).
-- **B2B — tuyển dụng:** Employer tạo *chiến dịch đánh giá* từ JD → phát link cho ứng viên → AI chấm theo tiêu chí & xếp hạng → xuất kết quả. **✅ B2B đã build gần đủ + deploy live** (campaign/tiêu chí, distribution join→start, ranking/result/export, lọc CV, SEC anti-cheat); còn SMTP creds live (D5) + SEC verify live.
+- **B2C — luyện phỏng vấn cá nhân:** người dùng tự đăng ký → mua credit prepaid → tự tạo session từ CV/JD → AI sinh câu hỏi → ghi âm → chấm rubric `JobCategory` → xem lịch sử của mình. **Engine + lịch sử đã chạy** (`POST/GET /api/practice/sessions*`); **thiếu**: ví credit cá nhân + reserve/consume khi luyện (D15). Chi tiết: [services/interview.md](services/interview.md).
+- **B2B — tuyển dụng:** Employer tạo *chiến dịch đánh giá* từ JD → phát link cho ứng viên → AI chấm theo tiêu chí & xếp hạng → xuất kết quả. **Phần lớn B2B chưa build.**
 - Nguyên tắc: B2B **tái dùng nguyên engine B2C**, chỉ thêm lớp điều phối (campaign, distribution, ranking, result). B2C chỉ thiếu lớp **thanh toán ví cá nhân** nối vào engine.
 
 ---
@@ -38,11 +38,11 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 
 | # | Module | Mô tả ngắn | Service phụ trách | Hiện trạng |
 |---|---|---|---|---|
-| BC1 | **Personal Account & Wallet** | Đăng ký/đăng nhập cá nhân (Candidate, không org) + mua **credit prepaid** ví cá nhân qua PayOS (`owner_type=User`, D15) | AuthService + PaymentService | ✅ ví wire + verified live (BC1/BC2) |
-| BC2 | **Self-serve Practice** | Tự tạo session từ CV/JD → AI sinh câu hỏi (**bám CV/JD**, ưu tiên JD>CV>JobCategory) → ghi âm → chấm **rubric `JobCategory`**; reserve→consume credit ví cá nhân | InterviewService + AIService + PaymentService | ✅ engine + sinh câu hỏi từ CV/JD + reserve/consume ví (BC2) |
+| BC1 | **Personal Account & Wallet** | Đăng ký/đăng nhập cá nhân (Candidate, không org) + mua **credit prepaid** ví cá nhân qua PayOS (`owner_type=User`, D15) | AuthService + PaymentService | 🟡 ví chưa wire |
+| BC2 | **Self-serve Practice** | Tự tạo session từ CV/JD → AI sinh câu hỏi (**bám CV/JD**, ưu tiên JD>CV>JobCategory) → ghi âm → chấm **rubric `JobCategory`**; reserve→consume credit ví cá nhân | InterviewService + AIService + PaymentService | ✅ engine + sinh câu hỏi từ CV/JD chạy · 🟡 thiếu reserve/consume |
 | BC3 | **Personal History & Results** | Xem lại các buổi luyện của mình: điểm, transcript, feedback | InterviewService (đọc local) | ✅ có (`GET /api/practice/sessions/history`) |
-| BC4 | **CV Analysis & Insights** | (a) **Feedback CV độc lập** (tóm tắt + điểm mạnh/yếu + gợi ý cải thiện); (b) **điểm khớp CV↔JD** (% phù hợp + kỹ năng thiếu/đủ); (c) mục **"CV vs câu trả lời"** trong báo cáo buổi luyện | InterviewService + AIService | ✅ đã có (BC6/BC7 phân tích CV tính phí + BC8 CV-vs-answer) |
-| BC5 | **Learning Roadmap** | **Roadmap ôn tập cá nhân hoá** (D20): chọn BA/FE/BE + level → từ report buổi đã chấm + CV → AI sinh milestone/lesson (**lý thuyết bám điểm yếu** → luyện session) → đo cải thiện mỗi mile → report cuối (radar + đánh giá theo level + kết luận) | InterviewService + AIService (+ PaymentService: session luyện tiêu credit) | ✅ đã có (BC12–BC15 roadmap + milestone/lesson + report) |
+| BC4 | **CV Analysis & Insights** | (a) **Feedback CV độc lập** (tóm tắt + điểm mạnh/yếu + gợi ý cải thiện); (b) **điểm khớp CV↔JD** (% phù hợp + kỹ năng thiếu/đủ); (c) mục **"CV vs câu trả lời"** trong báo cáo buổi luyện | InterviewService + AIService | ❌ chưa có (feature mới — D17) |
+| BC5 | **Learning Roadmap** | **Roadmap ôn tập cá nhân hoá** (D20): chọn BA/FE/BE + level → từ report buổi đã chấm + CV → AI sinh milestone/lesson (**lý thuyết bám điểm yếu** → luyện session) → đo cải thiện mỗi mile → report cuối (radar + đánh giá theo level + kết luận) | InterviewService + AIService (+ PaymentService: session luyện tiêu credit) | ❌ chưa có (feature mới — D20, tasks `BC12`–`BC15`) |
 
 ### 1b. B2B — Tuyển dụng (5 module SRS)
 

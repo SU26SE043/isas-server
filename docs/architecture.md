@@ -35,27 +35,27 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | **AuthService** | .NET, JWT, Google OAuth | Đăng nhập, JWT/refresh, profile; 3 role + **Organization (OrgAdmin/HrMember)** | ✅ (thêm Org) |
 | **InterviewService** | .NET, EF Core | **Engine dùng chung**: session (`campaign_id?`), câu hỏi, câu trả lời, điểm, rubric/tiêu chí, file | ✅ (mở rộng B2B) |
 | **AIService** | Python, FastAPI, faster-whisper, google-genai | Sinh câu hỏi + worker chấm điểm (rubric JobCategory **hoặc** tiêu chí campaign) | ✅ (mở rộng) |
-| **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | ✅ merged main (CRUD + tiêu chí cấu trúc + publish/audit + **distribution/ranking/result/export** M3/M4/M5 + SEC scaffold) |
+| **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | 🟢 merged main (M2: CRUD + tiêu chí cấu trúc + publish/audit); M3/M4/M5 🟡 |
 | **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo chủ ví** (org B2B / cá nhân B2C — D15), prepaid + postpaid, reserve→consume | ✅ trong tree (CI image, gateway route live, trong compose) |
 
 **Hạ tầng:** PostgreSQL 18 — DB-per-service (`isas`/`isas_interview`/`isas_campaign`/`isas_payment`) · SeaweedFS (S3, cổng 8333; CV/JD/Criteria/audio) · RabbitMQ (job chấm `scoring_pipeline_queue` + event) · Redis (provision sẵn cho cache; **lưu ý: refresh token của Auth hiện ở Postgres** — Redis chưa được wire, để dành phase sau).
 
-### 2.1. Trạng thái hiện tại — bức tranh gap toàn hệ thống (cập nhật 2026-07-18)
+### 2.1. Tổng hợp "chưa làm" — gap toàn hệ thống
 > **Bức tranh tổng** ở cấp hệ thống. **Tracking chi tiết** (đầu việc + lệnh xác minh + owner) là source of truth ở [work-division.md](work-division.md) §2/§8 + [tasks.md](tasks.md) + [progress.md](progress.md) — bảng này chỉ **trỏ tới**, không thay thế.
 
 | Mảng | ✅ Đã có | ❌/🟡 Chưa làm | Tracking |
 |---|---|---|---|
-| **B2C (nền)** | Engine sinh câu hỏi **bám CV/JD** + chấm rubric `JobCategory`/**rubric cá nhân** (BC16) + lịch sử + **ví credit cá nhân + reserve/consume** (BC2) + **phân tích CV tính phí** (BC7/BC7b) + tổng kết điểm/nhận xét (BC9–BC11) + **roadmap ôn tập** (BC12–BC15) | ✅ đủ engine — còn e2e verify tay (compose + Gemini) | tasks `BC1`–`BC16` ✅ |
-| **B2B (điều phối)** | tiêu chí cấu trúc (C8/C12) + audit (C9/C10) + **I1/E1** chấm theo tiêu chí + **distribution membership** (D1–D4) + **ranking/result/CSV** (E4–E6) + **wire `org_id`** (BK4) + **reserve org credit** (BK14) + **lọc CV** (C13–C15) + **transcript cho HR** (AI4) | ✅ đủ — còn **SMTP creds live** (D5) + **SEC live-verify** + PDF export (BK8) | work-division §1b; tasks `C*`/`D*`/`E*` ✅ |
+| **B2C (nền)** | Engine sinh câu hỏi **bám CV/JD** + chấm rubric `JobCategory` + lịch sử | Ví **credit cá nhân** + reserve/consume khi luyện; **phân tích CV (BC4)**; tổng kết điểm/nhận xét (BC9–BC11); **roadmap ôn tập (BC12–BC15, D20)** | tasks `BC1`–`BC15`; D15/D17/D20 |
+| **B2B (điều phối)** | tiêu chí text→**cấu trúc** (C8) + soft-delete/audit (C9/C10) + **I1** session `campaign_id`/materialize + **E1** chấm theo tiêu chí campaign + **distribution membership** (D1–D4: invitation/join/start/reissue) + **ranking/result/CSV** (E4/E5/E6) + **wire `org_id`** (BK4) + **reserve org credit** (BK14) + **lọc CV hàng loạt** (C13–C15) | ❌ **invitation-email consumer** (chỉ có publisher, chưa gửi mail); ❌ **SEC anti-cheat** (§dưới); PDF export (BK8) | work-division §1b; tasks `C*`/`D*`/`E*` |
 | **B2B Distribution — email** | ✅ **D5 + DB2b**: `InvitationEmailConsumer` gửi SMTP + **Transactional Outbox** (`outbox_messages` + `OutboxDispatcher` at-least-once, thay dual-write) + dedup (`email_sent_at`) — mail reliable, không trùng | cần **SMTP creds thật** để gửi live + L3 verify tay | tasks `D5`/`DB2b` ✅ |
-| **SEC — Anti-cheat B2B** | ✅ **built cross-repo (2026-07-18)**: BE ingest (`SessionFlagController`/`FaceVerifyController`) + toggle `face_verify_enabled` + bảng `session_flags` + surface HR (`Flags[]`) trên `main`; AIService **`/face-verify` InsightFace** trên `main`; **FE** proctor/webcam/consent trên `isas-frontend master` (D13 flag-cho-HR, KHÔNG auto-hủy) | còn **verify LIVE e2e** | rules SEC-1..5; tasks `SEC1` |
-| **AuthService** | 3 role, JWT, Google OAuth, **Organization + org-role** (A1–A3) + **A4** HrMember chặn billing + **A5** `[Authorize(Roles)]` mọi service + **A6/A6b** OrgAdmin quản thành viên | ✅ — còn A6b phase-2 (invite-email/attach) | tasks `A1`–`A6` ✅ |
-| **PaymentService** ✅ | `credit_accounts(owner_type)` + **reserve/consume/release** (P4/P5/P6) + mua pack/webhook (P2) + active-polling (P3) + **postpaid + hóa đơn** (P8) — **merged main + deployed live** | ✅ luồng tiền PayOS→webhook→credit verified live | tasks `P1`–`P8` ✅; [services/payment.md](services/payment.md) |
-| **CampaignService** ✅ | **merged main**: CRUD + JD/Criteria (**PdfPig shared** DB17) + lifecycle + publish tiêu chí cấu trúc + audit + **distribution/ranking/result/export** + wire `org_id` (BK4) + SEC scaffold | ✅ | tasks `C*`/`E*` ✅ |
-| **AIService** | generate-questions, transcribe, worker chấm, suggest-criteria + **analyze-cv** (BC6/BC7) + **face-verify** (SEC-2, InsightFace) + roadmap/summarize; `/ai/**` gỡ khỏi gateway (GEN-7); **anti prompt-injection** (E11/AI1) + **DLQ** (AI2) + **retry-before-Failed** (AI3) | ✅ — chạy trên **Mac** (aiworker scorer + aiapi API, `isas.aiservice:local`); Whisper CPU | [services/ai.md](services/ai.md) |
-| **Gateway / Infra** | Reverse proxy, compose; `/ai/**` gỡ (GEN-7, internal-only) | **Redis provisioned nhưng chưa wire** (DB7 leader-election **deferred** — deploy single-instance) | §6, §8 |
-| **Nền tảng (Phase 0)** | **4 test project .NET** (Auth/Payment/Campaign/Interview) + AIService pytest ✅ (`P0.3`/`P0.4`) | `docker compose up` máy sạch (P0.1), `make setup/test/check` (P0.2), readiness checkpoint (P0.5) | work-division §5; tasks `P0.1`/`P0.2`/`P0.5` |
-| **CI/CD** | Build+push **5 image** (Auth/Payment/Interview/Campaign/Gateway) → server qua Tailscale; **AIService deploy tay trên Mac** | ✅ | §8; [../DEPLOYMENT.md](../DEPLOYMENT.md) |
+| **SEC — Anti-cheat B2B** | thiết kế SEC-1..5 ([rules.md](rules.md)) | ❌ **0% implement** — chỉ có cột cờ `anti_cheat_enabled` (KHÔNG code nào đọc để enforce); **KHÔNG** có `face_verify_enabled`, `session_integrity_events`, giám sát 2 phút, face-verify gate | rules SEC-1..5; tasks `SEC1` (chưa làm) |
+| **AuthService** | 3 role, JWT, Google OAuth, **Organization + org-role** (OrgAdmin/HrMember) trong JWT + `register-org` (A1–A3) | `A4` HrMember chặn billing, `A5` bật lại `[Authorize(Roles)]` mọi service | tasks `A1`–`A5` |
+| **PaymentService** ✅ | `credit_accounts(owner_type)` + **reserve/consume/release** (P4/P5/P6) + mua pack/webhook (P2) + active-polling (P3) + **postpaid + hóa đơn** (P8) — in tree, CI image, gateway route, compose | verify tay: PayOS sandbox (webhook HMAC) | tasks `P1`–`P8` ✅; [services/payment.md](services/payment.md) |
+| **CampaignService** 🟢 | merged main: CRUD + JD/Criteria (PdfPig) + 6 bug fix + lifecycle + publish tiêu chí cấu trúc + soft-delete/audit | distribution, ranking/result/export, wire `org_id` | tasks `C1`–`C10` |
+| **AIService** | generate-questions, transcribe, worker chấm, **suggest-criteria** (C8) | **analyze-cv (BC4)**; ✅ đã bỏ `/ai/**` khỏi gateway (GEN-7) · còn `X-Internal-Token` nội bộ · Whisper nhẹ/GPU · chống prompt-injection · DLQ | [services/ai.md](services/ai.md) §Vấn đề |
+| **Gateway / Infra** | Reverse proxy, compose service | ✅ `/ai/**` đã gỡ khỏi gateway (GEN-7, internal-only); **Redis chưa wire** | §6, §8 |
+| **Nền tảng (Phase 0)** | test project Campaign/Auth/Interview ✅ (`P0.3`) | `docker compose up` máy sạch (verify), `make setup/test/check`, **test project Payment**, readiness 4 điều kiện | work-division §5; tasks `P0.1`–`P0.5` |
+| **CI/CD** | Build+push Auth/Interview/**Campaign**/Gateway → server qua Tailscale | Thêm **Payment** vào pipeline; AIService deploy **tay trên Mac** | §8; [../DEPLOYMENT.md](../DEPLOYMENT.md) |
 
 ## 3. Giao tiếp giữa service
 
@@ -82,7 +82,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 ### 4.0. Định danh & onboarding (trước cả hai dòng sản phẩm)
 > Mọi luồng dưới giả định user **đã định danh**. Đây là bước nền: ai là ai, role gì, thuộc org nào.
 - **B2C:** `POST /auth/register` → role **`Candidate`** (mặc định) → `login`/`refresh` → luyện tập ngay. Không cần org.
-- **B2B:** đăng ký/nâng cấp **tổ chức** → user thành **`Employer`** + tạo **Organization** (`org_id`, MST) → người tạo = **`OrgAdmin`**; *(phase 2: mời `HrMember`)*. JWT mang kèm **`org_id` + `org_role`**. *(A1–A6 đã build + deploy: register-org, org-role trong JWT, A4/A5 auth-gate, A6/A6b quản thành viên.)*
+- **B2B:** đăng ký/nâng cấp **tổ chức** → user thành **`Employer`** + tạo **Organization** (`org_id`, MST) → người tạo = **`OrgAdmin`**; *(phase 2: mời `HrMember`)*. JWT mang kèm **`org_id` + `org_role`**. **⚠ Gap:** luồng cấp role Employer / register-org **chưa build** (tasks `A1`–`A5`).
 - **PlatformAdmin (`Admin`):** **không** phải service riêng — endpoint admin-gated nằm trong Auth (cấp role, duyệt org/verify MST) + Payment (duyệt/đình chỉ **postpaid**, quản gói/đơn giá).
 - Mọi service **validate JWT offline** (§3) — **không** gọi Auth lúc chạy. Chi tiết: [services/auth.md](services/auth.md).
 

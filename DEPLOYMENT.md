@@ -3,7 +3,7 @@
 Kiến trúc tách **2 máy** nối nhau qua **Tailscale**:
 
 - **Server (Linux)** — chạy data layer + các .NET service: `postgres`, `redis`, `seaweedfs`, `rabbitmq`, `authservice`, `interviewservice`, `campaignservice`, `paymentservice`, `gateway`. Đây cũng là đích CI/CD (`ci.yml` build **5** image → push GHCR → SSH deploy).
-- **Mac (Docker)** — chạy **AIService** (Python): API `aiapi` (FastAPI: sinh câu hỏi/suggest-criteria/analyze-cv/roadmap/summarize + **SEC-2 `/face-verify` InsightFace**) + worker `aiworker` (consumer chấm điểm: Whisper + Gemini). Để Mac vì phần ML (Whisper/InsightFace) nặng. *(Container thật tên `aiapi`/`aiworker` — run tay bằng `docker run` reusing env; tên `aiservice-api`/`aiservice-worker` trong compose §5 là minh hoạ.)* ⚠ **aiapi tải InsightFace `buffalo_l` (~281 MB) mỗi lần restart** (chưa bake/volume) → ~4-5' downtime generation khi recreate; nên **mount volume `/root/.insightface`** (+ HF cache) hoặc bake model vào image (bản `:face` cũ đã bake).
+- **Mac (Docker)** — chạy **AIService** (Python): `aiservice-api` (FastAPI sinh câu hỏi) + `aiservice-worker` (consumer chấm điểm). Để Mac vì phần ML (Whisper) nặng.
 
 > Tất cả liên lạc cross-host đi qua **IP Tailscale riêng tư**, không mở cổng public.
 
