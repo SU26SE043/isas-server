@@ -92,11 +92,11 @@ public class CampaignCandidateScreeningTests
         Assert.Equal(0, res.Skipped);
 
         using var check = tdb.NewContext();
-        var rows = await check.CampaignCandidates.Where(c => c.CampaignId == camp.Id).ToListAsync();
+        var rows = await check.CvSubmissions.Where(c => c.CampaignId == camp.Id).ToListAsync();
         Assert.Equal(2, rows.Count);
         Assert.All(rows, r =>
         {
-            Assert.Equal(CandidateStatus.Filtered, r.Status);
+            Assert.Equal(CvSubmissionStatus.Filtered, r.Status);
             Assert.Equal(CvParseStatus.Done, r.ParseStatus);
             Assert.NotNull(r.CvFileUrl);
             Assert.StartsWith($"campaigns/{camp.Id}/candidates/", r.CvFileUrl);   // KEY, không full URL (GEN-5)
@@ -122,8 +122,8 @@ public class CampaignCandidateScreeningTests
         Assert.Equal(0, res.Filtered);
 
         using var check = tdb.NewContext();
-        var row = await check.CampaignCandidates.SingleAsync(c => c.CampaignId == camp.Id);
-        Assert.Equal(CandidateStatus.Rejected, row.Status);
+        var row = await check.CvSubmissions.SingleAsync(c => c.CampaignId == camp.Id);
+        Assert.Equal(CvSubmissionStatus.Rejected, row.Status);
         Assert.Equal(CvParseStatus.Failed, row.ParseStatus);
         Assert.False(string.IsNullOrWhiteSpace(row.RejectReason));
         Assert.NotNull(row.CvFileUrl);   // archive để HR xem file gốc dù loại
@@ -145,9 +145,9 @@ public class CampaignCandidateScreeningTests
         Assert.Equal(1, res.Filtered);
 
         using var check = tdb.NewContext();
-        var rows = await check.CampaignCandidates.Where(c => c.CampaignId == camp.Id).ToListAsync();
-        var rejected = rows.Single(r => r.Status == CandidateStatus.Rejected);
-        var filtered = rows.Single(r => r.Status == CandidateStatus.Filtered);
+        var rows = await check.CvSubmissions.Where(c => c.CampaignId == camp.Id).ToListAsync();
+        var rejected = rows.Single(r => r.Status == CvSubmissionStatus.Rejected);
+        var filtered = rows.Single(r => r.Status == CvSubmissionStatus.Filtered);
         Assert.Contains("SQL", rejected.RejectReason);
         Assert.Null(filtered.RejectReason);
     }
@@ -184,7 +184,7 @@ public class CampaignCandidateScreeningTests
         Assert.Equal(1, res.Skipped);
 
         using var check = tdb.NewContext();
-        Assert.Equal(1, await check.CampaignCandidates.CountAsync(c => c.CampaignId == camp.Id));
+        Assert.Equal(1, await check.CvSubmissions.CountAsync(c => c.CampaignId == camp.Id));
     }
 
     // (d-bis) dedup xuyên request: email đã tồn tại trong campaign → upload lại cùng email = skip.
@@ -194,10 +194,10 @@ public class CampaignCandidateScreeningTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedCampaign(tdb, owner);
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        tdb.Db.CvSubmissions.Add(new CvSubmission
         {
             Id = Guid.NewGuid(), CampaignId = camp.Id, Email = "old@x.com",
-            ParseStatus = CvParseStatus.Done, Status = CandidateStatus.Filtered,
+            ParseStatus = CvParseStatus.Done, Status = CvSubmissionStatus.Filtered,
             CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
         });
         await tdb.Db.SaveChangesAsync();
@@ -208,7 +208,7 @@ public class CampaignCandidateScreeningTests
         Assert.Equal(1, res.Skipped);
         Assert.Equal(0, res.Filtered);
         using var check = tdb.NewContext();
-        Assert.Equal(1, await check.CampaignCandidates.CountAsync(c => c.CampaignId == camp.Id));   // vẫn 1 (không thêm)
+        Assert.Equal(1, await check.CvSubmissions.CountAsync(c => c.CampaignId == camp.Id));   // vẫn 1 (không thêm)
     }
 
     // (e) vượt cap max_candidates → ArgumentException (→400), không tạo row nào.
@@ -224,7 +224,7 @@ public class CampaignCandidateScreeningTests
             svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf("1.pdf"), Pdf("2.pdf")), default));
 
         using var check = tdb.NewContext();
-        Assert.Equal(0, await check.CampaignCandidates.CountAsync(c => c.CampaignId == camp.Id));
+        Assert.Equal(0, await check.CvSubmissions.CountAsync(c => c.CampaignId == camp.Id));
     }
 
     // (f) campaign chưa Active (Draft) → InvalidOperationException (→409).
@@ -262,10 +262,10 @@ public class CampaignCandidateScreeningTests
         var camp = SeedCampaign(tdb, owner);
         var cid = Guid.NewGuid();
         var key = $"campaigns/{camp.Id}/candidates/{cid}.pdf";
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        tdb.Db.CvSubmissions.Add(new CvSubmission
         {
             Id = cid, CampaignId = camp.Id, CvFileUrl = key,
-            ParseStatus = CvParseStatus.Done, Status = CandidateStatus.Filtered,
+            ParseStatus = CvParseStatus.Done, Status = CvSubmissionStatus.Filtered,
             CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
         });
         await tdb.Db.SaveChangesAsync();
@@ -290,10 +290,10 @@ public class CampaignCandidateScreeningTests
         var owner = Guid.NewGuid();
         var camp = SeedCampaign(tdb, owner);
         var cid = Guid.NewGuid();
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        tdb.Db.CvSubmissions.Add(new CvSubmission
         {
             Id = cid, CampaignId = camp.Id, CvFileUrl = null,
-            ParseStatus = CvParseStatus.Failed, Status = CandidateStatus.Rejected,
+            ParseStatus = CvParseStatus.Failed, Status = CvSubmissionStatus.Rejected,
             CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
         });
         await tdb.Db.SaveChangesAsync();
@@ -313,10 +313,10 @@ public class CampaignCandidateScreeningTests
         var owner = Guid.NewGuid();
         var camp = SeedCampaign(tdb, owner);
         var cid = Guid.NewGuid();
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
+        tdb.Db.CvSubmissions.Add(new CvSubmission
         {
             Id = cid, CampaignId = camp.Id, CvFileUrl = "campaigns/x/candidates/y.pdf",
-            ParseStatus = CvParseStatus.Done, Status = CandidateStatus.Filtered,
+            ParseStatus = CvParseStatus.Done, Status = CvSubmissionStatus.Filtered,
             CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
         });
         await tdb.Db.SaveChangesAsync();

@@ -63,13 +63,14 @@ public class SessionFlagTests
 
     private static void SeedMember(CampaignDbContext db, Guid campaignId, Guid candidateId)
     {
-        db.CampaignCandidates.Add(new CampaignCandidate
+        // DB16 — membership (ownership check flags) sống ở campaign_membership.
+        db.CampaignMemberships.Add(new CampaignMembership
         {
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
             CandidateId = candidateId,
-            ParseStatus = CvParseStatus.Done,
-            Status = CandidateStatus.Joined,
+            Status = MembershipStatus.Joined,
+            JoinedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         });

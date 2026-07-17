@@ -26,9 +26,10 @@ namespace Isas.CampaignService.Models
         // Navigation
         public Campaign Campaign { get; set; } = null!;
 
-        // Navigation (DB9) — FK nội-service campaign_invitations.campaign_candidate_id → campaign_candidates.id.
+        // Navigation (DB9/DB16) — FK nội-service campaign_invitations.campaign_candidate_id → cv_submission.id.
+        // Cột DB giữ tên campaign_candidate_id (không rename cột); nav re-point về CvSubmission (bảng đổi tên).
         // Optional nav (CampaignCandidateId nullable, đường-1 mời-thẳng = null) → OnDelete SetNull:
-        // xoá candidate chỉ mất link shortlist, invitation giữ lại. KHÔNG cần query filter mới (optional nav).
-        public CampaignCandidate? CampaignCandidate { get; set; }
+        // xoá CV chỉ mất link shortlist, invitation giữ lại. KHÔNG cần query filter mới (optional nav).
+        public CvSubmission? CvSubmission { get; set; }
     }
 }

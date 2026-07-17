@@ -9,6 +9,7 @@ namespace Isas.CampaignService.Tests;
 /// <summary>
 /// D2 — Distribution: invitation → join → membership → my-campaigns → start.
 /// AuthProvisionClient + CampaignSessionClient mock; CampaignDbContext SQLite thật.
+/// DB16 — membership sống ở bảng riêng <c>campaign_membership</c> (tách khỏi <c>cv_submission</c>).
 /// </summary>
 public class ParticipationServiceTests
 {
@@ -93,7 +94,7 @@ public class ParticipationServiceTests
 
         // KHÔNG side-effect: membership vẫn rỗng
         using var check = tdb.NewContext();
-        Assert.Empty(await check.CampaignCandidates.ToListAsync());
+        Assert.Empty(await check.CampaignMemberships.ToListAsync());
     }
 
     [Fact]
@@ -169,32 +170,36 @@ public class ParticipationServiceTests
         Assert.Equal("Joined", res.MembershipStatus);
 
         using var check = tdb.NewContext();
-        var membership = await check.CampaignCandidates.SingleAsync(c => c.CampaignId == camp.Id);
+        var membership = await check.CampaignMemberships.SingleAsync(m => m.CampaignId == camp.Id);
         Assert.Equal(FixedCandidate, membership.CandidateId);
-        Assert.Equal(CandidateStatus.Joined, membership.Status);
+        Assert.Equal(MembershipStatus.Joined, membership.Status);
         Assert.NotNull(membership.JoinedAt);
-        Assert.Equal("duong1@acme.test", membership.Email);
+        Assert.Null(membership.CvSubmissionId);   // đường 1 (email) — không có CV shortlist
+        // Đường 1 KHÔNG tạo cv_submission (chỉ membership).
+        Assert.Empty(await check.CvSubmissions.ToListAsync());
     }
 
+    // DB16 — đường 2 (shortlist): join KHÔNG lật row CV, tạo membership riêng trỏ về CV. HAI ROW là
+    // hành vi CHỦ ĐÍCH của split (trước bảng God chỉ lật status 1 row Invited→Joined, mất sự thật sàng CV).
     [Fact]
-    public async Task Join_Duong2_CapNhatRowCV_CandidateIdSet_VaJoined()
+    public async Task Join_Duong2_KhongLatRowCV_TaoMembershipTroVeCV()
     {
         using var tdb = new CampaignTestDb();
         var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
-        var cvRow = new CampaignCandidate
+        var cvRow = new CvSubmission
         {
             Id = Guid.NewGuid(),
             CampaignId = camp.Id,
             Email = "shortlisted@acme.test",
             ParseStatus = CvParseStatus.Done,
-            Status = CandidateStatus.Invited,
+            Status = CvSubmissionStatus.Invited,
             Summary = "CV tốt",
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
         var inv = NewInvitation(camp.Id, "shortlisted@acme.test", campaignCandidateId: cvRow.Id);
         tdb.Db.Campaigns.Add(camp);
-        tdb.Db.CampaignCandidates.Add(cvRow);
+        tdb.Db.CvSubmissions.Add(cvRow);
         tdb.Db.CampaignInvitations.Add(inv);
         await tdb.Db.SaveChangesAsync();
 
@@ -202,12 +207,19 @@ public class ParticipationServiceTests
         await svc.JoinCampaignAsync(inv.Token, default);
 
         using var check = tdb.NewContext();
-        var rows = await check.CampaignCandidates.Where(c => c.CampaignId == camp.Id).ToListAsync();
-        Assert.Single(rows);   // cập nhật đúng row CV, KHÔNG tạo row mới
-        Assert.Equal(cvRow.Id, rows[0].Id);
-        Assert.Equal(FixedCandidate, rows[0].CandidateId);
-        Assert.Equal(CandidateStatus.Joined, rows[0].Status);
-        Assert.Equal("CV tốt", rows[0].Summary);   // dữ liệu sàng CV giữ nguyên
+        // 1 cv_submission — GIỮ NGUYÊN sự thật sàng CV (Status Invited, Summary còn nguyên).
+        var cvRows = await check.CvSubmissions.Where(c => c.CampaignId == camp.Id).ToListAsync();
+        Assert.Single(cvRows);
+        Assert.Equal(cvRow.Id, cvRows[0].Id);
+        Assert.Equal(CvSubmissionStatus.Invited, cvRows[0].Status);   // KHÔNG bị lật sang Joined
+        Assert.Equal("CV tốt", cvRows[0].Summary);                    // dữ liệu sàng CV giữ nguyên
+
+        // 1 campaign_membership MỚI — trỏ về CV shortlist + gắn candidate.
+        var memberships = await check.CampaignMemberships.Where(m => m.CampaignId == camp.Id).ToListAsync();
+        Assert.Single(memberships);
+        Assert.Equal(MembershipStatus.Joined, memberships[0].Status);
+        Assert.Equal(cvRow.Id, memberships[0].CvSubmissionId);
+        Assert.Equal(FixedCandidate, memberships[0].CandidateId);
     }
 
     [Fact]
@@ -224,7 +236,7 @@ public class ParticipationServiceTests
         await NewService(tdb.NewContext()).JoinCampaignAsync(inv.Token, default);
 
         using var check = tdb.NewContext();
-        Assert.Single(await check.CampaignCandidates.Where(c => c.CampaignId == camp.Id).ToListAsync());
+        Assert.Single(await check.CampaignMemberships.Where(m => m.CampaignId == camp.Id).ToListAsync());
     }
 
     [Fact]
@@ -241,7 +253,7 @@ public class ParticipationServiceTests
         await Assert.ThrowsAsync<InvitationGoneException>(() => svc.JoinCampaignAsync(inv.Token, default));
 
         using var check = tdb.NewContext();
-        Assert.Empty(await check.CampaignCandidates.ToListAsync());   // không provision/không membership
+        Assert.Empty(await check.CampaignMemberships.ToListAsync());   // không provision/không membership
     }
 
     // ── GET /my-campaigns ──────────────────────────────────────────────────────────
@@ -254,19 +266,9 @@ public class ParticipationServiceTests
         var other = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
         tdb.Db.Campaigns.AddRange(joined, other);
         // membership của candidate ở "joined"
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
-        {
-            Id = Guid.NewGuid(), CampaignId = joined.Id, CandidateId = FixedCandidate,
-            Email = "me@acme.test", ParseStatus = CvParseStatus.Pending, Status = CandidateStatus.Joined,
-            JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
-        });
+        tdb.Db.CampaignMemberships.Add(CampaignTestDb.NewMembership(joined.Id, FixedCandidate));
         // membership của candidate KHÁC ở "other" (không được liệt kê)
-        tdb.Db.CampaignCandidates.Add(new CampaignCandidate
-        {
-            Id = Guid.NewGuid(), CampaignId = other.Id, CandidateId = Guid.NewGuid(),
-            Email = "someone@acme.test", ParseStatus = CvParseStatus.Pending, Status = CandidateStatus.Joined,
-            JoinedAt = DateTime.UtcNow, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
-        });
+        tdb.Db.CampaignMemberships.Add(CampaignTestDb.NewMembership(other.Id, Guid.NewGuid()));
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
@@ -285,7 +287,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
@@ -296,7 +298,7 @@ public class ParticipationServiceTests
         Assert.NotEmpty(res.Questions);
 
         using var check = tdb.NewContext();
-        var membership = await check.CampaignCandidates.SingleAsync(c => c.CampaignId == camp.Id);
+        var membership = await check.CampaignMemberships.SingleAsync(m => m.CampaignId == camp.Id);
         Assert.Equal(FixedSession, membership.SessionId);
         Assert.Equal(InterviewProgressStatus.InProgress, membership.InterviewStatus);
     }
@@ -318,7 +320,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         var first = await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
@@ -335,7 +337,7 @@ public class ParticipationServiceTests
         var membership = Membership(camp.Id, FixedCandidate);
         membership.InterviewStatus = InterviewProgressStatus.Completed;
         membership.SessionId = FixedSession;
-        tdb.Db.CampaignCandidates.Add(membership);
+        tdb.Db.CampaignMemberships.Add(membership);
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
@@ -354,7 +356,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
@@ -363,7 +365,7 @@ public class ParticipationServiceTests
         Assert.Equal(FixedSession, second.SessionId);
 
         using var check = tdb.NewContext();
-        var membership = await check.CampaignCandidates.SingleAsync(c => c.CampaignId == camp.Id);
+        var membership = await check.CampaignMemberships.SingleAsync(m => m.CampaignId == camp.Id);
         Assert.Equal(FixedSession, membership.SessionId);                                  // session cũ giữ nguyên
         Assert.Equal(InterviewProgressStatus.InProgress, membership.InterviewStatus);      // KHÔNG reset về NotStarted
     }
@@ -378,7 +380,7 @@ public class ParticipationServiceTests
         var membership = Membership(camp.Id, FixedCandidate);
         membership.SessionId = FixedSession;
         membership.InterviewStatus = InterviewProgressStatus.InProgress;   // đã bắt đầu, trả lời dở
-        tdb.Db.CampaignCandidates.Add(membership);
+        tdb.Db.CampaignMemberships.Add(membership);
         await tdb.Db.SaveChangesAsync();
 
         var res = await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
@@ -386,7 +388,7 @@ public class ParticipationServiceTests
         Assert.Equal(FixedSession, res.SessionId);   // resume đúng session đang dở
 
         using var check = tdb.NewContext();
-        var after = await check.CampaignCandidates.SingleAsync(c => c.CampaignId == camp.Id);
+        var after = await check.CampaignMemberships.SingleAsync(m => m.CampaignId == camp.Id);
         Assert.Equal(FixedSession, after.SessionId);
         Assert.Equal(InterviewProgressStatus.InProgress, after.InterviewStatus);
     }
@@ -398,7 +400,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
@@ -424,7 +426,7 @@ public class ParticipationServiceTests
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
         var deadline = new DateTime(2026, 8, 1, 10, 0, 0, DateTimeKind.Utc);
         camp.ExpiresAt = deadline;
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         var session = DefaultSession();
@@ -443,7 +445,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);   // ExpiresAt = null
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         var session = DefaultSession();
@@ -464,7 +466,7 @@ public class ParticipationServiceTests
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
         var deadline = new DateTime(2026, 9, 15, 8, 30, 0, DateTimeKind.Utc);
         camp.ExpiresAt = deadline;
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         var session = DefaultSession();
@@ -486,7 +488,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         var session = DefaultSession();
@@ -506,7 +508,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
-        tdb.Db.CampaignCandidates.Add(Membership(camp.Id, FixedCandidate));
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
 
         var session = new Mock<ICampaignSessionClient>();
@@ -542,17 +544,6 @@ public class ParticipationServiceTests
         return camp;
     }
 
-    private static CampaignCandidate Membership(Guid campaignId, Guid candidateId)
-        => new()
-        {
-            Id = Guid.NewGuid(),
-            CampaignId = campaignId,
-            CandidateId = candidateId,
-            Email = "me@acme.test",
-            ParseStatus = CvParseStatus.Pending,
-            Status = CandidateStatus.Joined,
-            JoinedAt = DateTime.UtcNow,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
+    private static CampaignMembership Membership(Guid campaignId, Guid candidateId)
+        => CampaignTestDb.NewMembership(campaignId, candidateId);
 }

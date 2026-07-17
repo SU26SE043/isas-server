@@ -76,11 +76,11 @@ public class StuckScreeningRepublisherTests
         tdb.Db.SaveChanges();
     }
 
-    private static CampaignCandidate SeedCandidate(
-        CampaignTestDb tdb, Guid campaignId, CandidateStatus status,
+    private static CvSubmission SeedCandidate(
+        CampaignTestDb tdb, Guid campaignId, CvSubmissionStatus status,
         DateTime createdAt, DateTime? lastPublished)
     {
-        var cand = new CampaignCandidate
+        var cand = new CvSubmission
         {
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
@@ -93,7 +93,7 @@ public class StuckScreeningRepublisherTests
             CreatedAt = createdAt,
             UpdatedAt = createdAt
         };
-        tdb.Db.CampaignCandidates.Add(cand);
+        tdb.Db.CvSubmissions.Add(cand);
         tdb.Db.SaveChanges();
         return cand;
     }
@@ -106,7 +106,7 @@ public class StuckScreeningRepublisherTests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         SeedCriteria(tdb, camp.Id, 2);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered,
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered,
             createdAt: DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
 
         var (r, pub) = Build(tdb);
@@ -123,8 +123,8 @@ public class StuckScreeningRepublisherTests
         Assert.Equal(2, published.Criteria.Count);                    // TÁI DÙNG campaign_criteria
         Assert.Equal("http://campaign:8080", published.CallbackBase);
 
-        var saved = await tdb.NewContext().CampaignCandidates.AsNoTracking().FirstAsync(x => x.Id == cand.Id);
-        Assert.Equal(CandidateStatus.Analyzing, saved.Status);        // Filtered → Analyzing
+        var saved = await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id);
+        Assert.Equal(CvSubmissionStatus.Analyzing, saved.Status);        // Filtered → Analyzing
         Assert.NotNull(saved.LastScreeningPublishedAt);               // marker dời sang now
     }
 
@@ -136,7 +136,7 @@ public class StuckScreeningRepublisherTests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         SeedCriteria(tdb, camp.Id);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered,
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered,
             createdAt: DateTime.UtcNow.AddSeconds(-30), lastPublished: null);
 
         var (r, pub) = Build(tdb);
@@ -153,7 +153,7 @@ public class StuckScreeningRepublisherTests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         SeedCriteria(tdb, camp.Id);
-        SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzing,
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing,
             createdAt: DateTime.UtcNow.AddMinutes(-20), lastPublished: DateTime.UtcNow.AddMinutes(-2));
 
         var (r, pub) = Build(tdb);
@@ -170,24 +170,24 @@ public class StuckScreeningRepublisherTests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         SeedCriteria(tdb, camp.Id);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Analyzing,
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing,
             createdAt: DateTime.UtcNow.AddMinutes(-40), lastPublished: DateTime.UtcNow.AddMinutes(-20));
 
         var (r, pub) = Build(tdb);
         await ScanOnce(r);
 
         pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Once);
-        var saved = await tdb.NewContext().CampaignCandidates.AsNoTracking().FirstAsync(x => x.Id == cand.Id);
+        var saved = await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id);
         Assert.True(saved.LastScreeningPublishedAt > DateTime.UtcNow.AddMinutes(-1));   // marker dời sang now
     }
 
     // Analyzed / Rejected / Invited → terminal/chờ HR → KHÔNG nhặt (dù cũ).
     [Theory]
-    [InlineData(CandidateStatus.Analyzed)]
-    [InlineData(CandidateStatus.Rejected)]
-    [InlineData(CandidateStatus.Invited)]
-    [InlineData(CandidateStatus.AnalysisFailed)]
-    public async Task NonPending_Status_NeverRepublished(CandidateStatus status)
+    [InlineData(CvSubmissionStatus.Analyzed)]
+    [InlineData(CvSubmissionStatus.Rejected)]
+    [InlineData(CvSubmissionStatus.Invited)]
+    [InlineData(CvSubmissionStatus.AnalysisFailed)]
+    public async Task NonPending_Status_NeverRepublished(CvSubmissionStatus status)
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
@@ -210,7 +210,7 @@ public class StuckScreeningRepublisherTests
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
         SeedCriteria(tdb, camp.Id);
-        var cand = SeedCandidate(tdb, camp.Id, CandidateStatus.Filtered,
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered,
             createdAt: DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
         // soft-delete campaign
         var c = await tdb.Db.Campaigns.FirstAsync(x => x.Id == camp.Id);

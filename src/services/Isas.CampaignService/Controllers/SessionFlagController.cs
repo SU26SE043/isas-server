@@ -61,9 +61,9 @@ namespace Isas.CampaignService.Controllers
             var campaign = await _db.Campaigns.FirstOrDefaultAsync(c => c.Id == campaignId, ct);
             if (campaign is null) return NotFound(new { error = "Campaign not found." });
 
-            // Ownership: caller phải là thành viên campaign (CampaignCandidate theo candidateId) → ngoài = 403.
-            var isMember = await _db.CampaignCandidates
-                .AnyAsync(c => c.CampaignId == campaignId && c.CandidateId == candidateId, ct);
+            // Ownership: caller phải là thành viên campaign (CampaignMembership theo candidateId, DB16) → ngoài = 403.
+            var isMember = await _db.CampaignMemberships
+                .AnyAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId, ct);
             if (!isMember) return Forbid();
 
             if (!FeSignals.Contains(req.SignalType?.Trim() ?? string.Empty))

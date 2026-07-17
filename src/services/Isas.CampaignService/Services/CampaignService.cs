@@ -568,7 +568,7 @@ namespace Isas.CampaignService.Services
                 return response;
 
             // Load ứng viên thuộc campaign này (ngoài campaign / không tồn tại → failed[]).
-            var candidates = await _db.CampaignCandidates
+            var candidates = await _db.CvSubmissions
                 .Where(c => c.CampaignId == id && uniqueIds.Contains(c.Id))
                 .ToListAsync(ct);
             var byId = candidates.ToDictionary(c => c.Id);
@@ -580,7 +580,7 @@ namespace Isas.CampaignService.Services
                 .ToListAsync(ct);
             var existingSet = new HashSet<string>(existingEmails, StringComparer.OrdinalIgnoreCase);
 
-            var toInvite = new List<CampaignCandidate>();
+            var toInvite = new List<CvSubmission>();
             foreach (var cid in uniqueIds)
             {
                 if (!byId.TryGetValue(cid, out var cand))
@@ -590,10 +590,10 @@ namespace Isas.CampaignService.Services
                 }
 
                 // Absorbing: đã mời rồi → bỏ qua (không tạo invitation thứ 2, không lật trạng thái).
-                if (cand.Status == CandidateStatus.Invited)
+                if (cand.Status == CvSubmissionStatus.Invited)
                     continue;
 
-                if (cand.Status != CandidateStatus.Analyzed)
+                if (cand.Status != CvSubmissionStatus.Analyzed)
                 {
                     response.Failed.Add(new FailedInviteItem { CandidateId = cid, Reason = $"Chỉ mời được ứng viên Analyzed (hiện: {cand.Status})." });
                     continue;
@@ -642,7 +642,7 @@ namespace Isas.CampaignService.Services
                     CreatedAt = now,
                     SentAt = now,                    // DB2b — "đã vào outbox" (dispatcher publish sau)
                 };
-                cand.Status = CandidateStatus.Invited;
+                cand.Status = CvSubmissionStatus.Invited;
                 cand.UpdatedAt = now;
                 _db.CampaignInvitations.Add(invitation);
 
@@ -670,7 +670,7 @@ namespace Isas.CampaignService.Services
         // Idempotent: token cũ đã revoke → giữ mốc revoke cũ, VẪN tạo lời mời mới.
         // Ownership: campaign lọc theo org_id (ngoài org → 404); invitation không thuộc campaign → 404.
         // Campaign phải Active (Draft/Closed/Archived → 409) — nhất quán với mời hiện tại (CreateInvitations).
-        // KHÔNG đụng membership CampaignCandidate (D2 — link mời chỉ để join) và KHÔNG đụng session.
+        // KHÔNG đụng membership (CampaignMembership, D2 — link mời chỉ để join) / cv_submission và KHÔNG đụng session.
         public async Task<InvitationItem> ReissueInvitationAsync(
             Guid orgId, Guid actorUserId, Guid id, Guid invitationId, CancellationToken ct)
         {
@@ -889,7 +889,7 @@ namespace Isas.CampaignService.Services
             // Cap số CV/campaign (chặn đốt AI vì free) — vượt → 400, chặn CẢ batch (như invitations).
             if (campaign.MaxCandidates.HasValue)
             {
-                var currentCount = await _db.CampaignCandidates.CountAsync(c => c.CampaignId == id, ct);
+                var currentCount = await _db.CvSubmissions.CountAsync(c => c.CampaignId == id, ct);
                 if (currentCount + files.Count > campaign.MaxCandidates.Value)
                     throw new ArgumentException(
                         $"Vượt giới hạn sàng lọc của gói (max_candidates={campaign.MaxCandidates.Value}): " +
@@ -898,14 +898,14 @@ namespace Isas.CampaignService.Services
 
             // Dedup email: bộ đã có trong campaign + cộng dồn trong batch này (case-insensitive).
             var seenEmails = new HashSet<string>(
-                await _db.CampaignCandidates
+                await _db.CvSubmissions
                     .Where(c => c.CampaignId == id && c.Email != null)
                     .Select(c => c.Email!)
                     .ToListAsync(ct),
                 StringComparer.OrdinalIgnoreCase);
 
             var response = new ScreenCandidatesResponse { Received = files.Count };
-            var created = new List<CampaignCandidate>();
+            var created = new List<CvSubmission>();
             var now = DateTime.UtcNow;
 
             foreach (var file in files)
@@ -957,7 +957,7 @@ namespace Isas.CampaignService.Services
                 var cvKey = await ArchiveCvAsync(buffer, file, campaign.Id, candidateId, ct);
                 var reject = RunHardFilter(campaign, parsedText);
 
-                created.Add(new CampaignCandidate
+                created.Add(new CvSubmission
                 {
                     Id = candidateId,
                     CampaignId = campaign.Id,
@@ -966,7 +966,7 @@ namespace Isas.CampaignService.Services
                     CvFileUrl = cvKey,
                     CvParsedText = parsedText,
                     ParseStatus = CvParseStatus.Done,
-                    Status = reject is null ? CandidateStatus.Filtered : CandidateStatus.Rejected,
+                    Status = reject is null ? CvSubmissionStatus.Filtered : CvSubmissionStatus.Rejected,
                     RejectReason = reject,
                     CreatedAt = now,
                     UpdatedAt = now
@@ -975,15 +975,15 @@ namespace Isas.CampaignService.Services
 
             if (created.Count > 0)
             {
-                _db.CampaignCandidates.AddRange(created);
+                _db.CvSubmissions.AddRange(created);
                 AddAudit(actorUserId, orgId, AuditAction.ScreenCandidates, campaign.Id,
-                    $"Sàng {response.Received} CV: {created.Count(c => c.Status == CandidateStatus.Filtered)} qua, " +
-                    $"{created.Count(c => c.Status == CandidateStatus.Rejected)} loại, {response.Skipped} trùng");
+                    $"Sàng {response.Received} CV: {created.Count(c => c.Status == CvSubmissionStatus.Filtered)} qua, " +
+                    $"{created.Count(c => c.Status == CvSubmissionStatus.Rejected)} loại, {response.Skipped} trùng");
                 await _db.SaveChangesAsync(ct);
             }
 
-            response.Rejected = created.Count(c => c.Status == CandidateStatus.Rejected);
-            response.Filtered = created.Count(c => c.Status == CandidateStatus.Filtered);
+            response.Rejected = created.Count(c => c.Status == CvSubmissionStatus.Rejected);
+            response.Filtered = created.Count(c => c.Status == CvSubmissionStatus.Filtered);
             response.Candidates = created.Select(c => new ScreenedCandidateItem
             {
                 Id = c.Id,
@@ -1000,7 +1000,7 @@ namespace Isas.CampaignService.Services
         // cv_file_url null (chưa archive) → FileNotFoundException (404).
         public async Task<Stream> DownloadCandidateCvAsync(Guid orgId, Guid id, Guid candidateId, CancellationToken ct)
         {
-            var candidate = await _db.CampaignCandidates
+            var candidate = await _db.CvSubmissions
                 .FirstOrDefaultAsync(
                     c => c.Id == candidateId && c.CampaignId == id && c.Campaign.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
@@ -1083,7 +1083,7 @@ namespace Isas.CampaignService.Services
         }
 
         // C13: row ứng viên bị loại (file hỏng / parse fail). Id/CreatedAt set sẵn (chạy SQLite test + Postgres).
-        private static CampaignCandidate NewRejectedCandidate(
+        private static CvSubmission NewRejectedCandidate(
             Guid id, Guid campaignId, string? cvKey, string? email, string? parsedText,
             string reason, CvParseStatus parseStatus, DateTime now)
             => new()
@@ -1094,7 +1094,7 @@ namespace Isas.CampaignService.Services
                 Email = email,
                 CvParsedText = parsedText,
                 ParseStatus = parseStatus,
-                Status = CandidateStatus.Rejected,
+                Status = CvSubmissionStatus.Rejected,
                 RejectReason = reason,
                 CreatedAt = now,
                 UpdatedAt = now

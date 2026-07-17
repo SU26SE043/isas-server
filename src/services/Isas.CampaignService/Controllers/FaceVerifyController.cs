@@ -11,7 +11,7 @@ namespace Isas.CampaignService.Controllers
     /// <summary>
     /// SEC-2 — cổng xác minh khuôn mặt (face-verify) cho ứng viên B2B. 2 endpoint (JWT Candidate + phải là
     /// thành viên campaign — mirror <see cref="SessionFlagController"/>):
-    ///  1) <c>face-enroll</c>: upload ảnh THAM CHIẾU → S3 KEY → gán <c>CampaignCandidate.ReferenceImageKey</c>.
+    ///  1) <c>face-enroll</c>: upload ảnh THAM CHIẾU → S3 KEY → gán <c>CampaignMembership.ReferenceImageKey</c>.
     ///  2) <c>face-check</c>: chỉ khi campaign bật <c>FaceVerifyEnabled</c>; upload ảnh LIVE → S3 KEY →
     ///     gọi AIService so khớp → mỗi tín hiệu (no_face/multiple_faces/face_mismatch) → 1 cờ session_flags cho HR.
     /// D13/SEC-5: CHỈ FLAG cho HR, KHÔNG auto-chặn; thiếu ảnh tham chiếu ≠ gian lận (cờ identity_unverified).
@@ -129,13 +129,13 @@ namespace Isas.CampaignService.Controllers
         // ── helpers ──────────────────────────────────────────────────────────────────
 
         // Membership của candidate trong campaign (kèm Campaign nav). Không tồn tại → 403 (mirror SessionFlagController).
-        // Campaign không tồn tại → 404.
-        private async Task<(CampaignCandidate? membership, IActionResult? error)> ResolveMembershipAsync(
+        // Campaign không tồn tại → 404. DB16: membership ở bảng campaign_membership (ReferenceImageKey nằm đây).
+        private async Task<(CampaignMembership? membership, IActionResult? error)> ResolveMembershipAsync(
             Guid campaignId, Guid candidateId, CancellationToken ct)
         {
-            var membership = await _db.CampaignCandidates
-                .Include(c => c.Campaign)
-                .FirstOrDefaultAsync(c => c.CampaignId == campaignId && c.CandidateId == candidateId, ct);
+            var membership = await _db.CampaignMemberships
+                .Include(m => m.Campaign)
+                .FirstOrDefaultAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId, ct);
 
             if (membership is null)
             {
