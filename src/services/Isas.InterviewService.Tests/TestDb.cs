@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
@@ -57,6 +58,38 @@ public sealed class TestDb : IDisposable
         => new(db,
             Options.Create(new ScoringOptions { ImprovementThresholdPct = thresholdPct }),
             NullLogger<SessionResultService>.Instance);
+
+    // DB2 — SessionScoringNotifier THẬT (ghi outbox-row + side-effect BC9/10/14/15). Notifier KHÔNG còn
+    // giữ publisher; publish thật do OutboxDispatcher. summarizer/roadmapReport override khi cần test riêng.
+    public static SessionScoringNotifier Notifier(
+        InterviewDbContext db,
+        IAiServiceSessionSummarizer? summarizer = null,
+        IRoadmapReportService? roadmapReport = null)
+        => new(db,
+            ResultService(db),
+            summarizer ?? Summarizer(),
+            roadmapReport ?? RoadmapReport(db),
+            NullLogger<SessionScoringNotifier>.Instance);
+
+    // DB2 — đọc outbox-row settlement-event của 1 session (deserialize Payload đúng options mặc định như
+    // OutboxMessage.For* → khớp wire cũ). Dùng NewContext để đọc bản đã commit (không dính change-tracker).
+    public static SessionScoredEvent? ScoredOutbox(InterviewDbContext db, Guid sessionId)
+    {
+        var row = db.OutboxMessages.AsNoTracking()
+            .SingleOrDefault(m => m.SessionId == sessionId && m.Type == OutboxMessage.SessionScoredType);
+        return row is null ? null : JsonSerializer.Deserialize<SessionScoredEvent>(row.Payload);
+    }
+
+    public static SessionAbandonedEvent? AbandonedOutbox(InterviewDbContext db, Guid sessionId)
+    {
+        var row = db.OutboxMessages.AsNoTracking()
+            .SingleOrDefault(m => m.SessionId == sessionId && m.Type == OutboxMessage.SessionAbandonedType);
+        return row is null ? null : JsonSerializer.Deserialize<SessionAbandonedEvent>(row.Payload);
+    }
+
+    // Số outbox-row của 1 session theo Type (dùng cho Times.Once/Never → 1/0).
+    public static int OutboxCount(InterviewDbContext db, Guid sessionId, string type)
+        => db.OutboxMessages.AsNoTracking().Count(m => m.SessionId == sessionId && m.Type == type);
 
     // E10 — ScoringOptions cho AnswerService. Mặc định N=1 (self-consistency TẮT) → giữ hành vi cũ;
     // test self-consistency truyền N>1 + ngưỡng spread + temperature.

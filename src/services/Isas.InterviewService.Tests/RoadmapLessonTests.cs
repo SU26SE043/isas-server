@@ -72,7 +72,7 @@ public class RoadmapLessonTests
         => new(
             t.Db, new Mock<IStorageService>().Object, gen.Object,
             new Mock<ISessionScoringNotifier>().Object, reservation.Object,
-            new Mock<ISessionEventPublisher>().Object, NullLogger<PracticeService>.Instance);
+            NullLogger<PracticeService>.Instance);
 
     private static RoadmapsController Controller(
         TestDb t, IPracticeService practice, IAiServiceRoadmapGenerator gen, Guid userId)
@@ -296,10 +296,7 @@ public class RoadmapLessonTests
                 .SetProperty(l => l.Status, LessonStatus.Practicing)
                 .SetProperty(l => l.SessionId, session.Id));
 
-        var eventPub = new Mock<ISessionEventPublisher>();
-        var notifier = new SessionScoringNotifier(
-            t.Db, eventPub.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
-            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
+        var notifier = TestDb.Notifier(t.Db);
 
         await notifier.NotifySessionScoredAsync(session.Id);
 
@@ -328,7 +325,7 @@ public class RoadmapLessonTests
                 .SetProperty(l => l.Status, LessonStatus.Practicing)
                 .SetProperty(l => l.SessionId, session.Id));
 
-        var (sweeper, _) = BuildSweeper(t);
+        var sweeper = BuildSweeper(t);
         await ScanOnce(sweeper);
 
         var db = t.NewContext();
@@ -400,18 +397,15 @@ public class RoadmapLessonTests
         await (Task)mi.Invoke(s, new object[] { CancellationToken.None })!;
     }
 
-    private static (SessionAbandonSweeper sweeper, Mock<ISessionEventPublisher> pub) BuildSweeper(TestDb t)
+    private static SessionAbandonSweeper BuildSweeper(TestDb t)
     {
         var services = new ServiceCollection();
         services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
         var provider = services.BuildServiceProvider();
 
-        var pub = new Mock<ISessionEventPublisher>();
-        var sweeper = new SessionAbandonSweeper(
+        return new SessionAbandonSweeper(
             provider.GetRequiredService<IServiceScopeFactory>(),
-            pub.Object,
             Options.Create(new ScoringOptions()),
             NullLogger<SessionAbandonSweeper>.Instance);
-        return (sweeper, pub);
     }
 }

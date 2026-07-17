@@ -344,14 +344,8 @@ public class SessionResultServiceTests
         t.Db.AddRange(session, q, crit, answer);
         await t.Db.SaveChangesAsync();
 
-        // Notifier THẬT + result service THẬT (chỉ mock transport event).
-        var eventPublisher = new Mock<ISessionEventPublisher>();
-        eventPublisher
-            .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-        var notifier = new SessionScoringNotifier(
-            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
-            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
+        // Notifier THẬT + result service THẬT (DB2: ghi outbox-row thay vì publish trực tiếp).
+        var notifier = TestDb.Notifier(t.Db);
         var svc = new AnswerService(
             t.Db, new Mock<IStorageService>().Object, new Mock<IScoringJobPublisher>().Object,
             notifier, TestDb.ScoringOpts(), NullLogger<AnswerService>.Instance);
@@ -383,7 +377,6 @@ public class SessionResultServiceTests
             t.Db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object, notifier.Object,
             new Mock<ICreditReservationClient>().Object,   // BC2: không dùng ở nhánh B2B
-            new Mock<ISessionEventPublisher>().Object,     // BK12: không dùng ở nhánh B2B
             NullLogger<PracticeService>.Instance);
     }
 }

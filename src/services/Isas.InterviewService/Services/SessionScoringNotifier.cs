@@ -1,15 +1,18 @@
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
 
+// DB2 — Transactional Outbox: nơi đóng session GHI outbox-row (settlement-event) CÙNG transaction với
+// state-flip, thay cho "publish best-effort SAU SaveChanges" cũ (mất event khi broker chết). OutboxDispatcher
+// publish row lên "interview.events". Notifier KHÔNG còn publish/không giữ ISessionEventPublisher.
 public class SessionScoringNotifier : ISessionScoringNotifier
 {
     private readonly InterviewDbContext _db;
-    private readonly ISessionEventPublisher _eventPublisher;
     private readonly ISessionResultService _resultService;
     private readonly IAiServiceSessionSummarizer _summarizer;   // BC10
     private readonly IRoadmapReportService _roadmapReport;      // BC15
@@ -17,70 +20,27 @@ public class SessionScoringNotifier : ISessionScoringNotifier
 
     public SessionScoringNotifier(
         InterviewDbContext db,
-        ISessionEventPublisher eventPublisher,
         ISessionResultService resultService,
         IAiServiceSessionSummarizer summarizer,
         IRoadmapReportService roadmapReport,
         ILogger<SessionScoringNotifier> logger)
     {
         _db = db;
-        _eventPublisher = eventPublisher;
         _resultService = resultService;
         _summarizer = summarizer;
         _roadmapReport = roadmapReport;
         _logger = logger;
     }
 
-    public async Task NotifySessionScoredAsync(Guid sessionId, CancellationToken ct = default)
+    // Tính điểm tổng (weighted) + build SessionScoredEvent + `db.OutboxMessages.Add(row)` — KHÔNG save
+    // (caller commit chung với state-flip → đóng session state & outbox-row cùng 1 transaction, atomic).
+    // Không phụ thuộc BC9 (điểm event = weighted tính từ answer_scores) nên gọi được TRƯỚC SaveChanges.
+    public async Task EnqueueSessionScoredAsync(Guid sessionId, CancellationToken ct = default)
     {
-        // BC9: tính + ghi tổng kết điểm buổi luyện B2C (no-op nếu B2B). Đây là hook chung của cả 2
-        // điểm đóng session (AnswerService.TryCompleteSessionAsync + PracticeService.SubmitSessionAsync).
-        // Best-effort: lỗi tính KHÔNG chặn việc đóng session (đã Scored trong DB) — overall_score để
-        // null, có thể backfill sau. ComputeAndStore tự SaveChanges nên context không rớt dở dang.
-        try
-        {
-            await _resultService.ComputeAndStoreAsync(sessionId, ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "BC9: tính tổng kết điểm B2C thất bại cho session {SessionId}", sessionId);
-        }
-
-        // BC14: nếu session này là buổi luyện của 1 roadmap lesson (Practicing) → lesson `Done`.
-        // Đóng session Scored là chokepoint chung của cả 2 đường (AnswerService callback +
-        // PracticeService.SubmitSession) nên đặt ở đây phủ hết. Guard theo session_id + status
-        // Practicing → chỉ chạm lesson gắn đúng session này; B2B/không-lesson → no-op. Best-effort
-        // (lỗi KHÔNG chặn đóng session — session đã Scored trong DB).
-        try
-        {
-            var doneCount = await _db.RoadmapLessons
-                .Where(l => l.SessionId == sessionId && l.Status == LessonStatus.Practicing)
-                .ExecuteUpdateAsync(u => u.SetProperty(l => l.Status, LessonStatus.Done), ct);
-            if (doneCount > 0)
-            {
-                _logger.LogInformation("BC14: lesson của session {SessionId} -> Done", sessionId);
-
-                // BC15: lesson vừa Done → rollup hoàn tất milestone (+improvement) / roadmap (+final_report,
-                // AI comment). Best-effort trong cùng try — lỗi KHÔNG chặn đóng session (đã Scored trong DB).
-                await _roadmapReport.OnLessonDoneAsync(sessionId, ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "BC14/BC15: xử lý lesson Done thất bại cho session {SessionId}", sessionId);
-        }
-
         var session = await _db.PracticeSessions
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
         if (session is null) return;
-
-        // BC10: nhận xét chung buổi luyện B2C (AI best-effort). CHỈ B2C (campaign_id null); B2B → no-op.
-        // Chạy SAU BC9 (đã lưu overall_score + session_criterion_scores) → đọc lại số liệu đó → gọi
-        // AIService /summarize-session → lưu practice_sessions.overall_comment (AI KHÔNG ghi DB — GEN-4).
-        // Best-effort: AI lỗi/timeout → overall_comment để null, KHÔNG chặn Scored (session đã Scored trong DB).
-        if (session.CampaignId is null)
-            await TrySummarizeSessionAsync(session.Id, session.JobCategory, session.OverallScore, ct);
 
         var totalScore = await ComputeWeightedTotalScoreAsync(
             session.Id, session.CampaignId, session.JobCategory, ct);
@@ -94,37 +54,17 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             ScoredAt = DateTime.UtcNow
         };
 
-        try
-        {
-            await _eventPublisher.PublishSessionScoredAsync(evt, ct);
+        _db.OutboxMessages.Add(OutboxMessage.ForScored(evt));
 
-            // Settlement-outbox: phát OK → đánh dấu settlement_published_at để SettlementReconciler
-            // bỏ qua session này. Publish LỖI (catch dưới) → không tới đây → marker giữ null →
-            // reconciler phát lại (Payment idempotent theo session_id/PAY-11 → at-least-once an toàn).
-            // ExecuteUpdate vì session ở đây AsNoTracking (giống StuckAnswerRepublisher).
-            await _db.PracticeSessions
-                .Where(s => s.Id == session.Id)
-                .ExecuteUpdateAsync(u => u.SetProperty(s => s.SettlementPublishedAt, DateTime.UtcNow), ct);
-
-            _logger.LogInformation(
-                "Phát SessionScored: session={SessionId} campaign={CampaignId} score={Score}",
-                session.Id, session.CampaignId, totalScore);
-        }
-        catch (Exception ex)
-        {
-            // Publish lỗi KHÔNG được làm hỏng việc đóng session — session đã Scored trong DB
-            // rồi (giống pattern nuốt lỗi publish ở AnswerService.TryPublishScoringJobAsync).
-            // Miss event ở đây được SettlementReconciler backfill (B2C): marker null → phát lại.
-            _logger.LogError(ex, "Phát SessionScored thất bại cho session {SessionId}", sessionId);
-        }
+        _logger.LogInformation(
+            "Ghi outbox SessionScored: session={SessionId} campaign={CampaignId} score={Score}",
+            session.Id, session.CampaignId, totalScore);
     }
 
-    // PAY-13 — session đóng nhưng KHÔNG có answer nào Scored (mọi answer Failed/Skipped) → phát
-    // SessionAbandoned để Payment RELEASE reservation (không consume): candidate không được chấm 1
-    // answer nào thì không trừ 1 credit (PAY-1 = 1 credit / 1 lượt phỏng vấn AI-chấm). Best-effort như
-    // NotifySessionScoredAsync/SessionAbandonSweeper: session đã terminal trong DB, publish lỗi chỉ log.
-    // KHÔNG chạy BC9/BC10/BC14 (không phải buổi "Scored" — không có breakdown/nhận xét để tính).
-    public async Task NotifySessionAbandonedAsync(Guid sessionId, string reason, CancellationToken ct = default)
+    // PAY-13 / BK12 — session đóng mà KHÔNG có answer nào Scored (mọi answer Failed/Skipped) hoặc sinh câu
+    // hỏi lỗi (generation_failed) → build SessionAbandonedEvent + ghi outbox-row (Payment RELEASE, không
+    // consume): candidate không được chấm 1 answer nào thì không trừ 1 credit (PAY-1). KHÔNG save.
+    public async Task EnqueueSessionAbandonedAsync(Guid sessionId, string reason, CancellationToken ct = default)
     {
         var session = await _db.PracticeSessions
             .AsNoTracking()
@@ -140,32 +80,57 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             AbandonedAt = DateTime.UtcNow
         };
 
+        _db.OutboxMessages.Add(OutboxMessage.ForAbandoned(evt));
+
+        _logger.LogInformation(
+            "Ghi outbox SessionAbandoned: session={SessionId} reason={Reason}", session.Id, reason);
+    }
+
+    // Side-effect best-effort SAU khi session đã đóng Scored (đã commit). Chokepoint chung của cả 2 đường
+    // đóng (AnswerService callback + PracticeService.SubmitSession). Lỗi KHÔNG chặn (session đã Scored DB).
+    public async Task NotifySessionScoredAsync(Guid sessionId, CancellationToken ct = default)
+    {
+        // BC9: tính + ghi tổng kết điểm buổi luyện B2C (no-op nếu B2B). ComputeAndStore tự SaveChanges.
         try
         {
-            await _eventPublisher.PublishSessionAbandonedAsync(evt, ct);
-
-            // Settlement-outbox: phát OK → đánh dấu settlement_published_at (xem NotifySessionScoredAsync).
-            // Publish LỖI → không tới đây → marker null → SettlementReconciler phát lại (Payment release
-            // idempotent theo session_id/PAY-11 → at-least-once an toàn).
-            await _db.PracticeSessions
-                .Where(s => s.Id == session.Id)
-                .ExecuteUpdateAsync(u => u.SetProperty(s => s.SettlementPublishedAt, DateTime.UtcNow), ct);
-
-            _logger.LogInformation(
-                "PAY-13: phát SessionAbandoned (không answer nào Scored) cho session {SessionId} (reason={Reason})",
-                session.Id, reason);
+            await _resultService.ComputeAndStoreAsync(sessionId, ct);
         }
         catch (Exception ex)
         {
-            // Publish lỗi KHÔNG chặn đóng session — session đã terminal trong DB (giống pattern nuốt
-            // lỗi publish ở SessionScored/SessionAbandonSweeper). Miss event được SettlementReconciler backfill.
-            _logger.LogError(ex, "PAY-13: phát SessionAbandoned thất bại cho session {SessionId}", session.Id);
+            _logger.LogError(ex, "BC9: tính tổng kết điểm B2C thất bại cho session {SessionId}", sessionId);
         }
+
+        // BC14/BC15: nếu session này là buổi luyện của 1 roadmap lesson (Practicing) → lesson `Done` +
+        // rollup milestone/roadmap. Guard theo session_id + status Practicing → B2B/không-lesson → no-op.
+        try
+        {
+            var doneCount = await _db.RoadmapLessons
+                .Where(l => l.SessionId == sessionId && l.Status == LessonStatus.Practicing)
+                .ExecuteUpdateAsync(u => u.SetProperty(l => l.Status, LessonStatus.Done), ct);
+            if (doneCount > 0)
+            {
+                _logger.LogInformation("BC14: lesson của session {SessionId} -> Done", sessionId);
+                await _roadmapReport.OnLessonDoneAsync(sessionId, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "BC14/BC15: xử lý lesson Done thất bại cho session {SessionId}", sessionId);
+        }
+
+        // BC10: nhận xét chung buổi luyện B2C (AI best-effort). CHỈ B2C (campaign_id null); B2B → no-op.
+        // Đọc lại session (đã có overall_score do BC9 vừa ghi) → gọi AIService /summarize-session.
+        var session = await _db.PracticeSessions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+        if (session is null) return;
+
+        if (session.CampaignId is null)
+            await TrySummarizeSessionAsync(session.Id, session.JobCategory, session.OverallScore, ct);
     }
 
     // BC10 — sinh + lưu nhận xét chung buổi B2C. Đọc số liệu BC9 (overall_score + session_criterion_scores)
-    // đã lưu → gọi AIService (sync) → ExecuteUpdate overall_comment. Best-effort: bọc try/catch, lỗi AI KHÔNG
-    // chặn Scored (giống BC9/BC14). AI trả rỗng → AiServiceException → nuốt, overall_comment giữ null (backfill sau).
+    // → gọi AIService (sync) → ExecuteUpdate overall_comment. Best-effort: lỗi AI KHÔNG chặn Scored.
     private async Task TrySummarizeSessionAsync(
         Guid sessionId, JobCategory jobCategory, decimal? overallScore, CancellationToken ct)
     {
@@ -197,9 +162,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
     }
 
     // Điểm tổng có trọng số dùng cho event (ranking B2B — campaign.md §campaign_rankings:
-    // "total_score = Σ pct×weight, chuẩn hoá chia Σweight — Interview tính"). Áp dụng chung cho
-    // cả B2C: đây chỉ là điểm SNAPSHOT phát kèm event, KHÔNG phải overallScore BC9 (equal-weight,
-    // ghi DB) — BC9 là task riêng (not_started), không thuộc phạm vi E2.
+    // "total_score = Σ pct×weight, chuẩn hoá chia Σweight — Interview tính"). Áp dụng chung cho cả B2C.
     private async Task<decimal> ComputeWeightedTotalScoreAsync(
         Guid sessionId, Guid? campaignId, JobCategory jobCategory, CancellationToken ct)
     {
@@ -219,9 +182,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             .ToListAsync(ct);
         if (scores.Count == 0) return 0m;
 
-        // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency),
-        // thay cho "attempt mới nhất". N=1 → median-of-1 = giá trị cũ (không đổi hành vi). Median
-        // không dịch được SQL → materialize (trên) rồi tính client-side.
+        // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency).
         var medianPerAnswerCriterion = scores
             .GroupBy(s => (s.AnswerId, s.CriterionId))
             .Select(g => new { g.Key.CriterionId, Score = ScoreStatistics.Median(g.Select(s => s.Score)) });
@@ -231,8 +192,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             .GroupBy(s => s.CriterionId)
             .ToDictionary(g => g.Key, g => g.Average(s => s.Score));
 
-        // maxScore khác nhau giữa các tiêu chí ⇒ không cộng điểm thô — chuẩn theo % trước khi
-        // gộp trọng số (interview.md §Đánh giá cách chấm tiêu chí #2).
+        // maxScore khác nhau giữa các tiêu chí ⇒ chuẩn theo % trước khi gộp trọng số.
         decimal weightedSum = 0m;
         decimal weightSum = 0m;
         foreach (var c in criteria)

@@ -256,18 +256,9 @@ public class AnswerServiceTests
         var candidate = Guid.NewGuid();
         var campaignId = Guid.NewGuid();
 
-        // Notifier THẬT (tính điểm bằng data thật trong DB) — chỉ mock phần transport
-        // (ISessionEventPublisher) để bắt message publish ra, đúng tinh thần "assert against
-        // the publisher abstraction" thay vì cần RabbitMQ sống.
-        var eventPublisher = new Mock<ISessionEventPublisher>();
-        SessionScoredEvent? published = null;
-        eventPublisher
-            .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
-            .Callback<SessionScoredEvent, CancellationToken>((e, _) => published = e)
-            .Returns(Task.CompletedTask);
-        var notifier = new SessionScoringNotifier(
-            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
-            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
+        // Notifier THẬT (tính điểm bằng data thật trong DB) — DB2: ghi outbox-row (assert row thay vì
+        // publish trực tiếp; publish thật do OutboxDispatcher, không cần RabbitMQ sống).
+        var notifier = TestDb.Notifier(t.Db);
 
         // Tạo session B2B qua đúng đường I1 (materialize tiêu chí campaign).
         // BK14: B2B reserve ví ORG khi tạo session → mock trả reservation cho mọi ownerType.
@@ -280,7 +271,6 @@ public class AnswerServiceTests
             new Mock<IAiServiceQuestionGenerator>().Object,
             notifier,
             reservationMock.Object,
-            new Mock<ISessionEventPublisher>().Object,     // BK12: không dùng ở nhánh B2B
             NullLogger<PracticeService>.Instance);
         var created = await practice.CreateCampaignSessionAsync(candidate,
             new CreateCampaignSessionRequest(
@@ -330,9 +320,10 @@ public class AnswerServiceTests
             .ToListAsync();
         Assert.All(scoredCriterionIds, id => Assert.Contains(id, campaignCriterionIds));
 
-        // E2: SessionScored phát đúng 1 lần, mang campaign_id B2B + điểm tổng (4/5 = 80%).
-        eventPublisher.Verify(p => p.PublishSessionScoredAsync(
-            It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()), Times.Once);
+        // DB2: outbox-row SessionScored ghi đúng 1 lần, mang campaign_id B2B + điểm tổng (4/5 = 80%).
+        using var read = t.NewContext();
+        Assert.Equal(1, TestDb.OutboxCount(read, created.Id, "session.scored"));
+        var published = TestDb.ScoredOutbox(read, created.Id);
         Assert.NotNull(published);
         Assert.Equal(created.Id, published!.SessionId);
         Assert.Equal(campaignId, published.CampaignId);
@@ -455,15 +446,7 @@ public class AnswerServiceTests
         t.Db.AddRange(session, q, crit, answer);
         await t.Db.SaveChangesAsync();
 
-        var eventPublisher = new Mock<ISessionEventPublisher>();
-        SessionScoredEvent? published = null;
-        eventPublisher
-            .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
-            .Callback<SessionScoredEvent, CancellationToken>((e, _) => published = e)
-            .Returns(Task.CompletedTask);
-        var notifier = new SessionScoringNotifier(
-            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
-            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
+        var notifier = TestDb.Notifier(t.Db);
 
         var storage = new Mock<IStorageService>();
         var svc = new AnswerService(
@@ -477,6 +460,9 @@ public class AnswerServiceTests
             Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = 4m, Reasoning = "ok" } }
         });
 
+        // DB2: outbox-row SessionScored (event shape B2C).
+        using var read = t.NewContext();
+        var published = TestDb.ScoredOutbox(read, session.Id);
         Assert.NotNull(published);
         Assert.Equal(session.Id, published!.SessionId);
         Assert.Null(published.CampaignId);            // B2C
@@ -624,9 +610,11 @@ public class AnswerServiceTests
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.SessionAbandoned, s.Status);   // PAY-13: 0 Scored -> abandon, không Scored
 
-        // Phát SessionAbandoned (release), KHÔNG phát SessionScored (consume).
-        notifier.Verify(n => n.NotifySessionAbandonedAsync(session.Id, It.IsAny<string>(), It.IsAny<CancellationToken>()),
+        // DB2: ghi outbox abandoned (release), KHÔNG ghi/notify scored (consume).
+        notifier.Verify(n => n.EnqueueSessionAbandonedAsync(session.Id, It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Once);
+        notifier.Verify(n => n.EnqueueSessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
         notifier.Verify(n => n.NotifySessionScoredAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -644,15 +632,7 @@ public class AnswerServiceTests
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
 
-        var eventPublisher = new Mock<ISessionEventPublisher>();
-        SessionAbandonedEvent? abandoned = null;
-        eventPublisher
-            .Setup(p => p.PublishSessionAbandonedAsync(It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()))
-            .Callback<SessionAbandonedEvent, CancellationToken>((e, _) => abandoned = e)
-            .Returns(Task.CompletedTask);
-        var notifier = new SessionScoringNotifier(
-            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
-            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
+        var notifier = TestDb.Notifier(t.Db);
 
         var svc = new AnswerService(
             t.Db, new Mock<IStorageService>().Object, new Mock<IScoringJobPublisher>().Object,
@@ -663,10 +643,11 @@ public class AnswerServiceTests
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
         Assert.Equal(SessionStatus.SessionAbandoned, s.Status);
 
-        eventPublisher.Verify(p => p.PublishSessionAbandonedAsync(
-            It.IsAny<SessionAbandonedEvent>(), It.IsAny<CancellationToken>()), Times.Once);
-        eventPublisher.Verify(p => p.PublishSessionScoredAsync(
-            It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()), Times.Never);
+        // DB2: ghi outbox abandoned (E7 release), KHÔNG ghi scored (consume).
+        using var read = t.NewContext();
+        Assert.Equal(1, TestDb.OutboxCount(read, session.Id, "session.abandoned"));
+        Assert.Equal(0, TestDb.OutboxCount(read, session.Id, "session.scored"));
+        var abandoned = TestDb.AbandonedOutbox(read, session.Id);
         Assert.NotNull(abandoned);
         Assert.Equal(session.Id, abandoned!.SessionId);
         Assert.Null(abandoned.CampaignId);            // B2C
@@ -1073,15 +1054,7 @@ public class AnswerServiceTests
         t.Db.AddRange(session, q, crit, answer);
         await t.Db.SaveChangesAsync();
 
-        var eventPublisher = new Mock<ISessionEventPublisher>();
-        SessionScoredEvent? published = null;
-        eventPublisher
-            .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
-            .Callback<SessionScoredEvent, CancellationToken>((e, _) => published = e)
-            .Returns(Task.CompletedTask);
-        var notifier = new SessionScoringNotifier(
-            t.Db, eventPublisher.Object, TestDb.ResultService(t.Db), TestDb.Summarizer(),
-            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
+        var notifier = TestDb.Notifier(t.Db);
 
         var svc = new AnswerService(
             t.Db, new Mock<IStorageService>().Object, new Mock<IScoringJobPublisher>().Object,
@@ -1099,7 +1072,8 @@ public class AnswerServiceTests
                 Scores = { new ScoreItemDto { CriterionId = crit.Id, Score = scores[i], Reasoning = "ok" } }
             });
 
-        // Event total = median(2,2,5)=2 → 2/5 = 40%.
+        // DB2: outbox-row SessionScored total = median(2,2,5)=2 → 2/5 = 40%.
+        var published = TestDb.ScoredOutbox(t.NewContext(), session.Id);
         Assert.NotNull(published);
         Assert.Equal(40m, published!.TotalScore);
 

@@ -96,7 +96,7 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHostedService<StuckAnswerRepublisher>();
 builder.Services.AddHostedService<SessionAbandonSweeper>();
-builder.Services.AddHostedService<SettlementReconciler>();   // settlement-outbox: phát lại event B2C hụt
+builder.Services.AddHostedService<OutboxDispatcher>();   // DB2: transactional outbox → phát settlement-event
 
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -131,6 +131,8 @@ builder.Services.Configure<ScoringOptions>(
     builder.Configuration.GetSection(ScoringOptions.SectionName));   // BC9
 builder.Services.Configure<RoadmapOptions>(
     builder.Configuration.GetSection(RoadmapOptions.SectionName));   // BC15
+builder.Services.Configure<OutboxSettings>(
+    builder.Configuration.GetSection(OutboxSettings.SectionName));   // DB2
 
 builder.Services.AddSingleton<IAmazonS3>(sp =>
 {

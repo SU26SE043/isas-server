@@ -390,9 +390,7 @@ public class RoadmapReportTests
             .ReturnsAsync(new RoadmapSummaryAiResult([], [], [], "OK"));
         var report = TestDb.RoadmapReport(t.Db, gen.Object);
 
-        var notifier = new SessionScoringNotifier(
-            t.Db, new Mock<ISessionEventPublisher>().Object, TestDb.ResultService(t.Db),
-            TestDb.Summarizer(), report, NullLogger<SessionScoringNotifier>.Instance);
+        var notifier = TestDb.Notifier(t.Db, roadmapReport: report);
 
         await notifier.NotifySessionScoredAsync(s1);
 

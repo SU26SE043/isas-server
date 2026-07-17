@@ -24,6 +24,8 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<RoadmapMilestone> RoadmapMilestones => Set<RoadmapMilestone>();  // BC12
         public DbSet<RoadmapLesson> RoadmapLessons => Set<RoadmapLesson>();        // BC12
 
+        public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();        // DB2 — transactional outbox
+
         protected override void OnModelCreating(ModelBuilder b)
         {
             base.OnModelCreating(b);

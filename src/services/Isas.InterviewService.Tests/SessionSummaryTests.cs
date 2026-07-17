@@ -41,17 +41,9 @@ public class SessionSummaryTests
             Version = 1
         };
 
-    // Notifier THẬT + result service THẬT (BC9) — chỉ mock transport event + summarizer AI (BC10).
+    // Notifier THẬT + result service THẬT (BC9) — summarizer AI (BC10). DB2: outbox thay publish trực tiếp.
     private static SessionScoringNotifier BuildNotifier(TestDb t, IAiServiceSessionSummarizer summarizer)
-    {
-        var eventPub = new Mock<ISessionEventPublisher>();
-        eventPub
-            .Setup(p => p.PublishSessionScoredAsync(It.IsAny<SessionScoredEvent>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-        return new SessionScoringNotifier(
-            t.Db, eventPub.Object, TestDb.ResultService(t.Db), summarizer,
-            TestDb.RoadmapReport(t.Db), NullLogger<SessionScoringNotifier>.Instance);
-    }
+        => TestDb.Notifier(t.Db, summarizer);
 
     private static PracticeService BuildPractice(TestDb t)
     {
@@ -63,7 +55,6 @@ public class SessionSummaryTests
             t.Db, new Mock<IStorageService>().Object,
             new Mock<IAiServiceQuestionGenerator>().Object, notifier.Object,
             new Mock<ICreditReservationClient>().Object,
-            new Mock<ISessionEventPublisher>().Object,
             NullLogger<PracticeService>.Instance);
     }
 
