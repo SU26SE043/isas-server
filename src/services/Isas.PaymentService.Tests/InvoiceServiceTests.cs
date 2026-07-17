@@ -1,6 +1,7 @@
 using System.Data.Common;
 using Isas.PaymentService.Models;
 using Isas.PaymentService.Services;
+using Isas.Shared.Pagination;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -52,7 +53,7 @@ public class InvoiceServiceTests
             => throw new NotImplementedException();
         public Task<List<OrderResponse>> GetOwnerOrdersAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
             => throw new NotImplementedException();
-        public Task<List<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, CancellationToken ct = default)
+        public Task<KeysetPage<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, string? cursor, int? limit, CancellationToken ct = default)
             => throw new NotImplementedException();
         public Task CancelOrderAsync(Guid id, CancellationToken ct = default)
             => throw new NotImplementedException();

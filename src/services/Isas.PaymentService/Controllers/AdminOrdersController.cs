@@ -1,4 +1,5 @@
 using Isas.PaymentService.Services;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PaymentService.Models;
@@ -23,14 +24,19 @@ namespace Isas.PaymentService.Controllers
             _order = order;
         }
 
-        // GET /payment/admin/orders — mọi đơn (cap 500, mới nhất trước).
+        // GET /payment/admin/orders — mọi đơn (mới nhất trước; keyset-paged DB8).
         // ?status= lọc theo OrderStatus (numeric: 1=Pending..5=Cancelled); ?ownerType= lọc Org/User.
+        // ?limit= (mặc định/tối đa 500) + ?cursor= (opaque) để phân trang; next-cursor trả ở header
+        // X-Next-Cursor (vắng = hết trang). Body giữ nguyên mảng JSON (backward-compat cho FE).
         [HttpGet("orders")]
         public async Task<ActionResult<List<OrderResponse>>> ListOrders(
-            [FromQuery] OrderStatus? status = null, [FromQuery] OwnerType? ownerType = null, CancellationToken ct = default)
+            [FromQuery] OrderStatus? status = null, [FromQuery] OwnerType? ownerType = null,
+            [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
-            var orders = await _order.ListAllOrdersAsync(status, ownerType, ct);
-            return Ok(orders);
+            var page = await _order.ListAllOrdersAsync(status, ownerType, cursor, limit, ct);
+            if (page.NextCursor is not null)
+                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+            return Ok(page.Items);
         }
     }
 }
