@@ -225,6 +225,15 @@ namespace Isas.CampaignService.Models
                 e.HasIndex(x => new { x.CampaignId, x.Status });
                 e.HasIndex(x => x.CandidateId);
 
+                // DB5: index cho StuckScreeningRepublisher (C15) — sweeper quét mỗi 2' theo predicate
+                // (Status, LastScreeningPublishedAt) KHÔNG có campaign_id → index (campaign_id, status)
+                // ở trên vô dụng (leading col không khớp). Non-partial: cả 2 nhánh sweeper (Filtered+null,
+                // Analyzing+not-null) đều key theo status (cột dẫn đầu, selective — chỉ Filtered/Analyzing
+                // là hot); LastScreeningPublishedAt cột phụ để so mốc. Status lưu string (HasConversion)
+                // → không cần filter literal. Tên rút gọn (lsp) vì snake_case đầy đủ quá dài.
+                e.HasIndex(x => new { x.Status, x.LastScreeningPublishedAt })
+                 .HasDatabaseName("ix_campaign_candidates_status_lsp");
+
                 // DB13: khớp soft-delete filter của Campaign (required nav).
                 e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
 
