@@ -253,7 +253,9 @@ owner_id   uuid          chủ ví bị giữ chỗ
 session_id uuid          UNIQUE, ref lỏng → Interview (idempotency)
 status     varchar(16)   enum: Reserved · Consumed · Released
 created_at timestamptz
+                         FK (owner_type,owner_id) → credit_accounts(owner_type,owner_id) Restrict  ✅ DB9 (2026-07-17)
 ```
+> **✅ DB9 (2026-07-17) — FK nội-service:** `credit_reservations`/`credit_transactions`/`invoices` đều thêm FK composite `(owner_type,owner_id) → credit_accounts` (`OnDelete=Restrict`). `credit_accounts` thêm `HasAlternateKey(owner_type,owner_id)` = UNIQUE CONSTRAINT (Postgres FK không ref được unique-index). Hệ quả: `ReserveAsync` đọc ví TRƯỚC khi chèn reservation (FK cấm reservation mồ côi) — no-wallet vẫn →402 (PAY-5). Ref XUYÊN service (`session_id`/`order_id`) giữ Guid lỏng (GEN-2).
 
 ### `credit_transactions` — sổ cái
 ```
