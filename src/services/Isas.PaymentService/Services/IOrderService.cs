@@ -1,4 +1,5 @@
-﻿using PaymentService.Models;
+﻿using Isas.Shared.Pagination;
+using PaymentService.Models;
 using static Isas.PaymentService.DTOs.OrderRequest;
 
 namespace Isas.PaymentService.Services
@@ -21,7 +22,7 @@ namespace Isas.PaymentService.Services
         /// AUTH-7 — PlatformAdmin oversight: MỌI đơn xuyên chủ ví (KHÔNG lọc owner), read-only.
         /// Optional lọc status/ownerType. Cap 500, mới nhất trước.
         /// </summary>
-        Task<List<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, CancellationToken ct = default);
+        Task<KeysetPage<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, string? cursor, int? limit, CancellationToken ct = default);
         Task CancelOrderAsync(Guid id, CancellationToken ct = default);
     }
 }

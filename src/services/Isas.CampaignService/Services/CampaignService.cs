@@ -3,6 +3,7 @@ using CsvHelper;
 using CsvHelper.Configuration;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
+using Isas.Shared.Pagination;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
@@ -182,9 +183,14 @@ namespace Isas.CampaignService.Services
 
         // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org_id, khác GetCampaignsAsync).
         // Soft-delete (D11) tự loại nhờ global query filter (DeletedAt==null trên _db.Campaigns). Optional
-        // lọc status (parse enum; giá trị lạ → không match → rỗng) + orgId. Cap 500, mới nhất trước.
-        public async Task<List<AdminCampaignListItem>> ListAllCampaignsAsync(string? status, Guid? orgId, CancellationToken ct)
+        // lọc status (parse enum; giá trị lạ → không match → rỗng) + orgId. Keyset-paged (DB8): mới nhất
+        // trước theo (CreatedAt DESC, Id DESC); cursor rỗng = trang đầu; limit mặc định 500 (giữ hành vi cũ).
+        public async Task<KeysetPage<AdminCampaignListItem>> ListAllCampaignsAsync(
+            string? status, Guid? orgId, string? cursor, int? limit, CancellationToken ct)
         {
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = KeysetCursor.Decode(cursor);
+
             var query = _db.Campaigns.AsQueryable();
 
             if (orgId is Guid oid)
@@ -194,12 +200,21 @@ namespace Isas.CampaignService.Services
                 && Enum.TryParse<CampaignStatus>(status.Trim(), ignoreCase: true, out var parsed))
                 query = query.Where(c => c.Status == parsed);
 
+            if (cur is not null)
+                query = query.Where(c => c.CreatedAt < cur.CreatedAt
+                    || (c.CreatedAt == cur.CreatedAt && c.Id.CompareTo(cur.Id) < 0));
+
             var rows = await query
                 .OrderByDescending(c => c.CreatedAt)
-                .Take(500)
+                .ThenByDescending(c => c.Id)
+                .Take(take)
                 .ToListAsync(ct);
 
-            return rows.Select(AdminCampaignListItem.FromEntity).ToList();
+            var items = rows.Select(AdminCampaignListItem.FromEntity).ToList();
+            var next = rows.Count == take
+                ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
+                : null;
+            return new KeysetPage<AdminCampaignListItem>(items, next);
         }
 
         public async Task<CampaignResponse> UpdateCampaignAsync(Guid orgId, Guid actorUserId, Guid id, UpdateCampaignRequest request, CancellationToken ct)

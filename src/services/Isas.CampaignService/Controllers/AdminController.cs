@@ -1,5 +1,6 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Services;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -21,14 +22,19 @@ namespace Isas.CampaignService.Controllers
             _campaignService = campaignService;
         }
 
-        // GET /campaign/admin/campaigns — mọi campaign (cap 500, mới nhất trước; soft-delete loại tự động).
+        // GET /campaign/admin/campaigns — mọi campaign (mới nhất trước; keyset-paged DB8; soft-delete loại tự động).
         // ?status= lọc theo trạng thái (Draft/Active/Closed/Archived); ?orgId= lọc theo org.
+        // ?limit= (mặc định/tối đa 500) + ?cursor= (opaque) để phân trang; next-cursor trả ở header
+        // X-Next-Cursor (vắng = hết trang). Body giữ nguyên mảng JSON (backward-compat cho FE).
         [HttpGet("campaigns")]
         public async Task<ActionResult<List<AdminCampaignListItem>>> ListCampaigns(
-            [FromQuery] string? status = null, [FromQuery] Guid? orgId = null, CancellationToken ct = default)
+            [FromQuery] string? status = null, [FromQuery] Guid? orgId = null,
+            [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
-            var campaigns = await _campaignService.ListAllCampaignsAsync(status, orgId, ct);
-            return Ok(campaigns);
+            var page = await _campaignService.ListAllCampaignsAsync(status, orgId, cursor, limit, ct);
+            if (page.NextCursor is not null)
+                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+            return Ok(page.Items);
         }
     }
 }

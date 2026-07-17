@@ -1,5 +1,6 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
+using Isas.Shared.Pagination;
 
 namespace Isas.CampaignService.Services
 {
@@ -12,7 +13,7 @@ namespace Isas.CampaignService.Services
 
         // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org), read-only. Tôn trọng
         // soft-delete (D11). Optional lọc status/orgId. Cap 500, mới nhất trước.
-        Task<List<AdminCampaignListItem>> ListAllCampaignsAsync(string? status, Guid? orgId, CancellationToken ct);
+        Task<KeysetPage<AdminCampaignListItem>> ListAllCampaignsAsync(string? status, Guid? orgId, string? cursor, int? limit, CancellationToken ct);
         Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct);
         Task<CampaignResponse> UpdateCampaignAsync(Guid orgId, Guid actorUserId, Guid id, UpdateCampaignRequest request, CancellationToken ct);
         Task<bool> DeleteCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
