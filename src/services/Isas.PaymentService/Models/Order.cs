@@ -29,7 +29,6 @@
         // N–1 (payment.md §payment_transactions): 1 order nhận NHIỀU sự kiện gateway (webhook redeliver /
         // polling / webhook muộn) — log append-only, không ghi đè.
         public ICollection<PaymentTransaction> PaymentTransactions { get; set; } = [];
-        public Subscription? Subscription { get; set; }
         public ICollection<CreditTransaction> CreditTransactions { get; set; } = [];
     }
     public enum OrderStatus

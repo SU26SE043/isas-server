@@ -9,7 +9,6 @@ namespace PaymentService.Models
         public DbSet<ProductPackage> ProductPackages => Set<ProductPackage>();
         public DbSet<Order> Orders => Set<Order>();
         public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
-        public DbSet<Subscription> Subscriptions => Set<Subscription>();
         public DbSet<CreditAccount> CreditAccounts => Set<CreditAccount>();
         public DbSet<CreditReservation> CreditReservations => Set<CreditReservation>();
         public DbSet<CreditTransaction> CreditTransactions => Set<CreditTransaction>();
@@ -121,25 +120,6 @@ namespace PaymentService.Models
                  .HasForeignKey(x => x.OrderId)
                  .IsRequired(false)
                  .OnDelete(DeleteBehavior.SetNull);
-            });
-
-            // ── Subscription ──────────────────────────────────────
-            modelBuilder.Entity<Subscription>(e =>
-            {
-                e.HasKey(x => x.Id);
-                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
-                e.Property(x => x.Status).HasDefaultValue("active");
-                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
-
-                e.HasOne(x => x.Order)
-                 .WithOne(x => x.Subscription)
-                 .HasForeignKey<Subscription>(x => x.OrderId)
-                 .OnDelete(DeleteBehavior.Restrict);
-
-                e.HasOne(x => x.Package)
-                 .WithMany(x => x.Subscriptions)
-                 .HasForeignKey(x => x.PackageId)
-                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── CreditAccount (P1 — ví của chủ sở hữu, D15) ─────────
