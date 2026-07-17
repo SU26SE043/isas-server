@@ -183,5 +183,23 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
                 .WithMany(x => x.OrgMembers)
                 .HasForeignKey(x => x.UserId);
         });
+
+        // ================= DB10 — OPTIMISTIC CONCURRENCY (xmin) =================
+        // Dùng cột hệ thống Postgres `xmin` làm concurrency token cho organizations + org_members: hai
+        // admin sửa cùng org / cùng thành viên song song → lần ghi thứ hai bắt DbUpdateConcurrencyException
+        // thay vì lost-update thầm lặng. Map tường minh property ẩn `xmin` (uint) → cột hệ thống `xid`
+        // theo doc Npgsql (efcore.pg 10 đã bỏ helper UseXminAsConcurrencyToken()). `xmin` là system column
+        // nên migration KHÔNG phát AddColumn/DropColumn (model-snapshot-only). GATE IsNpgsql: `xmin` KHÔNG
+        // có tương đương SQLite → nhánh này bị bỏ qua dưới provider SQLite (EnsureCreated test) nên giữ
+        // nguyên hành vi. (Introduce idiom IsNpgsql ở Auth — chưa có tiền lệ.)
+        if (Database.IsNpgsql())
+        {
+            builder.Entity<Organization>().Property<uint>("xmin")
+                .HasColumnName("xmin").HasColumnType("xid")
+                .ValueGeneratedOnAddOrUpdate().IsConcurrencyToken();
+            builder.Entity<OrgMember>().Property<uint>("xmin")
+                .HasColumnName("xmin").HasColumnType("xid")
+                .ValueGeneratedOnAddOrUpdate().IsConcurrencyToken();
+        }
     }
 }

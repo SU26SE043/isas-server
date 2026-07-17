@@ -293,6 +293,23 @@ namespace PaymentService.Models
                  .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
                  .OnDelete(DeleteBehavior.Restrict);
             });
+
+            // ── DB10 — OPTIMISTIC CONCURRENCY (xmin) ────────────────
+            // Defense-in-depth (user-approved): dùng cột hệ thống Postgres `xmin` làm concurrency token cho
+            // credit_accounts (ví tiền). Map tường minh property ẩn `xmin` (uint) → cột hệ thống `xid` theo
+            // doc Npgsql (efcore.pg 10 đã bỏ helper UseXminAsConcurrencyToken()). `xmin` là system column nên
+            // migration KHÔNG phát AddColumn/DropColumn (model-snapshot-only). GATE IsNpgsql — `xmin` không có
+            // tương đương SQLite → nhánh này bị bỏ qua dưới provider SQLite (EnsureCreated test) nên giữ nguyên
+            // hành vi. (Introduce idiom IsNpgsql ở Payment — chưa có tiền lệ.)
+            // LƯU Ý: credit_accounts hiện KHÔNG có đường ghi tracked read-modify-write (mọi mutation là
+            // ExecuteUpdate...WHERE atomic) → xmin INERT lúc chạy; khai đồng nhất/phòng thủ nếu sau này có
+            // đường ghi tracked. KHÔNG đổi CreditAccountService/WebhookService/reconciler.
+            if (Database.IsNpgsql())
+            {
+                modelBuilder.Entity<CreditAccount>().Property<uint>("xmin")
+                    .HasColumnName("xmin").HasColumnType("xid")
+                    .ValueGeneratedOnAddOrUpdate().IsConcurrencyToken();
+            }
         }
     }
 }
