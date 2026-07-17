@@ -26,6 +26,10 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
 
         e.Property(x => x.CreatedAt).IsRequired();
 
+        // DB14 — audit updated_at: default now() ở DB (Postgres); C# init ở entity đảm nhận insert
+        // (SQLite/EnsureCreated không có now()). Stamp tự động khi Modified qua SaveChanges override.
+        e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+
         // BC9 — điểm tổng buổi B2C (nullable; set khi Scored).
         e.Property(x => x.OverallScore).HasColumnType("numeric(5,2)");
 

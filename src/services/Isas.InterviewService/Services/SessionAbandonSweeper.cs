@@ -194,7 +194,9 @@ public class SessionAbandonSweeper : BackgroundService
                         && (x.Status == SessionStatus.Ready || x.Status == SessionStatus.InProgress))
             .ExecuteUpdateAsync(u => u
                 .SetProperty(x => x.Status, SessionStatus.SessionAbandoned)
-                .SetProperty(x => x.CompletedAt, now), ct);
+                .SetProperty(x => x.CompletedAt, now)
+                // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
+                .SetProperty(x => x.UpdatedAt, now), ct);
 
         if (updated == 0)
         {

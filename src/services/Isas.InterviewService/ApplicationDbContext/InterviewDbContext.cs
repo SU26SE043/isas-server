@@ -26,6 +26,33 @@ namespace Isas.InterviewService.ApplicationDbContext
 
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();        // DB2 — transactional outbox
 
+        // DB14 — đóng dấu updated_at TỰ ĐỘNG cho entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()
+        // parameterless của EF gọi xuống overload (bool) này → override 2 overload dưới là đủ mọi đường ghi
+        // tracked. LƯU Ý: ExecuteUpdateAsync KHÔNG đi qua SaveChanges → các call flip practice_sessions.status
+        // (SessionAbandonSweeper) / overall_comment (SessionScoringNotifier) tự thêm .SetProperty(UpdatedAt).
+        public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        {
+            StampUpdatedAt();
+            return base.SaveChanges(acceptAllChangesOnSuccess);
+        }
+
+        public override Task<int> SaveChangesAsync(
+            bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+        {
+            StampUpdatedAt();
+            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        }
+
+        private void StampUpdatedAt()
+        {
+            var now = DateTime.UtcNow;
+            foreach (var entry in ChangeTracker.Entries<IHasUpdatedAt>())
+            {
+                if (entry.State == EntityState.Modified)
+                    entry.Entity.UpdatedAt = now;
+            }
+        }
+
         protected override void OnModelCreating(ModelBuilder b)
         {
             base.OnModelCreating(b);
