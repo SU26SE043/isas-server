@@ -493,6 +493,23 @@ public class PracticeService : IPracticeService
             .ToListAsync(ct);
     }
 
+    // DB18 — Payment (internal) dò orphan reservation: trả TẬP CON sessionIds có row practice_sessions
+    // (bất kể status). Reservation Reserved mà session KHÔNG tồn tại (crash giữa reserve↔insert lúc Start)
+    // = orphan → Payment release. Distinct để không phụ thuộc caller; rỗng → rỗng (không query).
+    public async Task<IReadOnlyList<Guid>> GetExistingSessionIdsAsync(
+        IReadOnlyList<Guid> sessionIds, CancellationToken ct = default)
+    {
+        if (sessionIds is null || sessionIds.Count == 0)
+            return Array.Empty<Guid>();
+
+        var ids = sessionIds.Distinct().ToList();
+        return await _db.PracticeSessions
+            .AsNoTracking()
+            .Where(s => ids.Contains(s.Id))
+            .Select(s => s.Id)
+            .ToListAsync(ct);
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
 
     // BK12: B2C reserve credit ví cá nhân (BC2) TRƯỚC khi sinh câu hỏi. Nếu AI sinh câu hỏi lỗi →

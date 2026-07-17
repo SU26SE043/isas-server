@@ -81,6 +81,20 @@ builder.Services.Configure<BillingSettings>(
 builder.Services.Configure<ReconcileSettings>(
     builder.Configuration.GetSection("Reconcile"));
 
+// DB18 — cấu hình reconciler bù trừ orphan reservation (session không bao giờ được insert lúc Start).
+builder.Services.Configure<OrphanReconcileSettings>(
+    builder.Configuration.GetSection(OrphanReconcileSettings.SectionName));
+
+// DB18 — chiều gọi nội bộ Payment→Interview `/internal/sessions/exists` (X-Internal-Token, KHÔNG qua
+// gateway). BaseUrl từ Interview:BaseUrl; trống → không set BaseAddress (call sẽ ném → reconciler skip vòng).
+builder.Services.AddHttpClient<IInterviewSessionClient, InterviewSessionClient>(c =>
+{
+    var baseUrl = builder.Configuration["Interview:BaseUrl"];
+    if (!string.IsNullOrWhiteSpace(baseUrl))
+        c.BaseAddress = new Uri(baseUrl);
+    c.Timeout = TimeSpan.FromSeconds(10);   // exists = query DB nhanh, không phải LLM
+});
+
 builder.Services.AddSingleton<PayOSClient>(sp =>
 {
     var settings = sp.GetRequiredService<IOptions<PayOSSettings>>().Value;
@@ -115,6 +129,10 @@ builder.Services.AddHostedService<InterviewEventConsumer>();
 // DB4: đối soát định kỳ credit_accounts.reserved_credits == count(reservations status=Reserved) cho
 // cùng owner → sửa drift (crash giữa reserve/consume/release, bút toán lệch). Core Payment-DB thuần.
 builder.Services.AddHostedService<CreditReservationReconciler>();
+// DB18 (DB4b): release reservation Reserved mà session Interview KHÔNG BAO GIỜ được tạo (crash giữa
+// reserve↔insert lúc Start). Xác minh dương qua Interview `/internal/sessions/exists`; Interview down →
+// skip vòng (KHÔNG release oan). Compensation-reconciler nhẹ (không saga).
+builder.Services.AddHostedService<OrphanReservationReconciler>();
 
 var app = builder.Build();
 
