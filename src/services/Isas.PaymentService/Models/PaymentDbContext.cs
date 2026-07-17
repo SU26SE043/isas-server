@@ -153,6 +153,30 @@ namespace PaymentService.Models
                 // idempotency: 1 reservation / session (D7)
                 e.HasIndex(x => x.SessionId).IsUnique();
 
+                // DB9 FK support index (owner_type, owner_id) — DECLARE TƯỜNG MINH để giữ lại. FK
+                // composite (owner_type, owner_id)→credit_accounts (bên dưới) sinh index này qua convention.
+                // DB5 thêm index partial (owner_type, owner_id, created_at) có prefix trùng → EF model-differ
+                // coi index convention là "thừa" và DROP nó. Nhưng index DB5 là PARTIAL (chỉ row Reserved) →
+                // KHÔNG phủ được FK/lookup mọi-trạng-thái. Khai tường minh (index EXPLICIT không bị auto-remove)
+                // → migration chỉ ADDITIVE (giữ FK index đầy đủ, KHÔNG drop). Cùng cột/tên convention nên
+                // KHÔNG tạo index trùng — vẫn đúng 1 index (owner_type, owner_id) đầy đủ.
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId });
+
+                // DB5 — index cho 2 reconciler background quét credit_reservations (trước chỉ có FK
+                // index (owner_type, owner_id) + unique(session_id) → full-scan phần status/created_at):
+                //   • CreditReservationReconciler: CountAsync(owner_type=X, owner_id=Y, status=Reserved)
+                //     → prefix (owner_type, owner_id) phục vụ count per-account.
+                //   • OrphanReservationReconciler: Where(status=Reserved, created_at < cutoff).OrderBy(created_at)
+                //     → tail created_at phục vụ age-filter + order.
+                // PARTIAL "status = 'Reserved'" giữ index tí hon (chỉ reservation đang giữ chỗ — Consumed/
+                // Released không index) → 1 index hình-vị-ngữ (predicate-shaped) phủ CẢ HAI reconciler.
+                // Filter dùng tên cột snake_case 'status' (khớp UseSnakeCaseNamingConvention) + literal
+                // 'Reserved' = tên member enum (Status lưu string qua HasConversion<string>, dòng trên).
+                // Postgres + SQLite(>=3.8) đều hỗ trợ partial index (DB2 outbox precedent).
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.CreatedAt })
+                 .HasDatabaseName("ix_credit_reservations_reserved")
+                 .HasFilter("status = 'Reserved'");
+
                 // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts.
                 // Không nav (CreditReservation không có prop tới account) → dạng HasOne<CreditAccount>().
                 // Restrict: owner NOT NULL không SetNull được; ví không bao giờ bị xoá.
