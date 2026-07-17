@@ -713,7 +713,9 @@ public class AnswerServiceTests
         Assert.Null(c.Anchors);   // dải mặc định không có câu mẫu
     }
 
-    // E9: tiêu chí CÓ rubric_levels + anchor → message mang đúng mức khai (sort theo score) + câu mẫu.
+    // E9/DB15: tiêu chí CÓ rubric_levels + câu mẫu (example_answers jsonb) → message mang đúng mức khai
+    // (sort theo score) + câu mẫu. Regression: OUTPUT ScoringCriteriaBuilder (Levels + Anchors) GIỮ NGUYÊN
+    // sau khi gộp rubric_anchors → rubric_levels.example_answers (hợp đồng ScoringJob bất biến).
     [Fact]
     public async Task Upload_CriterionWithDeclaredLevels_PublishesThoseLevelsAndAnchors()
     {
@@ -722,10 +724,13 @@ public class AnswerServiceTests
         var session = TestDb.Session(candidate, SessionStatus.Ready);
         var q = TestDb.Question(session.Id);
         var crit = TestDb.Criterion(session.JobCategory);
-        var lvl5 = new RubricLevel { CriterionId = crit.Id, Score = 5, Descriptor = "Trả lời đầy đủ" };
+        var lvl5 = new RubricLevel
+        {
+            CriterionId = crit.Id, Score = 5, Descriptor = "Trả lời đầy đủ",
+            ExampleAnswers = ["DI là tiêm phụ thuộc..."]   // DB15: câu mẫu nằm trên chính level
+        };
         var lvl0 = new RubricLevel { CriterionId = crit.Id, Score = 0, Descriptor = "Không trả lời" };
-        var anchor = new RubricAnchor { LevelId = lvl5.Id, ExampleAnswer = "DI là tiêm phụ thuộc..." };
-        t.Db.AddRange(session, q, crit, lvl5, lvl0, anchor);
+        t.Db.AddRange(session, q, crit, lvl5, lvl0);
         await t.Db.SaveChangesAsync();
 
         var publisher = new Mock<IScoringJobPublisher>();

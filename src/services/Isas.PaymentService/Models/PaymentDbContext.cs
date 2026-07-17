@@ -9,7 +9,6 @@ namespace PaymentService.Models
         public DbSet<ProductPackage> ProductPackages => Set<ProductPackage>();
         public DbSet<Order> Orders => Set<Order>();
         public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
-        public DbSet<Subscription> Subscriptions => Set<Subscription>();
         public DbSet<CreditAccount> CreditAccounts => Set<CreditAccount>();
         public DbSet<CreditReservation> CreditReservations => Set<CreditReservation>();
         public DbSet<CreditTransaction> CreditTransactions => Set<CreditTransaction>();
@@ -121,25 +120,6 @@ namespace PaymentService.Models
                  .HasForeignKey(x => x.OrderId)
                  .IsRequired(false)
                  .OnDelete(DeleteBehavior.SetNull);
-            });
-
-            // ── Subscription ──────────────────────────────────────
-            modelBuilder.Entity<Subscription>(e =>
-            {
-                e.HasKey(x => x.Id);
-                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
-                e.Property(x => x.Status).HasDefaultValue("active");
-                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
-
-                e.HasOne(x => x.Order)
-                 .WithOne(x => x.Subscription)
-                 .HasForeignKey<Subscription>(x => x.OrderId)
-                 .OnDelete(DeleteBehavior.Restrict);
-
-                e.HasOne(x => x.Package)
-                 .WithMany(x => x.Subscriptions)
-                 .HasForeignKey(x => x.PackageId)
-                 .OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── CreditAccount (P1 — ví của chủ sở hữu, D15) ─────────
@@ -293,6 +273,23 @@ namespace PaymentService.Models
                  .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
                  .OnDelete(DeleteBehavior.Restrict);
             });
+
+            // ── DB10 — OPTIMISTIC CONCURRENCY (xmin) ────────────────
+            // Defense-in-depth (user-approved): dùng cột hệ thống Postgres `xmin` làm concurrency token cho
+            // credit_accounts (ví tiền). Map tường minh property ẩn `xmin` (uint) → cột hệ thống `xid` theo
+            // doc Npgsql (efcore.pg 10 đã bỏ helper UseXminAsConcurrencyToken()). `xmin` là system column nên
+            // migration KHÔNG phát AddColumn/DropColumn (model-snapshot-only). GATE IsNpgsql — `xmin` không có
+            // tương đương SQLite → nhánh này bị bỏ qua dưới provider SQLite (EnsureCreated test) nên giữ nguyên
+            // hành vi. (Introduce idiom IsNpgsql ở Payment — chưa có tiền lệ.)
+            // LƯU Ý: credit_accounts hiện KHÔNG có đường ghi tracked read-modify-write (mọi mutation là
+            // ExecuteUpdate...WHERE atomic) → xmin INERT lúc chạy; khai đồng nhất/phòng thủ nếu sau này có
+            // đường ghi tracked. KHÔNG đổi CreditAccountService/WebhookService/reconciler.
+            if (Database.IsNpgsql())
+            {
+                modelBuilder.Entity<CreditAccount>().Property<uint>("xmin")
+                    .HasColumnName("xmin").HasColumnType("xid")
+                    .ValueGeneratedOnAddOrUpdate().IsConcurrencyToken();
+            }
         }
     }
 }

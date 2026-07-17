@@ -1,6 +1,9 @@
+using System.Text.Json;
 using Isas.InterviewService.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Isas.InterviewService.Configurations;
 
@@ -12,9 +15,18 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
         // 3 trạng thái loại trừ hợp lệ: campaign-only · candidate-only · both-null (seed mặc định BC11).
         // Không đường code nào set cả 2 (RubricLibraryService=candidate-only · PracticeService=campaign-only
         // · seed=both-null) → CHECK chỉ chặn dữ liệu bẩn, không phá luồng hiện có.
-        e.ToTable("rubric_criteria", t => t.HasCheckConstraint(
-            "ck_rubric_criteria_single_owner",
-            "campaign_id IS NULL OR candidate_id IS NULL"));
+        e.ToTable("rubric_criteria", t =>
+        {
+            t.HasCheckConstraint(
+                "ck_rubric_criteria_single_owner",
+                "campaign_id IS NULL OR candidate_id IS NULL");
+
+            // DB15 — weight ∈ (0,1]: khớp code (RubricLibraryService chuẩn hoá Σweight=1 nên mỗi tiêu
+            // chí >0; seed BC11 mỗi tiêu chí ≤1). Chặn dữ liệu bẩn (weight ≤0 hoặc >1) ở tầng DB.
+            t.HasCheckConstraint(
+                "ck_rubric_criteria_weight_range",
+                "weight > 0 AND weight <= 1");
+        });
 
         e.HasKey(x => x.Id);
 
@@ -48,6 +60,8 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
 
 public class RubricLevelConfiguration : IEntityTypeConfiguration<RubricLevel>
 {
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
     public void Configure(EntityTypeBuilder<RubricLevel> e)
     {
         e.HasKey(x => x.Id);
@@ -57,19 +71,22 @@ public class RubricLevelConfiguration : IEntityTypeConfiguration<RubricLevel>
 
         e.HasIndex(x => new { x.CriterionId, x.Score }).IsUnique();
 
-        e.HasMany(x => x.Anchors)
-            .WithOne(a => a.Level)
-            .HasForeignKey(a => a.LevelId)
-            .OnDelete(DeleteBehavior.Cascade);
-    }
-}
+        // DB15 — anchor (câu trả lời mẫu neo mức) gộp thành jsonb string[] trên chính rubric_levels
+        // (thay bảng rubric_anchors 1-n). Non-null; converter → JSON string nên SQLite (test) serialize
+        // ra text == Postgres jsonb. Mẫu giống RoadmapMilestone.FocusCriteria (converter + comparer).
+        var listConverter = new ValueConverter<List<string>, string>(
+            v => JsonSerializer.Serialize(v, Json),
+            v => JsonSerializer.Deserialize<List<string>>(v, Json) ?? new List<string>());
 
-public class RubricAnchorConfiguration : IEntityTypeConfiguration<RubricAnchor>
-{
-    public void Configure(EntityTypeBuilder<RubricAnchor> e)
-    {
-        e.HasKey(x => x.Id);
+        var listComparer = new ValueComparer<List<string>>(
+            (a, b) => (a ?? new List<string>()).SequenceEqual(b ?? new List<string>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, s) => HashCode.Combine(h, s.GetHashCode())),
+            v => v.ToList());
 
-        e.Property(x => x.ExampleAnswer).IsRequired();
+        var examples = e.Property(x => x.ExampleAnswers);
+        examples.HasConversion(listConverter);
+        examples.Metadata.SetValueComparer(listComparer);
+        examples.HasColumnType("jsonb");
+        examples.IsRequired();
     }
 }

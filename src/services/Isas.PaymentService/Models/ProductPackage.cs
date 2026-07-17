@@ -15,7 +15,6 @@
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
         public ICollection<Order> Orders { get; set; } = [];
-        public ICollection<Subscription> Subscriptions { get; set; } = [];
     }
 
     public enum PackageType

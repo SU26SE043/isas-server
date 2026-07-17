@@ -32,12 +32,18 @@ public class ScoringJobPublisher : IScoringJobPublisher
             await using var channel = await connection.CreateChannelAsync(cancellationToken: ct);
 
             // Tất cả method chuyển sang đuôi Async và nhận CancellationToken ở cuối
+            // AI2: args dead-letter PHẢI TRÙNG y hệt Python worker.declare_topology
+            // (app/config.py dlx_name/dead_routing_key) — lệch → RabbitMQ 406 khi redeclare.
             await channel.QueueDeclareAsync(
                 queue: QueueName,
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
-                arguments: null,
+                arguments: new Dictionary<string, object?>
+                {
+                    ["x-dead-letter-exchange"] = "scoring_pipeline_dlx",
+                    ["x-dead-letter-routing-key"] = "scoring_dead"
+                },
                 cancellationToken: ct);
 
             var json = JsonSerializer.Serialize(job);

@@ -402,19 +402,16 @@ version      int
 
 ### `rubric_levels`
 ```
-id           uuid   PK
-criterion_id uuid   FK → rubric_criteria (Cascade)
-score        int    0..max_score
-descriptor   text
-                    UNIQUE (criterion_id, score)
+id              uuid   PK
+criterion_id    uuid   FK → rubric_criteria (Cascade)
+score           int    0..max_score
+descriptor      text
+example_answers jsonb  ✅ DB15 — list câu mẫu neo cho mức (gộp từ bảng `rubric_anchors` cũ); '[]' nếu không có
+                       UNIQUE (criterion_id, score)
 ```
 
-### `rubric_anchors`
-```
-id             uuid   PK
-level_id       uuid   FK → rubric_levels (Cascade)
-example_answer text
-```
+### ~~`rubric_anchors`~~ ✅ **DB15 (2026-07-17) — bảng đã DROP, gộp inline vào `rubric_levels.example_answers` (jsonb `List<string>`)**
+> Trước: bảng riêng `rubric_anchors(id, level_id, example_answer)` 1 level ↔ N anchor. Nay mỗi câu mẫu = 1 phần tử trong `rubric_levels.example_answers` jsonb (converter+comparer như `RoadmapMilestone.FocusCriteria`). `ScoringCriteriaBuilder` flatten `l.ExampleAnswers` → `ScoringAnchorDto{Score, ExampleAnswer}` **giữ nguyên output** → **ScoringJob wire contract bất biến** (worker Python không đổi). Migration `SchemaCleanupDb15` (backfill `jsonb_agg(ORDER BY id)` → DROP TABLE; reversible; L3 Postgres verify 0-loss).
 
 ### `file_records`
 ```
@@ -490,8 +487,8 @@ status              varchar(16)   enum: Theory·Practicing·Done
 ```
 
 ### Index & ràng buộc (tổng hợp)
-- **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels`/`rubric_anchors` Cascade. ✅ Roadmap: Cascade theo `roadmap_id` → `roadmap_milestones` (→ `roadmap_lessons` Cascade); `roadmaps.cv_id` → `file_records` **Restrict** · `roadmap_lessons.session_id` → `practice_sessions` **Restrict**.
-- **UNIQUE**: `practice_questions(session_id, order_no)` · `practice_answers(session_id, question_id)` (1 answer/câu) · `answer_scores(answer_id, criterion_id, attempt_no)` · `session_criterion_scores(session_id, criterion_id)` · `rubric_levels(criterion_id, score)` · ✅ `roadmap_milestones(roadmap_id, order_no)` · `roadmap_lessons(milestone_id, order_no)`.
+- **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels` Cascade *(bảng `rubric_anchors` đã DROP — DB15, gộp vào `rubric_levels.example_answers` jsonb)*. ✅ Roadmap: Cascade theo `roadmap_id` → `roadmap_milestones` (→ `roadmap_lessons` Cascade); `roadmaps.cv_id` → `file_records` **Restrict** · `roadmap_lessons.session_id` → `practice_sessions` **Restrict**.
+- **UNIQUE**: `practice_questions(session_id, order_no)` · `practice_answers`: 1 answer/câu enforce qua UNIQUE `question_id` (1-1 FK) — ✅ **DB15 bỏ index UNIQUE trùng `(session_id, question_id)`, thay non-unique `(session_id)`** giữ leading-col cho sweeper/EXISTS · `answer_scores(answer_id, criterion_id, attempt_no)` · `session_criterion_scores(session_id, criterion_id)` · `rubric_levels(criterion_id, score)` · ✅ `roadmap_milestones(roadmap_id, order_no)` · `roadmap_lessons(milestone_id, order_no)`.
 - **Index**: `practice_sessions(candidate_id)` + `(campaign_id)` · `rubric_criteria(job_category, version, is_active)` · `file_records(user_id)` · ✅ `roadmaps(candidate_id)`.
 - **Idempotency**: callback `result` xoá điểm cũ cùng `(attempt_no, rubric_version)` rồi ghi lại; `failed` bỏ qua nếu answer đã `Scored` (xem §Idempotency callback).
 

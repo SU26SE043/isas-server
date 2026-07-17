@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PaymentService.Models;
@@ -11,9 +12,11 @@ using PaymentService.Models;
 namespace Isas.PaymentService.Migrations
 {
     [DbContext(typeof(PaymentDbContext))]
-    partial class PaymentDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260717142027_AddXminConcurrencyToken")]
+    partial class AddXminConcurrencyToken
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -471,6 +474,60 @@ namespace Isas.PaymentService.Migrations
                     b.ToTable("product_packages", (string)null);
                 });
 
+            modelBuilder.Entity("PaymentService.Models.Subscription", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<Guid>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<Guid>("PackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("package_id");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("active")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_subscriptions");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_subscriptions_order_id");
+
+                    b.HasIndex("PackageId")
+                        .HasDatabaseName("ix_subscriptions_package_id");
+
+                    b.ToTable("subscriptions", (string)null);
+                });
+
             modelBuilder.Entity("PaymentService.Models.CreditReservation", b =>
                 {
                     b.HasOne("PaymentService.Models.CreditAccount", null)
@@ -542,6 +599,27 @@ namespace Isas.PaymentService.Migrations
                     b.Navigation("Order");
                 });
 
+            modelBuilder.Entity("PaymentService.Models.Subscription", b =>
+                {
+                    b.HasOne("PaymentService.Models.Order", "Order")
+                        .WithOne("Subscription")
+                        .HasForeignKey("PaymentService.Models.Subscription", "OrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_subscriptions_orders_order_id");
+
+                    b.HasOne("PaymentService.Models.ProductPackage", "Package")
+                        .WithMany("Subscriptions")
+                        .HasForeignKey("PackageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_subscriptions_product_packages_package_id");
+
+                    b.Navigation("Order");
+
+                    b.Navigation("Package");
+                });
+
             modelBuilder.Entity("PaymentService.Models.Invoice", b =>
                 {
                     b.Navigation("Orders");
@@ -552,11 +630,15 @@ namespace Isas.PaymentService.Migrations
                     b.Navigation("CreditTransactions");
 
                     b.Navigation("PaymentTransactions");
+
+                    b.Navigation("Subscription");
                 });
 
             modelBuilder.Entity("PaymentService.Models.ProductPackage", b =>
                 {
                     b.Navigation("Orders");
+
+                    b.Navigation("Subscriptions");
                 });
 #pragma warning restore 612, 618
         }
