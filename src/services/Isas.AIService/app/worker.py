@@ -109,20 +109,30 @@ async def process_message(message: aio_pika.IncomingMessage):
             print(f"[✅] Transcript: {transcript}")
 
             # 3. Gemini chấm theo rubric.
-            #    score() raise ValueError khi LLM trả output không hợp lệ -> VĨNH VIỄN
-            #    (scoring dùng temperature=0 nên lỗi tái lập, retry vô ích).
+            #    score() raise ValueError khi LLM trả output không parse/không hợp lệ.
+            #    AI3 — lỗi parse thường CHỢP NHOÁNG (JSON cụt, thỉnh thoảng malformed),
+            #    nên thử lại tối đa `score_max_attempts` lần (GIỮ NGUYÊN args, kể cả
+            #    temperature/self-consistency E10) trước khi bó tay -> PermanentError -> Failed.
             #    Lỗi gọi API (rate limit/5xx/mạng) KHÔNG phải ValueError -> rơi xuống
             #    handler tạm thời -> nack để republisher thử lại sau.
-            try:
-                scores = await provider.score(
-                    question=question_content,
-                    transcript=transcript,
-                    job_category=job_category,
-                    criteria=criteria,
-                    temperature=temperature,   # E10: attempt 1 = 0, 2..N > 0
-                )
-            except ValueError as e:
-                raise PermanentError(f"Chấm thất bại (LLM output không hợp lệ): {e}")
+            scores = None
+            for score_try in range(1, settings.score_max_attempts + 1):
+                try:
+                    scores = await provider.score(
+                        question=question_content,
+                        transcript=transcript,
+                        job_category=job_category,
+                        criteria=criteria,
+                        temperature=temperature,   # E10: attempt 1 = 0, 2..N > 0
+                    )
+                    break
+                except ValueError as e:
+                    if score_try >= settings.score_max_attempts:
+                        raise PermanentError(
+                            f"Chấm thất bại sau {settings.score_max_attempts} lần "
+                            f"(LLM output không hợp lệ): {e}")
+                    print(f"[↻] Chấm lỗi parse lần {score_try}/"
+                          f"{settings.score_max_attempts} (thử lại): {e}")
             print(f"[✅] Chấm xong (attempt {attempt_no}): {scores}")
 
             # 4. Callback về .NET — .NET ghi transcript + answer_scores + đổi status.

@@ -8,6 +8,12 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     question_count: int = 5
 
+    # ── SCORING RETRY (AI3) ──────────────────────────────────────
+    # score() raise ValueError khi LLM trả output không parse/không hợp lệ. Lỗi
+    # parse thường CHỢP NHOÁNG (JSON cụt, thỉnh thoảng malformed) → thử lại vài
+    # lần trước khi bó tay báo answer Failed. 3 = 1 lần đầu + 2 lần retry.
+    score_max_attempts: int = 3
+
     # Whisper
     whisper_model: str = "large-v3"
     whisper_device: str = "cpu"
