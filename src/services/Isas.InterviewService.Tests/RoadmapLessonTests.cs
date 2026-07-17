@@ -403,7 +403,7 @@ public class RoadmapLessonTests
     private static (SessionAbandonSweeper sweeper, Mock<ISessionEventPublisher> pub) BuildSweeper(TestDb t)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection));
+        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
         var provider = services.BuildServiceProvider();
 
         var pub = new Mock<ISessionEventPublisher>();

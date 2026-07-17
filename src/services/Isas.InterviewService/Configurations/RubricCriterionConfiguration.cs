@@ -8,6 +8,14 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
 {
     public void Configure(EntityTypeBuilder<RubricCriterion> e)
     {
+        // DB19 — đúng-1-owner: cấm ĐỒNG THỜI campaign_id (B2B) và candidate_id (B2C, BC16).
+        // 3 trạng thái loại trừ hợp lệ: campaign-only · candidate-only · both-null (seed mặc định BC11).
+        // Không đường code nào set cả 2 (RubricLibraryService=candidate-only · PracticeService=campaign-only
+        // · seed=both-null) → CHECK chỉ chặn dữ liệu bẩn, không phá luồng hiện có.
+        e.ToTable("rubric_criteria", t => t.HasCheckConstraint(
+            "ck_rubric_criteria_single_owner",
+            "campaign_id IS NULL OR candidate_id IS NULL"));
+
         e.HasKey(x => x.Id);
 
         e.Property(x => x.Name).HasMaxLength(128).IsRequired();

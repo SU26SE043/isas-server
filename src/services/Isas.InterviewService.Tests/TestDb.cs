@@ -16,6 +16,10 @@ namespace Isas.InterviewService.Tests;
 /// <summary>
 /// Tạo InterviewDbContext chạy trên SQLite in-memory (giữ connection mở để DB sống).
 /// Dùng schema sinh từ model hiện tại (EnsureCreated) -> đã có cột LastScoringPublishedAt.
+/// DB19 — UseSnakeCaseNamingConvention() để cột SQLite mang tên snake_case, khớp SQL của model-level
+/// CHECK ck_rubric_criteria_single_owner ("campaign_id IS NULL OR candidate_id IS NULL"). Không có
+/// convention, EnsureCreated sinh CHECK tham chiếu cột snake_case không tồn tại → vỡ toàn bộ test.
+/// Test dùng LINQ (property expression) nên đổi tên cột không đổi hành vi CRUD.
 /// </summary>
 public sealed class TestDb : IDisposable
 {
@@ -35,6 +39,7 @@ public sealed class TestDb : IDisposable
     {
         var options = new DbContextOptionsBuilder<InterviewDbContext>()
             .UseSqlite(_conn)
+            .UseSnakeCaseNamingConvention()
             .Options;
         return new InterviewDbContext(options);
     }
