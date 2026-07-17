@@ -67,6 +67,20 @@ public class CreditAccountServiceTests
         var orgId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
 
+        // DB9 — reservation/transaction có FK (owner_type,owner_id)→credit_accounts → phải có ví tương ứng
+        // (production: ví luôn tồn tại trước khi giữ chỗ/ghi sổ). Seed ví Org trước khi insert 2 con.
+        tdb.Db.CreditAccounts.Add(new CreditAccount
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PaymentMode = PaymentMode.Prepaid,
+            Status = CreditAccountStatus.Active,
+            RemainingCredits = 0,
+            ReservedCredits = 0,
+            UpdatedAt = DateTime.UtcNow
+        });
+
         tdb.Db.CreditReservations.Add(new CreditReservation
         {
             Id = Guid.NewGuid(),
