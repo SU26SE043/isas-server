@@ -65,12 +65,26 @@ namespace Isas.InterviewService.ApplicationDbContext
             });
             b.ApplyConfigurationsFromAssembly(typeof(InterviewDbContext).Assembly);
 
-            // BC11: seed rubric B2C mặc định (BA/BE/FE) qua HasData → EF sinh InsertData literal
-            // trong migration, apply qua pipeline/tay (KHÔNG auto-migrate Neon, KHÔNG seed runtime).
-            // CHỈ áp cho Npgsql: test SQLite dùng EnsureCreated giữ rubric "controlled" như cũ
-            // (không seed sẵn) để không phá test E1/E2/E8 hiện có; test BC11 tự nạp seed khi cần.
+            // CHỈ áp cho Npgsql (SQLite test EnsureCreated bỏ qua) — 2 điều:
             if (Database.IsNpgsql())
+            {
+                // DB10 — optimistic concurrency qua system column xmin (Postgres). KHÔNG thêm DDL
+                // (cột hệ thống có sẵn); SQLite không có xmin nên gate provider để EnsureCreated không
+                // dựng token này. Chặn lost-update trên practice_sessions (đóng buổi ↔ sweeper cùng lúc).
+                // Npgsql 10 bỏ helper UseXminAsConcurrencyToken() → map shadow property "xmin" tay
+                // (uint → cột hệ thống xid, ValueGeneratedOnAddOrUpdate + IsConcurrencyToken) như doc EF.PG.
+                b.Entity<PracticeSession>().Property<uint>("xmin")
+                    .HasColumnName("xmin")
+                    .HasColumnType("xid")
+                    .ValueGeneratedOnAddOrUpdate()
+                    .IsConcurrencyToken();
+
+                // BC11: seed rubric B2C mặc định (BA/BE/FE) qua HasData → EF sinh InsertData literal
+                // trong migration, apply qua pipeline/tay (KHÔNG auto-migrate Neon, KHÔNG seed runtime).
+                // Test SQLite giữ rubric "controlled" như cũ (không seed sẵn) để không phá E1/E2/E8;
+                // test BC11 tự nạp seed khi cần.
                 b.Entity<RubricCriterion>().HasData(B2CRubricSeed.Build());
+            }
         }
     }
 }
