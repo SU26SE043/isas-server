@@ -21,6 +21,10 @@ namespace Isas.CampaignService.Services
         private readonly IParserService _parser;
         private readonly ICriteriaSuggester _suggester;
         private readonly IInvitationEmailPublisher _emailPublisher;
+        // AI4 — typed HttpClient gọi Interview /internal/sessions/{sessionId}/answers (transcript cho HR).
+        // Optional (default null): giữ nguyên các call-site test 6-tham-số hiện có; DI luôn resolve client
+        // thật (đăng ký ở Program.cs). GetSessionTranscriptAsync null → InvalidOperationException (config).
+        private readonly ICampaignSessionClient? _sessionClient;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
@@ -30,7 +34,8 @@ namespace Isas.CampaignService.Services
         public CampaignService(CampaignDbContext db,
             IFileService file, ILogger<CampaignService> logger,
             IParserService parser, ICriteriaSuggester suggester,
-            IInvitationEmailPublisher emailPublisher)
+            IInvitationEmailPublisher emailPublisher,
+            ICampaignSessionClient? sessionClient = null)
         {
             _db = db;
             _file = file;
@@ -38,6 +43,7 @@ namespace Isas.CampaignService.Services
             _parser = parser;
             _suggester = suggester;
             _emailPublisher = emailPublisher;
+            _sessionClient = sessionClient;
         }
 
         public async Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct = default)
@@ -834,6 +840,28 @@ namespace Isas.CampaignService.Services
                     ? $"Huỷ override session {sessionId} (về điểm AI). Lý do: {req.Note.Trim()}"
                     : $"Override session {sessionId}: score={req.Score?.ToString() ?? "—"}, result={result ?? "—"}. Lý do: {req.Note.Trim()}");
             await _db.SaveChangesAsync(ct);
+        }
+
+        // AI4 — HR đọc chi tiết transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi để đối
+        // chiếu điểm ranking (E5). Gating GIỐNG OverrideResultAsync (E11b): org sở hữu campaign + ranking row
+        // của sessionId thuộc campaign → ngoài org / session chưa được chấm = KeyNotFoundException (404).
+        // Transcript OWNED bởi Interview (GEN-2 ref lỏng) → đọc xuyên-service qua internal client (X-Internal-
+        // Token, không qua gateway). Client lỗi hạ tầng/non-success → DownstreamServiceException (502).
+        public async Task<SessionTranscriptResponse> GetSessionTranscriptAsync(
+            Guid orgId, Guid campaignId, Guid sessionId, CancellationToken ct)
+        {
+            _ = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            _ = await _db.CampaignRankings
+                .FirstOrDefaultAsync(r => r.SessionId == sessionId && r.CampaignId == campaignId, ct)
+                ?? throw new KeyNotFoundException($"Ranking cho session {sessionId} không tồn tại (ứng viên chưa được chấm).");
+
+            if (_sessionClient is null)
+                throw new InvalidOperationException("ICampaignSessionClient chưa được cấu hình.");
+
+            return await _sessionClient.GetSessionTranscriptAsync(sessionId, ct);
         }
 
         // SEC-4: gom session_flags của 1 campaign → Dictionary<session_id, List<FlagDto>>.

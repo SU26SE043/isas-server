@@ -1,3 +1,5 @@
+using Isas.CampaignService.DTOs;
+
 namespace Isas.CampaignService.Services
 {
     /// <summary>D2 — gọi InterviewService /internal/sessions/campaign (create-or-get session B2B, máy-máy).</summary>
@@ -12,6 +14,12 @@ namespace Isas.CampaignService.Services
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
             CancellationToken ct = default);
+
+        // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
+        // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).
+        // Lỗi hạ tầng / non-success → DownstreamServiceException (502).
+        Task<SessionTranscriptResponse> GetSessionTranscriptAsync(
+            Guid sessionId, CancellationToken ct = default);
     }
 
     public record SessionCriterionInput(string Name, string? Description, decimal Weight, int MaxScore);
