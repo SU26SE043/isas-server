@@ -88,6 +88,10 @@ namespace Isas.CampaignService.Models
 
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
 
+                // DB13: khớp soft-delete filter của Campaign (required nav) → hết cảnh báo
+                // PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning + không đọc con mồ côi.
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
+
                 e.HasOne(x => x.Campaign)
                  .WithMany(x => x.Questions)
                  .HasForeignKey(x => x.CampaignId)
@@ -109,6 +113,9 @@ namespace Isas.CampaignService.Models
                 // C12: tiêu chí structured HR khai thẳng — chống trùng + giữ thứ tự hiển thị.
                 e.HasIndex(x => new { x.CampaignId, x.OrderNo }).IsUnique();
                 e.HasIndex(x => new { x.CampaignId, x.Name }).IsUnique();
+
+                // DB13: khớp soft-delete filter của Campaign (required nav).
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
 
                 e.HasOne(x => x.Campaign)
                  .WithMany(x => x.Criteria)
@@ -140,6 +147,9 @@ namespace Isas.CampaignService.Models
 
                 e.HasIndex(x => x.Token).IsUnique();
                 e.HasIndex(x => x.CampaignId);
+
+                // DB13: khớp soft-delete filter của Campaign (required nav).
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
 
                 e.HasOne(x => x.Campaign)
                  .WithMany(x => x.Invitations)
@@ -193,6 +203,9 @@ namespace Isas.CampaignService.Models
                 e.HasIndex(x => new { x.CampaignId, x.Status });
                 e.HasIndex(x => x.CandidateId);
 
+                // DB13: khớp soft-delete filter của Campaign (required nav).
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
+
                 e.HasOne(x => x.Campaign)
                  .WithMany(x => x.Candidates)
                  .HasForeignKey(x => x.CampaignId)
@@ -209,6 +222,11 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
 
                 e.HasIndex(x => new { x.CandidateId, x.CriterionId }).IsUnique();
+
+                // DB13: CampaignCandidate + CampaignCriterion (2 required nav bên dưới) đã có soft-delete
+                // filter → phải khớp filter ở đây, nếu không EF phát lại warning + đọc điểm mồ côi.
+                // Chained qua Candidate→Campaign (Criterion cùng campaign → 1 điều kiện là đủ).
+                e.HasQueryFilter(x => x.Candidate.Campaign.DeletedAt == null);
 
                 e.HasOne(x => x.Candidate)
                  .WithMany(x => x.CriterionScores)
