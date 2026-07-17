@@ -51,6 +51,13 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Ignore(x => x.PhoneNumber);
             e.Ignore(x => x.PhoneNumberConfirmed);
             e.Ignore(x => x.TwoFactorEnabled);
+            // DB11: email UNIQUE — override index EmailIndex mặc định của Identity (non-unique)
+            // thành unique + filtered (chỉ áp cho email != null). Giữ tên "EmailIndex" để không
+            // sinh index trùng; kết hợp options.User.RequireUniqueEmail=true (Program.cs) chặn dupe email.
+            e.HasIndex(x => x.NormalizedEmail)
+                .HasDatabaseName("EmailIndex")
+                .IsUnique()
+                .HasFilter("normalized_email IS NOT NULL");
         });
 
         // ================= ROLES =================
@@ -137,6 +144,10 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Property(x => x.ReplacedBy).HasColumnName("replaced_by");
             e.Property(x => x.ExpiresAt).HasColumnName("expires_at");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            // DB12: unique index trên token (đã là SHA-256 hash 32+ byte ngẫu nhiên → an toàn
+            // unique). Vừa chống trùng token vừa biến lookup `x.Token == hash` (validate refresh)
+            // từ full-scan thành index seek.
+            e.HasIndex(x => x.Token).IsUnique();
             e.HasOne(x => x.User)
                 .WithMany(x => x.RefreshTokens)
                 .HasForeignKey(x => x.UserId);
