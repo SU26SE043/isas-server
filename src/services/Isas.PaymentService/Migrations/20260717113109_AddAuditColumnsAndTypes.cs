@@ -17,7 +17,7 @@ namespace Isas.PaymentService.Migrations
             // test SQLite dùng EnsureCreated dựng từ model nên KHÔNG chạy data-migration này).
             migrationBuilder.Sql(
                 "ALTER TABLE product_packages ALTER COLUMN type TYPE character varying(20) " +
-                "USING (CASE type WHEN 1 THEN 'OneTime' WHEN 2 THEN 'Subscription' END)");
+                "USING (CASE type WHEN 1 THEN 'OneTime' WHEN 2 THEN 'Subscription' END);");
 
             migrationBuilder.AddColumn<DateTime>(
                 name: "updated_at",
@@ -70,7 +70,7 @@ namespace Isas.PaymentService.Migrations
             // DB14 — reverse: varchar(20)→int, map tên enum về giá trị int (USING ...::integer).
             migrationBuilder.Sql(
                 "ALTER TABLE product_packages ALTER COLUMN type TYPE integer " +
-                "USING (CASE type WHEN 'OneTime' THEN 1 WHEN 'Subscription' THEN 2 END)::integer");
+                "USING (CASE type WHEN 'OneTime' THEN 1 WHEN 'Subscription' THEN 2 END)::integer;");
 
             migrationBuilder.AlterColumn<string>(
                 name: "status",
