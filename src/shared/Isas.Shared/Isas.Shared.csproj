@@ -12,6 +12,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- DB17: single owner of PDF text extraction (was duplicated in Campaign + Interview). -->
+        <PackageReference Include="PdfPig" Version="0.1.14" />
+    </ItemGroup>
+
+    <ItemGroup>
       <Content Include="..\..\..\.dockerignore">
         <Link>.dockerignore</Link>
       </Content>

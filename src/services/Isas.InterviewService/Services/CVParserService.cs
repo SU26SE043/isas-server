@@ -1,52 +1,29 @@
 ﻿using Isas.InterviewService.DTOs;
-using System.Text;
+using Isas.Shared.Files;
 using System.Text.RegularExpressions;
-using UglyToad.PdfPig;
-using UglyToad.PdfPig.Content;
 
 namespace Isas.InterviewService.Services
 {
+    // DB17: PDF text extraction now lives in Isas.Shared (IPdfTextExtractor). Interview keeps its own
+    // structured CV extraction (Name/Email/Phone/Skills/…) layered on top of the shared raw text.
     public partial class CVParserService : ICVParserService
     {
-        private ILogger<CVParserService> _logger;
-        public CVParserService(ILogger<CVParserService> logger)
+        private readonly IPdfTextExtractor _extractor;
+
+        public CVParserService(IPdfTextExtractor extractor)
         {
-            _logger = logger;
+            _extractor = extractor;
         }
+
         public async Task<CVParseResult> ParseAsync(Stream pdfStream, CancellationToken ct = default)
         {
-            return await Task.Run(() => ParseInternal(pdfStream), ct);
-        }
-        private CVParseResult ParseInternal(Stream pdfStream)
-        {
-            if (pdfStream.CanSeek)
-                pdfStream.Position = 0;
-
-            // Read into byte array — PdfPig needs full content
-            using var ms = new MemoryStream();
-            pdfStream.CopyTo(ms);
-            var bytes = ms.ToArray();
-
-            using var document = PdfDocument.Open(bytes);
-
-            var rawBuilder = new StringBuilder();
-            var pageCount = 0;
-
-            foreach (Page page in document.GetPages())
-            {
-                pageCount++;
-                var pageText = string.Join(" ", page.GetWords().Select(w => w.Text));
-                rawBuilder.AppendLine(pageText);
-            }
-
-            var rawText = rawBuilder.ToString();
-
-            _logger.LogDebug("PdfPig extracted {CharCount} chars from {Pages} pages.", rawText.Length, pageCount);
+            var extracted = await _extractor.ExtractAsync(pdfStream, ct);
+            var rawText = extracted.RawText;
 
             return new CVParseResult
             {
                 RawText = rawText,
-                PageCount = pageCount,
+                PageCount = extracted.PageCount,
                 Email = ExtractEmail(rawText),
                 Phone = ExtractPhone(rawText),
                 Name = ExtractName(rawText),
