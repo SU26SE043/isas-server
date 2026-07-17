@@ -73,7 +73,8 @@ public class CampaignInviteShortlistTests
 
         Assert.Equal(2, result.Invited.Count);
         Assert.Empty(result.Failed);
-        publisher.Verify(p => p.PublishAsync(It.IsAny<InvitationEmailJob>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+        // DB2b — service KHÔNG còn publish trực tiếp (dual-write); outbox-row ghi cùng transaction.
+        publisher.Verify(p => p.PublishAsync(It.IsAny<InvitationEmailJob>(), It.IsAny<CancellationToken>()), Times.Never);
 
         using var check = tdb.NewContext();
         var invitations = await check.CampaignInvitations.Where(i => i.CampaignId == camp.Id).ToListAsync();
@@ -81,6 +82,14 @@ public class CampaignInviteShortlistTests
         Assert.All(invitations, i => Assert.NotNull(i.CampaignCandidateId));       // đường 2 → gắn candidate
         Assert.All(invitations, i => Assert.False(string.IsNullOrWhiteSpace(i.Token)));
         Assert.All(invitations, i => Assert.NotNull(i.SentAt));
+
+        // DB2b — 2 outbox-row (1/invitation), chưa gửi, gắn đúng invitation.
+        var outbox = await check.OutboxMessages.ToListAsync();
+        Assert.Equal(2, outbox.Count);
+        Assert.All(outbox, m => Assert.Null(m.PublishedAt));
+        Assert.Equal(
+            invitations.Select(i => i.Id).OrderBy(x => x),
+            outbox.Select(m => m.InvitationId).OrderBy(x => x));
         Assert.Contains(invitations, i => i.CampaignCandidateId == c1.Id);
         Assert.Contains(invitations, i => i.CampaignCandidateId == c2.Id);
 
@@ -132,6 +141,8 @@ public class CampaignInviteShortlistTests
 
         using var check = tdb.NewContext();
         Assert.Empty(await check.CampaignInvitations.Where(i => i.CampaignId == camp.Id).ToListAsync());
+        // DB2b — absorbing: đã Invited → không tạo invitation → không outbox-row.
+        Assert.Empty(await check.OutboxMessages.ToListAsync());
     }
 
     // (d) trạng thái khác Analyzed/Invited (vd Filtered) → failed[], không mời.

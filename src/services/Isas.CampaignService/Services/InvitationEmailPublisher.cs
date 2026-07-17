@@ -64,5 +64,48 @@ namespace Isas.CampaignService.Services
                 throw;
             }
         }
+
+        // DB2b — publish payload NGUYÊN (đã serialize trong outbox-row) lên CÙNG queue
+        // campaign_invitation_email_queue. messageId → BasicProperties.MessageId (đối soát phía queue).
+        // Lỗi (broker down) → ném ra để OutboxDispatcher giữ published_at null + Attempts++.
+        public async Task PublishRawAsync(string payloadJson, string messageId, CancellationToken ct = default)
+        {
+            try
+            {
+                await using var connection = await _factory.CreateConnectionAsync(ct);
+                await using var channel = await connection.CreateChannelAsync(cancellationToken: ct);
+
+                await channel.QueueDeclareAsync(
+                    queue: QueueName,
+                    durable: true,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: null,
+                    cancellationToken: ct);
+
+                var body = Encoding.UTF8.GetBytes(payloadJson);
+
+                var properties = new BasicProperties
+                {
+                    Persistent = true,
+                    MessageId = messageId
+                };
+
+                await channel.BasicPublishAsync(
+                    exchange: string.Empty,
+                    routingKey: QueueName,
+                    mandatory: false,
+                    basicProperties: properties,
+                    body: body,
+                    cancellationToken: ct);
+
+                _logger.LogInformation("Đã phát outbox invitation-email (messageId={MessageId})", messageId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Thất bại khi phát outbox invitation-email (messageId={MessageId}) qua RabbitMQ", messageId);
+                throw;
+            }
+        }
     }
 }

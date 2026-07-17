@@ -51,6 +51,9 @@ builder.Services.AddSingleton<IInvitationEmailPublisher, InvitationEmailPublishe
 // D1 (consumer): tiêu thụ campaign_invitation_email_queue → gửi email mời qua SMTP.
 builder.Services.AddScoped<ICampaignEmailSender, CampaignEmailSender>();
 builder.Services.AddHostedService<InvitationEmailConsumer>();
+// DB2b: Transactional Outbox — dispatcher quét outbox_messages → publish invitation-email at-least-once.
+builder.Services.Configure<OutboxSettings>(builder.Configuration.GetSection(OutboxSettings.SectionName));
+builder.Services.AddHostedService<OutboxDispatcher>();
 // C14: sàng CV async — đẩy job AI chấm khớp (cv_screening_queue) + xử lý callback/shortlist/PATCH
 builder.Services.AddSingleton<ICvScreeningPublisher, CvScreeningPublisher>();
 builder.Services.AddScoped<ICvScreeningService, CvScreeningService>();

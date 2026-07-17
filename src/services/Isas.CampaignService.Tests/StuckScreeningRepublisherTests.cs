@@ -30,7 +30,8 @@ public class StuckScreeningRepublisherTests
     private static (StuckScreeningRepublisher r, Mock<ICvScreeningPublisher> pub) Build(CampaignTestDb t)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<CampaignDbContext>(o => o.UseSqlite(t.Connection));
+        // DB2b — khớp snake_case schema do CampaignTestDb EnsureCreated (partial index outbox_messages).
+        services.AddDbContext<CampaignDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
         var provider = services.BuildServiceProvider();
 
         var config = new ConfigurationBuilder()

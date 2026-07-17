@@ -18,6 +18,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignCandidate> CampaignCandidates => Set<CampaignCandidate>();          // C13: sàng CV
         public DbSet<CandidateCriterionScore> CandidateCriterionScores => Set<CandidateCriterionScore>();
         public DbSet<SessionFlag> SessionFlags => Set<SessionFlag>();                            // SEC-1: cờ chống gian lận cho HR
+        public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();                      // DB2b: transactional outbox (invitation-email)
 
         // C13: string[] ↔ JSON (jsonb trên Npgsql; text trên SQLite test). Portable — filter đọc/ghi trong C#,
         // không query trong JSON. Comparer để EF theo dõi thay đổi phần tử đúng (list là mutable reference).
@@ -252,6 +253,33 @@ namespace Isas.CampaignService.Models
                 // Gom cờ theo buổi (surface cho HR + aggregate results). Ref lỏng — KHÔNG FK xuyên service.
                 e.HasIndex(x => x.SessionId);
                 e.HasIndex(x => new { x.CampaignId, x.SessionId });
+            });
+
+            // ── OutboxMessage (transactional outbox invitation-email — DB2b) ──────
+            // Config INLINE (Campaign không có Configurations/ + ApplyConfigurationsFromAssembly). Cột
+            // snake_case tự sinh (UseSnakeCaseNamingConvention ở Program.cs). Payload jsonb có ĐIỀU KIỆN
+            // IsNpgsql (khớp precedent campaigns.required_skills) — SQLite test không set jsonb.
+            modelBuilder.Entity<OutboxMessage>(e =>
+            {
+                e.ToTable("outbox_messages");
+                e.HasKey(x => x.Id);
+
+                e.Property(x => x.Type).HasMaxLength(64).IsRequired();
+                e.Property(x => x.Payload).IsRequired();
+                if (Database.IsNpgsql())
+                    e.Property(x => x.Payload).HasColumnType("jsonb");
+
+                e.Property(x => x.InvitationId).IsRequired();
+                e.Property(x => x.CampaignId).IsRequired();
+                e.Property(x => x.OccurredAt).IsRequired();
+                e.Property(x => x.PublishedAt);
+                e.Property(x => x.Attempts).IsRequired();
+
+                // Dispatcher quét row chưa gửi (published_at IS NULL) → partial index chỉ index row còn tồn
+                // đọng. Postgres + SQLite (>=3.8) đều hỗ trợ partial index; filter dùng tên cột snake_case
+                // (khớp UseSnakeCaseNamingConvention — test cũng phải bật snake_case, DB2 precedent).
+                e.HasIndex(x => x.PublishedAt)
+                 .HasFilter("published_at IS NULL");
             });
         }
     }

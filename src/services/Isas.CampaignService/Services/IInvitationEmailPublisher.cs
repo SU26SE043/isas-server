@@ -14,5 +14,9 @@ namespace Isas.CampaignService.Services
     public interface IInvitationEmailPublisher
     {
         Task PublishAsync(InvitationEmailJob job, CancellationToken ct = default);
+
+        // DB2b — OutboxDispatcher publish payload NGUYÊN từ outbox-row (không reconstruct job). messageId
+        // → BasicProperties.MessageId. Lỗi (broker down) → ném ra để dispatcher giữ published_at null + Attempts++.
+        Task PublishRawAsync(string payloadJson, string messageId, CancellationToken ct = default);
     }
 }
