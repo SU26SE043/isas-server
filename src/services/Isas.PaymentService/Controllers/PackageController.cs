@@ -30,7 +30,10 @@ namespace Isas.PaymentService.Controllers
         [AllowAnonymous]
         public async Task<ActionResult<PackageResponse>> GetPackageAsync(Guid id, CancellationToken ct = default)
         {
-            return await _package.GetPackageAsync(id, ct);
+            var package = await _package.GetPackageAsync(id, ct);
+            if (package is null) return NotFound(new { message = "Package not found" });
+
+            return package;
         }
 
         // A5 — CRUD gói = admin-only (payment.md §Admin/PlatformAdmin). Role string "Admin" (AUTH-3).
