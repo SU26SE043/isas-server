@@ -74,7 +74,10 @@ public class ResumeContractTests
 
     private static PracticeController BuildController(InterviewDbContext db, Guid candidateId)
     {
-        var controller = new PracticeController(BuildPractice(db), NullLogger<PracticeController>.Instance);
+        // TTS đọc câu hỏi: controller nhận thêm IQuestionSpeechService — test resume không chạm
+        // endpoint /speech nên mock trần là đủ.
+        var controller = new PracticeController(BuildPractice(db),
+            new Mock<IQuestionSpeechService>().Object, NullLogger<PracticeController>.Instance);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, candidateId.ToString())], "test"));
         controller.ControllerContext = new ControllerContext

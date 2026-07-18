@@ -14,6 +14,18 @@ class Settings(BaseSettings):
     # lần trước khi bó tay báo answer Failed. 3 = 1 lần đầu + 2 lần retry.
     score_max_attempts: int = 3
 
+    # ── TTS: ĐỌC CÂU HỎI THÀNH TIẾNG ────────────────────────────
+    # Dùng LẠI gemini_api_key ở trên → KHÔNG phải cấp credential mới.
+    # Model TTS là model RIÊNG (model chat thường không nhận response_modalities=["AUDIO"]).
+    tts_model: str = "gemini-2.5-flash-preview-tts"
+    # Giọng dựng sẵn. Đổi voice ⇒ đổi cache key ⇒ audio cũ tự hết hiệu lực (khỏi purge tay).
+    tts_voice: str = "Kore"
+    # Gemini TTS hỗ trợ tiếng Việt (vi-VN). Đây là hằng phía SERVER — client KHÔNG truyền vào
+    # (nếu sau này cho client chọn ngôn ngữ thì PHẢI đưa nó vào cache key, xem app/tts.py).
+    tts_language_code: str = "vi-VN"
+    # Tiền tố key cache S3 — key nội-dung-định-danh: tts/{sha256(voice+text)}.mp3
+    tts_cache_prefix: str = "tts/"
+
     # Whisper
     whisper_model: str = "large-v3"
     whisper_device: str = "cpu"

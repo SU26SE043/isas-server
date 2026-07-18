@@ -177,3 +177,9 @@ class FaceVerifyResponse(BaseModel):
     match: bool                   # score ≥ threshold VÀ đúng 1 mặt
     score: float                  # cosine similarity ref↔live (0 nếu không so được)
     signals: list[str]            # ⊂ no_face / multiple_faces / face_mismatch (cờ cho HR)
+
+
+# ── TTS: đọc câu hỏi thành tiếng — sync HTTP, InterviewService gọi (máy-máy) ────────
+class TtsRequest(BaseModel):
+    text: str                     # NỘI DUNG câu hỏi cần đọc (dữ liệu, không phải lệnh — AI-4)
+    voice: str | None = None      # giọng dựng sẵn; None → settings.tts_voice

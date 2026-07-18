@@ -13,11 +13,16 @@ namespace Isas.InterviewService.Controllers;
 public class PracticeController : ControllerBase
 {
     private readonly IPracticeService _practiceService;
+    private readonly IQuestionSpeechService _questionSpeechService;
     private readonly ILogger<PracticeController> _logger;
 
-    public PracticeController(IPracticeService practiceService, ILogger<PracticeController> logger)
+    public PracticeController(
+        IPracticeService practiceService,
+        IQuestionSpeechService questionSpeechService,
+        ILogger<PracticeController> logger)
     {
         _practiceService = practiceService;
+        _questionSpeechService = questionSpeechService;
         _logger = logger;
     }
 
@@ -165,6 +170,49 @@ public class PracticeController : ControllerBase
         catch (UnauthorizedAccessException ex)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 5. Đọc câu hỏi thành tiếng (TTS) — trả bytes mp3 để FE phát cho ứng viên nghe.
+    /// Dùng chung cho B2C (luyện tập) và B2B (campaign); KHÔNG trừ credit (PAY-1).
+    /// AIService cache audio theo nội dung câu hỏi nên câu trùng không tổng hợp lại.
+    /// </summary>
+    // ⚠ KHÔNG thêm [Produces("audio/mpeg")] ở đây. ProducesAttribute ghi đè
+    // ObjectResult.ContentTypes cho MỌI kết quả của action — kể cả NotFound/ObjectResult
+    // body JSON của nhánh 403/404/502 → không formatter nào ghi được JSON dưới audio/mpeg
+    // → client nhận 406 thay vì mã lỗi thật. Content-Type 200 đã do File(...) tự đặt.
+    [HttpGet("{sessionId:guid}/questions/{questionId:guid}/speech")]
+    [ProducesResponseType(typeof(FileContentResult), StatusCodes.Status200OK, "audio/mpeg")]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]
+    public async Task<IActionResult> GetQuestionSpeech(
+        Guid sessionId, Guid questionId, CancellationToken ct)
+    {
+        try
+        {
+            var candidateId = GetCandidateId();
+            var speech = await _questionSpeechService.GetQuestionSpeechAsync(
+                candidateId, sessionId, questionId, ct);
+
+            if (speech is null)
+                return NotFound(new { error = "Không tìm thấy câu hỏi này trong buổi phỏng vấn." });
+
+            return File(speech.Content, speech.ContentType);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // INT-11 — không phải buổi của mình (khớp tiền lệ GetSession).
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (AiServiceException ex)
+        {
+            // TTS chết/quá tải → 502. FE degrade về CHỈ HIỆN CHỮ — không được chặn luồng
+            // phỏng vấn chỉ vì không đọc được thành tiếng.
+            _logger.LogError(ex, "AIService lỗi khi đọc câu hỏi thành tiếng.");
+            return StatusCode(StatusCodes.Status502BadGateway,
+                new { error = "Dịch vụ đọc câu hỏi tạm thời không phản hồi. Vui lòng thử lại sau." });
         }
     }
 }
