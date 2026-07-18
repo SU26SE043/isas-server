@@ -4,6 +4,7 @@ using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Isas.Shared.Extensions;
 using Isas.Shared.Files;
+using Isas.Shared.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -83,6 +84,9 @@ builder.Services.AddControllers().AddJsonOptions(options =>
     options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
     // BK20: enum-as-string như Interview — questions[].source nhận "CustomHr" (không chỉ 0/1).
     options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    // Chuẩn hoá DateTime nhận vào về UTC: chuỗi có offset SỐ (+00:00) bị parse thành Kind=Local,
+    // Npgsql từ chối ghi vào timestamptz → 500. Xem UtcDateTimeConverter.
+    options.JsonSerializerOptions.Converters.Add(new UtcDateTimeConverter());
 });
 
 builder.Services.AddHttpContextAccessor();
