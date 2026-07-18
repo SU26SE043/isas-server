@@ -49,7 +49,7 @@ UserResponse {
 ### Endpoints
 
 **`POST /register`** — Đăng ký (role mặc định `Candidate`). Public.
-- Req: `{ email: string, password: string, fullName: string }` → Res **`200`** `AuthResponse`. Lỗi: **400** (email tồn tại / mật khẩu yếu).
+- Req: `{ email: string, password: string, fullName: string }` → Res **`200`** `AuthResponse`. Lỗi: **409** (email đã tồn tại — body `{ error }`) · **400** (mật khẩu yếu).
 
 **`POST /register-org`** — Đăng ký tổ chức (✅ A3). Public. Tạo user role **`Employer`** + `Organization` + `OrgMember(OrgAdmin)`.
 
@@ -57,18 +57,41 @@ UserResponse {
 **`GET /auth/org/members`** — ✅ **A6** (OrgAdmin) → list thành viên org (email/org_role/joinedAt **thật** từ `joined_at`, order theo `joined_at` — ✅ A6b).
 **`PATCH /auth/org/members/{userId}`** — ✅ **A6b** (chỉ OrgAdmin). Req `{orgRole}` đổi `OrgAdmin↔HrMember` → **200**. role sai→**400**; hạ cấp **OrgAdmin cuối cùng** của org→**409**; không phải member→**404**; caller ≠OrgAdmin/khác org→**403**.
 **`DELETE /auth/org/members/{userId}`** — ✅ **A6b** (chỉ OrgAdmin) → **hard-remove** row `org_members` (account `User` **giữ nguyên**, chỉ gỡ tư cách thành viên org) → **204**. **Không tự xoá mình**→**400**; xoá **OrgAdmin cuối**→**409**; không phải member→**404**; caller ≠OrgAdmin/khác org→**403**. *(Ratify: `org_members` **không soft-delete** — bảng cascade theo user, không có `is_deleted`; nếu cần audit/khôi phục → phase 2 thêm audit.)*
-- Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **400** (email tồn tại / mật khẩu yếu).
+- Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **409** (email đã tồn tại — body `{ error }`) · **400** (mật khẩu yếu / `orgName` rỗng).
 
 **`POST /login`** — Đăng nhập. Public.
 - Req: `{ email: string, password: string }` → Res **`200`** `AuthResponse`. Lỗi: **400/401** (sai thông tin).
 
-**`GET /login-google`** → redirect Google · **`GET /login-google-callback?returnUrl&remoteError`** → OAuth callback, trả `AuthResponse`. Public.
+**Đăng nhập Google (OAuth) — Public.** Là **điều hướng cả trang**, không phải XHR: FE chỉ `window.location.href = {gateway}/api/v1/auth/login-google`, không fetch.
+
+- **`GET /login-google?returnUrl`** — challenge Google. `redirect_uri` gửi Google dựng từ **`Gateway:PublicBaseUrl`** (config server): gateway strip `/api/v1` nên URL handler tự dựng sẽ thiếu tiền tố + mang host nội bộ → 404 ở edge.
+- **`GET /signin-google`** — **CallbackPath của handler Google** (không phải action MVC). Đây là URI phải khai trên Google Cloud Console: `{Gateway:PublicBaseUrl}/auth/signin-google`. Phải **khác** route action bên dưới — middleware remote-auth chạy trước MVC và short-circuit đúng path nó giữ.
+- **`GET /login-google-callback?returnUrl&remoteError`** — action MVC, đích cuối vòng OAuth. **Trả `302`**, KHÔNG trả JSON (người dùng đang ở điều hướng cả trang → đáp xuống JSON thô thì app Angular không bao giờ chạy lại để nhận token). **Redirect KHÔNG mang token, chỉ mang mã dùng-một-lần:**
+  - Thành công → `{Frontend:BaseUrl}/auth/google/callback?code=<mã dùng-một-lần>[&returnUrl=…]`
+  - Thất bại → `{Frontend:BaseUrl}/auth/google/callback?error=<remote_error|no_login_info|login_failed>`
+- **`POST /google/exchange`** — chặng 2: đổi mã lấy phiên. Public (`[AllowAnonymous]` — lúc này user chưa có token).
+  - Req: `{ code: string }` → Res **`200`** `AuthResponse`. Lỗi: **400** (mã sai / hết hạn / **đã dùng**) — cả 3 ca trả CÙNG một thông điệp để không giúp kẻ dò mã biết mình đoán gần đúng.
+
+**Vì sao one-time code chứ không phải token trong URL:** bản trước đính token vào **fragment** — kín với access log và header `Referer` (fragment không được gửi lên server), nhưng vẫn nằm trong `location.hash` nên **script cùng trang, kể cả extension trình duyệt độc hại, đọc được**. Mã thì đọc trộm cũng vô dụng nếu FE đã đổi trước: đổi lần hai là thất bại.
+
+**Tính chất của mã** — 32 byte từ `RandomNumberGenerator` (256 bit, base64url; **không dùng `Guid`** — chỉ 122 bit và không cam kết nguồn ngẫu nhiên mật mã) · **TTL ngắn** `Authentication:Google:OneTimeCodeTtlSeconds` (mặc định **60s**, kẹp trong `[5, 600]`) · **dùng một lần** (đọc-và-xoá nguyên tử dưới khoá) · **KHÔNG bao giờ ghi giá trị mã vào log**.
+
+> ⚠ **Kho mã nằm trong BỘ NHỚ TIẾN TRÌNH** (`IMemoryCache`, `GoogleAuthCodeStore`) — không có bảng DB, không cần migration, hết hạn thì cache tự dọn (không cần sweeper). **Giới hạn phải biết khi vận hành:** mã phát ở instance nào chỉ đổi được ở **đúng instance đó**, và **restart/deploy làm mất mã đang bay** (hệ quả nhẹ: người dùng bấm đăng nhập Google lại). Deploy hiện tại **single-instance** nên chấp nhận được. **Scale ra nhiều instance AuthService ⇒ đăng nhập Google sẽ hỏng ngẫu nhiên** — khi đó phải bật sticky session hoặc chuyển kho sang Redis / bảng DB.
+
+**Bảo mật đích redirect:** base URL LUÔN từ config server (`Frontend:BaseUrl` / `Gateway:PublicBaseUrl`). `returnUrl` do client truyền chỉ được chấp nhận khi là **đường dẫn tương đối** (bắt đầu `/`, không `//`, không `/\`, không scheme, không ký tự điều khiển) rồi ghép sau base đã cấu hình — nhận host từ client = open-redirect làm rò phiên.
+
+**Account linking:** email Google trùng account mật khẩu sẵn có → **liên kết** external login vào account đó (`AddLoginAsync`) rồi đăng nhập, KHÔNG tạo user thứ hai. Chưa có account → tạo mới **passwordless** + role `Candidate` (AUTH-1; luồng này không mở đường Employer/org).
+
+**Config bắt buộc:** `Authentication:Google:ClientId/ClientSecret` · `Frontend:BaseUrl` · `Gateway:PublicBaseUrl`. **Tuỳ chọn:** `Authentication:Google:OneTimeCodeTtlSeconds` (mặc định 60).
 
 **`POST /refresh`** — Làm mới token. Public.
-- Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn/thu hồi).
+- Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn** bên dưới).
+- **Cửa sổ ân hạn xoay vòng** (`Jwt:RefreshTokenGraceSeconds`, mặc định **60s**, `0` = tắt): token vừa bị xoay vòng vẫn refresh được thêm ngần đó giây — server đi theo `replaced_by` tới token **còn sống** ở cuối chuỗi và xoay tiếp, trả cặp token mới. Mốc đo là `created_at` của token thay thế (không cần cột `revoked_at`). Token bị thu hồi **thẳng tay** (đăng xuất / đổi quyền — `replaced_by` NULL) **KHÔNG** hưởng ân hạn, chết ngay.
+- *Vì sao:* mỗi tab giữ refresh token riêng nhưng chung một phiên; thu-hồi-tức-thì làm tab đến muộn ăn 401 → đăng xuất oan (mở 2 tab là dính; quay về từ PayOS gần như luôn tạo tab thứ hai). *Đánh đổi:* thu-hồi-tức-thì chính là cơ chế **phát hiện token bị đánh cắp** (reuse detection) — ân hạn làm yếu nó trong đúng cửa sổ đó, nên giữ NGẮN.
 
-**`POST /logout`** — Thu hồi refresh token. Auth (`Candidate·Employer·Admin`).
-- Req: `{ refreshToken: string }` → Res **`200`**. Lỗi: **401**.
+**`POST /logout`** — Thu hồi **MỌI** refresh token của user đang đăng nhập. Auth (`Candidate·Employer·Admin`).
+- Req: `{ refreshToken: string }` (giữ hợp đồng cũ; phạm vi thu hồi lấy theo claim `sub`, **không** theo token gửi kèm) → Res **`204`**. Lỗi: **401**.
+- Thu hồi đúng 1 token thì tab khác vẫn gia hạn phiên tiếp → "đã đăng xuất" mà phiên vẫn sống. ⚠ **access token đang lưu hành KHÔNG thu hồi được** (validate offline — GEN-3) nên còn hợp lệ tới hết TTL (**15'**); **FE phải tự xoá token khỏi storage** khi đăng xuất (đã làm: `AuthStore.logout()` gọi `clearSession()` trước khi gọi API).
 
 **`GET /me`** — Profile. Auth. → Res **`200`** `UserResponse`. Lỗi: **401**.
 **`PUT /me`** — Cập nhật profile. Auth.
@@ -95,7 +118,7 @@ POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 RefreshTokenRe
 ### Validation (đầu vào)
 | Field | Ràng buộc |
 |---|---|
-| `email` | bắt buộc; format email; chuẩn hoá `normalized_email` **UNIQUE** (trùng → 400) |
+| `email` | bắt buộc; format email; chuẩn hoá `normalized_email` **UNIQUE** (trùng → **409**) |
 | `password` | bắt buộc; theo `PasswordOptions` Identity (độ dài ≥ 6, chữ+số…); **null chỉ** khi user Google-only |
 | `fullName` | bắt buộc khi `register`/`register-org` |
 | `orgName` | bắt buộc (register-org), non-empty (trim) |
@@ -106,10 +129,10 @@ POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 RefreshTokenRe
 ### Bảng mã lỗi (đặc thù — mã chung [../architecture.md](../architecture.md) §6)
 | Mã | Khi nào |
 |---|---|
-| 400 | email đã tồn tại · mật khẩu yếu (policy) · OTP sai/hết hạn · `orgName` rỗng |
-| 401 | login sai email/mật khẩu · refresh hết hạn/đã revoke · thiếu/sai Bearer |
+| 400 | mật khẩu yếu (policy) · OTP sai/hết hạn · `orgName` rỗng |
+| 401 | login sai email/mật khẩu · refresh hết hạn/đã revoke/quá cửa sổ ân hạn · thiếu/sai Bearer |
 | 403 | role/`org_role` không đủ quyền (vd `HrMember` gọi admin/billing — A4) |
-| 409 | (admin) tạo org trùng / gán role mâu thuẫn |
+| 409 | **email đã tồn tại** (`register` · `register-org` · `POST /auth/org/members` — thống nhất một mã cho "tài nguyên đã tồn tại") · (admin) tạo org trùng / gán role mâu thuẫn |
 | 423 | tài khoản **lockout** (quá `access_failed_count`) *(nếu bật `LockoutOptions`)* |
 
 ## Luồng (sequence)
@@ -205,9 +228,12 @@ joined_at timestamptz   ✅ A6b — thời điểm vào org (set khi tạo membe
 - **UNIQUE**: `users.normalized_email`, `users.normalized_user_name` (Identity) — chống trùng tài khoản; `org_members` PK `(org_id, user_id)`; `roles.normalized_name`; **`refresh_tokens.token`** (lookup theo token, chống trùng); **`organizations.tax_code`** (nullable-unique — 1 MST = 1 pháp nhân; trùng → 409, điều kiện để duyệt postpaid đúng org).
 - **Index / self-FK**: `refresh_tokens(user_id)` (revoke-all theo user); `refresh_tokens.replaced_by` là **self-FK → refresh_tokens.id** (chuỗi rotation — truy ngược được token nào đẻ ra token nào khi nghi trộm token).
 - **on-delete**: `user_roles` · `refresh_tokens` · `org_members` **Cascade** theo `user`; xoá `organization` → cascade `org_members`.
-- **Refresh rotation**: 1 refresh dùng 1 lần → revoke + `replaced_by`. **Dùng lại token đã revoke** = dấu hiệu trộm token → **401** (cân nhắc revoke cả chuỗi — phase 2).
+- **Refresh rotation**: 1 refresh dùng 1 lần → revoke + `replaced_by`. **Dùng lại token đã revoke** = dấu hiệu trộm token → **401**, TRỪ trong **cửa sổ ân hạn** `Jwt:RefreshTokenGraceSeconds` (mặc định 60s) dành cho đua refresh giữa nhiều tab: token vừa bị xoay → đi theo `replaced_by` tới token còn sống ở cuối chuỗi rồi xoay tiếp. Không trả lại chính token thay thế được vì DB chỉ lưu **hash** (raw chỉ ở client) → cấp cặp mới cho tab đến muộn; các tab hội tụ nhờ FE đồng bộ token qua sự kiện `storage`. Token revoke **không có** `replaced_by` (đăng xuất/đổi quyền) → không ân hạn. *(Revoke cả chuỗi khi nghi trộm — phase 2.)*
 - **Lockout**: `access_failed_count` tăng mỗi login sai; chạm ngưỡng → khoá tới `lockout_end` (nếu bật `LockoutOptions`).
-- **JWT offline ⇒ thu hồi role KHÔNG tức thì**: đổi `role`/`org_role` chỉ áp khi **token mới** (login/refresh lại); access cũ vẫn hợp lệ tới `expiresAt`. Chấp nhận (đánh đổi của *auth offline* — [../architecture.md](../architecture.md) §3); cần tức thì → rút ngắn TTL access.
+- **JWT offline ⇒ thu hồi quyền KHÔNG tức thì (ranh giới hiệu lực = ≤ 1 TTL access token, 15')**: access token **không thu hồi được** — các service validate JWT offline bằng chung key, không hỏi AuthService lúc chạy (**GEN-3**). Đây là đánh đổi **có chủ đích** của auth offline ([../architecture.md](../architecture.md) §3), KHÔNG phải thiếu sót. Cụ thể:
+  - **Đổi quyền** (`PATCH /auth/org/members/{userId}`) và **gỡ khỏi org** (`DELETE …`) → server **thu hồi mọi refresh token của user đó** ⇒ lần refresh kế họ phải đăng nhập lại và nhận quyền mới, thay vì mang quyền cũ suốt 7 ngày của refresh token.
+  - **Đăng xuất** → thu hồi mọi refresh token; access token cũ vẫn sống tới hết TTL ⇒ **FE phải xoá token khỏi storage**.
+  - Trong cả hai ca, quyền/phiên cũ còn hiệu lực **tối đa 15'** (TTL access token). Cần tức thì hơn → **rút ngắn TTL access**, ❌ **KHÔNG** thêm denylist/gọi mạng vào đường validate của service khác (vi phạm GEN-3).
 - **Google-only user**: `password_hash=null` → chặn login mật khẩu, chỉ OAuth.
 
 ## Xác thực (nguồn chân lý cho cả hệ)

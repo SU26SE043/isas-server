@@ -87,11 +87,17 @@ namespace Isas.CampaignService.DTOs
     }
 
     // Điểm + nhận xét (reasoning, E11 trích dẫn transcript) của 1 tiêu chí. CriterionId = ref lỏng
-    // (rubric_criteria phía Interview) — HR đối chiếu theo thứ tự/điểm, Campaign không map tên tiêu chí.
+    // (rubric_criteria phía Interview).
+    // CriterionName/MaxScore do Interview trả kèm: id này KHÁC `campaign_criteria.id` (Interview mint
+    // `Guid.NewGuid()` lúc materialize) nên Campaign/FE KHÔNG tra ngược tên được — thiếu nó thì màn
+    // transcript của HR hiện "Tiêu chí a3f81b2c — 3" thay vì "Giao tiếp — 3/5". Nullable vì buổi chấm
+    // trước 2026-07-18 không có 2 field này.
     public class TranscriptCriterionScore
     {
         public System.Guid CriterionId { get; set; }
+        public string? CriterionName { get; set; }
         public decimal Score { get; set; }
+        public int? MaxScore { get; set; }
         public string? Reasoning { get; set; }
     }
 }

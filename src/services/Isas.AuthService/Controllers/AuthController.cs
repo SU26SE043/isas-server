@@ -1,6 +1,7 @@
 ﻿using Isas.AuthService.DTOs;
 using Isas.AuthService.Models;
 using Isas.AuthService.Services;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.UI.Services;
@@ -18,12 +19,19 @@ namespace Isas.AuthService.Controllers
         private readonly UserManager<User> _userManager;
         private readonly SignInManager<User> _signInManager;
         private readonly IEmailSender _emailSender;
-        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager, IEmailSender emailSender)
+        private readonly IGoogleLoginRedirects _googleRedirects;
+        private readonly IGoogleAuthCodeStore _googleCodes;
+        private readonly ILogger<AuthController> _logger;
+        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager, IEmailSender emailSender,
+            IGoogleLoginRedirects googleRedirects, IGoogleAuthCodeStore googleCodes, ILogger<AuthController> logger)
         {
             _authService = authService;
             _userManager = userManager;
             _signInManager = signInManager;
             _emailSender = emailSender;
+            _googleRedirects = googleRedirects;
+            _googleCodes = googleCodes;
+            _logger = logger;
         }
 
         // A5 — auth-entry công khai (chưa có JWT): AllowAnonymous tường minh (rõ ý định + phòng tương lai).
@@ -33,9 +41,13 @@ namespace Isas.AuthService.Controllers
         {
             var existingUser = await _userManager.FindByEmailAsync(registerRequest.Email);
 
-            if(existingUser != null)
+            // 409 (không phải 400): "tài nguyên đã tồn tại" là XUNG ĐỘT trạng thái, không phải đầu vào
+            // sai dạng. Thống nhất với POST /auth/org/members vốn đã trả 409 cho cùng tình huống —
+            // trước đây hai đường trùng-email trả hai mã khác nhau. Body dạng { error } để FE rút được
+            // message hiển thị (extractErrorMessage đọc key `error`); chuỗi trần thì FE nuốt mất.
+            if (existingUser != null)
             {
-                return BadRequest("Email already exists");
+                return Conflict(new { error = "Email already exists" });
             }
 
             var result = await _authService.RegisterAsync(registerRequest);
@@ -49,7 +61,7 @@ namespace Isas.AuthService.Controllers
         {
             var existingUser = await _userManager.FindByEmailAsync(request.Email);
             if (existingUser != null)
-                return BadRequest("Email already exists");
+                return Conflict(new { error = "Email already exists" });   // 409 — xem ghi chú ở register
 
             var result = await _authService.RegisterOrgAsync(request);
             return Ok(result);
@@ -71,53 +83,114 @@ namespace Isas.AuthService.Controllers
             return Ok(await _authService.LoginAsync(request));
         }
 
+        // OAuth Google là điều hướng CẢ TRANG, không phải XHR: người dùng rời app Angular sang
+        // accounts.google.com rồi quay lại. Vì vậy redirect-uri phải là URL TUYỆT ĐỐI công khai
+        // (qua gateway) — handler redirect verbatim, trình duyệt phải với tới được.
+        // (Bug cũ: Url.Action(..., "Account", ...) trỏ tới controller KHÔNG tồn tại trong service này
+        // → trả null → RedirectUri không được set.)
         [AllowAnonymous]
         [HttpGet("login-google")]
-        public IActionResult LoginWithGoogle(string returnUrl = null)
+        public IActionResult LoginWithGoogle(string? returnUrl = null)
         {
-            var redirectUrl = Url.Action(nameof(GoogleLoginCallback), "Account", new { ReturnUrl = returnUrl });
+            var redirectUrl = _googleRedirects.CallbackUrl(returnUrl);
             var properties = _signInManager.ConfigureExternalAuthenticationProperties("Google", redirectUrl);
 
             return Challenge(properties, "Google");
         }
 
+        // Đích cuối của vòng OAuth. KHÔNG trả JSON (bug cũ): người dùng đang ở một điều hướng cả
+        // trang nên sẽ đáp xuống trang JSON thô và app Angular không bao giờ chạy lại để nhận token.
+        // Thay vào đó 302 về FE — nhưng CHỈ kèm mã dùng-một-lần, KHÔNG kèm token: token trong URL
+        // (kể cả ở fragment) vẫn đọc được từ phía trình duyệt (location.hash, extension). FE đổi mã
+        // lấy phiên qua POST /auth/google/exchange. Đích lấy từ config server, không nhận host từ client.
         [AllowAnonymous]
         [HttpGet("login-google-callback")]
-        public async Task<IActionResult> GoogleLoginCallback(string returnUrl = null, string remoteError = null)
+        public async Task<IActionResult> GoogleLoginCallback(string? returnUrl = null, string? remoteError = null)
         {
             if (remoteError != null)
-                return BadRequest(new { error = $"Google login error: {remoteError}" });
+            {
+                _logger.LogWarning("Google trả lỗi khi đăng nhập: {RemoteError}", remoteError);
+                return Redirect(_googleRedirects.FailureUrl("remote_error"));
+            }
 
             var info = await _signInManager.GetExternalLoginInfoAsync();
             if (info == null)
-                return BadRequest(new { error = "No Google login info" });
+            {
+                // Thường là cookie external hết hạn / bị chặn, hoặc user mở thẳng URL này.
+                _logger.LogWarning("Không đọc được ExternalLoginInfo ở callback Google");
+                return Redirect(_googleRedirects.FailureUrl("no_login_info"));
+            }
 
-            var authResponse = await _authService.LoginGoogleAsync(info);
+            AuthResponse authResponse;
+            try
+            {
+                authResponse = await _authService.LoginGoogleAsync(info);
+            }
+            catch (Exception ex)
+            {
+                // Không để lộ chi tiết lỗi ra URL — chỉ mã lỗi cho FE hiển thị, chi tiết vào log.
+                _logger.LogError(ex, "Đăng nhập Google thất bại khi phát hành phiên");
+                return Redirect(_googleRedirects.FailureUrl("login_failed"));
+            }
 
-            return Ok(authResponse);
+            // Cookie external chỉ phục vụ 1 vòng OAuth — dọn ngay để không còn dấu vết phiên.
+            await HttpContext.SignOutAsync(IdentityConstants.ExternalScheme);
+
+            // Phiên nằm lại server; ra URL chỉ là mã tham chiếu ngắn hạn. KHÔNG log giá trị mã —
+            // log là một bản sao vĩnh viễn của thứ đang thay mặt cho cả access + refresh token.
+            var code = _googleCodes.Issue(authResponse);
+            return Redirect(_googleRedirects.SuccessUrl(code, returnUrl));
         }
 
+        // Chặng 2 của đăng nhập Google: FE gửi mã vừa nhận qua redirect, đổi lấy phiên thật.
+        // AllowAnonymous vì đúng lúc này người dùng CHƯA có token — mã chính là bằng chứng đã qua
+        // được vòng OAuth. Sai/hết hạn/đã dùng đều trả 400 với CÙNG một thông điệp: phân biệt ra
+        // ngoài chỉ giúp kẻ dò mã biết mình đoán gần đúng.
+        [AllowAnonymous]
+        [HttpPost("google/exchange")]
+        public ActionResult<AuthResponse> ExchangeGoogleCode(GoogleExchangeRequest request)
+        {
+            var auth = _googleCodes.Consume(request.Code);
+            if (auth is null)
+            {
+                _logger.LogWarning("Đổi mã đăng nhập Google thất bại (mã sai, hết hạn hoặc đã dùng)");
+                return BadRequest("Mã đăng nhập không hợp lệ hoặc đã hết hạn");
+            }
+
+            return Ok(auth);
+        }
+
+        // Tính hợp lệ của refresh token do AuthService quyết định MỘT CHỖ DUY NHẤT: trước đây controller
+        // tự tiền-kiểm `IsRevoked` rồi mới gọi service, nên token vừa bị xoay vòng chết ở đây và không
+        // bao giờ tới được cửa sổ ân hạn (đua refresh nhiều tab). Kiểm hai nơi = một nơi luôn sai.
         [AllowAnonymous]
         [HttpPost("refresh")]
         public async Task<ActionResult<RefreshTokenResponse>> RefreshTokenAsync(RefreshTokenRequest refreshTokenRequest)
         {
-            var existingRefreshToken = await _authService.GetRefreshTokenAsync(refreshTokenRequest.RefreshToken);
-
-            if(existingRefreshToken == null || existingRefreshToken.IsRevoked || existingRefreshToken.ExpiresAt < DateTime.UtcNow)
+            try
             {
+                var result = await _authService.RefreshTokenAsync(refreshTokenRequest.RefreshToken);
+                return Ok(result);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Không tiết lộ token sai vì lý do gì (không tồn tại / hết hạn / quá cửa sổ ân hạn).
                 return Unauthorized("Refresh token expired or revoked");
             }
-
-            var result = await _authService.RefreshTokenAsync(refreshTokenRequest.RefreshToken);
-
-            return Ok(result);
         }
 
+        // Đăng xuất theo USER đang đăng nhập (claim `sub`), không theo riêng token gửi kèm: thu hồi mọi
+        // refresh token → tab khác không gia hạn phiên tiếp được. Body vẫn nhận `refreshToken` để giữ
+        // hợp đồng cũ với FE, nhưng KHÔNG còn quyết định phạm vi thu hồi.
         [Authorize(Roles = "Candidate, Employer, Admin")]
         [HttpPost("logout")]
         public async Task<IActionResult> LogoutAsync(RefreshTokenRequest refreshTokenRequest)
         {
-            await _authService.LogoutAsync(refreshTokenRequest.RefreshToken);
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (userId is null || !Guid.TryParse(userId, out var uid))
+                return Unauthorized();
+
+            await _authService.LogoutAsync(uid);
             return NoContent();
         }
 

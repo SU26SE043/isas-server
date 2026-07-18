@@ -4,6 +4,7 @@ using CsvHelper.Configuration;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.Shared.Pagination;
+using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
@@ -55,6 +56,11 @@ namespace Isas.CampaignService.Services
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
             ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions);   // INT-17: trần ≥ 0 nếu có
 
+            // C11 + cap độ dài: chuẩn hoá & kiểm ngưỡng TRƯỚC khi dựng entity/ghi DB → vượt ngưỡng thì
+            // 400 mà không để lại gì nửa vời.
+            var jdText = NormalizeText(request.JdText, JdTextLabel);
+            var criteriaText = NormalizeText(request.CriteriaText, CriteriaTextLabel);
+
             // ── 2. Build campaign entity ────────────────────────
             var campaign = new Campaign
             {
@@ -72,8 +78,8 @@ namespace Isas.CampaignService.Services
                 FaceVerifyEnabled = request.FaceVerifyEnabled,   // SEC-1: face-verify opt-in (B2B)
                 PassScorePct = request.PassScorePct,   // E5: ngưỡng pass/fail (null = HR quyết tay)
                 // C11: JD/Criteria nhập text trực tiếp → *_text set, *_file_url null (không file lúc tạo).
-                JDText = NormalizeText(request.JdText),
-                CriteriaText = NormalizeText(request.CriteriaText),
+                JDText = jdText,
+                CriteriaText = criteriaText,
                 StartsAt = request.StartsAt,
                 ExpiresAt = request.ExpiresAt,
                 // Set trong code (như AddAudit/questions) → chạy được trên SQLite test + Postgres,
@@ -229,6 +235,11 @@ namespace Isas.CampaignService.Services
 
         public async Task<CampaignResponse> UpdateCampaignAsync(Guid orgId, Guid actorUserId, Guid id, UpdateCampaignRequest request, CancellationToken ct)
         {
+            // ── 0. Cap độ dài JD/tiêu chí nhập text — kiểm TRƯỚC cả fetch: guard rẻ nhất chạy đầu,
+            // vượt ngưỡng → 400 mà không tốn round-trip DB và không đụng entity nào.
+            var jdText = NormalizeText(request.JdText, JdTextLabel);
+            var criteriaText = NormalizeText(request.CriteriaText, CriteriaTextLabel);
+
             // ── 1. Fetch & verify ownership ─────────────────────
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
@@ -277,13 +288,13 @@ namespace Isas.CampaignService.Services
             // C11: cập nhật JD/Criteria dạng text → set *_text, xoá *_file_url (text ưu tiên file).
             if (request.JdText is not null)
             {
-                campaign.JDText = NormalizeText(request.JdText);
+                campaign.JDText = jdText;   // đã chuẩn hoá + kiểm ngưỡng ở bước 0
                 campaign.JDFileUrl = null;
             }
 
             if (request.CriteriaText is not null)
             {
-                campaign.CriteriaText = NormalizeText(request.CriteriaText);
+                campaign.CriteriaText = criteriaText;   // đã chuẩn hoá + kiểm ngưỡng ở bước 0
                 campaign.CriteriaFileUrl = null;
             }
 
@@ -1348,9 +1359,17 @@ namespace Isas.CampaignService.Services
                 At = DateTime.UtcNow
             });
 
+        // Nhãn field trong thông báo lỗi 400 — để người dùng biết CHỖ NÀO quá dài (JD hay tiêu chí).
+        private const string JdTextLabel = "Mô tả công việc (jdText)";
+        private const string CriteriaTextLabel = "Tiêu chí (criteriaText)";
+
         // C11: chuẩn hoá JD/Criteria nhập trực tiếp — trim; rỗng/whitespace → null.
-        private static string? NormalizeText(string? text)
-            => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        // + cap độ dài (TextInputLimits.JdTextMaxChars — ngưỡng CHUNG với B2C/Interview): text nhập tay đi
+        // thẳng vào prompt Gemini → vượt ngưỡng ném ArgumentException (controller map → 400) kèm giới hạn
+        // và độ dài đang gửi. Đo SAU khi trim → khoảng trắng thừa không tính vào ngưỡng.
+        private static string? NormalizeText(string? text, string fieldLabel)
+            => TextInputLimits.NormalizeAndEnsureLimit(
+                text, fieldLabel, msg => new ArgumentException(msg));
 
         // C11: slot đã nhập JD/Criteria dạng TEXT trực tiếp (text có + chưa gắn file) → text ưu tiên, bỏ file.
         // (Có file_url = nguồn từ PDF trước đó → cho phép thay bằng file mới, không coi là "text trực tiếp".)

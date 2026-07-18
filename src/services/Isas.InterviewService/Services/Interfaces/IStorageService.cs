@@ -14,6 +14,9 @@ public interface IStorageService
     Task<FileRecord> SaveMetadata(Guid fileId, Guid userId, string fileType, string originalName, string storagePath, string storageBucket, string mimeType, long fileSize, CVParseResult? parsedCv, CancellationToken ct = default);
     Task<FileRecord?> GetMetadata(Guid fileId, CancellationToken ct = default);
     Task<string> GetParseTextAsync(Guid fileId, CancellationToken ct = default); // Đã đổi sang đuôi Async
+
+    // Bản owner-scoped: dùng ở luồng tạo session B2C để không đọc file của người khác (xem StorageService).
+    Task<string> GetOwnedParsedTextAsync(Guid fileId, Guid ownerId, CancellationToken ct = default);
     Task<List<FileRecord>> GetFilesByUserId(Guid userId, CancellationToken ct = default);
     Task<FileRecord> UpdateFileRecord(Guid fileId, Stream stream, string originalName, long fileSize, string contentType, CVParseResult? parsedCv, CancellationToken ct = default);
     Task<bool> DeleteFileRecord(Guid fileId, CancellationToken ct = default);

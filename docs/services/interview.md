@@ -152,7 +152,8 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 ### Practice — `/api/v1/interview/practice/sessions` (JWT Candidate)
 
 **`POST /sessions`** — Tạo session + sinh câu hỏi (gọi AI đồng bộ).
-- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE" }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc** (Đợt-1: DTO `[Required] JobCategory?` → **thiếu/null → 400**, guard TRƯỚC reserve nên không giữ credit oan; trước đây omit im lặng thành `BA`).
+- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jdText": string?, "jobCategory": "BA"|"BE"|"FE" }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc** (Đợt-1: DTO `[Required] JobCategory?` → **thiếu/null → 400**, guard TRƯỚC reserve nên không giữ credit oan; trước đây omit im lặng thành `BA`).
+- ✅ **JD nhập TEXT** — `jdText` = JD dán thẳng, **không cần upload PDF**. Áp nguyên quy ước **C11** của B2B/Campaign: **text ưu tiên file** — gửi cả `jdText` lẫn `jdId` → dùng text, file **không parse** và `jd_id` **KHÔNG lưu** (row đừng "nhận vơ" file không góp gì vào câu hỏi). `jdText` rỗng/toàn khoảng trắng = coi như **không gửi** (rơi về `jdId`). **KHÔNG có cột `jd_text`** — JD text chỉ là input sinh câu hỏi, không ai đọc lại sau khi tạo (khác Campaign: `campaigns.jd_text` bị publish đọc lại nên buộc phải lưu).
 - ✅ **BC2** *B2C:* reserve **1 credit ví cá nhân** (owner=User, khoá idempotency = sessionId) **TRƯỚC** khi tạo row session; ví hết → **402** (KHÔNG tạo session — PAY-5). Reserve thành công rồi AI/DB lỗi → release best-effort (P1-2) + SessionAbandoned (BK12) hoàn credit.
 - Res **`201`** `PracticeSessionResponse` (`status="Ready"`, `questions` đã sinh):
 ```json
@@ -189,7 +190,8 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 ### CV Analysis — `/api/v1/interview/practice/cv-analysis` (JWT Candidate) — ✅ **B2C BC4/BC7/BC7b** (D17→D22)
 
 **`POST /cv-analysis`** — Phân tích CV (parse → AIService `/analyze-cv` đồng bộ → lưu `cv_analyses`).
-- Req `application/json`: `{ "cvId": uuid, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE" }` — `jobCategory` **bắt buộc** (thiếu/null → **400**, validate **TRƯỚC** reserve credit ⇒ không giữ credit oan; ✅ **BK6**). Có `jdId` → kết quả thêm `jdMatch`.
+- Req `application/json`: `{ "cvId": uuid, "jdId": uuid?, "jdText": string?, "jobCategory": "BA"|"BE"|"FE" }` — `jobCategory` **bắt buộc** (thiếu/null → **400**, validate **TRƯỚC** reserve credit ⇒ không giữ credit oan; ✅ **BK6**). Có **JD** (`jdId` **hoặc** `jdText`) → kết quả thêm `jdMatch`.
+- ✅ **JD nhập TEXT** — `jdText` = JD dán thẳng (quy ước **C11**, **text ưu tiên file**): gửi cả hai → dùng text, file JD **không đọc** (khỏi round-trip + ownership-check cho file không dùng) và `jd_id` **không lưu**. ⚠ Hệ quả đọc response: JD nhập tay → `jdId=null` **nhưng `jdMatch` vẫn có** (gate theo *có nội dung JD*, không theo `jdId`) — client đừng suy ra "không có jdMatch" từ `jdId=null`.
 - Res **`201`** `CvAnalysisResponse`. Lỗi: **400** (thiếu `jobCategory` · CV không đọc được) · **401** · **402** (hết credit ví User — BK5/BC7b) · **403** (không phải file của bạn) · **404** (`cvId`/`jdId` không có) · **502** (AI lỗi).
 - **Đồng bộ HTTP**, không qua RabbitMQ. **TÍNH PHÍ — trừ credit ví cá nhân** (rules.md **BC-4**, chốt **BK5** 2026-07-12, đảo "free phase 1" của D17). Mục (c) "CV vs câu trả lời" sau khi `Scored` = task `BC8`.
 - **Engine `/analyze-cv` dùng chung với B2B:** CampaignService tái dùng **đúng endpoint này** để **sàng lọc CV hàng loạt** (gửi kèm `criteria[]` campaign → nhận thêm `criterionMatches`/`overallMatchScore`), nhưng gọi **async qua worker** (N CV) thay vì sync — xem [campaign.md](campaign.md) §Lọc ứng viên qua CV + [ai.md](ai.md). B2C (đây) **không đổi**: sync, lưu `cv_analyses`.
@@ -241,6 +243,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 | Field | Ràng buộc |
 |---|---|
 | `cvId`/`jdId` (create session) | optional; `FileRecord` phải **của chính user** + có `parsed_text` (không đọc được → 400) |
+| `jdText` (create session · cv-analysis) | optional; **ưu tiên hơn `jdId`** (C11); rỗng/khoảng trắng = không gửi; **≤ 20.000 ký tự** (đo SAU trim) — vượt → **400** kèm giới hạn + độ dài đang gửi. Ngưỡng CHUNG với B2B/Campaign (`Isas.Shared.Validation.TextInputLimits.JdTextMaxChars`); guard chạy **NGAY ĐẦU** cả 2 endpoint — **trước** đọc CV/JD và **trước** reserve credit ⇒ JD quá dài không giữ credit oan (mẫu BK6/PAY-5) |
 | `jobCategory` | bắt buộc, enum `BA·BE·FE` |
 | upload file | PDF (cv/jd) **≤10MB** · audio (answer) **≤50MB**; sai loại/size → 400 |
 | `questionId`/`durationSec` (answer) | bắt buộc; **1 answer/câu** (upload lại = ghi đè idempotent) |
@@ -248,7 +251,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 
 | Mã | Khi nào (đặc thù — chung [../architecture.md](../architecture.md) §6) |
 |---|---|
-| 400 | CV/JD không đọc được nội dung · AI trả rỗng · thiếu field · file quá lớn/sai loại |
+| 400 | CV/JD không đọc được nội dung · AI trả rỗng · thiếu field · file quá lớn/sai loại · `jdText` **> 20.000 ký tự** |
 | 401/403 | thiếu/sai JWT · **không phải chủ** session/file |
 | 402 | hết credit ví (B2C reserve khi tạo session / cv-analysis — BC2/BC7b) |
 | 404 | session/câu/file không tồn tại |

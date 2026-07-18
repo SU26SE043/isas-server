@@ -114,7 +114,10 @@ namespace Isas.CampaignService.Services
         private record TranscriptApiAnswer(
             Guid Id, string Status, int DurationSec, string? Transcript,
             List<TranscriptApiScore>? Scores, bool NeedsReview);
-        private record TranscriptApiScore(Guid CriterionId, decimal Score, string? Reasoning);
+        // CriterionName/MaxScore: Interview trả kèm để HR đọc được tên tiêu chí (id không tra ngược được
+        // sang campaign_criteria). Nullable — buổi chấm cũ không có.
+        private record TranscriptApiScore(Guid CriterionId, decimal Score, string? Reasoning,
+            string? CriterionName = null, int? MaxScore = null);
 
         public async Task<SessionTranscriptResponse> GetSessionTranscriptAsync(
             Guid sessionId, CancellationToken ct = default)
@@ -164,7 +167,9 @@ namespace Isas.CampaignService.Services
                         .Select(s => new TranscriptCriterionScore
                         {
                             CriterionId = s.CriterionId,
+                            CriterionName = s.CriterionName,
                             Score = s.Score,
+                            MaxScore = s.MaxScore,
                             Reasoning = s.Reasoning
                         })
                         .ToList()

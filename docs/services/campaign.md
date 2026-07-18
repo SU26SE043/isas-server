@@ -107,6 +107,7 @@ GET  /campaign/{id}/candidates?sort=score&minScore=70
 | Field | Ràng buộc |
 |---|---|
 | `title` | bắt buộc, ≤255 |
+| `jdText` / `criteriaText` | optional; **≤ 20.000 ký tự** (đo SAU trim) — vượt → **400** kèm giới hạn + độ dài đang gửi. Ngưỡng CHUNG với B2C/Interview (`Isas.Shared.Validation.TextInputLimits.JdTextMaxChars`); áp cho cả `POST /campaign` lẫn `PUT /campaign/{id}`, guard chạy **TRƯỚC** fetch/ghi DB. *(Text nhập tay đi thẳng vào prompt Gemini → cap để chặn chi phí token + lạm dụng. KHÔNG áp cho text trích từ PDF upload — luồng đó đã chặn bằng cỡ file ≤10MB.)* |
 | `startsAt` | bắt buộc; `expiresAt` (nếu có) > `startsAt` |
 | `criteria[]` | `0<weight≤1`, `maxScore≥1`, name không trùng, `Σweight∈[0.99,1.01]`→chuẩn hoá Σ→1 (ngoài→400); sửa khi `Active`→409 |
 | `questions[]` | `source∈{AiGenerated,CustomHr}`; publish cần ≥1 câu |
@@ -116,7 +117,7 @@ GET  /campaign/{id}/candidates?sort=score&minScore=70
 ### Bảng mã lỗi (đặc thù — chung [../architecture.md](../architecture.md) §6)
 | Mã | Khi nào |
 |---|---|
-| 400 | input sai · file không PDF · `Σweight` ngoài [0.99,1.01] |
+| 400 | input sai · file không PDF · `Σweight` ngoài [0.99,1.01] · `jdText`/`criteriaText` **> 20.000 ký tự** |
 | 401/403 | thiếu/sai JWT · non-owner (lọc `employer_id`) · không phải `Employer` |
 | 404 | campaign/candidate không tồn tại (hoặc đã soft-delete) |
 | 409 | sửa câu hỏi/tiêu chí khi `Active` · publish khi thiếu câu hỏi · transition trạng thái sai |

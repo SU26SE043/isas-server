@@ -4,6 +4,7 @@ using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -68,21 +69,32 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
 
+        // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
+        // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
+        // credit oan (mẫu BK6/PAY-5). Text rỗng/toàn khoảng trắng = coi như KHÔNG nhập (rơi về jdId).
+        var jdTextInput = NormalizeText(request.JdText);
+
         // CV optional: chỉ parse khi có. Không có CV cũng luyện được (dựa JobCategory).
         // TODO: xác nhận tên method storage (memory ghi GetParseText).
         string? cvText = null;
         if (request.CvId is not null)
         {
-            cvText = await _storage.GetParseTextAsync(request.CvId.Value, ct);
+            // Owner-scoped: file của người khác coi như không tồn tại (interview.md §Validation).
+            cvText = await _storage.GetOwnedParsedTextAsync(request.CvId.Value, candidateId, ct);
             if (string.IsNullOrWhiteSpace(cvText))
                 throw new InvalidOperationException("CV không đọc được nội dung");
         }
 
-        // JD optional: chỉ parse khi có.
-        string? jdText = null;
-        if (request.JdId is not null)
+        // JD optional, 2 nguồn: text nhập thẳng (jdText) HOẶC file đã upload (jdId).
+        // TEXT ƯU TIÊN FILE — quy ước C11 đã chốt bên B2B/Campaign, áp nguyên sang B2C cho nhất quán:
+        // gửi cả hai thì text thắng và file bị bỏ hẳn (không parse, không lưu jd_id) → row không "nhận vơ"
+        // một file thực ra không góp gì vào câu hỏi. (jdTextInput đã chuẩn hoá + kiểm ngưỡng ở đầu hàm.)
+        var jdIdToUse = jdTextInput is not null ? null : request.JdId;
+
+        string? jdText = jdTextInput;
+        if (jdTextInput is null && request.JdId is not null)
         {
-            jdText = await _storage.GetParseTextAsync(request.JdId.Value, ct);
+            jdText = await _storage.GetOwnedParsedTextAsync(request.JdId.Value, candidateId, ct);
             if (string.IsNullOrWhiteSpace(jdText))
                 throw new InvalidOperationException("JD không đọc được nội dung");
         }
@@ -109,7 +121,7 @@ public class PracticeService : IPracticeService
                 Id = sessionId,
                 CandidateId = candidateId,
                 CvId = request.CvId,           // có thể null
-                JdId = request.JdId,           // có thể null
+                JdId = jdIdToUse,              // null khi JD đến từ text (C11: text ưu tiên file)
                 JobCategory = jobCategory,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,
@@ -338,7 +350,7 @@ public class PracticeService : IPracticeService
             .ToListAsync(ct);
 
         var answers = await _db.PracticeAnswers.AsNoTracking()
-            .Include(a => a.Scores)
+            .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
             .Where(a => a.SessionId == existing.Id)
             .ToListAsync(ct);
 
@@ -475,7 +487,7 @@ public class PracticeService : IPracticeService
 
         var answers = await _db.PracticeAnswers
             .AsNoTracking()
-            .Include(a => a.Scores)
+            .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 
@@ -556,7 +568,7 @@ public class PracticeService : IPracticeService
 
         var answers = await _db.PracticeAnswers
             .AsNoTracking()
-            .Include(a => a.Scores)
+            .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 
@@ -604,6 +616,18 @@ public class PracticeService : IPracticeService
             _logger.LogError(ex, "BC14: revert lesson về Theory thất bại cho session {SessionId}", sessionId);
         }
     }
+
+    // Chuẩn hoá text nhập tay: rỗng/toàn khoảng trắng = KHÔNG nhập (null), còn lại thì trim.
+    // Giống hệt CampaignService.NormalizeText (C11) → "gửi jdText rỗng" hành xử như không gửi ở cả 2 dòng.
+    // + cap độ dài (TextInputLimits.JdTextMaxChars — ngưỡng CHUNG với B2B/Campaign): JD nhập tay đi thẳng
+    // vào prompt Gemini → vượt ngưỡng ném InvalidOperationException (controller map → 400) kèm giới hạn và
+    // độ dài đang gửi. Đo SAU khi trim → khoảng trắng thừa không tính vào ngưỡng.
+    private static string? NormalizeText(string? text)
+        => TextInputLimits.NormalizeAndEnsureLimit(
+            text, JdTextLabel, msg => new InvalidOperationException(msg));
+
+    // Nhãn field trong thông báo lỗi 400 — khớp tên field client gửi lên.
+    private const string JdTextLabel = "Mô tả công việc (jdText)";
 
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
@@ -685,8 +709,11 @@ public class PracticeService : IPracticeService
                 var rep = g.OrderBy(s => Math.Abs(s.Score - median))
                            .ThenByDescending(s => s.AttemptNo)
                            .First();
+                // Criterion nạp qua .ThenInclude ở các site đọc; dùng `?.` để site nào lỡ quên Include
+                // thì ra null (client lùi về nhãn chung) thay vì ném NRE giữa luồng xem kết quả.
                 return new AnswerScoreResponse(
-                    g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched);
+                    g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched,
+                    rep.Criterion?.Name, rep.Criterion?.MaxScore);
             })
             .ToList();
 

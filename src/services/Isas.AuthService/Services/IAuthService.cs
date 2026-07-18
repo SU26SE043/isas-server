@@ -43,7 +43,9 @@ namespace Isas.AuthService.Services
         Task<AuthResponse> LoginAsync(LoginRequest loginRequest);
         Task<AuthResponse> LoginGoogleAsync(ExternalLoginInfo info);
         Task<AuthResponse> RefreshTokenAsync(string refreshToken);
-        Task LogoutAsync(string refreshToken);
+        // Đăng xuất theo USER (không theo 1 token): thu hồi MỌI refresh token của user — tab khác không
+        // gia hạn phiên tiếp được. Access token đang lưu hành vẫn sống tới hết TTL (validate offline GEN-3).
+        Task LogoutAsync(Guid userId);
         Task<UserResponse> GetUserAsync(Guid userId);
         Task<string> UpdateUserAsync(Guid userId, UpdateProfileRequest request);
         Task<RefreshToken> GetRefreshTokenAsync(string refreshToken);

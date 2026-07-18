@@ -9,10 +9,15 @@ using Isas.InterviewService.Enums;
 // non-nullable không [Required] → omitted im lặng thành BA(0) VÀ vẫn reserve 1 credit (B2C audit P1).
 // ⚠ Attribute phải nằm trên PARAMETER (KHÔNG [property:]) — ASP.NET (.NET 10) THROW khi validation
 // attribute property-targeted trên positional record → 500 mọi request (mẫu CvAnalysisRequest/BK6).
+// JdText: JD nhập THẲNG dạng text (khỏi phải upload PDF trước) — mượn nguyên quy ước C11 của
+// B2B/Campaign (`jdText` + "text ưu tiên file") để 2 dòng sản phẩm nhất quán. Gửi cả `jdText` lẫn
+// `jdId` → TEXT THẮNG, bỏ file (xem PracticeService.CreateSessionInternalAsync). Đặt CUỐI + có
+// default → mọi call site positional cũ (RoadmapLessonService, test) không phải sửa.
 public record CreatePracticeSessionRequest(
     Guid? CvId,        // optional
     Guid? JdId,        // optional
-    [Required] JobCategory? JobCategory
+    [Required] JobCategory? JobCategory,
+    string? JdText = null   // optional — ưu tiên hơn JdId
 );
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
@@ -91,7 +96,15 @@ public record AnswerScoreResponse(
     decimal Score,
     string? Reasoning,
     int RubricVersion,
-    int? LevelMatched = null   // E9 — mức khớp khi neo theo rubric_levels; null nếu chưa neo (nullable → không phá client)
+    int? LevelMatched = null,  // E9 — mức khớp khi neo theo rubric_levels; null nếu chưa neo (nullable → không phá client)
+    // Tên + thang điểm tiêu chí, để client HIỂN THỊ được mà không phải tra ngược id.
+    // Bắt ở e2e 2026-07-18: client chỉ nhận `criterionId` nên breakdown điểm hiện trơ "Điểm tiêu chí"
+    // (B2C) và mã GUID (transcript B2B). Tra ngược KHÔNG khả thi: `rubric_criteria` của campaign được
+    // mint `Guid.NewGuid()` lúc materialize (PracticeService) nên id này KHÁC id `campaign_criteria`.
+    // Nullable + đặt cuối: client cũ không vỡ; caller quên `.ThenInclude(Criterion)` thì ra null chứ
+    // không ném NRE.
+    string? CriterionName = null,
+    int? MaxScore = null
 );
 
 public record PracticeSessionSummary(
