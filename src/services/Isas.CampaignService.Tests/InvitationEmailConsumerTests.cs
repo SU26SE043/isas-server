@@ -38,8 +38,9 @@ public class InvitationEmailConsumerTests
         {
             Id = Guid.NewGuid(),
             CampaignId = camp.Id,
-            Token = token,
+            TokenHash = InvitationTokens.Hash(token),   // DB23 — DB giữ hash; job/email mang bản thô
             Email = email,
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
             CreatedAt = DateTime.UtcNow,
             SentAt = DateTime.UtcNow,       // producer-side: đã vào outbox
             EmailSentAt = emailSentAt       // consumer-side: null = chưa gửi

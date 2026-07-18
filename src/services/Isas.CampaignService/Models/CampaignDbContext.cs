@@ -170,11 +170,15 @@ namespace Isas.CampaignService.Models
                 e.ToTable("campaign_invitations");
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
-                e.Property(x => x.Token).IsRequired().HasMaxLength(128);
+                // DB23 — lưu SHA-256(token) base64 (44 ký tự), không phải token thô. Giữ nguyên
+                // varchar(128) (hash vừa thoải mái) → migration không đụng kiểu/độ dài cột.
+                e.Property(x => x.TokenHash).IsRequired().HasMaxLength(128);
                 e.Property(x => x.Email).IsRequired().HasMaxLength(255);
+                e.Property(x => x.ExpiresAt).IsRequired();   // DB23 — token luôn có hạn
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
 
-                e.HasIndex(x => x.Token).IsUnique();
+                // UNIQUE giữ nguyên shape (1 row/token) — tra bằng hash vẫn là single-row probe.
+                e.HasIndex(x => x.TokenHash).IsUnique();
                 e.HasIndex(x => x.CampaignId);
 
                 // DB13: khớp soft-delete filter của Campaign (required nav).

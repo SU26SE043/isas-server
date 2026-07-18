@@ -6,6 +6,7 @@ using Isas.CampaignService.Models;
 using Isas.Shared.Pagination;
 using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -26,6 +27,9 @@ namespace Isas.CampaignService.Services
         // Optional (default null): giữ nguyên các call-site test 6-tham-số hiện có; DI luôn resolve client
         // thật (đăng ký ở Program.cs). GetSessionTranscriptAsync null → InvalidOperationException (config).
         private readonly ICampaignSessionClient? _sessionClient;
+        // DB23 — hạn mặc định cho token khi campaign không có deadline (optional: test cũ gọi
+        // ctor 6/7 tham số vẫn compile, dùng default 14 ngày).
+        private readonly InvitationSettings _invitationSettings;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
@@ -36,8 +40,10 @@ namespace Isas.CampaignService.Services
             IFileService file, ILogger<CampaignService> logger,
             IParserService parser, ICriteriaSuggester suggester,
             IInvitationEmailPublisher emailPublisher,
-            ICampaignSessionClient? sessionClient = null)
+            ICampaignSessionClient? sessionClient = null,
+            IOptions<InvitationSettings>? invitationOptions = null)
         {
+            _invitationSettings = invitationOptions?.Value ?? new InvitationSettings();
             _db = db;
             _file = file;
             _logger = logger;
@@ -560,29 +566,37 @@ namespace Isas.CampaignService.Services
 
             // ── 4. Tạo rows + đẩy job email queue ────────────────────────────
             var now = DateTime.UtcNow;
-            var invitations = toCreate.Select(email => new CampaignInvitation
+            var expiresAt = ResolveInvitationExpiry(campaign, now);
+
+            // DB23 — token THÔ chỉ sống trong bộ nhớ (đi vào email/URL); DB lưu SHA-256(token).
+            var invitations = toCreate.Select(email =>
             {
-                Id = Guid.NewGuid(),
-                CampaignId = campaign.Id,
-                CampaignCandidateId = null,   // đường 1 (D1) — không gắn campaign_candidates
-                Token = GenerateInvitationToken(),
-                Email = email,
-                ExpiresAt = campaign.ExpiresAt,
-                CreatedAt = now,
+                var rawToken = InvitationTokens.NewRawToken();
+                return (RawToken: rawToken, Invitation: new CampaignInvitation
+                {
+                    Id = Guid.NewGuid(),
+                    CampaignId = campaign.Id,
+                    CampaignCandidateId = null,   // đường 1 (D1) — không gắn campaign_candidates
+                    TokenHash = InvitationTokens.Hash(rawToken),
+                    Email = email,
+                    ExpiresAt = expiresAt,
+                    CreatedAt = now,
+                });
             }).ToList();
 
             if (invitations.Count > 0)
             {
-                _db.CampaignInvitations.AddRange(invitations);
+                _db.CampaignInvitations.AddRange(invitations.Select(x => x.Invitation));
 
                 // DB2b — Transactional Outbox: ghi outbox-row CÙNG SaveChanges tạo invitation (thay
                 // "publish best-effort SAU commit" cũ = dual-write mất mail khi broker down giữa 2 lần
                 // SaveChanges). SentAt = "đã vào outbox" (dispatcher publish sau). Response giữ shape cũ.
-                foreach (var invitation in invitations)
+                foreach (var (rawToken, invitation) in invitations)
                 {
                     invitation.SentAt = now;
+                    // Job mang token THÔ (email phải chứa link dùng được) — DB chỉ có hash.
                     _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                        invitation.Id, campaign.Id, invitation.Email, invitation.Token, campaign.Title, invitation.ExpiresAt)));
+                        invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt)));
                     response.Created.Add(new InvitationItem { Id = invitation.Id, Email = invitation.Email, ExpiresAt = invitation.ExpiresAt });
                 }
 
@@ -676,16 +690,18 @@ namespace Isas.CampaignService.Services
 
             // Tạo invitation (gắn campaign_candidate_id) + set Analyzed → Invited + outbox-row CÙNG tx.
             var now = DateTime.UtcNow;
+            var expiresAt = ResolveInvitationExpiry(campaign, now);
             foreach (var cand in toInvite)
             {
+                var rawToken = InvitationTokens.NewRawToken();   // DB23 — thô cho email, hash cho DB
                 var invitation = new CampaignInvitation
                 {
                     Id = Guid.NewGuid(),
                     CampaignId = campaign.Id,
                     CampaignCandidateId = cand.Id,   // đường 2 — gắn shortlist (đường 1 để null)
-                    Token = GenerateInvitationToken(),
+                    TokenHash = InvitationTokens.Hash(rawToken),
                     Email = cand.Email!.Trim(),      // email đã chuẩn hoá lowercase từ C13/PATCH
-                    ExpiresAt = campaign.ExpiresAt,
+                    ExpiresAt = expiresAt,
                     CreatedAt = now,
                     SentAt = now,                    // DB2b — "đã vào outbox" (dispatcher publish sau)
                 };
@@ -695,7 +711,7 @@ namespace Isas.CampaignService.Services
 
                 // DB2b — outbox-row CÙNG SaveChanges tạo invitation (không dual-write mất mail khi broker down).
                 _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                    invitation.Id, campaign.Id, invitation.Email, invitation.Token, campaign.Title, invitation.ExpiresAt)));
+                    invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt)));
 
                 response.Invited.Add(new InvitedCandidateItem
                 {
@@ -738,14 +754,15 @@ namespace Isas.CampaignService.Services
             // đi trong 1 SaveChangesAsync = 1 transaction (như CreateInvitationsAsync) → nguyên tử.
             old.RevokedAt ??= now;
 
+            var rawToken = InvitationTokens.NewRawToken();   // DB23 — thô cho email, hash cho DB
             var fresh = new CampaignInvitation
             {
                 Id = Guid.NewGuid(),
                 CampaignId = campaign.Id,
                 CampaignCandidateId = old.CampaignCandidateId,   // giữ liên kết shortlist (đường 2); đường 1 = null
-                Token = GenerateInvitationToken(),
+                TokenHash = InvitationTokens.Hash(rawToken),
                 Email = old.Email,
-                ExpiresAt = campaign.ExpiresAt,
+                ExpiresAt = ResolveInvitationExpiry(campaign, now),
                 CreatedAt = now,
                 SentAt = now,                                    // DB2b — "đã vào outbox" (dispatcher publish sau)
             };
@@ -754,7 +771,7 @@ namespace Isas.CampaignService.Services
             // DB2b — outbox-row CÙNG transaction (revoke token cũ + tạo fresh + outbox = 1 SaveChanges).
             // Thay "resend best-effort SAU commit" cũ (mất mail khi broker down) — dispatcher publish sau.
             _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                fresh.Id, campaign.Id, fresh.Email, fresh.Token, campaign.Title, fresh.ExpiresAt)));
+                fresh.Id, campaign.Id, fresh.Email, rawToken, campaign.Title, fresh.ExpiresAt)));
 
             AddAudit(actorUserId, orgId, AuditAction.ReissueInvitation, campaign.Id, $"Phát lại lời mời cho {old.Email}");
             await _db.SaveChangesAsync(ct);
@@ -1240,14 +1257,17 @@ namespace Isas.CampaignService.Services
                 throw new ArgumentException($"max_questions không được âm (hiện: {q}).");
         }
 
-        // Token magic-link 1 lần — 256-bit random, URL-safe base64 (không padding).
-        private static string GenerateInvitationToken()
+        // DB23 — hạn token: campaign có deadline → dùng deadline (giữ ràng buộc token ≤ hạn campaign);
+        // KHÔNG có deadline → now + Invitation:DefaultExpiryDays. Trước đây nhánh này để NULL = token
+        // sống vĩnh viễn (magic-link redeem được mãi mãi).
+        // (Sinh token đã chuyển sang InvitationTokens.NewRawToken — DB lưu hash, không lưu thô.)
+        private DateTime ResolveInvitationExpiry(Campaign campaign, DateTime now)
         {
-            var bytes = RandomNumberGenerator.GetBytes(32);
-            return Convert.ToBase64String(bytes)
-                .Replace("+", "-")
-                .Replace("/", "_")
-                .Replace("=", "");
+            if (campaign.ExpiresAt is DateTime deadline)
+                return deadline;
+
+            var days = Math.Max(1, _invitationSettings.DefaultExpiryDays);   // cấu hình ≤0 → 1 ngày, không bao giờ vô hạn
+            return now.AddDays(days);
         }
 
         // C12: validate + build tiêu chí structured HR khai thẳng (source=HrEdited).

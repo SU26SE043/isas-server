@@ -35,10 +35,11 @@ namespace Isas.CampaignService.Services
         // ── GET /invitations/{token} — metadata (KHÔNG side-effect) ──────────────────
         public async Task<InvitationMetadataResponse> GetInvitationMetadataAsync(string token, CancellationToken ct = default)
         {
+            var tokenHash = HashOrThrow(token);   // DB23 — tra bằng hash (DB không giữ token thô)
             var inv = await _db.CampaignInvitations
                 .AsNoTracking()
                 .Include(i => i.Campaign).ThenInclude(c => c.Criteria)
-                .FirstOrDefaultAsync(i => i.Token == token, ct)
+                .FirstOrDefaultAsync(i => i.TokenHash == tokenHash, ct)
                 ?? throw new KeyNotFoundException("Lời mời không tồn tại.");
 
             ValidateInvitationUsable(inv);
@@ -58,9 +59,10 @@ namespace Isas.CampaignService.Services
         // ── POST /invitations/{token}/join — tham gia campaign ───────────────────────
         public async Task<JoinCampaignResponse> JoinCampaignAsync(string token, CancellationToken ct = default)
         {
+            var tokenHash = HashOrThrow(token);   // DB23 — tra bằng hash (DB không giữ token thô)
             var inv = await _db.CampaignInvitations
                 .Include(i => i.Campaign)
-                .FirstOrDefaultAsync(i => i.Token == token, ct)
+                .FirstOrDefaultAsync(i => i.TokenHash == tokenHash, ct)
                 ?? throw new KeyNotFoundException("Lời mời không tồn tại.");
 
             ValidateInvitationUsable(inv);
@@ -271,13 +273,23 @@ namespace Isas.CampaignService.Services
         }
 
         // Lời mời còn dùng được: chưa revoke, chưa hết hạn, campaign còn Active. Ngược lại → 410 Gone.
+        // DB23 — token rỗng/trắng = không tồn tại (404), KHÔNG để lọt xuống Hash() ném ArgumentException
+        // (sẽ thành 500). Trim để dung thứ khoảng trắng khi ứng viên copy link từ email.
+        private static string HashOrThrow(string token)
+        {
+            var trimmed = token?.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+                throw new KeyNotFoundException("Lời mời không tồn tại.");
+            return InvitationTokens.Hash(trimmed);
+        }
+
         private static void ValidateInvitationUsable(CampaignInvitation inv)
         {
             if (inv.Campaign is null)
                 throw new InvitationGoneException("Chiến dịch không còn khả dụng.");
             if (inv.RevokedAt is not null)
                 throw new InvitationGoneException("Lời mời đã bị thu hồi.");
-            if (inv.ExpiresAt is DateTime exp && exp < DateTime.UtcNow)
+            if (inv.ExpiresAt < DateTime.UtcNow)   // DB23 — luôn có hạn (không còn nhánh NULL = vĩnh viễn)
                 throw new InvitationGoneException("Lời mời đã hết hạn.");
             if (inv.Campaign.Status != CampaignStatus.Active)
                 throw new InvitationGoneException($"Chiến dịch không còn nhận ứng viên (trạng thái {inv.Campaign.Status}).");

@@ -54,8 +54,9 @@ public class CampaignChildQueryFilterDb13Tests
         });
         tdb.Db.CampaignInvitations.Add(new CampaignInvitation
         {
-            Id = invId, CampaignId = camp.Id, Token = "tok-1", Email = "a@b.co",
-            CreatedAt = DateTime.UtcNow
+            Id = invId, CampaignId = camp.Id,
+            TokenHash = Isas.CampaignService.Services.InvitationTokens.Hash("tok-1"), Email = "a@b.co",
+            ExpiresAt = DateTime.UtcNow.AddDays(7), CreatedAt = DateTime.UtcNow
         });
         // DB16 — cả cv_submission và campaign_membership đều required-nav Campaign (soft-delete filter).
         tdb.Db.CvSubmissions.Add(new CvSubmission

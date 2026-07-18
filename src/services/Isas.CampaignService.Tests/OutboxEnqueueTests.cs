@@ -52,7 +52,9 @@ public class OutboxEnqueueTests
         Assert.Equal(inv.Id, job.InvitationId);
         Assert.Equal(camp.Id, job.CampaignId);
         Assert.Equal("a@example.com", job.Email);
-        Assert.Equal(inv.Token, job.Token);
+        // DB23 — job mang token THÔ (email cần link dùng được); DB chỉ giữ hash của đúng token đó.
+        Assert.Equal(inv.TokenHash, InvitationTokens.Hash(job.Token));
+        Assert.NotEqual(inv.TokenHash, job.Token);
         Assert.Equal("Backend Q3", job.CampaignTitle);
 
         // KHÔNG publish trực tiếp (dispatcher là đường phát duy nhất).
@@ -71,8 +73,9 @@ public class OutboxEnqueueTests
         {
             Id = Guid.NewGuid(),
             CampaignId = camp.Id,
-            Token = Guid.NewGuid().ToString("N"),
+            TokenHash = InvitationTokens.Hash(Guid.NewGuid().ToString("N")),
             Email = "reissue@example.com",
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
             CreatedAt = DateTime.UtcNow
         };
         tdb.Db.CampaignInvitations.Add(old);
