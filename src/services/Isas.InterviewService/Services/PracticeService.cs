@@ -78,9 +78,16 @@ public class PracticeService : IPracticeService
                 throw new InvalidOperationException("CV không đọc được nội dung");
         }
 
-        // JD optional: chỉ parse khi có.
-        string? jdText = null;
-        if (request.JdId is not null)
+        // JD optional, 2 nguồn: text nhập thẳng (jdText) HOẶC file đã upload (jdId).
+        // TEXT ƯU TIÊN FILE — quy ước C11 đã chốt bên B2B/Campaign, áp nguyên sang B2C cho nhất quán:
+        // gửi cả hai thì text thắng và file bị bỏ hẳn (không parse, không lưu jd_id) → row không "nhận vơ"
+        // một file thực ra không góp gì vào câu hỏi. Text rỗng/toàn khoảng trắng = coi như KHÔNG nhập
+        // (rơi về jdId) — cùng cách chuẩn hoá NormalizeText của Campaign.
+        var jdTextInput = NormalizeText(request.JdText);
+        var jdIdToUse = jdTextInput is not null ? null : request.JdId;
+
+        string? jdText = jdTextInput;
+        if (jdTextInput is null && request.JdId is not null)
         {
             jdText = await _storage.GetParseTextAsync(request.JdId.Value, ct);
             if (string.IsNullOrWhiteSpace(jdText))
@@ -109,7 +116,7 @@ public class PracticeService : IPracticeService
                 Id = sessionId,
                 CandidateId = candidateId,
                 CvId = request.CvId,           // có thể null
-                JdId = request.JdId,           // có thể null
+                JdId = jdIdToUse,              // null khi JD đến từ text (C11: text ưu tiên file)
                 JobCategory = jobCategory,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,
@@ -604,6 +611,11 @@ public class PracticeService : IPracticeService
             _logger.LogError(ex, "BC14: revert lesson về Theory thất bại cho session {SessionId}", sessionId);
         }
     }
+
+    // Chuẩn hoá text nhập tay: rỗng/toàn khoảng trắng = KHÔNG nhập (null), còn lại thì trim.
+    // Giống hệt CampaignService.NormalizeText (C11) → "gửi jdText rỗng" hành xử như không gửi ở cả 2 dòng.
+    private static string? NormalizeText(string? text)
+        => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
 
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,

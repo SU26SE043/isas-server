@@ -13,10 +13,14 @@ using Isas.InterviewService.Enums;
 // InvalidOperationException khi validation attribute property-targeted trên positional record
 // (metadata bị ignore) → 500 MỌI request. Bug bắt ở layer-3 API sweep 2026-07-13 (unit test gọi
 // service trực tiếp, không qua model-binding nên không thấy).
+// JdText: JD nhập THẲNG dạng text (khỏi phải upload PDF trước) — quy ước C11 của B2B/Campaign,
+// "text ưu tiên file". Có JD (text HOẶC file) → AI trả `jdMatch`. Đặt CUỐI + có default → call site
+// positional cũ không phải sửa.
 public record CvAnalysisRequest(
     Guid CvId,
     Guid? JdId,
-    [Required] JobCategory? JobCategory
+    [Required] JobCategory? JobCategory,
+    string? JdText = null   // optional — ưu tiên hơn JdId
 );
 
 // Kết quả AI đọc từ AIService `/analyze-cv` (B2C — bỏ criterionMatches/overallMatchScore của B2B).
