@@ -4,6 +4,7 @@ using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -68,6 +69,11 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
 
+        // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
+        // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
+        // credit oan (mẫu BK6/PAY-5). Text rỗng/toàn khoảng trắng = coi như KHÔNG nhập (rơi về jdId).
+        var jdTextInput = NormalizeText(request.JdText);
+
         // CV optional: chỉ parse khi có. Không có CV cũng luyện được (dựa JobCategory).
         // TODO: xác nhận tên method storage (memory ghi GetParseText).
         string? cvText = null;
@@ -82,9 +88,7 @@ public class PracticeService : IPracticeService
         // JD optional, 2 nguồn: text nhập thẳng (jdText) HOẶC file đã upload (jdId).
         // TEXT ƯU TIÊN FILE — quy ước C11 đã chốt bên B2B/Campaign, áp nguyên sang B2C cho nhất quán:
         // gửi cả hai thì text thắng và file bị bỏ hẳn (không parse, không lưu jd_id) → row không "nhận vơ"
-        // một file thực ra không góp gì vào câu hỏi. Text rỗng/toàn khoảng trắng = coi như KHÔNG nhập
-        // (rơi về jdId) — cùng cách chuẩn hoá NormalizeText của Campaign.
-        var jdTextInput = NormalizeText(request.JdText);
+        // một file thực ra không góp gì vào câu hỏi. (jdTextInput đã chuẩn hoá + kiểm ngưỡng ở đầu hàm.)
         var jdIdToUse = jdTextInput is not null ? null : request.JdId;
 
         string? jdText = jdTextInput;
@@ -615,8 +619,15 @@ public class PracticeService : IPracticeService
 
     // Chuẩn hoá text nhập tay: rỗng/toàn khoảng trắng = KHÔNG nhập (null), còn lại thì trim.
     // Giống hệt CampaignService.NormalizeText (C11) → "gửi jdText rỗng" hành xử như không gửi ở cả 2 dòng.
+    // + cap độ dài (TextInputLimits.JdTextMaxChars — ngưỡng CHUNG với B2B/Campaign): JD nhập tay đi thẳng
+    // vào prompt Gemini → vượt ngưỡng ném InvalidOperationException (controller map → 400) kèm giới hạn và
+    // độ dài đang gửi. Đo SAU khi trim → khoảng trắng thừa không tính vào ngưỡng.
     private static string? NormalizeText(string? text)
-        => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        => TextInputLimits.NormalizeAndEnsureLimit(
+            text, JdTextLabel, msg => new InvalidOperationException(msg));
+
+    // Nhãn field trong thông báo lỗi 400 — khớp tên field client gửi lên.
+    private const string JdTextLabel = "Mô tả công việc (jdText)";
 
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
