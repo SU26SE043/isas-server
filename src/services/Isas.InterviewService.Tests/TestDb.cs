@@ -128,9 +128,10 @@ public sealed class TestDb : IDisposable
             NullLogger<RoadmapReportService>.Instance);
 
     // ── Seed helpers ──────────────────────────────────────────────────────
+    // candidateId != null = rubric RIÊNG của candidate (BC16); null = seed mặc định dùng chung.
     public static RubricCriterion Criterion(
         JobCategory cat, int version = 1, bool active = true,
-        Guid? campaignId = null, string name = "Clarity")
+        Guid? campaignId = null, string name = "Clarity", Guid? candidateId = null)
         => new()
         {
             Id = Guid.NewGuid(),
@@ -141,6 +142,7 @@ public sealed class TestDb : IDisposable
             IsActive = active,
             JobCategory = cat,
             CampaignId = campaignId,
+            CandidateId = candidateId,
             Version = version
         };
 

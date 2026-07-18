@@ -157,6 +157,8 @@ builder.Services.Configure<RoadmapOptions>(
     builder.Configuration.GetSection(RoadmapOptions.SectionName));   // BC15
 builder.Services.Configure<OutboxSettings>(
     builder.Configuration.GetSection(OutboxSettings.SectionName));   // DB2
+builder.Services.Configure<RepublisherSettings>(
+    builder.Configuration.GetSection(RepublisherSettings.SectionName));   // DB29
 
 builder.Services.AddSingleton<IAmazonS3>(sp =>
 {
