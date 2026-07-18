@@ -109,6 +109,44 @@ public class BillingAuthorizationTests
         Assert.IsType<OkObjectResult>(result.Result);
     }
 
+    // ---------- OrderController: DELETE /order/{id} (huỷ đơn) ----------
+
+    // Huỷ đơn = money-mutation (void link thanh toán của OrgAdmin) → HrMember PHẢI 403.
+    // Regression: guard này từng thiếu (e2e 2026-07-18: hr@ DELETE /order/{id} → 204, đơn Pending→Failed).
+    [Fact]
+    public async Task CancelOrder_HrMember_tra_403_khong_goi_service()
+    {
+        var order = new Mock<IOrderService>();
+        var ctrl = WithUser(new OrderController(order.Object, Mock.Of<IOrderStatusService>()), HrMember());
+
+        var result = await ctrl.CancelOrderAsync(Guid.NewGuid());
+
+        Assert.IsType<ForbidResult>(result);
+        // Chặn TRƯỚC cả ownership-check → không đọc, không huỷ.
+        order.Verify(s => s.GetOrderAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        order.Verify(s => s.CancelOrderAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // OrgAdmin huỷ đơn của chính mình → qua guard, tới logic (KHÔNG 403).
+    [Fact]
+    public async Task CancelOrder_OrgAdmin_khong_bi_chan()
+    {
+        var orgId = Guid.NewGuid();
+        var user = Principal(Guid.NewGuid(), orgId, "OrgAdmin");
+        var orderId = Guid.NewGuid();
+
+        var order = new Mock<IOrderService>();
+        order.Setup(s => s.GetOrderAsync(orderId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new OrderResponse { Id = orderId, OwnerType = OwnerType.Org, OwnerId = orgId });
+        var ctrl = WithUser(new OrderController(order.Object, Mock.Of<IOrderStatusService>()), user);
+
+        var result = await ctrl.CancelOrderAsync(orderId);
+
+        Assert.IsNotType<ForbidResult>(result);
+        Assert.IsType<NoContentResult>(result);
+        order.Verify(s => s.CancelOrderAsync(orderId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     // ---------- InvoiceController: POST /invoices/{id}/pay + POST /admin/invoices/close ----------
 
     private static (InvoiceController ctrl, Mock<IInvoiceService> inv) NewInvoiceController(ClaimsPrincipal user)
