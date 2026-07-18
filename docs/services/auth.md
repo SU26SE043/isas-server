@@ -62,7 +62,21 @@ UserResponse {
 **`POST /login`** — Đăng nhập. Public.
 - Req: `{ email: string, password: string }` → Res **`200`** `AuthResponse`. Lỗi: **400/401** (sai thông tin).
 
-**`GET /login-google`** → redirect Google · **`GET /login-google-callback?returnUrl&remoteError`** → OAuth callback, trả `AuthResponse`. Public.
+**Đăng nhập Google (OAuth) — Public.** Là **điều hướng cả trang**, không phải XHR: FE chỉ `window.location.href = {gateway}/api/v1/auth/login-google`, không fetch.
+
+- **`GET /login-google?returnUrl`** — challenge Google. `redirect_uri` gửi Google dựng từ **`Gateway:PublicBaseUrl`** (config server): gateway strip `/api/v1` nên URL handler tự dựng sẽ thiếu tiền tố + mang host nội bộ → 404 ở edge.
+- **`GET /signin-google`** — **CallbackPath của handler Google** (không phải action MVC). Đây là URI phải khai trên Google Cloud Console: `{Gateway:PublicBaseUrl}/auth/signin-google`. Phải **khác** route action bên dưới — middleware remote-auth chạy trước MVC và short-circuit đúng path nó giữ.
+- **`GET /login-google-callback?returnUrl&remoteError`** — action MVC, đích cuối vòng OAuth. **Trả `302`**, KHÔNG trả JSON (người dùng đang ở điều hướng cả trang → đáp xuống JSON thô thì app Angular không bao giờ chạy lại để nhận token):
+  - Thành công → `{Frontend:BaseUrl}/auth/google/callback#accessToken=…&refreshToken=…&expiresAt=…[&returnUrl=…]`
+  - Thất bại → `{Frontend:BaseUrl}/auth/google/callback#error=<remote_error|no_login_info|login_failed>`
+
+Token đi trong **fragment** (không phải query): fragment **không được trình duyệt gửi lên server** → không lọt access log / header `Referer`.
+
+**Bảo mật đích redirect:** base URL LUÔN từ config server (`Frontend:BaseUrl` / `Gateway:PublicBaseUrl`). `returnUrl` do client truyền chỉ được chấp nhận khi là **đường dẫn tương đối** (bắt đầu `/`, không `//`, không `/\`, không scheme, không ký tự điều khiển) rồi ghép sau base đã cấu hình — nhận host từ client = open-redirect làm rò token.
+
+**Account linking:** email Google trùng account mật khẩu sẵn có → **liên kết** external login vào account đó (`AddLoginAsync`) rồi đăng nhập, KHÔNG tạo user thứ hai. Chưa có account → tạo mới **passwordless** + role `Candidate` (AUTH-1; luồng này không mở đường Employer/org).
+
+**Config bắt buộc:** `Authentication:Google:ClientId/ClientSecret` · `Frontend:BaseUrl` · `Gateway:PublicBaseUrl`.
 
 **`POST /refresh`** — Làm mới token. Public.
 - Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn/thu hồi).
