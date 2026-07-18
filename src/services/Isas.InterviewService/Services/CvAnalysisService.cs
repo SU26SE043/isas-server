@@ -51,9 +51,14 @@ public class CvAnalysisService : ICvAnalysisService
         // → KHÔNG trừ/giữ credit oan (mẫu BC2 PracticeService: validate → reserve).
         var cvText = await ReadOwnedParsedTextAsync(req.CvId, candidateId, "CV", ct);
 
-        // JD optional → gửi kèm để AI trả jdMatch.
-        string? jdText = null;
-        if (req.JdId is not null)
+        // JD optional → gửi kèm để AI trả jdMatch. 2 nguồn: text nhập thẳng (jdText) HOẶC file (jdId).
+        // TEXT ƯU TIÊN FILE (quy ước C11 bên B2B/Campaign): gửi cả hai → text thắng, file KHÔNG đọc
+        // (khỏi tốn round-trip + khỏi ownership-check cho file không dùng) và KHÔNG lưu jd_id.
+        var jdTextInput = NormalizeText(req.JdText);
+        var jdIdToUse = jdTextInput is not null ? null : req.JdId;
+
+        string? jdText = jdTextInput;
+        if (jdTextInput is null && req.JdId is not null)
             jdText = await ReadOwnedParsedTextAsync(req.JdId.Value, candidateId, "JD", ct);
 
         // BC7b — operationId = Id row cv_analyses sắp tạo, dùng làm khoá reservation cho op không-session
@@ -82,14 +87,15 @@ public class CvAnalysisService : ICvAnalysisService
                 Id = operationId,
                 CandidateId = candidateId,
                 CvId = req.CvId,
-                JdId = req.JdId,
+                JdId = jdIdToUse,   // null khi JD đến từ text (C11: text ưu tiên file)
                 JobCategory = jobCategory,
                 Summary = ai.Summary,
                 Strengths = ai.Strengths,
                 Weaknesses = ai.Weaknesses,
                 Suggestions = ai.Suggestions,
-                // jdMatch chỉ có ý nghĩa khi request có JD.
-                JdMatch = req.JdId is not null ? ai.JdMatch : null,
+                // jdMatch chỉ có ý nghĩa khi request có JD — gate theo "CÓ NỘI DUNG JD" (text HOẶC file),
+                // KHÔNG theo req.JdId: từ khi nhận jdText, gate cũ sẽ vứt jdMatch của mọi JD nhập tay.
+                JdMatch = jdText is not null ? ai.JdMatch : null,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -115,12 +121,19 @@ public class CvAnalysisService : ICvAnalysisService
         if (Billed)
             await ConsumeQuietlyAsync(operationId, ct);
 
+        // jdSource để đọc log biết JD đến từ đâu (text nhập tay không có jd_id để lần vết).
         _logger.LogInformation(
-            "CV analysis {Id} cho candidate {CandidateId} (cv={CvId}, jd={JdId})",
-            entity.Id, candidateId, req.CvId, req.JdId);
+            "CV analysis {Id} cho candidate {CandidateId} (cv={CvId}, jd={JdId}, jdSource={JdSource})",
+            entity.Id, candidateId, req.CvId, jdIdToUse,
+            jdTextInput is not null ? "text" : (jdIdToUse is not null ? "file" : "none"));
 
         return Map(entity);
     }
+
+    // Chuẩn hoá text nhập tay: rỗng/toàn khoảng trắng = KHÔNG nhập (null), còn lại thì trim.
+    // Giống CampaignService.NormalizeText (C11) → hành vi "gửi jdText rỗng" đồng nhất 2 dòng sản phẩm.
+    private static string? NormalizeText(string? text)
+        => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
 
     // BC7b — consume best-effort: lỗi Payment sau khi lưu row → KHÔNG fail phân tích (user đã có kết quả);
     // credit đã reserve (remaining giảm) → treo, reconcile sau. ⚠ ratify: cần active-polling đối soát.

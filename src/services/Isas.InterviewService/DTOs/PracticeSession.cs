@@ -9,10 +9,15 @@ using Isas.InterviewService.Enums;
 // non-nullable không [Required] → omitted im lặng thành BA(0) VÀ vẫn reserve 1 credit (B2C audit P1).
 // ⚠ Attribute phải nằm trên PARAMETER (KHÔNG [property:]) — ASP.NET (.NET 10) THROW khi validation
 // attribute property-targeted trên positional record → 500 mọi request (mẫu CvAnalysisRequest/BK6).
+// JdText: JD nhập THẲNG dạng text (khỏi phải upload PDF trước) — mượn nguyên quy ước C11 của
+// B2B/Campaign (`jdText` + "text ưu tiên file") để 2 dòng sản phẩm nhất quán. Gửi cả `jdText` lẫn
+// `jdId` → TEXT THẮNG, bỏ file (xem PracticeService.CreateSessionInternalAsync). Đặt CUỐI + có
+// default → mọi call site positional cũ (RoadmapLessonService, test) không phải sửa.
 public record CreatePracticeSessionRequest(
     Guid? CvId,        // optional
     Guid? JdId,        // optional
-    [Required] JobCategory? JobCategory
+    [Required] JobCategory? JobCategory,
+    string? JdText = null   // optional — ưu tiên hơn JdId
 );
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
