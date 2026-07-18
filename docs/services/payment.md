@@ -65,7 +65,7 @@ Order {                                 // = OrderResponse — POST /order, /inv
   checkoutUrl:    string?               // ✅ CHỈ có khi tạo đơn (POST /order · /invoices/{id}/pay) — link PayOS; null khi GET
 }
 
-CreditAccount {                         // GET /me/account 🔜 (chưa build) — enum cũng serialize SỐ khi build
+CreditAccount {                         // GET /me/account ✅ (= CreditAccountResponse) — enum serialize SỐ. KHÔNG trả `id` (định danh ví = ownerType+ownerId, alternate key DB9)
   ownerType:        enum(int)           // 0=Org · 1=User
   ownerId:          uuid
   paymentMode:      enum(int)           // 0=Prepaid · 1=Postpaid (User luôn Prepaid)
@@ -117,7 +117,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/order/{id}/status`** ✅ — **FE active-polling**: server chưa nhận webhook → gọi PayOS đối soát ngay. → `OrderStatusResponse` `{ orderCode: long, status: string, paidAt: datetime? }` (**ngoại lệ:** `status` là **CHUỖI** ở đây). Lỗi: **404** (không tồn tại/non-owner).
 
-**`GET /payment/me/account`** 🔜 — Số dư ví → `CreditAccount`. Lỗi: **401**.
+**`GET /payment/me/account`** ✅ (2026-07-18) — Số dư ví của **chính caller** → `CreditAccount`. Chủ ví suy từ JWT (D15: claim `org_id`→Org, else `sub`→User) nên **không có đường đọc ví người khác**; HrMember xem được (AUTH-6 chỉ chặn money-mutation). Chưa từng mua credit (chưa có row ví) → **200** ví rỗng `remainingCredits:0` (đọc thuần, KHÔNG tạo ví — ví tạo lazy ở webhook Paid P2). Lỗi: **401**.
 
 **`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
 
@@ -160,8 +160,9 @@ GET /api/v1/payment/order/{id}/status
 → 200 { "orderCode":260630153012, "status":"Paid", "paidAt":"2026-06-30T15:32:10Z" }   // NGOẠI LỆ: status CHUỖI · server đối soát PayOS nếu chưa có webhook
 
 GET /api/v1/payment/me/account
-→ 200 { "ownerType":"Org","ownerId":"…","paymentMode":"Prepaid","status":"Active",
-        "remainingCredits":48,"reservedCredits":2,"creditLimit":null,"periodUsage":null }
+→ 200 { "ownerType":0,"ownerId":"…","paymentMode":0,"status":0,                       // enum SỐ (khớp §DTO dòng 68 + mọi DTO Payment khác)
+        "remainingCredits":48,"reservedCredits":2,"creditLimit":null,"periodUsage":null,
+        "updatedAt":"2026-07-18T14:03:02Z" }
 
 POST /internal/credits/reserve  (X-Internal-Token)  { "ownerType":"Org","ownerId":"…","sessionId":"…" }
 → 200 { "reservationId":"…","reservedCredits":3 }   |   402 nếu hết credit/hạn mức
