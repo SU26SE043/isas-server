@@ -1,6 +1,7 @@
 ﻿using Isas.AuthService.DTOs;
 using Isas.AuthService.Models;
 using Isas.AuthService.Services;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.UI.Services;
@@ -18,12 +19,17 @@ namespace Isas.AuthService.Controllers
         private readonly UserManager<User> _userManager;
         private readonly SignInManager<User> _signInManager;
         private readonly IEmailSender _emailSender;
-        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager, IEmailSender emailSender)
+        private readonly IGoogleLoginRedirects _googleRedirects;
+        private readonly ILogger<AuthController> _logger;
+        public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager, IEmailSender emailSender,
+            IGoogleLoginRedirects googleRedirects, ILogger<AuthController> logger)
         {
             _authService = authService;
             _userManager = userManager;
             _signInManager = signInManager;
             _emailSender = emailSender;
+            _googleRedirects = googleRedirects;
+            _logger = logger;
         }
 
         // A5 — auth-entry công khai (chưa có JWT): AllowAnonymous tường minh (rõ ý định + phòng tương lai).
@@ -71,30 +77,59 @@ namespace Isas.AuthService.Controllers
             return Ok(await _authService.LoginAsync(request));
         }
 
+        // OAuth Google là điều hướng CẢ TRANG, không phải XHR: người dùng rời app Angular sang
+        // accounts.google.com rồi quay lại. Vì vậy redirect-uri phải là URL TUYỆT ĐỐI công khai
+        // (qua gateway) — handler redirect verbatim, trình duyệt phải với tới được.
+        // (Bug cũ: Url.Action(..., "Account", ...) trỏ tới controller KHÔNG tồn tại trong service này
+        // → trả null → RedirectUri không được set.)
         [AllowAnonymous]
         [HttpGet("login-google")]
-        public IActionResult LoginWithGoogle(string returnUrl = null)
+        public IActionResult LoginWithGoogle(string? returnUrl = null)
         {
-            var redirectUrl = Url.Action(nameof(GoogleLoginCallback), "Account", new { ReturnUrl = returnUrl });
+            var redirectUrl = _googleRedirects.CallbackUrl(returnUrl);
             var properties = _signInManager.ConfigureExternalAuthenticationProperties("Google", redirectUrl);
 
             return Challenge(properties, "Google");
         }
 
+        // Đích cuối của vòng OAuth. KHÔNG trả JSON (bug cũ): người dùng đang ở một điều hướng cả
+        // trang nên sẽ đáp xuống trang JSON thô và app Angular không bao giờ chạy lại để nhận token.
+        // Thay vào đó 302 về FE, token nằm ở FRAGMENT (fragment không được gửi lên server → không
+        // lọt access log / Referer). Đích lấy từ config server, không nhận host từ client.
         [AllowAnonymous]
         [HttpGet("login-google-callback")]
-        public async Task<IActionResult> GoogleLoginCallback(string returnUrl = null, string remoteError = null)
+        public async Task<IActionResult> GoogleLoginCallback(string? returnUrl = null, string? remoteError = null)
         {
             if (remoteError != null)
-                return BadRequest(new { error = $"Google login error: {remoteError}" });
+            {
+                _logger.LogWarning("Google trả lỗi khi đăng nhập: {RemoteError}", remoteError);
+                return Redirect(_googleRedirects.FailureUrl("remote_error"));
+            }
 
             var info = await _signInManager.GetExternalLoginInfoAsync();
             if (info == null)
-                return BadRequest(new { error = "No Google login info" });
+            {
+                // Thường là cookie external hết hạn / bị chặn, hoặc user mở thẳng URL này.
+                _logger.LogWarning("Không đọc được ExternalLoginInfo ở callback Google");
+                return Redirect(_googleRedirects.FailureUrl("no_login_info"));
+            }
 
-            var authResponse = await _authService.LoginGoogleAsync(info);
+            AuthResponse authResponse;
+            try
+            {
+                authResponse = await _authService.LoginGoogleAsync(info);
+            }
+            catch (Exception ex)
+            {
+                // Không để lộ chi tiết lỗi ra URL — chỉ mã lỗi cho FE hiển thị, chi tiết vào log.
+                _logger.LogError(ex, "Đăng nhập Google thất bại khi phát hành phiên");
+                return Redirect(_googleRedirects.FailureUrl("login_failed"));
+            }
 
-            return Ok(authResponse);
+            // Cookie external chỉ phục vụ 1 vòng OAuth — dọn ngay để không còn dấu vết phiên.
+            await HttpContext.SignOutAsync(IdentityConstants.ExternalScheme);
+
+            return Redirect(_googleRedirects.SuccessUrl(authResponse, returnUrl));
         }
 
         [AllowAnonymous]

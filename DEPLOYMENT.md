@@ -127,6 +127,10 @@ services:
       - EmailSettings__From=${SMTP_FROM}
       - Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
       - Authentication__Google__ClientSecret=${GOOGLE_CLIENT_SECRET}
+      # Đăng nhập Google: callback 302 về FE kèm token ở fragment. Cả 2 URL lấy từ CONFIG SERVER
+      # (không nhận đích từ client — nếu không là open-redirect làm rò token).
+      - Frontend__BaseUrl=${FRONTEND_BASE_URL}
+      - Gateway__PublicBaseUrl=${GATEWAY_PUBLIC_BASE_URL}
     expose: ["8080"]
     depends_on: [postgres, redis]
     networks: [isas-main-network]
@@ -263,6 +267,10 @@ SMTP_PASS=...
 SMTP_FROM=...
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
+# Đăng nhập Google — bắt buộc nếu bật login-google (thiếu → callback trả 500 khi dựng URL đích).
+# Redirect URI phải khai trên Google Cloud Console: ${GATEWAY_PUBLIC_BASE_URL}/auth/signin-google
+FRONTEND_BASE_URL=https://<your-frontend>
+GATEWAY_PUBLIC_BASE_URL=https://<your-tunnel>.trycloudflare.com/api/v1
 GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
 # PaymentService (PayOS) — bắt buộc để mua credit / webhook chạy
 PAYOS_CLIENT_ID=...

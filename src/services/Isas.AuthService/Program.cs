@@ -38,6 +38,7 @@ builder.Services.AddOpenApi(options =>
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddTransient<IEmailSender, EmailSender>();
+builder.Services.AddSingleton<IGoogleLoginRedirects, GoogleLoginRedirects>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
@@ -93,11 +94,34 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 var google = builder.Configuration.GetSection("Authentication:Google");
 builder.Services.AddAuthentication()
+    // Cookie TẠM giữ kết quả xác thực Google giữa 2 chặng (handler callback → action MVC).
+    // AddIdentityCore KHÔNG đăng ký scheme này, mà SignInManager.GetExternalLoginInfoAsync()
+    // đọc đúng nó → thiếu là cả luồng Google không bao giờ chạy được.
+    .AddCookie(IdentityConstants.ExternalScheme, options =>
+    {
+        options.Cookie.Name = IdentityConstants.ExternalScheme;
+        options.Cookie.HttpOnly = true;
+        options.Cookie.IsEssential = true;
+        // Path "/" tường minh: response đặt cookie đi qua gateway (PathBase = /api/v1), để mặc định
+        // cookie có thể bị giới hạn path và không quay lại được chặng sau.
+        options.Cookie.Path = "/";
+        // Lax (không Strict/None): Google trả về bằng ĐIỀU HƯỚNG GET cấp cao nhất → Lax vẫn gửi
+        // cookie, đồng thời không đòi Secure nên chạy được cả dev http://localhost.
+        options.Cookie.SameSite = SameSiteMode.Lax;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.ExpireTimeSpan = TimeSpan.FromMinutes(10); // chỉ sống trong 1 vòng OAuth
+    })
     .AddGoogle(options =>
     {
-        options.ClientId = google["ClientId"];
-        options.ClientSecret = google["ClientSecret"];
-        options.CallbackPath = "/auth/login-google-callback";
+        options.ClientId = google["ClientId"] ?? string.Empty;
+        options.ClientSecret = google["ClientSecret"] ?? string.Empty;
+        options.SignInScheme = IdentityConstants.ExternalScheme;
+        // KHÁC route action MVC: middleware remote-auth chạy trước MVC và short-circuit path nó giữ,
+        // trùng nhau thì GoogleLoginCallback không bao giờ được gọi (bug cũ).
+        options.CallbackPath = GoogleLoginRedirects.OAuthCallbackPath;
+        options.CorrelationCookie.Path = "/";
+        options.CorrelationCookie.SameSite = SameSiteMode.Lax;
+        options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
     });
 
 
@@ -121,6 +145,31 @@ if (app.Environment.IsDevelopment())
     });
 }
 
+
+// Gateway route /api/v1/auth/** rồi STRIP tiền tố → service chỉ thấy /auth/**. Handler Google lại tự
+// dựng redirect_uri từ Scheme/Host/PathBase của request đang chạy → sẽ ra host NỘI BỘ và thiếu
+// /api/v1 ⇒ URI không khớp cái đăng ký trên Google Console và 404 ở edge.
+// Cách sửa: ép request context về ORIGIN CÔNG KHAI (lấy từ config server, KHÔNG từ header client —
+// header do client kiểm soát sẽ thành lỗ redirect) cho đúng 2 path OAuth, để redirect_uri lúc
+// challenge và lúc đổi code hoàn toàn khớp nhau. Phải chạy TRƯỚC UseAuthentication.
+var publicBaseUrl = builder.Configuration["Gateway:PublicBaseUrl"];
+if (Uri.TryCreate(publicBaseUrl, UriKind.Absolute, out var publicBase))
+{
+    var publicPathBase = publicBase.AbsolutePath.TrimEnd('/');
+    app.Use(async (context, next) =>
+    {
+        var path = context.Request.Path.Value ?? string.Empty;
+        if (string.Equals(path, GoogleLoginRedirects.LoginPath, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(path, GoogleLoginRedirects.OAuthCallbackPath, StringComparison.OrdinalIgnoreCase))
+        {
+            context.Request.Scheme = publicBase.Scheme;
+            context.Request.Host = new HostString(publicBase.Authority);
+            context.Request.PathBase = publicPathBase;
+        }
+
+        await next();
+    });
+}
 
 app.UseAuthentication();
 app.UseAuthorization();

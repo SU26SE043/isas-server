@@ -38,19 +38,37 @@ namespace Isas.AuthService.Services
             return await GenerateAuthResponse(user);
         }
 
+        // AUTH-1: đăng nhập Google → account Candidate (không mở đường Employer/org ở đây).
+        // Ba nhánh: (1) external login đã liên kết → dùng lại; (2) email trùng account SẴN CÓ →
+        // LIÊN KẾT vào account đó; (3) chưa có gì → tạo mới passwordless.
         public async Task<AuthResponse> LoginGoogleAsync(ExternalLoginInfo info)
         {
-            var result = await _signInManager.ExternalLoginSignInAsync(info.LoginProvider, info.ProviderKey, false);
-
-            if (result.Succeeded)
-            {
-                var user = await _userManager.FindByLoginAsync(info.LoginProvider, info.ProviderKey);
-                return await GenerateAuthResponse(user);
-            }
+            // Không dùng SignInManager.ExternalLoginSignInAsync: khi tìm thấy user nó gọi
+            // Context.SignInAsync(IdentityConstants.ApplicationScheme) để ghi cookie phiên — service
+            // này chỉ AddIdentityCore nên scheme đó KHÔNG tồn tại → ném lỗi ngay ở lần đăng nhập
+            // Google THỨ HAI trở đi. API stateless (JWT) không cần cookie phiên; tra bảng
+            // user_logins là đủ để biết external login đang gắn account nào.
+            var linkedUser = await _userManager.FindByLoginAsync(info.LoginProvider, info.ProviderKey);
+            if (linkedUser is not null)
+                return await GenerateAuthResponse(linkedUser);
 
             var email = info.Principal.FindFirstValue(ClaimTypes.Email);
-            if (string.IsNullOrEmpty(email))
-                throw new Exception("Google account does not provide an email");
+            if (string.IsNullOrWhiteSpace(email))
+                throw new InvalidOperationException("Google account does not provide an email");
+
+            // Account linking: email Google trùng account mật khẩu sẵn có → gắn external login vào
+            // account ĐÓ rồi đăng nhập, KHÔNG tạo user thứ hai. Trước đây rơi thẳng xuống CreateAsync
+            // → vi phạm UNIQUE email (RequireUniqueEmail) → ném exception → 500, và người dùng đã
+            // đăng ký bằng mật khẩu thì vĩnh viễn không đăng nhập Google được.
+            var existingUser = await _userManager.FindByEmailAsync(email);
+            if (existingUser is not null)
+            {
+                var linkResult = await _userManager.AddLoginAsync(existingUser, info);
+                if (!linkResult.Succeeded)
+                    throw new InvalidOperationException(string.Join("; ", linkResult.Errors.Select(e => e.Description)));
+
+                return await GenerateAuthResponse(existingUser);
+            }
 
             var newUser = new User
             {
@@ -62,11 +80,15 @@ namespace Isas.AuthService.Services
                 UpdatedAt = DateTime.UtcNow
             };
 
+            // Passwordless (mẫu ProvisionCandidate) — user Google-only đặt mật khẩu qua forgot/reset.
             var identityResult = await _userManager.CreateAsync(newUser);
             if (!identityResult.Succeeded)
-                throw new Exception(string.Join("; ", identityResult.Errors.Select(e => e.Description)));
+                throw new InvalidOperationException(string.Join("; ", identityResult.Errors.Select(e => e.Description)));
 
-            await _userManager.AddLoginAsync(newUser, info);
+            var addLoginResult = await _userManager.AddLoginAsync(newUser, info);
+            if (!addLoginResult.Succeeded)
+                throw new InvalidOperationException(string.Join("; ", addLoginResult.Errors.Select(e => e.Description)));
+
             await EnsureRoleExistsAsync("Candidate");
             await _userManager.AddToRoleAsync(newUser, "Candidate");
 
