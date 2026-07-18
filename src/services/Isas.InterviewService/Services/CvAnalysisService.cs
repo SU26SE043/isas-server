@@ -2,6 +2,7 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
@@ -47,6 +48,11 @@ public class CvAnalysisService : ICvAnalysisService
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = req.JobCategory.Value;
 
+        // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
+        // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
+        // credit oan (mẫu BK6/PAY-5).
+        var jdTextInput = NormalizeText(req.JdText);
+
         // CV bắt buộc — đọc file (kiểm chủ sở hữu + lấy parsed_text). 404/403/400 ném TRƯỚC reserve
         // → KHÔNG trừ/giữ credit oan (mẫu BC2 PracticeService: validate → reserve).
         var cvText = await ReadOwnedParsedTextAsync(req.CvId, candidateId, "CV", ct);
@@ -54,7 +60,6 @@ public class CvAnalysisService : ICvAnalysisService
         // JD optional → gửi kèm để AI trả jdMatch. 2 nguồn: text nhập thẳng (jdText) HOẶC file (jdId).
         // TEXT ƯU TIÊN FILE (quy ước C11 bên B2B/Campaign): gửi cả hai → text thắng, file KHÔNG đọc
         // (khỏi tốn round-trip + khỏi ownership-check cho file không dùng) và KHÔNG lưu jd_id.
-        var jdTextInput = NormalizeText(req.JdText);
         var jdIdToUse = jdTextInput is not null ? null : req.JdId;
 
         string? jdText = jdTextInput;
@@ -132,8 +137,15 @@ public class CvAnalysisService : ICvAnalysisService
 
     // Chuẩn hoá text nhập tay: rỗng/toàn khoảng trắng = KHÔNG nhập (null), còn lại thì trim.
     // Giống CampaignService.NormalizeText (C11) → hành vi "gửi jdText rỗng" đồng nhất 2 dòng sản phẩm.
+    // + cap độ dài (TextInputLimits.JdTextMaxChars — ngưỡng CHUNG với B2B/Campaign): JD nhập tay đi thẳng
+    // vào prompt Gemini → vượt ngưỡng ném InvalidOperationException (controller map → 400) kèm giới hạn và
+    // độ dài đang gửi. Đo SAU khi trim → khoảng trắng thừa không tính vào ngưỡng.
     private static string? NormalizeText(string? text)
-        => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        => TextInputLimits.NormalizeAndEnsureLimit(
+            text, JdTextLabel, msg => new InvalidOperationException(msg));
+
+    // Nhãn field trong thông báo lỗi 400 — khớp tên field client gửi lên.
+    private const string JdTextLabel = "Mô tả công việc (jdText)";
 
     // BC7b — consume best-effort: lỗi Payment sau khi lưu row → KHÔNG fail phân tích (user đã có kết quả);
     // credit đã reserve (remaining giảm) → treo, reconcile sau. ⚠ ratify: cần active-polling đối soát.

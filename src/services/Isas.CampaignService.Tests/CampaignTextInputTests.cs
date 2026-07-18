@@ -1,6 +1,7 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
+using Isas.Shared.Validation;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -184,5 +185,100 @@ public class CampaignTextInputTests
         var criteria = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id).ToListAsync();
         Assert.NotEmpty(criteria);
         Assert.Equal(1.0m, criteria.Sum(c => c.Weight));   // Σweight = 1
+    }
+
+    // ── (e) Cap độ dài JD/tiêu chí nhập text (TextInputLimits.JdTextMaxChars) ──────────────
+    // Text nhập tay đi thẳng vào prompt Gemini → phải chặn ở BE, không chỉ FE maxlength.
+
+    // (e) SÁT ngưỡng (đúng JdTextMaxChars ký tự) → VẪN QUA: ngưỡng là "tối đa", không phải "nhỏ hơn".
+    [Fact]
+    public async Task Create_jdText_sat_nguong_van_qua()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var svc = NewService(tdb.NewContext());
+
+        var atLimit = new string('x', TextInputLimits.JdTextMaxChars);
+        var res = await svc.CreateCampaignAsync(owner, owner,
+            NewCreateReq(jdText: atLimit, criteriaText: atLimit), default);
+
+        Assert.Equal(TextInputLimits.JdTextMaxChars, res.JDText!.Length);
+        Assert.Equal(TextInputLimits.JdTextMaxChars, res.CriteriaText!.Length);
+    }
+
+    // (e) VƯỢT ngưỡng 1 ký tự → ArgumentException (controller map → 400); thông báo nói rõ giới hạn
+    // + độ dài đang gửi; KHÔNG ghi row nào.
+    [Fact]
+    public async Task Create_jdText_vuot_nguong_thi_400_va_khong_ghi_row()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var svc = NewService(tdb.NewContext());
+
+        var tooLong = new string('x', TextInputLimits.JdTextMaxChars + 1);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            svc.CreateCampaignAsync(owner, owner, NewCreateReq(jdText: tooLong), default));
+
+        Assert.Contains(TextInputLimits.JdTextMaxChars.ToString(), ex.Message);
+        Assert.Contains((TextInputLimits.JdTextMaxChars + 1).ToString(), ex.Message);   // độ dài đang gửi
+        Assert.Contains("jdText", ex.Message);
+
+        using var check = tdb.NewContext();
+        Assert.Empty(await check.Campaigns.ToListAsync());   // 400 → không để lại gì nửa vời
+    }
+
+    // (e) criteriaText cũng bị cap bằng CÙNG ngưỡng (một con số cho mọi ô text nhập tay).
+    [Fact]
+    public async Task Create_criteriaText_vuot_nguong_thi_400()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var svc = NewService(tdb.NewContext());
+
+        var tooLong = new string('x', TextInputLimits.JdTextMaxChars + 1);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            svc.CreateCampaignAsync(owner, owner, NewCreateReq(criteriaText: tooLong), default));
+
+        Assert.Contains("criteriaText", ex.Message);
+    }
+
+    // (e) Update cũng bị cap — guard chạy TRƯỚC fetch/mutate → campaign cũ KHÔNG đổi gì.
+    [Fact]
+    public async Task Update_jdText_vuot_nguong_thi_400_va_khong_doi_gi()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = CampaignTestDb.NewCampaign(owner, CampaignStatus.Draft);
+        camp.JDText = "JD cũ";
+        tdb.Db.Campaigns.Add(camp);
+        await tdb.Db.SaveChangesAsync();
+
+        var svc = NewService(tdb.NewContext());
+        var tooLong = new string('x', TextInputLimits.JdTextMaxChars + 1);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            svc.UpdateCampaignAsync(owner, owner, camp.Id,
+                new UpdateCampaignRequest { Title = "Tiêu đề mới", JdText = tooLong }, default));
+
+        using var check = tdb.NewContext();
+        var row = await check.Campaigns.FirstAsync(c => c.Id == camp.Id);
+        Assert.Equal("JD cũ", row.JDText);           // không sửa
+        Assert.NotEqual("Tiêu đề mới", row.Title);   // guard chạy trước mọi mutation khác
+    }
+
+    // (e) Đo SAU khi trim: khoảng trắng thừa không tính vào ngưỡng → sát ngưỡng + padding vẫn qua.
+    [Fact]
+    public async Task Create_jdText_sat_nguong_kem_khoang_trang_thua_van_qua()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var svc = NewService(tdb.NewContext());
+
+        var padded = "   " + new string('x', TextInputLimits.JdTextMaxChars) + "   \n";
+        var res = await svc.CreateCampaignAsync(owner, owner, NewCreateReq(jdText: padded), default);
+
+        Assert.Equal(TextInputLimits.JdTextMaxChars, res.JDText!.Length);
     }
 }

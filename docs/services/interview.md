@@ -243,7 +243,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 | Field | Ràng buộc |
 |---|---|
 | `cvId`/`jdId` (create session) | optional; `FileRecord` phải **của chính user** + có `parsed_text` (không đọc được → 400) |
-| `jdText` (create session · cv-analysis) | optional; **ưu tiên hơn `jdId`** (C11); rỗng/khoảng trắng = không gửi; **chưa giới hạn độ dài** (theo C11 — xem ⚠ dưới) |
+| `jdText` (create session · cv-analysis) | optional; **ưu tiên hơn `jdId`** (C11); rỗng/khoảng trắng = không gửi; **≤ 20.000 ký tự** (đo SAU trim) — vượt → **400** kèm giới hạn + độ dài đang gửi. Ngưỡng CHUNG với B2B/Campaign (`Isas.Shared.Validation.TextInputLimits.JdTextMaxChars`); guard chạy **NGAY ĐẦU** cả 2 endpoint — **trước** đọc CV/JD và **trước** reserve credit ⇒ JD quá dài không giữ credit oan (mẫu BK6/PAY-5) |
 | `jobCategory` | bắt buộc, enum `BA·BE·FE` |
 | upload file | PDF (cv/jd) **≤10MB** · audio (answer) **≤50MB**; sai loại/size → 400 |
 | `questionId`/`durationSec` (answer) | bắt buộc; **1 answer/câu** (upload lại = ghi đè idempotent) |
@@ -251,7 +251,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 
 | Mã | Khi nào (đặc thù — chung [../architecture.md](../architecture.md) §6) |
 |---|---|
-| 400 | CV/JD không đọc được nội dung · AI trả rỗng · thiếu field · file quá lớn/sai loại |
+| 400 | CV/JD không đọc được nội dung · AI trả rỗng · thiếu field · file quá lớn/sai loại · `jdText` **> 20.000 ký tự** |
 | 401/403 | thiếu/sai JWT · **không phải chủ** session/file |
 | 402 | hết credit ví (B2C reserve khi tạo session / cv-analysis — BC2/BC7b) |
 | 404 | session/câu/file không tồn tại |
