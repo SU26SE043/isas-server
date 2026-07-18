@@ -128,6 +128,43 @@ class SummarizeSessionResponse(BaseModel):
     overallComment: str        # tiếng Việt, vài câu: tổng quan mạnh/yếu + hướng cải thiện
 
 
+# ── Phỏng vấn THÍCH ỨNG (adaptive interview) — decide-next, stateless ────────
+# InterviewService (chủ state) gọi sau mỗi câu trả lời: gửi audio key (hoặc text)
+# + lịch sử Q&A + tiêu chí → AIService transcribe + QUYẾT ĐỊNH hành động kế tiếp
+# (follow_up | clarify | new_question | end). AIService KHÔNG ghi DB (GEN-4);
+# mọi state hội thoại nằm trong request (stateless).
+class DecideTurn(BaseModel):
+    question: str
+    answer: str | None = None      # transcript câu trả lời (None nếu chưa/không trả lời)
+    kind: str = "Seed"             # Seed | FollowUp | Clarify | NewQuestion
+
+
+class DecideCriterion(BaseModel):
+    name: str
+    description: str | None = None  # để follow-up NEO cùng năng lực → công bằng B2B
+
+
+class DecideNextRequest(BaseModel):
+    jobCategory: str
+    audioObjectKey: str | None = None   # ưu tiên: transcribe tại đây (single-source transcript)
+    answerText: str | None = None       # fallback nếu caller đã có transcript (dùng cho test)
+    language: str = "vi"
+    currentQuestion: str                # câu hỏi ứng viên vừa trả lời
+    history: list[DecideTurn] = []      # các lượt Q&A trước (stateless — caller truyền)
+    askedCount: int = 0                 # tổng số câu đã hỏi (seed + thích ứng)
+    followUpCount: int = 0              # số câu thích ứng đã thêm
+    maxQuestions: int = 0               # 0 = không trần cứng
+    maxFollowUps: int = 0               # 0 = không trần cứng
+    criteria: list[DecideCriterion] = []
+
+
+class DecideNextResponse(BaseModel):
+    action: str                         # follow_up | clarify | new_question | end
+    nextQuestion: str | None = None     # None ⇔ action == end
+    transcript: str | None = None       # echo khi transcribe từ audioObjectKey (single-source)
+    reason: str | None = None
+
+
 # ── Đối chiếu khuôn mặt (SEC-2/3) — sync HTTP, CampaignService gọi khi giám sát ──────
 class FaceVerifyRequest(BaseModel):
     referenceImageKey: str        # S3 key ảnh tham chiếu (đã đăng ký/consent)

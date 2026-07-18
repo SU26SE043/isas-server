@@ -85,28 +85,40 @@ async def process_message(message: aio_pika.IncomingMessage):
             temperature = body.get("Temperature")
         temperature = float(temperature) if temperature is not None else 0.0
 
-        if not answer_id or not storage_path:
-            print("[❌] Thiếu answerId/audioObjectKey — bỏ message (không retry).")
+        # Phỏng vấn THÍCH ỨNG: Interview đã transcribe ĐỒNG BỘ khi upload (qua /decide-next)
+        # và gửi kèm transcript → worker BỎ QUA Whisper (single-source transcript; tiết kiệm N
+        # lần transcribe của self-consistency E10). Không có (đường cũ / republish job cũ thiếu
+        # transcript) → tải audio + Whisper như trước.
+        pre_transcript = body.get("transcript") or body.get("Transcript")
+        pre_transcript = pre_transcript.strip() if isinstance(pre_transcript, str) else None
+
+        # Cần answerId luôn; cần audioObjectKey CHỈ khi chưa có transcript sẵn.
+        if not answer_id or (not storage_path and not pre_transcript):
+            print("[❌] Thiếu answerId/audioObjectKey/transcript — bỏ message (không retry).")
             await message.ack()  # message hỏng vĩnh viễn, ack để khỏi lặp vô hạn
             return
 
         tmp_path = None
         try:
-            # 1. Tải audio từ SeaweedFS (lỗi ở đây = tạm thời -> để retry).
-            suffix = os.path.splitext(storage_path)[1] or ".webm"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                s3_client.download_fileobj(settings.s3_bucket, storage_path, tmp)
-                tmp_path = tmp.name
-            print(f"[*] Tải file OK: {tmp_path}")
+            if pre_transcript:
+                transcript = pre_transcript
+                print(f"[✅] Dùng transcript có sẵn (bỏ qua Whisper): {transcript[:80]}")
+            else:
+                # 1. Tải audio từ SeaweedFS (lỗi ở đây = tạm thời -> để retry).
+                suffix = os.path.splitext(storage_path)[1] or ".webm"
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    s3_client.download_fileobj(settings.s3_bucket, storage_path, tmp)
+                    tmp_path = tmp.name
+                print(f"[*] Tải file OK: {tmp_path}")
 
-            # 2. Whisper transcribe — audio hỏng/không nghe được = lỗi VĨNH VIỄN.
-            try:
-                transcript = await asyncio.to_thread(transcriber.transcribe, tmp_path, "vi")
-            except Exception as e:
-                raise PermanentError(f"Transcribe lỗi (audio hỏng?): {e}")
-            if not transcript or not transcript.strip():
-                raise PermanentError("Transcript rỗng — audio không nghe được")
-            print(f"[✅] Transcript: {transcript}")
+                # 2. Whisper transcribe — audio hỏng/không nghe được = lỗi VĨNH VIỄN.
+                try:
+                    transcript = await asyncio.to_thread(transcriber.transcribe, tmp_path, "vi")
+                except Exception as e:
+                    raise PermanentError(f"Transcribe lỗi (audio hỏng?): {e}")
+                if not transcript or not transcript.strip():
+                    raise PermanentError("Transcript rỗng — audio không nghe được")
+                print(f"[✅] Transcript: {transcript}")
 
             # 3. Gemini chấm theo rubric.
             #    score() raise ValueError khi LLM trả output không parse/không hợp lệ.

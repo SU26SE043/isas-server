@@ -42,6 +42,16 @@ public class PracticeSession : IHasUpdatedAt
     // BC10 — nhận xét chung buổi (AI sinh best-effort khi Scored, chỉ B2C); null nếu chưa/AI lỗi/B2B.
     public string? OverallComment { get; set; }
 
+    // Phỏng vấn THÍCH ỨNG — bật/tắt vòng lặp câu-kế-động cho buổi này (đóng dấu lúc tạo session từ cấu
+    // hình B2C `Adaptive:Enabled` hoặc field campaign B2B). Tắt (mặc định) → giữ nguyên luồng batch tĩnh.
+    public bool AdaptiveEnabled { get; set; }
+
+    // Trần số câu hỏi thích ứng được thêm (0 = không trần cứng). Chống buổi phỏng vấn kéo dài vô tận.
+    public int MaxFollowUps { get; set; }
+
+    // Trần TỔNG số câu hỏi của buổi (seed + thích ứng; 0 = không trần cứng). B2B: giữ độ dài so sánh được.
+    public int MaxQuestions { get; set; }
+
     // Navigation
     public ICollection<PracticeQuestion> Questions { get; set; } = [];
     public ICollection<PracticeAnswer> Answers { get; set; } = [];

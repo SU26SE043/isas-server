@@ -25,13 +25,18 @@ public record CampaignCriterionInput(
 
 // I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).
 // I2: ExpiresAt = hạn chót nhận bài (campaigns.expires_at) → set session.Deadline; null = không hard-deadline.
+// Phỏng vấn THÍCH ỨNG (B2B): Adaptive*/MaxFollowUps/MaxQuestions do Campaign/HR bật (optional; null = tắt).
+// Seed = toàn bộ campaign questions (ai cũng nhận) → câu thích ứng thêm ở đuôi, chấm theo CÙNG tiêu chí.
 public record CreateCampaignSessionRequest(
     Guid CampaignId,
     Guid OrgId,        // BK14: chủ ví credit (owner=Org) để reserve khi tạo session B2B (PAY-6)
     JobCategory JobCategory,
     IReadOnlyList<string> Questions,
     IReadOnlyList<CampaignCriterionInput> Criteria,
-    DateTime? ExpiresAt = null
+    DateTime? ExpiresAt = null,
+    bool? AdaptiveEnabled = null,
+    int? MaxFollowUps = null,
+    int? MaxQuestions = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -46,7 +51,11 @@ public record CreateCampaignSessionInternalRequest(
     IReadOnlyList<CampaignCriterionInput> Criteria,
     // I2: hạn chót nhận bài (campaigns.expires_at). Campaign gửi kèm → set session.Deadline; null =
     // không hard-deadline (chỉ giới hạn từng câu). Campaign gửi field này là FOLLOW-UP nhỏ ngoài scope I2.
-    DateTime? ExpiresAt = null
+    DateTime? ExpiresAt = null,
+    // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật toggle + trần (optional; null = tắt → luồng batch tĩnh cũ).
+    bool? AdaptiveEnabled = null,
+    int? MaxFollowUps = null,
+    int? MaxQuestions = null
 );
 public record PracticeSessionResponse(
     Guid Id,
@@ -64,7 +73,8 @@ public record QuestionResponse(
     int OrderNo,
     string Content,
     int TimeLimitSec,
-    AnswerResponse? Answer
+    AnswerResponse? Answer,
+    string Kind = "Seed"   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion (default an toàn cho client cũ)
 );
 
 public record AnswerResponse(

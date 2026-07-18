@@ -2,8 +2,10 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
 
@@ -18,6 +20,7 @@ public class PracticeService : IPracticeService
     private readonly IAiServiceQuestionGenerator _questionGenerator;
     private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ICreditReservationClient _reservationClient;   // BC2
+    private readonly AdaptiveOptions _adaptive;   // phỏng vấn THÍCH ỨNG (B2C seed count + toggle)
     private readonly ILogger<PracticeService> _logger;
 
     public PracticeService(
@@ -26,13 +29,17 @@ public class PracticeService : IPracticeService
         IAiServiceQuestionGenerator questionGenerator,
         ISessionScoringNotifier scoringNotifier,
         ICreditReservationClient reservationClient,
-        ILogger<PracticeService> logger)
+        ILogger<PracticeService> logger,
+        // Optional (default null) → mọi test dựng PracticeService cũ (6 tham số) vẫn compile + adaptive tắt;
+        // DI inject bản thật (Configure<AdaptiveOptions>). null → AdaptiveOptions mặc định (Enabled=false).
+        IOptions<AdaptiveOptions>? adaptiveOptions = null)
     {
         _db = db;
         _storage = storage;
         _questionGenerator = questionGenerator;
         _scoringNotifier = scoringNotifier;
         _reservationClient = reservationClient;
+        _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
         _logger = logger;
     }
 
@@ -105,7 +112,11 @@ public class PracticeService : IPracticeService
                 JdId = request.JdId,           // có thể null
                 JobCategory = jobCategory,
                 Status = SessionStatus.GeneratingQuestions,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
+                AdaptiveEnabled = _adaptive.Enabled,
+                MaxQuestions = _adaptive.Enabled ? _adaptive.MaxQuestions : 0,
+                MaxFollowUps = _adaptive.Enabled ? _adaptive.MaxFollowUps : 0
             };
             _db.PracticeSessions.Add(session);
             await _db.SaveChangesAsync(ct);
@@ -147,15 +158,22 @@ public class PracticeService : IPracticeService
                 throw new InvalidOperationException("AIService không trả về câu hỏi nào");
             }
 
+            // Phỏng vấn THÍCH ỨNG (B2C): bật → giữ SeedCount câu đầu làm SEED (phần còn lại AI sinh động
+            // theo câu trả lời trong AnswerService). Tắt → giữ CẢ bộ như luồng cũ. Kind=Seed (mặc định entity).
+            var seedQuestions = _adaptive.Enabled
+                ? generated.Take(Math.Max(1, _adaptive.SeedCount)).ToList()
+                : generated;
+
             // Lưu câu hỏi + set Ready, commit #2 (tách commit tránh concurrency).
-            var questions = generated
+            var questions = seedQuestions
                 .Select((q, idx) => new PracticeQuestion
                 {
                     Id = Guid.NewGuid(),
                     SessionId = session.Id,
                     OrderNo = idx + 1,
                     Content = q.Content,
-                    TimeLimitSec = DefaultTimeLimitSec
+                    TimeLimitSec = DefaultTimeLimitSec,
+                    Kind = QuestionKind.Seed
                 })
                 .ToList();
 
@@ -227,7 +245,12 @@ public class PracticeService : IPracticeService
                 JobCategory = request.JobCategory,
                 Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
                 CreatedAt = DateTime.UtcNow,
-                Deadline = request.ExpiresAt    // I2: hạn chót nhận bài (B2B); null → không hard-deadline
+                Deadline = request.ExpiresAt,   // I2: hạn chót nhận bài (B2B); null → không hard-deadline
+                // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = TOÀN BỘ campaign questions (ai cũng
+                // nhận cùng bộ, công bằng), câu thích ứng thêm ở đuôi (bounded), chấm theo cùng tiêu chí. null → tắt.
+                AdaptiveEnabled = request.AdaptiveEnabled ?? false,
+                MaxQuestions = request.MaxQuestions ?? 0,
+                MaxFollowUps = request.MaxFollowUps ?? 0
             };
             _db.PracticeSessions.Add(session);
 
@@ -238,7 +261,8 @@ public class PracticeService : IPracticeService
                     SessionId = session.Id,
                     OrderNo = idx + 1,
                     Content = content,
-                    TimeLimitSec = DefaultTimeLimitSec
+                    TimeLimitSec = DefaultTimeLimitSec,
+                    Kind = QuestionKind.Seed
                 })
                 .ToList();
             _db.PracticeQuestions.AddRange(questions);
@@ -592,7 +616,8 @@ public class PracticeService : IPracticeService
             .OrderBy(q => q.OrderNo)
             .Select(q => new QuestionResponse(
                 q.Id, q.OrderNo, q.Content, q.TimeLimitSec,
-                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(a) : null))
+                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(a) : null,
+                q.Kind.ToString()))   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion
             .ToList();
 
         return new PracticeSessionResponse(

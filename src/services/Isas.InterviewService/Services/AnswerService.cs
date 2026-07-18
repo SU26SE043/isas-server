@@ -11,11 +11,15 @@ namespace Isas.InterviewService.Services;
 
 public class AnswerService : IAnswerService
 {
+    // Phỏng vấn THÍCH ỨNG — thời lượng cho câu hỏi thích ứng (giống seed B2C: PracticeService.DefaultTimeLimitSec).
+    private const int AdaptiveQuestionTimeLimitSec = 120;
+
     private readonly InterviewDbContext _db;
     private readonly IStorageService _storage;
     private readonly IScoringJobPublisher _scoringPublisher;
     private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ScoringOptions _scoring;   // E10 — self-consistency (N, ngưỡng spread, temp)
+    private readonly IAiServiceInterviewDecider? _decider;   // phỏng vấn THÍCH ỨNG (null = tắt / test cũ)
     private readonly ILogger<AnswerService> _logger;
 
     public AnswerService(
@@ -24,13 +28,17 @@ public class AnswerService : IAnswerService
         IScoringJobPublisher scoringPublisher,
         ISessionScoringNotifier scoringNotifier,
         IOptions<ScoringOptions> scoringOptions,
-        ILogger<AnswerService> logger)
+        ILogger<AnswerService> logger,
+        // Optional (default null) → mọi test dựng AnswerService cũ (6 tham số) vẫn compile + adaptive tắt;
+        // DI inject bản thật khi đăng ký (AddHttpClient). Adaptive chỉ chạy khi decider != null VÀ session bật.
+        IAiServiceInterviewDecider? decider = null)
     {
         _db = db;
         _storage = storage;
         _scoringPublisher = scoringPublisher;
         _scoringNotifier = scoringNotifier;
         _scoring = scoringOptions.Value;
+        _decider = decider;
         _logger = logger;
     }
 
@@ -120,11 +128,173 @@ public class AnswerService : IAnswerService
             "Saved answer {AnswerId} for question {QuestionId} in session {SessionId}",
             answer.Id, questionId, sessionId);
 
-        // 8. Chấm dần: publish job ngay sau khi lưu.
+        // Phỏng vấn THÍCH ỨNG — answer đã durable (SaveChanges trên) TRƯỚC mọi call AIService → decide lỗi
+        // KHÔNG làm mất câu trả lời. Chỉ chạy khi bật (decider != null + session.AdaptiveEnabled). Trả về
+        // transcript đồng bộ (đã lưu lên answer) + câu hỏi kế (nếu có) để (a) đẩy transcript vào ScoringJob
+        // → worker bỏ Whisper, (b) client hiện câu kế ngay trong response (không cần poll GET).
+        var adaptive = await TryRunAdaptiveAsync(session, question, answer, ct);
+
+        // 8. Chấm dần: publish job ngay sau khi lưu (kèm transcript đồng bộ nếu adaptive đã transcribe).
         //    Publish lỗi KHÔNG làm hỏng upload — answer đã lưu, để re-publish sau.
         await TryPublishScoringJobAsync(session, question, answer, ct);
 
-        return new UploadAnswerResult(answer.Id, questionId, answer.Status.ToString());
+        return new UploadAnswerResult(
+            answer.Id, questionId, answer.Status.ToString(),
+            Transcript: answer.Transcript,
+            NextAction: adaptive.Action,
+            NextQuestion: adaptive.AppendedQuestion is null ? null : new NextQuestionResponse(
+                adaptive.AppendedQuestion.Id, adaptive.AppendedQuestion.OrderNo,
+                adaptive.AppendedQuestion.Content, adaptive.AppendedQuestion.TimeLimitSec,
+                adaptive.AppendedQuestion.Kind.ToString()),
+            InterviewComplete: adaptive.InterviewComplete);
+    }
+
+    // ── Phỏng vấn THÍCH ỨNG: transcribe đồng bộ + quyết định + append câu kế ──────────────
+    private sealed record AdaptiveOutcome(
+        string? Action, PracticeQuestion? AppendedQuestion, bool InterviewComplete)
+    {
+        // Không chạy adaptive (tắt / chưa tới frontier / decide lỗi) → không có tín hiệu, không "complete".
+        public static readonly AdaptiveOutcome None = new(null, null, false);
+    }
+
+    // Chạy vòng thích ứng SAU khi answer đã lưu durable. Bọc toàn bộ trong try/catch → mọi lỗi (kể cả
+    // đua unique index khi double-POST) chỉ log + trả None: upload LUÔN thành công, degrade về luồng tĩnh.
+    private async Task<AdaptiveOutcome> TryRunAdaptiveAsync(
+        PracticeSession session, PracticeQuestion question, PracticeAnswer answer, CancellationToken ct)
+    {
+        if (_decider is null || !session.AdaptiveEnabled)
+            return AdaptiveOutcome.None;
+
+        try
+        {
+            // (1) Chỉ append khi MỌI câu hiện tại của buổi đã có answer (frontier tuyến tính, đúng cho cả
+            // B2C 1-seed lẫn B2B seeds-first — độc lập thứ tự trả lời). Còn câu chưa trả lời (kể cả child
+            // đã sinh trước đó) → chưa append (⇒ re-upload câu cũ / re-upload frontier sau khi đã có child
+            // đều không sinh trùng). answer vừa được SaveChanges ở trên nên đã tính vào truy vấn này.
+            var pendingCount = await _db.PracticeQuestions
+                .CountAsync(q => q.SessionId == session.Id
+                                 && !_db.PracticeAnswers.Any(a => a.QuestionId == q.Id), ct);
+            if (pendingCount > 0)
+                return AdaptiveOutcome.None;
+
+            // (2) Idempotency: answer này đã "đẻ" câu kế rồi (re-upload) → không sinh trùng (unique index backstop).
+            var alreadyHasChild = await _db.PracticeQuestions
+                .AnyAsync(q => q.GeneratedFromAnswerId == answer.Id, ct);
+            if (alreadyHasChild)
+                return AdaptiveOutcome.None;
+
+            // (3) Ngân sách — hết trần câu / trần thích ứng → kết thúc, KHÔNG gọi AI (tiết kiệm latency/cost).
+            var askedCount = await _db.PracticeQuestions.CountAsync(q => q.SessionId == session.Id, ct);
+            var followUpCount = await _db.PracticeQuestions
+                .CountAsync(q => q.SessionId == session.Id && q.Kind != QuestionKind.Seed, ct);
+            var budgetLeft = (session.MaxQuestions <= 0 || askedCount < session.MaxQuestions)
+                             && (session.MaxFollowUps <= 0 || followUpCount < session.MaxFollowUps);
+            if (!budgetLeft)
+                return new AdaptiveOutcome("end", null, InterviewComplete: true);
+
+            // (4) Quá hạn nhận bài (B2B) → không hỏi thêm (đối xứng SessionAbandonSweeper).
+            if (session.Deadline is DateTime dl && DateTime.UtcNow > dl)
+                return new AdaptiveOutcome("end", null, InterviewComplete: true);
+
+            // (5) Lịch sử Q&A + tiêu chí (CÙNG nguồn scoring → follow-up bám cùng rubric, công bằng B2B).
+            var history = await BuildAdaptiveHistoryAsync(session.Id, question.Id, ct);
+            var criteria = (await LoadActiveCriteriaAsync(session, ct))
+                .Select(c => new DecideCriterionDto(c.Name, c.Description))
+                .ToList();
+
+            // (6) Transcribe đồng bộ + quyết định. Lỗi → nuốt ở catch ngoài → None (degrade tĩnh).
+            var decision = await _decider!.DecideNextAsync(
+                answer.AudioObjectKey!, session.JobCategory.ToString(), question.Content,
+                history, askedCount, followUpCount, session.MaxQuestions, session.MaxFollowUps, criteria, ct);
+
+            // (7) Lưu transcript đồng bộ lên answer (single-source; TryPublishScoringJobAsync đọc lại → job).
+            if (!string.IsNullOrWhiteSpace(decision.Transcript))
+            {
+                answer.Transcript = decision.Transcript;
+                await _db.SaveChangesAsync(ct);
+            }
+
+            // (8) end / không có câu hỏi → mời submit (không append).
+            if (decision.Action == "end" || string.IsNullOrWhiteSpace(decision.NextQuestion))
+                return new AdaptiveOutcome(decision.Action, null, InterviewComplete: true);
+
+            // (9) Append 1 câu kế ở đuôi (OrderNo = max + 1), gắn GeneratedFromAnswerId (idempotency).
+            var maxOrder = await _db.PracticeQuestions
+                .Where(q => q.SessionId == session.Id)
+                .MaxAsync(q => q.OrderNo, ct);
+            var newQuestion = new PracticeQuestion
+            {
+                Id = Guid.NewGuid(),
+                SessionId = session.Id,
+                OrderNo = maxOrder + 1,
+                Content = decision.NextQuestion!,
+                TimeLimitSec = AdaptiveQuestionTimeLimitSec,
+                Kind = MapKind(decision.Action),
+                GeneratedFromAnswerId = answer.Id
+            };
+            _db.PracticeQuestions.Add(newQuestion);
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex)
+            {
+                // Đua double-POST: unique index generated_from_answer_id chặn child thứ 2. Gỡ entity khỏi
+                // tracker để lần SaveChanges kế (TryPublishScoringJobAsync) không cố lưu lại row hỏng.
+                _db.Entry(newQuestion).State = EntityState.Detached;
+                _logger.LogWarning(ex,
+                    "Adaptive: append câu kế bị chặn (đua unique) cho answer {AnswerId} — bỏ qua", answer.Id);
+                return AdaptiveOutcome.None;
+            }
+
+            _logger.LogInformation(
+                "Adaptive: session {SessionId} answer {AnswerId} → {Action}, thêm câu {QuestionId} (order {Order})",
+                session.Id, answer.Id, decision.Action, newQuestion.Id, newQuestion.OrderNo);
+
+            return new AdaptiveOutcome(decision.Action, newQuestion, InterviewComplete: false);
+        }
+        catch (Exception ex)
+        {
+            // Degrade về luồng tĩnh: answer đã lưu, worker sẽ transcribe async như cũ. Upload KHÔNG hỏng.
+            _logger.LogWarning(ex,
+                "Adaptive decide-next lỗi cho answer {AnswerId} — bỏ qua (fallback luồng tĩnh)", answer.Id);
+            return AdaptiveOutcome.None;
+        }
+    }
+
+    private static QuestionKind MapKind(string action) => action switch
+    {
+        "follow_up" => QuestionKind.FollowUp,
+        "clarify" => QuestionKind.Clarify,
+        "new_question" => QuestionKind.NewQuestion,
+        _ => QuestionKind.NewQuestion   // phòng hờ (end đã return trước, không tới đây)
+    };
+
+    // Lịch sử Q&A TRƯỚC câu hiện tại (currentQuestion + transcript mới nhất gửi riêng): câu theo OrderNo
+    // + transcript answer tương ứng. BỎ câu hiện tại (đang hỏi câu kế của nó). Lưu ý: B2C (1 seed) mỗi
+    // lượt trước đã transcribe đồng bộ → transcript đầy đủ; B2B seeds-first, các seed trước KHÔNG phải
+    // frontier nên transcript có thể còn null (worker chấm async chưa xong) → prompt hiển thị "(trống)",
+    // quyết định bám chủ yếu câu trả lời mới nhất (chấp nhận được — câu thích ứng B2B là phần bonus ở đuôi).
+    private async Task<List<DecideTurnDto>> BuildAdaptiveHistoryAsync(
+        Guid sessionId, Guid currentQuestionId, CancellationToken ct)
+    {
+        var questions = await _db.PracticeQuestions.AsNoTracking()
+            .Where(q => q.SessionId == sessionId && q.Id != currentQuestionId)
+            .OrderBy(q => q.OrderNo)
+            .Select(q => new { q.Id, q.Content, q.Kind })
+            .ToListAsync(ct);
+
+        var transcripts = await _db.PracticeAnswers.AsNoTracking()
+            .Where(a => a.SessionId == sessionId)
+            .Select(a => new { a.QuestionId, a.Transcript })
+            .ToListAsync(ct);
+        var byQuestion = transcripts.ToDictionary(x => x.QuestionId, x => x.Transcript);
+
+        return questions
+            .Select(q => new DecideTurnDto(
+                q.Content, byQuestion.GetValueOrDefault(q.Id), q.Kind.ToString()))
+            .ToList();
     }
 
     private async Task TryPublishScoringJobAsync(
@@ -133,27 +303,10 @@ public class AnswerService : IAnswerService
     {
         try
         {
-            // Nguồn tiêu chí tùy mode (E1): B2B chấm theo tiêu chí campaign, B2C theo rubric nghề.
-            // Criteria materialize của campaign cũng mang JobCategory → B2C phải lọc thêm
-            // campaign_id IS NULL để không chấm nhầm bằng tiêu chí campaign cùng nghề.
-            // E9: nạp kèm rubric_levels để đưa mức neo vào message chấm. DB15: câu mẫu (example_answers)
-            // là cột jsonb scalar trên chính level → nạp cùng .Include(Levels), không còn ThenInclude.
-            var query = _db.RubricCriteria.AsNoTracking()
-                .Include(c => c.Levels)
-                .Where(c => c.IsActive);
-            if (session.CampaignId is Guid campaignId)
-            {
-                query = query.Where(c => c.CampaignId == campaignId);
-            }
-            else
-            {
-                // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định (owner null).
-                var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, ct);
-                query = owner is Guid oid
-                    ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
-                    : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
-            }
-            var criteria = await query.ToListAsync(ct);
+            // Nguồn tiêu chí tùy mode (E1): B2B chấm theo tiêu chí campaign, B2C theo rubric nghề (kèm
+            // rubric_levels cho mức neo E9). Dùng chung LoadActiveCriteriaAsync với vòng adaptive để 2 đường
+            // (publish chấm + quyết định câu kế) luôn khớp nguồn tiêu chí.
+            var criteria = await LoadActiveCriteriaAsync(session, ct);
 
             if (criteria.Count == 0)
             {
@@ -184,7 +337,10 @@ public class AnswerService : IAnswerService
                     RubricVersion = rubricVersion,
                     Criteria = builtCriteria,
                     AttemptNo = attempt,
-                    Temperature = attempt == 1 ? 0d : _scoring.SelfConsistencyTemperature
+                    Temperature = attempt == 1 ? 0d : _scoring.SelfConsistencyTemperature,
+                    // Phỏng vấn THÍCH ỨNG — transcript đã transcribe đồng bộ (adaptive) → worker bỏ Whisper.
+                    // null (luồng tĩnh / adaptive tắt / decide lỗi) → worker tải audio + Whisper như cũ.
+                    Transcript = answer.Transcript
                 };
 
                 await _scoringPublisher.PublishAsync(job, ct);
@@ -206,6 +362,30 @@ public class AnswerService : IAnswerService
                 "Publish job chấm thất bại cho answer {AnswerId}. Answer vẫn ở Uploaded, sẽ re-publish sau.",
                 answer.Id);
         }
+    }
+
+    // Nguồn tiêu chí active theo mode (E1/BC16) — dùng chung cho publish chấm + quyết định câu kế (adaptive):
+    //   B2B: theo campaign_id. B2C: rubric RIÊNG của candidate cho nghề (nếu có) else seed mặc định (owner null).
+    // Criteria materialize của campaign cũng mang JobCategory → B2C lọc thêm campaign_id IS NULL (không chấm
+    // nhầm bằng tiêu chí campaign cùng nghề). E9: .Include(Levels) để có mức neo (câu mẫu jsonb trên level, DB15).
+    private async Task<List<RubricCriterion>> LoadActiveCriteriaAsync(
+        PracticeSession session, CancellationToken ct)
+    {
+        var query = _db.RubricCriteria.AsNoTracking()
+            .Include(c => c.Levels)
+            .Where(c => c.IsActive);
+        if (session.CampaignId is Guid campaignId)
+        {
+            query = query.Where(c => c.CampaignId == campaignId);
+        }
+        else
+        {
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, ct);
+            query = owner is Guid oid
+                ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
+                : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
+        }
+        return await query.ToListAsync(ct);
     }
     // ── Callback: lưu transcript + điểm từ worker Python ──────────────────
     public async Task SaveResultAsync(

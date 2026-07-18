@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, APIRouter
+from fastapi import FastAPI, HTTPException, UploadFile, File, APIRouter, Header
+import hmac
 import os
 import tempfile
 import asyncio
@@ -11,6 +12,7 @@ from app.schemas import (
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
     SummarizeSessionRequest, SummarizeSessionResponse,
     FaceVerifyRequest, FaceVerifyResponse,
+    DecideNextRequest, DecideNextResponse,
 )
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
@@ -22,6 +24,19 @@ app = FastAPI(title="ISAS AI Service")
 transcriber = Transcriber()
 provider = GeminiProvider()
 face_verifier = FaceVerifier()
+
+
+def _valid_internal_token(token: str | None) -> bool:
+    """So khớp HẰNG-THỜI-GIAN X-Internal-Token với cấu hình (GEN-7 hardening).
+
+    Fail-closed: token chưa cấu hình hoặc header thiếu → từ chối. Endpoint /decide-next
+    kéo audio S3 + gọi LLM → là endpoint máy-máy (InterviewService gọi), phải bảo vệ.
+    """
+    expected = settings.internal_token
+    if not expected or not token:
+        return False
+    return hmac.compare_digest(token, expected)
+
 
 # 1. Định nghĩa Router
 router = APIRouter(prefix="/api/v1")
@@ -190,6 +205,63 @@ async def transcribe(file: UploadFile = File(...), language: str = "vi"):
     finally:
         if "tmp_path" in dir() and os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+@router.post("/decide-next", response_model=DecideNextResponse)
+async def decide_next(
+    req: DecideNextRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+):
+    """Phỏng vấn THÍCH ỨNG — transcribe (nếu có audio) + quyết định hành động kế tiếp.
+
+    InterviewService (chủ state) gọi sau mỗi câu trả lời; AIService stateless (GEN-4).
+    Transcript trả về là NGUỒN DUY NHẤT — Interview lưu lên answer + đẩy vào ScoringJob
+    để worker khỏi transcribe lại (bỏ N lần Whisper của self-consistency E10)."""
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+
+    # Nguồn transcript: ưu tiên audioObjectKey (transcribe tại đây) → answerText (fallback test).
+    transcript: str | None = None
+    if req.audioObjectKey and req.audioObjectKey.strip():
+        tmp_path = None
+        try:
+            data = await asyncio.to_thread(storage.get_object_bytes, req.audioObjectKey)
+            suffix = os.path.splitext(req.audioObjectKey)[1] or ".webm"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            transcript = await asyncio.to_thread(transcriber.transcribe, tmp_path, req.language)
+        except Exception as ex:
+            raise HTTPException(status_code=502, detail=f"Lỗi transcribe: {ex}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    elif req.answerText and req.answerText.strip():
+        transcript = req.answerText.strip()
+    else:
+        raise HTTPException(status_code=400, detail="Thiếu audioObjectKey hoặc answerText")
+
+    try:
+        decision = await provider.decide_next(
+            job_category=req.jobCategory,
+            current_question=req.currentQuestion,
+            transcript=transcript or "",
+            history=[t.model_dump() for t in req.history],
+            asked_count=req.askedCount,
+            follow_up_count=req.followUpCount,
+            max_questions=req.maxQuestions,
+            max_follow_ups=req.maxFollowUps,
+            criteria=[c.model_dump() for c in req.criteria],
+        )
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi quyết định câu hỏi kế: {ex}")
+
+    return DecideNextResponse(
+        action=decision["action"],
+        nextQuestion=decision.get("nextQuestion"),
+        transcript=transcript,
+        reason=decision.get("reason"),
+    )
 
 
 # Kích hoạt toàn bộ route /api/v1 — đăng ký SAU khi mọi @router đã khai báo.
