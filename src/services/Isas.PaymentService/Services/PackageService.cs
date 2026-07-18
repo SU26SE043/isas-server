@@ -54,11 +54,14 @@ namespace Isas.PaymentService.Services
                 .ToListAsync(ct);
         }
 
+        // payment.md:109 — endpoint Public, phục vụ gói "đang bán" → lọc IsActive như GET catalog.
+        // Không tìm thấy (id lạ HOẶC gói đã ngừng bán) → null → controller trả 404, không lộ gói đã rút.
         public async Task<PackageResponse?> GetPackageAsync(Guid id, CancellationToken ct)
         {
-            var package = await _db.ProductPackages.FirstOrDefaultAsync(p => p.Id == id, ct);
+            var package = await _db.ProductPackages
+                .FirstOrDefaultAsync(p => p.Id == id && p.IsActive, ct);
 
-            return PackageResponse.ToResponse(package);
+            return package is null ? null : PackageResponse.ToResponse(package);
         }
 
         public async Task<PackageResponse?> UpdatePackageAsync(Guid id, UpdatePackageRequest request, CancellationToken ct)

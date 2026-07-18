@@ -106,7 +106,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 ### Public / Org / B2C (JWT)
 
-**`GET /payment/package`** · **`GET /payment/package/{id}`** — Gói prepaid đang bán. Public. → `ProductPackage[]` / `ProductPackage`.
+**`GET /payment/package`** · **`GET /payment/package/{id}`** — Gói prepaid đang bán. Public. → `ProductPackage[]` / `ProductPackage`. Cả hai **lọc `is_active=true`**; GET-by-id không thấy (id lạ **hoặc** gói đã ngừng bán) → **404** `{message:"Package not found"}`. *(Fix e2e 2026-07-18: trước đây GET-by-id id lạ ném NRE → **500** trên endpoint `[AllowAnonymous]`, và gói đã soft-delete vẫn trả 200 — lệch GET catalog.)*
 
 **`POST /payment/order`** ✅ — Mua pack credit. Auth `OrgAdmin` (B2B) / `User` (B2C). Chủ ví lấy từ JWT (claim `org_id`→Org, else `sub`→User). `HrMember`→**403** (A4).
 - Req: `{ packageId: uuid }` → Res **`201`** `Order` (**đầy đủ** — id, ownerType, ownerId, kind, packageId, invoiceId, status, amountVnd, payosOrderCode, expiredAt, paidAt, createdAt, **`checkoutUrl`** = link PayOS để redirect). Lỗi: **404** (packageId không tồn tại) · **400** (gói ngừng bán, `is_active=false`) · **403** (HrMember) · **401** · **502** (PayOS reject/misconfig → `PaymentGatewayException`). *(BK19 ratify 2026-07-13: unknown id → 404 "Package not found"; inactive → 400 "Package is no longer available".)*
