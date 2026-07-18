@@ -45,7 +45,7 @@
 - **CAMP-2** Sửa câu hỏi/tiêu chí **chỉ khi Draft** (Active → 409).
 - **CAMP-3** Chỉ thành viên org sở hữu được sửa/xóa/xem kết quả (sau khi publish thì soft delete). Campaign đã publish muốn huỷ → cập nhật trạng thái sang **Closed** và **gửi mail lại** cho ứng viên.
 - **CAMP-4** Mỗi campaign bắt buộc 1 position/vị trí.
-- **CAMP-5** **JD** nhập bằng **PDF** (upload; AI đọc để sinh câu hỏi) — C11. **Tiêu chí** nhập **trực tiếp có cấu trúc** trong app (`criteria[]`: name/weight/maxScore/description, Σweight=1) — công ty/HR tự khai (`source=HrEdited`), **publish không cần AI** — C12. *(Không dùng template file / PDF cho tiêu chí.)*
+- **CAMP-5** **JD** nhập bằng **text trực tiếp** (`jdText`) **hoặc** PDF upload; gửi cả hai → **text ưu tiên, bỏ file** — C11 (commit `4425461`). AI đọc JD để sinh câu hỏi bất kể nguồn nào. *(Ratify 2026-07-18: câu cũ "JD nhập bằng PDF" lệch code từ C11 — FE B2B thực tế chỉ có textarea `jdText`, không có ô upload JD.)* **Tiêu chí** nhập **trực tiếp có cấu trúc** trong app (`criteria[]`: name/weight/maxScore/description, Σweight=1) — công ty/HR tự khai (`source=HrEdited`), **publish không cần AI** — C12. *(Không dùng template file / PDF cho tiêu chí.)*
 - **CAMP-8** ✅ Distribution membership (D1–D4): invitation → join → my-campaigns → **Start** → create-or-get session (session tạo khi Start, không khi mở link); resume tới submit (D3); reissue token (D4). *(✅ **D5**: `InvitationEmailConsumer` đã build (branch `feat/b2b-email-anticheat`) tiêu thụ queue → SMTP gửi magic-link; cần SMTP creds thật để gửi live.)*
 - **CAMP-9** Tôn trọng `max_candidates`.
 - **CAMP-10** ✅ Ranking event-driven (E4): `SessionScored` → upsert `campaign_rankings` theo `session_id` (idempotent), đọc local.
