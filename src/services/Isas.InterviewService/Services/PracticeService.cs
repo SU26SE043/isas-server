@@ -338,7 +338,7 @@ public class PracticeService : IPracticeService
             .ToListAsync(ct);
 
         var answers = await _db.PracticeAnswers.AsNoTracking()
-            .Include(a => a.Scores)
+            .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
             .Where(a => a.SessionId == existing.Id)
             .ToListAsync(ct);
 
@@ -475,7 +475,7 @@ public class PracticeService : IPracticeService
 
         var answers = await _db.PracticeAnswers
             .AsNoTracking()
-            .Include(a => a.Scores)
+            .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 
@@ -556,7 +556,7 @@ public class PracticeService : IPracticeService
 
         var answers = await _db.PracticeAnswers
             .AsNoTracking()
-            .Include(a => a.Scores)
+            .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 
@@ -685,8 +685,11 @@ public class PracticeService : IPracticeService
                 var rep = g.OrderBy(s => Math.Abs(s.Score - median))
                            .ThenByDescending(s => s.AttemptNo)
                            .First();
+                // Criterion nạp qua .ThenInclude ở các site đọc; dùng `?.` để site nào lỡ quên Include
+                // thì ra null (client lùi về nhãn chung) thay vì ném NRE giữa luồng xem kết quả.
                 return new AnswerScoreResponse(
-                    g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched);
+                    g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched,
+                    rep.Criterion?.Name, rep.Criterion?.MaxScore);
             })
             .ToList();
 
