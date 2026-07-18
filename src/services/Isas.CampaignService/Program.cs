@@ -112,8 +112,16 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
+// DB25 — retry transient (blip mạng / deadlock Postgres) thay vì để nổi lên thành 500.
+// AN TOÀN Ở ĐÂY vì CampaignService KHÔNG có site `BeginTransactionAsync` nào: khi bật
+// EnableRetryOnFailure, transaction do người dùng tự mở sẽ ném InvalidOperationException
+// ("execution strategy does not support user-initiated transactions") trừ khi bọc trong
+// CreateExecutionStrategy(). Interview (1 site) + Payment (5 site) vì thế CHƯA bật — xem
+// ghi chú DB25 trong docs/tasks.md.
 builder.Services.AddDbContext<CampaignDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+    options.UseNpgsql(
+            builder.Configuration.GetConnectionString("DefaultConnection"),
+            npgsql => npgsql.EnableRetryOnFailure())
         .UseSnakeCaseNamingConvention());
 
 builder.Services.Configure<FileStorageOptions>(
