@@ -586,3 +586,45 @@ class GeminiProvider(QuestionProvider):
             "nextQuestion": next_q or None,   # end → None
             "reason": reason,
         }
+    # ── TTS: đọc câu hỏi thành tiếng ────────────────────────────────────────────
+    async def synthesize_speech(self, text: str, voice: str,
+                                language_code: str) -> tuple[bytes, str | None]:
+        """Text → (PCM thô, mime_type). KHÔNG phải mp3 — caller encode (app/audio.py).
+
+        Trả về PCM 16-bit little-endian mono 24kHz; mime_type dạng
+        `audio/L16;codec=pcm;rate=24000` để caller đọc đúng sample-rate.
+
+        AI-4: `text` là NỘI DUNG CÂU HỎI do AI sinh ⇒ coi là DỮ LIỆU, không phải lệnh.
+        Ở đây không ghép prompt/chỉ thị nào quanh nó — đưa nguyên văn cho bộ đọc. Model
+        TTS chỉ đọc, không "làm theo", nên bề mặt injection gần như bằng 0; thêm chỉ thị
+        kiểu "hãy đọc câu sau" mới là chỗ để câu hỏi độc hại bám vào mà lái giọng đọc."""
+        response = await self._client.aio.models.generate_content(
+            model=settings.tts_model,
+            contents=text,
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    language_code=language_code,
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice),
+                    ),
+                ),
+            ),
+        )
+
+        # Audio nằm ở inline_data của part đầu (khác luồng text: response.text = None).
+        blob = None
+        for candidate in (response.candidates or []):
+            content = getattr(candidate, "content", None)
+            for part in (getattr(content, "parts", None) or []):
+                if getattr(part, "inline_data", None) is not None:
+                    blob = part.inline_data
+                    break
+            if blob is not None:
+                break
+
+        data = getattr(blob, "data", None) if blob is not None else None
+        if not data:
+            raise ValueError("Gemini TTS không trả về audio.")
+
+        return data, getattr(blob, "mime_type", None)

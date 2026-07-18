@@ -25,7 +25,10 @@ public class PracticeControllerErrorMappingTests
             new Claim(ClaimTypes.NameIdentifier, candidateId.ToString())
         }, "Test"));
 
-        return new PracticeController(service.Object, NullLogger<PracticeController>.Instance)
+        // TTS đọc câu hỏi: controller nhận thêm IQuestionSpeechService — test này không chạm
+        // endpoint /speech nên mock trần là đủ.
+        return new PracticeController(service.Object, new Mock<IQuestionSpeechService>().Object,
+            NullLogger<PracticeController>.Instance)
         {
             ControllerContext = new ControllerContext
             {

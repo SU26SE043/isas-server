@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, APIRouter, Header
+from fastapi import FastAPI, HTTPException, UploadFile, File, APIRouter, Header, Response
 import hmac
 import os
 import tempfile
@@ -13,12 +13,13 @@ from app.schemas import (
     SummarizeSessionRequest, SummarizeSessionResponse,
     FaceVerifyRequest, FaceVerifyResponse,
     DecideNextRequest, DecideNextResponse,
+    TtsRequest,
 )
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
 from app.face_verify import FaceVerifier
 from app.config import settings
-from app import storage
+from app import storage, audio, tts
 
 app = FastAPI(title="ISAS AI Service")
 transcriber = Transcriber()
@@ -262,6 +263,70 @@ async def decide_next(
         transcript=transcript,
         reason=decision.get("reason"),
     )
+
+
+@router.post("/tts")
+async def text_to_speech(
+    req: TtsRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+):
+    """Đọc câu hỏi thành tiếng → trả BYTES mp3 (audio/mpeg).
+
+    Cache theo NỘI DUNG trên S3: key = tts/{sha256(voice+text)}.mp3 (xem app/tts.py).
+    Hit → trả thẳng, KHÔNG gọi vendor (đây là chỗ tiết kiệm tiền — có test khoá lại).
+    Miss → tổng hợp → encode mp3 → ghi S3 → trả.
+
+    KHÔNG trừ credit: đây là trợ năng đọc câu hỏi, không phải lượt phỏng vấn được AI
+    chấm (PAY-1). GEN-4 vẫn giữ: AIService chỉ ghi object storage, không ghi DB.
+    Gate X-Internal-Token, fail-closed (máy-máy, InterviewService gọi — GEN-7)."""
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text không được rỗng")
+
+    voice = (req.voice or settings.tts_voice).strip() or settings.tts_voice
+    key = tts.cache_key(text, voice)
+
+    # ── 1. Thử cache ───────────────────────────────────────────────────────────
+    # S3 blocking → thread, không chẹn event loop (idiom /face-verify).
+    try:
+        cached = await asyncio.to_thread(storage.try_get_object_bytes, key)
+    except Exception as ex:
+        # S3 hỏng THẬT (không phải "chưa có"). Không nuốt: nuốt = mọi request thành
+        # cache-miss và gọi vendor mãi mãi (đốt tiền âm thầm).
+        raise HTTPException(status_code=502, detail=f"Lỗi đọc cache TTS: {ex}")
+
+    if cached:
+        return Response(content=cached, media_type=tts.MP3_CONTENT_TYPE,
+                        headers={"X-Tts-Cache": "hit"})
+
+    # ── 2. Miss → gọi vendor + encode ──────────────────────────────────────────
+    try:
+        pcm, mime_type = await provider.synthesize_speech(
+            text, voice, settings.tts_language_code)
+        # Gemini TTS trả PCM thô, không phải mp3 → encode (ffmpeg, xem app/audio.py).
+        mp3 = await asyncio.to_thread(
+            audio.pcm_to_mp3, pcm, audio.parse_pcm_rate(mime_type))
+    except Exception as ex:
+        # Vendor chết/quá tải/encode lỗi → 502 sạch. FE degrade về chỉ hiện chữ;
+        # luồng phỏng vấn KHÔNG bị chặn.
+        raise HTTPException(status_code=502, detail=f"Lỗi tổng hợp giọng đọc: {ex}")
+
+    # ── 3. Ghi cache (best-effort) ─────────────────────────────────────────────
+    # Ghi hỏng KHÔNG được làm hỏng request: audio đã có trong tay, người dùng nghe được.
+    # Nhưng phải QUAN SÁT ĐƯỢC — nếu ghi luôn hỏng thì mọi request đều gọi vendor, nên
+    # đánh dấu "miss-nostore" để log/monitor thấy, thay vì im lặng.
+    cache_state = "miss"
+    try:
+        await asyncio.to_thread(
+            storage.put_object_bytes, key, mp3, tts.MP3_CONTENT_TYPE)
+    except Exception:
+        cache_state = "miss-nostore"
+
+    return Response(content=mp3, media_type=tts.MP3_CONTENT_TYPE,
+                    headers={"X-Tts-Cache": cache_state})
 
 
 # Kích hoạt toàn bộ route /api/v1 — đăng ký SAU khi mọi @router đã khai báo.
