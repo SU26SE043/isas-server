@@ -39,9 +39,13 @@ namespace Isas.AuthService.Controllers
         {
             var existingUser = await _userManager.FindByEmailAsync(registerRequest.Email);
 
-            if(existingUser != null)
+            // 409 (không phải 400): "tài nguyên đã tồn tại" là XUNG ĐỘT trạng thái, không phải đầu vào
+            // sai dạng. Thống nhất với POST /auth/org/members vốn đã trả 409 cho cùng tình huống —
+            // trước đây hai đường trùng-email trả hai mã khác nhau. Body dạng { error } để FE rút được
+            // message hiển thị (extractErrorMessage đọc key `error`); chuỗi trần thì FE nuốt mất.
+            if (existingUser != null)
             {
-                return BadRequest("Email already exists");
+                return Conflict(new { error = "Email already exists" });
             }
 
             var result = await _authService.RegisterAsync(registerRequest);
@@ -55,7 +59,7 @@ namespace Isas.AuthService.Controllers
         {
             var existingUser = await _userManager.FindByEmailAsync(request.Email);
             if (existingUser != null)
-                return BadRequest("Email already exists");
+                return Conflict(new { error = "Email already exists" });   // 409 — xem ghi chú ở register
 
             var result = await _authService.RegisterOrgAsync(request);
             return Ok(result);
@@ -132,27 +136,37 @@ namespace Isas.AuthService.Controllers
             return Redirect(_googleRedirects.SuccessUrl(authResponse, returnUrl));
         }
 
+        // Tính hợp lệ của refresh token do AuthService quyết định MỘT CHỖ DUY NHẤT: trước đây controller
+        // tự tiền-kiểm `IsRevoked` rồi mới gọi service, nên token vừa bị xoay vòng chết ở đây và không
+        // bao giờ tới được cửa sổ ân hạn (đua refresh nhiều tab). Kiểm hai nơi = một nơi luôn sai.
         [AllowAnonymous]
         [HttpPost("refresh")]
         public async Task<ActionResult<RefreshTokenResponse>> RefreshTokenAsync(RefreshTokenRequest refreshTokenRequest)
         {
-            var existingRefreshToken = await _authService.GetRefreshTokenAsync(refreshTokenRequest.RefreshToken);
-
-            if(existingRefreshToken == null || existingRefreshToken.IsRevoked || existingRefreshToken.ExpiresAt < DateTime.UtcNow)
+            try
             {
+                var result = await _authService.RefreshTokenAsync(refreshTokenRequest.RefreshToken);
+                return Ok(result);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Không tiết lộ token sai vì lý do gì (không tồn tại / hết hạn / quá cửa sổ ân hạn).
                 return Unauthorized("Refresh token expired or revoked");
             }
-
-            var result = await _authService.RefreshTokenAsync(refreshTokenRequest.RefreshToken);
-
-            return Ok(result);
         }
 
+        // Đăng xuất theo USER đang đăng nhập (claim `sub`), không theo riêng token gửi kèm: thu hồi mọi
+        // refresh token → tab khác không gia hạn phiên tiếp được. Body vẫn nhận `refreshToken` để giữ
+        // hợp đồng cũ với FE, nhưng KHÔNG còn quyết định phạm vi thu hồi.
         [Authorize(Roles = "Candidate, Employer, Admin")]
         [HttpPost("logout")]
         public async Task<IActionResult> LogoutAsync(RefreshTokenRequest refreshTokenRequest)
         {
-            await _authService.LogoutAsync(refreshTokenRequest.RefreshToken);
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (userId is null || !Guid.TryParse(userId, out var uid))
+                return Unauthorized();
+
+            await _authService.LogoutAsync(uid);
             return NoContent();
         }
 
