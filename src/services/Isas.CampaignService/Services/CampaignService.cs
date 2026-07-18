@@ -53,6 +53,7 @@ namespace Isas.CampaignService.Services
                 throw new ArgumentException("All questions must have non-empty text.");
 
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
+            ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions);   // INT-17: trần ≥ 0 nếu có
 
             // ── 2. Build campaign entity ────────────────────────
             var campaign = new Campaign
@@ -65,6 +66,9 @@ namespace Isas.CampaignService.Services
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
                 AntiCheatEnabled = request.AntiCheatEnabled,
+                AdaptiveEnabled = request.AdaptiveEnabled,   // INT-17: HR bật thích ứng cho campaign
+                MaxFollowUps = request.MaxFollowUps,
+                MaxQuestions = request.MaxQuestions,
                 FaceVerifyEnabled = request.FaceVerifyEnabled,   // SEC-1: face-verify opt-in (B2B)
                 PassScorePct = request.PassScorePct,   // E5: ngưỡng pass/fail (null = HR quyết tay)
                 // C11: JD/Criteria nhập text trực tiếp → *_text set, *_file_url null (không file lúc tạo).
@@ -257,6 +261,17 @@ namespace Isas.CampaignService.Services
             {
                 ValidatePassScorePct(request.PassScorePct);
                 campaign.PassScorePct = request.PassScorePct;
+            }
+
+            // INT-17: null = KHÔNG đổi (giữ giá trị cũ), như AntiCheatEnabled/FaceVerifyEnabled.
+            if (request.AdaptiveEnabled.HasValue)
+                campaign.AdaptiveEnabled = request.AdaptiveEnabled.Value;
+
+            if (request.MaxFollowUps.HasValue || request.MaxQuestions.HasValue)
+            {
+                ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions);
+                if (request.MaxFollowUps.HasValue) campaign.MaxFollowUps = request.MaxFollowUps;
+                if (request.MaxQuestions.HasValue) campaign.MaxQuestions = request.MaxQuestions;
             }
 
             // C11: cập nhật JD/Criteria dạng text → set *_text, xoá *_file_url (text ưu tiên file).
@@ -1202,6 +1217,16 @@ namespace Isas.CampaignService.Services
         {
             if (pct is int p && (p < 0 || p > 100))
                 throw new ArgumentException($"pass_score_pct phải trong khoảng [0, 100] (hiện: {p}).");
+        }
+
+        // INT-17: trần câu thích ứng — null = dùng mặc định phía Interview; có giá trị thì phải ≥ 0
+        // (0 = không thêm câu nào). Khớp CHECK ck_campaigns_adaptive_caps_non_negative ở DB.
+        private static void ValidateAdaptiveCaps(int? maxFollowUps, int? maxQuestions)
+        {
+            if (maxFollowUps is int f && f < 0)
+                throw new ArgumentException($"max_follow_ups không được âm (hiện: {f}).");
+            if (maxQuestions is int q && q < 0)
+                throw new ArgumentException($"max_questions không được âm (hiện: {q}).");
         }
 
         // Token magic-link 1 lần — 256-bit random, URL-safe base64 (không padding).

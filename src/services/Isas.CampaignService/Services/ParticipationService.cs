@@ -208,7 +208,10 @@ namespace Isas.CampaignService.Services
             // Create-or-get session (Interview dedup theo candidate+campaign) → bấm nhiều lần vẫn ra CÙNG session.
             // BK18 — gửi kèm campaign.ExpiresAt → Interview set session.Deadline (I2) cho sweeper auto-submit/abandon.
             var session = await _sessionClient.CreateOrGetSessionAsync(
-                candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, campaign.ExpiresAt, ct);
+                candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, campaign.ExpiresAt,
+                // INT-17: chuyển toggle + trần HR đặt trên campaign xuống Interview (campaign đã nạp đủ,
+                // không cần query thêm). Tắt (mặc định) → Interview giữ luồng batch tĩnh cũ.
+                campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, ct);
 
             membership.SessionId = session.SessionId;
             if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted)
@@ -229,6 +232,8 @@ namespace Isas.CampaignService.Services
                 // SEC-2: bật face-verify + chưa có ảnh tham chiếu → FE cần nhắc enroll (KHÔNG chặn start, D13/SEC-5).
                 FaceEnrollRequired = campaign.FaceVerifyEnabled
                     && string.IsNullOrWhiteSpace(membership.ReferenceImageKey),
+                // INT-17: FE dùng cờ này để biết bài có đuôi thích ứng (append nextQuestion sau seed cuối).
+                AdaptiveEnabled = campaign.AdaptiveEnabled,
                 Questions = session.Questions
                     .OrderBy(q => q.OrderNo)
                     .Select(q => new StartQuestionItem

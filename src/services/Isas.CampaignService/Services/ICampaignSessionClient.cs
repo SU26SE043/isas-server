@@ -9,10 +9,14 @@ namespace Isas.CampaignService.Services
         // abandon quá hạn. null (B2C hoặc campaign không đặt hạn) = không hard-deadline.
         // BK14 — orgId = chủ ví credit (Campaign.OrgId) → Interview reserve owner=Org (PAY-6).
         // Ví org hết credit → InsufficientOrgCreditException (402), KHÔNG tạo session.
+        // INT-17 — adaptiveEnabled/maxFollowUps/maxQuestions = toggle + trần HR đặt trên campaign.
+        // Interview đóng dấu lên session lúc tạo (null → tắt / mặc định). Seed = toàn bộ campaign
+        // questions (công bằng), câu thích ứng chỉ thêm ở ĐUÔI sau khi trả lời hết seed.
         Task<CampaignSessionResult> CreateOrGetSessionAsync(
             Guid candidateId, Guid campaignId, Guid orgId, string jobCategory,
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
+            bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             CancellationToken ct = default);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
