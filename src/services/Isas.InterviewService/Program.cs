@@ -2,6 +2,7 @@ using Amazon.S3;
 using Isas.InterviewService.Services;
 using Isas.Shared.Extensions;
 using Isas.Shared.Files;
+using Isas.Shared.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -98,7 +99,11 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
     options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
-    options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()); 
+    options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    // Chuẩn hoá DateTime nhận vào về UTC. Reachable: POST /internal/sessions/campaign nhận
+    // expiresAt → practice_sessions.deadline (timestamptz). Hôm nay an toàn chỉ vì Campaign tình cờ
+    // gửi 'Z'; client gửi offset SỐ sẽ thành Kind=Local → Npgsql từ chối → 500. Xem UtcDateTimeConverter.
+    options.JsonSerializerOptions.Converters.Add(new UtcDateTimeConverter());
 });
 
 

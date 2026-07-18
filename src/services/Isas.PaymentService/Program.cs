@@ -1,6 +1,7 @@
 using Isas.PaymentService.Models;
 using Isas.PaymentService.Services;
 using Isas.Shared.Extensions;
+using Isas.Shared.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -41,6 +42,10 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
     options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.Never;
+    // Chuẩn hoá DateTime nhận vào về UTC (KHÔNG đụng enum — Payment giữ enum SỐ theo hợp đồng FE).
+    // Reachable: POST /admin/invoices/close nhận periodStart/periodEnd → ghi invoices (timestamptz);
+    // offset SỐ (+00:00) bị parse thành Kind=Local → Npgsql từ chối → 500. Xem UtcDateTimeConverter.
+    options.JsonSerializerOptions.Converters.Add(new UtcDateTimeConverter());
 });
 
 builder.Services.AddHttpContextAccessor();
