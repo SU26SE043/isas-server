@@ -119,6 +119,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddHostedService<StuckAnswerRepublisher>();
 builder.Services.AddHostedService<SessionAbandonSweeper>();
 builder.Services.AddHostedService<OutboxDispatcher>();   // DB2: transactional outbox → phát settlement-event
+builder.Services.AddHostedService<OutboxPurger>();       // DB28: retention outbox đã phát (mặc định 30 ngày)
 
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
