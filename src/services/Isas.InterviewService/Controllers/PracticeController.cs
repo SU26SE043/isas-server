@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -100,17 +101,23 @@ public class PracticeController : ControllerBase
     }
 
     /// <summary>
-    /// 2. Lấy danh sách lịch sử phỏng vấn của user (Đặt trước {sessionId} để không bị lỗi Route)
+    /// 2. Lấy danh sách lịch sử phỏng vấn của user (Đặt trước {sessionId} để không bị lỗi Route).
+    /// DB31 — keyset-paged: `?limit=` (mặc định/tối đa 500) + `?cursor=` (opaque, lấy từ header
+    /// `X-Next-Cursor` của trang trước; vắng header = hết trang). Body giữ nguyên mảng JSON nên
+    /// client cũ không phải sửa gì — trước đây endpoint này trả lịch sử TRỌN ĐỜI trong 1 payload.
     /// </summary>
     [HttpGet("history")]
     [ProducesResponseType(typeof(IReadOnlyList<PracticeSessionSummary>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> GetHistory(CancellationToken ct)
+    public async Task<IActionResult> GetHistory(
+        CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null)
     {
         try
         {
             var candidateId = GetCandidateId();
-            var history = await _practiceService.GetHistoryAsync(candidateId, ct);
-            return Ok(history);
+            var page = await _practiceService.GetHistoryAsync(candidateId, cursor, limit, ct);
+            if (page.NextCursor is not null)
+                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+            return Ok(page.Items);
         }
         catch (UnauthorizedAccessException ex)
         {

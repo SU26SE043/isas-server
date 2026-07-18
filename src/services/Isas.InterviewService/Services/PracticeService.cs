@@ -4,6 +4,7 @@ using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Pagination;
 using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -351,6 +352,7 @@ public class PracticeService : IPracticeService
 
         var answers = await _db.PracticeAnswers.AsNoTracking()
             .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
+            .AsSplitQuery()   // DB31: tránh 1 JOIN lặp transcript (TEXT) trên answers×scores×criteria
             .Where(a => a.SessionId == existing.Id)
             .ToListAsync(ct);
 
@@ -488,6 +490,7 @@ public class PracticeService : IPracticeService
         var answers = await _db.PracticeAnswers
             .AsNoTracking()
             .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
+            .AsSplitQuery()   // DB31: tránh 1 JOIN lặp transcript (TEXT) trên answers×scores×criteria
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 
@@ -516,17 +519,37 @@ public class PracticeService : IPracticeService
     }
 
     // ── HISTORY ───────────────────────────────────────────────────────────
-    public async Task<IReadOnlyList<PracticeSessionSummary>> GetHistoryAsync(
-        Guid candidateId, CancellationToken ct = default)
+    // DB31 — keyset-paged (mẫu DB8, dùng chung Isas.Shared/Pagination). Trước đây KHÔNG có
+    // Skip/Take/cursor → trả TOÀN BỘ lịch sử phỏng vấn trọn đời của candidate trong 1 payload.
+    // Backward-compat y hệt DB8: body vẫn là mảng JSON, cursor opaque + limit là opt-in
+    // (`?cursor=&limit=`), next-cursor ở header X-Next-Cursor, limit mặc định = trần cũ.
+    public async Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(
+        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default)
     {
-        return await _db.PracticeSessions
+        var take = KeysetPaging.ClampLimit(limit);
+        var cur = KeysetCursor.Decode(cursor);
+
+        var query = _db.PracticeSessions
             .AsNoTracking()
-            .Where(s => s.CandidateId == candidateId)
+            .Where(s => s.CandidateId == candidateId);
+
+        if (cur is not null)
+            query = query.Where(s => s.CreatedAt < cur.CreatedAt
+                || (s.CreatedAt == cur.CreatedAt && s.Id.CompareTo(cur.Id) < 0));
+
+        var rows = await query
             .OrderByDescending(s => s.CreatedAt)
+            .ThenByDescending(s => s.Id)
+            .Take(take)
             .Select(s => new PracticeSessionSummary(
                 s.Id, s.Status.ToString(), s.JobCategory.ToString(),
                 s.CreatedAt, s.CompletedAt, s.OverallScore))   // BC9: lịch sử hiện điểm tổng
             .ToListAsync(ct);
+
+        var next = rows.Count == take
+            ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
+            : null;
+        return new KeysetPage<PracticeSessionSummary>(rows, next);
     }
 
     // DB18 — Payment (internal) dò orphan reservation: trả TẬP CON sessionIds có row practice_sessions
@@ -569,6 +592,7 @@ public class PracticeService : IPracticeService
         var answers = await _db.PracticeAnswers
             .AsNoTracking()
             .Include(a => a.Scores).ThenInclude(sc => sc.Criterion)
+            .AsSplitQuery()   // DB31: tránh 1 JOIN lặp transcript (TEXT) trên answers×scores×criteria
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 

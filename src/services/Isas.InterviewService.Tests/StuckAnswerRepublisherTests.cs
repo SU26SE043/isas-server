@@ -1,12 +1,16 @@
+using System.Data.Common;
 using System.Reflection;
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Isas.InterviewService.Tests;
@@ -22,18 +26,44 @@ public class StuckAnswerRepublisherTests
     }
 
     // ServiceProvider thật để CreateScope() trả về DbContext dùng chung connection.
-    private static (StuckAnswerRepublisher r, Mock<IScoringJobPublisher> pub) Build(TestDb t)
+    // DB29: interceptor tuỳ chọn để ĐẾM query thật (chứng minh rubric lookup được hoist khỏi vòng lặp).
+    private static (StuckAnswerRepublisher r, Mock<IScoringJobPublisher> pub) Build(
+        TestDb t, int batchSize = 200, IInterceptor? interceptor = null)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
+        services.AddDbContext<InterviewDbContext>(o =>
+        {
+            o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention();
+            if (interceptor is not null) o.AddInterceptors(interceptor);
+        });
         var provider = services.BuildServiceProvider();
 
         var pub = new Mock<IScoringJobPublisher>();
         var r = new StuckAnswerRepublisher(
             provider.GetRequiredService<IServiceScopeFactory>(),
             pub.Object,
+            Options.Create(new RepublisherSettings { BatchSize = batchSize }),
             NullLogger<StuckAnswerRepublisher>.Instance);
         return (r, pub);
+    }
+
+    // Đếm SELECT chạm bảng rubric_criteria (nạp tiêu chí + resolve owner BC16).
+    private sealed class RubricQueryCounter : DbCommandInterceptor
+    {
+        public int Count;
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            if (command.CommandText.Contains("rubric_criteria", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Increment(ref Count);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(ReaderExecuting(command, eventData, result));
     }
 
     private static async Task SeedActiveCriterion(TestDb t, JobCategory cat)
@@ -240,5 +270,96 @@ public class StuckAnswerRepublisherTests
         await ScanOnce(r);
 
         pub.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── DB29 ──────────────────────────────────────────────────────────────
+
+    // Tồn đọng lớn hơn trần batch → mỗi vòng chỉ tiêu hoá tối đa BatchSize (không nạp hết vào RAM).
+    // Gỡ .Take(...) khỏi production → publish 5 lần → ĐỎ.
+    [Fact]
+    public async Task Db29_BatchSize_CapsRowsProcessedPerScan()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        t.Db.AddRange(session, q);
+        for (var i = 0; i < 5; i++)
+        {
+            var q2 = TestDb.Question(session.Id, order: i + 2);
+            t.Db.Add(q2);
+            t.Db.Add(TestDb.Answer(session.Id, q2.Id, AnswerStatus.Uploaded,
+                DateTime.UtcNow.AddMinutes(-10 - i), lastPublished: null));
+        }
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t, batchSize: 2);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    // N answer cùng 1 campaign ⇒ CÙNG bộ tiêu chí ⇒ chỉ được tra rubric_criteria 1 lần (hoist khỏi vòng lặp).
+    // Đưa lookup trở lại trong foreach → 4 query → ĐỎ.
+    [Fact]
+    public async Task Db29_SameCampaign_LoadsCriteriaOnce_NotPerAnswer()
+    {
+        using var t = new TestDb();
+        var campaignId = Guid.NewGuid();
+        t.Db.Add(TestDb.Criterion(JobCategory.BE, campaignId: campaignId, name: "Campaign-Crit"));
+        for (var i = 0; i < 4; i++)
+        {
+            // 4 ứng viên KHÁC NHAU trong cùng campaign — đúng hình dạng tải thật của B2B.
+            var s = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress, campaignId: campaignId);
+            var q = TestDb.Question(s.Id);
+            t.Db.AddRange(s, q, TestDb.Answer(s.Id, q.Id, AnswerStatus.Uploaded,
+                DateTime.UtcNow.AddMinutes(-10), lastPublished: null));
+        }
+        await t.Db.SaveChangesAsync();
+
+        var counter = new RubricQueryCounter();
+        var (r, pub) = Build(t, interceptor: counter);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Exactly(4));
+        Assert.Equal(1, counter.Count);
+    }
+
+    // Hoist KHÔNG được trộn scope: 2 candidate B2C khác nhau (một có rubric riêng BC16, một dùng seed)
+    // phải nhận đúng tiêu chí của mình. Cache theo answer-id/khoá quá rộng sẽ làm sai chỗ này.
+    [Fact]
+    public async Task Db29_TwoB2CCandidates_EachGetsOwnRubric()
+    {
+        using var t = new TestDb();
+        var withCustom = Guid.NewGuid();
+        var withSeed = Guid.NewGuid();
+        var seed = TestDb.Criterion(JobCategory.BE, name: "Seed-Crit");
+        var custom = TestDb.Criterion(JobCategory.BE, name: "Custom-Crit", candidateId: withCustom);
+        t.Db.AddRange(seed, custom);
+
+        var sessions = new Dictionary<Guid, Guid>();   // candidateId -> sessionId
+        foreach (var cand in new[] { withCustom, withSeed })
+        {
+            var s = TestDb.Session(cand, SessionStatus.InProgress);
+            var q = TestDb.Question(s.Id);
+            t.Db.AddRange(s, q, TestDb.Answer(s.Id, q.Id, AnswerStatus.Uploaded,
+                DateTime.UtcNow.AddMinutes(-10), lastPublished: null));
+            sessions[cand] = s.Id;
+        }
+        await t.Db.SaveChangesAsync();
+
+        var (r, pub) = Build(t);
+        var published = new List<ScoringJob>();
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published.Add(j))
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.Equal(2, published.Count);
+        var customJob = published.Single(j => j.SessionId == sessions[withCustom]);
+        var seedJob = published.Single(j => j.SessionId == sessions[withSeed]);
+        Assert.Equal(custom.Id, Assert.Single(customJob.Criteria).CriterionId);
+        Assert.Equal(seed.Id, Assert.Single(seedJob.Criteria).CriterionId);
     }
 }

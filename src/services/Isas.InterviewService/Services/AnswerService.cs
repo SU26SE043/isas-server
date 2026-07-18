@@ -74,6 +74,9 @@ public class AnswerService : IAnswerService
         //    Include(Scores) để re-upload dọn sạch điểm cũ (INT-3) — xem nhánh else bên dưới.
         var answer = await _db.PracticeAnswers
             .Include(a => a.Scores)
+            // DB31: 1 JOIN ⇒ transcript (TEXT) của answer lặp trên MỌI dòng score; ×N khi bật
+            // self-consistency (SelfConsistencyN). Split query đọc answer 1 lần, scores 1 lần.
+            .AsSplitQuery()
             .FirstOrDefaultAsync(a => a.SessionId == sessionId && a.QuestionId == questionId, ct);
 
         // 5. fileId = answerId -> retry ghi đè đúng object (idempotent)

@@ -119,6 +119,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddHostedService<StuckAnswerRepublisher>();
 builder.Services.AddHostedService<SessionAbandonSweeper>();
 builder.Services.AddHostedService<OutboxDispatcher>();   // DB2: transactional outbox → phát settlement-event
+builder.Services.AddHostedService<OutboxPurger>();       // DB28: retention outbox đã phát (mặc định 30 ngày)
 
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -157,6 +158,8 @@ builder.Services.Configure<RoadmapOptions>(
     builder.Configuration.GetSection(RoadmapOptions.SectionName));   // BC15
 builder.Services.Configure<OutboxSettings>(
     builder.Configuration.GetSection(OutboxSettings.SectionName));   // DB2
+builder.Services.Configure<RepublisherSettings>(
+    builder.Configuration.GetSection(RepublisherSettings.SectionName));   // DB29
 
 builder.Services.AddSingleton<IAmazonS3>(sp =>
 {

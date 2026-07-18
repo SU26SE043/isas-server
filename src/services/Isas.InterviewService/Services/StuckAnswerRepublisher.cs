@@ -1,8 +1,11 @@
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
 
@@ -21,15 +24,18 @@ public class StuckAnswerRepublisher : BackgroundService
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IScoringJobPublisher _publisher;  // singleton, inject thẳng được
+    private readonly RepublisherSettings _options;     // DB29 — trần batch mỗi vòng
     private readonly ILogger<StuckAnswerRepublisher> _logger;
 
     public StuckAnswerRepublisher(
         IServiceScopeFactory scopeFactory,
         IScoringJobPublisher publisher,
+        IOptions<RepublisherSettings> options,
         ILogger<StuckAnswerRepublisher> logger)
     {
         _scopeFactory = scopeFactory;
         _publisher = publisher;
+        _options = options.Value;
         _logger = logger;
     }
 
@@ -77,6 +83,7 @@ public class StuckAnswerRepublisher : BackgroundService
                             (a.LastScoringPublishedAt == null && a.CreatedAt < publishGrace)
                             || (a.LastScoringPublishedAt != null && a.LastScoringPublishedAt < scoringCutoff)
                         ))
+            .OrderBy(a => a.CreatedAt)   // DB29: cũ trước — batch tất định, answer kẹt lâu nhất được cứu trước
             .Select(a => new
             {
                 a.Id,
@@ -89,33 +96,30 @@ public class StuckAnswerRepublisher : BackgroundService
                 JobCategory = a.Session.JobCategory,
                 QuestionContent = a.Question.Content
             })
+            .Take(_options.BatchSize > 0 ? _options.BatchSize : 200)   // DB29: chặn nạp cả tồn đọng 1 lần
             .ToListAsync(ct);
 
         if (stuck.Count == 0) return;
 
         _logger.LogWarning("Phát hiện {Count} answer kẹt Uploaded, đang re-publish", stuck.Count);
 
+        // DB29 — cache tiêu chí theo "chủ rubric", KHÔNG theo answer. Mọi answer cùng campaign (B2B) hoặc
+        // cùng (candidate, nghề) (B2C) dùng CHUNG một bộ tiêu chí, nên tra 1 lần/nhóm thay vì 1 lần/answer:
+        // trước đây mỗi answer tốn 3 query (resolve owner + nạp criteria + ExecuteUpdate) ⇒ 3N+1 mỗi 2 phút,
+        // đúng lúc broker vừa hồi phục và tồn đọng đang lớn nhất.
+        var criteriaCache = new Dictionary<RubricScopeKey, List<RubricCriterion>>();
+
         foreach (var a in stuck)
         {
-            // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
-            // E9: nạp kèm rubric_levels để message re-publish cũng mang mức neo. DB15: câu mẫu
-            // (example_answers) là cột jsonb scalar trên level → nạp cùng .Include(Levels).
-            var query = db.RubricCriteria.AsNoTracking()
-                .Include(c => c.Levels)
-                .Where(c => c.IsActive);
-            if (a.CampaignId is Guid campaignId)
+            var key = a.CampaignId is Guid cid
+                ? new RubricScopeKey(cid, null, null)                       // B2B: tiêu chí chỉ phụ thuộc campaign
+                : new RubricScopeKey(null, a.CandidateId, a.JobCategory);   // B2C: theo (candidate, nghề)
+
+            if (!criteriaCache.TryGetValue(key, out var criteria))
             {
-                query = query.Where(c => c.CampaignId == campaignId);
+                criteria = await LoadCriteriaAsync(db, key, ct);
+                criteriaCache[key] = criteria;
             }
-            else
-            {
-                // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định.
-                var owner = await B2CRubricScope.ResolveOwnerAsync(db, a.CandidateId, a.JobCategory, ct);
-                query = owner is Guid oid
-                    ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == a.JobCategory)
-                    : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == a.JobCategory);
-            }
-            var criteria = await query.ToListAsync(ct);
 
             if (criteria.Count == 0)
             {
@@ -158,5 +162,32 @@ public class StuckAnswerRepublisher : BackgroundService
                 _logger.LogError(ex, "Re-publish thất bại answer {AnswerId}, để vòng sau", a.Id);
             }
         }
+    }
+
+    // "Chủ" bộ tiêu chí của 1 answer. B2B = campaign (mọi ứng viên trong campaign dùng chung tiêu chí →
+    // KHÔNG kèm candidate vào key, nếu không B2B lại tách nhóm theo từng ứng viên = quay về N+1);
+    // B2C = (candidate, nghề) theo BC16.
+    private readonly record struct RubricScopeKey(Guid? CampaignId, Guid? CandidateId, JobCategory? JobCategory);
+
+    // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
+    // E9: nạp kèm rubric_levels để message re-publish cũng mang mức neo. DB15: câu mẫu
+    // (example_answers) là cột jsonb scalar trên level → nạp cùng .Include(Levels).
+    private static async Task<List<RubricCriterion>> LoadCriteriaAsync(
+        InterviewDbContext db, RubricScopeKey key, CancellationToken ct)
+    {
+        var query = db.RubricCriteria.AsNoTracking()
+            .Include(c => c.Levels)
+            .Where(c => c.IsActive);
+
+        if (key.CampaignId is Guid campaignId)
+            return await query.Where(c => c.CampaignId == campaignId).ToListAsync(ct);
+
+        // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định.
+        var jobCategory = key.JobCategory!.Value;
+        var owner = await B2CRubricScope.ResolveOwnerAsync(db, key.CandidateId!.Value, jobCategory, ct);
+        query = owner is Guid oid
+            ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory)
+            : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory);
+        return await query.ToListAsync(ct);
     }
 }
