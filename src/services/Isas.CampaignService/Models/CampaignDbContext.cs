@@ -39,9 +39,17 @@ namespace Isas.CampaignService.Models
             {
                 // DB15: pass_score_pct là % điểm tổng để auto pass/fail (E5) → phải NULL (HR quyết tay)
                 // hoặc ∈ [0,100]. CHECK ở tầng DB khớp guard code ValidatePassScorePct (CampaignService.cs).
-                e.ToTable("campaigns", t => t.HasCheckConstraint(
-                    "ck_campaigns_pass_score_pct_range",
-                    "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)"));
+                e.ToTable("campaigns", t =>
+                {
+                    t.HasCheckConstraint(
+                        "ck_campaigns_pass_score_pct_range",
+                        "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)");
+                    // INT-17: trần câu hỏi thích ứng phải null (dùng mặc định Interview) hoặc KHÔNG âm.
+                    // Khớp guard code ValidateAdaptiveCaps (CampaignService.cs).
+                    t.HasCheckConstraint(
+                        "ck_campaigns_adaptive_caps_non_negative",
+                        "(max_follow_ups IS NULL OR max_follow_ups >= 0) AND (max_questions IS NULL OR max_questions >= 0)");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -55,6 +63,7 @@ namespace Isas.CampaignService.Models
 
                 e.Property(x => x.AntiCheatEnabled).HasDefaultValue(true);
                 e.Property(x => x.FaceVerifyEnabled).HasDefaultValue(false);   // SEC-1: face-verify opt-in (B2B)
+                e.Property(x => x.AdaptiveEnabled).HasDefaultValue(false);     // INT-17: adaptive opt-in (B2B)
 
                 e.Property(x => x.StartsAt).IsRequired();
 

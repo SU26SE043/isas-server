@@ -16,6 +16,14 @@
         public bool FaceVerifyEnabled { get; set; }
         // E5: ngưỡng % điểm tổng để auto pass/fail (0–100, CAMP-11). null = không auto → HR quyết tay.
         public int? PassScorePct { get; set; }
+        // INT-17: HR bật phỏng vấn THÍCH ỨNG cho chiến dịch này (mặc định false = luồng batch tĩnh cũ).
+        // Seed = TOÀN BỘ campaign questions (ai cũng nhận, công bằng); AI chỉ thêm câu ở ĐUÔI sau khi
+        // ứng viên trả lời hết seed, chấm theo CÙNG tiêu chí campaign ⇒ ranking vẫn so sánh được.
+        public bool AdaptiveEnabled { get; set; }
+        // INT-17: trần số câu THÍCH ỨNG được thêm (null = dùng mặc định phía Interview). Giữ bài bounded.
+        public int? MaxFollowUps { get; set; }
+        // INT-17: trần TỔNG số câu (seed + thích ứng; null = mặc định Interview). Giữ độ dài so sánh được.
+        public int? MaxQuestions { get; set; }
         public string? JDFileUrl { get; set; }
         public string? JDText { get; set; }
         public string? CriteriaFileUrl { get; set; }

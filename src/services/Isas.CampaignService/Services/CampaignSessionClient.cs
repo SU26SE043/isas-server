@@ -37,6 +37,7 @@ namespace Isas.CampaignService.Services
             Guid candidateId, Guid campaignId, Guid orgId, string jobCategory,
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
+            bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             CancellationToken ct = default)
         {
             var payload = new
@@ -47,7 +48,11 @@ namespace Isas.CampaignService.Services
                 jobCategory,
                 questions,
                 criteria = criteria.Select(c => new { c.Name, c.Description, c.Weight, c.MaxScore }),
-                expiresAt   // BK18 — Interview map → session.Deadline (I2); null = không hard-deadline
+                expiresAt,  // BK18 — Interview map → session.Deadline (I2); null = không hard-deadline
+                // INT-17 — Interview đóng dấu lên practice_sessions lúc tạo; null = tắt/mặc định.
+                adaptiveEnabled,
+                maxFollowUps,
+                maxQuestions
             };
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/campaign")

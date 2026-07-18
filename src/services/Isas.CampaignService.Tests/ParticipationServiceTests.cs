@@ -42,7 +42,7 @@ public class ParticipationServiceTests
         m.Setup(x => x.CreateOrGetSessionAsync(
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-                It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CampaignSessionResult(FixedSession, new List<SessionQuestion>
             {
                 new(Guid.NewGuid(), 1, "Q1", 120)
@@ -436,7 +436,8 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             FixedCandidate, camp.Id, It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            deadline, It.IsAny<CancellationToken>()), Times.Once);
+            deadline, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // BK18(b): campaign không đặt hạn (ExpiresAt null) → truyền null (không hard-deadline).
@@ -455,7 +456,8 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            (DateTime?)null, It.IsAny<CancellationToken>()), Times.Once);
+            (DateTime?)null, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // BK18(c): resume (start 2×) → vẫn truyền đúng expiresAt cả 2 lần (không đổi session).
@@ -479,7 +481,8 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            deadline, It.IsAny<CancellationToken>()), Times.Exactly(2));
+            deadline, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
     // BK14: Start truyền đúng campaign.OrgId xuống session client (Interview reserve owner=Org).
@@ -498,7 +501,54 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             FixedCandidate, camp.Id, camp.OrgId, It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // INT-17: Start PHẢI truyền toggle + trần adaptive của campaign xuống session client.
+    // Trước fix, CampaignService không gửi gì ⇒ B2B adaptive không bao giờ bật được (E2E 2026-07-18).
+    [Fact]
+    public async Task Start_TruyenCampaignAdaptive_XuongSessionClient()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        camp.AdaptiveEnabled = true;
+        camp.MaxFollowUps = 2;
+        camp.MaxQuestions = 8;
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        var res = await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            It.IsAny<DateTime?>(), true, 2, 8, It.IsAny<CancellationToken>()), Times.Once);
+
+        // Cờ cũng surface về FE để trang thi biết sẽ có đuôi thích ứng.
+        Assert.True(res.AdaptiveEnabled);
+    }
+
+    // INT-17: campaign KHÔNG bật → truyền false + null (Interview giữ luồng batch tĩnh cũ).
+    [Fact]
+    public async Task Start_CampaignKhongBatAdaptive_TruyenFalse()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);   // AdaptiveEnabled mặc định false
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        var res = await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            It.IsAny<DateTime?>(), false, null, null, It.IsAny<CancellationToken>()), Times.Once);
+
+        Assert.False(res.AdaptiveEnabled);
     }
 
     // BK14: ví org hết credit → session client ném InsufficientOrgCreditException → Start propagate
@@ -515,7 +565,7 @@ public class ParticipationServiceTests
         session.Setup(x => x.CreateOrGetSessionAsync(
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-                It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InsufficientOrgCreditException("Tổ chức không đủ credit"));
 
         await Assert.ThrowsAsync<InsufficientOrgCreditException>(() =>
