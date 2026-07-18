@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using PaymentService.Models;
 
 namespace Isas.PaymentService.Services
@@ -12,11 +13,16 @@ namespace Isas.PaymentService.Services
     {
         private readonly PaymentDbContext _db;
         private readonly ICreditAccountService _accounts;
+        private readonly ILogger<WebhookService>? _logger;
 
-        public WebhookService(PaymentDbContext db, ICreditAccountService accounts)
+        // DB20 — logger inject OPTIONAL (mẫu AI4): ctor 2-tham-số đang được dùng ở nhiều site test;
+        // thêm dependency bắt buộc chỉ để log sẽ phải sửa hết mà không đem lại giá trị nào.
+        public WebhookService(PaymentDbContext db, ICreditAccountService accounts,
+            ILogger<WebhookService>? logger = null)
         {
             _db = db;
             _accounts = accounts;
+            _logger = logger;
         }
 
         public async Task<WebhookApplyOutcome> ApplyPaidWebhookAsync(
@@ -98,6 +104,38 @@ namespace Isas.PaymentService.Services
             }
 
             var credits = order.Package?.InterviewCredits ?? 0;
+
+            // DB20 — defense-in-depth: OrderService chặn không cho TẠO đơn CreditPack với gói không sinh
+            // credit, nhưng đơn CŨ đã nằm sẵn trong DB (tạo trước fix) vẫn có thể rơi vào đây. Nếu để
+            // credits=0 đi tiếp thì ledger Delta=0 vi phạm CHECK ck_credit_transactions_delta_nonzero →
+            // SaveChanges ném → tx.Commit không chạy → flip Pending→Paid rollback theo ⇒ khách trả tiền
+            // mà đơn kẹt Pending vĩnh viễn (deterministic: mọi retry đều fail y hệt).
+            // Chọn GIỮ đơn ở Paid + log bằng chứng, KHÔNG cộng credit và KHÔNG ghi ledger: tiền đã vào
+            // thật nên trạng thái Paid là đúng sự thật; phần credit thiếu để đối soát tay (PAY-10 terminal
+            // bất biến) — thà đơn Paid thiếu credit và thấy được, còn hơn đơn Pending vĩnh viễn ẩn mất.
+            if (credits <= 0)
+            {
+                _db.PaymentTransactions.Add(new PaymentTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    OrderId = order.Id,
+                    Gateway = "payos",
+                    GatewayTxnId = gatewayTxnId,
+                    Status = "success",
+                    RawWebhookPayload = rawPayload,
+                    CreatedAt = DateTime.UtcNow
+                });
+
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+
+                _logger?.LogError(
+                    "Đơn {OrderId} (payos {OrderCode}) đã Paid nhưng gói {PackageId} không sinh credit " +
+                    "(InterviewCredits={Credits}) → KHÔNG cộng credit, cần đối soát tay.",
+                    order.Id, payosOrderCode, order.PackageId, order.Package?.InterviewCredits);
+
+                return WebhookApplyOutcome.Credited;
+            }
 
             // 2) Đảm bảo ví tồn tại (lần mua đầu của chủ ví → chưa có account). Tạo trong CÙNG transaction
             //    (CreditAccountService dùng chung DbContext scoped). Race 2 đơn khác nhau cùng chủ ví cùng

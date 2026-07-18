@@ -6,10 +6,30 @@ namespace Isas.PaymentService.Services
     public class CreditAccountService : ICreditAccountService
     {
         private readonly PaymentDbContext _db;
+        private readonly ILogger<CreditAccountService>? _logger;
 
-        public CreditAccountService(PaymentDbContext db)
+        // DB22 — logger inject OPTIONAL (mẫu AI4 `ICampaignSessionClient`): ctor 1-tham-số đang được
+        // gọi ở rất nhiều site test; thêm dependency bắt buộc sẽ phải sửa toàn bộ mà không đem lại gì.
+        public CreditAccountService(PaymentDbContext db, ILogger<CreditAccountService>? logger = null)
         {
             _db = db;
+            _logger = logger;
+        }
+
+        /// <summary>
+        /// DB22 — cảnh báo khi bút toán trừ <c>reserved_credits</c> KHÔNG khớp row nào.
+        /// Nghĩa là ví đã drift (reserved_credits &lt; số reservation Reserved thật). Ta CỐ Ý không ném:
+        /// transition reservation ở trên đã commit-guard đúng 1 lần, ném ở đây chỉ khiến tx rollback →
+        /// reservation kẹt <c>Reserved</c> → consumer nack-requeue vô hạn → chặn cả queue credit.
+        /// Bỏ qua + log; <c>CreditReservationReconciler</c> (DB4/DB21) sẽ kéo reserved_credits về đúng.
+        /// </summary>
+        private void WarnIfNoAccountRow(int rows, OwnerType ownerType, Guid ownerId, string op)
+        {
+            if (rows > 0) return;
+            _logger?.LogWarning(
+                "DB22 — {Op}: ví {OwnerType}:{OwnerId} có reserved_credits=0 (drift) nên bỏ qua bút toán trừ. " +
+                "Reservation vẫn chuyển trạng thái đúng; reconciler sẽ đồng bộ lại.",
+                op, ownerType, ownerId);
         }
 
         public async Task<CreditAccount> CreateAccountAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
@@ -223,10 +243,17 @@ namespace Isas.PaymentService.Services
                 .Select(a => a.PaymentMode)
                 .FirstOrDefaultAsync(ct) == PaymentMode.Postpaid;
 
+            // DB22 — guard `ReservedCredits >= 1` trong WHERE (trước đây chỉ lọc theo owner). Nếu ví đã
+            // drift về 0 thì bút toán cũ trừ xuống âm → vi phạm CHECK ck_credit_accounts_non_negative →
+            // ném → tx rollback → reservation kẹt Reserved → consumer nack-requeue vô hạn → CHẶN CẢ QUEUE
+            // credit (poison message). Guard biến "nổ CHECK" thành "0 row + log" — mất mát tối đa là
+            // reserved_credits lệch, thứ mà reconciler DB4/DB21 vốn sinh ra để sửa.
+            int accRows;
             if (isPostpaid)
             {
-                await _db.CreditAccounts
-                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                accRows = await _db.CreditAccounts
+                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId
+                                && a.ReservedCredits >= 1)
                     .ExecuteUpdateAsync(s => s
                         .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
                         .SetProperty(a => a.PeriodUsage, a => (int?)((a.PeriodUsage ?? 0) + 1))
@@ -235,12 +262,15 @@ namespace Isas.PaymentService.Services
             else
             {
                 // PREPAID giữ nguyên (không có period_usage): chỉ reserved−1.
-                await _db.CreditAccounts
-                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                accRows = await _db.CreditAccounts
+                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId
+                                && a.ReservedCredits >= 1)
                     .ExecuteUpdateAsync(s => s
                         .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
                         .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
             }
+
+            WarnIfNoAccountRow(accRows, reservation.OwnerType, reservation.OwnerId, "Consume");
 
             // Bút toán Consume −1 (sổ cái append-only). session_id ref lỏng, order_id null (không gắn order).
             _db.CreditTransactions.Add(new CreditTransaction
@@ -311,13 +341,16 @@ namespace Isas.PaymentService.Services
                 .Select(a => a.PaymentMode)
                 .FirstOrDefaultAsync(ct) == PaymentMode.Postpaid;
 
+            // DB22 — guard `ReservedCredits >= 1` (xem giải thích ở ConsumeAsync).
+            int accRows;
             if (isPostpaid)
             {
                 // POSTPAID (BK11 · payment.md §Kế toán POSTPAID release): CHỈ reserved−1. KHÔNG remaining+1
                 // (postpaid remaining=0, bơm 0→1 là sai); period_usage KHÔNG đổi — chỗ giữ chưa tiêu nên
                 // không phát sinh nợ kỳ (reserve postpaid không dồn nợ P8a → release cũng không).
-                await _db.CreditAccounts
-                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                accRows = await _db.CreditAccounts
+                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId
+                                && a.ReservedCredits >= 1)
                     .ExecuteUpdateAsync(s => s
                         .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
                         .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
@@ -326,13 +359,16 @@ namespace Isas.PaymentService.Services
             {
                 // PREPAID (giữ nguyên P6): reserved−1, remaining+1 (nghịch đảo của reserve) → tổng
                 // remaining+reserved bảo toàn.
-                await _db.CreditAccounts
-                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+                accRows = await _db.CreditAccounts
+                    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId
+                                && a.ReservedCredits >= 1)
                     .ExecuteUpdateAsync(s => s
                         .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits - 1)
                         .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits + 1)
                         .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
             }
+
+            WarnIfNoAccountRow(accRows, reservation.OwnerType, reservation.OwnerId, "Release");
 
             await tx.CommitAsync(ct);
 

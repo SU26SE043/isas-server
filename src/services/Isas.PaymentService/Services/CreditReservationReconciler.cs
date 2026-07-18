@@ -88,12 +88,30 @@ namespace Isas.PaymentService.Services
 
                 try
                 {
+                    // DB21 — CAS: chỉ ghi khi reserved_credits VẪN đúng bằng giá trị đã đọc ở snapshot.
+                    // Trước đây WHERE chỉ có Id (không transaction, không guard) → nếu một ReserveAsync
+                    // commit xen giữa CountAsync và ExecuteUpdate thì reconciler ghi đè count CŨ, XOÁ mất
+                    // slot vừa giữ; prepaid đã trừ remaining_credits rồi ⇒ credit bốc hơi khỏi CẢ HAI cột
+                    // mà không có dòng ledger nào. Consume sau đó trừ reserved xuống âm → CHECK
+                    // ck_credit_accounts_non_negative nổ → tx rollback → reservation kẹt Reserved → event
+                    // redeliver vô hạn (nuôi đúng cái poison-message DB22 phải dọn).
+                    // Tức là: job sinh ra để SỬA drift lại chính là thứ TẠO RA drift.
                     // count ≥ 0 → không bao giờ set âm (guard chống âm + CHECK DB làm lưới cuối).
-                    await db.CreditAccounts
-                        .Where(x => x.Id == a.Id)
+                    var updated = await db.CreditAccounts
+                        .Where(x => x.Id == a.Id && x.ReservedCredits == a.ReservedCredits)
                         .ExecuteUpdateAsync(u => u
                             .SetProperty(x => x.ReservedCredits, count)
                             .SetProperty(x => x.UpdatedAt, DateTime.UtcNow), ct);
+
+                    if (updated == 0)
+                    {
+                        // Có reserve/consume/release chen vào giữa → snapshot đã cũ. BỎ QUA vòng này,
+                        // vòng sau đọc lại state mới. Idempotent: không ghi mù, không mất credit.
+                        _logger.LogDebug(
+                            "Bỏ qua reconcile ví {Account}: reserved_credits đã đổi giữa chừng (đọc {Observed}), thử lại vòng sau.",
+                            a.Id, a.ReservedCredits);
+                        continue;
+                    }
 
                     fixedCount++;
                     _logger.LogWarning(
