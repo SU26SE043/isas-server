@@ -6,7 +6,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.AspNetCore.Mvc;
+using System.Globalization;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using static Isas.AuthService.DTOs.ForgotPasswordDtos;
 
 namespace Isas.AuthService.Controllers
@@ -240,6 +243,24 @@ namespace Isas.AuthService.Controllers
             return NoContent();
         }
 
+        // ── Đặt lại mật khẩu bằng OTP ──────────────────────────────────────────────
+        // OTP là credential đặt lại mật khẩu → sinh bằng RNG mã hoá, so khớp hằng-thời-gian,
+        // giới hạn số lần đoán, và dùng-một-lần (xoá sạch sau khi đổi mật khẩu thành công).
+
+        private const string OtpProvider = "OTPProvider";
+        private const string OtpCodeToken = "OTPCode";        // giữ nguyên tên cũ → OTP đang lưu dở vẫn dùng được
+        private const string OtpExpiryToken = "OTPExpiry";
+        private const string OtpVerifiedToken = "OtpVerified";
+        private const string OtpAttemptsToken = "OtpAttempts";
+
+        private static readonly TimeSpan OtpLifetime = TimeSpan.FromMinutes(5);
+
+        /// <summary>Sau khi verify-otp, người dùng còn ngần này thời gian để gửi mật khẩu mới.</summary>
+        private static readonly TimeSpan OtpVerifiedWindow = TimeSpan.FromMinutes(5);
+
+        /// <summary>OTP chỉ có 10^6 khả năng → không chặn số lần đoán là dò được trong vài phút.</summary>
+        private const int MaxOtpAttempts = 5;
+
         [AllowAnonymous]
         [HttpPost("forgot-password")]
         public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto model)
@@ -248,10 +269,21 @@ namespace Isas.AuthService.Controllers
             if (user == null)
                 return BadRequest("User not found");
 
-            var otp = new Random().Next(100000, 999999).ToString();
+            // RandomNumberGenerator, KHÔNG phải `new Random()`: Random gieo hạt theo đồng hồ và là PRNG
+            // tuyến tính — biết thời điểm gửi mail là thu hẹp được không gian đoán của một credential
+            // đủ sức chiếm tài khoản. "D6" giữ cả số có số 0 đứng đầu → đủ trọn 000000-999999.
+            var otp = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
 
-            await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode", otp);
-            await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OTPExpiry", DateTime.UtcNow.AddMinutes(5).ToString());
+            await _userManager.SetAuthenticationTokenAsync(user, OtpProvider, OtpCodeToken, otp);
+            // Ghi theo định dạng round-trip ("O", có Kind=Utc) — `DateTime.UtcNow.ToString()` phụ thuộc
+            // culture của tiến trình nên đọc lại ở máy/locale khác là sai giờ hoặc vỡ parse.
+            await _userManager.SetAuthenticationTokenAsync(
+                user, OtpProvider, OtpExpiryToken, DateTime.UtcNow.Add(OtpLifetime).ToString("O", CultureInfo.InvariantCulture));
+
+            // Dọn trạng thái của lần yêu cầu TRƯỚC: cờ đã-verify cũ không được phép dùng cho OTP mới,
+            // và bộ đếm đoán sai phải về 0 cho lượt mới.
+            await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpVerifiedToken);
+            await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpAttemptsToken);
 
             await _emailSender.SendEmailAsync(model.Email, "Your OTP Code", BuildEmailBody(otp));
 
@@ -265,16 +297,24 @@ namespace Isas.AuthService.Controllers
             var user = await _userManager.FindByEmailAsync(model.Email);
             if (user == null) return BadRequest("User not found");
 
-            var storedOtp = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode");
-            var expiry = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPExpiry");
+            var storedOtp = await _userManager.GetAuthenticationTokenAsync(user, OtpProvider, OtpCodeToken);
+            var expiryRaw = await _userManager.GetAuthenticationTokenAsync(user, OtpProvider, OtpExpiryToken);
 
-            if (storedOtp == model.Otp && DateTime.Parse(expiry) > DateTime.UtcNow)
-            {
-                await _userManager.SetAuthenticationTokenAsync(user, "OTPProvider", "OtpVerified", DateTime.UtcNow.ToString());
-                return Ok("OTP verified, you can reset your password");
-            }
+            // Không còn OTP / mốc hết hạn hỏng / đã quá hạn → cùng một thông điệp, không nói rõ vì sao.
+            if (string.IsNullOrEmpty(storedOtp) || !TryParseUtc(expiryRaw, out var expiry) || expiry <= DateTime.UtcNow)
+                return BadRequest("Invalid or expired OTP");
 
-            return BadRequest("Invalid or expired OTP");
+            if (!await RegisterOtpAttemptAsync(user))
+                return BadRequest("Invalid or expired OTP");
+
+            if (!OtpMatches(storedOtp, model.Otp))
+                return BadRequest("Invalid or expired OTP");
+
+            await _userManager.SetAuthenticationTokenAsync(
+                user, OtpProvider, OtpVerifiedToken, DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpAttemptsToken);
+
+            return Ok("OTP verified, you can reset your password");
         }
 
         [AllowAnonymous]
@@ -284,17 +324,89 @@ namespace Isas.AuthService.Controllers
             var user = await _userManager.FindByEmailAsync(model.Email);
             if (user == null) return BadRequest("User not found");
 
-            var verifiedOtp = await _userManager.GetAuthenticationTokenAsync(user, "OTPProvider", "OTPCode");
-            if (string.IsNullOrEmpty(verifiedOtp) || DateTime.Parse(verifiedOtp).AddMinutes(5) < DateTime.UtcNow)
+            // Cửa 1 — đã đi qua verify-otp chưa? Trước đây chỗ này đọc nhầm khoá "OTPCode" (là 6 CHỮ SỐ)
+            // rồi DateTime.Parse lên nó → FormatException với MỌI OTP hợp lệ = endpoint 500 vô điều kiện.
+            var verifiedRaw = await _userManager.GetAuthenticationTokenAsync(user, OtpProvider, OtpVerifiedToken);
+            if (!TryParseUtc(verifiedRaw, out var verifiedAt) || verifiedAt.Add(OtpVerifiedWindow) < DateTime.UtcNow)
+                return BadRequest("OTP not verified or expired");
+
+            // Cửa 2 — người gọi có thật sự cầm OTP không? Cửa 1 chỉ khoá theo email: chỉ dựa vào nó thì
+            // bất kỳ ai biết email nạn nhân cũng đổi được mật khẩu trong cửa sổ sau khi nạn nhân verify.
+            var storedOtp = await _userManager.GetAuthenticationTokenAsync(user, OtpProvider, OtpCodeToken);
+            if (string.IsNullOrEmpty(storedOtp) || !OtpMatches(storedOtp, model.Otp))
                 return BadRequest("OTP not verified or expired");
 
             var token = await _userManager.GeneratePasswordResetTokenAsync(user);
             var result = await _userManager.ResetPasswordAsync(user, token, model.NewPassword);
 
-            if (result.Succeeded)
-                return Ok("Password reset successful");
+            // Mật khẩu mới bị Identity từ chối (quá yếu) → GIỮ nguyên OTP để người dùng thử lại mật khẩu
+            // khác mà không phải xin mã mới; chỉ đốt OTP khi nó đã thật sự đổi được mật khẩu.
+            if (!result.Succeeded)
+                return BadRequest(result.Errors);
 
-            return BadRequest(result.Errors);
+            await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpCodeToken);
+            await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpExpiryToken);
+            await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpVerifiedToken);
+            await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpAttemptsToken);
+
+            return Ok("Password reset successful");
+        }
+
+        /// <summary>
+        /// So khớp OTP HẰNG-THỜI-GIAN (mẫu đã dùng cho X-Internal-Token ở Payment/Interview):
+        /// `==` trên string thoát sớm ở ký tự lệch đầu tiên → rò rỉ tiền tố đúng qua thời gian đáp ứng.
+        /// </summary>
+        private static bool OtpMatches(string stored, string? supplied)
+        {
+            if (string.IsNullOrEmpty(supplied)) return false;
+            return CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(stored), Encoding.UTF8.GetBytes(supplied));
+        }
+
+        /// <summary>
+        /// Đếm lượt đoán; quá <see cref="MaxOtpAttempts"/> thì đốt luôn OTP (phải xin mã mới).
+        /// Trả về false khi lượt này KHÔNG được phép so khớp nữa.
+        /// </summary>
+        private async Task<bool> RegisterOtpAttemptAsync(User user)
+        {
+            var raw = await _userManager.GetAuthenticationTokenAsync(user, OtpProvider, OtpAttemptsToken);
+            _ = int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var attempts);
+            attempts++;
+
+            if (attempts > MaxOtpAttempts)
+            {
+                _logger.LogWarning("OTP bị đoán quá {Max} lần cho user {UserId} — huỷ mã.", MaxOtpAttempts, user.Id);
+                await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpCodeToken);
+                await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpExpiryToken);
+                await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpAttemptsToken);
+                return false;
+            }
+
+            await _userManager.SetAuthenticationTokenAsync(
+                user, OtpProvider, OtpAttemptsToken, attempts.ToString(CultureInfo.InvariantCulture));
+            return true;
+        }
+
+        /// <summary>
+        /// Đọc mốc thời gian UTC. Nhận cả định dạng round-trip mới lẫn giá trị CŨ ghi bằng
+        /// `DateTime.UtcNow.ToString()` (không mang Kind) — giá trị cũ vốn là UTC nên gắn Kind=Utc.
+        /// TryParse (không phải Parse) để chuỗi rác trả 400 chứ không ném 500.
+        /// </summary>
+        private static bool TryParseUtc(string? raw, out DateTime utc)
+        {
+            utc = default;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            if (!DateTime.TryParse(raw, CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind | DateTimeStyles.AllowWhiteSpaces, out var parsed))
+                return false;
+
+            utc = parsed.Kind switch
+            {
+                DateTimeKind.Utc => parsed,
+                DateTimeKind.Local => parsed.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(parsed, DateTimeKind.Utc)
+            };
+            return true;
         }
 
         private static string BuildEmailBody(string otp) =>
@@ -304,7 +416,7 @@ namespace Isas.AuthService.Controllers
               <h2 style="color:#1d4ed8;margin-bottom:8px">Password Reset Request</h2>
               <p style="color:#374151">
                 Use the code below to reset your password.
-                It expires in <strong>10 minutes</strong>.
+                It expires in <strong>5 minutes</strong>.
               </p>
               <div style="background:#f3f4f6;border-radius:8px;padding:24px;
                           text-align:center;margin:24px 0">
