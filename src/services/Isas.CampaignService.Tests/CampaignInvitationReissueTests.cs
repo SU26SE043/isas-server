@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Microsoft.EntityFrameworkCore;
@@ -25,20 +26,35 @@ public class CampaignInvitationReissueTests
         new(db, Mock.Of<IAuthProvisionClient>(), Mock.Of<ICampaignSessionClient>(),
             NullLogger<ParticipationService>.Instance);
 
+    // DB23 — token thô của row seed lấy lại được (deterministic theo Id); token thô của invitation do
+    // PRODUCTION sinh thì KHÔNG đọc được từ DB nữa → phải lấy từ outbox payload (xem RawTokenFromOutbox).
+    private static string RawTokenOf(CampaignInvitation inv) => inv.Id.ToString("N");
+
     private static CampaignInvitation SeedInvitation(
         CampaignDbContext db, Guid campaignId, string email = "cand@acme.test", Guid? campaignCandidateId = null)
     {
+        var id = Guid.NewGuid();
         var inv = new CampaignInvitation
         {
-            Id = Guid.NewGuid(),
+            Id = id,
             CampaignId = campaignId,
             CampaignCandidateId = campaignCandidateId,
-            Token = Guid.NewGuid().ToString("N"),
+            TokenHash = InvitationTokens.Hash(id.ToString("N")),
             Email = email,
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
             CreatedAt = DateTime.UtcNow
         };
         db.CampaignInvitations.Add(inv);
         return inv;
+    }
+
+    // Token THÔ chỉ còn tồn tại trên đường đi tới email = outbox payload (DB2b) → test đọc từ đó,
+    // đúng như InvitationEmailConsumer dựng link cho ứng viên.
+    private static async Task<string> RawTokenFromOutbox(CampaignDbContext db, Guid invitationId)
+    {
+        var row = await db.OutboxMessages.SingleAsync(m => m.InvitationId == invitationId);
+        return JsonSerializer.Deserialize<InvitationEmailJob>(
+            row.Payload, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!.Token;
     }
 
     // (a) happy path: token cũ RevokedAt set · invitation mới token khác · email publish · audit row
@@ -51,7 +67,7 @@ public class CampaignInvitationReissueTests
         tdb.Db.Campaigns.Add(camp);
         var old = SeedInvitation(tdb.Db, camp.Id, "reissue@example.com");
         await tdb.Db.SaveChangesAsync();
-        var oldToken = old.Token;
+        var oldToken = RawTokenOf(old);
 
         var publisher = new Mock<IInvitationEmailPublisher>();
         var svc = NewService(tdb.NewContext(), publisher.Object);
@@ -71,7 +87,7 @@ public class CampaignInvitationReissueTests
 
         var fresh = rows.Single(i => i.Id == result.Id);
         Assert.Null(fresh.RevokedAt);
-        Assert.NotEqual(oldToken, fresh.Token);   // token mới khác token cũ
+        Assert.NotEqual(InvitationTokens.Hash(oldToken), fresh.TokenHash);   // token mới khác token cũ
         Assert.NotNull(fresh.SentAt);             // đã resend
         Assert.Equal("reissue@example.com", fresh.Email);
 
@@ -101,7 +117,7 @@ public class CampaignInvitationReissueTests
         tdb.Db.Campaigns.Add(camp);
         var old = SeedInvitation(tdb.Db, camp.Id);
         await tdb.Db.SaveChangesAsync();
-        var oldToken = old.Token;
+        var oldToken = RawTokenOf(old);
 
         await NewService(tdb.NewContext()).ReissueInvitationAsync(owner, owner, camp.Id, old.Id, default);
 
@@ -110,10 +126,12 @@ public class CampaignInvitationReissueTests
         await Assert.ThrowsAsync<InvitationGoneException>(() =>
             participation.GetInvitationMetadataAsync(oldToken, default));
 
-        // token mới dùng được (không revoke, campaign Active) → không ném
+        // token mới dùng được (không revoke, campaign Active) → không ném.
+        // DB23: token thô lấy từ outbox (đường đi tới email), KHÔNG đọc được từ campaign_invitations.
         using var read = tdb.NewContext();
-        var freshToken = (await read.CampaignInvitations
-            .Where(i => i.CampaignId == camp.Id && i.RevokedAt == null).SingleAsync()).Token;
+        var freshInv = await read.CampaignInvitations
+            .SingleAsync(i => i.CampaignId == camp.Id && i.RevokedAt == null);
+        var freshToken = await RawTokenFromOutbox(read, freshInv.Id);
         var meta = await NewParticipation(tdb.NewContext()).GetInvitationMetadataAsync(freshToken, default);
         Assert.Equal(camp.Id, meta.CampaignId);
     }
@@ -187,7 +205,7 @@ public class CampaignInvitationReissueTests
         tdb.Db.Campaigns.Add(camp);
         var a = SeedInvitation(tdb.Db, camp.Id);
         await tdb.Db.SaveChangesAsync();
-        var tokenA = a.Token;
+        var tokenA = RawTokenOf(a);
 
         // lần 1: A → B
         var b = await NewService(tdb.NewContext()).ReissueInvitationAsync(owner, owner, camp.Id, a.Id, default);
@@ -199,7 +217,7 @@ public class CampaignInvitationReissueTests
         Assert.Equal(3, all.Count);
 
         // 3 token phân biệt
-        Assert.Equal(3, all.Select(i => i.Token).Distinct().Count());
+        Assert.Equal(3, all.Select(i => i.TokenHash).Distinct().Count());
 
         // chỉ C (mới nhất) còn hiệu lực; A và B đều revoked
         Assert.NotNull(all.Single(i => i.Id == a.Id).RevokedAt);
@@ -207,7 +225,7 @@ public class CampaignInvitationReissueTests
         Assert.Null(all.Single(i => i.Id == c.Id).RevokedAt);
 
         // token A và token B đều → 410
-        var tokenB = all.Single(i => i.Id == b.Id).Token;
+        var tokenB = await RawTokenFromOutbox(check, b.Id);
         await Assert.ThrowsAsync<InvitationGoneException>(() =>
             NewParticipation(tdb.NewContext()).GetInvitationMetadataAsync(tokenA, default));
         await Assert.ThrowsAsync<InvitationGoneException>(() =>

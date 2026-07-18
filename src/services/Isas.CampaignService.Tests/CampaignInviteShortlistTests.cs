@@ -80,7 +80,7 @@ public class CampaignInviteShortlistTests
         var invitations = await check.CampaignInvitations.Where(i => i.CampaignId == camp.Id).ToListAsync();
         Assert.Equal(2, invitations.Count);
         Assert.All(invitations, i => Assert.NotNull(i.CampaignCandidateId));       // đường 2 → gắn candidate
-        Assert.All(invitations, i => Assert.False(string.IsNullOrWhiteSpace(i.Token)));
+        Assert.All(invitations, i => Assert.False(string.IsNullOrWhiteSpace(i.TokenHash)));
         Assert.All(invitations, i => Assert.NotNull(i.SentAt));
 
         // DB2b — 2 outbox-row (1/invitation), chưa gửi, gắn đúng invitation.
@@ -225,7 +225,8 @@ public class CampaignInviteShortlistTests
             Id = Guid.NewGuid(),
             CampaignId = camp.Id,
             CampaignCandidateId = null,          // đường 1
-            Token = "existing-token",
+            TokenHash = InvitationTokens.Hash("existing-token"),
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
             Email = "a@x.com",
             CreatedAt = DateTime.UtcNow
         });
