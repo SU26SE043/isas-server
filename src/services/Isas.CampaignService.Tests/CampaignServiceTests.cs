@@ -31,7 +31,7 @@ public class CampaignServiceTests
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
-        var list = await svc.GetCampaignsAsync(a, default);
+        var list = (await svc.GetCampaignsAsync(a, null, null, default)).Items;
 
         Assert.Equal(2, list.Count);
         Assert.All(list, c => Assert.Equal(a, c.OrgId));
@@ -85,8 +85,8 @@ public class CampaignServiceTests
         Assert.True(ok);
 
         // query thường (global filter) → không thấy
-        var visible = await svc.GetCampaignsAsync(owner, default);
-        Assert.Empty(visible);
+        var visible = await svc.GetCampaignsAsync(owner, null, null, default);
+        Assert.Empty(visible.Items);
 
         // row vẫn còn (soft) + deleted_at đã set
         using var check = tdb.NewContext();
@@ -242,7 +242,7 @@ public class CampaignServiceTests
         Assert.Equal(orgId, audit.OrgId);            // audit ghi thêm org context
 
         // GetCampaigns theo ORG thấy; theo cá nhân HR (không phải org) → không thấy.
-        Assert.Single(await svc.GetCampaignsAsync(orgId, default));
-        Assert.Empty(await svc.GetCampaignsAsync(hrUserId, default));
+        Assert.Single((await svc.GetCampaignsAsync(orgId, null, null, default)).Items);
+        Assert.Empty((await svc.GetCampaignsAsync(hrUserId, null, null, default)).Items);
     }
 }

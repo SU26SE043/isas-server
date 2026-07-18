@@ -191,16 +191,41 @@ namespace Isas.CampaignService.Services
             return CampaignResponse.FromEntity(campaign);
         }
 
-        public async Task<List<CampaignResponse>> GetCampaignsAsync(Guid orgId, CancellationToken ct)
+        // List campaign của Employer — endpoint user THẬT SỰ gọi (khác admin oversight bên dưới).
+        // DB31: trước đây trả TOÀN BỘ campaign của org, không phân trang, kèm 2 Include → org lâu năm
+        // kéo cả nghìn campaign × (questions + criteria) mỗi lần mở trang. Nay keyset-paged theo ĐÚNG
+        // convention DB8 (`ListAllCampaignsAsync` ngay dưới): cursor opaque `(CreatedAt DESC, Id DESC)`,
+        // limit mặc định 500 = hành vi cũ, body vẫn mảng JSON, next-cursor ở header X-Next-Cursor.
+        // Index `(org_id, created_at, id)` (DB26) phủ trọn khoá sắp xếp này.
+        public async Task<KeysetPage<CampaignResponse>> GetCampaignsAsync(
+            Guid orgId, string? cursor, int? limit, CancellationToken ct)
         {
-            var listCampaigns = _db.Campaigns
-                .Where(c => c.OrgId == orgId)
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = KeysetCursor.Decode(cursor);
+
+            var query = _db.Campaigns.Where(c => c.OrgId == orgId);
+
+            if (cur is not null)
+                query = query.Where(c => c.CreatedAt < cur.CreatedAt
+                    || (c.CreatedAt == cur.CreatedAt && c.Id.CompareTo(cur.Id) < 0));
+
+            var rows = await query
                 .Include(c => c.Questions)
                 .Include(c => c.Criteria)   // list card hiện đúng số tiêu chí (khớp detail — C12)
+                // 2 Include collection trên cùng 1 root = JOIN fan-out nhân bản dòng gốc
+                // (questions × criteria) rồi EF dedup ở client. Split query tách thành 3 câu lệnh
+                // gọn: đúng thứ tự/limit được EF áp lại cho từng câu, nên phân trang vẫn chuẩn.
+                .AsSplitQuery()
                 .OrderByDescending(c => c.CreatedAt)
+                .ThenByDescending(c => c.Id)
+                .Take(take)
                 .ToListAsync(ct);
 
-            return (await listCampaigns).Select(CampaignResponse.FromEntity).ToList();
+            var items = rows.Select(CampaignResponse.FromEntity).ToList();
+            var next = rows.Count == take
+                ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
+                : null;
+            return new KeysetPage<CampaignResponse>(items, next);
         }
 
         // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org_id, khác GetCampaignsAsync).
