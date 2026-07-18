@@ -38,6 +38,7 @@
 - **INT-12** Phát event `SessionScored` / `SessionAbandoned`. *(Tạm dùng và làm tiếp phần tạm dừng B2C.)*
 - **INT-13** Danh tính B2B = magic-link → account Candidate nhẹ (D8).
 - **INT-14/15/16** ✅ Chất lượng chấm (E9→E10→E11 xong): neo theo mức (E9), self-consistency median + `needs_review` (E10), reasoning trích transcript + chống prompt-injection + HR chốt (E11).
+- **INT-17** ✅ **Phỏng vấn THÍCH ỨNG** (hybrid seed + adaptive; toggle theo session, tắt = luồng batch tĩnh cũ): sau mỗi câu trả lời, khi **MỌI câu hiện tại của buổi đã có answer** (frontier tuyến tính) + còn ngân sách (`max_questions`/`max_follow_ups`) + chưa quá `deadline` → InterviewService gọi AIService `/decide-next` (transcribe đồng bộ + Gemini) → **append 1 câu kế** (`kind` FollowUp/Clarify/NewQuestion, `generated_from_answer_id` = idempotency) hoặc **end**. **B2C** = 1 seed → hội thoại từ lượt 2; **B2B** = seed toàn bộ campaign questions (ai cũng nhận, công bằng) → câu thích ứng **bounded** ở đuôi, chấm theo **CÙNG tiêu chí campaign** (không mở tiêu chí mới → ranking so sánh được). Transcript đồng bộ = **nguồn duy nhất** → đẩy vào `ScoringJob` (worker bỏ Whisper). `/decide-next` lỗi → **degrade** về luồng tĩnh (answer đã lưu, worker transcribe async). Câu hỏi kế trả trong **response upload** (client khỏi poll).
 
 ## CAMP — Campaign (B2B orchestrator)
 - **CAMP-1** Lifecycle: `Draft → Active → Closed → Archived`.

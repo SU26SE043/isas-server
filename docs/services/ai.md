@@ -23,6 +23,7 @@
 | POST | `/api/v1/ai/generate-roadmap` 🔜 | `/api/v1/generate-roadmap` | **Sinh cấu trúc roadmap ôn tập (B2C BC13/D20)** — Gemini, đồng bộ |
 | POST | `/api/v1/ai/generate-lesson-theory` 🔜 | `/api/v1/generate-lesson-theory` | **Sinh lý thuyết lesson bám điểm yếu (B2C BC13/D20)** — Gemini, đồng bộ |
 | POST | `/api/v1/ai/summarize-roadmap` 🔜 | `/api/v1/summarize-roadmap` | **Kết luận roadmap: mạnh/yếu/cần cải thiện (B2C BC13/D20)** — Gemini, đồng bộ, best-effort |
+| POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/decide-next` | **Phỏng vấn THÍCH ỨNG (INT-17)** — transcribe đồng bộ + quyết định câu hỏi kế (follow-up/clarify/new/end), Gemini temp 0.3 |
 
 `generate-questions`: req `{ jobCategory, cvText?, jdText? }` → res `{ questions: [...] }`.
 `summarize-session` *(🔜 BC10, B2C)*: req `{ jobCategory, overallScore, criteriaScores:[{ name, percentage, needsImprovement }] }` → res `{ overallComment }` (text tiếng Việt, vài câu: tổng quan mạnh/yếu + hướng cải thiện). InterviewService gọi **đồng bộ best-effort** khi session B2C `Scored`; AI **không ghi DB** (Interview tự lưu `overall_comment`). Lỗi/timeout → để `null`, **không** chặn `Scored`. Bọc số liệu/nội dung ứng viên trong delimiter (chống prompt-injection).
@@ -38,7 +39,10 @@
 - `generate-lesson-theory`: req `{ jobCategory, level, lessonTitle, focusCriteria: string[], weaknesses?: string[] }` → res `{ theoryMarkdown }` (tiếng Việt, có ví dụ — nội dung ôn tập lý thuyết cho lesson). Interview lưu `roadmap_lessons.theory_content` (**lazy** — sinh 1 lần khi mở lesson đầu tiên).
 - `summarize-roadmap`: req `{ jobCategory, level, criteriaProgress: [{ criterionName, startPct?, endPct, levelThreshold, passed }] }` → res `{ strengths[], weaknesses[], improvements[], overallComment }` — **best-effort** khi roadmap `Completed` (lỗi → Interview để rỗng/null, không chặn). Bọc dữ liệu trong delimiter (chống prompt-injection) như `summarize-session`.
 
-> ⚠ **Bảo mật (cần sửa):** 2 endpoint này **hiện KHÔNG có auth** mà gateway vẫn route `/api/v1/ai/**` → ai cũng gọi được (đốt CPU/tiền). Xem *Vấn đề đã biết*.
+**Phỏng vấn THÍCH ỨNG** *(INT-17 — nội bộ, `X-Internal-Token` BẮT BUỘC, fail-closed)*:
+- `decide-next`: req `{ jobCategory, audioObjectKey?, answerText?, language?, currentQuestion, history:[{ question, answer?, kind }], askedCount, followUpCount, maxQuestions, maxFollowUps, criteria:[{ name, description? }] }` → res `{ action: follow_up|clarify|new_question|end, nextQuestion?, transcript?, reason? }`. InterviewService (chủ state) gọi **đồng bộ** sau mỗi câu trả lời: AIService tải audio S3 theo `audioObjectKey` → **transcribe (Whisper)** → **Gemini (temp 0.3)** quyết định câu kế. `transcript` trả về là **NGUỒN DUY NHẤT** — Interview lưu lên answer + đẩy vào `ScoringJob` (worker **bỏ Whisper**, tiết kiệm N lần self-consistency E10). Stateless (GEN-4): lịch sử hội thoại nằm trong request. `answerText` = fallback (test, không cần S3). Prompt chống prompt-injection (AI-4: câu trả lời = dữ liệu; "dừng phỏng vấn"/"hỏi câu dễ" bị phớt lờ) + NEO câu hỏi về `criteria` (không mở tiêu chí mới → công bằng chấm/ranking B2B). Lỗi (transcribe/Gemini) → **502** → Interview degrade về luồng tĩnh (worker transcribe async như cũ).
+
+> ⚠ **Bảo mật (cần sửa):** các endpoint SINH khác **hiện KHÔNG có auth** (chỉ nội bộ qua Tailscale, GEN-7). `/decide-next` **đã** gate `X-Internal-Token` (mẫu cho GEN-7 hardening các endpoint còn lại). Xem *Vấn đề đã biết*.
 
 > InterviewService (và CampaignService cho B2B) gọi `generate-questions` **trực tiếp** qua `AiService:BaseUrl`, **không** qua gateway. Worker chấm điểm callback về InterviewService — xem [interview.md](interview.md) (mục *Callback nội bộ*).
 

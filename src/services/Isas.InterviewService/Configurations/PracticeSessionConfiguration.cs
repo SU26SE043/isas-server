@@ -91,7 +91,21 @@ public class PracticeQuestionConfiguration : IEntityTypeConfiguration<PracticeQu
         e.Property(x => x.TimeLimitSec).IsRequired();
         e.Property(x => x.CreatedAt).IsRequired();
 
+        // Phỏng vấn THÍCH ỨNG — Kind lưu string (GEN-2). Rows cũ backfill 'Seed' (migration defaultValue).
+        e.Property(x => x.Kind)
+            .HasConversion<string>()
+            .HasMaxLength(16)
+            .IsRequired();
+
         e.HasIndex(x => new { x.SessionId, x.OrderNo }).IsUnique();
+
+        // Phỏng vấn THÍCH ỨNG — 1 answer sinh TỐI ĐA 1 câu kế: unique filtered index trên
+        // generated_from_answer_id (chỉ row thích ứng có giá trị; seed = null không tính). Là backstop
+        // đồng thời cho re-upload / double-POST cùng frontier answer (insert thứ 2 vỡ unique). Filter
+        // snake_case vì SQLite test dùng UseSnakeCaseNamingConvention (precedent DB5/DB19).
+        e.HasIndex(x => x.GeneratedFromAnswerId)
+            .IsUnique()
+            .HasFilter("generated_from_answer_id IS NOT NULL");
     }
 }
 

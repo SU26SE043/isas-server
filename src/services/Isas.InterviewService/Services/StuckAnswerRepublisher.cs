@@ -83,6 +83,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.SessionId,
                 a.QuestionId,
                 a.AudioObjectKey,
+                a.Transcript,   // adaptive: nếu đã transcribe đồng bộ → re-publish cũng mang theo (worker bỏ Whisper)
                 CampaignId = a.Session.CampaignId,
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
@@ -133,7 +134,8 @@ public class StuckAnswerRepublisher : BackgroundService
                 QuestionContent = a.QuestionContent,
                 JobCategory = a.JobCategory.ToString(),
                 RubricVersion = criteria[0].Version,
-                Criteria = ScoringCriteriaBuilder.Build(criteria)   // E9: kèm levels (+ anchors)
+                Criteria = ScoringCriteriaBuilder.Build(criteria),   // E9: kèm levels (+ anchors)
+                Transcript = a.Transcript   // adaptive: có transcript đồng bộ → worker bỏ Whisper
             };
 
             try

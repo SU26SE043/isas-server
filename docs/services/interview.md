@@ -171,7 +171,8 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 **`POST /sessions/{sessionId}/answers`** — Upload audio trả lời.
 - Req `multipart/form-data`: `questionId: uuid` · `file: audio ≤50MB` · `durationSec: int`.
 - **Idempotent**: upload lại cùng `questionId` = ghi đè (reset transcript **+ xoá điểm cũ `answer_scores` + `needs_review=false`**, publish lại chấm) — INT-3, chấm lại từ đầu sạch (không trộn điểm/rubric version cũ).
-- Res **`200/201`** `AnswerResponse` (`status="Uploaded"` → publish → `Scoring`). Answer đầu tiên: session `Ready→InProgress`.
+- Res **`200`** `UploadAnswerResult` `{ answerId, questionId, status, transcript?, nextAction?, nextQuestion?{ id, orderNo, content, timeLimitSec, kind }, interviewComplete }` (`status="Scoring"` sau publish; câu đầu: session `Ready→InProgress`). Các field `transcript/nextAction/nextQuestion/interviewComplete` = **phỏng vấn THÍCH ỨNG (INT-17)**, chỉ có khi session bật adaptive; client cũ bỏ qua vẫn chạy (backward-compat).
+- **Phỏng vấn THÍCH ỨNG (INT-17):** khi buổi bật adaptive + đây là **frontier** (mọi câu đã có answer) + còn ngân sách + chưa quá `deadline` → gọi AIService `/decide-next` (transcribe đồng bộ + Gemini) → `nextQuestion` (append `practice_questions` với `kind` FollowUp/Clarify/NewQuestion) HOẶC `interviewComplete=true` (end/hết ngân sách → mời submit). `/decide-next` lỗi → **degrade** luồng tĩnh (answer đã lưu, worker transcribe async; response không có câu kế). Câu kế trả **ngay trong response** → client khỏi poll `GET /sessions/{id}`.
 - Lỗi: **400** (thiếu field · file quá lớn) · **401** · **403** · **404** (session/câu không có) · **409** (session đã `Scoring`/`Scored`).
 
 ### Files — `/api/v1/interview/files` (JWT) — chỉ `.pdf`, `fileType ∈ {cv,jd}`
@@ -329,14 +330,18 @@ attempts     int           số lần thử publish
 
 ### `practice_questions`
 ```
-id             uuid          PK
-session_id     uuid          FK → practice_sessions (Cascade)
-order_no       int
-content        text
-time_limit_sec int           default 120  giới hạn/câu — ĐANG hiệu lực (hết giờ→chốt câu, sang câu kế); KHÔNG có giới hạn tổng buổi
-created_at     timestamptz
+id                       uuid          PK
+session_id               uuid          FK → practice_sessions (Cascade)
+order_no                 int
+content                  text
+time_limit_sec           int           default 120  giới hạn/câu — ĐANG hiệu lực (hết giờ→chốt câu, sang câu kế); KHÔNG có giới hạn tổng buổi
+kind                     varchar(16)   INT-17 enum QuestionKind: Seed·FollowUp·Clarify·NewQuestion (rows cũ backfill 'Seed')
+generated_from_answer_id uuid?         INT-17 answer đã "đẻ" câu này (null=seed); UNIQUE filtered (idempotency: 1 answer→≤1 câu kế). Ref lỏng practice_answers (KHÔNG FK — tránh cascade path)
+created_at               timestamptz
                              UNIQUE (session_id, order_no)
+                             UNIQUE (generated_from_answer_id) WHERE generated_from_answer_id IS NOT NULL
 ```
+> **Phỏng vấn THÍCH ỨNG (INT-17):** `practice_sessions` thêm `adaptive_enabled bool` (toggle theo buổi; tắt = luồng batch tĩnh cũ) + `max_follow_ups int`/`max_questions int` (trần; 0 = không trần cứng). Migration `AddAdaptiveInterviewColumns` (reversible; `ADD COLUMN kind DEFAULT 'Seed'` backfill an toàn; index add online-safe).
 
 ### `practice_answers`
 ```

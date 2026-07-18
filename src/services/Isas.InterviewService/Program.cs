@@ -61,6 +61,13 @@ builder.Services.AddHttpClient<IAiServiceSessionSummarizer, AiServiceSessionSumm
     c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
 });
 
+builder.Services.AddHttpClient<IAiServiceInterviewDecider, AiServiceInterviewDecider>(c =>   // phỏng vấn THÍCH ỨNG
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    // 90s: đủ cho transcribe ĐỒNG BỘ (Whisper) + Gemini quyết định câu kế trong 1 request.
+    c.Timeout = TimeSpan.FromSeconds(90);
+});
+
 builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient>(c =>   // BC2
 {
     // Nội bộ (KHÔNG qua gateway) → gọi thẳng PaymentService. X-Internal-Token gắn trong client.
@@ -131,6 +138,8 @@ builder.Services.Configure<FileStorageOptions>(
 
 builder.Services.Configure<ScoringOptions>(
     builder.Configuration.GetSection(ScoringOptions.SectionName));   // BC9
+builder.Services.Configure<AdaptiveOptions>(
+    builder.Configuration.GetSection(AdaptiveOptions.SectionName));   // phỏng vấn THÍCH ỨNG (B2C)
 builder.Services.Configure<RoadmapOptions>(
     builder.Configuration.GetSection(RoadmapOptions.SectionName));   // BC15
 builder.Services.Configure<OutboxSettings>(

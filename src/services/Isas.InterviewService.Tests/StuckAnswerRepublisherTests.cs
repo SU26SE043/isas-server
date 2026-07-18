@@ -119,6 +119,32 @@ public class StuckAnswerRepublisherTests
         Assert.Equal(new[] { 0, 1, 2, 3, 4, 5 }, c.Levels.Select(l => l.Score).ToArray());
     }
 
+    // Adaptive: answer đã có transcript đồng bộ → re-publish job mang theo transcript (worker bỏ Whisper).
+    [Fact]
+    public async Task PublishHut_WithSyncTranscript_CarriesTranscriptInJob()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        a.Transcript = "transcript đồng bộ đã có";   // adaptive: đã transcribe khi decide-next
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t);
+        ScoringJob? published = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.NotNull(published);
+        Assert.Equal("transcript đồng bộ đã có", published!.Transcript);
+    }
+
     [Fact]
     public async Task FreshUpload_WithinGrace_NotRepublished()
     {

@@ -121,3 +121,70 @@ async def test_process_message_nacks_to_dlq_when_report_also_fails(monkeypatch):
 
     message.nack.assert_awaited_once_with(requeue=False)
     message.ack.assert_not_called()
+
+
+# ── Adaptive: transcript đính kèm job → BỎ QUA Whisper (single-source) ───────
+@pytest.mark.asyncio
+async def test_process_message_skips_whisper_when_transcript_present(monkeypatch):
+    """Job mang `transcript` (Interview đã transcribe đồng bộ khi decide-next) → worker
+    KHÔNG tải audio, KHÔNG gọi Whisper; chấm thẳng transcript đó rồi callback + ack.
+    Tiết kiệm N lần Whisper (self-consistency E10)."""
+    download = MagicMock()
+    transcribe = MagicMock(return_value="KHÔNG NÊN DÙNG")
+    score = AsyncMock(return_value=[{"criterionId": "c1", "score": 3.0,
+                                     "levelMatched": 3, "reasoning": "x"}])
+    post_callback = AsyncMock()
+    monkeypatch.setattr(worker.s3_client, "download_fileobj", download)
+    monkeypatch.setattr(worker.transcriber, "transcribe", transcribe)
+    monkeypatch.setattr(worker.provider, "score", score)
+    monkeypatch.setattr(worker, "post_callback", post_callback)
+
+    message = _fake_message({
+        "answerId": "answer-3",
+        "audioObjectKey": "recordings/a3.webm",
+        "transcript": "Câu trả lời đã transcribe sẵn.",
+        "questionContent": "Q?",
+        "jobCategory": "BE",
+        "criteria": [],
+        "rubricVersion": 1,
+    })
+
+    await worker.process_message(message)
+
+    download.assert_not_called()          # KHÔNG tải audio
+    transcribe.assert_not_called()        # KHÔNG Whisper
+    # transcript có sẵn được đưa thẳng vào score() + callback.
+    assert score.call_args.kwargs["transcript"] == "Câu trả lời đã transcribe sẵn."
+    assert post_callback.await_args.args[0]["transcript"] == "Câu trả lời đã transcribe sẵn."
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_message_transcribes_when_no_transcript(monkeypatch):
+    """Regression: KHÔNG có transcript trong job (đường cũ) → vẫn tải audio + Whisper."""
+    download = MagicMock()
+    transcribe = MagicMock(return_value="transcript từ whisper")
+    score = AsyncMock(return_value=[{"criterionId": "c1", "score": 3.0,
+                                     "levelMatched": 3, "reasoning": "x"}])
+    post_callback = AsyncMock()
+    monkeypatch.setattr(worker.s3_client, "download_fileobj", download)
+    monkeypatch.setattr(worker.transcriber, "transcribe", transcribe)
+    monkeypatch.setattr(worker.provider, "score", score)
+    monkeypatch.setattr(worker, "post_callback", post_callback)
+
+    message = _fake_message({
+        "answerId": "answer-4",
+        "audioObjectKey": "recordings/a4.webm",
+        "questionContent": "Q?",
+        "jobCategory": "BE",
+        "criteria": [],
+        "rubricVersion": 1,
+    })
+
+    await worker.process_message(message)
+
+    download.assert_called_once()
+    transcribe.assert_called_once()
+    assert score.call_args.kwargs["transcript"] == "transcript từ whisper"
+    message.ack.assert_awaited_once()

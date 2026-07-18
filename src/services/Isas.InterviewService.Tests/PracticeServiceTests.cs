@@ -1,9 +1,11 @@
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Isas.InterviewService.Tests;
@@ -67,6 +69,55 @@ public class PracticeServiceTests
         var saved = await t.Db.PracticeQuestions.AsNoTracking()
             .CountAsync(q => q.SessionId == res.Id);
         Assert.Equal(3, saved);
+
+        // Adaptive TẮT (mặc định) → session không bật adaptive, mọi câu Kind=Seed.
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
+        Assert.False(s.AdaptiveEnabled);
+        Assert.All(res.Questions, q => Assert.Equal("Seed", q.Kind));
+    }
+
+    // Phỏng vấn THÍCH ỨNG (B2C): Adaptive:Enabled → chỉ giữ SeedCount câu SEED (dù AI trả nhiều hơn) +
+    // đóng dấu toggle/trần lên session. Phần còn lại do AnswerService sinh động theo câu trả lời.
+    [Fact]
+    public async Task Create_AdaptiveEnabled_KeepsOnlySeedCount_AndStampsSession()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GeneratedQuestion>
+            {
+                new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" }
+            });
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var adaptive = Options.Create(new AdaptiveOptions
+        {
+            Enabled = true, SeedCount = 1, MaxQuestions = 8, MaxFollowUps = 2
+        });
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance, adaptive);
+
+        var res = await svc.CreateSessionAsync(candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE));
+
+        // Chỉ 1 câu SEED (dù AI trả 3), Kind=Seed.
+        Assert.Single(res.Questions);
+        Assert.Equal("Seed", res.Questions[0].Kind);
+        Assert.Equal(1, await t.Db.PracticeQuestions.CountAsync(q => q.SessionId == res.Id));
+
+        // Session đóng dấu cấu hình adaptive.
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
+        Assert.True(s.AdaptiveEnabled);
+        Assert.Equal(8, s.MaxQuestions);
+        Assert.Equal(2, s.MaxFollowUps);
     }
 
     // BC2 (a): reserve OK → tạo session + reserve đúng ví cá nhân (owner=User, ownerId=candidate,

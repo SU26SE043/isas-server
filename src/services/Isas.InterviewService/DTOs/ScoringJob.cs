@@ -21,6 +21,11 @@ public class ScoringJob
     // (tái lập); 2..N = Scoring:SelfConsistencyTemperature (dao động thật để đo spread). null → worker
     // dùng mặc định (0) — tương thích worker cũ.
     public double? Temperature { get; set; }
+
+    // Phỏng vấn THÍCH ỨNG — transcript đã transcribe ĐỒNG BỘ khi upload (qua /decide-next). Có giá trị →
+    // worker BỎ QUA Whisper, chấm thẳng transcript này (single-source; tiết kiệm N lần Whisper self-
+    // consistency E10). null (luồng cũ / re-publish job cũ) → worker tải audio + Whisper như trước.
+    public string? Transcript { get; set; }
 }
 
 public class ScoringCriterionDto

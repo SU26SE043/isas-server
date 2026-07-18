@@ -48,7 +48,8 @@ public class InternalSessionsController : ControllerBase
             : JobCategory.BE;
 
         var request = new CreateCampaignSessionRequest(
-            req.CampaignId, req.OrgId, jobCategory, req.Questions, req.Criteria, req.ExpiresAt);
+            req.CampaignId, req.OrgId, jobCategory, req.Questions, req.Criteria, req.ExpiresAt,
+            req.AdaptiveEnabled, req.MaxFollowUps, req.MaxQuestions);   // phỏng vấn THÍCH ỨNG (B2B)
 
         try
         {

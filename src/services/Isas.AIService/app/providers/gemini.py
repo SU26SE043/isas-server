@@ -7,7 +7,7 @@ from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
-    build_summarize_session_prompt,
+    build_summarize_session_prompt, build_decide_next_prompt,
 )
 from app.providers.base import QuestionProvider
 
@@ -530,3 +530,59 @@ class GeminiProvider(QuestionProvider):
             raise ValueError("LLM không trả về nhận xét buổi luyện hợp lệ.")
 
         return {"overallComment": comment}
+
+    async def decide_next(self, job_category: str, current_question: str, transcript: str,
+                          history: list[dict], asked_count: int, follow_up_count: int,
+                          max_questions: int, max_follow_ups: int,
+                          criteria: list[dict]) -> dict:
+        """Phỏng vấn THÍCH ỨNG — quyết định hành động kế tiếp (sync, stateless, KHÔNG ghi DB).
+
+        Trả về dict: { "action": str, "nextQuestion": str|None, "reason": str|None }
+          action ∈ {follow_up, clarify, new_question, end}; nextQuestion None ⇔ end.
+
+        temperature=0.3: bám sát câu trả lời/năng lực nhưng câu hỏi tự nhiên hơn chấm điểm
+        (0.0) — thấp hơn sinh câu hỏi tự do (0.7) vì phải nhắm đúng câu trả lời + tiêu chí.
+        """
+        prompt = build_decide_next_prompt(
+            job_category, current_question, transcript, history,
+            asked_count, follow_up_count, max_questions, max_follow_ups, criteria)
+
+        response = await self._client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "nextQuestion": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM quyết định câu kế trả về JSON không hợp lệ: {text[:200]}")
+
+        action = str(data.get("action", "")).strip().lower()
+        if action not in {"follow_up", "clarify", "new_question", "end"}:
+            raise ValueError(f"LLM trả về action không hợp lệ: {action!r}")
+
+        next_q = str(data.get("nextQuestion", "") or "").strip()
+        # ≠ end BẮT BUỘC có câu hỏi — rỗng = output malformed → reject (idiom score()).
+        if action != "end" and not next_q:
+            raise ValueError(f"Action {action} nhưng nextQuestion rỗng.")
+
+        reason = str(data.get("reason", "") or "").strip() or None
+        return {
+            "action": action,
+            "nextQuestion": next_q or None,   # end → None
+            "reason": reason,
+        }
