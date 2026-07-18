@@ -117,6 +117,11 @@ namespace Isas.PaymentService.Controllers
         [Authorize]
         public async Task<IActionResult> CancelOrderAsync(Guid id, CancellationToken ct = default)
         {
+            // A4 (AUTH-6) — huỷ đơn = money-mutation (void link thanh toán của OrgAdmin) → HrMember 403,
+            // đồng nhất với CreateOrderAsync / invoices pay / admin invoices close.
+            if (User.IsHrMember())
+                return Forbid();
+
             var owner = GetOwner();
             if (owner is null)
                 return Forbid();
