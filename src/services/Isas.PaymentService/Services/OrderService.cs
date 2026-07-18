@@ -213,7 +213,9 @@ namespace Isas.PaymentService.Services
 
             await _payos.PaymentRequests.CancelAsync(order.PayosOrderCode, "Cancelled by user");
 
-            order.Status = OrderStatus.Failed;
+            // PAY-10: user chủ động huỷ → Cancelled (KHÔNG phải Failed = thanh toán hỏng). Giữ đủ 4
+            // trạng thái terminal để đối soát phân biệt được "user tự huỷ" với "cổng thanh toán lỗi".
+            order.Status = OrderStatus.Cancelled;
             await _db.SaveChangesAsync(ct);
         }
     }
