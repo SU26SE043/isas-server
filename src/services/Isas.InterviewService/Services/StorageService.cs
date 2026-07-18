@@ -118,6 +118,22 @@ public class StorageService : IStorageService
         return file?.ParsedText ?? string.Empty;
     }
 
+    /// <summary>
+    /// Như <see cref="GetParseTextAsync"/> nhưng CHỈ đọc file của chính chủ.
+    /// interview.md §Validation yêu cầu `cvId`/`jdId` phải thuộc về user, nhưng luồng tạo session
+    /// KHÔNG kiểm — candidate A truyền `cvId` của B thì CV của B lọt vào prompt sinh câu hỏi, tức A
+    /// đọc được nội dung CV người khác qua các câu hỏi (bắt khi rà e2e 2026-07-18).
+    /// File của người khác → trả rỗng, **y như file không tồn tại** (hành vi sẵn có với id lạ): theo
+    /// tiền lệ BK15 "non-owner không xác nhận sự tồn tại", và tránh đổi status code làm FE đăng xuất
+    /// oan (PracticeController map UnauthorizedAccessException → 401 → interceptor đá về /auth/login).
+    /// </summary>
+    public async Task<string> GetOwnedParsedTextAsync(Guid fileId, Guid ownerId, CancellationToken ct = default)
+    {
+        var file = await _db.FileRecords
+            .FirstOrDefaultAsync(f => f.Id == fileId && f.UserId == ownerId, ct);
+        return file?.ParsedText ?? string.Empty;
+    }
+
     public async Task<List<FileRecord>> GetFilesByUserId(Guid userId, CancellationToken ct = default)
     {
         return await _db.FileRecords.Where(f => f.UserId == userId).ToListAsync(ct);

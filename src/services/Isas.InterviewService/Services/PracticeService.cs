@@ -73,7 +73,8 @@ public class PracticeService : IPracticeService
         string? cvText = null;
         if (request.CvId is not null)
         {
-            cvText = await _storage.GetParseTextAsync(request.CvId.Value, ct);
+            // Owner-scoped: file của người khác coi như không tồn tại (interview.md §Validation).
+            cvText = await _storage.GetOwnedParsedTextAsync(request.CvId.Value, candidateId, ct);
             if (string.IsNullOrWhiteSpace(cvText))
                 throw new InvalidOperationException("CV không đọc được nội dung");
         }
@@ -89,7 +90,7 @@ public class PracticeService : IPracticeService
         string? jdText = jdTextInput;
         if (jdTextInput is null && request.JdId is not null)
         {
-            jdText = await _storage.GetParseTextAsync(request.JdId.Value, ct);
+            jdText = await _storage.GetOwnedParsedTextAsync(request.JdId.Value, candidateId, ct);
             if (string.IsNullOrWhiteSpace(jdText))
                 throw new InvalidOperationException("JD không đọc được nội dung");
         }

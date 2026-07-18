@@ -112,7 +112,7 @@ public class JdTextInputTests
         gen.Verify(g => g.GenerateQuestionsAsync(
             "BE", null, "Tuyển BE Java 3 năm", It.IsAny<CancellationToken>()), Times.Once);
         // Không có file nào phải parse.
-        storage.Verify(s => s.GetParseTextAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        storage.Verify(s => s.GetOwnedParsedTextAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
 
         var saved = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
         Assert.Null(saved.JdId);
@@ -129,7 +129,7 @@ public class JdTextInputTests
 
         var storage = new Mock<IStorageService>();
         // Parser trả text KHÁC — nếu file KHÔNG bị bỏ, AI sẽ nhận "TU-FILE" thay vì text nhập tay.
-        storage.Setup(s => s.GetParseTextAsync(jdId, It.IsAny<CancellationToken>())).ReturnsAsync("TU-FILE");
+        storage.Setup(s => s.GetOwnedParsedTextAsync(jdId, candidate, It.IsAny<CancellationToken>())).ReturnsAsync("TU-FILE");
         var gen = GeneratorMock();
 
         var res = await BuildPractice(t, storage.Object, gen.Object).CreateSessionAsync(
@@ -138,7 +138,7 @@ public class JdTextInputTests
 
         gen.Verify(g => g.GenerateQuestionsAsync(
             "BE", null, "JD nhập tay", It.IsAny<CancellationToken>()), Times.Once);
-        storage.Verify(s => s.GetParseTextAsync(jdId, It.IsAny<CancellationToken>()), Times.Never);
+        storage.Verify(s => s.GetOwnedParsedTextAsync(jdId, candidate, It.IsAny<CancellationToken>()), Times.Never);
 
         // jd_id KHÔNG được lưu: file không góp gì vào câu hỏi thì row đừng "nhận vơ" nó.
         var saved = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
@@ -158,7 +158,7 @@ public class JdTextInputTests
         await t.Db.SaveChangesAsync();
 
         var storage = new Mock<IStorageService>();
-        storage.Setup(s => s.GetParseTextAsync(jdId, It.IsAny<CancellationToken>())).ReturnsAsync("TU-FILE");
+        storage.Setup(s => s.GetOwnedParsedTextAsync(jdId, candidate, It.IsAny<CancellationToken>())).ReturnsAsync("TU-FILE");
         var gen = GeneratorMock();
 
         var res = await BuildPractice(t, storage.Object, gen.Object).CreateSessionAsync(
