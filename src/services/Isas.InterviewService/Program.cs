@@ -32,6 +32,7 @@ builder.Services.AddSingleton<ISessionEventPublisher, SessionEventPublisher>();
 builder.Services.AddScoped<ISessionResultService, SessionResultService>();   // BC9
 builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
+builder.Services.AddScoped<IQuestionSpeechService, QuestionSpeechService>();   // TTS đọc câu hỏi
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
 builder.Services.AddScoped<IRubricLibraryService, RubricLibraryService>();   // BC16 — rubric cá nhân B2C
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
@@ -67,6 +68,13 @@ builder.Services.AddHttpClient<IAiServiceInterviewDecider, AiServiceInterviewDec
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
     // 90s: đủ cho transcribe ĐỒNG BỘ (Whisper) + Gemini quyết định câu kế trong 1 request.
     c.Timeout = TimeSpan.FromSeconds(90);
+});
+
+builder.Services.AddHttpClient<IAiServiceSpeechSynthesizer, AiServiceSpeechSynthesizer>(c =>   // TTS đọc câu hỏi
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    // 60s: cache hit trả gần như tức thì; miss = 1 lần gọi Gemini TTS + encode mp3.
+    c.Timeout = TimeSpan.FromSeconds(60);
 });
 
 builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient>(c =>   // BC2

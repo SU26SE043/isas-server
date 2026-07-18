@@ -176,6 +176,16 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 - **Phỏng vấn THÍCH ỨNG (INT-17):** khi buổi bật adaptive + đây là **frontier** (mọi câu đã có answer) + còn ngân sách + chưa quá `deadline` → gọi AIService `/decide-next` (transcribe đồng bộ + Gemini) → `nextQuestion` (append `practice_questions` với `kind` FollowUp/Clarify/NewQuestion) HOẶC `interviewComplete=true` (end/hết ngân sách → mời submit). `/decide-next` lỗi → **degrade** luồng tĩnh (answer đã lưu, worker transcribe async; response không có câu kế). Câu kế trả **ngay trong response** → client khỏi poll `GET /sessions/{id}`.
 - Lỗi: **400** (thiếu field · file quá lớn) · **401** · **403** · **404** (session/câu không có) · **409** (session đã `Scoring`/`Scored`).
 
+**`GET /sessions/{sessionId}/questions/{questionId}/speech`** — 🔊 **Đọc câu hỏi thành tiếng (TTS)** — trợ năng để ứng viên NGHE đề bài.
+- Res **`200`**: **bytes audio**, `Content-Type: audio/mpeg` (mp3) — không phải JSON.
+- **Dùng chung B2C và B2B** — session B2B cũng là `practice_sessions` và cũng có `candidate_id`, nên MỘT endpoint phục vụ cả hai dòng (không tách route theo `campaign_id`).
+- **Owner-scope (INT-11):** chỉ **chủ buổi**. Không phải buổi của mình → **403** (khớp tiền lệ `GET /sessions/{id}`). `questionId` có thật nhưng **không thuộc** `sessionId` → **404** (không đọc trộm đề buổi khác chỉ vì đoán đúng GUID).
+- **KHÔNG trừ credit** — credit = 1 lượt phỏng vấn **được AI chấm** (PAY-1); nghe lại đề bài không phải lượt chấm, và tính tiền theo số lần bấm nghe sẽ phạt đúng người cần trợ năng. Không reserve/consume gì.
+- **Cache theo NỘI DUNG (⇒ KHÔNG cần migration):** Interview chỉ kiểm quyền rồi chuyển tiếp bytes; toàn bộ vendor + cache nằm ở **AIService `/tts`** — key S3 `tts/{sha256(voice+text)}.mp3` (xem [ai.md](ai.md) §TTS). Câu hỏi **trùng nhau** (nhất là seed B2B phát cho MỌI ứng viên) dùng chung **1 file** ⇒ chỉ tổng hợp/tính tiền **một lần**; sửa nội dung câu hỏi ⇒ hash đổi ⇒ audio cũ **tự vô hiệu hoá**. **KHÔNG thêm cột/bảng nào.**
+- Lỗi: **401** · **403** (không phải buổi của bạn) · **404** (session không có · câu hỏi không thuộc session · nội dung câu hỏi rỗng) · **502** (AIService/TTS gián đoạn).
+- ⚠ **502 KHÔNG được chặn luồng phỏng vấn** — FE degrade về **chỉ hiện chữ**. Vendor chết thì cố tình ném `AiServiceException` → **502**, KHÔNG nuốt thành 404 (404 sẽ khiến FE tưởng câu hỏi không tồn tại thay vì hiểu là TTS tạm hỏng).
+- **AI-4:** nội dung câu hỏi (do AI sinh) được chuyển **nguyên văn** như **dữ liệu** — không ghép chỉ thị/nội suy gì quanh nó.
+
 ### Files — `/api/v1/interview/files` (JWT) — chỉ `.pdf`, `fileType ∈ {cv,jd}`
 
 **`POST /upload?fileType=cv|jd`** — Upload PDF (≤10MB) + parse text.
