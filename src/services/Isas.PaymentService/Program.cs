@@ -90,6 +90,10 @@ builder.Services.Configure<ReconcileSettings>(
 builder.Services.Configure<OrphanReconcileSettings>(
     builder.Configuration.GetSection(OrphanReconcileSettings.SectionName));
 
+// PAY-10 — cấu hình sweeper đóng đơn Pending quá hạn sang Expired (đối soát PayOS trước khi đóng).
+builder.Services.Configure<OrderExpirySettings>(
+    builder.Configuration.GetSection(OrderExpirySettings.SectionName));
+
 // DB18 — chiều gọi nội bộ Payment→Interview `/internal/sessions/exists` (X-Internal-Token, KHÔNG qua
 // gateway). BaseUrl từ Interview:BaseUrl; trống → không set BaseAddress (call sẽ ném → reconciler skip vòng).
 builder.Services.AddHttpClient<IInterviewSessionClient, InterviewSessionClient>(c =>
@@ -138,6 +142,10 @@ builder.Services.AddHostedService<CreditReservationReconciler>();
 // reserve↔insert lúc Start). Xác minh dương qua Interview `/internal/sessions/exists`; Interview down →
 // skip vòng (KHÔNG release oan). Compensation-reconciler nhẹ (không saga).
 builder.Services.AddHostedService<OrphanReservationReconciler>();
+// PAY-10: đóng đơn Pending quá hạn sang Expired — trước đó KHÔNG sweeper nào gán Expired (e2e 2026-07-18:
+// 16/16 đơn Pending quá hạn, 0 đơn từng Expired). Hỏi PayOS trước: Paid → cộng credit (cứu webhook rơi),
+// Underpaid/PayOS-lỗi → giữ Pending; chỉ link chết mới đóng (không đóng mù → không chôn tiền đã trả).
+builder.Services.AddHostedService<OrderExpiryReconciler>();
 
 var app = builder.Build();
 
