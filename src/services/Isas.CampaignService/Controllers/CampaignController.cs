@@ -1,6 +1,7 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -35,15 +36,22 @@ namespace Isas.CampaignService.Controllers
         private Guid GetActorUserId()
             => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var g) ? g : Guid.Empty;
 
+        // GET /campaign — campaign của org caller (mới nhất trước; keyset-paged DB31, mẫu DB8).
+        // ?limit= (mặc định/tối đa 500) + ?cursor= (opaque) để phân trang; next-cursor trả ở header
+        // X-Next-Cursor (vắng = hết trang). Body giữ nguyên mảng JSON → FE hiện tại không phải sửa gì.
         [HttpGet]
         [Authorize(Roles = "Employer")]
-        public async Task<ActionResult<List<CampaignResponse>>> GetAllCampaign(CancellationToken ct)
+        public async Task<ActionResult<List<CampaignResponse>>> GetAllCampaign(
+            [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
             var orgId = GetOrgId();
             if (orgId is null)
                 return Forbid();
 
-            return await _campaignService.GetCampaignsAsync(orgId.Value, ct);
+            var page = await _campaignService.GetCampaignsAsync(orgId.Value, cursor, limit, ct);
+            if (page.NextCursor is not null)
+                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+            return Ok(page.Items);
         }
 
         [HttpGet("{id}")]
