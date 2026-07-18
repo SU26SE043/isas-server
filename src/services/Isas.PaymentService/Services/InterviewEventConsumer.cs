@@ -20,6 +20,14 @@ namespace Isas.PaymentService.Services
     {
         private const string ExchangeName = "interview.events";
         private const string QueueName = "payment.credit";
+
+        // DB22 — DLX/DLQ hứng message độc (mẫu AI2 `scoring_pipeline_dlx`). Trước đây mọi lỗi đều
+        // nack(requeue:true) vô điều kiện: 1 exception deterministic requeue mãi mãi và — vì prefetch=1 —
+        // CHẶN TOÀN BỘ event phía sau ⇒ platform ngừng consume credit (thiếu doanh thu) VÀ ngừng release
+        // (credit khách kẹt). Cả hai chiều đều mất tiền, mà triệu chứng chỉ là "hệ thống hơi chậm".
+        private const string DeadLetterExchangeName = "payment.credit.dlx";
+        private const string DeadLetterQueueName = "payment.credit.dead";
+        private const string DeadLetterRoutingKey = "credit_dead";
         private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
 
         private readonly IConfiguration _config;
@@ -87,11 +95,42 @@ namespace Isas.PaymentService.Services
                 autoDelete: false,
                 cancellationToken: stoppingToken);
 
+            // DB22 — DLX + DLQ phải tồn tại TRƯỚC khi khai main queue trỏ tới nó.
+            await channel.ExchangeDeclareAsync(
+                exchange: DeadLetterExchangeName,
+                type: ExchangeType.Direct,
+                durable: true,
+                autoDelete: false,
+                cancellationToken: stoppingToken);
+
+            await channel.QueueDeclareAsync(
+                queue: DeadLetterQueueName,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                cancellationToken: stoppingToken);
+
+            await channel.QueueBindAsync(
+                queue: DeadLetterQueueName,
+                exchange: DeadLetterExchangeName,
+                routingKey: DeadLetterRoutingKey,
+                cancellationToken: stoppingToken);
+
+            // ⚠ DEPLOY: queue `payment.credit` đang chạy LIVE được khai với arguments=null. RabbitMQ
+            // KHÔNG cho sửa argument tại chỗ → redeclare kèm x-dead-letter-* sẽ ném PRECONDITION_FAILED
+            // (406), đúng cái bẫy AI2 đã dính với `scoring_pipeline_queue`. Lúc apply phải drain (chờ
+            // queue rỗng) → delete → để consumer khai lại, HOẶC set DLX bằng RabbitMQ policy thay vì
+            // argument. Xem DEPLOYMENT.md.
             await channel.QueueDeclareAsync(
                 queue: QueueName,
                 durable: true,
                 exclusive: false,
                 autoDelete: false,
+                arguments: new Dictionary<string, object?>
+                {
+                    ["x-dead-letter-exchange"] = DeadLetterExchangeName,
+                    ["x-dead-letter-routing-key"] = DeadLetterRoutingKey
+                },
                 cancellationToken: stoppingToken);
 
             // Bind CẢ HAI key vào cùng 1 queue → 1 consumer xử lý cả consume lẫn release theo routing key.
@@ -125,10 +164,25 @@ namespace Isas.PaymentService.Services
                 }
                 catch (Exception ex)
                 {
-                    // Lỗi tạm (DB rớt/deadlock) → nack requeue để thử lại; idempotency của Consume/Release
-                    // đảm bảo redeliver không trừ/hoàn kép.
-                    _logger.LogError(ex, "Lỗi xử lý event {RoutingKey} — nack + requeue", ea.RoutingKey);
-                    await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: stoppingToken);
+                    // DB22 — trần retry để message độc KHÔNG chặn queue.
+                    // Lần đầu (`Redelivered=false`) → requeue thử lại: đủ cho lỗi tạm thật (DB rớt/deadlock),
+                    // idempotency Consume/Release (PAY-11) bảo đảm redeliver không trừ/hoàn kép.
+                    // Đã redeliver mà VẪN lỗi → coi là độc → nack(requeue:false) → DLX đẩy sang DLQ để
+                    // điều tra/replay. KHÔNG mất dữ liệu: message nằm nguyên trong DLQ, và Interview còn
+                    // outbox dispatcher độc lập nếu cần phát lại.
+                    // Cờ `Redelivered` do broker giữ nên bền qua restart consumer — không cần đếm in-memory.
+                    if (ea.Redelivered)
+                    {
+                        _logger.LogError(ex,
+                            "Event {RoutingKey} lỗi lần 2 → đẩy sang DLQ {DeadLetterQueue} (không chặn queue chính)",
+                            ea.RoutingKey, DeadLetterQueueName);
+                        await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false, cancellationToken: stoppingToken);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(ex, "Lỗi xử lý event {RoutingKey} — nack + requeue (thử lại 1 lần)", ea.RoutingKey);
+                        await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: stoppingToken);
+                    }
                 }
             };
 

@@ -40,10 +40,10 @@ public class CampaignInvitationTests
         using var check = tdb.NewContext();
         var rows = await check.CampaignInvitations.Where(i => i.CampaignId == camp.Id).ToListAsync();
         Assert.Equal(2, rows.Count);
-        Assert.All(rows, r => Assert.False(string.IsNullOrWhiteSpace(r.Token)));
+        Assert.All(rows, r => Assert.False(string.IsNullOrWhiteSpace(r.TokenHash)));
         Assert.All(rows, r => Assert.NotNull(r.SentAt));
         // token phải duy nhất
-        Assert.Equal(rows.Count, rows.Select(r => r.Token).Distinct().Count());
+        Assert.Equal(rows.Count, rows.Select(r => r.TokenHash).Distinct().Count());
 
         // DB2b — outbox: mỗi invitation hợp lệ → 1 outbox-row (ghi CÙNG transaction, KHÔNG publish trực tiếp)
         var outbox = await check.OutboxMessages.ToListAsync();
@@ -93,7 +93,8 @@ public class CampaignInvitationTests
         {
             Id = Guid.NewGuid(),
             CampaignId = camp.Id,
-            Token = "existing-token",
+            TokenHash = InvitationTokens.Hash("existing-token"),
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
             Email = "already@example.com",
             CreatedAt = DateTime.UtcNow
         });
@@ -128,7 +129,8 @@ public class CampaignInvitationTests
         {
             Id = Guid.NewGuid(),
             CampaignId = camp.Id,
-            Token = "existing-token",
+            TokenHash = InvitationTokens.Hash("existing-token"),
+            ExpiresAt = DateTime.UtcNow.AddDays(7),
             Email = "already@example.com",
             CreatedAt = DateTime.UtcNow
         });

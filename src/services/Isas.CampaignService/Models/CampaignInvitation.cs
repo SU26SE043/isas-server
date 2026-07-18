@@ -13,9 +13,14 @@ namespace Isas.CampaignService.Models
         // Bảng campaign_candidates CHƯA build (C13) nên KHÔNG có FK thật ở đây — luôn null cho đường 1 (D1).
         public Guid? CampaignCandidateId { get; set; }
 
-        public string Token { get; set; } = null!;
+        // DB23 — SHA-256(token) base64, KHÔNG PHẢI token thô. Token thô chỉ đi trong email/URL gửi
+        // ứng viên, không bao giờ nằm trong DB (đọc được DB ≠ mạo danh được invitee). Tra cứu:
+        // băm token client gửi lên rồi so với cột này (xem InvitationTokens).
+        public string TokenHash { get; set; } = null!;
         public string Email { get; set; } = null!;
-        public DateTime? ExpiresAt { get; set; }   // <= campaign.ExpiresAt; null nếu campaign không có hạn
+        // DB23 — LUÔN có hạn (trước đây nullable → campaign không deadline ⇒ token sống vĩnh viễn).
+        // = campaign.ExpiresAt nếu có, else created_at + Invitation:DefaultExpiryDays.
+        public DateTime ExpiresAt { get; set; }
         public DateTime? SentAt { get; set; }        // producer-side: đã vào outbox (ghi cùng tx tạo lời mời — DB2b)
         public DateTime? EmailSentAt { get; set; }   // consumer-side: SMTP đã gửi (dedup redeliver — DB2b, khác SentAt)
         public DateTime? UsedAt { get; set; }

@@ -34,6 +34,22 @@ namespace Isas.PaymentService.Services
             if (!package.IsActive)
                 throw new InvalidOperationException("Package is no longer available.");
 
+            // DB20 — gói PHẢI sinh được credit thì mới bán được qua đường CreditPack.
+            // Trước đây không guard: mua gói Subscription (InterviewCredits null — hợp lệ theo
+            // PackageService.Validate, vốn chỉ bắt buộc credits cho OneTime) hoặc OneTime credits=0
+            // vẫn tạo được đơn Kind=CreditPack. Tới lúc webhook Paid thì `credits ?? 0` = 0 → ledger
+            // Delta=0 vi phạm CHECK ck_credit_transactions_delta_nonzero → SaveChanges ném →
+            // tx.Commit KHÔNG chạy → flip Pending→Paid ROLLBACK theo ⇒ khách ĐÃ TRẢ TIỀN mà đơn kẹt
+            // Pending vĩnh viễn, và vì lỗi deterministic nên mọi đường cứu (OrderStatusService polling,
+            // OrderExpiryReconciler) đều re-fail. Chặn ở đây = fail 400 SỚM, trước khi tiền rời tay.
+            if (package.Type != PackageType.OneTime)
+                throw new InvalidOperationException(
+                    $"Package type '{package.Type}' cannot be purchased as a credit pack.");
+
+            if (package.InterviewCredits is not > 0)
+                throw new InvalidOperationException(
+                    "Package does not grant any interview credits and cannot be purchased.");
+
             // BF3 — guard PayOS config SỚM (trước khi persist) → thiếu ReturnUrl/CancelUrl thì fail
             // 502 sạch, KHÔNG tạo order mồ côi (bug bắt ở layer-3: PayOS reject "return_url null").
             // Redirect theo khu vực FE người mua: dùng URL request (candidate/employer) nếu hợp lệ, else config.

@@ -50,20 +50,27 @@ public class ParticipationServiceTests
         return m;
     }
 
+    // DB23 — token THÔ không nằm trong DB nữa: seed lưu hash, test lấy lại bản thô qua RawTokenOf
+    // (deterministic theo Id) để gọi endpoint như ứng viên cầm link trong email.
+    private static string RawTokenOf(CampaignInvitation inv) => inv.Id.ToString("N");
+
     private static CampaignInvitation NewInvitation(
         Guid campaignId, string email = "cand@acme.test",
         Guid? campaignCandidateId = null, DateTime? expiresAt = null, DateTime? revokedAt = null)
-        => new()
+    {
+        var id = Guid.NewGuid();
+        return new()
         {
-            Id = Guid.NewGuid(),
+            Id = id,
             CampaignId = campaignId,
             CampaignCandidateId = campaignCandidateId,
-            Token = Guid.NewGuid().ToString("N"),
+            TokenHash = InvitationTokens.Hash(id.ToString("N")),
             Email = email,
-            ExpiresAt = expiresAt,
+            ExpiresAt = expiresAt ?? DateTime.UtcNow.AddDays(7),
             RevokedAt = revokedAt,
             CreatedAt = DateTime.UtcNow
         };
+    }
 
     // ── GET /invitations/{token} — metadata ────────────────────────────────────────
     [Fact]
@@ -85,7 +92,7 @@ public class ParticipationServiceTests
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
-        var meta = await svc.GetInvitationMetadataAsync(inv.Token, default);
+        var meta = await svc.GetInvitationMetadataAsync(RawTokenOf(inv), default);
 
         Assert.Equal(camp.Id, meta.CampaignId);
         Assert.Equal("BE", meta.JobTitle);
@@ -118,7 +125,7 @@ public class ParticipationServiceTests
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<InvitationGoneException>(() =>
-            svc.GetInvitationMetadataAsync(inv.Token, default));
+            svc.GetInvitationMetadataAsync(RawTokenOf(inv), default));
     }
 
     [Fact]
@@ -133,7 +140,7 @@ public class ParticipationServiceTests
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<InvitationGoneException>(() =>
-            svc.GetInvitationMetadataAsync(inv.Token, default));
+            svc.GetInvitationMetadataAsync(RawTokenOf(inv), default));
     }
 
     [Fact]
@@ -148,7 +155,7 @@ public class ParticipationServiceTests
 
         var svc = NewService(tdb.NewContext());
         await Assert.ThrowsAsync<InvitationGoneException>(() =>
-            svc.GetInvitationMetadataAsync(inv.Token, default));
+            svc.GetInvitationMetadataAsync(RawTokenOf(inv), default));
     }
 
     // ── POST /invitations/{token}/join ─────────────────────────────────────────────
@@ -163,7 +170,7 @@ public class ParticipationServiceTests
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
-        var res = await svc.JoinCampaignAsync(inv.Token, default);
+        var res = await svc.JoinCampaignAsync(RawTokenOf(inv), default);
 
         Assert.Equal("jwt-candidate-token", res.AccessToken);
         Assert.Equal(FixedCandidate, res.CandidateId);
@@ -204,7 +211,7 @@ public class ParticipationServiceTests
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
-        await svc.JoinCampaignAsync(inv.Token, default);
+        await svc.JoinCampaignAsync(RawTokenOf(inv), default);
 
         using var check = tdb.NewContext();
         // 1 cv_submission — GIỮ NGUYÊN sự thật sàng CV (Status Invited, Summary còn nguyên).
@@ -232,8 +239,8 @@ public class ParticipationServiceTests
         tdb.Db.CampaignInvitations.Add(inv);
         await tdb.Db.SaveChangesAsync();
 
-        await NewService(tdb.NewContext()).JoinCampaignAsync(inv.Token, default);
-        await NewService(tdb.NewContext()).JoinCampaignAsync(inv.Token, default);
+        await NewService(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
+        await NewService(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
 
         using var check = tdb.NewContext();
         Assert.Single(await check.CampaignMemberships.Where(m => m.CampaignId == camp.Id).ToListAsync());
@@ -250,7 +257,7 @@ public class ParticipationServiceTests
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
-        await Assert.ThrowsAsync<InvitationGoneException>(() => svc.JoinCampaignAsync(inv.Token, default));
+        await Assert.ThrowsAsync<InvitationGoneException>(() => svc.JoinCampaignAsync(RawTokenOf(inv), default));
 
         using var check = tdb.NewContext();
         Assert.Empty(await check.CampaignMemberships.ToListAsync());   // không provision/không membership

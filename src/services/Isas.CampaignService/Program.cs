@@ -56,6 +56,8 @@ builder.Services.AddScoped<ICampaignEmailSender, CampaignEmailSender>();
 builder.Services.AddHostedService<InvitationEmailConsumer>();
 // DB2b: Transactional Outbox — dispatcher quét outbox_messages → publish invitation-email at-least-once.
 builder.Services.Configure<OutboxSettings>(builder.Configuration.GetSection(OutboxSettings.SectionName));
+// DB23: hạn mặc định token magic-link khi campaign không có deadline (không để token sống vĩnh viễn).
+builder.Services.Configure<InvitationSettings>(builder.Configuration.GetSection(InvitationSettings.SectionName));
 builder.Services.AddHostedService<OutboxDispatcher>();
 // C14: sàng CV async — đẩy job AI chấm khớp (cv_screening_queue) + xử lý callback/shortlist/PATCH
 builder.Services.AddSingleton<ICvScreeningPublisher, CvScreeningPublisher>();
@@ -112,8 +114,16 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
+// DB25 — retry transient (blip mạng / deadlock Postgres) thay vì để nổi lên thành 500.
+// AN TOÀN Ở ĐÂY vì CampaignService KHÔNG có site `BeginTransactionAsync` nào: khi bật
+// EnableRetryOnFailure, transaction do người dùng tự mở sẽ ném InvalidOperationException
+// ("execution strategy does not support user-initiated transactions") trừ khi bọc trong
+// CreateExecutionStrategy(). Interview (1 site) + Payment (5 site) vì thế CHƯA bật — xem
+// ghi chú DB25 trong docs/tasks.md.
 builder.Services.AddDbContext<CampaignDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+    options.UseNpgsql(
+            builder.Configuration.GetConnectionString("DefaultConnection"),
+            npgsql => npgsql.EnableRetryOnFailure())
         .UseSnakeCaseNamingConvention());
 
 builder.Services.Configure<FileStorageOptions>(
