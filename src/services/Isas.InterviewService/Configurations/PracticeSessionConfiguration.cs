@@ -36,24 +36,49 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 
-        e.HasIndex(x => x.CandidateId);
-
         // B2B: lookup session theo campaign (S3/S4). Non-unique, nullable.
         e.HasIndex(x => x.CampaignId);
 
-        // DB5 — hỗ trợ SessionAbandonSweeper (quét mỗi 2', trước đây seq-scan cả bảng).
-        // (1) B2B quá hạn nhận bài (ScanExpiredB2BAsync): status=InProgress + deadline != null + deadline < now.
-        // Partial index trên deadline (chỉ row CÓ deadline = B2B) → sweeper không quét row B2C (deadline null).
+        // DB31 — lịch sử buổi luyện của 1 candidate, phân trang keyset `(created_at DESC, id DESC)`
+        // (quy ước DB8). Composite (candidate_id, created_at DESC, id DESC) khớp ĐÚNG hình truy vấn
+        // `WHERE candidate_id = @c ORDER BY created_at DESC, id DESC LIMIT n` → index-only range scan,
+        // không sort. candidate_id lọc bằng '=' nên hướng của nó không quan trọng; 2 cột đuôi DESC khớp
+        // ORDER BY (thứ tự trộn ASC/DESC không phục vụ được bằng backward-scan nên phải khai DESC thật).
+        //
+        // ⚠ Index single-col `ix_practice_sessions_candidate_id` CŨ đã BỎ: nó là tiền tố trái của composite
+        // này ⇒ mọi lookup `candidate_id = @c` vẫn dùng được composite. candidate_id là Guid lỏng xuyên
+        // service (GEN-2), KHÔNG có FK ⇒ không dính bài học DB5 (partial index trùng prefix FK convention
+        // index khiến model-differ đòi drop index FK) — ở đây không có FK nào để bảo vệ.
+        e.HasIndex(x => new { x.CandidateId, x.CreatedAt, x.Id })
+            .HasDatabaseName("ix_practice_sessions_candidate_history")
+            .IsDescending(false, true, true);
+
+        // DB5 (đặt nền) + DB27 (RE-SHAPE) — index cho SessionAbandonSweeper (quét mỗi 2 phút).
+        //
+        // VÌ SAO ĐẢO ĐÁNH ĐỔI CỦA DB5: bản DB5 neo cột BẤT BIẾN (deadline / created_at) để tránh index
+        // churn khi status đổi. Nhưng cột bất biến ở đây lại KHÔNG chọn lọc: `created_at < now()-2h` khớp
+        // gần như MỌI session B2C từng tạo, `deadline < now()` khớp mọi campaign đã hết hạn — nên chi phí
+        // quét tăng TUYẾN TÍNH theo toàn bộ lịch sử, mỗi 2 phút, vĩnh viễn. Cột chọn lọc thật (`status`,
+        // tập nóng nhỏ) lại nằm ngoài index. Đưa status vào FILTER: churn chỉ O(5) lần/session trên tập
+        // nóng, rẻ hơn nhiều so với quét toàn lịch sử. Mẫu đúng đã có sẵn: ix_practice_answers_status_lsp.
+        //
+        // ⚠ Partial index chỉ dùng được nếu planner CHỨNG MINH được predicate query ⇒ predicate index.
+        // Đã verify bằng ToQueryString (Npgsql): EF render enum status thành LITERAL, không phải tham số
+        // — `p.status = 'InProgress'` / `p.status IN ('Ready', 'InProgress')` — nên filter dưới đây khớp
+        // đúng mệnh đề query và implication là hiển nhiên. (Nếu status bị đổi sang so bằng biến/tham số
+        // thì partial index NGỪNG được dùng — xem test SweeperIndexTests khoá hợp đồng này.)
+        //
+        // (1) B2B quá hạn nhận bài — ScanExpiredB2BAsync:
+        //     status == InProgress && deadline != null && deadline < now
         e.HasIndex(x => x.Deadline)
             .HasDatabaseName("ix_practice_sessions_deadline")
-            .HasFilter("deadline IS NOT NULL");
+            .HasFilter("status = 'InProgress' AND deadline IS NOT NULL");
 
-        // (2) B2C không hoạt động (ScanInactiveB2CAsync): status Ready|InProgress + deadline == null +
-        // campaign_id == null + created_at < cutoff. Partial index trên created_at (chỉ row B2C không-deadline)
-        // → tránh seq-scan; range-scan created_at trong tập B2C. Filter snake_case (SQLite test dùng snake_case).
+        // (2) B2C không hoạt động — ScanInactiveB2CAsync:
+        //     status IN (Ready, InProgress) && deadline == null && campaign_id == null && created_at < cutoff
         e.HasIndex(x => x.CreatedAt)
             .HasDatabaseName("ix_practice_sessions_b2c_active")
-            .HasFilter("campaign_id IS NULL AND deadline IS NULL");
+            .HasFilter("status IN ('Ready', 'InProgress') AND campaign_id IS NULL AND deadline IS NULL");
 
         e.HasMany(x => x.Questions)
             .WithOne(q => q.Session)
