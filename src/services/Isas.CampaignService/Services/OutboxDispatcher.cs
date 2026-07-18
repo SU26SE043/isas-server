@@ -100,6 +100,15 @@ namespace Isas.CampaignService.Services
                     _logger.LogError(ex,
                         "Phát outbox-row {MessageId} (invitation {InvitationId}) thất bại, để vòng sau (attempts={Attempts})",
                         m.Id, m.InvitationId, m.Attempts);
+
+                    // DB28 — `attempts` trước đây chỉ tăng rồi nằm im: row hỏng vĩnh viễn retry mãi mà
+                    // KHÔNG phân biệt được với tồn đọng khoẻ mạnh (broker vừa chớp tắt). Vượt ngưỡng →
+                    // Warning riêng để có cái mà cảnh báo. CHỈ cảnh báo — không xoá, không dead-letter:
+                    // row chưa publish nghĩa là mail CHƯA GỬI, không được phép mất.
+                    if (_options.AlertAfterAttempts > 0 && m.Attempts >= _options.AlertAfterAttempts)
+                        _logger.LogWarning(
+                            "Outbox-row {MessageId} (invitation {InvitationId}) đã thử {Attempts} lần mà chưa phát được — cần xem tay, KHÔNG tự xoá",
+                            m.Id, m.InvitationId, m.Attempts);
                 }
             }
 

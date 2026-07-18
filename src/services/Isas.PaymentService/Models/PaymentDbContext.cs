@@ -82,6 +82,31 @@ namespace PaymentService.Models
                  .HasDefaultValue(OrderKind.CreditPack);
                 e.Property(x => x.AmountVnd).IsRequired();
                 e.HasIndex(x => x.PayosOrderCode).IsUnique();
+
+                // DB26 — trước vòng này `orders` KHÔNG có index nào trên cột owner: mọi lần user/org mở
+                // trang đơn hàng là seq scan toàn bảng + sort. Khớp đúng hình dạng
+                // GetOwnerOrdersAsync: lọc (owner_type, owner_id) rồi ORDER BY created_at DESC.
+                // Đuôi (created_at, id) cũng đúng shape keyset DB8 nếu sau này phân trang theo chủ ví.
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.CreatedAt, x.Id })
+                 .IsDescending(false, false, true, true)
+                 .HasDatabaseName("ix_orders_owner_created");
+
+                // DB26 — OrderExpiryReconciler quét mỗi 5': WHERE status='Pending' AND expired_at < cutoff
+                // ORDER BY expired_at. Không index → full scan `orders` mỗi vòng, càng ngày càng chậm.
+                // Partial: đơn Pending là thiểu số sống ngắn (đa số đơn nằm ở trạng thái terminal), nên
+                // index chỉ ôm phần bảng sweeper thật sự cần. Literal 'Pending' khớp chuỗi enum lưu
+                // (Status = HasConversion<string>), cột snake_case.
+                e.HasIndex(x => x.ExpiredAt)
+                 .HasDatabaseName("ix_orders_pending_expired_at")
+                 .HasFilter("status = 'Pending'");
+
+                // DB26 — admin oversight ListAllOrdersAsync (AUTH-7) keyset (created_at DESC, id DESC),
+                // KHÔNG lọc owner nên index owner ở trên không phục vụ được. Không có index này thì công
+                // phân trang keyset DB8 vẫn phải sort toàn bảng mỗi trang. Đơn hàng ghi theo nhịp mua
+                // (thấp) nên 3 index trên `orders` là đánh đổi rẻ.
+                e.HasIndex(x => new { x.CreatedAt, x.Id })
+                 .IsDescending(true, true)
+                 .HasDatabaseName("ix_orders_created_id_desc");
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 // DB14 — audit updated_at (stamp khi Modified: Cancel/Paid webhook flip status). ExecuteUpdate
                 // flip status tự thêm .SetProperty(UpdatedAt) (WebhookService); tracked Cancel qua SaveChanges.

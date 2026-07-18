@@ -95,7 +95,11 @@ namespace Isas.CampaignService.Models
 
                 // Indexes — lọc theo owner ORG (BK4)
                 e.HasIndex(x => new { x.OrgId, x.Status });
-                e.HasIndex(x => new { x.OrgId, x.CreatedAt });
+                // DB26/DB31: đuôi `Id` để phủ TRỌN khoá sắp xếp keyset của list Employer
+                // (`GetCampaignsAsync`: WHERE org_id = @o ORDER BY created_at DESC, id DESC). Không có
+                // `id` ở đuôi thì tie-break phải sort ở heap mỗi khi trùng created_at. Superset của
+                // index cũ (org_id, created_at) → mọi truy vấn cũ vẫn được phục vụ y nguyên.
+                e.HasIndex(x => new { x.OrgId, x.CreatedAt, x.Id });
             });
 
             // ── CampaignQuestion ─────────────────────────────────────────
@@ -162,6 +166,15 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.Action).HasConversion<string>().HasMaxLength(32);
                 e.Property(x => x.At).HasDefaultValueSql("now()");
                 e.HasIndex(x => new { x.EntityId, x.At });
+
+                // DB26 — audit đọc theo NGƯỜI/TỔ CHỨC, không chỉ theo entity. Bảng này tồn tại để
+                // đối chất/kiện (D11) và ba câu hỏi audit tự nhiên là "org X đã làm gì", "user Y đã
+                // làm gì", "ai Publish trong khoảng thời gian này" — cả ba đều seq scan với mỗi
+                // index (entity_id, at) hiện có. `at` ở đuôi để lọc/sắp theo thời gian ngay trong
+                // index. Chi phí ghi chấp nhận được: audit_logs append-only và CHỈ ghi khi HR
+                // mutation (tạo/publish/mời/sàng CV/override) — không nằm trên đường nóng nào.
+                e.HasIndex(x => new { x.OrgId, x.At });
+                e.HasIndex(x => new { x.ActorUserId, x.At });
             });
 
             // ── CampaignInvitation (magic-link mời — D1, đường 1: mời thẳng email) ──
@@ -214,7 +227,17 @@ namespace Isas.CampaignService.Models
 
                 // Idempotent upsert theo session_id: event tới 2 lần vẫn 1 row.
                 e.HasIndex(x => x.SessionId).IsUnique();
-                e.HasIndex(x => new { x.CampaignId, x.TotalScore });
+                // DB26 — rút `total_score` khỏi đuôi index. `GetCampaignResultsAsync` (E5) chỉ
+                // `WHERE campaign_id = @c` rồi sắp TRONG BỘ NHỚ theo `override_score ?? total_score`
+                // (E11b) — không index nào phục vụ được biểu thức đó, và query lấy cả entity nên
+                // cũng không index-only-scan được. `total_score` ở đuôi vì thế là cột chết: phình
+                // index + mỗi upsert ranking (event SessionScored) phải sửa index dù chỉ đổi điểm.
+                // Bỏ nó ra → update điểm không đụng index này nữa (mở đường HOT update) và index vẫn
+                // phủ FK campaign_rankings.campaign_id → campaigns (DB9).
+                // Đánh đổi: nếu sau này cần ORDER BY total_score Ở SQL (paginate ranking) thì phải
+                // thêm lại — nhưng chỉ khi bỏ sort in-memory, mà sort in-memory là CHỦ Ý (E5: decimal
+                // trên SQLite lưu TEXT nên ORDER BY ở SQL sai thứ tự số học).
+                e.HasIndex(x => x.CampaignId);
 
                 // DB13/DB9: required nav (CampaignId NOT NULL) tới Campaign có soft-delete filter →
                 // BẮT BUỘC khớp filter, nếu không EF phát PossibleIncorrectRequiredNavigation warning +
@@ -291,6 +314,18 @@ namespace Isas.CampaignService.Models
                 e.HasIndex(x => x.CandidateId);
                 // 1 membership / CV shortlist (đường-2). NULL distinct → nhiều đường-1 (không CV) vẫn insert.
                 e.HasIndex(x => x.CvSubmissionId).IsUnique();
+
+                // DB26 — `RankingEventHandler.MarkMembershipCompletedAsync` tra membership theo
+                // session_id trên MỌI event SessionScored (đường nóng: mỗi buổi phỏng vấn chấm xong
+                // = 1 lần). Không index nào phủ session_id → seq scan toàn bảng mỗi event.
+                // PARTIAL `WHERE session_id IS NOT NULL`: membership tạo lúc join với session_id =
+                // NULL, chỉ điền khi bấm Start → phần lớn bảng là NULL và predicate `= @sid` không
+                // bao giờ khớp NULL. Postgres suy ra được `session_id = @p` ⇒ `IS NOT NULL` nên vẫn
+                // dùng index. Neo trên cột gần-như-bất-biến (set 1 lần ở Start) → không index churn.
+                // KHÔNG unique: đây là task hiệu năng; ràng buộc 1-session-1-membership là thay đổi
+                // ngữ nghĩa (và rủi ro fail lúc apply nếu dữ liệu cũ có trùng) → để riêng nếu cần.
+                e.HasIndex(x => x.SessionId)
+                 .HasFilter("session_id IS NOT NULL");
 
                 // DB13: required nav → Campaign (soft-delete filter) → BẮT BUỘC khớp filter.
                 e.HasQueryFilter(x => x.Campaign.DeletedAt == null);

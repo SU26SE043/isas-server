@@ -59,6 +59,9 @@ builder.Services.Configure<OutboxSettings>(builder.Configuration.GetSection(Outb
 // DB23: hạn mặc định token magic-link khi campaign không có deadline (không để token sống vĩnh viễn).
 builder.Services.Configure<InvitationSettings>(builder.Configuration.GetSection(InvitationSettings.SectionName));
 builder.Services.AddHostedService<OutboxDispatcher>();
+// DB28: retention — dọn outbox-row ĐÃ publish quá hạn giữ (bảng vốn phình vô hạn). Chỉ đụng row
+// published_at IS NOT NULL + quá hạn, có trần mỗi vòng; tắt bằng `Outbox:PurgeEnabled=false`.
+builder.Services.AddHostedService<OutboxPurger>();
 // C14: sàng CV async — đẩy job AI chấm khớp (cv_screening_queue) + xử lý callback/shortlist/PATCH
 builder.Services.AddSingleton<ICvScreeningPublisher, CvScreeningPublisher>();
 builder.Services.AddScoped<ICvScreeningService, CvScreeningService>();

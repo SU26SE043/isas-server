@@ -43,7 +43,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         if (session is null) return;
 
         var totalScore = await ComputeWeightedTotalScoreAsync(
-            session.Id, session.CampaignId, session.JobCategory, ct);
+            session.Id, session.CampaignId, session.CandidateId, session.JobCategory, ct);
 
         var evt = new SessionScoredEvent
         {
@@ -167,14 +167,27 @@ public class SessionScoringNotifier : ISessionScoringNotifier
     // Điểm tổng có trọng số dùng cho event (ranking B2B — campaign.md §campaign_rankings:
     // "total_score = Σ pct×weight, chuẩn hoá chia Σweight — Interview tính"). Áp dụng chung cho cả B2C.
     private async Task<decimal> ComputeWeightedTotalScoreAsync(
-        Guid sessionId, Guid? campaignId, JobCategory jobCategory, CancellationToken ct)
+        Guid sessionId, Guid? campaignId, Guid candidateId, JobCategory jobCategory, CancellationToken ct)
     {
         // Nguồn tiêu chí tùy mode (E1, giống AnswerService.TryPublishScoringJobAsync):
         // B2B theo campaign_id, B2C theo job_category + campaign_id IS NULL.
         var criteriaQuery = _db.RubricCriteria.AsNoTracking().Where(c => c.IsActive);
-        criteriaQuery = campaignId is Guid cid
-            ? criteriaQuery.Where(c => c.CampaignId == cid)
-            : criteriaQuery.Where(c => c.CampaignId == null && c.JobCategory == jobCategory);
+        if (campaignId is Guid cid)
+        {
+            criteriaQuery = criteriaQuery.Where(c => c.CampaignId == cid);
+        }
+        else
+        {
+            // DB30 — đây từng là call-site DUY NHẤT của nhánh B2C KHÔNG đi qua B2CRubricScope: thiếu
+            // predicate candidate_id ⇒ materialize rubric RIÊNG của MỌI candidate cùng nghề mỗi lần đóng
+            // session. Điểm vẫn đúng ở đường thường (criterion lạ không có score → TryGetValue bỏ qua)
+            // nên nó không bao giờ tự lộ ra như bug — chỉ âm thầm quét bảng. Không đúng ở đường rubric
+            // đổi giữa chừng: score cũ thuộc scope khác lọt vào weightSum. Đưa về CHUNG resolver (6/6 site).
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, ct);
+            criteriaQuery = owner is Guid oid
+                ? criteriaQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory)
+                : criteriaQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory);
+        }
         var criteria = await criteriaQuery.ToListAsync(ct);
         if (criteria.Count == 0) return 0m;
 

@@ -47,6 +47,12 @@ builder.Services.AddSingleton<IGoogleLoginRedirects, GoogleLoginRedirects>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IGoogleAuthCodeStore, GoogleAuthCodeStore>();
 
+// DB28 — dọn refresh_tokens đã chết. Bảng này chỉ có INSERT (rotation) + UPDATE cờ is_revoked, chưa
+// từng có đường xoá → phình vô hạn ngay trên đường login nóng. Enabled=false = tắt an toàn.
+builder.Services.Configure<RefreshTokenRetentionSettings>(
+    builder.Configuration.GetSection(RefreshTokenRetentionSettings.SectionName));
+builder.Services.AddHostedService<RefreshTokenPurger>();
+
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
