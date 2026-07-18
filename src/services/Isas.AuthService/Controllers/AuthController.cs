@@ -20,15 +20,17 @@ namespace Isas.AuthService.Controllers
         private readonly SignInManager<User> _signInManager;
         private readonly IEmailSender _emailSender;
         private readonly IGoogleLoginRedirects _googleRedirects;
+        private readonly IGoogleAuthCodeStore _googleCodes;
         private readonly ILogger<AuthController> _logger;
         public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager, IEmailSender emailSender,
-            IGoogleLoginRedirects googleRedirects, ILogger<AuthController> logger)
+            IGoogleLoginRedirects googleRedirects, IGoogleAuthCodeStore googleCodes, ILogger<AuthController> logger)
         {
             _authService = authService;
             _userManager = userManager;
             _signInManager = signInManager;
             _emailSender = emailSender;
             _googleRedirects = googleRedirects;
+            _googleCodes = googleCodes;
             _logger = logger;
         }
 
@@ -94,8 +96,9 @@ namespace Isas.AuthService.Controllers
 
         // Đích cuối của vòng OAuth. KHÔNG trả JSON (bug cũ): người dùng đang ở một điều hướng cả
         // trang nên sẽ đáp xuống trang JSON thô và app Angular không bao giờ chạy lại để nhận token.
-        // Thay vào đó 302 về FE, token nằm ở FRAGMENT (fragment không được gửi lên server → không
-        // lọt access log / Referer). Đích lấy từ config server, không nhận host từ client.
+        // Thay vào đó 302 về FE — nhưng CHỈ kèm mã dùng-một-lần, KHÔNG kèm token: token trong URL
+        // (kể cả ở fragment) vẫn đọc được từ phía trình duyệt (location.hash, extension). FE đổi mã
+        // lấy phiên qua POST /auth/google/exchange. Đích lấy từ config server, không nhận host từ client.
         [AllowAnonymous]
         [HttpGet("login-google-callback")]
         public async Task<IActionResult> GoogleLoginCallback(string? returnUrl = null, string? remoteError = null)
@@ -129,7 +132,28 @@ namespace Isas.AuthService.Controllers
             // Cookie external chỉ phục vụ 1 vòng OAuth — dọn ngay để không còn dấu vết phiên.
             await HttpContext.SignOutAsync(IdentityConstants.ExternalScheme);
 
-            return Redirect(_googleRedirects.SuccessUrl(authResponse, returnUrl));
+            // Phiên nằm lại server; ra URL chỉ là mã tham chiếu ngắn hạn. KHÔNG log giá trị mã —
+            // log là một bản sao vĩnh viễn của thứ đang thay mặt cho cả access + refresh token.
+            var code = _googleCodes.Issue(authResponse);
+            return Redirect(_googleRedirects.SuccessUrl(code, returnUrl));
+        }
+
+        // Chặng 2 của đăng nhập Google: FE gửi mã vừa nhận qua redirect, đổi lấy phiên thật.
+        // AllowAnonymous vì đúng lúc này người dùng CHƯA có token — mã chính là bằng chứng đã qua
+        // được vòng OAuth. Sai/hết hạn/đã dùng đều trả 400 với CÙNG một thông điệp: phân biệt ra
+        // ngoài chỉ giúp kẻ dò mã biết mình đoán gần đúng.
+        [AllowAnonymous]
+        [HttpPost("google/exchange")]
+        public ActionResult<AuthResponse> ExchangeGoogleCode(GoogleExchangeRequest request)
+        {
+            var auth = _googleCodes.Consume(request.Code);
+            if (auth is null)
+            {
+                _logger.LogWarning("Đổi mã đăng nhập Google thất bại (mã sai, hết hạn hoặc đã dùng)");
+                return BadRequest("Mã đăng nhập không hợp lệ hoặc đã hết hạn");
+            }
+
+            return Ok(auth);
         }
 
         [AllowAnonymous]

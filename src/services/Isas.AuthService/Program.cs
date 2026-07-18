@@ -39,6 +39,13 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddTransient<IEmailSender, EmailSender>();
 builder.Services.AddSingleton<IGoogleLoginRedirects, GoogleLoginRedirects>();
+// Mã dùng-một-lần của đăng nhập Google giữ trong BỘ NHỚ TIẾN TRÌNH (không có bảng DB).
+// ⚠ Hệ quả phải biết khi vận hành: mã phát ở instance nào chỉ đổi được ở ĐÚNG instance đó, và
+// restart/deploy làm mất mã đang bay (người dùng bấm đăng nhập Google lại là xong). Deploy hiện
+// tại single-instance nên chấp nhận được; scale ra nhiều instance thì phải bật sticky session
+// hoặc chuyển kho này sang Redis/bảng DB. Xem docs/services/auth.md §Đăng nhập Google.
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<IGoogleAuthCodeStore, GoogleAuthCodeStore>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
