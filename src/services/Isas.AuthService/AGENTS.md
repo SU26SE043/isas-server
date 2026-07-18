@@ -53,10 +53,10 @@ UserResponse {
 ### Endpoints
 
 **`POST /register`** — Đăng ký (role mặc định `Candidate`). Public.
-- Req: `{ email: string, password: string, fullName: string }` → Res **`200`** `AuthResponse`. Lỗi: **400** (email tồn tại / mật khẩu yếu).
+- Req: `{ email: string, password: string, fullName: string }` → Res **`200`** `AuthResponse`. Lỗi: **409** (email đã tồn tại — body `{ error }`) · **400** (mật khẩu yếu).
 
 **`POST /register-org`** — Đăng ký tổ chức (✅ A3). Public. Tạo user role **`Employer`** + `Organization` + `OrgMember(OrgAdmin)`.
-- Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **400** (email tồn tại / mật khẩu yếu).
+- Req: `{ email: string, password: string, fullName: string, orgName: string, taxCode: string? }` → Res **`200`** `AuthResponse` (token mang `org_id`+`org_role`). Lỗi: **409** (email đã tồn tại — body `{ error }`) · **400** (mật khẩu yếu / `orgName` rỗng).
 
 **`POST /login`** — Đăng nhập. Public.
 - Req: `{ email: string, password: string }` → Res **`200`** `AuthResponse`. Lỗi: **400/401** (sai thông tin).
@@ -64,10 +64,12 @@ UserResponse {
 **`GET /login-google`** → redirect Google · **`GET /login-google-callback?returnUrl&remoteError`** → OAuth callback, trả `AuthResponse`. Public.
 
 **`POST /refresh`** — Làm mới token. Public.
-- Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn/thu hồi).
+- Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn**).
+- **Cửa sổ ân hạn xoay vòng** (`Jwt:RefreshTokenGraceSeconds`, mặc định **60s**, `0`=tắt): token vừa bị xoay vòng vẫn refresh được thêm ngần đó giây — đi theo `replaced_by` tới token **còn sống** ở cuối chuỗi rồi xoay tiếp. Mốc đo = `created_at` của token thay thế (không cần cột `revoked_at` ⇒ **không migration**). Token thu hồi **thẳng tay** (đăng xuất/đổi quyền, `replaced_by` NULL) **KHÔNG** ân hạn. *Vì sao:* đua refresh giữa nhiều tab. *Đánh đổi:* làm yếu reuse-detection trong đúng cửa sổ đó → giữ NGẮN.
 
-**`POST /logout`** — Thu hồi refresh token. Auth (`Candidate·Employer·Admin`).
-- Req: `{ refreshToken: string }` → Res **`200`**. Lỗi: **401**.
+**`POST /logout`** — Thu hồi **MỌI** refresh token của user đang đăng nhập. Auth (`Candidate·Employer·Admin`).
+- Req: `{ refreshToken: string }` (giữ hợp đồng cũ; phạm vi thu hồi theo claim `sub`) → Res **`204`**. Lỗi: **401**.
+- ⚠ access token đang lưu hành **không thu hồi được** (GEN-3) → còn hợp lệ tới hết TTL (15'); **FE phải xoá token khỏi storage**.
 
 **`GET /me`** — Profile. Auth. → Res **`200`** `UserResponse`. Lỗi: **401**.
 **`PUT /me`** — Cập nhật profile. Auth.
@@ -201,9 +203,9 @@ org_role varchar(16)   enum(string): OrgAdmin · HrMember
 ### Index / ràng buộc / edge case
 - **UNIQUE**: `users.normalized_email`, `users.normalized_user_name` (Identity) — chống trùng tài khoản; `org_members` PK `(org_id, user_id)`; `roles.normalized_name`.
 - **on-delete**: `user_roles` · `refresh_tokens` · `org_members` **Cascade** theo `user`; xoá `organization` → cascade `org_members`.
-- **Refresh rotation**: 1 refresh dùng 1 lần → revoke + `replaced_by`. **Dùng lại token đã revoke** = dấu hiệu trộm token → **401** (cân nhắc revoke cả chuỗi — phase 2).
+- **Refresh rotation**: 1 refresh dùng 1 lần → revoke + `replaced_by`. **Dùng lại token đã revoke** = dấu hiệu trộm token → **401**, TRỪ trong **cửa sổ ân hạn** (mặc định 60s) cho đua refresh nhiều tab: đi theo `replaced_by` tới token còn sống ở cuối chuỗi rồi xoay tiếp. Không trả lại chính token thay thế được vì DB chỉ lưu **hash** (raw chỉ ở client) → cấp cặp mới cho tab đến muộn; các tab hội tụ nhờ FE đồng bộ qua sự kiện `storage`. *(Revoke cả chuỗi khi nghi trộm — phase 2.)*
 - **Lockout**: `access_failed_count` tăng mỗi login sai; chạm ngưỡng → khoá tới `lockout_end` (nếu bật `LockoutOptions`).
-- **JWT offline ⇒ thu hồi role KHÔNG tức thì**: đổi `role`/`org_role` chỉ áp khi **token mới** (login/refresh lại); access cũ vẫn hợp lệ tới `expiresAt`. Chấp nhận (đánh đổi của *auth offline* — [../architecture.md](../architecture.md) §3); cần tức thì → rút ngắn TTL access.
+- **JWT offline ⇒ thu hồi quyền KHÔNG tức thì (ranh giới = ≤ 1 TTL access token, 15')**: access token **không thu hồi được** (validate offline bằng chung key — **GEN-3**). Đổi `org_role` / gỡ khỏi org / đăng xuất → **thu hồi mọi refresh token** của user ⇒ lần refresh kế phải nhận token mới mang quyền mới. Đánh đổi **có chủ đích** của auth offline ([../architecture.md](../architecture.md) §3); cần tức thì → **rút ngắn TTL access**, ❌ KHÔNG thêm denylist/gọi mạng vào đường validate của service khác.
 - **Google-only user**: `password_hash=null` → chặn login mật khẩu, chỉ OAuth.
 
 ## Xác thực (nguồn chân lý cho cả hệ)

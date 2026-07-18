@@ -95,55 +95,135 @@ namespace Isas.AuthService.Services
             return await GenerateAuthResponse(newUser);
         }
 
-        public async Task LogoutAsync(string refreshToken)
-        {
-            var hashedToken = _jwtService.HashRefreshToken(refreshToken);
-
-            var existingToken = await _authDbContext.RefreshTokens
-                .FirstOrDefaultAsync(x => x.Token == hashedToken && !x.IsRevoked);
-
-            if (existingToken is null) return;
-
-            existingToken.IsRevoked = true;
-            await _authDbContext.SaveChangesAsync();
-        }
+        // Đăng xuất = thu hồi MỌI refresh token của user, không chỉ token client gửi lên.
+        // VÌ SAO: mỗi tab giữ refresh token riêng nhưng dùng chung một phiên. Thu hồi đúng 1 token thì
+        // tab khác vẫn gia hạn phiên tiếp → "đã đăng xuất" mà phiên vẫn sống. Đăng xuất là đăng xuất.
+        // GIỚI HẠN (có chủ đích): access token ĐANG lưu hành KHÔNG thu hồi được — các service validate
+        // JWT offline bằng chung key, không hỏi AuthService lúc chạy (GEN-3) → token cũ còn hợp lệ tới
+        // hết TTL (15'). Vì vậy FE PHẢI tự xoá token khỏi storage khi đăng xuất. Xem docs/services/auth.md.
+        public Task LogoutAsync(Guid userId) => RevokeAllRefreshTokensAsync(userId);
 
         public async Task<AuthResponse> RefreshTokenAsync(string refreshToken)
         {
             var hashedToken = _jwtService.HashRefreshToken(refreshToken);
 
-            var existingToken = await _authDbContext.RefreshTokens
-                .Include(x => x.User)
-                .FirstOrDefaultAsync(x => x.Token == hashedToken && !x.IsRevoked);
+            // Tra KHÔNG lọc IsRevoked: token đã bị xoay vòng vẫn còn cơ hội đi đường ân hạn bên dưới.
+            var presented = await _authDbContext.RefreshTokens
+                .FirstOrDefaultAsync(x => x.Token == hashedToken);
 
-            if (existingToken is null)
+            if (presented is null)
                 throw new UnauthorizedAccessException("Invalid refresh token");
 
-            if (existingToken.ExpiresAt < DateTime.UtcNow)
+            // Token đã bị xoay vòng → chỉ chấp nhận trong cửa sổ ân hạn, và xoay tiếp từ token ĐANG SỐNG
+            // ở cuối chuỗi ReplacedBy (tab kia có thể đã refresh vài lần).
+            var tokenToRotate = presented.IsRevoked
+                ? await ResolveGraceReplacementAsync(presented)
+                : presented;
+
+            if (tokenToRotate is null)
+                throw new UnauthorizedAccessException("Invalid refresh token");
+
+            if (tokenToRotate.ExpiresAt < DateTime.UtcNow)
                 throw new UnauthorizedAccessException("Refresh token expired");
 
-            existingToken.IsRevoked = true;
+            var user = await _authDbContext.Users
+                .FirstOrDefaultAsync(u => u.Id == tokenToRotate.UserId)
+                ?? throw new UnauthorizedAccessException("Invalid refresh token");
+
+            tokenToRotate.IsRevoked = true;
 
             var newRawRefreshToken = _jwtService.GenerateRefreshToken();
             var newRefreshTokenEntity = new RefreshToken
             {
                 Id = Guid.NewGuid(),
-                UserId = existingToken.UserId,
+                UserId = tokenToRotate.UserId,
                 Token = _jwtService.HashRefreshToken(newRawRefreshToken),
                 ExpiresAt = DateTime.UtcNow.AddDays(GetRefreshTokenDays()),
                 CreatedAt = DateTime.UtcNow
             };
 
-            existingToken.ReplacedBy = newRefreshTokenEntity.Id;
+            tokenToRotate.ReplacedBy = newRefreshTokenEntity.Id;
             _authDbContext.RefreshTokens.Add(newRefreshTokenEntity);
             await _authDbContext.SaveChangesAsync();
 
-            var roles = await _userManager.GetRolesAsync(existingToken.User);
-            var membership = await GetMembershipAsync(existingToken.UserId);
-            var accessToken = _jwtService.GenerateAccessToken(existingToken.User, roles, membership);
+            // Đọc lại roles + membership mỗi lần refresh → quyền mới vào token ở lần refresh kế
+            // (độ trễ tối đa = TTL access token). Đây là ranh giới hiệu lực của việc đổi quyền.
+            var roles = await _userManager.GetRolesAsync(user);
+            var membership = await GetMembershipAsync(tokenToRotate.UserId);
+            var accessToken = _jwtService.GenerateAccessToken(user, roles, membership);
 
             return BuildAuthResponse(accessToken, newRawRefreshToken);
         }
+
+        // Số bước tối đa đi theo chuỗi ReplacedBy — chặn vòng lặp vô hạn nếu dữ liệu chuỗi hỏng.
+        private const int MaxGraceChainHops = 8;
+
+        /// <summary>
+        /// Cửa sổ ân hạn khi xoay vòng refresh token — sửa đua refresh giữa NHIỀU TAB.
+        ///
+        /// VẤN ĐỀ: mỗi tab giữ refresh token trong bộ nhớ riêng (đọc lúc tải trang) nhưng dùng chung
+        /// storage. Tab A refresh → token cũ bị thu hồi TỨC THÌ → tab B (còn cầm token cũ) refresh sau
+        /// đó → 401 → người dùng bị đá về trang đăng nhập dù phiên vẫn còn hạn. Mở 2 tab là dính; mua
+        /// credit qua PayOS gần như luôn tạo tab thứ hai.
+        ///
+        /// ⚠ ĐÁNH ĐỔI BẢO MẬT (có chủ đích, không phải sơ suất): thu-hồi-tức-thì chính là cơ chế
+        /// PHÁT HIỆN TOKEN BỊ ĐÁNH CẮP (reuse detection) — một refresh token dùng hai lần là dấu hiệu
+        /// bị trộm. Ân hạn làm YẾU cơ chế đó bên trong đúng cửa sổ này: kẻ trộm dùng lại token trong
+        /// vòng &lt;grace&gt; giây sẽ không bị chặn. Vì vậy giữ cửa sổ NGẮN (mặc định 60s) và vẫn trả 401
+        /// khi đã quá hạn ân hạn → thiệt hại giới hạn ở vài chục giây, đổi lấy việc người dùng thật
+        /// không bị đăng xuất oan khi mở nhiều tab.
+        ///
+        /// Token bị thu hồi mà KHÔNG có ReplacedBy (đăng xuất, đổi quyền) → KHÔNG ân hạn, chết ngay.
+        /// </summary>
+        private async Task<RefreshToken?> ResolveGraceReplacementAsync(RefreshToken revoked)
+        {
+            // Thu hồi thẳng tay (logout / đổi org-role / xoá khỏi org) không đặt ReplacedBy → phải chết
+            // ngay lập tức, không được hưởng ân hạn. Chỉ token bị XOAY VÒNG mới có ReplacedBy.
+            if (revoked.ReplacedBy is not Guid replacementId)
+                return null;
+
+            var replacement = await _authDbContext.RefreshTokens
+                .FirstOrDefaultAsync(x => x.Id == replacementId);
+            if (replacement is null)
+                return null;
+
+            // Mốc "bị thu hồi lúc nào" lấy từ CreatedAt của token thay thế — token thay thế được tạo
+            // đúng thời điểm token cũ bị thu hồi (cùng một SaveChanges) → không cần thêm cột
+            // revoked_at, tức là KHÔNG cần migration (schema DB server không phải đụng tới).
+            if (DateTime.UtcNow - replacement.CreatedAt > TimeSpan.FromSeconds(GetRefreshTokenGraceSeconds()))
+                return null;
+
+            // Trong cửa sổ ân hạn: đi tới token còn sống ở cuối chuỗi. KHÔNG trả lại chính token thay
+            // thế cho client được vì DB chỉ lưu HASH (raw token chỉ tồn tại ở máy client) → cấp cặp
+            // token mới cho tab đến muộn là cách duy nhất, và hai tab hội tụ qua đồng bộ storage ở FE.
+            var current = replacement;
+            for (var hop = 0; current.IsRevoked && hop < MaxGraceChainHops; hop++)
+            {
+                if (current.ReplacedBy is not Guid nextId)
+                    return null;
+
+                var next = await _authDbContext.RefreshTokens
+                    .FirstOrDefaultAsync(x => x.Id == nextId);
+                if (next is null)
+                    return null;
+
+                current = next;
+            }
+
+            return current.IsRevoked ? null : current;
+        }
+
+        // Thu hồi mọi refresh token còn sống của 1 user. Dùng cho đăng xuất và cho các thay đổi quyền
+        // (đổi org-role / xoá khỏi org) — buộc phát lại token ở lần refresh kế thay vì để quyền cũ
+        // sống hết 7 ngày của refresh token. KHÔNG đặt ReplacedBy → không hưởng cửa sổ ân hạn.
+        //
+        // ⚠ KHÔNG dựng denylist access-token: các service khác validate JWT OFFLINE bằng chung key
+        // (GEN-3, ràng buộc cứng trong AGENTS.md). Thêm bước gọi mạng/Redis vào đường validate là vi
+        // phạm ràng buộc đó. Hệ quả chấp nhận: quyền cũ còn hiệu lực tối đa 1 TTL access token (15').
+        private Task RevokeAllRefreshTokensAsync(Guid userId, CancellationToken ct = default) =>
+            _authDbContext.RefreshTokens
+                .Where(x => x.UserId == userId && !x.IsRevoked)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.IsRevoked, true), ct);
 
         // AUTH-1: register → role Candidate mặc định. Trả AuthResponse {accessToken, refreshToken,
         // expiresAt} (như Login/RegisterOrg) qua GenerateAuthResponse — frontend nhận token ngay khi
@@ -517,6 +597,11 @@ namespace Isas.AuthService.Services
             member.OrgRole = newRole;
             await _authDbContext.SaveChangesAsync(ct);
 
+            // Đổi quyền → thu hồi mọi refresh token của người bị đổi: lần refresh kế họ phải đăng nhập
+            // lại và nhận token mang org_role MỚI, thay vì mang quyền cũ suốt 7 ngày. Ranh giới hiệu lực
+            // vì thế là ≤ TTL access token (15'), tường minh và có chủ đích — xem docs/services/auth.md.
+            await RevokeAllRefreshTokensAsync(userId, ct);
+
             return new OrgMemberResponse
             {
                 UserId = member.UserId,
@@ -548,6 +633,11 @@ namespace Isas.AuthService.Services
 
             _authDbContext.OrgMembers.Remove(member);
             await _authDbContext.SaveChangesAsync(ct);
+
+            // Gỡ khỏi org → thu hồi refresh token: token cũ còn mang org_id/org_role của org vừa rời,
+            // giữ nguyên thì người đã bị gỡ vẫn thao tác được trên org đó tới 7 ngày. (Xem ghi chú
+            // RevokeAllRefreshTokensAsync về việc vì sao KHÔNG denylist access token — GEN-3.)
+            await RevokeAllRefreshTokensAsync(userId, ct);
         }
 
         private async Task EnsureRoleExistsAsync(string roleName)
@@ -593,6 +683,13 @@ namespace Isas.AuthService.Services
         private int GetRefreshTokenDays() =>
             int.Parse(_configuration["Jwt:RefreshTokenDays"]
                 ?? throw new InvalidOperationException("Jwt:RefreshTokenDays is not configured"));
+
+        // Cửa sổ ân hạn xoay vòng refresh token (giây). Mặc định 60s khi không cấu hình / cấu hình rác —
+        // đủ để các tab hội tụ, đủ ngắn để reuse-detection còn ý nghĩa. Đặt 0 = tắt ân hạn (chặt nhất).
+        private int GetRefreshTokenGraceSeconds() =>
+            int.TryParse(_configuration["Jwt:RefreshTokenGraceSeconds"], out var seconds) && seconds >= 0
+                ? seconds
+                : 60;
 
         private int GetAccessTokenMinutes() =>
             int.Parse(_configuration["Jwt:AccessTokenMinutes"]

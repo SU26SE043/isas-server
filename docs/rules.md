@@ -18,7 +18,8 @@
 - **AUTH-2** `register-org` → Employer + Organization + OrgAdmin.
 - **AUTH-3** 3 platform role: Candidate / Employer / Admin (PlatformAdmin).
 - **AUTH-4** Org-role: **OrgAdmin** (billing/mua gói/quản thành viên) vs **HrMember** (quản campaign, không billing). **HrMember = thành viên THUỘC org** (không phải platform role riêng) — mô hình 2-tầng chốt **D23**.
-- **AUTH-5** JWT mang `org_id` + `org_role` khi user thuộc org. *(⚠ token KHÔNG refresh khi đổi role — BK14.)*
+- **AUTH-5** JWT mang `org_id` + `org_role` khi user thuộc org. ✅ **Ranh giới hiệu lực khi đổi quyền = ≤ 1 TTL access token (15')** — chốt BK14: access token **offline, không thu hồi được** (GEN-3), nên đổi `org_role` / gỡ khỏi org / đăng xuất **thu hồi mọi refresh token** của user → lần refresh kế nhận quyền mới (`RefreshTokenAsync` đọc lại roles + membership). Đánh đổi **có chủ đích**: quyền cũ sống thêm tối đa 15'; cần chặt hơn → **rút ngắn TTL access**, ❌ KHÔNG thêm denylist/gọi mạng vào đường validate của service khác (vi phạm GEN-3). Chi tiết: [services/auth.md](services/auth.md).
+- **AUTH-9** **Refresh token xoay vòng có cửa sổ ân hạn** (`Jwt:RefreshTokenGraceSeconds`, mặc định **60s**, `0`=tắt): token vừa bị xoay còn dùng được thêm ngần đó giây — sửa đua refresh giữa **nhiều tab** (mỗi tab giữ token riêng, chung 1 phiên). Token thu hồi **thẳng tay** (đăng xuất/đổi quyền, `replaced_by` NULL) **KHÔNG** ân hạn. ⚠ Đánh đổi: thu-hồi-tức-thì là cơ chế **phát hiện token bị đánh cắp** — ân hạn làm yếu nó trong đúng cửa sổ đó → giữ NGẮN.
 - **AUTH-6** ✅ HrMember gọi endpoint billing money-mutation → **403** (A4; verified live 2026-07-13). *(GET billing HrMember vẫn xem được — ratify.)*
 - **AUTH-7** PlatformAdmin = endpoint admin-gated trong service sở hữu dữ liệu (không phải service riêng).
 - **AUTH-8** Billing/credit + campaign gắn theo **ORG**, không theo cá nhân HR (D5).
