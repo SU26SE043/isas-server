@@ -1,5 +1,4 @@
 using System.Text;
-using Isas.AuthService.DTOs;
 
 namespace Isas.AuthService.Services
 {
@@ -18,10 +17,12 @@ namespace Isas.AuthService.Services
         /// <summary>URL tuyệt đối (public, qua gateway) của action callback MVC — nơi handler Google trả về sau khi xong.</summary>
         string CallbackUrl(string? returnUrl);
 
-        /// <summary>URL FE kèm token ở <b>fragment</b> (đăng nhập thành công).</summary>
-        string SuccessUrl(AuthResponse auth, string? returnUrl);
+        /// <summary>
+        /// URL FE kèm <b>mã dùng-một-lần</b> (<c>?code=…</c>) — KHÔNG kèm token.
+        /// </summary>
+        string SuccessUrl(string code, string? returnUrl);
 
-        /// <summary>URL FE kèm <c>#error=&lt;mã&gt;</c> (đăng nhập thất bại).</summary>
+        /// <summary>URL FE kèm <c>?error=&lt;mã&gt;</c> (đăng nhập thất bại).</summary>
         string FailureUrl(string errorCode);
     }
 
@@ -61,25 +62,23 @@ namespace Isas.AuthService.Services
             return safe is null ? url : $"{url}?returnUrl={Uri.EscapeDataString(safe)}";
         }
 
-        public string SuccessUrl(AuthResponse auth, string? returnUrl)
+        public string SuccessUrl(string code, string? returnUrl)
         {
-            // Token đi trong FRAGMENT chứ không phải query: fragment KHÔNG được trình duyệt gửi lên
-            // server → không lọt vào access log của FE host, cũng không lọt vào header Referer khi
-            // trang callback tải tài nguyên khác.
-            var fragment = new StringBuilder("#accessToken=")
-                .Append(Uri.EscapeDataString(auth.AccessToken))
-                .Append("&refreshToken=").Append(Uri.EscapeDataString(auth.RefreshToken))
-                .Append("&expiresAt=").Append(Uri.EscapeDataString(auth.ExpiresAt.ToString("O")));
+            // URL này KHÔNG mang token, chỉ mang mã tham chiếu ngắn hạn dùng-một-lần. Trước đây token
+            // đi trong fragment — kín với server log/Referer, nhưng vẫn nằm trong location.hash nên
+            // script cùng trang (kể cả extension trình duyệt độc hại) đọc được. Mã thì đọc trộm cũng
+            // vô dụng nếu FE đã đổi trước: đổi lần hai là thất bại.
+            var query = new StringBuilder("?code=").Append(Uri.EscapeDataString(code));
 
             var safe = SanitizeReturnUrl(returnUrl);
             if (safe is not null)
-                fragment.Append("&returnUrl=").Append(Uri.EscapeDataString(safe));
+                query.Append("&returnUrl=").Append(Uri.EscapeDataString(safe));
 
-            return FrontendCallbackBase() + fragment;
+            return FrontendCallbackBase() + query;
         }
 
         public string FailureUrl(string errorCode) =>
-            FrontendCallbackBase() + "#error=" + Uri.EscapeDataString(errorCode);
+            FrontendCallbackBase() + "?error=" + Uri.EscapeDataString(errorCode);
 
         private string FrontendCallbackBase() =>
             Require(_frontendBaseUrl, "Frontend:BaseUrl") + FrontendCallbackPath;

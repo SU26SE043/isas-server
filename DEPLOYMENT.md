@@ -127,10 +127,16 @@ services:
       - EmailSettings__From=${SMTP_FROM}
       - Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
       - Authentication__Google__ClientSecret=${GOOGLE_CLIENT_SECRET}
-      # Đăng nhập Google: callback 302 về FE kèm token ở fragment. Cả 2 URL lấy từ CONFIG SERVER
-      # (không nhận đích từ client — nếu không là open-redirect làm rò token).
+      # Đăng nhập Google: callback 302 về FE kèm MÃ DÙNG-MỘT-LẦN (?code=…), KHÔNG kèm token; FE đổi
+      # mã lấy phiên qua POST /auth/google/exchange. Cả 2 URL lấy từ CONFIG SERVER (không nhận đích
+      # từ client — nếu không là open-redirect làm rò phiên).
       - Frontend__BaseUrl=${FRONTEND_BASE_URL}
       - Gateway__PublicBaseUrl=${GATEWAY_PUBLIC_BASE_URL}
+      # Tuỳ chọn — hạn sống (giây) của mã dùng-một-lần; không set = 60, giá trị ngoài [5, 600] bị kẹp.
+      # ⚠ Mã giữ trong BỘ NHỚ tiến trình AuthService: chỉ đổi được ở ĐÚNG instance đã phát, và
+      # restart/deploy làm mất mã đang bay (user bấm đăng nhập Google lại là xong). Chạy NHIỀU
+      # instance AuthService ⇒ phải bật sticky session hoặc chuyển kho mã sang Redis/DB.
+      - Authentication__Google__OneTimeCodeTtlSeconds=${GOOGLE_ONETIME_CODE_TTL_SECONDS:-60}
     expose: ["8080"]
     depends_on: [postgres, redis]
     networks: [isas-main-network]
@@ -270,6 +276,8 @@ GOOGLE_CLIENT_SECRET=...
 # Đăng nhập Google — bắt buộc nếu bật login-google (thiếu → callback trả 500 khi dựng URL đích).
 # Redirect URI phải khai trên Google Cloud Console: ${GATEWAY_PUBLIC_BASE_URL}/auth/signin-google
 FRONTEND_BASE_URL=https://<your-frontend>
+# Tuỳ chọn: hạn sống mã dùng-một-lần của login Google (giây). Không set = 60.
+GOOGLE_ONETIME_CODE_TTL_SECONDS=60
 GATEWAY_PUBLIC_BASE_URL=https://<your-tunnel>.trycloudflare.com/api/v1
 GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
 # PaymentService (PayOS) — bắt buộc để mua credit / webhook chạy

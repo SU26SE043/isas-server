@@ -66,17 +66,23 @@ UserResponse {
 
 - **`GET /login-google?returnUrl`** — challenge Google. `redirect_uri` gửi Google dựng từ **`Gateway:PublicBaseUrl`** (config server): gateway strip `/api/v1` nên URL handler tự dựng sẽ thiếu tiền tố + mang host nội bộ → 404 ở edge.
 - **`GET /signin-google`** — **CallbackPath của handler Google** (không phải action MVC). Đây là URI phải khai trên Google Cloud Console: `{Gateway:PublicBaseUrl}/auth/signin-google`. Phải **khác** route action bên dưới — middleware remote-auth chạy trước MVC và short-circuit đúng path nó giữ.
-- **`GET /login-google-callback?returnUrl&remoteError`** — action MVC, đích cuối vòng OAuth. **Trả `302`**, KHÔNG trả JSON (người dùng đang ở điều hướng cả trang → đáp xuống JSON thô thì app Angular không bao giờ chạy lại để nhận token):
-  - Thành công → `{Frontend:BaseUrl}/auth/google/callback#accessToken=…&refreshToken=…&expiresAt=…[&returnUrl=…]`
-  - Thất bại → `{Frontend:BaseUrl}/auth/google/callback#error=<remote_error|no_login_info|login_failed>`
+- **`GET /login-google-callback?returnUrl&remoteError`** — action MVC, đích cuối vòng OAuth. **Trả `302`**, KHÔNG trả JSON (người dùng đang ở điều hướng cả trang → đáp xuống JSON thô thì app Angular không bao giờ chạy lại để nhận token). **Redirect KHÔNG mang token, chỉ mang mã dùng-một-lần:**
+  - Thành công → `{Frontend:BaseUrl}/auth/google/callback?code=<mã dùng-một-lần>[&returnUrl=…]`
+  - Thất bại → `{Frontend:BaseUrl}/auth/google/callback?error=<remote_error|no_login_info|login_failed>`
+- **`POST /google/exchange`** — chặng 2: đổi mã lấy phiên. Public (`[AllowAnonymous]` — lúc này user chưa có token).
+  - Req: `{ code: string }` → Res **`200`** `AuthResponse`. Lỗi: **400** (mã sai / hết hạn / **đã dùng**) — cả 3 ca trả CÙNG một thông điệp để không giúp kẻ dò mã biết mình đoán gần đúng.
 
-Token đi trong **fragment** (không phải query): fragment **không được trình duyệt gửi lên server** → không lọt access log / header `Referer`.
+**Vì sao one-time code chứ không phải token trong URL:** bản trước đính token vào **fragment** — kín với access log và header `Referer` (fragment không được gửi lên server), nhưng vẫn nằm trong `location.hash` nên **script cùng trang, kể cả extension trình duyệt độc hại, đọc được**. Mã thì đọc trộm cũng vô dụng nếu FE đã đổi trước: đổi lần hai là thất bại.
 
-**Bảo mật đích redirect:** base URL LUÔN từ config server (`Frontend:BaseUrl` / `Gateway:PublicBaseUrl`). `returnUrl` do client truyền chỉ được chấp nhận khi là **đường dẫn tương đối** (bắt đầu `/`, không `//`, không `/\`, không scheme, không ký tự điều khiển) rồi ghép sau base đã cấu hình — nhận host từ client = open-redirect làm rò token.
+**Tính chất của mã** — 32 byte từ `RandomNumberGenerator` (256 bit, base64url; **không dùng `Guid`** — chỉ 122 bit và không cam kết nguồn ngẫu nhiên mật mã) · **TTL ngắn** `Authentication:Google:OneTimeCodeTtlSeconds` (mặc định **60s**, kẹp trong `[5, 600]`) · **dùng một lần** (đọc-và-xoá nguyên tử dưới khoá) · **KHÔNG bao giờ ghi giá trị mã vào log**.
+
+> ⚠ **Kho mã nằm trong BỘ NHỚ TIẾN TRÌNH** (`IMemoryCache`, `GoogleAuthCodeStore`) — không có bảng DB, không cần migration, hết hạn thì cache tự dọn (không cần sweeper). **Giới hạn phải biết khi vận hành:** mã phát ở instance nào chỉ đổi được ở **đúng instance đó**, và **restart/deploy làm mất mã đang bay** (hệ quả nhẹ: người dùng bấm đăng nhập Google lại). Deploy hiện tại **single-instance** nên chấp nhận được. **Scale ra nhiều instance AuthService ⇒ đăng nhập Google sẽ hỏng ngẫu nhiên** — khi đó phải bật sticky session hoặc chuyển kho sang Redis / bảng DB.
+
+**Bảo mật đích redirect:** base URL LUÔN từ config server (`Frontend:BaseUrl` / `Gateway:PublicBaseUrl`). `returnUrl` do client truyền chỉ được chấp nhận khi là **đường dẫn tương đối** (bắt đầu `/`, không `//`, không `/\`, không scheme, không ký tự điều khiển) rồi ghép sau base đã cấu hình — nhận host từ client = open-redirect làm rò phiên.
 
 **Account linking:** email Google trùng account mật khẩu sẵn có → **liên kết** external login vào account đó (`AddLoginAsync`) rồi đăng nhập, KHÔNG tạo user thứ hai. Chưa có account → tạo mới **passwordless** + role `Candidate` (AUTH-1; luồng này không mở đường Employer/org).
 
-**Config bắt buộc:** `Authentication:Google:ClientId/ClientSecret` · `Frontend:BaseUrl` · `Gateway:PublicBaseUrl`.
+**Config bắt buộc:** `Authentication:Google:ClientId/ClientSecret` · `Frontend:BaseUrl` · `Gateway:PublicBaseUrl`. **Tuỳ chọn:** `Authentication:Google:OneTimeCodeTtlSeconds` (mặc định 60).
 
 **`POST /refresh`** — Làm mới token. Public.
 - Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn** bên dưới).

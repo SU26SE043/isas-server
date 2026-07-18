@@ -143,34 +143,24 @@ public class GoogleLoginTests
         Assert.Equal(returnUrl, GoogleLoginRedirects.SanitizeReturnUrl(returnUrl));
     }
 
-    // Token đi trong FRAGMENT (không phải query) → không lọt access log / header Referer.
+    // URL redirect chỉ mang MÃ dùng-một-lần, tuyệt đối không mang token: token đặt ở URL — kể cả
+    // trong fragment — vẫn đọc được từ phía trình duyệt (location.hash, extension).
     // Base URL luôn từ config server, kể cả khi client cố nhét returnUrl độc.
     [Fact]
-    public void SuccessUrl_DungFragmentVaBaseUrlTuConfig()
+    public void SuccessUrl_ChiMangMaKhongMangToken()
     {
-        var sut = Redirects();
-        var auth = new AuthResponse
-        {
-            AccessToken = "access.token.value",
-            RefreshToken = "refresh-token-value",
-            ExpiresAt = new DateTime(2026, 7, 18, 10, 0, 0, DateTimeKind.Utc)
-        };
+        var url = Redirects().SuccessUrl("one-time-code-value", "https://evil.com/steal");
 
-        var url = sut.SuccessUrl(auth, "https://evil.com/steal");
-
-        Assert.StartsWith("https://app.isas.test/auth/google/callback#", url);
-        Assert.Contains("accessToken=access.token.value", url);
-        Assert.Contains("refreshToken=refresh-token-value", url);
+        Assert.StartsWith("https://app.isas.test/auth/google/callback?code=one-time-code-value", url);
+        Assert.DoesNotContain("accessToken", url);
+        Assert.DoesNotContain("refreshToken", url);
         Assert.DoesNotContain("evil.com", url);            // returnUrl độc bị loại
-        Assert.DoesNotContain("?", url);                   // không có query → token chỉ ở fragment
     }
 
     [Fact]
-    public void SuccessUrl_GhepReturnUrlTuongDoiVaoFragment()
+    public void SuccessUrl_GhepReturnUrlTuongDoiVaoQuery()
     {
-        var url = Redirects().SuccessUrl(
-            new AuthResponse { AccessToken = "a", RefreshToken = "r", ExpiresAt = DateTime.UtcNow },
-            "/candidate/dashboard");
+        var url = Redirects().SuccessUrl("code-1", "/candidate/dashboard");
 
         Assert.Contains("&returnUrl=%2Fcandidate%2Fdashboard", url);
     }
@@ -178,7 +168,7 @@ public class GoogleLoginTests
     [Fact]
     public void FailureUrl_TraVeTrangCallbackFEKemMaLoi()
     {
-        Assert.Equal("https://app.isas.test/auth/google/callback#error=login_failed",
+        Assert.Equal("https://app.isas.test/auth/google/callback?error=login_failed",
             Redirects().FailureUrl("login_failed"));
     }
 
