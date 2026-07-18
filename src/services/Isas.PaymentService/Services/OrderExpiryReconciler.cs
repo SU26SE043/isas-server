@@ -85,6 +85,10 @@ namespace Isas.PaymentService.Services
             var graceMinutes = _options.GracePeriodMinutes > 0 ? _options.GracePeriodMinutes : 10;
             var batchSize = _options.BatchSize > 0 ? _options.BatchSize : 200;
             var cutoff = DateTime.UtcNow.AddMinutes(-graceMinutes);
+            // Chặn trên chống retry vô hạn (xem OrderExpirySettings.ForceExpireAfterDays). 0 = tắt.
+            DateTime? forceCutoff = _options.ForceExpireAfterDays > 0
+                ? DateTime.UtcNow.AddDays(-_options.ForceExpireAfterDays)
+                : null;
 
             // Ứng viên: Pending + đã qua expired_at + hết ân hạn (chưa hết ân hạn = webhook còn có thể về).
             var candidates = await db.Orders
@@ -92,7 +96,7 @@ namespace Isas.PaymentService.Services
                 .Where(o => o.Status == OrderStatus.Pending && o.ExpiredAt < cutoff)
                 .OrderBy(o => o.ExpiredAt)
                 .Take(batchSize)
-                .Select(o => new { o.Id, o.PayosOrderCode })
+                .Select(o => new { o.Id, o.PayosOrderCode, o.ExpiredAt })
                 .ToListAsync(ct);
 
             if (candidates.Count == 0) return;
@@ -112,7 +116,27 @@ namespace Isas.PaymentService.Services
                 }
                 catch (Exception ex)
                 {
-                    // Không xác minh được → GIỮ Pending, vòng sau thử lại. Không đóng mù.
+                    // Không xác minh được. Mặc định GIỮ Pending, vòng sau thử lại (không đóng mù).
+                    // NHƯNG có chặn trên: đơn quá hạn quá lâu mà mãi không xác minh được (PayOS trả
+                    // "Mã thanh toán không tồn tại" cho đơn thời BF3 — order đã lưu nhưng tạo link
+                    // THẤT BẠI, nên PayOS không bao giờ có mã này) sẽ retry vô hạn. Quan sát thật
+                    // 2026-07-18: 2 đơn từ 13/07 lặp mỗi vòng quét.
+                    if (forceCutoff is DateTime fc && order.ExpiredAt < fc)
+                    {
+                        var forced = await db.Orders
+                            .Where(o => o.Id == order.Id && o.Status == OrderStatus.Pending)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(o => o.Status, OrderStatus.Expired)
+                                .SetProperty(o => o.UpdatedAt, _ => DateTime.UtcNow), ct);
+
+                        expired += forced;
+                        _logger.LogWarning(ex,
+                            "Đơn orderCode={OrderCode} quá hạn từ {ExpiredAt:u} và PayOS không xác minh được — "
+                            + "đóng Expired theo chặn trên {Days} ngày (link PayOS 30' không còn đường trả).",
+                            order.PayosOrderCode, order.ExpiredAt, _options.ForceExpireAfterDays);
+                        continue;
+                    }
+
                     _logger.LogWarning(ex,
                         "PayOS get-payment-info lỗi cho orderCode={OrderCode} — giữ Pending, thử lại vòng sau.",
                         order.PayosOrderCode);

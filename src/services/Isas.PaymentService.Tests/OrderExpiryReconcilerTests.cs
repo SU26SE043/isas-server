@@ -31,7 +31,8 @@ public class OrderExpiryReconcilerTests
         IPayOsQueryClient payos,
         IWebhookService webhooks,
         bool enabled = true,
-        int graceMinutes = 10)
+        int graceMinutes = 10,
+        int forceExpireAfterDays = 7)
     {
         var services = new ServiceCollection();
         services.AddDbContext<PaymentDbContext>(o => o
@@ -48,6 +49,7 @@ public class OrderExpiryReconcilerTests
                 Enabled = enabled,
                 ScanIntervalSeconds = 300,
                 GracePeriodMinutes = graceMinutes,
+                ForceExpireAfterDays = forceExpireAfterDays,
             }),
             NullLogger<OrderExpiryReconciler>.Instance);
         return (r, provider);
@@ -162,6 +164,68 @@ public class OrderExpiryReconcilerTests
         using (provider)
         {
             await ScanOnce(r);   // không được ném ra ngoài
+        }
+
+        Assert.Equal(OrderStatus.Pending, await StatusOf(tdb, order.Id));
+    }
+
+    // Chặn trên chống retry vô hạn: PayOS mãi không xác minh được ("Mã thanh toán không tồn tại" — đơn
+    // thời BF3 tạo link thất bại) + đơn đã quá hạn quá ForceExpireAfterDays → vẫn đóng.
+    // Quan sát thật 2026-07-18 trên production: 2 đơn từ 13/07 lặp lại mỗi vòng quét.
+    [Fact]
+    public async Task Payos_loi_ma_don_qua_cu_thi_dong_theo_chan_tren()
+    {
+        using var tdb = new PaymentTestDb();
+        var order = SeedOrder(tdb, OrderStatus.Pending, DateTime.UtcNow.AddDays(-8), 2607181200000009);
+
+        var payos = new Mock<IPayOsQueryClient>();
+        payos.Setup(p => p.GetPaymentInfoAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Mã thanh toán không tồn tại"));
+
+        var (r, provider) = Build(tdb, payos.Object, Mock.Of<IWebhookService>(), forceExpireAfterDays: 7);
+        using (provider)
+        {
+            await ScanOnce(r);
+        }
+
+        Assert.Equal(OrderStatus.Expired, await StatusOf(tdb, order.Id));
+    }
+
+    // Chặn trên KHÔNG được nuốt đơn mới quá hạn: PayOS lỗi tạm thời + đơn còn trẻ → vẫn giữ Pending.
+    [Fact]
+    public async Task Payos_loi_nhung_don_con_moi_thi_van_giu_Pending()
+    {
+        using var tdb = new PaymentTestDb();
+        var order = SeedOrder(tdb, OrderStatus.Pending, DateTime.UtcNow.AddHours(-1), 2607181200000010);
+
+        var payos = new Mock<IPayOsQueryClient>();
+        payos.Setup(p => p.GetPaymentInfoAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("PayOS 503"));
+
+        var (r, provider) = Build(tdb, payos.Object, Mock.Of<IWebhookService>(), forceExpireAfterDays: 7);
+        using (provider)
+        {
+            await ScanOnce(r);
+        }
+
+        Assert.Equal(OrderStatus.Pending, await StatusOf(tdb, order.Id));
+    }
+
+    // ForceExpireAfterDays = 0 → tắt chặn trên, giữ Pending mãi kể cả đơn rất cũ (thoát hiểm bằng config).
+    [Fact]
+    public async Task Chan_tren_tat_thi_don_cu_van_giu_Pending()
+    {
+        using var tdb = new PaymentTestDb();
+        var order = SeedOrder(tdb, OrderStatus.Pending, DateTime.UtcNow.AddDays(-30), 2607181200000011);
+
+        var payos = new Mock<IPayOsQueryClient>();
+        payos.Setup(p => p.GetPaymentInfoAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Mã thanh toán không tồn tại"));
+
+        var (r, provider) = Build(tdb, payos.Object, Mock.Of<IWebhookService>(), forceExpireAfterDays: 0);
+        using (provider)
+        {
+            await ScanOnce(r);
         }
 
         Assert.Equal(OrderStatus.Pending, await StatusOf(tdb, order.Id));
