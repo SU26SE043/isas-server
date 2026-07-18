@@ -91,7 +91,15 @@ public record AnswerScoreResponse(
     decimal Score,
     string? Reasoning,
     int RubricVersion,
-    int? LevelMatched = null   // E9 — mức khớp khi neo theo rubric_levels; null nếu chưa neo (nullable → không phá client)
+    int? LevelMatched = null,  // E9 — mức khớp khi neo theo rubric_levels; null nếu chưa neo (nullable → không phá client)
+    // Tên + thang điểm tiêu chí, để client HIỂN THỊ được mà không phải tra ngược id.
+    // Bắt ở e2e 2026-07-18: client chỉ nhận `criterionId` nên breakdown điểm hiện trơ "Điểm tiêu chí"
+    // (B2C) và mã GUID (transcript B2B). Tra ngược KHÔNG khả thi: `rubric_criteria` của campaign được
+    // mint `Guid.NewGuid()` lúc materialize (PracticeService) nên id này KHÁC id `campaign_criteria`.
+    // Nullable + đặt cuối: client cũ không vỡ; caller quên `.ThenInclude(Criterion)` thì ra null chứ
+    // không ném NRE.
+    string? CriterionName = null,
+    int? MaxScore = null
 );
 
 public record PracticeSessionSummary(
