@@ -327,7 +327,7 @@ public class SessionResultServiceTests
         await BuildService(t).ComputeAndStoreAsync(session.Id);
 
         var history = await BuildPractice(t).GetHistoryAsync(candidate);
-        var item = Assert.Single(history);
+        var item = Assert.Single(history.Items);
         Assert.Equal(80m, item.OverallScore);   // 4/5
     }
 

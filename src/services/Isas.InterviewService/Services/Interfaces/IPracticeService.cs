@@ -1,4 +1,5 @@
 using Isas.InterviewService.DTOs;
+using Isas.Shared.Pagination;
 
 namespace Isas.InterviewService.Services.Interfaces;
 
@@ -29,8 +30,10 @@ public interface IPracticeService
     Task<PracticeSessionResponse?> GetSessionAsync(
         Guid candidateId, Guid sessionId, CancellationToken ct = default);
 
-    Task<IReadOnlyList<PracticeSessionSummary>> GetHistoryAsync(
-        Guid candidateId, CancellationToken ct = default);
+    // DB31 — keyset-paged (mẫu DB8): cursor opaque + limit opt-in; body giữ mảng JSON,
+    // next-cursor trả ở header X-Next-Cursor. cursor=null ⇒ trang đầu.
+    Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(
+        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default);
 
     // DB18 — Payment gọi (internal) để phát hiện orphan reservation: trả TẬP CON sessionIds thực sự có
     // row practice_sessions (bất kể status). Reservation Reserved mà session KHÔNG tồn tại (crash giữa
