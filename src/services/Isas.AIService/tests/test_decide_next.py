@@ -184,10 +184,19 @@ def test_endpoint_with_answer_text(monkeypatch):
 
 
 def test_endpoint_with_audio_key_transcribes(monkeypatch):
-    """audioObjectKey → transcribe (stub) → transcript vào decision + echo về response."""
+    """audioObjectKey → transcribe (stub) → transcript vào decision + echo về response.
+
+    F11 đổi call site sang ``transcribe_detailed`` (transcript KÈM chỉ số cách nói)."""
+    from app.fluency import Segment, compute_delivery_metrics
+    from app.transcriber import TranscriptionResult
+
     monkeypatch.setattr(main_module.storage, "get_object_bytes", lambda key: b"fake-audio")
-    monkeypatch.setattr(main_module.transcriber, "transcribe",
-                        lambda path, lang="vi": "transcript từ audio")
+    monkeypatch.setattr(
+        main_module.transcriber, "transcribe_detailed",
+        lambda path, lang="vi": TranscriptionResult(
+            text="transcript từ audio",
+            metrics=compute_delivery_metrics(
+                "transcript từ audio", [Segment(0.0, 2.0, "transcript từ audio")], 3.0)))
     captured = {}
 
     async def fake_decide(**kwargs):
@@ -208,6 +217,13 @@ def test_endpoint_with_audio_key_transcribes(monkeypatch):
     assert body["transcript"] == "transcript từ audio"
     # transcript được truyền xuống provider.decide_next (single-source).
     assert captured["transcript"] == "transcript từ audio"
+
+    # F11 — chỉ số cách nói PHẢI đi kèm trong response. Đây là lần đo DUY NHẤT của câu trả lời
+    # này ở đường thích ứng (worker bỏ Whisper khi job đã mang transcript); rơi ở đây là buổi
+    # adaptive vĩnh viễn không có chỉ số trong khi buổi tĩnh vẫn có — hỏng âm thầm.
+    assert body["deliveryMetrics"] is not None
+    assert body["deliveryMetrics"]["speechSec"] == 2.0
+    assert body["deliveryMetrics"]["audioSec"] == 3.0
 
 
 def test_endpoint_requires_internal_token():
@@ -235,7 +251,7 @@ def test_endpoint_502_when_transcribe_fails(monkeypatch):
     def boom(path, lang="vi"):
         raise RuntimeError("whisper down")
 
-    monkeypatch.setattr(main_module.transcriber, "transcribe", boom)
+    monkeypatch.setattr(main_module.transcriber, "transcribe_detailed", boom)
     res = client.post("/api/v1/decide-next", headers=_HEADERS, json={
         "jobCategory": "BE", "audioObjectKey": "a.webm", "currentQuestion": "Q"})
     assert res.status_code == 502

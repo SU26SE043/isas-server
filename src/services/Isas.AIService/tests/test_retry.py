@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app import worker
+from app.transcriber import TranscriptionResult
 from app.config import settings
 from app.providers.gemini import ScoreOutcome
 
@@ -26,7 +27,8 @@ def _patch_pipeline(monkeypatch, *, score, post_callback, post_failed,
     """Mock S3 tải + transcribe OK để tới bước score(). Caller quyết score.side_effect
     + hai callback (post_callback = success, post_failed = báo Failed)."""
     monkeypatch.setattr(worker.s3_client, "download_fileobj", MagicMock())
-    monkeypatch.setattr(worker.transcriber, "transcribe", MagicMock(return_value=transcript))
+    monkeypatch.setattr(worker.transcriber, "transcribe_detailed",
+                        MagicMock(return_value=TranscriptionResult(text=transcript)))
     monkeypatch.setattr(worker.provider, "score", score)
     monkeypatch.setattr(worker, "post_callback", post_callback)
     monkeypatch.setattr(worker, "post_failed", post_failed)

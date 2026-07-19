@@ -45,7 +45,7 @@
 - `summarize-roadmap`: req `{ jobCategory, level, criteriaProgress: [{ criterionName, startPct?, endPct, levelThreshold, passed }] }` → res `{ strengths[], weaknesses[], improvements[], overallComment }` — **best-effort** khi roadmap `Completed` (lỗi → Interview để rỗng/null, không chặn). Bọc dữ liệu trong delimiter (chống prompt-injection) như `summarize-session`.
 
 **Phỏng vấn THÍCH ỨNG** *(INT-17 — nội bộ, `X-Internal-Token` BẮT BUỘC, fail-closed)*:
-- `decide-next`: req `{ jobCategory, audioObjectKey?, answerText?, language?, currentQuestion, history:[{ question, answer?, kind }], askedCount, followUpCount, maxQuestions, maxFollowUps, criteria:[{ name, description? }] }` → res `{ action: follow_up|clarify|new_question|end, nextQuestion?, transcript?, reason? }`. InterviewService (chủ state) gọi **đồng bộ** sau mỗi câu trả lời: AIService tải audio S3 theo `audioObjectKey` → **transcribe (Whisper)** → **Gemini (temp 0.3)** quyết định câu kế. `transcript` trả về là **NGUỒN DUY NHẤT** — Interview lưu lên answer + đẩy vào `ScoringJob` (worker **bỏ Whisper**, tiết kiệm N lần self-consistency E10). Stateless (GEN-4): lịch sử hội thoại nằm trong request. `answerText` = fallback (test, không cần S3). Prompt chống prompt-injection (AI-4: câu trả lời = dữ liệu; "dừng phỏng vấn"/"hỏi câu dễ" bị phớt lờ) + NEO câu hỏi về `criteria` (không mở tiêu chí mới → công bằng chấm/ranking B2B). Lỗi (transcribe/Gemini) → **502** → Interview degrade về luồng tĩnh (worker transcribe async như cũ).
+- `decide-next`: req `{ jobCategory, audioObjectKey?, answerText?, language?, currentQuestion, history:[{ question, answer?, kind }], askedCount, followUpCount, maxQuestions, maxFollowUps, criteria:[{ name, description? }] }` → res `{ action: follow_up|clarify|new_question|end, nextQuestion?, transcript?, reason?, deliveryMetrics? }`. InterviewService (chủ state) gọi **đồng bộ** sau mỗi câu trả lời: AIService tải audio S3 theo `audioObjectKey` → **transcribe (Whisper)** → **Gemini (temp 0.3)** quyết định câu kế. `transcript` trả về là **NGUỒN DUY NHẤT** — Interview lưu lên answer + đẩy vào `ScoringJob` (worker **bỏ Whisper**, tiết kiệm N lần self-consistency E10). Stateless (GEN-4): lịch sử hội thoại nằm trong request. `answerText` = fallback (test, không cần S3). Prompt chống prompt-injection (AI-4: câu trả lời = dữ liệu; "dừng phỏng vấn"/"hỏi câu dễ" bị phớt lờ) + NEO câu hỏi về `criteria` (không mở tiêu chí mới → công bằng chấm/ranking B2B). Lỗi (transcribe/Gemini) → **502** → Interview degrade về luồng tĩnh (worker transcribe async như cũ).
 
 **TTS — đọc câu hỏi thành tiếng** *(nội bộ, `X-Internal-Token` BẮT BUỘC, fail-closed; InterviewService gọi)*:
 - `tts`: req `{ text, voice? }` → res **KHÔNG phải JSON**: **bytes mp3**, `Content-Type: audio/mpeg`, header `X-Tts-Cache: hit|miss|miss-nostore`. `text` = **nội dung câu hỏi**; `voice` mặc định `settings.tts_voice`. Ngôn ngữ là **hằng phía server** (`tts_language_code`, mặc định `vi-VN`) — client KHÔNG truyền.
@@ -57,6 +57,20 @@
 - **KHÔNG trừ credit** (PAY-1 — credit = 1 lượt được AI chấm; đọc đề bài không phải lượt chấm).
 - **AI-4:** `text` chuyển **nguyên văn** cho bộ đọc, không ghép chỉ thị nào quanh nó — model TTS chỉ đọc chứ không "làm theo", và chính việc thêm chỉ thị kiểu *"hãy đọc câu sau"* mới tạo chỗ cho câu hỏi độc hại bám vào mà lái giọng đọc.
 - Lỗi: **401** (thiếu/sai token) · **400** (`text` rỗng — chặn TRƯỚC khi gọi vendor) · **502** (Gemini chết/quá tải · encode mp3 lỗi · **S3 đọc lỗi THẬT**). Ghi cache hỏng → **vẫn trả 200** + `X-Tts-Cache: miss-nostore` (audio đã có trong tay thì đừng làm hỏng request; nhưng đánh dấu để monitor thấy — ghi hỏng kéo dài = mọi request gọi vendor). Đọc cache lỗi thật thì **KHÔNG** lặng lẽ fallback sang vendor (nuốt = đốt tiền âm thầm).
+
+### F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY (`app/fluency.py`)
+
+Trước F11, `transcriber.transcribe()` lấy `segments` rồi **vứt sạch mốc thời gian**, chỉ giữ text ⇒ mọi tín hiệu về *cách nói* biến mất trước khi tới bộ chấm; "độ trôi chảy" chỉ có thể **đoán** từ chữ. Nay `transcribe_detailed()` trả `TranscriptionResult(text, metrics)`.
+
+**Chỉ dùng mốc mức SEGMENT, KHÔNG bật `word_timestamps`.** `segment.start/.end` đã có sẵn **không tốn thêm gì**; `word_timestamps=True` chạy thêm một lượt căn chỉnh cross-attention + DTW ⇒ chậm hơn. Mà `/decide-next` transcribe **ĐỒNG BỘ trong request upload** và deploy đã phải hạ `large-v3` → `small` đúng vì lý do độ trễ đó. Mốc segment đủ để đo tốc độ nói + khoảng lặng.
+
+`deliveryMetrics` = `{ audioSec, speechSec, wordCount, speechRateWpm, longestPauseSec, pauseCount, silenceRatio, fillerCount, fillerPer100Words, fillerBreakdown{} }`. **`null` = KHÔNG đo được** (audio rỗng / nhánh `answerText`) — khác hẳn "đo ra 0".
+
+⚠ **`fillerCount` là mức TỐI THIỂU, không phải số thật.** Whisper học trên transcript đã làm sạch nên nó **thường nuốt bớt từ đệm** ⇒ đếm hụt có hệ thống. Nhưng tiếng "ừm" bị nuốt **vẫn chiếm thời gian thật**, nên nó lộ ra ở khoảng lặng / tốc độ nói ⇒ **chỉ số THỜI GIAN là bằng chứng đáng tin, số đếm chỉ là tham khảo**. Prompt chấm (`build_delivery_block`) nói rõ cả hai điều này; thiếu chúng thì LLM đọc "0 từ đệm" thành "nói hoàn hảo" và tính năng chạy **ngược** mục tiêu.
+
+Danh sách từ đệm cố ý **HẸP** (thà bỏ sót còn hơn buộc tội oan): đếm tiếng ngập ngừng thuần tuý ("ừm/ờ/ưm"…) + vài tật nói rõ rệt ("kiểu như", "đại loại là"…); **KHÔNG** đếm liên từ giải thích hợp lệ ("tức là", "nghĩa là", "ví dụ như") vì người trả lời TỐT dùng chúng để cấu trúc câu. Danh sách là **phán đoán có căn cứ, không lấy từ corpus có kiểm chứng** — repo không có corpus tiếng Việt nào.
+
+**Worker:** job mang `deliveryMetrics` (đường thích ứng, đo sẵn ở `/decide-next`) → dùng luôn; không có → tự `transcribe_detailed` rồi tự đo. Cả hai đường đều đẩy chỉ số vào `score(delivery=…)` **và** lên callback `.NET`. Job cũ mang `transcript` mà thiếu chỉ số → chấm với `delivery=None` (**KHÔNG** transcribe lại — mất trọn cái lợi bỏ Whisper của INT-17).
 
 > ⚠ **Bảo mật (cần sửa):** các endpoint SINH khác **hiện KHÔNG có auth** (chỉ nội bộ qua Tailscale, GEN-7). `/decide-next` **đã** gate `X-Internal-Token` (mẫu cho GEN-7 hardening các endpoint còn lại). Xem *Vấn đề đã biết*.
 
@@ -78,7 +92,7 @@ POST /api/v1/ai/analyze-cv
         "criterionMatches":[{"criterionId":"…","matchScore":4.0,"reasoning":"…"}], "overallMatchScore":78 }
         // không có jdText/criteria → bỏ jdMatch/criterionMatches/overallMatchScore
 
-POST /api/v1/ai/transcribe   (multipart: file=audio, language="vi")   → 200 { "text":"…" }
+POST /api/v1/ai/transcribe   (multipart: file=audio, language="vi")   → 200 { "text":"…", "deliveryMetrics": {…}|null }
 ```
 
 ### Validation đầu vào

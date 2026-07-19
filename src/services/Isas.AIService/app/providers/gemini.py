@@ -213,9 +213,14 @@ class GeminiProvider(QuestionProvider):
 
     async def score(self, question: str, transcript: str,
                     job_category: str, criteria: list[dict],
-                    temperature: float = 0.0) -> list[dict]:
+                    temperature: float = 0.0,
+                    delivery: dict | None = None) -> list[dict]:
         """
         Chấm 1 câu trả lời theo rubric.
+
+        delivery (F11 — FR06, optional): chỉ số cách nói đo từ audio (tốc độ nói, khoảng lặng,
+          từ đệm) — ghép vào prompt để tiêu chí "độ trôi chảy" chấm bằng SỐ ĐO thay vì đoán
+          từ text. ``None`` (mặc định) = chưa đo được → prompt nói rõ + cấm bịa số.
 
         criteria: list dict từ C# gửi qua, mỗi phần tử có
           { criterionId, name, description, maxScore, weight,
@@ -249,7 +254,7 @@ class GeminiProvider(QuestionProvider):
             # Không có levels (phòng hờ) → dải mặc định 0..maxScore.
             levels_by_id[cid] = sorted(scores) if scores else list(range(0, mx + 1))
 
-        prompt = build_scoring_prompt(question, transcript, job_category, criteria)
+        prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery)
 
         response = await self._client.aio.models.generate_content(
             model=settings.gemini_model,

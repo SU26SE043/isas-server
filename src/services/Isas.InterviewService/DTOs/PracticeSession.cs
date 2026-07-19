@@ -96,7 +96,11 @@ public record AnswerResponse(
     // F13 (FR07) — câu trả lời MẪU mức tối đa cho ĐÚNG câu hỏi này (AI sinh cùng lượt chấm).
     // null khi chưa chấm xong / LLM không trả → client chỉ đơn giản không hiện mục gợi ý.
     // Đặt CUỐI + có default: client cũ không vỡ (tiền lệ CriterionName/MaxScore).
-    string? SampleAnswer = null
+    string? SampleAnswer = null,
+    // F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY đo từ audio (tốc độ nói / khoảng lặng / từ đệm).
+    // ⚠ null = CHƯA ĐO ĐƯỢC (answer trước F11 · audio rỗng · đường degrade), KHÁC HẲN "đo ra 0":
+    // FE phải hiện "chưa có dữ liệu" chứ đừng hiện "0 từ đệm" như một lời khen.
+    DeliveryMetricsDto? DeliveryMetrics = null
 );
 
 public record AnswerScoreResponse(

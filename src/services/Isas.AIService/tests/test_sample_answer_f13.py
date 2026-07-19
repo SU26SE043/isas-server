@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app import worker
+from app.transcriber import TranscriptionResult
 from app.prompts import build_scoring_prompt
 from app.providers.gemini import GeminiProvider
 from app.worker import make_score_payload
@@ -136,7 +137,8 @@ async def test_worker_forwards_sample_answer_to_dotnet(monkeypatch):
     from app.providers.gemini import ScoreOutcome
 
     monkeypatch.setattr(worker.s3_client, "download_fileobj", MagicMock())
-    monkeypatch.setattr(worker.transcriber, "transcribe", MagicMock(return_value="tr"))
+    monkeypatch.setattr(worker.transcriber, "transcribe_detailed",
+                        MagicMock(return_value=TranscriptionResult(text="tr")))
     monkeypatch.setattr(worker.provider, "score", AsyncMock(
         return_value=ScoreOutcome(scores=_SCORES, sample_answer="Mẫu tốt hơn.")))
     post_callback = AsyncMock()

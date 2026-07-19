@@ -33,6 +33,27 @@ public class PracticeAnswer
 
     public int DurationSec { get; set; }
 
+    // ── F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY đo từ mốc thời gian Whisper ────────────────────────
+    // Tất cả nullable: null = CHƯA ĐO ĐƯỢC (answer cũ trước F11 · audio rỗng · đường degrade khi
+    // /decide-next lỗi), KHÁC HẲN với 0 = "đo ra 0". Phân biệt được hai ca này mới hiển thị đúng:
+    // "chưa có dữ liệu" vs "nói 0 từ đệm". Reset cùng transcript/scores khi upload lại (INT-3) —
+    // giữ lại là hiện chỉ số của bản ghi âm không còn tồn tại.
+    //
+    // ⚠ FillerCount là mức TỐI THIỂU (Whisper nuốt bớt từ đệm) — xem DeliveryMetricsDto.
+
+    /// <summary>Âm tiết/phút (tiếng Việt đơn âm tiết).</summary>
+    public double? SpeechRateWpm { get; set; }
+
+    public int? FillerCount { get; set; }
+    public int? PauseCount { get; set; }
+    public double? LongestPauseSec { get; set; }
+    public double? SilenceRatio { get; set; }
+
+    /// <summary>Chi tiết từ đệm dạng JSON (<c>{"ừm":3,"kiểu như":1}</c>) để hiện cho người luyện.
+    /// Lưu <b>text</b> chứ không phải jsonb: dữ liệu này chỉ để đọc-hiển-thị, không truy vấn theo
+    /// khoá bao giờ — chọn jsonb ở đây chỉ tổ rước rủi ro migration (xem F15) mà không được gì.</summary>
+    public string? FillerBreakdown { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     // Mốc lần gần nhất job chấm được đẩy lên queue (kể cả republish).

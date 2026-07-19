@@ -175,6 +175,78 @@ public class StuckAnswerRepublisherTests
         Assert.Equal("transcript đồng bộ đã có", published!.Transcript);
     }
 
+    // F11 — re-publish phải mang theo CẢ chỉ số cách nói, không chỉ transcript.
+    //
+    // Vì sao cần test riêng: republisher KHÔNG gọi lại AIService, và worker BỎ Whisper khi job đã
+    // có transcript ⇒ chỉ số không đi kèm ở đây thì đúng những answer phải cứu bằng republisher
+    // (broker trục trặc / worker chết — tức là lúc đã có sự cố) sẽ mất chỉ số, còn answer chấm trơn
+    // tru vẫn có. Lệch âm thầm, không lỗi nào nổ.
+    //
+    // ⚠ Lỗ này tìm ra BẰNG mutation-check: đặt `DeliveryMetrics = null` trong republisher mà cả
+    // 413 test vẫn XANH — bộ test lúc đó chỉ phủ mapper, không phủ chỗ đấu dây này.
+    [Fact]
+    public async Task PublishHut_WithDeliveryMetrics_CarriesMetricsInJob()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        a.Transcript = "ừm transcript đồng bộ";
+        DeliveryMetricsMapper.Apply(a, new DeliveryMetricsDto
+        {
+            SpeechRateWpm = 190,
+            FillerCount = 6,
+            PauseCount = 4,
+            LongestPauseSec = 3.1,
+            SilenceRatio = 0.4,
+            FillerBreakdown = new Dictionary<string, int> { ["ừm"] = 6 },
+        });
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t);
+        ScoringJob? published = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.NotNull(published);
+        Assert.NotNull(published!.DeliveryMetrics);
+        Assert.Equal(190, published.DeliveryMetrics!.SpeechRateWpm);
+        Assert.Equal(6, published.DeliveryMetrics.FillerCount);
+        Assert.Equal(6, published.DeliveryMetrics.FillerBreakdown["ừm"]);
+    }
+
+    // Mặt còn lại: answer CHƯA từng đo → job mang null (KHÔNG phải DTO toàn 0). Gửi 0 sẽ khiến
+    // worker tưởng "đã đo, kết quả 0" rồi bỏ qua việc đo thật ⇒ chỉ số bịa cho mọi answer tĩnh.
+    [Fact]
+    public async Task PublishHut_ChuaDoChiSo_JobMangNull()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t);
+        ScoringJob? published = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.NotNull(published);
+        Assert.Null(published!.DeliveryMetrics);
+    }
+
     [Fact]
     public async Task FreshUpload_WithinGrace_NotRepublished()
     {
