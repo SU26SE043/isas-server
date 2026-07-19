@@ -60,5 +60,19 @@ class Settings(BaseSettings):
     dotnet_callback_base: str = "http://localhost:5246"  # cổng .NET API
     internal_token: str = "change-me"                    # trùng Internal:Token .NET
 
+    # ── F22: ĐO TOKEN/CHI PHÍ (FR18) ─────────────────────────────
+    # GEN-4 cấm AIService ghi DB → số liệu được ĐẨY qua callback nội bộ về
+    # PaymentService (chỗ đã giữ doanh thu F19; chi phí AI chỉ có nghĩa khi đọc
+    # cạnh doanh thu). Xem app/usage.py cho các phương án đã loại.
+    usage_metering_enabled: bool = True
+    # Base URL PaymentService (KHÔNG qua gateway — GEN-1). Để RỖNG = chỉ ghi log,
+    # không gọi mạng: đây là mặc định an toàn cho test/dev, và là kill-switch khi
+    # sink có sự cố mà không phải deploy lại.
+    usage_sink_base: str = ""
+    # Ngắn có chủ đích: đây là lượt gọi PHỤ nằm sau một lượt LLM đã xong. Sink chậm
+    # KHÔNG được kéo dài request của người dùng (/decide-next chạy đồng bộ trong
+    # đường upload câu trả lời).
+    usage_sink_timeout_seconds: float = 3.0
+
 
 settings = Settings()

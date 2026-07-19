@@ -82,6 +82,11 @@ builder.Services.Configure<PayOSSettings>(
 builder.Services.Configure<BillingSettings>(
     builder.Configuration.GetSection("Billing"));
 
+// F22 — bảng giá token (USD/1 triệu). Giá sống ở Payment chứ không ở AIService: AIService biết SỐ TOKEN,
+// Payment biết TIỀN. Mỗi dòng usage snapshot lại đơn giá đã dùng nên đổi giá không hồi tố số liệu cũ.
+builder.Services.Configure<AiPricingSettings>(
+    builder.Configuration.GetSection("AiPricing"));
+
 // DB4 — cấu hình reconciler credit_accounts.reserved_credits ↔ count(reservations Reserved).
 builder.Services.Configure<ReconcileSettings>(
     builder.Configuration.GetSection("Reconcile"));
@@ -124,6 +129,8 @@ builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<IRefundService, RefundService>();
 // F19: tổng hợp doanh thu theo kỳ cho PlatformAdmin (đọc `orders`, không đụng sổ cái credit).
 builder.Services.AddScoped<IRevenueService, RevenueService>();
+// F22: nhận số liệu token AIService đẩy về (GEN-4 — AIService không ghi DB) + tổng hợp chi phí cho admin.
+builder.Services.AddScoped<IAiUsageService, AiUsageService>();
 // F20 (vế Payment): admin cấp credit khuyến mãi — ví tăng + bút toán PromoGrant ghi rõ người cấp.
 builder.Services.AddScoped<IAdminCreditService, AdminCreditService>();
 // P1: cấp phát credit_accounts (owner_type). Reserve/Consume/Release + webhook (P2/P4/P5/P6) = task sau.

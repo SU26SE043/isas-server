@@ -175,6 +175,20 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/admin/credits/{ownerType}/{ownerId}/transactions`** ✅ **F20** — Sổ cái ví **bất kỳ**, cùng hợp đồng keyset với `me/credit-transactions`, **có thêm** `grantedBy`/`note`.
 
+**`GET /payment/admin/ai-usage?from=&to=&groupBy=day|month`** ✅ **F22** (2026-07-19) — Tiêu thụ token + **chi phí AI** theo kỳ. Auth `Roles="Admin"`. Kỳ **nửa mở `[from, to)`**, thiếu tham số → 30 ngày gần nhất, mốc ép về UTC (mẫu F19). → **200** `{ from, to, granularity, totalCalls, promptTokens, outputTokens, totalTokens, totalCostUsd, byOperation[], buckets[], resourceUrls? }`.
+- **`byOperation[]`** = tiêu thụ **theo endpoint** (`score` · `generate_questions` · `decide_next` · `text_to_speech` …) → trả lời "tiền đi đâu", không chỉ "hết bao nhiêu". Đây là thứ cho biết bật `SelfConsistencyN` hay thêm 2 tiêu chí (F12) đắt lên bao nhiêu.
+- **`resourceUrls`** (F15) = `{ proposed, rejected, rejectedRate }` — tỉ lệ URL tài liệu do AI sinh bị allowlist tên miền loại. Trước F22 allowlist loại URL trong **im lặng**: nếu Gemini bịa domain 90% số lần thì không ai biết, và cũng không có cơ sở nào để nói allowlist 26 domain đang quá chặt hay quá lỏng. **`null` khi kỳ không có lượt sinh tài liệu** — `null` ≠ `0/0`, vì hiện "0% bị loại" là một khẳng định không có cơ sở.
+- Lỗi: **400** `from >= to` hoặc `groupBy` lạ.
+
+### Nội bộ — AIService → Payment — `X-Internal-Token`, **KHÔNG qua gateway** ✅ (F22)
+
+**`POST /internal/ai-usage`** ✅ **F22** — AIService đẩy số liệu 1 lượt gọi LLM. Req `{ operation, model, promptTokens, outputTokens, totalTokens, resourceUrlsProposed?, resourceUrlsRejected? }` → **200** `{ id }`.
+- **Vì sao Payment nhận chứ không phải AIService tự lưu:** GEN-4 cấm AIService ghi DB, nên số liệu đi qua **callback nội bộ** — đúng cơ chế GEN-4 đã dựng cho kết quả AI. Payment giữ bảng vì chi phí AI là câu hỏi **tiền** và chỉ có nghĩa khi đọc cạnh doanh thu (F19 cũng ở đây): "tháng này thu bao nhiêu, đốt bao nhiêu" phải trả lời được ở **một** chỗ. *(Các phương án đã loại — trả usage kèm response cho caller · endpoint `/metrics` in-memory · gom qua log — ghi trong `src/services/Isas.AIService/app/usage.py`.)*
+- **Caller KHÔNG gửi tiền, chỉ gửi token + tên model.** Đơn giá do Payment giữ (`AiPricing`, USD/1 triệu token) và **snapshot lên từng dòng** (mẫu `Invoice.UnitPrice`) → Google đổi giá **không hồi tố** số liệu lịch sử. Để AIService gửi luôn số tiền thì đơn giá phải sống ở hai nơi và sẽ lệch nhau vào đúng ngày đổi giá.
+- **Không bao giờ ép caller xử lý lỗi:** ghi hỏng → **202** `{ status: "dropped" }` + log, KHÔNG phải 500. Caller là AIService gọi ngay sau một lượt LLM **đã tốn tiền**; bắt nó retry/nổ ở đó là biến một tính năng **quan sát** thành đường làm answer `Failed` ⇒ mất credit (PAY-13). Phía AIService cũng đã nuốt lỗi — đây là lớp thứ hai.
+- Token âm → **kẹp về 0** (không từ chối): số âm lọt vào sẽ **trừ** vào tổng chi phí, tức báo cáo sai theo hướng có lợi cho ta.
+- Model không có trong bảng giá → dùng `AiPricing:Default` + **log cảnh báo** (KHÔNG ghi `cost = 0` — cost 0 làm báo cáo chi phí trông đẹp một cách sai sự thật).
+
 ### Nội bộ — Interview → Payment — `X-Internal-Token`, **KHÔNG qua gateway** ✅ (P4/P5/P6)
 
 **`POST /internal/credits/reserve`** — giữ 1 chỗ; **InterviewService gọi cho cả hai dòng** khi tạo session (B2B `owner=Org` từ `campaign.OrgId` Campaign gửi kèm — **BK14**; B2C `owner=User`).
@@ -399,6 +413,29 @@ updated_at     timestamptz
 **Một lần mua = MỘT row** (append-one-per-order, KHÔNG update row cũ để kéo dài hạn): `UNIQUE(order_id)` chính là khoá idempotency của webhook — cùng cơ chế `UNIQUE(session_id)` của `credit_reservations`. **Gia hạn** = row mới bắt đầu từ `expires_at` xa nhất đang còn hiệu lực (mua sớm không mất ngày đã trả tiền). **"Đang có thuê bao"** = tồn tại row `status=Active` **AND** `expires_at > now` — CỐ Ý không phụ thuộc sweeper đóng dấu `Expired`.
 
 > ⚠ Lệch shape cũ có chủ ý: dùng `subscriptions.order_id` thay `orders.subscription_id` — thuê bao được tạo Ở webhook (sau đơn), nên đặt khoá ở phía subscription vừa cho idempotency ở tầng DB vừa khỏi phải quay lại UPDATE đơn.
+
+### `ai_usage_logs` ✅ **F22 (2026-07-19)** — token + chi phí mỗi lượt gọi LLM (migration `AddAiUsageLogsF22`)
+```
+id                            uuid pk
+operation                     varchar(64)   đường gọi: score · generate_questions · decide_next · text_to_speech …
+model                         varchar(64)   model THẬT SỰ chạy (TTS dùng model + bảng giá riêng)
+prompt_tokens                 int
+output_tokens                 int
+total_tokens                  int           LẤY TỪ SDK, không phải prompt+output (Gemini tính cả token nội bộ)
+input_price_per_million_usd   numeric(18,6) SNAPSHOT đơn giá lúc ghi
+output_price_per_million_usd  numeric(18,6) SNAPSHOT đơn giá lúc ghi
+cost_usd                      numeric(18,8) tính TỪ 2 cột trên, không đọc lại cấu hình
+resource_urls_proposed        int?          F15 — chỉ lượt generate_lesson_theory; null = không áp dụng
+resource_urls_rejected        int?          F15 — số URL bị allowlist tên miền loại
+created_at                    timestamptz
+```
+**Index:** `ix_ai_usage_logs_created_at` · `ix_ai_usage_logs_operation_created_at` (mọi câu hỏi báo cáo lọc theo kỳ trước, rồi mới gộp theo operation).
+
+**KHÔNG PHẢI BẢNG TIỀN CỦA NGƯỜI DÙNG** — đây là **chi phí vận hành**: không FK tới `credit_accounts`, không ghi `credit_transactions`, không đụng bất biến `remaining + reserved = Σ delta`. Và **cố ý KHÔNG có CHECK constraint nào**: bảng này được ghi bởi một đường best-effort, nên một CHECK "hợp lệ" (vd `total_tokens > 0`) sẽ biến dữ liệu đo hơi lạ thành exception — đúng hình dạng lỗi **DB22**. Giá trị vô lý bị **kẹp** ở `AiUsageService.RecordAsync`, nơi hỏng thì chỉ mất một dòng thống kê.
+
+**Đơn giá snapshot trên từng dòng** (mẫu `Invoice.UnitPrice`): giá là dữ liệu **sẽ đổi**. Nếu chỉ lưu token rồi nhân giá hiện hành lúc xem báo cáo thì mọi số liệu **lịch sử** tự động sai đi mỗi lần Google đổi giá — và sai trong im lặng.
+
+⚠ **Bảng nhiều dòng nhất service** (1 dòng/lượt gọi LLM, nhân `SelfConsistencyN` nếu bật) và **CHƯA có job purge** — cùng nhóm với `refresh_tokens`/outbox ở **DB28**. Cần retention trước khi lưu lượng thật lớn.
 
 ### `credit_reservations.funded_by` ✅ **F8** — `varchar(16)` enum `Credit` (default) · `Subscription`
 Nguồn chi trả của một chỗ giữ, **chốt MỘT LẦN lúc reserve**, không bao giờ đọc lại từ trạng thái thuê bao.

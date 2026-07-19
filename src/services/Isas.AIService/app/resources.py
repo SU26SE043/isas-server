@@ -97,6 +97,41 @@ def _clean_url(raw) -> str | None:
     return raw.strip()
 
 
+def count_rejected_urls(raw_items) -> dict | None:
+    """F22 — đếm URL do AI ĐỀ XUẤT vs số bị allowlist LOẠI.
+
+    Allowlist hiện loại URL trong IM LẶNG: nếu Gemini bịa tên miền 90% số lần thì
+    KHÔNG AI BIẾT, và cũng không có cách nào biết allowlist 26 domain đang quá
+    chặt hay quá lỏng. Con số này là thứ duy nhất trả lời được câu đó.
+
+    Đếm trên danh sách THÔ, KHÔNG so với output đã lọc: output còn bị dedup theo
+    title và cắt trần ``MAX_RESOURCES``, nên "số url biến mất" ở đó lẫn cả nguyên
+    nhân không liên quan tới allowlist. Ở đây chỉ hỏi đúng một câu — trong những
+    URL AI đưa ra, bao nhiêu cái trượt allowlist.
+
+    Trả None khi AI không đề xuất URL nào (không có gì để nói về tỉ lệ; ghi 0/0 sẽ
+    kéo tỉ lệ trung bình về 0 một cách sai lệch).
+    """
+    if not isinstance(raw_items, list):
+        return None
+
+    proposed = 0
+    rejected = 0
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        raw_url = item.get("url")
+        if not isinstance(raw_url, str) or not raw_url.strip():
+            continue
+        proposed += 1
+        if _clean_url(raw_url) is None:
+            rejected += 1
+
+    if proposed == 0:
+        return None
+    return {"resourceUrlsProposed": proposed, "resourceUrlsRejected": rejected}
+
+
 def sanitize_resources(raw_items) -> list[dict]:
     """Chuẩn hoá + lọc list resource thô từ LLM.
 

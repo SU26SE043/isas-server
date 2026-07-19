@@ -134,6 +134,13 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`GET /payment/admin/transactions`** 🔜 — Giao dịch/hóa đơn toàn hệ.
 **`POST /payment/admin/orgs/{orgId}/credits/adjust`** 🔜 *(phase 2)* — Cấp/hoàn credit thủ công.
 
+**`GET /payment/admin/ai-usage?from=&to=&groupBy=day|month`** ✅ **F22** (2026-07-19) — Tiêu thụ token + chi phí AI theo kỳ (`Roles="Admin"`, kỳ nửa mở, mẫu F19). Trả `totalCostUsd` + `byOperation[]` (tiêu thụ **theo endpoint**) + `buckets[]` + `resourceUrls?` (F15 — tỉ lệ URL do AI sinh bị allowlist loại).
+
+### Nội bộ — AIService → Payment — `X-Internal-Token`, **KHÔNG qua gateway** ✅ (F22)
+
+**`POST /internal/ai-usage`** ✅ **F22 (2026-07-19)** — AIService đẩy token 1 lượt gọi LLM → bảng **mới** `ai_usage_logs` (migration `AddAiUsageLogsF22`, **chưa apply DB thật**).
+> **Vì sao bảng ở Payment:** GEN-4 cấm AIService ghi DB ⇒ số liệu đi qua callback nội bộ; Payment giữ vì chi phí AI là câu hỏi **tiền** và chỉ có nghĩa khi đọc cạnh doanh thu (F19). Caller gửi **token + tên model, KHÔNG gửi tiền** — đơn giá thuộc Payment (`AiPricing`, USD/1 triệu) và được **snapshot lên từng dòng** nên đổi giá không hồi tố. Ghi hỏng → **202 `dropped`**, KHÔNG 500: ép AIService xử lý lỗi cho một việc thuần quan sát là mở đường làm answer `Failed` ⇒ mất credit (PAY-13). Bảng **không FK/CHECK** nối với `credit_accounts` (cố ý — tránh hình dạng lỗi DB22) và **chưa có purge** (nhóm DB28). **Bản đầy đủ: [`docs/services/payment.md`](../../../docs/services/payment.md) §`ai_usage_logs` + §`POST /internal/ai-usage` (source of truth).**
+
 ### Nội bộ — Campaign/Interview → Payment — `X-Internal-Token`, **KHÔNG qua gateway** 🔜
 
 **`POST /internal/credits/reserve`** — giữ 1 chỗ (B2B: Campaign gọi `owner=Org`; B2C: Interview gọi `owner=User`).
