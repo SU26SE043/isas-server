@@ -27,7 +27,7 @@ class PermanentError(Exception):
 
 
 def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no,
-                       sample_answer=None, delivery_metrics=None) -> dict:
+                       sample_answer=None, delivery_metrics=None, prompt_version=None) -> dict:
     """E10 — dựng body callback chấm gửi về .NET. Echo ``attemptNo`` (từ job) để .NET lưu điểm
     theo đúng attempt (self-consistency chấm N lần → median/tiêu chí + cờ needs_review).
     Tách hàm thuần để unit-test không cần dựng cả pipeline worker.
@@ -36,7 +36,12 @@ def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no
     để mọi call site positional cũ không phải sửa; .NET bỏ qua khi rỗng.
 
     F11 — ``deliveryMetrics``: chỉ số cách nói (tốc độ nói/khoảng lặng/từ đệm) của CHÍNH lượt
-    transcribe đã dùng để chấm. Optional; .NET lưu lên answer để hiện cho người luyện (FR06)."""
+    transcribe đã dùng để chấm. Optional; .NET lưu lên answer để hiện cho người luyện (FR06).
+
+    BK23 — ``promptVersion``: con dấu phiên bản prompt của CHÍNH lượt chấm này (``score()`` chụp
+    tại chỗ dựng prompt). .NET đóng lên từng dòng ``answer_scores`` để sau này trả lời được "hai
+    điểm này có cùng thước đo không". Optional (default None): worker cũ không gửi → .NET để NULL
+    = "chấm trước F21/BK23, không biết prompt nào" — phân biệt được với 0 = "bản mặc định thuần"."""
     return {
         "answerId": answer_id,
         "transcript": transcript,
@@ -45,6 +50,7 @@ def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no
         "attemptNo": attempt_no,
         "sampleAnswer": sample_answer,
         "deliveryMetrics": delivery_metrics,
+        "promptVersion": prompt_version,
     }
 
 
@@ -184,7 +190,8 @@ async def process_message(message: aio_pika.IncomingMessage):
             #    Lỗi gửi callback = tạm thời -> retry. E10: echo attemptNo để .NET lưu theo attempt.
             await post_callback(make_score_payload(
                 answer_id, transcript, rubric_version, outcome.scores, attempt_no,
-                sample_answer=outcome.sample_answer, delivery_metrics=delivery))
+                sample_answer=outcome.sample_answer, delivery_metrics=delivery,
+                prompt_version=outcome.prompt_version))
 
             await message.ack()
 
