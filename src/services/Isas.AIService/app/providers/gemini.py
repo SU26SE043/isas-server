@@ -17,8 +17,11 @@ class GeminiProvider(QuestionProvider):
         self._client = genai.Client(api_key=settings.gemini_api_key)
 
     async def generate(self, job_category: str, cv_text: str | None,
-                       jd_text: str | None) -> list[str]:
-        prompt = build_prompt(job_category, cv_text, jd_text, settings.question_count)
+                       jd_text: str | None, count: int | None = None,
+                       focus_criteria: list[str] | None = None) -> list[str]:
+        # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
+        effective_count = count if count is not None else settings.question_count
+        prompt = build_prompt(job_category, cv_text, jd_text, effective_count, focus_criteria)
 
         response = await self._client.aio.models.generate_content(
             model=settings.gemini_model,
@@ -53,7 +56,7 @@ class GeminiProvider(QuestionProvider):
         if not questions:
             raise ValueError("LLM trả về danh sách câu hỏi rỗng sau khi lọc.")
 
-        return questions[:settings.question_count]
+        return questions[:effective_count]
 
     async def suggest_criteria(self, job_category: str, jd_text: str | None,
                                criteria_text: str | None, count: int) -> list[dict]:

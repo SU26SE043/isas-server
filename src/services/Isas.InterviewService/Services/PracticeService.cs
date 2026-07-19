@@ -73,6 +73,9 @@ public class PracticeService : IPracticeService
         // F2 — thời lượng mỗi câu. Guard TRƯỚC reserve (PAY-5): giá trị sai → 400 mà KHÔNG giữ credit oan.
         var timeLimitSec = ValidateTimeLimitSec(request.TimeLimitSec);
 
+        // F2b — số câu. Cùng lý do đặt trước reserve: 21 câu phải bị từ chối mà không trừ credit.
+        var questionCount = ValidateQuestionCount(request.QuestionCount);
+
         // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
         // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
         // credit oan (mẫu BK6/PAY-5). Text rỗng/toàn khoảng trắng = coi như KHÔNG nhập (rơi về jdId).
@@ -132,7 +135,10 @@ public class PracticeService : IPracticeService
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
                 AdaptiveEnabled = _adaptive.Enabled,
-                MaxQuestions = _adaptive.Enabled ? _adaptive.MaxQuestions : 0,
+                // F2b — adaptive BẬT: trần tổng số câu lấy theo lựa chọn của ứng viên (không chọn →
+                // cấu hình). Adaptive TẮT: 0 = không trần (số câu do AIService sinh 1 lần, đã cap ở
+                // questionCount rồi). CHECK ở DB chặn 0..20 cho mọi đường ghi.
+                MaxQuestions = _adaptive.Enabled ? (questionCount ?? _adaptive.MaxQuestions) : 0,
                 MaxFollowUps = _adaptive.Enabled ? _adaptive.MaxFollowUps : 0
             };
             _db.PracticeSessions.Add(session);
@@ -144,11 +150,11 @@ public class PracticeService : IPracticeService
             List<GeneratedQuestion> generated;
             try
             {
-                // focusCriteria chỉ có ở lesson /start (BC14) → dùng overload mang focusCriteria; luồng
-                // thường (null/rỗng) giữ nguyên overload cũ (không đổi hành vi/không đổi hợp đồng mock cũ).
-                generated = focusCriteria is { Count: > 0 }
+                // Dùng overload ĐẦY ĐỦ khi có focusCriteria (BC14) HOẶC ứng viên chọn số câu (F2b);
+                // còn lại giữ nguyên overload 4 tham số của luồng thường (không đổi hợp đồng mock cũ).
+                generated = focusCriteria is { Count: > 0 } || questionCount is not null
                     ? await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, ct)
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, questionCount, ct)
                     : await _questionGenerator.GenerateQuestionsAsync(
                         jobCategory: session.JobCategory.ToString(),
                         cvText: cvText,            // null nếu không có
@@ -672,6 +678,26 @@ public class PracticeService : IPracticeService
         if (!AllowedTimeLimitsSec.Contains(requested.Value))
             throw new InvalidOperationException(
                 $"timeLimitSec chỉ nhận {string.Join(" / ", AllowedTimeLimitsSec)} giây (đang gửi: {requested.Value}).");
+        return requested.Value;
+    }
+
+    // F2b — trần số câu.
+    //
+    // VÌ SAO PHẢI CÓ TRẦN: chi phí tăng TUYẾN TÍNH theo số câu (mỗi câu = 1 lượt Whisper + N lần gọi
+    // Gemini do self-consistency + 1 lần TTS gần như luôn miss cache) nhưng doanh thu là HẰNG SỐ 1
+    // credit/buổi — ReserveAsync gọi đúng một lần lúc tạo session, không scale theo số câu. Không có
+    // trần thì một người chọn 500 câu vừa ăn hết biên credit-to-cost vừa làm nghẽn queue chấm của
+    // mọi người khác (Whisper chạy CPU, xử lý tuần tự).
+    private const int MinQuestionCount = 1;
+    private const int MaxQuestionCount = 20;
+
+    // null = client không chọn → trả null để KHÔNG ghi đè mặc định của AIService (giữ hành vi cũ = 5 câu).
+    private static int? ValidateQuestionCount(int? requested)
+    {
+        if (requested is null) return null;
+        if (requested.Value is < MinQuestionCount or > MaxQuestionCount)
+            throw new InvalidOperationException(
+                $"questionCount phải nằm trong khoảng {MinQuestionCount}..{MaxQuestionCount} (đang gửi: {requested.Value}).");
         return requested.Value;
     }
 
