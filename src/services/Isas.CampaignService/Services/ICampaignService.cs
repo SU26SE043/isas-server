@@ -28,6 +28,11 @@ namespace Isas.CampaignService.Services
         // D1: Distribution đường 1 — mời thẳng qua danh sách email
         Task<CreateInvitationsResponse> CreateInvitationsAsync(Guid orgId, Guid actorUserId, Guid id, List<string> emails, CancellationToken ct);
 
+        // Danh sách lời mời đã phát của campaign (HR theo dõi "đã mời ai / mail tới đâu / ai đã join").
+        // Lọc `status` = giá trị trong InvitationDeliveryStatus (suy read-time), sai/rỗng → không lọc.
+        // Ngoài org → KeyNotFoundException (404). KHÔNG trả token (DB23).
+        Task<List<InvitationListItem>> GetInvitationsAsync(Guid orgId, Guid id, string? status, CancellationToken ct);
+
         // C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV (candidateIds → tách email từ CV).
         Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, CancellationToken ct);
 
