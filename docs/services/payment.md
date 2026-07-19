@@ -70,8 +70,9 @@ CreditAccount {                         // GET /me/account ✅ (= CreditAccountR
   ownerId:          uuid
   paymentMode:      enum(int)           // 0=Prepaid · 1=Postpaid (User luôn Prepaid)
   status:           enum(int)           // 0=Active · 1=Suspended (đình chỉ nợ xấu/quá hạn)
-  remainingCredits: int
+  remainingCredits: int                 // ✅ F7: ĐÃ GỒM credit dùng thử (không tách xô riêng)
   reservedCredits:  int
+  freeCreditsGranted: int               // ✅ F7 — suất dùng thử đã tặng cho ví này (0 = chưa/ví Org). Ví chưa tồn tại → 0 (KHÔNG hứa trước quota cấu hình)
   creditLimit:      int?                // chỉ Org/postpaid
   periodUsage:      int?                // chỉ Org/postpaid — lượt đã dùng kỳ này
   updatedAt:        datetime
@@ -126,6 +127,12 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/me/account`** ✅ (2026-07-18) — Số dư ví của **chính caller** → `CreditAccount`. Chủ ví suy từ JWT (D15: claim `org_id`→Org, else `sub`→User) nên **không có đường đọc ví người khác**; HrMember xem được (AUTH-6 chỉ chặn money-mutation). Chưa từng mua credit (chưa có row ví) → **200** ví rỗng `remainingCredits:0` (đọc thuần, KHÔNG tạo ví — ví tạo lazy ở webhook Paid P2). Lỗi: **401**.
 
+**`GET /payment/me/credit-transactions`** ✅ **F19** (2026-07-19) — Lịch sử **biến động credit** của chính caller → `CreditTransaction[]`. Chủ ví suy từ JWT (D15) nên không có đường đọc sổ cái người khác. Trước F19 KHÔNG endpoint nào đọc `credit_transactions` cho **bất kỳ ai**: người dùng thấy số dư (`me/account`) nhưng mất credit thì không tra được nó đi đâu. Keyset-paged theo mẫu chung (DB8): body vẫn **mảng JSON**, `?cursor=&limit=` opt-in, next-cursor ở header `X-Next-Cursor`, default 500 ⇒ **FE không phải sửa**. `?reason=` lọc theo loại bút toán. **KHÔNG** trả `grantedBy`/`note` (thông tin vận hành nội bộ — chỉ bản admin có). Chưa có bút toán nào → **200** mảng rỗng. Lỗi: **401**.
+
+**`GET /payment/me/subscription`** ✅ **F8** (2026-07-19) — Thuê bao đang hiệu lực của **chính caller** → `{ ownerType, ownerId, active: bool, billingCycle: "Monthly"|"Annual"|null, startedAt?, expiresAt? }`. Chủ ví suy từ JWT (D15) nên không có đường đọc thuê bao người khác; HrMember xem được membership org (AUTH-6 chỉ chặn money-mutation). Chưa có thuê bao → **200** `active:false` (không phải 404 — cùng lối `GET /me/account`). Đọc thuần. Lỗi: **401**.
+
+**`POST /payment/order`** với gói `Subscription` ✅ **F8** — cùng endpoint mua pack, nhưng gói `type=Subscription` đi **đường riêng**: đơn mang `kind=SubscriptionPurchase` (hoặc `SubscriptionRenewal` nếu chủ ví còn hạn) thay vì `CreditPack`. Gói thiếu `duration_days` → **400** (chặn trước khi tiền rời tay). ⚠ **KHÔNG gỡ guard DB20** — bất biến `kind=CreditPack ⇒ package.interview_credits > 0` giữ nguyên; gói thuê bao chỉ đơn giản không bao giờ mang kind đó. Webhook Paid → nhánh kích hoạt kỳ hạn (**không cộng credit, không ghi `credit_transactions`**, mẫu `InvoiceSettlement`) → outcome `SubscriptionActivated`.
+
 **`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
 
 **`POST /payment/invoices/{id}/pay`** ✅ P8b — Tất toán hóa đơn. Auth `Employer`, owner-scope; `HrMember`→**403** (A4). → **`200`** `Order` (**đầy đủ**, kind=`InvoiceSettlement`, invoice_id, kèm `checkoutUrl`; reuse `OrderService` tạo link PayOS). Lỗi: **404** (không tồn tại/non-owner) · **409** (đã Paid/Void) · **502** (PayOS reject).
@@ -141,7 +148,46 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`POST /payment/admin/orgs/{orgId}/suspend`** 🔜 — Đình chỉ org (nợ xấu/quá hạn).
 **`GET/PUT /payment/admin/unit-price`** 🔜 — Đơn giá 1 lượt (`{ unitPriceVnd: long }`).
 **`GET /payment/admin/transactions`** 🔜 — Giao dịch/hóa đơn toàn hệ.
-**`POST /payment/admin/orgs/{orgId}/credits/adjust`** 🔜 *(phase 2)* — Cấp/hoàn credit thủ công.
+
+**`POST /payment/admin/orders/{id}/refund`** ✅ **F18** (2026-07-19) — Hoàn tiền đơn mua credit. Auth `Roles="Admin"`. Req `{ reason (bắt buộc, 3–500), gatewayRef?, allowPartialClawback? }` → **200** `{ orderId, amountVnd, creditsPurchased, creditsClawedBack, clawbackCeiling, refundTransactionId?, refundedAt }`.
+- Đơn `Paid → Refunded` (trạng thái MỚI) + bút toán `Refund` âm gắn `reverses_transaction_id` → bút toán mua gốc + thu hồi credit khỏi `remaining`. Người hoàn lấy từ **JWT**, không nhận từ body.
+- **Thu hồi kẹp trần**, KHÔNG trừ thẳng: trần = `max(0, remaining − quà chưa tiêu)`, quà chưa tiêu = `max(0, free_credits_granted − tổng đã tiêu)` (quà tiêu TRƯỚC vì được cấp ngay lúc tạo ví). Hai lý do: (a) trừ quá tay → `remaining` âm → nổ CHECK `ck_credit_accounts_non_negative` → rollback → đơn kẹt `Paid` vĩnh viễn (hình dạng DB20/DB22); (b) credit `FreeGrant` không phải tiền khách trả nên hoàn tiền không được biến quà thành tiền mặt.
+- Thu hồi thiếu → **409** kèm `clawbackPossible`/`clawbackCeiling`; gửi lại `allowPartialClawback=true` để chấp nhận. Ledger ghi phần trừ **THẬT** (−2 khi chỉ lấy được 2), không ghi cho khớp đơn — nếu không thì `remaining + reserved = Σ delta` gãy. Thu hồi 0 → **không** ghi ledger (delta=0 vi phạm CHECK), đơn vẫn Refunded + log lỗi.
+- `reserved` KHÔNG bao giờ bị đụng (PAY-12 — không văng người đang thi).
+- Idempotent: gọi lại → 200 nguyên trạng; khoá thật nằm ở UNIQUE `reverses_transaction_id`.
+- **Phạm vi CỐ Ý hẹp**: chỉ `kind=CreditPack`. `InvoiceSettlement`/`Subscription*` → **400** (hoàn hoá đơn postpaid = mở lại kỳ đã chốt, `InvoiceStatus.Void` mới là trạng thái đúng; thu hồi kỳ thuê bao là nghiệp vụ riêng). ⇒ `InvoiceStatus.Void` vẫn là enum chết, có chủ đích.
+- Lỗi: **404** không có đơn · **409** đơn chưa Paid / thu hồi thiếu / ví vừa đổi giữa chừng.
+- ⚠ Ngoại lệ có chủ đích của **PAY-10**: mọi cơ chế TỰ ĐỘNG (webhook · polling · sweeper hết hạn) đều guard `status == Pending` ⇒ đơn Refunded nằm ngoài đường đi của chúng, webhook muộn không cộng lại credit vừa thu hồi (có test khoá).
+
+**`GET /payment/admin/revenue?from=&to=&groupBy=day|month`** ✅ **F19** (2026-07-19) — Doanh thu theo kỳ. Auth `Roles="Admin"`. Kỳ **nửa mở `[from, to)`** (hai kỳ liền nhau không đếm trùng); thiếu tham số → 30 ngày gần nhất; mốc ép về UTC. → **200** `{ from, to, granularity, grossRevenueVnd, paidOrderCount, refundedVnd, refundedOrderCount, netRevenueVnd, byKind[], buckets[] }`.
+- Doanh thu **gộp** đếm theo `paid_at` (đơn Paid); **tiền hoàn** đếm theo `refunded_at` — nếu đếm hoàn theo `paid_at` thì một khoản hoàn hôm nay đi ngược sửa doanh thu kỳ ĐÃ CHỐT. Kỳ có thể có `netRevenueVnd` âm — đúng bản chất kế toán.
+- **Quà không bao giờ thành doanh thu** theo cấu trúc: báo cáo đọc `orders`, còn `FreeGrant`/`PromoGrant` chỉ ghi `credit_transactions` và không sinh đơn nào (có test khoá).
+- Lỗi: **400** `from >= to` hoặc `groupBy` lạ.
+
+**`POST /payment/admin/credits/grant`** ✅ **F20** (2026-07-19) — Cấp credit khuyến mãi. Auth `Roles="Admin"`. Req `{ ownerType, ownerId, credits (1–10000), note (bắt buộc) }` → **200** `{ ownerType, ownerId, creditsGranted, remainingCredits, transactionId }`.
+- `remaining += N` + bút toán `PromoGrant +N` mang `granted_by` (lấy từ **JWT**, request DTO cố ý KHÔNG có trường khai người cấp) trong CÙNG transaction ⇒ bất biến sổ cái giữ nguyên.
+- Ví chưa tồn tại → tạo qua `CreateAccountAsync`, tức **đi qua đúng đường cấp suất dùng thử F7** (PAY-14) ⇒ user mới được tặng quà thì ví sinh ra kèm cả 3 credit dùng thử. Tự INSERT ví ở đây sẽ im lặng tước mất suất đó.
+- `credits <= 0` → **400**: bút toán delta=0 vi phạm CHECK, và "cấp số âm" sẽ là một đường TRỪ credit không có bút toán đảo — trừ credit phải đi đường hoàn tiền F18.
+- Ví `Suspended` **VẪN** nhận được quà: PAY-12 chặn hành động tương lai (reserve), còn cộng tiền là chiều ngược lại — chặn nó thì không đền bù được cho đúng tài khoản đang tranh chấp. Cấp quà không gỡ lệnh đình chỉ.
+- ⚠ **CHƯA có idempotency**: bấm hai lần = cấp hai lần. Khác webhook (có bộ retry tự động), đây là hành động người bấm; nếu cần thì thêm khoá idempotency do client cấp.
+
+**`GET /payment/admin/credits/{ownerType}/{ownerId}`** ✅ **F20** — Số dư ví **bất kỳ** → `CreditAccount`. Ví chưa tồn tại → **200** 0 credit (đọc thuần, cùng quy ước `me/account`). Đây là đường DUY NHẤT để admin đọc ví người khác — `me/account` suy chủ ví từ JWT nên chỉ bao giờ nói về chính người gọi.
+
+**`GET /payment/admin/credits/{ownerType}/{ownerId}/transactions`** ✅ **F20** — Sổ cái ví **bất kỳ**, cùng hợp đồng keyset với `me/credit-transactions`, **có thêm** `grantedBy`/`note`.
+
+**`GET /payment/admin/ai-usage?from=&to=&groupBy=day|month`** ✅ **F22** (2026-07-19) — Tiêu thụ token + **chi phí AI** theo kỳ. Auth `Roles="Admin"`. Kỳ **nửa mở `[from, to)`**, thiếu tham số → 30 ngày gần nhất, mốc ép về UTC (mẫu F19). → **200** `{ from, to, granularity, totalCalls, promptTokens, outputTokens, totalTokens, totalCostUsd, byOperation[], buckets[], resourceUrls? }`.
+- **`byOperation[]`** = tiêu thụ **theo endpoint** (`score` · `generate_questions` · `decide_next` · `text_to_speech` …) → trả lời "tiền đi đâu", không chỉ "hết bao nhiêu". Đây là thứ cho biết bật `SelfConsistencyN` hay thêm 2 tiêu chí (F12) đắt lên bao nhiêu.
+- **`resourceUrls`** (F15) = `{ proposed, rejected, rejectedRate }` — tỉ lệ URL tài liệu do AI sinh bị allowlist tên miền loại. Trước F22 allowlist loại URL trong **im lặng**: nếu Gemini bịa domain 90% số lần thì không ai biết, và cũng không có cơ sở nào để nói allowlist 26 domain đang quá chặt hay quá lỏng. **`null` khi kỳ không có lượt sinh tài liệu** — `null` ≠ `0/0`, vì hiện "0% bị loại" là một khẳng định không có cơ sở.
+- Lỗi: **400** `from >= to` hoặc `groupBy` lạ.
+
+### Nội bộ — AIService → Payment — `X-Internal-Token`, **KHÔNG qua gateway** ✅ (F22)
+
+**`POST /internal/ai-usage`** ✅ **F22** — AIService đẩy số liệu 1 lượt gọi LLM. Req `{ operation, model, promptTokens, outputTokens, totalTokens, resourceUrlsProposed?, resourceUrlsRejected? }` → **200** `{ id }`.
+- **Vì sao Payment nhận chứ không phải AIService tự lưu:** GEN-4 cấm AIService ghi DB, nên số liệu đi qua **callback nội bộ** — đúng cơ chế GEN-4 đã dựng cho kết quả AI. Payment giữ bảng vì chi phí AI là câu hỏi **tiền** và chỉ có nghĩa khi đọc cạnh doanh thu (F19 cũng ở đây): "tháng này thu bao nhiêu, đốt bao nhiêu" phải trả lời được ở **một** chỗ. *(Các phương án đã loại — trả usage kèm response cho caller · endpoint `/metrics` in-memory · gom qua log — ghi trong `src/services/Isas.AIService/app/usage.py`.)*
+- **Caller KHÔNG gửi tiền, chỉ gửi token + tên model.** Đơn giá do Payment giữ (`AiPricing`, USD/1 triệu token) và **snapshot lên từng dòng** (mẫu `Invoice.UnitPrice`) → Google đổi giá **không hồi tố** số liệu lịch sử. Để AIService gửi luôn số tiền thì đơn giá phải sống ở hai nơi và sẽ lệch nhau vào đúng ngày đổi giá.
+- **Không bao giờ ép caller xử lý lỗi:** ghi hỏng → **202** `{ status: "dropped" }` + log, KHÔNG phải 500. Caller là AIService gọi ngay sau một lượt LLM **đã tốn tiền**; bắt nó retry/nổ ở đó là biến một tính năng **quan sát** thành đường làm answer `Failed` ⇒ mất credit (PAY-13). Phía AIService cũng đã nuốt lỗi — đây là lớp thứ hai.
+- Token âm → **kẹp về 0** (không từ chối): số âm lọt vào sẽ **trừ** vào tổng chi phí, tức báo cáo sai theo hướng có lợi cho ta.
+- Model không có trong bảng giá → dùng `AiPricing:Default` + **log cảnh báo** (KHÔNG ghi `cost = 0` — cost 0 làm báo cáo chi phí trông đẹp một cách sai sự thật).
 
 ### Nội bộ — Interview → Payment — `X-Internal-Token`, **KHÔNG qua gateway** ✅ (P4/P5/P6)
 
@@ -244,13 +290,14 @@ owner_type       varchar(8)    enum: Org · User
 owner_id         uuid          ref lỏng → Auth
 payment_mode     varchar(16)   enum: Prepaid · Postpaid (User LUÔN Prepaid)
 status           varchar(16)   enum: Active · Suspended (mặc định Active) — đình chỉ nợ xấu/quá hạn → chặn reserve mới
-remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine)
+remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine); ✅ F7 gồm cả credit dùng thử
 reserved_credits int           đang giữ chỗ (Reserved chưa Consumed/Released)
+free_credits_granted int       ✅ F7 — suất dùng thử ĐÃ TẶNG ví này (0 = chưa tặng / ví Org). Denormalize từ sổ cái (reason=FreeGrant); KHÔNG phải xô riêng — credit tặng nằm chung remaining_credits
 credit_limit     int?          CHỈ Org/postpaid
 period_usage     int?          CHỈ Org/postpaid — lượt đã dùng kỳ này
 updated_at       timestamptz
                                UNIQUE (owner_type, owner_id)
-                               CHECK ck_credit_accounts_non_negative: remaining_credits>=0 AND reserved_credits>=0 AND (period_usage IS NULL OR period_usage>=0)  ✅ DB1 (2026-07-17)
+                               CHECK ck_credit_accounts_non_negative: remaining_credits>=0 AND reserved_credits>=0 AND free_credits_granted>=0 AND (period_usage IS NULL OR period_usage>=0)  ✅ DB1 (2026-07-17) · mở rộng free_credits_granted ✅ F7
 ```
 
 ### `credit_reservations` — giữ chỗ theo session
@@ -273,9 +320,20 @@ owner_id   uuid
 order_id   uuid?         FK → orders
 session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
-reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2)
+reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (✅ F18 — admin hoàn đơn, delta ÂM) · FreeGrant (+N suất dùng thử lúc tạo ví User — ✅ F7, order_id/session_id đều null) · PromoGrant (✅ F20 — admin cấp quà, +N, có granted_by)
+reverses_transaction_id uuid?  ✅ F18 — FK TỰ THAM CHIẾU → credit_transactions(id): bút toán mua bị đảo.
+                          Chỉ set trên row Refund. UNIQUE LỌC (WHERE NOT NULL) = khoá idempotency chống
+                          hoàn hai lần cùng một khoản mua (cùng lối UNIQUE(session_id) chặn double-reserve).
+granted_by uuid?          ✅ F20 — `sub` của admin cấp quà (ref lỏng → Auth). Chỉ set trên row PromoGrant:
+                          quà là loại credit DUY NHẤT không qua thanh toán và không do luật tự động, nên
+                          nếu không ký tên thì không truy được nguồn.
+note       varchar(500)?  ✅ F20 — lý do cấp quà.
 created_at timestamptz
                           CHECK ck_credit_transactions_delta_nonzero: delta<>0  ✅ DB1 (2026-07-17)
+                          INDEX ix_credit_transactions_owner_created (owner_type, owner_id, created_at DESC,
+                            id DESC) ✅ F19 — phục vụ GET /me/credit-transactions (keyset DB8). Migration
+                            F19 DROP index cũ (owner_type, owner_id): index mới có nó là TIỀN TỐ TRÁI và
+                            không có filter nên phủ trọn FK lookup ⇒ giữ lại là index chết (tiền lệ DB31).
 ```
 
 ### `product_packages`
@@ -335,8 +393,58 @@ created_at     timestamptz
 ```
 > **P8b reconcile (vòng 14):** dùng `owner_type/owner_id` + `numeric` (nhất quán schema payment còn lại) thay `org_id`+`*_vnd bigint`. Bỏ `issued_at/due_at/paid_at` — paid-ness derive từ `status=Paid` + order settle; thêm lại nếu HR cần hạn hóa đơn (**BK17**). `orders.invoice_id` (nullable FK Restrict, kind=InvoiceSettlement) + `orders.package_id`→nullable (đơn settle không gắn pack).
 
-### ~~`subscriptions`~~ ✅ **DB15 (2026-07-17) — bảng + entity `Subscription` đã DROP (dead scaffold, 0 query dùng)**
-> Bảng/entity/`DbSet`/2 nav (`Order.Subscription`, `ProductPackage.Subscriptions`) đã gỡ (migration `DropSubscriptionsTable`, reversible). **Enum members giữ nguyên** cho phase-2: `PackageType.Subscription`, `OrderKind.SubscriptionPurchase/Renewal` (chỉ là giá trị enum, không có bảng). Khi làm subscription phase-2 → tái tạo bảng qua migration mới. *(Shape cũ để tham khảo: `id · owner_type Org/User · owner_id · package_id · status Active/Expired/Cancelled · started_at · expires_at`; FK dự kiến `orders.subscription_id`.)*
+### `subscriptions` ✅ **F8 (2026-07-19) — dựng LẠI, lần này cùng đường tiêu thụ thật**
+> *(Lịch sử: DB15 2026-07-17 DROP bảng + entity vì là **dead scaffold** — 0 query dùng, `SubscriptionService` là stub `NotImplementedException`. F8 tái tạo qua migration `AddSubscriptionsF8`, gắn liền chuỗi order → webhook → activate → gate ở reserve.)*
+```
+id             uuid pk
+owner_type     varchar(8)    enum: Org (membership B2B) · User (Premium B2C)
+owner_id       uuid          FK composite (owner_type, owner_id) → credit_accounts (Restrict, DB9)
+package_id     uuid?         FK → product_packages (Restrict)
+order_id       uuid?         FK → orders (Restrict) · UNIQUE filtered (order_id IS NOT NULL)
+billing_cycle  varchar(16)   enum: Monthly · Annual   (suy từ package.duration_days, ngưỡng ≥180 ngày)
+status         varchar(16)   enum: Active · Expired · Cancelled
+started_at     timestamptz
+expires_at     timestamptz   CHECK ck_subscriptions_period_positive (expires_at > started_at)
+created_at     timestamptz
+updated_at     timestamptz
+```
+**Index:** `ix_subscriptions_owner_active (owner_type, owner_id, expires_at) WHERE status='Active'` (đường nóng — MỌI lần reserve đều hỏi) · `ix_subscriptions_active_expires_at (expires_at) WHERE status='Active'` (sweeper) · unique `order_id`.
+
+**Một lần mua = MỘT row** (append-one-per-order, KHÔNG update row cũ để kéo dài hạn): `UNIQUE(order_id)` chính là khoá idempotency của webhook — cùng cơ chế `UNIQUE(session_id)` của `credit_reservations`. **Gia hạn** = row mới bắt đầu từ `expires_at` xa nhất đang còn hiệu lực (mua sớm không mất ngày đã trả tiền). **"Đang có thuê bao"** = tồn tại row `status=Active` **AND** `expires_at > now` — CỐ Ý không phụ thuộc sweeper đóng dấu `Expired`.
+
+> ⚠ Lệch shape cũ có chủ ý: dùng `subscriptions.order_id` thay `orders.subscription_id` — thuê bao được tạo Ở webhook (sau đơn), nên đặt khoá ở phía subscription vừa cho idempotency ở tầng DB vừa khỏi phải quay lại UPDATE đơn.
+
+### `ai_usage_logs` ✅ **F22 (2026-07-19)** — token + chi phí mỗi lượt gọi LLM (migration `AddAiUsageLogsF22`)
+```
+id                            uuid pk
+operation                     varchar(64)   đường gọi: score · generate_questions · decide_next · text_to_speech …
+model                         varchar(64)   model THẬT SỰ chạy (TTS dùng model + bảng giá riêng)
+prompt_tokens                 int
+output_tokens                 int
+total_tokens                  int           LẤY TỪ SDK, không phải prompt+output (Gemini tính cả token nội bộ)
+input_price_per_million_usd   numeric(18,6) SNAPSHOT đơn giá lúc ghi
+output_price_per_million_usd  numeric(18,6) SNAPSHOT đơn giá lúc ghi
+cost_usd                      numeric(18,8) tính TỪ 2 cột trên, không đọc lại cấu hình
+resource_urls_proposed        int?          F15 — chỉ lượt generate_lesson_theory; null = không áp dụng
+resource_urls_rejected        int?          F15 — số URL bị allowlist tên miền loại
+created_at                    timestamptz
+```
+**Index:** `ix_ai_usage_logs_created_at` · `ix_ai_usage_logs_operation_created_at` (mọi câu hỏi báo cáo lọc theo kỳ trước, rồi mới gộp theo operation).
+
+**KHÔNG PHẢI BẢNG TIỀN CỦA NGƯỜI DÙNG** — đây là **chi phí vận hành**: không FK tới `credit_accounts`, không ghi `credit_transactions`, không đụng bất biến `remaining + reserved = Σ delta`. Và **cố ý KHÔNG có CHECK constraint nào**: bảng này được ghi bởi một đường best-effort, nên một CHECK "hợp lệ" (vd `total_tokens > 0`) sẽ biến dữ liệu đo hơi lạ thành exception — đúng hình dạng lỗi **DB22**. Giá trị vô lý bị **kẹp** ở `AiUsageService.RecordAsync`, nơi hỏng thì chỉ mất một dòng thống kê.
+
+**Đơn giá snapshot trên từng dòng** (mẫu `Invoice.UnitPrice`): giá là dữ liệu **sẽ đổi**. Nếu chỉ lưu token rồi nhân giá hiện hành lúc xem báo cáo thì mọi số liệu **lịch sử** tự động sai đi mỗi lần Google đổi giá — và sai trong im lặng.
+
+⚠ **Bảng nhiều dòng nhất service** (1 dòng/lượt gọi LLM, nhân `SelfConsistencyN` nếu bật) và **CHƯA có job purge** — cùng nhóm với `refresh_tokens`/outbox ở **DB28**. Cần retention trước khi lưu lượng thật lớn.
+
+### `credit_reservations.funded_by` ✅ **F8** — `varchar(16)` enum `Credit` (default) · `Subscription`
+Nguồn chi trả của một chỗ giữ, **chốt MỘT LẦN lúc reserve**, không bao giờ đọc lại từ trạng thái thuê bao.
+
+**Vì sao cần cột này thay vì hỏi lại "còn thuê bao không":** chỗ giữ kiểu `Subscription` không trừ cột số dư nào; nếu `Release` quyết định nhánh theo trạng thái *hiện tại* thì một thuê bao **hết hạn giữa buổi** sẽ đẩy release sang nhánh prepaid `remaining+1` ⇒ **đúc ra một credit trả tiền chưa từng được mua**. Chốt tại nguồn ⇒ nghịch đảo luôn khớp chiều thuận, và đó cũng chính là cách hiện thực PAY-12 "không văng người đang thi".
+
+**Bất biến kèm theo (BẮT BUỘC):** bất biến DB4/DB21 thu hẹp thành
+`reserved_credits = count(reservations WHERE status='Reserved' AND funded_by='Credit')`.
+Bỏ vế `funded_by` ⇒ `CreditReservationReconciler` đếm cả chỗ giữ của subscriber → bơm `reserved_credits` → phá `remaining + reserved = Σ delta` → consume/release trừ xuống âm → nổ CHECK → rollback → reservation kẹt `Reserved` → nack-requeue vô hạn. Tức là tái tạo DB21 qua cửa khác.
 
 ---
 
@@ -389,10 +497,17 @@ consume : UPDATE … SET reserved_credits  = reserved_credits − 1,
                        period_usage      = period_usage      + 1     ← ghi nợ kỳ (nguồn của interview_count)
           + INSERT credit_transactions(reason=Consume, delta=−1)
 release : UPDATE … SET reserved_credits  = reserved_credits − 1      (period_usage KHÔNG đổi)
+
+SUBSCRIPTION (F8 — chủ ví còn thuê bao lúc reserve ⇒ funded_by='Subscription'):
+reserve : UPDATE … SET updated_at = now()
+          WHERE owner=… AND status='Active'   ← KHÔNG đổi số dư; 0 row ⇒ ví Suspended ⇒ 402 (PAY-12)
+consume : (chỉ flip reservation → Consumed)   ← KHÔNG đổi số dư, KHÔNG ghi ledger
+release : (chỉ flip reservation → Released)   ← KHÔNG đổi số dư, KHÔNG ghi ledger
 ```
 - **Reserve trừ `remaining` NGAY** (không chỉ tăng `reserved`) → 2 reserve song song không cùng vượt check ⇒ **chống double-spend**. `remaining` = tiêu được thật; `reserved` = đang giữ.
 - **Bất biến audit (prepaid):** `remaining_credits + reserved_credits = Σ(credit_transactions.delta)` tại mọi thời điểm (reserve/release không ghi ledger nên bảo toàn tổng; Purchase/Consume/Refund mới đổi tổng). Job đối soát định kỳ so 2 vế → lệch = có bug bút toán.
 - **Postpaid** (không có `remaining`): điều kiện reserve là `period_usage + reserved + 1 ≤ credit_limit` (và account `Active`, không có hóa đơn `Overdue`). **Consume mới cộng `period_usage`** (không phải reserve) → bỏ ngang/release **không** dồn nợ; `period_usage` chính là nguồn snapshot ra `invoice.interview_count` cuối kỳ.
+- **✅ F8 (2026-07-19) — gate "unlimited" ở đường reserve:** chủ ví có thuê bao còn hạn ⇒ chỗ giữ mang `funded_by='Subscription'` và **KHÔNG đụng cột số dư nào ở CẢ BA bước**. Bất biến audit được giữ **bằng cách không động vào gì**, chứ không bằng bút toán bù: vế trái (`remaining+reserved`) và vế phải (`Σ delta`) đều đứng yên. *(Các phương án khác đều hỏng: "chỉ `reserved+1`" làm vế trái tăng một mình ⇒ gãy ngay từ reserve; "ghi ledger +1 rồi −1" đúc credit khống vào sổ; "vẫn trừ remaining" thì thuê bao vẫn 402 khi ví rỗng = mất tính năng.)* **Kéo theo:** bất biến DB4 thu hẹp thành `... AND funded_by='Credit'` (xem §DB `credit_reservations.funded_by`). Ví `Suspended` vẫn chặn reserve mới (PAY-12) — thuê bao không mua được quyền đi vòng qua lệnh đình chỉ.
 - **✅ DB4 (2026-07-17) — reconciler bất biến `reserved_credits == count(credit_reservations WHERE status=Reserved cùng owner)`:** `CreditReservationReconciler` (BackgroundService, `Reconcile:Enabled/ScanIntervalSeconds`, mặc định on/120s) quét định kỳ TỪ PHÍA `credit_accounts` → mỗi ví `CountAsync(Reserved)` → lệch → `ExecuteUpdate reserved_credits = count`. Sửa drift do crash giữa reserve/consume/release. Guard chống âm (count≥0 + CHECK `ck_credit_accounts_non_negative` DB1). **Scope core Payment-DB thuần** (reservation có sẵn owner); phần "reservation `Reserved` mà session Interview đã terminal (event settlement rớt)" = **DB4b** (backlog — `SettlementReconciler` bên Interview re-publish event; **DB2** outbox sẽ diệt gốc mất-event).
 - **✅ DB18 (2026-07-17) — orphan-reservation compensation (khép DB4b):** `OrphanReservationReconciler` (BackgroundService, `OrphanReconcile:Enabled/ScanIntervalSeconds(120)/OrphanThresholdMinutes(10)/BatchSize`) quét `credit_reservations WHERE Status=Reserved AND CreatedAt < now−10'` → gọi Interview `POST /internal/sessions/exists` (batch, qua `InterviewSessionClient` — **lần đầu Payment→Interview**, cần env `Interview__BaseUrl`) → session **KHÔNG tồn tại** (crash reserve↔insert lúc Start) → `ReleaseAsync(session_id)` (idempotent/absorbing PAY-11). **AN TOÀN:** chỉ release khi Interview xác nhận DƯƠNG; Interview down/lỗi → **skip, KHÔNG release mù**. Đóng hở duy nhất còn lại (process-crash giữa reserve↔insert mà try/catch release không cover). Bao B2B(Org)+B2C(User)+lesson (owner từ reservation). Không set `Interview__BaseUrl` → call ném → reconciler safe-skip mỗi vòng.
 
@@ -443,6 +558,14 @@ payment_mode:  Prepaid ─(PlatformAdmin duyệt + MST)─► Postpaid   (thu h�
 - Reserve lúc bắt đầu, Consume lúc `Scored`, Release lúc bỏ ngang/lỗi hệ thống. Idempotent theo `session_id`.
 - **Transition + bút toán atomic + xử lý event ra ngoài thứ tự**: xem **§State machine** (`credit_reservations` + kế toán `remaining↔reserved`) — đây là phần chống double-spend & double-process, **bắt buộc** khi build.
 - ⚠ **Sàng lọc CV (D18/D19) KHÔNG tiêu credit (phase 1).** `1 credit = 1 lượt phỏng vấn có audio` → đọc/chấm CV **không** phải lượt phỏng vấn ⇒ **không** reserve/consume, **không** chạm `credit_accounts`/`credit_reservations`. Chỉ **buổi phỏng vấn thật** mới reserve→consume (ứng viên sàng CV được mời → phỏng vấn = đi đúng luồng trên). Chi phí Gemini/CV là **giá vốn nội bộ**, CampaignService chặn bằng hard-filter + cap số CV/campaign ([campaign.md](campaign.md)). *(Phase 2 nếu tính phí sàng → **loại credit sàng riêng**, team xác nhận lại — như D17.)*
+
+### Suất dùng thử B2C — ✅ **F7** (2026-07-19)
+- **3 credit tặng khi TẠO ví của một `User`** (`Billing:FreeTrialCredits`, mặc định `3`, đặt `0` = tắt hẳn). **Chỉ `owner_type=User`** — ví Org không có suất dùng thử (B2B đi ví Org, BC-1); Org chưa có ví vẫn **402** như trước.
+- **Cấp ở đúng MỘT chỗ: `CreateAccountAsync`, ngay trong câu INSERT tạo ví** (cả số dư lẫn bút toán sổ cái, cùng một `SaveChanges`). Vì vậy nó phủ **cả hai** đường tạo ví: webhook Paid lần mua đầu **và** lần `reserve` đầu tiên của user chưa từng mua (đường mới của F7). Tách phần cấp thành một `UPDATE` tiếp sau sẽ khiến **bên thua race cấp lần hai** → credit tặng vô hạn; `UNIQUE(owner_type, owner_id)` chính là thứ bảo đảm "một ví = một suất".
+- **KHÔNG phải xô riêng.** Credit tặng nằm chung `remaining_credits` và tiêu theo đúng luật hiện hành (reserve/consume/release, PAY-4/PAY-11/PAY-13) — `ReserveAsync`/`ConsumeAsync`/`ReleaseAsync` **không đổi một dòng nào**. Mỗi lần cấp ghi **1 bút toán `FreeGrant +N`** (`order_id`/`session_id` null) nên bất biến **`remaining + reserved = Σ delta` vẫn đúng** ⇒ credit tặng bốc hơi do drift vẫn bị phát hiện y như credit khách trả tiền. Một "xô free không sổ sách" sẽ mất chính cái máy dò đó.
+- **Ví đã tồn tại KHÔNG bao giờ được top-up** (kể cả ví cũ có `free_credits_granted = 0` từ trước F7). Thêm nhánh "chưa tặng thì cấp bù" = đường tặng credit vô hạn.
+- **Không backfill.** Ví chỉ tồn tại với người **đã trả tiền**, nên `UPDATE ... WHERE owner_type='User'` sẽ tặng đúng nhóm khách đã trả tiền và **không chạm** user nào đang kẹt 402 — nhóm đó chưa có row nào trong bảng. Họ nhận suất dùng thử ở lần reserve đầu tiên.
+- ⚠ **Rủi ro đã biết, chưa xử:** 1 email = 3 lượt, mà đăng ký **không xác minh email** ⇒ lạm dụng bằng email dùng-một-lần là có thật. Cần quyết định sản phẩm (xác minh email / giới hạn theo thiết bị), không thuộc phạm vi F7.
 
 ### Postpaid (trả sau)
 - **Chỉ org được PlatformAdmin DUYỆT** mới bật `Postpaid` (cần **pháp nhân/MST** để xuất hóa đơn + đòi nợ). Mặc định org mới = `Prepaid`.

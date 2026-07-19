@@ -12,7 +12,7 @@ from app.schemas import (
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
     SummarizeSessionRequest, SummarizeSessionResponse,
     FaceVerifyRequest, FaceVerifyResponse,
-    DecideNextRequest, DecideNextResponse,
+    DecideNextRequest, DecideNextResponse, DeliveryMetrics,
     TtsRequest,
 )
 from app.providers.gemini import GeminiProvider
@@ -113,9 +113,10 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
     if not req.lessonTitle or not req.lessonTitle.strip():
         raise HTTPException(status_code=400, detail="lessonTitle không được rỗng")
     try:
-        theory = await provider.generate_lesson_theory(
+        theory, resources = await provider.generate_lesson_theory(
             req.jobCategory, req.level, req.lessonTitle, req.focusCriteria, req.weaknesses)
-        return GenerateLessonTheoryResponse(theoryMarkdown=theory)
+        # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
+        return GenerateLessonTheoryResponse(theoryMarkdown=theory, resources=resources)
     except HTTPException:
         raise
     except Exception as ex:
@@ -199,9 +200,13 @@ async def transcribe(file: UploadFile = File(...), language: str = "vi"):
             tmp_path = tmp.name
 
         # transcribe nặng CPU → chạy trong thread, không block event loop
-        text = await asyncio.to_thread(transcriber.transcribe, tmp_path, language)
+        result = await asyncio.to_thread(transcriber.transcribe_detailed, tmp_path, language)
 
-        return {"text": text}
+        # F11 — kèm chỉ số cách nói (None = không đo được). `text` giữ nguyên → client cũ không vỡ.
+        return {
+            "text": result.text,
+            "deliveryMetrics": result.metrics.to_dict() if result.metrics else None,
+        }
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi transcribe: {ex}")
     finally:
@@ -224,6 +229,9 @@ async def decide_next(
 
     # Nguồn transcript: ưu tiên audioObjectKey (transcribe tại đây) → answerText (fallback test).
     transcript: str | None = None
+    # F11 — chỉ số cách nói CHỈ đo được ở nhánh có audio thật; nhánh answerText (không có audio)
+    # để None, và .NET/prompt hiểu None = "chưa đo được" chứ không phải "đo ra 0".
+    metrics = None
     if req.audioObjectKey and req.audioObjectKey.strip():
         tmp_path = None
         try:
@@ -232,7 +240,9 @@ async def decide_next(
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(data)
                 tmp_path = tmp.name
-            transcript = await asyncio.to_thread(transcriber.transcribe, tmp_path, req.language)
+            result = await asyncio.to_thread(
+                transcriber.transcribe_detailed, tmp_path, req.language)
+            transcript, metrics = result.text, result.metrics
         except Exception as ex:
             raise HTTPException(status_code=502, detail=f"Lỗi transcribe: {ex}")
         finally:
@@ -263,6 +273,9 @@ async def decide_next(
         nextQuestion=decision.get("nextQuestion"),
         transcript=transcript,
         reason=decision.get("reason"),
+        # F11 — trả kèm chỉ số để Interview lưu lên answer + đẩy vào ScoringJob: buổi adaptive
+        # bỏ Whisper ở worker nên ĐÂY là lần đo DUY NHẤT của câu trả lời này.
+        deliveryMetrics=DeliveryMetrics(**metrics.to_dict()) if metrics else None,
     )
 
 

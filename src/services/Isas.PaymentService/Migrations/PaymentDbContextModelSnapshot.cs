@@ -22,6 +22,79 @@ namespace Isas.PaymentService.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("PaymentService.Models.AiUsageLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<decimal>("CostUsd")
+                        .HasPrecision(18, 8)
+                        .HasColumnType("numeric(18,8)")
+                        .HasColumnName("cost_usd");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<decimal>("InputPricePerMillionUsd")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("numeric(18,6)")
+                        .HasColumnName("input_price_per_million_usd");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("model");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("operation");
+
+                    b.Property<decimal>("OutputPricePerMillionUsd")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("numeric(18,6)")
+                        .HasColumnName("output_price_per_million_usd");
+
+                    b.Property<int>("OutputTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("output_tokens");
+
+                    b.Property<int>("PromptTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("prompt_tokens");
+
+                    b.Property<int?>("ResourceUrlsProposed")
+                        .HasColumnType("integer")
+                        .HasColumnName("resource_urls_proposed");
+
+                    b.Property<int?>("ResourceUrlsRejected")
+                        .HasColumnType("integer")
+                        .HasColumnName("resource_urls_rejected");
+
+                    b.Property<int>("TotalTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("total_tokens");
+
+                    b.HasKey("Id")
+                        .HasName("pk_ai_usage_logs");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_ai_usage_logs_created_at");
+
+                    b.HasIndex("Operation", "CreatedAt")
+                        .HasDatabaseName("ix_ai_usage_logs_operation_created_at");
+
+                    b.ToTable("ai_usage_logs", (string)null);
+                });
+
             modelBuilder.Entity("PaymentService.Models.CreditAccount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -33,6 +106,12 @@ namespace Isas.PaymentService.Migrations
                     b.Property<int?>("CreditLimit")
                         .HasColumnType("integer")
                         .HasColumnName("credit_limit");
+
+                    b.Property<int>("FreeCreditsGranted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("free_credits_granted");
 
                     b.Property<Guid>("OwnerId")
                         .HasColumnType("uuid")
@@ -96,7 +175,7 @@ namespace Isas.PaymentService.Migrations
 
                     b.ToTable("credit_accounts", null, t =>
                         {
-                            t.HasCheckConstraint("ck_credit_accounts_non_negative", "remaining_credits >= 0 AND reserved_credits >= 0 AND (period_usage IS NULL OR period_usage >= 0)");
+                            t.HasCheckConstraint("ck_credit_accounts_non_negative", "remaining_credits >= 0 AND reserved_credits >= 0 AND free_credits_granted >= 0 AND (period_usage IS NULL OR period_usage >= 0)");
                         });
                 });
 
@@ -113,6 +192,14 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
+
+                    b.Property<string>("FundedBy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Credit")
+                        .HasColumnName("funded_by");
 
                     b.Property<Guid>("OwnerId")
                         .HasColumnType("uuid")
@@ -177,6 +264,15 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("delta");
 
+                    b.Property<Guid?>("GrantedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("granted_by");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("note");
+
                     b.Property<Guid?>("OrderId")
                         .HasColumnType("uuid")
                         .HasColumnName("order_id");
@@ -197,6 +293,10 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("character varying(16)")
                         .HasColumnName("reason");
 
+                    b.Property<Guid?>("ReversesTransactionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reverses_transaction_id");
+
                     b.Property<Guid?>("SessionId")
                         .HasColumnType("uuid")
                         .HasColumnName("session_id");
@@ -207,8 +307,14 @@ namespace Isas.PaymentService.Migrations
                     b.HasIndex("OrderId")
                         .HasDatabaseName("ix_credit_transactions_order_id");
 
-                    b.HasIndex("OwnerType", "OwnerId")
-                        .HasDatabaseName("ix_credit_transactions_owner_type_owner_id");
+                    b.HasIndex("ReversesTransactionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_credit_transactions_reverses")
+                        .HasFilter("reverses_transaction_id IS NOT NULL");
+
+                    b.HasIndex("OwnerType", "OwnerId", "CreatedAt", "Id")
+                        .IsDescending(false, false, true, true)
+                        .HasDatabaseName("ix_credit_transactions_owner_created");
 
                     b.ToTable("credit_transactions", null, t =>
                         {
@@ -339,6 +445,24 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("payos_order_code");
 
+                    b.Property<string>("RefundGatewayRef")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("refund_gateway_ref");
+
+                    b.Property<string>("RefundReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("refund_reason");
+
+                    b.Property<DateTime?>("RefundedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("refunded_at");
+
+                    b.Property<Guid?>("RefundedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("refunded_by");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -365,6 +489,10 @@ namespace Isas.PaymentService.Migrations
 
                     b.HasIndex("PackageId")
                         .HasDatabaseName("ix_orders_package_id");
+
+                    b.HasIndex("PaidAt")
+                        .HasDatabaseName("ix_orders_paid_at")
+                        .HasFilter("status = 'Paid'");
 
                     b.HasIndex("PayosOrderCode")
                         .IsUnique()
@@ -483,6 +611,91 @@ namespace Isas.PaymentService.Migrations
                     b.ToTable("product_packages", (string)null);
                 });
 
+            modelBuilder.Entity("PaymentService.Models.Subscription", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("BillingCycle")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("billing_cycle");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<Guid?>("OrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("order_id");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("OwnerType")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("owner_type");
+
+                    b.Property<Guid?>("PackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("package_id");
+
+                    b.Property<DateTime>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Active")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("Id")
+                        .HasName("pk_subscriptions");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_subscriptions_active_expires_at")
+                        .HasFilter("status = 'Active'");
+
+                    b.HasIndex("OrderId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_subscriptions_order_id")
+                        .HasFilter("order_id IS NOT NULL");
+
+                    b.HasIndex("PackageId")
+                        .HasDatabaseName("ix_subscriptions_package_id");
+
+                    b.HasIndex("OwnerType", "OwnerId", "ExpiresAt")
+                        .HasDatabaseName("ix_subscriptions_owner_active")
+                        .HasFilter("status = 'Active'");
+
+                    b.ToTable("subscriptions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_subscriptions_period_positive", "expires_at > started_at");
+                        });
+                });
+
             modelBuilder.Entity("PaymentService.Models.CreditReservation", b =>
                 {
                     b.HasOne("PaymentService.Models.CreditAccount", null)
@@ -502,6 +715,12 @@ namespace Isas.PaymentService.Migrations
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_credit_transactions_orders_order_id");
 
+                    b.HasOne("PaymentService.Models.CreditTransaction", "ReversesTransaction")
+                        .WithMany()
+                        .HasForeignKey("ReversesTransactionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_credit_transactions_credit_transactions_reverses_transactio");
+
                     b.HasOne("PaymentService.Models.CreditAccount", null)
                         .WithMany()
                         .HasForeignKey("OwnerType", "OwnerId")
@@ -511,6 +730,8 @@ namespace Isas.PaymentService.Migrations
                         .HasConstraintName("fk_credit_transactions_credit_accounts_owner_type_owner_id");
 
                     b.Navigation("Order");
+
+                    b.Navigation("ReversesTransaction");
                 });
 
             modelBuilder.Entity("PaymentService.Models.Invoice", b =>
@@ -552,6 +773,33 @@ namespace Isas.PaymentService.Migrations
                         .HasConstraintName("fk_payment_transactions_orders_order_id");
 
                     b.Navigation("Order");
+                });
+
+            modelBuilder.Entity("PaymentService.Models.Subscription", b =>
+                {
+                    b.HasOne("PaymentService.Models.Order", "Order")
+                        .WithMany()
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_subscriptions_orders_order_id");
+
+                    b.HasOne("PaymentService.Models.ProductPackage", "Package")
+                        .WithMany()
+                        .HasForeignKey("PackageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_subscriptions_product_packages_package_id");
+
+                    b.HasOne("PaymentService.Models.CreditAccount", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerType", "OwnerId")
+                        .HasPrincipalKey("OwnerType", "OwnerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_subscriptions_credit_accounts_owner_type_owner_id");
+
+                    b.Navigation("Order");
+
+                    b.Navigation("Package");
                 });
 
             modelBuilder.Entity("PaymentService.Models.Invoice", b =>

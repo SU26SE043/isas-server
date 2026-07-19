@@ -30,6 +30,7 @@ builder.Services.AddHostedService<BucketInitializer>();
 builder.Services.AddSingleton<IScoringJobPublisher, ScoringJobPublisher>();
 builder.Services.AddSingleton<ISessionEventPublisher, SessionEventPublisher>();
 builder.Services.AddScoped<ISessionResultService, SessionResultService>();   // BC9
+builder.Services.AddScoped<ICriterionBenchmarkService, CriterionBenchmarkService>();   // F14
 builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
 builder.Services.AddScoped<IQuestionSpeechService, QuestionSpeechService>();   // TTS đọc câu hỏi
@@ -38,6 +39,7 @@ builder.Services.AddScoped<IRubricLibraryService, RubricLibraryService>();   // 
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
 builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
+builder.Services.AddScoped<PromptTemplateService>();   // F21 — prompt tuỳ biến (FR17)
 
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {
@@ -156,6 +158,8 @@ builder.Services.Configure<AdaptiveOptions>(
     builder.Configuration.GetSection(AdaptiveOptions.SectionName));   // phỏng vấn THÍCH ỨNG (B2C)
 builder.Services.Configure<RoadmapOptions>(
     builder.Configuration.GetSection(RoadmapOptions.SectionName));   // BC15
+builder.Services.Configure<BenchmarkOptions>(
+    builder.Configuration.GetSection(BenchmarkOptions.SectionName));   // F14
 builder.Services.Configure<OutboxSettings>(
     builder.Configuration.GetSection(OutboxSettings.SectionName));   // DB2
 builder.Services.Configure<RepublisherSettings>(

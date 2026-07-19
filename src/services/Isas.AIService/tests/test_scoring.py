@@ -88,12 +88,12 @@ async def test_score_returns_level_matched_and_score_equals_level():
         })
     )
 
-    result = await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
+    outcome = await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
 
-    assert len(result) == 1
-    assert result[0]["criterionId"] == "c1"
-    assert result[0]["levelMatched"] == 3
-    assert result[0]["score"] == 3.0   # score = levelMatched.score
+    assert len(outcome.scores) == 1
+    assert outcome.scores[0]["criterionId"] == "c1"
+    assert outcome.scores[0]["levelMatched"] == 3
+    assert outcome.scores[0]["score"] == 3.0   # score = levelMatched.score
 
 
 @pytest.mark.asyncio
@@ -109,11 +109,11 @@ async def test_score_snaps_when_level_not_valid():
         })
     )
 
-    result = await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
+    outcome = await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
 
     # 4 cách đều 3 và 5 một khoảng; tie-break chọn mức thấp hơn → 3.
-    assert result[0]["levelMatched"] == 3
-    assert result[0]["score"] == 3.0
+    assert outcome.scores[0]["levelMatched"] == 3
+    assert outcome.scores[0]["score"] == 3.0
 
 
 @pytest.mark.asyncio
@@ -128,10 +128,10 @@ async def test_score_default_band_snaps_fraction_to_integer_level():
         })
     )
 
-    result = await provider.score("Q", "trả lời", "BE", [_CRIT_DEFAULT_BAND])
+    outcome = await provider.score("Q", "trả lời", "BE", [_CRIT_DEFAULT_BAND])
 
-    assert result[0]["levelMatched"] == 4   # tie 4/5 → chọn thấp hơn
-    assert result[0]["score"] == 4.0
+    assert outcome.scores[0]["levelMatched"] == 4   # tie 4/5 → chọn thấp hơn
+    assert outcome.scores[0]["score"] == 4.0
 
 
 @pytest.mark.asyncio
@@ -243,10 +243,10 @@ async def test_score_accepts_reasoning_with_evidence():
         })
     )
 
-    result = await provider.score("Q", "DI giúp giảm coupling", "BE", [_CRIT_WITH_LEVELS])
+    outcome = await provider.score("Q", "DI giúp giảm coupling", "BE", [_CRIT_WITH_LEVELS])
 
-    assert len(result) == 1
-    assert result[0]["reasoning"].startswith("Ứng viên nói")
+    assert len(outcome.scores) == 1
+    assert outcome.scores[0]["reasoning"].startswith("Ứng viên nói")
 
 
 @pytest.mark.asyncio
@@ -279,3 +279,60 @@ async def test_score_rejects_whitespace_only_reasoning():
 
     with pytest.raises(ValueError):
         await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
+
+
+# ── F12 (FR03) — tiêu chí ngữ pháp/thuật ngữ trên transcript ASR ────────────────────────
+#
+# Rubric ngôn ngữ chấm trên transcript do Whisper sinh, nên prompt PHẢI cấm trừ điểm lỗi
+# chính tả/dấu câu — đó là lỗi của bộ nhận dạng, không phải của ứng viên. Không có dòng
+# này thì tiêu chí "Ngữ pháp & dùng từ" đo chất lượng ASR chứ không đo ứng viên.
+
+_CRIT_LANGUAGE = {
+    "criterionId": "c-lang",
+    "name": "Ngữ pháp & dùng từ",
+    "description": "Dùng từ chính xác, câu đủ ý. KHÔNG xét chính tả/dấu câu.",
+    "maxScore": 5,
+    "weight": 0.1,
+    "levels": [{"score": i, "descriptor": f"Mức {i}/5"} for i in range(6)],
+}
+
+
+def test_scoring_prompt_forbids_penalising_asr_artifacts():
+    prompt = build_scoring_prompt("Q", "ờ thì cái transaction đó", "BE", [_CRIT_LANGUAGE])
+
+    # Chỉ thị cấm trừ điểm lỗi ASR phải có mặt.
+    assert "KHÔNG phải của ứng viên" in prompt
+    assert "chính tả" in prompt
+    # Và phải nêu rõ tiêu chí ngôn ngữ xét cái gì thay thế.
+    assert "từ đệm" in prompt
+
+
+def test_scoring_prompt_includes_language_criterion_in_rubric_block():
+    """Tiêu chí ngôn ngữ đi vào rubric block như mọi tiêu chí khác (không bị bỏ sót)."""
+    prompt = build_scoring_prompt("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS, _CRIT_LANGUAGE])
+
+    assert 'criterionId="c-lang"' in prompt
+    assert "Ngữ pháp & dùng từ" in prompt
+
+
+@pytest.mark.asyncio
+async def test_score_returns_low_score_for_language_criterion_when_llm_says_so():
+    """Chấm ĐỦ cả tiêu chí ngôn ngữ → không raise 'chấm thiếu tiêu chí' (INT-9)."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "scores": [
+                {"criterionId": "c1", "score": 4, "levelMatched": 3,
+                 "reasoning": 'Ứng viên nói "DI là tiêm phụ thuộc" — đúng ý.'},
+                {"criterionId": "c-lang", "score": 1, "levelMatched": 1,
+                 "reasoning": 'Câu "ờ thì cái transaction đó" cụt ý, nhiều từ đệm.'},
+            ],
+        })
+    )
+
+    outcome = await provider.score(
+        "Q", "ờ thì cái transaction đó", "BE", [_CRIT_WITH_LEVELS, _CRIT_LANGUAGE])
+
+    by_id = {s["criterionId"]: s for s in outcome.scores}
+    assert set(by_id) == {"c1", "c-lang"}          # đủ tiêu chí, không thiếu
+    assert by_id["c-lang"]["score"] == 1           # sai/lủng củng → điểm thấp

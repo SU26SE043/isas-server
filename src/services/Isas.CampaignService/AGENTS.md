@@ -46,6 +46,7 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 | PUT | `/campaign/{id}` | Sửa campaign (check ownership). Body có thể gồm **🔜 `jdText?`/`criteriaText?`** (text) và **🔜 `criteria?`** (`CriterionItem[]` structured) để cập nhật/ghi đè JD/Criteria |
 | PUT | `/campaign/{id}/files` | Thay JD/Criteria (xóa file cũ) |
 | PUT | `/campaign/{id}/questions` | Thay toàn bộ câu hỏi. Body `List<QuestionItem>` |
+| POST | `/campaign/{id}/questions/generate` | **✅ F9 (FR11)** AI sinh câu hỏi từ **JD của campaign** → lưu `source=AiGenerated`, trả `CampaignResponse`. Query `?count=` (1..20; bỏ trống = mặc định AIService). **Thay lượt AI trước đó, GIỮ câu `CustomHr` HR gõ tay** (bấm nhiều lần không cộng dồn). Gọi AIService `POST /api/v1/generate-questions` (JD là **DỮ LIỆU** — AIService bọc delimiter chống prompt-injection, AI-4; AIService không ghi DB, GEN-4). **400** chưa có `jdText` / JD > 20.000 ký tự (CAMP-5) / `count` ngoài 1..20 — guard **TRƯỚC** khi tốn 1 lời gọi AI · **404** ngoài org · **409** campaign không ở `Draft` (CAMP-2) · **502** AIService lỗi hoặc không sinh được câu nào (đề đang có **KHÔNG** bị xoá) |
 | DELETE | `/campaign/{id}` | **Soft delete** (set `deleted_at`) — giữ lịch sử/audit; file SeaweedFS purge sau 90 ngày bằng cronjob |
 | POST | `/campaign/{id}/publish` | **✅ C8** Draft→Active + sinh `campaign_criteria` (Σweight=1) + ghi `audit_logs`. **🔜 C12:** có `criteria[]` HR khai thẳng → dùng luôn (bỏ qua AI); không có → AI `/suggest-criteria` (Gemini + fallback). Sai trạng thái/thiếu câu hỏi → 409 |
 | PUT | `/campaign/{id}/status` | **✅ C7** transition Active→Closed→Archived (bước sai → 409). Body `{ status }` |
@@ -63,6 +64,9 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 - `GET /invitations/{token}` — ứng viên vào bài (→ Interview tạo/lấy session gắn `campaignId`).
 - `POST /invitations/{id}/reissue` — Employer phát lại token (vô hiệu token cũ).
 - `GET /campaign/{id}/results` + `/results/export?format=csv|pdf` — bảng kết quả, xếp hạng, xuất file.
+  ✅ csv (E6) + ✅ pdf (F16, QuestPDF Community + `SkiaSharp.NativeAssets.Linux.NoDependencies`). Cả 2 định dạng
+  serialize từ CÙNG `GetCampaignResultsAsync` (E5) — đừng tính lại số ở tầng xuất file. Số/ngày dùng
+  **InvariantCulture** (locale server khác nhau sẽ làm PDF lệch CSV). Chi tiết: `docs/services/campaign.md`.
 
 ### Lọc ứng viên qua CV — sàng lọc hàng loạt (B2B) (🔜 C13–C15 — cùng prefix `/campaign`)
 > **1 trong 2 cách lọc của app** (cách kia: phỏng vấn AI), **tùy chọn** + **MIỄN PHÍ phase 1** (D19). HR đổ **nhiều CV** ứng viên vào campaign → **lọc hybrid** (rule cứng trước, AI chấm khớp sau) → **shortlist xếp hạng** trước khi mời phỏng vấn (tiết kiệm slot). Engine phân tích = AIService `/analyze-cv` ([ai.md](ai.md)) **dùng chung với B2C**; **TÁI DÙNG** `campaign_criteria` làm rubric — **không** đụng engine phỏng vấn. State machine + luồng tiền chi tiết: §Business rules.
@@ -239,7 +243,13 @@ token 1 lần · email ứng viên · hạn dùng · `used_at` · `session_id` (
 | created_at | timestamptz | `now()` |
 
 ### `audit_logs` — vết thao tác HR
-`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`/**`CreateApiKey`**/**`RevokeApiKey`**…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+
+### `api_keys` — ✅ F17 (API key bên thứ ba / ATS, migration `AddApiKeysF17`)
+`id` · `org_id` (**chủ = ORG**, AUTH-8) · `name` · **`key_hash` varchar(128) UNIQUE** (SHA-256 base64 — cùng lược đồ DB12/DB23; **key thô KHÔNG nằm trong DB**) · `key_prefix` (6 ký tự, chỉ hiển thị) · `include_pii` (mặc định **false**) · `created_by_user_id` · `created_at` · **`expires_at` NOT NULL** (bài học DB23) · `last_used_at?` (ghi có tiết chế) · `revoked_at?` (thu hồi soft).
+**Index:** `UNIQUE(key_hash)` (xác thực = single-row probe) · `(org_id, created_at)`.
+
+**API:** quản lý key `POST|GET /campaign/api-keys` + `DELETE /campaign/api-keys/{id}` — **JWT, chỉ OrgAdmin** (cấp key = uỷ quyền truy cập dữ liệu org, cùng hạng quản thành viên AUTH-4; HrMember → 403). Public API `GET /api/v1/campaign/public/campaigns[/{id}/results]` — **`X-Api-Key`, KHÔNG phải JWT** (scheme riêng ⇒ ranh giới là cấu trúc). Org scope đi qua **đúng** service method của đường JWT (`GetCampaignResultsAsync(orgId,…)`) — không viết truy vấn song song. DTO public **hẹp**: bỏ `overrideNote` + `flags[]` (CAMP-12/D13) + điểm thô; PII **deny-by-default** theo cờ `include_pii`. Rate-limit theo key id, in-process (⚠ N replica ⇒ trần N×). Chi tiết + lý do: [docs/services/campaign.md](../../../docs/services/campaign.md) §F17.
 
 ### Index & ràng buộc (tổng hợp)
 - **Soft-delete**: `campaigns.deleted_at` + **global query filter** `IS NULL` (mọi query tự ẩn campaign đã xoá).

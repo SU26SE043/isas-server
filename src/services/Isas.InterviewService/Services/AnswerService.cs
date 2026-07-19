@@ -116,6 +116,12 @@ public class AnswerService : IAnswerService
             if (answer.Scores.Count > 0)
                 _db.AnswerScores.RemoveRange(answer.Scores);
             answer.NeedsReview = false;
+            // F13 — gợi ý câu trả lời mẫu bám câu trả lời CŨ ("bù chỗ bạn còn thiếu"), giữ lại
+            // sau khi thu âm lại là hiển thị lời khuyên cho một bài không còn tồn tại.
+            answer.SampleAnswer = null;
+            // F11 — chỉ số cách nói đo trên bản ghi âm CŨ; giữ lại sau khi thu âm lại là báo
+            // "bạn nói 'ừm' 12 lần" cho một bản thu không còn tồn tại.
+            DeliveryMetricsMapper.Apply(answer, null);
         }
 
         // Câu trả lời đầu tiên -> session Ready chuyển InProgress.
@@ -208,9 +214,14 @@ public class AnswerService : IAnswerService
                 history, askedCount, followUpCount, session.MaxQuestions, session.MaxFollowUps, criteria, ct);
 
             // (7) Lưu transcript đồng bộ lên answer (single-source; TryPublishScoringJobAsync đọc lại → job).
+            //     F11 — lưu LUÔN chỉ số cách nói đo cùng lượt transcribe đó. Đây là lần đo DUY NHẤT
+            //     của câu trả lời này ở đường thích ứng: worker sau đó bỏ Whisper, nên không lưu ở
+            //     đây là mất vĩnh viễn (và mất im lặng — buổi tĩnh vẫn có chỉ số, buổi này thì không).
             if (!string.IsNullOrWhiteSpace(decision.Transcript))
             {
                 answer.Transcript = decision.Transcript;
+                if (decision.DeliveryMetrics is not null)
+                    DeliveryMetricsMapper.Apply(answer, decision.DeliveryMetrics);
                 await _db.SaveChangesAsync(ct);
             }
 
@@ -343,7 +354,10 @@ public class AnswerService : IAnswerService
                     Temperature = attempt == 1 ? 0d : _scoring.SelfConsistencyTemperature,
                     // Phỏng vấn THÍCH ỨNG — transcript đã transcribe đồng bộ (adaptive) → worker bỏ Whisper.
                     // null (luồng tĩnh / adaptive tắt / decide lỗi) → worker tải audio + Whisper như cũ.
-                    Transcript = answer.Transcript
+                    Transcript = answer.Transcript,
+                    // F11 — chỉ số PHẢI đi cùng Transcript: worker bỏ Whisper khi có Transcript, nên
+                    // thiếu cái này là buổi thích ứng chấm "độ trôi chảy" mà không có số đo nào.
+                    DeliveryMetrics = DeliveryMetricsMapper.Read(answer)
                 };
 
                 await _scoringPublisher.PublishAsync(job, ct);
@@ -435,6 +449,28 @@ public class AnswerService : IAnswerService
             _db.AnswerScores.RemoveRange(stale);
 
         answer.Transcript = req.Transcript;
+
+        // F13 — câu trả lời mẫu (do cùng lượt chấm sinh).
+        //  • attempt 1 (temperature=0, tái lập) = bản CHỌN → ghi đè, nên retry cùng attempt 1
+        //    là idempotent thay vì để bản đầu tiên đóng đinh vĩnh viễn.
+        //  • attempt 2..N (E10, temp>0) CHỈ điền khi còn trống → tránh nội dung hiển thị nhảy
+        //    theo attempt về sau, nhưng vẫn cứu được ca attempt 1 không trả field.
+        //  • rỗng/null KHÔNG xoá bản đang có: LLM im lặng bỏ field ở 1 attempt không được phép
+        //    xoá gợi ý hợp lệ đã lưu.
+        var incomingSample = req.SampleAnswer?.Trim();
+        if (!string.IsNullOrEmpty(incomingSample)
+            && (attemptNo == 1 || string.IsNullOrWhiteSpace(answer.SampleAnswer)))
+        {
+            answer.SampleAnswer = incomingSample;
+        }
+
+        // F11 — chỉ số cách nói (đường TĨNH: worker tự transcribe rồi tự đo). Chỉ ghi khi worker
+        // thực sự gửi: null KHÔNG được xoá bản đã lưu, vì ở đường THÍCH ỨNG chỉ số đã được ghi từ
+        // /decide-next và worker cũ (chưa có F11) sẽ gửi null → ghi đè null là xoá mất số đo đúng.
+        // Cùng lý do idempotency của SampleAnswer: attempt 1 là bản chốt (temperature=0), 2..N chỉ
+        // điền khi còn trống — nhưng chỉ số là ĐO ĐẠC nên mọi attempt đều ra cùng số, ghi đè vô hại.
+        if (req.DeliveryMetrics is not null)
+            DeliveryMetricsMapper.Apply(answer, req.DeliveryMetrics);
 
         foreach (var item in req.Scores)
         {

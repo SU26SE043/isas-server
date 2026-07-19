@@ -137,7 +137,10 @@ public class WebhookServiceTests
         Assert.Equal(1, await read.PaymentTransactions.CountAsync(t => t.OrderId == order.Id)); // lần 2 no-op trước khi ghi
     }
 
-    // (3) chủ ví chưa có account → Apply tạo account rồi cộng (remaining = N).
+    // (3) chủ ví chưa có account → Apply tạo account rồi cộng.
+    // F7 — ví User tạo mới mang sẵn suất dùng thử ⇒ remaining = 3 (tặng) + N (mua), KHÔNG phải N.
+    // Đây là ca "mua gói TRƯỚC khi thi buổi nào": nếu suất dùng thử chỉ cấp ở đường reserve thì nhóm
+    // này mất trắng vĩnh viễn — nên phần cấp nằm trong CreateAccountAsync, tức cả đường webhook này.
     [Fact]
     public async Task ApplyPaid_ChuaCoAccount_TaoRoiCong()
     {
@@ -153,9 +156,17 @@ public class WebhookServiceTests
         Assert.Equal(WebhookApplyOutcome.Credited, outcome);
         using var read = tdb.NewContext();
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerType == OwnerType.User && a.OwnerId == ownerId);
-        Assert.Equal(7, acc.RemainingCredits);   // 0 (mới tạo) + 7
+        Assert.Equal(10, acc.RemainingCredits);  // 3 (suất dùng thử F7) + 7 (mua)
+        Assert.Equal(3, acc.FreeCreditsGranted);
         Assert.Equal(PaymentMode.Prepaid, acc.PaymentMode);
         Assert.Single(await read.CreditTransactions.Where(t => t.OrderId == order.Id).ToListAsync());
+
+        // Sổ cái có CẢ HAI dòng, phân biệt được nguồn tiền: FreeGrant +3 (không order) và Purchase +7.
+        var ledger = await read.CreditTransactions.Where(t => t.OwnerId == ownerId).ToListAsync();
+        Assert.Equal(2, ledger.Count);
+        Assert.Contains(ledger, t => t.Reason == CreditTransactionReason.FreeGrant && t.Delta == 3 && t.OrderId == null);
+        Assert.Contains(ledger, t => t.Reason == CreditTransactionReason.Purchase && t.Delta == 7 && t.OrderId == order.Id);
+        Assert.Equal(ledger.Sum(t => t.Delta), acc.RemainingCredits + acc.ReservedCredits);
     }
 
     // (4) orderCode không khớp đơn nào → OrderNotFound, không throw, có payment_transactions log (order_id null),

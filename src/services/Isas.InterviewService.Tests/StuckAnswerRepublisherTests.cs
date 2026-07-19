@@ -175,6 +175,93 @@ public class StuckAnswerRepublisherTests
         Assert.Equal("transcript đồng bộ đã có", published!.Transcript);
     }
 
+    // F11 — re-publish phải mang theo CẢ chỉ số cách nói, không chỉ transcript.
+    //
+    // Vì sao cần test riêng: republisher KHÔNG gọi lại AIService, và worker BỎ Whisper khi job đã
+    // có transcript ⇒ chỉ số không đi kèm ở đây thì đúng những answer phải cứu bằng republisher
+    // (broker trục trặc / worker chết — tức là lúc đã có sự cố) sẽ mất chỉ số, còn answer chấm trơn
+    // tru vẫn có. Lệch âm thầm, không lỗi nào nổ.
+    //
+    // ⚠ Lỗ này tìm ra BẰNG mutation-check: đặt `DeliveryMetrics = null` trong republisher mà cả
+    // 413 test vẫn XANH — bộ test lúc đó chỉ phủ mapper, không phủ chỗ đấu dây này.
+    [Fact]
+    public async Task PublishHut_WithDeliveryMetrics_CarriesMetricsInJob()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        a.Transcript = "ừm transcript đồng bộ";
+        DeliveryMetricsMapper.Apply(a, new DeliveryMetricsDto
+        {
+            SpeechRateWpm = 190,
+            FillerCount = 6,
+            PauseCount = 4,
+            LongestPauseSec = 3.1,
+            SilenceRatio = 0.4,
+            // Vá 2026-07-19 — 4 chỉ số THỜI GIAN/mật độ. Chúng là thứ prompt chấm dặn LLM tin
+            // NHẤT, nên đường cứu mà đánh rơi chúng thì answer được republish bị chấm trôi chảy
+            // bằng "0 giây audio".
+            AudioSec = 70.0,
+            SpeechSec = 55.5,
+            WordCount = 160,
+            FillerPer100Words = 3.75,
+            FillerBreakdown = new Dictionary<string, int> { ["ừm"] = 6 },
+        });
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t);
+        ScoringJob? published = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.NotNull(published);
+        Assert.NotNull(published!.DeliveryMetrics);
+        Assert.Equal(190, published.DeliveryMetrics!.SpeechRateWpm);
+        Assert.Equal(6, published.DeliveryMetrics.FillerCount);
+        Assert.Equal(6, published.DeliveryMetrics.FillerBreakdown["ừm"]);
+
+        // ⚠ Vá 2026-07-19 — 4 assert dưới đây tồn tại vì overload `Read()` cho 4 tham số mới
+        // giá trị mặc định `null` (để call site cũ khỏi sửa). Tiện cho người gọi, nhưng nghĩa là
+        // BỎ QUÊN chúng ở đây sẽ biên dịch sạch và im lặng — đúng cách lỗi gốc đã lọt.
+        Assert.Equal(70.0, published.DeliveryMetrics.AudioSec);
+        Assert.Equal(55.5, published.DeliveryMetrics.SpeechSec);
+        Assert.Equal(160, published.DeliveryMetrics.WordCount);
+        Assert.Equal(3.75, published.DeliveryMetrics.FillerPer100Words);
+    }
+
+    // Mặt còn lại: answer CHƯA từng đo → job mang null (KHÔNG phải DTO toàn 0). Gửi 0 sẽ khiến
+    // worker tưởng "đã đo, kết quả 0" rồi bỏ qua việc đo thật ⇒ chỉ số bịa cho mọi answer tĩnh.
+    [Fact]
+    public async Task PublishHut_ChuaDoChiSo_JobMangNull()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t);
+        ScoringJob? published = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.NotNull(published);
+        Assert.Null(published!.DeliveryMetrics);
+    }
+
     [Fact]
     public async Task FreshUpload_WithinGrace_NotRepublished()
     {

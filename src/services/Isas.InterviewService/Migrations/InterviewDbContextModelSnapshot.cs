@@ -49,6 +49,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("level_matched");
 
+                    b.Property<int?>("PromptVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("prompt_version");
+
                     b.Property<string>("Reasoning")
                         .HasColumnType("text")
                         .HasColumnName("reasoning");
@@ -258,6 +262,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("character varying(512)")
                         .HasColumnName("audio_object_key");
 
+                    b.Property<double?>("AudioSec")
+                        .HasColumnType("double precision")
+                        .HasColumnName("audio_sec");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
@@ -266,21 +274,57 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("duration_sec");
 
+                    b.Property<string>("FillerBreakdown")
+                        .HasColumnType("text")
+                        .HasColumnName("filler_breakdown");
+
+                    b.Property<int?>("FillerCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("filler_count");
+
+                    b.Property<double?>("FillerPer100Words")
+                        .HasColumnType("double precision")
+                        .HasColumnName("filler_per100words");
+
                     b.Property<DateTime?>("LastScoringPublishedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_scoring_published_at");
+
+                    b.Property<double?>("LongestPauseSec")
+                        .HasColumnType("double precision")
+                        .HasColumnName("longest_pause_sec");
 
                     b.Property<bool>("NeedsReview")
                         .HasColumnType("boolean")
                         .HasColumnName("needs_review");
 
+                    b.Property<int?>("PauseCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("pause_count");
+
                     b.Property<Guid>("QuestionId")
                         .HasColumnType("uuid")
                         .HasColumnName("question_id");
 
+                    b.Property<string>("SampleAnswer")
+                        .HasColumnType("text")
+                        .HasColumnName("sample_answer");
+
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
                         .HasColumnName("session_id");
+
+                    b.Property<double?>("SilenceRatio")
+                        .HasColumnType("double precision")
+                        .HasColumnName("silence_ratio");
+
+                    b.Property<double?>("SpeechRateWpm")
+                        .HasColumnType("double precision")
+                        .HasColumnName("speech_rate_wpm");
+
+                    b.Property<double?>("SpeechSec")
+                        .HasColumnType("double precision")
+                        .HasColumnName("speech_sec");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -291,6 +335,10 @@ namespace Isas.InterviewService.Migrations
                     b.Property<string>("Transcript")
                         .HasColumnType("text")
                         .HasColumnName("transcript");
+
+                    b.Property<int?>("WordCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("word_count");
 
                     b.HasKey("Id")
                         .HasName("pk_practice_answers");
@@ -480,6 +528,63 @@ namespace Isas.InterviewService.Migrations
                         });
                 });
 
+            modelBuilder.Entity("Isas.InterviewService.Entities.PromptTemplate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body");
+
+                    b.Property<string>("ChangeNote")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("change_note");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("key");
+
+                    b.Property<Guid>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_prompt_templates");
+
+                    b.HasIndex("Key")
+                        .IsUnique()
+                        .HasDatabaseName("ux_prompt_templates_active_key")
+                        .HasFilter("is_active");
+
+                    b.HasIndex("Key", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ix_prompt_templates_key_version");
+
+                    b.ToTable("prompt_templates", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_prompt_templates_version_positive", "version > 0");
+                        });
+                });
+
             modelBuilder.Entity("Isas.InterviewService.Entities.Roadmap", b =>
                 {
                     b.Property<Guid>("Id")
@@ -563,6 +668,11 @@ namespace Isas.InterviewService.Migrations
                     b.Property<int>("OrderNo")
                         .HasColumnType("integer")
                         .HasColumnName("order_no");
+
+                    b.Property<string>("Resources")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("resources");
 
                     b.Property<Guid?>("SessionId")
                         .HasColumnType("uuid")
@@ -727,7 +837,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Phân tích yêu cầu",
                             Version = 1,
-                            Weight = 0.3000m
+                            Weight = 0.2200m
                         },
                         new
                         {
@@ -738,7 +848,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Giao tiếp & trình bày",
                             Version = 1,
-                            Weight = 0.2500m
+                            Weight = 0.1800m
                         },
                         new
                         {
@@ -749,7 +859,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Hiểu nghiệp vụ & các bên liên quan",
                             Version = 1,
-                            Weight = 0.2500m
+                            Weight = 0.1800m
                         },
                         new
                         {
@@ -760,7 +870,40 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Tư duy giải quyết vấn đề",
                             Version = 1,
-                            Weight = 0.2000m
+                            Weight = 0.1400m
+                        },
+                        new
+                        {
+                            Id = new Guid("0b100000-0000-0000-0000-000000000005"),
+                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc, ít từ đệm/lặp thừa (\"ờ\", \"kiểu như\"). Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, lặp từ đệm liên tục gây khó hiểu. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói).",
+                            IsActive = true,
+                            JobCategory = "BA",
+                            MaxScore = 5,
+                            Name = "Ngữ pháp & dùng từ",
+                            Version = 1,
+                            Weight = 0.0900m
+                        },
+                        new
+                        {
+                            Id = new Guid("0b100000-0000-0000-0000-000000000006"),
+                            Description = "Dùng ĐÚNG thuật ngữ chuyên ngành phân tích nghiệp vụ và giải thích được thuật ngữ mình dùng (vd stakeholder, user story, acceptance criteria, use case, business rule, backlog). Điểm cao: gọi đúng tên khái niệm, dùng đúng ngữ cảnh, giải thích được khi cần. Điểm thấp: gọi sai tên khái niệm, dùng thuật ngữ sai ngữ cảnh, hoặc nói thuật ngữ nhưng không giải thích được ý nghĩa — chỉ nói chung chung né thuật ngữ.",
+                            IsActive = true,
+                            JobCategory = "BA",
+                            MaxScore = 5,
+                            Name = "Thuật ngữ chuyên ngành",
+                            Version = 1,
+                            Weight = 0.0900m
+                        },
+                        new
+                        {
+                            Id = new Guid("0b100000-0000-0000-0000-000000000007"),
+                            Description = "Nói liền mạch, có nhịp, ít ngập ngừng — nghe ra sự tự tin. Điểm cao: nhịp nói đều, dừng đúng chỗ ngắt ý, hiếm từ đệm, không phải dò tìm từ giữa câu. Điểm thấp: dừng lâu giữa câu, nói nhát gừng, lặp lại đầu câu nhiều lần, chèn dày từ đệm (\"ừm\", \"ờ\", \"kiểu như\") khiến người nghe khó bám ý. CHỈ xét CÁCH NÓI — không xét câu trả lời đúng/sai hay đủ/thiếu kiến thức (đã có tiêu chí khác lo).",
+                            IsActive = true,
+                            JobCategory = "BA",
+                            MaxScore = 5,
+                            Name = "Độ trôi chảy & tự tin",
+                            Version = 1,
+                            Weight = 0.1000m
                         },
                         new
                         {
@@ -771,7 +914,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Chiều sâu kỹ thuật",
                             Version = 1,
-                            Weight = 0.3000m
+                            Weight = 0.2200m
                         },
                         new
                         {
@@ -782,7 +925,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Thiết kế hệ thống & CSDL",
                             Version = 1,
-                            Weight = 0.2500m
+                            Weight = 0.1800m
                         },
                         new
                         {
@@ -793,7 +936,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Giải quyết vấn đề & thuật toán",
                             Version = 1,
-                            Weight = 0.2500m
+                            Weight = 0.1800m
                         },
                         new
                         {
@@ -804,7 +947,40 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Giao tiếp & trình bày",
                             Version = 1,
-                            Weight = 0.2000m
+                            Weight = 0.1400m
+                        },
+                        new
+                        {
+                            Id = new Guid("0be00000-0000-0000-0000-000000000005"),
+                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc, ít từ đệm/lặp thừa (\"ờ\", \"kiểu như\"). Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, lặp từ đệm liên tục gây khó hiểu. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói).",
+                            IsActive = true,
+                            JobCategory = "BE",
+                            MaxScore = 5,
+                            Name = "Ngữ pháp & dùng từ",
+                            Version = 1,
+                            Weight = 0.0900m
+                        },
+                        new
+                        {
+                            Id = new Guid("0be00000-0000-0000-0000-000000000006"),
+                            Description = "Dùng ĐÚNG thuật ngữ chuyên ngành backend và giải thích được thuật ngữ mình dùng (vd transaction, index, deadlock, idempotent, cache, race condition, ACID). Điểm cao: gọi đúng tên khái niệm, dùng đúng ngữ cảnh, giải thích được khi cần. Điểm thấp: gọi sai tên khái niệm, dùng thuật ngữ sai ngữ cảnh, hoặc nói thuật ngữ nhưng không giải thích được ý nghĩa — chỉ nói chung chung né thuật ngữ.",
+                            IsActive = true,
+                            JobCategory = "BE",
+                            MaxScore = 5,
+                            Name = "Thuật ngữ chuyên ngành",
+                            Version = 1,
+                            Weight = 0.0900m
+                        },
+                        new
+                        {
+                            Id = new Guid("0be00000-0000-0000-0000-000000000007"),
+                            Description = "Nói liền mạch, có nhịp, ít ngập ngừng — nghe ra sự tự tin. Điểm cao: nhịp nói đều, dừng đúng chỗ ngắt ý, hiếm từ đệm, không phải dò tìm từ giữa câu. Điểm thấp: dừng lâu giữa câu, nói nhát gừng, lặp lại đầu câu nhiều lần, chèn dày từ đệm (\"ừm\", \"ờ\", \"kiểu như\") khiến người nghe khó bám ý. CHỈ xét CÁCH NÓI — không xét câu trả lời đúng/sai hay đủ/thiếu kiến thức (đã có tiêu chí khác lo).",
+                            IsActive = true,
+                            JobCategory = "BE",
+                            MaxScore = 5,
+                            Name = "Độ trôi chảy & tự tin",
+                            Version = 1,
+                            Weight = 0.1000m
                         },
                         new
                         {
@@ -815,7 +991,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Chiều sâu kỹ thuật",
                             Version = 1,
-                            Weight = 0.3000m
+                            Weight = 0.2200m
                         },
                         new
                         {
@@ -826,7 +1002,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Giải quyết vấn đề",
                             Version = 1,
-                            Weight = 0.2500m
+                            Weight = 0.1800m
                         },
                         new
                         {
@@ -837,7 +1013,7 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Giao tiếp & trình bày",
                             Version = 1,
-                            Weight = 0.2500m
+                            Weight = 0.1800m
                         },
                         new
                         {
@@ -848,7 +1024,40 @@ namespace Isas.InterviewService.Migrations
                             MaxScore = 5,
                             Name = "Ý thức UI/UX & accessibility",
                             Version = 1,
-                            Weight = 0.2000m
+                            Weight = 0.1400m
+                        },
+                        new
+                        {
+                            Id = new Guid("0fe00000-0000-0000-0000-000000000005"),
+                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc, ít từ đệm/lặp thừa (\"ờ\", \"kiểu như\"). Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, lặp từ đệm liên tục gây khó hiểu. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói).",
+                            IsActive = true,
+                            JobCategory = "FE",
+                            MaxScore = 5,
+                            Name = "Ngữ pháp & dùng từ",
+                            Version = 1,
+                            Weight = 0.0900m
+                        },
+                        new
+                        {
+                            Id = new Guid("0fe00000-0000-0000-0000-000000000006"),
+                            Description = "Dùng ĐÚNG thuật ngữ chuyên ngành frontend và giải thích được thuật ngữ mình dùng (vd reflow/repaint, hydration, virtual DOM, debounce, bundle, lazy-load, accessibility). Điểm cao: gọi đúng tên khái niệm, dùng đúng ngữ cảnh, giải thích được khi cần. Điểm thấp: gọi sai tên khái niệm, dùng thuật ngữ sai ngữ cảnh, hoặc nói thuật ngữ nhưng không giải thích được ý nghĩa — chỉ nói chung chung né thuật ngữ.",
+                            IsActive = true,
+                            JobCategory = "FE",
+                            MaxScore = 5,
+                            Name = "Thuật ngữ chuyên ngành",
+                            Version = 1,
+                            Weight = 0.0900m
+                        },
+                        new
+                        {
+                            Id = new Guid("0fe00000-0000-0000-0000-000000000007"),
+                            Description = "Nói liền mạch, có nhịp, ít ngập ngừng — nghe ra sự tự tin. Điểm cao: nhịp nói đều, dừng đúng chỗ ngắt ý, hiếm từ đệm, không phải dò tìm từ giữa câu. Điểm thấp: dừng lâu giữa câu, nói nhát gừng, lặp lại đầu câu nhiều lần, chèn dày từ đệm (\"ừm\", \"ờ\", \"kiểu như\") khiến người nghe khó bám ý. CHỈ xét CÁCH NÓI — không xét câu trả lời đúng/sai hay đủ/thiếu kiến thức (đã có tiêu chí khác lo).",
+                            IsActive = true,
+                            JobCategory = "FE",
+                            MaxScore = 5,
+                            Name = "Độ trôi chảy & tự tin",
+                            Version = 1,
+                            Weight = 0.1000m
                         });
                 });
 

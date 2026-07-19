@@ -83,7 +83,17 @@ namespace Isas.AuthService.Controllers
             if (result.IsLockedOut) return Unauthorized("Account locked");
             if (!result.Succeeded) return Unauthorized("Invalid credentials");
 
-            return Ok(await _authService.LoginAsync(request));
+            try
+            {
+                return Ok(await _authService.LoginAsync(request));
+            }
+            catch (UserBannedException ex)
+            {
+                // 403 chứ không 401: thông tin đăng nhập ĐÚNG (đã qua CheckPasswordSignInAsync ở trên),
+                // cái bị từ chối là quyền dùng hệ thống. 401 sẽ khiến FE mời người dùng thử lại mật
+                // khẩu — họ gõ đúng rồi, thử mãi cũng không vào được. (F20)
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+            }
         }
 
         // OAuth Google là điều hướng CẢ TRANG, không phải XHR: người dùng rời app Angular sang
@@ -128,6 +138,13 @@ namespace Isas.AuthService.Controllers
             try
             {
                 authResponse = await _authService.LoginGoogleAsync(info);
+            }
+            catch (UserBannedException)
+            {
+                // F20 — account bị đình chỉ cũng phải chặn ở đường Google, và trả mã riêng để FE nói
+                // đúng lý do (rơi vào "login_failed" chung thì người dùng cứ thử lại vô ích).
+                _logger.LogWarning("Từ chối đăng nhập Google: account đã bị đình chỉ");
+                return Redirect(_googleRedirects.FailureUrl("account_suspended"));
             }
             catch (Exception ex)
             {
@@ -178,6 +195,13 @@ namespace Isas.AuthService.Controllers
             catch (UnauthorizedAccessException)
             {
                 // Không tiết lộ token sai vì lý do gì (không tồn tại / hết hạn / quá cửa sổ ân hạn).
+                return Unauthorized("Refresh token expired or revoked");
+            }
+            catch (UserBannedException)
+            {
+                // F20 — account bị đình chỉ. Trả 401 (không phải 403) để giữ nguyên hợp đồng của
+                // đường refresh: FE đã xử lý 401 = hết phiên → về trang đăng nhập, và ở ĐÓ họ nhận
+                // 403 kèm lý do thật. Đường này gần như không tới được (ban đã thu hồi token).
                 return Unauthorized("Refresh token expired or revoked");
             }
         }

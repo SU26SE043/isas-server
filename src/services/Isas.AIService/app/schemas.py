@@ -93,8 +93,22 @@ class GenerateLessonTheoryRequest(BaseModel):
     weaknesses: list[str] | None = None
 
 
+class LessonResource(BaseModel):
+    """F15 — 1 tài liệu học gợi ý cho bài học.
+
+    ``url`` optional VÌ CÓ CHỦ ĐÍCH: link do LLM sinh chỉ được giữ khi tên miền
+    nằm trong allowlist (app/resources.py). Host lạ → url=None, mục vẫn còn tên
+    để người học tự tra. FE phải gắn nhãn "chưa kiểm chứng" khi có url.
+    """
+    title: str
+    type: str                    # Doc | Course | Book | Video | Article
+    publisher: str | None = None
+    url: str | None = None
+
+
 class GenerateLessonTheoryResponse(BaseModel):
     theoryMarkdown: str          # tiếng Việt, có ví dụ
+    resources: list[LessonResource] = []   # F15 — tài liệu học gợi ý (có thể rỗng)
 
 
 class CriterionProgress(BaseModel):
@@ -165,11 +179,33 @@ class DecideNextRequest(BaseModel):
     criteria: list[DecideCriterion] = []
 
 
+class DeliveryMetrics(BaseModel):
+    """F11 (FR06) — chỉ số CÁCH NÓI đo từ mốc thời gian Whisper (xem app/fluency.py).
+
+    ⚠ ``fillerCount`` là mức TỐI THIỂU: Whisper thường nuốt bớt từ đệm nên số thật cao hơn.
+    Chỉ số thời gian (``longestPauseSec``/``silenceRatio``/``speechRateWpm``) đáng tin hơn."""
+    audioSec: float = 0.0
+    speechSec: float = 0.0
+    wordCount: int = 0
+    speechRateWpm: float = 0.0          # âm tiết/phút (tiếng Việt đơn âm tiết — xem fluency.py)
+    longestPauseSec: float = 0.0
+    pauseCount: int = 0
+    silenceRatio: float = 0.0
+    fillerCount: int = 0
+    fillerPer100Words: float = 0.0
+    fillerBreakdown: dict[str, int] = {}
+
+
 class DecideNextResponse(BaseModel):
     action: str                         # follow_up | clarify | new_question | end
     nextQuestion: str | None = None     # None ⇔ action == end
     transcript: str | None = None       # echo khi transcribe từ audioObjectKey (single-source)
     reason: str | None = None
+
+    # F11 — chỉ số đo TRONG CÙNG lượt transcribe đồng bộ này. Phải trả ở đây, nếu không thì buổi
+    # ADAPTIVE mất chỉ số (worker bỏ Whisper khi job đã mang transcript) còn buổi TĨNH lại có →
+    # hỏng ÂM THẦM, không lỗi gì. None = không đo được (fallback answerText / audio rỗng).
+    deliveryMetrics: DeliveryMetrics | None = None
 
 
 # ── Đối chiếu khuôn mặt (SEC-2/3) — sync HTTP, CampaignService gọi khi giám sát ──────

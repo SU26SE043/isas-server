@@ -127,7 +127,7 @@ public class RoadmapLessonTests
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync("## Lý thuyết lesson");
+            .ReturnsAsync(new LessonTheoryResult("## Lý thuyết lesson", []));
 
         var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
 
@@ -350,7 +350,7 @@ public class RoadmapLessonTests
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync("## Theory");
+            .ReturnsAsync(new LessonTheoryResult("## Theory", []));
 
         // stranger → 403
         var strangerCtrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, stranger);

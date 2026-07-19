@@ -211,6 +211,9 @@ services:
       - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
       - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
       - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
+      # F7 — suất dùng thử tặng lúc tạo ví User. Có default :-3 vì chuỗi RỖNG không parse được thành
+      # int (env thiếu → options binder ném lúc khởi động). Đặt 0 để tắt hẳn.
+      - Billing__FreeTrialCredits=${FREE_TRIAL_CREDITS:-3}
     ports:
       - "5271:8080"     # publish để webhook PayOS gọi vào (cần public URL/tunnel)
     depends_on: [postgres, rabbitmq]
@@ -287,6 +290,8 @@ PAYOS_CHECKSUM_KEY=...
 # BF3 — bắt buộc: thiếu → POST /order 502 (PayOS reject "return_url null"). URL redirect sau thanh toán.
 PAYOS_RETURN_URL=https://<your-frontend-or-tunnel>/payment/success
 PAYOS_CANCEL_URL=https://<your-frontend-or-tunnel>/payment/cancel
+# F7 — số credit tặng khi tạo ví của một User (ví Org không có). Bỏ trống = 3. Đặt 0 = tắt hẳn.
+FREE_TRIAL_CREDITS=3
 ```
 
 ### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth
@@ -401,6 +406,10 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=gemini-2.5-flash
+      # F22 — endpoint sync (sinh câu hỏi · phân tích CV · roadmap · decide-next · TTS) cũng đốt
+      # token ⇒ container NÀY cũng phải đo, không chỉ worker chấm.
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN}
+      - USAGE_SINK_BASE=http://<SERVER_TS_IP>:5271
     ports:
       - "8000:8000"                    # server gọi vào đây qua tailnet
     restart: unless-stopped
@@ -420,6 +429,11 @@ services:
       - S3_BUCKET=isas-files
       - DOTNET_CALLBACK_BASE=http://<SERVER_TS_IP>:5246
       - INTERNAL_TOKEN=${INTERNAL_TOKEN}   # KHỚP server
+      # F22 — đẩy token/chi phí về PaymentService (GEN-4: AIService không ghi DB). Trỏ THẲNG tới
+      # payment (cổng publish 5271), KHÔNG qua gateway (GEN-1). Để TRỐNG = chỉ ghi log, không gọi
+      # mạng (kill-switch tại chỗ khi sink có sự cố, khỏi deploy lại). Dùng chung INTERNAL_TOKEN.
+      - USAGE_SINK_BASE=http://<SERVER_TS_IP>:5271
+      # - USAGE_METERING_ENABLED=false     # tắt hẳn việc đo
     depends_on: [aiservice-api]
     restart: unless-stopped
 ```

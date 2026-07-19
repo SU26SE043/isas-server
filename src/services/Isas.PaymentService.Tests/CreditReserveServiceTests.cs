@@ -99,19 +99,57 @@ public class CreditReserveServiceTests
         Assert.Equal(0, acc.ReservedCredits);
     }
 
-    // Không có ví → cũng Insufficient (block, không tạo session) + không đẻ reservation.
+    // F7 — ví ORG chưa tồn tại → vẫn Insufficient (block, không tạo session) + không đẻ reservation
+    // + KHÔNG tự tạo ví. Suất dùng thử là chuyện của B2C; ví Org do OrgAdmin mua credit tạo ra (BC-1).
+    // Đây là vế GIỮ NGUYÊN của hành vi no-wallet cũ, sau khi F7 đổi vế User.
     [Fact]
-    public async Task Reserve_KhongCoVi_Insufficient()
+    public async Task Reserve_ViOrgChuaTonTai_Insufficient_KhongTuTaoVi()
     {
         using var tdb = new PaymentTestDb();
         var sessionId = Guid.NewGuid();
+        var orgId = Guid.NewGuid();
 
         var result = await new CreditAccountService(tdb.NewContext())
-            .ReserveAsync(OwnerType.User, Guid.NewGuid(), sessionId);
+            .ReserveAsync(OwnerType.Org, orgId, sessionId);
 
         Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
         using var read = tdb.NewContext();
         Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
+        Assert.Equal(0, await read.CreditAccounts.CountAsync(a => a.OwnerId == orgId));
+        Assert.Equal(0, await read.CreditTransactions.CountAsync(t => t.OwnerId == orgId));
+    }
+
+    // F7 — ví USER chưa tồn tại → KHÔNG còn 402 nữa: tạo ví kèm suất dùng thử rồi reserve bình thường.
+    // Đây chính là ca "user vừa đăng ký, tạo buổi luyện đầu tiên" mà trước F7 luôn nhận 402.
+    [Fact]
+    public async Task Reserve_ViUserChuaTonTai_TaoViKemSuatDungThu_RoiReserve()
+    {
+        using var tdb = new PaymentTestDb();
+        var sessionId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        var result = await new CreditAccountService(tdb.NewContext())
+            .ReserveAsync(OwnerType.User, userId, sessionId);
+
+        Assert.Equal(ReserveOutcome.Reserved, result.Outcome);
+
+        using var read = tdb.NewContext();
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == userId);
+        Assert.Equal(3, acc.FreeCreditsGranted);
+        Assert.Equal(2, acc.RemainingCredits);  // 3 tặng − 1 vừa giữ chỗ
+        Assert.Equal(1, acc.ReservedCredits);
+        Assert.Equal(1, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
+
+        // Ghi sổ đúng 1 bút toán FreeGrant +3 (không gắn order/session) → bất biến số dư vẫn kiểm được.
+        var ledger = await read.CreditTransactions.Where(t => t.OwnerId == userId).ToListAsync();
+        var grant = Assert.Single(ledger);
+        Assert.Equal(CreditTransactionReason.FreeGrant, grant.Reason);
+        Assert.Equal(3, grant.Delta);
+        Assert.Null(grant.OrderId);
+        Assert.Null(grant.SessionId);
+
+        // Bất biến sổ cái: remaining + reserved == Σ delta.
+        Assert.Equal(ledger.Sum(t => t.Delta), acc.RemainingCredits + acc.ReservedCredits);
     }
 
     // (c) idempotent theo session_id (PAY-4): gọi 2 lần cùng session → đúng 1 reservation, chỉ trừ 1 lần.

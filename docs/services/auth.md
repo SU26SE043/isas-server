@@ -99,9 +99,21 @@ UserResponse {
 
 **`POST /forgot-password`** `{ email: string }` → gửi OTP · **`POST /verify-otp`** `{ email: string, otp: string }` · **`POST /reset-password`** `{ email: string, newPassword: string }`. Public. Lỗi: **400** (OTP sai/hết hạn).
 
-**🔜 Admin (PlatformAdmin) — quản trị Org/role chưa build (A4/A5):**
+**✅ Admin (PlatformAdmin) — đình chỉ account + đặt lại mật khẩu hộ (F20 / FR16, AUTH-7).** Cả cụm `auth/admin` gác `[Authorize(Roles="Admin")]` ở CLASS (A5). ⚠ **Đây là platform-role `Admin`, KHÁC `POST/PATCH/DELETE /auth/org/members`** vốn là `Employer` + `OrgAdmin` trong một org (AUTH-4/AUTH-8) — hai mô hình quyền khác nhau, đừng bê qua lại.
+
+- **`POST /auth/admin/users/{id}/ban`** — đình chỉ account. Req `{ reason?: string }` (≤500 ký tự) → Res **`200`** `AdminUserResponse` (kèm `bannedAt`/`banReason`). Lỗi: **400** tự ban mình · **404** user lạ · **409** người bị ban là **Admin còn hoạt động cuối cùng** (cấm hết Admin thì không còn ai gỡ ban được cho ai — hệ thống tự khoá mình).
+- **`POST /auth/admin/users/{id}/unban`** — gỡ đình chỉ → **`200`**. Lỗi: **404**. *(Không khôi phục refresh token cũ — đăng nhập lại là có phiên mới.)*
+- **`POST /auth/admin/users/{id}/reset-password`** — đặt lại mật khẩu hộ. Req `{ newPassword: string }` → **`204`**. Lỗi: **400** mật khẩu không đạt policy Identity · **404**. Thu hồi **mọi refresh token** của user (không thì đổi mật khẩu KHÔNG đuổi được kẻ đang chiếm tài khoản).
+- **`GET /auth/admin/users`** nay trả kèm `bannedAt`/`banReason` (additive — FE cũ không vỡ).
+
+> ⚠⚠ **RANH GIỚI HIỆU LỰC CỦA BAN (AUTH-5 / GEN-3 — đọc trước khi "siết cho chặt hơn").**
+> Service khác validate JWT **offline** bằng chung khoá, **không hỏi AuthService lúc chạy** → **access token đang lưu hành KHÔNG thu hồi được**. Ban vì thế **không tức thì**: người vừa bị cấm vẫn gọi API được **tối đa 1 TTL access token (15')**.
+> Ban làm ngay hai việc: **(1)** chặn **mọi** đường phát phiên mới — đăng nhập mật khẩu · đăng nhập Google · refresh · `provision-candidate` (magic-link B2B, cấp JWT chỉ theo email nên là cửa dễ bỏ sót nhất); **(2)** thu hồi **mọi refresh token** → không gia hạn được nữa. Sau ≤15' account chết hẳn.
+> Cần chặt hơn → **rút ngắn TTL access**. ❌ **KHÔNG** thêm denylist / gọi mạng vào đường validate của service khác (vi phạm GEN-3, ràng buộc cứng). Cùng đánh đổi đã chốt ở AUTH-5/BK14 cho việc đổi `org_role`.
+
+**🔜 Admin — chưa build:**
 - **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
-- **`GET/POST /auth/admin/orgs…`** — xem / duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
+- **`GET/POST /auth/admin/orgs…`** — duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
 - *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. ✅ A4 HrMember→403 billing · ✅ A5 `[Authorize(Roles)]` mọi service (v22): `OrgMembers`→`Employer`, auth-entry `[AllowAnonymous]` tường minh; `RoleClaimType=ClaimTypes.Role` khớp mọi service.)*
 
 ### Request/Response mẫu (luồng chính)
@@ -131,7 +143,7 @@ POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 RefreshTokenRe
 |---|---|
 | 400 | mật khẩu yếu (policy) · OTP sai/hết hạn · `orgName` rỗng |
 | 401 | login sai email/mật khẩu · refresh hết hạn/đã revoke/quá cửa sổ ân hạn · thiếu/sai Bearer |
-| 403 | role/`org_role` không đủ quyền (vd `HrMember` gọi admin/billing — A4) |
+| 403 | role/`org_role` không đủ quyền (vd `HrMember` gọi admin/billing — A4) · **login của account bị đình chỉ** (F20 — 403 chứ không 401: thông tin đăng nhập ĐÚNG, cái bị từ chối là quyền dùng hệ thống; 401 sẽ khiến FE mời gõ lại mật khẩu vô ích) · `provision-candidate` cho account bị đình chỉ |
 | 409 | **email đã tồn tại** (`register` · `register-org` · `POST /auth/org/members` — thống nhất một mã cho "tài nguyên đã tồn tại") · (admin) tạo org trùng / gán role mâu thuẫn |
 | 423 | tài khoản **lockout** (quá `access_failed_count`) *(nếu bật `LockoutOptions`)* |
 
@@ -185,8 +197,13 @@ location        varchar?
 title           varchar?
 created_at      timestamptz   default now()
 updated_at      timestamptz?
+banned_at       timestamptz?  ✅ F20 — mốc PlatformAdmin ĐÌNH CHỈ account (null = đang hoạt động)
+ban_reason      varchar(500)? ✅ F20 — lý do (chỉ hiển thị cho admin)
+banned_by       uuid?         ✅ F20 — admin ra quyết định (ref lỏng → users.id, phục vụ đối chất)
 ```
 + cột Identity chuẩn: `security_stamp`, `lockout_*`, `phone_*`…
+
+> ⚠ **`banned_at` ≠ `lockout_end`.** `lockout_*` là khoá **TỰ ĐỘNG** do nhập sai mật khẩu (`CheckPasswordSignInAsync(lockoutOnFailure: true)`), Identity tự đặt/xoá. Gộp ban của admin vào cột đó thì (a) không phân biệt được "bị cấm" với "gõ sai mật khẩu 5 lần", và (b) một lần đăng nhập thành công / reset mật khẩu sẽ **vô tình gỡ lệnh cấm**. Migration `AddUserBanF20` — thuần `AddColumn` nullable, **online-safe, không cần dọn dữ liệu trước**.
 
 ### `roles` / `user_roles`
 ```

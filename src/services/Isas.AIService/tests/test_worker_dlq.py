@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app import worker
+from app.transcriber import TranscriptionResult
+from app.providers.gemini import ScoreOutcome
 from app.config import settings
 
 
@@ -74,7 +76,8 @@ def _patch_pipeline(monkeypatch, *, transcript="một transcript hợp lệ", po
     """Mock S3 tải + transcribe OK để tới được bước score(); score() luôn raise ValueError
     (→ PermanentError). post_failed do caller quyết OK/raise để test 2 nhánh ack vs nack."""
     monkeypatch.setattr(worker.s3_client, "download_fileobj", MagicMock())
-    monkeypatch.setattr(worker.transcriber, "transcribe", MagicMock(return_value=transcript))
+    monkeypatch.setattr(worker.transcriber, "transcribe_detailed",
+                        MagicMock(return_value=TranscriptionResult(text=transcript)))
     monkeypatch.setattr(worker.provider, "score",
                         AsyncMock(side_effect=ValueError("LLM output không hợp lệ")))
     monkeypatch.setattr(worker, "post_failed", post_failed)
@@ -130,19 +133,23 @@ async def test_process_message_skips_whisper_when_transcript_present(monkeypatch
     KHÔNG tải audio, KHÔNG gọi Whisper; chấm thẳng transcript đó rồi callback + ack.
     Tiết kiệm N lần Whisper (self-consistency E10)."""
     download = MagicMock()
-    transcribe = MagicMock(return_value="KHÔNG NÊN DÙNG")
-    score = AsyncMock(return_value=[{"criterionId": "c1", "score": 3.0,
-                                     "levelMatched": 3, "reasoning": "x"}])
+    transcribe = MagicMock(return_value=TranscriptionResult(text="KHÔNG NÊN DÙNG"))
+    score = AsyncMock(return_value=ScoreOutcome(
+        scores=[{"criterionId": "c1", "score": 3.0,
+                 "levelMatched": 3, "reasoning": "x"}],
+        sample_answer="Câu trả lời mẫu."))
     post_callback = AsyncMock()
     monkeypatch.setattr(worker.s3_client, "download_fileobj", download)
-    monkeypatch.setattr(worker.transcriber, "transcribe", transcribe)
+    monkeypatch.setattr(worker.transcriber, "transcribe_detailed", transcribe)
     monkeypatch.setattr(worker.provider, "score", score)
     monkeypatch.setattr(worker, "post_callback", post_callback)
 
+    job_metrics = {"speechRateWpm": 210.0, "fillerCount": 4, "longestPauseSec": 1.8}
     message = _fake_message({
         "answerId": "answer-3",
         "audioObjectKey": "recordings/a3.webm",
         "transcript": "Câu trả lời đã transcribe sẵn.",
+        "deliveryMetrics": job_metrics,     # F11 — đo sẵn ở /decide-next
         "questionContent": "Q?",
         "jobCategory": "BE",
         "criteria": [],
@@ -159,17 +166,67 @@ async def test_process_message_skips_whisper_when_transcript_present(monkeypatch
     message.ack.assert_awaited_once()
     message.nack.assert_not_called()
 
+    # F11 — CHỖ DỄ HỎNG ÂM THẦM NHẤT: worker bỏ Whisper ở đường này, nên nếu không nhận chỉ số
+    # từ job thì buổi THÍCH ỨNG vĩnh viễn không có chỉ số trong khi buổi TĨNH vẫn có — không lỗi,
+    # không log, chỉ là tính năng chết một nửa. Khoá cả hai đầu (vào bộ chấm + lên .NET).
+    assert score.call_args.kwargs["delivery"] == job_metrics
+    assert post_callback.await_args.args[0]["deliveryMetrics"] == job_metrics
+
+
+@pytest.mark.asyncio
+async def test_process_message_transcript_khong_kem_chi_so_van_cham_duoc(monkeypatch):
+    """F11 degrade — job CŨ (Interview chưa deploy bản F11) mang transcript nhưng KHÔNG mang
+    chỉ số. Worker phải chấm bình thường với ``delivery=None`` (prompt nói "chưa đo được"),
+    TUYỆT ĐỐI không transcribe lại (mất trọn cái lợi bỏ Whisper) và không làm answer Failed
+    (PAY-13: Failed = người luyện mất credit vì một tính năng phụ)."""
+    transcribe = MagicMock(return_value=TranscriptionResult(text="KHÔNG NÊN DÙNG"))
+    score = AsyncMock(return_value=ScoreOutcome(
+        scores=[{"criterionId": "c1", "score": 3.0, "levelMatched": 3, "reasoning": "x"}],
+        sample_answer=None))
+    post_callback = AsyncMock()
+    monkeypatch.setattr(worker.s3_client, "download_fileobj", MagicMock())
+    monkeypatch.setattr(worker.transcriber, "transcribe_detailed", transcribe)
+    monkeypatch.setattr(worker.provider, "score", score)
+    monkeypatch.setattr(worker, "post_callback", post_callback)
+
+    message = _fake_message({
+        "answerId": "answer-old",
+        "audioObjectKey": "recordings/old.webm",
+        "transcript": "Job cũ không có deliveryMetrics.",
+        "questionContent": "Q?",
+        "jobCategory": "BE",
+        "criteria": [],
+        "rubricVersion": 1,
+    })
+
+    await worker.process_message(message)
+
+    transcribe.assert_not_called()
+    assert score.call_args.kwargs["delivery"] is None
+    assert post_callback.await_args.args[0]["deliveryMetrics"] is None
+    message.ack.assert_awaited_once()
+
 
 @pytest.mark.asyncio
 async def test_process_message_transcribes_when_no_transcript(monkeypatch):
-    """Regression: KHÔNG có transcript trong job (đường cũ) → vẫn tải audio + Whisper."""
+    """Regression: KHÔNG có transcript trong job (đường cũ) → vẫn tải audio + Whisper.
+
+    F11 gộp thêm vế ĐƯỜNG TĨNH: worker tự transcribe thì phải TỰ đo chỉ số cách nói và
+    chuyển tiếp cả xuống ``score()`` lẫn lên callback .NET."""
+    from app.fluency import Segment, compute_delivery_metrics
+
     download = MagicMock()
-    transcribe = MagicMock(return_value="transcript từ whisper")
-    score = AsyncMock(return_value=[{"criterionId": "c1", "score": 3.0,
-                                     "levelMatched": 3, "reasoning": "x"}])
+    metrics = compute_delivery_metrics(
+        "transcript từ whisper", [Segment(0.0, 2.0, "transcript từ whisper")], 4.0)
+    transcribe = MagicMock(return_value=TranscriptionResult(
+        text="transcript từ whisper", metrics=metrics))
+    score = AsyncMock(return_value=ScoreOutcome(
+        scores=[{"criterionId": "c1", "score": 3.0,
+                 "levelMatched": 3, "reasoning": "x"}],
+        sample_answer="Câu trả lời mẫu."))
     post_callback = AsyncMock()
     monkeypatch.setattr(worker.s3_client, "download_fileobj", download)
-    monkeypatch.setattr(worker.transcriber, "transcribe", transcribe)
+    monkeypatch.setattr(worker.transcriber, "transcribe_detailed", transcribe)
     monkeypatch.setattr(worker.provider, "score", score)
     monkeypatch.setattr(worker, "post_callback", post_callback)
 
@@ -188,3 +245,7 @@ async def test_process_message_transcribes_when_no_transcript(monkeypatch):
     transcribe.assert_called_once()
     assert score.call_args.kwargs["transcript"] == "transcript từ whisper"
     message.ack.assert_awaited_once()
+
+    # F11 — số đo phải tới CẢ bộ chấm (để chấm độ trôi chảy) LẪN .NET (để hiện cho người luyện).
+    assert score.call_args.kwargs["delivery"] == metrics.to_dict()
+    assert post_callback.await_args.args[0]["deliveryMetrics"] == metrics.to_dict()

@@ -220,7 +220,12 @@ public class RoadmapService : IRoadmapService
                 l.Title,
                 includeTheory ? l.TheoryContent : null,
                 l.SessionId,
-                l.Status.ToString())).ToList()
+                l.Status.ToString(),
+                // F15 — tài liệu đi CÙNG lý thuyết (sinh chung 1 lượt): view nào giấu theory thì
+                // cũng giấu resources, tránh hiện "tài liệu" cho lesson chưa mở.
+                includeTheory
+                    ? l.Resources.Select(RoadmapLessonService.MapResource).ToList()
+                    : [])).ToList()
         )).ToList(),
         r.CreatedAt,
         r.CompletedAt);

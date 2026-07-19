@@ -13,6 +13,11 @@ namespace PaymentService.Models
         public DbSet<CreditReservation> CreditReservations => Set<CreditReservation>();
         public DbSet<CreditTransaction> CreditTransactions => Set<CreditTransaction>();
         public DbSet<Invoice> Invoices => Set<Invoice>();
+        // F8 — bảng dựng lại sau khi DB15 drop bản scaffold chết; lần này có đường tiêu thụ thật.
+        public DbSet<Subscription> Subscriptions => Set<Subscription>();
+        // F22 — CHI PHÍ vận hành (token AI), KHÔNG phải tiền của người dùng: không FK/CHECK nào nối nó với
+        // credit_accounts. Xem AiUsageLog để biết vì sao bảng này ở Payment mà không ở AIService (GEN-4).
+        public DbSet<AiUsageLog> AiUsageLogs => Set<AiUsageLog>();
 
         // DB14 — đóng dấu updated_at TỰ ĐỘNG cho mọi entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()
         // parameterless của EF gọi xuống overload (bool) này nên chỉ cần override 2 overload dưới là đủ mọi
@@ -112,6 +117,26 @@ namespace PaymentService.Models
                 // flip status tự thêm .SetProperty(UpdatedAt) (WebhookService); tracked Cancel qua SaveChanges.
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
+                // F18 — audit hoàn tiền. Lý do/mã cổng giới hạn độ dài để không thành bãi rác text.
+                e.Property(x => x.RefundReason).HasMaxLength(500);
+                e.Property(x => x.RefundGatewayRef).HasMaxLength(100);
+
+                // F19 — báo cáo doanh thu gộp theo kỳ: WHERE status='Paid' AND paid_at ∈ [from,to).
+                // Partial theo đúng vị ngữ truy vấn: đơn Paid là tập con của `orders` (Pending bỏ dở +
+                // Expired chiếm phần lớn bảng theo thời gian), nên index chỉ ôm phần báo cáo cần đọc.
+                // Literal 'Paid' khớp chuỗi enum lưu (Status = HasConversion<string>), cột snake_case —
+                // cùng lối ix_orders_pending_expired_at (DB26).
+                //
+                // ⚠ Partial index chỉ được planner dùng khi nó CHỨNG MINH được predicate query ⇒ predicate
+                // index. EF phải render `status` thành LITERAL chứ không phải tham số; đã khoá bằng test
+                // đọc SQL sinh ra từ chính hàm production (bài học DB27: render thành @p thì index chết
+                // trong im lặng — index vẫn tồn tại, EXPLAIN vẫn seq scan, không có gì báo lỗi).
+                e.HasIndex(x => x.PaidAt)
+                 .HasDatabaseName("ix_orders_paid_at")
+                 .HasFilter("status = 'Paid'");
+
+
+
                 // P8b — package optional: đơn InvoiceSettlement không gắn package (gắn invoice_id).
                 e.HasOne(x => x.Package)
                  .WithMany(x => x.Orders)
@@ -152,9 +177,13 @@ namespace PaymentService.Models
             {
                 // DB1 — số dư credit KHÔNG bao giờ âm (chống double-spend/bug logic tràn xuống dưới 0).
                 // period_usage nullable → phải IS NULL OR ... tường minh (NULL >= 0 = UNKNOWN, không đủ chặn).
+                // F7 — free_credits_granted vào cùng CHECK (cùng ngữ nghĩa "số dư không âm"). CỐ Ý KHÔNG
+                // thêm vế kiểu `free_credits_granted >= remaining_credits`: đó đúng là lớp bug DB22 —
+                // một bút toán số dư hợp lệ (Consume/Release) sẽ làm nổ CHECK bên trong transaction,
+                // rollback → reservation kẹt Reserved → consumer nack-requeue vô hạn → nghẽn queue credit.
                 e.ToTable("credit_accounts", t => t.HasCheckConstraint(
                     "ck_credit_accounts_non_negative",
-                    "remaining_credits >= 0 AND reserved_credits >= 0 AND (period_usage IS NULL OR period_usage >= 0)"));
+                    "remaining_credits >= 0 AND reserved_credits >= 0 AND free_credits_granted >= 0 AND (period_usage IS NULL OR period_usage >= 0)"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -168,6 +197,7 @@ namespace PaymentService.Models
 
                 e.Property(x => x.RemainingCredits).HasDefaultValue(0);
                 e.Property(x => x.ReservedCredits).HasDefaultValue(0);
+                e.Property(x => x.FreeCreditsGranted).HasDefaultValue(0);
 
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
@@ -192,6 +222,12 @@ namespace PaymentService.Models
 
                 e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(ReservationStatus.Reserved);
+
+                // F8 — nguồn chi trả, enum lưu string (GEN-2). Default 'Credit' để mọi row CŨ (và mọi
+                // đường ghi chưa biết tới F8) giữ nguyên nghĩa "chỗ giữ này đã trừ ví" ⇒ Consume/Release
+                // của chúng vẫn chạy đúng nhánh bút toán như trước.
+                e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(16)
+                 .HasDefaultValue(ReservationFunding.Credit);
 
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 // DB14 — audit updated_at (stamp khi status flip Reserved→Consumed/Released). 2 flip đó dùng
@@ -249,8 +285,39 @@ namespace PaymentService.Models
                 e.Property(x => x.OwnerType).HasConversion<string>().HasMaxLength(8).IsRequired();
                 e.Property(x => x.OwnerId).IsRequired();
 
+                // F20 — "PromoGrant" (11 ký tự) vẫn vừa maxLength 16 sẵn có ⇒ không phải ALTER cột.
                 e.Property(x => x.Reason).HasConversion<string>().HasMaxLength(16).IsRequired();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // F20 — ghi chú lý do cấp quà; giới hạn độ dài để không thành bãi rác text.
+                e.Property(x => x.Note).HasMaxLength(500);
+
+                // F18 — self-FK: bút toán hoàn trỏ về bút toán mua gốc. Restrict (sổ cái append-only,
+                // không row nào bị xoá). UNIQUE LỌC `WHERE reverses_transaction_id IS NOT NULL` = khoá
+                // idempotency chống hoàn hai lần cùng một khoản mua: hai request hoàn song song thì bên
+                // thua đụng UNIQUE lúc SaveChanges → rollback → trả AlreadyRefunded, thay vì cả hai cùng
+                // trừ ví. NULL không bị ràng buộc nên mọi bút toán không-hoàn vẫn tự do.
+                e.HasOne(x => x.ReversesTransaction)
+                 .WithMany()
+                 .HasForeignKey(x => x.ReversesTransactionId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                e.HasIndex(x => x.ReversesTransactionId)
+                 .IsUnique()
+                 .HasDatabaseName("ux_credit_transactions_reverses")
+                 .HasFilter("reverses_transaction_id IS NOT NULL");
+
+                // F19 — `GET /payment/me/credit-transactions` lọc (owner_type, owner_id) rồi
+                // ORDER BY created_at DESC, id DESC (keyset DB8). Index composite DB9 hiện có chỉ phục vụ
+                // FK lookup, KHÔNG mang khoá sắp xếp ⇒ thiếu index này thì mỗi trang phải sort lại toàn bộ
+                // sổ cái của chủ ví. Cùng hình dạng ix_orders_owner_created (DB26).
+                // Sổ cái là bảng ghi nhiều nhất trong service (1 row/lượt chấm) nên đây là index đáng giá
+                // nhất của F19.
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.CreatedAt, x.Id })
+                 .IsDescending(false, false, true, true)
+                 .HasDatabaseName("ix_credit_transactions_owner_created");
+
 
                 e.HasOne(x => x.Order)
                  .WithMany(x => x.CreditTransactions)
@@ -297,6 +364,104 @@ namespace PaymentService.Models
                  .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
                  .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
                  .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── Subscription (F8 — thuê bao Premium B2C / membership B2B) ─
+            modelBuilder.Entity<Subscription>(e =>
+            {
+                // Kỳ hạn phải có bề rộng dương. CHECK này an toàn theo nghĩa DB22: không có đường ghi nào
+                // SỬA started_at/expires_at của row đã tồn tại (append-one-row-per-order), nên nó chỉ có thể
+                // chặn lúc INSERT — không thể nổ giữa một transaction Consume/Release rồi kẹt reservation.
+                e.ToTable("subscriptions", t => t.HasCheckConstraint(
+                    "ck_subscriptions_period_positive", "expires_at > started_at"));
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.OwnerType).HasConversion<string>().HasMaxLength(8).IsRequired();
+                e.Property(x => x.OwnerId).IsRequired();
+
+                e.Property(x => x.BillingCycle).HasConversion<string>().HasMaxLength(16).IsRequired();
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16)
+                 .HasDefaultValue(SubscriptionStatus.Active);
+
+                e.Property(x => x.StartedAt).IsRequired();
+                e.Property(x => x.ExpiresAt).IsRequired();
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+
+                // Khoá idempotency của webhook: 1 đơn ⇒ tối đa 1 kỳ hạn. Filtered vì order_id nullable
+                // (chỗ dành cho kỳ hạn cấp tay/khuyến mãi sau này, không sinh từ đơn nào).
+                e.HasIndex(x => x.OrderId).IsUnique().HasFilter("order_id IS NOT NULL");
+
+                // Đường nóng: MỌI lần reserve đều hỏi "chủ ví này còn thuê bao không". Partial theo
+                // status='Active' (mẫu DB5) để index chỉ ôm phần bảng thật sự bị hỏi — kỳ đã hết hạn/huỷ
+                // tích luỹ mãi mãi nhưng không bao giờ nằm trong vị ngữ này. Cột snake_case + literal
+                // khớp tên member enum (Status = HasConversion<string>).
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.ExpiresAt })
+                 .HasDatabaseName("ix_subscriptions_owner_active")
+                 .HasFilter("status = 'Active'");
+
+                // DB5 — sweeper ExpireDueAsync quét WHERE status='Active' AND expires_at <= now.
+                e.HasIndex(x => x.ExpiresAt)
+                 .HasDatabaseName("ix_subscriptions_active_expires_at")
+                 .HasFilter("status = 'Active'");
+
+                e.HasOne(x => x.Package)
+                 .WithMany()
+                 .HasForeignKey(x => x.PackageId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                e.HasOne(x => x.Order)
+                 .WithMany()
+                 .HasForeignKey(x => x.OrderId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict),
+                // đồng nhất với reservations/transactions/invoices. Hệ quả CÓ CHỦ Ý: kích hoạt thuê bao
+                // phải bảo đảm ví tồn tại trước — đằng nào reservation cũng bị chính FK này bắt buộc, nên
+                // tạo ví ngay lúc kích hoạt tốt hơn là để người mua gói tháng ăn 402 ở buổi đầu tiên.
+                e.HasOne<CreditAccount>()
+                 .WithMany()
+                 .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
+                 .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── AiUsageLog (F22) ──────────────────────────────────
+            modelBuilder.Entity<AiUsageLog>(e =>
+            {
+                // KHÔNG CHECK constraint nào ở đây, CÓ CHỦ Ý. Bảng này được ghi bởi một đường best-effort;
+                // một CHECK "hợp lệ" (vd total_tokens > 0) sẽ biến dữ liệu đo hơi lạ thành exception —
+                // đúng hình dạng lỗi DB22. Giá trị vô lý được KẸP ở AiUsageService.RecordAsync, nơi mà
+                // hỏng thì chỉ mất một dòng thống kê.
+                e.ToTable("ai_usage_logs");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.Operation).HasMaxLength(64).IsRequired();
+                e.Property(x => x.Model).HasMaxLength(64).IsRequired();
+
+                e.Property(x => x.PromptTokens).IsRequired();
+                e.Property(x => x.OutputTokens).IsRequired();
+                e.Property(x => x.TotalTokens).IsRequired();
+
+                // Đơn giá USD/1 triệu token: cần chỗ cho phần thập phân rất nhỏ (0.075 USD/1M là mức thật
+                // của flash) → precision rộng tay. decimal chứ KHÔNG double: tiền cộng dồn trên hàng triệu
+                // dòng mà dùng dấu phẩy động thì sai số tự tích lại.
+                e.Property(x => x.InputPricePerMillionUsd).HasPrecision(18, 6);
+                e.Property(x => x.OutputPricePerMillionUsd).HasPrecision(18, 6);
+                // Chi phí 1 lượt gọi rất nhỏ (cỡ 1e-4 USD) nhưng tổng thì lớn → 8 chữ số thập phân để một
+                // lượt gọi lẻ không bị làm tròn về 0 rồi biến mất khỏi tổng.
+                e.Property(x => x.CostUsd).HasPrecision(18, 8);
+
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // Mọi câu hỏi của báo cáo đều lọc theo khoảng thời gian trước, rồi mới gộp theo operation.
+                e.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_ai_usage_logs_created_at");
+                e.HasIndex(x => new { x.Operation, x.CreatedAt })
+                 .HasDatabaseName("ix_ai_usage_logs_operation_created_at");
             });
 
             // ── DB10 — OPTIMISTIC CONCURRENCY (xmin) ────────────────

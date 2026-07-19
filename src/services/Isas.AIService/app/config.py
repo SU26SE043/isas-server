@@ -60,5 +60,34 @@ class Settings(BaseSettings):
     dotnet_callback_base: str = "http://localhost:5246"  # cổng .NET API
     internal_token: str = "change-me"                    # trùng Internal:Token .NET
 
+    # ── F22: ĐO TOKEN/CHI PHÍ (FR18) ─────────────────────────────
+    # GEN-4 cấm AIService ghi DB → số liệu được ĐẨY qua callback nội bộ về
+    # PaymentService (chỗ đã giữ doanh thu F19; chi phí AI chỉ có nghĩa khi đọc
+    # cạnh doanh thu). Xem app/usage.py cho các phương án đã loại.
+    usage_metering_enabled: bool = True
+    # Base URL PaymentService (KHÔNG qua gateway — GEN-1). Để RỖNG = chỉ ghi log,
+    # không gọi mạng: đây là mặc định an toàn cho test/dev, và là kill-switch khi
+    # sink có sự cố mà không phải deploy lại.
+    usage_sink_base: str = ""
+    # Ngắn có chủ đích: đây là lượt gọi PHỤ nằm sau một lượt LLM đã xong. Sink chậm
+    # KHÔNG được kéo dài request của người dùng (/decide-next chạy đồng bộ trong
+    # đường upload câu trả lời).
+    usage_sink_timeout_seconds: float = 3.0
+
+    # ── F21: PROMPT REGISTRY (FR17) ──────────────────────────────────────
+    # GEN-4 cấm AIService ghi DB → mảnh prompt tuỳ biến nằm ở InterviewService, kéo về qua HTTP
+    # nội bộ. Xem app/prompt_registry.py cho các phương án đã loại + 4 tầng fail-open.
+    #
+    # Base URL InterviewService (KHÔNG qua gateway — GEN-1). RỖNG = tắt hẳn, chạy thuần bản
+    # hardcode trong prompts.py: mặc định an toàn cho test/dev, và là kill-switch khi registry
+    # có sự cố mà không phải deploy lại.
+    prompt_registry_base: str = ""
+    # 60s: đủ ngắn để admin sửa xong thấy hiệu lực gần như ngay (FR17 "lần sinh kế dùng bản
+    # mới"), đủ dài để không biến mỗi lượt gọi Gemini thành một lượt gọi mạng phụ.
+    prompt_cache_ttl_seconds: float = 60.0
+    # Ngắn: nạp prompt nằm TRƯỚC một lượt LLM trong cùng request. Registry chậm không được kéo
+    # dài request của người dùng — hết giờ thì dùng bản đang có (tầng 3/4).
+    prompt_fetch_timeout_seconds: float = 3.0
+
 
 settings = Settings()

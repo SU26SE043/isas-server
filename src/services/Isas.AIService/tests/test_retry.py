@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app import worker
+from app.transcriber import TranscriptionResult
 from app.config import settings
+from app.providers.gemini import ScoreOutcome
 
 
 def _fake_message(body: dict):
@@ -25,14 +27,19 @@ def _patch_pipeline(monkeypatch, *, score, post_callback, post_failed,
     """Mock S3 tải + transcribe OK để tới bước score(). Caller quyết score.side_effect
     + hai callback (post_callback = success, post_failed = báo Failed)."""
     monkeypatch.setattr(worker.s3_client, "download_fileobj", MagicMock())
-    monkeypatch.setattr(worker.transcriber, "transcribe", MagicMock(return_value=transcript))
+    monkeypatch.setattr(worker.transcriber, "transcribe_detailed",
+                        MagicMock(return_value=TranscriptionResult(text=transcript)))
     monkeypatch.setattr(worker.provider, "score", score)
     monkeypatch.setattr(worker, "post_callback", post_callback)
     monkeypatch.setattr(worker, "post_failed", post_failed)
 
 
 # Kết quả chấm hợp lệ (E9 shape) khi score() thành công.
-_VALID_SCORES = [{"criterionId": "c1", "score": 3.0, "levelMatched": 3, "reasoning": "ok"}]
+# F13 — score() nay trả ScoreOutcome(scores, sample_answer), không còn list trần.
+_VALID_SCORES = ScoreOutcome(
+    scores=[{"criterionId": "c1", "score": 3.0, "levelMatched": 3, "reasoning": "ok"}],
+    sample_answer="Câu trả lời mẫu.",
+)
 
 
 def test_score_max_attempts_default_is_three():

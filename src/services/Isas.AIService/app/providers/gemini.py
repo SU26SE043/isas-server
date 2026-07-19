@@ -1,8 +1,12 @@
 import json
+from typing import NamedTuple
+
 from google import genai
 from google.genai import types
 
 from app.config import settings
+from app.resources import sanitize_resources, count_rejected_urls
+from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt,
@@ -10,21 +14,67 @@ from app.prompts import (
     build_summarize_session_prompt, build_decide_next_prompt,
 )
 from app.providers.base import QuestionProvider
+from app.usage import report_usage
+
+
+class ScoreOutcome(NamedTuple):
+    """Kết quả 1 lượt chấm (F13).
+
+    ``score()`` TRƯỚC ĐÂY trả thẳng ``list[dict]``; nay trả kèm ``sample_answer`` nên phải
+    đổi shape. CỐ Ý dùng NamedTuple thay vì thêm biến thể trả về theo cờ: kiểu trả về hợp
+    nhất, và call site cũ (``result[0]["criterionId"]``) VỠ TO ngay lần chạy đầu thay vì
+    âm thầm đọc nhầm phần tử.
+
+    sample_answer: câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi vừa chấm; None khi LLM
+    không trả (phần phụ trợ, không đánh hỏng lượt chấm).
+    """
+    scores: list[dict]
+    sample_answer: str | None
 
 
 class GeminiProvider(QuestionProvider):
     def __init__(self) -> None:
         self._client = genai.Client(api_key=settings.gemini_api_key)
 
+    # ── F22 (FR18): CHOKEPOINT DUY NHẤT cho mọi lượt gọi Gemini ────────────────
+    async def _generate(self, operation: str, *, contents, config,
+                        model: str | None = None, defer_report: bool = False):
+        """Bọc ``generate_content`` để ĐO token/chi phí (F22).
+
+        MỌI lượt gọi Gemini của service đi qua đây — cố ý một cửa thay vì rải
+        ``usage_metadata`` ra 10 chỗ: rải thì lần thêm endpoint thứ 11 sẽ quên,
+        và "quên đo" là loại lỗi không ai phát hiện ra (không có gì hỏng cả, chỉ
+        là con số thiếu thầm lặng).
+
+        Ghi nhận NGAY sau khi có response, TRƯỚC khi caller parse: token đã bị
+        đốt rồi kể cả khi output malformed — mà đó lại đúng là những lượt ĐẮT
+        nhất (AI3 retry tới ``score_max_attempts`` lần). Hoãn ghi tới sau parse
+        sẽ làm mất đúng phần chi phí ta cần thấy nhất.
+
+        ``defer_report=True``: caller tự gọi ``report_usage`` (chỉ lesson-theory
+        dùng, để đính kèm số liệu URL bị loại) — caller đó BẮT BUỘC dùng
+        try/finally, xem :meth:`generate_lesson_theory`.
+
+        ``operation`` = nhãn đường gọi → admin xem tiêu thụ THEO ENDPOINT.
+        """
+        used_model = model or settings.gemini_model
+        response = await self._client.aio.models.generate_content(
+            model=used_model, contents=contents, config=config)
+        if not defer_report:
+            await report_usage(operation, used_model, response)
+        return response
+
     async def generate(self, job_category: str, cv_text: str | None,
                        jd_text: str | None, count: int | None = None,
                        focus_criteria: list[str] | None = None) -> list[str]:
         # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         effective_count = count if count is not None else settings.question_count
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count, focus_criteria)
 
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        response = await self._generate(
+            "generate_questions",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
@@ -61,9 +111,11 @@ class GeminiProvider(QuestionProvider):
     async def suggest_criteria(self, job_category: str, jd_text: str | None,
                                criteria_text: str | None, count: int) -> list[dict]:
         """Đề xuất bộ tiêu chí CÓ CẤU TRÚC (C8) — weight chuẩn hoá tổng = 1."""
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_criteria_prompt(job_category, jd_text, criteria_text, count)
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        response = await self._generate(
+            "suggest_criteria",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.4,
@@ -119,6 +171,8 @@ class GeminiProvider(QuestionProvider):
 
         jdMatch chỉ xuất hiện khi jd_text được cung cấp.
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category)
 
         properties: dict = {
@@ -140,8 +194,8 @@ class GeminiProvider(QuestionProvider):
             }
             required.append("jdMatch")
 
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        response = await self._generate(
+            "analyze_cv",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.0,  # phân tích/chấm khớp cần nhất quán, không sáng tạo
@@ -195,9 +249,14 @@ class GeminiProvider(QuestionProvider):
 
     async def score(self, question: str, transcript: str,
                     job_category: str, criteria: list[dict],
-                    temperature: float = 0.0) -> list[dict]:
+                    temperature: float = 0.0,
+                    delivery: dict | None = None) -> list[dict]:
         """
         Chấm 1 câu trả lời theo rubric.
+
+        delivery (F11 — FR06, optional): chỉ số cách nói đo từ audio (tốc độ nói, khoảng lặng,
+          từ đệm) — ghép vào prompt để tiêu chí "độ trôi chảy" chấm bằng SỐ ĐO thay vì đoán
+          từ text. ``None`` (mặc định) = chưa đo được → prompt nói rõ + cấm bịa số.
 
         criteria: list dict từ C# gửi qua, mỗi phần tử có
           { criterionId, name, description, maxScore, weight,
@@ -207,12 +266,16 @@ class GeminiProvider(QuestionProvider):
           = SelfConsistencyTemperature (>0) để tạo dao động THẬT giữa các lần chấm → .NET đo spread
           (max−min) → gắn cờ needs_review khi phân tán. Mặc định 0.0 (giữ hành vi cũ / worker cũ).
 
-        Trả về: list dict (E9 — neo theo mức)
-          [ { "criterionId": str, "score": float, "levelMatched": int, "reasoning": str }, ... ]
-        với score == levelMatched (score luôn = điểm của 1 mức HỢP LỆ của tiêu chí).
+        Trả về: ``ScoreOutcome(scores, sample_answer)`` — F13 đổi shape (trước là list trần).
+          scores: list dict (E9 — neo theo mức)
+            [ { "criterionId": str, "score": float, "levelMatched": int, "reasoning": str }, ... ]
+            với score == levelMatched (score luôn = điểm của 1 mức HỢP LỆ của tiêu chí).
+          sample_answer: câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này (F13), hoặc None.
         """
         # Map criterionId -> maxScore + tập điểm mức HỢP LỆ (chấp cả key hoa/thường).
         # Nguồn mức: levels C# gửi (rubric_levels khai hoặc dải mặc định 0..maxScore).
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         max_by_id: dict[str, int] = {}
         levels_by_id: dict[str, list[int]] = {}
         for c in criteria:
@@ -229,10 +292,10 @@ class GeminiProvider(QuestionProvider):
             # Không có levels (phòng hờ) → dải mặc định 0..maxScore.
             levels_by_id[cid] = sorted(scores) if scores else list(range(0, mx + 1))
 
-        prompt = build_scoring_prompt(question, transcript, job_category, criteria)
+        prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery)
 
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        response = await self._generate(
+            "score",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=temperature,  # E9 mặc định 0 (nhất quán); E10 attempt 2..N > 0 để đo spread
@@ -252,9 +315,14 @@ class GeminiProvider(QuestionProvider):
                                 },
                                 "required": ["criterionId", "score", "levelMatched", "reasoning"],
                             },
-                        }
+                        },
+                        # F13 — câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này.
+                        # Sinh CÙNG lượt chấm: prompt đã mang câu hỏi + rubric + transcript
+                        # nên chi phí tăng thêm CHỈ là output token; gọi riêng lúc user mở
+                        # sẽ phải nạp lại toàn bộ ngần ấy input.
+                        "sampleAnswer": {"type": "string"},
                     },
-                    "required": ["scores"],
+                    "required": ["scores", "sampleAnswer"],
                 },
             ),
         )
@@ -318,7 +386,13 @@ class GeminiProvider(QuestionProvider):
         if missing:
             raise ValueError(f"LLM chấm thiếu tiêu chí: {missing}")
 
-        return results
+        # F13 — câu trả lời mẫu. KHÔNG raise khi thiếu/rỗng: đây là phần PHỤ TRỢ, để nó
+        # đánh hỏng cả lượt chấm (=> answer Failed, mất credit PAY-13) là đổi chác tồi.
+        # Thiếu -> None -> .NET không lưu -> FE đơn giản không hiện mục gợi ý.
+        sample = data.get("sampleAnswer")
+        sample = sample.strip() if isinstance(sample, str) else None
+
+        return ScoreOutcome(scores=results, sample_answer=sample or None)
 
     async def generate_roadmap(self, job_category: str, level: str,
                                weaknesses: list[dict] | None,
@@ -329,10 +403,12 @@ class GeminiProvider(QuestionProvider):
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_roadmap_prompt(job_category, level, weaknesses, cv_text)
 
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        response = await self._generate(
+            "generate_roadmap",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.4,  # cấu trúc kế hoạch — nhất quán hơn sinh câu hỏi tự do
@@ -409,13 +485,30 @@ class GeminiProvider(QuestionProvider):
 
     async def generate_lesson_theory(self, job_category: str, level: str,
                                      lesson_title: str, focus_criteria: list[str],
-                                     weaknesses: list[str] | None) -> str:
-        """BC13/D20 — sinh nội dung lý thuyết (Markdown, tiếng Việt) cho 1 lesson."""
+                                     weaknesses: list[str] | None) -> tuple[str, list[dict]]:
+        """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
+
+        Trả ``(theoryMarkdown, resources)``. ``resources`` đã qua
+        :func:`app.resources.sanitize_resources`: url KHÔNG thuộc allowlist tên
+        miền bị BỎ (giữ lại tên tài liệu). Xem docstring app/resources.py cho lý
+        do — tóm tắt: LLM sinh url là đoán chuỗi, domain bịa là rủi ro thật.
+
+        resources rỗng KHÔNG phải lỗi (lý thuyết vẫn dùng được) → không raise,
+        khác với theoryMarkdown rỗng.
+        """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_lesson_theory_prompt(
             job_category, level, lesson_title, focus_criteria, weaknesses)
 
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
+        # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist
+        # F15 hiện loại URL trong IM LẶNG — nếu Gemini bịa domain 90% số lần thì
+        # không ai biết). Con số đó chỉ có SAU khi parse, nên phải hoãn.
+        # try/finally BẮT BUỘC: parse hỏng thì token vẫn đã bị đốt, vẫn phải ghi.
+        response = await self._generate(
+            "generate_lesson_theory",
+            defer_report=True,
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
@@ -424,23 +517,43 @@ class GeminiProvider(QuestionProvider):
                     "type": "object",
                     "properties": {
                         "theoryMarkdown": {"type": "string"},
+                        "resources": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "type": {"type": "string"},
+                                    "publisher": {"type": "string"},
+                                    "url": {"type": "string"},
+                                },
+                                "required": ["title", "type"],
+                            },
+                        },
                     },
                     "required": ["theoryMarkdown"],
                 },
             ),
         )
 
-        text = (response.text or "").strip()
+        url_meta: dict | None = None
         try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            raise ValueError(f"LLM sinh lý thuyết trả về JSON không hợp lệ: {text[:200]}")
+            text = (response.text or "").strip()
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                raise ValueError(f"LLM sinh lý thuyết trả về JSON không hợp lệ: {text[:200]}")
 
-        theory = str(data.get("theoryMarkdown", "")).strip()
-        if not theory:
-            raise ValueError("LLM không trả về nội dung lý thuyết hợp lệ.")
+            theory = str(data.get("theoryMarkdown", "")).strip()
+            if not theory:
+                raise ValueError("LLM không trả về nội dung lý thuyết hợp lệ.")
 
-        return theory
+            resources = sanitize_resources(data.get("resources"))
+            url_meta = count_rejected_urls(data.get("resources"))
+            return theory, resources
+        finally:
+            await report_usage("generate_lesson_theory", settings.gemini_model,
+                               response, meta=url_meta)
 
     async def summarize_roadmap(self, job_category: str, level: str,
                                 criteria_progress: list[dict]) -> dict:
@@ -451,10 +564,12 @@ class GeminiProvider(QuestionProvider):
           { "strengths": [str], "weaknesses": [str], "improvements": [str],
             "overallComment": str }
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_summarize_roadmap_prompt(job_category, level, criteria_progress)
 
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        response = await self._generate(
+            "summarize_roadmap",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.0,  # tổng kết dựa số liệu khách quan — cần nhất quán
@@ -504,10 +619,12 @@ class GeminiProvider(QuestionProvider):
 
         Trả về dict: { "overallComment": str }
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_summarize_session_prompt(job_category, overall_score, criteria_scores)
 
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        response = await self._generate(
+            "summarize_session",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.4,  # nhận xét tự nhiên — đủ thấp để bám số liệu, mềm hơn tổng kết
@@ -546,12 +663,14 @@ class GeminiProvider(QuestionProvider):
         temperature=0.3: bám sát câu trả lời/năng lực nhưng câu hỏi tự nhiên hơn chấm điểm
         (0.0) — thấp hơn sinh câu hỏi tự do (0.7) vì phải nhắm đúng câu trả lời + tiêu chí.
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_decide_next_prompt(
             job_category, current_question, transcript, history,
             asked_count, follow_up_count, max_questions, max_follow_ups, criteria)
 
-        response = await self._client.aio.models.generate_content(
-            model=settings.gemini_model,
+        response = await self._generate(
+            "decide_next",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.3,
@@ -601,7 +720,11 @@ class GeminiProvider(QuestionProvider):
         Ở đây không ghép prompt/chỉ thị nào quanh nó — đưa nguyên văn cho bộ đọc. Model
         TTS chỉ đọc, không "làm theo", nên bề mặt injection gần như bằng 0; thêm chỉ thị
         kiểu "hãy đọc câu sau" mới là chỗ để câu hỏi độc hại bám vào mà lái giọng đọc."""
-        response = await self._client.aio.models.generate_content(
+        # F22: TTS dùng MODEL RIÊNG (settings.tts_model) và tính giá riêng — đi qua
+        # cùng chokepoint nhưng khai model tường minh, đừng để nó bị ghi nhầm vào
+        # đơn giá của model chat.
+        response = await self._generate(
+            "text_to_speech",
             model=settings.tts_model,
             contents=text,
             config=types.GenerateContentConfig(

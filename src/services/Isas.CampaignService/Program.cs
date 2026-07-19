@@ -5,7 +5,9 @@ using Isas.CampaignService.Services;
 using Isas.Shared.Extensions;
 using Isas.Shared.Files;
 using Isas.Shared.Json;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -14,6 +16,7 @@ using Scalar.AspNetCore;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -45,6 +48,9 @@ builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();   // DB17:
 builder.Services.AddScoped<IParserService, ParserService>();
 // C8: gọi AIService đề xuất tiêu chí (đồng bộ qua AiService:BaseUrl; có fallback)
 builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c =>
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
+// F9: gọi AIService sinh câu hỏi từ JD cho campaign B2B (đồng bộ; lỗi → 502 ném lên controller)
+builder.Services.AddHttpClient<IQuestionGenerator, AiServiceQuestionGenerator>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 // SEC-2: gọi AIService so khớp khuôn mặt (đồng bộ qua AiService:BaseUrl; lỗi → 502 ném lên controller)
 builder.Services.AddHttpClient<IAiServiceFaceVerifyClient, AiServiceFaceVerifyClient>(c =>
@@ -96,7 +102,16 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 
 builder.Services.AddHttpContextAccessor();
 
+// F17: vòng đời API key bên thứ ba (tạo/liệt kê/thu hồi) + xác thực key cho Public API.
+builder.Services.Configure<ApiKeySettings>(builder.Configuration.GetSection(ApiKeySettings.SectionName));
+builder.Services.AddScoped<IApiKeyService, ApiKeyService>();
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    // F17 — scheme "ApiKey" ĐỨNG RIÊNG cạnh Bearer. Mặc định vẫn là Bearer nên API key KHÔNG mở
+    // được endpoint JWT nào; ngược lại Public API khai tường minh AuthenticationSchemes=ApiKey nên
+    // JWT không mở được nó. Ranh giới là cấu trúc, không phải kỷ luật viết code.
+    .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
+        ApiKeyDefaults.Scheme, _ => { })
     .AddJwtBearer(options =>
     {
         options.MapInboundClaims = false;
@@ -116,6 +131,43 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 builder.Services.AddAuthorization();
+
+// F17 — rate-limit Public API, phân vùng theo API KEY ID.
+//
+// VÌ SAO cần: không có nó thì một key rò rỉ = rút toàn bộ dữ liệu ứng viên của org ở tốc độ tối đa,
+// và org không có cửa sổ nào để kịp phát hiện + revoke. Rate-limit không ngăn được rò rỉ nhưng biến
+// "rút sạch trong vài giây" thành "mất nhiều giờ", đủ để last_used_at + log lộ ra bất thường.
+//
+// VÌ SAO phân vùng theo key id chứ không theo header thô: partition theo header thì kẻ tấn công gửi
+// key ngẫu nhiên mỗi request sẽ đẻ partition vô hạn trong bộ nhớ = DoS đổi chiều. Sau khi
+// UseAuthentication() chạy, request KHÔNG hợp lệ đã bị 401 và ta chỉ phân vùng cho key THẬT
+// (số lượng bị chặn bởi MaxActiveKeysPerOrg); phần còn lại dồn vào 1 partition "anonymous" chung.
+//
+// ⚠ GIỚI HẠN đã biết: limiter này IN-PROCESS → chạy N replica thì trần thực tế là N×. Deploy hiện
+// tại là single-instance (cùng lý do DB7 leader-election được hoãn). Muốn đúng khi scale ngang thì
+// cần backend chia sẻ (Redis) — ngoài phạm vi F17, đã ghi vào docs/services/campaign.md §F17.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy(ApiKeyDefaults.RateLimitPolicy, httpContext =>
+    {
+        var settings = httpContext.RequestServices
+            .GetRequiredService<IOptions<ApiKeySettings>>().Value;
+
+        // Trần ≤ 0 = tắt rate-limit (kill-switch vận hành, mẫu Billing:CvAnalysisCredits=0).
+        if (settings.RateLimitPermitsPerWindow <= 0)
+            return RateLimitPartition.GetNoLimiter("disabled");
+
+        var keyId = httpContext.User.FindFirst(ApiKeyDefaults.KeyIdClaim)?.Value ?? "anonymous";
+        return RateLimitPartition.GetFixedWindowLimiter(keyId, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = settings.RateLimitPermitsPerWindow,
+            Window = TimeSpan.FromSeconds(Math.Max(1, settings.RateLimitWindowSeconds)),
+            QueueLimit = 0,   // vượt trần → 429 ngay, không xếp hàng giữ kết nối
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+        });
+    });
+});
 
 // DB25 — retry transient (blip mạng / deadlock Postgres) thay vì để nổi lên thành 500.
 // AN TOÀN Ở ĐÂY vì CampaignService KHÔNG có site `BeginTransactionAsync` nào: khi bật
@@ -165,6 +217,10 @@ if (app.Environment.IsDevelopment())
 
 app.UseServiceCors();
 app.UseAuthentication();
+// F17 — PHẢI đứng SAU UseAuthentication(): partition resolver đọc claim api_key_id, mà claim chỉ có
+// sau khi scheme ApiKey chạy xong. Đặt trước thì mọi request rơi vào partition "anonymous" chung ⇒
+// một key ồn ào làm nghẽn hết các key khác (và mất luôn tác dụng cô lập theo key).
+app.UseRateLimiter();
 app.UseAuthorization();
 
 app.MapHealthChecks("/health");

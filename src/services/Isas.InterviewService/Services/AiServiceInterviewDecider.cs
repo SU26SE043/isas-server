@@ -29,7 +29,9 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
     }
 
     private record DecideNextApiResponse(
-        string? Action, string? NextQuestion, string? Transcript, string? Reason);
+        string? Action, string? NextQuestion, string? Transcript, string? Reason,
+        // F11 — AIService đo chỉ số cách nói ngay trong lượt transcribe đồng bộ này.
+        DeliveryMetricsDto? DeliveryMetrics);
 
     public async Task<DecideNextResult> DecideNextAsync(
         string audioObjectKey,
@@ -98,6 +100,7 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
             Action: body.Action,
             NextQuestion: body.NextQuestion,
             Transcript: body.Transcript,
-            Reason: body.Reason);
+            Reason: body.Reason,
+            DeliveryMetrics: body.DeliveryMetrics);   // F11 (null nếu AIService bản cũ / không đo được)
     }
 }

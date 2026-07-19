@@ -92,7 +92,15 @@ public record AnswerResponse(
     int DurationSec,
     string? Transcript,
     IReadOnlyList<AnswerScoreResponse> Scores,
-    bool NeedsReview = false   // E10 — self-consistency: spread điểm giữa các attempt vượt ngưỡng → cần soi lại (nullable-default → không phá client)
+    bool NeedsReview = false,  // E10 — self-consistency: spread điểm giữa các attempt vượt ngưỡng → cần soi lại (nullable-default → không phá client)
+    // F13 (FR07) — câu trả lời MẪU mức tối đa cho ĐÚNG câu hỏi này (AI sinh cùng lượt chấm).
+    // null khi chưa chấm xong / LLM không trả → client chỉ đơn giản không hiện mục gợi ý.
+    // Đặt CUỐI + có default: client cũ không vỡ (tiền lệ CriterionName/MaxScore).
+    string? SampleAnswer = null,
+    // F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY đo từ audio (tốc độ nói / khoảng lặng / từ đệm).
+    // ⚠ null = CHƯA ĐO ĐƯỢC (answer trước F11 · audio rỗng · đường degrade), KHÁC HẲN "đo ra 0":
+    // FE phải hiện "chưa có dữ liệu" chứ đừng hiện "0 từ đệm" như một lời khen.
+    DeliveryMetricsDto? DeliveryMetrics = null
 );
 
 public record AnswerScoreResponse(
@@ -128,7 +136,28 @@ public record SessionResultResponse(
     IReadOnlyList<CriterionScoreResponse> CriteriaScores,
     IReadOnlyList<Guid> NeedsImprovement,   // criterionId của tiêu chí dưới ngưỡng
     string? OverallComment = null,  // BC10 — nhận xét chung (AI); null trong BC9
-    CvVsAnswerReportResponse? CvVsAnswer = null   // BC8 — đối chiếu CV↔trả lời; null nếu không có CV đã phân tích
+    CvVsAnswerReportResponse? CvVsAnswer = null,  // BC8 — đối chiếu CV↔trả lời; null nếu không có CV đã phân tích
+    BenchmarkResponse? Benchmark = null   // F14 — mốc đối chiếu (lớp 2 của radar); null khi tắt/không dựng được
+);
+
+// F14 (FR08) — mốc đối chiếu vẽ chồng lên radar năng lực.
+//
+// ⚠ `Source`/`Label` là phần QUAN TRỌNG NHẤT của DTO này, không phải `Criteria`. Hệ thống KHÔNG
+// có dữ liệu chuẩn ngành; mốc chỉ đến từ (a) trung bình người dùng khác trên chính hệ thống hoặc
+// (b) ngưỡng đạt nội bộ. Client PHẢI hiển thị `Label` đúng nguyên văn — tự đặt lại thành "chuẩn
+// ngành" là nói dối người dùng về độ tin cậy của đường kẻ họ đang nhìn.
+public record BenchmarkResponse(
+    string Source,      // PeerAverage | PassThreshold
+    string Label,       // nhãn hiển thị, đã nói đúng nguồn (kèm cỡ mẫu khi là PeerAverage)
+    int SampleSize,     // số buổi luyện của NGƯỜI KHÁC góp vào (0 khi Source=PassThreshold)
+    IReadOnlyList<CriterionBenchmarkResponse> Criteria
+);
+
+// F14 — mốc của 1 tiêu chí, thang % để vẽ chung trục với `CriterionScoreResponse.Percentage`.
+public record CriterionBenchmarkResponse(
+    Guid CriterionId,
+    string Name,
+    decimal TargetPercentage   // 0–100
 );
 
 // BC8 — báo cáo "CV vs câu trả lời": đọc dữ liệu SẴN CÓ (không AI, không call ngoài).

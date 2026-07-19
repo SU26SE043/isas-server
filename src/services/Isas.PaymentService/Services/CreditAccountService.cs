@@ -1,4 +1,6 @@
+using Isas.PaymentService.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using PaymentService.Models;
 
 namespace Isas.PaymentService.Services
@@ -7,13 +9,25 @@ namespace Isas.PaymentService.Services
     {
         private readonly PaymentDbContext _db;
         private readonly ILogger<CreditAccountService>? _logger;
+        private readonly BillingSettings _billing;
+        private readonly ISubscriptionService? _subscriptions;
 
         // DB22 — logger inject OPTIONAL (mẫu AI4 `ICampaignSessionClient`): ctor 1-tham-số đang được
         // gọi ở rất nhiều site test; thêm dependency bắt buộc sẽ phải sửa toàn bộ mà không đem lại gì.
-        public CreditAccountService(PaymentDbContext db, ILogger<CreditAccountService>? logger = null)
+        // F7 — billing options cũng OPTIONAL vì lý do y hệt; null → mặc định của BillingSettings
+        // (FreeTrialCredits = 3), tức test không khai gì vẫn thấy đúng hành vi production.
+        // F8 — subscription service cũng OPTIONAL vì lý do y hệt; null → coi như KHÔNG ai có thuê bao,
+        // tức mọi test cũ giữ nguyên hành vi credit thuần.
+        public CreditAccountService(
+            PaymentDbContext db,
+            ILogger<CreditAccountService>? logger = null,
+            IOptions<BillingSettings>? billing = null,
+            ISubscriptionService? subscriptions = null)
         {
             _db = db;
             _logger = logger;
+            _billing = billing?.Value ?? new BillingSettings();
+            _subscriptions = subscriptions;
         }
 
         /// <summary>
@@ -32,6 +46,25 @@ namespace Isas.PaymentService.Services
                 op, ownerType, ownerId);
         }
 
+        /// <summary>
+        /// F7 — suất dùng thử tặng lúc TẠO ví, chỉ cho <see cref="OwnerType.User"/> (B2C).
+        /// <c>0</c> khi tắt bằng cấu hình hoặc khi chủ ví là Org (B2B đi ví Org, không dùng thử — BC-1).
+        /// </summary>
+        private int FreeTrialGrantFor(OwnerType ownerType) =>
+            ownerType == OwnerType.User && _billing.FreeTrialCredits > 0
+                ? _billing.FreeTrialCredits
+                : 0;
+
+        /// <summary>
+        /// Tạo ví rỗng cho chủ sở hữu. Gọi từ ĐÚNG 2 chỗ: webhook Paid lần mua đầu
+        /// (<c>WebhookService</c>) và lần reserve đầu tiên của một User (F7, <see cref="ReserveAsync"/>).
+        ///
+        /// F7 — suất dùng thử được cấp NGAY TRONG câu INSERT này (cả số dư lẫn bút toán sổ cái, cùng một
+        /// <c>SaveChangesAsync</c>). CỐ Ý không tách thành một UPDATE tiếp sau: hai đường gọi trên đều
+        /// chạy đua được, bên thua nuốt <c>DbUpdateException</c> rồi đọc lại ví — nếu phần cấp nằm ở
+        /// bước sau thì bên thua sẽ cấp LẦN HAI cho ví đã có quà (credit tặng vô hạn).
+        /// Chính UNIQUE(owner_type, owner_id) là thứ bảo đảm "một ví = một suất dùng thử".
+        /// </summary>
         public async Task<CreditAccount> CreateAccountAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
         {
             var exists = await _db.CreditAccounts
@@ -40,6 +73,8 @@ namespace Isas.PaymentService.Services
             if (exists)
                 throw new InvalidOperationException($"Credit account already exists for {ownerType}:{ownerId}.");
 
+            var grant = FreeTrialGrantFor(ownerType);
+
             var account = new CreditAccount
             {
                 Id = Guid.NewGuid(),
@@ -47,12 +82,32 @@ namespace Isas.PaymentService.Services
                 OwnerId = ownerId,
                 PaymentMode = PaymentMode.Prepaid,
                 Status = CreditAccountStatus.Active,
-                RemainingCredits = 0,
+                RemainingCredits = grant,
                 ReservedCredits = 0,
+                FreeCreditsGranted = grant,
                 UpdatedAt = DateTime.UtcNow
             };
 
             _db.CreditAccounts.Add(account);
+
+            // Ghi sổ phần được tặng: credit tặng nằm chung `remaining_credits` với credit khách trả tiền,
+            // nên nếu KHÔNG có bút toán này thì bất biến `remaining + reserved = Σ delta` gãy ngay từ lúc
+            // tạo ví ⇒ mất luôn cái máy dò drift số dư. `delta <> 0` (CHECK DB1) nên chỉ ghi khi grant > 0.
+            if (grant > 0)
+            {
+                _db.CreditTransactions.Add(new CreditTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    OwnerType = ownerType,
+                    OwnerId = ownerId,
+                    OrderId = null,   // không phát sinh từ đơn hàng
+                    SessionId = null, // không gắn buổi nào
+                    Delta = grant,
+                    Reason = CreditTransactionReason.FreeGrant,
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+
             await _db.SaveChangesAsync(ct);
 
             return account;
@@ -63,6 +118,47 @@ namespace Isas.PaymentService.Services
             return await _db.CreditAccounts
                 .AsNoTracking()
                 .FirstOrDefaultAsync(x => x.OwnerType == ownerType && x.OwnerId == ownerId, ct);
+        }
+
+        /// <summary>
+        /// F7 — bảo đảm ví tồn tại cho chủ ví ĐƯỢC HƯỞNG suất dùng thử (User, và cấu hình chưa tắt),
+        /// để lần reserve đầu tiên của người mới đăng ký không rơi vào nhánh no-wallet → 402.
+        ///
+        /// Không làm gì khi: chủ ví là Org · suất dùng thử bị tắt (<c>Billing:FreeTrialCredits = 0</c>) ·
+        /// ví đã tồn tại (⇒ KHÔNG bao giờ top-up ví cũ — đó sẽ là đường tặng credit vô hạn).
+        /// Race hai request cùng tạo ví → bên thua nuốt <c>DbUpdateException</c> (UNIQUE owner) và bỏ qua:
+        /// ví đã tồn tại là đủ, và suất dùng thử đã được bên thắng cấp đúng một lần.
+        /// </summary>
+        private Task EnsureTrialWalletAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct) =>
+            FreeTrialGrantFor(ownerType) == 0
+                ? Task.CompletedTask
+                : EnsureWalletAsync(ownerType, ownerId, ct);
+
+        /// <summary>
+        /// Tạo ví nếu chưa có (không bao giờ top-up ví cũ). F8 dùng cho chủ ví CÓ THUÊ BAO: FK composite
+        /// (owner_type, owner_id) trên <c>credit_reservations</c> cấm chỗ giữ mồ côi, nên người mua gói
+        /// tháng vẫn phải có một row ví — dù kỳ hạn của họ không tiêu credit nào.
+        /// </summary>
+        private async Task EnsureWalletAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct)
+        {
+            var exists = await _db.CreditAccounts
+                .AnyAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct);
+            if (exists) return;
+
+            try
+            {
+                await CreateAccountAsync(ownerType, ownerId, ct);
+            }
+            catch (DbUpdateException) // đối thủ vừa tạo trước — ví đã tồn tại là đủ, đi tiếp
+            {
+                foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
+                    entry.State = EntityState.Detached;
+                foreach (var entry in _db.ChangeTracker.Entries<CreditTransaction>().ToList())
+                    entry.State = EntityState.Detached;
+            }
+            catch (InvalidOperationException) // CreateAccountAsync tự thấy ví đã tồn tại (check-then-act)
+            {
+            }
         }
 
         // P4/P8a — Reserve 1 credit (D7 · payment.md §Kế toán remaining↔reserved / POSTPAID).
@@ -78,6 +174,44 @@ namespace Isas.PaymentService.Services
                 .FirstOrDefaultAsync(r => r.SessionId == sessionId, ct);
             if (existing is not null)
                 return ReserveResult.AlreadyReserved(existing.Id, await ReservedCreditsOf(existing.OwnerType, existing.OwnerId, ct));
+
+            // F7 — user B2C chưa từng mua thì CHƯA có ví (ví vốn chỉ tạo lazy ở webhook Paid), nên trước
+            // F7 buổi luyện đầu tiên của người mới đăng ký luôn rơi vào nhánh no-wallet → 402. Tạo ví ở
+            // đây để suất dùng thử (cấp bên trong CreateAccountAsync) đến được đúng nhóm đó.
+            //
+            // CỐ Ý nằm NGOÀI transaction reserve bên dưới: ví đã cấp là một sự thật độc lập, không có lý
+            // do gì roll back nó khi reserve fail; và tránh giữ khoá UNIQUE(owner) trên credit_accounts
+            // xuyên nhiều roundtrip ngay giữa đường nóng nhất của hệ thống.
+            //
+            // Org KHÔNG đi đường này: ví Org do OrgAdmin mua credit tạo ra, không có suất dùng thử (BC-1)
+            // ⇒ Org chưa có ví vẫn 402 y như trước.
+            await EnsureTrialWalletAsync(ownerType, ownerId, ct);
+
+            // ── F8 — GATE UNLIMITED ───────────────────────────────────────────────────────────────
+            // Chủ ví còn thuê bao ⇒ chỗ giữ này KHÔNG do credit tài trợ. Quyết định được chốt DUY NHẤT
+            // ở đây rồi ghi cứng vào `funded_by` của reservation (xem CreditReservation.FundedBy).
+            //
+            // BẤT BIẾN SỔ CÁI được giữ bằng cách KHÔNG ĐỘNG VÀO GÌ CẢ, chứ không phải bằng bút toán bù:
+            //   `remaining_credits + reserved_credits = Σ credit_transactions.delta`
+            // Chỗ giữ kiểu Subscription không đổi remaining, không đổi reserved, không ghi ledger ⇒ cả
+            // hai vế đứng yên qua CẢ BA bước reserve/consume/release. Mọi phương án khác đều hỏng:
+            //   • "reserved+1 rồi thôi" → vế trái tăng, vế phải đứng yên ⇒ bất biến gãy ngay từ reserve;
+            //   • "ghi ledger +1 rồi consume −1" → đúc credit khống vào sổ, và +1/−1 lệch nhịp thì số dư
+            //     thật của người dùng bị bơm lên;
+            //   • "vẫn trừ remaining nhưng hoàn lại sau" → thuê bao mà vẫn 402 khi ví rỗng = mất tính năng.
+            //
+            // Hệ quả BẮT BUỘC đi kèm: bất biến thứ hai (DB4/DB21)
+            //   `reserved_credits = count(reservations WHERE status=Reserved)`
+            // phải thu hẹp thành `... AND funded_by='Credit'` — nếu không, CreditReservationReconciler sẽ
+            // đếm cả chỗ giữ của subscriber rồi bơm reserved_credits lên, phá bất biến thứ nhất. Đó đúng
+            // là lớp bug DB21 (job sửa drift lại tự tạo drift), nên nó được khoá bằng test riêng.
+            var subsidized = _subscriptions is not null
+                && await _subscriptions.HasActiveAsync(ownerType, ownerId, ct);
+
+            // Người mua gói tháng có thể chưa từng mua credit ⇒ chưa có ví, mà FK composite trên
+            // credit_reservations lại đòi ví phải tồn tại. Tạo ví rỗng ở đây (Org: 0 credit, không bút
+            // toán; User: đi qua đúng đường F7 nên vẫn được suất dùng thử của mình).
+            if (subsidized) await EnsureWalletAsync(ownerType, ownerId, ct);
 
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
@@ -106,6 +240,7 @@ namespace Isas.PaymentService.Services
                 OwnerId = ownerId,
                 SessionId = sessionId,
                 Status = ReservationStatus.Reserved,
+                FundedBy = subsidized ? ReservationFunding.Subscription : ReservationFunding.Credit,
                 CreatedAt = DateTime.UtcNow
             };
             _db.CreditReservations.Add(reservation);
@@ -126,7 +261,23 @@ namespace Isas.PaymentService.Services
             // acc đã đọc ở trên (guard no-wallet + chọn nhánh bút toán). Guard đầy đủ vẫn nằm trong WHERE
             // của ExecuteUpdate (atomic self-consistent, gồm cả payment_mode) → không phá chống double-spend.
             int rows;
-            if (acc.PaymentMode == PaymentMode.Postpaid)
+            if (reservation.FundedBy == ReservationFunding.Subscription)
+            {
+                // KHÔNG bút toán số dư (xem giải thích bất biến ở gate phía trên). Vẫn phải qua một câu
+                // UPDATE có điều kiện vì cần guard ATOMIC `status = Active`: ví bị Đình chỉ thì chặn hành
+                // động MỚI (PAY-12) — thuê bao không mua được quyền đi vòng qua lệnh đình chỉ. Câu này chỉ
+                // chạm updated_at nên số dư đứng yên tuyệt đối; 0 row = ví Suspended/biến mất ⇒ 402.
+                //
+                // KHÔNG áp guard Overdue của postpaid ở đây: hoá đơn quá hạn là nợ theo LƯỢT TIÊU THỤ
+                // (period_usage), mà chỗ giữ kiểu thuê bao không sinh lượt tính tiền nào.
+                rows = await _db.CreditAccounts
+                    .Where(a => a.OwnerType == ownerType
+                                && a.OwnerId == ownerId
+                                && a.Status == CreditAccountStatus.Active)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+            }
+            else if (acc.PaymentMode == PaymentMode.Postpaid)
             {
                 // BK17 — Overdue-block: ví Org còn hóa đơn Overdue (nợ kỳ trước chưa tất toán) → chặn reserve
                 // MỚI (payment.md:379/431 "không có hóa đơn Overdue"; §State machine "Overdue ⇒ chặn reserve
@@ -231,6 +382,18 @@ namespace Isas.PaymentService.Services
                 return ConsumeResult.AlreadyFinalized(raced.Id);
             }
 
+            // F8 — chỗ giữ do THUÊ BAO tài trợ: reserve đã không trừ gì thì consume cũng không trừ gì.
+            // Chỉ chuyển trạng thái reservation (đã làm ở trên) rồi commit. KHÔNG ghi credit_transactions:
+            // delta sẽ phải bằng 0 (không có credit nào bị tiêu) → vi phạm CHECK ck_credit_transactions_
+            // delta_nonzero → SaveChanges ném → rollback → reservation kẹt Reserved → consumer nack-requeue
+            // vô hạn → nghẽn queue credit. Đó chính xác là hình dạng lỗi DB20/DB22, chỉ khác điểm vào.
+            // Vết tiêu thụ của subscriber KHÔNG mất: nó nằm ở chính row reservation (Consumed + session_id).
+            if (reservation.FundedBy == ReservationFunding.Subscription)
+            {
+                await tx.CommitAsync(ct);
+                return ConsumeResult.Consumed(reservation.Id);
+            }
+
             // reserved−1 (nhả chỗ giữ). remaining KHÔNG đổi → credit "tiêu" thật thể hiện ở ledger −1.
             // (bất biến audit prepaid: remaining + reserved = Σ credit_transactions.delta vẫn giữ.)
             // POSTPAID (BK7 · payment.md §Kế toán POSTPAID): consume dồn nợ kỳ → period_usage += 1 (nguồn
@@ -330,6 +493,18 @@ namespace Isas.PaymentService.Services
                 var raced = await _db.CreditReservations.AsNoTracking()
                     .FirstAsync(r => r.SessionId == sessionId, ct);
                 return ReleaseResult.AlreadyFinalized(raced.Id);
+            }
+
+            // F8 — chỗ giữ do THUÊ BAO tài trợ: không có gì để hoàn (reserve đã không trừ cột nào).
+            // ⚠ ĐÂY LÀ CHỖ NGUY HIỂM NHẤT của cả tính năng: nếu để rơi xuống nhánh prepaid bên dưới thì
+            // `remaining_credits + 1` sẽ ĐÚC RA một credit trả tiền chưa từng được mua, mỗi lần một
+            // subscriber bỏ ngang buổi thi. Nhánh được chọn theo `funded_by` đã ghi cứng lúc reserve chứ
+            // KHÔNG theo "hiện giờ còn thuê bao không" — nên thuê bao hết hạn giữa buổi cũng không lái
+            // được release sang nhánh credit (và người đang thi không bị đụng tới — PAY-12).
+            if (reservation.FundedBy == ReservationFunding.Subscription)
+            {
+                await tx.CommitAsync(ct);
+                return ReleaseResult.Released(reservation.Id);
             }
 
             // Hoàn chỗ giữ — KHÔNG ghi ledger cả 2 mode (chỗ giữ được trả lại chứ không tiêu →

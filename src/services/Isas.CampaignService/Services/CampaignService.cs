@@ -30,6 +30,10 @@ namespace Isas.CampaignService.Services
         // DB23 — hạn mặc định cho token khi campaign không có deadline (optional: test cũ gọi
         // ctor 6/7 tham số vẫn compile, dùng default 14 ngày).
         private readonly InvitationSettings _invitationSettings;
+        // F9 — typed HttpClient gọi AIService /generate-questions. Optional (default null) để giữ nguyên
+        // mọi call-site test hiện có; DI luôn resolve client thật (đăng ký ở Program.cs). null → chỉ ảnh
+        // hưởng đúng đường sinh câu hỏi (ném InvalidOperationException = lỗi cấu hình), không đường nào khác.
+        private readonly IQuestionGenerator? _questionGenerator;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
@@ -41,8 +45,10 @@ namespace Isas.CampaignService.Services
             IParserService parser, ICriteriaSuggester suggester,
             IInvitationEmailPublisher emailPublisher,
             ICampaignSessionClient? sessionClient = null,
-            IOptions<InvitationSettings>? invitationOptions = null)
+            IOptions<InvitationSettings>? invitationOptions = null,
+            IQuestionGenerator? questionGenerator = null)
         {
+            _questionGenerator = questionGenerator;
             _invitationSettings = invitationOptions?.Value ?? new InvitationSettings();
             _db = db;
             _file = file;
@@ -95,12 +101,19 @@ namespace Isas.CampaignService.Services
             };
 
             // ── 3. Build questions ──────────────────────────────
+            // F10: `source` ép CustomHr, KHÔNG lấy từ client. Campaign vừa tạo thì chưa lần nào gọi AI,
+            // nên câu gắn nhãn `AiGenerated` ở đây là nhãn sai theo định nghĩa. Tệ hơn: F9 khi sinh sẽ
+            // xoá mọi row `AiGenerated` cũ ⇒ câu HR gõ mà tự nhận là AI sẽ bị lượt sinh kế nuốt mất.
             campaign.Questions = request.Questions
                 .Select(q => new CampaignQuestion
                 {
+                    // Id sinh ở app (như F9/F10), không nhờ default `gen_random_uuid()` của Postgres:
+                    // 3 đường ghi câu hỏi nay thống nhất, và đường create thành test được trên SQLite
+                    // (trước đây không → `CampaignStructuredCriteriaTests` phải né hẳn việc seed câu hỏi).
+                    Id = Guid.NewGuid(),
                     OrgId = orgId,
                     QuestionText = q.QuestionText.Trim(),
-                    Source = q.Source,
+                    Source = QuestionSource.CustomHr,
                     IsRequired = q.IsRequired,
                     CreatedAt = DateTime.UtcNow,
                 })
@@ -440,18 +453,159 @@ namespace Isas.CampaignService.Services
             // ── 2. Validate questions ───────────────────────────
             if (questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 throw new ArgumentException("All questions must have non-empty text.");
-            // ── 3. Replace existing questions with new ones ─────
-            campaign.Questions.Clear();
-            campaign.Questions = questions.Select(q => new CampaignQuestion
+
+            // ── 3. F10 — MERGE theo id thay vì Clear()+tạo lại ──────────────────────────────
+            //    Cũ: xoá sạch rồi dựng lại với Guid mới + `source` lấy từ client. Vì FE hardcode
+            //    `source:'CustomHr'`, HR sửa MỘT câu là toàn bộ câu F9 sinh mất nhãn `AiGenerated`
+            //    VÀ mất id (mọi tham chiếu tới câu hỏi đứt, thứ tự bài thi đảo).
+            //    Mới: id có trong payload → sửa tại chỗ; vắng mặt → xoá; không id → thêm mới (CustomHr).
+            var existing = campaign.Questions.ToDictionary(q => q.Id);
+            var keptIds = new HashSet<Guid>();
+            var fresh = new List<CampaignQuestion>();
+            var now = DateTime.UtcNow;
+
+            foreach (var item in questions)
             {
+                var text = item.QuestionText.Trim();
+
+                if (item.Id is Guid qid && qid != Guid.Empty)
+                {
+                    // Id lạ = client đang nói về một câu không thuộc campaign này (id của campaign khác,
+                    // hoặc câu vừa bị người khác xoá). Im lặng coi như "thêm mới" sẽ NUỐT MẤT ý định sửa
+                    // và đẻ ra câu trùng → 400 để client biết state của mình đã cũ.
+                    if (!existing.TryGetValue(qid, out var row))
+                        throw new ArgumentException($"Question {qid} không thuộc campaign {id} (hoặc đã bị xoá).");
+
+                    // Cùng một id gửi 2 lần: "sửa" nào thắng là không xác định → chặn thay vì đoán.
+                    if (!keptIds.Add(qid))
+                        throw new ArgumentException($"Question {qid} xuất hiện nhiều lần trong payload.");
+
+                    row.QuestionText = text;
+                    row.IsRequired = item.IsRequired;
+                    // KHÔNG gán row.Source: nguồn gốc là sự thật do server ghi lúc tạo (F9 = AiGenerated,
+                    // HR gõ tay = CustomHr). Cho client ghi đè thì nhãn nguồn thành lời khai tự do.
+                    // KHÔNG gán row.CreatedAt: thứ tự bài thi sắp theo (CreatedAt, Id) — xem ParticipationService.
+                }
+                else
+                {
+                    fresh.Add(new CampaignQuestion
+                    {
+                        Id = Guid.NewGuid(),
+                        CampaignId = campaign.Id,
+                        OrgId = campaign.OrgId,
+                        QuestionText = text,
+                        Source = QuestionSource.CustomHr,   // F10: câu mới qua đường PUT = HR gõ tay, luôn
+                        IsRequired = item.IsRequired,
+                        CreatedAt = now,
+                    });
+                }
+            }
+
+            // Câu đang có mà payload không nhắc tới = HR đã xoá trên UI (PUT = replace).
+            var removed = existing.Values.Where(q => !keptIds.Contains(q.Id)).ToList();
+            _db.CampaignQuestions.RemoveRange(removed);
+            foreach (var q in removed)
+                campaign.Questions.Remove(q);   // để response phản ánh đúng đề sau khi sửa
+
+            // DbSet.AddRange chứ KHÔNG campaign.Questions.Add(): `Id` là store-generated, entity mang Id
+            // khác default mà chỉ gắn vào navigation sẽ bị DetectChanges phân loại Modified → UPDATE 0 row
+            // → DbUpdateConcurrencyException (bẫy đã dính ở F9). AddRange ép state = Added; relationship
+            // fixup tự đưa vào campaign.Questions cho response.
+            _db.CampaignQuestions.AddRange(fresh);
+
+            campaign.UpdatedAt = now;
+            AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id,
+                $"Sửa câu hỏi: giữ {keptIds.Count}, thêm {fresh.Count}, xoá {removed.Count}");
+            await _db.SaveChangesAsync(ct);
+            return CampaignResponse.FromEntity(campaign);
+        }
+
+        // F9 (FR11) — AI sinh câu hỏi từ JD cho campaign B2B.
+        // Trần số câu 1 lượt sinh: giữ bounded chi phí token + độ dài bài thi so sánh được (E1 fairness).
+        private const int MaxGeneratedQuestions = 20;
+
+        public async Task<CampaignResponse> GenerateCampaignQuestionsAsync(
+            Guid orgId, Guid actorUserId, Guid id, int? count, CancellationToken ct)
+        {
+            // ── 1. Fetch & verify ownership (ngoài org → 404, không lộ tồn tại) ──
+            var campaign = await _db.Campaigns
+                .Include(c => c.Questions)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            // ── 2. CAMP-2: câu hỏi chỉ sửa được khi Draft; Active/Closed/Archived → 409 ──
+            //    Sinh câu hỏi CŨNG là sửa câu hỏi → phải chịu cùng khoá lifecycle, nếu không
+            //    thì đây thành cửa hậu đổi đề của chiến dịch ĐANG chạy (ứng viên đã làm bài).
+            if (campaign.Status != CampaignStatus.Draft)
+                throw new InvalidOperationException(
+                    $"Cannot generate questions when campaign is {campaign.Status}. Only Draft is editable.");
+
+            // ── 3. Cần JD: không có JD thì "sinh từ JD" không có nghĩa → 400, KHÔNG tốn 1 lời gọi AI ──
+            //    (CAMP-5: JD nhập text trực tiếp hoặc trích từ PDF; cả 2 đường đều đổ vào JDText.)
+            if (string.IsNullOrWhiteSpace(campaign.JDText))
+                throw new ArgumentException(
+                    "Campaign chưa có JD (jdText) — cần JD để AI sinh câu hỏi.");
+
+            // ── 4. Guard độ dài JD TRƯỚC khi gọi AI (CAMP-5, ngưỡng chung TextInputLimits.JdTextMaxChars) ──
+            //    Text lúc ghi đã bị cap, nhưng campaign tạo trước khi có cap / sửa thẳng DB vẫn có thể vượt
+            //    → guard lại ở đây để không đẩy khối text tuỳ ý vào một lời gọi Gemini tính phí.
+            var jdText = NormalizeText(campaign.JDText, JdTextLabel);
+
+            if (count is not null && (count < 1 || count > MaxGeneratedQuestions))
+                throw new ArgumentException($"count phải trong khoảng 1..{MaxGeneratedQuestions}.");
+
+            if (_questionGenerator is null)
+                throw new InvalidOperationException("Question generator chưa được cấu hình.");
+
+            // ── 5. Gọi AI (AI-4: jdText là DỮ LIỆU — AIService đã bọc delimiter + chỉ thị bỏ qua lệnh
+            //    nhúng trong JD). Lỗi upstream → DownstreamServiceException → controller map 502. ──
+            var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
+            var generated = await _questionGenerator.GenerateAsync(jobCategory, jdText, count, ct);
+
+            // AI trả rỗng = lượt sinh không dùng được. Trả 502 thay vì lặng lẽ xoá sạch đề cũ rồi
+            // báo thành công — HR phải biết là AI hỏng, không phải "campaign của tôi mất hết câu hỏi".
+            if (generated.Count == 0)
+                throw new DownstreamServiceException("AIService không sinh được câu hỏi nào từ JD này.");
+
+            // Cắt bớt phải NÓI RA. Im lặng truncate đọc thành "AI sinh đúng ngần này" trong khi thực tế
+            // có câu bị rơi — người vận hành không có cách nào biết trần đang cắn.
+            if (generated.Count > MaxGeneratedQuestions)
+            {
+                _logger.LogWarning(
+                    "F9 — AIService sinh {Actual} câu cho campaign {CampaignId}, vượt trần {Max} → bỏ {Dropped} câu.",
+                    generated.Count, campaign.Id, MaxGeneratedQuestions, generated.Count - MaxGeneratedQuestions);
+                generated = generated.Take(MaxGeneratedQuestions).ToList();
+            }
+
+            // ── 6. Lưu: thay lượt AI trước đó, GIỮ NGUYÊN câu HR tự gõ ──────────────
+            //    "Sinh lại" = làm mới đề AI, không phải cộng dồn (bấm 3 lần ≠ 15 câu), và tuyệt đối
+            //    không được nuốt công HR đã gõ tay. F10 mới là phần trộn qua đường PUT questions.
+            var aiOld = campaign.Questions.Where(q => q.Source == QuestionSource.AiGenerated).ToList();
+            _db.CampaignQuestions.RemoveRange(aiOld);
+            foreach (var q in aiOld)
+                campaign.Questions.Remove(q);   // để response phản ánh đúng đề sau khi sinh
+
+            var now = DateTime.UtcNow;
+            var fresh = generated.Select(text => new CampaignQuestion
+            {
+                Id = Guid.NewGuid(),
+                CampaignId = campaign.Id,
                 OrgId = campaign.OrgId,
-                QuestionText = q.QuestionText.Trim(),
-                Source = q.Source,
-                IsRequired = q.IsRequired,
-                CreatedAt = DateTime.UtcNow,
+                QuestionText = text,
+                Source = QuestionSource.AiGenerated,   // F9: dấu vết nguồn — phân biệt với câu HR gõ
+                IsRequired = true,
+                CreatedAt = now,
             }).ToList();
-            campaign.UpdatedAt = DateTime.UtcNow;
-            AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id, $"Thay {questions.Count} câu hỏi");
+
+            // Dùng DbSet.AddRange chứ KHÔNG campaign.Questions.Add(): Id của câu hỏi là store-generated,
+            // nên entity mang Id khác default mà chỉ gắn vào navigation sẽ bị DetectChanges phân loại là
+            // Modified (EF tưởng là row đã tồn tại) → UPDATE 0 row → DbUpdateConcurrencyException.
+            // AddRange ép state = Added; relationship fixup tự đưa vào campaign.Questions cho response.
+            _db.CampaignQuestions.AddRange(fresh);
+
+            campaign.UpdatedAt = now;
+            AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id,
+                $"AI sinh {generated.Count} câu hỏi từ JD (thay {aiOld.Count} câu AI cũ)");
             await _db.SaveChangesAsync(ct);
             return CampaignResponse.FromEntity(campaign);
         }
@@ -1164,17 +1318,33 @@ namespace Isas.CampaignService.Services
         // ── E6: xuất bảng kết quả (E5) ra file ──────────────────────────────
         // Tái dùng NGUYÊN VẸN GetCampaignResultsAsync (E5) → thứ tự + rank + pass/fail y hệt bảng web,
         // không tính lại (một nguồn sự thật). Ngoài org → E5 ném KeyNotFoundException → controller 404.
-        // format: null/"" → mặc định csv; "csv" → csv; khác (kể cả "pdf" 🔜) → ArgumentException → 400.
+        // format: null/"" → mặc định csv; "csv" → csv; "pdf" → pdf (F16); khác → ArgumentException → 400.
         public async Task<CampaignResultExport> ExportCampaignResultsAsync(
             Guid orgId, Guid id, string? format, CancellationToken ct)
         {
             var normalized = string.IsNullOrWhiteSpace(format) ? "csv" : format.Trim().ToLowerInvariant();
-            if (normalized == "pdf")
-                throw new ArgumentException("format 'pdf' chưa được hỗ trợ — dùng format=csv.");
-            if (normalized != "csv")
-                throw new ArgumentException($"format '{format}' không hợp lệ — chỉ hỗ trợ format=csv.");
+            if (normalized != "csv" && normalized != "pdf")
+                throw new ArgumentException($"format '{format}' không hợp lệ — chỉ hỗ trợ format=csv|pdf.");
 
             var results = await GetCampaignResultsAsync(orgId, id, ct);   // có thể ném KeyNotFoundException (404)
+
+            if (normalized == "pdf")
+            {
+                // F16 — CÙNG object `results` với nhánh csv: hai bản xuất của một chiến dịch không được
+                // phép lệch nhau, nên chỉ khác ở tầng serialize. Tiêu đề chỉ để trình bày; quyền sở hữu
+                // đã kiểm ở GetCampaignResultsAsync ngay trên (ngoài org thì đã ném 404 rồi).
+                var title = await _db.Campaigns
+                    .Where(c => c.Id == id && c.OrgId == orgId)
+                    .Select(c => c.Title)
+                    .FirstOrDefaultAsync(ct) ?? "Chiến dịch";
+
+                return new CampaignResultExport
+                {
+                    Content = CampaignResultsPdf.Build(results, title, DateTime.UtcNow),
+                    ContentType = "application/pdf",
+                    FileName = $"campaign_{id}_results.pdf"
+                };
+            }
 
             return new CampaignResultExport
             {

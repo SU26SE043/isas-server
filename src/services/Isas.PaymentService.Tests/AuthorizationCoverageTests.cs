@@ -79,4 +79,36 @@ public class AuthorizationCoverageTests
         Assert.NotNull(attr);
         Assert.Equal("Admin", attr!.Roles);
     }
+
+    // F18/F19 — hai bề mặt admin MỚI. Hoàn tiền là mutation tiền, báo cáo doanh thu là dữ liệu tài chính
+    // toàn hệ thống: cả hai phải Admin-only, không được rơi xuống `[Authorize]` trần (ai đăng nhập cũng vào).
+    [Fact]
+    public void AdminRefundVaRevenue_RequireAdminRole()
+    {
+        foreach (var t in new[]
+                 {
+                     typeof(AdminOrdersController),
+                     typeof(AdminRevenueController),
+                     // F20 — nguy hiểm nhất nhóm: nhận ownerId từ CLIENT (không phải từ token) và CỘNG
+                     // credit. Rơi xuống [Authorize] trần = ai đăng nhập cũng tự cấp credit cho mình.
+                     typeof(AdminCreditsController),
+                 })
+        {
+            var attr = t.GetCustomAttributes<AuthorizeAttribute>(inherit: true).SingleOrDefault();
+            Assert.NotNull(attr);
+            Assert.Equal("Admin", attr!.Roles);
+        }
+    }
+
+    // F19 — sổ cái credit của chủ ví: chỉ cần đăng nhập (chủ ví suy từ JWT nên không có đường đọc ví
+    // người khác), nhưng KHÔNG được [AllowAnonymous] — đó là dữ liệu tài chính cá nhân.
+    [Fact]
+    public void SoCaiCuaChuVi_YeuCauDangNhap_KhongPhaiAnonymous()
+    {
+        var m = typeof(CreditAccountController)
+            .GetMethod(nameof(CreditAccountController.GetMyCreditTransactionsAsync))!;
+
+        Assert.NotNull(m.GetCustomAttribute<AuthorizeAttribute>());
+        Assert.Null(m.GetCustomAttribute<AllowAnonymousAttribute>());
+    }
 }

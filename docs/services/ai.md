@@ -37,11 +37,15 @@
 
 **Roadmap ôn tập B2C** *(🔜 BC13, D20 — cả 3 sync, KHÔNG queue vì không audio; Interview tự lưu — [interview.md](interview.md) §Roadmap)*:
 - `generate-roadmap`: req `{ jobCategory, level, weaknesses?:[{ criterionName, percentage }], cvText? }` → res `{ milestones: [{ title, focusCriteria: string[], lessons: [{ title }] }] }`. Có `weaknesses` (từ `session_criterion_scores`) → mile bám tiêu chí yếu; không có → roadmap **chuẩn theo `jobCategory + level`**. `level ∈ Fresher·Junior·Middle·Senior`.
-- `generate-lesson-theory`: req `{ jobCategory, level, lessonTitle, focusCriteria: string[], weaknesses?: string[] }` → res `{ theoryMarkdown }` (tiếng Việt, có ví dụ — nội dung ôn tập lý thuyết cho lesson). Interview lưu `roadmap_lessons.theory_content` (**lazy** — sinh 1 lần khi mở lesson đầu tiên).
+- `generate-lesson-theory`: req `{ jobCategory, level, lessonTitle, focusCriteria: string[], weaknesses?: string[] }` → res `{ theoryMarkdown, resources[] }` (tiếng Việt, có ví dụ — nội dung ôn tập lý thuyết cho lesson). Interview lưu `roadmap_lessons.theory_content` + `roadmap_lessons.resources` (**lazy** — sinh 1 lần khi mở lesson đầu tiên).
+  - ✅ **F15 (FR09) `resources[]`** = `{ title, type: Doc|Course|Book|Video|Article, publisher?, url? }` — tài liệu học gợi ý, **rỗng là HỢP LỆ** (khác `theoryMarkdown` rỗng → 502).
+  - 🔴 **URL do LLM sinh = ảo giác kinh điển.** Hai lớp phòng thủ, cố ý có CẢ HAI vì lớp 1 không đáng tin một mình: **(1) prompt** cấm đoán/ghép url, không chắc thì để trống; **(2) allowlist TÊN MIỀN** (`app/resources.py::sanitize_resources`) — giữ url chỉ khi **https** + host khớp **đầy đủ** (không substring, chặn `mozilla.org.evil.com`) một nguồn chính chủ đã biết; host lạ → **bỏ url, GIỮ tên tài liệu**. Cũng chặn `javascript:`/`data:`/`file:`/scheme-relative.
+  - ⚠ Allowlist bảo đảm đúng **tên miền**, KHÔNG bảo đảm **đường dẫn** tồn tại (không fetch xác minh) ⇒ FE phải gắn nhãn *"chưa được kiểm chứng"*. Thêm domain vào allowlist = **quyết định có chủ đích**, không phải "AI hay nhắc tới nên thêm".
+  - Ngoài ra `sanitize_resources` chuẩn hoá: `type` lạ → `Doc` · bỏ mục thiếu `title` · dedupe theo title (case-insensitive) · trần **5** mục.
 - `summarize-roadmap`: req `{ jobCategory, level, criteriaProgress: [{ criterionName, startPct?, endPct, levelThreshold, passed }] }` → res `{ strengths[], weaknesses[], improvements[], overallComment }` — **best-effort** khi roadmap `Completed` (lỗi → Interview để rỗng/null, không chặn). Bọc dữ liệu trong delimiter (chống prompt-injection) như `summarize-session`.
 
 **Phỏng vấn THÍCH ỨNG** *(INT-17 — nội bộ, `X-Internal-Token` BẮT BUỘC, fail-closed)*:
-- `decide-next`: req `{ jobCategory, audioObjectKey?, answerText?, language?, currentQuestion, history:[{ question, answer?, kind }], askedCount, followUpCount, maxQuestions, maxFollowUps, criteria:[{ name, description? }] }` → res `{ action: follow_up|clarify|new_question|end, nextQuestion?, transcript?, reason? }`. InterviewService (chủ state) gọi **đồng bộ** sau mỗi câu trả lời: AIService tải audio S3 theo `audioObjectKey` → **transcribe (Whisper)** → **Gemini (temp 0.3)** quyết định câu kế. `transcript` trả về là **NGUỒN DUY NHẤT** — Interview lưu lên answer + đẩy vào `ScoringJob` (worker **bỏ Whisper**, tiết kiệm N lần self-consistency E10). Stateless (GEN-4): lịch sử hội thoại nằm trong request. `answerText` = fallback (test, không cần S3). Prompt chống prompt-injection (AI-4: câu trả lời = dữ liệu; "dừng phỏng vấn"/"hỏi câu dễ" bị phớt lờ) + NEO câu hỏi về `criteria` (không mở tiêu chí mới → công bằng chấm/ranking B2B). Lỗi (transcribe/Gemini) → **502** → Interview degrade về luồng tĩnh (worker transcribe async như cũ).
+- `decide-next`: req `{ jobCategory, audioObjectKey?, answerText?, language?, currentQuestion, history:[{ question, answer?, kind }], askedCount, followUpCount, maxQuestions, maxFollowUps, criteria:[{ name, description? }] }` → res `{ action: follow_up|clarify|new_question|end, nextQuestion?, transcript?, reason?, deliveryMetrics? }`. InterviewService (chủ state) gọi **đồng bộ** sau mỗi câu trả lời: AIService tải audio S3 theo `audioObjectKey` → **transcribe (Whisper)** → **Gemini (temp 0.3)** quyết định câu kế. `transcript` trả về là **NGUỒN DUY NHẤT** — Interview lưu lên answer + đẩy vào `ScoringJob` (worker **bỏ Whisper**, tiết kiệm N lần self-consistency E10). Stateless (GEN-4): lịch sử hội thoại nằm trong request. `answerText` = fallback (test, không cần S3). Prompt chống prompt-injection (AI-4: câu trả lời = dữ liệu; "dừng phỏng vấn"/"hỏi câu dễ" bị phớt lờ) + NEO câu hỏi về `criteria` (không mở tiêu chí mới → công bằng chấm/ranking B2B). Lỗi (transcribe/Gemini) → **502** → Interview degrade về luồng tĩnh (worker transcribe async như cũ).
 
 **TTS — đọc câu hỏi thành tiếng** *(nội bộ, `X-Internal-Token` BẮT BUỘC, fail-closed; InterviewService gọi)*:
 - `tts`: req `{ text, voice? }` → res **KHÔNG phải JSON**: **bytes mp3**, `Content-Type: audio/mpeg`, header `X-Tts-Cache: hit|miss|miss-nostore`. `text` = **nội dung câu hỏi**; `voice` mặc định `settings.tts_voice`. Ngôn ngữ là **hằng phía server** (`tts_language_code`, mặc định `vi-VN`) — client KHÔNG truyền.
@@ -53,6 +57,20 @@
 - **KHÔNG trừ credit** (PAY-1 — credit = 1 lượt được AI chấm; đọc đề bài không phải lượt chấm).
 - **AI-4:** `text` chuyển **nguyên văn** cho bộ đọc, không ghép chỉ thị nào quanh nó — model TTS chỉ đọc chứ không "làm theo", và chính việc thêm chỉ thị kiểu *"hãy đọc câu sau"* mới tạo chỗ cho câu hỏi độc hại bám vào mà lái giọng đọc.
 - Lỗi: **401** (thiếu/sai token) · **400** (`text` rỗng — chặn TRƯỚC khi gọi vendor) · **502** (Gemini chết/quá tải · encode mp3 lỗi · **S3 đọc lỗi THẬT**). Ghi cache hỏng → **vẫn trả 200** + `X-Tts-Cache: miss-nostore` (audio đã có trong tay thì đừng làm hỏng request; nhưng đánh dấu để monitor thấy — ghi hỏng kéo dài = mọi request gọi vendor). Đọc cache lỗi thật thì **KHÔNG** lặng lẽ fallback sang vendor (nuốt = đốt tiền âm thầm).
+
+### F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY (`app/fluency.py`)
+
+Trước F11, `transcriber.transcribe()` lấy `segments` rồi **vứt sạch mốc thời gian**, chỉ giữ text ⇒ mọi tín hiệu về *cách nói* biến mất trước khi tới bộ chấm; "độ trôi chảy" chỉ có thể **đoán** từ chữ. Nay `transcribe_detailed()` trả `TranscriptionResult(text, metrics)`.
+
+**Chỉ dùng mốc mức SEGMENT, KHÔNG bật `word_timestamps`.** `segment.start/.end` đã có sẵn **không tốn thêm gì**; `word_timestamps=True` chạy thêm một lượt căn chỉnh cross-attention + DTW ⇒ chậm hơn. Mà `/decide-next` transcribe **ĐỒNG BỘ trong request upload** và deploy đã phải hạ `large-v3` → `small` đúng vì lý do độ trễ đó. Mốc segment đủ để đo tốc độ nói + khoảng lặng.
+
+`deliveryMetrics` = `{ audioSec, speechSec, wordCount, speechRateWpm, longestPauseSec, pauseCount, silenceRatio, fillerCount, fillerPer100Words, fillerBreakdown{} }`. **`null` = KHÔNG đo được** (audio rỗng / nhánh `answerText`) — khác hẳn "đo ra 0".
+
+⚠ **`fillerCount` là mức TỐI THIỂU, không phải số thật.** Whisper học trên transcript đã làm sạch nên nó **thường nuốt bớt từ đệm** ⇒ đếm hụt có hệ thống. Nhưng tiếng "ừm" bị nuốt **vẫn chiếm thời gian thật**, nên nó lộ ra ở khoảng lặng / tốc độ nói ⇒ **chỉ số THỜI GIAN là bằng chứng đáng tin, số đếm chỉ là tham khảo**. Prompt chấm (`build_delivery_block`) nói rõ cả hai điều này; thiếu chúng thì LLM đọc "0 từ đệm" thành "nói hoàn hảo" và tính năng chạy **ngược** mục tiêu.
+
+Danh sách từ đệm cố ý **HẸP** (thà bỏ sót còn hơn buộc tội oan): đếm tiếng ngập ngừng thuần tuý ("ừm/ờ/ưm"…) + vài tật nói rõ rệt ("kiểu như", "đại loại là"…); **KHÔNG** đếm liên từ giải thích hợp lệ ("tức là", "nghĩa là", "ví dụ như") vì người trả lời TỐT dùng chúng để cấu trúc câu. Danh sách là **phán đoán có căn cứ, không lấy từ corpus có kiểm chứng** — repo không có corpus tiếng Việt nào.
+
+**Worker:** job mang `deliveryMetrics` (đường thích ứng, đo sẵn ở `/decide-next`) → dùng luôn; không có → tự `transcribe_detailed` rồi tự đo. Cả hai đường đều đẩy chỉ số vào `score(delivery=…)` **và** lên callback `.NET`. Job cũ mang `transcript` mà thiếu chỉ số → chấm với `delivery=None` (**KHÔNG** transcribe lại — mất trọn cái lợi bỏ Whisper của INT-17).
 
 > ⚠ **Bảo mật (cần sửa):** các endpoint SINH khác **hiện KHÔNG có auth** (chỉ nội bộ qua Tailscale, GEN-7). `/decide-next` **đã** gate `X-Internal-Token` (mẫu cho GEN-7 hardening các endpoint còn lại). Xem *Vấn đề đã biết*.
 
@@ -74,7 +92,7 @@ POST /api/v1/ai/analyze-cv
         "criterionMatches":[{"criterionId":"…","matchScore":4.0,"reasoning":"…"}], "overallMatchScore":78 }
         // không có jdText/criteria → bỏ jdMatch/criterionMatches/overallMatchScore
 
-POST /api/v1/ai/transcribe   (multipart: file=audio, language="vi")   → 200 { "text":"…" }
+POST /api/v1/ai/transcribe   (multipart: file=audio, language="vi")   → 200 { "text":"…", "deliveryMetrics": {…}|null }
 ```
 
 ### Validation đầu vào
@@ -106,16 +124,54 @@ Mọi kết quả trả qua HTTP (sync) **hoặc** callback (async) về .NET �
 | analyze-cv (B2C) | sync | `cv_analyses` (Interview) |
 | analyze-cv (B2B sàng CV) | async `cv_screening_queue` → callback | `campaign_candidates`/`candidate_criterion_scores` (Campaign) |
 | generate-roadmap 🔜 | sync | `roadmaps`/`roadmap_milestones`/`roadmap_lessons` (Interview) |
-| generate-lesson-theory 🔜 | sync | `roadmap_lessons.theory_content` (Interview) |
+| generate-lesson-theory 🔜 | sync | `roadmap_lessons.theory_content` + `roadmap_lessons.resources` (Interview) — ✅ F15 |
 | summarize-roadmap 🔜 | sync | `roadmaps.final_report`/`overall_comment` (Interview) |
 | chấm answer | async `scoring_pipeline_queue` → callback | `answer_scores` (Interview) |
+| **token/chi phí MỌI lượt gọi** ✅ **F22** | callback `POST /internal/ai-usage` | `ai_usage_logs` (**Payment**) |
+
+## Đo token & chi phí ✅ **F22 (FR18) — 2026-07-19**
+Trước F22, `providers/gemini.py` gọi `generate_content` **10 chỗ** và **mọi chỗ chỉ đọc `response.text`** (grep `usage_metadata|prompt_token|total_tokens|cost` = **0 hit**) ⇒ **hệ thống không biết mình đốt bao nhiêu token/tiền**. Không có con số đó thì mọi quyết định về chi phí AI (bật `SelfConsistencyN`? thêm tiêu chí F12? sinh câu trả lời mẫu F13?) đều là đoán.
+
+**Một chokepoint duy nhất:** `GeminiProvider._generate()` bọc **toàn bộ** lời gọi Gemini (`app/providers/gemini.py`) → đọc `usage_metadata` → `app/usage.py:report_usage()`. Cố ý một cửa thay vì rải `usage_metadata` ra 10 chỗ: rải thì lần thêm endpoint thứ 11 sẽ quên, và **"quên đo" là loại lỗi không ai phát hiện ra** — không có gì hỏng cả, chỉ là con số thiếu thầm lặng. Có test parametrize khoá **từng** đường gọi.
+
+**Ghi nhận NGAY sau response, TRƯỚC khi parse:** token đã bị đốt kể cả khi output malformed — mà đó lại là những lượt **đắt nhất** (AI3 retry tới `score_max_attempts` lần). Hoãn ghi tới sau parse = mất đúng phần chi phí cần thấy nhất. Ngoại lệ **duy nhất** là `generate_lesson_theory` (hoãn để đính kèm số liệu URL F15) và nó **bắt buộc** dùng `try/finally`.
+
+**Lưu ở đâu — GEN-4:** AIService **không được ghi DB**, nên số liệu được **đẩy qua callback nội bộ** (`X-Internal-Token`) về **PaymentService** → bảng `ai_usage_logs`. Lý do chọn Payment + 3 phương án đã loại (trả usage kèm response cho caller · `/metrics` in-memory · gom qua log): xem docstring `app/usage.py` và [payment.md](payment.md) §`POST /internal/ai-usage`. **AIService chỉ gửi token + tên model, KHÔNG gửi tiền** — đơn giá thuộc về Payment.
+
+**Best-effort tuyệt đối:** sink chết / mạng hỏng / `usage_metadata` đổi shape đều bị nuốt và chỉ log. Đo là chức năng **quan sát**; để lỗi đo làm answer `Failed` là biến nó thành đường **mất credit** (PAY-13). Kill-switch `USAGE_METERING_ENABLED=false`; `USAGE_SINK_BASE` rỗng → chỉ ghi log, không gọi mạng (mặc định dev/test).
+
+**Kèm F15:** lượt `generate_lesson_theory` gửi thêm `resourceUrlsProposed`/`resourceUrlsRejected` — trước đó allowlist tên miền loại URL trong **im lặng**, tức nếu Gemini bịa domain 90% số lần thì không ai biết, và cũng không có cơ sở nào để đánh giá allowlist 26 domain là chặt hay lỏng.
+
+**Env:** `USAGE_METERING_ENABLED` (mặc định `true`) · `USAGE_SINK_BASE` (base URL Payment, **KHÔNG qua gateway** — GEN-1) · `USAGE_SINK_TIMEOUT_SECONDS` (mặc định `3.0`; ngắn có chủ đích vì `/decide-next` chạy đồng bộ trong request upload).
+
+## Prompt tuỳ biến ✅ **F21 (FR17) — 2026-07-19**
+Trước F21, `app/prompts.py` (576 dòng, 10 builder) **hardcode 100%** — grep `os.environ|getenv|settings.|open(|db|http` trong file cho **0 hit**. Sửa một câu chữ trong prompt = sửa code → build image → deploy.
+
+**Lưu ở đâu — GEN-4 (ngược chiều F22):** AIService **không được ghi DB** và không có kết nối DB nào, nên prompt buộc phải nằm ở service .NET. Chọn **InterviewService** (không phải Payment như F22): AUTH-7 nói endpoint admin nằm trong service **sở hữu dữ liệu**, và con dấu phiên bản prompt phải đóng lên `answer_scores` — bảng của Interview — trong cùng transaction. AIService **KÉO** về qua `GET /internal/prompts` (`X-Internal-Token`, KHÔNG qua gateway — GEN-1).
+
+**Hai phương án đã loại:** (a) *caller truyền prompt hoàn chỉnh xuống* — không làm được như một registry, vì builder ở đây là **template có nội suy** (`build_scoring_prompt` dựng `rubric_block` từ levels+anchors, `build_delivery_block` dựng khối chỉ số từ số đo F11); muốn caller dựng sẵn thì phải bê **cả 28KB logic prompt sang .NET** = viết lại, và đường worker qua RabbitMQ sẽ phải nhét prompt vào **mọi message**. (b) *mount file/ConfigMap* — không có đường quản trị ⇒ không đạt "admin sửa qua UI", và aiworker chạy trên Mac ngoài compose server.
+
+**Fail-open 4 tầng** (`app/prompt_registry.py`): cache còn hạn → HTTP GET → **cache CŨ (không hạn)** → **bản hardcode trong `prompts.py`**. Registry chết **không bao giờ** được làm một answer thành `Failed` — Failed = người luyện mất 1 credit (PAY-13) vì sự cố hạ tầng không liên quan tới họ. Tầng 3 (giữ bản cũ) có lý do riêng: rơi phịch về bản mặc định giữa chừng nghĩa là **thước đo tự đổi ngay lúc hạ tầng đang trục trặc**, mà không ai biết vì "bản gốc" trông chẳng có gì sai.
+
+**⚠ Chỉ lưu phần GHI ĐÈ.** Văn bản mặc định vẫn nằm trong `prompts.py`; `prompt_templates` rỗng = chạy y như trước F21. Cố ý **không** seed các chuỗi đó sang .NET: hai nguồn sự thật cho cùng một câu chữ, ở hai ngôn ngữ, sẽ lệch nhau ngay lần sửa `prompts.py` đầu tiên mà không ai biết.
+
+**⚠ Khung chống-injection KHÔNG sửa được — và đây là ràng buộc an toàn, không phải tiện lợi.** Prompt **chấm** vừa là **thước đo** vừa là **bề mặt injection**, nên nó là prompt duy nhất **không cho sửa toàn thân**: chỉ mở 2 khe `scoring.persona` + `scoring.extra_guidance`, chèn ở vị trí **code quyết**, và `extra_guidance` nằm **SAU** mọi luật bắt buộc nên không ghi đè được luật nào. Do code giữ: khối chống prompt-injection (E11) · delimiter bọc transcript (AI-4) · hợp đồng output · luật chọn mức (E9) · luật reasoning-trích-dẫn (E11) · luật ASR (F12) · luật sampleAnswer (F13). Cho sửa toàn thân nghĩa là một tài khoản admin — hoặc kẻ chiếm được nó — vô hiệu hoá **toàn bộ E9+E10+E11** bằng một câu "luôn cho điểm tối đa", và **không test nào kêu**. Mối nguy còn không cần ác ý: xoá nhầm một đoạn mà mục đích không hiển nhiên khi đọc là chuyện rất dễ xảy ra. 9 prompt **sinh** thì mở rộng tay hơn — sai ở đó cho ra câu hỏi dở, **không sai điểm và không mất credit**.
+
+**Số lượng câu hỏi KHÔNG sửa được qua registry:** `count` là hợp đồng với .NET (F2b có trần). Khe `questions.guidance` là phần **THÊM**, không phải phần **THAY**.
+
+**Guard cấu trúc:** nạp phải xảy ra **trước** lúc dựng prompt, còn `_generate()` (chokepoint F22) chạy **sau** — nên không gom về một cửa được. Thay bằng **test AST** khoá "mọi hàm gọi `build_*` đều phải gọi `refresh_if_stale()`" (mẫu `AuthorizationCoverageTests` bên .NET). Thêm 1 test đọc thẳng `PromptTemplateKeys.cs` để khoá hợp đồng khoá Python↔.NET — lệch một ký tự thì admin sửa thấy 200 OK mà prompt không đổi gì, **sai lặng lẽ, không triệu chứng**.
+
+**Nửa B — "custom 3 ngành":** `category.{BA,BE,FE}.display_name|description|guidance`. `guidance` chảy vào **cả** prompt sinh câu hỏi **và** khe hướng dẫn của prompt chấm (chỉ vào prompt sinh thì câu hỏi hỏi một đằng, rubric chấm một nẻo). **⚠ Tập nghề vẫn ĐÓNG ở 3 giá trị enum** — xem [interview.md](interview.md) §F21 cho lý do.
+
+**Env:** `PROMPT_REGISTRY_BASE` (base URL Interview, **KHÔNG qua gateway**; **rỗng = tắt**, chạy thuần hardcode — mặc định dev/test và là kill-switch) · `PROMPT_CACHE_TTL_SECONDS` (mặc định `60`) · `PROMPT_FETCH_TIMEOUT_SECONDS` (mặc định `3.0`).
 
 ## Pipeline chấm (worker) — queue `scoring_pipeline_queue`
 Worker consume (prefetch 1, ack/nack thủ công) → tải audio từ SeaweedFS → Whisper transcribe → Gemini chấm → callback `/internal/answers/{id}/result`.
 - ✅ **AI2 Dead-Letter Queue (2026-07-17):** khai **DLX `scoring_pipeline_dlx`** + **DLQ `scoring_pipeline_dead_queue`** (routing `scoring_dead`) trong `declare_topology(channel)`; queue `scoring_pipeline_queue` mang arg `x-dead-letter-exchange`/`x-dead-letter-routing-key`. Cả 2 site `nack(requeue=False)` (`worker.py:144` permanent-report-fail, `:150` transient) **auto-route vào DLQ** → message lỗi KHÔNG bị drop, giữ để điều tra/replay. *(Transient cũng vào DLQ nhưng `StuckAnswerRepublisher` (Interview, 2') vẫn re-publish bản mới → bản DLQ chỉ để inspect.)* **`.NET ScoringJobPublisher` PHẢI khai queue arg KHỚP y hệt** (2 bên redeclare khác arg → PRECONDITION_FAILED 406). **⚠ Deploy:** queue LIVE cũ khai `arguments=None` → không redeclare được với arg mới → **recreate queue** (drain→delete→redeclare) HOẶC set DLX qua **RabbitMQ policy** ([DEPLOYMENT.md](../DEPLOYMENT.md)).
 - **Message C# gửi:** `{ answerId, audioObjectKey, questionContent, jobCategory, criteria[], rubricVersion }`.
 - ⭐ **`criteria` do C# gửi KÈM trong message** (mỗi phần tử `{ criterionId, name, description, maxScore, weight }` **+ 🔜 E9: `levels:[{score,descriptor}]`, `anchors?:[{score,exampleAnswer}]`**) — worker **không tự đọc rubric từ DB**. *(Worker dùng `maxScore` kẹp điểm + **🔜 `levels`/`anchors` để neo mức (E9)**; `weight` để C# gộp điểm — worker KHÔNG dùng `weight`.)* → **B2B chỉ cần gửi tiêu chí campaign thay rubric JobCategory: cùng shape, worker KHÔNG đổi** (xác nhận khả thi quyết định D9). **✅ E1 (đã làm):** InterviewService chọn tiêu chí theo `campaign_id` cho session B2B (theo `job_category` + `campaign_id IS NULL` cho B2C); worker Python **giữ nguyên**.
-- Callback: `result` = `{ answerId, transcript, rubricVersion, scores:[{criterionId, score, reasoning, levelMatched? 🔜}] }`; lỗi vĩnh viễn → `failed` = `{ reason }`. **🔜 E9:** `score = levelMatched.score` (neo mức); **🔜 E11:** `reasoning` trích ≥1 dẫn chứng transcript.
+- Callback: `result` = `{ answerId, transcript, rubricVersion, scores:[{criterionId, score, reasoning, levelMatched? 🔜}], sampleAnswer? }`; lỗi vĩnh viễn → `failed` = `{ reason }`. **🔜 E9:** `score = levelMatched.score` (neo mức); **🔜 E11:** `reasoning` trích ≥1 dẫn chứng transcript.
+- ✅ **F13 (FR07) câu trả lời mẫu — sinh CÙNG lượt chấm:** `score()` trả **`ScoreOutcome(scores, sample_answer)`** (trước là `list` trần — **đổi shape, call site cũ vỡ TO chứ không âm thầm**); `response_schema` thêm `sampleAnswer` (required) và prompt yêu cầu mẫu bám **đúng câu hỏi + mức cao nhất của rubric** + bù chỗ ứng viên thiếu, ngôi thứ nhất, 100–250 từ. **Chọn cùng-lượt thay vì lazy** vì prompt đã mang sẵn câu hỏi + rubric + transcript ⇒ chi phí tăng thêm chỉ là output token; gọi riêng phải nạp lại toàn bộ input đó. **Thiếu/rỗng → `sample_answer=None`, KHÔNG raise** (mẫu là phụ trợ; để nó raise = biến tính năng phụ thành đường làm answer `Failed` → mất credit, PAY-13); worker log cảnh báo để không chết im lặng. **AI-4:** prompt cấm chép chỉ thị từ phần ứng viên vào mẫu và cấm việc soạn mẫu đổi điểm đã chấm.
 - **Config (.env):** `gemini_api_key` · `gemini_model` · `whisper_model/device/compute_type` · `rabbitmq_url` · `queue_name` · S3 (`s3_endpoint/access/secret/bucket`) · `dotnet_callback_base` · `internal_token`.
 
 ## Pipeline sàng CV B2B (worker) — queue `cv_screening_queue` 🔜 (C14)

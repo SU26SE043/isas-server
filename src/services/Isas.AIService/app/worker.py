@@ -26,16 +26,25 @@ class PermanentError(Exception):
     tái lập). Worker sẽ báo .NET đánh dấu answer Failed thay vì retry vô tận."""
 
 
-def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no) -> dict:
+def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no,
+                       sample_answer=None, delivery_metrics=None) -> dict:
     """E10 — dựng body callback chấm gửi về .NET. Echo ``attemptNo`` (từ job) để .NET lưu điểm
     theo đúng attempt (self-consistency chấm N lần → median/tiêu chí + cờ needs_review).
-    Tách hàm thuần để unit-test không cần dựng cả pipeline worker."""
+    Tách hàm thuần để unit-test không cần dựng cả pipeline worker.
+
+    F13 — ``sampleAnswer``: câu trả lời mẫu do CÙNG lượt chấm sinh ra. Optional (default None)
+    để mọi call site positional cũ không phải sửa; .NET bỏ qua khi rỗng.
+
+    F11 — ``deliveryMetrics``: chỉ số cách nói (tốc độ nói/khoảng lặng/từ đệm) của CHÍNH lượt
+    transcribe đã dùng để chấm. Optional; .NET lưu lên answer để hiện cho người luyện (FR06)."""
     return {
         "answerId": answer_id,
         "transcript": transcript,
         "rubricVersion": rubric_version,
         "scores": scores,       # [{criterionId, score, levelMatched, reasoning}, ...] (E9 shape)
         "attemptNo": attempt_no,
+        "sampleAnswer": sample_answer,
+        "deliveryMetrics": delivery_metrics,
     }
 
 
@@ -92,6 +101,13 @@ async def process_message(message: aio_pika.IncomingMessage):
         pre_transcript = body.get("transcript") or body.get("Transcript")
         pre_transcript = pre_transcript.strip() if isinstance(pre_transcript, str) else None
 
+        # F11 — chỉ số cách nói đã đo sẵn ở /decide-next (đường THÍCH ỨNG). Bắt buộc phải đi kèm
+        # transcript: worker bỏ Whisper khi có transcript ⇒ nếu không nhận chỉ số ở đây thì buổi
+        # adaptive VĨNH VIỄN không có chỉ số trong khi buổi tĩnh lại có — hỏng âm thầm, không lỗi.
+        pre_metrics = body.get("deliveryMetrics") or body.get("DeliveryMetrics")
+        if not isinstance(pre_metrics, dict):
+            pre_metrics = None
+
         # Cần answerId luôn; cần audioObjectKey CHỈ khi chưa có transcript sẵn.
         if not answer_id or (not storage_path and not pre_transcript):
             print("[❌] Thiếu answerId/audioObjectKey/transcript — bỏ message (không retry).")
@@ -100,9 +116,15 @@ async def process_message(message: aio_pika.IncomingMessage):
 
         tmp_path = None
         try:
+            delivery = pre_metrics   # F11 — mặc định dùng bản đo sẵn (đường thích ứng)
             if pre_transcript:
                 transcript = pre_transcript
                 print(f"[✅] Dùng transcript có sẵn (bỏ qua Whisper): {transcript[:80]}")
+                if delivery is None:
+                    # Job cũ / Interview chưa deploy bản F11 → không có chỉ số. KHÔNG transcribe
+                    # lại chỉ để lấy chỉ số (mất trọn cái lợi bỏ Whisper của INT-17) — chấm không
+                    # có số đo, prompt sẽ nói rõ "chưa đo được" thay vì để LLM bịa.
+                    print("[⚠️] Không có deliveryMetrics kèm transcript (job cũ?) — chấm không số đo")
             else:
                 # 1. Tải audio từ SeaweedFS (lỗi ở đây = tạm thời -> để retry).
                 suffix = os.path.splitext(storage_path)[1] or ".webm"
@@ -112,8 +134,14 @@ async def process_message(message: aio_pika.IncomingMessage):
                 print(f"[*] Tải file OK: {tmp_path}")
 
                 # 2. Whisper transcribe — audio hỏng/không nghe được = lỗi VĨNH VIỄN.
+                #    F11: transcribe_detailed giữ mốc thời gian segment → đo chỉ số cách nói
+                #    NGAY TẠI ĐÂY (đường tĩnh). Không tốn thêm lượt Whisper nào: mốc segment
+                #    vốn đã có sẵn, trước F11 chỉ bị vứt đi khi nối text.
                 try:
-                    transcript = await asyncio.to_thread(transcriber.transcribe, tmp_path, "vi")
+                    result = await asyncio.to_thread(
+                        transcriber.transcribe_detailed, tmp_path, "vi")
+                    transcript = result.text
+                    delivery = result.metrics.to_dict() if result.metrics else None
                 except Exception as e:
                     raise PermanentError(f"Transcribe lỗi (audio hỏng?): {e}")
                 if not transcript or not transcript.strip():
@@ -127,15 +155,16 @@ async def process_message(message: aio_pika.IncomingMessage):
             #    temperature/self-consistency E10) trước khi bó tay -> PermanentError -> Failed.
             #    Lỗi gọi API (rate limit/5xx/mạng) KHÔNG phải ValueError -> rơi xuống
             #    handler tạm thời -> nack để republisher thử lại sau.
-            scores = None
+            outcome = None
             for score_try in range(1, settings.score_max_attempts + 1):
                 try:
-                    scores = await provider.score(
+                    outcome = await provider.score(
                         question=question_content,
                         transcript=transcript,
                         job_category=job_category,
                         criteria=criteria,
                         temperature=temperature,   # E10: attempt 1 = 0, 2..N > 0
+                        delivery=delivery,         # F11: số đo cách nói (None = chưa đo được)
                     )
                     break
                 except ValueError as e:
@@ -145,12 +174,17 @@ async def process_message(message: aio_pika.IncomingMessage):
                             f"(LLM output không hợp lệ): {e}")
                     print(f"[↻] Chấm lỗi parse lần {score_try}/"
                           f"{settings.score_max_attempts} (thử lại): {e}")
-            print(f"[✅] Chấm xong (attempt {attempt_no}): {scores}")
+            print(f"[✅] Chấm xong (attempt {attempt_no}): {outcome.scores}")
+            if not outcome.sample_answer:
+                # F13 — không chặn luồng (câu trả lời mẫu là phụ trợ), nhưng phải THẤY được
+                # khi LLM im lặng bỏ field: im lặng ở đây = tính năng chết mà không ai biết.
+                print(f"[⚠️] Không có câu trả lời mẫu (F13) cho answer {answer_id}")
 
             # 4. Callback về .NET — .NET ghi transcript + answer_scores + đổi status.
             #    Lỗi gửi callback = tạm thời -> retry. E10: echo attemptNo để .NET lưu theo attempt.
             await post_callback(make_score_payload(
-                answer_id, transcript, rubric_version, scores, attempt_no))
+                answer_id, transcript, rubric_version, outcome.scores, attempt_no,
+                sample_answer=outcome.sample_answer, delivery_metrics=delivery))
 
             await message.ack()
 

@@ -20,6 +20,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CandidateCriterionScore> CandidateCriterionScores => Set<CandidateCriterionScore>();
         public DbSet<SessionFlag> SessionFlags => Set<SessionFlag>();                            // SEC-1: cờ chống gian lận cho HR
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();                      // DB2b: transactional outbox (invitation-email)
+        public DbSet<ApiKey> ApiKeys => Set<ApiKey>();                                           // F17: API key bên thứ ba (ATS), gắn theo org
 
         // C13: string[] ↔ JSON (jsonb trên Npgsql; text trên SQLite test). Portable — filter đọc/ghi trong C#,
         // không query trong JSON. Comparer để EF theo dõi thay đổi phần tử đúng (list là mutable reference).
@@ -431,6 +432,37 @@ namespace Isas.CampaignService.Models
                 // (khớp UseSnakeCaseNamingConvention — test cũng phải bật snake_case, DB2 precedent).
                 e.HasIndex(x => x.PublishedAt)
                  .HasFilter("published_at IS NULL");
+            });
+
+            // ── ApiKey (F17) ──────────────────────────────────────────────
+            modelBuilder.Entity<ApiKey>(e =>
+            {
+                e.ToTable("api_keys");
+                e.HasKey(x => x.Id);
+
+                e.Property(x => x.OrgId).IsRequired();
+                e.Property(x => x.Name).HasMaxLength(100).IsRequired();
+
+                // Hash SHA-256 base64 = 44 ký tự; 128 cho thoải mái nếu sau này đổi thuật toán.
+                e.Property(x => x.KeyHash).HasMaxLength(128).IsRequired();
+                e.Property(x => x.KeyPrefix).HasMaxLength(16).IsRequired();
+
+                e.Property(x => x.IncludePii).IsRequired();
+                e.Property(x => x.CreatedByUserId).IsRequired();
+                e.Property(x => x.CreatedAt).IsRequired();
+                // DB23 — hạn NOT NULL: cột hạn nullable là đúng cách credential sống vĩnh viễn.
+                e.Property(x => x.ExpiresAt).IsRequired();
+                e.Property(x => x.LastUsedAt);
+                e.Property(x => x.RevokedAt);
+
+                // UNIQUE trên hash: (a) đường xác thực là single-row index probe, không scan bảng —
+                // quan trọng vì đây là đường nóng của MỌI request bên thứ ba; (b) chặn 2 hàng cùng
+                // hash (đụng độ chỉ có thể do lỗi lập trình, và nó sẽ làm việc "key này thuộc org
+                // nào" thành không xác định).
+                e.HasIndex(x => x.KeyHash).IsUnique();
+
+                // Liệt kê/đếm key active theo org.
+                e.HasIndex(x => new { x.OrgId, x.CreatedAt });
             });
         }
     }

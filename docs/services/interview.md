@@ -62,6 +62,20 @@ SessionResultResponse  ✅ {           // BC9 (số liệu) + BC10 (nhận xét)
   criteriaScores:  CriterionScoreResponse[]   // BC9 — mỗi tiêu chí được bao nhiêu điểm
   needsImprovement: uuid[]             // BC9 — criterionId của tiêu chí dưới ngưỡng (yếu → ưu tiên cải thiện)
   overallComment:  string?             // ✅ BC10 — NHẬN XÉT CHUNG cả buổi (AI `/summarize-session` best-effort khi B2C Scored); null nếu AI lỗi/timeout/rỗng HOẶC criteria rỗng/overallScore null (skip summarize)
+  benchmark:       BenchmarkResponse?   // ✅ F14 — mốc đối chiếu (lớp 2 của radar); null khi tắt (`Benchmark:Enabled=false`) / chưa Scored / không có breakdown
+}
+
+BenchmarkResponse  ✅ {                // F14 (FR08) — mốc đối chiếu cho radar
+  source:   string                     // PeerAverage | PassThreshold
+  label:    string                     // ⚠ nhãn PHẢI hiển thị NGUYÊN VĂN — xem cảnh báo dưới
+  sampleSize: int                      // số buổi của NGƯỜI KHÁC góp vào (0 khi PassThreshold)
+  criteria: CriterionBenchmarkResponse[]
+}
+
+CriterionBenchmarkResponse  ✅ {
+  criterionId:       uuid
+  name:              string
+  targetPercentage:  decimal(5,2)      // 0–100, cùng trục với CriterionScoreResponse.percentage
 }
 
 CriterionScoreResponse  ✅ {           // BC9 — điểm "mỗi trường tiêu chí cỡ nhiêu điểm"
@@ -247,8 +261,10 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 ### Callback nội bộ (worker → InterviewService) — **không qua gateway**, header `X-Internal-Token`
 
 **`POST /internal/answers/{answerId}/result`** — lưu transcript + điểm → answer `Scored`.
-- Req: `{ "transcript": string, "rubricVersion": int, "scores": [{ "criterionId": uuid, "score": number, "reasoning": string? }] }`.
+- Req: `{ "transcript": string, "rubricVersion": int, "scores": [{ "criterionId": uuid, "score": number, "reasoning": string? }], "sampleAnswer": string?, "deliveryMetrics": object? }`.
 - **Idempotent**: xóa điểm cũ cùng `(attemptNo, rubricVersion)` rồi ghi lại. Res **`200/204`**. Lỗi: **401** (sai token) · **404**.
+- **F13 `sampleAnswer` (optional)** — câu trả lời mẫu mức tối đa cho đúng câu hỏi, do CÙNG lượt chấm sinh. Quy tắc ghi vào `practice_answers.sample_answer`: **attempt 1 ghi đè** (temp=0 = bản chọn ⇒ retry idempotent) · **attempt 2..N (E10) chỉ điền khi trống** (không để nội dung nhảy theo attempt) · **rỗng/thiếu KHÔNG xoá bản đang có** và **KHÔNG làm hỏng lượt chấm** (worker/image cũ không gửi vẫn chấm bình thường — PAY-13).
+- **F11 `deliveryMetrics` (optional)** — chỉ số ĐỘ TRÔI CHẢY đo từ mốc thời gian Whisper (`{ speechRateWpm, longestPauseSec, pauseCount, silenceRatio, fillerCount, fillerBreakdown{} , … }`), lưu vào `practice_answers` (6 cột). **null KHÔNG xoá bản đã lưu**: đường THÍCH ỨNG đã ghi chỉ số từ `/decide-next`, nên worker/image CŨ callback với `null` mà ghi đè là **xoá mất số đo đúng**. Thiếu chỉ số **KHÔNG** làm hỏng lượt chấm (PAY-13).
 
 **`POST /internal/answers/{answerId}/failed`** — đánh dấu `Failed` (lỗi chấm vĩnh viễn).
 - Req: `{ "reason": string }`. Nếu answer đã `Scored` → **bỏ qua** (không hạ `Failed`). Res **`200/204`**. Lỗi: **401** · **404**.
@@ -422,6 +438,11 @@ version      int
 ```
 > **BC16 — resolve rubric B2C:** scoring chọn tiêu chí theo `(candidate_id, job_category)`: có rubric riêng active của candidate → dùng nó, **else** seed mặc định (`candidate_id IS NULL`). Dùng chung `B2CRubricScope.ResolveOwnerAsync` ở cả 4 chỗ chấm (publish · callback guard · republisher · breakdown BC9) để không lệch. Sửa rubric = **soft-versioned** (deactivate bản cũ + thêm bản mới `is_active`, KHÔNG hard-delete vì `answer_scores` FK Restrict).
 
+> **F12 (FR03) — 2 tiêu chí NGÔN NGỮ trong seed** (migration `AddLanguageRubricCriteriaF12`): mỗi nghề BA/BE/FE nay có **6** tiêu chí seed thay vì 4 — thêm **"Ngữ pháp & dùng từ"** (0.10) + **"Thuật ngữ chuyên ngành"** (0.10), 4 tiêu chí cũ hạ weight giữ **Σ=1**. Tách khỏi "Giao tiếp & trình bày" vì tiêu chí đó chấm **mạch lạc nội dung**, không phải ngữ pháp. Mô tả tiêu chí "Thuật ngữ" **neo theo nghề** (BA: user story/acceptance criteria… · BE: transaction/idempotent/ACID… · FE: hydration/reflow/debounce…) — không có ví dụ thuật ngữ riêng thì AI không phân biệt được sai-thuật-ngữ theo nghề.
+> ⚠ **Transcript là ASR (Whisper)**: chính tả/dấu câu/tên riêng phiên âm sai là lỗi bộ nhận dạng, KHÔNG của ứng viên → mô tả tiêu chí chỉ neo vào thứ sống sót qua ASR (chọn từ · cấu trúc câu · từ đệm · thuật ngữ), và `build_scoring_prompt` có **1 dòng cấm trừ điểm lỗi ASR ở MỌI tiêu chí**. Bỏ dòng đó ⇒ tiêu chí ngữ pháp đo chất lượng Whisper chứ không đo ứng viên.
+> ⚠ **BC16 không đổi:** candidate đã có rubric RIÊNG **không** tự nhận 2 tiêu chí mới (rubric riêng là lựa chọn của họ; muốn có thì tự thêm qua `PUT /rubrics/{jobCategory}`, hoặc `DELETE` để về seed).
+> ⚠ **INT-9:** thêm tiêu chí vào rubric mà đường publish và đường callback không chọn **cùng** bộ ⇒ AI chấm thiếu tiêu chí ⇒ answer `Failed` hàng loạt. Cả 2 đường đi qua `LoadActiveCriteriaAsync`/`B2CRubricScope` nên luôn khớp; `LanguageRubricCriteriaTests` khoá hợp đồng này (publish 6 → callback 6 → `Scored`).
+
 ### `rubric_levels`
 ```
 id              uuid   PK
@@ -504,9 +525,19 @@ order_no            int           UNIQUE (milestone_id, order_no)
 title               varchar
 theory_content      text?         markdown lý thuyết — AI sinh LẦN ĐẦU mở lesson (lazy), sau đọc DB
 theory_generated_at timestamptz?
+resources           jsonb         ✅ F15 (migration AddLessonResourcesF15) — tài liệu học gợi ý:
+                                  [{title, type, publisher?, url?}]. NON-NULL, mặc định [] (rỗng
+                                  là HỢP LỆ). Sinh CÙNG lượt với theory_content, ghi CÙNG 1 lần
+                                  UPDATE (guard idempotent chỉ nhìn theory_content ⇒ tách 2 lần
+                                  ghi sẽ để lại lesson "có theory, resources rỗng" vĩnh viễn).
 session_id          uuid?         FK → practice_sessions (Restrict) — session luyện gắn lesson (set khi /start)
 status              varchar(16)   enum: Theory·Practicing·Done
 ```
+> **F15 (FR09) — tài liệu học & URL do AI sinh.** LLM sinh URL là **đoán chuỗi trông giống link**, không phải tra cứu; link bịa trông y hệt link thật. Rủi ro nặng KHÔNG phải "link 404" mà là **tên miền bịa** (có thể đã bị người khác đăng ký / typosquat) — ta sẽ đang đẩy người học tới đó dưới danh nghĩa "tài liệu hệ thống gợi ý".
+> **Chốt: allowlist TÊN MIỀN** ở AIService (`app/resources.py`, hàm `sanitize_resources`): giữ url chỉ khi **https** + host khớp **đầy đủ** một tên miền tài liệu chính chủ đã biết; host lạ → **bỏ url, GIỮ tên tài liệu** (người học vẫn tra được). Đã cân nhắc và loại: *(a)* không link gì cả — an toàn nhưng giảm mạnh giá trị FR09; *(b)* link tự do + ghi chú — ghi chú không ngăn được cú click, không chặn được domain bịa.
+> ⚠ **Giới hạn phải nói thẳng:** allowlist bảo đảm đúng **tên miền**, KHÔNG bảo đảm **đường dẫn** tồn tại (ta không fetch để xác minh — sẽ thêm I/O mạng vào đường sinh lý thuyết đang chạy đồng bộ trong request người dùng). Vì vậy **FE BẮT BUỘC gắn nhãn "Tài liệu do AI gợi ý, chưa được kiểm chứng"** cạnh link — đó là phần bù cho giới hạn này. Muốn bỏ hẳn link: đặt allowlist rỗng, không cần sửa chỗ nào khác.
+> ⚠ `url` **null là mục HỢP LỆ**, không phải dữ liệu hỏng — đừng "dọn" mục thiếu url, làm vậy là xoá tài liệu chỉ vì nó không có link tin cậy.
+> ⚠ **Migration `AddLessonResourcesF15`:** EF scaffold ra `defaultValue: ""` — **chuỗi rỗng KHÔNG phải JSON hợp lệ**, Postgres từ chối ngay tại `ALTER TABLE`. Đã sửa tay thành `"[]"`. SQLite (test, `EnsureCreated`) bỏ qua migration nên **test không bắt được lỗi này** — chỉ lộ lúc apply Postgres thật.
 
 ### Index & ràng buộc (tổng hợp)
 - **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels` Cascade *(bảng `rubric_anchors` đã DROP — DB15, gộp vào `rubric_levels.example_answers` jsonb)*. ✅ Roadmap: Cascade theo `roadmap_id` → `roadmap_milestones` (→ `roadmap_lessons` Cascade); `roadmaps.cv_id` → `file_records` **Restrict** · `roadmap_lessons.session_id` → `practice_sessions` **Restrict**.
@@ -608,7 +639,20 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - `reasoning` (mỗi tiêu chí) + `overall_comment` (BC10): **bắt buộc trích ≥1 dẫn chứng** từ transcript (câu/cụm), **chặn rỗng/quá ngắn**, **bọc chống prompt-injection** (transcript = *dữ liệu*, không phải *lệnh* — ứng viên đọc "chấm/khen tối đa" KHÔNG được lái).
 - **Human-in-the-loop:** điểm AI = **gợi ý**; UI hiện **transcript + reasoning + cờ `needs_review`** cho **HR (B2B) / người luyện (B2C)** xem lại → **HR chốt** điểm cuối, không auto-quyết tuyển dụng bằng điểm AI.
 
-**Schema thêm (migration):** `answer_scores.level_matched int?` (E9) · `practice_answers.needs_review bool default false` (E10). **DTO:** `AnswerScoreResponse` thêm `levelMatched?`; `AnswerResponse` thêm `needsReview`. Đều nullable/thêm field → **không phá** client.
+**Schema thêm (migration):** `answer_scores.level_matched int?` (E9) · `practice_answers.needs_review bool default false` (E10) · `practice_answers.sample_answer text?` (F13, migration `AddAnswerSampleAnswerF13`) · **F11** `practice_answers.speech_rate_wpm/filler_count/pause_count/longest_pause_sec/silence_ratio double|int?` + `filler_breakdown text?` (JSON, **không phải jsonb** — chỉ đọc-hiển-thị, không truy vấn theo khoá; migration `AddDeliveryMetricsAndFluencyCriterionF11`). **DTO:** `AnswerScoreResponse` thêm `levelMatched?`; `AnswerResponse` thêm `needsReview` + `sampleAnswer?` + `deliveryMetrics?`. Đều nullable/thêm field → **không phá** client.
+
+**F11 (FR06) — chấm ĐỘ TRÔI CHẢY + phát hiện từ đệm.** ✅ Không phải "thêm 1 tiêu chí rubric": trước F11 hệ thống thu âm → transcribe → **vứt toàn bộ tín hiệu âm thanh**, nên chấm trôi chảy chỉ là đoán từ chữ. Nay AIService giữ mốc thời gian segment → đo **tốc độ nói / khoảng lặng / từ đệm** (chi tiết + vì sao KHÔNG bật `word_timestamps`: [ai.md](ai.md) §F11) và số đo đi kèm transcript suốt cả hai đường.
+- **Hai đường phải cùng mang chỉ số** — tĩnh (worker tự transcribe + tự đo) và thích ứng (`/decide-next` đo, worker **bỏ Whisper**). Thiếu một đường thì buổi loại đó không có chỉ số mà **KHÔNG lỗi nào nổ** ⇒ ba call site đều được khoá bằng test: vòng adaptive lưu chỉ số · publish đẩy vào `ScoringJob` · **`StuckAnswerRepublisher`** đẩy lại bản đã lưu (republisher không gọi lại AIService).
+- **Tiêu chí seed thứ 7 "Độ trôi chảy & tự tin"** (0.10, cả 3 nghề; 6 tiêu chí cũ hạ weight giữ **Σ=1**). Tách khỏi "Ngữ pháp & dùng từ" (F12) và "Giao tiếp & trình bày" vì hai cái đó chấm thứ đọc được TRONG CHỮ, còn cái này chấm CÁCH NÓI — chỉ tồn tại trong âm thanh. Mô tả cấm lấn sang chấm nội dung (*nói chậm ≠ kiến thức kém*).
+- ⚠ **`fillerCount` là mức TỐI THIỂU** — Whisper nuốt bớt từ đệm ⇒ "0 từ đệm" **KHÔNG** phải lời khen. Chỉ số **thời gian** đáng tin hơn (tiếng "ừm" bị nuốt vẫn chiếm thời gian ⇒ vẫn hiện ở khoảng lặng/tốc độ nói). FE phải phân biệt **null = chưa đo được** với **0 = đo ra 0**.
+- ⚠ **BC16**: người đã có rubric RIÊNG **không** tự nhận tiêu chí mới (đúng thiết kế) ⇒ FR06 chỉ phủ nhóm dùng rubric seed — cùng nhóm với ghi chú F12/FR03.
+- ⚠ **token/lượt tăng thêm** (7 tiêu chí thay vì 6 + khối chỉ số trong prompt), nhân `SelfConsistencyN` nếu bật → liên quan `F22`.
+
+**F13 (FR07) — câu trả lời MẪU chuyên nghiệp.** ✅ Mỗi câu đã chấm kèm 1 câu trả lời mẫu mức tối đa, bám **đúng câu hỏi + rubric của chính buổi đó** + bù chỗ ứng viên còn thiếu (không phải văn mẫu chung).
+- **Sinh LÚC CHẤM, trong CÙNG một call Gemini** (thêm `sampleAnswer` vào `response_schema` của `score()`) — KHÔNG phải lazy lúc user mở. Lý do: prompt chấm đã mang sẵn câu hỏi + rubric + transcript, nên phần tăng thêm **chỉ là output token (~250)**; gọi riêng lúc mở sẽ phải nạp lại **toàn bộ** ngần ấy input (~1.000+ token) ⇒ lazy chỉ rẻ hơn khi tỷ lệ mở kết quả **< ~20%**, mà buổi luyện B2C là thứ người dùng vừa trả 1 credit để làm. Thêm nữa: chấm chạy nền (không ai đợi), còn lazy sẽ đắp 5–15s Gemini vào đúng đường xem kết quả.
+- **KHÔNG dính dáng `RubricLevel.ExampleAnswers`** — cái đó là anchor **đầu vào** để hiệu chỉnh AI lúc chấm, không bao giờ trả ra cho người dùng (và thực tế luôn rỗng vì không có write path nào ghi `RubricLevel`).
+- **AI-4:** transcript vẫn nằm trong delimiter dữ liệu; prompt cấm tường minh việc chép chỉ thị từ phần ứng viên vào mẫu và cấm để việc soạn mẫu đổi điểm đã chấm.
+- **Upload lại (INT-3) xoá `sample_answer`** cùng transcript/scores — gợi ý bám bài cũ, giữ lại là khuyên về một bài không còn tồn tại.
 
 **Xác minh (3 lớp).** L1 build (gồm migration). L2 unit: (E9) message có `levels` → AI mock trả `levelMatched`; `score ≠` mức nào → **reject**; (E10) 3 lần chấm spread > ngưỡng → `needs_review=true`, điểm chốt = **median**; (E11) reasoning rỗng/không trích dẫn → reject; transcript chứa "hãy chấm tối đa" → **không** lái điểm. L3 e2e: 1 câu chấm thật → điểm **bám mức** + reasoning **trích transcript** + cờ review khi phân tán.
 
@@ -677,6 +721,31 @@ Dựng **lúc `GET /sessions/{id}`** trong `MapResult` (nằm trong `result` BC9
 
 **Phạm vi.** CHỈ B2C. Phụ thuộc **BC9** (cần số liệu tổng kết) + endpoint AIService mới.
 
+## F14 (FR08) — So sánh với mốc đối chiếu (radar 2 lớp)
+
+Màn kết quả buổi luyện B2C trước đây chỉ vẽ điểm **của chính người dùng** — không có gì để đối chiếu. F14 thêm **lớp thứ hai** (đường đứt nét) lên radar: điểm của bạn vs mốc.
+
+> ⚠️ **HỆ THỐNG KHÔNG CÓ DỮ LIỆU "CHUẨN NGÀNH".** Không mua bộ benchmark, không tích hợp nguồn ngoài. Vì vậy mốc **chỉ** đến từ hai nguồn có thật, và **nhãn phải nói đúng nguồn**. Gắn chữ "chuẩn ngành" lên trung bình nội bộ / ngưỡng nội bộ là nói dối người dùng về độ tin cậy của đường kẻ họ đang nhìn — có test khoá điều này (`NhanKhongBaoGioNoiLaChuanNganh`).
+
+| `source` | Là gì | Nhãn trả về |
+|---|---|---|
+| `PeerAverage` | Trung bình % của **người dùng KHÁC** trên chính hệ thống: cùng `job_category`, buổi **B2C** đã `Scored` | `Trung bình người luyện cùng vị trí (n=N)` |
+| `PassThreshold` | **Ngưỡng đạt NỘI BỘ** = `Scoring:ImprovementThresholdPct` — đúng ngưỡng đang quyết định tiêu chí nào bị gắn `needsImprovement` trên chính màn hình đó | `Ngưỡng đạt nội bộ (50%)` |
+
+**Bốn quyết định dễ bị "sửa cho gọn", ghi lại lý do** (`CriterionBenchmarkService`, đều có mutation-check):
+1. **Loại chính mình khỏi mẫu.** So mình với tập có chứa mình là vòng tròn; ở ca hệ thống mới có 1 người dùng thì tập đó **chính là họ** ⇒ mốc trùng khít điểm của họ — vô nghĩa nhưng nhìn rất thuyết phục. Loại bản thân khiến ca đó tự rơi về `n=0` → ngưỡng nội bộ.
+2. **Gom theo TÊN tiêu chí, không theo id.** BC16 cho candidate rubric riêng ⇒ cùng một tiêu chí nhưng `rubric_criteria.id` khác nhau giữa các người. Gom theo id thì nhóm dùng rubric riêng **vĩnh viễn `n=0`** — tính năng chết im lặng đúng với nhóm dùng nhiều nhất.
+3. **Một nguồn cho CẢ radar, không trộn.** Thiếu mẫu ở **một** trục là cả biểu đồ rơi về ngưỡng nội bộ. Mỗi trục một nguồn thì đường đứt nét không còn nghĩa thống nhất và không chú thích trung thực được bằng một nhãn.
+4. **Chỉ lấy buổi B2C.** Điểm B2B chấm theo tiêu chí campaign (thang/ngữ cảnh khác hẳn) — trộn vào là so hai thứ không cùng đơn vị.
+
+**Read-time, KHÔNG migration.** Dựng trong `GET /practice/sessions/{id}` (cùng chỗ BC9/BC8). Không snapshot vào bảng: mốc đổi theo dữ liệu cộng đồng nên bản lưu sẽ lỗi thời ngay mà không ai chịu trách nhiệm làm mới.
+
+**Config `Benchmark`:** `Enabled` (mặc định `true`; `false` → `benchmark = null` → radar về 1 lớp như trước F14) · `MinSampleSize` (mặc định **5** buổi của người khác **cho mỗi tiêu chí**).
+
+**FE.** Dùng lại `RadarChart` của F3 (ECharts `renderer:'svg'`, lazy-import — đã verify `echarts` nằm ở lazy chunk, không lọt initial bundle). Thêm input `thresholdLabel` (mặc định giữ chuỗi cũ ⇒ trang báo cáo lộ trình không đổi). Radar chỉ vẽ khi **≥ 3 tiêu chí** (dưới 3 trục là hình thoi/đường thẳng, vô nghĩa) — ca ít tiêu chí vẫn thấy mốc qua **vạch trên thanh ngang**. Mốc ghép theo `criterionId`, **không theo thứ tự mảng** (ghép nhầm trục thì biểu đồ vẫn vẽ đẹp, không ai phát hiện).
+
+**Hạn chế còn lại (cần team biết).** `PeerAverage` là trung bình **người dùng của chính sản phẩm này**, không phải mặt bằng ứng viên ngoài thị trường — mẫu lệch theo tập người dùng hiện có. Muốn có "chuẩn ngành" thật thì phải có nguồn dữ liệu ngoài; đó là việc khác, **không** phải đổi nhãn cho số hiện tại.
+
 **AIService (sync, không ghi DB — theo D17).** Endpoint mới `POST /summarize-session` (xem [ai.md](ai.md)): req `{ jobCategory, overallScore, criteriaScores:[{ name, percentage, needsImprovement }] }` → res `{ overallComment }` (text tiếng Việt, vài câu). Bọc nội dung ứng viên trong delimiter (chống prompt-injection — ai.md). InterviewService nhận kết quả rồi **tự lưu** (AI không ghi DB).
 
 **Khi nào sinh & lưu.** Sau khi BC9 ghi số liệu lúc đóng `Scored` (B2C) → InterviewService gọi AIService **best-effort** → lưu `practice_sessions.overall_comment`. **AI lỗi KHÔNG chặn `Scored`**: để `overall_comment = null` + log; có thể **lazy/backfill** (sinh lại khi `GET` thấy null) — không bắt buộc trong BC10.
@@ -737,3 +806,36 @@ Khi session đóng, engine phát event để service khác phản ứng (event-d
 ### Xác thực
 - Endpoint user: **JWT Bearer**, validate bằng chung `Jwt:Key/Issuer/Audience`.
 - Callback `/internal/...`: `AllowAnonymous` + header `X-Internal-Token`.
+
+## F21 (FR17) — Quản lý System Prompt + nội dung lĩnh vực
+
+**Interview sở hữu registry prompt** (AUTH-7: endpoint admin nằm trong service sở hữu dữ liệu). Lý do chọn Interview thay vì Payment (nơi F22 đặt `ai_usage_logs`): con dấu phiên bản prompt phải đóng lên `answer_scores` — bảng của Interview — trong cùng transaction. Cơ chế phía AIService + 4 tầng fail-open: [ai.md](ai.md) §Prompt tuỳ biến.
+
+### API
+| Method | Path | Ai gọi | Ghi chú |
+|---|---|---|---|
+| GET | `/api/admin/prompts` | Admin | Mọi khoá code khai, **kể cả khoá chưa ai sửa** (`body: null` = đang dùng bản mặc định trong `prompts.py`) |
+| GET | `/api/admin/prompts/{key}/history` | Admin | Append-only ⇒ đây là dấu vết đầy đủ ai đổi gì, khi nào, vì sao |
+| PUT | `/api/admin/prompts/{key}` | Admin | Tạo **version mới**; 400 khi khoá lạ / body rỗng / >8.000 ký tự / chứa delimiter khung |
+| DELETE | `/api/admin/prompts/{key}` | Admin | Về bản mặc định = deactivate; **giữ lịch sử** |
+| GET | `/internal/prompts` | AIService | `X-Internal-Token`, KHÔNG qua gateway (GEN-1). Trả **chỉ phần đã tuỳ biến** + `promptVersion` |
+
+### DB — `prompt_templates`
+`id · key(64) · version · body · is_active · updated_by · change_note(512) · created_at`
+· UNIQUE `(key, version)` · UNIQUE partial `key WHERE is_active` · CHECK `version > 0`.
+
+**APPEND-ONLY.** Sửa = deactivate bản cũ + insert `version+1` (mẫu BC16), **1 transaction**. Không UPDATE tại chỗ: điểm đã chấm đóng dấu `answer_scores.prompt_version`, nên sửa tại chỗ khiến con dấu đó trỏ tới một văn bản **khác** với văn bản thực sự đã chấm ⇒ dấu vết kiểm toán nói dối. Với thứ quyết định điểm của người trả tiền, "không truy lại được" là **hỏng**, không phải bất tiện.
+
+### Versioning — vì sao cần dù đã có `rubric_version`
+Rubric quyết định chấm **cái gì**; prompt quyết định chấm **như thế nào**. Đổi prompt chấm là **đổi thước đo** — điểm trước và sau không còn so sánh trực tiếp được, mà hệ thống đang dùng điểm để **xếp hạng ứng viên với nhau** (CAMP-10/E4) và tính **cải thiện theo thời gian** (BC15).
+
+`answer_scores.prompt_version` nullable: `null` = chấm trước F21 · `0` = bản mặc định thuần · `>0` = tổng version các mảnh đang active. Gộp `null` với `0` là mất đúng thông tin cần để biết có so sánh được hay không.
+
+⚠ **Hiện mới LƯU, chưa cảnh báo** khi bảng xếp hạng trộn hai giá trị khác nhau → **`BK23`**. Lưu trước vì đây là vế **không hồi tố được**: thiếu cột thì điểm lịch sử vĩnh viễn mất dấu đã chấm bằng prompt nào; cảnh báo thì thêm lúc nào cũng được.
+
+### Ranh giới — F21 đóng theo nghĩa nào
+✅ **"Sửa được NỘI DUNG của 3 ngành"** (BA/BE/FE): tên hiển thị · mô tả · hướng dẫn riêng theo nghề, hiệu lực ở lần sinh/chấm kế mà **không cần deploy**.
+
+❌ **KHÔNG phải "thêm ngành tuỳ ý".** `JobCategory` vẫn là enum 3 giá trị. Đây là quyết định có chủ đích chứ không phải giới hạn kỹ thuật: `B2CRubricSeed` khoá theo enum (mỗi nghề 7 tiêu chí sau F11/F12), rubric riêng BC16 khoá theo nó, validation khoá theo nó. Một ngành **không có rubric** sẽ khiến `AnswerService` thấy 0 tiêu chí active ⇒ INT-9 *"thiếu tiêu chí → `Failed`"* ⇒ **người luyện trả 1 credit rồi nhận một buổi hỏng**. Mở tập ngành mà không mở kèm đường khai rubric là mở thẳng ra đường đó; tập đóng bảo đảm **mọi ngành chắc chắn có rubric**.
+
+*(Ghi chú kỹ thuật cho lần mở sau: 4 cột lưu `JobCategory` đều đã là **string** trên đĩa — `HasConversion<string>()` — và wire contract cũng đã là string, nên mở tập ngành **không phải data migration**. Cái chặn chỉ là kiểu C# + validation, cộng với bắt buộc khai rubric kèm theo.)*

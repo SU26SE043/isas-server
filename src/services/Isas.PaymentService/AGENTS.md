@@ -77,8 +77,9 @@ CreditAccount {                         // GET /me/account
   ownerId:          uuid
   paymentMode:      enum(string)        // Prepaid · Postpaid (User luôn Prepaid)
   status:           enum(string)        // Active · Suspended (đình chỉ nợ xấu/quá hạn)
-  remainingCredits: int
+  remainingCredits: int                 // ✅ F7: ĐÃ GỒM credit dùng thử (không tách xô riêng)
   reservedCredits:  int
+  freeCreditsGranted: int               // ✅ F7 — suất dùng thử đã tặng ví này (0 = chưa/ví Org); ví chưa tồn tại → 0
   creditLimit:      int?                // chỉ Org/postpaid
   periodUsage:      int?                // chỉ Org/postpaid — lượt đã dùng kỳ này
   updatedAt:        datetime
@@ -132,6 +133,13 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`GET/PUT /payment/admin/unit-price`** 🔜 — Đơn giá 1 lượt (`{ unitPriceVnd: long }`).
 **`GET /payment/admin/transactions`** 🔜 — Giao dịch/hóa đơn toàn hệ.
 **`POST /payment/admin/orgs/{orgId}/credits/adjust`** 🔜 *(phase 2)* — Cấp/hoàn credit thủ công.
+
+**`GET /payment/admin/ai-usage?from=&to=&groupBy=day|month`** ✅ **F22** (2026-07-19) — Tiêu thụ token + chi phí AI theo kỳ (`Roles="Admin"`, kỳ nửa mở, mẫu F19). Trả `totalCostUsd` + `byOperation[]` (tiêu thụ **theo endpoint**) + `buckets[]` + `resourceUrls?` (F15 — tỉ lệ URL do AI sinh bị allowlist loại).
+
+### Nội bộ — AIService → Payment — `X-Internal-Token`, **KHÔNG qua gateway** ✅ (F22)
+
+**`POST /internal/ai-usage`** ✅ **F22 (2026-07-19)** — AIService đẩy token 1 lượt gọi LLM → bảng **mới** `ai_usage_logs` (migration `AddAiUsageLogsF22`, **chưa apply DB thật**).
+> **Vì sao bảng ở Payment:** GEN-4 cấm AIService ghi DB ⇒ số liệu đi qua callback nội bộ; Payment giữ vì chi phí AI là câu hỏi **tiền** và chỉ có nghĩa khi đọc cạnh doanh thu (F19). Caller gửi **token + tên model, KHÔNG gửi tiền** — đơn giá thuộc Payment (`AiPricing`, USD/1 triệu) và được **snapshot lên từng dòng** nên đổi giá không hồi tố. Ghi hỏng → **202 `dropped`**, KHÔNG 500: ép AIService xử lý lỗi cho một việc thuần quan sát là mở đường làm answer `Failed` ⇒ mất credit (PAY-13). Bảng **không FK/CHECK** nối với `credit_accounts` (cố ý — tránh hình dạng lỗi DB22) và **chưa có purge** (nhóm DB28). **Bản đầy đủ: [`docs/services/payment.md`](../../../docs/services/payment.md) §`ai_usage_logs` + §`POST /internal/ai-usage` (source of truth).**
 
 ### Nội bộ — Campaign/Interview → Payment — `X-Internal-Token`, **KHÔNG qua gateway** 🔜
 
@@ -216,8 +224,9 @@ credit_accounts (1/chủ ví: Org HOẶC User)
    └── invoices (postpaid, CHỈ Org, theo kỳ)
 product_packages 1──* orders        (owner ref lỏng → Auth: org_id hoặc user_id)
 invoices        1──* orders        (orders.invoice_id — N Order tất toán 1 Invoice, retry được)
-subscriptions   1──* orders        (orders.subscription_id — N Order gia hạn 1 Subscription) 🔜 phase 2
+orders          1──1 subscriptions (subscriptions.order_id UNIQUE — 1 đơn ⇒ 1 kỳ hạn) ✅ F8
 ```
+> ⚠ **F8 (2026-07-19)** ĐẢO CHIỀU khoá so với dòng cũ (`orders.subscription_id` 🔜 phase 2): thuê bao được tạo Ở webhook (sau đơn), nên khoá đặt phía `subscriptions` — vừa cho idempotency ở tầng DB (`UNIQUE(order_id)`), vừa khỏi phải quay lại UPDATE đơn. Kèm cột mới `credit_reservations.funded_by` (`Credit` default · `Subscription`). **Bản đầy đủ + lý do ở `docs/services/payment.md` (source of truth)**; copy này chỉ đồng bộ những chỗ F8 làm cho SAI, các mục `🔜 phase 2` còn lại trong file vốn đã lệch từ trước.
 
 > **Quy ước kiểu DB:** `uuid·varchar(n)·text·int·bigint`(VND)·`numeric`·`bool·timestamptz·jsonb`, enum lưu **string**, `?`=nullable. Cột **snake_case**.
 
@@ -228,8 +237,9 @@ owner_type       varchar(8)    enum: Org · User
 owner_id         uuid          ref lỏng → Auth
 payment_mode     varchar(16)   enum: Prepaid · Postpaid (User LUÔN Prepaid)
 status           varchar(16)   enum: Active · Suspended (mặc định Active) — đình chỉ nợ xấu/quá hạn → chặn reserve mới
-remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine)
+remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine); ✅ F7 gồm cả credit dùng thử
 reserved_credits int           đang giữ chỗ (Reserved chưa Consumed/Released)
+free_credits_granted int       ✅ F7 — suất dùng thử ĐÃ TẶNG ví này (0 = chưa tặng / ví Org); denormalize từ sổ cái reason=FreeGrant
 credit_limit     int?          CHỈ Org/postpaid
 period_usage     int?          CHỈ Org/postpaid — lượt đã dùng kỳ này
 updated_at       timestamptz
@@ -254,7 +264,10 @@ owner_id   uuid
 order_id   uuid?         FK → orders
 session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
-reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2)
+reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (✅ F18 — admin hoàn đơn, delta ÂM) · FreeGrant (+N suất dùng thử lúc tạo ví User — ✅ F7, order_id/session_id null) · PromoGrant (✅ F20 — admin cấp quà, +N)
+reverses_transaction_id uuid?  ✅ F18 — FK tự tham chiếu → bút toán mua bị đảo; UNIQUE LỌC = khoá idempotency chống hoàn hai lần
+granted_by uuid?          ✅ F20 — admin cấp quà (ref lỏng → Auth); chỉ set trên row PromoGrant
+note       varchar(500)?  ✅ F20 — lý do cấp quà
 created_at timestamptz
 ```
 
@@ -277,7 +290,7 @@ owner_id         uuid
 kind             varchar(20)   enum: CreditPack · InvoiceSettlement (chỉ Org) · SubscriptionPurchase · SubscriptionRenewal 🔜(phase 2)
 package_id       uuid?         FK → product_packages
 invoice_id       uuid?         FK → invoices        (kind=InvoiceSettlement)
-subscription_id  uuid?         FK → subscriptions   (kind=SubscriptionPurchase/Renewal) 🔜(phase 2)
+(F8: khoá nằm ở subscriptions.order_id, KHÔNG có orders.subscription_id — xem docs/services/payment.md)
 amount_vnd       bigint
 payos_order_code bigint        UNIQUE (time+random — xem Business rules)
 status           varchar(16)   enum: Pending · Paid · Failed · Expired · Cancelled
@@ -325,7 +338,7 @@ status     varchar(16)   enum: Active · Expired · Cancelled
 started_at timestamptz
 expires_at timestamptz
 ```
-> FK nằm ở phía **`orders.subscription_id`** (KHÔNG đặt `order_id` ở đây) → 1 Subscription nhận **N Order** theo thời gian: `SubscriptionPurchase` (mua đầu) + mỗi kỳ `SubscriptionRenewal`. Cùng pattern với `orders.invoice_id`.
+> ⚠ **F8 (2026-07-19) ĐÃ ĐẢO thiết kế này — shape ở trên là BẢN CŨ, đừng code theo.** Bản thật: FK nằm phía **`subscriptions.order_id`** (UNIQUE filtered) và **một lần mua = MỘT row** (gia hạn = row mới nối tiếp `expires_at` cũ), thay vì 1 Subscription nhận N Order. Lý do: thuê bao được tạo Ở webhook (sau đơn), nên `UNIQUE(order_id)` vừa là khoá **idempotency** ở tầng DB vừa khỏi phải quay lại UPDATE đơn. Thêm cột `billing_cycle`, `order_id`, `created_at/updated_at`, CHECK `expires_at > started_at`, và cột mới `credit_reservations.funded_by`. **Bản đầy đủ: [`docs/services/payment.md`](../../../docs/services/payment.md) §`subscriptions` (source of truth).**
 
 ---
 
