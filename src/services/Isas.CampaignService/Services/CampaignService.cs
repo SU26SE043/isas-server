@@ -101,12 +101,19 @@ namespace Isas.CampaignService.Services
             };
 
             // ── 3. Build questions ──────────────────────────────
+            // F10: `source` ép CustomHr, KHÔNG lấy từ client. Campaign vừa tạo thì chưa lần nào gọi AI,
+            // nên câu gắn nhãn `AiGenerated` ở đây là nhãn sai theo định nghĩa. Tệ hơn: F9 khi sinh sẽ
+            // xoá mọi row `AiGenerated` cũ ⇒ câu HR gõ mà tự nhận là AI sẽ bị lượt sinh kế nuốt mất.
             campaign.Questions = request.Questions
                 .Select(q => new CampaignQuestion
                 {
+                    // Id sinh ở app (như F9/F10), không nhờ default `gen_random_uuid()` của Postgres:
+                    // 3 đường ghi câu hỏi nay thống nhất, và đường create thành test được trên SQLite
+                    // (trước đây không → `CampaignStructuredCriteriaTests` phải né hẳn việc seed câu hỏi).
+                    Id = Guid.NewGuid(),
                     OrgId = orgId,
                     QuestionText = q.QuestionText.Trim(),
-                    Source = q.Source,
+                    Source = QuestionSource.CustomHr,
                     IsRequired = q.IsRequired,
                     CreatedAt = DateTime.UtcNow,
                 })
@@ -446,18 +453,69 @@ namespace Isas.CampaignService.Services
             // ── 2. Validate questions ───────────────────────────
             if (questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 throw new ArgumentException("All questions must have non-empty text.");
-            // ── 3. Replace existing questions with new ones ─────
-            campaign.Questions.Clear();
-            campaign.Questions = questions.Select(q => new CampaignQuestion
+
+            // ── 3. F10 — MERGE theo id thay vì Clear()+tạo lại ──────────────────────────────
+            //    Cũ: xoá sạch rồi dựng lại với Guid mới + `source` lấy từ client. Vì FE hardcode
+            //    `source:'CustomHr'`, HR sửa MỘT câu là toàn bộ câu F9 sinh mất nhãn `AiGenerated`
+            //    VÀ mất id (mọi tham chiếu tới câu hỏi đứt, thứ tự bài thi đảo).
+            //    Mới: id có trong payload → sửa tại chỗ; vắng mặt → xoá; không id → thêm mới (CustomHr).
+            var existing = campaign.Questions.ToDictionary(q => q.Id);
+            var keptIds = new HashSet<Guid>();
+            var fresh = new List<CampaignQuestion>();
+            var now = DateTime.UtcNow;
+
+            foreach (var item in questions)
             {
-                OrgId = campaign.OrgId,
-                QuestionText = q.QuestionText.Trim(),
-                Source = q.Source,
-                IsRequired = q.IsRequired,
-                CreatedAt = DateTime.UtcNow,
-            }).ToList();
-            campaign.UpdatedAt = DateTime.UtcNow;
-            AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id, $"Thay {questions.Count} câu hỏi");
+                var text = item.QuestionText.Trim();
+
+                if (item.Id is Guid qid && qid != Guid.Empty)
+                {
+                    // Id lạ = client đang nói về một câu không thuộc campaign này (id của campaign khác,
+                    // hoặc câu vừa bị người khác xoá). Im lặng coi như "thêm mới" sẽ NUỐT MẤT ý định sửa
+                    // và đẻ ra câu trùng → 400 để client biết state của mình đã cũ.
+                    if (!existing.TryGetValue(qid, out var row))
+                        throw new ArgumentException($"Question {qid} không thuộc campaign {id} (hoặc đã bị xoá).");
+
+                    // Cùng một id gửi 2 lần: "sửa" nào thắng là không xác định → chặn thay vì đoán.
+                    if (!keptIds.Add(qid))
+                        throw new ArgumentException($"Question {qid} xuất hiện nhiều lần trong payload.");
+
+                    row.QuestionText = text;
+                    row.IsRequired = item.IsRequired;
+                    // KHÔNG gán row.Source: nguồn gốc là sự thật do server ghi lúc tạo (F9 = AiGenerated,
+                    // HR gõ tay = CustomHr). Cho client ghi đè thì nhãn nguồn thành lời khai tự do.
+                    // KHÔNG gán row.CreatedAt: thứ tự bài thi sắp theo (CreatedAt, Id) — xem ParticipationService.
+                }
+                else
+                {
+                    fresh.Add(new CampaignQuestion
+                    {
+                        Id = Guid.NewGuid(),
+                        CampaignId = campaign.Id,
+                        OrgId = campaign.OrgId,
+                        QuestionText = text,
+                        Source = QuestionSource.CustomHr,   // F10: câu mới qua đường PUT = HR gõ tay, luôn
+                        IsRequired = item.IsRequired,
+                        CreatedAt = now,
+                    });
+                }
+            }
+
+            // Câu đang có mà payload không nhắc tới = HR đã xoá trên UI (PUT = replace).
+            var removed = existing.Values.Where(q => !keptIds.Contains(q.Id)).ToList();
+            _db.CampaignQuestions.RemoveRange(removed);
+            foreach (var q in removed)
+                campaign.Questions.Remove(q);   // để response phản ánh đúng đề sau khi sửa
+
+            // DbSet.AddRange chứ KHÔNG campaign.Questions.Add(): `Id` là store-generated, entity mang Id
+            // khác default mà chỉ gắn vào navigation sẽ bị DetectChanges phân loại Modified → UPDATE 0 row
+            // → DbUpdateConcurrencyException (bẫy đã dính ở F9). AddRange ép state = Added; relationship
+            // fixup tự đưa vào campaign.Questions cho response.
+            _db.CampaignQuestions.AddRange(fresh);
+
+            campaign.UpdatedAt = now;
+            AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id,
+                $"Sửa câu hỏi: giữ {keptIds.Count}, thêm {fresh.Count}, xoá {removed.Count}");
             await _db.SaveChangesAsync(ct);
             return CampaignResponse.FromEntity(campaign);
         }
