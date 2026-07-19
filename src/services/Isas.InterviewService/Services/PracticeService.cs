@@ -70,6 +70,9 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
 
+        // F2 — thời lượng mỗi câu. Guard TRƯỚC reserve (PAY-5): giá trị sai → 400 mà KHÔNG giữ credit oan.
+        var timeLimitSec = ValidateTimeLimitSec(request.TimeLimitSec);
+
         // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
         // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
         // credit oan (mẫu BK6/PAY-5). Text rỗng/toàn khoảng trắng = coi như KHÔNG nhập (rơi về jdId).
@@ -126,6 +129,7 @@ public class PracticeService : IPracticeService
                 JobCategory = jobCategory,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,
+                TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
                 AdaptiveEnabled = _adaptive.Enabled,
                 MaxQuestions = _adaptive.Enabled ? _adaptive.MaxQuestions : 0,
@@ -185,7 +189,7 @@ public class PracticeService : IPracticeService
                     SessionId = session.Id,
                     OrderNo = idx + 1,
                     Content = q.Content,
-                    TimeLimitSec = DefaultTimeLimitSec,
+                    TimeLimitSec = session.TimeLimitSec,   // F2 — theo lựa chọn của ứng viên
                     Kind = QuestionKind.Seed
                 })
                 .ToList();
@@ -652,6 +656,24 @@ public class PracticeService : IPracticeService
 
     // Nhãn field trong thông báo lỗi 400 — khớp tên field client gửi lên.
     private const string JdTextLabel = "Mô tả công việc (jdText)";
+
+    // F2 — thời lượng mỗi câu ứng viên được chọn. Tập ĐÓNG (không phải khoảng): 3 mốc để UI là nhóm nút
+    // chọn, và để mọi buổi so sánh được với nhau. Tập nằm ở tầng service chứ KHÔNG đưa vào CHECK của DB —
+    // đổi lựa chọn sau này (thêm 180s chẳng hạn) sẽ phải chạy migration chỉ để sửa một danh sách UI.
+    private static readonly int[] AllowedTimeLimitsSec = [60, 120, 240];
+
+    // null = client cũ không gửi → giữ mặc định 120 (hành vi trước F2, không phải lỗi).
+    // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: PracticeController chỉ bắt
+    // InvalidOperationException → 400; ArgumentException rơi xuống catch(Exception) → 500. Cùng kiểu với
+    // guard jobCategory ngay đầu CreateSessionInternalAsync.
+    private static int ValidateTimeLimitSec(int? requested)
+    {
+        if (requested is null) return DefaultTimeLimitSec;
+        if (!AllowedTimeLimitsSec.Contains(requested.Value))
+            throw new InvalidOperationException(
+                $"timeLimitSec chỉ nhận {string.Join(" / ", AllowedTimeLimitsSec)} giây (đang gửi: {requested.Value}).");
+        return requested.Value;
+    }
 
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
