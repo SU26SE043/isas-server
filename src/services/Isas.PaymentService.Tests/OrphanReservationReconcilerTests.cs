@@ -22,12 +22,10 @@ public class OrphanReservationReconcilerTests
         await (Task)mi.Invoke(r, new object[] { CancellationToken.None })!;
     }
 
-    // Provider thật: DbContext (chung connection harness) + CreditAccountService scoped + mock Interview client.
-    // R1 — consumeFromUtc mặc định lùi 1 GIỜ để mọi test cũ/mới dùng mốc Old(-30') vẫn nằm SAU mốc (ca
-    // "chỗ giữ mới, được phép consume"). Test nào cần ca "cũ hơn mốc" thì truyền mốc tường minh.
-    private static (OrphanReservationReconciler r, ServiceProvider provider) Build(
-        PaymentTestDb tdb, IInterviewSessionClient client, bool enabled = true, int thresholdMinutes = 10,
-        bool consumeTerminalScored = true, DateTime? consumeFromUtc = null)
+    // Dựng reconciler với settings TRUYỀN THẲNG — dùng cho ca cần `ConsumeFromUtc` thật sự NULL
+    // (đúng cấu hình production). Build() bên dưới là lớp tiện dụng bọc quanh nó.
+    private static (OrphanReservationReconciler r, ServiceProvider provider) BuildWith(
+        PaymentTestDb tdb, IInterviewSessionClient client, OrphanReconcileSettings settings)
     {
         var services = new ServiceCollection();
         services.AddDbContext<PaymentDbContext>(o => o
@@ -39,18 +37,34 @@ public class OrphanReservationReconcilerTests
 
         var r = new OrphanReservationReconciler(
             provider.GetRequiredService<IServiceScopeFactory>(),
-            Options.Create(new OrphanReconcileSettings
-            {
-                Enabled = enabled,
-                ScanIntervalSeconds = 120,
-                OrphanThresholdMinutes = thresholdMinutes,
-                BatchSize = 200,
-                ConsumeTerminalScored = consumeTerminalScored,
-                ConsumeFromUtc = consumeFromUtc ?? DateTime.UtcNow.AddHours(-1)
-            }),
+            Options.Create(settings),
             NullLogger<OrphanReservationReconciler>.Instance);
         return (r, provider);
     }
+
+    // Provider thật: DbContext (chung connection harness) + CreditAccountService scoped + mock Interview client.
+    // R1 — consumeFromUtc mặc định lùi 1 GIỜ để mọi test dùng mốc Old(-30') vẫn nằm SAU mốc (ca "chỗ giữ
+    // mới, được phép consume"). Test nào cần ca "cũ hơn mốc" thì truyền mốc tường minh.
+    // ⚠ Helper này LUÔN set ConsumeFromUtc ⇒ KHÔNG chạm nhánh mặc định `?? DateTime.UtcNow` của production.
+    //   Nhánh đó được khoá riêng bởi 2 test `R1_MocMacDinh_*` (dùng BuildWith với ConsumeFromUtc=null).
+    private static (OrphanReservationReconciler r, ServiceProvider provider) Build(
+        PaymentTestDb tdb, IInterviewSessionClient client, bool enabled = true, int thresholdMinutes = 10,
+        bool consumeTerminalScored = true, DateTime? consumeFromUtc = null)
+        => BuildWith(tdb, client, new OrphanReconcileSettings
+        {
+            Enabled = enabled,
+            ScanIntervalSeconds = 120,
+            OrphanThresholdMinutes = thresholdMinutes,
+            BatchSize = 200,
+            ConsumeTerminalScored = consumeTerminalScored,
+            ConsumeFromUtc = consumeFromUtc ?? DateTime.UtcNow.AddHours(-1)
+        });
+
+    // Đọc mốc đã chốt trong constructor (private readonly) — cùng idiom reflection với ScanOnce.
+    private static DateTime ConsumeMark(OrphanReservationReconciler r) =>
+        (DateTime)typeof(OrphanReservationReconciler)
+            .GetField("_consumeFromUtc", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(r)!;
 
     // Interview trả: các session TỒN TẠI + trạng thái từng cái (R1). Dùng cho ca có trạng thái.
     private static IInterviewSessionClient Client(params (Guid Id, string Status)[] sessions)
@@ -551,6 +565,95 @@ public class OrphanReservationReconcilerTests
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == owner);
         Assert.Equal(1, acc.ReservedCredits);
         Assert.Equal(9, acc.RemainingCredits);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // 🔴 NHÁNH MẶC ĐỊNH CỦA MỐC — `ConsumeFromUtc` KHÔNG cấu hình ⇒ lấy mốc KHỞI ĐỘNG reconciler.
+    // Đây KHÔNG phải nhánh hiếm: quyết định B cố ý thiết kế để ops không phải cấu hình gì, nên trên
+    // production `ConsumeFromUtc` sẽ LUÔN không được set ⇒ **mặc định chính là thứ duy nhất chặn trừ
+    // tiền hồi tố**. Mọi test khác đi qua Build() vốn LUÔN set mốc tường minh ⇒ nhánh này từng KHÔNG
+    // ĐƯỢC CHẠY LẦN NÀO. 2 test dưới ghim mốc mặc định từ CẢ HAI phía:
+    //   · quá KHỨ (vd `?? DateTime.MinValue` — một default trông rất hợp lý: "chưa đặt = không giới
+    //     hạn") ⇒ máy trừ credit hồi tố đúng những dòng tồn đọng phải để người đối soát tay;
+    //   · quá TƯƠNG LAI (vd `?? DateTime.MaxValue`) ⇒ nhánh consume CHẾT IM LẶNG trên production —
+    //     không lỗi, không log, chỗ giữ tiếp tục rò y như trước R1.
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    // Phía QUÁ KHỨ (hành vi): không cấu hình mốc → chỗ giữ Scored có trước lúc khởi động phải SKIP,
+    // KHÔNG trừ và KHÔNG release. Đây đúng ca 3 dòng tồn đọng đo được trên production 2026-07-20.
+    [Fact]
+    public async Task R1_MocMacDinh_ScoredTruocKhoiDong_Skip_KhongTruKhongRelease()
+    {
+        using var tdb = new PaymentTestDb();
+        var owner = Guid.NewGuid();
+        SeedAccount(tdb, OwnerType.User, owner, reserved: 1, remaining: 9);
+        var tonDong = SeedReservation(tdb, OwnerType.User, owner, ReservationStatus.Reserved, Old);
+        await tdb.Db.SaveChangesAsync();
+
+        // ConsumeFromUtc KHÔNG set = ĐÚNG cấu hình production.
+        var (r, provider) = BuildWith(tdb, Client((tonDong, "Scored")), new OrphanReconcileSettings
+        {
+            Enabled = true,
+            ScanIntervalSeconds = 120,
+            OrphanThresholdMinutes = 10,
+            BatchSize = 200,
+            ConsumeTerminalScored = true
+            // ConsumeFromUtc = null  ← chính là nhánh cần khoá
+        });
+        using (provider)
+            await ScanOnce(r);
+
+        using var read = tdb.NewContext();
+        Assert.Equal(ReservationStatus.Reserved,
+            (await read.CreditReservations.SingleAsync(x => x.SessionId == tonDong)).Status);
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == owner);
+        Assert.Equal(1, acc.ReservedCredits);
+        Assert.Equal(9, acc.RemainingCredits);
+        Assert.Empty(await read.CreditTransactions.Where(t => t.OwnerId == owner).ToListAsync());
+    }
+
+    // Phía TƯƠNG LAI (giá trị): mốc mặc định phải nằm ĐÚNG tại thời điểm dựng reconciler.
+    // Không kiểm được bằng hành vi: chỗ giữ phải vừa cũ hơn ngưỡng orphan (10') vừa mới hơn mốc, mà mốc
+    // mặc định = lúc dựng ⇒ không dựng được ca đó trong thời gian thực (`OrphanThresholdMinutes=0` cũng
+    // không giúp: code coi `>0 ? … : 10`). Nên ghim thẳng GIÁ TRỊ, kẹp hai đầu.
+    [Fact]
+    public async Task R1_MocMacDinh_ChinhLaThoiDiemKhoiDong()
+    {
+        using var tdb = new PaymentTestDb();
+
+        var truoc = DateTime.UtcNow;
+        var (r, provider) = BuildWith(tdb, EmptyClient(), new OrphanReconcileSettings
+        {
+            Enabled = true, ScanIntervalSeconds = 120, OrphanThresholdMinutes = 10, BatchSize = 200,
+            ConsumeTerminalScored = true
+            // ConsumeFromUtc = null
+        });
+        var sau = DateTime.UtcNow;
+
+        using (provider)
+        {
+            var mark = ConsumeMark(r);
+            Assert.InRange(mark, truoc, sau);   // chặn cả MinValue lẫn MaxValue lẫn mọi hằng "hợp lý" khác
+            Assert.Equal(DateTimeKind.Utc, mark.Kind);
+        }
+    }
+
+    // Mốc cấu hình TƯỜNG MINH phải được tôn trọng nguyên vẹn (ops muốn quét cả tồn đọng thì đặt mốc sớm).
+    [Fact]
+    public async Task R1_MocCauHinhTuongMinh_DuocTonTrong()
+    {
+        using var tdb = new PaymentTestDb();
+        var moc = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var (r, provider) = BuildWith(tdb, EmptyClient(), new OrphanReconcileSettings
+        {
+            Enabled = true, ScanIntervalSeconds = 120, OrphanThresholdMinutes = 10, BatchSize = 200,
+            ConsumeTerminalScored = true,
+            ConsumeFromUtc = moc
+        });
+
+        using (provider)
+            Assert.Equal(moc, ConsumeMark(r));
     }
 
     // Trộn nhiều trạng thái trong CÙNG 1 lô: mỗi chỗ giữ đi đúng nhánh của nó, không lây chéo.
