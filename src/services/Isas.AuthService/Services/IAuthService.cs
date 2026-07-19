@@ -35,6 +35,18 @@ namespace Isas.AuthService.Services
         // Keyset-paged (DB8): (CreatedAt DESC, Id DESC); role lọc TRONG query (push-down) → phân trang đúng.
         Task<KeysetPage<AdminUserResponse>> ListAllUsersAsync(string? role, string? search, string? cursor, int? limit, CancellationToken ct = default);
 
+        // F20 (FR16) — PlatformAdmin đình chỉ / gỡ đình chỉ account. Ban chặn MỌI đường phát phiên mới
+        // + thu hồi refresh token; access token đang lưu hành vẫn sống tới hết TTL (GEN-3 — validate
+        // offline, không thu hồi được). User không tồn tại → KeyNotFoundException; đình chỉ Admin hoạt
+        // động CUỐI CÙNG → AdminActionConflictException.
+        Task<AdminUserResponse> BanUserAsync(Guid actingAdminId, Guid userId, string? reason, CancellationToken ct = default);
+        Task<AdminUserResponse> UnbanUserAsync(Guid userId, CancellationToken ct = default);
+
+        // F20 — PlatformAdmin đặt lại mật khẩu hộ user; thu hồi refresh token (phiên cũ phải chết,
+        // nếu không thì đổi mật khẩu không đuổi được kẻ đang chiếm tài khoản). Mật khẩu yếu →
+        // ArgumentException; user không tồn tại → KeyNotFoundException.
+        Task AdminResetPasswordAsync(Guid userId, string newPassword, CancellationToken ct = default);
+
         // Thông tin tổ chức: đọc (mọi member) + sửa name/taxCode (OrgAdmin — enforce ở controller).
         // Org không tồn tại → KeyNotFoundException.
         Task<OrganizationResponse> GetOrganizationAsync(Guid orgId, CancellationToken ct = default);

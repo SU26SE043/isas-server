@@ -48,6 +48,10 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Property(x => x.Title).HasColumnName("title");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+            // F20 — đình chỉ account do PlatformAdmin (tách khỏi lockout tự động của Identity).
+            e.Property(x => x.BannedAt).HasColumnName("banned_at");
+            e.Property(x => x.BanReason).HasColumnName("ban_reason").HasMaxLength(500);
+            e.Property(x => x.BannedBy).HasColumnName("banned_by");
             e.Ignore(x => x.PhoneNumber);
             e.Ignore(x => x.PhoneNumberConfirmed);
             e.Ignore(x => x.TwoFactorEnabled);

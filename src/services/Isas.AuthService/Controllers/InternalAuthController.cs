@@ -39,8 +39,18 @@ namespace Isas.AuthService.Controllers
             if (req is null || string.IsNullOrWhiteSpace(req.Email))
                 return BadRequest(new { error = "Email is required" });
 
-            var result = await _authService.ProvisionCandidateAsync(req.Email, req.FullName, ct);
-            return Ok(result);
+            try
+            {
+                var result = await _authService.ProvisionCandidateAsync(req.Email, req.FullName, ct);
+                return Ok(result);
+            }
+            catch (UserBannedException ex)
+            {
+                // F20 — người đã bị đình chỉ không được vào bài qua magic-link B2B. 403 để
+                // CampaignService phân biệt với "token internal sai" (401) và báo đúng cho ứng viên.
+                _logger.LogWarning("provision-candidate bị từ chối: account đã bị đình chỉ.");
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+            }
         }
 
         private bool IsValidInternalToken(string? token)
