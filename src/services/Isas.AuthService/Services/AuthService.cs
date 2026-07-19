@@ -80,17 +80,26 @@ namespace Isas.AuthService.Services
                 UpdatedAt = DateTime.UtcNow
             };
 
-            // Passwordless (mẫu ProvisionCandidate) — user Google-only đặt mật khẩu qua forgot/reset.
-            var identityResult = await _userManager.CreateAsync(newUser);
-            if (!identityResult.Succeeded)
-                throw new InvalidOperationException(string.Join("; ", identityResult.Errors.Select(e => e.Description)));
+            await EnsureRoleExistsAsync("Candidate");   // ngoài transaction — xem ghi chú ở hàm đó
 
-            var addLoginResult = await _userManager.AddLoginAsync(newUser, info);
-            if (!addLoginResult.Succeeded)
-                throw new InvalidOperationException(string.Join("; ", addLoginResult.Errors.Select(e => e.Description)));
+            // user + external login + role là MỘT đơn vị. Riêng đường này còn một kiểu hỏng nữa:
+            // user tạo xong mà user_logins chưa ghi thì lần đăng nhập Google KẾ TIẾP không tra ra
+            // liên kết, rơi xuống nhánh "email đã tồn tại" và người dùng kẹt ở một account không role.
+            await RunInTransactionAsync(async () =>
+            {
+                // Passwordless (mẫu ProvisionCandidate) — user Google-only đặt mật khẩu qua forgot/reset.
+                var identityResult = await _userManager.CreateAsync(newUser);
+                if (!identityResult.Succeeded)
+                    throw new InvalidOperationException(string.Join("; ", identityResult.Errors.Select(e => e.Description)));
 
-            await EnsureRoleExistsAsync("Candidate");
-            await _userManager.AddToRoleAsync(newUser, "Candidate");
+                var addLoginResult = await _userManager.AddLoginAsync(newUser, info);
+                if (!addLoginResult.Succeeded)
+                    throw new InvalidOperationException(string.Join("; ", addLoginResult.Errors.Select(e => e.Description)));
+
+                var roleResult = await _userManager.AddToRoleAsync(newUser, "Candidate");
+                if (!roleResult.Succeeded)
+                    throw new InvalidOperationException(string.Join("; ", roleResult.Errors.Select(e => e.Description)));
+            });
 
             return await GenerateAuthResponse(newUser);
         }
@@ -245,13 +254,25 @@ namespace Isas.AuthService.Services
                 UpdatedAt = DateTime.UtcNow
             };
 
-            var result = await _userManager.CreateAsync(user, registerRequest.Password);
-            if (!result.Succeeded)
-                throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
+            await EnsureRoleExistsAsync("Candidate");   // ngoài transaction — xem ghi chú ở hàm đó
 
-            await EnsureRoleExistsAsync("Candidate");
-            await _userManager.AddToRoleAsync(user, "Candidate");
+            // user + role là MỘT đơn vị: user không có role thì đăng nhập được nhưng mọi endpoint
+            // [Authorize(Roles)] trả 403, và không có gì dọn.
+            await RunInTransactionAsync(async () =>
+            {
+                var result = await _userManager.CreateAsync(user, registerRequest.Password);
+                if (!result.Succeeded)
+                    throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
 
+                var roleResult = await _userManager.AddToRoleAsync(user, "Candidate");
+                if (!roleResult.Succeeded)
+                    throw new Exception(string.Join("; ", roleResult.Errors.Select(e => e.Description)));
+            });
+
+            // NGOÀI transaction, có chủ đích: refresh token là trạng thái PHIÊN, không phải trạng
+            // thái tài khoản. Hỏng ở đây để lại một tài khoản đầy đủ và hợp lệ — người dùng chỉ cần
+            // đăng nhập lại. Kéo vào trong sẽ đánh đổi ngược: giữ transaction mở lâu hơn để bảo vệ
+            // thứ tự phục hồi được bằng một lần bấm "Đăng nhập".
             return await GenerateAuthResponse(user);
         }
 
@@ -269,32 +290,42 @@ namespace Isas.AuthService.Services
                 UpdatedAt = DateTime.UtcNow
             };
 
-            var result = await _userManager.CreateAsync(user, request.Password);
-            if (!result.Succeeded)
-                throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
+            await EnsureRoleExistsAsync("Employer");   // ngoài transaction — xem ghi chú ở hàm đó
 
-            await EnsureRoleExistsAsync("Employer");
-            await _userManager.AddToRoleAsync(user, "Employer");
-
-            var org = new Organization
+            // user + role + org + membership là MỘT đơn vị: dở dang ở đây để lại Employer không thuộc
+            // org nào, mà org_id quyết định cả quyền lẫn billing (AUTH-8).
+            await RunInTransactionAsync(async () =>
             {
-                Id = Guid.NewGuid(),
-                Name = request.OrgName,
-                TaxCode = request.TaxCode,
-                CreatedAt = DateTime.UtcNow
-            };
-            var member = new OrgMember
-            {
-                OrgId = org.Id,
-                UserId = user.Id,
-                OrgRole = OrgRole.OrgAdmin,
-                JoinedAt = DateTime.UtcNow
-            };
+                var result = await _userManager.CreateAsync(user, request.Password);
+                if (!result.Succeeded)
+                    throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
 
-            _authDbContext.Organizations.Add(org);
-            _authDbContext.OrgMembers.Add(member);
-            await _authDbContext.SaveChangesAsync();
+                var roleResult = await _userManager.AddToRoleAsync(user, "Employer");
+                if (!roleResult.Succeeded)
+                    throw new Exception(string.Join("; ", roleResult.Errors.Select(e => e.Description)));
 
+                var org = new Organization
+                {
+                    Id = Guid.NewGuid(),
+                    Name = request.OrgName,
+                    TaxCode = request.TaxCode,
+                    CreatedAt = DateTime.UtcNow
+                };
+                var member = new OrgMember
+                {
+                    OrgId = org.Id,
+                    UserId = user.Id,
+                    OrgRole = OrgRole.OrgAdmin,
+                    JoinedAt = DateTime.UtcNow
+                };
+
+                _authDbContext.Organizations.Add(org);
+                _authDbContext.OrgMembers.Add(member);
+                await _authDbContext.SaveChangesAsync();
+            });
+
+            // Sau COMMIT: GenerateAuthResponse đọc lại membership để nhét org_id/org_role vào token
+            // (A2) — chỉ đúng khi membership đã thật sự nằm trong DB.
             return await GenerateAuthResponse(user);
         }
 
@@ -323,12 +354,18 @@ namespace Isas.AuthService.Services
                     UpdatedAt = DateTime.UtcNow
                 };
 
-                var result = await _userManager.CreateAsync(user);   // KHÔNG mật khẩu (magic-link)
-                if (!result.Succeeded)
-                    throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
+                await EnsureRoleExistsAsync("Candidate");   // ngoài transaction — xem ghi chú ở hàm đó
 
-                await EnsureRoleExistsAsync("Candidate");
-                await _userManager.AddToRoleAsync(user, "Candidate");
+                await RunInTransactionAsync(async () =>
+                {
+                    var result = await _userManager.CreateAsync(user);   // KHÔNG mật khẩu (magic-link)
+                    if (!result.Succeeded)
+                        throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
+
+                    var roleResult = await _userManager.AddToRoleAsync(user, "Candidate");
+                    if (!roleResult.Succeeded)
+                        throw new Exception(string.Join("; ", roleResult.Errors.Select(e => e.Description)));
+                }, ct);
             }
 
             // F20 — account đã bị đình chỉ thì magic-link B2B KHÔNG được cấp JWT: đường này phát token
@@ -379,12 +416,7 @@ namespace Isas.AuthService.Services
                 UpdatedAt = DateTime.UtcNow
             };
 
-            var result = await _userManager.CreateAsync(user);   // KHÔNG mật khẩu (đặt qua forgot/reset)
-            if (!result.Succeeded)
-                throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
-
-            await EnsureRoleExistsAsync("Employer");
-            await _userManager.AddToRoleAsync(user, "Employer");
+            await EnsureRoleExistsAsync("Employer");   // ngoài transaction — xem ghi chú ở hàm đó
 
             var member = new OrgMember
             {
@@ -393,8 +425,22 @@ namespace Isas.AuthService.Services
                 OrgRole = OrgRole.HrMember,
                 JoinedAt = DateTime.UtcNow
             };
-            _authDbContext.OrgMembers.Add(member);
-            await _authDbContext.SaveChangesAsync(ct);
+
+            // user + role + membership là MỘT đơn vị: HrMember không có membership thì không thuộc org
+            // nào, và vì email đã UNIQUE nên OrgAdmin KHÔNG mời lại được cùng email đó để tự sửa.
+            await RunInTransactionAsync(async () =>
+            {
+                var result = await _userManager.CreateAsync(user);   // KHÔNG mật khẩu (đặt qua forgot/reset)
+                if (!result.Succeeded)
+                    throw new Exception(string.Join("; ", result.Errors.Select(e => e.Description)));
+
+                var roleResult = await _userManager.AddToRoleAsync(user, "Employer");
+                if (!roleResult.Succeeded)
+                    throw new Exception(string.Join("; ", roleResult.Errors.Select(e => e.Description)));
+
+                _authDbContext.OrgMembers.Add(member);
+                await _authDbContext.SaveChangesAsync(ct);
+            }, ct);
 
             return new OrgMemberResponse
             {
@@ -763,17 +809,78 @@ namespace Isas.AuthService.Services
             await RevokeAllRefreshTokensAsync(userId, ct);
         }
 
+        /// <summary>
+        /// Chạy <paramref name="work"/> trong MỘT transaction: hoặc mọi lệnh ghi bên trong đều vào DB,
+        /// hoặc KHÔNG cái nào. Dùng cho các đường TẠO TÀI KHOẢN, vốn ghi nhiều lần rời rạc
+        /// (users → user_roles → org/org_members) và lỗi giữa chừng để lại tài khoản dở dang mà
+        /// KHÔNG có gì dọn: user không role thì đăng nhập được nhưng mọi endpoint
+        /// <c>[Authorize(Roles)]</c> trả 403; Employer không thuộc org nào thì mất cả quyền lẫn
+        /// billing (AUTH-8).
+        ///
+        /// ⚠ PHẢI đi qua <see cref="IExecutionStrategy"/>: Program.cs bật
+        /// <c>EnableRetryOnFailure()</c> trên Npgsql, mà chiến lược retry TỪ CHỐI transaction do
+        /// người dùng tự mở — gọi thẳng <c>BeginTransactionAsync</c> sẽ ném lúc CHẠY THẬT trong khi
+        /// test (SQLite, chiến lược không-retry) vẫn xanh. Kiểu bug DB25b, chỉ nổ trên Postgres.
+        ///
+        /// ⚠ Đánh đổi đã biết của mẫu này: khi chiến lược retry thật sự chạy lại delegate, EF KHÔNG
+        /// reset trạng thái tracking của DbContext. Chấp nhận vì đây là mẫu chuẩn EF khuyến nghị và
+        /// vẫn tốt hơn hiện trạng (không transaction ⇒ tài khoản dở dang là CHẮC CHẮN, không phải
+        /// chỉ khi retry).
+        /// </summary>
+        private Task RunInTransactionAsync(Func<Task> work, CancellationToken ct = default)
+        {
+            var strategy = _authDbContext.Database.CreateExecutionStrategy();
+            return strategy.ExecuteAsync(async () =>
+            {
+                // Dispose khi chưa Commit = rollback → không cần Rollback tường minh ở nhánh lỗi.
+                await using var tx = await _authDbContext.Database.BeginTransactionAsync(ct);
+                await work();
+                await tx.CommitAsync(ct);
+            });
+        }
+
+        /// <summary>
+        /// Tạo role lazy nếu chưa có.
+        ///
+        /// ⚠ CỐ Ý gọi NGOÀI <see cref="RunInTransactionAsync"/>. Role là DỮ LIỆU THAM CHIẾU
+        /// (Candidate/Employer — hệ thống luôn cần chúng tồn tại), không phải dữ liệu của riêng một
+        /// tài khoản. Kéo vào trong transaction thì hai request đăng ký ĐẦU TIÊN chạy song song sẽ
+        /// đua nhau tạo cùng một role, bên thua đụng UNIQUE <c>RoleNameIndex</c>
+        /// (<c>roles.normalized_name</c>) và rollback theo cả việc TẠO USER — tức là một lần đăng ký
+        /// hoàn toàn hợp lệ bị 500 vì lý do chẳng liên quan gì tới nó. Để ngoài thì trường hợp xấu
+        /// nhất chỉ là một row role bị bỏ lại sau một lần đăng ký hỏng, mà row đó vốn dĩ phải có.
+        ///
+        /// Bên thua đua được xử lý là THÀNH CÔNG: mục tiêu "role tồn tại" đã đạt, ai tạo không quan trọng.
+        /// </summary>
         private async Task EnsureRoleExistsAsync(string roleName)
         {
-            if (!await _roleManager.RoleExistsAsync(roleName))
+            if (await _roleManager.RoleExistsAsync(roleName))
+                return;
+
+            var role = new Role
             {
-                await _roleManager.CreateAsync(new Role
-                {
-                    Id = Guid.NewGuid(),
-                    Name = roleName,
-                    NormalizedName = roleName.ToUpperInvariant()
-                });
+                Id = Guid.NewGuid(),
+                Name = roleName,
+                NormalizedName = roleName.ToUpperInvariant()
+            };
+
+            try
+            {
+                var result = await _roleManager.CreateAsync(role);
+                if (result.Succeeded)
+                    return;
             }
+            catch (DbUpdateException)
+            {
+                // Đụng UNIQUE vì request khác vừa tạo xong → kiểm lại bên dưới.
+            }
+
+            // Row Added hỏng còn kẹt trong change tracker sẽ được SaveChanges KẾ TIẾP (nằm trong
+            // transaction tạo user) thử insert lại và làm hỏng lây transaction đó → gỡ ra.
+            _authDbContext.Entry(role).State = EntityState.Detached;
+
+            if (!await _roleManager.RoleExistsAsync(roleName))
+                throw new InvalidOperationException($"Không tạo được role '{roleName}'.");
         }
 
         // A2: 1 user thuộc ≤1 org ở phase 1 (1 org = 1 OrgAdmin) → lấy membership đầu tiên (null nếu không thuộc org)
