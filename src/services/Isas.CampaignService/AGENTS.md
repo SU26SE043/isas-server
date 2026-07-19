@@ -243,7 +243,13 @@ token 1 lần · email ứng viên · hạn dùng · `used_at` · `session_id` (
 | created_at | timestamptz | `now()` |
 
 ### `audit_logs` — vết thao tác HR
-`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`/**`CreateApiKey`**/**`RevokeApiKey`**…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+
+### `api_keys` — ✅ F17 (API key bên thứ ba / ATS, migration `AddApiKeysF17`)
+`id` · `org_id` (**chủ = ORG**, AUTH-8) · `name` · **`key_hash` varchar(128) UNIQUE** (SHA-256 base64 — cùng lược đồ DB12/DB23; **key thô KHÔNG nằm trong DB**) · `key_prefix` (6 ký tự, chỉ hiển thị) · `include_pii` (mặc định **false**) · `created_by_user_id` · `created_at` · **`expires_at` NOT NULL** (bài học DB23) · `last_used_at?` (ghi có tiết chế) · `revoked_at?` (thu hồi soft).
+**Index:** `UNIQUE(key_hash)` (xác thực = single-row probe) · `(org_id, created_at)`.
+
+**API:** quản lý key `POST|GET /campaign/api-keys` + `DELETE /campaign/api-keys/{id}` — **JWT, chỉ OrgAdmin** (cấp key = uỷ quyền truy cập dữ liệu org, cùng hạng quản thành viên AUTH-4; HrMember → 403). Public API `GET /api/v1/campaign/public/campaigns[/{id}/results]` — **`X-Api-Key`, KHÔNG phải JWT** (scheme riêng ⇒ ranh giới là cấu trúc). Org scope đi qua **đúng** service method của đường JWT (`GetCampaignResultsAsync(orgId,…)`) — không viết truy vấn song song. DTO public **hẹp**: bỏ `overrideNote` + `flags[]` (CAMP-12/D13) + điểm thô; PII **deny-by-default** theo cờ `include_pii`. Rate-limit theo key id, in-process (⚠ N replica ⇒ trần N×). Chi tiết + lý do: [docs/services/campaign.md](../../../docs/services/campaign.md) §F17.
 
 ### Index & ràng buộc (tổng hợp)
 - **Soft-delete**: `campaigns.deleted_at` + **global query filter** `IS NULL` (mọi query tự ẩn campaign đã xoá).

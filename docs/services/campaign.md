@@ -77,6 +77,41 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
   - ⚠ Số/ngày trong PDF format bằng **InvariantCulture** — bắt buộc: server chạy locale `vi-VN` in `91,5` trong khi CSV (CsvHelper, InvariantCulture) in `91.5` ⇒ hai bản xuất mâu thuẫn nhau **tuỳ locale máy chạy**.
   - **Thư viện: QuestPDF (Community MIT)** + `SkiaSharp.NativeAssets.Linux.NoDependencies`. BK8 từng hoãn PDF vì SkiaSharp cần native lib trong container; gói `NoDependencies` tự chứa `libSkiaSharp` nên **Dockerfile KHÔNG cần `apt-get` gì thêm**. Đã verify chạy thật trên `mcr.microsoft.com/dotnet/aspnet:10.0` linux-x64, **non-root**, `/app` read-only — sinh PDF + đọc lại được tên tiếng Việt đủ dấu.
 
+### Public API + API key cho bên thứ ba (tích hợp ATS) — ✅ **F17** (FR14)
+
+**Phạm vi đã chốt (user quyết 2026-07-19):** *public API + API key cấp cho org*. Đã loại: webhook outbound · export chuẩn hoá đơn thuần.
+
+#### Quản lý key — JWT, **chỉ OrgAdmin**
+- `POST /campaign/api-keys` — body `{name, expiresInDays?, includePii?}` → **201** `{id, name, key, keyPrefix, includePii, expiresAt, createdAt}`. **`key` (thô) chỉ xuất hiện ở response này, đúng một lần** — DB chỉ giữ hash nên không endpoint nào đọc lại được; mất thì tạo key mới. `expiresInDays` ngoài `1..MaxExpiryDays` → **400**; vượt trần key active/org → **400**.
+- `GET /campaign/api-keys` — danh sách key của org (`keyPrefix`/`lastUsedAt`/`isActive`), **không bao giờ kèm key thô hoặc hash**.
+- `DELETE /campaign/api-keys/{id}` — thu hồi (soft), **idempotent** → 204. Key của org khác → **404** (không xác nhận hộ là nó tồn tại).
+
+> **Vì sao OrgAdmin chứ không HrMember (AUTH-4):** cấp key = phát một credential **đứng lâu, dùng ngoài phiên, đọc được kết quả + PII của TOÀN org, và sống lâu hơn nhiệm kỳ người tạo**. Đó là hành vi *uỷ quyền truy cập dữ liệu org* — cùng hạng với quản thành viên (OrgAdmin), không phải *quản campaign* (HrMember). AUTH-6 chặn HrMember ở money-mutation vì tiền không lấy lại được; **dữ liệu ứng viên đã rò cũng vậy** — revoke key không thu hồi được bản sao bên kia đã tải về. `GET` cũng gate OrgAdmin: danh sách tên+prefix key là **bản đồ tích hợp** của org, không phải thông tin vận hành hằng ngày của HR.
+
+#### Public API — xác thực bằng `X-Api-Key` (KHÔNG phải JWT)
+- `GET /api/v1/campaign/public/campaigns` — campaign của org sở hữu key; keyset-paged (`?cursor=&limit=`, `X-Next-Cursor`).
+- `GET /api/v1/campaign/public/campaigns/{id}/results` — kết quả + xếp hạng. Campaign của org khác → **404**.
+- Thiếu/sai/đã revoke/hết hạn key → **401** (không phân biệt lý do — phân biệt là xác nhận hộ kẻ tấn công rằng chuỗi họ cầm từng là key thật). Vượt rate-limit → **429**.
+
+**Định dạng key:** `isas_ak_` + 32 byte CSPRNG base64url (256 bit). Tiền tố cố định để **secret-scanner** (GitHub push protection, gitleaks) bắt được key ISAS bị commit nhầm vào repo khách hàng.
+
+**Qua gateway (GEN-1):** route `campaign/public/**` nằm dưới catch-all `/api/v1/campaign/{**}` sẵn có ⇒ **không cần thêm route gateway**. Đây là API *public do bên ngoài gọi vào*, khác hẳn `/internal/*` (service-to-service, đi thẳng, không qua gateway) — nên đi qua gateway là đúng chỗ: TLS termination, log truy cập tập trung, một bề mặt vào duy nhất.
+
+**Ranh giới key ≠ JWT là CẤU TRÚC, không phải kỷ luật:** API key là một **authentication scheme riêng** (`ApiKeyAuthenticationHandler`). Public API khai `[Authorize(AuthenticationSchemes = "ApiKey")]` ⇒ Bearer JWT không xác thực được nó; các endpoint còn lại dùng scheme mặc định (Bearer) ⇒ `X-Api-Key` không mở được chúng — **kể cả màn hình quản lý key** (nếu mở được thì một key rò rỉ sẽ tự cấp thêm key cho chính nó).
+
+**Phạm vi org — chỗ dễ hỏng nhất:** org của key lấy từ **hàng DB** (claim do handler gắn), **không** từ bất cứ thứ gì client gửi, rồi truyền thẳng vào **đúng những service method mà đường JWT dùng** (`GetCampaignsAsync` / `GetCampaignResultsAsync`, cả hai kẹp `c.OrgId == orgId` ngay trong vị ngữ SQL). Cố ý **KHÔNG viết truy vấn song song** cho đường public: một chỗ lọc org = một chỗ để sai.
+
+**Dữ liệu trả ra — hẹp có chủ đích.** DTO public **không phải** `CampaignResultRow` nội bộ; đã bỏ:
+- `overrideNote` — ghi chú riêng của HR ("hiring manager phản đối"), là bình luận nội bộ chứ không phải kết quả đánh giá;
+- `flags[]` (anti-cheat) — **CAMP-12/D13**: cờ là để **HR đọc và tự đánh giá**, không auto-huỷ. Đẩy sang ATS là mời hệ thống bên kia auto-loại đúng thứ D13 cấm;
+- `aiScore`/`overrideScore` thô — thay bằng `hrReviewed: bool` (đủ để ATS biết "đã có người xem lại", không lộ nội bộ).
+
+**PII deny-by-default:** `fullName`/`email` chỉ trả khi key bật `includePii` (mặc định **false**); response mang `piiIncluded` để bên tích hợp biết vì sao trường rỗng. Tích hợp chỉ cần điểm thì không được cầm PII ứng viên.
+
+**Rate-limit** (`ApiKeys:RateLimitPermitsPerWindow`, mặc định 60/60s, `0` = tắt): phân vùng **theo key id**, đặt **sau `UseAuthentication()`**. Không có nó thì một key rò rỉ = rút toàn bộ dữ liệu ứng viên ở tốc độ tối đa, org không có cửa sổ nào để kịp phát hiện + revoke. Phân vùng theo *key id* chứ không theo header thô vì header thô cho phép kẻ tấn công gửi key ngẫu nhiên mỗi request → **đẻ partition vô hạn trong bộ nhớ = DoS đổi chiều**; sau `UseAuthentication()` thì request không hợp lệ đã 401 và chỉ key THẬT mới được phân vùng (số lượng bị chặn bởi `MaxActiveKeysPerOrg`). ⚠ **Giới hạn đã biết: limiter IN-PROCESS** → chạy N replica thì trần thực tế là N× (deploy hiện tại single-instance, cùng lý do DB7 leader-election được hoãn). Muốn đúng khi scale ngang cần backend chia sẻ (Redis) — ngoài phạm vi F17.
+
+**So khớp hằng-thời-gian: KHÔNG cần ở đây** — khác `X-Internal-Token` (Payment/Interview, commit `0a55343`) vốn so **trực tiếp secret-với-secret** bằng `==` nên timing rò rỉ từng byte. Ở F17, đầu vào bị **SHA-256 trước khi chạm DB**, nên thời gian probe B-tree phụ thuộc hash của key kẻ tấn công tự chọn, không phụ thuộc key thật; hash của key đoán sai không "gần" hash key đúng theo bất kỳ nghĩa nào khai thác được. Thêm `FixedTimeEquals` sau khi DB đã so xong chỉ là trang trí.
+
 ### Lọc ứng viên qua CV — sàng lọc hàng loạt (B2B) (🔜 C13–C15 — cùng prefix `/campaign`)
 > **1 trong 2 cách lọc của app** (cách kia: phỏng vấn AI), **tùy chọn** + **MIỄN PHÍ phase 1** (D19). HR đổ **nhiều CV** ứng viên vào campaign → **lọc hybrid** (rule cứng trước, AI chấm khớp sau) → **shortlist xếp hạng** trước khi mời phỏng vấn (tiết kiệm slot). Engine phân tích = AIService `/analyze-cv` ([ai.md](ai.md)) **dùng chung với B2C**; **TÁI DÙNG** `campaign_criteria` làm rubric — **không** đụng engine phỏng vấn. State machine + luồng tiền chi tiết: §Business rules.
 
@@ -267,7 +302,24 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | created_at | timestamptz | `now()` |
 
 ### `audit_logs` — vết thao tác HR
-`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`/**`CreateApiKey`**/**`RevokeApiKey`**…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+
+### `api_keys` — ✅ F17 (API key bên thứ ba, migration `AddApiKeysF17`)
+| Cột | Kiểu | Ghi chú |
+|---|---|---|
+| id | uuid PK | |
+| org_id | uuid | **chủ sở hữu = ORG** (AUTH-8), KHÔNG phải cá nhân HR |
+| name | varchar(100) | nhãn để org biết revoke cái nào ("Greenhouse production") |
+| key_hash | varchar(128) **UNIQUE** | **SHA-256(key thô) base64** — cùng lược đồ refresh token (DB12) + invitation token (DB23). Key thô KHÔNG nằm trong DB |
+| key_prefix | varchar(16) | 6 ký tự đầu phần ngẫu nhiên, CHỈ để hiển thị (không tra cứu/xác thực) |
+| include_pii | bool | cho phép trả tên/email ứng viên. **Mặc định false** (deny-by-default) |
+| created_by_user_id | uuid | cá nhân đã tạo (audit) |
+| created_at | timestamptz | |
+| expires_at | timestamptz **NOT NULL** | LUÔN có hạn — bài học DB23 (cột hạn nullable ⇒ credential vĩnh viễn) |
+| last_used_at | timestamptz? | ghi CÓ TIẾT CHẾ (`ApiKeys:TouchThrottleMinutes`) — thiếu tín hiệu này thì org không dám revoke key nào |
+| revoked_at | timestamptz? | thu hồi = **soft** (giữ row cho audit) |
+
+**Index:** `UNIQUE(key_hash)` (đường xác thực = single-row probe, không scan bảng) · `(org_id, created_at)` (liệt kê + đếm key active).
 
 ### Index & ràng buộc (tổng hợp)
 - **Soft-delete**: `campaigns.deleted_at` + **global query filter** `IS NULL` (mọi query tự ẩn campaign đã xoá).

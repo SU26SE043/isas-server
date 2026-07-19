@@ -28,6 +28,8 @@ namespace Isas.CampaignService.Models
         ScreenCandidates = 7, // C13: upload + sàng CV hàng loạt (campaign_candidates)
         EditCandidate = 8,    // C14: HR sửa email/fullName ứng viên sàng CV (campaign_candidates)
         ReissueInvitation = 9, // D4: phát lại lời mời — vô hiệu token cũ + phát token mới
-        OverrideResult = 10   // E11b: HR chốt/sửa điểm-kết-quả cuối của ứng viên (điểm AI = gợi ý)
+        OverrideResult = 10,  // E11b: HR chốt/sửa điểm-kết-quả cuối của ứng viên (điểm AI = gợi ý)
+        CreateApiKey = 11,    // F17: OrgAdmin cấp API key cho bên thứ ba (ATS)
+        RevokeApiKey = 12     // F17: OrgAdmin thu hồi API key
     }
 }
