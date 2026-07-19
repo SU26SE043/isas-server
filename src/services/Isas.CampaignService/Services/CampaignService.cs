@@ -1318,17 +1318,33 @@ namespace Isas.CampaignService.Services
         // ── E6: xuất bảng kết quả (E5) ra file ──────────────────────────────
         // Tái dùng NGUYÊN VẸN GetCampaignResultsAsync (E5) → thứ tự + rank + pass/fail y hệt bảng web,
         // không tính lại (một nguồn sự thật). Ngoài org → E5 ném KeyNotFoundException → controller 404.
-        // format: null/"" → mặc định csv; "csv" → csv; khác (kể cả "pdf" 🔜) → ArgumentException → 400.
+        // format: null/"" → mặc định csv; "csv" → csv; "pdf" → pdf (F16); khác → ArgumentException → 400.
         public async Task<CampaignResultExport> ExportCampaignResultsAsync(
             Guid orgId, Guid id, string? format, CancellationToken ct)
         {
             var normalized = string.IsNullOrWhiteSpace(format) ? "csv" : format.Trim().ToLowerInvariant();
-            if (normalized == "pdf")
-                throw new ArgumentException("format 'pdf' chưa được hỗ trợ — dùng format=csv.");
-            if (normalized != "csv")
-                throw new ArgumentException($"format '{format}' không hợp lệ — chỉ hỗ trợ format=csv.");
+            if (normalized != "csv" && normalized != "pdf")
+                throw new ArgumentException($"format '{format}' không hợp lệ — chỉ hỗ trợ format=csv|pdf.");
 
             var results = await GetCampaignResultsAsync(orgId, id, ct);   // có thể ném KeyNotFoundException (404)
+
+            if (normalized == "pdf")
+            {
+                // F16 — CÙNG object `results` với nhánh csv: hai bản xuất của một chiến dịch không được
+                // phép lệch nhau, nên chỉ khác ở tầng serialize. Tiêu đề chỉ để trình bày; quyền sở hữu
+                // đã kiểm ở GetCampaignResultsAsync ngay trên (ngoài org thì đã ném 404 rồi).
+                var title = await _db.Campaigns
+                    .Where(c => c.Id == id && c.OrgId == orgId)
+                    .Select(c => c.Title)
+                    .FirstOrDefaultAsync(ct) ?? "Chiến dịch";
+
+                return new CampaignResultExport
+                {
+                    Content = CampaignResultsPdf.Build(results, title, DateTime.UtcNow),
+                    ContentType = "application/pdf",
+                    FileName = $"campaign_{id}_results.pdf"
+                };
+            }
 
             return new CampaignResultExport
             {

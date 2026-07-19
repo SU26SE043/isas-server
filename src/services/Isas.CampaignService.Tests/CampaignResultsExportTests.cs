@@ -21,7 +21,7 @@ namespace Isas.CampaignService.Tests;
 /// (a) format=csv → Content-Type "text/csv" + NỘI DUNG khớp E5 (thứ tự + rank + total_score + pass/fail);
 /// (a') thiếu format → mặc định csv;
 /// (b) người ngoài org → 404 (NotFound);
-/// (c) format=pdf (chưa hỗ trợ) / format lạ → 400 (BadRequest).
+/// (c) format lạ → 400 (BadRequest). (format=pdf: xem CampaignResultsPdfF16Tests — F16 đã hỗ trợ.)
 /// </summary>
 public class CampaignResultsExportTests
 {
@@ -343,10 +343,14 @@ public class CampaignResultsExportTests
         Assert.IsType<NotFoundObjectResult>(result);
     }
 
-    // (c) format=pdf (chưa hỗ trợ) → 400; format lạ → 400.
+    // (c) format lạ → 400.
+    // ⚠ F16 ĐỔI TIỀN ĐỀ CÓ CHỦ ĐÍCH: "pdf" trước đây nằm trong bộ InlineData này vì E6 hoãn PDF
+    // (rủi ro native SkiaSharp — backlog BK8). Nay PDF đã hỗ trợ nên ca "pdf" chuyển sang
+    // CampaignResultsPdfF16Tests. KHÔNG phải nới assert: hành vi "format lạ → 400" vẫn bị khoá
+    // nguyên vẹn bằng xlsx/docx.
     [Theory]
-    [InlineData("pdf")]
     [InlineData("xlsx")]
+    [InlineData("docx")]
     public async Task Export_format_khong_ho_tro_tra_400(string format)
     {
         using var tdb = new CampaignTestDb();
