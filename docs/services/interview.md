@@ -422,6 +422,11 @@ version      int
 ```
 > **BC16 — resolve rubric B2C:** scoring chọn tiêu chí theo `(candidate_id, job_category)`: có rubric riêng active của candidate → dùng nó, **else** seed mặc định (`candidate_id IS NULL`). Dùng chung `B2CRubricScope.ResolveOwnerAsync` ở cả 4 chỗ chấm (publish · callback guard · republisher · breakdown BC9) để không lệch. Sửa rubric = **soft-versioned** (deactivate bản cũ + thêm bản mới `is_active`, KHÔNG hard-delete vì `answer_scores` FK Restrict).
 
+> **F12 (FR03) — 2 tiêu chí NGÔN NGỮ trong seed** (migration `AddLanguageRubricCriteriaF12`): mỗi nghề BA/BE/FE nay có **6** tiêu chí seed thay vì 4 — thêm **"Ngữ pháp & dùng từ"** (0.10) + **"Thuật ngữ chuyên ngành"** (0.10), 4 tiêu chí cũ hạ weight giữ **Σ=1**. Tách khỏi "Giao tiếp & trình bày" vì tiêu chí đó chấm **mạch lạc nội dung**, không phải ngữ pháp. Mô tả tiêu chí "Thuật ngữ" **neo theo nghề** (BA: user story/acceptance criteria… · BE: transaction/idempotent/ACID… · FE: hydration/reflow/debounce…) — không có ví dụ thuật ngữ riêng thì AI không phân biệt được sai-thuật-ngữ theo nghề.
+> ⚠ **Transcript là ASR (Whisper)**: chính tả/dấu câu/tên riêng phiên âm sai là lỗi bộ nhận dạng, KHÔNG của ứng viên → mô tả tiêu chí chỉ neo vào thứ sống sót qua ASR (chọn từ · cấu trúc câu · từ đệm · thuật ngữ), và `build_scoring_prompt` có **1 dòng cấm trừ điểm lỗi ASR ở MỌI tiêu chí**. Bỏ dòng đó ⇒ tiêu chí ngữ pháp đo chất lượng Whisper chứ không đo ứng viên.
+> ⚠ **BC16 không đổi:** candidate đã có rubric RIÊNG **không** tự nhận 2 tiêu chí mới (rubric riêng là lựa chọn của họ; muốn có thì tự thêm qua `PUT /rubrics/{jobCategory}`, hoặc `DELETE` để về seed).
+> ⚠ **INT-9:** thêm tiêu chí vào rubric mà đường publish và đường callback không chọn **cùng** bộ ⇒ AI chấm thiếu tiêu chí ⇒ answer `Failed` hàng loạt. Cả 2 đường đi qua `LoadActiveCriteriaAsync`/`B2CRubricScope` nên luôn khớp; `LanguageRubricCriteriaTests` khoá hợp đồng này (publish 6 → callback 6 → `Scored`).
+
 ### `rubric_levels`
 ```
 id              uuid   PK

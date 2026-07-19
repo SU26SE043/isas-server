@@ -228,6 +228,7 @@ YÊU CẦU:
 - Chấm ĐỦ tất cả tiêu chí. Với mỗi tiêu chí, CHỌN đúng 1 mức trong danh sách mức của tiêu chí đó (levelMatched = score của mức đã chọn), và đặt score = levelMatched (KHÔNG cho điểm ngoài các mức đã liệt kê).
 - reasoning (1-2 câu, tiếng Việt) BẮT BUỘC (E11): (a) trích DẪN ÍT NHẤT 1 câu/cụm mà ứng viên đã nói trong câu trả lời (đặt trong dấu ngoặc kép "...") làm BẰNG CHỨNG, và (b) bám mô tả (descriptor) của mức đã chọn để giải thích vì sao khớp mức đó. KHÔNG được để trống, KHÔNG chỉ vài từ chung chung (vd "tốt", "đạt") thiếu dẫn chứng.
 - Dùng đúng criterionId được cung cấp, KHÔNG tự tạo id mới.
+- (F12) Transcript do MÁY chuyển từ giọng nói: lỗi chính tả, thiếu dấu câu, viết hoa/thường, tên riêng phiên âm sai là lỗi của bộ nhận dạng, KHÔNG phải của ứng viên — TUYỆT ĐỐI không trừ điểm vì các lỗi đó ở bất kỳ tiêu chí nào. Tiêu chí về ngôn ngữ (nếu có trong rubric) chỉ xét thứ ứng viên thực sự nói: chọn từ, cấu trúc câu, từ đệm/lặp thừa, và độ chính xác của thuật ngữ chuyên ngành.
 - Nếu câu trả lời trống hoặc lạc đề, chọn mức thấp nhất phù hợp và nêu rõ lý do (reasoning vẫn phải nêu bằng chứng: trích phần trống/lạc đề của câu trả lời).
 - Chấm khách quan theo bằng chứng trong câu trả lời, không suy diễn ngoài nội dung."""
 
