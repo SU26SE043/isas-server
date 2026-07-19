@@ -62,6 +62,20 @@ SessionResultResponse  ✅ {           // BC9 (số liệu) + BC10 (nhận xét)
   criteriaScores:  CriterionScoreResponse[]   // BC9 — mỗi tiêu chí được bao nhiêu điểm
   needsImprovement: uuid[]             // BC9 — criterionId của tiêu chí dưới ngưỡng (yếu → ưu tiên cải thiện)
   overallComment:  string?             // ✅ BC10 — NHẬN XÉT CHUNG cả buổi (AI `/summarize-session` best-effort khi B2C Scored); null nếu AI lỗi/timeout/rỗng HOẶC criteria rỗng/overallScore null (skip summarize)
+  benchmark:       BenchmarkResponse?   // ✅ F14 — mốc đối chiếu (lớp 2 của radar); null khi tắt (`Benchmark:Enabled=false`) / chưa Scored / không có breakdown
+}
+
+BenchmarkResponse  ✅ {                // F14 (FR08) — mốc đối chiếu cho radar
+  source:   string                     // PeerAverage | PassThreshold
+  label:    string                     // ⚠ nhãn PHẢI hiển thị NGUYÊN VĂN — xem cảnh báo dưới
+  sampleSize: int                      // số buổi của NGƯỜI KHÁC góp vào (0 khi PassThreshold)
+  criteria: CriterionBenchmarkResponse[]
+}
+
+CriterionBenchmarkResponse  ✅ {
+  criterionId:       uuid
+  name:              string
+  targetPercentage:  decimal(5,2)      // 0–100, cùng trục với CriterionScoreResponse.percentage
 }
 
 CriterionScoreResponse  ✅ {           // BC9 — điểm "mỗi trường tiêu chí cỡ nhiêu điểm"
@@ -698,6 +712,31 @@ Dựng **lúc `GET /sessions/{id}`** trong `MapResult` (nằm trong `result` BC9
 **Vì sao.** Số liệu BC9 cho *điểm*; người luyện còn cần **nhận xét chung bằng lời** cho cả buổi (tổng quan làm tốt/chưa tốt ở đâu + hướng cải thiện) — giá trị định hướng của B2C. Sinh bằng **AI (Gemini)** nên **tách khỏi BC9** (BC9 giữ thuần engine, không AI).
 
 **Phạm vi.** CHỈ B2C. Phụ thuộc **BC9** (cần số liệu tổng kết) + endpoint AIService mới.
+
+## F14 (FR08) — So sánh với mốc đối chiếu (radar 2 lớp)
+
+Màn kết quả buổi luyện B2C trước đây chỉ vẽ điểm **của chính người dùng** — không có gì để đối chiếu. F14 thêm **lớp thứ hai** (đường đứt nét) lên radar: điểm của bạn vs mốc.
+
+> ⚠️ **HỆ THỐNG KHÔNG CÓ DỮ LIỆU "CHUẨN NGÀNH".** Không mua bộ benchmark, không tích hợp nguồn ngoài. Vì vậy mốc **chỉ** đến từ hai nguồn có thật, và **nhãn phải nói đúng nguồn**. Gắn chữ "chuẩn ngành" lên trung bình nội bộ / ngưỡng nội bộ là nói dối người dùng về độ tin cậy của đường kẻ họ đang nhìn — có test khoá điều này (`NhanKhongBaoGioNoiLaChuanNganh`).
+
+| `source` | Là gì | Nhãn trả về |
+|---|---|---|
+| `PeerAverage` | Trung bình % của **người dùng KHÁC** trên chính hệ thống: cùng `job_category`, buổi **B2C** đã `Scored` | `Trung bình người luyện cùng vị trí (n=N)` |
+| `PassThreshold` | **Ngưỡng đạt NỘI BỘ** = `Scoring:ImprovementThresholdPct` — đúng ngưỡng đang quyết định tiêu chí nào bị gắn `needsImprovement` trên chính màn hình đó | `Ngưỡng đạt nội bộ (50%)` |
+
+**Bốn quyết định dễ bị "sửa cho gọn", ghi lại lý do** (`CriterionBenchmarkService`, đều có mutation-check):
+1. **Loại chính mình khỏi mẫu.** So mình với tập có chứa mình là vòng tròn; ở ca hệ thống mới có 1 người dùng thì tập đó **chính là họ** ⇒ mốc trùng khít điểm của họ — vô nghĩa nhưng nhìn rất thuyết phục. Loại bản thân khiến ca đó tự rơi về `n=0` → ngưỡng nội bộ.
+2. **Gom theo TÊN tiêu chí, không theo id.** BC16 cho candidate rubric riêng ⇒ cùng một tiêu chí nhưng `rubric_criteria.id` khác nhau giữa các người. Gom theo id thì nhóm dùng rubric riêng **vĩnh viễn `n=0`** — tính năng chết im lặng đúng với nhóm dùng nhiều nhất.
+3. **Một nguồn cho CẢ radar, không trộn.** Thiếu mẫu ở **một** trục là cả biểu đồ rơi về ngưỡng nội bộ. Mỗi trục một nguồn thì đường đứt nét không còn nghĩa thống nhất và không chú thích trung thực được bằng một nhãn.
+4. **Chỉ lấy buổi B2C.** Điểm B2B chấm theo tiêu chí campaign (thang/ngữ cảnh khác hẳn) — trộn vào là so hai thứ không cùng đơn vị.
+
+**Read-time, KHÔNG migration.** Dựng trong `GET /practice/sessions/{id}` (cùng chỗ BC9/BC8). Không snapshot vào bảng: mốc đổi theo dữ liệu cộng đồng nên bản lưu sẽ lỗi thời ngay mà không ai chịu trách nhiệm làm mới.
+
+**Config `Benchmark`:** `Enabled` (mặc định `true`; `false` → `benchmark = null` → radar về 1 lớp như trước F14) · `MinSampleSize` (mặc định **5** buổi của người khác **cho mỗi tiêu chí**).
+
+**FE.** Dùng lại `RadarChart` của F3 (ECharts `renderer:'svg'`, lazy-import — đã verify `echarts` nằm ở lazy chunk, không lọt initial bundle). Thêm input `thresholdLabel` (mặc định giữ chuỗi cũ ⇒ trang báo cáo lộ trình không đổi). Radar chỉ vẽ khi **≥ 3 tiêu chí** (dưới 3 trục là hình thoi/đường thẳng, vô nghĩa) — ca ít tiêu chí vẫn thấy mốc qua **vạch trên thanh ngang**. Mốc ghép theo `criterionId`, **không theo thứ tự mảng** (ghép nhầm trục thì biểu đồ vẫn vẽ đẹp, không ai phát hiện).
+
+**Hạn chế còn lại (cần team biết).** `PeerAverage` là trung bình **người dùng của chính sản phẩm này**, không phải mặt bằng ứng viên ngoài thị trường — mẫu lệch theo tập người dùng hiện có. Muốn có "chuẩn ngành" thật thì phải có nguồn dữ liệu ngoài; đó là việc khác, **không** phải đổi nhãn cho số hiện tại.
 
 **AIService (sync, không ghi DB — theo D17).** Endpoint mới `POST /summarize-session` (xem [ai.md](ai.md)): req `{ jobCategory, overallScore, criteriaScores:[{ name, percentage, needsImprovement }] }` → res `{ overallComment }` (text tiếng Việt, vài câu). Bọc nội dung ứng viên trong delimiter (chống prompt-injection — ai.md). InterviewService nhận kết quả rồi **tự lưu** (AI không ghi DB).
 
