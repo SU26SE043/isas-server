@@ -51,7 +51,13 @@ def test_drops_url_from_unknown_host_but_keeps_resource():
     "data:text/html,<script>alert(1)</script>",
     "file:///etc/passwd",
     "//developer.mozilla.org/docs",            # scheme-relative
-    "https://developer.mozilla.org.evil.com/", # typosquat: allowlist khớp HOST đầy đủ, không substring
+    "https://developer.mozilla.org.evil.com/", # typosquat kiểu TIỀN TỐ: host thật nằm đầu, domain lạ ở cuối
+    # Typosquat kiểu HẬU TỐ — vector khác hẳn ca trên và từng KHÔNG có test nào bắt (supervisor phát hiện
+    # bằng mutation `host.endswith(h)`: mutation đó xanh 143/143 trong khi ca `.evil.com` vẫn đỏ).
+    # Đáng khoá vì `endswith` là refactor RẤT dễ xảy ra — người ta hay đổi sang thế để cho phép subdomain
+    # (`docs.mozilla.org`), và lúc đó `evilmozilla.org` lọt allowlist mà không test nào kêu.
+    "https://evildeveloper.mozilla.org.attacker.net/",
+    "https://notdeveloper.mozilla.org/",
     "",
     None,
     12345,
