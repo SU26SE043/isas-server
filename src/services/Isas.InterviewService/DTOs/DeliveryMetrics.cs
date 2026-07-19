@@ -21,19 +21,26 @@ namespace Isas.InterviewService.DTOs;
 /// </summary>
 public class DeliveryMetricsDto
 {
-    public double AudioSec { get; set; }
-    public double SpeechSec { get; set; }
-    public int WordCount { get; set; }
+    // ⚠ MỌI field số đều NULLABLE, và đó là điểm mấu chốt của bản vá 2026-07-19.
+    //
+    // Trước đây chúng non-nullable nên `Read()` phải `?? 0` từng field ⇒ "chưa đo được" và
+    // "đo ra 0" đè lên nhau, chỉ còn phân biệt được khuyết ở mức CẢ CỤM. Với 4 field không hề
+    // có cột lưu, `?? 0` biến khuyết-vĩnh-viễn thành số 0 trông như số đo thật — rồi số 0 đó
+    // đi thẳng vào prompt chấm dưới nhãn "số liệu thật". null bây giờ đi được suốt từ DB ra
+    // tới cả client lẫn prompt, và mỗi bên tự nói "chưa đo được" thay vì bịa một con số.
+    public double? AudioSec { get; set; }
+    public double? SpeechSec { get; set; }
+    public int? WordCount { get; set; }
 
     /// <summary>Âm tiết/phút — tiếng Việt đơn âm tiết nên đây là nhịp nói, KHÔNG so trực tiếp
     /// được với "words per minute" của tiếng Anh.</summary>
-    public double SpeechRateWpm { get; set; }
+    public double? SpeechRateWpm { get; set; }
 
-    public double LongestPauseSec { get; set; }
-    public int PauseCount { get; set; }
-    public double SilenceRatio { get; set; }
-    public int FillerCount { get; set; }
-    public double FillerPer100Words { get; set; }
+    public double? LongestPauseSec { get; set; }
+    public int? PauseCount { get; set; }
+    public double? SilenceRatio { get; set; }
+    public int? FillerCount { get; set; }
+    public double? FillerPer100Words { get; set; }
 
     /// <summary>Từ đệm nào, mấy lần — để hiện "bạn nói 'ừm' 12 lần" thay vì chỉ một con số.</summary>
     public Dictionary<string, int> FillerBreakdown { get; set; } = [];
@@ -66,6 +73,14 @@ public static class DeliveryMetricsMapper
         answer.PauseCount = metrics?.PauseCount;
         answer.LongestPauseSec = metrics?.LongestPauseSec;
         answer.SilenceRatio = metrics?.SilenceRatio;
+
+        // Vá F11 — 4 field này TRƯỚC ĐÂY BỊ BỎ QUÊN ở đây. Chúng có trong DTO nhận từ AIService
+        // nhưng không được ghi xuống cột nào, nên `Read()` không thể dựng lại và trả về 0.
+        answer.AudioSec = metrics?.AudioSec;
+        answer.SpeechSec = metrics?.SpeechSec;
+        answer.WordCount = metrics?.WordCount;
+        answer.FillerPer100Words = metrics?.FillerPer100Words;
+
         answer.FillerBreakdown = metrics is null || metrics.FillerBreakdown.Count == 0
             ? null
             : JsonSerializer.Serialize(metrics.FillerBreakdown, Json);
@@ -76,16 +91,28 @@ public static class DeliveryMetricsMapper
     /// null khi answer chưa từng đo được — KHÁC với "đo ra 0".</summary>
     public static DeliveryMetricsDto? Read(PracticeAnswer answer) => Read(
         answer.SpeechRateWpm, answer.FillerCount, answer.PauseCount,
-        answer.LongestPauseSec, answer.SilenceRatio, answer.FillerBreakdown);
+        answer.LongestPauseSec, answer.SilenceRatio, answer.FillerBreakdown,
+        answer.AudioSec, answer.SpeechSec, answer.WordCount, answer.FillerPer100Words);
 
     /// <summary>Bản nhận từng giá trị — cho call site đọc bằng <c>.Select(...)</c> projection
-    /// (StuckAnswerRepublisher) không có entity đầy đủ trong tay.</summary>
+    /// (StuckAnswerRepublisher) không có entity đầy đủ trong tay.
+    ///
+    /// <para>4 tham số cuối có default <c>null</c> để call site cũ không phải sửa; nhưng call
+    /// site nào đẩy job CHẤM thì PHẢI truyền đủ — thiếu là prompt chấm mất số đo thời gian,
+    /// đúng lỗi bản vá 2026-07-19 đang bịt.</para></summary>
     public static DeliveryMetricsDto? Read(
         double? speechRateWpm, int? fillerCount, int? pauseCount,
-        double? longestPauseSec, double? silenceRatio, string? fillerBreakdownJson)
+        double? longestPauseSec, double? silenceRatio, string? fillerBreakdownJson,
+        double? audioSec = null, double? speechSec = null,
+        int? wordCount = null, double? fillerPer100Words = null)
     {
+        // "Chưa từng đo được" = KHÔNG có số nào. Giữ ngữ nghĩa cả-cụm cho giá trị trả về null
+        // (worker nhận null → tự transcribe rồi tự đo), nhưng từ đây trở xuống KHÔNG bịa 0 cho
+        // field lẻ nào nữa: khuyết field nào thì field đó ra null.
         if (speechRateWpm is null && fillerCount is null && pauseCount is null
-            && longestPauseSec is null && silenceRatio is null)
+            && longestPauseSec is null && silenceRatio is null
+            && audioSec is null && speechSec is null
+            && wordCount is null && fillerPer100Words is null)
             return null;
 
         Dictionary<string, int>? breakdown = null;
@@ -105,11 +132,18 @@ public static class DeliveryMetricsMapper
 
         return new DeliveryMetricsDto
         {
-            SpeechRateWpm = speechRateWpm ?? 0,
-            FillerCount = fillerCount ?? 0,
-            PauseCount = pauseCount ?? 0,
-            LongestPauseSec = longestPauseSec ?? 0,
-            SilenceRatio = silenceRatio ?? 0,
+            // KHÔNG `?? 0` — xem chú thích đầu DeliveryMetricsDto. Field khuyết đi ra ngoài
+            // dưới dạng null để client hiện "chưa đo được" và prompt chấm nói thẳng là thiếu,
+            // thay vì cả hai cùng đọc một số 0 do ta bịa ra.
+            SpeechRateWpm = speechRateWpm,
+            FillerCount = fillerCount,
+            PauseCount = pauseCount,
+            LongestPauseSec = longestPauseSec,
+            SilenceRatio = silenceRatio,
+            AudioSec = audioSec,
+            SpeechSec = speechSec,
+            WordCount = wordCount,
+            FillerPer100Words = fillerPer100Words,
             FillerBreakdown = breakdown ?? [],
         };
     }

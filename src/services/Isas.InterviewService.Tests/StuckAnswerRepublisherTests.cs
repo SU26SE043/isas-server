@@ -200,6 +200,13 @@ public class StuckAnswerRepublisherTests
             PauseCount = 4,
             LongestPauseSec = 3.1,
             SilenceRatio = 0.4,
+            // Vá 2026-07-19 — 4 chỉ số THỜI GIAN/mật độ. Chúng là thứ prompt chấm dặn LLM tin
+            // NHẤT, nên đường cứu mà đánh rơi chúng thì answer được republish bị chấm trôi chảy
+            // bằng "0 giây audio".
+            AudioSec = 70.0,
+            SpeechSec = 55.5,
+            WordCount = 160,
+            FillerPer100Words = 3.75,
             FillerBreakdown = new Dictionary<string, int> { ["ừm"] = 6 },
         });
         t.Db.AddRange(session, q, a);
@@ -219,6 +226,14 @@ public class StuckAnswerRepublisherTests
         Assert.Equal(190, published.DeliveryMetrics!.SpeechRateWpm);
         Assert.Equal(6, published.DeliveryMetrics.FillerCount);
         Assert.Equal(6, published.DeliveryMetrics.FillerBreakdown["ừm"]);
+
+        // ⚠ Vá 2026-07-19 — 4 assert dưới đây tồn tại vì overload `Read()` cho 4 tham số mới
+        // giá trị mặc định `null` (để call site cũ khỏi sửa). Tiện cho người gọi, nhưng nghĩa là
+        // BỎ QUÊN chúng ở đây sẽ biên dịch sạch và im lặng — đúng cách lỗi gốc đã lọt.
+        Assert.Equal(70.0, published.DeliveryMetrics.AudioSec);
+        Assert.Equal(55.5, published.DeliveryMetrics.SpeechSec);
+        Assert.Equal(160, published.DeliveryMetrics.WordCount);
+        Assert.Equal(3.75, published.DeliveryMetrics.FillerPer100Words);
     }
 
     // Mặt còn lại: answer CHƯA từng đo → job mang null (KHÔNG phải DTO toàn 0). Gửi 0 sẽ khiến

@@ -49,6 +49,33 @@ public class PracticeAnswer
     public double? LongestPauseSec { get; set; }
     public double? SilenceRatio { get; set; }
 
+    // ── Vá F11 (2026-07-19) — 4 cột BỔ SUNG ────────────────────────────────────────────────
+    // Trước bản vá, DTO khai 9 field nhưng chỉ 5 cột được lưu ⇒ `DeliveryMetricsMapper.Read()`
+    // dựng lại DTO với audioSec/speechSec/wordCount/fillerPer100Words = 0.
+    //
+    // Đó KHÔNG chỉ là lỗi hiển thị: CẢ HAI đường đẩy job chấm đều đi qua `Read()`
+    // (`AnswerService` đường thích ứng · `StuckAnswerRepublisher` đường cứu), nên prompt chấm
+    // nhận "nói trong 0s / tổng 0s audio" và "0 lần/100 âm tiết" — trong khi
+    // `build_delivery_block` giới thiệu chính khối đó là "số liệu thật" và dặn LLM coi chỉ số
+    // THỜI GIAN là bằng chứng ĐÁNG TIN NHẤT. Tức là vừa bịa số vừa bảo mô hình hãy tin nó nhất,
+    // và số bịa ("0 từ đệm/100 âm tiết") nghiêng về phía KHEN người luyện.
+    //
+    // Nullable như 5 cột trên: null = chưa đo được, KHÁC 0 = đo ra 0.
+
+    /// <summary>Tổng độ dài audio (giây) Whisper báo.</summary>
+    public double? AudioSec { get; set; }
+
+    /// <summary>Thời lượng THỰC SỰ có tiếng nói (giây) = tổng audio trừ khoảng lặng.</summary>
+    public double? SpeechSec { get; set; }
+
+    /// <summary>Số âm tiết đếm được trong transcript (mẫu số của <see cref="FillerPer100Words"/>).</summary>
+    public int? WordCount { get; set; }
+
+    /// <summary>Từ đệm trên 100 âm tiết. Lưu thay vì tính lại từ <see cref="FillerCount"/> và
+    /// <see cref="WordCount"/> để con số hiển thị cho người dùng TRÙNG KHÍT con số đã đưa vào
+    /// prompt chấm — tính lại ở hai nơi là hai cơ hội lệch nhau.</summary>
+    public double? FillerPer100Words { get; set; }
+
     /// <summary>Chi tiết từ đệm dạng JSON (<c>{"ừm":3,"kiểu như":1}</c>) để hiện cho người luyện.
     /// Lưu <b>text</b> chứ không phải jsonb: dữ liệu này chỉ để đọc-hiển-thị, không truy vấn theo
     /// khoá bao giờ — chọn jsonb ở đây chỉ tổ rước rủi ro migration (xem F15) mà không được gì.</summary>

@@ -204,9 +204,27 @@ def build_delivery_block(delivery: dict | None) -> str:
             "— TUYỆT ĐỐI KHÔNG bịa ra con số tốc độ nói/khoảng lặng/số từ đệm."
         )
 
-    def _num(key: str, default=0):
-        value = delivery.get(key, default)
-        return value if isinstance(value, (int, float)) else default
+    # Vá F11 (2026-07-19) — KHÔNG còn default 0.
+    #
+    # Trước bản vá, field khuyết được in ra là "0" trong một khối tự giới thiệu là "số liệu
+    # thật" và ngay bên dưới dặn LLM coi chỉ số THỜI GIAN là bằng chứng ĐÁNG TIN NHẤT. Bốn
+    # field audioSec/speechSec/wordCount/fillerPer100Words KHÔNG có cột lưu ở .NET nên chúng
+    # khuyết ở MỌI lượt đi qua `DeliveryMetricsMapper.Read()` — tức là mọi lượt chấm của đường
+    # thích ứng và đường republish đều đọc "nói trong 0s / tổng 0s audio" và "0 lần/100 âm
+    # tiết". Số 0 bịa đó nghiêng về phía KHEN (ít từ đệm = trôi chảy).
+    #
+    # .NET đã được vá để lưu đủ 4 cột, nhưng answer GHI TRƯỚC bản vá vĩnh viễn không có số —
+    # nên phía này vẫn phải nói thẳng "chưa đo được" thay vì in 0.
+    MISSING = "chưa đo được"
+
+    def _num(key: str):
+        value = delivery.get(key)
+        return value if isinstance(value, (int, float)) else MISSING
+
+    def _unit(key: str, unit: str):
+        """Số kèm đơn vị; khuyết thì chỉ in 'chưa đo được' (không dính đuôi 's'/'lần')."""
+        value = _num(key)
+        return MISSING if value is MISSING else f"{value}{unit}"
 
     breakdown = delivery.get("fillerBreakdown") or {}
     if isinstance(breakdown, dict) and breakdown:
@@ -215,10 +233,12 @@ def build_delivery_block(delivery: dict | None) -> str:
         detail = "(bộ nhận dạng không ghi lại từ đệm nào)"
 
     return f"""CHỈ SỐ TRÌNH BÀY (hệ thống ĐO từ âm thanh — số liệu thật, không phải lời ứng viên):
-- Tốc độ nói: {_num("speechRateWpm")} âm tiết/phút (nói trong {_num("speechSec")}s / tổng {_num("audioSec")}s audio)
-- Khoảng lặng dài nhất: {_num("longestPauseSec")}s; số lần dừng đáng kể: {_num("pauseCount")}
+- Tốc độ nói: {_unit("speechRateWpm", " âm tiết/phút")} (nói trong {_unit("speechSec", "s")} / tổng {_unit("audioSec", "s")} audio)
+- Khoảng lặng dài nhất: {_unit("longestPauseSec", "s")}; số lần dừng đáng kể: {_num("pauseCount")}
 - Tỉ lệ im lặng: {_num("silenceRatio")} (0 = nói liên tục, càng cao càng nhiều lúc ngắc ngứ)
-- Từ đệm đếm được: {_num("fillerCount")} lần ({_num("fillerPer100Words")} lần/100 âm tiết) — {detail}
+- Từ đệm đếm được: {_unit("fillerCount", " lần")} ({_unit("fillerPer100Words", " lần/100 âm tiết")}) — {detail}
+
+LƯU Ý: chỉ số nào ghi "{MISSING}" là hệ thống KHÔNG đo được cho câu này — hãy BỎ QUA nó, TUYỆT ĐỐI không coi đó là 0 và không suy ra điều gì từ nó.
 
 CÁCH DÙNG CHỈ SỐ TRÊN (quan trọng, đọc kỹ):
 - Transcript do máy nhận dạng tạo ra và máy THƯỜNG TỰ BỎ BỚT từ đệm khi ghi. Vì vậy số từ đệm đếm được là mức TỐI THIỂU, luôn thấp hơn thực tế. "0 từ đệm" KHÔNG được hiểu là nói trôi chảy hoàn hảo.
