@@ -49,7 +49,8 @@ async def health():
 @router.post("/generate-questions", response_model=GenerateQuestionsResponse)
 async def generate_questions(req: GenerateQuestionsRequest):
     try:
-        questions = await provider.generate(req.jobCategory, req.cvText, req.jdText)
+        questions = await provider.generate(
+            req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria)
         return GenerateQuestionsResponse(questions=questions)
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi sinh câu hỏi: {ex}")

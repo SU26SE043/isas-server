@@ -142,6 +142,51 @@ public class SessionFlagTests
         Assert.Equal(0, FlagCount(tdb, campaign.Id));
     }
 
+    // ── F4 — `camera_blocked`: OS/trình duyệt từ chối camera ────────────────────────
+    // Trước F4, FE nuốt lỗi này ⇒ ứng viên thi tiếp không bị giám sát mặt mà HR không có cờ nào.
+    [Fact]
+    public async Task Camera_blocked_duoc_chap_nhan_va_ghi_row()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        SeedMember(tdb.Db, campaign.Id, candidateId);
+
+        var result = await NewController(tdb.NewContext(), candidateId)
+            .ReportCandidateFlag(campaign.Id, sessionId,
+                new CandidateFlagRequest { SignalType = "camera_blocked", Note = "NotAllowedError" }, default);
+
+        Assert.IsType<NoContentResult>(result);
+
+        using var check = tdb.NewContext();
+        var flag = Assert.Single(check.SessionFlags.Where(f => f.CampaignId == campaign.Id));
+        Assert.Equal("camera_blocked", flag.SignalType);
+        Assert.Equal(sessionId, flag.SessionId);
+        Assert.Equal(candidateId, flag.CandidateId);
+        Assert.Equal("NotAllowedError", flag.Note);
+    }
+
+    // 🔴 `camera_blocked` là cờ MÔI TRƯỜNG, KHÔNG phải tín hiệu DANH TÍNH.
+    // Nếu ai đó thêm nhầm nó vào IdentitySignals thì điều kiện lưu đổi: campaign chỉ bật
+    // face_verify (anti-cheat TẮT) sẽ bắt đầu lưu cờ này. Test khoá đúng ranh giới đó.
+    [Fact]
+    public async Task Camera_blocked_khong_phai_tin_hieu_danh_tinh()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        // anti-cheat TẮT, face-verify BẬT → chỉ tín hiệu danh tính mới được lưu.
+        var campaign = SeedCampaign(tdb.Db, antiCheat: false, faceVerify: true);
+        SeedMember(tdb.Db, campaign.Id, candidateId);
+
+        var result = await NewController(tdb.NewContext(), candidateId)
+            .ReportCandidateFlag(campaign.Id, Guid.NewGuid(),
+                new CandidateFlagRequest { SignalType = "camera_blocked" }, default);
+
+        Assert.IsType<NoContentResult>(result);          // vẫn 204 (no-op idempotent)
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));    // nhưng KHÔNG lưu
+    }
+
     // ── (a) Anti-cheat tắt (+ face-verify tắt) → no-op 204, KHÔNG ghi row (giám sát tắt) ──
     [Fact]
     public async Task Anti_cheat_disabled_no_op_204()

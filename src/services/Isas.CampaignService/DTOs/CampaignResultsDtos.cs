@@ -20,6 +20,10 @@ namespace Isas.CampaignService.DTOs
         // Hạng dẫn xuất lúc đọc (doc §campaign_rankings: KHÔNG lưu cột rank). Đồng điểm → cùng rank (1,1,3).
         public int Rank { get; set; }
         public Guid CandidateId { get; set; }
+        // F5 — danh tính người-đọc-được (snapshot `campaign_membership`, fallback `cv_submission`).
+        // Nullable: membership đường-1 lịch sử không có nguồn backfill → HR thấy ô trống, KHÔNG phải tên đoán.
+        public string? FullName { get; set; }
+        public string? Email { get; set; }
         public Guid SessionId { get; set; }
         public decimal TotalScore { get; set; }
         // "Pass"/"Fail" so ngưỡng; null khi ngưỡng chưa đặt (HR quyết tay).

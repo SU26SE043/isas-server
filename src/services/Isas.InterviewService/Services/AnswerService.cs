@@ -11,9 +11,6 @@ namespace Isas.InterviewService.Services;
 
 public class AnswerService : IAnswerService
 {
-    // Phỏng vấn THÍCH ỨNG — thời lượng cho câu hỏi thích ứng (giống seed B2C: PracticeService.DefaultTimeLimitSec).
-    private const int AdaptiveQuestionTimeLimitSec = 120;
-
     private readonly InterviewDbContext _db;
     private readonly IStorageService _storage;
     private readonly IScoringJobPublisher _scoringPublisher;
@@ -231,7 +228,10 @@ public class AnswerService : IAnswerService
                 SessionId = session.Id,
                 OrderNo = maxOrder + 1,
                 Content = decision.NextQuestion!,
-                TimeLimitSec = AdaptiveQuestionTimeLimitSec,
+                // F2 — câu thích ứng theo ĐÚNG thời lượng ứng viên đã chọn cho buổi. Trước đây là hằng số
+                // 120 riêng ở đây, phải "đồng bộ thủ công" với seed → chọn 4 phút mà câu AI hỏi thêm vẫn
+                // 2 phút. `session` đã nằm trong scope nên đọc thẳng, không tốn query.
+                TimeLimitSec = session.TimeLimitSec,
                 Kind = MapKind(decision.Action),
                 GeneratedFromAnswerId = answer.Id
             };

@@ -5,6 +5,13 @@ class GenerateQuestionsRequest(BaseModel):
     jobCategory: str            # BA | BE | FE
     cvText: str | None = None
     jdText: str | None = None
+    # F2b — số câu do ứng viên chọn (B2C). Bỏ trống → settings.question_count (hành vi cũ = 5).
+    # Trần thực thi ở .NET (1..20); ở đây chỉ nhận giá trị đã được kiểm.
+    count: int | None = None
+    # 🐛 F2b — .NET GỬI field này từ BC14 (câu hỏi bài học roadmap bám tiêu chí milestone) nhưng schema
+    # chưa bao giờ khai ⇒ pydantic `extra='ignore'` NUỐT IM LẶNG: không lỗi, không log, câu hỏi chỉ đơn
+    # giản là không bám tiêu chí như thiết kế. Khai ra + đưa vào prompt thì mới thật sự có tác dụng.
+    focusCriteria: list[str] | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):
