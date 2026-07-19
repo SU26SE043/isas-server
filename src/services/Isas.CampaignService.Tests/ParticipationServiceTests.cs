@@ -229,6 +229,88 @@ public class ParticipationServiceTests
         Assert.Equal(FixedCandidate, memberships[0].CandidateId);
     }
 
+    // ── F5 — snapshot danh tính lên membership khi join ───────────────────────────
+
+    // Nhánh TẠO MỚI: email luôn có (từ lời mời); đường-1 không CV → full_name null (chấp nhận).
+    [Fact]
+    public async Task Join_F5_NhanhTaoMoi_SnapshotEmail()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        var inv = NewInvitation(camp.Id, "f5-new@acme.test");
+        tdb.Db.Campaigns.Add(camp);
+        tdb.Db.CampaignInvitations.Add(inv);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewService(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
+
+        using var check = tdb.NewContext();
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal("f5-new@acme.test", m.Email);
+        Assert.Null(m.FullName);   // đường-1: không có CV → không có tên
+    }
+
+    // Đường-2: full_name lấy từ cv_submission đã sàng.
+    [Fact]
+    public async Task Join_F5_Duong2_SnapshotTenTuCv()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        var cvRow = new CvSubmission
+        {
+            Id = Guid.NewGuid(),
+            CampaignId = camp.Id,
+            Email = "f5-cv@acme.test",
+            FullName = "Nguyễn Văn A, Jr.",
+            ParseStatus = CvParseStatus.Done,
+            Status = CvSubmissionStatus.Invited,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+        var inv = NewInvitation(camp.Id, "f5-cv@acme.test", campaignCandidateId: cvRow.Id);
+        tdb.Db.Campaigns.Add(camp);
+        tdb.Db.CvSubmissions.Add(cvRow);
+        tdb.Db.CampaignInvitations.Add(inv);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewService(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
+
+        using var check = tdb.NewContext();
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal("Nguyễn Văn A, Jr.", m.FullName);
+        Assert.Equal("f5-cv@acme.test", m.Email);
+    }
+
+    // 🔴 Nhánh IDEMPOTENT — chỗ dễ quên nhất: membership có SẴN từ trước F5 (cột danh tính null).
+    // Quên gọi snapshot ở nhánh này ⇒ user join lại bao nhiêu lần vẫn trống ⇒ CSV của HR vẫn trống.
+    [Fact]
+    public async Task Join_F5_NhanhIdempotent_DienDanhTinhChoMembershipCu()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        var inv = NewInvitation(camp.Id, "f5-old@acme.test");
+        tdb.Db.Campaigns.Add(camp);
+        tdb.Db.CampaignInvitations.Add(inv);
+        // Membership "lịch sử": tạo trước F5 → Email/FullName còn null.
+        tdb.Db.CampaignMemberships.Add(new CampaignMembership
+        {
+            Id = Guid.NewGuid(),
+            CampaignId = camp.Id,
+            CandidateId = FixedCandidate,
+            Status = MembershipStatus.Joined,
+            JoinedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
+
+        await NewService(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
+
+        using var check = tdb.NewContext();
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal("f5-old@acme.test", m.Email);   // đã được điền qua nhánh idempotent
+    }
+
     [Fact]
     public async Task Join_HaiLan_ChiMotMembership()
     {

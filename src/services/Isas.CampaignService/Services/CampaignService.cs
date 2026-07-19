@@ -833,6 +833,9 @@ namespace Isas.CampaignService.Services
             // Đọc read-model LOCAL session_flags (không xuyên service). Campaign không bật anti-cheat → không có cờ → [].
             var flagsBySession = await GetFlagsBySessionAsync(id, ct);
 
+            // F5: danh tính (tên/email) cho HR — 1 query, KHÔNG N+1 (mẫu GetFlagsBySessionAsync).
+            var identityByCandidate = await GetIdentityByCandidateAsync(id, ct);
+
             var threshold = campaign.PassScorePct;
             var results = new List<CampaignResultRow>(ordered.Count);
             for (int i = 0; i < ordered.Count; i++)
@@ -846,10 +849,14 @@ namespace Isas.CampaignService.Services
                     ? results[i - 1].Rank
                     : i + 1;
 
+                identityByCandidate.TryGetValue(r.CandidateId, out var identity);
+
                 results.Add(new CampaignResultRow
                 {
                     Rank = rank,
                     CandidateId = r.CandidateId,
+                    FullName = identity.FullName,   // F5 — null nếu không tra được (default tuple = (null,null))
+                    Email = identity.Email,
                     SessionId = r.SessionId,
                     TotalScore = effectiveScore,   // điểm effective (đã áp override); FE có AiScore để đối chiếu
                     // Pass/fail: HR override thắng ngưỡng; else so ngưỡng Employer (CAMP-11); ngưỡng null → null.
@@ -954,6 +961,31 @@ namespace Isas.CampaignService.Services
                               Note = t.Select(x => x.Note).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))
                           })
                           .ToList());
+        }
+
+        // F5: tra danh tính ứng viên của 1 campaign → Dictionary<candidate_id, (full_name, email)>.
+        // ĐÚNG 1 query cho cả bảng kết quả (mẫu GetFlagsBySessionAsync) — không N+1 theo từng dòng.
+        // Nav `CvSubmission` là OPTIONAL nên EF dịch thành LEFT JOIN NGAY TRONG query này ⇒ vẫn 1 round-trip.
+        // Fallback `?? m.CvSubmission.X`: che luôn membership đường-2 cũ mà backfill của migration sót
+        // (và mọi row tạo trước F5 chưa join lại) → HR vẫn thấy tên/email thay vì ô trống.
+        private async Task<Dictionary<Guid, (string? FullName, string? Email)>> GetIdentityByCandidateAsync(
+            Guid campaignId, CancellationToken ct)
+        {
+            var rows = await _db.CampaignMemberships
+                .Where(m => m.CampaignId == campaignId && m.CandidateId != null)
+                .Select(m => new
+                {
+                    CandidateId = m.CandidateId!.Value,
+                    FullName = m.FullName ?? (m.CvSubmission != null ? m.CvSubmission.FullName : null),
+                    Email = m.Email ?? (m.CvSubmission != null ? m.CvSubmission.Email : null)
+                })
+                .ToListAsync(ct);
+
+            // UNIQUE(campaign_id, candidate_id) ⇒ khoá không trùng; vẫn dùng nhóm-lấy-đầu cho an toàn
+            // (dữ liệu cũ trước khi index unique được áp có thể còn trùng).
+            return rows
+                .GroupBy(x => x.CandidateId)
+                .ToDictionary(g => g.Key, g => (g.First().FullName, g.First().Email));
         }
 
         // ── E6: xuất bảng kết quả (E5) ra file ──────────────────────────────
@@ -1212,7 +1244,7 @@ namespace Isas.CampaignService.Services
             };
 
         // Serialize bảng kết quả → CSV bằng CsvHelper (tự escape comma/quote/newline — không tự nối chuỗi).
-        // Cột snake_case (§5): rank,candidate_id,session_id,total_score,result,scored_at.
+        // Cột snake_case (§5): rank,candidate_id,session_id,total_score,result,scored_at,flags,full_name,email.
         private static byte[] BuildResultsCsv(CampaignResultsResponse results)
         {
             var rows = results.Results.Select(r => new ResultCsvRow
@@ -1224,7 +1256,10 @@ namespace Isas.CampaignService.Services
                 Result = r.Result ?? string.Empty,   // ngưỡng null → ô result rỗng (HR quyết tay)
                 ScoredAt = r.ScoredAt,
                 // SEC-4: tóm tắt cờ chống gian lận "type:count" ngăn bởi "; " (rỗng nếu không có cờ) cho HR đọc.
-                Flags = string.Join("; ", r.Flags.Select(f => $"{f.Type}:{f.Count}"))
+                Flags = string.Join("; ", r.Flags.Select(f => $"{f.Type}:{f.Count}")),
+                // F5: null → ô rỗng (không tra được danh tính) — CsvHelper tự escape dấu phẩy/nháy trong tên.
+                FullName = r.FullName ?? string.Empty,
+                Email = r.Email ?? string.Empty
             }).ToList();
 
             using var buffer = new MemoryStream();
@@ -1248,6 +1283,8 @@ namespace Isas.CampaignService.Services
             public string Result { get; set; } = string.Empty;
             public DateTime ScoredAt { get; set; }
             public string Flags { get; set; } = string.Empty;   // SEC-4: tóm tắt cờ chống gian lận
+            public string FullName { get; set; } = string.Empty;   // F5
+            public string Email { get; set; } = string.Empty;      // F5
         }
 
         private sealed class ResultCsvRowMap : ClassMap<ResultCsvRow>
@@ -1262,6 +1299,10 @@ namespace Isas.CampaignService.Services
                 // ScoredAt là UTC (UpdatedAt server) → ISO 8601 với hậu tố Z (chữ hoa = literal).
                 Map(m => m.ScoredAt).Index(5).Name("scored_at").TypeConverterOption.Format("yyyy-MM-ddTHH:mm:ssZ");
                 Map(m => m.Flags).Index(6).Name("flags");   // SEC-4: cột cờ chống gian lận (rỗng nếu không có)
+                // F5 — danh tính CUỐI bảng: Index(n) là TUYỆT ĐỐI, chèn vào giữa sẽ phải đánh số lại toàn bộ
+                // và đổi thứ tự cột của file HR đang dùng. Thêm ở đuôi = additive, script cũ không vỡ.
+                Map(m => m.FullName).Index(7).Name("full_name");
+                Map(m => m.Email).Index(8).Name("email");
             }
         }
 

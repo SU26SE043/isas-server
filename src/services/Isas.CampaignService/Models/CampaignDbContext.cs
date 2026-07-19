@@ -309,6 +309,11 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
+                // F5 — snapshot danh tính cho bảng kết quả + CSV (HR đọc được thay vì toàn UUID).
+                // Độ dài theo chuẩn: email ≤ 320 (RFC 5321: 64 local + @ + 255 domain) khớp cv_submission.
+                e.Property(x => x.FullName).HasMaxLength(256);
+                e.Property(x => x.Email).HasMaxLength(320);
+
                 // 1 membership / (campaign, candidate) — chống join 2 lần (D2 idempotent).
                 e.HasIndex(x => new { x.CampaignId, x.CandidateId }).IsUnique();
                 e.HasIndex(x => x.CandidateId);

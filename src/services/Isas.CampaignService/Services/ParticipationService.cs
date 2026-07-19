@@ -62,6 +62,7 @@ namespace Isas.CampaignService.Services
             var tokenHash = HashOrThrow(token);   // DB23 — tra bằng hash (DB không giữ token thô)
             var inv = await _db.CampaignInvitations
                 .Include(i => i.Campaign)
+                .Include(i => i.CvSubmission)   // F5 — nguồn full_name cho đường-2 (shortlist); đường-1 = null
                 .FirstOrDefaultAsync(i => i.TokenHash == tokenHash, ct)
                 ?? throw new KeyNotFoundException("Lời mời không tồn tại.");
 
@@ -87,6 +88,7 @@ namespace Isas.CampaignService.Services
                     CreatedAt = now,
                     UpdatedAt = now
                 };
+                ApplyIdentitySnapshot(membership, inv);
                 _db.CampaignMemberships.Add(membership);
             }
             else
@@ -97,6 +99,9 @@ namespace Isas.CampaignService.Services
                     membership.Status = MembershipStatus.Joined;
                 membership.JoinedAt ??= now;
                 membership.UpdatedAt = now;
+                // F5 — PHẢI chạy ở CẢ nhánh idempotent: membership tồn tại từ trước F5 (hoặc join lại sau
+                // khi reissue lời mời) vẫn cần điền danh tính, không thì HR xuất CSV ra ô trống vĩnh viễn.
+                ApplyIdentitySnapshot(membership, inv);
             }
 
             await _db.SaveChangesAsync(ct);
@@ -249,6 +254,17 @@ namespace Isas.CampaignService.Services
         }
 
         // ── helpers ──────────────────────────────────────────────────────────────────
+
+        // F5 — snapshot danh tính lên membership khi join. Email LUÔN có (lời mời phát theo email);
+        // FullName chỉ có ở đường-2 (parse từ CV lúc sàng — C13/C14), đường-1 mời-thẳng thì null và
+        // HR chấp nhận cột tên trống (email vẫn đủ để nhận diện).
+        // `??=` chứ không gán đè: dữ liệu HR đã sửa tay trên cv_submission (PATCH C14) không bị
+        // một lần join lại ghi ngược về giá trị cũ.
+        private static void ApplyIdentitySnapshot(CampaignMembership membership, CampaignInvitation inv)
+        {
+            membership.Email ??= inv.Email;
+            membership.FullName ??= inv.CvSubmission?.FullName;
+        }
 
         // Tìm membership để cập nhật khi join (D2 idempotent). DB16: dedup theo (campaign, candidate) —
         // membership KHÔNG có email nên bỏ nhánh email cũ. Đường 2 (shortlist): fallback theo cv_submission_id
