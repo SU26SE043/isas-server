@@ -14,15 +14,20 @@ namespace Isas.PaymentService.Services
         private readonly PaymentDbContext _db;
         private readonly ICreditAccountService _accounts;
         private readonly ILogger<WebhookService>? _logger;
+        private readonly ISubscriptionService? _subscriptions;
 
         // DB20 — logger inject OPTIONAL (mẫu AI4): ctor 2-tham-số đang được dùng ở nhiều site test;
         // thêm dependency bắt buộc chỉ để log sẽ phải sửa hết mà không đem lại giá trị nào.
+        // F8 — subscription service cũng OPTIONAL (cùng lý do). Null + đơn thuê bao → đơn vẫn Paid + log
+        // lỗi, KHÔNG cộng credit; cấu hình thật luôn có (Program.cs đăng ký).
         public WebhookService(PaymentDbContext db, ICreditAccountService accounts,
-            ILogger<WebhookService>? logger = null)
+            ILogger<WebhookService>? logger = null,
+            ISubscriptionService? subscriptions = null)
         {
             _db = db;
             _accounts = accounts;
             _logger = logger;
+            _subscriptions = subscriptions;
         }
 
         public async Task<WebhookApplyOutcome> ApplyPaidWebhookAsync(
@@ -101,6 +106,57 @@ namespace Isas.PaymentService.Services
                 await _db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
                 return WebhookApplyOutcome.InvoiceSettled;
+            }
+
+            // F8 — branch thuê bao: KHÔNG cộng credit, KHÔNG ghi credit_transactions (mẫu InvoiceSettlement
+            // ngay trên). Đây là lý do gói thuê bao KHÔNG cần gỡ guard DB20: dòng `credits ?? 0` bên dưới
+            // — thứ đẻ ra ledger Delta=0 → nổ CHECK → rollback flip Pending→Paid → đơn kẹt Pending vĩnh
+            // viễn dù khách đã trả tiền — nằm ngoài đường đi của đơn thuê bao.
+            if (order.Kind is OrderKind.SubscriptionPurchase or OrderKind.SubscriptionRenewal)
+            {
+                // Ví phải tồn tại trước khi ghi subscriptions (FK composite owner → credit_accounts, DB9),
+                // và người mua gói tháng đằng nào cũng cần ví để reserve được (FK trên credit_reservations).
+                // Cùng lối xử lý race với nhánh CreditPack bên dưới.
+                if (await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct) is null)
+                {
+                    try
+                    {
+                        await _accounts.CreateAccountAsync(order.OwnerType, order.OwnerId, ct);
+                    }
+                    catch (DbUpdateException) // đối thủ vừa tạo trước — ví đã tồn tại là đủ
+                    {
+                        foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
+                            entry.State = EntityState.Detached;
+                    }
+                }
+
+                Subscription? activated = null;
+                if (_subscriptions is not null && order.Package is not null)
+                    activated = await _subscriptions.ActivateAsync(
+                        order.OwnerType, order.OwnerId, order.Id, order.Package, ct);
+
+                if (activated is null)
+                    _logger?.LogError(
+                        "Đơn {OrderId} (payos {OrderCode}) đã Paid nhưng KHÔNG kích hoạt được kỳ hạn thuê bao " +
+                        "(package {PackageId}) → cần đối soát tay.",
+                        order.Id, payosOrderCode, order.PackageId);
+
+                _db.PaymentTransactions.Add(new PaymentTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    OrderId = order.Id,
+                    Gateway = "payos",
+                    GatewayTxnId = gatewayTxnId,
+                    Status = "success",
+                    RawWebhookPayload = rawPayload,
+                    CreatedAt = DateTime.UtcNow
+                });
+
+                // Kỳ hạn + flip Pending→Paid + log gateway commit CHUNG một transaction ⇒ không có trạng
+                // thái trung gian "đã Paid mà chưa có quyền dùng".
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+                return WebhookApplyOutcome.SubscriptionActivated;
             }
 
             var credits = order.Package?.InterviewCredits ?? 0;

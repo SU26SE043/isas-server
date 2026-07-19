@@ -13,6 +13,8 @@ namespace PaymentService.Models
         public DbSet<CreditReservation> CreditReservations => Set<CreditReservation>();
         public DbSet<CreditTransaction> CreditTransactions => Set<CreditTransaction>();
         public DbSet<Invoice> Invoices => Set<Invoice>();
+        // F8 — bảng dựng lại sau khi DB15 drop bản scaffold chết; lần này có đường tiêu thụ thật.
+        public DbSet<Subscription> Subscriptions => Set<Subscription>();
 
         // DB14 — đóng dấu updated_at TỰ ĐỘNG cho mọi entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()
         // parameterless của EF gọi xuống overload (bool) này nên chỉ cần override 2 overload dưới là đủ mọi
@@ -198,6 +200,12 @@ namespace PaymentService.Models
                 e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(ReservationStatus.Reserved);
 
+                // F8 — nguồn chi trả, enum lưu string (GEN-2). Default 'Credit' để mọi row CŨ (và mọi
+                // đường ghi chưa biết tới F8) giữ nguyên nghĩa "chỗ giữ này đã trừ ví" ⇒ Consume/Release
+                // của chúng vẫn chạy đúng nhánh bút toán như trước.
+                e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(16)
+                 .HasDefaultValue(ReservationFunding.Credit);
+
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 // DB14 — audit updated_at (stamp khi status flip Reserved→Consumed/Released). 2 flip đó dùng
                 // ExecuteUpdate (CreditAccountService) nên tự thêm .SetProperty(UpdatedAt) tại đó.
@@ -297,6 +305,69 @@ namespace PaymentService.Models
                 // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict).
                 // Invoice CHỈ Org — dùng owner đồng nhất (owner NOT NULL), KHÔNG dùng account_id (ref lỏng
                 // giữ nguyên cho tương thích). Không nav; ví không bao giờ bị xoá.
+                e.HasOne<CreditAccount>()
+                 .WithMany()
+                 .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
+                 .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── Subscription (F8 — thuê bao Premium B2C / membership B2B) ─
+            modelBuilder.Entity<Subscription>(e =>
+            {
+                // Kỳ hạn phải có bề rộng dương. CHECK này an toàn theo nghĩa DB22: không có đường ghi nào
+                // SỬA started_at/expires_at của row đã tồn tại (append-one-row-per-order), nên nó chỉ có thể
+                // chặn lúc INSERT — không thể nổ giữa một transaction Consume/Release rồi kẹt reservation.
+                e.ToTable("subscriptions", t => t.HasCheckConstraint(
+                    "ck_subscriptions_period_positive", "expires_at > started_at"));
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.OwnerType).HasConversion<string>().HasMaxLength(8).IsRequired();
+                e.Property(x => x.OwnerId).IsRequired();
+
+                e.Property(x => x.BillingCycle).HasConversion<string>().HasMaxLength(16).IsRequired();
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16)
+                 .HasDefaultValue(SubscriptionStatus.Active);
+
+                e.Property(x => x.StartedAt).IsRequired();
+                e.Property(x => x.ExpiresAt).IsRequired();
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+
+                // Khoá idempotency của webhook: 1 đơn ⇒ tối đa 1 kỳ hạn. Filtered vì order_id nullable
+                // (chỗ dành cho kỳ hạn cấp tay/khuyến mãi sau này, không sinh từ đơn nào).
+                e.HasIndex(x => x.OrderId).IsUnique().HasFilter("order_id IS NOT NULL");
+
+                // Đường nóng: MỌI lần reserve đều hỏi "chủ ví này còn thuê bao không". Partial theo
+                // status='Active' (mẫu DB5) để index chỉ ôm phần bảng thật sự bị hỏi — kỳ đã hết hạn/huỷ
+                // tích luỹ mãi mãi nhưng không bao giờ nằm trong vị ngữ này. Cột snake_case + literal
+                // khớp tên member enum (Status = HasConversion<string>).
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.ExpiresAt })
+                 .HasDatabaseName("ix_subscriptions_owner_active")
+                 .HasFilter("status = 'Active'");
+
+                // DB5 — sweeper ExpireDueAsync quét WHERE status='Active' AND expires_at <= now.
+                e.HasIndex(x => x.ExpiresAt)
+                 .HasDatabaseName("ix_subscriptions_active_expires_at")
+                 .HasFilter("status = 'Active'");
+
+                e.HasOne(x => x.Package)
+                 .WithMany()
+                 .HasForeignKey(x => x.PackageId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                e.HasOne(x => x.Order)
+                 .WithMany()
+                 .HasForeignKey(x => x.OrderId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict),
+                // đồng nhất với reservations/transactions/invoices. Hệ quả CÓ CHỦ Ý: kích hoạt thuê bao
+                // phải bảo đảm ví tồn tại trước — đằng nào reservation cũng bị chính FK này bắt buộc, nên
+                // tạo ví ngay lúc kích hoạt tốt hơn là để người mua gói tháng ăn 402 ở buổi đầu tiên.
                 e.HasOne<CreditAccount>()
                  .WithMany()
                  .HasForeignKey(x => new { x.OwnerType, x.OwnerId })

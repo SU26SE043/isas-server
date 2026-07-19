@@ -25,6 +25,12 @@ namespace Isas.PaymentService.Services
         Credited,
         /// <summary>Đơn InvoiceSettlement Pending→Paid + hóa đơn Issued/Overdue→Paid (KHÔNG cộng credit) — P8b.</summary>
         InvoiceSettled,
+        /// <summary>
+        /// F8 — đơn SubscriptionPurchase/Renewal Pending→Paid + kỳ hạn thuê bao đã kích hoạt.
+        /// KHÔNG cộng credit, KHÔNG ghi <c>credit_transactions</c> (thuê bao mở khoá ở đường reserve,
+        /// không phải bằng cách bơm credit vào ví).
+        /// </summary>
+        SubscriptionActivated,
         /// <summary>Đơn đã terminal (Paid/Expired/…) — idempotent no-op, KHÔNG cộng lần 2.</summary>
         AlreadyProcessed,
         /// <summary>Không có đơn khớp payos_order_code — chỉ log bằng chứng, no-op.</summary>

@@ -217,8 +217,9 @@ credit_accounts (1/chủ ví: Org HOẶC User)
    └── invoices (postpaid, CHỈ Org, theo kỳ)
 product_packages 1──* orders        (owner ref lỏng → Auth: org_id hoặc user_id)
 invoices        1──* orders        (orders.invoice_id — N Order tất toán 1 Invoice, retry được)
-subscriptions   1──* orders        (orders.subscription_id — N Order gia hạn 1 Subscription) 🔜 phase 2
+orders          1──1 subscriptions (subscriptions.order_id UNIQUE — 1 đơn ⇒ 1 kỳ hạn) ✅ F8
 ```
+> ⚠ **F8 (2026-07-19)** ĐẢO CHIỀU khoá so với dòng cũ (`orders.subscription_id` 🔜 phase 2): thuê bao được tạo Ở webhook (sau đơn), nên khoá đặt phía `subscriptions` — vừa cho idempotency ở tầng DB (`UNIQUE(order_id)`), vừa khỏi phải quay lại UPDATE đơn. Kèm cột mới `credit_reservations.funded_by` (`Credit` default · `Subscription`). **Bản đầy đủ + lý do ở `docs/services/payment.md` (source of truth)**; copy này chỉ đồng bộ những chỗ F8 làm cho SAI, các mục `🔜 phase 2` còn lại trong file vốn đã lệch từ trước.
 
 > **Quy ước kiểu DB:** `uuid·varchar(n)·text·int·bigint`(VND)·`numeric`·`bool·timestamptz·jsonb`, enum lưu **string**, `?`=nullable. Cột **snake_case**.
 
@@ -279,7 +280,7 @@ owner_id         uuid
 kind             varchar(20)   enum: CreditPack · InvoiceSettlement (chỉ Org) · SubscriptionPurchase · SubscriptionRenewal 🔜(phase 2)
 package_id       uuid?         FK → product_packages
 invoice_id       uuid?         FK → invoices        (kind=InvoiceSettlement)
-subscription_id  uuid?         FK → subscriptions   (kind=SubscriptionPurchase/Renewal) 🔜(phase 2)
+(F8: khoá nằm ở subscriptions.order_id, KHÔNG có orders.subscription_id — xem docs/services/payment.md)
 amount_vnd       bigint
 payos_order_code bigint        UNIQUE (time+random — xem Business rules)
 status           varchar(16)   enum: Pending · Paid · Failed · Expired · Cancelled
@@ -327,7 +328,7 @@ status     varchar(16)   enum: Active · Expired · Cancelled
 started_at timestamptz
 expires_at timestamptz
 ```
-> FK nằm ở phía **`orders.subscription_id`** (KHÔNG đặt `order_id` ở đây) → 1 Subscription nhận **N Order** theo thời gian: `SubscriptionPurchase` (mua đầu) + mỗi kỳ `SubscriptionRenewal`. Cùng pattern với `orders.invoice_id`.
+> ⚠ **F8 (2026-07-19) ĐÃ ĐẢO thiết kế này — shape ở trên là BẢN CŨ, đừng code theo.** Bản thật: FK nằm phía **`subscriptions.order_id`** (UNIQUE filtered) và **một lần mua = MỘT row** (gia hạn = row mới nối tiếp `expires_at` cũ), thay vì 1 Subscription nhận N Order. Lý do: thuê bao được tạo Ở webhook (sau đơn), nên `UNIQUE(order_id)` vừa là khoá **idempotency** ở tầng DB vừa khỏi phải quay lại UPDATE đơn. Thêm cột `billing_cycle`, `order_id`, `created_at/updated_at`, CHECK `expires_at > started_at`, và cột mới `credit_reservations.funded_by`. **Bản đầy đủ: [`docs/services/payment.md`](../../../docs/services/payment.md) §`subscriptions` (source of truth).**
 
 ---
 
