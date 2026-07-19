@@ -261,10 +261,11 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 ### Callback nội bộ (worker → InterviewService) — **không qua gateway**, header `X-Internal-Token`
 
 **`POST /internal/answers/{answerId}/result`** — lưu transcript + điểm → answer `Scored`.
-- Req: `{ "transcript": string, "rubricVersion": int, "scores": [{ "criterionId": uuid, "score": number, "reasoning": string? }], "sampleAnswer": string?, "deliveryMetrics": object? }`.
+- Req: `{ "transcript": string, "rubricVersion": int, "scores": [{ "criterionId": uuid, "score": number, "reasoning": string? }], "sampleAnswer": string?, "deliveryMetrics": object?, "promptVersion": int? }`.
 - **Idempotent**: xóa điểm cũ cùng `(attemptNo, rubricVersion)` rồi ghi lại. Res **`200/204`**. Lỗi: **401** (sai token) · **404**.
 - **F13 `sampleAnswer` (optional)** — câu trả lời mẫu mức tối đa cho đúng câu hỏi, do CÙNG lượt chấm sinh. Quy tắc ghi vào `practice_answers.sample_answer`: **attempt 1 ghi đè** (temp=0 = bản chọn ⇒ retry idempotent) · **attempt 2..N (E10) chỉ điền khi trống** (không để nội dung nhảy theo attempt) · **rỗng/thiếu KHÔNG xoá bản đang có** và **KHÔNG làm hỏng lượt chấm** (worker/image cũ không gửi vẫn chấm bình thường — PAY-13).
 - **F11 `deliveryMetrics` (optional)** — chỉ số ĐỘ TRÔI CHẢY đo từ mốc thời gian Whisper (`{ speechRateWpm, longestPauseSec, pauseCount, silenceRatio, fillerCount, fillerBreakdown{} , … }`), lưu vào `practice_answers` (6 cột). **null KHÔNG xoá bản đã lưu**: đường THÍCH ỨNG đã ghi chỉ số từ `/decide-next`, nên worker/image CŨ callback với `null` mà ghi đè là **xoá mất số đo đúng**. Thiếu chỉ số **KHÔNG** làm hỏng lượt chấm (PAY-13).
+- **BK23 `promptVersion` (optional)** — con dấu phiên bản prompt của **chính lượt chấm này**, do worker chụp **tại chỗ dựng prompt** (không phải đọc lại sau). Ghi lên **mỗi dòng** `answer_scores` (per-attempt, xem §Versioning). `null` = worker cũ / không biết · `0` = bản mặc định thuần · số **âm** → chuẩn hoá về `null` + log WARN (`version > 0` có CHECK ở DB nên âm chỉ có thể là worker lệch hợp đồng; lưu rác vào cột kiểm toán tệ hơn để trống). **Thiếu/hỏng con dấu KHÔNG BAO GIỜ làm answer `Failed`** — biến một cột audit thành đường mất credit (PAY-13) là đổi chác tồi.
 
 **`POST /internal/answers/{answerId}/failed`** — đánh dấu `Failed` (lỗi chấm vĩnh viễn).
 - Req: `{ "reason": string }`. Nếu answer đã `Scored` → **bỏ qua** (không hạ `Failed`). Res **`200/204`**. Lỗi: **401** · **404**.
@@ -831,7 +832,15 @@ Rubric quyết định chấm **cái gì**; prompt quyết định chấm **như
 
 `answer_scores.prompt_version` nullable: `null` = chấm trước F21 · `0` = bản mặc định thuần · `>0` = tổng version các mảnh đang active. Gộp `null` với `0` là mất đúng thông tin cần để biết có so sánh được hay không.
 
-⚠ **Hiện mới LƯU, chưa cảnh báo** khi bảng xếp hạng trộn hai giá trị khác nhau → **`BK23`**. Lưu trước vì đây là vế **không hồi tố được**: thiếu cột thì điểm lịch sử vĩnh viễn mất dấu đã chấm bằng prompt nào; cảnh báo thì thêm lúc nào cũng được.
+✅ **Con dấu ĐÃ được ghi thật (BK23).** F21 để lại cột + `GetPromptVersionStampAsync()` nhưng **không đấu dây writer nào** ⇒ cột NULL trên mọi dòng, tức tính năng tự vô hiệu hoá lớp an toàn của chính nó. Nay AIService gửi kèm `promptVersion` trong callback chấm → đóng lên **từng dòng** `answer_scores`.
+
+**Nguồn con dấu = AIService, KHÔNG phải Interview tự đọc DB lúc lưu.** AIService cache mảnh prompt theo TTL và **cố ý fail-open về cache CŨ** khi registry lỗi (F21 tầng 3), còn chấm thì bất đồng bộ qua RabbitMQ và có thể bị `StuckAnswerRepublisher` đẩy lại sau hàng giờ ⇒ "phiên bản đang trong DB lúc callback về" thường xuyên **khác** "phiên bản thực sự đã chấm". Con dấu sai còn **tệ hơn NULL**: cả lý do tồn tại của cột là trả lời *"hai điểm này có cùng thước đo không"*, mà con dấu nói dối thì nó trả lời **sai một cách tự tin** và không ai có cách nào biết. Giá phải trả: đổi hợp đồng callback — rẻ, đúng mẫu `sampleAnswer` (F13) / `deliveryMetrics` (F11).
+
+**Con dấu là thuộc tính của ATTEMPT, không phải của answer.** Với `SelfConsistencyN > 1` (E10), 1 answer = N lượt gọi AI riêng, mỗi lượt refresh registry riêng ⇒ lưu **per-row**, không gộp. Prompt đổi giữa chừng là **thấy được**, không bị một giá trị "đại diện" nuốt mất.
+
+⚠ **Attempt trộn hai phiên bản prompt → `needs_review`.** Điểm chốt là **median giữa các attempt**; trộn hai thước đo thì median vẫn ra một con số trông bình thường mà **không gì nói rằng nó vô nghĩa**. Xử bằng **cờ soi lại**: KHÔNG loại attempt (median mất mẫu, có khi còn 1) và KHÔNG `Failed` (mất credit PAY-13 vì một thao tác của admin — người trả tiền không liên quan). Dòng **khuyết** con dấu (worker cũ) **không** bị suy ra là "khác thước đo": `null` = *không biết*, suy "khác" từ "không biết" là bịa và sẽ gắn cờ oan hàng loạt đúng kiểu nhiễu khiến người ta tắt cờ rồi mất luôn tín hiệu thật.
+
+⚠ **Còn lại của `BK23`:** chưa có cảnh báo ở tầng **bảng xếp hạng** khi ranking trộn hai `prompt_version` khác nhau (CAMP-10/E4) và ở **BC15** khi so cải thiện theo thời gian — nay đã **có dữ liệu** để làm, trước thì không.
 
 ### Ranh giới — F21 đóng theo nghĩa nào
 ✅ **"Sửa được NỘI DUNG của 3 ngành"** (BA/BE/FE): tên hiển thị · mô tả · hướng dẫn riêng theo nghề, hiệu lực ở lần sinh/chấm kế mà **không cần deploy**.

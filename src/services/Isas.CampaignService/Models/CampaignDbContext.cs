@@ -311,9 +311,13 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
                 // F5 — snapshot danh tính cho bảng kết quả + CSV (HR đọc được thay vì toàn UUID).
-                // Độ dài theo chuẩn: email ≤ 320 (RFC 5321: 64 local + @ + 255 domain) khớp cv_submission.
-                e.Property(x => x.FullName).HasMaxLength(256);
-                e.Property(x => x.Email).HasMaxLength(320);
+                // FX1 — độ dài nay THỰC SỰ khớp nguồn (comment cũ nói "khớp cv_submission" nhưng để
+                // 320/256 trong khi cả `cv_submission.email` lẫn `campaign_invitations.email` đều là
+                // varchar(255), `cv_submission.full_name` là varchar(255)). Giá trị ở đây CHỈ sao chép
+                // từ 2 nguồn đó (ApplyIdentitySnapshot) nên không thể dài hơn 255 ⇒ thu về 255 an toàn
+                // và biến ràng buộc thành sự thật thay vì lời chú thích sai.
+                e.Property(x => x.FullName).HasMaxLength(255);
+                e.Property(x => x.Email).HasMaxLength(255);
 
                 // 1 membership / (campaign, candidate) — chống join 2 lần (D2 idempotent).
                 e.HasIndex(x => new { x.CampaignId, x.CandidateId }).IsUnique();
@@ -347,6 +351,22 @@ namespace Isas.CampaignService.Models
                 e.HasOne(x => x.CvSubmission)
                  .WithMany()
                  .HasForeignKey(x => x.CvSubmissionId)
+                 .OnDelete(DeleteBehavior.SetNull);
+
+                // FX1 — quan hệ THẬT membership → invitation (DB16 tách bảng nhưng bỏ quên khoá này,
+                // buộc GetInvitationsAsync phải ghép bằng email = suy đoán).
+                // Index thường, KHÔNG unique: reissue (D4) + join lại có thể cho nhiều membership cùng
+                // trỏ 1 lời mời trong dữ liệu lịch sử; ràng buộc 1-1 là thay đổi ngữ nghĩa và có thể fail
+                // lúc apply → để riêng nếu thật sự cần (mẫu comment index session_id ở trên).
+                // SetNull (không Restrict): invitation cascade-delete theo campaign, Restrict sẽ chặn
+                // xoá campaign; và mất link chỉ làm mất khả năng ghép chính xác, không mất membership.
+                e.HasIndex(x => x.InvitationId)
+                 .HasFilter("invitation_id IS NOT NULL");
+
+                e.HasOne(x => x.Invitation)
+                 .WithMany()
+                 .HasForeignKey(x => x.InvitationId)
+                 .HasConstraintName("fk_campaign_membership_invitation_invitation_id")
                  .OnDelete(DeleteBehavior.SetNull);
             });
 

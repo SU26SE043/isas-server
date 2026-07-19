@@ -82,6 +82,21 @@ public class AnswerScoreCallbackRequest
     // [Required] (mẫu SampleAnswer): worker/image CŨ không gửi vẫn phải chấm được, và chỉ số
     // thiếu KHÔNG được phép làm hỏng lượt chấm (answer Failed = mất credit, PAY-13).
     public DeliveryMetricsDto? DeliveryMetrics { get; set; }
+
+    // BK23 — con dấu phiên bản prompt của CHÍNH lượt chấm này, do worker chụp tại chỗ dựng
+    // prompt (`ScoreOutcome.prompt_version`). .NET đóng lên từng dòng answer_scores.
+    //
+    // Vì sao NHẬN TỪ WORKER thay vì Interview tự đọc `GetPromptVersionStampAsync()` lúc lưu:
+    // AIService cache mảnh prompt theo TTL và CỐ Ý fail-open về cache CŨ khi registry lỗi (F21,
+    // tầng 3), còn lượt chấm thì bất đồng bộ qua RabbitMQ + có thể bị `StuckAnswerRepublisher`
+    // đẩy lại sau hàng giờ. Nên "phiên bản đang trong DB lúc callback về" thường xuyên KHÁC
+    // "phiên bản thực sự đã chấm". Con dấu sai còn TỆ HƠN NULL: cả lý do tồn tại của cột là trả
+    // lời "hai điểm này có cùng thước đo không" — con dấu nói dối thì nó trả lời sai một cách
+    // tự tin, và không ai có cách nào biết.
+    //
+    // Nullable + không [Required] (mẫu SampleAnswer/DeliveryMetrics): worker/image CŨ không gửi
+    // → NULL = "không biết chấm bằng prompt nào", phân biệt được với 0 = "bản mặc định thuần".
+    public int? PromptVersion { get; set; }
 }
 
 public class ScoreItemDto
