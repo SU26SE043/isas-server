@@ -131,6 +131,24 @@ public class ApiKeyServiceF17Tests
         Assert.True(principal.IncludePii);
     }
 
+    // Vế ÂM của cờ PII — thiếu nó thì bộ test có một lỗ THẬT trên đường dữ liệu cá nhân.
+    // Ca dương ở trên chỉ assert `Assert.True(principal.IncludePii)`, nên một lỗi biến MỌI key thành
+    // được-đọc-PII (vd hardcode `true` lúc dựng principal) vẫn thoả mãn nó một cách tầm thường: mutation
+    // đúng chỗ đó cho 406/406 XANH. `PublicApiF17Tests` không đỡ được ca này vì nó dựng claim BẰNG TAY,
+    // không đi qua AuthenticateAsync ⇒ mapping api_keys.include_pii → principal chỉ được khoá ở đây.
+    [Fact]
+    public async Task Authenticate_key_khong_bat_pii_thi_principal_KHONG_duoc_mo_pii()
+    {
+        using var tdb = new CampaignTestDb();
+        var orgId = Guid.NewGuid();
+        var created = await NewService(tdb.NewContext()).CreateAsync(orgId, Guid.NewGuid(), Req(pii: false), default);
+
+        var principal = await NewService(tdb.NewContext()).AuthenticateAsync(created.Key, default);
+
+        Assert.NotNull(principal);
+        Assert.False(principal!.IncludePii);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]
