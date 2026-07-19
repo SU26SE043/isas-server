@@ -1,4 +1,4 @@
-﻿namespace PaymentService.Models
+namespace PaymentService.Models
 {
     /// <summary>
     /// Sổ cái credit (append-only) — Purchase (+pack) / Consume (−1/lượt khi Scored) / Refund.
@@ -16,6 +16,18 @@
         public CreditTransactionReason Reason { get; set; }
         public DateTime CreatedAt { get; set; }
         public Order? Order { get; set; }
+
+        /// <summary>
+        /// F18 — bút toán GỐC mà bút toán này đảo (chỉ set trên row <see cref="CreditTransactionReason.Refund"/>).
+        /// Tự tham chiếu cùng bảng.
+        ///
+        /// Đây vừa là liên kết đối soát ("khoản −3 này đảo khoản +5 nào"), vừa là **khoá idempotency**:
+        /// UNIQUE lọc trên cột này (xem PaymentDbContext) khiến hoàn tiền lần hai cho cùng một bút toán
+        /// mua đụng UNIQUE và bị chặn ở tầng DB — cùng lối mà UNIQUE(session_id) chặn double-reserve,
+        /// thay vì tin vào một câu check-then-act ở tầng ứng dụng.
+        /// </summary>
+        public Guid? ReversesTransactionId { get; set; }
+        public CreditTransaction? ReversesTransaction { get; set; }
     }
 
     public enum CreditTransactionReason

@@ -114,6 +114,12 @@ namespace PaymentService.Models
                 // flip status tự thêm .SetProperty(UpdatedAt) (WebhookService); tracked Cancel qua SaveChanges.
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
+                // F18 — audit hoàn tiền. Lý do/mã cổng giới hạn độ dài để không thành bãi rác text.
+                e.Property(x => x.RefundReason).HasMaxLength(500);
+                e.Property(x => x.RefundGatewayRef).HasMaxLength(100);
+
+
+
                 // P8b — package optional: đơn InvoiceSettlement không gắn package (gắn invoice_id).
                 e.HasOne(x => x.Package)
                  .WithMany(x => x.Orders)
@@ -264,6 +270,23 @@ namespace PaymentService.Models
 
                 e.Property(x => x.Reason).HasConversion<string>().HasMaxLength(16).IsRequired();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // F18 — self-FK: bút toán hoàn trỏ về bút toán mua gốc. Restrict (sổ cái append-only,
+                // không row nào bị xoá). UNIQUE LỌC `WHERE reverses_transaction_id IS NOT NULL` = khoá
+                // idempotency chống hoàn hai lần cùng một khoản mua: hai request hoàn song song thì bên
+                // thua đụng UNIQUE lúc SaveChanges → rollback → trả AlreadyRefunded, thay vì cả hai cùng
+                // trừ ví. NULL không bị ràng buộc nên mọi bút toán không-hoàn vẫn tự do.
+                e.HasOne(x => x.ReversesTransaction)
+                 .WithMany()
+                 .HasForeignKey(x => x.ReversesTransactionId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                e.HasIndex(x => x.ReversesTransactionId)
+                 .IsUnique()
+                 .HasDatabaseName("ux_credit_transactions_reverses")
+                 .HasFilter("reverses_transaction_id IS NOT NULL");
+
 
                 e.HasOne(x => x.Order)
                  .WithMany(x => x.CreditTransactions)
