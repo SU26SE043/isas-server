@@ -315,6 +315,27 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to create invitations: {ex.Message}"); }
         }
 
+        // Danh sách lời mời đã phát — HR theo dõi "đã mời ai / mail gửi tới đâu / ai đã join" và lấy
+        // invitationId để reissue (D4). Lọc `?status=Revoked|Joined|Expired|Sent|Queued` (suy read-time).
+        // Chỉ chủ org → ngoài org = 404. KHÔNG trả token (DB23 — DB chỉ giữ hash).
+        [HttpGet("{id:guid}/invitations")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<List<InvitationListItem>>> GetInvitations(
+            Guid id, [FromQuery] string? status, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                var list = await _campaignService.GetInvitationsAsync(orgId.Value, id, status, ct);
+                return Ok(list);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get invitations: {ex.Message}"); }
+        }
+
         // D4: phát lại lời mời — vô hiệu token cũ + phát token mới + resend email.
         // Ngoài org / invitation không thuộc campaign → 404; campaign không Active → 409.
         [HttpPost("{id:guid}/invitations/{invitationId:guid}/reissue")]

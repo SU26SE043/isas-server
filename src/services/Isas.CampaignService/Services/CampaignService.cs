@@ -632,6 +632,92 @@ namespace Isas.CampaignService.Services
             return response;
         }
 
+        // ── Danh sách lời mời đã phát (HR theo dõi phân phối) ───────────────────────────────
+        // Bịt lỗ: `created[]` của POST chỉ sống trong 1 response, mà đường-1 (mời thẳng email) KHÔNG
+        // sinh row cv_submission nên GET /candidates cũng không thấy → HR đóng tab là mất dấu đã mời ai,
+        // và không lấy được invitationId để gọi reissue (D4).
+        //
+        // Trạng thái suy READ-TIME từ mốc thời gian (không thêm cột state phải đồng bộ). "Đã join" =
+        // có row membership (D2) — KHÔNG dùng invitations.used_at vì cột đó chưa từng được ghi ở đâu.
+        // Ghép membership 2 đường: đường-2 theo cv_submission_id (link chắc chắn), đường-1 theo email
+        // (membership.Email = snapshot F5 lúc join).
+        // ⚠ Membership tạo TRƯỚC F5 có Email = null và CvSubmissionId = null (đường-1 lịch sử) → không
+        // ghép được → hiện "Sent"/"Expired" thay vì "Joined". Thà báo thiếu còn hơn đoán bừa.
+        public async Task<List<InvitationListItem>> GetInvitationsAsync(
+            Guid orgId, Guid id, string? status, CancellationToken ct)
+        {
+            // Ownership: campaign phải của org (query filter loại soft-deleted) → không thấy = 404.
+            var owns = await _db.Campaigns.AnyAsync(c => c.Id == id && c.OrgId == orgId, ct);
+            if (!owns)
+                throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            var invitations = await _db.CampaignInvitations
+                .Where(i => i.CampaignId == id)
+                .OrderByDescending(i => i.CreatedAt)
+                .ThenByDescending(i => i.Id)
+                .ToListAsync(ct);
+
+            if (invitations.Count == 0)
+                return new List<InvitationListItem>();
+
+            var memberships = await _db.CampaignMemberships
+                .Where(m => m.CampaignId == id)
+                .Select(m => new { m.CvSubmissionId, m.Email, m.JoinedAt })
+                .ToListAsync(ct);
+
+            // Ghép in-memory (N ≤ max_candidates, cùng cỡ với GetCandidatesAsync) — email so
+            // case-insensitive vì đường-1 chỉ Trim() còn đường-2 đã lowercase từ C13.
+            var joinedByCv = memberships
+                .Where(m => m.CvSubmissionId is not null)
+                .GroupBy(m => m.CvSubmissionId!.Value)
+                .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt));
+            var joinedByEmail = memberships
+                .Where(m => !string.IsNullOrWhiteSpace(m.Email))
+                .GroupBy(m => m.Email!.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt), StringComparer.OrdinalIgnoreCase);
+
+            var now = DateTime.UtcNow;
+            var rows = invitations.Select(i =>
+            {
+                var joined = i.CampaignCandidateId is Guid ccid && joinedByCv.TryGetValue(ccid, out var byCv)
+                    ? (found: true, at: byCv)
+                    : joinedByEmail.TryGetValue(i.Email.Trim(), out var byEmail)
+                        ? (found: true, at: byEmail)
+                        : (found: false, at: (DateTime?)null);
+
+                return new InvitationListItem
+                {
+                    Id = i.Id,
+                    Email = i.Email,
+                    Status = ResolveDeliveryStatus(i, joined.found, now),
+                    SentAt = i.SentAt,
+                    EmailSentAt = i.EmailSentAt,
+                    ExpiresAt = i.ExpiresAt,
+                    RevokedAt = i.RevokedAt,
+                    JoinedAt = joined.at,
+                    CampaignCandidateId = i.CampaignCandidateId,
+                    CreatedAt = i.CreatedAt
+                };
+            });
+
+            // Lọc theo trạng thái suy read-time (không lọc được ở SQL vì không có cột tương ứng).
+            if (!string.IsNullOrWhiteSpace(status))
+                rows = rows.Where(r => string.Equals(r.Status, status.Trim(), StringComparison.OrdinalIgnoreCase));
+
+            return rows.ToList();
+        }
+
+        // Thứ tự ưu tiên có chủ ý (xem InvitationDeliveryStatus): Revoked đứng trước Joined để lời mời
+        // cũ sau reissue (D4) không hiện Joined nhờ lời mời MỚI cùng email.
+        private static string ResolveDeliveryStatus(CampaignInvitation i, bool joined, DateTime now)
+        {
+            if (i.RevokedAt is not null) return InvitationDeliveryStatus.Revoked;
+            if (joined) return InvitationDeliveryStatus.Joined;
+            if (i.ExpiresAt <= now) return InvitationDeliveryStatus.Expired;
+            if (i.EmailSentAt is not null) return InvitationDeliveryStatus.Sent;
+            return InvitationDeliveryStatus.Queued;
+        }
+
         // ── C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV ──────────────────
         // HR chọn top sau ranking (candidateIds) → mỗi ứng viên: TÁCH EMAIL TỪ CV
         // (campaign_candidates.email, parse sẵn C13) → tạo invitation GẮN campaign_candidate_id +
