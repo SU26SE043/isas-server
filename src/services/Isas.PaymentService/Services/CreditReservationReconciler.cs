@@ -79,10 +79,19 @@ namespace Isas.PaymentService.Services
             foreach (var a in accounts)
             {
                 // CountAsync per account (KHÔNG GroupBy — tránh rủi ro dịch SQL, chưa dùng ở Payment).
+                //
+                // F8 — CHỈ đếm chỗ giữ do CREDIT tài trợ. Chỗ giữ của người có thuê bao cố ý không cộng
+                // reserved_credits (xem CreditAccountService.ReserveAsync §gate unlimited), nên nếu đếm
+                // cả chúng thì reconciler sẽ thấy "drift" ở MỌI subscriber đang thi rồi bơm
+                // reserved_credits lên — phá đúng bất biến remaining+reserved=Σdelta mà nó sinh ra để bảo
+                // vệ; consume/release sau đó trừ reserved xuống âm → nổ CHECK ck_credit_accounts_
+                // non_negative → tx rollback → reservation kẹt Reserved → nack-requeue vô hạn.
+                // Bỏ vế funded_by này = tái tạo nguyên xi lỗi DB21 qua một cửa khác.
                 var count = await db.CreditReservations.CountAsync(
                     r => r.OwnerType == a.OwnerType
                          && r.OwnerId == a.OwnerId
-                         && r.Status == ReservationStatus.Reserved, ct);
+                         && r.Status == ReservationStatus.Reserved
+                         && r.FundedBy == ReservationFunding.Credit, ct);
 
                 if (a.ReservedCredits == count) continue;   // đã khớp → bỏ qua (idempotent)
 

@@ -42,13 +42,43 @@ public class MoneyLossGuardsDb20Db21Db22Tests
         return pkg;
     }
 
-    // Gói Subscription có InterviewCredits=null HỢP LỆ theo PackageService.Validate (chỉ OneTime mới
-    // bắt buộc credits) → trước fix vẫn tạo được đơn Kind=CreditPack rồi chết ở webhook.
+    // ⚠ F8 ĐỔI TIỀN ĐỀ CỦA TEST NÀY, CÓ CHỦ Ý.
+    // Bản cũ khẳng định "gói Subscription KHÔNG mua được" — đúng khi subscription chưa được xây, vì lúc
+    // đó cách duy nhất để mua là chui vào đường CreditPack rồi chết ở webhook. F8 mở đường bán RIÊNG nên
+    // khẳng định cần bảo vệ không còn là "không mua được" mà là bất biến THẬT của DB20:
+    //
+    //     Kind = CreditPack  ⇒  gói sinh credit > 0
+    //
+    // Gói Subscription giờ đi ra một Kind khác ⇒ dòng `credits ?? 0` ở WebhookService (thứ đẻ ra ledger
+    // Delta=0 → nổ CHECK → rollback flip Pending→Paid → đơn kẹt Pending vĩnh viễn) nằm NGOÀI đường đi của
+    // nó. Test viết lại để khoá đúng bất biến đó — KHÔNG phải nới assert cũ cho khỏi đỏ.
     [Fact]
-    public async Task Db20_TaoDon_GoiSubscription_BiChan_KhongTaoDonMoCoi()
+    public async Task Db20_TaoDon_GoiSubscription_KhongBaoGioMangKindCreditPack()
     {
         using var tdb = new PaymentTestDb();
         var pkg = await SeedPackageAsync(tdb, PackageType.Subscription, credits: null, durationDays: 30);
+
+        var svc = new OrderService(tdb.Db, null!, Options.Create(NewPayosSettings()), new FakeOrderCodes());
+
+        // PayOSClient = null! → ném khi gọi cổng thanh toán. Đơn được persist TRƯỚC bước đó (hành vi sẵn
+        // có của CreateOrderAsync), nên vẫn kiểm được Kind đã ghi xuống DB.
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            svc.CreateOrderAsync(OwnerType.User, Guid.NewGuid(),
+                new DTOs.OrderRequest.CreateOrderRequest { PackageId = pkg.Id }));
+
+        var order = Assert.Single(await tdb.Db.Orders.ToListAsync());
+        Assert.Equal(OrderKind.SubscriptionPurchase, order.Kind);
+    }
+
+    // Vế còn lại của bất biến DB20, vẫn nguyên vẹn: loại gói KHÔNG có đường bán riêng thì bị chặn 400
+    // SỚM chứ không âm thầm trôi vào đường CreditPack (lưới cho PackageType thêm về sau / dữ liệu sửa tay).
+    [Fact]
+    public async Task Db20_TaoDon_LoaiGoiKhongHopLe_BiChan_KhongTaoDonMoCoi()
+    {
+        using var tdb = new PaymentTestDb();
+        var pkg = await SeedPackageAsync(tdb, PackageType.OneTime, credits: 5);
+        pkg.Type = (PackageType)99;
+        await tdb.Db.SaveChangesAsync();
 
         var svc = new OrderService(tdb.Db, null!, Options.Create(NewPayosSettings()), new FakeOrderCodes());
 

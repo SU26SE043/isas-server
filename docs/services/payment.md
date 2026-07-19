@@ -127,6 +127,10 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/me/account`** ✅ (2026-07-18) — Số dư ví của **chính caller** → `CreditAccount`. Chủ ví suy từ JWT (D15: claim `org_id`→Org, else `sub`→User) nên **không có đường đọc ví người khác**; HrMember xem được (AUTH-6 chỉ chặn money-mutation). Chưa từng mua credit (chưa có row ví) → **200** ví rỗng `remainingCredits:0` (đọc thuần, KHÔNG tạo ví — ví tạo lazy ở webhook Paid P2). Lỗi: **401**.
 
+**`GET /payment/me/subscription`** ✅ **F8** (2026-07-19) — Thuê bao đang hiệu lực của **chính caller** → `{ ownerType, ownerId, active: bool, billingCycle: "Monthly"|"Annual"|null, startedAt?, expiresAt? }`. Chủ ví suy từ JWT (D15) nên không có đường đọc thuê bao người khác; HrMember xem được membership org (AUTH-6 chỉ chặn money-mutation). Chưa có thuê bao → **200** `active:false` (không phải 404 — cùng lối `GET /me/account`). Đọc thuần. Lỗi: **401**.
+
+**`POST /payment/order`** với gói `Subscription` ✅ **F8** — cùng endpoint mua pack, nhưng gói `type=Subscription` đi **đường riêng**: đơn mang `kind=SubscriptionPurchase` (hoặc `SubscriptionRenewal` nếu chủ ví còn hạn) thay vì `CreditPack`. Gói thiếu `duration_days` → **400** (chặn trước khi tiền rời tay). ⚠ **KHÔNG gỡ guard DB20** — bất biến `kind=CreditPack ⇒ package.interview_credits > 0` giữ nguyên; gói thuê bao chỉ đơn giản không bao giờ mang kind đó. Webhook Paid → nhánh kích hoạt kỳ hạn (**không cộng credit, không ghi `credit_transactions`**, mẫu `InvoiceSettlement`) → outcome `SubscriptionActivated`.
+
 **`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
 
 **`POST /payment/invoices/{id}/pay`** ✅ P8b — Tất toán hóa đơn. Auth `Employer`, owner-scope; `HrMember`→**403** (A4). → **`200`** `Order` (**đầy đủ**, kind=`InvoiceSettlement`, invoice_id, kèm `checkoutUrl`; reuse `OrderService` tạo link PayOS). Lỗi: **404** (không tồn tại/non-owner) · **409** (đã Paid/Void) · **502** (PayOS reject).
@@ -337,8 +341,35 @@ created_at     timestamptz
 ```
 > **P8b reconcile (vòng 14):** dùng `owner_type/owner_id` + `numeric` (nhất quán schema payment còn lại) thay `org_id`+`*_vnd bigint`. Bỏ `issued_at/due_at/paid_at` — paid-ness derive từ `status=Paid` + order settle; thêm lại nếu HR cần hạn hóa đơn (**BK17**). `orders.invoice_id` (nullable FK Restrict, kind=InvoiceSettlement) + `orders.package_id`→nullable (đơn settle không gắn pack).
 
-### ~~`subscriptions`~~ ✅ **DB15 (2026-07-17) — bảng + entity `Subscription` đã DROP (dead scaffold, 0 query dùng)**
-> Bảng/entity/`DbSet`/2 nav (`Order.Subscription`, `ProductPackage.Subscriptions`) đã gỡ (migration `DropSubscriptionsTable`, reversible). **Enum members giữ nguyên** cho phase-2: `PackageType.Subscription`, `OrderKind.SubscriptionPurchase/Renewal` (chỉ là giá trị enum, không có bảng). Khi làm subscription phase-2 → tái tạo bảng qua migration mới. *(Shape cũ để tham khảo: `id · owner_type Org/User · owner_id · package_id · status Active/Expired/Cancelled · started_at · expires_at`; FK dự kiến `orders.subscription_id`.)*
+### `subscriptions` ✅ **F8 (2026-07-19) — dựng LẠI, lần này cùng đường tiêu thụ thật**
+> *(Lịch sử: DB15 2026-07-17 DROP bảng + entity vì là **dead scaffold** — 0 query dùng, `SubscriptionService` là stub `NotImplementedException`. F8 tái tạo qua migration `AddSubscriptionsF8`, gắn liền chuỗi order → webhook → activate → gate ở reserve.)*
+```
+id             uuid pk
+owner_type     varchar(8)    enum: Org (membership B2B) · User (Premium B2C)
+owner_id       uuid          FK composite (owner_type, owner_id) → credit_accounts (Restrict, DB9)
+package_id     uuid?         FK → product_packages (Restrict)
+order_id       uuid?         FK → orders (Restrict) · UNIQUE filtered (order_id IS NOT NULL)
+billing_cycle  varchar(16)   enum: Monthly · Annual   (suy từ package.duration_days, ngưỡng ≥180 ngày)
+status         varchar(16)   enum: Active · Expired · Cancelled
+started_at     timestamptz
+expires_at     timestamptz   CHECK ck_subscriptions_period_positive (expires_at > started_at)
+created_at     timestamptz
+updated_at     timestamptz
+```
+**Index:** `ix_subscriptions_owner_active (owner_type, owner_id, expires_at) WHERE status='Active'` (đường nóng — MỌI lần reserve đều hỏi) · `ix_subscriptions_active_expires_at (expires_at) WHERE status='Active'` (sweeper) · unique `order_id`.
+
+**Một lần mua = MỘT row** (append-one-per-order, KHÔNG update row cũ để kéo dài hạn): `UNIQUE(order_id)` chính là khoá idempotency của webhook — cùng cơ chế `UNIQUE(session_id)` của `credit_reservations`. **Gia hạn** = row mới bắt đầu từ `expires_at` xa nhất đang còn hiệu lực (mua sớm không mất ngày đã trả tiền). **"Đang có thuê bao"** = tồn tại row `status=Active` **AND** `expires_at > now` — CỐ Ý không phụ thuộc sweeper đóng dấu `Expired`.
+
+> ⚠ Lệch shape cũ có chủ ý: dùng `subscriptions.order_id` thay `orders.subscription_id` — thuê bao được tạo Ở webhook (sau đơn), nên đặt khoá ở phía subscription vừa cho idempotency ở tầng DB vừa khỏi phải quay lại UPDATE đơn.
+
+### `credit_reservations.funded_by` ✅ **F8** — `varchar(16)` enum `Credit` (default) · `Subscription`
+Nguồn chi trả của một chỗ giữ, **chốt MỘT LẦN lúc reserve**, không bao giờ đọc lại từ trạng thái thuê bao.
+
+**Vì sao cần cột này thay vì hỏi lại "còn thuê bao không":** chỗ giữ kiểu `Subscription` không trừ cột số dư nào; nếu `Release` quyết định nhánh theo trạng thái *hiện tại* thì một thuê bao **hết hạn giữa buổi** sẽ đẩy release sang nhánh prepaid `remaining+1` ⇒ **đúc ra một credit trả tiền chưa từng được mua**. Chốt tại nguồn ⇒ nghịch đảo luôn khớp chiều thuận, và đó cũng chính là cách hiện thực PAY-12 "không văng người đang thi".
+
+**Bất biến kèm theo (BẮT BUỘC):** bất biến DB4/DB21 thu hẹp thành
+`reserved_credits = count(reservations WHERE status='Reserved' AND funded_by='Credit')`.
+Bỏ vế `funded_by` ⇒ `CreditReservationReconciler` đếm cả chỗ giữ của subscriber → bơm `reserved_credits` → phá `remaining + reserved = Σ delta` → consume/release trừ xuống âm → nổ CHECK → rollback → reservation kẹt `Reserved` → nack-requeue vô hạn. Tức là tái tạo DB21 qua cửa khác.
 
 ---
 
@@ -391,10 +422,17 @@ consume : UPDATE … SET reserved_credits  = reserved_credits − 1,
                        period_usage      = period_usage      + 1     ← ghi nợ kỳ (nguồn của interview_count)
           + INSERT credit_transactions(reason=Consume, delta=−1)
 release : UPDATE … SET reserved_credits  = reserved_credits − 1      (period_usage KHÔNG đổi)
+
+SUBSCRIPTION (F8 — chủ ví còn thuê bao lúc reserve ⇒ funded_by='Subscription'):
+reserve : UPDATE … SET updated_at = now()
+          WHERE owner=… AND status='Active'   ← KHÔNG đổi số dư; 0 row ⇒ ví Suspended ⇒ 402 (PAY-12)
+consume : (chỉ flip reservation → Consumed)   ← KHÔNG đổi số dư, KHÔNG ghi ledger
+release : (chỉ flip reservation → Released)   ← KHÔNG đổi số dư, KHÔNG ghi ledger
 ```
 - **Reserve trừ `remaining` NGAY** (không chỉ tăng `reserved`) → 2 reserve song song không cùng vượt check ⇒ **chống double-spend**. `remaining` = tiêu được thật; `reserved` = đang giữ.
 - **Bất biến audit (prepaid):** `remaining_credits + reserved_credits = Σ(credit_transactions.delta)` tại mọi thời điểm (reserve/release không ghi ledger nên bảo toàn tổng; Purchase/Consume/Refund mới đổi tổng). Job đối soát định kỳ so 2 vế → lệch = có bug bút toán.
 - **Postpaid** (không có `remaining`): điều kiện reserve là `period_usage + reserved + 1 ≤ credit_limit` (và account `Active`, không có hóa đơn `Overdue`). **Consume mới cộng `period_usage`** (không phải reserve) → bỏ ngang/release **không** dồn nợ; `period_usage` chính là nguồn snapshot ra `invoice.interview_count` cuối kỳ.
+- **✅ F8 (2026-07-19) — gate "unlimited" ở đường reserve:** chủ ví có thuê bao còn hạn ⇒ chỗ giữ mang `funded_by='Subscription'` và **KHÔNG đụng cột số dư nào ở CẢ BA bước**. Bất biến audit được giữ **bằng cách không động vào gì**, chứ không bằng bút toán bù: vế trái (`remaining+reserved`) và vế phải (`Σ delta`) đều đứng yên. *(Các phương án khác đều hỏng: "chỉ `reserved+1`" làm vế trái tăng một mình ⇒ gãy ngay từ reserve; "ghi ledger +1 rồi −1" đúc credit khống vào sổ; "vẫn trừ remaining" thì thuê bao vẫn 402 khi ví rỗng = mất tính năng.)* **Kéo theo:** bất biến DB4 thu hẹp thành `... AND funded_by='Credit'` (xem §DB `credit_reservations.funded_by`). Ví `Suspended` vẫn chặn reserve mới (PAY-12) — thuê bao không mua được quyền đi vòng qua lệnh đình chỉ.
 - **✅ DB4 (2026-07-17) — reconciler bất biến `reserved_credits == count(credit_reservations WHERE status=Reserved cùng owner)`:** `CreditReservationReconciler` (BackgroundService, `Reconcile:Enabled/ScanIntervalSeconds`, mặc định on/120s) quét định kỳ TỪ PHÍA `credit_accounts` → mỗi ví `CountAsync(Reserved)` → lệch → `ExecuteUpdate reserved_credits = count`. Sửa drift do crash giữa reserve/consume/release. Guard chống âm (count≥0 + CHECK `ck_credit_accounts_non_negative` DB1). **Scope core Payment-DB thuần** (reservation có sẵn owner); phần "reservation `Reserved` mà session Interview đã terminal (event settlement rớt)" = **DB4b** (backlog — `SettlementReconciler` bên Interview re-publish event; **DB2** outbox sẽ diệt gốc mất-event).
 - **✅ DB18 (2026-07-17) — orphan-reservation compensation (khép DB4b):** `OrphanReservationReconciler` (BackgroundService, `OrphanReconcile:Enabled/ScanIntervalSeconds(120)/OrphanThresholdMinutes(10)/BatchSize`) quét `credit_reservations WHERE Status=Reserved AND CreatedAt < now−10'` → gọi Interview `POST /internal/sessions/exists` (batch, qua `InterviewSessionClient` — **lần đầu Payment→Interview**, cần env `Interview__BaseUrl`) → session **KHÔNG tồn tại** (crash reserve↔insert lúc Start) → `ReleaseAsync(session_id)` (idempotent/absorbing PAY-11). **AN TOÀN:** chỉ release khi Interview xác nhận DƯƠNG; Interview down/lỗi → **skip, KHÔNG release mù**. Đóng hở duy nhất còn lại (process-crash giữa reserve↔insert mà try/catch release không cover). Bao B2B(Org)+B2C(User)+lesson (owner từ reservation). Không set `Interview__BaseUrl` → call ném → reconciler safe-skip mỗi vòng.
 

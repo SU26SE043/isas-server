@@ -34,6 +34,14 @@ namespace Isas.PaymentService.Services
             if (!package.IsActive)
                 throw new InvalidOperationException("Package is no longer available.");
 
+            // F8 — gói thuê bao đi ĐƯỜNG RIÊNG, KHÔNG phải đường CreditPack. Đây là điểm mấu chốt để
+            // KHÔNG phải gỡ guard DB20 ngay bên dưới: bất biến "Kind=CreditPack ⇒ gói sinh credit > 0"
+            // được giữ nguyên vẹn, gói thuê bao chỉ đơn giản không bao giờ mang Kind đó nữa.
+            // (Trước F8 nhánh này không tồn tại nên gói Subscription hiện trong catalog mà bấm Mua là 400 —
+            // bẫy đã ghi ở F25.)
+            if (package.Type == PackageType.Subscription)
+                return await CreateSubscriptionOrderAsync(ownerType, ownerId, package, request, ct);
+
             // DB20 — gói PHẢI sinh được credit thì mới bán được qua đường CreditPack.
             // Trước đây không guard: mua gói Subscription (InterviewCredits null — hợp lệ theo
             // PackageService.Validate, vốn chỉ bắt buộc credits cho OneTime) hoặc OneTime credits=0
@@ -42,6 +50,9 @@ namespace Isas.PaymentService.Services
             // tx.Commit KHÔNG chạy → flip Pending→Paid ROLLBACK theo ⇒ khách ĐÃ TRẢ TIỀN mà đơn kẹt
             // Pending vĩnh viễn, và vì lỗi deterministic nên mọi đường cứu (OrderStatusService polling,
             // OrderExpiryReconciler) đều re-fail. Chặn ở đây = fail 400 SỚM, trước khi tiền rời tay.
+            // F8 — nhánh Subscription đã rẽ ở trên nên vế này giờ chỉ còn là LƯỚI AN TOÀN cho giá trị
+            // PackageType được thêm về sau: loại gói mới nào chưa có đường bán riêng thì fail 400 sớm,
+            // chứ không âm thầm trôi vào đường CreditPack rồi nổ ở webhook như DB20 đã dạy.
             if (package.Type != PackageType.OneTime)
                 throw new InvalidOperationException(
                     $"Package type '{package.Type}' cannot be purchased as a credit pack.");
@@ -79,6 +90,80 @@ namespace Isas.PaymentService.Services
                 OrderCode = orderCode,
                 Amount = package.PriceVnd,
                 Description = $"DH{order.Id:N}"[..25],  // PayOS max 25 chars
+                ReturnUrl = returnUrl,
+                CancelUrl = cancelUrl,
+                ExpiredAt = new DateTimeOffset(order.ExpiredAt).ToUnixTimeSeconds(),
+                Items =
+            [
+                new PaymentLinkItem
+                {
+                    Name     = package.Name,
+                    Quantity = 1,
+                    Price    = package.PriceVnd,
+                }
+            ],
+            };
+
+            var response = OrderResponse.ToResponse(order);
+            response.CheckoutUrl = await CreatePayosLinkAsync(paymentData);
+            return response;
+        }
+
+        /// <summary>
+        /// F8 — tạo đơn mua/gia hạn thuê bao. Giống đường CreditPack ở phần cơ khí (order_code P7 + link
+        /// PayOS), khác ở chỗ <c>Kind</c> KHÔNG phải <see cref="OrderKind.CreditPack"/> nên webhook sẽ rẽ
+        /// sang nhánh kích hoạt kỳ hạn — không cộng credit, không ghi sổ cái, không có cửa nào chạm CHECK
+        /// <c>delta &lt;&gt; 0</c> (chính là đường mà DB20 phải bịt).
+        ///
+        /// <c>SubscriptionPurchase</c> vs <c>SubscriptionRenewal</c> chỉ mang nghĩa BÁO CÁO (mua mới hay
+        /// gia hạn khi còn hạn), suy lúc tạo đơn. Đường kích hoạt xử lý hai kind y hệt nhau, nên đơn nằm
+        /// chờ lâu tới mức thuê bao hết hạn trước khi trả tiền cũng không sinh hành vi lệch.
+        /// </summary>
+        private async Task<OrderResponse> CreateSubscriptionOrderAsync(
+            OwnerType ownerType, Guid ownerId, ProductPackage package, CreateOrderRequest request, CancellationToken ct)
+        {
+            // Gói thuê bao không có duration_days thì không bán được: không biết bán bao nhiêu ngày.
+            // Chặn ở đây = 400 TRƯỚC khi tiền rời tay (cùng tinh thần DB20), thay vì để tiền vào rồi
+            // không kích hoạt được kỳ hạn.
+            if (package.DurationDays is not > 0)
+                throw new InvalidOperationException(
+                    "Subscription package has no duration and cannot be purchased.");
+
+            var now = DateTime.UtcNow;
+            var renewing = await _db.Subscriptions
+                .AnyAsync(s => s.OwnerType == ownerType && s.OwnerId == ownerId
+                               && s.Status == SubscriptionStatus.Active
+                               && s.ExpiresAt > now, ct);
+
+            var (returnUrl, cancelUrl) = PayosUrlResolver.Resolve(request.ReturnUrl, request.CancelUrl, _settings.Value);
+            var orderCode = await _orderCodes.GenerateAsync(ct);
+
+            var order = new Order
+            {
+                // Id/CreatedAt sinh phía C# thay vì dựa vào DEFAULT `gen_random_uuid()`/`now()`: cả hai là
+                // hàm CHỈ có ở Postgres, nên đường ghi này không chạy nổi dưới SQLite (EnsureCreated) ⇒
+                // không test được. Mọi entity khác trong service đã tự sinh ở C# (reservation/transaction/
+                // invoice…, và campaign C11 cùng lý do); giá trị tường minh được EF ưu tiên nên hành vi
+                // trên Postgres không đổi.
+                Id = Guid.NewGuid(),
+                CreatedAt = DateTime.UtcNow,
+                OwnerType = ownerType,
+                OwnerId = ownerId,
+                Kind = renewing ? OrderKind.SubscriptionRenewal : OrderKind.SubscriptionPurchase,
+                PackageId = package.Id,
+                AmountVnd = package.PriceVnd,
+                PayosOrderCode = orderCode,
+                ExpiredAt = DateTime.UtcNow.AddMinutes(30),
+            };
+
+            _db.Orders.Add(order);
+            await _db.SaveChangesAsync(ct);
+
+            var paymentData = new CreatePaymentLinkRequest
+            {
+                OrderCode = orderCode,
+                Amount = package.PriceVnd,
+                Description = $"DH{order.Id:N}"[..25],  // PayOS max 25 chars (PAY-9)
                 ReturnUrl = returnUrl,
                 CancelUrl = cancelUrl,
                 ExpiredAt = new DateTimeOffset(order.ExpiredAt).ToUnixTimeSeconds(),

@@ -146,6 +146,9 @@ builder.Services.AddHostedService<OrphanReservationReconciler>();
 // 16/16 đơn Pending quá hạn, 0 đơn từng Expired). Hỏi PayOS trước: Paid → cộng credit (cứu webhook rơi),
 // Underpaid/PayOS-lỗi → giữ Pending; chỉ link chết mới đóng (không đóng mù → không chôn tiền đã trả).
 builder.Services.AddHostedService<OrderExpiryReconciler>();
+// F8: đóng dấu Active→Expired cho kỳ hạn thuê bao quá hạn. THUẦN báo cáo — luật vào bài tự so ngày
+// (ISubscriptionService.HasActiveAsync), nên job này chết cũng KHÔNG cho ai thi miễn phí.
+builder.Services.AddHostedService<SubscriptionExpiryReconciler>();
 
 var app = builder.Build();
 
