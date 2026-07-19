@@ -133,6 +133,37 @@ public class SessionQuestionCountF2bTests
         Assert.Equal(7, session.MaxQuestions);
     }
 
+    /// <summary>
+    /// B2B: HR đặt trần vượt 20 (guard phía Campaign hiện chỉ chặn số âm) → phải KẸP, không được để
+    /// CHECK ở DB nổ. Nếu nổ thì ứng viên bấm "Bắt đầu" là lỗi, SAU KHI credit org đã bị reserve.
+    /// </summary>
+    [Theory]
+    [InlineData(100_000, 20)]
+    [InlineData(21, 20)]
+    [InlineData(20, 20)]
+    [InlineData(5, 5)]
+    [InlineData(0, 0)]
+    public async Task CampaignSession_ClampsMaxQuestionsIntoDbRange(int configured, int expected)
+    {
+        using var t = new TestDb();
+        var request = new CreateCampaignSessionRequest(
+            CampaignId: Guid.NewGuid(),
+            OrgId: Guid.NewGuid(),
+            JobCategory: JobCategory.BE,
+            Questions: ["Q1"],
+            Criteria: [new CampaignCriterionInput("Clarity", null, 1m, 5)],
+            ExpiresAt: null,
+            AdaptiveEnabled: true,
+            MaxFollowUps: 3,
+            MaxQuestions: configured);
+
+        var res = await Build(t, CreditsMock(), GeneratorMock())
+            .CreateCampaignSessionAsync(Guid.NewGuid(), request);
+
+        var session = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(s => s.Id == res.Id);
+        Assert.Equal(expected, session.MaxQuestions);
+    }
+
     // ── Adaptive BẬT nhưng không chọn → rơi về cấu hình (không đổi hành vi cũ) ──
     [Fact]
     public async Task AdaptiveEnabled_NoChoice_FallsBackToConfig()

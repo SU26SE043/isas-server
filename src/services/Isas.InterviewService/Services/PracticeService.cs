@@ -272,7 +272,7 @@ public class PracticeService : IPracticeService
                 // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = TOÀN BỘ campaign questions (ai cũng
                 // nhận cùng bộ, công bằng), câu thích ứng thêm ở đuôi (bounded), chấm theo cùng tiêu chí. null → tắt.
                 AdaptiveEnabled = request.AdaptiveEnabled ?? false,
-                MaxQuestions = request.MaxQuestions ?? 0,
+                MaxQuestions = ClampCampaignMaxQuestions(request.MaxQuestions, request.CampaignId),
                 MaxFollowUps = request.MaxFollowUps ?? 0
             };
             _db.PracticeSessions.Add(session);
@@ -699,6 +699,30 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException(
                 $"questionCount phải nằm trong khoảng {MinQuestionCount}..{MaxQuestionCount} (đang gửi: {requested.Value}).");
         return requested.Value;
+    }
+
+    /// <summary>
+    /// F2b — kẹp trần câu thích ứng của B2B về đúng miền CHECK ở DB (0..20).
+    ///
+    /// VÌ SAO KẸP CHỨ KHÔNG NÉM: `CampaignService.ValidateAdaptiveCaps` hiện chỉ chặn số ÂM, nên HR
+    /// đặt `max_questions = 100000` là qua sạch guard phía Campaign. Nếu ở đây để nguyên giá trị đó
+    /// thì CHECK `ck_practice_sessions_max_questions_range` sẽ nổ ngay lúc INSERT — tức là ứng viên
+    /// bấm "Bắt đầu" và nhận lỗi, SAU KHI credit org đã bị reserve. Đổi một cấu hình sai của HR lấy
+    /// một buổi thi hỏng là đánh đổi tệ; kẹp + log để HR sửa cấu hình mà ứng viên vẫn thi được.
+    ///
+    /// Chỗ sửa ĐÚNG là siết `ValidateAdaptiveCaps` phía Campaign (ngoài phạm vi worker này — file đó
+    /// đang do người khác giữ trong vòng này). Đây là lưới an toàn, không phải bản vá thay thế.
+    /// </summary>
+    private int ClampCampaignMaxQuestions(int? requested, Guid campaignId)
+    {
+        var value = requested ?? 0;
+        if (value >= 0 && value <= MaxQuestionCount) return value;
+
+        var clamped = Math.Clamp(value, 0, MaxQuestionCount);
+        _logger.LogWarning(
+            "Campaign {CampaignId} cấu hình max_questions={Requested} ngoài miền 0..{Max} → kẹp về {Clamped}",
+            campaignId, value, MaxQuestionCount, clamped);
+        return clamped;
     }
 
     private static PracticeSessionResponse MapToResponse(
