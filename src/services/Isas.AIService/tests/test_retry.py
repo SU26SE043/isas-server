@@ -10,6 +10,7 @@ import pytest
 
 from app import worker
 from app.config import settings
+from app.providers.gemini import ScoreOutcome
 
 
 def _fake_message(body: dict):
@@ -32,7 +33,11 @@ def _patch_pipeline(monkeypatch, *, score, post_callback, post_failed,
 
 
 # Kết quả chấm hợp lệ (E9 shape) khi score() thành công.
-_VALID_SCORES = [{"criterionId": "c1", "score": 3.0, "levelMatched": 3, "reasoning": "ok"}]
+# F13 — score() nay trả ScoreOutcome(scores, sample_answer), không còn list trần.
+_VALID_SCORES = ScoreOutcome(
+    scores=[{"criterionId": "c1", "score": 3.0, "levelMatched": 3, "reasoning": "ok"}],
+    sample_answer="Câu trả lời mẫu.",
+)
 
 
 def test_score_max_attempts_default_is_three():

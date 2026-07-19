@@ -24,8 +24,15 @@ public class PracticeAnswer
     // = gợi ý (INT-14/15/16), KHÔNG auto coi là điểm cuối. Mặc định false (N=1 → luôn false).
     public bool NeedsReview { get; set; }
 
+    // F13 (FR07) — câu trả lời MẪU mức tối đa cho ĐÚNG câu hỏi này, do CÙNG lượt chấm sinh ra
+    // (worker gửi kèm callback → không tốn thêm 1 call AI). null = chưa chấm / LLM không trả.
+    // ⚠ KHÁC HẲN RubricLevel.ExampleAnswers: cái kia là anchor ĐẦU VÀO để hiệu chỉnh AI lúc chấm,
+    // không bao giờ trả ra cho người dùng (và thực tế luôn rỗng vì không có write path nào).
+    // Reset cùng transcript/scores khi upload lại (INT-3) — giữ lại sẽ hiện gợi ý của bài CŨ.
+    public string? SampleAnswer { get; set; }
+
     public int DurationSec { get; set; }
- 
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     // Mốc lần gần nhất job chấm được đẩy lên queue (kể cả republish).

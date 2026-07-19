@@ -26,16 +26,21 @@ class PermanentError(Exception):
     tái lập). Worker sẽ báo .NET đánh dấu answer Failed thay vì retry vô tận."""
 
 
-def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no) -> dict:
+def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no,
+                       sample_answer=None) -> dict:
     """E10 — dựng body callback chấm gửi về .NET. Echo ``attemptNo`` (từ job) để .NET lưu điểm
     theo đúng attempt (self-consistency chấm N lần → median/tiêu chí + cờ needs_review).
-    Tách hàm thuần để unit-test không cần dựng cả pipeline worker."""
+    Tách hàm thuần để unit-test không cần dựng cả pipeline worker.
+
+    F13 — ``sampleAnswer``: câu trả lời mẫu do CÙNG lượt chấm sinh ra. Optional (default None)
+    để mọi call site positional cũ không phải sửa; .NET bỏ qua khi rỗng."""
     return {
         "answerId": answer_id,
         "transcript": transcript,
         "rubricVersion": rubric_version,
         "scores": scores,       # [{criterionId, score, levelMatched, reasoning}, ...] (E9 shape)
         "attemptNo": attempt_no,
+        "sampleAnswer": sample_answer,
     }
 
 
@@ -127,10 +132,10 @@ async def process_message(message: aio_pika.IncomingMessage):
             #    temperature/self-consistency E10) trước khi bó tay -> PermanentError -> Failed.
             #    Lỗi gọi API (rate limit/5xx/mạng) KHÔNG phải ValueError -> rơi xuống
             #    handler tạm thời -> nack để republisher thử lại sau.
-            scores = None
+            outcome = None
             for score_try in range(1, settings.score_max_attempts + 1):
                 try:
-                    scores = await provider.score(
+                    outcome = await provider.score(
                         question=question_content,
                         transcript=transcript,
                         job_category=job_category,
@@ -145,12 +150,17 @@ async def process_message(message: aio_pika.IncomingMessage):
                             f"(LLM output không hợp lệ): {e}")
                     print(f"[↻] Chấm lỗi parse lần {score_try}/"
                           f"{settings.score_max_attempts} (thử lại): {e}")
-            print(f"[✅] Chấm xong (attempt {attempt_no}): {scores}")
+            print(f"[✅] Chấm xong (attempt {attempt_no}): {outcome.scores}")
+            if not outcome.sample_answer:
+                # F13 — không chặn luồng (câu trả lời mẫu là phụ trợ), nhưng phải THẤY được
+                # khi LLM im lặng bỏ field: im lặng ở đây = tính năng chết mà không ai biết.
+                print(f"[⚠️] Không có câu trả lời mẫu (F13) cho answer {answer_id}")
 
             # 4. Callback về .NET — .NET ghi transcript + answer_scores + đổi status.
             #    Lỗi gửi callback = tạm thời -> retry. E10: echo attemptNo để .NET lưu theo attempt.
             await post_callback(make_score_payload(
-                answer_id, transcript, rubric_version, scores, attempt_no))
+                answer_id, transcript, rubric_version, outcome.scores, attempt_no,
+                sample_answer=outcome.sample_answer))
 
             await message.ack()
 

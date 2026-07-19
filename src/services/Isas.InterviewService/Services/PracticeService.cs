@@ -23,6 +23,7 @@ public class PracticeService : IPracticeService
     private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ICreditReservationClient _reservationClient;   // BC2
     private readonly AdaptiveOptions _adaptive;   // phỏng vấn THÍCH ỨNG (B2C seed count + toggle)
+    private readonly ICriterionBenchmarkService? _benchmarks;   // F14 — mốc đối chiếu radar (null = tắt)
     private readonly ILogger<PracticeService> _logger;
 
     public PracticeService(
@@ -34,7 +35,10 @@ public class PracticeService : IPracticeService
         ILogger<PracticeService> logger,
         // Optional (default null) → mọi test dựng PracticeService cũ (6 tham số) vẫn compile + adaptive tắt;
         // DI inject bản thật (Configure<AdaptiveOptions>). null → AdaptiveOptions mặc định (Enabled=false).
-        IOptions<AdaptiveOptions>? adaptiveOptions = null)
+        IOptions<AdaptiveOptions>? adaptiveOptions = null,
+        // F14 — optional cùng lý do: test cũ dựng service không truyền → không có benchmark, kết quả
+        // giữ nguyên hình dạng trước F14 (Benchmark=null) thay vì vỡ.
+        ICriterionBenchmarkService? benchmarks = null)
     {
         _db = db;
         _storage = storage;
@@ -42,6 +46,7 @@ public class PracticeService : IPracticeService
         _scoringNotifier = scoringNotifier;
         _reservationClient = reservationClient;
         _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
+        _benchmarks = benchmarks;
         _logger = logger;
     }
 
@@ -525,7 +530,13 @@ public class PracticeService : IPracticeService
                 cvStrengths = MergeStrengths(cv);
         }
 
-        return MapToResponse(session, questions, answers, criterionScores, cvStrengths);
+        // F14 — mốc đối chiếu (lớp 2 của radar). Chỉ dựng cho B2C đã Scored (cùng điều kiện với
+        // BC9 breakdown); thuần đọc, không ghi DB.
+        var benchmark = isB2CScored && _benchmarks is not null
+            ? await _benchmarks.BuildAsync(session, criterionScores, ct)
+            : null;
+
+        return MapToResponse(session, questions, answers, criterionScores, cvStrengths, benchmark);
     }
 
     // ── HISTORY ───────────────────────────────────────────────────────────
@@ -728,7 +739,8 @@ public class PracticeService : IPracticeService
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
         IReadOnlyList<SessionCriterionScore>? criterionScores = null,
-        IReadOnlyList<string>? cvStrengths = null)
+        IReadOnlyList<string>? cvStrengths = null,
+        BenchmarkResponse? benchmark = null)   // F14
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
 
@@ -743,13 +755,14 @@ public class PracticeService : IPracticeService
         return new PracticeSessionResponse(
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
-            MapResult(s, questions.Count, criterionScores, cvStrengths));
+            MapResult(s, questions.Count, criterionScores, cvStrengths, benchmark));
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.
     private static SessionResultResponse? MapResult(
         PracticeSession s, int totalQuestions, IReadOnlyList<SessionCriterionScore>? criterionScores,
-        IReadOnlyList<string>? cvStrengths = null)
+        IReadOnlyList<string>? cvStrengths = null,
+        BenchmarkResponse? benchmark = null)   // F14
     {
         if (s.Status != SessionStatus.Scored || s.CampaignId is not null
             || criterionScores is not { Count: > 0 })
@@ -775,7 +788,8 @@ public class PracticeService : IPracticeService
             criteria,
             needsImprovement,
             OverallComment: s.OverallComment,   // BC10 — nhận xét chung (AI, best-effort); null nếu chưa/AI lỗi.
-            CvVsAnswer: cvVsAnswer);
+            CvVsAnswer: cvVsAnswer,
+            Benchmark: benchmark);   // F14 — mốc đối chiếu; null khi tắt / caller không dựng
     }
 
     // BC8: gộp tín hiệu "CV mạnh" = strengths + matched skills (nếu có JD match), khử trùng giữ thứ tự.
@@ -814,6 +828,7 @@ public class PracticeService : IPracticeService
             .ToList();
 
         return new AnswerResponse(
-            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview);
+            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview,
+            a.SampleAnswer);   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
     }
 }

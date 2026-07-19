@@ -66,6 +66,11 @@ public class AnswerScoreCallbackRequest
     public int AttemptNo { get; set; } = 1;
 
     public List<ScoreItemDto> Scores { get; set; } = [];
+
+    // F13 — câu trả lời mẫu do CÙNG lượt chấm sinh (worker gửi kèm). Nullable + không [Required]:
+    // worker/image CŨ không gửi field này vẫn phải chấm được (deploy AIService lệch nhịp .NET là
+    // chuyện thường ở đây), và LLM lỡ bỏ field cũng KHÔNG được làm hỏng lượt chấm (PAY-13).
+    public string? SampleAnswer { get; set; }
 }
 
 public class ScoreItemDto

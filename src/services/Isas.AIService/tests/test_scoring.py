@@ -88,12 +88,12 @@ async def test_score_returns_level_matched_and_score_equals_level():
         })
     )
 
-    result = await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
+    outcome = await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
 
-    assert len(result) == 1
-    assert result[0]["criterionId"] == "c1"
-    assert result[0]["levelMatched"] == 3
-    assert result[0]["score"] == 3.0   # score = levelMatched.score
+    assert len(outcome.scores) == 1
+    assert outcome.scores[0]["criterionId"] == "c1"
+    assert outcome.scores[0]["levelMatched"] == 3
+    assert outcome.scores[0]["score"] == 3.0   # score = levelMatched.score
 
 
 @pytest.mark.asyncio
@@ -109,11 +109,11 @@ async def test_score_snaps_when_level_not_valid():
         })
     )
 
-    result = await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
+    outcome = await provider.score("Q", "trả lời", "BE", [_CRIT_WITH_LEVELS])
 
     # 4 cách đều 3 và 5 một khoảng; tie-break chọn mức thấp hơn → 3.
-    assert result[0]["levelMatched"] == 3
-    assert result[0]["score"] == 3.0
+    assert outcome.scores[0]["levelMatched"] == 3
+    assert outcome.scores[0]["score"] == 3.0
 
 
 @pytest.mark.asyncio
@@ -128,10 +128,10 @@ async def test_score_default_band_snaps_fraction_to_integer_level():
         })
     )
 
-    result = await provider.score("Q", "trả lời", "BE", [_CRIT_DEFAULT_BAND])
+    outcome = await provider.score("Q", "trả lời", "BE", [_CRIT_DEFAULT_BAND])
 
-    assert result[0]["levelMatched"] == 4   # tie 4/5 → chọn thấp hơn
-    assert result[0]["score"] == 4.0
+    assert outcome.scores[0]["levelMatched"] == 4   # tie 4/5 → chọn thấp hơn
+    assert outcome.scores[0]["score"] == 4.0
 
 
 @pytest.mark.asyncio
@@ -243,10 +243,10 @@ async def test_score_accepts_reasoning_with_evidence():
         })
     )
 
-    result = await provider.score("Q", "DI giúp giảm coupling", "BE", [_CRIT_WITH_LEVELS])
+    outcome = await provider.score("Q", "DI giúp giảm coupling", "BE", [_CRIT_WITH_LEVELS])
 
-    assert len(result) == 1
-    assert result[0]["reasoning"].startswith("Ứng viên nói")
+    assert len(outcome.scores) == 1
+    assert outcome.scores[0]["reasoning"].startswith("Ứng viên nói")
 
 
 @pytest.mark.asyncio
@@ -330,9 +330,9 @@ async def test_score_returns_low_score_for_language_criterion_when_llm_says_so()
         })
     )
 
-    scores = await provider.score(
+    outcome = await provider.score(
         "Q", "ờ thì cái transaction đó", "BE", [_CRIT_WITH_LEVELS, _CRIT_LANGUAGE])
 
-    by_id = {s["criterionId"]: s for s in scores}
+    by_id = {s["criterionId"]: s for s in outcome.scores}
     assert set(by_id) == {"c1", "c-lang"}          # đủ tiêu chí, không thiếu
     assert by_id["c-lang"]["score"] == 1           # sai/lủng củng → điểm thấp
