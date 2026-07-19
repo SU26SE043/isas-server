@@ -118,10 +118,15 @@ public class LanguageRubricCriteriaTests
         var names = published!.Criteria.Select(c => c.Name).ToList();
         Assert.Contains(B2CRubricSeed.LanguageName, names);
         Assert.Contains(B2CRubricSeed.TerminologyName, names);
-        Assert.Equal(6, published.Criteria.Count);   // 4 cũ + 2 mới
+        // Publish phải mang ĐÚNG TOÀN BỘ bộ seed của nghề đó — không rơi tiêu chí nào (INT-9).
+        // So theo TẬP thay vì đếm số cứng: mỗi lần thêm tiêu chí (F12 → 6 · F11 → 7) mà chỉ sửa
+        // lại con số thì test đang chạy theo hiện thực; so tập thì giữ nguyên được Ý ĐỊNH.
+        var expectedNames = B2CRubricSeed.Build()
+            .Where(c => c.JobCategory == cat).Select(c => c.Name).OrderBy(n => n);
+        Assert.Equal(expectedNames, names.OrderBy(n => n));
     }
 
-    // (5) 🔑 INT-9 — callback chấm ĐỦ 6 tiêu chí (đúng bộ đã publish) → answer Scored, KHÔNG Failed,
+    // (5) 🔑 INT-9 — callback chấm ĐỦ bộ tiêu chí (đúng bộ đã publish) → answer Scored, KHÔNG Failed,
     //     và điểm tiêu chí ngôn ngữ được LƯU (không bị E8 drop vì "ngoài rubric").
     [Fact]
     public async Task Callback_ScoringAllSixCriteria_SavesLanguageScores_AndAnswerScored()
@@ -164,7 +169,9 @@ public class LanguageRubricCriteriaTests
             .FirstAsync(a => a.Id == answer.Id);
 
         Assert.Equal(AnswerStatus.Scored, saved.Status);          // KHÔNG Failed vì thiếu tiêu chí
-        Assert.Equal(6, saved.Scores.Count);                      // đủ 6, không bị E8 drop cái nào
+        // Đủ đúng bộ đã chấm, không bị E8 drop cái nào (đếm theo `criteria` thay vì số cứng —
+        // xem ghi chú ở test (4): thêm tiêu chí mới không được biến test này thành việc vặt).
+        Assert.Equal(criteria.Count, saved.Scores.Count);
 
         var terminologyId = criteria.Single(c => c.Name == B2CRubricSeed.TerminologyName).Id;
         var termScore = saved.Scores.Single(s => s.CriterionId == terminologyId);

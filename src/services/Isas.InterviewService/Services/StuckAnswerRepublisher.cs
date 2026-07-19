@@ -91,6 +91,15 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.QuestionId,
                 a.AudioObjectKey,
                 a.Transcript,   // adaptive: nếu đã transcribe đồng bộ → re-publish cũng mang theo (worker bỏ Whisper)
+                // F11 — chỉ số cách nói đã đo (đường thích ứng lưu từ /decide-next). Republisher KHÔNG
+                // gọi lại AIService nên phải lấy bản đã lưu; thiếu ở đây là answer nào phải cứu bằng
+                // republisher thì mất chỉ số, trong khi answer chấm trơn tru lại có — lệch âm thầm.
+                a.SpeechRateWpm,
+                a.FillerCount,
+                a.PauseCount,
+                a.LongestPauseSec,
+                a.SilenceRatio,
+                a.FillerBreakdown,
                 CampaignId = a.Session.CampaignId,
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
@@ -139,7 +148,11 @@ public class StuckAnswerRepublisher : BackgroundService
                 JobCategory = a.JobCategory.ToString(),
                 RubricVersion = criteria[0].Version,
                 Criteria = ScoringCriteriaBuilder.Build(criteria),   // E9: kèm levels (+ anchors)
-                Transcript = a.Transcript   // adaptive: có transcript đồng bộ → worker bỏ Whisper
+                Transcript = a.Transcript,  // adaptive: có transcript đồng bộ → worker bỏ Whisper
+                // F11 — chỉ số đã đo đi kèm; null (chưa từng đo) → worker tự transcribe rồi tự đo.
+                DeliveryMetrics = DeliveryMetricsMapper.Read(
+                    a.SpeechRateWpm, a.FillerCount, a.PauseCount,
+                    a.LongestPauseSec, a.SilenceRatio, a.FillerBreakdown)
             };
 
             try

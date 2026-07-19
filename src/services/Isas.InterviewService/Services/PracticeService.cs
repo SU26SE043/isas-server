@@ -829,6 +829,7 @@ public class PracticeService : IPracticeService
 
         return new AnswerResponse(
             a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview,
-            a.SampleAnswer);   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
+            a.SampleAnswer,   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
+            DeliveryMetricsMapper.Read(a));   // F11 — chỉ số trôi chảy (null khi chưa đo được)
     }
 }

@@ -13,4 +13,8 @@ public record DecideNextResult(
     string Action,          // follow_up | clarify | new_question | end
     string? NextQuestion,   // null ⇔ end
     string? Transcript,     // transcript AIService trả về (single-source; đẩy vào ScoringJob)
-    string? Reason);
+    string? Reason,
+    // F11 — chỉ số cách nói đo trong CÙNG lượt transcribe đó. Đây là lần đo DUY NHẤT của câu trả
+    // lời ở đường thích ứng (worker sau đó bỏ Whisper) → không lấy ở đây là mất luôn.
+    // Optional (default null) để call site/test cũ dựng 4 tham số vẫn compile.
+    DeliveryMetricsDto? DeliveryMetrics = null);

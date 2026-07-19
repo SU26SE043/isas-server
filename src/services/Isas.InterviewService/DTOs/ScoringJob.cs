@@ -26,6 +26,12 @@ public class ScoringJob
     // worker BỎ QUA Whisper, chấm thẳng transcript này (single-source; tiết kiệm N lần Whisper self-
     // consistency E10). null (luồng cũ / re-publish job cũ) → worker tải audio + Whisper như trước.
     public string? Transcript { get; set; }
+
+    // F11 — chỉ số cách nói đo trong CÙNG lượt transcribe đồng bộ đó. PHẢI đi kèm Transcript:
+    // worker bỏ Whisper khi job có Transcript, nên nếu không gửi kèm thì buổi THÍCH ỨNG không
+    // bao giờ có chỉ số trong khi buổi TĨNH vẫn có — hỏng âm thầm, không lỗi nào nổ.
+    // null (luồng tĩnh / adaptive tắt / decide lỗi) → worker tự transcribe rồi tự đo.
+    public DeliveryMetricsDto? DeliveryMetrics { get; set; }
 }
 
 public class ScoringCriterionDto
@@ -71,6 +77,11 @@ public class AnswerScoreCallbackRequest
     // worker/image CŨ không gửi field này vẫn phải chấm được (deploy AIService lệch nhịp .NET là
     // chuyện thường ở đây), và LLM lỡ bỏ field cũng KHÔNG được làm hỏng lượt chấm (PAY-13).
     public string? SampleAnswer { get; set; }
+
+    // F11 — chỉ số cách nói của CHÍNH lượt transcribe đã dùng để chấm. Nullable + không
+    // [Required] (mẫu SampleAnswer): worker/image CŨ không gửi vẫn phải chấm được, và chỉ số
+    // thiếu KHÔNG được phép làm hỏng lượt chấm (answer Failed = mất credit, PAY-13).
+    public DeliveryMetricsDto? DeliveryMetrics { get; set; }
 }
 
 public class ScoreItemDto
