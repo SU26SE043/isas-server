@@ -33,8 +33,12 @@ namespace Isas.CampaignService.Controllers
         }
 
         // Cờ do FE phát (ứng viên đang làm bài). Danh tính KHÔNG thuộc nhóm FE → không nhận qua đường này.
+        // F4 — `camera_blocked`: OS/trình duyệt từ chối quyền camera. Trước F4, FE nuốt lỗi này và ứng viên
+        // thi tiếp KHÔNG bị giám sát mặt mà KHÔNG có cờ nào ⇒ HR không phân biệt được "sạch" với "camera
+        // chưa từng bật". Đây là cờ MÔI TRƯỜNG (thiết bị), KHÔNG phải tín hiệu danh tính → CỐ Ý không thêm
+        // vào IdentitySignals: làm vậy sẽ đổi điều kiện lưu (lưu cả khi chỉ bật face_verify_enabled).
         private static readonly HashSet<string> FeSignals = new(StringComparer.OrdinalIgnoreCase)
-            { "tab_switch", "paste", "focus_lost" };
+            { "tab_switch", "paste", "focus_lost", "camera_blocked" };
 
         // Cờ do AIService phát (giám sát khuôn mặt/giọng nói).
         private static readonly HashSet<string> AiSignals = new(StringComparer.OrdinalIgnoreCase)

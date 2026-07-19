@@ -22,6 +22,14 @@ namespace Isas.CampaignService.Models
         // SEC-2/DATA-2: ảnh tham chiếu face-verify — 1 bản/ứng viên/campaign. Lưu S3 KEY (không ảnh trong DB), null tới khi có.
         public string? ReferenceImageKey { get; set; }
 
+        // F5 — danh tính người-đọc-được cho HR (bảng kết quả + CSV export). Trước F5 mọi cột export đều là
+        // UUID nên file tải về gần như vô dụng. Snapshot tại thời điểm join (đường-1 lấy từ invitation.Email,
+        // đường-2 từ cv_submission) — KHÔNG gọi Auth lúc đọc (GEN-3: service không call Auth lúc chạy).
+        // NULLABLE có chủ ý: (a) NOT NULL + default sẽ rewrite bảng lúc apply; (b) membership đường-1 lịch sử
+        // (tạo trước F5) không có nguồn dữ liệu nào để backfill — xem comment trong migration.
+        public string? FullName { get; set; }
+        public string? Email { get; set; }
+
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
 
