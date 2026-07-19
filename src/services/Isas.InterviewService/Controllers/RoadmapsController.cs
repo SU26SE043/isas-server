@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -97,16 +98,26 @@ public class RoadmapsController : ControllerBase
         }
     }
 
-    // GET /roadmaps → RoadmapResponse[] của chính user (không kèm theoryContent).
+    /// <summary>
+    /// GET /roadmaps → danh sách roadmap của chính user. Keyset-paged: `?limit=` (mặc định/tối đa 500)
+    /// + `?cursor=` (opaque, lấy từ header `X-Next-Cursor` của trang trước; vắng header = hết trang).
+    /// Body giữ nguyên mảng JSON nên client cũ không phải sửa gì.
+    ///
+    /// Item là <see cref="RoadmapSummaryResponse"/> — KHÔNG còn `milestones` (trước đây list kéo cả
+    /// cây milestone→lesson). Cần cây đầy đủ → `GET /roadmaps/{id}`.
+    /// </summary>
     [HttpGet]
-    [ProducesResponseType(typeof(IReadOnlyList<RoadmapResponse>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> List(CancellationToken ct)
+    [ProducesResponseType(typeof(IReadOnlyList<RoadmapSummaryResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> List(
+        CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null)
     {
         if (!TryGetCandidateId(out var candidateId))
             return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
 
-        var results = await _service.ListAsync(candidateId, ct);
-        return Ok(results);
+        var page = await _service.ListAsync(candidateId, cursor, limit, ct);
+        if (page.NextCursor is not null)
+            Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+        return Ok(page.Items);
     }
 
     // GET /roadmaps/{id}/lessons/{lessonId} — mở lesson (lý thuyết lazy). theory null → sinh & lưu 1 lần.

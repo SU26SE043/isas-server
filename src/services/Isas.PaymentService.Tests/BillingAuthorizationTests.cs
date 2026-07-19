@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Isas.PaymentService.Controllers;
 using Isas.PaymentService.Services;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Moq;
@@ -99,8 +100,9 @@ public class BillingAuthorizationTests
     public async Task GetMyOrders_HrMember_khong_bi_chan()
     {
         var order = new Mock<IOrderService>();
-        order.Setup(s => s.GetOwnerOrdersAsync(It.IsAny<OwnerType>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new List<OrderResponse>());
+        order.Setup(s => s.GetOwnerOrdersAsync(It.IsAny<OwnerType>(), It.IsAny<Guid>(),
+                It.IsAny<OrderStatus?>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(KeysetPage<OrderResponse>.Empty);
         var ctrl = WithUser(new OrderController(order.Object, Mock.Of<IOrderStatusService>()), HrMember());
 
         var result = await ctrl.GetMyOrdersAsync();

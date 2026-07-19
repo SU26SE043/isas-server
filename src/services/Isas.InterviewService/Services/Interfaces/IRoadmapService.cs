@@ -1,4 +1,5 @@
 using Isas.InterviewService.DTOs;
+using Isas.Shared.Pagination;
 
 namespace Isas.InterviewService.Services.Interfaces;
 
@@ -12,5 +13,7 @@ public interface IRoadmapService
     Task<RoadmapResponse?> GetAsync(Guid candidateId, Guid id, CancellationToken ct = default);
 
     // GET /roadmaps — của chính user (không kèm theoryContent).
-    Task<IReadOnlyList<RoadmapResponse>> ListAsync(Guid candidateId, CancellationToken ct = default);
+    // Danh sách keyset-paged, KHÔNG kèm cây milestone/lesson (chi tiết dùng GetAsync).
+    Task<KeysetPage<RoadmapSummaryResponse>> ListAsync(
+        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default);
 }

@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Services;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -64,15 +65,20 @@ namespace Isas.CampaignService.Controllers
         }
 
         // ── GET /my-campaigns — campaign đã join của candidate ─────────────────────────
+        // Keyset-paged (DB8): `?cursor=&limit=` opt-in, body vẫn mảng JSON, next-cursor ở header
+        // X-Next-Cursor (vắng = hết trang) → FE hiện tại không phải sửa gì.
         [HttpGet("my-campaigns")]
         [Authorize(Roles = "Candidate")]
-        public async Task<IActionResult> GetMyCampaigns(CancellationToken ct)
+        public async Task<IActionResult> GetMyCampaigns(
+            [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
             var candidateId = GetCandidateId();
             if (candidateId is null) return Unauthorized();
 
-            var list = await _participation.GetMyCampaignsAsync(candidateId.Value, ct);
-            return Ok(list);
+            var page = await _participation.GetMyCampaignsAsync(candidateId.Value, cursor, limit, ct);
+            if (page.NextCursor is not null)
+                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+            return Ok(page.Items);
         }
 
         // ── GET /my-campaigns/{id} — chi tiết campaign cho ứng viên đã join ────────────

@@ -361,7 +361,7 @@ public class ParticipationServiceTests
         await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
-        var list = await svc.GetMyCampaignsAsync(FixedCandidate, default);
+        var list = (await svc.GetMyCampaignsAsync(FixedCandidate, null, null, default)).Items;
 
         Assert.Single(list);
         Assert.Equal(joined.Id, list[0].CampaignId);

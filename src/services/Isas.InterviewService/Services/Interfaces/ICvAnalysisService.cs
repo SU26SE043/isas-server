@@ -1,4 +1,5 @@
 using Isas.InterviewService.DTOs;
+using Isas.Shared.Pagination;
 
 namespace Isas.InterviewService.Services.Interfaces;
 
@@ -12,5 +13,7 @@ public interface ICvAnalysisService
     // null → 404; ném UnauthorizedAccessException → 403 (khác chủ).
     Task<CvAnalysisResponse?> GetAsync(Guid candidateId, Guid id, CancellationToken ct = default);
 
-    Task<IReadOnlyList<CvAnalysisResponse>> ListAsync(Guid candidateId, CancellationToken ct = default);
+    // Danh sách keyset-paged. Payload giữ NGUYÊN shape (FE render đầy đủ ngay trên trang danh sách).
+    Task<KeysetPage<CvAnalysisResponse>> ListAsync(
+        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default);
 }

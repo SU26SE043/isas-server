@@ -324,7 +324,7 @@ public class CampaignCvScreeningC14Tests
         SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "none@x.com", overall: null);
 
         var svc = NewService(tdb.NewContext());
-        var list = await svc.GetCandidatesAsync(owner, camp.Id, null, null, null, "score", default);
+        var list = (await svc.GetCandidatesAsync(owner, camp.Id, null, null, null, "score", null, null, null, default)).Items;
 
         Assert.Equal(3, list.Count);
         Assert.Equal(90, list[0].OverallMatchScore);
@@ -343,12 +343,12 @@ public class CampaignCvScreeningC14Tests
         SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: "b@x.com", overall: 85);
 
         var svc = NewService(tdb.NewContext());
-        var filtered = await svc.GetCandidatesAsync(owner, camp.Id, null, 70, null, "score", default);
+        var filtered = (await svc.GetCandidatesAsync(owner, camp.Id, null, 70, null, "score", null, null, null, default)).Items;
         Assert.Single(filtered);
         Assert.Equal(85, filtered[0].OverallMatchScore);
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
-            svc.GetCandidatesAsync(Guid.NewGuid() /* org khác */, camp.Id, null, null, null, "score", default));
+            svc.GetCandidatesAsync(Guid.NewGuid() /* org khác */, camp.Id, null, null, null, "score", null, null, null, default));
     }
 
     // (g) PATCH email → cập nhật + audit_logs có row EditCandidate.

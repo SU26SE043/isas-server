@@ -178,13 +178,44 @@ namespace Isas.PaymentService.Services
             return order is null ? null : OrderResponse.ToResponse(order);
         }
 
-        public async Task<List<OrderResponse>> GetOwnerOrdersAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
+        // Trang đơn hàng của CHÍNH chủ ví (PAY-2/D15 — owner lấy từ JWT, KHÔNG nhận từ query).
+        // Keyset-paged (DB8): mới nhất trước theo (CreatedAt DESC, Id DESC); cursor rỗng/rác = trang đầu;
+        // limit mặc định 500 (= hành vi trước phân trang). Optional lọc status — đẩy xuống SQL, KHÔNG
+        // lọc sau khi cắt trang (lọc client-side sau Take sẽ trả trang thiếu/rỗng sai).
+        //
+        // Vì sao set này phình: mỗi lần bấm checkout là INSERT 1 `orders` (ý định trả tiền, không phải
+        // trả tiền xong) → đơn Pending bỏ dở tích lại vĩnh viễn, không job nào dọn. Không phân trang thì
+        // màn billing tương tác này ngày càng nặng theo số lần user bấm mua.
+        //
+        // ⚠ Điều kiện owner là VÔ ĐIỀU KIỆN và đứng TRƯỚC mọi filter/cursor: cursor chỉ mang
+        // (created_at, id) — KHÔNG mang owner — nên nếu bỏ vị ngữ owner thì cursor sẽ dẫn thẳng sang
+        // đơn của chủ ví khác. Index ix_orders_owner_created (owner_type, owner_id, created_at DESC,
+        // id DESC) khớp đúng hình dạng này → không cần index mới.
+        public async Task<KeysetPage<OrderResponse>> GetOwnerOrdersAsync(
+            OwnerType ownerType, Guid ownerId, OrderStatus? status, string? cursor, int? limit, CancellationToken ct = default)
         {
-            return await _db.Orders
-                .Where(o => o.OwnerType == ownerType && o.OwnerId == ownerId)
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = KeysetCursor.Decode(cursor);
+
+            var query = _db.Orders.Where(o => o.OwnerType == ownerType && o.OwnerId == ownerId);
+
+            if (status is OrderStatus s)
+                query = query.Where(o => o.Status == s);
+            if (cur is not null)
+                query = query.Where(o => o.CreatedAt < cur.CreatedAt
+                    || (o.CreatedAt == cur.CreatedAt && o.Id.CompareTo(cur.Id) < 0));
+
+            var rows = await query
                 .OrderByDescending(o => o.CreatedAt)
-                .Select(o => OrderResponse.ToResponse(o))
+                .ThenByDescending(o => o.Id)
+                .Take(take)
                 .ToListAsync(ct);
+
+            var items = rows.Select(OrderResponse.ToResponse).ToList();
+            var next = rows.Count == take
+                ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
+                : null;
+            return new KeysetPage<OrderResponse>(items, next);
         }
 
         // AUTH-7: PlatformAdmin oversight — MỌI đơn xuyên chủ ví (KHÔNG lọc owner, khác GetOwnerOrdersAsync).

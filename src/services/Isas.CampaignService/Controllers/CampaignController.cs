@@ -316,12 +316,20 @@ namespace Isas.CampaignService.Controllers
         }
 
         // Danh sách lời mời đã phát — HR theo dõi "đã mời ai / mail gửi tới đâu / ai đã join" và lấy
-        // invitationId để reissue (D4). Lọc `?status=Revoked|Joined|Expired|Sent|Queued` (suy read-time).
-        // Chỉ chủ org → ngoài org = 404. KHÔNG trả token (DB23 — DB chỉ giữ hash).
+        // invitationId để reissue (D4). Lọc `?status=Revoked|Joined|Expired|Sent|Queued` + `?search=`
+        // (email) — cả hai lọc ở SQL nên đúng trên toàn bộ tập, không chỉ trong 1 trang.
+        // Keyset-paged (DB8): `?cursor=&limit=` opt-in, body vẫn mảng JSON, next-cursor ở header
+        // X-Next-Cursor (vắng = hết trang). Chỉ chủ org → ngoài org = 404.
+        // KHÔNG trả token (DB23 — DB chỉ giữ hash).
         [HttpGet("{id:guid}/invitations")]
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<List<InvitationListItem>>> GetInvitations(
-            Guid id, [FromQuery] string? status, CancellationToken ct)
+            Guid id,
+            [FromQuery] string? status,
+            [FromQuery] string? search,
+            [FromQuery] string? cursor,
+            [FromQuery] int? limit,
+            CancellationToken ct = default)
         {
             var orgId = GetOrgId();
             if (orgId is null)
@@ -329,8 +337,10 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var list = await _campaignService.GetInvitationsAsync(orgId.Value, id, status, ct);
-                return Ok(list);
+                var page = await _campaignService.GetInvitationsAsync(orgId.Value, id, status, search, cursor, limit, ct);
+                if (page.NextCursor is not null)
+                    Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+                return Ok(page.Items);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (Exception ex) { return StatusCode(500, $"Failed to get invitations: {ex.Message}"); }
@@ -499,7 +509,10 @@ namespace Isas.CampaignService.Controllers
         }
 
         // C14: shortlist — danh sách ứng viên sàng CV. `?sort=score` (mặc định) DESC theo overall_match_score;
-        // `?sort=name`; lọc `?status=&minScore=&skill=`. Chỉ chủ org (org_id) → ngoài org = 404.
+        // `?sort=name`; lọc `?status=&minScore=&search=&skill=`. Chỉ chủ org (org_id) → ngoài org = 404.
+        // Keyset-paged (DB8): `?cursor=&limit=` opt-in, body vẫn mảng JSON, next-cursor ở header X-Next-Cursor.
+        // ⚠ `?skill=` lọc SAU phân trang (jsonb, không push SQL portable được) → một trang có thể ngắn hơn
+        // `limit` hoặc rỗng mà VẪN còn trang sau: đi theo X-Next-Cursor tới khi header vắng, đừng dừng sớm.
         [HttpGet("{id:guid}/candidates")]
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<List<CandidateListItem>>> GetCandidates(
@@ -508,7 +521,10 @@ namespace Isas.CampaignService.Controllers
             [FromQuery] int? minScore,
             [FromQuery] string? skill,
             [FromQuery] string? sort,
-            CancellationToken ct)
+            [FromQuery] string? search,
+            [FromQuery] string? cursor,
+            [FromQuery] int? limit,
+            CancellationToken ct = default)
         {
             var orgId = GetOrgId();
             if (orgId is null)
@@ -516,8 +532,11 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var list = await _screening.GetCandidatesAsync(orgId.Value, id, status, minScore, skill, sort, ct);
-                return Ok(list);
+                var page = await _screening.GetCandidatesAsync(
+                    orgId.Value, id, status, minScore, skill, sort, search, cursor, limit, ct);
+                if (page.NextCursor is not null)
+                    Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+                return Ok(page.Items);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (Exception ex) { return StatusCode(500, $"Failed to get candidates: {ex.Message}"); }

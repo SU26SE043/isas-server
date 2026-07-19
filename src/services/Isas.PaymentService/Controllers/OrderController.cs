@@ -1,4 +1,5 @@
 using Isas.PaymentService.Services;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PaymentService.Models;
@@ -101,16 +102,25 @@ namespace Isas.PaymentService.Controllers
             });
         }
 
+        // GET /payment/order/my-orders — đơn của CHÍNH chủ ví (mới nhất trước; keyset-paged DB8).
+        // ?status= lọc theo OrderStatus (numeric: 1=Pending..5=Cancelled); ?limit= (mặc định/tối đa 500)
+        // + ?cursor= (opaque) để phân trang; next-cursor trả ở header X-Next-Cursor (vắng = hết trang).
+        // Body giữ nguyên mảng JSON (backward-compat cho FE) — mẫu AdminOrdersController.
         [HttpGet("my-orders")]
         [Authorize]
-        public async Task<ActionResult<List<OrderResponse>>> GetMyOrdersAsync(CancellationToken ct = default)
+        public async Task<ActionResult<List<OrderResponse>>> GetMyOrdersAsync(
+            [FromQuery] OrderStatus? status = null, [FromQuery] string? cursor = null,
+            [FromQuery] int? limit = null, CancellationToken ct = default)
         {
             var owner = GetOwner();
             if (owner is null)
                 return Forbid();
 
-            var orders = await _order.GetOwnerOrdersAsync(owner.Value.OwnerType, owner.Value.OwnerId, ct);
-            return Ok(orders);
+            var page = await _order.GetOwnerOrdersAsync(
+                owner.Value.OwnerType, owner.Value.OwnerId, status, cursor, limit, ct);
+            if (page.NextCursor is not null)
+                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+            return Ok(page.Items);
         }
 
         [HttpDelete("{id:guid}")]

@@ -1,4 +1,5 @@
 using Isas.CampaignService.DTOs;
+using Isas.Shared.Pagination;
 
 namespace Isas.CampaignService.Services
 {
@@ -24,9 +25,12 @@ namespace Isas.CampaignService.Services
         // Callback cv-failed: → AnalysisFailed (+ reason). Đã Analyzed/Invited → no-op (không hạ cấp).
         Task<CvFailedOutcome> MarkCvFailedAsync(Guid candidateId, string? reason, CancellationToken ct);
 
-        // Shortlist: mặc định sort=score DESC (overall_match_score). Lọc status/minScore/skill. Ngoài org → 404.
-        Task<List<CandidateListItem>> GetCandidatesAsync(
-            Guid orgId, Guid campaignId, string? status, int? minScore, string? skill, string? sort, CancellationToken ct);
+        // Shortlist: mặc định sort=score DESC (overall_match_score). Lọc status/minScore/search/skill.
+        // Keyset-paged (DB8). Ngoài org → 404. ⚠ skill lọc SAU phân trang → trang có thể ngắn hơn limit
+        // mà vẫn còn trang sau (chi tiết ở XML doc của implement).
+        Task<KeysetPage<CandidateListItem>> GetCandidatesAsync(
+            Guid orgId, Guid campaignId, string? status, int? minScore, string? skill, string? sort,
+            string? search, string? cursor, int? limit, CancellationToken ct);
 
         // Chi tiết 1 ứng viên + điểm từng tiêu chí. Ngoài org / không tồn tại → 404.
         Task<CandidateDetailResponse> GetCandidateAsync(Guid orgId, Guid campaignId, Guid candidateId, CancellationToken ct);

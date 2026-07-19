@@ -229,9 +229,12 @@ public class RoadmapTests
         Assert.IsType<NotFoundObjectResult>(await ownerCtrl.Get(Guid.NewGuid(), default));
     }
 
-    // ── (3b) list chỉ của mình + KHÔNG kèm theoryContent (GET {id} thì có) ──────────
+    // ── (3b) list chỉ của mình + KHÔNG kèm cây milestone/lesson (GET {id} thì có) ───
+    // Trước đây test này khoá "list bỏ theoryContent" (list vẫn trả cả cây, chỉ rỗng phần lý thuyết).
+    // Nay list KHÔNG trả cây nữa (RoadmapSummaryResponse) nên tính chất cũ được bao bởi tính chất
+    // mạnh hơn: không có lesson nào trong payload thì cũng không có theoryContent nào lọt.
     [Fact]
-    public async Task List_OwnOnly_OmitsTheoryContent()
+    public async Task List_OwnOnly_OmitsMilestoneTree()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
@@ -253,16 +256,17 @@ public class RoadmapTests
         var detail = Assert.IsType<RoadmapResponse>(getOk.Value);
         Assert.Contains(detail.Milestones.SelectMany(m => m.Lessons), l => l.TheoryContent == "## Lý thuyết");
 
-        // LIST → cùng lesson đó theoryContent null
+        // LIST → chỉ metadata, KHÔNG có cây milestone/lesson (⇒ cũng không có theoryContent).
         var listOk = Assert.IsType<OkObjectResult>(await ctrl.List(default));
-        var items = Assert.IsAssignableFrom<IReadOnlyList<RoadmapResponse>>(listOk.Value);
+        var items = Assert.IsAssignableFrom<IReadOnlyList<RoadmapSummaryResponse>>(listOk.Value);
         var listed = Assert.Single(items);
-        Assert.All(listed.Milestones.SelectMany(m => m.Lessons), l => Assert.Null(l.TheoryContent));
+        Assert.Equal(id, listed.Id);
+        Assert.DoesNotContain("Milestones", listed.GetType().GetProperties().Select(p => p.Name));
 
         // user khác → list rỗng
         var otherCtrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, other);
         var otherOk = Assert.IsType<OkObjectResult>(await otherCtrl.List(default));
-        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<RoadmapResponse>>(otherOk.Value));
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<RoadmapSummaryResponse>>(otherOk.Value));
     }
 
     // ── (4) cvId không phải của mình → 403; không tồn tại → 404 ─────────────────────

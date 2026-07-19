@@ -4,6 +4,7 @@ using Isas.InterviewService.Entities;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -197,8 +198,23 @@ namespace Isas.InterviewService.Controllers
             }
         }
 
+        /// <summary>
+        /// Danh sách file CV/JD của chính user. Keyset-paged: `?limit=` (mặc định/tối đa 500) +
+        /// `?cursor=` (opaque, lấy từ header `X-Next-Cursor` của trang trước; vắng header = hết trang);
+        /// lọc thêm `?fileType=cv|jd` (push-down SQL). Body giữ nguyên mảng JSON nên client cũ không
+        /// phải sửa gì.
+        ///
+        /// Payload nay là <see cref="FileRecordSummary"/> chứ không phải entity: BỎ `parsedText`
+        /// (toàn văn CV/JD — đọc riêng qua `GET /files/{id}/parsed-text`) cùng `storagePath`/
+        /// `storageBucket` (toạ độ SeaweedFS nội bộ, GEN-5).
+        /// </summary>
         [HttpGet("files")]
-        public async Task<IActionResult> GetUserFiles(CancellationToken ct)
+        [ProducesResponseType(typeof(IReadOnlyList<FileRecordSummary>), StatusCodes.Status200OK)]
+        public async Task<IActionResult> GetUserFiles(
+            CancellationToken ct,
+            [FromQuery] string? fileType = null,
+            [FromQuery] string? cursor = null,
+            [FromQuery] int? limit = null)
         {
             var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (!Guid.TryParse(userIdString, out var userId))
@@ -206,8 +222,10 @@ namespace Isas.InterviewService.Controllers
 
             try
             {
-                var files = await _storage.GetFilesByUserId(userId, ct);
-                return Ok(files);
+                var page = await _storage.GetFilesByUserId(userId, fileType, cursor, limit, ct);
+                if (page.NextCursor is not null)
+                    Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+                return Ok(page.Items);
             }
             catch (Exception ex)
             {
