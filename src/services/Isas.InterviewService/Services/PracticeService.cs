@@ -590,6 +590,27 @@ public class PracticeService : IPracticeService
             .ToListAsync(ct);
     }
 
+    // R1 — như GetExistingSessionIdsAsync nhưng kèm trạng thái (string tên enum, GEN-2). Payment dùng để
+    // phân nhánh chỗ giữ mồ côi: Scored → consume (buổi đã được AI chấm, PAY-1/PAY-13) · SessionAbandoned/
+    // Failed → release · đang bay → SKIP. Cùng vị ngữ query để 2 hàm không bao giờ lệch tập session.
+    public async Task<IReadOnlyList<SessionStateDto>> GetExistingSessionStatesAsync(
+        IReadOnlyList<Guid> sessionIds, CancellationToken ct = default)
+    {
+        if (sessionIds is null || sessionIds.Count == 0)
+            return Array.Empty<SessionStateDto>();
+
+        var ids = sessionIds.Distinct().ToList();
+        var rows = await _db.PracticeSessions
+            .AsNoTracking()
+            .Where(s => ids.Contains(s.Id))
+            .Select(s => new { s.Id, s.Status })
+            .ToListAsync(ct);
+
+        // ToString() ở client-side: provider dịch enum→string khác nhau (Npgsql lưu string, SQLite có thể
+        // ra số) → materialize rồi map để tên trạng thái trên dây LUÔN là tên enum C#.
+        return rows.Select(r => new SessionStateDto(r.Id, r.Status.ToString())).ToList();
+    }
+
     // AI4 — INTERNAL (Campaign/HR): trả per-question list kèm transcript + nhận xét AI per-criterion +
     // cờ needs_review (E10/E11). Tái dùng NGUYÊN VẸN truy vấn + MapAnswer của GetSessionAsync (một nguồn
     // sự thật cho transcript/điểm) NHƯNG BỎ check chủ session — caller là máy-máy (X-Internal-Token) và

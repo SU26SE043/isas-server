@@ -270,6 +270,12 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 **`POST /internal/answers/{answerId}/failed`** — đánh dấu `Failed` (lỗi chấm vĩnh viễn).
 - Req: `{ "reason": string }`. Nếu answer đã `Scored` → **bỏ qua** (không hạ `Failed`). Res **`200/204`**. Lỗi: **401** · **404**.
 
+**`POST /internal/sessions/exists`** (DB18 · **R1**) — PaymentService dò chỗ giữ credit mồ côi / chưa settle.
+- Req: `{ "sessionIds": uuid[] }`. Res **200**: `{ "existingIds": uuid[], "states": [{ "sessionId": uuid, "status": string }] }`. Lỗi: **401** (sai token). Input null/rỗng → 200 với cả hai mảng rỗng (không chạm DB).
+- **`states` = R1, ADDITIVE.** `status` là **tên enum `SessionStatus` dạng string** (GEN-2), KHÔNG phải số thứ tự — Payment đối chiếu Ordinal với `"Scored"`/`"SessionAbandoned"`/`"Failed"`, nên phát số thứ tự sẽ khiến Payment SKIP sạch và R1 thành **no-op IM LẶNG** (không lỗi, không log, chỗ giữ tiếp tục rò).
+- **Hai mảng phủ ĐÚNG CÙNG tập session** (`existingIds` suy ra từ `states` — một nguồn). Lệch tập ⇒ Payment thấy "tồn tại mà thiếu status" ⇒ SKIP oan đúng những chỗ giữ cần dọn.
+- ⚠ **`existingIds` GIỮ NGUYÊN nghĩa và KHÔNG được bỏ**: đó là trường Payment bản cũ đọc, và cũng là nguồn chân lý duy nhất cho "session có tồn tại không". Xem `payment.md` §R1 để biết vì sao Payment **không** được suy tồn-tại từ `states`.
+
 ### Validation & mã lỗi (tổng hợp — chi tiết per-endpoint ở trên)
 | Field | Ràng buộc |
 |---|---|
