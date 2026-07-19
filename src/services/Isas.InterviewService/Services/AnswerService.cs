@@ -440,6 +440,17 @@ public class AnswerService : IAnswerService
         // E10 — attempt worker vừa chấm (echo từ job). Worker cũ không gửi → DTO default 1.
         var attemptNo = req.AttemptNo <= 0 ? 1 : req.AttemptNo;
 
+        // BK23 — con dấu phiên bản prompt của lượt chấm này (worker chụp tại chỗ dựng prompt).
+        // Chuẩn hoá ÂM → null: con dấu là tổng version các mảnh đang active, mà version có CHECK
+        // `> 0` ở tầng DB, nên số âm chỉ có thể là worker hỏng/lệch hợp đồng. Lưu rác vào cột
+        // kiểm toán còn tệ hơn để trống — "không biết" là câu trả lời trung thực, số bịa thì không.
+        // KHÔNG ném lỗi: một cột audit không được phép biến thành đường làm answer Failed (PAY-13).
+        var promptVersion = req.PromptVersion is >= 0 ? req.PromptVersion : null;
+        if (req.PromptVersion is < 0)
+            _logger.LogWarning(
+                "Bỏ con dấu prompt_version âm ({Raw}) từ worker cho answer {AnswerId} — lưu NULL",
+                req.PromptVersion, answerId);
+
         // Idempotency: worker retry có thể gửi lại cùng attempt+version.
         // Xoá điểm cũ cùng attempt+version rồi ghi lại, tránh nhân đôi.
         var stale = answer.Scores
@@ -510,6 +521,12 @@ public class AnswerService : IAnswerService
                 Reasoning = item.Reasoning,
                 AttemptNo = attemptNo,
                 RubricVersion = req.RubricVersion,
+                // BK23 — đóng dấu thước đo lên CHÍNH dòng điểm. Đóng ở đây (mỗi dòng) chứ không
+                // ở answer: một answer có N attempt (E10), mỗi attempt là một lượt gọi AI riêng
+                // với lần refresh registry riêng ⇒ prompt_version là thuộc tính của ATTEMPT, không
+                // phải của answer. Lưu per-row nên prompt đổi giữa chừng là thấy được, không bị
+                // một giá trị "đại diện" nào đó nuốt mất.
+                PromptVersion = promptVersion,
                 CreatedAt = DateTime.UtcNow
             });
         }
@@ -540,7 +557,7 @@ public class AnswerService : IAnswerService
         // needs_review (cờ soi lại). N=1 → spread = 0. E11: kèm cả Reasoning để chấm "nhận xét OK".
         var perAttempt = await _db.AnswerScores.AsNoTracking()
             .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
-            .Select(s => new { s.CriterionId, s.Score, s.Reasoning })
+            .Select(s => new { s.CriterionId, s.Score, s.Reasoning, s.PromptVersion })
             .ToListAsync(ct);
 
         // E10 — spread giữa các attempt vượt ngưỡng → soi lại.
@@ -554,7 +571,29 @@ public class AnswerService : IAnswerService
         var shortReasoning = _scoring.MinReasoningLen > 0
             && perAttempt.Any(s => (s.Reasoning ?? "").Trim().Length < _scoring.MinReasoningLen);
 
-        var needsReview = highSpread || shortReasoning;
+        // BK23 — self-consistency (E10) trộn HAI THƯỚC ĐO. Điểm chốt là median giữa các attempt;
+        // nếu admin sửa prompt giữa lúc N attempt của cùng answer đang chạy thì median đó được
+        // lấy trên các lần chấm bằng prompt KHÁC NHAU — con số vẫn ra, vẫn trông bình thường, và
+        // không có gì nói rằng nó vô nghĩa. Đó đúng là loại im lặng mà cột này sinh ra để phá.
+        //
+        // Cờ soi lại chứ KHÔNG loại attempt / KHÔNG Failed: bỏ attempt sẽ làm median mất mẫu (có
+        // khi còn 1) và Failed thì mất credit (PAY-13) vì một thao tác của admin — người trả tiền
+        // không liên quan. N=1 → 1 giá trị → không bao giờ kích hoạt (giữ nguyên hành vi cũ).
+        // Chỉ so các dòng CÓ con dấu: trộn null (worker cũ) với số không chứng minh được là khác
+        // thước — null nghĩa là "không biết", suy ra "khác" từ "không biết" là bịa.
+        var stampedVersions = perAttempt
+            .Where(s => s.PromptVersion.HasValue)
+            .Select(s => s.PromptVersion!.Value)
+            .Distinct()
+            .ToList();
+        var mixedPromptVersion = stampedVersions.Count > 1;
+        if (mixedPromptVersion)
+            _logger.LogWarning(
+                "Answer {AnswerId}: các attempt chấm bằng prompt khác nhau ({Versions}) — "
+                + "median trộn hai thước đo, gắn cờ soi lại",
+                answerId, string.Join(",", stampedVersions));
+
+        var needsReview = highSpread || shortReasoning || mixedPromptVersion;
 
         answer.NeedsReview = needsReview;
         answer.Status = AnswerStatus.Scored;

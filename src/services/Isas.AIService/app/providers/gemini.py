@@ -27,9 +27,22 @@ class ScoreOutcome(NamedTuple):
 
     sample_answer: câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi vừa chấm; None khi LLM
     không trả (phần phụ trợ, không đánh hỏng lượt chấm).
+
+    prompt_version (BK23): con dấu phiên bản của bộ mảnh prompt ĐÃ THỰC SỰ dựng nên lượt chấm
+      này — đọc ngay sau ``refresh_if_stale()`` bên trong chính ``score()``, nên nó là phiên bản
+      của prompt vừa gửi đi, không phải phiên bản "đang nằm trong DB ở một thời điểm khác".
+      0 = thuần mặc định (chưa ai tuỳ biến, hoặc registry tắt/chưa nạp được).
+
+      Vì sao đọc TRONG ``score()`` chứ không để worker đọc sau khi ``score()`` trả về: cache là
+      biến module toàn cục và AI3 retry gọi lại ``score()`` (mỗi lần lại ``refresh_if_stale``),
+      nên đọc ở ngoài có thể lấy phải phiên bản của một lượt refresh KHÁC với lượt đã dựng prompt.
+      Chụp tại chỗ thì con dấu và prompt luôn cùng một lượt.
+
+      Mặc định 0 để mọi call site cũ dựng ScoreOutcome 2 trường (test) chạy nguyên.
     """
     scores: list[dict]
     sample_answer: str | None
+    prompt_version: int = 0
 
 
 class GeminiProvider(QuestionProvider):
@@ -276,6 +289,10 @@ class GeminiProvider(QuestionProvider):
         # Nguồn mức: levels C# gửi (rubric_levels khai hoặc dải mặc định 0..maxScore).
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
+        # BK23 — chụp con dấu NGAY sau lượt refresh vừa rồi và TRƯỚC khi dựng prompt bên dưới:
+        # đây chính là bộ mảnh sắp đi vào `build_scoring_prompt`. Đọc muộn hơn (ở worker, sau khi
+        # score() trả về) có thể vớ phải một lượt refresh khác — con dấu sẽ nói dối về thước đo.
+        stamp = prompt_registry.prompt_version()
         max_by_id: dict[str, int] = {}
         levels_by_id: dict[str, list[int]] = {}
         for c in criteria:
@@ -392,7 +409,7 @@ class GeminiProvider(QuestionProvider):
         sample = data.get("sampleAnswer")
         sample = sample.strip() if isinstance(sample, str) else None
 
-        return ScoreOutcome(scores=results, sample_answer=sample or None)
+        return ScoreOutcome(scores=results, sample_answer=sample or None, prompt_version=stamp)
 
     async def generate_roadmap(self, job_category: str, level: str,
                                weaknesses: list[dict] | None,
