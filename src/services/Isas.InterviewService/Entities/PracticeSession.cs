@@ -50,7 +50,15 @@ public class PracticeSession : IHasUpdatedAt
     public int MaxFollowUps { get; set; }
 
     // Trần TỔNG số câu hỏi của buổi (seed + thích ứng; 0 = không trần cứng). B2B: giữ độ dài so sánh được.
+    // F2b — CHECK `max_questions BETWEEN 0 AND 20`: trần ở tầng service chặn được đường HTTP, nhưng
+    // đường internal (Campaign gọi thẳng) thì không → chốt thêm ở DB để không có đường nào vượt.
     public int MaxQuestions { get; set; }
+
+    // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
+    // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
+    // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.
+    // Default 120 = hành vi cũ ⇒ row cũ + B2B (chưa cho chọn) không đổi gì.
+    public int TimeLimitSec { get; set; } = 120;
 
     // Navigation
     public ICollection<PracticeQuestion> Questions { get; set; } = [];

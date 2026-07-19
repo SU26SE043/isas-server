@@ -70,6 +70,12 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
 
+        // F2 — thời lượng mỗi câu. Guard TRƯỚC reserve (PAY-5): giá trị sai → 400 mà KHÔNG giữ credit oan.
+        var timeLimitSec = ValidateTimeLimitSec(request.TimeLimitSec);
+
+        // F2b — số câu. Cùng lý do đặt trước reserve: 21 câu phải bị từ chối mà không trừ credit.
+        var questionCount = ValidateQuestionCount(request.QuestionCount);
+
         // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
         // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
         // credit oan (mẫu BK6/PAY-5). Text rỗng/toàn khoảng trắng = coi như KHÔNG nhập (rơi về jdId).
@@ -126,9 +132,13 @@ public class PracticeService : IPracticeService
                 JobCategory = jobCategory,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,
+                TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
                 AdaptiveEnabled = _adaptive.Enabled,
-                MaxQuestions = _adaptive.Enabled ? _adaptive.MaxQuestions : 0,
+                // F2b — adaptive BẬT: trần tổng số câu lấy theo lựa chọn của ứng viên (không chọn →
+                // cấu hình). Adaptive TẮT: 0 = không trần (số câu do AIService sinh 1 lần, đã cap ở
+                // questionCount rồi). CHECK ở DB chặn 0..20 cho mọi đường ghi.
+                MaxQuestions = _adaptive.Enabled ? (questionCount ?? _adaptive.MaxQuestions) : 0,
                 MaxFollowUps = _adaptive.Enabled ? _adaptive.MaxFollowUps : 0
             };
             _db.PracticeSessions.Add(session);
@@ -140,11 +150,11 @@ public class PracticeService : IPracticeService
             List<GeneratedQuestion> generated;
             try
             {
-                // focusCriteria chỉ có ở lesson /start (BC14) → dùng overload mang focusCriteria; luồng
-                // thường (null/rỗng) giữ nguyên overload cũ (không đổi hành vi/không đổi hợp đồng mock cũ).
-                generated = focusCriteria is { Count: > 0 }
+                // Dùng overload ĐẦY ĐỦ khi có focusCriteria (BC14) HOẶC ứng viên chọn số câu (F2b);
+                // còn lại giữ nguyên overload 4 tham số của luồng thường (không đổi hợp đồng mock cũ).
+                generated = focusCriteria is { Count: > 0 } || questionCount is not null
                     ? await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, ct)
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, questionCount, ct)
                     : await _questionGenerator.GenerateQuestionsAsync(
                         jobCategory: session.JobCategory.ToString(),
                         cvText: cvText,            // null nếu không có
@@ -185,7 +195,7 @@ public class PracticeService : IPracticeService
                     SessionId = session.Id,
                     OrderNo = idx + 1,
                     Content = q.Content,
-                    TimeLimitSec = DefaultTimeLimitSec,
+                    TimeLimitSec = session.TimeLimitSec,   // F2 — theo lựa chọn của ứng viên
                     Kind = QuestionKind.Seed
                 })
                 .ToList();
@@ -262,7 +272,7 @@ public class PracticeService : IPracticeService
                 // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = TOÀN BỘ campaign questions (ai cũng
                 // nhận cùng bộ, công bằng), câu thích ứng thêm ở đuôi (bounded), chấm theo cùng tiêu chí. null → tắt.
                 AdaptiveEnabled = request.AdaptiveEnabled ?? false,
-                MaxQuestions = request.MaxQuestions ?? 0,
+                MaxQuestions = ClampCampaignMaxQuestions(request.MaxQuestions, request.CampaignId),
                 MaxFollowUps = request.MaxFollowUps ?? 0
             };
             _db.PracticeSessions.Add(session);
@@ -652,6 +662,68 @@ public class PracticeService : IPracticeService
 
     // Nhãn field trong thông báo lỗi 400 — khớp tên field client gửi lên.
     private const string JdTextLabel = "Mô tả công việc (jdText)";
+
+    // F2 — thời lượng mỗi câu ứng viên được chọn. Tập ĐÓNG (không phải khoảng): 3 mốc để UI là nhóm nút
+    // chọn, và để mọi buổi so sánh được với nhau. Tập nằm ở tầng service chứ KHÔNG đưa vào CHECK của DB —
+    // đổi lựa chọn sau này (thêm 180s chẳng hạn) sẽ phải chạy migration chỉ để sửa một danh sách UI.
+    private static readonly int[] AllowedTimeLimitsSec = [60, 120, 240];
+
+    // null = client cũ không gửi → giữ mặc định 120 (hành vi trước F2, không phải lỗi).
+    // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: PracticeController chỉ bắt
+    // InvalidOperationException → 400; ArgumentException rơi xuống catch(Exception) → 500. Cùng kiểu với
+    // guard jobCategory ngay đầu CreateSessionInternalAsync.
+    private static int ValidateTimeLimitSec(int? requested)
+    {
+        if (requested is null) return DefaultTimeLimitSec;
+        if (!AllowedTimeLimitsSec.Contains(requested.Value))
+            throw new InvalidOperationException(
+                $"timeLimitSec chỉ nhận {string.Join(" / ", AllowedTimeLimitsSec)} giây (đang gửi: {requested.Value}).");
+        return requested.Value;
+    }
+
+    // F2b — trần số câu.
+    //
+    // VÌ SAO PHẢI CÓ TRẦN: chi phí tăng TUYẾN TÍNH theo số câu (mỗi câu = 1 lượt Whisper + N lần gọi
+    // Gemini do self-consistency + 1 lần TTS gần như luôn miss cache) nhưng doanh thu là HẰNG SỐ 1
+    // credit/buổi — ReserveAsync gọi đúng một lần lúc tạo session, không scale theo số câu. Không có
+    // trần thì một người chọn 500 câu vừa ăn hết biên credit-to-cost vừa làm nghẽn queue chấm của
+    // mọi người khác (Whisper chạy CPU, xử lý tuần tự).
+    private const int MinQuestionCount = 1;
+    private const int MaxQuestionCount = 20;
+
+    // null = client không chọn → trả null để KHÔNG ghi đè mặc định của AIService (giữ hành vi cũ = 5 câu).
+    private static int? ValidateQuestionCount(int? requested)
+    {
+        if (requested is null) return null;
+        if (requested.Value is < MinQuestionCount or > MaxQuestionCount)
+            throw new InvalidOperationException(
+                $"questionCount phải nằm trong khoảng {MinQuestionCount}..{MaxQuestionCount} (đang gửi: {requested.Value}).");
+        return requested.Value;
+    }
+
+    /// <summary>
+    /// F2b — kẹp trần câu thích ứng của B2B về đúng miền CHECK ở DB (0..20).
+    ///
+    /// VÌ SAO KẸP CHỨ KHÔNG NÉM: `CampaignService.ValidateAdaptiveCaps` hiện chỉ chặn số ÂM, nên HR
+    /// đặt `max_questions = 100000` là qua sạch guard phía Campaign. Nếu ở đây để nguyên giá trị đó
+    /// thì CHECK `ck_practice_sessions_max_questions_range` sẽ nổ ngay lúc INSERT — tức là ứng viên
+    /// bấm "Bắt đầu" và nhận lỗi, SAU KHI credit org đã bị reserve. Đổi một cấu hình sai của HR lấy
+    /// một buổi thi hỏng là đánh đổi tệ; kẹp + log để HR sửa cấu hình mà ứng viên vẫn thi được.
+    ///
+    /// Chỗ sửa ĐÚNG là siết `ValidateAdaptiveCaps` phía Campaign (ngoài phạm vi worker này — file đó
+    /// đang do người khác giữ trong vòng này). Đây là lưới an toàn, không phải bản vá thay thế.
+    /// </summary>
+    private int ClampCampaignMaxQuestions(int? requested, Guid campaignId)
+    {
+        var value = requested ?? 0;
+        if (value >= 0 && value <= MaxQuestionCount) return value;
+
+        var clamped = Math.Clamp(value, 0, MaxQuestionCount);
+        _logger.LogWarning(
+            "Campaign {CampaignId} cấu hình max_questions={Requested} ngoài miền 0..{Max} → kẹp về {Clamped}",
+            campaignId, value, MaxQuestionCount, clamped);
+        return clamped;
+    }
 
     private static PracticeSessionResponse MapToResponse(
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,

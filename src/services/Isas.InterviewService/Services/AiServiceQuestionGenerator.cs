@@ -21,20 +21,24 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
 
     public Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText, CancellationToken ct = default)
-        => GenerateQuestionsAsync(jobCategory, cvText, jdText, focusCriteria: null, ct);
+        => GenerateQuestionsAsync(jobCategory, cvText, jdText, focusCriteria: null, count: null, ct);
 
-    // BC14 — overload thêm focusCriteria (roadmap lesson). null/rỗng → hành vi cũ (không gửi field).
+    // BC14 (focusCriteria) + F2b (count). null = không ghi đè → AIService dùng mặc định của nó.
     public async Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText,
-        IReadOnlyList<string>? focusCriteria, CancellationToken ct = default)
+        IReadOnlyList<string>? focusCriteria, int? count, CancellationToken ct = default)
     {
         var payload = new
         {
             jobCategory = jobCategory,
             cvText = cvText,
             jdText = jdText,
-            // Chỉ gửi khi có (lesson /start). AIService bỏ qua field lạ nếu chưa hỗ trợ (forward-compatible).
-            focusCriteria = focusCriteria is { Count: > 0 } ? focusCriteria : null
+            // Chỉ gửi khi có (lesson /start). ⚠ Field này TỪNG bị AIService nuốt im lặng vì schema
+            // pydantic không khai (extra='ignore') → câu hỏi bài học không thật sự bám tiêu chí
+            // milestone. Đã khai ở GenerateQuestionsRequest + đưa vào prompt (F2b).
+            focusCriteria = focusCriteria is { Count: > 0 } ? focusCriteria : null,
+            // F2b — số câu ứng viên chọn. null → AIService giữ settings.question_count (=5) như cũ.
+            count = count
         };
 
         HttpResponseMessage response;

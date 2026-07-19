@@ -13,11 +13,15 @@ using Isas.InterviewService.Enums;
 // B2B/Campaign (`jdText` + "text ưu tiên file") để 2 dòng sản phẩm nhất quán. Gửi cả `jdText` lẫn
 // `jdId` → TEXT THẮNG, bỏ file (xem PracticeService.CreateSessionInternalAsync). Đặt CUỐI + có
 // default → mọi call site positional cũ (RoadmapLessonService, test) không phải sửa.
+// TimeLimitSec (F2): thời lượng mỗi câu ứng viên chọn — 60/120/240; null = 120 (hành vi cũ).
+// ⚠ Đặt CUỐI + có default: call site positional (RoadmapLessonService, test cũ) không phải sửa.
 public record CreatePracticeSessionRequest(
     Guid? CvId,        // optional
     Guid? JdId,        // optional
     [Required] JobCategory? JobCategory,
-    string? JdText = null   // optional — ưu tiên hơn JdId
+    string? JdText = null,     // optional — ưu tiên hơn JdId
+    int? TimeLimitSec = null,  // optional — 60/120/240; null = mặc định 120
+    int? QuestionCount = null  // optional — 1..20; null = mặc định của AIService (5)
 );
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
