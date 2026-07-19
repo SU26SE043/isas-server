@@ -13,9 +13,11 @@ public interface IAiServiceRoadmapGenerator
         string? cvText,
         CancellationToken ct = default);
 
-    // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. Trả markdown; AI KHÔNG ghi DB.
+    // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
+    // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là
+    // HỢP LỆ (AI không gợi ý được, hoặc mọi link bị allowlist tên miền loại phía AIService).
     // Lỗi → AiServiceException (→ 502; mở lại được vì chưa lưu).
-    Task<string> GenerateLessonTheoryAsync(
+    Task<LessonTheoryResult> GenerateLessonTheoryAsync(
         string jobCategory,
         string level,
         string lessonTitle,

@@ -422,6 +422,11 @@ version      int
 ```
 > **BC16 — resolve rubric B2C:** scoring chọn tiêu chí theo `(candidate_id, job_category)`: có rubric riêng active của candidate → dùng nó, **else** seed mặc định (`candidate_id IS NULL`). Dùng chung `B2CRubricScope.ResolveOwnerAsync` ở cả 4 chỗ chấm (publish · callback guard · republisher · breakdown BC9) để không lệch. Sửa rubric = **soft-versioned** (deactivate bản cũ + thêm bản mới `is_active`, KHÔNG hard-delete vì `answer_scores` FK Restrict).
 
+> **F12 (FR03) — 2 tiêu chí NGÔN NGỮ trong seed** (migration `AddLanguageRubricCriteriaF12`): mỗi nghề BA/BE/FE nay có **6** tiêu chí seed thay vì 4 — thêm **"Ngữ pháp & dùng từ"** (0.10) + **"Thuật ngữ chuyên ngành"** (0.10), 4 tiêu chí cũ hạ weight giữ **Σ=1**. Tách khỏi "Giao tiếp & trình bày" vì tiêu chí đó chấm **mạch lạc nội dung**, không phải ngữ pháp. Mô tả tiêu chí "Thuật ngữ" **neo theo nghề** (BA: user story/acceptance criteria… · BE: transaction/idempotent/ACID… · FE: hydration/reflow/debounce…) — không có ví dụ thuật ngữ riêng thì AI không phân biệt được sai-thuật-ngữ theo nghề.
+> ⚠ **Transcript là ASR (Whisper)**: chính tả/dấu câu/tên riêng phiên âm sai là lỗi bộ nhận dạng, KHÔNG của ứng viên → mô tả tiêu chí chỉ neo vào thứ sống sót qua ASR (chọn từ · cấu trúc câu · từ đệm · thuật ngữ), và `build_scoring_prompt` có **1 dòng cấm trừ điểm lỗi ASR ở MỌI tiêu chí**. Bỏ dòng đó ⇒ tiêu chí ngữ pháp đo chất lượng Whisper chứ không đo ứng viên.
+> ⚠ **BC16 không đổi:** candidate đã có rubric RIÊNG **không** tự nhận 2 tiêu chí mới (rubric riêng là lựa chọn của họ; muốn có thì tự thêm qua `PUT /rubrics/{jobCategory}`, hoặc `DELETE` để về seed).
+> ⚠ **INT-9:** thêm tiêu chí vào rubric mà đường publish và đường callback không chọn **cùng** bộ ⇒ AI chấm thiếu tiêu chí ⇒ answer `Failed` hàng loạt. Cả 2 đường đi qua `LoadActiveCriteriaAsync`/`B2CRubricScope` nên luôn khớp; `LanguageRubricCriteriaTests` khoá hợp đồng này (publish 6 → callback 6 → `Scored`).
+
 ### `rubric_levels`
 ```
 id              uuid   PK
@@ -504,9 +509,19 @@ order_no            int           UNIQUE (milestone_id, order_no)
 title               varchar
 theory_content      text?         markdown lý thuyết — AI sinh LẦN ĐẦU mở lesson (lazy), sau đọc DB
 theory_generated_at timestamptz?
+resources           jsonb         ✅ F15 (migration AddLessonResourcesF15) — tài liệu học gợi ý:
+                                  [{title, type, publisher?, url?}]. NON-NULL, mặc định [] (rỗng
+                                  là HỢP LỆ). Sinh CÙNG lượt với theory_content, ghi CÙNG 1 lần
+                                  UPDATE (guard idempotent chỉ nhìn theory_content ⇒ tách 2 lần
+                                  ghi sẽ để lại lesson "có theory, resources rỗng" vĩnh viễn).
 session_id          uuid?         FK → practice_sessions (Restrict) — session luyện gắn lesson (set khi /start)
 status              varchar(16)   enum: Theory·Practicing·Done
 ```
+> **F15 (FR09) — tài liệu học & URL do AI sinh.** LLM sinh URL là **đoán chuỗi trông giống link**, không phải tra cứu; link bịa trông y hệt link thật. Rủi ro nặng KHÔNG phải "link 404" mà là **tên miền bịa** (có thể đã bị người khác đăng ký / typosquat) — ta sẽ đang đẩy người học tới đó dưới danh nghĩa "tài liệu hệ thống gợi ý".
+> **Chốt: allowlist TÊN MIỀN** ở AIService (`app/resources.py`, hàm `sanitize_resources`): giữ url chỉ khi **https** + host khớp **đầy đủ** một tên miền tài liệu chính chủ đã biết; host lạ → **bỏ url, GIỮ tên tài liệu** (người học vẫn tra được). Đã cân nhắc và loại: *(a)* không link gì cả — an toàn nhưng giảm mạnh giá trị FR09; *(b)* link tự do + ghi chú — ghi chú không ngăn được cú click, không chặn được domain bịa.
+> ⚠ **Giới hạn phải nói thẳng:** allowlist bảo đảm đúng **tên miền**, KHÔNG bảo đảm **đường dẫn** tồn tại (ta không fetch để xác minh — sẽ thêm I/O mạng vào đường sinh lý thuyết đang chạy đồng bộ trong request người dùng). Vì vậy **FE BẮT BUỘC gắn nhãn "Tài liệu do AI gợi ý, chưa được kiểm chứng"** cạnh link — đó là phần bù cho giới hạn này. Muốn bỏ hẳn link: đặt allowlist rỗng, không cần sửa chỗ nào khác.
+> ⚠ `url` **null là mục HỢP LỆ**, không phải dữ liệu hỏng — đừng "dọn" mục thiếu url, làm vậy là xoá tài liệu chỉ vì nó không có link tin cậy.
+> ⚠ **Migration `AddLessonResourcesF15`:** EF scaffold ra `defaultValue: ""` — **chuỗi rỗng KHÔNG phải JSON hợp lệ**, Postgres từ chối ngay tại `ALTER TABLE`. Đã sửa tay thành `"[]"`. SQLite (test, `EnsureCreated`) bỏ qua migration nên **test không bắt được lỗi này** — chỉ lộ lúc apply Postgres thật.
 
 ### Index & ràng buộc (tổng hợp)
 - **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels` Cascade *(bảng `rubric_anchors` đã DROP — DB15, gộp vào `rubric_levels.example_answers` jsonb)*. ✅ Roadmap: Cascade theo `roadmap_id` → `roadmap_milestones` (→ `roadmap_lessons` Cascade); `roadmaps.cv_id` → `file_records` **Restrict** · `roadmap_lessons.session_id` → `practice_sessions` **Restrict**.

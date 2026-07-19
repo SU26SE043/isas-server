@@ -3,6 +3,7 @@ using System;
 using Isas.InterviewService.ApplicationDbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    partial class InterviewDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260719090234_AddLanguageRubricCriteriaF12")]
+    partial class AddLanguageRubricCriteriaF12
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -563,11 +566,6 @@ namespace Isas.InterviewService.Migrations
                     b.Property<int>("OrderNo")
                         .HasColumnType("integer")
                         .HasColumnName("order_no");
-
-                    b.Property<string>("Resources")
-                        .IsRequired()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("resources");
 
                     b.Property<Guid?>("SessionId")
                         .HasColumnType("uuid")

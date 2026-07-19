@@ -20,8 +20,28 @@ public class RoadmapLesson
     public string? TheoryContent { get; set; }
     public DateTime? TheoryGeneratedAt { get; set; }
 
+    // F15 (FR09) — tài liệu học gợi ý, sinh CÙNG lượt với lý thuyết (không thêm lần gọi AI).
+    // jsonb, non-null (mặc định rỗng). RỖNG LÀ HỢP LỆ: AI có thể không gợi ý được tài liệu nào,
+    // hoặc mọi link nó đưa ra đều bị allowlist tên miền loại bỏ (AIService app/resources.py).
+    public List<LessonResource> Resources { get; set; } = [];
+
     // Ref FK Restrict → practice_sessions (session luyện của lesson) — set khi /start (BC14).
     public Guid? SessionId { get; set; }
 
     public LessonStatus Status { get; set; } = LessonStatus.Theory;
 }
+
+/// <summary>
+/// F15 — 1 tài liệu học gợi ý. Lưu jsonb trong <see cref="RoadmapLesson.Resources"/>, KHÔNG tách
+/// bảng: luôn đọc/ghi trọn gói theo lesson, không truy vấn/lọc theo tài liệu riêng lẻ.
+/// </summary>
+/// <param name="Title">Tên tài liệu/khoá học/chương sách.</param>
+/// <param name="Type">Doc · Course · Book · Video · Article (AIService chuẩn hoá, lạ → Doc).</param>
+/// <param name="Publisher">Nơi phát hành, có thể null.</param>
+/// <param name="Url">
+/// CÓ THỂ NULL VÌ CÓ CHỦ ĐÍCH. Link do LLM sinh chỉ được giữ khi https + tên miền thuộc allowlist
+/// ở AIService (<c>app/resources.py</c>); host lạ → url bị bỏ, tài liệu vẫn giữ tên. Allowlist bảo
+/// đảm link trỏ đúng TÊN MIỀN có thật, KHÔNG bảo đảm đường dẫn tồn tại (không fetch để xác minh) —
+/// nên FE phải gắn nhãn "chưa kiểm chứng" cạnh link.
+/// </param>
+public record LessonResource(string Title, string Type, string? Publisher, string? Url);

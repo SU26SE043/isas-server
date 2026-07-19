@@ -143,10 +143,11 @@ async def test_provider_generate_lesson_theory_shape():
         })
     )
 
-    theory = await provider.generate_lesson_theory(
+    theory, resources = await provider.generate_lesson_theory(
         "BE", "Junior", "Chuẩn hoá DB", ["Thiết kế CSDL"], None)
 
     assert theory == "# Chuẩn hoá DB\n\nVí dụ: 1NF, 2NF, 3NF..."
+    assert resources == []            # F15 — LLM không trả resources → rỗng, KHÔNG lỗi
 
 
 @pytest.mark.asyncio
@@ -259,7 +260,7 @@ def test_endpoint_generate_lesson_theory_response_shape(monkeypatch):
     async def fake_generate_lesson_theory(job_category, level, lesson_title,
                                           focus_criteria, weaknesses):
         assert lesson_title == "Chuẩn hoá DB"
-        return "# Chuẩn hoá DB\n\nNội dung lý thuyết..."
+        return "# Chuẩn hoá DB\n\nNội dung lý thuyết...", []
 
     monkeypatch.setattr(
         main_module.provider, "generate_lesson_theory", fake_generate_lesson_theory)
@@ -273,7 +274,10 @@ def test_endpoint_generate_lesson_theory_response_shape(monkeypatch):
     )
 
     assert res.status_code == 200
-    assert res.json() == {"theoryMarkdown": "# Chuẩn hoá DB\n\nNội dung lý thuyết..."}
+    assert res.json() == {
+        "theoryMarkdown": "# Chuẩn hoá DB\n\nNội dung lý thuyết...",
+        "resources": [],
+    }
 
 
 def test_endpoint_generate_lesson_theory_rejects_empty_lesson_title():

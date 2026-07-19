@@ -3,6 +3,7 @@ from google import genai
 from google.genai import types
 
 from app.config import settings
+from app.resources import sanitize_resources
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt,
@@ -409,8 +410,17 @@ class GeminiProvider(QuestionProvider):
 
     async def generate_lesson_theory(self, job_category: str, level: str,
                                      lesson_title: str, focus_criteria: list[str],
-                                     weaknesses: list[str] | None) -> str:
-        """BC13/D20 — sinh nội dung lý thuyết (Markdown, tiếng Việt) cho 1 lesson."""
+                                     weaknesses: list[str] | None) -> tuple[str, list[dict]]:
+        """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
+
+        Trả ``(theoryMarkdown, resources)``. ``resources`` đã qua
+        :func:`app.resources.sanitize_resources`: url KHÔNG thuộc allowlist tên
+        miền bị BỎ (giữ lại tên tài liệu). Xem docstring app/resources.py cho lý
+        do — tóm tắt: LLM sinh url là đoán chuỗi, domain bịa là rủi ro thật.
+
+        resources rỗng KHÔNG phải lỗi (lý thuyết vẫn dùng được) → không raise,
+        khác với theoryMarkdown rỗng.
+        """
         prompt = build_lesson_theory_prompt(
             job_category, level, lesson_title, focus_criteria, weaknesses)
 
@@ -424,6 +434,19 @@ class GeminiProvider(QuestionProvider):
                     "type": "object",
                     "properties": {
                         "theoryMarkdown": {"type": "string"},
+                        "resources": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "type": {"type": "string"},
+                                    "publisher": {"type": "string"},
+                                    "url": {"type": "string"},
+                                },
+                                "required": ["title", "type"],
+                            },
+                        },
                     },
                     "required": ["theoryMarkdown"],
                 },
@@ -440,7 +463,7 @@ class GeminiProvider(QuestionProvider):
         if not theory:
             raise ValueError("LLM không trả về nội dung lý thuyết hợp lệ.")
 
-        return theory
+        return theory, sanitize_resources(data.get("resources"))
 
     async def summarize_roadmap(self, job_category: str, level: str,
                                 criteria_progress: list[dict]) -> dict:
