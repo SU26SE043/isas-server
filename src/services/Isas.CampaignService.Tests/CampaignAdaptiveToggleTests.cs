@@ -124,6 +124,57 @@ public class CampaignAdaptiveToggleTests
             NewCampaignService(tdb.NewContext()).CreateCampaignAsync(org, org, req, default));
     }
 
+    // F2b — trần trên. Trước fix, guard CHỈ chặn số âm ⇒ HR đặt 100000 qua sạch, và vì F2b thêm CHECK
+    // `max_questions BETWEEN 0 AND 20` bên practice_sessions nên giá trị đó sẽ ném lúc INSERT session —
+    // tức SAU khi đã reserve credit org (PAY-6): hỏng đường doanh thu B2B + để lại reservation mồ côi,
+    // mà lỗi nổ ở service KHÁC với chỗ nhập sai. Phải 400 ngay tại đây.
+    [Theory]
+    [InlineData(21)]
+    [InlineData(100000)]
+    public async Task Create_MaxQuestions_VuotTran20_BiChan(int maxQuestions)
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var req = BaseCreate();
+        req.AdaptiveEnabled = true;
+        req.MaxQuestions = maxQuestions;
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewCampaignService(tdb.NewContext()).CreateCampaignAsync(org, org, req, default));
+
+        Assert.Empty(await tdb.NewContext().Campaigns.ToListAsync());   // không để lại campaign nửa vời
+    }
+
+    [Fact]
+    public async Task Create_MaxQuestions_DungTran20_ChoQua()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var req = BaseCreate();
+        req.AdaptiveEnabled = true;
+        req.MaxQuestions = 20;   // biên hợp lệ — không được chặn nhầm
+
+        var res = await NewCampaignService(tdb.NewContext()).CreateCampaignAsync(org, org, req, default);
+
+        Assert.Equal(20, res.MaxQuestions);
+    }
+
+    [Fact]
+    public async Task Update_MaxQuestions_VuotTran20_BiChan()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = CampaignTestDb.NewCampaign(org);
+        camp.AdaptiveEnabled = true;
+        tdb.Db.Campaigns.Add(camp);
+        await tdb.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewCampaignService(tdb.NewContext()).UpdateCampaignAsync(org, org, camp.Id,
+                new UpdateCampaignRequest { Title = "x", AdaptiveEnabled = true, MaxQuestions = 999 },
+                default));
+    }
+
     // ── (3) Payload JSON gửi Interview ──────────────────────────────────
     private sealed class CapturingHandler : HttpMessageHandler
     {

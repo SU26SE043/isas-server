@@ -1315,12 +1315,29 @@ namespace Isas.CampaignService.Services
 
         // INT-17: trần câu thích ứng — null = dùng mặc định phía Interview; có giá trị thì phải ≥ 0
         // (0 = không thêm câu nào). Khớp CHECK ck_campaigns_adaptive_caps_non_negative ở DB.
+        /// <summary>
+        /// Trần số câu tối đa cho 1 buổi phỏng vấn — PHẢI khớp CHECK
+        /// <c>ck_practice_sessions_max_questions_range</c> bên InterviewService (task F2b).
+        /// </summary>
+        private const int MaxQuestionsPerSession = 20;
+
         private static void ValidateAdaptiveCaps(int? maxFollowUps, int? maxQuestions)
         {
             if (maxFollowUps is int f && f < 0)
                 throw new ArgumentException($"max_follow_ups không được âm (hiện: {f}).");
             if (maxQuestions is int q && q < 0)
                 throw new ArgumentException($"max_questions không được âm (hiện: {q}).");
+
+            // F2b — chặn trần Ở ĐÂY, nơi HR nhập, chứ không để lọt xuống lúc ứng viên bấm Start.
+            // Trước đây guard chỉ chặn số âm ⇒ HR đặt max_questions=100000 qua sạch. Từ F2b có CHECK
+            // `max_questions BETWEEN 0 AND 20` trên practice_sessions, nên giá trị đó sẽ ném lúc INSERT
+            // session — tức là SAU khi đã reserve credit của org (PAY-6) ⇒ vừa hỏng đường doanh thu B2B
+            // vừa để lại reservation mồ côi, mà lỗi lại nổ ở service KHÁC với chỗ nhập sai.
+            // InterviewService có clamp phòng thủ, nhưng clamp là lưới an toàn: HR nhập 100000 mà hệ thống
+            // lặng lẽ chạy 20 là sai kiểu khác. 400 ngay lúc tạo campaign mới là phản hồi đúng.
+            if (maxQuestions is int mq && mq > MaxQuestionsPerSession)
+                throw new ArgumentException(
+                    $"max_questions tối đa {MaxQuestionsPerSession} (hiện: {mq}).");
         }
 
         // DB23 — hạn token: campaign có deadline → dùng deadline (giữ ràng buộc token ≤ hạn campaign);
