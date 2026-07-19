@@ -257,7 +257,10 @@ owner_id   uuid
 order_id   uuid?         FK → orders
 session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
-reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2) · FreeGrant (+N suất dùng thử lúc tạo ví User — ✅ F7, order_id/session_id null)
+reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (✅ F18 — admin hoàn đơn, delta ÂM) · FreeGrant (+N suất dùng thử lúc tạo ví User — ✅ F7, order_id/session_id null) · PromoGrant (✅ F20 — admin cấp quà, +N)
+reverses_transaction_id uuid?  ✅ F18 — FK tự tham chiếu → bút toán mua bị đảo; UNIQUE LỌC = khoá idempotency chống hoàn hai lần
+granted_by uuid?          ✅ F20 — admin cấp quà (ref lỏng → Auth); chỉ set trên row PromoGrant
+note       varchar(500)?  ✅ F20 — lý do cấp quà
 created_at timestamptz
 ```
 

@@ -120,6 +120,12 @@ builder.Services.AddScoped<IPackageService, PackageService>();
 // P8b: hóa đơn postpaid — chốt kỳ → tất toán (reuse OrderService/PayOS) → settle qua webhook (branch Kind).
 builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+// F18: hoàn tiền — đơn Paid→Refunded + bút toán đảo gắn bút toán mua gốc + thu hồi credit (kẹp trần).
+builder.Services.AddScoped<IRefundService, RefundService>();
+// F19: tổng hợp doanh thu theo kỳ cho PlatformAdmin (đọc `orders`, không đụng sổ cái credit).
+builder.Services.AddScoped<IRevenueService, RevenueService>();
+// F20 (vế Payment): admin cấp credit khuyến mãi — ví tăng + bút toán PromoGrant ghi rõ người cấp.
+builder.Services.AddScoped<IAdminCreditService, AdminCreditService>();
 // P1: cấp phát credit_accounts (owner_type). Reserve/Consume/Release + webhook (P2/P4/P5/P6) = task sau.
 builder.Services.AddScoped<ICreditAccountService, CreditAccountService>();
 // P7: sinh order_code time+random, unique + retry (dùng trong P2 CreateOrderAsync).

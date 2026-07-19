@@ -20,6 +20,19 @@
         public DateTime ExpiredAt { get; set; }
         public DateTime? PaidAt { get; set; }
         public DateTime CreatedAt { get; set; }
+
+        // ── F18 — hoàn tiền (admin) ──────────────────────────────────────────────────────────────
+        // Thời điểm đơn được đánh dấu hoàn. NULL với mọi đơn chưa hoàn.
+        public DateTime? RefundedAt { get; set; }
+        // `sub` của PlatformAdmin bấm hoàn — ref LỎNG → Auth (không FK xuyên service, GEN-2).
+        // Ai hoàn là thông tin đối soát bắt buộc: hoàn tiền là mutation tiền duy nhất không do
+        // cổng thanh toán khởi xướng, nên nếu không ghi người thực hiện thì không truy được trách nhiệm.
+        public Guid? RefundedBy { get; set; }
+        public string? RefundReason { get; set; }
+        // Mã giao dịch hoàn của cổng, do admin NHẬP TAY sau khi hoàn trên dashboard PayOS.
+        // CỐ Ý không tự gọi API refund PayOS: luồng đó chưa được wire ở đâu trong repo, và giả vờ
+        // đã gọi (sinh mã giả) sẽ khiến đối soát ngân hàng tin vào một mã không tồn tại.
+        public string? RefundGatewayRef { get; set; }
         // DB14 — audit: đóng dấu mỗi lần order bị sửa (status flip Cancel/Paid). C# init để insert không phụ
         // thuộc DB default now() (SQLite/EnsureCreated không có now()); DB default now() vẫn có ở Postgres.
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -38,6 +51,20 @@
         Failed = 3,
         Expired = 4,
         Cancelled = 5,
+
+        /// <summary>
+        /// F18 — đơn đã Paid nhưng được PlatformAdmin hoàn tiền. Trạng thái RIÊNG chứ không tái dùng
+        /// <see cref="Cancelled"/>: Cancelled nghĩa là "đơn chết trước khi có tiền" (huỷ lúc Pending),
+        /// gộp hai thứ lại thì báo cáo doanh thu không phân biệt được "chưa bao giờ thu" với "đã thu
+        /// rồi trả lại", mà đó đúng là hai con số kế toán khác nhau.
+        ///
+        /// ⚠ Đây là NGOẠI LỆ có chủ đích của PAY-10 (đơn terminal bất biến): PAY-10 sinh ra để chặn
+        /// cổng thanh toán tự lật trạng thái đơn (webhook muộn cộng credit lần hai). Hoàn tiền là hành
+        /// động NGƯỜI thực hiện, có audit (refunded_by/refund_reason), và mọi guard tự động trong
+        /// service đều bám `status == Pending` (webhook · polling · sweeper hết hạn) ⇒ đơn Refunded
+        /// không bị đường tự động nào chạm vào, kể cả webhook tới muộn.
+        /// </summary>
+        Refunded = 6,
     }
 
     /// <summary>

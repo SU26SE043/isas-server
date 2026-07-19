@@ -114,6 +114,26 @@ namespace PaymentService.Models
                 // flip status tự thêm .SetProperty(UpdatedAt) (WebhookService); tracked Cancel qua SaveChanges.
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
+                // F18 — audit hoàn tiền. Lý do/mã cổng giới hạn độ dài để không thành bãi rác text.
+                e.Property(x => x.RefundReason).HasMaxLength(500);
+                e.Property(x => x.RefundGatewayRef).HasMaxLength(100);
+
+                // F19 — báo cáo doanh thu gộp theo kỳ: WHERE status='Paid' AND paid_at ∈ [from,to).
+                // Partial theo đúng vị ngữ truy vấn: đơn Paid là tập con của `orders` (Pending bỏ dở +
+                // Expired chiếm phần lớn bảng theo thời gian), nên index chỉ ôm phần báo cáo cần đọc.
+                // Literal 'Paid' khớp chuỗi enum lưu (Status = HasConversion<string>), cột snake_case —
+                // cùng lối ix_orders_pending_expired_at (DB26).
+                //
+                // ⚠ Partial index chỉ được planner dùng khi nó CHỨNG MINH được predicate query ⇒ predicate
+                // index. EF phải render `status` thành LITERAL chứ không phải tham số; đã khoá bằng test
+                // đọc SQL sinh ra từ chính hàm production (bài học DB27: render thành @p thì index chết
+                // trong im lặng — index vẫn tồn tại, EXPLAIN vẫn seq scan, không có gì báo lỗi).
+                e.HasIndex(x => x.PaidAt)
+                 .HasDatabaseName("ix_orders_paid_at")
+                 .HasFilter("status = 'Paid'");
+
+
+
                 // P8b — package optional: đơn InvoiceSettlement không gắn package (gắn invoice_id).
                 e.HasOne(x => x.Package)
                  .WithMany(x => x.Orders)
@@ -262,8 +282,39 @@ namespace PaymentService.Models
                 e.Property(x => x.OwnerType).HasConversion<string>().HasMaxLength(8).IsRequired();
                 e.Property(x => x.OwnerId).IsRequired();
 
+                // F20 — "PromoGrant" (11 ký tự) vẫn vừa maxLength 16 sẵn có ⇒ không phải ALTER cột.
                 e.Property(x => x.Reason).HasConversion<string>().HasMaxLength(16).IsRequired();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // F20 — ghi chú lý do cấp quà; giới hạn độ dài để không thành bãi rác text.
+                e.Property(x => x.Note).HasMaxLength(500);
+
+                // F18 — self-FK: bút toán hoàn trỏ về bút toán mua gốc. Restrict (sổ cái append-only,
+                // không row nào bị xoá). UNIQUE LỌC `WHERE reverses_transaction_id IS NOT NULL` = khoá
+                // idempotency chống hoàn hai lần cùng một khoản mua: hai request hoàn song song thì bên
+                // thua đụng UNIQUE lúc SaveChanges → rollback → trả AlreadyRefunded, thay vì cả hai cùng
+                // trừ ví. NULL không bị ràng buộc nên mọi bút toán không-hoàn vẫn tự do.
+                e.HasOne(x => x.ReversesTransaction)
+                 .WithMany()
+                 .HasForeignKey(x => x.ReversesTransactionId)
+                 .IsRequired(false)
+                 .OnDelete(DeleteBehavior.Restrict);
+
+                e.HasIndex(x => x.ReversesTransactionId)
+                 .IsUnique()
+                 .HasDatabaseName("ux_credit_transactions_reverses")
+                 .HasFilter("reverses_transaction_id IS NOT NULL");
+
+                // F19 — `GET /payment/me/credit-transactions` lọc (owner_type, owner_id) rồi
+                // ORDER BY created_at DESC, id DESC (keyset DB8). Index composite DB9 hiện có chỉ phục vụ
+                // FK lookup, KHÔNG mang khoá sắp xếp ⇒ thiếu index này thì mỗi trang phải sort lại toàn bộ
+                // sổ cái của chủ ví. Cùng hình dạng ix_orders_owner_created (DB26).
+                // Sổ cái là bảng ghi nhiều nhất trong service (1 row/lượt chấm) nên đây là index đáng giá
+                // nhất của F19.
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.CreatedAt, x.Id })
+                 .IsDescending(false, false, true, true)
+                 .HasDatabaseName("ix_credit_transactions_owner_created");
+
 
                 e.HasOne(x => x.Order)
                  .WithMany(x => x.CreditTransactions)

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PaymentService.Models;
@@ -11,9 +12,11 @@ using PaymentService.Models;
 namespace Isas.PaymentService.Migrations
 {
     [DbContext(typeof(PaymentDbContext))]
-    partial class PaymentDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260719090542_AddOrderRefundF18")]
+    partial class AddOrderRefundF18
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -191,15 +194,6 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("delta");
 
-                    b.Property<Guid?>("GrantedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("granted_by");
-
-                    b.Property<string>("Note")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("note");
-
                     b.Property<Guid?>("OrderId")
                         .HasColumnType("uuid")
                         .HasColumnName("order_id");
@@ -239,9 +233,8 @@ namespace Isas.PaymentService.Migrations
                         .HasDatabaseName("ux_credit_transactions_reverses")
                         .HasFilter("reverses_transaction_id IS NOT NULL");
 
-                    b.HasIndex("OwnerType", "OwnerId", "CreatedAt", "Id")
-                        .IsDescending(false, false, true, true)
-                        .HasDatabaseName("ix_credit_transactions_owner_created");
+                    b.HasIndex("OwnerType", "OwnerId")
+                        .HasDatabaseName("ix_credit_transactions_owner_type_owner_id");
 
                     b.ToTable("credit_transactions", null, t =>
                         {
@@ -416,10 +409,6 @@ namespace Isas.PaymentService.Migrations
 
                     b.HasIndex("PackageId")
                         .HasDatabaseName("ix_orders_package_id");
-
-                    b.HasIndex("PaidAt")
-                        .HasDatabaseName("ix_orders_paid_at")
-                        .HasFilter("status = 'Paid'");
 
                     b.HasIndex("PayosOrderCode")
                         .IsUnique()
