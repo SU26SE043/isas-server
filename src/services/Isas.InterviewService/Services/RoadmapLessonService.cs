@@ -2,8 +2,10 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
 
@@ -18,16 +20,21 @@ public class RoadmapLessonService : IRoadmapLessonService
     private readonly IAiServiceRoadmapGenerator _generator;
     private readonly ILogger<RoadmapLessonService> _logger;
 
+    private readonly ScoringOptions _scoring;   // F6a — ngưỡng "điểm yếu" (dùng chung với BC9)
+
     public RoadmapLessonService(
         InterviewDbContext db,
         IPracticeService practiceService,
         IAiServiceRoadmapGenerator generator,
-        ILogger<RoadmapLessonService> logger)
+        ILogger<RoadmapLessonService> logger,
+        // Optional (default null) → test cũ dựng 4 tham số vẫn compile; DI inject bản thật.
+        IOptions<ScoringOptions>? scoringOptions = null)
     {
         _db = db;
         _practiceService = practiceService;
         _generator = generator;
         _logger = logger;
+        _scoring = scoringOptions?.Value ?? new ScoringOptions();
     }
 
     public async Task<LessonResponse> OpenLessonAsync(
@@ -44,7 +51,7 @@ public class RoadmapLessonService : IRoadmapLessonService
         var focus = lesson.Milestone.FocusCriteria ?? new List<string>();
         var theory = await _generator.GenerateLessonTheoryAsync(
             roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
-            lesson.Title, focus, weaknesses: null, ct);
+            lesson.Title, focus, BuildWeaknesses(roadmap, focus), ct);
         var now = DateTime.UtcNow;
 
         // Lưu idempotent: chỉ ghi khi theory_content vẫn null (2 request đồng thời → chỉ 1 ghi thắng).
@@ -131,6 +138,35 @@ public class RoadmapLessonService : IRoadmapLessonService
             throw new UnauthorizedAccessException("Không phải roadmap của bạn");
 
         return lesson;
+    }
+
+    /// <summary>
+    /// F6a — điểm yếu THẬT của ứng viên ở đúng các tiêu chí mà bài học này nhắm tới.
+    ///
+    /// Trước đây luôn truyền `weaknesses: null`, nên nhánh `if weaknesses:` trong prompt AIService
+    /// (prompts.py) là code CHẾT: đường ống đã thông từ interface tới prompt, chỉ thiếu mỗi dữ liệu.
+    /// Hệ quả: bài học viết chung chung, không bám vào chỗ ứng viên đang yếu.
+    ///
+    /// Nguồn = `roadmap.Baseline` (tên tiêu chí → % lúc lập roadmap), vốn ĐÃ nằm sẵn trong entity đã
+    /// `.Include()` ở LoadOwnedLessonAsync ⇒ 0 query thêm. Cố ý KHÔNG query `session_criterion_scores`
+    /// cho tươi hơn: chính xác hơn chút nhưng tốn thêm 1 query trên đường lazy-gen vốn đã phải chờ AI
+    /// đồng bộ, mà Baseline chính là snapshot của cùng dữ liệu đó.
+    ///
+    /// Giao với FocusCriteria để không "mách" AI những điểm yếu lạc đề với bài học đang mở.
+    /// Rỗng → null (giữ nguyên hành vi cũ, prompt bỏ qua nhánh này).
+    /// </summary>
+    private List<string>? BuildWeaknesses(Roadmap roadmap, IReadOnlyList<string> focus)
+    {
+        if (roadmap.Baseline is not { Count: > 0 } baseline || focus.Count == 0)
+            return null;
+
+        var weaknesses = focus
+            .Where(name => baseline.TryGetValue(name, out var pct)
+                           && pct < _scoring.ImprovementThresholdPct)
+            .Select(name => $"{name}: {baseline[name]:0.#}%")
+            .ToList();
+
+        return weaknesses.Count > 0 ? weaknesses : null;
     }
 
     private static LessonResponse MapLesson(RoadmapLesson l)
