@@ -406,6 +406,10 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=gemini-2.5-flash
+      # F22 — endpoint sync (sinh câu hỏi · phân tích CV · roadmap · decide-next · TTS) cũng đốt
+      # token ⇒ container NÀY cũng phải đo, không chỉ worker chấm.
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN}
+      - USAGE_SINK_BASE=http://<SERVER_TS_IP>:5271
     ports:
       - "8000:8000"                    # server gọi vào đây qua tailnet
     restart: unless-stopped
@@ -425,6 +429,11 @@ services:
       - S3_BUCKET=isas-files
       - DOTNET_CALLBACK_BASE=http://<SERVER_TS_IP>:5246
       - INTERNAL_TOKEN=${INTERNAL_TOKEN}   # KHỚP server
+      # F22 — đẩy token/chi phí về PaymentService (GEN-4: AIService không ghi DB). Trỏ THẲNG tới
+      # payment (cổng publish 5271), KHÔNG qua gateway (GEN-1). Để TRỐNG = chỉ ghi log, không gọi
+      # mạng (kill-switch tại chỗ khi sink có sự cố, khỏi deploy lại). Dùng chung INTERNAL_TOKEN.
+      - USAGE_SINK_BASE=http://<SERVER_TS_IP>:5271
+      # - USAGE_METERING_ENABLED=false     # tắt hẳn việc đo
     depends_on: [aiservice-api]
     restart: unless-stopped
 ```

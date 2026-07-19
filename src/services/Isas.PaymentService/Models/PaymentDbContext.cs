@@ -15,6 +15,9 @@ namespace PaymentService.Models
         public DbSet<Invoice> Invoices => Set<Invoice>();
         // F8 — bảng dựng lại sau khi DB15 drop bản scaffold chết; lần này có đường tiêu thụ thật.
         public DbSet<Subscription> Subscriptions => Set<Subscription>();
+        // F22 — CHI PHÍ vận hành (token AI), KHÔNG phải tiền của người dùng: không FK/CHECK nào nối nó với
+        // credit_accounts. Xem AiUsageLog để biết vì sao bảng này ở Payment mà không ở AIService (GEN-4).
+        public DbSet<AiUsageLog> AiUsageLogs => Set<AiUsageLog>();
 
         // DB14 — đóng dấu updated_at TỰ ĐỘNG cho mọi entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()
         // parameterless của EF gọi xuống overload (bool) này nên chỉ cần override 2 overload dưới là đủ mọi
@@ -424,6 +427,41 @@ namespace PaymentService.Models
                  .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
                  .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
                  .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── AiUsageLog (F22) ──────────────────────────────────
+            modelBuilder.Entity<AiUsageLog>(e =>
+            {
+                // KHÔNG CHECK constraint nào ở đây, CÓ CHỦ Ý. Bảng này được ghi bởi một đường best-effort;
+                // một CHECK "hợp lệ" (vd total_tokens > 0) sẽ biến dữ liệu đo hơi lạ thành exception —
+                // đúng hình dạng lỗi DB22. Giá trị vô lý được KẸP ở AiUsageService.RecordAsync, nơi mà
+                // hỏng thì chỉ mất một dòng thống kê.
+                e.ToTable("ai_usage_logs");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.Operation).HasMaxLength(64).IsRequired();
+                e.Property(x => x.Model).HasMaxLength(64).IsRequired();
+
+                e.Property(x => x.PromptTokens).IsRequired();
+                e.Property(x => x.OutputTokens).IsRequired();
+                e.Property(x => x.TotalTokens).IsRequired();
+
+                // Đơn giá USD/1 triệu token: cần chỗ cho phần thập phân rất nhỏ (0.075 USD/1M là mức thật
+                // của flash) → precision rộng tay. decimal chứ KHÔNG double: tiền cộng dồn trên hàng triệu
+                // dòng mà dùng dấu phẩy động thì sai số tự tích lại.
+                e.Property(x => x.InputPricePerMillionUsd).HasPrecision(18, 6);
+                e.Property(x => x.OutputPricePerMillionUsd).HasPrecision(18, 6);
+                // Chi phí 1 lượt gọi rất nhỏ (cỡ 1e-4 USD) nhưng tổng thì lớn → 8 chữ số thập phân để một
+                // lượt gọi lẻ không bị làm tròn về 0 rồi biến mất khỏi tổng.
+                e.Property(x => x.CostUsd).HasPrecision(18, 8);
+
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // Mọi câu hỏi của báo cáo đều lọc theo khoảng thời gian trước, rồi mới gộp theo operation.
+                e.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_ai_usage_logs_created_at");
+                e.HasIndex(x => new { x.Operation, x.CreatedAt })
+                 .HasDatabaseName("ix_ai_usage_logs_operation_created_at");
             });
 
             // ── DB10 — OPTIMISTIC CONCURRENCY (xmin) ────────────────

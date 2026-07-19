@@ -113,6 +113,22 @@ Mọi kết quả trả qua HTTP (sync) **hoặc** callback (async) về .NET �
 | generate-lesson-theory 🔜 | sync | `roadmap_lessons.theory_content` + `roadmap_lessons.resources` (Interview) — ✅ F15 |
 | summarize-roadmap 🔜 | sync | `roadmaps.final_report`/`overall_comment` (Interview) |
 | chấm answer | async `scoring_pipeline_queue` → callback | `answer_scores` (Interview) |
+| **token/chi phí MỌI lượt gọi** ✅ **F22** | callback `POST /internal/ai-usage` | `ai_usage_logs` (**Payment**) |
+
+## Đo token & chi phí ✅ **F22 (FR18) — 2026-07-19**
+Trước F22, `providers/gemini.py` gọi `generate_content` **10 chỗ** và **mọi chỗ chỉ đọc `response.text`** (grep `usage_metadata|prompt_token|total_tokens|cost` = **0 hit**) ⇒ **hệ thống không biết mình đốt bao nhiêu token/tiền**. Không có con số đó thì mọi quyết định về chi phí AI (bật `SelfConsistencyN`? thêm tiêu chí F12? sinh câu trả lời mẫu F13?) đều là đoán.
+
+**Một chokepoint duy nhất:** `GeminiProvider._generate()` bọc **toàn bộ** lời gọi Gemini (`app/providers/gemini.py`) → đọc `usage_metadata` → `app/usage.py:report_usage()`. Cố ý một cửa thay vì rải `usage_metadata` ra 10 chỗ: rải thì lần thêm endpoint thứ 11 sẽ quên, và **"quên đo" là loại lỗi không ai phát hiện ra** — không có gì hỏng cả, chỉ là con số thiếu thầm lặng. Có test parametrize khoá **từng** đường gọi.
+
+**Ghi nhận NGAY sau response, TRƯỚC khi parse:** token đã bị đốt kể cả khi output malformed — mà đó lại là những lượt **đắt nhất** (AI3 retry tới `score_max_attempts` lần). Hoãn ghi tới sau parse = mất đúng phần chi phí cần thấy nhất. Ngoại lệ **duy nhất** là `generate_lesson_theory` (hoãn để đính kèm số liệu URL F15) và nó **bắt buộc** dùng `try/finally`.
+
+**Lưu ở đâu — GEN-4:** AIService **không được ghi DB**, nên số liệu được **đẩy qua callback nội bộ** (`X-Internal-Token`) về **PaymentService** → bảng `ai_usage_logs`. Lý do chọn Payment + 3 phương án đã loại (trả usage kèm response cho caller · `/metrics` in-memory · gom qua log): xem docstring `app/usage.py` và [payment.md](payment.md) §`POST /internal/ai-usage`. **AIService chỉ gửi token + tên model, KHÔNG gửi tiền** — đơn giá thuộc về Payment.
+
+**Best-effort tuyệt đối:** sink chết / mạng hỏng / `usage_metadata` đổi shape đều bị nuốt và chỉ log. Đo là chức năng **quan sát**; để lỗi đo làm answer `Failed` là biến nó thành đường **mất credit** (PAY-13). Kill-switch `USAGE_METERING_ENABLED=false`; `USAGE_SINK_BASE` rỗng → chỉ ghi log, không gọi mạng (mặc định dev/test).
+
+**Kèm F15:** lượt `generate_lesson_theory` gửi thêm `resourceUrlsProposed`/`resourceUrlsRejected` — trước đó allowlist tên miền loại URL trong **im lặng**, tức nếu Gemini bịa domain 90% số lần thì không ai biết, và cũng không có cơ sở nào để đánh giá allowlist 26 domain là chặt hay lỏng.
+
+**Env:** `USAGE_METERING_ENABLED` (mặc định `true`) · `USAGE_SINK_BASE` (base URL Payment, **KHÔNG qua gateway** — GEN-1) · `USAGE_SINK_TIMEOUT_SECONDS` (mặc định `3.0`; ngắn có chủ đích vì `/decide-next` chạy đồng bộ trong request upload).
 
 ## Pipeline chấm (worker) — queue `scoring_pipeline_queue`
 Worker consume (prefetch 1, ack/nack thủ công) → tải audio từ SeaweedFS → Whisper transcribe → Gemini chấm → callback `/internal/answers/{id}/result`.

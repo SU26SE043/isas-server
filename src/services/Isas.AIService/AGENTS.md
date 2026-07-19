@@ -84,6 +84,9 @@ Mọi kết quả trả qua HTTP (sync) **hoặc** callback (async) về .NET �
 | analyze-cv (B2C) | sync | `cv_analyses` (Interview) |
 | analyze-cv (B2B sàng CV) | async `cv_screening_queue` → callback | `campaign_candidates`/`candidate_criterion_scores` (Campaign) |
 | chấm answer | async `scoring_pipeline_queue` → callback | `answer_scores` (Interview) |
+| **token/chi phí MỌI lượt gọi** ✅ **F22** | callback `POST /internal/ai-usage` | `ai_usage_logs` (**Payment**) |
+
+> ✅ **F22 (2026-07-19) — đo token/chi phí.** MỌI lời gọi Gemini đi qua **một chokepoint** `GeminiProvider._generate()`; đọc `usage_metadata` → `app/usage.py:report_usage()` → đẩy về **Payment** (GEN-4: AIService không ghi DB, số liệu đi qua callback `X-Internal-Token`). Ghi nhận **NGAY sau response, TRƯỚC parse** (token đã đốt kể cả khi output malformed — và đó là những lượt đắt nhất do AI3 retry). **Best-effort tuyệt đối**: sink chết KHÔNG được làm answer `Failed` (PAY-13). Thêm endpoint mới ⇒ **phải đi qua `_generate`**, đừng gọi thẳng `generate_content`. Env: `USAGE_METERING_ENABLED` · `USAGE_SINK_BASE` · `USAGE_SINK_TIMEOUT_SECONDS`. **Bản đầy đủ + các phương án đã loại: [`docs/services/ai.md`](../../../docs/services/ai.md) §Đo token & chi phí (source of truth) + docstring `app/usage.py`.**
 
 ## Pipeline chấm (worker) — queue `scoring_pipeline_queue`
 Worker consume (prefetch 1, ack/nack thủ công) → tải audio từ SeaweedFS → Whisper transcribe → Gemini chấm → callback `/internal/answers/{id}/result`.
