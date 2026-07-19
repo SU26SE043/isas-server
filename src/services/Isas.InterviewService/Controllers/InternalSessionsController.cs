@@ -74,6 +74,10 @@ public class InternalSessionsController : ControllerBase
     // DB18 — Payment gọi (máy-máy, X-Internal-Token) để phát hiện orphan reservation: gửi danh sách
     // session_id đang giữ chỗ (Reserved) → trả về TẬP CON thực sự có row practice_sessions. Payment coi
     // phần còn lại là orphan (crash giữa reserve↔insert lúc Start) → release. Input null/rỗng → trả rỗng.
+    //
+    // R1 — trả THÊM `states` (session_id + status string) để Payment phân nhánh chỗ giữ của session ĐÃ
+    // TERMINAL (Scored → consume · SessionAbandoned/Failed → release), thứ trước R1 không ai dọn.
+    // Mở rộng ADDITIVE: `existingIds` giữ nguyên nghĩa + vị trí ⇒ Payment bản cũ không vỡ.
     [HttpPost("internal/sessions/exists")]
     [AllowAnonymous]
     public async Task<IActionResult> SessionsExist(
@@ -85,10 +89,13 @@ public class InternalSessionsController : ControllerBase
             return Unauthorized(new { error = "Invalid internal token" });
 
         if (req?.SessionIds is null || req.SessionIds.Count == 0)
-            return Ok(new SessionExistsResponse(Array.Empty<Guid>()));
+            return Ok(new SessionExistsResponse(Array.Empty<Guid>(), Array.Empty<SessionStateDto>()));
 
-        var existing = await _practiceService.GetExistingSessionIdsAsync(req.SessionIds, ct);
-        return Ok(new SessionExistsResponse(existing));
+        // MỘT nguồn cho cả 2 trường: `existingIds` suy ra từ `states` ⇒ hai mảng không thể lệch tập
+        // (lệch tập = Payment thấy session "tồn tại mà thiếu status" → SKIP oan chỗ giữ cần dọn).
+        var states = await _practiceService.GetExistingSessionStatesAsync(req.SessionIds, ct);
+        var existingIds = states.Select(s => s.SessionId).ToList();
+        return Ok(new SessionExistsResponse(existingIds, states));
     }
 
     // AI4 — CampaignService (HR) gọi (máy-máy, X-Internal-Token, KHÔNG qua gateway, KHÔNG JWT) để đọc

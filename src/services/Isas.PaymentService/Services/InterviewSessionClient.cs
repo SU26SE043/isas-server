@@ -27,14 +27,17 @@ namespace Isas.PaymentService.Services
             _logger = logger;
         }
 
-        // Res 200: { existingIds: Guid[] } (Interview SessionExistsResponse).
-        private record ExistsApiResponse(List<Guid>? ExistingIds);
+        // Res 200: { existingIds: Guid[], states?: [{ sessionId, status }] } (Interview SessionExistsResponse).
+        // `states` VẮNG khi Interview còn image trước R1 → parse thành rỗng (KHÔNG suy ra từ existingIds).
+        private record StateApiDto(Guid SessionId, string? Status);
+        private record ExistsApiResponse(List<Guid>? ExistingIds, List<StateApiDto>? States);
 
-        public async Task<HashSet<Guid>> GetExistingSessionsAsync(
+        public async Task<InterviewSessionsSnapshot> GetExistingSessionsAsync(
             IReadOnlyList<Guid> sessionIds, CancellationToken ct = default)
         {
             if (sessionIds is null || sessionIds.Count == 0)
-                return new HashSet<Guid>();
+                return new InterviewSessionsSnapshot(
+                    new HashSet<Guid>(), new Dictionary<Guid, string>());
 
             // SessionExistsRequest { sessionIds }.
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/exists")
@@ -77,7 +80,22 @@ namespace Isas.PaymentService.Services
             if (body is null)
                 throw new InterviewServiceException("InterviewService exists trả rỗng");
 
-            return body.ExistingIds is null ? new HashSet<Guid>() : body.ExistingIds.ToHashSet();
+            // TỒN TẠI đọc từ existingIds (trường Interview bản CŨ vẫn điền) — KHÔNG suy từ states.
+            var existing = body.ExistingIds is null ? new HashSet<Guid>() : body.ExistingIds.ToHashSet();
+
+            // states VẮNG (Interview cũ) → dictionary RỖNG ⇒ reconciler SKIP mọi session đang tồn tại =
+            // đúng bằng hành vi trước R1. Bỏ qua entry status rỗng/null: "không biết" ≠ "trạng thái nào đó".
+            var states = new Dictionary<Guid, string>();
+            if (body.States is not null)
+            {
+                foreach (var s in body.States)
+                {
+                    if (!string.IsNullOrWhiteSpace(s.Status))
+                        states[s.SessionId] = s.Status!;
+                }
+            }
+
+            return new InterviewSessionsSnapshot(existing, states);
         }
     }
 }

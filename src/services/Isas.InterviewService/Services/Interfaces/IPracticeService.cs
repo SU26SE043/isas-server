@@ -41,6 +41,12 @@ public interface IPracticeService
     Task<IReadOnlyList<Guid>> GetExistingSessionIdsAsync(
         IReadOnlyList<Guid> sessionIds, CancellationToken ct = default);
 
+    // R1 — như trên nhưng kèm TRẠNG THÁI (string, GEN-2). Payment cần phân biệt session đã terminal
+    // (Scored → consume; SessionAbandoned/Failed → release) với session đang bay (SKIP): trước R1 chỗ
+    // giữ của session terminal mà lỡ mất event settle thì KHÔNG AI DỌN → rò credit vĩnh viễn.
+    Task<IReadOnlyList<SessionStateDto>> GetExistingSessionStatesAsync(
+        IReadOnlyList<Guid> sessionIds, CancellationToken ct = default);
+
     // AI4 — CampaignService (HR, internal) đọc transcript + nhận xét AI per-criterion + cờ needs_review
     // của 1 buổi để surface cho HR. CÙNG truy vấn như GetSessionAsync (questions→answers→Scores + MapAnswer)
     // NHƯNG KHÔNG check chủ session (máy-máy, X-Internal-Token; Campaign đã gate org+ranking phía nó).

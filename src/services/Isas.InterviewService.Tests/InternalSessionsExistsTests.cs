@@ -143,4 +143,81 @@ public class InternalSessionsExistsTests
         practice.Verify(p => p.GetExistingSessionIdsAsync(
             It.IsAny<IReadOnlyList<Guid>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // R1 — `states` (session_id + status string) để Payment phân nhánh chỗ giữ của session ĐÃ TERMINAL.
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    // Status trên dây phải là TÊN ENUM (string, GEN-2) — không phải số thứ tự. Nếu rơi thành số thì
+    // Payment (đối chiếu Ordinal với "Scored"/"SessionAbandoned"/"Failed") sẽ SKIP sạch mọi ca và R1
+    // thành no-op IM LẶNG: không lỗi, không log, chỉ là chỗ giữ tiếp tục rò như trước.
+    [Fact]
+    public async Task R1_GetExistingSessionStates_TraTenEnumDangString()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var scored = TestDb.Session(candidate, SessionStatus.Scored);
+        var abandoned = TestDb.Session(candidate, SessionStatus.SessionAbandoned);
+        var inProgress = TestDb.Session(candidate, SessionStatus.InProgress);
+        t.Db.PracticeSessions.AddRange(scored, abandoned, inProgress);
+        await t.Db.SaveChangesAsync();
+
+        var states = await BuildService(t).GetExistingSessionStatesAsync(
+            new[] { scored.Id, abandoned.Id, inProgress.Id });
+
+        var byId = states.ToDictionary(s => s.SessionId, s => s.Status);
+        Assert.Equal("Scored", byId[scored.Id]);
+        Assert.Equal("SessionAbandoned", byId[abandoned.Id]);
+        Assert.Equal("InProgress", byId[inProgress.Id]);
+    }
+
+    // Session không tồn tại → KHÔNG xuất hiện trong states (Payment coi là orphan → release).
+    [Fact]
+    public async Task R1_GetExistingSessionStates_BoIdKhongTonTai()
+    {
+        using var t = new TestDb();
+        var s = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready);
+        t.Db.PracticeSessions.Add(s);
+        await t.Db.SaveChangesAsync();
+
+        var missing = Guid.NewGuid();
+        var states = await BuildService(t).GetExistingSessionStatesAsync(new[] { s.Id, missing });
+
+        Assert.Single(states);
+        Assert.Equal(s.Id, states[0].SessionId);
+        Assert.Empty(await BuildService(t).GetExistingSessionStatesAsync(Array.Empty<Guid>()));
+    }
+
+    // Controller — `existingIds` và `states` phải phủ ĐÚNG CÙNG tập session. Lệch tập ⇒ Payment thấy
+    // "tồn tại mà thiếu status" ⇒ SKIP oan đúng những chỗ giữ cần dọn (R1 lại thành no-op im lặng).
+    [Fact]
+    public async Task R1_Controller_ExistingIdsVaStates_KhopTap()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var scored = TestDb.Session(candidate, SessionStatus.Scored);
+        var live = TestDb.Session(candidate, SessionStatus.InProgress);
+        t.Db.PracticeSessions.AddRange(scored, live);
+        await t.Db.SaveChangesAsync();
+
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Internal:Token"] = "test-internal-token"
+        }).Build();
+        var controller = new InternalSessionsController(
+            BuildService(t), config, NullLogger<InternalSessionsController>.Instance);
+
+        var req = new SessionExistsRequest(new[] { scored.Id, live.Id, Guid.NewGuid() });
+        var result = await controller.SessionsExist(req, token: "test-internal-token", default);
+
+        var body = Assert.IsType<SessionExistsResponse>(Assert.IsType<OkObjectResult>(result).Value);
+        Assert.NotNull(body.States);
+        Assert.Equal(
+            body.ExistingIds.OrderBy(x => x).ToList(),
+            body.States!.Select(s => s.SessionId).OrderBy(x => x).ToList());
+
+        var byId = body.States!.ToDictionary(s => s.SessionId, s => s.Status);
+        Assert.Equal("Scored", byId[scored.Id]);
+        Assert.Equal("InProgress", byId[live.Id]);
+    }
 }
