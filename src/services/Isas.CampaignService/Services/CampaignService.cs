@@ -30,6 +30,10 @@ namespace Isas.CampaignService.Services
         // DB23 — hạn mặc định cho token khi campaign không có deadline (optional: test cũ gọi
         // ctor 6/7 tham số vẫn compile, dùng default 14 ngày).
         private readonly InvitationSettings _invitationSettings;
+        // F9 — typed HttpClient gọi AIService /generate-questions. Optional (default null) để giữ nguyên
+        // mọi call-site test hiện có; DI luôn resolve client thật (đăng ký ở Program.cs). null → chỉ ảnh
+        // hưởng đúng đường sinh câu hỏi (ném InvalidOperationException = lỗi cấu hình), không đường nào khác.
+        private readonly IQuestionGenerator? _questionGenerator;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
@@ -41,8 +45,10 @@ namespace Isas.CampaignService.Services
             IParserService parser, ICriteriaSuggester suggester,
             IInvitationEmailPublisher emailPublisher,
             ICampaignSessionClient? sessionClient = null,
-            IOptions<InvitationSettings>? invitationOptions = null)
+            IOptions<InvitationSettings>? invitationOptions = null,
+            IQuestionGenerator? questionGenerator = null)
         {
+            _questionGenerator = questionGenerator;
             _invitationSettings = invitationOptions?.Value ?? new InvitationSettings();
             _db = db;
             _file = file;
@@ -452,6 +458,89 @@ namespace Isas.CampaignService.Services
             }).ToList();
             campaign.UpdatedAt = DateTime.UtcNow;
             AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id, $"Thay {questions.Count} câu hỏi");
+            await _db.SaveChangesAsync(ct);
+            return CampaignResponse.FromEntity(campaign);
+        }
+
+        // F9 (FR11) — AI sinh câu hỏi từ JD cho campaign B2B.
+        // Trần số câu 1 lượt sinh: giữ bounded chi phí token + độ dài bài thi so sánh được (E1 fairness).
+        private const int MaxGeneratedQuestions = 20;
+
+        public async Task<CampaignResponse> GenerateCampaignQuestionsAsync(
+            Guid orgId, Guid actorUserId, Guid id, int? count, CancellationToken ct)
+        {
+            // ── 1. Fetch & verify ownership (ngoài org → 404, không lộ tồn tại) ──
+            var campaign = await _db.Campaigns
+                .Include(c => c.Questions)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            // ── 2. CAMP-2: câu hỏi chỉ sửa được khi Draft; Active/Closed/Archived → 409 ──
+            //    Sinh câu hỏi CŨNG là sửa câu hỏi → phải chịu cùng khoá lifecycle, nếu không
+            //    thì đây thành cửa hậu đổi đề của chiến dịch ĐANG chạy (ứng viên đã làm bài).
+            if (campaign.Status != CampaignStatus.Draft)
+                throw new InvalidOperationException(
+                    $"Cannot generate questions when campaign is {campaign.Status}. Only Draft is editable.");
+
+            // ── 3. Cần JD: không có JD thì "sinh từ JD" không có nghĩa → 400, KHÔNG tốn 1 lời gọi AI ──
+            //    (CAMP-5: JD nhập text trực tiếp hoặc trích từ PDF; cả 2 đường đều đổ vào JDText.)
+            if (string.IsNullOrWhiteSpace(campaign.JDText))
+                throw new ArgumentException(
+                    "Campaign chưa có JD (jdText) — cần JD để AI sinh câu hỏi.");
+
+            // ── 4. Guard độ dài JD TRƯỚC khi gọi AI (CAMP-5, ngưỡng chung TextInputLimits.JdTextMaxChars) ──
+            //    Text lúc ghi đã bị cap, nhưng campaign tạo trước khi có cap / sửa thẳng DB vẫn có thể vượt
+            //    → guard lại ở đây để không đẩy khối text tuỳ ý vào một lời gọi Gemini tính phí.
+            var jdText = NormalizeText(campaign.JDText, JdTextLabel);
+
+            if (count is not null && (count < 1 || count > MaxGeneratedQuestions))
+                throw new ArgumentException($"count phải trong khoảng 1..{MaxGeneratedQuestions}.");
+
+            if (_questionGenerator is null)
+                throw new InvalidOperationException("Question generator chưa được cấu hình.");
+
+            // ── 5. Gọi AI (AI-4: jdText là DỮ LIỆU — AIService đã bọc delimiter + chỉ thị bỏ qua lệnh
+            //    nhúng trong JD). Lỗi upstream → DownstreamServiceException → controller map 502. ──
+            var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
+            var generated = await _questionGenerator.GenerateAsync(jobCategory, jdText, count, ct);
+
+            // AI trả rỗng = lượt sinh không dùng được. Trả 502 thay vì lặng lẽ xoá sạch đề cũ rồi
+            // báo thành công — HR phải biết là AI hỏng, không phải "campaign của tôi mất hết câu hỏi".
+            if (generated.Count == 0)
+                throw new DownstreamServiceException("AIService không sinh được câu hỏi nào từ JD này.");
+
+            if (generated.Count > MaxGeneratedQuestions)
+                generated = generated.Take(MaxGeneratedQuestions).ToList();
+
+            // ── 6. Lưu: thay lượt AI trước đó, GIỮ NGUYÊN câu HR tự gõ ──────────────
+            //    "Sinh lại" = làm mới đề AI, không phải cộng dồn (bấm 3 lần ≠ 15 câu), và tuyệt đối
+            //    không được nuốt công HR đã gõ tay. F10 mới là phần trộn qua đường PUT questions.
+            var aiOld = campaign.Questions.Where(q => q.Source == QuestionSource.AiGenerated).ToList();
+            _db.CampaignQuestions.RemoveRange(aiOld);
+            foreach (var q in aiOld)
+                campaign.Questions.Remove(q);   // để response phản ánh đúng đề sau khi sinh
+
+            var now = DateTime.UtcNow;
+            var fresh = generated.Select(text => new CampaignQuestion
+            {
+                Id = Guid.NewGuid(),
+                CampaignId = campaign.Id,
+                OrgId = campaign.OrgId,
+                QuestionText = text,
+                Source = QuestionSource.AiGenerated,   // F9: dấu vết nguồn — phân biệt với câu HR gõ
+                IsRequired = true,
+                CreatedAt = now,
+            }).ToList();
+
+            // Dùng DbSet.AddRange chứ KHÔNG campaign.Questions.Add(): Id của câu hỏi là store-generated,
+            // nên entity mang Id khác default mà chỉ gắn vào navigation sẽ bị DetectChanges phân loại là
+            // Modified (EF tưởng là row đã tồn tại) → UPDATE 0 row → DbUpdateConcurrencyException.
+            // AddRange ép state = Added; relationship fixup tự đưa vào campaign.Questions cho response.
+            _db.CampaignQuestions.AddRange(fresh);
+
+            campaign.UpdatedAt = now;
+            AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id,
+                $"AI sinh {generated.Count} câu hỏi từ JD (thay {aiOld.Count} câu AI cũ)");
             await _db.SaveChangesAsync(ct);
             return CampaignResponse.FromEntity(campaign);
         }
