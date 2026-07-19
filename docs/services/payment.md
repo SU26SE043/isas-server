@@ -111,7 +111,14 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`POST /payment/order`** ✅ — Mua pack credit. Auth `OrgAdmin` (B2B) / `User` (B2C). Chủ ví lấy từ JWT (claim `org_id`→Org, else `sub`→User). `HrMember`→**403** (A4).
 - Req: `{ packageId: uuid }` → Res **`201`** `Order` (**đầy đủ** — id, ownerType, ownerId, kind, packageId, invoiceId, status, amountVnd, payosOrderCode, expiredAt, paidAt, createdAt, **`checkoutUrl`** = link PayOS để redirect). Lỗi: **404** (packageId không tồn tại) · **400** (gói ngừng bán, `is_active=false`) · **403** (HrMember) · **401** · **502** (PayOS reject/misconfig → `PaymentGatewayException`). *(BK19 ratify 2026-07-13: unknown id → 404 "Package not found"; inactive → 400 "Package is no longer available".)*
 
-**`GET /payment/order/{id}`** ✅ · **`GET /payment/order/my-orders`** ✅ — Chi tiết / lịch sử đơn → `Order` / `Order[]`. *(route thật = `/order/my-orders` — `[Route("order")]`+`[HttpGet("my-orders")]`, KHÔNG phải `/my-orders`.)* Lỗi: **404** (không tồn tại **hoặc** non-owner — không lộ tồn tại; BK15).
+**`GET /payment/order/{id}`** ✅ — Chi tiết đơn → `Order`. Lỗi: **404** (không tồn tại **hoặc** non-owner — không lộ tồn tại; BK15).
+
+**`GET /payment/order/my-orders`** ✅ — Lịch sử đơn của **chính chủ ví** (JWT: `org_id`→Org, else `sub`→User; PAY-2/D15) → `Order[]`, mới nhất trước. *(route thật = `/order/my-orders` — `[Route("order")]`+`[HttpGet("my-orders")]`, KHÔNG phải `/my-orders`.)*
+- **Query (opt-in, backward-compat):** `?status=` lọc `OrderStatus` (numeric: 1=Pending..5=Cancelled, đẩy xuống SQL) · `?limit=` (mặc định **và** tối đa **500**) · `?cursor=` opaque keyset. **Body vẫn là mảng JSON** — client không gửi gì thì hành vi y như trước.
+- **Phân trang keyset** `(created_at DESC, id DESC)` (mẫu DB8 `Isas.Shared/Pagination`): next-cursor ở header **`X-Next-Cursor`** (vắng = hết trang); cursor rác → trang đầu (không 500). Đổi hành vi duy nhất: chủ ví có **>500 đơn** nay chỉ nhận 500 ở trang đầu.
+- *Vì sao cần:* mỗi lần bấm checkout là INSERT 1 row `orders` (ý định trả tiền, KHÔNG phải trả xong) → đơn `Pending` bỏ dở tích lại vĩnh viễn, không job nào dọn.
+- Index `ix_orders_owner_created` `(owner_type, owner_id, created_at DESC, id DESC)` (DB26) khớp sẵn hình dạng này → **không cần index/migration mới**.
+- Lỗi: **401** · **403** (JWT không suy được chủ ví).
 
 **`DELETE /payment/order/{id}`** ✅ — Huỷ đơn `Pending` (owner-scope). Res **`204`**. Lỗi: **400** (đơn không ở trạng thái `Pending`) · **404** (không tồn tại/non-owner).
 
