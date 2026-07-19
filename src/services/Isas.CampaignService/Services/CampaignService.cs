@@ -509,8 +509,15 @@ namespace Isas.CampaignService.Services
             if (generated.Count == 0)
                 throw new DownstreamServiceException("AIService không sinh được câu hỏi nào từ JD này.");
 
+            // Cắt bớt phải NÓI RA. Im lặng truncate đọc thành "AI sinh đúng ngần này" trong khi thực tế
+            // có câu bị rơi — người vận hành không có cách nào biết trần đang cắn.
             if (generated.Count > MaxGeneratedQuestions)
+            {
+                _logger.LogWarning(
+                    "F9 — AIService sinh {Actual} câu cho campaign {CampaignId}, vượt trần {Max} → bỏ {Dropped} câu.",
+                    generated.Count, campaign.Id, MaxGeneratedQuestions, generated.Count - MaxGeneratedQuestions);
                 generated = generated.Take(MaxGeneratedQuestions).ToList();
+            }
 
             // ── 6. Lưu: thay lượt AI trước đó, GIỮ NGUYÊN câu HR tự gõ ──────────────
             //    "Sinh lại" = làm mới đề AI, không phải cộng dồn (bấm 3 lần ≠ 15 câu), và tuyệt đối
