@@ -130,6 +130,11 @@ namespace Isas.AuthService.Services
                 .FirstOrDefaultAsync(u => u.Id == tokenToRotate.UserId)
                 ?? throw new UnauthorizedAccessException("Invalid refresh token");
 
+            // F20 — chặn refresh của account bị đình chỉ. Ban đã thu hồi mọi refresh token nên đường
+            // này thường không tới được; kiểm ở đây bịt ĐUA: một refresh đang bay song song với lệnh
+            // ban có thể chèn token mới SAU khi ExecuteUpdate quét xong → phiên sống tiếp vô thời hạn.
+            EnsureNotBanned(user);
+
             tokenToRotate.IsRevoked = true;
 
             var newRawRefreshToken = _jwtService.GenerateRefreshToken();
@@ -325,6 +330,10 @@ namespace Isas.AuthService.Services
                 await EnsureRoleExistsAsync("Candidate");
                 await _userManager.AddToRoleAsync(user, "Candidate");
             }
+
+            // F20 — account đã bị đình chỉ thì magic-link B2B KHÔNG được cấp JWT: đường này phát token
+            // chỉ dựa trên EMAIL (không mật khẩu), nên bỏ sót ở đây là mở nguyên một cửa vòng qua ban.
+            EnsureNotBanned(user);
 
             var roles = await _userManager.GetRolesAsync(user);
             var membership = await GetMembershipAsync(user.Id);
@@ -534,7 +543,11 @@ namespace Isas.AuthService.Services
                     OrgId = m?.OrgId,
                     OrgName = m?.Organization?.Name,
                     OrgRole = m?.OrgRole.ToString(),
-                    CreatedAt = u.CreatedAt
+                    CreatedAt = u.CreatedAt,
+                    // F20 — trạng thái đình chỉ hiện ngay trong danh sách: admin phải thấy ai đang bị
+                    // cấm trước khi bấm nút, và FE cần dữ liệu này để render nút Ban/Gỡ ban cho đúng.
+                    BannedAt = u.BannedAt,
+                    BanReason = u.BanReason
                 });
             }
 
@@ -542,6 +555,116 @@ namespace Isas.AuthService.Services
                 ? new KeysetCursor(users[^1].CreatedAt, users[^1].Id).Encode()
                 : null;
             return new KeysetPage<AdminUserResponse>(result, next);
+        }
+
+        // ── F20 (FR16) — PlatformAdmin mutation trên account người dùng ────────────────────────
+        //
+        // ⚠ RANH GIỚI HIỆU LỰC CỦA BAN (AUTH-5 / GEN-3 — đọc kỹ trước khi "sửa cho chặt hơn"):
+        // các service khác validate JWT OFFLINE bằng chung khoá, KHÔNG hỏi AuthService lúc chạy.
+        // Vì vậy ban KHÔNG giết được access token ĐANG lưu hành: người vừa bị cấm vẫn gọi API được
+        // tối đa 1 TTL access token (15'). Thứ ban làm ngay lập tức là: (1) chặn mọi đường PHÁT
+        // phiên mới, (2) thu hồi mọi refresh token → không gia hạn được nữa. Sau ≤15' account chết
+        // hẳn. Muốn chặt hơn thì RÚT NGẮN TTL access — TUYỆT ĐỐI KHÔNG thêm denylist/gọi mạng vào
+        // đường validate của service khác (vi phạm GEN-3, ràng buộc cứng). Xem docs/services/auth.md.
+        public async Task<AdminUserResponse> BanUserAsync(
+            Guid actingAdminId, Guid userId, string? reason, CancellationToken ct = default)
+        {
+            var user = await _authDbContext.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+                ?? throw new KeyNotFoundException("User not found");
+
+            // Bất biến: luôn còn ≥1 Admin hoạt động. Cấm hết Admin thì không còn ai GỠ ban được cho
+            // ai — hệ thống tự khoá mình vĩnh viễn (chỉ sửa được bằng tay trong DB).
+            if (user.BannedAt is null && await IsLastActiveAdminAsync(userId, ct))
+                throw new AdminActionConflictException("Cannot ban the last active platform Admin");
+
+            user.BannedAt = DateTime.UtcNow;
+            user.BanReason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+            user.BannedBy = actingAdminId;
+            user.UpdatedAt = DateTime.UtcNow;
+            await _authDbContext.SaveChangesAsync(ct);
+
+            // Thu hồi refresh token NGAY: nếu không, người bị cấm cứ 15' gia hạn một lần và phiên
+            // sống thêm trọn 7 ngày của refresh token — ban sẽ chỉ là cái nhãn trong DB.
+            await RevokeAllRefreshTokensAsync(userId, ct);
+
+            return await ToAdminUserResponseAsync(user, ct);
+        }
+
+        public async Task<AdminUserResponse> UnbanUserAsync(Guid userId, CancellationToken ct = default)
+        {
+            var user = await _authDbContext.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+                ?? throw new KeyNotFoundException("User not found");
+
+            user.BannedAt = null;
+            user.BanReason = null;
+            user.BannedBy = null;
+            user.UpdatedAt = DateTime.UtcNow;
+            await _authDbContext.SaveChangesAsync(ct);
+
+            // KHÔNG khôi phục refresh token đã thu hồi (đằng nào cũng chỉ còn hash) — người dùng
+            // đăng nhập lại là có phiên mới.
+            return await ToAdminUserResponseAsync(user, ct);
+        }
+
+        // F20 — Admin đặt lại mật khẩu HỘ user (user mất quyền truy cập email / cần khoá tài khoản
+        // đang bị chiếm). Dùng reset-token của Identity thay vì ghi thẳng hash: qua đúng validator
+        // mật khẩu + đổi SecurityStamp như đường tự-reset.
+        public async Task AdminResetPasswordAsync(
+            Guid userId, string newPassword, CancellationToken ct = default)
+        {
+            var user = await _authDbContext.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+                ?? throw new KeyNotFoundException("User not found");
+
+            var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+            var result = await _userManager.ResetPasswordAsync(user, token, newPassword);
+            if (!result.Succeeded)
+                throw new ArgumentException(string.Join("; ", result.Errors.Select(e => e.Description)));
+
+            // BẮT BUỘC: đổi mật khẩu mà không thu hồi refresh token thì phiên của kẻ đang chiếm tài
+            // khoản vẫn tự gia hạn thêm 7 ngày — tức là "đổi mật khẩu để cứu account" không cứu gì cả.
+            await RevokeAllRefreshTokensAsync(userId, ct);
+        }
+
+        // Đếm Admin CÒN HOẠT ĐỘNG (chưa bị ban) khác người đang bị thao tác. Đọc thẳng DB (không qua
+        // UserManager.GetUsersInRoleAsync) để đếm được cả cờ ban trong cùng một truy vấn.
+        private async Task<bool> IsLastActiveAdminAsync(Guid userId, CancellationToken ct)
+        {
+            var adminRoleId = await _authDbContext.Roles
+                .Where(r => r.NormalizedName == "ADMIN")
+                .Select(r => (Guid?)r.Id)
+                .FirstOrDefaultAsync(ct);
+            if (adminRoleId is not Guid rid) return false;
+
+            var targetIsAdmin = await _authDbContext.UserRoles
+                .AnyAsync(ur => ur.UserId == userId && ur.RoleId == rid, ct);
+            if (!targetIsAdmin) return false;
+
+            var otherActiveAdmins = await _authDbContext.UserRoles
+                .CountAsync(ur => ur.RoleId == rid
+                                  && ur.UserId != userId
+                                  && _authDbContext.Users.Any(u => u.Id == ur.UserId && u.BannedAt == null), ct);
+            return otherActiveAdmins == 0;
+        }
+
+        private async Task<AdminUserResponse> ToAdminUserResponseAsync(User user, CancellationToken ct)
+        {
+            var membership = await _authDbContext.OrgMembers.AsNoTracking()
+                .Include(m => m.Organization)
+                .FirstOrDefaultAsync(m => m.UserId == user.Id, ct);
+
+            return new AdminUserResponse
+            {
+                Id = user.Id,
+                Email = user.Email,
+                FullName = user.FullName,
+                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role",
+                OrgId = membership?.OrgId,
+                OrgName = membership?.Organization?.Name,
+                OrgRole = membership?.OrgRole.ToString(),
+                CreatedAt = user.CreatedAt,
+                BannedAt = user.BannedAt,
+                BanReason = user.BanReason
+            };
         }
 
         private static OrganizationResponse ToOrgResponse(Organization org, int memberCount) => new()
@@ -658,8 +781,26 @@ namespace Isas.AuthService.Services
             _authDbContext.OrgMembers.AsNoTracking()
                 .FirstOrDefaultAsync(m => m.UserId == userId);
 
+        /// <summary>
+        /// F20 (FR16) — cửa DUY NHẤT chặn account bị đình chỉ, đặt ngay trước khi phát token.
+        ///
+        /// VÌ SAO đặt ở tầng service chứ không ở controller đăng nhập: có BỐN đường phát phiên
+        /// (đăng nhập mật khẩu · đăng nhập Google · refresh · <c>ProvisionCandidateAsync</c> của D2)
+        /// và chỉ có đường đầu tiên đi qua kiểm mật khẩu. Chặn ở controller <c>Login</c> thì người bị
+        /// cấm vẫn vào lại được bằng Google, hoặc bằng magic-link B2B (provision cấp JWT theo EMAIL,
+        /// không hỏi mật khẩu). Gác ở <see cref="GenerateAuthResponse"/> + refresh + provision là
+        /// phủ hết cả bốn.
+        /// </summary>
+        private static void EnsureNotBanned(User user)
+        {
+            if (user.BannedAt is not null)
+                throw new UserBannedException("Account has been suspended");
+        }
+
         private async Task<AuthResponse> GenerateAuthResponse(User user)
         {
+            EnsureNotBanned(user);
+
             var roles = await _userManager.GetRolesAsync(user);
             var membership = await GetMembershipAsync(user.Id);
             var accessToken = _jwtService.GenerateAccessToken(user, roles, membership);
