@@ -85,7 +85,14 @@ public class AuthorizationCoverageTests
     [Fact]
     public void AdminRefundVaRevenue_RequireAdminRole()
     {
-        foreach (var t in new[] { typeof(AdminOrdersController), typeof(AdminRevenueController) })
+        foreach (var t in new[]
+                 {
+                     typeof(AdminOrdersController),
+                     typeof(AdminRevenueController),
+                     // F20 — nguy hiểm nhất nhóm: nhận ownerId từ CLIENT (không phải từ token) và CỘNG
+                     // credit. Rơi xuống [Authorize] trần = ai đăng nhập cũng tự cấp credit cho mình.
+                     typeof(AdminCreditsController),
+                 })
         {
             var attr = t.GetCustomAttributes<AuthorizeAttribute>(inherit: true).SingleOrDefault();
             Assert.NotNull(attr);

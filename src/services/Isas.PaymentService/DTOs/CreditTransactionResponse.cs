@@ -38,5 +38,22 @@ namespace Isas.PaymentService.DTOs
             ReversesTransactionId = t.ReversesTransactionId,
             CreatedAt = t.CreatedAt,
         };
+
+        /// <summary>
+        /// F20 — admin đã cấp khoản quà này (chỉ có trên dòng <c>PromoGrant</c>), kèm lý do.
+        /// CHỈ điền ở bản admin: với chủ ví thì "nhân viên nào bấm nút" là thông tin vận hành nội bộ,
+        /// không phải thứ họ cần để đối chiếu số dư của mình.
+        /// </summary>
+        public Guid? GrantedBy { get; set; }
+        public string? Note { get; set; }
+
+        /// <summary>Bản dành cho admin — có thêm <see cref="GrantedBy"/>/<see cref="Note"/>.</summary>
+        public static CreditTransactionResponse ToAdminResponse(CreditTransaction t)
+        {
+            var dto = ToResponse(t);
+            dto.GrantedBy = t.GrantedBy;
+            dto.Note = t.Note;
+            return dto;
+        }
     }
 }

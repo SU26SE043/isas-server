@@ -28,6 +28,19 @@ namespace PaymentService.Models
         /// </summary>
         public Guid? ReversesTransactionId { get; set; }
         public CreditTransaction? ReversesTransaction { get; set; }
+
+        /// <summary>
+        /// F20 — `sub` của PlatformAdmin đã cấp credit khuyến mãi (chỉ set trên row
+        /// <see cref="CreditTransactionReason.PromoGrant"/>). Ref LỎNG → Auth (GEN-2).
+        ///
+        /// Không có cột này thì quà tặng thủ công là loại credit DUY NHẤT xuất hiện trong ví mà không
+        /// truy được nguồn: không qua thanh toán (nên không có <c>order_id</c>), không do luật tự động
+        /// (nên không suy ra được từ ngữ cảnh). Cấp credit là in tiền trong hệ thống này — phải ký tên.
+        /// </summary>
+        public Guid? GrantedBy { get; set; }
+
+        /// <summary>F20 — ghi chú của admin lúc cấp (lý do khuyến mãi / đền bù sự cố).</summary>
+        public string? Note { get; set; }
     }
 
     public enum CreditTransactionReason
@@ -41,6 +54,16 @@ namespace PaymentService.Models
         /// cấp "credit không sổ sách": nhờ vậy bất biến `remaining + reserved = Σ delta` vẫn đúng,
         /// nên credit tặng bốc hơi do drift vẫn bị phát hiện y như credit khách trả tiền.
         /// </summary>
-        FreeGrant
+        FreeGrant,
+
+        /// <summary>
+        /// F20 — credit khuyến mãi do PlatformAdmin cấp tay (+N, có <c>granted_by</c>).
+        ///
+        /// TÁCH khỏi <see cref="Purchase"/> và <see cref="FreeGrant"/> vì ba thứ này trả lời ba câu hỏi
+        /// kế toán khác nhau: Purchase = tiền thật đã thu, FreeGrant = suất dùng thử cấp TỰ ĐỘNG lúc tạo
+        /// ví (F7), PromoGrant = quà do người quyết định. Gộp quà vào Purchase sẽ bơm khống doanh thu
+        /// (F19); gộp vào FreeGrant sẽ làm hỏng phép "ví này đã dùng suất dùng thử chưa".
+        /// </summary>
+        PromoGrant
     }
 }

@@ -127,6 +127,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/me/account`** ✅ (2026-07-18) — Số dư ví của **chính caller** → `CreditAccount`. Chủ ví suy từ JWT (D15: claim `org_id`→Org, else `sub`→User) nên **không có đường đọc ví người khác**; HrMember xem được (AUTH-6 chỉ chặn money-mutation). Chưa từng mua credit (chưa có row ví) → **200** ví rỗng `remainingCredits:0` (đọc thuần, KHÔNG tạo ví — ví tạo lazy ở webhook Paid P2). Lỗi: **401**.
 
+**`GET /payment/me/credit-transactions`** ✅ **F19** (2026-07-19) — Lịch sử **biến động credit** của chính caller → `CreditTransaction[]`. Chủ ví suy từ JWT (D15) nên không có đường đọc sổ cái người khác. Trước F19 KHÔNG endpoint nào đọc `credit_transactions` cho **bất kỳ ai**: người dùng thấy số dư (`me/account`) nhưng mất credit thì không tra được nó đi đâu. Keyset-paged theo mẫu chung (DB8): body vẫn **mảng JSON**, `?cursor=&limit=` opt-in, next-cursor ở header `X-Next-Cursor`, default 500 ⇒ **FE không phải sửa**. `?reason=` lọc theo loại bút toán. **KHÔNG** trả `grantedBy`/`note` (thông tin vận hành nội bộ — chỉ bản admin có). Chưa có bút toán nào → **200** mảng rỗng. Lỗi: **401**.
+
 **`GET /payment/me/subscription`** ✅ **F8** (2026-07-19) — Thuê bao đang hiệu lực của **chính caller** → `{ ownerType, ownerId, active: bool, billingCycle: "Monthly"|"Annual"|null, startedAt?, expiresAt? }`. Chủ ví suy từ JWT (D15) nên không có đường đọc thuê bao người khác; HrMember xem được membership org (AUTH-6 chỉ chặn money-mutation). Chưa có thuê bao → **200** `active:false` (không phải 404 — cùng lối `GET /me/account`). Đọc thuần. Lỗi: **401**.
 
 **`POST /payment/order`** với gói `Subscription` ✅ **F8** — cùng endpoint mua pack, nhưng gói `type=Subscription` đi **đường riêng**: đơn mang `kind=SubscriptionPurchase` (hoặc `SubscriptionRenewal` nếu chủ ví còn hạn) thay vì `CreditPack`. Gói thiếu `duration_days` → **400** (chặn trước khi tiền rời tay). ⚠ **KHÔNG gỡ guard DB20** — bất biến `kind=CreditPack ⇒ package.interview_credits > 0` giữ nguyên; gói thuê bao chỉ đơn giản không bao giờ mang kind đó. Webhook Paid → nhánh kích hoạt kỳ hạn (**không cộng credit, không ghi `credit_transactions`**, mẫu `InvoiceSettlement`) → outcome `SubscriptionActivated`.
@@ -146,7 +148,32 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`POST /payment/admin/orgs/{orgId}/suspend`** 🔜 — Đình chỉ org (nợ xấu/quá hạn).
 **`GET/PUT /payment/admin/unit-price`** 🔜 — Đơn giá 1 lượt (`{ unitPriceVnd: long }`).
 **`GET /payment/admin/transactions`** 🔜 — Giao dịch/hóa đơn toàn hệ.
-**`POST /payment/admin/orgs/{orgId}/credits/adjust`** 🔜 *(phase 2)* — Cấp/hoàn credit thủ công.
+
+**`POST /payment/admin/orders/{id}/refund`** ✅ **F18** (2026-07-19) — Hoàn tiền đơn mua credit. Auth `Roles="Admin"`. Req `{ reason (bắt buộc, 3–500), gatewayRef?, allowPartialClawback? }` → **200** `{ orderId, amountVnd, creditsPurchased, creditsClawedBack, clawbackCeiling, refundTransactionId?, refundedAt }`.
+- Đơn `Paid → Refunded` (trạng thái MỚI) + bút toán `Refund` âm gắn `reverses_transaction_id` → bút toán mua gốc + thu hồi credit khỏi `remaining`. Người hoàn lấy từ **JWT**, không nhận từ body.
+- **Thu hồi kẹp trần**, KHÔNG trừ thẳng: trần = `max(0, remaining − quà chưa tiêu)`, quà chưa tiêu = `max(0, free_credits_granted − tổng đã tiêu)` (quà tiêu TRƯỚC vì được cấp ngay lúc tạo ví). Hai lý do: (a) trừ quá tay → `remaining` âm → nổ CHECK `ck_credit_accounts_non_negative` → rollback → đơn kẹt `Paid` vĩnh viễn (hình dạng DB20/DB22); (b) credit `FreeGrant` không phải tiền khách trả nên hoàn tiền không được biến quà thành tiền mặt.
+- Thu hồi thiếu → **409** kèm `clawbackPossible`/`clawbackCeiling`; gửi lại `allowPartialClawback=true` để chấp nhận. Ledger ghi phần trừ **THẬT** (−2 khi chỉ lấy được 2), không ghi cho khớp đơn — nếu không thì `remaining + reserved = Σ delta` gãy. Thu hồi 0 → **không** ghi ledger (delta=0 vi phạm CHECK), đơn vẫn Refunded + log lỗi.
+- `reserved` KHÔNG bao giờ bị đụng (PAY-12 — không văng người đang thi).
+- Idempotent: gọi lại → 200 nguyên trạng; khoá thật nằm ở UNIQUE `reverses_transaction_id`.
+- **Phạm vi CỐ Ý hẹp**: chỉ `kind=CreditPack`. `InvoiceSettlement`/`Subscription*` → **400** (hoàn hoá đơn postpaid = mở lại kỳ đã chốt, `InvoiceStatus.Void` mới là trạng thái đúng; thu hồi kỳ thuê bao là nghiệp vụ riêng). ⇒ `InvoiceStatus.Void` vẫn là enum chết, có chủ đích.
+- Lỗi: **404** không có đơn · **409** đơn chưa Paid / thu hồi thiếu / ví vừa đổi giữa chừng.
+- ⚠ Ngoại lệ có chủ đích của **PAY-10**: mọi cơ chế TỰ ĐỘNG (webhook · polling · sweeper hết hạn) đều guard `status == Pending` ⇒ đơn Refunded nằm ngoài đường đi của chúng, webhook muộn không cộng lại credit vừa thu hồi (có test khoá).
+
+**`GET /payment/admin/revenue?from=&to=&groupBy=day|month`** ✅ **F19** (2026-07-19) — Doanh thu theo kỳ. Auth `Roles="Admin"`. Kỳ **nửa mở `[from, to)`** (hai kỳ liền nhau không đếm trùng); thiếu tham số → 30 ngày gần nhất; mốc ép về UTC. → **200** `{ from, to, granularity, grossRevenueVnd, paidOrderCount, refundedVnd, refundedOrderCount, netRevenueVnd, byKind[], buckets[] }`.
+- Doanh thu **gộp** đếm theo `paid_at` (đơn Paid); **tiền hoàn** đếm theo `refunded_at` — nếu đếm hoàn theo `paid_at` thì một khoản hoàn hôm nay đi ngược sửa doanh thu kỳ ĐÃ CHỐT. Kỳ có thể có `netRevenueVnd` âm — đúng bản chất kế toán.
+- **Quà không bao giờ thành doanh thu** theo cấu trúc: báo cáo đọc `orders`, còn `FreeGrant`/`PromoGrant` chỉ ghi `credit_transactions` và không sinh đơn nào (có test khoá).
+- Lỗi: **400** `from >= to` hoặc `groupBy` lạ.
+
+**`POST /payment/admin/credits/grant`** ✅ **F20** (2026-07-19) — Cấp credit khuyến mãi. Auth `Roles="Admin"`. Req `{ ownerType, ownerId, credits (1–10000), note (bắt buộc) }` → **200** `{ ownerType, ownerId, creditsGranted, remainingCredits, transactionId }`.
+- `remaining += N` + bút toán `PromoGrant +N` mang `granted_by` (lấy từ **JWT**, request DTO cố ý KHÔNG có trường khai người cấp) trong CÙNG transaction ⇒ bất biến sổ cái giữ nguyên.
+- Ví chưa tồn tại → tạo qua `CreateAccountAsync`, tức **đi qua đúng đường cấp suất dùng thử F7** (PAY-14) ⇒ user mới được tặng quà thì ví sinh ra kèm cả 3 credit dùng thử. Tự INSERT ví ở đây sẽ im lặng tước mất suất đó.
+- `credits <= 0` → **400**: bút toán delta=0 vi phạm CHECK, và "cấp số âm" sẽ là một đường TRỪ credit không có bút toán đảo — trừ credit phải đi đường hoàn tiền F18.
+- Ví `Suspended` **VẪN** nhận được quà: PAY-12 chặn hành động tương lai (reserve), còn cộng tiền là chiều ngược lại — chặn nó thì không đền bù được cho đúng tài khoản đang tranh chấp. Cấp quà không gỡ lệnh đình chỉ.
+- ⚠ **CHƯA có idempotency**: bấm hai lần = cấp hai lần. Khác webhook (có bộ retry tự động), đây là hành động người bấm; nếu cần thì thêm khoá idempotency do client cấp.
+
+**`GET /payment/admin/credits/{ownerType}/{ownerId}`** ✅ **F20** — Số dư ví **bất kỳ** → `CreditAccount`. Ví chưa tồn tại → **200** 0 credit (đọc thuần, cùng quy ước `me/account`). Đây là đường DUY NHẤT để admin đọc ví người khác — `me/account` suy chủ ví từ JWT nên chỉ bao giờ nói về chính người gọi.
+
+**`GET /payment/admin/credits/{ownerType}/{ownerId}/transactions`** ✅ **F20** — Sổ cái ví **bất kỳ**, cùng hợp đồng keyset với `me/credit-transactions`, **có thêm** `grantedBy`/`note`.
 
 ### Nội bộ — Interview → Payment — `X-Internal-Token`, **KHÔNG qua gateway** ✅ (P4/P5/P6)
 
@@ -279,9 +306,20 @@ owner_id   uuid
 order_id   uuid?         FK → orders
 session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
-reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2) · FreeGrant (+N suất dùng thử lúc tạo ví User — ✅ F7, order_id/session_id đều null)
+reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (✅ F18 — admin hoàn đơn, delta ÂM) · FreeGrant (+N suất dùng thử lúc tạo ví User — ✅ F7, order_id/session_id đều null) · PromoGrant (✅ F20 — admin cấp quà, +N, có granted_by)
+reverses_transaction_id uuid?  ✅ F18 — FK TỰ THAM CHIẾU → credit_transactions(id): bút toán mua bị đảo.
+                          Chỉ set trên row Refund. UNIQUE LỌC (WHERE NOT NULL) = khoá idempotency chống
+                          hoàn hai lần cùng một khoản mua (cùng lối UNIQUE(session_id) chặn double-reserve).
+granted_by uuid?          ✅ F20 — `sub` của admin cấp quà (ref lỏng → Auth). Chỉ set trên row PromoGrant:
+                          quà là loại credit DUY NHẤT không qua thanh toán và không do luật tự động, nên
+                          nếu không ký tên thì không truy được nguồn.
+note       varchar(500)?  ✅ F20 — lý do cấp quà.
 created_at timestamptz
                           CHECK ck_credit_transactions_delta_nonzero: delta<>0  ✅ DB1 (2026-07-17)
+                          INDEX ix_credit_transactions_owner_created (owner_type, owner_id, created_at DESC,
+                            id DESC) ✅ F19 — phục vụ GET /me/credit-transactions (keyset DB8). Migration
+                            F19 DROP index cũ (owner_type, owner_id): index mới có nó là TIỀN TỐ TRÁI và
+                            không có filter nên phủ trọn FK lookup ⇒ giữ lại là index chết (tiền lệ DB31).
 ```
 
 ### `product_packages`

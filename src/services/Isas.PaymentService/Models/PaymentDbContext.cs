@@ -282,8 +282,12 @@ namespace PaymentService.Models
                 e.Property(x => x.OwnerType).HasConversion<string>().HasMaxLength(8).IsRequired();
                 e.Property(x => x.OwnerId).IsRequired();
 
+                // F20 — "PromoGrant" (11 ký tự) vẫn vừa maxLength 16 sẵn có ⇒ không phải ALTER cột.
                 e.Property(x => x.Reason).HasConversion<string>().HasMaxLength(16).IsRequired();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // F20 — ghi chú lý do cấp quà; giới hạn độ dài để không thành bãi rác text.
+                e.Property(x => x.Note).HasMaxLength(500);
 
                 // F18 — self-FK: bút toán hoàn trỏ về bút toán mua gốc. Restrict (sổ cái append-only,
                 // không row nào bị xoá). UNIQUE LỌC `WHERE reverses_transaction_id IS NOT NULL` = khoá
