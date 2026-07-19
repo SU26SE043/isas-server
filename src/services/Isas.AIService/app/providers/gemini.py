@@ -1,4 +1,6 @@
 import json
+from typing import NamedTuple
+
 from google import genai
 from google.genai import types
 
@@ -11,6 +13,21 @@ from app.prompts import (
     build_summarize_session_prompt, build_decide_next_prompt,
 )
 from app.providers.base import QuestionProvider
+
+
+class ScoreOutcome(NamedTuple):
+    """Kết quả 1 lượt chấm (F13).
+
+    ``score()`` TRƯỚC ĐÂY trả thẳng ``list[dict]``; nay trả kèm ``sample_answer`` nên phải
+    đổi shape. CỐ Ý dùng NamedTuple thay vì thêm biến thể trả về theo cờ: kiểu trả về hợp
+    nhất, và call site cũ (``result[0]["criterionId"]``) VỠ TO ngay lần chạy đầu thay vì
+    âm thầm đọc nhầm phần tử.
+
+    sample_answer: câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi vừa chấm; None khi LLM
+    không trả (phần phụ trợ, không đánh hỏng lượt chấm).
+    """
+    scores: list[dict]
+    sample_answer: str | None
 
 
 class GeminiProvider(QuestionProvider):
@@ -208,9 +225,11 @@ class GeminiProvider(QuestionProvider):
           = SelfConsistencyTemperature (>0) để tạo dao động THẬT giữa các lần chấm → .NET đo spread
           (max−min) → gắn cờ needs_review khi phân tán. Mặc định 0.0 (giữ hành vi cũ / worker cũ).
 
-        Trả về: list dict (E9 — neo theo mức)
-          [ { "criterionId": str, "score": float, "levelMatched": int, "reasoning": str }, ... ]
-        với score == levelMatched (score luôn = điểm của 1 mức HỢP LỆ của tiêu chí).
+        Trả về: ``ScoreOutcome(scores, sample_answer)`` — F13 đổi shape (trước là list trần).
+          scores: list dict (E9 — neo theo mức)
+            [ { "criterionId": str, "score": float, "levelMatched": int, "reasoning": str }, ... ]
+            với score == levelMatched (score luôn = điểm của 1 mức HỢP LỆ của tiêu chí).
+          sample_answer: câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này (F13), hoặc None.
         """
         # Map criterionId -> maxScore + tập điểm mức HỢP LỆ (chấp cả key hoa/thường).
         # Nguồn mức: levels C# gửi (rubric_levels khai hoặc dải mặc định 0..maxScore).
@@ -253,9 +272,14 @@ class GeminiProvider(QuestionProvider):
                                 },
                                 "required": ["criterionId", "score", "levelMatched", "reasoning"],
                             },
-                        }
+                        },
+                        # F13 — câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này.
+                        # Sinh CÙNG lượt chấm: prompt đã mang câu hỏi + rubric + transcript
+                        # nên chi phí tăng thêm CHỈ là output token; gọi riêng lúc user mở
+                        # sẽ phải nạp lại toàn bộ ngần ấy input.
+                        "sampleAnswer": {"type": "string"},
                     },
-                    "required": ["scores"],
+                    "required": ["scores", "sampleAnswer"],
                 },
             ),
         )
@@ -319,7 +343,13 @@ class GeminiProvider(QuestionProvider):
         if missing:
             raise ValueError(f"LLM chấm thiếu tiêu chí: {missing}")
 
-        return results
+        # F13 — câu trả lời mẫu. KHÔNG raise khi thiếu/rỗng: đây là phần PHỤ TRỢ, để nó
+        # đánh hỏng cả lượt chấm (=> answer Failed, mất credit PAY-13) là đổi chác tồi.
+        # Thiếu -> None -> .NET không lưu -> FE đơn giản không hiện mục gợi ý.
+        sample = data.get("sampleAnswer")
+        sample = sample.strip() if isinstance(sample, str) else None
+
+        return ScoreOutcome(scores=results, sample_answer=sample or None)
 
     async def generate_roadmap(self, job_category: str, level: str,
                                weaknesses: list[dict] | None,

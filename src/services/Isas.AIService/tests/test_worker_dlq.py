@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app import worker
+from app.providers.gemini import ScoreOutcome
 from app.config import settings
 
 
@@ -131,8 +132,10 @@ async def test_process_message_skips_whisper_when_transcript_present(monkeypatch
     Tiết kiệm N lần Whisper (self-consistency E10)."""
     download = MagicMock()
     transcribe = MagicMock(return_value="KHÔNG NÊN DÙNG")
-    score = AsyncMock(return_value=[{"criterionId": "c1", "score": 3.0,
-                                     "levelMatched": 3, "reasoning": "x"}])
+    score = AsyncMock(return_value=ScoreOutcome(
+        scores=[{"criterionId": "c1", "score": 3.0,
+                 "levelMatched": 3, "reasoning": "x"}],
+        sample_answer="Câu trả lời mẫu."))
     post_callback = AsyncMock()
     monkeypatch.setattr(worker.s3_client, "download_fileobj", download)
     monkeypatch.setattr(worker.transcriber, "transcribe", transcribe)
@@ -165,8 +168,10 @@ async def test_process_message_transcribes_when_no_transcript(monkeypatch):
     """Regression: KHÔNG có transcript trong job (đường cũ) → vẫn tải audio + Whisper."""
     download = MagicMock()
     transcribe = MagicMock(return_value="transcript từ whisper")
-    score = AsyncMock(return_value=[{"criterionId": "c1", "score": 3.0,
-                                     "levelMatched": 3, "reasoning": "x"}])
+    score = AsyncMock(return_value=ScoreOutcome(
+        scores=[{"criterionId": "c1", "score": 3.0,
+                 "levelMatched": 3, "reasoning": "x"}],
+        sample_answer="Câu trả lời mẫu."))
     post_callback = AsyncMock()
     monkeypatch.setattr(worker.s3_client, "download_fileobj", download)
     monkeypatch.setattr(worker.transcriber, "transcribe", transcribe)

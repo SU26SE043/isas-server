@@ -814,6 +814,7 @@ public class PracticeService : IPracticeService
             .ToList();
 
         return new AnswerResponse(
-            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview);
+            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview,
+            a.SampleAnswer);   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
     }
 }

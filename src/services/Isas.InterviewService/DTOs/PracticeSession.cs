@@ -92,7 +92,11 @@ public record AnswerResponse(
     int DurationSec,
     string? Transcript,
     IReadOnlyList<AnswerScoreResponse> Scores,
-    bool NeedsReview = false   // E10 — self-consistency: spread điểm giữa các attempt vượt ngưỡng → cần soi lại (nullable-default → không phá client)
+    bool NeedsReview = false,  // E10 — self-consistency: spread điểm giữa các attempt vượt ngưỡng → cần soi lại (nullable-default → không phá client)
+    // F13 (FR07) — câu trả lời MẪU mức tối đa cho ĐÚNG câu hỏi này (AI sinh cùng lượt chấm).
+    // null khi chưa chấm xong / LLM không trả → client chỉ đơn giản không hiện mục gợi ý.
+    // Đặt CUỐI + có default: client cũ không vỡ (tiền lệ CriterionName/MaxScore).
+    string? SampleAnswer = null
 );
 
 public record AnswerScoreResponse(

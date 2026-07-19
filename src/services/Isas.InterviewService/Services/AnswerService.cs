@@ -116,6 +116,9 @@ public class AnswerService : IAnswerService
             if (answer.Scores.Count > 0)
                 _db.AnswerScores.RemoveRange(answer.Scores);
             answer.NeedsReview = false;
+            // F13 — gợi ý câu trả lời mẫu bám câu trả lời CŨ ("bù chỗ bạn còn thiếu"), giữ lại
+            // sau khi thu âm lại là hiển thị lời khuyên cho một bài không còn tồn tại.
+            answer.SampleAnswer = null;
         }
 
         // Câu trả lời đầu tiên -> session Ready chuyển InProgress.
@@ -435,6 +438,20 @@ public class AnswerService : IAnswerService
             _db.AnswerScores.RemoveRange(stale);
 
         answer.Transcript = req.Transcript;
+
+        // F13 — câu trả lời mẫu (do cùng lượt chấm sinh).
+        //  • attempt 1 (temperature=0, tái lập) = bản CHỌN → ghi đè, nên retry cùng attempt 1
+        //    là idempotent thay vì để bản đầu tiên đóng đinh vĩnh viễn.
+        //  • attempt 2..N (E10, temp>0) CHỈ điền khi còn trống → tránh nội dung hiển thị nhảy
+        //    theo attempt về sau, nhưng vẫn cứu được ca attempt 1 không trả field.
+        //  • rỗng/null KHÔNG xoá bản đang có: LLM im lặng bỏ field ở 1 attempt không được phép
+        //    xoá gợi ý hợp lệ đã lưu.
+        var incomingSample = req.SampleAnswer?.Trim();
+        if (!string.IsNullOrEmpty(incomingSample)
+            && (attemptNo == 1 || string.IsNullOrWhiteSpace(answer.SampleAnswer)))
+        {
+            answer.SampleAnswer = incomingSample;
+        }
 
         foreach (var item in req.Scores)
         {
