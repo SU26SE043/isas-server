@@ -3,6 +3,7 @@ using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Pagination;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
@@ -137,17 +138,49 @@ public class RoadmapService : IRoadmapService
         return Map(r, includeTheory: true);
     }
 
-    public async Task<IReadOnlyList<RoadmapResponse>> ListAsync(
-        Guid candidateId, CancellationToken ct = default)
+    /// <summary>
+    /// Danh sách roadmap của chính user — keyset-paged (mẫu DB8/DB31), KHÔNG kèm cây milestone/lesson.
+    ///
+    /// Trước: <c>Include(Milestones).ThenInclude(Lessons)</c> + không phân trang ⇒ payload nhân theo
+    /// cây (roadmap × milestone × lesson) và không có trần, cho một màn hình danh sách chỉ vẽ tiêu đề
+    /// + ngày + trạng thái. Nay project thẳng <see cref="RoadmapSummaryResponse"/> trong SQL; ai cần
+    /// cây đầy đủ thì gọi <c>GET /roadmaps/{id}</c> (giữ nguyên <see cref="RoadmapResponse"/>).
+    /// Đã đối chiếu FE trước khi bỏ: trang danh sách không đọc <c>milestones</c> (chỉ trang chi tiết
+    /// đọc, và nó gọi endpoint khác).
+    /// </summary>
+    public async Task<KeysetPage<RoadmapSummaryResponse>> ListAsync(
+        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default)
     {
-        var rows = await _db.Set<Roadmap>().AsNoTracking()
-            .Include(x => x.Milestones).ThenInclude(m => m.Lessons)
-            .Where(x => x.CandidateId == candidateId)
+        var take = KeysetPaging.ClampLimit(limit);
+        var cur = KeysetCursor.Decode(cursor);
+
+        var query = _db.Set<Roadmap>().AsNoTracking()
+            .Where(x => x.CandidateId == candidateId);
+
+        // Keyset (CreatedAt DESC, Id DESC) — Id tie-break để hai roadmap trùng created_at vẫn có thứ
+        // tự tổng, không lặp/sót dòng khi lật trang.
+        if (cur is not null)
+            query = query.Where(x => x.CreatedAt < cur.CreatedAt
+                || (x.CreatedAt == cur.CreatedAt && x.Id.CompareTo(cur.Id) < 0));
+
+        var rows = await query
             .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .Take(take)
+            .Select(x => new RoadmapSummaryResponse(
+                x.Id,
+                x.JobCategory.ToString(),
+                x.Level.ToString(),
+                x.CvId,
+                x.Status.ToString(),
+                x.CreatedAt,
+                x.CompletedAt))
             .ToListAsync(ct);
 
-        // List không kèm theoryContent (interview.md §API roadmaps).
-        return rows.Select(r => Map(r, includeTheory: false)).ToList();
+        var next = rows.Count == take
+            ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
+            : null;
+        return new KeysetPage<RoadmapSummaryResponse>(rows, next);
     }
 
     // Đọc parsed_text của file thuộc về candidate. null → 404; khác chủ → 403; rỗng → 400 (mẫu CvAnalysisService).

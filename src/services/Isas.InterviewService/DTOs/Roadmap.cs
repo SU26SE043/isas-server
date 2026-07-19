@@ -51,3 +51,27 @@ public record RoadmapResponse(
     DateTime CreatedAt,
     DateTime? CompletedAt
 );
+
+/// <summary>
+/// Một dòng trong `GET /roadmaps` (DANH SÁCH). KHÔNG có <c>milestones</c> — khác
+/// <see cref="RoadmapResponse"/> của endpoint chi tiết `GET /roadmaps/{id}`, vốn giữ nguyên đủ cây.
+///
+/// Vì sao bỏ hẳn thay vì trả cây rỗng: list trước đây <c>Include(Milestones).ThenInclude(Lessons)</c>
+/// nên payload nhân theo cây (mỗi roadmap × mỗi milestone × mỗi lesson) cho một màn hình chỉ vẽ
+/// tiêu đề + ngày + trạng thái. Đã đối chiếu FE (`isas-frontend`): trang danh sách roadmap chỉ đọc
+/// id/jobCategory/level/createdAt/status, còn <c>milestones</c> chỉ được đọc ở trang CHI TIẾT (gọi
+/// endpoint khác) ⇒ bỏ khỏi list không hỏng gì. Trả <c>[]</c> thì sẽ là nói dối ("roadmap này không
+/// có chặng nào"), nên chọn bỏ hẳn key.
+///
+/// Cần hiển thị "N chặng" trên thẻ danh sách về sau → thêm <c>MilestoneCount</c> project bằng
+/// subquery scalar (<c>x.Milestones.Count</c>), KHÔNG quay lại Include cả cây.
+/// </summary>
+public record RoadmapSummaryResponse(
+    Guid Id,
+    string JobCategory,
+    string Level,
+    Guid? CvId,
+    string Status,
+    DateTime CreatedAt,
+    DateTime? CompletedAt
+);

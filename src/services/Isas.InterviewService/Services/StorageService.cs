@@ -6,6 +6,7 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Pagination;
 using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
@@ -134,9 +135,55 @@ public class StorageService : IStorageService
         return file?.ParsedText ?? string.Empty;
     }
 
-    public async Task<List<FileRecord>> GetFilesByUserId(Guid userId, CancellationToken ct = default)
+    /// <summary>
+    /// Danh sách file của một user — keyset-paged (mẫu DB8/DB31) + project gọn ngay trong SQL.
+    ///
+    /// Trước: <c>Where(user_id).ToListAsync()</c> trả NGUYÊN entity, không giới hạn số dòng. Hai vấn đề
+    /// độc lập nhau, sửa cả hai ở đây:
+    /// (1) không phân trang ⇒ user upload càng nhiều thì payload càng lớn, không có trần;
+    /// (2) <c>SELECT *</c> kéo cả <c>parsed_text</c> = toàn văn mọi CV/JD đã upload. Điểm mấu chốt là
+    /// <see cref="FileRecordSummary"/> được <c>Select</c> TRƯỚC <c>ToListAsync</c> nên EF sinh
+    /// <c>SELECT id, file_type, …</c> — <c>parsed_text</c> KHÔNG bao giờ rời khỏi DB. (Map sau khi nạp
+    /// entity thì cột vẫn bị đọc lên, chỉ là không serialize ra JSON — không đạt mục đích.)
+    ///
+    /// <paramref name="fileType"/> lọc push-down xuống SQL (không lọc sau khi đã lấy trang, vì như vậy
+    /// trang có thể rỗng dù còn dữ liệu khớp ở trang sau).
+    /// </summary>
+    public async Task<KeysetPage<FileRecordSummary>> GetFilesByUserId(
+        Guid userId, string? fileType = null, string? cursor = null, int? limit = null,
+        CancellationToken ct = default)
     {
-        return await _db.FileRecords.Where(f => f.UserId == userId).ToListAsync(ct);
+        var take = KeysetPaging.ClampLimit(limit);
+        var cur = KeysetCursor.Decode(cursor);
+
+        var query = _db.FileRecords.AsNoTracking().Where(f => f.UserId == userId);
+
+        if (!string.IsNullOrWhiteSpace(fileType))
+        {
+            var wanted = fileType.Trim();
+            query = query.Where(f => f.FileType == wanted);
+        }
+
+        // Keyset (CreatedAt DESC, Id DESC): lấy phần ĐUÔI sau con trỏ. Id làm tie-break nên hai file
+        // trùng created_at vẫn có thứ tự tổng, không bị lặp/nhảy dòng giữa các trang.
+        if (cur is not null)
+            query = query.Where(f => f.CreatedAt < cur.CreatedAt
+                || (f.CreatedAt == cur.CreatedAt && f.Id.CompareTo(cur.Id) < 0));
+
+        var rows = await query
+            .OrderByDescending(f => f.CreatedAt)
+            .ThenByDescending(f => f.Id)
+            .Take(take)
+            .Select(f => new FileRecordSummary(
+                f.Id, f.FileType, f.OriginalName, f.MimeType,
+                f.FileSize, f.ParseStatus, f.CreatedAt, f.UpdatedAt))
+            .ToListAsync(ct);
+
+        // Đầy trang ⇒ CÓ THỂ còn dòng nữa → phát cursor. Chưa đầy ⇒ chắc chắn hết → null.
+        var next = rows.Count == take
+            ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
+            : null;
+        return new KeysetPage<FileRecordSummary>(rows, next);
     }
 
     public async Task<FileRecord> UpdateFileRecord(Guid fileId, Stream stream, string originalName, long fileSize, string contentType, CVParseResult? parsedCv, CancellationToken ct = default)

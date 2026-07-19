@@ -193,7 +193,8 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 - Res **`201`** `FileRecord` (`parseStatus` = `done`/`pending`). Lỗi: **400** (không phải PDF · quá lớn · `fileType` sai) · **401**.
 
 **`GET /{id}`** → `FileRecord` · **`GET /{id}/download`** → bytes (`Content-Type` theo mime; **404** nếu thiếu) · **`GET /{id}/parsed-text`** → `{ id, parsedText, parseStatus }`.
-**`GET /files`** → `FileRecord[]` của user.
+**`GET /files`** → `FileRecordSummary[]` của user — **keyset-paged** (`?cursor=&limit=`, mặc định/tối đa 500; next-cursor ở header `X-Next-Cursor`, vắng = hết trang; body vẫn là mảng JSON) + lọc `?fileType=cv|jd` (push-down SQL).
+- `FileRecordSummary` = `{ id, fileType, originalName, mimeType, fileSize, parseStatus, createdAt, updatedAt }`. **KHÔNG** có `parsedText` (toàn văn CV/JD — đọc riêng qua `GET /{id}/parsed-text`, owner-scoped) và **không** có `storagePath`/`storageBucket` (toạ độ SeaweedFS nội bộ — GEN-5). Trước đây endpoint trả nguyên entity `FileRecord` nên mỗi lần mở danh sách là kéo về toàn văn mọi CV đã upload; nay projection nằm **trong SQL** ⇒ cột `parsed_text` không được đọc lên, không chỉ là ẩn ở tầng JSON.
 **`PUT /{id}`** (multipart, thay file) → `FileRecord` mới · **`DELETE /{id}`** → **`204`** (xóa record + key S3).
 Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404**.
 
@@ -206,7 +207,8 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 - **Đồng bộ HTTP**, không qua RabbitMQ. **TÍNH PHÍ — trừ credit ví cá nhân** (rules.md **BC-4**, chốt **BK5** 2026-07-12, đảo "free phase 1" của D17). Mục (c) "CV vs câu trả lời" sau khi `Scored` = task `BC8`.
 - **Engine `/analyze-cv` dùng chung với B2B:** CampaignService tái dùng **đúng endpoint này** để **sàng lọc CV hàng loạt** (gửi kèm `criteria[]` campaign → nhận thêm `criterionMatches`/`overallMatchScore`), nhưng gọi **async qua worker** (N CV) thay vì sync — xem [campaign.md](campaign.md) §Lọc ứng viên qua CV + [ai.md](ai.md). B2C (đây) **không đổi**: sync, lưu `cv_analyses`.
 
-**`GET /cv-analysis/{id}`** → `CvAnalysisResponse` (403/404) · **`GET /cv-analysis`** → `CvAnalysisResponse[]` của user.
+**`GET /cv-analysis/{id}`** → `CvAnalysisResponse` (403/404) · **`GET /cv-analysis`** → `CvAnalysisResponse[]` của user — **keyset-paged** (`?cursor=&limit=`, mặc định/tối đa 500; header `X-Next-Cursor`; body vẫn là mảng JSON).
+- Shape mỗi item **giữ nguyên** (đủ `summary`/`strengths`/`weaknesses`/`suggestions`/`jdMatch`), cố ý: FE hiện **không có màn chi tiết** — trang danh sách chính là chi tiết, render đủ các field này inline. Cắt bớt sẽ làm văng runtime (`string[]` non-optional duyệt bằng `@for`), không phải chỉ thiếu chữ. Muốn list gọn thật thì phải làm trang chi tiết trước (BE + FE cùng nhịp).
 
 ### Rubric cá nhân — `/api/v1/interview/practice/rubrics` (JWT Candidate) — ✅ **BC16**
 > Candidate tự chỉnh **rubric riêng theo JobCategory** (không admin — đảo hướng BK3). Owner-scope tuyệt đối theo `candidateId` trong JWT. Chưa khai → dùng seed mặc định (BC11). Điểm tổng vẫn TB cộng (INT-10), `weight` chỉ hiển thị.
@@ -226,7 +228,9 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 - **Tạo roadmap KHÔNG trừ credit** — chỉ session luyện bên trong mới reserve→consume (D7/D15).
 - Res **`201`** `RoadmapResponse`. Lỗi: **400** (`jobCategory`/`level` sai · CV không đọc được) · **401** · **403** (`cvId` không phải của bạn) · **404** (`cvId`) · **502** (AI lỗi).
 
-**`GET /roadmaps`** → `RoadmapResponse[]` của user (list — không kèm `theoryContent`) · **`GET /roadmaps/{id}`** → `RoadmapResponse` đầy đủ. Lỗi: **401** · **403** · **404**.
+**`GET /roadmaps`** → `RoadmapSummaryResponse[]` của user — **keyset-paged** (`?cursor=&limit=`, mặc định/tối đa 500; header `X-Next-Cursor`; body vẫn là mảng JSON) · **`GET /roadmaps/{id}`** → `RoadmapResponse` đầy đủ. Lỗi: **401** · **403** · **404**.
+- `RoadmapSummaryResponse` = `{ id, jobCategory, level, cvId, status, createdAt, completedAt }` — **KHÔNG** có `milestones`. Trước đây list `Include(Milestones).ThenInclude(Lessons)` nên payload nhân theo cây cho một màn hình chỉ vẽ tiêu đề/ngày/trạng thái. Cần cây đầy đủ (kèm `theoryContent`) → gọi `GET /roadmaps/{id}`.
+- ⚠ Model FE (`roadmap.models.ts`) hiện khai **một** interface `RoadmapResponse` dùng chung cho cả list lẫn detail, với `milestones` **required**. Runtime không vỡ (trang danh sách không đọc field đó) nhưng model đang lệch thực tế — tách interface list/detail khi FE có dịp chạm vào.
 
 **`GET /roadmaps/{id}/lessons/{lessonId}`** — Mở lesson (lý thuyết).
 - `theory_content` **null** → gọi AIService `/generate-lesson-theory` (**sync**) → **lưu rồi trả**; lần sau đọc DB (**lazy, idempotent** — mở nhiều lần chỉ sinh 1 lần). AI lỗi → **502**, mở lại được.

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -101,15 +102,25 @@ public class CvAnalysisController : ControllerBase
         }
     }
 
-    // GET /cv-analysis → CvAnalysisResponse[] của chính user.
+    /// <summary>
+    /// GET /cv-analysis → danh sách phân tích CV của chính user. Keyset-paged: `?limit=` (mặc định/
+    /// tối đa 500) + `?cursor=` (opaque, lấy từ header `X-Next-Cursor` của trang trước; vắng header =
+    /// hết trang). Body giữ nguyên mảng JSON nên client cũ không phải sửa gì.
+    ///
+    /// Shape mỗi item KHÔNG đổi (FE render đầy đủ ngay trên trang danh sách — xem
+    /// <c>CvAnalysisService.ListAsync</c>); vòng này chỉ chặn số dòng mỗi trang.
+    /// </summary>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<CvAnalysisResponse>), StatusCodes.Status200OK)]
-    public async Task<IActionResult> List(CancellationToken ct)
+    public async Task<IActionResult> List(
+        CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null)
     {
         if (!TryGetCandidateId(out var candidateId))
             return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
 
-        var results = await _service.ListAsync(candidateId, ct);
-        return Ok(results);
+        var page = await _service.ListAsync(candidateId, cursor, limit, ct);
+        if (page.NextCursor is not null)
+            Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+        return Ok(page.Items);
     }
 }
