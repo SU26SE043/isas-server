@@ -21,6 +21,14 @@ namespace Isas.CampaignService.Services
         Task<CampaignResponse> UploadCampaignFilesAsync(Guid orgId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct);
         Task<CampaignResponse> UpdateCampaignFilesAsync(Guid orgId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct);
         Task<CampaignResponse> UpdateCampaignQuestionsAsync(Guid orgId, Guid actorUserId, Guid id, List<QuestionItem> questions, CancellationToken ct);
+
+        /// <summary>
+        /// F9 (FR11) — AI sinh câu hỏi từ JD của campaign, lưu với <c>source = AiGenerated</c>.
+        /// Thay lượt AI trước đó, GIỮ câu HR tự gõ. Chỉ khi Draft (CAMP-2).
+        /// Ném: KeyNotFound → 404 · InvalidOperation → 409 · Argument (chưa có JD / JD quá dài /
+        /// count ngoài 1..20) → 400 · DownstreamServiceException (AI lỗi hoặc trả rỗng) → 502.
+        /// </summary>
+        Task<CampaignResponse> GenerateCampaignQuestionsAsync(Guid orgId, Guid actorUserId, Guid id, int? count, CancellationToken ct);
         Task<Stream> DownloadCampaignFilesAsync(Guid orgId, Guid id, string fileType, CancellationToken ct);
         Task<CampaignResponse> PublishCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
         Task<CampaignResponse> TransitionStatusAsync(Guid orgId, Guid actorUserId, Guid id, CampaignStatus target, CancellationToken ct);

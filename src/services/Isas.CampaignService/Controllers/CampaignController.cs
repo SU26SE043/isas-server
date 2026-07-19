@@ -236,6 +236,38 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to update campaign questions: {ex.Message}"); }
         }
 
+        // F9 (FR11) — AI sinh câu hỏi từ JD của campaign. Câu sinh ra gắn source=AiGenerated, THAY lượt AI
+        // trước đó nhưng GIỮ câu HR tự gõ (bấm nhiều lần không cộng dồn, không nuốt công HR).
+        // 400 chưa có JD / JD quá dài / count ngoài 1..20 · 404 ngoài org · 409 không phải Draft (CAMP-2)
+        // · 502 AIService lỗi hoặc không sinh được câu nào.
+        [HttpPost("{id:guid}/questions/generate")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> GenerateCampaignQuestions(
+            Guid id, [FromQuery] int? count, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                var campaign = await _campaignService.GenerateCampaignQuestionsAsync(
+                    orgId.Value, GetActorUserId(), id, count, ct);
+                return Ok(campaign);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // Lỗi upstream AIService = 502, KHÔNG phải 400 — request của HR hợp lệ, chỉ là AI hỏng
+            // (tiền lệ b1239d4). Đặt TRƯỚC ArgumentException/InvalidOperationException để không bị nuốt.
+            catch (DownstreamServiceException ex)
+            {
+                _logger.LogError(ex, "AI sinh câu hỏi thất bại cho campaign {CampaignId}", id);
+                return StatusCode(StatusCodes.Status502BadGateway, ex.Message);
+            }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // CAMP-2: không Draft → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to generate campaign questions: {ex.Message}"); }
+        }
+
         [HttpDelete("{id}")]
         [Authorize(Roles = "Employer")]
         public async Task<IActionResult> DeleteCampaign(Guid id, CancellationToken ct)
