@@ -5,8 +5,21 @@ namespace Isas.CampaignService.DTOs
 {
     public class QuestionItem
     {
+        // F10 — id của câu hỏi ĐANG CÓ (echo lại từ `CampaignResponse.Questions[].id`).
+        // Có id  → sửa đúng row đó, GIỮ NGUYÊN `source` + `created_at` (câu AI không mất dấu vết, không đổi thứ tự).
+        // Không id → câu mới HR gõ tay.
+        // Trước F10, PUT questions `Clear()` rồi tạo lại toàn bộ với Guid mới ⇒ sửa 1 câu là xoá sạch
+        // provenance `AiGenerated` của cả chiến dịch (F9 sinh bao nhiêu cũng thành CustomHr).
+        public Guid? Id { get; set; }
+
         public string QuestionText { get; set; }
+
+        // ⚠ Server KHÔNG đọc field này khi ghi (create/update đều ép `CustomHr`).
+        // `AiGenerated` là KHẲNG ĐỊNH VỀ NGUỒN GỐC — chỉ đường sinh F9 mới có quyền đặt. Nhận từ client thì
+        // FE/HR gắn nhãn "AI sinh" cho câu gõ tay được ⇒ field mất sạch giá trị kiểm chứng, mà đó lại đúng
+        // là thứ F9/F10 sinh ra để bảo vệ. Giữ lại để không phá hợp đồng JSON đang có (BK20).
         public QuestionSource Source { get; set; }
+
         public bool IsRequired { get; set; } = true;
     }
 
@@ -170,7 +183,11 @@ namespace Isas.CampaignService.DTOs
             MaxQuestions = c.MaxQuestions,
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
-            Questions = c.Questions.Select(q => new CampaignQuestionResponse
+            // F10: sắp theo ĐÚNG thứ tự ứng viên sẽ gặp (ParticipationService dùng CreatedAt, Id) —
+            // FE echo `id` lại khi PUT, nên thứ tự response phải ổn định giữa các lần gọi.
+            Questions = c.Questions
+                .OrderBy(q => q.CreatedAt).ThenBy(q => q.Id)
+                .Select(q => new CampaignQuestionResponse
             {
                 Id = q.Id,
                 QuestionText = q.QuestionText,

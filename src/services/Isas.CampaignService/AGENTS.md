@@ -64,6 +64,9 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 - `GET /invitations/{token}` — ứng viên vào bài (→ Interview tạo/lấy session gắn `campaignId`).
 - `POST /invitations/{id}/reissue` — Employer phát lại token (vô hiệu token cũ).
 - `GET /campaign/{id}/results` + `/results/export?format=csv|pdf` — bảng kết quả, xếp hạng, xuất file.
+  ✅ csv (E6) + ✅ pdf (F16, QuestPDF Community + `SkiaSharp.NativeAssets.Linux.NoDependencies`). Cả 2 định dạng
+  serialize từ CÙNG `GetCampaignResultsAsync` (E5) — đừng tính lại số ở tầng xuất file. Số/ngày dùng
+  **InvariantCulture** (locale server khác nhau sẽ làm PDF lệch CSV). Chi tiết: `docs/services/campaign.md`.
 
 ### Lọc ứng viên qua CV — sàng lọc hàng loạt (B2B) (🔜 C13–C15 — cùng prefix `/campaign`)
 > **1 trong 2 cách lọc của app** (cách kia: phỏng vấn AI), **tùy chọn** + **MIỄN PHÍ phase 1** (D19). HR đổ **nhiều CV** ứng viên vào campaign → **lọc hybrid** (rule cứng trước, AI chấm khớp sau) → **shortlist xếp hạng** trước khi mời phỏng vấn (tiết kiệm slot). Engine phân tích = AIService `/analyze-cv` ([ai.md](ai.md)) **dùng chung với B2C**; **TÁI DÙNG** `campaign_criteria` làm rubric — **không** đụng engine phỏng vấn. State machine + luồng tiền chi tiết: §Business rules.
