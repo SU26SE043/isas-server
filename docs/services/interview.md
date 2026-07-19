@@ -806,3 +806,36 @@ Khi session đóng, engine phát event để service khác phản ứng (event-d
 ### Xác thực
 - Endpoint user: **JWT Bearer**, validate bằng chung `Jwt:Key/Issuer/Audience`.
 - Callback `/internal/...`: `AllowAnonymous` + header `X-Internal-Token`.
+
+## F21 (FR17) — Quản lý System Prompt + nội dung lĩnh vực
+
+**Interview sở hữu registry prompt** (AUTH-7: endpoint admin nằm trong service sở hữu dữ liệu). Lý do chọn Interview thay vì Payment (nơi F22 đặt `ai_usage_logs`): con dấu phiên bản prompt phải đóng lên `answer_scores` — bảng của Interview — trong cùng transaction. Cơ chế phía AIService + 4 tầng fail-open: [ai.md](ai.md) §Prompt tuỳ biến.
+
+### API
+| Method | Path | Ai gọi | Ghi chú |
+|---|---|---|---|
+| GET | `/api/admin/prompts` | Admin | Mọi khoá code khai, **kể cả khoá chưa ai sửa** (`body: null` = đang dùng bản mặc định trong `prompts.py`) |
+| GET | `/api/admin/prompts/{key}/history` | Admin | Append-only ⇒ đây là dấu vết đầy đủ ai đổi gì, khi nào, vì sao |
+| PUT | `/api/admin/prompts/{key}` | Admin | Tạo **version mới**; 400 khi khoá lạ / body rỗng / >8.000 ký tự / chứa delimiter khung |
+| DELETE | `/api/admin/prompts/{key}` | Admin | Về bản mặc định = deactivate; **giữ lịch sử** |
+| GET | `/internal/prompts` | AIService | `X-Internal-Token`, KHÔNG qua gateway (GEN-1). Trả **chỉ phần đã tuỳ biến** + `promptVersion` |
+
+### DB — `prompt_templates`
+`id · key(64) · version · body · is_active · updated_by · change_note(512) · created_at`
+· UNIQUE `(key, version)` · UNIQUE partial `key WHERE is_active` · CHECK `version > 0`.
+
+**APPEND-ONLY.** Sửa = deactivate bản cũ + insert `version+1` (mẫu BC16), **1 transaction**. Không UPDATE tại chỗ: điểm đã chấm đóng dấu `answer_scores.prompt_version`, nên sửa tại chỗ khiến con dấu đó trỏ tới một văn bản **khác** với văn bản thực sự đã chấm ⇒ dấu vết kiểm toán nói dối. Với thứ quyết định điểm của người trả tiền, "không truy lại được" là **hỏng**, không phải bất tiện.
+
+### Versioning — vì sao cần dù đã có `rubric_version`
+Rubric quyết định chấm **cái gì**; prompt quyết định chấm **như thế nào**. Đổi prompt chấm là **đổi thước đo** — điểm trước và sau không còn so sánh trực tiếp được, mà hệ thống đang dùng điểm để **xếp hạng ứng viên với nhau** (CAMP-10/E4) và tính **cải thiện theo thời gian** (BC15).
+
+`answer_scores.prompt_version` nullable: `null` = chấm trước F21 · `0` = bản mặc định thuần · `>0` = tổng version các mảnh đang active. Gộp `null` với `0` là mất đúng thông tin cần để biết có so sánh được hay không.
+
+⚠ **Hiện mới LƯU, chưa cảnh báo** khi bảng xếp hạng trộn hai giá trị khác nhau → **`BK23`**. Lưu trước vì đây là vế **không hồi tố được**: thiếu cột thì điểm lịch sử vĩnh viễn mất dấu đã chấm bằng prompt nào; cảnh báo thì thêm lúc nào cũng được.
+
+### Ranh giới — F21 đóng theo nghĩa nào
+✅ **"Sửa được NỘI DUNG của 3 ngành"** (BA/BE/FE): tên hiển thị · mô tả · hướng dẫn riêng theo nghề, hiệu lực ở lần sinh/chấm kế mà **không cần deploy**.
+
+❌ **KHÔNG phải "thêm ngành tuỳ ý".** `JobCategory` vẫn là enum 3 giá trị. Đây là quyết định có chủ đích chứ không phải giới hạn kỹ thuật: `B2CRubricSeed` khoá theo enum (mỗi nghề 7 tiêu chí sau F11/F12), rubric riêng BC16 khoá theo nó, validation khoá theo nó. Một ngành **không có rubric** sẽ khiến `AnswerService` thấy 0 tiêu chí active ⇒ INT-9 *"thiếu tiêu chí → `Failed`"* ⇒ **người luyện trả 1 credit rồi nhận một buổi hỏng**. Mở tập ngành mà không mở kèm đường khai rubric là mở thẳng ra đường đó; tập đóng bảo đảm **mọi ngành chắc chắn có rubric**.
+
+*(Ghi chú kỹ thuật cho lần mở sau: 4 cột lưu `JobCategory` đều đã là **string** trên đĩa — `HasConversion<string>()` — và wire contract cũng đã là string, nên mở tập ngành **không phải data migration**. Cái chặn chỉ là kiểu C# + validation, cộng với bắt buộc khai rubric kèm theo.)*

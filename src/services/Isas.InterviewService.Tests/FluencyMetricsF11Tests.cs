@@ -339,6 +339,82 @@ public class FluencyMetricsF11Tests
         Assert.Equal(5, read.FillerCount);
     }
 
+    // ── (7b) VÁ 2026-07-19 — 9 field phải SỐNG SÓT qua vòng lưu-đọc ────────────────────
+    //
+    // Lỗi được vá: DTO khai 9 field, `Apply()` chỉ ghi 5 (+breakdown) ⇒ `Read()` dựng lại với
+    // audioSec/speechSec/wordCount/fillerPer100Words = 0. Cả hai đường đẩy job chấm
+    // (`AnswerService` thích ứng · `StuckAnswerRepublisher` cứu) đều đi qua `Read()`, nên số 0
+    // bịa đó vào thẳng prompt chấm dưới nhãn "số liệu thật".
+
+    [Fact]
+    public async Task VaF11_ApplyRoiRead_GiuDuCa9Field_KhongMat4FieldThoiGian()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var sent = Metrics();
+        sent.AudioSec = 62.5;
+        sent.SpeechSec = 48.25;
+        sent.WordCount = 143;
+        sent.FillerPer100Words = 3.5;
+
+        await Build(t, out _).SaveResultAsync(answer.Id, Callback(crit.Id, sent));
+
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == answer.Id);
+
+        // (a) 4 cột mới phải THỰC SỰ được ghi xuống — trước bản vá `Apply()` bỏ qua chúng.
+        Assert.Equal(62.5, saved.AudioSec);
+        Assert.Equal(48.25, saved.SpeechSec);
+        Assert.Equal(143, saved.WordCount);
+        Assert.Equal(3.5, saved.FillerPer100Words);
+
+        // (b) và phải đọc ngược ra được — đây mới là thứ đi vào prompt chấm + màn kết quả.
+        var read = DeliveryMetricsMapper.Read(saved);
+        Assert.NotNull(read);
+        Assert.Equal(62.5, read!.AudioSec);
+        Assert.Equal(48.25, read.SpeechSec);
+        Assert.Equal(143, read.WordCount);
+        Assert.Equal(3.5, read.FillerPer100Words);
+    }
+
+    [Fact]
+    public void VaF11_FieldKhuyet_RaNull_KhongPhaiSo0()
+    {
+        // Đây là bất biến bị vi phạm trước bản vá: `Read()` `?? 0` từng field nên khuyết-vĩnh-viễn
+        // biến thành "0" trông y như số đo thật. "0 lần/100 âm tiết" đọc ra như một LỜI KHEN.
+        var read = DeliveryMetricsMapper.Read(
+            speechRateWpm: 180, fillerCount: 5, pauseCount: 3,
+            longestPauseSec: 2.5, silenceRatio: 0.35, fillerBreakdownJson: null);
+
+        Assert.NotNull(read);
+        Assert.Equal(180, read!.SpeechRateWpm);   // field đo được: có số
+        Assert.Null(read.AudioSec);               // field khuyết: PHẢI null, không phải 0
+        Assert.Null(read.SpeechSec);
+        Assert.Null(read.WordCount);
+        Assert.Null(read.FillerPer100Words);
+    }
+
+    [Fact]
+    public void VaF11_ChiCo4FieldMoi_VanCoiLaDaDo()
+    {
+        // Ngữ nghĩa cả-cụm: null chỉ khi KHÔNG có số nào. Nếu chỉ 4 field mới có giá trị mà vẫn
+        // trả null thì worker sẽ tưởng "chưa đo" rồi transcribe + đo lại từ đầu — tốn một lượt
+        // Whisper cho dữ liệu đã nằm sẵn trong DB.
+        var read = DeliveryMetricsMapper.Read(
+            speechRateWpm: null, fillerCount: null, pauseCount: null,
+            longestPauseSec: null, silenceRatio: null, fillerBreakdownJson: null,
+            audioSec: 30.0, speechSec: 25.0, wordCount: 80, fillerPer100Words: 1.25);
+
+        Assert.NotNull(read);
+        Assert.Equal(30.0, read!.AudioSec);
+        Assert.Null(read.SpeechRateWpm);
+    }
+
     // ── (8) BC16 — rubric riêng KHÔNG tự nhận tiêu chí seed mới ─────────────────────────
     [Fact]
     public async Task BC16_RubricRieng_KhongTuNhanTieuChiTroiChay()

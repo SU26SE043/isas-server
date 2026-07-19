@@ -39,6 +39,7 @@ builder.Services.AddScoped<IRubricLibraryService, RubricLibraryService>();   // 
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
 builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
+builder.Services.AddScoped<PromptTemplateService>();   // F21 — prompt tuỳ biến (FR17)
 
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {

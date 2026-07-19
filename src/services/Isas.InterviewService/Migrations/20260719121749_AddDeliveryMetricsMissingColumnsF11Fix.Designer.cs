@@ -3,6 +3,7 @@ using System;
 using Isas.InterviewService.ApplicationDbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    partial class InterviewDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260719121749_AddDeliveryMetricsMissingColumnsF11Fix")]
+    partial class AddDeliveryMetricsMissingColumnsF11Fix
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -48,10 +51,6 @@ namespace Isas.InterviewService.Migrations
                     b.Property<int?>("LevelMatched")
                         .HasColumnType("integer")
                         .HasColumnName("level_matched");
-
-                    b.Property<int?>("PromptVersion")
-                        .HasColumnType("integer")
-                        .HasColumnName("prompt_version");
 
                     b.Property<string>("Reasoning")
                         .HasColumnType("text")
@@ -525,63 +524,6 @@ namespace Isas.InterviewService.Migrations
                     b.ToTable("practice_sessions", null, t =>
                         {
                             t.HasCheckConstraint("ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20");
-                        });
-                });
-
-            modelBuilder.Entity("Isas.InterviewService.Entities.PromptTemplate", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Body")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("body");
-
-                    b.Property<string>("ChangeNote")
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)")
-                        .HasColumnName("change_note");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<bool>("IsActive")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_active");
-
-                    b.Property<string>("Key")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("key");
-
-                    b.Property<Guid>("UpdatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("updated_by");
-
-                    b.Property<int>("Version")
-                        .HasColumnType("integer")
-                        .HasColumnName("version");
-
-                    b.HasKey("Id")
-                        .HasName("pk_prompt_templates");
-
-                    b.HasIndex("Key")
-                        .IsUnique()
-                        .HasDatabaseName("ux_prompt_templates_active_key")
-                        .HasFilter("is_active");
-
-                    b.HasIndex("Key", "Version")
-                        .IsUnique()
-                        .HasDatabaseName("ix_prompt_templates_key_version");
-
-                    b.ToTable("prompt_templates", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_prompt_templates_version_positive", "version > 0");
                         });
                 });
 

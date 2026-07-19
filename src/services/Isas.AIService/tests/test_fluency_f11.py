@@ -168,6 +168,31 @@ def test_prompt_cam_dung_chi_so_de_cham_tieu_chi_noi_dung():
         in build_delivery_block(m.to_dict())
 
 
+def test_prompt_field_khuyet_ghi_chua_do_duoc_khong_in_so_0():
+    """Vá 2026-07-19 — field khuyết KHÔNG được in ra là 0.
+
+    Bối cảnh: .NET chỉ lưu 5/9 chỉ số, nên `DeliveryMetricsMapper.Read()` trả về DTO thiếu
+    audioSec/speechSec/fillerPer100Words. Trước bản vá, `_num()` mặc định 0 ⇒ prompt in
+    "nói trong 0s / tổng 0s audio" và "0 lần/100 âm tiết" — NGAY TRONG khối tự giới thiệu là
+    "số liệu thật" và ngay trên dòng dặn LLM coi chỉ số thời gian là bằng chứng ĐÁNG TIN NHẤT.
+
+    .NET đã được vá để lưu đủ 4 cột, nhưng answer ghi TRƯỚC bản vá vĩnh viễn không có số →
+    phía này vẫn phải nói thẳng là thiếu thay vì in 0.
+    """
+    block = build_delivery_block({
+        "speechRateWpm": 180, "longestPauseSec": 2.5,
+        "pauseCount": 3, "silenceRatio": 0.35, "fillerCount": 5,
+        # audioSec / speechSec / fillerPer100Words KHUYẾT — đúng hình dạng answer cũ
+    })
+
+    assert "chưa đo được" in block
+    assert "180 âm tiết/phút" in block          # field đo được vẫn in số bình thường
+    assert "tổng 0s audio" not in block         # ⚠ chính là con số bịa đã bị vá
+    assert "0 lần/100 âm tiết" not in block     # ⚠ và đây là con số bịa nghiêng về KHEN
+    # Phải dặn mô hình bỏ qua, nếu không nó tự diễn giải "chưa đo được" thành 0.
+    assert "không coi đó là 0" in block
+
+
 def test_prompt_giu_nguyen_chong_injection_va_f12():
     """Khối F11 chèn thêm không được làm mất chỉ thị của E11/F12."""
     prompt = build_scoring_prompt("Câu hỏi?", "trả lời", "BE", _criteria(), None)
