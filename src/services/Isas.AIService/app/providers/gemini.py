@@ -6,6 +6,7 @@ from google.genai import types
 
 from app.config import settings
 from app.resources import sanitize_resources, count_rejected_urls
+from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt,
@@ -67,6 +68,8 @@ class GeminiProvider(QuestionProvider):
                        jd_text: str | None, count: int | None = None,
                        focus_criteria: list[str] | None = None) -> list[str]:
         # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         effective_count = count if count is not None else settings.question_count
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count, focus_criteria)
 
@@ -108,6 +111,8 @@ class GeminiProvider(QuestionProvider):
     async def suggest_criteria(self, job_category: str, jd_text: str | None,
                                criteria_text: str | None, count: int) -> list[dict]:
         """Đề xuất bộ tiêu chí CÓ CẤU TRÚC (C8) — weight chuẩn hoá tổng = 1."""
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_criteria_prompt(job_category, jd_text, criteria_text, count)
         response = await self._generate(
             "suggest_criteria",
@@ -166,6 +171,8 @@ class GeminiProvider(QuestionProvider):
 
         jdMatch chỉ xuất hiện khi jd_text được cung cấp.
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category)
 
         properties: dict = {
@@ -267,6 +274,8 @@ class GeminiProvider(QuestionProvider):
         """
         # Map criterionId -> maxScore + tập điểm mức HỢP LỆ (chấp cả key hoa/thường).
         # Nguồn mức: levels C# gửi (rubric_levels khai hoặc dải mặc định 0..maxScore).
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         max_by_id: dict[str, int] = {}
         levels_by_id: dict[str, list[int]] = {}
         for c in criteria:
@@ -394,6 +403,8 @@ class GeminiProvider(QuestionProvider):
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_roadmap_prompt(job_category, level, weaknesses, cv_text)
 
         response = await self._generate(
@@ -485,6 +496,8 @@ class GeminiProvider(QuestionProvider):
         resources rỗng KHÔNG phải lỗi (lý thuyết vẫn dùng được) → không raise,
         khác với theoryMarkdown rỗng.
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_lesson_theory_prompt(
             job_category, level, lesson_title, focus_criteria, weaknesses)
 
@@ -551,6 +564,8 @@ class GeminiProvider(QuestionProvider):
           { "strengths": [str], "weaknesses": [str], "improvements": [str],
             "overallComment": str }
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_summarize_roadmap_prompt(job_category, level, criteria_progress)
 
         response = await self._generate(
@@ -604,6 +619,8 @@ class GeminiProvider(QuestionProvider):
 
         Trả về dict: { "overallComment": str }
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_summarize_session_prompt(job_category, overall_score, criteria_scores)
 
         response = await self._generate(
@@ -646,6 +663,8 @@ class GeminiProvider(QuestionProvider):
         temperature=0.3: bám sát câu trả lời/năng lực nhưng câu hỏi tự nhiên hơn chấm điểm
         (0.0) — thấp hơn sinh câu hỏi tự do (0.7) vì phải nhắm đúng câu trả lời + tiêu chí.
         """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
         prompt = build_decide_next_prompt(
             job_category, current_question, transcript, history,
             asked_count, follow_up_count, max_questions, max_follow_ups, criteria)
