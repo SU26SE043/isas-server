@@ -122,6 +122,8 @@ builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 // F18: hoàn tiền — đơn Paid→Refunded + bút toán đảo gắn bút toán mua gốc + thu hồi credit (kẹp trần).
 builder.Services.AddScoped<IRefundService, RefundService>();
+// F19: tổng hợp doanh thu theo kỳ cho PlatformAdmin (đọc `orders`, không đụng sổ cái credit).
+builder.Services.AddScoped<IRevenueService, RevenueService>();
 // P1: cấp phát credit_accounts (owner_type). Reserve/Consume/Release + webhook (P2/P4/P5/P6) = task sau.
 builder.Services.AddScoped<ICreditAccountService, CreditAccountService>();
 // P7: sinh order_code time+random, unique + retry (dùng trong P2 CreateOrderAsync).

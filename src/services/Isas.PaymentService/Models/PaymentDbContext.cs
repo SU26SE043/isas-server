@@ -118,6 +118,20 @@ namespace PaymentService.Models
                 e.Property(x => x.RefundReason).HasMaxLength(500);
                 e.Property(x => x.RefundGatewayRef).HasMaxLength(100);
 
+                // F19 — báo cáo doanh thu gộp theo kỳ: WHERE status='Paid' AND paid_at ∈ [from,to).
+                // Partial theo đúng vị ngữ truy vấn: đơn Paid là tập con của `orders` (Pending bỏ dở +
+                // Expired chiếm phần lớn bảng theo thời gian), nên index chỉ ôm phần báo cáo cần đọc.
+                // Literal 'Paid' khớp chuỗi enum lưu (Status = HasConversion<string>), cột snake_case —
+                // cùng lối ix_orders_pending_expired_at (DB26).
+                //
+                // ⚠ Partial index chỉ được planner dùng khi nó CHỨNG MINH được predicate query ⇒ predicate
+                // index. EF phải render `status` thành LITERAL chứ không phải tham số; đã khoá bằng test
+                // đọc SQL sinh ra từ chính hàm production (bài học DB27: render thành @p thì index chết
+                // trong im lặng — index vẫn tồn tại, EXPLAIN vẫn seq scan, không có gì báo lỗi).
+                e.HasIndex(x => x.PaidAt)
+                 .HasDatabaseName("ix_orders_paid_at")
+                 .HasFilter("status = 'Paid'");
+
 
 
                 // P8b — package optional: đơn InvoiceSettlement không gắn package (gắn invoice_id).
@@ -286,6 +300,16 @@ namespace PaymentService.Models
                  .IsUnique()
                  .HasDatabaseName("ux_credit_transactions_reverses")
                  .HasFilter("reverses_transaction_id IS NOT NULL");
+
+                // F19 — `GET /payment/me/credit-transactions` lọc (owner_type, owner_id) rồi
+                // ORDER BY created_at DESC, id DESC (keyset DB8). Index composite DB9 hiện có chỉ phục vụ
+                // FK lookup, KHÔNG mang khoá sắp xếp ⇒ thiếu index này thì mỗi trang phải sort lại toàn bộ
+                // sổ cái của chủ ví. Cùng hình dạng ix_orders_owner_created (DB26).
+                // Sổ cái là bảng ghi nhiều nhất trong service (1 row/lượt chấm) nên đây là index đáng giá
+                // nhất của F19.
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.CreatedAt, x.Id })
+                 .IsDescending(false, false, true, true)
+                 .HasDatabaseName("ix_credit_transactions_owner_created");
 
 
                 e.HasOne(x => x.Order)
