@@ -643,30 +643,99 @@ namespace Isas.CampaignService.Services
         // (membership.Email = snapshot F5 lúc join).
         // ⚠ Membership tạo TRƯỚC F5 có Email = null và CvSubmissionId = null (đường-1 lịch sử) → không
         // ghép được → hiện "Sent"/"Expired" thay vì "Joined". Thà báo thiếu còn hơn đoán bừa.
-        public async Task<List<InvitationListItem>> GetInvitationsAsync(
-            Guid orgId, Guid id, string? status, CancellationToken ct)
+        // Keyset-paged (DB8) theo (CreatedAt DESC, Id DESC) — đúng thứ tự vốn có nên không đổi UX.
+        // ?search= lọc theo email (case-insensitive) và ?status= ĐỀU ĐẨY XUỐNG SQL: trạng thái tuy suy
+        // read-time nhưng suy được từ đúng các cột đang có, nên diễn đạt lại thành vị ngữ SQL được.
+        // Lọc trong C# sau khi phân trang sẽ cho kết quả SAI (chỉ lọc trong phạm vi 1 trang).
+        public async Task<KeysetPage<InvitationListItem>> GetInvitationsAsync(
+            Guid orgId, Guid id, string? status, string? search, string? cursor, int? limit, CancellationToken ct)
         {
             // Ownership: campaign phải của org (query filter loại soft-deleted) → không thấy = 404.
             var owns = await _db.Campaigns.AnyAsync(c => c.Id == id && c.OrgId == orgId, ct);
             if (!owns)
                 throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            var invitations = await _db.CampaignInvitations
-                .Where(i => i.CampaignId == id)
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = KeysetCursor.Decode(cursor);
+            var now = DateTime.UtcNow;
+
+            var q = _db.CampaignInvitations.Where(i => i.CampaignId == id);
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var needle = search.Trim().ToLowerInvariant();
+                q = q.Where(i => i.Email.ToLower().Contains(needle));
+            }
+
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                var want = NormalizeDeliveryStatus(status);
+                if (want is null)
+                    return KeysetPage<InvitationListItem>.Empty;   // giá trị lạ → rỗng (như hành vi cũ)
+
+                // Chuỗi vị ngữ dưới đây là bản dịch 1-1 của thứ tự ưu tiên trong ResolveDeliveryStatus
+                // (Revoked → Joined → Expired → Sent → Queued): mỗi bậc = "KHÔNG rơi vào bậc trên" +
+                // điều kiện của chính nó. Lồng nhau (thay vì các `if` phẳng) để đúng cái "không rơi vào
+                // bậc trên" đó không thể bị bỏ sót — nhờ vậy lời mời cũ sau reissue (D4) KHÔNG "thơm lây"
+                // trạng thái Joined của lời mời MỚI cùng email.
+                if (want == InvitationDeliveryStatus.Revoked)
+                {
+                    q = q.Where(i => i.RevokedAt != null);
+                }
+                else
+                {
+                    q = q.Where(i => i.RevokedAt == null);
+
+                    if (want == InvitationDeliveryStatus.Joined)
+                    {
+                        q = q.Where(i => _db.CampaignMemberships.Any(m => m.CampaignId == id
+                            && ((i.CampaignCandidateId != null && m.CvSubmissionId == i.CampaignCandidateId)
+                                || (m.Email != null && m.Email.Trim().ToLower() == i.Email.Trim().ToLower()))));
+                    }
+                    else
+                    {
+                        q = q.Where(i => !_db.CampaignMemberships.Any(m => m.CampaignId == id
+                            && ((i.CampaignCandidateId != null && m.CvSubmissionId == i.CampaignCandidateId)
+                                || (m.Email != null && m.Email.Trim().ToLower() == i.Email.Trim().ToLower()))));
+
+                        if (want == InvitationDeliveryStatus.Expired)
+                            q = q.Where(i => i.ExpiresAt <= now);
+                        else if (want == InvitationDeliveryStatus.Sent)
+                            q = q.Where(i => i.ExpiresAt > now && i.EmailSentAt != null);
+                        else   // Queued
+                            q = q.Where(i => i.ExpiresAt > now && i.EmailSentAt == null);
+                    }
+                }
+            }
+
+            if (cur is not null)
+                q = q.Where(i => i.CreatedAt < cur.CreatedAt
+                    || (i.CreatedAt == cur.CreatedAt && i.Id.CompareTo(cur.Id) < 0));
+
+            var invitations = await q
                 .OrderByDescending(i => i.CreatedAt)
                 .ThenByDescending(i => i.Id)
+                .Take(take)
                 .ToListAsync(ct);
 
             if (invitations.Count == 0)
-                return new List<InvitationListItem>();
+                return KeysetPage<InvitationListItem>.Empty;
+
+            // Membership chỉ nạp cho ĐÚNG TRANG (trước đây nạp cả campaign) — đủ để điền JoinedAt + suy
+            // Status, mà không phải kéo toàn bộ bảng về chỉ để hiển thị ≤ limit dòng.
+            var cvIds = invitations.Where(i => i.CampaignCandidateId is not null)
+                .Select(i => i.CampaignCandidateId!.Value).Distinct().ToList();
+            var emails = invitations.Select(i => i.Email.Trim().ToLower()).Distinct().ToList();
 
             var memberships = await _db.CampaignMemberships
-                .Where(m => m.CampaignId == id)
+                .Where(m => m.CampaignId == id
+                    && ((m.CvSubmissionId != null && cvIds.Contains(m.CvSubmissionId.Value))
+                        || (m.Email != null && emails.Contains(m.Email.Trim().ToLower()))))
                 .Select(m => new { m.CvSubmissionId, m.Email, m.JoinedAt })
                 .ToListAsync(ct);
 
-            // Ghép in-memory (N ≤ max_candidates, cùng cỡ với GetCandidatesAsync) — email so
-            // case-insensitive vì đường-1 chỉ Trim() còn đường-2 đã lowercase từ C13.
+            // Ghép in-memory trên đúng trang — email so case-insensitive vì đường-1 chỉ Trim() còn
+            // đường-2 đã lowercase từ C13.
             var joinedByCv = memberships
                 .Where(m => m.CvSubmissionId is not null)
                 .GroupBy(m => m.CvSubmissionId!.Value)
@@ -676,8 +745,7 @@ namespace Isas.CampaignService.Services
                 .GroupBy(m => m.Email!.Trim(), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt), StringComparer.OrdinalIgnoreCase);
 
-            var now = DateTime.UtcNow;
-            var rows = invitations.Select(i =>
+            var items = invitations.Select(i =>
             {
                 var joined = i.CampaignCandidateId is Guid ccid && joinedByCv.TryGetValue(ccid, out var byCv)
                     ? (found: true, at: byCv)
@@ -689,6 +757,8 @@ namespace Isas.CampaignService.Services
                 {
                     Id = i.Id,
                     Email = i.Email,
+                    // Vẫn suy bằng ResolveDeliveryStatus (NGUỒN DUY NHẤT của thứ tự ưu tiên) — vị ngữ SQL
+                    // ở trên chỉ CHỌN dòng, không được phép tự định nghĩa lại trạng thái.
                     Status = ResolveDeliveryStatus(i, joined.found, now),
                     SentAt = i.SentAt,
                     EmailSentAt = i.EmailSentAt,
@@ -698,13 +768,30 @@ namespace Isas.CampaignService.Services
                     CampaignCandidateId = i.CampaignCandidateId,
                     CreatedAt = i.CreatedAt
                 };
-            });
+            }).ToList();
 
-            // Lọc theo trạng thái suy read-time (không lọc được ở SQL vì không có cột tương ứng).
-            if (!string.IsNullOrWhiteSpace(status))
-                rows = rows.Where(r => string.Equals(r.Status, status.Trim(), StringComparison.OrdinalIgnoreCase));
+            var next = invitations.Count == take
+                ? new KeysetCursor(invitations[^1].CreatedAt, invitations[^1].Id).Encode()
+                : null;
 
-            return rows.ToList();
+            return new KeysetPage<InvitationListItem>(items, next);
+        }
+
+        /// <summary>Chuẩn hoá `?status=` về đúng hằng trong <see cref="InvitationDeliveryStatus"/>; giá trị lạ → null.</summary>
+        private static string? NormalizeDeliveryStatus(string status)
+        {
+            var s = status.Trim();
+            foreach (var known in new[]
+                     {
+                         InvitationDeliveryStatus.Revoked, InvitationDeliveryStatus.Joined,
+                         InvitationDeliveryStatus.Expired, InvitationDeliveryStatus.Sent,
+                         InvitationDeliveryStatus.Queued
+                     })
+            {
+                if (string.Equals(s, known, StringComparison.OrdinalIgnoreCase))
+                    return known;
+            }
+            return null;
         }
 
         // Thứ tự ưu tiên có chủ ý (xem InvitationDeliveryStatus): Revoked đứng trước Joined để lời mời

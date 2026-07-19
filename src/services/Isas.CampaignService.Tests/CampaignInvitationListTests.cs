@@ -92,7 +92,7 @@ public class CampaignInvitationListTests
         SeedInvitation(tdb.Db, camp.Id, "a@example.com", emailSentAt: DateTime.UtcNow);
         await tdb.Db.SaveChangesAsync();
 
-        var rows = await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, default);
+        var rows = (await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, null, null, null, default)).Items;
 
         var row = Assert.Single(rows);
         Assert.Equal("a@example.com", row.Email);
@@ -115,7 +115,7 @@ public class CampaignInvitationListTests
         SeedInvitation(tdb.Db, camp.Id, "roi@example.com", emailSentAt: DateTime.UtcNow);
         await tdb.Db.SaveChangesAsync();
 
-        var rows = await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, default);
+        var rows = (await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, null, null, null, default)).Items;
 
         Assert.Equal(InvitationDeliveryStatus.Queued,
             rows.Single(r => r.Email == "chua@example.com").Status);
@@ -142,7 +142,7 @@ public class CampaignInvitationListTests
         SeedMembership(tdb.Db, camp.Id, null, cvId, joinedAt);                          // ghép theo cv_submission
         await tdb.Db.SaveChangesAsync();
 
-        var rows = await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, default);
+        var rows = (await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, null, null, null, default)).Items;
 
         Assert.All(rows, r => Assert.Equal(InvitationDeliveryStatus.Joined, r.Status));
         Assert.All(rows, r => Assert.NotNull(r.JoinedAt));
@@ -160,7 +160,7 @@ public class CampaignInvitationListTests
             emailSentAt: DateTime.UtcNow.AddDays(-9), expiresAt: DateTime.UtcNow.AddDays(-1));
         await tdb.Db.SaveChangesAsync();
 
-        var rows = await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, default);
+        var rows = (await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, null, null, null, default)).Items;
 
         Assert.Equal(InvitationDeliveryStatus.Expired, Assert.Single(rows).Status);
     }
@@ -183,7 +183,7 @@ public class CampaignInvitationListTests
         SeedMembership(tdb.Db, camp.Id, email, null, DateTime.UtcNow.AddMinutes(-5));
         await tdb.Db.SaveChangesAsync();
 
-        var rows = await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, default);
+        var rows = (await NewService(tdb.NewContext()).GetInvitationsAsync(owner, camp.Id, null, null, null, null, default)).Items;
 
         Assert.Equal(InvitationDeliveryStatus.Revoked, rows.Single(r => r.Id == old.Id).Status);
         Assert.Equal(InvitationDeliveryStatus.Joined, rows.Single(r => r.Id == fresh.Id).Status);
@@ -203,10 +203,10 @@ public class CampaignInvitationListTests
 
         var svc = NewService(tdb.NewContext());
 
-        var sent = await svc.GetInvitationsAsync(owner, camp.Id, "sent", default);   // case-insensitive
+        var sent = (await svc.GetInvitationsAsync(owner, camp.Id, "sent", null, null, null, default)).Items;   // case-insensitive
         Assert.Equal("sent@example.com", Assert.Single(sent).Email);
 
-        var queued = await svc.GetInvitationsAsync(owner, camp.Id, "Queued", default);
+        var queued = (await svc.GetInvitationsAsync(owner, camp.Id, "Queued", null, null, null, default)).Items;
         Assert.Equal("queued@example.com", Assert.Single(queued).Email);
     }
 
@@ -224,7 +224,7 @@ public class CampaignInvitationListTests
         var svc = NewService(tdb.NewContext());
 
         await Assert.ThrowsAsync<KeyNotFoundException>(
-            () => svc.GetInvitationsAsync(Guid.NewGuid(), camp.Id, null, default));
+            () => svc.GetInvitationsAsync(Guid.NewGuid(), camp.Id, null, null, null, null, default));
     }
 
     // (h) Lời mời của campaign KHÁC không lẫn sang; membership campaign khác không làm sai trạng thái.
@@ -243,7 +243,7 @@ public class CampaignInvitationListTests
         SeedMembership(tdb.Db, other.Id, "shared@example.com", null, DateTime.UtcNow);
         await tdb.Db.SaveChangesAsync();
 
-        var rows = await NewService(tdb.NewContext()).GetInvitationsAsync(owner, mine.Id, null, default);
+        var rows = (await NewService(tdb.NewContext()).GetInvitationsAsync(owner, mine.Id, null, null, null, null, default)).Items;
 
         var row = Assert.Single(rows);
         Assert.Equal("shared@example.com", row.Email);
