@@ -85,11 +85,12 @@ namespace Isas.CampaignService.Services
                     // Đường 2 (shortlist) — link về CV đã sàng; đường 1 (mời-thẳng email) = null.
                     CvSubmissionId = inv.CampaignCandidateId,
                     Status = MembershipStatus.Joined,
+                    // (InvitationId set trong ApplyInvitationLink bên dưới — CHUNG cho cả 2 nhánh.)
                     JoinedAt = now,
                     CreatedAt = now,
                     UpdatedAt = now
                 };
-                ApplyIdentitySnapshot(membership, inv);
+                ApplyInvitationLink(membership, inv);
                 _db.CampaignMemberships.Add(membership);
             }
             else
@@ -100,9 +101,10 @@ namespace Isas.CampaignService.Services
                     membership.Status = MembershipStatus.Joined;
                 membership.JoinedAt ??= now;
                 membership.UpdatedAt = now;
-                // F5 — PHẢI chạy ở CẢ nhánh idempotent: membership tồn tại từ trước F5 (hoặc join lại sau
-                // khi reissue lời mời) vẫn cần điền danh tính, không thì HR xuất CSV ra ô trống vĩnh viễn.
-                ApplyIdentitySnapshot(membership, inv);
+                // F5/FX1 — PHẢI chạy ở CẢ nhánh idempotent: membership tồn tại từ trước F5 (hoặc join lại
+                // sau khi reissue lời mời) vẫn cần điền danh tính + gắn lời mời, không thì HR xuất CSV ra
+                // ô trống vĩnh viễn và lời mời mới không bao giờ hiện "Joined".
+                ApplyInvitationLink(membership, inv);
             }
 
             await _db.SaveChangesAsync(ct);
@@ -286,8 +288,19 @@ namespace Isas.CampaignService.Services
         // HR chấp nhận cột tên trống (email vẫn đủ để nhận diện).
         // `??=` chứ không gán đè: dữ liệu HR đã sửa tay trên cv_submission (PATCH C14) không bị
         // một lần join lại ghi ngược về giá trị cũ.
-        private static void ApplyIdentitySnapshot(CampaignMembership membership, CampaignInvitation inv)
+        // FX1 — MỘT hàm cho cả (a) quan hệ membership → invitation và (b) snapshot danh tính F5, gọi ở
+        // CẢ HAI nhánh của JoinCampaignAsync. Gộp có chủ đích: tách 2 hàm = 2 chỗ có thể quên gọi ở
+        // nhánh idempotent (đúng lỗi F5 suýt mắc), gộp lại thì quên là quên cả hai và test bắt ngay.
+        //
+        // Hai vế có ngữ nghĩa KHÁC nhau, cố ý:
+        //  • InvitationId GHI ĐÈ — "lời mời gần nhất đã dẫn tới join". Lời mời cũ sau reissue (D4) đã
+        //    Revoked nên ValidateInvitationUsable chặn trước khi tới đây ⇒ không bao giờ ghi đè bằng
+        //    lời mời cũ hơn. Nhờ ghi đè, lời mời MỚI hiện đúng "Joined" thay vì "Sent".
+        //  • Email/FullName dùng `??=` — snapshot giữ danh tính BIẾT ĐẦU TIÊN, và quan trọng hơn là
+        //    không bao giờ ghi đè giá trị đang có bằng null (đường-1 không có CV ⇒ FullName null).
+        private static void ApplyInvitationLink(CampaignMembership membership, CampaignInvitation inv)
         {
+            membership.InvitationId = inv.Id;
             membership.Email ??= inv.Email;
             membership.FullName ??= inv.CvSubmission?.FullName;
         }

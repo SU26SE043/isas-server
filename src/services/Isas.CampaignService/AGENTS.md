@@ -204,6 +204,10 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 ### `campaign_invitations` (❌ kế hoạch)
 token 1 lần · email ứng viên · hạn dùng · `used_at` · `session_id` (ref lỏng → Interview).
 
+### `campaign_membership` — ✅ D2 join (DB16) + **FX1 khoá nối sang lời mời**
+`id` · `campaign_id` (FK → `campaigns` Cascade) · `cv_submission_id uuid?` (FK → `cv_submission`, SetNull; null = đường-1 mời-thẳng) · **`invitation_id uuid?` ✅ FX1** (FK → `campaign_invitations`, SetNull; index partial `WHERE invitation_id IS NOT NULL`) · `candidate_id uuid?` (ref lỏng → Auth) · `status` · `joined_at?` · `session_id?` · `interview_status?` · `reference_image_key?` · `full_name`/`email varchar(255)?` (snapshot F5) · `created_at`/`updated_at`.
+> **FX1:** DB16 tách bảng God nhưng bỏ quên quan hệ sang `campaign_invitations` ⇒ `GET /invitations` phải **đoán bằng email** (sai khi 1 email được mời nhiều lần). Nay set `invitation_id` ở **CẢ HAI nhánh** `JoinCampaignAsync` qua một hàm `ApplyInvitationLink` (ghi đè, không `??=` — lời mời cũ sau reissue đã `Revoked`). Cột `email`/`full_name` **giữ có chủ đích**: membership đường-1 join sau F5/trước FX1 không backfill được link ⇒ bỏ cột là mất dữ liệu vĩnh viễn. Backfill migration chỉ chạy đường-2 **khi đúng 1 lời mời khớp**; đường-1 để NULL (FK trỏ sai tệ hơn FK NULL). Chi tiết: [docs/services/campaign.md](../../../docs/services/campaign.md).
+
 ### `session_integrity_events` (anti-cheat — nếu build)
 `id` · `session_id` (ref lỏng) · `type` (`tab_switch`/`focus_lost`/`paste`/`fullscreen_exit`/`multi_voice`) · `at` timestamptz.
 

@@ -793,8 +793,10 @@ namespace Isas.CampaignService.Services
         //
         // Trạng thái suy READ-TIME từ mốc thời gian (không thêm cột state phải đồng bộ). "Đã join" =
         // có row membership (D2) — KHÔNG dùng invitations.used_at vì cột đó chưa từng được ghi ở đâu.
-        // Ghép membership 2 đường: đường-2 theo cv_submission_id (link chắc chắn), đường-1 theo email
-        // (membership.Email = snapshot F5 lúc join).
+        // FX1 — ghép membership theo QUAN HỆ THẬT `campaign_membership.invitation_id` (set lúc join, khi
+        // token còn trong tay). Ghép theo cv_submission_id / email chỉ còn là fallback cho membership
+        // LỊCH SỬ chưa có link — và chỉ áp cho row `invitation_id IS NULL`, để lời mời thứ hai cùng email
+        // không còn "thơm lây" trạng thái Joined của lời mời thứ nhất.
         // ⚠ Membership tạo TRƯỚC F5 có Email = null và CvSubmissionId = null (đường-1 lịch sử) → không
         // ghép được → hiện "Sent"/"Expired" thay vì "Joined". Thà báo thiếu còn hơn đoán bừa.
         // Keyset-paged (DB8) theo (CreatedAt DESC, Id DESC) — đúng thứ tự vốn có nên không đổi UX.
@@ -843,14 +845,18 @@ namespace Isas.CampaignService.Services
                     if (want == InvitationDeliveryStatus.Joined)
                     {
                         q = q.Where(i => _db.CampaignMemberships.Any(m => m.CampaignId == id
-                            && ((i.CampaignCandidateId != null && m.CvSubmissionId == i.CampaignCandidateId)
-                                || (m.Email != null && m.Email.Trim().ToLower() == i.Email.Trim().ToLower()))));
+                            && (m.InvitationId == i.Id
+                                || (m.InvitationId == null
+                                    && ((i.CampaignCandidateId != null && m.CvSubmissionId == i.CampaignCandidateId)
+                                        || (m.Email != null && m.Email.Trim().ToLower() == i.Email.Trim().ToLower()))))));
                     }
                     else
                     {
                         q = q.Where(i => !_db.CampaignMemberships.Any(m => m.CampaignId == id
-                            && ((i.CampaignCandidateId != null && m.CvSubmissionId == i.CampaignCandidateId)
-                                || (m.Email != null && m.Email.Trim().ToLower() == i.Email.Trim().ToLower()))));
+                            && (m.InvitationId == i.Id
+                                || (m.InvitationId == null
+                                    && ((i.CampaignCandidateId != null && m.CvSubmissionId == i.CampaignCandidateId)
+                                        || (m.Email != null && m.Email.Trim().ToLower() == i.Email.Trim().ToLower()))))));
 
                         if (want == InvitationDeliveryStatus.Expired)
                             q = q.Where(i => i.ExpiresAt <= now);
@@ -877,31 +883,45 @@ namespace Isas.CampaignService.Services
 
             // Membership chỉ nạp cho ĐÚNG TRANG (trước đây nạp cả campaign) — đủ để điền JoinedAt + suy
             // Status, mà không phải kéo toàn bộ bảng về chỉ để hiển thị ≤ limit dòng.
+            var invIds = invitations.Select(i => i.Id).ToList();
             var cvIds = invitations.Where(i => i.CampaignCandidateId is not null)
                 .Select(i => i.CampaignCandidateId!.Value).Distinct().ToList();
             var emails = invitations.Select(i => i.Email.Trim().ToLower()).Distinct().ToList();
 
             var memberships = await _db.CampaignMemberships
                 .Where(m => m.CampaignId == id
-                    && ((m.CvSubmissionId != null && cvIds.Contains(m.CvSubmissionId.Value))
+                    && ((m.InvitationId != null && invIds.Contains(m.InvitationId.Value))
+                        || (m.CvSubmissionId != null && cvIds.Contains(m.CvSubmissionId.Value))
                         || (m.Email != null && emails.Contains(m.Email.Trim().ToLower()))))
-                .Select(m => new { m.CvSubmissionId, m.Email, m.JoinedAt })
+                .Select(m => new { m.InvitationId, m.CvSubmissionId, m.Email, m.JoinedAt })
                 .ToListAsync(ct);
 
-            // Ghép in-memory trên đúng trang — email so case-insensitive vì đường-1 chỉ Trim() còn
-            // đường-2 đã lowercase từ C13.
-            var joinedByCv = memberships
+            // FX1 — ghép CHÍNH XÁC theo quan hệ membership.invitation_id trước. Hai nhánh cũ (cv_submission_id
+            // rồi email) chỉ còn là FALLBACK cho membership LỊCH SỬ chưa có link (join trước FX1, và migration
+            // cố ý không backfill khi không chắc). Membership ĐÃ có link thì KHÔNG được ghép bằng email nữa —
+            // nếu không, lời mời thứ hai cùng email vẫn "thơm lây" trạng thái Joined của lời mời thứ nhất,
+            // tức là đúng cái suy đoán mà quan hệ này sinh ra để bỏ.
+            var joinedByInvitation = memberships
+                .Where(m => m.InvitationId is not null)
+                .GroupBy(m => m.InvitationId!.Value)
+                .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt));
+
+            // Email so case-insensitive vì đường-1 chỉ Trim() còn đường-2 đã lowercase từ C13.
+            var legacy = memberships.Where(m => m.InvitationId is null).ToList();
+            var joinedByCv = legacy
                 .Where(m => m.CvSubmissionId is not null)
                 .GroupBy(m => m.CvSubmissionId!.Value)
                 .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt));
-            var joinedByEmail = memberships
+            var joinedByEmail = legacy
                 .Where(m => !string.IsNullOrWhiteSpace(m.Email))
                 .GroupBy(m => m.Email!.Trim(), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt), StringComparer.OrdinalIgnoreCase);
 
             var items = invitations.Select(i =>
             {
-                var joined = i.CampaignCandidateId is Guid ccid && joinedByCv.TryGetValue(ccid, out var byCv)
+                var joined = joinedByInvitation.TryGetValue(i.Id, out var byInv)
+                    ? (found: true, at: byInv)
+                    : i.CampaignCandidateId is Guid ccid && joinedByCv.TryGetValue(ccid, out var byCv)
                     ? (found: true, at: byCv)
                     : joinedByEmail.TryGetValue(i.Email.Trim(), out var byEmail)
                         ? (found: true, at: byEmail)
