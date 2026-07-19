@@ -16,7 +16,11 @@ namespace Isas.PaymentService.Services
         /// </summary>
         Task<OrderResponse> CreateInvoiceSettlementOrderAsync(Invoice invoice, CancellationToken ct = default);
         Task<OrderResponse?> GetOrderAsync(Guid id, CancellationToken ct = default);
-        Task<List<OrderResponse>> GetOwnerOrdersAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default);
+        /// <summary>
+        /// PAY-2/D15 — đơn của CHÍNH chủ ví (owner do controller lấy từ JWT, không phải từ query).
+        /// Optional lọc <paramref name="status"/>. Keyset-paged (DB8), cap 500, mới nhất trước.
+        /// </summary>
+        Task<KeysetPage<OrderResponse>> GetOwnerOrdersAsync(OwnerType ownerType, Guid ownerId, OrderStatus? status, string? cursor, int? limit, CancellationToken ct = default);
 
         /// <summary>
         /// AUTH-7 — PlatformAdmin oversight: MỌI đơn xuyên chủ ví (KHÔNG lọc owner), read-only.

@@ -31,7 +31,9 @@ namespace Isas.CampaignService.Services
         // Danh sách lời mời đã phát của campaign (HR theo dõi "đã mời ai / mail tới đâu / ai đã join").
         // Lọc `status` = giá trị trong InvitationDeliveryStatus (suy read-time), sai/rỗng → không lọc.
         // Ngoài org → KeyNotFoundException (404). KHÔNG trả token (DB23).
-        Task<List<InvitationListItem>> GetInvitationsAsync(Guid orgId, Guid id, string? status, CancellationToken ct);
+        // Keyset-paged (DB8); ?status= + ?search= (email) đều đẩy xuống SQL để lọc TRƯỚC phân trang.
+        Task<KeysetPage<InvitationListItem>> GetInvitationsAsync(
+            Guid orgId, Guid id, string? status, string? search, string? cursor, int? limit, CancellationToken ct);
 
         // C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV (candidateIds → tách email từ CV).
         Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, CancellationToken ct);

@@ -1,7 +1,9 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
+using Isas.Shared.Pagination;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 
 namespace Isas.CampaignService.Services
 {
@@ -164,14 +166,34 @@ namespace Isas.CampaignService.Services
             return CvFailedOutcome.Failed;
         }
 
-        // ── Shortlist: sort=score DESC (mặc định) — ranking derived overall_match_score ─────────────
-        public async Task<List<CandidateListItem>> GetCandidatesAsync(
-            Guid orgId, Guid campaignId, string? status, int? minScore, string? skill, string? sort, CancellationToken ct)
+        /// <summary>
+        /// Shortlist ứng viên sàng CV — màn HR dùng nhiều nhất. Mặc định <c>sort=score</c> DESC theo
+        /// <c>overall_match_score</c> (ranking), hoặc <c>sort=name</c>. Lọc <c>status</c>/<c>minScore</c>/
+        /// <c>search</c> (tên HOẶC email, case-insensitive) — TẤT CẢ đẩy xuống SQL; sort cũng đẩy xuống SQL
+        /// (trước đây `ToListAsync()` nạp TOÀN BỘ bảng rồi mới lọc/sắp trong C#, nên thêm filter làm
+        /// response nhỏ đi mà query không hề rẻ hơn, và `max_candidates` là `int?` = có thể KHÔNG có trần).
+        /// Keyset-paged theo convention DB8; xem <c>skill</c> bên dưới để biết ngoại lệ quan trọng.
+        /// <para>
+        /// ⚠ <b><c>skill</c> lọc SAU khi phân trang.</b> <c>Skills</c> là jsonb <c>string[]</c>, không có
+        /// cách push xuống SQL portable cho cả Npgsql lẫn SQLite ⇒ vẫn lọc trong C# trên đúng trang vừa
+        /// đọc. Hệ quả PHẢI biết khi gọi API: một trang có thể trả **ít hơn <c>limit</c>, thậm chí rỗng,
+        /// mà VẪN còn trang sau** ⇒ client phải đi theo <c>X-Next-Cursor</c> cho tới khi header vắng mặt,
+        /// KHÔNG được dừng khi thấy trang ngắn. Cursor luôn neo vào dòng cuối của trang DB (trước khi lọc
+        /// skill) nên không sót/không trùng dòng nào.
+        /// </para>
+        /// </summary>
+        public async Task<KeysetPage<CandidateListItem>> GetCandidatesAsync(
+            Guid orgId, Guid campaignId, string? status, int? minScore, string? skill, string? sort,
+            string? search, string? cursor, int? limit, CancellationToken ct)
         {
             // Ownership: campaign phải của org (query filter loại soft-deleted) → không thấy = 404.
             var owns = await _db.Campaigns.AnyAsync(c => c.Id == campaignId && c.OrgId == orgId, ct);
             if (!owns)
                 throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = SortKeysetCursor.Decode(cursor);
+            var normalizedSort = string.IsNullOrWhiteSpace(sort) ? "score" : sort.Trim().ToLowerInvariant();
 
             var q = _db.CvSubmissions.Where(c => c.CampaignId == campaignId);
 
@@ -182,25 +204,69 @@ namespace Isas.CampaignService.Services
             if (minScore is int min)
                 q = q.Where(c => c.OverallMatchScore != null && c.OverallMatchScore >= min);
 
-            var rows = await q.ToListAsync(ct);
+            // search: khớp tên HOẶC email. `.ToLower()` ở CẢ hai vế → dịch được trên Npgsql lẫn SQLite và
+            // cho kết quả xác định, không phụ thuộc collation mặc định của từng provider.
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var needle = search.Trim().ToLowerInvariant();
+                q = q.Where(c => (c.FullName != null && c.FullName.ToLower().Contains(needle))
+                              || (c.Email != null && c.Email.ToLower().Contains(needle)));
+            }
+
+            List<CvSubmission> rows;
+            string nextKey;
+
+            if (normalizedSort == "name")
+            {
+                // Khoá keyset = lower(coalesce(full_name,'')) ASC, id ASC. COALESCE để khoá KHÔNG BAO GIỜ
+                // NULL (hợp đồng SortKeysetCursor) — NULL trong predicate keyset cho UNKNOWN và loại nhầm cả trang.
+                if (cur is not null)
+                    q = q.Where(c => string.Compare((c.FullName ?? string.Empty).ToLower(), cur.Key) > 0
+                        || ((c.FullName ?? string.Empty).ToLower() == cur.Key && c.Id.CompareTo(cur.Id) > 0));
+
+                rows = await q
+                    .OrderBy(c => (c.FullName ?? string.Empty).ToLower())
+                    .ThenBy(c => c.Id)
+                    .Take(take)
+                    .ToListAsync(ct);
+
+                nextKey = rows.Count > 0 ? (rows[^1].FullName ?? string.Empty).ToLowerInvariant() : string.Empty;
+            }
+            else
+            {
+                // Khoá keyset = coalesce(overall_match_score, -1) DESC, id DESC. Điểm ∈ [0,100] nên -1 nằm
+                // dưới mọi điểm thật ⇒ ứng viên chưa Analyzed xuống cuối, ĐÚNG hành vi cũ (`?? int.MinValue`)
+                // mà không phải mượn cú pháp NULLS LAST (Postgres mặc định NULLS FIRST khi DESC, SQLite thì khác).
+                var curScore = cur?.KeyAsInt();
+                if (cur is not null && curScore is int cs)
+                    q = ApplyScoreKeyset(q, cs, cur.Id);
+
+                rows = await ApplyScoreOrder(q)
+                    .Take(take)
+                    .ToListAsync(ct);
+
+                nextKey = rows.Count > 0
+                    ? (rows[^1].OverallMatchScore ?? -1).ToString(CultureInfo.InvariantCulture)
+                    : string.Empty;
+            }
+
+            // Cursor neo vào dòng cuối của TRANG DB — phải tính TRƯỚC khi lọc skill, nếu không sẽ nhảy cóc
+            // qua những dòng bị skill loại và mất dữ liệu ở trang sau.
+            var next = rows.Count == take
+                ? new SortKeysetCursor(nextKey, rows[^1].Id).Encode()
+                : null;
 
             // skill: Skills là jsonb string[] → lọc trong C# (không query trong JSON — portable Npgsql/SQLite).
+            // Xem cảnh báo ở XML doc: đây là lý do trang có thể ngắn hơn limit mà vẫn còn trang sau.
+            var page = rows.AsEnumerable();
             if (!string.IsNullOrWhiteSpace(skill))
             {
                 var needle = skill.Trim();
-                rows = rows.Where(c => c.Skills != null &&
-                    c.Skills.Any(s => s.Contains(needle, StringComparison.OrdinalIgnoreCase))).ToList();
+                page = page.Where(c => c.Skills != null &&
+                    c.Skills.Any(s => s.Contains(needle, StringComparison.OrdinalIgnoreCase)));
             }
 
-            // sort in-memory (N ≤ max_candidates): mặc định score DESC, null (chưa Analyzed) xuống cuối; "name".
-            var normalizedSort = string.IsNullOrWhiteSpace(sort) ? "score" : sort.Trim().ToLowerInvariant();
-            rows = normalizedSort == "name"
-                ? rows.OrderBy(c => c.FullName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                      .ThenBy(c => c.CreatedAt).ToList()
-                : rows.OrderByDescending(c => c.OverallMatchScore ?? int.MinValue)
-                      .ThenBy(c => c.CreatedAt).ToList();
-
-            return rows.Select(c => new CandidateListItem
+            var items = page.Select(c => new CandidateListItem
             {
                 Id = c.Id,
                 FullName = c.FullName,
@@ -209,7 +275,34 @@ namespace Isas.CampaignService.Services
                 OverallMatchScore = c.OverallMatchScore,
                 Skills = c.Skills
             }).ToList();
+
+            return new KeysetPage<CandidateListItem>(items, next);
         }
+
+        /// <summary>
+        /// Sắp xếp shortlist theo điểm: <c>COALESCE(overall_match_score, -1) DESC, id DESC</c>.
+        /// <para>
+        /// ⚠ <c>COALESCE</c> ở đây KHÔNG phải trang trí. Postgres coi NULL là LỚN NHẤT nên
+        /// <c>ORDER BY score DESC</c> đẩy ứng viên chưa chấm lên ĐẦU shortlist; SQLite thì ngược lại
+        /// (NULL nhỏ nhất → xuống cuối). Nghĩa là bỏ <c>COALESCE</c> đi thì test SQLite VẪN XANH mà
+        /// production Postgres hiển thị sai hoàn toàn. Ép về -1 (dưới mọi điểm thật 0..100) làm thứ tự
+        /// giống nhau trên cả hai provider — và đó là lý do hàm này tách riêng: test
+        /// <c>ListQueryTranslationTests</c> soi SQL Npgsql sinh từ CHÍNH hàm này, nên mọi thay đổi ở
+        /// đây đều bị bắt.
+        /// </para>
+        /// </summary>
+        public static IOrderedQueryable<CvSubmission> ApplyScoreOrder(IQueryable<CvSubmission> q) =>
+            q.OrderByDescending(c => c.OverallMatchScore ?? -1)
+             .ThenByDescending(c => c.Id);
+
+        /// <summary>
+        /// Predicate keyset cho ordering ở <see cref="ApplyScoreOrder"/> — PHẢI dùng đúng biểu thức khoá
+        /// (<c>COALESCE(score,-1)</c>) như ORDER BY, lệch một chút là phân trang trượt dòng.
+        /// </summary>
+        public static IQueryable<CvSubmission> ApplyScoreKeyset(
+            IQueryable<CvSubmission> q, int curScore, Guid curId) =>
+            q.Where(c => (c.OverallMatchScore ?? -1) < curScore
+                || ((c.OverallMatchScore ?? -1) == curScore && c.Id.CompareTo(curId) < 0));
 
         // ── Chi tiết 1 ứng viên + điểm từng tiêu chí (reasoning) ─────────────────────────────────────
         public async Task<CandidateDetailResponse> GetCandidateAsync(

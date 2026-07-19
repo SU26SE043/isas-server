@@ -1,4 +1,5 @@
 using Isas.CampaignService.DTOs;
+using Isas.Shared.Pagination;
 
 namespace Isas.CampaignService.Services
 {
@@ -15,7 +16,9 @@ namespace Isas.CampaignService.Services
         Task<JoinCampaignResponse> JoinCampaignAsync(string token, CancellationToken ct = default);
 
         // GET /my-campaigns — campaign đã join của candidate.
-        Task<List<MyCampaignItem>> GetMyCampaignsAsync(Guid candidateId, CancellationToken ct = default);
+        // Keyset-paged (DB8) theo (CreatedAt DESC, Id DESC) của membership; soft-delete campaign lọc ở SQL.
+        Task<KeysetPage<MyCampaignItem>> GetMyCampaignsAsync(
+            Guid candidateId, string? cursor, int? limit, CancellationToken ct = default);
 
         // GET /my-campaigns/{id} — chi tiết campaign cho ứng viên đã join (không phải thành viên → 404).
         Task<CandidateCampaignDetailResponse> GetCandidateCampaignAsync(Guid candidateId, Guid campaignId, CancellationToken ct = default);

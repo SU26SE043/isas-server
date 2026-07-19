@@ -1,5 +1,6 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
+using Isas.Shared.Pagination;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.CampaignService.Services
@@ -120,17 +121,40 @@ namespace Isas.CampaignService.Services
         }
 
         // ── GET /my-campaigns ────────────────────────────────────────────────────────
-        public async Task<List<MyCampaignItem>> GetMyCampaignsAsync(Guid candidateId, CancellationToken ct = default)
+        // Keyset-paged (DB8) theo (CreatedAt DESC, Id DESC) của membership. Trước đây sắp theo JoinedAt
+        // DESC — cột NULLABLE nên không dùng làm khoá keyset được (NULL trong predicate cho UNKNOWN, và
+        // thứ tự NULL khác nhau giữa Postgres/SQLite). Membership CreatedAt = thời điểm join nên thứ tự
+        // hiển thị thực tế không đổi; ThenBy(Id) là tie-break duy nhất-toàn-cục.
+        public async Task<KeysetPage<MyCampaignItem>> GetMyCampaignsAsync(
+            Guid candidateId, string? cursor, int? limit, CancellationToken ct = default)
         {
-            var rows = await _db.CampaignMemberships
+            var take = KeysetPaging.ClampLimit(limit);
+            var cur = KeysetCursor.Decode(cursor);
+
+            // Soft-delete campaign (D11) đã được loại Ở SQL bởi global query filter DB13 trên
+            // CampaignMembership (`x.Campaign.DeletedAt == null`) → KHÔNG cần vị ngữ thủ công nào ở đây,
+            // và quan trọng hơn: trang không bị campaign đã xoá chiếm chỗ rồi mới bị bỏ trong C#.
+            var q = _db.CampaignMemberships
                 .AsNoTracking()
+                .Where(m => m.CandidateId == candidateId);
+
+            if (cur is not null)
+                q = q.Where(m => m.CreatedAt < cur.CreatedAt
+                    || (m.CreatedAt == cur.CreatedAt && m.Id.CompareTo(cur.Id) < 0));
+
+            var rows = await q
                 .Include(m => m.Campaign)
-                .Where(m => m.CandidateId == candidateId)
-                .OrderByDescending(m => m.JoinedAt)
+                .OrderByDescending(m => m.CreatedAt)
+                .ThenByDescending(m => m.Id)
+                .Take(take)
                 .ToListAsync(ct);
 
-            // Campaign soft-delete (query filter) → nav null → bỏ (không hiện campaign đã xoá).
-            return rows.Where(m => m.Campaign is not null).Select(m => new MyCampaignItem
+            var next = rows.Count == take
+                ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
+                : null;
+
+            // Guard phòng thủ: query filter DB13 đã loại campaign đã xoá, nhưng DTO deref .Title ngay dưới.
+            var items = rows.Where(m => m.Campaign is not null).Select(m => new MyCampaignItem
             {
                 CampaignId = m.CampaignId,
                 Title = m.Campaign.Title,
@@ -140,6 +164,8 @@ namespace Isas.CampaignService.Services
                 MembershipStatus = m.Status.ToString(),
                 InterviewStatus = (m.InterviewStatus ?? InterviewProgressStatus.NotStarted).ToString()
             }).ToList();
+
+            return new KeysetPage<MyCampaignItem>(items, next);
         }
 
         // ── GET /my-campaigns/{id} — chi tiết cho ứng viên đã join ────────────────────

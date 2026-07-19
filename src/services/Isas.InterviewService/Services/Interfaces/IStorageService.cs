@@ -1,5 +1,6 @@
 ﻿using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
+using Isas.Shared.Pagination;
 
 namespace Isas.InterviewService.Services.Interfaces;
 
@@ -17,7 +18,12 @@ public interface IStorageService
 
     // Bản owner-scoped: dùng ở luồng tạo session B2C để không đọc file của người khác (xem StorageService).
     Task<string> GetOwnedParsedTextAsync(Guid fileId, Guid ownerId, CancellationToken ct = default);
-    Task<List<FileRecord>> GetFilesByUserId(Guid userId, CancellationToken ct = default);
+    // Danh sách file của user: keyset-paged + project gọn (BỎ parsed_text/storage_path/storage_bucket).
+    // Trả DTO chứ không phải entity — xem StorageService.GetFilesByUserId để biết vì sao projection
+    // phải nằm trong SQL chứ không phải map sau khi nạp.
+    Task<KeysetPage<FileRecordSummary>> GetFilesByUserId(
+        Guid userId, string? fileType = null, string? cursor = null, int? limit = null,
+        CancellationToken ct = default);
     Task<FileRecord> UpdateFileRecord(Guid fileId, Stream stream, string originalName, long fileSize, string contentType, CVParseResult? parsedCv, CancellationToken ct = default);
     Task<bool> DeleteFileRecord(Guid fileId, CancellationToken ct = default);
 }

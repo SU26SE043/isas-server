@@ -58,7 +58,7 @@ public class CampaignCandidateFilterTests
         SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, "c@x.com", 60, null);
 
         var svc = NewService(tdb.NewContext());
-        var list = await svc.GetCandidatesAsync(owner, camp.Id, null, null, "sql", "score", default);
+        var list = (await svc.GetCandidatesAsync(owner, camp.Id, null, null, "sql", "score", null, null, null, default)).Items;
 
         Assert.Single(list);
         Assert.Equal("a@x.com", list[0].Email);
@@ -76,7 +76,7 @@ public class CampaignCandidateFilterTests
         SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Rejected, "c@x.com", null, null);
 
         var svc = NewService(tdb.NewContext());
-        var list = await svc.GetCandidatesAsync(owner, camp.Id, "Analyzed", null, null, "score", default);
+        var list = (await svc.GetCandidatesAsync(owner, camp.Id, "Analyzed", null, null, "score", null, null, null, default)).Items;
 
         Assert.Single(list);
         Assert.Equal("a@x.com", list[0].Email);
@@ -96,7 +96,7 @@ public class CampaignCandidateFilterTests
         SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, "wrongstatus@x.com", 99, new() { "SQL" });    // rớt status
 
         var svc = NewService(tdb.NewContext());
-        var list = await svc.GetCandidatesAsync(owner, camp.Id, "Analyzed", 70, "sql", "score", default);
+        var list = (await svc.GetCandidatesAsync(owner, camp.Id, "Analyzed", 70, "sql", "score", null, null, null, default)).Items;
 
         Assert.Single(list);
         Assert.Equal("hit@x.com", list[0].Email);

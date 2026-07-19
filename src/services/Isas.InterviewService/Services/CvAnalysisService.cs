@@ -2,6 +2,7 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Pagination;
 using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
 
@@ -191,15 +192,45 @@ public class CvAnalysisService : ICvAnalysisService
         return Map(row);
     }
 
-    public async Task<IReadOnlyList<CvAnalysisResponse>> ListAsync(
-        Guid candidateId, CancellationToken ct = default)
+    /// <summary>
+    /// Danh sách phân tích CV của chính user — keyset-paged (mẫu DB8/DB31).
+    ///
+    /// Shape payload giữ NGUYÊN, cố ý: đã kiểm FE (`isas-frontend`) trước khi định cắt bớt và thấy
+    /// trang này KHÔNG có màn chi tiết — danh sách CHÍNH LÀ chi tiết, mỗi dòng là một expansion panel
+    /// render đủ <c>summary</c>/<c>strengths</c>/<c>weaknesses</c>/<c>suggestions</c>/<c>jdMatch</c>
+    /// (endpoint `GET /cv-analysis/{id}` hiện không có consumer nào). Bỏ mấy mảng đó khỏi list sẽ
+    /// KHÔNG chỉ là thiếu chữ: chúng là `string[]` non-optional được `@for` duyệt thẳng, `undefined`
+    /// vào đó là văng runtime, trắng cả mục lịch sử.
+    ///
+    /// ⇒ ở đây chỉ chặn số dòng (trần 500/trang) chứ không đụng shape. Muốn list gọn thật thì phải
+    /// làm trang chi tiết trước (BE + FE cùng nhịp), không phải việc của vòng này.
+    /// </summary>
+    public async Task<KeysetPage<CvAnalysisResponse>> ListAsync(
+        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default)
     {
-        var rows = await _db.Set<CvAnalysis>().AsNoTracking()
-            .Where(x => x.CandidateId == candidateId)
+        var take = KeysetPaging.ClampLimit(limit);
+        var cur = KeysetCursor.Decode(cursor);
+
+        var query = _db.Set<CvAnalysis>().AsNoTracking()
+            .Where(x => x.CandidateId == candidateId);
+
+        // Keyset (CreatedAt DESC, Id DESC) — Id tie-break: hai phân tích trùng created_at (bấm liên
+        // tiếp) vẫn có thứ tự tổng, không lặp/sót dòng khi lật trang.
+        if (cur is not null)
+            query = query.Where(x => x.CreatedAt < cur.CreatedAt
+                || (x.CreatedAt == cur.CreatedAt && x.Id.CompareTo(cur.Id) < 0));
+
+        var rows = await query
             .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .Take(take)
             .ToListAsync(ct);
 
-        return rows.Select(Map).ToList();
+        var items = rows.Select(Map).ToList();
+        var next = items.Count == take
+            ? new KeysetCursor(items[^1].CreatedAt, items[^1].Id).Encode()
+            : null;
+        return new KeysetPage<CvAnalysisResponse>(items, next);
     }
 
     // Đọc parsed_text của file thuộc về candidate. null → 404; khác chủ → 403; rỗng → 400.
