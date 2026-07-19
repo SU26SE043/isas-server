@@ -152,9 +152,13 @@ namespace PaymentService.Models
             {
                 // DB1 — số dư credit KHÔNG bao giờ âm (chống double-spend/bug logic tràn xuống dưới 0).
                 // period_usage nullable → phải IS NULL OR ... tường minh (NULL >= 0 = UNKNOWN, không đủ chặn).
+                // F7 — free_credits_granted vào cùng CHECK (cùng ngữ nghĩa "số dư không âm"). CỐ Ý KHÔNG
+                // thêm vế kiểu `free_credits_granted >= remaining_credits`: đó đúng là lớp bug DB22 —
+                // một bút toán số dư hợp lệ (Consume/Release) sẽ làm nổ CHECK bên trong transaction,
+                // rollback → reservation kẹt Reserved → consumer nack-requeue vô hạn → nghẽn queue credit.
                 e.ToTable("credit_accounts", t => t.HasCheckConstraint(
                     "ck_credit_accounts_non_negative",
-                    "remaining_credits >= 0 AND reserved_credits >= 0 AND (period_usage IS NULL OR period_usage >= 0)"));
+                    "remaining_credits >= 0 AND reserved_credits >= 0 AND free_credits_granted >= 0 AND (period_usage IS NULL OR period_usage >= 0)"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -168,6 +172,7 @@ namespace PaymentService.Models
 
                 e.Property(x => x.RemainingCredits).HasDefaultValue(0);
                 e.Property(x => x.ReservedCredits).HasDefaultValue(0);
+                e.Property(x => x.FreeCreditsGranted).HasDefaultValue(0);
 
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 

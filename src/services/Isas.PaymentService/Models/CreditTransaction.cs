@@ -22,6 +22,13 @@
     {
         Purchase,
         Consume,
-        Refund
+        Refund,
+
+        /// <summary>
+        /// F7 — suất dùng thử tặng lúc TẠO ví User (+N, không gắn order/session). Ghi sổ chứ không
+        /// cấp "credit không sổ sách": nhờ vậy bất biến `remaining + reserved = Σ delta` vẫn đúng,
+        /// nên credit tặng bốc hơi do drift vẫn bị phát hiện y như credit khách trả tiền.
+        /// </summary>
+        FreeGrant
     }
 }

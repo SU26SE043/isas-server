@@ -15,6 +15,13 @@ namespace Isas.PaymentService.DTOs
         public CreditAccountStatus Status { get; set; }
         public int RemainingCredits { get; set; }
         public int ReservedCredits { get; set; }
+
+        /// <summary>
+        /// F7 — số credit dùng thử đã được tặng cho ví này (0 = chưa từng, mọi ví Org). Thêm MỚI, additive:
+        /// credit tặng nằm chung <see cref="RemainingCredits"/> nên client cũ không phải sửa gì.
+        /// </summary>
+        public int FreeCreditsGranted { get; set; }
+
         public int? CreditLimit { get; set; }
         public int? PeriodUsage { get; set; }
         public DateTime UpdatedAt { get; set; }
@@ -27,6 +34,7 @@ namespace Isas.PaymentService.DTOs
             Status = a.Status,
             RemainingCredits = a.RemainingCredits,
             ReservedCredits = a.ReservedCredits,
+            FreeCreditsGranted = a.FreeCreditsGranted,
             CreditLimit = a.CreditLimit,
             PeriodUsage = a.PeriodUsage,
             UpdatedAt = a.UpdatedAt,
@@ -45,6 +53,10 @@ namespace Isas.PaymentService.DTOs
             PaymentMode = PaymentMode.Prepaid,
             Status = CreditAccountStatus.Active,
             RemainingCredits = 0,
+            // F7 — CỐ Ý trả 0, KHÔNG hứa trước suất dùng thử theo cấu hình: ví chưa tồn tại nghĩa là
+            // chưa cấp gì cả. Hứa "bạn có 3 credit" ở đây là lời hứa endpoint này không giữ được nếu
+            // cấu hình đổi hoặc đường cấp hỏng — số dư thật xuất hiện ngay sau lần reserve đầu tiên.
+            FreeCreditsGranted = 0,
             ReservedCredits = 0,
             CreditLimit = null,
             PeriodUsage = null,

@@ -103,6 +103,9 @@ public class CreditAccountMeTests
         Assert.Equal(0, account.ReservedCredits);
         Assert.Equal(PaymentMode.Prepaid, account.PaymentMode);
         Assert.Equal(CreditAccountStatus.Active, account.Status);
+        // F7 — CỐ Ý 0, không hứa trước suất dùng thử theo cấu hình: chưa có ví = chưa cấp gì.
+        // Hứa "bạn có 3 credit" ở đây là lời hứa endpoint đọc-thuần này không giữ được.
+        Assert.Equal(0, account.FreeCreditsGranted);
         // Đọc thuần — KHÔNG được tự tạo ví trong DB.
         Assert.Empty(tdb.Db.CreditAccounts);
     }

@@ -77,8 +77,9 @@ CreditAccount {                         // GET /me/account
   ownerId:          uuid
   paymentMode:      enum(string)        // Prepaid · Postpaid (User luôn Prepaid)
   status:           enum(string)        // Active · Suspended (đình chỉ nợ xấu/quá hạn)
-  remainingCredits: int
+  remainingCredits: int                 // ✅ F7: ĐÃ GỒM credit dùng thử (không tách xô riêng)
   reservedCredits:  int
+  freeCreditsGranted: int               // ✅ F7 — suất dùng thử đã tặng ví này (0 = chưa/ví Org); ví chưa tồn tại → 0
   creditLimit:      int?                // chỉ Org/postpaid
   periodUsage:      int?                // chỉ Org/postpaid — lượt đã dùng kỳ này
   updatedAt:        datetime
@@ -228,8 +229,9 @@ owner_type       varchar(8)    enum: Org · User
 owner_id         uuid          ref lỏng → Auth
 payment_mode     varchar(16)   enum: Prepaid · Postpaid (User LUÔN Prepaid)
 status           varchar(16)   enum: Active · Suspended (mặc định Active) — đình chỉ nợ xấu/quá hạn → chặn reserve mới
-remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine)
+remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine); ✅ F7 gồm cả credit dùng thử
 reserved_credits int           đang giữ chỗ (Reserved chưa Consumed/Released)
+free_credits_granted int       ✅ F7 — suất dùng thử ĐÃ TẶNG ví này (0 = chưa tặng / ví Org); denormalize từ sổ cái reason=FreeGrant
 credit_limit     int?          CHỈ Org/postpaid
 period_usage     int?          CHỈ Org/postpaid — lượt đã dùng kỳ này
 updated_at       timestamptz
@@ -254,7 +256,7 @@ owner_id   uuid
 order_id   uuid?         FK → orders
 session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
-reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2)
+reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2) · FreeGrant (+N suất dùng thử lúc tạo ví User — ✅ F7, order_id/session_id null)
 created_at timestamptz
 ```
 

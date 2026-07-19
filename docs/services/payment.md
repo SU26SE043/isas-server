@@ -70,8 +70,9 @@ CreditAccount {                         // GET /me/account ✅ (= CreditAccountR
   ownerId:          uuid
   paymentMode:      enum(int)           // 0=Prepaid · 1=Postpaid (User luôn Prepaid)
   status:           enum(int)           // 0=Active · 1=Suspended (đình chỉ nợ xấu/quá hạn)
-  remainingCredits: int
+  remainingCredits: int                 // ✅ F7: ĐÃ GỒM credit dùng thử (không tách xô riêng)
   reservedCredits:  int
+  freeCreditsGranted: int               // ✅ F7 — suất dùng thử đã tặng cho ví này (0 = chưa/ví Org). Ví chưa tồn tại → 0 (KHÔNG hứa trước quota cấu hình)
   creditLimit:      int?                // chỉ Org/postpaid
   periodUsage:      int?                // chỉ Org/postpaid — lượt đã dùng kỳ này
   updatedAt:        datetime
@@ -244,13 +245,14 @@ owner_type       varchar(8)    enum: Org · User
 owner_id         uuid          ref lỏng → Auth
 payment_mode     varchar(16)   enum: Prepaid · Postpaid (User LUÔN Prepaid)
 status           varchar(16)   enum: Active · Suspended (mặc định Active) — đình chỉ nợ xấu/quá hạn → chặn reserve mới
-remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine)
+remaining_credits int          prepaid: số credit còn (reserve trừ NGAY — xem §State machine); ✅ F7 gồm cả credit dùng thử
 reserved_credits int           đang giữ chỗ (Reserved chưa Consumed/Released)
+free_credits_granted int       ✅ F7 — suất dùng thử ĐÃ TẶNG ví này (0 = chưa tặng / ví Org). Denormalize từ sổ cái (reason=FreeGrant); KHÔNG phải xô riêng — credit tặng nằm chung remaining_credits
 credit_limit     int?          CHỈ Org/postpaid
 period_usage     int?          CHỈ Org/postpaid — lượt đã dùng kỳ này
 updated_at       timestamptz
                                UNIQUE (owner_type, owner_id)
-                               CHECK ck_credit_accounts_non_negative: remaining_credits>=0 AND reserved_credits>=0 AND (period_usage IS NULL OR period_usage>=0)  ✅ DB1 (2026-07-17)
+                               CHECK ck_credit_accounts_non_negative: remaining_credits>=0 AND reserved_credits>=0 AND free_credits_granted>=0 AND (period_usage IS NULL OR period_usage>=0)  ✅ DB1 (2026-07-17) · mở rộng free_credits_granted ✅ F7
 ```
 
 ### `credit_reservations` — giữ chỗ theo session
@@ -273,7 +275,7 @@ owner_id   uuid
 order_id   uuid?         FK → orders
 session_id uuid?         ref lỏng → Interview
 delta      int           +/− (cộng pack / trừ lượt)
-reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2)
+reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Scored) · Refund (admin hoàn — phase 2) · FreeGrant (+N suất dùng thử lúc tạo ví User — ✅ F7, order_id/session_id đều null)
 created_at timestamptz
                           CHECK ck_credit_transactions_delta_nonzero: delta<>0  ✅ DB1 (2026-07-17)
 ```
@@ -443,6 +445,14 @@ payment_mode:  Prepaid ─(PlatformAdmin duyệt + MST)─► Postpaid   (thu h�
 - Reserve lúc bắt đầu, Consume lúc `Scored`, Release lúc bỏ ngang/lỗi hệ thống. Idempotent theo `session_id`.
 - **Transition + bút toán atomic + xử lý event ra ngoài thứ tự**: xem **§State machine** (`credit_reservations` + kế toán `remaining↔reserved`) — đây là phần chống double-spend & double-process, **bắt buộc** khi build.
 - ⚠ **Sàng lọc CV (D18/D19) KHÔNG tiêu credit (phase 1).** `1 credit = 1 lượt phỏng vấn có audio` → đọc/chấm CV **không** phải lượt phỏng vấn ⇒ **không** reserve/consume, **không** chạm `credit_accounts`/`credit_reservations`. Chỉ **buổi phỏng vấn thật** mới reserve→consume (ứng viên sàng CV được mời → phỏng vấn = đi đúng luồng trên). Chi phí Gemini/CV là **giá vốn nội bộ**, CampaignService chặn bằng hard-filter + cap số CV/campaign ([campaign.md](campaign.md)). *(Phase 2 nếu tính phí sàng → **loại credit sàng riêng**, team xác nhận lại — như D17.)*
+
+### Suất dùng thử B2C — ✅ **F7** (2026-07-19)
+- **3 credit tặng khi TẠO ví của một `User`** (`Billing:FreeTrialCredits`, mặc định `3`, đặt `0` = tắt hẳn). **Chỉ `owner_type=User`** — ví Org không có suất dùng thử (B2B đi ví Org, BC-1); Org chưa có ví vẫn **402** như trước.
+- **Cấp ở đúng MỘT chỗ: `CreateAccountAsync`, ngay trong câu INSERT tạo ví** (cả số dư lẫn bút toán sổ cái, cùng một `SaveChanges`). Vì vậy nó phủ **cả hai** đường tạo ví: webhook Paid lần mua đầu **và** lần `reserve` đầu tiên của user chưa từng mua (đường mới của F7). Tách phần cấp thành một `UPDATE` tiếp sau sẽ khiến **bên thua race cấp lần hai** → credit tặng vô hạn; `UNIQUE(owner_type, owner_id)` chính là thứ bảo đảm "một ví = một suất".
+- **KHÔNG phải xô riêng.** Credit tặng nằm chung `remaining_credits` và tiêu theo đúng luật hiện hành (reserve/consume/release, PAY-4/PAY-11/PAY-13) — `ReserveAsync`/`ConsumeAsync`/`ReleaseAsync` **không đổi một dòng nào**. Mỗi lần cấp ghi **1 bút toán `FreeGrant +N`** (`order_id`/`session_id` null) nên bất biến **`remaining + reserved = Σ delta` vẫn đúng** ⇒ credit tặng bốc hơi do drift vẫn bị phát hiện y như credit khách trả tiền. Một "xô free không sổ sách" sẽ mất chính cái máy dò đó.
+- **Ví đã tồn tại KHÔNG bao giờ được top-up** (kể cả ví cũ có `free_credits_granted = 0` từ trước F7). Thêm nhánh "chưa tặng thì cấp bù" = đường tặng credit vô hạn.
+- **Không backfill.** Ví chỉ tồn tại với người **đã trả tiền**, nên `UPDATE ... WHERE owner_type='User'` sẽ tặng đúng nhóm khách đã trả tiền và **không chạm** user nào đang kẹt 402 — nhóm đó chưa có row nào trong bảng. Họ nhận suất dùng thử ở lần reserve đầu tiên.
+- ⚠ **Rủi ro đã biết, chưa xử:** 1 email = 3 lượt, mà đăng ký **không xác minh email** ⇒ lạm dụng bằng email dùng-một-lần là có thật. Cần quyết định sản phẩm (xác minh email / giới hạn theo thiết bị), không thuộc phạm vi F7.
 
 ### Postpaid (trả sau)
 - **Chỉ org được PlatformAdmin DUYỆT** mới bật `Postpaid` (cần **pháp nhân/MST** để xuất hóa đơn + đòi nợ). Mặc định org mới = `Prepaid`.

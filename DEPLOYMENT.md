@@ -211,6 +211,9 @@ services:
       - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
       - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
       - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
+      # F7 — suất dùng thử tặng lúc tạo ví User. Có default :-3 vì chuỗi RỖNG không parse được thành
+      # int (env thiếu → options binder ném lúc khởi động). Đặt 0 để tắt hẳn.
+      - Billing__FreeTrialCredits=${FREE_TRIAL_CREDITS:-3}
     ports:
       - "5271:8080"     # publish để webhook PayOS gọi vào (cần public URL/tunnel)
     depends_on: [postgres, rabbitmq]
@@ -287,6 +290,8 @@ PAYOS_CHECKSUM_KEY=...
 # BF3 — bắt buộc: thiếu → POST /order 502 (PayOS reject "return_url null"). URL redirect sau thanh toán.
 PAYOS_RETURN_URL=https://<your-frontend-or-tunnel>/payment/success
 PAYOS_CANCEL_URL=https://<your-frontend-or-tunnel>/payment/cancel
+# F7 — số credit tặng khi tạo ví của một User (ví Org không có). Bỏ trống = 3. Đặt 0 = tắt hẳn.
+FREE_TRIAL_CREDITS=3
 ```
 
 ### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth
