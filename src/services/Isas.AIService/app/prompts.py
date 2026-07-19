@@ -1,3 +1,5 @@
+from app.resources import ALLOWED_HOSTS as ALLOWED_RESOURCE_HOSTS
+
 CATEGORY_NAMES = {
     "BA": "Business Analyst",
     "BE": "Backend Developer",
@@ -331,10 +333,28 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
             "Ưu tiên đào sâu đúng những điểm yếu này trong nội dung lý thuyết."
         )
 
+    # F15 (FR09) — kèm TÀI LIỆU HỌC. Chỉ thị về URL cố ý NGHIÊM: mô hình có xu
+    # hướng bịa link trông rất thật. Prompt là lớp phòng thủ THỨ NHẤT (bảo mô hình
+    # đừng đoán), allowlist tên miền trong app/resources.py là lớp THỨ HAI (không
+    # tin lời hứa của mô hình). Có cả hai vì lớp 1 không đáng tin một mình.
+    allowed = ", ".join(sorted(ALLOWED_RESOURCE_HOSTS)[:12])
+    parts.append(
+        "Kèm thêm 3-5 TÀI LIỆU HỌC cho bài này (resources), mỗi tài liệu gồm: "
+        "title (tên tài liệu/khoá học/chương sách), type (một trong: Doc, Course, "
+        "Book, Video, Article), publisher (nơi phát hành, nếu biết), url (tuỳ chọn).\n"
+        "QUY TẮC VỀ url — TUYỆT ĐỐI TUÂN THỦ:\n"
+        "- CHỈ đưa url khi bạn CHẮC CHẮN đường dẫn đó có thật và thuộc trang tài "
+        f"liệu chính chủ (vd: {allowed}).\n"
+        "- KHÔNG ĐƯỢC đoán, chế, hay ghép url. Không chắc thì ĐỂ TRỐNG url — "
+        "tài liệu chỉ có tên vẫn hữu ích, còn link sai thì có hại.\n"
+        "- Không dùng link rút gọn, không link trang cá nhân/blog lạ."
+    )
+
     parts.append(
         "Độ dài vừa đủ để đọc trước 1 buổi luyện (không quá dài dòng). "
         "CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown bọc "
-        'ngoài: {"theoryMarkdown":"# Tiêu đề\\n\\nNội dung markdown..."}'
+        'ngoài: {"theoryMarkdown":"# Tiêu đề\\n\\nNội dung markdown...",'
+        '"resources":[{"title":"...","type":"Doc","publisher":"...","url":"https://..."}]}'
     )
     return "\n\n".join(parts)
 

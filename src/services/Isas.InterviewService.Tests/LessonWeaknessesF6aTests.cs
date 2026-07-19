@@ -1,3 +1,4 @@
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
@@ -67,7 +68,7 @@ public class LessonWeaknessesF6aTests
                 It.IsAny<CancellationToken>()))
             .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?, CancellationToken>(
                 (_, _, _, _, weaknesses, _) => captured = weaknesses)
-            .ReturnsAsync("## Lý thuyết");
+            .ReturnsAsync(new LessonTheoryResult("## Lý thuyết", []));
 
         var options = threshold is null
             ? null

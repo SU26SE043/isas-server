@@ -22,13 +22,28 @@ public record GeneratedLesson(string Title);
 // { criterionName, deltaPct } — set khi milestone Completed (BC15); BC12 luôn null.
 public record MilestoneImprovementResponse(string CriterionName, decimal DeltaPct);
 
+// F15 — kết quả AIService /generate-lesson-theory: markdown + tài liệu học (đã qua allowlist
+// tên miền phía AIService). Resources rỗng KHÔNG phải lỗi.
+public record LessonTheoryResult(string TheoryMarkdown, IReadOnlyList<Entities.LessonResource> Resources);
+
+// F15 — 1 tài liệu học gợi ý trả cho FE. `url` CÓ THỂ NULL vì có chủ đích: link do AI sinh chỉ
+// được giữ khi tên miền thuộc allowlist (AIService app/resources.py). FE: có url → render link kèm
+// nhãn "chưa kiểm chứng"; không url → chỉ hiện tên (người học tự tra).
+public record LessonResourceResponse(
+    string Title,
+    string Type,          // Doc | Course | Book | Video | Article
+    string? Publisher,
+    string? Url
+);
+
 public record LessonResponse(
     Guid Id,
     int OrderNo,
     string Title,
     string? TheoryContent,   // null khi chưa mở (BC14); list bỏ luôn theoryContent.
     Guid? SessionId,
-    string Status
+    string Status,
+    IReadOnlyList<LessonResourceResponse> Resources   // F15 — rỗng khi chưa mở lesson / AI không gợi ý được
 );
 
 public record MilestoneResponse(

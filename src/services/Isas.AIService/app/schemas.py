@@ -93,8 +93,22 @@ class GenerateLessonTheoryRequest(BaseModel):
     weaknesses: list[str] | None = None
 
 
+class LessonResource(BaseModel):
+    """F15 — 1 tài liệu học gợi ý cho bài học.
+
+    ``url`` optional VÌ CÓ CHỦ ĐÍCH: link do LLM sinh chỉ được giữ khi tên miền
+    nằm trong allowlist (app/resources.py). Host lạ → url=None, mục vẫn còn tên
+    để người học tự tra. FE phải gắn nhãn "chưa kiểm chứng" khi có url.
+    """
+    title: str
+    type: str                    # Doc | Course | Book | Video | Article
+    publisher: str | None = None
+    url: str | None = None
+
+
 class GenerateLessonTheoryResponse(BaseModel):
     theoryMarkdown: str          # tiếng Việt, có ví dụ
+    resources: list[LessonResource] = []   # F15 — tài liệu học gợi ý (có thể rỗng)
 
 
 class CriterionProgress(BaseModel):

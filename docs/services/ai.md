@@ -37,7 +37,11 @@
 
 **Roadmap ôn tập B2C** *(🔜 BC13, D20 — cả 3 sync, KHÔNG queue vì không audio; Interview tự lưu — [interview.md](interview.md) §Roadmap)*:
 - `generate-roadmap`: req `{ jobCategory, level, weaknesses?:[{ criterionName, percentage }], cvText? }` → res `{ milestones: [{ title, focusCriteria: string[], lessons: [{ title }] }] }`. Có `weaknesses` (từ `session_criterion_scores`) → mile bám tiêu chí yếu; không có → roadmap **chuẩn theo `jobCategory + level`**. `level ∈ Fresher·Junior·Middle·Senior`.
-- `generate-lesson-theory`: req `{ jobCategory, level, lessonTitle, focusCriteria: string[], weaknesses?: string[] }` → res `{ theoryMarkdown }` (tiếng Việt, có ví dụ — nội dung ôn tập lý thuyết cho lesson). Interview lưu `roadmap_lessons.theory_content` (**lazy** — sinh 1 lần khi mở lesson đầu tiên).
+- `generate-lesson-theory`: req `{ jobCategory, level, lessonTitle, focusCriteria: string[], weaknesses?: string[] }` → res `{ theoryMarkdown, resources[] }` (tiếng Việt, có ví dụ — nội dung ôn tập lý thuyết cho lesson). Interview lưu `roadmap_lessons.theory_content` + `roadmap_lessons.resources` (**lazy** — sinh 1 lần khi mở lesson đầu tiên).
+  - ✅ **F15 (FR09) `resources[]`** = `{ title, type: Doc|Course|Book|Video|Article, publisher?, url? }` — tài liệu học gợi ý, **rỗng là HỢP LỆ** (khác `theoryMarkdown` rỗng → 502).
+  - 🔴 **URL do LLM sinh = ảo giác kinh điển.** Hai lớp phòng thủ, cố ý có CẢ HAI vì lớp 1 không đáng tin một mình: **(1) prompt** cấm đoán/ghép url, không chắc thì để trống; **(2) allowlist TÊN MIỀN** (`app/resources.py::sanitize_resources`) — giữ url chỉ khi **https** + host khớp **đầy đủ** (không substring, chặn `mozilla.org.evil.com`) một nguồn chính chủ đã biết; host lạ → **bỏ url, GIỮ tên tài liệu**. Cũng chặn `javascript:`/`data:`/`file:`/scheme-relative.
+  - ⚠ Allowlist bảo đảm đúng **tên miền**, KHÔNG bảo đảm **đường dẫn** tồn tại (không fetch xác minh) ⇒ FE phải gắn nhãn *"chưa được kiểm chứng"*. Thêm domain vào allowlist = **quyết định có chủ đích**, không phải "AI hay nhắc tới nên thêm".
+  - Ngoài ra `sanitize_resources` chuẩn hoá: `type` lạ → `Doc` · bỏ mục thiếu `title` · dedupe theo title (case-insensitive) · trần **5** mục.
 - `summarize-roadmap`: req `{ jobCategory, level, criteriaProgress: [{ criterionName, startPct?, endPct, levelThreshold, passed }] }` → res `{ strengths[], weaknesses[], improvements[], overallComment }` — **best-effort** khi roadmap `Completed` (lỗi → Interview để rỗng/null, không chặn). Bọc dữ liệu trong delimiter (chống prompt-injection) như `summarize-session`.
 
 **Phỏng vấn THÍCH ỨNG** *(INT-17 — nội bộ, `X-Internal-Token` BẮT BUỘC, fail-closed)*:
@@ -106,7 +110,7 @@ Mọi kết quả trả qua HTTP (sync) **hoặc** callback (async) về .NET �
 | analyze-cv (B2C) | sync | `cv_analyses` (Interview) |
 | analyze-cv (B2B sàng CV) | async `cv_screening_queue` → callback | `campaign_candidates`/`candidate_criterion_scores` (Campaign) |
 | generate-roadmap 🔜 | sync | `roadmaps`/`roadmap_milestones`/`roadmap_lessons` (Interview) |
-| generate-lesson-theory 🔜 | sync | `roadmap_lessons.theory_content` (Interview) |
+| generate-lesson-theory 🔜 | sync | `roadmap_lessons.theory_content` + `roadmap_lessons.resources` (Interview) — ✅ F15 |
 | summarize-roadmap 🔜 | sync | `roadmaps.final_report`/`overall_comment` (Interview) |
 | chấm answer | async `scoring_pipeline_queue` → callback | `answer_scores` (Interview) |
 

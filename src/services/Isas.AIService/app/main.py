@@ -113,9 +113,10 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
     if not req.lessonTitle or not req.lessonTitle.strip():
         raise HTTPException(status_code=400, detail="lessonTitle không được rỗng")
     try:
-        theory = await provider.generate_lesson_theory(
+        theory, resources = await provider.generate_lesson_theory(
             req.jobCategory, req.level, req.lessonTitle, req.focusCriteria, req.weaknesses)
-        return GenerateLessonTheoryResponse(theoryMarkdown=theory)
+        # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
+        return GenerateLessonTheoryResponse(theoryMarkdown=theory, resources=resources)
     except HTTPException:
         raise
     except Exception as ex:

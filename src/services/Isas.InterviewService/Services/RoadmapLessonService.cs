@@ -49,9 +49,13 @@ public class RoadmapLessonService : IRoadmapLessonService
 
         // Lazy-gen: gọi AIService (sync). Lỗi → AiServiceException (502) → chưa lưu gì (mở lại được).
         var focus = lesson.Milestone.FocusCriteria ?? new List<string>();
-        var theory = await _generator.GenerateLessonTheoryAsync(
+        var generated = await _generator.GenerateLessonTheoryAsync(
             roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
             lesson.Title, focus, BuildWeaknesses(roadmap, focus), ct);
+        var theory = generated.TheoryMarkdown;
+        // F15 — tài liệu học sinh CÙNG lượt với lý thuyết; lưu chung 1 lần ghi để không có trạng
+        // thái "có theory mà chưa có resources" (guard idempotent bên dưới chỉ nhìn theory_content).
+        var resources = generated.Resources.ToList();
         var now = DateTime.UtcNow;
 
         // Lưu idempotent: chỉ ghi khi theory_content vẫn null (2 request đồng thời → chỉ 1 ghi thắng).
@@ -59,6 +63,7 @@ public class RoadmapLessonService : IRoadmapLessonService
             .Where(l => l.Id == lessonId && l.TheoryContent == null)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(l => l.TheoryContent, theory)
+                .SetProperty(l => l.Resources, resources)
                 .SetProperty(l => l.TheoryGeneratedAt, now), ct);
 
         if (updated == 0)
@@ -72,6 +77,7 @@ public class RoadmapLessonService : IRoadmapLessonService
 
         // Trả bản vừa sinh (khỏi round-trip). lesson đang detached (AsNoTracking) → set để dựng response.
         lesson.TheoryContent = theory;
+        lesson.Resources = resources;
         lesson.TheoryGeneratedAt = now;
         return MapLesson(lesson);
     }
@@ -170,5 +176,11 @@ public class RoadmapLessonService : IRoadmapLessonService
     }
 
     private static LessonResponse MapLesson(RoadmapLesson l)
-        => new(l.Id, l.OrderNo, l.Title, l.TheoryContent, l.SessionId, l.Status.ToString());
+        => new(l.Id, l.OrderNo, l.Title, l.TheoryContent, l.SessionId, l.Status.ToString(),
+               (l.Resources ?? []).Select(MapResource).ToList());
+
+    /// <summary>F15 — entity → DTO. Dùng chung với <see cref="RoadmapService"/> để 2 đường trả
+    /// cùng shape (chi tiết lesson vs roadmap detail).</summary>
+    internal static LessonResourceResponse MapResource(LessonResource r)
+        => new(r.Title, r.Type, r.Publisher, r.Url);
 }

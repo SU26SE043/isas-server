@@ -509,9 +509,19 @@ order_no            int           UNIQUE (milestone_id, order_no)
 title               varchar
 theory_content      text?         markdown lý thuyết — AI sinh LẦN ĐẦU mở lesson (lazy), sau đọc DB
 theory_generated_at timestamptz?
+resources           jsonb         ✅ F15 (migration AddLessonResourcesF15) — tài liệu học gợi ý:
+                                  [{title, type, publisher?, url?}]. NON-NULL, mặc định [] (rỗng
+                                  là HỢP LỆ). Sinh CÙNG lượt với theory_content, ghi CÙNG 1 lần
+                                  UPDATE (guard idempotent chỉ nhìn theory_content ⇒ tách 2 lần
+                                  ghi sẽ để lại lesson "có theory, resources rỗng" vĩnh viễn).
 session_id          uuid?         FK → practice_sessions (Restrict) — session luyện gắn lesson (set khi /start)
 status              varchar(16)   enum: Theory·Practicing·Done
 ```
+> **F15 (FR09) — tài liệu học & URL do AI sinh.** LLM sinh URL là **đoán chuỗi trông giống link**, không phải tra cứu; link bịa trông y hệt link thật. Rủi ro nặng KHÔNG phải "link 404" mà là **tên miền bịa** (có thể đã bị người khác đăng ký / typosquat) — ta sẽ đang đẩy người học tới đó dưới danh nghĩa "tài liệu hệ thống gợi ý".
+> **Chốt: allowlist TÊN MIỀN** ở AIService (`app/resources.py`, hàm `sanitize_resources`): giữ url chỉ khi **https** + host khớp **đầy đủ** một tên miền tài liệu chính chủ đã biết; host lạ → **bỏ url, GIỮ tên tài liệu** (người học vẫn tra được). Đã cân nhắc và loại: *(a)* không link gì cả — an toàn nhưng giảm mạnh giá trị FR09; *(b)* link tự do + ghi chú — ghi chú không ngăn được cú click, không chặn được domain bịa.
+> ⚠ **Giới hạn phải nói thẳng:** allowlist bảo đảm đúng **tên miền**, KHÔNG bảo đảm **đường dẫn** tồn tại (ta không fetch để xác minh — sẽ thêm I/O mạng vào đường sinh lý thuyết đang chạy đồng bộ trong request người dùng). Vì vậy **FE BẮT BUỘC gắn nhãn "Tài liệu do AI gợi ý, chưa được kiểm chứng"** cạnh link — đó là phần bù cho giới hạn này. Muốn bỏ hẳn link: đặt allowlist rỗng, không cần sửa chỗ nào khác.
+> ⚠ `url` **null là mục HỢP LỆ**, không phải dữ liệu hỏng — đừng "dọn" mục thiếu url, làm vậy là xoá tài liệu chỉ vì nó không có link tin cậy.
+> ⚠ **Migration `AddLessonResourcesF15`:** EF scaffold ra `defaultValue: ""` — **chuỗi rỗng KHÔNG phải JSON hợp lệ**, Postgres từ chối ngay tại `ALTER TABLE`. Đã sửa tay thành `"[]"`. SQLite (test, `EnsureCreated`) bỏ qua migration nên **test không bắt được lỗi này** — chỉ lộ lúc apply Postgres thật.
 
 ### Index & ràng buộc (tổng hợp)
 - **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels` Cascade *(bảng `rubric_anchors` đã DROP — DB15, gộp vào `rubric_levels.example_answers` jsonb)*. ✅ Roadmap: Cascade theo `roadmap_id` → `roadmap_milestones` (→ `roadmap_lessons` Cascade); `roadmaps.cv_id` → `file_records` **Restrict** · `roadmap_lessons.session_id` → `practice_sessions` **Restrict**.

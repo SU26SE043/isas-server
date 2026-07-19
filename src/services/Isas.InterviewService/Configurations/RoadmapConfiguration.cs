@@ -15,6 +15,9 @@ public class RoadmapConfiguration : IEntityTypeConfiguration<Roadmap>
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
+    /// <summary>F15 — options dùng chung cho jsonb của lesson (xem <c>RoadmapLessonConfiguration</c>).</summary>
+    internal static readonly JsonSerializerOptions LessonJson = Json;
+
     // Comparer cho jsonb collection nullable — chặn warning 10620 + đúng change-tracking (BC15 set lại).
     internal static readonly ValueComparer<List<Guid>> GuidListComparer = new(
         (a, b) => (a ?? new List<Guid>()).SequenceEqual(b ?? new List<Guid>()),
@@ -165,6 +168,24 @@ public class RoadmapLessonConfiguration : IEntityTypeConfiguration<RoadmapLesson
         e.Property(x => x.OrderNo).IsRequired();
         e.Property(x => x.Title).HasMaxLength(256).IsRequired();
         e.Property(x => x.TheoryContent).HasColumnType("text");
+
+        // F15 — tài liệu học gợi ý: jsonb non-null (mặc định []). Converter → JSON string nên
+        // SQLite (test) serialize ra text == Postgres jsonb (mẫu RubricLevel.ExampleAnswers/DB15).
+        var resourceConverter = new ValueConverter<List<LessonResource>, string>(
+            v => JsonSerializer.Serialize(v ?? new List<LessonResource>(), RoadmapConfiguration.LessonJson),
+            v => JsonSerializer.Deserialize<List<LessonResource>>(v, RoadmapConfiguration.LessonJson)
+                 ?? new List<LessonResource>());
+
+        var resourceComparer = new ValueComparer<List<LessonResource>>(
+            (a, b) => (a ?? new List<LessonResource>()).SequenceEqual(b ?? new List<LessonResource>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, r) => HashCode.Combine(h, r.GetHashCode())),
+            v => v.ToList());
+
+        var resources = e.Property(x => x.Resources);
+        resources.HasConversion(resourceConverter);
+        resources.Metadata.SetValueComparer(resourceComparer);
+        resources.HasColumnType("jsonb");
+        resources.IsRequired();
 
         e.Property(x => x.Status)
             .HasConversion<string>()

@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Entities;
 using Isas.InterviewService.Services.Interfaces;
 
 namespace Isas.InterviewService.Services;
@@ -84,12 +85,14 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         return new RoadmapGenAiResult(milestones);
     }
 
-    // Shape res AIService /generate-lesson-theory (GenerateLessonTheoryResponse) — chỉ markdown.
-    private record LessonTheoryApiResponse(string? TheoryMarkdown);
+    // Shape res AIService /generate-lesson-theory (GenerateLessonTheoryResponse):
+    // markdown + F15 tài liệu học (đã sanitize allowlist tên miền phía AIService).
+    private record LessonTheoryApiResponse(string? TheoryMarkdown, List<LessonResourceApi>? Resources);
+    private record LessonResourceApi(string? Title, string? Type, string? Publisher, string? Url);
 
     // BC14 — POST /generate-lesson-theory {jobCategory, level, lessonTitle, focusCriteria[], weaknesses?}
     // → {theoryMarkdown}. Sync như /generate-roadmap. Lỗi → AiServiceException (→ 502).
-    public async Task<string> GenerateLessonTheoryAsync(
+    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(
         string jobCategory, string level, string lessonTitle,
         IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses,
         CancellationToken ct = default)
@@ -135,7 +138,18 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         if (body is null || string.IsNullOrWhiteSpace(body.TheoryMarkdown))
             throw new AiServiceException("AIService /generate-lesson-theory trả rỗng");
 
-        return body.TheoryMarkdown;
+        // F15 — resources RỖNG KHÔNG phải lỗi (lý thuyết vẫn dùng được), khác theoryMarkdown rỗng.
+        // Bỏ mục thiếu title; url giữ nguyên những gì AIService đã lọc qua allowlist tên miền.
+        var resources = (body.Resources ?? [])
+            .Where(r => !string.IsNullOrWhiteSpace(r.Title))
+            .Select(r => new LessonResource(
+                r.Title!.Trim(),
+                string.IsNullOrWhiteSpace(r.Type) ? "Doc" : r.Type!.Trim(),
+                string.IsNullOrWhiteSpace(r.Publisher) ? null : r.Publisher!.Trim(),
+                string.IsNullOrWhiteSpace(r.Url) ? null : r.Url!.Trim()))
+            .ToList();
+
+        return new LessonTheoryResult(body.TheoryMarkdown, resources);
     }
 
     // Shape res AIService /summarize-roadmap — kết luận chi tiết + nhận xét chung.
