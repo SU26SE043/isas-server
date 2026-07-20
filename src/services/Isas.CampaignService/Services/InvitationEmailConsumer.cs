@@ -184,14 +184,33 @@ namespace Isas.CampaignService.Services
         }
 
         /// <summary>
-        /// Magic-link tới trang join ứng viên qua gateway: <c>{baseUrl}/invitations/{token}</c>.
-        /// baseUrl = <c>Invitation:BaseUrl</c> ?? <c>Gateway:Url</c> ?? rỗng (bỏ dấu '/' cuối tránh '//').
+        /// Magic-link tới trang join ứng viên trên FRONTEND: <c>{baseUrl}/invite/{token}</c>.
+        /// <para>
+        /// ⚠ <c>Invitation:BaseUrl</c> PHẢI là origin của FE (vd <c>https://&lt;app&gt;.vercel.app</c>),
+        /// KHÔNG phải URL gateway. Link này là thứ ứng viên bấm trong email → phải mở ra một TRANG,
+        /// mà trang đó do FE phục vụ; gateway chỉ có route <c>/api/v1/...</c> nên link trỏ gateway
+        /// trả 404 với body rỗng ⇒ trình duyệt hiện TRANG TRẮNG, không báo lỗi gì (e2e 2026-07-20).
+        /// </para>
+        /// <para>
+        /// Path <c>/invite/</c> phải khớp route FE (<c>app.routes.ts</c>: <c>path: 'invite/:token'</c>).
+        /// Đây là hợp đồng XUYÊN REPO — không test nào ở đây chứng minh được nó còn khớp, đổi route FE
+        /// thì phải đổi cả chỗ này.
+        /// </para>
+        /// Không còn fallback sang <c>Gateway:Url</c>: fallback đó chính là thứ khiến cấu hình "trông như
+        /// đã đặt" mà link vẫn chết. Thiếu cấu hình → log Error + link tương đối (thấy được ngay khi thử).
         /// </summary>
         private string BuildJoinLink(string token)
         {
-            var baseUrl = (_config["Invitation:BaseUrl"] ?? _config["Gateway:Url"] ?? string.Empty)
-                .TrimEnd('/');
-            return $"{baseUrl}/invitations/{token}";
+            var baseUrl = (_config["Invitation:BaseUrl"] ?? string.Empty).TrimEnd('/');
+
+            if (string.IsNullOrEmpty(baseUrl))
+            {
+                _logger.LogError(
+                    "Thiếu cấu hình 'Invitation:BaseUrl' (origin FE) — magic-link gửi đi sẽ là link " +
+                    "tương đối và KHÔNG bấm được. Đặt env Invitation__BaseUrl trỏ vào origin frontend.");
+            }
+
+            return $"{baseUrl}/invite/{token}";
         }
     }
 }

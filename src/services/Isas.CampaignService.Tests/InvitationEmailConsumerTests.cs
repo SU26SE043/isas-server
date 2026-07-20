@@ -12,7 +12,7 @@ namespace Isas.CampaignService.Tests;
 
 /// <summary>
 /// D1 (consumer) + DB2b (dedup): InvitationEmailConsumer.ProcessMessageAsync — deserialize
-/// InvitationEmailJob, dedup theo <c>email_sent_at</c>, compose magic-link {baseUrl}/invitations/{token},
+/// InvitationEmailJob, dedup theo <c>email_sent_at</c>, compose magic-link {baseUrl}/invite/{token} (route FE),
 /// gọi ICampaignEmailSender, rồi set <c>email_sent_at</c>. Test trực tiếp logic 1 message (mock sender +
 /// DbContext SQLite thật) — KHÔNG cần broker/SMTP thật.
 /// </summary>
@@ -61,16 +61,18 @@ public class InvitationEmailConsumerTests
         var sender = new Mock<ICampaignEmailSender>();
         var consumer = NewConsumer(new Dictionary<string, string?>
         {
-            ["Invitation:BaseUrl"] = "https://gw.test"
+            ["Invitation:BaseUrl"] = "https://fe.test"
         });
 
         await consumer.ProcessMessageAsync(SerializeJob(job), sender.Object, tdb.NewContext(), default);
 
         // Sender được gọi đúng 1 lần với email + link magic-link mong đợi (deserialize PascalCase OK).
+        // Path '/invite/' khớp route FE `app.routes.ts: path: 'invite/:token'` — KHÔNG phải '/invitations/'
+        // (đó là route API của ParticipationController, trả JSON, không phải trang bấm được).
         sender.Verify(s => s.SendInvitationEmailAsync(
             "cand@acme.test",
             "Backend Q3",
-            "https://gw.test/invitations/tok-123",
+            "https://fe.test/invite/tok-123",
             expires,
             It.IsAny<CancellationToken>()), Times.Once);
         sender.VerifyNoOtherCalls();
@@ -81,15 +83,23 @@ public class InvitationEmailConsumerTests
         Assert.NotNull(saved.EmailSentAt);
     }
 
+    /// <summary>
+    /// ⚠ Test này ĐẢO tiền đề của bản cũ (`ProcessMessage_FallbackGatewayUrl_...`), vốn khẳng định
+    /// "thiếu Invitation:BaseUrl thì dùng Gateway:Url" là ĐÚNG. Hành vi đó là NGUỒN của lỗi
+    /// magic-link chết: gateway chỉ phục vụ `/api/v1/...`, nên link trỏ gateway trả 404 body rỗng
+    /// ⇒ ứng viên thấy TRANG TRẮNG, không có thông báo lỗi nào (verify live e2e 2026-07-20).
+    /// Nay fallback bị gỡ hẳn: thiếu cấu hình thì link tương đối + log Error, KHÔNG âm thầm
+    /// sinh ra một URL tuyệt đối trông hợp lệ mà chết.
+    /// </summary>
     [Fact]
-    public async Task ProcessMessage_FallbackGatewayUrl_KhiThieuInvitationBaseUrl()
+    public async Task ProcessMessage_KHONG_FallbackGatewayUrl_DuGatewayUrlCoDatSan()
     {
         using var tdb = new CampaignTestDb();
         var inv = SeedInvitation(tdb, "b@acme.test", "abc");
         var job = new InvitationEmailJob(inv.Id, inv.CampaignId, "b@acme.test", "abc", "Frontend", null);
 
         var sender = new Mock<ICampaignEmailSender>();
-        // Chỉ có Gateway:Url (không có Invitation:BaseUrl) + có '/' cuối → phải trim tránh '//'.
+        // Có Gateway:Url nhưng KHÔNG có Invitation:BaseUrl → tuyệt đối không được lấy URL gateway.
         var consumer = NewConsumer(new Dictionary<string, string?>
         {
             ["Gateway:Url"] = "https://gateway.test/"
@@ -100,9 +110,17 @@ public class InvitationEmailConsumerTests
         sender.Verify(s => s.SendInvitationEmailAsync(
             "b@acme.test",
             "Frontend",
-            "https://gateway.test/invitations/abc",
+            "/invite/abc",
             null,
             It.IsAny<CancellationToken>()), Times.Once);
+
+        // Chốt lại cho rõ: host của gateway không được xuất hiện trong bất kỳ link nào gửi đi.
+        sender.Verify(s => s.SendInvitationEmailAsync(
+            It.IsAny<string>(),
+            It.IsAny<string>(),
+            It.Is<string>(link => link.Contains("gateway.test")),
+            It.IsAny<DateTime?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -117,11 +135,11 @@ public class InvitationEmailConsumerTests
 
         await consumer.ProcessMessageAsync(SerializeJob(job), sender.Object, tdb.NewContext(), default);
 
-        // Thiếu Invitation:BaseUrl + Gateway:Url → baseUrl rỗng, link vẫn có phần path (relative).
+        // Thiếu Invitation:BaseUrl → baseUrl rỗng, link vẫn có phần path (relative) + đã log Error.
         sender.Verify(s => s.SendInvitationEmailAsync(
             "c@acme.test",
             "QA",
-            "/invitations/xyz",
+            "/invite/xyz",
             null,
             It.IsAny<CancellationToken>()), Times.Once);
     }
