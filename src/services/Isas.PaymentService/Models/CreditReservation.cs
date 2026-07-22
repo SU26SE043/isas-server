@@ -24,6 +24,22 @@ namespace PaymentService.Models
         /// </summary>
         public ReservationFunding FundedBy { get; set; } = ReservationFunding.Credit;
 
+        /// <summary>
+        /// F23/BK24 — snapshot <c>PaymentMode</c> CỦA VÍ tại thời điểm reserve, CHỐT MỘT LẦN và
+        /// KHÔNG BAO GIỜ đọc lại từ <c>credit_accounts.payment_mode</c> hiện tại. Chỉ có ý nghĩa khi
+        /// <see cref="FundedBy"/> = <see cref="ReservationFunding.Credit"/> (nhánh Subscription
+        /// không trừ ví nên không đọc field này).
+        ///
+        /// Lý do bắt buộc: Consume/Release trước đây đọc lại <c>PaymentMode</c> HIỆN TẠI của ví.
+        /// Nếu admin đổi Prepaid→Postpaid giữa lúc reservation đang <c>Reserved</c>: Release sẽ chạy
+        /// nhánh postpaid (chỉ <c>reserved−1</c>, không hoàn <c>remaining</c>) dù credit đã bị trừ
+        /// theo luật prepaid lúc reserve → MẤT credit khách. Ngược lại Postpaid→Prepaid giữa chừng
+        /// sẽ ĐÚC credit (remaining+1) chưa từng được mua. Snapshot tại nguồn (mẫu <see cref="FundedBy"/>,
+        /// F8) triệt tiêu cả hai. Default 'Prepaid' để mọi reservation CŨ (tạo trước F23, 100% ví khi đó
+        /// đều Prepaid — đã verify DB thật 2026-07-20) giữ nguyên đúng hành vi.
+        /// </summary>
+        public PaymentMode PaymentMode { get; set; } = PaymentMode.Prepaid;
+
         public DateTime CreatedAt { get; set; }
         // DB14 — audit: đóng dấu khi status flip Reserved→Consumed/Released. Cả 2 flip dùng ExecuteUpdate
         // (CreditAccountService.Consume/Release) → tự thêm .SetProperty(UpdatedAt) ở đó. C# init cho insert.
