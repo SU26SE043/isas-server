@@ -236,6 +236,9 @@ namespace PaymentService.Models
                 e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(ReservationFunding.Credit);
 
+                e.Property(x => x.PaymentMode).HasConversion<string>().HasMaxLength(16)
+                 .HasDefaultValue(PaymentMode.Prepaid);
+
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 // DB14 — audit updated_at (stamp khi status flip Reserved→Consumed/Released). 2 flip đó dùng
                 // ExecuteUpdate (CreditAccountService) nên tự thêm .SetProperty(UpdatedAt) tại đó.
