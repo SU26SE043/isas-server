@@ -10,6 +10,22 @@ namespace Isas.PaymentService.Services
     /// </summary>
     public interface IInvoiceService
     {
+        public enum CloseBillingPeriodOutcome
+        {
+            Closed,
+
+            /// <summary>Không có ví cho org này (thay cho KeyNotFoundException cũ).</summary>
+            WalletMissing,
+
+            /// <summary>Org đang Prepaid — không có kỳ postpaid nào để chốt.</summary>
+            NotPostpaid,
+
+            /// <summary>Billing:UnitPrice ≤ 0 (chưa cấu hình) — chặn lập hóa đơn 0đ (BK24 finding #4).</summary>
+            UnitPriceNotConfigured
+        }
+
+        public sealed record CloseBillingPeriodResult(CloseBillingPeriodOutcome Outcome, InvoiceResponse? Invoice);
+
         /// <summary>
         /// Chốt kỳ 1 org trong <b>1 transaction</b> (payment.md §Postpaid): snapshot <c>period_usage</c> →
         /// tạo <see cref="Invoice"/>(<c>Issued</c>, <c>interview_count = period_usage</c>,
@@ -31,5 +47,12 @@ namespace Isas.PaymentService.Services
 
         /// <summary>1 hóa đơn (owner-scope): không tồn tại / của chủ khác → null (controller → 404).</summary>
         Task<InvoiceResponse?> GetInvoiceAsync(OwnerType ownerType, Guid ownerId, Guid invoiceId, CancellationToken ct = default);
+
+        /// <summary>
+        /// F23/BK24 — quét Issued quá `due_at + graceHours` → Overdue (kích hoạt guard BK17 ở ReserveAsync).
+        /// LOG riêng cho Issued mà DueAt=NULL (hóa đơn không bao giờ bị quét được — "phanh hỏng câm" phải
+        /// nhìn thấy, không âm thầm bỏ qua mãi mãi). Trả số hóa đơn vừa đóng dấu.
+        /// </summary>
+        Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default);
     }
 }
