@@ -366,6 +366,10 @@ namespace PaymentService.Models
 
                 e.HasIndex(x => new { x.OwnerType, x.OwnerId });
 
+                e.HasIndex(x => x.DueAt)
+                 .HasDatabaseName("ix_invoices_issued_due_at")
+                 .HasFilter("status = 'Issued'");
+
                 // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict).
                 // Invoice CHỈ Org — dùng owner đồng nhất (owner NOT NULL), KHÔNG dùng account_id (ref lỏng
                 // giữ nguyên cho tương thích). Không nav; ví không bao giờ bị xoá.
