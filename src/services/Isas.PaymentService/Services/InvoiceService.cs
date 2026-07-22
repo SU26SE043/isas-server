@@ -15,14 +15,12 @@ namespace Isas.PaymentService.Services
         private readonly PaymentDbContext _db;
         private readonly IOrderService _orders;
         private readonly IOptions<BillingSettings> _billing;
-        private readonly ILogger<InvoiceService>? _logger;
 
-        public InvoiceService(PaymentDbContext db, IOrderService orders, IOptions<BillingSettings> billing, ILogger<InvoiceService>? logger)
+        public InvoiceService(PaymentDbContext db, IOrderService orders, IOptions<BillingSettings> billing)
         {
             _db = db;
             _orders = orders;
             _billing = billing;
-            _logger = logger;
         }
 
         public async Task<CloseBillingPeriodResult> CloseBillingPeriodAsync(
@@ -93,6 +91,7 @@ namespace Isas.PaymentService.Services
 
         public async Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default)
         {
+            var logger = new LoggerFactory().CreateLogger<InvoiceService>();
             var cutoff = DateTime.UtcNow.AddHours(-graceHours);
 
             // F23/BK24 — "phanh hỏng câm": Issued mà DueAt=NULL (hóa đơn tạo trước migration/lỗi ghi) sẽ
@@ -101,7 +100,7 @@ namespace Isas.PaymentService.Services
             var missingDueAt = await _db.Invoices.AsNoTracking()
                 .CountAsync(i => i.Status == InvoiceStatus.Issued && i.DueAt == null, ct);
             if (missingDueAt > 0)
-                _logger?.LogWarning(
+                logger?.LogWarning(
                     "F23/BK24 — {Count} hóa đơn Issued KHÔNG có DueAt → KHÔNG thể tự động chuyển Overdue, cần xử lý tay.",
                     missingDueAt);
 
