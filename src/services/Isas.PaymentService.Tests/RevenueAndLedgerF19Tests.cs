@@ -103,19 +103,23 @@ public class RevenueAndLedgerF19Tests
         await SeedOrderAsync(tdb, OrderStatus.Expired, 900_000, null);
         await SeedOrderAsync(tdb, OrderStatus.Cancelled, 900_000, null);
         await SeedOrderAsync(tdb, OrderStatus.Failed, 900_000, null);
-        // ⚠ Dòng QUAN TRỌNG NHẤT của test này. Bốn đơn trên đều có paid_at = null, nên chỉ riêng chúng
-        // thì vị ngữ `status = Paid` là THỪA — điều kiện `paid_at != null` đã loại hết. Đơn đã hoàn (F18)
-        // mới là ca duy nhất vừa có paid_at thật vừa KHÔNG được tính doanh thu gộp; thiếu nó thì test
-        // mang tên "chỉ cộng đơn Paid" mà thực chất không hề kiểm vị ngữ trạng thái.
+        // ⚠ Dòng QUAN TRỌNG NHẤT của test này. Bốn đơn trên đều có paid_at = null, nên chúng bị loại khỏi
+        // gross bởi điều kiện `paid_at != null` (tên test vẫn đúng: đơn chưa-trả KHÔNG vào doanh thu).
+        // Đơn đã hoàn (F18) mới là ca then chốt: nó GIỮ paid_at (RefundService không đụng paid_at) nên tiền
+        // của nó THẬT SỰ đã thu trong kỳ ⇒ VẪN thuộc gross; khoản hoàn trừ RIÊNG đúng một lần theo
+        // refunded_at. Assert cũ (gross 800k, loại đơn hoàn khỏi gross) khoá bug trừ-đôi: nó rớt đơn hoàn
+        // khỏi gross RỒI net=gross−refunded lại trừ tiếp ⇒ tác động của khoản hoàn bị đếm hai lần.
         await SeedOrderAsync(tdb, OrderStatus.Refunded, 900_000,
             paidAt: T0.AddDays(3), refundedAt: T0.AddDays(4));
 
         var r = await new RevenueService(tdb.Db)
             .GetRevenueAsync(T0, T0.AddDays(30), RevenueGranularity.Day);
 
-        Assert.Equal(800_000, r.GrossRevenueVnd);
-        Assert.Equal(2, r.PaidOrderCount);
-        Assert.Equal(-100_000, r.NetRevenueVnd);   // 800k thu − 900k hoàn, cùng kỳ
+        Assert.Equal(1_700_000, r.GrossRevenueVnd);   // 500k + 300k + 900k (đơn hoàn ĐÃ thu → vào gross)
+        Assert.Equal(3, r.PaidOrderCount);
+        Assert.Equal(900_000, r.RefundedVnd);
+        Assert.Equal(1, r.RefundedOrderCount);
+        Assert.Equal(800_000, r.NetRevenueVnd);       // 1.7M thu − 0.9M hoàn, trừ đúng một lần
     }
 
     /// <summary>
@@ -139,9 +143,11 @@ public class RevenueAndLedgerF19Tests
     }
 
     /// <summary>
-    /// Đơn được hoàn (F18) rời khỏi trạng thái Paid, nên nó KHÔNG còn nằm trong doanh thu gộp; tiền hoàn
-    /// được đếm riêng theo <c>refunded_at</c>. Đếm tiền hoàn theo <c>paid_at</c> sẽ khiến một khoản hoàn
-    /// hôm nay đi ngược về sửa doanh thu của kỳ ĐÃ CHỐT — báo cáo tháng trước tự đổi số.
+    /// Chính việc neo gross theo <c>paid_at</c> (độc lập status) mới THỰC SỰ giữ "không sửa ngược kỳ đã
+    /// chốt". Đơn bán tháng 7 rồi hoàn tháng 8 vẫn nằm trong gross tháng 7 VĨNH VIỄN — vì tiền đã thu thật
+    /// trong tháng 7; khoản hoàn là dòng riêng, đếm theo <c>refunded_at</c> nên rơi vào tháng 8.
+    /// Tiền đề CŨ (loại đơn hoàn khỏi gross theo status=Paid) là bug: nó kéo gross tháng 7 tụt từ 700k
+    /// xuống 200k sau khi tháng 8 hoàn — tức khoản hoàn ĐI NGƯỢC sửa số kỳ đã chốt, đúng thứ tên test cấm.
     /// </summary>
     [Fact]
     public async Task DoanhThu_TienHoanDemTheoKyHoan_KhongSuaNguocKyDaChot()
@@ -157,11 +163,12 @@ public class RevenueAndLedgerF19Tests
         var thang8 = await new RevenueService(tdb.Db)
             .GetRevenueAsync(T0.AddDays(31), T0.AddDays(62), RevenueGranularity.Day);
 
-        // Tháng 7 chỉ còn đơn chưa hoàn.
-        Assert.Equal(200_000, thang7.GrossRevenueVnd);
+        // Tháng 7 giữ nguyên tiền ĐÃ THU: 500k (đơn sau bị hoàn) + 200k = 700k, không bị hoàn kéo lùi.
+        Assert.Equal(700_000, thang7.GrossRevenueVnd);
         Assert.Equal(0, thang7.RefundedVnd);
+        Assert.Equal(700_000, thang7.NetRevenueVnd);
 
-        // Khoản hoàn rơi vào tháng 8, làm doanh thu ròng tháng 8 âm — đúng bản chất kế toán.
+        // Khoản hoàn rơi vào tháng 8 (theo refunded_at), làm doanh thu ròng tháng 8 âm — đúng kế toán.
         Assert.Equal(0, thang8.GrossRevenueVnd);
         Assert.Equal(500_000, thang8.RefundedVnd);
         Assert.Equal(1, thang8.RefundedOrderCount);
