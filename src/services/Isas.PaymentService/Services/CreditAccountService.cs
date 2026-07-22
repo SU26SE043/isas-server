@@ -402,10 +402,12 @@ namespace Isas.PaymentService.Services
             // thật (bỏ ngang/release không dồn nợ). Đọc payment_mode rời chỉ để CHỌN nhánh — increment
             // period_usage là SQL self-referential (atomic); transition Reserved→Consumed ở trên (guard
             // WHERE status=Reserved) đã bảo đảm đúng 1 consume/session ⇒ KHÔNG cộng nợ oan (idempotent PAY-11).
-            var isPostpaid = await _db.CreditAccounts.AsNoTracking()
-                .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
-                .Select(a => a.PaymentMode)
-                .FirstOrDefaultAsync(ct) == PaymentMode.Postpaid;
+
+            //var isPostpaid = await _db.CreditAccounts.AsNoTracking()
+            //    .Where(a => a.OwnerType == reservation.OwnerType && a.OwnerId == reservation.OwnerId)
+            //    .Select(a => a.PaymentMode)
+            //    .FirstOrDefaultAsync(ct) == PaymentMode.Postpaid;
+            var isPostpaid = reservation.PaymentMode == PaymentMode.Postpaid;
 
             // DB22 — guard `ReservedCredits >= 1` trong WHERE (trước đây chỉ lọc theo owner). Nếu ví đã
             // drift về 0 thì bút toán cũ trừ xuống âm → vi phạm CHECK ck_credit_accounts_non_negative →
