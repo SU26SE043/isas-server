@@ -5,16 +5,18 @@ namespace Isas.Gateway.Services;
 
 public class ApiServiceConfig
 {
-    public string Name { get; set; } = "";
     public string OpenApiUrl { get; set; } = "";
     public string Prefix { get; set; } = "";
     // Base path gốc của service cần cắt bỏ trước khi gắn Prefix gateway.
-    // Vd: AI service trả path "/api/v1/generate-questions", StripPrefix="/api/v1"
-    // -> cắt còn "/generate-questions" -> + Prefix "/api/v1/ai" = "/api/v1/ai/generate-questions"
+    // Vd: Interview trả path "/api/practice/sessions", StripPrefix="/api"
+    // -> cắt còn "/practice/sessions" -> + Prefix "/api/v1/interview" = "/api/v1/interview/practice/sessions"
     public string StripPrefix { get; set; } = "";
 }
 
-public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : BackgroundService
+public class OpenApiAggregatorService(
+    HttpClient http,
+    IConfiguration config,
+    ILogger<OpenApiAggregatorService> logger) : BackgroundService
 {
     public static string MergedDoc { get; private set; } = "{}";
 
@@ -22,21 +24,43 @@ public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : 
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            await RefreshOnce(http, config);
+            await RefreshOnce(http, config, logger);
             await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
         }
     }
 
-    public static async Task RefreshOnce(HttpClient http, IConfiguration config)
+    // GEN-1: callback nội bộ không đi qua gateway -> không được nằm trong doc public,
+    // nếu không doc sẽ quảng cáo endpoint mà bấm vào chỉ nhận 404.
+    private static bool IsInternalPath(string path) =>
+        path.StartsWith("/internal/", StringComparison.OrdinalIgnoreCase);
+
+    public static async Task RefreshOnce(
+        HttpClient http,
+        IConfiguration config,
+        ILogger? logger = null)
     {
-        var services = config.GetSection("ApiServices").Get<List<ApiServiceConfig>>() ?? [];
+        // Keyed-by-name: env override là "ApiServices__<name>__OpenApiUrl", nên URL của một service
+        // không thể bị ghép với Prefix của service khác. Mảng-theo-index trước đây làm đúng chuyện đó:
+        // compose khai 5 URL còn appsettings khai 4 entry -> mọi service lệch một ô prefix.
+        var services = config.GetSection("ApiServices").Get<Dictionary<string, ApiServiceConfig>>() ?? [];
 
         var mergedPaths = new JsonObject();
         var mergedSchemas = new JsonObject();
         JsonObject? baseDoc = null;
 
-        foreach (var service in services)
+        foreach (var (name, service) in services)
         {
+            // Prefix rỗng = mọi path của service đó đổ ra root doc, đúng triệu chứng của lỗi cấu hình
+            // cũ (env "ApiServices__4__OpenApiUrl" không có entry tương ứng trong appsettings).
+            // Thà mất một service trong doc còn hơn sinh ra doc sai mà không ai biết.
+            if (string.IsNullOrWhiteSpace(service.Prefix))
+            {
+                logger?.LogError(
+                    "ApiServices:{Service} không có Prefix nên bị bỏ qua. Env phải theo tên "
+                    + "(ApiServices__<tên>__OpenApiUrl), không phải theo index.", name);
+                continue;
+            }
+
             try
             {
                 var json = await http.GetStringAsync(service.OpenApiUrl);
@@ -46,14 +70,17 @@ public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : 
                 baseDoc ??= JsonNode.Parse(json)!.AsObject();
 
                 var paths = doc["paths"]?.AsObject();
+                var merged = 0;
                 if (paths is not null)
                 {
                     foreach (var path in paths)
                     {
+                        if (IsInternalPath(path.Key)) continue;
+
                         var pathJson = path.Value?.ToJsonString() ?? "{}";
                         pathJson = pathJson.Replace(
                             "#/components/schemas/",
-                            $"#/components/schemas/{service.Name}_"
+                            $"#/components/schemas/{name}_"
                         );
 
                         // Cắt base path gốc rồi mới gắn Prefix gateway, tránh double prefix.
@@ -65,6 +92,7 @@ public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : 
                         }
 
                         mergedPaths[service.Prefix + key] = JsonNode.Parse(pathJson);
+                        merged++;
                     }
                 }
 
@@ -76,19 +104,31 @@ public class OpenApiAggregatorService(HttpClient http, IConfiguration config) : 
                         var schemaJson = schema.Value?.ToJsonString() ?? "{}";
                         schemaJson = schemaJson.Replace(
                             "#/components/schemas/",
-                            $"#/components/schemas/{service.Name}_"
+                            $"#/components/schemas/{name}_"
                         );
-                        mergedSchemas[$"{service.Name}_{schema.Key}"] = JsonNode.Parse(schemaJson);
+                        mergedSchemas[$"{name}_{schema.Key}"] = JsonNode.Parse(schemaJson);
                     }
                 }
+
+                logger?.LogInformation(
+                    "OpenAPI merge: {Service} -> {Prefix} ({Count} path) từ {Url}",
+                    name, service.Prefix, merged, service.OpenApiUrl);
             }
-            catch
+            catch (Exception ex)
             {
-                // Service chưa chạy thì bỏ qua
+                // Nuốt im lặng ở đây từng khiến cấu hình lệch chạy nhiều ngày mà không ai thấy:
+                // doc vẫn sinh ra, chỉ thiếu/sai service. Phải log ra.
+                logger?.LogWarning(ex,
+                    "Không nạp được OpenAPI của service {Service} từ {Url}",
+                    name, service.OpenApiUrl);
             }
         }
 
-        if (baseDoc is null) return;
+        if (baseDoc is null)
+        {
+            logger?.LogWarning("Không service nào trả OpenAPI — giữ nguyên doc cũ.");
+            return;
+        }
 
         var gatewayUrl = config["Gateway:Url"]!;
         var title = config["Gateway:Title"]!;
