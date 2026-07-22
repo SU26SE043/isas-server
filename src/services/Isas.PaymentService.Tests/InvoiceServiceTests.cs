@@ -1,4 +1,3 @@
-using System.Data.Common;
 using Isas.PaymentService.Models;
 using Isas.PaymentService.Services;
 using Isas.Shared.Pagination;
@@ -7,7 +6,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using PaymentService.Models;
+using System.Data.Common;
 using static Isas.PaymentService.DTOs.OrderRequest;
+using static Isas.PaymentService.Services.IInvoiceService;
 
 namespace Isas.PaymentService.Tests;
 
@@ -64,6 +65,24 @@ public class InvoiceServiceTests
         ctx = tdb.NewContext();
         var billing = Options.Create(new BillingSettings { UnitPrice = unitPrice });
         return new InvoiceService(ctx, orders, billing);
+    }
+
+    // F23/BK24 — ví Prepaid (đối lập SeedPostpaidAccountAsync) cho test guard NotPostpaid.
+    private static async Task SeedPrepaidAccountAsync(PaymentTestDb tdb, Guid orgId, int periodUsage = 0)
+    {
+        tdb.Db.CreditAccounts.Add(new CreditAccount
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PaymentMode = PaymentMode.Prepaid,
+            Status = CreditAccountStatus.Active,
+            RemainingCredits = 10,
+            ReservedCredits = 0,
+            PeriodUsage = periodUsage,
+            UpdatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
     }
 
     private static async Task SeedPostpaidAccountAsync(
@@ -141,12 +160,15 @@ public class InvoiceServiceTests
         var result = await NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _)
             .CloseBillingPeriodAsync(orgId);
 
-        Assert.Equal(OwnerType.Org, result.OwnerType);
-        Assert.Equal(orgId, result.OwnerId);
-        Assert.Equal(InvoiceStatus.Issued, result.Status);
-        Assert.Equal(7, result.InterviewCount);
-        Assert.Equal(50_000m, result.UnitPrice);
-        Assert.Equal(350_000m, result.Amount);        // 7 × 50_000
+        Assert.Equal(CloseBillingPeriodOutcome.Closed, result.Outcome);
+        Assert.NotNull(result.Invoice);
+        var invoice = result.Invoice!;
+        Assert.Equal(OwnerType.Org, invoice.OwnerType);
+        Assert.Equal(orgId, invoice.OwnerId);
+        Assert.Equal(InvoiceStatus.Issued, invoice.Status);
+        Assert.Equal(7, invoice.InterviewCount);
+        Assert.Equal(50_000m, invoice.UnitPrice);
+        Assert.Equal(350_000m, invoice.Amount);        // 7 × 50_000
 
         using var read = tdb.NewContext();
         var inv = await read.Invoices.SingleAsync(i => i.OwnerId == orgId);
