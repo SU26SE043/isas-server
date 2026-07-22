@@ -184,6 +184,11 @@ namespace PaymentService.Models
                 e.ToTable("credit_accounts", t => t.HasCheckConstraint(
                     "ck_credit_accounts_non_negative",
                     "remaining_credits >= 0 AND reserved_credits >= 0 AND free_credits_granted >= 0 AND (period_usage IS NULL OR period_usage >= 0)"));
+
+                e.ToTable("credit_accounts", t =>t.HasCheckConstraint(
+                    "ck_credit_accounts_credit_limit_positive",
+                    "credit_limit IS NULL OR credit_limit > 0"));
+
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -198,6 +203,8 @@ namespace PaymentService.Models
                 e.Property(x => x.RemainingCredits).HasDefaultValue(0);
                 e.Property(x => x.ReservedCredits).HasDefaultValue(0);
                 e.Property(x => x.FreeCreditsGranted).HasDefaultValue(0);
+
+                e.Property(x => x.PaymentModeChangedNote).HasMaxLength(500);
 
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
