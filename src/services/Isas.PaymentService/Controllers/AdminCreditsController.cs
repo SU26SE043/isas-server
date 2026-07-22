@@ -65,6 +65,52 @@ namespace Isas.PaymentService.Controllers
             };
         }
 
+        [HttpPost("credits/payment-mode")]
+        public async Task<ActionResult<SetPaymentModeResponse>> SetPaymentMode(
+            [FromBody] SetPaymentModeRequest req, CancellationToken ct = default)
+        {
+            var sub = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!Guid.TryParse(sub, out var adminId))
+                return Forbid();
+
+            var result = await _credits.SetPaymentModeAsync(
+                req.OwnerType!.Value, req.OwnerId!.Value, req.PaymentMode!.Value, req.CreditLimit,
+                req.Note, req.AllowStrandedCredits, adminId, ct);
+
+            return result.Outcome switch
+            {
+                SetPaymentModeOutcome.NotOrg => BadRequest(new
+                {
+                    message = "Chỉ Organization (B2B) đổi được payment mode — User (B2C) LUÔN Prepaid (D15)."
+                }),
+                SetPaymentModeOutcome.InvalidCreditLimit => BadRequest(new
+                {
+                    message = "Postpaid bắt buộc `creditLimit` > 0; Prepaid thì KHÔNG được truyền `creditLimit`."
+                }),
+                SetPaymentModeOutcome.WalletMissing => NotFound(new
+                {
+                    message = "Chưa có ví cho chủ sở hữu này — không tự tạo ví qua endpoint duyệt."
+                }),
+                SetPaymentModeOutcome.StrandedCredits => Conflict(new
+                {
+                    message = "Ví còn credit đã mua (remaining/reserved > 0) sẽ KHÔNG dùng được sau khi " +
+                               "chuyển Postpaid. Gọi lại với `allowStrandedCredits=true` nếu vẫn muốn tiếp tục.",
+                    remainingCredits = result.RemainingCredits,
+                    reservedCredits = result.ReservedCredits
+                }),
+                SetPaymentModeOutcome.UnpaidDebt => Conflict(new
+                {
+                    message = "Còn hóa đơn chưa tất toán (Issued/Overdue) hoặc kỳ hiện tại đã phát sinh " +
+                               "sử dụng (period_usage > 0) — tất toán/đóng kỳ xong mới hạ về Prepaid."
+                }),
+                SetPaymentModeOutcome.Conflict => Conflict(new
+                {
+                    message = "Payment mode của ví vừa bị đổi bởi thao tác khác — tải lại và thử lại."
+                }),
+                _ => Ok(SetPaymentModeResponse.From(result))
+            };
+        }
+
         // GET /payment/admin/credits/{ownerType}/{ownerId} — số dư ví BẤT KỲ (đọc thuần, không tạo ví).
         // Ví chưa tồn tại → 200 với 0 credit (cùng quy ước me/account): "chưa có ví" là một sự thật hợp
         // lệ về chủ ví đó, không phải lỗi tra cứu.
