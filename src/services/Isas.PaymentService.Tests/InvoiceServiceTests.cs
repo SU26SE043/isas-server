@@ -210,7 +210,7 @@ public class InvoiceServiceTests
         Assert.Equal(3, acc.PeriodUsage);   // không bị đụng vào
     }
 
-    // (2c) F23/BK24 finding #4 — Billing:UnitPrice=0 (chưa cấu hình) → UnitPriceNotConfigured,
+     // (2c) F23/BK24 finding #4 — Billing:UnitPrice=0 (chưa cấu hình) → UnitPriceNotConfigured,
     // chặn TRƯỚC KHI ghi DB (không sinh hóa đơn 0đ).
     [Fact]
     public async Task Close_UnitPriceChuaCauHinh_UnitPriceNotConfigured()
@@ -399,7 +399,7 @@ public class InvoiceServiceTests
 
         var inv1 = await NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _)
             .CloseBillingPeriodAsync(orgId);
-        Assert.Equal(5, inv1.InterviewCount);
+        Assert.Equal(5, inv1.Invoice!.InterviewCount);
 
         // Kỳ mới phát sinh 3 lượt (period_usage 0 → 3).
         using (var c = tdb.NewContext())
@@ -410,7 +410,7 @@ public class InvoiceServiceTests
 
         var inv2 = await NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _)
             .CloseBillingPeriodAsync(orgId);
-        Assert.Equal(3, inv2.InterviewCount);     // đúng usage kỳ mới, không dính 5 của kỳ trước
+        Assert.Equal(3, inv2.Invoice!.InterviewCount);     // đúng usage kỳ mới, không dính 5 của kỳ trước
 
         using var read = tdb.NewContext();
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
