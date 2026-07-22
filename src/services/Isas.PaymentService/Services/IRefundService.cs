@@ -18,12 +18,31 @@ namespace Isas.PaymentService.Services
         /// (dừng lại và báo số) — mặc định phải là "hỏi người", vì thu hồi thiếu là mất tiền thật của
         /// công ty và không ai khác trong hệ thống phát hiện hộ.
         /// </param>
+        /// <param name="settledNow">
+        /// Admin khẳng định ĐÃ chuyển tiền thật cho khách ngay tại thời điểm hoàn (đã hoàn trên dashboard
+        /// PayOS / chuyển khoản tay). <c>true</c> → đóng dấu <c>refund_settled_at</c> luôn; <c>false</c>
+        /// (mặc định) → để chờ, admin xác nhận sau qua <see cref="SettleRefundAsync"/>. Mặc định chờ là an
+        /// toàn cho mục tiêu "đừng quên chuyển tiền cho khách".
+        /// </param>
         Task<RefundResult> RefundOrderAsync(
             Guid orderId,
             Guid adminUserId,
             string? reason,
             string? gatewayRef,
             bool allowPartialClawback,
+            bool settledNow = false,
+            CancellationToken ct = default);
+
+        /// <summary>
+        /// Xác nhận đã chuyển tiền hoàn thật về cho khách (bước tay tách khỏi refund). Đóng dấu
+        /// <c>refund_settled_at</c> + ghi <c>refund_gateway_ref</c> nếu có. KHÔNG đụng credit/status —
+        /// chỉ là mốc đối soát dòng tiền ra. Idempotent: đơn đã settle → trả nguyên trạng, không đổi mốc cũ.
+        /// Chỉ hợp lệ trên đơn đã <c>Refunded</c>.
+        /// </summary>
+        Task<SettleRefundResult> SettleRefundAsync(
+            Guid orderId,
+            Guid adminUserId,
+            string? gatewayRef,
             CancellationToken ct = default);
     }
 }

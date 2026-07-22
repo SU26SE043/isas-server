@@ -29,15 +29,17 @@ namespace Isas.PaymentService.Controllers
         }
 
         // GET /payment/admin/orders — mọi đơn (mới nhất trước; keyset-paged DB8).
-        // ?status= lọc theo OrderStatus (numeric: 1=Pending..5=Cancelled); ?ownerType= lọc Org/User.
+        // ?status= lọc theo OrderStatus (numeric: 1=Pending..6=Refunded); ?ownerType= lọc Org/User.
+        // ?refundSettlement=1(Pending)|2(Settled) lọc đơn hoàn theo trạng thái CHUYỂN TIỀN (chờ/đã chuyển).
         // ?limit= (mặc định/tối đa 500) + ?cursor= (opaque) để phân trang; next-cursor trả ở header
         // X-Next-Cursor (vắng = hết trang). Body giữ nguyên mảng JSON (backward-compat cho FE).
         [HttpGet("orders")]
-        public async Task<ActionResult<List<OrderResponse>>> ListOrders(
+        public async Task<ActionResult<List<AdminOrderListItem>>> ListOrders(
             [FromQuery] OrderStatus? status = null, [FromQuery] OwnerType? ownerType = null,
+            [FromQuery] RefundSettlementFilter? refundSettlement = null,
             [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
-            var page = await _order.ListAllOrdersAsync(status, ownerType, cursor, limit, ct);
+            var page = await _order.ListAllOrdersAsync(status, ownerType, refundSettlement, cursor, limit, ct);
             if (page.NextCursor is not null)
                 Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
             return Ok(page.Items);
@@ -59,7 +61,7 @@ namespace Isas.PaymentService.Controllers
                 return Forbid();
 
             var result = await _refund.RefundOrderAsync(
-                id, adminId, req.Reason, req.GatewayRef, req.AllowPartialClawback, ct);
+                id, adminId, req.Reason, req.GatewayRef, req.AllowPartialClawback, req.SettledNow, ct);
 
             return result.Outcome switch
             {
@@ -87,6 +89,31 @@ namespace Isas.PaymentService.Controllers
                             + "Đơn KHÔNG bị đổi trạng thái — thử lại."
                 }),
                 _ => Ok(RefundOrderResponse.From(result))
+            };
+        }
+
+        // F18 — POST /payment/admin/orders/{id}/refund/settle: XÁC NHẬN đã chuyển tiền hoàn thật cho khách.
+        // Bước tay tách khỏi refund (PayOS không có API refund — tiền về bank phải làm tay). KHÔNG đụng
+        // credit/status, chỉ đóng dấu mốc đối soát + ghi mã tham chiếu.
+        // 200 = đã settle (kể cả idempotent) · 404 không có đơn · 409 đơn chưa Refunded.
+        [HttpPost("orders/{id:guid}/refund/settle")]
+        public async Task<ActionResult<SettleRefundResponse>> SettleRefund(
+            Guid id, [FromBody] SettleRefundRequest req, CancellationToken ct = default)
+        {
+            var sub = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!Guid.TryParse(sub, out var adminId))
+                return Forbid();
+
+            var result = await _refund.SettleRefundAsync(id, adminId, req.GatewayRef?.Trim(), ct);
+
+            return result.Outcome switch
+            {
+                SettleOutcome.OrderNotFound => NotFound(new { message = "Không tìm thấy đơn." }),
+                SettleOutcome.NotRefunded => Conflict(new
+                {
+                    message = "Đơn chưa được hoàn — chưa có dòng tiền ra nào để xác nhận đã chuyển."
+                }),
+                _ => Ok(SettleRefundResponse.From(result))
             };
         }
     }
