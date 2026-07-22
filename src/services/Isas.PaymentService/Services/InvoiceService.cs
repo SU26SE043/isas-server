@@ -15,12 +15,14 @@ namespace Isas.PaymentService.Services
         private readonly PaymentDbContext _db;
         private readonly IOrderService _orders;
         private readonly IOptions<BillingSettings> _billing;
+        private readonly ILogger<InvoiceService>? _logger;
 
-        public InvoiceService(PaymentDbContext db, IOrderService orders, IOptions<BillingSettings> billing)
+        public InvoiceService(PaymentDbContext db, IOrderService orders, IOptions<BillingSettings> billing, ILogger<InvoiceService>? logger)
         {
             _db = db;
             _orders = orders;
             _billing = billing;
+            _logger = logger;
         }
 
         public async Task<CloseBillingPeriodResult> CloseBillingPeriodAsync(
@@ -87,6 +89,25 @@ namespace Isas.PaymentService.Services
             await tx.CommitAsync(ct);
 
             return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.Closed, InvoiceResponse.ToResponse(invoice));
+        }
+
+        public async Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default)
+        {
+            var cutoff = DateTime.UtcNow.AddHours(-graceHours);
+
+            // F23/BK24 — "phanh hỏng câm": Issued mà DueAt=NULL (hóa đơn tạo trước migration/lỗi ghi) sẽ
+            // KHÔNG BAO GIỜ bị quét bởi câu ExecuteUpdate dưới (điều kiện DueAt != null loại chúng ra) →
+            // phải LOG để ai đó thấy và xử lý tay, không được âm thầm bỏ qua mãi mãi.
+            var missingDueAt = await _db.Invoices.AsNoTracking()
+                .CountAsync(i => i.Status == InvoiceStatus.Issued && i.DueAt == null, ct);
+            if (missingDueAt > 0)
+                _logger?.LogWarning(
+                    "F23/BK24 — {Count} hóa đơn Issued KHÔNG có DueAt → KHÔNG thể tự động chuyển Overdue, cần xử lý tay.",
+                    missingDueAt);
+
+            return await _db.Invoices
+                .Where(i => i.Status == InvoiceStatus.Issued && i.DueAt != null && i.DueAt < cutoff)
+                .ExecuteUpdateAsync(s => s.SetProperty(i => i.Status, InvoiceStatus.Overdue), ct);
         }
 
         public async Task<PayInvoiceResult> PayInvoiceAsync(
