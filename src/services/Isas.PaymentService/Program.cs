@@ -91,6 +91,9 @@ builder.Services.Configure<AiPricingSettings>(
 builder.Services.Configure<ReconcileSettings>(
     builder.Configuration.GetSection("Reconcile"));
 
+builder.Services.Configure<InvoiceOverdueSettings>
+    (builder.Configuration.GetSection("InvoiceOverdue"));
+
 // DB18 — cấu hình reconciler bù trừ orphan reservation (session không bao giờ được insert lúc Start).
 builder.Services.Configure<OrphanReconcileSettings>(
     builder.Configuration.GetSection(OrphanReconcileSettings.SectionName));
