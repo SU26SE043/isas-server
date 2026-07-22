@@ -88,7 +88,11 @@ namespace Isas.PaymentService.Services
                         .Where(i => i.Id == invoiceId
                                     && (i.Status == InvoiceStatus.Issued || i.Status == InvoiceStatus.Overdue))
                         .ExecuteUpdateAsync(s => s
-                            .SetProperty(i => i.Status, InvoiceStatus.Paid), ct);
+                            .SetProperty(i => i.Status, InvoiceStatus.Paid)
+                            // F23/BK24 — set trong CÙNG ExecuteUpdate với Status: guard WHERE status ∈ {Issued,Overdue}
+                            // đã giữ idempotent (0 row nếu đã Paid/Void) ⇒ PaidAt cũng chỉ được set đúng 1 lần, không
+                            // dời "lần trả tiền" khi webhook redeliver.
+                            .SetProperty(i => i.PaidAt, _ => DateTime.UtcNow), ct);
                 }
 
                 // Log sự kiện gateway (append-only) — bằng chứng đối soát, KHÔNG ghi credit_transactions.
