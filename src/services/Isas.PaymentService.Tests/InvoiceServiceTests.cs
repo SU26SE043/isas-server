@@ -190,6 +190,26 @@ public class InvoiceServiceTests
         Assert.Null(result.Invoice);
     }
 
+    // (2b) F23/BK24 — org đang Prepaid → NotPostpaid, KHÔNG tạo invoice, KHÔNG đụng period_usage.
+    [Fact]
+    public async Task Close_OrgPrepaid_NotPostpaid()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedPrepaidAccountAsync(tdb, orgId, periodUsage: 3);
+
+        var result = await NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _)
+            .CloseBillingPeriodAsync(orgId);
+
+        Assert.Equal(CloseBillingPeriodOutcome.NotPostpaid, result.Outcome);
+        Assert.Null(result.Invoice);
+
+        using var read = tdb.NewContext();
+        Assert.False(await read.Invoices.AnyAsync(i => i.OwnerId == orgId));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(3, acc.PeriodUsage);   // không bị đụng vào
+    }
+
     // (3) Pay (Issued) → Created, Order gắn invoice_id; OrderService được gọi đúng invoice.
     [Fact]
     public async Task Pay_Issued_TaoOrderInvoiceSettlement()
