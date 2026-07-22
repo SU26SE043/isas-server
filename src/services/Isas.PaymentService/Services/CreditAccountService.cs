@@ -241,6 +241,7 @@ namespace Isas.PaymentService.Services
                 SessionId = sessionId,
                 Status = ReservationStatus.Reserved,
                 FundedBy = subsidized ? ReservationFunding.Subscription : ReservationFunding.Credit,
+                PaymentMode = acc.PaymentMode,
                 CreatedAt = DateTime.UtcNow
             };
             _db.CreditReservations.Add(reservation);
