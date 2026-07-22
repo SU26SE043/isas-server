@@ -382,7 +382,7 @@ public class InvoiceServiceTests
         var result = await new InvoiceService(ctx, new StubOrderService(), billing)
             .CloseBillingPeriodAsync(orgId);
 
-        Assert.Equal(5, result.InterviewCount);   // hóa đơn chốt ĐÚNG snapshot (5), không gồm lượt xen giữa
+        Assert.Equal(5, result.Invoice!.InterviewCount);   // hóa đơn chốt ĐÚNG snapshot (5), không gồm lượt xen giữa
 
         using var read = tdb.NewContext();
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
