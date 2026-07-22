@@ -179,12 +179,15 @@ public class InvoiceServiceTests
 
     // (2) Chốt kỳ không có ví → KeyNotFoundException (404).
     [Fact]
-    public async Task Close_KhongCoVi_Throws()
+    public async Task Close_KhongCoVi_WalletMissing()
     {
         using var tdb = new PaymentTestDb();
         var svc = NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _);
 
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => svc.CloseBillingPeriodAsync(Guid.NewGuid()));
+        var result = await svc.CloseBillingPeriodAsync(Guid.NewGuid());
+
+        Assert.Equal(CloseBillingPeriodOutcome.WalletMissing, result.Outcome);
+        Assert.Null(result.Invoice);
     }
 
     // (3) Pay (Issued) → Created, Order gắn invoice_id; OrderService được gọi đúng invoice.
