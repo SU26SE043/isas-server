@@ -210,6 +210,27 @@ public class InvoiceServiceTests
         Assert.Equal(3, acc.PeriodUsage);   // không bị đụng vào
     }
 
+    // (2c) F23/BK24 finding #4 — Billing:UnitPrice=0 (chưa cấu hình) → UnitPriceNotConfigured,
+    // chặn TRƯỚC KHI ghi DB (không sinh hóa đơn 0đ).
+    [Fact]
+    public async Task Close_UnitPriceChuaCauHinh_UnitPriceNotConfigured()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, periodUsage: 5);
+
+        var result = await NewService(tdb, new StubOrderService(), unitPrice: 0, out _)
+            .CloseBillingPeriodAsync(orgId);
+
+        Assert.Equal(CloseBillingPeriodOutcome.UnitPriceNotConfigured, result.Outcome);
+        Assert.Null(result.Invoice);
+
+        using var read = tdb.NewContext();
+        Assert.False(await read.Invoices.AnyAsync(i => i.OwnerId == orgId));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(5, acc.PeriodUsage);   // không bị chốt/reset
+    }
+
     // (3) Pay (Issued) → Created, Order gắn invoice_id; OrderService được gọi đúng invoice.
     [Fact]
     public async Task Pay_Issued_TaoOrderInvoiceSettlement()
