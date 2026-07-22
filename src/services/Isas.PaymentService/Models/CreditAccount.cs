@@ -25,6 +25,16 @@ namespace PaymentService.Models
         public int FreeCreditsGranted { get; set; }
         public int? CreditLimit { get; set; }
         public int? PeriodUsage { get; set; }
+
+        /// <summary>
+        /// F23/BK24 — vết lần đổi <see cref="PaymentMode"/> GẦN NHẤT (không phải lịch sử đầy đủ,
+        /// chỉ đủ trả lời "ai duyệt, lúc nào, vì sao" cho lần hiện tại). Null = ví chưa từng bị đổi
+        /// mode qua endpoint duyệt (vẫn Prepaid mặc định từ lúc tạo).
+        /// </summary>
+        public DateTime? PaymentModeChangedAt { get; set; }
+        public Guid? PaymentModeChangedBy { get; set; }
+        public string? PaymentModeChangedNote { get; set; }
+
         public DateTime UpdatedAt { get; set; }
     }
 
