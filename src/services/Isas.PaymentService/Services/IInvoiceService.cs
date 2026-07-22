@@ -33,7 +33,7 @@ namespace Isas.PaymentService.Services
         /// reset <c>period_usage = 0</c>. Fail giữa chừng → rollback cả 2 (không mất/nhân nợ). Ví không tồn
         /// tại → <see cref="KeyNotFoundException"/>.
         /// </summary>
-        Task<InvoiceResponse> CloseBillingPeriodAsync(Guid orgId, DateTime? periodStart = null, DateTime? periodEnd = null, CancellationToken ct = default);
+        Task<CloseBillingPeriodResult> CloseBillingPeriodAsync(Guid orgId, DateTime? periodStart = null, DateTime? periodEnd = null, CancellationToken ct = default);
 
         /// <summary>
         /// Tất toán hóa đơn (owner-scope): tạo đơn <c>InvoiceSettlement</c> + link PayOS (REUSE OrderService).
