@@ -5,6 +5,7 @@ using PaymentService.Models;
 using System.Security.Claims;
 using static Isas.PaymentService.DTOs.InvoiceRequest;
 using static Isas.PaymentService.DTOs.OrderRequest;
+using static Isas.PaymentService.Services.IInvoiceService;
 
 namespace Isas.PaymentService.Controllers
 {
@@ -107,13 +108,26 @@ namespace Isas.PaymentService.Controllers
             if (string.IsNullOrWhiteSpace(userId))
                 return Forbid();
 
-            try
+            var result = await _invoices.CloseBillingPeriodAsync(
+                request.OrgId, request.PeriodStart, request.PeriodEnd, ct);
+
+            return result.Outcome switch
             {
-                var invoice = await _invoices.CloseBillingPeriodAsync(
-                    request.OrgId, request.PeriodStart, request.PeriodEnd, ct);
-                return Ok(invoice);
-            }
-            catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
+                CloseBillingPeriodOutcome.WalletMissing => NotFound(new
+                {
+                    message = $"Không có ví cho Org {request.OrgId}."
+                }),
+                CloseBillingPeriodOutcome.NotPostpaid => Conflict(new
+                {
+                    message = "Org này đang Prepaid — không có kỳ postpaid nào để chốt."
+                }),
+                CloseBillingPeriodOutcome.UnitPriceNotConfigured => Conflict(new
+                {
+                    message = "Billing:UnitPrice chưa cấu hình (=0) — không lập hóa đơn 0đ. " +
+                               "Đặt Billing:UnitPrice > 0 rồi thử lại."
+                }),
+                _ => Ok(result.Invoice)
+            };
         }
     }
 }
