@@ -166,6 +166,8 @@ builder.Services.AddHostedService<OrderExpiryReconciler>();
 // (ISubscriptionService.HasActiveAsync), nên job này chết cũng KHÔNG cho ai thi miễn phí.
 builder.Services.AddHostedService<SubscriptionExpiryReconciler>();
 
+builder.Services.AddHostedService<InvoiceOverdueReconciler>();
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
