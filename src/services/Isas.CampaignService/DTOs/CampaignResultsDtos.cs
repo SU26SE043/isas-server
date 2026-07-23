@@ -13,6 +13,12 @@ namespace Isas.CampaignService.DTOs
         public int TotalCandidates { get; set; }
 
         public List<CampaignResultRow> Results { get; set; } = new();
+
+        // R7 — ứng viên CÓ CỜ chống gian lận nhưng CHƯA `Scored` (bỏ ngang / đang thi). `campaign_rankings`
+        // chỉ có row cho ứng viên Scored (CAMP-11) ⇒ đường Results/CSV/PDF cũ giấu mất nhóm này — đúng nhóm
+        // hành vi ĐÁNG NGỜ NHẤT (paste/chuyển tab rồi bỏ ngang). Additive: FE/CSV cũ bỏ qua field này, không vỡ.
+        // Không xếp hạng/không điểm (chưa chấm) — chỉ danh tính + cờ để HR đánh giá (D13: cờ = gợi ý, không auto-hủy).
+        public List<UnscoredFlaggedRow> UnscoredFlagged { get; set; } = new();
     }
 
     public class CampaignResultRow
@@ -49,6 +55,16 @@ namespace Isas.CampaignService.DTOs
         public string Type { get; set; } = null!;
         public int Count { get; set; }
         public string? Note { get; set; }
+    }
+
+    // R7 — 1 ứng viên có cờ mà CHƯA Scored: chỉ danh tính (F5) + cờ (không rank/điểm vì chưa chấm).
+    public class UnscoredFlaggedRow
+    {
+        public Guid CandidateId { get; set; }
+        public Guid SessionId { get; set; }
+        public string? FullName { get; set; }
+        public string? Email { get; set; }
+        public List<FlagDto> Flags { get; set; } = new();
     }
 
     // E11b — HR chốt/sửa điểm cuối. Note bắt buộc (ghi audit). Score/Result đều null = CLEAR override (về AI).
