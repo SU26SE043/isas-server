@@ -6,11 +6,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace Isas.CampaignService.Tests
 {
@@ -57,17 +53,17 @@ namespace Isas.CampaignService.Tests
 
             builder.ConfigureServices(services =>
             {
-                // Gỡ DbContext Postgres thật, thay bằng SQLite in-memory giữ connection mở.
-                services.RemoveAll<DbContextOptions<CampaignDbContext>>();
-                services.RemoveAll<DbContextOptions>();
+                var dbContextRelatedDescriptors = services
+                    .Where(d => d.ServiceType.IsGenericType
+                                && d.ServiceType.GetGenericArguments().Contains(typeof(CampaignDbContext)))
+                    .ToList();
+                foreach (var d in dbContextRelatedDescriptors)
+                    services.Remove(d);
 
                 _connection.Open();
                 services.AddDbContext<CampaignDbContext>(options =>
                     options.UseSqlite(_connection).UseSnakeCaseNamingConvention());
 
-                // Gỡ CHÍNH XÁC 5 hosted service tự khai trong Program.cs (namespace Isas.CampaignService)
-                // — KHÔNG RemoveAll<IHostedService>() vì sẽ xoá luôn GenericWebHostService (nội bộ ASP.NET
-                // Core) và làm chết hẳn test server.
                 var hostedServiceDescriptors = services
                     .Where(d => d.ServiceType == typeof(IHostedService)
                                 && d.ImplementationType?.Namespace?.StartsWith("Isas.CampaignService") == true)

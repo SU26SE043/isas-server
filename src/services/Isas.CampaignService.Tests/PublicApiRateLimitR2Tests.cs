@@ -42,11 +42,11 @@ namespace Isas.CampaignService.Tests
         {
             for (var i = 0; i < _factory.PerKeyLimit; i++)
             {
-                var res = await _client.SendAsync(PublicRequest(_factory.SeededRawKey));
+                var res = await _client.SendAsync(PublicRequest(_rawKeyA));
                 Assert.Equal(HttpStatusCode.OK, res.StatusCode);
             }
 
-            var rejected = await _client.SendAsync(PublicRequest(_factory.SeededRawKey));
+            var rejected = await _client.SendAsync(PublicRequest(_rawKeyA));
             Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
         }
 
@@ -82,12 +82,10 @@ namespace Isas.CampaignService.Tests
         [Fact]
         public async Task AnonymousBurst_DoesNotLockOutValidKey()
         {
-            // Đây là test trực tiếp chứng minh bug R2 gốc ĐÃ hết: trước khi sửa, việc này sẽ FAIL vì
-            // anonymous burst dùng CHUNG bucket với key thật.
             for (var i = 0; i < _factory.AnonymousLimit + 3; i++)
                 await _client.SendAsync(PublicRequest(apiKey: null));
 
-            var stillOk = await _client.SendAsync(PublicRequest(_factory.SeededRawKey));
+            var stillOk = await _client.SendAsync(PublicRequest(_rawKeyA));
             Assert.Equal(HttpStatusCode.OK, stillOk.StatusCode);
         }
 
