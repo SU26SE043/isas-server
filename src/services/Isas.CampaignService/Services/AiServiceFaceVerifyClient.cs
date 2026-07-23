@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Isas.CampaignService.Services
@@ -12,11 +13,14 @@ namespace Isas.CampaignService.Services
     public class AiServiceFaceVerifyClient : IAiServiceFaceVerifyClient
     {
         private readonly HttpClient _http;
+        private readonly string? _internalToken;
         private readonly ILogger<AiServiceFaceVerifyClient> _logger;
 
-        public AiServiceFaceVerifyClient(HttpClient http, ILogger<AiServiceFaceVerifyClient> logger)
+        public AiServiceFaceVerifyClient(HttpClient http, IConfiguration config, ILogger<AiServiceFaceVerifyClient> logger)
         {
             _http = http;
+            // GEN-7: /face-verify nay gate X-Internal-Token (fail-closed) → đính token như CampaignSessionClient.
+            _internalToken = config["Internal:Token"];
             _logger = logger;
         }
 
@@ -25,8 +29,13 @@ namespace Isas.CampaignService.Services
         {
             try
             {
-                var resp = await _http.PostAsJsonAsync("/api/v1/face-verify",
-                    new { referenceImageKey, liveImageKey, threshold }, ct);
+                using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/face-verify")
+                {
+                    Content = JsonContent.Create(new { referenceImageKey, liveImageKey, threshold })
+                };
+                // X-Internal-Token gắn trong client, KHÔNG qua gateway (mirror CampaignSessionClient).
+                msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
+                var resp = await _http.SendAsync(msg, ct);
 
                 if (!resp.IsSuccessStatusCode)
                 {
