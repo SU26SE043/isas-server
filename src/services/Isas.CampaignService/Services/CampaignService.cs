@@ -1176,11 +1176,14 @@ namespace Isas.CampaignService.Services
                 .ThenBy(r => r.SessionId)
                 .ToList();
 
-            // SEC-4: gom cờ chống gian lận theo buổi → signal_type + count (+ 1 note đại diện) cho HR.
-            // Đọc read-model LOCAL session_flags (không xuyên service). Campaign không bật anti-cheat → không có cờ → [].
-            var flagsBySession = await GetFlagsBySessionAsync(id, ct);
+            // SEC-4 + R7: nạp TOÀN BỘ cờ của campaign 1 lần (read-model LOCAL session_flags, không xuyên
+            // service) → gom theo buổi cho HR. Campaign không bật anti-cheat → không có cờ → [].
+            var allFlags = await _db.SessionFlags
+                .Where(f => f.CampaignId == id)
+                .ToListAsync(ct);
+            var flagsBySession = GroupFlagsBySession(allFlags);
 
-            // F5: danh tính (tên/email) cho HR — 1 query, KHÔNG N+1 (mẫu GetFlagsBySessionAsync).
+            // F5: danh tính (tên/email) cho HR — 1 query, KHÔNG N+1 (mẫu GroupFlagsBySession).
             var identityByCandidate = await GetIdentityByCandidateAsync(id, ct);
 
             var threshold = campaign.PassScorePct;
@@ -1219,12 +1222,37 @@ namespace Isas.CampaignService.Services
                 });
             }
 
+            // R7: cờ của buổi CHƯA có row ranking (chưa Scored — bỏ ngang / đang thi) → không lọt vào `results`
+            // ở trên. Gom riêng để HR vẫn thấy nhóm đáng ngờ nhất (SEC-4/D13). Nhiều cờ hơn = đáng ngờ hơn → lên
+            // trước; tie-break session_id cho ổn định. Danh tính reuse identityByCandidate (F5, không thêm query).
+            var scoredSessions = new HashSet<Guid>(ordered.Select(r => r.SessionId));
+            var unscoredFlagged = allFlags
+                .Where(f => !scoredSessions.Contains(f.SessionId))
+                .GroupBy(f => f.SessionId)
+                .Select(g =>
+                {
+                    var candidateId = g.Select(x => x.CandidateId).First();
+                    identityByCandidate.TryGetValue(candidateId, out var identity);
+                    return new UnscoredFlaggedRow
+                    {
+                        SessionId = g.Key,
+                        CandidateId = candidateId,
+                        FullName = identity.FullName,
+                        Email = identity.Email,
+                        Flags = flagsBySession.TryGetValue(g.Key, out var f) ? f : new List<FlagDto>()
+                    };
+                })
+                .OrderByDescending(u => u.Flags.Sum(f => f.Count))
+                .ThenBy(u => u.SessionId)
+                .ToList();
+
             return new CampaignResultsResponse
             {
                 CampaignId = id,
                 PassScorePct = threshold,
                 TotalCandidates = results.Count,
-                Results = results
+                Results = results,
+                UnscoredFlagged = unscoredFlagged
             };
         }
 
@@ -1286,15 +1314,12 @@ namespace Isas.CampaignService.Services
             return await _sessionClient.GetSessionTranscriptAsync(sessionId, ct);
         }
 
-        // SEC-4: gom session_flags của 1 campaign → Dictionary<session_id, List<FlagDto>>.
+        // SEC-4: gom session_flags (đã materialize) của 1 campaign → Dictionary<session_id, List<FlagDto>>.
         // Group theo (session_id, signal_type) → count; Note = ghi chú non-empty đầu tiên (đại diện cho HR).
-        // Materialize rồi group in-memory (số cờ/campaign nhỏ; tránh phụ thuộc dịch GROUP BY của provider).
-        private async Task<Dictionary<Guid, List<FlagDto>>> GetFlagsBySessionAsync(Guid campaignId, CancellationToken ct)
+        // In-memory (số cờ/campaign nhỏ; tránh phụ thuộc dịch GROUP BY của provider). Caller nạp list 1 lần
+        // (dùng chung cho cả bảng ranking lẫn nhóm R7 chưa-Scored) rồi truyền vào.
+        private static Dictionary<Guid, List<FlagDto>> GroupFlagsBySession(IEnumerable<SessionFlag> flags)
         {
-            var flags = await _db.SessionFlags
-                .Where(f => f.CampaignId == campaignId)
-                .ToListAsync(ct);
-
             return flags
                 .GroupBy(f => f.SessionId)
                 .ToDictionary(
@@ -1625,6 +1650,21 @@ namespace Isas.CampaignService.Services
                 Email = r.Email ?? string.Empty
             }).ToList();
 
+            // R7: nối ứng viên có cờ mà CHƯA Scored — HR đọc bản export cũng thấy nhóm đáng ngờ nhất.
+            // rank/total_score/scored_at để TRỐNG (nullable → CsvHelper ghi ô rỗng); result = "Chưa chấm".
+            rows.AddRange(results.UnscoredFlagged.Select(u => new ResultCsvRow
+            {
+                Rank = null,
+                CandidateId = u.CandidateId,
+                SessionId = u.SessionId,
+                TotalScore = null,
+                Result = "Chưa chấm",
+                ScoredAt = null,
+                Flags = string.Join("; ", u.Flags.Select(f => $"{f.Type}:{f.Count}")),
+                FullName = u.FullName ?? string.Empty,
+                Email = u.Email ?? string.Empty
+            }));
+
             using var buffer = new MemoryStream();
             // leaveOpen: StreamWriter/CsvWriter dispose (flush) nhưng KHÔNG đóng buffer → ToArray() sau đó đọc được.
             using (var writer = new StreamWriter(buffer, new UTF8Encoding(false), leaveOpen: true))
@@ -1639,12 +1679,13 @@ namespace Isas.CampaignService.Services
         // Model dòng CSV — tách khỏi DTO API để kiểm soát header + định dạng (scoped nội bộ E6).
         private sealed class ResultCsvRow
         {
-            public int Rank { get; set; }
+            // R7: nullable → dòng "chưa Scored" ghi ô TRỐNG cho rank/điểm/scored_at (CsvHelper: null → "").
+            public int? Rank { get; set; }
             public Guid CandidateId { get; set; }
             public Guid SessionId { get; set; }
-            public decimal TotalScore { get; set; }
+            public decimal? TotalScore { get; set; }
             public string Result { get; set; } = string.Empty;
-            public DateTime ScoredAt { get; set; }
+            public DateTime? ScoredAt { get; set; }
             public string Flags { get; set; } = string.Empty;   // SEC-4: tóm tắt cờ chống gian lận
             public string FullName { get; set; } = string.Empty;   // F5
             public string Email { get; set; } = string.Empty;      // F5
