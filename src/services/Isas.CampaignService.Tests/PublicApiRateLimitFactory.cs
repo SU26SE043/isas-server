@@ -8,6 +8,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using System;
+using System.Collections.Generic;
+using System.Text;
 
 namespace Isas.CampaignService.Tests
 {
@@ -82,23 +85,21 @@ namespace Isas.CampaignService.Tests
         /// này) và tên DbSet<ApiKey> trên CampaignDbContext. Tạm viết theo giả định hợp lý nhất, ĐỪNG
         /// chạy thật cho tới khi bạn xác nhận / sửa đúng.
         /// </summary>
-        public async Task SeedApiKeyAsync()
+        public async Task<string> SeedApiKeyAsync(Guid? orgId = null)
         {
             using var scope = Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<CampaignDbContext>();
             await db.Database.EnsureCreatedAsync();
 
-            SeededRawKey = $"isas_ak_{Guid.NewGuid():N}";
+            var rawKey = ApiKeys.NewRawKey();
 
-            db.Set<ApiKey>().Add(new ApiKey
+            db.ApiKeys.Add(new ApiKey
             {
                 Id = Guid.NewGuid(),
-                OrgId = SeededOrgId,
+                OrgId = orgId ?? SeededOrgId,
                 Name = "R2 test key",
-                // ⚠ GIẢ ĐỊNH CẦN XÁC NHẬN: chữ ký thật có thể khác (vd ApiKeys.Hash(string) trả string,
-                // hay ApiKeyService có method riêng để hash — chưa thấy file).
-                KeyHash = ApiKeys.Hash(SeededRawKey),
-                KeyPrefix = SeededRawKey[..10],
+                KeyHash = ApiKeys.Hash(rawKey),
+                KeyPrefix = ApiKeys.DisplayPrefix(rawKey),
                 IncludePii = false,
                 CreatedByUserId = Guid.NewGuid(),
                 CreatedAt = DateTime.UtcNow,
@@ -108,6 +109,7 @@ namespace Isas.CampaignService.Tests
             });
 
             await db.SaveChangesAsync();
+            return rawKey;
         }
 
         protected override void Dispose(bool disposing)
