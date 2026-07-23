@@ -25,5 +25,13 @@ namespace Isas.CampaignService.Models
 
         /// <summary>Độ dài cửa sổ rate-limit (giây).</summary>
         public int RateLimitWindowSeconds { get; set; } = 60;
+
+        /// <summary>
+        /// R2 — trần request/cửa-sổ cho bucket "anonymous" DÙNG CHUNG (request KHÔNG có api_key_id hợp lệ:
+        /// thiếu header, key sai/hết hạn/thu hồi). CỐ Ý chặt hơn per-key (RateLimitPermitsPerWindow) — bucket
+        /// này gộp MỌI request lạ vào 1 rổ, nên phải nhỏ để không ai dùng nó làm bàn đạp khoá key thật (đây
+        /// chính là lỗi R2 gốc). Kẹp tối thiểu 1 ở nơi dùng, không để 0/âm tắt mất giới hạn ngoài ý muốn.
+        /// </summary>
+        public int AnonymousRateLimitPermitsPerWindow { get; set; } = 10;
     }
 }
