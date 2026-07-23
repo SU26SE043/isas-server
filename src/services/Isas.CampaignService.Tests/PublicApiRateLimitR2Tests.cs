@@ -13,11 +13,12 @@ namespace Isas.CampaignService.Tests
     {
         private PublicApiRateLimitFactory _factory = null!;
         private HttpClient _client = null!;
+        private string _rawKeyA = null!;
 
         public async Task InitializeAsync()
         {
             _factory = new PublicApiRateLimitFactory { PerKeyLimit = 3, AnonymousLimit = 2 };
-            await _factory.SeedApiKeyAsync();
+            _rawKeyA = await _factory.SeedApiKeyAsync();
             _client = _factory.CreateClient();
         }
 
@@ -52,21 +53,17 @@ namespace Isas.CampaignService.Tests
         [Fact]
         public async Task KeyABurst_DoesNotLockOutKeyB()
         {
-            // Đây là test MẤU CHỐT của R2 — mutation-check bắt buộc phải RED nếu xoá middleware
-            // pre-authenticate. Trước khi sửa: key A và key B đều rơi vào "anonymous" chung → burst A
-            // khoá luôn B. Sau khi sửa: 2 bucket "key:{idA}" / "key:{idB}" tách biệt.
+            // MẤU CHỐT của R2 — mutation-check bắt buộc RED nếu xoá middleware pre-authenticate: trước
+            // sửa, A và B đều rơi "anonymous" chung → burst A khoá luôn B.
             for (var i = 0; i < _factory.PerKeyLimit; i++)
-                await _client.SendAsync(PublicRequest(_factory.SeededRawKey));
+                await _client.SendAsync(PublicRequest(_rawKeyA));
 
-            var exhausted = await _client.SendAsync(PublicRequest(_factory.SeededRawKey));
+            var exhausted = await _client.SendAsync(PublicRequest(_rawKeyA));
             Assert.Equal(HttpStatusCode.TooManyRequests, exhausted.StatusCode);
 
-            // TODO: seed thêm 1 key B riêng (org khác hoặc cùng org, không quan trọng) qua
-            // _factory.SeedApiKeyAsync() phiên bản overload nhận thêm raw key/label — cần bạn xác nhận
-            // cách seed trước, nhưng CẤU TRÚC test giữ nguyên như dưới:
-            //
-            // var stillOk = await _client.SendAsync(PublicRequest(rawKeyB));
-            // Assert.Equal(HttpStatusCode.OK, stillOk.StatusCode);
+            var rawKeyB = await _factory.SeedApiKeyAsync();
+            var stillOk = await _client.SendAsync(PublicRequest(rawKeyB));
+            Assert.Equal(HttpStatusCode.OK, stillOk.StatusCode);
         }
 
         [Fact]
