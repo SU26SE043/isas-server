@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PaymentService.Models;
@@ -11,9 +12,11 @@ using PaymentService.Models;
 namespace Isas.PaymentService.Migrations
 {
     [DbContext(typeof(PaymentDbContext))]
-    partial class PaymentDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260722180847_AddRefundSettledAt")]
+    partial class AddRefundSettledAt
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -131,19 +134,6 @@ namespace Isas.PaymentService.Migrations
                         .HasDefaultValue("Prepaid")
                         .HasColumnName("payment_mode");
 
-                    b.Property<DateTime?>("PaymentModeChangedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("payment_mode_changed_at");
-
-                    b.Property<Guid?>("PaymentModeChangedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("payment_mode_changed_by");
-
-                    b.Property<string>("PaymentModeChangedNote")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("payment_mode_changed_note");
-
                     b.Property<int?>("PeriodUsage")
                         .HasColumnType("integer")
                         .HasColumnName("period_usage");
@@ -188,8 +178,6 @@ namespace Isas.PaymentService.Migrations
 
                     b.ToTable("credit_accounts", null, t =>
                         {
-                            t.HasCheckConstraint("ck_credit_accounts_credit_limit_positive", "credit_limit IS NULL OR credit_limit > 0");
-
                             t.HasCheckConstraint("ck_credit_accounts_non_negative", "remaining_credits >= 0 AND reserved_credits >= 0 AND free_credits_granted >= 0 AND (period_usage IS NULL OR period_usage >= 0)");
                         });
                 });
@@ -225,14 +213,6 @@ namespace Isas.PaymentService.Migrations
                         .HasMaxLength(8)
                         .HasColumnType("character varying(8)")
                         .HasColumnName("owner_type");
-
-                    b.Property<string>("PaymentMode")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasDefaultValue("Prepaid")
-                        .HasColumnName("payment_mode");
 
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
@@ -368,10 +348,6 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
 
-                    b.Property<DateTime?>("DueAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("due_at");
-
                     b.Property<int>("InterviewCount")
                         .HasColumnType("integer")
                         .HasColumnName("interview_count");
@@ -385,10 +361,6 @@ namespace Isas.PaymentService.Migrations
                         .HasMaxLength(8)
                         .HasColumnType("character varying(8)")
                         .HasColumnName("owner_type");
-
-                    b.Property<DateTime?>("PaidAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("paid_at");
 
                     b.Property<DateTime>("PeriodEnd")
                         .HasColumnType("timestamp with time zone")
@@ -413,10 +385,6 @@ namespace Isas.PaymentService.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_invoices");
-
-                    b.HasIndex("DueAt")
-                        .HasDatabaseName("ix_invoices_issued_due_at")
-                        .HasFilter("status = 'Issued'");
 
                     b.HasIndex("OwnerType", "OwnerId")
                         .HasDatabaseName("ix_invoices_owner_type_owner_id");

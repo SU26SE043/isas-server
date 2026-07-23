@@ -22,13 +22,18 @@ namespace Isas.PaymentService.Services
         public async Task<RevenueReportResponse> GetRevenueAsync(
             DateTime from, DateTime to, RevenueGranularity granularity, CancellationToken ct = default)
         {
-            // Doanh thu GỘP: đơn Paid, đếm theo thời điểm THU TIỀN.
-            var paid = _db.Orders
-                .Where(o => o.Status == OrderStatus.Paid && o.PaidAt != null
-                            && o.PaidAt >= from && o.PaidAt < to);
+            // Doanh thu GỘP = tiền ĐÃ THU trong kỳ, neo theo paid_at, ĐỘC LẬP status. Đơn đã hoàn (F18)
+            // giữ nguyên paid_at (RefundService chỉ đổi Status→Refunded + set RefundedAt) nên tiền của nó
+            // THẬT SỰ đã thu trong kỳ và vẫn thuộc gross; khoản hoàn là dòng RIÊNG, đếm theo refunded_at.
+            // Chính cách này mới đạt "không sửa ngược kỳ đã chốt": lọc gross theo status=Paid sẽ làm đơn
+            // hoàn RỚT khỏi gross đúng lúc bị hoàn → gross kỳ đã thu tự tụt xuống, rồi net=gross−refunded
+            // trừ tác động của khoản hoàn LẦN THỨ HAI (trừ đôi).
+            var collected = _db.Orders
+                .Where(o => (o.Status == OrderStatus.Paid || o.Status == OrderStatus.Refunded)
+                            && o.PaidAt != null && o.PaidAt >= from && o.PaidAt < to);
 
-            var gross = await paid.SumAsync(o => (long?)o.AmountVnd, ct) ?? 0;
-            var paidCount = await paid.CountAsync(ct);
+            var gross = await collected.SumAsync(o => (long?)o.AmountVnd, ct) ?? 0;
+            var paidCount = await collected.CountAsync(ct);
 
             // Tiền hoàn: đếm theo thời điểm HOÀN, không phải thời điểm thu — nếu đếm theo paid_at thì một
             // khoản hoàn hôm nay sẽ đi ngược về sửa báo cáo của kỳ đã chốt.
@@ -39,7 +44,7 @@ namespace Isas.PaymentService.Services
             var refundedVnd = await refunded.SumAsync(o => (long?)o.AmountVnd, ct) ?? 0;
             var refundedCount = await refunded.CountAsync(ct);
 
-            var byKind = await paid
+            var byKind = await collected
                 .GroupBy(o => o.Kind)
                 .Select(g => new RevenueByKindRow
                 {
@@ -50,7 +55,7 @@ namespace Isas.PaymentService.Services
                 .ToListAsync(ct);
 
             var buckets = granularity == RevenueGranularity.Month
-                ? await paid
+                ? await collected
                     .GroupBy(o => new { o.PaidAt!.Value.Year, o.PaidAt!.Value.Month })
                     .Select(g => new
                     {
@@ -61,7 +66,7 @@ namespace Isas.PaymentService.Services
                         Count = g.Count()
                     })
                     .ToListAsync(ct)
-                : await paid
+                : await collected
                     .GroupBy(o => new { o.PaidAt!.Value.Year, o.PaidAt!.Value.Month, o.PaidAt!.Value.Day })
                     .Select(g => new
                     {

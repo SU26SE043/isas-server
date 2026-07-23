@@ -1,3 +1,4 @@
+using System.Text;
 using Isas.Gateway.Services;
 using Isas.Shared.Extensions;
 using Scalar.AspNetCore;
@@ -34,6 +35,24 @@ if (app.Environment.IsDevelopment())
     });
 }
 
+// Chuẩn hoá dấu gạch chéo trùng (`//` → `/`) phải chạy TRƯỚC định tuyến. Không path REST hợp lệ nào
+// chứa `//`, nhưng thiếu bước này thì `/api/v1/payment//internal/...` KHÔNG khớp khối chặn GEN-1 bên
+// dưới (pattern chỉ khớp một `/`) rồi rơi xuống reverse-proxy strip-về-root ⇒ lọt tới controller
+// Payment (đo được: `//internal/credits/reserve` → 401 "Invalid internal token" thay vì 404). Gộp ở
+// đây bịt cả class (mọi service, mọi route strip-về-root), giống nginx `merge_slashes on` mặc định.
+// Chỉ đụng Request.Path (không gồm query-string); `%2F` giữ nguyên mã hoá nên không bị gộp nhầm.
+// ⚠ Phải đứng trước `UseRouting()` GỌI TƯỜNG MINH: nếu để framework tự chèn UseRouting ở đầu pipeline
+// thì endpoint đã được match theo path CHƯA gộp, middleware này chạy quá muộn (đã đo: vẫn 401).
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path.Value;
+    if (path is not null && path.Contains("//", StringComparison.Ordinal))
+        context.Request.Path = CollapseSlashes(path);
+    await next();
+});
+
+app.UseRouting();
+
 app.UseGatewayCors();
 
 // GEN-1: /internal/* không qua gateway — payment-route pass-through root nên chặn tường minh.
@@ -42,3 +61,24 @@ app.Map("/api/v1/payment/internal/{**rest}", () => Results.NotFound()).ExcludeFr
 app.MapReverseProxy();
 
 app.Run();
+
+// Gộp mọi chuỗi `/` liên tiếp thành một, chỉ cấp phát khi thật sự có `//` (đã lọc ở caller).
+static string CollapseSlashes(string path)
+{
+    var sb = new StringBuilder(path.Length);
+    var prevSlash = false;
+    foreach (var c in path)
+    {
+        if (c == '/')
+        {
+            if (prevSlash) continue;
+            prevSlash = true;
+        }
+        else
+        {
+            prevSlash = false;
+        }
+        sb.Append(c);
+    }
+    return sb.ToString();
+}
