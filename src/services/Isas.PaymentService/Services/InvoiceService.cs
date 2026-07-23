@@ -40,7 +40,7 @@ namespace Isas.PaymentService.Services
             var account = await _db.CreditAccounts.AsNoTracking()
                 .FirstOrDefaultAsync(a => a.OwnerType == OwnerType.Org && a.OwnerId == orgId, ct);
             if (account is null)
-                throw new KeyNotFoundException($"No credit account for Org {orgId}.");
+                return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.WalletMissing, null);
             // F23/BK24 — org Prepaid không có "kỳ postpaid" để chốt (period_usage của Prepaid không dùng
             // cho billing kiểu này). Guard chặn chốt kỳ nhầm org, tránh sinh hóa đơn vô nghĩa.
             if (account.PaymentMode != PaymentMode.Postpaid)
