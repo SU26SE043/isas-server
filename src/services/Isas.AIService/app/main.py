@@ -148,12 +148,20 @@ async def summarize_session(req: SummarizeSessionRequest):
 
 
 @router.post("/face-verify", response_model=FaceVerifyResponse)
-async def face_verify(req: FaceVerifyRequest):
+async def face_verify(
+    req: FaceVerifyRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+):
     """SEC-2/3 — đối chiếu ảnh live ↔ ảnh tham chiếu + đếm mặt trên ảnh live.
 
     Kéo 2 ảnh từ S3 theo key → detect+embed (thread, nặng CPU) → dựng cờ:
       0 mặt → no_face · >1 mặt → multiple_faces · 1 mặt & score < threshold → face_mismatch.
-    Mọi tín hiệu = CỜ cho HR (SEC-4), KHÔNG tự chặn/hủy bài."""
+    Mọi tín hiệu = CỜ cho HR (SEC-4), KHÔNG tự chặn/hủy bài.
+
+    Gate X-Internal-Token, fail-closed (GEN-7): endpoint máy-máy — CampaignService gọi, kéo
+    ảnh S3 + chạy model CPU. Phải bảo vệ như /decide-next và /tts (trước đây chỉ dựa cô lập mạng)."""
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     if not req.referenceImageKey or not req.referenceImageKey.strip():
         raise HTTPException(status_code=400, detail="referenceImageKey không được rỗng")
     if not req.liveImageKey or not req.liveImageKey.strip():

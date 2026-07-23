@@ -4,14 +4,19 @@
 # cần cài ML deps (insightface/onnxruntime/opencv). Test verify LOGIC signals/match/score ở
 # endpoint bằng cách monkeypatch FaceVerifier.compare + storage.get_object_bytes — không
 # gọi model detect/embed thật, không đụng S3.
+#
+# GEN-7: /face-verify nay gate X-Internal-Token (fail-closed) như /decide-next → mọi call hợp lệ
+# phải kèm _HEADERS; xem test_endpoint_requires_internal_token cho nhánh 401.
 import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
+from app.config import settings
 
 client = TestClient(main_module.app)
 
 _KEYS = {"referenceImageKey": "ref.jpg", "liveImageKey": "live.jpg"}
+_HEADERS = {"X-Internal-Token": settings.internal_token}
 
 
 def _stub_io(monkeypatch, compare_return):
@@ -22,7 +27,7 @@ def _stub_io(monkeypatch, compare_return):
 
 def test_no_face_gives_no_face_signal_and_no_match(monkeypatch):
     _stub_io(monkeypatch, (0.0, 0))
-    res = client.post("/api/v1/face-verify", json=_KEYS)
+    res = client.post("/api/v1/face-verify", headers=_HEADERS, json=_KEYS)
     assert res.status_code == 200
     body = res.json()
     assert body["faceCount"] == 0
@@ -32,7 +37,7 @@ def test_no_face_gives_no_face_signal_and_no_match(monkeypatch):
 
 def test_multiple_faces_gives_multiple_faces_signal(monkeypatch):
     _stub_io(monkeypatch, (0.0, 3))
-    res = client.post("/api/v1/face-verify", json=_KEYS)
+    res = client.post("/api/v1/face-verify", headers=_HEADERS, json=_KEYS)
     assert res.status_code == 200
     body = res.json()
     assert body["faceCount"] == 3
@@ -42,7 +47,7 @@ def test_multiple_faces_gives_multiple_faces_signal(monkeypatch):
 
 def test_one_face_high_score_matches(monkeypatch):
     _stub_io(monkeypatch, (0.82, 1))
-    res = client.post("/api/v1/face-verify", json={**_KEYS, "threshold": 0.4})
+    res = client.post("/api/v1/face-verify", headers=_HEADERS, json={**_KEYS, "threshold": 0.4})
     assert res.status_code == 200
     body = res.json()
     assert body["faceCount"] == 1
@@ -53,7 +58,7 @@ def test_one_face_high_score_matches(monkeypatch):
 
 def test_one_face_low_score_is_face_mismatch(monkeypatch):
     _stub_io(monkeypatch, (0.15, 1))
-    res = client.post("/api/v1/face-verify", json={**_KEYS, "threshold": 0.4})
+    res = client.post("/api/v1/face-verify", headers=_HEADERS, json={**_KEYS, "threshold": 0.4})
     assert res.status_code == 200
     body = res.json()
     assert body["faceCount"] == 1
@@ -64,7 +69,7 @@ def test_one_face_low_score_is_face_mismatch(monkeypatch):
 def test_default_threshold_used_when_omitted(monkeypatch):
     # score 0.5 ≥ default face_match_threshold (0.4) → match: chứng minh dùng ngưỡng mặc định.
     _stub_io(monkeypatch, (0.5, 1))
-    res = client.post("/api/v1/face-verify", json=_KEYS)
+    res = client.post("/api/v1/face-verify", headers=_HEADERS, json=_KEYS)
     assert res.status_code == 200
     assert res.json()["match"] is True
 
@@ -72,19 +77,19 @@ def test_default_threshold_used_when_omitted(monkeypatch):
 def test_score_exactly_at_threshold_matches(monkeypatch):
     # Biên: score == threshold → khớp (≥, không phải >).
     _stub_io(monkeypatch, (0.4, 1))
-    res = client.post("/api/v1/face-verify", json={**_KEYS, "threshold": 0.4})
+    res = client.post("/api/v1/face-verify", headers=_HEADERS, json={**_KEYS, "threshold": 0.4})
     assert res.json()["match"] is True
     assert res.json()["signals"] == []
 
 
 def test_missing_required_key_rejected():
-    res = client.post("/api/v1/face-verify", json={"liveImageKey": "live.jpg"})
+    res = client.post("/api/v1/face-verify", headers=_HEADERS, json={"liveImageKey": "live.jpg"})
     assert res.status_code == 422  # referenceImageKey bắt buộc (pydantic)
 
 
 def test_blank_key_rejected(monkeypatch):
     _stub_io(monkeypatch, (0.9, 1))
-    res = client.post("/api/v1/face-verify",
+    res = client.post("/api/v1/face-verify", headers=_HEADERS,
                       json={"referenceImageKey": "   ", "liveImageKey": "live.jpg"})
     assert res.status_code == 400
 
@@ -96,6 +101,28 @@ def test_502_when_model_fails(monkeypatch):
         raise RuntimeError("model down")
 
     monkeypatch.setattr(main_module.face_verifier, "compare", boom)
-    res = client.post("/api/v1/face-verify", json=_KEYS)
+    res = client.post("/api/v1/face-verify", headers=_HEADERS, json=_KEYS)
     assert res.status_code == 502
     assert "Lỗi đối chiếu khuôn mặt" in res.json()["detail"]
+
+
+def test_endpoint_requires_internal_token(monkeypatch):
+    """GEN-7: thiếu / sai X-Internal-Token → 401 (fail-closed), TRƯỚC cả khi chạm S3/model.
+
+    Gate nằm đầu hàm nên body hợp lệ vẫn 401; và stub_io chứng minh không hề gọi model khi bị chặn."""
+    called = {"io": False}
+
+    def spy(key):
+        called["io"] = True
+        return b"x"
+
+    monkeypatch.setattr(main_module.storage, "get_object_bytes", spy)
+
+    res_missing = client.post("/api/v1/face-verify", json=_KEYS)
+    assert res_missing.status_code == 401
+
+    res_wrong = client.post("/api/v1/face-verify",
+                            headers={"X-Internal-Token": "wrong-token"}, json=_KEYS)
+    assert res_wrong.status_code == 401
+
+    assert called["io"] is False  # bị chặn trước khi kéo ảnh S3
