@@ -17,6 +17,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
+using System.Globalization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -149,19 +150,44 @@ builder.Services.AddAuthorization();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // R2 — 429 trước đây không kèm Retry-After/X-RateLimit-Remaining, client ATS không biết chờ
+    // bao lâu để retry đúng cách (dễ retry-storm ngay lập tức, càng làm nặng thêm chỗ đang nghẽn).
+    options.OnRejected = async (ctx, ct) =>
+    {
+        var settings = ctx.HttpContext.RequestServices
+            .GetRequiredService<IOptions<ApiKeySettings>>().Value;
+
+        var retryAfterSeconds = Math.Max(1, settings.RateLimitWindowSeconds);
+        if (ctx.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+            retryAfterSeconds = (int)Math.Ceiling(retryAfter.TotalSeconds);
+
+        ctx.HttpContext.Response.Headers.RetryAfter =
+            retryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+        ctx.HttpContext.Response.Headers["X-RateLimit-Remaining"] = "0";
+    };
+
     options.AddPolicy(ApiKeyDefaults.RateLimitPolicy, httpContext =>
     {
         var settings = httpContext.RequestServices
             .GetRequiredService<IOptions<ApiKeySettings>>().Value;
 
         // Trần ≤ 0 = tắt rate-limit (kill-switch vận hành, mẫu Billing:CvAnalysisCredits=0).
+        // Lưu ý: đây CHỈ tắt trần per-key; bucket anonymous có kill-switch riêng qua giá trị của nó
+        // (Resolve() đã kẹp tối thiểu 1 nên không tắt được — cố ý, xem ApiKeySettings).
         if (settings.RateLimitPermitsPerWindow <= 0)
             return RateLimitPartition.GetNoLimiter("disabled");
 
-        var keyId = httpContext.User.FindFirst(ApiKeyDefaults.KeyIdClaim)?.Value ?? "anonymous";
-        return RateLimitPartition.GetFixedWindowLimiter(keyId, _ => new FixedWindowRateLimiterOptions
+        // R2 — TRƯỚC: đọc claim trực tiếp ở đây và fallback "anonymous" khi thiếu claim — ĐÚNG Ý
+        // TƯỞNG nhưng SAI THỰC TẾ, vì tại middleware này chạy (UseRateLimiter, tức TRƯỚC
+        // UseAuthorization) claim api_key_id CHƯA TỪNG tồn tại cho bất kỳ request nào (xem middleware
+        // pre-authenticate mới thêm ở app.Use(...) phía trên UseRateLimiter). Nay claim đã có sẵn khi
+        // key hợp lệ → Resolve() phân vùng đúng theo key; ngược lại rơi về "anonymous" (bucket RIÊNG,
+        // CHẶT hơn — không còn dùng chung 1 trần 60 với key thật).
+        var decision = ApiKeyRateLimit.Resolve(httpContext.User, settings);
+        return RateLimitPartition.GetFixedWindowLimiter(decision.PartitionKey, _ => new FixedWindowRateLimiterOptions
         {
-            PermitLimit = settings.RateLimitPermitsPerWindow,
+            PermitLimit = decision.PermitLimit,
             Window = TimeSpan.FromSeconds(Math.Max(1, settings.RateLimitWindowSeconds)),
             QueueLimit = 0,   // vượt trần → 429 ngay, không xếp hàng giữ kết nối
             QueueProcessingOrder = QueueProcessingOrder.OldestFirst
@@ -217,9 +243,30 @@ if (app.Environment.IsDevelopment())
 
 app.UseServiceCors();
 app.UseAuthentication();
-// F17 — PHẢI đứng SAU UseAuthentication(): partition resolver đọc claim api_key_id, mà claim chỉ có
-// sau khi scheme ApiKey chạy xong. Đặt trước thì mọi request rơi vào partition "anonymous" chung ⇒
-// một key ồn ào làm nghẽn hết các key khác (và mất luôn tác dụng cô lập theo key).
+
+// R2 — SỬA F17: scheme mặc định của AddAuthentication() là JwtBearer (dòng khai báo phía trên),
+// nên UseAuthentication() KHÔNG chạy handler "ApiKey" — handler đó chỉ chạy khi có
+// [Authorize(AuthenticationSchemes = ApiKeyDefaults.Scheme)], tức là BÊN TRONG UseAuthorization(),
+// tức là SAU UseRateLimiter(). Hệ quả trước khi sửa: mọi request tới /campaign/public — kể cả với
+// X-Api-Key hợp lệ — đều CHƯA có claim api_key_id lúc limiter chạy → toàn bộ rơi vào bucket
+// "anonymous" DÙNG CHUNG. ~60 request vô danh (hoặc key sai) trong 60s là khoá luôn mọi org khác.
+//
+// Sửa: xác thực scheme ApiKey TƯỜNG MINH ở đây, chỉ cho path Public API, TRƯỚC UseRateLimiter().
+// AuthenticateAsync gọi lại ở UseAuthorization() phía dưới dùng lại AuthenticateResult đã cache
+// (AuthenticationHandler.HandleAuthenticateOnceAsync) — không tốn thêm lượt tra DB/hash.
+app.Use(async (ctx, next) =>
+{
+    if (ctx.Request.Path.StartsWithSegments("/campaign/public") && ctx.User.Identity?.IsAuthenticated != true)
+    {
+        var result = await ctx.AuthenticateAsync(ApiKeyDefaults.Scheme);
+        if (result.Succeeded && result.Principal is not null)
+            ctx.User = result.Principal;
+        // Không hợp lệ/thiếu header → giữ nguyên User rỗng → Resolve() rơi về "anonymous" (bucket
+        // chặt hơn) → UseAuthorization() phía dưới sẽ tự 401 như cũ, KHÔNG đổi hành vi auth.
+    }
+    await next();
+});
+
 app.UseRateLimiter();
 app.UseAuthorization();
 
