@@ -17,5 +17,9 @@ namespace Isas.PaymentService.Models
         /// Đổi giá trị KHÔNG hồi tố: ví đã tạo giữ nguyên <c>free_credits_granted</c> của nó.
         /// </summary>
         public int FreeTrialCredits { get; set; } = 3;
+
+        /// <summary>F23/BK24 — số ngày từ periodEnd tới hạn tất toán hóa đơn postpaid. Snapshot vào
+        /// `Invoice.DueAt` lúc lập; đổi giá trị này KHÔNG hồi tố hóa đơn đã có DueAt.</summary>
+        public int InvoiceDueDays { get; set; } = 15;
     }
 }

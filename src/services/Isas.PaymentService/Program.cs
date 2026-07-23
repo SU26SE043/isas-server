@@ -91,6 +91,9 @@ builder.Services.Configure<AiPricingSettings>(
 builder.Services.Configure<ReconcileSettings>(
     builder.Configuration.GetSection("Reconcile"));
 
+builder.Services.Configure<InvoiceOverdueSettings>
+    (builder.Configuration.GetSection("InvoiceOverdue"));
+
 // DB18 — cấu hình reconciler bù trừ orphan reservation (session không bao giờ được insert lúc Start).
 builder.Services.Configure<OrphanReconcileSettings>(
     builder.Configuration.GetSection(OrphanReconcileSettings.SectionName));
@@ -162,6 +165,8 @@ builder.Services.AddHostedService<OrderExpiryReconciler>();
 // F8: đóng dấu Active→Expired cho kỳ hạn thuê bao quá hạn. THUẦN báo cáo — luật vào bài tự so ngày
 // (ISubscriptionService.HasActiveAsync), nên job này chết cũng KHÔNG cho ai thi miễn phí.
 builder.Services.AddHostedService<SubscriptionExpiryReconciler>();
+
+builder.Services.AddHostedService<InvoiceOverdueReconciler>();
 
 var app = builder.Build();
 

@@ -1,4 +1,3 @@
-using System.Data.Common;
 using Isas.PaymentService.Models;
 using Isas.PaymentService.Services;
 using Isas.Shared.Pagination;
@@ -7,8 +6,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using PaymentService.Models;
+using System.Data.Common;
 using Isas.PaymentService.DTOs;
 using static Isas.PaymentService.DTOs.OrderRequest;
+using static Isas.PaymentService.Services.IInvoiceService;
 
 namespace Isas.PaymentService.Tests;
 
@@ -65,6 +66,24 @@ public class InvoiceServiceTests
         ctx = tdb.NewContext();
         var billing = Options.Create(new BillingSettings { UnitPrice = unitPrice });
         return new InvoiceService(ctx, orders, billing);
+    }
+
+    // F23/BK24 — ví Prepaid (đối lập SeedPostpaidAccountAsync) cho test guard NotPostpaid.
+    private static async Task SeedPrepaidAccountAsync(PaymentTestDb tdb, Guid orgId, int periodUsage = 0)
+    {
+        tdb.Db.CreditAccounts.Add(new CreditAccount
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PaymentMode = PaymentMode.Prepaid,
+            Status = CreditAccountStatus.Active,
+            RemainingCredits = 10,
+            ReservedCredits = 0,
+            PeriodUsage = periodUsage,
+            UpdatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
     }
 
     private static async Task SeedPostpaidAccountAsync(
@@ -142,12 +161,15 @@ public class InvoiceServiceTests
         var result = await NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _)
             .CloseBillingPeriodAsync(orgId);
 
-        Assert.Equal(OwnerType.Org, result.OwnerType);
-        Assert.Equal(orgId, result.OwnerId);
-        Assert.Equal(InvoiceStatus.Issued, result.Status);
-        Assert.Equal(7, result.InterviewCount);
-        Assert.Equal(50_000m, result.UnitPrice);
-        Assert.Equal(350_000m, result.Amount);        // 7 × 50_000
+        Assert.Equal(CloseBillingPeriodOutcome.Closed, result.Outcome);
+        Assert.NotNull(result.Invoice);
+        var invoice = result.Invoice!;
+        Assert.Equal(OwnerType.Org, invoice.OwnerType);
+        Assert.Equal(orgId, invoice.OwnerId);
+        Assert.Equal(InvoiceStatus.Issued, invoice.Status);
+        Assert.Equal(7, invoice.InterviewCount);
+        Assert.Equal(50_000m, invoice.UnitPrice);
+        Assert.Equal(350_000m, invoice.Amount);        // 7 × 50_000
 
         using var read = tdb.NewContext();
         var inv = await read.Invoices.SingleAsync(i => i.OwnerId == orgId);
@@ -158,12 +180,56 @@ public class InvoiceServiceTests
 
     // (2) Chốt kỳ không có ví → KeyNotFoundException (404).
     [Fact]
-    public async Task Close_KhongCoVi_Throws()
+    public async Task Close_KhongCoVi_WalletMissing()
     {
         using var tdb = new PaymentTestDb();
         var svc = NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _);
 
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => svc.CloseBillingPeriodAsync(Guid.NewGuid()));
+        var result = await svc.CloseBillingPeriodAsync(Guid.NewGuid());
+
+        Assert.Equal(CloseBillingPeriodOutcome.WalletMissing, result.Outcome);
+        Assert.Null(result.Invoice);
+    }
+
+    // (2b) F23/BK24 — org đang Prepaid → NotPostpaid, KHÔNG tạo invoice, KHÔNG đụng period_usage.
+    [Fact]
+    public async Task Close_OrgPrepaid_NotPostpaid()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedPrepaidAccountAsync(tdb, orgId, periodUsage: 3);
+
+        var result = await NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _)
+            .CloseBillingPeriodAsync(orgId);
+
+        Assert.Equal(CloseBillingPeriodOutcome.NotPostpaid, result.Outcome);
+        Assert.Null(result.Invoice);
+
+        using var read = tdb.NewContext();
+        Assert.False(await read.Invoices.AnyAsync(i => i.OwnerId == orgId));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(3, acc.PeriodUsage);   // không bị đụng vào
+    }
+
+     // (2c) F23/BK24 finding #4 — Billing:UnitPrice=0 (chưa cấu hình) → UnitPriceNotConfigured,
+    // chặn TRƯỚC KHI ghi DB (không sinh hóa đơn 0đ).
+    [Fact]
+    public async Task Close_UnitPriceChuaCauHinh_UnitPriceNotConfigured()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await SeedPostpaidAccountAsync(tdb, orgId, periodUsage: 5);
+
+        var result = await NewService(tdb, new StubOrderService(), unitPrice: 0, out _)
+            .CloseBillingPeriodAsync(orgId);
+
+        Assert.Equal(CloseBillingPeriodOutcome.UnitPriceNotConfigured, result.Outcome);
+        Assert.Null(result.Invoice);
+
+        using var read = tdb.NewContext();
+        Assert.False(await read.Invoices.AnyAsync(i => i.OwnerId == orgId));
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
+        Assert.Equal(5, acc.PeriodUsage);   // không bị chốt/reset
     }
 
     // (3) Pay (Issued) → Created, Order gắn invoice_id; OrderService được gọi đúng invoice.
@@ -317,7 +383,7 @@ public class InvoiceServiceTests
         var result = await new InvoiceService(ctx, new StubOrderService(), billing)
             .CloseBillingPeriodAsync(orgId);
 
-        Assert.Equal(5, result.InterviewCount);   // hóa đơn chốt ĐÚNG snapshot (5), không gồm lượt xen giữa
+        Assert.Equal(5, result.Invoice!.InterviewCount);   // hóa đơn chốt ĐÚNG snapshot (5), không gồm lượt xen giữa
 
         using var read = tdb.NewContext();
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
@@ -334,7 +400,7 @@ public class InvoiceServiceTests
 
         var inv1 = await NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _)
             .CloseBillingPeriodAsync(orgId);
-        Assert.Equal(5, inv1.InterviewCount);
+        Assert.Equal(5, inv1.Invoice!.InterviewCount);
 
         // Kỳ mới phát sinh 3 lượt (period_usage 0 → 3).
         using (var c = tdb.NewContext())
@@ -345,7 +411,7 @@ public class InvoiceServiceTests
 
         var inv2 = await NewService(tdb, new StubOrderService(), unitPrice: 50_000, out _)
             .CloseBillingPeriodAsync(orgId);
-        Assert.Equal(3, inv2.InterviewCount);     // đúng usage kỳ mới, không dính 5 của kỳ trước
+        Assert.Equal(3, inv2.Invoice!.InterviewCount);     // đúng usage kỳ mới, không dính 5 của kỳ trước
 
         using var read = tdb.NewContext();
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);

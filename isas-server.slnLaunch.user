@@ -13,6 +13,14 @@
       {
         "Path": "src\\services\\Isas.InterviewService\\Isas.InterviewService.csproj",
         "Action": "Start"
+      },
+      {
+        "Path": "src\\services\\Isas.CampaignService\\Isas.CampaignService.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "src\\services\\Isas.PaymentService\\Isas.PaymentService.csproj",
+        "Action": "StartWithoutDebugging"
       }
     ]
   }

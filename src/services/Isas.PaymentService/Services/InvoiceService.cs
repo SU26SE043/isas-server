@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PaymentService.Models;
 using static Isas.PaymentService.DTOs.InvoiceRequest;
+using static Isas.PaymentService.Services.IInvoiceService;
 
 namespace Isas.PaymentService.Services
 {
@@ -22,25 +23,32 @@ namespace Isas.PaymentService.Services
             _billing = billing;
         }
 
-        public async Task<InvoiceResponse> CloseBillingPeriodAsync(
+        public async Task<CloseBillingPeriodResult> CloseBillingPeriodAsync(
             Guid orgId, DateTime? periodStart = null, DateTime? periodEnd = null, CancellationToken ct = default)
         {
             var unitPrice = _billing.Value.UnitPrice;
+            if (unitPrice <= 0)
+                return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.UnitPriceNotConfigured, null);
+
             var now = DateTime.UtcNow;
             var pEnd = periodEnd ?? now;
             // Mốc kỳ chỉ để hiển thị/đối soát — không ảnh hưởng số tiền. Mặc định đầu tháng UTC → now.
             var pStart = periodStart ?? new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc);
-
-            // 1 transaction (payment.md §Postpaid): snapshot period_usage → tạo invoice → reset period_usage=0.
-            // Fail giữa chừng → rollback cả 2 (không mất/nhân nợ).
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
             // Đọc ví Org để snapshot period_usage. AsNoTracking: reset làm bằng ExecuteUpdate (atomic),
             // không cần entity tracked.
             var account = await _db.CreditAccounts.AsNoTracking()
                 .FirstOrDefaultAsync(a => a.OwnerType == OwnerType.Org && a.OwnerId == orgId, ct);
             if (account is null)
-                throw new KeyNotFoundException($"No credit account for Org {orgId}.");
+                return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.WalletMissing, null);
+            // F23/BK24 — org Prepaid không có "kỳ postpaid" để chốt (period_usage của Prepaid không dùng
+            // cho billing kiểu này). Guard chặn chốt kỳ nhầm org, tránh sinh hóa đơn vô nghĩa.
+            if (account.PaymentMode != PaymentMode.Postpaid)
+                return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.NotPostpaid, null);
+
+            // 1 transaction (payment.md §Postpaid): snapshot period_usage → tạo invoice → reset period_usage=0.
+            // Fail giữa chừng → rollback cả 2 (không mất/nhân nợ).
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
             var count = account.PeriodUsage ?? 0;
             var amount = count * unitPrice;
@@ -57,6 +65,9 @@ namespace Isas.PaymentService.Services
                 UnitPrice = unitPrice,
                 Amount = amount,
                 Status = InvoiceStatus.Issued,
+                // F23/BK24 — hạn tất toán = periodEnd + Billing:InvoiceDueDays (snapshot lúc lập, đổi
+                // config sau không hồi tố hóa đơn đã có DueAt).
+                DueAt = pEnd + TimeSpan.FromDays(_billing.Value.InvoiceDueDays),
                 CreatedAt = now
             };
             _db.Invoices.Add(invoice);
@@ -75,7 +86,27 @@ namespace Isas.PaymentService.Services
             await _db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
 
-            return InvoiceResponse.ToResponse(invoice);
+            return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.Closed, InvoiceResponse.ToResponse(invoice));
+        }
+
+        public async Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default)
+        {
+            var logger = new LoggerFactory().CreateLogger<InvoiceService>();
+            var cutoff = DateTime.UtcNow.AddHours(-graceHours);
+
+            // F23/BK24 — "phanh hỏng câm": Issued mà DueAt=NULL (hóa đơn tạo trước migration/lỗi ghi) sẽ
+            // KHÔNG BAO GIỜ bị quét bởi câu ExecuteUpdate dưới (điều kiện DueAt != null loại chúng ra) →
+            // phải LOG để ai đó thấy và xử lý tay, không được âm thầm bỏ qua mãi mãi.
+            var missingDueAt = await _db.Invoices.AsNoTracking()
+                .CountAsync(i => i.Status == InvoiceStatus.Issued && i.DueAt == null, ct);
+            if (missingDueAt > 0)
+                logger?.LogWarning(
+                    "F23/BK24 — {Count} hóa đơn Issued KHÔNG có DueAt → KHÔNG thể tự động chuyển Overdue, cần xử lý tay.",
+                    missingDueAt);
+
+            return await _db.Invoices
+                .Where(i => i.Status == InvoiceStatus.Issued && i.DueAt != null && i.DueAt < cutoff)
+                .ExecuteUpdateAsync(s => s.SetProperty(i => i.Status, InvoiceStatus.Overdue), ct);
         }
 
         public async Task<PayInvoiceResult> PayInvoiceAsync(

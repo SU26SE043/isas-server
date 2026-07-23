@@ -112,5 +112,102 @@ namespace Isas.PaymentService.Services
 
             return new GrantResult(GrantOutcome.Granted, ownerType, ownerId, credits, remaining, transaction.Id);
         }
+
+        public async Task<SetPaymentModeResult> SetPaymentModeAsync(
+            OwnerType ownerType, Guid ownerId, PaymentMode paymentMode, int? creditLimit,
+            string note, bool allowStrandedCredits, Guid adminUserId,
+            CancellationToken ct = default)
+        {
+            // payment.md D15 — "User LUÔN Prepaid". Không có khái niệm postpaid cho ví cá nhân B2C.
+            if (ownerType == OwnerType.User)
+                return new SetPaymentModeResult(
+                    SetPaymentModeOutcome.NotOrg, ownerType, ownerId, paymentMode, creditLimit, 0, 0);
+
+            // Postpaid PHẢI có creditLimit (>0 đã ép ở DTO [Range]); Prepaid thì KHÔNG được có creditLimit
+            // (limit là khái niệm riêng của postpaid — pha trộn sẽ gây hiểu lầm "prepaid cũng có hạn mức").
+            var invalidLimit =
+                (paymentMode == PaymentMode.Postpaid && creditLimit is null or <= 0) ||
+                (paymentMode == PaymentMode.Prepaid && creditLimit is not null);
+            if (invalidLimit)
+                return new SetPaymentModeResult(
+                    SetPaymentModeOutcome.InvalidCreditLimit, ownerType, ownerId, paymentMode, creditLimit, 0, 0);
+
+            // Snapshot ví — dùng làm CAS token (WHERE PaymentMode == acc.PaymentMode ở dưới) VÀ để đọc
+            // remaining/reserved/period_usage cho các guard nghiệp vụ. KHÔNG tạo ví lazy: duyệt mode cho
+            // một chủ ví chưa từng có ví là vô nghĩa (chưa ai mua/luyện gì để mà "duyệt trả sau").
+            var acc = await _db.CreditAccounts.AsNoTracking()
+                .FirstOrDefaultAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct);
+            if (acc is null)
+                return new SetPaymentModeResult(
+                    SetPaymentModeOutcome.WalletMissing, ownerType, ownerId, paymentMode, creditLimit, 0, 0);
+
+            var upgrading = acc.PaymentMode == PaymentMode.Prepaid && paymentMode == PaymentMode.Postpaid;
+            var downgrading = acc.PaymentMode == PaymentMode.Postpaid && paymentMode == PaymentMode.Prepaid;
+
+            // Prepaid→Postpaid: ví Postpaid KHÔNG dùng `remaining_credits` (nhánh reserve postpaid chỉ xét
+            // period_usage/reserved/credit_limit — xem ReserveAsync). Credit đã mua còn tồn trong
+            // remaining/reserved sẽ bị "mắc kẹt" (không tiêu được, không tự hoàn) nếu chuyển mà không cảnh
+            // báo. CỐ Ý KHÔNG zero remaining_credits kể cả khi opt-in (BK24 plan §Cố ý không làm) — mất mát
+            // không hoàn tác, chỉ cảnh báo + để admin tự quyết định qua opt-in tường minh.
+            if (upgrading && (acc.RemainingCredits > 0 || acc.ReservedCredits > 0) && !allowStrandedCredits)
+                return new SetPaymentModeResult(
+                    SetPaymentModeOutcome.StrandedCredits, ownerType, ownerId, paymentMode, creditLimit,
+                    acc.RemainingCredits, acc.ReservedCredits);
+
+            // Postpaid→Prepaid: còn nợ (hóa đơn Issued/Overdue) hoặc kỳ hiện tại đã phát sinh sử dụng chưa
+            // chốt (period_usage > 0) → chặn hạ mode. Hạ mode khi còn nợ sẽ làm mất luôn cơ chế đòi nợ
+            // (guard BK17 chỉ áp cho ví Postpaid).
+            if (downgrading)
+            {
+                var hasUnpaidInvoice = await _db.Invoices.AsNoTracking().AnyAsync(i =>
+                    i.OwnerType == ownerType && i.OwnerId == ownerId &&
+                    (i.Status == InvoiceStatus.Issued || i.Status == InvoiceStatus.Overdue), ct);
+
+                if (hasUnpaidInvoice || (acc.PeriodUsage ?? 0) > 0)
+                    return new SetPaymentModeResult(
+                        SetPaymentModeOutcome.UnpaidDebt, ownerType, ownerId, paymentMode, creditLimit,
+                        acc.RemainingCredits, acc.ReservedCredits);
+            }
+
+            // CAS: WHERE PaymentMode == acc.PaymentMode (snapshot) — 0 row nghĩa là ai đó đã đổi mode xen
+            // giữa lúc đọc snapshot ở trên và lúc ghi ở đây (admin khác duyệt cùng lúc). KHÔNG dùng entity
+            // tracked (đánh thức xmin — xem comment đầu method).
+            // Downgrade về Prepaid: reset CreditLimit/PeriodUsage về NULL (không còn ý nghĩa ở Prepaid —
+            // BK24 verify e2e bước 9: "limit/usage về NULL"). Upgrade lên Postpaid: PeriodUsage bắt đầu
+            // sạch = 0 cho kỳ mới.
+            var newPeriodUsage = paymentMode == PaymentMode.Postpaid ? (int?)0 : null;
+            var newCreditLimit = paymentMode == PaymentMode.Postpaid ? creditLimit : null;
+
+            var rows = await _db.CreditAccounts
+                .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId
+                            && a.PaymentMode == acc.PaymentMode)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(a => a.PaymentMode, paymentMode)
+                    .SetProperty(a => a.CreditLimit, newCreditLimit)
+                    .SetProperty(a => a.PeriodUsage, newPeriodUsage)
+                    .SetProperty(a => a.PaymentModeChangedAt, _ => DateTime.UtcNow)
+                    .SetProperty(a => a.PaymentModeChangedBy, adminUserId)
+                    .SetProperty(a => a.PaymentModeChangedNote, note)
+                    .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+
+            if (rows == 0)
+                return new SetPaymentModeResult(
+                    SetPaymentModeOutcome.Conflict, ownerType, ownerId, paymentMode, creditLimit,
+                    acc.RemainingCredits, acc.ReservedCredits);
+
+            _logger?.LogWarning(
+                "F23/BK24 — admin {AdminId} đổi payment mode ví {OwnerType}:{OwnerId}: {Old} → {New} " +
+                "(creditLimit={CreditLimit}). Lý do: {Note}",
+                adminUserId, ownerType, ownerId, acc.PaymentMode, paymentMode, creditLimit, note);
+
+            // Đọc lại fresh cho response — remaining/reserved không đổi ở thao tác này nhưng đọc lại vẫn
+            // rẻ và tránh trả số liệu snapshot cũ nếu có race vô hại khác xen vào.
+            var fresh = await _db.CreditAccounts.AsNoTracking()
+                .FirstAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct);
+
+            return new SetPaymentModeResult(
+                SetPaymentModeOutcome.Updated, ownerType, ownerId, fresh.PaymentMode, fresh.CreditLimit,
+                fresh.RemainingCredits, fresh.ReservedCredits);
+        }
     }
 }

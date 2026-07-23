@@ -184,6 +184,11 @@ namespace PaymentService.Models
                 e.ToTable("credit_accounts", t => t.HasCheckConstraint(
                     "ck_credit_accounts_non_negative",
                     "remaining_credits >= 0 AND reserved_credits >= 0 AND free_credits_granted >= 0 AND (period_usage IS NULL OR period_usage >= 0)"));
+
+                e.ToTable("credit_accounts", t =>t.HasCheckConstraint(
+                    "ck_credit_accounts_credit_limit_positive",
+                    "credit_limit IS NULL OR credit_limit > 0"));
+
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -198,6 +203,8 @@ namespace PaymentService.Models
                 e.Property(x => x.RemainingCredits).HasDefaultValue(0);
                 e.Property(x => x.ReservedCredits).HasDefaultValue(0);
                 e.Property(x => x.FreeCreditsGranted).HasDefaultValue(0);
+
+                e.Property(x => x.PaymentModeChangedNote).HasMaxLength(500);
 
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 
@@ -228,6 +235,9 @@ namespace PaymentService.Models
                 // của chúng vẫn chạy đúng nhánh bút toán như trước.
                 e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(ReservationFunding.Credit);
+
+                e.Property(x => x.PaymentMode).HasConversion<string>().HasMaxLength(16)
+                 .HasDefaultValue(PaymentMode.Prepaid);
 
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 // DB14 — audit updated_at (stamp khi status flip Reserved→Consumed/Released). 2 flip đó dùng
@@ -355,6 +365,10 @@ namespace PaymentService.Models
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
 
                 e.HasIndex(x => new { x.OwnerType, x.OwnerId });
+
+                e.HasIndex(x => x.DueAt)
+                 .HasDatabaseName("ix_invoices_issued_due_at")
+                 .HasFilter("status = 'Issued'");
 
                 // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict).
                 // Invoice CHỈ Org — dùng owner đồng nhất (owner NOT NULL), KHÔNG dùng account_id (ref lỏng

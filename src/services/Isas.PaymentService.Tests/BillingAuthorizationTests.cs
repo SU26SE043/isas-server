@@ -157,7 +157,7 @@ public class BillingAuthorizationTests
         inv.Setup(s => s.PayInvoiceAsync(It.IsAny<OwnerType>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(PayInvoiceResult.Created(new OrderResponse { Id = Guid.NewGuid() }));
         inv.Setup(s => s.CloseBillingPeriodAsync(It.IsAny<Guid>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new InvoiceResponse { Id = Guid.NewGuid() });
+            .ReturnsAsync(new IInvoiceService.CloseBillingPeriodResult(IInvoiceService.CloseBillingPeriodOutcome.Closed, new InvoiceResponse { Id = Guid.NewGuid()}));
         var ctrl = WithUser(new InvoiceController(inv.Object), user);
         return (ctrl, inv);
     }

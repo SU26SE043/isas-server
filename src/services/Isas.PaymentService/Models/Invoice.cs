@@ -22,6 +22,12 @@ namespace PaymentService.Models
         public InvoiceStatus Status { get; set; } = InvoiceStatus.Issued;
         public DateTime CreatedAt { get; set; }
 
+        /// <summary>F23/BK24 — hạn tất toán = periodEnd + Billing:InvoiceDueDays (snapshot lúc lập).</summary>
+        public DateTime? DueAt { get; set; }
+
+        /// <summary>F23/BK24 — set khi webhook PayOS xác nhận Paid (WebhookService, cùng ExecuteUpdate với Status).</summary>
+        public DateTime? PaidAt { get; set; }
+
         // 1 Invoice ── N Order (orders.invoice_id) — N lần tất toán/retry cùng 1 hóa đơn (payment.md §DB).
         public ICollection<Order> Orders { get; set; } = [];
     }
