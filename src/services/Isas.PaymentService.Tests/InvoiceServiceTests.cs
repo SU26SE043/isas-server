@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 using PaymentService.Models;
+using Isas.PaymentService.DTOs;
 using static Isas.PaymentService.DTOs.OrderRequest;
 
 namespace Isas.PaymentService.Tests;
@@ -53,7 +54,7 @@ public class InvoiceServiceTests
             => throw new NotImplementedException();
         public Task<KeysetPage<OrderResponse>> GetOwnerOrdersAsync(OwnerType ownerType, Guid ownerId, OrderStatus? status, string? cursor, int? limit, CancellationToken ct = default)
             => throw new NotImplementedException();
-        public Task<KeysetPage<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, string? cursor, int? limit, CancellationToken ct = default)
+        public Task<KeysetPage<AdminOrderListItem>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, RefundSettlementFilter? refundSettlement, string? cursor, int? limit, CancellationToken ct = default)
             => throw new NotImplementedException();
         public Task CancelOrderAsync(Guid id, CancellationToken ct = default)
             => throw new NotImplementedException();

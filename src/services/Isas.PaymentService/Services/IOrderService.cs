@@ -1,4 +1,5 @@
-﻿using Isas.Shared.Pagination;
+﻿using Isas.PaymentService.DTOs;
+using Isas.Shared.Pagination;
 using PaymentService.Models;
 using static Isas.PaymentService.DTOs.OrderRequest;
 
@@ -24,9 +25,10 @@ namespace Isas.PaymentService.Services
 
         /// <summary>
         /// AUTH-7 — PlatformAdmin oversight: MỌI đơn xuyên chủ ví (KHÔNG lọc owner), read-only.
-        /// Optional lọc status/ownerType. Cap 500, mới nhất trước.
+        /// Optional lọc status/ownerType + <paramref name="refundSettlement"/> (đơn hoàn chờ/đã chuyển tiền).
+        /// Cap 500, mới nhất trước. Trả <see cref="AdminOrderListItem"/> (kèm field refund admin-only).
         /// </summary>
-        Task<KeysetPage<OrderResponse>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, string? cursor, int? limit, CancellationToken ct = default);
+        Task<KeysetPage<AdminOrderListItem>> ListAllOrdersAsync(OrderStatus? status, OwnerType? ownerType, RefundSettlementFilter? refundSettlement, string? cursor, int? limit, CancellationToken ct = default);
         Task CancelOrderAsync(Guid id, CancellationToken ct = default);
     }
 }

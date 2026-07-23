@@ -23,6 +23,38 @@ namespace Isas.PaymentService.DTOs
         /// dừng lại và trả về số thu hồi được để admin quyết định, thay vì âm thầm để công ty chịu chênh.
         /// </summary>
         public bool AllowPartialClawback { get; set; }
+
+        /// <summary>
+        /// Admin khẳng định đã chuyển tiền thật cho khách ngay lúc hoàn (đã hoàn trên dashboard PayOS /
+        /// chuyển khoản tay). Mặc định <c>false</c> = đơn vào trạng thái "chờ chuyển tiền", admin xác nhận
+        /// sau qua <c>POST …/refund/settle</c> để không quên gửi tiền.
+        /// </summary>
+        public bool SettledNow { get; set; }
+    }
+
+    /// <summary>F18 — thân request `POST /payment/admin/orders/{id}/refund/settle` (xác nhận đã chuyển tiền).</summary>
+    public class SettleRefundRequest
+    {
+        /// <summary>Mã giao dịch hoàn của PayOS (nếu có). Bỏ trống nếu chuyển khoản tay không mã.</summary>
+        [StringLength(100)]
+        public string? GatewayRef { get; set; }
+    }
+
+    /// <summary>F18 — phản hồi xác nhận đã chuyển tiền hoàn.</summary>
+    public class SettleRefundResponse
+    {
+        public Guid OrderId { get; set; }
+        public DateTime? RefundedAt { get; set; }
+        public DateTime? RefundSettledAt { get; set; }
+        public string? RefundGatewayRef { get; set; }
+
+        public static SettleRefundResponse From(SettleRefundResult r) => new()
+        {
+            OrderId = r.OrderId,
+            RefundedAt = r.RefundedAt,
+            RefundSettledAt = r.RefundSettledAt,
+            RefundGatewayRef = r.RefundGatewayRef,
+        };
     }
 
     /// <summary>
@@ -38,6 +70,8 @@ namespace Isas.PaymentService.DTOs
         public int ClawbackCeiling { get; set; }
         public Guid? RefundTransactionId { get; set; }
         public DateTime? RefundedAt { get; set; }
+        /// <summary>NULL = đã hoàn nhưng CHƯA chuyển tiền cho khách (chờ kế toán).</summary>
+        public DateTime? RefundSettledAt { get; set; }
 
         public static RefundOrderResponse From(RefundResult r) => new()
         {
@@ -48,6 +82,7 @@ namespace Isas.PaymentService.DTOs
             ClawbackCeiling = r.ClawbackCeiling,
             RefundTransactionId = r.RefundTransactionId,
             RefundedAt = r.RefundedAt,
+            RefundSettledAt = r.RefundSettledAt,
         };
     }
 }

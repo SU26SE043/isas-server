@@ -48,6 +48,7 @@ namespace Isas.PaymentService.Services
             string? reason,
             string? gatewayRef,
             bool allowPartialClawback,
+            bool settledNow = false,
             CancellationToken ct = default)
         {
             var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId, ct);
@@ -57,7 +58,7 @@ namespace Isas.PaymentService.Services
             // Idempotent: đã hoàn rồi thì trả về nguyên trạng, KHÔNG trừ ví lần hai.
             if (order.Status == OrderStatus.Refunded)
                 return new RefundResult(RefundOutcome.AlreadyRefunded, orderId, order.AmountVnd,
-                    0, 0, 0, null, order.RefundedAt);
+                    0, 0, 0, null, order.RefundedAt, order.RefundSettledAt);
 
             if (order.Status != OrderStatus.Paid)
                 return RefundResult.Simple(RefundOutcome.NotPaid, orderId);
@@ -91,6 +92,8 @@ namespace Isas.PaymentService.Services
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
             var refundedAt = DateTime.UtcNow;
+            // Chờ chuyển tiền (null) trừ khi admin khẳng định đã chuyển ngay — mặc định để không quên gửi tiền.
+            DateTime? settledAt = settledNow ? refundedAt : null;
 
             // Lật ATOMIC Paid→Refunded (guard WHERE status=Paid): hai admin bấm hoàn cùng lúc → chỉ 1 row
             // ⇒ chỉ 1 lần trừ ví. 0 row = ai đó vừa hoàn xong trước → hấp thụ (mẫu WebhookService).
@@ -102,6 +105,7 @@ namespace Isas.PaymentService.Services
                     .SetProperty(o => o.RefundedBy, _ => (Guid?)adminUserId)
                     .SetProperty(o => o.RefundReason, _ => reason)
                     .SetProperty(o => o.RefundGatewayRef, _ => gatewayRef)
+                    .SetProperty(o => o.RefundSettledAt, _ => settledAt)
                     // DB14 — ExecuteUpdate không đi qua SaveChanges override → stamp updated_at tường minh.
                     .SetProperty(o => o.UpdatedAt, _ => refundedAt), ct);
 
@@ -184,7 +188,56 @@ namespace Isas.PaymentService.Services
                     orderId, purchased, clawback, ceiling, adminUserId);
 
             return new RefundResult(RefundOutcome.Refunded, orderId, order.AmountVnd,
-                purchased, clawback, ceiling, refundTxId, refundedAt);
+                purchased, clawback, ceiling, refundTxId, refundedAt, settledAt);
+        }
+
+        public async Task<SettleRefundResult> SettleRefundAsync(
+            Guid orderId,
+            Guid adminUserId,
+            string? gatewayRef,
+            CancellationToken ct = default)
+        {
+            var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId, ct);
+            if (order is null)
+                return SettleRefundResult.Simple(SettleOutcome.OrderNotFound, orderId);
+
+            // Chỉ xác nhận chuyển tiền cho đơn ĐÃ hoàn — chưa Refunded thì không có dòng tiền ra nào để đối soát.
+            if (order.Status != OrderStatus.Refunded)
+                return SettleRefundResult.Simple(SettleOutcome.NotRefunded, orderId);
+
+            // Đã settle trước đó → idempotent: KHÔNG dời mốc cũ (mốc đầu tiên mới là lúc tiền thật sự đi).
+            if (order.RefundSettledAt is not null)
+                return new SettleRefundResult(SettleOutcome.AlreadySettled, orderId,
+                    order.RefundedAt, order.RefundSettledAt, order.RefundGatewayRef);
+
+            var settledAt = DateTime.UtcNow;
+
+            // Đóng dấu ATOMIC (guard WHERE status=Refunded AND refund_settled_at IS NULL): hai admin bấm
+            // xác nhận cùng lúc → chỉ 1 row set mốc; kẻ thua thấy 0 row → đọc lại → AlreadySettled (idempotent).
+            // Chỉ ghi đè gatewayRef khi truyền mới — không xoá mã đã có bằng null.
+            var moved = await _db.Orders
+                .Where(o => o.Id == orderId && o.Status == OrderStatus.Refunded && o.RefundSettledAt == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(o => o.RefundSettledAt, _ => settledAt)
+                    .SetProperty(o => o.RefundGatewayRef,
+                        o => gatewayRef ?? o.RefundGatewayRef)
+                    // DB14 — ExecuteUpdate không đi qua SaveChanges override → stamp updated_at tường minh.
+                    .SetProperty(o => o.UpdatedAt, _ => settledAt), ct);
+
+            if (moved == 0)
+            {
+                // Đua thua: ai đó vừa settle xong → đọc lại trạng thái hiện tại, trả AlreadySettled.
+                var fresh = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId, ct);
+                return new SettleRefundResult(SettleOutcome.AlreadySettled, orderId,
+                    fresh?.RefundedAt, fresh?.RefundSettledAt, fresh?.RefundGatewayRef);
+            }
+
+            _logger?.LogInformation(
+                "F18 — đơn {OrderId} xác nhận đã chuyển tiền hoàn cho khách (admin {AdminId}, ref {Ref}).",
+                orderId, adminUserId, gatewayRef ?? order.RefundGatewayRef);
+
+            return new SettleRefundResult(SettleOutcome.Settled, orderId,
+                order.RefundedAt, settledAt, gatewayRef ?? order.RefundGatewayRef);
         }
 
         /// <summary>
