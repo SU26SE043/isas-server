@@ -33,6 +33,12 @@
         // CỐ Ý không tự gọi API refund PayOS: luồng đó chưa được wire ở đâu trong repo, và giả vờ
         // đã gọi (sinh mã giả) sẽ khiến đối soát ngân hàng tin vào một mã không tồn tại.
         public string? RefundGatewayRef { get; set; }
+        // Thời điểm XÁC NHẬN đã chuyển tiền thật về cho khách (dashboard PayOS / chuyển khoản tay).
+        // Tách khỏi RefundedAt: refund lật đơn→Refunded NGAY (nội bộ), còn chuyển tiền bank là bước tay
+        // riêng, có thể sau/có thể quên. NULL = "đã đánh dấu hoàn nhưng CHƯA chuyển tiền" (chờ kế toán);
+        // có giá trị = "tiền đã đi". Phân biệt dứt điểm cái mà RefundGatewayRef (cho phép chuyển-tay-không-mã)
+        // không diễn đạt được. KHÔNG dính tới credit/status — chỉ là mốc đối soát dòng tiền ra.
+        public DateTime? RefundSettledAt { get; set; }
         // DB14 — audit: đóng dấu mỗi lần order bị sửa (status flip Cancel/Paid). C# init để insert không phụ
         // thuộc DB default now() (SQLite/EnsureCreated không có now()); DB default now() vẫn có ở Postgres.
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;

@@ -1,4 +1,5 @@
-﻿using Isas.PaymentService.Models;
+﻿using Isas.PaymentService.DTOs;
+using Isas.PaymentService.Models;
 using Isas.Shared.Pagination;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -306,8 +307,9 @@ namespace Isas.PaymentService.Services
         // AUTH-7: PlatformAdmin oversight — MỌI đơn xuyên chủ ví (KHÔNG lọc owner, khác GetOwnerOrdersAsync).
         // Optional lọc status (numeric OrderStatus) + ownerType. Keyset-paged (DB8): mới nhất trước
         // theo (CreatedAt DESC, Id DESC); cursor rỗng = trang đầu; limit mặc định 500 (giữ hành vi cũ).
-        public async Task<KeysetPage<OrderResponse>> ListAllOrdersAsync(
-            OrderStatus? status, OwnerType? ownerType, string? cursor, int? limit, CancellationToken ct = default)
+        public async Task<KeysetPage<AdminOrderListItem>> ListAllOrdersAsync(
+            OrderStatus? status, OwnerType? ownerType, RefundSettlementFilter? refundSettlement,
+            string? cursor, int? limit, CancellationToken ct = default)
         {
             var take = KeysetPaging.ClampLimit(limit);
             var cur = KeysetCursor.Decode(cursor);
@@ -318,6 +320,12 @@ namespace Isas.PaymentService.Services
                 query = query.Where(o => o.Status == s);
             if (ownerType is OwnerType ot)
                 query = query.Where(o => o.OwnerType == ot);
+            // Lọc trạng thái chuyển tiền hoàn: cả hai nhánh HÀM Ý đơn đã Refunded (đẩy xuống SQL). `Pending`
+            // = đã hoàn nhưng refund_settled_at NULL (chờ kế toán chuyển tiền); `Settled` = đã chuyển.
+            if (refundSettlement is RefundSettlementFilter rs)
+                query = rs == RefundSettlementFilter.Pending
+                    ? query.Where(o => o.Status == OrderStatus.Refunded && o.RefundSettledAt == null)
+                    : query.Where(o => o.Status == OrderStatus.Refunded && o.RefundSettledAt != null);
             if (cur is not null)
                 query = query.Where(o => o.CreatedAt < cur.CreatedAt
                     || (o.CreatedAt == cur.CreatedAt && o.Id.CompareTo(cur.Id) < 0));
@@ -328,11 +336,11 @@ namespace Isas.PaymentService.Services
                 .Take(take)
                 .ToListAsync(ct);
 
-            var items = rows.Select(OrderResponse.ToResponse).ToList();
+            var items = rows.Select(AdminOrderListItem.From).ToList();
             var next = rows.Count == take
                 ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
                 : null;
-            return new KeysetPage<OrderResponse>(items, next);
+            return new KeysetPage<AdminOrderListItem>(items, next);
         }
 
         public async Task CancelOrderAsync(Guid id, CancellationToken ct = default)

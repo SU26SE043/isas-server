@@ -28,6 +28,7 @@ Kiến trúc **Engine + Orchestrator, 6 service**: `Gateway · AuthService · AI
 - **KHÔNG "tiện thể tái cấu trúc"** thứ khác khi đang làm task A → thấy việc đáng làm thì **ghi vào backlog/board**, làm sau.
 - Mỗi task có **1 lệnh xác minh chạy được**; "Xong" theo **3 lớp** (mục dưới), **không phải** "code trông ổn".
 - **Commit theo đơn vị nguyên tử** (1 task = 1 commit; message: *làm gì + vì sao*).
+- **Giao hàng = 1 PR duy nhất để duyệt** — gộp toàn bộ work của một đợt (nhiều concern/nhiều service) vào **1 branch → 1 PR** cho người duyệt, giữ các commit nguyên tử bên trong. **KHÔNG** tách mỗi concern 1 branch/PR rời, **KHÔNG** merge nhiều nhánh thẳng vào `main` (bỏ qua review). FE (repo riêng) cũng gộp về 1 branch → 1 PR sang `master`. *(User nhắc 2026-07-23; xem cả DB5 2026-07-17.)*
 - **Nguồn task = [tasks.md](docs/tasks.md)** (nguồn sự thật task-level): chọn task `not_started` không bị block; chỉ đánh **`passing` khi lệnh xác minh PASS** + ghi **bằng chứng** (commit/log) vào ô Status. Đừng tự nâng trạng thái.
 - *WIP=1 là per-người/per-agent* — team vẫn chạy 5 stream S1–S5 **song song**, mỗi stream WIP=1.
 

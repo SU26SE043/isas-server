@@ -18,9 +18,11 @@ namespace Isas.PaymentService.Services
         public async Task<PackageResponse> CreatePackageAsync(CreatePackageRequest request, CancellationToken ct)
         {
             Validate(request.Type, request.InterviewCredits, request.DurationDays);
+            ValidateSanity(request.Name, request.PriceVnd, request.InterviewCredits, request.DurationDays);
 
             var package = new ProductPackage
             {
+                Id = Guid.NewGuid(),
                 Name = request.Name,
                 Type = request.Type,
                 PriceVnd = request.PriceVnd,
@@ -69,6 +71,9 @@ namespace Isas.PaymentService.Services
             var package = await _db.ProductPackages.FindAsync(id);
             if (package is null) return null;
 
+            // Update là partial (mọi field nullable) → chỉ sanity-check field CÓ MẶT, khỏi bắt buộc trường vắng.
+            ValidateSanity(request.Name, request.PriceVnd, request.InterviewCredits, request.DurationDays);
+
             if (request.Name is not null) package.Name = request.Name;
             if (request.PriceVnd is not null) package.PriceVnd = request.PriceVnd.Value;
             if (request.InterviewCredits is not null) package.InterviewCredits = request.InterviewCredits;
@@ -87,6 +92,20 @@ namespace Isas.PaymentService.Services
                 throw new ArgumentException("DurationDays is required for subscription packages.");
             if (type is not (PackageType.OneTime or PackageType.Subscription))
                 throw new ArgumentException($"Invalid package type: {type}");
+        }
+
+        // Sanity-check dùng chung cho Create + Update: chặn name rỗng / số âm lọt xuống DB. Field nullable
+        // ⇒ chỉ kiểm khi CÓ MẶT (Create truyền name/price non-null; Update partial nên vắng field = giữ cũ).
+        private static void ValidateSanity(string? name, long? priceVnd, int? credits, int? days)
+        {
+            if (name is not null && string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Package name is required.");
+            if (priceVnd is not null && priceVnd < 0)
+                throw new ArgumentException("PriceVnd must be >= 0.");
+            if (credits is not null && credits < 0)
+                throw new ArgumentException("InterviewCredits must be >= 0.");
+            if (days is not null && days < 0)
+                throw new ArgumentException("DurationDays must be >= 0.");
         }
     }
 }

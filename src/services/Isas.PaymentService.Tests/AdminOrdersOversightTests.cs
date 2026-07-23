@@ -74,7 +74,7 @@ public class AdminOrdersOversightTests
         await SeedOrderAsync(tdb, OwnerType.User, userA, OrderStatus.Paid, 1002);
         await SeedOrderAsync(tdb, OwnerType.Org, orgB, OrderStatus.Paid, 1003);
 
-        var res = await NewService(tdb).ListAllOrdersAsync(null, null, null, null);
+        var res = await NewService(tdb).ListAllOrdersAsync(null, null, null, null, null);
 
         Assert.Equal(3, res.Items.Count);
         Assert.Null(res.NextCursor);   // < default limit → last page (backward-compat: no cursor emitted)
@@ -92,15 +92,15 @@ public class AdminOrdersOversightTests
         await SeedOrderAsync(tdb, OwnerType.User, user, OrderStatus.Paid, 2002);
         await SeedOrderAsync(tdb, OwnerType.Org, org, OrderStatus.Paid, 2003);
 
-        var paid = await NewService(tdb).ListAllOrdersAsync(OrderStatus.Paid, null, null, null);
+        var paid = await NewService(tdb).ListAllOrdersAsync(OrderStatus.Paid, null, null, null, null);
         Assert.Equal(2, paid.Items.Count);
         Assert.All(paid.Items, o => Assert.Equal(OrderStatus.Paid, o.Status));
 
-        var orgs = await NewService(tdb).ListAllOrdersAsync(null, OwnerType.Org, null, null);
+        var orgs = await NewService(tdb).ListAllOrdersAsync(null, OwnerType.Org, null, null, null);
         Assert.Single(orgs.Items);
         Assert.Equal(org, orgs.Items[0].OwnerId);
 
-        var both = await NewService(tdb).ListAllOrdersAsync(OrderStatus.Paid, OwnerType.User, null, null);
+        var both = await NewService(tdb).ListAllOrdersAsync(OrderStatus.Paid, OwnerType.User, null, null, null);
         Assert.Single(both.Items);
         Assert.Equal(2002, both.Items[0].PayosOrderCode);
     }
@@ -119,7 +119,7 @@ public class AdminOrdersOversightTests
         var pages = 0;
         do
         {
-            var page = await NewService(tdb).ListAllOrdersAsync(null, null, cursor, 2);
+            var page = await NewService(tdb).ListAllOrdersAsync(null, null, null, cursor, 2);
             Assert.True(page.Items.Count <= 2);
             seen.AddRange(page.Items.Select(o => o.PayosOrderCode));
             cursor = page.NextCursor;
@@ -144,7 +144,7 @@ public class AdminOrdersOversightTests
         string? cursor = null;
         for (var i = 0; i < 5 && (i == 0 || cursor is not null); i++)
         {
-            var page = await NewService(tdb).ListAllOrdersAsync(null, null, cursor, 1);
+            var page = await NewService(tdb).ListAllOrdersAsync(null, null, null, cursor, 1);
             seen.AddRange(page.Items.Select(o => o.PayosOrderCode));
             cursor = page.NextCursor;
         }
@@ -161,7 +161,7 @@ public class AdminOrdersOversightTests
         await SeedOrderAsync(tdb, OwnerType.User, Guid.NewGuid(), OrderStatus.Pending, 5001);
         await SeedOrderAsync(tdb, OwnerType.User, Guid.NewGuid(), OrderStatus.Pending, 5002);
 
-        var page = await NewService(tdb).ListAllOrdersAsync(null, null, "not-a-valid-cursor", null);
+        var page = await NewService(tdb).ListAllOrdersAsync(null, null, null, "not-a-valid-cursor", null);
 
         Assert.Equal(2, page.Items.Count);   // garbage cursor treated as first page, never throws
     }
