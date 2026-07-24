@@ -124,6 +124,11 @@
 - **BK9 → doc-only (đã làm):** event-bus convention vào [architecture.md](architecture.md) §6 (exchange `interview.events` topic + key `session.scored`/`session.abandoned` + queue `campaign.ranking`(E4)/`payment.credit`(E7)). Code E2/E3/E4/E7 đã khớp — chỉ chốt doc.
 - **BK10 → BỎ:** BC3/BC4 (consume/release ví cá nhân B2C) = **covered-by-E7** — `InterviewEventConsumer` (E7) consume/release **generic mọi session** theo reservation (gồm B2C owner=User từ BC2); B2C Failed→release đã có ở BK12. Không cần path B2C riêng → BC3/BC4 đánh **covered-by-E7** (chỉ cần test e2e khi có broker).
 
+## D26 — PONR: tính credit khi bộ câu hỏi đã materialize (2026-07-24)
+**Quyết định:** sau khi session và bộ câu hỏi đã được commit ở `Ready`, consume 1 credit ngay thay vì đợi `Scored`, áp cho B2C, roadmap lesson và B2B. Lỗi trước `Ready` (validation, AI, DB) release. No-show sau mốc cutover không release; PONR2 xử lý miễn trừ B2B bằng refund riêng.
+**Vì sao:** chặn vòng lặp reserve → sinh AI → bỏ ngang → release để dùng AI miễn phí vô hạn; không viện dẫn lý do “đồng bộ chi phí” vì sinh câu hỏi chỉ chiếm phần nhỏ tổng token.
+**Rollout:** `Billing:ConsumeAtQuestionGeneration=false` là mặc định cho tới khi PONR3 đã hiện cảnh báo. Khi bật, đặt `OrphanReconcile:ConsumeFromUtc` cùng mốc để Payment chỉ áp luật mới cho reservation sau cutover.
+
 ## D25 — Magic-link hiện tại là ĐỦ cho FR12; KHÔNG thêm mật khẩu cho link test (2026-07-19)
 **Quyết định:** **Ratify tài liệu**, không viết code — task `F23` đóng ở trạng thái *ratified, không làm*. Đường vào bài thi B2B giữ nguyên **magic-link bearer token**: 256-bit CSPRNG · lưu **hash SHA-256** (DB23, không còn plaintext trong DB) · có hạn (`expires_at`) · revoke được · single-use · reissue được (D4).
 **Vì sao:** câu chữ FR12 ("link test có mật khẩu") mô tả *phương tiện*, còn thứ cần đạt là *chỉ đúng ứng viên được mời mới vào được bài*. Token hiện tại đã đạt mục tiêu đó với entropy 256-bit — thêm mật khẩu **không tăng an toàn thật** mà còn có khả năng **giảm**: mật khẩu do HR đặt sẽ ngắn, đoán được, dùng lại giữa các campaign, và **được gửi qua chính email chứa link** ⇒ kẻ đọc được email thì có cả hai, còn ứng viên thật thì thêm một bước hỏng việc. Bịt được lỗ mà token chưa bịt (email bị chuyển tiếp) là bài toán **định danh**, và hệ thống đã giải bằng hướng khác: face-verify + anti-cheat flag (SEC-1→SEC-4, D13).

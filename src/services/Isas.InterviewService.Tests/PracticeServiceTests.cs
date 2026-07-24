@@ -3,6 +3,7 @@ using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -25,7 +26,8 @@ public class PracticeServiceTests
     private static PracticeService Build(
         TestDb t, Mock<IAiServiceQuestionGenerator> gen,
         out Mock<ISessionScoringNotifier> scoringNotifier,
-        out Mock<ICreditReservationClient> reservation)
+        out Mock<ICreditReservationClient> reservation,
+        IConfiguration? config = null)
     {
         scoringNotifier = new Mock<ISessionScoringNotifier>();
         scoringNotifier
@@ -40,7 +42,7 @@ public class PracticeServiceTests
 
         return new PracticeService(
             t.Db, new Mock<IStorageService>().Object, gen.Object, scoringNotifier.Object,
-            reservation.Object, NullLogger<PracticeService>.Instance);
+            reservation.Object, NullLogger<PracticeService>.Instance, config: config);
     }
 
     [Fact]
@@ -57,7 +59,7 @@ public class PracticeServiceTests
                 new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" }
             });
 
-        var svc = Build(t, gen);
+        var svc = Build(t, gen, out _, out var reservation);
         var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE);
 
         var res = await svc.CreateSessionAsync(candidate, req);
@@ -74,6 +76,34 @@ public class PracticeServiceTests
         var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
         Assert.False(s.AdaptiveEnabled);
         Assert.All(res.Questions, q => Assert.Equal("Seed", q.Kind));
+        // PONR1 rollout: thiếu config phải giữ luật cũ cho đến khi PONR3 đã thông báo trên UI.
+        // Đây là guard chống vô tình bật thu tại Ready khi deploy image mới.
+        reservation.Verify(r => r.ConsumeAsync(res.Id, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Create_ConsumeAtGenerationExplicitlyEnabled_ConsumesOnlyAfterReady()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
+
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Billing:ConsumeAtQuestionGeneration"] = "true"
+        }).Build();
+        var svc = Build(t, gen, out _, out var reservation, config);
+
+        var result = await svc.CreateSessionAsync(candidate,
+            new CreatePracticeSessionRequest(null, null, JobCategory.BE));
+
+        var session = await t.Db.PracticeSessions.AsNoTracking().SingleAsync(s => s.Id == result.Id);
+        Assert.Equal(SessionStatus.Ready, session.Status);
+        reservation.Verify(r => r.ConsumeAsync(result.Id, It.IsAny<CancellationToken>()), Times.Once);
+        reservation.Verify(r => r.ReleaseAsync(result.Id, It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // Phỏng vấn THÍCH ỨNG (B2C): Adaptive:Enabled → chỉ giữ SeedCount câu SEED (dù AI trả nhiều hơn) +
@@ -184,7 +214,11 @@ public class PracticeServiceTests
         var candidate = Guid.NewGuid();
         var orgId = Guid.NewGuid();
 
-        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out _, out var reservation);
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Billing:ConsumeAtQuestionGeneration"] = "true"
+        }).Build();
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out _, out var reservation, config);
 
         var req = new CreateCampaignSessionRequest(
             Guid.NewGuid(), orgId, JobCategory.BE,
@@ -238,7 +272,11 @@ public class PracticeServiceTests
         var orgId = Guid.NewGuid();
         var campaignId = Guid.NewGuid();
 
-        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out _, out var reservation);
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Billing:ConsumeAtQuestionGeneration"] = "true"
+        }).Build();
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>(), out _, out var reservation, config);
 
         CreateCampaignSessionRequest Req() => new(
             campaignId, orgId, JobCategory.BE,
@@ -252,6 +290,8 @@ public class PracticeServiceTests
         // Reserve chỉ 1 lần (lúc tạo mới), lần 2 (get) không reserve.
         reservation.Verify(r => r.ReserveAsync("Org", orgId, It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
             Times.Once);
+        // PONR1: request Start lặp trả cùng session đã Consumed, tuyệt đối không gọi consume lần hai.
+        reservation.Verify(r => r.ConsumeAsync(first.Id, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // P1 (B2C audit): thiếu jobCategory (null) → 400 (InvalidOperationException → BadRequest) TRƯỚC

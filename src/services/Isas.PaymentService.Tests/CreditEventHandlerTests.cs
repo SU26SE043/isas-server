@@ -3,6 +3,7 @@ using Isas.PaymentService.DTOs;
 using Isas.PaymentService.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using PaymentService.Models;
 
@@ -16,8 +17,10 @@ namespace Isas.PaymentService.Tests;
 //  (d) gọi lại cùng session (redeliver) → idempotent: KHÔNG trừ/hoàn kép (service thật + SQLite).
 public class CreditEventHandlerTests
 {
-    private static CreditEventHandler NewHandler(ICreditAccountService credits) =>
-        new(credits, Mock.Of<ILogger<CreditEventHandler>>());
+    private static CreditEventHandler NewHandler(
+        ICreditAccountService credits, DateTime? consumeFromUtc = null) =>
+        new(credits, Mock.Of<ILogger<CreditEventHandler>>(),
+            Options.Create(new OrphanReconcileSettings { ConsumeFromUtc = consumeFromUtc }));
 
     private static string ScoredJson(Guid sessionId, Guid? campaignId = null) =>
         JsonSerializer.Serialize(new SessionScoredMessage
@@ -29,13 +32,13 @@ public class CreditEventHandlerTests
             ScoredAt = DateTime.UtcNow
         });
 
-    private static string AbandonedJson(Guid sessionId) =>
+    private static string AbandonedJson(Guid sessionId, string reason = "expired_no_answer") =>
         JsonSerializer.Serialize(new SessionAbandonedMessage
         {
             SessionId = sessionId,
             CampaignId = null,
             CandidateId = Guid.NewGuid(),
-            Reason = "expired_no_answer",
+            Reason = reason,
             AbandonedAt = DateTime.UtcNow
         });
 
@@ -69,6 +72,41 @@ public class CreditEventHandlerTests
 
         credits.Verify(c => c.ReleaseAsync(sessionId, It.IsAny<CancellationToken>()), Times.Once);
         credits.Verify(c => c.ConsumeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // PONR1 Risk④: sau cutover, abandon không được hoàn chỗ giữ nếu inline-consume tại Ready bị lỗi.
+    // Giữ Reserved để R1 consume bù; nếu release ở đây sẽ mở lại vòng sinh câu hỏi AI miễn phí.
+    [Fact]
+    public async Task SessionAbandoned_SauPONRCutover_ReservationConReserved_KhongRelease()
+    {
+        var sessionId = Guid.NewGuid();
+        var mark = DateTime.UtcNow.AddMinutes(-1);
+        var credits = new Mock<ICreditAccountService>(MockBehavior.Strict);
+        credits.Setup(c => c.GetReservationGateSnapshotAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ReservationGateSnapshot(true, mark));
+
+        await NewHandler(credits.Object, mark)
+            .HandleAsync(CreditEventHandler.SessionAbandonedRoutingKey, AbandonedJson(sessionId));
+
+        credits.Verify(c => c.ReleaseAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        credits.Verify(c => c.ConsumeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // generation_failed luôn xảy ra trước Ready/materialize, nên dù reservation tạo sau cutover vẫn phải hoàn.
+    [Fact]
+    public async Task SessionAbandoned_GenerationFailed_SauPONRCutover_VanRelease()
+    {
+        var sessionId = Guid.NewGuid();
+        var credits = new Mock<ICreditAccountService>(MockBehavior.Strict);
+        credits.Setup(c => c.ReleaseAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReleaseResult.Released(Guid.NewGuid()));
+
+        await NewHandler(credits.Object, DateTime.UtcNow.AddMinutes(-1))
+            .HandleAsync(CreditEventHandler.SessionAbandonedRoutingKey,
+                AbandonedJson(sessionId, "generation_failed"));
+
+        credits.Verify(c => c.GetReservationGateSnapshotAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        credits.Verify(c => c.ReleaseAsync(sessionId, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // (c) routing key lạ → bỏ qua, KHÔNG gọi Consume/Release.

@@ -55,10 +55,10 @@
 - **CAMP-13** Soft-delete + `audit_logs` mọi mutation; purge file S3 sau 90 ngày (giữ điểm/transcript) (D11).
 
 ## PAY — Thanh toán & Credit
-- **PAY-1** Credit = 1 lượt phỏng vấn AI-chấm; không metering token (D4).
+- **PAY-1** Credit = 1 lượt phỏng vấn có bộ câu hỏi AI được materialize bền vững ở `Ready`; không metering token (D4/D26). Khi `Billing:ConsumeAtQuestionGeneration=false` (mặc định trong giai đoạn PONR3 chưa deploy), hệ thống giữ luật cũ consume lúc `Scored`.
 - **PAY-2** Chủ ví Org (B2B) hoặc User (B2C, prepaid-only) — `owner_type`/`owner_id` (D5/D15).
 - **PAY-3** Prepaid (pack) + Postpaid (chỉ Org, PlatformAdmin duyệt, `credit_limit`, hóa đơn cuối kỳ) (D6).
-- **PAY-4** `Reserve → Consume (Scored) → Release`; idempotent theo `session_id` (D7).
+- **PAY-4** `Reserve → Consume → Release`, idempotent theo `session_id`. PONR1 bật tường minh: consume ngay sau commit `Ready` + questions; trước mốc đó (validation/AI/DB lỗi) release. `SessionAbandoned` sau `OrphanReconcile:ConsumeFromUtc` không release; R1 consume bù nếu inline consume lỗi.
 - **PAY-5** Reserve trừ `remaining` ngay (atomic) chống double-spend; hết → **402**, không tạo session.
 - **PAY-6** Ai reserve: **InterviewService reserve cho CẢ HAI dòng** khi tạo session (reserve-first, tránh orphan); owner do caller truyền — **B2B = Org** (Campaign gửi `campaign.OrgId` qua `/internal/sessions/campaign`), **B2C = User** (candidateId). Hết credit → **402, không tạo session**. *(BK14 — trước đây B2B chưa wire; consume/release vẫn theo event, lấy owner từ reservation.)*
 - **PAY-7** `order_code` = time + random, ≤ 9.007.199.254.740.991 (trần PayOS, D12).
@@ -68,7 +68,7 @@
 - **PAY-11** Reservation Consumed/Released = absorbing; event ra ngoài thứ tự → bỏ qua (không trừ/hoàn oan).
 - **PAY-12** Đình chỉ (Suspended) → chặn hành động tương lai, **không văng người đang thi**.
 - **PAY-14** ✅ **Suất dùng thử B2C (F7):** ví của một **`User`** được tặng **3 credit ngay lúc TẠO ví** (`Billing:FreeTrialCredits`, `0` = tắt) — chỉ `owner_type=User`, ví **Org không có** (B2B đi ví Org, BC-1). Cấp ở **đúng một chỗ**: bên trong câu INSERT của `CreateAccountAsync`, nên phủ cả đường webhook Paid lẫn đường **tạo ví lúc reserve đầu tiên** (mới, để user chưa từng mua không còn nhận 402). Credit tặng **KHÔNG phải xô riêng** — nằm chung `remaining_credits`, tiêu theo đúng PAY-4/PAY-11/PAY-13, và mỗi lần cấp ghi **1 bút toán `FreeGrant +N`** để bất biến `remaining + reserved = Σ delta` vẫn đúng. **Ví đã tồn tại không bao giờ được top-up**; **không backfill** ví cũ. Chi tiết: [services/payment.md](services/payment.md) §Suất dùng thử B2C.
-- **PAY-13** 1 credit = 1 lượt **được AI chấm** (PAY-1). Session đóng mà **KHÔNG answer nào đạt `Scored`** (mọi answer `Failed`/`Skipped`, `scoredCount==0`) → **KHÔNG consume**: đóng session sang `SessionAbandoned` + phát `SessionAbandoned` (E7 **release** reservation), **không** phát `SessionScored`. Áp cả 2 điểm đóng session (callback chấm dần `AnswerService` + nhánh đóng-ngay `PracticeService.SubmitSession`). Đường ≥1 answer `Scored` giữ nguyên (Scored + consume). *(B2C: candidate không bị trừ credit ví khi cả buổi lỗi chấm.)*
+- **PAY-13** Khi PONR1 được bật sau PONR3, `Ready` là point of no return: session không có answer hay no-show vẫn đã tính 1 credit. Ngoại lệ duy nhất là lỗi trước materialize (`generation_failed`, validation, AI/DB lỗi) → release, không thu. PONR2 sẽ bổ sung hoàn có hạn mức cho B2B no-show bằng bút toán riêng; không thuộc PONR1.
 
 ## AI — Độ tin cậy
 - **AI-1** Sinh câu hỏi ưu tiên JD > CV > JobCategory; chấm `temperature=0`.

@@ -50,8 +50,12 @@ public class PracticeService : IPracticeService
         _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
         _benchmarks = benchmarks;
         _logger = logger;
-        _consumeAtGeneration = !string.Equals(
-            config?["Billing:ConsumeAtQuestionGeneration"], "false", StringComparison.OrdinalIgnoreCase);
+        // PONR1/PONR3 — thu ở mốc Ready là thay đổi chính sách tiền. Phải opt-in tường minh;
+        // thiếu/sai config = luật cũ (consume khi Scored), để không thể bật thu tiền trước khi UI
+        // PONR3 đã thông báo cho người dùng.
+        _consumeAtGeneration = bool.TryParse(
+            config?["Billing:ConsumeAtQuestionGeneration"], out var consumeAtGeneration)
+            && consumeAtGeneration;
     }
 
     // ── CREATE: tạo session + sinh câu hỏi (1 call) ───────────────────────

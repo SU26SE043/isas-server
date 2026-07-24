@@ -293,12 +293,24 @@ namespace Isas.PaymentService.Services
         // consume tại mốc sinh câu hỏi nhưng inline-consume (PracticeService.ConsumeQuietlyAsync) đã hụt.
         // R1 hoàn tất khoản thu đó Ở ĐÂY thay vì hoàn nó — đúng vai trò lưới cuối của reconciler này.
         //
-        // Dùng CHUNG 3 lớp gác với TryConsumeScoredAsync (không tách bản sao logic) — chỉ khác chỗ gọi.
-        // ⚠ Log bên trong TryConsumeScoredAsync ghi "đã Scored" — với nhánh này câu chữ không hoàn toàn
-        // đúng (session thực ra là SessionAbandoned), nhưng hành vi/số liệu 100% đúng. Muốn log chuẩn xác
-        // hơn thì cần đổi chữ ký TryConsumeScoredAsync — rủi ro phá test reflection hiện có, để sau nếu cần.
-        private Task<bool> TryConsumeAbandonedPastCutoverAsync(
+        // Không dùng ConsumeTerminalScored: đó là kill-switch recovery R1 cho ca đã Scored, còn PONR1 là
+        // chính sách đã được bật riêng bằng ConsumeFromUtc. Dùng chung sẽ làm reservation kẹt Reserved khi
+        // R1 tắt, rồi biến no-show sau PONR thành một khoản không thu cũng không hoàn.
+        private async Task<bool> TryConsumeAbandonedPastCutoverAsync(
             ICreditAccountService accountService, Guid sessionId, DateTime reservationCreatedAt, CancellationToken ct)
-            => TryConsumeScoredAsync(accountService, sessionId, reservationCreatedAt, ct);
+        {
+            try
+            {
+                var result = await accountService.ConsumeAsync(sessionId, ct);
+                return result.Outcome == ConsumeOutcome.Consumed;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "PONR1: không thể consume chỗ giữ SessionAbandoned sau cutover cho session {SessionId}, bỏ qua",
+                    sessionId);
+                return false;
+            }
+        }
     }
 }

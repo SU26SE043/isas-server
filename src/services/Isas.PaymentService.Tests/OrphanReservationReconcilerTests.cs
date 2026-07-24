@@ -363,9 +363,9 @@ public class OrphanReservationReconcilerTests
         Assert.Equal(5, acc.RemainingCredits);
     }
 
-    // SessionAbandoned — ca production `ee655e32` (user mất oan 1 credit) → hoàn chỗ giữ (E7).
+    // PONR1: SessionAbandoned sau cutover phải thu. Nếu inline consume ở Interview hụt, R1 hoàn tất thu.
     [Fact]
-    public async Task R1_SessionAbandoned_ThiRelease()
+    public async Task PONR1_SessionAbandoned_SauCutover_ThiConsume()
     {
         using var tdb = new PaymentTestDb();
         var owner = Guid.NewGuid();
@@ -378,11 +378,11 @@ public class OrphanReservationReconcilerTests
             await ScanOnce(r);
 
         using var read = tdb.NewContext();
-        Assert.Equal(ReservationStatus.Released,
+        Assert.Equal(ReservationStatus.Consumed,
             (await read.CreditReservations.SingleAsync(x => x.SessionId == abandoned)).Status);
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == owner);
         Assert.Equal(0, acc.ReservedCredits);
-        Assert.Equal(10, acc.RemainingCredits);   // hoàn chỗ giữ
+        Assert.Equal(9, acc.RemainingCredits);    // consume không hoàn remaining
     }
 
     // Failed = lỗi sinh câu hỏi → user không nhận được gì → release (BK12 vốn phát SessionAbandoned).
@@ -540,10 +540,10 @@ public class OrphanReservationReconcilerTests
         Assert.Empty(await read.CreditTransactions.Where(t => t.OwnerId == owner).ToListAsync());
     }
 
-    // Quyết định A — công tắc riêng cho nhánh trừ tiền: tắt được ngay bằng env, khỏi rollback image.
-    // Nhánh release vẫn phải chạy bình thường khi cờ tắt (nửa an toàn không bị tắt theo).
+    // Kill-switch R1 chỉ tắt recovery cho session Scored. PONR1 đã qua cutover vẫn phải consume no-show,
+    // nếu không reservation sẽ kẹt Reserved và chính sách thu tại Ready bị vô hiệu trong im lặng.
     [Fact]
-    public async Task R1_ConsumeTat_ScoredSkip_NhungAbandonedVanRelease()
+    public async Task PONR1_ConsumeR1Tat_ScoredSkip_NhungAbandonedVanConsume()
     {
         using var tdb = new PaymentTestDb();
         var owner = Guid.NewGuid();
@@ -560,11 +560,11 @@ public class OrphanReservationReconcilerTests
         using var read = tdb.NewContext();
         Assert.Equal(ReservationStatus.Reserved,   // nhánh trừ tiền TẮT
             (await read.CreditReservations.SingleAsync(x => x.SessionId == scored)).Status);
-        Assert.Equal(ReservationStatus.Released,   // nhánh hoàn tiền vẫn chạy
+        Assert.Equal(ReservationStatus.Consumed,   // PONR1 không phụ thuộc kill-switch R1
             (await read.CreditReservations.SingleAsync(x => x.SessionId == abandoned)).Status);
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == owner);
-        Assert.Equal(1, acc.ReservedCredits);
-        Assert.Equal(9, acc.RemainingCredits);
+        Assert.Equal(1, acc.ReservedCredits);     // session Scored giữ lại vì kill-switch R1 đang tắt
+        Assert.Equal(8, acc.RemainingCredits);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -677,12 +677,12 @@ public class OrphanReservationReconcilerTests
         using var read = tdb.NewContext();
         var byId = await read.CreditReservations.ToDictionaryAsync(x => x.SessionId, x => x.Status);
         Assert.Equal(ReservationStatus.Consumed, byId[scored]);
-        Assert.Equal(ReservationStatus.Released, byId[abandoned]);
+        Assert.Equal(ReservationStatus.Consumed, byId[abandoned]);
         Assert.Equal(ReservationStatus.Reserved, byId[live]);
         Assert.Equal(ReservationStatus.Released, byId[orphan]);   // không có trong existingIds
 
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == owner);
-        Assert.Equal(1, acc.ReservedCredits);     // 4 − 3 (1 consume + 2 release)
-        Assert.Equal(8, acc.RemainingCredits);    // 6 + 2 (chỉ release hoàn, consume KHÔNG)
+        Assert.Equal(1, acc.ReservedCredits);     // 4 − 3 (2 consume + 1 release)
+        Assert.Equal(7, acc.RemainingCredits);    // 6 + 1 (chỉ orphan release hoàn)
     }
 }
