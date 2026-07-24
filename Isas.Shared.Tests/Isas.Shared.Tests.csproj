@@ -18,8 +18,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\Isas.Shared\Isas.Shared.csproj" />
-		<ProjectReference Include="..\src\shared\Isas.Shared\Isas.Shared.csproj" />
+	  <ProjectReference Include="..\src\shared\Isas.Shared\Isas.Shared.csproj" />
 	</ItemGroup>
 
 </Project>
