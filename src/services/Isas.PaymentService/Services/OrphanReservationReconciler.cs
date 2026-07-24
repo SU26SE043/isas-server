@@ -267,5 +267,18 @@ namespace Isas.PaymentService.Services
                 return false;
             }
         }
+
+        // R1 Risk④/PONR1 — nhánh MỚI: session SessionAbandoned (no-show/hết hạn/không hoạt động — KHÔNG
+        // phải lỗi sinh câu hỏi) mà chỗ giữ vẫn Reserved và được tạo SAU mốc cutover PONR1 → PONR1 lẽ ra đã
+        // consume tại mốc sinh câu hỏi nhưng inline-consume (PracticeService.ConsumeQuietlyAsync) đã hụt.
+        // R1 hoàn tất khoản thu đó Ở ĐÂY thay vì hoàn nó — đúng vai trò lưới cuối của reconciler này.
+        //
+        // Dùng CHUNG 3 lớp gác với TryConsumeScoredAsync (không tách bản sao logic) — chỉ khác chỗ gọi.
+        // ⚠ Log bên trong TryConsumeScoredAsync ghi "đã Scored" — với nhánh này câu chữ không hoàn toàn
+        // đúng (session thực ra là SessionAbandoned), nhưng hành vi/số liệu 100% đúng. Muốn log chuẩn xác
+        // hơn thì cần đổi chữ ký TryConsumeScoredAsync — rủi ro phá test reflection hiện có, để sau nếu cần.
+        private Task<bool> TryConsumeAbandonedPastCutoverAsync(
+            ICreditAccountService accountService, Guid sessionId, DateTime reservationCreatedAt, CancellationToken ct)
+            => TryConsumeScoredAsync(accountService, sessionId, reservationCreatedAt, ct);
     }
 }
