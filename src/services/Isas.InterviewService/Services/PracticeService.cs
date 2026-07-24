@@ -51,7 +51,7 @@ public class PracticeService : IPracticeService
         _benchmarks = benchmarks;
         _logger = logger;
         _consumeAtGeneration = !string.Equals(
-            config?["Billing:ConsumeAtQuestionGeneration"], "false", StringComparison.OrdinalIgnoreCase);
+            config?["Billing:ConsumeAtQuestionGeneration"], "true", StringComparison.OrdinalIgnoreCase);
     }
 
     // ── CREATE: tạo session + sinh câu hỏi (1 call) ───────────────────────
