@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace Isas.Shared.Analytics
+﻿namespace Isas.Shared.Analytics
 {
     public sealed record TrafficWindowStat(
         DateTime WindowStart,
