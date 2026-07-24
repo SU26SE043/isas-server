@@ -25,6 +25,7 @@ public class PracticeService : IPracticeService
     private readonly AdaptiveOptions _adaptive;   // phỏng vấn THÍCH ỨNG (B2C seed count + toggle)
     private readonly ICriterionBenchmarkService? _benchmarks;   // F14 — mốc đối chiếu radar (null = tắt)
     private readonly ILogger<PracticeService> _logger;
+    private readonly bool _consumeAtGeneration;   // PONR1 — kill-switch Billing:ConsumeAtQuestionGeneration
 
     public PracticeService(
         InterviewDbContext db,
@@ -38,7 +39,8 @@ public class PracticeService : IPracticeService
         IOptions<AdaptiveOptions>? adaptiveOptions = null,
         // F14 — optional cùng lý do: test cũ dựng service không truyền → không có benchmark, kết quả
         // giữ nguyên hình dạng trước F14 (Benchmark=null) thay vì vỡ.
-        ICriterionBenchmarkService? benchmarks = null)
+        ICriterionBenchmarkService? benchmarks = null,
+        IConfiguration? config = null)
     {
         _db = db;
         _storage = storage;
@@ -48,6 +50,8 @@ public class PracticeService : IPracticeService
         _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
         _benchmarks = benchmarks;
         _logger = logger;
+        _consumeAtGeneration = !string.Equals(
+            config?["Billing:ConsumeAtQuestionGeneration"], "false", StringComparison.OrdinalIgnoreCase);
     }
 
     // ── CREATE: tạo session + sinh câu hỏi (1 call) ───────────────────────
@@ -214,6 +218,9 @@ public class PracticeService : IPracticeService
                 session.Id, session.JobCategory, questions.Count,
                 cvText != null, jdText != null);
 
+            if (_consumeAtGeneration)
+                await ConsumeQuietlyAsync(session.Id, ct);
+
             return MapToResponse(session, questions, new List<PracticeAnswer>());
         }
         catch (Exception ex)
@@ -320,6 +327,9 @@ public class PracticeService : IPracticeService
             _logger.LogInformation(
                 "Tạo session B2B {SessionId} cho campaign {CampaignId} ({Q} câu, materialize criteria={Mat})",
                 session.Id, request.CampaignId, questions.Count, !alreadyMaterialized);
+
+            if(_consumeAtGeneration)
+                await ConsumeQuietlyAsync(session.Id, ct);
 
             return MapToResponse(session, questions, new List<PracticeAnswer>());
         }
@@ -852,5 +862,21 @@ public class PracticeService : IPracticeService
             a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview,
             a.SampleAnswer,   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
             DeliveryMetricsMapper.Read(a));   // F11 — chỉ số trôi chảy (null khi chưa đo được)
+    }
+
+    private async Task ConsumeQuietlyAsync(Guid sessionId, CancellationToken ct)
+    {
+        try
+        {
+            await _reservationClient.ConsumeAsync(sessionId, ct);
+            _logger.LogInformation(
+                "PONR1: consume 1 credit cho session {SessionId} tại mốc sinh câu hỏi", sessionId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "PONR1: consume credit lỗi cho session {SessionId} sau khi đã Ready/materialize → " +
+                "reservation còn Reserved, chờ lưới cuối E7/R1 hoàn tất thu (KHÔNG release)", sessionId);
+        }
     }
 }
