@@ -5,6 +5,11 @@ using PaymentService.Models;
 
 namespace Isas.PaymentService.Services
 {
+    // PONR1 Risk④ — snapshot tối thiểu để CreditEventHandler (E7) quyết định release hay không, mà
+    // KHÔNG cần biết ReservationStatus/CreditReservation (giữ CreditEventHandler không phải thêm
+    // using Isas.PaymentService.Models). IsStillReserved thay vì trả nguyên enum Status: chỉ đúng MỘT
+    // câu hỏi E7 cần trả lời ("có còn Reserved để release không"), không rò thêm chi tiết ra ngoài.
+    public sealed record ReservationGateSnapshot(bool IsStillReserved, DateTime CreatedAt);
     public class CreditAccountService : ICreditAccountService
     {
         private readonly PaymentDbContext _db;
@@ -553,6 +558,22 @@ namespace Isas.PaymentService.Services
             await tx.CommitAsync(ct);
 
             return ReleaseResult.Released(reservation.Id);
+        }
+
+        /// <summary>
+        /// PONR1 Risk④ — đọc thuần trạng thái + thời điểm tạo reservation của 1 session, phục vụ
+        /// CreditEventHandler (E7) quyết định gate release theo mốc cutover. KHÔNG đổi gì. null = chưa
+        /// từng reserve session này (mirror Consume/ReleaseAsync: miss-reserve → caller tự quyết no-op).
+        /// </summary>
+        public async Task<ReservationGateSnapshot?> GetReservationGateSnapshotAsync(
+            Guid sessionId, CancellationToken ct = default)
+        {
+            var reservation = await _db.CreditReservations.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.SessionId == sessionId, ct);
+
+            return reservation is null
+                ? null
+                : new ReservationGateSnapshot(reservation.Status == ReservationStatus.Reserved, reservation.CreatedAt);
         }
     }
 }
