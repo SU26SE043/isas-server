@@ -46,5 +46,6 @@ namespace Isas.PaymentService.Services
         /// reservation (nguồn chân lý), không tin owner trong request.
         /// </summary>
         Task<ReleaseResult> ReleaseAsync(Guid sessionId, CancellationToken ct = default);
+        Task<ReservationGateSnapshot?> GetReservationGateSnapshotAsync(Guid sessionId, CancellationToken ct = default);
     }
 }
