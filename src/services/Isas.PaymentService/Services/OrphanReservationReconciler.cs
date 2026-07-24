@@ -179,9 +179,29 @@ namespace Isas.PaymentService.Services
 
                 // (d) Terminal "không chấm được gì" → hoàn chỗ giữ. SessionAbandoned = bỏ ngang (E7);
                 //     Failed = lỗi sinh câu hỏi (BK12 vốn phát SessionAbandoned để release).
-                if (string.Equals(status, StatusSessionAbandoned, StringComparison.Ordinal) ||
-                    string.Equals(status, StatusFailed, StringComparison.Ordinal))
+                if (string.Equals(status, StatusFailed, StringComparison.Ordinal))
                 {
+                    if (await TryReleaseAsync(accountService, sessionId, $"session {status}", ct))
+                        released++;
+                    continue;
+                }
+
+                // (d') SessionAbandoned = bỏ ngang SAU KHI có thể đã được consume tại mốc sinh câu hỏi (PONR1).
+                //      Dùng _options.ConsumeFromUtc THÔ (KHÔNG dùng _consumeFromUtc đã fallback "giờ khởi động"
+                //      của nhánh (c) — nhánh (c) là tính năng CŨ đã sống, còn nhánh này PHẢI "dark" đúng nghĩa cho
+                //      tới khi ops cấu hình tường minh, nếu không R1 sẽ tự trừ tiền no-show hợp lệ ngay khi
+                //      PaymentService restart — kể cả TRƯỚC KHI Interview bật Billing:ConsumeAtQuestionGeneration.
+                if (string.Equals(status, StatusSessionAbandoned, StringComparison.Ordinal))
+                {
+                    if (_options.ConsumeFromUtc is { } mark && candidate.CreatedAt >= mark)
+                    {
+                        if (await TryConsumeAbandonedPastCutoverAsync(accountService, sessionId, candidate.CreatedAt, ct))
+                            consumed++;
+                        continue;
+                    }
+
+                    // Trước mốc cutover (hoặc PONR1 phía Payment chưa kích hoạt — ConsumeFromUtc chưa cấu hình) →
+                    // hành vi CŨ, hoàn chỗ giữ.
                     if (await TryReleaseAsync(accountService, sessionId, $"session {status}", ct))
                         released++;
                     continue;
