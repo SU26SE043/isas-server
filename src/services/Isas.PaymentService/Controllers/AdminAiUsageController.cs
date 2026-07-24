@@ -1,5 +1,6 @@
 using Isas.PaymentService.DTOs;
 using Isas.PaymentService.Services;
+using Isas.Shared.Analytics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -17,6 +18,15 @@ namespace Isas.PaymentService.Controllers
     public class AdminAiUsageController : ControllerBase
     {
         private readonly IAiUsageService _usage;
+
+        // Chỉ day/month — KHÔNG đổi tập hợp lệ so với bản cũ, dù helper dùng chung hỗ trợ "hour"
+        // (Payment traffic §B2 sẽ khai bộ riêng của nó).
+        private static readonly IReadOnlyDictionary<string, AnalyticsGranularity> AllowedGranularities =
+            new Dictionary<string, AnalyticsGranularity>
+            {
+                ["day"] = AnalyticsGranularity.Day,
+                ["month"] = AnalyticsGranularity.Month,
+            };
 
         public AdminAiUsageController(IAiUsageService usage) => _usage = usage;
 
