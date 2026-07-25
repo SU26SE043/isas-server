@@ -6,7 +6,9 @@ using PaymentService.Models;
 
 namespace Isas.PaymentService.Controllers;
 
-[ApiController, Route("admin/traffic"), Authorize(Roles = "Admin")]
+[ApiController]
+[Route("admin/traffic")] 
+[Authorize(Roles = "Admin")]
 public sealed class AdminTrafficController(PaymentDbContext db) : ControllerBase
 {
     private static readonly IReadOnlyDictionary<string, AnalyticsGranularity> Allowed = new Dictionary<string, AnalyticsGranularity> { ["hour"] = AnalyticsGranularity.Hour, ["day"] = AnalyticsGranularity.Day };
