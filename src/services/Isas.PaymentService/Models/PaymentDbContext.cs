@@ -18,6 +18,7 @@ namespace PaymentService.Models
         // F22 — CHI PHÍ vận hành (token AI), KHÔNG phải tiền của người dùng: không FK/CHECK nào nối nó với
         // credit_accounts. Xem AiUsageLog để biết vì sao bảng này ở Payment mà không ở AIService (GEN-4).
         public DbSet<AiUsageLog> AiUsageLogs => Set<AiUsageLog>();
+        public DbSet<HttpTrafficStat> HttpTrafficStats => Set<HttpTrafficStat>();
 
         // DB14 — đóng dấu updated_at TỰ ĐỘNG cho mọi entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()
         // parameterless của EF gọi xuống overload (bool) này nên chỉ cần override 2 overload dưới là đủ mọi
@@ -476,6 +477,15 @@ namespace PaymentService.Models
                 e.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_ai_usage_logs_created_at");
                 e.HasIndex(x => new { x.Operation, x.CreatedAt })
                  .HasDatabaseName("ix_ai_usage_logs_operation_created_at");
+            });
+
+            modelBuilder.Entity<HttpTrafficStat>(e =>
+            {
+                e.ToTable("http_traffic_stats");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.RouteId).HasMaxLength(64).IsRequired();
+                e.Property(x => x.StatusClass).HasMaxLength(8).IsRequired();
+                e.HasIndex(x => x.WindowStart);
             });
 
             // ── DB10 — OPTIMISTIC CONCURRENCY (xmin) ────────────────
