@@ -36,6 +36,7 @@ builder.Services.AddOpenApi(options =>
 });
 
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IAuthAnalyticsService, AuthAnalyticsService>();
 builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddTransient<IEmailSender, EmailSender>();
 builder.Services.AddSingleton<IGoogleLoginRedirects, GoogleLoginRedirects>();

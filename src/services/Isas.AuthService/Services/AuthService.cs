@@ -35,7 +35,7 @@ namespace Isas.AuthService.Services
             if (user is null)
                 throw new UnauthorizedAccessException("Invalid credentials");
 
-            return await GenerateAuthResponse(user);
+            return await GenerateAuthResponse(user, LoginMethod.Password);
         }
 
         // AUTH-1: đăng nhập Google → account Candidate (không mở đường Employer/org ở đây).
@@ -50,7 +50,7 @@ namespace Isas.AuthService.Services
             // user_logins là đủ để biết external login đang gắn account nào.
             var linkedUser = await _userManager.FindByLoginAsync(info.LoginProvider, info.ProviderKey);
             if (linkedUser is not null)
-                return await GenerateAuthResponse(linkedUser);
+                return await GenerateAuthResponse(linkedUser, LoginMethod.Google);
 
             var email = info.Principal.FindFirstValue(ClaimTypes.Email);
             if (string.IsNullOrWhiteSpace(email))
@@ -67,7 +67,7 @@ namespace Isas.AuthService.Services
                 if (!linkResult.Succeeded)
                     throw new InvalidOperationException(string.Join("; ", linkResult.Errors.Select(e => e.Description)));
 
-                return await GenerateAuthResponse(existingUser);
+                return await GenerateAuthResponse(existingUser, LoginMethod.Google);
             }
 
             var newUser = new User
@@ -101,7 +101,7 @@ namespace Isas.AuthService.Services
                     throw new InvalidOperationException(string.Join("; ", roleResult.Errors.Select(e => e.Description)));
             });
 
-            return await GenerateAuthResponse(newUser);
+            return await GenerateAuthResponse(newUser, LoginMethod.Google);
         }
 
         // Đăng xuất = thu hồi MỌI refresh token của user, không chỉ token client gửi lên.
@@ -375,6 +375,8 @@ namespace Isas.AuthService.Services
             var roles = await _userManager.GetRolesAsync(user);
             var membership = await GetMembershipAsync(user.Id);
             var accessToken = _jwtService.GenerateAccessToken(user, roles, membership);
+
+            await RecordLoginBestEffortAsync(user.Id, LoginMethod.MagicLink, ct);
 
             return new ProvisionCandidateResponse
             {
@@ -904,7 +906,7 @@ namespace Isas.AuthService.Services
                 throw new UserBannedException("Account has been suspended");
         }
 
-        private async Task<AuthResponse> GenerateAuthResponse(User user)
+        private async Task<AuthResponse> GenerateAuthResponse(User user, string? loginMethod = null)
         {
             EnsureNotBanned(user);
 
@@ -925,7 +927,33 @@ namespace Isas.AuthService.Services
             _authDbContext.RefreshTokens.Add(refreshTokenEntity);
             await _authDbContext.SaveChangesAsync();
 
+            if (loginMethod is not null)
+                await RecordLoginBestEffortAsync(user.Id, loginMethod);
+
             return BuildAuthResponse(accessToken, rawRefreshToken);
+        }
+
+        // FR18: thống kê không được phép làm hỏng đường login. Nếu SaveChanges lỗi, tách entity lỗi
+        // khỏi tracker để request sau vẫn dùng được DbContext này; caller vẫn nhận được JWT hợp lệ.
+        private async Task RecordLoginBestEffortAsync(Guid userId, string method, CancellationToken ct = default)
+        {
+            var loginEvent = new LoginEvent
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                Method = method,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            try
+            {
+                _authDbContext.LoginEvents.Add(loginEvent);
+                await _authDbContext.SaveChangesAsync(ct);
+            }
+            catch (Exception)
+            {
+                _authDbContext.Entry(loginEvent).State = EntityState.Detached;
+            }
         }
 
         private int GetRefreshTokenDays() =>
