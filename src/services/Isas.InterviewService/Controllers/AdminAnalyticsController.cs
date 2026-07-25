@@ -24,14 +24,18 @@ public sealed class AdminAnalyticsController(InterviewDbContext db) : Controller
         var active = new[] { SessionStatus.GeneratingQuestions, SessionStatus.Ready, SessionStatus.InProgress, SessionStatus.Scoring };
         var sessions = await db.PracticeSessions.AsNoTracking().ToListAsync(ct);
         var answers = await db.PracticeAnswers.AsNoTracking().ToListAsync(ct);
-        var buckets = sessions.Where(s => s.CreatedAt >= resolved.FromUtc && s.CreatedAt < resolved.ToUtc)
-            .GroupBy(s => AnalyticsPeriod.BucketKey(s.CreatedAt, resolved.Granularity)).OrderBy(g => g.Key)
-            .Select(g => new { periodStart = AnalyticsPeriod.BucketStart(g.Key, resolved.Granularity), created = g.Count() }).ToList();
+        var bucketRows = sessions
+            .Where(s => s.CreatedAt >= resolved.FromUtc && s.CreatedAt < resolved.ToUtc)
+            .Select(s => new { Key = AnalyticsPeriod.BucketKey(s.CreatedAt, resolved.Granularity), Created = 1, Scored = 0, Failed = 0, Abandoned = 0 })
+            .Concat(sessions.Where(s => s.CompletedAt != null && s.CompletedAt >= resolved.FromUtc && s.CompletedAt < resolved.ToUtc)
+                .Select(s => new { Key = AnalyticsPeriod.BucketKey(s.CompletedAt!.Value, resolved.Granularity), Created = 0, Scored = s.Status == SessionStatus.Scored ? 1 : 0, Failed = s.Status == SessionStatus.Failed ? 1 : 0, Abandoned = s.Status == SessionStatus.SessionAbandoned ? 1 : 0 }))
+            .GroupBy(x => x.Key).OrderBy(g => g.Key)
+            .Select(g => new { periodStart = AnalyticsPeriod.BucketStart(g.Key, resolved.Granularity), created = g.Sum(x => x.Created), scored = g.Sum(x => x.Scored), failed = g.Sum(x => x.Failed), abandoned = g.Sum(x => x.Abandoned) }).ToList();
         return Ok(new {
             from = resolved.FromUtc, to = resolved.ToUtc, granularity = resolved.Granularity.ToString().ToLowerInvariant(),
             activeSessions = new { b2c = sessions.Count(s => active.Contains(s.Status) && s.CampaignId == null), b2b = sessions.Count(s => active.Contains(s.Status) && s.CampaignId != null) },
             totals = new { answersUploaded = answers.Count(a => a.Status == AnswerStatus.Uploaded), answersNeedsReview = answers.Count(a => a.NeedsReview), byJobCategory = sessions.GroupBy(s => s.JobCategory.ToString()).Select(g => new { jobCategory = g.Key, count = g.Count() }) },
-            buckets
+            buckets = bucketRows
         });
     }
 }
