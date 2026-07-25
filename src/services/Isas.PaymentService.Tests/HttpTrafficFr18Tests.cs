@@ -1,7 +1,10 @@
 using Isas.PaymentService.Controllers;
+using Isas.PaymentService.DTOs;
 using PaymentService.Models;
 using Isas.PaymentService.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Isas.PaymentService.Tests;
 public sealed class HttpTrafficFr18Tests
@@ -26,4 +29,27 @@ public sealed class HttpTrafficFr18Tests
         t.Db.HttpTrafficStats.AddRange(new HttpTrafficStat { Id=Guid.NewGuid(), WindowStart=now.AddDays(-91), WindowEnd=now, RouteId="a", StatusClass="2xx", CreatedAt=now }, new HttpTrafficStat { Id=Guid.NewGuid(), WindowStart=now.AddDays(-90), WindowEnd=now, RouteId="b", StatusClass="2xx", CreatedAt=now }); await t.Db.SaveChangesAsync();
         Assert.Equal(1, await HttpTrafficPurge.PurgeAsync(t.Db, now));
     }
+
+    [Fact]
+    public async Task InternalSink_RejectsWrongToken()
+    {
+        using var t = new PaymentTestDb();
+        var c = new InternalHttpTrafficController(t.Db, Config(), NullLogger<InternalHttpTrafficController>.Instance);
+        var result = await c.Record(new RecordHttpTrafficRequest(DateTime.UtcNow, DateTime.UtcNow, "auth-route", "2xx", 1, 1, 1), "wrong", default);
+        Assert.IsType<UnauthorizedObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task InternalSink_WhenStoreFails_ReturnsAcceptedDropped()
+    {
+        using var t = new PaymentTestDb();
+        var db = t.NewContext();
+        db.Dispose();
+        var c = new InternalHttpTrafficController(db, Config(), NullLogger<InternalHttpTrafficController>.Instance);
+        var result = await c.Record(new RecordHttpTrafficRequest(DateTime.UtcNow, DateTime.UtcNow, "auth-route", "2xx", 1, 1, 1), "test-token", default);
+        var accepted = Assert.IsType<AcceptedResult>(result);
+        Assert.NotNull(accepted.Value);
+    }
+
+    private static IConfiguration Config() => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Internal:Token"] = "test-token" }).Build();
 }
