@@ -5,10 +5,20 @@ using Isas.InterviewService.Enums;
 // BC12 (D20) — DTO roadmap ôn tập cá nhân hoá B2C.
 
 // POST /roadmaps — cvId optional (parse sẵn ở Files). jobCategory/level bắt buộc (enum sai → 400).
+// BC17 — candidate CHỌN nguồn nuôi roadmap thay vì tự gom MỌI buổi Scored:
+//   • SessionIds     — buổi luyện đã Scored làm baseline; rỗng/null → roadmap CHUẨN theo level (không gom).
+//   • CvAnalysisId   — 1 phân tích CV đã có (BC7) → CHỈ ngữ cảnh prompt (không gọi lại /analyze-cv, KHÔNG trừ credit).
+//   • PriorRoadmapId — final_report của 1 roadmap đã hoàn thành (BC15) → CHỈ ngữ cảnh prompt.
+//   • Focus          — mô tả tự do muốn AI tập trung vào đâu (≤ 2000 ký tự).
+// CvAnalysis + prior-roadmap + focus KHÔNG vào baseline — chỉ là bối cảnh cho AI.
 public record CreateRoadmapRequest(
     JobCategory JobCategory,
     RoadmapLevel Level,
-    Guid? CvId
+    Guid? CvId,
+    IReadOnlyList<Guid>? SessionIds = null,   // BC17 — buổi luyện Scored candidate chọn làm baseline
+    Guid? CvAnalysisId = null,                // BC17 — cv_analyses (BC7)
+    Guid? PriorRoadmapId = null,              // BC17 — roadmaps.final_report (BC15)
+    string? Focus = null                      // BC17 — free-text
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).

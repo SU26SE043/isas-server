@@ -33,6 +33,7 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
     public async Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory, string level,
         IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText,
+        string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
         CancellationToken ct = default)
     {
         var payload = new
@@ -41,7 +42,12 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             level,
             // rỗng/null → AI sinh roadmap chuẩn theo level (schema WeaknessScore: criterionName + percentage).
             weaknesses = weaknesses?.Select(w => new { criterionName = w.CriterionName, percentage = w.Percentage }),
-            cvText
+            cvText,
+            // BC17 — ngữ cảnh thêm do candidate chọn (đều null → hành vi cũ). Worker Python khai đúng 3 field
+            // camelCase này (extra='ignore' sẽ nuốt im lặng nếu lệch tên) và tự bọc như DỮ LIỆU (AI-4).
+            focus,
+            cvAnalysisSummary,
+            priorRoadmapSummary
         };
 
         HttpResponseMessage response;

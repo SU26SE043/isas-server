@@ -91,7 +91,11 @@ async def generate_roadmap(req: GenerateRoadmapRequest):
     try:
         weaknesses = [w.model_dump() for w in req.weaknesses] if req.weaknesses else None
         milestones = await provider.generate_roadmap(
-            req.jobCategory, req.level, weaknesses, req.cvText)
+            req.jobCategory, req.level, weaknesses, req.cvText,
+            focus=req.focus,
+            cv_analysis_summary=req.cvAnalysisSummary,
+            prior_roadmap_summary=req.priorRoadmapSummary,
+        )
         return GenerateRoadmapResponse(
             milestones=[
                 RoadmapMilestone(

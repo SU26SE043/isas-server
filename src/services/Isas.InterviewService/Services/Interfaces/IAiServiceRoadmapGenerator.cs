@@ -6,11 +6,15 @@ namespace Isas.InterviewService.Services.Interfaces;
 // Lỗi → AiServiceException (→ 502).
 public interface IAiServiceRoadmapGenerator
 {
+    // BC17 — focus/cvAnalysisSummary/priorRoadmapSummary = ngữ cảnh thêm do candidate chọn (đều optional).
     Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory,
         string level,
         IReadOnlyList<RoadmapWeakness>? weaknesses,
         string? cvText,
+        string? focus,                 // BC17 — mô tả tự do
+        string? cvAnalysisSummary,     // BC17 — tóm tắt từ cv_analyses (BC7)
+        string? priorRoadmapSummary,   // BC17 — tóm tắt từ final_report roadmap trước (BC15)
         CancellationToken ct = default);
 
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
