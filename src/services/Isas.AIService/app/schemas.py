@@ -58,6 +58,23 @@ class AnalyzeCvResponse(BaseModel):
     jdMatch: JdMatch | None = None   # chỉ có khi request có jdText
 
 
+# ── Phân tích GitHub repository (B2C BC18) ─────────────────────────────────
+class AnalyzeRepoRequest(BaseModel):
+    repoDigest: str
+    jobCategory: str | None = None
+    jdText: str | None = None
+
+
+class AnalyzeRepoResponse(BaseModel):
+    summary: str
+    techStack: list[str]
+    strengths: list[str]
+    weaknesses: list[str]
+    suggestions: list[str]
+    interviewTalkingPoints: list[str]
+    jdMatch: JdMatch | None = None
+
+
 # ── Roadmap ôn tập cá nhân hoá B2C (BC13, D20) — 3 endpoint sync, stateless ─
 class WeaknessScore(BaseModel):
     criterionName: str

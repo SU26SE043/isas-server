@@ -35,6 +35,7 @@ builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
 builder.Services.AddScoped<IQuestionSpeechService, QuestionSpeechService>();   // TTS đọc câu hỏi
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
+builder.Services.AddScoped<IRepoAnalysisService, RepoAnalysisService>(); // BC18
 builder.Services.AddScoped<IRubricLibraryService, RubricLibraryService>();   // BC16 — rubric cá nhân B2C
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
@@ -51,6 +52,11 @@ builder.Services.AddHttpClient<IAiServiceCvAnalyzer, AiServiceCvAnalyzer>(c =>  
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+});
+builder.Services.AddHttpClient<IAiServiceRepoAnalyzer, AiServiceRepoAnalyzer>(c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(60);
 });
 
 builder.Services.AddHttpClient<IAiServiceRoadmapGenerator, AiServiceRoadmapGenerator>(c =>   // BC12

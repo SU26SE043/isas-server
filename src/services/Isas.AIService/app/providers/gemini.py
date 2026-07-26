@@ -9,7 +9,7 @@ from app.resources import sanitize_resources, count_rejected_urls
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
-    build_cv_analysis_prompt,
+    build_cv_analysis_prompt, build_repo_analysis_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
     build_summarize_session_prompt, build_decide_next_prompt,
 )
@@ -258,6 +258,51 @@ class GeminiProvider(QuestionProvider):
                 "missingSkills": _clean_list(jd_match_raw.get("missingSkills")),
             }
 
+        return result
+
+    async def analyze_repo(self, repo_digest: str, jd_text: str | None,
+                           job_category: str | None) -> dict:
+        # F21: mọi hàm build prompt phải nạp registry trước, kể cả prompt in-code.
+        await prompt_registry.refresh_if_stale()
+        prompt = build_repo_analysis_prompt(repo_digest, jd_text, job_category)
+        properties: dict = {
+            "summary": {"type": "string"},
+            "techStack": {"type": "array", "items": {"type": "string"}},
+            "strengths": {"type": "array", "items": {"type": "string"}},
+            "weaknesses": {"type": "array", "items": {"type": "string"}},
+            "suggestions": {"type": "array", "items": {"type": "string"}},
+            "interviewTalkingPoints": {"type": "array", "items": {"type": "string"}},
+        }
+        required = list(properties)
+        if jd_text:
+            properties["jdMatch"] = {"type": "object", "properties": {
+                "score": {"type": "integer"},
+                "matchedSkills": {"type": "array", "items": {"type": "string"}},
+                "missingSkills": {"type": "array", "items": {"type": "string"}},
+            }, "required": ["score", "matchedSkills", "missingSkills"]}
+            required.append("jdMatch")
+        response = await self._generate("analyze_repo", contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.0, response_mime_type="application/json",
+                response_schema={"type": "object", "properties": properties, "required": required}))
+        try:
+            data = json.loads((response.text or "").strip())
+        except json.JSONDecodeError:
+            raise ValueError("LLM phân tích repository trả JSON không hợp lệ.")
+        summary = str(data.get("summary", "")).strip()
+        if not summary:
+            raise ValueError("LLM không trả về tóm tắt repository hợp lệ.")
+        def clean(value) -> list[str]:
+            return [str(x).strip() for x in value if str(x).strip()] if isinstance(value, list) else []
+        result = {"summary": summary, "techStack": clean(data.get("techStack")),
+                  "strengths": clean(data.get("strengths")), "weaknesses": clean(data.get("weaknesses")),
+                  "suggestions": clean(data.get("suggestions")),
+                  "interviewTalkingPoints": clean(data.get("interviewTalkingPoints"))}
+        if jd_text:
+            match = data.get("jdMatch")
+            if not isinstance(match, dict):
+                raise ValueError("LLM không trả jdMatch dù request có jdText.")
+            result["jdMatch"] = {"score": int(round(max(0, min(float(match.get("score", 0) or 0), 100)))),
+                "matchedSkills": clean(match.get("matchedSkills")), "missingSkills": clean(match.get("missingSkills"))}
         return result
 
     async def score(self, question: str, transcript: str,

@@ -6,7 +6,7 @@ import asyncio
 from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
-    AnalyzeCvRequest, AnalyzeCvResponse, JdMatch,
+    AnalyzeCvRequest, AnalyzeCvResponse, AnalyzeRepoRequest, AnalyzeRepoResponse, JdMatch,
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
     GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
@@ -82,6 +82,22 @@ async def analyze_cv(req: AnalyzeCvRequest):
         raise
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi phân tích CV: {ex}")
+
+
+@router.post("/analyze-repo", response_model=AnalyzeRepoResponse, response_model_exclude_none=True)
+async def analyze_repo(req: AnalyzeRepoRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+    if not req.repoDigest or not req.repoDigest.strip():
+        raise HTTPException(status_code=400, detail="repoDigest không được rỗng")
+    try:
+        result = await provider.analyze_repo(req.repoDigest, req.jdText, req.jobCategory)
+        return AnalyzeRepoResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi phân tích repository: {ex}")
 
 
 @router.post("/generate-roadmap", response_model=GenerateRoadmapResponse)

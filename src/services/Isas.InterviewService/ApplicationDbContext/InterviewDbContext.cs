@@ -19,6 +19,7 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<FileRecord> FileRecords => Set<FileRecord>();
 
         public DbSet<CvAnalysis> CvAnalyses => Set<CvAnalysis>();   // BC7
+        public DbSet<RepoAnalysis> RepoAnalyses => Set<RepoAnalysis>(); // BC18
 
         public DbSet<Roadmap> Roadmaps => Set<Roadmap>();                          // BC12
         public DbSet<RoadmapMilestone> RoadmapMilestones => Set<RoadmapMilestone>();  // BC12
