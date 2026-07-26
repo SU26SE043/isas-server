@@ -9,6 +9,89 @@
 
 ---
 
+## 🔓 CHƯA XONG — đọc CHỈ mục này để chọn việc
+> **Đây là bề mặt việc còn lại.** Mọi task đã `passing` nằm ở phần **📚 ARCHIVE bên dưới** (giữ bằng chứng commit/test làm log) — KHÔNG cần đọc khi chọn việc, chỉ tra khi cần chi tiết 1 task cụ thể.
+> Chọn task **không bị block** (dep đã ✅), WIP=1. Khi một task chuyển `passing`: xoá nó khỏi bảng này + cập nhật ô Status của nó dưới archive.
+> **Mốc đã xong (2026-07-26):** S1–S9 phần lớn `passing` · S10 `R1·R2·R4·R5·R7·R15` done (còn `R3·R6·R8–R14`) · **`PONR1` code merged main (PR #110) — guard OFF, chờ `PONR3` mới bật** · S6/S8 hardening phần lớn done. Migration DB server đã sync `origin/main`.
+
+### 🔴 Tiền / chính sách — ưu tiên cao nhất
+| ID | Việc | Dep | Trạng thái / ghi chú |
+|---|---|---|---|
+| PONR3 | Cảnh báo UI "sinh xong câu hỏi là bị tính phí kể cả không trả lời" | — | 🔴 **CHẶN việc bật PONR1** — code PONR1 đã merged main (PR #110) nhưng guard `Billing:ConsumeAtQuestionGeneration=false`; KHÔNG được bật `true` trước khi UI này báo trước |
+| PONR2 | Hạn mức miễn trừ no-show B2B (consume tại mốc → hoàn `NoShowRefund` trong hạn mức) | PONR1 | không gộp vào PONR1 (Payment không biết campaign) |
+| BK24 | Bật Postpaid cho Org — 3 việc CÙNG lúc: ①endpoint `Roles=Admin` duyệt `payment_mode`+`credit_limit` ②snapshot `payment_mode` lên reservation ③job set `InvoiceStatus.Overdue` | — | 🔴 thiếu 1 = lỗi tiền; lật mode lúc này làm **bốc hơi 7 credit** ví org `0610da24` |
+
+### 🚀 Ops / deploy — làm TAY (không phải code service), chạy trước khi test/deploy
+| ID | Việc | Ghi chú |
+|---|---|---|
+| OPS1 | Rebuild + redeploy `campaignservice` từ `d182600` | 🔴 image `:main` thiếu PR #95 → `campaign_membership.invitation_id` NULL (0/23) → reissue báo `Joined` dương-tính-giả; sau rebuild backfill row cửa sổ này |
+| OPS7 | Đổi env `Invitation__BaseUrl` → origin FE + redeploy `campaignservice` (kèm `6507b2e`) | 🔴 thiếu vế nào link mời cũng 404; sau deploy gửi 1 lời mời thật → phải thấy trang có nút "Tham gia phỏng vấn" |
+| OPS2 | Đối soát tay 3 reservation kẹt `ee655e32`/`ad20dae0`/`62814a3a` | 🔴 R1 đã done → mở khoá; tạo trước mốc `ConsumeFromUtc` nên reconciler SKIP |
+| OPS3 | Merge `fix/order-expiry-infinite-retry` (`fcd4513`) | 🟠 2 đơn Pending kẹt 13/07 retry vô hạn, vi phạm PAY-10 |
+| OPS4 | Chốt `WHISPER_MODEL` — `small` cho `aiapi` (sync `/decide-next`), `large-v3` cho `aiworker` | 🟠 nay `large-v3` cả hai → ~1/3 lượt adaptive vượt timeout 90s |
+| OPS6 | Đưa `ASPNETCORE_ENVIRONMENT=Production` vào compose version-control | 🟡 đã sửa trên server nhưng dễ trôi lại (đã tái phát 2 lần) |
+| OPS5 | Bật lại 2 job purge (`Outbox__PurgeEnabled` · `RefreshTokenRetention__Enabled`) sau cửa sổ e2e | 🟡 hiện xoá 0 dòng (an toàn); muốn dọn thật phải phủ token đã revoke |
+| BK2 | Backfill `order_no` trước apply C12 (tránh vỡ UNIQUE rows cũ) | dep C12 |
+| BK4b | Backfill `campaigns.org_id` user→org qua `org_members` trước apply BK4 + sync `AGENTS.md` copy | dep BK4 |
+| BF1 | cv-analysis 500 → đã fix code `83beabc` | ⏳ cần image interview mới + retest live |
+| BF2 | invitations 500 (thiếu env RabbitMQ campaign) → fix compose `0997030` | ⏳ chỉ cần `docker compose up -d` lại + retest |
+| BF3 | order 500 (thiếu env PayOS Return/Cancel URL) → fix code+config | ⏳ set env server + `up -d` + retest |
+| BF4 | order 500 route-name (`CreatedAtRoute`) → fix code | ⏳ cần image payment mới + retest live |
+
+### 🟠 S10 — sai số liệu / hợp đồng / trải nghiệm (còn lại)
+| ID | Việc | Trạng thái |
+|---|---|---|
+| R3 | Chi phí AI thiếu **thinking token** (báo thấp ~3,3×) + đối chiếu đơn giá Google | not_started |
+| R6 | Webhook PayOS lọt qua gateway (vi phạm GEN-1) → chặn `webhook/**` | not_started (cùng gốc R15 nhưng R15 không đóng hộ) |
+| R9 | Gói `OneTime` `credits=0` vẫn qua (catalog hiện, bấm mua ăn 400) | partial (`c0377e9` chặn âm; còn ca `=0` cần `>0`) |
+| R8 | `POST /admin/credits/grant` chưa idempotent (double-click cấp đôi) | not_started |
+| R10 | F9 "sinh lại" nuốt câu AI mà HR đã sửa, không cảnh báo | not_started |
+| R11 | Auth admin list: cursor rác → 200 trang đầu (lặp vô hạn); `limit=0` nuốt | not_started |
+| R12 | `/auth/me` không trả `orgId`/`orgRole`/`orgName` | not_started |
+| R13 | F15 tài liệu bị loại domain còn `url:null` (render/lọc) + review allowlist 26 domain | not_started |
+| R14 | PDF↔CSV lệch số thập phân (`91.50` vs `91.5`) | not_started |
+
+### 🟡 Tính năng chưa xây / chưa lộ ra
+| ID | Việc | Dep | Trạng thái |
+|---|---|---|---|
+| SEC1 | Anti-cheat B2B — detection THẬT (FE webcam/tab-switch/paste + AIService face-match/multi-voice) | C7,D2 | 🟡 backend scaffold done; detection cross-repo |
+| BC1 | Mua pack prepaid ví User (`owner=User`) → webhook cộng credit | P1,P7 | not_started |
+| BC5 | (verify) Lịch sử cá nhân đọc đúng chủ (`GET history` chỉ user; `{id}` người khác → 403/404) | — | not_started |
+| F24 | (NFR) Responsive **mobile** — 3 shell sidenav tự đóng + 5 bảng admin `overflow-x` | — | not_started |
+| F25 | Ẩn/khoá gói `Subscription` bấm-là-400 trong catalog (tới khi F8 xong) | — | not_started |
+| BC17 | Roadmap **nhập report cũ theo lựa chọn** — nay `RoadmapService.CreateAsync` (`RoadmapService.cs:42-71`) tự gom **MỌI** buổi Scored B2C, user không chọn được. Cho candidate **chọn/import report cụ thể** (kết quả buổi `session_criterion_scores`/`overall_comment` · phân tích CV `cv_analyses` BC7 · report roadmap trước `roadmaps.final_report` BC15) + 1 ô **mô tả đúng thứ muốn** → AI sinh lộ trình **đúng yêu cầu** thay vì gộp tất. Chạm: `CreateRoadmapRequest` (+`sessionIds?`/`cvAnalysisId?`/`priorRoadmapId?`/`focus?`) · `CreateAsync` lọc baseline/weakness chỉ theo report đã chọn (owner-scope từng id) · AIService `GenerateRoadmapRequest`+`build_roadmap_prompt` nhận thêm tóm tắt report + yêu cầu người dùng. Không đổi phí (create free — BC12). Cần chốt: buộc ≥1 report? trộn report cũ với buổi mới thế nào? | BC12,BC15,BC7 | not_started |
+
+### 🔧 Hardening / cleanup còn lại
+| ID | Việc | Dep | Trạng thái |
+|---|---|---|---|
+| DB25b | Bọc 6 site transaction bằng `CreateExecutionStrategy` rồi bật `EnableRetryOnFailure` cho Interview+Payment | DB25 | not_started (⚠ verify Postgres thật — SQLite xanh giả) |
+| DB8 | Off-row TEXT (`cv_parsed_text`/`parsed_text` → S3 key) + read-replica report | — | partial (keyset admin done; off-row gộp DB17; replica chưa có infra) |
+| DB17 | SeaweedFS S3-client consolidation + cross-service file handoff | — | partial (shared PdfPig extractor done) |
+| BK22 | Index cho `search`/keyset vòng paging (`pg_trgm` GIN cho `LIKE '%x%'`; drop tiền-tố-trái cũ) | paging | not_started (`search` đang seq-scan) |
+| BK21 | `max_candidates` không phải trần thật — cần **chốt ngữ nghĩa** (đếm row/email? reissue tính? null có trần?) | D1,D4 | 🔴 cần team chốt trước khi code |
+| BK25 | Ảnh face S3 không retention (DATA-3) — ghi key vào DB + job purge 90 ngày | SEC1 | not_started |
+| BK8 | E6 PDF export (QuestPDF; risk SkiaSharp) — nay `format=pdf`→400 | E6 | not_started (⚠ BK8 đã bị lật ở F16? — kiểm trước khi làm) |
+| BK13 | Ratify migration/schema `payment_transactions` + thêm `event_source` (P3) | P2 | not_started |
+| BK17(4) | Invoice `due_at`/`paid_at` (amount_vnd→bigint đã xong qua DB3) | P8b | not_started |
+| BK14 | D2 follow-up còn: retake sau Completed · JWT refresh khi đổi role · orgName resolve | D2,P2 | partial |
+| A6b | Org member còn: mời qua **email** + attach account có sẵn | A6,D1 | partial |
+| E10b | Selective N× (chỉ tiêu chí biên) + republisher re-publish đúng attempt thiếu | E10 | not_started |
+| BK26 | 🔴 **Join lời mời B2B bắt buộc đăng nhập + email khớp** — `POST /campaign/invitations/{token}/join` đang `[AllowAnonymous]`, provision theo `inv.Email` bất kể ai gọi ⇒ user đăng nhập email B redeem được token của email A (campaign hiện sai chủ). Sửa: controller `[Authorize(Roles=Candidate)]` (thiếu token→401) + guard email caller `User.FindFirstValue("email")` ≠ `inv.Email` (Trim+OrdinalIgnoreCase) → **403, không tạo membership** (`ParticipationController.cs:48` + `ParticipationService.JoinCampaignAsync` ngay sau `ValidateInvitationUsable`); +test mismatch→403+0-membership + mutation-check. **FE (repo riêng, PR đi kèm):** gate nút Join sau login + ngừng swap access-only token + hiện thông báo 403. Không migration. | D2 | not_started · ⚠ **breaking**: bỏ join ẩn danh (phá passwordless D2/D25) → FE bắt buộc sửa cùng; xác minh `dotnet test src/services/Isas.CampaignService.Tests` |
+
+### ⏸️ Deferred (có lý do — chỉ làm khi điều kiện tới, đừng mở lại theo phản xạ)
+| ID | Việc | Điều kiện mở lại |
+|---|---|---|
+| DB6 | Partition append-only theo tháng | khi volume thật cần (nay single-instance, `answer_scores` không append-only) |
+| DB7 | Sweeper leader-election / queue-based | khi bật multi-replica (nay single-instance, mọi sweeper đã idempotent) |
+| P0.1/P0.2/P0.5 | Phase 0 còn lại (compose máy sạch → `/health` · `make check` · readiness checkpoint) | verify tay ngoài worker |
+
+> ❌ **Đã BỎ/superseded — KHÔNG mở lại:** `E9b` (bỏ có chủ đích 2026-07-19) · `BK3` (superseded bởi BC16) · `BK10` (bỏ — BC3/BC4 covered-by-E7).
+
+---
+
+## 📚 ARCHIVE — chi tiết đầy đủ + log ĐÃ XONG (không cần đọc khi chọn việc)
+> Các mục S1–S10 + Backlog dưới đây giữ nguyên **bằng chứng từng task** (commit/test/mutation) làm log lịch sử. Task đã `passing` để lại đây; task chưa xong đã được gom lên bảng **🔓 CHƯA XONG** ở trên. Chỉ tra mục dưới khi cần chi tiết một task cụ thể.
+
 ## Phase 0 — Foundation/Init (làm TRƯỚC mọi feature)
 | ID | Hành vi | Xác minh | Dep | Status |
 |---|---|---|---|---|
@@ -276,7 +359,7 @@
 
 | ID | Hành vi | Xác minh | Dep | Status |
 |---|---|---|---|---|
-| PONR1 | 🔴 **Lõi Point of No Return** — consume **ngay sau khi AI trả bộ câu hỏi thành công** ở cả 3 luồng, thay vì đợi `Scored`. Trước mốc (thiếu credit · Gemini timeout · sinh lỗi · validation) → release, **không thu tiền** (giữ nguyên). Sau mốc → **không release tự động**. **4 rủi ro phải xử tường minh, không để rơi vào nhánh mặc định:** ①sinh câu hỏi xong nhưng **lưu session thất bại** (đã tốn AI mà chưa có session) — quyết consume hay release phải viết rõ; ②**retake/create-or-get** (`D2`, B2B `start` gọi 2 lần) **tuyệt đối không consume lần hai** (`ConsumeAsync` vốn absorbing nhưng phải có test khoá); ③**session đang bay lúc deploy** đã reserve theo luật cũ mà kết thúc dưới luật mới → chỉ áp cho session tạo sau mốc, dùng lại cơ chế `ConsumeFromUtc` của `R1`; ④**`SessionAbandoned` sau mốc KHÔNG được release nữa** ⇒ sửa **đồng bộ** `E7` + nhánh của `R1`, nếu không hai cơ chế đánh nhau (PONR thu tiền → R1 lẳng lặng hoàn lại = mất tiền qua một cửa mới). Kèm sửa `rules.md` + `decisions.md` | tạo session → AI sinh xong → ví **giảm ngay** (không đợi `Scored`) · bỏ ngang sau mốc → **không hoàn** · sinh câu hỏi lỗi → **hoàn, không thu** · gọi `start` 2 lần → **chỉ trừ 1** · **mutation:** gỡ guard "chỉ áp cho session sau mốc deploy" → ĐỎ | R1 | in_progress — rollout guard mặc định false, test Interview 447/447 và Payment cutover 33/33 (2026-07-24); còn review + full suite/E2E |
+| PONR1 | 🔴 **Lõi Point of No Return** — consume **ngay sau khi AI trả bộ câu hỏi thành công** ở cả 3 luồng, thay vì đợi `Scored`. Trước mốc (thiếu credit · Gemini timeout · sinh lỗi · validation) → release, **không thu tiền** (giữ nguyên). Sau mốc → **không release tự động**. **4 rủi ro phải xử tường minh, không để rơi vào nhánh mặc định:** ①sinh câu hỏi xong nhưng **lưu session thất bại** (đã tốn AI mà chưa có session) — quyết consume hay release phải viết rõ; ②**retake/create-or-get** (`D2`, B2B `start` gọi 2 lần) **tuyệt đối không consume lần hai** (`ConsumeAsync` vốn absorbing nhưng phải có test khoá); ③**session đang bay lúc deploy** đã reserve theo luật cũ mà kết thúc dưới luật mới → chỉ áp cho session tạo sau mốc, dùng lại cơ chế `ConsumeFromUtc` của `R1`; ④**`SessionAbandoned` sau mốc KHÔNG được release nữa** ⇒ sửa **đồng bộ** `E7` + nhánh của `R1`, nếu không hai cơ chế đánh nhau (PONR thu tiền → R1 lẳng lặng hoàn lại = mất tiền qua một cửa mới). Kèm sửa `rules.md` + `decisions.md` | tạo session → AI sinh xong → ví **giảm ngay** (không đợi `Scored`) · bỏ ngang sau mốc → **không hoàn** · sinh câu hỏi lỗi → **hoàn, không thu** · gọi `start` 2 lần → **chỉ trừ 1** · **mutation:** gỡ guard "chỉ áp cho session sau mốc deploy" → ĐỎ | R1 | ✅ **DONE — merged main (PR #110, merge `5dfbe6a`, parent `f415a5b`)**. Code 4 rủi ro (`_consumeAtGeneration` gate default-false · `ConsumeQuietlyAsync` · `TryConsumeAbandonedPastCutoverAsync` · `GetReservationGateSnapshotAsync`) + mutation-check guard cutover **2 phía** đã khoá bằng test (`PONR1_SessionAbandoned_TruocCutover_ThiRelease` · `SessionAbandoned_TruocPONRCutover...VanRelease` → gỡ `CreatedAt >= mark` = ĐỎ; verify 2026-07-26). Build 0 err · Payment 346 · Interview 447. ⚠ **Guard `Billing:ConsumeAtQuestionGeneration=false` mặc định — code merged nhưng CHƯA BẬT**: không được đặt `true` trước `PONR3` (UI cảnh báo) + set `OrphanReconcile:ConsumeFromUtc` cùng mốc lúc bật. L3 E2E thật (bật cờ → thu tại `Ready`) verify tay khi deploy. |
 | PONR2 | 🟠 **Hạn mức miễn trừ no-show B2B** — ⚠ **KHÔNG gộp vào `PONR1`.** Lý do kỹ thuật: Payment **không biết campaign** (reservation chỉ có `owner`+`sessionId`), và "no-show" chỉ xác định được **lúc buổi kết thúc** chứ không phải lúc sinh câu hỏi ⇒ **không thể consume có điều kiện tại mốc**. Đường khả thi: consume tại mốc như thường, rồi khi buổi đóng với **0 answer** và campaign **còn hạn mức** → **hoàn lại** bằng **bút toán mới** (vd `NoShowRefund +1`) + bộ đếm theo campaign. Cần: reason mới trong sổ cái · nơi giữ bộ đếm (Campaign) · đường Campaign→Payment yêu cầu hoàn. **Giữ bất biến `remaining + reserved = Σ delta`** | ứng viên Start rồi bỏ ngang 0 answer → org **được hoàn** trong hạn mức, **hết hạn mức thì không**; sổ cái có dòng `NoShowRefund`; bất biến còn đúng | PONR1 | not_started |
 | PONR3 | 🔴 **Thông báo trên giao diện** — trước khi bấm bắt đầu phải nói rõ *"Sau khi hệ thống sinh xong bộ câu hỏi, lượt phỏng vấn sẽ được tính phí kể cả khi bạn không trả lời câu nào."* 🔴 **`PONR1` KHÔNG được deploy trước `PONR3`** — thu tiền tại thời điểm mà giao diện chưa hề báo trước là thu tiền người dùng không biết | mở màn tạo buổi luyện / màn Start B2B → thấy cảnh báo trước khi bấm; vitest xanh | — | not_started |
 
@@ -315,8 +398,6 @@
 | BK8 | E6 **PDF export** (QuestPDF; risk SkiaSharp native) — nay `format=pdf`→400 | E6 |
 | BK13 | Ratify migration/schema `payment_transactions` (tên `AddOrderOwner` + thêm `event_source` cho P3) | P2 |
 | BK17(3)(4) | `orders.amount_vnd` int→**bigint** (tràn >2.1e9 VND) + invoice `due_at`/`paid_at` | P8b |
-| BK19 | ✅ **done (doc)** — ratify `POST /order` unknown packageId: giữ code **404** "Package not found", reconcile payment.md liệt kê cả **404** (unknown) + **400** (inactive, `is_active=false`) — doc cũ gộp nhầm 2 case | P2 |
-| BK20 | ✅ **done** — Campaign bật `JsonStringEnumConverter` (Program.cs) như Interview; `questions[].source="CustomHr"` nhận được (vẫn nhận numeric — backward-compat); response không đổi (đã `.ToString()`). Test `EnumStringSerializationBk20Tests` (+4) | C* |
 | BK21 | 🔴 **`max_candidates` KHÔNG phải trần thật** — `CreateInvitationsAsync` đếm **email distinct** chứ không đếm **row**, và `ReissueInvitationAsync` chèn row mới **không check trần** ⇒ số row `campaign_invitations` tăng không giới hạn theo mỗi lần HR gửi lại. Cột lại `int?` nên **để trống = không có trần nào**. Vòng paging chỉ che triệu chứng (phân trang), chưa chạm nguyên nhân. Cần chốt: đếm row hay đếm email? reissue có tính vào trần không? `max_candidates` null có nên có trần mặc định? | D1·D4 |
 | BK22 | 🟠 **Index cho `search`/keyset vòng paging** (vòng `feat/list-paging-filters` cố ý KHÔNG tạo migration). Thiếu index ⇒ **`search` seq-scan**. Cần: `cv_submission(campaign_id, overall_match_score DESC, id DESC)` · `(campaign_id, lower(full_name), id)` · **`pg_trgm` GIN** cho `LIKE '%x%'` (b-tree KHÔNG dùng được) · `campaign_invitations(campaign_id, created_at DESC, id DESC)` + `(lower(email))` · `campaign_membership(campaign_id, cv_submission_id)` + `(campaign_id, lower(trim(email)))` (nhánh `Joined` EXISTS) + `(candidate_id, created_at DESC, id DESC)` · `file_records(user_id, created_at DESC, id DESC)` · `roadmaps(candidate_id, created_at DESC, id DESC)` · `cv_analyses(candidate_id, created_at DESC, id DESC)`. ⚠ Index single-col cũ thành **tiền tố trái** → drop chứ đừng cộng thêm (tiền lệ DB31 với `practice_sessions`). ⚠ `CREATE INDEX` khoá ghi → **`CONCURRENTLY` chạy tay ngoài EF script** (EF không sinh được; idempotent script bọc transaction mà `CONCURRENTLY` không chạy trong transaction). Payment `my-orders` **không cần** — `ix_orders_owner_created` (DB26) đã khớp | paging round |
 | BK24 | 🟠 **Bật POSTPAID cho Org — chưa có đường hợp lệ nào** (yêu cầu user 2026-07-20; **chốt: thêm task, CHƯA làm**). `POST /payment/admin/orgs/{orgId}/postpaid` vẫn 🔜 ([payment.md:147](services/payment.md)); trong code `payment_mode` chỉ được ghi **đúng 1 chỗ** — hard-code `Prepaid` lúc tạo ví (`CreditAccountService.cs:83`), còn `credit_limit` **không có chỗ ghi nào**. ⇒ cách duy nhất hiện nay là `UPDATE` SQL tay, tức bỏ qua đúng bước "PlatformAdmin duyệt" mà PAY-3 đòi. **3 việc phải làm CÙNG nhau, thiếu cái nào cũng sinh lỗi tiền:** ①endpoint `Roles=Admin` đặt `payment_mode`+`credit_limit` trong 1 transaction, **chặn khi `reserved_credits > 0`** và cảnh báo khi `remaining_credits > 0`; ②**snapshot `payment_mode` lên `credit_reservations` lúc reserve** (mẫu `funded_by` của F8) — nay `ReleaseAsync` đọc mode **tại thời điểm release** (`CreditAccountService.cs:514-528`) nên lật mode giữa chừng làm **bốc hơi credit thật**: reservation tạo hồi Prepaid đã trừ `remaining−1`, release dưới Postpaid chỉ `reserved−1` mà không hoàn ⇒ gãy bất biến `remaining+reserved=Σdelta`; ③**job set `InvoiceStatus.Overdue`** — grep toàn Payment **không có dòng nào** chuyển invoice sang `Overdue`, nên guard BK17 (`Invoices.Any(Overdue)` → 402) **không bao giờ kích hoạt** ⇒ postpaid hiện là "trả sau" **không có phanh**, org không trả hoá đơn vẫn thi vô hạn. ⚠ `credit_limit` NULL → so sánh SQL ra UNKNOWN → **402 mọi lúc**, nên bật mode mà quên đặt limit còn kẹt nặng hơn không bật. **Đo thật 2026-07-20:** ví org `0610da24` = `remaining=0, reserved=7` ⇒ lật mode lúc này sẽ mất 7 credit khi các campaign hết hạn 22–23/07 | — |
