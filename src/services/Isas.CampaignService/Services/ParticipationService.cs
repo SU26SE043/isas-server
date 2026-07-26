@@ -58,7 +58,7 @@ namespace Isas.CampaignService.Services
         }
 
         // ── POST /invitations/{token}/join — tham gia campaign ───────────────────────
-        public async Task<JoinCampaignResponse> JoinCampaignAsync(string token, CancellationToken ct = default)
+        public async Task<JoinCampaignResponse> JoinCampaignAsync(string token, string? callerEmail, CancellationToken ct = default)
         {
             var tokenHash = HashOrThrow(token);   // DB23 — tra bằng hash (DB không giữ token thô)
             var inv = await _db.CampaignInvitations
@@ -68,6 +68,12 @@ namespace Isas.CampaignService.Services
                 ?? throw new KeyNotFoundException("Lời mời không tồn tại.");
 
             ValidateInvitationUsable(inv);
+
+            // BK26: token mời chỉ được redeem bởi Candidate đang đăng nhập bằng đúng email được mời.
+            // Guard này phải đứng trước provision/membership để caller sai không tạo side-effect nào.
+            if (string.IsNullOrWhiteSpace(callerEmail)
+                || !string.Equals(callerEmail.Trim(), inv.Email.Trim(), StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("Email đăng nhập không khớp với email được mời.");
 
             // Provision account Candidate nhẹ theo email của lời mời (idempotent bên Auth).
             var provisioned = await _authClient.ProvisionCandidateAsync(inv.Email, null, ct);

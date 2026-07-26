@@ -107,7 +107,7 @@ public class InvitationTokenHashDb23Tests
         var svc = NewParticipation(tdb.NewContext());
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() => svc.GetInvitationMetadataAsync(token, default));
-        await Assert.ThrowsAsync<KeyNotFoundException>(() => svc.JoinCampaignAsync(token, default));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => svc.JoinCampaignAsync(token, null, default));
     }
 
     // (e) Copy link từ email dính khoảng trắng → vẫn redeem được (trim trước khi băm).

@@ -130,7 +130,7 @@ public class MembershipInvitationLinkFx1Tests
         var inv = SeedInvitation(tdb.Db, camp.Id, "fx1-new@acme.test");
         await tdb.Db.SaveChangesAsync();
 
-        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), inv.Email, default);
 
         using var check = tdb.NewContext();
         var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
@@ -148,7 +148,7 @@ public class MembershipInvitationLinkFx1Tests
         var inv = SeedInvitation(tdb.Db, camp.Id, "fx1-cv@acme.test", campaignCandidateId: cv.Id);
         await tdb.Db.SaveChangesAsync();
 
-        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), inv.Email, default);
 
         using var check = tdb.NewContext();
         var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
@@ -178,7 +178,7 @@ public class MembershipInvitationLinkFx1Tests
         });
         await tdb.Db.SaveChangesAsync();
 
-        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), inv.Email, default);
 
         using var check = tdb.NewContext();
         var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
@@ -196,7 +196,7 @@ public class MembershipInvitationLinkFx1Tests
         var old = SeedInvitation(tdb.Db, camp.Id, "fx1-reissue@acme.test");
         await tdb.Db.SaveChangesAsync();
 
-        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(old), default);
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(old), old.Email, default);
 
         // Reissue: thu hồi lời mời cũ, phát lời mời mới cùng email.
         using (var ctx = tdb.NewContext())
@@ -212,7 +212,7 @@ public class MembershipInvitationLinkFx1Tests
             await ctx.SaveChangesAsync();
         }
 
-        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(fresh), default);
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(fresh), fresh.Email, default);
 
         using var check = tdb.NewContext();
         var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
@@ -262,7 +262,7 @@ public class MembershipInvitationLinkFx1Tests
         var inv = SeedInvitation(tdb.Db, camp.Id, "fx1-join@acme.test");
         await tdb.Db.SaveChangesAsync();
 
-        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), default);
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), inv.Email, default);
 
         var rows = (await NewCampaignSvc(tdb.NewContext())
             .GetInvitationsAsync(org, camp.Id, null, null, null, null, default)).Items;
@@ -286,7 +286,7 @@ public class MembershipInvitationLinkFx1Tests
         var unused = SeedInvitation(tdb.Db, camp.Id, "dup@acme.test");
         await tdb.Db.SaveChangesAsync();
 
-        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(used), default);
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(used), used.Email, default);
 
         var rows = (await NewCampaignSvc(tdb.NewContext())
             .GetInvitationsAsync(org, camp.Id, null, null, null, null, default)).Items;
@@ -309,7 +309,7 @@ public class MembershipInvitationLinkFx1Tests
         var unused = SeedInvitation(tdb.Db, camp.Id, "dup2@acme.test");
         await tdb.Db.SaveChangesAsync();
 
-        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(used), default);
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(used), used.Email, default);
 
         var svc = NewCampaignSvc(tdb.NewContext());
         var joined = (await svc.GetInvitationsAsync(org, camp.Id, "Joined", null, null, null, default)).Items;
@@ -407,8 +407,8 @@ public class MembershipInvitationLinkFx1Tests
 
         var candidate2 = Guid.Parse("bbbbbbbb-0000-0000-0000-000000000002");
         var candidate1 = Guid.Parse("cccccccc-0000-0000-0000-000000000003");
-        await NewParticipation(tdb.NewContext(), candidate2).JoinCampaignAsync(RawTokenOf(inv2), default);
-        await NewParticipation(tdb.NewContext(), candidate1).JoinCampaignAsync(RawTokenOf(inv1), default);
+        await NewParticipation(tdb.NewContext(), candidate2).JoinCampaignAsync(RawTokenOf(inv2), inv2.Email, default);
+        await NewParticipation(tdb.NewContext(), candidate1).JoinCampaignAsync(RawTokenOf(inv1), inv1.Email, default);
 
         // Chấm xong → ranking (nguồn của bảng kết quả E5/E6).
         using (var ctx = tdb.NewContext())

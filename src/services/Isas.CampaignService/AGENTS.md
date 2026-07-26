@@ -61,7 +61,8 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 
 ### Distribution / Result (❌ kế hoạch — cùng prefix `/campaign`)
 - `POST /campaign/{id}/invitations` — phát lời mời + email hàng loạt.
-- `GET /invitations/{token}` — ứng viên vào bài (→ Interview tạo/lấy session gắn `campaignId`).
+- `GET /invitations/{token}` — metadata lời mời public, không side-effect.
+- `POST /invitations/{token}/join` — **BK26:** JWT `Candidate` bắt buộc; claim `email` phải khớp email lời mời sau Trim + ordinal case-insensitive, lệch/thiếu → 403 không provision hay tạo membership.
 - `POST /invitations/{id}/reissue` — Employer phát lại token (vô hiệu token cũ).
 - `GET /campaign/{id}/results` + `/results/export?format=csv|pdf` — bảng kết quả, xếp hạng, xuất file.
   ✅ csv (E6) + ✅ pdf (F16, QuestPDF Community + `SkiaSharp.NativeAssets.Linux.NoDependencies`). Cả 2 định dạng
