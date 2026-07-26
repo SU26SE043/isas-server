@@ -75,6 +75,7 @@
 | BK14 | D2 follow-up còn: retake sau Completed · JWT refresh khi đổi role · orgName resolve | D2,P2 | partial |
 | A6b | Org member còn: mời qua **email** + attach account có sẵn | A6,D1 | partial |
 | E10b | Selective N× (chỉ tiêu chí biên) + republisher re-publish đúng attempt thiếu | E10 | not_started |
+| BK26 | 🔴 **Join lời mời B2B bắt buộc đăng nhập + email khớp** — `POST /campaign/invitations/{token}/join` đang `[AllowAnonymous]`, provision theo `inv.Email` bất kể ai gọi ⇒ user đăng nhập email B redeem được token của email A (campaign hiện sai chủ). Sửa: controller `[Authorize(Roles=Candidate)]` (thiếu token→401) + guard email caller `User.FindFirstValue("email")` ≠ `inv.Email` (Trim+OrdinalIgnoreCase) → **403, không tạo membership** (`ParticipationController.cs:48` + `ParticipationService.JoinCampaignAsync` ngay sau `ValidateInvitationUsable`); +test mismatch→403+0-membership + mutation-check. **FE (repo riêng, PR đi kèm):** gate nút Join sau login + ngừng swap access-only token + hiện thông báo 403. Không migration. | D2 | not_started · ⚠ **breaking**: bỏ join ẩn danh (phá passwordless D2/D25) → FE bắt buộc sửa cùng; xác minh `dotnet test src/services/Isas.CampaignService.Tests` |
 
 ### ⏸️ Deferred (có lý do — chỉ làm khi điều kiện tới, đừng mở lại theo phản xạ)
 | ID | Việc | Điều kiện mở lại |
