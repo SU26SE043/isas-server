@@ -59,6 +59,7 @@
 | BC5 | (verify) Lịch sử cá nhân đọc đúng chủ (`GET history` chỉ user; `{id}` người khác → 403/404) | — | not_started |
 | F24 | (NFR) Responsive **mobile** — 3 shell sidenav tự đóng + 5 bảng admin `overflow-x` | — | not_started |
 | F25 | Ẩn/khoá gói `Subscription` bấm-là-400 trong catalog (tới khi F8 xong) | — | not_started |
+| BC17 | Roadmap **nhập report cũ theo lựa chọn** — nay `RoadmapService.CreateAsync` (`RoadmapService.cs:42-71`) tự gom **MỌI** buổi Scored B2C, user không chọn được. Cho candidate **chọn/import report cụ thể** (kết quả buổi `session_criterion_scores`/`overall_comment` · phân tích CV `cv_analyses` BC7 · report roadmap trước `roadmaps.final_report` BC15) + 1 ô **mô tả đúng thứ muốn** → AI sinh lộ trình **đúng yêu cầu** thay vì gộp tất. Chạm: `CreateRoadmapRequest` (+`sessionIds?`/`cvAnalysisId?`/`priorRoadmapId?`/`focus?`) · `CreateAsync` lọc baseline/weakness chỉ theo report đã chọn (owner-scope từng id) · AIService `GenerateRoadmapRequest`+`build_roadmap_prompt` nhận thêm tóm tắt report + yêu cầu người dùng. Không đổi phí (create free — BC12). Cần chốt: buộc ≥1 report? trộn report cũ với buổi mới thế nào? | BC12,BC15,BC7 | not_started |
 
 ### 🔧 Hardening / cleanup còn lại
 | ID | Việc | Dep | Trạng thái |
