@@ -46,16 +46,17 @@ namespace Isas.CampaignService.Controllers
 
         // ── POST /invitations/{token}/join — tham gia campaign ─────────────────────────
         [HttpPost("invitations/{token}/join")]
-        [AllowAnonymous]
+        [Authorize(Roles = "Candidate")]
         public async Task<IActionResult> JoinCampaign(string token, CancellationToken ct)
         {
             try
             {
-                var result = await _participation.JoinCampaignAsync(token, ct);
+                var result = await _participation.JoinCampaignAsync(token, User.FindFirstValue("email"), ct);
                 return Ok(result);
             }
             catch (KeyNotFoundException ex) { return NotFound(new { error = ex.Message }); }
             catch (InvitationGoneException ex) { return StatusCode(StatusCodes.Status410Gone, new { error = ex.Message }); }
+            catch (UnauthorizedAccessException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message }); }
             catch (DownstreamServiceException ex)
             {
                 _logger.LogError(ex, "Provision candidate thất bại khi join campaign.");

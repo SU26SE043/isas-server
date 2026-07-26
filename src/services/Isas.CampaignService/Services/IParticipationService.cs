@@ -13,7 +13,7 @@ namespace Isas.CampaignService.Services
         Task<InvitationMetadataResponse> GetInvitationMetadataAsync(string token, CancellationToken ct = default);
 
         // POST /invitations/{token}/join — provision Candidate (Auth) + tạo/cập nhật membership Joined.
-        Task<JoinCampaignResponse> JoinCampaignAsync(string token, CancellationToken ct = default);
+        Task<JoinCampaignResponse> JoinCampaignAsync(string token, string? callerEmail, CancellationToken ct = default);
 
         // GET /my-campaigns — campaign đã join của candidate.
         // Keyset-paged (DB8) theo (CreatedAt DESC, Id DESC) của membership; soft-delete campaign lọc ở SQL.

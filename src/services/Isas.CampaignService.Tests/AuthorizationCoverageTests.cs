@@ -7,7 +7,7 @@ namespace Isas.CampaignService.Tests;
 
 /// <summary>
 /// A5 (AUTH-3/6/7) — guard tĩnh: KHÔNG endpoint nào "trần". + assert: CampaignController (Employer)
-/// mọi action Roles="Employer"; magic-link (invitations/join) = public; my-campaigns/start = Candidate.
+/// mọi action Roles="Employer"; metadata magic-link = public; join/my-campaigns/start = Candidate.
 /// </summary>
 public class AuthorizationCoverageTests
 {
@@ -60,7 +60,6 @@ public class AuthorizationCoverageTests
 
     [Theory]
     [InlineData(nameof(ParticipationController.GetInvitation))]
-    [InlineData(nameof(ParticipationController.JoinCampaign))]
     public void ParticipationMagicLink_IsPublic(string method)
     {
         var m = typeof(ParticipationController).GetMethod(method)!;
@@ -68,6 +67,7 @@ public class AuthorizationCoverageTests
     }
 
     [Theory]
+    [InlineData(nameof(ParticipationController.JoinCampaign))]
     [InlineData(nameof(ParticipationController.GetMyCampaigns))]
     [InlineData(nameof(ParticipationController.StartInterview))]
     public void ParticipationCandidateEndpoints_RequireCandidateRole(string method)
