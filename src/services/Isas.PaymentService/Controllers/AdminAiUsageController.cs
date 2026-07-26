@@ -1,5 +1,6 @@
 using Isas.PaymentService.DTOs;
 using Isas.PaymentService.Services;
+using Isas.Shared.Analytics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -18,6 +19,15 @@ namespace Isas.PaymentService.Controllers
     {
         private readonly IAiUsageService _usage;
 
+        // Chỉ day/month — KHÔNG đổi tập hợp lệ so với bản cũ, dù helper dùng chung hỗ trợ "hour"
+        // (Payment traffic §B2 sẽ khai bộ riêng của nó).
+        private static readonly IReadOnlyDictionary<string, AnalyticsGranularity> AllowedGranularities =
+            new Dictionary<string, AnalyticsGranularity>
+            {
+                ["day"] = AnalyticsGranularity.Day,
+                ["month"] = AnalyticsGranularity.Month,
+            };
+
         public AdminAiUsageController(IAiUsageService usage) => _usage = usage;
 
         /// <summary>
@@ -34,31 +44,27 @@ namespace Isas.PaymentService.Controllers
             [FromQuery] string? groupBy = null,
             CancellationToken ct = default)
         {
-            var toUtc = ToUtc(to ?? DateTime.UtcNow);
-            var fromUtc = ToUtc(from ?? toUtc.AddDays(-30));
-
-            if (fromUtc >= toUtc)
-                return BadRequest(new { message = "`from` phải nhỏ hơn `to`." });
-
-            AiUsageGranularity granularity;
-            switch ((groupBy ?? "day").Trim().ToLowerInvariant())
+            if (!AnalyticsPeriod.TryResolve(from, to, groupBy, AllowedGranularities, out var period, out var error))
             {
-                case "day": granularity = AiUsageGranularity.Day; break;
-                case "month": granularity = AiUsageGranularity.Month; break;
-                default:
-                    return BadRequest(new { message = "`groupBy` chỉ nhận `day` hoặc `month`." });
+                return error == AnalyticsPeriodError.InvalidRange
+                    ? BadRequest(new { message = "`from` phải nhỏ hơn `to`." })
+                    : BadRequest(new { message = "`groupBy` chỉ nhận `day` hoặc `month`." });
             }
 
-            return Ok(await _usage.GetReportAsync(fromUtc, toUtc, granularity, ct));
+            var granularity = period!.Granularity == AnalyticsGranularity.Month
+                ? AiUsageGranularity.Month
+                : AiUsageGranularity.Day;
+
+            return Ok(await _usage.GetReportAsync(period.FromUtc, period.ToUtc, granularity, ct));
         }
 
-        // Unspecified = client gửi chuỗi không offset → coi như đã là UTC (mọi mốc trong DB là UTC).
-        // Local = client gửi offset số (+07:00) → quy đổi thật sự, đừng gán nhãn suông.
-        private static DateTime ToUtc(DateTime value) => value.Kind switch
-        {
-            DateTimeKind.Utc => value,
-            DateTimeKind.Local => value.ToUniversalTime(),
-            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
-        };
+        //// Unspecified = client gửi chuỗi không offset → coi như đã là UTC (mọi mốc trong DB là UTC).
+        //// Local = client gửi offset số (+07:00) → quy đổi thật sự, đừng gán nhãn suông.
+        //private static DateTime ToUtc(DateTime value) => value.Kind switch
+        //{
+        //    DateTimeKind.Utc => value,
+        //    DateTimeKind.Local => value.ToUniversalTime(),
+        //    _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        //};
     }
 }

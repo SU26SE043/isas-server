@@ -86,6 +86,8 @@ builder.Services.Configure<BillingSettings>(
 // Payment biết TIỀN. Mỗi dòng usage snapshot lại đơn giá đã dùng nên đổi giá không hồi tố số liệu cũ.
 builder.Services.Configure<AiPricingSettings>(
     builder.Configuration.GetSection("AiPricing"));
+builder.Services.Configure<HttpTrafficRetentionSettings>(
+    builder.Configuration.GetSection(HttpTrafficRetentionSettings.SectionName));
 
 // DB4 — cấu hình reconciler credit_accounts.reserved_credits ↔ count(reservations Reserved).
 builder.Services.Configure<ReconcileSettings>(
@@ -167,6 +169,7 @@ builder.Services.AddHostedService<OrderExpiryReconciler>();
 builder.Services.AddHostedService<SubscriptionExpiryReconciler>();
 
 builder.Services.AddHostedService<InvoiceOverdueReconciler>();
+builder.Services.AddHostedService<HttpTrafficPurger>();
 
 var app = builder.Build();
 

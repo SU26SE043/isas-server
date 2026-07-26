@@ -36,6 +36,7 @@ builder.Services.AddOpenApi(options =>
 });
 
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<IAuthAnalyticsService, AuthAnalyticsService>();
 builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddTransient<IEmailSender, EmailSender>();
 builder.Services.AddSingleton<IGoogleLoginRedirects, GoogleLoginRedirects>();
@@ -52,6 +53,9 @@ builder.Services.AddSingleton<IGoogleAuthCodeStore, GoogleAuthCodeStore>();
 builder.Services.Configure<RefreshTokenRetentionSettings>(
     builder.Configuration.GetSection(RefreshTokenRetentionSettings.SectionName));
 builder.Services.AddHostedService<RefreshTokenPurger>();
+builder.Services.Configure<LoginEventRetentionSettings>
+    (builder.Configuration.GetSection(LoginEventRetentionSettings.SectionName));
+builder.Services.AddHostedService<LoginEventPurger>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>
 {

@@ -1,5 +1,8 @@
 using System.Text;
 using Isas.Gateway.Services;
+using Isas.Gateway.Middleware;
+using Isas.Shared.Analytics;
+using Microsoft.Extensions.Options;
 using Isas.Shared.Extensions;
 using Scalar.AspNetCore;
 
@@ -10,6 +13,11 @@ builder.Services.AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
 builder.Services.AddHttpClient<OpenApiAggregatorService>();
 builder.Services.AddHostedService<OpenApiAggregatorService>();
+builder.Services.Configure<TrafficAnalyticsOptions>(builder.Configuration.GetSection(TrafficAnalyticsOptions.SectionName));
+var analytics = builder.Configuration.GetSection(TrafficAnalyticsOptions.SectionName).Get<TrafficAnalyticsOptions>() ?? new();
+builder.Services.AddSingleton(new HttpTrafficAggregator(analytics.FlushIntervalSeconds > 0 ? analytics.FlushIntervalSeconds : 300, analytics.MaxPendingWindows));
+builder.Services.AddHttpClient("traffic-sink");
+builder.Services.AddHostedService<TrafficFlushService>();
 
 var app = builder.Build();
 
@@ -52,6 +60,8 @@ app.Use(async (context, next) =>
 });
 
 app.UseRouting();
+
+app.UseMiddleware<TrafficMeteringMiddleware>();
 
 app.UseGatewayCors();
 

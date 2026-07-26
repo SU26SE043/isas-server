@@ -19,6 +19,7 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
     public DbSet<UserToken> UserTokens => Set<UserToken>();
     public DbSet<IdentityUserLogin<Guid>> UserLogins => Set<IdentityUserLogin<Guid>>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<LoginEvent> LoginEvents => Set<LoginEvent>();
     public DbSet<Organization> Organizations => Set<Organization>();
     public DbSet<OrgMember> OrgMembers => Set<OrgMember>();
 
@@ -155,6 +156,20 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.HasOne(x => x.User)
                 .WithMany(x => x.RefreshTokens)
                 .HasForeignKey(x => x.UserId);
+        });
+
+        // FR18 — audit telemetry append-only cho các lần phát phiên thực sự. Không có navigation/FK
+        // tới User: analytics không cần load user, và event cũ vẫn purge được độc lập.
+        builder.Entity<LoginEvent>(e =>
+        {
+            e.ToTable("login_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.UserId).HasColumnName("user_id");
+            e.Property(x => x.Method).HasColumnName("method").HasMaxLength(24).IsRequired();
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.HasIndex(x => x.UserId);
+            e.HasIndex(x => x.CreatedAt);
         });
 
         // ================= ORGANIZATIONS =================
