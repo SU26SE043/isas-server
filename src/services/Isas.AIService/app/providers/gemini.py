@@ -413,16 +413,27 @@ class GeminiProvider(QuestionProvider):
 
     async def generate_roadmap(self, job_category: str, level: str,
                                weaknesses: list[dict] | None,
-                               cv_text: str | None) -> list[dict]:
+                               cv_text: str | None,
+                               focus: str | None = None,
+                               cv_analysis_summary: str | None = None,
+                               prior_roadmap_summary: str | None = None) -> list[dict]:
         """
         BC13/D20 — sinh cấu trúc roadmap ôn tập (sync, stateless, KHÔNG ghi DB).
+
+        BC17 — focus/cvAnalysisSummary/priorRoadmapSummary: cá nhân hoá theo report ứng viên CHỌN
+        + ô mô tả mong muốn. Đều là DỮ LIỆU (bọc delimiter trong prompt, AI-4).
 
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_roadmap_prompt(job_category, level, weaknesses, cv_text)
+        prompt = build_roadmap_prompt(
+            job_category, level, weaknesses, cv_text,
+            focus=focus,
+            cv_analysis_summary=cv_analysis_summary,
+            prior_roadmap_summary=prior_roadmap_summary,
+        )
 
         response = await self._generate(
             "generate_roadmap",

@@ -69,6 +69,13 @@ class GenerateRoadmapRequest(BaseModel):
     level: str                                     # Fresher | Junior | Middle | Senior
     weaknesses: list[WeaknessScore] | None = None  # từ session_criterion_scores; rỗng → roadmap chuẩn theo level
     cvText: str | None = None
+    # BC17 — cá nhân hoá roadmap từ report cũ do ứng viên CHỌN + ô mô tả mong muốn. 3 field này là
+    # free-text/tóm tắt do ứng viên/hệ thống cung cấp ⇒ bọc-làm-DỮ-LIỆU trong prompt (AI-4), KHÔNG
+    # phải chỉ thị. ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'`
+    # sẽ NUỐT IM LẶNG field quên khai (đúng bug BC14/F2b `focusCriteria`) → .NET gửi mà AI không thấy.
+    focus: str | None = None                       # ô ứng viên mô tả mong muốn định hướng (free-text)
+    cvAnalysisSummary: str | None = None           # tóm tắt phân tích CV (BC7) ứng viên đã chọn
+    priorRoadmapSummary: str | None = None         # tóm tắt roadmap/report trước ứng viên đã chọn
 
 
 class RoadmapLesson(BaseModel):

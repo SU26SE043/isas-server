@@ -203,7 +203,9 @@ async def test_provider_summarize_roadmap_raises_on_empty_comment():
 
 # ── Endpoint /api/v1/generate-roadmap: request/response shape qua HTTP thật ─
 def test_endpoint_generate_roadmap_response_shape(monkeypatch):
-    async def fake_generate_roadmap(job_category, level, weaknesses, cv_text):
+    async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
+                                    focus=None, cv_analysis_summary=None,
+                                    prior_roadmap_summary=None):
         assert job_category == "BE"
         assert level == "Junior"
         return [
@@ -242,7 +244,8 @@ def test_endpoint_generate_roadmap_rejects_empty_level():
 
 
 def test_endpoint_generate_roadmap_returns_502_when_gemini_fails(monkeypatch):
-    async def failing(job_category, level, weaknesses, cv_text):
+    async def failing(job_category, level, weaknesses, cv_text,
+                      focus=None, cv_analysis_summary=None, prior_roadmap_summary=None):
         raise ValueError("LLM trả JSON không hợp lệ")
 
     monkeypatch.setattr(main_module.provider, "generate_roadmap", failing)
@@ -253,6 +256,39 @@ def test_endpoint_generate_roadmap_returns_502_when_gemini_fails(monkeypatch):
     )
     assert res.status_code == 502
     assert "Lỗi sinh roadmap" in res.json()["detail"]
+
+
+# ── BC17 — 3 field cá nhân hoá KHÔNG bị pydantic `extra='ignore'` nuốt im lặng ─
+def test_endpoint_generate_roadmap_forwards_bc17_fields(monkeypatch):
+    """Guard bug BC14/F2b: `GenerateRoadmapRequest` không set model_config nên pydantic mặc định
+    `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai. Test POST 3 field mới rồi khẳng định
+    provider NHẬN được đúng giá trị — quên khai field trong schema thì fake nhận None và test ĐỎ."""
+    received = {}
+
+    async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
+                                    focus=None, cv_analysis_summary=None,
+                                    prior_roadmap_summary=None):
+        received["focus"] = focus
+        received["cv_analysis_summary"] = cv_analysis_summary
+        received["prior_roadmap_summary"] = prior_roadmap_summary
+        return [{"title": "M1", "focusCriteria": ["SQL"], "lessons": [{"title": "L1"}]}]
+
+    monkeypatch.setattr(main_module.provider, "generate_roadmap", fake_generate_roadmap)
+
+    res = client.post(
+        "/api/v1/generate-roadmap",
+        json={
+            "jobCategory": "BE", "level": "Junior",
+            "focus": "Tập trung vào system design",
+            "cvAnalysisSummary": "Thiếu kinh nghiệm hệ phân tán",
+            "priorRoadmapSummary": "Đã hoàn thành nền tảng SQL",
+        },
+    )
+
+    assert res.status_code == 200
+    assert received["focus"] == "Tập trung vào system design"
+    assert received["cv_analysis_summary"] == "Thiếu kinh nghiệm hệ phân tán"
+    assert received["prior_roadmap_summary"] == "Đã hoàn thành nền tảng SQL"
 
 
 # ── Endpoint /api/v1/generate-lesson-theory ─────────────────────────────────

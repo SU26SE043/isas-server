@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
@@ -11,6 +13,8 @@ namespace Isas.InterviewService.Services;
 // BC12 (D20) — roadmap ôn tập cá nhân hoá B2C. Gom điểm yếu (session_criterion_scores, BC9) + CV
 // → AIService /generate-roadmap (sync) → LƯU 3 bảng (AI KHÔNG ghi DB). Tạo roadmap KHÔNG trừ credit
 // (D7/D15 — chỉ session luyện BC14 mới reserve). AI lỗi → 502, KHÔNG lưu gì (gọi AI trước khi Add).
+// BC17 — candidate CHỌN nguồn: SessionIds (baseline), CvAnalysisId + PriorRoadmapId + Focus (bối cảnh
+// prompt, KHÔNG vào baseline). Rỗng SessionIds → roadmap CHUẨN theo level (thôi tự gom mọi buổi Scored).
 public class RoadmapService : IRoadmapService
 {
     private readonly InterviewDbContext _db;
@@ -38,41 +42,96 @@ public class RoadmapService : IRoadmapService
         if (req.CvId is not null)
             cvText = await ReadOwnedParsedTextAsync(req.CvId.Value, candidateId, "CV", ct);
 
-        // Gom điểm yếu + baseline từ các buổi B2C đã Scored (mới nhất trước).
-        var scored = await _db.PracticeSessions.AsNoTracking()
-            .Include(s => s.CriterionScores)
-            .Where(s => s.CandidateId == candidateId
-                        && s.CampaignId == null
-                        && s.Status == SessionStatus.Scored)
-            .OrderByDescending(s => s.CreatedAt)
-            .ToListAsync(ct);
-
+        // BC17 — baseline lấy từ CÁC BUỔI CANDIDATE CHỌN (thôi tự gom MỌI buổi Scored). SessionIds
+        // rỗng/null → roadmap CHUẨN theo level (baseline/weakness/sources = null, KHÔNG query buổi nào).
         Dictionary<string, decimal>? baseline = null;
         List<RoadmapWeakness>? weaknesses = null;
         List<Guid>? sourceSessionIds = null;
 
-        var withScores = scored.Where(s => s.CriterionScores.Count > 0).ToList();
-        if (withScores.Count > 0)
+        if (req.SessionIds is { Count: > 0 })
         {
-            // Newest-first: tiêu chí xuất hiện lần đầu (buổi mới nhất) thắng → baseline = % hiện tại.
-            baseline = new Dictionary<string, decimal>();
-            var weak = new List<RoadmapWeakness>();
-            foreach (var s in withScores)
-                foreach (var cs in s.CriterionScores)
-                {
-                    if (baseline.ContainsKey(cs.CriterionName)) continue;
-                    baseline[cs.CriterionName] = cs.Percentage;
-                    if (cs.NeedsImprovement)
-                        weak.Add(new RoadmapWeakness(cs.CriterionName, cs.Percentage));
-                }
+            var requestedIds = req.SessionIds.Distinct().ToList();
 
-            sourceSessionIds = withScores.Select(s => s.Id).ToList();
-            weaknesses = weak.Count > 0 ? weak : null;
+            // CHỈ những buổi được chọn, owner-scoped + B2C + đã Scored (BC-3). Không phủ đủ MỌI id yêu
+            // cầu → 404 batch (KHÔNG lộ id nào thiếu / không thuộc mình / chưa chấm).
+            var chosen = await _db.PracticeSessions.AsNoTracking()
+                .Include(s => s.CriterionScores)
+                .Where(s => requestedIds.Contains(s.Id)
+                            && s.CandidateId == candidateId
+                            && s.CampaignId == null
+                            && s.Status == SessionStatus.Scored)
+                .OrderByDescending(s => s.CreatedAt)
+                .ToListAsync(ct);
+
+            if (chosen.Count != requestedIds.Count)
+                throw new KeyNotFoundException(
+                    "Một số buổi luyện không tồn tại, không thuộc về bạn, hoặc chưa được chấm.");
+
+            // Newest-first: tiêu chí xuất hiện lần đầu (buổi mới nhất) thắng → baseline = % hiện tại.
+            var withScores = chosen.Where(s => s.CriterionScores.Count > 0).ToList();
+            if (withScores.Count > 0)
+            {
+                baseline = new Dictionary<string, decimal>();
+                var weak = new List<RoadmapWeakness>();
+                foreach (var s in withScores)
+                    foreach (var cs in s.CriterionScores)
+                    {
+                        if (baseline.ContainsKey(cs.CriterionName)) continue;
+                        baseline[cs.CriterionName] = cs.Percentage;
+                        if (cs.NeedsImprovement)
+                            weak.Add(new RoadmapWeakness(cs.CriterionName, cs.Percentage));
+                    }
+
+                weaknesses = weak.Count > 0 ? weak : null;
+            }
+
+            // sourceSessionIds = ĐÚNG các buổi được chọn (đều đã Scored/owned nhờ guard phủ ở trên).
+            sourceSessionIds = chosen.Select(s => s.Id).ToList();
+        }
+
+        // BC17 — phân tích CV đã có (BC7) làm NGỮ CẢNH prompt. CHỈ ĐỌC row đã lưu — KHÔNG gọi lại
+        // /analyze-cv, KHÔNG reserve/consume credit (D22, tạo roadmap free). Thiếu → 404; khác chủ → 403.
+        string? cvAnalysisSummary = null;
+        if (req.CvAnalysisId is not null)
+        {
+            var ca = await _db.Set<CvAnalysis>().AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == req.CvAnalysisId.Value, ct)
+                ?? throw new KeyNotFoundException("Phân tích CV không tồn tại.");
+            if (ca.CandidateId != candidateId)
+                throw new UnauthorizedAccessException("Không phải phân tích CV của bạn");
+            cvAnalysisSummary = BuildCvAnalysisSummary(ca);
+        }
+
+        // BC17 — final_report của roadmap đã hoàn thành (BC15) làm NGỮ CẢNH. Thiếu → 404; khác chủ → 403;
+        // chưa có báo cáo (chưa hoàn thành) → 400.
+        string? priorRoadmapSummary = null;
+        if (req.PriorRoadmapId is not null)
+        {
+            var prior = await _db.Set<Roadmap>().AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == req.PriorRoadmapId.Value, ct)
+                ?? throw new KeyNotFoundException("Roadmap được chọn không tồn tại.");
+            if (prior.CandidateId != candidateId)
+                throw new UnauthorizedAccessException("Không phải roadmap của bạn");
+            if (string.IsNullOrWhiteSpace(prior.FinalReport))
+                throw new InvalidOperationException("Roadmap được chọn chưa có báo cáo (chưa hoàn thành).");
+
+            priorRoadmapSummary = BuildPriorRoadmapSummary(prior.FinalReport, prior.Id);
+        }
+
+        // BC17 — mô tả tự do: trim (khoảng-trắng-thuần = không nhập) + cap độ dài → vượt 400. Chống
+        // prompt-injection (bọc như dữ liệu) là việc phía AIService (worker Python), không phải ở đây.
+        string? focus = null;
+        if (!string.IsNullOrWhiteSpace(req.Focus))
+        {
+            focus = req.Focus.Trim();
+            if (focus.Length > FocusMaxChars)
+                throw new InvalidOperationException($"Mô tả focus vượt quá {FocusMaxChars} ký tự.");
         }
 
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = await _generator.GenerateAsync(
-            req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText, ct);
+            req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
+            focus, cvAnalysisSummary, priorRoadmapSummary, ct);
 
         var roadmap = new Roadmap
         {
@@ -182,6 +241,64 @@ public class RoadmapService : IRoadmapService
             : null;
         return new KeysetPage<RoadmapSummaryResponse>(rows, next);
     }
+
+    // BC17 — trần độ dài. focus: cap input tự do (rẻ, chống prompt phình). summary: cắt bối cảnh gửi AI
+    // (giữ HttpClient timeout + chi phí token trong tầm — nhồi nhiều report/CV dễ vượt).
+    private const int FocusMaxChars = 2000;
+    private const int SummaryMaxChars = 4000;
+
+    // BC17 — deserialize final_report khớp cách RoadmapReportService serialize (Web defaults).
+    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
+
+    // BC17 — dựng bối cảnh text từ 1 phân tích CV (BC7) đã lưu: summary + strengths/weaknesses/suggestions
+    // + mức khớp JD (nếu có). Cắt ≤ SummaryMaxChars.
+    private static string BuildCvAnalysisSummary(CvAnalysis ca)
+    {
+        var sb = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(ca.Summary))
+            sb.Append("Tóm tắt CV: ").AppendLine(ca.Summary.Trim());
+        if (ca.Strengths.Count > 0)
+            sb.Append("Điểm mạnh: ").AppendLine(string.Join("; ", ca.Strengths));
+        if (ca.Weaknesses.Count > 0)
+            sb.Append("Điểm yếu: ").AppendLine(string.Join("; ", ca.Weaknesses));
+        if (ca.Suggestions.Count > 0)
+            sb.Append("Gợi ý: ").AppendLine(string.Join("; ", ca.Suggestions));
+        if (ca.JdMatch is not null)
+            sb.Append("Mức khớp JD: ").Append(ca.JdMatch.Score).AppendLine("%");
+        return Truncate(sb.ToString().Trim(), SummaryMaxChars);
+    }
+
+    // BC17 — dựng bối cảnh text từ final_report roadmap trước (BC15): overallComment + strengths/weaknesses
+    // /improvements. Cắt ≤ SummaryMaxChars. final_report hỏng (defensive, đáng lẽ không xảy ra) → null.
+    private string? BuildPriorRoadmapSummary(string finalReportJson, Guid roadmapId)
+    {
+        RoadmapReportResponse? report;
+        try
+        {
+            report = JsonSerializer.Deserialize<RoadmapReportResponse>(finalReportJson, WebJson);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "BC17: final_report roadmap {RoadmapId} hỏng → bỏ qua bối cảnh", roadmapId);
+            return null;
+        }
+        if (report is null) return null;
+
+        var sb = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(report.OverallComment))
+            sb.Append("Nhận xét roadmap trước: ").AppendLine(report.OverallComment!.Trim());
+        if (report.Strengths.Count > 0)
+            sb.Append("Điểm mạnh: ").AppendLine(string.Join("; ", report.Strengths));
+        if (report.Weaknesses.Count > 0)
+            sb.Append("Điểm yếu: ").AppendLine(string.Join("; ", report.Weaknesses));
+        if (report.Improvements.Count > 0)
+            sb.Append("Đã cải thiện / cần luyện tiếp: ").AppendLine(string.Join("; ", report.Improvements));
+
+        var text = sb.ToString().Trim();
+        return text.Length == 0 ? null : Truncate(text, SummaryMaxChars);
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
 
     // Đọc parsed_text của file thuộc về candidate. null → 404; khác chủ → 403; rỗng → 400 (mẫu CvAnalysisService).
     private async Task<string> ReadOwnedParsedTextAsync(
