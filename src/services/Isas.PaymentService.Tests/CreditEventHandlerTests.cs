@@ -92,6 +92,28 @@ public class CreditEventHandlerTests
         credits.Verify(c => c.ConsumeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    // PONR1 Risk③ — chỗ giữ tạo TRƯỚC mốc cutover (session "đang bay lúc deploy") dù còn Reserved vẫn
+    // phải release theo luật cũ, KHÔNG giữ lại cho R1 consume. Khoá guard `snapshot.CreatedAt >= mark`:
+    // gỡ guard → E7 nuốt luôn cả no-show hợp lệ trước cutover = trừ tiền hồi tố qua đường release-bị-chặn.
+    [Fact]
+    public async Task SessionAbandoned_TruocPONRCutover_ReservationConReserved_VanRelease()
+    {
+        var sessionId = Guid.NewGuid();
+        var mark = DateTime.UtcNow;
+        var beforeCutover = mark.AddHours(-1);
+        var credits = new Mock<ICreditAccountService>(MockBehavior.Strict);
+        credits.Setup(c => c.GetReservationGateSnapshotAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ReservationGateSnapshot(true, beforeCutover));
+        credits.Setup(c => c.ReleaseAsync(sessionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ReleaseResult.Released(Guid.NewGuid()));
+
+        await NewHandler(credits.Object, mark)
+            .HandleAsync(CreditEventHandler.SessionAbandonedRoutingKey, AbandonedJson(sessionId));
+
+        credits.Verify(c => c.ReleaseAsync(sessionId, It.IsAny<CancellationToken>()), Times.Once);
+        credits.Verify(c => c.ConsumeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     // generation_failed luôn xảy ra trước Ready/materialize, nên dù reservation tạo sau cutover vẫn phải hoàn.
     [Fact]
     public async Task SessionAbandoned_GenerationFailed_SauPONRCutover_VanRelease()

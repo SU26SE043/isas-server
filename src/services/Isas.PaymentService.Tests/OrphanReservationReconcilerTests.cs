@@ -385,6 +385,31 @@ public class OrphanReservationReconcilerTests
         Assert.Equal(9, acc.RemainingCredits);    // consume không hoàn remaining
     }
 
+    // PONR1 Risk③ — chỗ giữ SessionAbandoned tạo TRƯỚC mốc cutover (session "đang bay lúc deploy" đã
+    // reserve theo luật CŨ) → giữ hành vi cũ: release, KHÔNG trừ tiền hồi tố. Khoá guard `CreatedAt >= mark`:
+    // gỡ guard → reconciler sẽ consume nhầm no-show hợp lệ tạo trước khi PONR1 được bật = trừ tiền hồi tố.
+    [Fact]
+    public async Task PONR1_SessionAbandoned_TruocCutover_ThiRelease()
+    {
+        using var tdb = new PaymentTestDb();
+        var owner = Guid.NewGuid();
+        SeedAccount(tdb, OwnerType.User, owner, reserved: 1, remaining: 9);
+        var abandoned = SeedReservation(tdb, OwnerType.User, owner, ReservationStatus.Reserved, Old);
+        await tdb.Db.SaveChangesAsync();
+
+        // Mốc = bây giờ ⇒ chỗ giữ Old(-30') nằm TRƯỚC mốc cutover.
+        var (r, provider) = Build(tdb, Client((abandoned, "SessionAbandoned")), consumeFromUtc: DateTime.UtcNow);
+        using (provider)
+            await ScanOnce(r);
+
+        using var read = tdb.NewContext();
+        Assert.Equal(ReservationStatus.Released,
+            (await read.CreditReservations.SingleAsync(x => x.SessionId == abandoned)).Status);
+        var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == owner);
+        Assert.Equal(0, acc.ReservedCredits);
+        Assert.Equal(10, acc.RemainingCredits);    // release hoàn lại 1 (KHÔNG consume hồi tố)
+    }
+
     // Failed = lỗi sinh câu hỏi → user không nhận được gì → release (BK12 vốn phát SessionAbandoned).
     [Fact]
     public async Task R1_Failed_ThiRelease()
