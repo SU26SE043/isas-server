@@ -467,8 +467,8 @@ Pending ────┤
 
 ### credit_reservations — giữ chỗ theo session
 ```
-Reserved ─(SessionScored → consume)──────► Consumed  ★ (ghi ledger −1)
-        └─(SessionAbandoned/lỗi → release)► Released  ★ (không trừ)
+Reserved ─(SessionScored, hoặc PONR1 Ready → consume)──► Consumed  ★ (ghi ledger −1)
+        └─(lỗi trước Ready/generation_failed → release)──► Released  ★ (không trừ)
 ```
 - **Idempotent theo `session_id`** (UNIQUE 1 reservation/session) — redeliver cùng event không xử lý lại.
 - ⚠ **Event ra ngoài thứ tự** (RabbitMQ **không đảm bảo thứ tự** giữa `SessionScored`/`SessionAbandoned`) — bắt buộc xử:

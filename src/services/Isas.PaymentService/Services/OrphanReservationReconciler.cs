@@ -179,9 +179,29 @@ namespace Isas.PaymentService.Services
 
                 // (d) Terminal "không chấm được gì" → hoàn chỗ giữ. SessionAbandoned = bỏ ngang (E7);
                 //     Failed = lỗi sinh câu hỏi (BK12 vốn phát SessionAbandoned để release).
-                if (string.Equals(status, StatusSessionAbandoned, StringComparison.Ordinal) ||
-                    string.Equals(status, StatusFailed, StringComparison.Ordinal))
+                if (string.Equals(status, StatusFailed, StringComparison.Ordinal))
                 {
+                    if (await TryReleaseAsync(accountService, sessionId, $"session {status}", ct))
+                        released++;
+                    continue;
+                }
+
+                // (d') SessionAbandoned = bỏ ngang SAU KHI có thể đã được consume tại mốc sinh câu hỏi (PONR1).
+                //      Dùng _options.ConsumeFromUtc THÔ (KHÔNG dùng _consumeFromUtc đã fallback "giờ khởi động"
+                //      của nhánh (c) — nhánh (c) là tính năng CŨ đã sống, còn nhánh này PHẢI "dark" đúng nghĩa cho
+                //      tới khi ops cấu hình tường minh, nếu không R1 sẽ tự trừ tiền no-show hợp lệ ngay khi
+                //      PaymentService restart — kể cả TRƯỚC KHI Interview bật Billing:ConsumeAtQuestionGeneration.
+                if (string.Equals(status, StatusSessionAbandoned, StringComparison.Ordinal))
+                {
+                    if (_options.ConsumeFromUtc is { } mark && candidate.CreatedAt >= mark)
+                    {
+                        if (await TryConsumeAbandonedPastCutoverAsync(accountService, sessionId, candidate.CreatedAt, ct))
+                            consumed++;
+                        continue;
+                    }
+
+                    // Trước mốc cutover (hoặc PONR1 phía Payment chưa kích hoạt — ConsumeFromUtc chưa cấu hình) →
+                    // hành vi CŨ, hoàn chỗ giữ.
                     if (await TryReleaseAsync(accountService, sessionId, $"session {status}", ct))
                         released++;
                     continue;
@@ -264,6 +284,31 @@ namespace Isas.PaymentService.Services
                 // Lỗi 1 reservation → bỏ qua nó, KHÔNG giết cả vòng (các ứng viên khác vẫn xử lý).
                 _logger.LogError(ex,
                     "Không thể release chỗ giữ session {SessionId} ({Reason}), bỏ qua", sessionId, reason);
+                return false;
+            }
+        }
+
+        // R1 Risk④/PONR1 — nhánh MỚI: session SessionAbandoned (no-show/hết hạn/không hoạt động — KHÔNG
+        // phải lỗi sinh câu hỏi) mà chỗ giữ vẫn Reserved và được tạo SAU mốc cutover PONR1 → PONR1 lẽ ra đã
+        // consume tại mốc sinh câu hỏi nhưng inline-consume (PracticeService.ConsumeQuietlyAsync) đã hụt.
+        // R1 hoàn tất khoản thu đó Ở ĐÂY thay vì hoàn nó — đúng vai trò lưới cuối của reconciler này.
+        //
+        // Không dùng ConsumeTerminalScored: đó là kill-switch recovery R1 cho ca đã Scored, còn PONR1 là
+        // chính sách đã được bật riêng bằng ConsumeFromUtc. Dùng chung sẽ làm reservation kẹt Reserved khi
+        // R1 tắt, rồi biến no-show sau PONR thành một khoản không thu cũng không hoàn.
+        private async Task<bool> TryConsumeAbandonedPastCutoverAsync(
+            ICreditAccountService accountService, Guid sessionId, DateTime reservationCreatedAt, CancellationToken ct)
+        {
+            try
+            {
+                var result = await accountService.ConsumeAsync(sessionId, ct);
+                return result.Outcome == ConsumeOutcome.Consumed;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "PONR1: không thể consume chỗ giữ SessionAbandoned sau cutover cho session {SessionId}, bỏ qua",
+                    sessionId);
                 return false;
             }
         }
