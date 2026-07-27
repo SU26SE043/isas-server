@@ -59,18 +59,47 @@ app.Use(async (context, next) =>
     await next();
 });
 
+// GEN-1 (Production): chặn MỌI "/api/v1/<svc>/internal/*" — callback nội bộ KHÔNG được qua gateway.
+// Chạy sau CollapseSlashes (bắt cả "//internal") và TRƯỚC UseRouting nên độc lập với route nào.
+// Development KHÔNG thêm middleware này ⇒ 4 route "<svc>-internal-route" (appsettings.json) forward
+// internal qua gateway để Scalar test được TOÀN BỘ api. Production: middleware 404 kín, dù route
+// internal vẫn nằm trong config (đây là hàng rào duy nhất, thay khối chặn payment-only cũ).
+if (!app.Environment.IsDevelopment())
+{
+    app.Use(async (context, next) =>
+    {
+        if (IsGatewayInternalPath(context.Request.Path.Value))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+        await next();
+    });
+}
+
 app.UseRouting();
 
 app.UseMiddleware<TrafficMeteringMiddleware>();
 
 app.UseGatewayCors();
 
-// GEN-1: /internal/* không qua gateway — payment-route pass-through root nên chặn tường minh.
-app.Map("/api/v1/payment/internal/{**rest}", () => Results.NotFound()).ExcludeFromDescription();
-
 app.MapReverseProxy();
 
 app.Run();
+
+// Khớp "/api/v1/<svc>/internal" theo sau là "/" hoặc hết chuỗi. KHÔNG match "/api/v1/x/internalfoo".
+static bool IsGatewayInternalPath(string? path)
+{
+    if (path is null) return false;
+    const string prefix = "/api/v1/";
+    if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+    var rest = path.AsSpan(prefix.Length);              // "<svc>/internal/..."
+    var slash = rest.IndexOf('/');
+    if (slash <= 0) return false;
+    var afterSvc = rest[(slash + 1)..];                 // "internal/..." hoặc "internal"
+    return afterSvc.Equals("internal", StringComparison.OrdinalIgnoreCase)
+        || afterSvc.StartsWith("internal/", StringComparison.OrdinalIgnoreCase);
+}
 
 // Gộp mọi chuỗi `/` liên tiếp thành một, chỉ cấp phát khi thật sự có `//` (đã lọc ở caller).
 static string CollapseSlashes(string path)
