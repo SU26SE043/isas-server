@@ -15,10 +15,14 @@ from app.usage import TokenUsage, extract_usage, report_usage
 
 
 class _Usage:
-    def __init__(self, prompt, output, total):
+    def __init__(self, prompt, output, total, thoughts=None):
         self.prompt_token_count = prompt
         self.candidates_token_count = output
         self.total_token_count = total
+        # Gemini 2.5 kèm thoughts_token_count; SDK model cũ KHÔNG có field này →
+        # chỉ set khi test cung cấp, để tái hiện đúng cả hai shape.
+        if thoughts is not None:
+            self.thoughts_token_count = thoughts
 
 
 def _resp(payload: dict | None = None, usage=_Usage(100, 50, 160), text: str | None = None):
@@ -34,6 +38,22 @@ def _resp(payload: dict | None = None, usage=_Usage(100, 50, 160), text: str | N
 def test_extract_usage_doc_du_3_con_so():
     usage = extract_usage(_resp(usage=_Usage(1200, 340, 1600)))
     assert usage == TokenUsage(prompt_tokens=1200, output_tokens=340, total_tokens=1600)
+
+
+def test_extract_usage_gop_thinking_token_vao_output_r3():
+    # R3: Gemini 2.5 trả thoughts_token_count (token suy luận) NGOÀI candidates.
+    # Google tính tiền phần này theo giá OUTPUT, nên output = candidates + thoughts.
+    # Trước fix chỉ lấy candidates ⇒ chi phí (Payment) báo thiếu ~50%.
+    usage = extract_usage(_resp(usage=_Usage(1000, 200, 2000, thoughts=800)))
+    assert usage.output_tokens == 1000   # 200 candidates + 800 thoughts (KHÔNG phải 200)
+    assert usage.prompt_tokens == 1000
+    assert usage.total_tokens == 2000    # total của SDK giữ nguyên (authoritative)
+
+
+def test_extract_usage_khong_co_thoughts_giu_nguyen_output():
+    # Model không bật "thinking" (SDK không có field) → output = candidates như cũ.
+    usage = extract_usage(_resp(usage=_Usage(500, 120, 620)))
+    assert usage.output_tokens == 120
 
 
 def test_extract_usage_total_khong_phai_tong_hai_ve():

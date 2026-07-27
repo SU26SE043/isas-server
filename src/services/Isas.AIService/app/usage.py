@@ -55,8 +55,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """Số token 1 lượt gọi. ``total`` do SDK trả, KHÔNG tự cộng in+out —
-    Gemini tính cả token suy luận/nội bộ không nằm trong hai vế kia."""
+    """Số token 1 lượt gọi.
+
+    ``output_tokens`` = candidates + thoughts (token suy luận của Gemini 2.5).
+    Google TÍNH TIỀN token suy luận theo ĐƠN GIÁ OUTPUT, nên phải gộp chúng vào
+    output — nếu chỉ lấy ``candidates_token_count`` thì chi phí (Payment tính
+    ``prompt*giá_in + output*giá_out``) báo THIẾU (R3: đo thực bỏ sót ~50%).
+    ``total`` do SDK trả (authoritative — có thể gồm cả token cached/nội bộ ngoài
+    hai vế); KHÔNG tự cộng in+out làm chuẩn."""
     prompt_tokens: int
     output_tokens: int
     total_tokens: int
@@ -89,7 +95,13 @@ def extract_usage(response) -> TokenUsage | None:
             return None
 
         prompt = _as_int(getattr(meta, "prompt_token_count", None))
-        output = _as_int(getattr(meta, "candidates_token_count", None))
+        # candidates = phần trả lời hiển thị; thoughts = token suy luận (Gemini 2.5,
+        # KHÔNG nằm trong candidates). Google tính TIỀN token suy luận theo giá
+        # OUTPUT ⇒ gộp vào output, nếu không chi phí báo thiếu (R3). ``getattr``
+        # thiếu → 0 nên model không bật "thinking" vẫn ra đúng như cũ.
+        candidates = _as_int(getattr(meta, "candidates_token_count", None))
+        thoughts = _as_int(getattr(meta, "thoughts_token_count", None))
+        output = candidates + thoughts
         total = _as_int(getattr(meta, "total_token_count", None))
 
         # Mock/shape lạ cho ra 0 hết → coi như không có số liệu, đừng ghi dòng rỗng
