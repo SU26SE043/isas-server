@@ -15,5 +15,9 @@
         public DateTime CreatedAt { get; set; } 
 
         public string Role { get; set; }
+
+        public Guid? OrgId { get; set; }
+        public string? OrgName { get; set; }
+        public string? OrgRole { get; set; }
     }
 }

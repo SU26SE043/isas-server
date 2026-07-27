@@ -994,6 +994,10 @@ namespace Isas.AuthService.Services
             if (user is null)
                 throw new KeyNotFoundException("User not found");
 
+            var membership = await _authDbContext.OrgMembers.AsNoTracking()
+                .Include(m => m.Organization)
+                .FirstOrDefaultAsync(m => m.UserId == userId);
+
             return new UserResponse
             {
                 Id = user.Id.ToString(),
@@ -1002,7 +1006,10 @@ namespace Isas.AuthService.Services
                 Location = user.Location,
                 Title = user.Title,
                 CreatedAt = user.CreatedAt,
-                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role"
+                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role",
+                OrgId = membership?.OrgId,
+                OrgName = membership?.Organization?.Name,
+                OrgRole = membership?.OrgRole.ToString()
             };
         }
 

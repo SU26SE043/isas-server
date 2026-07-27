@@ -43,6 +43,9 @@ UserResponse {
   title:     string
   createdAt: datetime
   role:      enum(string)              // Candidate·Employer·Admin
+  orgId:     uuid?                     // nullable khi không thuộc org
+  orgName:   string?
+  orgRole:   enum(string)?             // OrgAdmin·HrMember
 }
 ```
 
@@ -93,7 +96,7 @@ UserResponse {
 - Req: `{ refreshToken: string }` (giữ hợp đồng cũ; phạm vi thu hồi lấy theo claim `sub`, **không** theo token gửi kèm) → Res **`204`**. Lỗi: **401**.
 - Thu hồi đúng 1 token thì tab khác vẫn gia hạn phiên tiếp → "đã đăng xuất" mà phiên vẫn sống. ⚠ **access token đang lưu hành KHÔNG thu hồi được** (validate offline — GEN-3) nên còn hợp lệ tới hết TTL (**15'**); **FE phải tự xoá token khỏi storage** khi đăng xuất (đã làm: `AuthStore.logout()` gọi `clearSession()` trước khi gọi API).
 
-**`GET /me`** — Profile. Auth. → Res **`200`** `UserResponse`. Lỗi: **401**.
+**`GET /me`** — Profile. Auth. → Res **`200`** `UserResponse` kèm `orgId`/`orgName`/`orgRole` nullable. Lỗi: **401**.
 **`PUT /me`** — Cập nhật profile. Auth.
 - Req: `{ fullName: string?, location: string?, title: string? }` → Res **`200`** `UserResponse`. Lỗi: **401**.
 

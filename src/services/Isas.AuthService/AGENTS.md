@@ -47,6 +47,9 @@ UserResponse {
   title:     string
   createdAt: datetime
   role:      enum(string)              // Candidate·Employer·Admin
+  orgId:     uuid?                     // nullable khi không thuộc org
+  orgName:   string?
+  orgRole:   enum(string)?             // OrgAdmin·HrMember
 }
 ```
 
@@ -71,7 +74,7 @@ UserResponse {
 - Req: `{ refreshToken: string }` (giữ hợp đồng cũ; phạm vi thu hồi theo claim `sub`) → Res **`204`**. Lỗi: **401**.
 - ⚠ access token đang lưu hành **không thu hồi được** (GEN-3) → còn hợp lệ tới hết TTL (15'); **FE phải xoá token khỏi storage**.
 
-**`GET /me`** — Profile. Auth. → Res **`200`** `UserResponse`. Lỗi: **401**.
+**`GET /me`** — Profile. Auth. → Res **`200`** `UserResponse` kèm `orgId`/`orgName`/`orgRole` nullable. Lỗi: **401**.
 **`PUT /me`** — Cập nhật profile. Auth.
 - Req: `{ fullName: string?, location: string?, title: string? }` → Res **`200`** `UserResponse`. Lỗi: **401**.
 
