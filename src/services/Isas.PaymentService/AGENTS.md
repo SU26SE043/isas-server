@@ -268,6 +268,8 @@ reason     varchar(16)   enum: Purchase (+pack) · Consume (−1/lượt khi Sco
 reverses_transaction_id uuid?  ✅ F18 — FK tự tham chiếu → bút toán mua bị đảo; UNIQUE LỌC = khoá idempotency chống hoàn hai lần
 granted_by uuid?          ✅ F20 — admin cấp quà (ref lỏng → Auth); chỉ set trên row PromoGrant
 note       varchar(500)?  ✅ F20 — lý do cấp quà
+grant_idempotency_key varchar(200)? ✅ R8 — client key, UNIQUE LỌC theo (owner_type, owner_id, key) khi khác null
+grant_remaining_credits_after int? ✅ R8 — snapshot response đầu cho row grant có key; retry không đọc số dư hiện tại
 created_at timestamptz
 ```
 

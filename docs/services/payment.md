@@ -164,12 +164,12 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 - **Quà không bao giờ thành doanh thu** theo cấu trúc: báo cáo đọc `orders`, còn `FreeGrant`/`PromoGrant` chỉ ghi `credit_transactions` và không sinh đơn nào (có test khoá).
 - Lỗi: **400** `from >= to` hoặc `groupBy` lạ.
 
-**`POST /payment/admin/credits/grant`** ✅ **F20** (2026-07-19) — Cấp credit khuyến mãi. Auth `Roles="Admin"`. Req `{ ownerType, ownerId, credits (1–10000), note (bắt buộc) }` → **200** `{ ownerType, ownerId, creditsGranted, remainingCredits, transactionId }`.
+**`POST /payment/admin/credits/grant`** ✅ **F20/R8** (2026-07-27) — Cấp credit khuyến mãi. Auth `Roles="Admin"`. Req `{ ownerType, ownerId, credits (1–10000), note (bắt buộc), idempotencyKey? (≤200) }` → **200** `{ ownerType, ownerId, creditsGranted, remainingCredits, transactionId }`.
 - `remaining += N` + bút toán `PromoGrant +N` mang `granted_by` (lấy từ **JWT**, request DTO cố ý KHÔNG có trường khai người cấp) trong CÙNG transaction ⇒ bất biến sổ cái giữ nguyên.
 - Ví chưa tồn tại → tạo qua `CreateAccountAsync`, tức **đi qua đúng đường cấp suất dùng thử F7** (PAY-14) ⇒ user mới được tặng quà thì ví sinh ra kèm cả 3 credit dùng thử. Tự INSERT ví ở đây sẽ im lặng tước mất suất đó.
 - `credits <= 0` → **400**: bút toán delta=0 vi phạm CHECK, và "cấp số âm" sẽ là một đường TRỪ credit không có bút toán đảo — trừ credit phải đi đường hoàn tiền F18.
 - Ví `Suspended` **VẪN** nhận được quà: PAY-12 chặn hành động tương lai (reserve), còn cộng tiền là chiều ngược lại — chặn nó thì không đền bù được cho đúng tài khoản đang tranh chấp. Cấp quà không gỡ lệnh đình chỉ.
-- ⚠ **CHƯA có idempotency**: bấm hai lần = cấp hai lần. Khác webhook (có bộ retry tự động), đây là hành động người bấm; nếu cần thì thêm khoá idempotency do client cấp.
+- `idempotencyKey` là tuỳ chọn để tương thích client cũ. Cùng `(ownerType, ownerId, key)` chỉ cấp một lần: UNIQUE lọc ở DB chặn race, retry trả lại **đúng response grant đầu** (gồm snapshot `remainingCredits`), kể cả khi ví đã có giao dịch sau đó. Key khác ví không xung đột; `null`/blank giữ hành vi cũ, mỗi request là grant riêng.
 
 **`GET /payment/admin/credits/{ownerType}/{ownerId}`** ✅ **F20** — Số dư ví **bất kỳ** → `CreditAccount`. Ví chưa tồn tại → **200** 0 credit (đọc thuần, cùng quy ước `me/account`). Đây là đường DUY NHẤT để admin đọc ví người khác — `me/account` suy chủ ví từ JWT nên chỉ bao giờ nói về chính người gọi.
 
@@ -328,6 +328,8 @@ granted_by uuid?          ✅ F20 — `sub` của admin cấp quà (ref lỏng �
                           quà là loại credit DUY NHẤT không qua thanh toán và không do luật tự động, nên
                           nếu không ký tên thì không truy được nguồn.
 note       varchar(500)?  ✅ F20 — lý do cấp quà.
+grant_idempotency_key varchar(200)? ✅ R8 — client key, UNIQUE LỌC theo (owner_type, owner_id, key) khi khác null.
+grant_remaining_credits_after int? ✅ R8 — snapshot response đầu cho row grant có key; retry không đọc số dư hiện tại.
 created_at timestamptz
                           CHECK ck_credit_transactions_delta_nonzero: delta<>0  ✅ DB1 (2026-07-17)
                           INDEX ix_credit_transactions_owner_created (owner_type, owner_id, created_at DESC,

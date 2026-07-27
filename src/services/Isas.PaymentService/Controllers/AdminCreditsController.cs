@@ -48,7 +48,7 @@ namespace Isas.PaymentService.Controllers
                 return Forbid();
 
             var result = await _credits.GrantAsync(
-                req.OwnerType!.Value, req.OwnerId!.Value, req.Credits, req.Note, adminId, ct);
+                req.OwnerType!.Value, req.OwnerId!.Value, req.Credits, req.Note, req.IdempotencyKey, adminId, ct);
 
             return result.Outcome switch
             {

@@ -25,6 +25,13 @@ namespace Isas.PaymentService.DTOs
         [Required]
         [StringLength(500, MinimumLength = 3)]
         public string Note { get; set; } = null!;
+
+        /// <summary>
+        /// Khoá chống cấp trùng do retry/double-click. Cùng ví + cùng khoá sẽ replay đúng response grant
+        /// đầu tiên; không truyền thì giữ hành vi cũ (mỗi request là một grant mới).
+        /// </summary>
+        [StringLength(200)]
+        public string? IdempotencyKey { get; set; }
     }
 
     public class GrantCreditResponse

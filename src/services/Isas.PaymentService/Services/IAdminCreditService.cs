@@ -69,7 +69,7 @@ namespace Isas.PaymentService.Services
     public interface IAdminCreditService
     {
         Task<GrantResult> GrantAsync(
-            OwnerType ownerType, Guid ownerId, int credits, string? note, Guid adminUserId,
+            OwnerType ownerType, Guid ownerId, int credits, string? note, string? idempotencyKey, Guid adminUserId,
             CancellationToken ct = default);
 
         /// <summary>
