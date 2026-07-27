@@ -59,18 +59,59 @@ app.Use(async (context, next) =>
     await next();
 });
 
+// Production khoá 2 nhóm KHÔNG được qua gateway:
+//  - GEN-1: "/api/v1/<svc>/internal/*" — callback nội bộ.
+//  - GEN-7: "/api/v1/ai/*" — AIService internal-only (Interview/Campaign gọi trực tiếp qua AiService:BaseUrl).
+// Middleware chạy sau CollapseSlashes (bắt cả "//") và TRƯỚC UseRouting nên độc lập với route nào.
+// Development KHÔNG thêm middleware này ⇒ route "<svc>-internal-route" + "ai-route" (appsettings.json)
+// forward qua gateway để Scalar liệt kê VÀ gọi được TOÀN BỘ api (kể cả AIService). Production: 404 kín,
+// dù route vẫn nằm trong config (đây là hàng rào duy nhất, thay khối chặn payment-only cũ).
+if (!app.Environment.IsDevelopment())
+{
+    app.Use(async (context, next) =>
+    {
+        var path = context.Request.Path.Value;
+        if (IsGatewayInternalPath(path) || IsGatewayAiPath(path))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+        await next();
+    });
+}
+
 app.UseRouting();
 
 app.UseMiddleware<TrafficMeteringMiddleware>();
 
 app.UseGatewayCors();
 
-// GEN-1: /internal/* không qua gateway — payment-route pass-through root nên chặn tường minh.
-app.Map("/api/v1/payment/internal/{**rest}", () => Results.NotFound()).ExcludeFromDescription();
-
 app.MapReverseProxy();
 
 app.Run();
+
+// Khớp "/api/v1/ai" hoặc "/api/v1/ai/...". KHÔNG match "/api/v1/aixyz" (GEN-7: khoá cả AIService ở prod).
+static bool IsGatewayAiPath(string? path)
+{
+    if (path is null) return false;
+    const string ai = "/api/v1/ai";
+    return path.Equals(ai, StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith(ai + "/", StringComparison.OrdinalIgnoreCase);
+}
+
+// Khớp "/api/v1/<svc>/internal" theo sau là "/" hoặc hết chuỗi. KHÔNG match "/api/v1/x/internalfoo".
+static bool IsGatewayInternalPath(string? path)
+{
+    if (path is null) return false;
+    const string prefix = "/api/v1/";
+    if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+    var rest = path.AsSpan(prefix.Length);              // "<svc>/internal/..."
+    var slash = rest.IndexOf('/');
+    if (slash <= 0) return false;
+    var afterSvc = rest[(slash + 1)..];                 // "internal/..." hoặc "internal"
+    return afterSvc.Equals("internal", StringComparison.OrdinalIgnoreCase)
+        || afterSvc.StartsWith("internal/", StringComparison.OrdinalIgnoreCase);
+}
 
 // Gộp mọi chuỗi `/` liên tiếp thành một, chỉ cấp phát khi thật sự có `//` (đã lọc ở caller).
 static string CollapseSlashes(string path)

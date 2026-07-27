@@ -16,6 +16,7 @@ public class ApiServiceConfig
 public class OpenApiAggregatorService(
     HttpClient http,
     IConfiguration config,
+    IHostEnvironment env,
     ILogger<OpenApiAggregatorService> logger) : BackgroundService
 {
     public static string MergedDoc { get; private set; } = "{}";
@@ -24,20 +25,24 @@ public class OpenApiAggregatorService(
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            await RefreshOnce(http, config, logger);
+            // Development: doc hiện TOÀN BỘ api (kể cả /internal/*) để Scalar test được hết —
+            // internal cũng được route qua gateway ở dev (appsettings.Development.json).
+            // Production: loại internal khỏi doc VÀ chặn route (Program.cs) — GEN-1 khoá lại.
+            await RefreshOnce(http, config, logger, includeInternal: env.IsDevelopment());
             await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
         }
     }
 
-    // GEN-1: callback nội bộ không đi qua gateway -> không được nằm trong doc public,
-    // nếu không doc sẽ quảng cáo endpoint mà bấm vào chỉ nhận 404.
+    // /internal/* = callback nội bộ. Production: loại khỏi doc (không route qua gateway -> bấm 404).
+    // Development: giữ trong doc để show toàn bộ api (route dev-only cho gọi được).
     private static bool IsInternalPath(string path) =>
         path.StartsWith("/internal/", StringComparison.OrdinalIgnoreCase);
 
     public static async Task RefreshOnce(
         HttpClient http,
         IConfiguration config,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        bool includeInternal = false)
     {
         // Keyed-by-name: env override là "ApiServices__<name>__OpenApiUrl", nên URL của một service
         // không thể bị ghép với Prefix của service khác. Mảng-theo-index trước đây làm đúng chuyện đó:
@@ -50,6 +55,10 @@ public class OpenApiAggregatorService(
 
         foreach (var (name, service) in services)
         {
+            // GEN-7: AIService internal-only. Chỉ gộp vào doc (và fetch OpenAPI của nó) ở Development —
+            // Production không lộ AIService qua gateway nên cũng không nên chạm tới nó.
+            if (!includeInternal && name.Equals("ai", StringComparison.OrdinalIgnoreCase)) continue;
+
             // Prefix rỗng = mọi path của service đó đổ ra root doc, đúng triệu chứng của lỗi cấu hình
             // cũ (env "ApiServices__4__OpenApiUrl" không có entry tương ứng trong appsettings).
             // Thà mất một service trong doc còn hơn sinh ra doc sai mà không ai biết.
@@ -75,7 +84,7 @@ public class OpenApiAggregatorService(
                 {
                     foreach (var path in paths)
                     {
-                        if (IsInternalPath(path.Key)) continue;
+                        if (!includeInternal && IsInternalPath(path.Key)) continue;
 
                         var pathJson = path.Value?.ToJsonString() ?? "{}";
                         pathJson = pathJson.Replace(
