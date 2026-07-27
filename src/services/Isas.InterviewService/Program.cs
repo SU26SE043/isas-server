@@ -58,6 +58,12 @@ builder.Services.AddHttpClient<IAiServiceRepoAnalyzer, AiServiceRepoAnalyzer>(c 
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(60);
 });
+builder.Services.AddHttpClient<IGitHubRepoFetcher, GitHubRepoFetcher>(c =>
+{
+    c.BaseAddress = new Uri("https://api.github.com/");
+    c.Timeout = TimeSpan.FromSeconds(20);
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("isas-server");
+});
 
 builder.Services.AddHttpClient<IAiServiceRoadmapGenerator, AiServiceRoadmapGenerator>(c =>   // BC12
 {

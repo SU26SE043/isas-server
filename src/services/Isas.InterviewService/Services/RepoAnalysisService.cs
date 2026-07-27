@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
 
-public class RepoAnalysisService(InterviewDbContext db, IAiServiceRepoAnalyzer analyzer, ICreditReservationClient credits, IConfiguration config) : IRepoAnalysisService
+public class RepoAnalysisService(InterviewDbContext db, IAiServiceRepoAnalyzer analyzer, IGitHubRepoFetcher fetcher, ICreditReservationClient credits, IConfiguration config) : IRepoAnalysisService
 {
     private readonly int _cost = int.TryParse(config["Billing:RepoAnalysisCredits"], out var cost) ? cost : 1;
     public async Task<RepoAnalysisResponse> AnalyzeAsync(Guid candidateId, RepoAnalysisRequest req, CancellationToken ct = default)
@@ -23,10 +23,9 @@ public class RepoAnalysisService(InterviewDbContext db, IAiServiceRepoAnalyzer a
         if (_cost > 0) await credits.ReserveAsync("User", candidateId, id, ct);
         try
         {
-            // Fetcher will replace this digest builder in the next incremental unit; keeping the digest server-controlled.
-            var digest = $"Repository: {parts[0]}/{parts[1].Replace(".git", "")}\nDefault branch only. Metadata/content fetch pending.";
-            var ai = await analyzer.AnalyzeAsync(digest, req.JobCategory.Value.ToString(), jd, ct);
-            var row = new RepoAnalysis { Id=id, CandidateId=candidateId, RepoUrl=uri.GetLeftPart(UriPartial.Path), RepoOwner=parts[0], RepoName=parts[1].Replace(".git", ""), JobCategory=req.JobCategory.Value, DefaultBranch="default", Summary=ai.Summary, TechStack=ai.TechStack, Strengths=ai.Strengths, Weaknesses=ai.Weaknesses, Suggestions=ai.Suggestions, InterviewTalkingPoints=ai.InterviewTalkingPoints, JdMatch=jd is null ? null : ai.JdMatch };
+            var repo = await fetcher.FetchAsync(parts[0], parts[1].Replace(".git", ""), ct);
+            var ai = await analyzer.AnalyzeAsync(repo.Digest, req.JobCategory.Value.ToString(), jd, ct);
+            var row = new RepoAnalysis { Id=id, CandidateId=candidateId, RepoUrl=uri.GetLeftPart(UriPartial.Path), RepoOwner=parts[0], RepoName=parts[1].Replace(".git", ""), JobCategory=req.JobCategory.Value, DefaultBranch=repo.DefaultBranch, CommitSha=repo.CommitSha, Stars=repo.Stars, PrimaryLanguage=repo.PrimaryLanguage, Languages=repo.Languages, Summary=ai.Summary, TechStack=ai.TechStack, Strengths=ai.Strengths, Weaknesses=ai.Weaknesses, Suggestions=ai.Suggestions, InterviewTalkingPoints=ai.InterviewTalkingPoints, JdMatch=jd is null ? null : ai.JdMatch };
             db.RepoAnalyses.Add(row); await db.SaveChangesAsync(ct); if (_cost > 0) await credits.ConsumeAsync(id, ct); return Map(row);
         }
         catch { if (_cost > 0) { try { await credits.ReleaseAsync(id, CancellationToken.None); } catch (PaymentServiceException) { } } throw; }

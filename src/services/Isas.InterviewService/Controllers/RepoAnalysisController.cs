@@ -21,6 +21,7 @@ public class RepoAnalysisController(IRepoAnalysisService service) : ControllerBa
         catch (InsufficientCreditException e) { return StatusCode(402,new {error=e.Message}); }
         catch (KeyNotFoundException e) { return NotFound(new {error=e.Message}); }
         catch (UnauthorizedAccessException e) { return StatusCode(403,new {error=e.Message}); }
+        catch (GitHubRateLimitException e) { if(e.RetryAfter is not null) Response.Headers["Retry-After"] = e.RetryAfter; return StatusCode(429,new {error=e.Message}); }
         catch (AiServiceException e) { return StatusCode(502,new {error=e.Message}); }
         catch (PaymentServiceException e) { return StatusCode(502,new {error=e.Message}); }
         catch (InvalidOperationException e) { return BadRequest(new {error=e.Message}); }
