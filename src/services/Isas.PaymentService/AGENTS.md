@@ -106,6 +106,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 }
 ```
 
+`OneTime.interviewCredits` bắt buộc **> 0** khi tạo hoặc cập nhật package; `0` bị trả **400** ngay ở CRUD để catalog không phát hành gói không thể mua. Ràng buộc này không áp vào `Subscription`.
+
 ### Public / Org / B2C (JWT)
 
 **`GET /payment/package`** · **`GET /payment/package/{id}`** — Gói prepaid đang bán. Public. → `ProductPackage[]` / `ProductPackage`.

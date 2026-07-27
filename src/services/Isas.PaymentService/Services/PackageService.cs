@@ -74,6 +74,11 @@ namespace Isas.PaymentService.Services
             // Update là partial (mọi field nullable) → chỉ sanity-check field CÓ MẶT, khỏi bắt buộc trường vắng.
             ValidateSanity(request.Name, request.PriceVnd, request.InterviewCredits, request.DurationDays);
 
+            // R9 — OrderService chỉ bán OneTime có credits > 0. Chặn cùng hợp đồng ngay lúc catalog
+            // được sửa, thay vì để UI hiển thị một gói mà bấm mua luôn 400.
+            if (package.Type == PackageType.OneTime && request.InterviewCredits is <= 0)
+                throw new ArgumentException("InterviewCredits must be > 0 for one_time packages.");
+
             if (request.Name is not null) package.Name = request.Name;
             if (request.PriceVnd is not null) package.PriceVnd = request.PriceVnd.Value;
             if (request.InterviewCredits is not null) package.InterviewCredits = request.InterviewCredits;
@@ -86,8 +91,8 @@ namespace Isas.PaymentService.Services
 
         private static void Validate(PackageType type, int? credits, int? days)
         {
-            if (type == PackageType.OneTime && credits is null)
-                throw new ArgumentException("InterviewCredits is required for one_time packages.");
+            if (type == PackageType.OneTime && credits is not > 0)
+                throw new ArgumentException("InterviewCredits must be > 0 for one_time packages.");
             if (type == PackageType.Subscription && days is null)
                 throw new ArgumentException("DurationDays is required for subscription packages.");
             if (type is not (PackageType.OneTime or PackageType.Subscription))

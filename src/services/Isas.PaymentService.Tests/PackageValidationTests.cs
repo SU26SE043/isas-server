@@ -53,6 +53,20 @@ public class PackageValidationTests
     }
 
     [Fact]
+    public async Task R9_Create_OneTimeCreditsBangKhong_Nem()
+    {
+        using var tdb = new PaymentTestDb();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => NewService(tdb).CreatePackageAsync(new CreatePackageRequest
+        {
+            Name = "Gói lỗi",
+            Type = PackageType.OneTime,
+            PriceVnd = 10_000,
+            InterviewCredits = 0,
+        }, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Create_HopLe_TraPackageResponse()
     {
         using var tdb = new PaymentTestDb();
@@ -92,5 +106,44 @@ public class PackageValidationTests
         await Assert.ThrowsAsync<ArgumentException>(
             () => service.UpdatePackageAsync(created.Id,
                 new UpdatePackageRequest { PriceVnd = -1 }, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task R9_Update_OneTimeCreditsBangKhong_NemVaGiuGiaTriCu()
+    {
+        using var tdb = new PaymentTestDb();
+        var service = NewService(tdb);
+        var created = await service.CreatePackageAsync(new CreatePackageRequest
+        {
+            Name = "Gói gốc",
+            Type = PackageType.OneTime,
+            PriceVnd = 50_000,
+            InterviewCredits = 3,
+        }, CancellationToken.None);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpdatePackageAsync(created.Id,
+            new UpdatePackageRequest { InterviewCredits = 0 }, CancellationToken.None));
+
+        Assert.Equal(3, (await service.GetPackageAsync(created.Id, CancellationToken.None))!.InterviewCredits);
+    }
+
+    [Fact]
+    public async Task R9_SubscriptionCreditsBangKhong_VanHopLe()
+    {
+        using var tdb = new PaymentTestDb();
+        var service = NewService(tdb);
+        var created = await service.CreatePackageAsync(new CreatePackageRequest
+        {
+            Name = "Gói tháng",
+            Type = PackageType.Subscription,
+            PriceVnd = 99_000,
+            InterviewCredits = 0,
+            DurationDays = 30,
+        }, CancellationToken.None);
+
+        var updated = await service.UpdatePackageAsync(created.Id,
+            new UpdatePackageRequest { InterviewCredits = 0 }, CancellationToken.None);
+
+        Assert.Equal(0, updated!.InterviewCredits);
     }
 }

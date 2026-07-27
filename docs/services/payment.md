@@ -105,6 +105,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 }
 ```
 
+`OneTime.interviewCredits` bắt buộc **> 0** khi tạo hoặc cập nhật package; `0` bị trả **400** ngay ở CRUD để catalog không phát hành gói không thể mua. Ràng buộc này không áp vào `Subscription`.
+
 ### Public / Org / B2C (JWT)
 
 **`GET /payment/package`** · **`GET /payment/package/{id}`** — Gói prepaid đang bán. Public. → `ProductPackage[]` / `ProductPackage`. Cả hai **lọc `is_active=true`**; GET-by-id không thấy (id lạ **hoặc** gói đã ngừng bán) → **404** `{message:"Package not found"}`. *(Fix e2e 2026-07-18: trước đây GET-by-id id lạ ném NRE → **500** trên endpoint `[AllowAnonymous]`, và gói đã soft-delete vẫn trả 200 — lệch GET catalog.)*
