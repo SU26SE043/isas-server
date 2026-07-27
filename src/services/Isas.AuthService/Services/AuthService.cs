@@ -491,6 +491,7 @@ namespace Isas.AuthService.Services
         public async Task<KeysetPage<OrganizationResponse>> ListAllOrganizationsAsync(
             string? search, string? cursor, int? limit, CancellationToken ct = default)
         {
+            ValidateAdminPageInput(cursor, limit);
             var take = KeysetPaging.ClampLimit(limit);
             var cur = KeysetCursor.Decode(cursor);
 
@@ -535,6 +536,7 @@ namespace Isas.AuthService.Services
         public async Task<KeysetPage<AdminUserResponse>> ListAllUsersAsync(
             string? role, string? search, string? cursor, int? limit, CancellationToken ct = default)
         {
+            ValidateAdminPageInput(cursor, limit);
             var take = KeysetPaging.ClampLimit(limit);
             var cur = KeysetCursor.Decode(cursor);
 
@@ -603,6 +605,14 @@ namespace Isas.AuthService.Services
                 ? new KeysetCursor(users[^1].CreatedAt, users[^1].Id).Encode()
                 : null;
             return new KeysetPage<AdminUserResponse>(result, next);
+        }
+
+        private static void ValidateAdminPageInput(string? cursor, int? limit)
+        {
+            if (limit is <= 0)
+                throw new ArgumentException("limit must be greater than 0.");
+            if (!KeysetCursor.TryValidate(cursor))
+                throw new ArgumentException("cursor is malformed.");
         }
 
         // ── F20 (FR16) — PlatformAdmin mutation trên account người dùng ────────────────────────

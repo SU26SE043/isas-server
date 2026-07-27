@@ -35,10 +35,17 @@ namespace Isas.AuthService.Controllers
             [FromQuery] string? search = null,
             [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
-            var page = await _authService.ListAllOrganizationsAsync(search, cursor, limit, ct);
-            if (page.NextCursor is not null)
-                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
-            return Ok(page.Items);
+            try
+            {
+                var page = await _authService.ListAllOrganizationsAsync(search, cursor, limit, ct);
+                if (page.NextCursor is not null)
+                    Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+                return Ok(page.Items);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
         }
 
         // GET /auth/admin/users — mọi user (mới nhất trước; keyset-paged DB8); ?role= lọc platform-role, ?search= lọc email.
@@ -49,10 +56,17 @@ namespace Isas.AuthService.Controllers
             [FromQuery] string? role = null, [FromQuery] string? search = null,
             [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
-            var page = await _authService.ListAllUsersAsync(role, search, cursor, limit, ct);
-            if (page.NextCursor is not null)
-                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
-            return Ok(page.Items);
+            try
+            {
+                var page = await _authService.ListAllUsersAsync(role, search, cursor, limit, ct);
+                if (page.NextCursor is not null)
+                    Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+                return Ok(page.Items);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
         }
 
         // POST /auth/admin/users/{userId}/ban — đình chỉ account (F20/FR16).

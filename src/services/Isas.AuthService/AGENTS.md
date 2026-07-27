@@ -83,6 +83,7 @@ UserResponse {
 - **`POST /auth/admin/users/{id}/unban`** → **`200`**. Lỗi: **404**.
 - **`POST /auth/admin/users/{id}/reset-password`** `{ newPassword: string }` → **`204`**. Lỗi: **400** policy · **404**. Thu hồi mọi refresh token.
 - **`GET /auth/admin/users`** trả kèm `bannedAt`/`banReason` (additive).
+- **`GET /auth/admin/organizations`** và **`GET /auth/admin/users`**: `cursor` hỏng hoặc `limit <= 0` → **400**; cursor vắng/hợp lệ giữ keyset paging cũ.
 
 > ⚠⚠ **Ban KHÔNG tức thì (AUTH-5 / GEN-3).** Service khác validate JWT **offline** → access token đang lưu hành **không thu hồi được**, còn sống tối đa **1 TTL (15')**. Ban chặn **mọi** đường phát phiên mới (mật khẩu · Google · refresh · `provision-candidate` magic-link) + thu hồi mọi refresh token. Chặt hơn → **rút ngắn TTL access**; ❌ KHÔNG denylist/gọi mạng trong đường validate.
 

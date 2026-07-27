@@ -155,7 +155,7 @@ public class AdminOversightTests
     }
 
     [Fact]
-    public async Task ListAllOrganizations_MalformedCursor_ReturnsFirstPage()
+    public async Task R11_ListAllOrganizations_MalformedCursor_Throws()
     {
         using var testDb = new AuthTestDb();
         var db = testDb.Db;
@@ -163,9 +163,16 @@ public class AdminOversightTests
         SeedOrg(db, "Two");
 
         var svc = NewService(db, TestConfig(), MockUserManager(db));
-        var page = await svc.ListAllOrganizationsAsync(null, "###bad###", null);
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.ListAllOrganizationsAsync(null, "###bad###", null));
+    }
 
-        Assert.Equal(2, page.Items.Count);
+    [Fact]
+    public async Task R11_ListAllUsers_LimitKhongDuong_Throws()
+    {
+        using var testDb = new AuthTestDb();
+        var svc = NewService(testDb.Db, TestConfig(), MockUserManager(testDb.Db));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.ListAllUsersAsync(null, null, null, 0));
     }
 
     [Fact]
