@@ -101,7 +101,7 @@ def count_rejected_urls(raw_items) -> dict | None:
     """F22 — đếm URL do AI ĐỀ XUẤT vs số bị allowlist LOẠI.
 
     Allowlist hiện loại URL trong IM LẶNG: nếu Gemini bịa tên miền 90% số lần thì
-    KHÔNG AI BIẾT, và cũng không có cách nào biết allowlist 26 domain đang quá
+    KHÔNG AI BIẾT, và cũng không có cách nào biết allowlist 30 domain đang quá
     chặt hay quá lỏng. Con số này là thứ duy nhất trả lời được câu đó.
 
     Đếm trên danh sách THÔ, KHÔNG so với output đã lọc: output còn bị dedup theo
@@ -137,8 +137,7 @@ def sanitize_resources(raw_items) -> list[dict]:
 
     - Bỏ mục không có ``title``.
     - ``type`` lạ → "Doc" (mặc định an toàn, FE luôn render được).
-    - ``url`` không qua allowlist → **bỏ URL, GIỮ mục** (người học vẫn tra được
-      theo tên; mất link còn hơn nhận link bịa).
+    - ``url`` không qua allowlist → **bỏ cả mục**, để FE không nhận resource chết.
     - Cắt trần ``MAX_RESOURCES`` để 1 bài học không đổ ra danh sách dài vô tận.
     """
     if not isinstance(raw_items, list):
@@ -166,11 +165,15 @@ def sanitize_resources(raw_items) -> list[dict]:
 
         publisher = str(item.get("publisher") or "").strip() or None
 
+        url = _clean_url(item.get("url"))
+        if url is None:
+            continue
+
         out.append({
             "title": title,
             "type": rtype,
             "publisher": publisher,
-            "url": _clean_url(item.get("url")),
+            "url": url,
         })
 
         if len(out) >= MAX_RESOURCES:
