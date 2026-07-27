@@ -55,6 +55,10 @@ public class OpenApiAggregatorService(
 
         foreach (var (name, service) in services)
         {
+            // GEN-7: AIService internal-only. Chỉ gộp vào doc (và fetch OpenAPI của nó) ở Development —
+            // Production không lộ AIService qua gateway nên cũng không nên chạm tới nó.
+            if (!includeInternal && name.Equals("ai", StringComparison.OrdinalIgnoreCase)) continue;
+
             // Prefix rỗng = mọi path của service đó đổ ra root doc, đúng triệu chứng của lỗi cấu hình
             // cũ (env "ApiServices__4__OpenApiUrl" không có entry tương ứng trong appsettings).
             // Thà mất một service trong doc còn hơn sinh ra doc sai mà không ai biết.

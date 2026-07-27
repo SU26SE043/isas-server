@@ -59,16 +59,19 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// GEN-1 (Production): chặn MỌI "/api/v1/<svc>/internal/*" — callback nội bộ KHÔNG được qua gateway.
-// Chạy sau CollapseSlashes (bắt cả "//internal") và TRƯỚC UseRouting nên độc lập với route nào.
-// Development KHÔNG thêm middleware này ⇒ 4 route "<svc>-internal-route" (appsettings.json) forward
-// internal qua gateway để Scalar test được TOÀN BỘ api. Production: middleware 404 kín, dù route
-// internal vẫn nằm trong config (đây là hàng rào duy nhất, thay khối chặn payment-only cũ).
+// Production khoá 2 nhóm KHÔNG được qua gateway:
+//  - GEN-1: "/api/v1/<svc>/internal/*" — callback nội bộ.
+//  - GEN-7: "/api/v1/ai/*" — AIService internal-only (Interview/Campaign gọi trực tiếp qua AiService:BaseUrl).
+// Middleware chạy sau CollapseSlashes (bắt cả "//") và TRƯỚC UseRouting nên độc lập với route nào.
+// Development KHÔNG thêm middleware này ⇒ route "<svc>-internal-route" + "ai-route" (appsettings.json)
+// forward qua gateway để Scalar liệt kê VÀ gọi được TOÀN BỘ api (kể cả AIService). Production: 404 kín,
+// dù route vẫn nằm trong config (đây là hàng rào duy nhất, thay khối chặn payment-only cũ).
 if (!app.Environment.IsDevelopment())
 {
     app.Use(async (context, next) =>
     {
-        if (IsGatewayInternalPath(context.Request.Path.Value))
+        var path = context.Request.Path.Value;
+        if (IsGatewayInternalPath(path) || IsGatewayAiPath(path))
         {
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
@@ -86,6 +89,15 @@ app.UseGatewayCors();
 app.MapReverseProxy();
 
 app.Run();
+
+// Khớp "/api/v1/ai" hoặc "/api/v1/ai/...". KHÔNG match "/api/v1/aixyz" (GEN-7: khoá cả AIService ở prod).
+static bool IsGatewayAiPath(string? path)
+{
+    if (path is null) return false;
+    const string ai = "/api/v1/ai";
+    return path.Equals(ai, StringComparison.OrdinalIgnoreCase)
+        || path.StartsWith(ai + "/", StringComparison.OrdinalIgnoreCase);
+}
 
 // Khớp "/api/v1/<svc>/internal" theo sau là "/" hoặc hết chuỗi. KHÔNG match "/api/v1/x/internalfoo".
 static bool IsGatewayInternalPath(string? path)
