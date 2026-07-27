@@ -91,6 +91,36 @@ public class AdminOversightTests
     }
 
     [Fact]
+    public async Task R12_GetUser_ThemThongTinOrgNeuLaMember()
+    {
+        using var testDb = new AuthTestDb();
+        var db = testDb.Db;
+        var orgId = SeedOrg(db, "Acme");
+        var user = SeedUser(db, "member@acme.test");
+        db.OrgMembers.Add(new OrgMember { OrgId = orgId, UserId = user.Id, OrgRole = OrgRole.OrgAdmin });
+        db.SaveChanges();
+
+        var response = await NewService(db, TestConfig(), MockUserManager(db)).GetUserAsync(user.Id);
+
+        Assert.Equal(orgId, response.OrgId);
+        Assert.Equal("Acme", response.OrgName);
+        Assert.Equal("OrgAdmin", response.OrgRole);
+    }
+
+    [Fact]
+    public async Task R12_GetUser_KhongThuocOrg_TraNull()
+    {
+        using var testDb = new AuthTestDb();
+        var user = SeedUser(testDb.Db, "solo@candidate.test");
+
+        var response = await NewService(testDb.Db, TestConfig(), MockUserManager(testDb.Db)).GetUserAsync(user.Id);
+
+        Assert.Null(response.OrgId);
+        Assert.Null(response.OrgName);
+        Assert.Null(response.OrgRole);
+    }
+
+    [Fact]
     public async Task ListAllUsers_SearchByEmail_Filters()
     {
         using var testDb = new AuthTestDb();
@@ -155,7 +185,7 @@ public class AdminOversightTests
     }
 
     [Fact]
-    public async Task ListAllOrganizations_MalformedCursor_ReturnsFirstPage()
+    public async Task R11_ListAllOrganizations_MalformedCursor_Throws()
     {
         using var testDb = new AuthTestDb();
         var db = testDb.Db;
@@ -163,9 +193,16 @@ public class AdminOversightTests
         SeedOrg(db, "Two");
 
         var svc = NewService(db, TestConfig(), MockUserManager(db));
-        var page = await svc.ListAllOrganizationsAsync(null, "###bad###", null);
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.ListAllOrganizationsAsync(null, "###bad###", null));
+    }
 
-        Assert.Equal(2, page.Items.Count);
+    [Fact]
+    public async Task R11_ListAllUsers_LimitKhongDuong_Throws()
+    {
+        using var testDb = new AuthTestDb();
+        var svc = NewService(testDb.Db, TestConfig(), MockUserManager(testDb.Db));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => svc.ListAllUsersAsync(null, null, null, 0));
     }
 
     [Fact]

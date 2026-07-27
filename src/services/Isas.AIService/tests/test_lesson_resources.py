@@ -34,15 +34,13 @@ def test_keeps_url_from_allowlisted_host():
     assert out[0]["url"].startswith("https://developer.mozilla.org/")
 
 
-def test_drops_url_from_unknown_host_but_keeps_resource():
-    """🔑 Ca chính: host ngoài allowlist = có thể là domain LLM bịa ra."""
+def test_drops_resource_from_unknown_host():
+    """🔑 Host ngoài allowlist không được tới FE dưới dạng resource chết."""
     out = sanitize_resources([
         {"title": "Sách hay về backend", "type": "Book",
          "url": "https://totally-real-backend-book.example.com/ch1"},
     ])
-    assert len(out) == 1                      # KHÔNG mất mục — người học vẫn tra được theo tên
-    assert out[0]["title"] == "Sách hay về backend"
-    assert out[0]["url"] is None              # nhưng KHÔNG dẫn người dùng tới domain lạ
+    assert out == []
 
 
 @pytest.mark.parametrize("bad_url", [
@@ -64,11 +62,11 @@ def test_drops_url_from_unknown_host_but_keeps_resource():
 ])
 def test_rejects_dangerous_or_malformed_urls(bad_url):
     out = sanitize_resources([{"title": "X", "type": "Doc", "url": bad_url}])
-    assert out[0]["url"] is None
+    assert out == []
 
 
 def test_unknown_type_falls_back_to_doc():
-    out = sanitize_resources([{"title": "X", "type": "Podcast"}])
+    out = sanitize_resources([{"title": "X", "type": "Podcast", "url": "https://react.dev/"}])
     assert out[0]["type"] == "Doc"
 
 
@@ -76,21 +74,23 @@ def test_drops_items_without_title():
     out = sanitize_resources([
         {"type": "Doc", "url": "https://react.dev/"},
         {"title": "   ", "type": "Doc"},
-        {"title": "Có tên", "type": "Doc"},
+        {"title": "Có tên", "type": "Doc", "url": "https://react.dev/"},
     ])
     assert [r["title"] for r in out] == ["Có tên"]
 
 
 def test_dedupes_by_title_case_insensitive():
     out = sanitize_resources([
-        {"title": "Clean Code", "type": "Book"},
-        {"title": "clean code", "type": "Book"},
+        {"title": "Clean Code", "type": "Book", "url": "https://react.dev/"},
+        {"title": "clean code", "type": "Book", "url": "https://react.dev/"},
     ])
     assert len(out) == 1
 
 
 def test_caps_number_of_resources():
-    out = sanitize_resources([{"title": f"R{i}", "type": "Doc"} for i in range(20)])
+    out = sanitize_resources([
+        {"title": f"R{i}", "type": "Doc", "url": "https://react.dev/"} for i in range(20)
+    ])
     assert len(out) == 5
 
 
@@ -122,10 +122,8 @@ async def test_provider_sanitizes_resources_from_llm():
         "BE", "Junior", "Transaction", ["Thiết kế CSDL"], None)
 
     assert theory.startswith("# Transaction")
-    assert len(resources) == 2
+    assert len(resources) == 1
     assert resources[0]["url"] is not None          # host allowlist → giữ
-    assert resources[1]["url"] is None              # host lạ → bỏ url, giữ mục
-    assert resources[1]["title"] == "Khoá học bịa"
 
 
 @pytest.mark.asyncio

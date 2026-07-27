@@ -92,7 +92,7 @@ public class AdminGrantCreditF20Tests
         await SeedWalletAsync(tdb, OwnerType.User, ownerId, remaining: 2);
 
         var result = await NewService(tdb).GrantAsync(
-            OwnerType.User, ownerId, 5, "đền bù sự cố chấm điểm", Admin);
+            OwnerType.User, ownerId, 5, "đền bù sự cố chấm điểm", null, Admin);
 
         Assert.Equal(GrantOutcome.Granted, result.Outcome);
         Assert.Equal(5, result.CreditsGranted);
@@ -123,7 +123,7 @@ public class AdminGrantCreditF20Tests
         var ownerId = Guid.NewGuid();
         await SeedWalletAsync(tdb, OwnerType.User, ownerId, remaining: 0);
 
-        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 4, "khuyến mãi", Admin);
+        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 4, "khuyến mãi", null, Admin);
 
         await using var db = tdb.NewContext();
         var rows = await db.CreditTransactions.AsNoTracking()
@@ -154,7 +154,7 @@ public class AdminGrantCreditF20Tests
         var to = DateTime.UtcNow.AddDays(1);
         var truoc = await new RevenueService(tdb.Db).GetRevenueAsync(from, to, RevenueGranularity.Day);
 
-        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 100, "quà to", Admin);
+        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 100, "quà to", null, Admin);
 
         var sau = await new RevenueService(tdb.Db).GetRevenueAsync(from, to, RevenueGranularity.Day);
 
@@ -175,7 +175,7 @@ public class AdminGrantCreditF20Tests
         var ownerId = Guid.NewGuid();
 
         var result = await NewService(tdb, freeTrial: 3).GrantAsync(
-            OwnerType.User, ownerId, 5, "quà", Admin);
+            OwnerType.User, ownerId, 5, "quà", null, Admin);
 
         Assert.Equal(GrantOutcome.Granted, result.Outcome);
         Assert.Equal(8, result.RemainingCredits);   // 3 dùng thử + 5 quà
@@ -199,7 +199,7 @@ public class AdminGrantCreditF20Tests
         using var tdb = new PaymentTestDb();
         var orgId = Guid.NewGuid();
 
-        var result = await NewService(tdb).GrantAsync(OwnerType.Org, orgId, 20, "quà B2B", Admin);
+        var result = await NewService(tdb).GrantAsync(OwnerType.Org, orgId, 20, "quà B2B", null, Admin);
 
         Assert.Equal(GrantOutcome.Granted, result.Outcome);
         Assert.Equal(20, result.RemainingCredits);
@@ -227,7 +227,7 @@ public class AdminGrantCreditF20Tests
         var ownerId = Guid.NewGuid();
         await SeedWalletAsync(tdb, OwnerType.User, ownerId, remaining: 7);
 
-        var result = await NewService(tdb).GrantAsync(OwnerType.User, ownerId, credits, "x", Admin);
+        var result = await NewService(tdb).GrantAsync(OwnerType.User, ownerId, credits, "x", null, Admin);
 
         Assert.Equal(GrantOutcome.InvalidAmount, result.Outcome);
 
@@ -251,7 +251,7 @@ public class AdminGrantCreditF20Tests
         await SeedWalletAsync(tdb, OwnerType.User, ownerId, remaining: 1,
             status: CreditAccountStatus.Suspended);
 
-        var result = await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 3, "đền bù", Admin);
+        var result = await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 3, "đền bù", null, Admin);
 
         Assert.Equal(GrantOutcome.Granted, result.Outcome);
         Assert.Equal(4, result.RemainingCredits);
@@ -270,7 +270,7 @@ public class AdminGrantCreditF20Tests
         var ownerId = Guid.NewGuid();
         await SeedWalletAsync(tdb, OwnerType.User, ownerId, remaining: 1, reserved: 2);
 
-        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 5, "quà", Admin);
+        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 5, "quà", null, Admin);
 
         await using var db = tdb.NewContext();
         var acc = await db.CreditAccounts.AsNoTracking().SingleAsync(a => a.OwnerId == ownerId);
@@ -278,6 +278,45 @@ public class AdminGrantCreditF20Tests
         Assert.Equal(2, acc.ReservedCredits);
 
         await AssertLedgerInvariantAsync(tdb, OwnerType.User, ownerId);
+    }
+
+    [Fact]
+    public async Task R8_CungKey_CapMotLanVaReplayDungResponseBanDau()
+    {
+        using var tdb = new PaymentTestDb();
+        var ownerId = Guid.NewGuid();
+        await SeedWalletAsync(tdb, OwnerType.User, ownerId, remaining: 2);
+        const string key = "grant-2026-07-27-001";
+
+        var first = await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 5, "đền bù", key, Admin);
+
+        // Giao dịch khác sau lần grant đầu chứng minh retry không được đọc số dư hiện tại (10).
+        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 3, "quà khác", null, Admin);
+        var replay = await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 999, "body retry khác", key, Admin);
+
+        Assert.Equal(first, replay);
+        await using var db = tdb.NewContext();
+        Assert.Equal(1, await db.CreditTransactions.CountAsync(t =>
+            t.OwnerType == OwnerType.User && t.OwnerId == ownerId && t.GrantIdempotencyKey == key));
+        Assert.Equal(10, (await db.CreditAccounts.SingleAsync(a => a.OwnerId == ownerId)).RemainingCredits);
+    }
+
+    [Fact]
+    public async Task R8_CungKeyKhacVi_KhongDedupCheo()
+    {
+        using var tdb = new PaymentTestDb();
+        var firstOwner = Guid.NewGuid();
+        var secondOwner = Guid.NewGuid();
+        await SeedWalletAsync(tdb, OwnerType.User, firstOwner, remaining: 0);
+        await SeedWalletAsync(tdb, OwnerType.User, secondOwner, remaining: 0);
+        const string key = "same-client-key";
+
+        var first = await NewService(tdb).GrantAsync(OwnerType.User, firstOwner, 2, "quà", key, Admin);
+        var second = await NewService(tdb).GrantAsync(OwnerType.User, secondOwner, 4, "quà", key, Admin);
+
+        Assert.NotEqual(first.TransactionId, second.TransactionId);
+        Assert.Equal(2, first.RemainingCredits);
+        Assert.Equal(4, second.RemainingCredits);
     }
 
     // ── controller: người cấp lấy từ JWT ─────────────────────────────────────────────────────
@@ -374,7 +413,7 @@ public class AdminGrantCreditF20Tests
         using var tdb = new PaymentTestDb();
         var ownerId = Guid.NewGuid();
         await SeedWalletAsync(tdb, OwnerType.User, ownerId, remaining: 0);
-        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 5, "đền bù sự cố", Admin);
+        await NewService(tdb).GrantAsync(OwnerType.User, ownerId, 5, "đền bù sự cố", null, Admin);
 
         var controller = NewController(tdb, new Claim(ClaimTypes.NameIdentifier, Admin.ToString()));
         var result = await controller.GetTransactions(OwnerType.User, ownerId);

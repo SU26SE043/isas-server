@@ -47,4 +47,8 @@ public sealed record KeysetCursor(DateTime CreatedAt, Guid Id)
             return null;
         }
     }
+
+    /// <summary>True for an absent cursor or one that can be decoded; does not alter Decode's legacy semantics.</summary>
+    public static bool TryValidate(string? cursor) =>
+        string.IsNullOrWhiteSpace(cursor) || Decode(cursor) is not null;
 }
