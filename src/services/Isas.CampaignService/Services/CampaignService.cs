@@ -1698,7 +1698,7 @@ namespace Isas.CampaignService.Services
                 Map(m => m.Rank).Index(0).Name("rank");
                 Map(m => m.CandidateId).Index(1).Name("candidate_id");
                 Map(m => m.SessionId).Index(2).Name("session_id");
-                Map(m => m.TotalScore).Index(3).Name("total_score");
+                Map(m => m.TotalScore).Index(3).Name("total_score").TypeConverterOption.Format("0.##");
                 Map(m => m.Result).Index(4).Name("result");
                 // ScoredAt là UTC (UpdatedAt server) → ISO 8601 với hậu tố Z (chữ hoa = literal).
                 Map(m => m.ScoredAt).Index(5).Name("scored_at").TypeConverterOption.Format("yyyy-MM-ddTHH:mm:ssZ");

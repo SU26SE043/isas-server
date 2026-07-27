@@ -491,6 +491,7 @@ namespace Isas.AuthService.Services
         public async Task<KeysetPage<OrganizationResponse>> ListAllOrganizationsAsync(
             string? search, string? cursor, int? limit, CancellationToken ct = default)
         {
+            ValidateAdminPageInput(cursor, limit);
             var take = KeysetPaging.ClampLimit(limit);
             var cur = KeysetCursor.Decode(cursor);
 
@@ -535,6 +536,7 @@ namespace Isas.AuthService.Services
         public async Task<KeysetPage<AdminUserResponse>> ListAllUsersAsync(
             string? role, string? search, string? cursor, int? limit, CancellationToken ct = default)
         {
+            ValidateAdminPageInput(cursor, limit);
             var take = KeysetPaging.ClampLimit(limit);
             var cur = KeysetCursor.Decode(cursor);
 
@@ -603,6 +605,14 @@ namespace Isas.AuthService.Services
                 ? new KeysetCursor(users[^1].CreatedAt, users[^1].Id).Encode()
                 : null;
             return new KeysetPage<AdminUserResponse>(result, next);
+        }
+
+        private static void ValidateAdminPageInput(string? cursor, int? limit)
+        {
+            if (limit is <= 0)
+                throw new ArgumentException("limit must be greater than 0.");
+            if (!KeysetCursor.TryValidate(cursor))
+                throw new ArgumentException("cursor is malformed.");
         }
 
         // ── F20 (FR16) — PlatformAdmin mutation trên account người dùng ────────────────────────
@@ -984,6 +994,10 @@ namespace Isas.AuthService.Services
             if (user is null)
                 throw new KeyNotFoundException("User not found");
 
+            var membership = await _authDbContext.OrgMembers.AsNoTracking()
+                .Include(m => m.Organization)
+                .FirstOrDefaultAsync(m => m.UserId == userId);
+
             return new UserResponse
             {
                 Id = user.Id.ToString(),
@@ -992,7 +1006,10 @@ namespace Isas.AuthService.Services
                 Location = user.Location,
                 Title = user.Title,
                 CreatedAt = user.CreatedAt,
-                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role"
+                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role",
+                OrgId = membership?.OrgId,
+                OrgName = membership?.Organization?.Name,
+                OrgRole = membership?.OrgRole.ToString()
             };
         }
 

@@ -43,6 +43,9 @@ UserResponse {
   title:     string
   createdAt: datetime
   role:      enum(string)              // Candidate·Employer·Admin
+  orgId:     uuid?                     // nullable khi không thuộc org
+  orgName:   string?
+  orgRole:   enum(string)?             // OrgAdmin·HrMember
 }
 ```
 
@@ -93,7 +96,7 @@ UserResponse {
 - Req: `{ refreshToken: string }` (giữ hợp đồng cũ; phạm vi thu hồi lấy theo claim `sub`, **không** theo token gửi kèm) → Res **`204`**. Lỗi: **401**.
 - Thu hồi đúng 1 token thì tab khác vẫn gia hạn phiên tiếp → "đã đăng xuất" mà phiên vẫn sống. ⚠ **access token đang lưu hành KHÔNG thu hồi được** (validate offline — GEN-3) nên còn hợp lệ tới hết TTL (**15'**); **FE phải tự xoá token khỏi storage** khi đăng xuất (đã làm: `AuthStore.logout()` gọi `clearSession()` trước khi gọi API).
 
-**`GET /me`** — Profile. Auth. → Res **`200`** `UserResponse`. Lỗi: **401**.
+**`GET /me`** — Profile. Auth. → Res **`200`** `UserResponse` kèm `orgId`/`orgName`/`orgRole` nullable. Lỗi: **401**.
 **`PUT /me`** — Cập nhật profile. Auth.
 - Req: `{ fullName: string?, location: string?, title: string? }` → Res **`200`** `UserResponse`. Lỗi: **401**.
 
@@ -105,6 +108,7 @@ UserResponse {
 - **`POST /auth/admin/users/{id}/unban`** — gỡ đình chỉ → **`200`**. Lỗi: **404**. *(Không khôi phục refresh token cũ — đăng nhập lại là có phiên mới.)*
 - **`POST /auth/admin/users/{id}/reset-password`** — đặt lại mật khẩu hộ. Req `{ newPassword: string }` → **`204`**. Lỗi: **400** mật khẩu không đạt policy Identity · **404**. Thu hồi **mọi refresh token** của user (không thì đổi mật khẩu KHÔNG đuổi được kẻ đang chiếm tài khoản).
 - **`GET /auth/admin/users`** nay trả kèm `bannedAt`/`banReason` (additive — FE cũ không vỡ).
+- **`GET /auth/admin/organizations`** và **`GET /auth/admin/users`**: `cursor` hỏng hoặc `limit <= 0` → **400** (không còn âm thầm quay về trang đầu); cursor vắng và cursor hợp lệ giữ keyset paging cũ.
 
 > ⚠⚠ **RANH GIỚI HIỆU LỰC CỦA BAN (AUTH-5 / GEN-3 — đọc trước khi "siết cho chặt hơn").**
 > Service khác validate JWT **offline** bằng chung khoá, **không hỏi AuthService lúc chạy** → **access token đang lưu hành KHÔNG thu hồi được**. Ban vì thế **không tức thì**: người vừa bị cấm vẫn gọi API được **tối đa 1 TTL access token (15')**.

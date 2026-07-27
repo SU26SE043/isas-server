@@ -41,6 +41,15 @@ namespace PaymentService.Models
 
         /// <summary>F20 — ghi chú của admin lúc cấp (lý do khuyến mãi / đền bù sự cố).</summary>
         public string? Note { get; set; }
+
+        /// <summary>R8 — khoá idempotency client gửi cho một lần cấp quà; unique theo chủ ví khi khác null.</summary>
+        public string? GrantIdempotencyKey { get; set; }
+
+        /// <summary>
+        /// R8 — snapshot số dư ngay sau lần cấp. Không đọc số dư hiện tại khi replay: có thể đã phát sinh
+        /// giao dịch khác và response retry phải giống chính xác response ban đầu.
+        /// </summary>
+        public int? GrantRemainingCreditsAfter { get; set; }
     }
 
     public enum CreditTransactionReason

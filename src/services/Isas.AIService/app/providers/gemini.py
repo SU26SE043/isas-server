@@ -563,7 +563,7 @@ class GeminiProvider(QuestionProvider):
 
         Trả ``(theoryMarkdown, resources)``. ``resources`` đã qua
         :func:`app.resources.sanitize_resources`: url KHÔNG thuộc allowlist tên
-        miền bị BỎ (giữ lại tên tài liệu). Xem docstring app/resources.py cho lý
+        miền bị BỎ CẢ MỤC. Xem docstring app/resources.py cho lý
         do — tóm tắt: LLM sinh url là đoán chuỗi, domain bịa là rủi ro thật.
 
         resources rỗng KHÔNG phải lỗi (lý thuyết vẫn dùng được) → không raise,

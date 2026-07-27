@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using PaymentService.Models;
 
 namespace Isas.PaymentService.Services
@@ -32,9 +33,11 @@ namespace Isas.PaymentService.Services
         }
 
         public async Task<GrantResult> GrantAsync(
-            OwnerType ownerType, Guid ownerId, int credits, string? note, Guid adminUserId,
+            OwnerType ownerType, Guid ownerId, int credits, string? note, string? idempotencyKey, Guid adminUserId,
             CancellationToken ct = default)
         {
+            idempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey.Trim();
+
             // Cấp 0 (hoặc âm) không có nghĩa, và bút toán delta = 0 vi phạm CHECK
             // ck_credit_transactions_delta_nonzero → SaveChanges ném giữa transaction. Chặn ở cửa thay vì
             // để DB ném (bài học DB20: lỗi ném từ trong tx làm hỏng cả những thứ đã làm trước đó).
@@ -42,6 +45,14 @@ namespace Isas.PaymentService.Services
             // "cấp số âm" — nếu không thì admin có một đường trừ credit không dấu vết.
             if (credits <= 0)
                 return new GrantResult(GrantOutcome.InvalidAmount, ownerType, ownerId, 0, 0, null);
+
+            // Fast path cho retry sau khi request đầu đã commit. Đồng thời tránh tạo ví/free-trial lần nữa.
+            if (!string.IsNullOrWhiteSpace(idempotencyKey))
+            {
+                var original = await FindOriginalGrantAsync(ownerType, ownerId, idempotencyKey, ct);
+                if (original is not null)
+                    return Replay(original);
+            }
 
             // Ví chưa tồn tại (chủ ví chưa từng mua/luyện) → tạo. Đi qua CreateAccountAsync chứ không tự
             // INSERT: đó là NƠI DUY NHẤT cấp suất dùng thử F7 (PAY-14), nên tự dựng ví ở đây sẽ tạo ra
@@ -94,24 +105,56 @@ namespace Isas.PaymentService.Services
                 Reason = CreditTransactionReason.PromoGrant,
                 GrantedBy = adminUserId,
                 Note = note,
+                GrantIdempotencyKey = idempotencyKey,
                 CreatedAt = DateTime.UtcNow
             };
             _db.CreditTransactions.Add(transaction);
 
-            await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
+            // Snapshot nằm trên ledger row để retry trả đúng response đầu, kể cả sau đó ví đã đổi số dư.
+            transaction.GrantRemainingCreditsAfter = await _db.CreditAccounts.AsNoTracking()
+                .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
+                .Select(a => (int?)a.RemainingCredits)
+                .SingleAsync(ct);
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+            }
+            catch (DbUpdateException ex) when (!string.IsNullOrWhiteSpace(idempotencyKey) && IsUniqueViolation(ex))
+            {
+                await tx.RollbackAsync(ct);
+                _db.ChangeTracker.Clear();
+
+                var original = await FindOriginalGrantAsync(ownerType, ownerId, idempotencyKey, ct);
+                if (original is not null)
+                    return Replay(original);
+
+                throw;
+            }
 
             _logger?.LogInformation(
                 "F20 — admin {AdminId} cấp {Credits} credit khuyến mãi cho ví {OwnerType}:{OwnerId}. Lý do: {Note}",
                 adminUserId, credits, ownerType, ownerId, note ?? "(không ghi)");
 
-            var remaining = await _db.CreditAccounts.AsNoTracking()
-                .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
-                .Select(a => a.RemainingCredits)
-                .FirstOrDefaultAsync(ct);
-
-            return new GrantResult(GrantOutcome.Granted, ownerType, ownerId, credits, remaining, transaction.Id);
+            return Replay(transaction);
         }
+
+        private async Task<CreditTransaction?> FindOriginalGrantAsync(
+            OwnerType ownerType, Guid ownerId, string idempotencyKey, CancellationToken ct) =>
+            await _db.CreditTransactions.AsNoTracking().FirstOrDefaultAsync(t =>
+                t.OwnerType == ownerType && t.OwnerId == ownerId &&
+                t.GrantIdempotencyKey == idempotencyKey &&
+                t.Reason == CreditTransactionReason.PromoGrant, ct);
+
+        private static GrantResult Replay(CreditTransaction transaction) =>
+            new(GrantOutcome.Granted, transaction.OwnerType, transaction.OwnerId, transaction.Delta,
+                transaction.GrantRemainingCreditsAfter
+                    ?? throw new InvalidOperationException("Idempotent promo grant thiếu snapshot số dư."),
+                transaction.Id);
+
+        private static bool IsUniqueViolation(DbUpdateException exception) =>
+            exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 
         public async Task<SetPaymentModeResult> SetPaymentModeAsync(
             OwnerType ownerType, Guid ownerId, PaymentMode paymentMode, int? creditLimit,

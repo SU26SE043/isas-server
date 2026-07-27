@@ -303,6 +303,15 @@ namespace PaymentService.Models
                 // F20 — ghi chú lý do cấp quà; giới hạn độ dài để không thành bãi rác text.
                 e.Property(x => x.Note).HasMaxLength(500);
 
+                e.Property(x => x.GrantIdempotencyKey).HasMaxLength(200);
+
+                // R8 — cùng khoá chỉ dedup trong MỘT ví. Key toàn cục sẽ làm hai grant độc lập cho hai
+                // owner khác nhau va nhau và replay nhầm response của ví khác.
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.GrantIdempotencyKey })
+                 .IsUnique()
+                 .HasDatabaseName("ux_credit_transactions_grant_idempotency")
+                 .HasFilter("grant_idempotency_key IS NOT NULL");
+
                 // F18 — self-FK: bút toán hoàn trỏ về bút toán mua gốc. Restrict (sổ cái append-only,
                 // không row nào bị xoá). UNIQUE LỌC `WHERE reverses_transaction_id IS NOT NULL` = khoá
                 // idempotency chống hoàn hai lần cùng một khoản mua: hai request hoàn song song thì bên
