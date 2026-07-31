@@ -1,3 +1,4 @@
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
 
 namespace Isas.InterviewService.Entities;
@@ -12,6 +13,15 @@ public class PracticeQuestion
     public int OrderNo { get; set; }
     public string Content { get; set; } = null!;
     public int TimeLimitSec { get; set; }
+
+    // RAG grounding — citation ĐÃ RESOLVE cho câu hỏi này (chunkId model cite → sourceUrl/sourceTitle).
+    // 3 TRẠNG THÁI (load-bearing, FE dựa vào — supervisor chốt):
+    //   null       = câu KHÔNG đi qua đường grounding (session cũ / B2B / adaptive) → FE không nhãn.
+    //   [] (rỗng)  = ĐÃ chạy grounding nhưng retrieval miss / AI không cite → `ungrounded`, FE nhãn nổi bật.
+    //   non-empty  = grounded (chunk model THẬT SỰ cite trong tập đã cấp — drop id lạ, chống bịa nguồn).
+    // ⇒ Đi qua grounding thì LUÔN set (ít nhất []), KHÔNG để null. jsonb nullable (không kèm content —
+    // câu hỏi đã sinh, chỉ cần link nguồn để hiển thị).
+    public List<Citation>? GroundingRefs { get; set; }
 
     // Phỏng vấn THÍCH ỨNG — nguồn câu hỏi (Seed = mở đầu; FollowUp/Clarify/NewQuestion = AI sinh sau
     // 1 câu trả lời). Mặc định Seed (rows cũ backfill Seed). Lưu string (GEN-2).

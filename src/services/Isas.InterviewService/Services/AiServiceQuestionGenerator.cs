@@ -8,16 +8,28 @@ namespace Isas.InterviewService.Services;
 public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
 {
     private readonly HttpClient _httpClient;
+    private readonly IConfiguration _config;
     private readonly ILogger<AiServiceQuestionGenerator> _logger;
+    private readonly string? _token;
 
-    public AiServiceQuestionGenerator(HttpClient httpClient, ILogger<AiServiceQuestionGenerator> logger)
+    public AiServiceQuestionGenerator(
+        HttpClient httpClient, IConfiguration config, ILogger<AiServiceQuestionGenerator> logger)
     {
         _httpClient = httpClient;
+        _config = config;
         _logger = logger;
+        _token = config["Internal:Token"];
     }
 
-    // 1. SỬA TẠI ĐÂY: Định nghĩa Record nhận về mảng String thuần túy theo đúng format Python
-    private record FastAPIQuestionsResponse(List<string> Questions);
+    private static readonly JsonSerializerOptions Json = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true
+    };
+
+    // Contract 2 — questions GIỮ NGUYÊN (Campaign B2B còn gọi); citations ADDITIVE (chỉ có khi truyền grounding).
+    private record FastAPIQuestionsResponse(List<string>? Questions, List<CitationApi>? Citations);
+    private record CitationApi(int QuestionIndex, List<string>? CitedChunkIds);
 
     public Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText, CancellationToken ct = default)
@@ -28,28 +40,50 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count, CancellationToken ct = default)
     {
+        var result = await GenerateQuestionsAsync(
+            jobCategory, cvText, jdText, focusCriteria, count, grounding: null, ct);
+        return result.Questions;
+    }
+
+    // RAG grounding — overload GROUNDED (đường DUY NHẤT gọi AIService; 2 overload trên delegate về đây).
+    public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct = default)
+    {
         var payload = new
         {
-            jobCategory = jobCategory,
-            cvText = cvText,
-            jdText = jdText,
-            // Chỉ gửi khi có (lesson /start). ⚠ Field này TỪNG bị AIService nuốt im lặng vì schema
-            // pydantic không khai (extra='ignore') → câu hỏi bài học không thật sự bám tiêu chí
-            // milestone. Đã khai ở GenerateQuestionsRequest + đưa vào prompt (F2b).
+            jobCategory,
+            cvText,
+            jdText,
+            // ⚠ Field TỪNG bị AIService nuốt im lặng (pydantic extra='ignore') — đã khai ở schema (F2b/W1).
             focusCriteria = focusCriteria is { Count: > 0 } ? focusCriteria : null,
-            // F2b — số câu ứng viên chọn. null → AIService giữ settings.question_count (=5) như cũ.
-            count = count
+            count,
+            // RAG grounding — chunk truy hồi (Contract 2). Chỉ gửi khi có → AIService chèn block "TÀI LIỆU
+            // THAM CHIẾU UY TÍN" + trả citations. null → sinh ungrounded như cũ (Campaign B2B không truyền).
+            grounding = grounding is { Count: > 0 }
+                ? grounding.Select(g => new { chunkId = g.ChunkId, content = g.Content, sourceUrl = g.SourceUrl, sourceTitle = g.SourceTitle })
+                : null
         };
+
+        // RAG grounding — /generate-questions là endpoint AIService (GEN-1/GEN-7 internal-only) → gắn
+        // X-Internal-Token. TRƯỚC ĐÂY THIẾU (chỉ chạy được vì AIService chưa gate endpoint sinh); thêm để
+        // khớp fail-closed khi W1 gate /generate-questions.
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/generate-questions")
+        {
+            Content = JsonContent.Create(payload)
+        };
+        request.Headers.TryAddWithoutValidation("X-Internal-Token", _token);
 
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.PostAsJsonAsync("/api/v1/generate-questions", payload, ct);
+            response = await _httpClient.SendAsync(request, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            // Upstream không gọi được (transport / timeout) = AIService lỗi, KHÔNG phải lỗi request của
-            // user → AiServiceException để PracticeController map 502 (không nuốt thành 400). (Mẫu AiServiceCvAnalyzer.)
+            // Upstream không gọi được (transport/timeout) = AIService lỗi → AiServiceException để controller
+            // map 502 (không nuốt thành 400).
             _logger.LogError(ex, "Không gọi được AIService /generate-questions");
             throw new AiServiceException("Không gọi được AIService /generate-questions", ex);
         }
@@ -58,27 +92,19 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
         {
             var error = await response.Content.ReadAsStringAsync(ct);
             _logger.LogError("FastAPI Error: {StatusCode} - {Error}", response.StatusCode, error);
-            // Non-success (4xx/5xx) từ AIService = upstream lỗi → AiServiceException → 502 (trước: bọc
-            // InvalidOperationException khiến controller trả 400, che mất lỗi thật của AIService).
             throw new AiServiceException($"AIService /generate-questions trả {(int)response.StatusCode}");
         }
 
-        // Hứng cục JSON dạng {"questions": ["chuỗi 1", "chuỗi 2"]}
-        var result = await response.Content.ReadFromJsonAsync<FastAPIQuestionsResponse>(
-            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }, 
-            cancellationToken: ct);
+        var body = await response.Content.ReadFromJsonAsync<FastAPIQuestionsResponse>(Json, ct);
 
-        if (result?.Questions == null)
-            return new List<GeneratedQuestion>();
-
-        // 2. SỬA TẠI ĐÂY: Duyệt mảng string từ Python và New từng Object GeneratedQuestion cho C#
-        return result.Questions
-            .Select((qText, index) => new GeneratedQuestion 
-            { 
-                // Khởi tạo các thuộc tính theo đúng cấu trúc Class GeneratedQuestion của ông
-                Content = qText
-                // Nếu class của ông có trường Order hoặc Id thì map luôn ở đây, ví dụ: Order = index + 1
-            })
+        var questions = (body?.Questions ?? new List<string>())
+            .Select(qText => new GeneratedQuestion { Content = qText })
             .ToList();
+
+        var citations = (body?.Citations ?? new List<CitationApi>())
+            .Select(c => new QuestionCitationDto(c.QuestionIndex, c.CitedChunkIds ?? new List<string>()))
+            .ToList();
+
+        return new GeneratedQuestionsResult(questions, citations);
     }
 }

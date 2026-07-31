@@ -126,7 +126,7 @@ public class RoadmapLessonTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LessonTheoryResult("## Lý thuyết lesson", []));
 
         var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
@@ -148,7 +148,7 @@ public class RoadmapLessonTests
 
         gen.Verify(g => g.GenerateLessonTheoryAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -162,7 +162,7 @@ public class RoadmapLessonTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-lesson-theory trả 500"));
 
         var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
@@ -349,7 +349,7 @@ public class RoadmapLessonTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LessonTheoryResult("## Theory", []));
 
         // stranger → 403
@@ -364,7 +364,7 @@ public class RoadmapLessonTests
         // AI KHÔNG được gọi cho request 403/404.
         gen.Verify(g => g.GenerateLessonTheoryAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 

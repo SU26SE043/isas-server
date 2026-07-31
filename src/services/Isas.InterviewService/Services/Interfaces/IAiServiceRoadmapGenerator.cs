@@ -20,6 +20,8 @@ public interface IAiServiceRoadmapGenerator
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
     // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là
     // HỢP LỆ (AI không gợi ý được, hoặc mọi link bị allowlist tên miền loại phía AIService).
+    // RAG grounding — grounding[] (snapshot precompute từ roadmap_lessons.grounding_refs) → AIService chèn
+    // block "TÀI LIỆU THAM CHIẾU UY TÍN" + trả CitedChunkIds (Contract 2). null/rỗng → ungrounded (vẫn sinh).
     // Lỗi → AiServiceException (→ 502; mở lại được vì chưa lưu).
     Task<LessonTheoryResult> GenerateLessonTheoryAsync(
         string jobCategory,
@@ -27,6 +29,7 @@ public interface IAiServiceRoadmapGenerator
         string lessonTitle,
         IReadOnlyList<string> focusCriteria,
         IReadOnlyList<string>? weaknesses,
+        IReadOnlyList<GroundingChunk>? grounding = null,
         CancellationToken ct = default);
 
     // BC15 — nhận xét chung khi roadmap Completed (kết luận chi tiết theo tiến độ tiêu chí). AI KHÔNG ghi DB.

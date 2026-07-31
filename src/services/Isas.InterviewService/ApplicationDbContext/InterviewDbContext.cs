@@ -27,6 +27,8 @@ namespace Isas.InterviewService.ApplicationDbContext
 
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();        // DB2 — transactional outbox
 
+        public DbSet<KnowledgeSource> KnowledgeSources => Set<KnowledgeSource>();  // RAG grounding — metadata nguồn (chunk ở Qdrant)
+
         public DbSet<PromptTemplate> PromptTemplates => Set<PromptTemplate>();    // F21 — prompt tuỳ biến (FR17)
 
         // DB14 — đóng dấu updated_at TỰ ĐỘNG cho entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()

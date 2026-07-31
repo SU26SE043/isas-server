@@ -45,9 +45,56 @@ class ScoreOutcome(NamedTuple):
     prompt_version: int = 0
 
 
+class QuestionGenerationResult(NamedTuple):
+    """Kết quả sinh câu hỏi (RAG grounding, Contract 2).
+
+    ``generate()`` TRƯỚC ĐÂY trả thẳng ``list[str]``; nay trả kèm ``citations`` nên đổi shape —
+    theo mẫu ``ScoreOutcome`` (F13): kiểu trả về HỢP NHẤT, call site cũ dùng ``len(result)`` vỡ TO
+    ngay lần chạy đầu thay vì âm thầm đọc nhầm.
+
+    ``citations``: per-question ``[{questionIndex, citedChunkIds}]``, chỉ có khi request cấp
+    grounding (mỗi ``citedChunkIds`` ⊆ tập đã cấp — provider đã drop id lạ). ``None`` khi ungrounded
+    → endpoint không trả field citations (giữ shape cũ cho Campaign B2B)."""
+    questions: list[str]
+    citations: list[dict] | None = None
+
+
+class LessonTheoryResult(NamedTuple):
+    """Kết quả sinh lý thuyết bài học (RAG grounding, Contract 2).
+
+    ``generate_lesson_theory()`` TRƯỚC ĐÂY trả ``(theory, resources)``; nay thêm
+    ``cited_chunk_ids`` (danh sách phẳng ⊆ tập grounding đã cấp) → 3 trường, call site cũ
+    ``theory, resources = ...`` vỡ TO ngay lần chạy đầu (mẫu F13). ``cited_chunk_ids`` = None khi
+    ungrounded → endpoint không trả field citedChunkIds (giữ shape cũ)."""
+    theory: str
+    resources: list[dict]
+    cited_chunk_ids: list[str] | None = None
+
+
 class GeminiProvider(QuestionProvider):
     def __init__(self) -> None:
         self._client = genai.Client(api_key=settings.gemini_api_key)
+
+    # ── RAG GROUNDING (Contract 1): SINH VECTOR, KHÔNG ghi kho nào (GEN-4) ──────
+    async def embed(self, texts: list[str], task_type: str) -> list[list[float]]:
+        """Sinh embedding cho batch text — InterviewService gọi lúc ingest / truy hồi.
+
+        KHÔNG đi qua chokepoint F22 (``_generate``): đó là cho ``generate_content`` (đo token
+        chấm/sinh, đơn giá model chat). ``embed_content`` là API + bảng giá KHÁC → đo riêng
+        (Phase sau nếu cần), không nhét nhầm vào thống kê model chat.
+
+        Trả về list vector cùng thứ tự ``texts``; ``output_dimensionality`` cắt về 768 (Matryoshka)
+        khớp collection Qdrant ``knowledge``.
+        """
+        resp = await self._client.aio.models.embed_content(
+            model=settings.embed_model,
+            contents=texts,
+            config=types.EmbedContentConfig(
+                output_dimensionality=settings.embed_dim,
+                task_type=task_type,
+            ),
+        )
+        return [list(e.values or []) for e in (resp.embeddings or [])]
 
     # ── F22 (FR18): CHOKEPOINT DUY NHẤT cho mọi lượt gọi Gemini ────────────────
     async def _generate(self, operation: str, *, contents, config,
@@ -79,12 +126,29 @@ class GeminiProvider(QuestionProvider):
 
     async def generate(self, job_category: str, cv_text: str | None,
                        jd_text: str | None, count: int | None = None,
-                       focus_criteria: list[str] | None = None) -> list[str]:
+                       focus_criteria: list[str] | None = None,
+                       grounding: list[dict] | None = None) -> QuestionGenerationResult:
         # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
         effective_count = count if count is not None else settings.question_count
-        prompt = build_prompt(job_category, cv_text, jd_text, effective_count, focus_criteria)
+        prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
+                              focus_criteria, grounding)
+
+        # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION). Ungrounded
+        # giữ nguyên schema cũ {questions:[str]} → Campaign B2B (không truyền grounding) không đổi.
+        grounded = bool(grounding)
+        if grounded:
+            question_schema = {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "citedChunkIds": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["text"],
+            }
+        else:
+            question_schema = {"type": "string"}
 
         response = await self._generate(
             "generate_questions",
@@ -97,7 +161,7 @@ class GeminiProvider(QuestionProvider):
                     "properties": {
                         "questions": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": question_schema,
                         }
                     },
                     "required": ["questions"],
@@ -111,15 +175,45 @@ class GeminiProvider(QuestionProvider):
         except json.JSONDecodeError:
             raise ValueError(f"LLM trả về JSON không hợp lệ: {text[:200]}")
 
-        questions = data.get("questions", [])
-        if not isinstance(questions, list) or not questions:
+        raw = data.get("questions", [])
+        if not isinstance(raw, list) or not raw:
             raise ValueError("LLM không trả về danh sách câu hỏi hợp lệ.")
 
-        questions = [str(q).strip() for q in questions if str(q).strip()]
+        if not grounded:
+            questions = [str(q).strip() for q in raw if str(q).strip()]
+            if not questions:
+                raise ValueError("LLM trả về danh sách câu hỏi rỗng sau khi lọc.")
+            return QuestionGenerationResult(questions=questions[:effective_count], citations=None)
+
+        # Grounded — tách text + lọc citedChunkIds. DROP mọi id KHÔNG thuộc tập grounding đã cấp
+        # (chống bịa by-construction — không tin lời hứa của model): id lạ = nguồn model tự phịa.
+        allowed = {str(g.get("chunkId")).strip() for g in grounding if g.get("chunkId")}
+        questions: list[str] = []
+        cited_lists: list[list[str]] = []
+        for item in raw:
+            if isinstance(item, dict):
+                q_text = str(item.get("text", "")).strip()
+                cited_raw = item.get("citedChunkIds") or []
+            else:
+                # Model lờ schema, trả chuỗi trần → vẫn nhận câu hỏi, coi như không cite.
+                q_text = str(item).strip()
+                cited_raw = []
+            if not q_text:
+                continue
+            cited = [c for c in cited_raw
+                     if isinstance(c, str) and c.strip() in allowed]
+            cited = list(dict.fromkeys(c.strip() for c in cited))  # bỏ trùng, giữ thứ tự
+            questions.append(q_text)
+            cited_lists.append(cited)
+
         if not questions:
             raise ValueError("LLM trả về danh sách câu hỏi rỗng sau khi lọc.")
 
-        return questions[:effective_count]
+        questions = questions[:effective_count]
+        cited_lists = cited_lists[:effective_count]
+        citations = [{"questionIndex": i, "citedChunkIds": cited_lists[i]}
+                     for i in range(len(questions))]
+        return QuestionGenerationResult(questions=questions, citations=citations)
 
     async def suggest_criteria(self, job_category: str, jd_text: str | None,
                                criteria_text: str | None, count: int) -> list[dict]:
@@ -461,12 +555,16 @@ class GeminiProvider(QuestionProvider):
                                cv_text: str | None,
                                focus: str | None = None,
                                cv_analysis_summary: str | None = None,
-                               prior_roadmap_summary: str | None = None) -> list[dict]:
+                               prior_roadmap_summary: str | None = None,
+                               grounding: list[dict] | None = None) -> list[dict]:
         """
         BC13/D20 — sinh cấu trúc roadmap ôn tập (sync, stateless, KHÔNG ghi DB).
 
         BC17 — focus/cvAnalysisSummary/priorRoadmapSummary: cá nhân hoá theo report ứng viên CHỌN
         + ô mô tả mong muốn. Đều là DỮ LIỆU (bọc delimiter trong prompt, AI-4).
+
+        ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ định hình cấu trúc.
+        Cấu trúc roadmap KHÔNG emit citation ở Phase 1 → output shape KHÔNG đổi (list dict cũ).
 
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
@@ -478,6 +576,7 @@ class GeminiProvider(QuestionProvider):
             focus=focus,
             cv_analysis_summary=cv_analysis_summary,
             prior_roadmap_summary=prior_roadmap_summary,
+            grounding=grounding,
         )
 
         response = await self._generate(
@@ -558,21 +657,49 @@ class GeminiProvider(QuestionProvider):
 
     async def generate_lesson_theory(self, job_category: str, level: str,
                                      lesson_title: str, focus_criteria: list[str],
-                                     weaknesses: list[str] | None) -> tuple[str, list[dict]]:
+                                     weaknesses: list[str] | None,
+                                     grounding: list[dict] | None = None
+                                     ) -> LessonTheoryResult:
         """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
 
-        Trả ``(theoryMarkdown, resources)``. ``resources`` đã qua
+        Trả ``LessonTheoryResult(theory, resources, cited_chunk_ids)`` — RAG grounding thêm
+        ``cited_chunk_ids`` (đổi shape so với trước, mẫu F13). ``resources`` đã qua
         :func:`app.resources.sanitize_resources`: url KHÔNG thuộc allowlist tên
         miền bị BỎ CẢ MỤC. Xem docstring app/resources.py cho lý
         do — tóm tắt: LLM sinh url là đoán chuỗi, domain bịa là rủi ro thật.
 
         resources rỗng KHÔNG phải lỗi (lý thuyết vẫn dùng được) → không raise,
         khác với theoryMarkdown rỗng.
+
+        ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ + đòi trích dẫn.
+        ``cited_chunk_ids`` = None khi ungrounded (endpoint không trả field, giữ shape cũ);
+        ⊆ tập grounding đã cấp khi grounded (drop id lạ = chống bịa).
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
         prompt = build_lesson_theory_prompt(
-            job_category, level, lesson_title, focus_criteria, weaknesses)
+            job_category, level, lesson_title, focus_criteria, weaknesses, grounding)
+
+        grounded = bool(grounding)
+        response_properties: dict = {
+            "theoryMarkdown": {"type": "string"},
+            "resources": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "type": {"type": "string"},
+                        "publisher": {"type": "string"},
+                        "url": {"type": "string"},
+                    },
+                    "required": ["title", "type"],
+                },
+            },
+        }
+        if grounded:
+            response_properties["citedChunkIds"] = {
+                "type": "array", "items": {"type": "string"}}
 
         # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
         # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist
@@ -588,22 +715,7 @@ class GeminiProvider(QuestionProvider):
                 response_mime_type="application/json",
                 response_schema={
                     "type": "object",
-                    "properties": {
-                        "theoryMarkdown": {"type": "string"},
-                        "resources": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "type": {"type": "string"},
-                                    "publisher": {"type": "string"},
-                                    "url": {"type": "string"},
-                                },
-                                "required": ["title", "type"],
-                            },
-                        },
-                    },
+                    "properties": response_properties,
                     "required": ["theoryMarkdown"],
                 },
             ),
@@ -623,7 +735,17 @@ class GeminiProvider(QuestionProvider):
 
             resources = sanitize_resources(data.get("resources"))
             url_meta = count_rejected_urls(data.get("resources"))
-            return theory, resources
+
+            cited: list[str] | None = None
+            if grounded:
+                allowed = {str(g.get("chunkId")).strip()
+                           for g in grounding if g.get("chunkId")}
+                cited = [c.strip() for c in (data.get("citedChunkIds") or [])
+                         if isinstance(c, str) and c.strip() in allowed]
+                cited = list(dict.fromkeys(cited))  # bỏ trùng, giữ thứ tự
+
+            return LessonTheoryResult(theory=theory, resources=resources,
+                                      cited_chunk_ids=cited)
         finally:
             await report_usage("generate_lesson_theory", settings.gemini_model,
                                response, meta=url_meta)

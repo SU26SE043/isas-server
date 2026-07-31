@@ -34,7 +34,12 @@ public record MilestoneImprovementResponse(string CriterionName, decimal DeltaPc
 
 // F15 — kết quả AIService /generate-lesson-theory: markdown + tài liệu học (đã qua allowlist
 // tên miền phía AIService). Resources rỗng KHÔNG phải lỗi.
-public record LessonTheoryResult(string TheoryMarkdown, IReadOnlyList<Entities.LessonResource> Resources);
+// RAG grounding — CitedChunkIds: id chunk grounding mà AI THẬT SỰ cite (Contract 2). Rỗng khi không
+// truyền grounding / AI không cite → lesson ungrounded.
+public record LessonTheoryResult(
+    string TheoryMarkdown,
+    IReadOnlyList<Entities.LessonResource> Resources,
+    IReadOnlyList<string>? CitedChunkIds = null);
 
 // F15 — 1 tài liệu học gợi ý trả cho FE. `url` CÓ THỂ NULL vì có chủ đích: link do AI sinh chỉ
 // được giữ khi tên miền thuộc allowlist (AIService app/resources.py). FE: có url → render link kèm
@@ -53,7 +58,11 @@ public record LessonResponse(
     string? TheoryContent,   // null khi chưa mở (BC14); list bỏ luôn theoryContent.
     Guid? SessionId,
     string Status,
-    IReadOnlyList<LessonResourceResponse> Resources   // F15 — rỗng khi chưa mở lesson / AI không gợi ý được
+    IReadOnlyList<LessonResourceResponse> Resources,   // F15 — rỗng khi chưa mở lesson / AI không gợi ý được
+    // RAG grounding — nguồn UY TÍN đã cite cho lý thuyết bài học ({chunkId, sourceUrl, sourceTitle}).
+    // 3 trạng thái như QuestionResponse.Citations: null = roadmap cũ (chưa precompute); [] = precompute
+    // chạy nhưng corpus không phủ → ungrounded; non-empty = grounded. Chỉ surface khi kèm theory.
+    IReadOnlyList<Citation>? Citations = null
 );
 
 public record MilestoneResponse(

@@ -92,15 +92,18 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
     }
 
     // Shape res AIService /generate-lesson-theory (GenerateLessonTheoryResponse):
-    // markdown + F15 tài liệu học (đã sanitize allowlist tên miền phía AIService).
-    private record LessonTheoryApiResponse(string? TheoryMarkdown, List<LessonResourceApi>? Resources);
+    // markdown + F15 tài liệu học (đã sanitize allowlist tên miền phía AIService) + RAG citedChunkIds.
+    private record LessonTheoryApiResponse(
+        string? TheoryMarkdown, List<LessonResourceApi>? Resources, List<string>? CitedChunkIds);
     private record LessonResourceApi(string? Title, string? Type, string? Publisher, string? Url);
 
     // BC14 — POST /generate-lesson-theory {jobCategory, level, lessonTitle, focusCriteria[], weaknesses?}
     // → {theoryMarkdown}. Sync như /generate-roadmap. Lỗi → AiServiceException (→ 502).
+    // RAG grounding — thêm grounding[] (Contract 2) → đọc citedChunkIds.
     public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(
         string jobCategory, string level, string lessonTitle,
         IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses,
+        IReadOnlyList<GroundingChunk>? grounding = null,
         CancellationToken ct = default)
     {
         var payload = new
@@ -109,7 +112,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             level,
             lessonTitle,
             focusCriteria = focusCriteria ?? [],
-            weaknesses
+            weaknesses,
+            // RAG grounding — snapshot precompute (roadmap_lessons.grounding_refs). null → sinh ungrounded.
+            grounding = grounding is { Count: > 0 }
+                ? grounding.Select(g => new { chunkId = g.ChunkId, content = g.Content, sourceUrl = g.SourceUrl, sourceTitle = g.SourceTitle })
+                : null
         };
 
         HttpResponseMessage response;
@@ -155,7 +162,7 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
                 string.IsNullOrWhiteSpace(r.Url) ? null : r.Url!.Trim()))
             .ToList();
 
-        return new LessonTheoryResult(body.TheoryMarkdown, resources);
+        return new LessonTheoryResult(body.TheoryMarkdown, resources, body.CitedChunkIds);
     }
 
     // Shape res AIService /summarize-roadmap — kết luận chi tiết + nhận xét chung.

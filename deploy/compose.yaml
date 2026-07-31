@@ -62,6 +62,18 @@ services:
       - "15672:15672"  # management UI
     networks: [isas-main-network]
 
+  # RAG grounding — kho vector (chunk tri thức). InterviewService quản + gọi (gRPC 6334). Volume bền.
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-main
+    restart: always
+    ports:
+      - "6333:6333"   # REST + dashboard (:6333/dashboard)
+      - "6334:6334"   # gRPC (InterviewService .NET client)
+    volumes:
+      - qdrant_main_data:/qdrant/storage
+    networks: [isas-main-network]
+
   # ===== APP SERVICES =====
   isas.authservice:
     image: ghcr.io/su26se043/isas.authservice:main
@@ -106,9 +118,14 @@ services:
       - RabbitMQ__UserName=${RABBITMQ_USER}
       - RabbitMQ__Password=${RABBITMQ_PASS}
       - AiService__BaseUrl=http://${MAC_TS_IP}:8000   # sinh câu hỏi chạy trên Mac (Tailscale IP)
+      # RAG grounding — kho vector (Qdrant, cùng compose) + ingest Context7 + toggle bật retrieval.
+      - Qdrant__Url=http://qdrant:6334
+      - Context7__ApiKey=${CONTEXT7_API_KEY}
+      # Grounding:Enabled mặc định TẮT (chuỗi rỗng không parse int/bool an toàn → dùng default). Bật khi có corpus.
+      - Grounding__Enabled=${GROUNDING_ENABLED:-false}
     ports:
       - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet
-    depends_on: [postgres, seaweedfs, rabbitmq]
+    depends_on: [postgres, seaweedfs, rabbitmq, qdrant]
     networks: [isas-main-network]
     restart: unless-stopped
 
@@ -209,3 +226,4 @@ volumes:
   postgres_main_data:
   redis_main_data:
   seaweedfs_main_data:
+  qdrant_main_data:   # RAG grounding — kho vector Qdrant
