@@ -1,7 +1,7 @@
 # ISAS — Business Rules (toàn hệ thống)
 
 > **Danh mục quy tắc nghiệp vụ toàn hệ thống** — mã hóa để tham chiếu (GEN/AUTH/INT/CAMP/PAY/AI/BC/SEC/DATA).
-> Chi tiết thiết kế/state machine từng service xem `docs/services/<service>.md`; **vì sao** (D1–D23) xem [decisions.md](decisions.md).
+> Chi tiết thiết kế/state machine từng service xem `docs/services/<service>.md`; **vì sao** (D1–D27) xem [decisions.md](decisions.md).
 > Ký hiệu: `🔜` = chưa làm / đang tới; `Dxx` = tham chiếu decision log.
 
 ## GEN — Ràng buộc chung (mọi service)
@@ -76,6 +76,7 @@
 - **AI-3** Chống ảo giác (đủ / kẹp / bỏ-bịa / chống-trùng).
 - **AI-4** Chống prompt-injection: nội dung ứng viên = **dữ liệu**, không phải lệnh.
 - **AI-5** AI **không được phép ghi DB**.
+- **AI-6** ✅ **Grounding (D27):** ground **lớp SINH** (câu hỏi · lý thuyết · roadmap) vào corpus tài liệu uy tín admin-curate (kho `knowledge_sources` + Qdrant, InterviewService); AIService thêm `/embed` stateless + inject nguồn, trả `citedChunkId` **chỉ từ tập đã cấp** (chống bịa URL by-construction). **KHÔNG** ground lớp CHẤM. Không có nguồn khớp → **ungrounded** (VẪN sinh + nhãn "chưa có nguồn", KHÔNG citation giả). Embedder `gemini-embedding-001` đa ngôn ngữ. Default **TẮT** (`GROUNDING_ENABLED`). Chi tiết: [services/ai.md](services/ai.md) §Grounding · [services/interview.md](services/interview.md) §Kho tri thức.
 
 ## BC — B2C luyện tập cá nhân
 - **BC-1** Không org, ví credit cá nhân **prepaid**.

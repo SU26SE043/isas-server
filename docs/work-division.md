@@ -93,7 +93,7 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 | Service | Có sẵn? | Phụ trách | Gateway prefix |
 |---|---|---|---|
 | **AuthService** | ✅ có 3 role | Identity: Candidate/Employer/Admin | `/api/v1/auth` |
-| **PaymentService** | 🟡 branch | M1: gói, **credit (lượt phỏng vấn)**, PayOS | `/api/v1/payment` |
+| **PaymentService** | ✅ merged main + deploy | M1: gói, **credit (lượt phỏng vấn)**, PayOS | `/api/v1/payment` |
 | **CampaignService** | 🟢 M2 merged (PR #22); M3/M4/M5 chưa | M2 + M3(phát) + M4(ranking) + M5: campaign, tiêu chí, distribution, kết quả | `/api/v1/campaign` |
 | **InterviewService** | ✅ engine | Engine phỏng vấn **B2B & B2C**: session (`campaign_id?`), answer, chấm điểm | `/api/v1/interview` |
 | **AIService** | ✅ mở rộng | Sinh câu hỏi + chấm (theo rubric B2C **hoặc** tiêu chí campaign) | `/api/v1/ai` |
