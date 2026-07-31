@@ -125,7 +125,7 @@ builder.Services.AddHttpClient<IAiServiceEmbedder, AiServiceEmbedder>(c =>   // 
 });
 builder.Services.AddHttpClient<IContext7Client, Context7Client>(c =>   // RAG grounding — Context7 ingest
 {
-    c.BaseAddress = new Uri(builder.Configuration["Context7:BaseUrl"] ?? "https://context7.com/api/v2");
+    c.BaseAddress = new Uri(builder.Configuration["Context7:BaseUrl"] ?? "https://context7.com/api/v2/");
     c.Timeout = TimeSpan.FromSeconds(30);
 });
 builder.Services.AddHttpClient<IUrlContentFetcher, UrlContentFetcher>(c =>   // RAG grounding — tải URL ingest

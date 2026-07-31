@@ -3,9 +3,9 @@ using Isas.InterviewService.Services.Interfaces;
 
 namespace Isas.InterviewService.Services;
 
-// RAG grounding — typed HttpClient gọi Context7 (context7.com/api/v2). Bearer {Context7:ApiKey}.
-// Xử 429 (Retry-After). Parse PHÒNG THỦ bằng JsonDocument (thử nhiều tên field) vì shape v2 của Context7
-// có thể đổi — ⚠ CẦN L3 verify với API + key thật (không mock được shape thật ở unit test).
+// RAG grounding — typed HttpClient gọi Context7 (context7.com/api/v2/). Bearer {Context7:ApiKey}.
+// Xử 429 (Retry-After). Shape v2 đã VERIFY bằng call thật (keyless, 2026-08-01) + khóa bằng
+// Context7ClientShapeTests (feed JSON thật). Path KHÔNG leading-slash (BaseAddress có /api/v2/).
 public class Context7Client(HttpClient client, IConfiguration config, ILogger<Context7Client> logger)
     : IContext7Client
 {
@@ -15,7 +15,7 @@ public class Context7Client(HttpClient client, IConfiguration config, ILogger<Co
         string libraryName, string? query, CancellationToken ct = default)
     {
         var q = Uri.EscapeDataString(query ?? libraryName);
-        using var doc = await GetJsonAsync($"/libs/search?libraryName={Uri.EscapeDataString(libraryName)}&query={q}", ct);
+        using var doc = await GetJsonAsync($"libs/search?libraryName={Uri.EscapeDataString(libraryName)}&query={q}", ct);
 
         var results = new List<Context7Library>();
         // Kết quả có thể nằm ở root array HOẶC dưới "results"/"libraries".
@@ -36,21 +36,32 @@ public class Context7Client(HttpClient client, IConfiguration config, ILogger<Co
     public async Task<IReadOnlyList<Context7Snippet>> GetContextAsync(
         string libraryId, string topic, CancellationToken ct = default)
     {
-        // type=json để nhận snippet có cấu trúc (title/description/code/source) thay vì markdown thô.
+        // Shape Context7 v2 THẬT (verify keyless 2026-08-01): /context?libraryId=&query=&type=json →
+        //   { codeSnippets:[{codeTitle,codeDescription,codeId(=URL),codeList:[{code}]}],
+        //     infoSnippets:[{pageId(=URL),breadcrumb,content}] }
         using var doc = await GetJsonAsync(
-            $"/context?library={Uri.EscapeDataString(libraryId)}&topic={Uri.EscapeDataString(topic)}&type=json", ct);
+            $"context?libraryId={Uri.EscapeDataString(libraryId)}&query={Uri.EscapeDataString(topic)}&type=json", ct);
 
         var snippets = new List<Context7Snippet>();
-        var arr = FindArray(doc.RootElement, "snippets", "results");
-        foreach (var s in arr)
+        var root = doc.RootElement;
+
+        // codeSnippets: mô tả + code ghép; URL nguồn = codeId.
+        foreach (var s in FindArray(root, "codeSnippets"))
         {
             var title = Str(s, "codeTitle", "pageTitle", "title") ?? topic;
-            var desc = Str(s, "codeDescription", "description", "content") ?? string.Empty;
+            var desc = Str(s, "codeDescription", "description") ?? string.Empty;
             var code = ExtractCode(s);
             var body = string.Join("\n\n", new[] { desc, code }.Where(x => !string.IsNullOrWhiteSpace(x))).Trim();
             if (string.IsNullOrWhiteSpace(body)) continue;
-            snippets.Add(new Context7Snippet(
-                title.Trim(), body, Str(s, "source", "pageUrl", "sourceUrl", "url")));
+            snippets.Add(new Context7Snippet(title.Trim(), body, Str(s, "codeId", "source", "sourceUrl", "url")));
+        }
+        // infoSnippets: văn xuôi; URL nguồn = pageId.
+        foreach (var s in FindArray(root, "infoSnippets"))
+        {
+            var content = Str(s, "content", "text") ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(content)) continue;
+            var title = Str(s, "breadcrumb", "pageTitle", "title") ?? topic;
+            snippets.Add(new Context7Snippet(title.Trim(), content.Trim(), Str(s, "pageId", "source", "sourceUrl", "url")));
         }
         return snippets;
     }
