@@ -83,7 +83,11 @@ public record QuestionResponse(
     string Content,
     int TimeLimitSec,
     AnswerResponse? Answer,
-    string Kind = "Seed"   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion (default an toàn cho client cũ)
+    string Kind = "Seed",   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion (default an toàn cho client cũ)
+    // RAG grounding — nguồn ĐÃ RESOLVE cho câu hỏi này ({chunkId, sourceUrl, sourceTitle}).
+    // 3 trạng thái (FE dựa vào — supervisor chốt): null = câu không đi qua grounding (không nhãn);
+    // [] = đã grounding nhưng không có nguồn → ungrounded (FE nhãn nổi bật); non-empty = grounded.
+    IReadOnlyList<Citation>? Citations = null
 );
 
 public record AnswerResponse(

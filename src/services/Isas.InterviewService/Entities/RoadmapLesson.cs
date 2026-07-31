@@ -1,3 +1,4 @@
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
 
 namespace Isas.InterviewService.Entities;
@@ -27,6 +28,14 @@ public class RoadmapLesson
 
     // Ref FK Restrict → practice_sessions (session luyện của lesson) — set khi /start (BC14).
     public Guid? SessionId { get; set; }
+
+    // RAG grounding (Cách 2 — precompute). Snapshot chunk truy hồi LÚC TẠO roadmap (RoadmapService.CreateAsync):
+    // batch-embed tên bài → Qdrant search → lưu 3–4 chunk (chunkId + content + sourceUrl + sourceTitle) vào đây.
+    // Lúc MỞ lesson (OpenLessonAsync) đọc thẳng snapshot này feed /generate-lesson-theory → KHÔNG retrieve
+    // realtime (khỏi thêm độ trễ đường lazy). Content cần để feed prompt AIService.
+    // 3 TRẠNG THÁI như PracticeQuestion.GroundingRefs: null = roadmap cũ (precompute chưa chạy) → không nhãn;
+    // [] = precompute chạy nhưng corpus không phủ → ungrounded; non-empty = có nguồn. jsonb nullable.
+    public List<GroundingChunk>? GroundingRefs { get; set; }
 
     public LessonStatus Status { get; set; } = LessonStatus.Theory;
 }

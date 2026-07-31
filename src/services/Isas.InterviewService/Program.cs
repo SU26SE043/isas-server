@@ -42,6 +42,25 @@ builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // 
 builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
 builder.Services.AddScoped<PromptTemplateService>();   // F21 — prompt tuỳ biến (FR17)
 
+// RAG grounding — kho tri thức (Qdrant) + retrieval. IChunker/QdrantVectorStore = singleton (không state
+// theo request); KnowledgeService scoped (dùng DbContext). QdrantClient singleton từ Qdrant:Url.
+builder.Services.AddSingleton<IChunker, Chunker>();
+builder.Services.AddSingleton(sp =>
+{
+    var url = builder.Configuration["Qdrant:Url"] ?? "http://localhost:6334";
+    var apiKey = builder.Configuration["Qdrant:ApiKey"];
+    var uri = new Uri(url);
+    // QdrantClient(host, port, https, apiKey) — gRPC (mặc định 6334). Uri.Port = -1 nếu không nêu → 6334.
+    return new Qdrant.Client.QdrantClient(
+        uri.Host,
+        uri.Port > 0 ? uri.Port : 6334,
+        https: uri.Scheme == Uri.UriSchemeHttps,
+        apiKey: string.IsNullOrWhiteSpace(apiKey) ? null : apiKey);
+});
+builder.Services.AddSingleton<IVectorStore, QdrantVectorStore>();
+builder.Services.AddScoped<IKnowledgeService, KnowledgeService>();
+builder.Services.AddHostedService<QdrantCollectionInitializer>();   // tạo collection lúc startup (best-effort)
+
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
@@ -96,6 +115,23 @@ builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient
     // Nội bộ (KHÔNG qua gateway) → gọi thẳng PaymentService. X-Internal-Token gắn trong client.
     c.BaseAddress = new Uri(builder.Configuration["Payment:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(10);  // reserve nhanh (DB update), không phải LLM
+});
+
+builder.Services.AddHttpClient<IAiServiceEmbedder, AiServiceEmbedder>(c =>   // RAG grounding — /embed
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    // Embed nhanh hơn generate nhưng batch ingest có thể lớn → 60s như các call AI khác.
+    c.Timeout = TimeSpan.FromSeconds(60);
+});
+builder.Services.AddHttpClient<IContext7Client, Context7Client>(c =>   // RAG grounding — Context7 ingest
+{
+    c.BaseAddress = new Uri(builder.Configuration["Context7:BaseUrl"] ?? "https://context7.com/api/v2");
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHttpClient<IUrlContentFetcher, UrlContentFetcher>(c =>   // RAG grounding — tải URL ingest
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("isas-server");
 });
 
 builder.Services.AddOpenApi(options =>
@@ -176,6 +212,8 @@ builder.Services.Configure<OutboxSettings>(
     builder.Configuration.GetSection(OutboxSettings.SectionName));   // DB2
 builder.Services.Configure<RepublisherSettings>(
     builder.Configuration.GetSection(RepublisherSettings.SectionName));   // DB29
+builder.Services.Configure<GroundingOptions>(
+    builder.Configuration.GetSection(GroundingOptions.SectionName));   // RAG grounding — Enabled/TopK/threshold
 
 builder.Services.AddSingleton<IAmazonS3>(sp =>
 {
