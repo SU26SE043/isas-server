@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
@@ -186,6 +187,21 @@ public class RoadmapLessonConfiguration : IEntityTypeConfiguration<RoadmapLesson
         resources.Metadata.SetValueComparer(resourceComparer);
         resources.HasColumnType("jsonb");
         resources.IsRequired();
+
+        // RAG grounding (Cách 2) — snapshot chunk precompute lúc tạo roadmap (jsonb NULLABLE — 3 trạng thái).
+        // Content cần để feed /generate-lesson-theory lúc mở lesson mà KHÔNG retrieve lại. Null-safe converter
+        // (mẫu SourceSessionIds) ⇒ row cũ NULL, migration khỏi defaultValue → né bug jsonb-rỗng F15.
+        var groundingConverter = new ValueConverter<List<GroundingChunk>?, string?>(
+            v => v == null ? null : JsonSerializer.Serialize(v, KnowledgeJson.Options),
+            v => v == null ? null : JsonSerializer.Deserialize<List<GroundingChunk>>(v, KnowledgeJson.Options));
+        var groundingComparer = new ValueComparer<List<GroundingChunk>?>(
+            (a, b) => (a ?? new List<GroundingChunk>()).SequenceEqual(b ?? new List<GroundingChunk>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, r) => HashCode.Combine(h, r.GetHashCode())),
+            v => v == null ? null : v.ToList());
+        var grounding = e.Property(x => x.GroundingRefs);
+        grounding.HasConversion(groundingConverter);
+        grounding.Metadata.SetValueComparer(groundingComparer);
+        grounding.HasColumnType("jsonb");
 
         e.Property(x => x.Status)
             .HasConversion<string>()

@@ -4,9 +4,11 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
 using Isas.Shared.Pagination;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
 
@@ -20,17 +22,24 @@ public class RoadmapService : IRoadmapService
     private readonly InterviewDbContext _db;
     private readonly IStorageService _storage;
     private readonly IAiServiceRoadmapGenerator _generator;
+    private readonly IKnowledgeService? _knowledge;   // RAG grounding — precompute (null = tắt)
+    private readonly GroundingOptions _grounding;     // RAG grounding — Enabled/TopK/threshold
     private readonly ILogger<RoadmapService> _logger;
 
     public RoadmapService(
         InterviewDbContext db,
         IStorageService storage,
         IAiServiceRoadmapGenerator generator,
-        ILogger<RoadmapService> logger)
+        ILogger<RoadmapService> logger,
+        // RAG grounding — optional (default null/tắt): test cũ dựng 4 tham số vẫn compile + precompute tắt.
+        IKnowledgeService? knowledge = null,
+        IOptions<GroundingOptions>? groundingOptions = null)
     {
         _db = db;
         _storage = storage;
         _generator = generator;
+        _knowledge = knowledge;
+        _grounding = groundingOptions?.Value ?? new GroundingOptions();
         _logger = logger;
     }
 
@@ -172,6 +181,13 @@ public class RoadmapService : IRoadmapService
             roadmap.Milestones.Add(milestone);
         }
 
+        // RAG grounding (Cách 2 — precompute): batch-embed query từng lesson (tên bài + focus milestone +
+        // jobCategory) trong 1 lần /embed → Qdrant search → LƯU snapshot vào lesson.GroundingRefs. Lúc MỞ
+        // lesson (OpenLessonAsync) feed thẳng snapshot này, KHÔNG retrieve realtime (không thêm độ trễ lazy).
+        // best-effort — RetrieveBatchAsync tự degrade rỗng khi lỗi; wrap để có sự cố lạ vẫn KHÔNG chặn tạo roadmap.
+        if (_grounding.Enabled && _knowledge is not null)
+            await PrecomputeLessonGroundingAsync(roadmap, req.JobCategory.ToString(), ct);
+
         _db.Set<Roadmap>().Add(roadmap);
         await _db.SaveChangesAsync(ct);
 
@@ -181,6 +197,48 @@ public class RoadmapService : IRoadmapService
             roadmap.Milestones.Count, sourceSessionIds?.Count ?? 0);
 
         return Map(roadmap, includeTheory: true);
+    }
+
+    // RAG grounding (Cách 2) — precompute snapshot cho MỌI lesson trong roadmap. 1 lần /embed cho tất cả
+    // query → search từng lesson → set GroundingRefs (LIST rỗng nếu miss — grounding ĐÃ chạy nên KHÔNG null,
+    // phân biệt với roadmap cũ chưa precompute = null). Query = tên bài + focus milestone + jobCategory.
+    private async Task PrecomputeLessonGroundingAsync(Roadmap roadmap, string jobCategory, CancellationToken ct)
+    {
+        // Duyệt lesson theo đúng thứ tự để map kết quả batch về đúng lesson.
+        var flat = roadmap.Milestones
+            .SelectMany(m => m.Lessons.Select(l => (Lesson: l, Milestone: m)))
+            .ToList();
+        if (flat.Count == 0) return;
+
+        var queries = flat.Select(x =>
+        {
+            var parts = new List<string> { x.Lesson.Title, jobCategory };
+            if (x.Milestone.FocusCriteria is { Count: > 0 } focus)
+                parts.Insert(1, string.Join(", ", focus));
+            return string.Join("\n", parts);
+        }).ToList();
+
+        IReadOnlyList<IReadOnlyList<GroundingChunk>> batches;
+        try
+        {
+            batches = await _knowledge!.RetrieveBatchAsync(jobCategory, queries, ct);
+        }
+        catch (Exception ex)
+        {
+            // RetrieveBatchAsync vốn tự degrade; wrap phòng lỗi lạ → precompute rỗng, KHÔNG chặn tạo roadmap.
+            _logger.LogWarning(ex, "RAG grounding: precompute roadmap lỗi → grounding_refs=[] (ungrounded)");
+            foreach (var (lesson, _) in flat) lesson.GroundingRefs = new List<GroundingChunk>();
+            return;
+        }
+
+        for (int i = 0; i < flat.Count; i++)
+            // grounding ĐÃ chạy → LUÔN set list (rỗng = ungrounded), KHÔNG để null.
+            flat[i].Lesson.GroundingRefs = (batches.Count > i ? batches[i] : Array.Empty<GroundingChunk>()).ToList();
+
+        var grounded = flat.Count(x => x.Lesson.GroundingRefs is { Count: > 0 });
+        _logger.LogInformation(
+            "RAG grounding: precompute roadmap {Id} — {Grounded}/{Total} lesson có nguồn",
+            roadmap.Id, grounded, flat.Count);
     }
 
     public async Task<RoadmapResponse?> GetAsync(
@@ -342,7 +400,12 @@ public class RoadmapService : IRoadmapService
                 // cũng giấu resources, tránh hiện "tài liệu" cho lesson chưa mở.
                 includeTheory
                     ? l.Resources.Select(RoadmapLessonService.MapResource).ToList()
-                    : [])).ToList()
+                    : [],
+                // RAG grounding — CHỈ hiện citation khi lý thuyết ĐÃ sinh (grounding_refs lúc đó = tập AI thật
+                // sự cite, narrow ở OpenLessonAsync). Chưa mở → null (chưa claim nguồn nào).
+                includeTheory && l.TheoryContent != null
+                    ? GroundingMapper.ToCitations(l.GroundingRefs)
+                    : null)).ToList()
         )).ToList(),
         r.CreatedAt,
         r.CompletedAt);

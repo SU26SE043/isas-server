@@ -24,6 +24,8 @@ public class PracticeService : IPracticeService
     private readonly ICreditReservationClient _reservationClient;   // BC2
     private readonly AdaptiveOptions _adaptive;   // phỏng vấn THÍCH ỨNG (B2C seed count + toggle)
     private readonly ICriterionBenchmarkService? _benchmarks;   // F14 — mốc đối chiếu radar (null = tắt)
+    private readonly IKnowledgeService? _knowledge;   // RAG grounding — retrieval (null = tắt, giữ luồng cũ)
+    private readonly GroundingOptions _grounding;     // RAG grounding — Enabled/TopK/threshold
     private readonly ILogger<PracticeService> _logger;
     private readonly bool _consumeAtGeneration;   // PONR1 — kill-switch Billing:ConsumeAtQuestionGeneration
 
@@ -40,7 +42,11 @@ public class PracticeService : IPracticeService
         // F14 — optional cùng lý do: test cũ dựng service không truyền → không có benchmark, kết quả
         // giữ nguyên hình dạng trước F14 (Benchmark=null) thay vì vỡ.
         ICriterionBenchmarkService? benchmarks = null,
-        IConfiguration? config = null)
+        IConfiguration? config = null,
+        // RAG grounding — optional (default null/tắt): test cũ không truyền → không đi đường grounding
+        // (câu hỏi GroundingRefs=null, hành vi trước grounding y nguyên). DI inject bản thật khi Grounding:Enabled.
+        IKnowledgeService? knowledge = null,
+        IOptions<GroundingOptions>? groundingOptions = null)
     {
         _db = db;
         _storage = storage;
@@ -49,6 +55,8 @@ public class PracticeService : IPracticeService
         _reservationClient = reservationClient;
         _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
         _benchmarks = benchmarks;
+        _knowledge = knowledge;
+        _grounding = groundingOptions?.Value ?? new GroundingOptions();
         _logger = logger;
         // PONR1/PONR3 — thu ở mốc Ready là thay đổi chính sách tiền. Phải opt-in tường minh;
         // thiếu/sai config = luật cũ (consume khi Scored), để không thể bật thu tiền trước khi UI
@@ -160,12 +168,30 @@ public class PracticeService : IPracticeService
             // Gọi Gemini NGOÀI transaction — không giữ DB connection lúc chờ AI.
             // Prompt tự xử 3 kịch bản: có JD ưu tiên JD; chỉ CV thì bám CV; không có
             // gì thì sinh câu hỏi chung theo JobCategory. focusCriteria (lesson /start) đưa thêm để bám tiêu chí.
+            //
+            // RAG grounding — khi Grounding:Enabled + có KnowledgeService: RETRIEVE chunk uy tín theo jobCategory
+            // (degrade rỗng khi lỗi/miss) → truyền vào overload grounded → nhận citations per-câu. Tắt → luồng cũ.
             List<GeneratedQuestion> generated;
+            IReadOnlyList<GroundingChunk> grounding = Array.Empty<GroundingChunk>();
+            IReadOnlyList<QuestionCitationDto> citations = Array.Empty<QuestionCitationDto>();
+            var grounded = _grounding.Enabled && _knowledge is not null;
             try
             {
+                if (grounded)
+                {
+                    // RetrieveAsync tự nuốt mọi lỗi → rỗng (degrade). grounding rỗng vẫn gọi overload grounded
+                    // để LUÔN emit citations (ít nhất []) — phân biệt "đã grounding, miss" với "không grounding".
+                    grounding = await _knowledge!.RetrieveAsync(
+                        session.JobCategory.ToString(),
+                        BuildRetrievalQuery(session.JobCategory.ToString(), cvText, jdText, focusCriteria), ct);
+                    var result = await _questionGenerator.GenerateQuestionsAsync(
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, questionCount, grounding, ct);
+                    generated = result.Questions;
+                    citations = result.Citations;
+                }
                 // Dùng overload ĐẦY ĐỦ khi có focusCriteria (BC14) HOẶC ứng viên chọn số câu (F2b);
                 // còn lại giữ nguyên overload 4 tham số của luồng thường (không đổi hợp đồng mock cũ).
-                generated = focusCriteria is { Count: > 0 } || questionCount is not null
+                else generated = focusCriteria is { Count: > 0 } || questionCount is not null
                     ? await _questionGenerator.GenerateQuestionsAsync(
                         session.JobCategory.ToString(), cvText, jdText, focusCriteria, questionCount, ct)
                     : await _questionGenerator.GenerateQuestionsAsync(
@@ -200,6 +226,12 @@ public class PracticeService : IPracticeService
                 ? generated.Take(Math.Max(1, _adaptive.SeedCount)).ToList()
                 : generated;
 
+            // RAG grounding — resolve citation per-câu (questionIndex → citedChunkIds → {sourceUrl,sourceTitle}
+            // từ tập grounding đã cấp; GUARD drop id lạ). grounded → mỗi câu có LIST (rỗng nếu AI không cite);
+            // KHÔNG grounded → null (không đi đường grounding). Index citations khớp index generated (seed = đầu).
+            var citationsByIndex = citations.ToDictionary(
+                c => c.QuestionIndex, c => GroundingMapper.ResolveCitations(grounding, c.CitedChunkIds));
+
             // Lưu câu hỏi + set Ready, commit #2 (tách commit tránh concurrency).
             var questions = seedQuestions
                 .Select((q, idx) => new PracticeQuestion
@@ -209,7 +241,11 @@ public class PracticeService : IPracticeService
                     OrderNo = idx + 1,
                     Content = q.Content,
                     TimeLimitSec = session.TimeLimitSec,   // F2 — theo lựa chọn của ứng viên
-                    Kind = QuestionKind.Seed
+                    Kind = QuestionKind.Seed,
+                    // grounded → list (rỗng = ungrounded, non-empty = grounded); không grounded → null.
+                    GroundingRefs = grounded
+                        ? (citationsByIndex.TryGetValue(idx, out var cits) ? cits : new List<Citation>())
+                        : null
                 })
                 .ToList();
 
@@ -709,6 +745,20 @@ public class PracticeService : IPracticeService
     // Nhãn field trong thông báo lỗi 400 — khớp tên field client gửi lên.
     private const string JdTextLabel = "Mô tả công việc (jdText)";
 
+    // RAG grounding — dựng câu truy vấn embed (RETRIEVAL_QUERY). Ưu tiên tín hiệu chủ đề: jobCategory +
+    // focusCriteria (lesson) + JD (ưu tiên) hoặc CV. RetrieveAsync tự cắt độ dài. Query VN↔EN cross-lingual
+    // (gemini-embedding-001) nên không cần dịch.
+    private static string BuildRetrievalQuery(
+        string jobCategory, string? cvText, string? jdText, IReadOnlyList<string>? focusCriteria)
+    {
+        var parts = new List<string> { jobCategory };
+        if (focusCriteria is { Count: > 0 })
+            parts.Add(string.Join(", ", focusCriteria));
+        if (!string.IsNullOrWhiteSpace(jdText)) parts.Add(jdText);
+        else if (!string.IsNullOrWhiteSpace(cvText)) parts.Add(cvText);
+        return string.Join("\n", parts);
+    }
+
     // F2 — thời lượng mỗi câu ứng viên được chọn. Tập ĐÓNG (không phải khoảng): 3 mốc để UI là nhóm nút
     // chọn, và để mọi buổi so sánh được với nhau. Tập nằm ở tầng service chứ KHÔNG đưa vào CHECK của DB —
     // đổi lựa chọn sau này (thêm 180s chẳng hạn) sẽ phải chạy migration chỉ để sửa một danh sách UI.
@@ -784,7 +834,8 @@ public class PracticeService : IPracticeService
             .Select(q => new QuestionResponse(
                 q.Id, q.OrderNo, q.Content, q.TimeLimitSec,
                 answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(a) : null,
-                q.Kind.ToString()))   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion
+                q.Kind.ToString(),   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion
+                q.GroundingRefs))    // RAG grounding — null (không grounding) / [] (ungrounded) / non-empty (grounded)
             .ToList();
 
         return new PracticeSessionResponse(

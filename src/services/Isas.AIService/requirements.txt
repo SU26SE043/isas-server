@@ -6,7 +6,9 @@ pydantic-settings
 python-dotenv
 
 # AI / ML
-google-genai
+# Pin: RAG grounding /embed dùng embed_content + EmbedContentConfig(output_dimensionality,
+# task_type) — API mới, cần khoá version để deploy khỏi trôi (bản đang chạy = 2.12.1).
+google-genai==2.12.1
 faster-whisper
 
 # Face verify (SEC-2/3): detect + đếm mặt + embed/cosine. onnxruntime = CPU inference.

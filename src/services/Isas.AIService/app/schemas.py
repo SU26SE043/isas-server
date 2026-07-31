@@ -1,6 +1,35 @@
 from pydantic import BaseModel
 
 
+# ── RAG GROUNDING (Contract 2) ──────────────────────────────────────────────
+# InterviewService truy hồi các đoạn tài liệu uy tín từ Qdrant rồi TRUYỀN VÀO request
+# khi gọi lớp SINH (câu hỏi / lý thuyết / roadmap). AIService chèn chúng làm căn cứ
+# nội dung + trả citation. ⚠ PHẢI khai tường minh trong mọi request có grounding — schema
+# không set model_config nên pydantic `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai
+# (đúng bug BC14/F2b `focusCriteria`): .NET gửi mà AI không thấy, không lỗi, không log.
+class GroundingChunk(BaseModel):
+    """1 đoạn tài liệu tham chiếu do InterviewService truy hồi từ Qdrant.
+
+    ``chunkId`` = định danh để model TRÍCH DẪN ngược (AIService drop id lạ ⇒ chống bịa
+    by-construction). ``content`` = đoạn văn cấp vào prompt làm căn cứ. ``sourceUrl``/
+    ``sourceTitle`` chỉ để hiển thị (W2 map từ payload Qdrant) → optional-safe để một field
+    thiếu không làm cả request 422.
+    """
+    chunkId: str
+    content: str
+    sourceUrl: str | None = None
+    sourceTitle: str | None = None
+
+
+class QuestionCitation(BaseModel):
+    """Citation THEO TỪNG câu hỏi (Contract CITATION, per-item).
+
+    ``citedChunkIds`` ⊆ tập grounding đã cấp (AIService đã lọc id lạ). Rỗng = câu này không
+    dựa nguồn nào → FE gắn nhãn ungrounded cho riêng câu đó."""
+    questionIndex: int
+    citedChunkIds: list[str]
+
+
 class GenerateQuestionsRequest(BaseModel):
     jobCategory: str            # BA | BE | FE
     cvText: str | None = None
@@ -12,10 +41,15 @@ class GenerateQuestionsRequest(BaseModel):
     # chưa bao giờ khai ⇒ pydantic `extra='ignore'` NUỐT IM LẶNG: không lỗi, không log, câu hỏi chỉ đơn
     # giản là không bám tiêu chí như thiết kế. Khai ra + đưa vào prompt thì mới thật sự có tác dụng.
     focusCriteria: list[str] | None = None
+    # RAG grounding (Contract 2) — vắng/rỗng → ungrounded (VẪN sinh, không citation).
+    grounding: list[GroundingChunk] | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):
     questions: list[str]
+    # ADDITIVE — CHỈ có khi request cấp grounding (per-question). Campaign B2B bỏ qua field này
+    # ⇒ không vỡ. Ungrounded → None (endpoint dùng exclude_none nên giữ nguyên shape cũ).
+    citations: list[QuestionCitation] | None = None
 
 
 # ── Đề xuất tiêu chí có cấu trúc (Campaign C8) ──────────────────────────────
@@ -93,6 +127,9 @@ class GenerateRoadmapRequest(BaseModel):
     focus: str | None = None                       # ô ứng viên mô tả mong muốn định hướng (free-text)
     cvAnalysisSummary: str | None = None           # tóm tắt phân tích CV (BC7) ứng viên đã chọn
     priorRoadmapSummary: str | None = None         # tóm tắt roadmap/report trước ứng viên đã chọn
+    # RAG grounding (Contract 2) — cấu trúc roadmap KHÔNG emit citation (Phase 1), nhưng nếu W2
+    # cấp grounding thì nó được chèn làm căn cứ. Khai tường minh để pydantic không nuốt (BC14).
+    grounding: list[GroundingChunk] | None = None
 
 
 class RoadmapLesson(BaseModel):
@@ -115,6 +152,8 @@ class GenerateLessonTheoryRequest(BaseModel):
     lessonTitle: str
     focusCriteria: list[str]
     weaknesses: list[str] | None = None
+    # RAG grounding (Contract 2) — vắng/rỗng → ungrounded. Khai tường minh (BC14).
+    grounding: list[GroundingChunk] | None = None
 
 
 class LessonResource(BaseModel):
@@ -133,6 +172,9 @@ class LessonResource(BaseModel):
 class GenerateLessonTheoryResponse(BaseModel):
     theoryMarkdown: str          # tiếng Việt, có ví dụ
     resources: list[LessonResource] = []   # F15 — tài liệu học gợi ý (có thể rỗng)
+    # ADDITIVE (Contract 2) — chunkId (⊆ tập grounding đã cấp) mà lý thuyết dựa vào. Ungrounded →
+    # None (endpoint exclude_none giữ shape cũ). Grounded-nhưng-không-cite → [] (ungrounded label).
+    citedChunkIds: list[str] | None = None
 
 
 class CriterionProgress(BaseModel):
@@ -250,3 +292,17 @@ class FaceVerifyResponse(BaseModel):
 class TtsRequest(BaseModel):
     text: str                     # NỘI DUNG câu hỏi cần đọc (dữ liệu, không phải lệnh — AI-4)
     voice: str | None = None      # giọng dựng sẵn; None → settings.tts_voice
+
+
+# ── EMBEDDING (RAG grounding, Contract 1) — sync HTTP, InterviewService gọi (máy-máy) ──
+# Stateless (GEN-4): chỉ sinh vector, KHÔNG ghi kho nào (InterviewService upsert vào Qdrant).
+class EmbedRequest(BaseModel):
+    texts: list[str]              # batch text cần embed (chunk lúc ingest / query lúc truy hồi)
+    # RETRIEVAL_DOCUMENT (ingest) | RETRIEVAL_QUERY (truy vấn) — cùng model, không gian vector chung.
+    taskType: str
+
+
+class EmbedResponse(BaseModel):
+    vectors: list[list[float]]    # 1 vector/text, cùng thứ tự texts đầu vào
+    dim: int                      # số chiều (khớp collection Qdrant `knowledge`)
+    model: str                    # model đã dùng (snapshot để đối soát nếu đổi embedder sau này)

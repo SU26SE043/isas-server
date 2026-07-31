@@ -1,6 +1,10 @@
+using System.Text.Json;
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Isas.InterviewService.Configurations;
 
@@ -131,6 +135,21 @@ public class PracticeQuestionConfiguration : IEntityTypeConfiguration<PracticeQu
             .HasConversion<string>()
             .HasMaxLength(16)
             .IsRequired();
+
+        // RAG grounding — citation ĐÃ RESOLVE (jsonb NULLABLE — 3 trạng thái null/[]/non-empty, xem entity).
+        // Converter null-safe (null → SQL NULL) mẫu Roadmap.SourceSessionIds. NULLABLE ⇒ migration AddColumn
+        // KHÔNG cần defaultValue (row cũ nhận NULL) → né hẳn bug jsonb-rỗng-default F15.
+        var refsConverter = new ValueConverter<List<Citation>?, string?>(
+            v => v == null ? null : JsonSerializer.Serialize(v, KnowledgeJson.Options),
+            v => v == null ? null : JsonSerializer.Deserialize<List<Citation>>(v, KnowledgeJson.Options));
+        var refsComparer = new ValueComparer<List<Citation>?>(
+            (a, b) => (a ?? new List<Citation>()).SequenceEqual(b ?? new List<Citation>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, r) => HashCode.Combine(h, r.GetHashCode())),
+            v => v == null ? null : v.ToList());
+        var refs = e.Property(x => x.GroundingRefs);
+        refs.HasConversion(refsConverter);
+        refs.Metadata.SetValueComparer(refsComparer);
+        refs.HasColumnType("jsonb");
 
         e.HasIndex(x => new { x.SessionId, x.OrderNo }).IsUnique();
 

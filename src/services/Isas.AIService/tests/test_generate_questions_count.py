@@ -78,7 +78,9 @@ async def test_generate_slices_to_requested_count(monkeypatch):
 
     result = await provider.generate("BE", None, None, count=12)
 
-    assert len(result) == 12
+    # RAG grounding: generate() nay trả QuestionGenerationResult (questions, citations) — mẫu F13.
+    assert len(result.questions) == 12
+    assert result.citations is None          # ungrounded → không citation
     assert "đúng 12 câu hỏi" in fake.last_prompt
 
 
@@ -91,7 +93,7 @@ async def test_generate_without_count_falls_back_to_settings(monkeypatch):
 
     result = await provider.generate("BE", None, None)
 
-    assert len(result) == settings.question_count
+    assert len(result.questions) == settings.question_count
     assert f"đúng {settings.question_count} câu hỏi" in fake.last_prompt
 
 

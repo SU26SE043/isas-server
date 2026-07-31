@@ -8,6 +8,14 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.5-flash"
     question_count: int = 5
 
+    # ── RAG GROUNDING: EMBEDDING (Phase 1) ───────────────────────────
+    # gemini-embedding-001 = model đa ngôn ngữ (100+, có tiếng Việt) mạnh cross-lingual
+    # VN↔EN → query tiếng Việt tìm thẳng chunk tiếng Anh, KHÔNG cần dịch. Matryoshka:
+    # output_dimensionality=768 khớp collection Qdrant `knowledge` (768, Cosine). Endpoint
+    # /embed stateless (GEN-4 — chỉ sinh vector, KHÔNG ghi kho nào; InterviewService quản Qdrant).
+    embed_model: str = "gemini-embedding-001"
+    embed_dim: int = 768
+
     # ── SCORING RETRY (AI3) ──────────────────────────────────────
     # score() raise ValueError khi LLM trả output không parse/không hợp lệ. Lỗi
     # parse thường CHỢP NHOÁNG (JSON cụt, thỉnh thoảng malformed) → thử lại vài
