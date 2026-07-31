@@ -4,7 +4,7 @@ import os
 import tempfile
 import asyncio
 from app.schemas import (
-    GenerateQuestionsRequest, GenerateQuestionsResponse,
+    GenerateQuestionsRequest, GenerateQuestionsResponse, QuestionCitation,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
     AnalyzeCvRequest, AnalyzeCvResponse, AnalyzeRepoRequest, AnalyzeRepoResponse, JdMatch,
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
@@ -14,6 +14,7 @@ from app.schemas import (
     FaceVerifyRequest, FaceVerifyResponse,
     DecideNextRequest, DecideNextResponse, DeliveryMetrics,
     TtsRequest,
+    EmbedRequest, EmbedResponse,
 )
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
@@ -46,12 +47,18 @@ router = APIRouter(prefix="/api/v1")
 async def health():
     return {"status": "ok"}
 
-@router.post("/generate-questions", response_model=GenerateQuestionsResponse)
+@router.post("/generate-questions", response_model=GenerateQuestionsResponse,
+             response_model_exclude_none=True)
 async def generate_questions(req: GenerateQuestionsRequest):
     try:
-        questions = await provider.generate(
-            req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria)
-        return GenerateQuestionsResponse(questions=questions)
+        # RAG grounding (Contract 2) — chuyển sang list[dict] cho provider; vắng → ungrounded.
+        grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
+        result = await provider.generate(
+            req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding)
+        # citations=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ cho Campaign B2B.
+        citations = ([QuestionCitation(**c) for c in result.citations]
+                     if result.citations is not None else None)
+        return GenerateQuestionsResponse(questions=result.questions, citations=citations)
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi sinh câu hỏi: {ex}")
 
@@ -106,11 +113,13 @@ async def generate_roadmap(req: GenerateRoadmapRequest):
         raise HTTPException(status_code=400, detail="level không được rỗng")
     try:
         weaknesses = [w.model_dump() for w in req.weaknesses] if req.weaknesses else None
+        grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
         milestones = await provider.generate_roadmap(
             req.jobCategory, req.level, weaknesses, req.cvText,
             focus=req.focus,
             cv_analysis_summary=req.cvAnalysisSummary,
             prior_roadmap_summary=req.priorRoadmapSummary,
+            grounding=grounding,
         )
         return GenerateRoadmapResponse(
             milestones=[
@@ -128,15 +137,21 @@ async def generate_roadmap(req: GenerateRoadmapRequest):
         raise HTTPException(status_code=502, detail=f"Lỗi sinh roadmap: {ex}")
 
 
-@router.post("/generate-lesson-theory", response_model=GenerateLessonTheoryResponse)
+@router.post("/generate-lesson-theory", response_model=GenerateLessonTheoryResponse,
+             response_model_exclude_none=True)
 async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
     if not req.lessonTitle or not req.lessonTitle.strip():
         raise HTTPException(status_code=400, detail="lessonTitle không được rỗng")
     try:
-        theory, resources = await provider.generate_lesson_theory(
-            req.jobCategory, req.level, req.lessonTitle, req.focusCriteria, req.weaknesses)
+        # RAG grounding (Contract 2) — vắng → ungrounded (cited_chunk_ids = None → field ẩn).
+        grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
+        theory, resources, cited = await provider.generate_lesson_theory(
+            req.jobCategory, req.level, req.lessonTitle, req.focusCriteria,
+            req.weaknesses, grounding)
         # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
-        return GenerateLessonTheoryResponse(theoryMarkdown=theory, resources=resources)
+        # cited=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ giữ nguyên.
+        return GenerateLessonTheoryResponse(
+            theoryMarkdown=theory, resources=resources, citedChunkIds=cited)
     except HTTPException:
         raise
     except Exception as ex:
@@ -369,6 +384,28 @@ async def text_to_speech(
 
     return Response(content=mp3, media_type=tts.MP3_CONTENT_TYPE,
                     headers={"X-Tts-Cache": cache_state})
+
+
+@router.post("/embed", response_model=EmbedResponse)
+async def embed(
+    req: EmbedRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+):
+    """RAG grounding (Contract 1) — sinh embedding cho batch text.
+
+    InterviewService (chủ kho tri thức) gọi lúc INGEST (task_type=RETRIEVAL_DOCUMENT → upsert
+    Qdrant) và lúc TRUY HỒI (RETRIEVAL_QUERY → vector search). AIService stateless (GEN-4): chỉ
+    sinh vector, KHÔNG ghi kho nào.
+
+    Gate X-Internal-Token, fail-closed (máy-máy — GEN-7, mẫu /decide-next /tts /face-verify).
+    Lỗi provider (Gemini quá tải/model lạ) → 502."""
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+    try:
+        vectors = await provider.embed(req.texts, req.taskType)
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi sinh embedding: {ex}")
+    return EmbedResponse(vectors=vectors, dim=settings.embed_dim, model=settings.embed_model)
 
 
 # Kích hoạt toàn bộ route /api/v1 — đăng ký SAU khi mọi @router đã khai báo.
