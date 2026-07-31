@@ -162,7 +162,7 @@ Mục tiêu = baseline **đã xác minh + sẵn sàng bàn giao**, không viết
 
 Kế thừa nguyên tắc đang dùng — chi tiết [architecture.md](architecture.md) §5:
 
-- **Branch:** `features/<service>` cho mảng lớn, PR vào `dev`.
+- **Branch:** nhánh `feat/`·`fix/`·`s/…` → **PR vào `main`** (workflow hiện hành). Nhánh `dev` gần như không dùng — **giữ cho luồng cập nhật production về sau**.
 - **Gateway:** API public đi qua `/api/v1/<service>/...` (StripPrefix). Callback nội bộ **không** qua gateway.
 - **DB:** mỗi service 1 database riêng, EF Core, cột **snake_case**, enum lưu **string**, **không FK xuyên service**.
 - **AI không ghi DB:** AIService chỉ trả kết quả qua **callback** về service .NET (`X-Internal-Token`). Service mới nhờ AI chấm → theo pattern publish RabbitMQ + callback này.

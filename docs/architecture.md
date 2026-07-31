@@ -147,7 +147,7 @@ bỏ ngang/lỗi ───(SessionAbandoned)─► RELEASE (nhả chỗ)
 - **Auth offline:** mọi service **validate JWT** bằng chung `Jwt:Key`/`Issuer`/`Audience` — **không call AuthService lúc chạy**.
 - **AI không ghi DB:** AIService chỉ trả kết quả qua **callback** về service .NET (`X-Internal-Token`). Service mới nhờ AI chấm → theo pattern publish RabbitMQ + callback.
 - **File:** lưu SeaweedFS (S3) — **lưu *key/path* trong DB, ghép URL khi đọc** (không lưu full URL).
-- **Branch:** `features/<service>` cho mảng lớn, PR vào `dev`.
+- **Branch:** nhánh `feat/`·`fix/`·`s/…` → **PR vào `main`** (workflow hiện hành). Nhánh `dev` gần như không dùng — **giữ cho luồng cập nhật production về sau**.
 
 ### 5.1. Biến ràng buộc thành check tự động (executable)
 Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **check chạy được** (grep/lint/architecture test trong CI), kèm **báo lỗi cách sửa**. Ưu tiên:
