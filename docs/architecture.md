@@ -33,12 +33,12 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 |---|---|---|---|
 | **Gateway** | .NET, YARP | Reverse proxy `/api/v1/*` → service; gộp OpenAPI thành 1 doc | ✅ |
 | **AuthService** | .NET, JWT, Google OAuth | Đăng nhập, JWT/refresh, profile; 3 role + **Organization (OrgAdmin/HrMember)** | ✅ (thêm Org) |
-| **InterviewService** | .NET, EF Core | **Engine dùng chung**: session (`campaign_id?`), câu hỏi, câu trả lời, điểm, rubric/tiêu chí, file | ✅ (mở rộng B2B) |
-| **AIService** | Python, FastAPI, faster-whisper, google-genai | Sinh câu hỏi + worker chấm điểm (rubric JobCategory **hoặc** tiêu chí campaign) | ✅ (mở rộng) |
-| **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | 🟢 merged main (M2: CRUD + tiêu chí cấu trúc + publish/audit); M3/M4/M5 🟡 |
-| **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo chủ ví** (org B2B / cá nhân B2C — D15), prepaid + postpaid, reserve→consume | ✅ trong tree (CI image, gateway route live, trong compose) |
+| **InterviewService** | .NET, EF Core | **Engine dùng chung**: session (`campaign_id?`), câu hỏi, câu trả lời, điểm, rubric/tiêu chí, file · **+ kho tri thức grounding** (Qdrant, D27) | ✅ merged main |
+| **AIService** | Python, FastAPI, faster-whisper, google-genai | Sinh câu hỏi + worker chấm điểm (rubric JobCategory **hoặc** tiêu chí campaign) · **+ `/embed` + grounding** (D27) | ✅ merged main |
+| **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | ✅ merged main (M2–M5: CRUD/tiêu chí/publish/audit + distribution + ranking + result/export) |
+| **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo chủ ví** (org B2B / cá nhân B2C — D15), prepaid + postpaid, reserve→consume | ✅ merged main + deploy live |
 
-**Hạ tầng:** PostgreSQL 18 — DB-per-service (`isas`/`isas_interview`/`isas_campaign`/`isas_payment`) · SeaweedFS (S3, cổng 8333; CV/JD/Criteria/audio) · RabbitMQ (job chấm `scoring_pipeline_queue` + event) · Redis (provision sẵn cho cache; **lưu ý: refresh token của Auth hiện ở Postgres** — Redis chưa được wire, để dành phase sau).
+**Hạ tầng:** PostgreSQL 18 — DB-per-service (`isas`/`isas_interview`/`isas_campaign`/`isas_payment`) · SeaweedFS (S3, cổng 8333; CV/JD/Criteria/audio) · RabbitMQ (job chấm `scoring_pipeline_queue` + event) · Redis (provision sẵn cho cache; **lưu ý: refresh token của Auth hiện ở Postgres** — Redis chưa được wire, để dành phase sau) · **Qdrant** (vector store — grounding D27, chỉ InterviewService gọi).
 
 ### 2.1. Tổng hợp "chưa làm" — gap toàn hệ thống
 > **Bức tranh tổng** ở cấp hệ thống. **Tracking chi tiết** (đầu việc + lệnh xác minh + owner) là source of truth ở [work-division.md](work-division.md) §2/§8 + [tasks.md](tasks.md) + [progress.md](progress.md) — bảng này chỉ **trỏ tới**, không thay thế.
@@ -147,7 +147,7 @@ bỏ ngang/lỗi ───(SessionAbandoned)─► RELEASE (nhả chỗ)
 - **Auth offline:** mọi service **validate JWT** bằng chung `Jwt:Key`/`Issuer`/`Audience` — **không call AuthService lúc chạy**.
 - **AI không ghi DB:** AIService chỉ trả kết quả qua **callback** về service .NET (`X-Internal-Token`). Service mới nhờ AI chấm → theo pattern publish RabbitMQ + callback.
 - **File:** lưu SeaweedFS (S3) — **lưu *key/path* trong DB, ghép URL khi đọc** (không lưu full URL).
-- **Branch:** `features/<service>` cho mảng lớn, PR vào `dev`.
+- **Branch:** nhánh `feat/`·`fix/`·`s/…` → **PR vào `main`** (workflow hiện hành). Nhánh `dev` gần như không dùng — **giữ cho luồng cập nhật production về sau**.
 
 ### 5.1. Biến ràng buộc thành check tự động (executable)
 Ràng buộc "trên giấy" agent/người sẽ lách → mỗi cái nên có **check chạy được** (grep/lint/architecture test trong CI), kèm **báo lỗi cách sửa**. Ưu tiên:

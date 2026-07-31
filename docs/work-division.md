@@ -56,6 +56,12 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 
 > **Dùng chung:** BC2/BC3 và M3/M4/M5 chạy trên **cùng** engine InterviewService + AIService; BC1 và M1 chạy trên **cùng** PaymentService (khác `owner_type`). B2C **không** đụng CampaignService.
 
+### 1c. Grounding — AI dựa NGUỒN uy tín (nâng cấp engine, cross-cutting) ✅ **D27 — 2026-08-01**
+Nâng chất lượng **lớp SINH** của AI bằng **RAG**: câu hỏi luyện (B2C) · lý thuyết bài học + roadmap ôn tập được ground vào **corpus tài liệu uy tín do ADMIN curate**, mỗi nội dung bấm ra **nguồn thật** để kiểm chứng (citation). **Module ADMIN mới: "Nguồn tri thức"** (thêm/nạp/xóa nguồn; nạp tự động từ Context7 hoặc dán tay). **KHÔNG** đụng lớp CHẤM điểm (giữ "AI gợi ý + HR quyết").
+- **Đụng service:** AIService (`/embed` + inject nguồn, giữ GEN-4 write-free) · InterviewService (kho `knowledge_sources` + retrieval + admin API `api/admin/knowledge`) · Admin FE (trang quản nguồn + hiển thị citation).
+- **Hạ tầng mới:** **Qdrant** (vector store) + Context7 (ống dẫn ingest, `Context7:ApiKey`). Embedder `gemini-embedding-001` (đa ngôn ngữ VN↔EN).
+- **Trạng thái:** code + fix + migration prod xong (nhánh `s/grounding-integration` BE · `feat/grounding-fe` FE, **chưa merge**); default **TẮT** (`GROUNDING_ENABLED`). Chi tiết: [decisions.md](decisions.md) D27 · [tasks.md](tasks.md) §Grounding · [services/interview.md](services/interview.md) §Kho tri thức · [services/ai.md](services/ai.md) §Grounding.
+
 ---
 
 ## 2. Hiện trạng — cái gì đã có, cái gì còn thiếu
@@ -75,7 +81,8 @@ Gateway · AuthService · AIService · PaymentService · CampaignService · Inte
 | **PaymentService (M1)** | 🟡 **branch `features/payment-b2c`** — có Order/Package/PayOS; **cần: credit theo org, reserve/consume, postpaid + hóa đơn, active-polling** | `src/services/Isas.PaymentService` |
 | Frontend B2B | 🟡 Prototype | `isas-demo/` (demo, **không trong repo này**) |
 
-> **Hạ tầng — lưu ý:** `Redis` đã có trong compose nhưng **AuthService chưa wire** (refresh token đang lưu Postgres) — provision để dành cache/phase sau, **không phải việc của stream nào** hiện tại.
+> **Hạ tầng — lưu ý:** `Redis` đã có trong compose nhưng **AuthService chưa wire** (refresh token đang lưu Postgres) — provision để dành cache/phase sau, **không phải việc của stream nào** hiện tại. · **Qdrant** (vector store) thêm vào `deploy/compose.yaml` cho Grounding §1c (2026-08-01) — chỉ InterviewService gọi.
+> **FE thật hiện hành = `isas-frontend` (Angular 21, repo riêng)** — bảng §2 dưới ghi `isas-demo/` là prototype cũ (đóng băng). FE B2C+B2B+Admin đều ở `isas-frontend`.
 
 ---
 
@@ -86,7 +93,7 @@ Giữ **microservices + Gateway**, mỗi service **1 DB riêng**, tham chiếu u
 | Service | Có sẵn? | Phụ trách | Gateway prefix |
 |---|---|---|---|
 | **AuthService** | ✅ có 3 role | Identity: Candidate/Employer/Admin | `/api/v1/auth` |
-| **PaymentService** | 🟡 branch | M1: gói, **credit (lượt phỏng vấn)**, PayOS | `/api/v1/payment` |
+| **PaymentService** | ✅ merged main + deploy | M1: gói, **credit (lượt phỏng vấn)**, PayOS | `/api/v1/payment` |
 | **CampaignService** | 🟢 M2 merged (PR #22); M3/M4/M5 chưa | M2 + M3(phát) + M4(ranking) + M5: campaign, tiêu chí, distribution, kết quả | `/api/v1/campaign` |
 | **InterviewService** | ✅ engine | Engine phỏng vấn **B2B & B2C**: session (`campaign_id?`), answer, chấm điểm | `/api/v1/interview` |
 | **AIService** | ✅ mở rộng | Sinh câu hỏi + chấm (theo rubric B2C **hoặc** tiêu chí campaign) | `/api/v1/ai` |
@@ -155,7 +162,7 @@ Mục tiêu = baseline **đã xác minh + sẵn sàng bàn giao**, không viết
 
 Kế thừa nguyên tắc đang dùng — chi tiết [architecture.md](architecture.md) §5:
 
-- **Branch:** `features/<service>` cho mảng lớn, PR vào `dev`.
+- **Branch:** nhánh `feat/`·`fix/`·`s/…` → **PR vào `main`** (workflow hiện hành). Nhánh `dev` gần như không dùng — **giữ cho luồng cập nhật production về sau**.
 - **Gateway:** API public đi qua `/api/v1/<service>/...` (StripPrefix). Callback nội bộ **không** qua gateway.
 - **DB:** mỗi service 1 database riêng, EF Core, cột **snake_case**, enum lưu **string**, **không FK xuyên service**.
 - **AI không ghi DB:** AIService chỉ trả kết quả qua **callback** về service .NET (`X-Internal-Token`). Service mới nhờ AI chấm → theo pattern publish RabbitMQ + callback này.

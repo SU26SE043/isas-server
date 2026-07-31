@@ -165,6 +165,17 @@ Trước F21, `app/prompts.py` (576 dòng, 10 builder) **hardcode 100%** — gre
 
 **Env:** `PROMPT_REGISTRY_BASE` (base URL Interview, **KHÔNG qua gateway**; **rỗng = tắt**, chạy thuần hardcode — mặc định dev/test và là kill-switch) · `PROMPT_CACHE_TTL_SECONDS` (mặc định `60`) · `PROMPT_FETCH_TIMEOUT_SECONDS` (mặc định `3.0`).
 
+## Grounding (RAG) — `/embed` + inject nguồn uy tín ✅ **D27 — 2026-08-01**
+Ground **lớp SINH** (câu hỏi · lý thuyết · roadmap) vào corpus admin curate. AIService giữ **write-free (GEN-4)** — chỉ thêm `/embed` stateless + nhận `grounding` trong request sinh; kho + retrieval nằm ở InterviewService (Qdrant).
+
+**`POST /api/v1/embed`** (gate `X-Internal-Token`, fail-closed): `{texts: string[], taskType: "RETRIEVAL_DOCUMENT"|"RETRIEVAL_QUERY"}` → `{vectors: number[][], dim: 768, model: "gemini-embedding-001"}`. Model `gemini-embedding-001` **đa ngôn ngữ** (query tiếng Việt tìm thẳng chunk tiếng Anh, không cần dịch), `output_dimensionality=768` (Matryoshka), `task_type` tách document/query. Lỗi provider → 502. Config `embed_model`/`embed_dim`.
+
+**Grounding injection** (`app/prompts.py::build_grounding_block`): `build_prompt`/`build_lesson_theory_prompt`/`build_roadmap_prompt` nhận optional `grounding: [{chunkId, content, sourceUrl, sourceTitle}]` → chèn block "TÀI LIỆU THAM CHIẾU UY TÍN" + chỉ thị *chỉ cite chunkId trong tập cấp, không bịa ngoài nguồn*. Block **HARDCODE, KHÔNG cho F21 override** (cùng nhóm bảo vệ anti-injection/E11 — vì chứa contract citation). GIỮ AST-guard F21 (`refresh_if_stale`).
+
+**Output ADDITIVE** (⚠ `/generate-questions` còn được Campaign B2B gọi → không đổi field cũ): `/generate-questions` giữ `{questions: string[]}` + thêm optional `citations: [{questionIndex, citedChunkIds}]`; `/generate-lesson-theory` giữ `{theoryMarkdown}` + thêm optional `citedChunkIds`. **Provider DROP mọi citedChunkId không thuộc tập grounding** (chống bịa by-construction). Grounding rỗng → không citations, shape cũ y nguyên (`response_model_exclude_none`).
+
+**Ý nghĩa citation (khai trung thực):** per-request = "sinh từ ngữ cảnh có nguồn này, model tự khai, không bịa URL" (mức vừa); "câu được nguồn entail" = **số faithfulness đo Phase 2** (KHÔNG hứa per-request). Xem [interview.md](interview.md) §Kho tri thức cho retrieval + [decisions.md](../decisions.md) D27.
+
 ## Pipeline chấm (worker) — queue `scoring_pipeline_queue`
 Worker consume (prefetch 1, ack/nack thủ công) → tải audio từ SeaweedFS → Whisper transcribe → Gemini chấm → callback `/internal/answers/{id}/result`.
 - ✅ **AI2 Dead-Letter Queue (2026-07-17):** khai **DLX `scoring_pipeline_dlx`** + **DLQ `scoring_pipeline_dead_queue`** (routing `scoring_dead`) trong `declare_topology(channel)`; queue `scoring_pipeline_queue` mang arg `x-dead-letter-exchange`/`x-dead-letter-routing-key`. Cả 2 site `nack(requeue=False)` (`worker.py:144` permanent-report-fail, `:150` transient) **auto-route vào DLQ** → message lỗi KHÔNG bị drop, giữ để điều tra/replay. *(Transient cũng vào DLQ nhưng `StuckAnswerRepublisher` (Interview, 2') vẫn re-publish bản mới → bản DLQ chỉ để inspect.)* **`.NET ScoringJobPublisher` PHẢI khai queue arg KHỚP y hệt** (2 bên redeclare khác arg → PRECONDITION_FAILED 406). **⚠ Deploy:** queue LIVE cũ khai `arguments=None` → không redeclare được với arg mới → **recreate queue** (drain→delete→redeclare) HOẶC set DLX qua **RabbitMQ policy** ([DEPLOYMENT.md](../DEPLOYMENT.md)).
