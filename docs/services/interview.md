@@ -854,3 +854,21 @@ Rubric quyết định chấm **cái gì**; prompt quyết định chấm **như
 ❌ **KHÔNG phải "thêm ngành tuỳ ý".** `JobCategory` vẫn là enum 3 giá trị. Đây là quyết định có chủ đích chứ không phải giới hạn kỹ thuật: `B2CRubricSeed` khoá theo enum (mỗi nghề 7 tiêu chí sau F11/F12), rubric riêng BC16 khoá theo nó, validation khoá theo nó. Một ngành **không có rubric** sẽ khiến `AnswerService` thấy 0 tiêu chí active ⇒ INT-9 *"thiếu tiêu chí → `Failed`"* ⇒ **người luyện trả 1 credit rồi nhận một buổi hỏng**. Mở tập ngành mà không mở kèm đường khai rubric là mở thẳng ra đường đó; tập đóng bảo đảm **mọi ngành chắc chắn có rubric**.
 
 *(Ghi chú kỹ thuật cho lần mở sau: 4 cột lưu `JobCategory` đều đã là **string** trên đĩa — `HasConversion<string>()` — và wire contract cũng đã là string, nên mở tập ngành **không phải data migration**. Cái chặn chỉ là kiểu C# + validation, cộng với bắt buộc khai rubric kèm theo.)*
+
+## Kho tri thức / Grounding (RAG) ✅ **D27 — 2026-08-01**
+InterviewService làm chủ kho tri thức; ground **lớp SINH** (câu hỏi · lý thuyết · roadmap). Xem [ai.md](ai.md) §Grounding cho `/embed` + injection, [decisions.md](../decisions.md) D27 cho quyết định.
+
+**DB (migration `AddKnowledgeAndGroundingRefs`, đã apply prod):**
+- Bảng `knowledge_sources` (Postgres): `id · title · job_category(null=chung) · source_type(Context7|Url|Manual) · source_ref · raw_content(để reindex) · reputation · status · chunk_count · created_by · created_at`. Index `(created_at desc, id desc)` + `(job_category)`.
+- **Chunk KHÔNG ở Postgres** — ở **Qdrant** collection `knowledge` (vector 768, Cosine, payload `{sourceId, jobCategory, ordinal, content, sourceUrl, sourceTitle}`).
+- Cột thêm: `practice_questions.grounding_refs` + `roadmap_lessons.grounding_refs` (jsonb, **nullable** — `null`=không đi grounding, `[]`=ungrounded, non-empty=grounded; nullable né bug jsonb-default F15).
+
+**Service:** `IVectorStore`/`QdrantVectorStore` (upsert · search filter jobCategory top-k=4 + **score-threshold** chống over-attribution · delete-by-sourceId) · `IChunker` (Context7 per-snippet · Url `ChunkHtmlByHeading` h1–h3 rồi window 350–500 token overlap 60–80 · Manual `##`) · `Context7Client` · `AiServiceEmbedder` (gọi `/embed`) · `KnowledgeService` (ingest = chunk→embed→upsert Qdrant→ghi row; retrieve = embed query→search→grounding; **degrade rỗng 1 điểm duy nhất**).
+
+**Admin API** `api/admin/knowledge` `[Authorize(Roles="Admin")]` (FE `{apiBase}/interview/admin/knowledge`): `GET /` list (keyset) · `POST /` add Manual/Url · `DELETE /{id}` (**xóa Qdrant TRƯỚC rồi Postgres** — chống orphan vector) · `POST /{id}/reindex` · `GET /context7/search` · `POST /context7/ingest {libraryId, topics[], jobCategory}`.
+
+**Wire sinh:** `PracticeService` retrieve theo jobCategory (query=jobCategory+focus+JD/CV) → truyền grounding vào `/generate-questions` → map `citedChunkIds`→`QuestionResponse.citations: [{chunkId, sourceUrl, sourceTitle}]` (`GroundingMapper` drop id lạ) → lưu `grounding_refs`. **Roadmap Cách 2 precompute:** `RoadmapService.CreateAsync` batch-embed tên bài (1 lần `/embed`) → lưu snapshot `roadmap_lessons.grounding_refs`; mở bài feed snapshot vào `/generate-lesson-theory` → **không retrieve realtime** (khỏi lo timeout 60s). Precompute/retrieval lỗi → `[]` (ungrounded, không vỡ).
+
+**Context7 (`context7.com/api/v2/`, Bearer `Context7:ApiKey`):** shape v2 verify keyless — `/libs/search`→`results[]{id,title,trustScore,totalSnippets}`; `/context?libraryId=&query=&type=json`→`{codeSnippets[]{codeTitle,codeDescription,codeId=URL,codeList[].code}, infoSnippets[]{pageId=URL,breadcrumb,content}}`. ⚠ **Bẫy đã sửa (D27):** BaseAddress phải **trailing-slash** + path **không leading-slash** (nếu không `/api/v2` bị mất → 404); param `libraryId`/`query` (không `library`/`topic`); sourceUrl từ `codeId`/`pageId`. Khóa bằng `Context7ClientShapeTests` (feed JSON thật).
+
+**Config/deploy:** `Qdrant:Url` · `Context7:ApiKey` · `Grounding:{Enabled(default false),TopK=4,ScoreThreshold=0.5}`. Qdrant = service trong `deploy/compose.yaml`. Bật grounding: nạp corpus qua admin → `Grounding__Enabled=true`. Unit test **mock `IVectorStore` + embed client** (không cần Qdrant/AI thật).
