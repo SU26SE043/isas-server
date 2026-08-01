@@ -30,6 +30,7 @@ namespace PaymentService.Models
         /// PayOS redeliver cùng một đơn sẽ đụng UNIQUE thay vì cộng thêm một kỳ hạn miễn phí.
         /// </summary>
         public Guid? OrderId { get; set; }
+        public string? AdminGrantIdempotencyKey { get; set; }
         public Guid? PlanId { get; set; }
         public PlanAudience Audience { get; set; }
         public string TierCode { get; set; } = "";

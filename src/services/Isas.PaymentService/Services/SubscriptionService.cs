@@ -201,6 +201,19 @@ namespace Isas.PaymentService.Services
             return new SubscriptionCancellationResult(effective.Id, true);
         }
 
+        public async Task<Subscription> GrantAsync(OwnerType ownerType, Guid ownerId, Guid planId, int durationDays, DateTime? activatedAt, string key, CancellationToken ct = default)
+        {
+            if (durationDays <= 0 || string.IsNullOrWhiteSpace(key)) throw new ArgumentException("DurationDays and idempotencyKey are required.");
+            var old = await _db.Subscriptions.FirstOrDefaultAsync(s => s.AdminGrantIdempotencyKey == key, ct); if (old is not null) return old;
+            var plan = await _db.Plans.SingleOrDefaultAsync(p => p.Id == planId && p.IsActive, ct) ?? throw new ArgumentException("Plan is not active.");
+            if ((ownerType == OwnerType.User) != (plan.Audience == PlanAudience.B2C)) throw new ArgumentException("Plan audience does not match owner.");
+            if (!await _db.CreditAccounts.AnyAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct))
+                throw new ArgumentException("Owner must have a credit account before receiving a subscription grant.");
+            var at = activatedAt?.ToUniversalTime() ?? DateTime.UtcNow; var snap = EntitlementSnapshot.Create(plan);
+            var sub = new Subscription { Id=Guid.NewGuid(), OwnerType=ownerType, OwnerId=ownerId, PlanId=plan.Id, Audience=plan.Audience, TierCode=plan.Code, TierRank=plan.Rank, InterviewFunding=plan.InterviewFunding, MonthlyQuota=plan.MonthlyQuota, EntitlementSnapshot=snap.Json, EntitlementsVersion=plan.EntitlementsVersion, EntitlementHash=snap.Hash, Source=SubscriptionSource.AdminGrant, AdminGrantIdempotencyKey=key, ActivatedAt=at, StartedAt=at, ExpiresAt=at.AddDays(durationDays), BillingCycle=CycleFor(durationDays), CreatedAt=DateTime.UtcNow, UpdatedAt=DateTime.UtcNow };
+            _db.Subscriptions.Add(sub); _db.SubscriptionEvents.Add(new SubscriptionEvent { Id=Guid.NewGuid(), SubscriptionId=sub.Id, EventType="Activated", CreatedAt=DateTime.UtcNow }); await _db.SaveChangesAsync(ct); return sub;
+        }
+
         public Task<int> ExpireDueAsync(CancellationToken ct = default)
         {
             var now = DateTime.UtcNow;

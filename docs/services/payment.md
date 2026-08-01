@@ -148,6 +148,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 ### Admin (PlatformAdmin)
 
+**`POST /payment/admin/subscriptions/grant`** — Admin cấp kỳ thuê bao không qua PayOS. Nhận owner, plan, `durationDays`, `activatedAt?`, `idempotencyKey`; User chỉ B2C, Org chỉ B2B. Row `source=AdminGrant`, không order, snapshot entitlement/hash và event `Activated`; activation tương lai chưa mở entitlement.
+
 **`/payment/admin/plans`** — CRUD catalog tier, chỉ `Admin`. `DELETE /{id}` soft-deactivate (`is_active=false`), không xoá row lịch sử đã được package/subscription tham chiếu. Validation: Metered cần quota dương; B2C không có B2B cap; Unlimited chỉ khi `Tiering:AllowUnlimitedPlans=true`. Sửa catalog không hồi tố subscription snapshot; chỉ activation/mua mới dùng catalog mới.
 
 **`POST/PUT/DELETE /payment/package…`** ✅ **A5** — CRUD gói (Req `ProductPackage`). Auth `Roles="Admin"` (PlatformAdmin, AUTH-3/7 — trước v22 comment hở → mở toang, nay đóng). GET catalog (trên) = Public.

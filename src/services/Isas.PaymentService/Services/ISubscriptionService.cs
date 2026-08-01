@@ -33,6 +33,7 @@ namespace Isas.PaymentService.Services
 
         /// <summary>Cancel only the owner's currently effective tier. Repeated/no-active calls are safe no-ops.</summary>
         Task<SubscriptionCancellationResult> CancelEffectiveAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default);
+        Task<Subscription> GrantAsync(OwnerType ownerType, Guid ownerId, Guid planId, int durationDays, DateTime? activatedAt, string key, CancellationToken ct = default);
 
         /// <summary>
         /// Đóng dấu <c>Active → Expired</c> cho các kỳ đã quá hạn. Thuần dọn dẹp/báo cáo — KHÔNG ảnh hưởng
