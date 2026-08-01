@@ -44,6 +44,7 @@ builder.Services.AddOpenApi(options =>
 });
 
 builder.Services.AddScoped<ICampaignService, CampaignService>();
+builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IFileService, FileService>();
 builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();   // DB17: shared PDF extractor
 builder.Services.AddScoped<IParserService, ParserService>();
@@ -88,6 +89,12 @@ builder.Services.AddHttpClient<ICampaignSessionClient, CampaignSessionClient>(c 
     c.BaseAddress = new Uri(
         string.IsNullOrWhiteSpace(builder.Configuration["Interview:BaseUrl"])
             ? "http://localhost:5002" : builder.Configuration["Interview:BaseUrl"]!));
+builder.Services.AddHttpClient<IEntitlementClient, EntitlementClient>(c =>
+{
+    c.BaseAddress = new Uri(string.IsNullOrWhiteSpace(builder.Configuration["Payment:BaseUrl"])
+        ? "http://localhost:5004" : builder.Configuration["Payment:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(5);
+});
 builder.Services.AddScoped<IParticipationService, ParticipationService>();
 
 builder.Services.AddControllers().AddJsonOptions(options =>

@@ -12,6 +12,12 @@ Lớp **điều phối B2B**, không tự chạy phỏng vấn:
 - **Credit**: khi ứng viên bấm **Start**, Campaign gửi `campaign.OrgId` sang InterviewService → **InterviewService reserve** 1 credit ví **org** (chủ campaign) — reserve-first (**BK14**, Campaign KHÔNG gọi Payment trực tiếp); ví org hết → **402**; consume/release qua event (E7). Chi tiết [payment.md](payment.md).
 - **Ranking + Result**: **nghe event `SessionScored`** → cập nhật **bảng ranking read-model trong `isas_campaign`** (không gọi HTTP đọc điểm mỗi lần) → xếp hạng, pass/fail, xuất CSV/PDF.
 
+### T8 — B2B entitlement gate
+- Campaign gọi trực tiếp Payment `GET /internal/entitlements?ownerType=Org&ownerId={orgId}` với `X-Internal-Token`, cache theo org 90 giây. Timeout/non-2xx/JSON hỏng luôn rơi an toàn về **Starter**: 1 Active campaign, 25 candidates, adaptive/grounding/postpaid tắt.
+- Create chặn khi số `Active` đã đạt tier; create/update chặn `maxCandidates` vượt cap hoặc bật adaptive/grounding không được cấp. Campaign đang tồn tại không bị hạ khi tier hết hạn.
+- Invite email, invite shortlist và upload CV dùng effective cap `min(campaign.max_candidates, entitlement.max_candidates_cap)`; cả batch bị 400 trước khi ghi nếu vượt.
+- `grounding_enabled` là snapshot feature cấp campaign, cùng nguyên tắc snapshot adaptive; không gọi lại Payment trong lúc campaign chạy.
+
 > Luồng end-to-end xuyên service ở [../architecture.md](../architecture.md) §4.1 (file này chỉ tả phần Campaign).
 
 ---

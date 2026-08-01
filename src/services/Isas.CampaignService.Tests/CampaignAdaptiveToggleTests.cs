@@ -28,7 +28,17 @@ public class CampaignAdaptiveToggleTests
 {
     private static CampaignSvc NewCampaignService(CampaignDbContext db) =>
         new(db, Mock.Of<IFileService>(), Mock.Of<ILogger<CampaignSvc>>(), Mock.Of<IParserService>(),
-            Mock.Of<ICriteriaSuggester>(), Mock.Of<IInvitationEmailPublisher>());
+            Mock.Of<ICriteriaSuggester>(), Mock.Of<IInvitationEmailPublisher>(), entitlements: Entitlements());
+
+    // INT-17 tests exercise adaptive behaviour, so give their isolated CampaignService a paid B2B grant.
+    // T8 production DI always resolves Payment; the test must not rely on the fail-closed missing-client fallback.
+    private static IEntitlementClient Entitlements()
+    {
+        var client = new Mock<IEntitlementClient>();
+        client.Setup(x => x.ResolveOrgAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(
+            new CampaignEntitlement("test", "business", 1, 10, 200, true, true, true));
+        return client.Object;
+    }
 
     private static CreateCampaignRequest BaseCreate(string title = "Campaign") => new()
     {

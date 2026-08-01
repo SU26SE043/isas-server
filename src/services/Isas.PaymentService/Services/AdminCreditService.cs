@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using PaymentService.Models;
+using System.Text.Json;
 
 namespace Isas.PaymentService.Services
 {
@@ -166,6 +167,18 @@ namespace Isas.PaymentService.Services
                 return new SetPaymentModeResult(
                     SetPaymentModeOutcome.NotOrg, ownerType, ownerId, paymentMode, creditLimit, 0, 0);
 
+            // T8: entitlement is resolved before any wallet read/write. Failure is fail-closed because
+            // EntitlementResolver falls back to Starter, whose postpaid_eligible is false.
+            if (paymentMode == PaymentMode.Postpaid)
+            {
+                var entitlement = await new EntitlementResolver(_db).ResolveAsync(ownerType, ownerId, ct);
+                var features = JsonSerializer.Deserialize<EntitlementFeatures>(entitlement.EntitlementSnapshot,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (features?.PostpaidEligible != true)
+                    return new SetPaymentModeResult(
+                        SetPaymentModeOutcome.PostpaidNotEligible, ownerType, ownerId, paymentMode, creditLimit, 0, 0);
+            }
+
             // Postpaid PHẢI có creditLimit (>0 đã ép ở DTO [Range]); Prepaid thì KHÔNG được có creditLimit
             // (limit là khái niệm riêng của postpaid — pha trộn sẽ gây hiểu lầm "prepaid cũng có hạn mức").
             var invalidLimit =
@@ -252,5 +265,7 @@ namespace Isas.PaymentService.Services
                 SetPaymentModeOutcome.Updated, ownerType, ownerId, fresh.PaymentMode, fresh.CreditLimit,
                 fresh.RemainingCredits, fresh.ReservedCredits);
         }
+
+        private sealed record EntitlementFeatures(bool PostpaidEligible);
     }
 }

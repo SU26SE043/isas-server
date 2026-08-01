@@ -34,6 +34,7 @@ namespace Isas.CampaignService.Services
         // mọi call-site test hiện có; DI luôn resolve client thật (đăng ký ở Program.cs). null → chỉ ảnh
         // hưởng đúng đường sinh câu hỏi (ném InvalidOperationException = lỗi cấu hình), không đường nào khác.
         private readonly IQuestionGenerator? _questionGenerator;
+        private readonly IEntitlementClient? _entitlements;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
@@ -46,7 +47,8 @@ namespace Isas.CampaignService.Services
             IInvitationEmailPublisher emailPublisher,
             ICampaignSessionClient? sessionClient = null,
             IOptions<InvitationSettings>? invitationOptions = null,
-            IQuestionGenerator? questionGenerator = null)
+            IQuestionGenerator? questionGenerator = null,
+            IEntitlementClient? entitlements = null)
         {
             _questionGenerator = questionGenerator;
             _invitationSettings = invitationOptions?.Value ?? new InvitationSettings();
@@ -57,10 +59,14 @@ namespace Isas.CampaignService.Services
             _suggester = suggester;
             _emailPublisher = emailPublisher;
             _sessionClient = sessionClient;
+            _entitlements = entitlements;
         }
 
         public async Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct = default)
         {
+            var entitlement = await ResolveEntitlementAsync(orgId, ct);
+            await EnsureCanCreateCampaignAsync(orgId, entitlement, ct);
+            ValidateEntitledSelection(request.MaxCandidates, request.AdaptiveEnabled, request.GroundingEnabled, entitlement);
             // ── 1. Validate questions ───────────────────────────
             if (request.Questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 throw new ArgumentException("All questions must have non-empty text.");
@@ -85,6 +91,7 @@ namespace Isas.CampaignService.Services
                 TimeLimitMinutes = request.TimeLimitMinutes,
                 AntiCheatEnabled = request.AntiCheatEnabled,
                 AdaptiveEnabled = request.AdaptiveEnabled,   // INT-17: HR bật thích ứng cho campaign
+                GroundingEnabled = request.GroundingEnabled,
                 MaxFollowUps = request.MaxFollowUps,
                 MaxQuestions = request.MaxQuestions,
                 FaceVerifyEnabled = request.FaceVerifyEnabled,   // SEC-1: face-verify opt-in (B2B)
@@ -291,6 +298,9 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
+            var entitlement = await ResolveEntitlementAsync(orgId, ct);
+            ValidateEntitledMutation(request.MaxCandidates, request.AdaptiveEnabled, request.GroundingEnabled, entitlement);
+
             // ── 2. Only update fields that were actually provided
             if (request.Title is not null)
                 campaign.Title = request.Title;
@@ -321,6 +331,9 @@ namespace Isas.CampaignService.Services
             // INT-17: null = KHÔNG đổi (giữ giá trị cũ), như AntiCheatEnabled/FaceVerifyEnabled.
             if (request.AdaptiveEnabled.HasValue)
                 campaign.AdaptiveEnabled = request.AdaptiveEnabled.Value;
+
+            if (request.GroundingEnabled.HasValue)
+                campaign.GroundingEnabled = request.GroundingEnabled.Value;
 
             if (request.MaxFollowUps.HasValue || request.MaxQuestions.HasValue)
             {
@@ -735,13 +748,7 @@ namespace Isas.CampaignService.Services
             }
 
             // ── 3. Cap theo max_candidates — vượt → chặn CẢ request (không tạo dở dang) ──
-            if (campaign.MaxCandidates.HasValue)
-            {
-                var currentCount = existingEmails.Count;
-                if (currentCount + toCreate.Count > campaign.MaxCandidates.Value)
-                    throw new ArgumentException(
-                        $"Vượt giới hạn max_candidates ({campaign.MaxCandidates.Value}): hiện có {currentCount} lời mời, đang mời thêm {toCreate.Count}.");
-            }
+            await EnsureCandidateCapacityAsync(orgId, campaign, existingEmails.Count, toCreate.Count, "lời mời", ct);
 
             // ── 4. Tạo rows + đẩy job email queue ────────────────────────────
             var now = DateTime.UtcNow;
@@ -1049,13 +1056,8 @@ namespace Isas.CampaignService.Services
             }
 
             // Cap max_candidates: invitation hiện có + mời mới ≤ cap → vượt = chặn CẢ request (như D1).
-            if (campaign.MaxCandidates.HasValue && toInvite.Count > 0)
-            {
-                var currentCount = existingEmails.Count;
-                if (currentCount + toInvite.Count > campaign.MaxCandidates.Value)
-                    throw new ArgumentException(
-                        $"Vượt giới hạn max_candidates ({campaign.MaxCandidates.Value}): hiện có {currentCount} lời mời, đang mời thêm {toInvite.Count}.");
-            }
+            if (toInvite.Count > 0)
+                await EnsureCandidateCapacityAsync(orgId, campaign, existingEmails.Count, toInvite.Count, "lời mời", ct);
 
             if (toInvite.Count == 0)
                 return response;
@@ -1418,14 +1420,8 @@ namespace Isas.CampaignService.Services
                 throw new ArgumentException("Cần ít nhất 1 file CV (PDF).");
 
             // Cap số CV/campaign (chặn đốt AI vì free) — vượt → 400, chặn CẢ batch (như invitations).
-            if (campaign.MaxCandidates.HasValue)
-            {
-                var currentCount = await _db.CvSubmissions.CountAsync(c => c.CampaignId == id, ct);
-                if (currentCount + files.Count > campaign.MaxCandidates.Value)
-                    throw new ArgumentException(
-                        $"Vượt giới hạn sàng lọc của gói (max_candidates={campaign.MaxCandidates.Value}): " +
-                        $"hiện có {currentCount} CV, đang tải thêm {files.Count}.");
-            }
+            var currentCount = await _db.CvSubmissions.CountAsync(c => c.CampaignId == id, ct);
+            await EnsureCandidateCapacityAsync(orgId, campaign, currentCount, files.Count, "CV", ct);
 
             // Dedup email: bộ đã có trong campaign + cộng dồn trong batch này (case-insensitive).
             var seenEmails = new HashSet<string>(
@@ -1742,6 +1738,54 @@ namespace Isas.CampaignService.Services
             if (maxQuestions is int mq && mq > MaxQuestionsPerSession)
                 throw new ArgumentException(
                     $"max_questions tối đa {MaxQuestionsPerSession} (hiện: {mq}).");
+        }
+
+        private async Task<CampaignEntitlement> ResolveEntitlementAsync(Guid orgId, CancellationToken ct)
+            => _entitlements is null
+                ? CampaignEntitlement.Starter
+                : await _entitlements.ResolveOrgAsync(orgId, ct);
+
+        private async Task EnsureCanCreateCampaignAsync(Guid orgId, CampaignEntitlement entitlement, CancellationToken ct)
+        {
+            var active = await _db.Campaigns.CountAsync(c => c.OrgId == orgId && c.Status == CampaignStatus.Active, ct);
+            if (active >= entitlement.MaxActiveCampaigns)
+                throw new EntitlementForbiddenException(
+                    $"Gói {entitlement.TierCode} chỉ cho phép {entitlement.MaxActiveCampaigns} campaign Active; hiện có {active}.");
+        }
+
+        private static void ValidateEntitledSelection(
+            int? maxCandidates, bool adaptiveEnabled, bool groundingEnabled, CampaignEntitlement entitlement)
+        {
+            if (maxCandidates is > 0 && maxCandidates > entitlement.MaxCandidatesCap)
+                throw new ArgumentException($"maxCandidates vượt trần {entitlement.MaxCandidatesCap} của gói {entitlement.TierCode}.");
+            if (adaptiveEnabled && !entitlement.AdaptiveEnabled)
+                throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ adaptive interview.");
+            if (groundingEnabled && !entitlement.GroundingEnabled)
+                throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
+        }
+
+        // Only requested mutations are gated. A tier expiry must not evict or freeze an existing campaign.
+        private static void ValidateEntitledMutation(
+            int? maxCandidates, bool? adaptiveEnabled, bool? groundingEnabled, CampaignEntitlement entitlement)
+        {
+            if (maxCandidates.HasValue && maxCandidates.Value > entitlement.MaxCandidatesCap)
+                throw new ArgumentException($"maxCandidates vượt trần {entitlement.MaxCandidatesCap} của gói {entitlement.TierCode}.");
+            if (adaptiveEnabled == true && !entitlement.AdaptiveEnabled)
+                throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ adaptive interview.");
+            if (groundingEnabled == true && !entitlement.GroundingEnabled)
+                throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
+        }
+
+        private async Task EnsureCandidateCapacityAsync(
+            Guid orgId, Campaign campaign, int currentCount, int batchCount, string label, CancellationToken ct)
+        {
+            var entitlement = await ResolveEntitlementAsync(orgId, ct);
+            var effectiveCap = campaign.MaxCandidates is int campaignCap
+                ? Math.Min(campaignCap, entitlement.MaxCandidatesCap)
+                : entitlement.MaxCandidatesCap;
+            if (currentCount + batchCount > effectiveCap)
+                throw new ArgumentException(
+                    $"Vượt giới hạn {label} hiệu lực ({effectiveCap}): hiện có {currentCount}, đang thêm {batchCount}.");
         }
 
         // DB23 — hạn token: campaign có deadline → dùng deadline (giữ ràng buộc token ≤ hạn campaign);

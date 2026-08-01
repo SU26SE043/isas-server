@@ -587,6 +587,7 @@ payment_mode:  Prepaid ─(PlatformAdmin duyệt + MST)─► Postpaid   (thu h�
 - ⚠ **Rủi ro đã biết, chưa xử:** 1 email = 3 lượt, mà đăng ký **không xác minh email** ⇒ lạm dụng bằng email dùng-một-lần là có thật. Cần quyết định sản phẩm (xác minh email / giới hạn theo thiết bị), không thuộc phạm vi F7.
 
 ### Postpaid (trả sau)
+- **T8:** trước khi PlatformAdmin đổi Org sang `Postpaid`, Payment resolve entitlement B2B hiện hiệu lực; `postpaid_eligible=false` trả **403** và không đọc/ghi thay đổi ví. Authorization PlatformAdmin giữ nguyên.
 - **Chỉ org được PlatformAdmin DUYỆT** mới bật `Postpaid` (cần **pháp nhân/MST** để xuất hóa đơn + đòi nợ). Mặc định org mới = `Prepaid`.
 - Chặn reserve khi **`nợ + giữ ≥ credit_limit`** hoặc **có hóa đơn `Overdue`**.
 - Cuối kỳ: chốt `period_usage` → tạo `invoice` (`interview_count × unit_price`) → org **tất toán qua PayOS** (`orders.kind = InvoiceSettlement`) → reset kỳ.

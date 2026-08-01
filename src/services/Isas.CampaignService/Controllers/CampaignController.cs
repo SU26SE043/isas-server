@@ -103,6 +103,10 @@ namespace Isas.CampaignService.Controllers
             {
                 return BadRequest(ex.Message);
             }
+            catch (EntitlementForbiddenException ex)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, ex.Message);
+            }
             catch (Exception ex)
             {
                 return StatusCode(500, $"Failed to create campaign: {ex.Message}");
@@ -179,6 +183,7 @@ namespace Isas.CampaignService.Controllers
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(ex.Message); }         // C12: criteria không hợp lệ → 400
+            catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // C12: sửa criteria khi != Draft → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to update campaign: {ex.Message}"); }
         }
@@ -343,6 +348,7 @@ namespace Isas.CampaignService.Controllers
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(ex.Message); }          // vượt cap max_candidates
+            catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }    // campaign không Active → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to create invitations: {ex.Message}"); }
         }
@@ -419,6 +425,7 @@ namespace Isas.CampaignService.Controllers
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(ex.Message); }          // vượt cap max_candidates
+            catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }    // campaign không Active → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to invite shortlisted candidates: {ex.Message}"); }
         }
@@ -536,6 +543,7 @@ namespace Isas.CampaignService.Controllers
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(ex.Message); }             // vượt cap / thiếu file → 400
+            catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }        // campaign chưa Active → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to screen candidates: {ex.Message}"); }
         }

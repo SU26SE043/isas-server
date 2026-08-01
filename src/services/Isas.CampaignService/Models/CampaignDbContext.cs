@@ -65,6 +65,7 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.AntiCheatEnabled).HasDefaultValue(true);
                 e.Property(x => x.FaceVerifyEnabled).HasDefaultValue(false);   // SEC-1: face-verify opt-in (B2B)
                 e.Property(x => x.AdaptiveEnabled).HasDefaultValue(false);     // INT-17: adaptive opt-in (B2B)
+                e.Property(x => x.GroundingEnabled).HasDefaultValue(false);    // T8: entitlement-gated snapshot
 
                 e.Property(x => x.StartsAt).IsRequired();
 
