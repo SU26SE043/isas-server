@@ -1076,7 +1076,8 @@ namespace Isas.PaymentService.Migrations
                         .HasDefaultValueSql("now()");
 
                     b.Property<string>("AdminGrantIdempotencyKey")
-                        .HasColumnType("text")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
                         .HasColumnName("admin_grant_idempotency_key");
 
                     b.Property<string>("Audience")
@@ -1201,9 +1202,9 @@ namespace Isas.PaymentService.Migrations
                     b.HasKey("Id")
                         .HasName("pk_subscriptions");
 
-                    b.HasIndex("AdminGrantIdempotencyKey")
+                    b.HasIndex("OwnerType", "OwnerId", "AdminGrantIdempotencyKey")
                         .IsUnique()
-                        .HasDatabaseName("ix_subscriptions_admin_grant_idempotency_key")
+                        .HasDatabaseName("ux_subscriptions_owner_grant_idempotency")
                         .HasFilter("admin_grant_idempotency_key IS NOT NULL");
 
                     b.HasIndex("ExpiresAt")

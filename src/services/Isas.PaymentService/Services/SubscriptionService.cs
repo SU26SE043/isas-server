@@ -201,7 +201,7 @@ namespace Isas.PaymentService.Services
         public async Task<Subscription> GrantAsync(OwnerType ownerType, Guid ownerId, Guid planId, int durationDays, DateTime? activatedAt, string key, CancellationToken ct = default)
         {
             if (durationDays <= 0 || string.IsNullOrWhiteSpace(key)) throw new ArgumentException("DurationDays and idempotencyKey are required.");
-            var old = await _db.Subscriptions.FirstOrDefaultAsync(s => s.AdminGrantIdempotencyKey == key, ct); if (old is not null) return old;
+            var old = await _db.Subscriptions.FirstOrDefaultAsync(s => s.OwnerType == ownerType && s.OwnerId == ownerId && s.AdminGrantIdempotencyKey == key, ct); if (old is not null) return old;
             var plan = await _db.Plans.SingleOrDefaultAsync(p => p.Id == planId && p.IsActive, ct) ?? throw new ArgumentException("Plan is not active.");
             if ((ownerType == OwnerType.User) != (plan.Audience == PlanAudience.B2C)) throw new ArgumentException("Plan audience does not match owner.");
             if (!await _db.CreditAccounts.AnyAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct))

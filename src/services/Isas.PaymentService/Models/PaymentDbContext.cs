@@ -492,7 +492,10 @@ namespace PaymentService.Models
                 // Khoá idempotency của webhook: 1 đơn ⇒ tối đa 1 kỳ hạn. Filtered vì order_id nullable
                 // (chỗ dành cho kỳ hạn cấp tay/khuyến mãi sau này, không sinh từ đơn nào).
                 e.HasIndex(x => x.OrderId).IsUnique().HasFilter("order_id IS NOT NULL");
-                e.HasIndex(x => x.AdminGrantIdempotencyKey).IsUnique().HasFilter("admin_grant_idempotency_key IS NOT NULL");
+                e.Property(x => x.AdminGrantIdempotencyKey).HasMaxLength(128);
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.AdminGrantIdempotencyKey }).IsUnique()
+                 .HasDatabaseName("ux_subscriptions_owner_grant_idempotency")
+                 .HasFilter("admin_grant_idempotency_key IS NOT NULL");
 
                 // Đường nóng: MỌI lần reserve đều hỏi "chủ ví này còn thuê bao không". Partial theo
                 // status='Active' (mẫu DB5) để index chỉ ôm phần bảng thật sự bị hỏi — kỳ đã hết hạn/huỷ

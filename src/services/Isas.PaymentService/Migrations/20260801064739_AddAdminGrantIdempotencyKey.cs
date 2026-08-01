@@ -15,13 +15,14 @@ namespace Isas.PaymentService.Migrations
             migrationBuilder.AddColumn<string>(
                 name: "admin_grant_idempotency_key",
                 table: "subscriptions",
-                type: "text",
+                type: "character varying(128)",
+                maxLength: 128,
                 nullable: true);
 
             migrationBuilder.CreateIndex(
-                name: "ix_subscriptions_admin_grant_idempotency_key",
+                name: "ux_subscriptions_owner_grant_idempotency",
                 table: "subscriptions",
-                column: "admin_grant_idempotency_key",
+                columns: new[] { "owner_type", "owner_id", "admin_grant_idempotency_key" },
                 unique: true,
                 filter: "admin_grant_idempotency_key IS NOT NULL");
         }
@@ -29,7 +30,7 @@ namespace Isas.PaymentService.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropIndex(
-                name: "ix_subscriptions_admin_grant_idempotency_key",
+                name: "ux_subscriptions_owner_grant_idempotency",
                 table: "subscriptions");
 
             migrationBuilder.DropColumn(
