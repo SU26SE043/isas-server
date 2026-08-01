@@ -67,6 +67,9 @@ namespace PaymentService.Models
                 // DB14 — audit updated_at (mirror created_at style: default now() ở DB; C# init ở entity để
                 // insert SQLite/EnsureCreated không phụ thuộc now()). Stamp tự động khi Modified (SaveChanges).
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.Audience).HasConversion<string>().HasMaxLength(8);
+                e.HasOne(x => x.Plan).WithMany()
+                    .HasForeignKey(x => x.PlanId).IsRequired(false).OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── Plan (tiered subscription catalog) ──────────────────────

@@ -13,6 +13,7 @@ namespace Isas.PaymentService.Tests;
 /// </summary>
 public class PackageValidationTests
 {
+    private static readonly Guid PlusPlanId = Guid.Parse("10000000-0000-0000-0000-000000000002");
     private static PackageService NewService(PaymentTestDb tdb) =>
         new(NullLogger<PackageService>.Instance, tdb.Db);
 
@@ -139,11 +140,24 @@ public class PackageValidationTests
             PriceVnd = 99_000,
             InterviewCredits = 0,
             DurationDays = 30,
+            PlanId = PlusPlanId,
+            Audience = PlanAudience.B2C,
         }, CancellationToken.None);
 
         var updated = await service.UpdatePackageAsync(created.Id,
             new UpdatePackageRequest { InterviewCredits = 0 }, CancellationToken.None);
 
         Assert.Equal(0, updated!.InterviewCredits);
+    }
+
+    [Fact]
+    public async Task Subscription_RequiresPlanWithMatchingAudience()
+    {
+        using var tdb = new PaymentTestDb();
+        await Assert.ThrowsAsync<ArgumentException>(() => NewService(tdb).CreatePackageAsync(new CreatePackageRequest
+        {
+            Name = "Sai audience", Type = PackageType.Subscription, PriceVnd = 99_000, DurationDays = 30,
+            PlanId = PlusPlanId, Audience = PlanAudience.B2B
+        }, CancellationToken.None));
     }
 }
