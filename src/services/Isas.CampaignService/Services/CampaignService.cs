@@ -650,6 +650,8 @@ namespace Isas.CampaignService.Services
             if (campaign.Status != CampaignStatus.Draft)
                 throw new InvalidOperationException($"Chỉ publish được campaign `Draft` (hiện: {campaign.Status}).");
 
+            await EnsureCanCreateCampaignAsync(orgId, await ResolveEntitlementAsync(orgId, ct), ct);
+
             if (campaign.Questions.Count == 0)
                 throw new InvalidOperationException("Campaign phải có ≥1 câu hỏi trước khi publish.");
 

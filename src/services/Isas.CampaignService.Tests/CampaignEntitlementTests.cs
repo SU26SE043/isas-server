@@ -38,6 +38,22 @@ public sealed class CampaignEntitlementTests
     }
 
     [Fact]
+    public async Task Starter_SecondDraftCannotBypassActiveCampaignCapWhenPublished()
+    {
+        using var tdb = new CampaignTestDb(); 
+        var org = Guid.NewGuid();
+        var first = await Service(tdb.NewContext(), Business).CreateCampaignAsync(org, org, Request(), default);
+        var second = await Service(tdb.NewContext(), Business).CreateCampaignAsync(org, org, Request(), default);
+
+        await Service(tdb.NewContext(), CampaignEntitlement.Starter).PublishCampaignAsync(org, org, first.Id, default);
+        await Assert.ThrowsAsync<EntitlementForbiddenException>(() =>
+            Service(tdb.NewContext(), CampaignEntitlement.Starter).PublishCampaignAsync(org, org, second.Id, default));
+
+        using var read = tdb.NewContext();
+        Assert.Equal(CampaignStatus.Draft, (await read.Campaigns.FindAsync(second.Id))!.Status);
+    }
+
+    [Fact]
     public async Task Business_CreateWithinCap_Succeeds_AndOverCapFails()
     {
         using var tdb = new CampaignTestDb(); var org = Guid.NewGuid();
