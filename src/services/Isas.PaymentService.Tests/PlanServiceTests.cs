@@ -56,10 +56,77 @@ public class PlanServiceTests
         Assert.Null(await t.NewContext().Plans.AsNoTracking().SingleOrDefaultAsync(p => p.Id == package.PlanId && p.IsActive));
     }
 
+    [Fact]
+    public async Task Update_DefaultPlanIdentity_IsRejected()
+    {
+        using var t = new PaymentTestDb();
+        var free = await t.Db.Plans.SingleAsync(p => p.Audience == PlanAudience.B2C && p.Code == "free");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => new PlanService(t.NewContext(), Options.Create(new TieringSettings()))
+            .UpdateAsync(free.Id, Request(free, code: "renamed-free"), default));
+    }
+
+    [Fact]
+    public async Task Deactivate_DefaultPlan_IsRejected()
+    {
+        using var t = new PaymentTestDb();
+        var starter = await t.Db.Plans.SingleAsync(p => p.Audience == PlanAudience.B2B && p.Code == "starter");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => new PlanService(t.NewContext(), Options.Create(new TieringSettings()))
+            .DeactivateAsync(starter.Id, default));
+    }
+
+    [Fact]
+    public async Task Update_ReferencedPlanIdentity_IsRejected()
+    {
+        using var t = new PaymentTestDb(); var plan = NewPlan("custom");
+        var owner = Guid.NewGuid();
+        t.Db.AddRange(plan, new CreditAccount
+        {
+            Id = Guid.NewGuid(), OwnerType = OwnerType.User, OwnerId = owner,
+            PaymentMode = PaymentMode.Prepaid, Status = CreditAccountStatus.Active, UpdatedAt = DateTime.UtcNow
+        }, new Subscription
+        {
+            Id = Guid.NewGuid(), OwnerType = OwnerType.User, OwnerId = owner, PlanId = plan.Id,
+            Audience = PlanAudience.B2C, TierCode = plan.Code, TierRank = plan.Rank,
+            InterviewFunding = plan.InterviewFunding, MonthlyQuota = plan.MonthlyQuota,
+            EntitlementSnapshot = "{}", EntitlementHash = "x", StartedAt = DateTime.UtcNow,
+            ActivatedAt = DateTime.UtcNow, ExpiresAt = DateTime.UtcNow.AddDays(30), CreatedAt = DateTime.UtcNow
+        });
+        await t.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => new PlanService(t.NewContext(), Options.Create(new TieringSettings()))
+            .UpdateAsync(plan.Id, Request(plan, code: "renamed"), default));
+    }
+
+    [Fact]
+    public async Task Update_DuplicateAudienceCode_ReturnsValidationError()
+    {
+        using var t = new PaymentTestDb(); var first = NewPlan("first"); var second = NewPlan("second");
+        t.Db.AddRange(first, second); await t.Db.SaveChangesAsync();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => new PlanService(t.NewContext(), Options.Create(new TieringSettings()))
+            .UpdateAsync(second.Id, Request(second, code: first.Code), default));
+    }
+
     private static Plan NewPlan(string code = "plus", int rank = 1) => new()
     {
         Id = Guid.NewGuid(), Audience = PlanAudience.B2C, Code = code, Name = code,
         Rank = rank, InterviewFunding = InterviewFunding.Metered, MonthlyQuota = 30,
         CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+    };
+
+    private static PlanRequest Request(Plan plan, string? code = null) => new()
+    {
+        Audience = plan.Audience, Code = code ?? plan.Code, Name = plan.Name, Rank = plan.Rank,
+        InterviewFunding = plan.InterviewFunding, MonthlyQuota = plan.MonthlyQuota,
+        AdaptiveEnabled = plan.AdaptiveEnabled, AdaptiveMaxQuestions = plan.AdaptiveMaxQuestions,
+        AdaptiveMaxFollowups = plan.AdaptiveMaxFollowups, GroundingEnabled = plan.GroundingEnabled,
+        SelfConsistencyN = plan.SelfConsistencyN, CvAnalysisIncluded = plan.CvAnalysisIncluded,
+        RepoAnalysisIncluded = plan.RepoAnalysisIncluded, RoadmapEnabled = plan.RoadmapEnabled,
+        MaxQuestionsCap = plan.MaxQuestionsCap, MaxActiveCampaigns = plan.MaxActiveCampaigns,
+        MaxCandidatesCap = plan.MaxCandidatesCap, PostpaidEligible = plan.PostpaidEligible,
+        SeatCount = plan.SeatCount, EntitlementsJson = plan.EntitlementsJson,
+        EntitlementsVersion = plan.EntitlementsVersion, IsActive = plan.IsActive
     };
 }

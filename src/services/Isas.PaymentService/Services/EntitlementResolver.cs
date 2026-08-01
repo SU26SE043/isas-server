@@ -26,7 +26,11 @@ public sealed class EntitlementResolver
 
         var audience = ownerType == OwnerType.Org ? PlanAudience.B2B : PlanAudience.B2C;
         var freeCode = audience == PlanAudience.B2B ? "starter" : "free";
-        var free = await _db.Plans.AsNoTracking().SingleAsync(p => p.Audience == audience && p.Code == freeCode, ct);
+        // The free tiers are a safety boundary on ReserveAsync's hot path. A damaged or accidentally
+        // edited catalog must degrade to the compiled entitlement, not turn every reserve into a 500.
+        var free = await _db.Plans.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Audience == audience && p.Code == freeCode, ct)
+            ?? PlanSeed.All.Single(p => p.Audience == audience && p.Code == freeCode);
         var snapshot = EntitlementSnapshot.Create(free);
         return new EntitlementSet
         {

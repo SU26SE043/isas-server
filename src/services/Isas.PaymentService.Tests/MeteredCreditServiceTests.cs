@@ -1,4 +1,5 @@
 using Isas.PaymentService.Services;
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PaymentService.Models;
@@ -7,6 +8,23 @@ namespace Isas.PaymentService.Tests;
 
 public class MeteredCreditServiceTests
 {
+    [Theory]
+    [InlineData(2026, 2, 1, 20, 2026, 1, 20)] // activated on the 20th: month day 1 is still prior period
+    [InlineData(2026, 2, 20, 20, 2026, 2, 20)]
+    [InlineData(2026, 3, 1, 28, 2026, 2, 28)] // activation on day 31 is clamped to the supported day 28
+    [InlineData(2026, 2, 1, null, 2026, 2, 1)] // legacy subscription with no anchor uses calendar month
+    public void MeteredPeriodStart_UsesSubscriptionAnchor_NotCalendarMonth(
+        int year, int month, int day, int? anchor, int expectedYear, int expectedMonth, int expectedDay)
+    {
+        var method = typeof(CreditAccountService).GetMethod("MeteredPeriodStart",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var actual = (DateTime)method.Invoke(null,
+            [new DateTime(year, month, day, 12, 0, 0, DateTimeKind.Utc),
+                anchor is null ? null : (short?)anchor.Value])!;
+
+        Assert.Equal(new DateTime(expectedYear, expectedMonth, expectedDay, 0, 0, 0, DateTimeKind.Utc), actual);
+    }
+
     private static async Task<Guid> SeedMeteredAsync(PaymentTestDb t, int quota, int credits = 0)
     {
         var owner = Guid.NewGuid(); var now = DateTime.UtcNow;

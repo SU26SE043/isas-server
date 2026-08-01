@@ -31,16 +31,34 @@ public sealed class PlanService
     public async Task<Plan?> UpdateAsync(Guid id, PlanRequest request, CancellationToken ct)
     {
         var plan = await Db.Plans.FirstOrDefaultAsync(p => p.Id == id, ct); if (plan is null) return null;
+        var changesIdentity = plan.Audience != request.Audience || !string.Equals(plan.Code, request.Code, StringComparison.Ordinal);
+        if (changesIdentity)
+        {
+            var isDefault = IsDefaultPlan(plan);
+            var isReferenced = await Db.Subscriptions.AnyAsync(s => s.PlanId == plan.Id, ct);
+            if (isDefault || isReferenced)
+                throw new ArgumentException("Cannot change the audience or code of a default or subscribed plan.");
+
+            if (await Db.Plans.AnyAsync(p => p.Id != plan.Id && p.Audience == request.Audience && p.Code == request.Code, ct))
+                throw new ArgumentException("Plan code already exists for this audience.");
+        }
+
         request.ApplyTo(plan); Validate(plan); await Db.SaveChangesAsync(ct); return plan;
     }
 
     public async Task<bool> DeactivateAsync(Guid id, CancellationToken ct)
     {
         var plan = await Db.Plans.FirstOrDefaultAsync(p => p.Id == id, ct); if (plan is null) return false;
+        if (IsDefaultPlan(plan))
+            throw new ArgumentException("Cannot deactivate a default plan.");
         plan.IsActive = false; await Db.SaveChangesAsync(ct); return true;
     }
 
     private PaymentDbContext Db => _db ?? throw new InvalidOperationException("Plan catalog requires a database.");
+
+    private static bool IsDefaultPlan(Plan plan) =>
+        (plan.Audience == PlanAudience.B2C && plan.Code == "free") ||
+        (plan.Audience == PlanAudience.B2B && plan.Code == "starter");
 
     public void Validate(Plan plan)
     {

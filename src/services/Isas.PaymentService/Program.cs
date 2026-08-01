@@ -161,6 +161,9 @@ builder.Services.AddHostedService<InterviewEventConsumer>();
 // cùng owner → sửa drift (crash giữa reserve/consume/release, bút toán lệch). Core Payment-DB thuần.
 builder.Services.AddHostedService<CreditReservationReconciler>();
 builder.Services.AddHostedService<SubscriptionMeterReconciler>();
+// T9/A3: paid subscription orders without a created entitlement are money-ambiguous. Log for manual
+// reconciliation only; never auto-grant or auto-refund (PAY-10).
+builder.Services.AddHostedService<SubscriptionSettlementReconciler>();
 // DB18 (DB4b): release reservation Reserved mà session Interview KHÔNG BAO GIỜ được tạo (crash giữa
 // reserve↔insert lúc Start). Xác minh dương qua Interview `/internal/sessions/exists`; Interview down →
 // skip vòng (KHÔNG release oan). Compensation-reconciler nhẹ (không saga).
