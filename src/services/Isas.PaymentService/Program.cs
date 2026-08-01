@@ -160,6 +160,7 @@ builder.Services.AddHostedService<InterviewEventConsumer>();
 // DB4: đối soát định kỳ credit_accounts.reserved_credits == count(reservations status=Reserved) cho
 // cùng owner → sửa drift (crash giữa reserve/consume/release, bút toán lệch). Core Payment-DB thuần.
 builder.Services.AddHostedService<CreditReservationReconciler>();
+builder.Services.AddHostedService<SubscriptionMeterReconciler>();
 // DB18 (DB4b): release reservation Reserved mà session Interview KHÔNG BAO GIỜ được tạo (crash giữa
 // reserve↔insert lúc Start). Xác minh dương qua Interview `/internal/sessions/exists`; Interview down →
 // skip vòng (KHÔNG release oan). Compensation-reconciler nhẹ (không saga).
