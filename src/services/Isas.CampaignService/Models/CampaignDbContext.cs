@@ -49,7 +49,7 @@ namespace Isas.CampaignService.Models
                     // Khớp guard code ValidateAdaptiveCaps (CampaignService.cs).
                     t.HasCheckConstraint(
                         "ck_campaigns_adaptive_caps_non_negative",
-                        "(max_follow_ups IS NULL OR max_follow_ups >= 0) AND (max_questions IS NULL OR max_questions >= 0)");
+                        "(max_follow_ups IS NULL OR max_follow_ups >= 0) AND (max_questions IS NULL OR max_questions >= 0) AND (max_deep_per_question IS NULL OR max_deep_per_question >= 0)");
                     t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
                 });
                 e.HasKey(x => x.Id);

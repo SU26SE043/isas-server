@@ -849,7 +849,10 @@ class GeminiProvider(QuestionProvider):
     async def decide_next(self, job_category: str, current_question: str, transcript: str,
                           history: list[dict], asked_count: int, follow_up_count: int,
                           max_questions: int, max_follow_ups: int,
-                          criteria: list[dict]) -> dict:
+                          criteria: list[dict],
+                          root_question: str | None = None, current_depth: int = 0,
+                          max_depth: int = 0,
+                          other_topics: list[str] | None = None) -> dict:
         """Phỏng vấn THÍCH ỨNG — quyết định hành động kế tiếp (sync, stateless, KHÔNG ghi DB).
 
         Trả về dict: { "action": str, "nextQuestion": str|None, "reason": str|None }
@@ -857,12 +860,18 @@ class GeminiProvider(QuestionProvider):
 
         temperature=0.3: bám sát câu trả lời/năng lực nhưng câu hỏi tự nhiên hơn chấm điểm
         (0.0) — thấp hơn sinh câu hỏi tự do (0.7) vì phải nhắm đúng câu trả lời + tiêu chí.
+
+        INT-17b — ``max_depth > 0`` = chế độ CHUỖI (đào sâu theo từng câu gốc). Tập action HỢP LỆ
+        giữ nguyên 4 giá trị để không phá hợp đồng với InterviewService; prompt chỉ thôi CHÀO
+        ``new_question``, còn phía .NET coi nó là "hết chuỗi" (không append).
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
         prompt = build_decide_next_prompt(
             job_category, current_question, transcript, history,
-            asked_count, follow_up_count, max_questions, max_follow_ups, criteria)
+            asked_count, follow_up_count, max_questions, max_follow_ups, criteria,
+            root_question=root_question, current_depth=current_depth,
+            max_depth=max_depth, other_topics=other_topics)
 
         response = await self._generate(
             "decide_next",

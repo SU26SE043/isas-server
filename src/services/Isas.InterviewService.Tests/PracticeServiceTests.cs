@@ -108,8 +108,115 @@ public class PracticeServiceTests
 
     // Phỏng vấn THÍCH ỨNG (B2C): Adaptive:Enabled → chỉ giữ SeedCount câu SEED (dù AI trả nhiều hơn) +
     // đóng dấu toggle/trần lên session. Phần còn lại do AnswerService sinh động theo câu trả lời.
+    //
+    // ⚠ INT-17b — ĐỔI TIỀN ĐỀ CÓ CHỦ ĐÍCH: trước đây bản test này mock overload 4 tham số (không có
+    // `count`), vì luồng cũ xin AI cả bộ rồi VỨT bớt chỉ giữ SeedCount — tức là trả tiền token cho những
+    // câu không bao giờ dùng. Nay adaptive bật thì xin ĐÚNG số câu gốc, nên phải mock overload có `count`
+    // và assert luôn SỐ CÂU GỬI ĐI (chứ không chỉ số câu giữ lại) — nếu chỉ assert số giữ lại thì lần
+    // hồi quy làm nó quay về xin thừa sẽ không test nào kêu.
     [Fact]
-    public async Task Create_AdaptiveEnabled_KeepsOnlySeedCount_AndStampsSession()
+    public async Task Create_AdaptiveEnabled_RequestsSeedCount_KeepsOnlySeedCount_AndStampsSession()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        int? requestedCount = null;
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, CancellationToken>(
+                (_, _, _, _, count, _) => requestedCount = count)
+            // AI vẫn có thể trả THỪA so với yêu cầu → `Take` phải cắt.
+            .ReturnsAsync(new List<GeneratedQuestion>
+            {
+                new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" }
+            });
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var adaptive = Options.Create(new AdaptiveOptions
+        {
+            Enabled = true, SeedCount = 1, MaxQuestions = 8, MaxFollowUps = 2, MaxDeepPerQuestion = 3
+        });
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance, adaptive);
+
+        var res = await svc.CreateSessionAsync(candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE));
+
+        // Xin AI ĐÚNG số câu gốc — không xin thừa rồi vứt.
+        Assert.Equal(1, requestedCount);
+
+        // Chỉ 1 câu SEED (dù AI trả 3), Kind=Seed.
+        Assert.Single(res.Questions);
+        Assert.Equal("Seed", res.Questions[0].Kind);
+        Assert.Equal(1, await t.Db.PracticeQuestions.CountAsync(q => q.SessionId == res.Id));
+
+        // Session đóng dấu cấu hình adaptive.
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
+        Assert.True(s.AdaptiveEnabled);
+        Assert.Equal(8, s.MaxQuestions);
+        Assert.Equal(3, s.MaxDeepPerQuestion);
+        // ⚠ ĐỔI TIỀN ĐỀ CÓ CHỦ ĐÍCH (INT-17b): trước đây assert `MaxFollowUps == 2` (đúng theo config).
+        // Nay bật chế độ chuỗi thì trần theo BUỔI bị ép về 0 — để nguyên 2 thì nó bó chặt hơn trần theo
+        // CÂU (1 gốc × 3) và hội thoại chết ở câu đào sâu thứ 2, tức là cấu hình tự mâu thuẫn.
+        // `MaxQuestions` mới là trần buổi.
+        Assert.Equal(0, s.MaxFollowUps);
+    }
+
+    // INT-17b — câu GỐC đánh số CÓ KHOẢNG TRỐNG (stride = 1 + trần đào sâu) để chuỗi của câu trước có
+    // chỗ nằm xen vào mà không đụng câu sau. Đây là thứ thay cho việc thêm field `displayOrder` + sửa FE:
+    // `MapToResponse` và FE B2B đều sắp theo `OrderNo`, nên đánh số đúng là ra đúng thứ tự hội thoại.
+    [Fact]
+    public async Task Create_ChoDoChuoi_CauGocDanhSoCoKhoangTrong()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GeneratedQuestion>
+            {
+                new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" },
+                new() { Content = "Q4" }, new() { Content = "Q5" }
+            });
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var adaptive = Options.Create(new AdaptiveOptions
+        {
+            Enabled = true, SeedCount = 5, MaxQuestions = 20, MaxFollowUps = 0, MaxDeepPerQuestion = 3
+        });
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance, adaptive);
+
+        var res = await svc.CreateSessionAsync(candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE));
+
+        var qs = await t.Db.PracticeQuestions.AsNoTracking()
+            .Where(q => q.SessionId == res.Id).OrderBy(q => q.OrderNo).ToListAsync();
+
+        // stride = 1 + 3 = 4 → chừa đúng 3 khe cho chuỗi của mỗi câu gốc.
+        Assert.Equal(new[] { 1, 5, 9, 13, 17 }, qs.Select(q => q.OrderNo).ToArray());
+        Assert.All(qs, q => Assert.Equal(0, q.Depth));
+        Assert.All(qs, q => Assert.Null(q.RootQuestionId));
+        Assert.All(qs, q => Assert.Equal(QuestionKind.Seed, q.Kind));
+    }
+
+    // INT-17b — trần đào sâu = 0 (chế độ cũ / adaptive tắt) → stride 1 ⇒ đánh số liền nhau y như trước.
+    [Fact]
+    public async Task Create_AdaptiveTat_CauGocVanDanhSoLienNhau()
     {
         using var t = new TestDb();
         var candidate = Guid.NewGuid();
@@ -127,27 +234,17 @@ public class PracticeServiceTests
             .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
 
-        var adaptive = Options.Create(new AdaptiveOptions
-        {
-            Enabled = true, SeedCount = 1, MaxQuestions = 8, MaxFollowUps = 2
-        });
         var svc = new PracticeService(
             t.Db, new Mock<IStorageService>().Object, gen.Object,
             new Mock<ISessionScoringNotifier>().Object, reservation.Object,
-            NullLogger<PracticeService>.Instance, adaptive);
+            NullLogger<PracticeService>.Instance);   // không truyền AdaptiveOptions ⇒ tắt
 
         var res = await svc.CreateSessionAsync(candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE));
 
-        // Chỉ 1 câu SEED (dù AI trả 3), Kind=Seed.
-        Assert.Single(res.Questions);
-        Assert.Equal("Seed", res.Questions[0].Kind);
-        Assert.Equal(1, await t.Db.PracticeQuestions.CountAsync(q => q.SessionId == res.Id));
-
-        // Session đóng dấu cấu hình adaptive.
-        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
-        Assert.True(s.AdaptiveEnabled);
-        Assert.Equal(8, s.MaxQuestions);
-        Assert.Equal(2, s.MaxFollowUps);
+        var qs = await t.Db.PracticeQuestions.AsNoTracking()
+            .Where(q => q.SessionId == res.Id).OrderBy(q => q.OrderNo).ToListAsync();
+        Assert.Equal(new[] { 1, 2, 3 }, qs.Select(q => q.OrderNo).ToArray());
+        Assert.Equal(0, (await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id)).MaxDeepPerQuestion);
     }
 
     // BC2 (a): reserve OK → tạo session + reserve đúng ví cá nhân (owner=User, ownerId=candidate,

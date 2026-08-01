@@ -244,6 +244,15 @@ class DecideNextRequest(BaseModel):
     maxFollowUps: int = 0               # 0 = không trần cứng
     criteria: list[DecideCriterion] = []
 
+    # INT-17b — ngữ cảnh CHUỖI đào sâu (mỗi câu gốc có chuỗi riêng, tối đa `maxDepth` tầng).
+    # ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'` sẽ NUỐT IM LẶNG
+    # field quên khai — .NET gửi mà Python không thấy, không lỗi gì, prompt chạy như chưa có tính năng
+    # (đúng lớp bug đã làm `focusCriteria` của BC14 hỏng suốt nhiều tuần).
+    rootQuestion: str | None = None     # câu GỐC của chuỗi — mỏ neo chủ đề, giữ câu đào sâu không lạc đề
+    currentDepth: int = 0               # câu vừa trả lời đang ở tầng mấy (0 = chính câu gốc)
+    maxDepth: int = 0                   # trần tầng cho MỖI câu gốc; 0 = chế độ cũ (ngân sách theo buổi)
+    otherTopics: list[str] = []         # tên các câu gốc KHÁC của buổi → đừng hỏi trùng chủ đề đã có
+
 
 class DeliveryMetrics(BaseModel):
     """F11 (FR06) — chỉ số CÁCH NÓI đo từ mốc thời gian Whisper (xem app/fluency.py).

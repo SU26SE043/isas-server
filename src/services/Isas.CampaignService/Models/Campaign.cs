@@ -26,6 +26,11 @@
         public int? MaxFollowUps { get; set; }
         // INT-17: trần TỔNG số câu (seed + thích ứng; null = mặc định Interview). Giữ độ dài so sánh được.
         public int? MaxQuestions { get; set; }
+        // INT-17b: trần số câu ĐÀO SÂU cho MỖI câu hỏi campaign. null/0 = chế độ cũ (AI chỉ thêm câu ở
+        // ĐUÔI sau khi ứng viên trả lời hết seed). > 0 = mỗi câu campaign có chuỗi đào sâu XEN KẼ ngay
+        // sau nó — vẫn công bằng vì mọi ứng viên nhận cùng bộ câu gốc và cùng trần độ sâu.
+        // ⚠ Độ dài bài nhân lên: N câu campaign × (1 + trần) — HR phải cân nhắc, xem ValidateAdaptiveCaps.
+        public int? MaxDeepPerQuestion { get; set; }
         public string? JDFileUrl { get; set; }
         public string? JDText { get; set; }
         public string? CriteriaFileUrl { get; set; }

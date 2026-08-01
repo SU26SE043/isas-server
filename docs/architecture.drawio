@@ -1,0 +1,169 @@
+<mxfile host="app.diagrams.net" modified="2026-07-15T00:00:00.000Z" agent="ISAS-system-architect" version="24.0.0" type="device">
+  <diagram id="isas-architecture" name="ISAS System Architecture">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ============ FRONTEND ============ -->
+        <mxCell id="fe_emp" value="Employer&#10;(B2B)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="200" y="40" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="fe_can" value="Candidate&#10;(B2C / ứng viên B2B)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="400" y="40" width="170" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- ============ GATEWAY ============ -->
+        <mxCell id="gw" value="Gateway (YARP)&#10;Reverse proxy /api/v1/*  (StripPrefix)&#10;gộp OpenAPI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="200" y="150" width="370" height="66" as="geometry" />
+        </mxCell>
+
+        <!-- ============ SERVICES (.NET) ============ -->
+        <mxCell id="auth" value="AuthService (.NET)&#10;JWT / refresh · Google OAuth&#10;3 role + Organization&#10;(OrgAdmin / HrMember)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="330" width="180" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="interview" value="InterviewService (.NET)&lt;br&gt;&lt;b&gt;ENGINE PHỎNG VẤN DÙNG CHUNG&lt;/b&gt;&lt;br&gt;&lt;b&gt;B2C + B2B&lt;/b&gt;  (campaign_id null = B2C)&lt;br&gt;session · câu hỏi · câu trả lời&lt;br&gt;điểm · rubric/tiêu chí · file" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#1B5E20;strokeWidth=3;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="300" y="310" width="270" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="campaign" value="CampaignService (.NET)&#10;Orchestrator B2B&#10;campaign + tiêu chí&#10;distribution · ranking · export" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="630" y="330" width="200" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="payment" value="PaymentService (.NET)&#10;credit theo chủ ví&#10;(Org B2B / User B2C)&#10;PayOS · prepaid + postpaid&#10;reserve → consume → release" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="330" width="200" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- ============ AISERVICE (Python, internal-only) ============ -->
+        <mxCell id="ai" value="AIService (Python / FastAPI)&lt;br&gt;faster-whisper · google-genai&lt;br&gt;sinh câu hỏi + worker chấm&lt;br&gt;&lt;b&gt;INTERNAL-ONLY (GEN-7)&lt;/b&gt;&lt;br&gt;&lt;b&gt;KHÔNG qua gateway · KHÔNG ghi DB&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;dashed=1;strokeWidth=2;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="320" width="250" height="130" as="geometry" />
+        </mxCell>
+
+        <!-- ============ PAYOS (external) ============ -->
+        <mxCell id="payos" value="PayOS&#10;(cổng thanh toán ngoài)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#AD1457;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="150" width="250" height="66" as="geometry" />
+        </mxCell>
+
+        <!-- ============ LEGEND ============ -->
+        <mxCell id="legend" value="&lt;b&gt;CHÚ THÍCH — LEGEND&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font color=&quot;#1565C0&quot;&gt;&lt;b&gt;━━&lt;/b&gt;&lt;/font&gt; HTTP public qua Gateway (/api/v1/*)&lt;br&gt;&lt;font color=&quot;#E65100&quot;&gt;&lt;b&gt;╍╍&lt;/b&gt;&lt;/font&gt; HTTP nội bộ /internal/* (X-Internal-Token) — KHÔNG qua gateway&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;&lt;b&gt;╍╍&lt;/b&gt;&lt;/font&gt; RabbitMQ — job chấm (scoring_pipeline_queue) + event bus (interview.events)&lt;br&gt;&lt;font color=&quot;#757575&quot;&gt;&lt;b&gt;━━&lt;/b&gt;&lt;/font&gt; Kết nối hạ tầng (DB-per-service / S3)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#616161;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;spacingRight=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1090" y="480" width="400" height="150" as="geometry" />
+        </mxCell>
+
+        <!-- ============ INFRASTRUCTURE (swimlane) ============ -->
+        <mxCell id="infra" value="Hạ tầng dùng chung — Infrastructure" style="swimlane;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#9E9E9E;startSize=30;fontStyle=1;fontSize=13;horizontal=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="670" width="1430" height="230" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pg_bg" value="PostgreSQL 18 — DB-per-service (snake_case · enum string · không FK xuyên service)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1F5FE;strokeColor=#0277BD;verticalAlign=top;dashed=1;fontSize=11;spacingTop=4;" vertex="1" parent="infra">
+          <mxGeometry x="20" y="45" width="660" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="db_auth" value="isas&#10;(AuthService)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#B3E5FC;strokeColor=#0277BD;fontSize=10;" vertex="1" parent="infra">
+          <mxGeometry x="40" y="85" width="130" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="db_int" value="isas_interview&#10;(InterviewService)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#B3E5FC;strokeColor=#0277BD;fontSize=10;" vertex="1" parent="infra">
+          <mxGeometry x="195" y="85" width="130" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="db_camp" value="isas_campaign&#10;(CampaignService)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#B3E5FC;strokeColor=#0277BD;fontSize=10;" vertex="1" parent="infra">
+          <mxGeometry x="350" y="85" width="130" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="db_pay" value="isas_payment&#10;(PaymentService)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#B3E5FC;strokeColor=#0277BD;fontSize=10;" vertex="1" parent="infra">
+          <mxGeometry x="505" y="85" width="130" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="s3" value="SeaweedFS (S3)&#10;CV / JD / audio&#10;lưu key/path (GEN-5)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#FFE0B2;strokeColor=#E65100;fontSize=10;" vertex="1" parent="infra">
+          <mxGeometry x="720" y="70" width="160" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mq" value="RabbitMQ&lt;br&gt;&lt;b&gt;scoring_pipeline_queue&lt;/b&gt; (job chấm)&lt;br&gt;exchange &lt;b&gt;interview.events&lt;/b&gt; (topic)&lt;br&gt;keys: session.scored · session.abandoned&lt;br&gt;→ campaign.ranking · payment.credit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="infra">
+          <mxGeometry x="920" y="55" width="270" height="140" as="geometry" />
+        </mxCell>
+
+        <mxCell id="redis" value="Redis&#10;(provision sẵn,&#10;CHƯA wire)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;dashed=1;fontSize=10;fontStyle=2;" vertex="1" parent="infra">
+          <mxGeometry x="1230" y="70" width="170" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- ================= EDGES: HTTP PUBLIC (blue solid) ================= -->
+        <mxCell id="e_emp_gw" value="HTTPS /api/v1/*" style="endArrow=block;html=1;strokeColor=#1565C0;strokeWidth=2;fontColor=#0D47A1;fontSize=10;" edge="1" parent="1" source="fe_emp" target="gw">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_can_gw" value="HTTPS /api/v1/*" style="endArrow=block;html=1;strokeColor=#1565C0;strokeWidth=2;fontColor=#0D47A1;fontSize=10;" edge="1" parent="1" source="fe_can" target="gw">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gw_auth" value="/api/v1/auth/**" style="endArrow=block;html=1;strokeColor=#1565C0;strokeWidth=2;fontColor=#0D47A1;fontSize=10;" edge="1" parent="1" source="gw" target="auth">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gw_int" value="/api/v1/interview/** · /files/**" style="endArrow=block;html=1;strokeColor=#1565C0;strokeWidth=2;fontColor=#0D47A1;fontSize=10;" edge="1" parent="1" source="gw" target="interview">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gw_camp" value="/api/v1/campaign/**" style="endArrow=block;html=1;strokeColor=#1565C0;strokeWidth=2;fontColor=#0D47A1;fontSize=10;" edge="1" parent="1" source="gw" target="campaign">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gw_pay" value="/api/v1/payment/**" style="endArrow=block;html=1;strokeColor=#1565C0;strokeWidth=2;fontColor=#0D47A1;fontSize=10;" edge="1" parent="1" source="gw" target="payment">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ================= EDGES: HTTP INTERNAL (orange dashed) ================= -->
+        <mxCell id="e_int_ai" value="AiService:BaseUrl&#10;sinh câu hỏi (đồng bộ)" style="endArrow=block;html=1;dashed=1;strokeColor=#E65100;strokeWidth=2;fontColor=#BF360C;fontSize=10;" edge="1" parent="1" source="interview" target="ai">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_camp_ai" value="AiService:BaseUrl&#10;suggest-criteria (từ JD)" style="endArrow=block;html=1;dashed=1;strokeColor=#E65100;strokeWidth=2;fontColor=#BF360C;fontSize=10;" edge="1" parent="1" source="campaign" target="ai">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_ai_int" value="callback /internal/answers/{id}/result&#10;(X-Internal-Token) — transcript + điểm" style="endArrow=block;html=1;dashed=1;strokeColor=#E65100;strokeWidth=2;fontColor=#BF360C;fontSize=10;exitX=0;exitY=0.75;exitDx=0;exitDy=0;" edge="1" parent="1" source="ai" target="interview">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_camp_int" value="/internal/sessions/campaign&#10;(X-Internal-Token)&#10;create-or-get session (campaign_id)" style="endArrow=block;html=1;dashed=1;strokeColor=#E65100;strokeWidth=2;fontColor=#BF360C;fontSize=10;" edge="1" parent="1" source="campaign" target="interview">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_camp_pay" value="/internal/credits/reserve|release&#10;(X-Internal-Token) — ví Org (B2B)" style="endArrow=block;html=1;dashed=1;strokeColor=#E65100;strokeWidth=2;fontColor=#BF360C;fontSize=10;" edge="1" parent="1" source="campaign" target="payment">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_int_pay" value="/internal/credits/reserve|consume&#10;(X-Internal-Token) — ví User (B2C)" style="endArrow=block;html=1;dashed=1;strokeColor=#E65100;strokeWidth=2;fontColor=#BF360C;fontSize=10;" edge="1" parent="1" source="interview" target="payment">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pay_payos" value="tạo payment-link&#10;active-polling đối soát" style="endArrow=block;html=1;dashed=1;strokeColor=#E65100;strokeWidth=2;fontColor=#BF360C;fontSize=10;" edge="1" parent="1" source="payment" target="payos">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_payos_pay" value="webhook PayOS (verify HMAC)&#10;KHÔNG qua gateway (GEN-1)" style="endArrow=block;html=1;dashed=1;strokeColor=#E65100;strokeWidth=3;fontColor=#BF360C;fontSize=10;fontStyle=1;" edge="1" parent="1" source="payos" target="payment">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ================= EDGES: RABBITMQ (green dashed) ================= -->
+        <mxCell id="e_int_mq" value="publish: job chấm (scoring_pipeline_queue)&#10;+ event interview.events" style="endArrow=block;html=1;dashed=1;dashPattern=6 4;strokeColor=#2E7D32;strokeWidth=2;fontColor=#1B5E20;fontSize=10;" edge="1" parent="1" source="interview" target="mq">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_mq_ai" value="consume scoring_pipeline_queue&#10;(worker chấm điểm)" style="endArrow=block;html=1;dashed=1;dashPattern=6 4;strokeColor=#2E7D32;strokeWidth=2;fontColor=#1B5E20;fontSize=10;" edge="1" parent="1" source="mq" target="ai">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_mq_camp" value="session.scored → campaign.ranking&#10;(upsert ranking; campaignId=null → no-op)" style="endArrow=block;html=1;dashed=1;dashPattern=6 4;strokeColor=#2E7D32;strokeWidth=2;fontColor=#1B5E20;fontSize=10;" edge="1" parent="1" source="mq" target="campaign">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_mq_pay" value="payment.credit&#10;session.scored → consume&#10;session.abandoned → release" style="endArrow=block;html=1;dashed=1;dashPattern=6 4;strokeColor=#2E7D32;strokeWidth=2;fontColor=#1B5E20;fontSize=10;" edge="1" parent="1" source="mq" target="payment">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ================= EDGES: INFRA (gray thin) ================= -->
+        <mxCell id="e_auth_db" value="EF Core" style="endArrow=open;html=1;strokeColor=#757575;strokeWidth=1;fontColor=#424242;fontSize=9;" edge="1" parent="1" source="auth" target="db_auth">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_int_db" value="EF Core" style="endArrow=open;html=1;strokeColor=#757575;strokeWidth=1;fontColor=#424242;fontSize=9;" edge="1" parent="1" source="interview" target="db_int">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_camp_db" value="EF Core" style="endArrow=open;html=1;strokeColor=#757575;strokeWidth=1;fontColor=#424242;fontSize=9;" edge="1" parent="1" source="campaign" target="db_camp">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_pay_db" value="EF Core" style="endArrow=open;html=1;strokeColor=#757575;strokeWidth=1;fontColor=#424242;fontSize=9;" edge="1" parent="1" source="payment" target="db_pay">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_int_s3" value="upload audio/CV (lưu key)" style="endArrow=open;html=1;strokeColor=#757575;strokeWidth=1;fontColor=#424242;fontSize=9;" edge="1" parent="1" source="interview" target="s3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_ai_s3" value="tải audio để transcribe" style="endArrow=open;html=1;strokeColor=#757575;strokeWidth=1;fontColor=#424242;fontSize=9;" edge="1" parent="1" source="ai" target="s3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

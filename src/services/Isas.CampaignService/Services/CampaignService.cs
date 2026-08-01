@@ -72,7 +72,7 @@ namespace Isas.CampaignService.Services
                 throw new ArgumentException("All questions must have non-empty text.");
 
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
-            ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions);   // INT-17: trần ≥ 0 nếu có
+            ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);   // INT-17: trần ≥ 0 nếu có
 
             // C11 + cap độ dài: chuẩn hoá & kiểm ngưỡng TRƯỚC khi dựng entity/ghi DB → vượt ngưỡng thì
             // 400 mà không để lại gì nửa vời.
@@ -94,6 +94,7 @@ namespace Isas.CampaignService.Services
                 GroundingEnabled = request.GroundingEnabled,
                 MaxFollowUps = request.MaxFollowUps,
                 MaxQuestions = request.MaxQuestions,
+                MaxDeepPerQuestion = request.MaxDeepPerQuestion,   // INT-17b: trần đào sâu mỗi câu
                 FaceVerifyEnabled = request.FaceVerifyEnabled,   // SEC-1: face-verify opt-in (B2B)
                 PassScorePct = request.PassScorePct,   // E5: ngưỡng pass/fail (null = HR quyết tay)
                 // C11: JD/Criteria nhập text trực tiếp → *_text set, *_file_url null (không file lúc tạo).
@@ -335,11 +336,13 @@ namespace Isas.CampaignService.Services
             if (request.GroundingEnabled.HasValue)
                 campaign.GroundingEnabled = request.GroundingEnabled.Value;
 
-            if (request.MaxFollowUps.HasValue || request.MaxQuestions.HasValue)
+            if (request.MaxFollowUps.HasValue || request.MaxQuestions.HasValue
+                || request.MaxDeepPerQuestion.HasValue)
             {
-                ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions);
+                ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);
                 if (request.MaxFollowUps.HasValue) campaign.MaxFollowUps = request.MaxFollowUps;
                 if (request.MaxQuestions.HasValue) campaign.MaxQuestions = request.MaxQuestions;
+                if (request.MaxDeepPerQuestion.HasValue) campaign.MaxDeepPerQuestion = request.MaxDeepPerQuestion;
             }
 
             // C11: cập nhật JD/Criteria dạng text → set *_text, xoá *_file_url (text ưu tiên file).
@@ -1723,12 +1726,35 @@ namespace Isas.CampaignService.Services
         /// </summary>
         private const int MaxQuestionsPerSession = 20;
 
-        private static void ValidateAdaptiveCaps(int? maxFollowUps, int? maxQuestions)
+        /// <summary>
+        /// INT-17b — trần số câu ĐÀO SÂU cho MỖI câu campaign. Độ dài bài nhân lên theo
+        /// <c>số câu campaign × (1 + trần)</c>, mà mỗi câu trả lời lại cõng thêm một lượt gọi AI ĐỒNG BỘ
+        /// ⇒ đặt trần thấp là cố ý: 3 tầng trên campaign 10 câu đã là bài 40 câu.
+        /// </summary>
+        private const int MaxDeepPerQuestionCap = 3;
+
+        /// <summary>
+        /// Trần số câu thích ứng thêm cho CẢ buổi. Trước INT-17b field này KHÔNG có trần trên nào —
+        /// HR gõ 50 là qua sạch. Vá luôn ở đây vì chế độ chuỗi làm hậu quả nặng hơn hẳn.
+        /// </summary>
+        private const int MaxFollowUpsCap = MaxQuestionsPerSession;
+
+        private static void ValidateAdaptiveCaps(int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion = null)
         {
             if (maxFollowUps is int f && f < 0)
                 throw new ArgumentException($"max_follow_ups không được âm (hiện: {f}).");
             if (maxQuestions is int q && q < 0)
                 throw new ArgumentException($"max_questions không được âm (hiện: {q}).");
+            if (maxDeepPerQuestion is int d && d < 0)
+                throw new ArgumentException($"max_deep_per_question không được âm (hiện: {d}).");
+
+            if (maxFollowUps is int mf && mf > MaxFollowUpsCap)
+                throw new ArgumentException(
+                    $"max_follow_ups tối đa {MaxFollowUpsCap} (hiện: {mf}).");
+
+            if (maxDeepPerQuestion is int md && md > MaxDeepPerQuestionCap)
+                throw new ArgumentException(
+                    $"max_deep_per_question tối đa {MaxDeepPerQuestionCap} (hiện: {md}).");
 
             // F2b — chặn trần Ở ĐÂY, nơi HR nhập, chứ không để lọt xuống lúc ứng viên bấm Start.
             // Trước đây guard chỉ chặn số âm ⇒ HR đặt max_questions=100000 qua sạch. Từ F2b có CHECK

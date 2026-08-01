@@ -45,7 +45,9 @@ public record CreateCampaignSessionRequest(
     DateTime? ExpiresAt = null,
     bool? AdaptiveEnabled = null,
     int? MaxFollowUps = null,
-    int? MaxQuestions = null
+    int? MaxQuestions = null,
+    // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ: đào sâu dồn ở đuôi buổi).
+    int? MaxDeepPerQuestion = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -64,7 +66,10 @@ public record CreateCampaignSessionInternalRequest(
     // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật toggle + trần (optional; null = tắt → luồng batch tĩnh cũ).
     bool? AdaptiveEnabled = null,
     int? MaxFollowUps = null,
-    int? MaxQuestions = null
+    int? MaxQuestions = null,
+    // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ). Field optional CUỐI record →
+    // client cũ (chưa gửi) không vỡ.
+    int? MaxDeepPerQuestion = null
 );
 public record PracticeSessionResponse(
     Guid Id,
