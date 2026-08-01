@@ -16,6 +16,8 @@ namespace PaymentService.Models
         public DbSet<Invoice> Invoices => Set<Invoice>();
         // F8 — bảng dựng lại sau khi DB15 drop bản scaffold chết; lần này có đường tiêu thụ thật.
         public DbSet<Subscription> Subscriptions => Set<Subscription>();
+        public DbSet<SubscriptionMeter> SubscriptionMeters => Set<SubscriptionMeter>();
+        public DbSet<SubscriptionEvent> SubscriptionEvents => Set<SubscriptionEvent>();
         // F22 — CHI PHÍ vận hành (token AI), KHÔNG phải tiền của người dùng: không FK/CHECK nào nối nó với
         // credit_accounts. Xem AiUsageLog để biết vì sao bảng này ở Payment mà không ở AIService (GEN-4).
         public DbSet<AiUsageLog> AiUsageLogs => Set<AiUsageLog>();
@@ -271,6 +273,8 @@ namespace PaymentService.Models
                 // của chúng vẫn chạy đúng nhánh bút toán như trước.
                 e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(ReservationFunding.Credit);
+                e.ToTable(t => t.HasCheckConstraint("ck_reservation_metered_consistency",
+                    "(funded_by = 'SubscriptionMetered' AND metered_subscription_id IS NOT NULL AND metered_period_start IS NOT NULL) OR (funded_by <> 'SubscriptionMetered' AND metered_subscription_id IS NULL AND metered_period_start IS NULL)"));
 
                 e.Property(x => x.PaymentMode).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(PaymentMode.Prepaid);
@@ -279,6 +283,7 @@ namespace PaymentService.Models
                 // DB14 — audit updated_at (stamp khi status flip Reserved→Consumed/Released). 2 flip đó dùng
                 // ExecuteUpdate (CreditAccountService) nên tự thêm .SetProperty(UpdatedAt) tại đó.
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.MeteredPeriodStart).HasColumnType("timestamp with time zone");
 
                 // idempotency: 1 reservation / session (D7)
                 e.HasIndex(x => x.SessionId).IsUnique();
@@ -447,6 +452,18 @@ namespace PaymentService.Models
                 e.Property(x => x.ExpiresAt).IsRequired();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.Audience).HasConversion<string>().HasMaxLength(8).HasDefaultValue(PlanAudience.B2C);
+                e.Property(x => x.InterviewFunding).HasConversion<string>().HasMaxLength(16).HasDefaultValue(InterviewFunding.Credit);
+                e.Property(x => x.Source).HasConversion<string>().HasMaxLength(16).HasDefaultValue(SubscriptionSource.Purchase);
+                e.Property(x => x.TierCode).HasMaxLength(64).HasDefaultValue("");
+                e.Property(x => x.EntitlementSnapshot).HasColumnType("jsonb").HasDefaultValue("{}");
+                e.Property(x => x.EntitlementHash).HasMaxLength(64).HasDefaultValue("");
+                e.Property(x => x.ActivatedAt).HasDefaultValueSql("now()");
+                e.ToTable(t =>
+                {
+                    t.HasCheckConstraint("ck_sub_audience_owner", "(audience = 'B2C' AND owner_type = 'User') OR (audience = 'B2B' AND owner_type = 'Org')");
+                    t.HasCheckConstraint("ck_sub_meter_anchor", "meter_anchor_day IS NULL OR meter_anchor_day BETWEEN 1 AND 28");
+                });
 
                 // Khoá idempotency của webhook: 1 đơn ⇒ tối đa 1 kỳ hạn. Filtered vì order_id nullable
                 // (chỗ dành cho kỳ hạn cấp tay/khuyến mãi sau này, không sinh từ đơn nào).
@@ -476,6 +493,7 @@ namespace PaymentService.Models
                  .HasForeignKey(x => x.OrderId)
                  .IsRequired(false)
                  .OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Plan).WithMany().HasForeignKey(x => x.PlanId).OnDelete(DeleteBehavior.Restrict);
 
                 // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict),
                 // đồng nhất với reservations/transactions/invoices. Hệ quả CÓ CHỦ Ý: kích hoạt thuê bao
@@ -486,6 +504,24 @@ namespace PaymentService.Models
                  .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
                  .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
                  .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<SubscriptionMeter>(e =>
+            {
+                e.ToTable("subscription_meters", t => t.HasCheckConstraint("ck_meter_nonneg", "used_count >= 0 AND reserved_count >= 0"));
+                e.HasKey(x => new { x.SubscriptionId, x.PeriodStart });
+                e.Property(x => x.PeriodStart).HasColumnType("timestamp with time zone");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.HasOne(x => x.Subscription).WithMany().HasForeignKey(x => x.SubscriptionId).OnDelete(DeleteBehavior.Restrict);
+            });
+            modelBuilder.Entity<SubscriptionEvent>(e =>
+            {
+                e.ToTable("subscription_events"); e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.EventType).HasMaxLength(32).IsRequired();
+                e.Property(x => x.Payload).HasColumnType("jsonb").HasDefaultValue("{}");
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.HasOne(x => x.Subscription).WithMany().HasForeignKey(x => x.SubscriptionId).OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── AiUsageLog (F22) ──────────────────────────────────
