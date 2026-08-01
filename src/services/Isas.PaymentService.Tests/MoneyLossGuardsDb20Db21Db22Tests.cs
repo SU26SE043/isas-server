@@ -37,6 +37,24 @@ public class MoneyLossGuardsDb20Db21Db22Tests
             IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
+        if (type == PackageType.Subscription)
+        {
+            pkg.PlanId = Guid.NewGuid();
+            pkg.Audience = PlanAudience.B2C;
+            tdb.Db.Plans.Add(new Plan
+            {
+                Id = pkg.PlanId.Value,
+                Audience = PlanAudience.B2C,
+                Code = $"db20-{pkg.Id:N}",
+                Name = "DB20 subscription tier",
+                Rank = 1,
+                InterviewFunding = InterviewFunding.Metered,
+                MonthlyQuota = 1,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            });
+        }
         tdb.Db.ProductPackages.Add(pkg);
         await tdb.Db.SaveChangesAsync();
         return pkg;

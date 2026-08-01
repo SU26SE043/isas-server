@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PaymentService.Models;
 
@@ -47,6 +50,25 @@ namespace Isas.PaymentService.Services
                 return null;
             }
 
+            // T9 — webhook luôn giữ order Paid khi catalog đã bị sửa sau checkout, nhưng tuyệt đối
+            // không cấp một tier sai audience. Snapshot chỉ được tạo từ plan active, hợp lệ lúc này.
+            var expectedAudience = ownerType == OwnerType.User ? PlanAudience.B2C : PlanAudience.B2B;
+            if (package.PlanId is not Guid planId || package.Audience is not PlanAudience packageAudience)
+            {
+                _logger?.LogError("Đơn {OrderId}: package {PackageId} thiếu plan/audience → KHÔNG kích hoạt, cần đối soát tay.",
+                    orderId, package.Id);
+                return null;
+            }
+
+            var plan = await _db.Plans.AsNoTracking()
+                .SingleOrDefaultAsync(p => p.Id == planId && p.IsActive, ct);
+            if (plan is null || packageAudience != expectedAudience || plan.Audience != expectedAudience || plan.Audience != packageAudience)
+            {
+                _logger?.LogError("Đơn {OrderId}: package {PackageId} / plan {PlanId} không hợp lệ cho {Audience} → KHÔNG kích hoạt, cần đối soát tay.",
+                    orderId, package.Id, package.PlanId, expectedAudience);
+                return null;
+            }
+
             // Idempotency (PAY-8): webhook redeliver / active-polling P3 chạy lại cùng đơn → kỳ hạn đã có.
             // UNIQUE(order_id) ở DB mới là khoá thật; check này chỉ để trả row cũ thay vì để nổ UNIQUE.
             var already = await _db.Subscriptions.AsNoTracking()
@@ -64,19 +86,22 @@ namespace Isas.PaymentService.Services
                 .MaxAsync(s => (DateTime?)s.ExpiresAt, ct);
 
             var startedAt = currentEnd is DateTime end && end > now ? end : now;
+            var snapshot = EntitlementSnapshot.Create(plan);
 
             var sub = new Subscription
             {
                 Id = Guid.NewGuid(),
                 OwnerType = ownerType,
                 OwnerId = ownerId,
-                Audience = ownerType == OwnerType.Org ? PlanAudience.B2B : PlanAudience.B2C,
-                TierCode = "legacy",
-                TierRank = 0,
-                InterviewFunding = InterviewFunding.Credit,
-                EntitlementSnapshot = "{}",
-                EntitlementsVersion = 1,
-                EntitlementHash = "",
+                PlanId = plan.Id,
+                Audience = plan.Audience,
+                TierCode = plan.Code,
+                TierRank = plan.Rank,
+                InterviewFunding = plan.InterviewFunding,
+                MonthlyQuota = plan.MonthlyQuota,
+                EntitlementSnapshot = snapshot.Json,
+                EntitlementsVersion = plan.EntitlementsVersion,
+                EntitlementHash = snapshot.Hash,
                 Source = SubscriptionSource.Purchase,
                 ActivatedAt = now,
                 PackageId = package.Id,
@@ -125,5 +150,47 @@ namespace Isas.PaymentService.Services
                     // DB14 — ExecuteUpdate không đi qua SaveChanges override → stamp tường minh.
                     .SetProperty(s => s.UpdatedAt, _ => DateTime.UtcNow), ct);
         }
+
+        private sealed record EntitlementSnapshot(
+            PlanAudience Audience,
+            string Code,
+            int Rank,
+            InterviewFunding Funding,
+            int? MonthlyQuota,
+            bool AdaptiveEnabled,
+            int? AdaptiveMaxQuestions,
+            int? AdaptiveMaxFollowups,
+            bool GroundingEnabled,
+            int SelfConsistencyN,
+            bool CvAnalysisIncluded,
+            bool RepoAnalysisIncluded,
+            bool RoadmapEnabled,
+            int? MaxActiveCampaigns,
+            int? MaxCandidatesCap,
+            int? SeatCount,
+            bool PostpaidEligible,
+            string EntitlementsJson,
+            int EntitlementsVersion)
+        {
+            internal string Json { get; private init; } = "";
+            internal string Hash { get; private init; } = "";
+
+            internal static EntitlementSnapshot Create(Plan plan)
+            {
+                var value = new EntitlementSnapshot(plan.Audience, plan.Code, plan.Rank, plan.InterviewFunding,
+                    plan.MonthlyQuota, plan.AdaptiveEnabled, plan.AdaptiveMaxQuestions, plan.AdaptiveMaxFollowups,
+                    plan.GroundingEnabled, plan.SelfConsistencyN, plan.CvAnalysisIncluded, plan.RepoAnalysisIncluded,
+                    plan.RoadmapEnabled, plan.MaxActiveCampaigns, plan.MaxCandidatesCap, plan.SeatCount,
+                    plan.PostpaidEligible, plan.EntitlementsJson, plan.EntitlementsVersion);
+                var json = JsonSerializer.Serialize(value, SnapshotJsonOptions);
+                return value with
+                {
+                    Json = json,
+                    Hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant()
+                };
+            }
+        }
+
+        private static readonly JsonSerializerOptions SnapshotJsonOptions = new(JsonSerializerDefaults.Web);
     }
 }

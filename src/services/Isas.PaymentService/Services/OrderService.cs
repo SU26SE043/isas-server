@@ -123,6 +123,19 @@ namespace Isas.PaymentService.Services
         private async Task<OrderResponse> CreateSubscriptionOrderAsync(
             OwnerType ownerType, Guid ownerId, ProductPackage package, CreateOrderRequest request, CancellationToken ct)
         {
+            // T9 — SKU subscription phải được buộc vào đúng audience của chủ ví ngay tại cửa tạo
+            // order. Không được để khách trả tiền rồi mới phát hiện catalog sai ở webhook.
+            if (package.PlanId is not Guid planId || package.Audience is not PlanAudience packageAudience)
+                throw new InvalidOperationException("Subscription package must specify a plan and audience.");
+
+            var expectedAudience = ownerType == OwnerType.User ? PlanAudience.B2C : PlanAudience.B2B;
+            var plan = await _db.Plans.AsNoTracking()
+                .SingleOrDefaultAsync(p => p.Id == planId && p.IsActive, ct);
+            if (plan is null)
+                throw new InvalidOperationException("Subscription plan is unavailable.");
+            if (packageAudience != expectedAudience || plan.Audience != expectedAudience || plan.Audience != packageAudience)
+                throw new InvalidOperationException("Subscription package audience does not match the owner.");
+
             // Gói thuê bao không có duration_days thì không bán được: không biết bán bao nhiêu ngày.
             // Chặn ở đây = 400 TRƯỚC khi tiền rời tay (cùng tinh thần DB20), thay vì để tiền vào rồi
             // không kích hoạt được kỳ hạn.
