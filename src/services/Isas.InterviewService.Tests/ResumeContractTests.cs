@@ -121,8 +121,11 @@ public class ResumeContractTests
         // GetSession: câu 1 có answer, câu 2 trống.
         var got = await BuildPractice(t.NewContext()).GetSessionAsync(candidate, created.Id);
         Assert.NotNull(got);
-        Assert.NotNull(got!.Questions[0].Answer);
-        Assert.Equal(answerId, got.Questions[0].Answer!.Id);
+        var answer = got!.Questions[0].Answer;
+        Assert.NotNull(answer);
+        Assert.Equal(answerId, answer!.Id);
+        Assert.Equal($"/api/v1/interview/practice/sessions/{created.Id}/answers/{answerId}/audio",
+            answer.AudioUrl);
         Assert.Null(got.Questions[1].Answer);
 
         // Resume (create-or-get lần 2) → CÙNG session; câu 1 GIỮ NGUYÊN answer cũ, câu 2 vẫn trống.

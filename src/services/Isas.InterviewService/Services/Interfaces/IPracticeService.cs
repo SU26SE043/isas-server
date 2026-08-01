@@ -30,6 +30,11 @@ public interface IPracticeService
     Task<PracticeSessionResponse?> GetSessionAsync(
         Guid candidateId, Guid sessionId, CancellationToken ct = default);
 
+    // Audio câu trả lời của chính candidate. Null = session/answer không tồn tại hoặc answer chưa có audio;
+    // owner khác → UnauthorizedAccessException. Không trả SeaweedFS object key ra API.
+    Task<AnswerAudioContent?> GetAnswerAudioAsync(
+        Guid candidateId, Guid sessionId, Guid answerId, CancellationToken ct = default);
+
     // DB31 — keyset-paged (mẫu DB8): cursor opaque + limit opt-in; body giữ mảng JSON,
     // next-cursor trả ở header X-Next-Cursor. cursor=null ⇒ trang đầu.
     Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(

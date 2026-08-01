@@ -149,6 +149,29 @@ public class PracticeController : ControllerBase
         }
     }
 
+    /// <summary>Phát hoặc tải bản ghi âm câu trả lời của chính candidate.</summary>
+    [HttpGet("{sessionId:guid}/answers/{answerId:guid}/audio")]
+    [ProducesResponseType(typeof(FileStreamResult), StatusCodes.Status200OK, "audio/webm")]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetAnswerAudio(
+        Guid sessionId, Guid answerId, CancellationToken ct)
+    {
+        try
+        {
+            var audio = await _practiceService.GetAnswerAudioAsync(
+                GetCandidateId(), sessionId, answerId, ct);
+            if (audio is null)
+                return NotFound(new { error = "Không tìm thấy bản ghi âm câu trả lời này." });
+
+            return File(audio.Content, audio.ContentType, enableRangeProcessing: true);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+    }
+
     /// <summary>
     /// 4. Chốt sổ và nộp bài phỏng vấn (Bắn RabbitMQ đi chấm)
     /// </summary>

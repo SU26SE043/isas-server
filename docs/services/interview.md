@@ -46,7 +46,10 @@ AnswerResponse {
   durationSec:  int
   transcript:   string?
   scores:       AnswerScoreResponse[]
+  audioUrl:     string?                 // URL owner-scoped để phát/tải audio; null khi chưa có file
 }
+
+**`GET /interview/practice/sessions/{sessionId}/answers/{answerId}/audio`** — Phát/tải audio câu trả lời của chính candidate. `AnswerResponse.audioUrl` trỏ tới route này; server xác minh chủ session từ JWT rồi stream audio, không lộ SeaweedFS object key. Không có audio/answer/session → **404**; session của người khác → **403**.
 
 AnswerScoreResponse {
   criterionId:  uuid

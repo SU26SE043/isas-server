@@ -104,8 +104,12 @@ public record AnswerResponse(
     // F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY đo từ audio (tốc độ nói / khoảng lặng / từ đệm).
     // ⚠ null = CHƯA ĐO ĐƯỢC (answer trước F11 · audio rỗng · đường degrade), KHÁC HẲN "đo ra 0":
     // FE phải hiện "chưa có dữ liệu" chứ đừng hiện "0 từ đệm" như một lời khen.
-    DeliveryMetricsDto? DeliveryMetrics = null
+    DeliveryMetricsDto? DeliveryMetrics = null,
+    // URL API owner-scoped để phát/tải bản ghi âm; không bao giờ lộ AudioObjectKey của SeaweedFS.
+    string? AudioUrl = null
 );
+
+public record AnswerAudioContent(Stream Content, string ContentType);
 
 public record AnswerScoreResponse(
     Guid CriterionId,

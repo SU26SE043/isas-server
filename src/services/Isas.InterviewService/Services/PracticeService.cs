@@ -623,6 +623,23 @@ public class PracticeService : IPracticeService
         return new KeysetPage<PracticeSessionSummary>(rows, next);
     }
 
+    public async Task<AnswerAudioContent?> GetAnswerAudioAsync(
+        Guid candidateId, Guid sessionId, Guid answerId, CancellationToken ct = default)
+    {
+        var answer = await _db.PracticeAnswers
+            .AsNoTracking()
+            .Include(a => a.Session)
+            .FirstOrDefaultAsync(a => a.Id == answerId && a.SessionId == sessionId, ct);
+
+        if (answer is null || string.IsNullOrWhiteSpace(answer.AudioObjectKey))
+            return null;
+        if (answer.Session.CandidateId != candidateId)
+            throw new UnauthorizedAccessException("Không phải buổi của bạn");
+
+        var content = await _storage.DownloadAsync(answer.AudioObjectKey, ct);
+        return new AnswerAudioContent(content, "audio/webm");
+    }
+
     // DB18 — Payment (internal) dò orphan reservation: trả TẬP CON sessionIds có row practice_sessions
     // (bất kể status). Reservation Reserved mà session KHÔNG tồn tại (crash giữa reserve↔insert lúc Start)
     // = orphan → Payment release. Distinct để không phụ thuộc caller; rỗng → rỗng (không query).
@@ -833,7 +850,7 @@ public class PracticeService : IPracticeService
             .OrderBy(q => q.OrderNo)
             .Select(q => new QuestionResponse(
                 q.Id, q.OrderNo, q.Content, q.TimeLimitSec,
-                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(a) : null,
+                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(s.Id, a) : null,
                 q.Kind.ToString(),   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion
                 q.GroundingRefs))    // RAG grounding — null (không grounding) / [] (ungrounded) / non-empty (grounded)
             .ToList();
@@ -892,7 +909,7 @@ public class PracticeService : IPracticeService
         return merged;
     }
 
-    private static AnswerResponse MapAnswer(PracticeAnswer a)
+    private static AnswerResponse MapAnswer(Guid sessionId, PracticeAnswer a)
     {
         // E10 — mỗi tiêu chí: điểm chốt = MEDIAN qua các attempt (self-consistency); reasoning/level
         // lấy từ attempt ĐẠI DIỆN (điểm gần median nhất, tie-break attempt mới nhất) để nhận xét khớp
@@ -916,7 +933,10 @@ public class PracticeService : IPracticeService
         return new AnswerResponse(
             a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview,
             a.SampleAnswer,   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
-            DeliveryMetricsMapper.Read(a));   // F11 — chỉ số trôi chảy (null khi chưa đo được)
+            DeliveryMetricsMapper.Read(a),   // F11 — chỉ số trôi chảy (null khi chưa đo được)
+            string.IsNullOrWhiteSpace(a.AudioObjectKey)
+                ? null
+                : $"/api/v1/interview/practice/sessions/{sessionId}/answers/{a.Id}/audio");
     }
 
     private async Task ConsumeQuietlyAsync(Guid sessionId, CancellationToken ct)
