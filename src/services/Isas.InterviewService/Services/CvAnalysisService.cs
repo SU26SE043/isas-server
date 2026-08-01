@@ -18,6 +18,8 @@ public class CvAnalysisService : ICvAnalysisService
     private readonly ICreditReservationClient _reservationClient;   // BC7b
     private readonly int _cvAnalysisCredits;                        // BC7b (Billing:CvAnalysisCredits)
     private readonly ILogger<CvAnalysisService> _logger;
+    private readonly IEntitlementClient? _entitlements;
+    private readonly bool _tieringEnabled;
 
     // BC7b — 0 = miễn phí (kill-switch, bỏ qua reserve/consume/release); >0 = tính phí 1 credit/lần.
     private bool Billed => _cvAnalysisCredits > 0;
@@ -28,7 +30,8 @@ public class CvAnalysisService : ICvAnalysisService
         IAiServiceCvAnalyzer analyzer,
         ICreditReservationClient reservationClient,
         IConfiguration config,
-        ILogger<CvAnalysisService> logger)
+        ILogger<CvAnalysisService> logger,
+        IEntitlementClient? entitlements = null)
     {
         _db = db;
         _storage = storage;
@@ -37,11 +40,15 @@ public class CvAnalysisService : ICvAnalysisService
         // Billing:CvAnalysisCredits (mặc định 1). Chỉ dùng indexer để không phụ thuộc Configuration.Binder.
         _cvAnalysisCredits = int.TryParse(config["Billing:CvAnalysisCredits"], out var credits) ? credits : 1;
         _logger = logger;
+        _entitlements = entitlements;
+        _tieringEnabled = bool.TryParse(config["Tiering:Enabled"], out var enabled) && enabled;
     }
 
     public async Task<CvAnalysisResponse> AnalyzeAsync(
         Guid candidateId, CvAnalysisRequest req, CancellationToken ct = default)
     {
+        if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).CvAnalysisIncluded)
+            throw new UnauthorizedAccessException("Gói hiện tại không bao gồm phân tích CV.");
         // BK6 — jobCategory BẮT BUỘC. Guard NGAY ĐẦU (trước cả đọc CV/reserve) → thiếu → 400
         // (controller map InvalidOperationException → BadRequest), KHÔNG giữ credit oan (PAY-5).
         // (HTTP thật cũng 400 sớm hơn nhờ [Required]; test gọi controller trực tiếp nên cần guard này.)

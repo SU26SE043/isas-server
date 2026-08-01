@@ -383,6 +383,8 @@ created_at               timestamptz
 ```
 > **Phỏng vấn THÍCH ỨNG (INT-17):** `practice_sessions` thêm `adaptive_enabled bool` (toggle theo buổi; tắt = luồng batch tĩnh cũ) + `max_follow_ups int`/`max_questions int` (trần; 0 = không trần cứng). Migration `AddAdaptiveInterviewColumns` (reversible; `ADD COLUMN kind DEFAULT 'Seed'` backfill an toàn; index add online-safe).
 
+> **T7 entitlement stamp:** khi `Tiering:Enabled=true`, B2C resolve đúng một lần `GET Payment /internal/entitlements?ownerType=User&ownerId=…` (internal token, timeout/non-2xx/JSON lỗi → warning + Free local), rồi đóng dấu `entitlement_source`, `tier_code`, `tier_rank`, `adaptive_enabled`, `max_questions` (≤20), `max_follow_ups`, `grounding_enabled`, `self_consistency_n`, `cv_analysis_included`, `repo_analysis_included`, `roadmap_enabled`. Session cũ (`entitlement_source=legacy`) tiếp tục dùng config cũ; session mới không đọc tier lại giữa buổi. CV/repo/roadmap là thao tác độc lập nên resolve entitlement tại thao tác và trả 403 nếu plan khóa.
+
 ### `practice_answers`
 ```
 id                        uuid          PK (= fileId audio)

@@ -8,11 +8,13 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
 
-public class RepoAnalysisService(InterviewDbContext db, IAiServiceRepoAnalyzer analyzer, IGitHubRepoFetcher fetcher, ICreditReservationClient credits, IConfiguration config) : IRepoAnalysisService
+public class RepoAnalysisService(InterviewDbContext db, IAiServiceRepoAnalyzer analyzer, IGitHubRepoFetcher fetcher, ICreditReservationClient credits, IConfiguration config, IEntitlementClient? entitlements = null) : IRepoAnalysisService
 {
     private readonly int _cost = int.TryParse(config["Billing:RepoAnalysisCredits"], out var cost) ? cost : 1;
     public async Task<RepoAnalysisResponse> AnalyzeAsync(Guid candidateId, RepoAnalysisRequest req, CancellationToken ct = default)
     {
+        if (bool.TryParse(config["Tiering:Enabled"], out var tiering) && tiering && entitlements is not null && !(await entitlements.ResolveUserAsync(candidateId, ct)).RepoAnalysisIncluded)
+            throw new UnauthorizedAccessException("Gói hiện tại không bao gồm phân tích repository.");
         if (req.JobCategory is null) throw new InvalidOperationException("jobCategory là bắt buộc.");
         if (!Uri.TryCreate(req.RepoUrl, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || (uri.Host != "github.com" && uri.Host != "www.github.com") || !string.IsNullOrEmpty(uri.UserInfo) || uri.Port != 443 && !uri.IsDefaultPort)
             throw new InvalidOperationException("repoUrl phải là URL HTTPS GitHub hợp lệ.");

@@ -22,6 +22,8 @@ public class PracticeService : IPracticeService
     private readonly IAiServiceQuestionGenerator _questionGenerator;
     private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ICreditReservationClient _reservationClient;   // BC2
+    private readonly IEntitlementClient? _entitlements;
+    private readonly bool _tieringEnabled;
     private readonly AdaptiveOptions _adaptive;   // phỏng vấn THÍCH ỨNG (B2C seed count + toggle)
     private readonly ICriterionBenchmarkService? _benchmarks;   // F14 — mốc đối chiếu radar (null = tắt)
     private readonly IKnowledgeService? _knowledge;   // RAG grounding — retrieval (null = tắt, giữ luồng cũ)
@@ -46,7 +48,8 @@ public class PracticeService : IPracticeService
         // RAG grounding — optional (default null/tắt): test cũ không truyền → không đi đường grounding
         // (câu hỏi GroundingRefs=null, hành vi trước grounding y nguyên). DI inject bản thật khi Grounding:Enabled.
         IKnowledgeService? knowledge = null,
-        IOptions<GroundingOptions>? groundingOptions = null)
+        IOptions<GroundingOptions>? groundingOptions = null,
+        IEntitlementClient? entitlements = null)
     {
         _db = db;
         _storage = storage;
@@ -57,6 +60,8 @@ public class PracticeService : IPracticeService
         _benchmarks = benchmarks;
         _knowledge = knowledge;
         _grounding = groundingOptions?.Value ?? new GroundingOptions();
+        _entitlements = entitlements;
+        _tieringEnabled = bool.TryParse(config?["Tiering:Enabled"], out var tiering) && tiering;
         _logger = logger;
         // PONR1/PONR3 — thu ở mốc Ready là thay đổi chính sách tiền. Phải opt-in tường minh;
         // thiếu/sai config = luật cũ (consume khi Scored), để không thể bật thu tiền trước khi UI
@@ -96,6 +101,9 @@ public class PracticeService : IPracticeService
 
         // F2b — số câu. Cùng lý do đặt trước reserve: 21 câu phải bị từ chối mà không trừ credit.
         var questionCount = ValidateQuestionCount(request.QuestionCount);
+        var entitlement = _tieringEnabled && _entitlements is not null
+            ? await _entitlements.ResolveUserAsync(candidateId, ct)
+            : EntitlementSnapshot.Free;
 
         // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
         // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
@@ -155,12 +163,22 @@ public class PracticeService : IPracticeService
                 CreatedAt = DateTime.UtcNow,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
-                AdaptiveEnabled = _adaptive.Enabled,
+                AdaptiveEnabled = _tieringEnabled ? entitlement.AdaptiveEnabled : _adaptive.Enabled,
                 // F2b — adaptive BẬT: trần tổng số câu lấy theo lựa chọn của ứng viên (không chọn →
                 // cấu hình). Adaptive TẮT: 0 = không trần (số câu do AIService sinh 1 lần, đã cap ở
                 // questionCount rồi). CHECK ở DB chặn 0..20 cho mọi đường ghi.
-                MaxQuestions = _adaptive.Enabled ? (questionCount ?? _adaptive.MaxQuestions) : 0,
-                MaxFollowUps = _adaptive.Enabled ? _adaptive.MaxFollowUps : 0
+                MaxQuestions = _tieringEnabled && entitlement.AdaptiveEnabled
+                    ? Math.Clamp(questionCount ?? entitlement.MaxQuestions, 0, Math.Min(20, entitlement.MaxQuestions))
+                    : _adaptive.Enabled ? (questionCount ?? _adaptive.MaxQuestions) : 0,
+                MaxFollowUps = _tieringEnabled && entitlement.AdaptiveEnabled ? entitlement.MaxFollowUps : _adaptive.Enabled ? _adaptive.MaxFollowUps : 0,
+                EntitlementSource = _tieringEnabled ? entitlement.Source : "legacy",
+                TierCode = _tieringEnabled ? entitlement.TierCode : "free",
+                TierRank = _tieringEnabled ? entitlement.TierRank : 0,
+                GroundingEnabled = _tieringEnabled ? entitlement.GroundingEnabled : _grounding.Enabled,
+                SelfConsistencyN = _tieringEnabled ? entitlement.SelfConsistencyN : 1,
+                CvAnalysisIncluded = _tieringEnabled && entitlement.CvAnalysisIncluded,
+                RepoAnalysisIncluded = _tieringEnabled && entitlement.RepoAnalysisIncluded,
+                RoadmapEnabled = _tieringEnabled && entitlement.RoadmapEnabled
             };
             _db.PracticeSessions.Add(session);
             await _db.SaveChangesAsync(ct);
@@ -174,7 +192,9 @@ public class PracticeService : IPracticeService
             List<GeneratedQuestion> generated;
             IReadOnlyList<GroundingChunk> grounding = Array.Empty<GroundingChunk>();
             IReadOnlyList<QuestionCitationDto> citations = Array.Empty<QuestionCitationDto>();
-            var grounded = _grounding.Enabled && _knowledge is not null;
+            // Rows created before T7 have source=legacy and must keep the old global rollout behaviour.
+            var grounded = (session.EntitlementSource == "legacy" ? _grounding.Enabled : session.GroundingEnabled)
+                && _knowledge is not null;
             try
             {
                 if (grounded)
@@ -222,7 +242,7 @@ public class PracticeService : IPracticeService
 
             // Phỏng vấn THÍCH ỨNG (B2C): bật → giữ SeedCount câu đầu làm SEED (phần còn lại AI sinh động
             // theo câu trả lời trong AnswerService). Tắt → giữ CẢ bộ như luồng cũ. Kind=Seed (mặc định entity).
-            var seedQuestions = _adaptive.Enabled
+            var seedQuestions = session.AdaptiveEnabled
                 ? generated.Take(Math.Max(1, _adaptive.SeedCount)).ToList()
                 : generated;
 

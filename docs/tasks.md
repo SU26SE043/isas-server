@@ -27,7 +27,7 @@
 | T4 | Resolver entitlement + free-default B2C/B2B | `dotnet test --filter Entitlement` | T3 | not_started |
 | T5 | Internal entitlement endpoint, token fail-closed | `dotnet test --filter Entitlement` | T4 | not_started |
 | T6 | Metered reserve/consume/release/reconcile, fallback credit and race tests | `dotnet test --filter Metered` | T4 | not_started |
-| T7 | Interview stamps entitlement and gates B2C features | `dotnet test Isas.InterviewService.Tests` | T5 | not_started |
+| T7 | Interview stamps entitlement and gates B2C features | `dotnet test Isas.InterviewService.Tests` | T5 | active — implementation awaiting diff review; 495 Interview tests pass |
 | T8 | Campaign gates B2B caps/features/postpaid eligibility | `dotnet test Isas.CampaignService.Tests` | T5 | not_started |
 | T9–T13 | Audience-safe ordering, upgrade/cancel, plan CRUD and admin grant | `dotnet test Isas.PaymentService.Tests` | T3–T4 | not_started |
 | VB1 | Additive DB hardening Auth/Interview/Campaign after Postgres preflight | service-specific tests + migration inspection | — | not_started |

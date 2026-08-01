@@ -337,7 +337,9 @@ public class AnswerService : IAnswerService
             // E10 — self-consistency: publish N job (attempt 1..N) cho cùng 1 answer để chấm N lần.
             //   attempt 1 → temp=0 (tái lập); 2..N → SelfConsistencyTemperature (dao động thật để đo spread).
             //   N=1 (mặc định) → đúng 1 job như cũ. Worker echo attempt_no về callback → .NET lưu theo attempt.
-            var n = Math.Max(1, _scoring.SelfConsistencyN);
+            // T7: B2C tiered sessions use their creation-time entitlement, never a later config change.
+            var n = Math.Max(1, session.CampaignId is null && session.EntitlementSource != "legacy"
+                ? session.SelfConsistencyN : _scoring.SelfConsistencyN);
             for (int attempt = 1; attempt <= n; attempt++)
             {
                 var job = new ScoringJob
@@ -537,7 +539,9 @@ public class AnswerService : IAnswerService
         // E10 — self-consistency: chỉ chốt answer khi đã đủ N attempt cho rubric_version hiện tại
         //   (đếm distinct attempt_no). Chưa đủ → giữ Scoring, chờ callback attempt kế.
         //   N=1 (mặc định) → 1 attempt là đủ → hành vi cũ.
-        var n = Math.Max(1, _scoring.SelfConsistencyN);
+        // Session is loaded above with the answer; use the stamped B2C value for the completion gate too.
+        var n = Math.Max(1, session.CampaignId is null && session.EntitlementSource != "legacy"
+            ? session.SelfConsistencyN : _scoring.SelfConsistencyN);
         var attemptsForVersion = await _db.AnswerScores.AsNoTracking()
             .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
             .Select(s => s.AttemptNo)

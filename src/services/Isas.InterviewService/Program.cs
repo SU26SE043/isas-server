@@ -116,6 +116,11 @@ builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient
     c.BaseAddress = new Uri(builder.Configuration["Payment:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(10);  // reserve nhanh (DB update), không phải LLM
 });
+builder.Services.AddHttpClient<IEntitlementClient, EntitlementClient>(c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["Payment:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(5);
+});
 
 builder.Services.AddHttpClient<IAiServiceEmbedder, AiServiceEmbedder>(c =>   // RAG grounding — /embed
 {
