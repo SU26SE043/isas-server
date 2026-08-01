@@ -44,10 +44,7 @@ public class AdaptiveInterviewTests
     {
         var d = new Mock<IAiServiceInterviewDecider>();
         d.Setup(x => x.DecideNextAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<DecideTurnDto>>(), It.IsAny<int>(), It.IsAny<int>(),
-                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<DecideCriterionDto>>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(result);
         return d;
     }
@@ -152,10 +149,7 @@ public class AdaptiveInterviewTests
         var result = await svc.UploadAnswerAsync(session.Id, q1.Id, candidate, audio, "audio/webm", 30);
 
         decider.Verify(x => x.DecideNextAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<DecideTurnDto>>(), It.IsAny<int>(), It.IsAny<int>(),
-            It.IsAny<int>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<DecideCriterionDto>>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
         Assert.Equal(2, await t.Db.PracticeQuestions.CountAsync(x => x.SessionId == session.Id));   // không thêm
         Assert.Null(result.NextQuestion);
         Assert.False(result.InterviewComplete);
@@ -209,10 +203,7 @@ public class AdaptiveInterviewTests
         var result = await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
 
         decider.Verify(x => x.DecideNextAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<DecideTurnDto>>(), It.IsAny<int>(), It.IsAny<int>(),
-            It.IsAny<int>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<DecideCriterionDto>>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
         Assert.True(result.InterviewComplete);
         Assert.Null(result.NextQuestion);
         Assert.Equal(1, await t.Db.PracticeQuestions.CountAsync(x => x.SessionId == session.Id));
@@ -232,10 +223,7 @@ public class AdaptiveInterviewTests
 
         var decider = new Mock<IAiServiceInterviewDecider>();
         decider.Setup(x => x.DecideNextAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<DecideTurnDto>>(), It.IsAny<int>(), It.IsAny<int>(),
-                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<DecideCriterionDto>>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /decide-next down"));
         var svc = BuildAdaptive(t, decider, out var publisher, out var jobs);
 
@@ -289,10 +277,7 @@ public class AdaptiveInterviewTests
 
         Assert.Equal(2, await t.Db.PracticeQuestions.AsNoTracking().CountAsync(x => x.SessionId == session.Id));
         decider.Verify(x => x.DecideNextAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<DecideTurnDto>>(), It.IsAny<int>(), It.IsAny<int>(),
-            It.IsAny<int>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<DecideCriterionDto>>(),
-            It.IsAny<CancellationToken>()), Times.Once);   // chỉ lần 1 tới frontier
+            It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()), Times.Once);   // chỉ lần 1 tới frontier
     }
 
     // ── Adaptive TẮT ở session → decider KHÔNG gọi dù có decider (regression flag) ─
@@ -314,10 +299,7 @@ public class AdaptiveInterviewTests
         var result = await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
 
         decider.Verify(x => x.DecideNextAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<DecideTurnDto>>(), It.IsAny<int>(), It.IsAny<int>(),
-            It.IsAny<int>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<DecideCriterionDto>>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
         Assert.Equal(1, await t.Db.PracticeQuestions.CountAsync(x => x.SessionId == session.Id));
         Assert.Null(result.NextQuestion);
         Assert.Null(result.NextAction);

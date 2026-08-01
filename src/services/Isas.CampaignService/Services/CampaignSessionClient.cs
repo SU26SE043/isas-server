@@ -38,6 +38,7 @@ namespace Isas.CampaignService.Services
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
+            int? maxDeepPerQuestion = null,   // INT-17b
             CancellationToken ct = default)
         {
             var payload = new
@@ -52,7 +53,9 @@ namespace Isas.CampaignService.Services
                 // INT-17 — Interview đóng dấu lên practice_sessions lúc tạo; null = tắt/mặc định.
                 adaptiveEnabled,
                 maxFollowUps,
-                maxQuestions
+                maxQuestions,
+                // INT-17b — >0 ⇒ mỗi câu campaign mọc chuỗi đào sâu xen kẽ ngay sau nó.
+                maxDeepPerQuestion
             };
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/campaign")

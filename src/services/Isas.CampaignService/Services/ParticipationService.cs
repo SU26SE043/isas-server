@@ -252,7 +252,8 @@ namespace Isas.CampaignService.Services
                 candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, campaign.ExpiresAt,
                 // INT-17: chuyển toggle + trần HR đặt trên campaign xuống Interview (campaign đã nạp đủ,
                 // không cần query thêm). Tắt (mặc định) → Interview giữ luồng batch tĩnh cũ.
-                campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, ct);
+                campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions,
+                campaign.MaxDeepPerQuestion, ct);   // INT-17b: trần đào sâu mỗi câu
 
             membership.SessionId = session.SessionId;
             if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted)

@@ -151,6 +151,12 @@ public class PracticeService : IPracticeService
         // an toàn cả khi nhánh gen-fail đã phát SessionAbandoned) TRƯỚC khi ném lại. Không đổi happy path.
         try
         {
+            // INT-17b — chế độ chuỗi đào sâu. Nguồn bật/tắt adaptive nay có thể là ENTITLEMENT (T7) chứ
+            // không chỉ `Adaptive:Enabled`, nên bám theo đúng cờ đã resolve — đọc lại `_adaptive.Enabled`
+            // ở đây sẽ khiến buổi bật adaptive bằng gói dịch vụ lại chạy chế độ cũ mà không lỗi gì.
+            var adaptiveOn = _tieringEnabled ? entitlement.AdaptiveEnabled : _adaptive.Enabled;
+            var maxDeepPerQuestion = adaptiveOn ? Math.Max(0, _adaptive.MaxDeepPerQuestion) : 0;
+
             // Tạo session, commit #1. Status set bằng C# initializer của entity.
             var session = new PracticeSession
             {
@@ -163,14 +169,24 @@ public class PracticeService : IPracticeService
                 CreatedAt = DateTime.UtcNow,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
-                AdaptiveEnabled = _tieringEnabled ? entitlement.AdaptiveEnabled : _adaptive.Enabled,
+                AdaptiveEnabled = adaptiveOn,
                 // F2b — adaptive BẬT: trần tổng số câu lấy theo lựa chọn của ứng viên (không chọn →
                 // cấu hình). Adaptive TẮT: 0 = không trần (số câu do AIService sinh 1 lần, đã cap ở
                 // questionCount rồi). CHECK ở DB chặn 0..20 cho mọi đường ghi.
                 MaxQuestions = _tieringEnabled && entitlement.AdaptiveEnabled
                     ? Math.Clamp(questionCount ?? entitlement.MaxQuestions, 0, Math.Min(20, entitlement.MaxQuestions))
                     : _adaptive.Enabled ? (questionCount ?? _adaptive.MaxQuestions) : 0,
-                MaxFollowUps = _tieringEnabled && entitlement.AdaptiveEnabled ? entitlement.MaxFollowUps : _adaptive.Enabled ? _adaptive.MaxFollowUps : 0,
+                // INT-17b — ở chế độ chuỗi, trần theo BUỔI phải để 0: để nguyên 3 thì nó bó chặt hơn trần
+                // theo CÂU (5 gốc × 3 = 15 câu sâu) và hội thoại chết ở câu đào sâu thứ 3. `MaxQuestions`
+                // mới là trần buổi. Áp cho CẢ nguồn entitlement (T7) lẫn nguồn config.
+                MaxFollowUps = maxDeepPerQuestion > 0
+                    ? 0
+                    : _tieringEnabled && entitlement.AdaptiveEnabled
+                        ? entitlement.MaxFollowUps
+                        : _adaptive.Enabled ? _adaptive.MaxFollowUps : 0,
+                // INT-17b — trần đào sâu MỖI câu gốc. 0 = chế độ frontier cũ (AnswerService rẽ nhánh theo
+                // đúng field này) ⇒ tắt adaptive cũng cho 0, hành vi y như trước.
+                MaxDeepPerQuestion = maxDeepPerQuestion,
                 EntitlementSource = _tieringEnabled ? entitlement.Source : "legacy",
                 TierCode = _tieringEnabled ? entitlement.TierCode : "free",
                 TierRank = _tieringEnabled ? entitlement.TierRank : 0,
@@ -182,6 +198,25 @@ public class PracticeService : IPracticeService
             };
             _db.PracticeSessions.Add(session);
             await _db.SaveChangesAsync(ct);
+
+            // INT-17b — số câu GỐC của buổi. Adaptive tắt → null = giữ nguyên hợp đồng cũ (số câu do
+            // ứng viên chọn / AIService mặc định, không xen vào việc chọn overload bên dưới).
+            //
+            // ⚠ `questionCount` VẪN là "tổng số câu của buổi" (F2b), KHÔNG phải số câu gốc. Đừng đổi thành
+            // `seeds × (1 + đào sâu)`: `ValidateQuestionCount` nhận 1..20 nên chọn 6 sẽ ra trần 24, vi phạm
+            // CHECK `ck_practice_sessions_max_questions_range` NGAY LÚC INSERT — tức là SAU `ReserveAsync`
+            // ⇒ đúng lỗi PAY-5 (mất tiền + reservation mồ côi) mà `ClampCampaignMaxQuestions` sinh ra để
+            // chặn, lần này trên đường B2C. Nó cũng âm thầm đổi thứ ứng viên đã mua bằng 1 credit.
+            int? seedCount = adaptiveOn
+                ? Math.Max(1, session.MaxQuestions > 0
+                    ? Math.Min(_adaptive.SeedCount, session.MaxQuestions)
+                    : _adaptive.SeedCount)
+                : null;
+
+            // Adaptive BẬT → xin AI ĐÚNG số câu gốc (trước đây xin `questionCount` rồi vứt bớt ở bước
+            // `Take` bên dưới = trả tiền token cho câu không bao giờ dùng). Adaptive TẮT → giữ nguyên
+            // `questionCount` như cũ.
+            var requestedCount = seedCount ?? questionCount;
 
             // Gọi Gemini NGOÀI transaction — không giữ DB connection lúc chờ AI.
             // Prompt tự xử 3 kịch bản: có JD ưu tiên JD; chỉ CV thì bám CV; không có
@@ -205,15 +240,16 @@ public class PracticeService : IPracticeService
                         session.JobCategory.ToString(),
                         BuildRetrievalQuery(session.JobCategory.ToString(), cvText, jdText, focusCriteria), ct);
                     var result = await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, questionCount, grounding, ct);
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, ct);
                     generated = result.Questions;
                     citations = result.Citations;
                 }
-                // Dùng overload ĐẦY ĐỦ khi có focusCriteria (BC14) HOẶC ứng viên chọn số câu (F2b);
-                // còn lại giữ nguyên overload 4 tham số của luồng thường (không đổi hợp đồng mock cũ).
-                else generated = focusCriteria is { Count: > 0 } || questionCount is not null
+                // Dùng overload ĐẦY ĐỦ khi có focusCriteria (BC14) HOẶC đã biết số câu cần xin (F2b /
+                // INT-17b); còn lại giữ nguyên overload 4 tham số của luồng thường (không đổi hợp đồng
+                // mock cũ — adaptive TẮT + không chọn số câu vẫn phải rơi vào đúng nhánh này).
+                else generated = focusCriteria is { Count: > 0 } || requestedCount is not null
                     ? await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, questionCount, ct)
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, ct)
                     : await _questionGenerator.GenerateQuestionsAsync(
                         jobCategory: session.JobCategory.ToString(),
                         cvText: cvText,            // null nếu không có
@@ -242,9 +278,10 @@ public class PracticeService : IPracticeService
 
             // Phỏng vấn THÍCH ỨNG (B2C): bật → giữ SeedCount câu đầu làm SEED (phần còn lại AI sinh động
             // theo câu trả lời trong AnswerService). Tắt → giữ CẢ bộ như luồng cũ. Kind=Seed (mặc định entity).
-            var seedQuestions = session.AdaptiveEnabled
-                ? generated.Take(Math.Max(1, _adaptive.SeedCount)).ToList()
-                : generated;
+            // Chốt phòng thủ: nay đã xin AI đúng `seedCount` nên `Take` thường là no-op, nhưng AI vẫn có
+            // thể trả THỪA (hoặc thiếu) — không cắt thì buổi có nhiều câu gốc hơn ngân sách đã đóng dấu.
+            // (`seedCount` không null ⇔ `session.AdaptiveEnabled`, và còn kẹp thêm theo `MaxQuestions`.)
+            var seedQuestions = seedCount is int sc ? generated.Take(sc).ToList() : generated;
 
             // RAG grounding — resolve citation per-câu (questionIndex → citedChunkIds → {sourceUrl,sourceTitle}
             // từ tập grounding đã cấp; GUARD drop id lạ). grounded → mỗi câu có LIST (rỗng nếu AI không cite);
@@ -253,12 +290,13 @@ public class PracticeService : IPracticeService
                 c => c.QuestionIndex, c => GroundingMapper.ResolveCitations(grounding, c.CitedChunkIds));
 
             // Lưu câu hỏi + set Ready, commit #2 (tách commit tránh concurrency).
+            var seedStride = SeedOrderStride(session.MaxDeepPerQuestion);
             var questions = seedQuestions
                 .Select((q, idx) => new PracticeQuestion
                 {
                     Id = Guid.NewGuid(),
                     SessionId = session.Id,
-                    OrderNo = idx + 1,
+                    OrderNo = idx * seedStride + 1,   // INT-17b — chừa chỗ cho chuỗi đào sâu (xem SeedOrderStride)
                     Content = q.Content,
                     TimeLimitSec = session.TimeLimitSec,   // F2 — theo lựa chọn của ứng viên
                     Kind = QuestionKind.Seed,
@@ -342,19 +380,23 @@ public class PracticeService : IPracticeService
                 CreatedAt = DateTime.UtcNow,
                 Deadline = request.ExpiresAt,   // I2: hạn chót nhận bài (B2B); null → không hard-deadline
                 // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = TOÀN BỘ campaign questions (ai cũng
-                // nhận cùng bộ, công bằng), câu thích ứng thêm ở đuôi (bounded), chấm theo cùng tiêu chí. null → tắt.
+                // nhận cùng bộ, công bằng), chấm theo cùng tiêu chí. null → tắt.
+                // INT-17b: `MaxDeepPerQuestion > 0` → mỗi câu campaign có chuỗi đào sâu XEN KẼ ngay sau nó
+                // (thay vì dồn ở đuôi buổi); vẫn công bằng vì mọi ứng viên nhận cùng bộ câu gốc và cùng trần.
                 AdaptiveEnabled = request.AdaptiveEnabled ?? false,
                 MaxQuestions = ClampCampaignMaxQuestions(request.MaxQuestions, request.CampaignId),
-                MaxFollowUps = request.MaxFollowUps ?? 0
+                MaxFollowUps = request.MaxFollowUps ?? 0,
+                MaxDeepPerQuestion = Math.Max(0, request.MaxDeepPerQuestion ?? 0)
             };
             _db.PracticeSessions.Add(session);
 
+            var seedStride = SeedOrderStride(session.MaxDeepPerQuestion);
             var questions = request.Questions
                 .Select((content, idx) => new PracticeQuestion
                 {
                     Id = Guid.NewGuid(),
                     SessionId = session.Id,
-                    OrderNo = idx + 1,
+                    OrderNo = idx * seedStride + 1,   // INT-17b — chừa chỗ cho chuỗi đào sâu
                     Content = content,
                     TimeLimitSec = DefaultTimeLimitSec,
                     Kind = QuestionKind.Seed
@@ -816,6 +858,24 @@ public class PracticeService : IPracticeService
                 $"questionCount phải nằm trong khoảng {MinQuestionCount}..{MaxQuestionCount} (đang gửi: {requested.Value}).");
         return requested.Value;
     }
+
+    /// <summary>
+    /// INT-17b — khoảng cách <c>OrderNo</c> giữa hai câu GỐC liền nhau, để chuỗi đào sâu của câu trước
+    /// có chỗ nằm xen vào mà không đụng câu sau.
+    ///
+    /// Câu gốc thứ <c>i</c> nhận <c>i × stride + 1</c> (maxDeep=3 → 1, 5, 9, 13, 17); câu đào sâu nhận
+    /// <c>OrderNo của câu cha + 1</c> (2, 3, 4 …). Sắp theo <c>OrderNo</c> là ra đúng thứ tự hội thoại.
+    ///
+    /// VÌ SAO ĐÁNH SỐ CÓ KHOẢNG TRỐNG thay vì thêm field <c>displayOrder</c>: <c>MapToResponse</c> đã
+    /// sắp theo <c>OrderNo</c>, FE B2B tự sắp lại cũng theo <c>OrderNo</c>, FE B2C dùng thẳng thứ tự
+    /// mảng BE trả — và KHÔNG màn nào hiển thị <c>OrderNo</c> ra người dùng (cả hai đánh số câu theo
+    /// chỉ số mảng). Nên cách này cho thứ tự đúng ở mọi nơi mà không phải đổi DTO lẫn FE.
+    /// Đánh số LẠI (renumber) thì không được: unique <c>(session_id, order_no)</c> là INDEX chứ không
+    /// phải constraint nên không hoãn (DEFERRABLE) được, mọi phép dịch số sẽ đụng nhau giữa chừng.
+    ///
+    /// <c>maxDeep = 0</c> (chế độ cũ) → stride 1 ⇒ câu gốc đánh 1,2,3… y như trước.
+    /// </summary>
+    private static int SeedOrderStride(int maxDeepPerQuestion) => 1 + Math.Max(0, maxDeepPerQuestion);
 
     /// <summary>
     /// F2b — kẹp trần câu thích ứng của B2B về đúng miền CHECK ở DB (0..20).

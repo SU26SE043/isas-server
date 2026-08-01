@@ -34,28 +34,26 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
         DeliveryMetricsDto? DeliveryMetrics);
 
     public async Task<DecideNextResult> DecideNextAsync(
-        string audioObjectKey,
-        string jobCategory,
-        string currentQuestion,
-        IReadOnlyList<DecideTurnDto> history,
-        int askedCount,
-        int followUpCount,
-        int maxQuestions,
-        int maxFollowUps,
-        IReadOnlyList<DecideCriterionDto> criteria,
-        CancellationToken ct = default)
+        AdaptiveDecisionRequest request, CancellationToken ct = default)
     {
         var payload = new
         {
-            jobCategory,
-            audioObjectKey,
-            currentQuestion,
-            history = history.Select(h => new { question = h.Question, answer = h.Answer, kind = h.Kind }),
-            askedCount,
-            followUpCount,
-            maxQuestions,
-            maxFollowUps,
-            criteria = criteria.Select(c => new { name = c.Name, description = c.Description })
+            jobCategory = request.JobCategory,
+            audioObjectKey = request.AudioObjectKey,
+            currentQuestion = request.CurrentQuestion,
+            history = request.History.Select(h => new { question = h.Question, answer = h.Answer, kind = h.Kind }),
+            askedCount = request.AskedCount,
+            followUpCount = request.FollowUpCount,
+            maxQuestions = request.MaxQuestions,
+            maxFollowUps = request.MaxFollowUps,
+            criteria = request.Criteria.Select(c => new { name = c.Name, description = c.Description }),
+            // INT-17b — ngữ cảnh chuỗi. ⚠ Mọi field ở đây PHẢI được khai trong `DecideNextRequest`
+            // (app/schemas.py): pydantic để `extra='ignore'` nên field quên khai bị NUỐT IM LẶNG —
+            // đúng lớp bug đã làm `focusCriteria` của BC14 hỏng mà không ai thấy.
+            rootQuestion = request.RootQuestion,
+            currentDepth = request.CurrentDepth,
+            maxDepth = request.MaxDepth,
+            otherTopics = request.OtherTopics ?? Array.Empty<string>()
         };
 
         using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/decide-next")

@@ -128,10 +128,7 @@ public class SessionTimeLimitF2Tests
         var decider = new Mock<IAiServiceInterviewDecider>();
         decider
             .Setup(x => x.DecideNextAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<DecideTurnDto>>(), It.IsAny<int>(), It.IsAny<int>(),
-                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<DecideCriterionDto>>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DecideNextResult("follow_up", "Cho ví dụ cụ thể?", "transcript", "đào sâu"));
 
         var storage = new Mock<IStorageService>();

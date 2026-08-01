@@ -307,6 +307,11 @@ async def decide_next(
             max_questions=req.maxQuestions,
             max_follow_ups=req.maxFollowUps,
             criteria=[c.model_dump() for c in req.criteria],
+            # INT-17b — ngữ cảnh chuỗi đào sâu (maxDepth = 0 ⇒ giữ nguyên hành vi cũ).
+            root_question=req.rootQuestion,
+            current_depth=req.currentDepth,
+            max_depth=req.maxDepth,
+            other_topics=req.otherTopics,
         )
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi quyết định câu hỏi kế: {ex}")

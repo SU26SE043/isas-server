@@ -17,6 +17,7 @@ public class AnswerService : IAnswerService
     private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ScoringOptions _scoring;   // E10 — self-consistency (N, ngưỡng spread, temp)
     private readonly IAiServiceInterviewDecider? _decider;   // phỏng vấn THÍCH ỨNG (null = tắt / test cũ)
+    private readonly AdaptiveOptions _adaptive;   // INT-17b — chỉ đọc trần số lần lỗi (phần còn lại đóng dấu trên session)
     private readonly ILogger<AnswerService> _logger;
 
     public AnswerService(
@@ -28,7 +29,10 @@ public class AnswerService : IAnswerService
         ILogger<AnswerService> logger,
         // Optional (default null) → mọi test dựng AnswerService cũ (6 tham số) vẫn compile + adaptive tắt;
         // DI inject bản thật khi đăng ký (AddHttpClient). Adaptive chỉ chạy khi decider != null VÀ session bật.
-        IAiServiceInterviewDecider? decider = null)
+        IAiServiceInterviewDecider? decider = null,
+        // Optional cùng lý do: null → mặc định AdaptiveOptions (trần lỗi 3). Trần/toggle của BUỔI đọc từ
+        // session (đã đóng dấu lúc tạo), không đọc lại config ở đây — buổi đang chạy không bị đổi luật giữa chừng.
+        IOptions<AdaptiveOptions>? adaptiveOptions = null)
     {
         _db = db;
         _storage = storage;
@@ -36,6 +40,7 @@ public class AnswerService : IAnswerService
         _scoringNotifier = scoringNotifier;
         _scoring = scoringOptions.Value;
         _decider = decider;
+        _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
         _logger = logger;
     }
 
@@ -171,17 +176,56 @@ public class AnswerService : IAnswerService
         if (_decider is null || !session.AdaptiveEnabled)
             return AdaptiveOutcome.None;
 
+        var perQuestionMode = session.MaxDeepPerQuestion > 0;
+
         try
         {
-            // (1) Chỉ append khi MỌI câu hiện tại của buổi đã có answer (frontier tuyến tính, đúng cho cả
-            // B2C 1-seed lẫn B2B seeds-first — độc lập thứ tự trả lời). Còn câu chưa trả lời (kể cả child
-            // đã sinh trước đó) → chưa append (⇒ re-upload câu cũ / re-upload frontier sau khi đã có child
-            // đều không sinh trùng). answer vừa được SaveChanges ở trên nên đã tính vào truy vấn này.
+            // (0) INT-17b — chống chờ chết: chế độ chuỗi gọi AI sau GẦN NHƯ MỌI câu trả lời, nên khi
+            // AIService hỏng thì mỗi lượt upload vẫn phải chờ hết timeout decider. Chạm trần lỗi →
+            // thôi gọi, degrade hẳn về luồng tĩnh (answer vẫn lưu bình thường).
+            if (perQuestionMode && _adaptive.MaxFailuresPerSession > 0)
+            {
+                // ⚠ Đọc THẲNG từ DB, KHÔNG đọc `session.AdaptiveFailures`: bộ đếm được cộng bằng
+                // `ExecuteUpdate` (atomic, không đụng change tracker) nên entity đang được theo dõi vẫn
+                // giữ giá trị cũ. Trong production mỗi request một DbContext nên đọc lại là ra đúng, nhưng
+                // nếu cùng một context xử lý nhiều lượt thì cổng này im lặng KHÔNG BAO GIỜ đóng.
+                var failures = await _db.PracticeSessions.AsNoTracking()
+                    .Where(s => s.Id == session.Id)
+                    .Select(s => s.AdaptiveFailures)
+                    .FirstOrDefaultAsync(ct);
+                if (failures >= _adaptive.MaxFailuresPerSession)
+                {
+                    _logger.LogWarning(
+                        "Adaptive: session {SessionId} đã lỗi {Failures} lần — thôi gọi decide-next (degrade tĩnh)",
+                        session.Id, failures);
+                    return AdaptiveOutcome.None;
+                }
+            }
+
+            // Số câu CHƯA có answer. `answer` vừa SaveChanges ở trên nên đã tính vào truy vấn này.
+            // Dùng cho cả hai chế độ: chế độ cũ lấy làm điều kiện frontier; chế độ chuỗi lấy để biết
+            // "hết hội thoại" có đồng nghĩa "xong buổi" hay không.
             var pendingCount = await _db.PracticeQuestions
                 .CountAsync(q => q.SessionId == session.Id
                                  && !_db.PracticeAnswers.Any(a => a.QuestionId == q.Id), ct);
-            if (pendingCount > 0)
+
+            // (1) CHẾ ĐỘ CŨ (MaxDeepPerQuestion = 0): chỉ append khi MỌI câu hiện tại đã có answer
+            // (frontier tuyến tính, độc lập thứ tự trả lời).
+            //     CHẾ ĐỘ CHUỖI (INT-17b): bỏ frontier — mỗi câu tự mọc chuỗi đào sâu của nó ngay sau khi
+            // được trả lời, nên trả lời câu nào là đào sâu câu đó. Điều kiện thay thế: chuỗi chứa câu vừa
+            // trả lời còn dưới trần độ sâu.
+            //     ⚠ Frontier cũ kiêm luôn việc chặn sinh trùng khi re-upload; bỏ nó KHÔNG hở, vì (2) khoá
+            // theo `answer.Id` mà Id đó GIỮ NGUYÊN qua re-upload (xem `answerId` ở đầu UploadAnswerAsync).
+            if (!perQuestionMode && pendingCount > 0)
                 return AdaptiveOutcome.None;
+
+            if (perQuestionMode && question.Depth >= session.MaxDeepPerQuestion)
+            {
+                // Chuỗi này hết độ sâu → chuyển sang câu gốc kế (nếu còn). KHÔNG gọi AI.
+                // Phải trả `InterviewComplete` theo pendingCount chứ không trả None: câu CUỐI CÙNG chạm
+                // trần độ sâu thì buổi đã xong thật, không báo thì ứng viên không được mời nộp bài.
+                return EndOutcome("end", pendingCount);
+            }
 
             // (2) Idempotency: answer này đã "đẻ" câu kế rồi (re-upload) → không sinh trùng (unique index backstop).
             var alreadyHasChild = await _db.PracticeQuestions
@@ -189,29 +233,55 @@ public class AnswerService : IAnswerService
             if (alreadyHasChild)
                 return AdaptiveOutcome.None;
 
-            // (3) Ngân sách — hết trần câu / trần thích ứng → kết thúc, KHÔNG gọi AI (tiết kiệm latency/cost).
+            // (3) Ngân sách buổi — hết trần câu / trần thích ứng → kết thúc, KHÔNG gọi AI (tiết kiệm latency/cost).
+            // ⚠ INT-17b: KHÔNG còn trả cứng `InterviewComplete: true`. Ở chế độ chuỗi, hết ngân sách lúc
+            // vẫn còn 3 câu gốc chưa trả lời mà báo "xong" thì hoá ra giục ứng viên nộp bài giữa chừng.
             var askedCount = await _db.PracticeQuestions.CountAsync(q => q.SessionId == session.Id, ct);
             var followUpCount = await _db.PracticeQuestions
                 .CountAsync(q => q.SessionId == session.Id && q.Kind != QuestionKind.Seed, ct);
             var budgetLeft = (session.MaxQuestions <= 0 || askedCount < session.MaxQuestions)
                              && (session.MaxFollowUps <= 0 || followUpCount < session.MaxFollowUps);
             if (!budgetLeft)
-                return new AdaptiveOutcome("end", null, InterviewComplete: true);
+                return EndOutcome("end", pendingCount);
 
             // (4) Quá hạn nhận bài (B2B) → không hỏi thêm (đối xứng SessionAbandonSweeper).
+            // Giữ `true`: deadline kết thúc buổi THẬT, không phải chỉ hết chuỗi.
             if (session.Deadline is DateTime dl && DateTime.UtcNow > dl)
                 return new AdaptiveOutcome("end", null, InterviewComplete: true);
 
             // (5) Lịch sử Q&A + tiêu chí (CÙNG nguồn scoring → follow-up bám cùng rubric, công bằng B2B).
-            var history = await BuildAdaptiveHistoryAsync(session.Id, question.Id, ct);
+            var rootQuestionId = question.RootQuestionId ?? question.Id;
+            var history = perQuestionMode
+                ? await BuildAdaptiveChainAsync(session.Id, rootQuestionId, question.Id, ct)
+                : await BuildAdaptiveHistoryAsync(session.Id, question.Id, ct);
             var criteria = (await LoadActiveCriteriaAsync(session, ct))
                 .Select(c => new DecideCriterionDto(c.Name, c.Description))
                 .ToList();
 
+            // Chế độ chuỗi: kèm câu GỐC (mỏ neo chủ đề) + tên các câu gốc KHÁC (đừng hỏi trùng).
+            string? rootQuestion = null;
+            List<string>? otherTopics = null;
+            if (perQuestionMode)
+            {
+                var seeds = await _db.PracticeQuestions.AsNoTracking()
+                    .Where(q => q.SessionId == session.Id && q.RootQuestionId == null)
+                    .OrderBy(q => q.OrderNo)
+                    .Select(q => new { q.Id, q.Content })
+                    .ToListAsync(ct);
+                rootQuestion = seeds.FirstOrDefault(s => s.Id == rootQuestionId)?.Content;
+                otherTopics = seeds.Where(s => s.Id != rootQuestionId).Select(s => s.Content).ToList();
+            }
+
             // (6) Transcribe đồng bộ + quyết định. Lỗi → nuốt ở catch ngoài → None (degrade tĩnh).
             var decision = await _decider!.DecideNextAsync(
-                answer.AudioObjectKey!, session.JobCategory.ToString(), question.Content,
-                history, askedCount, followUpCount, session.MaxQuestions, session.MaxFollowUps, criteria, ct);
+                new AdaptiveDecisionRequest(
+                    answer.AudioObjectKey!, session.JobCategory.ToString(), question.Content,
+                    history, askedCount, followUpCount, session.MaxQuestions, session.MaxFollowUps, criteria,
+                    RootQuestion: rootQuestion,
+                    CurrentDepth: question.Depth,
+                    MaxDepth: session.MaxDeepPerQuestion,
+                    OtherTopics: otherTopics),
+                ct);
 
             // (7) Lưu transcript đồng bộ lên answer (single-source; TryPublishScoringJobAsync đọc lại → job).
             //     F11 — lưu LUÔN chỉ số cách nói đo cùng lượt transcribe đó. Đây là lần đo DUY NHẤT
@@ -225,26 +295,44 @@ public class AnswerService : IAnswerService
                 await _db.SaveChangesAsync(ct);
             }
 
-            // (8) end / không có câu hỏi → mời submit (không append).
-            if (decision.Action == "end" || string.IsNullOrWhiteSpace(decision.NextQuestion))
-                return new AdaptiveOutcome(decision.Action, null, InterviewComplete: true);
+            // (8) Hết chuỗi → không append.
+            //  - `end` / câu rỗng: AI thấy chủ đề đã khai thác xong.
+            //  - `new_question` ở CHẾ ĐỘ CHUỖI cũng tính là hết chuỗi: 5 câu gốc đã phủ sẵn phạm vi, nên
+            //    một câu "đổi chủ đề" mà lại nằm trong chuỗi của câu gốc này là sai ngữ nghĩa (nó sẽ được
+            //    chấm như phần đào sâu của chủ đề khác). Vẫn nhận `new_question` là action HỢP LỆ trên dây
+            //    để không phá hợp đồng với AIService — chỉ đổi cách xử phía server.
+            // ⚠ InterviewComplete theo pendingCount, KHÔNG cứng `true`: hết chuỗi câu 1 mà còn câu 2..5
+            // chưa trả lời thì buổi chưa xong.
+            var endsChain = decision.Action == "end"
+                            || string.IsNullOrWhiteSpace(decision.NextQuestion)
+                            || (perQuestionMode && decision.Action == "new_question");
+            if (endsChain)
+                return EndOutcome(decision.Action, pendingCount);
 
-            // (9) Append 1 câu kế ở đuôi (OrderNo = max + 1), gắn GeneratedFromAnswerId (idempotency).
-            var maxOrder = await _db.PracticeQuestions
-                .Where(q => q.SessionId == session.Id)
-                .MaxAsync(q => q.OrderNo, ct);
+            // (9) Append 1 câu kế, gắn GeneratedFromAnswerId (idempotency).
+            // CHẾ ĐỘ CHUỖI: OrderNo = câu cha + 1 — chỗ này đã được `SeedOrderStride` chừa sẵn khi đánh số
+            // câu gốc (1, 5, 9, …) nên luôn rảnh, và sắp theo OrderNo là ra đúng thứ tự hội thoại xen kẽ.
+            // CHẾ ĐỘ CŨ: giữ nguyên "append ở đuôi" (max + 1).
+            var orderNo = perQuestionMode
+                ? question.OrderNo + 1
+                : await _db.PracticeQuestions
+                    .Where(q => q.SessionId == session.Id)
+                    .MaxAsync(q => q.OrderNo, ct) + 1;
             var newQuestion = new PracticeQuestion
             {
                 Id = Guid.NewGuid(),
                 SessionId = session.Id,
-                OrderNo = maxOrder + 1,
+                OrderNo = orderNo,
                 Content = decision.NextQuestion!,
                 // F2 — câu thích ứng theo ĐÚNG thời lượng ứng viên đã chọn cho buổi. Trước đây là hằng số
                 // 120 riêng ở đây, phải "đồng bộ thủ công" với seed → chọn 4 phút mà câu AI hỏi thêm vẫn
                 // 2 phút. `session` đã nằm trong scope nên đọc thẳng, không tốn query.
                 TimeLimitSec = session.TimeLimitSec,
                 Kind = MapKind(decision.Action),
-                GeneratedFromAnswerId = answer.Id
+                GeneratedFromAnswerId = answer.Id,
+                // INT-17b — nối chuỗi: sâu hơn cha 1 tầng, thừa kế câu gốc của cha.
+                Depth = question.Depth + 1,
+                RootQuestionId = perQuestionMode ? rootQuestionId : null
             };
             _db.PracticeQuestions.Add(newQuestion);
 
@@ -273,8 +361,45 @@ public class AnswerService : IAnswerService
             // Degrade về luồng tĩnh: answer đã lưu, worker sẽ transcribe async như cũ. Upload KHÔNG hỏng.
             _logger.LogWarning(ex,
                 "Adaptive decide-next lỗi cho answer {AnswerId} — bỏ qua (fallback luồng tĩnh)", answer.Id);
+
+            // INT-17b — đếm lỗi để cổng (0) ngắt hẳn sau vài lần. Best-effort: đếm lỗi mà ném thì
+            // thành nuốt luôn cả upload, nên bọc riêng.
+            if (perQuestionMode)
+            {
+                try
+                {
+                    await _db.PracticeSessions
+                        .Where(s => s.Id == session.Id)
+                        .ExecuteUpdateAsync(
+                            u => u.SetProperty(s => s.AdaptiveFailures, s => s.AdaptiveFailures + 1)
+                                  .SetProperty(s => s.UpdatedAt, DateTime.UtcNow), ct);
+                }
+                catch (Exception counterEx)
+                {
+                    _logger.LogWarning(counterEx,
+                        "Adaptive: không tăng được adaptive_failures cho session {SessionId}", session.Id);
+                }
+            }
+
             return AdaptiveOutcome.None;
         }
+    }
+
+    /// <summary>
+    /// Kết quả cho mọi nhánh "không thêm câu nữa". Buổi xong ⇔ không còn câu nào chưa trả lời.
+    ///
+    /// ⚠ CHỈ báo action ra client khi buổi THỰC SỰ xong. Ở chế độ chuỗi, "hết chuỗi" xảy ra sau mỗi câu
+    /// gốc, mà FE ánh xạ <c>end</c> thành <i>"AI đã hỏi xong — bạn có thể nộp bài."</i> ⇒ báo end lúc còn
+    /// 4 câu gốc chưa trả lời là giục ứng viên nộp bài giữa chừng (mất 1 credit cho buổi làm dở). Trả
+    /// action null → FE hiện "Đã nộp câu trả lời." rồi tự chuyển sang câu chưa trả lời kế tiếp.
+    ///
+    /// Chế độ CŨ không đổi hành vi: nhánh frontier bảo đảm <paramref name="pendingCount"/> luôn bằng 0
+    /// khi tới được các điểm return này, nên vẫn ra đúng <c>(action, null, true)</c> như trước.
+    /// </summary>
+    private static AdaptiveOutcome EndOutcome(string? action, int pendingCount)
+    {
+        var complete = pendingCount == 0;
+        return new AdaptiveOutcome(complete ? action : null, null, complete);
     }
 
     private static QuestionKind MapKind(string action) => action switch
@@ -290,6 +415,41 @@ public class AnswerService : IAnswerService
     // lượt trước đã transcribe đồng bộ → transcript đầy đủ; B2B seeds-first, các seed trước KHÔNG phải
     // frontier nên transcript có thể còn null (worker chấm async chưa xong) → prompt hiển thị "(trống)",
     // quyết định bám chủ yếu câu trả lời mới nhất (chấp nhận được — câu thích ứng B2B là phần bonus ở đuôi).
+    /// <summary>
+    /// INT-17b — lịch sử theo ĐÚNG CHUỖI đang đào sâu (câu gốc → … → câu cha), bỏ câu hiện tại.
+    ///
+    /// VÌ SAO KHÔNG GỬI CẢ BUỔI như chế độ cũ: (a) quyết định nay là "đào sâu ĐÚNG chủ đề này", lượt Q&amp;A
+    /// của 4 chủ đề khác chỉ là nhiễu mời mô hình lạc đề; (b) với 5 câu gốc thì lịch sử cả buổi lên tới
+    /// ~19 lượt mà phần lớn `answer` còn null (B2B chấm async chưa xong) → prompt phình bằng chữ "(trống)";
+    /// (c) đây là đường ĐỒNG BỘ trong request upload, vốn đã sát timeout — chuỗi giữ mỗi lượt ≤ trần độ sâu.
+    /// </summary>
+    private async Task<List<DecideTurnDto>> BuildAdaptiveChainAsync(
+        Guid sessionId, Guid rootQuestionId, Guid currentQuestionId, CancellationToken ct)
+    {
+        // Chuỗi = câu gốc (Id == root, RootQuestionId null) + mọi câu thừa kế root đó.
+        var chain = await _db.PracticeQuestions.AsNoTracking()
+            .Where(q => q.SessionId == sessionId
+                        && q.Id != currentQuestionId
+                        && (q.Id == rootQuestionId || q.RootQuestionId == rootQuestionId))
+            .OrderBy(q => q.Depth).ThenBy(q => q.OrderNo)
+            .Select(q => new { q.Id, q.Content, q.Kind })
+            .ToListAsync(ct);
+
+        if (chain.Count == 0) return [];
+
+        var chainIds = chain.Select(c => c.Id).ToList();
+        var transcripts = await _db.PracticeAnswers.AsNoTracking()
+            .Where(a => a.SessionId == sessionId && chainIds.Contains(a.QuestionId))
+            .Select(a => new { a.QuestionId, a.Transcript })
+            .ToListAsync(ct);
+        var byQuestion = transcripts.ToDictionary(x => x.QuestionId, x => x.Transcript);
+
+        return chain
+            .Select(q => new DecideTurnDto(
+                q.Content, byQuestion.GetValueOrDefault(q.Id), q.Kind.ToString()))
+            .ToList();
+    }
+
     private async Task<List<DecideTurnDto>> BuildAdaptiveHistoryAsync(
         Guid sessionId, Guid currentQuestionId, CancellationToken ct)
     {
