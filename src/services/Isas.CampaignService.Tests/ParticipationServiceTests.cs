@@ -574,7 +574,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
-        var deadline = new DateTime(2026, 8, 1, 10, 0, 0, DateTimeKind.Utc);
+        var deadline = DateTime.UtcNow.AddDays(1);
         camp.ExpiresAt = deadline;
         tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
@@ -616,7 +616,7 @@ public class ParticipationServiceTests
     {
         using var tdb = new CampaignTestDb();
         var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
-        var deadline = new DateTime(2026, 9, 15, 8, 30, 0, DateTimeKind.Utc);
+        var deadline = DateTime.UtcNow.AddDays(1);
         camp.ExpiresAt = deadline;
         tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
         await tdb.Db.SaveChangesAsync();
