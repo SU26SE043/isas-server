@@ -13,9 +13,9 @@ public sealed class EntitlementResolver
     {
         var now = DateTime.UtcNow;
         var sub = await _db.Subscriptions.AsNoTracking()
-            .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId &&
-                        s.Status == SubscriptionStatus.Active && s.ActivatedAt <= now && s.ExpiresAt > now)
-            .OrderByDescending(s => s.TierRank).ThenByDescending(s => s.ExpiresAt).ThenByDescending(s => s.Id)
+            .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId)
+            .ActiveAt(now)
+            .OrderByTierPriority()
             .FirstOrDefaultAsync(ct);
         if (sub is not null) return new EntitlementSet
         {

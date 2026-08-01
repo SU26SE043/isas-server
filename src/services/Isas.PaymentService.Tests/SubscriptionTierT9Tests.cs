@@ -146,4 +146,52 @@ public class SubscriptionTierT9Tests
     {
         public Task<long> GenerateAsync(CancellationToken ct = default) => Task.FromResult(9000L);
     }
+
+    [Fact]
+    public async Task Resolver_UpgradeSelectsHigherTierImmediately_AndScheduledDowngradeWaits()
+    {
+        using var tdb = new PaymentTestDb();
+        var owner = Guid.NewGuid(); var now = DateTime.UtcNow;
+        tdb.Db.CreditAccounts.Add(Wallet(owner, now));
+        tdb.Db.Subscriptions.AddRange(
+            Sub(owner, "plus", 1, now.AddMinutes(-1), now.AddDays(20)),
+            Sub(owner, "pro", 2, now.AddMinutes(-1), now.AddDays(30)),
+            Sub(owner, "starter", 0, now.AddDays(30), now.AddDays(60)));
+        await tdb.Db.SaveChangesAsync();
+
+        Assert.Equal("pro", (await new EntitlementResolver(tdb.NewContext()).ResolveAsync(OwnerType.User, owner)).TierCode);
+
+        await tdb.NewContext().Subscriptions.Where(s => s.TierCode == "pro")
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.ExpiresAt, now.AddSeconds(-1)));
+        Assert.Equal("plus", (await new EntitlementResolver(tdb.NewContext()).ResolveAsync(OwnerType.User, owner)).TierCode);
+    }
+
+    [Fact]
+    public async Task Resolver_SameRankUsesExpiryThenIdDeterministically()
+    {
+        using var tdb = new PaymentTestDb(); var owner = Guid.NewGuid(); var now = DateTime.UtcNow;
+        tdb.Db.CreditAccounts.Add(Wallet(owner, now));
+        var earlier = Sub(owner, "a", 1, now.AddMinutes(-1), now.AddDays(5));
+        var later = Sub(owner, "b", 1, now.AddMinutes(-1), now.AddDays(10));
+        tdb.Db.Subscriptions.AddRange(earlier, later); await tdb.Db.SaveChangesAsync();
+        Assert.Equal(later.Id, (await new EntitlementResolver(tdb.NewContext()).ResolveAsync(OwnerType.User, owner)).SubscriptionId);
+
+        await tdb.NewContext().Subscriptions.ExecuteUpdateAsync(s => s.SetProperty(x => x.ExpiresAt, now.AddDays(10)));
+        var expected = new[] { earlier.Id, later.Id }.Max();
+        Assert.Equal(expected, (await new EntitlementResolver(tdb.NewContext()).ResolveAsync(OwnerType.User, owner)).SubscriptionId);
+    }
+
+    private static Subscription Sub(Guid owner, string code, int rank, DateTime activatedAt, DateTime expiresAt) => new()
+    {
+        Id = Guid.NewGuid(), OwnerType = OwnerType.User, OwnerId = owner, Audience = PlanAudience.B2C,
+        TierCode = code, TierRank = rank, InterviewFunding = InterviewFunding.Metered, MonthlyQuota = 10,
+        EntitlementSnapshot = "{}", EntitlementHash = "x", ActivatedAt = activatedAt,
+        StartedAt = activatedAt, ExpiresAt = expiresAt, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+    };
+
+    private static CreditAccount Wallet(Guid owner, DateTime now) => new()
+    {
+        Id = Guid.NewGuid(), OwnerType = OwnerType.User, OwnerId = owner,
+        PaymentMode = PaymentMode.Prepaid, Status = CreditAccountStatus.Active, UpdatedAt = now
+    };
 }

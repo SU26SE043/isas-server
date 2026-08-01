@@ -400,6 +400,8 @@ created_at     timestamptz
 
 ### `subscriptions` ✅ **F8 (2026-07-19) — dựng LẠI, lần này cùng đường tiêu thụ thật**
 > *(Lịch sử: DB15 2026-07-17 DROP bảng + entity vì là **dead scaffold** — 0 query dùng, `SubscriptionService` là stub `NotImplementedException`. F8 tái tạo qua migration `AddSubscriptionsF8`, gắn liền chuỗi order → webhook → activate → gate ở reserve.)*
+
+**T10 — đổi tier không prorate:** không có endpoint đổi gói riêng; UI mua SKU mới qua `POST /payment/order`, webhook Paid append subscription row. Active window là `status=Active AND activated_at<=now AND expires_at>now`; effective row sắp theo `tier_rank DESC, expires_at DESC, id DESC`. Tier cao hơn hiệu lực ngay; tier thấp hơn được lịch từ lúc effective tier hiện tại hết hạn; cùng tier nối sau kỳ xa nhất của đúng tier. Reservation metered giữ snapshot subscription/meter lúc reserve, không bị đổi theo tier mới.
 ```
 id             uuid pk
 owner_type     varchar(8)    enum: Org (membership B2B) · User (Premium B2C)

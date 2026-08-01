@@ -77,15 +77,37 @@ namespace Isas.PaymentService.Services
 
             var now = DateTime.UtcNow;
 
-            // GIA HẠN: nối tiếp ngày hết hạn xa nhất đang còn hiệu lực chứ không cắt từ "bây giờ" — mua sớm
-            // để khỏi quên thì không mất phần ngày đã trả tiền. Hết hạn rồi thì kỳ mới bắt đầu từ now.
-            var currentEnd = await _db.Subscriptions
-                .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId
-                            && s.Status == SubscriptionStatus.Active
-                            && s.ExpiresAt > now)
-                .MaxAsync(s => (DateTime?)s.ExpiresAt, ct);
+            // T10: effective tier is chosen with exactly the same window/order as entitlement resolution.
+            // Higher rank starts now; lower rank is scheduled after the current effective tier. Equal tier
+            // is a renewal and extends only that tier's existing active/scheduled chain.
+            var effective = await _db.Subscriptions.AsNoTracking()
+                .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId)
+                .ActiveAt(now)
+                .OrderByTierPriority()
+                .FirstOrDefaultAsync(ct);
 
-            var startedAt = currentEnd is DateTime end && end > now ? end : now;
+            DateTime activatedAt;
+            if (effective is not null && plan.Rank < effective.TierRank)
+            {
+                activatedAt = effective.ExpiresAt;
+            }
+            else if (effective is not null && plan.Rank == effective.TierRank)
+            {
+                var chainEnd = await _db.Subscriptions.AsNoTracking()
+                    .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId
+                                && s.Status == SubscriptionStatus.Active
+                                && s.TierCode == plan.Code && s.TierRank == plan.Rank
+                                && s.ExpiresAt > now)
+                    .MaxAsync(s => (DateTime?)s.ExpiresAt, ct);
+                activatedAt = chainEnd is DateTime end && end > now ? end : now;
+            }
+            else
+            {
+                // No effective tier, or an upgrade: higher tier takes effect immediately without prorating.
+                activatedAt = now;
+            }
+
+            var startedAt = activatedAt;
             var snapshot = EntitlementSnapshot.Create(plan);
 
             var sub = new Subscription
@@ -103,7 +125,7 @@ namespace Isas.PaymentService.Services
                 EntitlementsVersion = plan.EntitlementsVersion,
                 EntitlementHash = snapshot.Hash,
                 Source = SubscriptionSource.Purchase,
-                ActivatedAt = now,
+                ActivatedAt = activatedAt,
                 PackageId = package.Id,
                 OrderId = orderId,
                 BillingCycle = CycleFor(package.DurationDays.Value),
@@ -124,19 +146,18 @@ namespace Isas.PaymentService.Services
         {
             var now = DateTime.UtcNow;
             return _db.Subscriptions.AsNoTracking()
-                .AnyAsync(s => s.OwnerType == ownerType && s.OwnerId == ownerId
-                               && s.Status == SubscriptionStatus.Active
-                               && s.ExpiresAt > now, ct);
+                .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId)
+                .ActiveAt(now)
+                .AnyAsync(ct);
         }
 
         public Task<Subscription?> GetActiveAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
         {
             var now = DateTime.UtcNow;
             return _db.Subscriptions.AsNoTracking()
-                .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId
-                            && s.Status == SubscriptionStatus.Active
-                            && s.ExpiresAt > now)
-                .OrderByDescending(s => s.ExpiresAt)
+                .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId)
+                .ActiveAt(now)
+                .OrderByTierPriority()
                 .FirstOrDefaultAsync(ct);
         }
 
