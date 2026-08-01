@@ -145,9 +145,9 @@ namespace Isas.PaymentService.Services
 
             var now = DateTime.UtcNow;
             var renewing = await _db.Subscriptions
-                .AnyAsync(s => s.OwnerType == ownerType && s.OwnerId == ownerId
-                               && s.Status == SubscriptionStatus.Active
-                               && s.ExpiresAt > now, ct);
+                .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId)
+                .ActiveAt(now)
+                .AnyAsync(ct);
 
             var (returnUrl, cancelUrl) = PayosUrlResolver.Resolve(request.ReturnUrl, request.CancelUrl, _settings.Value);
             var orderCode = await _orderCodes.GenerateAsync(ct);

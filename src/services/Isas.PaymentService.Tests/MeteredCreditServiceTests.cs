@@ -1,5 +1,6 @@
 using Isas.PaymentService.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using PaymentService.Models;
 
 namespace Isas.PaymentService.Tests;
@@ -17,7 +18,10 @@ public class MeteredCreditServiceTests
             StartedAt = now.AddMinutes(-1), ExpiresAt = now.AddDays(30), CreatedAt = now, UpdatedAt = now });
         await t.Db.SaveChangesAsync(); return owner;
     }
-    private static CreditAccountService Service(PaymentDbContext db) => new(db, entitlements: new EntitlementResolver(db));
+    private static CreditAccountService Service(PaymentDbContext db) => new(
+        db,
+        entitlements: new EntitlementResolver(db),
+        tiering: Options.Create(new TieringSettings { Enabled = true }));
 
     [Fact]
     public async Task Metered_QuotaExhausted_FallsBackToCredit()
@@ -93,5 +97,49 @@ public class MeteredCreditServiceTests
         Assert.Equal(30, await read.CreditReservations.CountAsync(r => r.FundedBy == ReservationFunding.SubscriptionMetered));
         Assert.Equal(20, await read.CreditReservations.CountAsync(r => r.FundedBy == ReservationFunding.Credit));
         var meter = await read.SubscriptionMeters.SingleAsync(); Assert.Equal(30, meter.ReservedCount); Assert.Equal(0, meter.UsedCount);
+    }
+
+    [Fact]
+    public async Task Metered_SuspendedWallet_CannotReserveQuota()
+    {
+        using var t = new PaymentTestDb(); var owner = await SeedMeteredAsync(t, 2);
+        var account = await t.Db.CreditAccounts.SingleAsync();
+        account.Status = CreditAccountStatus.Suspended;
+        await t.Db.SaveChangesAsync();
+
+        var result = await Service(t.NewContext()).ReserveAsync(OwnerType.User, owner, Guid.NewGuid());
+
+        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        using var read = t.NewContext();
+        Assert.Empty(await read.CreditReservations.ToListAsync());
+        Assert.Empty(await read.SubscriptionMeters.ToListAsync());
+    }
+
+    [Fact]
+    public async Task TieringEnabled_B2BCreditSubscription_ChargesWallet()
+    {
+        using var t = new PaymentTestDb();
+        var owner = Guid.NewGuid(); var now = DateTime.UtcNow;
+        t.Db.CreditAccounts.Add(new CreditAccount
+        {
+            Id = Guid.NewGuid(), OwnerType = OwnerType.Org, OwnerId = owner,
+            PaymentMode = PaymentMode.Prepaid, Status = CreditAccountStatus.Active,
+            RemainingCredits = 1, UpdatedAt = now
+        });
+        t.Db.Subscriptions.Add(new Subscription
+        {
+            Id = Guid.NewGuid(), OwnerType = OwnerType.Org, OwnerId = owner,
+            Audience = PlanAudience.B2B, TierCode = "business", TierRank = 1,
+            InterviewFunding = InterviewFunding.Credit, EntitlementSnapshot = "{}", EntitlementHash = "x",
+            ActivatedAt = now, StartedAt = now, ExpiresAt = now.AddDays(30), CreatedAt = now, UpdatedAt = now
+        });
+        await t.Db.SaveChangesAsync();
+
+        var result = await Service(t.NewContext()).ReserveAsync(OwnerType.Org, owner, Guid.NewGuid());
+
+        Assert.Equal(ReserveOutcome.Reserved, result.Outcome);
+        using var read = t.NewContext();
+        Assert.Equal(ReservationFunding.Credit, (await read.CreditReservations.SingleAsync()).FundedBy);
+        Assert.Equal(0, (await read.CreditAccounts.SingleAsync()).RemainingCredits);
     }
 }

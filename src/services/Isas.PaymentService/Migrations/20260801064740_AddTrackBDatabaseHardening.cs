@@ -16,6 +16,11 @@ namespace Isas.PaymentService.Migrations
                 sql: "billing_cycle IN ('Monthly', 'Annual') AND status IN ('Active', 'Expired', 'Cancelled') AND audience IN ('B2C', 'B2B') AND interview_funding IN ('Credit', 'Metered', 'Unlimited') AND source IN ('Purchase', 'AdminGrant')");
 
             migrationBuilder.AddCheckConstraint(
+                name: "ck_sub_metered_quota",
+                table: "subscriptions",
+                sql: "interview_funding <> 'Metered' OR monthly_quota IS NOT NULL AND monthly_quota > 0");
+
+            migrationBuilder.AddCheckConstraint(
                 name: "ck_product_packages_audience",
                 table: "product_packages",
                 sql: "audience IS NULL OR audience IN ('B2C', 'B2B')");
@@ -76,6 +81,10 @@ namespace Isas.PaymentService.Migrations
         {
             migrationBuilder.DropCheckConstraint(
                 name: "ck_subscriptions_enums",
+                table: "subscriptions");
+
+            migrationBuilder.DropCheckConstraint(
+                name: "ck_sub_metered_quota",
                 table: "subscriptions");
 
             migrationBuilder.DropCheckConstraint(

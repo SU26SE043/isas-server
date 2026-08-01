@@ -17,6 +17,7 @@ namespace Isas.PaymentService.Services
         private readonly BillingSettings _billing;
         private readonly ISubscriptionService? _subscriptions;
         private readonly EntitlementResolver? _entitlements;
+        private readonly TieringSettings _tiering;
 
         // DB22 — logger inject OPTIONAL (mẫu AI4 `ICampaignSessionClient`): ctor 1-tham-số đang được
         // gọi ở rất nhiều site test; thêm dependency bắt buộc sẽ phải sửa toàn bộ mà không đem lại gì.
@@ -29,13 +30,15 @@ namespace Isas.PaymentService.Services
             ILogger<CreditAccountService>? logger = null,
             IOptions<BillingSettings>? billing = null,
             ISubscriptionService? subscriptions = null,
-            EntitlementResolver? entitlements = null)
+            EntitlementResolver? entitlements = null,
+            IOptions<TieringSettings>? tiering = null)
         {
             _db = db;
             _logger = logger;
             _billing = billing?.Value ?? new BillingSettings();
             _subscriptions = subscriptions;
             _entitlements = entitlements;
+            _tiering = tiering?.Value ?? new TieringSettings();
         }
 
         /// <summary>
@@ -213,10 +216,15 @@ namespace Isas.PaymentService.Services
             // phải thu hẹp thành `... AND funded_by='Credit'` — nếu không, CreditReservationReconciler sẽ
             // đếm cả chỗ giữ của subscriber rồi bơm reserved_credits lên, phá bất biến thứ nhất. Đó đúng
             // là lớp bug DB21 (job sửa drift lại tự tạo drift), nên nó được khoá bằng test riêng.
-            var entitlement = _entitlements is null ? null : await _entitlements.ResolveAsync(ownerType, ownerId, ct);
+            // Tiering rollout phải giữ nguyên F8 khi cờ tắt. Khi cờ bật, chỉ snapshot entitlement
+            // quyết định funding: B2B Credit vẫn đi qua ví, không được biến thành unlimited.
+            var entitlement = _tiering.Enabled && _entitlements is not null
+                ? await _entitlements.ResolveAsync(ownerType, ownerId, ct)
+                : null;
             var metered = entitlement is { InterviewFunding: InterviewFunding.Metered, SubscriptionId: not null };
-            var subsidized = !metered && _subscriptions is not null
-                && await _subscriptions.HasActiveAsync(ownerType, ownerId, ct);
+            var subsidized = _tiering.Enabled
+                ? entitlement is { InterviewFunding: InterviewFunding.Unlimited, SubscriptionId: not null }
+                : _subscriptions is not null && await _subscriptions.HasActiveAsync(ownerType, ownerId, ct);
 
             // Người mua gói tháng có thể chưa từng mua credit ⇒ chưa có ví, mà FK composite trên
             // credit_reservations lại đòi ví phải tồn tại. Tạo ví rỗng ở đây (Org: 0 credit, không bút
@@ -284,6 +292,9 @@ namespace Isas.PaymentService.Services
                 rows = await _db.SubscriptionMeters
                     .Where(m => m.SubscriptionId == reservation.MeteredSubscriptionId!.Value
                              && m.PeriodStart == reservation.MeteredPeriodStart!.Value
+                             && _db.CreditAccounts.Any(a => a.OwnerType == ownerType
+                                                          && a.OwnerId == ownerId
+                                                          && a.Status == CreditAccountStatus.Active)
                              && m.UsedCount + m.ReservedCount + 1 <= entitlement!.MonthlyQuota)
                     .ExecuteUpdateAsync(s => s
                         .SetProperty(m => m.ReservedCount, m => m.ReservedCount + 1)

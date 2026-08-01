@@ -485,6 +485,7 @@ namespace PaymentService.Models
                 {
                     t.HasCheckConstraint("ck_sub_audience_owner", "(audience = 'B2C' AND owner_type = 'User') OR (audience = 'B2B' AND owner_type = 'Org')");
                     t.HasCheckConstraint("ck_sub_meter_anchor", "meter_anchor_day IS NULL OR meter_anchor_day BETWEEN 1 AND 28");
+                    t.HasCheckConstraint("ck_sub_metered_quota", "interview_funding <> 'Metered' OR monthly_quota IS NOT NULL AND monthly_quota > 0");
                     t.HasCheckConstraint("ck_subscriptions_enums", "billing_cycle IN ('Monthly', 'Annual') AND status IN ('Active', 'Expired', 'Cancelled') AND audience IN ('B2C', 'B2B') AND interview_funding IN ('Credit', 'Metered', 'Unlimited') AND source IN ('Purchase', 'AdminGrant')");
                 });
 

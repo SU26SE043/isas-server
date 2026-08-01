@@ -1234,6 +1234,8 @@ namespace Isas.PaymentService.Migrations
 
                             t.HasCheckConstraint("ck_sub_meter_anchor", "meter_anchor_day IS NULL OR meter_anchor_day BETWEEN 1 AND 28");
 
+                            t.HasCheckConstraint("ck_sub_metered_quota", "interview_funding <> 'Metered' OR monthly_quota IS NOT NULL AND monthly_quota > 0");
+
                             t.HasCheckConstraint("ck_subscriptions_enums", "billing_cycle IN ('Monthly', 'Annual') AND status IN ('Active', 'Expired', 'Cancelled') AND audience IN ('B2C', 'B2B') AND interview_funding IN ('Credit', 'Metered', 'Unlimited') AND source IN ('Purchase', 'AdminGrant')");
 
                             t.HasCheckConstraint("ck_subscriptions_period_positive", "expires_at > started_at");
