@@ -42,10 +42,10 @@ public sealed class EntitlementClient(
                     throw new JsonException("Payment entitlement response is incomplete.");
                 var features = JsonSerializer.Deserialize<Features>(body.EntitlementSnapshot, Json)
                     ?? throw new JsonException("Payment entitlement snapshot is invalid.");
-                if (features.MaxActiveCampaigns is null or < 1 || features.MaxCandidatesCap is null or < 1)
+                if (features.MaxActiveCampaigns is < 1 || features.MaxCandidatesCap is < 1)
                     throw new JsonException("Payment B2B caps are invalid.");
                 return new CampaignEntitlement(body.Source ?? "resolved", body.TierCode, body.TierRank,
-                    features.MaxActiveCampaigns.Value, features.MaxCandidatesCap.Value,
+                    features.MaxActiveCampaigns ?? int.MaxValue, features.MaxCandidatesCap ?? int.MaxValue,
                     features.AdaptiveEnabled, features.GroundingEnabled, features.PostpaidEligible);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)

@@ -27,11 +27,12 @@ public sealed class EntitlementResolver
         var audience = ownerType == OwnerType.Org ? PlanAudience.B2B : PlanAudience.B2C;
         var freeCode = audience == PlanAudience.B2B ? "starter" : "free";
         var free = await _db.Plans.AsNoTracking().SingleAsync(p => p.Audience == audience && p.Code == freeCode, ct);
+        var snapshot = EntitlementSnapshot.Create(free);
         return new EntitlementSet
         {
             Audience = audience, TierCode = free.Code, TierRank = free.Rank,
             InterviewFunding = free.InterviewFunding, MonthlyQuota = free.MonthlyQuota,
-            EntitlementSnapshot = free.EntitlementsJson
+            EntitlementSnapshot = snapshot.Json
         };
     }
 }

@@ -11,7 +11,7 @@ public sealed class EntitlementClient(HttpClient client, IConfiguration config, 
     private readonly string? _internalToken = config["Internal:Token"];
 
     private sealed record ApiResponse(string? Source, string? TierCode, int TierRank, string? EntitlementSnapshot);
-    private sealed record Features(bool AdaptiveEnabled, int MaxQuestions, int MaxFollowUps, bool GroundingEnabled,
+    private sealed record Features(bool AdaptiveEnabled, int? AdaptiveMaxQuestions, int? AdaptiveMaxFollowups, bool GroundingEnabled,
         int SelfConsistencyN, bool CvAnalysisIncluded, bool RepoAnalysisIncluded, bool RoadmapEnabled);
 
     public async Task<EntitlementSnapshot> ResolveUserAsync(Guid candidateId, CancellationToken ct = default)
@@ -33,7 +33,7 @@ public sealed class EntitlementClient(HttpClient client, IConfiguration config, 
             var features = JsonSerializer.Deserialize<Features>(body.EntitlementSnapshot, Json);
             if (features is null) throw new JsonException("Payment entitlement snapshot is invalid.");
             return new EntitlementSnapshot(body.Source ?? "resolved", body.TierCode, body.TierRank,
-                features.AdaptiveEnabled, Math.Clamp(features.MaxQuestions, 0, 20), Math.Max(0, features.MaxFollowUps),
+                features.AdaptiveEnabled, Math.Clamp(features.AdaptiveMaxQuestions ?? 10, 0, 20), Math.Max(0, features.AdaptiveMaxFollowups ?? 3),
                 features.GroundingEnabled, Math.Max(1, features.SelfConsistencyN), features.CvAnalysisIncluded,
                 features.RepoAnalysisIncluded, features.RoadmapEnabled);
         }
