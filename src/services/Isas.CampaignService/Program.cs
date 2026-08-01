@@ -66,6 +66,7 @@ builder.Services.AddHostedService<InvitationEmailConsumer>();
 builder.Services.Configure<OutboxSettings>(builder.Configuration.GetSection(OutboxSettings.SectionName));
 // DB23: hạn mặc định token magic-link khi campaign không có deadline (không để token sống vĩnh viễn).
 builder.Services.Configure<InvitationSettings>(builder.Configuration.GetSection(InvitationSettings.SectionName));
+builder.Services.Configure<TieringSettings>(builder.Configuration.GetSection(TieringSettings.SectionName));
 builder.Services.AddHostedService<OutboxDispatcher>();
 // DB28: retention — dọn outbox-row ĐÃ publish quá hạn giữ (bảng vốn phình vô hạn). Chỉ đụng row
 // published_at IS NOT NULL + quá hạn, có trần mỗi vòng; tắt bằng `Outbox:PurgeEnabled=false`.

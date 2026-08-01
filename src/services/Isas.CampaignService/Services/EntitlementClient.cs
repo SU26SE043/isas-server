@@ -2,11 +2,13 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Isas.CampaignService.Models;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 
 namespace Isas.CampaignService.Services;
 
 public sealed class EntitlementClient(
-    HttpClient client, IConfiguration config, IMemoryCache cache, ILogger<EntitlementClient> logger) : IEntitlementClient
+    HttpClient client, IConfiguration config, IMemoryCache cache, ILogger<EntitlementClient> logger,
+    IOptions<TieringSettings> tiering) : IEntitlementClient
 {
     private const string CachePrefix = "campaign-entitlement-org:";
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
@@ -15,8 +17,12 @@ public sealed class EntitlementClient(
     private sealed record Features(int? MaxActiveCampaigns, int? MaxCandidatesCap, bool AdaptiveEnabled,
         bool GroundingEnabled, bool PostpaidEligible);
 
-    public Task<CampaignEntitlement> ResolveOrgAsync(Guid orgId, CancellationToken ct = default) =>
-        cache.GetOrCreateAsync(CachePrefix + orgId, async entry =>
+    public Task<CampaignEntitlement> ResolveOrgAsync(Guid orgId, CancellationToken ct = default)
+    {
+        if (!tiering.Value.Enabled)
+            return Task.FromResult(CampaignEntitlement.Legacy);
+
+        return cache.GetOrCreateAsync(CachePrefix + orgId, async entry =>
         {
             entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(90);
             try
@@ -48,4 +54,5 @@ public sealed class EntitlementClient(
                 return CampaignEntitlement.Starter;
             }
         })!;
+    }
 }
