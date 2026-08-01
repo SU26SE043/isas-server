@@ -55,6 +55,7 @@ Order {                                 // = OrderResponse — POST /order, /inv
   ownerId:        uuid
   kind:           enum(int)             // 0=CreditPack · 1=InvoiceSettlement · 2=SubscriptionPurchase · 3=SubscriptionRenewal 🔜(phase 2)
   packageId:      uuid?
+  packageName:    string?               // tên package hiện tại; null khi đơn không gắn package
   invoiceId:      uuid?
   amountVnd:      long                  // amount_vnd bigint (long) — pack lớn/hóa đơn gộp kỳ vượt trần int
   payosOrderCode: long
@@ -116,7 +117,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/order/{id}`** ✅ — Chi tiết đơn → `Order`. Lỗi: **404** (không tồn tại **hoặc** non-owner — không lộ tồn tại; BK15).
 
-**`GET /payment/order/my-orders`** ✅ — Lịch sử đơn của **chính chủ ví** (JWT: `org_id`→Org, else `sub`→User; PAY-2/D15) → `Order[]`, mới nhất trước. *(route thật = `/order/my-orders` — `[Route("order")]`+`[HttpGet("my-orders")]`, KHÔNG phải `/my-orders`.)*
+**`GET /payment/order/my-orders`** ✅ — Lịch sử đơn của **chính chủ ví** (JWT: `org_id`→Org, else `sub`→User; PAY-2/D15) → `Order[]`, mới nhất trước. Mỗi order kèm `packageName` (tên package hiện tại; `null` nếu đơn không gắn package). *(route thật = `/order/my-orders` — `[Route("order")]`+`[HttpGet("my-orders")]`, KHÔNG phải `/my-orders`.)*
 - **Query (opt-in, backward-compat):** `?status=` lọc `OrderStatus` (numeric: 1=Pending..5=Cancelled, đẩy xuống SQL) · `?limit=` (mặc định **và** tối đa **500**) · `?cursor=` opaque keyset. **Body vẫn là mảng JSON** — client không gửi gì thì hành vi y như trước.
 - **Phân trang keyset** `(created_at DESC, id DESC)` (mẫu DB8 `Isas.Shared/Pagination`): next-cursor ở header **`X-Next-Cursor`** (vắng = hết trang); cursor rác → trang đầu (không 500). Đổi hành vi duy nhất: chủ ví có **>500 đơn** nay chỉ nhận 500 ở trang đầu.
 - *Vì sao cần:* mỗi lần bấm checkout là INSERT 1 row `orders` (ý định trả tiền, KHÔNG phải trả xong) → đơn `Pending` bỏ dở tích lại vĩnh viễn, không job nào dọn.

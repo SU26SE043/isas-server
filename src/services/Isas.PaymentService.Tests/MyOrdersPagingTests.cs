@@ -71,6 +71,44 @@ public class MyOrdersPagingTests
         Assert.Equal(new long[] { 6002, 6001, 6000 }, page.Items.Select(o => o.PayosOrderCode).ToArray());
     }
 
+    [Fact]
+    public async Task MyOrders_CoPackage_TraVeTenPackage()
+    {
+        using var tdb = new PaymentTestDb();
+        var ownerId = Guid.NewGuid();
+        var package = new ProductPackage
+        {
+            Id = Guid.NewGuid(),
+            Name = "Gói luyện phỏng vấn 10 lượt",
+            Type = PackageType.OneTime,
+            PriceVnd = 100_000,
+            InterviewCredits = 10,
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        };
+        tdb.Db.ProductPackages.Add(package);
+        tdb.Db.Orders.Add(new Order
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.User,
+            OwnerId = ownerId,
+            Kind = OrderKind.CreditPack,
+            PackageId = package.Id,
+            Status = OrderStatus.Paid,
+            AmountVnd = package.PriceVnd,
+            PayosOrderCode = 7000,
+            ExpiredAt = DateTime.UtcNow.AddMinutes(30),
+            PaidAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
+
+        var page = await NewService(tdb).GetOwnerOrdersAsync(OwnerType.User, ownerId, null, null, null);
+
+        var order = Assert.Single(page.Items);
+        Assert.Equal(package.Name, order.PackageName);
+    }
+
     // ---------- Keyset ----------
 
     [Fact]

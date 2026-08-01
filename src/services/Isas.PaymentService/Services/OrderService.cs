@@ -294,6 +294,7 @@ namespace Isas.PaymentService.Services
             var rows = await query
                 .OrderByDescending(o => o.CreatedAt)
                 .ThenByDescending(o => o.Id)
+                .Include(o => o.Package)
                 .Take(take)
                 .ToListAsync(ct);
 

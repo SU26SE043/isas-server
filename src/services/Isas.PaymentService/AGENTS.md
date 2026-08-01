@@ -62,6 +62,7 @@ Order {
   ownerId:        uuid
   kind:           enum(string)          // CreditPack · InvoiceSettlement · SubscriptionPurchase · SubscriptionRenewal 🔜(phase 2)
   packageId:      uuid?
+  packageName:    string?               // tên package hiện tại; null khi đơn không gắn package
   invoiceId:      uuid?
   subscriptionId: uuid?                 // 🔜 phase 2
   amountVnd:      long

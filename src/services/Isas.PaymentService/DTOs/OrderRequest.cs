@@ -29,6 +29,8 @@ namespace Isas.PaymentService.DTOs
             public Guid OwnerId { get; set; }
             public OrderKind Kind { get; set; }
             public Guid? PackageId { get; set; }
+            // Nullable: invoice-settlement orders and legacy rows may not have a package.
+            public string? PackageName { get; set; }
             public Guid? InvoiceId { get; set; }
             public OrderStatus Status { get; set; }
             public long AmountVnd { get; set; }   // khớp Order.AmountVnd (amount_vnd bigint — payment.md §DB)
@@ -44,6 +46,7 @@ namespace Isas.PaymentService.DTOs
                 OwnerId = order.OwnerId,
                 Kind = order.Kind,
                 PackageId = order.PackageId,
+                PackageName = order.Package?.Name,
                 InvoiceId = order.InvoiceId,
                 Status = order.Status,
                 AmountVnd = order.AmountVnd,
