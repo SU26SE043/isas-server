@@ -109,6 +109,15 @@ namespace Isas.PaymentService.Migrations
                 type: "uuid",
                 nullable: true);
 
+            // Tiering chưa từng tồn tại trên các row cũ. Giữ đúng quyền F8 đã bán và sửa audience
+            // trước khi CHECK owner/audience được áp dụng; thiếu bước này sẽ làm migration dừng với Org.
+            migrationBuilder.Sql("""
+                UPDATE subscriptions
+                SET audience = CASE WHEN owner_type = 'Org' THEN 'B2B' ELSE 'B2C' END,
+                    interview_funding = 'Unlimited'
+                WHERE plan_id IS NULL AND tier_code = '';
+                """);
+
             migrationBuilder.CreateTable(
                 name: "subscription_events",
                 columns: table => new

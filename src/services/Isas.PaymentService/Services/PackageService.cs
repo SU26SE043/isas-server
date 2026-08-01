@@ -84,6 +84,15 @@ namespace Isas.PaymentService.Services
 
             var nextPlanId = request.PlanId ?? package.PlanId;
             var nextAudience = request.Audience ?? package.Audience;
+            var changesSubscriptionBinding = package.Type == PackageType.Subscription &&
+                (nextPlanId != package.PlanId || nextAudience != package.Audience);
+            if (changesSubscriptionBinding)
+            {
+                var hasPendingOrder = await _db.Orders.AnyAsync(o => o.PackageId == package.Id && o.Status == OrderStatus.Pending, ct);
+                var hasActiveSubscription = await _db.Subscriptions.AnyAsync(s => s.PackageId == package.Id && s.Status == SubscriptionStatus.Active && s.ExpiresAt > DateTime.UtcNow, ct);
+                if (hasPendingOrder || hasActiveSubscription)
+                    throw new ArgumentException("Cannot change a subscription package plan or audience while pending orders or active subscriptions exist.");
+            }
             if (package.Type == PackageType.Subscription)
                 await ValidateAsync(package.Type, package.InterviewCredits, request.DurationDays ?? package.DurationDays,
                     nextPlanId, nextAudience, ct);

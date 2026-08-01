@@ -24,6 +24,10 @@ namespace Isas.PaymentService.Migrations
                 type: "uuid",
                 nullable: true);
 
+            // Không suy đoán tier cho SKU subscription cũ. Ngừng bán mọi SKU chưa có mapping để webhook
+            // không thể nhận tiền cho một đơn không kích hoạt được quyền thuê bao.
+            migrationBuilder.Sql("UPDATE product_packages SET is_active = false WHERE type = 'Subscription' AND plan_id IS NULL;");
+
             migrationBuilder.CreateIndex(
                 name: "ix_product_packages_plan_id",
                 table: "product_packages",
