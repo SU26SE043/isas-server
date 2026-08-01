@@ -376,6 +376,22 @@
 - **`?skill=` lọc SAU phân trang** ⇒ trang ngắn hơn `limit` vẫn còn trang sau — ngoại lệ duy nhất của hợp đồng paging, đã ghi doc.
 - **Điểm 0–34 với audio `say`** — transcript rác, cơ chế chấm đúng (E11 trích được "hoàn toàn lạc đề").
 
+## S11 — Gói phân tầng (Tiered Subscription) · branch `fix/bugs` / PR #124
+
+> Mở rộng **F8** (thuê bao nhị phân) thành **tier có entitlement**. Chốt sản phẩm: **cả B2C và B2B**, hai catalog tách bằng `plans.audience` (+ CHECK `ck_sub_audience_owner` ⇒ tường ở tầng DB) · **KHÔNG gói nào unlimited** (B2C Plus/Pro = quota tháng *metered*; B2B = feature + trần campaign/ứng viên/seats, phỏng vấn **vẫn** org-credit/postpaid) · **coexist** credit pack · kỳ quota **neo `meter_anchor_day`** · upgrade giữa kỳ nhận quota tươi (ToS: không carry-over/prorate).
+> **`Tiering:Enabled` mặc định `false`** — migration đã apply prod nhưng hành vi tier **chưa bật**.
+
+| ID | Việc | Lệnh xác minh | Dep | Status |
+|---|---|---|---|---|
+| T-CORE | Catalog `plans` + snapshot entitlement + gate funding (Credit/Metered/Unlimited-latent) + meter theo `(subscription_id, period_start)` + resolution `/internal/entitlements` + gate feature Interview/Campaign + admin plan/grant | `dotnet test` 4 service xanh; `has-pending`=No changes | F8 | ✅ **passing** (PR #124, tip `205c389`) |
+| T-FIX | Vá **5 blocker + 6 high + 9 medium** từ 3 vòng review | mutation-check ĐỎ đúng chỗ cho mọi guard tiền | T-CORE | ✅ **passing** — 2 blocker được **chứng minh bằng test**: gói B2B trả phí đi nhánh unlimited ⇒ **phỏng vấn miễn phí, hoá đơn postpaid 0đ**; producer emit `adaptiveMaxQuestions` mà Interview đọc `maxQuestions` ⇒ **mọi user Plus/Pro trần 0 câu**. ⚠ 2 bẫy đã xử tường minh: backfill row pre-tiering → `Unlimited` (nếu không, khách F8 tụt xuống trả-theo-lượt **trong im lặng**); cờ OFF phải về **đúng luật F8**, không phải "mọi thứ thành Credit" |
+| T-L3 | **L3 Postgres thật** (SQLite bỏ qua migration + không enforce varchar ⇒ mù hoàn toàn) | apply idempotent script trên DB seed đúng hình dạng prod; race N-connection ở biên quota | T-FIX | ✅ **passing** — 🔴 tìm ra bug **production-breaking mà 1569 test bỏ lọt**: `funded_by` `varchar(16)` < `'SubscriptionMetered'` (19) ⇒ **MỌI reserve metered chết** trên PG. Vá `varchar(32)` (`WidenFundedByForMeteredEnum`) + `EnumColumnLengthTests` quét EF model. Đo: 80 reserve ‖ quota 30 → **trước 0 / sau đúng 30**. Counter-proof: gỡ backfill `audience` → migration abort `ck_sub_audience_owner ... violated by some row` ⇒ backfill là load-bearing |
+| T-APPLY | Apply migration lên prod `postgres-main` | head 4 DB đúng; bảng tiền không đổi | T-L3 | ✅ **done (2026-08-01)** — preflight bắt 1 gói `price_vnd=-5` (rác test, 0 đơn tham chiếu) sẽ abort CHECK → user chốt DELETE. Head: Auth/Interview `AddTrackBDatabaseHardening` · Payment `WidenFundedByForMeteredEnum` · Campaign `DropDeadCampaignColumns`. Verify: `funded_by`=32 · 6 plan · 2 sub F8 → `B2C/Unlimited` · tiền không đổi (15 ví/67 bút toán/118 resv/42 đơn) |
+| T-DEPLOY | 🔴 **Deploy image mới cho CampaignService** | `GET /api/v1/campaign` (có auth) **không** 500 | T-APPLY | **not_started — ĐANG GÂY GIÁN ĐOẠN.** `DropDeadCampaignColumns` đã drop 2 cột mà image `campaignservice-main` đang chạy **vẫn map** ⇒ mọi request đọc campaign **500** (`42703`, đã verify bằng chính câu SELECT của image cũ). User chủ động chọn apply luôn sau khi được cảnh báo. **KHÔNG mất dữ liệu** (2 cột 100% NULL, `candidate_criterion_scores` 0 row). Sửa: **merge PR #124 → CI build+deploy**; hoãn thì chạy `Down()` của migration đó |
+| T-ENABLE | Bật `Tiering:Enabled=true` sau khi seed/kiểm catalog | tạo buổi khi ví 0 credit + có gói Plus → chạy; hết quota → rơi về credit pack rồi 402 | T-DEPLOY | not_started — giữ **OFF** tới khi catalog được kiểm (mẫu grounding/adaptive) |
+| T-REST | Endpoint huỷ/hoàn thuê bao + FE mua/quản gói + trang quota "còn N/tháng" | — | T-ENABLE | not_started |
+
+
 ## Backlog — dọn dẹp / follow-up (sinh từ **ghi chú ⚠** của task passing)
 > Chưng cất từ ⚠ note của task passing (không trùng task chính). Mỗi cái WIP=1. **Bằng chứng chi tiết của item done = §Vòng tables trong [progress.md](progress.md).**
 
