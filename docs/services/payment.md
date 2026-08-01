@@ -9,7 +9,8 @@
 - Thanh toán **PayOS** theo **mô hình credit** = **1 credit ≈ 1 lượt phỏng vấn AI chấm**. **Không** metering token LLM.
 - **Chủ ví = Org HOẶC User** (`owner_type`/`owner_id`): **B2B** billing cấp **tổ chức** (`owner_type=Org`), không phải cá nhân HR; **B2C** = **ví cá nhân** (`owner_type=User` của chính người luyện), **prepaid-only**. Cùng pack/PayOS/reserve→consume, chỉ khác chủ ví (xem [decisions.md](../decisions.md) **D15**).
 - **2 hình thức trả:**
-  - **Prepaid (trả trước):** mua pack credit `OneTime` → tiêu dần. (`Subscription` = phase 2.) Áp cho **cả Org và B2C cá nhân**.
+  - **Prepaid (trả trước):** mua pack credit `OneTime` → tiêu dần. Áp cho **cả Org và B2C cá nhân**.
+  - **Tiered subscription (D28, đang xây):** catalog `plans` tách `B2C`/`B2B`; B2C metered quota tháng rồi fallback credit, B2B chỉ mở feature/cap còn mỗi lượt vẫn dùng org-credit/postpaid. `Tiering:Enabled=false` là mặc định rollout.
   - **Postpaid (trả sau):** **chỉ Org** được **PlatformAdmin duyệt** → dùng trước (dồn nợ tới **hạn mức**) → **cuối kỳ ra hóa đơn** → tất toán qua PayOS. **B2C/personal không áp dụng** (luôn Prepaid).
 - **Đơn giá 1 lượt** = biến cấu hình (cần cho hóa đơn postpaid). Service riêng, cô lập dữ liệu tiền.
 

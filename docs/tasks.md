@@ -16,6 +16,22 @@
 > **Phiên e2e 2026-07-27 (5 agent + PayOS tiền thật):** **BF1–BF4 done** (retest live PASS: cv-analysis 400/201 · invitations POST 200 · order 201+`checkoutUrl` · route `CreatedAtRoute`) · **OPS1 rebuild done** (image `:main` 07-27 populate `campaign_membership.invitation_id`, 6/29 row mới) · 🔴 **migration `AddGrantIdempotencyKey` CHƯA apply prod** → image map 2 cột `grant_*` mà DB thiếu → **mọi ghi `credit_transactions` chết `42703`** (FreeGrant/Purchase/Consume/Refund) → khách trả mất tiền (DB20 tái diễn) → **ĐÃ apply migration + verify 3 lớp + PayOS thật** (order Paid → ví +1 → ledger `Purchase +1` atomic → PAY-8 idempotent) · **AIService rebuild trên Mac** (image từ `main` có `adf8c5c` → gate GEN-7 `/face-verify` no-token **401**, trước là 502; worker consumer=1) · **OPS6 tái phát lần 3** (cả 5 `-main` = Development). ⚠ **GEN-7 còn hở 8 endpoint AI** (`/suggest-criteria`·`/analyze-cv`·`/generate-*`·`/summarize-*`·`/transcribe`) chưa gate trong code — task code, network-isolated.
 > **GROUNDING (RAG nguồn uy tín) — 2026-08-01, D27 · 3 worker multi-agent · CHƯA push/merge:** ground lớp SINH (câu hỏi·lý thuyết·roadmap) vào corpus admin curate, mỗi câu bấm ra nguồn thật. **G1 AIService** (`/embed` gemini-embedding-001 + grounding injection + citations additive) · **G2 InterviewService** (Qdrant `IVectorStore` + `Context7Client` + `IChunker` + `KnowledgeService` + `AdminKnowledgeController` + wire Practice/Roadmap + migration) · **G3 FE** (admin "Nguồn tri thức" + citation grounded/ungrounded) — **all passing:** build 0 err · Interview 495 · AIService pytest 256 · FE vitest 315. Supervisor sửa **4 lỗi Context7** (base URL `/api/v2` mất · param `library`→`libraryId` · array `snippets`→`codeSnippets`/`infoSnippets` · sourceUrl `codeId`/`pageId`) verify keyless + live auth key thật PASS. **Migration `AddKnowledgeAndGroundingRefs` ĐÃ apply prod** `isas_interview` (kèm gap `AddRepoAnalyses`), data cũ nguyên. Nhánh `s/grounding-integration`(BE)·`feat/grounding-fe`(FE). **CÒN:** ①push+2 PR · ②L3 bật (Qdrant up · rebuild AIService · env `Qdrant__Url`+`Context7__ApiKey`+`GROUNDING_ENABLED=true` · nạp corpus) · ③**Phase 2** eval faithfulness/recall (gold set người gán) · ④sample-answer grounding (hoãn, path chấm) · ⑤orphan-vector sweep. Chi tiết: [decisions.md](decisions.md) D27 · [progress.md](progress.md) §2026-08-01.
 
+### 🧱 Tiered subscription — B2C/B2B boundary (D28, Track A)
+> `Tiering:Enabled=false` mặc định. Payment chạy tuần tự vì chung DbContext/migration; T7/T8 chỉ chạy song song sau T5.
+
+| ID | Hành vi | Xác minh | Dep | Status |
+|---|---|---|---|---|
+| T1 | Catalog `plans`, six non-Unlimited seed tiers, validation and tier priority helper | `dotnet test --filter PlanServiceTests` | — | **active** |
+| T2 | Package liên kết plan/audience; subscription package bắt buộc plan đúng audience | `dotnet test --filter Package` | T1 | not_started |
+| T3 | Subscription snapshot, meter/event schema và reservation meter snapshot | `dotnet test --filter Subscription` + `dotnet ef migrations has-pending-model-changes` | T1 | not_started |
+| T4 | Resolver entitlement + free-default B2C/B2B | `dotnet test --filter Entitlement` | T3 | not_started |
+| T5 | Internal entitlement endpoint, token fail-closed | `dotnet test --filter Entitlement` | T4 | not_started |
+| T6 | Metered reserve/consume/release/reconcile, fallback credit and race tests | `dotnet test --filter Metered` | T4 | not_started |
+| T7 | Interview stamps entitlement and gates B2C features | `dotnet test Isas.InterviewService.Tests` | T5 | not_started |
+| T8 | Campaign gates B2B caps/features/postpaid eligibility | `dotnet test Isas.CampaignService.Tests` | T5 | not_started |
+| T9–T13 | Audience-safe ordering, upgrade/cancel, plan CRUD and admin grant | `dotnet test Isas.PaymentService.Tests` | T3–T4 | not_started |
+| VB1 | Additive DB hardening Auth/Interview/Campaign after Postgres preflight | service-specific tests + migration inspection | — | not_started |
+
 ### 🔴 Tiền / chính sách — ưu tiên cao nhất
 | ID | Việc | Dep | Trạng thái / ghi chú |
 |---|---|---|---|

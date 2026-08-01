@@ -88,6 +88,8 @@ builder.Services.Configure<AiPricingSettings>(
     builder.Configuration.GetSection("AiPricing"));
 builder.Services.Configure<HttpTrafficRetentionSettings>(
     builder.Configuration.GetSection(HttpTrafficRetentionSettings.SectionName));
+builder.Services.Configure<TieringSettings>(
+    builder.Configuration.GetSection(TieringSettings.SectionName));
 
 // DB4 — cấu hình reconciler credit_accounts.reserved_credits ↔ count(reservations Reserved).
 builder.Services.Configure<ReconcileSettings>(
@@ -130,6 +132,7 @@ builder.Services.AddScoped<IPackageService, PackageService>();
 // P8b: hóa đơn postpaid — chốt kỳ → tất toán (reuse OrderService/PayOS) → settle qua webhook (branch Kind).
 builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+builder.Services.AddScoped<PlanService>();
 // F18: hoàn tiền — đơn Paid→Refunded + bút toán đảo gắn bút toán mua gốc + thu hồi credit (kẹp trần).
 builder.Services.AddScoped<IRefundService, RefundService>();
 // F19: tổng hợp doanh thu theo kỳ cho PlatformAdmin (đọc `orders`, không đụng sổ cái credit).

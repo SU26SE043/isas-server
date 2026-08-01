@@ -7,6 +7,7 @@ namespace PaymentService.Models
         public PaymentDbContext(DbContextOptions<PaymentDbContext> options) : base(options) { }
 
         public DbSet<ProductPackage> ProductPackages => Set<ProductPackage>();
+        public DbSet<Plan> Plans => Set<Plan>();
         public DbSet<Order> Orders => Set<Order>();
         public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
         public DbSet<CreditAccount> CreditAccounts => Set<CreditAccount>();
@@ -66,6 +67,37 @@ namespace PaymentService.Models
                 // DB14 — audit updated_at (mirror created_at style: default now() ở DB; C# init ở entity để
                 // insert SQLite/EnsureCreated không phụ thuộc now()). Stamp tự động khi Modified (SaveChanges).
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+            });
+
+            // ── Plan (tiered subscription catalog) ──────────────────────
+            modelBuilder.Entity<Plan>(e =>
+            {
+                e.ToTable("plans", t =>
+                {
+                    t.HasCheckConstraint("ck_plans_audience", "audience IN ('B2C', 'B2B')");
+                    t.HasCheckConstraint("ck_plans_funding", "interview_funding IN ('Credit', 'Metered', 'Unlimited')");
+                    t.HasCheckConstraint("ck_plans_metered", "interview_funding <> 'Metered' OR monthly_quota > 0");
+                    t.HasCheckConstraint("ck_plans_maxq", "max_questions_cap IS NULL OR max_questions_cap BETWEEN 0 AND 20");
+                    t.HasCheckConstraint("ck_plans_scn", "self_consistency_n >= 1");
+                    t.HasCheckConstraint("ck_plans_adaptive_caps", "adaptive_enabled OR (adaptive_max_questions IS NULL AND adaptive_max_followups IS NULL)");
+                    t.HasCheckConstraint("ck_plans_b2c_no_b2b", "audience = 'B2B' OR (max_active_campaigns IS NULL AND max_candidates_cap IS NULL AND postpaid_eligible = false AND seat_count IS NULL)");
+                });
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.Audience).HasConversion<string>().HasMaxLength(8).IsRequired();
+                e.Property(x => x.Code).HasMaxLength(64).IsRequired();
+                e.Property(x => x.Name).HasMaxLength(128).IsRequired();
+                e.Property(x => x.InterviewFunding).HasConversion<string>().HasMaxLength(16).IsRequired();
+                e.Property(x => x.EntitlementsJson).HasColumnType("jsonb").HasDefaultValue("[]").IsRequired();
+                e.Property(x => x.EntitlementsVersion).HasDefaultValue(1);
+                e.Property(x => x.IsActive).HasDefaultValue(true);
+                e.Property(x => x.SelfConsistencyN).HasDefaultValue(1);
+                e.Property(x => x.PostpaidEligible).HasDefaultValue(false);
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.HasIndex(x => new { x.Audience, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.Audience, x.IsActive }).HasDatabaseName("ix_plans_audience_active");
+                e.HasData(PlanSeed.All);
             });
 
             // ── Order ─────────────────────────────────────────────
