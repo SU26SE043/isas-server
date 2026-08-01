@@ -50,6 +50,7 @@ namespace Isas.CampaignService.Models
                     t.HasCheckConstraint(
                         "ck_campaigns_adaptive_caps_non_negative",
                         "(max_follow_ups IS NULL OR max_follow_ups >= 0) AND (max_questions IS NULL OR max_questions >= 0)");
+                    t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
@@ -107,7 +108,8 @@ namespace Isas.CampaignService.Models
             // ── CampaignQuestion ─────────────────────────────────────────
             modelBuilder.Entity<CampaignQuestion>(e =>
             {
-                e.ToTable("campaign_questions");
+                e.ToTable("campaign_questions", t => t.HasCheckConstraint(
+                    "ck_campaign_questions_source", "source IN ('AiGenerated', 'CustomHr')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -134,9 +136,11 @@ namespace Isas.CampaignService.Models
             modelBuilder.Entity<CampaignCriterion>(e =>
             {
                 // DB15: weight ∈ (0,1] — khớp guard code BuildStructuredCriteria (0 < weight ≤ 1).
-                e.ToTable("campaign_criteria", t => t.HasCheckConstraint(
-                    "ck_campaign_criteria_weight_range",
-                    "weight > 0 AND weight <= 1"));
+                e.ToTable("campaign_criteria", t =>
+                {
+                    t.HasCheckConstraint("ck_campaign_criteria_weight_range", "weight > 0 AND weight <= 1");
+                    t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Name).IsRequired().HasMaxLength(255);
@@ -161,7 +165,8 @@ namespace Isas.CampaignService.Models
             // ── AuditLog (vết thao tác — C10/D11) ───────────────────────────
             modelBuilder.Entity<AuditLog>(e =>
             {
-                e.ToTable("audit_logs");
+                e.ToTable("audit_logs", t => t.HasCheckConstraint(
+                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Entity).IsRequired().HasMaxLength(64);
@@ -258,7 +263,11 @@ namespace Isas.CampaignService.Models
             // ── CvSubmission (sàng CV B2B — C13/D18; DB16 ex campaign_candidates) ───
             modelBuilder.Entity<CvSubmission>(e =>
             {
-                e.ToTable("cv_submission");
+                e.ToTable("cv_submission", t =>
+                {
+                    t.HasCheckConstraint("ck_cv_submission_parse_status", "parse_status IN ('Pending', 'Done', 'Failed')");
+                    t.HasCheckConstraint("ck_cv_submission_status", "status IN ('Pending', 'Filtered', 'Rejected', 'Analyzing', 'Analyzed', 'AnalysisFailed', 'Invited')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.FullName).HasMaxLength(255);
@@ -301,7 +310,11 @@ namespace Isas.CampaignService.Models
             // ── CampaignMembership (D2 join — DB16 tách khỏi bảng God) ─────────────
             modelBuilder.Entity<CampaignMembership>(e =>
             {
-                e.ToTable("campaign_membership");
+                e.ToTable("campaign_membership", t =>
+                {
+                    t.HasCheckConstraint("ck_campaign_membership_status", "status IN ('Joined')");
+                    t.HasCheckConstraint("ck_campaign_membership_interview_status", "interview_status IS NULL OR interview_status IN ('NotStarted', 'InProgress', 'Completed')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -380,18 +393,17 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.MatchScore).HasColumnType("numeric(5,2)");
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
 
-                e.HasIndex(x => new { x.CandidateId, x.CriterionId }).IsUnique();
+                e.HasIndex(x => new { x.CvSubmissionId, x.CriterionId }).IsUnique();
 
                 // DB13: CvSubmission + CampaignCriterion (2 required nav bên dưới) đã có soft-delete
                 // filter → phải khớp filter ở đây, nếu không EF phát lại warning + đọc điểm mồ côi.
                 // Chained qua CvSubmission→Campaign (Criterion cùng campaign → 1 điều kiện là đủ).
                 e.HasQueryFilter(x => x.CvSubmission.Campaign.DeletedAt == null);
 
-                // DB16 — nav re-point về CvSubmission; cột FK giữ tên candidate_id (không rename cột).
                 e.HasOne(x => x.CvSubmission)
                  .WithMany(x => x.CriterionScores)
-                 .HasForeignKey(x => x.CandidateId)
-                 .HasConstraintName("fk_candidate_criterion_scores_cv_submission_candidate_id")
+                 .HasForeignKey(x => x.CvSubmissionId)
+                 .HasConstraintName("fk_candidate_criterion_scores_cv_submission_cv_submission_id")
                  .OnDelete(DeleteBehavior.Cascade);
 
                 // Restrict: chặn xoá tiêu chí còn điểm tham chiếu (TÁI DÙNG rubric campaign_criteria).

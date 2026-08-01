@@ -56,6 +56,12 @@ namespace PaymentService.Models
             // ── ProductPackage ────────────────────────────────────
             modelBuilder.Entity<ProductPackage>(e =>
             {
+                e.ToTable("product_packages", t =>
+                {
+                    t.HasCheckConstraint("ck_product_packages_type", "type IN ('OneTime', 'Subscription')");
+                    t.HasCheckConstraint("ck_product_packages_price_non_negative", "price_vnd >= 0");
+                    t.HasCheckConstraint("ck_product_packages_audience", "audience IS NULL OR audience IN ('B2C', 'B2B')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Name).IsRequired();
@@ -108,6 +114,13 @@ namespace PaymentService.Models
             // ── Order ─────────────────────────────────────────────
             modelBuilder.Entity<Order>(e =>
             {
+                e.ToTable("orders", t =>
+                {
+                    t.HasCheckConstraint("ck_orders_owner_type", "owner_type IN ('Org', 'User')");
+                    t.HasCheckConstraint("ck_orders_kind", "kind IN ('CreditPack', 'InvoiceSettlement', 'SubscriptionPurchase', 'SubscriptionRenewal')");
+                    t.HasCheckConstraint("ck_orders_status", "status IN ('Pending', 'Paid', 'Failed', 'Expired', 'Cancelled', 'Refunded')");
+                    t.HasCheckConstraint("ck_orders_amount_non_negative", "amount_vnd >= 0");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 // Pre-existing bug (features/payment-b2c): default "pending" (string) trên property enum
@@ -226,6 +239,8 @@ namespace PaymentService.Models
                 e.ToTable("credit_accounts", t =>t.HasCheckConstraint(
                     "ck_credit_accounts_credit_limit_positive",
                     "credit_limit IS NULL OR credit_limit > 0"));
+                e.ToTable("credit_accounts", t => t.HasCheckConstraint(
+                    "ck_credit_accounts_enums", "owner_type IN ('Org', 'User') AND payment_mode IN ('Prepaid', 'Postpaid') AND status IN ('Active', 'Suspended')"));
 
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
@@ -273,8 +288,11 @@ namespace PaymentService.Models
                 // của chúng vẫn chạy đúng nhánh bút toán như trước.
                 e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(ReservationFunding.Credit);
-                e.ToTable(t => t.HasCheckConstraint("ck_reservation_metered_consistency",
-                    "(funded_by = 'SubscriptionMetered' AND metered_subscription_id IS NOT NULL AND metered_period_start IS NOT NULL) OR (funded_by <> 'SubscriptionMetered' AND metered_subscription_id IS NULL AND metered_period_start IS NULL)"));
+                e.ToTable(t =>
+                {
+                    t.HasCheckConstraint("ck_reservation_metered_consistency", "(funded_by = 'SubscriptionMetered' AND metered_subscription_id IS NOT NULL AND metered_period_start IS NOT NULL) OR (funded_by <> 'SubscriptionMetered' AND metered_subscription_id IS NULL AND metered_period_start IS NULL)");
+                    t.HasCheckConstraint("ck_credit_reservations_enums", "owner_type IN ('Org', 'User') AND status IN ('Reserved', 'Consumed', 'Released') AND funded_by IN ('Credit', 'Subscription', 'SubscriptionMetered') AND payment_mode IN ('Prepaid', 'Postpaid')");
+                });
 
                 e.Property(x => x.PaymentMode).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(PaymentMode.Prepaid);
@@ -328,8 +346,11 @@ namespace PaymentService.Models
             {
                 // DB1 — sổ cái append-only: mọi bút toán phải chuyển số dư (Purchase +N / Consume −1 / Refund).
                 // delta = 0 là bút toán vô nghĩa → chặn ở DB (dữ liệu rác/bug ghi sổ).
-                e.ToTable("credit_transactions", t => t.HasCheckConstraint(
-                    "ck_credit_transactions_delta_nonzero", "delta <> 0"));
+                e.ToTable("credit_transactions", t =>
+                {
+                    t.HasCheckConstraint("ck_credit_transactions_delta_nonzero", "delta <> 0");
+                    t.HasCheckConstraint("ck_credit_transactions_enums", "owner_type IN ('Org', 'User') AND reason IN ('Purchase', 'Consume', 'Refund', 'FreeGrant', 'PromoGrant')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -398,7 +419,8 @@ namespace PaymentService.Models
             // ── Invoice (P8b — hóa đơn postpaid, CHỈ Org) ───────────
             modelBuilder.Entity<Invoice>(e =>
             {
-                e.ToTable("invoices");
+                e.ToTable("invoices", t => t.HasCheckConstraint(
+                    "ck_invoices_enums", "owner_type = 'Org' AND status IN ('Issued', 'Paid', 'Overdue', 'Void')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -463,6 +485,7 @@ namespace PaymentService.Models
                 {
                     t.HasCheckConstraint("ck_sub_audience_owner", "(audience = 'B2C' AND owner_type = 'User') OR (audience = 'B2B' AND owner_type = 'Org')");
                     t.HasCheckConstraint("ck_sub_meter_anchor", "meter_anchor_day IS NULL OR meter_anchor_day BETWEEN 1 AND 28");
+                    t.HasCheckConstraint("ck_subscriptions_enums", "billing_cycle IN ('Monthly', 'Annual') AND status IN ('Active', 'Expired', 'Cancelled') AND audience IN ('B2C', 'B2B') AND interview_funding IN ('Credit', 'Metered', 'Unlimited') AND source IN ('Purchase', 'AdminGrant')");
                 });
 
                 // Khoá idempotency của webhook: 1 đơn ⇒ tối đa 1 kỳ hạn. Filtered vì order_id nullable

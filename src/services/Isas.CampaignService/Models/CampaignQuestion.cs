@@ -7,7 +7,6 @@
         public Guid OrgId { get; set; }   // BK4: owner denormalize theo campaign = ORG (AUTH-8)
         public string QuestionText { get; set; }
         public QuestionSource Source { get; set; }
-        public int? TimeLimitSeconds { get; set; }
         public bool IsRequired { get; set; }
         public DateTime CreatedAt { get; set; }
 

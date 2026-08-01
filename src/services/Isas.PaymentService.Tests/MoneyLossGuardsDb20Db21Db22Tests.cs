@@ -88,23 +88,15 @@ public class MoneyLossGuardsDb20Db21Db22Tests
         Assert.Equal(OrderKind.SubscriptionPurchase, order.Kind);
     }
 
-    // Vế còn lại của bất biến DB20, vẫn nguyên vẹn: loại gói KHÔNG có đường bán riêng thì bị chặn 400
-    // SỚM chứ không âm thầm trôi vào đường CreditPack (lưới cho PackageType thêm về sau / dữ liệu sửa tay).
+    // DB hardening: enum-string CHECK là hàng rào đầu tiên với dữ liệu sửa tay/legacy. Vì fixture SQLite
+    // nay cũng enforce đúng ràng buộc Postgres, không thể persist enum sai rồi mới đưa vào OrderService.
     [Fact]
-    public async Task Db20_TaoDon_LoaiGoiKhongHopLe_BiChan_KhongTaoDonMoCoi()
+    public async Task Db20_ProductPackage_LoaiGoiKhongHopLe_BiChanTaiDb()
     {
         using var tdb = new PaymentTestDb();
         var pkg = await SeedPackageAsync(tdb, PackageType.OneTime, credits: 5);
         pkg.Type = (PackageType)99;
-        await tdb.Db.SaveChangesAsync();
-
-        var svc = new OrderService(tdb.Db, null!, Options.Create(NewPayosSettings()), new FakeOrderCodes());
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.CreateOrderAsync(OwnerType.User, Guid.NewGuid(),
-                new DTOs.OrderRequest.CreateOrderRequest { PackageId = pkg.Id }));
-
-        Assert.Contains("credit pack", ex.Message, StringComparison.OrdinalIgnoreCase);
+        await Assert.ThrowsAsync<DbUpdateException>(() => tdb.Db.SaveChangesAsync());
         Assert.Empty(await tdb.Db.Orders.ToListAsync());   // KHÔNG để lại đơn mồ côi
     }
 

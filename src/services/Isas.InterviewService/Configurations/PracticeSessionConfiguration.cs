@@ -37,8 +37,11 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // F2b — trần cứng số câu ở tầng DB. Tầng service đã chặn 1..20 cho B2C, nhưng đường internal
         // (Campaign → /internal/sessions/campaign) không đi qua guard đó ⇒ chốt ở đây cho mọi đường ghi.
         // 0 = "không trần cứng" (luồng tĩnh / adaptive tắt) nên phải nằm trong khoảng hợp lệ.
-        e.ToTable(t => t.HasCheckConstraint(
-            "ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20"));
+        e.ToTable(t =>
+        {
+            t.HasCheckConstraint("ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20");
+            t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
+        });
 
         // DB14 — audit updated_at: default now() ở DB (Postgres); C# init ở entity đảm nhận insert
         // (SQLite/EnsureCreated không có now()). Stamp tự động khi Modified qua SaveChanges override.
@@ -167,6 +170,8 @@ public class PracticeAnswerConfiguration : IEntityTypeConfiguration<PracticeAnsw
 {
     public void Configure(EntityTypeBuilder<PracticeAnswer> e)
     {
+        e.ToTable(t => t.HasCheckConstraint(
+            "ck_practice_answers_status", "status IN ('Uploaded', 'Transcribing', 'Transcribed', 'Scoring', 'Scored', 'Skipped', 'Failed')"));
         e.HasKey(x => x.Id);
 
         e.Property(x => x.AudioObjectKey).HasMaxLength(512);
