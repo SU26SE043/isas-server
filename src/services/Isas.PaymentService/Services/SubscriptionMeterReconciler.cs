@@ -32,20 +32,25 @@ public sealed class SubscriptionMeterReconciler : BackgroundService
         if (!_settings.Enabled) return;
         using var scope = _scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PaymentDbContext>();
-        var meters = await db.SubscriptionMeters.AsNoTracking().ToListAsync(ct);
+        var now = DateTime.UtcNow;
+        var meters = await db.SubscriptionMeters.AsNoTracking()
+            .Where(m => db.Subscriptions.Any(s => s.Id == m.SubscriptionId && s.Status == SubscriptionStatus.Active && s.ExpiresAt > now))
+            .ToListAsync(ct);
         foreach (var meter in meters)
         {
-            var reserved = await db.CreditReservations.CountAsync(r =>
-                r.FundedBy == ReservationFunding.SubscriptionMetered &&
-                r.Status == ReservationStatus.Reserved &&
-                r.MeteredSubscriptionId == meter.SubscriptionId && r.MeteredPeriodStart == meter.PeriodStart, ct);
-            if (reserved == meter.ReservedCount) continue;
-            var changed = await db.SubscriptionMeters.Where(m => m.SubscriptionId == meter.SubscriptionId &&
-                m.PeriodStart == meter.PeriodStart && m.ReservedCount == meter.ReservedCount)
-                .ExecuteUpdateAsync(s => s.SetProperty(m => m.ReservedCount, reserved)
-                    .SetProperty(m => m.UpdatedAt, _ => DateTime.UtcNow), ct);
-            if (changed > 0) _logger.LogWarning("Reconciled meter {SubscriptionId}/{PeriodStart}: {Old} -> {New}",
-                meter.SubscriptionId, meter.PeriodStart, meter.ReservedCount, reserved);
+            try
+            {
+                var counts = await db.CreditReservations.Where(r => r.FundedBy == ReservationFunding.SubscriptionMetered &&
+                    r.MeteredSubscriptionId == meter.SubscriptionId && r.MeteredPeriodStart == meter.PeriodStart)
+                    .GroupBy(_ => 1).Select(g => new { Reserved = g.Count(r => r.Status == ReservationStatus.Reserved), Used = g.Count(r => r.Status == ReservationStatus.Consumed) })
+                    .FirstOrDefaultAsync(ct);
+                var reserved = counts?.Reserved ?? 0; var used = counts?.Used ?? 0;
+                if (reserved == meter.ReservedCount && used == meter.UsedCount) continue;
+                var changed = await db.SubscriptionMeters.Where(m => m.SubscriptionId == meter.SubscriptionId && m.PeriodStart == meter.PeriodStart && m.ReservedCount == meter.ReservedCount && m.UsedCount == meter.UsedCount)
+                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.ReservedCount, reserved).SetProperty(m => m.UsedCount, used).SetProperty(m => m.UpdatedAt, _ => now), ct);
+                if (changed > 0) _logger.LogWarning("Reconciled meter {SubscriptionId}/{PeriodStart}: reserved {OldReserved}->{Reserved}, used {OldUsed}->{Used}", meter.SubscriptionId, meter.PeriodStart, meter.ReservedCount, reserved, meter.UsedCount, used);
+            }
+            catch (Exception ex) { _logger.LogError(ex, "Meter reconcile failed for {SubscriptionId}/{PeriodStart}", meter.SubscriptionId, meter.PeriodStart); }
         }
     }
 }

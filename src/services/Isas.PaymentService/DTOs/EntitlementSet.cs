@@ -11,5 +11,6 @@ public sealed class EntitlementSet
     public int TierRank { get; init; }
     public InterviewFunding InterviewFunding { get; init; }
     public int? MonthlyQuota { get; init; }
+    public short? MeterAnchorDay { get; init; }
     public string EntitlementSnapshot { get; init; } = "{}";
 }

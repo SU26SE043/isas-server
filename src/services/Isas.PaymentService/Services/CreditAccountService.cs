@@ -260,7 +260,7 @@ namespace Isas.PaymentService.Services
                 Status = ReservationStatus.Reserved,
                 FundedBy = metered ? ReservationFunding.SubscriptionMetered : subsidized ? ReservationFunding.Subscription : ReservationFunding.Credit,
                 MeteredSubscriptionId = metered ? entitlement!.SubscriptionId : null,
-                MeteredPeriodStart = metered ? new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc) : null,
+                MeteredPeriodStart = metered ? MeteredPeriodStart(DateTime.UtcNow, entitlement!.MeterAnchorDay) : null,
                 PaymentMode = acc.PaymentMode,
                 CreatedAt = DateTime.UtcNow
             };
@@ -288,7 +288,8 @@ namespace Isas.PaymentService.Services
                 // reserves; the guarded UPDATE is the quota gate and is in this same transaction.
                 await _db.Database.ExecuteSqlInterpolatedAsync($@"INSERT INTO subscription_meters (subscription_id, period_start, used_count, reserved_count, updated_at)
                     VALUES ({reservation.MeteredSubscriptionId!.Value}, {reservation.MeteredPeriodStart!.Value}, 0, 0, {DateTime.UtcNow})
-                    ON CONFLICT (subscription_id, period_start) DO NOTHING", ct);
+                    ON CONFLICT (subscription_id, period_start) DO UPDATE
+                    SET updated_at = EXCLUDED.updated_at", ct);
                 rows = await _db.SubscriptionMeters
                     .Where(m => m.SubscriptionId == reservation.MeteredSubscriptionId!.Value
                              && m.PeriodStart == reservation.MeteredPeriodStart!.Value
@@ -395,6 +396,13 @@ namespace Isas.PaymentService.Services
                 .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
                 .Select(a => a.ReservedCredits)
                 .FirstOrDefaultAsync(ct);
+
+        internal static DateTime MeteredPeriodStart(DateTime now, short? anchorDay)
+        {
+            var anchor = Math.Clamp(anchorDay ?? 1, (short)1, (short)28);
+            var monthAnchor = new DateTime(now.Year, now.Month, anchor, 0, 0, 0, DateTimeKind.Utc);
+            return now < monthAnchor ? monthAnchor.AddMonths(-1) : monthAnchor;
+        }
 
         // P5 — Consume 1 credit khi SessionScored (D7 · payment.md §State machine "credit_reservations" +
         // "kế toán remaining↔reserved"). Reservation Reserved→Consumed + reserved−1 + ledger(Consume,−1);

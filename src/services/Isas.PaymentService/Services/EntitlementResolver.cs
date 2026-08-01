@@ -21,7 +21,7 @@ public sealed class EntitlementResolver
         {
             Source = "resolved", SubscriptionId = sub.Id, Audience = sub.Audience,
             TierCode = sub.TierCode, TierRank = sub.TierRank, InterviewFunding = sub.InterviewFunding,
-            MonthlyQuota = sub.MonthlyQuota, EntitlementSnapshot = sub.EntitlementSnapshot
+            MonthlyQuota = sub.MonthlyQuota, MeterAnchorDay = sub.MeterAnchorDay, EntitlementSnapshot = sub.EntitlementSnapshot
         };
 
         var audience = ownerType == OwnerType.Org ? PlanAudience.B2B : PlanAudience.B2C;
