@@ -286,7 +286,11 @@ namespace PaymentService.Models
                 // F8 — nguồn chi trả, enum lưu string (GEN-2). Default 'Credit' để mọi row CŨ (và mọi
                 // đường ghi chưa biết tới F8) giữ nguyên nghĩa "chỗ giữ này đã trừ ví" ⇒ Consume/Release
                 // của chúng vẫn chạy đúng nhánh bút toán như trước.
-                e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(16)
+                // ⚠ ĐỘ DÀI PHẢI ĐỦ CHO GIÁ TRỊ ENUM DÀI NHẤT: 'SubscriptionMetered' = 19 ký tự.
+                // Cột này từng là varchar(16) — trên Postgres MỌI reserve gói metered ném
+                // "value too long for type character varying(16)", mà SQLite (test) KHÔNG enforce độ dài
+                // varchar nên toàn bộ test vẫn xanh. `EnumColumnLengthTests` nay khoá bất biến này.
+                e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(32)
                  .HasDefaultValue(ReservationFunding.Credit);
                 e.ToTable(t =>
                 {
