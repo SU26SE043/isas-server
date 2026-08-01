@@ -54,6 +54,16 @@ public class PracticeSession : IHasUpdatedAt
     // đường internal (Campaign gọi thẳng) thì không → chốt thêm ở DB để không có đường nào vượt.
     public int MaxQuestions { get; set; }
 
+    // T7 — entitlement is resolved once at B2C session creation. Existing sessions retain legacy defaults.
+    public string EntitlementSource { get; set; } = "legacy";
+    public string TierCode { get; set; } = "free";
+    public int TierRank { get; set; }
+    public bool GroundingEnabled { get; set; }
+    public int SelfConsistencyN { get; set; } = 1;
+    public bool CvAnalysisIncluded { get; set; }
+    public bool RepoAnalysisIncluded { get; set; }
+    public bool RoadmapEnabled { get; set; }
+
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.

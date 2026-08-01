@@ -280,6 +280,9 @@ namespace Isas.AuthService.Services
         // (token tự mang org_id + org_role nhờ A2 vì membership đã persist trước GenerateAuthResponse).
         public async Task<AuthResponse> RegisterOrgAsync(RegisterOrgRequest request)
         {
+            var taxCode = NormalizeTaxCode(request.TaxCode);
+            if (taxCode is not null && await _authDbContext.Organizations.AnyAsync(o => o.TaxCode == taxCode))
+                throw new InvalidOperationException("Tax code is already registered.");
             var user = new User
             {
                 Id = Guid.NewGuid(),
@@ -308,7 +311,7 @@ namespace Isas.AuthService.Services
                 {
                     Id = Guid.NewGuid(),
                     Name = request.OrgName,
-                    TaxCode = request.TaxCode,
+                    TaxCode = taxCode,
                     CreatedAt = DateTime.UtcNow
                 };
                 var member = new OrgMember
@@ -477,13 +480,22 @@ namespace Isas.AuthService.Services
             if (!string.IsNullOrWhiteSpace(request.Name))
                 org.Name = request.Name.Trim();
             if (request.TaxCode is not null)
-                org.TaxCode = string.IsNullOrWhiteSpace(request.TaxCode) ? null : request.TaxCode.Trim();
+            {
+                var taxCode = NormalizeTaxCode(request.TaxCode);
+                if (taxCode is not null && await _authDbContext.Organizations
+                    .AnyAsync(o => o.Id != orgId && o.TaxCode == taxCode, ct))
+                    throw new InvalidOperationException("Tax code is already registered.");
+                org.TaxCode = taxCode;
+            }
 
             await _authDbContext.SaveChangesAsync(ct);
 
             var memberCount = await _authDbContext.OrgMembers.CountAsync(m => m.OrgId == orgId, ct);
             return ToOrgResponse(org, memberCount);
         }
+
+        private static string? NormalizeTaxCode(string? taxCode) =>
+            string.IsNullOrWhiteSpace(taxCode) ? null : taxCode.Trim();
 
         // AUTH-7: PlatformAdmin liệt kê MỌI org (cross-org, read-only). Keyset-paged (DB8): mới nhất trước
         // theo (CreatedAt DESC, Id DESC); cursor rỗng = trang đầu; limit mặc định 500 (giữ hành vi cũ).

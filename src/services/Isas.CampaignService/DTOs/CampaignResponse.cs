@@ -56,6 +56,7 @@ namespace Isas.CampaignService.DTOs
 
         // INT-17: bật phỏng vấn THÍCH ỨNG cho chiến dịch (mặc định false = luồng tĩnh). Không gửi → false.
         public bool AdaptiveEnabled { get; set; }
+        public bool GroundingEnabled { get; set; }
         // INT-17: trần câu thích ứng / tổng câu. null = dùng mặc định phía Interview.
         public int? MaxFollowUps { get; set; }
         public int? MaxQuestions { get; set; }
@@ -102,6 +103,7 @@ namespace Isas.CampaignService.DTOs
 
         // INT-17: bật/tắt phỏng vấn thích ứng + trần câu — null = không đổi (giữ cũ), như AntiCheatEnabled.
         public bool? AdaptiveEnabled { get; set; }
+        public bool? GroundingEnabled { get; set; }
         public int? MaxFollowUps { get; set; }
         public int? MaxQuestions { get; set; }
 
@@ -155,6 +157,7 @@ namespace Isas.CampaignService.DTOs
         public bool FaceVerifyEnabled { get; set; }   // SEC-1: bật face-verify (B2B-only)
         public int? PassScorePct { get; set; }   // E5: ngưỡng % pass/fail (null = HR quyết tay)
         public bool AdaptiveEnabled { get; set; }   // INT-17: phỏng vấn thích ứng (B2B opt-in)
+        public bool GroundingEnabled { get; set; }  // T8: grounding snapshot (B2B opt-in)
         public int? MaxFollowUps { get; set; }      // INT-17: trần câu thích ứng (null = mặc định Interview)
         public int? MaxQuestions { get; set; }      // INT-17: trần tổng câu (null = mặc định Interview)
         public DateTime? StartsAt { get; set; }
@@ -179,6 +182,7 @@ namespace Isas.CampaignService.DTOs
             FaceVerifyEnabled = c.FaceVerifyEnabled,
             PassScorePct = c.PassScorePct,
             AdaptiveEnabled = c.AdaptiveEnabled,   // INT-17
+            GroundingEnabled = c.GroundingEnabled,
             MaxFollowUps = c.MaxFollowUps,
             MaxQuestions = c.MaxQuestions,
             StartsAt = c.StartsAt,

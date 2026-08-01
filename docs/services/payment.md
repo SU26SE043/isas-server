@@ -9,7 +9,8 @@
 - Thanh toán **PayOS** theo **mô hình credit** = **1 credit ≈ 1 lượt phỏng vấn AI chấm**. **Không** metering token LLM.
 - **Chủ ví = Org HOẶC User** (`owner_type`/`owner_id`): **B2B** billing cấp **tổ chức** (`owner_type=Org`), không phải cá nhân HR; **B2C** = **ví cá nhân** (`owner_type=User` của chính người luyện), **prepaid-only**. Cùng pack/PayOS/reserve→consume, chỉ khác chủ ví (xem [decisions.md](../decisions.md) **D15**).
 - **2 hình thức trả:**
-  - **Prepaid (trả trước):** mua pack credit `OneTime` → tiêu dần. (`Subscription` = phase 2.) Áp cho **cả Org và B2C cá nhân**.
+  - **Prepaid (trả trước):** mua pack credit `OneTime` → tiêu dần. Áp cho **cả Org và B2C cá nhân**.
+  - **Tiered subscription (D28, đang xây):** catalog `plans` tách `B2C`/`B2B`; B2C metered quota tháng rồi fallback credit, B2B chỉ mở feature/cap còn mỗi lượt vẫn dùng org-credit/postpaid. `Tiering:Enabled=false` là mặc định rollout.
   - **Postpaid (trả sau):** **chỉ Org** được **PlatformAdmin duyệt** → dùng trước (dồn nợ tới **hạn mức**) → **cuối kỳ ra hóa đơn** → tất toán qua PayOS. **B2C/personal không áp dụng** (luôn Prepaid).
 - **Đơn giá 1 lượt** = biến cấu hình (cần cho hóa đơn postpaid). Service riêng, cô lập dữ liệu tiền.
 
@@ -133,6 +134,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/me/subscription`** ✅ **F8** (2026-07-19) — Thuê bao đang hiệu lực của **chính caller** → `{ ownerType, ownerId, active: bool, billingCycle: "Monthly"|"Annual"|null, startedAt?, expiresAt? }`. Chủ ví suy từ JWT (D15) nên không có đường đọc thuê bao người khác; HrMember xem được membership org (AUTH-6 chỉ chặn money-mutation). Chưa có thuê bao → **200** `active:false` (không phải 404 — cùng lối `GET /me/account`). Đọc thuần. Lỗi: **401**.
 
+**`POST /payment/me/subscription/cancel`** — Huỷ đúng tier effective của caller (owner chỉ từ JWT). Row chuyển `Active → Cancelled`, resolver loại ngay; không hoàn tiền và không đổi reservation/meter đã mở. Trả `{ subscriptionId?, cancelled }`; khi đã huỷ/chưa có tier effective trả `200` với `cancelled:false`, không ghi event trùng. Lỗi: **401**.
+
 **`POST /payment/order`** với gói `Subscription` ✅ **F8** — cùng endpoint mua pack, nhưng gói `type=Subscription` đi **đường riêng**: đơn mang `kind=SubscriptionPurchase` (hoặc `SubscriptionRenewal` nếu chủ ví còn hạn) thay vì `CreditPack`. Gói thiếu `duration_days` → **400** (chặn trước khi tiền rời tay). ⚠ **KHÔNG gỡ guard DB20** — bất biến `kind=CreditPack ⇒ package.interview_credits > 0` giữ nguyên; gói thuê bao chỉ đơn giản không bao giờ mang kind đó. Webhook Paid → nhánh kích hoạt kỳ hạn (**không cộng credit, không ghi `credit_transactions`**, mẫu `InvoiceSettlement`) → outcome `SubscriptionActivated`.
 
 **`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
@@ -144,6 +147,10 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`POST /payment/admin/invoices/close`** ✅ P8b — Chốt kỳ postpaid (1 transaction): snapshot `period_usage` → `Invoice(Issued, amount=count×Billing:UnitPrice)` → reset `period_usage=0`. Auth `Roles="Admin"` (PlatformAdmin ✅ A5) + guard `HrMember`→403.
 
 ### Admin (PlatformAdmin)
+
+**`POST /payment/admin/subscriptions/grant`** — Admin cấp kỳ thuê bao không qua PayOS. Nhận owner, plan, `durationDays`, `activatedAt?`, `idempotencyKey`; User chỉ B2C, Org chỉ B2B. Row `source=AdminGrant`, không order, snapshot entitlement/hash và event `Activated`; activation tương lai chưa mở entitlement.
+
+**`/payment/admin/plans`** — CRUD catalog tier, chỉ `Admin`. `DELETE /{id}` soft-deactivate (`is_active=false`), không xoá row lịch sử đã được package/subscription tham chiếu. Validation: Metered cần quota dương; B2C không có B2B cap; Unlimited chỉ khi `Tiering:AllowUnlimitedPlans=true`. Sửa catalog không hồi tố subscription snapshot; chỉ activation/mua mới dùng catalog mới.
 
 **`POST/PUT/DELETE /payment/package…`** ✅ **A5** — CRUD gói (Req `ProductPackage`). Auth `Roles="Admin"` (PlatformAdmin, AUTH-3/7 — trước v22 comment hở → mở toang, nay đóng). GET catalog (trên) = Public.
 **`POST /payment/admin/orgs/{orgId}/postpaid`** 🔜 — Duyệt postpaid + đặt `credit_limit` (cần MST). Req: `{ creditLimit: int }`.
@@ -399,6 +406,8 @@ created_at     timestamptz
 
 ### `subscriptions` ✅ **F8 (2026-07-19) — dựng LẠI, lần này cùng đường tiêu thụ thật**
 > *(Lịch sử: DB15 2026-07-17 DROP bảng + entity vì là **dead scaffold** — 0 query dùng, `SubscriptionService` là stub `NotImplementedException`. F8 tái tạo qua migration `AddSubscriptionsF8`, gắn liền chuỗi order → webhook → activate → gate ở reserve.)*
+
+**T10 — đổi tier không prorate:** không có endpoint đổi gói riêng; UI mua SKU mới qua `POST /payment/order`, webhook Paid append subscription row. Active window là `status=Active AND activated_at<=now AND expires_at>now`; effective row sắp theo `tier_rank DESC, expires_at DESC, id DESC`. Tier cao hơn hiệu lực ngay; tier thấp hơn được lịch từ lúc effective tier hiện tại hết hạn; cùng tier nối sau kỳ xa nhất của đúng tier. Reservation metered giữ snapshot subscription/meter lúc reserve, không bị đổi theo tier mới.
 ```
 id             uuid pk
 owner_type     varchar(8)    enum: Org (membership B2B) · User (Premium B2C)
@@ -586,6 +595,7 @@ payment_mode:  Prepaid ─(PlatformAdmin duyệt + MST)─► Postpaid   (thu h�
 - ⚠ **Rủi ro đã biết, chưa xử:** 1 email = 3 lượt, mà đăng ký **không xác minh email** ⇒ lạm dụng bằng email dùng-một-lần là có thật. Cần quyết định sản phẩm (xác minh email / giới hạn theo thiết bị), không thuộc phạm vi F7.
 
 ### Postpaid (trả sau)
+- **T8:** trước khi PlatformAdmin đổi Org sang `Postpaid`, Payment resolve entitlement B2B hiện hiệu lực; `postpaid_eligible=false` trả **403** và không đọc/ghi thay đổi ví. Authorization PlatformAdmin giữ nguyên.
 - **Chỉ org được PlatformAdmin DUYỆT** mới bật `Postpaid` (cần **pháp nhân/MST** để xuất hóa đơn + đòi nợ). Mặc định org mới = `Prepaid`.
 - Chặn reserve khi **`nợ + giữ ≥ credit_limit`** hoặc **có hóa đơn `Overdue`**.
 - Cuối kỳ: chốt `period_usage` → tạo `invoice` (`interview_count × unit_price`) → org **tất toán qua PayOS** (`orders.kind = InvoiceSettlement`) → reset kỳ.

@@ -421,7 +421,10 @@ namespace Isas.InterviewService.Migrations
                     b.HasIndex("Status", "LastScoringPublishedAt")
                         .HasDatabaseName("ix_practice_answers_status_lsp");
 
-                    b.ToTable("practice_answers", (string)null);
+                    b.ToTable("practice_answers", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_practice_answers_status", "status IN ('Uploaded', 'Transcribing', 'Transcribed', 'Scoring', 'Scored', 'Skipped', 'Failed')");
+                        });
                 });
 
             modelBuilder.Entity("Isas.InterviewService.Entities.PracticeQuestion", b =>
@@ -512,6 +515,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<bool>("CvAnalysisIncluded")
+                        .HasColumnType("boolean")
+                        .HasColumnName("cv_analysis_included");
+
                     b.Property<Guid?>("CvId")
                         .HasColumnType("uuid")
                         .HasColumnName("cv_id");
@@ -519,6 +526,15 @@ namespace Isas.InterviewService.Migrations
                     b.Property<DateTime?>("Deadline")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deadline");
+
+                    b.Property<string>("EntitlementSource")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("entitlement_source");
+
+                    b.Property<bool>("GroundingEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("grounding_enabled");
 
                     b.Property<Guid?>("JdId")
                         .HasColumnType("uuid")
@@ -546,11 +562,32 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("overall_score");
 
+                    b.Property<bool>("RepoAnalysisIncluded")
+                        .HasColumnType("boolean")
+                        .HasColumnName("repo_analysis_included");
+
+                    b.Property<bool>("RoadmapEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("roadmap_enabled");
+
+                    b.Property<int>("SelfConsistencyN")
+                        .HasColumnType("integer")
+                        .HasColumnName("self_consistency_n");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
                         .HasColumnName("status");
+
+                    b.Property<string>("TierCode")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("tier_code");
+
+                    b.Property<int>("TierRank")
+                        .HasColumnType("integer")
+                        .HasColumnName("tier_rank");
 
                     b.Property<int>("TimeLimitSec")
                         .ValueGeneratedOnAdd()
@@ -597,6 +634,8 @@ namespace Isas.InterviewService.Migrations
                     b.ToTable("practice_sessions", null, t =>
                         {
                             t.HasCheckConstraint("ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20");
+
+                            t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
                         });
                 });
 

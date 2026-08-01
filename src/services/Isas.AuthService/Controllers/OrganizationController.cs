@@ -38,6 +38,10 @@ namespace Isas.AuthService.Controllers
             {
                 return NotFound(new { error = ex.Message });
             }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
         }
 
         // PUT /auth/org — sửa name/taxCode. Chỉ OrgAdmin (HrMember → 403).
@@ -59,6 +63,10 @@ namespace Isas.AuthService.Controllers
             catch (KeyNotFoundException ex)
             {
                 return NotFound(new { error = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { error = ex.Message });
             }
         }
     }

@@ -142,7 +142,10 @@ namespace Isas.CampaignService.Migrations
                     b.HasIndex("OrgId", "At")
                         .HasDatabaseName("ix_audit_logs_org_id_at");
 
-                    b.ToTable("audit_logs", (string)null);
+                    b.ToTable("audit_logs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey')");
+                        });
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.Campaign", b =>
@@ -197,6 +200,12 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false)
                         .HasColumnName("face_verify_enabled");
+
+                    b.Property<bool>("GroundingEnabled")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("grounding_enabled");
 
                     b.Property<string>("JDFileUrl")
                         .HasColumnType("text")
@@ -286,6 +295,8 @@ namespace Isas.CampaignService.Migrations
                             t.HasCheckConstraint("ck_campaigns_adaptive_caps_non_negative", "(max_follow_ups IS NULL OR max_follow_ups >= 0) AND (max_questions IS NULL OR max_questions >= 0)");
 
                             t.HasCheckConstraint("ck_campaigns_pass_score_pct_range", "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)");
+
+                            t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
                         });
                 });
 
@@ -354,6 +365,8 @@ namespace Isas.CampaignService.Migrations
 
                     b.ToTable("campaign_criteria", null, t =>
                         {
+                            t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited')");
+
                             t.HasCheckConstraint("ck_campaign_criteria_weight_range", "weight > 0 AND weight <= 1");
                         });
                 });
@@ -411,10 +424,6 @@ namespace Isas.CampaignService.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)")
                         .HasColumnName("token_hash");
-
-                    b.Property<DateTime?>("UsedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("used_at");
 
                     b.HasKey("Id")
                         .HasName("pk_campaign_invitations");
@@ -525,7 +534,12 @@ namespace Isas.CampaignService.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_campaign_membership_campaign_id_candidate_id");
 
-                    b.ToTable("campaign_membership", (string)null);
+                    b.ToTable("campaign_membership", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_campaign_membership_interview_status", "interview_status IS NULL OR interview_status IN ('NotStarted', 'InProgress', 'Completed')");
+
+                            t.HasCheckConstraint("ck_campaign_membership_status", "status IN ('Joined')");
+                        });
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.CampaignQuestion", b =>
@@ -567,17 +581,16 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("source");
 
-                    b.Property<int?>("TimeLimitSeconds")
-                        .HasColumnType("integer")
-                        .HasColumnName("time_limit_seconds");
-
                     b.HasKey("Id")
                         .HasName("pk_campaign_questions");
 
                     b.HasIndex("CampaignId")
                         .HasDatabaseName("ix_campaign_questions_campaign_id");
 
-                    b.ToTable("campaign_questions", (string)null);
+                    b.ToTable("campaign_questions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_campaign_questions_source", "source IN ('AiGenerated', 'CustomHr')");
+                        });
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.CampaignRanking", b =>
@@ -652,10 +665,6 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
 
-                    b.Property<Guid>("CandidateId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("candidate_id");
-
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -665,6 +674,10 @@ namespace Isas.CampaignService.Migrations
                     b.Property<Guid>("CriterionId")
                         .HasColumnType("uuid")
                         .HasColumnName("criterion_id");
+
+                    b.Property<Guid>("CvSubmissionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cv_submission_id");
 
                     b.Property<decimal>("MatchScore")
                         .HasColumnType("numeric(5,2)")
@@ -680,9 +693,9 @@ namespace Isas.CampaignService.Migrations
                     b.HasIndex("CriterionId")
                         .HasDatabaseName("ix_candidate_criterion_scores_criterion_id");
 
-                    b.HasIndex("CandidateId", "CriterionId")
+                    b.HasIndex("CvSubmissionId", "CriterionId")
                         .IsUnique()
-                        .HasDatabaseName("ix_candidate_criterion_scores_candidate_id_criterion_id");
+                        .HasDatabaseName("ix_candidate_criterion_scores_cv_submission_id_criterion_id");
 
                     b.ToTable("candidate_criterion_scores", (string)null);
                 });
@@ -778,7 +791,12 @@ namespace Isas.CampaignService.Migrations
                     b.HasIndex("Status", "LastScreeningPublishedAt")
                         .HasDatabaseName("ix_cv_submission_status_lsp");
 
-                    b.ToTable("cv_submission", (string)null);
+                    b.ToTable("cv_submission", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_cv_submission_parse_status", "parse_status IN ('Pending', 'Done', 'Failed')");
+
+                            t.HasCheckConstraint("ck_cv_submission_status", "status IN ('Pending', 'Filtered', 'Rejected', 'Analyzing', 'Analyzed', 'AnalysisFailed', 'Invited')");
+                        });
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.OutboxMessage", b =>
@@ -963,19 +981,19 @@ namespace Isas.CampaignService.Migrations
 
             modelBuilder.Entity("Isas.CampaignService.Models.CandidateCriterionScore", b =>
                 {
-                    b.HasOne("Isas.CampaignService.Models.CvSubmission", "CvSubmission")
-                        .WithMany("CriterionScores")
-                        .HasForeignKey("CandidateId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_candidate_criterion_scores_cv_submission_candidate_id");
-
                     b.HasOne("Isas.CampaignService.Models.CampaignCriterion", "Criterion")
                         .WithMany()
                         .HasForeignKey("CriterionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_candidate_criterion_scores_campaign_criteria_criterion_id");
+
+                    b.HasOne("Isas.CampaignService.Models.CvSubmission", "CvSubmission")
+                        .WithMany("CriterionScores")
+                        .HasForeignKey("CvSubmissionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_candidate_criterion_scores_cv_submission_cv_submission_id");
 
                     b.Navigation("Criterion");
 

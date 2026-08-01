@@ -88,6 +88,8 @@ builder.Services.Configure<AiPricingSettings>(
     builder.Configuration.GetSection("AiPricing"));
 builder.Services.Configure<HttpTrafficRetentionSettings>(
     builder.Configuration.GetSection(HttpTrafficRetentionSettings.SectionName));
+builder.Services.Configure<TieringSettings>(
+    builder.Configuration.GetSection(TieringSettings.SectionName));
 
 // DB4 — cấu hình reconciler credit_accounts.reserved_credits ↔ count(reservations Reserved).
 builder.Services.Configure<ReconcileSettings>(
@@ -130,6 +132,8 @@ builder.Services.AddScoped<IPackageService, PackageService>();
 // P8b: hóa đơn postpaid — chốt kỳ → tất toán (reuse OrderService/PayOS) → settle qua webhook (branch Kind).
 builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+builder.Services.AddScoped<PlanService>();
+builder.Services.AddScoped<EntitlementResolver>();
 // F18: hoàn tiền — đơn Paid→Refunded + bút toán đảo gắn bút toán mua gốc + thu hồi credit (kẹp trần).
 builder.Services.AddScoped<IRefundService, RefundService>();
 // F19: tổng hợp doanh thu theo kỳ cho PlatformAdmin (đọc `orders`, không đụng sổ cái credit).
@@ -156,6 +160,10 @@ builder.Services.AddHostedService<InterviewEventConsumer>();
 // DB4: đối soát định kỳ credit_accounts.reserved_credits == count(reservations status=Reserved) cho
 // cùng owner → sửa drift (crash giữa reserve/consume/release, bút toán lệch). Core Payment-DB thuần.
 builder.Services.AddHostedService<CreditReservationReconciler>();
+builder.Services.AddHostedService<SubscriptionMeterReconciler>();
+// T9/A3: paid subscription orders without a created entitlement are money-ambiguous. Log for manual
+// reconciliation only; never auto-grant or auto-refund (PAY-10).
+builder.Services.AddHostedService<SubscriptionSettlementReconciler>();
 // DB18 (DB4b): release reservation Reserved mà session Interview KHÔNG BAO GIỜ được tạo (crash giữa
 // reserve↔insert lúc Start). Xác minh dương qua Interview `/internal/sessions/exists`; Interview down →
 // skip vòng (KHÔNG release oan). Compensation-reconciler nhẹ (không saga).

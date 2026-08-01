@@ -179,7 +179,7 @@ public class CampaignCvScreeningC14Tests
         Assert.Equal(3.5m, row.YearsExperience);
         Assert.Contains("C#", row.Skills!);
 
-        var scores = await check.CandidateCriterionScores.Where(s => s.CandidateId == cand.Id).ToListAsync();
+        var scores = await check.CandidateCriterionScores.Where(s => s.CvSubmissionId == cand.Id).ToListAsync();
         Assert.Equal(2, scores.Count);                     // id bịa bị bỏ (2 hợp lệ)
         Assert.Equal(5m, scores.Single(s => s.CriterionId == criteria[1].Id).MatchScore);   // kẹp về max_score=5
     }
@@ -271,7 +271,7 @@ public class CampaignCvScreeningC14Tests
         await NewService(tdb.NewContext()).SaveCvResultAsync(cand.Id, Req(), default);   // callback lần 2
 
         using var check = tdb.NewContext();
-        Assert.Equal(2, await check.CandidateCriterionScores.CountAsync(s => s.CandidateId == cand.Id));  // vẫn 2, không 4
+        Assert.Equal(2, await check.CandidateCriterionScores.CountAsync(s => s.CvSubmissionId == cand.Id));  // vẫn 2, không 4
         Assert.Equal(88, (await check.CvSubmissions.FindAsync(cand.Id))!.OverallMatchScore);
     }
 
@@ -299,7 +299,7 @@ public class CampaignCvScreeningC14Tests
         var row = await check.CvSubmissions.FindAsync(cand.Id);
         Assert.Equal(CvSubmissionStatus.Invited, row!.Status);      // giữ nguyên
         Assert.Equal(90, row.OverallMatchScore);                 // KHÔNG bị ghi đè
-        Assert.Equal(0, await check.CandidateCriterionScores.CountAsync(s => s.CandidateId == cand.Id));
+        Assert.Equal(0, await check.CandidateCriterionScores.CountAsync(s => s.CvSubmissionId == cand.Id));
     }
 
     // (e-bis) candidate không tồn tại → KeyNotFoundException (→404).

@@ -16,6 +16,8 @@ namespace Isas.PaymentService.Services
         private readonly ILogger<CreditAccountService>? _logger;
         private readonly BillingSettings _billing;
         private readonly ISubscriptionService? _subscriptions;
+        private readonly EntitlementResolver? _entitlements;
+        private readonly TieringSettings _tiering;
 
         // DB22 — logger inject OPTIONAL (mẫu AI4 `ICampaignSessionClient`): ctor 1-tham-số đang được
         // gọi ở rất nhiều site test; thêm dependency bắt buộc sẽ phải sửa toàn bộ mà không đem lại gì.
@@ -27,12 +29,16 @@ namespace Isas.PaymentService.Services
             PaymentDbContext db,
             ILogger<CreditAccountService>? logger = null,
             IOptions<BillingSettings>? billing = null,
-            ISubscriptionService? subscriptions = null)
+            ISubscriptionService? subscriptions = null,
+            EntitlementResolver? entitlements = null,
+            IOptions<TieringSettings>? tiering = null)
         {
             _db = db;
             _logger = logger;
             _billing = billing?.Value ?? new BillingSettings();
             _subscriptions = subscriptions;
+            _entitlements = entitlements;
+            _tiering = tiering?.Value ?? new TieringSettings();
         }
 
         /// <summary>
@@ -210,13 +216,20 @@ namespace Isas.PaymentService.Services
             // phải thu hẹp thành `... AND funded_by='Credit'` — nếu không, CreditReservationReconciler sẽ
             // đếm cả chỗ giữ của subscriber rồi bơm reserved_credits lên, phá bất biến thứ nhất. Đó đúng
             // là lớp bug DB21 (job sửa drift lại tự tạo drift), nên nó được khoá bằng test riêng.
-            var subsidized = _subscriptions is not null
-                && await _subscriptions.HasActiveAsync(ownerType, ownerId, ct);
+            // Tiering rollout phải giữ nguyên F8 khi cờ tắt. Khi cờ bật, chỉ snapshot entitlement
+            // quyết định funding: B2B Credit vẫn đi qua ví, không được biến thành unlimited.
+            var entitlement = _tiering.Enabled && _entitlements is not null
+                ? await _entitlements.ResolveAsync(ownerType, ownerId, ct)
+                : null;
+            var metered = entitlement is { InterviewFunding: InterviewFunding.Metered, SubscriptionId: not null };
+            var subsidized = _tiering.Enabled
+                ? entitlement is { InterviewFunding: InterviewFunding.Unlimited, SubscriptionId: not null }
+                : _subscriptions is not null && await _subscriptions.HasActiveAsync(ownerType, ownerId, ct);
 
             // Người mua gói tháng có thể chưa từng mua credit ⇒ chưa có ví, mà FK composite trên
             // credit_reservations lại đòi ví phải tồn tại. Tạo ví rỗng ở đây (Org: 0 credit, không bút
             // toán; User: đi qua đúng đường F7 nên vẫn được suất dùng thử của mình).
-            if (subsidized) await EnsureWalletAsync(ownerType, ownerId, ct);
+            if (subsidized || metered) await EnsureWalletAsync(ownerType, ownerId, ct);
 
             await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
@@ -245,7 +258,9 @@ namespace Isas.PaymentService.Services
                 OwnerId = ownerId,
                 SessionId = sessionId,
                 Status = ReservationStatus.Reserved,
-                FundedBy = subsidized ? ReservationFunding.Subscription : ReservationFunding.Credit,
+                FundedBy = metered ? ReservationFunding.SubscriptionMetered : subsidized ? ReservationFunding.Subscription : ReservationFunding.Credit,
+                MeteredSubscriptionId = metered ? entitlement!.SubscriptionId : null,
+                MeteredPeriodStart = metered ? MeteredPeriodStart(DateTime.UtcNow, entitlement!.MeterAnchorDay) : null,
                 PaymentMode = acc.PaymentMode,
                 CreatedAt = DateTime.UtcNow
             };
@@ -266,7 +281,40 @@ namespace Isas.PaymentService.Services
 
             // acc đã đọc ở trên (guard no-wallet + chọn nhánh bút toán). Guard đầy đủ vẫn nằm trong WHERE
             // của ExecuteUpdate (atomic self-consistent, gồm cả payment_mode) → không phá chống double-spend.
-            int rows;
+            int rows = 0;
+            if (reservation.FundedBy == ReservationFunding.SubscriptionMetered)
+            {
+                // One row per subscription + UTC calendar month. INSERT is idempotent for competing
+                // reserves; the guarded UPDATE is the quota gate and is in this same transaction.
+                await _db.Database.ExecuteSqlInterpolatedAsync($@"INSERT INTO subscription_meters (subscription_id, period_start, used_count, reserved_count, updated_at)
+                    VALUES ({reservation.MeteredSubscriptionId!.Value}, {reservation.MeteredPeriodStart!.Value}, 0, 0, {DateTime.UtcNow})
+                    ON CONFLICT (subscription_id, period_start) DO UPDATE
+                    SET updated_at = EXCLUDED.updated_at", ct);
+                rows = await _db.SubscriptionMeters
+                    .Where(m => m.SubscriptionId == reservation.MeteredSubscriptionId!.Value
+                             && m.PeriodStart == reservation.MeteredPeriodStart!.Value
+                             && _db.CreditAccounts.Any(a => a.OwnerType == ownerType
+                                                          && a.OwnerId == ownerId
+                                                          && a.Status == CreditAccountStatus.Active)
+                             && m.UsedCount + m.ReservedCount + 1 <= entitlement!.MonthlyQuota)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(m => m.ReservedCount, m => m.ReservedCount + 1)
+                        .SetProperty(m => m.UpdatedAt, _ => DateTime.UtcNow), ct);
+                if (rows == 0)
+                {
+                    // Quota exhausted: the meter update did not mutate, so this reservation can
+                    // atomically fall through to the normal credit/postpaid path.
+                    reservation.FundedBy = ReservationFunding.Credit;
+                    reservation.MeteredSubscriptionId = null;
+                    reservation.MeteredPeriodStart = null;
+                    await _db.CreditReservations.Where(r => r.Id == reservation.Id)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(r => r.FundedBy, ReservationFunding.Credit)
+                            .SetProperty(r => r.MeteredSubscriptionId, (Guid?)null)
+                            .SetProperty(r => r.MeteredPeriodStart, (DateTime?)null)
+                            .SetProperty(r => r.UpdatedAt, _ => DateTime.UtcNow), ct);
+                }
+            }
             if (reservation.FundedBy == ReservationFunding.Subscription)
             {
                 // KHÔNG bút toán số dư (xem giải thích bất biến ở gate phía trên). Vẫn phải qua một câu
@@ -283,7 +331,7 @@ namespace Isas.PaymentService.Services
                     .ExecuteUpdateAsync(s => s
                         .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
             }
-            else if (acc.PaymentMode == PaymentMode.Postpaid)
+            else if (reservation.FundedBy == ReservationFunding.Credit && acc.PaymentMode == PaymentMode.Postpaid)
             {
                 // BK17 — Overdue-block: ví Org còn hóa đơn Overdue (nợ kỳ trước chưa tất toán) → chặn reserve
                 // MỚI (payment.md:379/431 "không có hóa đơn Overdue"; §State machine "Overdue ⇒ chặn reserve
@@ -314,7 +362,7 @@ namespace Isas.PaymentService.Services
                         .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits + 1)
                         .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
             }
-            else
+            else if (reservation.FundedBy == ReservationFunding.Credit)
             {
                 // PREPAID (giữ nguyên P4): 1 câu UPDATE có điều kiện (không đọc-rồi-ghi rời) → 2 reserve song
                 // song không cùng vượt check remaining≥1 ⇒ chống double-spend (PAY-5). 0 row = hết credit /
@@ -348,6 +396,13 @@ namespace Isas.PaymentService.Services
                 .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
                 .Select(a => a.ReservedCredits)
                 .FirstOrDefaultAsync(ct);
+
+        internal static DateTime MeteredPeriodStart(DateTime now, short? anchorDay)
+        {
+            var anchor = Math.Clamp(anchorDay ?? 1, (short)1, (short)28);
+            var monthAnchor = new DateTime(now.Year, now.Month, anchor, 0, 0, 0, DateTimeKind.Utc);
+            return now < monthAnchor ? monthAnchor.AddMonths(-1) : monthAnchor;
+        }
 
         // P5 — Consume 1 credit khi SessionScored (D7 · payment.md §State machine "credit_reservations" +
         // "kế toán remaining↔reserved"). Reservation Reserved→Consumed + reserved−1 + ledger(Consume,−1);
@@ -394,6 +449,20 @@ namespace Isas.PaymentService.Services
             // delta_nonzero → SaveChanges ném → rollback → reservation kẹt Reserved → consumer nack-requeue
             // vô hạn → nghẽn queue credit. Đó chính xác là hình dạng lỗi DB20/DB22, chỉ khác điểm vào.
             // Vết tiêu thụ của subscriber KHÔNG mất: nó nằm ở chính row reservation (Consumed + session_id).
+            if (reservation.FundedBy == ReservationFunding.SubscriptionMetered)
+            {
+                var rows = await _db.SubscriptionMeters
+                    .Where(m => m.SubscriptionId == reservation.MeteredSubscriptionId!.Value
+                             && m.PeriodStart == reservation.MeteredPeriodStart!.Value
+                             && m.ReservedCount >= 1)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(m => m.ReservedCount, m => m.ReservedCount - 1)
+                        .SetProperty(m => m.UsedCount, m => m.UsedCount + 1)
+                        .SetProperty(m => m.UpdatedAt, _ => DateTime.UtcNow), ct);
+                if (rows == 0) _logger?.LogWarning("Meter snapshot missing/drifted while consuming {SessionId}", sessionId);
+                await tx.CommitAsync(ct);
+                return ConsumeResult.Consumed(reservation.Id);
+            }
             if (reservation.FundedBy == ReservationFunding.Subscription)
             {
                 await tx.CommitAsync(ct);
@@ -509,6 +578,19 @@ namespace Isas.PaymentService.Services
             // subscriber bỏ ngang buổi thi. Nhánh được chọn theo `funded_by` đã ghi cứng lúc reserve chứ
             // KHÔNG theo "hiện giờ còn thuê bao không" — nên thuê bao hết hạn giữa buổi cũng không lái
             // được release sang nhánh credit (và người đang thi không bị đụng tới — PAY-12).
+            if (reservation.FundedBy == ReservationFunding.SubscriptionMetered)
+            {
+                var rows = await _db.SubscriptionMeters
+                    .Where(m => m.SubscriptionId == reservation.MeteredSubscriptionId!.Value
+                             && m.PeriodStart == reservation.MeteredPeriodStart!.Value
+                             && m.ReservedCount >= 1)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(m => m.ReservedCount, m => m.ReservedCount - 1)
+                        .SetProperty(m => m.UpdatedAt, _ => DateTime.UtcNow), ct);
+                if (rows == 0) _logger?.LogWarning("Meter snapshot missing/drifted while releasing {SessionId}", sessionId);
+                await tx.CommitAsync(ct);
+                return ReleaseResult.Released(reservation.Id);
+            }
             if (reservation.FundedBy == ReservationFunding.Subscription)
             {
                 await tx.CommitAsync(ct);

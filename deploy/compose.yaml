@@ -149,6 +149,11 @@ services:
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__UserName=${RABBITMQ_USER}
       - RabbitMQ__Password=${RABBITMQ_PASS}
+      # D28 — B2B tier gate stays off until staging verification. When enabled, this client must
+      # resolve Payment directly with the internal token; it never goes through Gateway.
+      - Payment__BaseUrl=http://isas.paymentservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}
+      - Tiering__Enabled=${TIERING_ENABLED:-false}
       # SMTP — InvitationEmailConsumer gửi email mời (magic-link) khi tiêu thụ campaign_invitation_email_queue.
       - EmailSettings__Host=${SMTP_HOST}
       - EmailSettings__Port=${SMTP_PORT}
@@ -181,6 +186,9 @@ services:
       - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
       - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
       - Interview__BaseUrl=http://isas.interviewservice:8080   # DB18 — OrphanReservationReconciler gọi Interview /internal/sessions/exists (trống → reconciler safe-skip)
+      # D28 — keep both safeguards explicit during additive rollout. Unlimited plans remain disabled.
+      - Tiering__Enabled=${TIERING_ENABLED:-false}
+      - Tiering__AllowUnlimitedPlans=${TIERING_ALLOW_UNLIMITED_PLANS:-false}
       # F7 — suất dùng thử tặng lúc tạo ví User. Có default :-3 vì chuỗi RỖNG không parse được thành int
       # (env thiếu sẽ làm options binder ném lúc khởi động). Đặt 0 để tắt hẳn.
       - Billing__FreeTrialCredits=${FREE_TRIAL_CREDITS:-3}

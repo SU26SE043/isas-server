@@ -7,13 +7,13 @@ namespace Isas.CampaignService.Models
     public class CandidateCriterionScore
     {
         public Guid Id { get; set; }
-        public Guid CandidateId { get; set; }   // FK → cv_submission (Cascade, DB16); cột giữ candidate_id; UNIQUE(candidate_id, criterion_id)
+        public Guid CvSubmissionId { get; set; } // FK → cv_submission (Cascade); UNIQUE(cv_submission_id, criterion_id)
         public Guid CriterionId { get; set; }   // FK → campaign_criteria (Restrict) — chặn id AI bịa
         public decimal MatchScore { get; set; } // numeric(5,2) — kẹp [0, max_score]
         public string? Reasoning { get; set; }  // dẫn chứng từ CV
         public DateTime CreatedAt { get; set; }
 
-        // Navigation (DB16 — re-point về CvSubmission; cột FK giữ candidate_id)
+        // Navigation to the screened CV submission.
         public CvSubmission CvSubmission { get; set; } = null!;
         public CampaignCriterion Criterion { get; set; } = null!;
     }

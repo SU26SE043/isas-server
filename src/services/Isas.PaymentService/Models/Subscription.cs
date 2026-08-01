@@ -30,6 +30,19 @@ namespace PaymentService.Models
         /// PayOS redeliver cùng một đơn sẽ đụng UNIQUE thay vì cộng thêm một kỳ hạn miễn phí.
         /// </summary>
         public Guid? OrderId { get; set; }
+        public string? AdminGrantIdempotencyKey { get; set; }
+        public Guid? PlanId { get; set; }
+        public PlanAudience Audience { get; set; }
+        public string TierCode { get; set; } = "";
+        public int TierRank { get; set; }
+        public InterviewFunding InterviewFunding { get; set; } = InterviewFunding.Credit;
+        public int? MonthlyQuota { get; set; }
+        public string EntitlementSnapshot { get; set; } = "{}";
+        public int EntitlementsVersion { get; set; } = 1;
+        public string EntitlementHash { get; set; } = "";
+        public SubscriptionSource Source { get; set; } = SubscriptionSource.Purchase;
+        public short? MeterAnchorDay { get; set; }
+        public DateTime ActivatedAt { get; set; } = DateTime.UtcNow;
 
         public BillingCycle BillingCycle { get; set; }
         public SubscriptionStatus Status { get; set; } = SubscriptionStatus.Active;
@@ -42,6 +55,7 @@ namespace PaymentService.Models
 
         public ProductPackage? Package { get; set; }
         public Order? Order { get; set; }
+        public Plan? Plan { get; set; }
     }
 
     /// <summary>
@@ -63,4 +77,5 @@ namespace PaymentService.Models
         /// <summary>Bị huỷ giữa kỳ (hoàn tiền/đối soát tay). Chặn unlimited NGAY, không đợi hết hạn.</summary>
         Cancelled
     }
+    public enum SubscriptionSource { Purchase, AdminGrant }
 }

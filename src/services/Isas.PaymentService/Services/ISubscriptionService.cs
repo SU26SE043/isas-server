@@ -31,10 +31,19 @@ namespace Isas.PaymentService.Services
         /// <summary>Kỳ hạn còn hiệu lực có ngày hết hạn xa nhất (để hiển thị), hoặc null nếu không có.</summary>
         Task<Subscription?> GetActiveAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default);
 
+        /// <summary>Cancel only the owner's currently effective tier. Repeated/no-active calls are safe no-ops.</summary>
+        Task<SubscriptionCancellationResult> CancelEffectiveAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default);
+        Task<Subscription> GrantAsync(OwnerType ownerType, Guid ownerId, Guid planId, int durationDays, DateTime? activatedAt, string key, CancellationToken ct = default);
+
         /// <summary>
         /// Đóng dấu <c>Active → Expired</c> cho các kỳ đã quá hạn. Thuần dọn dẹp/báo cáo — KHÔNG ảnh hưởng
         /// luật vào bài (<see cref="HasActiveAsync"/> tự so ngày). Trả về số row đã đóng dấu.
         /// </summary>
         Task<int> ExpireDueAsync(CancellationToken ct = default);
+    }
+
+    public sealed record SubscriptionCancellationResult(Guid? SubscriptionId, bool Cancelled)
+    {
+        public static readonly SubscriptionCancellationResult NoActive = new(null, false);
     }
 }
