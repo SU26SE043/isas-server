@@ -181,6 +181,41 @@ public class SubscriptionTierT9Tests
         Assert.Equal(expected, (await new EntitlementResolver(tdb.NewContext()).ResolveAsync(OwnerType.User, owner)).SubscriptionId);
     }
 
+    [Fact]
+    public async Task Cancel_EffectiveTierIsRemovedImmediately_AndWritesOneEvent()
+    {
+        using var tdb = new PaymentTestDb(); var owner = Guid.NewGuid(); var now = DateTime.UtcNow;
+        tdb.Db.CreditAccounts.Add(Wallet(owner, now));
+        var plus = Sub(owner, "plus", 1, now.AddMinutes(-1), now.AddDays(20));
+        var pro = Sub(owner, "pro", 2, now.AddMinutes(-1), now.AddDays(30));
+        tdb.Db.Subscriptions.AddRange(plus, pro); await tdb.Db.SaveChangesAsync();
+        var service = new SubscriptionService(tdb.NewContext());
+
+        var first = await service.CancelEffectiveAsync(OwnerType.User, owner);
+        var second = await service.CancelEffectiveAsync(OwnerType.User, owner);
+
+        Assert.Equal(pro.Id, first.SubscriptionId); Assert.True(first.Cancelled);
+        Assert.False(second.Cancelled);
+        Assert.Equal("plus", (await new EntitlementResolver(tdb.NewContext()).ResolveAsync(OwnerType.User, owner)).TierCode);
+        using var read = tdb.NewContext();
+        Assert.Equal(SubscriptionStatus.Cancelled, (await read.Subscriptions.SingleAsync(s => s.Id == pro.Id)).Status);
+        Assert.Single(await read.SubscriptionEvents.Where(e => e.SubscriptionId == pro.Id && e.EventType == "Cancelled").ToListAsync());
+    }
+
+    [Fact]
+    public async Task Cancel_OtherOwnerCannotSeeOrCancelSubscription()
+    {
+        using var tdb = new PaymentTestDb(); var owner = Guid.NewGuid(); var other = Guid.NewGuid(); var now = DateTime.UtcNow;
+        tdb.Db.CreditAccounts.AddRange(Wallet(owner, now), Wallet(other, now));
+        tdb.Db.Subscriptions.Add(Sub(owner, "pro", 2, now.AddMinutes(-1), now.AddDays(30))); await tdb.Db.SaveChangesAsync();
+
+        var result = await new SubscriptionService(tdb.NewContext()).CancelEffectiveAsync(OwnerType.User, other);
+
+        Assert.False(result.Cancelled);
+        Assert.Equal("pro", (await new EntitlementResolver(tdb.NewContext()).ResolveAsync(OwnerType.User, owner)).TierCode);
+        Assert.Empty(await tdb.NewContext().SubscriptionEvents.ToListAsync());
+    }
+
     private static Subscription Sub(Guid owner, string code, int rank, DateTime activatedAt, DateTime expiresAt) => new()
     {
         Id = Guid.NewGuid(), OwnerType = OwnerType.User, OwnerId = owner, Audience = PlanAudience.B2C,

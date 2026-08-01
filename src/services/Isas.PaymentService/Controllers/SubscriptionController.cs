@@ -57,7 +57,20 @@ namespace Isas.PaymentService.Controllers
                 ? SubscriptionResponse.None(owner.Value.OwnerType, owner.Value.OwnerId)
                 : SubscriptionResponse.ToResponse(sub);
         }
+
+        [HttpPost("me/subscription/cancel")]
+        [Authorize]
+        public async Task<ActionResult<SubscriptionCancellationResponse>> CancelMySubscriptionAsync(CancellationToken ct = default)
+        {
+            var owner = GetOwner();
+            if (owner is null) return Forbid();
+
+            var result = await _subscriptions.CancelEffectiveAsync(owner.Value.OwnerType, owner.Value.OwnerId, ct);
+            return Ok(new SubscriptionCancellationResponse(result.SubscriptionId, result.Cancelled));
+        }
     }
+
+    public record SubscriptionCancellationResponse(Guid? SubscriptionId, bool Cancelled);
 
     /// <param name="Active">Có quyền unlimited tại thời điểm gọi hay không — FE chỉ cần đọc cờ này.</param>
     public record SubscriptionResponse(

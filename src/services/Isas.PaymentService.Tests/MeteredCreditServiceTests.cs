@@ -48,6 +48,23 @@ public class MeteredCreditServiceTests
     }
 
     [Fact]
+    public async Task Metered_CancelAfterReserve_StillConsumesAndReleasesOriginalMeterSnapshot()
+    {
+        using var t = new PaymentTestDb(); var owner = await SeedMeteredAsync(t, 2);
+        var consumed = Guid.NewGuid(); var released = Guid.NewGuid();
+        await Service(t.NewContext()).ReserveAsync(OwnerType.User, owner, consumed);
+        await Service(t.NewContext()).ReserveAsync(OwnerType.User, owner, released);
+
+        Assert.True((await new SubscriptionService(t.NewContext()).CancelEffectiveAsync(OwnerType.User, owner)).Cancelled);
+        await Service(t.NewContext()).ConsumeAsync(consumed);
+        await Service(t.NewContext()).ReleaseAsync(released);
+
+        using var read = t.NewContext(); var meter = await read.SubscriptionMeters.SingleAsync();
+        Assert.Equal(1, meter.UsedCount); Assert.Equal(0, meter.ReservedCount);
+        Assert.Empty(await read.CreditTransactions.ToListAsync());
+    }
+
+    [Fact]
     public async Task Metered_ConsumeAfterMonthBoundary_UsesOriginalPeriod()
     {
         using var t = new PaymentTestDb(); var owner = await SeedMeteredAsync(t, 2); var session = Guid.NewGuid();

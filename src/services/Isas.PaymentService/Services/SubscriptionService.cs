@@ -161,6 +161,46 @@ namespace Isas.PaymentService.Services
                 .FirstOrDefaultAsync(ct);
         }
 
+        public async Task<SubscriptionCancellationResult> CancelEffectiveAsync(
+            OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
+        {
+            var now = DateTime.UtcNow;
+            // Read the same effective row the resolver sees. The guarded update makes a racing cancel
+            // idempotent; only the winner writes the single append-only cancellation event.
+            var effective = await _db.Subscriptions.AsNoTracking()
+                .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId)
+                .ActiveAt(now)
+                .OrderByTierPriority()
+                .Select(s => new { s.Id, s.TierRank })
+                .FirstOrDefaultAsync(ct);
+            if (effective is null) return SubscriptionCancellationResult.NoActive;
+
+            // The route intentionally has no subscription id. If cancelling a higher tier exposes an
+            // older lower tier, a retry must remain a no-op rather than cancelling that different row.
+            // A later, genuinely higher-tier purchase is still independently cancellable.
+            var cancellationAlreadyApplies = await _db.Subscriptions.AsNoTracking()
+                .AnyAsync(s => s.OwnerType == ownerType && s.OwnerId == ownerId
+                               && s.Status == SubscriptionStatus.Cancelled
+                               && s.ExpiresAt > now && s.TierRank >= effective.TierRank, ct);
+            if (cancellationAlreadyApplies) return SubscriptionCancellationResult.NoActive;
+
+            var changed = await _db.Subscriptions
+                .Where(s => s.Id == effective.Id && s.OwnerType == ownerType && s.OwnerId == ownerId
+                            && s.Status == SubscriptionStatus.Active)
+                .ExecuteUpdateAsync(u => u
+                    .SetProperty(s => s.Status, SubscriptionStatus.Cancelled)
+                    .SetProperty(s => s.UpdatedAt, _ => now), ct);
+            if (changed == 0) return SubscriptionCancellationResult.NoActive;
+
+            _db.SubscriptionEvents.Add(new SubscriptionEvent
+            {
+                Id = Guid.NewGuid(), SubscriptionId = effective.Id, EventType = "Cancelled",
+                Payload = "{}", CreatedAt = now
+            });
+            await _db.SaveChangesAsync(ct);
+            return new SubscriptionCancellationResult(effective.Id, true);
+        }
+
         public Task<int> ExpireDueAsync(CancellationToken ct = default)
         {
             var now = DateTime.UtcNow;
