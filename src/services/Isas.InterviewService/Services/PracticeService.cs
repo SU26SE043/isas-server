@@ -885,8 +885,14 @@ public class PracticeService : IPracticeService
     ///
     /// VÌ SAO ĐÁNH SỐ CÓ KHOẢNG TRỐNG thay vì thêm field <c>displayOrder</c>: <c>MapToResponse</c> đã
     /// sắp theo <c>OrderNo</c>, FE B2B tự sắp lại cũng theo <c>OrderNo</c>, FE B2C dùng thẳng thứ tự
-    /// mảng BE trả — và KHÔNG màn nào hiển thị <c>OrderNo</c> ra người dùng (cả hai đánh số câu theo
-    /// chỉ số mảng). Nên cách này cho thứ tự đúng ở mọi nơi mà không phải đổi DTO lẫn FE.
+    /// mảng BE trả — và HAI MÀN ỨNG VIÊN không hiển thị <c>OrderNo</c> (đều đánh số câu theo chỉ số
+    /// mảng: practice-session.html:28 "Câu i + 1", campaign-interview.html:47 "Câu currentIndex() + 1").
+    /// Nên cách này cho thứ tự đúng ở hai màn đó mà không phải đổi DTO lẫn FE.
+    ///
+    /// ⚠ NGOẠI LỆ, CHƯA SỬA — màn transcript của Employer CÓ hiển thị <c>OrderNo</c> thô:
+    /// session-transcript-dialog.ts:78 render "Câu q.orderNo", dữ liệu đi từ <c>QuestionResponse.OrderNo</c>
+    /// qua <c>CampaignResultsDtos.cs:101</c> ⇒ với stride 4 HR thấy "Câu 1, 2, 5, 9, 13". Ghi nhận ở đây
+    /// để lần sau đọc khối này không tưởng là đã phủ hết.
     /// Đánh số LẠI (renumber) thì không được: unique <c>(session_id, order_no)</c> là INDEX chứ không
     /// phải constraint nên không hoãn (DEFERRABLE) được, mọi phép dịch số sẽ đụng nhau giữa chừng.
     ///
@@ -897,14 +903,15 @@ public class PracticeService : IPracticeService
     /// <summary>
     /// F2b — kẹp trần câu thích ứng của B2B về đúng miền CHECK ở DB (0..20).
     ///
-    /// VÌ SAO KẸP CHỨ KHÔNG NÉM: `CampaignService.ValidateAdaptiveCaps` hiện chỉ chặn số ÂM, nên HR
-    /// đặt `max_questions = 100000` là qua sạch guard phía Campaign. Nếu ở đây để nguyên giá trị đó
-    /// thì CHECK `ck_practice_sessions_max_questions_range` sẽ nổ ngay lúc INSERT — tức là ứng viên
-    /// bấm "Bắt đầu" và nhận lỗi, SAU KHI credit org đã bị reserve. Đổi một cấu hình sai của HR lấy
-    /// một buổi thi hỏng là đánh đổi tệ; kẹp + log để HR sửa cấu hình mà ứng viên vẫn thi được.
+    /// VÌ SAO KẸP CHỨ KHÔNG NÉM: nếu để nguyên một giá trị ngoài miền thì CHECK
+    /// `ck_practice_sessions_max_questions_range` nổ ngay lúc INSERT — tức là ứng viên bấm "Bắt đầu"
+    /// và nhận lỗi, SAU KHI credit org đã bị reserve. Đổi một cấu hình sai của HR lấy một buổi thi
+    /// hỏng là đánh đổi tệ; kẹp + log để HR sửa cấu hình mà ứng viên vẫn thi được.
     ///
-    /// Chỗ sửa ĐÚNG là siết `ValidateAdaptiveCaps` phía Campaign (ngoài phạm vi worker này — file đó
-    /// đang do người khác giữ trong vòng này). Đây là lưới an toàn, không phải bản vá thay thế.
+    /// ✅ Lỗ upstream đã vá (INT-17b): `CampaignService.ValidateAdaptiveCaps` nay có đủ trần TRÊN cho
+    /// cả ba (`MaxQuestionsPerSession`, `MaxFollowUpsCap`, `MaxDeepPerQuestionCap`), không còn cảnh
+    /// "chỉ chặn số âm, HR gõ 100000 là qua sạch". Giữ chỗ kẹp này làm **lưới an toàn** cho đường
+    /// internal (Campaign gọi thẳng, không đi qua validate) chứ không phải bản vá thay thế.
     /// </summary>
     private int ClampCampaignMaxQuestions(int? requested, Guid campaignId)
     {

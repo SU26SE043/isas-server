@@ -32,10 +32,10 @@
 | Configuration & Deployment (CFG) | 7 | 0 | 4 | 5 |
 | Reliability (REL) | 7 | 0 | 2 | 7 |
 | Performance & Cost (PERF) | 6 | 0 | 1 | 6 |
-| Test Coverage (TEST) | 9 | 0 | 1 | 8 |
-| **Tổng** | **57** | **2** *(cả 2 đã xử lý)* | **13** | **49** |
+| Test Coverage (TEST) | 9 | 0 | 1 | 7 |
+| **Tổng** | **57** | **2** *(cả 2 đã xử lý)* | **13** | **48** |
 
-> **Đã xử lý ngay trong phiên (2026-08-02):** `DB-06` (apply migration, sự cố prod) · `DB-04` (đo: 0 dòng mồ côi) · `BUS-01` + `CFG-01` + `TEST-09` (bản vá code, nhánh `fix/int17b-seed-budget-killswitch`) · `CFG-03` phần repo · `BUS-02` đỡ một phần.
+> **Đã xử lý ngay trong phiên (2026-08-02):** `DB-06` (apply migration, sự cố prod) · `DB-04` (đo: 0 dòng mồ côi) · `BUS-01` + `CFG-01` + `TEST-09` (bản vá code, nhánh `fix/int17b-seed-budget-killswitch`) · `CFG-03` phần repo · `TEST-01` (test hợp đồng dây 2 đầu) · `BUS-02` đỡ một phần · 5 chỗ doc lệch code.
 
 **Điều nghiêm trọng nhất không nằm trong code mà nằm trên server**: `DB-06` — image mang INT-17b chạy production 9 tiếng trong khi 2 migration chưa apply, `InterviewService` và `CampaignService` trả 500 trên đường request. ✅ **Đã xử lý 2026-08-02**: apply 2 migration, backfill verified bằng phép kiểm độc lập, hai service trả 200 và log sạch `42703`. Chi tiết + bằng chứng từng bước ở `DB-06`.
 
@@ -592,13 +592,19 @@ Tiền đề của `OPS4` đã đổi: model hiện tại là `small`, nên rủ
 **Evidence**
 - Python: `tests/test_decide_next.py:341` dựng thẳng model (`DecideNextRequest(... rootQuestion="Gốc", currentDepth=2, maxDepth=3, otherTopics=["Khác"])`), `:358` gọi thẳng `provider.decide_next(...)` — **không** request nào qua route mang `rootQuestion` (6 lời gọi `client.post` ở `:171, :208, :231, :235, :243, :255`)
 - Mapping ở `app/main.py:311-314` do đó không có test nào phủ
-- .NET: grep `rootQuestion` trong `Isas.InterviewService.Tests/` → **0 kết quả**; payload là anonymous object (`AiServiceInterviewDecider.cs:53-56`) nên `PropertyNamingPolicy = CamelCase` (`:19`) không áp
+- .NET: grep `rootQuestion` trong `Isas.InterviewService.Tests/` → **0 kết quả** (payload dựng tay ở `AiServiceInterviewDecider.cs:53-56`)
 - Precedent làm đúng đã có trong repo: `tests/test_roadmap.py:263` (post qua route, assert provider nhận đủ), `tests/test_worker_dlq.py:58` (pin hằng số phía .NET)
 
 **Failure** — Xoá 4 dòng mapping ở `main.py` hoặc gõ sai tên field ở .NET đều không làm đỏ test nào — đúng lớp lỗi mà `BC14/focusCriteria` từng mắc và mà commit này tự nêu là muốn tránh.
-**Severity** — High · **Status** — Chưa thấy đề cập
-**Cross-agent confirmation** — CFG-02
-**Recommended verification** — Một test Python qua route với JSON camelCase + một test .NET assert các khoá trong body gửi đi (serialize rồi so khớp tên).
+
+> ✏️ **Đính chính bản nháp:** tôi từng viết *"payload là anonymous object nên `PropertyNamingPolicy = CamelCase` (`:19`) không áp"* — **SAI**. `JsonContent.Create(payload)` ở `:61` **không** truyền options nên rơi về `JsonSerializerDefaults.Web` của `System.Net.Http.Json`, tức camelCase **vẫn** được áp; field `Json` ở `:17-21` chỉ dùng cho chiều ĐỌC response. Đo lại để chắc (mutation trên chính bộ test mới): đổi `rootQuestion` → `RootQuestion` (Pascal) → **XANH** (policy nắn về camel, vô hại); đổi thành `rootQuestionX` → **2 ĐỎ**. ⇒ Bề mặt rủi ro hẹp hơn bản nháp mô tả: sai HOA/thường được cứu, chỉ sai tên thật mới lọt — và nay đã bị bắt.
+
+**Severity** — High
+**Status** — ✅ **ĐÃ SỬA 2026-08-02** (nhánh `fix/int17b-seed-budget-killswitch`)
+- **Python** — `test_endpoint_forwards_int17b_depth_fields_to_provider`: POST **qua route** với đúng 4 khoá camelCase .NET gửi + header `X-Internal-Token`, dùng `answerText` để khỏi đụng S3/Whisper. Gửi giá trị **khác default** (`currentDepth=2`) để phân biệt "map đúng" với "rơi về default" — gửi 0 thì mutation sẽ xanh giả. Mutation xoá 4 dòng `main.py:311-314` → **1 ĐỎ**, và đỏ đúng triệu chứng lớp bug BC14: `status_code == 200` vẫn PASS, chỉ giá trị bốc hơi. Test này bắt cả 3 kiểu đứt: quên khai schema · thiếu map · đổi tên kwarg provider.
+- **.NET** — `DecideNextWireContractTests.cs`, 5 test: 4 khoá INT-17b · 9 khoá cũ + shape lồng (`history[]`, `criteria[]`) · **tập khoá top-level bằng đúng 13 khoá khai ở `schemas.py`** (chặn cả khoá thừa) · `otherTopics` null → mảng rỗng (Python khai `list[str] = []`, gửi `null` là 422) · đường dẫn + header `X-Internal-Token`. Mutation 5/6 ĐỎ (ca thứ 6 là Pascal — xanh có lý do, xem đính chính trên).
+
+**Cross-agent confirmation** — CFG-02 (deploy lệch nhịp giờ đã có lưới)
 
 ### TEST-02 — Test Campaign nới lỏng đúng field mới *(UC cũ: mới)*
 
@@ -671,7 +677,7 @@ Mặc định C# là thứ có hiệu lực khi cả env lẫn `appsettings.json
 | ~~0~~ | ~~**DB-06**~~ | ✅ **Đã xử lý 2026-08-02** — apply 2 migration, backfill verified, hai service trả 200, log sạch `42703` | Giữ lại trong bảng để thấy thứ tự ưu tiên tại thời điểm phát hiện. |
 | 1 | **CFG-07** | 5/5 container production chạy `ASPNETCORE_ENVIRONMENT=Development` ⇒ mọi lỗi trả ra ngoài kèm stack trace **và câu SQL** | Lần **thứ ba** (18/07, 20/07, nay) vì hai lần trước chỉ `sed` trên server chứ không sửa trong `deploy/compose.yaml` (`OPS6`). Sự cố `DB-06` vừa rồi phơi nguyên tên cột và câu SQL ra ngoài trong 9 tiếng. |
 | ~~2~~ | ~~**CFG-01**~~ | ✅ **Đã sửa 2026-08-02** — kill-switch nay là MỘT khoá; kèm `BUS-01` (số câu gốc chia theo ngân sách) và `CFG-03` phần repo. Mutation 4/4 ĐỎ, 1597 test xanh. Còn: đổi env trên server **sau** khi image mới lên. | |
-| 3 | **CFG-02 + TEST-01** | AIService build tay ngoài CI + pydantic `extra='ignore'` + không test nào phủ mapping ⇒ deploy lệch nhịp làm chuỗi chết sớm, hoàn toàn im lặng | Hai lỗ hổng trên cùng một đường: lỗi xảy ra được **và** không có gì bắt được. Một contract test qua route + một test payload .NET là việc nhỏ, chặn cả lớp lỗi đã từng làm `focusCriteria` hỏng nhiều tuần. `DB-06` cho thấy deploy ở đây thật sự lệch nhịp được. |
+| 3 | **CFG-02** *(`TEST-01` ✅ đã sửa)* | AIService build tay ngoài CI + pydantic `extra='ignore'` + không test nào phủ mapping ⇒ deploy lệch nhịp làm chuỗi chết sớm, hoàn toàn im lặng | Hai lỗ hổng trên cùng một đường: lỗi xảy ra được **và** không có gì bắt được. Một contract test qua route + một test payload .NET là việc nhỏ, chặn cả lớp lỗi đã từng làm `focusCriteria` hỏng nhiều tuần. `DB-06` cho thấy deploy ở đây thật sự lệch nhịp được. |
 | 4 | **DB-01** | Backfill CTE nay đã chạy trên prod **và đúng** (verified), nhưng repo vẫn không có hạ tầng test migration Postgres | Lần này thoát nhờ dữ liệu nhỏ và kiểm tay. Migration sau sẽ không may như vậy: `EnsureCreated` trên SQLite không bao giờ chạy migration, nên mọi backfill/raw SQL vẫn ra production mà chưa từng được thực thi ở đâu. |
 | 5 | **BUS-03 + BUS-04** | B2B không ép `MaxFollowUps = 0` ⇒ chuỗi chết sau 3 câu; ngân sách buổi tiêu theo thứ tự trả lời ⇒ ứng viên cùng campaign nhận số câu khác nhau | Chỉ chặn nhánh **B2B** — B2C bật được trước. Nhưng `rules.md:42` đang khẳng định "vẫn công bằng" trong khi code không bảo đảm điều đó, và kết quả B2B thì đem đi xếp hạng. |
 

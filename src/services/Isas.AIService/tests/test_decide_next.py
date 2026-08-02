@@ -354,6 +354,48 @@ def test_request_accepts_depth_fields_no_longer_swallowed():
     assert req.otherTopics == ["Khác"]
 
 
+def test_endpoint_forwards_int17b_depth_fields_to_provider(monkeypatch):
+    """Khoá mắt xích ROUTE của chuỗi .NET → schema → main.py → provider cho 4 field INT-17b.
+
+    Hai test kẹp quanh đây đều NHẢY QUA khối map ở `main.py`: test trên dựng thẳng
+    `DecideNextRequest`, test dưới gọi thẳng `provider.decide_next`. Đo thật: xoá 4 dòng map
+    (`root_question=`/`current_depth=`/`max_depth=`/`other_topics=`) thì cả 265 test vẫn XANH —
+    tính năng chuỗi tắt câm, không lỗi gì, đúng lớp bug đã làm `focusCriteria` của BC14 hỏng.
+
+    Test này POST bằng ĐÚNG khoá camelCase mà `AiServiceInterviewDecider` dựng payload, nên đứt ở
+    bất kỳ mắt nào cũng ĐỎ: schema quên khai → fake nhận default; map thiếu → fake nhận default;
+    đổi tên kwarg → TypeError → route trả 502."""
+    received = {}
+
+    async def fake_decide_next(job_category, current_question, transcript, history,
+                               asked_count, follow_up_count, max_questions, max_follow_ups,
+                               criteria, root_question=None, current_depth=0, max_depth=0,
+                               other_topics=None):
+        received.update(root_question=root_question, current_depth=current_depth,
+                        max_depth=max_depth, other_topics=other_topics)
+        return {"action": "follow_up", "nextQuestion": "Đào sâu thêm?", "reason": "r"}
+
+    monkeypatch.setattr(main_module.provider, "decide_next", fake_decide_next)
+
+    # answerText thay audioObjectKey → khỏi mock S3/Whisper (mẫu test_endpoint_with_answer_text).
+    res = client.post("/api/v1/decide-next", headers=_HEADERS, json={
+        "jobCategory": "FE",
+        "answerText": "Virtual DOM là cây ảo trong bộ nhớ.",
+        "currentQuestion": "Q hiện tại",
+        "criteria": _CRITERIA,
+        "rootQuestion": "Bạn hiểu Virtual DOM thế nào?",
+        "currentDepth": 2,       # ≠ default 0 → phân biệt được "map đúng" với "rơi về default"
+        "maxDepth": 3,           # ≠ default 0
+        "otherTopics": ["Kể về một bug khó", "Bạn tối ưu bundle size ra sao?"],
+    })
+
+    assert res.status_code == 200
+    assert received["root_question"] == "Bạn hiểu Virtual DOM thế nào?"
+    assert received["current_depth"] == 2
+    assert received["max_depth"] == 3
+    assert received["other_topics"] == ["Kể về một bug khó", "Bạn tối ưu bundle size ra sao?"]
+
+
 @pytest.mark.asyncio
 async def test_decide_next_forwards_depth_context_to_prompt(monkeypatch):
     """Khai schema thôi chưa đủ — dữ liệu phải LUỒN tới tận prompt (bài học BC14)."""
