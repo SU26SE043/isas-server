@@ -429,6 +429,11 @@ services:
       - S3_BUCKET=isas-files
       - DOTNET_CALLBACK_BASE=http://<SERVER_TS_IP>:5246
       - INTERNAL_TOKEN=${INTERNAL_TOKEN}   # KHỚP server
+      # C14 — consumer sàng CV B2B (`cv_screening_queue`), chạy CÙNG tiến trình worker nhưng channel
+      # riêng nên không xếp hàng sau job chấm. Mặc định TẮT: bật SAU khi đã xả queue tồn, nếu không
+      # sẽ chấm lại toàn bộ bản nhân đôi mà StuckScreeningRepublisher đã đẩy (đo 2026-08-02: 713
+      # message cho đúng 8 ứng viên). `CallbackBase` lấy từ chính message, không phải env này.
+      - CV_SCREENING_ENABLED=false
       # F22 — đẩy token/chi phí về PaymentService (GEN-4: AIService không ghi DB). Trỏ THẲNG tới
       # payment (cổng publish 5271), KHÔNG qua gateway (GEN-1). Để TRỐNG = chỉ ghi log, không gọi
       # mạng (kill-switch tại chỗ khi sink có sự cố, khỏi deploy lại). Dùng chung INTERNAL_TOKEN.

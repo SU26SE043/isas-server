@@ -169,6 +169,130 @@ public class PracticeServiceTests
         Assert.Equal(0, s.MaxFollowUps);
     }
 
+    // BUS-01 — số câu GỐC phải CHIA ngân sách buổi cho chiều sâu, không lấy thẳng `SeedCount`.
+    //
+    // FE mặc định `questionCount = 5`, mà `questionCount` là TỔNG số câu của buổi (F2b). Sinh đúng 5 câu
+    // gốc thì `askedCount = 5` chạm ngay trần ⇒ `AnswerService` bước (3) thấy hết ngân sách và trả về
+    // TRƯỚC cả lời gọi AI đầu tiên ⇒ buổi không có câu đào sâu nào, không lỗi, không thông báo: tính năng
+    // tắt câm trên đúng đường mặc định của B2C.
+    [Theory]
+    [InlineData(20, 5)]   // trần 20 = thiết kế "5 gốc × (1+3)"
+    [InlineData(10, 3)]   // gói plus: ceil(10/4) = 3 gốc → 3 + 7 khe sâu
+    [InlineData(5, 2)]    // MẶC ĐỊNH FE: 2 gốc + 3 khe sâu = đúng 5 câu
+    [InlineData(1, 1)]    // chọn 1 câu = 1 câu, không âm/không 0
+    public async Task Create_ChuoiDaoSau_SoCauGoc_ChiaTheoNganSachBuoi(int questionCount, int expectedSeeds)
+    {
+        using var t = new TestDb();
+
+        int? requestedCount = null;
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, CancellationToken>(
+                (_, _, _, _, count, _) => requestedCount = count)
+            // AI trả dư — `Take` phải cắt về đúng số câu gốc đã tính.
+            .ReturnsAsync(Enumerable.Range(1, 9).Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList());
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var adaptive = Options.Create(new AdaptiveOptions
+        {
+            Enabled = true, SeedCount = 5, MaxQuestions = 20, MaxFollowUps = 3, MaxDeepPerQuestion = 3
+        });
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance, adaptive);
+
+        var res = await svc.CreateSessionAsync(
+            Guid.NewGuid(),
+            new CreatePracticeSessionRequest(null, null, JobCategory.BE, QuestionCount: questionCount));
+
+        Assert.Equal(expectedSeeds, requestedCount);          // xin AI đúng ngần đó, không xin thừa
+        Assert.Equal(expectedSeeds, res.Questions.Count);     // và giữ đúng ngần đó
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
+        Assert.Equal(questionCount, s.MaxQuestions);
+        // Bất biến thật sự cần giữ: sau khi rải seed vẫn PHẢI còn khe cho câu đào sâu (trừ khi ứng viên
+        // chỉ chọn 1 câu). Đây mới là thứ BUS-01 nói tới — số câu gốc chỉ là phương tiện.
+        if (questionCount > 1) Assert.True(s.MaxQuestions > expectedSeeds);
+    }
+
+    // CFG-01 — KILL-SWITCH: `MaxDeepPerQuestion = 0` phải quay lại ĐÚNG hành vi trước INT-17b, không phải
+    // một hình dạng thứ ba. Trước bản vá, nhánh tính `seedCount` rẽ theo `adaptiveOn` chứ không theo trần
+    // độ sâu ⇒ đặt trần 0 vẫn (a) xin AI `SeedCount` thay vì `questionCount`, (b) đẩy lời gọi sang overload
+    // 6 tham số. Tức là "tắt" mà hành vi không quay lại như cũ — đúng lúc người trực cần nó nhất.
+    [Fact]
+    public async Task Create_KillSwitch_TranDoSauBang0_QuayLaiDungLuongTruocInt17b()
+    {
+        using var t = new TestDb();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>(MockBehavior.Strict);
+        // Luồng CŨ: không focusCriteria + không chọn số câu ⇒ overload 4 THAM SỐ.
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GeneratedQuestion>
+            {
+                new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" }
+            });
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var adaptive = Options.Create(new AdaptiveOptions
+        {
+            Enabled = true, SeedCount = 1, MaxQuestions = 10, MaxFollowUps = 3, MaxDeepPerQuestion = 0
+        });
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance, adaptive);
+
+        var res = await svc.CreateSessionAsync(
+            Guid.NewGuid(), new CreatePracticeSessionRequest(null, null, JobCategory.BE));
+
+        // `MockBehavior.Strict` + chỉ setup overload 4 tham số ⇒ nếu code gọi overload có `count` thì test
+        // ném ngay. Đây là phần khoá "không đổi overload".
+        gen.Verify(g => g.GenerateQuestionsAsync(
+            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        // Vẫn cắt còn `SeedCount` câu seed như luồng adaptive cũ (AI trả 3, giữ 1).
+        Assert.Single(res.Questions);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
+        Assert.True(s.AdaptiveEnabled);
+        Assert.Equal(0, s.MaxDeepPerQuestion);
+        // Trần theo BUỔI trở lại có hiệu lực (chế độ chuỗi mới ép nó về 0). Để 0 ở đây nghĩa là "không
+        // trần" ⇒ kill-switch sẽ ra hành vi thứ ba: thích ứng chạy tới tận trần buổi.
+        Assert.Equal(3, s.MaxFollowUps);
+    }
+
+    // CFG-01 (tiếp) — khoá GIÁ TRỊ MẶC ĐỊNH, không chỉ hành vi.
+    //
+    // Test trên tự dựng `AdaptiveOptions { MaxFollowUps = 3 }` nên nó KHÔNG phủ mặc định — mutation đổi
+    // mặc định về 0 chạy qua xanh 514/514. Mà mặc định mới là thứ có hiệu lực khi env lẫn appsettings đều
+    // vắng khoá này, tức đúng ca "ai đó dựng service ở môi trường mới rồi bật kill-switch".
+    // `MaxFollowUps = 0` ở chế độ frontier nghĩa là KHÔNG trần (xem `AnswerService` bước (3)), nên mặc
+    // định 0 biến kill-switch thành "thích ứng chạy tới tận trần buổi" thay vì hành vi trước INT-17b.
+    [Fact]
+    public void AdaptiveOptions_MacDinh_GiuTranBuoiChoCheDoFrontier()
+    {
+        var d = new AdaptiveOptions();
+
+        Assert.Equal(3, d.MaxFollowUps);          // >0 = có trần thật khi kill-switch bật
+        Assert.Equal(3, d.MaxDeepPerQuestion);    // >0 = chế độ chuỗi là mặc định
+        Assert.Equal(5, d.SeedCount);
+        Assert.Equal(20, d.MaxQuestions);
+        Assert.Equal(3, d.MaxFailuresPerSession); // >0 = cầu dao bật (0 = tắt cầu dao)
+        Assert.False(d.Enabled);                  // toggle vẫn TẮT mặc định
+    }
+
     // INT-17b — câu GỐC đánh số CÓ KHOẢNG TRỐNG (stride = 1 + trần đào sâu) để chuỗi của câu trước có
     // chỗ nằm xen vào mà không đụng câu sau. Đây là thứ thay cho việc thêm field `displayOrder` + sửa FE:
     // `MapToResponse` và FE B2B đều sắp theo `OrderNo`, nên đánh số đúng là ra đúng thứ tự hội thoại.

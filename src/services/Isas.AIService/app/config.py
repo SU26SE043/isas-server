@@ -58,6 +58,25 @@ class Settings(BaseSettings):
     dead_queue_name: str = "scoring_pipeline_dead_queue"  # nơi giữ message chết
     dead_routing_key: str = "scoring_dead"                # DLX → DLQ binding key
 
+    # ── SÀNG CV B2B (C14) — queue RIÊNG, KHÔNG Whisper ───────────
+    # TRÙNG hằng `CvScreeningPublisher.QueueName` (.NET). Publisher khai queue với
+    # `arguments: null` ⇒ bên này PHẢI khai y hệt (durable, KHÔNG argument) — thêm
+    # x-dead-letter-* ở đây sẽ ném PRECONDITION_FAILED 406 khi redeclare.
+    cv_screening_queue_name: str = "cv_screening_queue"
+    # Cao hơn scoring (prefetch=1): sàng CV KHÔNG tải audio/không Whisper nên nhẹ hơn nhiều.
+    # Chạy trên channel RIÊNG để backlog audio không nghẽn sàng CV và ngược lại (ai.md).
+    cv_screening_prefetch: int = 4
+    # Bật/tắt consumer sàng CV mà không phải deploy lại. ⚠ Queue LIVE có thể đang tồn hàng trăm
+    # message do StuckScreeningRepublisher đẩy lại mỗi 15' suốt thời gian KHÔNG có consumer —
+    # mỗi message = 1 lượt Gemini. Xả queue trước khi bật lần đầu (xem ai.md §Pipeline sàng CV).
+    # ⚠ Mặc định TẮT, theo đúng tiền lệ mọi rollout khác của repo (`GROUNDING_ENABLED`,
+    # `TIERING_ENABLED`, `ADAPTIVE_ENABLED` đều false). Lý do cụ thể ở đây: lúc consumer này ra đời,
+    # `cv_screening_queue` đã tồn 713 message của ĐÚNG 8 ứng viên (StuckScreeningRepublisher nhân bản
+    # ~89 lần/người). Bật cùng lúc deploy = 713 lượt Gemini thay vì 8 (~2,85 triệu token thay vì ~32
+    # nghìn). Trình tự an toàn: deploy code (tắt) → XẢ queue → bật `CV_SCREENING_ENABLED=true` →
+    # republisher tự đẩy lại đúng 8 job trong 15'.
+    cv_screening_enabled: bool = False
+
     # ── S3 / SEAWEEDFS CONFIG ────────────────────────────────────
     s3_endpoint: str = "http://localhost:8333"
     s3_access_key: str = "your-access-key"

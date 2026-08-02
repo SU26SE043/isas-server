@@ -27,16 +27,17 @@ public class StuckScreeningRepublisherTests
     }
 
     // ServiceProvider thật để CreateScope() trả về CampaignDbContext dùng chung connection SQLite.
-    private static (StuckScreeningRepublisher r, Mock<ICvScreeningPublisher> pub) Build(CampaignTestDb t)
+    private static (StuckScreeningRepublisher r, Mock<ICvScreeningPublisher> pub) Build(
+        CampaignTestDb t, string? giveUpHours = null)
     {
         var services = new ServiceCollection();
         // DB2b — khớp snake_case schema do CampaignTestDb EnsureCreated (partial index outbox_messages).
         services.AddDbContext<CampaignDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
         var provider = services.BuildServiceProvider();
 
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["Internal:CallbackBase"] = "http://campaign:8080" })
-            .Build();
+        var settings = new Dictionary<string, string?> { ["Internal:CallbackBase"] = "http://campaign:8080" };
+        if (giveUpHours is not null) settings["Screening:GiveUpAfterHours"] = giveUpHours;
+        var config = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
 
         var pub = new Mock<ICvScreeningPublisher>();
         var r = new StuckScreeningRepublisher(
@@ -221,5 +222,85 @@ public class StuckScreeningRepublisherTests
         await ScanOnce(r);
 
         pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── TRẦN BỎ CUỘC ────────────────────────────────────────────────────────────────────────────
+    //
+    // Không có trần thì vòng đẩy-lại KHÔNG có điểm dừng. Đo trên production 2026-08-02:
+    // `cv_screening_queue` tồn **713 message của đúng 8 ứng viên** — consumer chưa từng tồn tại nên
+    // mỗi người bị đẩy lại 1 lần/15' suốt ~22 tiếng, và không alert nào đọc `list_queues` để ai biết.
+    // Mỗi bản nhân đôi = 1 lượt Gemini nếu consumer bật lên.
+
+    [Fact]
+    public async Task QuaTranBoCuoc_ChuyenAnalysisFailed_VaKhongDayLai()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = SeedActiveCampaign(tdb, Guid.NewGuid());
+        SeedCriteria(tdb, camp.Id);
+        // Tạo 7 giờ trước (> trần mặc định 6h), vẫn Analyzing và đã quá 15' không callback.
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing,
+            createdAt: DateTime.UtcNow.AddHours(-7), lastPublished: DateTime.UtcNow.AddMinutes(-20));
+
+        var (r, pub) = Build(tdb);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Never);
+        var saved = await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id);
+        Assert.Equal(CvSubmissionStatus.AnalysisFailed, saved.Status);
+        Assert.NotNull(saved.RejectReason);   // HR phải NHÌN THẤY lý do, không im lặng kẹt Analyzing
+    }
+
+    // Neo trần theo `CreatedAt`, KHÔNG theo `LastScreeningPublishedAt`: mốc sau bị chính vòng lặp này
+    // dời về `now` mỗi lần đẩy ⇒ lấy nó làm trần thì trần không bao giờ tới. Ca này khoá đúng điều đó:
+    // ứng viên CŨ nhưng marker vừa mới dời vẫn phải bị bỏ cuộc.
+    [Fact]
+    public async Task QuaTranBoCuoc_TinhTheoCreatedAt_DuMarkerVuaDoi()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = SeedActiveCampaign(tdb, Guid.NewGuid());
+        SeedCriteria(tdb, camp.Id);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing,
+            createdAt: DateTime.UtcNow.AddHours(-30), lastPublished: DateTime.UtcNow.AddMinutes(-16));
+
+        var (r, pub) = Build(tdb);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(CvSubmissionStatus.AnalysisFailed,
+            (await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id)).Status);
+    }
+
+    [Fact]
+    public async Task ChuaQuaTranBoCuoc_VanDayLaiBinhThuong()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = SeedActiveCampaign(tdb, Guid.NewGuid());
+        SeedCriteria(tdb, camp.Id);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing,
+            createdAt: DateTime.UtcNow.AddHours(-1), lastPublished: DateTime.UtcNow.AddMinutes(-20));
+
+        var (r, pub) = Build(tdb);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(CvSubmissionStatus.Analyzing,
+            (await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id)).Status);
+    }
+
+    // `Screening:GiveUpAfterHours = 0` = TẮT trần (đẩy lại vô hạn như trước). Có công tắc để ai đó
+    // cố ý chọn hành vi cũ, nhưng phải là lựa chọn tường minh chứ không phải mặc định.
+    [Fact]
+    public async Task TranBang0_TatTran_VanDayLaiDuRatCu()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = SeedActiveCampaign(tdb, Guid.NewGuid());
+        SeedCriteria(tdb, camp.Id);
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing,
+            createdAt: DateTime.UtcNow.AddDays(-30), lastPublished: DateTime.UtcNow.AddMinutes(-20));
+
+        var (r, pub) = Build(tdb, giveUpHours: "0");
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }
