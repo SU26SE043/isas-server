@@ -1,5 +1,31 @@
-# ISAS — FULL production stack (server host). Source of truth for the runnable stack.
+# ISAS — FULL production stack (server host).
+#
+# ⚠⚠ FILE NÀY **KHÔNG PHẢI** ARTIFACT ĐANG CHẠY PRODUCTION. ⚠⚠
+# Stack thật do `/home/duc2834/docker/main/docker-compose.yml` TRÊN SERVER quản (compose project
+# `main` — kiểm bằng label `com.docker.compose.project` / `com.docker.compose.project.config_files`
+# của bất kỳ container nào). Hai file đã trôi khỏi nhau theo CẢ HAI CHIỀU và từng để lại hậu quả
+# thật: bản repo có lúc còn `ApiServices__<index>__…` (bug đã sửa ở PR #100, làm 119/144 endpoint
+# sai đường dẫn trên Scalar) và `Invitation__BaseUrl=${GATEWAY_PUBLIC_URL}` (magic-link mời B2B
+# chết, sửa ở `6507b2e`) — deploy bằng file repo lúc đó = dựng lại nguyên hai con bug.
+#
+# ⇒ ĐỔI CẤU HÌNH PHẢI SỬA **CẢ HAI** cho tới khi hợp nhất được về một nguồn.
+# Kiểm lệch:  ssh duc2834@100.64.204.33 "cat ~/docker/main/docker-compose.yml"   rồi so với file này.
+# Đối chiếu gần nhất: **2026-08-02**. Những chỗ CỐ Ý còn khác server sau lần đối chiếu đó:
+#   · `Tiering__*` (payment + campaign) và `Payment__BaseUrl` (campaign) — D28, chưa lên server, mặc định TẮT.
+#   · `Adaptive__*` — repo THAM SỐ HOÁ qua .env với mặc định AN TOÀN (`ADAPTIVE_ENABLED=false`,
+#     seed 5 / trần 20), server ghi CỨNG `true` / seed 1 / trần 6 và .env server CHƯA khai biến nào.
+#     ⚠ Dùng file này trên server mà không đặt `ADAPTIVE_*` trong .env = TẮT phỏng vấn thích ứng.
+#   · `Cors__AllowedOrigins__6` — xem chú thích ở gateway (server khai TRÙNG index 4).
+#   · `Internal__CallbackBase` dùng `${SERVER_TS_IP}`, server đang ghi cứng `100.64.204.33` (tương đương).
+# Server còn thừa override `ai-cluster` (GEN-7 đã gỡ route /api/v1/ai) — nên xoá bên đó, KHÔNG thêm
+# lại vào đây. Server cũng còn `expose: ["8080"]` thừa ở campaignservice (đã có `ports` 5247).
+# ⚠ `ASPNETCORE_ENVIRONMENT=Development` bên dưới = MIRROR đúng production hôm nay, nhưng đó là
+# lỗi đã biết (`OPS6`, tái diễn 3 lần): Development làm gateway KHÔNG bật khối chặn `/internal/*`
+# + `/api/v1/ai/*`, và service trả stack trace ra ngoài. Sửa = quyết định deploy, không sửa lén ở đây.
+#
 # Faithful extract of DEPLOYMENT.md §4 (previously only lived as a fenced block there).
+# ⚠ DEPLOYMENT.md §4 là artifact THỨ BA và cũng đã lệch (còn `FRONTEND_BASE_URL` /
+# `GATEWAY_PUBLIC_BASE_URL`, trong khi .env server dùng `FRONTEND_PUBLIC_URL` / `GOOGLE_PUBLIC_BASE_URL`).
 #
 # Usage (server, e.g. ~/docker/main/ — keep .env + seaweed-s3.json NEXT TO this file):
 #   cp ../.env.example .env   # then fill real values (chmod 600 .env)
@@ -8,7 +34,8 @@
 # NO secret values are committed here — every credential is a ${VAR} placeholder
 # resolved from .env (keys match ../.env.example). Images come from GHCR (CI-built).
 # AIService runs SEPARATELY on the Mac (Whisper is heavy) — see DEPLOYMENT.md §5.
-# The root ../compose.yaml is a DEV-PARTIAL skeleton (Auth+Gateway+MinIO only) — use THIS for the full stack.
+# The root ../compose.yaml is a DEV-PARTIAL skeleton (Auth+Gateway+MinIO only) — THIS one describes the
+# full stack (nhưng bản đang CHẠY vẫn là file trên server, xem cảnh báo đầu file).
 
 services:
   # ===== DATA LAYER =====
@@ -80,6 +107,13 @@ services:
     container_name: authservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
+      # Auth cũng phục vụ callback máy-máy `/internal/auth/provision-candidate` (D2 — join magic-link
+      # B2B tạo tài khoản Candidate nhẹ). Thiếu token này → Campaign gọi sang bị từ chối, join B2B hỏng.
+      - Internal__Token=${INTERNAL_TOKEN}
+      # DB28 — job dọn refresh_token hết hạn. Giữ TẮT như production: xoá dữ liệu auth là không đảo
+      # ngược được, và vị ngữ dọn có ngữ nghĩa NULL/so-sánh-thời-gian khác nhau giữa SQLite (test) và
+      # Postgres (thật). Bật sau khi quan sát 1 chu kỳ — đây là quyết định ops, không phải mặc định.
+      - RefreshTokenRetention__Enabled=false
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=http://isas.authservice:8080
@@ -93,6 +127,15 @@ services:
       - EmailSettings__From=${SMTP_FROM}
       - Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
       - Authentication__Google__ClientSecret=${GOOGLE_CLIENT_SECRET}
+      # Đăng nhập Google: callback 302 về FE kèm MÃ DÙNG-MỘT-LẦN (?code=…), KHÔNG kèm token; FE đổi
+      # mã lấy phiên qua POST /auth/google/exchange. Cả 2 URL lấy từ CONFIG SERVER (nhận đích từ
+      # client = open-redirect làm rò phiên).
+      # ⚠ Tên biến theo .env ĐANG CHẠY trên server (`FRONTEND_PUBLIC_URL` / `GOOGLE_PUBLIC_BASE_URL`).
+      # DEPLOYMENT.md §4 còn ghi tên cũ `FRONTEND_BASE_URL` / `GATEWAY_PUBLIC_BASE_URL` — chưa hợp nhất.
+      # `GOOGLE_PUBLIC_BASE_URL` phải KÈM `/api/v1` (gateway strip tiền tố) và khớp "Authorized
+      # redirect URI" khai trên Google Cloud Console: {GOOGLE_PUBLIC_BASE_URL}/auth/signin-google.
+      - Gateway__PublicBaseUrl=${GOOGLE_PUBLIC_BASE_URL}
+      - Frontend__BaseUrl=${FRONTEND_PUBLIC_URL}
     expose: ["8080"]
     depends_on: [postgres, redis]
     networks: [isas-main-network]
@@ -103,6 +146,9 @@ services:
     container_name: interviewservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
+      # DB28 — dọn outbox_messages đã publish. Giữ TẮT như production (cùng lý do RefreshTokenRetention
+      # bên authservice: xoá là không đảo ngược, bật sau khi quan sát 1 chu kỳ).
+      - Outbox__PurgeEnabled=false
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_interview;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       - Jwt__Key=${JWT_KEY}                         # KHỚP authservice
       - Jwt__Issuer=http://isas.authservice:8080
@@ -146,6 +192,8 @@ services:
     container_name: campaignservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
+      # DB2b — dọn outbox_messages (email mời) đã publish. Giữ TẮT như production.
+      - Outbox__PurgeEnabled=false
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_campaign;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=http://isas.authservice:8080
@@ -164,7 +212,16 @@ services:
       # D28 — B2B tier gate stays off until staging verification. When enabled, this client must
       # resolve Payment directly with the internal token; it never goes through Gateway.
       - Payment__BaseUrl=http://isas.paymentservice:8080
+      # D2 — join magic-link: Campaign gọi Auth `/internal/auth/provision-candidate` (tạo/lấy tài khoản
+      # Candidate theo email) rồi Interview `/internal/sessions/campaign` (create-or-get session lúc
+      # Start). THIẾU 2 base URL này → join/start B2B 500 (bắt ở đợt hardening 2026-07-15).
+      - Auth__BaseUrl=http://isas.authservice:8080
+      - Interview__BaseUrl=http://isas.interviewservice:8080
       - Internal__Token=${INTERNAL_TOKEN}
+      # C14 — worker sàng CV chạy TRÊN MAC, nên callback phải là địa chỉ tới được qua tailnet, không
+      # phải `http://localhost:8080` (mặc định trong code) và cũng KHÔNG qua gateway (GEN-1).
+      # ⇒ campaignservice phải publish cổng 5247 (bên dưới) để Mac gọi ngược vào.
+      - Internal__CallbackBase=http://${SERVER_TS_IP}:5247
       - Tiering__Enabled=${TIERING_ENABLED:-false}
       # SMTP — InvitationEmailConsumer gửi email mời (magic-link) khi tiêu thụ campaign_invitation_email_queue.
       - EmailSettings__Host=${SMTP_HOST}
@@ -172,9 +229,14 @@ services:
       - EmailSettings__Username=${SMTP_USER}
       - EmailSettings__Password=${SMTP_PASS}
       - EmailSettings__From=${SMTP_FROM}
-      # Base URL magic-link ứng viên: {baseUrl}/invitations/{token} → trang join qua gateway public.
-      - Invitation__BaseUrl=${GATEWAY_PUBLIC_URL}
-    expose: ["8080"]
+      # Magic-link ứng viên = {baseUrl}/invite/{token} — PHẢI là origin của FRONTEND.
+      # 🔴 Trước đây chỗ này ghi `${GATEWAY_PUBLIC_URL}` + path `/invitations/`: sai HAI lớp (gateway chỉ
+      # phục vụ `/api/v1/...`, còn `/invitations/:token` là route API trả JSON — route FE là `invite/:token`)
+      # ⇒ link trong email trả 404 body RỖNG = trang trắng, nhìn y như đang tải, sống nhiều ngày không ai
+      # báo. Sửa ở `6507b2e` (+ gỡ hẳn fallback về `Gateway:Url`, vì fallback làm cấu hình TRÔNG như đã đặt).
+      - Invitation__BaseUrl=${FRONTEND_PUBLIC_URL}
+    ports:
+      - "5247:8080"     # publish để worker sàng CV trên Mac gọi callback /internal/... qua tailnet (C14)
     depends_on: [postgres, seaweedfs, rabbitmq]
     networks: [isas-main-network]
     restart: unless-stopped
@@ -198,6 +260,12 @@ services:
       - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
       - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
       - Interview__BaseUrl=http://isas.interviewservice:8080   # DB18 — OrphanReservationReconciler gọi Interview /internal/sessions/exists (trống → reconciler safe-skip)
+      # BK24 — `InvoiceOverdueReconciler` đóng dấu hoá đơn postpaid Issued→Overdue quá hạn. Đó là cái
+      # PHANH của BK17 (org có hoá đơn Overdue thì reserve → 402): không bật thì postpaid là "trả sau"
+      # KHÔNG có phanh. Bật thật trên server 2026-07-23.
+      - InvoiceOverdue__Enabled=true
+      - InvoiceOverdue__GraceHours=24
+      - InvoiceOverdue__ScanIntervalSeconds=600
       # D28 — keep both safeguards explicit during additive rollout. Unlimited plans remain disabled.
       - Tiering__Enabled=${TIERING_ENABLED:-false}
       - Tiering__AllowUnlimitedPlans=${TIERING_ALLOW_UNLIMITED_PLANS:-false}
@@ -220,18 +288,35 @@ services:
       - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
       - ReverseProxy__Clusters__campaign-cluster__Destinations__campaign-node-01__Address=http://isas.campaignservice:8080
       - ReverseProxy__Clusters__payment-cluster__Destinations__payment-node-01__Address=http://isas.paymentservice:8080
-      # GEN-7 (2026-07-13): ai-cluster + /api/v1/ai route đã GỠ khỏi gateway (AI internal-only qua AiService:BaseUrl).
-      # → không còn override ai-cluster address / ai OpenApi. Index ApiServices dồn lại (bỏ ai=cũ-index-1).
-      - ApiServices__0__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
-      - ApiServices__1__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
-      - ApiServices__2__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
-      - ApiServices__3__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
+      # GEN-7: AIService internal-only — KHÔNG override `ai-cluster` ở đây (Interview/Campaign gọi thẳng
+      # qua `AiService:BaseUrl`). ⚠ Server hiện VẪN còn dòng override ai-cluster; nên xoá bên đó, đừng
+      # thêm lại vào đây. Lưu ý: `ai-route` + khối chặn `/internal/*` chỉ ĐƯỢC BẬT khi môi trường ≠
+      # Development — mà production đang chạy Development (OPS6) ⇒ /api/v1/ai hiện vẫn đi qua gateway.
+      #
+      # 🔴 ApiServices phải khai theo TÊN (`ApiServices__<tên>__OpenApiUrl`), KHÔNG theo index.
+      # Dạng cũ `ApiServices__0__…` là bug đã sửa ở PR #100: appsettings khai 5 entry còn compose khai
+      # 4 URL ⇒ mỗi service ghép nhầm `Prefix` của service khác (119/144 op sai đường dẫn trên Scalar),
+      # Payment không có entry nên đổ hết path ra root. Với bản keyed hiện tại, `__0__` còn tệ hơn: nó
+      # tạo entry tên "0" KHÔNG có Prefix (bị bỏ qua + log Error) trong khi 4 service thật giữ nguyên URL
+      # localhost:517x của appsettings ⇒ gộp OpenAPI hỏng SẠCH. Tên hợp lệ: auth · interview · campaign · payment.
+      - ApiServices__auth__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
+      - ApiServices__interview__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
+      - ApiServices__campaign__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
+      - ApiServices__payment__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
       - Gateway__Url=${GATEWAY_PUBLIC_URL}
+      # ⚠ Mỗi `Cors__AllowedOrigins__N` GHI ĐÈ phần tử thứ N của mảng trong appsettings.json (5 phần tử:
+      # localhost:4200 · localhost:3000 · localhost:5173 · issa.app · sep-490-angular.vercel.app) — không
+      # phải nối thêm. Vì thế phải khai LẠI tường minh origin FE production ở index 5 và localhost:4200 ở
+      # index 6, nếu không chúng bị chính các dòng 0-4 dưới đây ghi đè mất.
+      # ⚠ Server đang khai TRÙNG index 4 hai lần (`${GATEWAY_PUBLIC_URL}` rồi `http://localhost:4200`) →
+      # dòng sau thắng, `GATEWAY_PUBLIC_URL` rơi khỏi CORS. Bố cục dưới đây giữ đủ cả hai; sửa bên server theo.
       - Cors__AllowedOrigins__0=http://localhost:3000
       - Cors__AllowedOrigins__1=http://localhost:5173
       - Cors__AllowedOrigins__2=http://localhost:5174
       - Cors__AllowedOrigins__3=https://isas-web-client.vercel.app
       - Cors__AllowedOrigins__4=${GATEWAY_PUBLIC_URL}
+      - Cors__AllowedOrigins__5=https://sep-490-angular.vercel.app
+      - Cors__AllowedOrigins__6=http://localhost:4200
     ports:
       - "5050:8080"
     depends_on: [isas.authservice, isas.interviewservice, isas.campaignservice, isas.paymentservice]
