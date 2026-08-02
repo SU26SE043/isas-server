@@ -9,35 +9,61 @@ Kiến trúc tách **2 máy** nối nhau qua **Tailscale**:
 
 ---
 
+## 0. ⚠ Ba nơi mô tả cấu hình deploy — file compose trong repo KHÔNG phải cái đang chạy
+
+| Nơi | Vai trò |
+|---|---|
+| `/home/duc2834/docker/main/docker-compose.yml` **trên server** | **Cái đang chạy thật** (compose project `main` — kiểm bằng label `com.docker.compose.project` của bất kỳ container nào). Nguồn sự thật về production. |
+| [`deploy/compose.yaml`](deploy/compose.yaml) (repo) | Bản mirror trong version control. Khối cảnh báo đầu file liệt kê những chỗ **cố ý** còn khác server. |
+| **`DEPLOYMENT.md` §4** (file này) | Tài liệu hướng dẫn — artifact **thứ ba**, dễ lệch nhất vì không ai chạy nó. |
+
+Ba nơi đã trôi khỏi nhau theo **cả hai chiều** và từng để lại hậu quả thật: `ApiServices__<index>__…` làm **119/144 endpoint sai đường dẫn** trên Scalar (sửa ở PR #100), `Invitation__BaseUrl=${GATEWAY_PUBLIC_URL}` làm **magic-link mời B2B chết nhiều ngày** mà không ai báo (sửa ở `6507b2e`).
+
+**⇒ Đổi cấu hình phải sửa CẢ BA nơi** cho tới khi hợp nhất được về một nguồn.
+
+```bash
+# kiểm lệch
+ssh duc2834@100.64.204.33 "cat ~/docker/main/docker-compose.yml"   # so với deploy/compose.yaml
+ssh duc2834@100.64.204.33 "grep -oE '^[A-Za-z0-9_]+' ~/docker/main/.env"   # chỉ TÊN biến, không giá trị
+```
+
+> **Đối chiếu gần nhất: 2026-08-02.** Danh sách chỗ **cố ý** còn khác server nằm ở đầu [`deploy/compose.yaml`](deploy/compose.yaml) — **đừng chép lại vào đây**, chép là đẻ ra artifact thứ tư.
+
+---
+
 ## 1. Sơ đồ liên lạc
 
 ```
 SERVER (Linux)                              MAC (Docker)
-┌──────────────────────────┐                ┌─────────────────────┐
-│ postgres  redis          │                │ aiservice-api :8000 │◄─┐
-│ seaweedfs :8333 ◄────────┼───────┐        │  (sinh câu hỏi)     │  │
-│ rabbitmq  :5672 ◄────────┼─────┐ │        │                     │  │
-│ interviewservice :5246 ◄─┼───┐ │ │        │ aiservice-worker    │  │
-│ authservice              │   │ │ └────────│  - kéo audio (S3)   │  │
-│ gateway   :5050          │   │ └──────────│  - chấm (Gemini)    │  │
-│                          │   └────────────│  - callback kết quả │  │
-│ gateway   ai-cluster ────┼────────────────┼─────────────────────┘  │
-│ interview AiService:Base ┼────────────────┴────────────────────────┘
-└──────────────────────────┘   (server → Mac:8000 để sinh câu hỏi)
+┌──────────────────────────┐                ┌──────────────────────┐
+│ postgres  redis  qdrant  │                │ aiservice-api :8000  │
+│ seaweedfs :8333          │◄───────────────┤  (sinh câu hỏi/TTS)  │
+│ rabbitmq  :5672          │◄───────────────┤                      │
+│ interviewservice :5246   │◄───────────────┤ aiservice-worker     │
+│ campaignservice  :5247   │◄───────────────┤  - kéo audio (S3)    │
+│ paymentservice   :5271   │◄───────────────┤  - chấm (Gemini)     │
+│ authservice              │                │  - sàng CV (C14)     │
+│ gateway   :5050          │                │  - callback kết quả  │
+│                          ├───────────────►│  - báo usage (F22)   │
+│ interview/campaign gọi   │   Mac:8000     └──────────────────────┘
+│   AiService__BaseUrl     │
+└──────────────────────────┘
 ```
 
-**Mac → Server:** worker kéo job `rabbitmq:5672`, tải audio `seaweedfs:8333`, callback `interviewservice:5246`.
-**Server → Mac:** gateway + interviewservice gọi `aiservice-api:8000` để sinh câu hỏi.
+**Mac → Server:** worker kéo job `rabbitmq:5672`, tải audio `seaweedfs:8333`, callback chấm `interviewservice:5246`, callback sàng CV `campaignservice:5247` (**C14**), báo token/chi phí `paymentservice:5271` (**F22**).
+**Server → Mac:** interviewservice + campaignservice gọi `aiservice-api:8000` (sinh câu hỏi · `/decide-next` · phân tích CV · roadmap · TTS). **KHÔNG qua gateway** — GEN-7, AIService là internal-only.
+> ⚠ Server hiện vẫn còn dòng override `ai-cluster` trong compose (thừa từ trước GEN-7) — nên xoá bên đó, **đừng thêm lại** vào repo.
 
 ---
 
 ## 2. Yêu cầu trước
 
 - [ ] **Tailscale** cài trên **cả** Server và Mac, cùng tailnet. Lấy IP: `tailscale ip -4`.
-  - `<SERVER_TS_IP>` = IP Tailscale của server.
-  - `<MAC_TS_IP>` = IP Tailscale của Mac.
+  - `<SERVER_TS_IP>` = IP Tailscale của server → biến `.env` **`SERVER_TS_IP`**. Chiều Mac→Server: worker AIService chạy trên Mac nên callback **không dùng được `localhost`** (mặc định trong code) và **không qua gateway** (GEN-1). Dùng cho `Internal__CallbackBase` của campaignservice (C14) và cho `DOTNET_CALLBACK_BASE` / `USAGE_SINK_BASE` / `RABBITMQ_URL` / `S3_ENDPOINT` phía Mac.
+  - `<MAC_TS_IP>` = IP Tailscale của Mac → biến `.env` **`MAC_TS_IP`** (`AiService__BaseUrl` của interview + campaign).
 - [ ] **Docker + Docker Compose** trên cả 2 máy.
-- [ ] Firewall/Tailscale ACL: cổng `5672`, `8333`, `5246` (server) và `8000` (Mac) **chỉ** cho phép tailnet — không lộ public.
+- [ ] Firewall/Tailscale ACL: cổng `5672`, `8333`, `5246`, `5247` (server) và `8000` (Mac) **chỉ** cho phép tailnet — không lộ public.
+  - ⚠ Riêng **`5271`** (payment) vừa nhận callback usage từ Mac **vừa phải cho webhook PayOS gọi vào** ⇒ cần public URL/tunnel, không chặn được về tailnet-only.
 
 ---
 
@@ -45,15 +71,17 @@ SERVER (Linux)                              MAC (Docker)
 
 | Secret | Dùng ở | Quy tắc |
 |---|---|---|
-| `Jwt__Key` / `Jwt__Issuer` / `Jwt__Audience` | authservice ↔ interviewservice | **giống hệt** (Interview validate token do Auth phát) |
-| `Internal__Token` ↔ `INTERNAL_TOKEN` | interviewservice ↔ aiservice-worker | **giống hệt** (xác thực callback chấm điểm) |
-| SeaweedFS access/secret | interviewservice ↔ aiservice-worker | cùng giá trị (S3 dùng chung) |
+| `Jwt__Key` / `Jwt__Issuer` / `Jwt__Audience` | authservice ↔ **interview · campaign · payment** | **giống hệt** (3 service kia validate offline token do Auth phát — GEN-3, không gọi Auth lúc chạy) |
+| `Internal__Token` ↔ `INTERNAL_TOKEN` | **auth · interview · campaign · payment** ↔ **aiservice-api · aiservice-worker** | **giống hệt** — một token duy nhất cho MỌI callback máy-máy `/internal/*`: chấm điểm (worker→interview), sàng CV C14 (worker→campaign), báo usage F22 (api+worker→payment), provision-candidate D2 (campaign→auth). Lệch 1 ký tự = 401 âm thầm ở đúng nhánh đó *(đã dính 2026-07-15)*. |
+| SeaweedFS access/secret | interviewservice · campaignservice ↔ aiservice-worker ↔ `seaweed-s3.json` | cùng giá trị (S3 dùng chung) |
 
 > Giá trị thật để trong file `.env` cạnh compose trên server / Mac — **không** ghi vào file md này.
 
 ---
 
-## 4. SERVER — `~/docker/main/compose.yaml`
+## 4. SERVER — `~/docker/main/docker-compose.yml`
+
+> Bản dưới đây là **mirror của [`deploy/compose.yaml`](deploy/compose.yaml)** (bản trong version control, mặc định AN TOÀN). Cái **đang chạy** là file trên server — xem §0. Chỗ cố ý còn khác server: đọc khối cảnh báo đầu `deploy/compose.yaml`.
 
 ```yaml
 services:
@@ -108,12 +136,31 @@ services:
       - "15672:15672"  # management UI
     networks: [isas-main-network]
 
+  # RAG grounding (D27) — kho vector chunk tri thức. Chỉ InterviewService gọi (gRPC 6334). Volume bền.
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-main
+    restart: unless-stopped
+    # ⚠ CỐ Ý KHÔNG publish 6333/6334 ra host — khớp production. InterviewService gọi qdrant qua
+    # network nội bộ (`Qdrant__Url=http://qdrant:6334`), không cần cổng ngoài; publish ra là mở
+    # dashboard REST 6333 cho mọi thứ tới được host. Cần xem dashboard thì `docker compose port`
+    # hoặc ssh tunnel, đừng mở cố định.
+    volumes:
+      - qdrant_main_data:/qdrant/storage
+    networks: [isas-main-network]
+
   # ===== APP SERVICES =====
   isas.authservice:
     image: ghcr.io/su26se043/isas.authservice:main
     container_name: authservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
+      # Auth cũng phục vụ callback máy-máy `/internal/auth/provision-candidate` (D2 — join magic-link
+      # B2B tạo tài khoản Candidate nhẹ). Thiếu token này → Campaign gọi sang bị từ chối, join B2B hỏng.
+      - Internal__Token=${INTERNAL_TOKEN}
+      # DB28 — job dọn refresh_token hết hạn. Giữ TẮT như production: xoá dữ liệu auth là không đảo
+      # ngược được. Bật sau khi quan sát 1 chu kỳ — quyết định ops, không phải mặc định.
+      - RefreshTokenRetention__Enabled=false
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=http://isas.authservice:8080
@@ -130,13 +177,19 @@ services:
       # Đăng nhập Google: callback 302 về FE kèm MÃ DÙNG-MỘT-LẦN (?code=…), KHÔNG kèm token; FE đổi
       # mã lấy phiên qua POST /auth/google/exchange. Cả 2 URL lấy từ CONFIG SERVER (không nhận đích
       # từ client — nếu không là open-redirect làm rò phiên).
-      - Frontend__BaseUrl=${FRONTEND_BASE_URL}
-      - Gateway__PublicBaseUrl=${GATEWAY_PUBLIC_BASE_URL}
-      # Tuỳ chọn — hạn sống (giây) của mã dùng-một-lần; không set = 60, giá trị ngoài [5, 600] bị kẹp.
+      # ⚠ TÊN BIẾN theo .env ĐANG CHẠY trên server: `FRONTEND_PUBLIC_URL` / `GOOGLE_PUBLIC_BASE_URL`
+      # (tài liệu này trước đây ghi tên cũ `FRONTEND_BASE_URL` / `GATEWAY_PUBLIC_BASE_URL` — đã sửa 2026-08-02).
+      # `GOOGLE_PUBLIC_BASE_URL` phải KÈM `/api/v1` (gateway strip tiền tố) và khớp "Authorized redirect
+      # URI" khai trên Google Cloud Console: {GOOGLE_PUBLIC_BASE_URL}/auth/signin-google
+      - Frontend__BaseUrl=${FRONTEND_PUBLIC_URL}
+      - Gateway__PublicBaseUrl=${GOOGLE_PUBLIC_BASE_URL}
+      # ⓘ TUỲ CHỌN, hiện KHÔNG compose nào đặt (server lẫn repo) ⇒ đang lấy mặc định `appsettings.json`
+      #   = 60s. Code vẫn đọc khoá này (`GoogleAuthCodeStore.cs:58`), giá trị ngoài [5, 600] bị kẹp.
+      #   Chỉ thêm dòng dưới khi thật sự cần đổi TTL:
+      # - Authentication__Google__OneTimeCodeTtlSeconds=${GOOGLE_ONETIME_CODE_TTL_SECONDS:-60}
       # ⚠ Mã giữ trong BỘ NHỚ tiến trình AuthService: chỉ đổi được ở ĐÚNG instance đã phát, và
       # restart/deploy làm mất mã đang bay (user bấm đăng nhập Google lại là xong). Chạy NHIỀU
       # instance AuthService ⇒ phải bật sticky session hoặc chuyển kho mã sang Redis/DB.
-      - Authentication__Google__OneTimeCodeTtlSeconds=${GOOGLE_ONETIME_CODE_TTL_SECONDS:-60}
     expose: ["8080"]
     depends_on: [postgres, redis]
     networks: [isas-main-network]
@@ -147,6 +200,8 @@ services:
     container_name: interviewservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
+      # DB28 — dọn outbox_messages đã publish. Giữ TẮT như production (cùng lý do RefreshTokenRetention).
+      - Outbox__PurgeEnabled=false
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_interview;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       - Jwt__Key=${JWT_KEY}                         # KHỚP authservice
       - Jwt__Issuer=http://isas.authservice:8080
@@ -161,10 +216,33 @@ services:
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__UserName=${RABBITMQ_USER}
       - RabbitMQ__Password=${RABBITMQ_PASS}
-      - AiService__BaseUrl=http://<MAC_TS_IP>:8000   # sinh câu hỏi chạy trên Mac
+      - AiService__BaseUrl=http://${MAC_TS_IP}:8000   # sinh câu hỏi chạy trên Mac (Tailscale IP)
+      # RAG grounding (D27) — kho vector Qdrant + ingest Context7 + toggle bật retrieval lúc SINH.
+      # Mặc định TẮT: bật khi đã nạp corpus, nếu không mọi request đều "ungrounded" mà vẫn tốn 1 vòng embed.
+      - Qdrant__Url=http://qdrant:6334
+      - Context7__ApiKey=${CONTEXT7_API_KEY}
+      - Grounding__Enabled=${GROUNDING_ENABLED:-false}
+      # ===== Phỏng vấn THÍCH ỨNG (INT-17 / INT-17b) =====
+      # Trước đây các khoá này CHỈ tồn tại trong compose sửa TAY trên server ⇒ hình dạng buổi phỏng vấn
+      # chạy thật chỉ đọc được bằng `docker inspect`, và thêm một khoá mới vào appsettings là âm thầm
+      # đổi hành vi production. Nay tham số hoá qua .env, mặc định AN TOÀN.
+      #
+      # ⚠ KILL-SWITCH = `Adaptive__MaxDeepPerQuestion` (`ADAPTIVE_MAX_DEEP_PER_QUESTION`):
+      #     >0 → chế độ CHUỖI (mỗi câu gốc đào sâu tối đa ngần đó tầng, xen kẽ ngay sau nó);
+      #      0 → chế độ frontier trước INT-17b (lúc đó `MaxFollowUps` mới có hiệu lực — ở chế độ chuỗi
+      #          code tự ép nó về 0, nên ĐỪNG đặt `MaxFollowUps=0` để "tắt", làm vậy là bỏ trần buổi).
+      #   Tắt hẳn phỏng vấn thích ứng (về luồng batch tĩnh cũ): `Adaptive__Enabled=false`.
+      # ⚠ `SeedCount` là TRẦN TRÊN của số câu gốc; số thực tế = ceil(trần buổi / (1 + độ sâu)) vì ứng viên
+      #   chọn "số câu" là chọn TỔNG số câu của buổi (F2b). Trần 20 → 5 gốc · 10 → 3 · 5 → 2.
+      - Adaptive__Enabled=${ADAPTIVE_ENABLED:-false}
+      - Adaptive__SeedCount=${ADAPTIVE_SEED_COUNT:-5}
+      - Adaptive__MaxQuestions=${ADAPTIVE_MAX_QUESTIONS:-20}
+      - Adaptive__MaxFollowUps=${ADAPTIVE_MAX_FOLLOW_UPS:-3}
+      - Adaptive__MaxDeepPerQuestion=${ADAPTIVE_MAX_DEEP_PER_QUESTION:-3}
+      - Adaptive__MaxFailuresPerSession=${ADAPTIVE_MAX_FAILURES_PER_SESSION:-3}
     ports:
       - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet
-    depends_on: [postgres, seaweedfs, rabbitmq]
+    depends_on: [postgres, seaweedfs, rabbitmq, qdrant]
     networks: [isas-main-network]
     restart: unless-stopped
 
@@ -173,11 +251,13 @@ services:
     container_name: campaignservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
+      # DB2b — dọn outbox_messages (email mời) đã publish. Giữ TẮT như production.
+      - Outbox__PurgeEnabled=false
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_campaign;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=http://isas.authservice:8080
       - Jwt__Audience=http://isas.authservice:8080
-      - AiService__BaseUrl=http://<MAC_TS_IP>:8000
+      - AiService__BaseUrl=http://${MAC_TS_IP}:8000
       - SeaweedFS__ServiceURL=http://seaweedfs:8333
       - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
       - SeaweedFS__SecretKey=${S3_SECRET_KEY}
@@ -188,7 +268,34 @@ services:
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__UserName=${RABBITMQ_USER}
       - RabbitMQ__Password=${RABBITMQ_PASS}
-    expose: ["8080"]
+      # D28 — B2B tier gate giữ TẮT tới khi verify staging. Khi bật, client này phải gọi THẲNG Payment
+      # kèm internal token, KHÔNG qua gateway. ⚠ Chưa có trên server.
+      - Payment__BaseUrl=http://isas.paymentservice:8080
+      - Tiering__Enabled=${TIERING_ENABLED:-false}
+      # D2 — join magic-link: Campaign gọi Auth `/internal/auth/provision-candidate` (tạo/lấy tài khoản
+      # Candidate theo email) rồi Interview `/internal/sessions/campaign` (create-or-get session lúc
+      # Start). THIẾU 2 base URL này → join/start B2B 500 (bắt ở đợt hardening 2026-07-15).
+      - Auth__BaseUrl=http://isas.authservice:8080
+      - Interview__BaseUrl=http://isas.interviewservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}
+      # C14 — worker sàng CV B2B chạy TRÊN MAC, nên callback phải là địa chỉ tới được qua tailnet, không
+      # phải `http://localhost:8080` (mặc định trong code — `CvScreeningService.cs:58`) và cũng KHÔNG
+      # qua gateway (GEN-1). ⇒ campaignservice PHẢI publish cổng 5247 (bên dưới) để Mac gọi ngược vào.
+      - Internal__CallbackBase=http://${SERVER_TS_IP}:5247
+      # SMTP — InvitationEmailConsumer gửi email mời (magic-link) khi tiêu thụ campaign_invitation_email_queue.
+      - EmailSettings__Host=${SMTP_HOST}
+      - EmailSettings__Port=${SMTP_PORT}
+      - EmailSettings__Username=${SMTP_USER}
+      - EmailSettings__Password=${SMTP_PASS}
+      - EmailSettings__From=${SMTP_FROM}
+      # Magic-link ứng viên = {baseUrl}/invite/{token} — PHẢI là origin của FRONTEND.
+      # 🔴 Trước đây chỗ này ghi `${GATEWAY_PUBLIC_URL}` + path `/invitations/`: sai HAI lớp (gateway chỉ
+      # phục vụ `/api/v1/...`, còn `/invitations/:token` là route API trả JSON — route FE là `invite/:token`)
+      # ⇒ link trong email trả 404 body RỖNG = trang trắng, nhìn y như đang tải, sống nhiều ngày không ai
+      # báo. Sửa ở `6507b2e` (+ gỡ hẳn fallback về `Gateway:Url`, vì fallback làm cấu hình TRÔNG như đã đặt).
+      - Invitation__BaseUrl=${FRONTEND_PUBLIC_URL}
+    ports:
+      - "5247:8080"     # publish để worker sàng CV trên Mac gọi callback /internal/... qua tailnet (C14)
     depends_on: [postgres, seaweedfs, rabbitmq]
     networks: [isas-main-network]
     restart: unless-stopped
@@ -211,6 +318,18 @@ services:
       - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
       - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
       - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
+      # DB18 — OrphanReservationReconciler gọi Interview /internal/sessions/exists để dọn chỗ giữ credit
+      # mồ côi. Để TRỐNG → reconciler safe-skip mỗi vòng (không release mù), credit treo không ai dọn.
+      - Interview__BaseUrl=http://isas.interviewservice:8080
+      # BK24 — `InvoiceOverdueReconciler` đóng dấu hoá đơn postpaid Issued→Overdue quá hạn. Đó là cái
+      # PHANH của BK17 (org có hoá đơn Overdue thì reserve → 402): không bật thì postpaid là "trả sau"
+      # KHÔNG có phanh. Bật thật trên server 2026-07-23.
+      - InvoiceOverdue__Enabled=true
+      - InvoiceOverdue__GraceHours=24
+      - InvoiceOverdue__ScanIntervalSeconds=600
+      # D28 — giữ tường minh cả hai lá chắn trong lúc rollout additive. ⚠ Chưa có trên server.
+      - Tiering__Enabled=${TIERING_ENABLED:-false}
+      - Tiering__AllowUnlimitedPlans=${TIERING_ALLOW_UNLIMITED_PLANS:-false}
       # F7 — suất dùng thử tặng lúc tạo ví User. Có default :-3 vì chuỗi RỖNG không parse được thành
       # int (env thiếu → options binder ném lúc khởi động). Đặt 0 để tắt hẳn.
       - Billing__FreeTrialCredits=${FREE_TRIAL_CREDITS:-3}
@@ -230,18 +349,34 @@ services:
       - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
       - ReverseProxy__Clusters__campaign-cluster__Destinations__campaign-node-01__Address=http://isas.campaignservice:8080
       - ReverseProxy__Clusters__payment-cluster__Destinations__payment-node-01__Address=http://isas.paymentservice:8080
-      # GEN-7 (2026-07-13): ai-cluster + /api/v1/ai route đã GỠ khỏi gateway (AI internal-only qua AiService:BaseUrl).
-      # → không còn override ai-cluster address / ai OpenApi. Index ApiServices dồn lại (bỏ ai=cũ-index-1).
-      - ApiServices__0__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
-      - ApiServices__1__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
-      - ApiServices__2__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
-      - ApiServices__3__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
+      # GEN-7 (2026-07-13): ai-cluster + /api/v1/ai route đã GỠ khỏi gateway (AI internal-only qua
+      # AiService:BaseUrl). ⚠ Server hiện VẪN còn dòng override `ai-cluster` — nên xoá bên đó, đừng
+      # thêm lại vào đây. Lưu ý `ai-route` + khối chặn `/internal/*` chỉ ĐƯỢC BẬT khi môi trường ≠
+      # Development — mà production đang chạy Development (OPS6) ⇒ /api/v1/ai hiện vẫn đi qua gateway.
+      #
+      # 🔴 ApiServices phải khai theo TÊN (`ApiServices__<tên>__OpenApiUrl`), KHÔNG theo index.
+      # Dạng cũ `ApiServices__0__…` là bug đã sửa ở PR #100: appsettings khai 5 entry còn compose khai
+      # 4 URL ⇒ mỗi service ghép nhầm `Prefix` của service khác (119/144 op sai đường dẫn trên Scalar),
+      # Payment không có entry nên đổ hết path ra root. Với bản keyed hiện tại, `__0__` còn tệ hơn: nó
+      # tạo entry tên "0" KHÔNG có Prefix (bị bỏ qua + log Error) trong khi 4 service thật giữ nguyên
+      # URL localhost:517x của appsettings ⇒ gộp OpenAPI hỏng SẠCH.
+      # Tên hợp lệ: auth · interview · campaign · payment.
+      - ApiServices__auth__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
+      - ApiServices__interview__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
+      - ApiServices__campaign__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
+      - ApiServices__payment__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
       - Gateway__Url=${GATEWAY_PUBLIC_URL}
+      # ⚠ Mỗi `Cors__AllowedOrigins__N` GHI ĐÈ phần tử thứ N của mảng trong appsettings.json (5 phần tử)
+      # — KHÔNG phải nối thêm. Vì thế phải khai LẠI tường minh origin FE production và localhost:4200.
+      # ⚠ Server đang khai TRÙNG index 4 hai lần (`${GATEWAY_PUBLIC_URL}` rồi `http://localhost:4200`)
+      # → dòng sau thắng, `GATEWAY_PUBLIC_URL` rơi khỏi CORS. Bố cục dưới đây giữ đủ cả hai.
       - Cors__AllowedOrigins__0=http://localhost:3000
       - Cors__AllowedOrigins__1=http://localhost:5173
       - Cors__AllowedOrigins__2=http://localhost:5174
       - Cors__AllowedOrigins__3=https://isas-web-client.vercel.app
       - Cors__AllowedOrigins__4=${GATEWAY_PUBLIC_URL}
+      - Cors__AllowedOrigins__5=https://sep-490-angular.vercel.app
+      - Cors__AllowedOrigins__6=http://localhost:4200
     ports:
       - "5050:8080"
     depends_on: [isas.authservice, isas.interviewservice, isas.campaignservice, isas.paymentservice]
@@ -256,43 +391,78 @@ volumes:
   postgres_main_data:
   redis_main_data:
   seaweedfs_main_data:
+  qdrant_main_data:   # RAG grounding (D27)
 ```
 
 ### Server `.env` (cạnh compose, `chmod 600`)
 
+> **Nguồn sự thật cho từng khoá = [`.env.example`](.env.example)** (có giải thích đầy đủ vì sao + hậu quả khi thiếu). Bảng dưới chỉ liệt kê tên để tra nhanh.
+
 ```env
+# ===== Hạ tầng =====
 POSTGRES_USER=admin
 POSTGRES_PASSWORD=...
-JWT_KEY=...
-INTERNAL_TOKEN=...
+JWT_KEY=...                    # PHẢI giống hệt ở auth · interview · campaign · payment
+INTERNAL_TOKEN=...             # PHẢI giống hệt ở 4 service .NET + aiservice-api + aiservice-worker
 S3_ACCESS_KEY=admin
 S3_SECRET_KEY=...
 RABBITMQ_USER=guest
 RABBITMQ_PASS=guest
+
+# ===== SMTP (Auth gửi OTP/reset · Campaign gửi email mời B2B) =====
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=...
 SMTP_PASS=...
 SMTP_FROM=...
+
+# ===== Google OAuth + origin công khai =====
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
-# Đăng nhập Google — bắt buộc nếu bật login-google (thiếu → callback trả 500 khi dựng URL đích).
-# Redirect URI phải khai trên Google Cloud Console: ${GATEWAY_PUBLIC_BASE_URL}/auth/signin-google
-FRONTEND_BASE_URL=https://<your-frontend>
-# Tuỳ chọn: hạn sống mã dùng-một-lần của login Google (giây). Không set = 60.
-GOOGLE_ONETIME_CODE_TTL_SECONDS=60
-GATEWAY_PUBLIC_BASE_URL=https://<your-tunnel>.trycloudflare.com/api/v1
+# ⚠ TÊN BIẾN đúng (khớp .env đang chạy). Trước 2026-08-02 tài liệu này ghi nhầm `FRONTEND_BASE_URL`
+#   và `GATEWAY_PUBLIC_BASE_URL` — hai tên đó KHÔNG tồn tại ở đâu cả.
+# Origin FE. CÙNG biến này còn là `Invitation__BaseUrl` của campaign (magic-link = {origin}/invite/{token}).
+FRONTEND_PUBLIC_URL=https://<your-frontend>
+# Origin gateway KÈM /api/v1 (gateway strip tiền tố). Redirect URI khai trên Google Cloud Console:
+#   {GOOGLE_PUBLIC_BASE_URL}/auth/signin-google
+GOOGLE_PUBLIC_BASE_URL=https://<your-tunnel>.trycloudflare.com/api/v1
+# Origin gateway KHÔNG kèm /api/v1 — dùng cho CORS + Scalar.
 GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
-# PaymentService (PayOS) — bắt buộc để mua credit / webhook chạy
+
+# ===== Mạng Tailscale (2 host) =====
+MAC_TS_IP=100.x.y.z            # Mac chạy AIService — interview/campaign gọi sinh câu hỏi
+SERVER_TS_IP=100.64.204.33     # chiều ngược: callback C14 (campaign:5247), usage F22, RabbitMQ, S3
+
+# ===== PayOS (mua credit + webhook) =====
 PAYOS_CLIENT_ID=...
 PAYOS_API_KEY=...
 PAYOS_CHECKSUM_KEY=...
-# BF3 — bắt buộc: thiếu → POST /order 502 (PayOS reject "return_url null"). URL redirect sau thanh toán.
+# BF3 — bắt buộc: thiếu → POST /order 502 (PayOS reject "return_url null").
 PAYOS_RETURN_URL=https://<your-frontend-or-tunnel>/payment/success
 PAYOS_CANCEL_URL=https://<your-frontend-or-tunnel>/payment/cancel
-# F7 — số credit tặng khi tạo ví của một User (ví Org không có). Bỏ trống = 3. Đặt 0 = tắt hẳn.
-FREE_TRIAL_CREDITS=3
+
+# ===== Feature flag (mặc định AN TOÀN — bật tường minh sau khi verify) =====
+FREE_TRIAL_CREDITS=3           # F7 — credit tặng khi TẠO ví User. Bỏ trống = 3, đặt 0 = tắt.
+TIERING_ENABLED=false          # D28 — gói phân tầng
+TIERING_ALLOW_UNLIMITED_PLANS=false
+CONTEXT7_API_KEY=...           # D27 — ingest corpus grounding
+GROUNDING_ENABLED=false        # D27 — bật retrieval lúc SINH; chỉ bật sau khi đã nạp corpus
+# INT-17b — KILL-SWITCH là ADAPTIVE_MAX_DEEP_PER_QUESTION (0 = về chế độ frontier trước INT-17b).
+ADAPTIVE_ENABLED=false
+ADAPTIVE_SEED_COUNT=5
+ADAPTIVE_MAX_QUESTIONS=20
+ADAPTIVE_MAX_FOLLOW_UPS=3
+ADAPTIVE_MAX_DEEP_PER_QUESTION=3
+ADAPTIVE_MAX_FAILURES_PER_SESSION=3
+
+# ⓘ Tuỳ chọn, hiện KHÔNG đặt ở đâu → lấy mặc định appsettings (60s):
+# GOOGLE_ONETIME_CODE_TTL_SECONDS=60
 ```
+
+> ✅ **Đã hợp nhất 2026-08-02**: `.env` server nay có đủ 9 khoá từng thiếu (`SERVER_TS_IP` · 2× `TIERING_*` · 6× `ADAPTIVE_*`), và `~/docker/main/docker-compose.yml` đã được thay bằng bản khớp `deploy/compose.yaml`. Xác nhận bằng `docker compose config` (0 cảnh báo biến chưa set) rồi `up -d`; `docker inspect interviewservice-main` cho thấy đủ 6 khoá `Adaptive__*`.
+> Chỉ còn `GOOGLE_ONETIME_CODE_TTL_SECONDS` là tuỳ chọn không đặt ở đâu (mặc định 60s).
+> 🔴 **Bẫy vẫn còn giá trị cho lần deploy sau:** dùng `deploy/compose.yaml` trên một máy mà `.env` thiếu `ADAPTIVE_*` ⇒ `ADAPTIVE_ENABLED` rơi về `false` = **TẮT phỏng vấn thích ứng trong im lặng**; thiếu `SERVER_TS_IP` ⇒ `Internal__CallbackBase=http://:5247` = **callback C14 chết**. Cả hai đều không có lỗi nào báo — chỉ tính năng ngừng chạy.
+> ⓘ Trước lần hợp nhất này production chạy **1 câu gốc × 3 tầng** (`SeedCount=1`, `MaxQuestions=6` ghi cứng trong compose server, 2 khoá còn lại lấy mặc định appsettings). Nay là **5 × 3** đúng thiết kế INT-17b.
 
 ### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth
 Seaweed bật auth bằng file này (`-s3.config` ở trên). `accessKey`/`secretKey` phải **khớp** `S3_ACCESS_KEY`/`S3_SECRET_KEY` trong `.env` **và** phía Mac (`aiservice-worker`).
@@ -458,10 +628,14 @@ docker compose logs -f aiservice-worker
 | Service | Host | Cổng container | Publish | Ai truy cập |
 |---|---|---|---|---|
 | gateway | server | 8080 | 5050 | public (cloudflare) |
-| interviewservice | server | 8080 | 5246 | Mac (callback) |
+| interviewservice | server | 8080 | 5246 | Mac (callback chấm điểm) |
+| **campaignservice** | server | 8080 | **5247** | Mac (**callback sàng CV — C14**) |
+| **paymentservice** | server | 8080 | **5271** | Mac (**usage F22**) + **webhook PayOS** (public/tunnel) |
 | seaweedfs S3 | server | 8333 | 8333 | Mac (tải audio) |
 | rabbitmq | server | 5672 | 5672 | Mac (consume) |
-| aiservice-api | Mac | 8000 | 8000 | server (sinh câu hỏi) |
+| **qdrant** | server | 6334 (gRPC) · 6333 (REST) | *(không publish)* | chỉ interviewservice, qua network nội bộ |
+| authservice | server | 8080 | *(expose, không publish)* | chỉ nội bộ network |
+| aiservice-api | Mac | 8000 | 8000 | server (interview + campaign) |
 
 ---
 
@@ -474,7 +648,10 @@ docker compose logs -f aiservice-worker
   s3_client = boto3.client('s3', endpoint_url=settings.s3_endpoint, ...,
       config=Config(s3={"addressing_style": "path"}))
   ```
-- [ ] **`<MAC_TS_IP>` / `<SERVER_TS_IP>`** thay bằng IP Tailscale thật ở cả 2 phía.
+- [ ] **Đổi cấu hình = sửa CẢ BA nơi** (server compose · `deploy/compose.yaml` · file này) — xem §0. Kiểm lệch trước mỗi lần deploy, đừng tin trí nhớ.
+- [ ] **`<MAC_TS_IP>` / `<SERVER_TS_IP>`** thay bằng IP Tailscale thật ở cả 2 phía (biến `.env`: `MAC_TS_IP` / `SERVER_TS_IP`).
+- [ ] **C14 — bật consumer sàng CV đúng THỨ TỰ**: `CV_SCREENING_ENABLED` (Mac worker) mặc định **`false`**. Bật trước khi xả queue tồn ⇒ chấm lại toàn bộ bản nhân đôi mà `StuckScreeningRepublisher` đã đẩy (đo 2026-08-02: **713 message cho đúng 8 ứng viên**). Trình tự: deploy code (tắt) → **xả `cv_screening_queue`** → `CV_SCREENING_ENABLED=true` → đợi ≤15' xem ứng viên rời `Analyzing`. Xả queue an toàn: 8 ứng viên vẫn ở `Analyzing` nên republisher tự đẩy lại đúng 8 job.
+- [ ] **C14 — callback về `campaignservice:5247`**: cần `Internal__CallbackBase=http://${SERVER_TS_IP}:5247` **và** campaignservice publish cổng 5247. Thiếu 1 trong 2 → worker callback vào `http://localhost:8080` (mặc định trong code) = kết quả sàng CV không bao giờ về.
 - [ ] **Routing `/api/v1`** — frontend gọi `/api/v1/auth/...`, `/api/v1/interview/...`, `/api/v1/campaign/...`, `/api/v1/payment/...` (KHÔNG còn `/api/auth`). **`/api/v1/ai/*` đã gỡ (GEN-7)** — AI internal-only, FE không gọi trực tiếp.
 - [ ] **Internal token** Interview ↔ Worker khớp, **Jwt** Auth ↔ Interview khớp.
 - [ ] **CI không build AIService** — Mac build tay (`up -d --build`), không pull GHCR. Muốn pull thì thêm step CI buildx multi-arch (Mac là arm64).

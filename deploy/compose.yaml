@@ -93,10 +93,11 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant-main
-    restart: always
-    ports:
-      - "6333:6333"   # REST + dashboard (:6333/dashboard)
-      - "6334:6334"   # gRPC (InterviewService .NET client)
+    restart: unless-stopped
+    # ⚠ CỐ Ý KHÔNG publish 6333/6334 ra host — khớp production. InterviewService gọi qdrant qua
+    # network nội bộ (`Qdrant__Url=http://qdrant:6334`), không cần cổng ngoài; publish ra là mở
+    # dashboard REST 6333 cho mọi thứ tới được host. Cần xem dashboard thì `docker compose port`
+    # hoặc ssh tunnel, đừng mở cố định.
     volumes:
       - qdrant_main_data:/qdrant/storage
     networks: [isas-main-network]
