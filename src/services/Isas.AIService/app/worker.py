@@ -7,6 +7,7 @@ import aiohttp
 import aio_pika
 
 from app.config import settings
+from app.cv_screening import maybe_start_cv_screening_consumer
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
 
@@ -262,6 +263,13 @@ async def main():
         queue = await declare_topology(channel)  # AI2: DLX/DLQ + queue chính (args dead-letter)
         await queue.consume(process_message)
         print(f"[✅] Worker chạy, nghe queue '{settings.queue_name}' (CTRL+C để thoát)")
+
+        # C14 — sàng CV B2B trong CÙNG tiến trình nhưng CHANNEL RIÊNG: prefetch riêng (sàng CV
+        # nhẹ hơn nhiều vì không Whisper) để backlog audio không nghẽn sàng CV và ngược lại.
+        # Cổng kill-switch nằm TRONG hàm (không phải `if` ở đây) để cờ tắt unit-test được —
+        # xem docstring `maybe_start_cv_screening_consumer`.
+        await maybe_start_cv_screening_consumer(connection)
+
         await asyncio.Future()
 
 
