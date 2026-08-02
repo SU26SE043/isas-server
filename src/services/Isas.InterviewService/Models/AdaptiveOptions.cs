@@ -19,10 +19,12 @@ public class AdaptiveOptions
     public int MaxQuestions { get; set; } = 20;
 
     // Trần số câu THÍCH ỨNG cho CẢ BUỔI, đóng dấu lên session lúc tạo. 0 = không trần cứng.
-    // ⚠ PHẢI để 0 ở chế độ chuỗi-theo-câu: trần buổi 3 sẽ bó chặt hơn trần theo câu (5 × 3 = 15) ⇒
-    // hội thoại chết ở câu đào sâu thứ 3. `MaxQuestions` mới là trần buổi. Giữ field cho chế độ cũ
-    // (`MaxDeepPerQuestion = 0`) và cho campaign B2B đã cấu hình sẵn theo ngữ nghĩa cũ.
-    public int MaxFollowUps { get; set; } = 0;
+    // ⚠ Ở chế độ chuỗi-theo-câu, trần buổi PHẢI là 0 (trần 3 bó chặt hơn trần theo câu 5×3=15 ⇒ hội thoại
+    // chết ở câu đào sâu thứ 3) — nhưng việc đó do CODE ép (`PracticeService` khi `MaxDeepPerQuestion > 0`),
+    // KHÔNG phải do giá trị mặc định ở đây. Giữ 3 vì giá trị này chỉ còn hiệu lực ở chế độ frontier cũ,
+    // tức đúng lúc kill-switch được bật: để 0 ở đó nghĩa là "KHÔNG trần" ⇒ tắt chế độ chuỗi lại ra một
+    // hành vi thứ ba (thích ứng không giới hạn tới trần buổi) thay vì hành vi trước INT-17b.
+    public int MaxFollowUps { get; set; } = 3;
 
     // INT-17b — trần số câu ĐÀO SÂU cho MỖI câu gốc. 0 = chế độ CŨ (frontier: chỉ sinh câu kế khi
     // MỌI câu đã trả lời, ngân sách tính theo buổi) ⇒ vừa là kill-switch vừa là bộ chọn chế độ.

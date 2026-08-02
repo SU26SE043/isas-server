@@ -199,23 +199,35 @@ public class PracticeService : IPracticeService
             _db.PracticeSessions.Add(session);
             await _db.SaveChangesAsync(ct);
 
-            // INT-17b — số câu GỐC của buổi. Adaptive tắt → null = giữ nguyên hợp đồng cũ (số câu do
-            // ứng viên chọn / AIService mặc định, không xen vào việc chọn overload bên dưới).
+            // INT-17b — số câu GỐC của buổi.
             //
             // ⚠ `questionCount` VẪN là "tổng số câu của buổi" (F2b), KHÔNG phải số câu gốc. Đừng đổi thành
             // `seeds × (1 + đào sâu)`: `ValidateQuestionCount` nhận 1..20 nên chọn 6 sẽ ra trần 24, vi phạm
             // CHECK `ck_practice_sessions_max_questions_range` NGAY LÚC INSERT — tức là SAU `ReserveAsync`
             // ⇒ đúng lỗi PAY-5 (mất tiền + reservation mồ côi) mà `ClampCampaignMaxQuestions` sinh ra để
             // chặn, lần này trên đường B2C. Nó cũng âm thầm đổi thứ ứng viên đã mua bằng 1 credit.
-            int? seedCount = adaptiveOn
-                ? Math.Max(1, session.MaxQuestions > 0
-                    ? Math.Min(_adaptive.SeedCount, session.MaxQuestions)
-                    : _adaptive.SeedCount)
+            //
+            // Chính vì `questionCount` là TỔNG, số câu gốc phải CHIA ngân sách đó cho chiều sâu chứ không
+            // lấy thẳng `SeedCount`: FE mặc định 5 câu, mà sinh đúng 5 câu gốc thì `askedCount = 5` chạm
+            // ngay trần ⇒ ngân sách cạn TRƯỚC lời gọi AI đầu tiên (`AnswerService` bước (3)) ⇒ buổi không
+            // có câu đào sâu nào và không báo gì cho ai. Chia cho (1 + độ sâu), làm tròn LÊN để tiêu hết
+            // ngân sách: trần 20 → 5 gốc (5×4=20) · 10 → 3 · 6 → 2 · 5 → 2 (2 + 3 sâu = 5) · 1 → 1.
+            //
+            // ⚠ Rẽ theo TRẦN ĐỘ SÂU, KHÔNG theo `adaptiveOn` — đây mới là kill-switch thật. Rẽ theo
+            // `adaptiveOn` thì đặt `MaxDeepPerQuestion = 0` vẫn đổi số câu xin AI **và** đổi overload
+            // được gọi ở dưới ⇒ "tắt" mà hành vi không quay lại như trước INT-17b.
+            int? seedCount = maxDeepPerQuestion > 0
+                ? Math.Clamp(
+                    session.MaxQuestions > 0
+                        // ceil-div: (a + b - 1) / b với b = 1 + maxDeepPerQuestion
+                        ? (session.MaxQuestions + maxDeepPerQuestion) / (1 + maxDeepPerQuestion)
+                        : _adaptive.SeedCount,
+                    1, Math.Max(1, _adaptive.SeedCount))
                 : null;
 
-            // Adaptive BẬT → xin AI ĐÚNG số câu gốc (trước đây xin `questionCount` rồi vứt bớt ở bước
-            // `Take` bên dưới = trả tiền token cho câu không bao giờ dùng). Adaptive TẮT → giữ nguyên
-            // `questionCount` như cũ.
+            // Chế độ chuỗi → xin AI ĐÚNG số câu gốc (trước đây xin `questionCount` rồi vứt bớt ở bước
+            // `Take` bên dưới = trả tiền token cho câu không bao giờ dùng). Trần độ sâu 0 → giữ nguyên
+            // `questionCount` như trước INT-17b.
             var requestedCount = seedCount ?? questionCount;
 
             // Gọi Gemini NGOÀI transaction — không giữ DB connection lúc chờ AI.
@@ -278,10 +290,15 @@ public class PracticeService : IPracticeService
 
             // Phỏng vấn THÍCH ỨNG (B2C): bật → giữ SeedCount câu đầu làm SEED (phần còn lại AI sinh động
             // theo câu trả lời trong AnswerService). Tắt → giữ CẢ bộ như luồng cũ. Kind=Seed (mặc định entity).
-            // Chốt phòng thủ: nay đã xin AI đúng `seedCount` nên `Take` thường là no-op, nhưng AI vẫn có
-            // thể trả THỪA (hoặc thiếu) — không cắt thì buổi có nhiều câu gốc hơn ngân sách đã đóng dấu.
-            // (`seedCount` không null ⇔ `session.AdaptiveEnabled`, và còn kẹp thêm theo `MaxQuestions`.)
-            var seedQuestions = seedCount is int sc ? generated.Take(sc).ToList() : generated;
+            // Chốt phòng thủ: chế độ chuỗi đã xin AI đúng `seedCount` nên `Take` thường là no-op, nhưng AI
+            // vẫn có thể trả THỪA — không cắt thì buổi có nhiều câu gốc hơn ngân sách đã đóng dấu.
+            // Nhánh giữa = kill-switch (trần độ sâu 0) + adaptive bật: cắt theo `SeedCount` ĐÚNG như trước
+            // INT-17b, để đặt trần 0 là quay lại nguyên hành vi cũ chứ không phải một hình dạng thứ ba.
+            var seedQuestions = seedCount is int sc
+                ? generated.Take(sc).ToList()
+                : adaptiveOn
+                    ? generated.Take(Math.Max(1, _adaptive.SeedCount)).ToList()
+                    : generated;
 
             // RAG grounding — resolve citation per-câu (questionIndex → citedChunkIds → {sourceUrl,sourceTitle}
             // từ tập grounding đã cấp; GUARD drop id lạ). grounded → mỗi câu có LIST (rỗng nếu AI không cite);

@@ -123,6 +123,18 @@ services:
       - Context7__ApiKey=${CONTEXT7_API_KEY}
       # Grounding:Enabled mặc định TẮT (chuỗi rỗng không parse int/bool an toàn → dùng default). Bật khi có corpus.
       - Grounding__Enabled=${GROUNDING_ENABLED:-false}
+      # Phỏng vấn THÍCH ỨNG (INT-17 / INT-17b). Trước đây 3 khoá này chỉ tồn tại trong compose SỬA TAY trên
+      # server, không có trong repo — nên hình dạng buổi phỏng vấn chạy thật chỉ đọc được bằng `docker inspect`,
+      # và một khoá mới (`MaxDeepPerQuestion`) thêm vào appsettings là âm thầm đổi hành vi production.
+      # ⚠ KILL-SWITCH = `MaxDeepPerQuestion`: đặt 0 → quay lại chế độ frontier trước INT-17b (`MaxFollowUps`
+      # lúc đó mới có hiệu lực; chế độ chuỗi thì code tự ép về 0). Đặt `Adaptive__Enabled=false` → tắt hẳn
+      # phỏng vấn thích ứng, về luồng batch tĩnh.
+      - Adaptive__Enabled=${ADAPTIVE_ENABLED:-false}
+      - Adaptive__SeedCount=${ADAPTIVE_SEED_COUNT:-5}
+      - Adaptive__MaxQuestions=${ADAPTIVE_MAX_QUESTIONS:-20}
+      - Adaptive__MaxFollowUps=${ADAPTIVE_MAX_FOLLOW_UPS:-3}
+      - Adaptive__MaxDeepPerQuestion=${ADAPTIVE_MAX_DEEP_PER_QUESTION:-3}
+      - Adaptive__MaxFailuresPerSession=${ADAPTIVE_MAX_FAILURES_PER_SESSION:-3}
     ports:
       - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet
     depends_on: [postgres, seaweedfs, rabbitmq, qdrant]
