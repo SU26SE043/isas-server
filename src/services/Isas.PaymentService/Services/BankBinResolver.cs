@@ -39,20 +39,39 @@ namespace Isas.PaymentService.Services
             var raw = counterAccountBankId?.Trim();
             if (string.IsNullOrEmpty(raw)) return null;
 
-            // Bảng ánh xạ do ops điền (config, không cần deploy) — tra TRƯỚC để một mục cấu hình sai
-            // sửa được ngay, và để mục tường minh luôn thắng suy đoán bên dưới.
-            if (_options.BankBinMap.TryGetValue(raw, out var mapped))
-            {
-                var trimmed = mapped?.Trim();
-                return IsBin(trimmed) ? trimmed : null;
-            }
+            // (1) Khớp NGUYÊN mã trước — để ops ghim được một mã cụ thể khi cần, và mục tường minh
+            // luôn thắng mọi suy diễn bên dưới.
+            if (TryMap(raw, out var exact)) return exact;
 
-            // Vốn đã là BIN → dùng thẳng. Nếu một mã 6 số nào đó hoá ra không phải BIN thì
-            // ValidateDestination phía payOS chặn lại, chứ không thành lệnh chuyển đi mù.
+            // (2) Mã CITAD 8 số → lấy 3 số GIỮA làm mã ngân hàng. Cấu trúc
+            // [2 số tỉnh][3 số tổ chức][3 số chi nhánh] được xác minh bằng dữ liệu, không phải phỏng đoán:
+            // trong danh sách CITAD do ngân hàng công bố, 695 mã của Kho Bạc Nhà nước trải 63 tỉnh đều
+            // mang cùng 3 số giữa `701`, và mọi nhóm ngân hàng thương mại đều thuần đúng một tên.
+            //
+            // Khớp theo 3 số này thay vì cả 8 số là điều BẮT BUỘC, vì mã CITAD phân biệt tới CHI NHÁNH:
+            // khách mở tài khoản ở chi nhánh khác sẽ mang mã khác, và bảng khớp-cả-8-số sẽ trượt họ.
+            if (IsCitad(raw) && TryMap(raw.Substring(2, 3), out var bySegment)) return bySegment;
+
+            // (3) Vốn đã là BIN (payOS trả BIN với một số ngân hàng, CITAD với số khác) → dùng thẳng.
             return IsBin(raw) ? raw : null;
+        }
+
+        // Giá trị trong bảng phải là BIN hợp lệ; một dòng cấu hình gõ sai KHÔNG được biến thành lệnh
+        // chuyển tiền đi mù — thà trả null để rơi về chuyển tay.
+        private bool TryMap(string key, out string? bin)
+        {
+            bin = null;
+            if (!_options.BankBinMap.TryGetValue(key, out var mapped)) return false;
+            var trimmed = mapped?.Trim();
+            if (!IsBin(trimmed)) return false;
+            bin = trimmed;
+            return true;
         }
 
         private static bool IsBin(string? value) =>
             value is { Length: 6 } && value.All(char.IsAsciiDigit);
+
+        private static bool IsCitad(string value) =>
+            value.Length == 8 && value.All(char.IsAsciiDigit);
     }
 }
