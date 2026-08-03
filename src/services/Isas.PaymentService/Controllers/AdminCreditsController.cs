@@ -87,6 +87,10 @@ namespace Isas.PaymentService.Controllers
                 {
                     message = "Postpaid bắt buộc `creditLimit` > 0; Prepaid thì KHÔNG được truyền `creditLimit`."
                 }),
+                SetPaymentModeOutcome.PostpaidNotEligible => StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    message = "Tier B2B hiện hiệu lực không đủ điều kiện dùng Postpaid."
+                }),
                 SetPaymentModeOutcome.WalletMissing => NotFound(new
                 {
                     message = "Chưa có ví cho chủ sở hữu này — không tự tạo ví qua endpoint duyệt."

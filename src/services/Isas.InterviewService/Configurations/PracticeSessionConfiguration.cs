@@ -37,8 +37,16 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // F2b — trần cứng số câu ở tầng DB. Tầng service đã chặn 1..20 cho B2C, nhưng đường internal
         // (Campaign → /internal/sessions/campaign) không đi qua guard đó ⇒ chốt ở đây cho mọi đường ghi.
         // 0 = "không trần cứng" (luồng tĩnh / adaptive tắt) nên phải nằm trong khoảng hợp lệ.
-        e.ToTable(t => t.HasCheckConstraint(
-            "ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20"));
+        e.ToTable(t =>
+        {
+            t.HasCheckConstraint("ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20");
+            t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
+        });
+
+        // INT-17b — trần đào sâu MỖI câu gốc + bộ đếm lỗi decide-next. default 0 ⇒ row CŨ tự nhận
+        // "chế độ cũ, chưa lỗi lần nào" lúc apply migration (khỏi backfill riêng).
+        e.Property(x => x.MaxDeepPerQuestion).IsRequired().HasDefaultValue(0);
+        e.Property(x => x.AdaptiveFailures).IsRequired().HasDefaultValue(0);
 
         // DB14 — audit updated_at: default now() ở DB (Postgres); C# init ở entity đảm nhận insert
         // (SQLite/EnsureCreated không có now()). Stamp tự động khi Modified qua SaveChanges override.
@@ -130,6 +138,10 @@ public class PracticeQuestionConfiguration : IEntityTypeConfiguration<PracticeQu
         e.Property(x => x.TimeLimitSec).IsRequired();
         e.Property(x => x.CreatedAt).IsRequired();
 
+        // INT-17b — độ sâu trong chuỗi đào sâu (0 = seed). Required + default 0 ⇒ row cũ nhận giá trị
+        // hợp lệ ngay lúc AddColumn; migration còn backfill lại theo cây cho row thích ứng đã tồn tại.
+        e.Property(x => x.Depth).IsRequired().HasDefaultValue(0);
+
         // Phỏng vấn THÍCH ỨNG — Kind lưu string (GEN-2). Rows cũ backfill 'Seed' (migration defaultValue).
         e.Property(x => x.Kind)
             .HasConversion<string>()
@@ -160,6 +172,10 @@ public class PracticeQuestionConfiguration : IEntityTypeConfiguration<PracticeQu
         e.HasIndex(x => x.GeneratedFromAnswerId)
             .IsUnique()
             .HasFilter("generated_from_answer_id IS NOT NULL");
+
+        // INT-17b — gom lịch sử theo ĐÚNG chuỗi (root) + kiểm trần độ sâu. KHÔNG unique: một câu gốc có
+        // nhiều tầng, và (root, depth) chỉ duy nhất trong chuỗi chứ không phải toàn buổi.
+        e.HasIndex(x => new { x.SessionId, x.RootQuestionId, x.Depth });
     }
 }
 
@@ -167,6 +183,8 @@ public class PracticeAnswerConfiguration : IEntityTypeConfiguration<PracticeAnsw
 {
     public void Configure(EntityTypeBuilder<PracticeAnswer> e)
     {
+        e.ToTable(t => t.HasCheckConstraint(
+            "ck_practice_answers_status", "status IN ('Uploaded', 'Transcribing', 'Transcribed', 'Scoring', 'Scored', 'Skipped', 'Failed')"));
         e.HasKey(x => x.Id);
 
         e.Property(x => x.AudioObjectKey).HasMaxLength(512);

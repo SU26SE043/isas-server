@@ -190,6 +190,8 @@ namespace Isas.PaymentService.Migrations
                         {
                             t.HasCheckConstraint("ck_credit_accounts_credit_limit_positive", "credit_limit IS NULL OR credit_limit > 0");
 
+                            t.HasCheckConstraint("ck_credit_accounts_enums", "owner_type IN ('Org', 'User') AND payment_mode IN ('Prepaid', 'Postpaid') AND status IN ('Active', 'Suspended')");
+
                             t.HasCheckConstraint("ck_credit_accounts_non_negative", "remaining_credits >= 0 AND reserved_credits >= 0 AND free_credits_granted >= 0 AND (period_usage IS NULL OR period_usage >= 0)");
                         });
                 });
@@ -211,10 +213,18 @@ namespace Isas.PaymentService.Migrations
                     b.Property<string>("FundedBy")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
                         .HasDefaultValue("Credit")
                         .HasColumnName("funded_by");
+
+                    b.Property<DateTime?>("MeteredPeriodStart")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("metered_period_start");
+
+                    b.Property<Guid?>("MeteredSubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("metered_subscription_id");
 
                     b.Property<Guid>("OwnerId")
                         .HasColumnType("uuid")
@@ -266,7 +276,12 @@ namespace Isas.PaymentService.Migrations
                         .HasDatabaseName("ix_credit_reservations_reserved")
                         .HasFilter("status = 'Reserved'");
 
-                    b.ToTable("credit_reservations", (string)null);
+                    b.ToTable("credit_reservations", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_credit_reservations_enums", "owner_type IN ('Org', 'User') AND status IN ('Reserved', 'Consumed', 'Released') AND funded_by IN ('Credit', 'Subscription', 'SubscriptionMetered') AND payment_mode IN ('Prepaid', 'Postpaid')");
+
+                            t.HasCheckConstraint("ck_reservation_metered_consistency", "(funded_by = 'SubscriptionMetered' AND metered_subscription_id IS NOT NULL AND metered_period_start IS NOT NULL) OR (funded_by <> 'SubscriptionMetered' AND metered_subscription_id IS NULL AND metered_period_start IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("PaymentService.Models.CreditTransaction", b =>
@@ -356,6 +371,8 @@ namespace Isas.PaymentService.Migrations
                     b.ToTable("credit_transactions", null, t =>
                         {
                             t.HasCheckConstraint("ck_credit_transactions_delta_nonzero", "delta <> 0");
+
+                            t.HasCheckConstraint("ck_credit_transactions_enums", "owner_type IN ('Org', 'User') AND reason IN ('Purchase', 'Consume', 'Refund', 'FreeGrant', 'PromoGrant')");
                         });
                 });
 
@@ -487,7 +504,10 @@ namespace Isas.PaymentService.Migrations
                     b.HasIndex("OwnerType", "OwnerId")
                         .HasDatabaseName("ix_invoices_owner_type_owner_id");
 
-                    b.ToTable("invoices", (string)null);
+                    b.ToTable("invoices", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_invoices_enums", "owner_type = 'Org' AND status IN ('Issued', 'Paid', 'Overdue', 'Void')");
+                        });
                 });
 
             modelBuilder.Entity("PaymentService.Models.Order", b =>
@@ -546,6 +566,25 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("payos_order_code");
 
+                    b.Property<string>("PayoutFailureReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("payout_failure_reason");
+
+                    b.Property<string>("PayoutId")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("payout_id");
+
+                    b.Property<Guid?>("PayoutIdempotencyKey")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payout_idempotency_key");
+
+                    b.Property<string>("PayoutStatus")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("payout_status");
+
                     b.Property<string>("RefundGatewayRef")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
@@ -603,6 +642,15 @@ namespace Isas.PaymentService.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_orders_payos_order_code");
 
+                    b.HasIndex("PayoutIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_orders_payout_idempotency_key")
+                        .HasFilter("payout_idempotency_key IS NOT NULL");
+
+                    b.HasIndex("UpdatedAt")
+                        .HasDatabaseName("ix_orders_payout_in_flight")
+                        .HasFilter("payout_status = 'InFlight'");
+
                     b.HasIndex("CreatedAt", "Id")
                         .IsDescending()
                         .HasDatabaseName("ix_orders_created_id_desc");
@@ -611,7 +659,18 @@ namespace Isas.PaymentService.Migrations
                         .IsDescending(false, false, true, true)
                         .HasDatabaseName("ix_orders_owner_created");
 
-                    b.ToTable("orders", (string)null);
+                    b.ToTable("orders", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_orders_amount_non_negative", "amount_vnd >= 0");
+
+                            t.HasCheckConstraint("ck_orders_kind", "kind IN ('CreditPack', 'InvoiceSettlement', 'SubscriptionPurchase', 'SubscriptionRenewal')");
+
+                            t.HasCheckConstraint("ck_orders_owner_type", "owner_type IN ('Org', 'User')");
+
+                            t.HasCheckConstraint("ck_orders_payout_status", "payout_status IS NULL OR payout_status IN ('InFlight', 'Succeeded', 'Failed')");
+
+                            t.HasCheckConstraint("ck_orders_status", "status IN ('Pending', 'Paid', 'Failed', 'Expired', 'Cancelled', 'Refunded')");
+                        });
                 });
 
             modelBuilder.Entity("PaymentService.Models.PaymentTransaction", b =>
@@ -661,6 +720,303 @@ namespace Isas.PaymentService.Migrations
                     b.ToTable("payment_transactions", (string)null);
                 });
 
+            modelBuilder.Entity("PaymentService.Models.Plan", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<bool>("AdaptiveEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("adaptive_enabled");
+
+                    b.Property<int?>("AdaptiveMaxFollowups")
+                        .HasColumnType("integer")
+                        .HasColumnName("adaptive_max_followups");
+
+                    b.Property<int?>("AdaptiveMaxQuestions")
+                        .HasColumnType("integer")
+                        .HasColumnName("adaptive_max_questions");
+
+                    b.Property<string>("Audience")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("audience");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("code");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<bool>("CvAnalysisIncluded")
+                        .HasColumnType("boolean")
+                        .HasColumnName("cv_analysis_included");
+
+                    b.Property<string>("EntitlementsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("entitlements_json");
+
+                    b.Property<int>("EntitlementsVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("entitlements_version");
+
+                    b.Property<bool>("GroundingEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("grounding_enabled");
+
+                    b.Property<string>("InterviewFunding")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("interview_funding");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<int?>("MaxActiveCampaigns")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_active_campaigns");
+
+                    b.Property<int?>("MaxCandidatesCap")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_candidates_cap");
+
+                    b.Property<int?>("MaxQuestionsCap")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_questions_cap");
+
+                    b.Property<int?>("MonthlyQuota")
+                        .HasColumnType("integer")
+                        .HasColumnName("monthly_quota");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("name");
+
+                    b.Property<bool>("PostpaidEligible")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("postpaid_eligible");
+
+                    b.Property<int>("Rank")
+                        .HasColumnType("integer")
+                        .HasColumnName("rank");
+
+                    b.Property<bool>("RepoAnalysisIncluded")
+                        .HasColumnType("boolean")
+                        .HasColumnName("repo_analysis_included");
+
+                    b.Property<bool>("RoadmapEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("roadmap_enabled");
+
+                    b.Property<int?>("SeatCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("seat_count");
+
+                    b.Property<int>("SelfConsistencyN")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("self_consistency_n");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("Id")
+                        .HasName("pk_plans");
+
+                    b.HasIndex("Audience", "Code")
+                        .IsUnique()
+                        .HasDatabaseName("ix_plans_audience_code");
+
+                    b.HasIndex("Audience", "IsActive")
+                        .HasDatabaseName("ix_plans_audience_active");
+
+                    b.ToTable("plans", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_plans_adaptive_caps", "adaptive_enabled OR (adaptive_max_questions IS NULL AND adaptive_max_followups IS NULL)");
+
+                            t.HasCheckConstraint("ck_plans_audience", "audience IN ('B2C', 'B2B')");
+
+                            t.HasCheckConstraint("ck_plans_b2c_no_b2b", "audience = 'B2B' OR (max_active_campaigns IS NULL AND max_candidates_cap IS NULL AND postpaid_eligible = false AND seat_count IS NULL)");
+
+                            t.HasCheckConstraint("ck_plans_funding", "interview_funding IN ('Credit', 'Metered', 'Unlimited')");
+
+                            t.HasCheckConstraint("ck_plans_maxq", "max_questions_cap IS NULL OR max_questions_cap BETWEEN 0 AND 20");
+
+                            t.HasCheckConstraint("ck_plans_metered", "interview_funding <> 'Metered' OR monthly_quota > 0");
+
+                            t.HasCheckConstraint("ck_plans_scn", "self_consistency_n >= 1");
+                        });
+
+                    b.HasData(
+                        new
+                        {
+                            Id = new Guid("10000000-0000-0000-0000-000000000001"),
+                            AdaptiveEnabled = false,
+                            Audience = "B2C",
+                            Code = "free",
+                            CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CvAnalysisIncluded = false,
+                            EntitlementsJson = "[]",
+                            EntitlementsVersion = 1,
+                            GroundingEnabled = false,
+                            InterviewFunding = "Credit",
+                            IsActive = true,
+                            Name = "Free",
+                            PostpaidEligible = false,
+                            Rank = 0,
+                            RepoAnalysisIncluded = false,
+                            RoadmapEnabled = false,
+                            SelfConsistencyN = 1,
+                            UpdatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            Id = new Guid("10000000-0000-0000-0000-000000000002"),
+                            AdaptiveEnabled = true,
+                            AdaptiveMaxFollowups = 3,
+                            AdaptiveMaxQuestions = 10,
+                            Audience = "B2C",
+                            Code = "plus",
+                            CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CvAnalysisIncluded = true,
+                            EntitlementsJson = "[]",
+                            EntitlementsVersion = 1,
+                            GroundingEnabled = true,
+                            InterviewFunding = "Metered",
+                            IsActive = true,
+                            MaxQuestionsCap = 10,
+                            MonthlyQuota = 30,
+                            Name = "Plus",
+                            PostpaidEligible = false,
+                            Rank = 1,
+                            RepoAnalysisIncluded = false,
+                            RoadmapEnabled = true,
+                            SelfConsistencyN = 1,
+                            UpdatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            Id = new Guid("10000000-0000-0000-0000-000000000003"),
+                            AdaptiveEnabled = true,
+                            AdaptiveMaxFollowups = 5,
+                            AdaptiveMaxQuestions = 20,
+                            Audience = "B2C",
+                            Code = "pro",
+                            CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CvAnalysisIncluded = true,
+                            EntitlementsJson = "[]",
+                            EntitlementsVersion = 1,
+                            GroundingEnabled = true,
+                            InterviewFunding = "Metered",
+                            IsActive = true,
+                            MaxQuestionsCap = 20,
+                            MonthlyQuota = 100,
+                            Name = "Pro",
+                            PostpaidEligible = false,
+                            Rank = 2,
+                            RepoAnalysisIncluded = true,
+                            RoadmapEnabled = true,
+                            SelfConsistencyN = 3,
+                            UpdatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000001"),
+                            AdaptiveEnabled = false,
+                            Audience = "B2B",
+                            Code = "starter",
+                            CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CvAnalysisIncluded = false,
+                            EntitlementsJson = "[]",
+                            EntitlementsVersion = 1,
+                            GroundingEnabled = false,
+                            InterviewFunding = "Credit",
+                            IsActive = true,
+                            MaxActiveCampaigns = 1,
+                            MaxCandidatesCap = 25,
+                            Name = "Starter",
+                            PostpaidEligible = false,
+                            Rank = 0,
+                            RepoAnalysisIncluded = false,
+                            RoadmapEnabled = false,
+                            SeatCount = 1,
+                            SelfConsistencyN = 1,
+                            UpdatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000002"),
+                            AdaptiveEnabled = true,
+                            Audience = "B2B",
+                            Code = "business",
+                            CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CvAnalysisIncluded = false,
+                            EntitlementsJson = "[]",
+                            EntitlementsVersion = 1,
+                            GroundingEnabled = true,
+                            InterviewFunding = "Credit",
+                            IsActive = true,
+                            MaxActiveCampaigns = 10,
+                            MaxCandidatesCap = 200,
+                            Name = "Business",
+                            PostpaidEligible = true,
+                            Rank = 1,
+                            RepoAnalysisIncluded = false,
+                            RoadmapEnabled = false,
+                            SeatCount = 10,
+                            SelfConsistencyN = 1,
+                            UpdatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000003"),
+                            AdaptiveEnabled = true,
+                            Audience = "B2B",
+                            Code = "enterprise",
+                            CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
+                            CvAnalysisIncluded = false,
+                            EntitlementsJson = "[]",
+                            EntitlementsVersion = 1,
+                            GroundingEnabled = true,
+                            InterviewFunding = "Credit",
+                            IsActive = true,
+                            Name = "Enterprise",
+                            PostpaidEligible = true,
+                            Rank = 2,
+                            RepoAnalysisIncluded = false,
+                            RoadmapEnabled = false,
+                            SelfConsistencyN = 1,
+                            UpdatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc)
+                        });
+                });
+
             modelBuilder.Entity("PaymentService.Models.ProductPackage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -668,6 +1024,11 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("Audience")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("audience");
 
                     b.Property<DateTime>("CreatedAt")
                         .ValueGeneratedOnAdd()
@@ -694,6 +1055,10 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("text")
                         .HasColumnName("name");
 
+                    b.Property<Guid?>("PlanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("plan_id");
+
                     b.Property<long>("PriceVnd")
                         .HasColumnType("bigint")
                         .HasColumnName("price_vnd");
@@ -713,7 +1078,17 @@ namespace Isas.PaymentService.Migrations
                     b.HasKey("Id")
                         .HasName("pk_product_packages");
 
-                    b.ToTable("product_packages", (string)null);
+                    b.HasIndex("PlanId")
+                        .HasDatabaseName("ix_product_packages_plan_id");
+
+                    b.ToTable("product_packages", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_product_packages_audience", "audience IS NULL OR audience IN ('B2C', 'B2B')");
+
+                            t.HasCheckConstraint("ck_product_packages_price_non_negative", "price_vnd >= 0");
+
+                            t.HasCheckConstraint("ck_product_packages_type", "type IN ('OneTime', 'Subscription')");
+                        });
                 });
 
             modelBuilder.Entity("PaymentService.Models.Subscription", b =>
@@ -723,6 +1098,25 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("ActivatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("activated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("AdminGrantIdempotencyKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("admin_grant_idempotency_key");
+
+                    b.Property<string>("Audience")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasDefaultValue("B2C")
+                        .HasColumnName("audience");
 
                     b.Property<string>("BillingCycle")
                         .IsRequired()
@@ -736,9 +1130,44 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<string>("EntitlementHash")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValue("")
+                        .HasColumnName("entitlement_hash");
+
+                    b.Property<string>("EntitlementSnapshot")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("entitlement_snapshot");
+
+                    b.Property<int>("EntitlementsVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("entitlements_version");
+
                     b.Property<DateTime>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
+
+                    b.Property<string>("InterviewFunding")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Credit")
+                        .HasColumnName("interview_funding");
+
+                    b.Property<short?>("MeterAnchorDay")
+                        .HasColumnType("smallint")
+                        .HasColumnName("meter_anchor_day");
+
+                    b.Property<int?>("MonthlyQuota")
+                        .HasColumnType("integer")
+                        .HasColumnName("monthly_quota");
 
                     b.Property<Guid?>("OrderId")
                         .HasColumnType("uuid")
@@ -758,6 +1187,18 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("package_id");
 
+                    b.Property<Guid?>("PlanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("plan_id");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Purchase")
+                        .HasColumnName("source");
+
                     b.Property<DateTime>("StartedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at");
@@ -769,6 +1210,18 @@ namespace Isas.PaymentService.Migrations
                         .HasColumnType("character varying(16)")
                         .HasDefaultValue("Active")
                         .HasColumnName("status");
+
+                    b.Property<string>("TierCode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValue("")
+                        .HasColumnName("tier_code");
+
+                    b.Property<int>("TierRank")
+                        .HasColumnType("integer")
+                        .HasColumnName("tier_rank");
 
                     b.Property<DateTime>("UpdatedAt")
                         .ValueGeneratedOnAdd()
@@ -791,13 +1244,102 @@ namespace Isas.PaymentService.Migrations
                     b.HasIndex("PackageId")
                         .HasDatabaseName("ix_subscriptions_package_id");
 
+                    b.HasIndex("PlanId")
+                        .HasDatabaseName("ix_subscriptions_plan_id");
+
+                    b.HasIndex("OwnerType", "OwnerId", "AdminGrantIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_subscriptions_owner_grant_idempotency")
+                        .HasFilter("admin_grant_idempotency_key IS NOT NULL");
+
                     b.HasIndex("OwnerType", "OwnerId", "ExpiresAt")
                         .HasDatabaseName("ix_subscriptions_owner_active")
                         .HasFilter("status = 'Active'");
 
                     b.ToTable("subscriptions", null, t =>
                         {
+                            t.HasCheckConstraint("ck_sub_audience_owner", "(audience = 'B2C' AND owner_type = 'User') OR (audience = 'B2B' AND owner_type = 'Org')");
+
+                            t.HasCheckConstraint("ck_sub_meter_anchor", "meter_anchor_day IS NULL OR meter_anchor_day BETWEEN 1 AND 28");
+
+                            t.HasCheckConstraint("ck_sub_metered_quota", "interview_funding <> 'Metered' OR monthly_quota IS NOT NULL AND monthly_quota > 0");
+
+                            t.HasCheckConstraint("ck_subscriptions_enums", "billing_cycle IN ('Monthly', 'Annual') AND status IN ('Active', 'Expired', 'Cancelled') AND audience IN ('B2C', 'B2B') AND interview_funding IN ('Credit', 'Metered', 'Unlimited') AND source IN ('Purchase', 'AdminGrant')");
+
                             t.HasCheckConstraint("ck_subscriptions_period_positive", "expires_at > started_at");
+                        });
+                });
+
+            modelBuilder.Entity("PaymentService.Models.SubscriptionEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("event_type");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("payload");
+
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_subscription_events");
+
+                    b.HasIndex("SubscriptionId")
+                        .HasDatabaseName("ix_subscription_events_subscription_id");
+
+                    b.ToTable("subscription_events", (string)null);
+                });
+
+            modelBuilder.Entity("PaymentService.Models.SubscriptionMeter", b =>
+                {
+                    b.Property<Guid>("SubscriptionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subscription_id");
+
+                    b.Property<DateTime>("PeriodStart")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("period_start");
+
+                    b.Property<int>("ReservedCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("reserved_count");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<int>("UsedCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("used_count");
+
+                    b.HasKey("SubscriptionId", "PeriodStart")
+                        .HasName("pk_subscription_meters");
+
+                    b.ToTable("subscription_meters", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_meter_nonneg", "used_count >= 0 AND reserved_count >= 0");
                         });
                 });
 
@@ -880,6 +1422,17 @@ namespace Isas.PaymentService.Migrations
                     b.Navigation("Order");
                 });
 
+            modelBuilder.Entity("PaymentService.Models.ProductPackage", b =>
+                {
+                    b.HasOne("PaymentService.Models.Plan", "Plan")
+                        .WithMany()
+                        .HasForeignKey("PlanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_product_packages_plans_plan_id");
+
+                    b.Navigation("Plan");
+                });
+
             modelBuilder.Entity("PaymentService.Models.Subscription", b =>
                 {
                     b.HasOne("PaymentService.Models.Order", "Order")
@@ -894,6 +1447,12 @@ namespace Isas.PaymentService.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_subscriptions_product_packages_package_id");
 
+                    b.HasOne("PaymentService.Models.Plan", "Plan")
+                        .WithMany()
+                        .HasForeignKey("PlanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_subscriptions_plans_plan_id");
+
                     b.HasOne("PaymentService.Models.CreditAccount", null)
                         .WithMany()
                         .HasForeignKey("OwnerType", "OwnerId")
@@ -905,6 +1464,32 @@ namespace Isas.PaymentService.Migrations
                     b.Navigation("Order");
 
                     b.Navigation("Package");
+
+                    b.Navigation("Plan");
+                });
+
+            modelBuilder.Entity("PaymentService.Models.SubscriptionEvent", b =>
+                {
+                    b.HasOne("PaymentService.Models.Subscription", "Subscription")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_subscription_events_subscriptions_subscription_id");
+
+                    b.Navigation("Subscription");
+                });
+
+            modelBuilder.Entity("PaymentService.Models.SubscriptionMeter", b =>
+                {
+                    b.HasOne("PaymentService.Models.Subscription", "Subscription")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_subscription_meters_subscriptions_subscription_id");
+
+                    b.Navigation("Subscription");
                 });
 
             modelBuilder.Entity("PaymentService.Models.Invoice", b =>

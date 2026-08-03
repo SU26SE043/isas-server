@@ -267,7 +267,8 @@ class GeminiProvider(QuestionProvider):
         return items
 
     async def analyze_cv(self, cv_text: str, jd_text: str | None,
-                         job_category: str | None) -> dict:
+                         job_category: str | None,
+                         criteria: list[dict] | None = None) -> dict:
         """
         Phân tích CV (BC6, B2C sync, D17) — feedback + khớp JD (nếu có).
 
@@ -277,10 +278,17 @@ class GeminiProvider(QuestionProvider):
             "jdMatch"?: { "score": int, "matchedSkills": [str], "missingSkills": [str] } }
 
         jdMatch chỉ xuất hiện khi jd_text được cung cấp.
+
+        C14 (B2B sàng CV) — có ``criteria`` (tiêu chí campaign) thì trả THÊM:
+          "skills": [str], "yearsExperience": float, "education": [str],
+          "criterionMatches": [{criterionId, matchScore, reasoning}], "overallMatchScore": int
+
+        ``criteria=None`` (đường B2C) ⇒ prompt, response_schema và dict trả về GIỮ NGUYÊN XI.
+        ``criteria`` là tham số có mặc định nên mọi call site 3-đối-số cũ chạy nguyên.
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category)
+        prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category, criteria)
 
         properties: dict = {
             "summary": {"type": "string"},
@@ -289,6 +297,26 @@ class GeminiProvider(QuestionProvider):
             "suggestions": {"type": "array", "items": {"type": "string"}},
         }
         required = ["summary", "strengths", "weaknesses", "suggestions"]
+        if criteria:
+            properties.update({
+                "skills": {"type": "array", "items": {"type": "string"}},
+                "yearsExperience": {"type": "number"},
+                "education": {"type": "array", "items": {"type": "string"}},
+                "criterionMatches": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "criterionId": {"type": "string"},
+                            "matchScore": {"type": "number"},
+                            "reasoning": {"type": "string"},
+                        },
+                        "required": ["criterionId", "matchScore"],
+                    },
+                },
+                "overallMatchScore": {"type": "integer"},
+            })
+            required += ["skills", "criterionMatches", "overallMatchScore"]
         if jd_text:
             properties["jdMatch"] = {
                 "type": "object",
@@ -351,6 +379,66 @@ class GeminiProvider(QuestionProvider):
                 "matchedSkills": _clean_list(jd_match_raw.get("matchedSkills")),
                 "missingSkills": _clean_list(jd_match_raw.get("missingSkills")),
             }
+
+        # ── C14 — chấm khớp theo tiêu chí campaign + chống ảo giác (AI-3) ────────────────
+        # KHÔNG tin điểm model trả về: kẹp về thang của ĐÚNG tiêu chí đó, DROP id không nằm
+        # trong `criteria[]` đã gửi xuống (id bịa = tiêu chí model tự nghĩ ra), bỏ id lặp.
+        # Làm ở đây chứ không chỉ trông vào .NET: hai lớp là cố ý — .NET có FK Restrict + clamp,
+        # nhưng endpoint /analyze-cv còn được gọi TRỰC TIẾP (B2C sync) nên guard phải nằm tại nguồn.
+        if criteria:
+            allowed: dict[str, float] = {}
+            for c in criteria:
+                cid = str(c.get("criterionId") or "").strip()
+                if cid:
+                    allowed[cid] = float(c.get("maxScore") or 0)
+
+            matches: list[dict] = []
+            seen: set[str] = set()
+            for m in data.get("criterionMatches") or []:
+                if not isinstance(m, dict):
+                    continue
+                cid = str(m.get("criterionId") or "").strip()
+                if cid not in allowed or cid in seen:
+                    continue    # id BỊA hoặc trùng → bỏ
+                seen.add(cid)
+                raw_score = m.get("matchScore")
+                try:
+                    match_score = float(raw_score if raw_score is not None else 0)
+                except (TypeError, ValueError):
+                    match_score = 0.0
+                reasoning = str(m.get("reasoning") or "").strip()
+                matches.append({
+                    "criterionId": cid,
+                    # Kẹp [0, maxScore] của CHÍNH tiêu chí này (không phải một thang chung).
+                    "matchScore": max(0.0, min(match_score, allowed[cid])),
+                    "reasoning": reasoning or None,
+                })
+
+            if not matches:
+                # 0 tiêu chí nào sống sót = model bịa sạch id hoặc bỏ trắng phần chấm. Nếu cứ trả
+                # về thì Campaign lưu candidate "Analyzed" mà KHÔNG có điểm tiêu chí nào — HR nhìn
+                # thấy đã chấm xong trong khi thực chất chưa chấm gì. Raise ⇒ worker retry, hết
+                # retry thì cv-failed (HR biết mà cho chạy lại), thà thấy lỗi còn hơn sai lặng lẽ.
+                raise ValueError("LLM không trả criterionMatches hợp lệ nào (id bịa hoặc rỗng).")
+            if len(matches) < len(allowed):
+                print(f"[⚠️] Sàng CV: chỉ {len(matches)}/{len(allowed)} tiêu chí được chấm hợp lệ")
+
+            overall = data.get("overallMatchScore")
+            try:
+                overall = float(overall if overall is not None else 0)
+            except (TypeError, ValueError):
+                overall = 0.0
+            years = data.get("yearsExperience")
+            try:
+                years = float(years) if years is not None else None
+            except (TypeError, ValueError):
+                years = None
+
+            result["skills"] = _clean_list(data.get("skills"))
+            result["yearsExperience"] = max(0.0, years) if years is not None else None
+            result["education"] = _clean_list(data.get("education"))
+            result["criterionMatches"] = matches
+            result["overallMatchScore"] = int(round(max(0.0, min(overall, 100.0))))
 
         return result
 
@@ -849,7 +937,10 @@ class GeminiProvider(QuestionProvider):
     async def decide_next(self, job_category: str, current_question: str, transcript: str,
                           history: list[dict], asked_count: int, follow_up_count: int,
                           max_questions: int, max_follow_ups: int,
-                          criteria: list[dict]) -> dict:
+                          criteria: list[dict],
+                          root_question: str | None = None, current_depth: int = 0,
+                          max_depth: int = 0,
+                          other_topics: list[str] | None = None) -> dict:
         """Phỏng vấn THÍCH ỨNG — quyết định hành động kế tiếp (sync, stateless, KHÔNG ghi DB).
 
         Trả về dict: { "action": str, "nextQuestion": str|None, "reason": str|None }
@@ -857,12 +948,18 @@ class GeminiProvider(QuestionProvider):
 
         temperature=0.3: bám sát câu trả lời/năng lực nhưng câu hỏi tự nhiên hơn chấm điểm
         (0.0) — thấp hơn sinh câu hỏi tự do (0.7) vì phải nhắm đúng câu trả lời + tiêu chí.
+
+        INT-17b — ``max_depth > 0`` = chế độ CHUỖI (đào sâu theo từng câu gốc). Tập action HỢP LỆ
+        giữ nguyên 4 giá trị để không phá hợp đồng với InterviewService; prompt chỉ thôi CHÀO
+        ``new_question``, còn phía .NET coi nó là "hết chuỗi" (không append).
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
         prompt = build_decide_next_prompt(
             job_category, current_question, transcript, history,
-            asked_count, follow_up_count, max_questions, max_follow_ups, criteria)
+            asked_count, follow_up_count, max_questions, max_follow_ups, criteria,
+            root_question=root_question, current_depth=current_depth,
+            max_depth=max_depth, other_topics=other_topics)
 
         response = await self._generate(
             "decide_next",

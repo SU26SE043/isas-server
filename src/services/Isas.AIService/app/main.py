@@ -7,6 +7,7 @@ from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse, QuestionCitation,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
     AnalyzeCvRequest, AnalyzeCvResponse, AnalyzeRepoRequest, AnalyzeRepoResponse, JdMatch,
+    CriterionMatch,
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
     GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
@@ -76,14 +77,24 @@ async def analyze_cv(req: AnalyzeCvRequest):
     if not req.cvText or not req.cvText.strip():
         raise HTTPException(status_code=400, detail="cvText không được rỗng")
     try:
-        result = await provider.analyze_cv(req.cvText, req.jdText, req.jobCategory)
+        # C14 — criteria vắng ⇒ None (KHÔNG phải []): provider rẽ nhánh theo truthiness, và
+        # response_model_exclude_none bỏ hẳn 5 field B2B ⇒ đường B2C giữ nguyên shape cũ.
+        criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
+        result = await provider.analyze_cv(req.cvText, req.jdText, req.jobCategory, criteria)
         jd_match = JdMatch(**result["jdMatch"]) if result.get("jdMatch") else None
+        matches = ([CriterionMatch(**m) for m in result["criterionMatches"]]
+                   if result.get("criterionMatches") else None)
         return AnalyzeCvResponse(
             summary=result["summary"],
             strengths=result["strengths"],
             weaknesses=result["weaknesses"],
             suggestions=result["suggestions"],
             jdMatch=jd_match,
+            skills=result.get("skills"),
+            yearsExperience=result.get("yearsExperience"),
+            education=result.get("education"),
+            criterionMatches=matches,
+            overallMatchScore=result.get("overallMatchScore"),
         )
     except HTTPException:
         raise
@@ -307,6 +318,11 @@ async def decide_next(
             max_questions=req.maxQuestions,
             max_follow_ups=req.maxFollowUps,
             criteria=[c.model_dump() for c in req.criteria],
+            # INT-17b — ngữ cảnh chuỗi đào sâu (maxDepth = 0 ⇒ giữ nguyên hành vi cũ).
+            root_question=req.rootQuestion,
+            current_depth=req.currentDepth,
+            max_depth=req.maxDepth,
+            other_topics=req.otherTopics,
         )
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi quyết định câu hỏi kế: {ex}")

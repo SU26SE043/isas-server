@@ -181,12 +181,14 @@ public class AuthDbContext : IdentityDbContext<User, Role, Guid, UserClaim, User
             e.Property(x => x.Name).HasColumnName("name").IsRequired();
             e.Property(x => x.TaxCode).HasColumnName("tax_code");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.HasIndex(x => x.TaxCode).IsUnique().HasFilter("tax_code IS NOT NULL");
         });
 
         // ================= ORG MEMBERS =================
         builder.Entity<OrgMember>(e =>
         {
-            e.ToTable("org_members");
+            e.ToTable("org_members", t => t.HasCheckConstraint(
+                "ck_org_members_org_role", "org_role IN ('OrgAdmin', 'HrMember')"));
             e.HasKey(x => new { x.OrgId, x.UserId });
             e.Property(x => x.OrgId).HasColumnName("org_id");
             e.Property(x => x.UserId).HasColumnName("user_id");

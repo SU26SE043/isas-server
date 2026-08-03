@@ -9,7 +9,8 @@
 - Thanh toán **PayOS** theo **mô hình credit** = **1 credit ≈ 1 lượt phỏng vấn AI chấm**. **Không** metering token LLM.
 - **Chủ ví = Org HOẶC User** (`owner_type`/`owner_id`): **B2B** billing cấp **tổ chức** (`owner_type=Org`), không phải cá nhân HR; **B2C** = **ví cá nhân** (`owner_type=User` của chính người luyện), **prepaid-only**. Cùng pack/PayOS/reserve→consume, chỉ khác chủ ví (xem [decisions.md](../decisions.md) **D15**).
 - **2 hình thức trả:**
-  - **Prepaid (trả trước):** mua pack credit `OneTime` → tiêu dần. (`Subscription` = phase 2.) Áp cho **cả Org và B2C cá nhân**.
+  - **Prepaid (trả trước):** mua pack credit `OneTime` → tiêu dần. Áp cho **cả Org và B2C cá nhân**.
+  - **Tiered subscription (D28, đang xây):** catalog `plans` tách `B2C`/`B2B`; B2C metered quota tháng rồi fallback credit, B2B chỉ mở feature/cap còn mỗi lượt vẫn dùng org-credit/postpaid. `Tiering:Enabled=false` là mặc định rollout.
   - **Postpaid (trả sau):** **chỉ Org** được **PlatformAdmin duyệt** → dùng trước (dồn nợ tới **hạn mức**) → **cuối kỳ ra hóa đơn** → tất toán qua PayOS. **B2C/personal không áp dụng** (luôn Prepaid).
 - **Đơn giá 1 lượt** = biến cấu hình (cần cho hóa đơn postpaid). Service riêng, cô lập dữ liệu tiền.
 
@@ -134,6 +135,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/me/subscription`** ✅ **F8** (2026-07-19) — Thuê bao đang hiệu lực của **chính caller** → `{ ownerType, ownerId, active: bool, billingCycle: "Monthly"|"Annual"|null, startedAt?, expiresAt? }`. Chủ ví suy từ JWT (D15) nên không có đường đọc thuê bao người khác; HrMember xem được membership org (AUTH-6 chỉ chặn money-mutation). Chưa có thuê bao → **200** `active:false` (không phải 404 — cùng lối `GET /me/account`). Đọc thuần. Lỗi: **401**.
 
+**`POST /payment/me/subscription/cancel`** — Huỷ đúng tier effective của caller (owner chỉ từ JWT). Row chuyển `Active → Cancelled`, resolver loại ngay; không hoàn tiền và không đổi reservation/meter đã mở. Trả `{ subscriptionId?, cancelled }`; khi đã huỷ/chưa có tier effective trả `200` với `cancelled:false`, không ghi event trùng. Lỗi: **401**.
+
 **`POST /payment/order`** với gói `Subscription` ✅ **F8** — cùng endpoint mua pack, nhưng gói `type=Subscription` đi **đường riêng**: đơn mang `kind=SubscriptionPurchase` (hoặc `SubscriptionRenewal` nếu chủ ví còn hạn) thay vì `CreditPack`. Gói thiếu `duration_days` → **400** (chặn trước khi tiền rời tay). ⚠ **KHÔNG gỡ guard DB20** — bất biến `kind=CreditPack ⇒ package.interview_credits > 0` giữ nguyên; gói thuê bao chỉ đơn giản không bao giờ mang kind đó. Webhook Paid → nhánh kích hoạt kỳ hạn (**không cộng credit, không ghi `credit_transactions`**, mẫu `InvoiceSettlement`) → outcome `SubscriptionActivated`.
 
 **`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
@@ -145,6 +148,10 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`POST /payment/admin/invoices/close`** ✅ P8b — Chốt kỳ postpaid (1 transaction): snapshot `period_usage` → `Invoice(Issued, amount=count×Billing:UnitPrice)` → reset `period_usage=0`. Auth `Roles="Admin"` (PlatformAdmin ✅ A5) + guard `HrMember`→403.
 
 ### Admin (PlatformAdmin)
+
+**`POST /payment/admin/subscriptions/grant`** — Admin cấp kỳ thuê bao không qua PayOS. Nhận owner, plan, `durationDays`, `activatedAt?`, `idempotencyKey`; User chỉ B2C, Org chỉ B2B. Row `source=AdminGrant`, không order, snapshot entitlement/hash và event `Activated`; activation tương lai chưa mở entitlement.
+
+**`/payment/admin/plans`** — CRUD catalog tier, chỉ `Admin`. `DELETE /{id}` soft-deactivate (`is_active=false`), không xoá row lịch sử đã được package/subscription tham chiếu. Validation: Metered cần quota dương; B2C không có B2B cap; Unlimited chỉ khi `Tiering:AllowUnlimitedPlans=true`. Sửa catalog không hồi tố subscription snapshot; chỉ activation/mua mới dùng catalog mới.
 
 **`POST/PUT/DELETE /payment/package…`** ✅ **A5** — CRUD gói (Req `ProductPackage`). Auth `Roles="Admin"` (PlatformAdmin, AUTH-3/7 — trước v22 comment hở → mở toang, nay đóng). GET catalog (trên) = Public.
 **`POST /payment/admin/orgs/{orgId}/postpaid`** 🔜 — Duyệt postpaid + đặt `credit_limit` (cần MST). Req: `{ creditLimit: int }`.
@@ -161,6 +168,26 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 - **Phạm vi CỐ Ý hẹp**: chỉ `kind=CreditPack`. `InvoiceSettlement`/`Subscription*` → **400** (hoàn hoá đơn postpaid = mở lại kỳ đã chốt, `InvoiceStatus.Void` mới là trạng thái đúng; thu hồi kỳ thuê bao là nghiệp vụ riêng). ⇒ `InvoiceStatus.Void` vẫn là enum chết, có chủ đích.
 - Lỗi: **404** không có đơn · **409** đơn chưa Paid / thu hồi thiếu / ví vừa đổi giữa chừng.
 - ⚠ Ngoại lệ có chủ đích của **PAY-10**: mọi cơ chế TỰ ĐỘNG (webhook · polling · sweeper hết hạn) đều guard `status == Pending` ⇒ đơn Refunded nằm ngoài đường đi của chúng, webhook muộn không cộng lại credit vừa thu hồi (có test khoá).
+
+**`POST /payment/admin/orders/{id}/refund/settle`** ✅ **F18** — XÁC NHẬN đã chuyển tiền hoàn cho khách (đường **TAY**). Auth `Roles="Admin"`. Req `{ gatewayRef? }` → **200**. Đóng dấu `refund_settled_at`; KHÔNG đụng credit/status. Idempotent (đã settle → giữ nguyên mốc CŨ, vì mốc đầu tiên mới là lúc tiền thật sự đi). **404** không có đơn · **409** đơn chưa Refunded.
+
+**`POST /payment/admin/orders/{id}/refund/payout`** ✅ (2026-08-03) — **CHI tiền hoàn tự động** qua kênh chi payOS (`/v1/payouts`). Auth `Roles="Admin"`. Không có body → **202** đang bay / **200** đã chuyển xong `{ orderId, payoutId, refundSettledAt, outcome, message }`.
+- **payOS KHÔNG có API refund** — hoàn tiền được dựng bằng một **lệnh CHI mới** về tài khoản người đã trả. Đích chuyển đọc từ `counterAccountNumber`/`counterAccountBankId` trong webhook thu đã lưu ở `payment_transactions.raw_webhook_payload` (cố ý không nhân bản số tài khoản sang cột riêng — PII).
+- **Kênh chi có credential RIÊNG** (`PayOS:Payout:{ClientId,ApiKey,ChecksumKey}`), không dùng chung kênh thu: đã kiểm chứng bằng lệnh gọi thật — key kênh thu gọi API chi trả `code 601 "API key không tồn tại"`.
+- **Ba luật chống mất tiền:** (a) khoá idempotency sinh MỘT lần và **ghi DB TRƯỚC** lời gọi mạng, dùng lại nguyên vẹn ở mọi lần sau ⇒ retry không đẻ lệnh thứ hai; (b) **timeout ≠ thất bại** — không rõ kết quả thì giữ `InFlight` và hỏi lại **bằng đúng khoá cũ**, tuyệt đối không tạo lệnh mới; (c) chỉ `Succeeded` mới đóng dấu `refund_settled_at`, `Received`/`Processing` đều là CHƯA xong.
+- **Fail-closed ở mã ngân hàng:** `counterAccountBankId` **trộn HAI hệ mã** — đo trên dữ liệu thật: 12/15 giao dịch trả **mã CITAD 8 số** (`01203001` = Vietcombank, `01358001`), chỉ 3/15 trả **BIN NAPAS 6 số** (`970422` = MB). `toBin` của lệnh chi chỉ nhận BIN ⇒ mã CITAD phải được ánh xạ, không dùng thẳng. Không đổi được → **422**, admin chuyển tay.
+- **Khoá ánh xạ là 3 số GIỮA của mã CITAD**, không phải cả 8 số. Cấu trúc `[2 số tỉnh][3 số tổ chức][3 số chi nhánh]` đã xác minh bằng dữ liệu: trong danh sách CITAD do ngân hàng công bố, **695 mã của Kho Bạc Nhà nước trải 63 tỉnh đều mang cùng 3 số giữa `701`**, và mọi nhóm ngân hàng thương mại đều thuần đúng một tên. Khớp cả 8 số sẽ **trượt khách mở tài khoản ở chi nhánh khác** — cùng ngân hàng nhưng mã khác.
+- Thứ tự tra: khớp nguyên mã (ops ghim riêng) → 3 số giữa → mã vốn đã là BIN → `null`. Giá trị trong bảng phải là BIN 6 số hợp lệ, gõ sai → `null` (chuyển tay) chứ không gửi chuỗi rác cho payOS.
+- `appsettings.json` seed sẵn **13 ngân hàng phổ biến**, mỗi dòng đối chiếu **hai nguồn**: tên trong danh sách CITAD ngân hàng công bố + BIN tại [api.vietqr.io/v2/banks](https://api.vietqr.io/v2/banks). Thêm ngân hàng mới bằng env `RefundPayout__BankBinMap__<3 số>=<bin>` (không cần deploy) hoặc thêm vào appsettings để đi qua review — **khuyến nghị đường sau**, vì mỗi dòng quyết định tiền chảy đi đâu. ⚠ Ghép tên tự động ĐÃ tạo hai dòng sai khi thử (`701→Ubank` do khớp chuỗi con, `307→CBBank` vì `"acbbank"` chứa `"cbbank"`) ⇒ không nhận bảng sinh máy mà không có người đọc từng dòng.
+- **Đối chiếu tên người nhận:** `toAccountName` payOS trả về lệch `counterAccountName` của webhook gốc → **409 `NameMismatch`**, KHÔNG đóng dấu (đóng dấu nghĩa là khẳng định khách đã nhận được tiền). Webhook không có tên (3/15 giao dịch thật) → vẫn đóng dấu + log cảnh báo: mất bộ dò không phải bằng chứng chuyển nhầm.
+- Lệnh đã hỏng là **điểm dừng của đường tự động** (thử lại đòi khoá mới = mở lại cửa chuyển-hai-lần) → **409**, xử tay qua `/refund/settle`.
+- Phanh: cờ `RefundPayout:Enabled` (**mặc định `false`**), trần `MaxAutoPayoutVnd` mỗi lệnh (vượt → **409**), kiểm số dư ví chi trước khi gọi (thiếu → **503**; **không đọc được ≠ bằng 0** nên không chặn).
+- ✅ **Đã chạy thật trên production (2026-08-03):** hoàn 2.000₫ về Vietcombank — `toBin` resolve đúng qua ánh xạ CITAD, tên người nhận khớp, `state=SUCCEEDED`, `refund_settled_at` đóng dấu sau ~5 giây ngay ở lời gọi đầu. Ví chi bị trừ **đúng số tiền hoàn**, không thấy phí trừ thêm (⚠ `estimate-credit` trả con số lớn hơn — KHÔNG phải số tiền sẽ bị trừ). payOS trả `transactions` dạng **mảng**, đúng SDK, khác tài liệu.
+- `RefundPayoutReconciler` (nền, 2') theo tiếp lệnh đang bay tới khi có kết luận — chuyển khoản liên ngân hàng không xong trong một nhịp HTTP, và nó cũng là lưới cứu ca timeout.
+
+> **Dashboard admin đọc trạng thái lệnh chi ở đâu:** `GET /payment/admin/orders` trả thêm `payoutStatus` (`InFlight`/`Succeeded`/`Failed`/null) + `payoutFailureReason`. Không có hai trường này thì `refundSettledAt = null` trông **giống hệt nhau** ở hai tình huống khác hẳn: "chưa ai bấm chuyển" và "lệnh chi đã hỏng / tiền đã đi nhưng tên người nhận không khớp" — ca sau cần xử lý ngay mà trước đó chỉ nằm trong log. Additive nên FE cũ không vỡ.
+>
+> ⚠ **`estimate-credit` KHÔNG phải chi phí.** Đo thật trên tài khoản production: nó trả **hằng số `2950` với mọi số tiền** (2.000₫/5.000₫/50.000₫ đều ra 2950), trong khi ví chi bị trừ **đúng số tiền hoàn** (100.000 → 98.000 cho lệnh 2.000₫, không đổi sau hơn 1 giờ). Đừng lấy `estimateCredit − amount` làm phí — phép trừ đó vô nghĩa. Production KHÔNG gọi endpoint này.
 
 **`GET /payment/admin/revenue?from=&to=&groupBy=day|month`** ✅ **F19** (2026-07-19) — Doanh thu theo kỳ. Auth `Roles="Admin"`. Kỳ **nửa mở `[from, to)`** (hai kỳ liền nhau không đếm trùng); thiếu tham số → 30 ngày gần nhất; mốc ép về UTC. → **200** `{ from, to, granularity, grossRevenueVnd, paidOrderCount, refundedVnd, refundedOrderCount, netRevenueVnd, byKind[], buckets[] }`.
 - Doanh thu **gộp** đếm theo `paid_at` (đơn Paid); **tiền hoàn** đếm theo `refunded_at` — nếu đếm hoàn theo `paid_at` thì một khoản hoàn hôm nay đi ngược sửa doanh thu kỳ ĐÃ CHỐT. Kỳ có thể có `netRevenueVnd` âm — đúng bản chất kế toán.
@@ -363,11 +390,22 @@ invoice_id       uuid?         FK → invoices        (kind=InvoiceSettlement)
 subscription_id  uuid?         FK → subscriptions   (kind=SubscriptionPurchase/Renewal) 🔜(phase 2)
 amount_vnd       bigint
 payos_order_code bigint        UNIQUE (time+random — xem Business rules)
-status           varchar(16)   enum: Pending · Paid · Failed · Expired · Cancelled
+status           varchar(20)   enum: Pending · Paid · Failed · Expired · Cancelled · Refunded (F18)
 expired_at       timestamptz
 paid_at          timestamptz?
 created_at       timestamptz
+updated_at       timestamptz   DB14 — đóng dấu mỗi lần đơn bị sửa
+refunded_at      timestamptz?  F18 — mốc đánh dấu hoàn (nội bộ)
+refunded_by      uuid?         F18 — `sub` admin bấm hoàn (ref lỏng → Auth)
+refund_reason    varchar(500)?
+refund_gateway_ref varchar(100)? mã đối soát: admin nhập tay HOẶC payout_id của lệnh chi tự động
+refund_settled_at  timestamptz?  mốc tiền THẬT SỰ rời tài khoản công ty (NULL = chưa chuyển)
+payout_idempotency_key uuid?   UNIQUE (lọc NOT NULL) — khoá chống chuyển tiền hai lần
+payout_id          varchar(100)? id lệnh chi payOS
+payout_status      varchar(20)?  enum: InFlight · Succeeded · Failed (CHECK)
+payout_failure_reason varchar(500)?
 ```
+> **`payout_idempotency_key` UNIQUE toàn bảng** — đây chính là thứ payOS dùng để nhận ra lệnh trùng, nên hai đơn dùng chung một khoá nghĩa là đơn thứ hai **im lặng không được chuyển tiền** (payOS coi là bản sao). Index `ix_orders_payout_in_flight` (partial `payout_status = 'InFlight'`) phục vụ `RefundPayoutReconciler`.
 > ⚠ **`amount_vnd` = `bigint` (long)** — VND nguyên với pack lớn / hóa đơn postpaid gộp kỳ vượt trần `int` (~2,1 tỷ ₫). `InitialCreate` tạo cột `integer`; migration **`AmountVndToBigint`** (Đợt-3, `20260715113108`) alter → `bigint`. **Phải apply tay** trên DB server trước khi bán pack lớn (rule no-auto-migrate). `Order.AmountVnd` + `OrderResponse.AmountVnd` = `long`. *(Lưu ý: `product_packages.price_vnd` vẫn `integer` — pack đơn lẻ trong trần int, chưa đổi.)*
 
 ### `payment_transactions` — log sự kiện gateway (append-only)
@@ -400,6 +438,8 @@ created_at     timestamptz
 
 ### `subscriptions` ✅ **F8 (2026-07-19) — dựng LẠI, lần này cùng đường tiêu thụ thật**
 > *(Lịch sử: DB15 2026-07-17 DROP bảng + entity vì là **dead scaffold** — 0 query dùng, `SubscriptionService` là stub `NotImplementedException`. F8 tái tạo qua migration `AddSubscriptionsF8`, gắn liền chuỗi order → webhook → activate → gate ở reserve.)*
+
+**T10 — đổi tier không prorate:** không có endpoint đổi gói riêng; UI mua SKU mới qua `POST /payment/order`, webhook Paid append subscription row. Active window là `status=Active AND activated_at<=now AND expires_at>now`; effective row sắp theo `tier_rank DESC, expires_at DESC, id DESC`. Tier cao hơn hiệu lực ngay; tier thấp hơn được lịch từ lúc effective tier hiện tại hết hạn; cùng tier nối sau kỳ xa nhất của đúng tier. Reservation metered giữ snapshot subscription/meter lúc reserve, không bị đổi theo tier mới.
 ```
 id             uuid pk
 owner_type     varchar(8)    enum: Org (membership B2B) · User (Premium B2C)
@@ -587,6 +627,7 @@ payment_mode:  Prepaid ─(PlatformAdmin duyệt + MST)─► Postpaid   (thu h�
 - ⚠ **Rủi ro đã biết, chưa xử:** 1 email = 3 lượt, mà đăng ký **không xác minh email** ⇒ lạm dụng bằng email dùng-một-lần là có thật. Cần quyết định sản phẩm (xác minh email / giới hạn theo thiết bị), không thuộc phạm vi F7.
 
 ### Postpaid (trả sau)
+- **T8:** trước khi PlatformAdmin đổi Org sang `Postpaid`, Payment resolve entitlement B2B hiện hiệu lực; `postpaid_eligible=false` trả **403** và không đọc/ghi thay đổi ví. Authorization PlatformAdmin giữ nguyên.
 - **Chỉ org được PlatformAdmin DUYỆT** mới bật `Postpaid` (cần **pháp nhân/MST** để xuất hóa đơn + đòi nợ). Mặc định org mới = `Prepaid`.
 - Chặn reserve khi **`nợ + giữ ≥ credit_limit`** hoặc **có hóa đơn `Overdue`**.
 - Cuối kỳ: chốt `period_usage` → tạo `invoice` (`interview_count × unit_price`) → org **tất toán qua PayOS** (`orders.kind = InvoiceSettlement`) → reset kỳ.

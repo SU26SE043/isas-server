@@ -25,6 +25,8 @@ public class RoadmapService : IRoadmapService
     private readonly IKnowledgeService? _knowledge;   // RAG grounding — precompute (null = tắt)
     private readonly GroundingOptions _grounding;     // RAG grounding — Enabled/TopK/threshold
     private readonly ILogger<RoadmapService> _logger;
+    private readonly IEntitlementClient? _entitlements;
+    private readonly bool _tieringEnabled;
 
     public RoadmapService(
         InterviewDbContext db,
@@ -33,7 +35,9 @@ public class RoadmapService : IRoadmapService
         ILogger<RoadmapService> logger,
         // RAG grounding — optional (default null/tắt): test cũ dựng 4 tham số vẫn compile + precompute tắt.
         IKnowledgeService? knowledge = null,
-        IOptions<GroundingOptions>? groundingOptions = null)
+        IOptions<GroundingOptions>? groundingOptions = null,
+        IEntitlementClient? entitlements = null,
+        IConfiguration? config = null)
     {
         _db = db;
         _storage = storage;
@@ -41,11 +45,15 @@ public class RoadmapService : IRoadmapService
         _knowledge = knowledge;
         _grounding = groundingOptions?.Value ?? new GroundingOptions();
         _logger = logger;
+        _entitlements = entitlements;
+        _tieringEnabled = bool.TryParse(config?["Tiering:Enabled"], out var enabled) && enabled;
     }
 
     public async Task<RoadmapResponse> CreateAsync(
         Guid candidateId, CreateRoadmapRequest req, CancellationToken ct = default)
     {
+        if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
+            throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
         // CV optional — đọc parsed_text (kiểm chủ sở hữu). null → 404; khác chủ → 403; rỗng → 400.
         string? cvText = null;
         if (req.CvId is not null)

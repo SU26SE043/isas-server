@@ -82,7 +82,10 @@ namespace Isas.AuthService.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("org_members", (string)null);
+                    b.ToTable("org_members", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_org_members_org_role", "org_role IN ('OrgAdmin', 'HrMember')");
+                        });
                 });
 
             modelBuilder.Entity("Isas.AuthService.Models.Organization", b =>
@@ -112,6 +115,10 @@ namespace Isas.AuthService.Migrations
                         .HasColumnName("xmin");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TaxCode")
+                        .IsUnique()
+                        .HasFilter("tax_code IS NOT NULL");
 
                     b.ToTable("organizations", (string)null);
                 });

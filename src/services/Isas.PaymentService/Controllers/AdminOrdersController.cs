@@ -92,9 +92,61 @@ namespace Isas.PaymentService.Controllers
             };
         }
 
+        // POST /payment/admin/orders/{id}/refund/payout: CHI tiền hoàn về tài khoản người đã trả, qua
+        // kênh chi payOS. Thay thao tác chuyển tay — nhưng KHÔNG bỏ nó: mọi ca không tự động được vẫn
+        // rơi về /refund/settle.
+        // 202 = đã gửi lệnh, đang chờ ngân hàng · 200 = đã chuyển xong và đóng dấu · 404 không có đơn
+        // · 409 đơn chưa Refunded / đã settle / lệnh trước đã hỏng / tên người nhận không khớp
+        // · 422 không dựng được đích chuyển · 503 chưa bật hoặc ví chi không đủ.
+        [HttpPost("orders/{id:guid}/refund/payout")]
+        public async Task<ActionResult<RefundPayoutResponse>> PayoutRefund(
+            Guid id, CancellationToken ct = default)
+        {
+            var sub = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!Guid.TryParse(sub, out var adminId))
+                return Forbid();
+
+            var result = await _refund.InitiateRefundPayoutAsync(id, adminId, ct);
+            var body = RefundPayoutResponse.From(result);
+
+            return result.Outcome switch
+            {
+                RefundPayoutOutcome.OrderNotFound => NotFound(new { message = "Không tìm thấy đơn." }),
+                RefundPayoutOutcome.NotRefunded => Conflict(new
+                {
+                    message = "Đơn chưa được hoàn — quyết định hoàn phải có trước khi chuyển tiền."
+                }),
+                RefundPayoutOutcome.AlreadySettled => Conflict(new
+                {
+                    message = "Đơn đã được đóng dấu chuyển tiền — không chuyển lại.",
+                    refundSettledAt = result.RefundSettledAt,
+                    payoutId = result.PayoutId
+                }),
+                RefundPayoutOutcome.NotEnabled => StatusCode(StatusCodes.Status503ServiceUnavailable, new
+                {
+                    message = result.Message ?? "Chi tiền hoàn tự động chưa được bật."
+                }),
+                RefundPayoutOutcome.DestinationUnresolved =>
+                    UnprocessableEntity(new { message = result.Message }),
+                RefundPayoutOutcome.OverCeiling => Conflict(new { message = result.Message }),
+                RefundPayoutOutcome.InsufficientBalance =>
+                    StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = result.Message }),
+                RefundPayoutOutcome.Rejected => Conflict(new { message = result.Message }),
+                // Tiền đã đi nhưng nhiều khả năng tới nhầm người — trả 409 kèm mã lệnh để đối soát ngay,
+                // KHÔNG trả 200 (200 ở đây sẽ đọc thành "hoàn tiền xong").
+                RefundPayoutOutcome.NameMismatch => Conflict(new
+                {
+                    message = result.Message,
+                    payoutId = result.PayoutId
+                }),
+                RefundPayoutOutcome.InFlight => Accepted(body),
+                _ => Ok(body)
+            };
+        }
+
         // F18 — POST /payment/admin/orders/{id}/refund/settle: XÁC NHẬN đã chuyển tiền hoàn thật cho khách.
-        // Bước tay tách khỏi refund (PayOS không có API refund — tiền về bank phải làm tay). KHÔNG đụng
-        // credit/status, chỉ đóng dấu mốc đối soát + ghi mã tham chiếu.
+        // Đường TAY, giữ nguyên làm lối thoát cho mọi ca chi tự động không xử được (không dựng được đích,
+        // vượt trần, payOS từ chối). KHÔNG đụng credit/status, chỉ đóng dấu mốc đối soát + ghi mã tham chiếu.
         // 200 = đã settle (kể cả idempotent) · 404 không có đơn · 409 đơn chưa Refunded.
         [HttpPost("orders/{id:guid}/refund/settle")]
         public async Task<ActionResult<SettleRefundResponse>> SettleRefund(

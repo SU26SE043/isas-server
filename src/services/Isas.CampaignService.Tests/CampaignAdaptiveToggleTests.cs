@@ -28,7 +28,17 @@ public class CampaignAdaptiveToggleTests
 {
     private static CampaignSvc NewCampaignService(CampaignDbContext db) =>
         new(db, Mock.Of<IFileService>(), Mock.Of<ILogger<CampaignSvc>>(), Mock.Of<IParserService>(),
-            Mock.Of<ICriteriaSuggester>(), Mock.Of<IInvitationEmailPublisher>());
+            Mock.Of<ICriteriaSuggester>(), Mock.Of<IInvitationEmailPublisher>(), entitlements: Entitlements());
+
+    // INT-17 tests exercise adaptive behaviour, so give their isolated CampaignService a paid B2B grant.
+    // T8 production DI always resolves Payment; the test must not rely on the fail-closed missing-client fallback.
+    private static IEntitlementClient Entitlements()
+    {
+        var client = new Mock<IEntitlementClient>();
+        client.Setup(x => x.ResolveOrgAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(
+            new CampaignEntitlement("test", "business", 1, 10, 200, true, true, true));
+        return client.Object;
+    }
 
     private static CreateCampaignRequest BaseCreate(string title = "Campaign") => new()
     {
@@ -223,6 +233,92 @@ public class CampaignAdaptiveToggleTests
         Assert.True(doc.RootElement.GetProperty("adaptiveEnabled").GetBoolean());
         Assert.Equal(2, doc.RootElement.GetProperty("maxFollowUps").GetInt32());
         Assert.Equal(8, doc.RootElement.GetProperty("maxQuestions").GetInt32());
+    }
+
+    // ── INT-17b — trần đào sâu MỖI câu: round-trip + validation ─────────────────
+    [Fact]
+    public async Task Create_TranDaoSauMoiCau_LuuVaTraVe()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+
+        var req = BaseCreate("Chain campaign");
+        req.AdaptiveEnabled = true;
+        req.MaxDeepPerQuestion = 2;
+
+        var res = await NewCampaignService(tdb.NewContext()).CreateCampaignAsync(org, org, req, default);
+
+        Assert.Equal(2, res.MaxDeepPerQuestion);
+        var saved = await tdb.NewContext().Campaigns.AsNoTracking().SingleAsync(c => c.Id == res.Id);
+        Assert.Equal(2, saved.MaxDeepPerQuestion);
+    }
+
+    // Không gửi → null = chế độ CŨ (đào sâu dồn ở đuôi buổi). Campaign đang chạy không tự đổi hành vi.
+    [Fact]
+    public async Task Create_KhongGuiTranDaoSau_MacDinhNull_CheDoCu()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+
+        var res = await NewCampaignService(tdb.NewContext())
+            .CreateCampaignAsync(org, org, BaseCreate("Legacy"), default);
+
+        Assert.Null(res.MaxDeepPerQuestion);
+    }
+
+    // Trần TRÊN: N câu campaign × (1 + trần) là độ dài bài thật, mà mỗi câu trả lời còn cõng 1 lượt gọi
+    // AI ĐỒNG BỘ ⇒ chặn ngay chỗ HR nhập, đừng để nổ lúc ứng viên bấm Start (SAU khi đã reserve credit org).
+    [Theory]
+    [InlineData(4)]
+    [InlineData(20)]
+    [InlineData(100000)]
+    public async Task Create_TranDaoSauVuotNguong_400(int value)
+    {
+        using var tdb = new CampaignTestDb();
+        var req = BaseCreate("Quá sâu");
+        req.MaxDeepPerQuestion = value;
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewCampaignService(tdb.NewContext()).CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), req, default));
+    }
+
+    [Fact]
+    public async Task Create_TranDaoSauAm_400()
+    {
+        using var tdb = new CampaignTestDb();
+        var req = BaseCreate("Âm");
+        req.MaxDeepPerQuestion = -1;
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewCampaignService(tdb.NewContext()).CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), req, default));
+    }
+
+    // Lỗ CÓ SẴN trước INT-17b: `maxFollowUps` chỉ bị chặn số âm, HR gõ 50 là qua sạch. Chế độ chuỗi làm
+    // hậu quả nặng hơn nên vá luôn ở đây.
+    [Fact]
+    public async Task Create_MaxFollowUpsVuotNguong_400()
+    {
+        using var tdb = new CampaignTestDb();
+        var req = BaseCreate("Quá nhiều");
+        req.MaxFollowUps = 50;
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewCampaignService(tdb.NewContext()).CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), req, default));
+    }
+
+    // Payload gửi Interview phải mang trần đào sâu — thiếu field này thì B2B im lặng chạy chế độ cũ.
+    [Fact]
+    public async Task Payload_MangTranDaoSauMoiCau()
+    {
+        var handler = new CapturingHandler(Guid.NewGuid());
+
+        await NewSessionClient(handler).CreateOrGetSessionAsync(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BE", Qs, Crits,
+            expiresAt: null, adaptiveEnabled: true, maxFollowUps: 0, maxQuestions: 20,
+            maxDeepPerQuestion: 3, ct: default);
+
+        using var doc = JsonDocument.Parse(handler.CapturedBody!);
+        Assert.Equal(3, doc.RootElement.GetProperty("maxDeepPerQuestion").GetInt32());
     }
 
     [Fact]

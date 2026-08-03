@@ -32,6 +32,16 @@ public class PracticeQuestion
     // re-upload / double-POST tạo trùng). Ref lỏng tới practice_answers (KHÔNG FK — tránh cascade path phụ).
     public Guid? GeneratedFromAnswerId { get; set; }
 
+    // INT-17b — độ sâu trong CHUỖI đào sâu: 0 = câu gốc (seed), 1..N = câu AI đào sâu tầng thứ N.
+    // Là khoá của trần "tối đa N câu sâu MỖI câu gốc" (`session.MaxDeepPerQuestion`): chỉ cần so
+    // `Depth < trần` thay vì đếm ngược cả chuỗi. Row cũ backfill theo cây `generated_from_answer_id`.
+    public int Depth { get; set; }
+
+    // INT-17b — câu GỐC (seed) của chuỗi này; null ⇔ chính nó là gốc ⇒ gốc hiệu dụng = `RootQuestionId ?? Id`.
+    // Dùng để (a) gom lịch sử theo ĐÚNG chuỗi khi hỏi AI câu kế, (b) soi cây hội thoại. Ref lỏng trong
+    // cùng bảng, KHÔNG FK — cùng lý do `GeneratedFromAnswerId` ở trên (tránh cascade path phụ).
+    public Guid? RootQuestionId { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     // Navigation - mỗi câu hỏi có tối đa 1 answer (business rule)

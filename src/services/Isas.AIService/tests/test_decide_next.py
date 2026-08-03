@@ -255,3 +255,170 @@ def test_endpoint_502_when_transcribe_fails(monkeypatch):
     res = client.post("/api/v1/decide-next", headers=_HEADERS, json={
         "jobCategory": "BE", "audioObjectKey": "a.webm", "currentQuestion": "Q"})
     assert res.status_code == 502
+
+
+# ── INT-17b — chế độ CHUỖI: đào sâu theo từng câu gốc (max_depth > 0) ────────
+
+def _chain_prompt(**over):
+    kwargs = dict(
+        job_category="FE",
+        current_question="Q hiện tại",
+        transcript="trả lời",
+        history=[],
+        asked_count=3, follow_up_count=1, max_questions=20, max_follow_ups=0,
+        criteria=_CRITERIA,
+        root_question="Bạn hiểu Virtual DOM thế nào?",
+        current_depth=1, max_depth=3,
+        other_topics=["Kể về một bug khó", "Bạn tối ưu bundle size ra sao?"],
+    )
+    kwargs.update(over)
+    return build_decide_next_prompt(**kwargs)
+
+
+def test_chain_prompt_states_per_question_depth_not_session_budget():
+    """Ngân sách phải nói về CHUỖI (tầng mấy / trần mấy), không phải trần thích ứng theo buổi."""
+    prompt = _chain_prompt()
+    assert "đã 1/3 tầng" in prompt
+    assert "còn tối đa 2 câu nữa cho chủ đề này" in prompt
+
+
+def test_chain_prompt_does_not_offer_new_question():
+    """Chủ đề mới đã có sẵn trong danh sách câu gốc → chào `new_question` là mời mô hình lạc chỗ.
+
+    Không chỉ BỎ khỏi thực đơn mà còn CẤM tường minh — cấm hẳn mạnh hơn im lặng bỏ qua, vì mô hình
+    vẫn biết action đó tồn tại từ các phiên bản prompt/ngữ cảnh khác.
+    (Giá trị vẫn HỢP LỆ trên dây để không phá hợp đồng với InterviewService — chỉ prompt thôi chào.)
+    """
+    prompt = _chain_prompt()
+    assert '- "new_question":' not in prompt          # không nằm trong thực đơn hành động
+    assert 'KHÔNG dùng "new_question"' in prompt      # và bị cấm tường minh
+    for action in ('"clarify"', '"follow_up"', '"end"'):
+        assert action in prompt
+
+
+def test_chain_prompt_says_end_only_ends_topic_not_interview():
+    """Thiếu câu này mô hình sẽ ngại chọn `end` vì tưởng đang cắt ngang buổi phỏng vấn."""
+    prompt = _chain_prompt()
+    assert "KHÔNG kết thúc buổi phỏng vấn" in prompt
+
+
+def test_chain_prompt_anchors_root_question_as_data():
+    """Câu gốc = mỏ neo chủ đề, và vẫn phải nằm trong delimiter DỮ LIỆU (AI-4)."""
+    prompt = _chain_prompt()
+    start = prompt.index("---CHỦ ĐỀ ĐANG ĐÀO SÂU")
+    end = prompt.index("---HẾT CÂU GỐC---")
+    assert start < prompt.index("Bạn hiểu Virtual DOM thế nào?") < end
+
+
+def test_chain_prompt_lists_other_topics_as_data_to_avoid_overlap():
+    prompt = _chain_prompt()
+    start = prompt.index("---CÁC CHỦ ĐỀ KHÁC CỦA BUỔI")
+    end = prompt.index("---HẾT DANH SÁCH---")
+    assert start < prompt.index("Kể về một bug khó") < end
+    assert start < prompt.index("Bạn tối ưu bundle size ra sao?") < end
+
+
+def test_chain_prompt_omits_topic_blocks_when_nothing_to_show():
+    """Chỉ có 1 câu gốc → không có "chủ đề khác" → đừng in khối rỗng gây nhiễu."""
+    prompt = _chain_prompt(other_topics=[])
+    assert "---CÁC CHỦ ĐỀ KHÁC CỦA BUỔI" not in prompt
+    assert "---CHỦ ĐỀ ĐANG ĐÀO SÂU" in prompt
+
+
+def test_legacy_prompt_unchanged_when_max_depth_zero():
+    """max_depth = 0 (chế độ cũ) phải giữ NGUYÊN VĂN prompt cũ — kill-switch thật sự."""
+    prompt = build_decide_next_prompt(
+        job_category="FE", current_question="Q", transcript="t", history=[],
+        asked_count=2, follow_up_count=1, max_questions=8, max_follow_ups=2,
+        criteria=_CRITERIA,
+    )
+    assert '"new_question"' in prompt
+    assert "Đã hỏi: 2 câu" in prompt
+    assert "---CHỦ ĐỀ ĐANG ĐÀO SÂU" not in prompt
+    assert "tầng" not in prompt
+
+
+def test_request_accepts_depth_fields_no_longer_swallowed():
+    """`DecideNextRequest` không set model_config ⇒ pydantic `extra='ignore'` NUỐT IM LẶNG field
+    quên khai. .NET gửi mà Python không thấy = tính năng tắt câm, không lỗi gì (đúng lớp bug đã làm
+    `focusCriteria` của BC14 hỏng). Test này khoá hợp đồng đó."""
+    from app.schemas import DecideNextRequest
+
+    req = DecideNextRequest(
+        jobCategory="FE", currentQuestion="Q", answerText="a",
+        rootQuestion="Gốc", currentDepth=2, maxDepth=3, otherTopics=["Khác"],
+    )
+    assert req.rootQuestion == "Gốc"
+    assert req.currentDepth == 2
+    assert req.maxDepth == 3
+    assert req.otherTopics == ["Khác"]
+
+
+def test_endpoint_forwards_int17b_depth_fields_to_provider(monkeypatch):
+    """Khoá mắt xích ROUTE của chuỗi .NET → schema → main.py → provider cho 4 field INT-17b.
+
+    Hai test kẹp quanh đây đều NHẢY QUA khối map ở `main.py`: test trên dựng thẳng
+    `DecideNextRequest`, test dưới gọi thẳng `provider.decide_next`. Đo thật: xoá 4 dòng map
+    (`root_question=`/`current_depth=`/`max_depth=`/`other_topics=`) thì cả 265 test vẫn XANH —
+    tính năng chuỗi tắt câm, không lỗi gì, đúng lớp bug đã làm `focusCriteria` của BC14 hỏng.
+
+    Test này POST bằng ĐÚNG khoá camelCase mà `AiServiceInterviewDecider` dựng payload, nên đứt ở
+    bất kỳ mắt nào cũng ĐỎ: schema quên khai → fake nhận default; map thiếu → fake nhận default;
+    đổi tên kwarg → TypeError → route trả 502."""
+    received = {}
+
+    async def fake_decide_next(job_category, current_question, transcript, history,
+                               asked_count, follow_up_count, max_questions, max_follow_ups,
+                               criteria, root_question=None, current_depth=0, max_depth=0,
+                               other_topics=None):
+        received.update(root_question=root_question, current_depth=current_depth,
+                        max_depth=max_depth, other_topics=other_topics)
+        return {"action": "follow_up", "nextQuestion": "Đào sâu thêm?", "reason": "r"}
+
+    monkeypatch.setattr(main_module.provider, "decide_next", fake_decide_next)
+
+    # answerText thay audioObjectKey → khỏi mock S3/Whisper (mẫu test_endpoint_with_answer_text).
+    res = client.post("/api/v1/decide-next", headers=_HEADERS, json={
+        "jobCategory": "FE",
+        "answerText": "Virtual DOM là cây ảo trong bộ nhớ.",
+        "currentQuestion": "Q hiện tại",
+        "criteria": _CRITERIA,
+        "rootQuestion": "Bạn hiểu Virtual DOM thế nào?",
+        "currentDepth": 2,       # ≠ default 0 → phân biệt được "map đúng" với "rơi về default"
+        "maxDepth": 3,           # ≠ default 0
+        "otherTopics": ["Kể về một bug khó", "Bạn tối ưu bundle size ra sao?"],
+    })
+
+    assert res.status_code == 200
+    assert received["root_question"] == "Bạn hiểu Virtual DOM thế nào?"
+    assert received["current_depth"] == 2
+    assert received["max_depth"] == 3
+    assert received["other_topics"] == ["Kể về một bug khó", "Bạn tối ưu bundle size ra sao?"]
+
+
+@pytest.mark.asyncio
+async def test_decide_next_forwards_depth_context_to_prompt(monkeypatch):
+    """Khai schema thôi chưa đủ — dữ liệu phải LUỒN tới tận prompt (bài học BC14)."""
+    captured = {}
+
+    def _spy(*args, **kwargs):
+        captured.update(kwargs)
+        return "PROMPT"
+
+    monkeypatch.setattr("app.providers.gemini.build_decide_next_prompt", _spy)
+
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({"action": "end"}))
+
+    await provider.decide_next(
+        job_category="FE", current_question="Q", transcript="t", history=[],
+        asked_count=1, follow_up_count=0, max_questions=20, max_follow_ups=0,
+        criteria=_CRITERIA,
+        root_question="Gốc", current_depth=2, max_depth=3, other_topics=["Khác"],
+    )
+
+    assert captured["root_question"] == "Gốc"
+    assert captured["current_depth"] == 2
+    assert captured["max_depth"] == 3
+    assert captured["other_topics"] == ["Khác"]

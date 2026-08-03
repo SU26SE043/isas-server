@@ -72,10 +72,35 @@ class SuggestCriteriaResponse(BaseModel):
 
 
 # ── Phân tích CV (B2C BC6, D17) — sync HTTP, dùng chung engine với B2B (C14) ─
+class CvCriterion(BaseModel):
+    """C14 — 1 tiêu chí campaign gửi kèm để AI chấm khớp CV (`campaign_criteria`).
+
+    Worker/endpoint KHÔNG tự đọc DB (GEN-4) → CampaignService đẩy sẵn tiêu chí xuống.
+    ``criterionId`` để trả lại ĐÚNG id trong callback; id nào không có ở đây mà model
+    trả về là id BỊA → bị drop (AI-3).
+    """
+    criterionId: str
+    name: str
+    description: str | None = None
+    maxScore: int = 5
+
+
+class CriterionMatch(BaseModel):
+    """C14 — điểm khớp CV theo 1 tiêu chí. ``matchScore`` đã kẹp [0, maxScore] phía provider."""
+    criterionId: str
+    matchScore: float
+    reasoning: str | None = None
+
+
 class AnalyzeCvRequest(BaseModel):
     cvText: str
     jdText: str | None = None
     jobCategory: str | None = None   # BA | BE | FE — optional (chỉ để cá nhân hoá nhận xét)
+    # C14 (B2B sàng CV) — có criteria ⇒ res thêm criterionMatches + overallMatchScore + trích xuất.
+    # ⚠ PHẢI khai tường minh: schema này không set model_config nên pydantic `extra='ignore'` sẽ
+    # NUỐT IM LẶNG field quên khai (đúng bug BC14/F2b `focusCriteria`) — .NET gửi mà AI không thấy,
+    # không lỗi, không log, tính năng chỉ đơn giản là không chạy.
+    criteria: list[CvCriterion] | None = None
 
 
 class JdMatch(BaseModel):
@@ -90,6 +115,17 @@ class AnalyzeCvResponse(BaseModel):
     weaknesses: list[str]
     suggestions: list[str]
     jdMatch: JdMatch | None = None   # chỉ có khi request có jdText
+
+    # ── C14 (B2B) — ADDITIVE, chỉ có khi request cấp `criteria[]` ────────────────────
+    # Mặc định None (KHÔNG phải [] ) là CÓ CHỦ ĐÍCH: endpoint dùng response_model_exclude_none
+    # nên None ⇒ field biến mất ⇒ đường B2C giữ NGUYÊN XI shape cũ (ai.md: "không có
+    # jdText/criteria → bỏ jdMatch/criterionMatches/overallMatchScore"). Để `= []` thì B2C sẽ
+    # bắt đầu trả `"criterionMatches": []` — đổi hợp đồng của một đường đang chạy.
+    skills: list[str] | None = None
+    yearsExperience: float | None = None
+    education: list[str] | None = None
+    criterionMatches: list[CriterionMatch] | None = None
+    overallMatchScore: int | None = None   # 0-100
 
 
 # ── Phân tích GitHub repository (B2C BC18) ─────────────────────────────────
@@ -243,6 +279,15 @@ class DecideNextRequest(BaseModel):
     maxQuestions: int = 0               # 0 = không trần cứng
     maxFollowUps: int = 0               # 0 = không trần cứng
     criteria: list[DecideCriterion] = []
+
+    # INT-17b — ngữ cảnh CHUỖI đào sâu (mỗi câu gốc có chuỗi riêng, tối đa `maxDepth` tầng).
+    # ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'` sẽ NUỐT IM LẶNG
+    # field quên khai — .NET gửi mà Python không thấy, không lỗi gì, prompt chạy như chưa có tính năng
+    # (đúng lớp bug đã làm `focusCriteria` của BC14 hỏng suốt nhiều tuần).
+    rootQuestion: str | None = None     # câu GỐC của chuỗi — mỏ neo chủ đề, giữ câu đào sâu không lạc đề
+    currentDepth: int = 0               # câu vừa trả lời đang ở tầng mấy (0 = chính câu gốc)
+    maxDepth: int = 0                   # trần tầng cho MỖI câu gốc; 0 = chế độ cũ (ngân sách theo buổi)
+    otherTopics: list[str] = []         # tên các câu gốc KHÁC của buổi → đừng hỏi trùng chủ đề đã có
 
 
 class DeliveryMetrics(BaseModel):

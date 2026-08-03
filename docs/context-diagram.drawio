@@ -1,0 +1,113 @@
+<mxfile host="app.diagrams.net" modified="2026-07-28T00:00:00.000Z" agent="ISAS-system-architect" version="24.0.0" type="device">
+  <diagram id="isas-system-context" name="ISAS System Context (§1)">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1240" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ============ TITLE ============ -->
+        <mxCell id="title" value="ISAS — System Context Diagram · §1 Product Overview" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontStyle=1;fontSize=18;fontColor=#212121;" vertex="1" parent="1">
+          <mxGeometry x="640" y="20" width="700" height="34" as="geometry" />
+        </mxCell>
+
+        <!-- ============ LEGEND / NOTE ============ -->
+        <mxCell id="note" value="&lt;b&gt;Legend &amp; notes&lt;/b&gt;&#10;• Center bubble = the system in scope (ISAS). Surrounding rectangles = external entities (human actors + external systems).&#10;• Each arrow = one &lt;b&gt;named data flow&lt;/b&gt;, single direction, labeled with the data it carries — an arrow INTO ISAS is an input, an arrow OUT is an output.&#10;• Only &lt;b&gt;3 platform roles&lt;/b&gt;: Candidate · Employer · Admin. OrgAdmin / HrMember are &lt;b&gt;org sub-roles&lt;/b&gt; (no separate &quot;HR&quot; / &quot;Organization&quot; role).&#10;• &lt;b&gt;AuthService&lt;/b&gt; (JWT, Google OAuth) is INSIDE ISAS. &lt;b&gt;AIService&lt;/b&gt; internal-only (GEN-7): Gemini reached only through it.&#10;• Self-hosted infra (RabbitMQ, SeaweedFS/S3, PostgreSQL) is INSIDE the ISAS boundary → not shown as an external entity. No monitoring stack yet." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFDE7;strokeColor=#F9A825;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;spacingRight=10;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="30" y="30" width="480" height="196" as="geometry" />
+        </mxCell>
+
+        <!-- ============ CENTRAL SYSTEM (bubble) ============ -->
+        <mxCell id="isas" value="&lt;b&gt;ISAS&lt;/b&gt;&#10;AI Interview Platform&#10;&#10;B2C practice + B2B assessment&#10;(one shared engine)" style="ellipse;whiteSpace=wrap;html=1;fillColor=#8E63CE;strokeColor=#5E35B1;strokeWidth=3;fontColor=#FFFFFF;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="780" y="520" width="240" height="240" as="geometry" />
+        </mxCell>
+
+        <!-- ============ EXTERNAL ENTITIES — HUMAN ACTORS (blue, left) ============ -->
+        <mxCell id="a_candidate" value="&lt;b&gt;Candidate&lt;/b&gt;&#10;(B2C + B2B applicant)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="120" y="300" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a_employer" value="&lt;b&gt;Employer&lt;/b&gt;&#10;(business user)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="120" y="600" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="a_emp_note" value="&lt;b&gt;Org sub-roles&lt;/b&gt; (within an Organization):&#10;• &lt;b&gt;OrgAdmin&lt;/b&gt; — billing, buy credits, manage members&#10;• &lt;b&gt;HrMember&lt;/b&gt; — manage campaigns / ranking, NO billing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F9FF;strokeColor=#64B5F6;dashed=1;fontSize=9;align=left;spacingLeft=8;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="90" y="686" width="265" height="92" as="geometry" />
+        </mxCell>
+
+        <mxCell id="a_admin" value="&lt;b&gt;Platform Admin&lt;/b&gt;&#10;(packages · orders · orgs · users)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="120" y="900" width="200" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ============ EXTERNAL ENTITIES — THIRD-PARTY SYSTEMS (colored) ============ -->
+        <mxCell id="x_oauth" value="&lt;b&gt;Google OAuth 2.0&lt;/b&gt;&#10;sign in with Google" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4285F4;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="790" y="120" width="220" height="76" as="geometry" />
+        </mxCell>
+
+        <mxCell id="x_gemini" value="&lt;b&gt;Google Gemini&lt;/b&gt; (LLM)&#10;question generation + scoring&#10;(via internal AIService)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1520" y="410" width="230" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="x_payos" value="&lt;b&gt;PayOS&lt;/b&gt; (sandbox)&#10;payment gateway" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#AD1457;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1520" y="700" width="230" height="74" as="geometry" />
+        </mxCell>
+
+        <mxCell id="x_smtp" value="&lt;b&gt;SMTP / Email&lt;/b&gt;&#10;transactional email provider" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E0F2F1;strokeColor=#00695C;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="785" y="1000" width="230" height="76" as="geometry" />
+        </mxCell>
+
+        <!-- ================= NAMED DATA FLOWS (orthogonal, single-direction) ================= -->
+        <!-- Candidate (left-top) -->
+        <mxCell id="f_can_in" value="CV / JD, interview answers" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=1;exitY=0.4;exitDx=0;exitDy=0;entryX=0.06;entryY=0.24;entryDx=0;entryDy=0;" edge="1" parent="1" source="a_candidate" target="isas">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f_can_out" value="Questions, scores &amp; feedback" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0.06;exitY=0.34;exitDx=0;exitDy=0;entryX=1;entryY=0.62;entryDx=0;entryDy=0;" edge="1" parent="1" source="isas" target="a_candidate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Employer (left-mid) -->
+        <mxCell id="f_emp_in" value="Campaign, criteria, credit order" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=1;exitY=0.4;exitDx=0;exitDy=0;entryX=0.06;entryY=0.44;entryDx=0;entryDy=0;" edge="1" parent="1" source="a_employer" target="isas">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f_emp_out" value="Rankings, results, invoice" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0.06;exitY=0.54;exitDx=0;exitDy=0;entryX=1;entryY=0.6;entryDx=0;entryDy=0;" edge="1" parent="1" source="isas" target="a_employer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Platform Admin (left-bottom) -->
+        <mxCell id="f_adm_in" value="Admin commands" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=1;exitY=0.4;exitDx=0;exitDy=0;entryX=0.06;entryY=0.66;entryDx=0;entryDy=0;" edge="1" parent="1" source="a_admin" target="isas">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f_adm_out" value="Users / orders / orgs data" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0.06;exitY=0.76;exitDx=0;exitDy=0;entryX=1;entryY=0.6;entryDx=0;entryDy=0;" edge="1" parent="1" source="isas" target="a_admin">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Google OAuth 2.0 (top) -->
+        <mxCell id="f_oauth_out" value="Auth request" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0.42;exitY=0.06;exitDx=0;exitDy=0;entryX=0.42;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="isas" target="x_oauth">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f_oauth_in" value="ID token (profile)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0.58;exitY=1;exitDx=0;exitDy=0;entryX=0.58;entryY=0.06;entryDx=0;entryDy=0;" edge="1" parent="1" source="x_oauth" target="isas">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Google Gemini (right-top) -->
+        <mxCell id="f_gem_out" value="Prompt (JD/CV, transcript)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0.94;exitY=0.24;exitDx=0;exitDy=0;entryX=0;entryY=0.4;entryDx=0;entryDy=0;" edge="1" parent="1" source="isas" target="x_gemini">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f_gem_in" value="Questions &amp; scores" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0;exitY=0.6;exitDx=0;exitDy=0;entryX=0.94;entryY=0.34;entryDx=0;entryDy=0;" edge="1" parent="1" source="x_gemini" target="isas">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- PayOS (right-bottom) -->
+        <mxCell id="f_pay_out" value="Payment-link request" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0.94;exitY=0.62;exitDx=0;exitDy=0;entryX=0;entryY=0.4;entryDx=0;entryDy=0;" edge="1" parent="1" source="isas" target="x_payos">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f_pay_in" value="Payment result (webhook)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0;exitY=0.6;exitDx=0;exitDy=0;entryX=0.94;entryY=0.76;entryDx=0;entryDy=0;" edge="1" parent="1" source="x_payos" target="isas">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- SMTP / Email (bottom, output only) -->
+        <mxCell id="f_smtp_out" value="Email (magic-link, notification)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=classic;startArrow=none;strokeColor=#E8A33D;strokeWidth=1.5;fontColor=#7A5A1E;fontSize=10;exitX=0.5;exitY=0.94;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="isas" target="x_smtp">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -213,6 +213,22 @@ public class OrgMemberServiceTests
         Assert.Equal("KEEP", resp.TaxCode);
     }
 
+    [Fact]
+    public async Task UpdateOrganization_DuplicateTrimmedTaxCode_IsRejectedWithoutChangingOrg()
+    {
+        using var testDb = new AuthTestDb();
+        var db = testDb.Db;
+        var existing = new Organization { Id = Guid.NewGuid(), Name = "Existing", TaxCode = "0101234567", CreatedAt = DateTime.UtcNow };
+        var target = new Organization { Id = Guid.NewGuid(), Name = "Target", CreatedAt = DateTime.UtcNow };
+        db.Organizations.AddRange(existing, target); await db.SaveChangesAsync();
+        var svc = NewService(db, TestConfig(), MockUserManager(db));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => svc.UpdateOrganizationAsync(target.Id,
+            new Isas.AuthService.DTOs.UpdateOrgRequest { TaxCode = " 0101234567 " }));
+
+        Assert.Null((await testDb.NewContext().Organizations.FindAsync(target.Id))!.TaxCode);
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────────
     private static Guid SeedOrg(AuthDbContext db, string name)
     {

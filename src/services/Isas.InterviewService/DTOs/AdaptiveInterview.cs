@@ -8,6 +8,32 @@ public record DecideTurnDto(string Question, string? Answer, string Kind);
 // Tiêu chí năng lực để AI NEO câu hỏi thích ứng về cùng rubric (giữ công bằng chấm/ranking B2B).
 public record DecideCriterionDto(string Name, string? Description);
 
+/// <summary>
+/// INT-17b — toàn bộ đầu vào của 1 lượt <c>/decide-next</c>, gói thành record thay vì rải tham số.
+///
+/// VÌ SAO GÓI: chữ ký cũ đã 9 tham số + <c>ct</c>. Moq <c>Setup</c>/<c>Verify</c> nằm trong expression
+/// tree, mà expression tree KHÔNG được phép bỏ optional argument (CS0854) — nên mỗi lần thêm tham số
+/// là vỡ toàn bộ mock dù tham số mới có giá trị mặc định. Gói lại thì mọi khối <c>It.IsAny&lt;&gt;</c>
+/// ×10 rút còn một, và lần mở rộng sau không đụng test nào.
+/// </summary>
+public record AdaptiveDecisionRequest(
+    string AudioObjectKey,
+    string JobCategory,
+    string CurrentQuestion,
+    IReadOnlyList<DecideTurnDto> History,
+    int AskedCount,
+    int FollowUpCount,
+    int MaxQuestions,
+    int MaxFollowUps,
+    IReadOnlyList<DecideCriterionDto> Criteria,
+    // INT-17b — ngữ cảnh CHUỖI: câu gốc của chuỗi đang đào sâu (mỏ neo chủ đề), đang ở tầng mấy và
+    // trần tầng là bao nhiêu. Cho AI biết "đào sâu ĐÚNG chủ đề này, còn N lượt".
+    string? RootQuestion = null,
+    int CurrentDepth = 0,
+    int MaxDepth = 0,
+    // Tên các câu gốc KHÁC của buổi (không kèm transcript) — để AI không hỏi trùng chủ đề đã có sẵn.
+    IReadOnlyList<string>? OtherTopics = null);
+
 // Kết quả decide-next: action + câu hỏi kế (null nếu end) + transcript đã transcribe đồng bộ.
 public record DecideNextResult(
     string Action,          // follow_up | clarify | new_question | end

@@ -26,6 +26,8 @@ public class SubscriptionF8Tests
     private static ProductPackage NewSubPackage(int durationDays = 30) => new()
     {
         Id = Guid.NewGuid(),
+        PlanId = Guid.NewGuid(),
+        Audience = PlanAudience.B2C,
         Name = "Premium",
         Type = PackageType.Subscription,
         PriceVnd = 199_000,
@@ -38,6 +40,23 @@ public class SubscriptionF8Tests
     private static async Task<Order> SeedPendingOrderAsync(
         PaymentTestDb tdb, OwnerType ownerType, Guid ownerId, ProductPackage pkg, OrderKind kind, long code)
     {
+        if (pkg.Type == PackageType.Subscription)
+        {
+            pkg.Audience = ownerType == OwnerType.User ? PlanAudience.B2C : PlanAudience.B2B;
+            tdb.Db.Plans.Add(new Plan
+            {
+                Id = pkg.PlanId!.Value,
+                Audience = pkg.Audience.Value,
+                Code = "test-tier",
+                Name = "Test tier",
+                Rank = 1,
+                InterviewFunding = InterviewFunding.Metered,
+                MonthlyQuota = 10,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            });
+        }
         tdb.Db.ProductPackages.Add(pkg);
         var order = new Order
         {
@@ -86,6 +105,11 @@ public class SubscriptionF8Tests
             Id = Guid.NewGuid(),
             OwnerType = ownerType,
             OwnerId = ownerId,
+            Audience = ownerType == OwnerType.Org ? PlanAudience.B2B : PlanAudience.B2C,
+            TierCode = "legacy",
+            EntitlementSnapshot = "{}",
+            EntitlementsVersion = 1,
+            ActivatedAt = DateTime.UtcNow,
             BillingCycle = BillingCycle.Monthly,
             Status = status,
             StartedAt = expiresAt.AddDays(-30),

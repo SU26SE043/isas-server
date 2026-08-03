@@ -46,13 +46,35 @@ public class PracticeSession : IHasUpdatedAt
     // hình B2C `Adaptive:Enabled` hoặc field campaign B2B). Tắt (mặc định) → giữ nguyên luồng batch tĩnh.
     public bool AdaptiveEnabled { get; set; }
 
-    // Trần số câu hỏi thích ứng được thêm (0 = không trần cứng). Chống buổi phỏng vấn kéo dài vô tận.
+    // Trần số câu hỏi thích ứng được thêm cho CẢ BUỔI (0 = không trần cứng). Chống buổi kéo dài vô tận.
+    // ⚠ INT-17b: ở chế độ chuỗi-theo-câu, trần này để 0 — nếu không nó bó chặt hơn trần theo câu
+    // (5 gốc × 3 = 15 câu sâu) và tính năng sẽ chết ở câu đào sâu thứ 3. `MaxQuestions` là trần buổi.
     public int MaxFollowUps { get; set; }
+
+    // INT-17b — trần số câu ĐÀO SÂU cho MỖI câu gốc. 0 = chế độ CŨ (frontier: chỉ sinh câu kế khi mọi
+    // câu đã trả lời, ngân sách tính theo buổi) ⇒ vừa là kill-switch vừa là bộ chọn chế độ, đổi được
+    // lúc chạy chứ không cần deploy lại. Row cũ + campaign cũ mặc định 0 nên hành vi không đổi.
+    public int MaxDeepPerQuestion { get; set; }
+
+    // INT-17b — số lần gọi `/decide-next` lỗi trong buổi này. Chế độ chuỗi gọi AI sau gần như MỌI câu
+    // trả lời, mà mỗi lần lỗi vẫn phải chờ hết timeout ⇒ AIService hỏng sẽ cộng hàng chục phút chờ chết
+    // vào đúng một buổi thi. Chạm `Adaptive:MaxFailuresPerSession` → thôi gọi, degrade về luồng tĩnh.
+    public int AdaptiveFailures { get; set; }
 
     // Trần TỔNG số câu hỏi của buổi (seed + thích ứng; 0 = không trần cứng). B2B: giữ độ dài so sánh được.
     // F2b — CHECK `max_questions BETWEEN 0 AND 20`: trần ở tầng service chặn được đường HTTP, nhưng
     // đường internal (Campaign gọi thẳng) thì không → chốt thêm ở DB để không có đường nào vượt.
     public int MaxQuestions { get; set; }
+
+    // T7 — entitlement is resolved once at B2C session creation. Existing sessions retain legacy defaults.
+    public string EntitlementSource { get; set; } = "legacy";
+    public string TierCode { get; set; } = "free";
+    public int TierRank { get; set; }
+    public bool GroundingEnabled { get; set; }
+    public int SelfConsistencyN { get; set; } = 1;
+    public bool CvAnalysisIncluded { get; set; }
+    public bool RepoAnalysisIncluded { get; set; }
+    public bool RoadmapEnabled { get; set; }
 
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session

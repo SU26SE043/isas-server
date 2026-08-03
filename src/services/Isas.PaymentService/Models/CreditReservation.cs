@@ -23,6 +23,8 @@ namespace PaymentService.Models
         /// Đồng thời chính là cách hiện thực "không văng người đang thi" (PAY-12).
         /// </summary>
         public ReservationFunding FundedBy { get; set; } = ReservationFunding.Credit;
+        public Guid? MeteredSubscriptionId { get; set; }
+        public DateTime? MeteredPeriodStart { get; set; }
 
         /// <summary>
         /// F23/BK24 — snapshot <c>PaymentMode</c> CỦA VÍ tại thời điểm reserve, CHỐT MỘT LẦN và
@@ -64,6 +66,7 @@ namespace PaymentService.Models
         /// idempotency theo session (PAY-4), tính hấp thụ Consumed/Released (PAY-11) và để
         /// <c>OrphanReservationReconciler</c> (DB18) vẫn dọn được chỗ giữ mồ côi.
         /// </summary>
-        Subscription
+        Subscription,
+        SubscriptionMetered
     }
 }

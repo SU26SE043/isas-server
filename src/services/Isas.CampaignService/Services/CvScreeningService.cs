@@ -111,7 +111,7 @@ namespace Isas.CampaignService.Services
             // Idempotent: xoá điểm cũ rồi ghi lại → callback 2 lần KHÔNG nhân đôi (EF xếp DELETE trước
             // INSERT trong 1 SaveChanges dù trùng UNIQUE(candidate_id, criterion_id) — như replace-all C12).
             var existingScores = await _db.CandidateCriterionScores
-                .Where(s => s.CandidateId == candidateId)
+                .Where(s => s.CvSubmissionId == candidateId)
                 .ToListAsync(ct);
             _db.CandidateCriterionScores.RemoveRange(existingScores);
 
@@ -124,7 +124,7 @@ namespace Isas.CampaignService.Services
                 _db.CandidateCriterionScores.Add(new CandidateCriterionScore
                 {
                     Id = Guid.NewGuid(),
-                    CandidateId = candidateId,
+                    CvSubmissionId = candidateId,
                     CriterionId = m.CriterionId,
                     MatchScore = Math.Clamp(m.MatchScore, 0m, crit.MaxScore),   // kẹp [0, max_score] (INT-9)
                     Reasoning = m.Reasoning,
@@ -315,7 +315,7 @@ namespace Isas.CampaignService.Services
 
             var scores = await (from s in _db.CandidateCriterionScores
                                 join cr in _db.CampaignCriteria on s.CriterionId equals cr.Id
-                                where s.CandidateId == candidateId
+                                where s.CvSubmissionId == candidateId
                                 orderby cr.OrderNo
                                 select new CriterionScoreItem
                                 {

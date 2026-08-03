@@ -36,6 +36,9 @@ namespace Isas.PaymentService.Services
         /// <summary>Postpaid mà creditLimit null/≤0, HOẶC Prepaid mà creditLimit có giá trị.</summary>
         InvalidCreditLimit,
 
+        /// <summary>Tier B2B hiện hiệu lực không cho org chuyển sang Postpaid.</summary>
+        PostpaidNotEligible,
+
         /// <summary>Chưa có ví — KHÔNG tạo ví lazy ở đây (tạo ví = tạo đối tượng tiền, ngoài phạm vi duyệt mode).</summary>
         WalletMissing,
 

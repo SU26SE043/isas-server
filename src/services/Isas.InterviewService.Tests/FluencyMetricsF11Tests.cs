@@ -269,10 +269,7 @@ public class FluencyMetricsF11Tests
         var decider = new Mock<IAiServiceInterviewDecider>();
         decider
             .Setup(x => x.DecideNextAsync(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<DecideTurnDto>>(), It.IsAny<int>(), It.IsAny<int>(),
-                It.IsAny<int>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<DecideCriterionDto>>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new DecideNextResult(
                 "end", null, "ừm tôi nghĩ vậy", "r", Metrics(wpm: 165, fillers: 7)));
 

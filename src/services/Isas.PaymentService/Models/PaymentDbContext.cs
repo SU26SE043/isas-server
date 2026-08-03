@@ -7,6 +7,7 @@ namespace PaymentService.Models
         public PaymentDbContext(DbContextOptions<PaymentDbContext> options) : base(options) { }
 
         public DbSet<ProductPackage> ProductPackages => Set<ProductPackage>();
+        public DbSet<Plan> Plans => Set<Plan>();
         public DbSet<Order> Orders => Set<Order>();
         public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
         public DbSet<CreditAccount> CreditAccounts => Set<CreditAccount>();
@@ -15,6 +16,8 @@ namespace PaymentService.Models
         public DbSet<Invoice> Invoices => Set<Invoice>();
         // F8 — bảng dựng lại sau khi DB15 drop bản scaffold chết; lần này có đường tiêu thụ thật.
         public DbSet<Subscription> Subscriptions => Set<Subscription>();
+        public DbSet<SubscriptionMeter> SubscriptionMeters => Set<SubscriptionMeter>();
+        public DbSet<SubscriptionEvent> SubscriptionEvents => Set<SubscriptionEvent>();
         // F22 — CHI PHÍ vận hành (token AI), KHÔNG phải tiền của người dùng: không FK/CHECK nào nối nó với
         // credit_accounts. Xem AiUsageLog để biết vì sao bảng này ở Payment mà không ở AIService (GEN-4).
         public DbSet<AiUsageLog> AiUsageLogs => Set<AiUsageLog>();
@@ -53,6 +56,12 @@ namespace PaymentService.Models
             // ── ProductPackage ────────────────────────────────────
             modelBuilder.Entity<ProductPackage>(e =>
             {
+                e.ToTable("product_packages", t =>
+                {
+                    t.HasCheckConstraint("ck_product_packages_type", "type IN ('OneTime', 'Subscription')");
+                    t.HasCheckConstraint("ck_product_packages_price_non_negative", "price_vnd >= 0");
+                    t.HasCheckConstraint("ck_product_packages_audience", "audience IS NULL OR audience IN ('B2C', 'B2B')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Name).IsRequired();
@@ -66,11 +75,54 @@ namespace PaymentService.Models
                 // DB14 — audit updated_at (mirror created_at style: default now() ở DB; C# init ở entity để
                 // insert SQLite/EnsureCreated không phụ thuộc now()). Stamp tự động khi Modified (SaveChanges).
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.Audience).HasConversion<string>().HasMaxLength(8);
+                e.HasOne(x => x.Plan).WithMany()
+                    .HasForeignKey(x => x.PlanId).IsRequired(false).OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── Plan (tiered subscription catalog) ──────────────────────
+            modelBuilder.Entity<Plan>(e =>
+            {
+                e.ToTable("plans", t =>
+                {
+                    t.HasCheckConstraint("ck_plans_audience", "audience IN ('B2C', 'B2B')");
+                    t.HasCheckConstraint("ck_plans_funding", "interview_funding IN ('Credit', 'Metered', 'Unlimited')");
+                    t.HasCheckConstraint("ck_plans_metered", "interview_funding <> 'Metered' OR monthly_quota > 0");
+                    t.HasCheckConstraint("ck_plans_maxq", "max_questions_cap IS NULL OR max_questions_cap BETWEEN 0 AND 20");
+                    t.HasCheckConstraint("ck_plans_scn", "self_consistency_n >= 1");
+                    t.HasCheckConstraint("ck_plans_adaptive_caps", "adaptive_enabled OR (adaptive_max_questions IS NULL AND adaptive_max_followups IS NULL)");
+                    t.HasCheckConstraint("ck_plans_b2c_no_b2b", "audience = 'B2B' OR (max_active_campaigns IS NULL AND max_candidates_cap IS NULL AND postpaid_eligible = false AND seat_count IS NULL)");
+                });
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.Audience).HasConversion<string>().HasMaxLength(8).IsRequired();
+                e.Property(x => x.Code).HasMaxLength(64).IsRequired();
+                e.Property(x => x.Name).HasMaxLength(128).IsRequired();
+                e.Property(x => x.InterviewFunding).HasConversion<string>().HasMaxLength(16).IsRequired();
+                e.Property(x => x.EntitlementsJson).HasColumnType("jsonb").HasDefaultValue("[]").IsRequired();
+                e.Property(x => x.EntitlementsVersion).HasDefaultValue(1);
+                e.Property(x => x.IsActive).HasDefaultValue(true);
+                e.Property(x => x.SelfConsistencyN).HasDefaultValue(1);
+                e.Property(x => x.PostpaidEligible).HasDefaultValue(false);
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.HasIndex(x => new { x.Audience, x.Code }).IsUnique();
+                e.HasIndex(x => new { x.Audience, x.IsActive }).HasDatabaseName("ix_plans_audience_active");
+                e.HasData(PlanSeed.All);
             });
 
             // ── Order ─────────────────────────────────────────────
             modelBuilder.Entity<Order>(e =>
             {
+                e.ToTable("orders", t =>
+                {
+                    t.HasCheckConstraint("ck_orders_owner_type", "owner_type IN ('Org', 'User')");
+                    t.HasCheckConstraint("ck_orders_kind", "kind IN ('CreditPack', 'InvoiceSettlement', 'SubscriptionPurchase', 'SubscriptionRenewal')");
+                    t.HasCheckConstraint("ck_orders_status", "status IN ('Pending', 'Paid', 'Failed', 'Expired', 'Cancelled', 'Refunded')");
+                    t.HasCheckConstraint("ck_orders_amount_non_negative", "amount_vnd >= 0");
+                    t.HasCheckConstraint("ck_orders_payout_status",
+                        "payout_status IS NULL OR payout_status IN ('InFlight', 'Succeeded', 'Failed')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 // Pre-existing bug (features/payment-b2c): default "pending" (string) trên property enum
@@ -136,6 +188,28 @@ namespace PaymentService.Models
                  .HasDatabaseName("ix_orders_paid_at")
                  .HasFilter("status = 'Paid'");
 
+                // Chi tiền hoàn tự động — enum lưu string (GEN-2); lý do hỏng giới hạn độ dài như
+                // refund_reason để không thành bãi rác text.
+                e.Property(x => x.PayoutStatus).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.PayoutId).HasMaxLength(100);
+                e.Property(x => x.PayoutFailureReason).HasMaxLength(500);
+
+                // Khoá idempotency là DUY NHẤT toàn bảng: nó chính là thứ payOS dùng để nhận ra lệnh
+                // trùng, nên hai đơn dùng chung một khoá nghĩa là đơn thứ hai sẽ im lặng KHÔNG được
+                // chuyển tiền (payOS coi là bản sao của lệnh trước). Lọc IS NOT NULL vì gần như mọi đơn
+                // không có lệnh chi nào.
+                e.HasIndex(x => x.PayoutIdempotencyKey)
+                 .IsUnique()
+                 .HasDatabaseName("ux_orders_payout_idempotency_key")
+                 .HasFilter("payout_idempotency_key IS NOT NULL");
+
+                // RefundPayoutReconciler quét đúng vị ngữ này mỗi 2'. Partial theo trạng thái đang bay —
+                // tập cực nhỏ và sống ngắn, nên index chỉ ôm phần reconciler cần (mẫu DB5/DB26).
+                // Literal 'InFlight' khớp chuỗi enum lưu.
+                e.HasIndex(x => x.UpdatedAt)
+                 .HasDatabaseName("ix_orders_payout_in_flight")
+                 .HasFilter("payout_status = 'InFlight'");
+
 
 
                 // P8b — package optional: đơn InvoiceSettlement không gắn package (gắn invoice_id).
@@ -189,6 +263,8 @@ namespace PaymentService.Models
                 e.ToTable("credit_accounts", t =>t.HasCheckConstraint(
                     "ck_credit_accounts_credit_limit_positive",
                     "credit_limit IS NULL OR credit_limit > 0"));
+                e.ToTable("credit_accounts", t => t.HasCheckConstraint(
+                    "ck_credit_accounts_enums", "owner_type IN ('Org', 'User') AND payment_mode IN ('Prepaid', 'Postpaid') AND status IN ('Active', 'Suspended')"));
 
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
@@ -234,8 +310,17 @@ namespace PaymentService.Models
                 // F8 — nguồn chi trả, enum lưu string (GEN-2). Default 'Credit' để mọi row CŨ (và mọi
                 // đường ghi chưa biết tới F8) giữ nguyên nghĩa "chỗ giữ này đã trừ ví" ⇒ Consume/Release
                 // của chúng vẫn chạy đúng nhánh bút toán như trước.
-                e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(16)
+                // ⚠ ĐỘ DÀI PHẢI ĐỦ CHO GIÁ TRỊ ENUM DÀI NHẤT: 'SubscriptionMetered' = 19 ký tự.
+                // Cột này từng là varchar(16) — trên Postgres MỌI reserve gói metered ném
+                // "value too long for type character varying(16)", mà SQLite (test) KHÔNG enforce độ dài
+                // varchar nên toàn bộ test vẫn xanh. `EnumColumnLengthTests` nay khoá bất biến này.
+                e.Property(x => x.FundedBy).HasConversion<string>().HasMaxLength(32)
                  .HasDefaultValue(ReservationFunding.Credit);
+                e.ToTable(t =>
+                {
+                    t.HasCheckConstraint("ck_reservation_metered_consistency", "(funded_by = 'SubscriptionMetered' AND metered_subscription_id IS NOT NULL AND metered_period_start IS NOT NULL) OR (funded_by <> 'SubscriptionMetered' AND metered_subscription_id IS NULL AND metered_period_start IS NULL)");
+                    t.HasCheckConstraint("ck_credit_reservations_enums", "owner_type IN ('Org', 'User') AND status IN ('Reserved', 'Consumed', 'Released') AND funded_by IN ('Credit', 'Subscription', 'SubscriptionMetered') AND payment_mode IN ('Prepaid', 'Postpaid')");
+                });
 
                 e.Property(x => x.PaymentMode).HasConversion<string>().HasMaxLength(16)
                  .HasDefaultValue(PaymentMode.Prepaid);
@@ -244,6 +329,7 @@ namespace PaymentService.Models
                 // DB14 — audit updated_at (stamp khi status flip Reserved→Consumed/Released). 2 flip đó dùng
                 // ExecuteUpdate (CreditAccountService) nên tự thêm .SetProperty(UpdatedAt) tại đó.
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.MeteredPeriodStart).HasColumnType("timestamp with time zone");
 
                 // idempotency: 1 reservation / session (D7)
                 e.HasIndex(x => x.SessionId).IsUnique();
@@ -288,8 +374,11 @@ namespace PaymentService.Models
             {
                 // DB1 — sổ cái append-only: mọi bút toán phải chuyển số dư (Purchase +N / Consume −1 / Refund).
                 // delta = 0 là bút toán vô nghĩa → chặn ở DB (dữ liệu rác/bug ghi sổ).
-                e.ToTable("credit_transactions", t => t.HasCheckConstraint(
-                    "ck_credit_transactions_delta_nonzero", "delta <> 0"));
+                e.ToTable("credit_transactions", t =>
+                {
+                    t.HasCheckConstraint("ck_credit_transactions_delta_nonzero", "delta <> 0");
+                    t.HasCheckConstraint("ck_credit_transactions_enums", "owner_type IN ('Org', 'User') AND reason IN ('Purchase', 'Consume', 'Refund', 'FreeGrant', 'PromoGrant')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -358,7 +447,8 @@ namespace PaymentService.Models
             // ── Invoice (P8b — hóa đơn postpaid, CHỈ Org) ───────────
             modelBuilder.Entity<Invoice>(e =>
             {
-                e.ToTable("invoices");
+                e.ToTable("invoices", t => t.HasCheckConstraint(
+                    "ck_invoices_enums", "owner_type = 'Org' AND status IN ('Issued', 'Paid', 'Overdue', 'Void')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
@@ -412,10 +502,28 @@ namespace PaymentService.Models
                 e.Property(x => x.ExpiresAt).IsRequired();
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.Audience).HasConversion<string>().HasMaxLength(8).HasDefaultValue(PlanAudience.B2C);
+                e.Property(x => x.InterviewFunding).HasConversion<string>().HasMaxLength(16).HasDefaultValue(InterviewFunding.Credit);
+                e.Property(x => x.Source).HasConversion<string>().HasMaxLength(16).HasDefaultValue(SubscriptionSource.Purchase);
+                e.Property(x => x.TierCode).HasMaxLength(64).HasDefaultValue("");
+                e.Property(x => x.EntitlementSnapshot).HasColumnType("jsonb").HasDefaultValue("{}");
+                e.Property(x => x.EntitlementHash).HasMaxLength(64).HasDefaultValue("");
+                e.Property(x => x.ActivatedAt).HasDefaultValueSql("now()");
+                e.ToTable(t =>
+                {
+                    t.HasCheckConstraint("ck_sub_audience_owner", "(audience = 'B2C' AND owner_type = 'User') OR (audience = 'B2B' AND owner_type = 'Org')");
+                    t.HasCheckConstraint("ck_sub_meter_anchor", "meter_anchor_day IS NULL OR meter_anchor_day BETWEEN 1 AND 28");
+                    t.HasCheckConstraint("ck_sub_metered_quota", "interview_funding <> 'Metered' OR monthly_quota IS NOT NULL AND monthly_quota > 0");
+                    t.HasCheckConstraint("ck_subscriptions_enums", "billing_cycle IN ('Monthly', 'Annual') AND status IN ('Active', 'Expired', 'Cancelled') AND audience IN ('B2C', 'B2B') AND interview_funding IN ('Credit', 'Metered', 'Unlimited') AND source IN ('Purchase', 'AdminGrant')");
+                });
 
                 // Khoá idempotency của webhook: 1 đơn ⇒ tối đa 1 kỳ hạn. Filtered vì order_id nullable
                 // (chỗ dành cho kỳ hạn cấp tay/khuyến mãi sau này, không sinh từ đơn nào).
                 e.HasIndex(x => x.OrderId).IsUnique().HasFilter("order_id IS NOT NULL");
+                e.Property(x => x.AdminGrantIdempotencyKey).HasMaxLength(128);
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.AdminGrantIdempotencyKey }).IsUnique()
+                 .HasDatabaseName("ux_subscriptions_owner_grant_idempotency")
+                 .HasFilter("admin_grant_idempotency_key IS NOT NULL");
 
                 // Đường nóng: MỌI lần reserve đều hỏi "chủ ví này còn thuê bao không". Partial theo
                 // status='Active' (mẫu DB5) để index chỉ ôm phần bảng thật sự bị hỏi — kỳ đã hết hạn/huỷ
@@ -441,6 +549,7 @@ namespace PaymentService.Models
                  .HasForeignKey(x => x.OrderId)
                  .IsRequired(false)
                  .OnDelete(DeleteBehavior.Restrict);
+                e.HasOne(x => x.Plan).WithMany().HasForeignKey(x => x.PlanId).OnDelete(DeleteBehavior.Restrict);
 
                 // DB9 — FK nội-service composite (owner_type, owner_id) → credit_accounts (Restrict),
                 // đồng nhất với reservations/transactions/invoices. Hệ quả CÓ CHỦ Ý: kích hoạt thuê bao
@@ -451,6 +560,24 @@ namespace PaymentService.Models
                  .HasForeignKey(x => new { x.OwnerType, x.OwnerId })
                  .HasPrincipalKey(a => new { a.OwnerType, a.OwnerId })
                  .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            modelBuilder.Entity<SubscriptionMeter>(e =>
+            {
+                e.ToTable("subscription_meters", t => t.HasCheckConstraint("ck_meter_nonneg", "used_count >= 0 AND reserved_count >= 0"));
+                e.HasKey(x => new { x.SubscriptionId, x.PeriodStart });
+                e.Property(x => x.PeriodStart).HasColumnType("timestamp with time zone");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+                e.HasOne(x => x.Subscription).WithMany().HasForeignKey(x => x.SubscriptionId).OnDelete(DeleteBehavior.Restrict);
+            });
+            modelBuilder.Entity<SubscriptionEvent>(e =>
+            {
+                e.ToTable("subscription_events"); e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.EventType).HasMaxLength(32).IsRequired();
+                e.Property(x => x.Payload).HasColumnType("jsonb").HasDefaultValue("{}");
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.HasOne(x => x.Subscription).WithMany().HasForeignKey(x => x.SubscriptionId).OnDelete(DeleteBehavior.Restrict);
             });
 
             // ── AiUsageLog (F22) ──────────────────────────────────

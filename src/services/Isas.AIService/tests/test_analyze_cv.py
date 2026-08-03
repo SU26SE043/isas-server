@@ -138,7 +138,11 @@ async def test_provider_analyze_cv_raises_on_empty_summary():
 
 # ── Endpoint /api/v1/analyze-cv: request/response shape qua HTTP thật ───────
 def test_endpoint_without_jdtext_response_shape(monkeypatch):
-    async def fake_analyze_cv(cv_text, jd_text, job_category):
+    # C14 — `criteria` là tham số THỨ TƯ có mặc định (đường B2C không gửi). Double phải nhận nó,
+    # nếu không thì test đỏ vì TypeError chứ không phải vì hành vi. Assert `is None` để double
+    # này khoá luôn bất biến "B2C KHÔNG truyền criteria xuống provider".
+    async def fake_analyze_cv(cv_text, jd_text, job_category, criteria=None):
+        assert criteria is None
         return {
             "summary": "Tóm tắt CV.",
             "strengths": ["A"],
@@ -162,8 +166,9 @@ def test_endpoint_without_jdtext_response_shape(monkeypatch):
 
 
 def test_endpoint_with_jdtext_response_shape(monkeypatch):
-    async def fake_analyze_cv(cv_text, jd_text, job_category):
+    async def fake_analyze_cv(cv_text, jd_text, job_category, criteria=None):
         assert jd_text == "jd text"
+        assert criteria is None
         return {
             "summary": "Tóm tắt CV.",
             "strengths": ["A"],
@@ -194,7 +199,9 @@ def test_endpoint_rejects_empty_cvtext():
 
 
 def test_endpoint_returns_502_when_gemini_fails(monkeypatch):
-    async def failing_analyze_cv(cv_text, jd_text, job_category):
+    # Nhận `criteria` để test đỏ/xanh vì ĐÚNG lý do: double 3-tham-số sẽ ném TypeError và cũng
+    # ra 502 — tức test vẫn "xanh" mà không hề đi qua nhánh ValueError nó định kiểm.
+    async def failing_analyze_cv(cv_text, jd_text, job_category, criteria=None):
         raise ValueError("LLM trả JSON không hợp lệ")
 
     monkeypatch.setattr(main_module.provider, "analyze_cv", failing_analyze_cv)

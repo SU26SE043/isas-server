@@ -25,6 +25,22 @@ namespace Isas.CampaignService.Services
         // Để dài để không đua với worker đang chấm chậm. Đo theo LastScreeningPublishedAt.
         private static readonly TimeSpan AnalyzingLostThreshold = TimeSpan.FromMinutes(15);
 
+        // TRẦN BỎ CUỘC — vòng lặp này KHÔNG có điểm dừng nếu không có nó.
+        //
+        // Đo được 2026-08-02: `cv_screening_queue` tồn **713 message của đúng 8 ứng viên**. Consumer
+        // phía AIService chưa từng tồn tại, nên mỗi ứng viên bị đẩy lại 1 lần/15' suốt ~22 tiếng
+        // (96 lần/ngày) và hàng đợi lớn mãi mà KHÔNG có gì báo — không alert nào đọc `list_queues`.
+        // Mỗi bản nhân đôi là một lượt Gemini nếu consumer bật lên.
+        //
+        // Neo theo `CreatedAt` chứ KHÔNG theo `LastScreeningPublishedAt`: mốc sau bị chính vòng lặp
+        // này dời về `now` mỗi lần đẩy, nên lấy nó làm trần thì trần không bao giờ tới.
+        //
+        // Quá trần → `AnalysisFailed` + log Error. Cố ý biến một rò rỉ vô hình thành một trạng thái
+        // HR NHÌN THẤY: ⚠ hiện KHÔNG có endpoint nào cho HR retry `AnalysisFailed` (chỉ callback
+        // `cv-result` đến muộn mới gỡ được — `CvScreeningService.cs:139`), nên để mặc định rộng tay
+        // và chỉnh được bằng config.
+        private static readonly TimeSpan DefaultGiveUpAfter = TimeSpan.FromHours(6);
+
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ICvScreeningPublisher _publisher;   // singleton — inject thẳng được
         private readonly IConfiguration _config;
@@ -89,6 +105,7 @@ namespace Isas.CampaignService.Services
                     c.Id,
                     c.CampaignId,
                     c.CvParsedText,
+                    c.CreatedAt,
                     Domain = c.Campaign.Domain,
                     JdText = c.Campaign.JDText
                 })
@@ -101,8 +118,33 @@ namespace Isas.CampaignService.Services
             var callbackBase = _config["Internal:CallbackBase"] ?? "http://localhost:8080";
             var criteriaCache = new Dictionary<Guid, List<CvScreeningCriterion>>();
 
+            // Trần bỏ cuộc: 0 hoặc âm = TẮT trần (giữ hành vi đẩy lại vô hạn — chỉ dùng khi cố ý).
+            var giveUpAfter = int.TryParse(_config["Screening:GiveUpAfterHours"], out var h)
+                ? TimeSpan.FromHours(h)
+                : DefaultGiveUpAfter;
+            var giveUpCutoff = giveUpAfter > TimeSpan.Zero ? now - giveUpAfter : (DateTime?)null;
+
             foreach (var c in stuck)
             {
+                // Quá trần → thôi đẩy lại, chuyển AnalysisFailed để HR NHÌN THẤY thay vì rò rỉ im lặng.
+                // Đặt TRƯỚC mọi thứ khác (kể cả nạp criteria) — đã bỏ cuộc thì không tốn thêm query nào.
+                if (giveUpCutoff is DateTime cutoff && c.CreatedAt < cutoff)
+                {
+                    await db.CvSubmissions
+                        .Where(x => x.Id == c.Id)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(x => x.Status, CvSubmissionStatus.AnalysisFailed)
+                            .SetProperty(x => x.RejectReason,
+                                $"Sàng CV không hoàn tất sau {giveUpAfter.TotalHours:0.#} giờ — worker sàng CV không phản hồi")
+                            .SetProperty(x => x.UpdatedAt, now), ct);
+
+                    _logger.LogError(
+                        "Bỏ cuộc sàng CV candidate {CandidateId} (campaign {CampaignId}): quá {Hours} giờ "
+                        + "không có callback → AnalysisFailed. Kiểm tra consumer cv_screening_queue.",
+                        c.Id, c.CampaignId, giveUpAfter.TotalHours);
+                    continue;
+                }
+
                 // TÁI DÙNG campaign_criteria làm rubric gửi kèm job (cache theo campaign — N nhỏ do max_candidates).
                 if (!criteriaCache.TryGetValue(c.CampaignId, out var criteria))
                 {

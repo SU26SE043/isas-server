@@ -17,7 +17,8 @@ namespace Isas.PaymentService.Services
 
         public async Task<PackageResponse> CreatePackageAsync(CreatePackageRequest request, CancellationToken ct)
         {
-            Validate(request.Type, request.InterviewCredits, request.DurationDays);
+            await ValidateAsync(request.Type, request.InterviewCredits, request.DurationDays,
+                request.PlanId, request.Audience, ct);
             ValidateSanity(request.Name, request.PriceVnd, request.InterviewCredits, request.DurationDays);
 
             var package = new ProductPackage
@@ -28,6 +29,8 @@ namespace Isas.PaymentService.Services
                 PriceVnd = request.PriceVnd,
                 InterviewCredits = request.InterviewCredits,
                 DurationDays = request.DurationDays,
+                PlanId = request.PlanId,
+                Audience = request.Audience,
                 IsActive = true,
                 CreatedAt = DateTime.UtcNow
             };
@@ -79,22 +82,53 @@ namespace Isas.PaymentService.Services
             if (package.Type == PackageType.OneTime && request.InterviewCredits is <= 0)
                 throw new ArgumentException("InterviewCredits must be > 0 for one_time packages.");
 
+            var nextPlanId = request.PlanId ?? package.PlanId;
+            var nextAudience = request.Audience ?? package.Audience;
+            var changesSubscriptionBinding = package.Type == PackageType.Subscription &&
+                (nextPlanId != package.PlanId || nextAudience != package.Audience);
+            if (changesSubscriptionBinding)
+            {
+                var hasPendingOrder = await _db.Orders.AnyAsync(o => o.PackageId == package.Id && o.Status == OrderStatus.Pending, ct);
+                var hasActiveSubscription = await _db.Subscriptions.AnyAsync(s => s.PackageId == package.Id && s.Status == SubscriptionStatus.Active && s.ExpiresAt > DateTime.UtcNow, ct);
+                if (hasPendingOrder || hasActiveSubscription)
+                    throw new ArgumentException("Cannot change a subscription package plan or audience while pending orders or active subscriptions exist.");
+            }
+            if (package.Type == PackageType.Subscription)
+                await ValidateAsync(package.Type, package.InterviewCredits, request.DurationDays ?? package.DurationDays,
+                    nextPlanId, nextAudience, ct);
+            else if (request.PlanId is not null || request.Audience is not null)
+                throw new ArgumentException("OneTime packages cannot reference a plan or audience.");
+
             if (request.Name is not null) package.Name = request.Name;
             if (request.PriceVnd is not null) package.PriceVnd = request.PriceVnd.Value;
             if (request.InterviewCredits is not null) package.InterviewCredits = request.InterviewCredits;
             if (request.DurationDays is not null) package.DurationDays = request.DurationDays;
             if (request.IsActive is not null) package.IsActive = request.IsActive.Value;
+            if (request.PlanId is not null) package.PlanId = request.PlanId;
+            if (request.Audience is not null) package.Audience = request.Audience;
 
             await _db.SaveChangesAsync();
             return PackageResponse.ToResponse(package);
         }
 
-        private static void Validate(PackageType type, int? credits, int? days)
+        private async Task ValidateAsync(PackageType type, int? credits, int? days,
+            Guid? planId, PlanAudience? audience, CancellationToken ct)
         {
             if (type == PackageType.OneTime && credits is not > 0)
                 throw new ArgumentException("InterviewCredits must be > 0 for one_time packages.");
-            if (type == PackageType.Subscription && days is null)
-                throw new ArgumentException("DurationDays is required for subscription packages.");
+            if (type == PackageType.Subscription)
+            {
+                if (days is not > 0) throw new ArgumentException("DurationDays is required for subscription packages.");
+                if (planId is null || audience is null)
+                    throw new ArgumentException("Subscription packages require PlanId and Audience.");
+                var plan = await _db.Plans.AsNoTracking()
+                    .SingleOrDefaultAsync(p => p.Id == planId && p.IsActive, ct);
+                if (plan is null) throw new ArgumentException("Plan not found or inactive.");
+                if (plan.Audience != audience)
+                    throw new ArgumentException("Subscription package audience must match its plan.");
+            }
+            else if (planId is not null || audience is not null)
+                throw new ArgumentException("OneTime packages cannot reference a plan or audience.");
             if (type is not (PackageType.OneTime or PackageType.Subscription))
                 throw new ArgumentException($"Invalid package type: {type}");
         }
