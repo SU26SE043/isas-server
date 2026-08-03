@@ -53,8 +53,10 @@ public class PayoutClientShapeTests
         // "không rõ kết quả" → đơn nằm InFlight và KHÔNG bao giờ được đóng dấu. An toàn về tiền (không
         // chuyển lần hai) nhưng kẹt vĩnh viễn, phải đối soát tay.
         //
-        // Bằng chứng hiện có nghiêng về dạng MẢNG: phản hồi thật của GET /v1/payouts trả `"payouts":[]`.
-        // Chưa xác minh dứt điểm được vì chưa có lệnh chi thật nào chạy → là mục L3 số 1 khi bật cờ.
+        // ✅ ĐÃ XÁC MINH bằng lệnh chi THẬT trên production (2026-08-03): payOS trả `transactions` dạng
+        // MẢNG, đúng như SDK khai — tài liệu vẽ sai. Nhánh kẹt-vĩnh-viễn nói trên KHÔNG xảy ra trong
+        // thực tế. Test này giữ lại để nếu payOS đổi sang dạng object thì có chỗ ghi nhận, chứ không
+        // còn là ẩn số chặn việc bật tính năng.
         Assert.Throws<JsonException>(() =>
             JsonSerializer.Deserialize<Payout>(PayoutJson(asArray: false)));
     }
