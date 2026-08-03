@@ -405,6 +405,42 @@ public class RefundPayoutTests
         Assert.Equal(0, payout.CreateCalls);
     }
 
+    // ── Admin phải phân biệt được "chưa chuyển" với "chuyển hỏng" ───────────────────────────────
+
+    [Fact]
+    public async Task DanhSachAdmin_LoTrangThaiLenhChi_ChuKhongChiMocDaChuyen()
+    {
+        using var tdb = new PaymentTestDb();
+        var order = await SeedRefundedAsync(tdb, accountName: "NGUYEN VAN A");
+        var payout = new FakePayout
+        {
+            OnCreate = _ => new PayoutCreateResult(PayoutCallOutcome.Created,
+                new PayoutSnapshot(PayoutState.Succeeded, "payout_1", "TRAN THI B", null), null)
+        };
+
+        await NewService(tdb, payout).InitiateRefundPayoutAsync(order.Id, Admin);
+
+        var item = Isas.PaymentService.DTOs.AdminOrderListItem.From(await ReloadAsync(tdb, order.Id));
+
+        // Tiền ĐÃ đi nhưng tới nhầm tên. Nếu admin chỉ nhìn refundSettledAt thì ca này trông hệt như
+        // "chưa ai bấm chuyển" — mà nó là ca gấp nhất trong cả luồng.
+        Assert.Null(item.RefundSettledAt);
+        Assert.Equal("Succeeded", item.PayoutStatus);
+        Assert.Contains("không khớp", item.PayoutFailureReason);
+    }
+
+    [Fact]
+    public async Task DanhSachAdmin_ChuaBanLenhNao_TrangThaiRong()
+    {
+        using var tdb = new PaymentTestDb();
+        var order = await SeedRefundedAsync(tdb);
+
+        var item = Isas.PaymentService.DTOs.AdminOrderListItem.From(await ReloadAsync(tdb, order.Id));
+
+        Assert.Null(item.PayoutStatus);
+        Assert.Null(item.RefundSettledAt);
+    }
+
     // ── Đổi mã ngân hàng: CITAD → BIN ───────────────────────────────────────────────────────────
 
     private static BankBinResolver Resolver(params (string key, string bin)[] map) =>
