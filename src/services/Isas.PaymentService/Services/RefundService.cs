@@ -1,4 +1,9 @@
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using PayOS.Models.Webhooks;
 using PaymentService.Models;
 
 namespace Isas.PaymentService.Services
@@ -34,12 +39,25 @@ namespace Isas.PaymentService.Services
     {
         private readonly PaymentDbContext _db;
         private readonly ILogger<RefundService>? _logger;
+        private readonly IPayoutClient? _payout;
+        private readonly IBankBinResolver? _bins;
+        private readonly RefundPayoutSettings _payoutOptions;
 
         // Logger OPTIONAL (mẫu WebhookService/CreditAccountService): test dựng service bằng ctor 1 tham số.
-        public RefundService(PaymentDbContext db, ILogger<RefundService>? logger = null)
+        // Ba tham số chi tiền cũng optional vì phần lớn test F18 chỉ quan tâm sổ sách; thiếu chúng thì
+        // đường chi tự động tự tắt (NotEnabled) chứ không ném.
+        public RefundService(
+            PaymentDbContext db,
+            ILogger<RefundService>? logger = null,
+            IPayoutClient? payout = null,
+            IBankBinResolver? bins = null,
+            IOptions<RefundPayoutSettings>? payoutOptions = null)
         {
             _db = db;
             _logger = logger;
+            _payout = payout;
+            _bins = bins;
+            _payoutOptions = payoutOptions?.Value ?? new RefundPayoutSettings();
         }
 
         public async Task<RefundResult> RefundOrderAsync(
@@ -239,6 +257,325 @@ namespace Isas.PaymentService.Services
             return new SettleRefundResult(SettleOutcome.Settled, orderId,
                 order.RefundedAt, settledAt, gatewayRef ?? order.RefundGatewayRef);
         }
+
+        public async Task<RefundPayoutResult> InitiateRefundPayoutAsync(
+            Guid orderId, Guid adminUserId, CancellationToken ct = default)
+        {
+            var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId, ct);
+            if (order is null)
+                return new RefundPayoutResult(RefundPayoutOutcome.OrderNotFound, orderId);
+
+            if (order.Status != OrderStatus.Refunded)
+                return new RefundPayoutResult(RefundPayoutOutcome.NotRefunded, orderId);
+
+            // Đã chuyển tiền rồi → KHÔNG chuyển lần hai. Guard này đứng trước mọi thứ khác vì nó là
+            // ranh giới giữa "một lần hoàn" và "hoàn hai lần".
+            if (order.RefundSettledAt is not null)
+                return new RefundPayoutResult(RefundPayoutOutcome.AlreadySettled, orderId,
+                    order.PayoutId, order.RefundSettledAt);
+
+            if (!_payoutOptions.Enabled || _payout is null || _bins is null || !_payout.IsConfigured)
+                return new RefundPayoutResult(RefundPayoutOutcome.NotEnabled, orderId,
+                    Message: "Chi tiền hoàn tự động chưa bật hoặc chưa cấu hình kênh chi payOS.");
+
+            // Đã có lệnh đang bay → theo tiếp lệnh CŨ, tuyệt đối không mở lệnh mới.
+            if (order.PayoutIdempotencyKey is not null && order.PayoutStatus == PayoutStatus.InFlight)
+                return await PollRefundPayoutAsync(orderId, ct);
+
+            // Lệnh hỏng là ĐIỂM DỪNG của đường tự động. Thử lại đòi một khoá idempotency mới, tức là
+            // mở lại đúng cánh cửa chuyển-tiền-hai-lần mà cả thiết kế này dựng lên để đóng — nên việc
+            // thử lại là quyết định của người, qua đường chuyển tay.
+            if (order.PayoutStatus == PayoutStatus.Failed)
+                return new RefundPayoutResult(RefundPayoutOutcome.Rejected, orderId, order.PayoutId,
+                    Message: order.PayoutFailureReason
+                             ?? "Lệnh chi trước đó đã hỏng — chuyển tay và xác nhận bằng /refund/settle.");
+
+            if (_payoutOptions.MaxAutoPayoutVnd <= 0 || order.AmountVnd > _payoutOptions.MaxAutoPayoutVnd)
+                return new RefundPayoutResult(RefundPayoutOutcome.OverCeiling, orderId,
+                    Message: $"Số tiền {order.AmountVnd:N0}₫ vượt trần chi tự động "
+                             + $"{_payoutOptions.MaxAutoPayoutVnd:N0}₫ — chuyển tay.");
+
+            var payer = await ReadPayerAsync(orderId, ct);
+            var bin = _bins.Resolve(payer.BankId);
+            if (bin is null || string.IsNullOrWhiteSpace(payer.AccountNumber))
+                return new RefundPayoutResult(RefundPayoutOutcome.DestinationUnresolved, orderId,
+                    Message: $"Không dựng được đích chuyển từ webhook gốc (mã ngân hàng '{payer.BankId}', "
+                             + "số tài khoản " + (string.IsNullOrWhiteSpace(payer.AccountNumber) ? "trống" : "có")
+                             + ") — chuyển tay.");
+
+            // Số dư đọc được mà không đủ → dừng sớm. Đọc KHÔNG được (null) thì không chặn: "không biết"
+            // không phải "bằng 0", và payOS vẫn từ chối được ở bước sau nếu thật sự thiếu tiền.
+            var balance = await _payout.GetBalanceAsync(ct);
+            if (balance is not null && balance < order.AmountVnd)
+                return new RefundPayoutResult(RefundPayoutOutcome.InsufficientBalance, orderId,
+                    Message: $"Ví chi còn {balance:N0}₫, cần {order.AmountVnd:N0}₫.");
+
+            // ── GHI KHOÁ IDEMPOTENCY TRƯỚC KHI GỌI ─────────────────────────────────────────────────
+            // Ghi trước, và ghi bằng một câu UPDATE có điều kiện `payout_idempotency_key IS NULL`. Hai
+            // tính chất, hai mục đích khác nhau:
+            //   • ghi TRƯỚC ⇒ nếu tiến trình chết ngay sau lời gọi mạng, khoá vẫn còn trên đĩa và lần
+            //     hỏi lại dùng đúng khoá đó ⇒ payOS nhận ra lệnh trùng thay vì chuyển tiền lần hai;
+            //   • điều kiện IS NULL ⇒ hai admin bấm cùng lúc thì chỉ một người giành được khoá.
+            var key = Guid.NewGuid();
+            var now = DateTime.UtcNow;
+            var claimed = await _db.Orders
+                .Where(o => o.Id == orderId
+                            && o.Status == OrderStatus.Refunded
+                            && o.RefundSettledAt == null
+                            && o.PayoutIdempotencyKey == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(o => o.PayoutIdempotencyKey, _ => (Guid?)key)
+                    .SetProperty(o => o.PayoutStatus, _ => (PayoutStatus?)PayoutStatus.InFlight)
+                    .SetProperty(o => o.UpdatedAt, _ => now), ct);
+
+            if (claimed == 0)
+                // Người khác vừa giành khoá xong → theo lệnh của họ, không mở lệnh song song.
+                return await PollRefundPayoutAsync(orderId, ct);
+
+            _logger?.LogInformation(
+                "Chi tiền hoàn đơn {OrderId}: {Amount}₫ → {Bin}/{Account} (admin {AdminId}).",
+                orderId, order.AmountVnd, bin, Mask(payer.AccountNumber), adminUserId);
+
+            var created = await _payout.CreateAsync(
+                orderId.ToString(), order.AmountVnd, BuildDescription(orderId),
+                bin, payer.AccountNumber!, key, ct);
+
+            return await ApplyPayoutOutcomeAsync(orderId, adminUserId, created.Outcome,
+                created.Payout, created.Message, payer.AccountName, ct);
+        }
+
+        public async Task<RefundPayoutResult> PollRefundPayoutAsync(Guid orderId, CancellationToken ct = default)
+        {
+            var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == orderId, ct);
+            if (order is null)
+                return new RefundPayoutResult(RefundPayoutOutcome.OrderNotFound, orderId);
+
+            if (order.RefundSettledAt is not null)
+                return new RefundPayoutResult(RefundPayoutOutcome.AlreadySettled, orderId,
+                    order.PayoutId, order.RefundSettledAt);
+
+            if (_payout is null || !_payout.IsConfigured || !_payoutOptions.Enabled)
+                return new RefundPayoutResult(RefundPayoutOutcome.NotEnabled, orderId);
+
+            if (order.PayoutStatus != PayoutStatus.InFlight || order.PayoutIdempotencyKey is null)
+                return new RefundPayoutResult(RefundPayoutOutcome.NotEnabled, orderId,
+                    Message: "Đơn không có lệnh chi nào đang bay.");
+
+            var payer = await ReadPayerAsync(orderId, ct);
+
+            // Chưa có payoutId = lời gọi tạo lệnh không trả về được (timeout). Đường duy nhất để biết
+            // lệnh có tồn tại hay không là GỌI LẠI BẰNG ĐÚNG KHOÁ CŨ: payOS hoặc trả lại lệnh cũ, hoặc
+            // báo trùng khoá — cả hai đều KHÔNG sinh thêm lệnh. (API danh sách lệnh chi chỉ lọc được
+            // limit/offset, không tra được theo referenceId, nên không dùng đường đó.)
+            if (string.IsNullOrEmpty(order.PayoutId))
+            {
+                var bin = _bins?.Resolve(payer.BankId);
+                if (bin is null || string.IsNullOrWhiteSpace(payer.AccountNumber))
+                    return new RefundPayoutResult(RefundPayoutOutcome.DestinationUnresolved, orderId);
+
+                var retried = await _payout.CreateAsync(
+                    orderId.ToString(), order.AmountVnd, BuildDescription(orderId),
+                    bin, payer.AccountNumber!, order.PayoutIdempotencyKey.Value, ct);
+
+                return await ApplyPayoutOutcomeAsync(orderId, Guid.Empty, retried.Outcome,
+                    retried.Payout, retried.Message, payer.AccountName, ct);
+            }
+
+            var snapshot = await _payout.GetAsync(order.PayoutId, ct);
+            if (snapshot is null)
+                // Không tra được ≠ hỏng. Giữ nguyên đang-bay, hỏi lại vòng sau.
+                return new RefundPayoutResult(RefundPayoutOutcome.InFlight, orderId, order.PayoutId);
+
+            return await ApplyPayoutOutcomeAsync(orderId, Guid.Empty, PayoutCallOutcome.Created,
+                snapshot, null, payer.AccountName, ct);
+        }
+
+        /// <summary>
+        /// Quy một kết quả từ payOS về hành động trên đơn. Tách riêng vì cả đường bấm nút lẫn đường
+        /// reconciler đều phải xử lý y hệt nhau — hai bản sao của luật tiền là hai bản sao để lệch nhau.
+        /// </summary>
+        private async Task<RefundPayoutResult> ApplyPayoutOutcomeAsync(
+            Guid orderId,
+            Guid actorId,
+            PayoutCallOutcome outcome,
+            PayoutSnapshot? snapshot,
+            string? message,
+            string? payerName,
+            CancellationToken ct)
+        {
+            switch (outcome)
+            {
+                case PayoutCallOutcome.Rejected:
+                    await MarkPayoutFailedAsync(orderId, message, ct);
+                    return new RefundPayoutResult(RefundPayoutOutcome.Rejected, orderId, Message: message);
+
+                // Không biết kết quả, hoặc biết chắc lệnh đã tồn tại nhưng không lấy được id: cả hai đều
+                // là "giữ nguyên đang bay". Khoá idempotency đã nằm trên đĩa nên vòng sau hỏi lại an toàn.
+                case PayoutCallOutcome.Unknown:
+                case PayoutCallOutcome.AlreadyExists when snapshot is null:
+                    return new RefundPayoutResult(RefundPayoutOutcome.InFlight, orderId, Message: message);
+            }
+
+            if (snapshot is null)
+                return new RefundPayoutResult(RefundPayoutOutcome.InFlight, orderId, Message: message);
+
+            var now = DateTime.UtcNow;
+
+            if (snapshot.State == PayoutState.Failed)
+            {
+                await MarkPayoutFailedAsync(orderId, snapshot.Message ?? message, ct);
+                return new RefundPayoutResult(RefundPayoutOutcome.Rejected, orderId, snapshot.PayoutId,
+                    Message: snapshot.Message);
+            }
+
+            if (snapshot.State != PayoutState.Succeeded)
+            {
+                // Mới nhận / đang xử lý → chỉ lưu lại id để vòng sau tra được, KHÔNG đóng dấu gì.
+                await _db.Orders
+                    .Where(o => o.Id == orderId && o.PayoutId == null)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(o => o.PayoutId, _ => snapshot.PayoutId)
+                        .SetProperty(o => o.UpdatedAt, _ => now), ct);
+
+                return new RefundPayoutResult(RefundPayoutOutcome.InFlight, orderId, snapshot.PayoutId);
+            }
+
+            // ── payOS báo ĐÃ CHUYỂN XONG ────────────────────────────────────────────────────────────
+            // Đối chiếu tên chủ tài khoản nhận với tên người đã trả tiền. Đây là lưới bắt ca hiểm nhất
+            // còn lại: mã ngân hàng đích suy sai ⇒ CÙNG số tài khoản ở ngân hàng KHÁC vẫn tồn tại và
+            // ValidateDestination vẫn cho qua ⇒ tiền tới một người có thật, nhưng không phải khách.
+            var matched = NamesMatch(payerName, snapshot.ToAccountName);
+
+            if (matched == false)
+            {
+                _logger?.LogError(
+                    "Đơn {OrderId}: lệnh chi {PayoutId} ĐÃ chuyển xong nhưng tên người nhận '{Received}' " +
+                    "KHÔNG khớp người đã trả '{Expected}'. KHÔNG đóng dấu đã hoàn — cần đối soát NGAY.",
+                    orderId, snapshot.PayoutId, snapshot.ToAccountName, payerName);
+
+                await _db.Orders
+                    .Where(o => o.Id == orderId)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(o => o.PayoutId, _ => snapshot.PayoutId)
+                        .SetProperty(o => o.PayoutStatus, _ => (PayoutStatus?)PayoutStatus.Succeeded)
+                        .SetProperty(o => o.PayoutFailureReason, _ =>
+                            $"Tiền đã chuyển nhưng tên người nhận '{snapshot.ToAccountName}' không khớp "
+                            + $"người đã trả '{payerName}' — cần đối soát.")
+                        .SetProperty(o => o.UpdatedAt, _ => now), ct);
+
+                return new RefundPayoutResult(RefundPayoutOutcome.NameMismatch, orderId, snapshot.PayoutId,
+                    Message: "Tiền đã chuyển nhưng tên người nhận không khớp — chưa đóng dấu đã hoàn.");
+            }
+
+            if (matched is null)
+                // Webhook gốc không có tên (đo thật: 3/15 giao dịch) ⇒ mất bộ dò, nhưng KHÔNG có dấu hiệu
+                // sai nào. Vẫn đóng dấu (tiền đã đi là sự thật) và ghi log để còn lần theo được.
+                _logger?.LogWarning(
+                    "Đơn {OrderId}: không đối chiếu được tên người nhận (webhook gốc không có tên). " +
+                    "Vẫn đóng dấu đã hoàn theo xác nhận của payOS.", orderId);
+
+            await _db.Orders
+                .Where(o => o.Id == orderId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(o => o.PayoutId, _ => snapshot.PayoutId)
+                    .SetProperty(o => o.PayoutStatus, _ => (PayoutStatus?)PayoutStatus.Succeeded)
+                    .SetProperty(o => o.UpdatedAt, _ => now), ct);
+
+            // Tái dùng đường settle sẵn có (idempotent, guard `refund_settled_at IS NULL`) thay vì tự
+            // đóng dấu — một chỗ duy nhất định nghĩa "tiền đã đi" cho cả đường tay lẫn đường tự động.
+            var settled = await SettleRefundAsync(orderId, actorId, snapshot.PayoutId, ct);
+
+            return new RefundPayoutResult(RefundPayoutOutcome.Settled, orderId, snapshot.PayoutId,
+                settled.RefundSettledAt);
+        }
+
+        private async Task MarkPayoutFailedAsync(Guid orderId, string? reason, CancellationToken ct)
+        {
+            var now = DateTime.UtcNow;
+            await _db.Orders
+                .Where(o => o.Id == orderId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(o => o.PayoutStatus, _ => (PayoutStatus?)PayoutStatus.Failed)
+                    .SetProperty(o => o.PayoutFailureReason, _ => reason)
+                    .SetProperty(o => o.UpdatedAt, _ => now), ct);
+        }
+
+        /// <summary>Mô tả lệnh chi. payOS giới hạn độ dài mô tả nên cắt ngắn có chủ đích (PAY-9).</summary>
+        private static string BuildDescription(Guid orderId) =>
+            $"Hoan tien {orderId.ToString()[..8]}";
+
+        /// <summary>
+        /// So tên chủ tài khoản. <c>null</c> = không đủ dữ liệu để so (một trong hai vế trống) — CỐ Ý
+        /// khác <c>false</c>: "không biết" không được phép biến thành cáo buộc chuyển nhầm.
+        ///
+        /// So sau khi bỏ dấu + bỏ mọi ký tự không phải chữ/số, vì tên do ngân hàng trả về thường viết hoa
+        /// không dấu ("NGUYEN VAN A") còn tên trong webhook có thể khác cách đặt khoảng trắng.
+        /// </summary>
+        public static bool? NamesMatch(string? expected, string? received)
+        {
+            var a = NormalizeName(expected);
+            var b = NormalizeName(received);
+            if (a.Length == 0 || b.Length == 0) return null;
+            return string.Equals(a, b, StringComparison.Ordinal);
+        }
+
+        private static string NormalizeName(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "";
+
+            var decomposed = value.Normalize(NormalizationForm.FormD);
+            var sb = new StringBuilder(decomposed.Length);
+            foreach (var ch in decomposed)
+            {
+                if (CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.NonSpacingMark) continue;
+                if (char.IsLetterOrDigit(ch)) sb.Append(char.ToUpperInvariant(ch));
+            }
+            return sb.ToString();
+        }
+
+        private static string Mask(string? accountNumber) =>
+            string.IsNullOrEmpty(accountNumber) || accountNumber.Length <= 4
+                ? "****"
+                : $"****{accountNumber[^4..]}";
+
+        /// <summary>
+        /// Đọc tài khoản người đã trả tiền từ webhook gốc đã lưu (<c>payment_transactions</c>).
+        ///
+        /// <para>CỐ Ý không sao chép số tài khoản sang cột riêng trên <c>orders</c>: đó là dữ liệu cá
+        /// nhân, bản gốc đã nằm sẵn trong log append-only, và nhân bản nó ra bảng thứ hai chỉ tạo thêm
+        /// một chỗ phải bảo vệ và phải dọn.</para>
+        /// </summary>
+        private async Task<PayerAccount> ReadPayerAsync(Guid orderId, CancellationToken ct)
+        {
+            var raws = await _db.PaymentTransactions.AsNoTracking()
+                .Where(t => t.OrderId == orderId && t.RawWebhookPayload != null)
+                .OrderByDescending(t => t.CreatedAt)
+                .Select(t => t.RawWebhookPayload!)
+                .Take(10)
+                .ToListAsync(ct);
+
+            foreach (var raw in raws)
+            {
+                WebhookData? data;
+                try
+                {
+                    data = JsonSerializer.Deserialize<Webhook>(raw)?.Data;
+                }
+                catch (JsonException)
+                {
+                    continue;   // bản ghi hỏng không được làm chết cả lệnh hoàn
+                }
+
+                if (data is null || string.IsNullOrWhiteSpace(data.CounterAccountNumber)) continue;
+
+                return new PayerAccount(
+                    data.CounterAccountBankId, data.CounterAccountNumber, data.CounterAccountName);
+            }
+
+            return new PayerAccount(null, null, null);
+        }
+
+        private sealed record PayerAccount(string? BankId, string? AccountNumber, string? AccountName);
 
         /// <summary>
         /// Trần thu hồi = <c>max(0, remaining − quà chưa tiêu)</c>, với quà chưa tiêu =

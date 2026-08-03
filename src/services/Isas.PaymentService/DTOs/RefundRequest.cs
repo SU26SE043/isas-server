@@ -57,6 +57,27 @@ namespace Isas.PaymentService.DTOs
         };
     }
 
+    /// <summary>Phản hồi lệnh chi tiền hoàn tự động qua kênh chi payOS.</summary>
+    public class RefundPayoutResponse
+    {
+        public Guid OrderId { get; set; }
+        /// <summary>Mã lệnh chi phía payOS — dùng để đối soát khi cần lần theo dòng tiền.</summary>
+        public string? PayoutId { get; set; }
+        /// <summary>NULL = tiền chưa xác nhận tới khách (đang bay, hoặc cần người xử lý).</summary>
+        public DateTime? RefundSettledAt { get; set; }
+        public string Outcome { get; set; } = "";
+        public string? Message { get; set; }
+
+        public static RefundPayoutResponse From(RefundPayoutResult r) => new()
+        {
+            OrderId = r.OrderId,
+            PayoutId = r.PayoutId,
+            RefundSettledAt = r.RefundSettledAt,
+            Outcome = r.Outcome.ToString(),
+            Message = r.Message,
+        };
+    }
+
     /// <summary>
     /// F18 — phản hồi hoàn tiền. Trả CẢ số đã bán lẫn số thu hồi được: khi hai số lệch nhau thì phần
     /// chênh là khoản công ty mất, và người bấm nút cần thấy nó ngay tại chỗ.

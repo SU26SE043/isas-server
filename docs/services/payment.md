@@ -168,6 +168,18 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 - Lỗi: **404** không có đơn · **409** đơn chưa Paid / thu hồi thiếu / ví vừa đổi giữa chừng.
 - ⚠ Ngoại lệ có chủ đích của **PAY-10**: mọi cơ chế TỰ ĐỘNG (webhook · polling · sweeper hết hạn) đều guard `status == Pending` ⇒ đơn Refunded nằm ngoài đường đi của chúng, webhook muộn không cộng lại credit vừa thu hồi (có test khoá).
 
+**`POST /payment/admin/orders/{id}/refund/settle`** ✅ **F18** — XÁC NHẬN đã chuyển tiền hoàn cho khách (đường **TAY**). Auth `Roles="Admin"`. Req `{ gatewayRef? }` → **200**. Đóng dấu `refund_settled_at`; KHÔNG đụng credit/status. Idempotent (đã settle → giữ nguyên mốc CŨ, vì mốc đầu tiên mới là lúc tiền thật sự đi). **404** không có đơn · **409** đơn chưa Refunded.
+
+**`POST /payment/admin/orders/{id}/refund/payout`** ✅ (2026-08-03) — **CHI tiền hoàn tự động** qua kênh chi payOS (`/v1/payouts`). Auth `Roles="Admin"`. Không có body → **202** đang bay / **200** đã chuyển xong `{ orderId, payoutId, refundSettledAt, outcome, message }`.
+- **payOS KHÔNG có API refund** — hoàn tiền được dựng bằng một **lệnh CHI mới** về tài khoản người đã trả. Đích chuyển đọc từ `counterAccountNumber`/`counterAccountBankId` trong webhook thu đã lưu ở `payment_transactions.raw_webhook_payload` (cố ý không nhân bản số tài khoản sang cột riêng — PII).
+- **Kênh chi có credential RIÊNG** (`PayOS:Payout:{ClientId,ApiKey,ChecksumKey}`), không dùng chung kênh thu: đã kiểm chứng bằng lệnh gọi thật — key kênh thu gọi API chi trả `code 601 "API key không tồn tại"`.
+- **Ba luật chống mất tiền:** (a) khoá idempotency sinh MỘT lần và **ghi DB TRƯỚC** lời gọi mạng, dùng lại nguyên vẹn ở mọi lần sau ⇒ retry không đẻ lệnh thứ hai; (b) **timeout ≠ thất bại** — không rõ kết quả thì giữ `InFlight` và hỏi lại **bằng đúng khoá cũ**, tuyệt đối không tạo lệnh mới; (c) chỉ `Succeeded` mới đóng dấu `refund_settled_at`, `Received`/`Processing` đều là CHƯA xong.
+- **Fail-closed ở mã ngân hàng:** `counterAccountBankId` **không cùng hệ mã** với `toBin` — đo trên dữ liệu thật: 12/15 giao dịch trả mã 8 số (`01203001`), chỉ 3/15 là BIN 6 số (`970422`). Không đổi được sang BIN → **422**, admin chuyển tay. Bảng ánh xạ do ops điền ở `RefundPayout:BankBinMap` (config, không cần deploy).
+- **Đối chiếu tên người nhận:** `toAccountName` payOS trả về lệch `counterAccountName` của webhook gốc → **409 `NameMismatch`**, KHÔNG đóng dấu (đóng dấu nghĩa là khẳng định khách đã nhận được tiền). Webhook không có tên (3/15 giao dịch thật) → vẫn đóng dấu + log cảnh báo: mất bộ dò không phải bằng chứng chuyển nhầm.
+- Lệnh đã hỏng là **điểm dừng của đường tự động** (thử lại đòi khoá mới = mở lại cửa chuyển-hai-lần) → **409**, xử tay qua `/refund/settle`.
+- Phanh: cờ `RefundPayout:Enabled` (**mặc định `false`**), trần `MaxAutoPayoutVnd` mỗi lệnh (vượt → **409**), kiểm số dư ví chi trước khi gọi (thiếu → **503**; **không đọc được ≠ bằng 0** nên không chặn).
+- `RefundPayoutReconciler` (nền, 2') theo tiếp lệnh đang bay tới khi có kết luận — chuyển khoản liên ngân hàng không xong trong một nhịp HTTP, và nó cũng là lưới cứu ca timeout.
+
 **`GET /payment/admin/revenue?from=&to=&groupBy=day|month`** ✅ **F19** (2026-07-19) — Doanh thu theo kỳ. Auth `Roles="Admin"`. Kỳ **nửa mở `[from, to)`** (hai kỳ liền nhau không đếm trùng); thiếu tham số → 30 ngày gần nhất; mốc ép về UTC. → **200** `{ from, to, granularity, grossRevenueVnd, paidOrderCount, refundedVnd, refundedOrderCount, netRevenueVnd, byKind[], buckets[] }`.
 - Doanh thu **gộp** đếm theo `paid_at` (đơn Paid); **tiền hoàn** đếm theo `refunded_at` — nếu đếm hoàn theo `paid_at` thì một khoản hoàn hôm nay đi ngược sửa doanh thu kỳ ĐÃ CHỐT. Kỳ có thể có `netRevenueVnd` âm — đúng bản chất kế toán.
 - **Quà không bao giờ thành doanh thu** theo cấu trúc: báo cáo đọc `orders`, còn `FreeGrant`/`PromoGrant` chỉ ghi `credit_transactions` và không sinh đơn nào (có test khoá).
@@ -369,11 +381,22 @@ invoice_id       uuid?         FK → invoices        (kind=InvoiceSettlement)
 subscription_id  uuid?         FK → subscriptions   (kind=SubscriptionPurchase/Renewal) 🔜(phase 2)
 amount_vnd       bigint
 payos_order_code bigint        UNIQUE (time+random — xem Business rules)
-status           varchar(16)   enum: Pending · Paid · Failed · Expired · Cancelled
+status           varchar(20)   enum: Pending · Paid · Failed · Expired · Cancelled · Refunded (F18)
 expired_at       timestamptz
 paid_at          timestamptz?
 created_at       timestamptz
+updated_at       timestamptz   DB14 — đóng dấu mỗi lần đơn bị sửa
+refunded_at      timestamptz?  F18 — mốc đánh dấu hoàn (nội bộ)
+refunded_by      uuid?         F18 — `sub` admin bấm hoàn (ref lỏng → Auth)
+refund_reason    varchar(500)?
+refund_gateway_ref varchar(100)? mã đối soát: admin nhập tay HOẶC payout_id của lệnh chi tự động
+refund_settled_at  timestamptz?  mốc tiền THẬT SỰ rời tài khoản công ty (NULL = chưa chuyển)
+payout_idempotency_key uuid?   UNIQUE (lọc NOT NULL) — khoá chống chuyển tiền hai lần
+payout_id          varchar(100)? id lệnh chi payOS
+payout_status      varchar(20)?  enum: InFlight · Succeeded · Failed (CHECK)
+payout_failure_reason varchar(500)?
 ```
+> **`payout_idempotency_key` UNIQUE toàn bảng** — đây chính là thứ payOS dùng để nhận ra lệnh trùng, nên hai đơn dùng chung một khoá nghĩa là đơn thứ hai **im lặng không được chuyển tiền** (payOS coi là bản sao). Index `ix_orders_payout_in_flight` (partial `payout_status = 'InFlight'`) phục vụ `RefundPayoutReconciler`.
 > ⚠ **`amount_vnd` = `bigint` (long)** — VND nguyên với pack lớn / hóa đơn postpaid gộp kỳ vượt trần `int` (~2,1 tỷ ₫). `InitialCreate` tạo cột `integer`; migration **`AmountVndToBigint`** (Đợt-3, `20260715113108`) alter → `bigint`. **Phải apply tay** trên DB server trước khi bán pack lớn (rule no-auto-migrate). `Order.AmountVnd` + `OrderResponse.AmountVnd` = `long`. *(Lưu ý: `product_packages.price_vnd` vẫn `integer` — pack đơn lẻ trong trần int, chưa đổi.)*
 
 ### `payment_transactions` — log sự kiện gateway (append-only)

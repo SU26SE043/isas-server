@@ -260,6 +260,13 @@ services:
       - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
       - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
       - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
+      # Kênh CHI (hoàn tiền tự động) — credential RIÊNG, không dùng chung kênh thu ở trên.
+      - PayOS__Payout__ClientId=${PAYOS_PAYOUT_CLIENT_ID:-}
+      - PayOS__Payout__ApiKey=${PAYOS_PAYOUT_API_KEY:-}
+      - PayOS__Payout__ChecksumKey=${PAYOS_PAYOUT_CHECKSUM_KEY:-}
+      # Mặc định TẮT — bật tường minh sau khi đối soát kênh chi.
+      - RefundPayout__Enabled=${REFUND_PAYOUT_ENABLED:-false}
+      - RefundPayout__MaxAutoPayoutVnd=${REFUND_PAYOUT_MAX_VND:-2000000}
       - Interview__BaseUrl=http://isas.interviewservice:8080   # DB18 — OrphanReservationReconciler gọi Interview /internal/sessions/exists (trống → reconciler safe-skip)
       # BK24 — `InvoiceOverdueReconciler` đóng dấu hoá đơn postpaid Issued→Overdue quá hạn. Đó là cái
       # PHANH của BK17 (org có hoá đơn Overdue thì reserve → 402): không bật thì postpaid là "trả sau"
