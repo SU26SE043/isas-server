@@ -127,6 +127,25 @@ builder.Services.AddSingleton<PayOSClient>(sp =>
     });
 });
 
+// Cấu hình chi tiền hoàn tự động (kênh CHI payOS). Mặc định TẮT — xem RefundPayoutSettings.
+builder.Services.Configure<RefundPayoutSettings>(
+    builder.Configuration.GetSection(RefundPayoutSettings.SectionName));
+builder.Services.Configure<PayoutChannelSettings>(
+    builder.Configuration.GetSection(PayoutChannelSettings.SectionName));
+
+// Client thứ hai, credential RIÊNG của kênh chi. Không dùng chung với kênh thu: đã kiểm chứng bằng lệnh
+// gọi thật — API key kênh thu gọi API chi trả code 601 "API key không tồn tại".
+builder.Services.AddKeyedSingleton<PayOSClient>(PayoutChannelSettings.SectionName, (sp, _) =>
+{
+    var channel = sp.GetRequiredService<IOptions<PayoutChannelSettings>>().Value;
+    return new PayOSClient(new PayOSOptions
+    {
+        ClientId = channel.ClientId,
+        ApiKey = channel.ApiKey,
+        ChecksumKey = channel.ChecksumKey,
+    });
+});
+
 builder.Services.AddScoped<IOrderService, OrderService>();
 builder.Services.AddScoped<IPackageService, PackageService>();
 // P8b: hóa đơn postpaid — chốt kỳ → tất toán (reuse OrderService/PayOS) → settle qua webhook (branch Kind).
@@ -136,6 +155,9 @@ builder.Services.AddScoped<PlanService>();
 builder.Services.AddScoped<EntitlementResolver>();
 // F18: hoàn tiền — đơn Paid→Refunded + bút toán đảo gắn bút toán mua gốc + thu hồi credit (kẹp trần).
 builder.Services.AddScoped<IRefundService, RefundService>();
+// Chi tiền hoàn qua kênh chi payOS: client bọc SDK (mockable) + đổi mã ngân hàng webhook sang BIN.
+builder.Services.AddScoped<IPayoutClient, PayoutClient>();
+builder.Services.AddScoped<IBankBinResolver, BankBinResolver>();
 // F19: tổng hợp doanh thu theo kỳ cho PlatformAdmin (đọc `orders`, không đụng sổ cái credit).
 builder.Services.AddScoped<IRevenueService, RevenueService>();
 // F22: nhận số liệu token AIService đẩy về (GEN-4 — AIService không ghi DB) + tổng hợp chi phí cho admin.
@@ -176,6 +198,9 @@ builder.Services.AddHostedService<OrderExpiryReconciler>();
 // (ISubscriptionService.HasActiveAsync), nên job này chết cũng KHÔNG cho ai thi miễn phí.
 builder.Services.AddHostedService<SubscriptionExpiryReconciler>();
 
+// Theo tiếp lệnh chi hoàn tiền đang bay tới khi có kết luận (chuyển khoản liên ngân hàng không xong
+// trong một nhịp HTTP), đồng thời là lưới cứu ca timeout: gọi lại bằng ĐÚNG khoá idempotency đã ghi.
+builder.Services.AddHostedService<RefundPayoutReconciler>();
 builder.Services.AddHostedService<InvoiceOverdueReconciler>();
 builder.Services.AddHostedService<HttpTrafficPurger>();
 

@@ -29,9 +29,9 @@
         // cổng thanh toán khởi xướng, nên nếu không ghi người thực hiện thì không truy được trách nhiệm.
         public Guid? RefundedBy { get; set; }
         public string? RefundReason { get; set; }
-        // Mã giao dịch hoàn của cổng, do admin NHẬP TAY sau khi hoàn trên dashboard PayOS.
-        // CỐ Ý không tự gọi API refund PayOS: luồng đó chưa được wire ở đâu trong repo, và giả vờ
-        // đã gọi (sinh mã giả) sẽ khiến đối soát ngân hàng tin vào một mã không tồn tại.
+        // Mã giao dịch hoàn của cổng. Hai nguồn: admin NHẬP TAY sau khi chuyển trên dashboard, HOẶC
+        // payout_id do lệnh chi tự động sinh ra (xem PayoutId). Vẫn cho nhập tay vì chuyển khoản ngoài
+        // luồng cổng là ca có thật (không resolve được ngân hàng đích, vượt trần tự động).
         public string? RefundGatewayRef { get; set; }
         // Thời điểm XÁC NHẬN đã chuyển tiền thật về cho khách (dashboard PayOS / chuyển khoản tay).
         // Tách khỏi RefundedAt: refund lật đơn→Refunded NGAY (nội bộ), còn chuyển tiền bank là bước tay
@@ -39,6 +39,22 @@
         // có giá trị = "tiền đã đi". Phân biệt dứt điểm cái mà RefundGatewayRef (cho phép chuyển-tay-không-mã)
         // không diễn đạt được. KHÔNG dính tới credit/status — chỉ là mốc đối soát dòng tiền ra.
         public DateTime? RefundSettledAt { get; set; }
+
+        // ── Hoàn tiền tự động qua kênh chi payOS ────────────────────────────────────────────────
+        // Khoá idempotency của lệnh chi, sinh MỘT LẦN và ghi xuống đây TRƯỚC khi gọi payOS.
+        //
+        // ⚠ Đây là cột chống-mất-tiền quan trọng nhất của cả tính năng. payOS nhận diện lệnh trùng
+        // theo khoá này; sinh khoá mới ở lần retry nghĩa là payOS coi đó là lệnh MỚI và chuyển tiền
+        // LẦN HAI. Vì thế khoá phải bền vững trước lời gọi mạng, không phải biến cục bộ trong hàm.
+        public Guid? PayoutIdempotencyKey { get; set; }
+        // Id lệnh chi payOS trả về. NULL mà PayoutIdempotencyKey đã có = đã gọi nhưng chưa biết kết quả
+        // (timeout/mất mạng) → reconciler tra bằng ReferenceId = order id.
+        public string? PayoutId { get; set; }
+        // Trạng thái lệnh chi phía ta. Enum lưu string (GEN-2).
+        public PayoutStatus? PayoutStatus { get; set; }
+        // Vì sao lệnh chi hỏng/bị chặn — để admin biết phải làm gì thay vì thấy một ô trống.
+        public string? PayoutFailureReason { get; set; }
+
         // DB14 — audit: đóng dấu mỗi lần order bị sửa (status flip Cancel/Paid). C# init để insert không phụ
         // thuộc DB default now() (SQLite/EnsureCreated không có now()); DB default now() vẫn có ở Postgres.
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
@@ -71,6 +87,28 @@
         /// không bị đường tự động nào chạm vào, kể cả webhook tới muộn.
         /// </summary>
         Refunded = 6,
+    }
+
+    /// <summary>
+    /// Trạng thái lệnh chi hoàn tiền phía ta — KHÔNG phải bản sao 1-1 state của payOS.
+    ///
+    /// <para>Gộp <c>Received</c>/<c>Processing</c> của payOS thành <see cref="InFlight"/> vì với ta
+    /// hai cái đó cùng nghĩa "tiền chưa chắc đã đi, đừng đóng dấu, hỏi lại sau". Phân biệt chúng chỉ
+    /// tạo cơ hội cho ai đó viết nhầm một nhánh coi <c>Processing</c> là xong.</para>
+    /// </summary>
+    public enum PayoutStatus
+    {
+        /// <summary>Đã gửi lệnh (hoặc đã gọi mà chưa rõ kết quả) — chờ reconciler xác định.</summary>
+        InFlight = 1,
+
+        /// <summary>payOS xác nhận đã chuyển xong. Chỉ trạng thái NÀY mới được đóng dấu refund_settled_at.</summary>
+        Succeeded = 2,
+
+        /// <summary>
+        /// payOS báo hỏng (Failed/Cancelled), hoặc ta tự chặn (tên người nhận không khớp).
+        /// KHÔNG tự thử lại — chuyển tiền hỏng cần người xem, vì lý do hỏng thường là dữ liệu đích sai.
+        /// </summary>
+        Failed = 3
     }
 
     /// <summary>

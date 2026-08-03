@@ -120,6 +120,8 @@ namespace PaymentService.Models
                     t.HasCheckConstraint("ck_orders_kind", "kind IN ('CreditPack', 'InvoiceSettlement', 'SubscriptionPurchase', 'SubscriptionRenewal')");
                     t.HasCheckConstraint("ck_orders_status", "status IN ('Pending', 'Paid', 'Failed', 'Expired', 'Cancelled', 'Refunded')");
                     t.HasCheckConstraint("ck_orders_amount_non_negative", "amount_vnd >= 0");
+                    t.HasCheckConstraint("ck_orders_payout_status",
+                        "payout_status IS NULL OR payout_status IN ('InFlight', 'Succeeded', 'Failed')");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
@@ -185,6 +187,28 @@ namespace PaymentService.Models
                 e.HasIndex(x => x.PaidAt)
                  .HasDatabaseName("ix_orders_paid_at")
                  .HasFilter("status = 'Paid'");
+
+                // Chi tiền hoàn tự động — enum lưu string (GEN-2); lý do hỏng giới hạn độ dài như
+                // refund_reason để không thành bãi rác text.
+                e.Property(x => x.PayoutStatus).HasConversion<string>().HasMaxLength(20);
+                e.Property(x => x.PayoutId).HasMaxLength(100);
+                e.Property(x => x.PayoutFailureReason).HasMaxLength(500);
+
+                // Khoá idempotency là DUY NHẤT toàn bảng: nó chính là thứ payOS dùng để nhận ra lệnh
+                // trùng, nên hai đơn dùng chung một khoá nghĩa là đơn thứ hai sẽ im lặng KHÔNG được
+                // chuyển tiền (payOS coi là bản sao của lệnh trước). Lọc IS NOT NULL vì gần như mọi đơn
+                // không có lệnh chi nào.
+                e.HasIndex(x => x.PayoutIdempotencyKey)
+                 .IsUnique()
+                 .HasDatabaseName("ux_orders_payout_idempotency_key")
+                 .HasFilter("payout_idempotency_key IS NOT NULL");
+
+                // RefundPayoutReconciler quét đúng vị ngữ này mỗi 2'. Partial theo trạng thái đang bay —
+                // tập cực nhỏ và sống ngắn, nên index chỉ ôm phần reconciler cần (mẫu DB5/DB26).
+                // Literal 'InFlight' khớp chuỗi enum lưu.
+                e.HasIndex(x => x.UpdatedAt)
+                 .HasDatabaseName("ix_orders_payout_in_flight")
+                 .HasFilter("payout_status = 'InFlight'");
 
 
 

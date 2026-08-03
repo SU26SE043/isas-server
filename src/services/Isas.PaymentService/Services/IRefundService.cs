@@ -44,5 +44,25 @@ namespace Isas.PaymentService.Services
             Guid adminUserId,
             string? gatewayRef,
             CancellationToken ct = default);
+
+        /// <summary>
+        /// Chi tiền hoàn về tài khoản người đã trả, qua kênh chi payOS. Thay thao tác chuyển tay của
+        /// <see cref="SettleRefundAsync"/> — nhưng KHÔNG thay thế nó: mọi ca không tự động được (thiếu
+        /// đích, vượt trần, payOS từ chối) vẫn rơi về đường tay.
+        ///
+        /// <para>Chỉ hợp lệ trên đơn đã <c>Refunded</c> và CHƯA settle. Idempotent theo đơn: khoá
+        /// idempotency được ghi xuống DB trước khi gọi payOS và dùng lại nguyên vẹn ở mọi lần gọi sau,
+        /// nên bấm nhiều lần không tạo ra hai lệnh chuyển tiền.</para>
+        /// </summary>
+        Task<RefundPayoutResult> InitiateRefundPayoutAsync(
+            Guid orderId,
+            Guid adminUserId,
+            CancellationToken ct = default);
+
+        /// <summary>
+        /// Hỏi lại payOS trạng thái lệnh chi đang bay của một đơn rồi kết sổ nếu đã xong. Dùng bởi
+        /// reconciler; idempotent và an toàn khi gọi lặp.
+        /// </summary>
+        Task<RefundPayoutResult> PollRefundPayoutAsync(Guid orderId, CancellationToken ct = default);
     }
 }
