@@ -30,6 +30,22 @@ namespace Isas.PaymentService.DTOs
         /// <summary>NULL trên đơn đã Refunded = "chờ chuyển tiền cho khách"; có giá trị = "đã chuyển".</summary>
         public DateTime? RefundSettledAt { get; set; }
 
+        /// <summary>
+        /// Trạng thái lệnh chi tự động: <c>InFlight</c> · <c>Succeeded</c> · <c>Failed</c> · NULL (chưa
+        /// bắn lệnh nào).
+        ///
+        /// <para>Không có trường này thì <see cref="RefundSettledAt"/><c> = null</c> trông giống nhau ở hai
+        /// tình huống khác hẳn: "chưa ai bấm chuyển" và "lệnh chi đã hỏng". Cái thứ hai cần người xử lý
+        /// ngay, mà trước đó nó chỉ nằm trong log — nơi phải có ai đó tình cờ đi đọc mới thấy.</para>
+        /// </summary>
+        public string? PayoutStatus { get; set; }
+
+        /// <summary>
+        /// Vì sao lệnh chi hỏng, hoặc cảnh báo "tiền ĐÃ đi nhưng tên người nhận không khớp".
+        /// Ca thứ hai là ca gấp nhất trong cả luồng: tiền đã rời tài khoản mà khách chưa chắc nhận được.
+        /// </summary>
+        public string? PayoutFailureReason { get; set; }
+
         public static AdminOrderListItem From(Order o) => new()
         {
             Id = o.Id,
@@ -48,6 +64,8 @@ namespace Isas.PaymentService.DTOs
             RefundReason = o.RefundReason,
             RefundGatewayRef = o.RefundGatewayRef,
             RefundSettledAt = o.RefundSettledAt,
+            PayoutStatus = o.PayoutStatus?.ToString(),
+            PayoutFailureReason = o.PayoutFailureReason,
         };
     }
 
