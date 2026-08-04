@@ -104,18 +104,18 @@ def test_non_list_input_is_safe():
 
 
 @pytest.mark.asyncio
-async def test_provider_sanitizes_resources_from_llm():
+async def test_provider_sanitizes_resources_from_llm(lesson_theory_payload):
     provider = GeminiProvider()
     provider._client.aio.models.generate_content = AsyncMock(
-        return_value=_fake_gemini_response({
-            "theoryMarkdown": "# Transaction\n\nNội dung...",
-            "resources": [
+        return_value=_fake_gemini_response(lesson_theory_payload(
+            ["Thiết kế CSDL"],
+            resources=[
                 {"title": "PostgreSQL docs: Transactions", "type": "Doc",
                  "publisher": "PostgreSQL", "url": "https://www.postgresql.org/docs/current/tutorial-transactions.html"},
                 {"title": "Khoá học bịa", "type": "Course",
                  "url": "https://khoahoc-khong-co-that.example/abc"},
             ],
-        })
+        ))
     )
 
     # RAG grounding: generate_lesson_theory() nay trả 3 trường (theory, resources, cited) — mẫu F13.
@@ -129,11 +129,11 @@ async def test_provider_sanitizes_resources_from_llm():
 
 
 @pytest.mark.asyncio
-async def test_provider_missing_resources_is_not_an_error():
-    """resources rỗng KHÔNG phải lỗi — lý thuyết vẫn dùng được (khác theoryMarkdown rỗng)."""
+async def test_provider_missing_resources_is_not_an_error(lesson_theory_payload):
+    """resources rỗng KHÔNG phải lỗi — bài giảng vẫn dùng được (khác với bài thiếu nội dung)."""
     provider = GeminiProvider()
     provider._client.aio.models.generate_content = AsyncMock(
-        return_value=_fake_gemini_response({"theoryMarkdown": "# Bài\n\nNội dung"})
+        return_value=_fake_gemini_response(lesson_theory_payload(["Bài"]))
     )
 
     theory, resources, _ = await provider.generate_lesson_theory("BE", "Junior", "Bài", [], None)

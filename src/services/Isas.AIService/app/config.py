@@ -116,5 +116,12 @@ class Settings(BaseSettings):
     # dài request của người dùng — hết giờ thì dùng bản đang có (tầng 3/4).
     prompt_fetch_timeout_seconds: float = 3.0
 
+    # ── Chất lượng bài giảng roadmap (BC13/D20) ──────────────────────────
+    # Bài trượt rubric (app/lesson_quality.py) được TRẢ LẠI kèm nhận xét và bắt viết lại. 2 = thử
+    # tối đa 2 lượt; 1 = tắt hẳn việc viết lại (về hành vi cũ), vẫn giữ phần chấm.
+    # Trần thấp có chủ đích: mỗi lượt là một lần gọi Gemini nằm TRONG request đồng bộ của người
+    # học (đo thật 13-54s/lượt) — nới lên 3 là mời timeout quay lại.
+    lesson_theory_max_attempts: int = 2
+
 
 settings = Settings()

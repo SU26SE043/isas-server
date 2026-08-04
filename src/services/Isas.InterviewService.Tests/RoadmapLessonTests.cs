@@ -115,6 +115,67 @@ public class RoadmapLessonTests
         return m;
     }
 
+    // Bài giảng "dùng được" phải có thân bài, không chỉ mỗi dòng tiêu đề — bài một dòng nay được
+    // coi là CHƯA sinh và sẽ sinh lại (xem RoadmapLessonService.HasUsableTheory). Seed cũ ở đây là
+    // đúng một dòng nên phải đổi, nếu không test này đỏ vì tiền đề chứ không vì hành vi.
+    private const string TheoryDuDung = "## Lý thuyết lesson\n\nNội dung giải thích chi tiết.";
+
+    // ── (0) Bài hỏng CŨ tự sinh lại ────────────────────────────────────────────────────────
+    // Sự cố 2026-08-03 trên deploy: bài "Giới thiệu về Business Analyst và vai trò cốt lõi" lưu đúng
+    // MỘT DÒNG tiêu đề, không thân bài. Vì lý thuyết chỉ sinh một lần rồi lưu, người học mở lại vẫn
+    // thấy trang trắng — vĩnh viễn, không có đường nào tự cứu.
+    [Fact]
+    public async Task OpenLesson_BaiCuChiCoMotDong_SinhLaiVaGhiDe()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        // Bài hỏng đã nằm sẵn trong DB (sinh trước bản vá này).
+        await t.Db.RoadmapLessons.Where(l => l.Id == lesson1)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(l => l.TheoryContent, "# Giới thiệu về Business Analyst")
+                .SetProperty(l => l.TheoryGeneratedAt, DateTime.UtcNow.AddDays(-1)));
+
+        var gen = new Mock<IAiServiceRoadmapGenerator>();
+        gen.Setup(g => g.GenerateLessonTheoryAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new LessonTheoryResult(TheoryDuDung, []));
+
+        var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
+        var ok = Assert.IsType<OkObjectResult>(await ctrl.OpenLesson(roadmapId, lesson1, default));
+
+        // Trả bản MỚI cho người học...
+        Assert.Equal(TheoryDuDung, Assert.IsType<LessonResponse>(ok.Value).TheoryContent);
+        // ...và ghi đè thật xuống DB. Vế này bắt lỗi "chỉ sửa nhánh đọc mà quên vị ngữ .Where lúc
+        // ghi": khi đó AI vẫn bị gọi mỗi lần mở nhưng không bao giờ ghi được — đốt token im lặng.
+        var saved = await t.NewContext().RoadmapLessons.AsNoTracking().FirstAsync(l => l.Id == lesson1);
+        Assert.Equal(TheoryDuDung, saved.TheoryContent);
+    }
+
+    // Bài KHÔNG có xuống dòng nhưng CÓ mục con là bài có nội dung, chỉ trình bày liền dòng —
+    // preflight DB thật 2026-08-04 có đúng một bài như vậy, dài 7.904 ký tự. Sinh đè nó là đem một
+    // bài có nội dung đổi lấy một canh bạc.
+    [Fact]
+    public async Task OpenLesson_BaiMotDongNhungCoMucCon_KhongSinhLai()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        const string lienDong = "# Ôn tập cấu trúc dữ liệu ## Mảng và danh sách Nội dung... ## Cây Nội dung...";
+        await t.Db.RoadmapLessons.Where(l => l.Id == lesson1)
+            .ExecuteUpdateAsync(u => u.SetProperty(l => l.TheoryContent, lienDong));
+
+        var gen = new Mock<IAiServiceRoadmapGenerator>(MockBehavior.Strict);   // gọi AI = đỏ ngay
+        var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
+
+        var ok = Assert.IsType<OkObjectResult>(await ctrl.OpenLesson(roadmapId, lesson1, default));
+        Assert.Equal(lienDong, Assert.IsType<LessonResponse>(ok.Value).TheoryContent);
+    }
+
     // ── (1) Mở lesson: lần 1 gọi AI + lưu; lần 2 đọc DB (không gọi lại); AI lỗi → 502 ──────
     [Fact]
     public async Task OpenLesson_FirstTimeGeneratesAndPersists_SecondTimeReadsDb()
@@ -127,24 +188,24 @@ public class RoadmapLessonTests
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new LessonTheoryResult("## Lý thuyết lesson", []));
+            .ReturnsAsync(new LessonTheoryResult(TheoryDuDung, []));
 
         var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
 
         // Lần 1: sinh + lưu.
         var ok1 = Assert.IsType<OkObjectResult>(await ctrl.OpenLesson(roadmapId, lesson1, default));
         var body1 = Assert.IsType<LessonResponse>(ok1.Value);
-        Assert.Equal("## Lý thuyết lesson", body1.TheoryContent);
+        Assert.Equal(TheoryDuDung, body1.TheoryContent);
         Assert.Equal("Theory", body1.Status);
 
         var saved = await t.NewContext().RoadmapLessons.AsNoTracking().FirstAsync(l => l.Id == lesson1);
-        Assert.Equal("## Lý thuyết lesson", saved.TheoryContent);
+        Assert.Equal(TheoryDuDung, saved.TheoryContent);
         Assert.NotNull(saved.TheoryGeneratedAt);
 
         // Lần 2: đọc DB, KHÔNG gọi AI thêm.
         var ok2 = Assert.IsType<OkObjectResult>(await ctrl.OpenLesson(roadmapId, lesson1, default));
         var body2 = Assert.IsType<LessonResponse>(ok2.Value);
-        Assert.Equal("## Lý thuyết lesson", body2.TheoryContent);
+        Assert.Equal(TheoryDuDung, body2.TheoryContent);
 
         gen.Verify(g => g.GenerateLessonTheoryAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),

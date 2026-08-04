@@ -43,8 +43,8 @@ public class RoadmapLessonService : IRoadmapLessonService
         var lesson = await LoadOwnedLessonAsync(candidateId, roadmapId, lessonId, ct);
         var roadmap = lesson.Milestone.Roadmap;
 
-        // Đã có lý thuyết → đọc DB, KHÔNG gọi AI lần 2 (lazy, idempotent).
-        if (!string.IsNullOrEmpty(lesson.TheoryContent))
+        // Đã có lý thuyết DÙNG ĐƯỢC → đọc DB, KHÔNG gọi AI lần 2 (lazy, idempotent).
+        if (HasUsableTheory(lesson.TheoryContent))
             return MapLesson(lesson);
 
         // Lazy-gen: gọi AIService (sync). Lỗi → AiServiceException (502) → chưa lưu gì (mở lại được).
@@ -66,9 +66,15 @@ public class RoadmapLessonService : IRoadmapLessonService
         // AI không cite / corpus rỗng → [] (ungrounded); có cite → non-empty (grounded).
         var citedRefs = NarrowToCited(lesson.GroundingRefs, generated.CitedChunkIds);
 
-        // Lưu idempotent: chỉ ghi khi theory_content vẫn null (2 request đồng thời → chỉ 1 ghi thắng).
+        // Lưu idempotent: chỉ ghi khi CHƯA có bài dùng được. Vị ngữ phải khớp `HasUsableTheory` ở
+        // nhánh đọc phía trên — lệch nhau thì bài hỏng gọi AI mỗi lần mở nhưng không bao giờ ghi
+        // được, đốt token trong im lặng.
+        // ⚠ Với bài hỏng cũ, 2 request đồng thời nay đều ghi được (điều kiện không còn là `== null`)
+        // → bản sau đè bản trước. Cả hai đều là bài đã qua rubric nên vô hại; không thêm khoá.
         var updated = await _db.RoadmapLessons
-            .Where(l => l.Id == lessonId && l.TheoryContent == null)
+            .Where(l => l.Id == lessonId
+                        && (l.TheoryContent == null
+                            || !(l.TheoryContent.Contains("\n") || l.TheoryContent.Contains("## "))))
             .ExecuteUpdateAsync(u => u
                 .SetProperty(l => l.TheoryContent, theory)
                 .SetProperty(l => l.Resources, resources)
@@ -91,6 +97,27 @@ public class RoadmapLessonService : IRoadmapLessonService
         lesson.TheoryGeneratedAt = now;
         return MapLesson(lesson);
     }
+
+    /// <summary>
+    /// Bài lưu trong DB có dùng được không. Bài sinh TRƯỚC bản vá này là markdown thô, không còn cấu
+    /// trúc để chấm lại bằng rubric của AIService — nên ở đây chỉ nhận ca RÕ RÀNG hỏng: nội dung vỏn
+    /// vẹn một dòng tiêu đề, không có gì bên dưới. Đúng bài 51 ký tự gặp trên deploy 2026-08-03; bài
+    /// như vậy trước đây đóng đinh vĩnh viễn, người học không có đường nào lấy lại nội dung.
+    ///
+    /// "Có gì đó ngoài tiêu đề" = có xuống dòng HOẶC có mục con <c>"## "</c>. Vế thứ hai không thừa:
+    /// preflight trên DB thật (2026-08-04) có 5 bài không chứa ký tự xuống dòng nào, nhưng MỘT trong
+    /// số đó dài 7.904 ký tự và có nhiều mục <c>##</c> nằm cùng dòng — nội dung thật, chỉ trình bày
+    /// liền dòng. Thiếu vế này thì nó bị coi là bài trắng và bị sinh đè, tức lấy một bài có nội dung
+    /// đổi lấy một canh bạc.
+    ///
+    /// CỐ Ý không đặt ngưỡng số ký tự: chất lượng do rubric AIService định nghĩa (đủ phần, không phải
+    /// đủ dài), và một ngưỡng .NET chặt hơn rubric đó sẽ khiến bài vừa được chấp nhận bị coi là hỏng
+    /// rồi sinh lại MỖI LẦN MỞ, vô hạn.
+    ///
+    /// Vị ngữ này phải khớp điều kiện <c>.Where(...)</c> lúc ghi trong <see cref="OpenLessonAsync"/>.
+    /// </summary>
+    private static bool HasUsableTheory(string? theory) =>
+        !string.IsNullOrEmpty(theory) && (theory.Contains('\n') || theory.Contains("## "));
 
     // RAG grounding — narrow snapshot precompute về đúng chunk được cite. null (chưa precompute) → null;
     // đã precompute nhưng không cite → [] (ungrounded); có cite → subset. .Where trên tập cấp ⇒ id lạ tự rơi.
