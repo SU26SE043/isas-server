@@ -273,7 +273,9 @@ namespace Isas.PaymentService.Services
 
         public async Task<OrderResponse?> GetOrderAsync(Guid id, CancellationToken ct = default)
         {
-            var order = await _db.Orders.FirstOrDefaultAsync(o => o.Id == id, ct);
+            var order = await _db.Orders
+                .Include(o => o.Package)
+                .FirstOrDefaultAsync(o => o.Id == id, ct);
             return order is null ? null : OrderResponse.ToResponse(order);
         }
 
