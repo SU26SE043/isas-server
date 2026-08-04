@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.config import settings
 from app.providers.gemini import GeminiProvider
 from app.resources import count_rejected_urls
 from app.usage import TokenUsage, extract_usage, report_usage
@@ -101,7 +102,8 @@ _ALL_CALLS = [
      {"milestones": [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]}),
     ("generate_lesson_theory", dict(job_category="BE", level="Junior", lesson_title="L",
                                     focus_criteria=[], weaknesses=None),
-     {"theoryMarkdown": "# Lý thuyết", "resources": []}),
+     {"sections": [{"criterion": "L", "heading": "L", "body": "Nội dung bài giảng."}],
+      "example": "Ví dụ.", "commonMistakes": "Lỗi hay gặp.", "resources": []}),
     ("summarize_roadmap", dict(job_category="BE", level="Junior", criteria_progress=[]),
      {"strengths": [], "weaknesses": [], "improvements": [], "overallComment": "Nhận xét"}),
     ("summarize_session", dict(job_category="BE", overall_score=80.0, criteria_scores=[]),
@@ -175,7 +177,12 @@ async def test_ghi_nhan_ca_khi_parse_that_bai():
 @pytest.mark.asyncio
 async def test_lesson_theory_ghi_nhan_ca_khi_parse_that_bai():
     """Đường lesson-theory hoãn ghi (defer_report) để đính kèm số liệu URL → try/finally BẮT BUỘC.
-    Thiếu finally thì đúng đường duy nhất có ngoại lệ sẽ mất số liệu khi parse hỏng."""
+    Thiếu finally thì đúng đường duy nhất có ngoại lệ sẽ mất số liệu khi parse hỏng.
+
+    Kỳ vọng đổi từ 1 → 2 lượt có chủ đích: bài không dùng được nay bị TRẢ LẠI và hỏi lại
+    (`lesson_theory_max_attempts`, mặc định 2). Mỗi lượt đều đốt token thật, nên try/finally phải nằm
+    TRONG vòng lặp — gom ra ngoài thì lượt viết lại, chính là phần chi phí phát sinh mới, biến mất
+    khỏi báo cáo."""
     provider = GeminiProvider()
     provider._client.aio.models.generate_content = AsyncMock(
         return_value=_resp(text="không-phải-json", usage=_Usage(800, 20, 820)))
@@ -186,7 +193,7 @@ async def test_lesson_theory_ghi_nhan_ca_khi_parse_that_bai():
                 job_category="BE", level="Junior", lesson_title="L",
                 focus_criteria=[], weaknesses=None)
 
-    spy.assert_awaited_once()
+    assert spy.await_count == settings.lesson_theory_max_attempts == 2
 
 
 # ── F15: đếm URL bị allowlist loại ───────────────────────────────────────────────
@@ -212,7 +219,9 @@ def test_dem_url_khong_de_xuat_tra_none():
 async def test_lesson_theory_dinh_kem_so_lieu_url():
     provider = GeminiProvider()
     provider._client.aio.models.generate_content = AsyncMock(return_value=_resp({
-        "theoryMarkdown": "# Lý thuyết",
+        "sections": [{"criterion": "L", "heading": "L", "body": "Nội dung bài giảng."}],
+        "example": "Ví dụ.",
+        "commonMistakes": "Lỗi hay gặp.",
         "resources": [
             {"title": "A", "type": "Doc", "url": "https://developer.mozilla.org/x"},
             {"title": "B", "type": "Doc", "url": "https://bia-dat.example/y"},

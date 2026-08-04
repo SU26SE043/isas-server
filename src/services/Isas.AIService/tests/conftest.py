@@ -52,3 +52,33 @@ if "insightface" not in sys.modules:
 import os
 
 os.environ.setdefault("GEMINI_API_KEY", "test-dummy-key")
+
+import pytest
+
+
+@pytest.fixture
+def lesson_theory_payload():
+    """Factory dựng payload `/generate-lesson-theory` ĐẠT rubric (app/lesson_quality.py).
+
+    Có mặt vì hình dạng đó là một HỢP ĐỒNG — bài phải phủ hết tiêu chí trọng tâm, có ví dụ, có lỗi
+    thường gặp. Rải payload thủ công ra 4 file test thì lần siết rubric sau phải đi sửa từng chỗ, và
+    chỗ nào quên sẽ đỏ vì lý do chẳng liên quan gì tới điều nó đang kiểm.
+
+    Truyền `criteria` đúng bộ `focusCriteria` mà test gọi provider, nếu không bài sẽ trượt điều kiện
+    phủ đề — đó là hành vi đúng, chỉ là không phải thứ test đang muốn kiểm.
+    """
+    def _make(criteria=("Thiết kế CSDL",), *, example="Ví dụ: bảng orders tách khỏi bảng customers.",
+              mistakes="Nhầm chuẩn 2NF với 3NF khi được hỏi.", **extra):
+        payload = {
+            "sections": [
+                {"criterion": c, "heading": f"Về {c}",
+                 "body": f"Giải thích {c} kèm cách trình bày khi phỏng vấn."}
+                for c in criteria
+            ],
+            "example": example,
+            "commonMistakes": mistakes,
+        }
+        payload.update(extra)
+        return payload
+
+    return _make

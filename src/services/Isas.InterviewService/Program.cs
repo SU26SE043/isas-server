@@ -87,7 +87,11 @@ builder.Services.AddHttpClient<IGitHubRepoFetcher, GitHubRepoFetcher>(c =>
 builder.Services.AddHttpClient<IAiServiceRoadmapGenerator, AiServiceRoadmapGenerator>(c =>   // BC12
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
-    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+    // 120s (các client khác giữ 60s): đường này sinh lý thuyết bài học — đo thật trên deploy
+    // 2026-08-03 mất 13,4s / 49,0s / 53,8s, tức 60s đã sát trần TRƯỚC khi có gì thêm. Bài trượt
+    // rubric nay được bắt viết lại ngay trong cùng lượt (AIService lesson_theory_max_attempts) nên
+    // ca xấu là hai lượt LLM nối nhau.
+    c.Timeout = TimeSpan.FromSeconds(120);
 });
 
 builder.Services.AddHttpClient<IAiServiceSessionSummarizer, AiServiceSessionSummarizer>(c =>   // BC10

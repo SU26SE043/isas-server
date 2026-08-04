@@ -244,7 +244,10 @@ async def test_generate_grounded_dedupes_cited_ids():
 @pytest.mark.asyncio
 async def test_lesson_theory_grounded_filters_cited_ids():
     provider = _provider_with({
-        "theoryMarkdown": "# useEffect\n\nNội dung...",
+        "sections": [{"criterion": "React", "heading": "useEffect",
+                      "body": "Nội dung giải thích useEffect..."}],
+        "example": "Ví dụ: cleanup khi unmount.",
+        "commonMistakes": "Quên dependency array.",
         "resources": [],
         "citedChunkIds": ["c1", "GHOST", "c2"],
     })
@@ -257,7 +260,10 @@ async def test_lesson_theory_grounded_filters_cited_ids():
 
 @pytest.mark.asyncio
 async def test_lesson_theory_ungrounded_cited_is_none():
-    provider = _provider_with({"theoryMarkdown": "# Bài\n\nND", "resources": []})
+    provider = _provider_with({
+        "sections": [{"criterion": "React", "heading": "Bài", "body": "ND đủ ý."}],
+        "example": "Ví dụ.", "commonMistakes": "Lỗi hay gặp.", "resources": [],
+    })
     theory, resources, cited = await provider.generate_lesson_theory(
         "FE", "Junior", "useEffect", ["React"], None)
     assert cited is None

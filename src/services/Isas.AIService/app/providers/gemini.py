@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import NamedTuple
 
 from google import genai
@@ -6,6 +7,7 @@ from google.genai import types
 
 from app.config import settings
 from app.resources import sanitize_resources, count_rejected_urls
+from app.lesson_quality import evaluate_lesson_theory, render_lesson_markdown
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
@@ -15,6 +17,8 @@ from app.prompts import (
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
+
+logger = logging.getLogger(__name__)
 
 
 class ScoreOutcome(NamedTuple):
@@ -765,12 +769,23 @@ class GeminiProvider(QuestionProvider):
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_lesson_theory_prompt(
-            job_category, level, lesson_title, focus_criteria, weaknesses, grounding)
 
         grounded = bool(grounding)
         response_properties: dict = {
-            "theoryMarkdown": {"type": "string"},
+            "sections": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "criterion": {"type": "string"},
+                        "heading": {"type": "string"},
+                        "body": {"type": "string"},
+                    },
+                    "required": ["criterion", "body"],
+                },
+            },
+            "example": {"type": "string"},
+            "commonMistakes": {"type": "string"},
             "resources": {
                 "type": "array",
                 "items": {
@@ -789,54 +804,90 @@ class GeminiProvider(QuestionProvider):
             response_properties["citedChunkIds"] = {
                 "type": "array", "items": {"type": "string"}}
 
-        # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
-        # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist
-        # F15 hiện loại URL trong IM LẶNG — nếu Gemini bịa domain 90% số lần thì
-        # không ai biết). Con số đó chỉ có SAU khi parse, nên phải hoãn.
-        # try/finally BẮT BUỘC: parse hỏng thì token vẫn đã bị đốt, vẫn phải ghi.
-        response = await self._generate(
-            "generate_lesson_theory",
-            defer_report=True,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "object",
-                    "properties": response_properties,
-                    "required": ["theoryMarkdown"],
-                },
-            ),
+        config = types.GenerateContentConfig(
+            temperature=0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": response_properties,
+                "required": ["sections", "example", "commonMistakes"],
+            },
         )
 
-        url_meta: dict | None = None
-        try:
-            text = (response.text or "").strip()
+        # Bài trượt rubric thì TRẢ LẠI kèm nhận xét và bắt viết lại, thay vì lưu một bài không dùng
+        # được (lý thuyết chỉ sinh một lần rồi lưu ⇒ bài hỏng sống vĩnh viễn). Hỏi lại y hệt đề cũ
+        # thì phần lớn nhận lại đúng cái sai đó, nên lượt sau mang theo `retry_feedback`.
+        attempts = max(1, settings.lesson_theory_max_attempts)
+        feedback: str | None = None
+        last_defects: list[str] = []
+
+        for _ in range(attempts):
+            prompt = build_lesson_theory_prompt(
+                job_category, level, lesson_title, focus_criteria, weaknesses,
+                grounding, retry_feedback=feedback)
+
+            # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
+            # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist
+            # F15 hiện loại URL trong IM LẶNG — nếu Gemini bịa domain 90% số lần thì
+            # không ai biết). Con số đó chỉ có SAU khi parse, nên phải hoãn.
+            # try/finally BẮT BUỘC, và phải nằm TRONG vòng lặp: token của lượt bị trả lại vẫn đã
+            # bị đốt: đó đúng là phần chi phí cần thấy nhất, gom ra ngoài là mất hẳn.
+            response = await self._generate(
+                "generate_lesson_theory",
+                defer_report=True,
+                contents=prompt,
+                config=config,
+            )
+
+            url_meta: dict | None = None
             try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                raise ValueError(f"LLM sinh lý thuyết trả về JSON không hợp lệ: {text[:200]}")
+                text = (response.text or "").strip()
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    data = None
 
-            theory = str(data.get("theoryMarkdown", "")).strip()
-            if not theory:
-                raise ValueError("LLM không trả về nội dung lý thuyết hợp lệ.")
+                if not isinstance(data, dict):
+                    last_defects = [
+                        f"Bản trước không phải JSON hợp lệ: {text[:200]}"]
+                    feedback = "\n".join(f"- {d}" for d in last_defects)
+                    continue
 
-            resources = sanitize_resources(data.get("resources"))
-            url_meta = count_rejected_urls(data.get("resources"))
+                url_meta = count_rejected_urls(data.get("resources"))
 
-            cited: list[str] | None = None
-            if grounded:
-                allowed = {str(g.get("chunkId")).strip()
-                           for g in grounding if g.get("chunkId")}
-                cited = [c.strip() for c in (data.get("citedChunkIds") or [])
-                         if isinstance(c, str) and c.strip() in allowed]
-                cited = list(dict.fromkeys(cited))  # bỏ trùng, giữ thứ tự
+                last_defects = evaluate_lesson_theory(
+                    data, focus_criteria, lesson_title)
+                if last_defects:
+                    # Log để tỉ lệ trả-lại ĐO ĐƯỢC. Không có dòng này thì rubric siết quá tay sẽ chỉ
+                    # lộ ra dưới dạng "thỉnh thoảng mở bài bị 502" — đúng kiểu hỏng im lặng mà
+                    # allowlist URL F15 đã dính (loại link mà không ai biết tỉ lệ).
+                    logger.info('Bài giảng "%s" bị trả lại: %s',
+                                lesson_title, "; ".join(last_defects))
+                    feedback = "\n".join(f"- {d}" for d in last_defects)
+                    continue
 
-            return LessonTheoryResult(theory=theory, resources=resources,
-                                      cited_chunk_ids=cited)
-        finally:
-            await report_usage("generate_lesson_theory", settings.gemini_model,
-                               response, meta=url_meta)
+                theory = render_lesson_markdown(lesson_title, data)
+                resources = sanitize_resources(data.get("resources"))
+
+                cited: list[str] | None = None
+                if grounded:
+                    allowed = {str(g.get("chunkId")).strip()
+                               for g in grounding if g.get("chunkId")}
+                    cited = [c.strip() for c in (data.get("citedChunkIds") or [])
+                             if isinstance(c, str) and c.strip() in allowed]
+                    cited = list(dict.fromkeys(cited))  # bỏ trùng, giữ thứ tự
+
+                return LessonTheoryResult(theory=theory, resources=resources,
+                                          cited_chunk_ids=cited)
+            finally:
+                await report_usage("generate_lesson_theory", settings.gemini_model,
+                                   response, meta=url_meta)
+
+        # Hết lượt vẫn chưa đạt → ValueError ⇒ InterviewService nhận 502 và KHÔNG lưu gì, nên lần
+        # người học mở lại sẽ sinh lại. Thà không có bài còn hơn có một bài rỗng đóng đinh vĩnh viễn.
+        raise ValueError(
+            "LLM không sinh được bài giảng đạt yêu cầu sau "
+            f"{attempts} lượt: " + "; ".join(last_defects))
 
     async def summarize_roadmap(self, job_category: str, level: str,
                                 criteria_progress: list[dict]) -> dict:

@@ -130,7 +130,7 @@ public class LessonResourcesF15Tests
         var roadmap = SeedRoadmap(t, user);
         var lessonId = roadmap.Milestones.First().Lessons.First().Id;
 
-        var gen = GeneratorReturning("## Bài",
+        var gen = GeneratorReturning("## Bài\n\nNội dung bài giảng.",
             new LessonResource("Sách hay, không có link tin cậy", "Book", null, null));
 
         var ctrl = Controller(t, gen.Object, user);
@@ -155,12 +155,12 @@ public class LessonResourcesF15Tests
         var roadmap = SeedRoadmap(t, user);
         var lessonId = roadmap.Milestones.First().Lessons.First().Id;
 
-        var ctrl = Controller(t, GeneratorReturning("## Bài").Object, user);
+        var ctrl = Controller(t, GeneratorReturning("## Bài\n\nNội dung bài giảng.").Object, user);
         var ok = Assert.IsType<OkObjectResult>(await ctrl.OpenLesson(roadmap.Id, lessonId, default));
         var body = Assert.IsType<LessonResponse>(ok.Value);
 
         Assert.Empty(body.Resources);
-        Assert.Equal("## Bài", body.TheoryContent);       // lý thuyết vẫn dùng được
+        Assert.Equal("## Bài\n\nNội dung bài giảng.", body.TheoryContent);       // lý thuyết vẫn dùng được
     }
 
     // (4) 🔑 Lưu CÙNG lần ghi với theory: mở lại KHÔNG gọi AI lần 2 mà tài liệu vẫn còn.
@@ -174,7 +174,7 @@ public class LessonResourcesF15Tests
         var roadmap = SeedRoadmap(t, user);
         var lessonId = roadmap.Milestones.First().Lessons.First().Id;
 
-        var gen = GeneratorReturning("## Bài",
+        var gen = GeneratorReturning("## Bài\n\nNội dung bài giảng.",
             new LessonResource("MDN", "Doc", "Mozilla", "https://developer.mozilla.org/"));
         var ctrl = Controller(t, gen.Object, user);
 

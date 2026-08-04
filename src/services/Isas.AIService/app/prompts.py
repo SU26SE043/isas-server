@@ -653,8 +653,21 @@ def build_roadmap_prompt(job_category: str, level: str,
 def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
                                focus_criteria: list[str],
                                weaknesses: list[str] | None,
-                               grounding: list[dict] | None = None) -> str:
+                               grounding: list[dict] | None = None,
+                               retry_feedback: str | None = None) -> str:
     """BC13/D20 — sinh nội dung lý thuyết ôn tập cho 1 lesson, bám điểm yếu.
+
+    Đề bài ra theo ĐÚNG cấu trúc mà :func:`app.lesson_quality.evaluate_lesson_theory` chấm
+    (mỗi tiêu chí trọng tâm một mục + ví dụ + lỗi thường gặp). Ra đề một đằng chấm một nẻo thì
+    mô hình trượt vì lý do nó không được biết — nên hai chỗ này phải sửa cùng nhau.
+
+    Cố ý KHÔNG nói gì về độ dài: bản cũ dặn "không quá dài dòng" và kèm ví dụ JSON
+    ``{"theoryMarkdown":"# Tiêu đề\\n\\nNội dung markdown..."}`` — mô hình bắt chước đúng cái khung
+    đó, điền tiêu đề rồi bỏ thân bài (bài 51 ký tự đo được trên deploy 2026-08-03). Yêu cầu bây giờ
+    là ĐỦ PHẦN, không phải đủ dài.
+
+    ``retry_feedback``: nhận xét của lượt chấm trước (bài thiếu gì) — trả bài kèm lý do thay vì
+    hỏi lại y hệt.
 
     ``grounding`` (RAG, Contract 2): tài liệu uy tín truy hồi từ Qdrant — chèn làm căn cứ +
     yêu cầu trích dẫn citedChunkIds. Đây là đường ground QUAN TRỌNG NHẤT (AI dạy kiến thức)."""
@@ -663,16 +676,28 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
 
     parts = [
         f"Bạn là giảng viên ôn luyện phỏng vấn cho vị trí {role}, trình độ {lvl}.",
-        f'Soạn nội dung LÝ THUYẾT ôn tập cho bài học "{lesson_title}", '
-        "bằng tiếng Việt, dạng Markdown.",
-        "Nội dung PHẢI có: giải thích khái niệm cốt lõi, VÍ DỤ minh hoạ cụ thể, "
-        "và (nếu phù hợp) lưu ý sai lầm thường gặp khi trả lời phỏng vấn.",
+        f'Soạn nội dung LÝ THUYẾT ôn tập cho bài học "{lesson_title}", bằng tiếng Việt.',
+        "Bài giảng PHẢI gồm đủ 3 phần:\n"
+        "1. sections — các mục giải thích, MỖI mục gồm criterion (tiêu chí mục này phục vụ), "
+        "heading (tên mục) và body (nội dung markdown).\n"
+        "2. example — ví dụ minh hoạ CỤ THỂ cho chủ đề bài học.\n"
+        "3. commonMistakes — lỗi/hiểu lầm thường gặp khi trả lời phỏng vấn về chủ đề này.\n"
+        "Mỗi phần phải giải thích đủ để người học hiểu và tự trả lời được câu hỏi phỏng vấn về "
+        "nội dung đó. Phần rỗng hoặc chỉ có tiêu đề sẽ bị TRẢ LẠI.",
     ]
 
     if focus_criteria:
         parts.append(
-            "Bám sát các tiêu chí năng lực sau (đây là chủ đề trọng tâm của "
-            "milestone chứa bài học này): " + ", ".join(focus_criteria)
+            "TIÊU CHÍ TRỌNG TÂM của milestone chứa bài học này — MỖI tiêu chí phải có ÍT NHẤT "
+            "một mục trong sections giải thích nó:\n"
+            + "\n".join(f"- {c}" for c in focus_criteria) + "\n"
+            "Trường criterion của mỗi mục phải ghi ĐÚNG NGUYÊN VĂN một trong các tên trên — "
+            "không tự đặt tên khác, không viết tắt, không dịch lại."
+        )
+    else:
+        parts.append(
+            "Milestone không khai tiêu chí trọng tâm → sections phải bám chính chủ đề bài học; "
+            f'trường criterion của mỗi mục ghi "{lesson_title}".'
         )
 
     if weaknesses:
@@ -707,20 +732,31 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     grounding_block = build_grounding_block(grounding, cite=True)
     if grounding_block:
         parts.append(grounding_block)
+
+    # Trả bài kèm nhận xét: nêu ĐÚNG phần thiếu của lượt trước. Đặt SÁT khối JSON để không bị các
+    # chỉ dẫn phía trên làm loãng.
+    if retry_feedback:
         parts.append(
-            "Độ dài vừa đủ để đọc trước 1 buổi luyện (không quá dài dòng). "
-            "CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown bọc ngoài: "
-            '{"theoryMarkdown":"# Tiêu đề\\n\\nNội dung markdown...",'
-            '"resources":[{"title":"...","type":"Doc","publisher":"...","url":"https://..."}],'
-            '"citedChunkIds":["chunkId..."]}'
+            "BẢN TRƯỚC CỦA BẠN BỊ TRẢ LẠI vì chưa đạt yêu cầu:\n"
+            f"{retry_feedback}\n"
+            "Viết lại BẢN ĐẦY ĐỦ (không phải phần bổ sung), khắc phục đúng những điểm trên."
         )
-    else:
-        parts.append(
-            "Độ dài vừa đủ để đọc trước 1 buổi luyện (không quá dài dòng). "
-            "CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown bọc "
-            'ngoài: {"theoryMarkdown":"# Tiêu đề\\n\\nNội dung markdown...",'
-            '"resources":[{"title":"...","type":"Doc","publisher":"...","url":"https://..."}]}'
-        )
+
+    schema_lines = [
+        '{"sections":[{"criterion":"<đúng nguyên văn tên tiêu chí ở trên>",'
+        '"heading":"Tên mục","body":"Nội dung markdown giải thích tiêu chí này..."}],',
+        '"example":"Ví dụ minh hoạ cụ thể...",',
+        '"commonMistakes":"Lỗi thường gặp khi trả lời phỏng vấn...",',
+        '"resources":[{"title":"...","type":"Doc","publisher":"...","url":"https://..."}]',
+    ]
+    if grounding_block:
+        schema_lines.append(',"citedChunkIds":["chunkId..."]')
+    schema_lines.append("}")
+
+    parts.append(
+        "CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown bọc ngoài: "
+        + "".join(schema_lines)
+    )
     return "\n\n".join(parts)
 
 
