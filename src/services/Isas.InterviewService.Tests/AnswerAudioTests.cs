@@ -2,6 +2,12 @@ using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using System.Net;
+using System.Security.Claims;
+using Amazon.S3;
+using Isas.InterviewService.Controllers;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -13,6 +19,19 @@ public class AnswerAudioTests
         new(t.Db, storage.Object, new Mock<IAiServiceQuestionGenerator>().Object,
             new Mock<ISessionScoringNotifier>().Object, new Mock<ICreditReservationClient>().Object,
             NullLogger<PracticeService>.Instance);
+
+    private static PracticeController BuildController(Mock<IPracticeService> service, Guid candidateId) =>
+        new(service.Object, new Mock<IQuestionSpeechService>().Object, NullLogger<PracticeController>.Instance)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        [new Claim(ClaimTypes.NameIdentifier, candidateId.ToString())], "Test"))
+                }
+            }
+        };
 
     [Fact]
     public async Task ChuBuoi_LayDuocAudioCauTraLoi()
@@ -74,5 +93,34 @@ public class AnswerAudioTests
 
         Assert.Null(result);
         storage.Verify(s => s.DownloadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AudioS3KhongCon_Tra404()
+    {
+        var candidate = Guid.NewGuid();
+        var service = new Mock<IPracticeService>();
+        service.Setup(s => s.GetAnswerAudioAsync(candidate, It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AmazonS3Exception("NoSuchKey") { StatusCode = HttpStatusCode.NotFound });
+        var controller = BuildController(service, candidate);
+
+        var result = await controller.GetAnswerAudio(Guid.NewGuid(), Guid.NewGuid(), default);
+
+        Assert.IsType<NotFoundObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task AudioS3LoiBatNgo_Tra500KhongNem()
+    {
+        var candidate = Guid.NewGuid();
+        var service = new Mock<IPracticeService>();
+        service.Setup(s => s.GetAnswerAudioAsync(candidate, It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("S3 timeout"));
+        var controller = BuildController(service, candidate);
+
+        var result = await controller.GetAnswerAudio(Guid.NewGuid(), Guid.NewGuid(), default);
+
+        var error = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status500InternalServerError, error.StatusCode);
     }
 }
