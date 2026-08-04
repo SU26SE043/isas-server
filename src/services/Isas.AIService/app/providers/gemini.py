@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import NamedTuple
 
 from google import genai
@@ -16,6 +17,8 @@ from app.prompts import (
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
+
+logger = logging.getLogger(__name__)
 
 
 class ScoreOutcome(NamedTuple):
@@ -855,6 +858,11 @@ class GeminiProvider(QuestionProvider):
                 last_defects = evaluate_lesson_theory(
                     data, focus_criteria, lesson_title)
                 if last_defects:
+                    # Log để tỉ lệ trả-lại ĐO ĐƯỢC. Không có dòng này thì rubric siết quá tay sẽ chỉ
+                    # lộ ra dưới dạng "thỉnh thoảng mở bài bị 502" — đúng kiểu hỏng im lặng mà
+                    # allowlist URL F15 đã dính (loại link mà không ai biết tỉ lệ).
+                    logger.info('Bài giảng "%s" bị trả lại: %s',
+                                lesson_title, "; ".join(last_defects))
                     feedback = "\n".join(f"- {d}" for d in last_defects)
                     continue
 
