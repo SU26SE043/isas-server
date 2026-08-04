@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Net;
+using Amazon.S3;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
@@ -146,6 +148,42 @@ public class PracticeController : ControllerBase
         catch (UnauthorizedAccessException ex)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>Phát hoặc tải bản ghi âm câu trả lời của chính candidate.</summary>
+    [HttpGet("{sessionId:guid}/answers/{answerId:guid}/audio")]
+    [ProducesResponseType(typeof(FileStreamResult), StatusCodes.Status200OK, "audio/webm")]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetAnswerAudio(
+        Guid sessionId, Guid answerId, CancellationToken ct)
+    {
+        try
+        {
+            var audio = await _practiceService.GetAnswerAudioAsync(
+                GetCandidateId(), sessionId, answerId, ct);
+            if (audio is null)
+                return NotFound(new { error = "Không tìm thấy bản ghi âm câu trả lời này." });
+
+            return File(audio.Content, audio.ContentType, enableRangeProcessing: true);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (AmazonS3Exception ex) when (
+            ex.StatusCode == HttpStatusCode.NotFound || ex.ErrorCode is "NoSuchKey")
+        {
+            _logger.LogWarning(ex, "Không tìm thấy object S3 của audio answer {AnswerId} trong session {SessionId}.",
+                answerId, sessionId);
+            return NotFound(new { error = "Bản ghi âm không còn trên hệ thống." });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Lỗi tải audio answer {AnswerId} trong session {SessionId}.", answerId, sessionId);
+            return StatusCode(StatusCodes.Status500InternalServerError,
+                new { error = "Không thể tải bản ghi âm lúc này. Vui lòng thử lại sau." });
         }
     }
 

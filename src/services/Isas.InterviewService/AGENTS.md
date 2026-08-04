@@ -50,6 +50,7 @@ AnswerResponse {
   durationSec:  int
   transcript:   string?
   scores:       AnswerScoreResponse[]
+  audioUrl:     string?                 // URL owner-scoped để phát/tải audio; null khi chưa có file
 }
 
 AnswerScoreResponse {
@@ -115,6 +116,8 @@ CvAnalysisResponse  🔜 {
 ```
 
 ### Practice — `/api/v1/interview/practice/sessions` (JWT Candidate)
+
+**`GET /sessions/{sessionId}/answers/{answerId}/audio`** — Stream audio câu trả lời của chính candidate; `AnswerResponse.audioUrl` trỏ tới route này. Không có audio/answer/session → **404**; session của người khác → **403**. Không trả SeaweedFS object key.
 
 **`POST /sessions`** — Tạo session + sinh câu hỏi (gọi AI đồng bộ).
 - Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE" }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc**.
