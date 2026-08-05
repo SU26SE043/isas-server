@@ -51,6 +51,35 @@ namespace Isas.PaymentService.Services
             var promptTokens = Math.Max(0, req.PromptTokens);
             var outputTokens = Math.Max(0, req.OutputTokens);
             var totalTokens = Math.Max(0, req.TotalTokens);
+            var audioSeconds = req.AudioSeconds.HasValue ? Math.Max(0, req.AudioSeconds.Value) : (int?)null;
+
+            // ĐƠN VỊ TÍNH TIỀN QUYẾT ĐỊNH BỞI DỮ LIỆU CALLER GỬI, KHÔNG BỞI BẢNG GIÁ. Caller là bên duy nhất
+            // biết chắc lượt gọi vừa rồi bán theo phút hay theo token; bảng giá thì lạc hậu là chuyện thường
+            // (đã có cảnh báo ngay trên cho ca đó). Rẽ nhánh theo bảng giá sẽ khiến một model chép lời MỚI —
+            // thứ chưa kịp khai giá — âm thầm tính theo token và ra 0 đồng, tức là đúng cái lỗ đang bịt.
+            decimal? pricePerMinute = null;
+            if (audioSeconds.HasValue)
+            {
+                pricePerMinute = _pricing.ResolvePerMinute(model);
+                if (pricePerMinute is null or <= 0m)
+                {
+                    // Không im lặng: đây là lượt CÓ TỐN TIỀN THẬT mà ta sắp ghi 0 đồng.
+                    _logger.LogWarning(
+                        "F22: lượt chép lời model {Model} ({Seconds}s) chưa có đơn giá theo phút — chi phí sẽ "
+                        + "ghi 0. Khai AiPricing:Models:{Model}:PricePerMinuteUsd hoặc AiPricing:Default:"
+                        + "PricePerMinuteUsd.", model, audioSeconds.Value, model);
+                }
+            }
+            else if (price.PricePerMinuteUsd.HasValue)
+            {
+                // Model bán theo PHÚT mà lượt gọi lại không khai độ dài audio ⇒ nó sắp được tính bằng công
+                // thức token và ra 0 đồng. Đây là hình dạng của một hợp đồng dây bị lệch: khoá JSON
+                // `audioSeconds` bind hụt KHÔNG ném lỗi, nó chỉ điền null. Test ở CI chỉ khoá được phía
+                // .NET; nếu AIService đổi tên khoá thì DÒNG LOG NÀY là thứ duy nhất báo trên production.
+                _logger.LogWarning(
+                    "F22: model {Model} tính tiền theo phút nhưng lượt {Operation} không gửi `audioSeconds` "
+                    + "— chi phí sẽ ghi 0. Kiểm tra khoá JSON của callback AIService.", model, operation);
+            }
 
             var entity = new AiUsageLog
             {
@@ -63,6 +92,8 @@ namespace Isas.PaymentService.Services
                 TotalTokens = totalTokens > 0 ? totalTokens : promptTokens + outputTokens,
                 InputPricePerMillionUsd = price.InputPerMillionUsd,
                 OutputPricePerMillionUsd = price.OutputPerMillionUsd,
+                AudioSeconds = audioSeconds,
+                PricePerMinuteUsd = pricePerMinute,
                 ResourceUrlsProposed = req.ResourceUrlsProposed,
                 ResourceUrlsRejected = req.ResourceUrlsRejected,
                 CreatedAt = DateTime.UtcNow
@@ -78,10 +109,22 @@ namespace Isas.PaymentService.Services
             return entity.Id;
         }
 
-        /// <summary>Tiền của một lượt gọi, từ đơn giá đã snapshot trên chính dòng đó (USD/1 triệu token).</summary>
+        /// <summary>
+        /// Tiền của một lượt gọi, từ đơn giá đã snapshot trên chính dòng đó.
+        ///
+        /// RẼ NHÁNH THEO ĐƠN VỊ, và đây là chỗ dễ hỏng ngầm nhất của cả tính năng: lượt chép lời có
+        /// <c>PromptTokens = OutputTokens = 0</c>, nên nếu bỏ nhánh phút thì công thức token cho ra ĐÚNG 0 —
+        /// không exception, không log, chỉ là chi phí transcribe biến mất khỏi mọi báo cáo.
+        ///
+        /// <c>AudioSeconds != null</c> (chứ không phải <c>&gt; 0</c>) là dấu hiệu nhận biết: 0 giây nghĩa là
+        /// "có chép lời, độ dài 0" ⇒ 0 đồng là đúng; null nghĩa là "không phải lượt chép lời" ⇒ tính theo
+        /// token. Cùng quy ước null ≠ 0 với <c>ResourceUrlsProposed</c>.
+        /// </summary>
         internal static decimal CostOf(AiUsageLog log) =>
-            log.PromptTokens / 1_000_000m * log.InputPricePerMillionUsd
-            + log.OutputTokens / 1_000_000m * log.OutputPricePerMillionUsd;
+            log.AudioSeconds.HasValue
+                ? log.AudioSeconds.Value / 60m * (log.PricePerMinuteUsd ?? 0m)
+                : log.PromptTokens / 1_000_000m * log.InputPricePerMillionUsd
+                  + log.OutputTokens / 1_000_000m * log.OutputPricePerMillionUsd;
 
         public async Task<AiUsageReportResponse> GetReportAsync(
             DateTime from, DateTime to, AiUsageGranularity granularity, CancellationToken ct = default)
@@ -97,6 +140,8 @@ namespace Isas.PaymentService.Services
                     Prompt = (long?)g.Sum(u => (long)u.PromptTokens) ?? 0,
                     Output = (long?)g.Sum(u => (long)u.OutputTokens) ?? 0,
                     Total = (long?)g.Sum(u => (long)u.TotalTokens) ?? 0,
+                    // Cộng riêng vì đơn vị khác token — dòng chép lời có 0 token nhưng vẫn tốn tiền.
+                    Audio = (long?)g.Sum(u => (long?)u.AudioSeconds) ?? 0,
                     Cost = (decimal?)g.Sum(u => u.CostUsd) ?? 0m,
                     UrlProposed = (long?)g.Sum(u => (long?)u.ResourceUrlsProposed) ?? 0,
                     UrlRejected = (long?)g.Sum(u => (long?)u.ResourceUrlsRejected) ?? 0,
@@ -113,6 +158,7 @@ namespace Isas.PaymentService.Services
                     PromptTokens = g.Sum(u => (long)u.PromptTokens),
                     OutputTokens = g.Sum(u => (long)u.OutputTokens),
                     TotalTokens = g.Sum(u => (long)u.TotalTokens),
+                    AudioSeconds = g.Sum(u => (long?)u.AudioSeconds) ?? 0,
                     CostUsd = g.Sum(u => u.CostUsd)
                 })
                 .ToListAsync(ct);
@@ -152,6 +198,7 @@ namespace Isas.PaymentService.Services
                 PromptTokens = totals?.Prompt ?? 0,
                 OutputTokens = totals?.Output ?? 0,
                 TotalTokens = totals?.Total ?? 0,
+                AudioSeconds = totals?.Audio ?? 0,
                 TotalCostUsd = totals?.Cost ?? 0m,
                 ByOperation = byOperation.OrderByDescending(o => o.CostUsd).ToList(),
                 Buckets = buckets
