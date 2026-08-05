@@ -39,6 +39,28 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
 
+    # ── CHÉP LỜI QUA NHÀ CUNG CẤP TỪ XA ─────────────────────────
+    # `"local"` (mặc định) = Whisper cục bộ như trước · `"whisper-1"` = OpenAI · `"gemini"`.
+    # Từ xa hỏng (mạng/quota/bản chép có dấu hiệu hỏng) → TỰ ĐỘNG rơi về Whisper cục bộ; cục bộ
+    # hỏng nốt thì giữ nguyên hành vi cũ (PermanentError → answer Failed). Xem
+    # app/transcribe_providers.py để biết số đo và vì sao.
+    #
+    # ⚠ Mặc định TẮT theo đúng tiền lệ mọi rollout khác của repo (`GROUNDING_ENABLED`,
+    # `TIERING_ENABLED`, `CV_SCREENING_ENABLED`): đây là năng lực MỚI, vừa tốn tiền theo lượt vừa
+    # có hệ quả riêng tư (audio ứng viên rời khỏi hạ tầng của mình) — khác `delivery_metrics_source`
+    # vốn là bản vá cho hành vi ĐÃ ĐO ĐƯỢC LÀ SAI nên phải bật sẵn.
+    transcribe_provider: str = "local"
+    # Credential RIÊNG của OpenAI (không dùng lại gemini_api_key được). Rỗng + provider
+    # `"whisper-1"` ⇒ lượt gọi 401 → rơi về cục bộ (không sập, chỉ mất phần chất lượng).
+    openai_api_key: str = ""
+    # Model chép lời của OpenAI. Giá trị này CŨNG là con dấu `transcriptEngine` gửi về .NET, nên
+    # đổi model ở đây thì số liệu lịch sử vẫn phân biệt được bản nào chép bằng gì.
+    openai_transcribe_model: str = "whisper-1"
+    # 60s: đo thật whisper-1 mất 23,9s cho 190s audio, gemini 29,9s — trần này chừa gấp đôi cho
+    # mạng xấu mà vẫn nằm dưới timeout 90s của decider (`/decide-next` gọi ĐỒNG BỘ trong request
+    # upload). Hết giờ = rơi về cục bộ, không phải lỗi.
+    transcribe_timeout_seconds: float = 60.0
+
     # ── F11: NGUỒN MỐC THỜI GIAN cho chỉ số cách nói ─────────────
     # `"vad"` (mặc định) = vùng tiếng nói do Silero VAD xác định · `"whisper"` = biên segment
     # Whisper (hành vi trước 2026-08-05, GIỮ LẠI CHỈ để quay lui không cần deploy).
