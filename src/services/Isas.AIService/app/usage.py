@@ -45,7 +45,9 @@ KHÔNG được nổi lên trên. Đây là ngoại lệ có chủ đích với 
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 from dataclasses import dataclass
 
 from app.config import settings
@@ -163,3 +165,67 @@ async def report_usage(operation: str, model: str, response,
                     logger.warning("F22: sink trả %s cho %s", resp.status, operation)
     except Exception:  # noqa: BLE001 — sink chết KHÔNG được kéo theo lượt chấm
         logger.warning("F22: không gửi được usage cho %s", operation, exc_info=True)
+
+
+async def report_audio_usage(operation: str, model: str,
+                             audio_seconds: float) -> None:
+    """Bản ghi tiêu thụ cho nhà cung cấp tính tiền theo THỜI LƯỢNG AUDIO. KHÔNG BAO GIỜ raise.
+
+    ``whisper-1`` tính theo PHÚT, không theo token — nên :func:`report_usage` (đọc
+    ``usage_metadata``) không dùng được: nó sẽ ghi một dòng 0 token, mà 0 token nghĩa là
+    "không có số liệu" ⇒ chi phí chép lời **biến mất khỏi sổ**.
+
+    Cố ý KHÔNG bịa ``promptTokens``/``outputTokens`` = 0 vào payload: bên nhận phân biệt được
+    dòng-theo-giây với dòng-theo-token bằng sự có mặt của ``audioSeconds``, còn số token bịa
+    ra thì không ai phân biệt được với số token thật.
+
+    ``audioSeconds`` làm tròn LÊN về int: nhà cung cấp cũng tính tròn lên, và một lượt gọi
+    thật không bao giờ là 0 giây — 0 ở cột đó phải đọc được là "hỏng", không phải "rất ngắn".
+    """
+    if not settings.usage_metering_enabled:
+        return
+
+    payload = {
+        "operation": operation,
+        "model": model,
+        "audioSeconds": max(0, math.ceil(audio_seconds or 0)),
+    }
+
+    if not settings.usage_sink_base:
+        logger.info("F22 usage %s", payload)
+        return
+
+    try:
+        import aiohttp
+
+        url = f"{settings.usage_sink_base.rstrip('/')}/internal/ai-usage"
+        headers = {"X-Internal-Token": settings.internal_token}
+        timeout = aiohttp.ClientTimeout(total=settings.usage_sink_timeout_seconds)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status >= 400:
+                    logger.warning("F22: sink trả %s cho %s", resp.status, operation)
+    except Exception:  # noqa: BLE001 — sink chết KHÔNG được kéo theo lượt chép lời
+        logger.warning("F22: không gửi được usage cho %s", operation, exc_info=True)
+
+
+def report_blocking(coro) -> None:
+    """Chạy một coroutine ĐO ĐẠC từ code ĐỒNG BỘ. KHÔNG BAO GIỜ raise.
+
+    Vì sao cần: đường chép lời (`transcriber.py`) là ĐỒNG BỘ có chủ đích — nó chạy trong thread
+    do ``asyncio.to_thread`` cấp, cạnh Whisper (nặng CPU). Thread đó KHÔNG có event loop nên
+    không ``await`` được, mà đổi cả đường đó sang async chỉ để ghi một dòng thống kê thì phải
+    sửa 3 call site và ~10 test đang mock hàm đồng bộ — đắt hơn nhiều so với thứ nhận lại.
+
+    ``asyncio.run`` hợp lệ ở đây đúng vì thread đó không có loop. Trường hợp bị gọi từ thread
+    CÓ loop, nó ném ``RuntimeError`` → nuốt + đóng coroutine (không đóng thì Python cảnh báo
+    "coroutine was never awaited" — một cảnh báo gây hoang mang mà chẳng chỉ ra vấn đề gì thật).
+    """
+    try:
+        asyncio.run(coro)
+    except Exception:  # noqa: BLE001 — xem docstring module: đo không được làm hỏng đường chính
+        logger.warning("F22: không chạy được báo cáo usage đồng bộ", exc_info=True)
+        try:
+            coro.close()
+        except Exception:  # noqa: BLE001
+            pass

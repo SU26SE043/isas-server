@@ -21,3 +21,11 @@ numpy
 aio-pika==10.0.1
 boto3
 aiohttp
+
+# Chép lời qua whisper-1 (app/transcribe_providers.py). Vì sao httpx chứ không aiohttp như mọi
+# lượt gọi mạng khác: đường chép lời là ĐỒNG BỘ có chủ đích (chạy trong thread `asyncio.to_thread`
+# cạnh Whisper), mà aiohttp chỉ có API async — httpx là thứ duy nhất đã có sẵn mà dùng được ở đó.
+# ⚠ KHAI TƯỜNG MINH dù google-genai đã kéo httpx về: một đường chạy production KHÔNG được sống
+# nhờ phụ thuộc bắc cầu của thư viện khác (họ đổi transport là mình gãy, mà lỗi lại nổ ở chỗ
+# chẳng liên quan). Trước vòng này httpx chỉ nằm ở requirements-dev.txt (cho TestClient).
+httpx

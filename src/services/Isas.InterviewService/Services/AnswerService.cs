@@ -118,6 +118,10 @@ public class AnswerService : IAnswerService
             answer.DurationSec = durationSec;
             answer.Status = AnswerStatus.Uploaded;
             answer.Transcript = null;
+            // Con dấu engine đi CẶP với transcript: giữ lại sau khi thu âm lại là khai lai lịch của
+            // một bản chép không còn tồn tại — và nó sẽ được đọc như thể mô tả bản chép MỚI (cùng lý
+            // do bản vá F11 phải xoá cụm chỉ số ở ngay dưới).
+            answer.TranscriptEngine = null;
             if (answer.Scores.Count > 0)
                 _db.AnswerScores.RemoveRange(answer.Scores);
             answer.NeedsReview = false;
@@ -290,6 +294,11 @@ public class AnswerService : IAnswerService
             if (!string.IsNullOrWhiteSpace(decision.Transcript))
             {
                 answer.Transcript = decision.Transcript;
+                // Con dấu engine của CHÍNH bản chép vừa nhận. Gán THẲNG (kể cả null) chứ không
+                // "chỉ ghi khi có": đây là bản chép mới toanh, nên AIService bản cũ không gửi dấu ⇒
+                // null = "không biết engine nào" là câu trả lời trung thực. Giữ dấu cũ ở đây sẽ là
+                // gán lai lịch của bản chép TRƯỚC cho bản chép SAU — con dấu nói dối, tệ hơn khuyết.
+                answer.TranscriptEngine = NormalizeEngineStamp(decision.TranscriptEngine, answer.Id);
                 if (decision.DeliveryMetrics is not null)
                     DeliveryMetricsMapper.Apply(answer, decision.DeliveryMetrics);
                 await _db.SaveChangesAsync(ct);
@@ -400,6 +409,37 @@ public class AnswerService : IAnswerService
     {
         var complete = pendingCount == 0;
         return new AdaptiveOutcome(complete ? action : null, null, complete);
+    }
+
+    /// <summary>Trần độ dài con dấu engine. Tên model dài nhất đang biết là
+    /// <c>gemini-2.5-flash-preview-native-audio-dialog</c> (43 ký tự) nên 64 là rộng gấp rưỡi. Đây là
+    /// guard phát hiện RÁC (worker hỏng / lệch hợp đồng), không phải validation nghiêm ngặt.</summary>
+    private const int MaxEngineStampLen = 64;
+
+    /// <summary>
+    /// Chuẩn hoá con dấu engine nhận từ AIService: rỗng/khoảng trắng và rác quá dài → <c>null</c>.
+    ///
+    /// <para><b>Quá dài thì bỏ hẳn chứ KHÔNG cắt cụt</b>: cắt tạo ra một tên engine chưa từng tồn tại
+    /// rồi lưu nó như sự thật — đúng thứ cột này sinh ra để tránh. "Không biết" là câu trả lời trung
+    /// thực (nguyên tắc BK23: con dấu sai tệ hơn con dấu khuyết).</para>
+    ///
+    /// <para><b>KHÔNG BAO GIỜ ném</b>: một cột kiểm toán tuyệt đối không được biến thành đường làm
+    /// answer <c>Failed</c> — Failed = người luyện mất 1 credit (PAY-13). Mẫu đã có ở
+    /// <c>promptVersion</c> âm (BK23) và ở F13/F11.</para>
+    /// </summary>
+    private string? NormalizeEngineStamp(string? raw, Guid answerId)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var trimmed = raw.Trim();
+        if (trimmed.Length <= MaxEngineStampLen)
+            return trimmed;
+
+        _logger.LogWarning(
+            "Bỏ con dấu engine dài bất thường ({Len} ký tự) từ AIService cho answer {AnswerId} — lưu NULL",
+            trimmed.Length, answerId);
+        return null;
     }
 
     private static QuestionKind MapKind(string action) => action switch
@@ -517,6 +557,10 @@ public class AnswerService : IAnswerService
                     // Phỏng vấn THÍCH ỨNG — transcript đã transcribe đồng bộ (adaptive) → worker bỏ Whisper.
                     // null (luồng tĩnh / adaptive tắt / decide lỗi) → worker tải audio + Whisper như cũ.
                     Transcript = answer.Transcript,
+                    // Con dấu engine đi cùng Transcript: worker bỏ Whisper khi job có Transcript nên nó
+                    // KHÔNG tự biết engine nào đã chép — không gửi kèm thì nó không có gì để echo về
+                    // callback, và con dấu chỉ sống ở answer chứ không đi được vào lượt chấm.
+                    TranscriptEngine = answer.TranscriptEngine,
                     // F11 — chỉ số PHẢI đi cùng Transcript: worker bỏ Whisper khi có Transcript, nên
                     // thiếu cái này là buổi thích ứng chấm "độ trôi chảy" mà không có số đo nào.
                     DeliveryMetrics = DeliveryMetricsMapper.Read(answer)
@@ -620,6 +664,23 @@ public class AnswerService : IAnswerService
             .ToList();
         if (stale.Count > 0)
             _db.AnswerScores.RemoveRange(stale);
+
+        // Con dấu ENGINE — phải quyết định TRƯỚC khi ghi đè `answer.Transcript` ngay dưới, vì nó
+        // dựa vào việc bản chép có ĐỔI hay không.
+        //
+        // Ba ca, và cả ba đều thật:
+        //  (a) worker gửi dấu     → ghi dấu đó (đường tĩnh: worker tự chép, tự biết engine).
+        //  (b) worker KHÔNG gửi dấu nhưng transcript ĐỔI → bản chép mới mà không rõ engine ⇒ dấu về
+        //      null. KHÔNG giữ dấu cũ: giữ là gán lai lịch của bản chép TRƯỚC cho bản chép SAU, tức
+        //      con dấu nói dối — mà cả lý do tồn tại của cột là trả lời "hai điểm này có cùng chất
+        //      lượng bản chép không". Sai thì nó trả lời SAI một cách tự tin (nguyên tắc BK23).
+        //  (c) worker KHÔNG gửi dấu và transcript GIỮ NGUYÊN → worker echo lại đúng bản chép đã có
+        //      trong job (nó bỏ Whisper), nên dấu cũ vẫn mô tả đúng bản chép này ⇒ GIỮ. Đây là ca
+        //      thường trực của đường thích ứng khi image AIService lệch nhịp .NET.
+        var incomingEngine = NormalizeEngineStamp(req.TranscriptEngine, answerId);
+        var transcriptChanged = !string.Equals(answer.Transcript, req.Transcript, StringComparison.Ordinal);
+        if (incomingEngine is not null || transcriptChanged)
+            answer.TranscriptEngine = incomingEngine;
 
         answer.Transcript = req.Transcript;
 

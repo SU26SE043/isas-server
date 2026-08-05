@@ -1,4 +1,5 @@
 # app/transcriber.py
+import logging
 from dataclasses import dataclass
 
 from faster_whisper import WhisperModel
@@ -7,6 +8,11 @@ from faster_whisper.vad import VadOptions, get_speech_timestamps
 
 from app.config import settings
 from app.fluency import DeliveryMetrics, Segment, compute_delivery_metrics
+from app.transcribe_providers import (
+    LOCAL, looks_broken, pcm_to_wav_bytes, transcribe_remote,
+)
+
+logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 
@@ -33,9 +39,20 @@ class TranscriptionResult:
     Trước F11 hàm transcribe chỉ trả `str`: `segments` (đã có sẵn start/end) bị vứt ngay tại
     chỗ nối text, nên mọi tín hiệu về *cách nói* biến mất trước khi tới bộ chấm. Nay giữ lại.
     `metrics is None` = không đo được (audio rỗng / không segment) — xem fluency.py.
+
+    ``engine`` = CON DẤU nhà cung cấp đã thật sự chép ra `text` (`"whisper-1"` /
+    `"gemini-2.5-flash"` / `"local:small"`). Bắt buộc phải có vì đường này nay có DỰ PHÒNG: khi
+    nhà cung cấp từ xa hỏng, bản chép rơi về Whisper cục bộ — chất lượng khác hẳn (lỗi từ 0,7%
+    so với 4,2%) mà nhìn từ ngoài thì hai bản không phân biệt được. Không có con dấu thì câu hỏi
+    "điểm thấp này do ứng viên hay do bản chép?" là câu không trả lời được.
+
+    ``None`` = chưa đóng dấu (test dựng tay, hoặc bản chép có sẵn từ đường khác) — cố ý phân
+    biệt với chuỗi rỗng, theo đúng nếp ``promptVersion`` của BK23: NULL là "không biết", khác
+    hẳn một giá trị cụ thể.
     """
     text: str
     metrics: DeliveryMetrics | None = None
+    engine: str | None = None
 
 
 class Transcriber:
@@ -70,9 +87,62 @@ class Transcriber:
         """
         # Giải mã MỘT lần rồi đưa cùng một mảng cho cả hai bên (`transcribe` nhận ndarray). Để
         # mỗi bên tự mở file là mở đường cho chênh lệch đến từ khâu giải mã/resample chứ không
-        # phải từ thứ đang đo.
+        # phải từ thứ đang đo. Nhà cung cấp TỪ XA cũng nhận đúng mảng này (dựng lại thành WAV),
+        # nên bất biến "một bản giải mã" giữ nguyên khi đổi nguồn CHỮ.
         pcm = decode_audio(audio_path, sampling_rate=SAMPLE_RATE)
 
+        # Có mảng trong tay thì đo thẳng, đáng tin hơn `info.duration` (và không phụ thuộc vào
+        # việc `info` có tồn tại hay không). 0 = không giải mã được gì → fluency tự rơi về mốc
+        # cuối segment.
+        audio_sec = len(pcm) / SAMPLE_RATE
+
+        text, engine, whisper_segments = self._text(pcm, language, audio_sec)
+
+        return TranscriptionResult(
+            text=text,
+            metrics=compute_delivery_metrics(
+                text,
+                # Nhà cung cấp từ xa KHÔNG trả biên segment ⇒ cần cờ này để cần gạt quay lui
+                # `delivery_metrics_source="whisper"` không âm thầm đo trên danh sách rỗng.
+                self._timing_spans(pcm, whisper_segments,
+                                   whisper_available=engine.startswith(f"{LOCAL}:")),
+                audio_sec),
+            engine=engine,
+        )
+
+    def _text(self, pcm, language: str | None,
+              audio_sec: float) -> tuple[str, str, list[Segment]]:
+        """Lấy phần CHỮ. Trả ``(text, engine, whisper_segments)``.
+
+        Nhà cung cấp từ xa không trả biên segment ⇒ ``whisper_segments`` rỗng ở nhánh đó. Mốc
+        thời gian KHÔNG đi qua đây — nó luôn là việc của VAD (:meth:`_timing_spans`), nên đổi
+        nguồn chữ không đụng được một dòng nào của F11.
+
+        DỰ PHÒNG hai tầng, cố ý không có tầng thứ ba: từ xa hỏng → Whisper cục bộ; cục bộ hỏng
+        nốt → để lỗi nổi lên nguyên như trước (worker biến thành ``PermanentError`` → answer
+        ``Failed``). Phát minh thêm đường ở đây tức là thêm một trạng thái mà không ai đã đo.
+        """
+        provider = (settings.transcribe_provider or LOCAL).strip()
+        if provider != LOCAL:
+            try:
+                text, engine = transcribe_remote(
+                    provider, pcm_to_wav_bytes(pcm, SAMPLE_RATE), language, audio_sec)
+                reason = looks_broken(text)
+                if reason is None:
+                    return text, engine, []
+                # Bản chép hỏng KHÔNG được đi tiếp trong im lặng: nó vẫn là chuỗi ký tự hợp lệ
+                # và bộ chấm sẽ chấm nó như thật. Xem `looks_broken` để biết ca đã quan sát được.
+                logger.warning(
+                    "Chép lời bằng %s có dấu hiệu hỏng (%s) — dùng lại Whisper cục bộ",
+                    provider, reason)
+            except Exception:  # noqa: BLE001 — mọi hỏng hóc từ xa đều rơi về cục bộ
+                logger.warning(
+                    "Chép lời bằng %s hỏng — dùng lại Whisper cục bộ", provider, exc_info=True)
+
+        return self._transcribe_local(pcm, language)
+
+    def _transcribe_local(self, pcm, language: str | None) -> tuple[str, str, list[Segment]]:
+        """Whisper cục bộ — hành vi y hệt trước vòng này (đường mặc định)."""
         segments, _info = self._model.transcribe(
             pcm,
             language=language,   # None = auto-detect; "vi" cho tiếng Việt
@@ -84,26 +154,28 @@ class Transcriber:
             for seg in segments
         ]
         text = " ".join(s.text.strip() for s in collected).strip()
+        return text, f"{LOCAL}:{settings.whisper_model}", collected
 
-        # Có mảng trong tay thì đo thẳng, đáng tin hơn `info.duration` (và không phụ thuộc vào
-        # việc `info` có tồn tại hay không). 0 = không giải mã được gì → fluency tự rơi về mốc
-        # cuối segment.
-        audio_sec = len(pcm) / SAMPLE_RATE
-
-        return TranscriptionResult(
-            text=text,
-            metrics=compute_delivery_metrics(text, self._timing_spans(pcm, collected), audio_sec),
-        )
-
-    def _timing_spans(self, pcm, whisper_segments: list[Segment]) -> list[Segment]:
+    def _timing_spans(self, pcm, whisper_segments: list[Segment],
+                      *, whisper_available: bool = True) -> list[Segment]:
         """Các vùng CÓ TIẾNG NÓI dùng để tính khoảng lặng / tỉ lệ im lặng / tốc độ nói.
 
         Trả về `Segment` không có text: `compute_delivery_metrics` chỉ đọc `start`/`end` ở đây,
         còn phần chữ (đếm từ, đếm từ đệm) nó lấy từ tham số `text` riêng — nên đổi nguồn mốc
         thời gian KHÔNG cần đụng `fluency.py` một dòng nào.
+
+        ``whisper_available=False`` ⇔ phần chữ đến từ nhà cung cấp TỪ XA, tức không có biên
+        segment nào để mà quay lui về. Nếu bỏ vế này thì bật `delivery_metrics_source="whisper"`
+        CÙNG một nhà cung cấp từ xa sẽ đo trên danh sách RỖNG và cho ra "0 lần ngập ngừng, 0
+        giây im lặng" — đúng hạng lỗi F11 sinh ra để diệt (bịa số 0 rồi bảo LLM tin nó nhất),
+        chỉ khác là lần này do hai cấu hình hợp lệ gặp nhau.
         """
         if settings.delivery_metrics_source == "whisper":
-            return whisper_segments
+            if whisper_available:
+                return whisper_segments
+            logger.warning(
+                "delivery_metrics_source='whisper' nhưng bản chép đến từ nhà cung cấp từ xa "
+                "(không có biên segment) — đo bằng VAD")
         return [
             Segment(start=t["start"] / SAMPLE_RATE, end=t["end"] / SAMPLE_RATE, text="")
             for t in get_speech_timestamps(pcm, VAD_OPTIONS, sampling_rate=SAMPLE_RATE)
