@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
     queue_name: str = "scoring_pipeline_queue"   # TRÙNG RabbitMQ:QueueName .NET
 
+    # Số message chấm xử lý ĐỒNG THỜI trên 1 tiến trình worker. Trước đây ghi cứng `1` với lý do
+    # "chấm nặng" — lý do đó SAI khi đo thật: phần tốn thời gian là CHỜ MẠNG Gemini, không phải CPU.
+    # Đo 2026-08-04 trên máy chạy worker: 1 lượt chấm 12,6s; 4 lượt SONG SONG cũng chỉ 13,3s
+    # ⇒ throughput 4,8 → 18 lượt/phút mà không thêm phần cứng nào. `1` là lãng phí thuần.
+    # ⚠ Trần này áp cho CẢ hai đường: đường THÍCH ỨNG gửi kèm transcript (bỏ Whisper — nhẹ, chỉ
+    # chờ mạng) và đường TĨNH/republish KHÔNG có transcript (phải Whisper — nặng CPU thật). Đặt quá
+    # cao thì một đợt job tĩnh sẽ chạy ngần đó Whisper cùng lúc và bóp nghẹt CPU máy chạy worker.
+    # ⚠ Mỗi message = ≥1 lượt Gemini ⇒ giá trị này cũng là trần request đồng thời lên Gemini.
+    scoring_prefetch: int = 10
+
     # ── DEAD-LETTER (AI2) ────────────────────────────────────────
     # Message bị nack(requeue=False) → broker đẩy sang DLX → DLQ thay vì XOÁ IM LẶNG.
     # 3 tên này khai vào `arguments` của queue chính; PHẢI TRÙNG y hệt args khai ở

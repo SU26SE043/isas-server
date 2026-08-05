@@ -259,7 +259,10 @@ async def main():
     connection = await aio_pika.connect_robust(settings.rabbitmq_url)
     async with connection:
         channel = await connection.channel()
-        await channel.set_qos(prefetch_count=1)  # chấm nặng -> xử lý 1 lúc 1 message
+        # `queue.consume(callback)` (KHÔNG phải async-iterator) → aio-pika chạy các callback
+        # ĐỒNG THỜI, số lượng do đúng prefetch này chặn. Xem config.scoring_prefetch để biết vì sao
+        # bỏ giá trị cũ `1` (đo thật: 4 lượt song song ≈ thời gian 1 lượt, vì chờ mạng chứ không CPU).
+        await channel.set_qos(prefetch_count=settings.scoring_prefetch)
         queue = await declare_topology(channel)  # AI2: DLX/DLQ + queue chính (args dead-letter)
         await queue.consume(process_message)
         print(f"[✅] Worker chạy, nghe queue '{settings.queue_name}' (CTRL+C để thoát)")
