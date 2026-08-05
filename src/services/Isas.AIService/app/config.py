@@ -39,6 +39,26 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
 
+    # ── F11: NGUỒN MỐC THỜI GIAN cho chỉ số cách nói ─────────────
+    # `"vad"` (mặc định) = vùng tiếng nói do Silero VAD xác định · `"whisper"` = biên segment
+    # Whisper (hành vi trước 2026-08-05, GIỮ LẠI CHỈ để quay lui không cần deploy).
+    #
+    # Vì sao đổi — đo trên 7 ghi âm THẬT lấy từ S3, trọng tài là hai bộ dò độc lập (ngưỡng năng
+    # lượng + Silero) tự hiệu chuẩn đạt 0,02-0,03s trên audio biết trước sự thật và đồng ý với
+    # nhau 18/21: biên segment Whisper bắt được **2/21 khoảng lặng (10%)**. Ca nặng nhất là một
+    # câu trả lời 45s ngập ngừng 7 lần (có đoạn im 3 giây) bị báo về `pauseCount=0`,
+    # `silenceRatio=0,020` trong khi thực tế là 0,315 — sai 16 lần, và luôn nghiêng về phía KHEN.
+    # Đổi sang vùng VAD: lệch pauseCount 2,71 → 0,57 · lệch silenceRatio 0,152 → 0,035.
+    #
+    # KHÔNG phải lỗi model: `large-v3` cũng chỉ được 2/21 (Whisper học để CHÉP LỜI nên nó kéo
+    # dài biên segment xuyên qua tiếng thở/tiếng phòng — trên audio tổng hợp có im lặng số tuyệt
+    # đối thì nó cắt đúng, nên bài đo tổng hợp che mất hẳn lỗi này).
+    #
+    # ⚠ Mặc định BẬT, khác `grounding`/`tiering`/`cv_screening` (đều tắt): những cái đó là tính
+    # năng MỚI, còn đây là bản vá cho hành vi ĐÃ ĐO ĐƯỢC LÀ SAI — để mặc định tắt tức là cố ý
+    # giữ bug. Cờ này là cần gạt rollback, không phải cổng tính năng.
+    delivery_metrics_source: str = "vad"
+
     # ── FACE VERIFY (SEC-2/3) ────────────────────────────────────
     # buffalo_l = pack insightface mặc định (detect + ArcFace embed). CPU-only.
     face_model_name: str = "buffalo_l"

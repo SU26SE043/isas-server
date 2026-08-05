@@ -33,7 +33,7 @@ public class PracticeAnswer
 
     public int DurationSec { get; set; }
 
-    // ── F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY đo từ mốc thời gian Whisper ────────────────────────
+    // ── F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY đo từ audio (mốc thời gian: VAD từ 2026-08-05) ─────
     // Tất cả nullable: null = CHƯA ĐO ĐƯỢC (answer cũ trước F11 · audio rỗng · đường degrade khi
     // /decide-next lỗi), KHÁC HẲN với 0 = "đo ra 0". Phân biệt được hai ca này mới hiển thị đúng:
     // "chưa có dữ liệu" vs "nói 0 từ đệm". Reset cùng transcript/scores khi upload lại (INT-3) —
@@ -80,6 +80,22 @@ public class PracticeAnswer
     /// Lưu <b>text</b> chứ không phải jsonb: dữ liệu này chỉ để đọc-hiển-thị, không truy vấn theo
     /// khoá bao giờ — chọn jsonb ở đây chỉ tổ rước rủi ro migration (xem F15) mà không được gì.</summary>
     public string? FillerBreakdown { get; set; }
+
+    /// <summary>
+    /// Phiên bản THƯỚC ĐO đã sinh ra các cột trên (AIService <c>fluency.DELIVERY_METRICS_VERSION</c>).
+    /// <c>1</c> = mốc thời gian từ biên segment Whisper · <c>2</c> = từ vùng tiếng nói VAD.
+    ///
+    /// <para>Vì sao cần: bản vá 2026-08-05 đổi cách đo, và số cũ với số mới KHÔNG so sánh được.
+    /// Trên 7 ghi âm thật, thước cũ bắt được 2/21 khoảng lặng — một câu trả lời 45s ngập ngừng
+    /// 7 lần bị ghi <c>PauseCount = 0</c>, <c>SilenceRatio = 0,020</c> (thực tế 0,315). Điểm chấm
+    /// từ hai thước đó vẫn bị đem so với nhau ở xếp hạng B2B (CAMP-10) và ở phần đo cải thiện
+    /// của roadmap (BC15) nếu không có dấu để phân biệt.</para>
+    ///
+    /// <para>⚠ <c>null</c> = đo bằng thước CŨ. Suy luận này an toàn ở đây (cột chỉ tồn tại từ
+    /// bản vá trở đi, và mọi lượt đo từ đó đều đóng dấu) nhưng NGƯỢC quy ước BK23 của
+    /// <c>prompt_version</c>, nơi <c>null</c> phải giữ nghĩa "không biết". Đừng áp ngược.</para>
+    /// </summary>
+    public int? MetricsVersion { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

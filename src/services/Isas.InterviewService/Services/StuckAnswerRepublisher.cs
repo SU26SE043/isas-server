@@ -104,6 +104,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.SpeechSec,
                 a.WordCount,
                 a.FillerPer100Words,
+                a.MetricsVersion,
                 CampaignId = a.Session.CampaignId,
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
@@ -159,7 +160,8 @@ public class StuckAnswerRepublisher : BackgroundService
                 DeliveryMetrics = DeliveryMetricsMapper.Read(
                     a.SpeechRateWpm, a.FillerCount, a.PauseCount,
                     a.LongestPauseSec, a.SilenceRatio, a.FillerBreakdown,
-                    a.AudioSec, a.SpeechSec, a.WordCount, a.FillerPer100Words)
+                    a.AudioSec, a.SpeechSec, a.WordCount, a.FillerPer100Words,
+                    a.MetricsVersion)
             };
 
             try

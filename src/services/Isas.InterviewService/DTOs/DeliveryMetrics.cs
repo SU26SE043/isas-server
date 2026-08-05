@@ -4,7 +4,8 @@ using Isas.InterviewService.Entities;
 namespace Isas.InterviewService.DTOs;
 
 /// <summary>
-/// F11 (FR06) — chỉ số CÁCH NÓI đo từ mốc thời gian Whisper (AIService <c>app/fluency.py</c>).
+/// F11 (FR06) — chỉ số CÁCH NÓI đo từ audio (AIService <c>app/fluency.py</c>). Từ 2026-08-05
+/// mốc thời gian lấy từ VAD chứ không phải biên segment Whisper — xem <see cref="MetricsVersion"/>.
 ///
 /// <para>Trước F11 mọi tín hiệu âm thanh bị vứt ngay sau khi transcribe: chỉ text đi tiếp, nên
 /// "độ trôi chảy" chỉ có thể ĐOÁN từ chữ. Nay số đo đi kèm transcript suốt cả 2 đường
@@ -44,6 +45,21 @@ public class DeliveryMetricsDto
 
     /// <summary>Từ đệm nào, mấy lần — để hiện "bạn nói 'ừm' 12 lần" thay vì chỉ một con số.</summary>
     public Dictionary<string, int> FillerBreakdown { get; set; } = [];
+
+    /// <summary>
+    /// Phiên bản THƯỚC ĐO đã sinh ra bộ số này (AIService <c>fluency.DELIVERY_METRICS_VERSION</c>).
+    /// <c>1</c> = mốc thời gian lấy từ biên segment Whisper · <c>2</c> = lấy từ vùng tiếng nói VAD.
+    ///
+    /// <para>Cần thiết vì điểm chấm được đem SO SÁNH với nhau (xếp hạng B2B — CAMP-10; đo cải
+    /// thiện của roadmap — BC15). Đổi cách đo giữa chừng mà không đánh dấu thì hai con số sinh
+    /// ra từ hai thước khác nhau vẫn bị đặt cạnh nhau như thể cùng đơn vị.</para>
+    ///
+    /// <para>⚠ <b><c>null</c> ở đây nghĩa là "đo bằng thước cũ"</b>, KHÁC với quy ước của BK23
+    /// (<c>prompt_version</c>) nơi <c>null</c> phải giữ nghĩa "không biết". Ở đây suy luận đó an
+    /// toàn vì cột chỉ tồn tại từ bản vá 2026-08-05 trở đi, và mọi lượt đo từ đó đều đóng dấu —
+    /// nên khuyết dấu chỉ có đúng một nguyên nhân. Đừng áp ngược tiền lệ này sang cột khác.</para>
+    /// </summary>
+    public int? MetricsVersion { get; set; }
 }
 
 /// <summary>
@@ -80,6 +96,7 @@ public static class DeliveryMetricsMapper
         answer.SpeechSec = metrics?.SpeechSec;
         answer.WordCount = metrics?.WordCount;
         answer.FillerPer100Words = metrics?.FillerPer100Words;
+        answer.MetricsVersion = metrics?.MetricsVersion;
 
         answer.FillerBreakdown = metrics is null || metrics.FillerBreakdown.Count == 0
             ? null
@@ -92,7 +109,8 @@ public static class DeliveryMetricsMapper
     public static DeliveryMetricsDto? Read(PracticeAnswer answer) => Read(
         answer.SpeechRateWpm, answer.FillerCount, answer.PauseCount,
         answer.LongestPauseSec, answer.SilenceRatio, answer.FillerBreakdown,
-        answer.AudioSec, answer.SpeechSec, answer.WordCount, answer.FillerPer100Words);
+        answer.AudioSec, answer.SpeechSec, answer.WordCount, answer.FillerPer100Words,
+        answer.MetricsVersion);
 
     /// <summary>Bản nhận từng giá trị — cho call site đọc bằng <c>.Select(...)</c> projection
     /// (StuckAnswerRepublisher) không có entity đầy đủ trong tay.
@@ -104,11 +122,17 @@ public static class DeliveryMetricsMapper
         double? speechRateWpm, int? fillerCount, int? pauseCount,
         double? longestPauseSec, double? silenceRatio, string? fillerBreakdownJson,
         double? audioSec = null, double? speechSec = null,
-        int? wordCount = null, double? fillerPer100Words = null)
+        int? wordCount = null, double? fillerPer100Words = null,
+        int? metricsVersion = null)
     {
         // "Chưa từng đo được" = KHÔNG có số nào. Giữ ngữ nghĩa cả-cụm cho giá trị trả về null
         // (worker nhận null → tự transcribe rồi tự đo), nhưng từ đây trở xuống KHÔNG bịa 0 cho
         // field lẻ nào nữa: khuyết field nào thì field đó ra null.
+        //
+        // ⚠ `metricsVersion` CỐ Ý KHÔNG nằm trong điều kiện này. Nó là con dấu MÔ TẢ bộ số, tự
+        // nó không phải một số đo — đưa vào đây thì một answer chưa từng đo được nhưng lỡ có
+        // dấu sẽ trả về DTO rỗng toàn null thay vì `null`, và worker sẽ tưởng "đã đo rồi" nên
+        // bỏ qua bước tự transcribe.
         if (speechRateWpm is null && fillerCount is null && pauseCount is null
             && longestPauseSec is null && silenceRatio is null
             && audioSec is null && speechSec is null
@@ -145,6 +169,7 @@ public static class DeliveryMetricsMapper
             WordCount = wordCount,
             FillerPer100Words = fillerPer100Words,
             FillerBreakdown = breakdown ?? [],
+            MetricsVersion = metricsVersion,
         };
     }
 }
