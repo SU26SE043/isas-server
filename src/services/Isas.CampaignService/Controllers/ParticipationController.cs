@@ -118,6 +118,11 @@ namespace Isas.CampaignService.Controllers
                 // BK14: ví org hết credit → reserve chặn → 402 (PAY-5), KHÔNG tạo session.
                 return StatusCode(StatusCodes.Status402PaymentRequired, new { error = ex.Message });
             }
+            catch (CampaignInterviewCapacityExceededException ex)
+            {
+                Response.Headers.RetryAfter = "60";
+                return StatusCode(StatusCodes.Status429TooManyRequests, new { error = ex.Message, retryAfterSeconds = 60 });
+            }
             catch (DownstreamServiceException ex)
             {
                 _logger.LogError(ex, "Tạo session phỏng vấn thất bại (campaign {CampaignId}).", id);

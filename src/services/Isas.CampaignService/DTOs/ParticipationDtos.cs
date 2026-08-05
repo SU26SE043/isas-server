@@ -56,6 +56,7 @@ namespace Isas.CampaignService.DTOs
     {
         public Guid SessionId { get; set; }
         public Guid CampaignId { get; set; }
+        public DateTime? DeadlineAt { get; set; }
         public List<StartQuestionItem> Questions { get; set; } = new();
         // SEC-1: campaign bật giám sát chống gian lận → FE kích hoạt proctoring (tab-switch/paste/focus + webcam).
         // Độc lập với face-verify: có thể bật anti-cheat mà không bật face-verify.

@@ -85,6 +85,11 @@ namespace Isas.CampaignService.Services
                     _logger.LogWarning("InterviewService create-or-get session: ví org hết credit (402) - {Error}", error);
                     throw new InsufficientOrgCreditException("Tổ chức không đủ credit để bắt đầu phỏng vấn.");
                 }
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    _logger.LogWarning("InterviewService create-or-get session: quá tải phiên chạy (429) - {Error}", error);
+                    throw new CampaignInterviewCapacityExceededException("Hệ thống đang đạt giới hạn phiên phỏng vấn đồng thời. Vui lòng thử lại sau.");
+                }
                 _logger.LogError("InterviewService create-or-get session lỗi: {StatusCode} - {Error}", response.StatusCode, error);
                 throw new DownstreamServiceException($"InterviewService create-or-get session trả {(int)response.StatusCode}");
             }

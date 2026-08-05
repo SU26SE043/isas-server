@@ -17,4 +17,10 @@ namespace Isas.CampaignService.Services
     {
         public InsufficientOrgCreditException(string message) : base(message) { }
     }
+
+    /// <summary>Campaign đã dùng hết số phiên đang chạy được cấu hình.</summary>
+    public class CampaignInterviewCapacityExceededException : Exception
+    {
+        public CampaignInterviewCapacityExceededException(string message) : base(message) { }
+    }
 }
