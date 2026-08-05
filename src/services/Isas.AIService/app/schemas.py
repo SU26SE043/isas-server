@@ -291,10 +291,18 @@ class DecideNextRequest(BaseModel):
 
 
 class DeliveryMetrics(BaseModel):
-    """F11 (FR06) — chỉ số CÁCH NÓI đo từ mốc thời gian Whisper (xem app/fluency.py).
+    """F11 (FR06) — chỉ số CÁCH NÓI đo từ audio (xem app/fluency.py).
 
     ⚠ ``fillerCount`` là mức TỐI THIỂU: Whisper thường nuốt bớt từ đệm nên số thật cao hơn.
-    Chỉ số thời gian (``longestPauseSec``/``silenceRatio``/``speechRateWpm``) đáng tin hơn."""
+    Chỉ số thời gian (``longestPauseSec``/``silenceRatio``/``speechRateWpm``) đáng tin hơn.
+
+    🔴 **Mọi khoá `fluency.DeliveryMetrics.to_dict()` sinh ra PHẢI được khai ở đây.** Pydantic mặc
+    định `extra='ignore'` nên khoá không khai bị **nuốt IM LẶNG** — không lỗi, không cảnh báo, chỉ
+    là field rụng mất trên đường `/decide-next`. Đúng lớp bug đã làm `focusCriteria` (BC14) hỏng
+    âm thầm, và đã tái diễn với `metricsVersion` (thêm vào `to_dict()` 2026-08-05 nhưng quên khai
+    ở đây ⇒ cột `practice_answers.metrics_version` NULL trên production dù mọi test đều xanh —
+    e2e mới bắt được). `test_fluency_f11.py` nay khoá bất biến này bằng cách so hai bộ khoá."""
+    metricsVersion: int | None = None
     audioSec: float = 0.0
     speechSec: float = 0.0
     wordCount: int = 0
