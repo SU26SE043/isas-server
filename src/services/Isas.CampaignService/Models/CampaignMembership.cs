@@ -28,6 +28,8 @@ namespace Isas.CampaignService.Models
         public MembershipStatus Status { get; set; }        // enum string; default Joined (D2)
         public DateTime? JoinedAt { get; set; }             // null tới khi ứng viên tham gia (D2)
         public Guid? SessionId { get; set; }                // ref lỏng → Interview; set khi "Start Interview"
+        public Guid? SlotId { get; set; }
+        public DateTime? InterviewDeadlineAt { get; set; }
         public InterviewProgressStatus? InterviewStatus { get; set; }   // NotStarted/InProgress/Completed (enum string)
         // SEC-2/DATA-2: ảnh tham chiếu face-verify — 1 bản/ứng viên/campaign. Lưu S3 KEY (không ảnh trong DB), null tới khi có.
         public string? ReferenceImageKey { get; set; }

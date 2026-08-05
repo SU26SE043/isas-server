@@ -9,6 +9,7 @@
         public string? Domain { get; set; }
         public CampaignStatus Status { get; set; }
         public int? MaxCandidates { get; set; }
+        public int? MaxConcurrentInterviews { get; set; }
         public int? TimeLimitMinutes { get; set; }
         public bool AntiCheatEnabled { get; set; }
         // SEC-1: bật xác minh khuôn mặt trước bài (B2B-only, mặc định false). Gate face-verify (SEC-2) +

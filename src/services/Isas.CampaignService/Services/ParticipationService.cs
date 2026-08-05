@@ -170,7 +170,7 @@ namespace Isas.CampaignService.Services
                 JobTitle = m.Campaign.Domain,
                 Deadline = m.Campaign.ExpiresAt,
                 MembershipStatus = m.Status.ToString(),
-                InterviewStatus = (m.InterviewStatus ?? InterviewProgressStatus.NotStarted).ToString()
+                InterviewStatus = MapCandidateInterviewStatus(m.InterviewStatus).ToString()
             }).ToList();
 
             return new KeysetPage<MyCampaignItem>(items, next);
@@ -188,7 +188,7 @@ namespace Isas.CampaignService.Services
             if (membership is null || membership.Campaign is null)
                 throw new KeyNotFoundException("Bạn không phải thành viên của chiến dịch này.");
 
-            var interviewStatus = membership.InterviewStatus ?? InterviewProgressStatus.NotStarted;
+            var interviewStatus = MapCandidateInterviewStatus(membership.InterviewStatus);
 
             return new CandidateCampaignDetailResponse
             {
@@ -256,7 +256,7 @@ namespace Isas.CampaignService.Services
                 campaign.MaxDeepPerQuestion, ct);   // INT-17b: trần đào sâu mỗi câu
 
             membership.SessionId = session.SessionId;
-            if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted)
+            if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted or InterviewProgressStatus.Abandoned)
                 membership.InterviewStatus = InterviewProgressStatus.InProgress;
             membership.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
@@ -337,6 +337,10 @@ namespace Isas.CampaignService.Services
         // Lời mời còn dùng được: chưa revoke, chưa hết hạn, campaign còn Active. Ngược lại → 410 Gone.
         // DB23 — token rỗng/trắng = không tồn tại (404), KHÔNG để lọt xuống Hash() ném ArgumentException
         // (sẽ thành 500). Trim để dung thứ khoảng trắng khi ứng viên copy link từ email.
+        private static InterviewProgressStatus MapCandidateInterviewStatus(InterviewProgressStatus? status) =>
+            status == InterviewProgressStatus.Abandoned ? InterviewProgressStatus.NotStarted
+                : status ?? InterviewProgressStatus.NotStarted;
+
         private static string HashOrThrow(string token)
         {
             var trimmed = token?.Trim();

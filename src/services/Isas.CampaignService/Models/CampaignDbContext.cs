@@ -14,6 +14,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignCriterion> CampaignCriteria => Set<CampaignCriterion>();
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
         public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
+        public DbSet<CampaignSlot> CampaignSlots => Set<CampaignSlot>();
         public DbSet<CampaignRanking> CampaignRankings => Set<CampaignRanking>();
         public DbSet<CvSubmission> CvSubmissions => Set<CvSubmission>();                         // C13: sàng CV (DB16, ex campaign_candidates)
         public DbSet<CampaignMembership> CampaignMemberships => Set<CampaignMembership>();        // D2: membership ứng viên↔campaign (DB16)
@@ -103,6 +104,20 @@ namespace Isas.CampaignService.Models
                 // `id` ở đuôi thì tie-break phải sort ở heap mỗi khi trùng created_at. Superset của
                 // index cũ (org_id, created_at) → mọi truy vấn cũ vẫn được phục vụ y nguyên.
                 e.HasIndex(x => new { x.OrgId, x.CreatedAt, x.Id });
+            });
+
+            modelBuilder.Entity<CampaignSlot>(e =>
+            {
+                e.ToTable("campaign_slots", t =>
+                {
+                    t.HasCheckConstraint("ck_campaign_slots_range", "ends_at > starts_at");
+                    t.HasCheckConstraint("ck_campaign_slots_capacity", "capacity > 0");
+                });
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.HasIndex(x => new { x.CampaignId, x.StartsAt }).IsUnique();
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
+                e.HasOne(x => x.Campaign).WithMany().HasForeignKey(x => x.CampaignId).OnDelete(DeleteBehavior.Cascade);
             });
 
             // ── CampaignQuestion ─────────────────────────────────────────
@@ -200,6 +215,7 @@ namespace Isas.CampaignService.Models
                 // UNIQUE giữ nguyên shape (1 row/token) — tra bằng hash vẫn là single-row probe.
                 e.HasIndex(x => x.TokenHash).IsUnique();
                 e.HasIndex(x => x.CampaignId);
+                e.HasOne<CampaignSlot>().WithMany().HasForeignKey(x => x.SlotId).OnDelete(DeleteBehavior.SetNull);
 
                 // DB13: khớp soft-delete filter của Campaign (required nav).
                 e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
@@ -313,7 +329,7 @@ namespace Isas.CampaignService.Models
                 e.ToTable("campaign_membership", t =>
                 {
                     t.HasCheckConstraint("ck_campaign_membership_status", "status IN ('Joined')");
-                    t.HasCheckConstraint("ck_campaign_membership_interview_status", "interview_status IS NULL OR interview_status IN ('NotStarted', 'InProgress', 'Completed')");
+                    t.HasCheckConstraint("ck_campaign_membership_interview_status", "interview_status IS NULL OR interview_status IN ('NotStarted', 'InProgress', 'Abandoned', 'Completed')");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
@@ -350,6 +366,8 @@ namespace Isas.CampaignService.Models
                 // ngữ nghĩa (và rủi ro fail lúc apply nếu dữ liệu cũ có trùng) → để riêng nếu cần.
                 e.HasIndex(x => x.SessionId)
                  .HasFilter("session_id IS NOT NULL");
+                e.HasIndex(x => x.CampaignId).HasFilter("interview_status = 'InProgress'");
+                e.HasOne<CampaignSlot>().WithMany().HasForeignKey(x => x.SlotId).OnDelete(DeleteBehavior.SetNull);
 
                 // DB13: required nav → Campaign (soft-delete filter) → BẮT BUỘC khớp filter.
                 e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
