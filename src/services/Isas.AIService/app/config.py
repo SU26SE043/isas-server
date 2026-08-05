@@ -61,6 +61,23 @@ class Settings(BaseSettings):
     # upload). Hết giờ = rơi về cục bộ, không phải lỗi.
     transcribe_timeout_seconds: float = 60.0
 
+    # ── NGÂN SÁCH "THINKING" CHO /decide-next ────────────────────
+    # Gemini 2.5 mặc định bật suy luận ẩn (thinking) và tính tiền token đó THEO GIÁ OUTPUT.
+    # Đo trên chính đường này: **934 thinking token cho 65 token output thật** — gấp 14 lần, và
+    # đó chính là phần lớn độ trễ.
+    #
+    # Đo A/B (12 transcript THẬT từ prod + 2 ca dựng): tắt thinking → độ trễ trung vị
+    # **4,61s → 1,43s (nhanh 3,2×)**, **14/14 quyết định TRÙNG nhau** trên cả 3 loại action
+    # (clarify/follow_up/end), độ dài câu hỏi sinh ra gần như không đổi (97 → 96 ký tự).
+    #
+    # Vì sao decide-next KHÔNG cần suy luận sâu: nó chỉ chọn 1 trong 4 nhánh rồi viết một câu
+    # hỏi ngắn — khác hẳn chấm điểm (cân nhắc nhiều tiêu chí) hay sinh bài giảng. CHỈ áp cho
+    # đường này; các lượt gọi khác giữ nguyên mặc định.
+    #
+    # `0` = tắt · `>0` = trần token suy luận · `-1` = trả về mặc định động của model.
+    # ⚠ Chỉ Gemini **Flash** cho phép 0; Pro không tắt được — đổi model thì phải xem lại.
+    decide_next_thinking_budget: int = 0
+
     # ── F11: NGUỒN MỐC THỜI GIAN cho chỉ số cách nói ─────────────
     # `"vad"` (mặc định) = vùng tiếng nói do Silero VAD xác định · `"whisper"` = biên segment
     # Whisper (hành vi trước 2026-08-05, GIỮ LẠI CHỈ để quay lui không cần deploy).

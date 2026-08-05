@@ -135,6 +135,32 @@ def test_to_dict_camelcase_khop_hop_dong_dotnet():
     }
 
 
+def test_schema_decide_next_khai_DU_moi_khoa_cua_to_dict():
+    """🔴 Bất biến chống một LỚP bug, không phải một field.
+
+    `/decide-next` trả `deliveryMetrics` qua model pydantic `schemas.DeliveryMetrics`. Pydantic
+    mặc định `extra='ignore'` ⇒ khoá nào `to_dict()` sinh ra mà schema KHÔNG khai thì bị **nuốt
+    im lặng**: không lỗi, không cảnh báo, chỉ là field rụng mất giữa đường.
+
+    Đã xảy ra THẬT hai lần: `focusCriteria` (BC14) và `metricsVersion` (2026-08-05 — thêm vào
+    `to_dict()` nhưng quên khai ở schema ⇒ `practice_answers.metrics_version` NULL trên
+    production trong khi 362 test đều xanh; chỉ e2e mới bắt được).
+
+    Test này so HAI BỘ KHOÁ thay vì liệt kê tay, nên field thêm về sau tự được bảo vệ.
+    """
+    from app.schemas import DeliveryMetrics as DeliveryMetricsSchema
+
+    emitted = set(compute_delivery_metrics(
+        "một hai ba", [Segment(0.0, 2.0, "một hai ba")], audio_sec=4.0).to_dict())
+    declared = set(DeliveryMetricsSchema.model_fields)
+
+    missing = emitted - declared
+    assert not missing, (
+        f"schemas.DeliveryMetrics thiếu khoá {sorted(missing)} — pydantic sẽ NUỐT IM LẶNG chúng "
+        f"trên đường /decide-next. Khai thêm vào schema, đừng bỏ khỏi to_dict()."
+    )
+
+
 # ── (3) Prompt ────────────────────────────────────────────────────────────────────────
 def _criteria():
     return [{"criterionId": "c1", "name": "Độ trôi chảy", "maxScore": 5,
