@@ -49,6 +49,7 @@ public class PracticeController : ControllerBase
     [ProducesResponseType(typeof(PracticeSessionResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status402PaymentRequired)]   // BC2: ví hết credit
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(StatusCodes.Status502BadGateway)]        // BC2: PaymentService down
     public async Task<IActionResult> CreateSession([FromBody] CreatePracticeSessionRequest request, CancellationToken ct)
     {
@@ -148,6 +149,14 @@ public class PracticeController : ControllerBase
         catch (UnauthorizedAccessException ex)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (CapacityExceededException ex)
+        {
+            Response.Headers.RetryAfter = "60";
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                error = ex.Message, code = "platform_capacity_exceeded", retryAfterSeconds = 60
+            });
         }
     }
 

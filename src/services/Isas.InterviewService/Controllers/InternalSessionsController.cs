@@ -64,6 +64,14 @@ public class InternalSessionsController : ControllerBase
                 req.CampaignId, req.OrgId);
             return StatusCode(StatusCodes.Status402PaymentRequired, new { error = ex.Message });
         }
+        catch (CapacityExceededException ex)
+        {
+            Response.Headers.RetryAfter = "60";
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                error = ex.Message, code = "platform_capacity_exceeded", retryAfterSeconds = 60
+            });
+        }
         catch (InvalidOperationException ex)
         {
             _logger.LogWarning(ex, "create-or-get campaign session lỗi input (candidate {CandidateId}, campaign {CampaignId})",

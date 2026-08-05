@@ -61,6 +61,11 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // B2B: lookup session theo campaign (S3/S4). Non-unique, nullable.
         e.HasIndex(x => x.CampaignId);
 
+        // Capacity: đếm đúng tập nóng đang chiếm chỗ; filter phải khớp EnsureCapacityAsync.
+        e.HasIndex(x => x.Status)
+            .HasDatabaseName("ix_practice_sessions_running_capacity")
+            .HasFilter("status IN ('GeneratingQuestions', 'Ready', 'InProgress')");
+
         // DB31 — lịch sử buổi luyện của 1 candidate, phân trang keyset `(created_at DESC, id DESC)`
         // (quy ước DB8). Composite (candidate_id, created_at DESC, id DESC) khớp ĐÚNG hình truy vấn
         // `WHERE candidate_id = @c ORDER BY created_at DESC, id DESC LIMIT n` → index-only range scan,

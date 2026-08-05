@@ -30,6 +30,7 @@ public class PracticeService : IPracticeService
     private readonly GroundingOptions _grounding;     // RAG grounding — Enabled/TopK/threshold
     private readonly ILogger<PracticeService> _logger;
     private readonly bool _consumeAtGeneration;   // PONR1 — kill-switch Billing:ConsumeAtQuestionGeneration
+    private readonly CapacityOptions _capacity;
 
     public PracticeService(
         InterviewDbContext db,
@@ -49,7 +50,8 @@ public class PracticeService : IPracticeService
         // (câu hỏi GroundingRefs=null, hành vi trước grounding y nguyên). DI inject bản thật khi Grounding:Enabled.
         IKnowledgeService? knowledge = null,
         IOptions<GroundingOptions>? groundingOptions = null,
-        IEntitlementClient? entitlements = null)
+        IEntitlementClient? entitlements = null,
+        IOptions<CapacityOptions>? capacityOptions = null)
     {
         _db = db;
         _storage = storage;
@@ -69,6 +71,7 @@ public class PracticeService : IPracticeService
         _consumeAtGeneration = bool.TryParse(
             config?["Billing:ConsumeAtQuestionGeneration"], out var consumeAtGeneration)
             && consumeAtGeneration;
+        _capacity = capacityOptions?.Value ?? new CapacityOptions();
     }
 
     // ── CREATE: tạo session + sinh câu hỏi (1 call) ───────────────────────
@@ -134,6 +137,8 @@ public class PracticeService : IPracticeService
             if (string.IsNullOrWhiteSpace(jdText))
                 throw new InvalidOperationException("JD không đọc được nội dung");
         }
+
+        await EnsureCapacityAsync(ct); // phải trước reserve: đầy không được giữ credit oan.
 
         // BC2: reserve 1 credit ví cá nhân (owner=User) TRƯỚC khi tạo session row.
         // sessionId cấp trước → reserve khoá idempotency theo đúng Id session sẽ dùng (P4).
@@ -372,6 +377,8 @@ public class PracticeService : IPracticeService
         if (request.Criteria is null || request.Criteria.Count == 0)
             throw new InvalidOperationException("Campaign session cần ít nhất 1 tiêu chí");
 
+        await EnsureCapacityAsync(ct); // CreateCampaignSession chỉ được gọi khi tạo mới, không chặn resume.
+
         // BK14: reserve 1 credit ví ORG (owner=Org, PAY-6) TRƯỚC khi tạo session row — reserve-first
         // như B2C (BC2) để tránh orphan. sessionId cấp trước → reserve khoá idempotency theo đúng Id
         // session sẽ dùng (P4). Ví org hết credit → Payment 402 → InsufficientCreditException ném ở đây
@@ -505,6 +512,17 @@ public class PracticeService : IPracticeService
             existing.Id, candidateId, request.CampaignId);
 
         return MapToResponse(existing, questions, answers);
+    }
+
+    private async Task EnsureCapacityAsync(CancellationToken ct)
+    {
+        if (_capacity.MaxConcurrentSessions <= 0) return;
+
+        var running = await _db.PracticeSessions.CountAsync(s =>
+            s.Status == SessionStatus.GeneratingQuestions || s.Status == SessionStatus.Ready ||
+            s.Status == SessionStatus.InProgress, ct);
+        if (running >= _capacity.MaxConcurrentSessions)
+            throw new CapacityExceededException(_capacity.MaxConcurrentSessions);
     }
 
     // ── SUBMIT SESSION: chốt sổ (KHÔNG publish — chấm dần đã publish lúc upload) ──

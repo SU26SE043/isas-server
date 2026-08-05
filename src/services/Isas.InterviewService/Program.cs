@@ -211,6 +211,8 @@ builder.Services.Configure<FileStorageOptions>(
 
 builder.Services.Configure<ScoringOptions>(
     builder.Configuration.GetSection(ScoringOptions.SectionName));   // BC9
+builder.Services.Configure<CapacityOptions>(
+    builder.Configuration.GetSection(CapacityOptions.SectionName));
 builder.Services.Configure<AdaptiveOptions>(
     builder.Configuration.GetSection(AdaptiveOptions.SectionName));   // phỏng vấn THÍCH ỨNG (B2C)
 builder.Services.Configure<RoadmapOptions>(
