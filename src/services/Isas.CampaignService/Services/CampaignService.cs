@@ -794,13 +794,14 @@ namespace Isas.CampaignService.Services
 
             // ── 3. Cap theo max_candidates — vượt → chặn CẢ request (không tạo dở dang) ──
             await EnsureCandidateCapacityAsync(orgId, campaign, existingEmails.Count, toCreate.Count, "lời mời", ct);
+            var assignedSlots = await AssignSlotsAsync(campaign.Id, toCreate.Count, ct);
 
             // ── 4. Tạo rows + đẩy job email queue ────────────────────────────
             var now = DateTime.UtcNow;
             var expiresAt = ResolveInvitationExpiry(campaign, now);
 
             // DB23 — token THÔ chỉ sống trong bộ nhớ (đi vào email/URL); DB lưu SHA-256(token).
-            var invitations = toCreate.Select(email =>
+            var invitations = toCreate.Select((email, index) =>
             {
                 var rawToken = InvitationTokens.NewRawToken();
                 return (RawToken: rawToken, Invitation: new CampaignInvitation
@@ -808,6 +809,7 @@ namespace Isas.CampaignService.Services
                     Id = Guid.NewGuid(),
                     CampaignId = campaign.Id,
                     CampaignCandidateId = null,   // đường 1 (D1) — không gắn campaign_candidates
+                    SlotId = assignedSlots[index],
                     TokenHash = InvitationTokens.Hash(rawToken),
                     Email = email,
                     ExpiresAt = expiresAt,
@@ -1110,7 +1112,8 @@ namespace Isas.CampaignService.Services
             // Tạo invitation (gắn campaign_candidate_id) + set Analyzed → Invited + outbox-row CÙNG tx.
             var now = DateTime.UtcNow;
             var expiresAt = ResolveInvitationExpiry(campaign, now);
-            foreach (var cand in toInvite)
+            var assignedSlots = await AssignSlotsAsync(campaign.Id, toInvite.Count, ct);
+            foreach (var (cand, index) in toInvite.Select((value, index) => (value, index)))
             {
                 var rawToken = InvitationTokens.NewRawToken();   // DB23 — thô cho email, hash cho DB
                 var invitation = new CampaignInvitation
@@ -1118,6 +1121,7 @@ namespace Isas.CampaignService.Services
                     Id = Guid.NewGuid(),
                     CampaignId = campaign.Id,
                     CampaignCandidateId = cand.Id,   // đường 2 — gắn shortlist (đường 1 để null)
+                    SlotId = assignedSlots[index],
                     TokenHash = InvitationTokens.Hash(rawToken),
                     Email = cand.Email!.Trim(),      // email đã chuẩn hoá lowercase từ C13/PATCH
                     ExpiresAt = expiresAt,
@@ -1172,6 +1176,11 @@ namespace Isas.CampaignService.Services
             // Revoke token cũ (idempotent: đã revoke → giữ mốc cũ) + tạo invitation mới. Cả hai thay đổi
             // đi trong 1 SaveChangesAsync = 1 transaction (như CreateInvitationsAsync) → nguyên tử.
             old.RevokedAt ??= now;
+            var slotId = old.SlotId;
+            if (slotId is not null && !await _db.CampaignSlots.AnyAsync(s => s.Id == slotId && s.CampaignId == campaign.Id, ct))
+                slotId = null;
+            if (slotId is null)
+                slotId = (await AssignSlotsAsync(campaign.Id, 1, ct))[0];
 
             var rawToken = InvitationTokens.NewRawToken();   // DB23 — thô cho email, hash cho DB
             var fresh = new CampaignInvitation
@@ -1179,6 +1188,7 @@ namespace Isas.CampaignService.Services
                 Id = Guid.NewGuid(),
                 CampaignId = campaign.Id,
                 CampaignCandidateId = old.CampaignCandidateId,   // giữ liên kết shortlist (đường 2); đường 1 = null
+                SlotId = slotId,
                 TokenHash = InvitationTokens.Hash(rawToken),
                 Email = old.Email,
                 ExpiresAt = ResolveInvitationExpiry(campaign, now),
@@ -1854,6 +1864,29 @@ namespace Isas.CampaignService.Services
             if (currentCount + batchCount > effectiveCap)
                 throw new ArgumentException(
                     $"Vượt giới hạn {label} hiệu lực ({effectiveCap}): hiện có {currentCount}, đang thêm {batchCount}.");
+        }
+
+        // Slot null means the campaign has no schedule configured, so legacy invitations remain unrestricted.
+        // For configured slots, count invitation rows (not distinct email) and reserve capacity for this batch
+        // in-memory so a single request is evenly distributed and all-or-nothing.
+        private async Task<List<Guid?>> AssignSlotsAsync(Guid campaignId, int count, CancellationToken ct)
+        {
+            if (count == 0) return [];
+            var slots = await _db.CampaignSlots.Where(s => s.CampaignId == campaignId)
+                .OrderBy(s => s.StartsAt).ThenBy(s => s.Id).ToListAsync(ct);
+            if (slots.Count == 0) return Enumerable.Repeat<Guid?>(null, count).ToList();
+            var used = await _db.CampaignInvitations.Where(i => i.CampaignId == campaignId && i.RevokedAt == null && i.SlotId != null)
+                .GroupBy(i => i.SlotId!.Value).Select(g => new { SlotId = g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.SlotId, x => x.Count, ct);
+            var result = new List<Guid?>(count);
+            for (var i = 0; i < count; i++)
+            {
+                var selected = slots.Where(s => (used.TryGetValue(s.Id, out var n) ? n : 0) < s.Capacity)
+                    .OrderBy(s => used.TryGetValue(s.Id, out var n) ? n : 0).ThenBy(s => s.StartsAt).ThenBy(s => s.Id).FirstOrDefault();
+                if (selected is null) throw new ArgumentException("Tất cả khung giờ đã đủ ứng viên được mời.");
+                used[selected.Id] = (used.TryGetValue(selected.Id, out var existing) ? existing : 0) + 1;
+                result.Add(selected.Id);
+            }
+            return result;
         }
 
         // DB23 — hạn token: campaign có deadline → dùng deadline (giữ ràng buộc token ≤ hạn campaign);
