@@ -44,6 +44,7 @@ def _reset_provider(monkeypatch):
     monkeypatch.setattr(app_settings, "transcribe_provider", "local")
     monkeypatch.setattr(app_settings, "whisper_model", "small")
     monkeypatch.setattr(app_settings, "delivery_metrics_source", "vad")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", False)
 
 
 def _make(monkeypatch, *, vad_spans=None, seconds=6.0):
@@ -82,6 +83,26 @@ def _stub_remote(monkeypatch, text=None, *, engine="whisper-1", boom=None):
 
     monkeypatch.setattr(transcriber_mod, "transcribe_remote", _fake)
     return seen
+
+
+def test_original_audio_is_sent_with_real_filename_and_remote_can_retry_wav(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_settings, "transcribe_provider", "whisper-1")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", True)
+    audio = tmp_path / "answer.webm"
+    audio.write_bytes(b"original-webm")
+    t, _ = _make(monkeypatch)
+    calls = []
+
+    def remote(provider, data, language, audio_seconds=0.0, filename="audio.wav"):
+        calls.append((data, filename))
+        if filename == "answer.webm":
+            raise ValueError("legacy WAV bytes under webm extension")
+        return "bản WAV cứu hộ", "whisper-1"
+
+    monkeypatch.setattr(transcriber_mod, "transcribe_remote", remote)
+    assert t.transcribe_detailed(str(audio)).text == "bản WAV cứu hộ"
+    assert calls[0] == (b"original-webm", "answer.webm")
+    assert calls[1][1] == "audio.wav"
 
 
 # ── 1. Đường thành công của từng nhà cung cấp ────────────────────────────────────────

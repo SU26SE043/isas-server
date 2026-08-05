@@ -41,6 +41,7 @@ from __future__ import annotations
 import array
 import io
 import logging
+import mimetypes
 import re
 import unicodedata
 import wave
@@ -220,8 +221,8 @@ def pcm_to_wav_bytes(pcm, sample_rate: int = SAMPLE_RATE) -> bytes:
     return buf.getvalue()
 
 
-def transcribe_openai(wav_bytes: bytes, language: str | None,
-                      audio_seconds: float = 0.0) -> tuple[str, str]:
+def transcribe_openai(audio_bytes: bytes, language: str | None,
+                      audio_seconds: float = 0.0, filename: str = "audio.wav") -> tuple[str, str]:
     """`whisper-1` của OpenAI. Trả ``(text, engine)``. RAISE khi hỏng (caller lo dự phòng).
 
     🔴 KHÔNG BAO GIỜ THÊM KHOÁ ``prompt`` VÀO PAYLOAD NÀY.
@@ -235,7 +236,7 @@ def transcribe_openai(wav_bytes: bytes, language: str | None,
 
     from app.usage import report_audio_usage, report_blocking
 
-    files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
+    files = {"file": (filename, audio_bytes, mimetypes.guess_type(filename)[0] or "application/octet-stream")}
     data = {
         "model": settings.openai_transcribe_model,
         "response_format": "json",
@@ -274,8 +275,8 @@ def _get_gemini_client():
     return _gemini_client
 
 
-def transcribe_gemini(wav_bytes: bytes, language: str | None,
-                      audio_seconds: float = 0.0) -> tuple[str, str]:
+def transcribe_gemini(audio_bytes: bytes, language: str | None,
+                      audio_seconds: float = 0.0, filename: str = "audio.wav") -> tuple[str, str]:
     """Gemini đa phương thức. Trả ``(text, engine)``. RAISE khi hỏng (caller lo dự phòng).
 
     Dùng API ĐỒNG BỘ (``client.models``) chứ không ``client.aio.models`` như
@@ -293,7 +294,7 @@ def transcribe_gemini(wav_bytes: bytes, language: str | None,
     resp = _get_gemini_client().models.generate_content(
         model=settings.gemini_model,
         contents=[
-            types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
+            types.Part.from_bytes(data=audio_bytes, mime_type=mimetypes.guess_type(filename)[0] or "application/octet-stream"),
             GEMINI_TRANSCRIBE_PROMPT,
         ],
         config=types.GenerateContentConfig(temperature=0.0),
@@ -306,11 +307,11 @@ def transcribe_gemini(wav_bytes: bytes, language: str | None,
     return text, settings.gemini_model
 
 
-def transcribe_remote(provider: str, wav_bytes: bytes, language: str | None,
-                      audio_seconds: float = 0.0) -> tuple[str, str]:
+def transcribe_remote(provider: str, audio_bytes: bytes, language: str | None,
+                      audio_seconds: float = 0.0, filename: str = "audio.wav") -> tuple[str, str]:
     """Điều phối theo tên nhà cung cấp. RAISE khi tên lạ hoặc lượt gọi hỏng."""
     if provider == OPENAI:
-        return transcribe_openai(wav_bytes, language, audio_seconds)
+        return transcribe_openai(audio_bytes, language, audio_seconds, filename)
     if provider == GEMINI:
-        return transcribe_gemini(wav_bytes, language, audio_seconds)
+        return transcribe_gemini(audio_bytes, language, audio_seconds, filename)
     raise ValueError(f"transcribe_provider không nhận ra: {provider!r}")
