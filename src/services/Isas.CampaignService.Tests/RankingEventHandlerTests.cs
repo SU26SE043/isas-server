@@ -14,6 +14,50 @@ public class RankingEventHandlerTests
     private static RankingEventHandler NewHandler(CampaignDbContext db) =>
         new(db, Mock.Of<ILogger<RankingEventHandler>>());
 
+    [Fact]
+    public async Task SessionAbandoned_InProgress_DanhDauAbandonedVaNhaDeadline()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        var sessionId = Guid.NewGuid();
+        var membership = CampaignTestDb.NewMembership(campaign.Id, Guid.NewGuid(), sessionId: sessionId,
+            interviewStatus: InterviewProgressStatus.InProgress);
+        membership.InterviewDeadlineAt = DateTime.UtcNow.AddHours(1);
+        tdb.Db.AddRange(campaign, membership);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewHandler(tdb.NewContext()).HandleSessionAbandonedAsync(new SessionAbandonedMessage
+        {
+            SessionId = sessionId, CampaignId = campaign.Id, CandidateId = membership.CandidateId!.Value,
+            Reason = "expired_no_answer", AbandonedAt = DateTime.UtcNow
+        });
+
+        using var check = tdb.NewContext();
+        var after = await check.CampaignMemberships.SingleAsync();
+        Assert.Equal(InterviewProgressStatus.Abandoned, after.InterviewStatus);
+        Assert.Equal(sessionId, after.SessionId);
+        Assert.Null(after.InterviewDeadlineAt);
+    }
+
+    [Fact]
+    public async Task SessionAbandoned_KhongHaCapCompleted()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        var membership = CampaignTestDb.NewMembership(campaign.Id, Guid.NewGuid(), sessionId: Guid.NewGuid(),
+            interviewStatus: InterviewProgressStatus.Completed);
+        tdb.Db.AddRange(campaign, membership);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewHandler(tdb.NewContext()).HandleSessionAbandonedAsync(new SessionAbandonedMessage
+        {
+            SessionId = membership.SessionId!.Value, CampaignId = campaign.Id, CandidateId = membership.CandidateId!.Value
+        });
+
+        using var check = tdb.NewContext();
+        Assert.Equal(InterviewProgressStatus.Completed, (await check.CampaignMemberships.SingleAsync()).InterviewStatus);
+    }
+
     // E4(a): SessionScored B2B (campaignId có giá trị) → 1 row campaign_rankings với total_score có trọng số.
     [Fact]
     public async Task SessionScored_B2B_tao_1_row_ranking_voi_diem_co_trong_so()

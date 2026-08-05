@@ -72,6 +72,29 @@ namespace Isas.CampaignService.Services
             await _db.SaveChangesAsync(ct);
         }
 
+        public async Task HandleSessionAbandonedAsync(SessionAbandonedMessage evt, CancellationToken ct = default)
+        {
+            if (evt.CampaignId is null)
+                return;
+
+            var membership = await _db.CampaignMemberships
+                .FirstOrDefaultAsync(m => m.SessionId == evt.SessionId, ct);
+            if (membership is null)
+                membership = await _db.CampaignMemberships.FirstOrDefaultAsync(
+                    m => m.CampaignId == evt.CampaignId && m.CandidateId == evt.CandidateId, ct);
+
+            // Absorbing Completed: delayed abandon events must never erase a scored result.
+            if (membership is null || membership.InterviewStatus == InterviewProgressStatus.Completed)
+                return;
+
+            membership.InterviewStatus = InterviewProgressStatus.Abandoned;
+            membership.SessionId ??= evt.SessionId;
+            membership.InterviewDeadlineAt = null;
+            membership.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            _logger.LogInformation("membership {MembershipId} released after abandoned session {SessionId}", membership.Id, evt.SessionId);
+        }
+
         // D2/DB16: session Scored → membership (campaign_membership) interview_status = Completed. Match theo
         // session_id (chắc chắn đúng membership) rồi fallback (campaign, candidate). Idempotent (đã Completed
         // → no-op). Không có membership (luồng không qua D2) → no-op, KHÔNG phá ranking.

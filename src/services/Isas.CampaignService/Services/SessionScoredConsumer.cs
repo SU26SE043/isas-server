@@ -23,7 +23,8 @@ namespace Isas.CampaignService.Services
     public class SessionScoredConsumer : BackgroundService
     {
         private const string ExchangeName = "interview.events";
-        private const string RoutingKey = "session.scored";
+        private const string ScoredRoutingKey = "session.scored";
+        private const string AbandonedRoutingKey = "session.abandoned";
         private const string QueueName = "campaign.ranking";
         private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
 
@@ -35,6 +36,7 @@ namespace Isas.CampaignService.Services
         private readonly IConfiguration _config;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<SessionScoredConsumer> _logger;
+        private readonly bool _releaseOnAbandoned;
 
         public SessionScoredConsumer(
             IConfiguration config,
@@ -44,6 +46,7 @@ namespace Isas.CampaignService.Services
             _config = config;
             _scopeFactory = scopeFactory;
             _logger = logger;
+            _releaseOnAbandoned = config.GetValue<bool>("Membership:ReleaseOnAbandoned");
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -108,8 +111,11 @@ namespace Isas.CampaignService.Services
             await channel.QueueBindAsync(
                 queue: QueueName,
                 exchange: ExchangeName,
-                routingKey: RoutingKey,
+                routingKey: ScoredRoutingKey,
                 cancellationToken: stoppingToken);
+            if (_releaseOnAbandoned)
+                await channel.QueueBindAsync(queue: QueueName, exchange: ExchangeName, routingKey: AbandonedRoutingKey,
+                    cancellationToken: stoppingToken);
 
             // Prefetch 1 → xử lý tuần tự, ack sau khi upsert xong (an toàn cho idempotency find-or-update).
             await channel.BasicQosAsync(0, 1, false, cancellationToken: stoppingToken);
@@ -120,25 +126,35 @@ namespace Isas.CampaignService.Services
                 try
                 {
                     var json = Encoding.UTF8.GetString(ea.Body.Span);
-                    var evt = JsonSerializer.Deserialize<SessionScoredMessage>(json, JsonOptions);
-
-                    if (evt is not null)
+                    using var scope = _scopeFactory.CreateScope();
+                    var handler = scope.ServiceProvider.GetRequiredService<IRankingEventHandler>();
+                    if (ea.RoutingKey == ScoredRoutingKey)
                     {
-                        using var scope = _scopeFactory.CreateScope();
-                        var handler = scope.ServiceProvider.GetRequiredService<IRankingEventHandler>();
+                        var evt = JsonSerializer.Deserialize<SessionScoredMessage>(json, JsonOptions);
+                        if (evt is null) throw new JsonException("SessionScored message rỗng.");
                         await handler.HandleSessionScoredAsync(evt, stoppingToken);
                     }
-                    else
+                    else if (_releaseOnAbandoned && ea.RoutingKey == AbandonedRoutingKey)
                     {
-                        _logger.LogWarning("SessionScored message rỗng/không deserialize được — bỏ qua: {Json}", json);
+                        var evt = JsonSerializer.Deserialize<SessionAbandonedMessage>(json, JsonOptions);
+                        if (evt is null) throw new JsonException("SessionAbandoned message rỗng.");
+                        await handler.HandleSessionAbandonedAsync(evt, stoppingToken);
                     }
 
                     await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Lỗi xử lý SessionScored — nack + requeue");
-                    await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: stoppingToken);
+                    if (ea.Redelivered)
+                    {
+                        _logger.LogError(ex, "Event {RoutingKey} lỗi lần 2 — bỏ khỏi queue chính", ea.RoutingKey);
+                        await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false, cancellationToken: stoppingToken);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(ex, "Lỗi xử lý event {RoutingKey} — thử lại một lần", ea.RoutingKey);
+                        await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: stoppingToken);
+                    }
                 }
             };
 
@@ -149,8 +165,8 @@ namespace Isas.CampaignService.Services
                 cancellationToken: stoppingToken);
 
             _logger.LogInformation(
-                "SessionScoredConsumer đang nghe {Queue} (bind {Exchange}/{RoutingKey})",
-                QueueName, ExchangeName, RoutingKey);
+                "SessionScoredConsumer đang nghe {Queue} (bind {Exchange}/{ScoredKey}+{AbandonedKey})",
+                QueueName, ExchangeName, ScoredRoutingKey, AbandonedRoutingKey);
 
             // Giữ task sống tới khi bị huỷ; nếu channel/connection rớt, exception sẽ ném ra ngoài
             // và ExecuteAsync sẽ reconnect.
