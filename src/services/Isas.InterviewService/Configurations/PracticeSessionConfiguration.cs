@@ -97,11 +97,12 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
             .HasDatabaseName("ix_practice_sessions_deadline")
             .HasFilter("status IN ('Ready', 'InProgress') AND deadline IS NOT NULL");
 
-        // (2) B2C không hoạt động — ScanInactiveB2CAsync:
-        //     status IN (Ready, InProgress) && deadline == null && campaign_id == null && created_at < cutoff
+        // (2) Không hoạt động không có hard deadline — ScanInactiveB2CAsync:
+        //     status IN (Ready, InProgress) && deadline == null && created_at < cutoff. Không lọc
+        //     campaign_id: B2B không deadline đã reserve credit lúc Start, cũng phải được dọn.
         e.HasIndex(x => x.CreatedAt)
             .HasDatabaseName("ix_practice_sessions_b2c_active")
-            .HasFilter("status IN ('Ready', 'InProgress') AND campaign_id IS NULL AND deadline IS NULL");
+            .HasFilter("status IN ('Ready', 'InProgress') AND deadline IS NULL");
 
         e.HasMany(x => x.Questions)
             .WithOne(q => q.Session)
