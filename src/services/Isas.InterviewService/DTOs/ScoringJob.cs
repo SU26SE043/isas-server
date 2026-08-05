@@ -27,6 +27,12 @@ public class ScoringJob
     // consistency E10). null (luồng cũ / re-publish job cũ) → worker tải audio + Whisper như trước.
     public string? Transcript { get; set; }
 
+    // Con dấu ENGINE đã chép ra `Transcript` ở trên. Đi cặp với nó, cùng lý do như DeliveryMetrics:
+    // worker bỏ Whisper khi job có Transcript, nên nó KHÔNG tự biết engine nào đã chép — không gửi
+    // kèm thì worker không có gì để echo về callback, và con dấu chỉ tồn tại ở đường thích ứng còn
+    // đường republisher thì mất. null = job không mang transcript (worker tự chép, tự đóng dấu).
+    public string? TranscriptEngine { get; set; }
+
     // F11 — chỉ số cách nói đo trong CÙNG lượt transcribe đồng bộ đó. PHẢI đi kèm Transcript:
     // worker bỏ Whisper khi job có Transcript, nên nếu không gửi kèm thì buổi THÍCH ỨNG không
     // bao giờ có chỉ số trong khi buổi TĨNH vẫn có — hỏng âm thầm, không lỗi nào nổ.
@@ -65,6 +71,24 @@ public class ScoringAnchorDto
 public class AnswerScoreCallbackRequest
 {
     public string Transcript { get; set; } = "";
+
+    // Engine đã chép ra `Transcript` ngay trên (vd "whisper-1" / "gemini-2.5-flash" /
+    // "whisper-local-small"). AIService chép qua nhà cung cấp TỪ XA và rơi về Whisper CỤC BỘ khi
+    // mạng hỏng ⇒ hai answer cùng buổi có thể dùng hai engine khác nhau, mà chất lượng chữ đi thẳng
+    // vào điểm chấm (Whisper small sai 4,2% số từ vs 0,5–0,7% của engine từ xa). Không đóng dấu thì
+    // chênh lệch đó vô hình ở xếp hạng B2B (CAMP-10) và ở đo cải thiện roadmap (BC15).
+    //
+    // 🔴 KHOÁ DÂY CỐ ĐỊNH: `transcriptEngine` (camelCase). AIService gửi đúng tên này. Lệch tên giữa
+    // hai ngôn ngữ KHÔNG ném lỗi ở đâu cả — nó chỉ im lặng điền null, và repo đã dính đúng kiểu này
+    // 3 lần (`focusCriteria` bị pydantic nuốt · `adaptiveMaxQuestions` vs `maxQuestions` làm mọi gói
+    // trả phí nhận trần 0 câu · `promptVersion` suýt để cột NULL vĩnh viễn). Đổi tên field ở đây phải
+    // đổi đồng thời phía Python — `TranscriptEngineWireContractTests` khoá hợp đồng này.
+    //
+    // Nullable + không [Required] (mẫu SampleAnswer/DeliveryMetrics/PromptVersion): worker/image CŨ
+    // không gửi vẫn phải chấm được, và một cột kiểm toán TUYỆT ĐỐI không được biến thành đường làm
+    // answer Failed (PAY-13: Failed = người luyện mất 1 credit).
+    public string? TranscriptEngine { get; set; }
+
     public int RubricVersion { get; set; }
 
     // E10 — attempt worker vừa chấm (echo từ job). Idempotent theo (attempt_no, rubric_version):

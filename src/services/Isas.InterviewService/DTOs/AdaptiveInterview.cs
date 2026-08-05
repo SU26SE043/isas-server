@@ -43,4 +43,10 @@ public record DecideNextResult(
     // F11 — chỉ số cách nói đo trong CÙNG lượt transcribe đó. Đây là lần đo DUY NHẤT của câu trả
     // lời ở đường thích ứng (worker sau đó bỏ Whisper) → không lấy ở đây là mất luôn.
     // Optional (default null) để call site/test cũ dựng 4 tham số vẫn compile.
-    DeliveryMetricsDto? DeliveryMetrics = null);
+    DeliveryMetricsDto? DeliveryMetrics = null,
+    // Engine đã chép ra `Transcript` ngay trên. Đi CẶP với nó: đường thích ứng là lần chép DUY NHẤT
+    // (worker sau đó bỏ Whisper) nên không lấy con dấu ở đây là mất vĩnh viễn lai lịch của đúng bản
+    // chép đã dùng để chấm. AIService rơi từ engine từ xa về Whisper cục bộ khi mạng hỏng ⇒ giá trị
+    // này thay đổi giữa các câu trong cùng một buổi.
+    // 🔴 Khoá dây phía AIService: `transcriptEngine` (camelCase) — xem AnswerScoreCallbackRequest.
+    string? TranscriptEngine = null);
