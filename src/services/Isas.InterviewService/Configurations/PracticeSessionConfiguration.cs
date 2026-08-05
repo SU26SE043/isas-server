@@ -91,10 +91,11 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // thì partial index NGỪNG được dùng — xem test SweeperIndexTests khoá hợp đồng này.)
         //
         // (1) B2B quá hạn nhận bài — ScanExpiredB2BAsync:
-        //     status == InProgress && deadline != null && deadline < now
+        //     status IN (Ready, InProgress) && deadline != null && deadline < now. B2B Ready đã
+        //     reserve credit tại Start, nên phải được sweeper dọn nếu đóng tab trước answer đầu tiên.
         e.HasIndex(x => x.Deadline)
             .HasDatabaseName("ix_practice_sessions_deadline")
-            .HasFilter("status = 'InProgress' AND deadline IS NOT NULL");
+            .HasFilter("status IN ('Ready', 'InProgress') AND deadline IS NOT NULL");
 
         // (2) B2C không hoạt động — ScanInactiveB2CAsync:
         //     status IN (Ready, InProgress) && deadline == null && campaign_id == null && created_at < cutoff

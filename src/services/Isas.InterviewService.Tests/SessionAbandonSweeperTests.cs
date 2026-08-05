@@ -127,9 +127,10 @@ public class SessionAbandonSweeperTests
     }
 
     [Fact]
-    public async Task ReadyStatus_PastDeadline_ZeroAnswers_NotAbandoned()
+    public async Task ReadyStatus_PastDeadline_ZeroAnswers_WritesAbandonedOutbox_AndClosesSession()
     {
-        // Sweeper chỉ chạm InProgress — Ready (chưa bắt đầu) quá Deadline KHÔNG thuộc phạm vi.
+        // B2B Ready được tạo sau Start và credit đã reserve. Đóng tab trước câu đầu tiên vẫn phải
+        // abandon khi deadline qua để Payment release reservation.
         using var t = new TestDb();
         var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready,
             deadline: DateTime.UtcNow.AddMinutes(-5));
@@ -139,7 +140,9 @@ public class SessionAbandonSweeperTests
         var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        Assert.Equal(0, AbandonedRows(t, session.Id));
+        Assert.Equal(1, AbandonedRows(t, session.Id));
+        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.SessionAbandoned, saved.Status);
     }
 
     [Fact]

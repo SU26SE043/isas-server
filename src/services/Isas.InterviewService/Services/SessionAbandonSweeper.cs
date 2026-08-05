@@ -14,7 +14,7 @@ namespace Isas.InterviewService.Services;
 // B2C = null → không hard-deadline, chỉ giới hạn từng câu). Mirror pattern background-sweep của
 // StuckAnswerRepublisher (ScanInterval 2', scope riêng cho DbContext).
 //
-// Quá Deadline + InProgress (B2B):
+// Quá Deadline + Ready/InProgress (B2B):
 //   • ≥1 answer  → AUTO-SUBMIT (reuse PracticeService.SubmitSessionAsync): chốt sổ → câu trống → Skipped
 //                  → Scoring/Scored → consume credit qua SessionScored (E7).
 //   • 0  answer  → SessionAbandoned (reuse event E3): phát để Payment release reservation (không consume).
@@ -76,7 +76,9 @@ public class SessionAbandonSweeper : BackgroundService
         await ScanInactiveB2CAsync(ct);
     }
 
-    // B2B — InProgress + có Deadline THẬT + đã quá hạn nhận bài. Deadline null → bỏ qua hoàn toàn.
+    // B2B — Ready/InProgress + có Deadline THẬT + đã quá hạn nhận bài. `Ready` ở B2B đã
+    // reserve credit tại Start; nếu ứng viên đóng tab trước answer đầu tiên thì nó sẽ không bao
+    // giờ tự chuyển InProgress. Deadline null vẫn bỏ qua hoàn toàn theo policy B2B đã chốt.
     private async Task ScanExpiredB2BAsync(CancellationToken ct)
     {
         // Đọc danh sách session quá hạn trong 1 scope (projection, không tracking). Xử lý từng session
@@ -88,7 +90,7 @@ public class SessionAbandonSweeper : BackgroundService
             var now = DateTime.UtcNow;
 
             expired = await db.PracticeSessions
-                .Where(s => s.Status == SessionStatus.InProgress
+                .Where(s => (s.Status == SessionStatus.Ready || s.Status == SessionStatus.InProgress)
                             && s.Deadline != null
                             && s.Deadline < now)
                 .Select(s => new ExpiredSession(s.Id, s.CampaignId, s.CandidateId))
@@ -98,7 +100,7 @@ public class SessionAbandonSweeper : BackgroundService
         if (expired.Count == 0) return;
 
         _logger.LogWarning(
-            "Phát hiện {Count} session InProgress quá hạn nhận bài, chốt buổi", expired.Count);
+            "Phát hiện {Count} session B2B Ready/InProgress quá hạn nhận bài, chốt buổi", expired.Count);
 
         foreach (var s in expired)
             await FinalizeExpiredSessionAsync(s, ct);
