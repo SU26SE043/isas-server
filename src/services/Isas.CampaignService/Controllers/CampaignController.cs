@@ -71,6 +71,47 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to get campaign: {ex.Message}"); }
         }
 
+        [HttpGet("{id:guid}/slots")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<IReadOnlyList<CampaignSlotResponse>>> GetSlots(Guid id, CancellationToken ct)
+        {
+            var orgId = GetOrgId(); if (orgId is null) return Forbid();
+            try { return Ok(await _campaignService.GetSlotsAsync(orgId.Value, id, ct)); }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+        }
+
+        [HttpPost("{id:guid}/slots")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignSlotResponse>> CreateSlot(Guid id, CreateCampaignSlotRequest request, CancellationToken ct)
+        {
+            var orgId = GetOrgId(); if (orgId is null) return Forbid();
+            try { return Ok(await _campaignService.CreateSlotAsync(orgId.Value, id, request, ct)); }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }
+        }
+
+        [HttpPut("{id:guid}/slots/{slotId:guid}")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignSlotResponse>> UpdateSlot(Guid id, Guid slotId, UpdateCampaignSlotRequest request, CancellationToken ct)
+        {
+            var orgId = GetOrgId(); if (orgId is null) return Forbid();
+            try { return Ok(await _campaignService.UpdateSlotAsync(orgId.Value, id, slotId, request, ct)); }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }
+        }
+
+        [HttpDelete("{id:guid}/slots/{slotId:guid}")]
+        [Authorize(Roles = "Employer")]
+        public async Task<IActionResult> DeleteSlot(Guid id, Guid slotId, CancellationToken ct)
+        {
+            var orgId = GetOrgId(); if (orgId is null) return Forbid();
+            try { await _campaignService.DeleteSlotAsync(orgId.Value, id, slotId, ct); return NoContent(); }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }
+        }
+
         [HttpPost]
         [Authorize(Roles = "Employer")]
         public async Task<ActionResult<CampaignResponse>> CreateCampaign([FromBody] CreateCampaignRequest request, CancellationToken ct)

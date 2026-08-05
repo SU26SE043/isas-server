@@ -143,6 +143,46 @@ namespace Isas.CampaignService.Services
             return CampaignResponse.FromEntity(campaign);
         }
 
+        public async Task<IReadOnlyList<CampaignSlotResponse>> GetSlotsAsync(Guid orgId, Guid campaignId, CancellationToken ct)
+        {
+            await RequireCampaignAsync(orgId, campaignId, ct);
+            return await _db.CampaignSlots.Where(x => x.CampaignId == campaignId).OrderBy(x => x.StartsAt)
+                .Select(x => new CampaignSlotResponse { Id = x.Id, StartsAt = x.StartsAt, EndsAt = x.EndsAt, Capacity = x.Capacity,
+                    AssignedCount = _db.CampaignInvitations.Count(i => i.SlotId == x.Id && i.RevokedAt == null),
+                    StartedCount = _db.CampaignMemberships.Count(m => m.SlotId == x.Id && m.InterviewStatus == InterviewProgressStatus.InProgress) }).ToListAsync(ct);
+        }
+
+        public async Task<CampaignSlotResponse> CreateSlotAsync(Guid orgId, Guid campaignId, CreateCampaignSlotRequest request, CancellationToken ct)
+        {
+            await RequireCampaignAsync(orgId, campaignId, ct); ValidateSlot(request.StartsAt, request.EndsAt, request.Capacity);
+            await EnsureNoSlotOverlapAsync(campaignId, request.StartsAt, request.EndsAt, null, ct);
+            var slot = new CampaignSlot { Id = Guid.NewGuid(), CampaignId = campaignId, StartsAt = request.StartsAt, EndsAt = request.EndsAt, Capacity = request.Capacity };
+            _db.CampaignSlots.Add(slot); await _db.SaveChangesAsync(ct); return ToSlotResponse(slot, 0, 0);
+        }
+
+        public async Task<CampaignSlotResponse> UpdateSlotAsync(Guid orgId, Guid campaignId, Guid slotId, UpdateCampaignSlotRequest request, CancellationToken ct)
+        {
+            await RequireCampaignAsync(orgId, campaignId, ct); ValidateSlot(request.StartsAt, request.EndsAt, request.Capacity);
+            var slot = await _db.CampaignSlots.FirstOrDefaultAsync(x => x.Id == slotId && x.CampaignId == campaignId, ct) ?? throw new KeyNotFoundException();
+            var assigned = await _db.CampaignInvitations.CountAsync(i => i.SlotId == slotId && i.RevokedAt == null, ct);
+            if (request.Capacity < assigned) throw new ArgumentException("Sức chứa không thể nhỏ hơn số lời mời đã gán.");
+            await EnsureNoSlotOverlapAsync(campaignId, request.StartsAt, request.EndsAt, slotId, ct);
+            slot.StartsAt=request.StartsAt; slot.EndsAt=request.EndsAt; slot.Capacity=request.Capacity; await _db.SaveChangesAsync(ct);
+            var started=await _db.CampaignMemberships.CountAsync(m=>m.SlotId==slotId&&m.InterviewStatus==InterviewProgressStatus.InProgress,ct); return ToSlotResponse(slot,assigned,started);
+        }
+
+        public async Task DeleteSlotAsync(Guid orgId, Guid campaignId, Guid slotId, CancellationToken ct)
+        {
+            await RequireCampaignAsync(orgId,campaignId,ct); var slot=await _db.CampaignSlots.FirstOrDefaultAsync(x=>x.Id==slotId&&x.CampaignId==campaignId,ct)??throw new KeyNotFoundException();
+            if(await _db.CampaignMemberships.AnyAsync(m=>m.SlotId==slotId&&m.InterviewStatus==InterviewProgressStatus.InProgress,ct)) throw new InvalidOperationException("Không thể xóa khung giờ đang có ứng viên thi.");
+            _db.CampaignSlots.Remove(slot); await _db.SaveChangesAsync(ct);
+        }
+
+        private async Task RequireCampaignAsync(Guid orgId, Guid campaignId, CancellationToken ct) => _ = await _db.Campaigns.FirstOrDefaultAsync(c=>c.Id==campaignId&&c.OrgId==orgId,ct) ?? throw new KeyNotFoundException();
+        private static void ValidateSlot(DateTime starts, DateTime ends, int capacity) { if(ends<=starts||capacity<=0) throw new ArgumentException("Khung giờ hoặc sức chứa không hợp lệ."); }
+        private async Task EnsureNoSlotOverlapAsync(Guid campaignId, DateTime starts, DateTime ends, Guid? exceptId, CancellationToken ct) { if(await _db.CampaignSlots.AnyAsync(s=>s.CampaignId==campaignId&&s.Id!=exceptId&&s.StartsAt<ends&&starts<s.EndsAt,ct)) throw new InvalidOperationException("Khung giờ bị chồng lấn."); }
+        private static CampaignSlotResponse ToSlotResponse(CampaignSlot x,int assigned,int started)=>new(){Id=x.Id,StartsAt=x.StartsAt,EndsAt=x.EndsAt,Capacity=x.Capacity,AssignedCount=assigned,StartedCount=started};
+
         public async Task<CampaignResponse> UploadCampaignFilesAsync(Guid orgId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
         {
             var campaign = await _db.Campaigns
