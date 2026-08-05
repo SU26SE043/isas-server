@@ -422,3 +422,57 @@ async def test_decide_next_forwards_depth_context_to_prompt(monkeypatch):
     assert captured["current_depth"] == 2
     assert captured["max_depth"] == 3
     assert captured["other_topics"] == ["Khác"]
+
+
+# ── Ngân sách "thinking" của /decide-next (2026-08-05) ──────────────────────────────────
+def test_decide_next_tat_thinking_theo_config(monkeypatch):
+    """Suy luận ẩn của Gemini 2.5 chiếm ~3/4 độ trễ đường này mà KHÔNG đổi quyết định.
+
+    Đo A/B trên 12 transcript thật + 2 ca dựng: 4,61s → 1,43s (nhanh 3,2×), 14/14 quyết định
+    trùng nhau trên cả 3 loại action. Đường này chạy ĐỒNG BỘ trong request upload nên độ trễ
+    là chi phí trực tiếp lên người dùng.
+
+    Test khoá việc cấu hình THẬT SỰ được truyền xuống SDK — không có nó thì ai đó đổi
+    `decide_next_thinking_budget` sẽ tưởng đã tắt trong khi model vẫn suy luận (và vẫn tính tiền).
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from app.config import settings as app_settings
+    from app.providers.gemini import GeminiProvider
+
+    for budget, expect in [(0, 0), (256, 256)]:
+        monkeypatch.setattr(app_settings, "decide_next_thinking_budget", budget)
+        p = GeminiProvider.__new__(GeminiProvider)
+        captured = {}
+
+        async def fake(op, contents, config, **kw):
+            captured["config"] = config
+            r = type("R", (), {"text": '{"action":"end"}', "usage_metadata": None})()
+            return r
+
+        with patch.object(GeminiProvider, "_generate", new=AsyncMock(side_effect=fake)):
+            asyncio.run(p.decide_next(
+                job_category="BE", current_question="q", transcript="t", history=[],
+                asked_count=1, follow_up_count=0, max_questions=6, max_follow_ups=3,
+                criteria=[{"id": "c", "name": "n", "maxScore": 10, "weight": 1.0}]))
+
+        tc = getattr(captured["config"], "thinking_config", None)
+        assert tc is not None, f"budget={budget} phải truyền thinking_config xuống SDK"
+        assert tc.thinking_budget == expect
+
+    # -1 = trả lại mặc định động của model ⇒ KHÔNG được truyền thinking_config
+    monkeypatch.setattr(app_settings, "decide_next_thinking_budget", -1)
+    p = GeminiProvider.__new__(GeminiProvider)
+    captured = {}
+
+    async def fake2(op, contents, config, **kw):
+        captured["config"] = config
+        return type("R", (), {"text": '{"action":"end"}', "usage_metadata": None})()
+
+    with patch.object(GeminiProvider, "_generate", new=AsyncMock(side_effect=fake2)):
+        asyncio.run(p.decide_next(
+            job_category="BE", current_question="q", transcript="t", history=[],
+            asked_count=1, follow_up_count=0, max_questions=6, max_follow_ups=3,
+            criteria=[{"id": "c", "name": "n", "maxScore": 10, "weight": 1.0}]))
+    assert getattr(captured["config"], "thinking_config", None) is None

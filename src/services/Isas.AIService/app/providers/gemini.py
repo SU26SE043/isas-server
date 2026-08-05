@@ -1012,22 +1012,31 @@ class GeminiProvider(QuestionProvider):
             root_question=root_question, current_depth=current_depth,
             max_depth=max_depth, other_topics=other_topics)
 
+        # Đường này chạy ĐỒNG BỘ trong request upload của người dùng ⇒ độ trễ là chi phí trực
+        # tiếp lên trải nghiệm. Suy luận ẩn của Gemini 2.5 đo được chiếm ~3/4 thời gian mà không
+        # đổi quyết định (chi tiết + số liệu A/B: `config.decide_next_thinking_budget`).
+        # `-1` = không đụng vào, để model tự quyết như trước.
+        cfg = dict(
+            temperature=0.3,
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "nextQuestion": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["action"],
+            },
+        )
+        if settings.decide_next_thinking_budget >= 0:
+            cfg["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.decide_next_thinking_budget)
+
         response = await self._generate(
             "decide_next",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.3,
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string"},
-                        "nextQuestion": {"type": "string"},
-                        "reason": {"type": "string"},
-                    },
-                    "required": ["action"],
-                },
-            ),
+            config=types.GenerateContentConfig(**cfg),
         )
 
         text = (response.text or "").strip()
