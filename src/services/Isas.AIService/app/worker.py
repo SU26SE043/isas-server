@@ -28,7 +28,8 @@ class PermanentError(Exception):
 
 
 def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no,
-                       sample_answer=None, delivery_metrics=None, prompt_version=None) -> dict:
+                       sample_answer=None, delivery_metrics=None, prompt_version=None,
+                       transcript_engine=None) -> dict:
     """E10 — dựng body callback chấm gửi về .NET. Echo ``attemptNo`` (từ job) để .NET lưu điểm
     theo đúng attempt (self-consistency chấm N lần → median/tiêu chí + cờ needs_review).
     Tách hàm thuần để unit-test không cần dựng cả pipeline worker.
@@ -42,7 +43,15 @@ def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no
     BK23 — ``promptVersion``: con dấu phiên bản prompt của CHÍNH lượt chấm này (``score()`` chụp
     tại chỗ dựng prompt). .NET đóng lên từng dòng ``answer_scores`` để sau này trả lời được "hai
     điểm này có cùng thước đo không". Optional (default None): worker cũ không gửi → .NET để NULL
-    = "chấm trước F21/BK23, không biết prompt nào" — phân biệt được với 0 = "bản mặc định thuần"."""
+    = "chấm trước F21/BK23, không biết prompt nào" — phân biệt được với 0 = "bản mặc định thuần".
+
+    ``transcriptEngine``: engine ĐÃ CHÉP RA transcript đang chấm ("whisper-1" /
+    "gemini-2.5-flash" / "local:small"). 🔴 Tên khoá là HỢP ĐỒNG DÂY với .NET — đổi tên KHÔNG ném
+    lỗi, nó chỉ làm .NET bind hụt rồi lưu NULL vĩnh viễn (đúng lớp bug ``focusCriteria`` bị
+    pydantic nuốt). Cần vì đường chép lời nay có DỰ PHÒNG: khi nhà cung cấp từ xa hỏng, bản chép
+    lặng lẽ rơi về Whisper cục bộ (lỗi từ 4,2% so với 0,7%) mà nhìn từ ngoài hai bản giống hệt
+    nhau — thiếu con dấu thì "điểm thấp do ứng viên hay do bản chép?" là câu không trả lời được.
+    Optional (default None): None = không biết, khác hẳn một tên engine cụ thể."""
     return {
         "answerId": answer_id,
         "transcript": transcript,
@@ -52,6 +61,7 @@ def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no
         "sampleAnswer": sample_answer,
         "deliveryMetrics": delivery_metrics,
         "promptVersion": prompt_version,
+        "transcriptEngine": transcript_engine,
     }
 
 
@@ -115,6 +125,20 @@ async def process_message(message: aio_pika.IncomingMessage):
         if not isinstance(pre_metrics, dict):
             pre_metrics = None
 
+        # Con dấu engine của bản chép ĐÃ CÓ SẴN (đường thích ứng: /decide-next chép, .NET lưu rồi
+        # gửi kèm job). Đi cùng `pre_transcript` chứ không đo lại được ở đây — worker bỏ Whisper
+        # khi job đã mang transcript, nên nó KHÔNG biết bản chép đó do engine nào tạo ra.
+        # Job cũ / .NET chưa deploy phần này → None = "không biết" (không bịa "local").
+        #
+        # 🔴 ĐỌC CẢ HAI CASING, và PascalCase mới là bản THẬT trên dây này. `ScoringJobPublisher.cs`
+        # gọi `JsonSerializer.Serialize(job)` KHÔNG truyền options ⇒ dùng `JsonSerializerOptions.
+        # Default` (PascalCase), khác hẳn đường HTTP của ASP.NET Core (camelCase qua Web defaults).
+        # Chỉ đọc camelCase thì con dấu chết IM LẶNG trên đường queue — không lỗi, không cảnh báo,
+        # chỉ là một cột NULL. Đúng mẫu phòng thủ đã có sẵn cho `transcript`/`deliveryMetrics` ngay
+        # bên trên; sang HTTP thì GỬI camelCase.
+        pre_engine = body.get("transcriptEngine") or body.get("TranscriptEngine")
+        pre_engine = pre_engine.strip() if isinstance(pre_engine, str) and pre_engine.strip() else None
+
         # Cần answerId luôn; cần audioObjectKey CHỈ khi chưa có transcript sẵn.
         if not answer_id or (not storage_path and not pre_transcript):
             print("[❌] Thiếu answerId/audioObjectKey/transcript — bỏ message (không retry).")
@@ -124,6 +148,7 @@ async def process_message(message: aio_pika.IncomingMessage):
         tmp_path = None
         try:
             delivery = pre_metrics   # F11 — mặc định dùng bản đo sẵn (đường thích ứng)
+            engine = pre_engine      # con dấu engine đi kèm transcript có sẵn (nếu có)
             if pre_transcript:
                 transcript = pre_transcript
                 print(f"[✅] Dùng transcript có sẵn (bỏ qua Whisper): {transcript[:80]}")
@@ -149,6 +174,9 @@ async def process_message(message: aio_pika.IncomingMessage):
                         transcriber.transcribe_detailed, tmp_path, "vi")
                     transcript = result.text
                     delivery = result.metrics.to_dict() if result.metrics else None
+                    # Lượt chép lời DIỄN RA Ở ĐÂY nên con dấu lấy thẳng từ kết quả — có thể là
+                    # bản dự phòng cục bộ nếu nhà cung cấp từ xa vừa hỏng.
+                    engine = result.engine
                 except Exception as e:
                     raise PermanentError(f"Transcribe lỗi (audio hỏng?): {e}")
                 if not transcript or not transcript.strip():
@@ -192,7 +220,7 @@ async def process_message(message: aio_pika.IncomingMessage):
             await post_callback(make_score_payload(
                 answer_id, transcript, rubric_version, outcome.scores, attempt_no,
                 sample_answer=outcome.sample_answer, delivery_metrics=delivery,
-                prompt_version=outcome.prompt_version))
+                prompt_version=outcome.prompt_version, transcript_engine=engine))
 
             await message.ack()
 
@@ -259,7 +287,10 @@ async def main():
     connection = await aio_pika.connect_robust(settings.rabbitmq_url)
     async with connection:
         channel = await connection.channel()
-        await channel.set_qos(prefetch_count=1)  # chấm nặng -> xử lý 1 lúc 1 message
+        # `queue.consume(callback)` (KHÔNG phải async-iterator) → aio-pika chạy các callback
+        # ĐỒNG THỜI, số lượng do đúng prefetch này chặn. Xem config.scoring_prefetch để biết vì sao
+        # bỏ giá trị cũ `1` (đo thật: 4 lượt song song ≈ thời gian 1 lượt, vì chờ mạng chứ không CPU).
+        await channel.set_qos(prefetch_count=settings.scoring_prefetch)
         queue = await declare_topology(channel)  # AI2: DLX/DLQ + queue chính (args dead-letter)
         await queue.consume(process_message)
         print(f"[✅] Worker chạy, nghe queue '{settings.queue_name}' (CTRL+C để thoát)")

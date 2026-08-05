@@ -318,6 +318,16 @@ class DecideNextResponse(BaseModel):
     # hỏng ÂM THẦM, không lỗi gì. None = không đo được (fallback answerText / audio rỗng).
     deliveryMetrics: DeliveryMetrics | None = None
 
+    # Con dấu engine đã CHÉP RA `transcript` ("whisper-1" / "gemini-2.5-flash" / "local:small").
+    # 🔴 TÊN KHOÁ LÀ HỢP ĐỒNG DÂY với .NET — đổi tên ở đây KHÔNG ném lỗi, nó chỉ làm .NET bind hụt
+    # rồi lưu NULL vĩnh viễn (đúng lớp bug `focusCriteria` bị pydantic nuốt và `adaptiveMaxQuestions`
+    # vs `maxQuestions`). Thấy sai thì BÁO, đừng tự sửa một bên.
+    #
+    # Cần thiết vì đường chép lời nay có DỰ PHÒNG: khi nhà cung cấp từ xa hỏng, bản chép lặng lẽ
+    # rơi về Whisper cục bộ (lỗi từ 4,2% so với 0,7%) mà nhìn từ ngoài hai bản giống hệt nhau.
+    # None = không đo được (nhánh answerText, không có audio để chép).
+    transcriptEngine: str | None = None
+
 
 # ── Đối chiếu khuôn mặt (SEC-2/3) — sync HTTP, CampaignService gọi khi giám sát ──────
 class FaceVerifyRequest(BaseModel):

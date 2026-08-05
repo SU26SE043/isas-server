@@ -31,7 +31,13 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
     private record DecideNextApiResponse(
         string? Action, string? NextQuestion, string? Transcript, string? Reason,
         // F11 — AIService đo chỉ số cách nói ngay trong lượt transcribe đồng bộ này.
-        DeliveryMetricsDto? DeliveryMetrics);
+        DeliveryMetricsDto? DeliveryMetrics,
+        // Engine đã chép ra `Transcript` (AIService rơi từ nhà cung cấp từ xa về Whisper cục bộ khi
+        // mạng hỏng ⇒ khác nhau giữa các câu trong CÙNG một buổi).
+        // 🔴 Khoá dây: `transcriptEngine`. `Json` khai đầu class dùng camelCase + case-insensitive nên
+        // tên property C# đọc được khoá đó; đổi tên property là gãy hợp đồng IM LẶNG (bind hụt → null,
+        // không lỗi ở đâu cả) — `TranscriptEngineWireContractTests` khoá lại.
+        string? TranscriptEngine);
 
     public async Task<DecideNextResult> DecideNextAsync(
         AdaptiveDecisionRequest request, CancellationToken ct = default)
@@ -99,6 +105,7 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
             NextQuestion: body.NextQuestion,
             Transcript: body.Transcript,
             Reason: body.Reason,
-            DeliveryMetrics: body.DeliveryMetrics);   // F11 (null nếu AIService bản cũ / không đo được)
+            DeliveryMetrics: body.DeliveryMetrics,    // F11 (null nếu AIService bản cũ / không đo được)
+            TranscriptEngine: body.TranscriptEngine); // null nếu AIService bản cũ chưa gửi con dấu
     }
 }

@@ -257,9 +257,12 @@ async def transcribe(file: UploadFile = File(...), language: str = "vi"):
         result = await asyncio.to_thread(transcriber.transcribe_detailed, tmp_path, language)
 
         # F11 — kèm chỉ số cách nói (None = không đo được). `text` giữ nguyên → client cũ không vỡ.
+        # `transcriptEngine` = engine đã thật sự chép (có thể là bản dự phòng cục bộ nếu nhà cung
+        # cấp từ xa hỏng) — endpoint này là chỗ soi tay, không có con dấu thì không soi được gì.
         return {
             "text": result.text,
             "deliveryMetrics": result.metrics.to_dict() if result.metrics else None,
+            "transcriptEngine": result.engine,
         }
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi transcribe: {ex}")
@@ -286,6 +289,8 @@ async def decide_next(
     # F11 — chỉ số cách nói CHỈ đo được ở nhánh có audio thật; nhánh answerText (không có audio)
     # để None, và .NET/prompt hiểu None = "chưa đo được" chứ không phải "đo ra 0".
     metrics = None
+    # Con dấu engine — cùng lý do: nhánh answerText không chép lời nên không có engine nào.
+    engine: str | None = None
     if req.audioObjectKey and req.audioObjectKey.strip():
         tmp_path = None
         try:
@@ -296,7 +301,7 @@ async def decide_next(
                 tmp_path = tmp.name
             result = await asyncio.to_thread(
                 transcriber.transcribe_detailed, tmp_path, req.language)
-            transcript, metrics = result.text, result.metrics
+            transcript, metrics, engine = result.text, result.metrics, result.engine
         except Exception as ex:
             raise HTTPException(status_code=502, detail=f"Lỗi transcribe: {ex}")
         finally:
@@ -335,6 +340,9 @@ async def decide_next(
         # F11 — trả kèm chỉ số để Interview lưu lên answer + đẩy vào ScoringJob: buổi adaptive
         # bỏ Whisper ở worker nên ĐÂY là lần đo DUY NHẤT của câu trả lời này.
         deliveryMetrics=DeliveryMetrics(**metrics.to_dict()) if metrics else None,
+        # Cùng lý do với deliveryMetrics: buổi adaptive chép lời ĐÚNG MỘT LẦN tại đây, nên nếu
+        # con dấu không đi ra ở đây thì nó không còn cơ hội nào khác.
+        transcriptEngine=engine,
     )
 
 

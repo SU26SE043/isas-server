@@ -16,7 +16,38 @@ public class PracticeAnswer
     public string? AudioObjectKey { get; set; }
  
     public string? Transcript { get; set; }
- 
+
+    /// <summary>
+    /// Engine đã CHÉP ra <see cref="Transcript"/> ở trên (vd <c>whisper-1</c>, <c>gemini-2.5-flash</c>,
+    /// <c>whisper-local-small</c>). Nguồn: AIService gửi kèm — đường thích ứng qua <c>/decide-next</c>,
+    /// đường tĩnh qua callback chấm.
+    ///
+    /// <para><b>Vì sao cần:</b> AIService chép qua nhà cung cấp TỪ XA và rơi về Whisper CỤC BỘ khi
+    /// mạng hỏng, nên <b>hai answer trong CÙNG một buổi có thể được chép bằng hai engine khác nhau</b>.
+    /// Chất lượng chữ đi thẳng vào điểm chấm: đo thật thì Whisper <c>small</c> sai 4,2% số từ (chép
+    /// "người dùng <b>cần</b> thiết" thành "người dùng <b>tầng</b> thiết") trong khi engine từ xa sai
+    /// 0,5–0,7%. Điểm sinh ra từ hai bản chép đó vẫn bị đem so với nhau ở xếp hạng B2B (CAMP-10) và
+    /// ở phần đo cải thiện của roadmap (BC15) — không đánh dấu thì chênh lệch đó vô hình.</para>
+    ///
+    /// <para>Reset cùng transcript khi upload lại (INT-3): giữ lại là hiện lai lịch của một bản ghi
+    /// âm không còn tồn tại — cùng lý do với <see cref="SampleAnswer"/> và cụm chỉ số F11.</para>
+    ///
+    /// <para>⚠ <c>null</c> = <b>chép TRƯỚC bản vá này</b> (cột chỉ tồn tại từ đây trở đi, và mọi lượt
+    /// chép từ đây đều đóng dấu ⇒ khuyết dấu chỉ có đúng một nguyên nhân). Suy luận đó NGƯỢC quy ước
+    /// BK23 của <c>answer_scores.prompt_version</c>, nơi <c>null</c> bắt buộc giữ nghĩa "không biết"
+    /// vì con dấu đến từ worker có thể lệch nhịp deploy bất kỳ lúc nào. Khác biệt nằm ở chỗ: ở đây
+    /// engine là thuộc tính của CHÍNH bản chép đang lưu, và bản chép đó chỉ được ghi bởi code sau bản
+    /// vá; ở BK23 con dấu mô tả một lượt chấm do bên khác thực hiện. <b>Đừng áp ngược tiền lệ này.</b>
+    /// Ngoại lệ được cài tường minh trong <c>AnswerService.SaveResultAsync</c>: worker CŨ gửi transcript
+    /// MỚI mà không kèm dấu ⇒ dấu về <c>null</c>, chứ không giữ dấu cũ (dấu nói dối tệ hơn khuyết dấu).</para>
+    ///
+    /// <para>Cột để kiểu <c>text</c> (không <c>HasMaxLength</c>) là CÓ CHỦ ĐÍCH: tên model do bên thứ ba
+    /// đặt và dài tuỳ ý (<c>gemini-2.5-flash-preview-native-audio-dialog</c> đã 43 ký tự). Chọn
+    /// <c>varchar(n)</c> ở đây là dựng lại đúng bẫy <c>credit_reservations.funded_by varchar(16)</c> —
+    /// SQLite không enforce độ dài nên CI xanh 100% trong khi Postgres ném lúc chạy thật.</para>
+    /// </summary>
+    public string? TranscriptEngine { get; set; }
+
     public AnswerStatus Status { get; set; } = AnswerStatus.Uploaded;
 
     // E10 — self-consistency: chấm N lần, nếu spread điểm giữa các attempt (mỗi tiêu chí) vượt
@@ -33,7 +64,7 @@ public class PracticeAnswer
 
     public int DurationSec { get; set; }
 
-    // ── F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY đo từ mốc thời gian Whisper ────────────────────────
+    // ── F11 (FR06) — chỉ số ĐỘ TRÔI CHẢY đo từ audio (mốc thời gian: VAD từ 2026-08-05) ─────
     // Tất cả nullable: null = CHƯA ĐO ĐƯỢC (answer cũ trước F11 · audio rỗng · đường degrade khi
     // /decide-next lỗi), KHÁC HẲN với 0 = "đo ra 0". Phân biệt được hai ca này mới hiển thị đúng:
     // "chưa có dữ liệu" vs "nói 0 từ đệm". Reset cùng transcript/scores khi upload lại (INT-3) —
@@ -80,6 +111,22 @@ public class PracticeAnswer
     /// Lưu <b>text</b> chứ không phải jsonb: dữ liệu này chỉ để đọc-hiển-thị, không truy vấn theo
     /// khoá bao giờ — chọn jsonb ở đây chỉ tổ rước rủi ro migration (xem F15) mà không được gì.</summary>
     public string? FillerBreakdown { get; set; }
+
+    /// <summary>
+    /// Phiên bản THƯỚC ĐO đã sinh ra các cột trên (AIService <c>fluency.DELIVERY_METRICS_VERSION</c>).
+    /// <c>1</c> = mốc thời gian từ biên segment Whisper · <c>2</c> = từ vùng tiếng nói VAD.
+    ///
+    /// <para>Vì sao cần: bản vá 2026-08-05 đổi cách đo, và số cũ với số mới KHÔNG so sánh được.
+    /// Trên 7 ghi âm thật, thước cũ bắt được 2/21 khoảng lặng — một câu trả lời 45s ngập ngừng
+    /// 7 lần bị ghi <c>PauseCount = 0</c>, <c>SilenceRatio = 0,020</c> (thực tế 0,315). Điểm chấm
+    /// từ hai thước đó vẫn bị đem so với nhau ở xếp hạng B2B (CAMP-10) và ở phần đo cải thiện
+    /// của roadmap (BC15) nếu không có dấu để phân biệt.</para>
+    ///
+    /// <para>⚠ <c>null</c> = đo bằng thước CŨ. Suy luận này an toàn ở đây (cột chỉ tồn tại từ
+    /// bản vá trở đi, và mọi lượt đo từ đó đều đóng dấu) nhưng NGƯỢC quy ước BK23 của
+    /// <c>prompt_version</c>, nơi <c>null</c> phải giữ nghĩa "không biết". Đừng áp ngược.</para>
+    /// </summary>
+    public int? MetricsVersion { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

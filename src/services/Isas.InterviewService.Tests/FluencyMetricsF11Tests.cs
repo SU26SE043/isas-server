@@ -32,7 +32,7 @@ public class FluencyMetricsF11Tests
 
     private static DeliveryMetricsDto Metrics(
         double wpm = 180, int fillers = 5, int pauses = 3,
-        double longestPause = 2.5, double silence = 0.35) => new()
+        double longestPause = 2.5, double silence = 0.35, int? version = 2) => new()
         {
             SpeechRateWpm = wpm,
             FillerCount = fillers,
@@ -40,6 +40,7 @@ public class FluencyMetricsF11Tests
             LongestPauseSec = longestPause,
             SilenceRatio = silence,
             FillerBreakdown = new Dictionary<string, int> { ["ừm"] = 3, ["kiểu như"] = 2 },
+            MetricsVersion = version,
         };
 
     private static AnswerService Build(
@@ -440,5 +441,50 @@ public class FluencyMetricsF11Tests
         var job = Assert.Single(jobs);
         Assert.DoesNotContain(job.Criteria, c => c.Name == B2CRubricSeed.FluencyName);
         Assert.Contains(job.Criteria, c => c.Name == "Tiêu chí của riêng tôi");
+    }
+
+    // ── (8) Con dấu THƯỚC ĐO (2026-08-05) ────────────────────────────────────────────────
+    // Bản vá đổi nguồn mốc thời gian từ biên segment Whisper sang vùng tiếng nói VAD, và số
+    // sinh ra từ hai thước đó KHÔNG so sánh được: trên 7 ghi âm thật thước cũ chỉ bắt 2/21
+    // khoảng lặng. Điểm chấm vẫn bị đem so với nhau (xếp hạng B2B CAMP-10 · đo cải thiện
+    // roadmap BC15), nên phải biết mỗi con số ra đời từ thước nào.
+
+    [Fact]
+    public void ConDauThuocDo_SongSotVongApplyRead()
+    {
+        var answer = TestDb.Answer(Guid.NewGuid(), Guid.NewGuid(), AnswerStatus.Scored,
+            DateTime.UtcNow, DateTime.UtcNow);
+
+        DeliveryMetricsMapper.Apply(answer, Metrics(version: 2));
+
+        Assert.Equal(2, answer.MetricsVersion);
+        Assert.Equal(2, DeliveryMetricsMapper.Read(answer)!.MetricsVersion);
+    }
+
+    [Fact]
+    public void ConDauThuocDo_AnswerCuKhongCoDau_DocRaNull_ChuKhongPhaiMotPhienBanBiaRa()
+    {
+        // Answer ghi TRƯỚC bản vá không có dấu. `null` ở đây mang nghĩa "đo bằng thước cũ" —
+        // an toàn vì cột chỉ tồn tại từ bản vá trở đi. Điền một số mặc định (1 hay 2) sẽ là
+        // khẳng định một điều ta không đo được, đúng lớp lỗi mà bản vá 2026-07-19 đã bịt.
+        var answer = TestDb.Answer(Guid.NewGuid(), Guid.NewGuid(), AnswerStatus.Scored,
+            DateTime.UtcNow, DateTime.UtcNow);
+        DeliveryMetricsMapper.Apply(answer, Metrics(version: null));
+
+        Assert.Null(answer.MetricsVersion);
+        Assert.Null(DeliveryMetricsMapper.Read(answer)!.MetricsVersion);
+    }
+
+    [Fact]
+    public void ConDauThuocDo_MotMinhKhongBienAnswerChuaDoThanhDaDo()
+    {
+        // Guard "mọi field null → trả null" của `Read()` CỐ Ý không xét con dấu: nó mô tả bộ số
+        // chứ tự nó không phải số đo. Nếu xét, một answer chưa từng đo được mà lỡ có dấu sẽ trả
+        // về DTO rỗng thay vì null ⇒ worker tưởng "đã đo rồi" và bỏ luôn bước tự transcribe.
+        var answer = TestDb.Answer(Guid.NewGuid(), Guid.NewGuid(), AnswerStatus.Uploaded,
+            DateTime.UtcNow, DateTime.UtcNow);
+        answer.MetricsVersion = 2;   // có dấu nhưng KHÔNG có chỉ số nào
+
+        Assert.Null(DeliveryMetricsMapper.Read(answer));
     }
 }

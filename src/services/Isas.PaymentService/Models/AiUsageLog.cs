@@ -45,6 +45,26 @@ namespace PaymentService.Models
         public decimal InputPricePerMillionUsd { get; set; }
         public decimal OutputPricePerMillionUsd { get; set; }
 
+        /// <summary>
+        /// Độ dài audio của lượt CHÉP LỜI, tính bằng giây. <c>null</c> ở mọi lượt khác — và null chính là
+        /// thứ quyết định lượt này tính tiền theo đơn vị nào (xem <c>AiUsageService.CostOf</c>).
+        ///
+        /// Có nó vì không phải model nào cũng tính theo token: <c>whisper-1</c> tính theo PHÚT AUDIO. Không
+        /// có nhánh này thì công thức token cho ra ĐÚNG 0 với mọi lượt chép lời (token đều bằng 0) ⇒ chi phí
+        /// transcribe vô hình trên báo cáo mà không có gì kêu — đúng kiểu hỏng đã xảy ra khi env
+        /// <c>USAGE_SINK_BASE</c> vắng và F22 tắt câm nhiều ngày.
+        ///
+        /// Đây cũng là số đo KHỐI LƯỢNG của đường transcribe: chỉ có tiền thì không phân biệt được "chi phí
+        /// tăng vì chép nhiều hơn" với "vì nhà cung cấp tăng giá".
+        /// </summary>
+        public int? AudioSeconds { get; set; }
+
+        /// <summary>
+        /// ĐƠN GIÁ SNAPSHOT theo PHÚT audio (USD/phút), cùng lý do với hai đơn giá token ở trên: đổi giá
+        /// không được hồi tố lịch sử. Null ở lượt tính theo token.
+        /// </summary>
+        public decimal? PricePerMinuteUsd { get; set; }
+
         /// <summary>Tiền của riêng lượt gọi này, tính từ đơn giá đã snapshot ở trên.</summary>
         public decimal CostUsd { get; set; }
 

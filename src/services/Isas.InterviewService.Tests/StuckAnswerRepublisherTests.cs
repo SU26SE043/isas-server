@@ -208,6 +208,7 @@ public class StuckAnswerRepublisherTests
             WordCount = 160,
             FillerPer100Words = 3.75,
             FillerBreakdown = new Dictionary<string, int> { ["ừm"] = 6 },
+            MetricsVersion = 2,
         });
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
@@ -234,6 +235,12 @@ public class StuckAnswerRepublisherTests
         Assert.Equal(55.5, published.DeliveryMetrics.SpeechSec);
         Assert.Equal(160, published.DeliveryMetrics.WordCount);
         Assert.Equal(3.75, published.DeliveryMetrics.FillerPer100Words);
+
+        // Con dấu thước đo (2026-08-05) rơi vào ĐÚNG cái bẫy mô tả ngay trên: nó cũng là tham số
+        // có default `null` ở overload `Read()`. Bỏ quên ở projection của republisher thì answer
+        // đi đường cứu mất dấu, trong khi answer chấm trơn tru vẫn có — hai bộ số cùng một buổi
+        // lại mang hai lai lịch khác nhau.
+        Assert.Equal(2, published.DeliveryMetrics.MetricsVersion);
     }
 
     // Mặt còn lại: answer CHƯA từng đo → job mang null (KHÔNG phải DTO toàn 0). Gửi 0 sẽ khiến

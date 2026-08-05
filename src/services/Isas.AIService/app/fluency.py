@@ -47,6 +47,19 @@ from dataclasses import dataclass, field
 # 0.7s ≈ dài hơn nhịp ngắt câu tự nhiên, đủ để nghe ra là đang ngập ngừng/nghĩ.
 PAUSE_THRESHOLD_SEC = 0.7
 
+# Phiên bản THƯỚC ĐO — tăng khi cách tính đổi tới mức số cũ và số mới KHÔNG SO SÁNH ĐƯỢC.
+#   1 = mốc thời gian lấy từ biên segment Whisper (tới 2026-08-05)
+#   2 = mốc thời gian lấy từ vùng tiếng nói do VAD xác định
+#
+# Vì sao cần con dấu: điểm chấm được đem SO SÁNH với nhau (xếp hạng B2B - CAMP-10, đo cải
+# thiện của roadmap - BC15). Thước đo đổi giữa chừng mà không đánh dấu thì hai con số sinh ra
+# từ hai thước khác nhau vẫn bị đặt cạnh nhau như thể cùng đơn vị.
+#
+# ⚠ KHÔNG tái dùng được `answer_scores.prompt_version`: giá trị đó do prompt registry của
+# InterviewService (F21) cấp, AIService chỉ echo lại — đổi cách TÍNH ở đây không làm nó nhúc
+# nhích, nên nó không thể đại diện cho thay đổi này.
+DELIVERY_METRICS_VERSION = 2
+
 # Tiếng ngập ngừng thuần tuý — gần như không bao giờ mang nghĩa trong câu trả lời phỏng vấn.
 HESITATION_FILLERS: tuple[str, ...] = (
     "ừm", "ưm", "ừ", "ờ", "ơ", "à ờ", "ừ thì", "ờ thì",
@@ -92,6 +105,9 @@ class DeliveryMetrics:
     def to_dict(self) -> dict:
         """camelCase — khớp hợp đồng JSON với .NET (DeliveryMetricsDto)."""
         return {
+            # Con dấu thước đo — đi kèm chính bộ số nó mô tả, để phía .NET lưu cạnh các cột
+            # chỉ số. Dòng khuyết con dấu = đo bằng thước cũ (xem DELIVERY_METRICS_VERSION).
+            "metricsVersion": DELIVERY_METRICS_VERSION,
             "audioSec": round(self.audio_sec, 2),
             "speechSec": round(self.speech_sec, 2),
             "wordCount": self.word_count,

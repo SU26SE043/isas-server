@@ -603,6 +603,9 @@ namespace PaymentService.Models
                 // dòng mà dùng dấu phẩy động thì sai số tự tích lại.
                 e.Property(x => x.InputPricePerMillionUsd).HasPrecision(18, 6);
                 e.Property(x => x.OutputPricePerMillionUsd).HasPrecision(18, 6);
+                // Đơn giá theo PHÚT audio (whisper-1 = 0.006 USD/phút). Nullable: null = lượt tính theo
+                // token, khác 0 vốn nghĩa là "tính theo phút và miễn phí".
+                e.Property(x => x.PricePerMinuteUsd).HasPrecision(18, 6);
                 // Chi phí 1 lượt gọi rất nhỏ (cỡ 1e-4 USD) nhưng tổng thì lớn → 8 chữ số thập phân để một
                 // lượt gọi lẻ không bị làm tròn về 0 rồi biến mất khỏi tổng.
                 e.Property(x => x.CostUsd).HasPrecision(18, 8);

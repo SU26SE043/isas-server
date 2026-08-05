@@ -21,6 +21,33 @@ if "faster_whisper" not in sys.modules:
     fake_module.WhisperModel = _FakeWhisperModel
     sys.modules["faster_whisper"] = fake_module
 
+    # Hai SUBMODULE phải stub riêng, không thừa hưởng từ module cha: `transcriber.py` nay
+    # `from faster_whisper.vad import ...` / `from faster_whisper.audio import ...`, mà một
+    # ModuleType rỗng không tự sinh submodule ⇒ thiếu hai khối dưới là **toàn bộ test chết
+    # ngay lúc import** (ModuleNotFoundError), không phải đỏ vì logic.
+    #
+    # Stub cố ý TRƠ (VAD trả rỗng, decode trả mảng rỗng): test nào cần hành vi thật thì
+    # monkeypatch `app.transcriber.get_speech_timestamps` / `.decode_audio` — nơi đó mới là
+    # chỗ diễn tả ý định của từng test, chứ không phải một giá trị dựng sẵn ở conftest.
+    fake_vad = types.ModuleType("faster_whisper.vad")
+
+    class _FakeVadOptions:
+        def __init__(self, *args, **kwargs) -> None:
+            self.__dict__.update(kwargs)
+
+    fake_vad.VadOptions = _FakeVadOptions
+    fake_vad.get_speech_timestamps = lambda *args, **kwargs: []
+    fake_module.vad = fake_vad
+    sys.modules["faster_whisper.vad"] = fake_vad
+
+    fake_audio = types.ModuleType("faster_whisper.audio")
+    # Trả `list` chứ không phải mảng numpy: `transcriber` chỉ cần `len()` để tính độ dài
+    # audio, nên stub không cần kéo theo numpy — giữ đúng nếp "stub không thêm phụ thuộc"
+    # của hai khối stub hiện có.
+    fake_audio.decode_audio = lambda *args, **kwargs: []
+    fake_module.audio = fake_audio
+    sys.modules["faster_whisper.audio"] = fake_audio
+
 # Stub insightface trước khi import app.main — FaceVerifier nạp model nặng (insightface
 # FaceAnalysis) + cần onnxruntime/opencv (wheel không có cho mọi Python/arch — chạy ở
 # deploy trong image 3.12, xem Dockerfile). Test /face-verify chỉ cần app.main import được

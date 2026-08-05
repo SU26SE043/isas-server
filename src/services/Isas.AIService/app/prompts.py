@@ -388,8 +388,8 @@ def build_repo_analysis_prompt(repo_digest: str, jd_text: str | None,
 def build_delivery_block(delivery: dict | None) -> str:
     """F11 (FR06) — khối "CHỈ SỐ TRÌNH BÀY" ghép vào prompt chấm.
 
-    Đây là SỐ ĐO của hệ thống (lấy từ mốc thời gian Whisper), KHÔNG phải dữ liệu ứng viên
-    nhập ⇒ không phải bề mặt prompt-injection: khoá đều là hằng của ta, giá trị đều là số.
+    Đây là SỐ ĐO của hệ thống (khoảng lặng lấy từ VAD — xem `transcriber.py`), KHÔNG phải dữ liệu
+    ứng viên nhập ⇒ không phải bề mặt prompt-injection: khoá đều là hằng của ta, giá trị đều là số.
 
     Hai chỉ thị BẮT BUỘC phải có trong khối này, nếu thiếu thì tính năng phản tác dụng:
 
@@ -448,8 +448,10 @@ LƯU Ý: chỉ số nào ghi "{MISSING}" là hệ thống KHÔNG đo được ch
 
 CÁCH DÙNG CHỈ SỐ TRÊN (quan trọng, đọc kỹ):
 - Transcript do máy nhận dạng tạo ra và máy THƯỜNG TỰ BỎ BỚT từ đệm khi ghi. Vì vậy số từ đệm đếm được là mức TỐI THIỂU, luôn thấp hơn thực tế. "0 từ đệm" KHÔNG được hiểu là nói trôi chảy hoàn hảo.
-- Hãy coi chỉ số THỜI GIAN (khoảng lặng, tỉ lệ im lặng, tốc độ nói) là bằng chứng ĐÁNG TIN NHẤT về độ trôi chảy: một tiếng ngập ngừng bị máy bỏ qua vẫn để lại khoảng lặng và vẫn làm tốc độ nói chậm lại.
-- Tham chiếu thô cho tiếng Việt nói tự nhiên: khoảng 180-320 âm tiết/phút là nhịp bình thường; chậm hơn nhiều thường là ngắc ngứ/nghĩ lâu, nhanh hơn nhiều thường là nói vội/học thuộc. Đây là THAM CHIẾU để diễn giải, KHÔNG phải công thức quy ra điểm.
+- Hãy coi chỉ số THỜI GIAN là bằng chứng ĐÁNG TIN NHẤT về độ trôi chảy: một tiếng ngập ngừng bị máy bỏ qua vẫn để lại khoảng lặng đo được.
+- Bằng chứng về NGẬP NGỪNG nằm ở "số lần dừng đáng kể", "khoảng lặng dài nhất" và "tỉ lệ im lặng" — KHÔNG nằm ở tốc độ nói.
+- "Tốc độ nói" đo NHỊP PHÁT ÂM lúc đang nói, đã LOẠI thời gian im lặng ra khỏi mẫu số. Nên một người ngừng rất nhiều vẫn có thể có tốc độ nói bình thường: hai chỉ số này nói hai chuyện khác nhau, đừng cộng dồn chúng thành một lời nhận xét.
+- Tham chiếu thô cho tiếng Việt nói tự nhiên: khoảng 180-320 âm tiết/phút là nhịp bình thường; chậm hơn nhiều thường là nói rề rà/nặng nhọc, nhanh hơn nhiều thường là nói vội/học thuộc. Đây là THAM CHIẾU để diễn giải, KHÔNG phải công thức quy ra điểm.
 - Chỉ dùng các chỉ số này cho tiêu chí về ĐỘ TRÔI CHẢY/TỰ TIN/CÁCH TRÌNH BÀY. KHÔNG dùng chúng để tăng/giảm điểm các tiêu chí về NỘI DUNG chuyên môn (nói chậm không có nghĩa là kiến thức kém)."""
 
 

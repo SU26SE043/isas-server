@@ -39,6 +39,48 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
 
+    # ── CHÉP LỜI QUA NHÀ CUNG CẤP TỪ XA ─────────────────────────
+    # `"local"` (mặc định) = Whisper cục bộ như trước · `"whisper-1"` = OpenAI · `"gemini"`.
+    # Từ xa hỏng (mạng/quota/bản chép có dấu hiệu hỏng) → TỰ ĐỘNG rơi về Whisper cục bộ; cục bộ
+    # hỏng nốt thì giữ nguyên hành vi cũ (PermanentError → answer Failed). Xem
+    # app/transcribe_providers.py để biết số đo và vì sao.
+    #
+    # ⚠ Mặc định TẮT theo đúng tiền lệ mọi rollout khác của repo (`GROUNDING_ENABLED`,
+    # `TIERING_ENABLED`, `CV_SCREENING_ENABLED`): đây là năng lực MỚI, vừa tốn tiền theo lượt vừa
+    # có hệ quả riêng tư (audio ứng viên rời khỏi hạ tầng của mình) — khác `delivery_metrics_source`
+    # vốn là bản vá cho hành vi ĐÃ ĐO ĐƯỢC LÀ SAI nên phải bật sẵn.
+    transcribe_provider: str = "local"
+    # Credential RIÊNG của OpenAI (không dùng lại gemini_api_key được). Rỗng + provider
+    # `"whisper-1"` ⇒ lượt gọi 401 → rơi về cục bộ (không sập, chỉ mất phần chất lượng).
+    openai_api_key: str = ""
+    # Model chép lời của OpenAI. Giá trị này CŨNG là con dấu `transcriptEngine` gửi về .NET, nên
+    # đổi model ở đây thì số liệu lịch sử vẫn phân biệt được bản nào chép bằng gì.
+    openai_transcribe_model: str = "whisper-1"
+    # 60s: đo thật whisper-1 mất 23,9s cho 190s audio, gemini 29,9s — trần này chừa gấp đôi cho
+    # mạng xấu mà vẫn nằm dưới timeout 90s của decider (`/decide-next` gọi ĐỒNG BỘ trong request
+    # upload). Hết giờ = rơi về cục bộ, không phải lỗi.
+    transcribe_timeout_seconds: float = 60.0
+
+    # ── F11: NGUỒN MỐC THỜI GIAN cho chỉ số cách nói ─────────────
+    # `"vad"` (mặc định) = vùng tiếng nói do Silero VAD xác định · `"whisper"` = biên segment
+    # Whisper (hành vi trước 2026-08-05, GIỮ LẠI CHỈ để quay lui không cần deploy).
+    #
+    # Vì sao đổi — đo trên 7 ghi âm THẬT lấy từ S3, trọng tài là hai bộ dò độc lập (ngưỡng năng
+    # lượng + Silero) tự hiệu chuẩn đạt 0,02-0,03s trên audio biết trước sự thật và đồng ý với
+    # nhau 18/21: biên segment Whisper bắt được **2/21 khoảng lặng (10%)**. Ca nặng nhất là một
+    # câu trả lời 45s ngập ngừng 7 lần (có đoạn im 3 giây) bị báo về `pauseCount=0`,
+    # `silenceRatio=0,020` trong khi thực tế là 0,315 — sai 16 lần, và luôn nghiêng về phía KHEN.
+    # Đổi sang vùng VAD: lệch pauseCount 2,71 → 0,57 · lệch silenceRatio 0,152 → 0,035.
+    #
+    # KHÔNG phải lỗi model: `large-v3` cũng chỉ được 2/21 (Whisper học để CHÉP LỜI nên nó kéo
+    # dài biên segment xuyên qua tiếng thở/tiếng phòng — trên audio tổng hợp có im lặng số tuyệt
+    # đối thì nó cắt đúng, nên bài đo tổng hợp che mất hẳn lỗi này).
+    #
+    # ⚠ Mặc định BẬT, khác `grounding`/`tiering`/`cv_screening` (đều tắt): những cái đó là tính
+    # năng MỚI, còn đây là bản vá cho hành vi ĐÃ ĐO ĐƯỢC LÀ SAI — để mặc định tắt tức là cố ý
+    # giữ bug. Cờ này là cần gạt rollback, không phải cổng tính năng.
+    delivery_metrics_source: str = "vad"
+
     # ── FACE VERIFY (SEC-2/3) ────────────────────────────────────
     # buffalo_l = pack insightface mặc định (detect + ArcFace embed). CPU-only.
     face_model_name: str = "buffalo_l"
@@ -48,6 +90,16 @@ class Settings(BaseSettings):
     # ── RABBITMQ CONFIG ──────────────────────────────────────────
     rabbitmq_url: str = "amqp://guest:guest@localhost/"
     queue_name: str = "scoring_pipeline_queue"   # TRÙNG RabbitMQ:QueueName .NET
+
+    # Số message chấm xử lý ĐỒNG THỜI trên 1 tiến trình worker. Trước đây ghi cứng `1` với lý do
+    # "chấm nặng" — lý do đó SAI khi đo thật: phần tốn thời gian là CHỜ MẠNG Gemini, không phải CPU.
+    # Đo 2026-08-04 trên máy chạy worker: 1 lượt chấm 12,6s; 4 lượt SONG SONG cũng chỉ 13,3s
+    # ⇒ throughput 4,8 → 18 lượt/phút mà không thêm phần cứng nào. `1` là lãng phí thuần.
+    # ⚠ Trần này áp cho CẢ hai đường: đường THÍCH ỨNG gửi kèm transcript (bỏ Whisper — nhẹ, chỉ
+    # chờ mạng) và đường TĨNH/republish KHÔNG có transcript (phải Whisper — nặng CPU thật). Đặt quá
+    # cao thì một đợt job tĩnh sẽ chạy ngần đó Whisper cùng lúc và bóp nghẹt CPU máy chạy worker.
+    # ⚠ Mỗi message = ≥1 lượt Gemini ⇒ giá trị này cũng là trần request đồng thời lên Gemini.
+    scoring_prefetch: int = 10
 
     # ── DEAD-LETTER (AI2) ────────────────────────────────────────
     # Message bị nack(requeue=False) → broker đẩy sang DLX → DLQ thay vì XOÁ IM LẶNG.

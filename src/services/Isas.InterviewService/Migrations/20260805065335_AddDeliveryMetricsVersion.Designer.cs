@@ -3,6 +3,7 @@ using System;
 using Isas.InterviewService.ApplicationDbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    partial class InterviewDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260805065335_AddDeliveryMetricsVersion")]
+    partial class AddDeliveryMetricsVersion
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -407,10 +410,6 @@ namespace Isas.InterviewService.Migrations
                     b.Property<string>("Transcript")
                         .HasColumnType("text")
                         .HasColumnName("transcript");
-
-                    b.Property<string>("TranscriptEngine")
-                        .HasColumnType("text")
-                        .HasColumnName("transcript_engine");
 
                     b.Property<int?>("WordCount")
                         .HasColumnType("integer")
