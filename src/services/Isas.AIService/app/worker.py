@@ -7,6 +7,7 @@ import aiohttp
 import aio_pika
 
 from app.config import settings
+from app import threadpool
 from app.cv_screening import maybe_start_cv_screening_consumer
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
@@ -283,6 +284,9 @@ async def declare_topology(channel):
 
 
 async def main():
+    # Đối xứng với api. ⚠ Ở worker cần gạt này gần như vô hiệu: trần thật bên đây là
+    # `scoring_prefetch` (10) + `cv_screening_prefetch` (4), không phải số thread.
+    threadpool.apply(asyncio.get_running_loop(), settings.thread_pool_max_workers)
     print("[*] Kết nối RabbitMQ...")
     connection = await aio_pika.connect_robust(settings.rabbitmq_url)
     async with connection:
