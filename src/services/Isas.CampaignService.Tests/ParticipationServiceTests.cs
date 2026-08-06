@@ -723,6 +723,120 @@ public class ParticipationServiceTests
                 .StartInterviewAsync(FixedCandidate, camp.Id, default));
     }
 
+    [Fact]
+    public async Task Start_TruocCampaignStart_ChanTruocKhiGoiInterview()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        camp.StartsAt = DateTime.UtcNow.AddMinutes(5);
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NewService(tdb.NewContext(), session: session).StartInterviewAsync(FixedCandidate, camp.Id));
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Start_TrongSlot_DungDeadlineSomHonVaLuuMembership()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        camp.ExpiresAt = DateTime.UtcNow.AddHours(4);
+        var slot = new CampaignSlot { Id = Guid.NewGuid(), CampaignId = camp.Id, StartsAt = DateTime.UtcNow.AddMinutes(-5), EndsAt = DateTime.UtcNow.AddHours(1), Capacity = 1 };
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SlotId = slot.Id;
+        tdb.Db.CampaignSlots.Add(slot);
+        tdb.Db.CampaignMemberships.Add(membership);
+        await tdb.Db.SaveChangesAsync();
+
+        var res = await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id);
+
+        Assert.Equal(slot.EndsAt, res.DeadlineAt);
+        using var check = tdb.NewContext();
+        Assert.Equal(slot.EndsAt, (await check.CampaignMemberships.SingleAsync()).InterviewDeadlineAt);
+    }
+
+    [Fact]
+    public async Task Start_SlotDaKetThuc_TraNgoaiKhungKemMocThoiGian()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        var slot = new CampaignSlot { Id = Guid.NewGuid(), CampaignId = camp.Id, StartsAt = DateTime.UtcNow.AddHours(-2), EndsAt = DateTime.UtcNow.AddMinutes(-1), Capacity = 1 };
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SlotId = slot.Id;
+        tdb.Db.AddRange(slot, membership);
+        await tdb.Db.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<OutsideSlotWindowException>(() =>
+            NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id));
+
+        Assert.Equal(slot.StartsAt, ex.StartsAt);
+        Assert.Equal(slot.EndsAt, ex.EndsAt);
+        Assert.Contains($"{slot.StartsAt.AddHours(7):HH:mm dd/MM}", ex.Message);
+    }
+
+    // ⚠ Test này CỐ Ý gọi thẳng VietnamTime.From chứ không đi qua StartInterviewAsync.
+    // Đã đo: seed slot với Kind=Local rồi đọc lại qua SQLite thì ra Kind=Unspecified (Npgsql ra Utc)
+    // ⇒ một test "3 kind" đi qua DB thực chất chỉ kiểm ĐÚNG MỘT kind và sẽ XANH kể cả khi gỡ
+    // SpecifyKind — tức một test trang trí. Kiểm thẳng hàm mới thấy được hành vi thật.
+    [Theory]
+    [InlineData(DateTimeKind.Local)]        // constructor DateTimeOffset ném ArgumentException nếu không SpecifyKind
+    [InlineData(DateTimeKind.Unspecified)]  // đường SQLite/test
+    [InlineData(DateTimeKind.Utc)]          // đường Npgsql/production
+    public void VietnamTime_MoiKind_DeuRa0700_KhongNem(DateTimeKind kind)
+    {
+        var utc = new DateTime(2026, 8, 12, 7, 0, 0, DateTimeKind.Utc);
+        var input = DateTime.SpecifyKind(utc, kind);
+
+        var vn = VietnamTime.From(input);
+
+        Assert.Equal(TimeSpan.FromHours(7), vn.Offset);
+        Assert.Equal("14:00 12/08", vn.ToString("HH:mm dd/MM"));   // 07:00Z → 14:00 giờ VN
+    }
+
+    [Fact]
+    public async Task Resume_SauKhiHrDoiStartsAt_VanVao()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        camp.StartsAt = DateTime.UtcNow.AddHours(1);
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SessionId = FixedSession;
+        membership.InterviewStatus = InterviewProgressStatus.InProgress;
+        tdb.Db.CampaignMemberships.Add(membership);
+        await tdb.Db.SaveChangesAsync();
+
+        var result = await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id);
+        Assert.Equal(FixedSession, result.SessionId);
+    }
+
+    [Fact]
+    public async Task Start_CampaignDaDatConcurrentCap_ChanTruocKhiGoiInterview()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        camp.MaxConcurrentInterviews = 1;
+        var running = Membership(camp.Id, Guid.NewGuid());
+        running.InterviewStatus = InterviewProgressStatus.InProgress;
+        running.SessionId = Guid.NewGuid();
+        running.InterviewDeadlineAt = DateTime.UtcNow.AddHours(1);
+        tdb.Db.CampaignMemberships.AddRange(running, Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        await Assert.ThrowsAsync<CampaignInterviewCapacityExceededException>(() =>
+            NewService(tdb.NewContext(), session: session).StartInterviewAsync(FixedCandidate, camp.Id));
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────────
     private static Campaign ActiveCampaignWithQuestionAndCriterion(CampaignTestDb tdb)
     {

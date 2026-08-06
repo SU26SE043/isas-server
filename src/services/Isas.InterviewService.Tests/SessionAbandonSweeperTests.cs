@@ -108,6 +108,32 @@ public class SessionAbandonSweeperTests
     }
 
     [Fact]
+    public async Task B2B_NullDeadline_Inactive_Abandoned_AndActiveSessionIsNotSwept()
+    {
+        // B2B không deadline vẫn đã reserve credit lúc Start. Lưới inactivity phải nhả credit cho
+        // session bị bỏ ngang, nhưng answer mới trong cutoff phải ngăn quét oan người đang làm.
+        using var t = new TestDb();
+        var stale = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready, campaignId: Guid.NewGuid(),
+            createdAt: DateTime.UtcNow.AddMinutes(-121), deadline: null);
+        var active = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress, campaignId: Guid.NewGuid(),
+            createdAt: DateTime.UtcNow.AddMinutes(-121), deadline: null);
+        var question = TestDb.Question(active.Id);
+        var answer = TestDb.Answer(active.Id, question.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-1), lastPublished: null);
+        t.Db.AddRange(stale, active, question, answer);
+        await t.Db.SaveChangesAsync();
+
+        await ScanOnce(Build(t));
+
+        Assert.Equal(1, AbandonedRows(t, stale.Id));
+        Assert.Equal(0, AbandonedRows(t, active.Id));
+        var sessions = await t.NewContext().PracticeSessions.AsNoTracking()
+            .Where(x => x.Id == stale.Id || x.Id == active.Id).ToDictionaryAsync(x => x.Id);
+        Assert.Equal(SessionStatus.SessionAbandoned, sessions[stale.Id].Status);
+        Assert.Equal(SessionStatus.InProgress, sessions[active.Id].Status);
+    }
+
+    [Fact]
     public async Task InProgress_DeadlineNotYetPassed_ZeroAnswers_NotAbandoned()
     {
         using var t = new TestDb();
@@ -127,9 +153,10 @@ public class SessionAbandonSweeperTests
     }
 
     [Fact]
-    public async Task ReadyStatus_PastDeadline_ZeroAnswers_NotAbandoned()
+    public async Task ReadyStatus_PastDeadline_ZeroAnswers_WritesAbandonedOutbox_AndClosesSession()
     {
-        // Sweeper chỉ chạm InProgress — Ready (chưa bắt đầu) quá Deadline KHÔNG thuộc phạm vi.
+        // B2B Ready được tạo sau Start và credit đã reserve. Đóng tab trước câu đầu tiên vẫn phải
+        // abandon khi deadline qua để Payment release reservation.
         using var t = new TestDb();
         var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready,
             deadline: DateTime.UtcNow.AddMinutes(-5));
@@ -139,7 +166,9 @@ public class SessionAbandonSweeperTests
         var sweeper = Build(t);
         await ScanOnce(sweeper);
 
-        Assert.Equal(0, AbandonedRows(t, session.Id));
+        Assert.Equal(1, AbandonedRows(t, session.Id));
+        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(SessionStatus.SessionAbandoned, saved.Status);
     }
 
     [Fact]
@@ -341,23 +370,4 @@ public class SessionAbandonSweeperTests
         Assert.Equal(SessionStatus.Ready, saved.Status);
     }
 
-    // P1-1: B2B với Deadline null (Campaign chưa gửi expires_at) KHÔNG bị nhánh B2C quét (CampaignId!=null).
-    // B2B behavior giữ nguyên: chỉ bị đóng qua nhánh Deadline (không có ở đây).
-    [Fact]
-    public async Task B2B_NullDeadline_OldSession_NotSweptByB2CBranch()
-    {
-        using var t = new TestDb();
-        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress,
-            campaignId: Guid.NewGuid(),                    // B2B
-            createdAt: DateTime.UtcNow.AddMinutes(-300), deadline: null);
-        t.Db.Add(session);
-        await t.Db.SaveChangesAsync();
-
-        var sweeper = Build(t);
-        await ScanOnce(sweeper);
-
-        Assert.Equal(0, AbandonedRows(t, session.Id));
-        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
-        Assert.Equal(SessionStatus.InProgress, saved.Status);
-    }
 }

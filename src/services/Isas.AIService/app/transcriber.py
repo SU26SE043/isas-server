@@ -1,5 +1,6 @@
 # app/transcriber.py
 import logging
+from pathlib import Path
 from dataclasses import dataclass
 
 from faster_whisper import WhisperModel
@@ -15,6 +16,8 @@ from app.transcribe_providers import (
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
+ORIGINAL_EXTENSIONS = {".webm", ".ogg", ".oga", ".mp3", ".m4a", ".mp4", ".mpeg", ".mpga", ".flac", ".wav"}
+OPENAI_MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 # Tham số VAD — KHÔNG dùng mặc định của thư viện, cả hai giá trị dưới đều cần thiết:
 #
@@ -96,7 +99,7 @@ class Transcriber:
         # cuối segment.
         audio_sec = len(pcm) / SAMPLE_RATE
 
-        text, engine, whisper_segments = self._text(pcm, language, audio_sec)
+        text, engine, whisper_segments = self._text(pcm, language, audio_sec, audio_path)
 
         return TranscriptionResult(
             text=text,
@@ -110,8 +113,8 @@ class Transcriber:
             engine=engine,
         )
 
-    def _text(self, pcm, language: str | None,
-              audio_sec: float) -> tuple[str, str, list[Segment]]:
+    def _text(self, pcm, language: str | None, audio_sec: float,
+              audio_path: str) -> tuple[str, str, list[Segment]]:
         """Lấy phần CHỮ. Trả ``(text, engine, whisper_segments)``.
 
         Nhà cung cấp từ xa không trả biên segment ⇒ ``whisper_segments`` rỗng ở nhánh đó. Mốc
@@ -124,9 +127,18 @@ class Transcriber:
         """
         provider = (settings.transcribe_provider or LOCAL).strip()
         if provider != LOCAL:
+            original = self._read_original(audio_path)
             try:
-                text, engine = transcribe_remote(
-                    provider, pcm_to_wav_bytes(pcm, SAMPLE_RATE), language, audio_sec)
+                if original is not None:
+                    try:
+                        text, engine = transcribe_remote(provider, original[0], language, audio_sec, original[1])
+                    except Exception as ex:
+                        if not self._should_retry_original_as_wav(ex):
+                            raise
+                        logger.warning("Nhà cung cấp từ chối file gốc %s — thử lại WAV", original[1], exc_info=True)
+                        text, engine = transcribe_remote(provider, pcm_to_wav_bytes(pcm, SAMPLE_RATE), language, audio_sec)
+                else:
+                    text, engine = transcribe_remote(provider, pcm_to_wav_bytes(pcm, SAMPLE_RATE), language, audio_sec)
                 reason = looks_broken(text)
                 if reason is None:
                     return text, engine, []
@@ -140,6 +152,41 @@ class Transcriber:
                     "Chép lời bằng %s hỏng — dùng lại Whisper cục bộ", provider, exc_info=True)
 
         return self._transcribe_local(pcm, language)
+
+    @staticmethod
+    def _should_retry_original_as_wav(error: Exception) -> bool:
+        """Chỉ thử WAV khi lỗi cho thấy payload gốc không được chấp nhận.
+
+        Timeout/lỗi mạng retry thêm một lượt sẽ vượt ngân sách 90 giây của decider; lỗi đó phải
+        rơi ngay về Whisper cục bộ. ``ValueError`` là bản chép HTTP 200 nhưng rỗng.
+
+        ⚠ Phải phủ **cả hai** nhà cung cấp: `transcribe_openai` dùng httpx (``HTTPStatusError``)
+        còn `transcribe_gemini` dùng google-genai (``ClientError`` = 4xx theo định nghĩa của SDK;
+        ``ServerError`` = 5xx nên KHÔNG retry, giống 5xx của httpx). Thiếu vế gemini thì đổi
+        ``TRANSCRIBE_PROVIDER=gemini`` — một biến env đổi được KHÔNG cần deploy — sẽ làm mọi lượt
+        bị từ chối rơi thẳng về Whisper `small` (lỗi từ 0,7% lên 4,2%) trong im lặng.
+        """
+        if isinstance(error, ValueError):
+            return True
+        try:
+            import httpx
+            if isinstance(error, httpx.HTTPStatusError):
+                return 400 <= error.response.status_code < 500
+        except ImportError:
+            pass
+        try:
+            from google.genai import errors as genai_errors
+            return isinstance(error, genai_errors.ClientError)
+        except ImportError:
+            return False
+
+    @staticmethod
+    def _read_original(audio_path: str) -> tuple[bytes, str] | None:
+        path = Path(audio_path)
+        if (not settings.transcribe_send_original or path.suffix.lower() not in ORIGINAL_EXTENSIONS
+                or not path.is_file() or path.stat().st_size > OPENAI_MAX_AUDIO_BYTES):
+            return None
+        return path.read_bytes(), path.name
 
     def _transcribe_local(self, pcm, language: str | None) -> tuple[str, str, list[Segment]]:
         """Whisper cục bộ — hành vi y hệt trước vòng này (đường mặc định)."""

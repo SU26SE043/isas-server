@@ -61,6 +61,11 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // B2B: lookup session theo campaign (S3/S4). Non-unique, nullable.
         e.HasIndex(x => x.CampaignId);
 
+        // Capacity: đếm đúng tập nóng đang chiếm chỗ; filter phải khớp EnsureCapacityAsync.
+        e.HasIndex(x => x.Status)
+            .HasDatabaseName("ix_practice_sessions_running_capacity")
+            .HasFilter("status IN ('GeneratingQuestions', 'Ready', 'InProgress')");
+
         // DB31 — lịch sử buổi luyện của 1 candidate, phân trang keyset `(created_at DESC, id DESC)`
         // (quy ước DB8). Composite (candidate_id, created_at DESC, id DESC) khớp ĐÚNG hình truy vấn
         // `WHERE candidate_id = @c ORDER BY created_at DESC, id DESC LIMIT n` → index-only range scan,
@@ -91,16 +96,18 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // thì partial index NGỪNG được dùng — xem test SweeperIndexTests khoá hợp đồng này.)
         //
         // (1) B2B quá hạn nhận bài — ScanExpiredB2BAsync:
-        //     status == InProgress && deadline != null && deadline < now
+        //     status IN (Ready, InProgress) && deadline != null && deadline < now. B2B Ready đã
+        //     reserve credit tại Start, nên phải được sweeper dọn nếu đóng tab trước answer đầu tiên.
         e.HasIndex(x => x.Deadline)
             .HasDatabaseName("ix_practice_sessions_deadline")
-            .HasFilter("status = 'InProgress' AND deadline IS NOT NULL");
+            .HasFilter("status IN ('Ready', 'InProgress') AND deadline IS NOT NULL");
 
-        // (2) B2C không hoạt động — ScanInactiveB2CAsync:
-        //     status IN (Ready, InProgress) && deadline == null && campaign_id == null && created_at < cutoff
+        // (2) Không hoạt động không có hard deadline — ScanInactiveB2CAsync:
+        //     status IN (Ready, InProgress) && deadline == null && created_at < cutoff. Không lọc
+        //     campaign_id: B2B không deadline đã reserve credit lúc Start, cũng phải được dọn.
         e.HasIndex(x => x.CreatedAt)
             .HasDatabaseName("ix_practice_sessions_b2c_active")
-            .HasFilter("status IN ('Ready', 'InProgress') AND campaign_id IS NULL AND deadline IS NULL");
+            .HasFilter("status IN ('Ready', 'InProgress') AND deadline IS NULL");
 
         e.HasMany(x => x.Questions)
             .WithOne(q => q.Session)

@@ -44,6 +44,7 @@ def _reset_provider(monkeypatch):
     monkeypatch.setattr(app_settings, "transcribe_provider", "local")
     monkeypatch.setattr(app_settings, "whisper_model", "small")
     monkeypatch.setattr(app_settings, "delivery_metrics_source", "vad")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", False)
 
 
 def _make(monkeypatch, *, vad_spans=None, seconds=6.0):
@@ -82,6 +83,76 @@ def _stub_remote(monkeypatch, text=None, *, engine="whisper-1", boom=None):
 
     monkeypatch.setattr(transcriber_mod, "transcribe_remote", _fake)
     return seen
+
+
+def test_original_audio_is_sent_with_real_filename_and_remote_can_retry_wav(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_settings, "transcribe_provider", "whisper-1")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", True)
+    audio = tmp_path / "answer.webm"
+    audio.write_bytes(b"original-webm")
+    t, _ = _make(monkeypatch)
+    calls = []
+
+    def remote(provider, data, language, audio_seconds=0.0, filename="audio.wav"):
+        calls.append((data, filename))
+        if filename == "answer.webm":
+            raise ValueError("legacy WAV bytes under webm extension")
+        return "bản WAV cứu hộ", "whisper-1"
+
+    monkeypatch.setattr(transcriber_mod, "transcribe_remote", remote)
+    assert t.transcribe_detailed(str(audio)).text == "bản WAV cứu hộ"
+    assert calls[0] == (b"original-webm", "answer.webm")
+    assert calls[1][1] == "audio.wav"
+
+
+def test_timeout_khong_retry_wav_va_roi_thang_ve_cuc_bo(monkeypatch, tmp_path):
+    """Retry timeout 60s thêm một lần sẽ vượt ngân sách decider 90s."""
+    import httpx
+
+    monkeypatch.setattr(app_settings, "transcribe_provider", "whisper-1")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", True)
+    audio = tmp_path / "answer.webm"
+    audio.write_bytes(b"original-webm")
+    t, calls = _make(monkeypatch)
+    attempts = []
+
+    def remote(*args, **kwargs):
+        attempts.append(args)
+        raise httpx.TimeoutException("quá 60s")
+
+    monkeypatch.setattr(transcriber_mod, "transcribe_remote", remote)
+    assert t.transcribe_detailed(str(audio)).engine == "local:small"
+    assert len(attempts) == 1
+    assert calls["local_transcribe"] == 1
+
+
+def test_loi_4xx_retry_wav_nhung_timeout_khong(monkeypatch, tmp_path):
+    import httpx
+
+    monkeypatch.setattr(app_settings, "transcribe_provider", "whisper-1")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", True)
+    audio = tmp_path / "answer.webm"
+    audio.write_bytes(b"original-webm")
+    t, _ = _make(monkeypatch)
+    calls = []
+    request = httpx.Request("POST", "https://example.test/transcribe")
+    response = httpx.Response(415, request=request)
+
+    def remote(provider, data, language, audio_seconds=0.0, filename="audio.wav"):
+        calls.append(filename)
+        if len(calls) == 1:
+            raise httpx.HTTPStatusError("unsupported media", request=request, response=response)
+        return "bản WAV cứu hộ", "whisper-1"
+
+    monkeypatch.setattr(transcriber_mod, "transcribe_remote", remote)
+    assert t.transcribe_detailed(str(audio)).text == "bản WAV cứu hộ"
+    assert calls == ["answer.webm", "audio.wav"]
+
+
+def test_local_khong_doc_file_goc(monkeypatch):
+    t, _ = _make(monkeypatch)
+    monkeypatch.setattr(t, "_read_original", lambda _: (_ for _ in ()).throw(AssertionError("local không được đọc file gốc")))
+    assert t.transcribe_detailed("/tmp/x.webm").engine == "local:small"
 
 
 # ── 1. Đường thành công của từng nhà cung cấp ────────────────────────────────────────
@@ -402,8 +473,13 @@ def test_ban_chep_rong_tu_openai_thi_NEM_de_roi_ve_cuc_bo(monkeypatch, fake_http
     import httpx
     monkeypatch.setattr(httpx, "Client", _Empty)
 
+    from app import usage
+    charged = []
+    monkeypatch.setattr(usage, "report_audio_usage", lambda *args: charged.append(args))
+
     with pytest.raises(ValueError):
         tp.transcribe_openai(b"RIFFxxxx", "vi", 1.0)
+    assert charged == [("transcribe", app_settings.openai_transcribe_model, 1.0)]
 
 
 # ── 5b. Gemini — audio là DỮ LIỆU, lệnh là "chép nguyên văn" ─────────────────────────
@@ -669,3 +745,107 @@ def test_nguon_moc_whisper_van_dung_segment_khi_chep_cuc_bo(monkeypatch):
     # Segment cục bộ: nói 0-5s, khe 0,5s (dưới ngưỡng 0,7s), nói 5,5-6s ⇒ 0 lần ngập ngừng.
     assert m.pause_count == 0
     assert m.speech_sec == pytest.approx(5.5)
+
+
+# ── Content-Type: bảng tĩnh, KHÔNG phụ thuộc /etc/mime.types ─────────────────────────
+@pytest.mark.parametrize("filename,expected", [
+    ("answer.webm", "audio/webm"),   # đuôi DUY NHẤT xuất hiện trên production
+    ("answer.ogg", "audio/ogg"),
+    ("answer.oga", "audio/ogg"),
+    ("answer.m4a", "audio/mp4"),
+    ("answer.mpga", "audio/mpeg"),
+    ("answer.flac", "audio/flac"),
+    ("answer.wav", "audio/wav"),
+    ("answer.WEBM", "audio/webm"),   # đuôi hoa
+    ("answer.xyz", "application/octet-stream"),
+    ("khong-co-duoi", "application/octet-stream"),
+])
+def test_content_type_tra_bang_tinh(filename, expected):
+    """Khoá bảng tĩnh — `mimetypes.guess_type` đọc /etc/mime.types nên đổi theo image/OS.
+
+    Trên `python:3.12-slim` nó cho ra `video/webm` cho .webm (đường chạy thật!), và None →
+    octet-stream cho .ogg/.oga/.m4a/.mpga/.flac. Nhà cung cấp từ chối thì nhánh cứu WAV nuốt lỗi
+    ⇒ tính năng gửi-file-gốc không bao giờ kích hoạt mà không ai biết.
+    """
+    assert tp.audio_content_type(filename) == expected
+
+
+def test_content_type_khong_bao_gio_la_video():
+    """Vế phủ định: audio đi dưới nhãn `video/*` là dấu hiệu ai đó quay lại dùng `mimetypes`."""
+    for ext in (".webm", ".mp4", ".mpeg", ".ogg"):
+        assert not tp.audio_content_type("a" + ext).startswith("video/")
+
+
+def test_gemini_tu_choi_4xx_van_retry_wav(monkeypatch, tmp_path):
+    """Nhánh gemini phải retry WAV y như nhánh openai.
+
+    `transcribe_openai` ném `httpx.HTTPStatusError`, còn `transcribe_gemini` ném
+    `google.genai.errors.ClientError`. Chỉ nhận diện httpx ⇒ đổi TRANSCRIBE_PROVIDER=gemini (một
+    biến env, KHÔNG cần deploy) làm mọi lượt bị từ chối rơi thẳng về Whisper `small` trong im lặng.
+    """
+    from google.genai import errors as genai_errors
+
+    monkeypatch.setattr(app_settings, "transcribe_provider", "gemini")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", True)
+    audio = tmp_path / "answer.webm"
+    audio.write_bytes(b"original-webm")
+    t, _ = _make(monkeypatch)
+    calls = []
+
+    def remote(provider, data, language, audio_seconds=0.0, filename="audio.wav"):
+        calls.append(filename)
+        if len(calls) == 1:
+            raise genai_errors.ClientError(400, {"error": {"message": "unsupported mime"}})
+        return "bản WAV cứu hộ", "gemini-2.5-flash"
+
+    monkeypatch.setattr(transcriber_mod, "transcribe_remote", remote)
+    assert t.transcribe_detailed(str(audio)).text == "bản WAV cứu hộ"
+    assert calls == ["answer.webm", "audio.wav"]
+
+
+def test_gemini_loi_5xx_KHONG_retry(monkeypatch, tmp_path):
+    """Vế đối chứng: 5xx là lỗi phía nhà cung cấp, retry chỉ tốn thêm một ngân sách thời gian."""
+    from google.genai import errors as genai_errors
+
+    monkeypatch.setattr(app_settings, "transcribe_provider", "gemini")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", True)
+    audio = tmp_path / "answer.webm"
+    audio.write_bytes(b"original-webm")
+    t, calls = _make(monkeypatch)
+    attempts = []
+
+    def remote(*args, **kwargs):
+        attempts.append(args)
+        raise genai_errors.ServerError(503, {"error": {"message": "overloaded"}})
+
+    monkeypatch.setattr(transcriber_mod, "transcribe_remote", remote)
+    assert t.transcribe_detailed(str(audio)).engine == "local:small"
+    assert len(attempts) == 1
+    assert calls["local_transcribe"] == 1
+
+
+def test_ban_chep_rong_van_GHI_usage_truoc_khi_nem(monkeypatch, fake_httpx):
+    """HTTP 200 + text rỗng vẫn là một lượt ĐÃ BỊ TÍNH TIỀN.
+
+    Ghi usage sau `raise` thì lượt đó biến mất khỏi F22 trong khi OpenAI vẫn thu tiền — và caller
+    còn thử lại bằng WAV, tức thực tế tốn 2 lượt mà sổ chỉ thấy 1.
+    """
+    class _Empty(_FakeClient):
+        def post(self, *a, **k):
+            type(self).last.update(url=a[0] if a else k.get("url"), files=k.get("files"))
+            return _FakeResp({"text": "   "})
+
+    monkeypatch.setattr("httpx.Client", _Empty)
+    reported = []
+
+    def _capture(coro):
+        reported.append(coro)
+        coro.close()          # tránh cảnh báo "coroutine never awaited"
+
+    # `report_blocking` được import BÊN TRONG transcribe_openai ⇒ phải vá ở module nguồn.
+    monkeypatch.setattr("app.usage.report_blocking", _capture)
+
+    with pytest.raises(ValueError):
+        tp.transcribe_openai(b"RIFFxxxx", "vi", 42.0)
+
+    assert len(reported) == 1, "lượt bị bỏ vẫn phải vào sổ chi phí"

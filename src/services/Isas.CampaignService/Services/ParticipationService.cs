@@ -170,7 +170,7 @@ namespace Isas.CampaignService.Services
                 JobTitle = m.Campaign.Domain,
                 Deadline = m.Campaign.ExpiresAt,
                 MembershipStatus = m.Status.ToString(),
-                InterviewStatus = (m.InterviewStatus ?? InterviewProgressStatus.NotStarted).ToString()
+                InterviewStatus = MapCandidateInterviewStatus(m.InterviewStatus).ToString()
             }).ToList();
 
             return new KeysetPage<MyCampaignItem>(items, next);
@@ -188,7 +188,7 @@ namespace Isas.CampaignService.Services
             if (membership is null || membership.Campaign is null)
                 throw new KeyNotFoundException("Bạn không phải thành viên của chiến dịch này.");
 
-            var interviewStatus = membership.InterviewStatus ?? InterviewProgressStatus.NotStarted;
+            var interviewStatus = MapCandidateInterviewStatus(membership.InterviewStatus);
 
             return new CandidateCampaignDetailResponse
             {
@@ -225,10 +225,53 @@ namespace Isas.CampaignService.Services
                 throw new InvalidOperationException($"Chiến dịch không còn cho phỏng vấn (trạng thái {campaign.Status}).");
             if (campaign.ExpiresAt is DateTime exp && exp < DateTime.UtcNow)
                 throw new InvalidOperationException("Chiến dịch đã hết hạn phỏng vấn.");
-
             // Đã hoàn thành → không cho làm lại (biên idempotency phía membership).
             if (membership.InterviewStatus == InterviewProgressStatus.Completed)
                 throw new InvalidOperationException("Bạn đã hoàn thành phỏng vấn của chiến dịch này.");
+
+            var now = DateTime.UtcNow;
+            var isResume = membership.SessionId is not null
+                && membership.InterviewStatus == InterviewProgressStatus.InProgress;
+            DateTime? interviewDeadline = campaign.ExpiresAt;
+
+            // Resume đã có session idempotent, không chiếm thêm slot/capacity và không gọi lại reserve.
+            if (!isResume)
+            {
+                // Resume tiếp session đã mở không được chặn nếu HR đổi StartsAt về tương lai.
+                if (campaign.StartsAt is DateTime startsAt && startsAt > now)
+                    throw new InvalidOperationException("Chiến dịch chưa đến thời gian bắt đầu phỏng vấn.");
+
+                if (membership.SlotId is Guid slotId)
+                {
+                    var slot = await _db.CampaignSlots
+                        .FirstOrDefaultAsync(s => s.Id == slotId && s.CampaignId == campaignId, ct);
+                    if (slot is null || now < slot.StartsAt || now > slot.EndsAt)
+                    {
+                        if (slot is null)
+                            throw new InvalidOperationException("Không tìm thấy khung giờ phỏng vấn đã được phân.");
+
+                        var startsAtVn = ToVietnamTime(slot.StartsAt);
+                        var endsAtVn = ToVietnamTime(slot.EndsAt);
+                        throw new OutsideSlotWindowException(
+                            slot.StartsAt, slot.EndsAt,
+                            $"Bạn thi lúc {startsAtVn:HH:mm dd/MM} (giờ VN), kết thúc {endsAtVn:HH:mm}.");
+                    }
+
+                    interviewDeadline = MinDeadline(campaign.ExpiresAt, slot.EndsAt);
+                }
+
+                if (campaign.MaxConcurrentInterviews is int maxConcurrent)
+                {
+                    var inactiveSince = now.AddHours(-24);
+                    var running = await _db.CampaignMemberships.CountAsync(m =>
+                        m.CampaignId == campaignId
+                        && m.InterviewStatus == InterviewProgressStatus.InProgress
+                        && ((m.InterviewDeadlineAt != null && m.InterviewDeadlineAt > now)
+                            || (m.InterviewDeadlineAt == null && m.UpdatedAt > inactiveSince)), ct);
+                    if (running >= maxConcurrent)
+                        throw new CampaignInterviewCapacityExceededException("Chiến dịch đang đạt giới hạn số phiên phỏng vấn đồng thời.");
+                }
+            }
 
             var questions = campaign.Questions
                 .OrderBy(q => q.CreatedAt).ThenBy(q => q.Id)
@@ -247,16 +290,18 @@ namespace Isas.CampaignService.Services
             var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
 
             // Create-or-get session (Interview dedup theo candidate+campaign) → bấm nhiều lần vẫn ra CÙNG session.
-            // BK18 — gửi kèm campaign.ExpiresAt → Interview set session.Deadline (I2) cho sweeper auto-submit/abandon.
+            // Gửi deadline hiệu lực (min campaign expiry và slot) để Interview sweeper tự kết thúc đúng hạn.
             var session = await _sessionClient.CreateOrGetSessionAsync(
-                candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, campaign.ExpiresAt,
+                candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
                 // INT-17: chuyển toggle + trần HR đặt trên campaign xuống Interview (campaign đã nạp đủ,
                 // không cần query thêm). Tắt (mặc định) → Interview giữ luồng batch tĩnh cũ.
                 campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions,
                 campaign.MaxDeepPerQuestion, ct);   // INT-17b: trần đào sâu mỗi câu
 
             membership.SessionId = session.SessionId;
-            if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted)
+            // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.
+            membership.InterviewDeadlineAt ??= interviewDeadline;
+            if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted or InterviewProgressStatus.Abandoned)
                 membership.InterviewStatus = InterviewProgressStatus.InProgress;
             membership.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
@@ -269,6 +314,7 @@ namespace Isas.CampaignService.Services
             {
                 SessionId = session.SessionId,
                 CampaignId = campaignId,
+                DeadlineAt = membership.InterviewDeadlineAt,
                 // SEC-1: FE kích hoạt proctoring khi campaign bật anti-cheat (độc lập face-verify).
                 AntiCheatEnabled = campaign.AntiCheatEnabled,
                 // SEC-2: bật face-verify + chưa có ảnh tham chiếu → FE cần nhắc enroll (KHÔNG chặn start, D13/SEC-5).
@@ -287,6 +333,11 @@ namespace Isas.CampaignService.Services
                     }).ToList()
             };
         }
+
+        private static DateTime? MinDeadline(DateTime? campaignExpiresAt, DateTime slotEndsAt) =>
+            campaignExpiresAt is null || slotEndsAt < campaignExpiresAt ? slotEndsAt : campaignExpiresAt;
+
+        private static DateTimeOffset ToVietnamTime(DateTime utc) => VietnamTime.From(utc);
 
         // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -337,6 +388,10 @@ namespace Isas.CampaignService.Services
         // Lời mời còn dùng được: chưa revoke, chưa hết hạn, campaign còn Active. Ngược lại → 410 Gone.
         // DB23 — token rỗng/trắng = không tồn tại (404), KHÔNG để lọt xuống Hash() ném ArgumentException
         // (sẽ thành 500). Trim để dung thứ khoảng trắng khi ứng viên copy link từ email.
+        private static InterviewProgressStatus MapCandidateInterviewStatus(InterviewProgressStatus? status) =>
+            status == InterviewProgressStatus.Abandoned ? InterviewProgressStatus.NotStarted
+                : status ?? InterviewProgressStatus.NotStarted;
+
         private static string HashOrThrow(string token)
         {
             var trimmed = token?.Trim();

@@ -70,6 +70,7 @@ namespace Isas.CampaignService.Models
     {
         NotStarted = 0,
         InProgress = 1,
-        Completed = 2
+        Abandoned = 2,
+        Completed = 3
     }
 }

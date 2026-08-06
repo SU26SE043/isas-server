@@ -10,5 +10,6 @@ namespace Isas.CampaignService.Services
     public interface IRankingEventHandler
     {
         Task HandleSessionScoredAsync(SessionScoredMessage evt, CancellationToken ct = default);
+        Task HandleSessionAbandonedAsync(SessionAbandonedMessage evt, CancellationToken ct = default);
     }
 }

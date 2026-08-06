@@ -32,10 +32,10 @@ public class SweeperIndexTests
 
         Assert.NotNull(idx);
         Assert.Equal(nameof(PracticeSession.Deadline), Assert.Single(idx!.Properties).Name);
-        Assert.Equal("status = 'InProgress' AND deadline IS NOT NULL", idx.GetFilter());
+        Assert.Equal("status IN ('Ready', 'InProgress') AND deadline IS NOT NULL", idx.GetFilter());
     }
 
-    // (2) B2C inactivity sweep — DB27: partial index trên CreatedAt, filter mang status + 2 cột phân dòng.
+    // (2) Inactivity sweep — DB27: partial index trên CreatedAt, filter mang status + deadline.
     [Fact]
     public void PracticeSessions_HasB2CActivePartialIndex()
     {
@@ -48,7 +48,7 @@ public class SweeperIndexTests
         Assert.NotNull(idx);
         Assert.Equal(nameof(PracticeSession.CreatedAt), Assert.Single(idx!.Properties).Name);
         Assert.Equal(
-            "status IN ('Ready', 'InProgress') AND campaign_id IS NULL AND deadline IS NULL",
+            "status IN ('Ready', 'InProgress') AND deadline IS NULL",
             idx.GetFilter());
     }
 
@@ -136,22 +136,22 @@ public class SweeperIndexTests
 
         var now = DateTime.UtcNow;
 
-        // (a) B2B — khớp filter "status = 'InProgress' AND deadline IS NOT NULL".
+        // (a) B2B — khớp filter "status IN ('Ready', 'InProgress') AND deadline IS NOT NULL".
         var b2b = db.PracticeSessions
-            .Where(s => s.Status == SessionStatus.InProgress && s.Deadline != null && s.Deadline < now)
+            .Where(s => (s.Status == SessionStatus.Ready || s.Status == SessionStatus.InProgress)
+                        && s.Deadline != null && s.Deadline < now)
             .Select(s => s.Id)
             .ToQueryString();
-        Assert.Contains("status = 'InProgress'", b2b);
+        Assert.Contains("status IN ('Ready', 'InProgress')", b2b);
         Assert.Contains("deadline IS NOT NULL", b2b);
 
-        // (b) B2C — khớp filter "status IN ('Ready', 'InProgress') AND campaign_id IS NULL AND deadline IS NULL".
+        // (b) No-deadline inactivity — khớp filter "status IN ('Ready', 'InProgress') AND deadline IS NULL".
         var b2c = db.PracticeSessions
             .Where(s => (s.Status == SessionStatus.Ready || s.Status == SessionStatus.InProgress)
-                        && s.Deadline == null && s.CampaignId == null && s.CreatedAt < now)
+                        && s.Deadline == null && s.CreatedAt < now)
             .Select(s => s.Id)
             .ToQueryString();
         Assert.Contains("status IN ('Ready', 'InProgress')", b2c);
-        Assert.Contains("campaign_id IS NULL", b2c);
         Assert.Contains("deadline IS NULL", b2c);
     }
 }

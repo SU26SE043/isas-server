@@ -23,8 +23,13 @@ namespace Isas.CampaignService.Services
     public class SessionScoredConsumer : BackgroundService
     {
         private const string ExchangeName = "interview.events";
-        private const string RoutingKey = "session.scored";
+        private const string ScoredRoutingKey = "session.scored";
+        private const string AbandonedRoutingKey = "session.abandoned";
         private const string QueueName = "campaign.ranking";
+        // Queue chính đã tồn tại trên production không có arguments. DLX phải được gắn bằng
+        // RabbitMQ policy (xem DEPLOYMENT.md), tuyệt đối không thêm arguments khi redeclare.
+        private const string DeadLetterExchangeName = "campaign.ranking.dlx";
+        private const string DeadLetterQueueName = "campaign.ranking.dead";
         private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
 
         private static readonly JsonSerializerOptions JsonOptions = new()
@@ -35,6 +40,7 @@ namespace Isas.CampaignService.Services
         private readonly IConfiguration _config;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<SessionScoredConsumer> _logger;
+        private readonly bool _releaseOnAbandoned;
 
         public SessionScoredConsumer(
             IConfiguration config,
@@ -44,6 +50,7 @@ namespace Isas.CampaignService.Services
             _config = config;
             _scopeFactory = scopeFactory;
             _logger = logger;
+            _releaseOnAbandoned = config.GetValue<bool>("Membership:ReleaseOnAbandoned");
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -76,6 +83,87 @@ namespace Isas.CampaignService.Services
             }
         }
 
+        /// <summary>
+        /// Khai topology. Tách ra khỏi <c>RunConsumerAsync</c> để test được bằng <c>Mock&lt;IChannel&gt;</c> —
+        /// phần này không unit-test được nếu còn nằm chung với việc mở connection thật.
+        /// </summary>
+        /// <remarks>
+        /// 🔴 <b>Queue chính PHẢI được khai không có <c>arguments</c>.</b> Nó đã tồn tại trên production
+        /// với <c>arguments</c> rỗng; khai lại kèm <c>x-dead-letter-*</c> sẽ ném <b>406
+        /// PRECONDITION_FAILED</b> và consumer chết vòng lặp reconnect (bẫy <c>payment.credit</c> đã dính,
+        /// S6 đợt 9). DLX được gắn bằng <b>RabbitMQ policy</b> phía ops — xem <c>DEPLOYMENT.md</c>. Ở đây
+        /// chỉ khai các đối tượng MỚI (<c>campaign.ranking.dlx</c> / <c>campaign.ranking.dead</c>) nên
+        /// idempotent và không đụng queue đang sống.
+        /// </remarks>
+        internal async Task DeclareTopologyAsync(IChannel channel, CancellationToken ct)
+        {
+            // Khai lại exchange (idempotent, cùng khai báo với publisher) — Campaign không sở hữu
+            // exchange nhưng cần đảm bảo nó tồn tại trước khi bind queue, phòng consumer khởi động
+            // trước publisher lần đầu.
+            await channel.ExchangeDeclareAsync(
+                exchange: ExchangeName, type: ExchangeType.Topic,
+                durable: true, autoDelete: false, cancellationToken: ct);
+
+            await channel.QueueDeclareAsync(
+                queue: QueueName, durable: true, exclusive: false, autoDelete: false, cancellationToken: ct);
+
+            await channel.QueueBindAsync(
+                queue: QueueName, exchange: ExchangeName, routingKey: ScoredRoutingKey, cancellationToken: ct);
+
+            await channel.ExchangeDeclareAsync(
+                exchange: DeadLetterExchangeName, type: ExchangeType.Direct,
+                durable: true, autoDelete: false, cancellationToken: ct);
+            await channel.QueueDeclareAsync(
+                queue: DeadLetterQueueName, durable: true, exclusive: false, autoDelete: false,
+                cancellationToken: ct);
+            // Routing key = TÊN QUEUE CHÍNH, khớp `dead-letter-routing-key` trong policy ops. Không có
+            // vế đó thì message chết giữ routing key GỐC (`session.scored`), direct exchange không khớp
+            // ⇒ rơi lần thứ hai, tức vá mà vẫn mất message.
+            await channel.QueueBindAsync(
+                queue: DeadLetterQueueName, exchange: DeadLetterExchangeName,
+                routingKey: QueueName, cancellationToken: ct);
+
+            if (_releaseOnAbandoned)
+                await channel.QueueBindAsync(
+                    queue: QueueName, exchange: ExchangeName, routingKey: AbandonedRoutingKey,
+                    cancellationToken: ct);
+        }
+
+        /// <summary>
+        /// Định tuyến message theo routing key. Ném ⇒ caller nack; trả về bình thường ⇒ caller ack.
+        /// Tách ra để test được nhánh cờ tắt mà không cần broker.
+        /// </summary>
+        internal async Task DispatchAsync(
+            string routingKey, string json, IRankingEventHandler handler, CancellationToken ct)
+        {
+            if (routingKey == ScoredRoutingKey)
+            {
+                var evt = JsonSerializer.Deserialize<SessionScoredMessage>(json, JsonOptions);
+                if (evt is null) throw new JsonException("SessionScored message rỗng.");
+                await handler.HandleSessionScoredAsync(evt, ct);
+                return;
+            }
+
+            if (routingKey == AbandonedRoutingKey)
+            {
+                // Cờ tắt nhưng binding cũ có thể vẫn còn (đã từng bật rồi tắt) ⇒ message vẫn tới.
+                // Bỏ qua + để caller ACK: nack-requeue sẽ quay vòng vô tận vì lần sau vẫn bị bỏ qua.
+                if (!_releaseOnAbandoned)
+                {
+                    _logger.LogDebug(
+                        "Bỏ qua event {RoutingKey} vì Membership:ReleaseOnAbandoned=false", routingKey);
+                    return;
+                }
+
+                var evt = JsonSerializer.Deserialize<SessionAbandonedMessage>(json, JsonOptions);
+                if (evt is null) throw new JsonException("SessionAbandoned message rỗng.");
+                await handler.HandleSessionAbandonedAsync(evt, ct);
+                return;
+            }
+
+            _logger.LogWarning("Routing key không xử lý: {RoutingKey} — ack để không nghẽn queue", routingKey);
+        }
+
         private async Task RunConsumerAsync(CancellationToken stoppingToken)
         {
             var factory = new ConnectionFactory
@@ -88,28 +176,7 @@ namespace Isas.CampaignService.Services
             await using var connection = await factory.CreateConnectionAsync(stoppingToken);
             await using var channel = await connection.CreateChannelAsync(cancellationToken: stoppingToken);
 
-            // Khai lại exchange (idempotent, cùng khai báo với publisher) — Campaign không sở hữu
-            // exchange nhưng cần đảm bảo nó tồn tại trước khi bind queue, phòng consumer khởi động
-            // trước publisher lần đầu.
-            await channel.ExchangeDeclareAsync(
-                exchange: ExchangeName,
-                type: ExchangeType.Topic,
-                durable: true,
-                autoDelete: false,
-                cancellationToken: stoppingToken);
-
-            await channel.QueueDeclareAsync(
-                queue: QueueName,
-                durable: true,
-                exclusive: false,
-                autoDelete: false,
-                cancellationToken: stoppingToken);
-
-            await channel.QueueBindAsync(
-                queue: QueueName,
-                exchange: ExchangeName,
-                routingKey: RoutingKey,
-                cancellationToken: stoppingToken);
+            await DeclareTopologyAsync(channel, stoppingToken);
 
             // Prefetch 1 → xử lý tuần tự, ack sau khi upsert xong (an toàn cho idempotency find-or-update).
             await channel.BasicQosAsync(0, 1, false, cancellationToken: stoppingToken);
@@ -119,26 +186,25 @@ namespace Isas.CampaignService.Services
             {
                 try
                 {
-                    var json = Encoding.UTF8.GetString(ea.Body.Span);
-                    var evt = JsonSerializer.Deserialize<SessionScoredMessage>(json, JsonOptions);
-
-                    if (evt is not null)
-                    {
-                        using var scope = _scopeFactory.CreateScope();
-                        var handler = scope.ServiceProvider.GetRequiredService<IRankingEventHandler>();
-                        await handler.HandleSessionScoredAsync(evt, stoppingToken);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("SessionScored message rỗng/không deserialize được — bỏ qua: {Json}", json);
-                    }
+                    using var scope = _scopeFactory.CreateScope();
+                    var handler = scope.ServiceProvider.GetRequiredService<IRankingEventHandler>();
+                    await DispatchAsync(
+                        ea.RoutingKey, Encoding.UTF8.GetString(ea.Body.Span), handler, stoppingToken);
 
                     await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Lỗi xử lý SessionScored — nack + requeue");
-                    await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: stoppingToken);
+                    if (ea.Redelivered)
+                    {
+                        _logger.LogError(ex, "Event {RoutingKey} lỗi lần 2 — bỏ khỏi queue chính", ea.RoutingKey);
+                        await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: false, cancellationToken: stoppingToken);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(ex, "Lỗi xử lý event {RoutingKey} — thử lại một lần", ea.RoutingKey);
+                        await channel.BasicNackAsync(ea.DeliveryTag, multiple: false, requeue: true, cancellationToken: stoppingToken);
+                    }
                 }
             };
 
@@ -149,8 +215,8 @@ namespace Isas.CampaignService.Services
                 cancellationToken: stoppingToken);
 
             _logger.LogInformation(
-                "SessionScoredConsumer đang nghe {Queue} (bind {Exchange}/{RoutingKey})",
-                QueueName, ExchangeName, RoutingKey);
+                "SessionScoredConsumer đang nghe {Queue} (bind {Exchange}/{ScoredKey}+{AbandonedKey})",
+                QueueName, ExchangeName, ScoredRoutingKey, AbandonedRoutingKey);
 
             // Giữ task sống tới khi bị huỷ; nếu channel/connection rớt, exception sẽ ném ra ngoài
             // và ExecuteAsync sẽ reconnect.

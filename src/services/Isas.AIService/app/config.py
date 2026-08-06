@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     # mạng xấu mà vẫn nằm dưới timeout 90s của decider (`/decide-next` gọi ĐỒNG BỘ trong request
     # upload). Hết giờ = rơi về cục bộ, không phải lỗi.
     transcribe_timeout_seconds: float = 60.0
+    # Rollout riêng cho payload gốc: false giữ WAV tái mã hoá tương thích tuyệt đối.
+    transcribe_send_original: bool = False
 
     # ── NGÂN SÁCH "THINKING" CHO /decide-next ────────────────────
     # Gemini 2.5 mặc định bật suy luận ẩn (thinking) và tính tiền token đó THEO GIÁ OUTPUT.

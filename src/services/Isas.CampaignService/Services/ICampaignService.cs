@@ -32,6 +32,10 @@ namespace Isas.CampaignService.Services
         Task<Stream> DownloadCampaignFilesAsync(Guid orgId, Guid id, string fileType, CancellationToken ct);
         Task<CampaignResponse> PublishCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
         Task<CampaignResponse> TransitionStatusAsync(Guid orgId, Guid actorUserId, Guid id, CampaignStatus target, CancellationToken ct);
+        Task<IReadOnlyList<CampaignSlotResponse>> GetSlotsAsync(Guid orgId, Guid campaignId, CancellationToken ct);
+        Task<CampaignSlotResponse> CreateSlotAsync(Guid orgId, Guid campaignId, CreateCampaignSlotRequest request, CancellationToken ct);
+        Task<CampaignSlotResponse> UpdateSlotAsync(Guid orgId, Guid campaignId, Guid slotId, UpdateCampaignSlotRequest request, CancellationToken ct);
+        Task DeleteSlotAsync(Guid orgId, Guid campaignId, Guid slotId, CancellationToken ct);
 
         // D1: Distribution đường 1 — mời thẳng qua danh sách email
         Task<CreateInvitationsResponse> CreateInvitationsAsync(Guid orgId, Guid actorUserId, Guid id, List<string> emails, CancellationToken ct);

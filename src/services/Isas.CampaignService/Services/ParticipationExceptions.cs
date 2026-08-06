@@ -17,4 +17,23 @@ namespace Isas.CampaignService.Services
     {
         public InsufficientOrgCreditException(string message) : base(message) { }
     }
+
+    /// <summary>Campaign đã dùng hết số phiên đang chạy được cấu hình.</summary>
+    public class CampaignInterviewCapacityExceededException : Exception
+    {
+        public CampaignInterviewCapacityExceededException(string message) : base(message) { }
+    }
+
+    /// <summary>409 — ứng viên bắt đầu mới ngoài khoảng thời gian slot đã được phân.</summary>
+    public class OutsideSlotWindowException : Exception
+    {
+        public DateTime StartsAt { get; }
+        public DateTime EndsAt { get; }
+
+        public OutsideSlotWindowException(DateTime startsAt, DateTime endsAt, string message) : base(message)
+        {
+            StartsAt = startsAt;
+            EndsAt = endsAt;
+        }
+    }
 }

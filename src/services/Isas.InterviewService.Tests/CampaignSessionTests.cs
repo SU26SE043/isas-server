@@ -1,12 +1,14 @@
 using Isas.InterviewService.Controllers;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Isas.InterviewService.Tests;
@@ -17,7 +19,7 @@ namespace Isas.InterviewService.Tests;
 /// </summary>
 public class CampaignSessionTests
 {
-    private static PracticeService Build(TestDb t)
+    private static PracticeService Build(TestDb t, int maxConcurrentSessions = 0, Mock<ICreditReservationClient>? credits = null)
     {
         var scoringNotifier = new Mock<ISessionScoringNotifier>();
         scoringNotifier
@@ -25,7 +27,7 @@ public class CampaignSessionTests
             .Returns(Task.CompletedTask);
 
         // BK14: B2B reserve ví ORG khi tạo session → mock trả reservation hợp lệ cho mọi ownerType.
-        var reservation = new Mock<ICreditReservationClient>();
+        var reservation = credits ?? new Mock<ICreditReservationClient>();
         reservation
             .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
@@ -34,7 +36,8 @@ public class CampaignSessionTests
                new Mock<IAiServiceQuestionGenerator>().Object,
                scoringNotifier.Object,
                reservation.Object,
-               NullLogger<PracticeService>.Instance);
+               NullLogger<PracticeService>.Instance,
+               capacityOptions: Options.Create(new CapacityOptions { MaxConcurrentSessions = maxConcurrentSessions }));
     }
 
     [Fact]
@@ -134,6 +137,30 @@ public class CampaignSessionTests
 
         await using var read = t.NewContext();
         Assert.Equal(1, await read.PracticeSessions.CountAsync(s => s.CampaignId == campaignId));
+    }
+
+    [Fact]
+    public async Task GetOrCreate_OverCapacity_ResumeReturnsExisting_AndNewSessionDoesNotReserve()
+    {
+        using var t = new TestDb();
+        var campaignId = Guid.NewGuid();
+        var candidate = Guid.NewGuid();
+        var credits = new Mock<ICreditReservationClient>();
+        credits.Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+        var existing = TestDb.Session(candidate, SessionStatus.InProgress, campaignId: campaignId);
+        t.Db.Add(existing);
+        await t.Db.SaveChangesAsync();
+        var req = new CreateCampaignSessionRequest(campaignId, Guid.NewGuid(), JobCategory.BE, ["Q1"],
+            [new CampaignCriterionInput("Communication", null, 1m, 5)]);
+
+        var resumed = await Build(t, maxConcurrentSessions: 1, credits).GetOrCreateCampaignSessionAsync(candidate, req);
+        Assert.Equal(existing.Id, resumed.Id);
+        credits.Verify(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        await Assert.ThrowsAsync<CapacityExceededException>(() =>
+            Build(t, maxConcurrentSessions: 1, credits).GetOrCreateCampaignSessionAsync(Guid.NewGuid(), req));
+        credits.Verify(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // D2(c): khác candidate cùng campaign → session riêng (mỗi ứng viên 1 bài); criteria không nhân đôi.

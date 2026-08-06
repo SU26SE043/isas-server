@@ -17,10 +17,10 @@ public static class CorsExtensions
             {
                 if (string.IsNullOrEmpty(gatewayUrl))
                     policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()
-                        .WithExposedHeaders(KeysetPaging.NextCursorHeader);
+                        .WithExposedHeaders(KeysetPaging.NextCursorHeader, "Retry-After");
                 else
                     policy.WithOrigins(gatewayUrl).AllowAnyMethod().AllowAnyHeader()
-                        .WithExposedHeaders(KeysetPaging.NextCursorHeader);
+                        .WithExposedHeaders(KeysetPaging.NextCursorHeader, "Retry-After");
             });
         });
 
@@ -38,7 +38,7 @@ public static class CorsExtensions
                 policy.WithOrigins(allowedOrigins)
                     .AllowAnyMethod()
                     .AllowAnyHeader()
-                    .WithExposedHeaders(KeysetPaging.NextCursorHeader);
+                    .WithExposedHeaders(KeysetPaging.NextCursorHeader, "Retry-After");
             });
         });
 

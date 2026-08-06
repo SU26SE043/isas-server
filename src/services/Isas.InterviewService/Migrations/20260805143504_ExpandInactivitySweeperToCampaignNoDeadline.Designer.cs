@@ -3,6 +3,7 @@ using System;
 using Isas.InterviewService.ApplicationDbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    partial class InterviewDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260805143504_ExpandInactivitySweeperToCampaignNoDeadline")]
+    partial class ExpandInactivitySweeperToCampaignNoDeadline
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -659,10 +662,6 @@ namespace Isas.InterviewService.Migrations
 
                     b.HasIndex("JdId")
                         .HasDatabaseName("ix_practice_sessions_jd_id");
-
-                    b.HasIndex("Status")
-                        .HasDatabaseName("ix_practice_sessions_running_capacity")
-                        .HasFilter("status IN ('GeneratingQuestions', 'Ready', 'InProgress')");
 
                     b.HasIndex("CandidateId", "CreatedAt", "Id")
                         .IsDescending(false, true, true)
