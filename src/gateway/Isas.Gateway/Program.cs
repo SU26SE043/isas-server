@@ -63,9 +63,13 @@ app.Use(async (context, next) =>
 //  - GEN-1: "/api/v1/<svc>/internal/*" — callback nội bộ.
 //  - GEN-7: "/api/v1/ai/*" — AIService internal-only (Interview/Campaign gọi trực tiếp qua AiService:BaseUrl).
 // Middleware chạy sau CollapseSlashes (bắt cả "//") và TRƯỚC UseRouting nên độc lập với route nào.
-// Development KHÔNG thêm middleware này ⇒ route "<svc>-internal-route" + "ai-route" (appsettings.json)
-// forward qua gateway để Scalar liệt kê VÀ gọi được TOÀN BỘ api (kể cả AIService). Production: 404 kín,
-// dù route vẫn nằm trong config (đây là hàng rào duy nhất, thay khối chặn payment-only cũ).
+// Development KHÔNG thêm middleware này ⇒ route "<svc>-internal-route" (appsettings.json) forward qua
+// gateway để Scalar liệt kê VÀ gọi được api internal. Production: 404 kín, dù route vẫn nằm trong
+// config (đây là hàng rào duy nhất, thay khối chặn payment-only cũ).
+//
+// ⚠ Vế "ai" nay là LƯỚI AN TOÀN chứ không còn là nửa-production của một cặp: "ai-route"/"ai-cluster"
+// đã bị gỡ khỏi appsettings.json (2026-08-06) nên KHÔNG môi trường nào forward tới AIService nữa.
+// Giữ vế này để lần sau ai đó thêm lại route thì prod vẫn kín — ĐỪNG "dọn cho gọn".
 if (!app.Environment.IsDevelopment())
 {
     app.Use(async (context, next) =>
