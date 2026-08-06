@@ -7,6 +7,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Topology RabbitMQ + định tuyến message của SessionScoredConsumer là `internal` để test được
+         bằng Mock<IChannel>; nếu còn nằm trong RunConsumerAsync (mở connection thật) thì không có
+         cách nào unit-test, mà đây lại là chỗ một sai sót gây MẤT MESSAGE trong im lặng. -->
+    <InternalsVisibleTo Include="Isas.CampaignService.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
 	  <PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="4.0.4.1" />
 	  <PackageReference Include="AWSSDK.S3" Version="4.0.23.4" />
 	  <PackageReference Include="CsvHelper" Version="33.1.0" />
