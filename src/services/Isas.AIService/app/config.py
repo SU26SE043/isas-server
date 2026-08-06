@@ -194,5 +194,21 @@ class Settings(BaseSettings):
     # học (đo thật 13-54s/lượt) — nới lên 3 là mời timeout quay lại.
     lesson_theory_max_attempts: int = 2
 
+    # ── TRẦN THREAD CHO CÔNG VIỆC CHẶN ────────────────────────────
+    # `asyncio.to_thread` dùng executor mặc định của event loop, cỡ `min(32, cpu_count + 4)`
+    # (CPython `Lib/concurrent/futures/thread.py`) ⇒ **12** trên server 8 core. Mọi việc nặng
+    # của service đều đi qua đó: đọc S3, giải mã audio, và lời gọi chép lời ĐỒNG BỘ (httpx
+    # blocking) — nên 12 chính là trần số `/decide-next` chạy song song.
+    #
+    # **0 = giữ nguyên mặc định asyncio.** Đặt số > 0 mới nới.
+    #
+    # ⚠ Nới KHÔNG làm mạng nhanh hơn. Trần thật sau khi chuyển sang server là băng thông upload
+    # ra OpenAI (~2,26 req/s với payload WAV 2,88 MB cho câu 90s); pool lớn hơn chỉ biến "từ chối
+    # nhanh" thành "hàng đợi dài". Và mỗi request đang bay giữ ~15 MB (pcm float32 + WAV int16 +
+    # bản copy multipart) ⇒ 64 request ≈ 960 MB đỉnh. Đi từng nấc: 0 → đo → 32 → 64.
+    #
+    # ⚠ Ở worker gần như vô hiệu: trần thật bên đó là `scoring_prefetch` (10) + `cv_screening_prefetch` (4).
+    thread_pool_max_workers: int = 0
+
 
 settings = Settings()

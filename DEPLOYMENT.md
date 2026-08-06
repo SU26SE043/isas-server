@@ -1,11 +1,17 @@
-# ISAS — Hướng dẫn Deploy (2 host)
+# ISAS — Hướng dẫn Deploy (1 host)
 
-Kiến trúc tách **2 máy** nối nhau qua **Tailscale**:
+**Toàn bộ stack chạy trên MỘT server Linux**: data layer (`postgres`, `redis`, `seaweedfs`,
+`rabbitmq`, `qdrant`), 5 service .NET (`authservice`, `interviewservice`, `campaignservice`,
+`paymentservice`, `gateway`) và **AIService** Python (`aiapi` + `aiworker`). CI/CD build **6**
+image → push GHCR → SSH deploy.
 
-- **Server (Linux)** — chạy data layer + các .NET service: `postgres`, `redis`, `seaweedfs`, `rabbitmq`, `authservice`, `interviewservice`, `campaignservice`, `paymentservice`, `gateway`. Đây cũng là đích CI/CD (`ci.yml` build **5** image → push GHCR → SSH deploy).
-- **Mac (Docker)** — chạy **AIService** (Python): `aiservice-api` (FastAPI sinh câu hỏi) + `aiservice-worker` (consumer chấm điểm). Để Mac vì phần ML (Whisper) nặng.
-
-> Tất cả liên lạc cross-host đi qua **IP Tailscale riêng tư**, không mở cổng public.
+> **Trước 2026-08-06 AIService chạy trên Mac** và gọi S3/RabbitMQ của server qua Tailscale.
+> Đo được link đó bão hoà ~1 MB/s, mà audio phải đi vòng **server(S3) → Mac → OpenAI** ⇒ quét
+> tải `/decide-next` knee ở 0,5 req/s (~60 người đồng thời). Đưa AIService về đây biến chặng S3
+> thành loopback, chỉ còn upload ra OpenAI qua đường 6,5 MB/s.
+>
+> `SERVER_TS_IP` vẫn còn dùng cho `Internal__CallbackBase` của campaignservice — giữ dạng IP
+> tailnet có chủ ý để đường lùi về Mac không phải đụng tới nó.
 
 ---
 
@@ -34,35 +40,45 @@ ssh duc2834@100.64.204.33 "grep -oE '^[A-Za-z0-9_]+' ~/docker/main/.env"   # ch�
 ## 1. Sơ đồ liên lạc
 
 ```
-SERVER (Linux)                              MAC (Docker)
-┌──────────────────────────┐                ┌──────────────────────┐
-│ postgres  redis  qdrant  │                │ aiservice-api :8000  │
-│ seaweedfs :8333          │◄───────────────┤  (sinh câu hỏi/TTS)  │
-│ rabbitmq  :5672          │◄───────────────┤                      │
-│ interviewservice :5246   │◄───────────────┤ aiservice-worker     │
-│ campaignservice  :5247   │◄───────────────┤  - kéo audio (S3)    │
-│ paymentservice   :5271   │◄───────────────┤  - chấm (Gemini)     │
-│ authservice              │                │  - sàng CV (C14)     │
-│ gateway   :5050          │                │  - callback kết quả  │
-│                          ├───────────────►│  - báo usage (F22)   │
-│ interview/campaign gọi   │   Mac:8000     └──────────────────────┘
-│   AiService__BaseUrl     │
-└──────────────────────────┘
+SERVER (Linux) — MỘT host, một compose network `isas-main-network`
+┌───────────────────────────────────────────────────────────────────┐
+│  postgres   redis   qdrant   seaweedfs:8333   rabbitmq:5672       │
+│      ▲                            ▲                ▲              │
+│      │                            │                │              │
+│  ┌───┴──────────────┐    ┌────────┴────────────────┴───────────┐  │
+│  │ authservice      │    │ aiapi   :8000  (expose, KHÔNG publish)│ │
+│  │ interviewservice │◄──►│   sinh câu hỏi · /decide-next · TTS  │  │
+│  │ campaignservice  │    │   phân tích CV · roadmap · embed     │  │
+│  │ paymentservice   │◄───┤ aiworker  (không phục vụ HTTP)       │  │
+│  │ gateway   :5050  │    │   kéo audio S3 · chấm Gemini         │  │
+│  └──────────────────┘    │   sàng CV C14 · callback · usage F22 │  │
+│         │                └──────────────────────────────────────┘  │
+└─────────┼─────────────────────────────────────────────────────────┘
+          ▼  public qua cloudflare tunnel (chỉ gateway)
+
+Audio KHÔNG còn rời host: seaweedfs → aiapi là loopback. Chặng ra ngoài duy nhất
+là aiapi/aiworker → OpenAI + Gemini.
 ```
 
-**Mac → Server:** worker kéo job `rabbitmq:5672`, tải audio `seaweedfs:8333`, callback chấm `interviewservice:5246`, callback sàng CV `campaignservice:5247` (**C14**), báo token/chi phí `paymentservice:5271` (**F22**).
-**Server → Mac:** interviewservice + campaignservice gọi `aiservice-api:8000` (sinh câu hỏi · `/decide-next` · phân tích CV · roadmap · TTS). **KHÔNG qua gateway** — GEN-7, AIService là internal-only.
-> ⚠ Server hiện vẫn còn dòng override `ai-cluster` trong compose (thừa từ trước GEN-7) — nên xoá bên đó, **đừng thêm lại** vào repo.
+**aiworker → phần còn lại** (nay đều là tên service trong cùng compose network): kéo job
+`rabbitmq:5672`, tải audio `seaweedfs:8333`, callback chấm `isas.interviewservice:8080`, callback
+sàng CV `campaignservice` (**C14**, lấy từ chính message), báo token/chi phí
+`isas.paymentservice:8080` (**F22**), nạp prompt `isas.interviewservice:8080` (**F21**).
+**interview/campaign → aiapi:** `AiService__BaseUrl=http://aiapi:8000` (sinh câu hỏi · `/decide-next`
+· phân tích CV · roadmap · TTS · embed). **KHÔNG qua gateway** — GEN-7, AIService internal-only:
+`aiapi` chỉ `expose`, không `ports`.
+> ✅ Override `ai-cluster` thừa trên server đã được gỡ (đo 2026-08-06: gateway chỉ còn 4 cluster).
+> **Đừng thêm lại** chỉ vì nay `aiapi` là container anh em.
 
 ---
 
 ## 2. Yêu cầu trước
 
 - [ ] **Tailscale** cài trên **cả** Server và Mac, cùng tailnet. Lấy IP: `tailscale ip -4`.
-  - `<SERVER_TS_IP>` = IP Tailscale của server → biến `.env` **`SERVER_TS_IP`**. Chiều Mac→Server: worker AIService chạy trên Mac nên callback **không dùng được `localhost`** (mặc định trong code) và **không qua gateway** (GEN-1). Dùng cho `Internal__CallbackBase` của campaignservice (C14) và cho `DOTNET_CALLBACK_BASE` / `USAGE_SINK_BASE` / `RABBITMQ_URL` / `S3_ENDPOINT` phía Mac.
-  - `<MAC_TS_IP>` = IP Tailscale của Mac → biến `.env` **`MAC_TS_IP`** (`AiService__BaseUrl` của interview + campaign).
+  - `<SERVER_TS_IP>` = IP Tailscale của server → biến `.env` **`SERVER_TS_IP`**. Nay chỉ còn dùng cho `Internal__CallbackBase` của campaignservice (C14). Giữ dạng IP tailnet **có chủ ý**: nó tới được từ cả container trên server lẫn từ Mac, nên đường lùi về Mac không phải đụng tới nó.
+  - *(`MAC_TS_IP` đã bỏ — AIService không còn ở Mac.)*
 - [ ] **Docker + Docker Compose** trên cả 2 máy.
-- [ ] Firewall/Tailscale ACL: cổng `5672`, `8333`, `5246`, `5247` (server) và `8000` (Mac) **chỉ** cho phép tailnet — không lộ public.
+- [ ] Firewall/Tailscale ACL: cổng `5672`, `8333`, `5246`, `5247` **chỉ** cho phép tailnet — không lộ public. `aiapi:8000` KHÔNG publish ra host (chỉ `expose`), nên không cần luật riêng.
   - ⚠ Riêng **`5271`** (payment) vừa nhận callback usage từ Mac **vừa phải cho webhook PayOS gọi vào** ⇒ cần public URL/tunnel, không chặn được về tailnet-only.
 
 ---
@@ -72,8 +88,8 @@ SERVER (Linux)                              MAC (Docker)
 | Secret | Dùng ở | Quy tắc |
 |---|---|---|
 | `Jwt__Key` / `Jwt__Issuer` / `Jwt__Audience` | authservice ↔ **interview · campaign · payment** | **giống hệt** (3 service kia validate offline token do Auth phát — GEN-3, không gọi Auth lúc chạy) |
-| `Internal__Token` ↔ `INTERNAL_TOKEN` | **auth · interview · campaign · payment** ↔ **aiservice-api · aiservice-worker** | **giống hệt** — một token duy nhất cho MỌI callback máy-máy `/internal/*`: chấm điểm (worker→interview), sàng CV C14 (worker→campaign), báo usage F22 (api+worker→payment), provision-candidate D2 (campaign→auth). Lệch 1 ký tự = 401 âm thầm ở đúng nhánh đó *(đã dính 2026-07-15)*. |
-| SeaweedFS access/secret | interviewservice · campaignservice ↔ aiservice-worker ↔ `seaweed-s3.json` | cùng giá trị (S3 dùng chung) |
+| `Internal__Token` ↔ `INTERNAL_TOKEN` | **auth · interview · campaign · payment** ↔ **aiapi · aiworker** | **giống hệt** — một token duy nhất cho MỌI callback máy-máy `/internal/*`: chấm điểm (worker→interview), sàng CV C14 (worker→campaign), báo usage F22 (api+worker→payment), provision-candidate D2 (campaign→auth). Lệch 1 ký tự = 401 âm thầm ở đúng nhánh đó *(đã dính 2026-07-15)*. |
+| SeaweedFS access/secret | interviewservice · campaignservice ↔ aiworker ↔ `seaweed-s3.json` | cùng giá trị (S3 dùng chung) |
 
 > Giá trị thật để trong file `.env` cạnh compose trên server / Mac — **không** ghi vào file md này.
 
@@ -206,7 +222,7 @@ services:
       - Jwt__Key=${JWT_KEY}                         # KHỚP authservice
       - Jwt__Issuer=http://isas.authservice:8080
       - Jwt__Audience=http://isas.authservice:8080
-      - Internal__Token=${INTERNAL_TOKEN}           # KHỚP aiservice-worker
+      - Internal__Token=${INTERNAL_TOKEN}           # KHỚP aiworker
       - SeaweedFS__ServiceURL=http://seaweedfs:8333
       - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
       - SeaweedFS__SecretKey=${S3_SECRET_KEY}
@@ -216,7 +232,7 @@ services:
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__UserName=${RABBITMQ_USER}
       - RabbitMQ__Password=${RABBITMQ_PASS}
-      - AiService__BaseUrl=http://${MAC_TS_IP}:8000   # sinh câu hỏi chạy trên Mac (Tailscale IP)
+      - AiService__BaseUrl=http://aiapi:8000          # cùng compose network (trước 2026-08-06: Mac qua Tailscale)
       # RAG grounding (D27) — kho vector Qdrant + ingest Context7 + toggle bật retrieval lúc SINH.
       # Mặc định TẮT: bật khi đã nạp corpus, nếu không mọi request đều "ungrounded" mà vẫn tốn 1 vòng embed.
       - Qdrant__Url=http://qdrant:6334
@@ -257,7 +273,7 @@ services:
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=http://isas.authservice:8080
       - Jwt__Audience=http://isas.authservice:8080
-      - AiService__BaseUrl=http://${MAC_TS_IP}:8000
+      - AiService__BaseUrl=http://aiapi:8000
       - SeaweedFS__ServiceURL=http://seaweedfs:8333
       - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
       - SeaweedFS__SecretKey=${S3_SECRET_KEY}
@@ -403,7 +419,7 @@ volumes:
 POSTGRES_USER=admin
 POSTGRES_PASSWORD=...
 JWT_KEY=...                    # PHẢI giống hệt ở auth · interview · campaign · payment
-INTERNAL_TOKEN=...             # PHẢI giống hệt ở 4 service .NET + aiservice-api + aiservice-worker
+INTERNAL_TOKEN=...             # PHẢI giống hệt ở 4 service .NET + aiapi + aiworker
 S3_ACCESS_KEY=admin
 S3_SECRET_KEY=...
 RABBITMQ_USER=guest
@@ -430,7 +446,6 @@ GOOGLE_PUBLIC_BASE_URL=https://<your-tunnel>.trycloudflare.com/api/v1
 GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
 
 # ===== Mạng Tailscale (2 host) =====
-MAC_TS_IP=100.x.y.z            # Mac chạy AIService — interview/campaign gọi sinh câu hỏi
 SERVER_TS_IP=100.64.204.33     # chiều ngược: callback C14 (campaign:5247), usage F22, RabbitMQ, S3
 
 # ===== PayOS (mua credit + webhook) =====
@@ -465,7 +480,7 @@ ADAPTIVE_MAX_FAILURES_PER_SESSION=3
 > ⓘ Trước lần hợp nhất này production chạy **1 câu gốc × 3 tầng** (`SeedCount=1`, `MaxQuestions=6` ghi cứng trong compose server, 2 khoá còn lại lấy mặc định appsettings). Nay là **5 × 3** đúng thiết kế INT-17b.
 
 ### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth
-Seaweed bật auth bằng file này (`-s3.config` ở trên). `accessKey`/`secretKey` phải **khớp** `S3_ACCESS_KEY`/`S3_SECRET_KEY` trong `.env` **và** phía Mac (`aiservice-worker`).
+Seaweed bật auth bằng file này (`-s3.config` ở trên). `accessKey`/`secretKey` phải **khớp** `S3_ACCESS_KEY`/`S3_SECRET_KEY` trong `.env` **và** `aiworker`.
 ```json
 {
   "identities": [
@@ -547,96 +562,44 @@ SQL
 
 ---
 
-## 5. MAC — AIService trong Docker
+## 5. AIService (Python) — nay nằm trong compose server
 
-### 5a. Dockerfile — `src/services/Isas.AIService/Dockerfile`
+**Không còn mục riêng.** `aiapi` + `aiworker` khai ngay trong `deploy/compose.yaml` (khối
+`x-aiservice` + 2 service), dùng chung anchor env để hai container **không thể lệch nhau** — đó
+là lỗi đã cháy thật: 2026-08-05 chúng chạy hai image khác nhau 3 ngày, và trước đó
+`USAGE_SINK_BASE`/`PROMPT_REGISTRY_BASE` vắng ở một bên khiến F21 + F22 tắt câm nhiều ngày.
 
-```dockerfile
-FROM python:3.12-slim
-WORKDIR /app
-# ffmpeg cho faster-whisper decode webm/opus
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY app ./app
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
+Dockerfile: `src/services/Isas.AIService/Dockerfile` — nguồn sự thật DUY NHẤT. *(Mục 5a cũ chép
+lại nó và đã trôi: bản chép thiếu `libgl1 libglib2.0-0` mà bản thật đã có từ lâu. Không chép nữa.)*
 
-> Dùng `python:3.12` — `ctranslate2`/`faster-whisper` chưa có wheel cho 3.14.
+Ba thứ dễ quên khi dựng lại từ đầu:
 
-### 5b. Mac `compose.yaml`
+| | |
+|---|---|
+| **2 volume model** | `ai_hf_cache` (faster-whisper) + `ai_insightface` (buffalo_l). Thiếu = tải lại ~800 MB **mỗi lần recreate**, mà từ nay MỌI push lên `main` đều recreate. |
+| **Nạp trước volume** | Lần đầu volume rỗng, `aiapi` chưa bind `:8000` cho tới khi tải xong. Chạy trước một container tạm cùng volume để kéo model, rồi mới `up -d` — khác nhau giữa cửa sổ 20 giây và 5 phút. |
+| **`GEMINI_API_KEY`** | Env **duy nhất** không có default: thiếu là chết lúc `import app.config`, không phải lỗi runtime. |
 
-```yaml
-services:
-  aiservice-api:                       # FastAPI: sinh câu hỏi + transcribe
-    build: /path/to/Isas.AIService
-    image: isas.aiservice:local
-    container_name: aiservice-api
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_MODEL=gemini-2.5-flash
-      # F22 — endpoint sync (sinh câu hỏi · phân tích CV · roadmap · decide-next · TTS) cũng đốt
-      # token ⇒ container NÀY cũng phải đo, không chỉ worker chấm.
-      - INTERNAL_TOKEN=${INTERNAL_TOKEN}
-      - USAGE_SINK_BASE=http://<SERVER_TS_IP>:5271
-    ports:
-      - "8000:8000"                    # server gọi vào đây qua tailnet
-    restart: unless-stopped
+Bring-up: `docker compose up -d aiapi aiworker` (image từ GHCR, CI build — **không** build tay nữa).
 
-  aiservice-worker:                    # consumer chấm điểm (dùng chung image)
-    image: isas.aiservice:local
-    container_name: aiservice-worker
-    command: python -m app.worker
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GEMINI_MODEL=gemini-2.5-flash
-      - RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@<SERVER_TS_IP>:5672/
-      - QUEUE_NAME=scoring_pipeline_queue
-      - S3_ENDPOINT=http://<SERVER_TS_IP>:8333
-      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
-      - S3_SECRET_KEY=${S3_SECRET_KEY}
-      - S3_BUCKET=isas-files
-      - DOTNET_CALLBACK_BASE=http://<SERVER_TS_IP>:5246
-      - INTERNAL_TOKEN=${INTERNAL_TOKEN}   # KHỚP server
-      # C14 — consumer sàng CV B2B (`cv_screening_queue`), chạy CÙNG tiến trình worker nhưng channel
-      # riêng nên không xếp hàng sau job chấm. Mặc định TẮT: bật SAU khi đã xả queue tồn, nếu không
-      # sẽ chấm lại toàn bộ bản nhân đôi mà StuckScreeningRepublisher đã đẩy (đo 2026-08-02: 713
-      # message cho đúng 8 ứng viên). `CallbackBase` lấy từ chính message, không phải env này.
-      - CV_SCREENING_ENABLED=false
-      # F22 — đẩy token/chi phí về PaymentService (GEN-4: AIService không ghi DB). Trỏ THẲNG tới
-      # payment (cổng publish 5271), KHÔNG qua gateway (GEN-1). Để TRỐNG = chỉ ghi log, không gọi
-      # mạng (kill-switch tại chỗ khi sink có sự cố, khỏi deploy lại). Dùng chung INTERNAL_TOKEN.
-      - USAGE_SINK_BASE=http://<SERVER_TS_IP>:5271
-      # - USAGE_METERING_ENABLED=false     # tắt hẳn việc đo
-    depends_on: [aiservice-api]
-    restart: unless-stopped
-```
-
-### Bring-up Mac
-
-```bash
-cd ~/ai
-docker compose up -d --build
-docker compose logs -f aiservice-worker
-```
-
----
 
 ## 6. Bảng cổng tham chiếu
 
-| Service | Host | Cổng container | Publish | Ai truy cập |
-|---|---|---|---|---|
-| gateway | server | 8080 | 5050 | public (cloudflare) |
-| interviewservice | server | 8080 | 5246 | Mac (callback chấm điểm) |
-| **campaignservice** | server | 8080 | **5247** | Mac (**callback sàng CV — C14**) |
-| **paymentservice** | server | 8080 | **5271** | Mac (**usage F22**) + **webhook PayOS** (public/tunnel) |
-| seaweedfs S3 | server | 8333 | 8333 | Mac (tải audio) |
-| rabbitmq | server | 5672 | 5672 | Mac (consume) |
-| **qdrant** | server | 6334 (gRPC) · 6333 (REST) | *(không publish)* | chỉ interviewservice, qua network nội bộ |
-| authservice | server | 8080 | *(expose, không publish)* | chỉ nội bộ network |
-| aiservice-api | Mac | 8000 | 8000 | server (interview + campaign) |
+Từ 2026-08-06 mọi service ở **cùng một host**; các `publish` dưới đây phần lớn là **di sản của
+thời AIService còn ở Mac** — nay chúng chỉ còn dùng để gỡ rối từ tailnet, không phải đường chạy.
+
+| Service | Cổng container | Publish | Ai truy cập |
+|---|---|---|---|
+| gateway | 8080 | 5050 | public (cloudflare) |
+| interviewservice | 8080 | 5246 | *(di sản)* — nội bộ gọi `isas.interviewservice:8080` |
+| **campaignservice** | 8080 | **5247** | `Internal__CallbackBase` (**C14**) vẫn dùng IP tailnet |
+| **paymentservice** | 8080 | **5271** | **webhook PayOS** (public/tunnel) |
+| seaweedfs S3 | 8333 | 8333 | *(di sản)* — `aiapi`/`aiworker` gọi `seaweedfs:8333` |
+| rabbitmq | 5672 | 5672 | *(di sản)* — `aiworker` gọi `rabbitmq:5672` |
+| **qdrant** | 6334 (gRPC) · 6333 (REST) | *(không publish)* | chỉ interviewservice, network nội bộ |
+| authservice | 8080 | *(expose)* | chỉ nội bộ network |
+| **aiapi** | 8000 | **(expose, KHÔNG publish)** | chỉ interview + campaign — **GEN-7 internal-only** |
+| **aiworker** | — | — | không phục vụ HTTP, chỉ consume RabbitMQ |
 
 ---
 
@@ -650,13 +613,13 @@ docker compose logs -f aiservice-worker
       config=Config(s3={"addressing_style": "path"}))
   ```
 - [ ] **Đổi cấu hình = sửa CẢ BA nơi** (server compose · `deploy/compose.yaml` · file này) — xem §0. Kiểm lệch trước mỗi lần deploy, đừng tin trí nhớ.
-- [ ] **`<MAC_TS_IP>` / `<SERVER_TS_IP>`** thay bằng IP Tailscale thật ở cả 2 phía (biến `.env`: `MAC_TS_IP` / `SERVER_TS_IP`).
+- [ ] **`<SERVER_TS_IP>`** thay bằng IP Tailscale thật (biến `.env`: `SERVER_TS_IP`) — nay chỉ còn dùng cho `Internal__CallbackBase` của campaignservice.
 - [ ] **C14 — bật consumer sàng CV đúng THỨ TỰ**: `CV_SCREENING_ENABLED` (Mac worker) mặc định **`false`**. Bật trước khi xả queue tồn ⇒ chấm lại toàn bộ bản nhân đôi mà `StuckScreeningRepublisher` đã đẩy (đo 2026-08-02: **713 message cho đúng 8 ứng viên**). Trình tự: deploy code (tắt) → **xả `cv_screening_queue`** → `CV_SCREENING_ENABLED=true` → đợi ≤15' xem ứng viên rời `Analyzing`. Xả queue an toàn: 8 ứng viên vẫn ở `Analyzing` nên republisher tự đẩy lại đúng 8 job.
 - [ ] **C14 — callback về `campaignservice:5247`**: cần `Internal__CallbackBase=http://${SERVER_TS_IP}:5247` **và** campaignservice publish cổng 5247. Thiếu 1 trong 2 → worker callback vào `http://localhost:8080` (mặc định trong code) = kết quả sàng CV không bao giờ về.
 - [ ] **Routing `/api/v1`** — frontend gọi `/api/v1/auth/...`, `/api/v1/interview/...`, `/api/v1/campaign/...`, `/api/v1/payment/...` (KHÔNG còn `/api/auth`). **`/api/v1/ai/*` đã gỡ (GEN-7)** — AI internal-only, FE không gọi trực tiếp.
 - [ ] **Internal token** Interview ↔ Worker khớp, **Jwt** Auth ↔ Interview khớp.
-- [ ] **CI không build AIService** — Mac build tay (`up -d --build`), không pull GHCR. Muốn pull thì thêm step CI buildx multi-arch (Mac là arm64).
-- [ ] **RAM Mac**: api + worker đều load Whisper (2 model). Không dùng `/transcribe` thì bỏ `Transcriber()` trong `main.py` cho nhẹ.
+- [x] **CI build AIService** → `ghcr.io/<owner>/isas.aiservice:main` (từ 2026-08-06, `ci.yml` build **6** image). Trước đó Mac build tay, và hệ quả đã cháy: `aiapi` từng chạy image **cũ hơn `aiworker` 3 ngày** dù cùng tag `:local`. Verify bằng label: `docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' aiapi-main aiworker-main` — phải GIỐNG NHAU và bằng SHA của `main`.
+- [x] **RAM**: trước đây api + worker đều nạp Whisper lúc import (đo `ru_maxrss`: +778 MB mỗi tiến trình, +358 MB nữa cho InsightFace ở api). ⚠ Lời khuyên cũ *"bỏ `Transcriber()` trong main.py cho nhẹ"* nay **SAI** — `/decide-next` cần transcriber. Câu trả lời đúng là **nạp lười** (đã làm 2026-08-06): model dựng ở lần dùng đầu, lúc rỗi chỉ còn ~150-250 MB.
 - [ ] **Bucket `isas-files`** tự tạo bởi `BucketInitializer` của Interview — không cần tạo tay.
 - [ ] Cổng tailnet (`5672/8333/5246/8000`) chặn public bằng firewall/Tailscale ACL.
 

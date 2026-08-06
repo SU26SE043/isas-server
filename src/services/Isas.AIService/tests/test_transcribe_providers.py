@@ -65,8 +65,10 @@ def _make(monkeypatch, *, vad_spans=None, seconds=6.0):
             calls["local_transcribe"] += 1
             return _LOCAL_SEGS, None
 
-    t = Transcriber.__new__(Transcriber)      # bỏ qua __init__ (nạp model thật)
-    t._model = _Model()
+    # Trước đây phải `__new__` để né `__init__` nạp model thật; nay `__init__` nạp LƯỜI nên gọi
+    # thẳng được — helper vì thế chạy qua đúng constructor production thay vì né nó.
+    t = Transcriber()
+    t._model_instance = _Model()              # tiêm model giả vào ô nạp-lười
     return t, calls
 
 

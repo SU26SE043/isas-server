@@ -1,5 +1,6 @@
 # app/transcriber.py
 import logging
+import threading
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -60,12 +61,39 @@ class TranscriptionResult:
 
 class Transcriber:
     def __init__(self) -> None:
-        # Model load 1 lần, dùng lại (load lại mỗi request rất chậm)
-        self._model = WhisperModel(
-            settings.whisper_model,
-            device=settings.whisper_device,
-            compute_type=settings.whisper_compute_type,
-        )
+        # Model nạp LƯỜI — dựng ở lần dùng đầu, không phải lúc import.
+        #
+        # Đo trong image (`ru_maxrss`): python trần 12 MB → +`WhisperModel(small,int8)` = **778 MB**.
+        # Cả `main.py` lẫn `worker.py` dựng `Transcriber()` ở module scope ⇒ trước đây là ~1,5 GB
+        # nằm thường trú ở hai tiến trình. Trên Mac 32 GB không ai để ý; trên server 8 core/7,6 GB
+        # thì đó là phần RAM quyết định có nới được thread pool hay không.
+        #
+        # Đường từ xa (`TRANSCRIBE_PROVIDER != local`) KHÔNG bao giờ chạm model này, nên ở cấu hình
+        # production hiện tại nó chỉ là lưới dự phòng — nhưng là lưới THẬT (xem `_text`: 4xx/chép
+        # rỗng/`looks_broken` đều rơi về đây), không phải code chết.
+        #
+        # ⚠ Đánh đổi: lần rơi về cục bộ ĐẦU TIÊN trả tiền nạp model ngay trong request. Volume
+        # HF cache phải được nạp trước khi cắt chuyển, nếu không đó là ~480 MB tải về nằm trong
+        # lòng timeout 90s của decider — tức làm một đường vốn đã hỏng chậm thêm.
+        self._model_lock = threading.Lock()
+        self._model_instance: WhisperModel | None = None
+
+    @property
+    def _model(self) -> WhisperModel:
+        # Double-checked locking, và khoá ở đây là BẮT BUỘC chứ không phải cho đẹp:
+        # `_transcribe_local` chạy trong thread do `asyncio.to_thread` cấp. Hai lượt dự phòng
+        # đồng thời mà không khoá sẽ dựng HAI `WhisperModel` ⇒ tải đôi + RAM đôi, đúng lúc hệ
+        # đang chịu tải (vì dự phòng chỉ kích hoạt khi nhà cung cấp từ xa đang hỏng).
+        if self._model_instance is None:
+            with self._model_lock:
+                if self._model_instance is None:
+                    logger.info("Nạp WhisperModel %s (lần đầu, nạp lười)", settings.whisper_model)
+                    self._model_instance = WhisperModel(
+                        settings.whisper_model,
+                        device=settings.whisper_device,
+                        compute_type=settings.whisper_compute_type,
+                    )
+        return self._model_instance
 
     def transcribe_detailed(
         self, audio_path: str, language: str | None = "vi"

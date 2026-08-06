@@ -3,6 +3,7 @@ import hmac
 import os
 import tempfile
 import asyncio
+from contextlib import asynccontextmanager
 from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse, QuestionCitation,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
@@ -21,9 +22,19 @@ from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
 from app.face_verify import FaceVerifier
 from app.config import settings
-from app import storage, audio, tts
+from app import storage, audio, threadpool, tts
 
-app = FastAPI(title="ISAS AI Service")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Đặt trần thread cho công việc CHẶN. Mặc định cấu hình là 0 = giữ nguyên hành vi asyncio,
+    # nên thay đổi này ship ra là no-op; nới bằng env THREAD_POOL_MAX_WORKERS sau khi đo.
+    # Không cần tự shutdown executor: uvicorn chạy qua `asyncio.run`, mà nó gọi
+    # `loop.shutdown_default_executor()` lúc đóng.
+    threadpool.apply(asyncio.get_running_loop(), settings.thread_pool_max_workers)
+    yield
+
+
+app = FastAPI(title="ISAS AI Service", lifespan=_lifespan)
 transcriber = Transcriber()
 provider = GeminiProvider()
 face_verifier = FaceVerifier()
