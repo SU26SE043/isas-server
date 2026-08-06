@@ -12,7 +12,6 @@ COPY ["src/shared/Isas.Shared/Isas.Shared.csproj", "src/shared/Isas.Shared/"]
 RUN dotnet restore "src/gateway/Isas.Gateway/Isas.Gateway.csproj"
 COPY . .
 WORKDIR "/src/src/gateway/Isas.Gateway"
-RUN dotnet build "./Isas.Gateway.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release

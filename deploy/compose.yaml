@@ -39,6 +39,20 @@
 # AIService (aiapi/aiworker) nay chạy TRONG file này — trước 2026-08-06 nó ở trên Mac.
 # The root ../compose.yaml is a DEV-PARTIAL skeleton (Auth+Gateway+MinIO only) — THIS one describes the
 # full stack (nhưng bản đang CHẠY vẫn là file trên server, xem cảnh báo đầu file).
+#
+# ===== §IMAGE_TAG — ĐƯỜNG LÙI DUY NHẤT =====
+# Cả 6 `image:` dưới đây dùng `${IMAGE_TAG:-main}`. Không đặt biến ⇒ ra đúng `:main` như trước,
+# nên đổi này KHÔNG làm lệch hành vi deploy hiện tại.
+# VÌ SAO cần: repo có **0 tag git**, và `:main` là tag DI ĐỘNG — mỗi lần push lên `main` nó trỏ
+# sang image mới. Deploy hỏng mà chỉ có `:main` thì không còn cách nào gọi tên bản tốt trước đó,
+# ngoài chờ CI build lại (~15 phút) từ một commit revert. CI nay đẩy **tag đôi** `:main` +
+# `:main-<sha>`; `:main-<sha>` là BẤT BIẾN ⇒ lùi = `IMAGE_TAG=main-<sha-tốt>` trong .env rồi
+# `docker compose up -d`, tính bằng giây.
+# ⚠ NHƯNG: file này KHÔNG phải artifact chạy thật (xem cảnh báo đầu file) ⇒ `IMAGE_TAG` chỉ có
+# tác dụng SAU KHI file compose TRÊN SERVER cũng được tham số hoá y hệt. Sửa mỗi bên repo là
+# không lùi được gì cả. Quy trình lùi đầy đủ: ../DEPLOYMENT.md §Rollback.
+# ⚠ Lùi CODE không lùi được SCHEMA — `Down()` của `DropColumn` dựng lại cột RỖNG, dữ liệu đã mất.
+# Đọc §Rollback trước khi lùi qua một mốc có migration.
 
 x-aiservice-env: &aiservice-env
   GEMINI_API_KEY: ${GEMINI_API_KEY}          # env DUY NHẤT bắt buộc: thiếu → chết lúc import app.config
@@ -66,7 +80,7 @@ x-aiservice-env: &aiservice-env
   THREAD_POOL_MAX_WORKERS: ${AI_THREAD_POOL:-0}
 
 x-aiservice: &aiservice
-  image: ghcr.io/su26se043/isas.aiservice:main
+  image: ghcr.io/su26se043/isas.aiservice:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file
   volumes:
     # Model tải lúc CHẠY (~480 MB whisper small + ~300 MB buffalo_l). Thiếu 2 volume này là tải
     # lại mỗi lần recreate — mà từ nay MỌI push lên `main` đều recreate.
@@ -143,7 +157,7 @@ services:
 
   # ===== APP SERVICES =====
   isas.authservice:
-    image: ghcr.io/su26se043/isas.authservice:main
+    image: ghcr.io/su26se043/isas.authservice:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file
     container_name: authservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -182,7 +196,7 @@ services:
     restart: unless-stopped
 
   isas.interviewservice:
-    image: ghcr.io/su26se043/isas.interviewservice:main
+    image: ghcr.io/su26se043/isas.interviewservice:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file
     container_name: interviewservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -228,7 +242,7 @@ services:
     restart: unless-stopped
 
   isas.campaignservice:
-    image: ghcr.io/su26se043/isas.campaignservice:main
+    image: ghcr.io/su26se043/isas.campaignservice:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file
     container_name: campaignservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -282,7 +296,7 @@ services:
     restart: unless-stopped
 
   isas.paymentservice:
-    image: ghcr.io/su26se043/isas.paymentservice:main
+    image: ghcr.io/su26se043/isas.paymentservice:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file
     container_name: paymentservice-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
@@ -326,7 +340,7 @@ services:
     restart: unless-stopped
 
   isas.gateway:
-    image: ghcr.io/su26se043/isas.gateway:main
+    image: ghcr.io/su26se043/isas.gateway:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file
     container_name: gateway-main
     environment:
       - ASPNETCORE_ENVIRONMENT=Development

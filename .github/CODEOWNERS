@@ -1,0 +1,38 @@
+# CODEOWNERS — mục tiêu là HIỂN THỊ, không phải chặn.
+#
+# VÌ SAO: tên nhánh không nói được PR chạm vào cái gì. PR #143 mang prefix `docs/`
+# nhưng thực tế sửa `ci.yml` + `deploy/compose.yaml` + `Dockerfile` + `app/config.py`
+# — 8/9 file là code/hạ tầng, không phải doc. Người duyệt đọc tên nhánh rồi lướt qua
+# là chuyện dễ xảy ra. Có file này, GitHub tự gắn nhãn "PR này chạm /deploy/ và
+# /.github/" ngay trên trang PR, không phụ thuộc người viết đặt tên nhánh thế nào.
+#
+# ⚠ File này CHỈ CHẶN merge khi bật "Require review from Code Owners" trong
+# branch ruleset của `main` (Settings → Rules). Hiện CHƯA bật ⇒ giá trị lúc này
+# thuần là hiển thị + tự động thêm reviewer. Đó là chủ đích: bật chặn khi repo mới
+# có 2 người sẽ tự khoá chính mình (tác giả PR không tự duyệt PR của mình được).
+#
+# Luật: dòng KHỚP SAU CÙNG thắng (ngược với .gitignore về trực giác "cụ thể hơn thắng").
+
+# Mặc định — mọi thứ còn lại
+*                       @light2a
+
+# --- Vùng dễ gây sự cố production, muốn nhìn thấy ngay trên trang PR ---
+
+# CI + workflow: sửa nhầm là hỏng đường build/deploy của cả team
+/.github/               @light2a
+
+# Compose/hạ tầng deploy. ⚠ file trong repo KHÔNG phải artifact chạy thật
+# (xem cảnh báo đầu deploy/compose.yaml) — đổi ở đây thường phải đổi cả trên server.
+/deploy/                @light2a
+/DEPLOYMENT.md          @light2a
+
+# Khai báo env: thiếu một biến là service chết lúc khởi động hoặc hỏng ÂM THẦM
+# lúc chạy (tiền lệ: `USAGE_SINK_BASE`/`PROMPT_REGISTRY_BASE` vắng nhiều ngày ⇒
+# F21 + F22 tắt câm mà không log lỗi nào).
+/.env.example           @light2a
+
+# Migration: KHÔNG được lọt trong một PR 100+ file mà không ai để ý.
+# Chúng chạy tay lên DB thật, `Down()` của DropColumn dựng lại cột RỖNG
+# (dữ liệu mất vĩnh viễn), và SQLite trong test BỎ QUA migration nên
+# `dotnet test` xanh KHÔNG chứng minh migration chạy được trên Postgres.
+**/Migrations/          @light2a
