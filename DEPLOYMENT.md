@@ -515,11 +515,14 @@ docker compose logs -f isas.gateway
 > dotnet ef database update --connection "Host=<server>;Port=5432;Database=<isas|isas_interview|isas_campaign|isas_payment>;Username=admin;Password=<pwd>"
 > # cách 2 — không SDK: sinh SQL rồi psql
 > dotnet ef migrations script -o init_<db>.sql   # (chạy nơi có SDK)
-> docker exec -i postgres-main psql -U admin -d <db> < init_<db>.sql
+> docker exec -i postgres-main psql -v ON_ERROR_STOP=1 -U admin -d <db> < init_<db>.sql
 > ```
+> ⚠ **`-v ON_ERROR_STOP=1` là BẮT BUỘC, không phải tuỳ chọn.** `psql` trần chạy tiếp sau lỗi
+> và **thoát 0** ⇒ script chết giữa chừng nhưng bạn thấy "thành công", để lại DB **migrate dở**
+> (một phần bảng/cột đã đổi, phần còn lại chưa) — trạng thái tệ hơn cả không chạy gì.
 > Đổi/reset schema → **drop & tạo lại DB** trước khi apply (squash chỉ sạch trên DB rỗng).
 
-> **S6 hardening rounds — apply migration TĂNG DẦN (DB đã có data, KHÔNG drop):** dùng **idempotent script** (`dotnet ef migrations script --idempotent -o up.sql` → `docker exec -i postgres-main psql -U admin -d <db> < up.sql`) hoặc `dotnet ef database update`. **Preflight bắt buộc theo round (dọn TRƯỚC khi apply, không migration nào tự dọn):**
+> **S6 hardening rounds — apply migration TĂNG DẦN (DB đã có data, KHÔNG drop):** dùng **idempotent script** (`dotnet ef migrations script --idempotent -o up.sql` → `docker exec -i postgres-main psql -v ON_ERROR_STOP=1 -U admin -d <db> < up.sql`) hoặc `dotnet ef database update`. ⚠ **`-v ON_ERROR_STOP=1` bắt buộc** — xem cảnh báo ở khối trên. **Preflight bắt buộc theo round (dọn TRƯỚC khi apply, không migration nào tự dọn):**
 > - **S6 đợt 9 (DB10/DB15):** ⚠ CHECK constraints fail nếu data ngoài miền → trước apply: `UPDATE`/dọn row `campaign_criteria.weight`/`rubric_criteria.weight` ngoài **(0,1]** và `campaigns.pass_score_pct` ngoài **[0,100]**; bảng `subscriptions` phải **rỗng** (DROP TABLE). `rubric_anchors`→`rubric_levels.example_answers` backfill đã **L3 Postgres verify 0-loss** (throwaway PG) — an toàn. xmin = model-only, **0 DDL** (system column), không cần dọn.
 > - **AI2 (RabbitMQ DLX/DLQ):** queue `scoring_pipeline_queue` LIVE khai `arguments=None` → **KHÔNG redeclare được** với arg `x-dead-letter-exchange` mới (PRECONDITION_FAILED 406, cả `aiworker` lẫn `interviewservice` fail khởi động). **Chọn 1:** (a) **recreate queue** — dừng consumer/publisher → `rabbitmqadmin delete queue name=scoring_pipeline_queue` (đảm bảo drain hết) → khởi động lại (2 bên tự redeclare với DLX arg); HOẶC (b) **RabbitMQ policy** không đụng queue arg: `rabbitmqctl set_policy scoring-dlx "^scoring_pipeline_queue$" '{"dead-letter-exchange":"scoring_pipeline_dlx","dead-letter-routing-key":"scoring_dead"}' --apply-to queues` (vẫn phải khai DLX `scoring_pipeline_dlx` + DLQ `scoring_pipeline_dead_queue` trước). Cách (b) **an toàn hơn** (không mất message đang chờ).
 > - **Campaign ranking DLX (PR #138 follow-up):** deploy CampaignService trước để nó khai exchange `campaign.ranking.dlx` và queue `campaign.ranking.dead`, rồi gắn policy vào **queue hiện hữu** (không thêm queue arguments, tránh 406): `rabbitmqctl set_policy campaign-ranking-dlx "^campaign\.ranking$" '{"dead-letter-exchange":"campaign.ranking.dlx","dead-letter-routing-key":"campaign.ranking"}' --apply-to queues`. Kiểm tra bằng `rabbitmqctl list_queues name messages` sau một event lỗi lần 2; message phải ở `campaign.ranking.dead`, không biến mất.
@@ -631,3 +634,90 @@ thời AIService còn ở Mac** — nay chúng chỉ còn dùng để gỡ rối
 2. FE upload answer → Interview lưu audio lên SeaweedFS → publish job lên RabbitMQ → answer = `Scoring`.
 3. Worker (Mac) consume → tải audio (SeaweedFS) → Whisper transcribe → Gemini chấm → callback `interviewservice:5246/internal/answers/{id}/result`.
 4. Interview lưu điểm → answer = `Scored`; lỗi vĩnh viễn → worker callback `/failed` → answer = `Failed`. Session đóng khi mọi answer xong.
+
+---
+
+## 9. Rollback (khi deploy hỏng)
+
+> **Đọc hết mục này TRƯỚC khi lùi qua một mốc có migration.** Lùi code và lùi schema là
+> hai bài toán khác nhau, và chỉ một trong hai làm được.
+
+### 9.1 Lùi CODE — dùng tag bất biến `:main-<sha>`
+
+`:main` là tag **di động**: mỗi lần push lên `main` nó trỏ sang image mới, nên bản vừa hỏng
+đã chiếm mất cái tên đó. Repo cũng **không có tag git nào** để lần ra bản tốt. Vì vậy CI đẩy
+**tag đôi**: `:main` (di động) **+** `:main-<sha>` (**bất biến**, gắn cứng vào một commit).
+
+> 🔴 **GIỚI HẠN — đọc trước khi trông cậy vào mục này.** Tag `:main-<sha>` chỉ tồn tại cho
+> image build **SAU** khi CI bắt đầu đẩy tag đôi. Mọi image build **trước** mốc đó chỉ từng
+> mang `:main`, và cái tên đó nay đã bị bản mới chiếm ⇒ **không lùi về trước mốc đó được**.
+> Kiểm bản nào thật sự lùi được — đừng giả định:
+> ```bash
+> docker image inspect ghcr.io/su26se043/isas.gateway:main-<sha> >/dev/null 2>&1 \
+>   && echo "CÓ, lùi được" || echo "KHÔNG có tag này — không lùi được về mốc đó"
+> ```
+
+```bash
+# 1. Tìm SHA của bản chạy tốt gần nhất — hỏi chính image ĐANG chạy, đừng đoán theo thời gian
+docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+  gateway-main authservice-main interviewservice-main campaignservice-main paymentservice-main aiapi-main
+
+# 2. Ghim tag trong .env cạnh compose (server)
+echo 'IMAGE_TAG=main-<sha-tốt>' >> ~/docker/main/.env
+
+# 3. Áp
+cd ~/docker/main && docker compose pull && docker compose up -d
+```
+
+Mất vài chục giây, **không phải chờ CI build lại ~15 phút** từ một commit revert.
+Quay về bản mới nhất: xoá dòng `IMAGE_TAG` (mặc định `${IMAGE_TAG:-main}` cho lại `:main`).
+
+⚠ **ĐIỀU KIỆN TIÊN QUYẾT:** file compose **TRÊN SERVER** (`~/docker/main/docker-compose.yml`)
+phải đã tham số hoá `${IMAGE_TAG:-main}` y hệt `deploy/compose.yaml` trong repo. Sửa mỗi bên
+repo **không tự động** làm được gì cả (xem §0 — hai file là hai artifact khác nhau).
+Kiểm nhanh: `grep 'image: ghcr' ~/docker/main/docker-compose.yml` — phải thấy `${IMAGE_TAG`.
+
+⚠ Lùi **một** service lẻ thì sửa thẳng dòng `image:` của service đó, vì `IMAGE_TAG` áp cho
+**cả 6**. Lùi cả 6 về cùng một SHA là đường an toàn hơn — các service gọi nhau qua hợp đồng
+nội bộ (callback, tên field JSON) và những hợp đồng đó đổi theo commit.
+
+### 9.2 Lùi SCHEMA — 🔴 KHÔNG TỒN TẠI, đừng lên kế hoạch dựa vào nó
+
+`Down()` của EF **không phải** máy thời gian. `Down()` của một `DropColumn` chỉ
+`AddColumn` lại — **cột rỗng**. Dữ liệu trong cột đã bị xoá lúc `Up()` chạy và **mất vĩnh
+viễn**. Tương tự với `DropTable` và phần lớn `Rename*`/`Alter*` có chuyển kiểu.
+
+Trên production hiện đã có **hàng chục migration destructive** (drop cột chết, tách bảng,
+đổi tên). Với chúng, rollback schema **không phải là chậm — nó không tồn tại**.
+
+⇒ **Đường đi thực tế là FIX-FORWARD:** viết migration mới sửa tiếp, không lùi.
+⇒ Hệ quả cho §9.1: lùi code qua một mốc có migration destructive thì **code cũ gặp schema
+mới** → `42703 column does not exist` → 500 hàng loạt (đã xảy ra **2 lần**: 02/08 và 05/08,
+theo chiều ngược lại). **Kiểm `__EFMigrationsHistory` trước khi lùi**, và nếu có migration
+nằm giữa hai mốc thì lùi code KHÔNG an toàn — phải fix-forward.
+
+```bash
+# migration nào đã apply, mốc nào (chạy cho từng db: isas · isas_interview · isas_campaign · isas_payment)
+docker exec -i postgres-main psql -v ON_ERROR_STOP=1 -U admin -d <db> \
+  -c 'SELECT * FROM "__EFMigrationsHistory" ORDER BY 1 DESC LIMIT 5;'
+```
+⚠ Tên cột lịch sử **không đồng nhất**: Auth dùng `"MigrationId"`, ba service kia dùng
+`migration_id` (tên bảng thì đều là `"__EFMigrationsHistory"`).
+
+### 9.3 Chốt lại
+
+| Muốn lùi | Làm được? | Cách |
+|---|---|---|
+| Code (image) | ✅ vài chục giây | `IMAGE_TAG=main-<sha>` + `up -d` (§9.1) |
+| Schema (migration destructive) | ❌ **không** | fix-forward bằng migration mới (§9.2) |
+| Cấu hình / feature flag | ✅ nhanh nhất | đổi env + `up -d`; phần lớn cờ đã thiết kế để tắt được mà không cần deploy lại |
+
+⚠ **Không có backup DB nào trong repo** — `deploy/compose.yaml`, `compose.yaml`, `ci.yml` và
+`scripts/` đều **0 hit** cho `pg_dump`/`backup` (kiểm 2026-08-06). *(Chưa xác minh server có
+cron riêng ngoài repo hay không — nếu có thì bổ sung vào đây.)* Nghĩa là trước một
+apply-window rủi ro, `pg_dump` **chạy tay** là lưới an toàn duy nhất, và nó không nằm trong
+quy trình nào cả — phải nhớ mà làm:
+
+```bash
+docker exec postgres-main pg_dump -U admin -d <db> -Fc > ~/backup-<db>-$(date +%Y%m%d-%H%M).dump
+```
