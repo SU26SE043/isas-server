@@ -57,6 +57,11 @@ namespace Isas.CampaignService.DTOs
         // INT-17: bật phỏng vấn THÍCH ỨNG cho chiến dịch (mặc định false = luồng tĩnh). Không gửi → false.
         public bool AdaptiveEnabled { get; set; }
         public bool GroundingEnabled { get; set; }
+        // Trần số ứng viên thi ĐỒNG THỜI của chiến dịch. null = không giới hạn.
+        // PHẢI >= 1: guard là `running >= max`, nên 0 hoặc số âm làm MỌI lượt Start trả 429
+        // ⇒ khoá chiến dịch vĩnh viễn. Xem ValidateConcurrencyCap.
+        public int? MaxConcurrentInterviews { get; set; }
+
         // INT-17: trần câu thích ứng / tổng câu. null = dùng mặc định phía Interview.
         public int? MaxFollowUps { get; set; }
         public int? MaxQuestions { get; set; }
@@ -106,6 +111,10 @@ namespace Isas.CampaignService.DTOs
         // INT-17: bật/tắt phỏng vấn thích ứng + trần câu — null = không đổi (giữ cũ), như AntiCheatEnabled.
         public bool? AdaptiveEnabled { get; set; }
         public bool? GroundingEnabled { get; set; }
+        // null = KHÔNG ĐỔI (giữ giá trị cũ), đồng nếp với các trần khác ở DTO này.
+        // ⚠ Hệ quả: đã đặt trần thì không gỡ về null được qua API — muốn "bỏ trần" thì đặt một
+        // số lớn hơn số ứng viên của chiến dịch. Đánh đổi có chủ ý để không lệch nếp các field kia.
+        public int? MaxConcurrentInterviews { get; set; }
         public int? MaxFollowUps { get; set; }
         public int? MaxQuestions { get; set; }
         public int? MaxDeepPerQuestion { get; set; }   // INT-17b
@@ -161,6 +170,7 @@ namespace Isas.CampaignService.DTOs
         public int? PassScorePct { get; set; }   // E5: ngưỡng % pass/fail (null = HR quyết tay)
         public bool AdaptiveEnabled { get; set; }   // INT-17: phỏng vấn thích ứng (B2B opt-in)
         public bool GroundingEnabled { get; set; }  // T8: grounding snapshot (B2B opt-in)
+        public int? MaxConcurrentInterviews { get; set; }   // trần thi đồng thời (null = không giới hạn)
         public int? MaxFollowUps { get; set; }      // INT-17: trần câu thích ứng (null = mặc định Interview)
         public int? MaxQuestions { get; set; }      // INT-17: trần tổng câu (null = mặc định Interview)
         public int? MaxDeepPerQuestion { get; set; }   // INT-17b: trần đào sâu mỗi câu (null/0 = chế độ cũ)
@@ -187,6 +197,7 @@ namespace Isas.CampaignService.DTOs
             PassScorePct = c.PassScorePct,
             AdaptiveEnabled = c.AdaptiveEnabled,   // INT-17
             GroundingEnabled = c.GroundingEnabled,
+            MaxConcurrentInterviews = c.MaxConcurrentInterviews,
             MaxFollowUps = c.MaxFollowUps,
             MaxQuestions = c.MaxQuestions,
             MaxDeepPerQuestion = c.MaxDeepPerQuestion,   // INT-17b
