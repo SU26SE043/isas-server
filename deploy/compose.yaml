@@ -17,8 +17,11 @@
 #     ⚠ Dùng file này trên server mà không đặt `ADAPTIVE_*` trong .env = TẮT phỏng vấn thích ứng.
 #   · `Cors__AllowedOrigins__6` — xem chú thích ở gateway (server khai TRÙNG index 4).
 #   · `Internal__CallbackBase` dùng `${SERVER_TS_IP}`, server đang ghi cứng `100.64.204.33` (tương đương).
-# Override `ai-cluster` thừa trên server đã được gỡ (đo 2026-08-06: gateway chỉ còn 4 cluster).
-# KHÔNG thêm lại vào đây — GEN-7 giữ AIService internal-only. Server cũng còn `expose: ["8080"]` thừa ở campaignservice (đã có `ports` 5247).
+# AIService ĐƯỢC khai ở gateway (`ApiServices__ai` + `ai-cluster` bên dưới) — có chủ đích, KHÔNG
+# mâu thuẫn GEN-7: hai thứ đó chỉ có tác dụng ở **Development**, nơi Scalar phải liệt kê VÀ gọi
+# được TOÀN BỘ api. Ở Production, `IsGatewayAiPath` (Program.cs) trả 404 cho `/api/v1/ai/*` và
+# aggregator bỏ qua tên `ai` ⇒ AIService vẫn internal-only. Server cũng còn `expose: ["8080"]`
+# thừa ở campaignservice (đã có `ports` 5247).
 # ⚠ `ASPNETCORE_ENVIRONMENT=Development` bên dưới = MIRROR đúng production hôm nay, nhưng đó là
 # lỗi đã biết (`OPS6`, tái diễn 3 lần): Development làm gateway KHÔNG bật khối chặn `/internal/*`
 # + `/api/v1/ai/*`, và service trả stack trace ra ngoài. Sửa = quyết định deploy, không sửa lén ở đây.
@@ -332,10 +335,14 @@ services:
       - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
       - ReverseProxy__Clusters__campaign-cluster__Destinations__campaign-node-01__Address=http://isas.campaignservice:8080
       - ReverseProxy__Clusters__payment-cluster__Destinations__payment-node-01__Address=http://isas.paymentservice:8080
-      # GEN-7: AIService internal-only — KHÔNG override `ai-cluster` ở đây (Interview/Campaign gọi thẳng
-      # qua `AiService:BaseUrl`). ⚠ Server hiện VẪN còn dòng override ai-cluster; nên xoá bên đó, đừng
-      # thêm lại vào đây. Lưu ý: `ai-route` + khối chặn `/internal/*` chỉ ĐƯỢC BẬT khi môi trường ≠
-      # Development — mà production đang chạy Development (OPS6) ⇒ /api/v1/ai hiện vẫn đi qua gateway.
+      # `ai-cluster` PHẢI trỏ `aiapi:8000` (từ 2026-08-06 AIService là container anh em, trước đó
+      # ở trên Mac nên appsettings để `localhost:8000` — địa chỉ đó nay chết trong container gateway).
+      # Không có dòng này thì Scalar ở Development liệt kê endpoint AI nhưng bấm "Test Request" là 502.
+      #
+      # ⚠ KHÔNG mâu thuẫn GEN-7: cặp `ai-route` + `ai-cluster` chỉ sống ở **Development**. Ở Production
+      # `IsGatewayAiPath` (Program.cs) trả 404 trước cả UseRouting ⇒ AIService vẫn internal-only.
+      # Đúng ý đồ đã ghi trong Program.cs: Development = Scalar thấy VÀ gọi được TOÀN BỘ api.
+      - ReverseProxy__Clusters__ai-cluster__Destinations__ai-node-01__Address=http://aiapi:8000
       #
       # 🔴 ApiServices phải khai theo TÊN (`ApiServices__<tên>__OpenApiUrl`), KHÔNG theo index.
       # Dạng cũ `ApiServices__0__…` là bug đã sửa ở PR #100: appsettings khai 5 entry còn compose khai
@@ -347,6 +354,12 @@ services:
       - ApiServices__interview__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
       - ApiServices__campaign__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
       - ApiServices__payment__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
+      # AIService: FastAPI phục vụ schema ở `/openapi.json` (KHÔNG phải `/openapi/v1.json` như 5
+      # image .NET, và cũng không phải `/api/v1/openapi.json` — đã thử, 404). Thiếu dòng này thì
+      # aggregator vẫn đọc `localhost:8000` của appsettings → Connection refused mỗi 30s (~12 dòng
+      # rác/phút) VÀ 14 endpoint AI biến mất khỏi Scalar. Production không fetch (aggregator bỏ qua
+      # tên `ai` khi môi trường ≠ Development) nên dòng này chỉ có tác dụng ở Development.
+      - ApiServices__ai__OpenApiUrl=http://aiapi:8000/openapi.json
       - Gateway__Url=${GATEWAY_PUBLIC_URL}
       # ⚠ Mỗi `Cors__AllowedOrigins__N` GHI ĐÈ phần tử thứ N của mảng trong appsettings.json (5 phần tử:
       # localhost:4200 · localhost:3000 · localhost:5173 · issa.app · sep-490-angular.vercel.app) — không
@@ -381,9 +394,9 @@ services:
     container_name: aiapi-main
     environment:
       <<: *aiservice-env
-    # GEN-7 internal-only: `expose`, KHÔNG `ports`. Interview/Campaign gọi qua tên `aiapi`.
-    # ⚠ ĐỪNG thêm lại override `ai-cluster` ở gateway chỉ vì nay aiapi là container anh em —
-    # appsettings gateway trỏ `localhost:8000` nên `/api/v1/ai` vẫn chết đúng như thiết kế.
+    # GEN-7 internal-only: `expose`, KHÔNG `ports` — không lộ cổng ra host. Interview/Campaign gọi
+    # qua tên `aiapi`. Gateway CÓ trỏ tới đây (`ai-cluster` + `ApiServices__ai`) nhưng chỉ để Scalar
+    # ở **Development** liệt kê + gọi được toàn bộ api; Production chặn `/api/v1/ai/*` bằng 404.
     expose: ["8000"]
     healthcheck:
       # image không có curl/wget — dùng chính python trong image.
