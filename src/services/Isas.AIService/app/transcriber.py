@@ -159,12 +159,24 @@ class Transcriber:
 
         Timeout/lỗi mạng retry thêm một lượt sẽ vượt ngân sách 90 giây của decider; lỗi đó phải
         rơi ngay về Whisper cục bộ. ``ValueError`` là bản chép HTTP 200 nhưng rỗng.
+
+        ⚠ Phải phủ **cả hai** nhà cung cấp: `transcribe_openai` dùng httpx (``HTTPStatusError``)
+        còn `transcribe_gemini` dùng google-genai (``ClientError`` = 4xx theo định nghĩa của SDK;
+        ``ServerError`` = 5xx nên KHÔNG retry, giống 5xx của httpx). Thiếu vế gemini thì đổi
+        ``TRANSCRIBE_PROVIDER=gemini`` — một biến env đổi được KHÔNG cần deploy — sẽ làm mọi lượt
+        bị từ chối rơi thẳng về Whisper `small` (lỗi từ 0,7% lên 4,2%) trong im lặng.
         """
         if isinstance(error, ValueError):
             return True
         try:
             import httpx
-            return isinstance(error, httpx.HTTPStatusError) and 400 <= error.response.status_code < 500
+            if isinstance(error, httpx.HTTPStatusError):
+                return 400 <= error.response.status_code < 500
+        except ImportError:
+            pass
+        try:
+            from google.genai import errors as genai_errors
+            return isinstance(error, genai_errors.ClientError)
         except ImportError:
             return False
 

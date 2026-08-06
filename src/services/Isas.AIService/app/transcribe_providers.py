@@ -41,7 +41,6 @@ from __future__ import annotations
 import array
 import io
 import logging
-import mimetypes
 import re
 import unicodedata
 import wave
@@ -221,6 +220,30 @@ def pcm_to_wav_bytes(pcm, sample_rate: int = SAMPLE_RATE) -> bytes:
     return buf.getvalue()
 
 
+# Content-Type theo ĐUÔI FILE, tra bảng tường minh — CỐ Ý KHÔNG dùng `mimetypes.guess_type`.
+# `mimetypes` đọc /etc/mime.types nên kết quả phụ thuộc image/OS, và trên image `python:3.12-slim`
+# nó cho ra những giá trị SAI cho đúng đường đang chạy thật:
+#     .webm → video/webm   (đuôi DUY NHẤT xuất hiện trên production — AnswerService.cs:80)
+#     .ogg .oga .m4a .mpga .flac → None → application/octet-stream
+#     .wav  → audio/x-wav
+# Gửi sai Content-Type thì nhà cung cấp có thể từ chối; lúc đó nhánh cứu WAV nuốt lỗi ⇒ tính năng
+# gửi-file-gốc KHÔNG BAO GIỜ kích hoạt mà không ai biết (mẫu "tắt câm" đã dính 3 lần: env F21/F22,
+# consumer C14). Bảng tĩnh làm hành vi giống nhau ở mọi máy và đọc được bằng mắt.
+AUDIO_CONTENT_TYPES = {
+    ".webm": "audio/webm", ".ogg": "audio/ogg", ".oga": "audio/ogg",
+    ".mp3": "audio/mpeg", ".mpga": "audio/mpeg", ".mpeg": "audio/mpeg",
+    ".m4a": "audio/mp4", ".mp4": "audio/mp4",
+    ".flac": "audio/flac", ".wav": "audio/wav",
+}
+
+
+def audio_content_type(filename: str) -> str:
+    """Content-Type cho payload chép lời. Đuôi lạ → octet-stream (nhà cung cấp tự dò theo tên file)."""
+    dot = filename.rfind(".")
+    ext = filename[dot:].lower() if dot != -1 else ""
+    return AUDIO_CONTENT_TYPES.get(ext, "application/octet-stream")
+
+
 def transcribe_openai(audio_bytes: bytes, language: str | None,
                       audio_seconds: float = 0.0, filename: str = "audio.wav") -> tuple[str, str]:
     """`whisper-1` của OpenAI. Trả ``(text, engine)``. RAISE khi hỏng (caller lo dự phòng).
@@ -236,7 +259,7 @@ def transcribe_openai(audio_bytes: bytes, language: str | None,
 
     from app.usage import report_audio_usage, report_blocking
 
-    files = {"file": (filename, audio_bytes, mimetypes.guess_type(filename)[0] or "application/octet-stream")}
+    files = {"file": (filename, audio_bytes, audio_content_type(filename))}
     data = {
         "model": settings.openai_transcribe_model,
         "response_format": "json",
@@ -294,7 +317,7 @@ def transcribe_gemini(audio_bytes: bytes, language: str | None,
     resp = _get_gemini_client().models.generate_content(
         model=settings.gemini_model,
         contents=[
-            types.Part.from_bytes(data=audio_bytes, mime_type=mimetypes.guess_type(filename)[0] or "application/octet-stream"),
+            types.Part.from_bytes(data=audio_bytes, mime_type=audio_content_type(filename)),
             GEMINI_TRANSCRIBE_PROMPT,
         ],
         config=types.GenerateContentConfig(temperature=0.0),
