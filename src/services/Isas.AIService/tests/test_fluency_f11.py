@@ -316,8 +316,8 @@ def test_transcriber_nguon_whisper_giu_moc_thoi_gian_va_khong_bat_word_timestamp
             captured.update(kwargs)
             return [_Seg(0.0, 2.0, "ừm tôi là"), _Seg(4.0, 6.0, "kỹ sư backend")], None
 
-    t = Transcriber.__new__(Transcriber)      # bỏ qua __init__ (nạp model thật)
-    t._model = _Model()
+    t = Transcriber()      # bỏ qua __init__ (nạp model thật)
+    t._model_instance = _Model()
 
     result = t.transcribe_detailed("/tmp/x.webm", "vi")
 
@@ -337,6 +337,6 @@ def test_transcribe_str_van_tra_text_cho_call_site_cu():
         def transcribe(self, path, **kwargs):
             return [], None
 
-    t = Transcriber.__new__(Transcriber)
-    t._model = _Model()
+    t = Transcriber()
+    t._model_instance = _Model()
     assert t.transcribe("/tmp/x.webm") == ""

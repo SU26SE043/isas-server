@@ -61,8 +61,8 @@ def _make(monkeypatch, *, vad_spans=None, whisper_segs=None, seconds=6.0):
             calls["whisper_audio"] = audio
             return segs, None
 
-    t = Transcriber.__new__(Transcriber)      # bỏ qua __init__ (nạp model thật)
-    t._model = _Model()
+    t = Transcriber()      # bỏ qua __init__ (nạp model thật)
+    t._model_instance = _Model()
     return t, calls
 
 

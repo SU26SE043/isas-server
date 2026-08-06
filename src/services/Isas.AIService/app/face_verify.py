@@ -1,21 +1,44 @@
 # app/face_verify.py — SEC-2/3: đối chiếu khuôn mặt (face verify) + đếm số mặt.
 #
-# insightface FaceAnalysis nạp 1 LẦN trong __init__ (như Transcriber) — model detect+embed
-# nặng, load lại mỗi request rất chậm. CPU-only (onnxruntime CPUExecutionProvider).
+# insightface FaceAnalysis nạp LƯỜI — dựng ở lần dùng đầu, không phải lúc import (như Transcriber).
+# Model detect+embed nặng, vẫn chỉ nạp 1 lần rồi dùng lại. CPU-only (onnxruntime CPUExecutionProvider).
+import logging
+import threading
+
 from insightface.app import FaceAnalysis
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 
 class FaceVerifier:
     def __init__(self) -> None:
-        # Model load 1 lần (dải buffalo_l: SCRFD detect + ArcFace embed).
-        self._model = FaceAnalysis(
-            name=settings.face_model_name,
-            providers=["CPUExecutionProvider"],
-        )
-        # ctx_id=-1 = CPU; det_size cố định cho ổn định.
-        self._model.prepare(ctx_id=-1, det_size=(640, 640))
+        # Đo trong image (`ru_maxrss`): +`FaceAnalysis(buffalo_l)` = **358 MB**. Chỉ `main.py` dựng
+        # FaceVerifier (worker không import file này), nhưng face-verify là đường HIẾM — nạp lúc
+        # import nghĩa là mọi tiến trình api trả 358 MB thường trú cho một tính năng có thể cả
+        # ngày không ai gọi.
+        self._model_lock = threading.Lock()
+        self._model_instance: FaceAnalysis | None = None
+
+    @property
+    def _model(self) -> FaceAnalysis:
+        # Double-checked locking — `/face-verify` chạy qua `asyncio.to_thread` (main.py:222) nên
+        # hai request đồng thời sẽ dựng hai model nếu không khoá.
+        if self._model_instance is None:
+            with self._model_lock:
+                if self._model_instance is None:
+                    logger.info("Nạp FaceAnalysis %s (lần đầu, nạp lười)", settings.face_model_name)
+                    model = FaceAnalysis(
+                        name=settings.face_model_name,
+                        providers=["CPUExecutionProvider"],
+                    )
+                    # ctx_id=-1 = CPU; det_size cố định cho ổn định.
+                    model.prepare(ctx_id=-1, det_size=(640, 640))
+                    # Gán SAU khi prepare xong: gán trước rồi prepare mà ném thì request kế đọc
+                    # được một model chưa prepare (lỗi khác hẳn, khó lần).
+                    self._model_instance = model
+        return self._model_instance
 
     def _decode(self, img_bytes: bytes):
         """bytes ảnh → ndarray BGR (cv2) để insightface detect.
