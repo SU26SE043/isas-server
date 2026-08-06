@@ -64,3 +64,7 @@ rabbitmq_data/
 .DS_Store
 Thumbs.db
 *.log
+
+## Worktree của agent — 3 bản sao TOÀN BỘ repo (mỗi bản đủ 4 thư mục Migrations).
+## KHÔNG ignore `.claude/` trần: `.claude/agents/system-architect.md` đang được track.
+.claude/worktrees/
