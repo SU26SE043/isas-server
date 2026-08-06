@@ -73,6 +73,7 @@ namespace Isas.CampaignService.Services
 
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
             ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);   // INT-17: trần ≥ 0 nếu có
+            ValidateConcurrencyCap(request.MaxConcurrentInterviews);
 
             // C11 + cap độ dài: chuẩn hoá & kiểm ngưỡng TRƯỚC khi dựng entity/ghi DB → vượt ngưỡng thì
             // 400 mà không để lại gì nửa vời.
@@ -92,6 +93,7 @@ namespace Isas.CampaignService.Services
                 AntiCheatEnabled = request.AntiCheatEnabled,
                 AdaptiveEnabled = request.AdaptiveEnabled,   // INT-17: HR bật thích ứng cho campaign
                 GroundingEnabled = request.GroundingEnabled,
+                MaxConcurrentInterviews = request.MaxConcurrentInterviews,
                 MaxFollowUps = request.MaxFollowUps,
                 MaxQuestions = request.MaxQuestions,
                 MaxDeepPerQuestion = request.MaxDeepPerQuestion,   // INT-17b: trần đào sâu mỗi câu
@@ -375,6 +377,12 @@ namespace Isas.CampaignService.Services
 
             if (request.GroundingEnabled.HasValue)
                 campaign.GroundingEnabled = request.GroundingEnabled.Value;
+
+            if (request.MaxConcurrentInterviews.HasValue)
+            {
+                ValidateConcurrencyCap(request.MaxConcurrentInterviews);
+                campaign.MaxConcurrentInterviews = request.MaxConcurrentInterviews;
+            }
 
             if (request.MaxFollowUps.HasValue || request.MaxQuestions.HasValue
                 || request.MaxDeepPerQuestion.HasValue)
@@ -1788,6 +1796,18 @@ namespace Isas.CampaignService.Services
         /// HR gõ 50 là qua sạch. Vá luôn ở đây vì chế độ chuỗi làm hậu quả nặng hơn hẳn.
         /// </summary>
         private const int MaxFollowUpsCap = MaxQuestionsPerSession;
+
+        // Trần thi đồng thời PHẢI >= 1. Guard bên ParticipationService là `running >= max`, nên với
+        // 0 hoặc số âm thì `0 >= 0` / `0 >= -1` đều đúng ngay từ ứng viên ĐẦU TIÊN ⇒ mọi lượt Start
+        // trả 429 và chiến dịch bị khoá vĩnh viễn mà HR không hiểu vì sao. Chặn ở đây — nơi HR nhập —
+        // đúng bài học F2b: đừng để giá trị vô lý lọt xuống tận lúc ứng viên bấm Start.
+        // KHÔNG đặt trần trên: số lớn = "không giới hạn", vô hại (khác max_questions vốn có CHECK ở DB).
+        private static void ValidateConcurrencyCap(int? maxConcurrentInterviews)
+        {
+            if (maxConcurrentInterviews is int c && c < 1)
+                throw new ArgumentException(
+                    $"max_concurrent_interviews phải >= 1 (hiện: {c}). Bỏ trống = không giới hạn.");
+        }
 
         private static void ValidateAdaptiveCaps(int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion = null)
         {
