@@ -56,7 +56,10 @@ x-aiservice-env: &aiservice-env
   S3_BUCKET: isas-files
   USAGE_SINK_BASE: http://isas.paymentservice:8080        # F22 — nội bộ, KHÔNG qua gateway (GEN-1)
   PROMPT_REGISTRY_BASE: http://isas.interviewservice:8080  # F21
-  # 0 = giữ mặc định asyncio (min(32,cpu+4)=12). Nới từng nấc sau khi đo: 0 → 32 → 64.
+  # Trần thread cho việc CHẶN (đọc S3 + chép lời). 0 = mặc định asyncio (min(32,cpu+4)=12).
+  # Production = **32**: đo 2026-08-06 ra 3,22 → 5,16 req/s (+60%), p95 9,67s → 6,95s.
+  # ⚠ ĐỪNG nâng 64 — ở pool 32 tải tăng 32→48 chỉ +3% ⇒ trần thật (~5 req/s) nằm SAU pool.
+  # Chi tiết số đo + cách đo lại: `app/config.py` §thread_pool_max_workers, `scripts/loadtest-ai-threadpool.py`.
   THREAD_POOL_MAX_WORKERS: ${AI_THREAD_POOL:-0}
 
 x-aiservice: &aiservice
