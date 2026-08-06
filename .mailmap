@@ -1,0 +1,28 @@
+# .mailmap — gộp các identity git về ĐÚNG người.
+#
+# VÌ SAO: repo chỉ có **2 người** nhưng lịch sử mang **5 identity** (đo bằng
+# `git shortlog -sne --all`). Một người commit từ nhiều máy/nhiều cách (web UI
+# GitHub dùng địa chỉ `@users.noreply.github.com`, CLI dùng gmail) là chuyện
+# bình thường, nhưng hệ quả thì không: mọi thống kê đóng góp — `git shortlog`,
+# `git blame`, biểu đồ contributor của GitHub — đều đếm rời ra, làm công sức
+# một người trông như của ba người lạ. Với đồ án cần chứng minh phần đóng góp
+# thì đó là con số SAI, không phải chỉ là xấu.
+#
+# Trước:  light2a <leminhduc2834@gmail.com>                     531
+#         Định Trần <dinht1706@gmail.com>                        152
+#         light2a <86029943+light2a@users.noreply.github.com>    139
+#         light2a <light2a@users.noreply.github.com>               6
+#         DinhTran1706 <dinht1706@gmail.com>                       1
+# Sau:    đúng 2 dòng.
+#
+# ⚠ KHÔNG gộp hai người thành một — mỗi khối dưới đây là MỘT con người thật.
+# Kiểm lại bất cứ lúc nào:  git shortlog -sne --all   (phải ra đúng 2 dòng)
+#
+# Cú pháp:  <Tên chuẩn> <email chuẩn> <email cũ cần gộp>
+
+# --- Người 1 ---
+light2a <leminhduc2834@gmail.com> <86029943+light2a@users.noreply.github.com>
+light2a <leminhduc2834@gmail.com> <light2a@users.noreply.github.com>
+
+# --- Người 2 --- (cùng email, chỉ lệch cách viết tên → chuẩn hoá về tên đầy đủ)
+Định Trần <dinht1706@gmail.com>
