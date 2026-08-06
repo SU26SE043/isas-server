@@ -2,19 +2,60 @@ name: CI/CD
 
 on:
   push:
-    branches: [main, dev, 'features/**']
+    # `features/**` đã GỠ: cấu hình chết — trong toàn bộ lịch sử repo chỉ khớp đúng MỘT nhánh
+    # (`features/payment-b2c`, obsolete từ vòng 1). Giữ lại chỉ tạo ảo giác "nhánh feature có CI che".
+    branches: [main, dev]
   pull_request:
     branches: [main, dev]
 
+# ── Concurrency tầng 1: theo ref ───────────────────────────────────────────────
+# PR đẩy commit mới → HUỶ run cũ (không ai chờ kết quả của commit đã bị thay).
+# main/dev thì **KHÔNG huỷ** — cắt ngang một run đang `docker compose up -d` sẽ để stack ở trạng
+# thái nửa vời (vài container mới, vài container cũ) mà không có gì báo.
+# Đây là ca THẬT, không phải phòng xa: đo được 32/136 cặp merge liên tiếp cách nhau <15 phút,
+# có cặp chỉ 0,4 phút — tức run sau chắc chắn chồng lên run trước.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Mặc định KHÔNG quyền gì. Mỗi job tự xin đúng phần nó cần (least privilege) — quên xin thì job
+# đó gãy ngay, chứ không âm thầm chạy với token toàn quyền.
+permissions: {}
+
 jobs:
+  # ── guard: chặn sớm, chạy CẢ trên PR ─────────────────────────────────────────
+  # Vì sao là job riêng chứ không nhét vào `test`: nó phải chặn được ở **PR** (trước khi merge),
+  # còn sự cố thật thì luôn xảy ra ngay SAU merge — CI deploy image mới trong khi migration chưa
+  # apply ⇒ `42703: column ... does not exist` trên đường request (đã cháy 2 lần: 02/08 và 05/08).
+  # ~30% commit first-parent của repo này mang migration, nên đây không phải ca hiếm.
+  guard:
+    name: Guard (migration checks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # fetch-depth: 0 — script có thể cần đối chiếu với lịch sử (base ref / commit trước) để biết
+      # commit này có mang migration hay không. Checkout nông (mặc định depth 1) sẽ làm phép đối
+      # chiếu đó im lặng ra kết quả rỗng. Repo nhỏ nên chi phí không đáng kể.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Check migrations
+        run: python3 scripts/check-migrations.py
+
   test:
     name: Run tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: '10.0.x'
 
@@ -30,11 +71,14 @@ jobs:
   test-python:
     name: Run AIService tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'      # khớp base image Dockerfile (ctranslate2 chưa có wheel 3.14)
           cache: pip
@@ -62,13 +106,14 @@ jobs:
   docker:
     name: Build & Push Docker images
     runs-on: ubuntu-latest
-    needs: [test, test-python]
+    needs: [guard, test, test-python]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Lowercase repo owner
         run: echo "OWNER=$(echo ${{ github.repository_owner }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
@@ -79,59 +124,81 @@ jobs:
       # 5 image .NET không dùng cache nên trước giờ không lộ ra; chúng vẫn build bình thường dưới
       # driver mới vì đều `push: true` (driver container không nạp image vào daemon cục bộ).
       - name: Setup Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── Vì sao MỖI image có HAI tag ──────────────────────────────────────────
+      # `:main` là tag **mutable** — nó luôn trỏ vào bản build gần nhất, nên khi cần lùi về bản
+      # trước đó thì KHÔNG có gì để lùi về: bản cũ không còn tên nào gọi được.
+      # Tag thứ hai `<ref>-<sha>` là bất biến ⇒ rollback = đổi `IMAGE_TAG` trong `.env` rồi `up -d`,
+      # và cũng là thứ để đối chiếu "container đang chạy có đúng commit này không" (bước Verify
+      # running revision ở job deploy).
+      # `:main` giữ lại cho tương thích: compose trên server + mọi quy trình tay đang bám tag đó.
+      #
+      # ⚠ `github.ref_name` giữ NGUYÊN dấu `/` của tên nhánh (`features/x` → `features/x-<sha>`),
+      # mà tag Docker KHÔNG cho phép `/` ⇒ build sẽ hỏng. Hôm nay an toàn vì job đã gate `if:` chỉ
+      # `main`/`dev` (không có `/`). Nếu sau này nới `if:` cho nhánh khác thì PHẢI sanitize trước
+      # (vd `tr '/' '-'`), đừng để lộ ra lúc chạy thật.
       - name: Build & Push AuthService
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: src/services/Isas.AuthService/Dockerfile
           push: true
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: ghcr.io/${{ env.OWNER }}/isas.authservice:${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ env.OWNER }}/isas.authservice:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER }}/isas.authservice:${{ github.ref_name }}-${{ github.sha }}
 
       - name: Build & Push InterviewService
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: src/services/Isas.InterviewService/Dockerfile
           push: true
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: ghcr.io/${{ env.OWNER }}/isas.interviewservice:${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ env.OWNER }}/isas.interviewservice:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER }}/isas.interviewservice:${{ github.ref_name }}-${{ github.sha }}
 
       - name: Build & Push CampaignService
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: src/services/Isas.CampaignService/Dockerfile
           push: true
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: ghcr.io/${{ env.OWNER }}/isas.campaignservice:${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ env.OWNER }}/isas.campaignservice:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER }}/isas.campaignservice:${{ github.ref_name }}-${{ github.sha }}
 
       - name: Build & Push PaymentService
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: src/services/Isas.PaymentService/Dockerfile
           push: true
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: ghcr.io/${{ env.OWNER }}/isas.paymentservice:${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ env.OWNER }}/isas.paymentservice:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER }}/isas.paymentservice:${{ github.ref_name }}-${{ github.sha }}
 
       - name: Build & Push Gateway
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: src/gateway/Isas.Gateway/Dockerfile
           push: true
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: ghcr.io/${{ env.OWNER }}/isas.gateway:${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ env.OWNER }}/isas.gateway:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER }}/isas.gateway:${{ github.ref_name }}-${{ github.sha }}
 
       # AIService (Python). Ba điểm KHÁC hẳn 5 image .NET ở trên:
       #   • `context` là chính thư mục service, KHÔNG phải gốc repo (Dockerfile `COPY` thẳng
@@ -141,14 +208,16 @@ jobs:
       #   • cache registry: tầng pip ~2,5 GB (ctranslate2/onnxruntime/opencv), runner GitHub
       #     KHÔNG giữ layer cache giữa các lần chạy nên thiếu dòng này là build lại từ đầu mỗi lần.
       - name: Build & Push AIService
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: src/services/Isas.AIService
           file: src/services/Isas.AIService/Dockerfile
           platforms: linux/amd64
           push: true
           labels: org.opencontainers.image.revision=${{ github.sha }}
-          tags: ghcr.io/${{ env.OWNER }}/isas.aiservice:${{ github.ref_name }}
+          tags: |
+            ghcr.io/${{ env.OWNER }}/isas.aiservice:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER }}/isas.aiservice:${{ github.ref_name }}-${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/${{ env.OWNER }}/isas.aiservice:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ env.OWNER }}/isas.aiservice:buildcache,mode=max
 
@@ -173,31 +242,226 @@ jobs:
           fi
           echo "Lock khớp image: $(wc -l < /tmp/freeze-locked.txt) gói."
 
-  deploy:
-    name: Deploy to server
+  # ── schema-gate: migration trong repo vs migration ĐÃ APPLY trên DB thật ──────
+  # Chạy SONG SONG với `docker` (cùng `needs`), KHÔNG xếp sau nó: gate này ~30s còn build ~10 phút,
+  # nối tiếp chỉ làm deploy chậm thêm mà không mua được gì — `deploy` đã `needs` cả hai nên thứ tự
+  # hoàn thành không quan trọng, chỉ cần cả hai xanh.
+  schema-gate:
+    name: Schema gate (repo vs prod DB)
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [guard, test, test-python]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    timeout-minutes: 10
+    permissions:
+      contents: read      # KHÔNG cần packages: job này không đụng registry
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
       - name: Tailscale
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-      - name: Deploy
-        uses: appleboy/ssh-action@v1
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@a6f90b1f127823b31d4d4a8d96047790581349bd # v0.9.1
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: 22
-          script: |
-            cd ~/docker/${{ github.ref_name }}
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            # --ignore-pull-failures: bỏ qua các service dùng image build tay/local (vd :bk14g
-            # không có trên registry) thay vì để cả `pull` chết → khi đó các service :main
-            # (auth/payment/gateway) mới thật sự được cập nhật khi deploy. Nếu không, pull nghẹn
-            # ở tag local → server đứng yên image cũ dù CI xanh (job vẫn pass vì lệnh cuối prune OK).
-            docker compose pull --ignore-pull-failures
-            docker compose up -d --remove-orphans
-            docker image prune -f
+          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+
+      - name: Dump prod migration heads
+        env:
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new "$SERVER_USER@$SERVER_HOST" 'bash -s' \
+            < scripts/dump-prod-migrations.sh > prod-migrations.txt
+          echo "--- head đọc được từ prod:"
+          cat prod-migrations.txt
+
+      # `SCHEMA_GATE_MODE` là **biến repo** (Settings → Variables), không phải secret: mặc định
+      # `warn` để bật gate mà chưa chặn ai; đổi sang `enforce` khi đã tin số liệu.
+      - name: Compare with repo migrations
+        env:
+          SCHEMA_GATE_MODE: ${{ vars.SCHEMA_GATE_MODE || 'warn' }}
+        run: python3 scripts/check-schema-gate.py prod-migrations.txt
+
+  deploy:
+    name: Deploy to server
+    runs-on: ubuntu-latest
+    needs: [docker, schema-gate]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # 🔴 `packages: read` BẮT BUỘC: server dùng chính `GITHUB_TOKEN` này để `docker login ghcr.io`
+      # rồi `pull`. Thiếu nó thì pull trả 401 và deploy đỏ vì một lý do chẳng liên quan gì tới thứ
+      # ta đang sửa — mất hàng giờ đi tìm nhầm chỗ.
+      packages: read
+    # Group KHÔNG chứa ref (khác concurrency tầng 1 ở đầu file): `main` và `dev` là hai group
+    # workflow khác nhau nhưng deploy lên CÙNG MỘT docker daemon. `docker image prune -f` của stack
+    # này xoá được layer mà stack kia vừa pull ⇒ hai deploy phải xếp hàng, không chạy chồng.
+    concurrency:
+      group: isas-deploy-server
+      cancel-in-progress: false
+    # `production` = nhãn để GitHub ghi lịch sử deploy (ai deploy commit nào, lúc nào).
+    # KHÔNG đặt required reviewer cho environment này — thêm reviewer sẽ làm mọi deploy treo chờ duyệt.
+    # `url` lấy từ biến repo `DEPLOY_URL` (tuỳ chọn); bỏ trống thì UI đơn giản không hiện link.
+    environment:
+      name: production
+      url: ${{ vars.DEPLOY_URL }}
+    steps:
+      # Cần checkout: bước Smoke chạy `scripts/verify-gateway-openapi.py` từ repo.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Tailscale
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@a6f90b1f127823b31d4d4a8d96047790581349bd # v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
+
+      # ── Vì sao BỎ `appleboy/ssh-action` và dùng `ssh` trần ────────────────────
+      # Action đó mặc định `script_stop: false` ⇒ script remote chạy tiếp sau khi một lệnh hỏng,
+      # và **lệnh CUỐI quyết định exit code**. Lệnh cuối là `docker image prune -f` — gần như luôn
+      # thành công ⇒ `docker compose up -d` fail mà job vẫn XANH. Tức job deploy trước đây về mặt
+      # cấu trúc là **không thể đỏ**. Ở đúng chỗ nguy hiểm nhất thì không nên phụ thuộc giá trị mặc
+      # định của một action bên thứ ba.
+      #
+      # Secret đi qua **biến môi trường** (`env:`), KHÔNG nội suy `${{ }}` thẳng vào chuỗi script:
+      # `${{ }}` được GitHub thay bằng văn bản TRƯỚC khi shell phân tích ⇒ đó là hình dạng của lỗi
+      # template-injection. (Nháy đơn quanh các giá trị gửi sang remote là đủ ở đây vì tập giá trị
+      # đã bị chặn hẹp: username, token GHCR dạng `ghs_…`, và ref chỉ có thể là `main`/`dev` do `if:`.)
+      - name: Deploy
+        env:
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STACK: ${{ github.ref_name }}
+          IMAGE_TAG: ${{ github.ref_name }}-${{ github.sha }}
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new "$SERVER_USER@$SERVER_HOST" \
+            "GHCR_USER='$GHCR_USER' GHCR_TOKEN='$GHCR_TOKEN' STACK='$STACK' IMAGE_TAG='$IMAGE_TAG' bash -s" <<'REMOTE'
+          # `set -euo pipefail`: exit code của job = lệnh THẤT BẠI ĐẦU TIÊN, không phải lệnh cuối.
+          set -euo pipefail
+
+          cd ~/docker/"$STACK"
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+          # Ghi IMAGE_TAG vào `.env` của stack. Biến này đã có sẵn trong môi trường của phiên ssh
+          # (nên `docker compose` dưới đây thấy ngay), nhưng phải GHI XUỐNG FILE để lần sau ai đó
+          # chạy `docker compose up -d` bằng tay không âm thầm rơi về `:main` — tức lặng lẽ triển
+          # khai một commit khác với commit vừa deploy.
+          touch .env
+          if grep -q '^IMAGE_TAG=' .env; then
+            sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=$IMAGE_TAG|" .env
+          else
+            printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG" >> .env
+          fi
+
+          # `--ignore-pull-failures` đã BỎ: nó nuốt cả lỗi pull THẬT (registry 401/500, tag không
+          # tồn tại) ⇒ server đứng yên image cũ trong khi CI báo xanh.
+          #
+          # Cờ đó từng được thêm vì compose trên server có service trỏ tag build tay (`:bk14g`) làm
+          # `pull` chết cả loạt. Đối soát `~/docker/main/docker-compose.yml` THẬT ngày 2026-08-06:
+          # tag đó đã biến mất, 6/6 image của ta đều là `ghcr.io/su26se043/isas.*:main`; hai tag
+          # `:latest` còn lại là seaweedfs/qdrant — hạ tầng bên thứ ba, KHÔNG nằm trong 7 service
+          # nêu dưới đây nên không bị chạm. ⇒ Bỏ cờ là an toàn, và nêu ĐÍCH DANH 7 service giữ
+          # nguyên tính chất "một service lạ trên compose server không giết được deploy của ta".
+          docker compose pull \
+            isas.authservice \
+            isas.interviewservice \
+            isas.campaignservice \
+            isas.paymentservice \
+            isas.gateway \
+            aiapi \
+            aiworker
+
+          docker compose up -d --remove-orphans
+          docker image prune -f
+          REMOTE
+
+      # `up -d` trả về khi container ĐƯỢC TẠO, không phải khi app phục vụ được request. Không có
+      # bước chờ này thì "deploy xanh" chỉ có nghĩa "docker đã nhận lệnh".
+      #
+      # ⚠ `/openapi/merged.json` chỉ tồn tại ở **Development** (`Program.cs:24` gác `IsDevelopment()`).
+      # Hôm nay đúng vì compose đặt `ASPNETCORE_ENVIRONMENT=Development` (OPS6, có chủ đích). Ngày
+      # ai đó đổi sang Production thì bước này sẽ ĐỎ — lúc đó đổi sang một endpoint health khác,
+      # đừng gỡ bước chờ.
+      - name: Wait for gateway
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          url="http://$SERVER_HOST:5050/openapi/merged.json"
+          deadline=$(( SECONDS + 600 ))
+          until curl -fsS --max-time 10 -o /dev/null "$url"; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Gateway KHÔNG phục vụ được $url sau 600s — coi như deploy hỏng."
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "Gateway sẵn sàng sau ${SECONDS}s."
+
+      # Bằng chứng "image mới thật sự đang chạy" — đọc HÀNH VI của container, không suy từ dấu
+      # thời gian build. Đã có tiền lệ: 2026-07-20 kết luận "image build sau commit ⇒ đã gồm PR"
+      # nhưng CI checkout nhầm commit, phải bới SQL do chính service phát ra mới lộ ra.
+      #
+      # ⚠ Bước này đúng NHỜ một giả định: job `docker` KHÔNG có path filter ⇒ mọi commit đều build
+      # lại cả 6 image ⇒ digest đổi ⇒ `up -d` buộc tái tạo cả 7 container. **Thêm path filter là
+      # giả định đó VỠ** (service không đổi sẽ giữ revision cũ và bước này báo đỏ oan) — khi đó
+      # phải cho job `docker` xuất `outputs.pushed` và chỉ duyệt danh sách service thật sự đã build.
+      - name: Verify running revision
+        env:
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new "$SERVER_USER@$SERVER_HOST" 'bash -s' > revisions.txt <<'REMOTE'
+          # KHÔNG dùng `-e` ở khối này (khác khối Deploy): nó chỉ ĐỌC và báo cáo, ta muốn liệt kê
+          # đủ cả 7 container rồi mới kết luận ở runner — dừng ngay container đầu tiên đọc lỗi thì
+          # mất thông tin của 6 cái còn lại. Phán quyết nằm ở phần dưới, chạy trên runner.
+          set -uo pipefail
+          for c in authservice-main interviewservice-main campaignservice-main \
+                   paymentservice-main gateway-main aiapi-main aiworker-main; do
+            rev=$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$c" 2>/dev/null || true)
+            printf '%s %s\n' "$c" "${rev:-KHONG-DOC-DUOC}"
+          done
+          REMOTE
+          cat revisions.txt
+          # Fail-closed: output rỗng (ssh chạy được nhưng remote không in gì) sẽ làm vòng lặp dưới
+          # KHÔNG chạy lần nào ⇒ `fail=0` ⇒ bước này xanh mà chẳng kiểm được gì. Chốt số dòng trước.
+          got=$(wc -l < revisions.txt)
+          if [ "$got" -ne 7 ]; then
+            echo "::error::Chỉ đọc được $got dòng revision, kỳ vọng 7 — remote không trả đủ."
+            exit 1
+          fi
+          fail=0
+          while read -r name rev; do
+            if [ "$rev" != "$GITHUB_SHA" ]; then
+              echo "::error::$name đang chạy revision '$rev', kỳ vọng '$GITHUB_SHA' — image mới KHÔNG lên."
+              fail=1
+            fi
+          done < revisions.txt
+          [ "$fail" -eq 0 ]
+
+      # Tái dùng NGUYÊN script đã có (`scripts/verify-gateway-openapi.py`) — nó bắt đúng lớp bug
+      # "doc vẫn sinh ra, service vẫn chạy, chỉ có path là bịa" (PR #100: 119/144 op sai đường dẫn).
+      #
+      # ⚠ Ba điều phải biết trước khi tin bước này — đo trên doc THẬT ngày 2026-08-06 (146 path):
+      #   (a) Nó đọc `/openapi/merged.json` ⇒ cùng ràng buộc Development như bước chờ ở trên.
+      #   (b) Script POST/PUT/PATCH body `{}` vào MỌI endpoint trong doc: **106 operation đổi trạng
+      #       thái** (POST 80 · PUT 13 · DELETE 11 · PATCH 2). Chúng dừng ở 401 nhờ auth gate — tức
+      #       lá chắn duy nhất của bước này là auth, không phải bản thân script. Endpoint
+      #       `[AllowAnonymous]` (webhook PayOS, quên-mật-khẩu, …) KHÔNG có lá chắn đó ⇒ có thể
+      #       thực thi THẬT trên production. Đây là máy thật, không phải môi trường thử.
+      #   (c) Doc ở Development **có cả 16 path `/internal/*`** (bộ lọc `/internal/*` chỉ áp khi
+      #       không phải Development) — đừng tin câu "internal đã bị lọc khỏi doc". Chúng gác
+      #       `X-Internal-Token` fail-closed nên trả 401 và script coi 401 là OK; nhưng nếu gate đó
+      #       hỏng thì chính bước smoke này sẽ gọi thật vào callback nội bộ.
+      - name: Smoke (gateway OpenAPI ↔ routing thật)
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+        run: python3 scripts/verify-gateway-openapi.py "http://$SERVER_HOST:5050"

@@ -12,7 +12,6 @@ COPY ["src/shared/Isas.Shared/Isas.Shared.csproj", "src/shared/Isas.Shared/"]
 RUN dotnet restore "src/services/Isas.AuthService/Isas.AuthService.csproj"
 COPY . .
 WORKDIR "/src/src/services/Isas.AuthService"
-RUN dotnet build "./Isas.AuthService.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
