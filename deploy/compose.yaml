@@ -17,8 +17,8 @@
 #     ⚠ Dùng file này trên server mà không đặt `ADAPTIVE_*` trong .env = TẮT phỏng vấn thích ứng.
 #   · `Cors__AllowedOrigins__6` — xem chú thích ở gateway (server khai TRÙNG index 4).
 #   · `Internal__CallbackBase` dùng `${SERVER_TS_IP}`, server đang ghi cứng `100.64.204.33` (tương đương).
-# Server còn thừa override `ai-cluster` (GEN-7 đã gỡ route /api/v1/ai) — nên xoá bên đó, KHÔNG thêm
-# lại vào đây. Server cũng còn `expose: ["8080"]` thừa ở campaignservice (đã có `ports` 5247).
+# Override `ai-cluster` thừa trên server đã được gỡ (đo 2026-08-06: gateway chỉ còn 4 cluster).
+# KHÔNG thêm lại vào đây — GEN-7 giữ AIService internal-only. Server cũng còn `expose: ["8080"]` thừa ở campaignservice (đã có `ports` 5247).
 # ⚠ `ASPNETCORE_ENVIRONMENT=Development` bên dưới = MIRROR đúng production hôm nay, nhưng đó là
 # lỗi đã biết (`OPS6`, tái diễn 3 lần): Development làm gateway KHÔNG bật khối chặn `/internal/*`
 # + `/api/v1/ai/*`, và service trả stack trace ra ngoài. Sửa = quyết định deploy, không sửa lén ở đây.
@@ -33,9 +33,42 @@
 #
 # NO secret values are committed here — every credential is a ${VAR} placeholder
 # resolved from .env (keys match ../.env.example). Images come from GHCR (CI-built).
-# AIService runs SEPARATELY on the Mac (Whisper is heavy) — see DEPLOYMENT.md §5.
+# AIService (aiapi/aiworker) nay chạy TRONG file này — trước 2026-08-06 nó ở trên Mac.
 # The root ../compose.yaml is a DEV-PARTIAL skeleton (Auth+Gateway+MinIO only) — THIS one describes the
 # full stack (nhưng bản đang CHẠY vẫn là file trên server, xem cảnh báo đầu file).
+
+x-aiservice-env: &aiservice-env
+  GEMINI_API_KEY: ${GEMINI_API_KEY}          # env DUY NHẤT bắt buộc: thiếu → chết lúc import app.config
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+  INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+  # ⚠ Thiếu key → OpenAI 401 → RƠI ÂM THẦM về Whisper cục bộ (lỗi từ 0,7% lên 4,2%), KHÔNG
+  # sinh log lỗi nào. Cách duy nhất phát hiện là đọc `practice_answers.transcript_engine`.
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+  TRANSCRIBE_PROVIDER: ${TRANSCRIBE_PROVIDER:-whisper-1}
+  # ⚠ Default TRONG CODE là `large-v3` = 2,9 GB tải về + 64-96s/lượt ⇒ vượt timeout decider 90s.
+  # Production chạy `small`. ĐỪNG bỏ dòng này.
+  WHISPER_MODEL: ${WHISPER_MODEL:-small}
+  # Ba biến dưới có default trong code nhưng đều trỏ `localhost` ⇒ thiếu thì service khởi động
+  # BÌNH THƯỜNG rồi mới hỏng lúc chạy. Đây là loại lỗi khó thấy nhất khi đổi topology.
+  S3_ENDPOINT: http://seaweedfs:8333
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY}
+  S3_BUCKET: isas-files
+  USAGE_SINK_BASE: http://isas.paymentservice:8080        # F22 — nội bộ, KHÔNG qua gateway (GEN-1)
+  PROMPT_REGISTRY_BASE: http://isas.interviewservice:8080  # F21
+  # 0 = giữ mặc định asyncio (min(32,cpu+4)=12). Nới từng nấc sau khi đo: 0 → 32 → 64.
+  THREAD_POOL_MAX_WORKERS: ${AI_THREAD_POOL:-0}
+
+x-aiservice: &aiservice
+  image: ghcr.io/su26se043/isas.aiservice:main
+  volumes:
+    # Model tải lúc CHẠY (~480 MB whisper small + ~300 MB buffalo_l). Thiếu 2 volume này là tải
+    # lại mỗi lần recreate — mà từ nay MỌI push lên `main` đều recreate.
+    - ai_hf_cache:/root/.cache/huggingface
+    - ai_insightface:/root/.insightface
+  networks: [isas-main-network]
+  restart: unless-stopped
+
 
 services:
   # ===== DATA LAYER =====
@@ -154,7 +187,7 @@ services:
       - Jwt__Key=${JWT_KEY}                         # KHỚP authservice
       - Jwt__Issuer=http://isas.authservice:8080
       - Jwt__Audience=http://isas.authservice:8080
-      - Internal__Token=${INTERNAL_TOKEN}           # KHỚP aiservice-worker
+      - Internal__Token=${INTERNAL_TOKEN}           # KHỚP aiworker
       - SeaweedFS__ServiceURL=http://seaweedfs:8333
       - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
       - SeaweedFS__SecretKey=${S3_SECRET_KEY}
@@ -164,7 +197,7 @@ services:
       - RabbitMQ__HostName=rabbitmq
       - RabbitMQ__UserName=${RABBITMQ_USER}
       - RabbitMQ__Password=${RABBITMQ_PASS}
-      - AiService__BaseUrl=http://${MAC_TS_IP}:8000   # sinh câu hỏi chạy trên Mac (Tailscale IP)
+      - AiService__BaseUrl=http://aiapi:8000   # cùng compose network (trước 2026-08-06: Mac qua Tailscale)
       # RAG grounding — kho vector (Qdrant, cùng compose) + ingest Context7 + toggle bật retrieval.
       - Qdrant__Url=http://qdrant:6334
       - Context7__ApiKey=${CONTEXT7_API_KEY}
@@ -199,7 +232,7 @@ services:
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=http://isas.authservice:8080
       - Jwt__Audience=http://isas.authservice:8080
-      - AiService__BaseUrl=http://${MAC_TS_IP}:8000
+      - AiService__BaseUrl=http://aiapi:8000
       - SeaweedFS__ServiceURL=http://seaweedfs:8333
       - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
       - SeaweedFS__SecretKey=${S3_SECRET_KEY}
@@ -331,6 +364,52 @@ services:
     networks: [isas-main-network]
     restart: unless-stopped
 
+  # ===== AI LAYER (Python) — MỘT image, HAI tiến trình =====
+  # Trước 2026-08-06 hai container này chạy trên MAC, gọi S3/RabbitMQ của server qua Tailscale.
+  # Đo được link đó bão hoà ở ~1 MB/s, và audio phải đi vòng server(S3) → Mac → OpenAI ⇒ quét tải
+  # `/decide-next` knee ở 0,5 req/s (~60 người đồng thời). Đưa về đây: chặng S3 thành loopback,
+  # chỉ còn upload ra OpenAI qua đường 6,5 MB/s.
+  #
+  # Anchor dưới đây KHÔNG phải để tiết kiệm dòng: 2026-08-05 hai container này chạy HAI IMAGE khác
+  # nhau 3 ngày (cùng tag `:local`), và trước đó USAGE_SINK_BASE/PROMPT_REGISTRY_BASE vắng ở một
+  # bên khiến F21 + F22 tắt câm nhiều ngày. Khối env chung phải KHÔNG THỂ lệch giữa hai bên.
+  aiapi:
+    <<: *aiservice
+    container_name: aiapi-main
+    environment:
+      <<: *aiservice-env
+    # GEN-7 internal-only: `expose`, KHÔNG `ports`. Interview/Campaign gọi qua tên `aiapi`.
+    # ⚠ ĐỪNG thêm lại override `ai-cluster` ở gateway chỉ vì nay aiapi là container anh em —
+    # appsettings gateway trỏ `localhost:8000` nên `/api/v1/ai` vẫn chết đúng như thiết kế.
+    expose: ["8000"]
+    healthcheck:
+      # image không có curl/wget — dùng chính python trong image.
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/v1/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # rộng: lần đầu volume rỗng phải tải ~800 MB model trước khi bind cổng.
+      start_period: 180s
+    depends_on: [seaweedfs]
+
+  aiworker:
+    <<: *aiservice
+    container_name: aiworker-main
+    command: python -m app.worker
+    environment:
+      <<: *aiservice-env
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
+      QUEUE_NAME: scoring_pipeline_queue
+      # ⚠ KHÔNG dấu `/` cuối — worker.py ghép chuỗi trần, không rstrip.
+      DOTNET_CALLBACK_BASE: http://isas.interviewservice:8080
+      # C14 — giữ TẮT. Trình tự bật: deploy (tắt) → XẢ cv_screening_queue → true. Bật cùng lúc
+      # deploy = 713 lượt Gemini cho 8 ứng viên (republisher đã nhân bản, đo 2026-08-02).
+      # `callbackBase` của sàng CV lấy từ CHÍNH message, không phải env này.
+      CV_SCREENING_ENABLED: ${CV_SCREENING_ENABLED:-false}
+      SCORING_PREFETCH: ${SCORING_PREFETCH:-10}
+    depends_on: [rabbitmq, seaweedfs]
+
 networks:
   isas-main-network:
     driver: bridge
@@ -340,3 +419,5 @@ volumes:
   redis_main_data:
   seaweedfs_main_data:
   qdrant_main_data:   # RAG grounding — kho vector Qdrant
+  ai_hf_cache:        # model faster-whisper (HuggingFace hub cache)
+  ai_insightface:     # dải model buffalo_l của insightface (face-verify)
