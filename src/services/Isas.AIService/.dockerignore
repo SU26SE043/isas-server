@@ -1,0 +1,18 @@
+# Build context của AIService là THƯ MỤC NÀY (`context: src/services/Isas.AIService`), không phải
+# gốc repo — Dockerfile dùng `COPY requirements.txt .`. Nên `.dockerignore` ở gốc repo KHÔNG áp
+# dụng ở đây, và nếu thiếu file này thì `.venv` (162 MB) được gửi sang daemon MỖI LẦN build.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Test không vào image production (requirements-dev.txt cũng không được cài — xem đầu file đó).
+tests/
+requirements-dev.txt
+
+# Bí mật: chặn ở đây là lớp cuối. Env production đến từ compose `environment:`, không phải file.
+.env
+.env.*
+!.env.example
