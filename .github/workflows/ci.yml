@@ -38,12 +38,22 @@ jobs:
         with:
           python-version: '3.12'      # khớp base image Dockerfile (ctranslate2 chưa có wheel 3.14)
           cache: pip
-          cache-dependency-path: src/services/Isas.AIService/requirements-dev.txt
+          # Cả hai: lock quyết định phiên bản được cài, requirements-dev quyết định công cụ test.
+          cache-dependency-path: |
+            src/services/Isas.AIService/requirements.lock.txt
+            src/services/Isas.AIService/requirements-dev.txt
 
       # `conftest.py` stub faster_whisper/insightface nên KHÔNG cần tải model ~800 MB ở CI.
+      #
+      # `-c requirements.lock.txt`: test PHẢI chạy trên đúng bộ thư viện mà image sẽ ship.
+      # Thiếu nó thì job này cài bản mới nhất còn image cài bản đã pin ⇒ CI xanh trên một bộ,
+      # production chạy một bộ khác — đúng cái "cùng code, khác thư viện" mà lock sinh ra để diệt.
+      # (Constraints KHÔNG kế thừa qua `-r`, nên phải nêu ở đây dù requirements-dev đã `-r` sang
+      # requirements.txt. `pytest`/`pytest-asyncio` không có trong lock nên vẫn tự do — đúng ý:
+      # chúng là công cụ test, không vào image.)
       - name: Install deps
         working-directory: src/services/Isas.AIService
-        run: pip install -r requirements-dev.txt
+        run: pip install -r requirements-dev.txt -c requirements.lock.txt
 
       - name: Test
         working-directory: src/services/Isas.AIService
