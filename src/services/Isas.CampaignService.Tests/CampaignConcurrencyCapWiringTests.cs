@@ -3,6 +3,7 @@ using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 using CampaignSvc = Isas.CampaignService.Services.CampaignService;
@@ -142,6 +143,61 @@ public class CampaignConcurrencyCapWiringTests
         using var check = tdb.NewContext();
         Assert.Null((await check.Campaigns.SingleAsync()).MaxConcurrentInterviews);
     }
+
+    // 🔴 Test QUAN TRỌNG NHẤT file này: NỐI hai nửa.
+    // Trần đặt qua DTO (nửa A) và guard đọc `campaign.MaxConcurrentInterviews` (nửa B) trước giờ được
+    // test RIÊNG RẼ — mỗi nửa xanh trong khi đường nối giữa chúng đứt, và đó chính là con bug vừa vá.
+    // Ở đây trần đi TRỌN đường: CreateCampaignAsync → DB → StartInterviewAsync.
+    [Fact]
+    public async Task DatTranQuaDTO_ThiGuardStart_ChanThat()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+
+        // Nửa A — đặt trần = 1 qua đúng API mà HR dùng.
+        var created = await NewSvc(tdb.NewContext()).CreateCampaignAsync(org, org, NewRequest(1), default);
+
+        // Dựng bối cảnh để campaign có thể Start (không phải thứ đang kiểm).
+        using (var setup = tdb.NewContext())
+        {
+            var c = await setup.Campaigns.SingleAsync(x => x.Id == created.Id);
+            c.Status = CampaignStatus.Active;
+            c.Domain = "BE";
+            // Giả lập thời gian đã trôi qua mốc mở. Không có dòng này thì guard StartsAt (vá ở #138)
+            // chặn TRƯỚC guard trần, và test sẽ xanh/đỏ vì lý do khác hẳn thứ đang kiểm.
+            c.StartsAt = DateTime.UtcNow.AddMinutes(-5);
+            setup.CampaignCriteria.Add(new CampaignCriterion
+            {
+                Id = Guid.NewGuid(), CampaignId = c.Id, OrderNo = 0, Name = "Communication",
+                Weight = 1.0m, MaxScore = 5, Source = CriterionSource.HrEdited,
+                CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+            });
+            // Người thứ nhất ĐANG thi và còn hạn ⇒ chiếm trọn khe duy nhất.
+            var busy = CampaignTestDb.NewMembership(c.Id, Guid.NewGuid());
+            busy.InterviewStatus = InterviewProgressStatus.InProgress;
+            busy.SessionId = Guid.NewGuid();
+            busy.InterviewDeadlineAt = DateTime.UtcNow.AddHours(1);
+            setup.CampaignMemberships.Add(busy);
+            // Người thứ hai vừa join, chưa thi.
+            setup.CampaignMemberships.Add(CampaignTestDb.NewMembership(c.Id, Newcomer));
+            await setup.SaveChangesAsync();
+        }
+
+        // Nửa B — người thứ hai bấm Start.
+        var session = new Mock<ICampaignSessionClient>(MockBehavior.Strict);
+        var participation = new ParticipationService(
+            tdb.NewContext(), Mock.Of<IAuthProvisionClient>(), session.Object,
+            NullLogger<ParticipationService>.Instance);
+
+        await Assert.ThrowsAsync<CampaignInterviewCapacityExceededException>(() =>
+            participation.StartInterviewAsync(Newcomer, created.Id, default));
+
+        // Và phải chặn TRƯỚC khi gọi Interview — vì reserve credit org nằm bên trong lời gọi đó
+        // (PAY-5/PAY-6). Chặn sau = vừa 429 vừa trừ tiền + để lại reservation mồ côi.
+        session.VerifyNoOtherCalls();
+    }
+
+    private static readonly Guid Newcomer = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
     [Fact]
     public async Task Tran1_LaHopLe_KhongBiChanNham()
