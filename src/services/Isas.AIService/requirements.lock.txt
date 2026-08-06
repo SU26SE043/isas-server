@@ -1,0 +1,118 @@
+# requirements.lock.txt — KHOÁ phiên bản cho image AIService.
+#
+# Vì sao có file này: `requirements.txt` gần như không pin, nên hai lần `docker build` cách nhau
+# vài ngày ra hai bộ thư viện khác nhau từ CÙNG một commit. Sau khi chuyển AIService từ Mac về
+# server (2026-08-06) chuyện đó thành rủi ro thật: image CI dựng hôm đó đã lệch bản Mac từng
+# chạy ở boto3/botocore (1.43.64→65) và starlette (1.4.0→1.4.1). Toàn là patch, nhưng không ai
+# CHỌN chúng — và lần trôi sau có thể rơi vào ctranslate2/onnxruntime/numpy, những thứ quyết
+# định chất lượng chép lời và nhận diện mặt.
+#
+# Cách dùng (Dockerfile): `pip install -r requirements.txt -c requirements.lock.txt`.
+#   • `requirements.txt` vẫn là nơi KHAI phụ thuộc (thêm gói mới ở đó, không phải ở đây).
+#   • File này chỉ CHẶN phiên bản — kể cả phụ thuộc bắc cầu không hề xuất hiện trong
+#     requirements.txt (ctranslate2, tokenizers, onnx, scipy, av...).
+#   ⚠ ĐỪNG đổi sang `pip install -r requirements.lock.txt`: làm vậy biến requirements.txt thành
+#     tài liệu chết — thêm gói vào đó mà quên file này thì image KHÔNG có gói, và lỗi nổ lúc
+#     chạy dưới dạng ImportError ở chỗ chẳng liên quan.
+#
+# Chạy test cục bộ cho khớp image (constraints KHÔNG tự kế thừa qua `-r`):
+#   pip install -r requirements-dev.txt -c requirements.lock.txt
+#
+# Tái sinh (khi cố ý nâng cấp — phải là một quyết định, không phải tác dụng phụ):
+#   docker run --rm --entrypoint pip <image> freeze | LC_ALL=C sort > requirements.lock.txt
+#   rồi chép lại khối header này lên đầu.
+#   ⚠ LC_ALL=C bắt buộc: không có nó thì thứ tự đổi theo locale máy (aio-pika trước/sau aiohttp)
+#     và step guard trong CI sẽ báo lệch giả.
+#
+# Guard: `.github/workflows/ci.yml` chạy `pip freeze` trong image vừa dựng rồi diff với file này
+# và FAIL nếu lệch. Nó bắt đúng ca `-c` không phủ được: một phụ thuộc bắc cầu MỚI xuất hiện
+# (không có trong lock ⇒ trôi tự do). Job `deploy` phụ thuộc job `docker` nên fail = chặn deploy.
+#
+# Nguồn của bản này: image ĐANG PHỤC VỤ PRODUCTION lúc chốt (đã qua e2e 23/23 ngày 2026-08-05).
+#   ghcr.io/su26se043/isas.aiservice@sha256:c81c4f6b8f0f9167b50396b405824ef90c2e419c84195db00abf33ed542d1ae1
+#   org.opencontainers.image.revision = bd0a796104bb5bd9acd32009699cda7b26013177
+#   chốt ngày 2026-08-06
+# Cố ý KHÔNG pin về image Mac cũ: làm vậy là HẠ CẤP boto3/starlette của bản đang chạy — một
+# chiều thay đổi chưa ai test — trong khi mục tiêu chỉ là dừng trôi.
+
+ImageIO==2.37.4
+PyYAML==6.0.3
+aio-pika==10.0.1
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiormq==7.0.0
+aiosignal==1.4.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+attrs==26.1.0
+av==18.0.0
+boto3==1.43.65
+botocore==1.43.65
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.4.9
+click==8.4.2
+cryptography==50.0.0
+ctranslate2==4.8.1
+distro==1.9.0
+fastapi==0.141.1
+faster-whisper==1.2.1
+filelock==3.32.2
+flatbuffers==25.12.19
+frozenlist==1.8.0
+fsspec==2026.7.0
+google-auth==2.55.2
+google-genai==2.12.1
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+huggingface_hub==1.26.0
+idna==3.18
+insightface==1.0.1
+jmespath==1.1.0
+lazy-loader==0.5
+ml_dtypes==0.5.4
+multidict==6.7.1
+networkx==3.6.1
+numpy==2.5.1
+onnx==1.22.0
+onnxruntime==1.28.0
+opencv-python-headless==5.0.0.93
+opencv-python==5.0.0.93
+packaging==26.3
+pamqp==4.0.1
+pillow==12.3.0
+propcache==0.5.2
+protobuf==7.35.1
+pyasn1==0.6.4
+pyasn1_modules==0.4.2
+pycparser==3.0
+pydantic-settings==2.14.2
+pydantic==2.13.4
+pydantic_core==2.46.4
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+requests==2.34.2
+s3transfer==0.19.2
+scikit-image==0.26.0
+scipy==1.18.0
+setuptools==83.0.0
+six==1.17.0
+sniffio==1.3.1
+starlette==1.4.1
+tenacity==9.1.4
+tifffile==2026.7.31
+tokenizers==0.23.1
+tqdm==4.70.0
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.52.1
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==16.1.1
+yarl==1.24.5

@@ -1,3 +1,7 @@
+# File này KHAI phụ thuộc (cái gì + vì sao). PHIÊN BẢN nằm ở `requirements.lock.txt` — Dockerfile
+# cài bằng `-r requirements.txt -c requirements.lock.txt`, nên mọi dòng dưới đây, kể cả những
+# dòng trông như "để trôi", đều bị khoá về đúng bộ đang chạy production. Thêm gói mới thì thêm
+# Ở ĐÂY (kèm lý do), rồi tái sinh lock theo hướng dẫn trong header của nó.
 fastapi
 uvicorn[standard]
 python-multipart

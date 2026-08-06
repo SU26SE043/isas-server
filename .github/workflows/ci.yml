@@ -124,8 +124,9 @@ jobs:
           tags: ghcr.io/${{ env.OWNER }}/isas.gateway:${{ github.ref_name }}
 
       # AIService (Python). Ba điểm KHÁC hẳn 5 image .NET ở trên:
-      #   • `context` là chính thư mục service, KHÔNG phải gốc repo (Dockerfile dùng
-      #     `COPY requirements.txt .`) ⇒ `.dockerignore` gốc không áp dụng, phải có file riêng.
+      #   • `context` là chính thư mục service, KHÔNG phải gốc repo (Dockerfile `COPY` thẳng
+      #     `requirements.txt`/`requirements.lock.txt`) ⇒ `.dockerignore` gốc không áp dụng,
+      #     phải có file riêng trong thư mục service.
       #   • `platforms: linux/amd64` tường minh: server là x86_64 còn máy dev là Mac arm64.
       #   • cache registry: tầng pip ~2,5 GB (ctranslate2/onnxruntime/opencv), runner GitHub
       #     KHÔNG giữ layer cache giữa các lần chạy nên thiếu dòng này là build lại từ đầu mỗi lần.
@@ -140,6 +141,27 @@ jobs:
           tags: ghcr.io/${{ env.OWNER }}/isas.aiservice:${{ github.ref_name }}
           cache-from: type=registry,ref=ghcr.io/${{ env.OWNER }}/isas.aiservice:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ env.OWNER }}/isas.aiservice:buildcache,mode=max
+
+      # Image vừa dựng phải có ĐÚNG bộ thư viện trong requirements.lock.txt.
+      #
+      # `-c` trong Dockerfile đã chặn được việc nâng phiên bản, nhưng KHÔNG chặn được ca còn lại:
+      # một phụ thuộc BẮC CẦU MỚI xuất hiện (upstream thêm dep) — nó không có dòng nào trong lock
+      # nên trôi tự do, và build vẫn xanh. Đó đúng là cách "cùng code, khác thư viện" quay lại.
+      #
+      # `deploy` phụ thuộc job này ⇒ lệch = chặn deploy, không phải chỉ cảnh báo. Muốn nâng cấp
+      # thì tái sinh lock (hướng dẫn trong header file đó) — bắt buộc là một quyết định có người ký.
+      - name: Verify AIService lock
+        run: |
+          docker run --rm --entrypoint pip \
+            ghcr.io/${{ env.OWNER }}/isas.aiservice:${{ github.ref_name }} freeze \
+            | LC_ALL=C sort > /tmp/freeze-actual.txt
+          grep -vE '^\s*(#|$)' src/services/Isas.AIService/requirements.lock.txt \
+            | LC_ALL=C sort > /tmp/freeze-locked.txt
+          if ! diff -u /tmp/freeze-locked.txt /tmp/freeze-actual.txt; then
+            echo "::error::Thư viện trong image LỆCH requirements.lock.txt (xem diff: '-' = lock, '+' = image thật)."
+            exit 1
+          fi
+          echo "Lock khớp image: $(wc -l < /tmp/freeze-locked.txt) gói."
 
   deploy:
     name: Deploy to server
