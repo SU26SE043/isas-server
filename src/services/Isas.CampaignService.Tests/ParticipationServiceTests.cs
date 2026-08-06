@@ -780,6 +780,25 @@ public class ParticipationServiceTests
         Assert.Contains($"{slot.StartsAt.AddHours(7):HH:mm dd/MM}", ex.Message);
     }
 
+    // ⚠ Test này CỐ Ý gọi thẳng VietnamTime.From chứ không đi qua StartInterviewAsync.
+    // Đã đo: seed slot với Kind=Local rồi đọc lại qua SQLite thì ra Kind=Unspecified (Npgsql ra Utc)
+    // ⇒ một test "3 kind" đi qua DB thực chất chỉ kiểm ĐÚNG MỘT kind và sẽ XANH kể cả khi gỡ
+    // SpecifyKind — tức một test trang trí. Kiểm thẳng hàm mới thấy được hành vi thật.
+    [Theory]
+    [InlineData(DateTimeKind.Local)]        // constructor DateTimeOffset ném ArgumentException nếu không SpecifyKind
+    [InlineData(DateTimeKind.Unspecified)]  // đường SQLite/test
+    [InlineData(DateTimeKind.Utc)]          // đường Npgsql/production
+    public void VietnamTime_MoiKind_DeuRa0700_KhongNem(DateTimeKind kind)
+    {
+        var utc = new DateTime(2026, 8, 12, 7, 0, 0, DateTimeKind.Utc);
+        var input = DateTime.SpecifyKind(utc, kind);
+
+        var vn = VietnamTime.From(input);
+
+        Assert.Equal(TimeSpan.FromHours(7), vn.Offset);
+        Assert.Equal("14:00 12/08", vn.ToString("HH:mm dd/MM"));   // 07:00Z → 14:00 giờ VN
+    }
+
     [Fact]
     public async Task Resume_SauKhiHrDoiStartsAt_VanVao()
     {

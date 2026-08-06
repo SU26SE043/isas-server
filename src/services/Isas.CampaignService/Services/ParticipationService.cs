@@ -250,9 +250,8 @@ namespace Isas.CampaignService.Services
                         if (slot is null)
                             throw new InvalidOperationException("Không tìm thấy khung giờ phỏng vấn đã được phân.");
 
-                        var vietnamOffset = TimeSpan.FromHours(7);
-                        var startsAtVn = new DateTimeOffset(slot.StartsAt, TimeSpan.Zero).ToOffset(vietnamOffset);
-                        var endsAtVn = new DateTimeOffset(slot.EndsAt, TimeSpan.Zero).ToOffset(vietnamOffset);
+                        var startsAtVn = ToVietnamTime(slot.StartsAt);
+                        var endsAtVn = ToVietnamTime(slot.EndsAt);
                         throw new OutsideSlotWindowException(
                             slot.StartsAt, slot.EndsAt,
                             $"Bạn thi lúc {startsAtVn:HH:mm dd/MM} (giờ VN), kết thúc {endsAtVn:HH:mm}.");
@@ -337,6 +336,8 @@ namespace Isas.CampaignService.Services
 
         private static DateTime? MinDeadline(DateTime? campaignExpiresAt, DateTime slotEndsAt) =>
             campaignExpiresAt is null || slotEndsAt < campaignExpiresAt ? slotEndsAt : campaignExpiresAt;
+
+        private static DateTimeOffset ToVietnamTime(DateTime utc) => VietnamTime.From(utc);
 
         // ── helpers ──────────────────────────────────────────────────────────────────
 
