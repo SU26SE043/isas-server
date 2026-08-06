@@ -762,6 +762,41 @@ public class ParticipationServiceTests
     }
 
     [Fact]
+    public async Task Start_SlotDaKetThuc_TraNgoaiKhungKemMocThoiGian()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        var slot = new CampaignSlot { Id = Guid.NewGuid(), CampaignId = camp.Id, StartsAt = DateTime.UtcNow.AddHours(-2), EndsAt = DateTime.UtcNow.AddMinutes(-1), Capacity = 1 };
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SlotId = slot.Id;
+        tdb.Db.AddRange(slot, membership);
+        await tdb.Db.SaveChangesAsync();
+
+        var ex = await Assert.ThrowsAsync<OutsideSlotWindowException>(() =>
+            NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id));
+
+        Assert.Equal(slot.StartsAt, ex.StartsAt);
+        Assert.Equal(slot.EndsAt, ex.EndsAt);
+        Assert.Contains($"{slot.StartsAt.AddHours(7):HH:mm dd/MM}", ex.Message);
+    }
+
+    [Fact]
+    public async Task Resume_SauKhiHrDoiStartsAt_VanVao()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        camp.StartsAt = DateTime.UtcNow.AddHours(1);
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SessionId = FixedSession;
+        membership.InterviewStatus = InterviewProgressStatus.InProgress;
+        tdb.Db.CampaignMemberships.Add(membership);
+        await tdb.Db.SaveChangesAsync();
+
+        var result = await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id);
+        Assert.Equal(FixedSession, result.SessionId);
+    }
+
+    [Fact]
     public async Task Start_CampaignDaDatConcurrentCap_ChanTruocKhiGoiInterview()
     {
         using var tdb = new CampaignTestDb();

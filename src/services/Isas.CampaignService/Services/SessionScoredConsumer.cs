@@ -26,6 +26,10 @@ namespace Isas.CampaignService.Services
         private const string ScoredRoutingKey = "session.scored";
         private const string AbandonedRoutingKey = "session.abandoned";
         private const string QueueName = "campaign.ranking";
+        // Queue chính đã tồn tại trên production không có arguments. DLX phải được gắn bằng
+        // RabbitMQ policy (xem DEPLOYMENT.md), tuyệt đối không thêm arguments khi redeclare.
+        private const string DeadLetterExchangeName = "campaign.ranking.dlx";
+        private const string DeadLetterQueueName = "campaign.ranking.dead";
         private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
 
         private static readonly JsonSerializerOptions JsonOptions = new()
@@ -113,6 +117,26 @@ namespace Isas.CampaignService.Services
                 exchange: ExchangeName,
                 routingKey: ScoredRoutingKey,
                 cancellationToken: stoppingToken);
+
+            // Chỉ khai đối tượng MỚI: đổi arguments của QueueName đang sống sẽ gây 406
+            // PRECONDITION_FAILED. Policy ops sẽ route các BasicNack(requeue:false) vào đây.
+            await channel.ExchangeDeclareAsync(
+                exchange: DeadLetterExchangeName,
+                type: ExchangeType.Direct,
+                durable: true,
+                autoDelete: false,
+                cancellationToken: stoppingToken);
+            await channel.QueueDeclareAsync(
+                queue: DeadLetterQueueName,
+                durable: true,
+                exclusive: false,
+                autoDelete: false,
+                cancellationToken: stoppingToken);
+            await channel.QueueBindAsync(
+                queue: DeadLetterQueueName,
+                exchange: DeadLetterExchangeName,
+                routingKey: QueueName,
+                cancellationToken: stoppingToken);
             if (_releaseOnAbandoned)
                 await channel.QueueBindAsync(queue: QueueName, exchange: ExchangeName, routingKey: AbandonedRoutingKey,
                     cancellationToken: stoppingToken);
@@ -139,6 +163,12 @@ namespace Isas.CampaignService.Services
                         var evt = JsonSerializer.Deserialize<SessionAbandonedMessage>(json, JsonOptions);
                         if (evt is null) throw new JsonException("SessionAbandoned message rỗng.");
                         await handler.HandleSessionAbandonedAsync(evt, stoppingToken);
+                    }
+                    else if (!_releaseOnAbandoned && ea.RoutingKey == AbandonedRoutingKey)
+                    {
+                        _logger.LogDebug(
+                            "Bỏ qua event {RoutingKey} vì Membership:ReleaseOnAbandoned=false",
+                            ea.RoutingKey);
                     }
 
                     await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);

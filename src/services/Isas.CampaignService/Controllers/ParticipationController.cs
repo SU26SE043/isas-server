@@ -112,6 +112,17 @@ namespace Isas.CampaignService.Controllers
                 return Ok(result);
             }
             catch (UnauthorizedAccessException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message }); }
+            catch (OutsideSlotWindowException ex)
+            {
+                return Conflict(new
+                {
+                    error = ex.Message,
+                    code = "outside_slot_window",
+                    slotStartsAt = ex.StartsAt,
+                    slotEndsAt = ex.EndsAt,
+                    serverTimeUtc = DateTime.UtcNow
+                });
+            }
             catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }   // campaign không cho phỏng vấn / đã hoàn thành → 409
             catch (InsufficientOrgCreditException ex)
             {

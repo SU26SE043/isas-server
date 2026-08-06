@@ -105,6 +105,56 @@ def test_original_audio_is_sent_with_real_filename_and_remote_can_retry_wav(monk
     assert calls[1][1] == "audio.wav"
 
 
+def test_timeout_khong_retry_wav_va_roi_thang_ve_cuc_bo(monkeypatch, tmp_path):
+    """Retry timeout 60s thêm một lần sẽ vượt ngân sách decider 90s."""
+    import httpx
+
+    monkeypatch.setattr(app_settings, "transcribe_provider", "whisper-1")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", True)
+    audio = tmp_path / "answer.webm"
+    audio.write_bytes(b"original-webm")
+    t, calls = _make(monkeypatch)
+    attempts = []
+
+    def remote(*args, **kwargs):
+        attempts.append(args)
+        raise httpx.TimeoutException("quá 60s")
+
+    monkeypatch.setattr(transcriber_mod, "transcribe_remote", remote)
+    assert t.transcribe_detailed(str(audio)).engine == "local:small"
+    assert len(attempts) == 1
+    assert calls["local_transcribe"] == 1
+
+
+def test_loi_4xx_retry_wav_nhung_timeout_khong(monkeypatch, tmp_path):
+    import httpx
+
+    monkeypatch.setattr(app_settings, "transcribe_provider", "whisper-1")
+    monkeypatch.setattr(app_settings, "transcribe_send_original", True)
+    audio = tmp_path / "answer.webm"
+    audio.write_bytes(b"original-webm")
+    t, _ = _make(monkeypatch)
+    calls = []
+    request = httpx.Request("POST", "https://example.test/transcribe")
+    response = httpx.Response(415, request=request)
+
+    def remote(provider, data, language, audio_seconds=0.0, filename="audio.wav"):
+        calls.append(filename)
+        if len(calls) == 1:
+            raise httpx.HTTPStatusError("unsupported media", request=request, response=response)
+        return "bản WAV cứu hộ", "whisper-1"
+
+    monkeypatch.setattr(transcriber_mod, "transcribe_remote", remote)
+    assert t.transcribe_detailed(str(audio)).text == "bản WAV cứu hộ"
+    assert calls == ["answer.webm", "audio.wav"]
+
+
+def test_local_khong_doc_file_goc(monkeypatch):
+    t, _ = _make(monkeypatch)
+    monkeypatch.setattr(t, "_read_original", lambda _: (_ for _ in ()).throw(AssertionError("local không được đọc file gốc")))
+    assert t.transcribe_detailed("/tmp/x.webm").engine == "local:small"
+
+
 # ── 1. Đường thành công của từng nhà cung cấp ────────────────────────────────────────
 @pytest.mark.parametrize("provider,engine", [
     ("whisper-1", "whisper-1"),
@@ -423,8 +473,13 @@ def test_ban_chep_rong_tu_openai_thi_NEM_de_roi_ve_cuc_bo(monkeypatch, fake_http
     import httpx
     monkeypatch.setattr(httpx, "Client", _Empty)
 
+    from app import usage
+    charged = []
+    monkeypatch.setattr(usage, "report_audio_usage", lambda *args: charged.append(args))
+
     with pytest.raises(ValueError):
         tp.transcribe_openai(b"RIFFxxxx", "vi", 1.0)
+    assert charged == [("transcribe", app_settings.openai_transcribe_model, 1.0)]
 
 
 # ── 5b. Gemini — audio là DỮ LIỆU, lệnh là "chép nguyên văn" ─────────────────────────

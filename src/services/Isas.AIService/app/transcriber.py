@@ -99,8 +99,7 @@ class Transcriber:
         # cuối segment.
         audio_sec = len(pcm) / SAMPLE_RATE
 
-        original = self._read_original(audio_path)
-        text, engine, whisper_segments = self._text(pcm, language, audio_sec, original)
+        text, engine, whisper_segments = self._text(pcm, language, audio_sec, audio_path)
 
         return TranscriptionResult(
             text=text,
@@ -115,7 +114,7 @@ class Transcriber:
         )
 
     def _text(self, pcm, language: str | None, audio_sec: float,
-              original: tuple[bytes, str] | None = None) -> tuple[str, str, list[Segment]]:
+              audio_path: str) -> tuple[str, str, list[Segment]]:
         """Lấy phần CHỮ. Trả ``(text, engine, whisper_segments)``.
 
         Nhà cung cấp từ xa không trả biên segment ⇒ ``whisper_segments`` rỗng ở nhánh đó. Mốc
@@ -128,11 +127,14 @@ class Transcriber:
         """
         provider = (settings.transcribe_provider or LOCAL).strip()
         if provider != LOCAL:
+            original = self._read_original(audio_path)
             try:
                 if original is not None:
                     try:
                         text, engine = transcribe_remote(provider, original[0], language, audio_sec, original[1])
-                    except Exception:
+                    except Exception as ex:
+                        if not self._should_retry_original_as_wav(ex):
+                            raise
                         logger.warning("Nhà cung cấp từ chối file gốc %s — thử lại WAV", original[1], exc_info=True)
                         text, engine = transcribe_remote(provider, pcm_to_wav_bytes(pcm, SAMPLE_RATE), language, audio_sec)
                 else:
@@ -150,6 +152,21 @@ class Transcriber:
                     "Chép lời bằng %s hỏng — dùng lại Whisper cục bộ", provider, exc_info=True)
 
         return self._transcribe_local(pcm, language)
+
+    @staticmethod
+    def _should_retry_original_as_wav(error: Exception) -> bool:
+        """Chỉ thử WAV khi lỗi cho thấy payload gốc không được chấp nhận.
+
+        Timeout/lỗi mạng retry thêm một lượt sẽ vượt ngân sách 90 giây của decider; lỗi đó phải
+        rơi ngay về Whisper cục bộ. ``ValueError`` là bản chép HTTP 200 nhưng rỗng.
+        """
+        if isinstance(error, ValueError):
+            return True
+        try:
+            import httpx
+            return isinstance(error, httpx.HTTPStatusError) and 400 <= error.response.status_code < 500
+        except ImportError:
+            return False
 
     @staticmethod
     def _read_original(audio_path: str) -> tuple[bytes, str] | None:

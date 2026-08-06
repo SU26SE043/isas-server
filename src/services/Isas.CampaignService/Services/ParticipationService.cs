@@ -225,9 +225,6 @@ namespace Isas.CampaignService.Services
                 throw new InvalidOperationException($"Chiến dịch không còn cho phỏng vấn (trạng thái {campaign.Status}).");
             if (campaign.ExpiresAt is DateTime exp && exp < DateTime.UtcNow)
                 throw new InvalidOperationException("Chiến dịch đã hết hạn phỏng vấn.");
-            if (campaign.StartsAt is DateTime startsAt && startsAt > DateTime.UtcNow)
-                throw new InvalidOperationException("Chiến dịch chưa đến thời gian bắt đầu phỏng vấn.");
-
             // Đã hoàn thành → không cho làm lại (biên idempotency phía membership).
             if (membership.InterviewStatus == InterviewProgressStatus.Completed)
                 throw new InvalidOperationException("Bạn đã hoàn thành phỏng vấn của chiến dịch này.");
@@ -240,12 +237,26 @@ namespace Isas.CampaignService.Services
             // Resume đã có session idempotent, không chiếm thêm slot/capacity và không gọi lại reserve.
             if (!isResume)
             {
+                // Resume tiếp session đã mở không được chặn nếu HR đổi StartsAt về tương lai.
+                if (campaign.StartsAt is DateTime startsAt && startsAt > now)
+                    throw new InvalidOperationException("Chiến dịch chưa đến thời gian bắt đầu phỏng vấn.");
+
                 if (membership.SlotId is Guid slotId)
                 {
                     var slot = await _db.CampaignSlots
                         .FirstOrDefaultAsync(s => s.Id == slotId && s.CampaignId == campaignId, ct);
                     if (slot is null || now < slot.StartsAt || now > slot.EndsAt)
-                        throw new InvalidOperationException("Bạn chỉ có thể bắt đầu phỏng vấn trong khung giờ đã được phân.");
+                    {
+                        if (slot is null)
+                            throw new InvalidOperationException("Không tìm thấy khung giờ phỏng vấn đã được phân.");
+
+                        var vietnamOffset = TimeSpan.FromHours(7);
+                        var startsAtVn = new DateTimeOffset(slot.StartsAt, TimeSpan.Zero).ToOffset(vietnamOffset);
+                        var endsAtVn = new DateTimeOffset(slot.EndsAt, TimeSpan.Zero).ToOffset(vietnamOffset);
+                        throw new OutsideSlotWindowException(
+                            slot.StartsAt, slot.EndsAt,
+                            $"Bạn thi lúc {startsAtVn:HH:mm dd/MM} (giờ VN), kết thúc {endsAtVn:HH:mm}.");
+                    }
 
                     interviewDeadline = MinDeadline(campaign.ExpiresAt, slot.EndsAt);
                 }
@@ -289,6 +300,7 @@ namespace Isas.CampaignService.Services
                 campaign.MaxDeepPerQuestion, ct);   // INT-17b: trần đào sâu mỗi câu
 
             membership.SessionId = session.SessionId;
+            // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.
             membership.InterviewDeadlineAt ??= interviewDeadline;
             if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted or InterviewProgressStatus.Abandoned)
                 membership.InterviewStatus = InterviewProgressStatus.InProgress;
