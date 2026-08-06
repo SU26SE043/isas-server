@@ -9,8 +9,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# `-c requirements.lock.txt` khoá phiên bản MỌI gói (kể cả bắc cầu: ctranslate2, onnxruntime,
+# tokenizers…) về đúng bộ đang chạy production. Không có nó, hai lần build cách nhau vài ngày
+# từ CÙNG một commit ra hai image khác nhau. Xem header của file lock để biết cách nâng cấp.
+COPY requirements.txt requirements.lock.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c requirements.lock.txt
 
 # (Tùy chọn) Pre-download model insightface lúc build để request đầu không phải tải ~300MB.
 # Bỏ comment nếu môi trường build có mạng tới kho model:

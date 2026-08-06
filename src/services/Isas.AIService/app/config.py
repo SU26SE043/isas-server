@@ -196,16 +196,32 @@ class Settings(BaseSettings):
 
     # ── TRẦN THREAD CHO CÔNG VIỆC CHẶN ────────────────────────────
     # `asyncio.to_thread` dùng executor mặc định của event loop, cỡ `min(32, cpu_count + 4)`
-    # (CPython `Lib/concurrent/futures/thread.py`) ⇒ **12** trên server 8 core. Mọi việc nặng
-    # của service đều đi qua đó: đọc S3, giải mã audio, và lời gọi chép lời ĐỒNG BỘ (httpx
-    # blocking) — nên 12 chính là trần số `/decide-next` chạy song song.
+    # (CPython `Lib/concurrent/futures/thread.py`) ⇒ **12** trên server 8 core. Việc CHẶN của
+    # service đi qua đó: đọc S3 và chép lời ĐỒNG BỘ (httpx blocking). Gemini thì KHÔNG —
+    # `_generate` dùng client async (`_client.aio.…`) nên không giữ thread nào.
     #
-    # **0 = giữ nguyên mặc định asyncio.** Đặt số > 0 mới nới.
+    # **0 = giữ nguyên mặc định asyncio.** Production đặt **32** qua env (đo bên dưới).
     #
-    # ⚠ Nới KHÔNG làm mạng nhanh hơn. Trần thật sau khi chuyển sang server là băng thông upload
-    # ra OpenAI (~2,26 req/s với payload WAV 2,88 MB cho câu 90s); pool lớn hơn chỉ biến "từ chối
-    # nhanh" thành "hàng đợi dài". Và mỗi request đang bay giữ ~15 MB (pcm float32 + WAV int16 +
-    # bản copy multipart) ⇒ 64 request ≈ 960 MB đỉnh. Đi từng nấc: 0 → đo → 32 → 64.
+    # ── SỐ ĐO THẬT (2026-08-06, server 8 core / 7,6 GB, `TRANSCRIBE_PROVIDER=whisper-1`) ──
+    # Đo bằng `scripts/loadtest-ai-threadpool.py` trên `/transcribe` (cùng đường chặn, không
+    # lẫn chi phí Gemini), audio THẬT 18,3s lấy từ S3:
+    #
+    #   một request giữ thread   3,9s  (S3 0,2s + chép lời 3,7s — đo 3 clip 18-23s)
+    #   K=32  pool 12 (mặc định) 3,22 req/s   p50 7,52s   p95 9,67s
+    #   K=32  pool 32            4,82 req/s   p50 5,03s   p95 7,40s     ← +50%
+    #   K=48  pool 32            4,96 req/s   p50 6,00s   p95 8,52s     ← chỉ +3%: ĐÃ BÃO HOÀ
+    #   (sau khi áp lên prod, K=32: 5,16 req/s — p50 4,61s, p95 6,95s, 0 lỗi)
+    #
+    # ⚠ **ĐỪNG nâng lên 64.** Ở pool 32, tăng tải 32→48 chỉ được +3% mà độ trễ tệ đi ⇒ trần thật
+    # (~5 req/s) nằm SAU pool, không phải ở pool: 32 thread mà chỉ đạt 4,9 req/s thì thêm thread
+    # chỉ dài thêm hàng đợi. Nghi can là chính whisper-1 (băng thông đo được 5,75 MB/s, mà 5 req/s
+    # × 586 KB = 2,9 MB/s — mới một nửa). Muốn vượt trần này thì cần gạt là
+    # `transcribe_send_original` (WAV 586 KB → opus ~60 KB cho cùng 18s), không phải pool.
+    #
+    # ⚠ Ước lượng CŨ trong comment này ("trần ~2,26 req/s do băng thông") là SAI vì tính cho câu
+    # trả lời 90 giây; câu thật đo được chỉ **18,5s** (p50, n=34 `ai_usage_logs.audio_seconds`)
+    # ⇒ payload 586 KB chứ không phải 2,88 MB. Con số RAM "15 MB/request" cũng theo đó: đo thật
+    # 48 request đang bay chỉ thêm ~80 MB (~1,7 MB/request), đỉnh 681 MB, CPU 208%/800%.
     #
     # ⚠ Ở worker gần như vô hiệu: trần thật bên đó là `scoring_prefetch` (10) + `cv_screening_prefetch` (4).
     thread_pool_max_workers: int = 0
