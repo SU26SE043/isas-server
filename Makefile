@@ -20,7 +20,10 @@ test:             ## Run all .NET test projects (Auth · Interview · Campaign �
 check: build test ## Build then test — the "clean state" gate before a commit
 
 ai-test:          ## Run AIService pytest (needs: pip install -r $(AI_DIR)/requirements-dev.txt)
-	cd $(AI_DIR) && python -m pytest
+	# Gọi console script `pytest`, GIỐNG HỆT CI. Trước đây là `python -m pytest`, mà `-m` chèn
+	# CWD vào sys.path còn console script thì không ⇒ local luôn xanh trong khi CI đỏ 26 lỗi
+	# collect. Giữ hai bên gọi giống nhau để lần sau vỡ là vỡ ở CẢ HAI.
+	cd $(AI_DIR) && pytest
 
 clean:            ## Remove build output
 	dotnet clean $(SLN)
