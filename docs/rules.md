@@ -11,7 +11,7 @@
 - **GEN-4** AIService **KHÔNG ghi DB** — kết quả trả qua callback (`X-Internal-Token`).
 - **GEN-5** File lưu S3: lưu **key**, không lưu full URL.
 - **GEN-6** Phân biệt B2B/B2C bằng `campaign_id` (null = B2C).
-- **GEN-7** ✅ AIService internal-only — chỉ Interview/Campaign gọi nội bộ qua `AiService:BaseUrl` (**`http://aiapi:8000`, cùng compose network** từ 2026-08-06; trước đó là Mac qua Tailscale). Gỡ theo **2 đợt**: bỏ route khỏi gateway 2026-07-13, rồi **gỡ nốt `ApiServices.ai` + `ai-route` + `ai-cluster` khỏi `appsettings.json`** 2026-08-06 — entry còn sót trỏ `localhost:8000` đã đẻ ~12 dòng "Connection refused" mỗi phút trên prod suốt nhiều ngày. Nay `/api/v1/ai/*` **404 ở mọi môi trường**; 2 guard còn lại (`OpenApiAggregatorService` bỏ qua tên `ai` · `IsGatewayAiPath` chặn ở prod) là **lưới an toàn có chủ đích, đừng dọn**. *(Follow-up: thêm `X-Internal-Token` trên endpoint AIService — đã có ở `/decide-next`, `/tts`, `/face-verify`.)*
+- **GEN-7** ✅ AIService internal-only — đã **bỏ `/ai` khỏi gateway** (2026-07-13); chỉ Interview/Campaign gọi nội bộ qua `AiService:BaseUrl` (Tailscale). *(Follow-up: thêm `X-Internal-Token` trên endpoint AIService.)*
 
 ## AUTH — Định danh & Tổ chức
 - **AUTH-1** `register` → role **Candidate** mặc định.

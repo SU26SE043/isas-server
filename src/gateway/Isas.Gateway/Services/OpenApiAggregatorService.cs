@@ -55,15 +55,8 @@ public class OpenApiAggregatorService(
 
         foreach (var (name, service) in services)
         {
-            // GEN-7: AIService internal-only — KHÔNG có entry "ai" trong appsettings.json nữa
-            // (gỡ 2026-08-06, sau khi AIService về chung compose và được gọi thẳng qua
-            // `AiService:BaseUrl`). Dòng này giữ lại làm LƯỚI AN TOÀN cho đường mà file config
-            // không kiểm soát được: khai lại bằng env `ApiServices__ai__OpenApiUrl`.
-            //
-            // Vì sao đáng giữ dù entry đã biến mất: entry cũ trỏ `localhost:8000` và ở
-            // Development (`includeInternal=true`) nó bị fetch mỗi 30s trên server thật, đẻ ra
-            // ~12 dòng "Connection refused" + stack trace mỗi phút suốt nhiều ngày mà không ai
-            // để ý. Rẻ hơn nhiều so với việc phát hiện lại lần nữa.
+            // GEN-7: AIService internal-only. Chỉ gộp vào doc (và fetch OpenAPI của nó) ở Development —
+            // Production không lộ AIService qua gateway nên cũng không nên chạm tới nó.
             if (!includeInternal && name.Equals("ai", StringComparison.OrdinalIgnoreCase)) continue;
 
             // Prefix rỗng = mọi path của service đó đổ ra root doc, đúng triệu chứng của lỗi cấu hình

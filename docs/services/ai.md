@@ -1,6 +1,6 @@
 # AIService — Sinh câu hỏi & chấm điểm (AI)
 
-> Code: `src/services/Isas.AIService` (Python / FastAPI + worker). **Internal-only (GEN-7): KHÔNG qua gateway** — gọi nội bộ qua `AiService:BaseUrl` = **`http://aiapi:8000`, cùng compose network** (từ 2026-08-06; trước đó Mac qua Tailscale). Cấu hình AI ở gateway đã gỡ **hết** (route/cluster 2026-07-13, `ApiServices.ai` 2026-08-06) ⇒ `/api/v1/ai/*` **404 ở mọi môi trường**. *(Follow-up: `X-Internal-Token` — đã có ở `/decide-next`, `/tts`, `/face-verify`.)*
+> Code: `src/services/Isas.AIService` (Python / FastAPI + worker). **Internal-only (GEN-7, 2026-07-13): KHÔNG qua gateway** — gọi nội bộ qua `AiService:BaseUrl` (Tailscale). *(Follow-up: `X-Internal-Token`.)*
 > Quy ước chung: [../architecture.md](../architecture.md) §5. Engine gọi service này: [interview.md](interview.md). Phân việc: [../work-division.md](../work-division.md).
 
 ## Vai trò

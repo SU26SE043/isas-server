@@ -382,10 +382,8 @@ services:
     environment:
       <<: *aiservice-env
     # GEN-7 internal-only: `expose`, KHÔNG `ports`. Interview/Campaign gọi qua tên `aiapi`.
-    # ⚠ ĐỪNG thêm route/cluster/`ApiServices__ai__*` cho AI ở gateway chỉ vì nay aiapi là
-    # container anh em. Toàn bộ phần AI đã bị GỠ khỏi appsettings gateway (2026-08-06) — trước
-    # đó nó trỏ `localhost:8000` và đẻ ~12 dòng "Connection refused" mỗi phút trên prod.
-    # `/api/v1/ai/*` chết là ĐÚNG THIẾT KẾ, không phải cấu hình còn thiếu.
+    # ⚠ ĐỪNG thêm lại override `ai-cluster` ở gateway chỉ vì nay aiapi là container anh em —
+    # appsettings gateway trỏ `localhost:8000` nên `/api/v1/ai` vẫn chết đúng như thiết kế.
     expose: ["8000"]
     healthcheck:
       # image không có curl/wget — dùng chính python trong image.
