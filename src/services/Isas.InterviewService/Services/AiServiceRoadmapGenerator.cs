@@ -11,6 +11,7 @@ namespace Isas.InterviewService.Services;
 public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
 {
     private readonly HttpClient _httpClient;
+    private readonly string? _token;
     private readonly ILogger<AiServiceRoadmapGenerator> _logger;
 
     private static readonly JsonSerializerOptions Json = new()
@@ -19,10 +20,31 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         PropertyNameCaseInsensitive = true
     };
 
-    public AiServiceRoadmapGenerator(HttpClient httpClient, ILogger<AiServiceRoadmapGenerator> logger)
+    public AiServiceRoadmapGenerator(
+        HttpClient httpClient, IConfiguration config, ILogger<AiServiceRoadmapGenerator> logger)
     {
         _httpClient = httpClient;
+        // GEN-7: cả 3 endpoint class này gọi (/generate-roadmap · /generate-lesson-theory ·
+        // /summarize-roadmap) nay gate X-Internal-Token (fail-closed) → đính token.
+        _token = config["Internal:Token"];
         _logger = logger;
+    }
+
+    /// <summary>
+    /// POST tới AIService kèm X-Internal-Token (GEN-7). Class này gọi 3 endpoint với cùng hình dạng
+    /// request, nên gom một chỗ: call site mới về sau tự mang token thay vì phải nhớ đính tay
+    /// (dùng thẳng PostAsJsonAsync sẽ bỏ header và chỉ hỏng lúc chạy thật, không test nào kêu).
+    /// </summary>
+    private async Task<HttpResponseMessage> PostInternalAsync(string path, object payload, CancellationToken ct)
+    {
+        // PHẢI await trong hàm: trả thẳng Task sẽ để `using` dispose request (kèm Content) TRƯỚC khi
+        // gửi xong → ObjectDisposedException lúc chạy thật.
+        using var request = new HttpRequestMessage(HttpMethod.Post, path)
+        {
+            Content = JsonContent.Create(payload)
+        };
+        request.Headers.TryAddWithoutValidation("X-Internal-Token", _token);
+        return await _httpClient.SendAsync(request, ct);
     }
 
     // Shape res AIService — chỉ cấu trúc (không điểm).
@@ -57,7 +79,7 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.PostAsJsonAsync("/api/v1/generate-roadmap", payload, ct);
+            response = await PostInternalAsync("/api/v1/generate-roadmap", payload, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
@@ -130,7 +152,7 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.PostAsJsonAsync("/api/v1/generate-lesson-theory", payload, ct);
+            response = await PostInternalAsync("/api/v1/generate-lesson-theory", payload, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
@@ -207,7 +229,7 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.PostAsJsonAsync("/api/v1/summarize-roadmap", payload, ct);
+            response = await PostInternalAsync("/api/v1/summarize-roadmap", payload, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

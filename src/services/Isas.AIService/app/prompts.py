@@ -696,13 +696,36 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
         "nội dung đó. Phần rỗng hoặc chỉ có tiêu đề sẽ bị TRẢ LẠI.",
     ]
 
+    # Q10 — chỉ dẫn "ghi ĐÚNG NGUYÊN VĂN, không dịch lại" PHẢI cùng ngôn ngữ với bài. Đây không
+    # phải chuyện thẩm mỹ: `evaluate_lesson_theory` khớp `criterion` bằng so chuỗi và CỐ Ý không
+    # fuzzy, nên mô hình dịch tên tiêu chí một lượt là trượt rubric — hết lượt viết lại thì
+    # `generate_lesson_theory` raise ⇒ InterviewService trả **502**. Nói bằng tiếng Việt rằng
+    # "đừng dịch" ngay trong một đề bài yêu cầu viết tiếng Anh là tự đặt bẫy cho chính mình.
     if focus_criteria:
+        listed = "\n".join(f"- {c}" for c in focus_criteria)
+        if normalize(language) == EN:
+            parts.append(
+                "FOCUS CRITERIA of the milestone that owns this lesson — EACH criterion must have "
+                "AT LEAST one section in `sections` explaining it:\n"
+                + listed + "\n"
+                "The `criterion` field of every section must repeat ONE of the names above "
+                "VERBATIM — do not rename it, do not abbreviate it, and DO NOT TRANSLATE IT, even "
+                "when the criterion name is not in English. Only the lesson content is written in "
+                "English; the criterion names are identifiers and must be copied character for "
+                "character."
+            )
+        else:
+            parts.append(
+                "TIÊU CHÍ TRỌNG TÂM của milestone chứa bài học này — MỖI tiêu chí phải có ÍT NHẤT "
+                "một mục trong sections giải thích nó:\n"
+                + listed + "\n"
+                "Trường criterion của mỗi mục phải ghi ĐÚNG NGUYÊN VĂN một trong các tên trên — "
+                "không tự đặt tên khác, không viết tắt, không dịch lại."
+            )
+    elif normalize(language) == EN:
         parts.append(
-            "TIÊU CHÍ TRỌNG TÂM của milestone chứa bài học này — MỖI tiêu chí phải có ÍT NHẤT "
-            "một mục trong sections giải thích nó:\n"
-            + "\n".join(f"- {c}" for c in focus_criteria) + "\n"
-            "Trường criterion của mỗi mục phải ghi ĐÚNG NGUYÊN VĂN một trong các tên trên — "
-            "không tự đặt tên khác, không viết tắt, không dịch lại."
+            "The milestone declares no focus criteria → `sections` must follow the lesson topic "
+            f'itself, and every section must set `criterion` to "{lesson_title}" verbatim.'
         )
     else:
         parts.append(
@@ -747,6 +770,10 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     # chỉ dẫn phía trên làm loãng.
     if retry_feedback:
         parts.append(
+            "YOUR PREVIOUS ANSWER WAS REJECTED because it did not meet the requirements:\n"
+            f"{retry_feedback}\n"
+            "Rewrite the FULL answer (not a patch), fixing exactly the points above."
+            if normalize(language) == EN else
             "BẢN TRƯỚC CỦA BẠN BỊ TRẢ LẠI vì chưa đạt yêu cầu:\n"
             f"{retry_feedback}\n"
             "Viết lại BẢN ĐẦY ĐỦ (không phải phần bổ sung), khắc phục đúng những điểm trên."
@@ -865,7 +892,8 @@ def build_decide_next_prompt(job_category: str, current_question: str, transcrip
                              criteria: list[dict],
                              root_question: str | None = None, current_depth: int = 0,
                              max_depth: int = 0,
-                             other_topics: list[str] | None = None, *, language: str = VI) -> str:
+                             other_topics: list[str] | None = None, *, language: str = VI,
+                             retry_feedback: str | None = None) -> str:
     """Phỏng vấn THÍCH ỨNG — quyết định hành động kế tiếp sau 1 câu trả lời.
 
     Đọc câu trả lời MỚI NHẤT + lịch sử + tiêu chí → chọn đúng 1 hành động
@@ -887,6 +915,17 @@ def build_decide_next_prompt(job_category: str, current_question: str, transcrip
     * ``other_topics`` = tên các câu gốc khác → chống hỏi trùng thứ lát nữa sẽ hỏi.
 
     ``max_depth <= 0`` giữ NGUYÊN VĂN prompt cũ (chế độ frontier theo buổi).
+
+    Q16 — ``retry_feedback``: chỗ hỏng của lượt trước (câu cụt / JSON hỏng / action lạ). Hỏi lại y
+    hệt đề cũ thì phần lớn nhận lại đúng cái sai đó, nên lượt sau phải mang theo lý do.
+
+    Cũng vì Q16 mà đề bài bỏ chữ "ngắn gọn" và bỏ placeholder ``"..."`` trong ví dụ JSON. Đó KHÔNG
+    phải dọn dẹp văn phong: repo đã dính đúng cơ chế này một lần và ghi lại ở
+    :func:`build_lesson_theory_prompt` — bản cũ dặn "không quá dài dòng" kèm khung JSON
+    ``{"theoryMarkdown":"# Tiêu đề\\n\\nNội dung markdown..."}`` thì mô hình bắt chước đúng cái
+    khung, điền tiêu đề rồi bỏ thân bài (bài 51 ký tự, deploy 2026-08-03). Ở đây là cùng một cặp
+    tín hiệu — "ngắn gọn" + ``"nextQuestion":"..."`` — và cùng một hình dạng hậu quả: câu hỏi 31 ký
+    tự bỏ lửng giữa chừng (deploy 2026-08-07). Yêu cầu bây giờ là HOÀN CHỈNH, không phải ngắn.
     """
     chain_mode = max_depth > 0
     role = CATEGORY_NAMES.get(job_category.upper(), job_category)
@@ -980,6 +1019,14 @@ def build_decide_next_prompt(job_category: str, current_question: str, transcrip
         " câu hỏi kế tiếp bám vào chính câu trả lời ứng viên vừa đưa ra."
     )
 
+    # Q16 — trả bài kèm nhận xét: nêu ĐÚNG chỗ hỏng của lượt trước (câu cụt / JSON hỏng / action lạ).
+    # Đặt SÁT khối JSON ở cuối để không bị các chỉ dẫn phía trên làm loãng (mẫu lesson theory).
+    retry_block = (
+        "\n\nLƯỢT TRƯỚC CỦA BẠN BỊ TRẢ LẠI:\n"
+        f"{retry_feedback}\n"
+        "Trả lời lại từ đầu, khắc phục đúng điểm trên."
+        if retry_feedback else "")
+
     return f"""{intro}
 
 Nhiệm vụ: đọc CÂU TRẢ LỜI MỚI NHẤT (bên dưới) trong bối cảnh cả buổi, rồi QUYẾT ĐỊNH đúng MỘT hành động kế tiếp:
@@ -1005,7 +1052,8 @@ NGÂN SÁCH:
 
 YÊU CẦU:
 {rules_block}
-- Với action ≠ "end": nextQuestion là 1 câu hỏi DUY NHẤT bằng {field_lang(language)}, ngắn gọn, hỏi trực tiếp (không lời dẫn), bám năng lực ở trên và KHÔNG lặp lại câu đã hỏi.
+- Với action ≠ "end": nextQuestion là 1 câu hỏi DUY NHẤT bằng {field_lang(language)}, hỏi trực tiếp (không lời dẫn), bám năng lực ở trên và KHÔNG lặp lại câu đã hỏi.
+- nextQuestion PHẢI là câu HOÀN CHỈNH và kết thúc bằng dấu câu (thường là dấu ?). Câu bị cắt giữa chừng, hay chỉ có mấy chữ đầu rồi bỏ lửng, sẽ bị TRẢ LẠI.
 - Với action = "end": nextQuestion để trống.
 - reason: 1 câu ngắn ({field_lang(language)}) giải thích vì sao chọn hành động đó.
-- CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown: {{"action":"follow_up","nextQuestion":"...","reason":"..."}}"""
+- CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown: {{"action":"follow_up","nextQuestion":"<câu hỏi hoàn chỉnh, kết thúc bằng dấu ?>","reason":"<lý do ngắn>"}}{retry_block}"""

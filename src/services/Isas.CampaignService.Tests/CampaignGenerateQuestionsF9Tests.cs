@@ -4,6 +4,7 @@ using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Moq;
 
@@ -375,6 +376,9 @@ public class CampaignGenerateQuestionsF9Tests
 
     private static AiServiceQuestionGenerator NewClient(StubHandler handler)
         => new(new HttpClient(handler) { BaseAddress = new Uri("http://ai.test") },
+               new ConfigurationBuilder()
+                   .AddInMemoryCollection(new Dictionary<string, string?> { ["Internal:Token"] = "tok-f9" })
+                   .Build(),
                Mock.Of<ILogger<AiServiceQuestionGenerator>>());
 
     private static HttpResponseMessage Json(HttpStatusCode code, string body)

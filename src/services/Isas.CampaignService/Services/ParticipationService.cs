@@ -355,9 +355,24 @@ namespace Isas.CampaignService.Services
         //    lời mời cũ hơn. Nhờ ghi đè, lời mời MỚI hiện đúng "Joined" thay vì "Sent".
         //  • Email/FullName dùng `??=` — snapshot giữ danh tính BIẾT ĐẦU TIÊN, và quan trọng hơn là
         //    không bao giờ ghi đè giá trị đang có bằng null (đường-1 không có CV ⇒ FullName null).
+        //
+        // Q7 — SlotId cũng GHI ĐÈ, cùng lý lẽ với InvitationId. Trước đây khung giờ chỉ được ghi lên
+        // `campaign_invitations`, KHÔNG chỗ nào chép sang membership, trong khi cả 4 đường đọc lại đọc
+        // `membership.SlotId`: guard khung giờ lúc Start, `StartedCount` của slot, và guard "không xoá
+        // khung giờ đang có ứng viên thi". Cột luôn NULL ⇒ ứng viên có khung giờ ĐÃ ĐÓNG vẫn Start được
+        // (200, trừ credit org thật, deadline rơi về campaign.ExpiresAt), `StartedCount` vĩnh viễn 0,
+        // guard xoá slot không bao giờ kích hoạt. Đây là chokepoint DUY NHẤT ghi membership trong
+        // service, chạy ở CẢ hai nhánh join → một dòng phủ hết.
+        // Vì sao `=` chứ KHÔNG `??=`: sau reissue (D4) lời mời cũ đã Revoked nên ValidateInvitationUsable
+        // chặn trước ⇒ không bao giờ ghi đè bằng lời mời cũ hơn. Ngược lại `??=` sẽ đóng băng khung giờ
+        // đầu tiên vĩnh viễn — HR đổi/xoá slot rồi phát lại lời mời thì ứng viên kẹt ở slot cũ và
+        // `StartInterviewAsync` ném "Không tìm thấy khung giờ phỏng vấn đã được phân", chặn hẳn buổi thi.
+        // `inv.SlotId` null vẫn ĐÚNG nghiệp vụ: campaign chưa cấu hình slot nào → AssignSlotsAsync trả
+        // null → "không ràng buộc khung giờ" (xem comment AssignSlotsAsync).
         private static void ApplyInvitationLink(CampaignMembership membership, CampaignInvitation inv)
         {
             membership.InvitationId = inv.Id;
+            membership.SlotId = inv.SlotId;
             membership.Email ??= inv.Email;
             membership.FullName ??= inv.CvSubmission?.FullName;
         }

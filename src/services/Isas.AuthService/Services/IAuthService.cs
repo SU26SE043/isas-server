@@ -58,6 +58,12 @@ namespace Isas.AuthService.Services
         // Đăng xuất theo USER (không theo 1 token): thu hồi MỌI refresh token của user — tab khác không
         // gia hạn phiên tiếp được. Access token đang lưu hành vẫn sống tới hết TTL (validate offline GEN-3).
         Task LogoutAsync(Guid userId);
+
+        // Q3 — thu hồi MỌI phiên của user vì lý do BẢO MẬT (đổi mật khẩu / đặt lại mật khẩu), tách tên
+        // khỏi LogoutAsync dù thân giống hệt: hai đường đổi mật khẩu ở AuthController thao tác thẳng
+        // trên UserManager nên không đi qua service, và gọi "logout" cho việc đuổi kẻ chiếm tài khoản
+        // là mượn nghĩa. Access token đang lưu hành vẫn sống tới hết TTL (GEN-3).
+        Task RevokeAllSessionsAsync(Guid userId, CancellationToken ct = default);
         Task<UserResponse> GetUserAsync(Guid userId);
         Task<string> UpdateUserAsync(Guid userId, UpdateProfileRequest request);
         Task<RefreshToken> GetRefreshTokenAsync(string refreshToken);

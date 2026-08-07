@@ -79,7 +79,8 @@ public class MembershipInvitationLinkFx1Tests
 
     private static CampaignInvitation SeedInvitation(
         CampaignDbContext db, Guid campaignId, string email,
-        Guid? campaignCandidateId = null, DateTime? revokedAt = null, DateTime? emailSentAt = null)
+        Guid? campaignCandidateId = null, DateTime? revokedAt = null, DateTime? emailSentAt = null,
+        Guid? slotId = null)
     {
         var id = Guid.NewGuid();
         var inv = new CampaignInvitation
@@ -87,6 +88,7 @@ public class MembershipInvitationLinkFx1Tests
             Id = id,
             CampaignId = campaignId,
             CampaignCandidateId = campaignCandidateId,
+            SlotId = slotId,
             TokenHash = InvitationTokens.Hash(id.ToString("N")),
             Email = email,
             ExpiresAt = DateTime.UtcNow.AddDays(7),
@@ -245,6 +247,176 @@ public class MembershipInvitationLinkFx1Tests
         });
 
         await Assert.ThrowsAnyAsync<DbUpdateException>(() => ctx.SaveChangesAsync());
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // (A2) Q7 — join phải CHÉP khung giờ từ lời mời sang membership
+    //
+    // Trước Q7 `campaign_membership.slot_id` được ĐỌC ở 4 chỗ (guard khung giờ lúc Start ·
+    // StartedCount mỗi slot · guard không-xoá-slot-đang-thi) mà KHÔNG đường ghi nào chạm tới —
+    // khung giờ chỉ nằm trên campaign_invitations. Cột luôn NULL nên cả 3 tính năng đều chết im.
+    // ⚠ Lý do bug sống sót: mọi test slot hiện có (ParticipationServiceTests, CampaignSlotServiceTests)
+    // đều TỰ TAY set membership.SlotId rồi mới test Start/Delete ⇒ verify guard nhưng mù hoàn toàn
+    // việc guard không bao giờ nhận được dữ liệu. Các test dưới đi qua ĐÚNG đường ghi (join thật).
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    private static CampaignSlot SeedSlot(
+        CampaignDbContext db, Guid campaignId, DateTime startsAt, int capacity = 5)
+    {
+        var slot = new CampaignSlot
+        {
+            Id = Guid.NewGuid(),
+            CampaignId = campaignId,
+            StartsAt = startsAt,
+            EndsAt = startsAt.AddHours(1),
+            Capacity = capacity
+        };
+        db.CampaignSlots.Add(slot);
+        return slot;
+    }
+
+    // Nhánh TẠO MỚI — membership sinh ra đã mang khung giờ của lời mời.
+    [Fact]
+    public async Task Q7_Join_NhanhTaoMoi_ChepSlotIdTuLoiMoi()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        tdb.Db.Campaigns.Add(camp);
+        var slot = SeedSlot(tdb.Db, camp.Id, DateTime.UtcNow.AddDays(1));
+        var inv = SeedInvitation(tdb.Db, camp.Id, "q7-new@acme.test", slotId: slot.Id);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), inv.Email, default);
+
+        using var check = tdb.NewContext();
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal(slot.Id, m.SlotId);
+    }
+
+    // Nhánh IDEMPOTENT — membership có từ trước Q7 (slot_id null) join lại PHẢI được điền, không thì
+    // row lịch sử vĩnh viễn không có khung giờ và guard Start không bao giờ chạy cho họ.
+    [Fact]
+    public async Task Q7_Join_NhanhIdempotent_MembershipCu_DuocDienSlotId()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        tdb.Db.Campaigns.Add(camp);
+        var slot = SeedSlot(tdb.Db, camp.Id, DateTime.UtcNow.AddDays(1));
+        var inv = SeedInvitation(tdb.Db, camp.Id, "q7-old@acme.test", slotId: slot.Id);
+        tdb.Db.CampaignMemberships.Add(new CampaignMembership
+        {
+            Id = Guid.NewGuid(),
+            CampaignId = camp.Id,
+            CandidateId = FixedCandidate,
+            SlotId = null,                 // membership "lịch sử"
+            Status = MembershipStatus.Joined,
+            JoinedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
+
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), inv.Email, default);
+
+        using var check = tdb.NewContext();
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal(slot.Id, m.SlotId);
+    }
+
+    // 🔴 Đây là ca phân biệt `=` với `??=`: HR dời ứng viên sang khung giờ khác rồi phát lại lời mời
+    // (D4). Với `??=` membership đóng băng ở slot CŨ ⇒ ứng viên tới đúng giờ mới vẫn bị chặn ngoài
+    // khung, và nếu slot cũ đã bị xoá thì Start ném thẳng "Không tìm thấy khung giờ đã được phân".
+    [Fact]
+    public async Task Q7_Join_SauReissueDoiSlot_SlotIdTheoLoiMoiMoi()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        tdb.Db.Campaigns.Add(camp);
+        var slotCu = SeedSlot(tdb.Db, camp.Id, DateTime.UtcNow.AddDays(1));
+        var slotMoi = SeedSlot(tdb.Db, camp.Id, DateTime.UtcNow.AddDays(2));
+        var old = SeedInvitation(tdb.Db, camp.Id, "q7-reissue@acme.test", slotId: slotCu.Id);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(old), old.Email, default);
+
+        // Reissue: thu hồi lời mời cũ, phát lời mời mới ở khung giờ KHÁC.
+        using (var ctx = tdb.NewContext())
+        {
+            (await ctx.CampaignInvitations.SingleAsync(x => x.Id == old.Id)).RevokedAt = DateTime.UtcNow;
+            await ctx.SaveChangesAsync();
+        }
+        CampaignInvitation fresh;
+        using (var ctx = tdb.NewContext())
+        {
+            fresh = SeedInvitation(ctx, camp.Id, "q7-reissue@acme.test", slotId: slotMoi.Id);
+            await ctx.SaveChangesAsync();
+        }
+
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(fresh), fresh.Email, default);
+
+        using var check = tdb.NewContext();
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal(slotMoi.Id, m.SlotId);
+    }
+
+    // 🔴 End-to-end join → Start: chứng minh khung giờ THẬT SỰ được thực thi, không chỉ "cột có giá trị".
+    // Đây đúng hành vi đang hỏng trên deploy: ứng viên có khung giờ đã đóng 4 tiếng bấm Start vẫn 200,
+    // trừ credit org thật, deadline rơi về campaign.ExpiresAt.
+    [Fact]
+    public async Task Q7_JoinRoiStart_SlotDaDong_BiChanNgoaiKhung()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignReadyForStart(tdb);
+        var slot = SeedSlot(tdb.Db, camp.Id, DateTime.UtcNow.AddHours(-5));   // đã kết thúc 4 tiếng trước
+        var inv = SeedInvitation(tdb.Db, camp.Id, "q7-closed@acme.test", slotId: slot.Id);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), inv.Email, default);
+
+        await Assert.ThrowsAsync<OutsideSlotWindowException>(() =>
+            NewParticipation(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default));
+    }
+
+    // Vế còn lại: khung giờ ĐANG mở → Start được, và deadline lấy mốc SỚM HƠN (slot.EndsAt) chứ không
+    // phải campaign.ExpiresAt — cũng chỉ có nghĩa khi membership.SlotId thật sự được ghi lúc join.
+    [Fact]
+    public async Task Q7_JoinRoiStart_SlotDangMo_DeadlineTheoSlot()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignReadyForStart(tdb);
+        camp.ExpiresAt = DateTime.UtcNow.AddDays(3);           // campaign còn hạn rất dài
+        var slot = SeedSlot(tdb.Db, camp.Id, DateTime.UtcNow.AddMinutes(-5));   // đang mở, hết sau ~55'
+        var inv = SeedInvitation(tdb.Db, camp.Id, "q7-open@acme.test", slotId: slot.Id);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewParticipation(tdb.NewContext()).JoinCampaignAsync(RawTokenOf(inv), inv.Email, default);
+        var res = await NewParticipation(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        Assert.Equal(slot.EndsAt, res.DeadlineAt);
+        using var check = tdb.NewContext();
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal(slot.EndsAt, m.InterviewDeadlineAt);
+        Assert.Equal(slot.Id, m.SlotId);
+    }
+
+    private static Campaign ActiveCampaignReadyForStart(CampaignTestDb tdb)
+    {
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        camp.Domain = "BE";
+        camp.Questions.Add(new CampaignQuestion
+        {
+            Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = camp.OrgId,
+            QuestionText = "Giải thích DI?", Source = QuestionSource.CustomHr,
+            IsRequired = true, CreatedAt = DateTime.UtcNow
+        });
+        camp.Criteria.Add(new CampaignCriterion
+        {
+            Id = Guid.NewGuid(), CampaignId = camp.Id, OrderNo = 0, Name = "Communication",
+            Weight = 1.0m, MaxScore = 5, Source = CriterionSource.HrEdited,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+        });
+        tdb.Db.Campaigns.Add(camp);
+        return camp;
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════════

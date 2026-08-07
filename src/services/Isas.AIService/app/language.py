@@ -39,3 +39,14 @@ def rate_unit(language: str | None) -> str:
 
 def per100_unit(language: str | None) -> str:
     return " per 100 words" if normalize(language) == EN else " lần/100 âm tiết"
+
+
+def lesson_example_heading(language: str | None) -> str:
+    """Nhãn mục ví dụ trong bài giảng roadmap (server tự ghép, KHÔNG do model sinh)."""
+    return "Worked example" if normalize(language) == EN else "Ví dụ minh hoạ"
+
+
+def lesson_mistakes_heading(language: str | None) -> str:
+    """Nhãn mục lỗi thường gặp trong bài giảng roadmap (server tự ghép)."""
+    return ("Common mistakes in interview answers" if normalize(language) == EN
+            else "Lỗi thường gặp khi trả lời phỏng vấn")

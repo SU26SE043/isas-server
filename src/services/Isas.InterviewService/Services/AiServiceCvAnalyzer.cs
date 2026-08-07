@@ -11,6 +11,7 @@ namespace Isas.InterviewService.Services;
 public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
 {
     private readonly HttpClient _httpClient;
+    private readonly string? _token;
     private readonly ILogger<AiServiceCvAnalyzer> _logger;
 
     private static readonly JsonSerializerOptions Json = new()
@@ -19,9 +20,14 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
         PropertyNameCaseInsensitive = true
     };
 
-    public AiServiceCvAnalyzer(HttpClient httpClient, ILogger<AiServiceCvAnalyzer> logger)
+    public AiServiceCvAnalyzer(
+        HttpClient httpClient, IConfiguration config, ILogger<AiServiceCvAnalyzer> logger)
     {
         _httpClient = httpClient;
+        // GEN-7: /analyze-cv nay gate X-Internal-Token (fail-closed) → đính token như
+        // AiServiceQuestionGenerator. Thiếu token → 502 ở controller, KHÔNG mất credit (reserve
+        // xảy ra trước, và AI lỗi → release — xem CvAnalysisService/BC7b).
+        _token = config["Internal:Token"];
         _logger = logger;
     }
 
@@ -45,10 +51,16 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
             jdText   // null → AI bỏ jdMatch
         };
 
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/analyze-cv")
+        {
+            Content = JsonContent.Create(payload)
+        };
+        request.Headers.TryAddWithoutValidation("X-Internal-Token", _token);
+
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.PostAsJsonAsync("/api/v1/analyze-cv", payload, ct);
+            response = await _httpClient.SendAsync(request, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

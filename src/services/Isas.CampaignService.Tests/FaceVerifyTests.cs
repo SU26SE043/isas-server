@@ -66,8 +66,11 @@ public class FaceVerifyTests
         return c;
     }
 
+    // Q4 — `sessionId` = buổi thi đã Start của thành viên này; route PHẢI trùng (mirror SessionFlagTests).
+    // Mặc định FixedSession để test cũ dùng FixedSession không phải sửa gì.
     private static void SeedMember(
-        CampaignDbContext db, Guid campaignId, Guid candidateId, string? referenceImageKey = null)
+        CampaignDbContext db, Guid campaignId, Guid candidateId, string? referenceImageKey = null,
+        Guid? sessionId = null)
     {
         // DB16 — membership (+ ReferenceImageKey) sống ở campaign_membership.
         db.CampaignMemberships.Add(new CampaignMembership
@@ -75,6 +78,7 @@ public class FaceVerifyTests
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
             CandidateId = candidateId,
+            SessionId = sessionId ?? FixedSession,
             ReferenceImageKey = referenceImageKey,
             Status = MembershipStatus.Joined,
             JoinedAt = DateTime.UtcNow,
@@ -140,7 +144,7 @@ public class FaceVerifyTests
 
         var ai = AiReturning();   // 0 signal → match=true
         var result = await NewController(tdb.NewContext(), candidateId, Mock.Of<IFileService>(), ai.Object)
-            .Check(campaign.Id, Guid.NewGuid(), FakeImage(), default);
+            .Check(campaign.Id, FixedSession, FakeImage(), default);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var body = Assert.IsType<FaceCheckResponse>(ok.Value);
@@ -191,7 +195,7 @@ public class FaceVerifyTests
         var file = new Mock<IFileService>();
         var ai = AiReturning("face_mismatch");
         var result = await NewController(tdb.NewContext(), candidateId, file.Object, ai.Object)
-            .Check(campaign.Id, Guid.NewGuid(), FakeImage(), default);
+            .Check(campaign.Id, FixedSession, FakeImage(), default);
 
         Assert.IsType<NoContentResult>(result);
         file.Verify(x => x.UploadAsync(It.IsAny<IFormFile>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
@@ -249,6 +253,58 @@ public class FaceVerifyTests
             Times.Never);
         using var check = tdb.NewContext();
         Assert.Equal(0, check.SessionFlags.Count(f => f.CampaignId == campaign.Id));
+    }
+
+    // ── 🔴 Q4 — THÀNH VIÊN cùng campaign gọi face-check trên buổi của NGƯỜI KHÁC → 403 ─────
+    // Rộng hơn đường `flags`: sessionId đi vào CẢ khoá S3 ảnh live (`campaigns/{c}/sessions/{s}/...`)
+    // LẪN session_flags ⇒ vừa cắm được cờ danh tính lên buổi nạn nhân, vừa nhét ảnh vào thư mục đó.
+    [Fact]
+    public async Task Q4_Check_ThanhVienKhac_BuoiCuaNguoiKhac_403_KhongUpload_KhongCo()
+    {
+        using var tdb = new CampaignTestDb();
+        var attacker = Guid.NewGuid();
+        var victim = Guid.NewGuid();
+        var victimSession = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        var campaign = SeedCampaign(tdb.Db, faceVerify: true);
+        SeedMember(tdb.Db, campaign.Id, attacker, referenceImageKey: "campaigns/attacker.jpg");
+        SeedMember(tdb.Db, campaign.Id, victim, referenceImageKey: "campaigns/victim.jpg",
+            sessionId: victimSession);
+
+        var file = new Mock<IFileService>();
+        var ai = AiReturning("face_mismatch");
+        var result = await NewController(tdb.NewContext(), attacker, file.Object, ai.Object)
+            .Check(campaign.Id, victimSession, FakeImage(), default);
+
+        Assert.IsType<ForbidResult>(result);
+        file.Verify(x => x.UploadAsync(It.IsAny<IFormFile>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        ai.Verify(x => x.VerifyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<double?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        using var check = tdb.NewContext();
+        Assert.Equal(0, check.SessionFlags.Count(f => f.CampaignId == campaign.Id));
+    }
+
+    // Q4 — face-enroll dùng CHUNG helper nên cũng phải chặn: sessionId ở đó hiện chỉ nằm trong route và
+    // không được dùng, nhưng để một tham số không ai kiểm trên đường ghi là đúng hình dạng lỗi vừa vá.
+    [Fact]
+    public async Task Q4_Enroll_BuoiCuaNguoiKhac_403_KhongUpload()
+    {
+        using var tdb = new CampaignTestDb();
+        var attacker = Guid.NewGuid();
+        var victim = Guid.NewGuid();
+        var victimSession = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var campaign = SeedCampaign(tdb.Db, faceVerify: true);
+        SeedMember(tdb.Db, campaign.Id, attacker, referenceImageKey: null);
+        SeedMember(tdb.Db, campaign.Id, victim, referenceImageKey: null, sessionId: victimSession);
+
+        var file = new Mock<IFileService>();
+        var result = await NewController(tdb.NewContext(), attacker, file.Object, Mock.Of<IAiServiceFaceVerifyClient>())
+            .Enroll(campaign.Id, victimSession, FakeImage(), default);
+
+        Assert.IsType<ForbidResult>(result);
+        file.Verify(x => x.UploadAsync(It.IsAny<IFormFile>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     // ── (5') campaign không tồn tại → 404 ──────────────────────────────────────────

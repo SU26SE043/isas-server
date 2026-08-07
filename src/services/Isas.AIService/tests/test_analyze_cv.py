@@ -10,10 +10,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.prompts import build_cv_analysis_prompt
+from app.config import settings
 from app.providers.gemini import GeminiProvider
 import app.main as main_module
 
 client = TestClient(main_module.app)
+
+# Q2/GEN-7 — endpoint SINH nay gate X-Internal-Token (fail-closed): mọi call hợp lệ phải
+# kèm _HEADERS. Nhánh 401 nằm ở tests/test_internal_token_gate_q2.py.
+_HEADERS = {"X-Internal-Token": settings.internal_token}
 
 
 def _fake_gemini_response(payload: dict):
@@ -152,7 +157,7 @@ def test_endpoint_without_jdtext_response_shape(monkeypatch):
 
     monkeypatch.setattr(main_module.provider, "analyze_cv", fake_analyze_cv)
 
-    res = client.post("/api/v1/analyze-cv", json={"cvText": "cv text", "jobCategory": "BE"})
+    res = client.post("/api/v1/analyze-cv", headers=_HEADERS, json={"cvText": "cv text", "jobCategory": "BE"})
 
     assert res.status_code == 200
     body = res.json()
@@ -181,6 +186,7 @@ def test_endpoint_with_jdtext_response_shape(monkeypatch):
 
     res = client.post(
         "/api/v1/analyze-cv",
+        headers=_HEADERS,
         json={"cvText": "cv text", "jdText": "jd text", "jobCategory": "BE"},
     )
 
@@ -194,7 +200,7 @@ def test_endpoint_with_jdtext_response_shape(monkeypatch):
 
 
 def test_endpoint_rejects_empty_cvtext():
-    res = client.post("/api/v1/analyze-cv", json={"cvText": "   "})
+    res = client.post("/api/v1/analyze-cv", headers=_HEADERS, json={"cvText": "   "})
     assert res.status_code == 400
 
 
@@ -206,6 +212,6 @@ def test_endpoint_returns_502_when_gemini_fails(monkeypatch):
 
     monkeypatch.setattr(main_module.provider, "analyze_cv", failing_analyze_cv)
 
-    res = client.post("/api/v1/analyze-cv", json={"cvText": "cv text"})
+    res = client.post("/api/v1/analyze-cv", headers=_HEADERS, json={"cvText": "cv text"})
     assert res.status_code == 502
     assert "Lỗi phân tích CV" in res.json()["detail"]
