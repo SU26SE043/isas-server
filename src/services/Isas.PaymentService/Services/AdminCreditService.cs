@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 using PaymentService.Models;
 using System.Text.Json;
 
@@ -65,15 +64,24 @@ namespace Isas.PaymentService.Services
                 {
                     await _accounts.CreateAccountAsync(ownerType, ownerId, ct);
                 }
-                catch (DbUpdateException) // đối thủ vừa tạo trước — ví tồn tại là đủ (mẫu WebhookService)
+                // S11-CATCH — hậu kiểm provider-agnostic (mẫu WebhookService.EnsureWalletExistsAsync).
+                // Bắt cả InvalidOperationException vì CreateAccountAsync check-then-act.
+                catch (Exception ex) when (ex is DbUpdateException or InvalidOperationException)
                 {
-                    foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
-                        entry.State = EntityState.Detached;
-                    foreach (var entry in _db.ChangeTracker.Entries<CreditTransaction>().ToList())
-                        entry.State = EntityState.Detached;
-                }
-                catch (InvalidOperationException) // CreateAccountAsync tự thấy ví đã có (check-then-act)
-                {
+                    // Dọn TOÀN BỘ tracker: CreateAccountAsync Add hai entity (ví + bút toán FreeGrant F7).
+                    // Bỏ sót dòng FreeGrant thì SaveChanges của chính lệnh cấp quà bên dưới sẽ chèn nó
+                    // thật ⇒ sổ cái +3 mà số dư chỉ tăng đúng phần quà ⇒ gãy bất biến số dư.
+                    _db.ChangeTracker.Clear();
+
+                    if (await _accounts.GetAccountAsync(ownerType, ownerId, ct) is null)
+                        // ⚠ BẤT ĐỐI XỨNG CÓ CHỦ ĐÍCH — KHÔNG `throw;`. Hàm chạy NGOÀI transaction và đã có
+                        // hàng rào hạ cấp mềm ngay sau: câu cộng ATOMIC bên dưới khớp 0 row ⇒ trả
+                        // GrantOutcome.WalletMissing (400/409 ở controller) thay vì 500. Ném ở đây chỉ đổi
+                        // một câu trả lời đúng sự thật lấy một stack trace. Lỗi KHÔNG bị giấu — log Error.
+                        _logger?.LogError(ex,
+                            "S11-CATCH — không tạo được ví {OwnerType}:{OwnerId} và ví cũng KHÔNG tồn tại sau đó. " +
+                            "Lệnh cấp quà sẽ hạ cấp thành WalletMissing, không phải 500.",
+                            ownerType, ownerId);
                 }
             }
 
@@ -127,7 +135,14 @@ namespace Isas.PaymentService.Services
                     await _db.SaveChangesAsync(ct);
                     await tx.CommitAsync(ct);
                 }
-                catch (DbUpdateException ex) when (!string.IsNullOrWhiteSpace(idempotencyKey) && IsUniqueViolation(ex))
+                // S11-CATCH — bộ lọc CŨ có thêm `IsUniqueViolation(ex)`, chỉ nhận
+                // `PostgresException{SqlState:23505}` ⇒ trên SQLite luôn false ⇒ CẢ NHÁNH NÀY chưa từng
+                // được một test nào chạy qua (0% coverage cho đúng đường idempotency của tiền). Bỏ bộ lọc
+                // đi vẫn AN TOÀN vì quyết định thật sự nằm ở HẬU KIỂM ngay dưới: tìm thấy bút toán gốc ⇒
+                // đúng là request trùng ⇒ phát lại kết quả cũ; không thấy ⇒ `throw;` y như trước.
+                // Giữ vế `idempotencyKey` vì không có khoá thì không thể có đụng độ khoá, và cũng không
+                // tra lại được bút toán gốc.
+                catch (DbUpdateException) when (!string.IsNullOrWhiteSpace(idempotencyKey))
                 {
                     await tx.RollbackAsync(ct);
                     _db.ChangeTracker.Clear();
@@ -159,9 +174,6 @@ namespace Isas.PaymentService.Services
                 transaction.GrantRemainingCreditsAfter
                     ?? throw new InvalidOperationException("Idempotent promo grant thiếu snapshot số dư."),
                 transaction.Id);
-
-        private static bool IsUniqueViolation(DbUpdateException exception) =>
-            exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 
         public async Task<SetPaymentModeResult> SetPaymentModeAsync(
             OwnerType ownerType, Guid ownerId, PaymentMode paymentMode, int? creditLimit,

@@ -125,19 +125,8 @@ namespace Isas.PaymentService.Services
                 {
                     // Ví phải tồn tại trước khi ghi subscriptions (FK composite owner → credit_accounts, DB9),
                     // và người mua gói tháng đằng nào cũng cần ví để reserve được (FK trên credit_reservations).
-                    // Cùng lối xử lý race với nhánh CreditPack bên dưới.
-                    if (await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct) is null)
-                    {
-                        try
-                        {
-                            await _accounts.CreateAccountAsync(order.OwnerType, order.OwnerId, ct);
-                        }
-                        catch (DbUpdateException) // đối thủ vừa tạo trước — ví đã tồn tại là đủ
-                        {
-                            foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
-                                entry.State = EntityState.Detached;
-                        }
-                    }
+                    // Cùng lối xử lý race với nhánh CreditPack bên dưới (xem EnsureWalletExistsAsync).
+                    await EnsureWalletExistsAsync(order, ct);
 
                     Subscription? activated = null;
                     if (_subscriptions is not null && order.Package is not null)
@@ -204,20 +193,8 @@ namespace Isas.PaymentService.Services
 
                 // 2) Đảm bảo ví tồn tại (lần mua đầu của chủ ví → chưa có account). Tạo trong CÙNG transaction
                 //    (CreditAccountService dùng chung DbContext scoped). Race 2 đơn khác nhau cùng chủ ví cùng
-                //    tạo account → 1 thắng, bên thua đụng UNIQUE(owner) → nuốt, account đã tồn tại là đủ.
-                var account = await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct);
-                if (account is null)
-                {
-                    try
-                    {
-                        await _accounts.CreateAccountAsync(order.OwnerType, order.OwnerId, ct);
-                    }
-                    catch (DbUpdateException) // đối thủ vừa tạo trước — account đã tồn tại, tiếp tục cộng
-                    {
-                        foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
-                            entry.State = EntityState.Detached;
-                    }
-                }
+                //    tạo account → 1 thắng, bên thua hậu kiểm thấy ví đã có là đủ (xem EnsureWalletExistsAsync).
+                await EnsureWalletExistsAsync(order, ct);
 
                 // 3) Cộng credit ATOMIC theo chủ ví (không đọc-rồi-ghi). Prepaid pack → remaining_credits += credits.
                 await _db.CreditAccounts
@@ -256,6 +233,53 @@ namespace Isas.PaymentService.Services
 
                 return WebhookApplyOutcome.Credited;
             });
+        }
+
+        /// <summary>
+        /// S11-CATCH — bảo đảm ví của chủ đơn tồn tại: chịu được đua tạo ví, mà KHÔNG nuốt lỗi ghi thật.
+        ///
+        /// <para>MỘT bản dùng chung cho cả nhánh thuê bao lẫn nhánh mua credit — hai bản sao của cùng
+        /// một luật tiền là hai bản sao để lệch nhau (mẫu <c>RefundService.ApplyPayoutOutcomeAsync</c>).</para>
+        ///
+        /// <para><b>Hậu kiểm, không lọc theo mã lỗi.</b> Bắt lỗi rồi HỎI LẠI DB "ví có thật sự tồn tại
+        /// không". Có ⇒ đúng là đua, đi tiếp. KHÔNG ⇒ đây là lỗi ghi khác (FK, CHECK, mất kết nối) nên
+        /// <c>throw;</c>: vừa để execution strategy còn cơ hội thử lại (catch trần nuốt mất lỗi tạm thời
+        /// TRƯỚC khi strategy nhìn thấy ⇒ <c>EnableRetryOnFailure</c> thành vô hiệu ở đúng đường tiền),
+        /// vừa để không đi tiếp trên một tiền đề sai. CỐ Ý không lọc bằng
+        /// <c>PostgresException{SqlState:23505}</c>: bộ lọc đó luôn false trên SQLite ⇒ nhánh này sẽ
+        /// không bao giờ được test chạm tới.</para>
+        ///
+        /// <para><b>Vì sao bắt cả <see cref="InvalidOperationException"/>.</b>
+        /// <c>CreateAccountAsync</c> kiểm tra ví rồi mới chèn (check-then-act) và ném
+        /// <c>InvalidOperationException</c> khi thấy đã có. Cửa sổ đua đó RỘNG HƠN cửa sổ UNIQUE — nó mở
+        /// từ lúc <c>GetAccountAsync</c> ngay trên đọc xong cho tới lúc <c>AnyAsync</c> bên trong chạy.
+        /// Trước bản vá, hai site webhook chỉ bắt <c>DbUpdateException</c> ⇒ đối thủ commit đúng trong
+        /// khoảng đó sẽ đẩy exception ra khỏi transaction ⇒ cú lật <c>Pending→Paid</c> rollback theo ⇒
+        /// <b>khách trả tiền mà đơn kẹt Pending vĩnh viễn</b> (đúng lớp lỗi DB20).</para>
+        ///
+        /// <para><b>Vì sao <c>ChangeTracker.Clear()</c> chứ không detach theo kiểu.</b>
+        /// <c>CreateAccountAsync</c> Add HAI entity: ví và bút toán <c>FreeGrant +3</c> (F7). Bản cũ chỉ
+        /// detach <c>CreditAccount</c> ⇒ dòng <c>FreeGrant</c> kẹt <c>Added</c> rồi được
+        /// <c>SaveChanges</c> sau đó chèn thật ⇒ sổ cái +3 trong khi số dư không hề tăng ⇒ <b>gãy bất
+        /// biến remaining + reserved = Σ delta</b> (FK không chặn: ví của bên thắng đã tồn tại). Danh
+        /// sách kiểu cứng đã sai đúng một lần khi F7 thêm entity thứ hai — thêm một vòng lặp nữa chỉ là
+        /// dựng lại cùng cái bẫy cho lần thứ ba.</para>
+        /// </summary>
+        private async Task EnsureWalletExistsAsync(Order order, CancellationToken ct)
+        {
+            if (await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct) is not null) return;
+
+            try
+            {
+                await _accounts.CreateAccountAsync(order.OwnerType, order.OwnerId, ct);
+            }
+            catch (Exception ex) when (ex is DbUpdateException or InvalidOperationException)
+            {
+                _db.ChangeTracker.Clear();
+
+                if (await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct) is null)
+                    throw;
+            }
         }
     }
 }

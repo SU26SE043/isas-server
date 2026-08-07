@@ -160,15 +160,28 @@ namespace Isas.PaymentService.Services
             {
                 await CreateAccountAsync(ownerType, ownerId, ct);
             }
-            catch (DbUpdateException) // đối thủ vừa tạo trước — ví đã tồn tại là đủ, đi tiếp
+            // S11-CATCH — hậu kiểm provider-agnostic thay cho "nuốt mọi lỗi ghi". CỐ Ý không lọc bằng
+            // PostgresException{SqlState}: bộ lọc đó luôn false trên SQLite ⇒ nhánh sẽ không bao giờ
+            // được test chạm tới. Bắt cả InvalidOperationException vì CreateAccountAsync check-then-act.
+            catch (Exception ex) when (ex is DbUpdateException or InvalidOperationException)
             {
-                foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
-                    entry.State = EntityState.Detached;
-                foreach (var entry in _db.ChangeTracker.Entries<CreditTransaction>().ToList())
-                    entry.State = EntityState.Detached;
-            }
-            catch (InvalidOperationException) // CreateAccountAsync tự thấy ví đã tồn tại (check-then-act)
-            {
+                // Dọn TOÀN BỘ tracker: CreateAccountAsync Add hai entity (ví + bút toán FreeGrant của F7).
+                // Bỏ sót dòng FreeGrant thì SaveChanges sau đó chèn nó thật ⇒ sổ cái +3 mà số dư đứng yên.
+                _db.ChangeTracker.Clear();
+
+                if (await _db.CreditAccounts.AnyAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct))
+                    return;     // đúng là đua: ví đã có, đi tiếp
+
+                // ⚠ BẤT ĐỐI XỨNG CÓ CHỦ ĐÍCH — chỗ này KHÔNG `throw;`, khác hai site webhook.
+                // Hàm này chạy NGOÀI transaction, trên đường nóng nhất hệ thống (ReserveAsync), và đã có
+                // sẵn hàng rào hạ cấp mềm ngay phía sau: reserve đọc ví thấy null ⇒ trả Insufficient
+                // (402, ReserveAsync guard no-wallet). Ném ở đây chỉ đổi một cái 402 nói đúng sự thật
+                // ("chưa có ví, không giữ được credit") lấy một cái 500 trên đúng đường tạo buổi thi.
+                // Lỗi KHÔNG bị giấu: log ở mức Error kèm nguyên exception.
+                _logger?.LogError(ex,
+                    "S11-CATCH — không tạo được ví {OwnerType}:{OwnerId} và ví cũng KHÔNG tồn tại sau đó. " +
+                    "Lời gọi reserve sẽ hạ cấp thành Insufficient (402), không phải 500.",
+                    ownerType, ownerId);
             }
         }
 
@@ -275,12 +288,23 @@ namespace Isas.PaymentService.Services
                 {
                     await _db.SaveChangesAsync(ct);
                 }
-                catch (DbUpdateException) // đụng UNIQUE(session_id) → request khác đã reserve session này
+                // S11-CATCH — hậu kiểm: rollback + dọn tracker rồi HỎI LẠI xem session này có THẬT SỰ đã
+                // được request khác giữ chỗ chưa. Bản cũ `catch` trần + `FirstAsync` biến MỌI lỗi ghi
+                // (FK composite owner→credit_accounts DB9, CHECK enum/metered, varchar quá dài, lỗi tạm
+                // thời) thành "Sequence contains no elements" — che mất nguyên nhân thật ở đúng bước tạo
+                // buổi thi của cả B2C lẫn B2B, và nuốt luôn lỗi tạm thời trước khi execution strategy
+                // (EnableRetryOnFailure) kịp nhìn thấy để thử lại.
+                catch (DbUpdateException)
                 {
-                    _db.Entry(reservation).State = EntityState.Detached;
                     await tx.RollbackAsync(ct);
+                    _db.ChangeTracker.Clear();
+
                     var raced = await _db.CreditReservations.AsNoTracking()
-                        .FirstAsync(r => r.SessionId == sessionId, ct);
+                        .FirstOrDefaultAsync(r => r.SessionId == sessionId, ct);
+
+                    // Không có chỗ giữ nào cho session này ⇒ KHÔNG phải đua UNIQUE(session_id) ⇒ lỗi thật.
+                    if (raced is null) throw;
+
                     return ReserveResult.AlreadyReserved(raced.Id, await ReservedCreditsOf(raced.OwnerType, raced.OwnerId, ct));
                 }
 
