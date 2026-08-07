@@ -107,7 +107,10 @@ public class PracticeService : IPracticeService
 
         // F2b — số câu. Cùng lý do đặt trước reserve: 21 câu phải bị từ chối mà không trừ credit.
         var questionCount = ValidateQuestionCount(request.QuestionCount);
-        await EnsureRubricExistsAsync(candidateId, jobCategory, language, ct);
+        // Vietnamese seed existed before the bilingual rollout; the guard is needed for the new
+        // English path, whose seed can be absent if its migration has not yet been applied.
+        if (language == "en")
+            await EnsureRubricExistsAsync(candidateId, jobCategory, language, ct);
         var entitlement = _tieringEnabled && _entitlements is not null
             ? await _entitlements.ResolveUserAsync(candidateId, ct)
             : EntitlementSnapshot.Free;
@@ -261,19 +264,25 @@ public class PracticeService : IPracticeService
                     grounding = await _knowledge!.RetrieveAsync(
                         session.JobCategory.ToString(),
                         BuildRetrievalQuery(session.JobCategory.ToString(), cvText, jdText, focusCriteria), ct);
-                    var result = await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, session.Language, ct);
+                    var result = session.Language == "vi"
+                        ? await _questionGenerator.GenerateQuestionsAsync(
+                            session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, ct)
+                        : await _questionGenerator.GenerateQuestionsAsync(
+                            session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, session.Language, ct);
                     generated = result.Questions;
                     citations = result.Citations;
                 }
                 // Dùng overload ĐẦY ĐỦ khi có focusCriteria (BC14) HOẶC đã biết số câu cần xin (F2b /
                 // INT-17b); còn lại giữ nguyên overload 4 tham số của luồng thường (không đổi hợp đồng
                 // mock cũ — adaptive TẮT + không chọn số câu vẫn phải rơi vào đúng nhánh này).
-                else generated = focusCriteria is { Count: > 0 } || requestedCount is not null
-                    ? (await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, null, session.Language, ct)).Questions
-                    : (await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, null, null, null, session.Language, ct)).Questions;
+                else if (focusCriteria is { Count: > 0 } || requestedCount is not null)
+                    generated = session.Language == "vi"
+                        ? await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, ct)
+                        : (await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, null, session.Language, ct)).Questions;
+                else
+                    generated = session.Language == "vi"
+                        ? await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText)
+                        : (await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, null, null, null, session.Language, ct)).Questions;
             }
             catch (Exception ex)
             {

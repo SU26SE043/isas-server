@@ -34,7 +34,10 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         string jobCategory, string level,
         IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText,
         string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
-        CancellationToken ct = default, string language = "vi")
+        CancellationToken ct = default)
+        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi");
+
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language)
     {
         var payload = new
         {
@@ -105,7 +108,10 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         string jobCategory, string level, string lessonTitle,
         IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses,
         IReadOnlyList<GroundingChunk>? grounding = null,
-        CancellationToken ct = default, string language = "vi")
+        CancellationToken ct = default)
+        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi");
+
+    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language)
     {
         var payload = new
         {
@@ -178,7 +184,10 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
     public async Task<RoadmapSummaryAiResult> SummarizeRoadmapAsync(
         string jobCategory, string level,
         IReadOnlyList<RoadmapCriteriaProgress> criteriaProgress,
-        CancellationToken ct = default, string language = "vi")
+        CancellationToken ct = default)
+        => await SummarizeRoadmapAsync(jobCategory, level, criteriaProgress, ct, "vi");
+
+    public async Task<RoadmapSummaryAiResult> SummarizeRoadmapAsync(string jobCategory, string level, IReadOnlyList<RoadmapCriteriaProgress> criteriaProgress, CancellationToken ct, string language)
     {
         var payload = new
         {

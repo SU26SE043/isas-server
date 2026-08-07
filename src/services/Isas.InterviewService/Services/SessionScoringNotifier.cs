@@ -146,7 +146,9 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             // Không có breakdown (rubric rỗng / BC9 chưa ghi) → không đủ dữ liệu để nhận xét → bỏ qua.
             if (overallScore is not decimal overall || criteria.Count == 0) return;
 
-            var comment = await _summarizer.SummarizeAsync(jobCategory.ToString(), overall, criteria, language, ct);
+            var comment = language == "vi"
+                ? await _summarizer.SummarizeAsync(jobCategory.ToString(), overall, criteria, ct)
+                : await _summarizer.SummarizeAsync(jobCategory.ToString(), overall, criteria, language, ct);
             if (string.IsNullOrWhiteSpace(comment)) return;
 
             await _db.PracticeSessions

@@ -149,9 +149,11 @@ public class RoadmapService : IRoadmapService
         }
 
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
-        var ai = await _generator.GenerateAsync(
-            req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-            focus, cvAnalysisSummary, priorRoadmapSummary, ct, language);
+        var ai = language == "vi"
+            ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct)
+            : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language);
 
         var roadmap = new Roadmap
         {

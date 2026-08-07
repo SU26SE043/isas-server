@@ -36,9 +36,10 @@ public class B2CRubricSeedTests
         await ApplySeedAsync(t.Db);
 
         foreach (var cat in AllCategories)
+        foreach (var language in new[] { "vi", "en" })
         {
             var rows = await t.Db.RubricCriteria.AsNoTracking()
-                .Where(c => c.CampaignId == null && c.IsActive && c.JobCategory == cat)
+                .Where(c => c.CampaignId == null && c.IsActive && c.JobCategory == cat && c.Language == language)
                 .ToListAsync();
 
             Assert.NotEmpty(rows);                          // có nguồn tiêu chí cho nghề (INT-8)
@@ -98,7 +99,7 @@ public class B2CRubricSeedTests
             second.Select(c => c.Id).OrderBy(x => x));                    // Id ổn định giữa các lần build
 
         Assert.Equal(first.Count, first.Select(c => c.Id).Distinct().Count());                    // không trùng Id
-        Assert.Equal(first.Count, first.Select(c => (c.JobCategory, c.Name)).Distinct().Count()); // không trùng (nghề,tên)
+        Assert.Equal(first.Count, first.Select(c => (c.Language, c.JobCategory, c.Name)).Distinct().Count()); // không trùng (ngôn ngữ,nghề,tên)
         Assert.All(first, c => Assert.Null(c.CampaignId));               // đều là rubric B2C
         Assert.All(first, c => Assert.True(c.IsActive));
     }

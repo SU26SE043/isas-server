@@ -84,9 +84,10 @@ public class FluencyMetricsF11Tests
         var seed = B2CRubricSeed.Build();
 
         foreach (var cat in AllCategories)
+        foreach (var language in new[] { "vi", "en" })
         {
-            var rows = seed.Where(c => c.JobCategory == cat).ToList();
-            Assert.Contains(rows, c => c.Name == B2CRubricSeed.FluencyName);
+            var rows = seed.Where(c => c.JobCategory == cat && c.Language == language).ToList();
+            Assert.Contains(rows, c => c.Name == (language == "vi" ? B2CRubricSeed.FluencyName : "Fluency & confidence"));
             // INT-10: rebalance 6 tiêu chí cũ để chừa chỗ cho tiêu chí thứ 7 — Σ phải vẫn đúng 1.
             Assert.Equal(1.0m, rows.Sum(c => c.Weight));
         }

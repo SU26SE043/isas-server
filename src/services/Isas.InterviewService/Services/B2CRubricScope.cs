@@ -24,7 +24,7 @@ public static class B2CRubricScope
     /// <c>c.CampaignId == null &amp;&amp; c.CandidateId == owner &amp;&amp; c.JobCategory == jc</c>.
     /// </summary>
     public static async Task<Guid?> ResolveOwnerAsync(
-        InterviewDbContext db, Guid candidateId, JobCategory jobCategory, string language = "vi", CancellationToken ct = default)
+        InterviewDbContext db, Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct = default)
     {
         var hasOwn = await db.RubricCriteria.AsNoTracking().AnyAsync(
             c => c.CampaignId == null

@@ -50,10 +50,11 @@ public class RoadmapLessonService : IRoadmapLessonService
         // Lazy-gen: gọi AIService (sync). Lỗi → AiServiceException (502) → chưa lưu gì (mở lại được).
         // RAG grounding (Cách 2) — feed snapshot precompute (lesson.GroundingRefs) → AI cite trong tập đó.
         var focus = lesson.Milestone.FocusCriteria ?? new List<string>();
-        var generated = await _generator.GenerateLessonTheoryAsync(
-            roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
-            lesson.Title, focus, BuildWeaknesses(roadmap, focus),
-            grounding: lesson.GroundingRefs, ct: ct, language: roadmap.Language);
+        var generated = roadmap.Language == "vi"
+            ? await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
+                lesson.Title, focus, BuildWeaknesses(roadmap, focus), lesson.GroundingRefs, ct)
+            : await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
+                lesson.Title, focus, BuildWeaknesses(roadmap, focus), lesson.GroundingRefs, ct, roadmap.Language);
         var theory = generated.TheoryMarkdown;
         // F15 — tài liệu học sinh CÙNG lượt với lý thuyết; lưu chung 1 lần ghi để không có trạng
         // thái "có theory mà chưa có resources" (guard idempotent bên dưới chỉ nhìn theory_content).
