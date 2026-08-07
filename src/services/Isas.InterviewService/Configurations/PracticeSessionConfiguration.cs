@@ -33,6 +33,7 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // F2 — thời lượng mỗi câu do ứng viên chọn. defaultValue 120 để row CŨ tự nhận giá trị hợp lệ
         // lúc apply migration (khỏi backfill riêng) và khớp đúng hằng số 120 vốn hardcode trước đây.
         e.Property(x => x.TimeLimitSec).IsRequired().HasDefaultValue(120);
+        e.Property(x => x.Language).HasColumnType("text").IsRequired().HasDefaultValue("vi");
 
         // F2b — trần cứng số câu ở tầng DB. Tầng service đã chặn 1..20 cho B2C, nhưng đường internal
         // (Campaign → /internal/sessions/campaign) không đi qua guard đó ⇒ chốt ở đây cho mọi đường ghi.
@@ -40,6 +41,7 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         e.ToTable(t =>
         {
             t.HasCheckConstraint("ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20");
+            t.HasCheckConstraint("ck_practice_sessions_language", "language IN ('vi', 'en')");
             t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
         });
 

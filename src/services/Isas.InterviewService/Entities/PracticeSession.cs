@@ -17,6 +17,10 @@ public class PracticeSession : IHasUpdatedAt
     public Guid? CvId { get; set; }
     public Guid? JdId { get; set; }
     public JobCategory JobCategory { get; set; }
+
+    // Snapshot per session: adaptive questions, scoring jobs and TTS must use the language chosen
+    // at creation time, never a mutable runtime default.
+    public string Language { get; set; } = "vi";
  
     public SessionStatus Status { get; set; } = SessionStatus.GeneratingQuestions;
  

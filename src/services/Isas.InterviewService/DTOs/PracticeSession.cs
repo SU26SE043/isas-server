@@ -21,7 +21,8 @@ public record CreatePracticeSessionRequest(
     [Required] JobCategory? JobCategory,
     string? JdText = null,     // optional — ưu tiên hơn JdId
     int? TimeLimitSec = null,  // optional — 60/120/240; null = mặc định 120
-    int? QuestionCount = null  // optional — 1..20; null = mặc định của AIService (5)
+    int? QuestionCount = null, // optional — 1..20; null = mặc định của AIService (5)
+    string? Language = null
 );
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).

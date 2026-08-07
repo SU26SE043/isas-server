@@ -98,6 +98,7 @@ public class PracticeService : IPracticeService
         if (request.JobCategory is null)
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
+        var language = ValidateLanguage(request.Language);
 
         // F2 — thời lượng mỗi câu. Guard TRƯỚC reserve (PAY-5): giá trị sai → 400 mà KHÔNG giữ credit oan.
         var timeLimitSec = ValidateTimeLimitSec(request.TimeLimitSec);
@@ -170,6 +171,7 @@ public class PracticeService : IPracticeService
                 CvId = request.CvId,           // có thể null
                 JdId = jdIdToUse,              // null khi JD đến từ text (C11: text ưu tiên file)
                 JobCategory = jobCategory,
+                Language = language,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
@@ -882,6 +884,15 @@ public class PracticeService : IPracticeService
     // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: PracticeController chỉ bắt
     // InvalidOperationException → 400; ArgumentException rơi xuống catch(Exception) → 500. Cùng kiểu với
     // guard jobCategory ngay đầu CreateSessionInternalAsync.
+    private static string ValidateLanguage(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return "vi";
+        var language = requested.Trim().ToLowerInvariant();
+        if (language is not ("vi" or "en"))
+            throw new InvalidOperationException("language chỉ nhận vi hoặc en.");
+        return language;
+    }
+
     private static int ValidateTimeLimitSec(int? requested)
     {
         if (requested is null) return DefaultTimeLimitSec;

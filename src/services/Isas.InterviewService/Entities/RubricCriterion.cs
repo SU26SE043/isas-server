@@ -17,6 +17,7 @@ public class RubricCriterion
 
     public bool IsActive { get; set; } = true;
     public JobCategory JobCategory { get; set; }
+    public string Language { get; set; } = "vi";
     public int Version { get; set; } = 1;
 
     // B2B: tiêu chí thuộc về 1 campaign (thay cho job_category); null = rubric B2C theo JobCategory.
