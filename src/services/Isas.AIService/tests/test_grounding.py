@@ -286,7 +286,7 @@ def test_endpoint_generate_questions_returns_citations(monkeypatch):
 
     monkeypatch.setattr(main_module.provider, "generate", fake_generate)
 
-    res = client.post("/api/v1/generate-questions", json={
+    res = client.post("/api/v1/generate-questions", headers=_HEADERS, json={
         "jobCategory": "FE",
         "grounding": [{"chunkId": "c1", "content": "x"}],
     })
@@ -308,7 +308,7 @@ def test_endpoint_generate_questions_ungrounded_omits_citations(monkeypatch):
 
     monkeypatch.setattr(main_module.provider, "generate", fake_generate)
 
-    res = client.post("/api/v1/generate-questions", json={"jobCategory": "FE"})
+    res = client.post("/api/v1/generate-questions", headers=_HEADERS, json={"jobCategory": "FE"})
 
     assert res.status_code == 200
     body = res.json()
@@ -324,7 +324,7 @@ def test_endpoint_generate_lesson_theory_returns_cited_chunkids(monkeypatch):
 
     monkeypatch.setattr(main_module.provider, "generate_lesson_theory", fake)
 
-    res = client.post("/api/v1/generate-lesson-theory", json={
+    res = client.post("/api/v1/generate-lesson-theory", headers=_HEADERS, json={
         "jobCategory": "FE", "level": "Junior", "lessonTitle": "useEffect",
         "focusCriteria": ["React"],
         "grounding": [{"chunkId": "c1", "content": "x"}],
@@ -344,7 +344,7 @@ def test_endpoint_generate_lesson_theory_ungrounded_omits_cited(monkeypatch):
 
     monkeypatch.setattr(main_module.provider, "generate_lesson_theory", fake)
 
-    res = client.post("/api/v1/generate-lesson-theory", json={
+    res = client.post("/api/v1/generate-lesson-theory", headers=_HEADERS, json={
         "jobCategory": "FE", "level": "Junior", "lessonTitle": "Bài", "focusCriteria": []})
 
     assert res.status_code == 200

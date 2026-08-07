@@ -11,10 +11,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.prompts import build_summarize_session_prompt
+from app.config import settings
 from app.providers.gemini import GeminiProvider
 import app.main as main_module
 
 client = TestClient(main_module.app)
+
+# Q2/GEN-7 — endpoint SINH nay gate X-Internal-Token (fail-closed): mọi call hợp lệ phải
+# kèm _HEADERS. Nhánh 401 nằm ở tests/test_internal_token_gate_q2.py.
+_HEADERS = {"X-Internal-Token": settings.internal_token}
 
 
 def _fake_gemini_response(payload: dict):
@@ -128,6 +133,7 @@ def test_endpoint_summarize_session_response_shape(monkeypatch):
 
     res = client.post(
         "/api/v1/summarize-session",
+        headers=_HEADERS,
         json={
             "jobCategory": "BE",
             "overallScore": 62.5,
@@ -150,6 +156,7 @@ def test_endpoint_summarize_session_empty_criteria_still_ok(monkeypatch):
 
     res = client.post(
         "/api/v1/summarize-session",
+        headers=_HEADERS,
         json={"jobCategory": "FE", "overallScore": 80, "criteriaScores": []},
     )
 
@@ -161,6 +168,7 @@ def test_endpoint_summarize_session_rejects_missing_required_field():
     """Thiếu field bắt buộc (overallScore) → 422 (pydantic validation)."""
     res = client.post(
         "/api/v1/summarize-session",
+        headers=_HEADERS,
         json={"jobCategory": "BE", "criteriaScores": []},
     )
     assert res.status_code == 422
@@ -174,6 +182,7 @@ def test_endpoint_summarize_session_returns_502_when_gemini_fails(monkeypatch):
 
     res = client.post(
         "/api/v1/summarize-session",
+        headers=_HEADERS,
         json={"jobCategory": "BE", "overallScore": 50, "criteriaScores": []},
     )
     assert res.status_code == 502

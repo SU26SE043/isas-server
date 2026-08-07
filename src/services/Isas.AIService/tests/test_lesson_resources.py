@@ -11,10 +11,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
+from app.config import settings
 from app.providers.gemini import GeminiProvider
 from app.resources import sanitize_resources
 
 client = TestClient(main_module.app)
+
+# Q2/GEN-7 — endpoint SINH nay gate X-Internal-Token (fail-closed): mọi call hợp lệ phải
+# kèm _HEADERS. Nhánh 401 nằm ở tests/test_internal_token_gate_q2.py.
+_HEADERS = {"X-Internal-Token": settings.internal_token}
 
 
 def _fake_gemini_response(payload: dict):
@@ -169,6 +174,7 @@ def test_endpoint_returns_resources(monkeypatch):
 
     res = client.post(
         "/api/v1/generate-lesson-theory",
+        headers=_HEADERS,
         json={"jobCategory": "BE", "level": "Junior", "lessonTitle": "Bài",
               "focusCriteria": []},
     )

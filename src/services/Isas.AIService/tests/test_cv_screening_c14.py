@@ -22,6 +22,10 @@ from app.providers.gemini import GeminiProvider
 C1 = "11111111-1111-1111-1111-111111111111"
 C2 = "22222222-2222-2222-2222-222222222222"
 
+# Q2/GEN-7 — endpoint SINH nay gate X-Internal-Token (fail-closed): mọi call hợp lệ phải
+# kèm _HEADERS. Nhánh 401 nằm ở tests/test_internal_token_gate_q2.py.
+_HEADERS = {"X-Internal-Token": settings.internal_token}
+
 
 def _criteria():
     return [
@@ -196,7 +200,7 @@ def test_endpoint_voi_criteria_tra_them_criterion_matches(monkeypatch):
         }
 
     monkeypatch.setattr(main_module.provider, "analyze_cv", fake)
-    res = TestClient(main_module.app).post("/api/v1/analyze-cv", json={
+    res = TestClient(main_module.app).post("/api/v1/analyze-cv", headers=_HEADERS, json={
         "cvText": "cv", "jobCategory": "BE", "criteria": _criteria(),
     })
 
@@ -220,7 +224,7 @@ def test_endpoint_khong_criteria_giu_nguyen_shape_cu(monkeypatch):
         return {"summary": "s", "strengths": ["A"], "weaknesses": ["B"], "suggestions": ["C"]}
 
     monkeypatch.setattr(main_module.provider, "analyze_cv", fake)
-    res = TestClient(main_module.app).post("/api/v1/analyze-cv", json={"cvText": "cv"})
+    res = TestClient(main_module.app).post("/api/v1/analyze-cv", headers=_HEADERS, json={"cvText": "cv"})
 
     assert res.status_code == 200
     assert res.json() == {"summary": "s", "strengths": ["A"],
