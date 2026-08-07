@@ -26,12 +26,15 @@ public class AiServiceSpeechSynthesizer : IAiServiceSpeechSynthesizer
     }
 
     public async Task<QuestionSpeech> SynthesizeAsync(string text, CancellationToken ct = default)
+        => await SynthesizeAsync(text, "vi", ct);
+
+    public async Task<QuestionSpeech> SynthesizeAsync(string text, string language, CancellationToken ct = default)
     {
         // Chỉ gửi NỘI DUNG câu hỏi. Giọng/ngôn ngữ do AIService quyết (hằng phía server) —
         // Interview không cần biết, và client càng không được chọn.
         using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/tts")
         {
-            Content = JsonContent.Create(new { text })
+            Content = JsonContent.Create(new { text, language })
         };
         msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
 

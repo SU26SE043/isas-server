@@ -376,6 +376,8 @@ public class PracticeService : IPracticeService
         if (request.Criteria is null || request.Criteria.Count == 0)
             throw new InvalidOperationException("Campaign session cần ít nhất 1 tiêu chí");
 
+        var language = ValidateLanguage(request.Language);
+
         await EnsureCapacityAsync(ct); // CreateCampaignSession chỉ được gọi khi tạo mới, không chặn resume.
 
         // BK14: reserve 1 credit ví ORG (owner=Org, PAY-6) TRƯỚC khi tạo session row — reserve-first
@@ -399,6 +401,7 @@ public class PracticeService : IPracticeService
                 CandidateId = candidateId,
                 CampaignId = request.CampaignId,
                 JobCategory = request.JobCategory,
+                Language = language,
                 Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
                 CreatedAt = DateTime.UtcNow,
                 Deadline = request.ExpiresAt,   // I2: hạn chót nhận bài (B2B); null → không hard-deadline
@@ -442,6 +445,7 @@ public class PracticeService : IPracticeService
                     IsActive = true,
                     JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
                     CampaignId = request.CampaignId,
+                    Language = language,
                     Version = 1
                 });
                 _db.RubricCriteria.AddRange(criteria);
