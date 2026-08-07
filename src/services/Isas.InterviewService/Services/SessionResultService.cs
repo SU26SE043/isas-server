@@ -84,19 +84,28 @@ public class SessionResultService : ISessionResultService
         int scoredCriteriaCount = 0;   // K = số tiêu chí đã chấm (có điểm)
         foreach (var c in criteria)
         {
-            var hasScore = avgByCriterion.TryGetValue(c.Id, out var avgRaw);
+            // Tiêu chí KHÔNG có answer_scores nào trong buổi ⇒ KHÔNG ghi dòng.
+            //
+            // Trước đây ghi dòng `0.00` + `needs_improvement = true`, nghĩa là "chưa từng được hỏi"
+            // bị ghi xuống y như "trả lời rất tệ". Bảng này là NGUỒN của BC12 (điểm yếu → sinh lộ
+            // trình ôn), BC15 (đo cải thiện) và F14 (mốc so sánh với người khác) ⇒ dữ liệu bẩn không
+            // dừng ở màn hình kết quả mà chảy tiếp vào lộ trình học và vào mốc của cả cộng đồng.
+            // Kể từ khi phạm vi chấm thu hẹp theo câu hỏi, ca này thành ca THƯỜNG GẶP chứ không còn
+            // là ngoại lệ (buổi 5 câu không thể chạm hết mọi tiêu chí nội dung).
+            //
+            // KHÔNG ghi (thay vì ghi kèm cờ "chưa đánh giá") vì cả 5 nơi đọc bảng này đều chỉ duyệt
+            // các dòng CÓ SẴN và gom theo tên tiêu chí — không nơi nào cần "đủ mọi tiêu chí":
+            //   BC10 SessionScoringNotifier · BC12 RoadmapService · BC15 RoadmapReportService ·
+            //   F14 CriterionBenchmarkService · GET kết quả PracticeService/CvVsAnswerReportBuilder.
+            // Thêm cờ thì phải dạy cả 5 nơi bỏ qua nó, và nơi nào quên là quay lại đúng bug này.
+            if (!avgByCriterion.TryGetValue(c.Id, out var avgRaw)) continue;
+
             var maxScore = c.MaxScore > 0 ? c.MaxScore : 1;   // phòng chia 0 (ràng buộc maxScore≥1)
             // Điểm đã kẹp [0,maxScore] ở callback chấm (E8) → percentage nằm [0,100].
-            var pct = hasScore
-                ? Math.Round(Math.Clamp(avgRaw / maxScore * 100m, 0m, 100m), 2)
-                : 0m;
-            var average = hasScore ? Math.Round(avgRaw, 2) : 0m;
+            var pct = Math.Round(Math.Clamp(avgRaw / maxScore * 100m, 0m, 100m), 2);
 
-            if (hasScore)
-            {
-                sumPct += pct;
-                scoredCriteriaCount++;
-            }
+            sumPct += pct;
+            scoredCriteriaCount++;
 
             _db.SessionCriterionScores.Add(new SessionCriterionScore
             {
@@ -104,11 +113,10 @@ public class SessionResultService : ISessionResultService
                 SessionId = sessionId,
                 CriterionId = c.Id,
                 CriterionName = c.Name,
-                AverageScore = average,
+                AverageScore = Math.Round(avgRaw, 2),
                 MaxScore = c.MaxScore,
                 Percentage = pct,
                 Weight = c.Weight,
-                // answeredCount=0 → mọi tiêu chí pct=0 < ngưỡng → needsImprovement = tất cả.
                 NeedsImprovement = pct < _improvementThresholdPct,
                 CreatedAt = DateTime.UtcNow
             });

@@ -255,9 +255,30 @@ public class PracticeService : IPracticeService
             // Rows created before T7 have source=legacy and must keep the old global rollout behaviour.
             var grounded = (session.EntitlementSource == "legacy" ? _grounding.Enabled : session.GroundingEnabled)
                 && _knowledge is not null;
+
+            // Tiêu chí NỘI DUNG của rubric buổi này (ScoringScope.WhenTargeted) — cấp cho AIService để
+            // nó gắn nhãn "câu i nhắm tiêu chí nào". KHÔNG gửi 4 tiêu chí CÁCH NÓI: chúng được chấm cho
+            // mọi câu nên đưa vào chỉ mời mô hình gắn nhãn thừa.
+            // Rỗng (rubric riêng BC16 chưa phân loại / seed chưa apply) → không có gì để gắn nhãn → giữ
+            // NGUYÊN đường gọi cũ bên dưới, câu hỏi không nhãn → chấm đủ rubric như trước.
+            var targetable = await LoadTargetableCriteriaAsync(
+                candidateId, jobCategory, language, ct);
             try
             {
-                if (grounded)
+                if (targetable.Count > 0)
+                {
+                    if (grounded)
+                        grounding = await _knowledge!.RetrieveAsync(
+                            session.JobCategory.ToString(),
+                            BuildRetrievalQuery(session.JobCategory.ToString(), cvText, jdText, focusCriteria), ct);
+
+                    var result = await _questionGenerator.GenerateQuestionsAsync(
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount,
+                        grounded ? grounding : null, session.Language, targetable, ct);
+                    generated = result.Questions;
+                    citations = result.Citations;
+                }
+                else if (grounded)
                 {
                     // RetrieveAsync tự nuốt mọi lỗi → rỗng (degrade). grounding rỗng vẫn gọi overload grounded
                     // để LUÔN emit citations (ít nhất []) — phân biệt "đã grounding, miss" với "không grounding".
@@ -336,12 +357,28 @@ public class PracticeService : IPracticeService
                     // grounded → list (rỗng = ungrounded, non-empty = grounded); không grounded → null.
                     GroundingRefs = grounded
                         ? (citationsByIndex.TryGetValue(idx, out var cits) ? cits : new List<Citation>())
-                        : null
+                        : null,
+                    // Nhãn tiêu chí nội dung. ⚠ GIỮ NGUYÊN 3 trạng thái — `?.ToList()` chứ KHÔNG
+                    // `is {Count:>0} ? … : null`: quy `[]` về null ở đây là làm tính năng vô hiệu đúng
+                    // ở nhóm câu cần nó nhất (câu xã giao vẫn bị chấm tiêu chí chuyên môn).
+                    TargetCriterionIds = q.TargetCriterionIds?.ToList()
                 })
                 .ToList();
 
             _db.PracticeQuestions.AddRange(questions);
             session.Status = SessionStatus.Ready;
+
+            // Con dấu phạm vi chấm (xem PracticeSession.ScoringScopeVersion). Đóng theo SỰ THẬT quan
+            // sát được — có câu nào thực sự mang nhãn không — chứ không theo "code này đã hỗ trợ nhãn".
+            // Buổi không có nhãn nào được chấm y hệt trước đây, đóng dấu 2 cho nó là báo động giả cho
+            // BC15/F14/CAMP-10 (đúng lỗi "suy KHÁC từ KHÔNG BIẾT" mà BK23 cấm, chỉ theo chiều ngược lại).
+            // `is not null` (kể cả `[]`): nhãn RỖNG cũng thu hẹp phạm vi — câu đó chỉ được chấm 4 tiêu
+            // chí cách nói, tức điểm buổi này đã khác thước đo cũ.
+            session.ScoringScopeVersion =
+                questions.Any(q => q.TargetCriterionIds is not null)
+                    ? ScopeVersionPerQuestion
+                    : ScopeVersionFullRubric;
+
             await _db.SaveChangesAsync(ct);
 
             _logger.LogInformation(
@@ -433,7 +470,12 @@ public class PracticeService : IPracticeService
                 // Điều kiện MỘT vế, source-independent: đường B2B không đọc entitlement (Campaign chỉ
                 // CHẶN lúc HR bật, không CẤP giá trị; EntitlementSnapshot không có MaxDeepPerQuestion).
                 MaxFollowUps = maxDeepPerQuestion > 0 ? 0 : (request.MaxFollowUps ?? 0),
-                MaxDeepPerQuestion = maxDeepPerQuestion
+                MaxDeepPerQuestion = maxDeepPerQuestion,
+                // B2B: câu hỏi do HR/Campaign cấp sẵn, KHÔNG đi qua đường gắn nhãn ⇒ chấm trên toàn bộ
+                // tiêu chí campaign, y như trước. Đóng dấu 1 ("đã biết: full rubric") chứ không để null:
+                // null nghĩa là "không biết", mà ở đây ta biết chắc. Quan trọng cho CAMP-10 — xếp hạng
+                // trộn ứng viên trước/sau mốc deploy này vẫn so sánh được, và có dữ liệu để chứng minh.
+                ScoringScopeVersion = ScopeVersionFullRubric
             };
             _db.PracticeSessions.Add(session);
 
@@ -922,6 +964,39 @@ public class PracticeService : IPracticeService
 
     // A session must never reserve a credit for a language whose B2C rubric has not been deployed.
     // Otherwise scoring has no criteria, leaves the answer Uploaded forever, and consumes the credit.
+    // Con dấu phạm vi chấm (practice_sessions.scoring_scope_version). Xem entity để biết ý nghĩa
+    // từng giá trị và vì sao null KHÔNG được đọc là "khác phiên bản".
+    private const int ScopeVersionFullRubric = 1;    // đã biết: chấm trên toàn bộ rubric
+    private const int ScopeVersionPerQuestion = 2;   // đã biết: có câu chấm trên tập tiêu chí hẹp hơn
+
+    /// <summary>
+    /// Tiêu chí NỘI DUNG (<see cref="ScoringScope.WhenTargeted"/>) của rubric B2C đang hiệu lực cho
+    /// (candidate, nghề, ngôn ngữ) — cấp cho AIService để gắn nhãn câu hỏi.
+    ///
+    /// Dùng CHUNG <see cref="B2CRubricScope"/> với 6 site chọn tiêu chí kia (publish · callback ·
+    /// republisher · BC9 · weighted-total · Q9): resolve khác nhau ở đây thì nhãn sẽ trỏ vào id của
+    /// một bộ rubric KHÁC bộ dùng để chấm ⇒ lọc phạm vi không khớp được id nào.
+    /// </summary>
+    private async Task<List<QuestionTargetCriterionDto>> LoadTargetableCriteriaAsync(
+        Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
+    {
+        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, language, ct);
+        var query = _db.RubricCriteria.AsNoTracking()
+            .Where(c => c.IsActive
+                        && c.CampaignId == null
+                        && c.JobCategory == jobCategory
+                        && c.Language == language
+                        && c.ScoringScope == ScoringScope.WhenTargeted);
+        query = owner is Guid oid
+            ? query.Where(c => c.CandidateId == oid)
+            : query.Where(c => c.CandidateId == null);
+
+        return await query
+            .OrderBy(c => c.Name)
+            .Select(c => new QuestionTargetCriterionDto(c.Id, c.Name))
+            .ToListAsync(ct);
+    }
+
     private async Task EnsureRubricExistsAsync(
         Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
     {

@@ -28,10 +28,32 @@ public class RoadmapReportTests
     {
         var session = TestDb.Session(cand, SessionStatus.Scored);
         t.Db.PracticeSessions.Add(session);
+
+        // Câu hỏi + answer ĐÃ CHẤM đứng sau breakdown. Trước đây helper chỉ seed thẳng
+        // session_criterion_scores mà KHÔNG có answer_scores nào — một trạng thái production không
+        // dựng được (bảng này chỉ do SessionResultService ghi, và nó ghi từ answer_scores). Trạng thái
+        // giả đó chỉ vô hại chừng nào BC9 còn "sửa" nó bằng cách ghi đè dòng 0.00; nay BC9 bỏ hẳn dòng
+        // không có điểm nên test integration chạy notifier THẬT sẽ thấy breakdown rỗng.
+        var question = TestDb.Question(session.Id);
+        var answer = TestDb.Answer(
+            session.Id, question.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(question, answer);
+
         foreach (var (name, pct) in scores)
         {
             var criterion = TestDb.Criterion(JobCategory.BE, name: name);   // MaxScore 5, Weight 1.0
             t.Db.RubricCriteria.Add(criterion);
+            // Điểm thô sinh ra ĐÚNG pct mong muốn khi BC9 tính lại: maxScore 5 ⇒ pct = score/5*100.
+            t.Db.AnswerScores.Add(new AnswerScore
+            {
+                Id = Guid.NewGuid(),
+                AnswerId = answer.Id,
+                CriterionId = criterion.Id,
+                Score = Math.Round(pct / 20m, 2),
+                AttemptNo = 1,
+                RubricVersion = 1,
+                CreatedAt = DateTime.UtcNow
+            });
             t.Db.SessionCriterionScores.Add(new SessionCriterionScore
             {
                 Id = Guid.NewGuid(),
