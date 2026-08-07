@@ -778,6 +778,40 @@ def test_content_type_khong_bao_gio_la_video():
         assert not tp.audio_content_type("a" + ext).startswith("video/")
 
 
+def test_hop_dong_duoi_file_voi_dotnet():
+    """BK27 — đuôi .NET cho phép lưu PHẢI nằm trong tập hai bảng bên này hiểu được.
+
+    .NET (`AudioFormats.cs`) quyết định đuôi của S3 key; AIService suy MIME TỪ ĐUÔI ĐÓ khi gửi file
+    gốc lên nhà cung cấp (`main.py` / `worker.py`: `suffix = os.path.splitext(key)[1] or ".webm"`).
+    Hai danh sách nằm ở hai ngôn ngữ, không gì buộc chúng khớp — thêm đuôi một bên mà quên bên kia
+    thì file đi ra với `application/octet-stream`, nhà cung cấp từ chối, nhánh cứu WAV nuốt lỗi, và
+    tính năng "tắt câm" y như các lần trước (env F21/F22, consumer C14).
+
+    CỐ Ý không `pytest.skip` khi thiếu cây .NET: CI `test-python` checkout cả repo, nên skip ở đây
+    chỉ có nghĩa là test tự cho mình qua.
+    """
+    import pathlib
+    import re
+
+    cs = (pathlib.Path(__file__).resolve().parents[2]
+          / "Isas.InterviewService" / "Services" / "AudioFormats.cs").read_text(encoding="utf-8")
+
+    # Chỉ khớp value là đuôi thuần (không có "/"), nên bảng alias — value là MIME — tự rơi ra ngoài.
+    exts = set(re.findall(r'\["[a-z0-9/.+-]+"\]\s*=\s*"([a-z0-9]+)"', cs))
+
+    # Regex hỏng ⇒ tập rỗng ⇒ "tập rỗng là con của mọi tập" ⇒ test xanh mà không kiểm gì.
+    assert len(exts) >= 7, f"parse hụt AudioFormats.cs, chỉ thấy {exts}"
+
+    for ext in exts:
+        dotted = f".{ext}"
+        assert dotted in transcriber_mod.ORIGINAL_EXTENSIONS, (
+            f"{dotted} .NET lưu được nhưng KHÔNG nằm trong ORIGINAL_EXTENSIONS ⇒ file gốc sẽ không "
+            f"bao giờ được gửi thẳng, âm thầm rơi về WAV tái mã hoá")
+        assert dotted in tp.AUDIO_CONTENT_TYPES, (
+            f"{dotted} .NET lưu được nhưng thiếu trong AUDIO_CONTENT_TYPES ⇒ gửi đi dưới nhãn "
+            f"application/octet-stream")
+
+
 def test_gemini_tu_choi_4xx_van_retry_wav(monkeypatch, tmp_path):
     """Nhánh gemini phải retry WAV y như nhánh openai.
 

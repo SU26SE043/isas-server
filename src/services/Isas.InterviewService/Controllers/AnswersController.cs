@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -44,12 +45,51 @@ public class AnswersController : ControllerBase   // KHÔNG [Route] cấp class
         if (!Guid.TryParse(sub, out var candidateId))
             return Unauthorized();
 
+        // Cổng định dạng. ⚠ PHẢI đứng SAU khối parse `sub` ở trên, đừng dời lên trước:
+        //   (a) hai test 401 (`Upload_MissingSubClaim_401`, `Upload_UnparsableSubClaim_401`) chỉ dựng `Length`
+        //       nên `ContentType` là null — dời lên sẽ biến 401 thành 400;
+        //   (b) smoke của CI (`scripts/verify-gateway-openapi.py`) POST body `{}` vào MỌI endpoint trong doc
+        //       mỗi lần deploy, và nó phải tiếp tục dừng ở 401 của tầng auth.
+        var contentType = file.ContentType;
+        if (_config.GetValue("Audio:StrictFormatGate", true))
+        {
+            // Đọc riêng vài byte đầu: `OpenReadStream()` trả stream mới mỗi lần gọi (thân request đã được
+            // buffer) nên lần đọc này không tiêu mất dữ liệu của lần đọc thật bên dưới.
+            var head = new byte[12];
+            int read;
+            await using (var probe = file.OpenReadStream())
+                read = await probe.ReadAtLeastAsync(head, head.Length, throwOnEndOfStream: false, ct);
+
+            if (!AudioFormats.TryResolve(head.AsSpan(0, read), file.ContentType, file.FileName,
+                    out var canonicalMime, out _, out var source))
+            {
+                _logger.LogWarning(
+                    "Từ chối audio không nhận dạng được (session {SessionId}, contentType {ContentType}, tên {FileName})",
+                    sessionId, file.ContentType, file.FileName);
+                return BadRequest(new
+                {
+                    error = $"Định dạng audio không hỗ trợ. Chấp nhận: {AudioFormats.AcceptedList}."
+                });
+            }
+
+            if (source != AudioFormatSource.MagicBytes)
+            {
+                // Quan sát sau deploy: nội dung file lẽ ra luôn tự khai được. Rơi vào đây nghĩa là có client
+                // gửi định dạng ta chưa lường — biết sớm, trước khi nó thành sự cố.
+                _logger.LogWarning(
+                    "Định dạng audio suy từ {Source} chứ không phải nội dung file (session {SessionId}, contentType {ContentType}, tên {FileName})",
+                    source, sessionId, file.ContentType, file.FileName);
+            }
+
+            contentType = canonicalMime;
+        }
+
         try
         {
             await using var stream = file.OpenReadStream();
             var result = await _answerService.UploadAnswerAsync(
                 sessionId, questionId, candidateId,
-                stream, file.ContentType, durationSec, ct);
+                stream, contentType, durationSec, ct);
             return Ok(result);
         }
         catch (KeyNotFoundException ex)

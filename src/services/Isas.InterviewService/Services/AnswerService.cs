@@ -90,7 +90,9 @@ public class AnswerService : IAnswerService
             fileType: "answer-audio",
             userId: candidateId,
             fileId: answerId,
-            ext: "webm",
+            // Đuôi theo ĐỊNH DẠNG THẬT: điện thoại đẻ ra m4a, không phải webm. Đuôi này còn là thứ AIService
+            // dùng để suy MIME khi gửi file gốc lên nhà cung cấp chép lời, nên lưu sai = nói dối một cách im lặng.
+            ext: AudioFormats.ExtFor(contentType),
             contentType: contentType,
             ct: ct);
 
