@@ -43,7 +43,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         if (session is null) return;
 
         var totalScore = await ComputeWeightedTotalScoreAsync(
-            session.Id, session.CampaignId, session.CandidateId, session.JobCategory, ct);
+            session.Id, session.CampaignId, session.CandidateId, session.JobCategory, session.Language, ct);
 
         var evt = new SessionScoredEvent
         {
@@ -169,7 +169,8 @@ public class SessionScoringNotifier : ISessionScoringNotifier
     // Điểm tổng có trọng số dùng cho event (ranking B2B — campaign.md §campaign_rankings:
     // "total_score = Σ pct×weight, chuẩn hoá chia Σweight — Interview tính"). Áp dụng chung cho cả B2C.
     private async Task<decimal> ComputeWeightedTotalScoreAsync(
-        Guid sessionId, Guid? campaignId, Guid candidateId, JobCategory jobCategory, CancellationToken ct)
+        Guid sessionId, Guid? campaignId, Guid candidateId, JobCategory jobCategory, string language,
+        CancellationToken ct)
     {
         // Nguồn tiêu chí tùy mode (E1, giống AnswerService.TryPublishScoringJobAsync):
         // B2B theo campaign_id, B2C theo job_category + campaign_id IS NULL.
@@ -185,10 +186,16 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             // session. Điểm vẫn đúng ở đường thường (criterion lạ không có score → TryGetValue bỏ qua)
             // nên nó không bao giờ tự lộ ra như bug — chỉ âm thầm quét bảng. Không đúng ở đường rubric
             // đổi giữa chừng: score cũ thuộc scope khác lọt vào weightSum. Đưa về CHUNG resolver (6/6 site).
-            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, ct);
+            //
+            // Q8 — cùng cơ chế `continue` đó cũng che một lỗi NẶNG HƠN khi có song ngữ: resolver ở đây
+            // từng gọi overload hard-code "vi" trong khi đường CHẤM resolve theo `session.Language`.
+            // Ứng viên có rubric riêng (RubricLibraryService luôn sinh "vi") + buổi "en" ⇒ hai bên chọn
+            // hai bộ tiêu chí KHÁC HẲN, giao ID rỗng ⇒ mọi vòng lặp `continue` ⇒ weightSum = 0 ⇒ event
+            // mang TotalScore = 0, không phải "lệch nhẹ". Nên `language` phải đi vào CẢ resolver LẪN filter.
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, language, ct);
             criteriaQuery = owner is Guid oid
-                ? criteriaQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory)
-                : criteriaQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory);
+                ? criteriaQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory && c.Language == language)
+                : criteriaQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory && c.Language == language);
         }
         var criteria = await criteriaQuery.ToListAsync(ct);
         if (criteria.Count == 0) return 0m;

@@ -128,12 +128,17 @@ public sealed class TestDb : IDisposable
             NullLogger<RoadmapReportService>.Instance);
 
     // ── Seed helpers ──────────────────────────────────────────────────────
+    // Q8 — `language` có DEFAULT "vi" nên mọi test cũ không phải sửa dòng nào, nhưng chính vì trước
+    // đây KHÔNG có chiều này mà toàn bộ suite đơn ngữ ⇒ vế lọc `c.Language` bị thiếu ở production
+    // không thể biểu hiện. Test song ngữ phải truyền tường minh.
     // candidateId != null = rubric RIÊNG của candidate (BC16); null = seed mặc định dùng chung.
     public static RubricCriterion Criterion(
         JobCategory cat, int version = 1, bool active = true,
-        Guid? campaignId = null, string name = "Clarity", Guid? candidateId = null)
+        Guid? campaignId = null, string name = "Clarity", Guid? candidateId = null,
+        string language = "vi")
         => new()
         {
+            Language = language,
             Id = Guid.NewGuid(),
             Name = name,
             Description = "Trình bày rõ ràng",
@@ -148,9 +153,11 @@ public sealed class TestDb : IDisposable
 
     public static PracticeSession Session(
         Guid candidateId, SessionStatus status, JobCategory cat = JobCategory.BE,
-        Guid? campaignId = null, DateTime? createdAt = null, DateTime? deadline = null)
+        Guid? campaignId = null, DateTime? createdAt = null, DateTime? deadline = null,
+        string language = "vi")
         => new()
         {
+            Language = language,
             Id = Guid.NewGuid(),
             CandidateId = candidateId,
             JobCategory = cat,

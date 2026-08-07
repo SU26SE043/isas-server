@@ -33,7 +33,11 @@ public class RubricLibraryService : IRubricLibraryService
     public async Task<RubricResponse> GetEffectiveAsync(
         Guid candidateId, JobCategory jobCategory, CancellationToken ct = default)
     {
-        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, ct);
+        // TODO(Q9): service này CHƯA có khái niệm ngôn ngữ — cả 6 query bên dưới lẫn `ReplaceAsync`
+        // (không set `Language` ⇒ mọi rubric riêng rơi về "vi") đều đơn ngữ. "vi" viết TƯỜNG MINH ở đây
+        // thay vì ẩn trong overload mặc định, để chỗ cần sửa nhìn thấy được. Hệ quả đang sống: GET trả
+        // 14 tiêu chí Σweight=2.0 và PUT chính payload đó → 400. Sửa = đổi hợp đồng API, cần lockstep FE.
+        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, "vi", ct);
         if (owner is Guid oid)
         {
             var custom = await _db.RubricCriteria.AsNoTracking()

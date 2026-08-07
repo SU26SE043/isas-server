@@ -39,8 +39,14 @@ public class SessionResultService : ISessionResultService
         // Bộ tiêu chí đã chấm (đúng nguồn theo E1/BC16): B2C = rubric nghề active + campaign_id IS NULL,
         // ưu tiên rubric RIÊNG của candidate (nếu có active), else seed mặc định (candidate_id IS NULL).
         var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, session.Language, ct);
+        // Q8 — `c.Language` BẮT BUỘC: seed B2C chứa CẢ vi lẫn en cùng nghề, nên thiếu vế này thì mọi buổi
+        // (kể cả buổi tiếng Việt) nạp 14 tiêu chí thay vì 7. Bảy tiêu chí ngôn ngữ kia không bao giờ có
+        // answer_scores (đường chấm đã lọc đúng) ⇒ ghi xuống thành 7 dòng `0.00` gắn cờ needs_improvement.
+        // `overallScore` không sai (scoredCriteriaCount loại chúng) nhưng session_criterion_scores là
+        // nguồn của BC12 weakness / BC15 đo cải thiện / F14 peer benchmark ⇒ dữ liệu bẩn chảy tiếp.
         var critQuery = _db.RubricCriteria.AsNoTracking()
-            .Where(c => c.IsActive && c.CampaignId == null && c.JobCategory == session.JobCategory);
+            .Where(c => c.IsActive && c.CampaignId == null && c.JobCategory == session.JobCategory
+                        && c.Language == session.Language);
         critQuery = owner is Guid oid
             ? critQuery.Where(c => c.CandidateId == oid)
             : critQuery.Where(c => c.CandidateId == null);
