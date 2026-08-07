@@ -213,8 +213,14 @@ builder.Services.AddRateLimiter(options =>
 // AN TOÀN Ở ĐÂY vì CampaignService KHÔNG có site `BeginTransactionAsync` nào: khi bật
 // EnableRetryOnFailure, transaction do người dùng tự mở sẽ ném InvalidOperationException
 // ("execution strategy does not support user-initiated transactions") trừ khi bọc trong
-// CreateExecutionStrategy(). Interview (1 site) + Payment (5 site) vì thế CHƯA bật — xem
-// ghi chú DB25 trong docs/tasks.md.
+// CreateExecutionStrategy().
+// ⚠ Bất biến "không site nào" nay được KHOÁ BẰNG TEST — `CampaignRetryInvariantDb25bTests`.
+// Trước đó nó chỉ được giữ bằng chính comment này, mà comment không làm đỏ build; rủi ro không
+// lý thuyết vì vòng 2026-08-07 vừa thêm một background service mới (FaceImagePurger, BK25) vào
+// đúng service này. Cần transaction ở đây thì: thêm class DbRetry cho Campaign theo mẫu
+// Isas.PaymentService/Services/DbRetry.cs (nhớ cả vế ChangeTracker.Clear từ lượt 2 — thiếu nó là
+// bug tiền, xem DB25b), bọc site, rồi đổi test sang TransactionSiteScanner.
+// DB25b (2026-08-07): Interview (2 site) + Payment (7 site) NAY ĐÃ bọc và ĐÃ bật retry.
 builder.Services.AddDbContext<CampaignDbContext>(options =>
     options.UseNpgsql(
             builder.Configuration.GetConnectionString("DefaultConnection"),
