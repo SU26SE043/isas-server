@@ -34,11 +34,12 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         string jobCategory, string level,
         IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText,
         string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string language = "vi")
     {
         var payload = new
         {
             jobCategory,
+            language,
             level,
             // rỗng/null → AI sinh roadmap chuẩn theo level (schema WeaknessScore: criterionName + percentage).
             weaknesses = weaknesses?.Select(w => new { criterionName = w.CriterionName, percentage = w.Percentage }),
@@ -104,11 +105,12 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         string jobCategory, string level, string lessonTitle,
         IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses,
         IReadOnlyList<GroundingChunk>? grounding = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string language = "vi")
     {
         var payload = new
         {
             jobCategory,
+            language,
             level,
             lessonTitle,
             focusCriteria = focusCriteria ?? [],
@@ -176,11 +178,12 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
     public async Task<RoadmapSummaryAiResult> SummarizeRoadmapAsync(
         string jobCategory, string level,
         IReadOnlyList<RoadmapCriteriaProgress> criteriaProgress,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string language = "vi")
     {
         var payload = new
         {
             jobCategory,
+            language,
             level,
             criteriaProgress = criteriaProgress.Select(c => new
             {

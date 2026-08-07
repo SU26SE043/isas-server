@@ -15,7 +15,7 @@ public interface IAiServiceRoadmapGenerator
         string? focus,                 // BC17 — mô tả tự do
         string? cvAnalysisSummary,     // BC17 — tóm tắt từ cv_analyses (BC7)
         string? priorRoadmapSummary,   // BC17 — tóm tắt từ final_report roadmap trước (BC15)
-        CancellationToken ct = default);
+        CancellationToken ct = default, string language = "vi");
 
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
     // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là
@@ -30,7 +30,7 @@ public interface IAiServiceRoadmapGenerator
         IReadOnlyList<string> focusCriteria,
         IReadOnlyList<string>? weaknesses,
         IReadOnlyList<GroundingChunk>? grounding = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default, string language = "vi");
 
     // BC15 — nhận xét chung khi roadmap Completed (kết luận chi tiết theo tiến độ tiêu chí). AI KHÔNG ghi DB.
     // best-effort: lỗi → AiServiceException; caller (RoadmapReportService) nuốt → để rỗng/null, KHÔNG chặn Completed.
@@ -38,5 +38,5 @@ public interface IAiServiceRoadmapGenerator
         string jobCategory,
         string level,
         IReadOnlyList<RoadmapCriteriaProgress> criteriaProgress,
-        CancellationToken ct = default);
+        CancellationToken ct = default, string language = "vi");
 }

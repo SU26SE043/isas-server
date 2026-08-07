@@ -53,7 +53,7 @@ public class RoadmapLessonService : IRoadmapLessonService
         var generated = await _generator.GenerateLessonTheoryAsync(
             roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
             lesson.Title, focus, BuildWeaknesses(roadmap, focus),
-            grounding: lesson.GroundingRefs, ct: ct);
+            grounding: lesson.GroundingRefs, ct: ct, language: roadmap.Language);
         var theory = generated.TheoryMarkdown;
         // F15 — tài liệu học sinh CÙNG lượt với lý thuyết; lưu chung 1 lần ghi để không có trạng
         // thái "có theory mà chưa có resources" (guard idempotent bên dưới chỉ nhìn theory_content).
