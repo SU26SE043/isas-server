@@ -352,6 +352,13 @@ namespace Isas.CampaignService.Services
             if (request.Domain is not null)
                 campaign.Domain = request.Domain;
 
+            if (request.Language is not null)
+            {
+                if (campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException("Chỉ được đổi language khi campaign ở Draft.");
+                campaign.Language = ValidateLanguage(request.Language);
+            }
+
             if (request.MaxCandidates.HasValue)
                 campaign.MaxCandidates = request.MaxCandidates;
 
