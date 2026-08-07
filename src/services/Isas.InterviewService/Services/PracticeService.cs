@@ -259,7 +259,7 @@ public class PracticeService : IPracticeService
                         session.JobCategory.ToString(),
                         BuildRetrievalQuery(session.JobCategory.ToString(), cvText, jdText, focusCriteria), ct);
                     var result = await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, ct);
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, session.Language, ct);
                     generated = result.Questions;
                     citations = result.Citations;
                 }
@@ -267,13 +267,10 @@ public class PracticeService : IPracticeService
                 // INT-17b); còn lại giữ nguyên overload 4 tham số của luồng thường (không đổi hợp đồng
                 // mock cũ — adaptive TẮT + không chọn số câu vẫn phải rơi vào đúng nhánh này).
                 else generated = focusCriteria is { Count: > 0 } || requestedCount is not null
-                    ? await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, ct)
-                    : await _questionGenerator.GenerateQuestionsAsync(
-                        jobCategory: session.JobCategory.ToString(),
-                        cvText: cvText,            // null nếu không có
-                        jdText: jdText,            // null nếu không có
-                        ct: ct);
+                    ? (await _questionGenerator.GenerateQuestionsAsync(
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, null, session.Language, ct)).Questions
+                    : (await _questionGenerator.GenerateQuestionsAsync(
+                        session.JobCategory.ToString(), cvText, jdText, null, null, null, session.Language, ct)).Questions;
             }
             catch (Exception ex)
             {

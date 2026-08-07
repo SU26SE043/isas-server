@@ -10,6 +10,7 @@ public class ScoringJob
     // Các field worker Python cần để chấm theo rubric:
     public string QuestionContent { get; set; } = null!;
     public string JobCategory { get; set; } = null!;
+    public string Language { get; set; } = "vi";
     public int RubricVersion { get; set; }
     public List<ScoringCriterionDto> Criteria { get; set; } = [];
 

@@ -25,6 +25,11 @@ public interface IAiServiceQuestionGenerator
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count,
         IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct = default);
+
+    Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language, CancellationToken ct = default);
 }
 
 // Nhét cái này vào chung file DTOs của ông

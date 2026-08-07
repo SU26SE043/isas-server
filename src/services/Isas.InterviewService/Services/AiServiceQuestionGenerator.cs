@@ -50,6 +50,12 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count,
         IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct = default)
+        => await GenerateQuestionsAsync(jobCategory, cvText, jdText, focusCriteria, count, grounding, "vi", ct);
+
+    public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language, CancellationToken ct = default)
     {
         var payload = new
         {
@@ -59,6 +65,7 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             // ⚠ Field TỪNG bị AIService nuốt im lặng (pydantic extra='ignore') — đã khai ở schema (F2b/W1).
             focusCriteria = focusCriteria is { Count: > 0 } ? focusCriteria : null,
             count,
+            language,
             // RAG grounding — chunk truy hồi (Contract 2). Chỉ gửi khi có → AIService chèn block "TÀI LIỆU
             // THAM CHIẾU UY TÍN" + trả citations. null → sinh ungrounded như cũ (Campaign B2B không truyền).
             grounding = grounding is { Count: > 0 }
