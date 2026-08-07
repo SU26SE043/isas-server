@@ -28,7 +28,10 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
     };
 
     // Contract 2 — questions GIỮ NGUYÊN (Campaign B2B còn gọi); citations ADDITIVE (chỉ có khi truyền grounding).
-    private record FastAPIQuestionsResponse(List<string>? Questions, List<CitationApi>? Citations);
+    // targetCriteria ADDITIVE: mảng SONG SONG theo index với `questions`, phần tử i = danh sách
+    // criterionId (string GUID) mà `questions[i]` nhắm tới; có thể rỗng (AIService fail-open).
+    private record FastAPIQuestionsResponse(
+        List<string>? Questions, List<CitationApi>? Citations, List<List<string>?>? TargetCriteria);
     private record CitationApi(int QuestionIndex, List<string>? CitedChunkIds);
 
     public Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
@@ -56,6 +59,14 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count,
         IReadOnlyList<GroundingChunk>? grounding, string language, CancellationToken ct = default)
+        => await GenerateQuestionsAsync(
+            jobCategory, cvText, jdText, focusCriteria, count, grounding, language, criteria: null, ct);
+
+    public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria, CancellationToken ct = default)
     {
         var payload = new
         {
@@ -70,6 +81,13 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             // THAM CHIẾU UY TÍN" + trả citations. null → sinh ungrounded như cũ (Campaign B2B không truyền).
             grounding = grounding is { Count: > 0 }
                 ? grounding.Select(g => new { chunkId = g.ChunkId, content = g.Content, sourceUrl = g.SourceUrl, sourceTitle = g.SourceTitle })
+                : null,
+            // Tiêu chí NỘI DUNG để AIService gắn nhãn từng câu. Vắng/rỗng → gửi null ⇒ AIService KHÔNG
+            // gắn nhãn (hành vi cũ). Anonymous object viết tay tên trường camelCase — CÙNG LÝ DO như
+            // `grounding` ngay trên: JsonContent.Create không áp naming policy, dùng record .NET ở đây
+            // sẽ serialize ra `CriterionId`/`Name` và Python im lặng bỏ qua.
+            criteria = criteria is { Count: > 0 }
+                ? criteria.Select(c => new { criterionId = c.CriterionId, name = c.Name })
                 : null
         };
 
@@ -104,8 +122,20 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
 
         var body = await response.Content.ReadFromJsonAsync<FastAPIQuestionsResponse>(Json, ct);
 
+        // Nhãn tiêu chí theo INDEX. GUARD by-construction (mẫu GroundingMapper "drop id lạ"): chỉ nhận
+        // id parse được VÀ nằm trong tập tiêu chí CHÍNH TA vừa gửi đi ⇒ AIService không thể bịa ra một
+        // tiêu chí không có trong rubric để lái phạm vi chấm.
+        var allowedIds = criteria is { Count: > 0 }
+            ? criteria.Select(c => c.CriterionId).ToHashSet()
+            : null;
+        var targets = body?.TargetCriteria;
+
         var questions = (body?.Questions ?? new List<string>())
-            .Select(qText => new GeneratedQuestion { Content = qText })
+            .Select((qText, idx) => new GeneratedQuestion
+            {
+                Content = qText,
+                TargetCriterionIds = ParseTargets(targets, idx, allowedIds)
+            })
             .ToList();
 
         var citations = (body?.Citations ?? new List<CitationApi>())
@@ -113,5 +143,48 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             .ToList();
 
         return new GeneratedQuestionsResult(questions, citations);
+    }
+
+    /// <summary>
+    /// Nhãn của câu thứ <paramref name="index"/>: parse GUID, bỏ id lạ (không nằm trong
+    /// <paramref name="allowedIds"/> = tập ta đã gửi), khử trùng.
+    ///
+    /// <para>🔑 Giữ ĐÚNG 3 trạng thái (xem <see cref="Entities.PracticeQuestion.TargetCriterionIds"/>):</para>
+    /// <list type="bullet">
+    ///   <item>AIService không trả mảng / index vượt / phần tử <c>null</c> ⇒ <c>null</c> = CHƯA HỎI.</item>
+    ///   <item>Phần tử là <c>[]</c> ⇒ trả <c>[]</c> = ĐÃ HỎI, câu không nhắm tiêu chí nội dung nào
+    ///   (câu xã giao) ⇒ chỉ chấm 4 tiêu chí cách nói. KHÔNG được quy về <c>null</c>.</item>
+    ///   <item>Phần tử có id nhưng KHÔNG id nào sống sót qua guard ⇒ <c>null</c>, KHÔNG phải <c>[]</c>:
+    ///   AIService vừa khẳng định câu này có nhắm tiêu chí, chỉ là nó gọi tên những thứ không thuộc
+    ///   rubric ⇒ ta không có tín hiệu đáng tin nào để thu hẹp, và "toàn id lạ" khác hẳn với lời
+    ///   khẳng định "không nhắm gì cả".</item>
+    /// </list>
+    /// </summary>
+    private IReadOnlyList<Guid>? ParseTargets(
+        List<List<string>?>? targets, int index, HashSet<Guid>? allowedIds)
+    {
+        if (targets is null || index >= targets.Count) return null;
+        var raw = targets[index];
+        if (raw is null) return null;
+        if (raw.Count == 0) return Array.Empty<Guid>();
+
+        var parsed = new List<Guid>();
+        foreach (var s in raw)
+        {
+            if (!Guid.TryParse(s, out var id)) continue;
+            if (allowedIds is not null && !allowedIds.Contains(id)) continue;
+            if (!parsed.Contains(id)) parsed.Add(id);
+        }
+
+        if (parsed.Count == 0)
+        {
+            _logger.LogWarning(
+                "AIService gắn nhãn câu {Index} bằng {Count} tiêu chí nhưng KHÔNG id nào thuộc rubric đã gửi "
+                + "({Raw}) — bỏ nhãn (chấm đủ rubric) thay vì coi như câu không nhắm tiêu chí nào",
+                index, raw.Count, string.Join(",", raw));
+            return null;
+        }
+
+        return parsed;
     }
 }

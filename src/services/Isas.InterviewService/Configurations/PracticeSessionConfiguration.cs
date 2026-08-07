@@ -57,6 +57,11 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // BC9 — điểm tổng buổi B2C (nullable; set khi Scored).
         e.Property(x => x.OverallScore).HasColumnType("numeric(5,2)");
 
+        // Con dấu phạm vi chấm — NULLABLE và CỐ Ý KHÔNG có default: default sẽ gán một giá trị "đã
+        // biết" cho toàn bộ row cũ, tức khai rằng ta biết chúng được chấm theo phạm vi nào. Ta không
+        // biết (BK23). null phải giữ đúng nghĩa "không biết".
+        e.Property(x => x.ScoringScopeVersion);
+
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 
@@ -171,6 +176,22 @@ public class PracticeQuestionConfiguration : IEntityTypeConfiguration<PracticeQu
         refs.HasConversion(refsConverter);
         refs.Metadata.SetValueComparer(refsComparer);
         refs.HasColumnType("jsonb");
+
+        // Tiêu chí NỘI DUNG mà câu hỏi nhắm tới (jsonb NULLABLE — null = không nhãn ⇒ chấm đủ rubric).
+        // Cùng khuôn converter null-safe với GroundingRefs ngay trên: NULLABLE nên `AddColumn` KHÔNG
+        // cần defaultValue → né hẳn bug F15 (EF scaffold `defaultValue: ""` cho cột jsonb làm Postgres
+        // từ chối ngay tại ALTER TABLE, trong khi SQLite/EnsureCreated bỏ qua migration nên test xanh 100%).
+        var targetConverter = new ValueConverter<List<Guid>?, string?>(
+            v => v == null ? null : JsonSerializer.Serialize(v, KnowledgeJson.Options),
+            v => v == null ? null : JsonSerializer.Deserialize<List<Guid>>(v, KnowledgeJson.Options));
+        var targetComparer = new ValueComparer<List<Guid>?>(
+            (a, b) => (a ?? new List<Guid>()).SequenceEqual(b ?? new List<Guid>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, g) => HashCode.Combine(h, g.GetHashCode())),
+            v => v == null ? null : v.ToList());
+        var targets = e.Property(x => x.TargetCriterionIds);
+        targets.HasConversion(targetConverter);
+        targets.Metadata.SetValueComparer(targetComparer);
+        targets.HasColumnType("jsonb");
 
         e.HasIndex(x => new { x.SessionId, x.OrderNo }).IsUnique();
 

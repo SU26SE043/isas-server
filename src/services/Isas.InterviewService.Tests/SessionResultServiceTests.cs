@@ -262,9 +262,15 @@ public class SessionResultServiceTests
         Assert.Equal(1, count);   // không nhân đôi
     }
 
-    // Edge: answeredCount=0 (mọi câu Failed, không có answer_scores) → overall=0, mọi tiêu chí cần cải thiện.
+    // Edge: answeredCount=0 (mọi câu Failed, không có answer_scores) → overall=0 và KHÔNG ghi dòng nào.
+    //
+    // ⚠ ĐẢO TIỀN ĐỀ CÓ CHỦ ĐÍCH (tên cũ: ..._AllNeedImprovement). Bản cũ khẳng định "ghi đủ 2 dòng
+    // 0.00 + needs_improvement" — tức khoá lại đúng hành vi vừa bị bỏ: ghi "chưa từng được hỏi" xuống
+    // y như "trả lời rất tệ", rồi để BC12 (điểm yếu → lộ trình ôn) / BC15 (đo cải thiện) / F14 (mốc
+    // cộng đồng) đọc tiếp. Kể từ khi phạm vi chấm thu hẹp theo câu hỏi, tiêu chí không có điểm là ca
+    // THƯỜNG GẶP chứ không còn là edge, nên hành vi cũ sẽ bơm dữ liệu bẩn vào cả ba nơi đó.
     [Fact]
-    public async Task Compute_B2C_NoScoredAnswers_OverallZero_AllNeedImprovement()
+    public async Task Compute_B2C_NoScoredAnswers_OverallZero_NoRowsWritten()
     {
         using var t = new TestDb();
         var candidate = Guid.NewGuid();
@@ -283,11 +289,41 @@ public class SessionResultServiceTests
         Assert.Equal(0m, s.OverallScore);
         Assert.Equal(0, s.AnsweredCount);
 
+        // Không tiêu chí nào có answer_scores ⇒ không dòng nào được ghi (thay vì 2 dòng 0.00).
         var rows = await t.Db.SessionCriterionScores.AsNoTracking()
             .Where(x => x.SessionId == session.Id).ToListAsync();
-        Assert.Equal(2, rows.Count);
-        Assert.All(rows, r => Assert.Equal(0m, r.Percentage));
-        Assert.All(rows, r => Assert.True(r.NeedsImprovement));   // tất cả tiêu chí
+        Assert.Empty(rows);
+    }
+
+    // Tiêu chí KHÔNG được câu nào nhắm tới (không có answer_scores) không được ghi thành dòng 0.00,
+    // trong khi tiêu chí CÓ điểm vẫn ghi bình thường. Đây là ca chính sau khi phạm vi chấm thu hẹp:
+    // buổi 5 câu không thể chạm hết mọi tiêu chí nội dung của rubric.
+    [Fact]
+    public async Task Compute_B2C_CriterionNeverAsked_IsOmitted_NotWrittenAsZero()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scored, JobCategory.BE);
+        var q = TestDb.Question(session.Id);
+        var asked = Crit(JobCategory.BE, "Đã hỏi", maxScore: 5, weight: 0.5m);
+        var neverAsked = Crit(JobCategory.BE, "Chưa hỏi bao giờ", maxScore: 5, weight: 0.5m);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, asked, neverAsked, answer);
+        t.Db.Add(Score(answer.Id, asked.Id, 4m));   // 4/5 = 80%
+        await t.Db.SaveChangesAsync();
+
+        await BuildService(t).ComputeAndStoreAsync(session.Id);
+
+        var rows = await t.Db.SessionCriterionScores.AsNoTracking()
+            .Where(x => x.SessionId == session.Id).ToListAsync();
+        var row = Assert.Single(rows);
+        Assert.Equal(asked.Id, row.CriterionId);
+        Assert.DoesNotContain(rows, r => r.CriterionId == neverAsked.Id);
+
+        // overallScore GIỮ NGUYÊN công thức (TB cộng trên các tiêu chí ĐÃ chấm — INT-10): tiêu chí
+        // chưa hỏi vốn đã bị loại khỏi mẫu số từ trước, nên bỏ dòng không làm điểm nhúc nhích.
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(80m, s.OverallScore);
     }
 
     // ── (b) GET /sessions/{id} trả result đúng shape (đọc từ DB, không tính lại) ──────

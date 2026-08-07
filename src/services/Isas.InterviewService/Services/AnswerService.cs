@@ -533,9 +533,21 @@ public class AnswerService : IAnswerService
                 return;
             }
 
-            // Tất cả criterion active của 1 nghề dùng chung 1 version.
+            // Tất cả criterion active của 1 nghề dùng chung 1 version. Đọc từ bộ ĐẦY ĐỦ (không phải
+            // bộ đã lọc) để con số này không đổi theo phạm vi chấm của từng câu.
             var rubricVersion = criteria[0].Version;
-            var builtCriteria = ScoringCriteriaBuilder.Build(criteria);   // E9: kèm levels (+ anchors)
+
+            // Chấm ĐÚNG PHẠM VI: 4 tiêu chí cách nói (luôn) + tiêu chí nội dung câu hỏi này nhắm tới.
+            // Câu không có nhãn → nguyên bộ (lùi an toàn). Xem ScoringScopeFilter.
+            var scopedCriteria = ScoringScopeFilter.Apply(
+                criteria, question.TargetCriterionIds, _logger, answer.Id);
+            if (scopedCriteria.Count < criteria.Count)
+                _logger.LogInformation(
+                    "Phạm vi chấm answer {AnswerId}: {Scoped}/{Total} tiêu chí (câu hỏi {QuestionId} nhắm {Targeted})",
+                    answer.Id, scopedCriteria.Count, criteria.Count, question.Id,
+                    string.Join(",", question.TargetCriterionIds ?? []));
+
+            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria);   // E9: kèm levels (+ anchors)
 
             // E10 — self-consistency: publish N job (attempt 1..N) cho cùng 1 answer để chấm N lần.
             //   attempt 1 → temp=0 (tái lập); 2..N → SelfConsistencyTemperature (dao động thật để đo spread).

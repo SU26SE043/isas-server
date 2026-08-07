@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Isas.InterviewService.Entities;
+using Isas.InterviewService.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -29,6 +30,11 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
             t.HasCheckConstraint(
                 "ck_rubric_criteria_language",
                 "language IN ('vi', 'en')");
+
+            // Phạm vi chấm lưu string (GEN-2) → CHECK chặn giá trị lạ ở tầng DB (mẫu ck_..._language).
+            t.HasCheckConstraint(
+                "ck_rubric_criteria_scoring_scope",
+                "scoring_scope IN ('Always', 'WhenTargeted')");
         });
 
         e.HasKey(x => x.Id);
@@ -43,6 +49,18 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
             .HasMaxLength(8)
             .IsRequired();
         e.Property(x => x.Language).HasColumnType("text").IsRequired().HasDefaultValue("vi");
+
+        // Phạm vi chấm — string (GEN-2) + default 'Always' ở TẦNG DB, để `AddColumn` của migration tự
+        // điền cho mọi row đang có (rubric riêng BC16 + tiêu chí campaign B2B) mà không cần backfill tay.
+        //
+        // ⚠ Độ dài 24 cho chuỗi dài nhất 12 ký tự ('WhenTargeted') — bài học S11: `funded_by`
+        // varchar(16) gặp enum 19 ký tự làm VỠ mọi lượt ghi trên Postgres trong khi SQLite (test)
+        // KHÔNG enforce độ dài nên toàn bộ test vẫn xanh. Chừa gấp đôi.
+        e.Property(x => x.ScoringScope)
+            .HasConversion<string>()
+            .HasMaxLength(24)
+            .IsRequired()
+            .HasDefaultValue(ScoringScope.Always);
 
         e.Property(x => x.Version).IsRequired();
 
