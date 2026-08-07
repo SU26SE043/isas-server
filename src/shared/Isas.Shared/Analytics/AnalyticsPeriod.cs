@@ -4,7 +4,30 @@
 
     public enum AnalyticsPeriodError { None, InvalidRange, InvalidGranularity }
 
-    public readonly record struct AnalyticsBucketKey(int Year, int Month, int Day, int Hour);
+    /// <summary>
+    /// Khoá bucket analytics. <b>Phải tự khai <c>IComparable</c></b>: <c>record struct</c> chỉ auto-sinh
+    /// <c>IEquatable</c> (đủ cho <c>GroupBy</c>) chứ KHÔNG sinh <c>CompareTo</c> — thiếu nó thì
+    /// <c>Comparer&lt;T&gt;.Default</c> rơi về <c>ObjectComparer</c> và <c>OrderBy</c> ném
+    /// <c>ArgumentException("At least one object must implement IComparable")</c> ngay ở lần so ĐẦU TIÊN.
+    /// Nghĩa là 0–1 bucket thì im lặng, ≥2 bucket mới nổ ⇒ fixture test 1 bucket xanh trong khi
+    /// production 500 với mọi dải ngày thật (đo 2026-08-07: 3/4 API admin analytics chết).
+    /// </summary>
+    public readonly record struct AnalyticsBucketKey(int Year, int Month, int Day, int Hour)
+        : IComparable<AnalyticsBucketKey>
+    {
+        // Bậc thang thay vì (Y,M,D,H).CompareTo(tuple): để mutation gỡ ĐÚNG MỘT bậc được, và để thêm
+        // field mới thì thấy ngay phải sửa ở đây — record tự cập nhật Equals nhưng KHÔNG cập nhật CompareTo.
+        public int CompareTo(AnalyticsBucketKey other)
+        {
+            var c = Year.CompareTo(other.Year);
+            if (c != 0) return c;
+            c = Month.CompareTo(other.Month);
+            if (c != 0) return c;
+            c = Day.CompareTo(other.Day);
+            if (c != 0) return c;
+            return Hour.CompareTo(other.Hour);
+        }
+    }
 
     public sealed record AnalyticsPeriodResult(DateTime FromUtc, DateTime ToUtc, AnalyticsGranularity Granularity);
 

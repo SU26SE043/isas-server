@@ -182,5 +182,66 @@ namespace Isas.Shared.Tests
 
             Assert.Equal(new DateTime(2026, 7, 20, 15, 0, 0, DateTimeKind.Utc), start);
         }
+
+        // ── Q5: AnalyticsBucketKey phải sắp xếp được ─────────────────────────
+        // Trước bản vá, `OrderBy` trên khoá này ném ArgumentException NGAY LẦN SO ĐẦU TIÊN ⇒ chỉ nổ khi
+        // có ≥2 bucket. Mọi test cũ ở file này chỉ dùng Equals/NotEqual (IEquatable có sẵn) nên mù ca đó.
+
+        [Fact]
+        public void OrderBy_NhieuBucket_SapTheoThoiGian_KeCaVuotBienNamVaThang()
+        {
+            // Cố ý trộn: vượt biên NĂM (2025-12-31 → 2026-01-01) và vượt biên THÁNG (2026-01-31 → 2026-02-01).
+            // Nếu CompareTo so sai bậc (vd bỏ Year) thì hai cặp này là chỗ lộ ra trước tiên.
+            var mong = new[]
+            {
+                new AnalyticsBucketKey(2025, 12, 31, 0),
+                new AnalyticsBucketKey(2026, 1, 1, 0),
+                new AnalyticsBucketKey(2026, 1, 31, 0),
+                new AnalyticsBucketKey(2026, 2, 1, 0),
+                new AnalyticsBucketKey(2026, 2, 1, 5),
+            };
+            var tron = new[] { mong[3], mong[0], mong[4], mong[2], mong[1] };
+
+            Assert.Equal(mong, tron.OrderBy(k => k).ToArray());
+        }
+
+        [Theory]
+        // Mỗi cặp chỉ khác ĐÚNG MỘT trường ⇒ mutation gỡ một bậc trong CompareTo làm đúng dòng này đỏ.
+        [InlineData(2025, 7, 20, 3, 2026, 7, 20, 3)]  // Year
+        [InlineData(2026, 6, 20, 3, 2026, 7, 20, 3)]  // Month
+        [InlineData(2026, 7, 19, 3, 2026, 7, 20, 3)]  // Day
+        [InlineData(2026, 7, 20, 2, 2026, 7, 20, 3)]  // Hour
+        public void CompareTo_TungBac_NhoHonThiAm(int y1, int m1, int d1, int h1, int y2, int m2, int d2, int h2)
+        {
+            var nho = new AnalyticsBucketKey(y1, m1, d1, h1);
+            var lon = new AnalyticsBucketKey(y2, m2, d2, h2);
+
+            Assert.True(nho.CompareTo(lon) < 0);
+            Assert.True(lon.CompareTo(nho) > 0);
+        }
+
+        [Fact]
+        public void CompareTo_NhatQuanVoi_Equals()
+        {
+            var keys = new[]
+            {
+                new AnalyticsBucketKey(2026, 7, 20, 3),
+                new AnalyticsBucketKey(2026, 7, 20, 4),
+                new AnalyticsBucketKey(2026, 7, 21, 3),
+                new AnalyticsBucketKey(2026, 8, 20, 3),
+            };
+
+            foreach (var a in keys)
+                foreach (var b in keys)
+                    Assert.Equal(a.Equals(b), a.CompareTo(b) == 0);
+        }
+
+        [Fact]
+        public void ThemFieldMoi_PhaiSuaCaCompareTo_KhongChiEquals()
+        {
+            // Guard trôi dạt: `record struct` tự cập nhật Equals/GetHashCode khi thêm field, nhưng CompareTo
+            // là code viết tay ⇒ field thứ 5 sẽ lọt khỏi thứ tự sắp xếp trong IM LẶNG. Test này đỏ để nhắc.
+            Assert.Equal(4, typeof(AnalyticsBucketKey).GetProperties().Length);
+        }
     }
 }
