@@ -1,5 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 using PaymentService.Models;
 
 namespace Isas.PaymentService.Tests;
@@ -28,13 +30,25 @@ public sealed class PaymentTestDb : IDisposable
         Db.Database.EnsureCreated();
     }
 
-    public PaymentDbContext NewContext()
+    public PaymentDbContext NewContext() => NewContext(null, null);
+
+    /// <summary>
+    /// DB25b — biến thể cho phép cắm <paramref name="strategy"/> (execution strategy) và
+    /// <paramref name="interceptors"/>. Cả hai mặc định <c>null</c> ⇒ hành vi y hệt
+    /// <see cref="NewContext()"/>, nên mọi test cũ không đổi một dòng.
+    ///
+    /// Cần thiết vì SQLite mặc định chạy chiến lược KHÔNG-retry, tức là ràng buộc "không được tự mở
+    /// transaction" của Npgsql <c>EnableRetryOnFailure</c> không bao giờ được kiểm trong CI.
+    /// </summary>
+    public PaymentDbContext NewContext(
+        Func<ExecutionStrategyDependencies, IExecutionStrategy>? strategy,
+        IEnumerable<IInterceptor>? interceptors)
     {
-        var options = new DbContextOptionsBuilder<PaymentDbContext>()
-            .UseSqlite(_conn)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-        return new PaymentDbContext(options);
+        var builder = new DbContextOptionsBuilder<PaymentDbContext>()
+            .UseSqlite(_conn, o => { if (strategy is not null) o.ExecutionStrategy(strategy); })
+            .UseSnakeCaseNamingConvention();
+        if (interceptors is not null) builder.AddInterceptors(interceptors);
+        return new PaymentDbContext(builder.Options);
     }
 
     public void Dispose()

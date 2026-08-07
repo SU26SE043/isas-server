@@ -189,35 +189,43 @@ public class SessionAbandonSweeper : BackgroundService
     {
         var now = DateTime.UtcNow;
 
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
-
-        var updated = await db.PracticeSessions
-            .Where(x => x.Id == s.Id
-                        && (x.Status == SessionStatus.Ready || x.Status == SessionStatus.InProgress))
-            .ExecuteUpdateAsync(u => u
-                .SetProperty(x => x.Status, SessionStatus.SessionAbandoned)
-                .SetProperty(x => x.CompletedAt, now)
-                // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
-                .SetProperty(x => x.UpdatedAt, now), ct);
-
-        if (updated == 0)
+        // DB25b — bọc IExecutionStrategy vì Npgsql bật EnableRetryOnFailure (xem <see cref="DbRetry"/>).
+        // `now` cố ý tính NGOÀI delegate: mọi lần thử phải đóng dấu cùng một mốc thời gian.
+        var abandoned = await DbRetry.RunAsync(db, async () =>
         {
-            await tx.RollbackAsync(ct);   // đã chốt bởi luồng khác → không đóng/không enqueue
-            return;
-        }
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
 
-        // Ghi outbox-row (Payment release credit) CÙNG transaction với state-flip: broker chết vẫn còn row
-        // để OutboxDispatcher gửi lại (at-least-once; Payment idempotent theo session_id/PAY-11).
-        db.OutboxMessages.Add(OutboxMessage.ForAbandoned(new SessionAbandonedEvent
-        {
-            SessionId = s.Id,
-            CampaignId = s.CampaignId,
-            CandidateId = s.CandidateId,
-            Reason = reason,
-            AbandonedAt = now
-        }));
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+            var updated = await db.PracticeSessions
+                .Where(x => x.Id == s.Id
+                            && (x.Status == SessionStatus.Ready || x.Status == SessionStatus.InProgress))
+                .ExecuteUpdateAsync(u => u
+                    .SetProperty(x => x.Status, SessionStatus.SessionAbandoned)
+                    .SetProperty(x => x.CompletedAt, now)
+                    // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
+                    .SetProperty(x => x.UpdatedAt, now), ct);
+
+            if (updated == 0)
+            {
+                await tx.RollbackAsync(ct);   // đã chốt bởi luồng khác → không đóng/không enqueue
+                return false;
+            }
+
+            // Ghi outbox-row (Payment release credit) CÙNG transaction với state-flip: broker chết vẫn còn row
+            // để OutboxDispatcher gửi lại (at-least-once; Payment idempotent theo session_id/PAY-11).
+            db.OutboxMessages.Add(OutboxMessage.ForAbandoned(new SessionAbandonedEvent
+            {
+                SessionId = s.Id,
+                CampaignId = s.CampaignId,
+                CandidateId = s.CandidateId,
+                Reason = reason,
+                AbandonedAt = now
+            }));
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return true;
+        });
+
+        if (!abandoned) return;
 
         _logger.LogInformation(
             "Đã đóng SessionAbandoned + ghi outbox cho session {SessionId} (reason={Reason})", s.Id, reason);

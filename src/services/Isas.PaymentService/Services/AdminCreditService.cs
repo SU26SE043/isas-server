@@ -77,68 +77,74 @@ namespace Isas.PaymentService.Services
                 }
             }
 
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
-
-            // Cộng ATOMIC (không đọc-rồi-ghi) — hai lệnh cấp song song cùng ví không đè lên nhau.
-            // KHÔNG lọc theo Status: ví bị Đình chỉ vẫn nhận được quà. PAY-12 chặn HÀNH ĐỘNG tương lai
-            // (reserve), còn cộng tiền vào ví là chiều ngược lại — chặn nó chỉ khiến admin không đền bù
-            // được cho chính tài khoản đang có tranh chấp, tức đúng lúc cần nhất.
-            var rows = await _db.CreditAccounts
-                .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits + credits)
-                    .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
-
-            if (rows == 0)
+            // DB25b — bọc IExecutionStrategy vì Npgsql bật EnableRetryOnFailure: chiến lược retry
+            // TỪ CHỐI transaction do người dùng tự mở, và khi chạy lại delegate nó KHÔNG reset change
+            // tracker (chi tiết + hệ quả với sổ cái: xem <see cref="DbRetry"/>).
+            return await DbRetry.RunAsync(_db, async Task<GrantResult> () =>
             {
-                await tx.RollbackAsync(ct);
-                return new GrantResult(GrantOutcome.WalletMissing, ownerType, ownerId, 0, 0, null);
-            }
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-            var transaction = new CreditTransaction
-            {
-                Id = Guid.NewGuid(),
-                OwnerType = ownerType,
-                OwnerId = ownerId,
-                OrderId = null,    // quà không phát sinh từ đơn nào — chính vì thế mới cần granted_by
-                SessionId = null,
-                Delta = credits,
-                Reason = CreditTransactionReason.PromoGrant,
-                GrantedBy = adminUserId,
-                Note = note,
-                GrantIdempotencyKey = idempotencyKey,
-                CreatedAt = DateTime.UtcNow
-            };
-            _db.CreditTransactions.Add(transaction);
+                // Cộng ATOMIC (không đọc-rồi-ghi) — hai lệnh cấp song song cùng ví không đè lên nhau.
+                // KHÔNG lọc theo Status: ví bị Đình chỉ vẫn nhận được quà. PAY-12 chặn HÀNH ĐỘNG tương lai
+                // (reserve), còn cộng tiền vào ví là chiều ngược lại — chặn nó chỉ khiến admin không đền bù
+                // được cho chính tài khoản đang có tranh chấp, tức đúng lúc cần nhất.
+                var rows = await _db.CreditAccounts
+                    .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits + credits)
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
 
-            // Snapshot nằm trên ledger row để retry trả đúng response đầu, kể cả sau đó ví đã đổi số dư.
-            transaction.GrantRemainingCreditsAfter = await _db.CreditAccounts.AsNoTracking()
-                .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
-                .Select(a => (int?)a.RemainingCredits)
-                .SingleAsync(ct);
+                if (rows == 0)
+                {
+                    await tx.RollbackAsync(ct);
+                    return new GrantResult(GrantOutcome.WalletMissing, ownerType, ownerId, 0, 0, null);
+                }
 
-            try
-            {
-                await _db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
-            }
-            catch (DbUpdateException ex) when (!string.IsNullOrWhiteSpace(idempotencyKey) && IsUniqueViolation(ex))
-            {
-                await tx.RollbackAsync(ct);
-                _db.ChangeTracker.Clear();
+                var transaction = new CreditTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    OwnerType = ownerType,
+                    OwnerId = ownerId,
+                    OrderId = null,    // quà không phát sinh từ đơn nào — chính vì thế mới cần granted_by
+                    SessionId = null,
+                    Delta = credits,
+                    Reason = CreditTransactionReason.PromoGrant,
+                    GrantedBy = adminUserId,
+                    Note = note,
+                    GrantIdempotencyKey = idempotencyKey,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _db.CreditTransactions.Add(transaction);
 
-                var original = await FindOriginalGrantAsync(ownerType, ownerId, idempotencyKey, ct);
-                if (original is not null)
-                    return Replay(original);
+                // Snapshot nằm trên ledger row để retry trả đúng response đầu, kể cả sau đó ví đã đổi số dư.
+                transaction.GrantRemainingCreditsAfter = await _db.CreditAccounts.AsNoTracking()
+                    .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
+                    .Select(a => (int?)a.RemainingCredits)
+                    .SingleAsync(ct);
 
-                throw;
-            }
+                try
+                {
+                    await _db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+                }
+                catch (DbUpdateException ex) when (!string.IsNullOrWhiteSpace(idempotencyKey) && IsUniqueViolation(ex))
+                {
+                    await tx.RollbackAsync(ct);
+                    _db.ChangeTracker.Clear();
 
-            _logger?.LogInformation(
-                "F20 — admin {AdminId} cấp {Credits} credit khuyến mãi cho ví {OwnerType}:{OwnerId}. Lý do: {Note}",
-                adminUserId, credits, ownerType, ownerId, note ?? "(không ghi)");
+                    var original = await FindOriginalGrantAsync(ownerType, ownerId, idempotencyKey, ct);
+                    if (original is not null)
+                        return Replay(original);
 
-            return Replay(transaction);
+                    throw;
+                }
+
+                _logger?.LogInformation(
+                    "F20 — admin {AdminId} cấp {Credits} credit khuyến mãi cho ví {OwnerType}:{OwnerId}. Lý do: {Note}",
+                    adminUserId, credits, ownerType, ownerId, note ?? "(không ghi)");
+
+                return Replay(transaction);
+            });
         }
 
         private async Task<CreditTransaction?> FindOriginalGrantAsync(

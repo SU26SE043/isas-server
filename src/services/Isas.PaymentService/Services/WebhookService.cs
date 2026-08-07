@@ -58,123 +58,188 @@ namespace Isas.PaymentService.Services
                 return WebhookApplyOutcome.OrderNotFound;
             }
 
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
-
-            // 1) Transition ATOMIC Pending→Paid (guard WHERE status=Pending): 2 webhook redeliver cùng lúc →
-            //    chỉ 1 thắng (1 row) ⇒ chỉ 1 lần cộng credit (idempotent PAY-8). 0 row = đã Paid/terminal
-            //    (PAY-10 bất biến) → no-op, KHÔNG cộng credit lần 2.
-            var moved = await _db.Orders
-                .Where(o => o.PayosOrderCode == payosOrderCode && o.Status == OrderStatus.Pending)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(o => o.Status, OrderStatus.Paid)
-                    .SetProperty(o => o.PaidAt, _ => DateTime.UtcNow)
-                    // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
-                    .SetProperty(o => o.UpdatedAt, _ => DateTime.UtcNow), ct);
-
-            if (moved == 0)
+            // DB25b — bọc IExecutionStrategy vì Npgsql bật EnableRetryOnFailure: chiến lược retry
+            // TỪ CHỐI transaction do người dùng tự mở, và khi chạy lại delegate nó KHÔNG reset change
+            // tracker (chi tiết + hệ quả với sổ cái: xem <see cref="DbRetry"/>).
+            return await DbRetry.RunAsync(_db, async Task<WebhookApplyOutcome> () =>
             {
-                await tx.RollbackAsync(ct);
-                return WebhookApplyOutcome.AlreadyProcessed;
-            }
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-            // P8b — branch theo Kind: đơn InvoiceSettlement tất toán hóa đơn postpaid, KHÔNG cộng credit.
-            // Hóa đơn Issued/Overdue → Paid (guard WHERE status ∈ {Issued,Overdue} → idempotent: đã Paid/Void
-            // → 0 row → no-op). Order đã guard Pending→Paid (moved==1) ở trên nên đây chạy đúng 1 lần/đơn.
-            if (order.Kind == OrderKind.InvoiceSettlement)
-            {
-                if (order.InvoiceId is Guid invoiceId)
+                // 1) Transition ATOMIC Pending→Paid (guard WHERE status=Pending): 2 webhook redeliver cùng lúc →
+                //    chỉ 1 thắng (1 row) ⇒ chỉ 1 lần cộng credit (idempotent PAY-8). 0 row = đã Paid/terminal
+                //    (PAY-10 bất biến) → no-op, KHÔNG cộng credit lần 2.
+                var moved = await _db.Orders
+                    .Where(o => o.PayosOrderCode == payosOrderCode && o.Status == OrderStatus.Pending)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(o => o.Status, OrderStatus.Paid)
+                        .SetProperty(o => o.PaidAt, _ => DateTime.UtcNow)
+                        // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
+                        .SetProperty(o => o.UpdatedAt, _ => DateTime.UtcNow), ct);
+
+                if (moved == 0)
                 {
-                    await _db.Invoices
-                        .Where(i => i.Id == invoiceId
-                                    && (i.Status == InvoiceStatus.Issued || i.Status == InvoiceStatus.Overdue))
-                        .ExecuteUpdateAsync(s => s
-                            .SetProperty(i => i.Status, InvoiceStatus.Paid)
-                            // F23/BK24 — set trong CÙNG ExecuteUpdate với Status: guard WHERE status ∈ {Issued,Overdue}
-                            // đã giữ idempotent (0 row nếu đã Paid/Void) ⇒ PaidAt cũng chỉ được set đúng 1 lần, không
-                            // dời "lần trả tiền" khi webhook redeliver.
-                            .SetProperty(i => i.PaidAt, _ => DateTime.UtcNow), ct);
+                    await tx.RollbackAsync(ct);
+                    return WebhookApplyOutcome.AlreadyProcessed;
                 }
 
-                // Log sự kiện gateway (append-only) — bằng chứng đối soát, KHÔNG ghi credit_transactions.
-                _db.PaymentTransactions.Add(new PaymentTransaction
+                // P8b — branch theo Kind: đơn InvoiceSettlement tất toán hóa đơn postpaid, KHÔNG cộng credit.
+                // Hóa đơn Issued/Overdue → Paid (guard WHERE status ∈ {Issued,Overdue} → idempotent: đã Paid/Void
+                // → 0 row → no-op). Order đã guard Pending→Paid (moved==1) ở trên nên đây chạy đúng 1 lần/đơn.
+                if (order.Kind == OrderKind.InvoiceSettlement)
                 {
-                    Id = Guid.NewGuid(),
-                    OrderId = order.Id,
-                    Gateway = "payos",
-                    GatewayTxnId = gatewayTxnId,
-                    Status = "success",
-                    RawWebhookPayload = rawPayload,
-                    CreatedAt = DateTime.UtcNow
-                });
+                    if (order.InvoiceId is Guid invoiceId)
+                    {
+                        await _db.Invoices
+                            .Where(i => i.Id == invoiceId
+                                        && (i.Status == InvoiceStatus.Issued || i.Status == InvoiceStatus.Overdue))
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(i => i.Status, InvoiceStatus.Paid)
+                                // F23/BK24 — set trong CÙNG ExecuteUpdate với Status: guard WHERE status ∈ {Issued,Overdue}
+                                // đã giữ idempotent (0 row nếu đã Paid/Void) ⇒ PaidAt cũng chỉ được set đúng 1 lần, không
+                                // dời "lần trả tiền" khi webhook redeliver.
+                                .SetProperty(i => i.PaidAt, _ => DateTime.UtcNow), ct);
+                    }
 
-                await _db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
-                return WebhookApplyOutcome.InvoiceSettled;
-            }
+                    // Log sự kiện gateway (append-only) — bằng chứng đối soát, KHÔNG ghi credit_transactions.
+                    _db.PaymentTransactions.Add(new PaymentTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        Gateway = "payos",
+                        GatewayTxnId = gatewayTxnId,
+                        Status = "success",
+                        RawWebhookPayload = rawPayload,
+                        CreatedAt = DateTime.UtcNow
+                    });
 
-            // F8 — branch thuê bao: KHÔNG cộng credit, KHÔNG ghi credit_transactions (mẫu InvoiceSettlement
-            // ngay trên). Đây là lý do gói thuê bao KHÔNG cần gỡ guard DB20: dòng `credits ?? 0` bên dưới
-            // — thứ đẻ ra ledger Delta=0 → nổ CHECK → rollback flip Pending→Paid → đơn kẹt Pending vĩnh
-            // viễn dù khách đã trả tiền — nằm ngoài đường đi của đơn thuê bao.
-            if (order.Kind is OrderKind.SubscriptionPurchase or OrderKind.SubscriptionRenewal)
-            {
-                // Ví phải tồn tại trước khi ghi subscriptions (FK composite owner → credit_accounts, DB9),
-                // và người mua gói tháng đằng nào cũng cần ví để reserve được (FK trên credit_reservations).
-                // Cùng lối xử lý race với nhánh CreditPack bên dưới.
-                if (await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct) is null)
+                    await _db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+                    return WebhookApplyOutcome.InvoiceSettled;
+                }
+
+                // F8 — branch thuê bao: KHÔNG cộng credit, KHÔNG ghi credit_transactions (mẫu InvoiceSettlement
+                // ngay trên). Đây là lý do gói thuê bao KHÔNG cần gỡ guard DB20: dòng `credits ?? 0` bên dưới
+                // — thứ đẻ ra ledger Delta=0 → nổ CHECK → rollback flip Pending→Paid → đơn kẹt Pending vĩnh
+                // viễn dù khách đã trả tiền — nằm ngoài đường đi của đơn thuê bao.
+                if (order.Kind is OrderKind.SubscriptionPurchase or OrderKind.SubscriptionRenewal)
+                {
+                    // Ví phải tồn tại trước khi ghi subscriptions (FK composite owner → credit_accounts, DB9),
+                    // và người mua gói tháng đằng nào cũng cần ví để reserve được (FK trên credit_reservations).
+                    // Cùng lối xử lý race với nhánh CreditPack bên dưới.
+                    if (await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct) is null)
+                    {
+                        try
+                        {
+                            await _accounts.CreateAccountAsync(order.OwnerType, order.OwnerId, ct);
+                        }
+                        catch (DbUpdateException) // đối thủ vừa tạo trước — ví đã tồn tại là đủ
+                        {
+                            foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
+                                entry.State = EntityState.Detached;
+                        }
+                    }
+
+                    Subscription? activated = null;
+                    if (_subscriptions is not null && order.Package is not null)
+                        activated = await _subscriptions.ActivateAsync(
+                            order.OwnerType, order.OwnerId, order.Id, order.Package, ct);
+
+                    if (activated is null)
+                        _logger?.LogError(
+                            "Đơn {OrderId} (payos {OrderCode}) đã Paid nhưng KHÔNG kích hoạt được kỳ hạn thuê bao " +
+                            "(package {PackageId}) → cần đối soát tay.",
+                            order.Id, payosOrderCode, order.PackageId);
+
+                    _db.PaymentTransactions.Add(new PaymentTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        Gateway = "payos",
+                        GatewayTxnId = gatewayTxnId,
+                        Status = "success",
+                        RawWebhookPayload = rawPayload,
+                        CreatedAt = DateTime.UtcNow
+                    });
+
+                    // Kỳ hạn + flip Pending→Paid + log gateway commit CHUNG một transaction ⇒ không có trạng
+                    // thái trung gian "đã Paid mà chưa có quyền dùng".
+                    await _db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+                    return WebhookApplyOutcome.SubscriptionActivated;
+                }
+
+                var credits = order.Package?.InterviewCredits ?? 0;
+
+                // DB20 — defense-in-depth: OrderService chặn không cho TẠO đơn CreditPack với gói không sinh
+                // credit, nhưng đơn CŨ đã nằm sẵn trong DB (tạo trước fix) vẫn có thể rơi vào đây. Nếu để
+                // credits=0 đi tiếp thì ledger Delta=0 vi phạm CHECK ck_credit_transactions_delta_nonzero →
+                // SaveChanges ném → tx.Commit không chạy → flip Pending→Paid rollback theo ⇒ khách trả tiền
+                // mà đơn kẹt Pending vĩnh viễn (deterministic: mọi retry đều fail y hệt).
+                // Chọn GIỮ đơn ở Paid + log bằng chứng, KHÔNG cộng credit và KHÔNG ghi ledger: tiền đã vào
+                // thật nên trạng thái Paid là đúng sự thật; phần credit thiếu để đối soát tay (PAY-10 terminal
+                // bất biến) — thà đơn Paid thiếu credit và thấy được, còn hơn đơn Pending vĩnh viễn ẩn mất.
+                if (credits <= 0)
+                {
+                    _db.PaymentTransactions.Add(new PaymentTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        Gateway = "payos",
+                        GatewayTxnId = gatewayTxnId,
+                        Status = "success",
+                        RawWebhookPayload = rawPayload,
+                        CreatedAt = DateTime.UtcNow
+                    });
+
+                    await _db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+
+                    _logger?.LogError(
+                        "Đơn {OrderId} (payos {OrderCode}) đã Paid nhưng gói {PackageId} không sinh credit " +
+                        "(InterviewCredits={Credits}) → KHÔNG cộng credit, cần đối soát tay.",
+                        order.Id, payosOrderCode, order.PackageId, order.Package?.InterviewCredits);
+
+                    return WebhookApplyOutcome.Credited;
+                }
+
+                // 2) Đảm bảo ví tồn tại (lần mua đầu của chủ ví → chưa có account). Tạo trong CÙNG transaction
+                //    (CreditAccountService dùng chung DbContext scoped). Race 2 đơn khác nhau cùng chủ ví cùng
+                //    tạo account → 1 thắng, bên thua đụng UNIQUE(owner) → nuốt, account đã tồn tại là đủ.
+                var account = await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct);
+                if (account is null)
                 {
                     try
                     {
                         await _accounts.CreateAccountAsync(order.OwnerType, order.OwnerId, ct);
                     }
-                    catch (DbUpdateException) // đối thủ vừa tạo trước — ví đã tồn tại là đủ
+                    catch (DbUpdateException) // đối thủ vừa tạo trước — account đã tồn tại, tiếp tục cộng
                     {
                         foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
                             entry.State = EntityState.Detached;
                     }
                 }
 
-                Subscription? activated = null;
-                if (_subscriptions is not null && order.Package is not null)
-                    activated = await _subscriptions.ActivateAsync(
-                        order.OwnerType, order.OwnerId, order.Id, order.Package, ct);
+                // 3) Cộng credit ATOMIC theo chủ ví (không đọc-rồi-ghi). Prepaid pack → remaining_credits += credits.
+                await _db.CreditAccounts
+                    .Where(a => a.OwnerType == order.OwnerType && a.OwnerId == order.OwnerId)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits + credits)
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
 
-                if (activated is null)
-                    _logger?.LogError(
-                        "Đơn {OrderId} (payos {OrderCode}) đã Paid nhưng KHÔNG kích hoạt được kỳ hạn thuê bao " +
-                        "(package {PackageId}) → cần đối soát tay.",
-                        order.Id, payosOrderCode, order.PackageId);
-
-                _db.PaymentTransactions.Add(new PaymentTransaction
+                // 4) Sổ cái Purchase (+credits) — gắn order_id, session_id null.
+                _db.CreditTransactions.Add(new CreditTransaction
                 {
                     Id = Guid.NewGuid(),
+                    OwnerType = order.OwnerType,
+                    OwnerId = order.OwnerId,
                     OrderId = order.Id,
-                    Gateway = "payos",
-                    GatewayTxnId = gatewayTxnId,
-                    Status = "success",
-                    RawWebhookPayload = rawPayload,
+                    SessionId = null,
+                    Delta = credits,
+                    Reason = CreditTransactionReason.Purchase,
                     CreatedAt = DateTime.UtcNow
                 });
 
-                // Kỳ hạn + flip Pending→Paid + log gateway commit CHUNG một transaction ⇒ không có trạng
-                // thái trung gian "đã Paid mà chưa có quyền dùng".
-                await _db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
-                return WebhookApplyOutcome.SubscriptionActivated;
-            }
-
-            var credits = order.Package?.InterviewCredits ?? 0;
-
-            // DB20 — defense-in-depth: OrderService chặn không cho TẠO đơn CreditPack với gói không sinh
-            // credit, nhưng đơn CŨ đã nằm sẵn trong DB (tạo trước fix) vẫn có thể rơi vào đây. Nếu để
-            // credits=0 đi tiếp thì ledger Delta=0 vi phạm CHECK ck_credit_transactions_delta_nonzero →
-            // SaveChanges ném → tx.Commit không chạy → flip Pending→Paid rollback theo ⇒ khách trả tiền
-            // mà đơn kẹt Pending vĩnh viễn (deterministic: mọi retry đều fail y hệt).
-            // Chọn GIỮ đơn ở Paid + log bằng chứng, KHÔNG cộng credit và KHÔNG ghi ledger: tiền đã vào
-            // thật nên trạng thái Paid là đúng sự thật; phần credit thiếu để đối soát tay (PAY-10 terminal
-            // bất biến) — thà đơn Paid thiếu credit và thấy được, còn hơn đơn Pending vĩnh viễn ẩn mất.
-            if (credits <= 0)
-            {
+                // 5) Log sự kiện gateway (append-only) — bằng chứng đối soát.
                 _db.PaymentTransactions.Add(new PaymentTransaction
                 {
                     Id = Guid.NewGuid(),
@@ -188,68 +253,9 @@ namespace Isas.PaymentService.Services
 
                 await _db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
-
-                _logger?.LogError(
-                    "Đơn {OrderId} (payos {OrderCode}) đã Paid nhưng gói {PackageId} không sinh credit " +
-                    "(InterviewCredits={Credits}) → KHÔNG cộng credit, cần đối soát tay.",
-                    order.Id, payosOrderCode, order.PackageId, order.Package?.InterviewCredits);
 
                 return WebhookApplyOutcome.Credited;
-            }
-
-            // 2) Đảm bảo ví tồn tại (lần mua đầu của chủ ví → chưa có account). Tạo trong CÙNG transaction
-            //    (CreditAccountService dùng chung DbContext scoped). Race 2 đơn khác nhau cùng chủ ví cùng
-            //    tạo account → 1 thắng, bên thua đụng UNIQUE(owner) → nuốt, account đã tồn tại là đủ.
-            var account = await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct);
-            if (account is null)
-            {
-                try
-                {
-                    await _accounts.CreateAccountAsync(order.OwnerType, order.OwnerId, ct);
-                }
-                catch (DbUpdateException) // đối thủ vừa tạo trước — account đã tồn tại, tiếp tục cộng
-                {
-                    foreach (var entry in _db.ChangeTracker.Entries<CreditAccount>().ToList())
-                        entry.State = EntityState.Detached;
-                }
-            }
-
-            // 3) Cộng credit ATOMIC theo chủ ví (không đọc-rồi-ghi). Prepaid pack → remaining_credits += credits.
-            await _db.CreditAccounts
-                .Where(a => a.OwnerType == order.OwnerType && a.OwnerId == order.OwnerId)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits + credits)
-                    .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
-
-            // 4) Sổ cái Purchase (+credits) — gắn order_id, session_id null.
-            _db.CreditTransactions.Add(new CreditTransaction
-            {
-                Id = Guid.NewGuid(),
-                OwnerType = order.OwnerType,
-                OwnerId = order.OwnerId,
-                OrderId = order.Id,
-                SessionId = null,
-                Delta = credits,
-                Reason = CreditTransactionReason.Purchase,
-                CreatedAt = DateTime.UtcNow
             });
-
-            // 5) Log sự kiện gateway (append-only) — bằng chứng đối soát.
-            _db.PaymentTransactions.Add(new PaymentTransaction
-            {
-                Id = Guid.NewGuid(),
-                OrderId = order.Id,
-                Gateway = "payos",
-                GatewayTxnId = gatewayTxnId,
-                Status = "success",
-                RawWebhookPayload = rawPayload,
-                CreatedAt = DateTime.UtcNow
-            });
-
-            await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
-
-            return WebhookApplyOutcome.Credited;
         }
     }
 }

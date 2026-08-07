@@ -48,45 +48,51 @@ namespace Isas.PaymentService.Services
 
             // 1 transaction (payment.md §Postpaid): snapshot period_usage → tạo invoice → reset period_usage=0.
             // Fail giữa chừng → rollback cả 2 (không mất/nhân nợ).
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
-
-            var count = account.PeriodUsage ?? 0;
-            var amount = count * unitPrice;
-
-            var invoice = new Invoice
+            // DB25b — bọc IExecutionStrategy vì Npgsql bật EnableRetryOnFailure: chiến lược retry
+            // TỪ CHỐI transaction do người dùng tự mở, và khi chạy lại delegate nó KHÔNG reset change
+            // tracker (chi tiết + hệ quả với sổ cái: xem <see cref="DbRetry"/>).
+            return await DbRetry.RunAsync(_db, async Task<CloseBillingPeriodResult> () =>
             {
-                Id = Guid.NewGuid(),
-                OwnerType = OwnerType.Org,
-                OwnerId = orgId,
-                AccountId = account.Id,
-                PeriodStart = pStart,
-                PeriodEnd = pEnd,
-                InterviewCount = count,
-                UnitPrice = unitPrice,
-                Amount = amount,
-                Status = InvoiceStatus.Issued,
-                // F23/BK24 — hạn tất toán = periodEnd + Billing:InvoiceDueDays (snapshot lúc lập, đổi
-                // config sau không hồi tố hóa đơn đã có DueAt).
-                DueAt = pEnd + TimeSpan.FromDays(_billing.Value.InvoiceDueDays),
-                CreatedAt = now
-            };
-            _db.Invoices.Add(invoice);
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-            // BK17 — TRỪ ĐÚNG snapshot đã chốt (period_usage − count) CÙNG transaction, KHÔNG reset=0.
-            // count = period_usage đọc lúc snapshot ở trên (đã chốt vào invoice.interview_count). Nếu có
-            // Consume commit XEN GIỮA snapshot-read và câu update này (race), reset=0 sẽ NUỐT lượt đó;
-            // trừ-snapshot giữ phần phát sinh sau snapshot lại cho kỳ sau: period_usage_hiện_tại − count.
-            // Self-referential SQL (atomic) — Context7 EF Core ExecuteUpdate.
-            await _db.CreditAccounts
-                .Where(a => a.OwnerType == OwnerType.Org && a.OwnerId == orgId)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.PeriodUsage, a => (int?)((a.PeriodUsage ?? 0) - count))
-                    .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+                var count = account.PeriodUsage ?? 0;
+                var amount = count * unitPrice;
 
-            await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
+                var invoice = new Invoice
+                {
+                    Id = Guid.NewGuid(),
+                    OwnerType = OwnerType.Org,
+                    OwnerId = orgId,
+                    AccountId = account.Id,
+                    PeriodStart = pStart,
+                    PeriodEnd = pEnd,
+                    InterviewCount = count,
+                    UnitPrice = unitPrice,
+                    Amount = amount,
+                    Status = InvoiceStatus.Issued,
+                    // F23/BK24 — hạn tất toán = periodEnd + Billing:InvoiceDueDays (snapshot lúc lập, đổi
+                    // config sau không hồi tố hóa đơn đã có DueAt).
+                    DueAt = pEnd + TimeSpan.FromDays(_billing.Value.InvoiceDueDays),
+                    CreatedAt = now
+                };
+                _db.Invoices.Add(invoice);
 
-            return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.Closed, InvoiceResponse.ToResponse(invoice));
+                // BK17 — TRỪ ĐÚNG snapshot đã chốt (period_usage − count) CÙNG transaction, KHÔNG reset=0.
+                // count = period_usage đọc lúc snapshot ở trên (đã chốt vào invoice.interview_count). Nếu có
+                // Consume commit XEN GIỮA snapshot-read và câu update này (race), reset=0 sẽ NUỐT lượt đó;
+                // trừ-snapshot giữ phần phát sinh sau snapshot lại cho kỳ sau: period_usage_hiện_tại − count.
+                // Self-referential SQL (atomic) — Context7 EF Core ExecuteUpdate.
+                await _db.CreditAccounts
+                    .Where(a => a.OwnerType == OwnerType.Org && a.OwnerId == orgId)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.PeriodUsage, a => (int?)((a.PeriodUsage ?? 0) - count))
+                        .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+
+                return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.Closed, InvoiceResponse.ToResponse(invoice));
+            });
         }
 
         public async Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default)
