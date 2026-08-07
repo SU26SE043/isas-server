@@ -832,7 +832,12 @@ namespace Isas.CampaignService.Services
             }
 
             // ── 3. Cap theo max_candidates — vượt → chặn CẢ request (không tạo dở dang) ──
-            await EnsureCandidateCapacityAsync(orgId, campaign, existingEmails.Count, toCreate.Count, "lời mời", ct);
+            // BK21: đếm NGƯỜI (hợp email distinct của invitation + cv_submission), không đếm row. Email
+            // trong `toCreate` mà đã có CV trong campaign này thì KHÔNG tốn suất mới — người đó đã chiếm
+            // chỗ rồi. `toCreate` đã được dedup với invitation ở bước 2 nên chỉ còn phải trừ vế CV.
+            var people = await LoadCampaignPeopleAsync(id, ct);
+            var newSeats = toCreate.Count(e => !people.Emails.Contains(e));
+            await EnsureCandidateCapacityAsync(orgId, campaign, OccupiedSeats(people), newSeats, "lời mời", ct);
             var assignedSlots = await AssignSlotsAsync(campaign.Id, toCreate.Count, ct);
 
             // ── 4. Tạo rows + đẩy job email queue ────────────────────────────
@@ -1141,9 +1146,16 @@ namespace Isas.CampaignService.Services
                 toInvite.Add(cand);
             }
 
-            // Cap max_candidates: invitation hiện có + mời mới ≤ cap → vượt = chặn CẢ request (như D1).
+            // Cap max_candidates: NGƯỜI hiện có + người mới ≤ cap → vượt = chặn CẢ request (như D1).
+            // BK21: ứng viên shortlist theo định nghĩa đã có email trong `cv_submission` ⇒ mời họ tốn
+            // ĐÚNG 0 suất mới. Trước đây đếm row invitation nên cùng một người bị tính hai lần: một lần
+            // lúc nộp CV, một lần nữa lúc được mời.
             if (toInvite.Count > 0)
-                await EnsureCandidateCapacityAsync(orgId, campaign, existingEmails.Count, toInvite.Count, "lời mời", ct);
+            {
+                var people = await LoadCampaignPeopleAsync(id, ct);
+                var newSeats = toInvite.Count(c => c.Email is null || !people.Emails.Contains(c.Email.Trim()));
+                await EnsureCandidateCapacityAsync(orgId, campaign, OccupiedSeats(people), newSeats, "lời mời", ct);
+            }
 
             if (toInvite.Count == 0)
                 return response;
@@ -1515,9 +1527,16 @@ namespace Isas.CampaignService.Services
             if (files is null || files.Count == 0)
                 throw new ArgumentException("Cần ít nhất 1 file CV (PDF).");
 
-            // Cap số CV/campaign (chặn đốt AI vì free) — vượt → 400, chặn CẢ batch (như invitations).
-            var currentCount = await _db.CvSubmissions.CountAsync(c => c.CampaignId == id, ct);
-            await EnsureCandidateCapacityAsync(orgId, campaign, currentCount, files.Count, "CV", ct);
+            // Cap số NGƯỜI/campaign (chặn đốt AI vì free) — vượt → 400, chặn CẢ batch (như invitations).
+            // BK21: `currentCount` nay là hợp email distinct (invitation + CV), không phải số row CV.
+            //
+            // `files.Count` được GIỮ làm cận trên có chủ đích: email chỉ biết được SAU khi parse
+            // (ExtractEmail ở dưới), mà ArchiveCvAsync đã đẩy file lên S3 TRƯỚC đó trong cùng vòng lặp
+            // ⇒ dời phép kiểm xuống sau parse sẽ để lại object S3 mồ côi mỗi lần từ chối batch, tức tái
+            // tạo đúng lớp rác mà BK29 đang phải đi dọn tay. Đánh đổi: upload CV của người đã được mời
+            // vẫn bị tính vào trần ở thời điểm kiểm (sau đó nó rơi vào nhánh Skipped, không tạo row).
+            var people = await LoadCampaignPeopleAsync(id, ct);
+            await EnsureCandidateCapacityAsync(orgId, campaign, OccupiedSeats(people), files.Count, "CV", ct);
 
             // Dedup email: bộ đã có trong campaign + cộng dồn trong batch này (case-insensitive).
             var seenEmails = new HashSet<string>(
@@ -1947,6 +1966,48 @@ namespace Isas.CampaignService.Services
             if (groundingEnabled == true && !entitlement.GroundingEnabled)
                 throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
         }
+
+        /// <summary>
+        /// BK21 — "một người = một suất": tập NGƯỜI đang chiếm chỗ của campaign, tính bằng HỢP các email
+        /// distinct của <c>campaign_invitations</c> (chưa revoke) và <c>cv_submission</c>, cộng số CV
+        /// không tách được email (không dedup được nên mỗi dòng tính một suất).
+        ///
+        /// Trước BK21 cả ba call site đều đếm ROW: đường mời truyền <c>existingEmails.Count</c> — đó là
+        /// <c>List&lt;string&gt;</c> KHÔNG <c>.Distinct()</c>, không phải distinct như doc từng ghi — nên
+        /// mỗi lần <see cref="ReissueInvitationAsync"/> phát lại một lời mời đã revoke lại đẻ thêm một
+        /// row sống cùng email và ăn mất một suất của người khác. Đường CV thì đếm cả row Rejected.
+        ///
+        /// Hợp được tính TRONG BỘ NHỚ chứ không bằng SQL vì hai bảng có quy ước hoa/thường khác nhau:
+        /// invitation lưu nguyên như HR gõ (chỉ Trim), còn ExtractEmail luôn ToLowerInvariant. So trong
+        /// SQL sẽ phải lower() hai vế và phải chứng minh nó dịch được trên CẢ Npgsql lẫn SQLite; sai một
+        /// vế thì phép so hỏng trong im lặng (bài học DB27). OrdinalIgnoreCase đúng by-construction.
+        /// Không thêm round-trip mới: cả hai tập vốn đã được nạp về bộ nhớ ở các call site, và chính cái
+        /// trần này chặn trên kích thước tập.
+        /// </summary>
+        private async Task<(HashSet<string> Emails, int NoEmailCvCount)> LoadCampaignPeopleAsync(
+            Guid campaignId, CancellationToken ct)
+        {
+            var invitationEmails = await _db.CampaignInvitations
+                .Where(i => i.CampaignId == campaignId && i.RevokedAt == null)
+                .Select(i => i.Email)
+                .ToListAsync(ct);
+
+            var cvEmails = await _db.CvSubmissions
+                .Where(c => c.CampaignId == campaignId && c.Email != null)
+                .Select(c => c.Email!)
+                .ToListAsync(ct);
+
+            var noEmailCvCount = await _db.CvSubmissions
+                .CountAsync(c => c.CampaignId == campaignId && c.Email == null, ct);
+
+            var union = new HashSet<string>(invitationEmails, StringComparer.OrdinalIgnoreCase);
+            union.UnionWith(cvEmails);
+            return (union, noEmailCvCount);
+        }
+
+        /// <summary>Số suất đang bị chiếm = |hợp email distinct| + số CV không có email.</summary>
+        private static int OccupiedSeats((HashSet<string> Emails, int NoEmailCvCount) people)
+            => people.Emails.Count + people.NoEmailCvCount;
 
         private async Task EnsureCandidateCapacityAsync(
             Guid orgId, Campaign campaign, int currentCount, int batchCount, string label, CancellationToken ct)
