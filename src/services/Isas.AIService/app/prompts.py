@@ -892,7 +892,8 @@ def build_decide_next_prompt(job_category: str, current_question: str, transcrip
                              criteria: list[dict],
                              root_question: str | None = None, current_depth: int = 0,
                              max_depth: int = 0,
-                             other_topics: list[str] | None = None, *, language: str = VI) -> str:
+                             other_topics: list[str] | None = None, *, language: str = VI,
+                             retry_feedback: str | None = None) -> str:
     """Phỏng vấn THÍCH ỨNG — quyết định hành động kế tiếp sau 1 câu trả lời.
 
     Đọc câu trả lời MỚI NHẤT + lịch sử + tiêu chí → chọn đúng 1 hành động
@@ -914,6 +915,17 @@ def build_decide_next_prompt(job_category: str, current_question: str, transcrip
     * ``other_topics`` = tên các câu gốc khác → chống hỏi trùng thứ lát nữa sẽ hỏi.
 
     ``max_depth <= 0`` giữ NGUYÊN VĂN prompt cũ (chế độ frontier theo buổi).
+
+    Q16 — ``retry_feedback``: chỗ hỏng của lượt trước (câu cụt / JSON hỏng / action lạ). Hỏi lại y
+    hệt đề cũ thì phần lớn nhận lại đúng cái sai đó, nên lượt sau phải mang theo lý do.
+
+    Cũng vì Q16 mà đề bài bỏ chữ "ngắn gọn" và bỏ placeholder ``"..."`` trong ví dụ JSON. Đó KHÔNG
+    phải dọn dẹp văn phong: repo đã dính đúng cơ chế này một lần và ghi lại ở
+    :func:`build_lesson_theory_prompt` — bản cũ dặn "không quá dài dòng" kèm khung JSON
+    ``{"theoryMarkdown":"# Tiêu đề\\n\\nNội dung markdown..."}`` thì mô hình bắt chước đúng cái
+    khung, điền tiêu đề rồi bỏ thân bài (bài 51 ký tự, deploy 2026-08-03). Ở đây là cùng một cặp
+    tín hiệu — "ngắn gọn" + ``"nextQuestion":"..."`` — và cùng một hình dạng hậu quả: câu hỏi 31 ký
+    tự bỏ lửng giữa chừng (deploy 2026-08-07). Yêu cầu bây giờ là HOÀN CHỈNH, không phải ngắn.
     """
     chain_mode = max_depth > 0
     role = CATEGORY_NAMES.get(job_category.upper(), job_category)
@@ -1007,6 +1019,14 @@ def build_decide_next_prompt(job_category: str, current_question: str, transcrip
         " câu hỏi kế tiếp bám vào chính câu trả lời ứng viên vừa đưa ra."
     )
 
+    # Q16 — trả bài kèm nhận xét: nêu ĐÚNG chỗ hỏng của lượt trước (câu cụt / JSON hỏng / action lạ).
+    # Đặt SÁT khối JSON ở cuối để không bị các chỉ dẫn phía trên làm loãng (mẫu lesson theory).
+    retry_block = (
+        "\n\nLƯỢT TRƯỚC CỦA BẠN BỊ TRẢ LẠI:\n"
+        f"{retry_feedback}\n"
+        "Trả lời lại từ đầu, khắc phục đúng điểm trên."
+        if retry_feedback else "")
+
     return f"""{intro}
 
 Nhiệm vụ: đọc CÂU TRẢ LỜI MỚI NHẤT (bên dưới) trong bối cảnh cả buổi, rồi QUYẾT ĐỊNH đúng MỘT hành động kế tiếp:
@@ -1032,7 +1052,8 @@ NGÂN SÁCH:
 
 YÊU CẦU:
 {rules_block}
-- Với action ≠ "end": nextQuestion là 1 câu hỏi DUY NHẤT bằng {field_lang(language)}, ngắn gọn, hỏi trực tiếp (không lời dẫn), bám năng lực ở trên và KHÔNG lặp lại câu đã hỏi.
+- Với action ≠ "end": nextQuestion là 1 câu hỏi DUY NHẤT bằng {field_lang(language)}, hỏi trực tiếp (không lời dẫn), bám năng lực ở trên và KHÔNG lặp lại câu đã hỏi.
+- nextQuestion PHẢI là câu HOÀN CHỈNH và kết thúc bằng dấu câu (thường là dấu ?). Câu bị cắt giữa chừng, hay chỉ có mấy chữ đầu rồi bỏ lửng, sẽ bị TRẢ LẠI.
 - Với action = "end": nextQuestion để trống.
 - reason: 1 câu ngắn ({field_lang(language)}) giải thích vì sao chọn hành động đó.
-- CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown: {{"action":"follow_up","nextQuestion":"...","reason":"..."}}"""
+- CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown: {{"action":"follow_up","nextQuestion":"<câu hỏi hoàn chỉnh, kết thúc bằng dấu ?>","reason":"<lý do ngắn>"}}{retry_block}"""
