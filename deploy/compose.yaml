@@ -250,6 +250,10 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       # DB2b — dọn outbox_messages (email mời) đã publish. Giữ TẮT như production.
       - Outbox__PurgeEnabled=false
+      # BK25/DATA-3 — dọn ảnh sinh trắc (face-live/face-reference) quá hạn giữ trong SeaweedFS.
+      # TẮT tường minh: thứ bị xoá là bằng chứng chống gian lận của buổi thi, không đảo ngược được.
+      # Bật sau khi quan sát 1 chu kỳ và đối chiếu log "FaceImagePurger: đã xoá N ảnh".
+      - FaceImageRetention__Enabled=false
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_campaign;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=http://isas.authservice:8080
