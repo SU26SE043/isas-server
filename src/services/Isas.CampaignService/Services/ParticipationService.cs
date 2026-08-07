@@ -296,7 +296,7 @@ namespace Isas.CampaignService.Services
                 // INT-17: chuyển toggle + trần HR đặt trên campaign xuống Interview (campaign đã nạp đủ,
                 // không cần query thêm). Tắt (mặc định) → Interview giữ luồng batch tĩnh cũ.
                 campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions,
-                campaign.MaxDeepPerQuestion, ct);   // INT-17b: trần đào sâu mỗi câu
+                campaign.MaxDeepPerQuestion, campaign.Language, ct);   // INT-17b: trần đào sâu mỗi câu
 
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.

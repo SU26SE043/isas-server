@@ -40,6 +40,7 @@ namespace Isas.CampaignService.DTOs
 
         [Required]
         public string? Domain { get; set; }
+        public string? Language { get; set; }
 
         public int? MaxCandidates { get; set; }
 

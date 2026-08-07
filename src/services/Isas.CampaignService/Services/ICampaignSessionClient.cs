@@ -20,6 +20,7 @@ namespace Isas.CampaignService.Services
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             int? maxDeepPerQuestion = null,
+            string language = "vi",
             CancellationToken ct = default);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm

@@ -87,6 +87,7 @@ namespace Isas.CampaignService.Services
                 OrgId = orgId,
                 Title = request.Title,
                 Domain = request.Domain,
+                Language = ValidateLanguage(request.Language),
                 Status = CampaignStatus.Draft,
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
@@ -1770,6 +1771,15 @@ namespace Isas.CampaignService.Services
         }
 
         // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
+        private static string ValidateLanguage(string? requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested)) return "vi";
+            var language = requested.Trim().ToLowerInvariant();
+            if (language is not ("vi" or "en"))
+                throw new ArgumentException("language chỉ nhận vi hoặc en.");
+            return language;
+        }
+
         private static void ValidatePassScorePct(int? pct)
         {
             if (pct is int p && (p < 0 || p > 100))

@@ -39,6 +39,7 @@ namespace Isas.CampaignService.Services
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             int? maxDeepPerQuestion = null,   // INT-17b
+            string language = "vi",
             CancellationToken ct = default)
         {
             var payload = new
@@ -56,6 +57,7 @@ namespace Isas.CampaignService.Services
                 maxQuestions,
                 // INT-17b — >0 ⇒ mỗi câu campaign mọc chuỗi đào sâu xen kẽ ngay sau nó.
                 maxDeepPerQuestion
+                ,language
             };
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/campaign")

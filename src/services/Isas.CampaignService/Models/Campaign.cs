@@ -7,6 +7,8 @@
         public Guid OrgId { get; set; }
         public string Title { get; set; }
         public string? Domain { get; set; }
+        // Snapshot for fair B2B scoring: every session in this campaign uses this language.
+        public string Language { get; set; } = "vi";
         public CampaignStatus Status { get; set; }
         public int? MaxCandidates { get; set; }
         public int? MaxConcurrentInterviews { get; set; }
