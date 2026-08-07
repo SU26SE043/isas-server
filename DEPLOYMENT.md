@@ -280,6 +280,10 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       # DB2b — dọn outbox_messages (email mời) đã publish. Giữ TẮT như production.
       - Outbox__PurgeEnabled=false
+      # BK25 — purge ảnh khuôn mặt S3 quá 90 ngày (DATA-3). Giữ TẮT như production: xoá là
+      # KHÔNG đảo ngược được, và job chỉ dọn được ảnh CÓ dòng trong `face_images` — ảnh mồ côi
+      # trước BK25 phải dọn bằng script ops riêng (BK29).
+      - FaceImageRetention__Enabled=false
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_campaign;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=http://isas.authservice:8080
