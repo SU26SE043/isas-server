@@ -12,7 +12,7 @@ Kiến trúc **Engine + Orchestrator, 6 service**: `Gateway · AuthService · AI
 - **Kiểm thử:** `dotnet test` (4 test project **đã có**: Auth · Interview · Campaign · Payment) + AIService `pytest` (Python, `cd src/services/Isas.AIService` + `pip install -r requirements-dev.txt` — cần `pytest-asyncio`). Trạng thái số test hiện hành: [progress.md](docs/progress.md).
 - **Env cần:** connection string mỗi DB · `Jwt:Key/Issuer/Audience` (giống nhau mọi service) · `Internal:Token` · `AiService:BaseUrl` · SeaweedFS keys · PayOS keys.
 
-**Readiness (4 điều kiện cho phiên/người mới):** ✅ chạy được (compose) · ✅ thấy tiến độ ([progress.md](docs/progress.md)) · ✅ chọn bước kế ([progress.md](docs/progress.md) §Bước tiếp theo) · ✅ **test được**: cả 4 service .NET + AIService pytest **đã có** (`P0.3`/`P0.4` xong). **Còn Phase 0:** `P0.1` (compose máy sạch → `/health` 200), `P0.2` (`make setup/test/check`), `P0.5` (readiness checkpoint).
+**Readiness (4 điều kiện cho phiên/người mới):** ✅ chạy được (compose) · ✅ thấy tiến độ ([progress.md](docs/progress.md)) · ✅ chọn bước kế ([progress.md](docs/progress.md) §Bước tiếp theo) · ✅ **test được**: cả 4 service .NET + AIService pytest **đã có** (`P0.3`/`P0.4` xong). **Còn Phase 0:** `P0.1` (compose máy sạch → `/health` 200), `P0.2` (**partial** — `Makefile` đã có đủ `setup`/`build`/`test`/`check`/`ai-test`/`clean`; thiếu đúng vế **lint** trong `check`), `P0.5` (readiness checkpoint).
 
 ## Ràng buộc cứng (PHẢI tuân — chi tiết [architecture.md](docs/architecture.md) §5)
 - API public qua Gateway `/api/v1/<service>/...`; **callback `/internal/...` + webhook PayOS KHÔNG qua gateway**.
@@ -74,7 +74,7 @@ Sau pass: cập nhật status <ID> trong tasks.md (kèm commit) + service doc n�
 ```
 
 **Guardrail (để không "code trông ổn"):**
-- **Phase 0 còn lại** (`P0.1`,`P0.2`,`P0.5`): chưa verify `docker compose up` máy sạch · chưa `make setup/test/check` → lớp-3 e2e thật (compose + broker + PayOS sandbox + Gemini) **verify tay ngoài worker**. (`P0.3`/`P0.4` xong — 4 test project + pytest đã có.)
+- **Phase 0 còn lại** (`P0.1`,`P0.2`,`P0.5`): chưa verify `docker compose up` máy sạch · `make setup/build/test/check/ai-test` **đã dùng được** (`P0.2` partial — `check` chưa có lint; thêm `dotnet format --verify-no-changes` lúc này sẽ ĐỎ vì **1360** lỗi whitespace có sẵn ⇒ phải chạy một lượt format riêng trước) → lớp-3 e2e thật (compose + broker + PayOS sandbox + Gemini) **verify tay ngoài worker**. (`P0.3`/`P0.4` xong — 4 test project + pytest đã có.)
 - **Nhánh làm việc:** toàn bộ feature ở nhánh tích hợp **`docs/sync-design-d18-d21`** (6 service đều trong tree; `main` mới có nền pre-vòng-1 — xem [progress.md](docs/progress.md) §Main-vs-branch). KHÔNG checkout branch cũ.
 - Agent **KHÔNG bịa ngoài doc**, **KHÔNG đổi thiết kế trong doc** (thấy sai → hỏi), **KHÔNG tự nâng `passing`** khi lệnh xác minh chưa PASS.
 - **Bắt đầu:** đọc [progress.md](docs/progress.md) §Bước tiếp theo → chọn task `not_started` không bị block trong [tasks.md](docs/tasks.md).
