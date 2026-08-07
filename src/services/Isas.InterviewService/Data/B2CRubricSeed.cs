@@ -167,7 +167,7 @@ public static class B2CRubricSeed
         {
             Id = EnglishId(v.Id),
             Name = EnglishName(v.Name),
-            Description = EnglishDescription(v.Name, v.Description ?? string.Empty),
+            Description = EnglishDescription(v.JobCategory, v.Name, v.Description ?? string.Empty),
             Weight = v.Weight,
             MaxScore = v.MaxScore,
             IsActive = v.IsActive,
@@ -191,7 +191,7 @@ public static class B2CRubricSeed
         "Phân tích yêu cầu" => "Requirements analysis",
         "Giao tiếp & trình bày" => "Communication & presentation",
         "Hiểu nghiệp vụ & các bên liên quan" => "Business domain & stakeholders",
-        "Tư duy giải quyết vấn đề" or "Giải quyết vấn đề" => "Problem solving",
+        "Tư duy giải quyết vấn đề" or "Giải quyết vấn đề" or "Giải quyết vấn đề & thuật toán" => "Problem solving",
         "Chiều sâu kỹ thuật" => "Technical depth",
         "Thiết kế hệ thống & CSDL" => "System design & databases",
         "Ý thức UI/UX & accessibility" => "UI/UX & accessibility awareness",
@@ -201,11 +201,23 @@ public static class B2CRubricSeed
         _ => name,
     };
 
-    private static string EnglishDescription(string name, string fallback) => name switch
+    private static string EnglishDescription(JobCategory category, string name, string fallback) => (category, name) switch
     {
-        "Ngữ pháp & dùng từ" => "Uses accurate word choice and complete, well-structured sentences with few fillers or unnecessary repetitions. Do not assess spelling or punctuation because the transcript is produced from speech recognition.",
-        "Thuật ngữ chuyên ngành" => "Uses relevant professional terminology accurately and can explain terms in context. Assess the evidence in the spoken answer, not transcription spelling.",
-        "Độ trôi chảy & tự tin" => "Speaks with a steady, confident rhythm and limited hesitation. Assess delivery only, not the correctness or completeness of technical content.",
+        (JobCategory.BA, "Phân tích yêu cầu") => "Elicits, clarifies, and structures business requirements into testable, actionable outcomes.",
+        (JobCategory.BA, "Giao tiếp & trình bày") => "Explains analysis and recommendations clearly, logically, and for the intended stakeholder audience.",
+        (JobCategory.BA, "Hiểu nghiệp vụ & các bên liên quan") => "Understands the business domain, objectives, constraints, and the perspectives of relevant stakeholders.",
+        (JobCategory.BA, "Tư duy giải quyết vấn đề") => "Builds evidence-based reasoning, compares viable options, and communicates trade-offs.",
+        (JobCategory.BE, "Chiều sâu kỹ thuật") => "Demonstrates sound understanding of languages, frameworks, runtime behavior, and technical trade-offs.",
+        (JobCategory.BE, "Thiết kế hệ thống & CSDL") => "Designs data models and system architecture with scalability, reliability, and consistency in mind.",
+        (JobCategory.BE, "Giải quyết vấn đề & thuật toán") => "Breaks down problems, chooses appropriate algorithms, and considers complexity and edge cases.",
+        (JobCategory.BE, "Giao tiếp & trình bày") => "Explains technical solutions clearly enough for others to follow the reasoning and implementation choices.",
+        (JobCategory.FE, "Chiều sâu kỹ thuật") => "Demonstrates practical knowledge of HTML, CSS, JavaScript, frontend frameworks, state management, and rendering performance.",
+        (JobCategory.FE, "Giải quyết vấn đề") => "Solves UI and application-logic problems methodically, including debugging and trade-off analysis.",
+        (JobCategory.FE, "Giao tiếp & trình bày") => "Communicates product and technical ideas clearly, coherently, and with an appropriate level of detail.",
+        (JobCategory.FE, "Ý thức UI/UX & accessibility") => "Considers user experience, accessibility, and consistent interface behavior in proposed solutions.",
+        (_, "Ngữ pháp & dùng từ") => "Uses accurate word choice and complete, well-structured sentences with few fillers or unnecessary repetitions. Do not assess spelling or punctuation because the transcript is produced from speech recognition.",
+        (_, "Thuật ngữ chuyên ngành") => "Uses relevant professional terminology accurately and can explain terms in context. Assess the evidence in the spoken answer, not transcription spelling.",
+        (_, "Độ trôi chảy & tự tin") => "Speaks with a steady, confident rhythm and limited hesitation. Assess delivery only, not the correctness or completeness of technical content.",
         _ => fallback,
     };
 

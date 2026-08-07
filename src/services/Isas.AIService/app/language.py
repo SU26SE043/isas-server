@@ -5,13 +5,17 @@ language and must keep their exact existing behaviour.
 """
 
 import os
+import logging
 
 VI = "vi"
 EN = "en"
+_logger = logging.getLogger(__name__)
 
 
 def normalize(language: str | None) -> str:
     allowed = {item.strip() for item in os.getenv("BILINGUAL_ALLOWED_LANGUAGES", VI).split(",")}
+    if language == EN and EN not in allowed:
+        _logger.warning("Bilingual request downgraded to Vietnamese because BILINGUAL_ALLOWED_LANGUAGES excludes en")
     return EN if language == EN and EN in allowed else VI
 
 

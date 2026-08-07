@@ -325,7 +325,7 @@ def build_cv_analysis_prompt(cv_text: str, jd_text: str | None,
             "dùng các criterionId đó — TUYỆT ĐỐI không tự nghĩ ra id mới, không bỏ sót id nào.\n"
             "- matchScore nằm trong [0, thang điểm của CHÍNH tiêu chí đó]; chấm theo bằng chứng "
             "THẬT trong CV, thiếu bằng chứng thì cho điểm thấp chứ KHÔNG suy diễn có lợi.\n"
-            "- reasoning: 1-2 câu tiếng Việt, trích dẫn chỗ trong CV làm căn cứ.\n"
+            f"- reasoning: 1-2 câu {field_lang(language)}, trích dẫn chỗ trong CV làm căn cứ.\n"
             "- overallMatchScore: mức khớp tổng thể của CV với vị trí, 0-100.\n"
             "- Ngoài ra trích xuất từ CV: skills (danh sách kỹ năng), yearsExperience (tổng số năm "
             "kinh nghiệm, số thực; không xác định được thì 0), education (danh sách bằng cấp/trường)."

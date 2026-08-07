@@ -104,6 +104,23 @@ public class B2CRubricSeedTests
         Assert.All(first, c => Assert.True(c.IsActive));
     }
 
+    [Fact]
+    public void EnglishSeed_HasTranslatedNamesAndDescriptions_ForEveryCriterion()
+    {
+        var seed = B2CRubricSeed.Build();
+        var vietnameseText = seed.Where(c => c.Language == "vi")
+            .SelectMany(c => new[] { c.Name, c.Description })
+            .ToHashSet();
+        var english = seed.Where(c => c.Language == "en").ToList();
+
+        Assert.Equal(21, english.Count);
+        Assert.All(english, c =>
+        {
+            Assert.DoesNotContain(c.Name, vietnameseText);
+            Assert.DoesNotContain(c.Description, vietnameseText);
+        });
+    }
+
     // (c2) Idempotent trên DB — seed lại lần 2 (khoá theo PK cố định như migration/HasData) KHÔNG nhân đôi.
     [Fact]
     public async Task Seed_ReAppliedToDb_DoesNotDuplicate()

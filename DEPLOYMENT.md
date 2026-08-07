@@ -5,6 +5,16 @@
 `paymentservice`, `gateway`) và **AIService** Python (`aiapi` + `aiworker`). CI/CD build **6**
 image → push GHCR → SSH deploy.
 
+## Rollout song ngữ
+
+Chỉ bật tiếng Anh khi cả ba cấu hình đã được triển khai cùng lúc:
+
+- InterviewService: `Interview__Bilingual__Enabled=true`
+- CampaignService: `Campaign__Bilingual__Enabled=true`
+- AIService: `BILINGUAL_ALLOWED_LANGUAGES=vi,en`
+
+Thiếu biến AIService sẽ hạ yêu cầu EN về VI và ghi warning để phát hiện lệch rollout.
+
 > **Trước 2026-08-06 AIService chạy trên Mac** và gọi S3/RabbitMQ của server qua Tailscale.
 > Đo được link đó bão hoà ~1 MB/s, mà audio phải đi vòng **server(S3) → Mac → OpenAI** ⇒ quét
 > tải `/decide-next` knee ở 0,5 req/s (~60 người đồng thời). Đưa AIService về đây biến chặng S3
