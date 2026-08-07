@@ -66,6 +66,9 @@ public class RoadmapConfiguration : IEntityTypeConfiguration<Roadmap>
             .HasMaxLength(16)
             .IsRequired();
 
+        e.Property(x => x.Language).HasColumnType("text").HasDefaultValue("vi").IsRequired();
+        e.HasCheckConstraint("ck_roadmaps_language", "language IN ('vi', 'en')");
+
         e.Property(x => x.Status)
             .HasConversion<string>()
             .HasMaxLength(16)

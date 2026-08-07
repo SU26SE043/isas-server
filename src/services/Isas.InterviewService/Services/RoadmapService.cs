@@ -27,6 +27,7 @@ public class RoadmapService : IRoadmapService
     private readonly ILogger<RoadmapService> _logger;
     private readonly IEntitlementClient? _entitlements;
     private readonly bool _tieringEnabled;
+    private readonly bool _bilingualEnabled;
 
     public RoadmapService(
         InterviewDbContext db,
@@ -47,11 +48,13 @@ public class RoadmapService : IRoadmapService
         _logger = logger;
         _entitlements = entitlements;
         _tieringEnabled = bool.TryParse(config?["Tiering:Enabled"], out var enabled) && enabled;
+        _bilingualEnabled = bool.TryParse(config?["Interview:Bilingual:Enabled"], out var bilingual) && bilingual;
     }
 
     public async Task<RoadmapResponse> CreateAsync(
         Guid candidateId, CreateRoadmapRequest req, CancellationToken ct = default)
     {
+        var language = ValidateLanguage(req.Language);
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
         // CV optional — đọc parsed_text (kiểm chủ sở hữu). null → 404; khác chủ → 403; rỗng → 400.
@@ -156,6 +159,7 @@ public class RoadmapService : IRoadmapService
             CandidateId = candidateId,
             JobCategory = req.JobCategory,
             Level = req.Level,
+            Language = language,
             CvId = req.CvId,
             SourceSessionIds = sourceSessionIds,
             Baseline = baseline,
@@ -382,10 +386,22 @@ public class RoadmapService : IRoadmapService
         return file.ParsedText;
     }
 
+    private string ValidateLanguage(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return "vi";
+        var language = requested.Trim().ToLowerInvariant();
+        if (language is not ("vi" or "en"))
+            throw new InvalidOperationException("language chỉ nhận vi hoặc en.");
+        if (!_bilingualEnabled && language != "vi")
+            throw new InvalidOperationException("Bilingual interview chưa được bật.");
+        return language;
+    }
+
     private static RoadmapResponse Map(Roadmap r, bool includeTheory) => new(
         r.Id,
         r.JobCategory.ToString(),
         r.Level.ToString(),
+        r.Language,
         r.CvId,
         r.Status.ToString(),
         r.Milestones.OrderBy(m => m.OrderNo).Select(m => new MilestoneResponse(
