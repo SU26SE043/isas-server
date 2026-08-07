@@ -19,6 +19,10 @@ namespace Isas.CampaignService.Services
         // Mỗi candidate Filtered → publish cv_screening_queue → Analyzing (+ last_screening_published_at).
         Task<int> PublishScreeningJobsAsync(Guid orgId, Guid campaignId, CancellationToken ct);
 
+        // BK30: HR đẩy lại sàng CV cho 1 ứng viên (Filtered/Analyzed/AnalysisFailed → Analyzing).
+        // Invited/Analyzing/Rejected/Pending → InvalidOperationException (controller map 409).
+        Task RescreenCandidateAsync(Guid orgId, Guid campaignId, Guid candidateId, CancellationToken ct);
+
         // Callback cv-result: ghi candidate_criterion_scores + overall_match_score → Analyzed (idempotent).
         Task<CvResultOutcome> SaveCvResultAsync(Guid candidateId, CvResultCallbackRequest req, CancellationToken ct);
 
