@@ -407,6 +407,7 @@ public class PracticeService : IPracticeService
         // (idempotent PAY-11) TRƯỚC khi ném lại, tránh treo credit org — đồng pattern B2C (P1-2).
         try
         {
+            var maxDeepPerQuestion = Math.Max(0, request.MaxDeepPerQuestion ?? 0);
             var session = new PracticeSession
             {
                 Id = sessionId,
@@ -423,8 +424,16 @@ public class PracticeService : IPracticeService
                 // (thay vì dồn ở đuôi buổi); vẫn công bằng vì mọi ứng viên nhận cùng bộ câu gốc và cùng trần.
                 AdaptiveEnabled = request.AdaptiveEnabled ?? false,
                 MaxQuestions = ClampCampaignMaxQuestions(request.MaxQuestions, request.CampaignId),
-                MaxFollowUps = request.MaxFollowUps ?? 0,
-                MaxDeepPerQuestion = Math.Max(0, request.MaxDeepPerQuestion ?? 0)
+                // INT-17b — ĐỐI XỨNG đường B2C (:195-199): ở chế độ chuỗi, trần theo BUỔI phải để 0.
+                // Để nguyên giá trị HR khai thì nó bó chặt hơn trần theo CÂU, vì `AnswerService` đếm
+                // `followUpCount` trên MỌI câu non-Seed của cả buổi ⇒ ngân sách cạn giữa chuỗi. Đo được:
+                // campaign maxDeep=2 + maxFollowUps=3, 4 câu gốc → phân bố câu sâu 2/1/0/0 PHỤ THUỘC
+                // THỨ TỰ TRẢ LỜI ⇒ hai ứng viên cùng campaign nhận số câu và chủ đề khác nhau, trong khi
+                // điểm vẫn đem xếp hạng chung (CAMP-10). `MaxQuestions` mới là trần buổi.
+                // Điều kiện MỘT vế, source-independent: đường B2B không đọc entitlement (Campaign chỉ
+                // CHẶN lúc HR bật, không CẤP giá trị; EntitlementSnapshot không có MaxDeepPerQuestion).
+                MaxFollowUps = maxDeepPerQuestion > 0 ? 0 : (request.MaxFollowUps ?? 0),
+                MaxDeepPerQuestion = maxDeepPerQuestion
             };
             _db.PracticeSessions.Add(session);
 
