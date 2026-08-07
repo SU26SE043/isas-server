@@ -30,6 +30,26 @@ class QuestionCitation(BaseModel):
     citedChunkIds: list[str]
 
 
+class CriterionRef(BaseModel):
+    """1 tiêu chí NỘI DUNG mà câu hỏi CÓ THỂ nhắm tới (chấm-theo-phạm-vi).
+
+    Trước đây mọi câu trả lời bị chấm trên CẢ 7 tiêu chí bất kể câu hỏi hỏi gì: đo trên deploy,
+    một câu về "xoay vòng refresh token" vẫn bị chấm tiêu chí *Thiết kế hệ thống & CSDL* (trọng số
+    0.18) và ăn 2/5 CHỈ VÌ không được hỏi ⇒ cùng trình độ, bài trả lời câu hỏi hẹp được ~69/100
+    còn bài trả lời câu "đại luận" được 91–97.
+
+    Ở đây chỉ cần ``criterionId`` + ``name``: id để .NET map ngược (và để AIService DROP id lạ —
+    chống bịa by-construction, mẫu ``citedChunkId`` của grounding và ``criterionId`` của C14),
+    ``name`` để model hiểu tiêu chí nói về cái gì mà quyết định câu hỏi có nhắm tới nó không.
+    KHÔNG mang ``maxScore``/``weight``: đây là bài toán GẮN NHÃN PHẠM VI, không phải chấm điểm.
+
+    ⚠ 4 tiêu chí CÁCH NÓI (giao tiếp / trôi chảy / ngữ pháp / thuật ngữ) KHÔNG đi qua đây —
+    chúng luôn chấm ở mọi câu nên .NET không gửi xuống, và model không có cửa nào loại chúng.
+    """
+    criterionId: str
+    name: str
+
+
 class GenerateQuestionsRequest(BaseModel):
     jobCategory: str            # BA | BE | FE
     language: str = "vi"
@@ -44,6 +64,12 @@ class GenerateQuestionsRequest(BaseModel):
     focusCriteria: list[str] | None = None
     # RAG grounding (Contract 2) — vắng/rỗng → ungrounded (VẪN sinh, không citation).
     grounding: list[GroundingChunk] | None = None
+    # Chấm-theo-phạm-vi — tập tiêu chí NỘI DUNG để model gắn nhãn cho từng câu hỏi.
+    # Vắng/rỗng ⇒ KHÔNG gắn nhãn, response giữ nguyên xi shape cũ (Campaign B2B / mọi caller cũ).
+    # ⚠ PHẢI khai tường minh: schema này không set model_config nên pydantic `extra='ignore'` sẽ
+    # NUỐT IM LẶNG field quên khai — .NET gửi mà AI không thấy, không lỗi, không log, tính năng chỉ
+    # đơn giản là không chạy (đúng lớp bug `focusCriteria` BC14 và `metricsVersion` 2026-08-05).
+    criteria: list[CriterionRef] | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):
@@ -51,6 +77,17 @@ class GenerateQuestionsResponse(BaseModel):
     # ADDITIVE — CHỈ có khi request cấp grounding (per-question). Campaign B2B bỏ qua field này
     # ⇒ không vỡ. Ungrounded → None (endpoint dùng exclude_none nên giữ nguyên shape cũ).
     citations: list[QuestionCitation] | None = None
+    # ADDITIVE — mảng SONG SONG index-aligned với `questions`: phần tử i = danh sách criterionId
+    # mà questions[i] nhắm tới (⊆ tập `criteria` đã cấp — provider đã drop id lạ + bỏ trùng).
+    #
+    # 🔴 TÊN KHOÁ LÀ HỢP ĐỒNG DÂY với .NET — đổi tên ở đây KHÔNG ném lỗi, nó chỉ làm .NET bind hụt
+    # rồi lưu rỗng vĩnh viễn ⇒ mọi câu hỏi quay về bị chấm trên CẢ 7 tiêu chí như trước, không
+    # triệu chứng nào ngoài "điểm dạo này lạ lạ". Thấy sai thì BÁO, đừng tự sửa một bên.
+    #
+    # Mảng song song (KHÔNG phải dict lồng trong từng câu hỏi) là để `questions: list[str]` giữ
+    # nguyên kiểu — đúng mẫu `citations` đã có ở trên. None (ungrounded/không gắn nhãn) → endpoint
+    # dùng exclude_none nên field BIẾN MẤT khỏi response, giữ shape cũ y hệt.
+    targetCriteria: list[list[str]] | None = None
 
 
 # ── Đề xuất tiêu chí có cấu trúc (Campaign C8) ──────────────────────────────

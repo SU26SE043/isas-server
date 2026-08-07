@@ -85,12 +85,20 @@ async def generate_questions(req: GenerateQuestionsRequest,
     try:
         # RAG grounding (Contract 2) — chuyển sang list[dict] cho provider; vắng → ungrounded.
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
+        # Chấm-theo-phạm-vi — vắng ⇒ None (KHÔNG phải []): provider rẽ nhánh theo truthiness, và
+        # response_model_exclude_none bỏ hẳn targetCriteria ⇒ caller cũ giữ nguyên shape.
+        criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
         result = await _call_with_language(req.language, provider.generate,
-            req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding)
+            req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding,
+            criteria)
         # citations=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ cho Campaign B2B.
         citations = ([QuestionCitation(**c) for c in result.citations]
                      if result.citations is not None else None)
-        return GenerateQuestionsResponse(questions=result.questions, citations=citations)
+        # Quên dòng targetCriteria dưới đây thì pydantic KHÔNG lỗi, field chỉ đơn giản không bao giờ
+        # ra wire — .NET nhận rỗng và mọi câu hỏi lặng lẽ quay về bị chấm trên CẢ 7 tiêu chí
+        # (cùng lớp bug `metricsVersion` rụng ở `DeliveryMetrics` 2026-08-05, `fullName` ở BK28).
+        return GenerateQuestionsResponse(questions=result.questions, citations=citations,
+                                         targetCriteria=result.target_criteria)
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi sinh câu hỏi: {ex}")
 
