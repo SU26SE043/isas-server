@@ -20,6 +20,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignMembership> CampaignMemberships => Set<CampaignMembership>();        // D2: membership ứng viên↔campaign (DB16)
         public DbSet<CandidateCriterionScore> CandidateCriterionScores => Set<CandidateCriterionScore>();
         public DbSet<SessionFlag> SessionFlags => Set<SessionFlag>();                            // SEC-1: cờ chống gian lận cho HR
+        public DbSet<FaceImage> FaceImages => Set<FaceImage>();                                  // BK25: sổ theo dõi ảnh sinh trắc trong S3 (DATA-3)
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();                      // DB2b: transactional outbox (invitation-email)
         public DbSet<ApiKey> ApiKeys => Set<ApiKey>();                                           // F17: API key bên thứ ba (ATS), gắn theo org
 
@@ -458,6 +459,39 @@ namespace Isas.CampaignService.Models
                  .WithMany()
                  .HasForeignKey(x => x.CampaignId)
                  .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── FaceImage (sổ theo dõi ảnh sinh trắc trong S3 — BK25/DATA-3) ──────
+            // ⚠ CỐ Ý KHÔNG có nav/FK tới Campaign, KHÁC session_flags của DB9. Nav BẮT BUỘC tới
+            // Campaign kéo theo query filter soft-delete (DB13, nếu không thì
+            // PossibleIncorrectRequiredNavigation warning + test DB13 ném) — mà campaign đã
+            // soft-delete chính là nhóm CẦN PURGE NHẤT, filter sẽ giấu đúng những dòng đó khỏi job
+            // dọn và ảnh của campaign bị xoá sẽ nằm trong S3 vĩnh viễn. Đây là SỔ RETENTION, mọi
+            // tham chiếu để Guid lỏng (GEN-2).
+            modelBuilder.Entity<FaceImage>(e =>
+            {
+                e.ToTable("face_images", t =>
+                {
+                    t.HasCheckConstraint("ck_face_images_kind", "kind IN ('Live', 'Reference')");
+                });
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+                // Key S3 dài nhất hiện tại ~ "campaigns/{36}/sessions/{36}/face-live-{32}.jpeg" ≈ 110 ký tự;
+                // 512 để dư cho prefix đổi về sau mà không phải migration lần nữa.
+                e.Property(x => x.StorageKey).HasMaxLength(512).IsRequired();
+                e.Property(x => x.CapturedAt).HasDefaultValueSql("now()");
+
+                // 1 object S3 = 1 dòng. Nhờ UNIQUE này, enroll lại ĐÚNG cùng key (cùng đuôi file) chỉ
+                // cập nhật CapturedAt thay vì đẻ dòng thứ hai trỏ cùng chỗ (DATA-2: 1 bản/ứng viên/campaign).
+                e.HasIndex(x => x.StorageKey).IsUnique();
+
+                // Đường quét DUY NHẤT của FaceImagePurger: `WHERE captured_at < cutoff ORDER BY captured_at`.
+                e.HasIndex(x => x.CapturedAt);
+
+                // Truy ngược "ảnh của buổi thi này" khi HR/ops cần đối chất trước lúc hết hạn giữ.
+                e.HasIndex(x => new { x.CampaignId, x.SessionId });
             });
 
             // ── OutboxMessage (transactional outbox invitation-email — DB2b) ──────

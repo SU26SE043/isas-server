@@ -71,6 +71,12 @@ builder.Services.AddHostedService<OutboxDispatcher>();
 // DB28: retention — dọn outbox-row ĐÃ publish quá hạn giữ (bảng vốn phình vô hạn). Chỉ đụng row
 // published_at IS NOT NULL + quá hạn, có trần mỗi vòng; tắt bằng `Outbox:PurgeEnabled=false`.
 builder.Services.AddHostedService<OutboxPurger>();
+// BK25/DATA-3: retention ảnh sinh trắc — xoá object SeaweedFS + dòng face_images quá hạn giữ
+// (CAMP-13: 90 ngày). 🔴 MẶC ĐỊNH TẮT (thứ bị xoá là bằng chứng buổi thi, không phải rác thuần như
+// outbox) → bật bằng `FaceImageRetention__Enabled=true` sau khi quan sát 1 chu kỳ.
+builder.Services.Configure<FaceImageRetentionSettings>(
+    builder.Configuration.GetSection(FaceImageRetentionSettings.SectionName));
+builder.Services.AddHostedService<FaceImagePurger>();
 // C14: sàng CV async — đẩy job AI chấm khớp (cv_screening_queue) + xử lý callback/shortlist/PATCH
 builder.Services.AddSingleton<ICvScreeningPublisher, CvScreeningPublisher>();
 builder.Services.AddScoped<ICvScreeningService, CvScreeningService>();
