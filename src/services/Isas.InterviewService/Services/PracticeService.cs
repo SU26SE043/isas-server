@@ -105,6 +105,7 @@ public class PracticeService : IPracticeService
 
         // F2b — số câu. Cùng lý do đặt trước reserve: 21 câu phải bị từ chối mà không trừ credit.
         var questionCount = ValidateQuestionCount(request.QuestionCount);
+        await EnsureRubricExistsAsync(candidateId, jobCategory, language, ct);
         var entitlement = _tieringEnabled && _entitlements is not null
             ? await _entitlements.ResolveUserAsync(candidateId, ct)
             : EntitlementSnapshot.Free;
@@ -892,6 +893,24 @@ public class PracticeService : IPracticeService
         if (language is not ("vi" or "en"))
             throw new InvalidOperationException("language chỉ nhận vi hoặc en.");
         return language;
+    }
+
+    // A session must never reserve a credit for a language whose B2C rubric has not been deployed.
+    // Otherwise scoring has no criteria, leaves the answer Uploaded forever, and consumes the credit.
+    private async Task EnsureRubricExistsAsync(
+        Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
+    {
+        var ownerId = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, language, ct);
+        var exists = await _db.RubricCriteria.AsNoTracking().AnyAsync(c =>
+            c.CampaignId == null
+            && c.CandidateId == ownerId
+            && c.JobCategory == jobCategory
+            && c.Language == language
+            && c.IsActive,
+            ct);
+
+        if (!exists)
+            throw new InvalidOperationException($"Chưa có rubric hoạt động cho {jobCategory} ({language}).");
     }
 
     private static int ValidateTimeLimitSec(int? requested)

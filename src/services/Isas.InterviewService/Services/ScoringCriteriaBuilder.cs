@@ -31,7 +31,7 @@ public static class ScoringCriteriaBuilder
 
         var levels = declared.Count > 0
             ? declared.Select(l => new ScoringLevelDto { Score = l.Score, Descriptor = l.Descriptor }).ToList()
-            : DefaultBand(c.MaxScore);
+            : DefaultBand(c.MaxScore, c.Language);
 
         // Anchor chỉ đến từ rubric_levels khai (DB15: câu mẫu nằm ở cột jsonb example_answers của mức);
         // dải mặc định không có câu mẫu. OUTPUT giữ nguyên hợp đồng cũ: {Score, ExampleAnswer} sort theo score.
@@ -54,11 +54,15 @@ public static class ScoringCriteriaBuilder
     }
 
     /// <summary>Dải mức mặc định <c>0..maxScore</c> khi tiêu chí không khai rubric_levels.</summary>
-    public static List<ScoringLevelDto> DefaultBand(int maxScore)
+    public static List<ScoringLevelDto> DefaultBand(int maxScore, string language = "vi")
     {
         var top = Math.Max(maxScore, 0);
         return Enumerable.Range(0, top + 1)
-            .Select(i => new ScoringLevelDto { Score = i, Descriptor = $"Mức {i}/{top}" })
+            .Select(i => new ScoringLevelDto
+            {
+                Score = i,
+                Descriptor = language == "en" ? $"Level {i}/{top}" : $"Mức {i}/{top}"
+            })
             .ToList();
     }
 
