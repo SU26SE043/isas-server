@@ -7,6 +7,10 @@ namespace Isas.CampaignService.DTOs
     /// <summary>cv-result — kết quả AI chấm khớp 1 CV theo tiêu chí campaign.</summary>
     public class CvResultCallbackRequest
     {
+        /// <summary>BK28 — họ tên rút từ CV. <c>null</c> = CV không có tên rõ ràng (hợp lệ) ⇒
+        /// <see cref="Services.CvScreeningService.SaveCvResultAsync"/> giữ nguyên giá trị đang có,
+        /// KHÔNG ghi đè tên HR đã nhập tay qua PATCH.</summary>
+        public string? FullName { get; set; }
         public List<string>? Skills { get; set; }
         public decimal? YearsExperience { get; set; }
         public List<string>? Education { get; set; }   // chấp nhận nhưng KHÔNG lưu (C13 schema không có cột)

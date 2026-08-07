@@ -80,6 +80,9 @@ def make_cv_result_payload(result: dict) -> dict:
     ``CvResultCallbackRequest`` (`Skills`/`YearsExperience`/…).
     """
     return {
+        # BK28 — tên ứng viên rút từ CV. `None` khi CV không có tên rõ ràng: .NET nhận null và
+        # KHÔNG ghi đè (xem `SaveCvResultAsync`), nên gửi null an toàn hơn hẳn gửi "".
+        "fullName": result.get("fullName"),
         "skills": result.get("skills") or [],
         "yearsExperience": result.get("yearsExperience"),
         "education": result.get("education") or [],
