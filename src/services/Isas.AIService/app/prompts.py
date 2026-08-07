@@ -807,8 +807,8 @@ def build_summarize_roadmap_prompt(job_category: str, level: str,
         f"- strengths: tiêu chí đã mạnh / đạt ngưỡng (list, {field_lang(language)}).\n"
         f"- weaknesses: tiêu chí còn yếu / chưa đạt ngưỡng (list, {field_lang(language)}).\n"
         "- improvements: tiêu chí có cải thiện rõ rệt so với baseline (list, "
-        "tiếng Việt).\n"
-        "- overallComment: nhận xét tổng quan (vài câu, tiếng Việt) — điểm "
+        f"{field_lang(language)}).\n"
+        f"- overallComment: nhận xét tổng quan (vài câu, {field_lang(language)}) — điểm "
         "mạnh/yếu tổng thể + hướng ôn tiếp theo.",
         "Nhận xét khách quan dựa trên số liệu thực tế, KHÔNG bịa tiêu chí "
         "ngoài danh sách trên.",
@@ -1005,7 +1005,7 @@ NGÂN SÁCH:
 
 YÊU CẦU:
 {rules_block}
-- Với action ≠ "end": nextQuestion là 1 câu hỏi DUY NHẤT bằng tiếng Việt, ngắn gọn, hỏi trực tiếp (không lời dẫn), bám năng lực ở trên và KHÔNG lặp lại câu đã hỏi.
+- Với action ≠ "end": nextQuestion là 1 câu hỏi DUY NHẤT bằng {field_lang(language)}, ngắn gọn, hỏi trực tiếp (không lời dẫn), bám năng lực ở trên và KHÔNG lặp lại câu đã hỏi.
 - Với action = "end": nextQuestion để trống.
-- reason: 1 câu ngắn (tiếng Việt) giải thích vì sao chọn hành động đó.
+- reason: 1 câu ngắn ({field_lang(language)}) giải thích vì sao chọn hành động đó.
 - CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown: {{"action":"follow_up","nextQuestion":"...","reason":"..."}}"""
