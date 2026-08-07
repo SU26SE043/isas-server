@@ -5,7 +5,7 @@
 > Ký hiệu: `🔜` = chưa làm / đang tới; `Dxx` = tham chiếu decision log.
 
 ## GEN — Ràng buộc chung (mọi service)
-- **GEN-1** API public chỉ qua Gateway `/api/v1/<service>`; callback `/internal/*` + webhook PayOS **KHÔNG** qua gateway.
+- **GEN-1** API public chỉ qua Gateway `/api/v1/<service>`; callback `/internal/*` + webhook PayOS **KHÔNG** qua gateway. ⚠ **Vế "webhook PayOS" ĐANG MÂU THUẪN THỰC TẾ — chưa ai chốt** (2026-08-07): prod chỉ có **một tunnel công khai trỏ gateway**, cổng `5271` **không có đường ra Internet**, và URL đăng ký với PayOS chính là `{GW}/api/v1/payment/webhook/payos` — [progress.md](progress.md) §2026-07-18 ghi **tiền THẬT** đã đi đúng đường đó. Gateway cũng **chưa từng** có khối chặn `webhook/**` (`grep -rn "webhook" src/gateway/` = 0 hit, mọi nhánh). Nhánh **chưa merge** `docs/d24-payos-webhook-via-gateway` (`bc465aa`) ratify chiều ngược lại. 🛑 **Đừng "sửa cho đúng luật" bằng cách chặn `webhook/**`** — làm vậy khi URL bên PayOS chưa đổi sẽ giết đường thu tiền **trong im lặng** (polling P3 vẫn cộng credit nên nhìn như vẫn chạy). Xem `R6` trong [tasks.md](tasks.md) §S10. *(Vế `/internal/*` KHÔNG bị nghi ngờ — vẫn đúng, và đã có khối chặn.)*
 - **GEN-2** DB-per-service; **không FK xuyên service** (ref = Guid lỏng); cột snake_case; enum lưu string.
 - **GEN-3** JWT validate offline bằng chung key; service **không gọi Auth lúc chạy**.
 - **GEN-4** AIService **KHÔNG ghi DB** — kết quả trả qua callback (`X-Internal-Token`).
