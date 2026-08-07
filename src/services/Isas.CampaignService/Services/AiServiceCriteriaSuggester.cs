@@ -16,12 +16,12 @@ namespace Isas.CampaignService.Services
         }
 
         public async Task<List<SuggestedCriterion>?> SuggestAsync(
-            string jobCategory, string? jdText, string? criteriaText, int count, CancellationToken ct = default)
+            string jobCategory, string? jdText, string? criteriaText, int count, string language = "vi", CancellationToken ct = default)
         {
             try
             {
                 var resp = await _http.PostAsJsonAsync("/api/v1/suggest-criteria",
-                    new { jobCategory, jdText, criteriaText, count }, ct);
+                    new { jobCategory, jdText, criteriaText, count, language }, ct);
 
                 if (!resp.IsSuccessStatusCode)
                 {

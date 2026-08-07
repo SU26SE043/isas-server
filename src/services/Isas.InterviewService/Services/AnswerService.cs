@@ -284,7 +284,8 @@ public class AnswerService : IAnswerService
                     RootQuestion: rootQuestion,
                     CurrentDepth: question.Depth,
                     MaxDepth: session.MaxDeepPerQuestion,
-                    OtherTopics: otherTopics),
+                    OtherTopics: otherTopics,
+                    Language: session.Language),
                 ct);
 
             // (7) Lưu transcript đồng bộ lên answer (single-source; TryPublishScoringJobAsync đọc lại → job).
