@@ -20,8 +20,9 @@ Thiếu biến AIService sẽ hạ yêu cầu EN về VI và ghi warning để p
 > tải `/decide-next` knee ở 0,5 req/s (~60 người đồng thời). Đưa AIService về đây biến chặng S3
 > thành loopback, chỉ còn upload ra OpenAI qua đường 6,5 MB/s.
 >
-> `SERVER_TS_IP` vẫn còn dùng cho `Internal__CallbackBase` của campaignservice — giữ dạng IP
-> tailnet có chủ ý để đường lùi về Mac không phải đụng tới nó.
+> 🔴 `SERVER_TS_IP` **KHÔNG còn** dùng cho `Internal__CallbackBase` nữa. Ghi chú cũ ở đây khẳng định
+> giữ dạng IP tailnet là "có chủ ý" vì nó tới được từ cả container trên server lẫn từ Mac — **tiền đề
+> đó SAI**: container trên bridge network không tới được IP Tailscale của chính host. Xem §C14 bên dưới.
 
 ---
 
@@ -85,7 +86,7 @@ sàng CV `campaignservice` (**C14**, lấy từ chính message), báo token/chi 
 ## 2. Yêu cầu trước
 
 - [ ] **Tailscale** cài trên **cả** Server và Mac, cùng tailnet. Lấy IP: `tailscale ip -4`.
-  - `<SERVER_TS_IP>` = IP Tailscale của server → biến `.env` **`SERVER_TS_IP`**. Nay chỉ còn dùng cho `Internal__CallbackBase` của campaignservice (C14). Giữ dạng IP tailnet **có chủ ý**: nó tới được từ cả container trên server lẫn từ Mac, nên đường lùi về Mac không phải đụng tới nó.
+  - `<SERVER_TS_IP>` = IP Tailscale của server → biến `.env` **`SERVER_TS_IP`**. Giữ lại cho thao tác ops qua tailnet và cho **đường lùi** chạy aiworker trên Mac; `deploy/compose.yaml` **không còn tham chiếu** nó. 🔴 Trước đây nó cấp `Internal__CallbackBase` với lý do "tới được từ cả hai phía" — sai, xem §C14.
   - *(`MAC_TS_IP` đã bỏ — AIService không còn ở Mac.)*
 - [ ] **Docker + Docker Compose** trên cả 2 máy.
 - [ ] Firewall/Tailscale ACL: cổng `5672`, `8333`, `5246`, `5247` **chỉ** cho phép tailnet — không lộ public. `aiapi:8000` KHÔNG publish ra host (chỉ `expose`), nên không cần luật riêng.
@@ -304,10 +305,10 @@ services:
       - Auth__BaseUrl=http://isas.authservice:8080
       - Interview__BaseUrl=http://isas.interviewservice:8080
       - Internal__Token=${INTERNAL_TOKEN}
-      # C14 — worker sàng CV B2B chạy TRÊN MAC, nên callback phải là địa chỉ tới được qua tailnet, không
-      # phải `http://localhost:8080` (mặc định trong code — `CvScreeningService.cs:58`) và cũng KHÔNG
-      # qua gateway (GEN-1). ⇒ campaignservice PHẢI publish cổng 5247 (bên dưới) để Mac gọi ngược vào.
-      - Internal__CallbackBase=http://${SERVER_TS_IP}:5247
+      # C14 — callback sàng CV: aiworker → campaignservice, KHÔNG qua gateway (GEN-1), và KHÔNG dùng
+      # `http://localhost:8080` (mặc định trong code — `CvScreeningService.cs:58`). Từ 2026-08-06
+      # aiworker chạy trên server ⇒ dùng TÊN CONTAINER như mọi URL xuyên service khác. Xem §C14.
+      - Internal__CallbackBase=http://isas.campaignservice:8080
       # SMTP — InvitationEmailConsumer gửi email mời (magic-link) khi tiêu thụ campaign_invitation_email_queue.
       - EmailSettings__Host=${SMTP_HOST}
       - EmailSettings__Port=${SMTP_PORT}
@@ -456,7 +457,7 @@ GOOGLE_PUBLIC_BASE_URL=https://<your-tunnel>.trycloudflare.com/api/v1
 GATEWAY_PUBLIC_URL=https://<your-tunnel>.trycloudflare.com
 
 # ===== Mạng Tailscale (2 host) =====
-SERVER_TS_IP=100.64.204.33     # chiều ngược: callback C14 (campaign:5247), usage F22, RabbitMQ, S3
+SERVER_TS_IP=100.64.204.33     # ops qua tailnet + đường lùi aiworker trên Mac (KHÔNG còn cấp callback C14)
 
 # ===== PayOS (mua credit + webhook) =====
 PAYOS_CLIENT_ID=...
@@ -486,7 +487,7 @@ ADAPTIVE_MAX_FAILURES_PER_SESSION=3
 
 > ✅ **Đã hợp nhất 2026-08-02**: `.env` server nay có đủ 9 khoá từng thiếu (`SERVER_TS_IP` · 2× `TIERING_*` · 6× `ADAPTIVE_*`), và `~/docker/main/docker-compose.yml` đã được thay bằng bản khớp `deploy/compose.yaml`. Xác nhận bằng `docker compose config` (0 cảnh báo biến chưa set) rồi `up -d`; `docker inspect interviewservice-main` cho thấy đủ 6 khoá `Adaptive__*`.
 > Chỉ còn `GOOGLE_ONETIME_CODE_TTL_SECONDS` là tuỳ chọn không đặt ở đâu (mặc định 60s).
-> 🔴 **Bẫy vẫn còn giá trị cho lần deploy sau:** dùng `deploy/compose.yaml` trên một máy mà `.env` thiếu `ADAPTIVE_*` ⇒ `ADAPTIVE_ENABLED` rơi về `false` = **TẮT phỏng vấn thích ứng trong im lặng**; thiếu `SERVER_TS_IP` ⇒ `Internal__CallbackBase=http://:5247` = **callback C14 chết**. Cả hai đều không có lỗi nào báo — chỉ tính năng ngừng chạy.
+> 🔴 **Bẫy vẫn còn giá trị cho lần deploy sau:** dùng `deploy/compose.yaml` trên một máy mà `.env` thiếu `ADAPTIVE_*` ⇒ `ADAPTIVE_ENABLED` rơi về `false` = **TẮT phỏng vấn thích ứng trong im lặng**; *(vế `SERVER_TS_IP` ⇒ callback C14 chết KHÔNG còn đúng — callback nay dùng tên container, xem §C14.)* Bẫy `ADAPTIVE_*` không có lỗi nào báo — chỉ tính năng ngừng chạy.
 > ⓘ Trước lần hợp nhất này production chạy **1 câu gốc × 3 tầng** (`SeedCount=1`, `MaxQuestions=6` ghi cứng trong compose server, 2 khoá còn lại lấy mặc định appsettings). Nay là **5 × 3** đúng thiết kế INT-17b.
 
 ### Server `seaweed-s3.json` (cạnh compose) — identities cho S3 auth
@@ -626,9 +627,10 @@ thời AIService còn ở Mac** — nay chúng chỉ còn dùng để gỡ rối
       config=Config(s3={"addressing_style": "path"}))
   ```
 - [ ] **Đổi cấu hình = sửa CẢ BA nơi** (server compose · `deploy/compose.yaml` · file này) — xem §0. Kiểm lệch trước mỗi lần deploy, đừng tin trí nhớ.
-- [ ] **`<SERVER_TS_IP>`** thay bằng IP Tailscale thật (biến `.env`: `SERVER_TS_IP`) — nay chỉ còn dùng cho `Internal__CallbackBase` của campaignservice.
+- [ ] **`<SERVER_TS_IP>`** thay bằng IP Tailscale thật (biến `.env`: `SERVER_TS_IP`) — nay chỉ dùng cho ops qua tailnet + đường lùi aiworker trên Mac; `deploy/compose.yaml` không tham chiếu.
 - [ ] **C14 — bật consumer sàng CV đúng THỨ TỰ**: `CV_SCREENING_ENABLED` (Mac worker) mặc định **`false`**. Bật trước khi xả queue tồn ⇒ chấm lại toàn bộ bản nhân đôi mà `StuckScreeningRepublisher` đã đẩy (đo 2026-08-02: **713 message cho đúng 8 ứng viên**). Trình tự: deploy code (tắt) → **xả `cv_screening_queue`** → `CV_SCREENING_ENABLED=true` → đợi ≤15' xem ứng viên rời `Analyzing`. Xả queue an toàn: 8 ứng viên vẫn ở `Analyzing` nên republisher tự đẩy lại đúng 8 job.
-- [ ] **C14 — callback về `campaignservice:5247`**: cần `Internal__CallbackBase=http://${SERVER_TS_IP}:5247` **và** campaignservice publish cổng 5247. Thiếu 1 trong 2 → worker callback vào `http://localhost:8080` (mặc định trong code) = kết quả sàng CV không bao giờ về.
+- [ ] **C14 — callback sàng CV**: `Internal__CallbackBase=http://isas.campaignservice:8080` (tên container, aiworker cùng `isas-main-network`). Sai giá trị → worker chấm xong nhưng callback không tới, `nack` → republish vô hạn, ứng viên kẹt `Analyzing`; sau 6h → `AnalysisFailed` mà **không có endpoint HR retry**.
+      🔴 **Đừng dùng lại `http://${SERVER_TS_IP}:5247`** — container bridge KHÔNG tới được IP Tailscale của chính host (đo 2026-08-07). Chỉ dùng dạng đó khi chạy aiworker **trên Mac** (đường lùi), và khi đó cổng 5247 phải publish.
 - [ ] **Routing `/api/v1`** — frontend gọi `/api/v1/auth/...`, `/api/v1/interview/...`, `/api/v1/campaign/...`, `/api/v1/payment/...` (KHÔNG còn `/api/auth`). **`/api/v1/ai/*` đã gỡ (GEN-7)** — AI internal-only, FE không gọi trực tiếp.
 - [ ] **Internal token** Interview ↔ Worker khớp, **Jwt** Auth ↔ Interview khớp.
 - [x] **CI build AIService** → `ghcr.io/<owner>/isas.aiservice:main` (từ 2026-08-06, `ci.yml` build **6** image). Trước đó Mac build tay, và hệ quả đã cháy: `aiapi` từng chạy image **cũ hơn `aiworker` 3 ngày** dù cùng tag `:local`. Verify bằng label: `docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' aiapi-main aiworker-main` — phải GIỐNG NHAU và bằng SHA của `main`.

@@ -16,7 +16,9 @@
 #     seed 5 / trần 20), server ghi CỨNG `true` / seed 1 / trần 6 và .env server CHƯA khai biến nào.
 #     ⚠ Dùng file này trên server mà không đặt `ADAPTIVE_*` trong .env = TẮT phỏng vấn thích ứng.
 #   · `Cors__AllowedOrigins__6` — xem chú thích ở gateway (server khai TRÙNG index 4).
-#   · `Internal__CallbackBase` dùng `${SERVER_TS_IP}`, server đang ghi cứng `100.64.204.33` (tương đương).
+#   · 🔴 `Internal__CallbackBase` — repo nay dùng TÊN CONTAINER; server còn ghi cứng
+#     `http://100.64.204.33:5247` và đó là trạng thái ĐANG HỎNG (callback sàng CV timeout), KHÔNG
+#     phải "tương đương" như dòng này từng ghi. Phải áp tay lên server, xem DEPLOYMENT.md §C14.
 # AIService ĐƯỢC khai ở gateway (`ApiServices__ai` + `ai-cluster` bên dưới) — có chủ đích, KHÔNG
 # mâu thuẫn GEN-7: hai thứ đó chỉ có tác dụng ở **Development**, nơi Scalar phải liệt kê VÀ gọi
 # được TOÀN BỘ api. Ở Production, `IsGatewayAiPath` (Program.cs) trả 404 cho `/api/v1/ai/*` và
@@ -272,10 +274,16 @@ services:
       - Auth__BaseUrl=http://isas.authservice:8080
       - Interview__BaseUrl=http://isas.interviewservice:8080
       - Internal__Token=${INTERNAL_TOKEN}
-      # C14 — worker sàng CV chạy TRÊN MAC, nên callback phải là địa chỉ tới được qua tailnet, không
-      # phải `http://localhost:8080` (mặc định trong code) và cũng KHÔNG qua gateway (GEN-1).
-      # ⇒ campaignservice phải publish cổng 5247 (bên dưới) để Mac gọi ngược vào.
-      - Internal__CallbackBase=http://${SERVER_TS_IP}:5247
+      # C14 — callback sàng CV: aiworker → campaignservice (KHÔNG qua gateway, GEN-1).
+      # 🔴 Trước đây chỗ này là `http://${SERVER_TS_IP}:5247` và DEPLOYMENT.md ghi đó là lựa chọn "có
+      # chủ ý" vì IP tailnet tới được từ CẢ container trên server LẪN Mac. Tiền đề đó SAI: container
+      # trên bridge network KHÔNG tới được IP Tailscale của chính host. Từ 2026-08-06 aiworker chạy
+      # trên server ⇒ callback timeout → nack → republish vô hạn, ứng viên kẹt `Analyzing`; sau
+      # `Screening:GiveUpAfterHours` (6h) → `AnalysisFailed`, mà KHÔNG có endpoint HR retry.
+      # Triệu chứng đánh lừa: publish OK, queue có consumer, worker vẫn chấm answer bình thường.
+      # ⚠ Đường lùi chạy aiworker trên Mac PHẢI đổi khoá này về `http://${SERVER_TS_IP}:5247`
+      # (cổng 5247 vẫn publish bên dưới nên đường đó còn dùng được).
+      - Internal__CallbackBase=http://isas.campaignservice:8080
       - Tiering__Enabled=${TIERING_ENABLED:-false}
       # SMTP — InvitationEmailConsumer gửi email mời (magic-link) khi tiêu thụ campaign_invitation_email_queue.
       - EmailSettings__Host=${SMTP_HOST}
@@ -290,7 +298,10 @@ services:
       # báo. Sửa ở `6507b2e` (+ gỡ hẳn fallback về `Gateway:Url`, vì fallback làm cấu hình TRÔNG như đã đặt).
       - Invitation__BaseUrl=${FRONTEND_PUBLIC_URL}
     ports:
-      - "5247:8080"     # publish để worker sàng CV trên Mac gọi callback /internal/... qua tailnet (C14)
+      # DI SẢN: callback C14 nay đi bằng tên container (xem Internal__CallbackBase ở trên). Cổng này chỉ
+      # còn cho thao tác ops qua tailnet + đường lùi chạy aiworker trên Mac. ⚠ Nó lộ toàn bộ API
+      # campaignservice NGOÀI gateway — gỡ là quyết định ops riêng, không gộp vào bản vá này.
+      - "5247:8080"
     depends_on: [postgres, seaweedfs, rabbitmq]
     networks: [isas-main-network]
     restart: unless-stopped
