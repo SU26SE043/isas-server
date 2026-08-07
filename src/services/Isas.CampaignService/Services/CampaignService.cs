@@ -555,6 +555,15 @@ namespace Isas.CampaignService.Services
                     if (!keptIds.Add(qid))
                         throw new ArgumentException($"Question {qid} xuất hiện nhiều lần trong payload.");
 
+                    // R10 — đóng dấu HR đã chỉnh NỘI DUNG một câu do AI sinh, để lượt F9 kế không xoá
+                    // mất công sức đó. Đo TRƯỚC khi gán, và chỉ khi text THẬT SỰ đổi: sửa rồi sửa về
+                    // nguyên văn cũ = không có công sức nào để bảo vệ, đóng dấu chỉ làm câu AI đó bất tử.
+                    // Chỉ tính đổi TEXT, không tính bật/tắt `IsRequired`: cái HR mất khi sinh lại là câu
+                    // chữ họ soạn; giữ một câu AI sống sót chỉ vì ai đó gạt một checkbox sẽ làm đề tồn
+                    // đọng câu cũ mà HR không hiểu vì sao.
+                    if (row.Source == QuestionSource.AiGenerated && !string.Equals(row.QuestionText, text, StringComparison.Ordinal))
+                        row.HrEditedAt = now;
+
                     row.QuestionText = text;
                     row.IsRequired = item.IsRequired;
                     // KHÔNG gán row.Source: nguồn gốc là sự thật do server ghi lúc tạo (F9 = AiGenerated,
@@ -655,7 +664,15 @@ namespace Isas.CampaignService.Services
             // ── 6. Lưu: thay lượt AI trước đó, GIỮ NGUYÊN câu HR tự gõ ──────────────
             //    "Sinh lại" = làm mới đề AI, không phải cộng dồn (bấm 3 lần ≠ 15 câu), và tuyệt đối
             //    không được nuốt công HR đã gõ tay. F10 mới là phần trộn qua đường PUT questions.
-            var aiOld = campaign.Questions.Where(q => q.Source == QuestionSource.AiGenerated).ToList();
+            //
+            //    R10 — "câu AI HR đã chỉnh" cũng là công sức HR, chỉ khoác nhãn nguồn khác. Trước bản vá,
+            //    F9 xoá MỌI row AiGenerated nên câu HR ngồi sửa lại từng chữ biến mất ở lượt sinh kế,
+            //    không cảnh báo, không khôi phục được. Nay chỉ thay câu AI CHƯA AI ĐỤNG TỚI.
+            var aiOld = campaign.Questions
+                .Where(q => q.Source == QuestionSource.AiGenerated && q.HrEditedAt is null)
+                .ToList();
+            var aiKept = campaign.Questions
+                .Count(q => q.Source == QuestionSource.AiGenerated && q.HrEditedAt is not null);
             _db.CampaignQuestions.RemoveRange(aiOld);
             foreach (var q in aiOld)
                 campaign.Questions.Remove(q);   // để response phản ánh đúng đề sau khi sinh
@@ -679,8 +696,11 @@ namespace Isas.CampaignService.Services
             _db.CampaignQuestions.AddRange(fresh);
 
             campaign.UpdatedAt = now;
+            // R10: audit phải nói ra phần GIỮ LẠI. "Thay N câu AI cũ" mà im lặng về số câu được giữ thì
+            // HR đọc lại không phân biệt được "AI sinh ít câu" với "một số câu bị giữ vì đã chỉnh".
             AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id,
-                $"AI sinh {generated.Count} câu hỏi từ JD (thay {aiOld.Count} câu AI cũ)");
+                $"AI sinh {generated.Count} câu hỏi từ JD (thay {aiOld.Count} câu AI cũ, " +
+                $"giữ {aiKept} câu AI HR đã chỉnh)");
             await _db.SaveChangesAsync(ct);
             return CampaignResponse.FromEntity(campaign);
         }

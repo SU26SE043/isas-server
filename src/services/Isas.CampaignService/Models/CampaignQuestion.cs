@@ -10,6 +10,19 @@
         public bool IsRequired { get; set; }
         public DateTime CreatedAt { get; set; }
 
+        /// <summary>
+        /// R10 — mốc HR sửa NỘI DUNG một câu do AI sinh (null = chưa ai sửa).
+        ///
+        /// Vì sao phải là cột riêng chứ không đổi <see cref="Source"/> sang <c>CustomHr</c> khi HR sửa:
+        /// F10 khoá "provenance là sự thật do SERVER sở hữu, không đổi khi HR sửa" bằng test — badge
+        /// "AI sinh" phải sống sót qua vòng đọc→sửa→lưu. Hai thông tin này khác nhau: <c>Source</c> trả lời
+        /// "ai VIẾT RA câu này", <c>HrEditedAt</c> trả lời "HR có bỏ công chỉnh nó không".
+        ///
+        /// F9 ("sinh lại") xoá mọi row <c>AiGenerated</c> — có cột này mới phân biệt được câu AI HR chưa
+        /// đụng tới (thay được) với câu AI HR đã chỉnh (mất là mất trắng công sức, không khôi phục được).
+        /// </summary>
+        public DateTime? HrEditedAt { get; set; }
+
         // Navigation
         public Campaign Campaign { get; set; } = null!;
     }
