@@ -341,7 +341,7 @@ class GeminiProvider(QuestionProvider):
         jdMatch chỉ xuất hiện khi jd_text được cung cấp.
 
         C14 (B2B sàng CV) — có ``criteria`` (tiêu chí campaign) thì trả THÊM:
-          "skills": [str], "yearsExperience": float, "education": [str],
+          "fullName": str|None (BK28), "skills": [str], "yearsExperience": float, "education": [str],
           "criterionMatches": [{criterionId, matchScore, reasoning}], "overallMatchScore": int
 
         ``criteria=None`` (đường B2C) ⇒ prompt, response_schema và dict trả về GIỮ NGUYÊN XI.
@@ -360,6 +360,10 @@ class GeminiProvider(QuestionProvider):
         required = ["summary", "strengths", "weaknesses", "suggestions"]
         if criteria:
             properties.update({
+                # BK28 — KHÔNG đưa vào `required`: CV không có tên rõ ràng là chuyện HỢP LỆ, mà
+                # `required` ở đây nghĩa là model buộc phải bịa ra một chuỗi. `nullable` để model
+                # có đường trả null tường minh thay vì điền bừa.
+                "fullName": {"type": "string", "nullable": True},
                 "skills": {"type": "array", "items": {"type": "string"}},
                 "yearsExperience": {"type": "number"},
                 "education": {"type": "array", "items": {"type": "string"}},
@@ -495,6 +499,18 @@ class GeminiProvider(QuestionProvider):
             except (TypeError, ValueError):
                 years = None
 
+            # BK28 — `fullName` là DANH TÍNH đi thẳng vào bảng shortlist + bản xuất CSV/PDF của HR,
+            # nên guard đặt tại NGUỒN (AI-3) chứ không chỉ trông vào .NET — endpoint /analyze-cv còn
+            # được gọi TRỰC TIẾP, y như lý do 2 lớp của `criterionMatches` ở trên.
+            #   • rỗng/toàn khoảng trắng ⇒ None (CV không có tên rõ ràng là HỢP LỆ, đừng lưu "");
+            #   • cắt 255 = đúng `varchar(255)` của `cv_submission.full_name`, tràn thì Postgres ném
+            #     lúc SaveChanges ⇒ callback 500 ⇒ worker nack ⇒ vòng lặp republish.
+            # 🔴 CỐ Ý KHÔNG raise khi thiếu/rỗng (khác `criterionMatches`): `cv_screening.py` biến
+            # ValueError thành retry `score_max_attempts` lần rồi `PermanentCvError` ⇒ ứng viên rơi
+            # `AnalysisFailed` và KHÔNG có endpoint nào cho HR chạy lại. Biến một field phụ thành
+            # đường làm hỏng cả hồ sơ đắt hơn nhiều so với việc thiếu một cái tên.
+            full_name = str(data.get("fullName") or "").strip()
+            result["fullName"] = full_name[:255] or None
             result["skills"] = _clean_list(data.get("skills"))
             result["yearsExperience"] = max(0.0, years) if years is not None else None
             result["education"] = _clean_list(data.get("education"))

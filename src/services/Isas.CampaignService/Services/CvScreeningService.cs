@@ -132,6 +132,18 @@ namespace Isas.CampaignService.Services
                 });
             }
 
+            // BK28 — AI CHỈ ĐIỀN CHỖ TRỐNG, KHÔNG BAO GIỜ ghi đè người (`??=`, cùng ngữ nghĩa
+            // ParticipationService.ApplyInvitationLink). `StuckScreeningRepublisher` đẩy lại job cho
+            // ứng viên kẹt `Analyzing` nên cv-result tới NHIỀU LẦN — gán thẳng `=` sẽ xoá đúng cái
+            // tên HR vừa sửa tay qua PATCH ở lần callback kế tiếp.
+            // Cắt 255 vì `cv_submission.full_name` là varchar(255): tràn → Postgres ném lúc
+            // SaveChanges → callback 500 → worker nack → vòng republish. Không chỉ trông vào guard
+            // phía Python (mẫu 2 lớp của `Math.Clamp` bên trên) — callback là endpoint mở với
+            // X-Internal-Token, không phải chỉ worker của mình mới gọi được.
+            var aiFullName = req.FullName?.Trim();
+            if (!string.IsNullOrEmpty(aiFullName))
+                candidate.FullName ??= aiFullName.Length > 255 ? aiFullName[..255] : aiFullName;
+
             candidate.Skills = req.Skills;
             candidate.YearsExperience = req.YearsExperience;
             candidate.Summary = req.Summary;

@@ -1,4 +1,4 @@
-using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace Isas.CampaignService.Tests;
 
@@ -65,11 +65,17 @@ public class CampaignRetryInvariantDb25bTests
         Assert.True(scanned > 10, $"Chỉ quét được {scanned} file .cs — nghi đường dẫn sai.");
     }
 
-    private static string RepoRoot()
-    {
-        var dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
-        while (dir is not null && !Directory.Exists(Path.Combine(dir, ".git")))
-            dir = Path.GetDirectoryName(dir);
-        return dir ?? throw new InvalidOperationException("Không tìm được gốc repo.");
-    }
+    /// <summary>
+    /// Gốc repo, suy từ đường dẫn CHÍNH FILE NÀY lúc biên dịch — cùng mẫu với
+    /// <c>ExecutionStrategyDb25bTests</c> ở Interview và Payment.
+    ///
+    /// <para>⚠ Bản cũ đi ngược lên tìm thư mục <c>.git</c> và **luôn ném trong git worktree**: ở đó
+    /// <c>.git</c> là một FILE (con trỏ <c>gitdir:</c>) chứ không phải thư mục, nên
+    /// <c>Directory.Exists</c> không bao giờ đúng, vòng lặp chạy tới <c>/</c> rồi trả null.
+    /// Mà worktree chính là cách repo này chạy multi-agent ⇒ mọi worker đều thấy 2 test ở đây
+    /// ĐỎ GIẢ ngay trên commit chưa sửa gì, và một baseline nói dối thì mọi phép mutation
+    /// dựng trên nó đều vô nghĩa.</para>
+    /// </summary>
+    private static string RepoRoot([CallerFilePath] string here = "")
+        => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(here)!, "..", "..", ".."));
 }
