@@ -32,6 +32,7 @@ class QuestionCitation(BaseModel):
 
 class GenerateQuestionsRequest(BaseModel):
     jobCategory: str            # BA | BE | FE
+    language: str = "vi"
     cvText: str | None = None
     jdText: str | None = None
     # F2b — số câu do ứng viên chọn (B2C). Bỏ trống → settings.question_count (hành vi cũ = 5).
@@ -55,6 +56,7 @@ class GenerateQuestionsResponse(BaseModel):
 # ── Đề xuất tiêu chí có cấu trúc (Campaign C8) ──────────────────────────────
 class SuggestCriteriaRequest(BaseModel):
     jobCategory: str
+    language: str = "vi"
     jdText: str | None = None
     criteriaText: str | None = None
     count: int = 4
@@ -94,6 +96,7 @@ class CriterionMatch(BaseModel):
 
 class AnalyzeCvRequest(BaseModel):
     cvText: str
+    language: str = "vi"
     jdText: str | None = None
     jobCategory: str | None = None   # BA | BE | FE — optional (chỉ để cá nhân hoá nhận xét)
     # C14 (B2B sàng CV) — có criteria ⇒ res thêm criterionMatches + overallMatchScore + trích xuất.
@@ -131,6 +134,7 @@ class AnalyzeCvResponse(BaseModel):
 # ── Phân tích GitHub repository (B2C BC18) ─────────────────────────────────
 class AnalyzeRepoRequest(BaseModel):
     repoDigest: str
+    language: str = "vi"
     jobCategory: str | None = None
     jdText: str | None = None
 
@@ -153,6 +157,7 @@ class WeaknessScore(BaseModel):
 
 class GenerateRoadmapRequest(BaseModel):
     jobCategory: str
+    language: str = "vi"
     level: str                                     # Fresher | Junior | Middle | Senior
     weaknesses: list[WeaknessScore] | None = None  # từ session_criterion_scores; rỗng → roadmap chuẩn theo level
     cvText: str | None = None
@@ -184,6 +189,7 @@ class GenerateRoadmapResponse(BaseModel):
 
 class GenerateLessonTheoryRequest(BaseModel):
     jobCategory: str
+    language: str = "vi"
     level: str
     lessonTitle: str
     focusCriteria: list[str]
@@ -223,6 +229,7 @@ class CriterionProgress(BaseModel):
 
 class SummarizeRoadmapRequest(BaseModel):
     jobCategory: str
+    language: str = "vi"
     level: str
     criteriaProgress: list[CriterionProgress]
 
@@ -243,6 +250,7 @@ class CriteriaScore(BaseModel):
 
 class SummarizeSessionRequest(BaseModel):
     jobCategory: str
+    language: str = "vi"
     overallScore: float
     criteriaScores: list[CriteriaScore]   # rỗng vẫn ra nhận xét tổng quát theo overallScore
 
@@ -355,6 +363,7 @@ class FaceVerifyResponse(BaseModel):
 class TtsRequest(BaseModel):
     text: str                     # NỘI DUNG câu hỏi cần đọc (dữ liệu, không phải lệnh — AI-4)
     voice: str | None = None      # giọng dựng sẵn; None → settings.tts_voice
+    language: str = "vi"
 
 
 # ── EMBEDDING (RAG grounding, Contract 1) — sync HTTP, InterviewService gọi (máy-máy) ──

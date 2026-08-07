@@ -1,0 +1,34 @@
+"""Shared language policy for bilingual AI output.
+
+Vietnamese is deliberately the fail-safe default: older callers do not send a
+language and must keep their exact existing behaviour.
+"""
+
+VI = "vi"
+EN = "en"
+
+
+def normalize(language: str | None) -> str:
+    return EN if language == EN else VI
+
+
+def output_directive(language: str | None) -> str:
+    return f"Toàn bộ nội dung sinh ra PHẢI bằng {field_lang(language)}."
+
+
+def field_lang(language: str | None) -> str:
+    return "English" if normalize(language) == EN else "tiếng Việt"
+
+
+def speech_rate_reference(language: str | None) -> str:
+    if normalize(language) == EN:
+        return "120–180 words/min"
+    return "180–320 âm tiết/phút"
+
+
+def rate_unit(language: str | None) -> str:
+    return " words/min" if normalize(language) == EN else " âm tiết/phút"
+
+
+def per100_unit(language: str | None) -> str:
+    return " per 100 words" if normalize(language) == EN else " lần/100 âm tiết"

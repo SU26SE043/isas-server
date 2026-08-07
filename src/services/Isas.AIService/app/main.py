@@ -66,7 +66,7 @@ async def generate_questions(req: GenerateQuestionsRequest):
         # RAG grounding (Contract 2) — chuyển sang list[dict] cho provider; vắng → ungrounded.
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
         result = await provider.generate(
-            req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding)
+            req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding, req.language)
         # citations=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ cho Campaign B2B.
         citations = ([QuestionCitation(**c) for c in result.citations]
                      if result.citations is not None else None)
@@ -78,7 +78,7 @@ async def generate_questions(req: GenerateQuestionsRequest):
 async def suggest_criteria(req: SuggestCriteriaRequest):
     try:
         items = await provider.suggest_criteria(
-            req.jobCategory, req.jdText, req.criteriaText, req.count)
+            req.jobCategory, req.jdText, req.criteriaText, req.count, req.language)
         return SuggestCriteriaResponse(criteria=[CriterionItem(**c) for c in items])
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đề xuất tiêu chí: {ex}")
@@ -91,7 +91,7 @@ async def analyze_cv(req: AnalyzeCvRequest):
         # C14 — criteria vắng ⇒ None (KHÔNG phải []): provider rẽ nhánh theo truthiness, và
         # response_model_exclude_none bỏ hẳn 5 field B2B ⇒ đường B2C giữ nguyên shape cũ.
         criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
-        result = await provider.analyze_cv(req.cvText, req.jdText, req.jobCategory, criteria)
+        result = await provider.analyze_cv(req.cvText, req.jdText, req.jobCategory, criteria, req.language)
         jd_match = JdMatch(**result["jdMatch"]) if result.get("jdMatch") else None
         matches = ([CriterionMatch(**m) for m in result["criterionMatches"]]
                    if result.get("criterionMatches") else None)
@@ -121,7 +121,7 @@ async def analyze_repo(req: AnalyzeRepoRequest,
     if not req.repoDigest or not req.repoDigest.strip():
         raise HTTPException(status_code=400, detail="repoDigest không được rỗng")
     try:
-        result = await provider.analyze_repo(req.repoDigest, req.jdText, req.jobCategory)
+        result = await provider.analyze_repo(req.repoDigest, req.jdText, req.jobCategory, req.language)
         return AnalyzeRepoResponse(**result)
     except HTTPException:
         raise
@@ -141,7 +141,7 @@ async def generate_roadmap(req: GenerateRoadmapRequest):
             focus=req.focus,
             cv_analysis_summary=req.cvAnalysisSummary,
             prior_roadmap_summary=req.priorRoadmapSummary,
-            grounding=grounding,
+            grounding=grounding, language=req.language,
         )
         return GenerateRoadmapResponse(
             milestones=[
@@ -169,7 +169,7 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
         theory, resources, cited = await provider.generate_lesson_theory(
             req.jobCategory, req.level, req.lessonTitle, req.focusCriteria,
-            req.weaknesses, grounding)
+            req.weaknesses, grounding, req.language)
         # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
         # cited=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ giữ nguyên.
         return GenerateLessonTheoryResponse(
@@ -184,7 +184,7 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
 async def summarize_roadmap(req: SummarizeRoadmapRequest):
     try:
         progress = [c.model_dump() for c in req.criteriaProgress]
-        result = await provider.summarize_roadmap(req.jobCategory, req.level, progress)
+        result = await provider.summarize_roadmap(req.jobCategory, req.level, progress, req.language)
         return SummarizeRoadmapResponse(**result)
     except HTTPException:
         raise
@@ -196,7 +196,7 @@ async def summarize_roadmap(req: SummarizeRoadmapRequest):
 async def summarize_session(req: SummarizeSessionRequest):
     try:
         criteria = [c.model_dump() for c in req.criteriaScores]
-        result = await provider.summarize_session(req.jobCategory, req.overallScore, criteria)
+        result = await provider.summarize_session(req.jobCategory, req.overallScore, criteria, req.language)
         return SummarizeSessionResponse(**result)
     except HTTPException:
         raise
@@ -338,7 +338,7 @@ async def decide_next(
             root_question=req.rootQuestion,
             current_depth=req.currentDepth,
             max_depth=req.maxDepth,
-            other_topics=req.otherTopics,
+            other_topics=req.otherTopics, language=req.language,
         )
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi quyết định câu hỏi kế: {ex}")
@@ -379,7 +379,8 @@ async def text_to_speech(
         raise HTTPException(status_code=400, detail="text không được rỗng")
 
     voice = (req.voice or settings.tts_voice).strip() or settings.tts_voice
-    key = tts.cache_key(text, voice)
+    language_code = settings.tts_language_code_en if req.language == "en" else settings.tts_language_code
+    key = tts.cache_key(text, voice, language_code)
 
     # ── 1. Thử cache ───────────────────────────────────────────────────────────
     # S3 blocking → thread, không chẹn event loop (idiom /face-verify).
@@ -397,7 +398,7 @@ async def text_to_speech(
     # ── 2. Miss → gọi vendor + encode ──────────────────────────────────────────
     try:
         pcm, mime_type = await provider.synthesize_speech(
-            text, voice, settings.tts_language_code)
+            text, voice, language_code)
         # Gemini TTS trả PCM thô, không phải mp3 → encode (ffmpeg, xem app/audio.py).
         mp3 = await asyncio.to_thread(
             audio.pcm_to_mp3, pcm, audio.parse_pcm_rate(mime_type))

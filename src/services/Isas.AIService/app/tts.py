@@ -22,9 +22,10 @@ from app.config import settings
 MP3_CONTENT_TYPE = "audio/mpeg"
 
 
-def cache_key(text: str, voice: str) -> str:
-    """(text, voice) → key S3 ổn định. Cùng input ⇒ cùng key (giữa các process/lần deploy)."""
+def cache_key(text: str, voice: str, language_code: str = "vi-VN") -> str:
+    """Return a stable key; preserve the legacy Vietnamese key byte-for-byte."""
     # "\x00" ngăn nhập nhằng ghép chuỗi: (voice="A", text="BC") và (voice="AB", text="C")
     # phải ra 2 key khác nhau.
-    digest = hashlib.sha256(f"{voice}\x00{text}".encode("utf-8")).hexdigest()
+    material = f"{voice}\x00{text}" if language_code == "vi-VN" else f"{voice}\x00{language_code}\x00{text}"
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     return f"{settings.tts_cache_prefix}{digest}.mp3"

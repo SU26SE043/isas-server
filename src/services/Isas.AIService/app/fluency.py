@@ -58,13 +58,14 @@ PAUSE_THRESHOLD_SEC = 0.7
 # ⚠ KHÔNG tái dùng được `answer_scores.prompt_version`: giá trị đó do prompt registry của
 # InterviewService (F21) cấp, AIService chỉ echo lại — đổi cách TÍNH ở đây không làm nó nhúc
 # nhích, nên nó không thể đại diện cho thay đổi này.
-DELIVERY_METRICS_VERSION = 2
+DELIVERY_METRICS_VERSION_BY_LANG = {"vi": 2, "en": 3}
 
 # Tiếng ngập ngừng thuần tuý — gần như không bao giờ mang nghĩa trong câu trả lời phỏng vấn.
 HESITATION_FILLERS: tuple[str, ...] = (
     "ừm", "ưm", "ừ", "ờ", "ơ", "à ờ", "ừ thì", "ờ thì",
     "hmm", "hm", "um", "uh", "ehm", "eh",
 )
+HESITATION_FILLERS_EN: tuple[str, ...] = ("er", "erm", "ah", "mm", "mhm", "uhm")
 
 # Tật nói (verbal tic) — mang nghĩa rất mỏng, lặp nhiều là dấu hiệu thiếu trôi chảy.
 TIC_FILLERS: tuple[str, ...] = (
@@ -72,11 +73,12 @@ TIC_FILLERS: tuple[str, ...] = (
     "nói chung là", "cái gì đó", "gì đó", "thế nào nhỉ", "sao ấy nhỉ",
     "cái mà", "thì cái", "you know", "like là",
 )
+TIC_FILLERS_EN: tuple[str, ...] = ("you know", "i mean", "sort of", "kind of", "you know what i mean")
 
 # Thứ tự QUAN TRỌNG: cụm dài trước cụm ngắn ("à ờ" phải khớp trước "ờ", "kiểu như" trước "kiểu
 # là"), nếu không cụm ngắn ăn mất cụm dài và số đếm sai.
 ALL_FILLERS: tuple[str, ...] = tuple(
-    sorted(HESITATION_FILLERS + TIC_FILLERS, key=len, reverse=True)
+    sorted(HESITATION_FILLERS + TIC_FILLERS + HESITATION_FILLERS_EN + TIC_FILLERS_EN, key=len, reverse=True)
 )
 
 
@@ -101,13 +103,14 @@ class DeliveryMetrics:
     filler_count: int = 0
     filler_per_100_words: float = 0.0
     filler_breakdown: dict[str, int] = field(default_factory=dict)
+    metrics_version: int = 2
 
     def to_dict(self) -> dict:
         """camelCase — khớp hợp đồng JSON với .NET (DeliveryMetricsDto)."""
         return {
             # Con dấu thước đo — đi kèm chính bộ số nó mô tả, để phía .NET lưu cạnh các cột
             # chỉ số. Dòng khuyết con dấu = đo bằng thước cũ (xem DELIVERY_METRICS_VERSION).
-            "metricsVersion": DELIVERY_METRICS_VERSION,
+            "metricsVersion": self.metrics_version,
             "audioSec": round(self.audio_sec, 2),
             "speechSec": round(self.speech_sec, 2),
             "wordCount": self.word_count,
@@ -177,6 +180,7 @@ def compute_delivery_metrics(
     text: str,
     segments: list[Segment],
     audio_sec: float | None = None,
+    language: str | None = "vi",
 ) -> DeliveryMetrics | None:
     """Tính chỉ số cách nói từ transcript + mốc thời gian segment.
 
@@ -216,4 +220,5 @@ def compute_delivery_metrics(
         filler_count=filler_count,
         filler_per_100_words=(filler_count / word_count * 100.0) if word_count else 0.0,
         filler_breakdown=breakdown,
+        metrics_version=DELIVERY_METRICS_VERSION_BY_LANG.get(language or "vi", 2),
     )
