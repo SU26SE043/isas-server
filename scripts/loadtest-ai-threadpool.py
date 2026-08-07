@@ -49,11 +49,13 @@ sys.path.insert(0, "/app")
 import httpx  # noqa: E402
 
 
-async def one(client: httpx.AsyncClient, url: str, blob: bytes, name: str) -> tuple[float, str | None, int]:
+async def one(client: httpx.AsyncClient, url: str, blob: bytes, name: str,
+              headers: dict[str, str]) -> tuple[float, str | None, int]:
     t0 = time.perf_counter()
     files = {"file": (name, io.BytesIO(blob), "audio/webm")}
     try:
-        r = await client.post(url, files=files, params={"language": "vi"}, timeout=300.0)
+        r = await client.post(url, files=files, params={"language": "vi"},
+                              headers=headers, timeout=300.0)
         engine = r.json().get("transcriptEngine") if r.status_code == 200 else None
         return time.perf_counter() - t0, engine, r.status_code
     except Exception as ex:                       # timeout / reset — đếm là lỗi, không làm hỏng cả lượt
@@ -70,15 +72,20 @@ async def main() -> int:
     args = ap.parse_args()
 
     from app import storage
+    from app.config import settings
     blob = storage.get_object_bytes(args.key)
     total = args.requests or args.concurrency * 2
     url = f"{args.base}/api/v1/transcribe"
+    # Q2/GEN-7: /transcribe nay gate X-Internal-Token (fail-closed). Script chạy TRONG container
+    # nên đọc thẳng cùng `settings` mà service dùng — thiếu header thì mọi lượt về 401 và bảng số
+    # đo sẽ ra "lỗi=n" chứ không phải một phép đo.
+    headers = {"X-Internal-Token": settings.internal_token}
 
     sem = asyncio.Semaphore(args.concurrency)
 
     async def guarded(client):
         async with sem:
-            return await one(client, url, blob, args.key.rsplit("/", 1)[-1])
+            return await one(client, url, blob, args.key.rsplit("/", 1)[-1], headers)
 
     async with httpx.AsyncClient() as client:
         t0 = time.perf_counter()

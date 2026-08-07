@@ -26,7 +26,8 @@ public class SessionResultServiceTests
             CreatedAt = DateTime.UtcNow
         };
 
-    private static RubricCriterion Crit(JobCategory cat, string name, int maxScore, decimal weight)
+    private static RubricCriterion Crit(JobCategory cat, string name, int maxScore, decimal weight,
+        string language = "vi")
         => new()
         {
             Id = Guid.NewGuid(),
@@ -37,6 +38,7 @@ public class SessionResultServiceTests
             IsActive = true,
             JobCategory = cat,
             CampaignId = null,
+            Language = language,
             Version = 1
         };
 
@@ -78,6 +80,46 @@ public class SessionResultServiceTests
 
         var depthRow = rows.Single(r => r.CriterionId == depth.Id);
         Assert.Equal(40m, depthRow.Percentage);
+    }
+
+    // ── Q8: breakdown phải lọc theo NGÔN NGỮ của buổi ────────────────────────────────
+    // Seed B2C chứa CẢ vi lẫn en cho cùng nghề. Thiếu vế `c.Language` thì mọi buổi nạp 14 tiêu chí
+    // thay vì 7; 7 tiêu chí ngôn ngữ kia không bao giờ có answer_scores (đường chấm lọc đúng) nên rơi
+    // xuống thành row `0.00` + needs_improvement=true. Đo trên prod 2026-08-07: đúng 7 phantom/buổi,
+    // ở CẢ buổi en LẪN buổi vi.
+
+    [Theory]
+    [InlineData("vi")]
+    [InlineData("en")]   // ← ca "en" một mình không đủ: hard-code "en" cũng làm nó xanh. Cần cả hai.
+    public async Task Compute_ChiGhiTieuChiCungNgonNguVoiBuoi_KhongCoPhantom(string language)
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scored, JobCategory.BE, language: language);
+        var q = TestDb.Question(session.Id);
+        // Cùng nghề, cùng active, chỉ khác NGÔN NGỮ — mô phỏng đúng hình dạng seed song ngữ.
+        var vi = Crit(JobCategory.BE, "Chiều sâu kỹ thuật", maxScore: 5, weight: 1.0m, language: "vi");
+        var en = Crit(JobCategory.BE, "Technical depth", maxScore: 5, weight: 1.0m, language: "en");
+        var dung = language == "vi" ? vi : en;
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, q, vi, en, answer);
+        t.Db.Add(Score(answer.Id, dung.Id, 4m));
+        await t.Db.SaveChangesAsync();
+
+        await BuildService(t).ComputeAndStoreAsync(session.Id);
+
+        var rows = await t.Db.SessionCriterionScores.AsNoTracking()
+            .Where(x => x.SessionId == session.Id).ToListAsync();
+
+        Assert.Single(rows);                                   // KHÔNG phải 2
+        Assert.Equal(dung.Id, rows[0].CriterionId);
+        Assert.Empty(rows.Where(r => r.AverageScore == 0m));    // không phantom 0.00
+        Assert.Empty(rows.Where(r => r.NeedsImprovement));      // không gắn cờ oan
+
+        // Lời hứa "chỉ dọn bảng, KHÔNG đổi điểm": overall vẫn là 4/5 = 80% như trước bản vá
+        // (scoredCriteriaCount vốn đã loại phantom khỏi mẫu số).
+        var sess = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(80m, sess.OverallScore);
     }
 
     // Trung bình điểm mỗi tiêu chí qua NHIỀU câu đã chấm (BC9 §Công thức bước 1).

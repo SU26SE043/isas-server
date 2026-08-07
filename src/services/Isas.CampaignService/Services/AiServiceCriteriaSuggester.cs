@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Isas.CampaignService.Services
@@ -7,11 +8,17 @@ namespace Isas.CampaignService.Services
     public class AiServiceCriteriaSuggester : ICriteriaSuggester
     {
         private readonly HttpClient _http;
+        private readonly string? _internalToken;
         private readonly ILogger<AiServiceCriteriaSuggester> _logger;
 
-        public AiServiceCriteriaSuggester(HttpClient http, ILogger<AiServiceCriteriaSuggester> logger)
+        public AiServiceCriteriaSuggester(
+            HttpClient http, IConfiguration config, ILogger<AiServiceCriteriaSuggester> logger)
         {
             _http = http;
+            // GEN-7: /suggest-criteria nay gate X-Internal-Token (fail-closed) → đính token như
+            // AiServiceFaceVerifyClient. Thiếu token = 401 = fallback default criteria (không crash),
+            // nhưng đó là hỏng câm → phải cấu hình Internal:Token cho CampaignService.
+            _internalToken = config["Internal:Token"];
             _logger = logger;
         }
 
@@ -22,8 +29,13 @@ namespace Isas.CampaignService.Services
         {
             try
             {
-                var resp = await _http.PostAsJsonAsync("/api/v1/suggest-criteria",
-                    new { jobCategory, jdText, criteriaText, count, language }, ct);
+                using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/suggest-criteria")
+                {
+                    Content = JsonContent.Create(new { jobCategory, jdText, criteriaText, count, language })
+                };
+                // X-Internal-Token gắn trong client, KHÔNG qua gateway (mirror AiServiceFaceVerifyClient).
+                msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
+                var resp = await _http.SendAsync(msg, ct);
 
                 if (!resp.IsSuccessStatusCode)
                 {

@@ -225,7 +225,7 @@ public class RubricLibraryTests
     {
         using var t = new TestDb();
         await SeedDefaultAsync(t.Db, JobCategory.BE);
-        Assert.Null(await B2CRubricScope.ResolveOwnerAsync(t.Db, Guid.NewGuid(), JobCategory.BE));
+        Assert.Null(await B2CRubricScope.ResolveOwnerAsync(t.Db, Guid.NewGuid(), JobCategory.BE, "vi"));
     }
 
     [Fact]
@@ -234,7 +234,7 @@ public class RubricLibraryTests
         using var t = new TestDb();
         var me = Guid.NewGuid();
         await Svc(t.Db).ReplaceAsync(me, JobCategory.BE, TwoCriteria());
-        Assert.Equal(me, await B2CRubricScope.ResolveOwnerAsync(t.Db, me, JobCategory.BE));
+        Assert.Equal(me, await B2CRubricScope.ResolveOwnerAsync(t.Db, me, JobCategory.BE, "vi"));
     }
 
     [Fact]
@@ -243,7 +243,7 @@ public class RubricLibraryTests
         using var t = new TestDb();
         var me = Guid.NewGuid();
         await Svc(t.Db).ReplaceAsync(me, JobCategory.FE, TwoCriteria());   // FE, không phải BE
-        Assert.Null(await B2CRubricScope.ResolveOwnerAsync(t.Db, me, JobCategory.BE));
+        Assert.Null(await B2CRubricScope.ResolveOwnerAsync(t.Db, me, JobCategory.BE, "vi"));
     }
 
     // ── Publish (site 1) — regression + custom ────────────────────────────────

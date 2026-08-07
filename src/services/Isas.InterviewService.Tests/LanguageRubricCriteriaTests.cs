@@ -193,7 +193,7 @@ public class LanguageRubricCriteriaTests
         await t.Db.SaveChangesAsync();
 
         // Resolver vẫn ưu tiên rubric riêng dù seed vừa có thêm tiêu chí.
-        var owner = await B2CRubricScope.ResolveOwnerAsync(t.Db, candidate, JobCategory.BE);
+        var owner = await B2CRubricScope.ResolveOwnerAsync(t.Db, candidate, JobCategory.BE, "vi");
         Assert.Equal(candidate, owner);
 
         var session = TestDb.Session(candidate, SessionStatus.Ready, cat: JobCategory.BE);

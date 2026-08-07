@@ -96,4 +96,28 @@ public class WeightedTotalRubricScopeDb30Tests
 
         Assert.Equal(40m, await ScoredTotal(t, session));
     }
+
+    // ── Q8: điểm tổng của event cũng phải scope theo NGÔN NGỮ ────────────────────────────────
+    // Ca thật: RubricLibraryService luôn sinh rubric riêng Language="vi" (không set Language →
+    // rơi về default entity). Ứng viên đó làm buổi "en":
+    //   · đường CHẤM resolve theo session.Language="en" → hasOwn=false → dùng SEED en
+    //   · notifier (trước vá) gọi overload hard-code "vi" → hasOwn=TRUE → dùng rubric riêng VI
+    // Hai bộ tiêu chí KHÁC HẲN ⇒ giao ID rỗng ⇒ mọi vòng `continue` ⇒ weightSum=0 ⇒ TotalScore=0.
+    // Không phải "lệch nhẹ" — là mất trắng điểm trong payload event.
+    [Fact]
+    public async Task Q8_UngVienCoRubricRiengVI_BuoiEN_KhongSapVe0()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var seedEn = TestDb.Criterion(JobCategory.BE, name: "Technical depth", language: "en");
+        // rubric riêng của chính ứng viên này nhưng Ở NGÔN NGỮ KHÁC — đúng thứ RubricLibraryService đẻ ra
+        var customVi = TestDb.Criterion(JobCategory.BE, name: "Chiều sâu kỹ thuật",
+            candidateId: candidate, language: "vi");
+        var session = TestDb.Session(candidate, SessionStatus.Scored, JobCategory.BE, language: "en");
+        t.Db.AddRange(seedEn, customVi, session);
+        SeedScoredAnswer(t, session, (seedEn, 4m));   // 4/5 = 80%, weight 1.0
+        await t.Db.SaveChangesAsync();
+
+        Assert.Equal(80m, await ScoredTotal(t, session));   // trước vá: 0
+    }
 }

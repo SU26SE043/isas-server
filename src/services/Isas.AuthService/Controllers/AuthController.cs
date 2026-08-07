@@ -264,6 +264,13 @@ namespace Isas.AuthService.Controllers
             if (!result.Succeeded)
                 return BadRequest(string.Join(" ", result.Errors.Select(e => e.Description)));
 
+            // Q3 — CHỈ khi mật khẩu đã đổi THẬT. Thu hồi trước (hoặc bất kể kết quả) sẽ đá người dùng
+            // gõ nhầm mật khẩu cũ ra khỏi mọi phiên: biến một thao tác vô hại thành mất phiên.
+            //
+            // KHÔNG truyền HttpContext.RequestAborted: client ngắt kết nối ngay sau khi mật khẩu đã đổi
+            // sẽ HUỶ đúng bước thu hồi → mật khẩu mới + phiên cũ còn sống = y nguyên lỗ đang vá.
+            await _authService.RevokeAllSessionsAsync(user.Id);
+
             return NoContent();
         }
 
@@ -367,6 +374,11 @@ namespace Isas.AuthService.Controllers
             // khác mà không phải xin mã mới; chỉ đốt OTP khi nó đã thật sự đổi được mật khẩu.
             if (!result.Succeeded)
                 return BadRequest(result.Errors);
+
+            // Q3 — thu hồi phiên NGAY sau khi mật khẩu đổi thật, TRƯỚC bước đốt OTP: bốn lệnh xoá token
+            // bên dưới đều có thể ném, và bỏ lỡ bước thu hồi (kẻ chiếm tài khoản gia hạn phiên vô hạn)
+            // nặng hơn bỏ lỡ bước đốt OTP (mã còn sống thêm vài phút trong tay người ĐÃ cầm nó).
+            await _authService.RevokeAllSessionsAsync(user.Id);
 
             await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpCodeToken);
             await _userManager.RemoveAuthenticationTokenAsync(user, OtpProvider, OtpExpiryToken);

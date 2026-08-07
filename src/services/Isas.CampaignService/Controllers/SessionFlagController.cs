@@ -66,9 +66,19 @@ namespace Isas.CampaignService.Controllers
             if (campaign is null) return NotFound(new { error = "Campaign not found." });
 
             // Ownership: caller phải là thành viên campaign (CampaignMembership theo candidateId, DB16) → ngoài = 403.
-            var isMember = await _db.CampaignMemberships
-                .AnyAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId, ct);
-            if (!isMember) return Forbid();
+            //
+            // Q4 — vế `m.SessionId == sessionId` là BẮT BUỘC, không phải siết cho chặt: `sessionId` đến từ
+            // ROUTE và đi thẳng vào session_flags. Chỉ kiểm "là thành viên campaign" thì MỌI thành viên
+            // cắm được cờ vào buổi thi của NGƯỜI KHÁC cùng campaign (đã xảy ra trên prod: 1 buổi có cờ do
+            // 2 candidate khác nhau gửi). Hại thật: `unscoredFlagged` (R7) xếp theo TỔNG số cờ mỗi buổi ⇒
+            // đối thủ đẩy được ứng viên khác lên đầu danh sách "đáng ngờ" của HR; cột candidate_id có lưu
+            // thủ phạm nhưng đường đọc gom theo session_id nên HR không phân biệt được.
+            // KHÔNG chặn nhầm: membership.SessionId chỉ được ghi lúc Start (ParticipationService), mà ứng
+            // viên cũng chỉ có sessionId sau khi Start trả về ⇒ không tồn tại ca "gửi cờ trước Start".
+            var isOwnSession = await _db.CampaignMemberships
+                .AnyAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId
+                    && m.SessionId == sessionId, ct);
+            if (!isOwnSession) return Forbid();
 
             if (!FeSignals.Contains(req.SignalType?.Trim() ?? string.Empty))
                 return BadRequest(new { error = $"Unknown signal_type '{req.SignalType}'." });

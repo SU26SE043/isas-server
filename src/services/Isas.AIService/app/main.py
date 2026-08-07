@@ -54,8 +54,14 @@ async def _call_with_language(language: str, method, *args, **kwargs):
 def _valid_internal_token(token: str | None) -> bool:
     """So khớp HẰNG-THỜI-GIAN X-Internal-Token với cấu hình (GEN-7 hardening).
 
-    Fail-closed: token chưa cấu hình hoặc header thiếu → từ chối. Endpoint /decide-next
-    kéo audio S3 + gọi LLM → là endpoint máy-máy (InterviewService gọi), phải bảo vệ.
+    Fail-closed: token chưa cấu hình hoặc header thiếu → từ chối.
+
+    Q2 — áp cho MỌI endpoint trừ /health. Trước đó chỉ 5/13 endpoint gọi hàm này, nên nhóm
+    endpoint SINH (generate-questions, suggest-criteria, analyze-cv, roadmap, lesson-theory,
+    summarize-*) và /transcribe để trần: một POST ẩn danh từ Internet gọi được /generate-questions
+    và tính tiền thẳng vào tài khoản Gemini của dự án (đã tái hiện, ai_usage_logs ghi lại). Cô lập
+    mạng KHÔNG phải lá chắn — gateway có tuyến /api/v1/ai/** trong Development, và không có
+    rate-limit nào phủ nhóm này.
     """
     expected = settings.internal_token
     if not expected or not token:
@@ -72,7 +78,10 @@ async def health():
 
 @router.post("/generate-questions", response_model=GenerateQuestionsResponse,
              response_model_exclude_none=True)
-async def generate_questions(req: GenerateQuestionsRequest):
+async def generate_questions(req: GenerateQuestionsRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     try:
         # RAG grounding (Contract 2) — chuyển sang list[dict] cho provider; vắng → ungrounded.
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
@@ -86,7 +95,10 @@ async def generate_questions(req: GenerateQuestionsRequest):
         raise HTTPException(status_code=502, detail=f"Lỗi sinh câu hỏi: {ex}")
 
 @router.post("/suggest-criteria", response_model=SuggestCriteriaResponse)
-async def suggest_criteria(req: SuggestCriteriaRequest):
+async def suggest_criteria(req: SuggestCriteriaRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     try:
         items = await _call_with_language(req.language, provider.suggest_criteria,
             req.jobCategory, req.jdText, req.criteriaText, req.count)
@@ -95,7 +107,10 @@ async def suggest_criteria(req: SuggestCriteriaRequest):
         raise HTTPException(status_code=502, detail=f"Lỗi đề xuất tiêu chí: {ex}")
 
 @router.post("/analyze-cv", response_model=AnalyzeCvResponse, response_model_exclude_none=True)
-async def analyze_cv(req: AnalyzeCvRequest):
+async def analyze_cv(req: AnalyzeCvRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     if not req.cvText or not req.cvText.strip():
         raise HTTPException(status_code=400, detail="cvText không được rỗng")
     try:
@@ -141,7 +156,10 @@ async def analyze_repo(req: AnalyzeRepoRequest,
 
 
 @router.post("/generate-roadmap", response_model=GenerateRoadmapResponse)
-async def generate_roadmap(req: GenerateRoadmapRequest):
+async def generate_roadmap(req: GenerateRoadmapRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     if not req.level or not req.level.strip():
         raise HTTPException(status_code=400, detail="level không được rỗng")
     try:
@@ -172,7 +190,10 @@ async def generate_roadmap(req: GenerateRoadmapRequest):
 
 @router.post("/generate-lesson-theory", response_model=GenerateLessonTheoryResponse,
              response_model_exclude_none=True)
-async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
+async def generate_lesson_theory(req: GenerateLessonTheoryRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     if not req.lessonTitle or not req.lessonTitle.strip():
         raise HTTPException(status_code=400, detail="lessonTitle không được rỗng")
     try:
@@ -192,7 +213,10 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest):
 
 
 @router.post("/summarize-roadmap", response_model=SummarizeRoadmapResponse)
-async def summarize_roadmap(req: SummarizeRoadmapRequest):
+async def summarize_roadmap(req: SummarizeRoadmapRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     try:
         progress = [c.model_dump() for c in req.criteriaProgress]
         result = await _call_with_language(req.language, provider.summarize_roadmap, req.jobCategory, req.level, progress)
@@ -204,7 +228,10 @@ async def summarize_roadmap(req: SummarizeRoadmapRequest):
 
 
 @router.post("/summarize-session", response_model=SummarizeSessionResponse)
-async def summarize_session(req: SummarizeSessionRequest):
+async def summarize_session(req: SummarizeSessionRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     try:
         criteria = [c.model_dump() for c in req.criteriaScores]
         result = await _call_with_language(req.language, provider.summarize_session, req.jobCategory, req.overallScore, criteria)
@@ -267,7 +294,10 @@ async def face_verify(
 
 
 @router.post("/transcribe")
-async def transcribe(file: UploadFile = File(...), language: str = "vi"):
+async def transcribe(file: UploadFile = File(...), language: str = "vi",
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
     # Lưu tạm file để faster-whisper đọc (nó nhận path)
     suffix = os.path.splitext(file.filename or "")[1] or ".tmp"
     try:

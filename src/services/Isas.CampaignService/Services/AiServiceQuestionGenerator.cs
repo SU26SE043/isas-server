@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Isas.CampaignService.Services
@@ -20,11 +21,17 @@ namespace Isas.CampaignService.Services
             new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
         private readonly HttpClient _http;
+        private readonly string? _internalToken;
         private readonly ILogger<AiServiceQuestionGenerator> _logger;
 
-        public AiServiceQuestionGenerator(HttpClient http, ILogger<AiServiceQuestionGenerator> logger)
+        public AiServiceQuestionGenerator(
+            HttpClient http, IConfiguration config, ILogger<AiServiceQuestionGenerator> logger)
         {
             _http = http;
+            // GEN-7: /generate-questions nay gate X-Internal-Token (fail-closed). Bản Interview của
+            // client này (Isas.InterviewService/Services/AiServiceQuestionGenerator.cs) đã đính token
+            // từ trước; bản Campaign thì chưa — đó là bất đối xứng gây ra lỗ Q2.
+            _internalToken = config["Internal:Token"];
             _logger = logger;
         }
 
@@ -36,8 +43,12 @@ namespace Isas.CampaignService.Services
             {
                 // cvText = null: B2B soạn đề chung cho cả chiến dịch (mọi ứng viên nhận cùng seed — E1 fairness),
                 // nên không có CV cá nhân nào để cá nhân hoá. count null → AIService giữ mặc định của nó.
-                resp = await _http.PostAsJsonAsync("/api/v1/generate-questions",
-                    new { jobCategory, cvText = (string?)null, jdText, count }, ct);
+                using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/generate-questions")
+                {
+                    Content = JsonContent.Create(new { jobCategory, cvText = (string?)null, jdText, count })
+                };
+                msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
+                resp = await _http.SendAsync(msg, ct);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {

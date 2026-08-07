@@ -16,10 +16,15 @@ from app.prompts import (
 from app.lesson_quality import (
     EXAMPLE_HEADING, MISTAKES_HEADING, evaluate_lesson_theory, render_lesson_markdown,
 )
+from app.config import settings
 from app.providers.gemini import GeminiProvider
 import app.main as main_module
 
 client = TestClient(main_module.app)
+
+# Q2/GEN-7 — endpoint SINH nay gate X-Internal-Token (fail-closed): mọi call hợp lệ phải
+# kèm _HEADERS. Nhánh 401 nằm ở tests/test_internal_token_gate_q2.py.
+_HEADERS = {"X-Internal-Token": settings.internal_token}
 
 
 def _fake_gemini_response(payload: dict):
@@ -232,6 +237,7 @@ def test_endpoint_generate_roadmap_response_shape(monkeypatch):
 
     res = client.post(
         "/api/v1/generate-roadmap",
+        headers=_HEADERS,
         json={"jobCategory": "BE", "level": "Junior"},
     )
 
@@ -250,6 +256,7 @@ def test_endpoint_generate_roadmap_response_shape(monkeypatch):
 def test_endpoint_generate_roadmap_rejects_empty_level():
     res = client.post(
         "/api/v1/generate-roadmap",
+        headers=_HEADERS,
         json={"jobCategory": "BE", "level": "   "},
     )
     assert res.status_code == 400
@@ -265,6 +272,7 @@ def test_endpoint_generate_roadmap_returns_502_when_gemini_fails(monkeypatch):
 
     res = client.post(
         "/api/v1/generate-roadmap",
+        headers=_HEADERS,
         json={"jobCategory": "BE", "level": "Junior"},
     )
     assert res.status_code == 502
@@ -290,6 +298,7 @@ def test_endpoint_generate_roadmap_forwards_bc17_fields(monkeypatch):
 
     res = client.post(
         "/api/v1/generate-roadmap",
+        headers=_HEADERS,
         json={
             "jobCategory": "BE", "level": "Junior",
             "focus": "Tập trung vào system design",
@@ -316,6 +325,7 @@ def test_endpoint_generate_lesson_theory_response_shape(monkeypatch):
 
     res = client.post(
         "/api/v1/generate-lesson-theory",
+        headers=_HEADERS,
         json={
             "jobCategory": "BE", "level": "Junior", "lessonTitle": "Chuẩn hoá DB",
             "focusCriteria": ["Thiết kế CSDL"],
@@ -332,6 +342,7 @@ def test_endpoint_generate_lesson_theory_response_shape(monkeypatch):
 def test_endpoint_generate_lesson_theory_rejects_empty_lesson_title():
     res = client.post(
         "/api/v1/generate-lesson-theory",
+        headers=_HEADERS,
         json={"jobCategory": "BE", "level": "Junior", "lessonTitle": "", "focusCriteria": []},
     )
     assert res.status_code == 400
@@ -355,6 +366,7 @@ def test_endpoint_summarize_roadmap_response_shape(monkeypatch):
 
     res = client.post(
         "/api/v1/summarize-roadmap",
+        headers=_HEADERS,
         json={
             "jobCategory": "BE", "level": "Junior",
             "criteriaProgress": [
@@ -381,6 +393,7 @@ def test_endpoint_summarize_roadmap_returns_502_when_gemini_fails(monkeypatch):
 
     res = client.post(
         "/api/v1/summarize-roadmap",
+        headers=_HEADERS,
         json={"jobCategory": "BE", "level": "Junior", "criteriaProgress": []},
     )
     assert res.status_code == 502

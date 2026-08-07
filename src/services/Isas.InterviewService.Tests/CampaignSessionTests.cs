@@ -206,4 +206,107 @@ public class CampaignSessionTests
         practice.Verify(p => p.GetOrCreateCampaignSessionAsync(
             It.IsAny<Guid>(), It.IsAny<CreateCampaignSessionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+
+    // ── INT-17b: đường B2B phải ép `MaxFollowUps = 0` ở chế độ chuỗi (đối xứng B2C) ──────────────
+    // Trước bản vá, `MaxFollowUps` lấy thẳng giá trị HR khai. Vì `AnswerService` đếm `followUpCount`
+    // trên MỌI câu non-Seed của cả buổi, trần theo BUỔI bó chặt hơn trần theo CÂU ⇒ chuỗi chết giữa
+    // chừng, và chết ở đâu thì phụ thuộc THỨ TỰ TRẢ LỜI ⇒ hai ứng viên cùng campaign nhận số câu
+    // khác nhau trong khi điểm vẫn xếp hạng chung (CAMP-10).
+
+    private static CreateCampaignSessionRequest CampaignReq(
+        Guid campaignId, string[] questions, int? maxDeep, int? maxFollowUps, int? maxQuestions = 20) =>
+        new(campaignId, Guid.NewGuid(), JobCategory.BE,
+            Questions: questions,
+            Criteria: new[] { new CampaignCriterionInput("Communication", null, 1.0m, 5) },
+            AdaptiveEnabled: true,
+            MaxFollowUps: maxFollowUps,
+            MaxQuestions: maxQuestions,
+            MaxDeepPerQuestion: maxDeep);
+
+    [Fact]
+    public async Task CreateCampaignSession_CheDoChuoi_EpMaxFollowUpsVe0()
+    {
+        using var t = new TestDb();
+        var svc = Build(t);
+
+        var res = await svc.CreateCampaignSessionAsync(
+            Guid.NewGuid(), CampaignReq(Guid.NewGuid(), new[] { "Q1", "Q2" }, maxDeep: 3, maxFollowUps: 3));
+
+        await using var read = t.NewContext();
+        var s = await read.PracticeSessions.AsNoTracking().SingleAsync(x => x.Id == res.Id);
+        Assert.Equal(0, s.MaxFollowUps);        // ← trần BUỔI tắt
+        Assert.Equal(3, s.MaxDeepPerQuestion);  // ← trần theo CÂU giữ nguyên
+    }
+
+    [Fact]
+    public async Task CreateCampaignSession_KillSwitch_GiuNguyenMaxFollowUps()
+    {
+        // Đối chứng: campaign KHÔNG dùng chế độ chuỗi (maxDeep=0) thì hành vi phải y hệt trước —
+        // guard là CÓ ĐIỀU KIỆN, không phải ép mù. Thiếu test này thì một fix sai (ép 0 vô điều kiện)
+        // vẫn làm test trên xanh.
+        using var t = new TestDb();
+        var svc = Build(t);
+
+        var res = await svc.CreateCampaignSessionAsync(
+            Guid.NewGuid(), CampaignReq(Guid.NewGuid(), new[] { "Q1" }, maxDeep: 0, maxFollowUps: 3));
+
+        await using var read = t.NewContext();
+        var s = await read.PracticeSessions.AsNoTracking().SingleAsync(x => x.Id == res.Id);
+        Assert.Equal(3, s.MaxFollowUps);
+        Assert.Equal(0, s.MaxDeepPerQuestion);
+    }
+
+    [Fact]
+    public async Task CreateCampaignSession_CheDoChuoi_MoiCauGocDuocDaoSauDayDu_KhongLechTheoThuTu()
+    {
+        // Test HÀNH VI — cái đáng giá nhất. Hai test trên chỉ bắt "con dấu" trên entity; test này chứng
+        // minh hệ quả công bằng: MỌI câu gốc đều đào sâu đủ trần, bất kể trả lời theo thứ tự nào.
+        // Trước bản vá: phân bố 2/1/0/0 (câu gốc trả lời sau cạn ngân sách buổi).
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var svc = Build(t);
+
+        var created = await svc.CreateCampaignSessionAsync(
+            candidate, CampaignReq(Guid.NewGuid(), new[] { "G1", "G2", "G3", "G4" }, maxDeep: 2, maxFollowUps: 3));
+
+        var decider = new Mock<IAiServiceInterviewDecider>();
+        decider.Setup(x => x.DecideNextAsync(It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new DecideNextResult("follow_up", "Đào sâu", "ts", null));
+
+        var publisher = new Mock<IScoringJobPublisher>();
+        publisher.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+                 .Returns(Task.CompletedTask);
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.UploadAsync(It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<Guid>(),
+                    It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync("answer-audio/x.webm");
+        var answers = new AnswerService(
+            t.Db, storage.Object, publisher.Object, new Mock<ISessionScoringNotifier>().Object,
+            TestDb.ScoringOpts(), NullLogger<AnswerService>.Instance, decider.Object,
+            Options.Create(new AdaptiveOptions { MaxFailuresPerSession = 3 }));
+
+        // Trả lời XEN KẼ: mỗi vòng trả lời câu chưa-có-answer có orderNo nhỏ nhất — mô phỏng ứng viên
+        // đi tuần tự qua danh sách, tức thứ tự bất lợi nhất cho ngân sách theo buổi.
+        for (var round = 0; round < 12; round++)
+        {
+            await using var scan = t.NewContext();
+            var next = await scan.PracticeQuestions.AsNoTracking()
+                .Where(q => q.SessionId == created.Id)
+                .Where(q => !scan.PracticeAnswers.Any(a => a.QuestionId == q.Id))
+                .OrderBy(q => q.OrderNo).FirstOrDefaultAsync();
+            if (next is null) break;
+            using var audio = new MemoryStream(new byte[] { 1 });
+            await answers.UploadAnswerAsync(created.Id, next.Id, candidate, audio, "audio/webm", 30);
+        }
+
+        await using var read = t.NewContext();
+        var byRoot = await read.PracticeQuestions.AsNoTracking()
+            .Where(q => q.SessionId == created.Id && q.Kind != QuestionKind.Seed)
+            .GroupBy(q => q.RootQuestionId)
+            .Select(g => new { Root = g.Key, Depth = g.Count() })
+            .ToListAsync();
+
+        Assert.Equal(4, byRoot.Count);                       // cả 4 câu gốc đều có chuỗi
+        Assert.All(byRoot, x => Assert.Equal(2, x.Depth));   // và đều đủ trần 2 — không 2/1/0/0
+    }
 }

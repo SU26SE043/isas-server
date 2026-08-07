@@ -81,6 +81,17 @@ class Settings(BaseSettings):
     # ⚠ Chỉ Gemini **Flash** cho phép 0; Pro không tắt được — đổi model thì phải xem lại.
     decide_next_thinking_budget: int = 0
 
+    # ── Q16: SỐ LƯỢT SINH CÂU ĐÀO SÂU ────────────────────────────
+    # `/decide-next` TỪNG là đường DUY NHẤT của provider không có retry: output hỏng một lượt là
+    # raise thẳng → 502. Với `score()` (`score_max_attempts=3`) và `generate_lesson_theory`
+    # (`lesson_theory_max_attempts=2`) thì output hỏng chợp nhoáng đã được thử lại từ lâu — ở đây
+    # thì không, dù hậu quả nhìn thấy được nhiều hơn: ứng viên nhận nửa câu hỏi rồi trả lời nó.
+    #
+    # `2` chứ không phải `3`: đường này chạy ĐỒNG BỘ trong request upload câu trả lời (đo trên prod
+    # 2026-08-05: một lượt ~1,43s sau khi tắt thinking, cả request ~9,4s) ⇒ mỗi lượt thêm là độ trễ
+    # cộng thẳng vào trải nghiệm. `1` = tắt hẳn việc thử lại (về hành vi cũ), vẫn giữ phần kiểm.
+    decide_next_max_attempts: int = 2
+
     # ── F11: NGUỒN MỐC THỜI GIAN cho chỉ số cách nói ─────────────
     # `"vad"` (mặc định) = vùng tiếng nói do Silero VAD xác định · `"whisper"` = biên segment
     # Whisper (hành vi trước 2026-08-05, GIỮ LẠI CHỈ để quay lui không cần deploy).

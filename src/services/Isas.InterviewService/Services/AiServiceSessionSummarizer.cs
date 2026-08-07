@@ -11,6 +11,7 @@ namespace Isas.InterviewService.Services;
 public class AiServiceSessionSummarizer : IAiServiceSessionSummarizer
 {
     private readonly HttpClient _httpClient;
+    private readonly string? _token;
     private readonly ILogger<AiServiceSessionSummarizer> _logger;
 
     private static readonly JsonSerializerOptions Json = new()
@@ -19,9 +20,14 @@ public class AiServiceSessionSummarizer : IAiServiceSessionSummarizer
         PropertyNameCaseInsensitive = true
     };
 
-    public AiServiceSessionSummarizer(HttpClient httpClient, ILogger<AiServiceSessionSummarizer> logger)
+    public AiServiceSessionSummarizer(
+        HttpClient httpClient, IConfiguration config, ILogger<AiServiceSessionSummarizer> logger)
     {
         _httpClient = httpClient;
+        // GEN-7: /summarize-session nay gate X-Internal-Token (fail-closed) → đính token.
+        // Caller (SessionScoringNotifier) nuốt lỗi best-effort ⇒ thiếu token thì buổi vẫn Scored
+        // nhưng overall_comment luôn null — hỏng CÂM, phải cấu hình Internal:Token.
+        _token = config["Internal:Token"];
         _logger = logger;
     }
 
@@ -53,10 +59,16 @@ public class AiServiceSessionSummarizer : IAiServiceSessionSummarizer
             })
         };
 
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/summarize-session")
+        {
+            Content = JsonContent.Create(payload)
+        };
+        request.Headers.TryAddWithoutValidation("X-Internal-Token", _token);
+
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.PostAsJsonAsync("/api/v1/summarize-session", payload, ct);
+            response = await _httpClient.SendAsync(request, ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

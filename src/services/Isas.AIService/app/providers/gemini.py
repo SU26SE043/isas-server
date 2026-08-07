@@ -7,7 +7,9 @@ from google.genai import types
 
 from app.config import settings
 from app.resources import sanitize_resources, count_rejected_urls
-from app.lesson_quality import evaluate_lesson_theory, render_lesson_markdown
+from app.lesson_quality import (
+    evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
+)
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
@@ -19,6 +21,61 @@ from app.providers.base import QuestionProvider
 from app.usage import report_usage
 
 logger = logging.getLogger(__name__)
+
+
+# ── Q16: câu đào sâu bị CỤT ────────────────────────────────────────────────────
+# Trên deploy 2026-08-07, `practice_questions` có một câu `Clarify` dài 31 ký tự —
+# "Bạn có thể giải thích rõ hơn về" — đã trả cho ứng viên, ứng viên đã trả lời, answer đã `Scored`
+# (các câu Clarify khác 168/177 ký tự, hoàn chỉnh).
+#
+# Dấu câu kết. Cố ý gồm cả `.`/`!` chứ không chỉ `?`: câu mệnh lệnh ("Hãy mô tả cách bạn xử lý lỗi.")
+# là câu hỏi hợp lệ, ép dấu `?` sẽ bắt oan đúng nhóm câu tự nhiên nhất.
+_QUESTION_TERMINATORS = "?.!…。？！"
+
+
+def _looks_truncated(question: str) -> bool:
+    """Câu hỏi có bị cắt giữa chừng không? CỐ Ý không đo bằng ngưỡng ĐỘ DÀI.
+
+    Ngưỡng độ dài đo sai thứ cần đo: một câu hỏi ngắn vẫn có thể trọn vẹn ("Bạn dùng index nào?"),
+    còn một câu dài vẫn có thể cụt. Thay vào đó dùng đúng thủ pháp repo đã dùng ở chỗ khác — nêu
+    hợp đồng trong prompt rồi KIỂM BẰNG MÁY (model chỉ cite được chunkId đã cấp D27; `criterion`
+    phải trùng nguyên văn tên tiêu chí BC13; url phải thuộc allowlist F15). Ở đây hợp đồng là:
+    câu hỏi kết thúc bằng dấu câu.
+
+    Hai dấu hiệu, cả hai đều về TÍNH TRỌN VẸN:
+      1. không còn chữ/số nào sau khi bỏ dấu câu → mô hình chép lại placeholder ("...", "?"),
+         mà `if not next_q` không bắt được vì chuỗi khác rỗng;
+      2. ký tự cuối không phải dấu kết câu → dấu vết kinh điển của một câu bị cắt.
+
+    Bắt oan không phải là không có giá: nó tốn thêm một lượt sinh, và cạn lượt thì thành 502 (.NET
+    degrade về luồng tĩnh — answer VẪN được lưu). Đổi lại là không đưa nửa câu cho ứng viên trả lời
+    rồi đem đi chấm. Đánh đổi nghiêng hẳn về phía chặn.
+    """
+    text = question.strip()
+    if not any(ch.isalnum() for ch in text):
+        return True
+    return text[-1] not in _QUESTION_TERMINATORS
+
+
+def _generation_diagnostics(response) -> str:
+    """Vì sao lượt sinh này hỏng — dữ liệu để CHỐT nguyên nhân Q16 bằng số thật ở lớp 3.
+
+    KHÔNG BAO GIỜ raise (idiom ``app.usage.extract_usage``): đây là dòng log phụ, làm hỏng đường
+    chính vì nó thì mất nhiều hơn được. Đọc bằng ``getattr`` vì test double dựng response bằng
+    ``type("R", (), {...})()`` nên không có ``candidates``.
+
+    ``finish_reason=MAX_TOKENS`` ở đây sẽ chứng minh giả thuyết "bị cắt lúc truyền"; còn
+    ``STOP`` kèm ``candidates_token_count`` nhỏ nghĩa là chính mô hình tự đóng chuỗi — hai nguyên
+    nhân đó cần hai cách sửa khác hẳn nhau, nên phải phân biệt được thay vì đoán.
+    """
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        finish = getattr(candidates[0], "finish_reason", None) if candidates else None
+        meta = getattr(response, "usage_metadata", None)
+        out_tokens = getattr(meta, "candidates_token_count", None) if meta is not None else None
+        return f"finish_reason={finish!r} candidates_token_count={out_tokens!r}"
+    except Exception:  # noqa: BLE001 — xem docstring: đo không được làm hỏng đường chính
+        return "finish_reason=? candidates_token_count=? (không đọc được)"
 
 
 class ScoreOutcome(NamedTuple):
@@ -848,15 +905,15 @@ class GeminiProvider(QuestionProvider):
                     data = None
 
                 if not isinstance(data, dict):
-                    last_defects = [
-                        f"Bản trước không phải JSON hợp lệ: {text[:200]}"]
+                    last_defects = [lesson_message("not_json", language,
+                                                   raw=text[:200])]
                     feedback = "\n".join(f"- {d}" for d in last_defects)
                     continue
 
                 url_meta = count_rejected_urls(data.get("resources"))
 
                 last_defects = evaluate_lesson_theory(
-                    data, focus_criteria, lesson_title)
+                    data, focus_criteria, lesson_title, language=language)
                 if last_defects:
                     # Log để tỉ lệ trả-lại ĐO ĐƯỢC. Không có dòng này thì rubric siết quá tay sẽ chỉ
                     # lộ ra dưới dạng "thỉnh thoảng mở bài bị 502" — đúng kiểu hỏng im lặng mà
@@ -866,7 +923,8 @@ class GeminiProvider(QuestionProvider):
                     feedback = "\n".join(f"- {d}" for d in last_defects)
                     continue
 
-                theory = render_lesson_markdown(lesson_title, data)
+                theory = render_lesson_markdown(lesson_title, data,
+                                                language=language)
                 resources = sanitize_resources(data.get("resources"))
 
                 cited: list[str] | None = None
@@ -1006,11 +1064,6 @@ class GeminiProvider(QuestionProvider):
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_decide_next_prompt(
-            job_category, current_question, transcript, history,
-            asked_count, follow_up_count, max_questions, max_follow_ups, criteria,
-            root_question=root_question, current_depth=current_depth,
-            max_depth=max_depth, other_topics=other_topics, language=language)
 
         # Đường này chạy ĐỒNG BỘ trong request upload của người dùng ⇒ độ trễ là chi phí trực
         # tiếp lên trải nghiệm. Suy luận ẩn của Gemini 2.5 đo được chiếm ~3/4 thời gian mà không
@@ -1033,12 +1086,47 @@ class GeminiProvider(QuestionProvider):
             cfg["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=settings.decide_next_thinking_budget)
 
-        response = await self._generate(
-            "decide_next",
-            contents=prompt,
-            config=types.GenerateContentConfig(**cfg),
-        )
+        # Q16 — output hỏng thì TRẢ LẠI và hỏi lại kèm lý do, thay vì raise thẳng thành 502 ngay
+        # lượt đầu (mẫu `generate_lesson_theory`). Hỏi lại y hệt đề cũ thì phần lớn nhận lại đúng
+        # cái sai đó, nên lượt sau mang theo `retry_feedback`.
+        attempts = max(1, settings.decide_next_max_attempts)
+        feedback: str | None = None
+        last_error: ValueError | None = None
 
+        for _ in range(attempts):
+            prompt = build_decide_next_prompt(
+                job_category, current_question, transcript, history,
+                asked_count, follow_up_count, max_questions, max_follow_ups, criteria,
+                root_question=root_question, current_depth=current_depth,
+                max_depth=max_depth, other_topics=other_topics, language=language,
+                retry_feedback=feedback)
+
+            response = await self._generate(
+                "decide_next",
+                contents=prompt,
+                config=types.GenerateContentConfig(**cfg),
+            )
+
+            try:
+                return self._parse_decide_next(response)
+            except ValueError as e:
+                last_error = e
+                feedback = str(e)
+                # Log để tỉ lệ trả-lại ĐO ĐƯỢC + chốt nguyên nhân Q16 bằng số thật (xem
+                # `_generation_diagnostics`). Không có dòng này thì câu cụt chỉ lộ ra dưới dạng
+                # "thỉnh thoảng hội thoại thích ứng chết" — đúng kiểu hỏng im lặng mà allowlist URL
+                # F15 đã dính.
+                logger.info("Câu kế bị trả lại (%s): %s", _generation_diagnostics(response), e)
+
+        raise last_error  # type: ignore[misc]  # attempts >= 1 ⇒ luôn đã gán
+
+    @staticmethod
+    def _parse_decide_next(response) -> dict:
+        """Đọc + KIỂM output một lượt `/decide-next`. Raise ``ValueError`` khi không dùng được.
+
+        Tách khỏi vòng lặp để chỗ "thế nào là output hợp lệ" nằm gọn một nơi và test được trực
+        tiếp, không phải đi vòng qua mock SDK.
+        """
         text = (response.text or "").strip()
         try:
             data = json.loads(text)
@@ -1053,6 +1141,15 @@ class GeminiProvider(QuestionProvider):
         # ≠ end BẮT BUỘC có câu hỏi — rỗng = output malformed → reject (idiom score()).
         if action != "end" and not next_q:
             raise ValueError(f"Action {action} nhưng nextQuestion rỗng.")
+
+        # Q16 — rỗng KHÔNG phải hình dạng hỏng duy nhất. Trên deploy 2026-08-07 một câu `Clarify`
+        # 31 ký tự ("Bạn có thể giải thích rõ hơn về") đã tới tay ứng viên, được trả lời, rồi được
+        # chấm. Câu cụt tệ hơn không có câu: không có câu thì .NET degrade về luồng tĩnh và ứng
+        # viên không mất gì, còn nửa câu thì họ trả lời một thứ vô nghĩa bằng chính lượt đã trả tiền.
+        if action != "end" and _looks_truncated(next_q):
+            raise ValueError(
+                "nextQuestion là câu chưa hoàn chỉnh (bị cắt giữa chừng hoặc chỉ có dấu câu): "
+                f"{next_q!r}. Viết lại MỘT câu hỏi trọn vẹn, kết thúc bằng dấu câu.")
 
         reason = str(data.get("reason", "") or "").strip() or None
         return {

@@ -14,14 +14,15 @@ namespace Isas.InterviewService.Services;
 /// </summary>
 public static class B2CRubricScope
 {
-    public static Task<Guid?> ResolveOwnerAsync(
-        InterviewDbContext db, Guid candidateId, JobCategory jobCategory, CancellationToken ct = default)
-        => ResolveOwnerAsync(db, candidateId, jobCategory, "vi", ct);
+    // Q8 — CỐ Ý KHÔNG có overload thiếu `language`. Overload cũ mặc định "vi" đã cắn HAI lần
+    // (SessionScoringNotifier + RubricLibraryService): call-site tưởng mình đang resolve theo ngôn ngữ
+    // của session, thực ra luôn hỏi rubric "vi". Bắt khai tường minh thì compiler chặn được lỗi đó.
 
     /// <summary>
-    /// Trả về <c>candidateId</c> nếu candidate có ≥1 tiêu chí RIÊNG đang active cho nghề đó,
+    /// Trả về <c>candidateId</c> nếu candidate có ≥1 tiêu chí RIÊNG đang active cho (nghề, NGÔN NGỮ) đó,
     /// ngược lại <c>null</c> (⇒ dùng seed mặc định). Kết quả này đưa vào filter
-    /// <c>c.CampaignId == null &amp;&amp; c.CandidateId == owner &amp;&amp; c.JobCategory == jc</c>.
+    /// <c>c.CampaignId == null &amp;&amp; c.CandidateId == owner &amp;&amp; c.JobCategory == jc
+    /// &amp;&amp; c.Language == language</c> — caller PHẢI tự thêm vế <c>Language</c>, resolver không trả nó về.
     /// </summary>
     public static async Task<Guid?> ResolveOwnerAsync(
         InterviewDbContext db, Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct = default)
