@@ -20,8 +20,8 @@ namespace Isas.CampaignService.Services
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             int? maxDeepPerQuestion = null,
-            string language = "vi",
             CancellationToken ct = default);
+        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, CancellationToken ct);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
         // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).

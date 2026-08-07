@@ -38,9 +38,10 @@ namespace Isas.CampaignService.Services
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
-            int? maxDeepPerQuestion = null,   // INT-17b
-            string language = "vi",
-            CancellationToken ct = default)
+            int? maxDeepPerQuestion = null, CancellationToken ct = default)
+            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", ct);
+
+        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, CancellationToken ct)
         {
             var payload = new
             {

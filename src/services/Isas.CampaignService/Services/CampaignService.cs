@@ -2001,7 +2001,9 @@ namespace Isas.CampaignService.Services
         private async Task<List<CampaignCriterion>> BuildCriteriaAsync(Campaign campaign, CancellationToken ct)
         {
             var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
-            var suggested = await _suggester.SuggestAsync(jobCategory, campaign.JDText, campaign.CriteriaText, 4, campaign.Language, ct);
+            var suggested = campaign.Language == "vi"
+                ? await _suggester.SuggestAsync(jobCategory, campaign.JDText, campaign.CriteriaText, 4, ct)
+                : await _suggester.SuggestAsync(jobCategory, campaign.JDText, campaign.CriteriaText, 4, campaign.Language, ct);
 
             if (suggested is not { Count: > 0 })
                 return BuildDefaultCriteria(campaign.Id);   // fallback khi AI lỗi/rỗng

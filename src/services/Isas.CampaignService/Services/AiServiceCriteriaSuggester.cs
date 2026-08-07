@@ -15,8 +15,10 @@ namespace Isas.CampaignService.Services
             _logger = logger;
         }
 
-        public async Task<List<SuggestedCriterion>?> SuggestAsync(
-            string jobCategory, string? jdText, string? criteriaText, int count, string language = "vi", CancellationToken ct = default)
+        public async Task<List<SuggestedCriterion>?> SuggestAsync(string jobCategory, string? jdText, string? criteriaText, int count, CancellationToken ct = default)
+            => await SuggestAsync(jobCategory, jdText, criteriaText, count, "vi", ct);
+
+        public async Task<List<SuggestedCriterion>?> SuggestAsync(string jobCategory, string? jdText, string? criteriaText, int count, string language, CancellationToken ct)
         {
             try
             {
