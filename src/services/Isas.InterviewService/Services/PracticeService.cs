@@ -991,6 +991,7 @@ public class PracticeService : IPracticeService
 
         return new PracticeSessionResponse(
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
+            s.Language,
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
             MapResult(s, questions.Count, criterionScores, cvStrengths, benchmark));
     }

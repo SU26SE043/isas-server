@@ -78,6 +78,7 @@ public record PracticeSessionResponse(
     Guid Id,
     string Status,
     string JobCategory,
+    string Language,
     Guid? CvId, Guid? JdId,
     DateTime CreatedAt,
     DateTime? CompletedAt,
