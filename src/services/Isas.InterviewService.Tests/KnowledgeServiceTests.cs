@@ -237,4 +237,93 @@ public class KnowledgeServiceTests
         await t.Db.SaveChangesAsync();
         return src.Id;
     }
+    // ── Nhãn trích dẫn + điểm uy tín (sửa 2026-08-08) ───────────────────────────────────────
+    //
+    // Vì sao có nhóm test này: cả hai đường đều KHÔNG được test nào phủ trước đó, mà cả hai đều là
+    // thứ NGƯỜI DÙNG NHÌN THẤY hoặc dùng để đánh giá độ tin cậy của nguồn.
+
+    /// Heading của chunk KHÔNG được đè tên nguồn: trên trang thật heading hay là đồ trang trí điều
+    /// hướng ("Help improve MDN" xuất hiện 5 lần trong corpus đã nạp) ⇒ trích dẫn thành vô nghĩa,
+    /// mà kiểm chứng được là cả lý do citation tồn tại (D27).
+    [Fact]
+    public async Task Ingest_NhanTrichDan_LuonNeuTenNguonTruoc_KemMucCon()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        List<VectorPoint>? upserted = null;
+        h.VectorStore.Setup(v => v.UpsertAsync(It.IsAny<IReadOnlyList<VectorPoint>>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<VectorPoint>, CancellationToken>((p, _) => upserted = p.ToList())
+            .Returns(Task.CompletedTask);
+
+        await h.Svc.IngestAsync(Guid.NewGuid(), new CreateKnowledgeRequest(
+            "MDN — ARIA / Accessibility", JobCategory.FE, KnowledgeSourceType.Manual,
+            "## Help improve MDN\nnội dung phần điều hướng ở đây.", null));
+
+        Assert.NotNull(upserted);
+        var label = upserted!.First().SourceTitle;
+        Assert.StartsWith("MDN — ARIA / Accessibility", label);            // tên nguồn ĐỨNG TRƯỚC
+        Assert.Contains("Help improve MDN", label);                        // mục con KHÔNG bị mất
+        Assert.NotEqual("Help improve MDN", label);                        // và KHÔNG được đè tên nguồn
+    }
+
+    /// Không có mục con → chỉ tên nguồn, không có dấu phân cách lơ lửng.
+    [Fact]
+    public async Task Ingest_KhongCoMucCon_NhanChiLaTenNguon()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        List<VectorPoint>? upserted = null;
+        h.VectorStore.Setup(v => v.UpsertAsync(It.IsAny<IReadOnlyList<VectorPoint>>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<VectorPoint>, CancellationToken>((p, _) => upserted = p.ToList())
+            .Returns(Task.CompletedTask);
+
+        await h.Svc.IngestAsync(Guid.NewGuid(), new CreateKnowledgeRequest(
+            "Scrum Guide 2020", JobCategory.BA, KnowledgeSourceType.Manual,
+            "đoạn văn thuần không có heading nào cả.", null));
+
+        Assert.Equal("Scrum Guide 2020", upserted!.First().SourceTitle);
+    }
+
+    /// Điểm uy tín do SERVER tra, và phải khớp bằng ID ĐẦY ĐỦ: search "react" trả về nhiều thư viện
+    /// trùng tên với uy tín khác nhau (8.3 → 10), khớp theo tên là gắn nhầm điểm của thư viện khác.
+    [Fact]
+    public async Task Context7Ingest_LuuDiemUyTin_KhopTheoIdDayDu()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        h.Context7.Setup(c => c.SearchAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Context7Library>
+            {
+                new("/react/react", "React", "8.3", 6165),
+                new("/reactjs/react.dev", "React", "10", 6052),
+            });
+        h.Context7.Setup(c => c.GetContextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Context7Snippet> { new("useEffect", "nội dung snippet", "https://react.dev/x") });
+
+        var res = await h.Svc.Context7IngestAsync(Guid.NewGuid(),
+            new Context7IngestRequest("/reactjs/react.dev", new List<string> { "hooks" }, JobCategory.FE));
+
+        Assert.Equal("10", t.Db.KnowledgeSources.Single(x => x.Id == res.Id).Reputation);
+    }
+
+    /// Context7 lỗi → điểm uy tín để trống, KHÔNG làm hỏng cả lần nạp (nạp corpus tốn tiền embedding;
+    /// biến một nhãn phụ thành đường làm hỏng là đánh đổi tồi — cùng lý do cv_screening không raise
+    /// khi thiếu fullName).
+    [Fact]
+    public async Task Context7Ingest_TraUyTinLoi_VanNapDuoc_UyTinDeTrong()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        h.Context7.Setup(c => c.SearchAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Context7 sập"));
+        h.Context7.Setup(c => c.GetContextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Context7Snippet> { new("useEffect", "nội dung snippet", "https://react.dev/x") });
+
+        var res = await h.Svc.Context7IngestAsync(Guid.NewGuid(),
+            new Context7IngestRequest("/reactjs/react.dev", new List<string> { "hooks" }, JobCategory.FE));
+
+        Assert.Null(t.Db.KnowledgeSources.Single(x => x.Id == res.Id).Reputation);
+        Assert.True(res.ChunkCount > 0);   // nạp VẪN thành công
+    }
+
 }
