@@ -696,13 +696,36 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
         "nội dung đó. Phần rỗng hoặc chỉ có tiêu đề sẽ bị TRẢ LẠI.",
     ]
 
+    # Q10 — chỉ dẫn "ghi ĐÚNG NGUYÊN VĂN, không dịch lại" PHẢI cùng ngôn ngữ với bài. Đây không
+    # phải chuyện thẩm mỹ: `evaluate_lesson_theory` khớp `criterion` bằng so chuỗi và CỐ Ý không
+    # fuzzy, nên mô hình dịch tên tiêu chí một lượt là trượt rubric — hết lượt viết lại thì
+    # `generate_lesson_theory` raise ⇒ InterviewService trả **502**. Nói bằng tiếng Việt rằng
+    # "đừng dịch" ngay trong một đề bài yêu cầu viết tiếng Anh là tự đặt bẫy cho chính mình.
     if focus_criteria:
+        listed = "\n".join(f"- {c}" for c in focus_criteria)
+        if normalize(language) == EN:
+            parts.append(
+                "FOCUS CRITERIA of the milestone that owns this lesson — EACH criterion must have "
+                "AT LEAST one section in `sections` explaining it:\n"
+                + listed + "\n"
+                "The `criterion` field of every section must repeat ONE of the names above "
+                "VERBATIM — do not rename it, do not abbreviate it, and DO NOT TRANSLATE IT, even "
+                "when the criterion name is not in English. Only the lesson content is written in "
+                "English; the criterion names are identifiers and must be copied character for "
+                "character."
+            )
+        else:
+            parts.append(
+                "TIÊU CHÍ TRỌNG TÂM của milestone chứa bài học này — MỖI tiêu chí phải có ÍT NHẤT "
+                "một mục trong sections giải thích nó:\n"
+                + listed + "\n"
+                "Trường criterion của mỗi mục phải ghi ĐÚNG NGUYÊN VĂN một trong các tên trên — "
+                "không tự đặt tên khác, không viết tắt, không dịch lại."
+            )
+    elif normalize(language) == EN:
         parts.append(
-            "TIÊU CHÍ TRỌNG TÂM của milestone chứa bài học này — MỖI tiêu chí phải có ÍT NHẤT "
-            "một mục trong sections giải thích nó:\n"
-            + "\n".join(f"- {c}" for c in focus_criteria) + "\n"
-            "Trường criterion của mỗi mục phải ghi ĐÚNG NGUYÊN VĂN một trong các tên trên — "
-            "không tự đặt tên khác, không viết tắt, không dịch lại."
+            "The milestone declares no focus criteria → `sections` must follow the lesson topic "
+            f'itself, and every section must set `criterion` to "{lesson_title}" verbatim.'
         )
     else:
         parts.append(
@@ -747,6 +770,10 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     # chỉ dẫn phía trên làm loãng.
     if retry_feedback:
         parts.append(
+            "YOUR PREVIOUS ANSWER WAS REJECTED because it did not meet the requirements:\n"
+            f"{retry_feedback}\n"
+            "Rewrite the FULL answer (not a patch), fixing exactly the points above."
+            if normalize(language) == EN else
             "BẢN TRƯỚC CỦA BẠN BỊ TRẢ LẠI vì chưa đạt yêu cầu:\n"
             f"{retry_feedback}\n"
             "Viết lại BẢN ĐẦY ĐỦ (không phải phần bổ sung), khắc phục đúng những điểm trên."

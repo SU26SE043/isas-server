@@ -7,7 +7,9 @@ from google.genai import types
 
 from app.config import settings
 from app.resources import sanitize_resources, count_rejected_urls
-from app.lesson_quality import evaluate_lesson_theory, render_lesson_markdown
+from app.lesson_quality import (
+    evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
+)
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
@@ -848,15 +850,15 @@ class GeminiProvider(QuestionProvider):
                     data = None
 
                 if not isinstance(data, dict):
-                    last_defects = [
-                        f"Bản trước không phải JSON hợp lệ: {text[:200]}"]
+                    last_defects = [lesson_message("not_json", language,
+                                                   raw=text[:200])]
                     feedback = "\n".join(f"- {d}" for d in last_defects)
                     continue
 
                 url_meta = count_rejected_urls(data.get("resources"))
 
                 last_defects = evaluate_lesson_theory(
-                    data, focus_criteria, lesson_title)
+                    data, focus_criteria, lesson_title, language=language)
                 if last_defects:
                     # Log để tỉ lệ trả-lại ĐO ĐƯỢC. Không có dòng này thì rubric siết quá tay sẽ chỉ
                     # lộ ra dưới dạng "thỉnh thoảng mở bài bị 502" — đúng kiểu hỏng im lặng mà
@@ -866,7 +868,8 @@ class GeminiProvider(QuestionProvider):
                     feedback = "\n".join(f"- {d}" for d in last_defects)
                     continue
 
-                theory = render_lesson_markdown(lesson_title, data)
+                theory = render_lesson_markdown(lesson_title, data,
+                                                language=language)
                 resources = sanitize_resources(data.get("resources"))
 
                 cited: list[str] | None = None
