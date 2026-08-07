@@ -228,7 +228,8 @@ def pcm_to_wav_bytes(pcm, sample_rate: int = SAMPLE_RATE) -> bytes:
 # Content-Type theo ĐUÔI FILE, tra bảng tường minh — CỐ Ý KHÔNG dùng `mimetypes.guess_type`.
 # `mimetypes` đọc /etc/mime.types nên kết quả phụ thuộc image/OS, và trên image `python:3.12-slim`
 # nó cho ra những giá trị SAI cho đúng đường đang chạy thật:
-#     .webm → video/webm   (đuôi DUY NHẤT xuất hiện trên production — AnswerService.cs:80)
+#     .webm → video/webm   (từng là đuôi DUY NHẤT trên production; từ BK27 .NET lưu theo định dạng
+#                           thật — xem AudioFormats.cs, có test hợp đồng khoá hai bảng dưới đây)
 #     .ogg .oga .m4a .mpga .flac → None → application/octet-stream
 #     .wav  → audio/x-wav
 # Gửi sai Content-Type thì nhà cung cấp có thể từ chối; lúc đó nhánh cứu WAV nuốt lỗi ⇒ tính năng

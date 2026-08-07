@@ -162,7 +162,10 @@ public class PracticeController : ControllerBase
 
     /// <summary>Phát hoặc tải bản ghi âm câu trả lời của chính candidate.</summary>
     [HttpGet("{sessionId:guid}/answers/{answerId:guid}/audio")]
-    [ProducesResponseType(typeof(FileStreamResult), StatusCodes.Status200OK, "audio/webm")]
+    // Content-Type thật phụ thuộc định dạng ứng viên đã thu (webm trên Chrome, m4a trên iPhone…) nên khai đủ
+    // tập cho OpenAPI. KHÔNG thêm [Produces] — lý do ở GetQuestionSpeech bên dưới.
+    [ProducesResponseType(typeof(FileStreamResult), StatusCodes.Status200OK,
+        "audio/webm", "audio/ogg", "audio/mpeg", "audio/mp4", "video/mp4", "audio/flac", "audio/wav")]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetAnswerAudio(

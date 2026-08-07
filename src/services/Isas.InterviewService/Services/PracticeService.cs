@@ -749,7 +749,10 @@ public class PracticeService : IPracticeService
             throw new UnauthorizedAccessException("Không phải buổi của bạn");
 
         var content = await _storage.DownloadAsync(answer.AudioObjectKey, ct);
-        return new AnswerAudioContent(content, "audio/webm");
+        // MIME suy từ đuôi của object key — trước đây trả cứng "audio/webm" cho MỌI file, nên bản ghi âm từ
+        // iPhone (m4a) được gắn nhãn webm và trình phát từ chối. Đuôi là nguồn duy nhất còn giữ được định dạng:
+        // IStorageService.DownloadAsync chỉ trả Stream, không kèm content-type của S3.
+        return new AnswerAudioContent(content, AudioFormats.ContentTypeForKey(answer.AudioObjectKey));
     }
 
     // DB18 — Payment (internal) dò orphan reservation: trả TẬP CON sessionIds có row practice_sessions

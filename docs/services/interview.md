@@ -49,7 +49,7 @@ AnswerResponse {
   audioUrl:     string?                 // URL owner-scoped để phát/tải audio; null khi chưa có file
 }
 
-**`GET /interview/practice/sessions/{sessionId}/answers/{answerId}/audio`** — Phát/tải audio câu trả lời của chính candidate. `AnswerResponse.audioUrl` trỏ tới route này; server xác minh chủ session từ JWT rồi stream audio, không lộ SeaweedFS object key. Không có audio/answer/session → **404**; session của người khác → **403**.
+**`GET /interview/practice/sessions/{sessionId}/answers/{answerId}/audio`** — Phát/tải audio câu trả lời của chính candidate. `AnswerResponse.audioUrl` trỏ tới route này; server xác minh chủ session từ JWT rồi stream audio, không lộ SeaweedFS object key. Không có audio/answer/session → **404**; session của người khác → **403**. **`Content-Type` theo định dạng thật của bản ghi** (suy từ đuôi object key — `audio/webm`, `audio/mp4`, …; đuôi lạ/dữ liệu cũ → `application/octet-stream`), không còn trả cứng `audio/webm` — BK27.
 
 AnswerScoreResponse {
   criterionId:  uuid
@@ -188,6 +188,7 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 
 **`POST /sessions/{sessionId}/answers`** — Upload audio trả lời.
 - Req `multipart/form-data`: `questionId: uuid` · `file: audio ≤50MB` · `durationSec: int`.
+- **Định dạng audio (BK27)** — server nhận dạng theo thứ tự **magic bytes → `Content-Type` → đuôi tên file**, rồi lưu S3 với **đuôi đúng định dạng thật** (trước đây luôn là `.webm`). Chấp nhận: `audio/webm` · `audio/ogg` · `audio/mpeg` · `audio/mp4` · `video/mp4` · `audio/flac` · `audio/wav` (kèm alias `audio/x-m4a`, `audio/mp4a-latm`, `application/ogg`, `audio/x-wav`…). Ngoài tập này → **400**. ⚠ **`.3gp`/`.amr`/`.aac` thô KHÔNG được nhận** — client mobile phải ghi ra container MPEG-4 (`.m4a`); đây là ràng buộc từ `ORIGINAL_EXTENSIONS` của AIService, có test hợp đồng khoá hai chiều. Kill-switch `Audio:StrictFormatGate=false` → không từ chối, quay về hành vi cũ (`ext=webm`).
 - **Idempotent**: upload lại cùng `questionId` = ghi đè (reset transcript **+ xoá điểm cũ `answer_scores` + `needs_review=false`**, publish lại chấm) — INT-3, chấm lại từ đầu sạch (không trộn điểm/rubric version cũ).
 - Res **`200`** `UploadAnswerResult` `{ answerId, questionId, status, transcript?, nextAction?, nextQuestion?{ id, orderNo, content, timeLimitSec, kind }, interviewComplete }` (`status="Scoring"` sau publish; câu đầu: session `Ready→InProgress`). Các field `transcript/nextAction/nextQuestion/interviewComplete` = **phỏng vấn THÍCH ỨNG (INT-17)**, chỉ có khi session bật adaptive; client cũ bỏ qua vẫn chạy (backward-compat).
 - **Phỏng vấn THÍCH ỨNG (INT-17):** khi buổi bật adaptive + còn ngân sách + chưa quá `deadline` → gọi AIService `/decide-next` (transcribe đồng bộ + Gemini) → `nextQuestion` (append `practice_questions` với `kind` FollowUp/Clarify/NewQuestion) HOẶC `interviewComplete=true` (→ mời submit). `/decide-next` lỗi → **degrade** luồng tĩnh (answer đã lưu, worker transcribe async; response không có câu kế). Câu kế trả **ngay trong response** → client khỏi poll `GET /sessions/{id}`.
@@ -292,7 +293,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 | `cvId`/`jdId` (create session) | optional; `FileRecord` phải **của chính user** + có `parsed_text` (không đọc được → 400) |
 | `jdText` (create session · cv-analysis) | optional; **ưu tiên hơn `jdId`** (C11); rỗng/khoảng trắng = không gửi; **≤ 20.000 ký tự** (đo SAU trim) — vượt → **400** kèm giới hạn + độ dài đang gửi. Ngưỡng CHUNG với B2B/Campaign (`Isas.Shared.Validation.TextInputLimits.JdTextMaxChars`); guard chạy **NGAY ĐẦU** cả 2 endpoint — **trước** đọc CV/JD và **trước** reserve credit ⇒ JD quá dài không giữ credit oan (mẫu BK6/PAY-5) |
 | `jobCategory` | bắt buộc, enum `BA·BE·FE` |
-| upload file | PDF (cv/jd) **≤10MB** · audio (answer) **≤50MB**; sai loại/size → 400 |
+| upload file | PDF (cv/jd) **≤10MB** · audio (answer) **≤50MB**; sai loại/size → 400. Audio: định dạng ngoài allowlist (webm/ogg/mp3/m4a/mp4/flac/wav) → **400** — BK27 |
 | `questionId`/`durationSec` (answer) | bắt buộc; **1 answer/câu** (upload lại = ghi đè idempotent) |
 | callback `/internal/*` | `X-Internal-Token` đúng (sai → 401) |
 
