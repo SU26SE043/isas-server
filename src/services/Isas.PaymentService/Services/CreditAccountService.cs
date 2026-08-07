@@ -473,8 +473,15 @@ namespace Isas.PaymentService.Services
                 if (moved == 0)
                 {
                     await tx.RollbackAsync(ct);
+                    // Cùng mẫu hậu kiểm với ReserveAsync ở trên: `FirstAsync` trần biến "không tìm thấy
+                    // row" thành "Sequence contains no elements" — đúng triệu chứng mơ hồ mà S11-CATCH
+                    // vừa gỡ ở đường reserve. Hôm nay bất biến giữ cho tập không rỗng (row reservation
+                    // không bao giờ bị xoá), nhưng nếu sau này có đường xoá thì đây thành 500 câm.
                     var raced = await _db.CreditReservations.AsNoTracking()
-                        .FirstAsync(r => r.SessionId == sessionId, ct);
+                        .FirstOrDefaultAsync(r => r.SessionId == sessionId, ct);
+                    if (raced is null)
+                        throw new InvalidOperationException(
+                            $"Không tìm thấy chỗ giữ credit cho session {sessionId} sau khi transition trượt.");
                     return ConsumeResult.AlreadyFinalized(raced.Id);
                 }
 
@@ -608,8 +615,12 @@ namespace Isas.PaymentService.Services
                 if (moved == 0)
                 {
                     await tx.RollbackAsync(ct);
+                    // Cùng mẫu hậu kiểm với ReserveAsync/ConsumeAsync — xem chú thích ở ConsumeAsync.
                     var raced = await _db.CreditReservations.AsNoTracking()
-                        .FirstAsync(r => r.SessionId == sessionId, ct);
+                        .FirstOrDefaultAsync(r => r.SessionId == sessionId, ct);
+                    if (raced is null)
+                        throw new InvalidOperationException(
+                            $"Không tìm thấy chỗ giữ credit cho session {sessionId} sau khi transition trượt.");
                     return ReleaseResult.AlreadyFinalized(raced.Id);
                 }
 

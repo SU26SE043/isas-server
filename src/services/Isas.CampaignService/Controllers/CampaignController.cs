@@ -662,6 +662,27 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to update candidate: {ex.Message}"); }
         }
 
+        // BK30: HR đẩy lại sàng CV cho 1 ứng viên (điền full_name/điểm còn thiếu, hoặc retry
+        // AnalysisFailed — trước đây KHÔNG có đường nào, phải sửa tay trong DB).
+        // Invited/Analyzing/Rejected/Pending → 409; CV không có text → 409; ngoài org → 404.
+        [HttpPost("{id:guid}/candidates/{candidateId:guid}/rescreen")]
+        [Authorize(Roles = "Employer")]
+        public async Task<IActionResult> RescreenCandidate(Guid id, Guid candidateId, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                await _screening.RescreenCandidateAsync(orgId.Value, id, candidateId, ct);
+                return Accepted();
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // trạng thái không cho phép
+            catch (Exception ex) { return StatusCode(500, $"Failed to rescreen candidate: {ex.Message}"); }
+        }
+
         // C13: serve CV gốc (PDF) cho HR. cv_file_url null → 404; ngoài org → 404.
         [HttpGet("{id:guid}/candidates/{candidateId:guid}/cv")]
         [Authorize(Roles = "Employer")]

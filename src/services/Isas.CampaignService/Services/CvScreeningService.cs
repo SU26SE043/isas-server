@@ -89,6 +89,69 @@ namespace Isas.CampaignService.Services
             return published;
         }
 
+        // ── BK30: HR đẩy lại sàng CV cho MỘT ứng viên ───────────────────────────────────────
+        // Trước BK30 không có đường nào: PublishScreeningJobsAsync lọc cứng `Filtered`, còn
+        // StuckScreeningRepublisher chỉ quét `Filtered`/`Analyzing` — nên ứng viên đã `Analyzed`
+        // (thiếu full_name, thiếu điểm) hay `AnalysisFailed` (quá trần bỏ cuộc) là điểm CHẾT, phải
+        // sửa tay trong DB. Chính StuckScreeningRepublisher tự ghi chú lỗ này.
+        //
+        // Đây CỐ Ý là đường riêng, không phải nới điều kiện của sweeper: tự động đẩy lại phải khác
+        // với HR bấm tay. Sweeper vẫn không bao giờ chạm `Analyzed`.
+        public async Task RescreenCandidateAsync(Guid orgId, Guid campaignId, Guid candidateId, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .Include(c => c.Criteria)
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            var candidate = await _db.CvSubmissions
+                .FirstOrDefaultAsync(c => c.Id == candidateId && c.CampaignId == campaignId, ct)
+                ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
+
+            // `Invited` bị chặn vì SaveCvResultAsync bỏ qua nó (không lật kết quả đã chốt) ⇒ chạy tiếp
+            // chỉ tổ đốt token Gemini rồi vứt kết quả.
+            // `Analyzing` bị chặn vì job đang bay — và đây cũng chính là cooldown miễn phí chống bấm
+            // liên tục: rescreen đặt trạng thái về Analyzing ngay, nên lần bấm kế bị từ chối.
+            if (candidate.Status is not (CvSubmissionStatus.Filtered
+                or CvSubmissionStatus.Analyzed
+                or CvSubmissionStatus.AnalysisFailed))
+            {
+                throw new InvalidOperationException(
+                    $"Chỉ đẩy lại được ứng viên Filtered/Analyzed/AnalysisFailed (hiện: {candidate.Status}).");
+            }
+
+            if (string.IsNullOrWhiteSpace(candidate.CvParsedText))
+                throw new InvalidOperationException("CV không có nội dung đọc được — upload lại thay vì đẩy lại.");
+
+            var criteria = campaign.Criteria
+                .OrderBy(c => c.OrderNo)
+                .Select(c => new CvScreeningCriterion(c.Id, c.Name, c.Description, c.MaxScore))
+                .ToList();
+
+            var callbackBase = _config["Internal:CallbackBase"] ?? "http://localhost:8080";
+
+            // Publish TRƯỚC rồi mới đổi trạng thái: publish ném thì ứng viên giữ nguyên trạng thái cũ,
+            // HR bấm lại được. Đổi trạng thái trước rồi publish hụt sẽ đẩy ứng viên vào `Analyzing`
+            // mồ côi và phải chờ hết 15' của sweeper.
+            await _publisher.PublishAsync(new CvScreeningJob(
+                candidate.Id,
+                candidate.CvParsedText!,
+                campaign.Domain,
+                campaign.JDText,
+                criteria,
+                callbackBase), ct);
+
+            var now = DateTime.UtcNow;
+            candidate.Status = CvSubmissionStatus.Analyzing;
+            candidate.LastScreeningPublishedAt = now;
+            candidate.UpdatedAt = now;
+            await _db.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "BK30 — HR đẩy lại sàng CV cho candidate {CandidateId} (campaign {CampaignId}).",
+                candidateId, campaignId);
+        }
+
         // ── Callback cv-result → ghi điểm + Analyzed (idempotent, chống ảo giác, recover ngoài thứ tự) ──
         public async Task<CvResultOutcome> SaveCvResultAsync(Guid candidateId, CvResultCallbackRequest req, CancellationToken ct)
         {
