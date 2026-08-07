@@ -99,7 +99,7 @@ sàng CV `campaignservice` (**C14**, lấy từ chính message), báo token/chi 
 | Secret | Dùng ở | Quy tắc |
 |---|---|---|
 | `Jwt__Key` / `Jwt__Issuer` / `Jwt__Audience` | authservice ↔ **interview · campaign · payment** | **giống hệt** (3 service kia validate offline token do Auth phát — GEN-3, không gọi Auth lúc chạy) |
-| `Internal__Token` ↔ `INTERNAL_TOKEN` | **auth · interview · campaign · payment** ↔ **aiapi · aiworker** | **giống hệt** — một token duy nhất cho MỌI callback máy-máy `/internal/*`: chấm điểm (worker→interview), sàng CV C14 (worker→campaign), báo usage F22 (api+worker→payment), provision-candidate D2 (campaign→auth). Lệch 1 ký tự = 401 âm thầm ở đúng nhánh đó *(đã dính 2026-07-15)*. |
+| `Internal__Token` ↔ `INTERNAL_TOKEN` | **auth · interview · campaign · payment · gateway** ↔ **aiapi · aiworker** | **giống hệt** — một token duy nhất cho MỌI callback máy-máy `/internal/*`: chấm điểm (worker→interview), sàng CV C14 (worker→campaign), báo usage F22 (api+worker→payment), provision-candidate D2 (campaign→auth), **flush traffic FR18 (gateway→payment)**. Lệch 1 ký tự = 401 âm thầm ở đúng nhánh đó *(đã dính 2026-07-15)*. ⚠ **gateway mới được thêm vào danh sách này** — trước đó nó KHÔNG có `Internal__Token`, mà đó là một trong ba vế guard của FR18 ⇒ flush chưa bao giờ chạy. |
 | SeaweedFS access/secret | interviewservice · campaignservice ↔ aiworker ↔ `seaweed-s3.json` | cùng giá trị (S3 dùng chung) |
 
 > Giá trị thật để trong file `.env` cạnh compose trên server / Mac — **không** ghi vào file md này.
@@ -393,6 +393,16 @@ services:
       - ApiServices__campaign__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
       - ApiServices__payment__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
       - Gateway__Url=${GATEWAY_PUBLIC_URL}
+      # FR18 — gom số liệu HTTP rồi flush sang Payment. `TrafficFlushService.cs:11` cần ĐỦ BA vế,
+      # thiếu một vế là thoát ngay lúc khởi động (chỉ log "disabled or incomplete configuration").
+      # ⚠ section tên `Analytics` (không phải `TrafficAnalytics`) — `TrafficAnalyticsOptions.cs:4`.
+      # ⚠ `SinkBaseUrl` mặc định `http://localhost:5271` **parse được** nên guard cho qua, nhưng
+      #   trong container gateway `localhost` là chính nó ⇒ POST hỏng IM LẶNG (at-most-once, mất
+      #   luôn cửa sổ đang drain). Phải là tên container — cùng mẫu `USAGE_SINK_BASE` của F22.
+      #   Đi thẳng container-to-container, KHÔNG qua gateway ⇒ không đụng GEN-1.
+      - Analytics__Enabled=${ANALYTICS_ENABLED:-true}
+      - Analytics__SinkBaseUrl=http://isas.paymentservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}
       # ⚠ Mỗi `Cors__AllowedOrigins__N` GHI ĐÈ phần tử thứ N của mảng trong appsettings.json (5 phần tử)
       # — KHÔNG phải nối thêm. Vì thế phải khai LẠI tường minh origin FE production và localhost:4200.
       # ⚠ Server đang khai TRÙNG index 4 hai lần (`${GATEWAY_PUBLIC_URL}` rồi `http://localhost:4200`)

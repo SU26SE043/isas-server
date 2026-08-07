@@ -386,6 +386,33 @@ services:
       # tên `ai` khi môi trường ≠ Development) nên dòng này chỉ có tác dụng ở Development.
       - ApiServices__ai__OpenApiUrl=http://aiapi:8000/openapi.json
       - Gateway__Url=${GATEWAY_PUBLIC_URL}
+      #
+      # ===== FR18 — gom số liệu HTTP rồi FLUSH về PaymentService =====
+      # `TrafficFlushService.cs:11` thoát ngay (log "FR18 traffic flush disabled or incomplete
+      # configuration") nếu THIẾU BẤT KỲ vế nào trong BA vế dưới. Trước bản này gateway thiếu HAI
+      # vế (`Analytics__Enabled` + `Internal__Token`) và vế thứ ba trỏ SAI ⇒ tính năng tắt câm.
+      #
+      # ⚠ Tên section là `Analytics`, KHÔNG phải `TrafficAnalytics`
+      #   (`TrafficAnalyticsOptions.cs:4` → `SectionName = "Analytics"`). Grep nhầm tên sẽ ra
+      #   "không có ở đâu cả" trong khi `appsettings.json:9-14` vốn ĐÃ có section (Enabled=false).
+      - Analytics__Enabled=${ANALYTICS_ENABLED:-true}
+      #
+      # ⚠ Vế NGUY HIỂM NHẤT: mặc định appsettings là `http://localhost:5271` — **parse ĐƯỢC** thành
+      # Uri tuyệt đối nên guard `Uri.TryCreate` cho qua, rồi mọi lần POST đều hỏng vì trong container
+      # gateway thì `localhost` là chính nó. Hỏng IM LẶNG (catch → LogWarning, at-most-once, mất
+      # luôn cửa sổ đang drain). Phải trỏ TÊN CONTAINER — cùng mẫu `USAGE_SINK_BASE` (F22) ở đầu file.
+      # Đi THẲNG container-to-container, KHÔNG qua gateway ⇒ không đụng GEN-1.
+      - Analytics__SinkBaseUrl=http://isas.paymentservice:8080
+      #
+      # ⚠ 4 service .NET kia đều có dòng này; gateway thì KHÔNG, nên vế thứ ba của guard luôn rỗng.
+      # Sink `InternalHttpTrafficController` so token bằng `FixedTimeEquals` và **fail-closed**
+      # (thiếu/lệch → 401), nên token phải GIỐNG HỆT các service khác — xem DEPLOYMENT.md §3.
+      - Internal__Token=${INTERNAL_TOKEN}
+      #
+      # ⚠ DEP: `Q5` phải có trong image đang chạy TRƯỚC khi bật cờ này. Bật flush ⇒ nhiều bucket ⇒
+      # `AdminTrafficController` mới thật sự chạy nhánh `GroupBy(...).OrderBy(...)` đa-bucket, vốn
+      # ném 500 trước khi `Q5` sửa. `Q5` đã merged (PR #147) nên nay an toàn; nếu rollback image
+      # Payment về trước mốc đó thì phải đặt `ANALYTICS_ENABLED=false` cùng lúc.
       # ⚠ Mỗi `Cors__AllowedOrigins__N` GHI ĐÈ phần tử thứ N của mảng trong appsettings.json (5 phần tử:
       # localhost:4200 · localhost:3000 · localhost:5173 · issa.app · sep-490-angular.vercel.app) — không
       # phải nối thêm. Vì thế phải khai LẠI tường minh origin FE production ở index 5 và localhost:4200 ở
