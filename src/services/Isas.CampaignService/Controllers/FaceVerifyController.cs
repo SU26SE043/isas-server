@@ -57,7 +57,7 @@ namespace Isas.CampaignService.Controllers
             if (image is null || image.Length == 0)
                 return BadRequest(new { error = "Ảnh tham chiếu rỗng." });
 
-            var (membership, error) = await ResolveMembershipAsync(campaignId, candidateId.Value, ct);
+            var (membership, error) = await ResolveMembershipAsync(campaignId, candidateId.Value, sessionId, ct);
             if (error is not null) return error;
 
             var key = BuildKey($"campaigns/{campaignId}/candidates/{candidateId}/face-reference", image);
@@ -84,7 +84,7 @@ namespace Isas.CampaignService.Controllers
             if (image is null || image.Length == 0)
                 return BadRequest(new { error = "Ảnh giám sát rỗng." });
 
-            var (membership, error) = await ResolveMembershipAsync(campaignId, candidateId.Value, ct);
+            var (membership, error) = await ResolveMembershipAsync(campaignId, candidateId.Value, sessionId, ct);
             if (error is not null) return error;
 
             var campaign = membership!.Campaign;
@@ -130,16 +130,25 @@ namespace Isas.CampaignService.Controllers
 
         // Membership của candidate trong campaign (kèm Campaign nav). Không tồn tại → 403 (mirror SessionFlagController).
         // Campaign không tồn tại → 404. DB16: membership ở bảng campaign_membership (ReferenceImageKey nằm đây).
+        //
+        // Q4 — buộc `sessionId` của ROUTE phải là buổi của CHÍNH caller (mirror SessionFlagController).
+        // Thiếu vế này thì `face-check` là lỗ Y HỆT đường `flags`, mà còn rộng hơn: sessionId đi vào CẢ
+        // khoá S3 của ảnh live (`campaigns/{c}/sessions/{s}/face-live-*`) LẪN session_flags ⇒ thành viên
+        // cùng campaign vừa cắm được cờ danh tính vào buổi người khác, vừa nhét ảnh vào thư mục buổi đó.
+        // Áp cho cả `face-enroll` (dùng chung helper): ở đó sessionId hiện chỉ nằm trong route và không
+        // được dùng, nên chặn sớm rẻ hơn là để một tham số không ai kiểm nằm trên đường ghi.
         private async Task<(CampaignMembership? membership, IActionResult? error)> ResolveMembershipAsync(
-            Guid campaignId, Guid candidateId, CancellationToken ct)
+            Guid campaignId, Guid candidateId, Guid sessionId, CancellationToken ct)
         {
             var membership = await _db.CampaignMemberships
                 .Include(m => m.Campaign)
-                .FirstOrDefaultAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId, ct);
+                .FirstOrDefaultAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId
+                    && m.SessionId == sessionId, ct);
 
             if (membership is null)
             {
-                // Phân biệt campaign không tồn tại (404) vs không phải thành viên (403).
+                // Phân biệt campaign không tồn tại (404) vs không phải thành viên / sai buổi (403).
+                // Hai ca sau CỐ Ý gộp làm 403: tách ra sẽ để lộ "buổi này có tồn tại nhưng không phải của bạn".
                 var campaignExists = await _db.Campaigns.AnyAsync(c => c.Id == campaignId, ct);
                 return campaignExists
                     ? (null, Forbid())

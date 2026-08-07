@@ -61,7 +61,12 @@ public class SessionFlagTests
         return c;
     }
 
-    private static void SeedMember(CampaignDbContext db, Guid campaignId, Guid candidateId)
+    // Q4 — `sessionId` = buổi thi ĐÃ Start của thành viên này (ParticipationService ghi lúc Start).
+    // Trước Q4 helper này để SessionId null còn test truyền Guid.NewGuid() vào route, tức mọi test đều
+    // đi qua đúng ca "cờ gửi vào buổi KHÔNG phải của mình" mà vẫn kỳ vọng 204 ⇒ bộ test cũ khoá đúng
+    // hành vi sai. Nay seed và route dùng CHUNG một sessionId.
+    private static void SeedMember(
+        CampaignDbContext db, Guid campaignId, Guid candidateId, Guid? sessionId = null)
     {
         // DB16 — membership (ownership check flags) sống ở campaign_membership.
         db.CampaignMemberships.Add(new CampaignMembership
@@ -69,6 +74,7 @@ public class SessionFlagTests
             Id = Guid.NewGuid(),
             CampaignId = campaignId,
             CandidateId = candidateId,
+            SessionId = sessionId,
             Status = MembershipStatus.Joined,
             JoinedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow,
@@ -91,7 +97,7 @@ public class SessionFlagTests
         var candidateId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
         var campaign = SeedCampaign(tdb.Db, antiCheat: true);
-        SeedMember(tdb.Db, campaign.Id, candidateId);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
 
         var result = await NewController(tdb.NewContext(), candidateId)
             .ReportCandidateFlag(campaign.Id, sessionId,
@@ -115,7 +121,7 @@ public class SessionFlagTests
         var member = Guid.NewGuid();
         var outsider = Guid.NewGuid();
         var campaign = SeedCampaign(tdb.Db);
-        SeedMember(tdb.Db, campaign.Id, member);   // chỉ `member` là thành viên
+        SeedMember(tdb.Db, campaign.Id, member, Guid.NewGuid());   // chỉ `member` là thành viên
 
         var result = await NewController(tdb.NewContext(), outsider)
             .ReportCandidateFlag(campaign.Id, Guid.NewGuid(),
@@ -125,17 +131,65 @@ public class SessionFlagTests
         Assert.Equal(0, FlagCount(tdb, campaign.Id));
     }
 
+    // ── 🔴 Q4 — THÀNH VIÊN campaign cắm cờ vào buổi thi của THÀNH VIÊN KHÁC → 403, KHÔNG ghi row ──
+    // Đã xảy ra trên prod (1 buổi mang cờ do 2 candidate khác nhau gửi): guard cũ chỉ hỏi "có phải
+    // thành viên campaign không", còn sessionId lấy thẳng từ route. Vì `unscoredFlagged` (R7) xếp theo
+    // TỔNG số cờ mỗi buổi, đây là đường bôi bẩn ứng viên khác trong bảng "đáng ngờ" của HR.
+    [Fact]
+    public async Task Q4_ThanhVien_CamCoVaoBuoiCuaNguoiKhac_403()
+    {
+        using var tdb = new CampaignTestDb();
+        var attacker = Guid.NewGuid();
+        var victim = Guid.NewGuid();
+        var attackerSession = Guid.NewGuid();
+        var victimSession = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        SeedMember(tdb.Db, campaign.Id, attacker, attackerSession);   // CẢ HAI đều là thành viên hợp lệ
+        SeedMember(tdb.Db, campaign.Id, victim, victimSession);
+
+        var result = await NewController(tdb.NewContext(), attacker)
+            .ReportCandidateFlag(campaign.Id, victimSession,
+                new CandidateFlagRequest { SignalType = "tab_switch" }, default);
+
+        Assert.IsType<ForbidResult>(result);
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));   // buổi của nạn nhân KHÔNG dính cờ nào
+    }
+
+    // Q4 — cùng ranh giới, phía còn lại: buổi CỦA CHÍNH MÌNH vẫn ghi được (guard không chặn quá tay).
+    [Fact]
+    public async Task Q4_ThanhVien_CamCoVaoBuoiCuaChinhMinh_204()
+    {
+        using var tdb = new CampaignTestDb();
+        var me = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var mySession = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        SeedMember(tdb.Db, campaign.Id, me, mySession);
+        SeedMember(tdb.Db, campaign.Id, other, Guid.NewGuid());
+
+        var result = await NewController(tdb.NewContext(), me)
+            .ReportCandidateFlag(campaign.Id, mySession,
+                new CandidateFlagRequest { SignalType = "focus_lost" }, default);
+
+        Assert.IsType<NoContentResult>(result);
+        using var check = tdb.NewContext();
+        var flag = Assert.Single(check.SessionFlags.Where(f => f.CampaignId == campaign.Id));
+        Assert.Equal(mySession, flag.SessionId);
+        Assert.Equal(me, flag.CandidateId);
+    }
+
     // ── (a) Loại tín hiệu lạ (không thuộc whitelist FE) → 400, KHÔNG ghi row ──
     [Fact]
     public async Task Unknown_signal_type_400()
     {
         using var tdb = new CampaignTestDb();
         var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
         var campaign = SeedCampaign(tdb.Db);
-        SeedMember(tdb.Db, campaign.Id, candidateId);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
 
         var result = await NewController(tdb.NewContext(), candidateId)
-            .ReportCandidateFlag(campaign.Id, Guid.NewGuid(),
+            .ReportCandidateFlag(campaign.Id, sessionId,
                 new CandidateFlagRequest { SignalType = "teleport" }, default);
 
         Assert.IsType<BadRequestObjectResult>(result);
@@ -151,7 +205,7 @@ public class SessionFlagTests
         var candidateId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
         var campaign = SeedCampaign(tdb.Db, antiCheat: true);
-        SeedMember(tdb.Db, campaign.Id, candidateId);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
 
         var result = await NewController(tdb.NewContext(), candidateId)
             .ReportCandidateFlag(campaign.Id, sessionId,
@@ -175,12 +229,13 @@ public class SessionFlagTests
     {
         using var tdb = new CampaignTestDb();
         var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
         // anti-cheat TẮT, face-verify BẬT → chỉ tín hiệu danh tính mới được lưu.
         var campaign = SeedCampaign(tdb.Db, antiCheat: false, faceVerify: true);
-        SeedMember(tdb.Db, campaign.Id, candidateId);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
 
         var result = await NewController(tdb.NewContext(), candidateId)
-            .ReportCandidateFlag(campaign.Id, Guid.NewGuid(),
+            .ReportCandidateFlag(campaign.Id, sessionId,
                 new CandidateFlagRequest { SignalType = "camera_blocked" }, default);
 
         Assert.IsType<NoContentResult>(result);          // vẫn 204 (no-op idempotent)
@@ -193,11 +248,12 @@ public class SessionFlagTests
     {
         using var tdb = new CampaignTestDb();
         var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
         var campaign = SeedCampaign(tdb.Db, antiCheat: false, faceVerify: false);
-        SeedMember(tdb.Db, campaign.Id, candidateId);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
 
         var result = await NewController(tdb.NewContext(), candidateId)
-            .ReportCandidateFlag(campaign.Id, Guid.NewGuid(),
+            .ReportCandidateFlag(campaign.Id, sessionId,
                 new CandidateFlagRequest { SignalType = "paste" }, default);
 
         Assert.IsType<NoContentResult>(result);
