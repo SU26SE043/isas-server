@@ -35,6 +35,7 @@ namespace Isas.CampaignService.Services
         // hưởng đúng đường sinh câu hỏi (ném InvalidOperationException = lỗi cấu hình), không đường nào khác.
         private readonly IQuestionGenerator? _questionGenerator;
         private readonly IEntitlementClient? _entitlements;
+        private readonly bool _bilingualEnabled;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
@@ -48,7 +49,8 @@ namespace Isas.CampaignService.Services
             ICampaignSessionClient? sessionClient = null,
             IOptions<InvitationSettings>? invitationOptions = null,
             IQuestionGenerator? questionGenerator = null,
-            IEntitlementClient? entitlements = null)
+            IEntitlementClient? entitlements = null,
+            IConfiguration? config = null)
         {
             _questionGenerator = questionGenerator;
             _invitationSettings = invitationOptions?.Value ?? new InvitationSettings();
@@ -60,6 +62,7 @@ namespace Isas.CampaignService.Services
             _emailPublisher = emailPublisher;
             _sessionClient = sessionClient;
             _entitlements = entitlements;
+            _bilingualEnabled = bool.TryParse(config?["Campaign:Bilingual:Enabled"], out var bilingual) && bilingual;
         }
 
         public async Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct = default)
@@ -1778,12 +1781,14 @@ namespace Isas.CampaignService.Services
         }
 
         // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
-        private static string ValidateLanguage(string? requested)
+        private string ValidateLanguage(string? requested)
         {
             if (string.IsNullOrWhiteSpace(requested)) return "vi";
             var language = requested.Trim().ToLowerInvariant();
             if (language is not ("vi" or "en"))
                 throw new ArgumentException("language chỉ nhận vi hoặc en.");
+            if (!_bilingualEnabled && language != "vi")
+                throw new ArgumentException("Bilingual campaign chưa được bật.");
             return language;
         }
 

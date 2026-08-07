@@ -4,12 +4,15 @@ Vietnamese is deliberately the fail-safe default: older callers do not send a
 language and must keep their exact existing behaviour.
 """
 
+import os
+
 VI = "vi"
 EN = "en"
 
 
 def normalize(language: str | None) -> str:
-    return EN if language == EN else VI
+    allowed = {item.strip() for item in os.getenv("BILINGUAL_ALLOWED_LANGUAGES", VI).split(",")}
+    return EN if language == EN and EN in allowed else VI
 
 
 def output_directive(language: str | None) -> str:

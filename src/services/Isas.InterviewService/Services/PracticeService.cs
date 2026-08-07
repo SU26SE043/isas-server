@@ -30,6 +30,7 @@ public class PracticeService : IPracticeService
     private readonly GroundingOptions _grounding;     // RAG grounding — Enabled/TopK/threshold
     private readonly ILogger<PracticeService> _logger;
     private readonly bool _consumeAtGeneration;   // PONR1 — kill-switch Billing:ConsumeAtQuestionGeneration
+    private readonly bool _bilingualEnabled;
     private readonly CapacityOptions _capacity;
 
     public PracticeService(
@@ -64,6 +65,7 @@ public class PracticeService : IPracticeService
         _grounding = groundingOptions?.Value ?? new GroundingOptions();
         _entitlements = entitlements;
         _tieringEnabled = bool.TryParse(config?["Tiering:Enabled"], out var tiering) && tiering;
+        _bilingualEnabled = bool.TryParse(config?["Interview:Bilingual:Enabled"], out var bilingual) && bilingual;
         _logger = logger;
         // PONR1/PONR3 — thu ở mốc Ready là thay đổi chính sách tiền. Phải opt-in tường minh;
         // thiếu/sai config = luật cũ (consume khi Scored), để không thể bật thu tiền trước khi UI
@@ -886,12 +888,14 @@ public class PracticeService : IPracticeService
     // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: PracticeController chỉ bắt
     // InvalidOperationException → 400; ArgumentException rơi xuống catch(Exception) → 500. Cùng kiểu với
     // guard jobCategory ngay đầu CreateSessionInternalAsync.
-    private static string ValidateLanguage(string? requested)
+    private string ValidateLanguage(string? requested)
     {
         if (string.IsNullOrWhiteSpace(requested)) return "vi";
         var language = requested.Trim().ToLowerInvariant();
         if (language is not ("vi" or "en"))
             throw new InvalidOperationException("language chỉ nhận vi hoặc en.");
+        if (!_bilingualEnabled && language != "vi")
+            throw new InvalidOperationException("Bilingual interview chưa được bật.");
         return language;
     }
 
