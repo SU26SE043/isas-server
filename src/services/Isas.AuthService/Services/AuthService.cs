@@ -110,7 +110,27 @@ namespace Isas.AuthService.Services
         // GIỚI HẠN (có chủ đích): access token ĐANG lưu hành KHÔNG thu hồi được — các service validate
         // JWT offline bằng chung key, không hỏi AuthService lúc chạy (GEN-3) → token cũ còn hợp lệ tới
         // hết TTL (15'). Vì vậy FE PHẢI tự xoá token khỏi storage khi đăng xuất. Xem docs/services/auth.md.
-        public Task LogoutAsync(Guid userId) => RevokeAllRefreshTokensAsync(userId);
+        public Task LogoutAsync(Guid userId) => RevokeAllSessionsAsync(userId);
+
+        /// <summary>
+        /// Q3 — thu hồi MỌI phiên của user vì lý do BẢO MẬT: đổi mật khẩu (<c>change-password</c>) và
+        /// đặt lại mật khẩu bằng OTP (<c>reset-password</c>).
+        ///
+        /// VÌ SAO phải public (trong khi <see cref="RevokeAllRefreshTokensAsync"/> vẫn private): hai
+        /// đường đó nằm ở <c>AuthController</c> và thao tác THẲNG trên <c>UserManager</c>, không đi qua
+        /// service nào — nên trước đây đổi mật khẩu xong mà phiên cũ vẫn sống. Refresh token xoay vòng
+        /// cấp token 7 ngày MỚI mỗi lần, nên truy cập của kẻ đang chiếm tài khoản GIA HẠN VÔ HẠN: nạn
+        /// nhân làm đúng thao tác được dạy mà không đuổi được ai. (Đường admin-reset đã đúng từ F20.)
+        ///
+        /// Tên tách khỏi <see cref="LogoutAsync"/> dù thân giống hệt: dùng chữ "logout" để diễn đạt
+        /// "thu hồi phiên vì mật khẩu vừa đổi" là mượn nghĩa — hai ý định khác nhau thì gọi tên khác
+        /// nhau, kể cả khi hôm nay cùng làm một việc.
+        ///
+        /// GIỚI HẠN (như mọi chỗ thu hồi khác): access token ĐANG lưu hành không giết được — service
+        /// khác validate JWT offline bằng chung khoá (GEN-3) → quyền cũ sống thêm tối đa 1 TTL (15').
+        /// </summary>
+        public Task RevokeAllSessionsAsync(Guid userId, CancellationToken ct = default) =>
+            RevokeAllRefreshTokensAsync(userId, ct);
 
         public async Task<AuthResponse> RefreshTokenAsync(string refreshToken)
         {
