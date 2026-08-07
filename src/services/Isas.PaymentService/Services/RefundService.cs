@@ -181,10 +181,25 @@ namespace Isas.PaymentService.Services
                     {
                         await _db.SaveChangesAsync(ct);
                     }
-                    catch (DbUpdateException) // đụng UNIQUE(reverses_transaction_id) → khoản mua này đã bị đảo
+                    // S11-CATCH — hậu kiểm: hỏi lại DB xem ĐÚNG khoản mua này (`purchase.Id`) có thật sự
+                    // đã bị đảo chưa, thay vì suy ra từ việc "có lỗi ghi nào đó". Vị ngữ phải neo theo
+                    // `ReversesTransactionId` — đó chính là cột mà UNIQUE lọc
+                    // `ux_credit_transactions_reverses` bảo vệ. Nới ra thành "ví này có bút toán Refund
+                    // nào không" sẽ báo AlreadyRefunded cho một đơn CHƯA hề được hoàn, chỉ vì ví đó từng
+                    // hoàn một đơn KHÁC ⇒ khách không bao giờ nhận được tiền, mà log thì nói đã hoàn rồi.
+                    catch (DbUpdateException)
                     {
-                        _db.Entry(refundTx).State = EntityState.Detached;
                         await tx.RollbackAsync(ct);
+                        _db.ChangeTracker.Clear();
+
+                        var alreadyReversed = await _db.CreditTransactions.AsNoTracking()
+                            .AnyAsync(t => t.ReversesTransactionId == purchase!.Id, ct);
+
+                        // Khoản mua chưa bị ai đảo ⇒ KHÔNG phải đua idempotency ⇒ lỗi ghi thật: ném lên
+                        // để caller biết (và để execution strategy còn cơ hội thử lại lỗi tạm thời).
+                        // Nuốt ở đây là báo "đã hoàn rồi" cho một đơn vẫn đang Paid.
+                        if (!alreadyReversed) throw;
+
                         return RefundResult.Simple(RefundOutcome.AlreadyRefunded, orderId);
                     }
 

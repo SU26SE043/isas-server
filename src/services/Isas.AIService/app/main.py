@@ -127,6 +127,9 @@ async def analyze_cv(req: AnalyzeCvRequest,
             weaknesses=result["weaknesses"],
             suggestions=result["suggestions"],
             jdMatch=jd_match,
+            # BK28 — quên dòng này thì pydantic KHÔNG lỗi, field chỉ đơn giản không bao giờ ra wire
+            # (cùng lớp bug `metricsVersion` rụng ở `DeliveryMetrics` 2026-08-05).
+            fullName=result.get("fullName"),
             skills=result.get("skills"),
             yearsExperience=result.get("yearsExperience"),
             education=result.get("education"),

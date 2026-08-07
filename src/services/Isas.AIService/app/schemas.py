@@ -124,6 +124,12 @@ class AnalyzeCvResponse(BaseModel):
     # nên None ⇒ field biến mất ⇒ đường B2C giữ NGUYÊN XI shape cũ (ai.md: "không có
     # jdText/criteria → bỏ jdMatch/criterionMatches/overallMatchScore"). Để `= []` thì B2C sẽ
     # bắt đầu trả `"criterionMatches": []` — đổi hợp đồng của một đường đang chạy.
+    #
+    # BK28 — `fullName` rút từ CV. Trước đó pipeline sàng CV KHÔNG hề có khái niệm tên (grep toàn
+    # AIService = 0 hit) nên `cv_submission.full_name` NULL 100%: bảng kết quả / CSV / PDF / Public
+    # API đều trống cột tên, đường ghi duy nhất là HR sửa tay. None (không phải "") vì CV không có
+    # tên rõ ràng là HỢP LỆ — xem guard ở gemini.analyze_cv.
+    fullName: str | None = None
     skills: list[str] | None = None
     yearsExperience: float | None = None
     education: list[str] | None = None

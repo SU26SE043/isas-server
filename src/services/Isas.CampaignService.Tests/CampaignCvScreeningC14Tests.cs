@@ -387,6 +387,118 @@ public class CampaignCvScreeningC14Tests
                 new PatchCandidateRequest { FullName = "X" }, default));
     }
 
+    // ── BK28 — AI điền `full_name` (trước đó NULL 100%: AIService không hề có khái niệm tên) ──────
+    //
+    // Bất biến: **AI CHỈ ĐIỀN CHỖ TRỐNG, KHÔNG BAO GIỜ ghi đè người.** `StuckScreeningRepublisher`
+    // đẩy lại job cho ứng viên kẹt `Analyzing` nên cv-result tới NHIỀU LẦN — gán thẳng `=` sẽ xoá
+    // đúng cái tên HR vừa sửa tay qua PATCH ở lần callback kế tiếp.
+
+    private static CvResultCallbackRequest ResultWithName(string? fullName, Guid criterionId) => new()
+    {
+        FullName = fullName,
+        OverallMatchScore = 80,
+        CriterionMatches = new() { new() { CriterionId = criterionId, MatchScore = 4m } }
+    };
+
+    // (h) cv-result mang fullName → điền vào ô đang trống.
+    [Fact]
+    public async Task Bk28_callback_co_fullName_thi_dien_vao_o_trong()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+        Assert.Null(cand.FullName);   // C13 luôn ghi null — đây chính là trạng thái BK28 sinh ra để sửa
+
+        await NewService(tdb.NewContext())
+            .SaveCvResultAsync(cand.Id, ResultWithName("  Nguyễn Văn A  ", criteria[0].Id), default);
+
+        using var check = tdb.NewContext();
+        Assert.Equal("Nguyễn Văn A", (await check.CvSubmissions.FindAsync(cand.Id))!.FullName);   // trim
+    }
+
+    // (h-bis) 🔴 callback lần 2 KHÔNG được ghi đè tên HR đã sửa tay — ca mà republisher tạo ra thật.
+    [Fact]
+    public async Task Bk28_callback_lan_2_KHONG_ghi_de_ten_HR_da_PATCH()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+
+        // Lần 1: AI điền tên (đọc nhầm từ CV scan).
+        await NewService(tdb.NewContext())
+            .SaveCvResultAsync(cand.Id, ResultWithName("Nguyen Van A (OCR sai)", criteria[0].Id), default);
+
+        // HR sửa tay.
+        await NewService(tdb.NewContext()).PatchCandidateAsync(owner, owner, camp.Id, cand.Id,
+            new PatchCandidateRequest { FullName = "Nguyễn Văn A" }, default);
+
+        // Lần 2: republisher đẩy lại job → cv-result về lần nữa với tên AI cũ.
+        await NewService(tdb.NewContext())
+            .SaveCvResultAsync(cand.Id, ResultWithName("Nguyen Van A (OCR sai)", criteria[0].Id), default);
+
+        using var check = tdb.NewContext();
+        Assert.Equal("Nguyễn Văn A", (await check.CvSubmissions.FindAsync(cand.Id))!.FullName);
+    }
+
+    // (h-ter) fullName null (CV không có tên rõ ràng) → giữ nguyên giá trị đang có, KHÔNG xoá.
+    [Fact]
+    public async Task Bk28_fullName_null_thi_giu_nguyen_gia_tri_cu()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+        cand.FullName = "Tên HR nhập";
+        tdb.Db.SaveChanges();
+
+        await NewService(tdb.NewContext())
+            .SaveCvResultAsync(cand.Id, ResultWithName(null, criteria[0].Id), default);
+
+        using var check = tdb.NewContext();
+        Assert.Equal("Tên HR nhập", (await check.CvSubmissions.FindAsync(cand.Id))!.FullName);
+    }
+
+    // (h-quater) fullName toàn khoảng trắng → coi như KHÔNG có tên (đừng lưu "" làm ô trông như đã điền).
+    [Fact]
+    public async Task Bk28_fullName_toan_khoang_trang_thi_khong_ghi()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+
+        await NewService(tdb.NewContext())
+            .SaveCvResultAsync(cand.Id, ResultWithName("   ", criteria[0].Id), default);
+
+        using var check = tdb.NewContext();
+        Assert.Null((await check.CvSubmissions.FindAsync(cand.Id))!.FullName);
+    }
+
+    // (h-quinquies) tên vượt varchar(255) → CẮT, không ném. Tràn thì Postgres ném lúc SaveChanges
+    // → callback 500 → worker nack → vòng republish (SQLite không enforce độ dài nên chỉ assert
+    // được độ dài đã cắt — chính là lý do phải cắt trong CODE chứ không trông vào DB).
+    [Fact]
+    public async Task Bk28_ten_qua_dai_thi_cat_255_khong_nem()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+
+        await NewService(tdb.NewContext())
+            .SaveCvResultAsync(cand.Id, ResultWithName(new string('Ạ', 400), criteria[0].Id), default);
+
+        using var check = tdb.NewContext();
+        Assert.Equal(255, (await check.CvSubmissions.FindAsync(cand.Id))!.FullName!.Length);
+    }
+
     // (g-ter) PATCH email trùng ứng viên khác trong campaign → ArgumentException (→400).
     [Fact]
     public async Task Patch_email_trung_nem_ArgumentException()
