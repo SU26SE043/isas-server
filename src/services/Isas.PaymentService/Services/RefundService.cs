@@ -107,106 +107,112 @@ namespace Isas.PaymentService.Services
                 return new RefundResult(RefundOutcome.InsufficientCredits, orderId, order.AmountVnd,
                     purchased, clawback, ceiling, null, null);
 
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
-
-            var refundedAt = DateTime.UtcNow;
-            // Chờ chuyển tiền (null) trừ khi admin khẳng định đã chuyển ngay — mặc định để không quên gửi tiền.
-            DateTime? settledAt = settledNow ? refundedAt : null;
-
-            // Lật ATOMIC Paid→Refunded (guard WHERE status=Paid): hai admin bấm hoàn cùng lúc → chỉ 1 row
-            // ⇒ chỉ 1 lần trừ ví. 0 row = ai đó vừa hoàn xong trước → hấp thụ (mẫu WebhookService).
-            var moved = await _db.Orders
-                .Where(o => o.Id == orderId && o.Status == OrderStatus.Paid)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(o => o.Status, OrderStatus.Refunded)
-                    .SetProperty(o => o.RefundedAt, _ => refundedAt)
-                    .SetProperty(o => o.RefundedBy, _ => (Guid?)adminUserId)
-                    .SetProperty(o => o.RefundReason, _ => reason)
-                    .SetProperty(o => o.RefundGatewayRef, _ => gatewayRef)
-                    .SetProperty(o => o.RefundSettledAt, _ => settledAt)
-                    // DB14 — ExecuteUpdate không đi qua SaveChanges override → stamp updated_at tường minh.
-                    .SetProperty(o => o.UpdatedAt, _ => refundedAt), ct);
-
-            if (moved == 0)
+            // DB25b — bọc IExecutionStrategy vì Npgsql bật EnableRetryOnFailure: chiến lược retry
+            // TỪ CHỐI transaction do người dùng tự mở, và khi chạy lại delegate nó KHÔNG reset change
+            // tracker (chi tiết + hệ quả với sổ cái: xem <see cref="DbRetry"/>).
+            return await DbRetry.RunAsync(_db, async Task<RefundResult> () =>
             {
-                await tx.RollbackAsync(ct);
-                return RefundResult.Simple(RefundOutcome.AlreadyRefunded, orderId);
-            }
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-            Guid? refundTxId = null;
+                var refundedAt = DateTime.UtcNow;
+                // Chờ chuyển tiền (null) trừ khi admin khẳng định đã chuyển ngay — mặc định để không quên gửi tiền.
+                DateTime? settledAt = settledNow ? refundedAt : null;
 
-            if (clawback > 0)
-            {
-                // Trừ ví ATOMIC kèm guard `remaining >= clawback` — KHÔNG đọc-rồi-ghi. Số dư đọc ở trên
-                // chỉ để tính trần và để hỏi người; giữa lúc đó một buổi thi khác có thể vừa reserve mất
-                // credit. 0 row = số dư không còn đỡ nổi khoản trừ ⇒ huỷ TOÀN BỘ (kể cả cú lật trạng thái
-                // đơn) và bảo gọi lại. Không dùng CHECK làm hàng rào: để CHECK ném thì transaction chết
-                // giữa chừng và đơn kẹt Paid vĩnh viễn (bài học DB22).
-                var accRows = await _db.CreditAccounts
-                    .Where(a => a.OwnerType == order.OwnerType && a.OwnerId == order.OwnerId
-                                && a.RemainingCredits >= clawback)
+                // Lật ATOMIC Paid→Refunded (guard WHERE status=Paid): hai admin bấm hoàn cùng lúc → chỉ 1 row
+                // ⇒ chỉ 1 lần trừ ví. 0 row = ai đó vừa hoàn xong trước → hấp thụ (mẫu WebhookService).
+                var moved = await _db.Orders
+                    .Where(o => o.Id == orderId && o.Status == OrderStatus.Paid)
                     .ExecuteUpdateAsync(s => s
-                        .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits - clawback)
-                        .SetProperty(a => a.UpdatedAt, _ => refundedAt), ct);
+                        .SetProperty(o => o.Status, OrderStatus.Refunded)
+                        .SetProperty(o => o.RefundedAt, _ => refundedAt)
+                        .SetProperty(o => o.RefundedBy, _ => (Guid?)adminUserId)
+                        .SetProperty(o => o.RefundReason, _ => reason)
+                        .SetProperty(o => o.RefundGatewayRef, _ => gatewayRef)
+                        .SetProperty(o => o.RefundSettledAt, _ => settledAt)
+                        // DB14 — ExecuteUpdate không đi qua SaveChanges override → stamp updated_at tường minh.
+                        .SetProperty(o => o.UpdatedAt, _ => refundedAt), ct);
 
-                if (accRows == 0)
+                if (moved == 0)
                 {
-                    await tx.RollbackAsync(ct);
-                    return new RefundResult(RefundOutcome.WalletChanged, orderId, order.AmountVnd,
-                        purchased, clawback, ceiling, null, null);
-                }
-
-                var refundTx = new CreditTransaction
-                {
-                    Id = Guid.NewGuid(),
-                    OwnerType = order.OwnerType,
-                    OwnerId = order.OwnerId,
-                    OrderId = orderId,
-                    SessionId = null,
-                    Delta = -clawback,
-                    Reason = CreditTransactionReason.Refund,
-                    // Liên kết + khoá idempotency (UNIQUE lọc). purchase khác null bảo đảm bởi clawback>0
-                    // (clawback ≤ purchased = purchase.Delta).
-                    ReversesTransactionId = purchase!.Id,
-                    CreatedAt = refundedAt
-                };
-                _db.CreditTransactions.Add(refundTx);
-
-                try
-                {
-                    await _db.SaveChangesAsync(ct);
-                }
-                catch (DbUpdateException) // đụng UNIQUE(reverses_transaction_id) → khoản mua này đã bị đảo
-                {
-                    _db.Entry(refundTx).State = EntityState.Detached;
                     await tx.RollbackAsync(ct);
                     return RefundResult.Simple(RefundOutcome.AlreadyRefunded, orderId);
                 }
 
-                refundTxId = refundTx.Id;
-            }
-            else if (purchased > 0)
-            {
-                // Hoàn tiền mà KHÔNG thu hồi được credit nào (ví đã tiêu sạch, hoặc phần còn lại toàn là
-                // quà được bảo vệ). Cố ghi ledger −0 sẽ vi phạm CHECK ck_credit_transactions_delta_nonzero
-                // → nổ đúng kiểu DB20. Chọn: đơn vẫn Refunded (tiền trả lại là sự thật) + log to để đối
-                // soát tay — thà thấy được khoản lỗ còn hơn đơn kẹt Paid ẩn mất.
-                _logger?.LogError(
-                    "F18 — đơn {OrderId} hoàn tiền {AmountVnd}₫ nhưng KHÔNG thu hồi được credit nào " +
-                    "(đã bán {Purchased}, trần thu hồi {Ceiling}) → công ty chịu phần chênh, cần đối soát tay.",
-                    orderId, order.AmountVnd, purchased, ceiling);
-            }
+                Guid? refundTxId = null;
 
-            await tx.CommitAsync(ct);
+                if (clawback > 0)
+                {
+                    // Trừ ví ATOMIC kèm guard `remaining >= clawback` — KHÔNG đọc-rồi-ghi. Số dư đọc ở trên
+                    // chỉ để tính trần và để hỏi người; giữa lúc đó một buổi thi khác có thể vừa reserve mất
+                    // credit. 0 row = số dư không còn đỡ nổi khoản trừ ⇒ huỷ TOÀN BỘ (kể cả cú lật trạng thái
+                    // đơn) và bảo gọi lại. Không dùng CHECK làm hàng rào: để CHECK ném thì transaction chết
+                    // giữa chừng và đơn kẹt Paid vĩnh viễn (bài học DB22).
+                    var accRows = await _db.CreditAccounts
+                        .Where(a => a.OwnerType == order.OwnerType && a.OwnerId == order.OwnerId
+                                    && a.RemainingCredits >= clawback)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits - clawback)
+                            .SetProperty(a => a.UpdatedAt, _ => refundedAt), ct);
 
-            if (clawback < purchased)
-                _logger?.LogWarning(
-                    "F18 — đơn {OrderId} hoàn một phần: đã bán {Purchased} credit, chỉ thu hồi được {Clawback} " +
-                    "(trần {Ceiling}). Admin {AdminId} đã chấp nhận.",
-                    orderId, purchased, clawback, ceiling, adminUserId);
+                    if (accRows == 0)
+                    {
+                        await tx.RollbackAsync(ct);
+                        return new RefundResult(RefundOutcome.WalletChanged, orderId, order.AmountVnd,
+                            purchased, clawback, ceiling, null, null);
+                    }
 
-            return new RefundResult(RefundOutcome.Refunded, orderId, order.AmountVnd,
-                purchased, clawback, ceiling, refundTxId, refundedAt, settledAt);
+                    var refundTx = new CreditTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OwnerType = order.OwnerType,
+                        OwnerId = order.OwnerId,
+                        OrderId = orderId,
+                        SessionId = null,
+                        Delta = -clawback,
+                        Reason = CreditTransactionReason.Refund,
+                        // Liên kết + khoá idempotency (UNIQUE lọc). purchase khác null bảo đảm bởi clawback>0
+                        // (clawback ≤ purchased = purchase.Delta).
+                        ReversesTransactionId = purchase!.Id,
+                        CreatedAt = refundedAt
+                    };
+                    _db.CreditTransactions.Add(refundTx);
+
+                    try
+                    {
+                        await _db.SaveChangesAsync(ct);
+                    }
+                    catch (DbUpdateException) // đụng UNIQUE(reverses_transaction_id) → khoản mua này đã bị đảo
+                    {
+                        _db.Entry(refundTx).State = EntityState.Detached;
+                        await tx.RollbackAsync(ct);
+                        return RefundResult.Simple(RefundOutcome.AlreadyRefunded, orderId);
+                    }
+
+                    refundTxId = refundTx.Id;
+                }
+                else if (purchased > 0)
+                {
+                    // Hoàn tiền mà KHÔNG thu hồi được credit nào (ví đã tiêu sạch, hoặc phần còn lại toàn là
+                    // quà được bảo vệ). Cố ghi ledger −0 sẽ vi phạm CHECK ck_credit_transactions_delta_nonzero
+                    // → nổ đúng kiểu DB20. Chọn: đơn vẫn Refunded (tiền trả lại là sự thật) + log to để đối
+                    // soát tay — thà thấy được khoản lỗ còn hơn đơn kẹt Paid ẩn mất.
+                    _logger?.LogError(
+                        "F18 — đơn {OrderId} hoàn tiền {AmountVnd}₫ nhưng KHÔNG thu hồi được credit nào " +
+                        "(đã bán {Purchased}, trần thu hồi {Ceiling}) → công ty chịu phần chênh, cần đối soát tay.",
+                        orderId, order.AmountVnd, purchased, ceiling);
+                }
+
+                await tx.CommitAsync(ct);
+
+                if (clawback < purchased)
+                    _logger?.LogWarning(
+                        "F18 — đơn {OrderId} hoàn một phần: đã bán {Purchased} credit, chỉ thu hồi được {Clawback} " +
+                        "(trần {Ceiling}). Admin {AdminId} đã chấp nhận.",
+                        orderId, purchased, clawback, ceiling, adminUserId);
+
+                return new RefundResult(RefundOutcome.Refunded, orderId, order.AmountVnd,
+                    purchased, clawback, ceiling, refundTxId, refundedAt, settledAt);
+            });
         }
 
         public async Task<SettleRefundResult> SettleRefundAsync(

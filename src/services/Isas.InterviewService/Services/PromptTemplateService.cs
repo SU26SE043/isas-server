@@ -100,34 +100,43 @@ public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplate
 
         // 1 transaction: deactivate bản cũ + insert bản mới. Tách ra thì có khe để hai bản cùng
         // active (hoặc không bản nào active) — AIService sẽ đọc được bản tuỳ ý trong khe đó.
-        await using var tx = await db.Database.BeginTransactionAsync(ct);
-
-        var current = await db.PromptTemplates
-            .Where(p => p.Key == key && p.IsActive)
-            .ToListAsync(ct);
-
-        foreach (var c in current) c.IsActive = false;
-
-        var next = current.Count == 0
-            ? 1
-            : current.Max(c => c.Version) + 1;
-
-        var created = new PromptTemplate
+        //
+        // DB25b — bọc IExecutionStrategy vì Npgsql bật EnableRetryOnFailure (xem <see cref="DbRetry"/>).
+        // Cả phần đọc-rồi-sửa `current` LẪN phần Add bản mới phải nằm TRONG delegate: retry dọn tracker
+        // rồi chạy lại từ đầu, nên bản mới phải được dựng lại theo `current` vừa đọc lại — để ngoài thì
+        // lần thử sau tính `version` theo dữ liệu cũ.
+        var created = await DbRetry.RunAsync(db, async () =>
         {
-            Key = key,
-            Version = next,
-            Body = body,
-            IsActive = true,
-            UpdatedBy = actor,
-            ChangeNote = changeNote,
-        };
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
 
-        db.PromptTemplates.Add(created);
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+            var current = await db.PromptTemplates
+                .Where(p => p.Key == key && p.IsActive)
+                .ToListAsync(ct);
+
+            foreach (var c in current) c.IsActive = false;
+
+            var next = current.Count == 0
+                ? 1
+                : current.Max(c => c.Version) + 1;
+
+            var row = new PromptTemplate
+            {
+                Key = key,
+                Version = next,
+                Body = body,
+                IsActive = true,
+                UpdatedBy = actor,
+                ChangeNote = changeNote,
+            };
+
+            db.PromptTemplates.Add(row);
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return row;
+        });
 
         logger.LogInformation(
-            "F21: prompt '{Key}' lên version {Version} bởi {Actor}", key, next, actor);
+            "F21: prompt '{Key}' lên version {Version} bởi {Actor}", key, created.Version, actor);
 
         return new PromptTemplateResponse(
             created.Key, created.Version, created.Body,
