@@ -223,6 +223,12 @@ services:
       # RAG grounding — kho vector (Qdrant, cùng compose) + ingest Context7 + toggle bật retrieval.
       - Qdrant__Url=http://qdrant:6334
       - Context7__ApiKey=${CONTEXT7_API_KEY}
+      # BC18 phân tích repo GitHub. RỖNG = an toàn, hành xử y như không có (`GitHubRepoFetcher.cs:67`
+      # gác `!IsNullOrWhiteSpace` trước khi gắn header Authorization) — NHƯNG khi đó là GitHub API
+      # **ẨN DANH: 60 req/h DÙNG CHUNG theo IP server**, mỗi lượt phân tích 4–9 call ⇒ ~7–15 lượt/giờ
+      # cho TOÀN BỘ người dùng, sau đó mọi ai cũng ăn 429. Có token → 5000 req/h.
+      # ⚠ Không có section `GitHub` trong `appsettings.json` ⇒ khoá này CHỈ đặt được qua env.
+      - GitHub__Token=${GITHUB_TOKEN}
       # Grounding:Enabled mặc định TẮT (chuỗi rỗng không parse int/bool an toàn → dùng default). Bật khi có corpus.
       - Grounding__Enabled=${GROUNDING_ENABLED:-false}
       # Phỏng vấn THÍCH ỨNG (INT-17 / INT-17b). Trước đây 3 khoá này chỉ tồn tại trong compose SỬA TAY trên
