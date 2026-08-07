@@ -603,7 +603,7 @@ public class AnswerService : IAnswerService
         }
         else
         {
-            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, ct);
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, session.Language, ct);
             query = owner is Guid oid
                 ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
                 : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
@@ -634,7 +634,7 @@ public class AnswerService : IAnswerService
         else
         {
             // BC16: khớp CHÍNH XÁC nguồn đã dùng lúc publish (E1) — B2C ưu tiên rubric RIÊNG của candidate.
-            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session!.CandidateId, session.JobCategory, ct);
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session!.CandidateId, session.JobCategory, session.Language, ct);
             critQuery = owner is Guid oid
                 ? critQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
                 : critQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);

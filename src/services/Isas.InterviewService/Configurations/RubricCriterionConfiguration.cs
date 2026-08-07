@@ -26,6 +26,9 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
             t.HasCheckConstraint(
                 "ck_rubric_criteria_weight_range",
                 "weight > 0 AND weight <= 1");
+            t.HasCheckConstraint(
+                "ck_rubric_criteria_language",
+                "language IN ('vi', 'en')");
         });
 
         e.HasKey(x => x.Id);

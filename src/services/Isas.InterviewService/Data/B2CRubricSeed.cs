@@ -111,8 +111,10 @@ public static class B2CRubricSeed
     /// Tạo MỚI danh sách tiêu chí seed (GUID cố định, giá trị bất biến). Trả instance mới mỗi lần
     /// gọi để an toàn khi Add vào nhiều DbContext (test) và cho HasData.
     /// </summary>
-    public static List<RubricCriterion> Build() =>
-    [
+    public static List<RubricCriterion> Build()
+    {
+        var vietnamese = new List<RubricCriterion>
+        {
         // ── BA — Business Analyst (Σweight = 1.0000) ────────────────────────────────────────
         Criterion(BaRequirement,    JobCategory.BA, "Phân tích yêu cầu",
             "Bóc tách, làm rõ và cấu trúc hoá yêu cầu nghiệp vụ; đặt câu hỏi đúng chỗ.", 0.2200m),
@@ -157,7 +159,55 @@ public static class B2CRubricSeed
             TerminologyDesc("frontend",
                 "reflow/repaint, hydration, virtual DOM, debounce, bundle, lazy-load, accessibility"), 0.0900m),
         Criterion(FeFluency,        JobCategory.FE, FluencyName, FluencyDesc, 0.1000m),
-    ];
+        };
+
+        // English has an independent, deterministic id per Vietnamese seed. It keeps the exact
+        // same weighting and category coverage, while preventing cross-language rubric mixing.
+        var english = vietnamese.Select(v => new RubricCriterion
+        {
+            Id = EnglishId(v.Id),
+            Name = EnglishName(v.Name),
+            Description = EnglishDescription(v.Name, v.Description ?? string.Empty),
+            Weight = v.Weight,
+            MaxScore = v.MaxScore,
+            IsActive = v.IsActive,
+            JobCategory = v.JobCategory,
+            Language = "en",
+            CampaignId = null,
+            Version = v.Version,
+        });
+        return vietnamese.Concat(english).ToList();
+    }
+
+    private static Guid EnglishId(Guid vietnameseId)
+    {
+        var bytes = vietnameseId.ToByteArray();
+        bytes[0] ^= 0x11; // fixed and collision-free for the 21 seed ids above
+        return new Guid(bytes);
+    }
+
+    private static string EnglishName(string name) => name switch
+    {
+        "Phân tích yêu cầu" => "Requirements analysis",
+        "Giao tiếp & trình bày" => "Communication & presentation",
+        "Hiểu nghiệp vụ & các bên liên quan" => "Business domain & stakeholders",
+        "Tư duy giải quyết vấn đề" or "Giải quyết vấn đề" => "Problem solving",
+        "Chiều sâu kỹ thuật" => "Technical depth",
+        "Thiết kế hệ thống & CSDL" => "System design & databases",
+        "Ý thức UI/UX & accessibility" => "UI/UX & accessibility awareness",
+        "Ngữ pháp & dùng từ" => "Grammar & word choice",
+        "Thuật ngữ chuyên ngành" => "Professional terminology",
+        "Độ trôi chảy & tự tin" => "Fluency & confidence",
+        _ => name,
+    };
+
+    private static string EnglishDescription(string name, string fallback) => name switch
+    {
+        "Ngữ pháp & dùng từ" => "Uses accurate word choice and complete, well-structured sentences with few fillers or unnecessary repetitions. Do not assess spelling or punctuation because the transcript is produced from speech recognition.",
+        "Thuật ngữ chuyên ngành" => "Uses relevant professional terminology accurately and can explain terms in context. Assess the evidence in the spoken answer, not transcription spelling.",
+        "Độ trôi chảy & tự tin" => "Speaks with a steady, confident rhythm and limited hesitation. Assess delivery only, not the correctness or completeness of technical content.",
+        _ => fallback,
+    };
 
     private static RubricCriterion Criterion(
         Guid id, JobCategory cat, string name, string description, decimal weight) =>
@@ -170,6 +220,7 @@ public static class B2CRubricSeed
             MaxScore = DefaultMaxScore,
             IsActive = true,
             JobCategory = cat,
+            Language = "vi",
             CampaignId = null,        // B2C: rubric theo JobCategory, không thuộc campaign
             Version = RubricVersion,
         };
