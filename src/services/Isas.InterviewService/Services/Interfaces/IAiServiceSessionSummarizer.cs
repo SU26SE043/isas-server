@@ -11,4 +11,11 @@ public interface IAiServiceSessionSummarizer
         decimal overallScore,
         IReadOnlyList<SessionSummaryCriterion> criteriaScores,
         CancellationToken ct = default);
+
+    Task<string> SummarizeAsync(
+        string jobCategory,
+        decimal overallScore,
+        IReadOnlyList<SessionSummaryCriterion> criteriaScores,
+        string language,
+        CancellationToken ct = default);
 }

@@ -18,7 +18,8 @@ public record CreateRoadmapRequest(
     IReadOnlyList<Guid>? SessionIds = null,   // BC17 — buổi luyện Scored candidate chọn làm baseline
     Guid? CvAnalysisId = null,                // BC17 — cv_analyses (BC7)
     Guid? PriorRoadmapId = null,              // BC17 — roadmaps.final_report (BC15)
-    string? Focus = null                      // BC17 — free-text
+    string? Focus = null,                     // BC17 — free-text
+    string? Language = null
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).
@@ -79,6 +80,7 @@ public record RoadmapResponse(
     Guid Id,
     string JobCategory,
     string Level,
+    string Language,
     Guid? CvId,
     string Status,
     IReadOnlyList<MilestoneResponse> Milestones,   // theo orderNo

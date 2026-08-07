@@ -40,6 +40,7 @@ namespace Isas.CampaignService.DTOs
 
         [Required]
         public string? Domain { get; set; }
+        public string? Language { get; set; }
 
         public int? MaxCandidates { get; set; }
 
@@ -93,6 +94,7 @@ namespace Isas.CampaignService.DTOs
     public class UpdateCampaignRequest
     {
         public string Title { get; set; }
+        public string? Language { get; set; }
 
         public string? Domain { get; set; }
 
@@ -162,6 +164,7 @@ namespace Isas.CampaignService.DTOs
         public Guid OrgId { get; set; }   // BK4: owner = ORG (AUTH-8)
         public string Title { get; set; }
         public string? Domain { get; set; }
+        public string Language { get; set; } = "vi";
         public string Status { get; set; }
         public int? MaxCandidates { get; set; }
         public int? TimeLimitMinutes { get; set; }
@@ -189,6 +192,7 @@ namespace Isas.CampaignService.DTOs
             OrgId = c.OrgId,
             Title = c.Title,
             Domain = c.Domain,
+            Language = c.Language,
             Status = c.Status.ToString(),
             MaxCandidates = c.MaxCandidates,
             TimeLimitMinutes = c.TimeLimitMinutes,

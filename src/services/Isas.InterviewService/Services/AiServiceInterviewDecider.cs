@@ -59,7 +59,8 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
             rootQuestion = request.RootQuestion,
             currentDepth = request.CurrentDepth,
             maxDepth = request.MaxDepth,
-            otherTopics = request.OtherTopics ?? Array.Empty<string>()
+            otherTopics = request.OtherTopics ?? Array.Empty<string>(),
+            language = request.Language
         };
 
         using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/decide-next")

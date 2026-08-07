@@ -30,7 +30,7 @@ public class QuestionSpeechTests
     private static Mock<IAiServiceSpeechSynthesizer> Synth()
     {
         var m = new Mock<IAiServiceSpeechSynthesizer>();
-        m.Setup(s => s.SynthesizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        m.Setup(s => s.SynthesizeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new QuestionSpeech(Mp3, "audio/mpeg"));
         return m;
     }
@@ -71,7 +71,7 @@ public class QuestionSpeechTests
         Assert.Equal(Mp3, result!.Content);
         Assert.Equal("audio/mpeg", result.ContentType);
         // Gửi ĐÚNG nội dung câu hỏi, nguyên văn (AI-4: dữ liệu, không nội suy thêm).
-        synth.Verify(s => s.SynthesizeAsync(question.Content, It.IsAny<CancellationToken>()),
+        synth.Verify(s => s.SynthesizeAsync(question.Content, "vi", It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -226,7 +226,7 @@ public class QuestionSpeechTests
         await t.Db.SaveChangesAsync();
 
         var synth = new Mock<IAiServiceSpeechSynthesizer>();
-        synth.Setup(s => s.SynthesizeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+        synth.Setup(s => s.SynthesizeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("Gemini 503"));
 
         await Assert.ThrowsAsync<AiServiceException>(

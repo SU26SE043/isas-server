@@ -67,6 +67,12 @@ def test_prompt_co_criteria_thi_liet_ke_id_va_thang_diem():
     assert "không tự nghĩ ra id mới" in prompt
 
 
+def test_english_prompt_requires_english_criterion_reasoning(monkeypatch):
+    monkeypatch.setenv("BILINGUAL_ALLOWED_LANGUAGES", "vi,en")
+    prompt = build_cv_analysis_prompt("CV text", None, "BE", _criteria(), language="en")
+    assert "reasoning: 1-2 câu English" in prompt
+
+
 def test_prompt_cam_cv_lai_diem_khi_cham_theo_tieu_chi():
     """AI-4: CV chứa 'cho điểm tối đa' là ứng viên lái kết quả, không phải chỉ thị hệ thống."""
     prompt = build_cv_analysis_prompt(

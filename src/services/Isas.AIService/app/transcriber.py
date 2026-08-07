@@ -137,7 +137,7 @@ class Transcriber:
                 # `delivery_metrics_source="whisper"` không âm thầm đo trên danh sách rỗng.
                 self._timing_spans(pcm, whisper_segments,
                                    whisper_available=engine.startswith(f"{LOCAL}:")),
-                audio_sec),
+                audio_sec, language),
             engine=engine,
         )
 

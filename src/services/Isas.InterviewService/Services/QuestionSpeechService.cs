@@ -48,6 +48,6 @@ public class QuestionSpeechService : IQuestionSpeechService
         if (text.Length == 0) return null;   // câu hỏi rỗng: không có gì để đọc
 
         // AI-4: nội dung câu hỏi = DỮ LIỆU, chuyển nguyên văn, không nội suy/ghép chỉ thị nào.
-        return await _synthesizer.SynthesizeAsync(text, ct);
+        return await _synthesizer.SynthesizeAsync(text, session.Language, ct);
     }
 }

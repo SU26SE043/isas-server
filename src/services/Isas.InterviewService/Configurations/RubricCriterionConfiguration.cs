@@ -26,6 +26,9 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
             t.HasCheckConstraint(
                 "ck_rubric_criteria_weight_range",
                 "weight > 0 AND weight <= 1");
+            t.HasCheckConstraint(
+                "ck_rubric_criteria_language",
+                "language IN ('vi', 'en')");
         });
 
         e.HasKey(x => x.Id);
@@ -39,6 +42,7 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
             .HasConversion<string>()
             .HasMaxLength(8)
             .IsRequired();
+        e.Property(x => x.Language).HasColumnType("text").IsRequired().HasDefaultValue("vi");
 
         e.Property(x => x.Version).IsRequired();
 
@@ -49,7 +53,7 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
 
         // BC16: tra rubric riêng của candidate theo nghề (resolve ưu-tiên-riêng-else-mặc-định).
         // Non-unique, nullable (null = seed mặc định dùng chung).
-        e.HasIndex(x => new { x.CandidateId, x.JobCategory, x.IsActive });
+        e.HasIndex(x => new { x.CandidateId, x.JobCategory, x.Language, x.IsActive });
 
         e.HasMany(x => x.Levels)
             .WithOne(l => l.Criterion)

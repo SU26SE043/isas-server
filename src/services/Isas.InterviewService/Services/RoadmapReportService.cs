@@ -175,8 +175,9 @@ public class RoadmapReportService : IRoadmapReportService
                     threshold,
                     c.Percentage >= threshold)).ToList();
 
-                var ai = await _generator.SummarizeRoadmapAsync(
-                    roadmap.JobCategory.ToString(), roadmap.Level.ToString(), progress, ct);
+                var ai = roadmap.Language == "vi"
+                    ? await _generator.SummarizeRoadmapAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(), progress, ct)
+                    : await _generator.SummarizeRoadmapAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(), progress, ct, roadmap.Language);
                 strengths = ai.Strengths;
                 weaknesses = ai.Weaknesses;
                 improvements = ai.Improvements;

@@ -15,6 +15,7 @@ public class Roadmap
 
     public JobCategory JobCategory { get; set; }
     public RoadmapLevel Level { get; set; }
+    public string Language { get; set; } = "vi";
 
     // FK Restrict → file_records (cùng DB interview) — đồng bộ cách PracticeSession.CvId cấu hình.
     public Guid? CvId { get; set; }

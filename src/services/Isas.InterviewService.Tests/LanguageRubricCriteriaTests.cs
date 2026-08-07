@@ -44,14 +44,15 @@ public class LanguageRubricCriteriaTests
         await ApplySeedAsync(t.Db);
 
         foreach (var cat in AllCategories)
+        foreach (var language in new[] { "vi", "en" })
         {
             var rows = await t.Db.RubricCriteria.AsNoTracking()
                 .Where(c => c.CampaignId == null && c.CandidateId == null
-                            && c.IsActive && c.JobCategory == cat)
+                            && c.IsActive && c.JobCategory == cat && c.Language == language)
                 .ToListAsync();
 
-            Assert.Contains(rows, c => c.Name == B2CRubricSeed.LanguageName);
-            Assert.Contains(rows, c => c.Name == B2CRubricSeed.TerminologyName);
+            Assert.Contains(rows, c => c.Name == (language == "vi" ? B2CRubricSeed.LanguageName : "Grammar & word choice"));
+            Assert.Contains(rows, c => c.Name == (language == "vi" ? B2CRubricSeed.TerminologyName : "Professional terminology"));
             Assert.Equal(1.0m, rows.Sum(c => c.Weight));   // rebalance vẫn giữ Σ=1 (INT-10)
         }
     }
@@ -122,7 +123,7 @@ public class LanguageRubricCriteriaTests
         // So theo TẬP thay vì đếm số cứng: mỗi lần thêm tiêu chí (F12 → 6 · F11 → 7) mà chỉ sửa
         // lại con số thì test đang chạy theo hiện thực; so tập thì giữ nguyên được Ý ĐỊNH.
         var expectedNames = B2CRubricSeed.Build()
-            .Where(c => c.JobCategory == cat).Select(c => c.Name).OrderBy(n => n);
+            .Where(c => c.JobCategory == cat && c.Language == "vi").Select(c => c.Name).OrderBy(n => n);
         Assert.Equal(expectedNames, names.OrderBy(n => n));
     }
 
@@ -142,7 +143,7 @@ public class LanguageRubricCriteriaTests
         await t.Db.SaveChangesAsync();
 
         var criteria = await t.Db.RubricCriteria.AsNoTracking()
-            .Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == JobCategory.BE)
+            .Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == JobCategory.BE && c.Language == "vi")
             .ToListAsync();
 
         // Ứng viên dùng SAI thuật ngữ → tiêu chí "Thuật ngữ chuyên ngành" điểm thấp (1/5),

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # Gemini TTS hỗ trợ tiếng Việt (vi-VN). Đây là hằng phía SERVER — client KHÔNG truyền vào
     # (nếu sau này cho client chọn ngôn ngữ thì PHẢI đưa nó vào cache key, xem app/tts.py).
     tts_language_code: str = "vi-VN"
+    tts_language_code_en: str = "en-US"
     # Tiền tố key cache S3 — key nội-dung-định-danh: tts/{sha256(voice+text)}.mp3
     tts_cache_prefix: str = "tts/"
 

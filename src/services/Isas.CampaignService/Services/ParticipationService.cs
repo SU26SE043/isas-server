@@ -291,12 +291,11 @@ namespace Isas.CampaignService.Services
 
             // Create-or-get session (Interview dedup theo candidate+campaign) → bấm nhiều lần vẫn ra CÙNG session.
             // Gửi deadline hiệu lực (min campaign expiry và slot) để Interview sweeper tự kết thúc đúng hạn.
-            var session = await _sessionClient.CreateOrGetSessionAsync(
-                candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                // INT-17: chuyển toggle + trần HR đặt trên campaign xuống Interview (campaign đã nạp đủ,
-                // không cần query thêm). Tắt (mặc định) → Interview giữ luồng batch tĩnh cũ.
-                campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions,
-                campaign.MaxDeepPerQuestion, ct);   // INT-17b: trần đào sâu mỗi câu
+            var session = campaign.Language == "vi"
+                ? await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, ct)
+                : await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, ct);
 
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.

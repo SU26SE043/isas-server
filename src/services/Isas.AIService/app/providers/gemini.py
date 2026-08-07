@@ -131,13 +131,13 @@ class GeminiProvider(QuestionProvider):
     async def generate(self, job_category: str, cv_text: str | None,
                        jd_text: str | None, count: int | None = None,
                        focus_criteria: list[str] | None = None,
-                       grounding: list[dict] | None = None) -> QuestionGenerationResult:
+                       grounding: list[dict] | None = None, language: str = "vi") -> QuestionGenerationResult:
         # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
         effective_count = count if count is not None else settings.question_count
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
-                              focus_criteria, grounding)
+                              focus_criteria, grounding, language=language)
 
         # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION). Ungrounded
         # giữ nguyên schema cũ {questions:[str]} → Campaign B2B (không truyền grounding) không đổi.
@@ -220,11 +220,11 @@ class GeminiProvider(QuestionProvider):
         return QuestionGenerationResult(questions=questions, citations=citations)
 
     async def suggest_criteria(self, job_category: str, jd_text: str | None,
-                               criteria_text: str | None, count: int) -> list[dict]:
+                               criteria_text: str | None, count: int, language: str = "vi") -> list[dict]:
         """Đề xuất bộ tiêu chí CÓ CẤU TRÚC (C8) — weight chuẩn hoá tổng = 1."""
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_criteria_prompt(job_category, jd_text, criteria_text, count)
+        prompt = build_criteria_prompt(job_category, jd_text, criteria_text, count, language=language)
         response = await self._generate(
             "suggest_criteria",
             contents=prompt,
@@ -271,8 +271,8 @@ class GeminiProvider(QuestionProvider):
         return items
 
     async def analyze_cv(self, cv_text: str, jd_text: str | None,
-                         job_category: str | None,
-                         criteria: list[dict] | None = None) -> dict:
+                           job_category: str | None,
+                         criteria: list[dict] | None = None, language: str = "vi") -> dict:
         """
         Phân tích CV (BC6, B2C sync, D17) — feedback + khớp JD (nếu có).
 
@@ -292,7 +292,7 @@ class GeminiProvider(QuestionProvider):
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category, criteria)
+        prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category, criteria, language=language)
 
         properties: dict = {
             "summary": {"type": "string"},
@@ -447,10 +447,10 @@ class GeminiProvider(QuestionProvider):
         return result
 
     async def analyze_repo(self, repo_digest: str, jd_text: str | None,
-                           job_category: str | None) -> dict:
+                           job_category: str | None, language: str = "vi") -> dict:
         # F21: mọi hàm build prompt phải nạp registry trước, kể cả prompt in-code.
         await prompt_registry.refresh_if_stale()
-        prompt = build_repo_analysis_prompt(repo_digest, jd_text, job_category)
+        prompt = build_repo_analysis_prompt(repo_digest, jd_text, job_category, language=language)
         properties: dict = {
             "summary": {"type": "string"},
             "techStack": {"type": "array", "items": {"type": "string"}},
@@ -494,7 +494,7 @@ class GeminiProvider(QuestionProvider):
     async def score(self, question: str, transcript: str,
                     job_category: str, criteria: list[dict],
                     temperature: float = 0.0,
-                    delivery: dict | None = None) -> list[dict]:
+                    delivery: dict | None = None, language: str = "vi") -> list[dict]:
         """
         Chấm 1 câu trả lời theo rubric.
 
@@ -540,7 +540,7 @@ class GeminiProvider(QuestionProvider):
             # Không có levels (phòng hờ) → dải mặc định 0..maxScore.
             levels_by_id[cid] = sorted(scores) if scores else list(range(0, mx + 1))
 
-        prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery)
+        prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery, language=language)
 
         response = await self._generate(
             "score",
@@ -648,7 +648,7 @@ class GeminiProvider(QuestionProvider):
                                focus: str | None = None,
                                cv_analysis_summary: str | None = None,
                                prior_roadmap_summary: str | None = None,
-                               grounding: list[dict] | None = None) -> list[dict]:
+                               grounding: list[dict] | None = None, language: str = "vi") -> list[dict]:
         """
         BC13/D20 — sinh cấu trúc roadmap ôn tập (sync, stateless, KHÔNG ghi DB).
 
@@ -668,7 +668,7 @@ class GeminiProvider(QuestionProvider):
             focus=focus,
             cv_analysis_summary=cv_analysis_summary,
             prior_roadmap_summary=prior_roadmap_summary,
-            grounding=grounding,
+            grounding=grounding, language=language,
         )
 
         response = await self._generate(
@@ -750,7 +750,7 @@ class GeminiProvider(QuestionProvider):
     async def generate_lesson_theory(self, job_category: str, level: str,
                                      lesson_title: str, focus_criteria: list[str],
                                      weaknesses: list[str] | None,
-                                     grounding: list[dict] | None = None
+                                     grounding: list[dict] | None = None, language: str = "vi"
                                      ) -> LessonTheoryResult:
         """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
 
@@ -824,7 +824,7 @@ class GeminiProvider(QuestionProvider):
         for _ in range(attempts):
             prompt = build_lesson_theory_prompt(
                 job_category, level, lesson_title, focus_criteria, weaknesses,
-                grounding, retry_feedback=feedback)
+                grounding, retry_feedback=feedback, language=language)
 
             # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
             # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist
@@ -890,7 +890,7 @@ class GeminiProvider(QuestionProvider):
             f"{attempts} lượt: " + "; ".join(last_defects))
 
     async def summarize_roadmap(self, job_category: str, level: str,
-                                criteria_progress: list[dict]) -> dict:
+                                criteria_progress: list[dict], language: str = "vi") -> dict:
         """
         BC13/D20 — tổng kết roadmap: mạnh/yếu/cải thiện + nhận xét chung.
 
@@ -900,7 +900,7 @@ class GeminiProvider(QuestionProvider):
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_summarize_roadmap_prompt(job_category, level, criteria_progress)
+        prompt = build_summarize_roadmap_prompt(job_category, level, criteria_progress, language=language)
 
         response = await self._generate(
             "summarize_roadmap",
@@ -944,7 +944,7 @@ class GeminiProvider(QuestionProvider):
         }
 
     async def summarize_session(self, job_category: str, overall_score: float,
-                                criteria_scores: list[dict]) -> dict:
+                                criteria_scores: list[dict], language: str = "vi") -> dict:
         """
         BC10 — nhận xét chung 1 buổi luyện B2C (sync, best-effort, KHÔNG ghi DB).
 
@@ -955,7 +955,7 @@ class GeminiProvider(QuestionProvider):
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_summarize_session_prompt(job_category, overall_score, criteria_scores)
+        prompt = build_summarize_session_prompt(job_category, overall_score, criteria_scores, language=language)
 
         response = await self._generate(
             "summarize_session",
@@ -991,7 +991,7 @@ class GeminiProvider(QuestionProvider):
                           criteria: list[dict],
                           root_question: str | None = None, current_depth: int = 0,
                           max_depth: int = 0,
-                          other_topics: list[str] | None = None) -> dict:
+                          other_topics: list[str] | None = None, language: str = "vi") -> dict:
         """Phỏng vấn THÍCH ỨNG — quyết định hành động kế tiếp (sync, stateless, KHÔNG ghi DB).
 
         Trả về dict: { "action": str, "nextQuestion": str|None, "reason": str|None }
@@ -1010,7 +1010,7 @@ class GeminiProvider(QuestionProvider):
             job_category, current_question, transcript, history,
             asked_count, follow_up_count, max_questions, max_follow_ups, criteria,
             root_question=root_question, current_depth=current_depth,
-            max_depth=max_depth, other_topics=other_topics)
+            max_depth=max_depth, other_topics=other_topics, language=language)
 
         # Đường này chạy ĐỒNG BỘ trong request upload của người dùng ⇒ độ trễ là chi phí trực
         # tiếp lên trải nghiệm. Suy luận ẩn của Gemini 2.5 đo được chiếm ~3/4 thời gian mà không

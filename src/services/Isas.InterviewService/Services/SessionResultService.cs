@@ -38,7 +38,7 @@ public class SessionResultService : ISessionResultService
 
         // Bộ tiêu chí đã chấm (đúng nguồn theo E1/BC16): B2C = rubric nghề active + campaign_id IS NULL,
         // ưu tiên rubric RIÊNG của candidate (nếu có active), else seed mặc định (candidate_id IS NULL).
-        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, ct);
+        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, session.Language, ct);
         var critQuery = _db.RubricCriteria.AsNoTracking()
             .Where(c => c.IsActive && c.CampaignId == null && c.JobCategory == session.JobCategory);
         critQuery = owner is Guid oid

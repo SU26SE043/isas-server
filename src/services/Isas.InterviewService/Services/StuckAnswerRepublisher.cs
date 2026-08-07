@@ -112,6 +112,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 CampaignId = a.Session.CampaignId,
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
+                Language = a.Session.Language,
                 QuestionContent = a.Question.Content
             })
             .Take(_options.BatchSize > 0 ? _options.BatchSize : 200)   // DB29: chặn nạp cả tồn đọng 1 lần
@@ -131,7 +132,7 @@ public class StuckAnswerRepublisher : BackgroundService
         {
             var key = a.CampaignId is Guid cid
                 ? new RubricScopeKey(cid, null, null)                       // B2B: tiêu chí chỉ phụ thuộc campaign
-                : new RubricScopeKey(null, a.CandidateId, a.JobCategory);   // B2C: theo (candidate, nghề)
+                : new RubricScopeKey(null, a.CandidateId, a.JobCategory, a.Language);   // B2C: theo (candidate, nghề, language)
 
             if (!criteriaCache.TryGetValue(key, out var criteria))
             {
@@ -155,6 +156,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 AudioObjectKey = a.AudioObjectKey!,
                 QuestionContent = a.QuestionContent,
                 JobCategory = a.JobCategory.ToString(),
+                Language = a.Language,
                 RubricVersion = criteria[0].Version,
                 Criteria = ScoringCriteriaBuilder.Build(criteria),   // E9: kèm levels (+ anchors)
                 Transcript = a.Transcript,  // adaptive: có transcript đồng bộ → worker bỏ Whisper
@@ -194,7 +196,7 @@ public class StuckAnswerRepublisher : BackgroundService
     // "Chủ" bộ tiêu chí của 1 answer. B2B = campaign (mọi ứng viên trong campaign dùng chung tiêu chí →
     // KHÔNG kèm candidate vào key, nếu không B2B lại tách nhóm theo từng ứng viên = quay về N+1);
     // B2C = (candidate, nghề) theo BC16.
-    private readonly record struct RubricScopeKey(Guid? CampaignId, Guid? CandidateId, JobCategory? JobCategory);
+    private readonly record struct RubricScopeKey(Guid? CampaignId, Guid? CandidateId, JobCategory? JobCategory, string Language = "vi");
 
     // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
     // E9: nạp kèm rubric_levels để message re-publish cũng mang mức neo. DB15: câu mẫu
@@ -211,10 +213,10 @@ public class StuckAnswerRepublisher : BackgroundService
 
         // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định.
         var jobCategory = key.JobCategory!.Value;
-        var owner = await B2CRubricScope.ResolveOwnerAsync(db, key.CandidateId!.Value, jobCategory, ct);
+        var owner = await B2CRubricScope.ResolveOwnerAsync(db, key.CandidateId!.Value, jobCategory, key.Language, ct);
         query = owner is Guid oid
-            ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory)
-            : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory);
+            ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory && c.Language == key.Language)
+            : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory && c.Language == key.Language);
         return await query.ToListAsync(ct);
     }
 }

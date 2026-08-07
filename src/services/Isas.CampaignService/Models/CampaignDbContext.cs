@@ -52,12 +52,14 @@ namespace Isas.CampaignService.Models
                         "ck_campaigns_adaptive_caps_non_negative",
                         "(max_follow_ups IS NULL OR max_follow_ups >= 0) AND (max_questions IS NULL OR max_questions >= 0) AND (max_deep_per_question IS NULL OR max_deep_per_question >= 0)");
                     t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
+                    t.HasCheckConstraint("ck_campaigns_language", "language IN ('vi', 'en')");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
 
                 e.Property(x => x.Title).HasMaxLength(255).IsRequired();
                 e.Property(x => x.Domain).HasMaxLength(100);
+                e.Property(x => x.Language).HasColumnType("text").IsRequired().HasDefaultValue("vi");
 
                 e.Property(x => x.Status)
                  .HasConversion<string>()

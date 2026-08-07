@@ -8,4 +8,5 @@ namespace Isas.InterviewService.Services.Interfaces;
 public interface IAiServiceSpeechSynthesizer
 {
     Task<QuestionSpeech> SynthesizeAsync(string text, CancellationToken ct = default);
+    Task<QuestionSpeech> SynthesizeAsync(string text, string language, CancellationToken ct = default);
 }

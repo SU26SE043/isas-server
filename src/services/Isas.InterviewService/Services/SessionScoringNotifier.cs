@@ -126,13 +126,13 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         if (session is null) return;
 
         if (session.CampaignId is null)
-            await TrySummarizeSessionAsync(session.Id, session.JobCategory, session.OverallScore, ct);
+            await TrySummarizeSessionAsync(session.Id, session.JobCategory, session.Language, session.OverallScore, ct);
     }
 
     // BC10 — sinh + lưu nhận xét chung buổi B2C. Đọc số liệu BC9 (overall_score + session_criterion_scores)
     // → gọi AIService (sync) → ExecuteUpdate overall_comment. Best-effort: lỗi AI KHÔNG chặn Scored.
     private async Task TrySummarizeSessionAsync(
-        Guid sessionId, JobCategory jobCategory, decimal? overallScore, CancellationToken ct)
+        Guid sessionId, JobCategory jobCategory, string language, decimal? overallScore, CancellationToken ct)
     {
         try
         {
@@ -146,7 +146,9 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             // Không có breakdown (rubric rỗng / BC9 chưa ghi) → không đủ dữ liệu để nhận xét → bỏ qua.
             if (overallScore is not decimal overall || criteria.Count == 0) return;
 
-            var comment = await _summarizer.SummarizeAsync(jobCategory.ToString(), overall, criteria, ct);
+            var comment = language == "vi"
+                ? await _summarizer.SummarizeAsync(jobCategory.ToString(), overall, criteria, ct)
+                : await _summarizer.SummarizeAsync(jobCategory.ToString(), overall, criteria, language, ct);
             if (string.IsNullOrWhiteSpace(comment)) return;
 
             await _db.PracticeSessions

@@ -3,6 +3,7 @@ using System;
 using Isas.InterviewService.ApplicationDbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    partial class InterviewDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260807043508_AddRoadmapLanguage")]
+    partial class AddRoadmapLanguage
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1371,7 +1374,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0b100011-0000-0000-0000-000000000001"),
-                            Description = "Elicits, clarifies, and structures business requirements into testable, actionable outcomes.",
+                            Description = "Bóc tách, làm rõ và cấu trúc hoá yêu cầu nghiệp vụ; đặt câu hỏi đúng chỗ.",
                             IsActive = true,
                             JobCategory = "BA",
                             Language = "en",
@@ -1383,7 +1386,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0b100011-0000-0000-0000-000000000002"),
-                            Description = "Explains analysis and recommendations clearly, logically, and for the intended stakeholder audience.",
+                            Description = "Diễn đạt rõ ràng, mạch lạc, đúng đối tượng người nghe.",
                             IsActive = true,
                             JobCategory = "BA",
                             Language = "en",
@@ -1395,7 +1398,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0b100011-0000-0000-0000-000000000003"),
-                            Description = "Understands the business domain, objectives, constraints, and the perspectives of relevant stakeholders.",
+                            Description = "Nắm bối cảnh domain, mục tiêu và ràng buộc của các stakeholder.",
                             IsActive = true,
                             JobCategory = "BA",
                             Language = "en",
@@ -1407,7 +1410,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0b100011-0000-0000-0000-000000000004"),
-                            Description = "Builds evidence-based reasoning, compares viable options, and communicates trade-offs.",
+                            Description = "Lập luận có căn cứ, cân nhắc phương án và đánh đổi.",
                             IsActive = true,
                             JobCategory = "BA",
                             Language = "en",
@@ -1455,7 +1458,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0be00011-0000-0000-0000-000000000001"),
-                            Description = "Demonstrates sound understanding of languages, frameworks, runtime behavior, and technical trade-offs.",
+                            Description = "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.",
                             IsActive = true,
                             JobCategory = "BE",
                             Language = "en",
@@ -1467,7 +1470,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0be00011-0000-0000-0000-000000000002"),
-                            Description = "Designs data models and system architecture with scalability, reliability, and consistency in mind.",
+                            Description = "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.",
                             IsActive = true,
                             JobCategory = "BE",
                             Language = "en",
@@ -1479,19 +1482,19 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0be00011-0000-0000-0000-000000000003"),
-                            Description = "Breaks down problems, chooses appropriate algorithms, and considers complexity and edge cases.",
+                            Description = "Phân rã vấn đề, lựa chọn giải pháp hợp lý, cân nhắc độ phức tạp.",
                             IsActive = true,
                             JobCategory = "BE",
                             Language = "en",
                             MaxScore = 5,
-                            Name = "Problem solving",
+                            Name = "Giải quyết vấn đề & thuật toán",
                             Version = 1,
                             Weight = 0.1800m
                         },
                         new
                         {
                             Id = new Guid("0be00011-0000-0000-0000-000000000004"),
-                            Description = "Explains technical solutions clearly enough for others to follow the reasoning and implementation choices.",
+                            Description = "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
                             IsActive = true,
                             JobCategory = "BE",
                             Language = "en",
@@ -1539,7 +1542,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0fe00011-0000-0000-0000-000000000001"),
-                            Description = "Demonstrates practical knowledge of HTML, CSS, JavaScript, frontend frameworks, state management, and rendering performance.",
+                            Description = "Nắm vững HTML/CSS/JS, framework FE, state management và hiệu năng render.",
                             IsActive = true,
                             JobCategory = "FE",
                             Language = "en",
@@ -1551,7 +1554,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0fe00011-0000-0000-0000-000000000003"),
-                            Description = "Solves UI and application-logic problems methodically, including debugging and trade-off analysis.",
+                            Description = "Xử lý bài toán UI/logic, gỡ lỗi và cân nhắc giải pháp.",
                             IsActive = true,
                             JobCategory = "FE",
                             Language = "en",
@@ -1563,7 +1566,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0fe00011-0000-0000-0000-000000000004"),
-                            Description = "Communicates product and technical ideas clearly, coherently, and with an appropriate level of detail.",
+                            Description = "Diễn đạt ý tưởng và giải pháp rõ ràng, mạch lạc.",
                             IsActive = true,
                             JobCategory = "FE",
                             Language = "en",
@@ -1575,7 +1578,7 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0fe00011-0000-0000-0000-000000000002"),
-                            Description = "Considers user experience, accessibility, and consistent interface behavior in proposed solutions.",
+                            Description = "Quan tâm trải nghiệm người dùng, khả năng tiếp cận và tính nhất quán giao diện.",
                             IsActive = true,
                             JobCategory = "FE",
                             Language = "en",

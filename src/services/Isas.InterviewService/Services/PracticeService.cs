@@ -30,6 +30,7 @@ public class PracticeService : IPracticeService
     private readonly GroundingOptions _grounding;     // RAG grounding — Enabled/TopK/threshold
     private readonly ILogger<PracticeService> _logger;
     private readonly bool _consumeAtGeneration;   // PONR1 — kill-switch Billing:ConsumeAtQuestionGeneration
+    private readonly bool _bilingualEnabled;
     private readonly CapacityOptions _capacity;
 
     public PracticeService(
@@ -64,6 +65,7 @@ public class PracticeService : IPracticeService
         _grounding = groundingOptions?.Value ?? new GroundingOptions();
         _entitlements = entitlements;
         _tieringEnabled = bool.TryParse(config?["Tiering:Enabled"], out var tiering) && tiering;
+        _bilingualEnabled = bool.TryParse(config?["Interview:Bilingual:Enabled"], out var bilingual) && bilingual;
         _logger = logger;
         // PONR1/PONR3 — thu ở mốc Ready là thay đổi chính sách tiền. Phải opt-in tường minh;
         // thiếu/sai config = luật cũ (consume khi Scored), để không thể bật thu tiền trước khi UI
@@ -98,12 +100,17 @@ public class PracticeService : IPracticeService
         if (request.JobCategory is null)
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
+        var language = ValidateLanguage(request.Language);
 
         // F2 — thời lượng mỗi câu. Guard TRƯỚC reserve (PAY-5): giá trị sai → 400 mà KHÔNG giữ credit oan.
         var timeLimitSec = ValidateTimeLimitSec(request.TimeLimitSec);
 
         // F2b — số câu. Cùng lý do đặt trước reserve: 21 câu phải bị từ chối mà không trừ credit.
         var questionCount = ValidateQuestionCount(request.QuestionCount);
+        // Vietnamese seed existed before the bilingual rollout; the guard is needed for the new
+        // English path, whose seed can be absent if its migration has not yet been applied.
+        if (language == "en")
+            await EnsureRubricExistsAsync(candidateId, jobCategory, language, ct);
         var entitlement = _tieringEnabled && _entitlements is not null
             ? await _entitlements.ResolveUserAsync(candidateId, ct)
             : EntitlementSnapshot.Free;
@@ -170,6 +177,7 @@ public class PracticeService : IPracticeService
                 CvId = request.CvId,           // có thể null
                 JdId = jdIdToUse,              // null khi JD đến từ text (C11: text ưu tiên file)
                 JobCategory = jobCategory,
+                Language = language,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
@@ -256,22 +264,25 @@ public class PracticeService : IPracticeService
                     grounding = await _knowledge!.RetrieveAsync(
                         session.JobCategory.ToString(),
                         BuildRetrievalQuery(session.JobCategory.ToString(), cvText, jdText, focusCriteria), ct);
-                    var result = await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, ct);
+                    var result = session.Language == "vi"
+                        ? await _questionGenerator.GenerateQuestionsAsync(
+                            session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, ct)
+                        : await _questionGenerator.GenerateQuestionsAsync(
+                            session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, session.Language, ct);
                     generated = result.Questions;
                     citations = result.Citations;
                 }
                 // Dùng overload ĐẦY ĐỦ khi có focusCriteria (BC14) HOẶC đã biết số câu cần xin (F2b /
                 // INT-17b); còn lại giữ nguyên overload 4 tham số của luồng thường (không đổi hợp đồng
                 // mock cũ — adaptive TẮT + không chọn số câu vẫn phải rơi vào đúng nhánh này).
-                else generated = focusCriteria is { Count: > 0 } || requestedCount is not null
-                    ? await _questionGenerator.GenerateQuestionsAsync(
-                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, ct)
-                    : await _questionGenerator.GenerateQuestionsAsync(
-                        jobCategory: session.JobCategory.ToString(),
-                        cvText: cvText,            // null nếu không có
-                        jdText: jdText,            // null nếu không có
-                        ct: ct);
+                else if (focusCriteria is { Count: > 0 } || requestedCount is not null)
+                    generated = session.Language == "vi"
+                        ? await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, ct)
+                        : (await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, null, session.Language, ct)).Questions;
+                else
+                    generated = session.Language == "vi"
+                        ? await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText)
+                        : (await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, null, null, null, session.Language, ct)).Questions;
             }
             catch (Exception ex)
             {
@@ -377,6 +388,8 @@ public class PracticeService : IPracticeService
         if (request.Criteria is null || request.Criteria.Count == 0)
             throw new InvalidOperationException("Campaign session cần ít nhất 1 tiêu chí");
 
+        var language = ValidateLanguage(request.Language);
+
         await EnsureCapacityAsync(ct); // CreateCampaignSession chỉ được gọi khi tạo mới, không chặn resume.
 
         // BK14: reserve 1 credit ví ORG (owner=Org, PAY-6) TRƯỚC khi tạo session row — reserve-first
@@ -400,6 +413,7 @@ public class PracticeService : IPracticeService
                 CandidateId = candidateId,
                 CampaignId = request.CampaignId,
                 JobCategory = request.JobCategory,
+                Language = language,
                 Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
                 CreatedAt = DateTime.UtcNow,
                 Deadline = request.ExpiresAt,   // I2: hạn chót nhận bài (B2B); null → không hard-deadline
@@ -443,6 +457,7 @@ public class PracticeService : IPracticeService
                     IsActive = true,
                     JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
                     CampaignId = request.CampaignId,
+                    Language = language,
                     Version = 1
                 });
                 _db.RubricCriteria.AddRange(criteria);
@@ -882,6 +897,35 @@ public class PracticeService : IPracticeService
     // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: PracticeController chỉ bắt
     // InvalidOperationException → 400; ArgumentException rơi xuống catch(Exception) → 500. Cùng kiểu với
     // guard jobCategory ngay đầu CreateSessionInternalAsync.
+    private string ValidateLanguage(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return "vi";
+        var language = requested.Trim().ToLowerInvariant();
+        if (language is not ("vi" or "en"))
+            throw new InvalidOperationException("language chỉ nhận vi hoặc en.");
+        if (!_bilingualEnabled && language != "vi")
+            throw new InvalidOperationException("Bilingual interview chưa được bật.");
+        return language;
+    }
+
+    // A session must never reserve a credit for a language whose B2C rubric has not been deployed.
+    // Otherwise scoring has no criteria, leaves the answer Uploaded forever, and consumes the credit.
+    private async Task EnsureRubricExistsAsync(
+        Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
+    {
+        var ownerId = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, language, ct);
+        var exists = await _db.RubricCriteria.AsNoTracking().AnyAsync(c =>
+            c.CampaignId == null
+            && c.CandidateId == ownerId
+            && c.JobCategory == jobCategory
+            && c.Language == language
+            && c.IsActive,
+            ct);
+
+        if (!exists)
+            throw new InvalidOperationException($"Chưa có rubric hoạt động cho {jobCategory} ({language}).");
+    }
+
     private static int ValidateTimeLimitSec(int? requested)
     {
         if (requested is null) return DefaultTimeLimitSec;
@@ -979,6 +1023,7 @@ public class PracticeService : IPracticeService
 
         return new PracticeSessionResponse(
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
+            s.Language,
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
             MapResult(s, questions.Count, criterionScores, cvStrengths, benchmark));
     }

@@ -21,7 +21,8 @@ public record CreatePracticeSessionRequest(
     [Required] JobCategory? JobCategory,
     string? JdText = null,     // optional — ưu tiên hơn JdId
     int? TimeLimitSec = null,  // optional — 60/120/240; null = mặc định 120
-    int? QuestionCount = null  // optional — 1..20; null = mặc định của AIService (5)
+    int? QuestionCount = null, // optional — 1..20; null = mặc định của AIService (5)
+    string? Language = null
 );
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
@@ -47,7 +48,8 @@ public record CreateCampaignSessionRequest(
     int? MaxFollowUps = null,
     int? MaxQuestions = null,
     // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ: đào sâu dồn ở đuôi buổi).
-    int? MaxDeepPerQuestion = null
+    int? MaxDeepPerQuestion = null,
+    string? Language = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -69,12 +71,14 @@ public record CreateCampaignSessionInternalRequest(
     int? MaxQuestions = null,
     // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ). Field optional CUỐI record →
     // client cũ (chưa gửi) không vỡ.
-    int? MaxDeepPerQuestion = null
+    int? MaxDeepPerQuestion = null,
+    string? Language = null
 );
 public record PracticeSessionResponse(
     Guid Id,
     string Status,
     string JobCategory,
+    string Language,
     Guid? CvId, Guid? JdId,
     DateTime CreatedAt,
     DateTime? CompletedAt,

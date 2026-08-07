@@ -32,7 +32,8 @@ public record AdaptiveDecisionRequest(
     int CurrentDepth = 0,
     int MaxDepth = 0,
     // Tên các câu gốc KHÁC của buổi (không kèm transcript) — để AI không hỏi trùng chủ đề đã có sẵn.
-    IReadOnlyList<string>? OtherTopics = null);
+    IReadOnlyList<string>? OtherTopics = null,
+    string Language = "vi");
 
 // Kết quả decide-next: action + câu hỏi kế (null nếu end) + transcript đã transcribe đồng bộ.
 public record DecideNextResult(

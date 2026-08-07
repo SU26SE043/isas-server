@@ -71,6 +71,11 @@ GEMINI_TRANSCRIBE_PROMPT = (
     "TUYỆT ĐỐI KHÔNG sửa ngữ pháp, KHÔNG viết lại cho mượt, KHÔNG tóm tắt, KHÔNG thêm bình luận. "
     "Chỉ trả về phần lời nói, không gì khác."
 )
+GEMINI_TRANSCRIBE_PROMPT_EN = (
+    "Transcribe this English audio verbatim. Preserve fillers, unfinished sentences, repetitions, "
+    "and self-corrections. Do not correct grammar, rewrite, summarize, or add commentary. "
+    "Return only the spoken words."
+)
 
 # Vết bẩn dữ liệu HUẤN LUYỆN của Whisper: nó được học trên phụ đề YouTube nên khi tín hiệu
 # yếu/mồi sai, nó "chép" ra câu kết video thay vì lời người nói. Đây KHÔNG phải chép sai —
@@ -318,7 +323,7 @@ def transcribe_gemini(audio_bytes: bytes, language: str | None,
         model=settings.gemini_model,
         contents=[
             types.Part.from_bytes(data=audio_bytes, mime_type=audio_content_type(filename)),
-            GEMINI_TRANSCRIBE_PROMPT,
+            GEMINI_TRANSCRIBE_PROMPT_EN if language == "en" else GEMINI_TRANSCRIBE_PROMPT,
         ],
         config=types.GenerateContentConfig(temperature=0.0),
     )

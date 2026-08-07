@@ -284,7 +284,8 @@ public class AnswerService : IAnswerService
                     RootQuestion: rootQuestion,
                     CurrentDepth: question.Depth,
                     MaxDepth: session.MaxDeepPerQuestion,
-                    OtherTopics: otherTopics),
+                    OtherTopics: otherTopics,
+                    Language: session.Language),
                 ct);
 
             // (7) Lưu transcript đồng bộ lên answer (single-source; TryPublishScoringJobAsync đọc lại → job).
@@ -550,6 +551,7 @@ public class AnswerService : IAnswerService
                     AudioObjectKey = answer.AudioObjectKey!,
                     QuestionContent = question.Content,
                     JobCategory = session.JobCategory.ToString(),
+                    Language = session.Language,
                     RubricVersion = rubricVersion,
                     Criteria = builtCriteria,
                     AttemptNo = attempt,
@@ -603,10 +605,10 @@ public class AnswerService : IAnswerService
         }
         else
         {
-            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, ct);
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, session.Language, ct);
             query = owner is Guid oid
-                ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
-                : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
+                ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory && c.Language == session.Language)
+                : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory && c.Language == session.Language);
         }
         return await query.ToListAsync(ct);
     }
@@ -634,10 +636,10 @@ public class AnswerService : IAnswerService
         else
         {
             // BC16: khớp CHÍNH XÁC nguồn đã dùng lúc publish (E1) — B2C ưu tiên rubric RIÊNG của candidate.
-            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session!.CandidateId, session.JobCategory, ct);
+            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session!.CandidateId, session.JobCategory, session.Language, ct);
             critQuery = owner is Guid oid
-                ? critQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory)
-                : critQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory);
+                ? critQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory && c.Language == session.Language)
+                : critQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory && c.Language == session.Language);
         }
         // E8/E9: bản đồ criterionId -> tiêu chí (kèm rubric_levels) để BỎ criterion ngoài rubric,
         // KẸP [0,maxScore], và (E9) snap/lưu level_matched theo mức của tiêu chí.

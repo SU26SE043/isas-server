@@ -32,10 +32,18 @@ public class AiServiceSessionSummarizer : IAiServiceSessionSummarizer
         string jobCategory, decimal overallScore,
         IReadOnlyList<SessionSummaryCriterion> criteriaScores,
         CancellationToken ct = default)
+        => await SummarizeAsync(jobCategory, overallScore, criteriaScores, "vi", ct);
+
+    public async Task<string> SummarizeAsync(
+        string jobCategory, decimal overallScore,
+        IReadOnlyList<SessionSummaryCriterion> criteriaScores,
+        string language,
+        CancellationToken ct = default)
     {
         var payload = new
         {
             jobCategory,
+            language,
             overallScore,
             criteriaScores = criteriaScores.Select(c => new
             {

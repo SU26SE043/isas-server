@@ -169,7 +169,7 @@ public sealed class DecideNextWireContractTests
 
         string[] expected =
         [
-            "jobCategory", "audioObjectKey", "currentQuestion", "history",
+            "jobCategory", "audioObjectKey", "currentQuestion", "history", "language",
             "askedCount", "followUpCount", "maxQuestions", "maxFollowUps", "criteria",
             "rootQuestion", "currentDepth", "maxDepth", "otherTopics"
         ];

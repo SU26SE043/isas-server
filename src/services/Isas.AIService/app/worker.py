@@ -139,6 +139,7 @@ async def process_message(message: aio_pika.IncomingMessage):
         # bên trên; sang HTTP thì GỬI camelCase.
         pre_engine = body.get("transcriptEngine") or body.get("TranscriptEngine")
         pre_engine = pre_engine.strip() if isinstance(pre_engine, str) and pre_engine.strip() else None
+        language = body.get("language") or body.get("Language") or "vi"
 
         # Cần answerId luôn; cần audioObjectKey CHỈ khi chưa có transcript sẵn.
         if not answer_id or (not storage_path and not pre_transcript):
@@ -172,7 +173,7 @@ async def process_message(message: aio_pika.IncomingMessage):
                 #    vốn đã có sẵn, trước F11 chỉ bị vứt đi khi nối text.
                 try:
                     result = await asyncio.to_thread(
-                        transcriber.transcribe_detailed, tmp_path, "vi")
+                        transcriber.transcribe_detailed, tmp_path, language)
                     transcript = result.text
                     delivery = result.metrics.to_dict() if result.metrics else None
                     # Lượt chép lời DIỄN RA Ở ĐÂY nên con dấu lấy thẳng từ kết quả — có thể là
@@ -201,6 +202,7 @@ async def process_message(message: aio_pika.IncomingMessage):
                         criteria=criteria,
                         temperature=temperature,   # E10: attempt 1 = 0, 2..N > 0
                         delivery=delivery,         # F11: số đo cách nói (None = chưa đo được)
+                        language=language,
                     )
                     break
                 except ValueError as e:

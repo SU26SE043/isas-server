@@ -35,6 +35,7 @@ namespace Isas.CampaignService.Services
         // hưởng đúng đường sinh câu hỏi (ném InvalidOperationException = lỗi cấu hình), không đường nào khác.
         private readonly IQuestionGenerator? _questionGenerator;
         private readonly IEntitlementClient? _entitlements;
+        private readonly bool _bilingualEnabled;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
                 "application/pdf",
@@ -48,7 +49,8 @@ namespace Isas.CampaignService.Services
             ICampaignSessionClient? sessionClient = null,
             IOptions<InvitationSettings>? invitationOptions = null,
             IQuestionGenerator? questionGenerator = null,
-            IEntitlementClient? entitlements = null)
+            IEntitlementClient? entitlements = null,
+            IConfiguration? config = null)
         {
             _questionGenerator = questionGenerator;
             _invitationSettings = invitationOptions?.Value ?? new InvitationSettings();
@@ -60,6 +62,7 @@ namespace Isas.CampaignService.Services
             _emailPublisher = emailPublisher;
             _sessionClient = sessionClient;
             _entitlements = entitlements;
+            _bilingualEnabled = bool.TryParse(config?["Campaign:Bilingual:Enabled"], out var bilingual) && bilingual;
         }
 
         public async Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct = default)
@@ -87,6 +90,7 @@ namespace Isas.CampaignService.Services
                 OrgId = orgId,
                 Title = request.Title,
                 Domain = request.Domain,
+                Language = ValidateLanguage(request.Language),
                 Status = CampaignStatus.Draft,
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
@@ -350,6 +354,13 @@ namespace Isas.CampaignService.Services
 
             if (request.Domain is not null)
                 campaign.Domain = request.Domain;
+
+            if (request.Language is not null)
+            {
+                if (campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException("Chỉ được đổi language khi campaign ở Draft.");
+                campaign.Language = ValidateLanguage(request.Language);
+            }
 
             if (request.MaxCandidates.HasValue)
                 campaign.MaxCandidates = request.MaxCandidates;
@@ -1770,6 +1781,17 @@ namespace Isas.CampaignService.Services
         }
 
         // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
+        private string ValidateLanguage(string? requested)
+        {
+            if (string.IsNullOrWhiteSpace(requested)) return "vi";
+            var language = requested.Trim().ToLowerInvariant();
+            if (language is not ("vi" or "en"))
+                throw new ArgumentException("language chỉ nhận vi hoặc en.");
+            if (!_bilingualEnabled && language != "vi")
+                throw new ArgumentException("Bilingual campaign chưa được bật.");
+            return language;
+        }
+
         private static void ValidatePassScorePct(int? pct)
         {
             if (pct is int p && (p < 0 || p > 100))
@@ -1979,7 +2001,9 @@ namespace Isas.CampaignService.Services
         private async Task<List<CampaignCriterion>> BuildCriteriaAsync(Campaign campaign, CancellationToken ct)
         {
             var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
-            var suggested = await _suggester.SuggestAsync(jobCategory, campaign.JDText, campaign.CriteriaText, 4, ct);
+            var suggested = campaign.Language == "vi"
+                ? await _suggester.SuggestAsync(jobCategory, campaign.JDText, campaign.CriteriaText, 4, ct)
+                : await _suggester.SuggestAsync(jobCategory, campaign.JDText, campaign.CriteriaText, 4, campaign.Language, ct);
 
             if (suggested is not { Count: > 0 })
                 return BuildDefaultCriteria(campaign.Id);   // fallback khi AI lỗi/rỗng
