@@ -555,6 +555,15 @@ namespace Isas.CampaignService.Services
                     if (!keptIds.Add(qid))
                         throw new ArgumentException($"Question {qid} xuất hiện nhiều lần trong payload.");
 
+                    // R10 — đóng dấu HR đã chỉnh NỘI DUNG một câu do AI sinh, để lượt F9 kế không xoá
+                    // mất công sức đó. Đo TRƯỚC khi gán, và chỉ khi text THẬT SỰ đổi: sửa rồi sửa về
+                    // nguyên văn cũ = không có công sức nào để bảo vệ, đóng dấu chỉ làm câu AI đó bất tử.
+                    // Chỉ tính đổi TEXT, không tính bật/tắt `IsRequired`: cái HR mất khi sinh lại là câu
+                    // chữ họ soạn; giữ một câu AI sống sót chỉ vì ai đó gạt một checkbox sẽ làm đề tồn
+                    // đọng câu cũ mà HR không hiểu vì sao.
+                    if (row.Source == QuestionSource.AiGenerated && !string.Equals(row.QuestionText, text, StringComparison.Ordinal))
+                        row.HrEditedAt = now;
+
                     row.QuestionText = text;
                     row.IsRequired = item.IsRequired;
                     // KHÔNG gán row.Source: nguồn gốc là sự thật do server ghi lúc tạo (F9 = AiGenerated,
@@ -655,7 +664,15 @@ namespace Isas.CampaignService.Services
             // ── 6. Lưu: thay lượt AI trước đó, GIỮ NGUYÊN câu HR tự gõ ──────────────
             //    "Sinh lại" = làm mới đề AI, không phải cộng dồn (bấm 3 lần ≠ 15 câu), và tuyệt đối
             //    không được nuốt công HR đã gõ tay. F10 mới là phần trộn qua đường PUT questions.
-            var aiOld = campaign.Questions.Where(q => q.Source == QuestionSource.AiGenerated).ToList();
+            //
+            //    R10 — "câu AI HR đã chỉnh" cũng là công sức HR, chỉ khoác nhãn nguồn khác. Trước bản vá,
+            //    F9 xoá MỌI row AiGenerated nên câu HR ngồi sửa lại từng chữ biến mất ở lượt sinh kế,
+            //    không cảnh báo, không khôi phục được. Nay chỉ thay câu AI CHƯA AI ĐỤNG TỚI.
+            var aiOld = campaign.Questions
+                .Where(q => q.Source == QuestionSource.AiGenerated && q.HrEditedAt is null)
+                .ToList();
+            var aiKept = campaign.Questions
+                .Count(q => q.Source == QuestionSource.AiGenerated && q.HrEditedAt is not null);
             _db.CampaignQuestions.RemoveRange(aiOld);
             foreach (var q in aiOld)
                 campaign.Questions.Remove(q);   // để response phản ánh đúng đề sau khi sinh
@@ -679,8 +696,11 @@ namespace Isas.CampaignService.Services
             _db.CampaignQuestions.AddRange(fresh);
 
             campaign.UpdatedAt = now;
+            // R10: audit phải nói ra phần GIỮ LẠI. "Thay N câu AI cũ" mà im lặng về số câu được giữ thì
+            // HR đọc lại không phân biệt được "AI sinh ít câu" với "một số câu bị giữ vì đã chỉnh".
             AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id,
-                $"AI sinh {generated.Count} câu hỏi từ JD (thay {aiOld.Count} câu AI cũ)");
+                $"AI sinh {generated.Count} câu hỏi từ JD (thay {aiOld.Count} câu AI cũ, " +
+                $"giữ {aiKept} câu AI HR đã chỉnh)");
             await _db.SaveChangesAsync(ct);
             return CampaignResponse.FromEntity(campaign);
         }
@@ -1353,6 +1373,8 @@ namespace Isas.CampaignService.Services
             if (result is not null && result != "Pass" && result != "Fail")
                 throw new ArgumentException("Result chỉ nhận 'Pass' hoặc 'Fail'.");
 
+            ValidateOverrideScore(req.Score);
+
             var isClear = req.Score is null && result is null;
 
             ranking.OverrideScore = req.Score;
@@ -1796,6 +1818,36 @@ namespace Isas.CampaignService.Services
         {
             if (pct is int p && (p < 0 || p > 100))
                 throw new ArgumentException($"pass_score_pct phải trong khoảng [0, 100] (hiện: {p}).");
+        }
+
+        /// <summary>
+        /// Q12 (E11b) — điểm HR chốt tay phải CÙNG THANG với điểm AI và ngưỡng đạt: phần trăm [0,100].
+        ///
+        /// Ba đại lượng này được so trực tiếp với nhau ở <see cref="GetCampaignResultsAsync"/>
+        /// (<c>effectiveScore = OverrideScore ?? TotalScore</c>, rồi <c>effectiveScore >= PassScorePct</c>),
+        /// nên chúng buộc phải cùng thang. Hai vế kia ĐÃ được bảo đảm:
+        /// <c>campaign_rankings.total_score</c> là snapshot Interview gửi sang và Interview đã chuẩn hoá về
+        /// phần trăm TRƯỚC khi gộp trọng số (<c>SessionScoringNotifier</c>: <c>pct = clamp(avg/maxScore*100)</c>
+        /// → <c>Σ pct×weight / Σweight</c>, clamp [0,100]); <c>pass_score_pct</c> bị
+        /// <see cref="ValidatePassScorePct"/> ép về [0,100]. Chỉ cột override là nhận mọi
+        /// <see cref="decimal"/> — HR gõ theo thang <c>maxScore</c> của tiêu chí (vd 8 khi maxScore = 10)
+        /// vẫn ghi được, rồi bị so với ngưỡng "50" ⇒ Fail oan mà không lỗi nào phát ra.
+        ///
+        /// Chặn ngay tại chỗ HR nhập, không để giá trị lệch thang lọt xuống tận lúc đọc kết quả (bài học F2b).
+        /// Lợi ích phụ: cột là <c>numeric(5,2)</c> (trần 999.99) nên số lớn hiện ném DbUpdateException → 500;
+        /// nay thành 400 kèm thông điệp.
+        ///
+        /// ⚠ GIỚI HẠN có chủ đích: 8 vẫn hợp lệ vì "8%" là điểm hợp lệ. Không đại lượng nào trong hệ phân biệt
+        /// được "8 nghĩa là 8%" với "8 nghĩa là 8/10" ⇒ KHÔNG suy đoán hộ HR (heuristic kiểu "score ≤ 10 thì
+        /// nhân 10" sẽ âm thầm biến điểm 8% thật thành 80%). Phần còn lại thuộc về UI: nhãn "%" + min/max
+        /// trên ô nhập.
+        /// </summary>
+        private static void ValidateOverrideScore(decimal? score)
+        {
+            if (score is decimal s && (s < 0m || s > 100m))
+                throw new ArgumentException(
+                    $"score phải trong khoảng [0, 100] — điểm HR chốt tay dùng CÙNG thang phần trăm với " +
+                    $"điểm AI và ngưỡng đạt pass_score_pct (hiện: {s}).");
         }
 
         // INT-17: trần câu thích ứng — null = dùng mặc định phía Interview; có giá trị thì phải ≥ 0

@@ -8,6 +8,8 @@ using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -36,13 +38,25 @@ public sealed class TestDb : IDisposable
     }
 
     // Context mới dùng chung connection -> chung DB in-memory (cho test republisher cần scope riêng).
-    public InterviewDbContext NewContext()
+    public InterviewDbContext NewContext() => NewContext(null, null);
+
+    /// <summary>
+    /// DB25b — biến thể cho phép cắm <paramref name="strategy"/> (execution strategy) và
+    /// <paramref name="interceptors"/>. Cả hai mặc định <c>null</c> ⇒ hành vi y hệt
+    /// <see cref="NewContext()"/>, nên mọi test cũ không đổi một dòng.
+    ///
+    /// Cần thiết vì SQLite mặc định chạy chiến lược KHÔNG-retry, tức là ràng buộc "không được tự mở
+    /// transaction" của Npgsql <c>EnableRetryOnFailure</c> không bao giờ được kiểm trong CI.
+    /// </summary>
+    public InterviewDbContext NewContext(
+        Func<ExecutionStrategyDependencies, IExecutionStrategy>? strategy,
+        IEnumerable<IInterceptor>? interceptors)
     {
-        var options = new DbContextOptionsBuilder<InterviewDbContext>()
-            .UseSqlite(_conn)
-            .UseSnakeCaseNamingConvention()
-            .Options;
-        return new InterviewDbContext(options);
+        var builder = new DbContextOptionsBuilder<InterviewDbContext>()
+            .UseSqlite(_conn, o => { if (strategy is not null) o.ExecutionStrategy(strategy); })
+            .UseSnakeCaseNamingConvention();
+        if (interceptors is not null) builder.AddInterceptors(interceptors);
+        return new InterviewDbContext(builder.Options);
     }
 
     public SqliteConnection Connection => _conn;

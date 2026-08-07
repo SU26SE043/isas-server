@@ -3,6 +3,7 @@ using System;
 using Isas.CampaignService.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.CampaignService.Migrations
 {
     [DbContext(typeof(CampaignDbContext))]
-    partial class CampaignDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260807130520_AddQuestionHrEditedAtR10")]
+    partial class AddQuestionHrEditedAtR10
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -878,63 +881,6 @@ namespace Isas.CampaignService.Migrations
                             t.HasCheckConstraint("ck_cv_submission_parse_status", "parse_status IN ('Pending', 'Done', 'Failed')");
 
                             t.HasCheckConstraint("ck_cv_submission_status", "status IN ('Pending', 'Filtered', 'Rejected', 'Analyzing', 'Analyzed', 'AnalysisFailed', 'Invited')");
-                        });
-                });
-
-            modelBuilder.Entity("Isas.CampaignService.Models.FaceImage", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id")
-                        .HasDefaultValueSql("gen_random_uuid()");
-
-                    b.Property<Guid>("CampaignId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("campaign_id");
-
-                    b.Property<Guid>("CandidateId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("candidate_id");
-
-                    b.Property<DateTime>("CapturedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("captured_at")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<string>("Kind")
-                        .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasColumnName("kind");
-
-                    b.Property<Guid?>("SessionId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("session_id");
-
-                    b.Property<string>("StorageKey")
-                        .IsRequired()
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)")
-                        .HasColumnName("storage_key");
-
-                    b.HasKey("Id")
-                        .HasName("pk_face_images");
-
-                    b.HasIndex("CapturedAt")
-                        .HasDatabaseName("ix_face_images_captured_at");
-
-                    b.HasIndex("StorageKey")
-                        .IsUnique()
-                        .HasDatabaseName("ix_face_images_storage_key");
-
-                    b.HasIndex("CampaignId", "SessionId")
-                        .HasDatabaseName("ix_face_images_campaign_id_session_id");
-
-                    b.ToTable("face_images", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_face_images_kind", "kind IN ('Live', 'Reference')");
                         });
                 });
 

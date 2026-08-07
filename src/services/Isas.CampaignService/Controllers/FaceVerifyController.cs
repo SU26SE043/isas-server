@@ -15,7 +15,12 @@ namespace Isas.CampaignService.Controllers
     ///  2) <c>face-check</c>: chỉ khi campaign bật <c>FaceVerifyEnabled</c>; upload ảnh LIVE → S3 KEY →
     ///     gọi AIService so khớp → mỗi tín hiệu (no_face/multiple_faces/face_mismatch) → 1 cờ session_flags cho HR.
     /// D13/SEC-5: CHỈ FLAG cho HR, KHÔNG auto-chặn; thiếu ảnh tham chiếu ≠ gian lận (cờ identity_unverified).
-    /// AIService đọc CHUNG bucket SeaweedFS → chỉ truyền KEY (GEN-5), không truyền ảnh. Ảnh live chỉ nằm S3 (DATA-3).
+    /// AIService đọc CHUNG bucket SeaweedFS → chỉ truyền KEY (GEN-5), không truyền ảnh.
+    ///
+    /// BK25/DATA-3 — ảnh chỉ nằm trong S3, nhưng KEY phải được ghi vào <c>face_images</c> TRƯỚC khi
+    /// upload. Trước đây <c>face-check</c> vứt key đi ⇒ 1 ảnh khuôn mặt mỗi ~30 giây suốt buổi thi
+    /// trở thành object mồ côi không đếm được, không join được, không dọn được.
+    /// Việc dọn theo hạn giữ do <see cref="FaceImagePurger"/> lo.
     /// </summary>
     [ApiController]
     [Authorize(Roles = "Candidate")]
@@ -61,11 +66,25 @@ namespace Isas.CampaignService.Controllers
             if (error is not null) return error;
 
             var key = BuildKey($"campaigns/{campaignId}/candidates/{candidateId}/face-reference", image);
+            var previousKey = membership!.ReferenceImageKey;
+
+            // BK25 — ghi sổ TRƯỚC khi upload (xem bất biến ở FaceImage): không được để object nằm
+            // trong S3 mà không có dòng nào trỏ tới. Sổ trỏ vào object chưa tồn tại thì vô hại.
+            await RecordImageAsync(FaceImageKind.Reference, key, campaignId, candidateId.Value, null, ct);
+
             await _file.UploadAsync(image, key, ct);
 
-            membership!.ReferenceImageKey = key;
+            membership.ReferenceImageKey = key;
             membership.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
+
+            // DATA-2 "ảnh tham chiếu 1 bản/ứng viên/campaign": key deterministic THEO ĐUÔI FILE
+            // (BuildKey nối `Path.GetExtension`), nên enroll .jpg rồi enroll lại .png sinh HAI object
+            // trong khi membership chỉ trỏ được vào cái sau ⇒ cái trước thành mồ côi. Dọn bản bị thay
+            // thế ngay tại đây (best-effort): S3 trước, dòng sổ sau. S3 lỗi → GIỮ dòng sổ để
+            // FaceImagePurger dọn khi tới hạn, và KHÔNG làm hỏng lần enroll vừa thành công.
+            if (!string.IsNullOrWhiteSpace(previousKey) && previousKey != key)
+                await DeleteSupersededReferenceAsync(previousKey!, ct);
 
             _logger.LogInformation(
                 "SEC-2 enroll: candidate {CandidateId} đặt ảnh tham chiếu campaign {CampaignId} (key {Key}).",
@@ -94,6 +113,11 @@ namespace Isas.CampaignService.Controllers
                 return NoContent();
 
             var liveKey = BuildKey($"campaigns/{campaignId}/sessions/{sessionId}/face-live-{Guid.NewGuid():N}", image);
+
+            // BK25 — ghi sổ TRƯỚC khi upload. Đây là nguồn phình chính (1 ảnh/~30s/buổi thi); thiếu
+            // dòng này thì object thành mồ côi KHÔNG LIỆT KÊ NỔI, không có gì để join khi muốn dọn.
+            await RecordImageAsync(FaceImageKind.Live, liveKey, campaignId, candidateId.Value, sessionId, ct);
+
             await _file.UploadAsync(image, liveKey, ct);
 
             // Chưa enroll ảnh tham chiếu → không so được → cờ identity_unverified (HR duyệt), KHÔNG chặn (SEC-5).
@@ -193,6 +217,57 @@ namespace Isas.CampaignService.Controllers
             }
 
             if (added) await _db.SaveChangesAsync(ct);
+        }
+
+        // BK25 — ghi 1 dòng sổ cho object sinh trắc sắp đẩy lên S3 (DATA-3: có retention + purge).
+        // Gọi TRƯỚC UploadAsync: bất biến của tính năng là "không object nào tồn tại mà không có dòng
+        // trỏ tới" (chi tiết ở FaceImage). Ảnh THAM CHIẾU dùng key deterministic nên enroll lại cùng
+        // đuôi file sẽ trùng key — khi đó chỉ dời CapturedAt (giữ đúng 1 dòng/1 object, hợp DATA-2)
+        // thay vì insert dòng thứ hai và vỡ UNIQUE(storage_key).
+        private async Task RecordImageAsync(
+            FaceImageKind kind, string storageKey, Guid campaignId, Guid candidateId,
+            Guid? sessionId, CancellationToken ct)
+        {
+            var existing = await _db.FaceImages.FirstOrDefaultAsync(x => x.StorageKey == storageKey, ct);
+            if (existing is not null)
+            {
+                existing.CapturedAt = DateTime.UtcNow;   // ảnh mới đè lên cùng key → hạn giữ tính lại từ đây
+                existing.SessionId = sessionId;
+            }
+            else
+            {
+                _db.FaceImages.Add(new FaceImage
+                {
+                    Id = Guid.NewGuid(),
+                    CampaignId = campaignId,
+                    CandidateId = candidateId,
+                    SessionId = sessionId,
+                    Kind = kind,
+                    StorageKey = storageKey,
+                    CapturedAt = DateTime.UtcNow
+                });
+            }
+            await _db.SaveChangesAsync(ct);
+        }
+
+        // DATA-2 — dọn ảnh tham chiếu ĐÃ BỊ THAY THẾ. Thứ tự bắt buộc: S3 trước, dòng sổ sau (ngược
+        // lại = bỏ lại ảnh khuôn mặt không ai trỏ tới = đúng con bug BK25). Best-effort: lần enroll
+        // vừa rồi ĐÃ thành công và đã commit, không được để việc dọn rác làm nó trả lỗi cho ứng viên.
+        private async Task DeleteSupersededReferenceAsync(string previousKey, CancellationToken ct)
+        {
+            try
+            {
+                await _file.DeleteAsync(previousKey, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "DATA-2: xoá ảnh tham chiếu cũ '{Key}' thất bại — GIỮ dòng sổ để FaceImagePurger dọn khi tới hạn",
+                    previousKey);
+                return;   // KHÔNG xoá dòng sổ: mất dòng = mất dấu vết object vẫn còn trong S3
+            }
+
+            await _db.FaceImages.Where(x => x.StorageKey == previousKey).ExecuteDeleteAsync(ct);
         }
 
         // Key S3 deterministic + giữ đuôi file gốc (fallback .jpg). GEN-5: lưu KEY, không full URL.

@@ -202,8 +202,15 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
+// DB25b — retry transient (blip mạng / deadlock Postgres) thay vì để nổi lên thành 500.
+// BẬT ĐƯỢC vì cả 2 site `BeginTransactionAsync` của service này đã đi qua `DbRetry.RunAsync`
+// (PromptTemplateService · SessionAbandonSweeper). Bật khi CHƯA bọc thì transaction tự mở sẽ ném
+// InvalidOperationException ở MỌI request trên Postgres, trong khi test SQLite vẫn xanh 100%.
+// Guard chống tái phát: ExecutionStrategyDb25bTests.MoiTransactionTuMo_DeuNamTrongDbRetry.
 builder.Services.AddDbContext<InterviewDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+    options.UseNpgsql(
+            builder.Configuration.GetConnectionString("DefaultConnection"),
+            npgsql => npgsql.EnableRetryOnFailure())
         .UseSnakeCaseNamingConvention());
 
 builder.Services.Configure<FileStorageOptions>(

@@ -144,6 +144,11 @@ namespace Isas.CampaignService.DTOs
         public string QuestionText { get; set; }
         public string Source { get; set; }
         public bool IsRequired { get; set; }
+
+        // R10 — có giá trị = câu do AI sinh mà HR đã sửa nội dung ⇒ lượt "sinh lại" GIỮ nó, không thay.
+        // Additive (FE cũ bỏ qua field lạ). FE cần field này để hộp thoại xác nhận đếm đúng: nó đang
+        // đếm theo `source` nên vẫn xếp câu AI-đã-chỉnh vào nhóm "sẽ bị THAY" — hiện là dương tính giả.
+        public DateTime? HrEditedAt { get; set; }
     }
 
     // C12: tiêu chí có cấu trúc trả về (đọc/duyệt). order_no + source (HrEdited/AiSuggested).
@@ -216,7 +221,8 @@ namespace Isas.CampaignService.DTOs
                 Id = q.Id,
                 QuestionText = q.QuestionText,
                 Source = q.Source.ToString(),
-                IsRequired = q.IsRequired
+                IsRequired = q.IsRequired,
+                HrEditedAt = q.HrEditedAt   // R10
             }).ToList(),
             Criteria = c.Criteria
                 .OrderBy(cr => cr.OrderNo)
