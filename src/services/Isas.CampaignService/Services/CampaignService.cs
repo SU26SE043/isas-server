@@ -76,7 +76,10 @@ namespace Isas.CampaignService.Services
 
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
             ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);   // INT-17: trần ≥ 0 nếu có
-            ValidateSeniority(request.Seniority);
+            // Giữ KẾT QUẢ ở đây thay vì gọi lại lúc dựng entity: trước đó `ValidateSeniority` chạy hai
+            // lần (lần này vứt kết quả, lần sau mới dùng) — thừa một lần validate, và nếu ai sửa luật
+            // mà chỉ đổi một trong hai chỗ thì hai lần gọi có thể lệch nhau.
+            var seniority = ValidateSeniority(request.Seniority);
             ValidateConcurrencyCap(request.MaxConcurrentInterviews);
 
             // C11 + cap độ dài: chuẩn hoá & kiểm ngưỡng TRƯỚC khi dựng entity/ghi DB → vượt ngưỡng thì
@@ -92,7 +95,7 @@ namespace Isas.CampaignService.Services
                 Title = request.Title,
                 Domain = request.Domain,
                 Language = ValidateLanguage(request.Language),
-                Seniority = ValidateSeniority(request.Seniority),
+                Seniority = seniority,
                 Status = CampaignStatus.Draft,
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
