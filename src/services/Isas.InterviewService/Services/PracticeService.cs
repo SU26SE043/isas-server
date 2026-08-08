@@ -212,6 +212,18 @@ public class PracticeService : IPracticeService
             _db.PracticeSessions.Add(session);
             await _db.SaveChangesAsync(ct);
 
+            // Tiêu chí NỘI DUNG của rubric buổi này (ScoringScope.WhenTargeted) — cấp cho AIService để
+            // nó gắn nhãn "câu i nhắm tiêu chí nào". KHÔNG gửi 4 tiêu chí CÁCH NÓI: chúng được chấm cho
+            // mọi câu nên đưa vào chỉ mời mô hình gắn nhãn thừa.
+            // Rỗng (rubric riêng BC16 chưa phân loại / seed chưa apply) → không có gì để gắn nhãn → giữ
+            // NGUYÊN đường gọi cũ bên dưới, câu hỏi không nhãn → chấm đủ rubric như trước.
+            //
+            // ⚠ Nạp TRƯỚC khi tính số câu gốc (SC1): chính con số này là SÀN của số câu gốc — xem
+            // `ComputeSeedCount`. Trước SC1 nó nằm sau chỗ tính `seedCount`, nên số câu gốc hoàn toàn
+            // không biết rubric có mấy tiêu chí nội dung.
+            var targetable = await LoadTargetableCriteriaAsync(
+                candidateId, jobCategory, language, ct);
+
             // INT-17b — số câu GỐC của buổi.
             //
             // ⚠ `questionCount` VẪN là "tổng số câu của buổi" (F2b), KHÔNG phải số câu gốc. Đừng đổi thành
@@ -220,23 +232,25 @@ public class PracticeService : IPracticeService
             // ⇒ đúng lỗi PAY-5 (mất tiền + reservation mồ côi) mà `ClampCampaignMaxQuestions` sinh ra để
             // chặn, lần này trên đường B2C. Nó cũng âm thầm đổi thứ ứng viên đã mua bằng 1 credit.
             //
-            // Chính vì `questionCount` là TỔNG, số câu gốc phải CHIA ngân sách đó cho chiều sâu chứ không
-            // lấy thẳng `SeedCount`: FE mặc định 5 câu, mà sinh đúng 5 câu gốc thì `askedCount = 5` chạm
-            // ngay trần ⇒ ngân sách cạn TRƯỚC lời gọi AI đầu tiên (`AnswerService` bước (3)) ⇒ buổi không
-            // có câu đào sâu nào và không báo gì cho ai. Chia cho (1 + độ sâu), làm tròn LÊN để tiêu hết
-            // ngân sách: trần 20 → 5 gốc (5×4=20) · 10 → 3 · 6 → 2 · 5 → 2 (2 + 3 sâu = 5) · 1 → 1.
-            //
             // ⚠ Rẽ theo TRẦN ĐỘ SÂU, KHÔNG theo `adaptiveOn` — đây mới là kill-switch thật. Rẽ theo
             // `adaptiveOn` thì đặt `MaxDeepPerQuestion = 0` vẫn đổi số câu xin AI **và** đổi overload
             // được gọi ở dưới ⇒ "tắt" mà hành vi không quay lại như trước INT-17b.
             int? seedCount = maxDeepPerQuestion > 0
-                ? Math.Clamp(
-                    session.MaxQuestions > 0
-                        // ceil-div: (a + b - 1) / b với b = 1 + maxDeepPerQuestion
-                        ? (session.MaxQuestions + maxDeepPerQuestion) / (1 + maxDeepPerQuestion)
-                        : _adaptive.SeedCount,
-                    1, Math.Max(1, _adaptive.SeedCount))
+                ? ComputeSeedCount(
+                    session.MaxQuestions, maxDeepPerQuestion, _adaptive.SeedCount, targetable.Count)
                 : null;
+
+            // SC1 — ngân sách buổi không đủ chỗ cho mọi tiêu chí nội dung. Tiêu chí không được câu nào
+            // hỏi sẽ bị LOẠI khỏi điểm (đúng thiết kế chấm-theo-phạm-vi) ⇒ buổi này đo bằng ít tiêu chí
+            // hơn buổi khác. Không ném (ứng viên đã trả credit, và đây là hệ quả của lựa chọn số câu),
+            // nhưng phải nói ra chứ không cắt im lặng (tiền lệ F9).
+            if (seedCount is int planned && planned < targetable.Count)
+                _logger.LogWarning(
+                    "SC1: buổi {SessionId} chỉ có {Seeds} câu gốc cho {Criteria} tiêu chí nội dung "
+                    + "(trần buổi {MaxQuestions}, trần đào sâu {MaxDeep}) — {Missing} tiêu chí sẽ không "
+                    + "được hỏi và bị loại khỏi điểm",
+                    session.Id, planned, targetable.Count, session.MaxQuestions, maxDeepPerQuestion,
+                    targetable.Count - planned);
 
             // Chế độ chuỗi → xin AI ĐÚNG số câu gốc (trước đây xin `questionCount` rồi vứt bớt ở bước
             // `Take` bên dưới = trả tiền token cho câu không bao giờ dùng). Trần độ sâu 0 → giữ nguyên
@@ -256,13 +270,6 @@ public class PracticeService : IPracticeService
             var grounded = (session.EntitlementSource == "legacy" ? _grounding.Enabled : session.GroundingEnabled)
                 && _knowledge is not null;
 
-            // Tiêu chí NỘI DUNG của rubric buổi này (ScoringScope.WhenTargeted) — cấp cho AIService để
-            // nó gắn nhãn "câu i nhắm tiêu chí nào". KHÔNG gửi 4 tiêu chí CÁCH NÓI: chúng được chấm cho
-            // mọi câu nên đưa vào chỉ mời mô hình gắn nhãn thừa.
-            // Rỗng (rubric riêng BC16 chưa phân loại / seed chưa apply) → không có gì để gắn nhãn → giữ
-            // NGUYÊN đường gọi cũ bên dưới, câu hỏi không nhãn → chấm đủ rubric như trước.
-            var targetable = await LoadTargetableCriteriaAsync(
-                candidateId, jobCategory, language, ct);
             try
             {
                 if (targetable.Count > 0)
@@ -336,6 +343,34 @@ public class PracticeService : IPracticeService
                 : adaptiveOn
                     ? generated.Take(Math.Max(1, _adaptive.SeedCount)).ToList()
                     : generated;
+
+            // SC1 — kiểm PHỦ sau khi AI gắn nhãn: tiêu chí nội dung nào không câu nào nhắm tới?
+            //
+            // Prompt đã yêu cầu trải đều, nhưng đó là lời dặn model chứ không phải bất biến — đo trên
+            // prod: 3 câu gốc, 2 câu cùng một tiêu chí, tiêu chí thứ ba không bao giờ được hỏi.
+            //
+            // ⚠ CỐ Ý CHỈ LOG, không sửa nhãn. Hai cách "chữa" đều tệ hơn:
+            //   • gán bù tiêu chí thiếu vào câu chưa có nhãn = BỊA — ứng viên bị chấm đúng thứ họ không
+            //     hề được hỏi, chính là lỗi mà chấm-theo-phạm-vi sinh ra để diệt;
+            //   • bỏ sạch nhãn để quay về chấm cả rubric = lùi về nguyên hành vi trước chấm-theo-phạm-vi,
+            //     tức áp lỗi đó cho MỌI câu thay vì một tiêu chí.
+            // Thiếu phủ làm buổi này đo bằng ít tiêu chí hơn buổi khác — đắt, nhưng vẫn rẻ hơn cả hai.
+            // Ném thì càng không: buổi đã reserve credit (PAY-5), biến một cái nhãn thành đường làm
+            // hỏng cả buổi là đánh đổi sai (mẫu fail-open của `fullName` BK28).
+            if (targetable.Count > 0)
+            {
+                var covered = seedQuestions
+                    .Where(q => q.TargetCriterionIds is not null)
+                    .SelectMany(q => q.TargetCriterionIds!)
+                    .ToHashSet();
+                var missing = targetable.Where(c => !covered.Contains(c.CriterionId)).ToList();
+                if (missing.Count > 0)
+                    _logger.LogWarning(
+                        "SC1: buổi {SessionId} có {Missing}/{Total} tiêu chí nội dung KHÔNG được câu hỏi "
+                        + "nào nhắm tới ({Names}) — chúng sẽ bị loại khỏi điểm, {Seeds} câu gốc đã sinh",
+                        session.Id, missing.Count, targetable.Count,
+                        string.Join(", ", missing.Select(c => c.Name)), seedQuestions.Count);
+            }
 
             // RAG grounding — resolve citation per-câu (questionIndex → citedChunkIds → {sourceUrl,sourceTitle}
             // từ tập grounding đã cấp; GUARD drop id lạ). grounded → mỗi câu có LIST (rỗng nếu AI không cite);
@@ -977,6 +1012,44 @@ public class PracticeService : IPracticeService
     /// republisher · BC9 · weighted-total · Q9): resolve khác nhau ở đây thì nhãn sẽ trỏ vào id của
     /// một bộ rubric KHÁC bộ dùng để chấm ⇒ lọc phạm vi không khớp được id nào.
     /// </summary>
+    /// <summary>
+    /// Số câu GỐC của buổi ở chế độ chuỗi đào sâu (INT-17b + SC1).
+    ///
+    /// <para>Ba lực kéo, xử theo đúng thứ tự này:</para>
+    /// <list type="number">
+    ///   <item><b>Ngân sách</b> — <paramref name="maxQuestions"/> là TỔNG số câu của buổi (F2b), nên
+    ///   số câu gốc phải chia cho chiều sâu (làm tròn LÊN để tiêu hết ngân sách): trần 20 → 5 gốc
+    ///   (5×4=20) · 10 → 3 · 5 → 2. Lấy thẳng <c>SeedCount</c> thì FE mặc định 5 câu sẽ sinh 5 câu gốc,
+    ///   <c>askedCount</c> chạm trần ngay ⇒ 0 câu đào sâu, không lỗi, không báo (bug BUS-01).</item>
+    ///   <item><b>Phủ tiêu chí (SC1)</b> — <paramref name="contentCriteriaCount"/> là SÀN, và nó THẮNG
+    ///   trần <c>SeedCount</c>. Tiêu chí nội dung không câu nào hỏi sẽ bị loại khỏi điểm, nên điểm
+    ///   thành "may mắn trúng tủ"; thiếu đào sâu chỉ mất chiều sâu. Đo trên prod: 3 câu gốc nhưng nhãn
+    ///   ra 2 lần cùng một tiêu chí ⇒ tiêu chí thứ ba không bao giờ được hỏi. Bám con số ĐỘNG chứ không
+    ///   hằng số config vì BC16 cho candidate tự CRUD rubric — hằng số sẽ lệch âm thầm.</item>
+    ///   <item><b>Chừa khe đào sâu</b> — trần cứng <c>budget - 1</c>. Để <c>seeds == budget</c> thì
+    ///   <c>AnswerService</c> thấy hết ngân sách ngay lượt đầu ⇒ buổi đóng dấu adaptive nhưng chạy y
+    ///   như batch tĩnh. Đây là vế thắng sau cùng: ngân sách quá hẹp thì thà thiếu phủ (CÓ log cảnh
+    ///   báo ở call site) còn hơn tắt câm cả tính năng đào sâu (KHÔNG có triệu chứng nào).</item>
+    /// </list>
+    ///
+    /// <para><paramref name="maxQuestions"/> ≤ 0 = KHÔNG trần buổi ⇒ bỏ luôn vế ngân sách lẫn vế chừa
+    /// khe (<c>AnswerService</c> không bao giờ hết ngân sách), chỉ còn config và sàn phủ.</para>
+    /// </summary>
+    private static int ComputeSeedCount(
+        int maxQuestions, int maxDeepPerQuestion, int configuredSeedCount, int contentCriteriaCount)
+    {
+        var configured = Math.Max(1, configuredSeedCount);
+        var floorByCriteria = Math.Max(1, contentCriteriaCount);
+
+        if (maxQuestions <= 0)
+            return Math.Max(configured, floorByCriteria);
+
+        // ceil-div: (a + b - 1) / b với b = 1 + maxDeepPerQuestion
+        var byBudget = (maxQuestions + maxDeepPerQuestion) / (1 + maxDeepPerQuestion);
+        var seeds = Math.Max(Math.Min(byBudget, configured), floorByCriteria);
+        return Math.Clamp(seeds, 1, Math.Max(1, maxQuestions - 1));
+    }
+
     private async Task<List<QuestionTargetCriterionDto>> LoadTargetableCriteriaAsync(
         Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
     {
