@@ -348,3 +348,40 @@ async def test_model_lo_schema_tra_object_khong_thanh_cau_hoi_rac(monkeypatch):
                                      grounding=[{"chunkId": "c1", "content": "tài liệu"}])
 
     assert result.questions == ["Q thật?"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Cần gạt phải THAO TÁC ĐƯỢC lúc chạy
+#
+# `question_max_attempts=2` BẬT MẶC ĐỊNH trong code nhưng từng không có mặt ở `.env.example` lẫn
+# `deploy/compose.yaml` ⇒ muốn tắt phải sửa code + rebuild image. Cùng hạng với sự cố
+# `USAGE_SINK_BASE`/`PROMPT_REGISTRY_BASE` vắng trên container: tính năng chạy (hoặc tắt) mà không
+# ai chỉnh được, và không có triệu chứng nào.
+#
+# Đọc file bằng TEXT THUẦN, không yaml: PyYAML chỉ là phụ thuộc BẮC CẦU trong lock — dựng một đường
+# test lên nó là đúng thứ repo vừa phải sửa cho `httpx`.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _repo_root():
+    import pathlib
+    return pathlib.Path(__file__).resolve().parents[4]
+
+
+@pytest.mark.parametrize("knob", ["QUESTION_MAX_ATTEMPTS", "QUESTION_VERIFY_ENABLED"])
+def test_can_gat_co_mat_trong_env_example_va_compose(knob):
+    root = _repo_root()
+    assert knob in (root / ".env.example").read_text(encoding="utf-8"), \
+        f"{knob} thiếu trong .env.example — người deploy không biết nó tồn tại"
+    assert knob in (root / "deploy" / "compose.yaml").read_text(encoding="utf-8"), \
+        f"{knob} thiếu trong deploy/compose.yaml — không tắt được nếu không rebuild image"
+
+
+def test_mac_dinh_trong_compose_khop_mac_dinh_trong_code():
+    """Lệch mặc định giữa hai nơi = hành vi đổi theo chỗ deploy mà không ai khai gì."""
+    import re
+    compose = (_repo_root() / "deploy" / "compose.yaml").read_text(encoding="utf-8")
+
+    attempts = re.search(r"QUESTION_MAX_ATTEMPTS:-(\d+)", compose)
+    verify = re.search(r"QUESTION_VERIFY_ENABLED:-(\w+)", compose)
+    assert attempts and int(attempts.group(1)) == settings.question_max_attempts
+    assert verify and (verify.group(1) == "true") == settings.question_verify_enabled
