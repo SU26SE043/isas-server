@@ -1185,6 +1185,10 @@ class GeminiProvider(QuestionProvider):
                     "action": {"type": "string"},
                     "nextQuestion": {"type": "string"},
                     "reason": {"type": "string"},
+                    "targetCriterionId": {"type": "string", "nullable": True},
+                    "evidenceFound": {"type": "array", "items": {"type": "string"}},
+                    "missingEvidence": {"type": "array", "items": {"type": "string"}},
+                    "newEvidenceState": {"type": "string", "nullable": True},
                 },
                 "required": ["action"],
             },
@@ -1260,10 +1264,29 @@ class GeminiProvider(QuestionProvider):
                 f"{next_q!r}. Viết lại MỘT câu hỏi trọn vẹn, kết thúc bằng dấu câu.")
 
         reason = str(data.get("reason", "") or "").strip() or None
+        target_criterion_id = str(data.get("targetCriterionId", "") or "").strip() or None
+
+        def evidence_list(field: str) -> list[str]:
+            value = data.get(field)
+            if value is None:
+                return []
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                raise ValueError(f"LLM trả về {field} không phải mảng chuỗi.")
+            return [item.strip() for item in value if item.strip()]
+
+        evidence_found = evidence_list("evidenceFound")
+        missing_evidence = evidence_list("missingEvidence")
+        new_evidence_state = str(data.get("newEvidenceState", "") or "").strip().upper() or None
+        if new_evidence_state not in {None, "UNKNOWN", "PARTIAL", "SATISFIED", "FAILED"}:
+            raise ValueError(f"LLM trả về newEvidenceState không hợp lệ: {new_evidence_state!r}")
         return {
             "action": action,
             "nextQuestion": next_q or None,   # end → None
             "reason": reason,
+            "targetCriterionId": target_criterion_id,
+            "evidenceFound": evidence_found,
+            "missingEvidence": missing_evidence,
+            "newEvidenceState": new_evidence_state,
         }
     # ── TTS: đọc câu hỏi thành tiếng ────────────────────────────────────────────
     async def synthesize_speech(self, text: str, voice: str,

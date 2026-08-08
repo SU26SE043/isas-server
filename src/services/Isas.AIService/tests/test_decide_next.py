@@ -81,6 +81,23 @@ def test_decide_next_prompt_lists_actions_criteria_and_budget():
     assert "trần 2" in prompt
 
 
+def test_decide_next_prompt_uses_selected_seniority_and_evidence_state():
+    criterion_id = "bf7a91bb-9c5d-4b75-b254-2fc1f3c514f4"
+    prompt = build_decide_next_prompt(
+        job_category="BE", current_question="Q", transcript="trả lời", history=[],
+        asked_count=1, follow_up_count=0, max_questions=8, max_follow_ups=2,
+        criteria=_CRITERIA, seniority="Senior", current_evidence_state=[{
+            "criterionId": criterion_id, "name": "Thiết kế hệ thống", "state": "PARTIAL",
+            "evidenceFound": ["Đã nêu cache"], "missingEvidence": ["Chưa nêu trade-off"],
+        }],
+    )
+
+    assert "CẤP ĐỘ ỨNG VIÊN DO NGƯỜI DÙNG CHỌN: Senior" in prompt
+    assert criterion_id in prompt
+    assert "Ưu tiên tiêu chí UNKNOWN, rồi PARTIAL, rồi FAILED" in prompt
+    assert "targetCriterionId" in prompt and "newEvidenceState" in prompt
+
+
 # ── decide_next(): action + nextQuestion ────────────────────────────────────
 @pytest.mark.asyncio
 async def test_decide_next_returns_action_and_question():
@@ -101,6 +118,28 @@ async def test_decide_next_returns_action_and_question():
     assert result["action"] == "follow_up"
     assert result["nextQuestion"].startswith("Bạn có thể nêu ví dụ")
     assert result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_decide_next_returns_evidence_fields_when_provided_by_model():
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "action": "follow_up", "nextQuestion": "Bạn cân nhắc trade-off nào?",
+            "targetCriterionId": "bf7a91bb-9c5d-4b75-b254-2fc1f3c514f4",
+            "evidenceFound": ["Đã mô tả cache"],
+            "missingEvidence": ["Chưa giải thích invalidation"],
+            "newEvidenceState": "partial",
+        })
+    )
+
+    result = await provider.decide_next(
+        "BE", "Q", "trả lời", [], asked_count=1, follow_up_count=0,
+        max_questions=10, max_follow_ups=3, criteria=_CRITERIA)
+
+    assert result["targetCriterionId"] == "bf7a91bb-9c5d-4b75-b254-2fc1f3c514f4"
+    assert result["evidenceFound"] == ["Đã mô tả cache"]
+    assert result["newEvidenceState"] == "PARTIAL"
 
 
 @pytest.mark.asyncio
