@@ -583,3 +583,31 @@ async def test_action_hong_thi_VAN_bi_tra_lai():
         await provider.decide_next(
             "BE", "Q", "trả lời", [], asked_count=1, follow_up_count=0,
             max_questions=10, max_follow_ups=3, criteria=_CRITERIA)
+
+
+# ── `deepCount`: KHÔNG trên wire của AIService ──────────────────────────────
+def test_deep_count_khong_nam_tren_wire_va_khong_lam_vo_request():
+    """.NET vẫn gửi `deepCount` (nó có cột DB riêng bên đó) — request phải nhận bình thường, và
+    prompt phải KHÔNG tiêu thụ nó. Khai một field rồi không đọc chính là mẫu "có tên mà không có
+    ruột" mà repo đã nhiều lần phải đi dọn."""
+    from app.schemas import CriterionEvidenceState, DecideNextRequest
+
+    assert "deepCount" not in CriterionEvidenceState.model_fields
+
+    req = DecideNextRequest(
+        jobCategory="BE", currentQuestion="Q", answerText="a",
+        currentEvidenceState=[{
+            "criterionId": "c-1", "name": "Thiết kế", "state": "PARTIAL",
+            "evidenceFound": ["đã nêu cache"], "missingEvidence": ["chưa nêu trade-off"],
+            "deepCount": 7,                      # .NET gửi → phải được BỎ QUA, không 422
+        }])
+    dumped = req.currentEvidenceState[0].model_dump()
+    assert "deepCount" not in dumped
+
+    prompt = build_decide_next_prompt(
+        job_category="BE", current_question="Q", transcript="a", history=[],
+        asked_count=1, follow_up_count=0, max_questions=8, max_follow_ups=2,
+        criteria=_CRITERIA, current_evidence_state=[dumped])
+    assert "deepCount" not in prompt
+    # …nhưng ngân sách chuỗi vẫn tới prompt bằng đường riêng, đúng hơn (INT-17b).
+    assert "chưa nêu trade-off" in prompt
