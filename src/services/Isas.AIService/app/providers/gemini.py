@@ -1343,19 +1343,32 @@ class GeminiProvider(QuestionProvider):
         reason = str(data.get("reason", "") or "").strip() or None
         target_criterion_id = str(data.get("targetCriterionId", "") or "").strip() or None
 
+        # ── Nhãn bằng chứng: FAIL-OPEN CÓ CHỦ ĐÍCH ──────────────────────────────────────────
+        # Ba trường dưới đây là nhãn PHỤ TRỢ cho state phía .NET, không phải kết quả của lượt gọi.
+        # Trước đây chúng `raise ValueError` khi model trả sai hình dạng → hết `decide_next_max_attempts`
+        # → `main.py` gói thành **502** → buổi phỏng vấn chết vì một cái nhãn. Đó là chính sách NGƯỢC với
+        # `targetCriterionIds` ngay ở `generate()` cho CÙNG hạng nhãn ("biến một cái nhãn phụ thành đường
+        # làm hỏng cả buổi thì đắt hơn nhiều"), và `schemas.DecideNextResponse` khai cả ba `| None = None`
+        # nên .NET vốn chịu được chúng vắng mặt.
+        #
+        # Nhãn hỏng ⇒ bỏ qua + LOG (đo được), giữ nguyên `action`/`nextQuestion` — thứ ứng viên thật sự
+        # cần. Vẫn KHÔNG nới cho `action`/`nextQuestion`: những cái đó hỏng thì lượt gọi vô dụng, trả lại
+        # là đúng (Q16).
         def evidence_list(field: str) -> list[str]:
             value = data.get(field)
             if value is None:
                 return []
             if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-                raise ValueError(f"LLM trả về {field} không phải mảng chuỗi.")
+                logger.info("Bỏ qua %s không phải mảng chuỗi: %r", field, value)
+                return []
             return [item.strip() for item in value if item.strip()]
 
         evidence_found = evidence_list("evidenceFound")
         missing_evidence = evidence_list("missingEvidence")
         new_evidence_state = str(data.get("newEvidenceState", "") or "").strip().upper() or None
         if new_evidence_state not in {None, "UNKNOWN", "PARTIAL", "SATISFIED", "FAILED"}:
-            raise ValueError(f"LLM trả về newEvidenceState không hợp lệ: {new_evidence_state!r}")
+            logger.info("Bỏ qua newEvidenceState không hợp lệ: %r", new_evidence_state)
+            new_evidence_state = None
         return {
             "action": action,
             "nextQuestion": next_q or None,   # end → None
