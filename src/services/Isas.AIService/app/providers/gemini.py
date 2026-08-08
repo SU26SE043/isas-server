@@ -352,7 +352,11 @@ class GeminiProvider(QuestionProvider):
         result = QuestionGenerationResult(questions=questions, citations=citations,
                                           target_criteria=target_lists if labeled else None)
         # SC1c fail-open: only retry the complete set once; remaining defects still deliver a session.
-        defects = coverage_defects(result.target_criteria, criteria)
+        # `effective_count` và `language` PHẢI truyền: thiếu count thì bản kiểm đòi phủ 100% ngay cả khi
+        # chính prompt đã bảo model "chỉ chọn {count} tiêu chí khác nhau" ⇒ đốt một lượt Gemini TẤT ĐỊNH;
+        # thiếu language thì buổi tiếng Anh nhận nhận xét sửa bài bằng tiếng Việt (Q10).
+        defects = coverage_defects(result.target_criteria, criteria, effective_count,
+                                   language=language)
         if settings.question_verify_enabled:
             try:
                 knowledge_defects, verified_citations = await self._verify_question_knowledge(result.questions, grounding)
