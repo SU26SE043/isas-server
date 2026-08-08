@@ -1836,10 +1836,33 @@ namespace Isas.CampaignService.Services
             }
         }
 
-        // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
+        /// <summary>
+        /// BK35 — hợp đồng validate `language` (ngôn ngữ cấp CHIẾN DỊCH). Cùng hình dạng với
+        /// <see cref="ValidateSeniority"/> sau PR160: <c>null</c> và chuỗi RỖNG là hai ca khác nhau.
+        ///
+        /// <list type="bullet">
+        /// <item><c>null</c> → <c>"vi"</c> (đường CREATE: HR không khai = mặc định). Đường UPDATE
+        /// KHÔNG gọi vào đây khi null — guard <c>request.Language is not null</c> giữ nguyên giá trị cũ.</item>
+        /// <item>rỗng sau <c>Trim()</c> → <b>400</b>, KHÔNG được coi là <c>"vi"</c>. Trước BK35,
+        /// <c>string.IsNullOrWhiteSpace → "vi"</c> khiến HR gửi <c>"language": ""</c> ở đường UPDATE
+        /// ÂM THẦM hạ campaign <c>en</c> về <c>vi</c>: không lỗi, không cảnh báo, mất dữ liệu im lặng.</item>
+        /// <item>ngoài <c>{vi, en}</c> → <b>400</b>.</item>
+        /// <item>cờ song ngữ tắt mà xin <c>en</c> → <b>400</b>.</item>
+        /// <item>hợp lệ → giá trị đã trim và hạ về CHỮ THƯỜNG.</item>
+        /// </list>
+        ///
+        /// ⚠ KHÁC <see cref="ValidateSeniority"/> đúng một điểm, và cố ý giữ khác: ở đây chuẩn hoá về
+        /// chữ thường (<c>"EN"</c> → <c>"en"</c>) vì cột DB lẫn hợp đồng song ngữ liên service
+        /// (Interview/AIService) đều dùng chữ thường; <c>seniority</c> thì phân biệt HOA/thường vì
+        /// CHECK <c>ck_campaigns_seniority</c> so đúng thang <c>Fresher/Junior/Middle/Senior</c>.
+        /// Đừng "cho nhất quán" mà đổi một trong hai.
+        /// </summary>
         private string ValidateLanguage(string? requested)
         {
-            if (string.IsNullOrWhiteSpace(requested)) return "vi";
+            // Chỉ null mới là "không khai"; chuỗi rỗng là HR GỬI một giá trị sai → phải báo lỗi.
+            if (requested is null) return "vi";
+            if (string.IsNullOrWhiteSpace(requested))
+                throw new ArgumentException("language không được để trống — phải là vi hoặc en.");
             var language = requested.Trim().ToLowerInvariant();
             if (language is not ("vi" or "en"))
                 throw new ArgumentException("language chỉ nhận vi hoặc en.");
@@ -1875,6 +1898,8 @@ namespace Isas.CampaignService.Services
                 : throw new ArgumentException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
         }
 
+        // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
+        // (Dòng chú thích này vốn nằm lạc trên ValidateLanguage — trả về đúng hàm nó mô tả.)
         private static void ValidatePassScorePct(int? pct)
         {
             if (pct is int p && (p < 0 || p > 100))
