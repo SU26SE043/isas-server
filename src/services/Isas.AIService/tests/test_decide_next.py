@@ -409,9 +409,12 @@ def test_endpoint_forwards_int17b_depth_fields_to_provider(monkeypatch):
     async def fake_decide_next(job_category, current_question, transcript, history,
                                asked_count, follow_up_count, max_questions, max_follow_ups,
                                criteria, root_question=None, current_depth=0, max_depth=0,
-                               other_topics=None):
+                               other_topics=None, language="vi", seniority="Junior",
+                               current_evidence_state=None):
         received.update(root_question=root_question, current_depth=current_depth,
-                        max_depth=max_depth, other_topics=other_topics)
+                        max_depth=max_depth, other_topics=other_topics,
+                        language=language, seniority=seniority,
+                        current_evidence_state=current_evidence_state)
         return {"action": "follow_up", "nextQuestion": "Đào sâu thêm?", "reason": "r"}
 
     monkeypatch.setattr(main_module.provider, "decide_next", fake_decide_next)
@@ -433,6 +436,9 @@ def test_endpoint_forwards_int17b_depth_fields_to_provider(monkeypatch):
     assert received["current_depth"] == 2
     assert received["max_depth"] == 3
     assert received["other_topics"] == ["Kể về một bug khó", "Bạn tối ưu bundle size ra sao?"]
+    assert received["language"] == "vi"
+    assert received["seniority"] == "Junior"
+    assert received["current_evidence_state"] == []
 
 
 @pytest.mark.asyncio
