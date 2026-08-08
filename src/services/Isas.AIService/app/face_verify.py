@@ -4,12 +4,30 @@
 # Model detect+embed nặng, vẫn chỉ nạp 1 lần rồi dùng lại. CPU-only (onnxruntime CPUExecutionProvider).
 import logging
 import threading
+from typing import NamedTuple
 
 from insightface.app import FaceAnalysis
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class FaceCompareResult(NamedTuple):
+    """Kết quả đối chiếu — tách rõ "ảnh MỐC hỏng" khỏi "người KHÁC".
+
+    Trước đây `compare` chỉ trả `(score, face_count)`, nuốt mất việc ảnh mốc có đọc được mặt
+    hay không ⇒ enroll hỏng (ảnh đen do webcam chưa phơi sáng) cho ra score 0.0, và caller
+    kết luận `face_mismatch` — tức ĐỔ LỖI cho ứng viên trung thực, mỗi 30s suốt buổi thi.
+    Hai ca đó dẫn tới hai quyết định khác hẳn nhau của HR nên phải phân biệt được ở đây.
+    """
+
+    score: float
+    face_count: int
+    """Số mặt trên ảnh LIVE."""
+    reference_face_count: int | None
+    """Số mặt trên ảnh MỐC. `None` = CHƯA XÉT (live đã không so được nên không cần detect ảnh
+    mốc) — cố ý không dùng 0, vì 0 nghĩa là "đã nhìn và không thấy mặt nào"."""
 
 
 class FaceVerifier:
@@ -71,29 +89,33 @@ class FaceVerifier:
             raise ValueError(f"Cần đúng 1 khuôn mặt để nhúng, có {len(faces)}.")
         return faces[0].normed_embedding
 
-    def compare(self, ref_bytes: bytes, live_bytes: bytes) -> tuple[float, int]:
+    def compare(self, ref_bytes: bytes, live_bytes: bytes) -> FaceCompareResult:
         """Đối chiếu ảnh tham chiếu ↔ ảnh live.
 
         Detect trên ảnh LIVE để đếm mặt (chống thi hộ / nhiều người / vắng mặt):
           - live có 0 hoặc >1 mặt → không so khớp được → score=0.0, trả kèm face_count.
           - live có đúng 1 mặt → nhúng cả 2 ảnh → cosine similarity ∈ [-1,1] → score.
 
-        Trả về (score, face_count) với face_count = số mặt trên ảnh LIVE.
+        Xem FaceCompareResult về ý nghĩa từng trường.
         """
         live_faces = self._detect(live_bytes)
         face_count = len(live_faces)
         if face_count != 1:
-            return 0.0, face_count
+            # Live đã không so được → khỏi detect ảnh mốc (tiết kiệm một lượt model).
+            # reference_face_count = None vì ta CHƯA NHÌN, không phải "nhìn rồi không thấy".
+            return FaceCompareResult(0.0, face_count, None)
 
         # Ảnh reference cũng cần đúng 1 mặt. Nếu enroll kém (0 hoặc nhiều mặt) → KHÔNG raise
-        # (tránh 502 chặn cả face-check), trả score 0.0 → caller cờ face_mismatch cho HR (D13, không chặn).
+        # (tránh 502 chặn cả face-check), trả score 0.0 KÈM số mặt đọc được trên ảnh mốc để
+        # caller phân biệt "mốc hỏng" (→ identity_unverified) với "người khác" (→ face_mismatch).
         ref_faces = self._detect(ref_bytes)
-        if len(ref_faces) != 1:
-            return 0.0, face_count
+        ref_face_count = len(ref_faces)
+        if ref_face_count != 1:
+            return FaceCompareResult(0.0, face_count, ref_face_count)
 
         live_emb = live_faces[0].normed_embedding
         ref_emb = ref_faces[0].normed_embedding
-        return self._cosine(ref_emb, live_emb), face_count
+        return FaceCompareResult(self._cosine(ref_emb, live_emb), face_count, ref_face_count)
 
     @staticmethod
     def _cosine(a, b) -> float:

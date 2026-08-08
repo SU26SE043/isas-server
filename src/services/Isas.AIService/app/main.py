@@ -265,8 +265,9 @@ async def face_verify(
 ):
     """SEC-2/3 — đối chiếu ảnh live ↔ ảnh tham chiếu + đếm mặt trên ảnh live.
 
-    Kéo 2 ảnh từ S3 theo key → detect+embed (thread, nặng CPU) → dựng cờ:
+    Kéo 2 ảnh từ S3 theo key → detect+embed (thread, nặng CPU) → dựng cờ (theo ảnh LIVE):
       0 mặt → no_face · >1 mặt → multiple_faces · 1 mặt & score < threshold → face_mismatch.
+    Riêng ca ảnh MỐC không đọc được mặt → identity_unverified (lỗi ở ảnh mốc, không phải ứng viên).
     Mọi tín hiệu = CỜ cho HR (SEC-4), KHÔNG tự chặn/hủy bài.
 
     Gate X-Internal-Token, fail-closed (GEN-7): endpoint máy-máy — CampaignService gọi, kéo
@@ -284,10 +285,12 @@ async def face_verify(
         # Tải ảnh (S3 blocking) + so khớp (model nặng CPU) → thread, không block event loop.
         ref_bytes = await asyncio.to_thread(storage.get_object_bytes, req.referenceImageKey)
         live_bytes = await asyncio.to_thread(storage.get_object_bytes, req.liveImageKey)
-        score, face_count = await asyncio.to_thread(
+        result = await asyncio.to_thread(
             face_verifier.compare, ref_bytes, live_bytes)
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đối chiếu khuôn mặt: {ex}")
+
+    score, face_count = result.score, result.face_count
 
     signals: list[str] = []
     if face_count == 0:
@@ -295,6 +298,14 @@ async def face_verify(
         match = False
     elif face_count > 1:
         signals.append("multiple_faces")
+        match = False
+    elif result.reference_face_count != 1:
+        # Ảnh MỐC không dùng được (0 mặt vì enroll trúng khung đen/tối, hoặc nhiều mặt) — đây
+        # KHÔNG phải lỗi của ứng viên đang ngồi trước camera, nên tuyệt đối không gắn
+        # `face_mismatch` ("không đúng người"): cờ đó là cờ nặng nhất, HR đọc xong là loại.
+        # `identity_unverified` = "chưa xác minh được danh tính", đúng nghĩa và ĐÃ có sẵn trong
+        # IdentitySignals của CampaignService lẫn nhánh "chưa enroll" của FaceVerifyController.
+        signals.append("identity_unverified")
         match = False
     else:
         match = score >= threshold
