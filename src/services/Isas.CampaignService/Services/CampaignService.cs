@@ -76,6 +76,7 @@ namespace Isas.CampaignService.Services
 
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
             ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);   // INT-17: trần ≥ 0 nếu có
+            ValidateSeniority(request.Seniority);
             ValidateConcurrencyCap(request.MaxConcurrentInterviews);
 
             // C11 + cap độ dài: chuẩn hoá & kiểm ngưỡng TRƯỚC khi dựng entity/ghi DB → vượt ngưỡng thì
@@ -91,6 +92,7 @@ namespace Isas.CampaignService.Services
                 Title = request.Title,
                 Domain = request.Domain,
                 Language = ValidateLanguage(request.Language),
+                Seniority = ValidateSeniority(request.Seniority),
                 Status = CampaignStatus.Draft,
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
@@ -360,6 +362,13 @@ namespace Isas.CampaignService.Services
                 if (campaign.Status != CampaignStatus.Draft)
                     throw new InvalidOperationException("Chỉ được đổi language khi campaign ở Draft.");
                 campaign.Language = ValidateLanguage(request.Language);
+            }
+
+            if (request.Seniority is not null)
+            {
+                if (campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException("Chỉ được đổi seniority khi campaign ở Draft.");
+                campaign.Seniority = ValidateSeniority(request.Seniority);
             }
 
             if (request.MaxCandidates.HasValue)
@@ -1831,6 +1840,14 @@ namespace Isas.CampaignService.Services
             if (!_bilingualEnabled && language != "vi")
                 throw new ArgumentException("Bilingual campaign chưa được bật.");
             return language;
+        }
+
+        private static string ValidateSeniority(string? requested)
+        {
+            var seniority = string.IsNullOrWhiteSpace(requested) ? "Junior" : requested.Trim();
+            return seniority is "Fresher" or "Junior" or "Middle" or "Senior"
+                ? seniority
+                : throw new ArgumentException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
         }
 
         private static void ValidatePassScorePct(int? pct)

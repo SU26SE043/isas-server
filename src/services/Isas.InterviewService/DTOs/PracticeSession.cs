@@ -70,7 +70,8 @@ public record CreateCampaignSessionRequest(
     int? MaxQuestions = null,
     // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ: đào sâu dồn ở đuôi buổi).
     int? MaxDeepPerQuestion = null,
-    string? Language = null
+    string? Language = null,
+    string Seniority = "Junior"
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -93,7 +94,8 @@ public record CreateCampaignSessionInternalRequest(
     // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ). Field optional CUỐI record →
     // client cũ (chưa gửi) không vỡ.
     int? MaxDeepPerQuestion = null,
-    string? Language = null
+    string? Language = null,
+    string Seniority = "Junior"
 );
 public record PracticeSessionResponse(
     Guid Id,

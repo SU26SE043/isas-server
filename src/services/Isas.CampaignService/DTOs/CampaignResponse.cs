@@ -41,6 +41,7 @@ namespace Isas.CampaignService.DTOs
         [Required]
         public string? Domain { get; set; }
         public string? Language { get; set; }
+        public string Seniority { get; set; } = "Junior";
 
         public int? MaxCandidates { get; set; }
 
@@ -95,6 +96,7 @@ namespace Isas.CampaignService.DTOs
     {
         public string Title { get; set; }
         public string? Language { get; set; }
+        public string? Seniority { get; set; }
 
         public string? Domain { get; set; }
 
@@ -170,6 +172,7 @@ namespace Isas.CampaignService.DTOs
         public string Title { get; set; }
         public string? Domain { get; set; }
         public string Language { get; set; } = "vi";
+        public string Seniority { get; set; } = "Junior";
         public string Status { get; set; }
         public int? MaxCandidates { get; set; }
         public int? TimeLimitMinutes { get; set; }
@@ -198,6 +201,7 @@ namespace Isas.CampaignService.DTOs
             Title = c.Title,
             Domain = c.Domain,
             Language = c.Language,
+            Seniority = c.Seniority,
             Status = c.Status.ToString(),
             MaxCandidates = c.MaxCandidates,
             TimeLimitMinutes = c.TimeLimitMinutes,

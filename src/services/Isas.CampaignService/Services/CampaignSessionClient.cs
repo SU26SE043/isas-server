@@ -38,10 +38,10 @@ namespace Isas.CampaignService.Services
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
-            int? maxDeepPerQuestion = null, CancellationToken ct = default)
-            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", ct);
+            int? maxDeepPerQuestion = null, CancellationToken ct = default, string seniority = "Junior")
+            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", ct, seniority);
 
-        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, CancellationToken ct)
+        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, CancellationToken ct, string seniority = "Junior")
         {
             var payload = new
             {
@@ -58,7 +58,8 @@ namespace Isas.CampaignService.Services
                 maxQuestions,
                 // INT-17b — >0 ⇒ mỗi câu campaign mọc chuỗi đào sâu xen kẽ ngay sau nó.
                 maxDeepPerQuestion
-                ,language
+                ,language,
+                seniority
             };
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/campaign")

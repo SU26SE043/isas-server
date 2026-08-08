@@ -76,4 +76,18 @@ public class CampaignSessionClientBk18Tests
         Assert.True(doc.RootElement.TryGetProperty("expiresAt", out var exp));
         Assert.Equal(JsonValueKind.Null, exp.ValueKind);
     }
+
+    [Fact]
+    public async Task Payload_ChuyenSeniorityHrSangInterview()
+    {
+        var handler = new CapturingHandler(Guid.NewGuid());
+        var client = NewClient(handler);
+
+        await client.CreateOrGetSessionAsync(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BE", Questions, Criteria,
+            expiresAt: null, ct: default, seniority: "Senior");
+
+        using var doc = JsonDocument.Parse(handler.CapturedBody!);
+        Assert.Equal("Senior", doc.RootElement.GetProperty("seniority").GetString());
+    }
 }

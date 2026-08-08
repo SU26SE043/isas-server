@@ -50,7 +50,7 @@ public class InternalSessionsController : ControllerBase
         var request = new CreateCampaignSessionRequest(
             req.CampaignId, req.OrgId, jobCategory, req.Questions, req.Criteria, req.ExpiresAt,
             req.AdaptiveEnabled, req.MaxFollowUps, req.MaxQuestions,
-            req.MaxDeepPerQuestion, req.Language);   // phỏng vấn THÍCH ỨNG (B2B) — INT-17b: trần đào sâu mỗi câu
+            req.MaxDeepPerQuestion, req.Language, req.Seniority);   // phỏng vấn THÍCH ỨNG (B2B) — INT-17b: trần đào sâu mỗi câu
 
         try
         {

@@ -516,6 +516,8 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException("Campaign session cần ít nhất 1 tiêu chí");
 
         var language = ValidateLanguage(request.Language);
+        var seniority = request.Seniority is "Fresher" or "Junior" or "Middle" or "Senior"
+            ? request.Seniority : throw new InvalidOperationException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
 
         await EnsureCapacityAsync(ct); // CreateCampaignSession chỉ được gọi khi tạo mới, không chặn resume.
 
@@ -541,6 +543,7 @@ public class PracticeService : IPracticeService
                 CandidateId = candidateId,
                 CampaignId = request.CampaignId,
                 JobCategory = request.JobCategory,
+                Seniority = seniority,
                 Language = language,
                 Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
                 CreatedAt = DateTime.UtcNow,
