@@ -199,6 +199,13 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
   - `action = "end"` mang nghĩa **hết CHỦ ĐỀ này**, không phải hết buổi ⇒ `interviewComplete` = *không còn câu nào chưa trả lời*. Khi chuỗi hết mà còn câu gốc khác, response trả `nextAction = null` (không phải `"end"`) — FE ánh xạ `end` thành "bạn có thể nộp bài", báo sớm sẽ giục ứng viên nộp giữa chừng và mất 1 credit cho buổi làm dở.
   - `action = "new_question"` **không append** ở chế độ này (chủ đề mới đã có sẵn trong bộ câu gốc); vẫn là giá trị hợp lệ trên dây để không phá hợp đồng AIService.
   - **Circuit breaker**: `/decide-next` lỗi → `practice_sessions.adaptive_failures++`; chạm `Adaptive:MaxFailuresPerSession` (mặc định 3) → thôi gọi cả buổi. Chế độ chuỗi gọi AI sau gần như mọi câu trả lời, không có cầu dao thì AIService hỏng sẽ cộng hàng chục phút chờ timeout vào đúng một buổi thi.
+  - **Số câu GỐC bám số tiêu chí NỘI DUNG** (`ComputeSeedCount`, SC1) — ba lực kéo, xử **đúng thứ tự**:
+    1. **Ngân sách** — `max_questions` là **TỔNG số câu buổi** (F2b) nên số câu gốc phải **chia cho chiều sâu**, làm tròn LÊN: trần 20 → 5 gốc (5×4=20) · 10 → 3 · 5 → 2. Lấy thẳng `Adaptive:SeedCount` thì FE mặc định 5 câu sẽ sinh 5 câu gốc, `askedCount` chạm trần ngay ⇒ **0 câu đào sâu, không lỗi, không báo** (bug `BUS-01`).
+    2. **Phủ tiêu chí (SC1)** — số tiêu chí `WhenTargeted` là **SÀN**, và nó **THẮNG trần `SeedCount`**. Tiêu chí không câu nào hỏi bị loại khỏi điểm ⇒ điểm thành "may mắn trúng tủ"; thiếu đào sâu chỉ mất chiều sâu. Đo trên prod: 3 câu gốc nhưng nhãn ra 2 lần cùng một tiêu chí ⇒ tiêu chí thứ ba không bao giờ được hỏi. Bám con số **ĐỘNG** chứ không hằng số config vì **BC16** cho candidate tự CRUD rubric — hằng số sẽ lệch âm thầm.
+    3. **Chừa ≥1 khe đào sâu** — trần cứng `max_questions − 1`, **thắng sau cùng**. Để `seeds == ngân sách` thì `AnswerService` thấy hết ngân sách ngay lượt đầu ⇒ buổi đóng dấu adaptive nhưng chạy y như batch tĩnh. Ngân sách quá hẹp thì thà thiếu phủ (**có log warning**) còn hơn tắt câm cả tính năng đào sâu (không triệu chứng).
+    - `max_questions ≤ 0` = không trần buổi ⇒ bỏ vế 1 và 3, chỉ còn config và sàn phủ.
+  - ⚠ **`questionCount` VẪN là "tổng số câu của buổi"** (F2b), **KHÔNG phải số câu gốc**. Đừng đổi thành `seeds × (1 + đào sâu)`: `ValidateQuestionCount` nhận 1..20 nên chọn 6 sẽ ra trần 24 → vi phạm CHECK `ck_practice_sessions_max_questions_range` **ngay lúc INSERT**, tức **SAU `ReserveAsync`** ⇒ đúng lỗi **PAY-5** (mất credit + reservation mồ côi) mà `ClampCampaignMaxQuestions` sinh ra để chặn, lần này trên đường B2C. Nó cũng âm thầm đổi thứ ứng viên đã mua bằng 1 credit.
+  - **Thiếu phủ thì CHỈ log, không sửa nhãn** — gán bù tiêu chí thiếu vào câu chưa có nhãn là **BỊA** (ứng viên bị chấm đúng thứ họ không được hỏi = chính lỗi mà chấm-theo-phạm-vi sinh ra để diệt); bỏ sạch nhãn để quay về chấm cả rubric là lùi về nguyên hành vi cũ cho MỌI câu. Ném thì càng không: buổi đã reserve credit (PAY-5).
 - Lỗi: **400** (thiếu field · file quá lớn) · **401** · **403** · **404** (session/câu không có) · **409** (session đã `Scoring`/`Scored`).
 
 **`GET /sessions/{sessionId}/questions/{questionId}/speech`** — 🔊 **Đọc câu hỏi thành tiếng (TTS)** — trợ năng để ứng viên NGHE đề bài.
@@ -363,6 +370,7 @@ deadline      timestamptz?  ✅ I2+BK18 (migration AddSessionDeadline) — hạn
 overall_score numeric(5,2)? ✅ BC9 (migration `AddSessionResultBC9`) — điểm tổng 0–100, set khi `Scored` (B2C); null khi chưa/B2B
 answered_count int?         ✅ BC9 — số câu đã chấm lúc tính kết quả (snapshot)
 overall_comment text?       ✅ BC10 (migration `AddSessionOverallComment`) — nhận xét chung, AI `/summarize-session` sinh trong `SessionScoringNotifier` khi B2C `Scored` (best-effort, sau BC9); null nếu AI lỗi/timeout/rỗng / criteria rỗng / B2B
+scoring_scope_version int?  ✅ **Chấm theo phạm vi** (migration `AddScoringScopeAndQuestionTargets`) — con dấu thước đo: điểm buổi này tính trên TOÀN BỘ rubric hay trên tập tiêu chí riêng từng câu. `null`=KHÔNG BIẾT (row có trước cột) · `1`=đã biết, chấm đủ rubric · `2`=đã biết, có ≥1 câu chấm trên tập HẸP HƠN. Xem §Chấm theo PHẠM VI câu hỏi
                             ⚠ cột `settlement_published_at` (Đợt-3b) đã **DROP** ở ✅ **DB2** (migration `AddOutboxMessages`) — thay bằng bảng `outbox_messages` (Transactional Outbox, xem dưới)
 ```
 
@@ -388,6 +396,7 @@ content                  text
 time_limit_sec           int           default 120  giới hạn/câu — ĐANG hiệu lực (hết giờ→chốt câu, sang câu kế); KHÔNG có giới hạn tổng buổi
 kind                     varchar(16)   INT-17 enum QuestionKind: Seed·FollowUp·Clarify·NewQuestion (rows cũ backfill 'Seed')
 generated_from_answer_id uuid?         INT-17 answer đã "đẻ" câu này (null=seed); UNIQUE filtered (idempotency: 1 answer→≤1 câu kế). Ref lỏng practice_answers (KHÔNG FK — tránh cascade path)
+target_criterion_ids     jsonb?        ✅ **Chấm theo phạm vi** (migration `AddScoringScopeAndQuestionTargets`) — tiêu chí NỘI DUNG câu hỏi này nhắm tới (AIService gắn nhãn lúc sinh). **3 trạng thái load-bearing**: `null`=chưa hỏi/không đủ tin → chấm ĐỦ rubric · `[]`=đã hỏi, câu không nhắm nội dung nào → chỉ 4 tiêu chí CÁCH NÓI · non-empty=cách nói + đúng tiêu chí liệt kê. ⚠ **TUYỆT ĐỐI không quy `[]` về `null`**. Nullable ⇒ né bug jsonb-default F15
 created_at               timestamptz
                              UNIQUE (session_id, order_no)
                              UNIQUE (generated_from_answer_id) WHERE generated_from_answer_id IS NOT NULL
@@ -456,12 +465,16 @@ job_category varchar(8)    enum: BA·BE·FE
 campaign_id  uuid?         B2B: tiêu chí theo campaign thay job_category · null=rubric B2C
 candidate_id uuid?         ✅ BC16 — B2C rubric CÁ NHÂN: null=seed mặc định dùng chung · set=rubric riêng của candidate (ref lỏng AuthService, không FK). Chỉ có nghĩa khi campaign_id IS NULL.
 version      int
+scoring_scope varchar(24)  ✅ **Chấm theo phạm vi** (migration `AddScoringScopeAndQuestionTargets`) — NOT NULL DEFAULT `'Always'`, enum `ScoringScope` lưu string (GEN-2). `Always`=chấm MỌI câu (tiêu chí CÁCH NÓI) · `WhenTargeted`=chỉ chấm khi câu hỏi nhắm tới (tiêu chí NỘI DUNG)
                            index (job_category, version, is_active) · index (candidate_id, job_category, is_active) [BC16]
                            CHECK ck_rubric_criteria_single_owner: campaign_id IS NULL OR candidate_id IS NULL  ✅ DB19 (2026-07-17) — cấm both-set; 3 trạng thái loại trừ (campaign-only B2B · candidate-only B2C · both-null seed)
+                           CHECK ck_rubric_criteria_scoring_scope: scoring_scope IN ('Always','WhenTargeted')  ✅ Chấm theo phạm vi
 ```
+> **Nhận diện nhóm "cách nói" CHỈ được đọc từ cột `scoring_scope`** — KHÔNG khớp theo **tên** tiêu chí: rubric tồn tại ở cả `vi` lẫn `en` (F12) và candidate tự đặt tên rubric riêng (BC16), nên so tên là hợp đồng gãy ngay khi ai đó đổi một chữ. Cũng KHÔNG khớp theo id seed (rubric riêng mang GUID mới).
+> **Mặc định `Always` = hành vi trước thay đổi này** ⇒ mọi row không phân loại tường minh (rubric riêng BC16 · tiêu chí campaign B2B · row cũ) tự động an toàn. Chiều mặc định an toàn là **chấm thừa**, không phải bỏ chấm: bỏ chấm nhầm = tiêu chí biến mất khỏi kết quả mà không ai thấy.
 > **BC16 — resolve rubric B2C:** scoring chọn tiêu chí theo `(candidate_id, job_category)`: có rubric riêng active của candidate → dùng nó, **else** seed mặc định (`candidate_id IS NULL`). Dùng chung `B2CRubricScope.ResolveOwnerAsync` ở cả 4 chỗ chấm (publish · callback guard · republisher · breakdown BC9) để không lệch. Sửa rubric = **soft-versioned** (deactivate bản cũ + thêm bản mới `is_active`, KHÔNG hard-delete vì `answer_scores` FK Restrict).
 
-> **F12 (FR03) — 2 tiêu chí NGÔN NGỮ trong seed** (migration `AddLanguageRubricCriteriaF12`): mỗi nghề BA/BE/FE nay có **6** tiêu chí seed thay vì 4 — thêm **"Ngữ pháp & dùng từ"** (0.10) + **"Thuật ngữ chuyên ngành"** (0.10), 4 tiêu chí cũ hạ weight giữ **Σ=1**. Tách khỏi "Giao tiếp & trình bày" vì tiêu chí đó chấm **mạch lạc nội dung**, không phải ngữ pháp. Mô tả tiêu chí "Thuật ngữ" **neo theo nghề** (BA: user story/acceptance criteria… · BE: transaction/idempotent/ACID… · FE: hydration/reflow/debounce…) — không có ví dụ thuật ngữ riêng thì AI không phân biệt được sai-thuật-ngữ theo nghề.
+> **F12 (FR03) — 2 tiêu chí NGÔN NGỮ trong seed** (migration `AddLanguageRubricCriteriaF12`): mỗi nghề BA/BE/FE lên **6** tiêu chí seed thay vì 4 *(⚠ cập nhật: nay là **7** — F11 thêm "Độ trôi chảy & tự tin" 0.10; xem bảng phân loại ở §Chấm theo PHẠM VI câu hỏi)* — thêm **"Ngữ pháp & dùng từ"** (0.10) + **"Thuật ngữ chuyên ngành"** (0.10), 4 tiêu chí cũ hạ weight giữ **Σ=1**. Tách khỏi "Giao tiếp & trình bày" vì tiêu chí đó chấm **mạch lạc nội dung**, không phải ngữ pháp. Mô tả tiêu chí "Thuật ngữ" **neo theo nghề** (BA: user story/acceptance criteria… · BE: transaction/idempotent/ACID… · FE: hydration/reflow/debounce…) — không có ví dụ thuật ngữ riêng thì AI không phân biệt được sai-thuật-ngữ theo nghề.
 > ⚠ **Transcript là ASR (Whisper)**: chính tả/dấu câu/tên riêng phiên âm sai là lỗi bộ nhận dạng, KHÔNG của ứng viên → mô tả tiêu chí chỉ neo vào thứ sống sót qua ASR (chọn từ · cấu trúc câu · từ đệm · thuật ngữ), và `build_scoring_prompt` có **1 dòng cấm trừ điểm lỗi ASR ở MỌI tiêu chí**. Bỏ dòng đó ⇒ tiêu chí ngữ pháp đo chất lượng Whisper chứ không đo ứng viên.
 > ⚠ **BC16 không đổi:** candidate đã có rubric RIÊNG **không** tự nhận 2 tiêu chí mới (rubric riêng là lựa chọn của họ; muốn có thì tự thêm qua `PUT /rubrics/{jobCategory}`, hoặc `DELETE` để về seed).
 > ⚠ **INT-9:** thêm tiêu chí vào rubric mà đường publish và đường callback không chọn **cùng** bộ ⇒ AI chấm thiếu tiêu chí ⇒ answer `Failed` hàng loạt. Cả 2 đường đi qua `LoadActiveCriteriaAsync`/`B2CRubricScope` nên luôn khớp; `LanguageRubricCriteriaTests` khoá hợp đồng này (publish 6 → callback 6 → `Scored`).
@@ -566,6 +579,7 @@ status              varchar(16)   enum: Theory·Practicing·Done
 - **FK on-delete**: Cascade theo `session_id` → `practice_questions` · `practice_answers` (→ `answer_scores` Cascade) · `session_criterion_scores`. `cv_id`/`jd_id` → `file_records` **Restrict** (chặn xoá file đang gắn session). `answer_scores.criterion_id` → `rubric_criteria` **Restrict**. `rubric_levels` Cascade *(bảng `rubric_anchors` đã DROP — DB15, gộp vào `rubric_levels.example_answers` jsonb)*. ✅ Roadmap: Cascade theo `roadmap_id` → `roadmap_milestones` (→ `roadmap_lessons` Cascade); `roadmaps.cv_id` → `file_records` **Restrict** · `roadmap_lessons.session_id` → `practice_sessions` **Restrict**.
 - **UNIQUE**: `practice_questions(session_id, order_no)` · `practice_answers`: 1 answer/câu enforce qua UNIQUE `question_id` (1-1 FK) — ✅ **DB15 bỏ index UNIQUE trùng `(session_id, question_id)`, thay non-unique `(session_id)`** giữ leading-col cho sweeper/EXISTS · `answer_scores(answer_id, criterion_id, attempt_no)` · `session_criterion_scores(session_id, criterion_id)` · `rubric_levels(criterion_id, score)` · ✅ `roadmap_milestones(roadmap_id, order_no)` · `roadmap_lessons(milestone_id, order_no)`.
 - **Index**: `practice_sessions(candidate_id)` + `(campaign_id)` · `rubric_criteria(job_category, version, is_active)` · `file_records(user_id)` · ✅ `roadmaps(candidate_id)`.
+- **CHECK**: `rubric_criteria` — `ck_rubric_criteria_single_owner` (DB19) · ✅ `ck_rubric_criteria_scoring_scope` (`scoring_scope IN ('Always','WhenTargeted')`).
 - **Idempotency**: callback `result` xoá điểm cũ cùng `(attempt_no, rubric_version)` rồi ghi lại; `failed` bỏ qua nếu answer đã `Scored` (xem §Idempotency callback).
 
 ---
@@ -607,12 +621,14 @@ Uploaded ──(publish OK)──► Scoring ──(result)──► Scored
 - Submit **không** publish lại (tránh chấm trùng).
 - Publish lỗi **không** hỏng upload — republisher xử lý sau.
 - Mỗi job kèm **rubric active** của `JobCategory` + `RubricVersion`. Không có rubric active → bỏ publish (log warning).
+- ✅ **Chấm theo PHẠM VI:** bộ tiêu chí gửi vào job = 4 tiêu chí `Always` (cách nói) + đúng tiêu chí `WhenTargeted` mà **câu hỏi này** nhắm tới (`ScoringScopeFilter`); câu không có nhãn → nguyên bộ. Spec ở **§Chấm theo PHẠM VI câu hỏi**.
 
 ### Republish answer kẹt (`StuckAnswerRepublisher`)
 Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - `Uploaded` + `last_scoring_published_at=null` quá **2 phút** (CreatedAt) → publish hụt → đẩy lại.
 - đã `Scoring` quá **15 phút** không callback → worker mất tích → đẩy lại.
 - Đẩy lại OK → set `Scoring` + dời `last_scoring_published_at=now`. Answer `Failed`/`Scored` **không** bị nhặt.
+- ⚠ **Phải đi CHUNG luật với đường publish** — projection bắt buộc mang `Question.TargetCriterionIds` rồi gọi cùng `ScoringScopeFilter.Apply`. Thiếu vế này thì answer nào phải nhờ republisher cứu sẽ bị chấm **đủ rubric** trong khi answer chạy trơn tru được chấm đúng phạm vi ⇒ lệch âm thầm, chỉ xảy ra lúc đã có sự cố (đúng chỗ **F11** từng dính). Cùng lý do với `DeliveryMetrics`/`TranscriptEngine` trong projection.
 
 ### Idempotency callback
 - **result**: xoá điểm cũ cùng `(attemptNo, rubricVersion)` rồi ghi lại → retry không nhân đôi.
@@ -626,6 +642,7 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - **Điểm tổng/session** (khi `Scored`): **B2C = TRUNG BÌNH CỘNG** pct tiêu chí (equal weight — BC9); **B2B = `Σ điểm×weight`** chuẩn hoá (có trọng số — dùng cho ranking E4).
 - **✅ Tổng kết điểm B2C (BC9):** spec đầy đủ ở **§Tổng kết điểm buổi luyện B2C (BC9)** ngay dưới.
 - **✅ Chất lượng & độ nhất quán khi chấm (E9–E11):** neo theo mức (đúng) + đo/chặn chênh lệch (nhất quán) + chuẩn nhận xét — spec ở **§Chất lượng & độ nhất quán khi chấm** dưới.
+- **✅ Chấm theo PHẠM VI câu hỏi:** không phải câu nào cũng chấm đủ rubric — tiêu chí NỘI DUNG chỉ được chấm khi câu hỏi thực sự nhắm tới (`rubric_criteria.scoring_scope` + `practice_questions.target_criterion_ids`). Spec ở **§Chấm theo PHẠM VI câu hỏi** dưới.
 
 #### Đánh giá cách chấm tiêu chí hiện tại (review 2026-06-28)
 **✅ Phần chắc — GIỮ NGUYÊN** (worker `gemini.score()` + callback C# `AnswerService.SaveResultAsync`):
@@ -642,6 +659,47 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 6. **`attempt_no` — self-consistency ĐÃ BUILD (E10, cập nhật 2026-07-17):** chấm **N lần** (opt-in qua `Scoring:Attempts`, default **N=1** = hành vi cũ) → điểm chốt = **median/tiêu chí**, spread>ngưỡng → `practice_answers.needs_review=true`. Vì default N=1 nên thực tế `attempt_no` thường =1; `UNIQUE(answer_id,criterion_id,attempt_no)` hỗ trợ N>1.
 
 > **Tóm lại:** chấm **từng tiêu chí trên mỗi câu = ổn & chắc**; phần **tổng hợp mức buổi** (weight/điểm tổng/cần cải thiện) **chưa có** (BC9/BC10/E4) và **rubric B2C chưa có nguồn dữ liệu** (#3) là 2 việc cần làm để luồng B2C chạy trọn.
+
+### Chấm theo PHẠM VI câu hỏi — ✅ (migration `AddScoringScopeAndQuestionTargets`, đã apply prod)
+> **Vấn đề gốc:** mọi câu trả lời bị chấm trên **TOÀN BỘ** rubric, nên câu hỏi hẹp ("giải thích cơ chế xoay vòng refresh token") vẫn bị chấm "Thiết kế hệ thống & CSDL" và ăn điểm thấp **chỉ vì không được hỏi**. Đo trên deploy: cùng trình độ, bài trả lời câu hỏi hẹp ~69/100 còn bài "đại luận" 91–97.
+
+**Phân loại tiêu chí (`rubric_criteria.scoring_scope`)** — seed B2C có **7 tiêu chí/nghề/ngôn ngữ**:
+
+| Nhóm | `scoring_scope` | Tiêu chí seed | Vì sao |
+|---|---|---|---|
+| **CÁCH NÓI** (4) | `Always` | Giao tiếp & trình bày · Ngữ pháp & dùng từ (F12) · Thuật ngữ chuyên ngành (F12) · Độ trôi chảy & tự tin (F11) | Quan sát được ở **bất kỳ** câu trả lời nào |
+| **NỘI DUNG** (3) | `WhenTargeted` | BA: Phân tích yêu cầu · Hiểu nghiệp vụ & stakeholder · Tư duy giải quyết vấn đề<br>BE: Chiều sâu kỹ thuật · Thiết kế hệ thống & CSDL · Giải quyết vấn đề & thuật toán<br>FE: Chiều sâu kỹ thuật · Giải quyết vấn đề · Ý thức UI/UX & accessibility | Chỉ đo được khi câu hỏi thực sự hỏi tới |
+
+> **Seed:** 42 row = **18 `WhenTargeted`** (3 tiêu chí nội dung × 3 nghề × 2 ngôn ngữ) + **24 `Always`**. Id `vi`/`en` của cùng tiêu chí chỉ khác byte đầu (`B2CRubricSeed.EnglishId`: `bytes[0] ^= 0x11`).
+
+**Luật lọc — `ScoringScopeFilter.Apply` (`null` ≠ `[]`, điểm sống còn):**
+
+| `practice_questions.target_criterion_ids` | Bộ tiêu chí gửi vào lượt chấm |
+|---|---|
+| `null` — chưa hỏi / không đủ tin | **NGUYÊN bộ** (lùi an toàn, y như trước thay đổi này) |
+| `[]` — đã hỏi, câu không nhắm nội dung nào | **Chỉ tiêu chí `Always`** |
+| non-empty | Tiêu chí `Always` **+** đúng những tiêu chí được nhắm |
+
+- ⚠ **Gộp `[]` vào `null` làm tính năng NO-OP đúng ở nhóm câu cần nó nhất** — câu xã giao ("giới thiệu bản thân") vẫn bị chấm "Thiết kế hệ thống & CSDL", chính là hình dạng lỗi mà cả thay đổi này sinh ra để diệt.
+- **LÙI AN TOÀN cuối:** lọc xong mà **rỗng** → trả nguyên bộ (+ log warning). Bộ rỗng KHÔNG vô hại: cả hai caller đều **bỏ publish** khi không có tiêu chí ⇒ answer không bao giờ được chấm ⇒ buổi không bao giờ đóng ⇒ người luyện **mất 1 credit** (PAY-13). Với tới được khi rubric riêng (BC16) bị sửa **giữa buổi** (bản cũ deactivate, id trong nhãn trỏ vào tiêu chí không còn active) hoặc rubric không có tiêu chí `Always` nào.
+- **INT-9 KHÔNG phải sửa:** guard "LLM chấm thiếu tiêu chí" so với danh sách **được gửi vào**, không phải toàn rubric ⇒ gửi ít hơn vẫn hợp lệ.
+- `RubricVersion` của job đọc từ bộ **ĐẦY ĐỦ** (không phải bộ đã lọc) ⇒ con số này không đổi theo phạm vi chấm của từng câu.
+
+**Nguồn nhãn — `AiServiceQuestionGenerator.ParseTargets`:** AIService trả `targetCriteria[]` theo **index câu**; .NET parse GUID, **drop id lạ** (guard by-construction, mẫu `GroundingMapper`) — chỉ nhận id nằm trong tập tiêu chí **chính ta vừa gửi đi** ⇒ AIService không thể bịa tiêu chí ngoài rubric để lái phạm vi chấm. ⚠ **"Toàn id lạ" → `null`, KHÔNG phải `[]`**: AIService vừa khẳng định câu này *có* nhắm tiêu chí, chỉ là gọi tên thứ không thuộc rubric ⇒ ta không có tín hiệu đáng tin nào để thu hẹp, khác hẳn lời khẳng định "không nhắm gì cả".
+
+**HAI đường đẩy job chấm dùng CHUNG một luật** — `AnswerService.TryPublishScoringJobAsync` (publish lúc upload) và `StuckAnswerRepublisher` (đẩy lại khi kẹt) đều gọi `ScoringScopeFilter.Apply`, và republisher **phải mang `target_criterion_ids` trong projection**. Hai đường lệch nhau là lỗi **chỉ lộ ra khi đã có sự cố**: answer nào phải nhờ republisher cứu sẽ được chấm theo luật KHÁC answer chạy trơn tru, mà không có gì báo — đúng hạng lỗi **F11** đã dính ở chính cặp đường này.
+
+**Câu ĐÀO SÂU thừa kế nhãn của câu cha** (`AnswerService`) — và **đúng do cấu trúc**, không phải xấp xỉ cho rẻ:
+- `follow_up`/`clarify` theo định nghĩa đào sâu vào **chính câu trả lời vừa rồi** ⇒ vẫn là chủ đề câu cha.
+- `new_question` (đổi chủ đề) ở **chế độ chuỗi** đã bị chặn từ trước (`endsChain` — INT-17b không append) nên không bao giờ tới đây; ở **chế độ frontier** (kill-switch `MaxDeepPerQuestion=0`) nó tới được, và lúc đó thừa kế SẼ SAI ⇒ chỉ thừa kế cho **2 loại đào sâu**, `new_question` để `null` = chấm đủ rubric (an toàn).
+- ⚠ Không thừa kế thì `/decide-next` không trả nhãn ⇒ **mọi** câu đào sâu chấm cả rubric. Prod chạy chế độ chuỗi nên **phần lớn câu trong một buổi là câu đào sâu** — thiếu vế này thì tính năng chỉ có hiệu lực trên câu gốc, tức gần như không có hiệu lực.
+
+**Con dấu `practice_sessions.scoring_scope_version`** — thu hẹp phạm vi làm điểm **KHÔNG CÒN SO SÁNH ĐƯỢC** với điểm cũ, mà **BC15** (đo cải thiện) · **F14** (mốc peer) · **CAMP-10** (xếp hạng) đang đem so thẳng. Tiền lệ: `practice_answers.metrics_version` (F11), `answer_scores.prompt_version` (BK23).
+- `null` = **KHÔNG BIẾT** (row có trước cột). ⚠ **KHÔNG được suy ra "khác phiên bản" từ `null`** — suy "khác" từ "không biết" là bịa (BK23).
+- `1` = đã biết: chấm trên toàn bộ rubric. Đóng cho **B2B** (câu do HR/Campaign cấp, không đi đường gắn nhãn) và buổi B2C không câu nào mang nhãn.
+- `2` = đã biết: có ≥1 câu mang nhãn ⇒ tồn tại answer chấm trên tập **hẹp hơn**. **Chỉ giá trị này mới chứng minh được "khác thước đo".**
+- Đóng theo **sự thật quan sát được** (`questions.Any(q => q.TargetCriterionIds is not null)`, kể cả `[]`) chứ không theo "code đã hỗ trợ nhãn" — đóng dấu `2` cho buổi không nhãn là báo động giả cho BC15/F14/CAMP-10.
+- Đóng ở **tầng BUỔI** (không phải từng dòng điểm) vì (a) mọi phép so trên đều đọc số liệu mức buổi, (b) `answer_scores` là bảng lớn nhất hệ (~100M dòng ở quy mô mục tiêu).
 
 ### Chất lượng & độ nhất quán khi chấm (E9–E11) — ✅ passing (E9 `4b4d625` · E10 `938bef0` · E11 `f3ef192`)
 > Mục tiêu: **(1) chấm ĐÚNG mức · (2) chênh lệch mỗi lần/câu chấm NHỎ & ĐO ĐƯỢC · (3) nhận xét CÓ CĂN CỨ.** Áp **cả B2B & B2C**. Phần kẹp/lọc hiện có (review trên) **giữ nguyên** — đây là lớp *đảm bảo đúng*, không thay.
@@ -886,5 +944,14 @@ InterviewService làm chủ kho tri thức; ground **lớp SINH** (câu hỏi ·
 **Wire sinh:** `PracticeService` retrieve theo jobCategory (query=jobCategory+focus+JD/CV) → truyền grounding vào `/generate-questions` → map `citedChunkIds`→`QuestionResponse.citations: [{chunkId, sourceUrl, sourceTitle}]` (`GroundingMapper` drop id lạ) → lưu `grounding_refs`. **Roadmap Cách 2 precompute:** `RoadmapService.CreateAsync` batch-embed tên bài (1 lần `/embed`) → lưu snapshot `roadmap_lessons.grounding_refs`; mở bài feed snapshot vào `/generate-lesson-theory` → **không retrieve realtime** (khỏi lo timeout 60s). Precompute/retrieval lỗi → `[]` (ungrounded, không vỡ).
 
 **Context7 (`context7.com/api/v2/`, Bearer `Context7:ApiKey`):** shape v2 verify keyless — `/libs/search`→`results[]{id,title,trustScore,totalSnippets}`; `/context?libraryId=&query=&type=json`→`{codeSnippets[]{codeTitle,codeDescription,codeId=URL,codeList[].code}, infoSnippets[]{pageId=URL,breadcrumb,content}}`. ⚠ **Bẫy đã sửa (D27):** BaseAddress phải **trailing-slash** + path **không leading-slash** (nếu không `/api/v2` bị mất → 404); param `libraryId`/`query` (không `library`/`topic`); sourceUrl từ `codeId`/`pageId`. Khóa bằng `Context7ClientShapeTests` (feed JSON thật).
+
+**Nhãn trích dẫn — LUÔN bắt đầu bằng tên nguồn admin curate** (`KnowledgeService.CitationLabel`): `source.Title`, hoặc `source.Title · <mục con>` khi chunk có `SectionTitle` khác tên nguồn. Áp cho **CẢ BA** `source_type`.
+> ⚠ **Bẫy đã sửa:** trước đây nhãn là `SectionTitle ?? source.Title` — heading của chunk **ĐÈ** tên nguồn. Trên trang thật, heading thường là đồ trang trí điều hướng: đo trên corpus đã nạp, `"Help improve MDN"` xuất hiện **5 lần**, cạnh `"In This Article:"` và `"Format: 3-Part"`. Người dùng thấy trích dẫn tên "Help improve MDN" thì **không kiểm chứng được gì**, mà cả lý do tồn tại của citation là để kiểm chứng (D27). Tên nguồn đứng **TRƯỚC** nên nhãn không bao giờ vô nghĩa; mục con giữ phía sau để không mất vị trí trong tài liệu dài (MDN Web Performance: 57 chunk).
+> ⚠ **Lần vá đầu BỎ SÓT nhánh Context7** (nó dùng thẳng tiêu đề snippet): đo trên prod sau khi reindex toàn bộ — **607/687 nhãn đúng, 80 sai**, và 80 **đúng bằng tổng chunk của cả 5 nguồn Context7** ⇒ nhánh đó sai **100%** (`"SET TRANSACTION"`, `"CREATE INDEX"`, `"Built-in React Hooks"`). Bất biến *"nhãn luôn bắt đầu bằng `source.Title`"* nay được test khoá theo vòng lặp trên `Enum.GetValues<KnowledgeSourceType>()` để nhánh thêm về sau không lọt lần nữa.
+
+**Điểm uy tín (`reputation`) — SERVER tự tra, không nhận từ client:** `Context7IngestAsync` **và** `ReindexAsync` đều gọi `TryResolveContext7ReputationAsync` (chỉ với `source_type=Context7` + có `source_ref`; Manual/Url bỏ qua, không tốn lời gọi nào). Khớp bằng **ID ĐẦY ĐỦ** chứ không theo tên — search `"react"` trả **5 thư viện khác nhau, uy tín 8.3→10**.
+> ⚠ **Tra hụt thì GIỮ giá trị cũ, KHÔNG ghi đè `null`** (`?? source.Reputation`): `null` ở đây nghĩa là *"không biết"* (Context7 lỗi/rate-limit, hoặc id không nằm trong tập kết quả search) chứ **không phải "uy tín bị rút"** — ghi đè sẽ **XOÁ dữ liệu tốt** mỗi lần Context7 rate-limit, mà lần reindex sau không còn gì để khôi phục.
+> ⚠ **Vì sao `ReindexAsync` phải tra lại:** trước đây `reputation` được gán **đúng một lần** trong `Context7IngestAsync` ⇒ mọi nguồn nạp **TRƯỚC** khi có đường ghi đó **vĩnh viễn `null`**, reindex bao nhiêu lần cũng không cứu. Đo trên prod: reindex cả 25 nguồn xong thì **5/5** nguồn Context7 vẫn `reputation = null`.
+> Fail-open có chủ đích (cùng hướng với `cv_screening` không raise khi thiếu `fullName`): nạp corpus là việc admin làm thủ công và **tốn tiền embedding** — biến một nhãn phụ thành đường làm hỏng cả lần nạp là đánh đổi tồi.
 
 **Config/deploy:** `Qdrant:Url` · `Context7:ApiKey` · `Grounding:{Enabled(default false),TopK=4,ScoreThreshold=0.5}`. Qdrant = service trong `deploy/compose.yaml`. Bật grounding: nạp corpus qua admin → `Grounding__Enabled=true`. Unit test **mock `IVectorStore` + embed client** (không cần Qdrant/AI thật).
