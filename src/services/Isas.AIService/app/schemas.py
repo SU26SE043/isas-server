@@ -70,6 +70,21 @@ class GenerateQuestionsRequest(BaseModel):
     # NUỐT IM LẶNG field quên khai — .NET gửi mà AI không thấy, không lỗi, không log, tính năng chỉ
     # đơn giản là không chạy (đúng lớp bug `focusCriteria` BC14 và `metricsVersion` 2026-08-05).
     criteria: list[CriterionRef] | None = None
+    # SEN1 — CẤP ĐỘ ỨNG VIÊN do người dùng chọn (`Fresher|Junior|Middle|Senior`), dùng để hiệu chỉnh
+    # độ khó của bộ CÂU GỐC. Trước SEN1, field này chỉ tới được `/decide-next` ⇒ người chọn *Senior*
+    # nhận bộ câu gốc y hệt người chọn *Fresher*, mà câu gốc mới là thứ định khung cả buổi (INT-17b:
+    # mỗi câu gốc còn kéo theo tối đa 3 tầng đào sâu quanh chính chủ đề nó mở ra).
+    #
+    # ⚠ Khai tường minh ở ĐÂY là nửa quyết định của tính năng: thiếu dòng này thì .NET vẫn gửi,
+    # HTTP vẫn 200, không lỗi, không log — pydantic `extra='ignore'` chỉ đơn giản vứt field và
+    # prompt không đổi một chữ. Chính lớp bug đó đã cắn repo 3 lần (`focusCriteria`/BC14 ·
+    # `metricsVersion` · `adaptiveMaxQuestions` vs `maxQuestions`).
+    #
+    # Mặc định `"Junior"` = khớp mặc định của `practice_sessions.seniority` / `campaigns.seniority`
+    # ở DB, nên caller cũ không gửi gì vẫn nhận đúng mức mà DB của chính họ đang ghi.
+    # Giá trị lạ KHÔNG bị từ chối ở tầng schema (`str` chứ không phải Literal/Enum): xem
+    # `app/seniority.normalize` — 422 ở đây sẽ thành 502 trên một buổi ĐÃ TRỪ CREDIT.
+    seniority: str = "Junior"
 
 
 class GenerateQuestionsResponse(BaseModel):
@@ -317,6 +332,23 @@ class DecideCriterion(BaseModel):
     name: str
     description: str | None = None  # để follow-up NEO cùng năng lực → công bằng B2B
 
+class CriterionEvidenceState(BaseModel):
+    """Trạng thái bằng chứng theo tiêu chí — .NET là chủ state, đây chỉ là bản chụp để QUYẾT ĐỊNH.
+
+    ⚠ `deepCount` CỐ Ý KHÔNG khai ở đây, đừng thêm lại theo phản xạ "cho khớp .NET":
+    (1) `build_decide_next_prompt` đọc đúng 5 field dưới đây và KHÔNG đọc nó ⇒ khai thêm chỉ tạo ra
+        một field có tên mà không có ruột, và người sau sẽ tưởng prompt đang dùng nó;
+    (2) nó là tín hiệu ĐỘ SÂU/NGÂN SÁCH, mà quyết định sản phẩm đã chốt là bằng chứng chỉ lái NỘI DUNG
+        câu hỏi, KHÔNG lái độ dài buổi — nhét nó vào prompt là lái độ dài qua cửa sau;
+    (3) ngân sách chuỗi vốn đã tới prompt bằng đường riêng và ĐÚNG hơn: `currentDepth`/`maxDepth`.
+    .NET vẫn gửi `deepCount` cũng không sao — pydantic `extra='ignore'` bỏ qua, không 422.
+    """
+    criterionId: str
+    name: str
+    state: str = "UNKNOWN"
+    evidenceFound: list[str] = []
+    missingEvidence: list[str] = []
+
 
 class DecideNextRequest(BaseModel):
     jobCategory: str
@@ -330,6 +362,8 @@ class DecideNextRequest(BaseModel):
     maxQuestions: int = 0               # 0 = không trần cứng
     maxFollowUps: int = 0               # 0 = không trần cứng
     criteria: list[DecideCriterion] = []
+    seniority: str = "Junior"
+    currentEvidenceState: list[CriterionEvidenceState] = []
 
     # INT-17b — ngữ cảnh CHUỖI đào sâu (mỗi câu gốc có chuỗi riêng, tối đa `maxDepth` tầng).
     # ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'` sẽ NUỐT IM LẶNG
@@ -386,6 +420,10 @@ class DecideNextResponse(BaseModel):
     # rơi về Whisper cục bộ (lỗi từ 4,2% so với 0,7%) mà nhìn từ ngoài hai bản giống hệt nhau.
     # None = không đo được (nhánh answerText, không có audio để chép).
     transcriptEngine: str | None = None
+    targetCriterionId: str | None = None
+    evidenceFound: list[str] | None = None
+    missingEvidence: list[str] | None = None
+    newEvidenceState: str | None = None
 
 
 # ── Đối chiếu khuôn mặt (SEC-2/3) — sync HTTP, CampaignService gọi khi giám sát ──────

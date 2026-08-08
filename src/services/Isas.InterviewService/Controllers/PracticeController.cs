@@ -42,6 +42,30 @@ public class PracticeController : ControllerBase
         return candidateId;
     }
 
+    /// <summary>SC3 — preview preset câu hỏi do server tính, dùng đúng luật tạo session.</summary>
+    [HttpGet("/api/practice/session-options")]
+    [ProducesResponseType(typeof(PracticeSessionOptionsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    // `language` optional (null = vi) — PHẢI khớp `language` sẽ gửi khi tạo session, nếu không preview
+    // dựng trên rubric khác bộ rubric của buổi thật (số tiêu chí nội dung là SÀN của số câu gốc).
+    public async Task<IActionResult> GetSessionOptions(
+        [FromQuery] string jobCategory, [FromQuery] string? language, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await _practiceService.GetSessionOptionsAsync(
+                GetCandidateId(), jobCategory, language, ct));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return Unauthorized(new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     /// <summary>
     /// 1. Tạo phiên phỏng vấn mới (Gọi AI sinh câu hỏi)
     /// </summary>

@@ -22,8 +22,35 @@ public record CreatePracticeSessionRequest(
     string? JdText = null,     // optional — ưu tiên hơn JdId
     int? TimeLimitSec = null,  // optional — 60/120/240; null = mặc định 120
     int? QuestionCount = null, // optional — 1..20; null = mặc định của AIService (5)
-    string? Language = null
+    string? Language = null,
+    // Seniority: mức ứng viên tự khai (Fresher|Junior|Middle|Senior), đóng dấu lên session.
+    // ⚠ NULLABLE có chủ ý — xem PracticeService.ValidateSeniority: null (client cũ không gửi) =
+    // "Junior", còn chuỗi RỖNG là một giá trị SAI → 400. Kiểu non-nullable `= "Junior"` KHÔNG phân
+    // biệt được hai ca đó: System.Text.Json vẫn bind `"seniority": null` thành null (nullable ref
+    // types không được enforce lúc chạy) ⇒ nhánh mặc định không bao giờ với tới được, client gửi
+    // null nhận 400 thay vì Junior.
+    string? Seniority = null
 );
+
+// SC3 — tất cả số liệu nghiệp vụ (đặc biệt SeedCount) do server tính bằng đúng luật tạo session.
+// UI chỉ dùng QuestionCount × TimeLimitSec để hiển thị thời lượng.
+public record PracticeSessionOptionsResponse(
+    bool AdaptiveEnabled,
+    int MaxDeepPerQuestion,
+    int ContentCriteriaCount,
+    int QuestionCountMin,
+    int QuestionCountMax,
+    int DefaultQuestionCount,
+    IReadOnlyList<PracticeSessionPreset> Presets,
+    IReadOnlyList<PracticeSessionPreview> Preview);
+
+public record PracticeSessionPreset(
+    string Key,
+    int QuestionCount,
+    int SeedCount,
+    bool CoversAllCriteria);
+
+public record PracticeSessionPreview(int QuestionCount, int SeedCount);
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
 public record CampaignCriterionInput(
@@ -49,7 +76,9 @@ public record CreateCampaignSessionRequest(
     int? MaxQuestions = null,
     // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ: đào sâu dồn ở đuôi buổi).
     int? MaxDeepPerQuestion = null,
-    string? Language = null
+    string? Language = null,
+    // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
+    string? Seniority = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -72,7 +101,10 @@ public record CreateCampaignSessionInternalRequest(
     // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ). Field optional CUỐI record →
     // client cũ (chưa gửi) không vỡ.
     int? MaxDeepPerQuestion = null,
-    string? Language = null
+    string? Language = null,
+    // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
+    // Campaign gửi field này; client cũ chưa gửi vẫn ra Junior thay vì 400.
+    string? Seniority = null
 );
 public record PracticeSessionResponse(
     Guid Id,
@@ -83,7 +115,21 @@ public record PracticeSessionResponse(
     DateTime CreatedAt,
     DateTime? CompletedAt,
     IReadOnlyList<QuestionResponse> Questions,
-    SessionResultResponse? Result = null   // BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa
+    SessionResultResponse? Result = null,  // BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa
+    string Seniority = "Junior",           // snapshot mức do ứng viên chọn khi tạo B2C session
+    IReadOnlyList<CriterionEvidenceResponse>? CriterionEvidence = null
+);
+
+// Evidence state được trả dạng additive ở GET session để client khôi phục đúng ngữ cảnh đã dùng
+// cho lượt adaptive tiếp theo; null = session cũ/B2B chưa bật evidence tracking.
+public record CriterionEvidenceResponse(
+    Guid CriterionId,
+    string CriterionName,
+    string State,
+    IReadOnlyList<string> EvidenceFound,
+    IReadOnlyList<string> MissingEvidence,
+    int DeepCount,
+    DateTime UpdatedAt
 );
 
 public record QuestionResponse(

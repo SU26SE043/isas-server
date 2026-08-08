@@ -35,38 +35,48 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
     private record CitationApi(int QuestionIndex, List<string>? CitedChunkIds);
 
     public Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
-        string jobCategory, string? cvText, string? jdText, CancellationToken ct = default)
-        => GenerateQuestionsAsync(jobCategory, cvText, jdText, focusCriteria: null, count: null, ct);
+        string jobCategory, string? cvText, string? jdText,
+        string seniority = "Junior", CancellationToken ct = default)
+        => GenerateQuestionsAsync(
+            jobCategory, cvText, jdText, focusCriteria: null, count: null, seniority, ct);
 
     // BC14 (focusCriteria) + F2b (count). null = không ghi đè → AIService dùng mặc định của nó.
     public async Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText,
-        IReadOnlyList<string>? focusCriteria, int? count, CancellationToken ct = default)
+        IReadOnlyList<string>? focusCriteria, int? count,
+        string seniority = "Junior", CancellationToken ct = default)
     {
         var result = await GenerateQuestionsAsync(
-            jobCategory, cvText, jdText, focusCriteria, count, grounding: null, ct);
+            jobCategory, cvText, jdText, focusCriteria, count, grounding: null, "vi",
+            criteria: null, seniority, ct);
         return result.Questions;
     }
 
-    // RAG grounding — overload GROUNDED (đường DUY NHẤT gọi AIService; 2 overload trên delegate về đây).
+    // RAG grounding — overload GROUNDED. Xem ghi chú ở interface: overload này KHÔNG mang `seniority`
+    // (đụng độ chữ ký với overload `language` ngay dưới) ⇒ luôn gửi mặc định.
     public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count,
         IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct = default)
-        => await GenerateQuestionsAsync(jobCategory, cvText, jdText, focusCriteria, count, grounding, "vi", ct);
-
-    public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
-        string jobCategory, string? cvText, string? jdText,
-        IReadOnlyList<string>? focusCriteria, int? count,
-        IReadOnlyList<GroundingChunk>? grounding, string language, CancellationToken ct = default)
         => await GenerateQuestionsAsync(
-            jobCategory, cvText, jdText, focusCriteria, count, grounding, language, criteria: null, ct);
+            jobCategory, cvText, jdText, focusCriteria, count, grounding, "vi",
+            criteria: null, "Junior", ct);
 
     public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count,
         IReadOnlyList<GroundingChunk>? grounding, string language,
-        IReadOnlyList<QuestionTargetCriterionDto>? criteria, CancellationToken ct = default)
+        string seniority = "Junior", CancellationToken ct = default)
+        => await GenerateQuestionsAsync(
+            jobCategory, cvText, jdText, focusCriteria, count, grounding, language,
+            criteria: null, seniority, ct);
+
+    public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria,
+        string seniority = "Junior", CancellationToken ct = default)
     {
         var payload = new
         {
@@ -88,7 +98,24 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             // sẽ serialize ra `CriterionId`/`Name` và Python im lặng bỏ qua.
             criteria = criteria is { Count: > 0 }
                 ? criteria.Select(c => new { criterionId = c.CriterionId, name = c.Name })
-                : null
+                : null,
+            // SEN1 — cấp độ ứng viên. Tên thành viên ở đây là nơi DUY NHẤT quyết định tên khoá ra dây,
+            // và hợp đồng với pydantic là `seniority`.
+            //
+            // ⚠ Đính chính một hiểu nhầm đang lưu hành trong repo (đã probe thật, không suy luận):
+            // `JsonContent.Create(payload)` KHÔNG dùng `JsonSerializerOptions.Default` mà dùng
+            // `JsonSerializerDefaults.Web` ⇒ CÓ áp camelCase. Viết `Seniority` ở đây vẫn ra
+            // `"seniority"`. Nên rủi ro thật KHÔNG phải hoa/thường mà là **đổi TÊN** (vd
+            // `seniorityLevel`) — đổi tên thì pydantic `extra='ignore'` nuốt im lặng, không lỗi,
+            // không log. *(Ngược lại, `JsonSerializer.Serialize(job)` không truyền options — như ở
+            // `ScoringJobPublisher` — mới thật sự ra PascalCase.)*
+            //
+            // Không bao giờ để `null` ra dây: `GenerateQuestionsRequest.seniority` bên Python khai
+            // `str` (không Optional) ⇒ `"seniority": null` là **422**, mà đường sinh câu hỏi nằm SAU
+            // `ReserveAsync` ⇒ một giá trị rỗng lọt xuống đây sẽ thành buổi hỏng ĐÃ TRỪ CREDIT
+            // (PAY-5). Giá trị lạ NHƯNG khác rỗng thì cứ gửi — AIService tự hạ về "Junior" và ghi
+            // log, đúng chỗ để phát hiện caller gửi sai.
+            seniority = string.IsNullOrWhiteSpace(seniority) ? "Junior" : seniority
         };
 
         // RAG grounding — /generate-questions là endpoint AIService (GEN-1/GEN-7 internal-only) → gắn

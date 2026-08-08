@@ -146,6 +146,8 @@ public sealed class DecideNextWireContractTests
         Assert.Equal(3, Prop(root, "followUpCount").GetInt32());
         Assert.Equal(19, Prop(root, "maxQuestions").GetInt32());
         Assert.Equal(4, Prop(root, "maxFollowUps").GetInt32());
+        Assert.Equal("Junior", Prop(root, "seniority").GetString());
+        Assert.Empty(Prop(root, "currentEvidenceState").EnumerateArray());
 
         // Phần tử lồng cũng phải đúng tên (DecideTurn / DecideCriterion bên schemas.py).
         var turn = Assert.Single(Prop(root, "history").EnumerateArray().ToList());
@@ -171,7 +173,7 @@ public sealed class DecideNextWireContractTests
         [
             "jobCategory", "audioObjectKey", "currentQuestion", "history", "language",
             "askedCount", "followUpCount", "maxQuestions", "maxFollowUps", "criteria",
-            "rootQuestion", "currentDepth", "maxDepth", "otherTopics"
+            "rootQuestion", "currentDepth", "maxDepth", "otherTopics", "seniority", "currentEvidenceState"
         ];
 
         var actual = doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(x => x, StringComparer.Ordinal);

@@ -9,6 +9,8 @@
         public string? Domain { get; set; }
         // Snapshot for fair B2B scoring: every session in this campaign uses this language.
         public string Language { get; set; } = "vi";
+        // Mức HR chọn cho cả campaign; snapshot sang session để prompt adaptive không suy đoán từ CV.
+        public string Seniority { get; set; } = "Junior";
         public CampaignStatus Status { get; set; }
         public int? MaxCandidates { get; set; }
         public int? MaxConcurrentInterviews { get; set; }

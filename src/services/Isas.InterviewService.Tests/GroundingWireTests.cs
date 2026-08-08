@@ -89,7 +89,10 @@ public class GroundingWireTests
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
-                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
+                // SEN1 — đường grounded nay gọi overload `language` (overload `grounding+ct` không
+                // mang được `seniority`, xem IAiServiceQuestionGenerator): +1 tham số `seniority`.
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GeneratedQuestionsResult(
                 new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } },
                 new List<QuestionCitationDto> { new(0, new[] { "A" }) }));
@@ -126,7 +129,10 @@ public class GroundingWireTests
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
-                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
+                // SEN1 — đường grounded nay gọi overload `language` (overload `grounding+ct` không
+                // mang được `seniority`, xem IAiServiceQuestionGenerator): +1 tham số `seniority`.
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GeneratedQuestionsResult(
                 new List<GeneratedQuestion> { new() { Content = "Q1" } },
                 new List<QuestionCitationDto> { new(0, new[] { "A" }) }));
@@ -148,7 +154,7 @@ public class GroundingWireTests
         var gen = new Mock<IAiServiceQuestionGenerator>();
         // Grounding tắt → PracticeService gọi overload CŨ 4 tham số (không grounding).
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
 
         var svc = Build(t, gen, knowledge.Object, groundingEnabled: false);

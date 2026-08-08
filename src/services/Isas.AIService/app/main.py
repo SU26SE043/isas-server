@@ -88,9 +88,14 @@ async def generate_questions(req: GenerateQuestionsRequest,
         # Chấm-theo-phạm-vi — vắng ⇒ None (KHÔNG phải []): provider rẽ nhánh theo truthiness, và
         # response_model_exclude_none bỏ hẳn targetCriteria ⇒ caller cũ giữ nguyên shape.
         criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
+        # SEN1 — cấp độ ứng viên phải tới được LỚP SINH, không chỉ `/decide-next`. Truyền bằng
+        # TỪ KHOÁ: `_call_with_language` chèn `language=` vào kwargs, nên mọi thứ sau `criteria`
+        # phải là keyword, và keyword thì không lệch khi provider thêm tham số về sau.
+        # Quên dòng này thì schema có khai, .NET có gửi, HTTP vẫn 200 — prompt chỉ đơn giản không
+        # đổi một chữ (cùng lớp bug `targetCriteria` ngay dưới đây và `metricsVersion` 2026-08-05).
         result = await _call_with_language(req.language, provider.generate,
             req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding,
-            criteria)
+            criteria, seniority=req.seniority)
         # citations=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ cho Campaign B2B.
         citations = ([QuestionCitation(**c) for c in result.citations]
                      if result.citations is not None else None)
@@ -402,6 +407,8 @@ async def decide_next(
             current_depth=req.currentDepth,
             max_depth=req.maxDepth,
             other_topics=req.otherTopics,
+            seniority=req.seniority,
+            current_evidence_state=[e.model_dump() for e in req.currentEvidenceState],
         )
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi quyết định câu hỏi kế: {ex}")
@@ -417,6 +424,10 @@ async def decide_next(
         # Cùng lý do với deliveryMetrics: buổi adaptive chép lời ĐÚNG MỘT LẦN tại đây, nên nếu
         # con dấu không đi ra ở đây thì nó không còn cơ hội nào khác.
         transcriptEngine=engine,
+        targetCriterionId=decision.get("targetCriterionId"),
+        evidenceFound=decision.get("evidenceFound"),
+        missingEvidence=decision.get("missingEvidence"),
+        newEvidenceState=decision.get("newEvidenceState"),
     )
 
 

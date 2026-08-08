@@ -262,6 +262,14 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("required_skills");
 
+                    b.Property<string>("Seniority")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Junior")
+                        .HasColumnName("seniority");
+
                     b.Property<DateTime>("StartsAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("starts_at");
@@ -312,6 +320,8 @@ namespace Isas.CampaignService.Migrations
                             t.HasCheckConstraint("ck_campaigns_language", "language IN ('vi', 'en')");
 
                             t.HasCheckConstraint("ck_campaigns_pass_score_pct_range", "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)");
+
+                            t.HasCheckConstraint("ck_campaigns_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
 
                             t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
                         });

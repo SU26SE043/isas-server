@@ -36,14 +36,14 @@ public class SessionQuestionCountF2bTests
         var questions = new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } };
 
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(questions);
 
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, CancellationToken>(
-                (_, _, _, _, count, _) => captureCount?.Invoke(count))
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, string, CancellationToken>(
+                (_, _, _, _, count, _, _) => captureCount?.Invoke(count))
             .ReturnsAsync(questions);
 
         return gen;
@@ -88,11 +88,11 @@ public class SessionQuestionCountF2bTests
 
         // Đi đúng overload cũ (4 tham số) — không gửi count nào cả.
         gen.Verify(g => g.GenerateQuestionsAsync(
-            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Once);
         gen.Verify(g => g.GenerateQuestionsAsync(
             It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 

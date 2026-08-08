@@ -8,6 +8,10 @@ public record DecideTurnDto(string Question, string? Answer, string Kind);
 // Tiêu chí năng lực để AI NEO câu hỏi thích ứng về cùng rubric (giữ công bằng chấm/ranking B2B).
 public record DecideCriterionDto(string Name, string? Description);
 
+// Evidence-driven adaptive interview: trạng thái do InterviewService sở hữu và snapshot sang AIService.
+public record CriterionEvidenceStateDto(string CriterionId, string Name, string State,
+    IReadOnlyList<string> EvidenceFound, IReadOnlyList<string> MissingEvidence, int DeepCount);
+
 /// <summary>
 /// INT-17b — toàn bộ đầu vào của 1 lượt <c>/decide-next</c>, gói thành record thay vì rải tham số.
 ///
@@ -33,7 +37,9 @@ public record AdaptiveDecisionRequest(
     int MaxDepth = 0,
     // Tên các câu gốc KHÁC của buổi (không kèm transcript) — để AI không hỏi trùng chủ đề đã có sẵn.
     IReadOnlyList<string>? OtherTopics = null,
-    string Language = "vi");
+    string Language = "vi",
+    string Seniority = "Junior",
+    IReadOnlyList<CriterionEvidenceStateDto>? CurrentEvidenceState = null);
 
 // Kết quả decide-next: action + câu hỏi kế (null nếu end) + transcript đã transcribe đồng bộ.
 public record DecideNextResult(
@@ -50,4 +56,8 @@ public record DecideNextResult(
     // chép đã dùng để chấm. AIService rơi từ engine từ xa về Whisper cục bộ khi mạng hỏng ⇒ giá trị
     // này thay đổi giữa các câu trong cùng một buổi.
     // 🔴 Khoá dây phía AIService: `transcriptEngine` (camelCase) — xem AnswerScoreCallbackRequest.
-    string? TranscriptEngine = null);
+    string? TranscriptEngine = null,
+    string? TargetCriterionId = null,
+    IReadOnlyList<string>? EvidenceFound = null,
+    IReadOnlyList<string>? MissingEvidence = null,
+    string? NewEvidenceState = null);

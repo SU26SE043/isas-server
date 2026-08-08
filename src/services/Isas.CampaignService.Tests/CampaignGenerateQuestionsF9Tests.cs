@@ -37,11 +37,22 @@ public class CampaignGenerateQuestionsF9Tests
         public string? LastJobCategory { get; private set; }
         public string? LastJdText { get; private set; }
         public int? LastCount { get; private set; }
+        /// <summary>SEN1 — mức HR đặt cấp chiến dịch, ghi lại để test khẳng định được nó đi tới đây.</summary>
+        public string? LastSeniority { get; private set; }
 
         public FakeGenerator(Func<List<string>> result) => _result = result;
 
         public static FakeGenerator Returning(params string[] questions)
             => new(() => questions.ToList());
+
+        // SEN1 — thành viên BẮT BUỘC (interface cố ý không có default): quên cài = vỡ biên dịch,
+        // thay vì đánh rơi seniority trong im lặng.
+        public Task<List<string>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority, CancellationToken ct)
+        {
+            LastSeniority = seniority;
+            return GenerateAsync(jobCategory, jdText, count, ct);
+        }
 
         public static FakeGenerator Throwing()
             => new(() => throw new DownstreamServiceException("AIService /generate-questions trả về 503."));
@@ -97,6 +108,39 @@ public class CampaignGenerateQuestionsF9Tests
         };
 
     // ───────────────────── (a) đường sinh: source = AiGenerated ─────────────────────
+
+    /// <summary>
+    /// SEN1 — mức kinh nghiệm HR đặt cấp CHIẾN DỊCH phải đi tới lượt sinh câu hỏi.
+    ///
+    /// <para>Trước SEN1, <c>seniority</c> chỉ tới <c>/decide-next</c> (câu ĐÀO SÂU) chứ không tới
+    /// <c>/generate-questions</c> ⇒ chiến dịch khai <c>Senior</c> nhận **bộ câu gốc y hệt** chiến dịch
+    /// <c>Fresher</c> — mà câu gốc mới là thứ định khung cả buổi (INT-17b: mỗi câu gốc mở ra một chuỗi
+    /// đào sâu quanh chính chủ đề nó nêu).</para>
+    ///
+    /// <para>Test này khoá đúng vế cuối của chuỗi: caller trong <c>CampaignService</c> phải truyền
+    /// <c>campaign.Seniority</c> chứ không rơi về mặc định. Ghim <c>"Senior"</c> (≠ mặc định
+    /// <c>"Junior"</c>) để phân biệt được "truyền đúng" với "rơi về default" — nếu ghim Junior thì
+    /// test xanh cả khi caller đánh rơi tham số.</para>
+    /// </summary>
+    [Fact]
+    public async Task Sinh_cau_hoi_gui_dung_seniority_cua_chien_dich()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb, org);
+        using (var seed = tdb.NewContext())
+        {
+            var row = await seed.Campaigns.FirstAsync(c => c.Id == campaign.Id);
+            row.Seniority = "Senior";
+            await seed.SaveChangesAsync();
+        }
+        var gen = FakeGenerator.Returning("Q1");
+
+        await NewService(tdb.NewContext(), gen)
+            .GenerateCampaignQuestionsAsync(org, org, campaign.Id, count: null, default);
+
+        Assert.Equal("Senior", gen.LastSeniority);
+    }
 
     [Fact]
     public async Task Sinh_cau_hoi_tu_JD_luu_voi_source_AiGenerated()

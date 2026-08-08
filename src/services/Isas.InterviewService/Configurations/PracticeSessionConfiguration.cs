@@ -27,6 +27,7 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
             .HasConversion<string>()
             .HasMaxLength(8)
             .IsRequired();
+        e.Property(x => x.Seniority).HasMaxLength(16).IsRequired().HasDefaultValue("Junior");
 
         e.Property(x => x.CreatedAt).IsRequired();
 
@@ -42,6 +43,7 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         {
             t.HasCheckConstraint("ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20");
             t.HasCheckConstraint("ck_practice_sessions_language", "language IN ('vi', 'en')");
+            t.HasCheckConstraint("ck_practice_sessions_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
             t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
         });
 
@@ -302,5 +304,42 @@ public class SessionCriterionScoreConfiguration : IEntityTypeConfiguration<Sessi
             .WithMany()
             .HasForeignKey(x => x.CriterionId)
             .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+public class SessionCriterionEvidenceConfiguration : IEntityTypeConfiguration<SessionCriterionEvidence>
+{
+    public void Configure(EntityTypeBuilder<SessionCriterionEvidence> e)
+    {
+        e.HasKey(x => x.Id);
+        e.Property(x => x.CriterionName).HasMaxLength(128).IsRequired();
+        e.Property(x => x.State).HasMaxLength(16).IsRequired();
+
+        // Tập ĐÓNG của evidence state, chốt ở tầng DB cho MỌI đường ghi — đối xứng
+        // `ck_practice_sessions_seniority` (cùng PR đã làm cho seniority, chỗ này thì quên).
+        //
+        // ⚠ Vì sao KHÔNG dựa vào guard C# ở AnswerService: `state` là `varchar(16)`, và thêm một state
+        // dài hơn 16 ký tự sẽ vỡ trên Postgres trong khi **SQLite không enforce độ dài varchar** ⇒ test
+        // xanh 100%. Đúng hình dạng sự cố S11 (`funded_by varchar(16)` vs enum `SubscriptionMetered`
+        // 19 ký tự: 1569 test SQLite xanh, mọi reserve gói metered hỏng trên prod). CHECK làm giá trị
+        // lạ hỏng NGAY ở migration/insert đầu tiên thay vì hỏng lặng lẽ theo độ dài chuỗi.
+        e.ToTable(t => t.HasCheckConstraint(
+            "ck_session_criterion_evidence_state",
+            "state IN ('UNKNOWN', 'PARTIAL', 'SATISFIED', 'FAILED')"));
+        var evidenceComparer = new ValueComparer<List<string>>(
+            (a, b) => (a ?? new List<string>()).SequenceEqual(b ?? new List<string>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, x) => HashCode.Combine(h, x.GetHashCode())),
+            v => v == null ? new List<string>() : v.ToList());
+        var found = e.Property(x => x.EvidenceFound).HasConversion(
+            v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null) ?? new List<string>()).HasColumnType("jsonb");
+        found.Metadata.SetValueComparer(evidenceComparer);
+        var missing = e.Property(x => x.MissingEvidence).HasConversion(
+            v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null) ?? new List<string>()).HasColumnType("jsonb");
+        missing.Metadata.SetValueComparer(evidenceComparer);
+        e.HasIndex(x => new { x.SessionId, x.CriterionId }).IsUnique();
+        e.HasOne(x => x.Session).WithMany().HasForeignKey(x => x.SessionId).OnDelete(DeleteBehavior.Cascade);
+        e.HasOne<RubricCriterion>().WithMany().HasForeignKey(x => x.CriterionId).OnDelete(DeleteBehavior.Restrict);
     }
 }

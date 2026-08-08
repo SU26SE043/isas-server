@@ -17,6 +17,8 @@ public class PracticeSession : IHasUpdatedAt
     public Guid? CvId { get; set; }
     public Guid? JdId { get; set; }
     public JobCategory JobCategory { get; set; }
+    // Snapshot trình độ người dùng/HR chọn lúc tạo; không suy từ CV và không đổi giữa buổi.
+    public string Seniority { get; set; } = "Junior";
 
     // Snapshot per session: adaptive questions, scoring jobs and TTS must use the language chosen
     // at creation time, never a mutable runtime default.

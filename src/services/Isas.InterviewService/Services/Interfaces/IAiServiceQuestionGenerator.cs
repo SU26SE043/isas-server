@@ -4,23 +4,42 @@ namespace Isas.InterviewService.Services.Interfaces;
 
 public interface IAiServiceQuestionGenerator
 {
+    // ── SEN1 — `seniority` trên MỌI overload, không chỉ overload giàu nhất ──────────────────────
+    //
+    // `PracticeService` chọn overload theo 4 nhánh (labeled / grounded / focus-hoặc-count / plain),
+    // và nhánh nào cũng có người dùng thật:
+    //   • labeled  → rubric seed B2C (có tiêu chí `WhenTargeted`);
+    //   • các nhánh còn lại → rubric campaign B2B **và** rubric riêng BC16 — cả hai đều nhận DEFAULT
+    //     `ScoringScope='Always'` nên `targetable` RỖNG (rules.md §INT-18, mục SC2).
+    // Đặt `seniority` riêng ở overload giàu nhất là bỏ rơi trọn dòng B2B + mọi ứng viên dùng rubric
+    // riêng: họ chọn *Senior* mà bộ câu gốc vẫn ra y hệt *Fresher*, không lỗi, không log. Đó đúng
+    // là kiểu hỏng SEN1 sinh ra để diệt, chỉ đổi chỗ chứ không mất đi.
+    //
+    // Vị trí: NGAY TRƯỚC `ct` (CA1068 buộc CancellationToken đứng cuối) — cùng quy ước với
+    // `CampaignSessionClient.CreateOrGetSessionAsync` khi PR160 wire seniority sang Interview.
+    // Mặc định `"Junior"` = mặc định của cột `practice_sessions.seniority` ở DB, nên caller chưa
+    // wire vẫn gửi đúng thứ DB của chính họ đang ghi.
     Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
-        string jobCategory, string? cvText, string? jdText, CancellationToken ct = default);
+        string jobCategory, string? cvText, string? jdText,
+        string seniority = "Junior", CancellationToken ct = default);
 
     // Overload ĐẦY ĐỦ: focusCriteria (BC14 — bám tiêu chí trọng tâm của roadmap lesson) + count
     // (F2b — số câu ứng viên chọn; null = để AIService dùng mặc định của nó).
-    //
-    // ⚠ Giữ overload 4 tham số ở trên NGUYÊN chữ ký có chủ ý: nó là đường đi của luồng thường và có
-    // ~18 điểm mock trong test. Chèn thêm tham số vào giữa sẽ làm mọi lời gọi positional đó vỡ biên
-    // dịch, đổi lấy đúng một tham số mà luồng thường không dùng tới.
     Task<List<GeneratedQuestion>> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText,
-        IReadOnlyList<string>? focusCriteria, int? count, CancellationToken ct = default);
+        IReadOnlyList<string>? focusCriteria, int? count,
+        string seniority = "Junior", CancellationToken ct = default);
 
     // RAG grounding — overload GROUNDED: truyền `grounding[]` (chunk truy hồi) + đọc `citations` per-câu
     // (Contract 2). Trả CẢ câu hỏi lẫn citation để PracticeService lưu/hiển thị. grounding rỗng → AIService
     // sinh ungrounded, citations rỗng. Tách overload riêng (không đổi 2 overload trên) — chỉ PracticeService
     // gọi khi Grounding:Enabled.
+    //
+    // ⚠ Overload này CỐ Ý giữ nguyên chữ ký (KHÔNG có `seniority`): thêm `string seniority` vào đây
+    // sẽ đụng độ với `string language` của overload ngay dưới — một lời gọi 7 tham số kết thúc bằng
+    // chuỗi khớp được CẢ HAI (seniority-với-ct-mặc-định vs language-với-seniority-và-ct-mặc-định)
+    // ⇒ CS0121 ambiguous. Đường grounded của `PracticeService` vì thế gọi thẳng overload dưới với
+    // `session.Language` (giá trị ở nhánh đó vốn LÀ "vi", nên hành vi không đổi).
     Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count,
@@ -29,22 +48,23 @@ public interface IAiServiceQuestionGenerator
     Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count,
-        IReadOnlyList<GroundingChunk>? grounding, string language, CancellationToken ct = default);
+        IReadOnlyList<GroundingChunk>? grounding, string language,
+        string seniority = "Junior", CancellationToken ct = default);
 
     // Overload GIÀU NHẤT: thêm `criteria` = danh sách tiêu chí NỘI DUNG của rubric buổi này, để
     // AIService gắn nhãn "câu hỏi i nhắm tiêu chí nào" (`targetCriteria`, mảng SONG SONG theo index
     // với `questions`). Nhãn đó quyết định phạm vi chấm về sau (ScoringScopeFilter).
     //
-    // ⚠ Tách overload riêng thay vì thêm tham số vào 4 overload trên: chữ ký của chúng là hợp đồng
-    // của ~33 điểm mock trong test, và PracticeService chỉ gọi overload này khi THẬT SỰ có tiêu chí
-    // nội dung để gắn nhãn — rubric không có tiêu chí nào `WhenTargeted` (B2B, rubric riêng BC16)
-    // thì không có gì để gửi, nên giữ nguyên đường gọi cũ vừa đúng hợp đồng ("criteria vắng ⇒ không
-    // gắn nhãn") vừa không đụng vào hành vi đã có.
+    // ⚠ Tách overload riêng thay vì thêm tham số vào 4 overload trên: PracticeService chỉ gọi
+    // overload này khi THẬT SỰ có tiêu chí nội dung để gắn nhãn — rubric không có tiêu chí nào
+    // `WhenTargeted` (B2B, rubric riêng BC16) thì không có gì để gửi, nên giữ nguyên đường gọi cũ
+    // vừa đúng hợp đồng ("criteria vắng ⇒ không gắn nhãn") vừa không đụng vào hành vi đã có.
     Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
         string jobCategory, string? cvText, string? jdText,
         IReadOnlyList<string>? focusCriteria, int? count,
         IReadOnlyList<GroundingChunk>? grounding, string language,
-        IReadOnlyList<QuestionTargetCriterionDto>? criteria, CancellationToken ct = default);
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria,
+        string seniority = "Junior", CancellationToken ct = default);
 }
 
 /// <summary>

@@ -507,10 +507,10 @@ public class ScoringScopeTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Callback((string _, string? _, string? _, IReadOnlyList<string>? _, int? _,
                        IReadOnlyList<GroundingChunk>? _, string _,
-                       IReadOnlyList<QuestionTargetCriterionDto>? c, CancellationToken _) => sent = c)
+                       IReadOnlyList<QuestionTargetCriterionDto>? c, string _, CancellationToken _) => sent = c)
             .ReturnsAsync(new GeneratedQuestionsResult(
                 [
                     new GeneratedQuestion { Content = "Câu nhắm thiết kế", TargetCriterionIds = [content[1].Id] },
@@ -548,7 +548,7 @@ public class ScoringScopeTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GeneratedQuestionsResult(
                 [new GeneratedQuestion { Content = "Q", TargetCriterionIds = [content[0].Id] }],
                 Array.Empty<QuestionCitationDto>()));
@@ -573,7 +573,7 @@ public class ScoringScopeTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GeneratedQuestionsResult(
                 [new GeneratedQuestion { Content = "Giới thiệu bản thân", TargetCriterionIds = Array.Empty<Guid>() }],
                 Array.Empty<QuestionCitationDto>()));
@@ -597,7 +597,7 @@ public class ScoringScopeTests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GeneratedQuestionsResult(
                 [new GeneratedQuestion { Content = "Q" }], Array.Empty<QuestionCitationDto>()));
 
@@ -619,7 +619,7 @@ public class ScoringScopeTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>(MockBehavior.Strict);
         gen.Setup(g => g.GenerateQuestionsAsync(
-                "BE", It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                "BE", It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync([new GeneratedQuestion { Content = "Q" }]);
 
         var resp = await Practicing(t, gen).CreateSessionAsync(

@@ -53,7 +53,7 @@ public class PracticeServiceTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion>
             {
                 new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" }
@@ -88,7 +88,7 @@ public class PracticeServiceTests
         var candidate = Guid.NewGuid();
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
 
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
@@ -124,9 +124,9 @@ public class PracticeServiceTests
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, CancellationToken>(
-                (_, _, _, _, count, _) => requestedCount = count)
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, string, CancellationToken>(
+                (_, _, _, _, count, _, _) => requestedCount = count)
             // AI vẫn có thể trả THỪA so với yêu cầu → `Take` phải cắt.
             .ReturnsAsync(new List<GeneratedQuestion>
             {
@@ -188,9 +188,9 @@ public class PracticeServiceTests
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, CancellationToken>(
-                (_, _, _, _, count, _) => requestedCount = count)
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, string, CancellationToken>(
+                (_, _, _, _, count, _, _) => requestedCount = count)
             // AI trả dư — `Take` phải cắt về đúng số câu gốc đã tính.
             .ReturnsAsync(Enumerable.Range(1, 9).Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList());
 
@@ -234,7 +234,7 @@ public class PracticeServiceTests
         var gen = new Mock<IAiServiceQuestionGenerator>(MockBehavior.Strict);
         // Luồng CŨ: không focusCriteria + không chọn số câu ⇒ overload 4 THAM SỐ.
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion>
             {
                 new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" }
@@ -260,7 +260,7 @@ public class PracticeServiceTests
         // `MockBehavior.Strict` + chỉ setup overload 4 tham số ⇒ nếu code gọi overload có `count` thì test
         // ném ngay. Đây là phần khoá "không đổi overload".
         gen.Verify(g => g.GenerateQuestionsAsync(
-            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
 
         // Vẫn cắt còn `SeedCount` câu seed như luồng adaptive cũ (AI trả 3, giữ 1).
         Assert.Single(res.Questions);
@@ -293,6 +293,44 @@ public class PracticeServiceTests
         Assert.False(d.Enabled);                  // toggle vẫn TẮT mặc định
     }
 
+    // SC3 — endpoint preview phải dùng đúng luật production, không để FE tự nhân bản ceil/kẹp.
+    [Fact]
+    public async Task SessionOptions_PreviewKhớpSoCauGocDuocTaoThucTe()
+    {
+        using var t = new TestDb();
+        int? requestedCount = null;
+        var generator = new Mock<IAiServiceQuestionGenerator>();
+        generator.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, string, CancellationToken>(
+                (_, _, _, _, count, _, _) => requestedCount = count)
+            .ReturnsAsync(Enumerable.Range(1, 5).Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList());
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation.Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, generator.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance,
+            Options.Create(new AdaptiveOptions { Enabled = true, SeedCount = 5, MaxQuestions = 20, MaxDeepPerQuestion = 3 }));
+        var candidate = Guid.NewGuid();
+
+        var options = await svc.GetSessionOptionsAsync(candidate, "BE");
+        var preview = options.Preview.Single(p => p.QuestionCount == 5);
+        await svc.CreateSessionAsync(candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE, QuestionCount: 5));
+
+        Assert.True(options.AdaptiveEnabled);
+        Assert.Equal(2, preview.SeedCount);
+        Assert.Equal(preview.SeedCount, requestedCount);
+        // ĐẢO TIỀN ĐỀ có chủ ý: assert cũ là `Equal(12, …)` — khoá cứng một HẰNG SỐ MA.
+        // Mặc định THẬT khi client bỏ trống `questionCount` là `questionCount ?? _adaptive.MaxQuestions`
+        // (xem ResolveSessionSettings) = 20 với đúng options mà chính test này dựng ở trên. Assert cũ vừa
+        // sai vừa tự mâu thuẫn với `MaxQuestions = 20` khai cách đó 6 dòng, và nó khoá luôn cái sai lại:
+        // ai sửa endpoint cho đúng sẽ thấy test đỏ và tưởng mình làm hỏng.
+        Assert.Equal(20, options.DefaultQuestionCount);
+    }
+
     // INT-17b — câu GỐC đánh số CÓ KHOẢNG TRỐNG (stride = 1 + trần đào sâu) để chuỗi của câu trước có
     // chỗ nằm xen vào mà không đụng câu sau. Đây là thứ thay cho việc thêm field `displayOrder` + sửa FE:
     // `MapToResponse` và FE B2B đều sắp theo `OrderNo`, nên đánh số đúng là ra đúng thứ tự hội thoại.
@@ -305,7 +343,7 @@ public class PracticeServiceTests
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion>
             {
                 new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" },
@@ -347,7 +385,7 @@ public class PracticeServiceTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion>
             {
                 new() { Content = "Q1" }, new() { Content = "Q2" }, new() { Content = "Q3" }
@@ -381,7 +419,7 @@ public class PracticeServiceTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
 
         var svc = Build(t, gen, out _, out var reservation);
@@ -423,7 +461,7 @@ public class PracticeServiceTests
         Assert.Equal(0, await t.Db.PracticeQuestions.CountAsync());
         // Reserve chặn trước AI → không tốn 1 lượt gọi Gemini.
         gen.Verify(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -539,7 +577,7 @@ public class PracticeServiceTests
         // Không có row session, không gọi AI.
         Assert.Equal(0, await t.Db.PracticeSessions.CountAsync());
         gen.Verify(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -578,7 +616,7 @@ public class PracticeServiceTests
         reservation.Verify(r => r.ReleaseAsync(sessionId, It.IsAny<CancellationToken>()), Times.Once);
         // Lỗi xảy ra trước khi sinh câu hỏi → generator không được gọi.
         gen.Verify(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -590,7 +628,7 @@ public class PracticeServiceTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion>());
 
         var svc = Build(t, gen, out var notifier, out _);
@@ -618,7 +656,7 @@ public class PracticeServiceTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new Exception("Gemini down"));
 
         var svc = Build(t, gen, out var notifier, out _);
@@ -647,7 +685,7 @@ public class PracticeServiceTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-questions trả 503"));
 
         var svc = Build(t, gen, out var notifier, out var reservation);
@@ -681,7 +719,7 @@ public class PracticeServiceTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new Exception("Gemini down"));
 
         // DB2 (real notifier): sinh câu hỏi lỗi → session Failed + ghi outbox abandoned(generation_failed)
@@ -721,7 +759,7 @@ public class PracticeServiceTests
 
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
 
         var svc = Build(t, gen, out var notifier, out _);

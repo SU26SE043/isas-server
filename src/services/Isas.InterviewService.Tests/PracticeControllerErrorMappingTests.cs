@@ -72,4 +72,36 @@ public class PracticeControllerErrorMappingTests
 
         Assert.IsType<BadRequestObjectResult>(result);
     }
+
+    [Fact]
+    public async Task SessionOptions_DelegatesCandidateAndJobCategory()
+    {
+        var candidate = Guid.NewGuid();
+        var service = new Mock<IPracticeService>();
+        service.Setup(s => s.GetSessionOptionsAsync(candidate, "BE", null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PracticeSessionOptionsResponse(false, 0, 0, 1, 20, 12, [], []));
+        var controller = Build(service, candidate);
+
+        var result = await controller.GetSessionOptions("BE", null, default);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(s => s.GetSessionOptionsAsync(candidate, "BE", null, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // Controller phải CHUYỂN TIẾP `language` chứ không nuốt: preview dựng trên rubric khác ngôn ngữ với
+    // buổi thật sẽ ra số câu gốc khác (số tiêu chí nội dung là SÀN của số câu gốc).
+    [Fact]
+    public async Task SessionOptions_ChuyenTiepLanguage()
+    {
+        var candidate = Guid.NewGuid();
+        var service = new Mock<IPracticeService>();
+        service.Setup(s => s.GetSessionOptionsAsync(candidate, "BE", "en", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PracticeSessionOptionsResponse(true, 3, 3, 1, 20, 20, [], []));
+        var controller = Build(service, candidate);
+
+        var result = await controller.GetSessionOptions("BE", "en", default);
+
+        Assert.IsType<OkObjectResult>(result);
+        service.Verify(s => s.GetSessionOptionsAsync(candidate, "BE", "en", It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

@@ -76,6 +76,10 @@ namespace Isas.CampaignService.Services
 
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
             ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);   // INT-17: trần ≥ 0 nếu có
+            // Giữ KẾT QUẢ ở đây thay vì gọi lại lúc dựng entity: trước đó `ValidateSeniority` chạy hai
+            // lần (lần này vứt kết quả, lần sau mới dùng) — thừa một lần validate, và nếu ai sửa luật
+            // mà chỉ đổi một trong hai chỗ thì hai lần gọi có thể lệch nhau.
+            var seniority = ValidateSeniority(request.Seniority);
             ValidateConcurrencyCap(request.MaxConcurrentInterviews);
 
             // C11 + cap độ dài: chuẩn hoá & kiểm ngưỡng TRƯỚC khi dựng entity/ghi DB → vượt ngưỡng thì
@@ -91,6 +95,7 @@ namespace Isas.CampaignService.Services
                 Title = request.Title,
                 Domain = request.Domain,
                 Language = ValidateLanguage(request.Language),
+                Seniority = seniority,
                 Status = CampaignStatus.Draft,
                 MaxCandidates = request.MaxCandidates,
                 TimeLimitMinutes = request.TimeLimitMinutes,
@@ -360,6 +365,16 @@ namespace Isas.CampaignService.Services
                 if (campaign.Status != CampaignStatus.Draft)
                     throw new InvalidOperationException("Chỉ được đổi language khi campaign ở Draft.");
                 campaign.Language = ValidateLanguage(request.Language);
+            }
+
+            // PR160 — `null` = KHÔNG đổi (giữ mức HR đã chọn), như AntiCheatEnabled (C3). Chuỗi RỖNG thì
+            // KHÔNG rơi vào nhánh này: nó đi tiếp vào ValidateSeniority và ăn 400 — cố ý, vì coi ""
+            // là "Junior" ở đây là ghi đè im lặng lựa chọn của HR.
+            if (request.Seniority is not null)
+            {
+                if (campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException("Chỉ được đổi seniority khi campaign ở Draft.");
+                campaign.Seniority = ValidateSeniority(request.Seniority);
             }
 
             if (request.MaxCandidates.HasValue)
@@ -644,7 +659,7 @@ namespace Isas.CampaignService.Services
             // ── 5. Gọi AI (AI-4: jdText là DỮ LIỆU — AIService đã bọc delimiter + chỉ thị bỏ qua lệnh
             //    nhúng trong JD). Lỗi upstream → DownstreamServiceException → controller map 502. ──
             var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
-            var generated = await _questionGenerator.GenerateAsync(jobCategory, jdText, count, ct);
+            var generated = await _questionGenerator.GenerateAsync(jobCategory, jdText, count, campaign.Seniority, ct);
 
             // AI trả rỗng = lượt sinh không dùng được. Trả 502 thay vì lặng lẽ xoá sạch đề cũ rồi
             // báo thành công — HR phải biết là AI hỏng, không phải "campaign của tôi mất hết câu hỏi".
@@ -1821,10 +1836,33 @@ namespace Isas.CampaignService.Services
             }
         }
 
-        // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
+        /// <summary>
+        /// BK35 — hợp đồng validate `language` (ngôn ngữ cấp CHIẾN DỊCH). Cùng hình dạng với
+        /// <see cref="ValidateSeniority"/> sau PR160: <c>null</c> và chuỗi RỖNG là hai ca khác nhau.
+        ///
+        /// <list type="bullet">
+        /// <item><c>null</c> → <c>"vi"</c> (đường CREATE: HR không khai = mặc định). Đường UPDATE
+        /// KHÔNG gọi vào đây khi null — guard <c>request.Language is not null</c> giữ nguyên giá trị cũ.</item>
+        /// <item>rỗng sau <c>Trim()</c> → <b>400</b>, KHÔNG được coi là <c>"vi"</c>. Trước BK35,
+        /// <c>string.IsNullOrWhiteSpace → "vi"</c> khiến HR gửi <c>"language": ""</c> ở đường UPDATE
+        /// ÂM THẦM hạ campaign <c>en</c> về <c>vi</c>: không lỗi, không cảnh báo, mất dữ liệu im lặng.</item>
+        /// <item>ngoài <c>{vi, en}</c> → <b>400</b>.</item>
+        /// <item>cờ song ngữ tắt mà xin <c>en</c> → <b>400</b>.</item>
+        /// <item>hợp lệ → giá trị đã trim và hạ về CHỮ THƯỜNG.</item>
+        /// </list>
+        ///
+        /// ⚠ KHÁC <see cref="ValidateSeniority"/> đúng một điểm, và cố ý giữ khác: ở đây chuẩn hoá về
+        /// chữ thường (<c>"EN"</c> → <c>"en"</c>) vì cột DB lẫn hợp đồng song ngữ liên service
+        /// (Interview/AIService) đều dùng chữ thường; <c>seniority</c> thì phân biệt HOA/thường vì
+        /// CHECK <c>ck_campaigns_seniority</c> so đúng thang <c>Fresher/Junior/Middle/Senior</c>.
+        /// Đừng "cho nhất quán" mà đổi một trong hai.
+        /// </summary>
         private string ValidateLanguage(string? requested)
         {
-            if (string.IsNullOrWhiteSpace(requested)) return "vi";
+            // Chỉ null mới là "không khai"; chuỗi rỗng là HR GỬI một giá trị sai → phải báo lỗi.
+            if (requested is null) return "vi";
+            if (string.IsNullOrWhiteSpace(requested))
+                throw new ArgumentException("language không được để trống — phải là vi hoặc en.");
             var language = requested.Trim().ToLowerInvariant();
             if (language is not ("vi" or "en"))
                 throw new ArgumentException("language chỉ nhận vi hoặc en.");
@@ -1833,6 +1871,35 @@ namespace Isas.CampaignService.Services
             return language;
         }
 
+        /// <summary>
+        /// PR160 — hợp đồng validate `seniority`. Giữ ĐÚNG như bên Interview (<c>PracticeService</c>):
+        /// lệch một ly thì hai service chấp nhận/từ chối khác nhau cho cùng một giá trị.
+        ///
+        /// <list type="bullet">
+        /// <item><c>null</c> → <c>"Junior"</c> (đường CREATE: HR không khai = mặc định). Đường UPDATE
+        /// KHÔNG gọi vào đây khi null — guard <c>request.Seniority is not null</c> giữ nguyên giá trị cũ.</item>
+        /// <item>rỗng sau <c>Trim()</c> → <b>400</b>, KHÔNG được coi là <c>"Junior"</c>. Trước PR160,
+        /// <c>string.IsNullOrWhiteSpace → "Junior"</c> khiến HR gửi <c>"seniority": ""</c> ở đường UPDATE
+        /// ÂM THẦM ghi đè mức đã chọn về Junior: không lỗi, không cảnh báo, mất dữ liệu im lặng.</item>
+        /// <item>ngoài tập hợp lệ → <b>400</b>, phân biệt HOA/thường (<c>"junior"</c> không hợp lệ) —
+        /// cùng thang với giá trị lưu DB và CHECK <c>ck_campaigns_seniority</c>.</item>
+        /// <item>hợp lệ → giá trị ĐÃ trim.</item>
+        /// </list>
+        /// </summary>
+        private static string ValidateSeniority(string? requested)
+        {
+            // Chỉ null mới là "không khai"; chuỗi rỗng là HR GỬI một giá trị sai → phải báo lỗi.
+            if (requested is null) return "Junior";
+            if (string.IsNullOrWhiteSpace(requested))
+                throw new ArgumentException("seniority không được để trống — phải là Fresher, Junior, Middle hoặc Senior.");
+            var seniority = requested.Trim();
+            return seniority is "Fresher" or "Junior" or "Middle" or "Senior"
+                ? seniority
+                : throw new ArgumentException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
+        }
+
+        // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
+        // (Dòng chú thích này vốn nằm lạc trên ValidateLanguage — trả về đúng hàm nó mô tả.)
         private static void ValidatePassScorePct(int? pct)
         {
             if (pct is int p && (p < 0 || p > 100))

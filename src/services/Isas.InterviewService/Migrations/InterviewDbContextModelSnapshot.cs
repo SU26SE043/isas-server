@@ -622,6 +622,14 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("self_consistency_n");
 
+                    b.Property<string>("Seniority")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Junior")
+                        .HasColumnName("seniority");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -688,6 +696,8 @@ namespace Isas.InterviewService.Migrations
                             t.HasCheckConstraint("ck_practice_sessions_language", "language IN ('vi', 'en')");
 
                             t.HasCheckConstraint("ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20");
+
+                            t.HasCheckConstraint("ck_practice_sessions_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
 
                             t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
                         });
@@ -1717,6 +1727,67 @@ namespace Isas.InterviewService.Migrations
                     b.ToTable("rubric_levels", (string)null);
                 });
 
+            modelBuilder.Entity("Isas.InterviewService.Entities.SessionCriterionEvidence", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CriterionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("criterion_id");
+
+                    b.Property<string>("CriterionName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("criterion_name");
+
+                    b.Property<int>("DeepCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("deep_count");
+
+                    b.Property<string>("EvidenceFound")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("evidence_found");
+
+                    b.Property<string>("MissingEvidence")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("missing_evidence");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("state");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_session_criterion_evidence");
+
+                    b.HasIndex("CriterionId")
+                        .HasDatabaseName("ix_session_criterion_evidence_criterion_id");
+
+                    b.HasIndex("SessionId", "CriterionId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_session_criterion_evidence_session_id_criterion_id");
+
+                    b.ToTable("session_criterion_evidence", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_session_criterion_evidence_state", "state IN ('UNKNOWN', 'PARTIAL', 'SATISFIED', 'FAILED')");
+                        });
+                });
+
             modelBuilder.Entity("Isas.InterviewService.Entities.SessionCriterionScore", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1893,6 +1964,25 @@ namespace Isas.InterviewService.Migrations
                         .HasConstraintName("fk_rubric_levels_rubric_criteria_criterion_id");
 
                     b.Navigation("Criterion");
+                });
+
+            modelBuilder.Entity("Isas.InterviewService.Entities.SessionCriterionEvidence", b =>
+                {
+                    b.HasOne("Isas.InterviewService.Entities.RubricCriterion", null)
+                        .WithMany()
+                        .HasForeignKey("CriterionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_session_criterion_evidence_rubric_criteria_criterion_id");
+
+                    b.HasOne("Isas.InterviewService.Entities.PracticeSession", "Session")
+                        .WithMany()
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_session_criterion_evidence_practice_sessions_session_id");
+
+                    b.Navigation("Session");
                 });
 
             modelBuilder.Entity("Isas.InterviewService.Entities.SessionCriterionScore", b =>

@@ -35,17 +35,38 @@ namespace Isas.CampaignService.Services
             _logger = logger;
         }
 
-        public async Task<List<string>> GenerateAsync(
+        public Task<List<string>> GenerateAsync(
             string jobCategory, string? jdText, int? count, CancellationToken ct = default)
+            => GenerateAsync(jobCategory, jdText, count, "Junior", ct);
+
+        public async Task<List<string>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority, CancellationToken ct)
         {
             HttpResponseMessage resp;
             try
             {
                 // cvText = null: B2B soạn đề chung cho cả chiến dịch (mọi ứng viên nhận cùng seed — E1 fairness),
                 // nên không có CV cá nhân nào để cá nhân hoá. count null → AIService giữ mặc định của nó.
+                //
+                // SEN1 — `seniority`: tên thành viên ở đây là nơi duy nhất quyết định tên khoá ra dây,
+                // và lệch tên với pydantic thì KHÔNG ném lỗi ở đâu cả — field im lặng biến mất.
+                //
+                // ⚠ Đã probe thật: `JsonContent.Create` dùng `JsonSerializerDefaults.Web` nên CÓ áp
+                // camelCase ⇒ rủi ro là đổi TÊN (`seniorityLevel`), không phải hoa/thường.
+                //
+                // Không để rỗng/null ra dây: `GenerateQuestionsRequest.seniority` bên Python khai `str`
+                // (không Optional) ⇒ `null` là 422, tức HR bấm "sinh câu hỏi" nhận 502 mà nguyên nhân
+                // thật nằm ở một field phụ.
                 using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/generate-questions")
                 {
-                    Content = JsonContent.Create(new { jobCategory, cvText = (string?)null, jdText, count })
+                    Content = JsonContent.Create(new
+                    {
+                        jobCategory,
+                        cvText = (string?)null,
+                        jdText,
+                        count,
+                        seniority = string.IsNullOrWhiteSpace(seniority) ? "Junior" : seniority
+                    })
                 };
                 msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
                 resp = await _http.SendAsync(msg, ct);

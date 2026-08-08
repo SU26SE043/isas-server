@@ -37,7 +37,7 @@ public class JdTextInputTests
     {
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
         return gen;
     }
@@ -111,7 +111,7 @@ public class JdTextInputTests
         Assert.Equal(nameof(SessionStatus.Ready), res.Status);
         // Text được trim rồi đưa thẳng vào prompt sinh câu hỏi.
         gen.Verify(g => g.GenerateQuestionsAsync(
-            "BE", null, "Tuyển BE Java 3 năm", It.IsAny<CancellationToken>()), Times.Once);
+            "BE", null, "Tuyển BE Java 3 năm", It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         // Không có file nào phải parse.
         storage.Verify(s => s.GetOwnedParsedTextAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
 
@@ -138,7 +138,7 @@ public class JdTextInputTests
             new CreatePracticeSessionRequest(null, jdId, JobCategory.BE, JdText: "JD nhập tay"));
 
         gen.Verify(g => g.GenerateQuestionsAsync(
-            "BE", null, "JD nhập tay", It.IsAny<CancellationToken>()), Times.Once);
+            "BE", null, "JD nhập tay", It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
         storage.Verify(s => s.GetOwnedParsedTextAsync(jdId, candidate, It.IsAny<CancellationToken>()), Times.Never);
 
         // jd_id KHÔNG được lưu: file không góp gì vào câu hỏi thì row đừng "nhận vơ" nó.
@@ -166,7 +166,7 @@ public class JdTextInputTests
             candidate, new CreatePracticeSessionRequest(null, jdId, JobCategory.BE, JdText: "   "));
 
         gen.Verify(g => g.GenerateQuestionsAsync(
-            "BE", null, "TU-FILE", It.IsAny<CancellationToken>()), Times.Once);
+            "BE", null, "TU-FILE", It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
 
         var saved = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == res.Id);
         Assert.Equal(jdId, saved.JdId);   // luồng file cũ giữ nguyên
@@ -247,7 +247,7 @@ public class JdTextInputTests
             candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE, JdText: atLimit));
 
         Assert.Equal(nameof(SessionStatus.Ready), res.Status);
-        gen.Verify(g => g.GenerateQuestionsAsync("BE", null, atLimit, It.IsAny<CancellationToken>()), Times.Once);
+        gen.Verify(g => g.GenerateQuestionsAsync("BE", null, atLimit, It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // (f) Tạo buổi luyện, VƯỢT ngưỡng → 400 (InvalidOperationException) TRƯỚC reserve/AI/session:
@@ -276,7 +276,7 @@ public class JdTextInputTests
         credits.Verify(c => c.ReserveAsync(
             It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         gen.Verify(g => g.GenerateQuestionsAsync(
-            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         Assert.Empty(await t.Db.PracticeSessions.AsNoTracking().ToListAsync());
     }
 

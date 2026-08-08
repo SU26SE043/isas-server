@@ -311,7 +311,8 @@ async def test_provider_grounding_va_criteria_loc_doc_lap(monkeypatch):
 
 def test_endpoint_co_criteria_tra_target_criteria(monkeypatch):
     async def fake_generate(job_category, cv_text, jd_text, count=None,
-                            focus_criteria=None, grounding=None, criteria=None):
+                            focus_criteria=None, grounding=None, criteria=None,
+                            seniority=None):
         # criteria phải xuống tới provider (không bị pydantic nuốt, không bị quên truyền).
         assert criteria == [{"criterionId": C1, "name": "Chiều sâu kỹ thuật"}]
         return QuestionGenerationResult(questions=["Q1", "Q2"], citations=None,
@@ -333,7 +334,8 @@ def test_endpoint_co_criteria_tra_target_criteria(monkeypatch):
 def test_endpoint_khong_criteria_giu_nguyen_shape_cu(monkeypatch):
     """Campaign B2B + mọi caller cũ: response CHỈ có questions, KHÔNG có khoá targetCriteria."""
     async def fake_generate(job_category, cv_text, jd_text, count=None,
-                            focus_criteria=None, grounding=None, criteria=None):
+                            focus_criteria=None, grounding=None, criteria=None,
+                            seniority=None):
         assert criteria is None
         return QuestionGenerationResult(questions=["Q1"], citations=None)
 
@@ -349,7 +351,8 @@ def test_endpoint_criteria_rong_coi_nhu_khong_co(monkeypatch):
     """`criteria: []` (.NET gửi mảng rỗng khi org chưa khai tiêu chí nội dung) ⇒ KHÔNG gắn nhãn,
     KHÔNG phát sinh field — không được biến thành `targetCriteria: [[]]` gây hiểu nhầm 'đã gắn'."""
     async def fake_generate(job_category, cv_text, jd_text, count=None,
-                            focus_criteria=None, grounding=None, criteria=None):
+                            focus_criteria=None, grounding=None, criteria=None,
+                            seniority=None):
         assert criteria is None
         return QuestionGenerationResult(questions=["Q1"], citations=None)
 
@@ -360,3 +363,55 @@ def test_endpoint_criteria_rong_coi_nhu_khong_co(monkeypatch):
 
     assert res.status_code == 200
     assert res.json() == {"questions": ["Q1"]}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# (5) BẤT BIẾN B2B — payload Campaign đi ĐÚNG MỘT lượt Gemini, bất kể cần gạt nào
+#
+# Payload thật của CampaignService là `{jobCategory, cvText:null, jdText, count}`: không `criteria`,
+# không `grounding`. Trước đây nó an toàn NHỜ CẤU TRÚC (nhánh chuỗi trần return sớm, trước cả vòng
+# chất lượng lẫn cổng kiểm chứng) — không phải nhờ một cái gate nào, và KHÔNG test nào khoá điều đó.
+# Bản vá QV1 bỏ cái return sớm ấy đi (nó làm buổi grounded bị nhảy qua cổng kiểm chứng), nên bất biến
+# này nay phải được khoá TƯỜNG MINH: đo SỐ LƯỢT GỌI, không chỉ đo shape.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("attempts,verify", [(1, False), (2, False), (2, True), (1, True)])
+@pytest.mark.asyncio
+async def test_b2b_luon_dung_MOT_luot_gemini(monkeypatch, attempts, verify):
+    class Fake:
+        def __init__(self): self.calls = 0
+        async def generate_content(self, *, model, contents, config):
+            self.calls += 1
+            return SimpleNamespace(text=json.dumps({"questions": ["Q1", "Q2", "Q3"]}))
+
+    monkeypatch.setattr(GeminiProvider, "__init__", lambda self: None)
+    provider = GeminiProvider(); fake = Fake()
+    provider._client = SimpleNamespace(aio=SimpleNamespace(models=fake))
+    monkeypatch.setattr(settings, "question_max_attempts", attempts)
+    monkeypatch.setattr(settings, "question_verify_enabled", verify)
+
+    result = await provider.generate("BE", None, "JD của campaign", count=3)
+
+    assert fake.calls == 1, "payload B2B không được kéo theo lượt Gemini thứ hai"
+    assert result == QuestionGenerationResult(questions=["Q1", "Q2", "Q3"], citations=None)
+    assert result.target_criteria is None
+
+
+@pytest.mark.asyncio
+async def test_b2b_prompt_khong_doi_khi_bat_can_gat(monkeypatch):
+    """Không chỉ số lượt: chính CHUỖI prompt của đường B2B phải giống hệt ở mọi cấu hình."""
+    prompts = {}
+
+    for verify in (False, True):
+        class Fake:
+            async def generate_content(self, *, model, contents, config):
+                prompts[verify] = contents
+                return SimpleNamespace(text=json.dumps({"questions": ["Q1"]}))
+
+        monkeypatch.setattr(GeminiProvider, "__init__", lambda self: None)
+        provider = GeminiProvider()
+        provider._client = SimpleNamespace(aio=SimpleNamespace(models=Fake()))
+        monkeypatch.setattr(settings, "question_verify_enabled", verify)
+        await provider.generate("BE", None, "JD của campaign", count=1)
+
+    assert prompts[False] == prompts[True]

@@ -22,6 +22,26 @@ class Settings(BaseSettings):
     # lần trước khi bó tay báo answer Failed. 3 = 1 lần đầu + 2 lần retry.
     score_max_attempts: int = 3
 
+    # ── SC1c: VÒNG CHẤT LƯỢNG CÂU HỎI ────────────────────────────
+    # Bộ câu hỏi không phủ đủ tiêu chí (`app/question_quality.coverage_defects`) được TRẢ LẠI kèm
+    # nhận xét và sinh lại. `2` = 1 lượt đầu + tối đa 1 lượt sinh lại · `1` = TẮT hẳn việc sinh lại
+    # (vẫn giữ phần kiểm — nó là hàm thuần, không tốn gì).
+    #
+    # ⚠ Đây là KILL-SWITCH của SC1c và nó **BẬT MẶC ĐỊNH**: mỗi lượt sinh lại là một lần gọi Gemini
+    # nằm TRONG request tạo buổi luyện (đồng bộ). Trần thấp có chủ đích — mẫu `lesson_theory_max_attempts`.
+    question_max_attempts: int = 2
+
+    # ── QV1: CỔNG KIỂM CHỨNG CÂU HỎI ĐỐI CHIẾU CORPUS ────────────
+    # BẬT ⇒ đổi hình dạng cả đường sinh, không chỉ thêm một bước:
+    #   (a) grounding KHÔNG còn được cấp cho lượt SINH (câu hỏi sinh ra "tự do", corpus chỉ dùng để
+    #       KIỂM) ⇒ prompt + response_schema + citations đều rẽ nhánh theo cờ này;
+    #   (b) thêm MỘT lượt Gemini nữa cho mỗi lần sinh câu hỏi (`verify_questions`);
+    #   (c) citations của kết quả đến TỪ lượt kiểm — lượt kiểm hỏng ⇒ trả về KHÔNG có citation
+    #       (field biến mất), cố ý không dựng citation rỗng giả (D27).
+    # ⚠ KHÔNG liên quan tới `question_max_attempts`: tắt cờ này KHÔNG tắt vòng sinh lại của SC1c.
+    question_verify_enabled: bool = False
+
+
     # ── TTS: ĐỌC CÂU HỎI THÀNH TIẾNG ────────────────────────────
     # Dùng LẠI gemini_api_key ở trên → KHÔNG phải cấp credential mới.
     # Model TTS là model RIÊNG (model chat thường không nhận response_modalities=["AUDIO"]).
