@@ -609,6 +609,22 @@ public class PracticeService : IPracticeService
 
             await _db.SaveChangesAsync(ct);
 
+            // Evidence-driven B2B: snapshot toàn bộ campaign rubric; B2B chấm đủ rubric, khác
+            // LoadTargetableCriteriaAsync vốn chỉ đúng cho rubric riêng B2C.
+            if (session.AdaptiveEnabled)
+            {
+                var evidenceCriteria = await _db.RubricCriteria.AsNoTracking()
+                    .Where(c => c.CampaignId == request.CampaignId && c.IsActive)
+                    .OrderBy(c => c.Name)
+                    .Select(c => new { c.Id, c.Name })
+                    .ToListAsync(ct);
+                _db.SessionCriterionEvidence.AddRange(evidenceCriteria.Select(c => new SessionCriterionEvidence
+                {
+                    SessionId = session.Id, CriterionId = c.Id, CriterionName = c.Name, State = "UNKNOWN"
+                }));
+                await _db.SaveChangesAsync(ct);
+            }
+
             _logger.LogInformation(
                 "Tạo session B2B {SessionId} cho campaign {CampaignId} ({Q} câu, materialize criteria={Mat})",
                 session.Id, request.CampaignId, questions.Count, !alreadyMaterialized);
