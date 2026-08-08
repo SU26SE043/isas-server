@@ -373,4 +373,117 @@ public class AdaptiveChainDepthInt17bTests
         Assert.Equal(3, appended.OrderNo);
         Assert.Null(appended.RootQuestionId);    // chế độ cũ không nối chuỗi
     }
+    // ── Chấm-theo-phạm-vi: câu đào sâu thừa kế nhãn tiêu chí của câu cha ──────────────────────
+    //
+    // Vì sao cần: `/decide-next` KHÔNG trả nhãn tiêu chí. Không thừa kế thì mọi câu đào sâu có
+    // `TargetCriterionIds = null` ⇒ chấm cả rubric. Prod chạy chế độ chuỗi nên phần lớn câu trong
+    // một buổi là câu đào sâu ⇒ tính năng chấm-theo-phạm-vi gần như KHÔNG có hiệu lực.
+
+    /// `follow_up` đào sâu vào chính câu trả lời vừa rồi ⇒ vẫn là chủ đề của câu cha ⇒ thừa kế ĐÚNG.
+    [Fact]
+    public async Task DaoSau_FollowUp_ThuaKeNhanTieuChiCuaCauCha()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = ChainSession(candidate);
+        var nhan = new List<Guid> { Guid.NewGuid(), Guid.NewGuid() };
+        var root = Seed(session.Id, 1);
+        root.TargetCriterionIds = nhan;
+        t.Db.AddRange(session, root, TestDb.Criterion(session.JobCategory));
+        await t.Db.SaveChangesAsync();
+
+        var svc = BuildAdaptive(t, Decider(new DecideNextResult("follow_up", "Đào sâu", "ts", null)));
+        await UploadAsync(svc, session.Id, root.Id, candidate);
+
+        var con = await t.Db.PracticeQuestions.AsNoTracking()
+            .SingleAsync(q => q.SessionId == session.Id && q.Kind == QuestionKind.FollowUp);
+        Assert.Equal(nhan, con.TargetCriterionIds);
+    }
+
+    /// `clarify` cũng bám chính câu trả lời đó ⇒ thừa kế.
+    [Fact]
+    public async Task DaoSau_Clarify_CungThuaKeNhan()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = ChainSession(candidate);
+        var nhan = new List<Guid> { Guid.NewGuid() };
+        var root = Seed(session.Id, 1);
+        root.TargetCriterionIds = nhan;
+        t.Db.AddRange(session, root, TestDb.Criterion(session.JobCategory));
+        await t.Db.SaveChangesAsync();
+
+        var svc = BuildAdaptive(t, Decider(new DecideNextResult("clarify", "Làm rõ", "ts", null)));
+        await UploadAsync(svc, session.Id, root.Id, candidate);
+
+        var con = await t.Db.PracticeQuestions.AsNoTracking()
+            .SingleAsync(q => q.SessionId == session.Id && q.Kind == QuestionKind.Clarify);
+        Assert.Equal(nhan, con.TargetCriterionIds);
+    }
+
+    /// Câu cha KHÔNG có nhãn (buổi cũ / AIService fail-open) → con cũng null = chấm đủ rubric.
+    /// `null` phải giữ nghĩa "không biết", KHÔNG được biến thành `[]` (= "không nhắm tiêu chí nào").
+    [Fact]
+    public async Task DaoSau_ChaKhongCoNhan_ConVanNull_KhongPhaiMangRong()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = ChainSession(candidate);
+        var root = Seed(session.Id, 1);   // TargetCriterionIds = null
+        t.Db.AddRange(session, root, TestDb.Criterion(session.JobCategory));
+        await t.Db.SaveChangesAsync();
+
+        var svc = BuildAdaptive(t, Decider(new DecideNextResult("follow_up", "Đào sâu", "ts", null)));
+        await UploadAsync(svc, session.Id, root.Id, candidate);
+
+        var con = await t.Db.PracticeQuestions.AsNoTracking()
+            .SingleAsync(q => q.SessionId == session.Id && q.Kind == QuestionKind.FollowUp);
+        Assert.Null(con.TargetCriterionIds);
+    }
+
+    /// Câu cha nhắm 0 tiêu chí nội dung (`[]`, ví dụ "giới thiệu bản thân") → con giữ `[]`, KHÔNG
+    /// được rơi về null: hai giá trị này mang nghĩa khác hẳn nhau ở tầng chấm.
+    [Fact]
+    public async Task DaoSau_ChaCoNhanRong_ConGiuMangRong_KhongRoiVeNull()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = ChainSession(candidate);
+        var root = Seed(session.Id, 1);
+        root.TargetCriterionIds = new List<Guid>();
+        t.Db.AddRange(session, root, TestDb.Criterion(session.JobCategory));
+        await t.Db.SaveChangesAsync();
+
+        var svc = BuildAdaptive(t, Decider(new DecideNextResult("follow_up", "Đào sâu", "ts", null)));
+        await UploadAsync(svc, session.Id, root.Id, candidate);
+
+        var con = await t.Db.PracticeQuestions.AsNoTracking()
+            .SingleAsync(q => q.SessionId == session.Id && q.Kind == QuestionKind.FollowUp);
+        Assert.NotNull(con.TargetCriterionIds);
+        Assert.Empty(con.TargetCriterionIds!);
+    }
+
+    /// CHẾ ĐỘ FRONTIER (`MaxDeepPerQuestion = 0`, kill-switch INT-17b): `new_question` KHÔNG bị chặn
+    /// nên nó tới được chỗ append — và đó là câu ĐỔI CHỦ ĐỀ, thừa kế nhãn của câu cha sẽ chấm nhầm
+    /// tiêu chí. Ca này là lý do tồn tại của vế `is "follow_up" or "clarify"`; thiếu test này thì
+    /// mutation "thừa kế cả new_question" đi qua sạch (đã đo).
+    [Fact]
+    public async Task Frontier_NewQuestion_KHONG_ThuaKeNhan_ViDaDoiChuDe()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = ChainSession(candidate, maxDeep: 0);   // 0 = frontier, không phải chế độ chuỗi
+        var root = Seed(session.Id, 1);
+        root.TargetCriterionIds = new List<Guid> { Guid.NewGuid() };
+        t.Db.AddRange(session, root, TestDb.Criterion(session.JobCategory));
+        await t.Db.SaveChangesAsync();
+
+        var svc = BuildAdaptive(t, Decider(new DecideNextResult("new_question", "Chủ đề khác hẳn", "ts", null)));
+        await UploadAsync(svc, session.Id, root.Id, candidate);
+
+        var con = await t.Db.PracticeQuestions.AsNoTracking()
+            .SingleAsync(q => q.SessionId == session.Id && q.Kind == QuestionKind.NewQuestion);
+        Assert.Null(con.TargetCriterionIds);
+    }
+
 }
