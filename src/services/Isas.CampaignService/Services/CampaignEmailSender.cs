@@ -1,5 +1,8 @@
 using System.Net;
 using System.Net.Mail;
+using System.Net.Mime;
+using System.Text;
+using System.Text.Encodings.Web;
 
 namespace Isas.CampaignService.Services
 {
@@ -35,6 +38,7 @@ namespace Isas.CampaignService.Services
 
             var subject = $"Lời mời tham gia đánh giá — {campaignTitle}";
             var body = BuildHtmlBody(campaignTitle, joinLink, expiresAt);
+            var plainTextBody = BuildPlainTextBody(campaignTitle, joinLink, expiresAt);
 
             using var client = new SmtpClient(host, port)
             {
@@ -50,22 +54,81 @@ namespace Isas.CampaignService.Services
                 IsBodyHtml = true
             };
             mailMessage.To.Add(toEmail);
+            mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
+                plainTextBody, Encoding.UTF8, MediaTypeNames.Text.Plain));
 
             await client.SendMailAsync(mailMessage, ct);
         }
 
-        private static string BuildHtmlBody(string campaignTitle, string joinLink, DateTime? expiresAt)
+        internal static string BuildHtmlBody(string campaignTitle, string joinLink, DateTime? expiresAt)
         {
-            var expiryLine = expiresAt.HasValue
-                ? $"<p>Lời mời có hiệu lực đến: <strong>{expiresAt.Value:yyyy-MM-dd HH:mm} UTC</strong>.</p>"
+            var safeCampaignTitle = HtmlEncoder.Default.Encode(campaignTitle);
+            var safeJoinLink = HtmlEncoder.Default.Encode(joinLink);
+            var expiryCard = expiresAt.HasValue
+                ? $@"<tr>
+  <td style=""padding:16px 20px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;color:#1e3a8a;font-size:14px;line-height:20px;"">
+    <strong>Thời hạn tham gia</strong><br/>
+    Vui lòng tham gia trước <strong>{expiresAt.Value:yyyy-MM-dd HH:mm} UTC</strong>.
+  </td>
+</tr>
+<tr><td style=""height:24px;font-size:1px;line-height:1px;"">&nbsp;</td></tr>"
                 : string.Empty;
 
-            return $@"<p>Xin chào,</p>
-<p>Bạn được mời tham gia đánh giá <strong>{campaignTitle}</strong>.</p>
-<p>Nhấn vào liên kết dưới đây để tham gia:</p>
-<p><a href=""{joinLink}"">{joinLink}</a></p>
+            return $@"<!doctype html>
+<html lang=""vi"">
+<body style=""margin:0;padding:0;background:#f3f6fb;font-family:Arial,Helvetica,sans-serif;color:#172033;"">
+  <table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""background:#f3f6fb;padding:32px 16px;"">
+    <tr><td align=""center"">
+      <table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""max-width:600px;background:#ffffff;border-radius:20px;overflow:hidden;"">
+        <tr>
+          <td style=""padding:28px 32px;background:linear-gradient(135deg,#132b5c,#2563eb);color:#ffffff;"">
+            <div style=""font-size:13px;font-weight:700;letter-spacing:1.6px;"">ISAS · AI INTERVIEW</div>
+            <div style=""margin-top:12px;font-size:28px;font-weight:700;line-height:36px;"">Bạn được mời phỏng vấn cùng AI</div>
+          </td>
+        </tr>
+        <tr>
+          <td style=""padding:32px;color:#172033;"">
+            <p style=""margin:0 0 16px;color:#172033;font-size:16px;line-height:24px;"">Xin chào,</p>
+            <p style=""margin:0 0 20px;color:#172033;font-size:16px;line-height:24px;"">Bạn đã được mời tham gia chiến dịch đánh giá:</p>
+            <div style=""margin:0 0 24px;padding:18px 20px;background:#f8fafc;border-left:4px solid #2563eb;border-radius:8px;font-size:18px;font-weight:700;line-height:26px;"">{safeCampaignTitle}</div>
+            <p style=""margin:0 0 24px;color:#172033;font-size:16px;line-height:24px;"">Nhấn nút bên dưới để xác nhận lời mời và bắt đầu hành trình phỏng vấn với AI.</p>
+            <table role=""presentation"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""margin:0 0 24px;"">
+              <tr><td align=""center"" bgcolor=""#2563eb"" style=""border-radius:10px;"">
+                <a href=""{safeJoinLink}"" style=""display:inline-block;padding:14px 22px;color:#ffffff;font-size:16px;font-weight:700;line-height:20px;text-decoration:none;"">Tham gia phỏng vấn AI</a>
+              </td></tr>
+            </table>
+            {expiryCard}
+            <p style=""margin:0;font-size:13px;line-height:20px;color:#667085;"">Vì bảo mật, không chuyển tiếp email hoặc liên kết này cho người khác. Nếu nút không hoạt động, hãy mở liên kết sau trong trình duyệt:</p>
+            <p style=""margin:8px 0 0;font-size:13px;line-height:20px;word-break:break-all;""><a href=""{safeJoinLink}"" style=""color:#2563eb;"">{safeJoinLink}</a></p>
+          </td>
+        </tr>
+        <tr><td style=""padding:20px 32px;background:#f8fafc;color:#667085;font-size:13px;line-height:20px;"">Trân trọng,<br/><strong>Đội ngũ ISAS</strong></td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>";
+        }
+
+        internal static string BuildPlainTextBody(string campaignTitle, string joinLink, DateTime? expiresAt)
+        {
+            var expiryLine = expiresAt.HasValue
+                ? $"\nThời hạn tham gia: trước {expiresAt.Value:yyyy-MM-dd HH:mm} UTC.\n"
+                : string.Empty;
+
+            return $"""
+Xin chào,
+
+Bạn được mời tham gia chiến dịch đánh giá: {campaignTitle}
+
+Tham gia phỏng vấn AI tại:
+{joinLink}
 {expiryLine}
-<p>Trân trọng,<br/>ISAS</p>";
+Vì bảo mật, không chuyển tiếp email hoặc liên kết này cho người khác.
+
+Trân trọng,
+Đội ngũ ISAS
+""";
         }
     }
 }
