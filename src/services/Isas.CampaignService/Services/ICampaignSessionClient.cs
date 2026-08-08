@@ -14,15 +14,20 @@ namespace Isas.CampaignService.Services
         // INT-17b — maxDeepPerQuestion: null/0 giữ hành vi cũ (seed = toàn bộ campaign questions, câu
         // thích ứng chỉ thêm ở ĐUÔI sau khi trả lời hết seed); > 0 thì MỖI câu campaign mọc chuỗi đào
         // sâu XEN KẼ ngay sau nó (vẫn công bằng: cùng bộ câu gốc, cùng trần độ sâu cho mọi ứng viên).
+        // PR160 — `seniority` (mức kinh nghiệm HR chọn cho campaign) đứng TRƯỚC `ct`: CA1068 đòi
+        // CancellationToken là tham số CUỐI. Tham số nằm sau `ct` vừa trái quy ước .NET, vừa dễ khiến
+        // caller positional truyền nhầm hai thứ cho nhau khi đọc lướt.
         Task<CampaignSessionResult> CreateOrGetSessionAsync(
             Guid candidateId, Guid campaignId, Guid orgId, string jobCategory,
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             int? maxDeepPerQuestion = null,
-            CancellationToken ct = default,
-            string seniority = "Junior");
-        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, CancellationToken ct, string seniority = "Junior");
+            string seniority = "Junior",
+            CancellationToken ct = default);
+        // Overload đầy đủ: KHÔNG đặt default cho `language`/`seniority`/`ct` — caller duy nhất
+        // (ParticipationService) truyền đủ, và để trống default thì hai overload không thể nhập nhằng.
+        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, CancellationToken ct);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
         // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).

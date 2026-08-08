@@ -314,6 +314,18 @@ public class SessionCriterionEvidenceConfiguration : IEntityTypeConfiguration<Se
         e.HasKey(x => x.Id);
         e.Property(x => x.CriterionName).HasMaxLength(128).IsRequired();
         e.Property(x => x.State).HasMaxLength(16).IsRequired();
+
+        // Tập ĐÓNG của evidence state, chốt ở tầng DB cho MỌI đường ghi — đối xứng
+        // `ck_practice_sessions_seniority` (cùng PR đã làm cho seniority, chỗ này thì quên).
+        //
+        // ⚠ Vì sao KHÔNG dựa vào guard C# ở AnswerService: `state` là `varchar(16)`, và thêm một state
+        // dài hơn 16 ký tự sẽ vỡ trên Postgres trong khi **SQLite không enforce độ dài varchar** ⇒ test
+        // xanh 100%. Đúng hình dạng sự cố S11 (`funded_by varchar(16)` vs enum `SubscriptionMetered`
+        // 19 ký tự: 1569 test SQLite xanh, mọi reserve gói metered hỏng trên prod). CHECK làm giá trị
+        // lạ hỏng NGAY ở migration/insert đầu tiên thay vì hỏng lặng lẽ theo độ dài chuỗi.
+        e.ToTable(t => t.HasCheckConstraint(
+            "ck_session_criterion_evidence_state",
+            "state IN ('UNKNOWN', 'PARTIAL', 'SATISFIED', 'FAILED')"));
         var evidenceComparer = new ValueComparer<List<string>>(
             (a, b) => (a ?? new List<string>()).SequenceEqual(b ?? new List<string>()),
             v => v == null ? 0 : v.Aggregate(0, (h, x) => HashCode.Combine(h, x.GetHashCode())),

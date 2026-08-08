@@ -23,7 +23,13 @@ public record CreatePracticeSessionRequest(
     int? TimeLimitSec = null,  // optional — 60/120/240; null = mặc định 120
     int? QuestionCount = null, // optional — 1..20; null = mặc định của AIService (5)
     string? Language = null,
-    string Seniority = "Junior"
+    // Seniority: mức ứng viên tự khai (Fresher|Junior|Middle|Senior), đóng dấu lên session.
+    // ⚠ NULLABLE có chủ ý — xem PracticeService.ValidateSeniority: null (client cũ không gửi) =
+    // "Junior", còn chuỗi RỖNG là một giá trị SAI → 400. Kiểu non-nullable `= "Junior"` KHÔNG phân
+    // biệt được hai ca đó: System.Text.Json vẫn bind `"seniority": null` thành null (nullable ref
+    // types không được enforce lúc chạy) ⇒ nhánh mặc định không bao giờ với tới được, client gửi
+    // null nhận 400 thay vì Junior.
+    string? Seniority = null
 );
 
 // SC3 — tất cả số liệu nghiệp vụ (đặc biệt SeedCount) do server tính bằng đúng luật tạo session.
@@ -71,7 +77,8 @@ public record CreateCampaignSessionRequest(
     // INT-17b — trần đào sâu MỖI câu campaign (null/0 = chế độ cũ: đào sâu dồn ở đuôi buổi).
     int? MaxDeepPerQuestion = null,
     string? Language = null,
-    string Seniority = "Junior"
+    // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
+    string? Seniority = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -95,7 +102,9 @@ public record CreateCampaignSessionInternalRequest(
     // client cũ (chưa gửi) không vỡ.
     int? MaxDeepPerQuestion = null,
     string? Language = null,
-    string Seniority = "Junior"
+    // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
+    // Campaign gửi field này; client cũ chưa gửi vẫn ra Junior thay vì 400.
+    string? Seniority = null
 );
 public record PracticeSessionResponse(
     Guid Id,

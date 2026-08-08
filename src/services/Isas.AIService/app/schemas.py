@@ -318,12 +318,21 @@ class DecideCriterion(BaseModel):
     description: str | None = None  # để follow-up NEO cùng năng lực → công bằng B2B
 
 class CriterionEvidenceState(BaseModel):
+    """Trạng thái bằng chứng theo tiêu chí — .NET là chủ state, đây chỉ là bản chụp để QUYẾT ĐỊNH.
+
+    ⚠ `deepCount` CỐ Ý KHÔNG khai ở đây, đừng thêm lại theo phản xạ "cho khớp .NET":
+    (1) `build_decide_next_prompt` đọc đúng 5 field dưới đây và KHÔNG đọc nó ⇒ khai thêm chỉ tạo ra
+        một field có tên mà không có ruột, và người sau sẽ tưởng prompt đang dùng nó;
+    (2) nó là tín hiệu ĐỘ SÂU/NGÂN SÁCH, mà quyết định sản phẩm đã chốt là bằng chứng chỉ lái NỘI DUNG
+        câu hỏi, KHÔNG lái độ dài buổi — nhét nó vào prompt là lái độ dài qua cửa sau;
+    (3) ngân sách chuỗi vốn đã tới prompt bằng đường riêng và ĐÚNG hơn: `currentDepth`/`maxDepth`.
+    .NET vẫn gửi `deepCount` cũng không sao — pydantic `extra='ignore'` bỏ qua, không 422.
+    """
     criterionId: str
     name: str
     state: str = "UNKNOWN"
     evidenceFound: list[str] = []
     missingEvidence: list[str] = []
-    deepCount: int = 0
 
 
 class DecideNextRequest(BaseModel):

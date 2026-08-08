@@ -10,13 +10,14 @@ from app.resources import sanitize_resources, count_rejected_urls
 from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
-from app.question_quality import coverage_defects
+from app.question_quality import coverage_defects, verify_defect
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt, build_repo_analysis_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
     build_summarize_session_prompt, build_decide_next_prompt,
+    build_verify_questions_prompt,
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
@@ -153,6 +154,15 @@ def _keep_known_ids(raw, allowed: set[str]) -> list[str]:
     return list(dict.fromkeys(kept))
 
 
+def _question_text(item) -> str:
+    """Text câu hỏi từ output model, chấp nhận CẢ HAI hình dạng (chuỗi trần / object có ``text``).
+
+    Model đôi khi lờ ``response_schema``; cả hai chiều lờ đều phải nhận được, vì thứ rơi ra khi
+    không nhận là một CÂU HỎI RÁC gửi thẳng cho ứng viên đã trả credit — không lỗi nào nổ.
+    """
+    return str(item.get("text", "") if isinstance(item, dict) else item).strip()
+
+
 class GeminiProvider(QuestionProvider):
     def __init__(self) -> None:
         self._client = genai.Client(api_key=settings.gemini_api_key)
@@ -178,17 +188,43 @@ class GeminiProvider(QuestionProvider):
         )
         return [list(e.values or []) for e in (resp.embeddings or [])]
 
-    async def _verify_question_knowledge(self, questions: list[str], grounding: list[dict] | None) -> tuple[list[str], list[dict] | None]:
+    async def _verify_question_knowledge(self, questions: list[str], grounding: list[dict] | None,
+                                         language: str = "vi") -> tuple[list[str], list[dict] | None]:
         """QV1 best-effort: only a concrete contradiction is a defect; retrieval miss is valid."""
         if not grounding:
             return [], None
-        context = "\n".join(f'[{g.get("chunkId")}] {g.get("content", "")}' for g in grounding)
-        prompt = ("Đối chiếu các câu hỏi với tài liệu. Không có tài liệu phù hợp KHÔNG phải lỗi. "
-                  "Chỉ liệt kê câu có khẳng định cụ thể mâu thuẫn tài liệu. Với MỖI câu, trả citedChunkIds "
-                  "chỉ từ tài liệu đã cấp (không có căn cứ thì []). Trả JSON {\"checks\":[{\"questionIndex\":0,\"citedChunkIds\":[],\"reason\":null}]}.\n"
-                  f"TÀI LIỆU:\n{context}\nCÂU HỎI:\n" + "\n".join(f"- {q}" for q in questions))
+        # Registry là no-op ở đây (prompt kiểm chứng HARDCODE, F21 không có khe nào cho nó) — nhưng
+        # guard cấu trúc `test_moi_ham_dung_build_prompt_deu_phai_nap_registry` cố ý KHÔNG có ngoại
+        # lệ, và một guard có ngoại lệ là guard sẽ bị lách. Cache đã ấm từ `generate()` nên không
+        # thêm lượt gọi mạng nào.
+        await prompt_registry.refresh_if_stale()
+        prompt = build_verify_questions_prompt(questions, grounding)
         response = await self._generate("verify_questions", contents=prompt,
-            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json"))
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                # Thiếu schema thì "trả JSON đúng dạng" chỉ còn là lời dặn trong prompt — đúng thứ
+                # mà một chunk độc nhắm vào đầu tiên. Mọi lượt gọi JSON khác của file này đều khai
+                # schema; lượt này từng là ngoại lệ duy nhất.
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "checks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "questionIndex": {"type": "integer"},
+                                    "citedChunkIds": {"type": "array", "items": {"type": "string"}},
+                                    "reason": {"type": "string", "nullable": True},
+                                },
+                                "required": ["questionIndex"],
+                            },
+                        }
+                    },
+                    "required": ["checks"],
+                },
+            ))
         data = json.loads((response.text or "").strip())
         allowed = {str(g.get("chunkId")).strip() for g in grounding if g.get("chunkId")}
         checks = data.get("checks", [])
@@ -202,7 +238,8 @@ class GeminiProvider(QuestionProvider):
                 citations[index] = _keep_known_ids(item.get("citedChunkIds"), allowed)
                 reason = str(item.get("reason") or "").strip()
                 if reason:
-                    defects.append(reason)
+                    # KHÔNG nhét `reason` nguyên văn: nó đi thẳng vào prompt lượt SINH.
+                    defects.append(verify_defect(index, reason, language))
         return defects, [{"questionIndex": i, "citedChunkIds": ids} for i, ids in enumerate(citations)]
 
     # ── F22 (FR18): CHOKEPOINT DUY NHẤT cho mọi lượt gọi Gemini ────────────────
@@ -255,7 +292,12 @@ class GeminiProvider(QuestionProvider):
         # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION).
         # Chấm-theo-phạm-vi — có criteria ⇒ kèm targetCriterionIds.
         # KHÔNG cái nào ⇒ giữ nguyên schema cũ {questions:[str]} → mọi caller cũ không đổi.
-        grounded = bool(grounding)
+        #
+        # ⚠ Phải bám `prompt_grounding`, KHÔNG phải `grounding`: khi QV1 bật, lượt sinh KHÔNG được cấp
+        # tài liệu, nên bảo model trả `citedChunkIds` là đòi nó trích cái nó chưa từng thấy. Dùng
+        # `grounding` ở đây làm prompt (bảo trả CHUỖI TRẦN) chọi thẳng với schema (ép OBJECT) — hai vế
+        # của cùng một hợp đồng nói ngược nhau, và citations sinh ra khi đó chỉ toàn rỗng.
+        grounded = bool(prompt_grounding)
         labeled = bool(criteria)
         if grounded or labeled:
             item_properties: dict = {"text": {"type": "string"}}
@@ -304,15 +346,25 @@ class GeminiProvider(QuestionProvider):
             raise ValueError("LLM không trả về danh sách câu hỏi hợp lệ.")
 
         if not grounded and not labeled:
-            questions = [str(q).strip() for q in raw if str(q).strip()]
+            # `_question_text` chứ không `str(q)`: model lờ schema mà trả OBJECT thì `str(dict)` biến
+            # nguyên cái repr Python thành CÂU HỎI gửi cho ứng viên. Đây là vế đối xứng của phòng thủ
+            # đã có ở nhánh dưới ("model lờ schema, trả chuỗi trần"), và nay mới với tới được: QV1 bật
+            # thì buổi CÓ grounding cũng đi qua nhánh này (lượt sinh cố ý ungrounded).
+            questions = [t for q in raw if (t := _question_text(q))]
             if not questions:
                 raise ValueError("LLM trả về danh sách câu hỏi rỗng sau khi lọc.")
-            return QuestionGenerationResult(questions=questions[:effective_count], citations=None)
+            # ⚠ KHÔNG return sớm ở đây. Nhánh này CÓ THỂ là buổi grounded đang bật QV1 (lượt sinh
+            # ungrounded có chủ đích) — return sớm thì cổng kiểm chứng bị nhảy qua IM LẶNG và
+            # citations không bao giờ được điền.
+            result = QuestionGenerationResult(questions=questions[:effective_count], citations=None)
+            return await self._finish(
+                result, criteria, grounding, language, effective_count,
+                job_category, cv_text, jd_text, count, focus_criteria, _attempt)
 
         # Có grounding và/hoặc criteria — tách text + lọc id. DROP mọi id KHÔNG thuộc tập đã cấp
         # (chống bịa by-construction — không tin lời hứa của model): id lạ = model tự phịa.
-        allowed_chunks = ({str(g.get("chunkId")).strip() for g in grounding if g.get("chunkId")}
-                          if grounded else set())
+        allowed_chunks = ({str(g.get("chunkId")).strip() for g in prompt_grounding
+                           if g.get("chunkId")} if grounded else set())
         allowed_criteria = ({str(c.get("criterionId")).strip() for c in criteria
                              if c.get("criterionId")} if labeled else set())
         questions: list[str] = []
@@ -320,7 +372,7 @@ class GeminiProvider(QuestionProvider):
         target_lists: list[list[str]] = []
         for item in raw:
             if isinstance(item, dict):
-                q_text = str(item.get("text", "")).strip()
+                q_text = _question_text(item)
                 cited_raw = item.get("citedChunkIds") or []
                 target_raw = item.get("targetCriterionIds") or []
             else:
@@ -351,16 +403,41 @@ class GeminiProvider(QuestionProvider):
         # index nên lệch độ dài là gán nhãn của câu này cho câu khác.
         result = QuestionGenerationResult(questions=questions, citations=citations,
                                           target_criteria=target_lists if labeled else None)
+        return await self._finish(
+            result, criteria, grounding, language, effective_count,
+            job_category, cv_text, jd_text, count, focus_criteria, _attempt)
+
+    async def _finish(self, result: QuestionGenerationResult, criteria: list[dict] | None,
+                      grounding: list[dict] | None, language: str, effective_count: int,
+                      job_category: str, cv_text: str | None, jd_text: str | None,
+                      count: int | None, focus_criteria: list[str] | None,
+                      _attempt: int) -> QuestionGenerationResult:
+        """Vòng chất lượng (SC1c) + cổng kiểm chứng (QV1), CHUNG cho mọi nhánh của :meth:`generate`.
+
+        Tách ra vì `generate` có hai đường về (chuỗi trần / object) và trước đây đường chuỗi trần
+        return SỚM ⇒ buổi grounded bật QV1 (lượt sinh cố ý ungrounded, model trả chuỗi trần) nhảy
+        qua cả kiểm chứng lẫn citations mà không lỗi gì.
+        """
         # SC1c fail-open: only retry the complete set once; remaining defects still deliver a session.
-        defects = coverage_defects(result.target_criteria, criteria)
+        # `effective_count` và `language` PHẢI truyền: thiếu count thì bản kiểm đòi phủ 100% ngay cả khi
+        # chính prompt đã bảo model "chỉ chọn {count} tiêu chí khác nhau" ⇒ đốt một lượt Gemini TẤT ĐỊNH;
+        # thiếu language thì buổi tiếng Anh nhận nhận xét sửa bài bằng tiếng Việt (Q10).
+        defects = coverage_defects(result.target_criteria, criteria, effective_count,
+                                   language=language)
         if settings.question_verify_enabled:
             try:
-                knowledge_defects, verified_citations = await self._verify_question_knowledge(result.questions, grounding)
+                knowledge_defects, verified_citations = await self._verify_question_knowledge(
+                    result.questions, grounding, language)
                 defects.extend(knowledge_defects)
+                # CHỈ ghi đè khi kiểm chứng CHẠY XONG. Lượt kiểm hỏng thì `citations` giữ nguyên giá
+                # trị của lượt sinh — mà ở chế độ QV1 giá trị đó là None ⇒ `response_model_exclude_none`
+                # bỏ hẳn field ⇒ .NET thấy "KHÔNG CÓ citation" thay vì "đã kiểm và không tìm ra nguồn
+                # nào". Hai thứ đó khác nhau, và trả rỗng-mà-trông-như-đã-kiểm là nói dối đúng chỗ D27
+                # cấm (ungrounded thì nhận ungrounded, KHÔNG dựng citation giả).
                 if verified_citations is not None:
                     result = QuestionGenerationResult(result.questions, verified_citations, result.target_criteria)
             except Exception:  # verification is auxiliary; never fail a paid session
-                logger.exception("QV1 verification failed; delivering generated questions")
+                logger.exception("QV1 verification failed; delivering questions without citations")
         if defects and _attempt < max(1, settings.question_max_attempts):
             return await self.generate(job_category, cv_text, jd_text, count, focus_criteria,
                                        grounding, criteria, language, defects, _attempt + 1)
@@ -1266,19 +1343,32 @@ class GeminiProvider(QuestionProvider):
         reason = str(data.get("reason", "") or "").strip() or None
         target_criterion_id = str(data.get("targetCriterionId", "") or "").strip() or None
 
+        # ── Nhãn bằng chứng: FAIL-OPEN CÓ CHỦ ĐÍCH ──────────────────────────────────────────
+        # Ba trường dưới đây là nhãn PHỤ TRỢ cho state phía .NET, không phải kết quả của lượt gọi.
+        # Trước đây chúng `raise ValueError` khi model trả sai hình dạng → hết `decide_next_max_attempts`
+        # → `main.py` gói thành **502** → buổi phỏng vấn chết vì một cái nhãn. Đó là chính sách NGƯỢC với
+        # `targetCriterionIds` ngay ở `generate()` cho CÙNG hạng nhãn ("biến một cái nhãn phụ thành đường
+        # làm hỏng cả buổi thì đắt hơn nhiều"), và `schemas.DecideNextResponse` khai cả ba `| None = None`
+        # nên .NET vốn chịu được chúng vắng mặt.
+        #
+        # Nhãn hỏng ⇒ bỏ qua + LOG (đo được), giữ nguyên `action`/`nextQuestion` — thứ ứng viên thật sự
+        # cần. Vẫn KHÔNG nới cho `action`/`nextQuestion`: những cái đó hỏng thì lượt gọi vô dụng, trả lại
+        # là đúng (Q16).
         def evidence_list(field: str) -> list[str]:
             value = data.get(field)
             if value is None:
                 return []
             if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-                raise ValueError(f"LLM trả về {field} không phải mảng chuỗi.")
+                logger.info("Bỏ qua %s không phải mảng chuỗi: %r", field, value)
+                return []
             return [item.strip() for item in value if item.strip()]
 
         evidence_found = evidence_list("evidenceFound")
         missing_evidence = evidence_list("missingEvidence")
         new_evidence_state = str(data.get("newEvidenceState", "") or "").strip().upper() or None
         if new_evidence_state not in {None, "UNKNOWN", "PARTIAL", "SATISFIED", "FAILED"}:
-            raise ValueError(f"LLM trả về newEvidenceState không hợp lệ: {new_evidence_state!r}")
+            logger.info("Bỏ qua newEvidenceState không hợp lệ: %r", new_evidence_state)
+            new_evidence_state = None
         return {
             "action": action,
             "nextQuestion": next_q or None,   # end → None

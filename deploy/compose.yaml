@@ -80,6 +80,14 @@ x-aiservice-env: &aiservice-env
   # ⚠ ĐỪNG nâng 64 — ở pool 32 tải tăng 32→48 chỉ +3% ⇒ trần thật (~5 req/s) nằm SAU pool.
   # Chi tiết số đo + cách đo lại: `app/config.py` §thread_pool_max_workers, `scripts/loadtest-ai-threadpool.py`.
   THREAD_POOL_MAX_WORKERS: ${AI_THREAD_POOL:-0}
+  # ⚠ KILL-SWITCH SC1c = `QUESTION_MAX_ATTEMPTS` (BẬT MẶC ĐỊNH TRONG CODE = 2): bộ câu hỏi không phủ
+  # đủ tiêu chí thì bị trả lại + sinh lại tối đa một lần — mỗi lần là MỘT lượt Gemini nữa nằm trong
+  # request tạo buổi luyện. `1` = tắt hẳn việc sinh lại (vẫn giữ phần kiểm, vốn là hàm thuần).
+  QUESTION_MAX_ATTEMPTS: ${QUESTION_MAX_ATTEMPTS:-2}
+  # ⚠ KILL-SWITCH QV1 = `QUESTION_VERIFY_ENABLED`. Bật ĐỔI HÌNH DẠNG đường sinh: corpus thôi không
+  # được cấp cho lượt SINH (chỉ dùng để KIỂM), citations đến TỪ lượt kiểm, và cộng thêm một lượt
+  # Gemini mỗi lần sinh câu hỏi. Chỉ có nghĩa khi `GROUNDING_ENABLED=true` VÀ corpus đã nạp.
+  QUESTION_VERIFY_ENABLED: ${QUESTION_VERIFY_ENABLED:-false}
 
 x-aiservice: &aiservice
   image: ghcr.io/su26se043/isas.aiservice:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file

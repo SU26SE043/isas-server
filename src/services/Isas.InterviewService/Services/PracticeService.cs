@@ -88,22 +88,30 @@ public class PracticeService : IPracticeService
         IReadOnlyList<string>? focusCriteria, CancellationToken ct = default)
         => CreateSessionInternalAsync(candidateId, request, sessionId, focusCriteria, ct);
 
-    // SC3 — language cố ý chốt "vi": request tạo session hiện cũng mặc định vi khi client không gửi
-    // language. Nhận một language riêng ở đây sẽ làm preview rubric lệch session thật.
+    /// <summary>
+    /// SC3 — preview số câu/số câu gốc do SERVER tính bằng ĐÚNG luật tạo session.
+    ///
+    /// <para><paramref name="language"/> đi qua <see cref="ValidateLanguage"/> — CÙNG hàm mà đường tạo
+    /// session dùng. Trước đây chốt cứng <c>"vi"</c> với lý do "request tạo session cũng mặc định vi",
+    /// nhưng <c>CreatePracticeSessionRequest</c> CÓ field <c>Language</c> và song ngữ đã bật thật trên
+    /// prod ⇒ buổi <c>en</c> preview bằng rubric <c>vi</c>. Không phải sai số hiển thị: số tiêu chí nội
+    /// dung là SÀN của số câu gốc (<see cref="ComputeSeedCount"/>, thắng cả trần config) nên preview và
+    /// buổi thật ra hai con số khác nhau.</para>
+    /// </summary>
     public async Task<PracticeSessionOptionsResponse> GetSessionOptionsAsync(
-        Guid candidateId, string jobCategory, CancellationToken ct = default)
+        Guid candidateId, string jobCategory, string? language = null, CancellationToken ct = default)
     {
         if (!Enum.TryParse<JobCategory>(jobCategory, ignoreCase: true, out var category))
             throw new InvalidOperationException("jobCategory không hợp lệ.");
+        var resolvedLanguage = ValidateLanguage(language);
 
         var entitlement = _tieringEnabled && _entitlements is not null
             ? await _entitlements.ResolveUserAsync(candidateId, ct)
             : EntitlementSnapshot.Free;
-        var criteriaCount = (await LoadTargetableCriteriaAsync(candidateId, category, "vi", ct)).Count;
+        var criteriaCount =
+            (await LoadTargetableCriteriaAsync(candidateId, category, resolvedLanguage, ct)).Count;
         var baseline = ResolveSessionSettings(null, entitlement);
-        var max = baseline.MaxQuestions is > 0 and <= MaxQuestionCount
-            ? baseline.MaxQuestions
-            : MaxQuestionCount;
+        var max = EffectiveMaxQuestionCount(entitlement);
         var min = MinQuestionCount;
 
         PracticeSessionPreview PreviewFor(int count)
@@ -116,16 +124,39 @@ public class PracticeService : IPracticeService
         }
 
         var preview = Enumerable.Range(min, max - min + 1).Select(PreviewFor).ToList();
+
+        // `CoversAllCriteria` = "có ĐỦ KHE cho mọi tiêu chí nội dung", tính GIỐNG NHAU ở cả hai chế độ.
+        //
+        // Trước đây `!baseline.AdaptiveEnabled ||` cho ra `true` VÔ ĐIỀU KIỆN khi adaptive tắt ⇒ UI
+        // khẳng định "phủ hết tiêu chí" kể cả preset 1 câu. Adaptive tắt KHÔNG làm câu hỏi hết nhãn:
+        // `targetable` vẫn được gửi vào `GenerateQuestionsAsync` (xem CreateSessionInternalAsync) và
+        // `PreviewFor` trả `seeds = count` cho nhánh đó, nên phép so vẫn có nghĩa và vẫn đúng đại lượng.
+        //
+        // ⚠ Đây là điều kiện CẦN, không phải đủ: AI vẫn có thể gắn trùng nhãn (đo trên prod: 3 câu gốc
+        // nhưng nhãn ra 2 lần cùng một tiêu chí — xem log cảnh báo SC1 ở call site tạo session).
         PracticeSessionPreset Preset(string key, int desired)
         {
             var item = PreviewFor(Math.Clamp(desired, min, max));
             return new PracticeSessionPreset(
-                key, item.QuestionCount, item.SeedCount,
-                !baseline.AdaptiveEnabled || item.SeedCount >= criteriaCount);
+                key, item.QuestionCount, item.SeedCount, item.SeedCount >= criteriaCount);
         }
 
-        var presets = new[] { Preset("short", 6), Preset("medium", 12), Preset("long", 20) };
-        var defaultQuestionCount = Math.Clamp(12, min, max);
+        // Preset SẬP TRÙNG NHAU khi trần thấp: gói cap 8 → short=6, medium=8, long=8 ⇒ UI hiện 3 nút mà
+        // 2 nút y hệt. Dedupe theo `QuestionCount`, giữ nhãn CUỐI cùng để giá trị lớn nhất còn dùng được
+        // giữ nhãn "long" (giữ nhãn đầu thì nút to nhất lại mang tên "medium").
+        var presets = new[] { Preset("short", 6), Preset("medium", 12), Preset("long", 20) }
+            .GroupBy(p => p.QuestionCount)
+            .Select(g => g.Last())
+            .OrderBy(p => p.QuestionCount)
+            .ToList();
+
+        // Mặc định THẬT khi client bỏ trống `questionCount`, KHÔNG phải một con số UI tự đặt.
+        // `ResolveSessionSettings(null, …)` chạy đúng nhánh mà `CreateSessionInternalAsync` sẽ chạy
+        // (`questionCount ?? entitlement.MaxQuestions` / `?? _adaptive.MaxQuestions`). Trần buổi 0 =
+        // "không trần" (adaptive tắt) ⇒ số câu do AIService quyết, mặc định của nó là 5.
+        var defaultQuestionCount = Math.Clamp(
+            baseline.MaxQuestions > 0 ? baseline.MaxQuestions : AiServiceDefaultQuestionCount, min, max);
+
         return new PracticeSessionOptionsResponse(
             baseline.AdaptiveEnabled, baseline.MaxDeepPerQuestion, criteriaCount, min, max,
             defaultQuestionCount, presets, preview);
@@ -143,8 +174,7 @@ public class PracticeService : IPracticeService
         if (request.JobCategory is null)
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
-        var seniority = request.Seniority is "Fresher" or "Junior" or "Middle" or "Senior"
-            ? request.Seniority : throw new InvalidOperationException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
+        var seniority = ValidateSeniority(request.Seniority);
         var language = ValidateLanguage(request.Language);
 
         // F2 — thời lượng mỗi câu. Guard TRƯỚC reserve (PAY-5): giá trị sai → 400 mà KHÔNG giữ credit oan.
@@ -159,6 +189,19 @@ public class PracticeService : IPracticeService
         var entitlement = _tieringEnabled && _entitlements is not null
             ? await _entitlements.ResolveUserAsync(candidateId, ct)
             : EntitlementSnapshot.Free;
+
+        // F2b/SC3 — trần số câu THẬT phụ thuộc GÓI, nên chỉ kiểm được sau khi resolve entitlement.
+        // Vẫn TRƯỚC reserve (PAY-5): vượt trần → 400 mà KHÔNG giữ credit oan.
+        //
+        // Thiếu guard này thì `Math.Clamp` trong `ResolveSessionSettings` cắt trong IM LẶNG: gói cap 8,
+        // ứng viên chọn 20 → `ValidateQuestionCount` (1..20) cho qua → session ra 8 câu. Không lỗi,
+        // không cảnh báo, và `GET /session-options` thì đã báo max = 8 ⇒ API tự mâu thuẫn với chính nó.
+        // Clamp bên trong GIỮ NGUYÊN làm lưới an toàn cho đường internal không đi qua guard này.
+        var effectiveMaxQuestions = EffectiveMaxQuestionCount(entitlement);
+        if (questionCount is int chosenQuestionCount && chosenQuestionCount > effectiveMaxQuestions)
+            throw new InvalidOperationException(
+                $"questionCount phải nằm trong khoảng {MinQuestionCount}..{effectiveMaxQuestions} "
+                + $"(đang gửi: {chosenQuestionCount}).");
 
         // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
         // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
@@ -267,7 +310,19 @@ public class PracticeService : IPracticeService
 
             // Evidence-driven adaptive: state khởi tạo cùng snapshot rubric của buổi. AIService chỉ
             // nhận state qua wire; InterviewService là nơi duy nhất ghi state/evidence (GEN-4).
-            if (targetable.Count > 0)
+            //
+            // ⚠ GATE theo `adaptiveOn` — đối xứng đường B2B (`if (session.AdaptiveEnabled)`). Evidence chỉ
+            // được ĐỌC và GHI trong `AnswerService` ở đường thích ứng; buổi tắt adaptive mà vẫn khởi tạo
+            // thì N row đứng `UNKNOWN` vĩnh viễn — và `GetSessionAsync` TRẢ CHÚNG RA API
+            // (`CriterionEvidence`), nên FE hiện "chưa có bằng chứng cho mọi tiêu chí" cho một buổi mà cơ
+            // chế đó không hề chạy.
+            //
+            // ⚠ Tập criterion khác nhau giữa hai đường là CÓ LÝ DO, không phải lệch: cả hai đều nghĩa là
+            // "tiêu chí NỘI DUNG của rubric buổi này", nhưng B2B không dùng `ScoringScope` (tiêu chí do HR
+            // gõ, nhận DEFAULT `Always` — xem SC2) nên lọc `WhenTargeted` bên đó sẽ ra RỖNG và giết luôn
+            // evidence của B2B. B2C thì phải lọc, vì 4 tiêu chí CÁCH NÓI được chấm cho mọi câu ⇒ không có
+            // "câu nhắm tới" để mà theo dõi bằng chứng.
+            if (adaptiveOn && targetable.Count > 0)
             {
                 _db.SessionCriterionEvidence.AddRange(targetable.Select(c => new SessionCriterionEvidence
                 {
@@ -516,8 +571,7 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException("Campaign session cần ít nhất 1 tiêu chí");
 
         var language = ValidateLanguage(request.Language);
-        var seniority = request.Seniority is "Fresher" or "Junior" or "Middle" or "Senior"
-            ? request.Seniority : throw new InvalidOperationException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
+        var seniority = ValidateSeniority(request.Seniority);
 
         await EnsureCapacityAsync(ct); // CreateCampaignSession chỉ được gọi khi tạo mới, không chặn resume.
 
@@ -1188,6 +1242,34 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException($"Chưa có rubric hoạt động cho {jobCategory} ({language}).");
     }
 
+    // Mức kinh nghiệm ứng viên tự khai — đóng dấu lên session, đi vào `/decide-next` để câu đào sâu
+    // hỏi đúng tầm. Tập ĐÓNG, khớp `ck_practice_sessions_seniority` ở DB **và** `RoadmapLevel`.
+    private static readonly string[] AllowedSeniorities = ["Fresher", "Junior", "Middle", "Senior"];
+    private const string DefaultSeniority = "Junior";
+
+    /// <summary>
+    /// Hợp đồng seniority — CHUNG cho B2C và B2B (worker Campaign áp cùng luật, đừng chế biến thể):
+    /// <list type="bullet">
+    ///   <item><c>null</c> (client cũ không gửi) → <c>"Junior"</c>.</item>
+    ///   <item>chuỗi RỖNG sau <c>Trim()</c> → <b>400</b>, KHÔNG âm thầm reset về Junior: client gửi
+    ///   <c>""</c> là đang gửi một giá trị SAI, khác hẳn với không gửi gì.</item>
+    ///   <item>không thuộc tập (so <b>case-sensitive</b>, khớp CHECK ở DB) → 400.</item>
+    ///   <item>hợp lệ → giá trị đã trim.</item>
+    /// </list>
+    /// ⚠ <c>InvalidOperationException</c> chứ KHÔNG phải <c>ArgumentException</c>: PracticeController
+    /// chỉ bắt loại đầu → 400; loại sau rơi xuống <c>catch(Exception)</c> → 500 (cùng bẫy với
+    /// <see cref="ValidateTimeLimitSec"/>). Guard chạy TRƯỚC reserve ⇒ input sai không giữ credit (PAY-5).
+    /// </summary>
+    private static string ValidateSeniority(string? requested)
+    {
+        if (requested is null) return DefaultSeniority;
+        var seniority = requested.Trim();
+        if (!AllowedSeniorities.Contains(seniority, StringComparer.Ordinal))
+            throw new InvalidOperationException(
+                $"seniority chỉ nhận {string.Join(" / ", AllowedSeniorities)} (đang gửi: '{requested}').");
+        return seniority;
+    }
+
     private static int ValidateTimeLimitSec(int? requested)
     {
         if (requested is null) return DefaultTimeLimitSec;
@@ -1207,7 +1289,29 @@ public class PracticeService : IPracticeService
     private const int MinQuestionCount = 1;
     private const int MaxQuestionCount = 20;
 
+    // Số câu AIService tự sinh khi .NET không truyền `count`. Trần cứng ở trên là của HỆ THỐNG; con số
+    // này là mặc định của AIService — hai thứ khác nhau, đừng gộp.
+    private const int AiServiceDefaultQuestionCount = 5;
+
+    /// <summary>
+    /// Trần số câu THẬT của một ứng viên = min(trần hệ thống, trần gói). Dùng CHUNG bởi
+    /// <see cref="GetSessionOptionsAsync"/> (số báo cho UI) và <see cref="CreateSessionInternalAsync"/>
+    /// (số dùng để từ chối). Hai chỗ tính khác nhau chính là bug: endpoint báo max 8 mà POST
+    /// <c>questionCount: 20</c> vẫn 200 rồi bị <c>Math.Clamp</c> trong <see cref="ResolveSessionSettings"/>
+    /// cắt còn 8 trong im lặng — ứng viên trả 1 credit cho một buổi khác thứ họ đã chọn.
+    /// </summary>
+    private int EffectiveMaxQuestionCount(EntitlementSnapshot entitlement)
+    {
+        var baseline = ResolveSessionSettings(null, entitlement);
+        return baseline.MaxQuestions is > 0 and <= MaxQuestionCount
+            ? baseline.MaxQuestions
+            : MaxQuestionCount;
+    }
+
     // null = client không chọn → trả null để KHÔNG ghi đè mặc định của AIService (giữ hành vi cũ = 5 câu).
+    //
+    // ⚠ Đây là trần TUYỆT ĐỐI của hệ thống, kiểm sớm và rẻ (không cần entitlement). Trần theo GÓI hẹp
+    // hơn được kiểm riêng sau khi resolve entitlement — xem EffectiveMaxQuestionCount.
     private static int? ValidateQuestionCount(int? requested)
     {
         if (requested is null) return null;

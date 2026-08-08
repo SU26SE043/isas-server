@@ -270,22 +270,26 @@ public class AnswerService : IAnswerService
                     e.State, e.EvidenceFound, e.MissingEvidence, e.DeepCount))
                 .ToListAsync(ct);
 
-            // Evidence là điều kiện dừng thực thi ở server, không chỉ là lời dặn prompt: AI không
-            // được kéo dài buổi khi mọi criterion đã đủ, hoặc khi tất cả đã có kết luận cuối.
-            if (evidenceState.Count > 0 && evidenceState.All(e => e.State is "SATISFIED" or "FAILED"))
-                return EndOutcome("end", pendingCount);
-
-            // Hai criterion liên tiếp không chứng minh được năng lực là tín hiệu giảm tải/đóng buổi
-            // trong spec. Server chưa có protocol "reduce difficulty" riêng, vì vậy chọn nhánh an toàn
-            // là dừng thay vì để model tiếp tục hỏi vô hạn. Chỉ xét criterion đã cập nhật (UpdatedAt).
-            var latestStates = await _db.SessionCriterionEvidence.AsNoTracking()
-                .Where(e => e.SessionId == session.Id && e.State == "FAILED")
-                .OrderByDescending(e => e.UpdatedAt)
-                .Take(2)
-                .Select(e => e.CriterionId)
-                .ToListAsync(ct);
-            if (latestStates.Count == 2)
-                return EndOutcome("end", pendingCount);
+            // ⚠ EVIDENCE CHỈ LÁI **NỘI DUNG** CÂU HỎI, KHÔNG LÁI **ĐỘ DÀI** BUỔI (quyết định sản phẩm).
+            //
+            // Ở đây từng có 2 luật dừng sớm — "mọi criterion đã SATISFIED/FAILED → end" và "2 criterion
+            // FAILED → end" — đã GỠ, cố ý. Vì sao:
+            //  • Ứng viên trả 1 credit cho ĐÚNG số câu họ chọn (F2b). Cắt buổi sớm = giao ít hơn đã bán,
+            //    mà lại cắt đúng vào người trả lời kém (2 FAILED) — tức phạt hai lần.
+            //  • B2B: số câu phụ thuộc chất lượng trả lời thì hai ứng viên cùng campaign nhận số câu
+            //    khác nhau, trong khi điểm vẫn đem xếp hạng chung ⇒ phá CAMP-10 (đúng thứ INT-17b đã
+            //    phải để `MaxFollowUps = 0` để tránh).
+            //  • Luật thứ hai còn KHÔNG làm đúng thứ nó tự khai: comment nói "2 tiêu chí LIÊN TIẾP"
+            //    nhưng query chỉ đếm `COUNT(FAILED) >= 2` bất kỳ (`OrderByDescending(UpdatedAt).Take(2)`
+            //    là thừa — lọc trước, sắp sau, không có ngữ nghĩa "liên tiếp" nào). `FAILED` lại DÍNH
+            //    (chỉ đổi khi có decision nhắm đúng criterion đó) ⇒ đã dừng là dừng vĩnh viễn.
+            //  • Ở chế độ frontier (`MaxDeepPerQuestion == 0`) tới được đây nghĩa là `pendingCount == 0`
+            //    ⇒ `EndOutcome` trả `InterviewComplete: true` ⇒ FE báo "đã hỏi xong, mời nộp bài" sau
+            //    5 câu, ứng viên nộp bài dở dang.
+            //
+            // Ngân sách buổi (bước 3) + trần độ sâu (bước 1) mới là thứ quyết định buổi dài bao nhiêu.
+            // `evidenceState` vẫn được nạp và GỬI vào `/decide-next` bên dưới — đó là phần giá trị của
+            // evidence: AI biết tiêu chí nào còn thiếu bằng chứng để hỏi TRÚNG, chứ không phải để đóng cửa.
 
             // Chế độ chuỗi: kèm câu GỐC (mỏ neo chủ đề) + tên các câu gốc KHÁC (đừng hỏi trùng).
             string? rootQuestion = null;
@@ -334,19 +338,51 @@ public class AnswerService : IAnswerService
 
             // Chỉ InterviewService ghi evidence state. Id không thuộc snapshot hoặc state lạ bị bỏ qua;
             // AI trả thiếu evidence không được phép làm hỏng answer/session đã trả credit.
-            if (Guid.TryParse(decision.TargetCriterionId, out var targetId)
-                && decision.NewEvidenceState is "UNKNOWN" or "PARTIAL" or "SATISFIED" or "FAILED")
+            //
+            // ⚠ Bỏ qua PHẢI CÓ LOG. Tính năng này im lặng khi hỏng: evidence đứng `UNKNOWN` cả buổi,
+            // `/decide-next` vẫn nhận snapshot rỗng nghĩa và vẫn trả câu hỏi ⇒ không có triệu chứng nào
+            // ngoài "chất lượng câu hỏi tệ dần". Log là thứ duy nhất phân biệt "AI chưa gắn nhãn lần này"
+            // với "hợp đồng dây đã lệch tên khoá" (lớp bug đã xảy ra 3 lần: focusCriteria · metricsVersion
+            // · adaptiveMaxQuestions).
+            if (!string.IsNullOrWhiteSpace(decision.TargetCriterionId)
+                || !string.IsNullOrWhiteSpace(decision.NewEvidenceState))
             {
-                var evidence = await _db.SessionCriterionEvidence
-                    .SingleOrDefaultAsync(e => e.SessionId == session.Id && e.CriterionId == targetId, ct);
-                if (evidence is not null)
+                var parsed = Guid.TryParse(decision.TargetCriterionId, out var targetId);
+                var stateOk = decision.NewEvidenceState is "UNKNOWN" or "PARTIAL" or "SATISFIED" or "FAILED";
+                if (!parsed || !stateOk)
                 {
-                    evidence.State = decision.NewEvidenceState;
-                    evidence.EvidenceFound = decision.EvidenceFound?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
-                    evidence.MissingEvidence = decision.MissingEvidence?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
-                    evidence.DeepCount = question.Depth;
-                    evidence.UpdatedAt = DateTime.UtcNow;
-                    await _db.SaveChangesAsync(ct);
+                    _logger.LogWarning(
+                        "Evidence: bỏ qua cập nhật cho answer {AnswerId} (session {SessionId}) — "
+                        + "targetCriterionId='{TargetCriterionId}' (parse={Parsed}), newEvidenceState='{State}' (hợp lệ={StateOk})",
+                        answer.Id, session.Id, decision.TargetCriterionId, parsed, decision.NewEvidenceState, stateOk);
+                }
+                else
+                {
+                    var evidence = await _db.SessionCriterionEvidence
+                        .SingleOrDefaultAsync(e => e.SessionId == session.Id && e.CriterionId == targetId, ct);
+                    if (evidence is null)
+                    {
+                        _logger.LogWarning(
+                            "Evidence: criterion {CriterionId} KHÔNG thuộc snapshot của session {SessionId} — bỏ qua",
+                            targetId, session.Id);
+                    }
+                    else
+                    {
+                        evidence.State = decision.NewEvidenceState!;
+                        evidence.EvidenceFound = decision.EvidenceFound?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
+                        evidence.MissingEvidence = decision.MissingEvidence?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
+                        // CỘNG DỒN theo TIÊU CHÍ, không gán `question.Depth`.
+                        //
+                        // `PracticeQuestion.Depth` là độ sâu trong CHUỖI ĐÀO SÂU của một câu GỐC (INT-17b) —
+                        // thuộc về câu, không phải tiêu chí. Gán đè bằng nó sai hai lần: (a) sai đại lượng;
+                        // (b) là phép GÁN nên một decision đến từ câu gốc (`Depth == 0`) RESET bộ đếm về 0,
+                        // xoá luôn lịch sử đào sâu của tiêu chí. Cột này chỉ có nghĩa nếu nó đếm "đã đào sâu
+                        // tiêu chí này mấy lần" — và AIService dùng chính con số đó để biết khi nào nên
+                        // chuyển tiêu chí.
+                        evidence.DeepCount += 1;
+                        evidence.UpdatedAt = DateTime.UtcNow;
+                        await _db.SaveChangesAsync(ct);
+                    }
                 }
             }
 

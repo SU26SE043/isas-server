@@ -521,3 +521,93 @@ def test_decide_next_tat_thinking_theo_config(monkeypatch):
             asked_count=1, follow_up_count=0, max_questions=6, max_follow_ups=3,
             criteria=[{"id": "c", "name": "n", "maxScore": 10, "weight": 1.0}]))
     assert getattr(captured["config"], "thinking_config", None) is None
+
+
+# ── Nhãn bằng chứng hỏng KHÔNG được giết cả lượt decide-next ────────────────
+#
+# Ba trường evidence là nhãn PHỤ TRỢ cho state phía .NET. Khi chúng raise, `decide_next` hết
+# `decide_next_max_attempts` rồi `main.py` gói thành 502 ⇒ buổi phỏng vấn chết vì một cái nhãn —
+# ngược hẳn chính sách đã ghi cho `targetCriterionIds` ở `generate()`, và `DecideNextResponse` vốn
+# khai cả ba `| None = None` nên .NET chịu được chúng vắng mặt.
+
+@pytest.mark.asyncio
+async def test_new_evidence_state_la_thi_bo_qua_chu_khong_giet_luot_goi():
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "action": "follow_up", "nextQuestion": "Bạn cân nhắc trade-off nào?",
+            "newEvidenceState": "MOSTLY_OK",          # không thuộc 4 giá trị hợp lệ
+        })
+    )
+
+    result = await provider.decide_next(
+        "BE", "Q", "trả lời", [], asked_count=1, follow_up_count=0,
+        max_questions=10, max_follow_ups=3, criteria=_CRITERIA)
+
+    assert result["action"] == "follow_up"
+    assert result["nextQuestion"] == "Bạn cân nhắc trade-off nào?"
+    assert result["newEvidenceState"] is None
+    # KHÔNG được thử lại: nhãn hỏng không phải lý do đốt thêm một lượt Gemini.
+    assert provider._client.aio.models.generate_content.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_evidence_list_sai_hinh_dang_thi_bo_qua_chu_khong_giet_luot_goi():
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "action": "clarify", "nextQuestion": "Ý bạn là gì?",
+            "evidenceFound": "một chuỗi chứ không phải mảng",
+            "missingEvidence": [{"lồng": "dict"}],
+        })
+    )
+
+    result = await provider.decide_next(
+        "BE", "Q", "trả lời", [], asked_count=1, follow_up_count=0,
+        max_questions=10, max_follow_ups=3, criteria=_CRITERIA)
+
+    assert result["action"] == "clarify"
+    assert result["evidenceFound"] == [] and result["missingEvidence"] == []
+    assert provider._client.aio.models.generate_content.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_action_hong_thi_VAN_bi_tra_lai():
+    """Ranh giới của fail-open: `action`/`nextQuestion` hỏng thì lượt gọi vô dụng — vẫn phải trả lại
+    (Q16), không được nới theo."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({"action": "hỏi_tiếp_đi", "nextQuestion": "X?"}))
+
+    with pytest.raises(ValueError):
+        await provider.decide_next(
+            "BE", "Q", "trả lời", [], asked_count=1, follow_up_count=0,
+            max_questions=10, max_follow_ups=3, criteria=_CRITERIA)
+
+
+# ── `deepCount`: KHÔNG trên wire của AIService ──────────────────────────────
+def test_deep_count_khong_nam_tren_wire_va_khong_lam_vo_request():
+    """.NET vẫn gửi `deepCount` (nó có cột DB riêng bên đó) — request phải nhận bình thường, và
+    prompt phải KHÔNG tiêu thụ nó. Khai một field rồi không đọc chính là mẫu "có tên mà không có
+    ruột" mà repo đã nhiều lần phải đi dọn."""
+    from app.schemas import CriterionEvidenceState, DecideNextRequest
+
+    assert "deepCount" not in CriterionEvidenceState.model_fields
+
+    req = DecideNextRequest(
+        jobCategory="BE", currentQuestion="Q", answerText="a",
+        currentEvidenceState=[{
+            "criterionId": "c-1", "name": "Thiết kế", "state": "PARTIAL",
+            "evidenceFound": ["đã nêu cache"], "missingEvidence": ["chưa nêu trade-off"],
+            "deepCount": 7,                      # .NET gửi → phải được BỎ QUA, không 422
+        }])
+    dumped = req.currentEvidenceState[0].model_dump()
+    assert "deepCount" not in dumped
+
+    prompt = build_decide_next_prompt(
+        job_category="BE", current_question="Q", transcript="a", history=[],
+        asked_count=1, follow_up_count=0, max_questions=8, max_follow_ups=2,
+        criteria=_CRITERIA, current_evidence_state=[dumped])
+    assert "deepCount" not in prompt
+    # …nhưng ngân sách chuỗi vẫn tới prompt bằng đường riêng, đúng hơn (INT-17b).
+    assert "chưa nêu trade-off" in prompt

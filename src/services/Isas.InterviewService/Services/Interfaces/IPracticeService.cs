@@ -5,9 +5,14 @@ namespace Isas.InterviewService.Services.Interfaces;
 
 public interface IPracticeService
 {
-    /// <summary>SC3 — server-side preview so clients do not duplicate adaptive seed-count rules.</summary>
+    /// <summary>
+    /// SC3 — server-side preview so clients do not duplicate adaptive seed-count rules.
+    /// <paramref name="language"/> must match the language the client will use when creating the
+    /// session: the content-criteria count of that rubric is the FLOOR for the seed count, so a
+    /// mismatched language previews a different number than the session will actually get.
+    /// </summary>
     Task<PracticeSessionOptionsResponse> GetSessionOptionsAsync(
-        Guid candidateId, string jobCategory, CancellationToken ct = default);
+        Guid candidateId, string jobCategory, string? language = null, CancellationToken ct = default);
 
     Task<PracticeSessionResponse> CreateSessionAsync(
         Guid candidateId, CreatePracticeSessionRequest request, CancellationToken ct = default);
