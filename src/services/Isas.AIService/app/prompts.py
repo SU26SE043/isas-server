@@ -114,7 +114,8 @@ def build_prompt(job_category: str, cv_text: str | None,
                  jd_text: str | None, count: int,
                  focus_criteria: list[str] | None = None,
                  grounding: list[dict] | None = None,
-                 criteria: list[dict] | None = None, *, language: str = VI) -> str:
+                 criteria: list[dict] | None = None, retry_feedback: list[str] | None = None,
+                 *, language: str = VI) -> str:
     """Prompt SINH CÂU HỎI.
 
     ``criteria`` (chấm-theo-phạm-vi) = tập tiêu chí NỘI DUNG ``[{criterionId, name}]``; có thì mỗi
@@ -280,6 +281,10 @@ def build_prompt(job_category: str, cv_text: str | None,
     grounding_block = build_grounding_block(grounding, cite=True)
     if grounding_block:
         parts.append(grounding_block)
+
+    if retry_feedback:
+        parts.append("NHẬN XÉT BẮT BUỘC TỪ LƯỢT TRƯỚC — hãy sửa toàn bộ bộ câu hỏi:\n- "
+                     + "\n- ".join(retry_feedback))
 
     # Hợp đồng output. Câu hỏi là CHUỖI TRẦN khi không grounding và không gắn nhãn (shape gốc);
     # thành OBJECT ngay khi có một trong hai, và mang cả hai field khi có cả hai.

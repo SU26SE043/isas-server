@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # lần trước khi bó tay báo answer Failed. 3 = 1 lần đầu + 2 lần retry.
     score_max_attempts: int = 3
 
+    # SC1c/QV1: 1 = tắt vòng chất lượng, 2 = sinh lại tối đa một lần.
+    question_max_attempts: int = 2
+    # Một cờ điều khiển cả bỏ grounding khỏi prompt-sinh và lượt kiểm kiến thức.
+    question_verify_enabled: bool = False
+
+
     # ── TTS: ĐỌC CÂU HỎI THÀNH TIẾNG ────────────────────────────
     # Dùng LẠI gemini_api_key ở trên → KHÔNG phải cấp credential mới.
     # Model TTS là model RIÊNG (model chat thường không nhận response_modalities=["AUDIO"]).

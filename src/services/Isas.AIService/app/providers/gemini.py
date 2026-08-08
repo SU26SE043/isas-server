@@ -10,6 +10,7 @@ from app.resources import sanitize_resources, count_rejected_urls
 from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
+from app.question_quality import coverage_defects
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
@@ -177,6 +178,33 @@ class GeminiProvider(QuestionProvider):
         )
         return [list(e.values or []) for e in (resp.embeddings or [])]
 
+    async def _verify_question_knowledge(self, questions: list[str], grounding: list[dict] | None) -> tuple[list[str], list[dict] | None]:
+        """QV1 best-effort: only a concrete contradiction is a defect; retrieval miss is valid."""
+        if not grounding:
+            return [], None
+        context = "\n".join(f'[{g.get("chunkId")}] {g.get("content", "")}' for g in grounding)
+        prompt = ("Đối chiếu các câu hỏi với tài liệu. Không có tài liệu phù hợp KHÔNG phải lỗi. "
+                  "Chỉ liệt kê câu có khẳng định cụ thể mâu thuẫn tài liệu. Với MỖI câu, trả citedChunkIds "
+                  "chỉ từ tài liệu đã cấp (không có căn cứ thì []). Trả JSON {\"checks\":[{\"questionIndex\":0,\"citedChunkIds\":[],\"reason\":null}]}.\n"
+                  f"TÀI LIỆU:\n{context}\nCÂU HỎI:\n" + "\n".join(f"- {q}" for q in questions))
+        response = await self._generate("verify_questions", contents=prompt,
+            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json"))
+        data = json.loads((response.text or "").strip())
+        allowed = {str(g.get("chunkId")).strip() for g in grounding if g.get("chunkId")}
+        checks = data.get("checks", [])
+        citations = [[] for _ in questions]
+        defects: list[str] = []
+        for item in checks if isinstance(checks, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("questionIndex"), int):
+                continue
+            index = item["questionIndex"]
+            if 0 <= index < len(questions):
+                citations[index] = _keep_known_ids(item.get("citedChunkIds"), allowed)
+                reason = str(item.get("reason") or "").strip()
+                if reason:
+                    defects.append(reason)
+        return defects, [{"questionIndex": i, "citedChunkIds": ids} for i, ids in enumerate(citations)]
+
     # ── F22 (FR18): CHOKEPOINT DUY NHẤT cho mọi lượt gọi Gemini ────────────────
     async def _generate(self, operation: str, *, contents, config,
                         model: str | None = None, defer_report: bool = False):
@@ -210,7 +238,8 @@ class GeminiProvider(QuestionProvider):
                        focus_criteria: list[str] | None = None,
                        grounding: list[dict] | None = None,
                        criteria: list[dict] | None = None,
-                       language: str = "vi") -> QuestionGenerationResult:
+                       language: str = "vi", _retry_feedback: list[str] | None = None,
+                       _attempt: int = 1) -> QuestionGenerationResult:
         """Sinh câu hỏi. ``criteria`` = tiêu chí NỘI DUNG ``[{criterionId, name}]`` để gắn nhãn
         phạm vi đánh giá cho từng câu (chấm-theo-phạm-vi); vắng ⇒ prompt/schema/kết quả GIỮ
         NGUYÊN XI như trước (mẫu ``criteria`` của C14 ở :meth:`analyze_cv`)."""
@@ -218,8 +247,10 @@ class GeminiProvider(QuestionProvider):
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
         effective_count = count if count is not None else settings.question_count
+        # QV1: grounding vẫn đi trên dây để citations/verify dùng được, nhưng không neo lượt SINH.
+        prompt_grounding = None if settings.question_verify_enabled else grounding
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
-                              focus_criteria, grounding, criteria, language=language)
+                              focus_criteria, prompt_grounding, criteria, _retry_feedback, language=language)
 
         # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION).
         # Chấm-theo-phạm-vi — có criteria ⇒ kèm targetCriterionIds.
@@ -318,8 +349,22 @@ class GeminiProvider(QuestionProvider):
                       for i in range(len(questions))] if grounded else None)
         # Mảng song song: LUÔN cùng độ dài `questions` (cắt cùng một lát ở trên) — .NET zip theo
         # index nên lệch độ dài là gán nhãn của câu này cho câu khác.
-        return QuestionGenerationResult(questions=questions, citations=citations,
-                                        target_criteria=target_lists if labeled else None)
+        result = QuestionGenerationResult(questions=questions, citations=citations,
+                                          target_criteria=target_lists if labeled else None)
+        # SC1c fail-open: only retry the complete set once; remaining defects still deliver a session.
+        defects = coverage_defects(result.target_criteria, criteria)
+        if settings.question_verify_enabled:
+            try:
+                knowledge_defects, verified_citations = await self._verify_question_knowledge(result.questions, grounding)
+                defects.extend(knowledge_defects)
+                if verified_citations is not None:
+                    result = QuestionGenerationResult(result.questions, verified_citations, result.target_criteria)
+            except Exception:  # verification is auxiliary; never fail a paid session
+                logger.exception("QV1 verification failed; delivering generated questions")
+        if defects and _attempt < max(1, settings.question_max_attempts):
+            return await self.generate(job_category, cv_text, jd_text, count, focus_criteria,
+                                       grounding, criteria, language, defects, _attempt + 1)
+        return result
 
     async def suggest_criteria(self, job_category: str, jd_text: str | None,
                                criteria_text: str | None, count: int, language: str = "vi") -> list[dict]:
