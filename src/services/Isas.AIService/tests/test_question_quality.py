@@ -385,3 +385,32 @@ def test_mac_dinh_trong_compose_khop_mac_dinh_trong_code():
     verify = re.search(r"QUESTION_VERIFY_ENABLED:-(\w+)", compose)
     assert attempts and int(attempts.group(1)) == settings.question_max_attempts
     assert verify and (verify.group(1) == "true") == settings.question_verify_enabled
+
+
+@pytest.mark.parametrize("attempts,expected_calls", [(1, 1), (2, 2)])
+@pytest.mark.asyncio
+async def test_kill_switch_sc1c_chan_luot_sinh_lai(monkeypatch, attempts, expected_calls):
+    """KILL-SWITCH: `question_max_attempts=1` ⇒ có khiếm khuyết cũng KHÔNG sinh lại.
+
+    Lỗ đã lộ ra qua mutation: mọi test đặt attempts=1 trước đó đều dựng ca KHÔNG có khiếm khuyết,
+    nên nhánh sinh lại chưa từng bị chạm ở cấu hình đó — tức cần gạt mà người vận hành kéo để NGỪNG
+    đốt lượt Gemini chưa hề được chứng minh là có tác dụng."""
+    class Fake:
+        def __init__(self): self.calls = 0
+        async def generate_content(self, *, model, contents, config):
+            self.calls += 1
+            # Luôn dồn cả hai câu vào cùng một tiêu chí ⇒ LUÔN có khiếm khuyết.
+            return SimpleNamespace(text=json.dumps({"questions": [
+                {"text": "Q1?", "targetCriterionIds": [C1]},
+                {"text": "Q2?", "targetCriterionIds": [C1]}]}))
+
+    monkeypatch.setattr(GeminiProvider, "__init__", lambda self: None)
+    provider = GeminiProvider(); fake = Fake()
+    provider._client = SimpleNamespace(aio=SimpleNamespace(models=fake))
+    monkeypatch.setattr(settings, "question_max_attempts", attempts)
+
+    result = await provider.generate("BE", None, None, count=2, criteria=_criteria3())
+
+    assert fake.calls == expected_calls
+    # Fail-open ở cả hai cấu hình: còn khiếm khuyết vẫn GIAO BÀI, không ném (buổi đã reserve credit).
+    assert result.questions == ["Q1?", "Q2?"]
