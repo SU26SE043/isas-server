@@ -473,6 +473,35 @@ public class KnowledgeServiceTests
         Assert.Equal("10", t.NewContext().KnowledgeSources.Single(x => x.Id == id).Reputation);
     }
 
+    /// Nguồn ĐÃ có uy tín và Context7 trả giá trị MỚI KHÁC → phải CẬP NHẬT, không giữ số cũ.
+    ///
+    /// <remarks>
+    /// Lỗ test do supervisor tìm ra lúc gộp: hai test "giữ giá trị cũ" ngay dưới đều dựng ca tra
+    /// HỤT, còn test điền-cho-nguồn-cũ thì seed <c>null</c>. Không ca nào phân biệt được
+    /// <c>mới ?? cũ</c> (đúng) với <c>cũ ?? mới</c> (sai) ⇒ đảo thứ tự hai vế vẫn XANH 684/684,
+    /// mà hành vi thật là reindex KHÔNG BAO GIỜ làm mới uy tín đã có. `trustScore` bên Context7
+    /// đổi theo thời gian, và reindex chính là lúc nên đọc lại — hỏng kiểu này không có triệu
+    /// chứng nào, chỉ là số cũ nằm im mãi.
+    /// </remarks>
+    [Fact]
+    public async Task Reindex_Context7_TraVeGiaTriMoi_CapNhat_KhongGiuSoCu()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        var id = await SeedContext7Source(t, reputation: "10");
+        SetupSnippets(h);
+        h.Context7.Setup(c => c.SearchAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Context7Library>
+            {
+                new("/reactjs/react.dev", "React", "9.2", 6052),
+            });
+
+        var res = await h.Svc.ReindexAsync(id, default);
+
+        Assert.Equal("9.2", res!.Reputation);
+        Assert.Equal("9.2", t.NewContext().KnowledgeSources.Single(x => x.Id == id).Reputation);
+    }
+
     /// Context7 lỗi/rate-limit khi tra lại → GIỮ giá trị cũ. Ghi đè null ở đây là XOÁ dữ liệu tốt vì
     /// một sự cố tạm thời, mà lần reindex sau không còn gì để khôi phục.
     [Fact]
