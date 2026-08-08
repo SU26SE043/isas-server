@@ -37,7 +37,8 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
         // 🔴 Khoá dây: `transcriptEngine`. `Json` khai đầu class dùng camelCase + case-insensitive nên
         // tên property C# đọc được khoá đó; đổi tên property là gãy hợp đồng IM LẶNG (bind hụt → null,
         // không lỗi ở đâu cả) — `TranscriptEngineWireContractTests` khoá lại.
-        string? TranscriptEngine);
+        string? TranscriptEngine, string? TargetCriterionId, List<string>? EvidenceFound,
+        List<string>? MissingEvidence, string? NewEvidenceState);
 
     public async Task<DecideNextResult> DecideNextAsync(
         AdaptiveDecisionRequest request, CancellationToken ct = default)
@@ -60,7 +61,10 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
             currentDepth = request.CurrentDepth,
             maxDepth = request.MaxDepth,
             otherTopics = request.OtherTopics ?? Array.Empty<string>(),
-            language = request.Language
+            language = request.Language,
+            seniority = request.Seniority,
+            currentEvidenceState = (request.CurrentEvidenceState ?? Array.Empty<CriterionEvidenceStateDto>())
+                .Select(x => new { x.CriterionId, x.Name, x.State, x.EvidenceFound, x.MissingEvidence, x.DeepCount })
         };
 
         using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/decide-next")
@@ -107,6 +111,10 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
             Transcript: body.Transcript,
             Reason: body.Reason,
             DeliveryMetrics: body.DeliveryMetrics,    // F11 (null nếu AIService bản cũ / không đo được)
-            TranscriptEngine: body.TranscriptEngine); // null nếu AIService bản cũ chưa gửi con dấu
+            TranscriptEngine: body.TranscriptEngine,
+            TargetCriterionId: body.TargetCriterionId,
+            EvidenceFound: body.EvidenceFound,
+            MissingEvidence: body.MissingEvidence,
+            NewEvidenceState: body.NewEvidenceState);
     }
 }

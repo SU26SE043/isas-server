@@ -317,6 +317,14 @@ class DecideCriterion(BaseModel):
     name: str
     description: str | None = None  # để follow-up NEO cùng năng lực → công bằng B2B
 
+class CriterionEvidenceState(BaseModel):
+    criterionId: str
+    name: str
+    state: str = "UNKNOWN"
+    evidenceFound: list[str] = []
+    missingEvidence: list[str] = []
+    deepCount: int = 0
+
 
 class DecideNextRequest(BaseModel):
     jobCategory: str
@@ -330,6 +338,8 @@ class DecideNextRequest(BaseModel):
     maxQuestions: int = 0               # 0 = không trần cứng
     maxFollowUps: int = 0               # 0 = không trần cứng
     criteria: list[DecideCriterion] = []
+    seniority: str = "Junior"
+    currentEvidenceState: list[CriterionEvidenceState] = []
 
     # INT-17b — ngữ cảnh CHUỖI đào sâu (mỗi câu gốc có chuỗi riêng, tối đa `maxDepth` tầng).
     # ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'` sẽ NUỐT IM LẶNG
@@ -386,6 +396,10 @@ class DecideNextResponse(BaseModel):
     # rơi về Whisper cục bộ (lỗi từ 4,2% so với 0,7%) mà nhìn từ ngoài hai bản giống hệt nhau.
     # None = không đo được (nhánh answerText, không có audio để chép).
     transcriptEngine: str | None = None
+    targetCriterionId: str | None = None
+    evidenceFound: list[str] | None = None
+    missingEvidence: list[str] | None = None
+    newEvidenceState: str | None = None
 
 
 # ── Đối chiếu khuôn mặt (SEC-2/3) — sync HTTP, CampaignService gọi khi giám sát ──────

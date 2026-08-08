@@ -999,7 +999,8 @@ def build_decide_next_prompt(job_category: str, current_question: str, transcrip
                              criteria: list[dict],
                              root_question: str | None = None, current_depth: int = 0,
                              max_depth: int = 0,
-                             other_topics: list[str] | None = None, *, language: str = VI,
+                             other_topics: list[str] | None = None, seniority: str = "Junior",
+                             current_evidence_state: list[dict] | None = None, *, language: str = VI,
                              retry_feedback: str | None = None) -> str:
     """Phỏng vấn THÍCH ỨNG — quyết định hành động kế tiếp sau 1 câu trả lời.
 

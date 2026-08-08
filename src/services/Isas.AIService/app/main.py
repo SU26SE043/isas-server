@@ -391,6 +391,8 @@ async def decide_next(
             current_depth=req.currentDepth,
             max_depth=req.maxDepth,
             other_topics=req.otherTopics,
+            seniority=req.seniority,
+            current_evidence_state=[e.model_dump() for e in req.currentEvidenceState],
         )
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi quyết định câu hỏi kế: {ex}")
@@ -406,6 +408,10 @@ async def decide_next(
         # Cùng lý do với deliveryMetrics: buổi adaptive chép lời ĐÚNG MỘT LẦN tại đây, nên nếu
         # con dấu không đi ra ở đây thì nó không còn cơ hội nào khác.
         transcriptEngine=engine,
+        targetCriterionId=decision.get("targetCriterionId"),
+        evidenceFound=decision.get("evidenceFound"),
+        missingEvidence=decision.get("missingEvidence"),
+        newEvidenceState=decision.get("newEvidenceState"),
     )
 
 

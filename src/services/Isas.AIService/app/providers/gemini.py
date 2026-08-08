@@ -1155,7 +1155,8 @@ class GeminiProvider(QuestionProvider):
                           criteria: list[dict],
                           root_question: str | None = None, current_depth: int = 0,
                           max_depth: int = 0,
-                          other_topics: list[str] | None = None, language: str = "vi") -> dict:
+                          other_topics: list[str] | None = None, language: str = "vi",
+                          seniority: str = "Junior", current_evidence_state: list[dict] | None = None) -> dict:
         """Phỏng vấn THÍCH ỨNG — quyết định hành động kế tiếp (sync, stateless, KHÔNG ghi DB).
 
         Trả về dict: { "action": str, "nextQuestion": str|None, "reason": str|None }
@@ -1205,6 +1206,7 @@ class GeminiProvider(QuestionProvider):
                 asked_count, follow_up_count, max_questions, max_follow_ups, criteria,
                 root_question=root_question, current_depth=current_depth,
                 max_depth=max_depth, other_topics=other_topics, language=language,
+                seniority=seniority, current_evidence_state=current_evidence_state,
                 retry_feedback=feedback)
 
             response = await self._generate(
