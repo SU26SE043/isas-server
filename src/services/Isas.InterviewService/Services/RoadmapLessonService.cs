@@ -147,7 +147,15 @@ public class RoadmapLessonService : IRoadmapLessonService
         // sessionId cấp trước để link lesson SAU khi session tồn tại (thoả FK roadmap_lessons.session_id).
         // Reserve/gen lỗi → CreateLessonSessionAsync ném (402/gen-fail) TRƯỚC khi link ⇒ lesson vẫn Theory.
         var sessionId = Guid.NewGuid();
-        var req = new CreatePracticeSessionRequest(roadmap.CvId, JdId: null, roadmap.JobCategory);
+        // Seniority lấy từ ĐÚNG mức của roadmap, không để rơi vào mặc định "Junior".
+        //
+        // `RoadmapLevel` và tập seniority của session trùng khít 4 giá trị (Fresher/Junior/Middle/
+        // Senior) nên `.ToString()` là ánh xạ đúng, không phải xấp xỉ. Trước đây call site này dựng
+        // request POSITIONAL 3 tham số ⇒ nhận default ⇒ MỌI buổi luyện theo lộ trình đóng dấu "Junior"
+        // vĩnh viễn, kể cả roadmap Senior. Không vô hại: seniority đi vào `/decide-next` (câu đào sâu
+        // hỏi sai tầm) và lộ ra `PracticeSessionResponse.Seniority` cho FE.
+        var req = new CreatePracticeSessionRequest(
+            roadmap.CvId, JdId: null, roadmap.JobCategory, Seniority: roadmap.Level.ToString());
         var response = await _practiceService.CreateLessonSessionAsync(
             candidateId, req, sessionId, lesson.Milestone.FocusCriteria, ct);
 

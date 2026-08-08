@@ -143,8 +143,7 @@ public class PracticeService : IPracticeService
         if (request.JobCategory is null)
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
-        var seniority = request.Seniority is "Fresher" or "Junior" or "Middle" or "Senior"
-            ? request.Seniority : throw new InvalidOperationException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
+        var seniority = ValidateSeniority(request.Seniority);
         var language = ValidateLanguage(request.Language);
 
         // F2 — thời lượng mỗi câu. Guard TRƯỚC reserve (PAY-5): giá trị sai → 400 mà KHÔNG giữ credit oan.
@@ -516,8 +515,7 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException("Campaign session cần ít nhất 1 tiêu chí");
 
         var language = ValidateLanguage(request.Language);
-        var seniority = request.Seniority is "Fresher" or "Junior" or "Middle" or "Senior"
-            ? request.Seniority : throw new InvalidOperationException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
+        var seniority = ValidateSeniority(request.Seniority);
 
         await EnsureCapacityAsync(ct); // CreateCampaignSession chỉ được gọi khi tạo mới, không chặn resume.
 
@@ -1186,6 +1184,34 @@ public class PracticeService : IPracticeService
 
         if (!exists)
             throw new InvalidOperationException($"Chưa có rubric hoạt động cho {jobCategory} ({language}).");
+    }
+
+    // Mức kinh nghiệm ứng viên tự khai — đóng dấu lên session, đi vào `/decide-next` để câu đào sâu
+    // hỏi đúng tầm. Tập ĐÓNG, khớp `ck_practice_sessions_seniority` ở DB **và** `RoadmapLevel`.
+    private static readonly string[] AllowedSeniorities = ["Fresher", "Junior", "Middle", "Senior"];
+    private const string DefaultSeniority = "Junior";
+
+    /// <summary>
+    /// Hợp đồng seniority — CHUNG cho B2C và B2B (worker Campaign áp cùng luật, đừng chế biến thể):
+    /// <list type="bullet">
+    ///   <item><c>null</c> (client cũ không gửi) → <c>"Junior"</c>.</item>
+    ///   <item>chuỗi RỖNG sau <c>Trim()</c> → <b>400</b>, KHÔNG âm thầm reset về Junior: client gửi
+    ///   <c>""</c> là đang gửi một giá trị SAI, khác hẳn với không gửi gì.</item>
+    ///   <item>không thuộc tập (so <b>case-sensitive</b>, khớp CHECK ở DB) → 400.</item>
+    ///   <item>hợp lệ → giá trị đã trim.</item>
+    /// </list>
+    /// ⚠ <c>InvalidOperationException</c> chứ KHÔNG phải <c>ArgumentException</c>: PracticeController
+    /// chỉ bắt loại đầu → 400; loại sau rơi xuống <c>catch(Exception)</c> → 500 (cùng bẫy với
+    /// <see cref="ValidateTimeLimitSec"/>). Guard chạy TRƯỚC reserve ⇒ input sai không giữ credit (PAY-5).
+    /// </summary>
+    private static string ValidateSeniority(string? requested)
+    {
+        if (requested is null) return DefaultSeniority;
+        var seniority = requested.Trim();
+        if (!AllowedSeniorities.Contains(seniority, StringComparer.Ordinal))
+            throw new InvalidOperationException(
+                $"seniority chỉ nhận {string.Join(" / ", AllowedSeniorities)} (đang gửi: '{requested}').");
+        return seniority;
     }
 
     private static int ValidateTimeLimitSec(int? requested)
