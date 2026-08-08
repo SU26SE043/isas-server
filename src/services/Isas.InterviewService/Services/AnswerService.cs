@@ -263,6 +263,12 @@ public class AnswerService : IAnswerService
             var criteria = (await LoadActiveCriteriaAsync(session, ct))
                 .Select(c => new DecideCriterionDto(c.Name, c.Description))
                 .ToList();
+            var evidenceState = await _db.SessionCriterionEvidence.AsNoTracking()
+                .Where(e => e.SessionId == session.Id)
+                .OrderBy(e => e.CriterionName)
+                .Select(e => new CriterionEvidenceStateDto(e.CriterionId.ToString(), e.CriterionName,
+                    e.State, e.EvidenceFound, e.MissingEvidence, e.DeepCount))
+                .ToListAsync(ct);
 
             // Chế độ chuỗi: kèm câu GỐC (mỏ neo chủ đề) + tên các câu gốc KHÁC (đừng hỏi trùng).
             string? rootQuestion = null;
@@ -287,7 +293,9 @@ public class AnswerService : IAnswerService
                     CurrentDepth: question.Depth,
                     MaxDepth: session.MaxDeepPerQuestion,
                     OtherTopics: otherTopics,
-                    Language: session.Language),
+                    Language: session.Language,
+                    Seniority: session.Seniority,
+                    CurrentEvidenceState: evidenceState),
                 ct);
 
             // (7) Lưu transcript đồng bộ lên answer (single-source; TryPublishScoringJobAsync đọc lại → job).
@@ -305,6 +313,24 @@ public class AnswerService : IAnswerService
                 if (decision.DeliveryMetrics is not null)
                     DeliveryMetricsMapper.Apply(answer, decision.DeliveryMetrics);
                 await _db.SaveChangesAsync(ct);
+            }
+
+            // Chỉ InterviewService ghi evidence state. Id không thuộc snapshot hoặc state lạ bị bỏ qua;
+            // AI trả thiếu evidence không được phép làm hỏng answer/session đã trả credit.
+            if (Guid.TryParse(decision.TargetCriterionId, out var targetId)
+                && decision.NewEvidenceState is "UNKNOWN" or "PARTIAL" or "SATISFIED" or "FAILED")
+            {
+                var evidence = await _db.SessionCriterionEvidence
+                    .SingleOrDefaultAsync(e => e.SessionId == session.Id && e.CriterionId == targetId, ct);
+                if (evidence is not null)
+                {
+                    evidence.State = decision.NewEvidenceState;
+                    evidence.EvidenceFound = decision.EvidenceFound?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
+                    evidence.MissingEvidence = decision.MissingEvidence?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
+                    evidence.DeepCount = question.Depth;
+                    evidence.UpdatedAt = DateTime.UtcNow;
+                    await _db.SaveChangesAsync(ct);
+                }
             }
 
             // (8) Hết chuỗi → không append.
