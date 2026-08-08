@@ -839,7 +839,15 @@ public class PracticeService : IPracticeService
             ? await _benchmarks.BuildAsync(session, criterionScores, ct)
             : null;
 
-        return MapToResponse(session, questions, answers, criterionScores, cvStrengths, benchmark);
+        var criterionEvidence = await _db.SessionCriterionEvidence.AsNoTracking()
+            .Where(x => x.SessionId == sessionId)
+            .OrderBy(x => x.CriterionName)
+            .Select(x => new CriterionEvidenceResponse(
+                x.CriterionId, x.CriterionName, x.State,
+                x.EvidenceFound, x.MissingEvidence, x.DeepCount, x.UpdatedAt))
+            .ToListAsync(ct);
+
+        return MapToResponse(session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence);
     }
 
     // ── HISTORY ───────────────────────────────────────────────────────────
@@ -1243,7 +1251,8 @@ public class PracticeService : IPracticeService
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
         IReadOnlyList<SessionCriterionScore>? criterionScores = null,
         IReadOnlyList<string>? cvStrengths = null,
-        BenchmarkResponse? benchmark = null)   // F14
+        BenchmarkResponse? benchmark = null,   // F14
+        IReadOnlyList<CriterionEvidenceResponse>? criterionEvidence = null)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
 
@@ -1260,7 +1269,9 @@ public class PracticeService : IPracticeService
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
             s.Language,
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
-            MapResult(s, questions.Count, criterionScores, cvStrengths, benchmark));
+            MapResult(s, questions.Count, criterionScores, cvStrengths, benchmark),
+            s.Seniority,
+            criterionEvidence is { Count: > 0 } ? criterionEvidence : null);
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.

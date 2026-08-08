@@ -104,7 +104,21 @@ public record PracticeSessionResponse(
     DateTime CreatedAt,
     DateTime? CompletedAt,
     IReadOnlyList<QuestionResponse> Questions,
-    SessionResultResponse? Result = null   // BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa
+    SessionResultResponse? Result = null,  // BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa
+    string Seniority = "Junior",           // snapshot mức do ứng viên chọn khi tạo B2C session
+    IReadOnlyList<CriterionEvidenceResponse>? CriterionEvidence = null
+);
+
+// Evidence state được trả dạng additive ở GET session để client khôi phục đúng ngữ cảnh đã dùng
+// cho lượt adaptive tiếp theo; null = session cũ/B2B chưa bật evidence tracking.
+public record CriterionEvidenceResponse(
+    Guid CriterionId,
+    string CriterionName,
+    string State,
+    IReadOnlyList<string> EvidenceFound,
+    IReadOnlyList<string> MissingEvidence,
+    int DeepCount,
+    DateTime UpdatedAt
 );
 
 public record QuestionResponse(
