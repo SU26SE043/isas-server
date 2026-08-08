@@ -80,6 +80,25 @@ public class PracticeSession : IHasUpdatedAt
     public bool RepoAnalysisIncluded { get; set; }
     public bool RoadmapEnabled { get; set; }
 
+    // Con dấu PHẠM VI CHẤM của buổi — trả lời đúng một câu: "điểm buổi này tính trên TOÀN BỘ rubric,
+    // hay trên tập tiêu chí riêng của từng câu hỏi?". Cần vì việc thu hẹp phạm vi làm điểm KHÔNG CÒN
+    // SO SÁNH ĐƯỢC với điểm cũ, mà BC15 (đo cải thiện) · F14 (mốc peer) · CAMP-10 (xếp hạng) đang
+    // đem so thẳng. Tiền lệ: `practice_answers.metrics_version` (F11), `answer_scores.prompt_version` (BK23).
+    //
+    //   null = KHÔNG BIẾT — row có trước khi cột này tồn tại. ⚠ KHÔNG được suy ra "khác phiên bản"
+    //          từ null (nguyên tắc BK23: suy "khác" từ "không biết" là bịa). Trên thực tế row null
+    //          đều là phạm vi cũ, nhưng đó là suy đoán của người đọc, không phải điều dữ liệu khẳng định.
+    //      1 = ĐÃ BIẾT: chấm trên toàn bộ rubric (không câu nào mang nhãn tiêu chí) — B2B, rubric
+    //          riêng BC16 không phân loại, hoặc AIService không gắn được nhãn. So với null: cùng
+    //          hành vi, chỉ khác ở chỗ 1 là ghi nhận còn null là không biết.
+    //      2 = ĐÃ BIẾT: buổi có ít nhất một câu mang nhãn ⇒ tồn tại answer được chấm trên tập tiêu chí
+    //          HẸP HƠN rubric. Chỉ giá trị này mới CHỨNG MINH được "khác thước đo".
+    //
+    // Đóng dấu ở tầng BUỔI (không phải từng dòng điểm) vì (a) mọi phép so ở trên đều đọc số liệu tổng
+    // hợp mức buổi, (b) `answer_scores` là bảng lớn nhất hệ (~100M dòng ở quy mô mục tiêu) nên thêm
+    // cột ở đó là cái giá không mua lại được gì.
+    public int? ScoringScopeVersion { get; set; }
+
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.

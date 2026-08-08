@@ -117,13 +117,16 @@ public static class B2CRubricSeed
         {
         // ── BA — Business Analyst (Σweight = 1.0000) ────────────────────────────────────────
         Criterion(BaRequirement,    JobCategory.BA, "Phân tích yêu cầu",
-            "Bóc tách, làm rõ và cấu trúc hoá yêu cầu nghiệp vụ; đặt câu hỏi đúng chỗ.", 0.2200m),
+            "Bóc tách, làm rõ và cấu trúc hoá yêu cầu nghiệp vụ; đặt câu hỏi đúng chỗ.", 0.2200m,
+            ScoringScope.WhenTargeted),
         Criterion(BaCommunication,  JobCategory.BA, "Giao tiếp & trình bày",
             "Diễn đạt rõ ràng, mạch lạc, đúng đối tượng người nghe.", 0.1800m),
         Criterion(BaDomain,         JobCategory.BA, "Hiểu nghiệp vụ & các bên liên quan",
-            "Nắm bối cảnh domain, mục tiêu và ràng buộc của các stakeholder.", 0.1800m),
+            "Nắm bối cảnh domain, mục tiêu và ràng buộc của các stakeholder.", 0.1800m,
+            ScoringScope.WhenTargeted),
         Criterion(BaProblemSolving, JobCategory.BA, "Tư duy giải quyết vấn đề",
-            "Lập luận có căn cứ, cân nhắc phương án và đánh đổi.", 0.1400m),
+            "Lập luận có căn cứ, cân nhắc phương án và đánh đổi.", 0.1400m,
+            ScoringScope.WhenTargeted),
         Criterion(BaLanguage,       JobCategory.BA, LanguageName, LanguageDesc, 0.0900m),
         Criterion(BaTerminology,    JobCategory.BA, TerminologyName,
             TerminologyDesc("phân tích nghiệp vụ",
@@ -132,11 +135,14 @@ public static class B2CRubricSeed
 
         // ── BE — Backend (Σweight = 1.0000) ─────────────────────────────────────────────────
         Criterion(BeTechnical,      JobCategory.BE, "Chiều sâu kỹ thuật",
-            "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.", 0.2200m),
+            "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.", 0.2200m,
+            ScoringScope.WhenTargeted),
         Criterion(BeSystemDesign,   JobCategory.BE, "Thiết kế hệ thống & CSDL",
-            "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.", 0.1800m),
+            "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.", 0.1800m,
+            ScoringScope.WhenTargeted),
         Criterion(BeProblemSolving, JobCategory.BE, "Giải quyết vấn đề & thuật toán",
-            "Phân rã vấn đề, lựa chọn giải pháp hợp lý, cân nhắc độ phức tạp.", 0.1800m),
+            "Phân rã vấn đề, lựa chọn giải pháp hợp lý, cân nhắc độ phức tạp.", 0.1800m,
+            ScoringScope.WhenTargeted),
         Criterion(BeCommunication,  JobCategory.BE, "Giao tiếp & trình bày",
             "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.", 0.1400m),
         Criterion(BeLanguage,       JobCategory.BE, LanguageName, LanguageDesc, 0.0900m),
@@ -147,13 +153,16 @@ public static class B2CRubricSeed
 
         // ── FE — Frontend (Σweight = 1.0000) ────────────────────────────────────────────────
         Criterion(FeTechnical,      JobCategory.FE, "Chiều sâu kỹ thuật",
-            "Nắm vững HTML/CSS/JS, framework FE, state management và hiệu năng render.", 0.2200m),
+            "Nắm vững HTML/CSS/JS, framework FE, state management và hiệu năng render.", 0.2200m,
+            ScoringScope.WhenTargeted),
         Criterion(FeProblemSolving, JobCategory.FE, "Giải quyết vấn đề",
-            "Xử lý bài toán UI/logic, gỡ lỗi và cân nhắc giải pháp.", 0.1800m),
+            "Xử lý bài toán UI/logic, gỡ lỗi và cân nhắc giải pháp.", 0.1800m,
+            ScoringScope.WhenTargeted),
         Criterion(FeCommunication,  JobCategory.FE, "Giao tiếp & trình bày",
             "Diễn đạt ý tưởng và giải pháp rõ ràng, mạch lạc.", 0.1800m),
         Criterion(FeUiUx,           JobCategory.FE, "Ý thức UI/UX & accessibility",
-            "Quan tâm trải nghiệm người dùng, khả năng tiếp cận và tính nhất quán giao diện.", 0.1400m),
+            "Quan tâm trải nghiệm người dùng, khả năng tiếp cận và tính nhất quán giao diện.", 0.1400m,
+            ScoringScope.WhenTargeted),
         Criterion(FeLanguage,       JobCategory.FE, LanguageName, LanguageDesc, 0.0900m),
         Criterion(FeTerminology,    JobCategory.FE, TerminologyName,
             TerminologyDesc("frontend",
@@ -175,6 +184,9 @@ public static class B2CRubricSeed
             Language = "en",
             CampaignId = null,
             Version = v.Version,
+            // Phạm vi chấm là thuộc tính của TIÊU CHÍ, không phải của ngôn ngữ ⇒ thừa kế nguyên từ
+            // bản `vi`. Khai lại bằng tay ở đây là mở đường cho hai ngôn ngữ lệch nhau trong im lặng.
+            ScoringScope = v.ScoringScope,
         });
         return vietnamese.Concat(english).ToList();
     }
@@ -221,8 +233,16 @@ public static class B2CRubricSeed
         _ => fallback,
     };
 
+    /// <param name="scope">
+    /// Mặc định <see cref="ScoringScope.Always"/> = tiêu chí CÁCH NÓI (giao tiếp · trôi chảy · ngữ
+    /// pháp/dùng từ · thuật ngữ) — quan sát được ở bất kỳ câu trả lời nào nên chấm mọi câu. Tiêu chí
+    /// NỘI DUNG chuyên môn phải khai tường minh <see cref="ScoringScope.WhenTargeted"/>: đọc seed là
+    /// thấy ngay tiêu chí nào chỉ chấm khi được hỏi tới. <c>B2CRubricSeedTests</c> khoá tỉ lệ 4/3 mỗi
+    /// nghề để phân loại không trôi khi thêm/sửa tiêu chí.
+    /// </param>
     private static RubricCriterion Criterion(
-        Guid id, JobCategory cat, string name, string description, decimal weight) =>
+        Guid id, JobCategory cat, string name, string description, decimal weight,
+        ScoringScope scope = ScoringScope.Always) =>
         new()
         {
             Id = id,
@@ -235,5 +255,6 @@ public static class B2CRubricSeed
             Language = "vi",
             CampaignId = null,        // B2C: rubric theo JobCategory, không thuộc campaign
             Version = RubricVersion,
+            ScoringScope = scope,
         };
 }

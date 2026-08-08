@@ -113,7 +113,11 @@ public class StuckAnswerRepublisher : BackgroundService
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
                 Language = a.Session.Language,
-                QuestionContent = a.Question.Content
+                QuestionContent = a.Question.Content,
+                // Nhãn tiêu chí của câu hỏi — PHẢI có trong projection, nếu không answer nào phải cứu
+                // bằng republisher sẽ được chấm theo luật KHÁC answer chạy trơn tru (ở đây là chấm đủ
+                // rubric thay vì đúng phạm vi), lệch âm thầm. Đúng chỗ F11 đã dính.
+                QuestionTargetCriterionIds = a.Question.TargetCriterionIds
             })
             .Take(_options.BatchSize > 0 ? _options.BatchSize : 200)   // DB29: chặn nạp cả tồn đọng 1 lần
             .ToListAsync(ct);
@@ -148,6 +152,11 @@ public class StuckAnswerRepublisher : BackgroundService
                 continue;
             }
 
+            // Cùng luật phạm vi chấm với đường publish lúc upload (AnswerService) — dùng CHUNG helper
+            // để hai đường không thể trôi khỏi nhau.
+            var scopedCriteria = ScoringScopeFilter.Apply(
+                criteria, a.QuestionTargetCriterionIds, _logger, a.Id);
+
             var job = new ScoringJob
             {
                 AnswerId = a.Id,
@@ -158,7 +167,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 JobCategory = a.JobCategory.ToString(),
                 Language = a.Language,
                 RubricVersion = criteria[0].Version,
-                Criteria = ScoringCriteriaBuilder.Build(criteria),   // E9: kèm levels (+ anchors)
+                Criteria = ScoringCriteriaBuilder.Build(scopedCriteria),   // E9: kèm levels (+ anchors)
                 Transcript = a.Transcript,  // adaptive: có transcript đồng bộ → worker bỏ Whisper
                 TranscriptEngine = a.TranscriptEngine,   // đi cặp: worker bỏ Whisper thì không tự biết engine
                 // F11 — chỉ số đã đo đi kèm; null (chưa từng đo) → worker tự transcribe rồi tự đo.

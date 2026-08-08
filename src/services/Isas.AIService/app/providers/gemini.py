@@ -115,9 +115,15 @@ class QuestionGenerationResult(NamedTuple):
 
     ``citations``: per-question ``[{questionIndex, citedChunkIds}]``, chỉ có khi request cấp
     grounding (mỗi ``citedChunkIds`` ⊆ tập đã cấp — provider đã drop id lạ). ``None`` khi ungrounded
-    → endpoint không trả field citations (giữ shape cũ cho Campaign B2B)."""
+    → endpoint không trả field citations (giữ shape cũ cho Campaign B2B).
+
+    ``target_criteria``: mảng SONG SONG index-aligned với ``questions`` — phần tử i = criterionId
+    mà câu i nhắm tới (⊆ tập ``criteria`` đã cấp). ``None`` khi request không cấp ``criteria``
+    → endpoint không trả field targetCriteria (shape cũ nguyên vẹn). Trường thứ ba có mặc định nên
+    mọi call site cũ dựng 1-2 trường (kể cả test double) chạy nguyên."""
     questions: list[str]
     citations: list[dict] | None = None
+    target_criteria: list[list[str]] | None = None
 
 
 class LessonTheoryResult(NamedTuple):
@@ -130,6 +136,20 @@ class LessonTheoryResult(NamedTuple):
     theory: str
     resources: list[dict]
     cited_chunk_ids: list[str] | None = None
+
+
+def _keep_known_ids(raw, allowed: set[str]) -> list[str]:
+    """Giữ lại id ⊆ ``allowed``, bỏ trùng, giữ thứ tự. DROP mọi thứ khác.
+
+    Chống bịa BY-CONSTRUCTION: prompt có dặn model "chỉ dùng id đã cấp" nhưng đó mới là lớp phòng
+    thủ thứ nhất — lớp thứ hai là ở đây, không tin lời hứa của model. Dùng chung cho ``citedChunkIds``
+    (grounding, D27) và ``targetCriterionIds`` (chấm-theo-phạm-vi): hai hợp đồng khác nhau nhưng
+    cùng một luật lọc, tách ra để lần siết sau không phải sửa hai chỗ rồi quên một.
+    """
+    if not isinstance(raw, list):
+        return []
+    kept = (x.strip() for x in raw if isinstance(x, str) and x.strip() in allowed)
+    return list(dict.fromkeys(kept))
 
 
 class GeminiProvider(QuestionProvider):
@@ -188,24 +208,36 @@ class GeminiProvider(QuestionProvider):
     async def generate(self, job_category: str, cv_text: str | None,
                        jd_text: str | None, count: int | None = None,
                        focus_criteria: list[str] | None = None,
-                       grounding: list[dict] | None = None, language: str = "vi") -> QuestionGenerationResult:
+                       grounding: list[dict] | None = None,
+                       criteria: list[dict] | None = None,
+                       language: str = "vi") -> QuestionGenerationResult:
+        """Sinh câu hỏi. ``criteria`` = tiêu chí NỘI DUNG ``[{criterionId, name}]`` để gắn nhãn
+        phạm vi đánh giá cho từng câu (chấm-theo-phạm-vi); vắng ⇒ prompt/schema/kết quả GIỮ
+        NGUYÊN XI như trước (mẫu ``criteria`` của C14 ở :meth:`analyze_cv`)."""
         # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
         effective_count = count if count is not None else settings.question_count
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
-                              focus_criteria, grounding, language=language)
+                              focus_criteria, grounding, criteria, language=language)
 
-        # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION). Ungrounded
-        # giữ nguyên schema cũ {questions:[str]} → Campaign B2B (không truyền grounding) không đổi.
+        # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION).
+        # Chấm-theo-phạm-vi — có criteria ⇒ kèm targetCriterionIds.
+        # KHÔNG cái nào ⇒ giữ nguyên schema cũ {questions:[str]} → mọi caller cũ không đổi.
         grounded = bool(grounding)
-        if grounded:
+        labeled = bool(criteria)
+        if grounded or labeled:
+            item_properties: dict = {"text": {"type": "string"}}
+            if grounded:
+                item_properties["citedChunkIds"] = {"type": "array", "items": {"type": "string"}}
+            if labeled:
+                item_properties["targetCriterionIds"] = {"type": "array", "items": {"type": "string"}}
             question_schema = {
                 "type": "object",
-                "properties": {
-                    "text": {"type": "string"},
-                    "citedChunkIds": {"type": "array", "items": {"type": "string"}},
-                },
+                "properties": item_properties,
+                # CỐ Ý chỉ `text` là bắt buộc: ép `targetCriterionIds` vào `required` là ép model
+                # phải điền một mảng cho MỌI câu, mà rỗng lại là câu trả lời hợp lệ (câu hỏi không
+                # nhắm tiêu chí nội dung nào) ⇒ ép sẽ đẩy model sang gắn bừa — đúng thứ đang chống.
                 "required": ["text"],
             }
         else:
@@ -240,41 +272,54 @@ class GeminiProvider(QuestionProvider):
         if not isinstance(raw, list) or not raw:
             raise ValueError("LLM không trả về danh sách câu hỏi hợp lệ.")
 
-        if not grounded:
+        if not grounded and not labeled:
             questions = [str(q).strip() for q in raw if str(q).strip()]
             if not questions:
                 raise ValueError("LLM trả về danh sách câu hỏi rỗng sau khi lọc.")
             return QuestionGenerationResult(questions=questions[:effective_count], citations=None)
 
-        # Grounded — tách text + lọc citedChunkIds. DROP mọi id KHÔNG thuộc tập grounding đã cấp
-        # (chống bịa by-construction — không tin lời hứa của model): id lạ = nguồn model tự phịa.
-        allowed = {str(g.get("chunkId")).strip() for g in grounding if g.get("chunkId")}
+        # Có grounding và/hoặc criteria — tách text + lọc id. DROP mọi id KHÔNG thuộc tập đã cấp
+        # (chống bịa by-construction — không tin lời hứa của model): id lạ = model tự phịa.
+        allowed_chunks = ({str(g.get("chunkId")).strip() for g in grounding if g.get("chunkId")}
+                          if grounded else set())
+        allowed_criteria = ({str(c.get("criterionId")).strip() for c in criteria
+                             if c.get("criterionId")} if labeled else set())
         questions: list[str] = []
         cited_lists: list[list[str]] = []
+        target_lists: list[list[str]] = []
         for item in raw:
             if isinstance(item, dict):
                 q_text = str(item.get("text", "")).strip()
                 cited_raw = item.get("citedChunkIds") or []
+                target_raw = item.get("targetCriterionIds") or []
             else:
-                # Model lờ schema, trả chuỗi trần → vẫn nhận câu hỏi, coi như không cite.
+                # Model lờ schema, trả chuỗi trần → vẫn nhận câu hỏi, coi như không cite/không nhãn.
                 q_text = str(item).strip()
                 cited_raw = []
+                target_raw = []
             if not q_text:
                 continue
-            cited = [c for c in cited_raw
-                     if isinstance(c, str) and c.strip() in allowed]
-            cited = list(dict.fromkeys(c.strip() for c in cited))  # bỏ trùng, giữ thứ tự
             questions.append(q_text)
-            cited_lists.append(cited)
+            cited_lists.append(_keep_known_ids(cited_raw, allowed_chunks))
+            # FAIL-OPEN CÓ CHỦ ĐÍCH — thiếu nhãn / nhãn toàn id lạ ⇒ [] chứ KHÔNG raise (khác
+            # `criterionMatches` của C14, chỗ đó raise là đúng vì nó LÀ kết quả sàng lọc).
+            # Ở đây sinh câu hỏi nằm trên đường tạo buổi luyện ĐÃ RESERVE CREDIT (PAY-5): biến
+            # một cái nhãn phụ thành đường làm hỏng cả buổi thì đắt hơn nhiều so với việc thiếu
+            # nhãn — .NET nhận [] và tự xử (mẫu `fullName` của BK28 cố ý không raise).
+            target_lists.append(_keep_known_ids(target_raw, allowed_criteria))
 
         if not questions:
             raise ValueError("LLM trả về danh sách câu hỏi rỗng sau khi lọc.")
 
         questions = questions[:effective_count]
         cited_lists = cited_lists[:effective_count]
-        citations = [{"questionIndex": i, "citedChunkIds": cited_lists[i]}
-                     for i in range(len(questions))]
-        return QuestionGenerationResult(questions=questions, citations=citations)
+        target_lists = target_lists[:effective_count]
+        citations = ([{"questionIndex": i, "citedChunkIds": cited_lists[i]}
+                      for i in range(len(questions))] if grounded else None)
+        # Mảng song song: LUÔN cùng độ dài `questions` (cắt cùng một lát ở trên) — .NET zip theo
+        # index nên lệch độ dài là gán nhãn của câu này cho câu khác.
+        return QuestionGenerationResult(questions=questions, citations=citations,
+                                        target_criteria=target_lists if labeled else None)
 
     async def suggest_criteria(self, job_category: str, jd_text: str | None,
                                criteria_text: str | None, count: int, language: str = "vi") -> list[dict]:

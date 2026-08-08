@@ -23,6 +23,23 @@ public class PracticeQuestion
     // câu hỏi đã sinh, chỉ cần link nguồn để hiển thị).
     public List<Citation>? GroundingRefs { get; set; }
 
+    // Tiêu chí NỘI DUNG mà câu hỏi này thực sự nhắm tới (AIService gắn nhãn lúc sinh câu hỏi).
+    // Quyết định bộ tiêu chí gửi vào lượt chấm: 4 tiêu chí CÁCH NÓI luôn có mặt, cộng đúng những
+    // tiêu chí nội dung liệt kê ở đây (xem ScoringScopeFilter).
+    //
+    // 🔑 3 TRẠNG THÁI (load-bearing — `[]` KHÁC `null`, tầng lưu trữ TUYỆT ĐỐI không được quy `[]` về null):
+    //   null      = CHƯA HỎI / không có nhãn → LÙI AN TOÀN, chấm đủ cả rubric như trước. Phủ: câu của
+    //               buổi cũ, câu B2B (Campaign không gửi tiêu chí), câu thích ứng do /decide-next sinh,
+    //               và ca AIService trả nhãn toàn id lạ (không đủ tin để thu hẹp).
+    //   [] (rỗng) = ĐÃ HỎI, AIService kết luận câu này KHÔNG nhắm tiêu chí nội dung nào ("giới thiệu
+    //               bản thân", "vì sao bạn ứng tuyển") ⇒ chỉ chấm 4 tiêu chí CÁCH NÓI.
+    //   non-empty = tiêu chí nội dung được nhắm tới (+ 4 tiêu chí cách nói).
+    //
+    // ⚠ Gộp `[]` vào null làm tính năng NO-OP đúng ở nhóm câu cần nó nhất: câu xã giao vẫn bị chấm
+    // "Thiết kế hệ thống & CSDL" — chính là hình dạng lỗi gốc mà cả thay đổi này sinh ra để diệt.
+    // jsonb nullable ⇒ AddColumn không cần defaultValue (né bug jsonb-rỗng-default của F15).
+    public List<Guid>? TargetCriterionIds { get; set; }
+
     // Phỏng vấn THÍCH ỨNG — nguồn câu hỏi (Seed = mở đầu; FollowUp/Clarify/NewQuestion = AI sinh sau
     // 1 câu trả lời). Mặc định Seed (rows cũ backfill Seed). Lưu string (GEN-2).
     public QuestionKind Kind { get; set; } = QuestionKind.Seed;

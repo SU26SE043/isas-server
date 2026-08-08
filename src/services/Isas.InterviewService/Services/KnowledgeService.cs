@@ -147,15 +147,22 @@ public class KnowledgeService(
         var topics = req.Topics.Select(t => t.Trim()).Where(t => t.Length > 0).Distinct().ToList();
         if (topics.Count == 0) throw new InvalidOperationException("Cần ít nhất 1 topic hợp lệ.");
 
+        var libraryId = req.LibraryId.Trim();
+
         var source = new KnowledgeSource
         {
             Id = Guid.NewGuid(),
-            Title = $"Context7: {req.LibraryId} ({string.Join(", ", topics)})",
+            Title = $"Context7: {libraryId} ({string.Join(", ", topics)})",
             JobCategory = req.JobCategory,
             SourceType = KnowledgeSourceType.Context7,
-            SourceRef = req.LibraryId.Trim(),
+            SourceRef = libraryId,
             RawContent = string.Join("\n", topics),   // topics để reindex refetch
-            Reputation = null,
+            // Điểm uy tín do SERVER tự tra, KHÔNG nhận từ client: cả lý do tồn tại của kho này là
+            // "tài liệu UY TÍN" (D27), nên để client tự khai điểm uy tín thì ai cũng gắn 10 cho repo
+            // của mình được — đúng lỗ mà F10 đã bịt cho `source` của câu hỏi campaign.
+            // Trước đây dòng này ghi cứng `null` ⇒ `Context7Client` parse `trustScore` về rồi vứt đi,
+            // cột `reputation` tồn tại nhưng KHÔNG có đường ghi nào (đúng mẫu "có tên mà không có ruột").
+            Reputation = await TryResolveContext7ReputationAsync(libraryId, ct),
             Status = KnowledgeStatus.Active,
             CreatedBy = adminId,
             CreatedAt = DateTime.UtcNow
@@ -242,6 +249,54 @@ public class KnowledgeService(
 
     private const string GeneralCategory = "General";
 
+    /// <summary>
+    /// Nhãn hiển thị của một trích dẫn: LUÔN nêu tên nguồn admin đã curate, kèm mục con nếu có.
+    /// </summary>
+    /// <remarks>
+    /// Trước đây nhãn là <c>SectionTitle ?? source.Title</c> — heading của chunk ĐÈ tên nguồn. Trên trang
+    /// thật, heading thường là đồ trang trí điều hướng: đo trên corpus đã nạp, <c>"Help improve MDN"</c>
+    /// xuất hiện 5 lần, cạnh <c>"In This Article:"</c> và <c>"Format: 3-Part"</c>. Người dùng nhìn thấy
+    /// một trích dẫn tên là "Help improve MDN" thì không kiểm chứng được gì, mà cả lý do tồn tại của
+    /// citation là để kiểm chứng (D27).
+    /// Tên nguồn đứng TRƯỚC nên nhãn không bao giờ vô nghĩa; mục con giữ lại phía sau để không mất vị trí
+    /// trong tài liệu dài (MDN Web Performance: 57 chunk).
+    /// </remarks>
+    private static string CitationLabel(KnowledgeSource source, string? sectionTitle)
+    {
+        var section = sectionTitle?.Trim();
+        return string.IsNullOrEmpty(section) || string.Equals(section, source.Title, StringComparison.OrdinalIgnoreCase)
+            ? source.Title
+            : $"{source.Title} · {section}";
+    }
+
+    /// <summary>
+    /// Tra điểm uy tín (trustScore) của một thư viện Context7 — SERVER tự hỏi, không nhận từ client.
+    /// </summary>
+    /// <remarks>
+    /// Fail-open có chủ đích: Context7 lỗi/rate-limit/không khớp id → trả <c>null</c> ("chưa xác định")
+    /// chứ KHÔNG ném. Nạp corpus là việc admin làm thủ công và tốn tiền embedding; biến một nhãn phụ
+    /// thành đường làm hỏng cả lần nạp là đánh đổi tồi — cùng lý do <c>cv_screening</c> không raise khi
+    /// thiếu <c>fullName</c>.
+    /// </remarks>
+    private async Task<string?> TryResolveContext7ReputationAsync(string libraryId, CancellationToken ct)
+    {
+        try
+        {
+            // `libs/search` nhận TÊN thư viện; lấy đoạn cuối của id ("/reactjs/react.dev" → "react.dev")
+            // làm từ khoá rồi khớp lại bằng ID ĐẦY ĐỦ — khớp theo tên là cách nhận nhầm thư viện khác
+            // trùng tên (search "react" trả về 5 kết quả khác nhau, uy tín từ 8.3 tới 10).
+            var name = libraryId.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? libraryId;
+            var hits = await context7.SearchAsync(name, null, ct);
+            return hits.FirstOrDefault(h => string.Equals(h.Id, libraryId, StringComparison.OrdinalIgnoreCase))
+                ?.Reputation;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "RAG grounding: không tra được điểm uy tín Context7 cho {Lib} — để trống", libraryId);
+            return null;
+        }
+    }
+
     private record RawChunk(string Content, string SourceUrl, string SourceTitle);
 
     // Dispatch chunking theo source_type. Manual/Url dùng IChunker (heading/window); Context7 refetch snippet.
@@ -254,7 +309,7 @@ public class KnowledgeService(
                     if (string.IsNullOrWhiteSpace(source.RawContent))
                         throw new InvalidOperationException("Nguồn Manual không có nội dung để (re)index.");
                     return chunker.Chunk(KnowledgeSourceType.Manual, source.RawContent)
-                        .Select(c => new RawChunk(c.Content, string.Empty, c.SectionTitle ?? source.Title))
+                        .Select(c => new RawChunk(c.Content, string.Empty, CitationLabel(source, c.SectionTitle)))
                         .ToList();
                 }
             case KnowledgeSourceType.Url:
@@ -263,7 +318,7 @@ public class KnowledgeService(
                         throw new InvalidOperationException("Nguồn Url thiếu URL để (re)index.");
                     var html = await urlFetcher.FetchAsync(source.SourceRef, ct);
                     return chunker.Chunk(KnowledgeSourceType.Url, html)
-                        .Select(c => new RawChunk(c.Content, source.SourceRef, c.SectionTitle ?? source.Title))
+                        .Select(c => new RawChunk(c.Content, source.SourceRef, CitationLabel(source, c.SectionTitle)))
                         .ToList();
                 }
             case KnowledgeSourceType.Context7:

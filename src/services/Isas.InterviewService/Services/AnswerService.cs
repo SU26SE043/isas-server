@@ -344,7 +344,21 @@ public class AnswerService : IAnswerService
                 GeneratedFromAnswerId = answer.Id,
                 // INT-17b — nối chuỗi: sâu hơn cha 1 tầng, thừa kế câu gốc của cha.
                 Depth = question.Depth + 1,
-                RootQuestionId = perQuestionMode ? rootQuestionId : null
+                RootQuestionId = perQuestionMode ? rootQuestionId : null,
+                // Chấm-theo-phạm-vi: câu ĐÀO SÂU thừa kế nhãn tiêu chí của câu cha.
+                //
+                // Vì sao thừa kế là ĐÚNG chứ không phải xấp xỉ cho rẻ: `follow_up`/`clarify` theo định
+                // nghĩa đào sâu vào CHÍNH câu trả lời vừa rồi, tức vẫn là chủ đề của câu cha. Còn
+                // `new_question` (đổi chủ đề) thì ở chế độ chuỗi đã bị chặn ngay trên (`endsChain`) nên
+                // không bao giờ tới đây; ở chế độ frontier nó tới được, và lúc đó thừa kế SẼ SAI — nên
+                // chỉ thừa kế cho hai loại đào sâu, `new_question` để `null` = chấm đủ rubric (an toàn).
+                //
+                // ⚠ Không thừa kế thì `/decide-next` không trả nhãn ⇒ mọi câu đào sâu chấm cả rubric.
+                // Prod chạy chế độ chuỗi nên PHẦN LỚN câu trong một buổi là câu đào sâu — thiếu dòng này
+                // thì tính năng chỉ có hiệu lực trên câu gốc, tức gần như không có hiệu lực.
+                TargetCriterionIds = decision.Action is "follow_up" or "clarify"
+                    ? question.TargetCriterionIds
+                    : null
             };
             _db.PracticeQuestions.Add(newQuestion);
 
@@ -533,9 +547,21 @@ public class AnswerService : IAnswerService
                 return;
             }
 
-            // Tất cả criterion active của 1 nghề dùng chung 1 version.
+            // Tất cả criterion active của 1 nghề dùng chung 1 version. Đọc từ bộ ĐẦY ĐỦ (không phải
+            // bộ đã lọc) để con số này không đổi theo phạm vi chấm của từng câu.
             var rubricVersion = criteria[0].Version;
-            var builtCriteria = ScoringCriteriaBuilder.Build(criteria);   // E9: kèm levels (+ anchors)
+
+            // Chấm ĐÚNG PHẠM VI: 4 tiêu chí cách nói (luôn) + tiêu chí nội dung câu hỏi này nhắm tới.
+            // Câu không có nhãn → nguyên bộ (lùi an toàn). Xem ScoringScopeFilter.
+            var scopedCriteria = ScoringScopeFilter.Apply(
+                criteria, question.TargetCriterionIds, _logger, answer.Id);
+            if (scopedCriteria.Count < criteria.Count)
+                _logger.LogInformation(
+                    "Phạm vi chấm answer {AnswerId}: {Scoped}/{Total} tiêu chí (câu hỏi {QuestionId} nhắm {Targeted})",
+                    answer.Id, scopedCriteria.Count, criteria.Count, question.Id,
+                    string.Join(",", question.TargetCriterionIds ?? []));
+
+            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria);   // E9: kèm levels (+ anchors)
 
             // E10 — self-consistency: publish N job (attempt 1..N) cho cùng 1 answer để chấm N lần.
             //   attempt 1 → temp=0 (tái lập); 2..N → SelfConsistencyTemperature (dao động thật để đo spread).
