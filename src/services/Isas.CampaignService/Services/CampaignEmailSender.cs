@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Mail;
 using System.Net.Mime;
@@ -36,29 +37,65 @@ namespace Isas.CampaignService.Services
             var password = _config["EmailSettings:Password"]
                 ?? throw new InvalidOperationException("SMTP password not configured");
 
-            var subject = $"Lời mời tham gia đánh giá — {campaignTitle}";
-            var body = BuildHtmlBody(campaignTitle, joinLink, expiresAt);
-            var plainTextBody = BuildPlainTextBody(campaignTitle, joinLink, expiresAt);
-
             using var client = new SmtpClient(host, port)
             {
                 Credentials = new NetworkCredential(from, password),
                 EnableSsl = true
             };
 
-            using var mailMessage = new MailMessage
-            {
-                From = new MailAddress(from),
-                Subject = subject,
-                Body = body,
-                IsBodyHtml = true
-            };
-            mailMessage.To.Add(toEmail);
-            mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
-                plainTextBody, Encoding.UTF8, MediaTypeNames.Text.Plain));
+            using var mailMessage = BuildMailMessage(from, toEmail, campaignTitle, joinLink, expiresAt);
 
             await client.SendMailAsync(mailMessage, ct);
         }
+
+        /// <summary>
+        /// Dựng <see cref="MailMessage"/> đa phần (plain text + HTML).
+        /// <para>
+        /// ⚠ KHÔNG dùng <c>MailMessage.Body</c> + <c>IsBodyHtml</c> ở đây: khi
+        /// <c>AlternateViews</c> không rỗng, .NET dựng view từ <c>Body</c> mà BỎ QUA
+        /// <c>IsBodyHtml</c> ⇒ bản HTML bị gửi dưới <c>Content-Type: text/plain</c>.
+        /// </para>
+        /// <para>
+        /// Thứ tự có ý nghĩa: theo RFC 2046, part CUỐI CÙNG trong <c>multipart/alternative</c>
+        /// là bản client ưu tiên hiển thị ⇒ plain text TRƯỚC, HTML SAU. Đảo lại thì ứng viên
+        /// nhận email plain text và toàn bộ template HTML không bao giờ hiện ra.
+        /// </para>
+        /// Cả hai bất biến được khoá bằng <c>CampaignEmailSenderMimeTests</c> (đọc .eml thật).
+        /// </summary>
+        internal static MailMessage BuildMailMessage(
+            string from,
+            string toEmail,
+            string campaignTitle,
+            string joinLink,
+            DateTime? expiresAt)
+        {
+            var mailMessage = new MailMessage
+            {
+                From = new MailAddress(from),
+                Subject = $"Lời mời tham gia đánh giá — {campaignTitle}"
+            };
+            mailMessage.To.Add(toEmail);
+
+            mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
+                BuildPlainTextBody(campaignTitle, joinLink, expiresAt),
+                Encoding.UTF8,
+                MediaTypeNames.Text.Plain));
+            mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
+                BuildHtmlBody(campaignTitle, joinLink, expiresAt),
+                Encoding.UTF8,
+                MediaTypeNames.Text.Html));
+
+            return mailMessage;
+        }
+
+        /// <summary>
+        /// Mốc hết hạn LUÔN in theo <see cref="CultureInfo.InvariantCulture"/>: trong chuỗi
+        /// format tuỳ biến, <c>:</c> là time-separator phụ thuộc culture (máy <c>fi-FI</c> in
+        /// <c>09.30</c>), nên bỏ qua sẽ khiến email đổi định dạng theo locale máy chủ —
+        /// đúng lớp lỗi F16 (PDF <c>91,5</c> vs CSV <c>91.5</c>).
+        /// </summary>
+        private static string FormatExpiry(DateTime expiresAt) =>
+            expiresAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
 
         internal static string BuildHtmlBody(string campaignTitle, string joinLink, DateTime? expiresAt)
         {
@@ -68,7 +105,7 @@ namespace Isas.CampaignService.Services
                 ? $@"<tr>
   <td style=""padding:16px 20px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;color:#1e3a8a;font-size:14px;line-height:20px;"">
     <strong>Thời hạn tham gia</strong><br/>
-    Vui lòng tham gia trước <strong>{expiresAt.Value:yyyy-MM-dd HH:mm} UTC</strong>.
+    Vui lòng tham gia trước <strong>{FormatExpiry(expiresAt.Value)} UTC</strong>.
   </td>
 </tr>
 <tr><td style=""height:24px;font-size:1px;line-height:1px;"">&nbsp;</td></tr>"
@@ -81,7 +118,7 @@ namespace Isas.CampaignService.Services
     <tr><td align=""center"">
       <table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""max-width:600px;background:#ffffff;border-radius:20px;overflow:hidden;"">
         <tr>
-          <td style=""padding:28px 32px;background:linear-gradient(135deg,#132b5c,#2563eb);color:#ffffff;"">
+          <td bgcolor=""#132b5c"" style=""padding:28px 32px;background-color:#132b5c;background:linear-gradient(135deg,#132b5c,#2563eb);color:#ffffff;"">
             <div style=""font-size:13px;font-weight:700;letter-spacing:1.6px;"">ISAS · AI INTERVIEW</div>
             <div style=""margin-top:12px;font-size:28px;font-weight:700;line-height:36px;"">Bạn được mời phỏng vấn cùng AI</div>
           </td>
@@ -113,7 +150,7 @@ namespace Isas.CampaignService.Services
         internal static string BuildPlainTextBody(string campaignTitle, string joinLink, DateTime? expiresAt)
         {
             var expiryLine = expiresAt.HasValue
-                ? $"\nThời hạn tham gia: trước {expiresAt.Value:yyyy-MM-dd HH:mm} UTC.\n"
+                ? $"\nThời hạn tham gia: trước {FormatExpiry(expiresAt.Value)} UTC.\n"
                 : string.Empty;
 
             return $"""
