@@ -88,6 +88,49 @@ public class PracticeService : IPracticeService
         IReadOnlyList<string>? focusCriteria, CancellationToken ct = default)
         => CreateSessionInternalAsync(candidateId, request, sessionId, focusCriteria, ct);
 
+    // SC3 — language cố ý chốt "vi": request tạo session hiện cũng mặc định vi khi client không gửi
+    // language. Nhận một language riêng ở đây sẽ làm preview rubric lệch session thật.
+    public async Task<PracticeSessionOptionsResponse> GetSessionOptionsAsync(
+        Guid candidateId, string jobCategory, CancellationToken ct = default)
+    {
+        if (!Enum.TryParse<JobCategory>(jobCategory, ignoreCase: true, out var category))
+            throw new InvalidOperationException("jobCategory không hợp lệ.");
+
+        var entitlement = _tieringEnabled && _entitlements is not null
+            ? await _entitlements.ResolveUserAsync(candidateId, ct)
+            : EntitlementSnapshot.Free;
+        var criteriaCount = (await LoadTargetableCriteriaAsync(candidateId, category, "vi", ct)).Count;
+        var baseline = ResolveSessionSettings(null, entitlement);
+        var max = baseline.MaxQuestions is > 0 and <= MaxQuestionCount
+            ? baseline.MaxQuestions
+            : MaxQuestionCount;
+        var min = MinQuestionCount;
+
+        PracticeSessionPreview PreviewFor(int count)
+        {
+            var settings = ResolveSessionSettings(count, entitlement);
+            var seeds = settings.MaxDeepPerQuestion > 0
+                ? ComputeSeedCount(settings.MaxQuestions, settings.MaxDeepPerQuestion, _adaptive.SeedCount, criteriaCount)
+                : count;
+            return new PracticeSessionPreview(count, seeds);
+        }
+
+        var preview = Enumerable.Range(min, max - min + 1).Select(PreviewFor).ToList();
+        PracticeSessionPreset Preset(string key, int desired)
+        {
+            var item = PreviewFor(Math.Clamp(desired, min, max));
+            return new PracticeSessionPreset(
+                key, item.QuestionCount, item.SeedCount,
+                !baseline.AdaptiveEnabled || item.SeedCount >= criteriaCount);
+        }
+
+        var presets = new[] { Preset("short", 6), Preset("medium", 12), Preset("long", 20) };
+        var defaultQuestionCount = Math.Clamp(12, min, max);
+        return new PracticeSessionOptionsResponse(
+            baseline.AdaptiveEnabled, baseline.MaxDeepPerQuestion, criteriaCount, min, max,
+            defaultQuestionCount, presets, preview);
+    }
+
     // Lõi dùng chung cho CreateSessionAsync (sessionId ngẫu nhiên, không focus) và
     // CreateLessonSessionAsync (sessionId caller cấp + focusCriteria roadmap lesson).
     private async Task<PracticeSessionResponse> CreateSessionInternalAsync(
@@ -166,8 +209,9 @@ public class PracticeService : IPracticeService
             // INT-17b — chế độ chuỗi đào sâu. Nguồn bật/tắt adaptive nay có thể là ENTITLEMENT (T7) chứ
             // không chỉ `Adaptive:Enabled`, nên bám theo đúng cờ đã resolve — đọc lại `_adaptive.Enabled`
             // ở đây sẽ khiến buổi bật adaptive bằng gói dịch vụ lại chạy chế độ cũ mà không lỗi gì.
-            var adaptiveOn = _tieringEnabled ? entitlement.AdaptiveEnabled : _adaptive.Enabled;
-            var maxDeepPerQuestion = adaptiveOn ? Math.Max(0, _adaptive.MaxDeepPerQuestion) : 0;
+            var settings = ResolveSessionSettings(questionCount, entitlement);
+            var adaptiveOn = settings.AdaptiveEnabled;
+            var maxDeepPerQuestion = settings.MaxDeepPerQuestion;
 
             // Tạo session, commit #1. Status set bằng C# initializer của entity.
             var session = new PracticeSession
@@ -186,17 +230,11 @@ public class PracticeService : IPracticeService
                 // F2b — adaptive BẬT: trần tổng số câu lấy theo lựa chọn của ứng viên (không chọn →
                 // cấu hình). Adaptive TẮT: 0 = không trần (số câu do AIService sinh 1 lần, đã cap ở
                 // questionCount rồi). CHECK ở DB chặn 0..20 cho mọi đường ghi.
-                MaxQuestions = _tieringEnabled && entitlement.AdaptiveEnabled
-                    ? Math.Clamp(questionCount ?? entitlement.MaxQuestions, 0, Math.Min(20, entitlement.MaxQuestions))
-                    : _adaptive.Enabled ? (questionCount ?? _adaptive.MaxQuestions) : 0,
+                MaxQuestions = settings.MaxQuestions,
                 // INT-17b — ở chế độ chuỗi, trần theo BUỔI phải để 0: để nguyên 3 thì nó bó chặt hơn trần
                 // theo CÂU (5 gốc × 3 = 15 câu sâu) và hội thoại chết ở câu đào sâu thứ 3. `MaxQuestions`
                 // mới là trần buổi. Áp cho CẢ nguồn entitlement (T7) lẫn nguồn config.
-                MaxFollowUps = maxDeepPerQuestion > 0
-                    ? 0
-                    : _tieringEnabled && entitlement.AdaptiveEnabled
-                        ? entitlement.MaxFollowUps
-                        : _adaptive.Enabled ? _adaptive.MaxFollowUps : 0,
+                MaxFollowUps = settings.MaxFollowUps,
                 // INT-17b — trần đào sâu MỖI câu gốc. 0 = chế độ frontier cũ (AnswerService rẽ nhánh theo
                 // đúng field này) ⇒ tắt adaptive cũng cho 0, hành vi y như trước.
                 MaxDeepPerQuestion = maxDeepPerQuestion,
@@ -1049,6 +1087,26 @@ public class PracticeService : IPracticeService
         var seeds = Math.Max(Math.Min(byBudget, configured), floorByCriteria);
         return Math.Clamp(seeds, 1, Math.Max(1, maxQuestions - 1));
     }
+
+    // SC3 — single source of truth shared by session creation and the UI-options endpoint. Preserve the
+    // existing tiering branches exactly; their known MaxQuestions/adaptiveOn asymmetry is out of scope.
+    private SessionGenerationSettings ResolveSessionSettings(int? questionCount, EntitlementSnapshot entitlement)
+    {
+        var adaptiveEnabled = _tieringEnabled ? entitlement.AdaptiveEnabled : _adaptive.Enabled;
+        var maxDeepPerQuestion = adaptiveEnabled ? Math.Max(0, _adaptive.MaxDeepPerQuestion) : 0;
+        var maxQuestions = _tieringEnabled && entitlement.AdaptiveEnabled
+            ? Math.Clamp(questionCount ?? entitlement.MaxQuestions, 0, Math.Min(MaxQuestionCount, entitlement.MaxQuestions))
+            : _adaptive.Enabled ? (questionCount ?? _adaptive.MaxQuestions) : 0;
+        var maxFollowUps = maxDeepPerQuestion > 0
+            ? 0
+            : _tieringEnabled && entitlement.AdaptiveEnabled
+                ? entitlement.MaxFollowUps
+                : _adaptive.Enabled ? _adaptive.MaxFollowUps : 0;
+        return new SessionGenerationSettings(adaptiveEnabled, maxQuestions, maxFollowUps, maxDeepPerQuestion);
+    }
+
+    private sealed record SessionGenerationSettings(
+        bool AdaptiveEnabled, int MaxQuestions, int MaxFollowUps, int MaxDeepPerQuestion);
 
     private async Task<List<QuestionTargetCriterionDto>> LoadTargetableCriteriaAsync(
         Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)

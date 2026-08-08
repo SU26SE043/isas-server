@@ -64,7 +64,7 @@ builder.Services.AddHostedService<QdrantCollectionInitializer>();   // tạo col
 builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGenerator>(c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
-    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+    c.Timeout = TimeSpan.FromSeconds(90);  // SC3/QV1: quality retry and verification can exceed one generation
 });
 
 builder.Services.AddHttpClient<IAiServiceCvAnalyzer, AiServiceCvAnalyzer>(c =>   // BC7

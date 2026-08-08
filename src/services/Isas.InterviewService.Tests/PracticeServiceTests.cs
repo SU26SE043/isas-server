@@ -293,6 +293,39 @@ public class PracticeServiceTests
         Assert.False(d.Enabled);                  // toggle vẫn TẮT mặc định
     }
 
+    // SC3 — endpoint preview phải dùng đúng luật production, không để FE tự nhân bản ceil/kẹp.
+    [Fact]
+    public async Task SessionOptions_PreviewKhớpSoCauGocDuocTaoThucTe()
+    {
+        using var t = new TestDb();
+        int? requestedCount = null;
+        var generator = new Mock<IAiServiceQuestionGenerator>();
+        generator.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, CancellationToken>(
+                (_, _, _, _, count, _) => requestedCount = count)
+            .ReturnsAsync(Enumerable.Range(1, 5).Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList());
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation.Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, generator.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance,
+            Options.Create(new AdaptiveOptions { Enabled = true, SeedCount = 5, MaxQuestions = 20, MaxDeepPerQuestion = 3 }));
+        var candidate = Guid.NewGuid();
+
+        var options = await svc.GetSessionOptionsAsync(candidate, "BE");
+        var preview = options.Preview.Single(p => p.QuestionCount == 5);
+        await svc.CreateSessionAsync(candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE, QuestionCount: 5));
+
+        Assert.True(options.AdaptiveEnabled);
+        Assert.Equal(2, preview.SeedCount);
+        Assert.Equal(preview.SeedCount, requestedCount);
+        Assert.Equal(12, options.DefaultQuestionCount);
+    }
+
     // INT-17b — câu GỐC đánh số CÓ KHOẢNG TRỐNG (stride = 1 + trần đào sâu) để chuỗi của câu trước có
     // chỗ nằm xen vào mà không đụng câu sau. Đây là thứ thay cho việc thêm field `displayOrder` + sửa FE:
     // `MapToResponse` và FE B2B đều sắp theo `OrderNo`, nên đánh số đúng là ra đúng thứ tự hội thoại.

@@ -25,6 +25,26 @@ public record CreatePracticeSessionRequest(
     string? Language = null
 );
 
+// SC3 — tất cả số liệu nghiệp vụ (đặc biệt SeedCount) do server tính bằng đúng luật tạo session.
+// UI chỉ dùng QuestionCount × TimeLimitSec để hiển thị thời lượng.
+public record PracticeSessionOptionsResponse(
+    bool AdaptiveEnabled,
+    int MaxDeepPerQuestion,
+    int ContentCriteriaCount,
+    int QuestionCountMin,
+    int QuestionCountMax,
+    int DefaultQuestionCount,
+    IReadOnlyList<PracticeSessionPreset> Presets,
+    IReadOnlyList<PracticeSessionPreview> Preview);
+
+public record PracticeSessionPreset(
+    string Key,
+    int QuestionCount,
+    int SeedCount,
+    bool CoversAllCriteria);
+
+public record PracticeSessionPreview(int QuestionCount, int SeedCount);
+
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
 public record CampaignCriterionInput(
     string Name,

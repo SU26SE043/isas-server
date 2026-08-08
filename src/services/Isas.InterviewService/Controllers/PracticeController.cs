@@ -42,6 +42,26 @@ public class PracticeController : ControllerBase
         return candidateId;
     }
 
+    /// <summary>SC3 — preview preset câu hỏi do server tính, dùng đúng luật tạo session.</summary>
+    [HttpGet("/api/practice/session-options")]
+    [ProducesResponseType(typeof(PracticeSessionOptionsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetSessionOptions([FromQuery] string jobCategory, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await _practiceService.GetSessionOptionsAsync(GetCandidateId(), jobCategory, ct));
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return Unauthorized(new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     /// <summary>
     /// 1. Tạo phiên phỏng vấn mới (Gọi AI sinh câu hỏi)
     /// </summary>

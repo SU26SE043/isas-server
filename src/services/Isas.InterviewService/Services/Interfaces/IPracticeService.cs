@@ -5,6 +5,10 @@ namespace Isas.InterviewService.Services.Interfaces;
 
 public interface IPracticeService
 {
+    /// <summary>SC3 — server-side preview so clients do not duplicate adaptive seed-count rules.</summary>
+    Task<PracticeSessionOptionsResponse> GetSessionOptionsAsync(
+        Guid candidateId, string jobCategory, CancellationToken ct = default);
+
     Task<PracticeSessionResponse> CreateSessionAsync(
         Guid candidateId, CreatePracticeSessionRequest request, CancellationToken ct = default);
 
