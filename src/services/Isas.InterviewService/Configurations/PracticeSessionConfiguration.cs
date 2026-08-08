@@ -306,3 +306,28 @@ public class SessionCriterionScoreConfiguration : IEntityTypeConfiguration<Sessi
             .OnDelete(DeleteBehavior.Restrict);
     }
 }
+
+public class SessionCriterionEvidenceConfiguration : IEntityTypeConfiguration<SessionCriterionEvidence>
+{
+    public void Configure(EntityTypeBuilder<SessionCriterionEvidence> e)
+    {
+        e.HasKey(x => x.Id);
+        e.Property(x => x.CriterionName).HasMaxLength(128).IsRequired();
+        e.Property(x => x.State).HasMaxLength(16).IsRequired();
+        var evidenceComparer = new ValueComparer<List<string>>(
+            (a, b) => (a ?? new List<string>()).SequenceEqual(b ?? new List<string>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, x) => HashCode.Combine(h, x.GetHashCode())),
+            v => v == null ? new List<string>() : v.ToList());
+        var found = e.Property(x => x.EvidenceFound).HasConversion(
+            v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null) ?? new List<string>()).HasColumnType("jsonb");
+        found.Metadata.SetValueComparer(evidenceComparer);
+        var missing = e.Property(x => x.MissingEvidence).HasConversion(
+            v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null) ?? new List<string>()).HasColumnType("jsonb");
+        missing.Metadata.SetValueComparer(evidenceComparer);
+        e.HasIndex(x => new { x.SessionId, x.CriterionId }).IsUnique();
+        e.HasOne(x => x.Session).WithMany().HasForeignKey(x => x.SessionId).OnDelete(DeleteBehavior.Cascade);
+        e.HasOne<RubricCriterion>().WithMany().HasForeignKey(x => x.CriterionId).OnDelete(DeleteBehavior.Restrict);
+    }
+}

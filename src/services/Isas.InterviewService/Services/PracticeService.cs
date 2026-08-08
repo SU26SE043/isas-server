@@ -265,6 +265,20 @@ public class PracticeService : IPracticeService
             var targetable = await LoadTargetableCriteriaAsync(
                 candidateId, jobCategory, language, ct);
 
+            // Evidence-driven adaptive: state khởi tạo cùng snapshot rubric của buổi. AIService chỉ
+            // nhận state qua wire; InterviewService là nơi duy nhất ghi state/evidence (GEN-4).
+            if (targetable.Count > 0)
+            {
+                _db.SessionCriterionEvidence.AddRange(targetable.Select(c => new SessionCriterionEvidence
+                {
+                    SessionId = session.Id,
+                    CriterionId = c.CriterionId,
+                    CriterionName = c.Name,
+                    State = "UNKNOWN"
+                }));
+                await _db.SaveChangesAsync(ct);
+            }
+
             // INT-17b — số câu GỐC của buổi.
             //
             // ⚠ `questionCount` VẪN là "tổng số câu của buổi" (F2b), KHÔNG phải số câu gốc. Đừng đổi thành
