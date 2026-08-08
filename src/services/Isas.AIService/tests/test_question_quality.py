@@ -49,6 +49,9 @@ async def test_verify_uses_grounding_for_citations_without_injecting_it_into_gen
                                      grounding=[{"chunkId": "c1", "content": "Nguồn đúng"}])
     assert "TÀI LIỆU THAM CHIẾU UY TÍN" not in models.calls[0]
     assert result.citations == [{"questionIndex": 0, "citedChunkIds": ["c1"]}]
+    # Test này KHÔNG soi `questions` nên nó từng xanh trong khi câu hỏi giao đi là repr Python của
+    # dict (`"{'text': 'Q?', ...}"`). Thêm vế này để lần sau nó không che nữa.
+    assert result.questions == ["Q?"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -263,3 +266,85 @@ async def test_qv1_khai_response_schema(monkeypatch):
     verify_cfg = fake.configs[1]
     assert verify_cfg.response_schema is not None
     assert "checks" in json.dumps(verify_cfg.response_schema)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# QV1 bật ⇒ prompt / response_schema / citations phải NÓI CÙNG MỘT THỨ
+#
+# QV1 cố ý KHÔNG cấp tài liệu cho lượt sinh (grounding chỉ dùng để kiểm + lấy citation). Nếu schema
+# vẫn bám `grounding` gốc thì prompt bảo "trả CHUỖI TRẦN" còn schema ép OBJECT kèm `citedChunkIds` —
+# hai vế của cùng hợp đồng chọi nhau, và model bị đòi trích cái nó chưa từng được xem.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _verify_provider(monkeypatch, gen_payload, verify_payload=None, verify_raises=False):
+    class Fake:
+        def __init__(self): self.configs = []; self.prompts = []
+        async def generate_content(self, *, model, contents, config):
+            self.configs.append(config); self.prompts.append(contents)
+            if len(self.configs) == 1:
+                return SimpleNamespace(text=json.dumps(gen_payload))
+            if verify_raises:
+                raise RuntimeError("Gemini 503")
+            return SimpleNamespace(text=json.dumps(verify_payload or {"checks": []}))
+
+    monkeypatch.setattr(GeminiProvider, "__init__", lambda self: None)
+    provider = GeminiProvider(); fake = Fake()
+    provider._client = SimpleNamespace(aio=SimpleNamespace(models=fake))
+    monkeypatch.setattr(settings, "question_verify_enabled", True)
+    monkeypatch.setattr(settings, "question_max_attempts", 1)
+    return provider, fake
+
+
+@pytest.mark.asyncio
+async def test_qv1_schema_khop_prompt_khong_doi_citedChunkIds(monkeypatch):
+    provider, fake = _verify_provider(monkeypatch, {"questions": ["Q1?"]})
+
+    await provider.generate("BE", None, None, count=1,
+                            grounding=[{"chunkId": "c1", "content": "tài liệu"}])
+
+    gen_schema = fake.configs[0].response_schema
+    assert gen_schema["properties"]["questions"]["items"] == {"type": "string"}
+    assert "citedChunkIds" not in json.dumps(gen_schema)
+
+
+@pytest.mark.asyncio
+async def test_qv1_hong_thi_KHONG_giao_citations_rong(monkeypatch):
+    """Lượt kiểm hỏng ⇒ citations phải là None (field bị bỏ hẳn khỏi response) chứ KHÔNG phải mảng
+    rỗng: "không có citation" ≠ "đã kiểm và không tìm ra nguồn nào". Trả rỗng-mà-trông-như-đã-kiểm là
+    dựng citation giả — đúng thứ D27 cấm."""
+    provider, _ = _verify_provider(monkeypatch, {"questions": ["Q1?"]}, verify_raises=True)
+
+    result = await provider.generate("BE", None, None, count=1,
+                                     grounding=[{"chunkId": "c1", "content": "tài liệu"}])
+
+    assert result.questions == ["Q1?"]
+    assert result.citations is None
+
+
+@pytest.mark.asyncio
+async def test_qv1_van_chay_khi_khong_co_criteria(monkeypatch):
+    """Buổi grounded KHÔNG có criteria đi nhánh "chuỗi trần". Nhánh đó từng return SỚM ⇒ nhảy qua cả
+    cổng kiểm chứng lẫn citations, im lặng."""
+    provider, fake = _verify_provider(
+        monkeypatch, {"questions": ["Q1?"]},
+        {"checks": [{"questionIndex": 0, "citedChunkIds": ["c1"]}]})
+
+    result = await provider.generate("BE", None, None, count=1,
+                                     grounding=[{"chunkId": "c1", "content": "tài liệu"}])
+
+    assert len(fake.configs) == 2                    # lượt kiểm CÓ chạy
+    assert result.citations == [{"questionIndex": 0, "citedChunkIds": ["c1"]}]
+
+
+@pytest.mark.asyncio
+async def test_model_lo_schema_tra_object_khong_thanh_cau_hoi_rac(monkeypatch):
+    """Vế đối xứng của phòng thủ "model lờ schema": `str(dict)` sẽ biến repr Python thành CÂU HỎI gửi
+    cho ứng viên đã trả credit, không lỗi nào nổ."""
+    provider, _ = _verify_provider(
+        monkeypatch, {"questions": [{"text": "Q thật?", "citedChunkIds": []}]},
+        {"checks": [{"questionIndex": 0, "citedChunkIds": ["c1"]}]})
+
+    result = await provider.generate("BE", None, None, count=1,
+                                     grounding=[{"chunkId": "c1", "content": "tài liệu"}])
+
+    assert result.questions == ["Q thật?"]
