@@ -10,13 +10,14 @@ from app.resources import sanitize_resources, count_rejected_urls
 from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
-from app.question_quality import coverage_defects
+from app.question_quality import coverage_defects, verify_defect
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt, build_repo_analysis_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
     build_summarize_session_prompt, build_decide_next_prompt,
+    build_verify_questions_prompt,
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
@@ -178,17 +179,43 @@ class GeminiProvider(QuestionProvider):
         )
         return [list(e.values or []) for e in (resp.embeddings or [])]
 
-    async def _verify_question_knowledge(self, questions: list[str], grounding: list[dict] | None) -> tuple[list[str], list[dict] | None]:
+    async def _verify_question_knowledge(self, questions: list[str], grounding: list[dict] | None,
+                                         language: str = "vi") -> tuple[list[str], list[dict] | None]:
         """QV1 best-effort: only a concrete contradiction is a defect; retrieval miss is valid."""
         if not grounding:
             return [], None
-        context = "\n".join(f'[{g.get("chunkId")}] {g.get("content", "")}' for g in grounding)
-        prompt = ("Đối chiếu các câu hỏi với tài liệu. Không có tài liệu phù hợp KHÔNG phải lỗi. "
-                  "Chỉ liệt kê câu có khẳng định cụ thể mâu thuẫn tài liệu. Với MỖI câu, trả citedChunkIds "
-                  "chỉ từ tài liệu đã cấp (không có căn cứ thì []). Trả JSON {\"checks\":[{\"questionIndex\":0,\"citedChunkIds\":[],\"reason\":null}]}.\n"
-                  f"TÀI LIỆU:\n{context}\nCÂU HỎI:\n" + "\n".join(f"- {q}" for q in questions))
+        # Registry là no-op ở đây (prompt kiểm chứng HARDCODE, F21 không có khe nào cho nó) — nhưng
+        # guard cấu trúc `test_moi_ham_dung_build_prompt_deu_phai_nap_registry` cố ý KHÔNG có ngoại
+        # lệ, và một guard có ngoại lệ là guard sẽ bị lách. Cache đã ấm từ `generate()` nên không
+        # thêm lượt gọi mạng nào.
+        await prompt_registry.refresh_if_stale()
+        prompt = build_verify_questions_prompt(questions, grounding)
         response = await self._generate("verify_questions", contents=prompt,
-            config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json"))
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                # Thiếu schema thì "trả JSON đúng dạng" chỉ còn là lời dặn trong prompt — đúng thứ
+                # mà một chunk độc nhắm vào đầu tiên. Mọi lượt gọi JSON khác của file này đều khai
+                # schema; lượt này từng là ngoại lệ duy nhất.
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "checks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "questionIndex": {"type": "integer"},
+                                    "citedChunkIds": {"type": "array", "items": {"type": "string"}},
+                                    "reason": {"type": "string", "nullable": True},
+                                },
+                                "required": ["questionIndex"],
+                            },
+                        }
+                    },
+                    "required": ["checks"],
+                },
+            ))
         data = json.loads((response.text or "").strip())
         allowed = {str(g.get("chunkId")).strip() for g in grounding if g.get("chunkId")}
         checks = data.get("checks", [])
@@ -202,7 +229,8 @@ class GeminiProvider(QuestionProvider):
                 citations[index] = _keep_known_ids(item.get("citedChunkIds"), allowed)
                 reason = str(item.get("reason") or "").strip()
                 if reason:
-                    defects.append(reason)
+                    # KHÔNG nhét `reason` nguyên văn: nó đi thẳng vào prompt lượt SINH.
+                    defects.append(verify_defect(index, reason, language))
         return defects, [{"questionIndex": i, "citedChunkIds": ids} for i, ids in enumerate(citations)]
 
     # ── F22 (FR18): CHOKEPOINT DUY NHẤT cho mọi lượt gọi Gemini ────────────────
@@ -359,7 +387,8 @@ class GeminiProvider(QuestionProvider):
                                    language=language)
         if settings.question_verify_enabled:
             try:
-                knowledge_defects, verified_citations = await self._verify_question_knowledge(result.questions, grounding)
+                knowledge_defects, verified_citations = await self._verify_question_knowledge(
+                    result.questions, grounding, language)
                 defects.extend(knowledge_defects)
                 if verified_citations is not None:
                     result = QuestionGenerationResult(result.questions, verified_citations, result.target_criteria)
