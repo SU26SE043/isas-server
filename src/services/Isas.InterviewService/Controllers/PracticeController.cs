@@ -46,11 +46,15 @@ public class PracticeController : ControllerBase
     [HttpGet("/api/practice/session-options")]
     [ProducesResponseType(typeof(PracticeSessionOptionsResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> GetSessionOptions([FromQuery] string jobCategory, CancellationToken ct)
+    // `language` optional (null = vi) — PHẢI khớp `language` sẽ gửi khi tạo session, nếu không preview
+    // dựng trên rubric khác bộ rubric của buổi thật (số tiêu chí nội dung là SÀN của số câu gốc).
+    public async Task<IActionResult> GetSessionOptions(
+        [FromQuery] string jobCategory, [FromQuery] string? language, CancellationToken ct)
     {
         try
         {
-            return Ok(await _practiceService.GetSessionOptionsAsync(GetCandidateId(), jobCategory, ct));
+            return Ok(await _practiceService.GetSessionOptionsAsync(
+                GetCandidateId(), jobCategory, language, ct));
         }
         catch (UnauthorizedAccessException ex)
         {

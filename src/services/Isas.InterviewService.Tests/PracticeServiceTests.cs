@@ -323,7 +323,12 @@ public class PracticeServiceTests
         Assert.True(options.AdaptiveEnabled);
         Assert.Equal(2, preview.SeedCount);
         Assert.Equal(preview.SeedCount, requestedCount);
-        Assert.Equal(12, options.DefaultQuestionCount);
+        // ĐẢO TIỀN ĐỀ có chủ ý: assert cũ là `Equal(12, …)` — khoá cứng một HẰNG SỐ MA.
+        // Mặc định THẬT khi client bỏ trống `questionCount` là `questionCount ?? _adaptive.MaxQuestions`
+        // (xem ResolveSessionSettings) = 20 với đúng options mà chính test này dựng ở trên. Assert cũ vừa
+        // sai vừa tự mâu thuẫn với `MaxQuestions = 20` khai cách đó 6 dòng, và nó khoá luôn cái sai lại:
+        // ai sửa endpoint cho đúng sẽ thấy test đỏ và tưởng mình làm hỏng.
+        Assert.Equal(20, options.DefaultQuestionCount);
     }
 
     // INT-17b — câu GỐC đánh số CÓ KHOẢNG TRỐNG (stride = 1 + trần đào sâu) để chuỗi của câu trước có
