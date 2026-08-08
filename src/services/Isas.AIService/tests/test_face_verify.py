@@ -151,6 +151,70 @@ def test_502_when_model_fails(monkeypatch):
     assert "Lỗi đối chiếu khuôn mặt" in res.json()["detail"]
 
 
+# ── FaceVerifier.compare — chạy CODE THẬT (chỉ giả lớp detect) ───────────────────
+#
+# Mọi test phía trên monkeypatch nguyên hàm `compare`, nên chúng KHÔNG hề chứng minh
+# `reference_face_count` được tính đúng. Mutation "cho reference_face_count luôn = 1" chạy qua
+# 545 test vẫn XANH — tức bug ảnh-mốc-hỏng có thể quay lại y nguyên mà không ai biết. Nhóm test
+# dưới đây đóng đúng khe đó: giả `_detect` (khỏi cần model), gọi `compare` thật.
+
+
+class _FakeFace:
+    def __init__(self, emb):
+        self.normed_embedding = emb
+
+
+def _verifier_with(monkeypatch, ref_faces, live_faces):
+    from app.face_verify import FaceVerifier
+
+    v = FaceVerifier()
+    seen: list[bytes] = []
+
+    def fake_detect(img_bytes):
+        seen.append(img_bytes)
+        return live_faces if img_bytes == b"live" else ref_faces
+
+    monkeypatch.setattr(v, "_detect", fake_detect)
+    return v, seen
+
+
+def test_compare_bao_cao_so_mat_cua_anh_moc(monkeypatch):
+    v, _ = _verifier_with(monkeypatch, ref_faces=[_FakeFace([1.0, 0.0])],
+                          live_faces=[_FakeFace([1.0, 0.0])])
+    r = v.compare(b"ref", b"live")
+    assert r.face_count == 1
+    assert r.reference_face_count == 1
+    assert r.score == pytest.approx(1.0)
+
+
+def test_compare_anh_moc_khong_co_mat_bao_0_khong_phai_1(monkeypatch):
+    """Ca sinh ra bản vá: mốc 0 mặt phải BÁO ĐÚNG 0 để endpoint ra identity_unverified."""
+    v, _ = _verifier_with(monkeypatch, ref_faces=[], live_faces=[_FakeFace([1.0, 0.0])])
+    r = v.compare(b"ref", b"live")
+    assert r.reference_face_count == 0
+    assert r.score == 0.0
+    assert r.face_count == 1
+
+
+def test_compare_anh_moc_nhieu_mat_bao_dung_so(monkeypatch):
+    v, _ = _verifier_with(monkeypatch,
+                          ref_faces=[_FakeFace([1.0, 0.0]), _FakeFace([0.0, 1.0])],
+                          live_faces=[_FakeFace([1.0, 0.0])])
+    assert v.compare(b"ref", b"live").reference_face_count == 2
+
+
+def test_compare_live_hong_thi_chua_xet_anh_moc(monkeypatch):
+    """live 0 mặt → reference_face_count = None ("chưa nhìn"), và KHÔNG tốn lượt detect ảnh mốc.
+
+    None chứ không phải 0: 0 nghĩa là "đã nhìn và không thấy mặt nào" — hai chuyện khác nhau,
+    và chính chỗ đó quyết định endpoint gắn no_face hay identity_unverified."""
+    v, seen = _verifier_with(monkeypatch, ref_faces=[_FakeFace([1.0, 0.0])], live_faces=[])
+    r = v.compare(b"ref", b"live")
+    assert r.reference_face_count is None
+    assert r.face_count == 0
+    assert seen == [b"live"]  # không đụng ảnh mốc
+
+
 def test_endpoint_requires_internal_token(monkeypatch):
     """GEN-7: thiếu / sai X-Internal-Token → 401 (fail-closed), TRƯỚC cả khi chạm S3/model.
 
