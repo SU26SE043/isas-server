@@ -326,4 +326,257 @@ public class KnowledgeServiceTests
         Assert.True(res.ChunkCount > 0);   // nạp VẪN thành công
     }
 
+    // ── Defect 1: nhãn trích dẫn — BẤT BIẾN áp cho MỌI source_type (2026-08-08) ────────────
+    //
+    // Hai test nhãn ở trên chỉ phủ nhánh Manual, nên nhánh Context7 dùng thẳng `s.Title` lọt qua toàn bộ
+    // suite. Đo trên prod sau khi reindex cả 25 nguồn: 687 chunk / 607 nhãn đúng / 80 sai — 80 đúng bằng
+    // tổng chunk của 5 nguồn Context7 (10+15+16+23+16) ⇒ nhánh đó sai 100%.
+    //
+    // Vì thế test này KHÔNG assert một chuỗi cụ thể mà khoá BẤT BIẾN "nhãn luôn bắt đầu bằng tên nguồn",
+    // và duyệt `Enum.GetValues<KnowledgeSourceType>()` để source_type thêm về sau hoặc được phủ, hoặc
+    // làm test ĐỎ ở nhánh `default` — không có cửa lọt im lặng lần thứ hai.
+
+    /// Mỗi source_type nạp một nguồn có "mục con" là đồ trang trí điều hướng — thứ quan sát được thật
+    /// trên corpus prod ("Help improve MDN", "In This Article:", "SET TRANSACTION").
+    private static async Task<(string SourceTitle, List<VectorPoint> Points)> IngestForTypeAsync(
+        Harness h, KnowledgeSourceType type)
+    {
+        List<VectorPoint>? upserted = null;
+        h.VectorStore.Setup(v => v.UpsertAsync(It.IsAny<IReadOnlyList<VectorPoint>>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<VectorPoint>, CancellationToken>((p, _) => upserted = p.ToList())
+            .Returns(Task.CompletedTask);
+
+        KnowledgeSourceResponse res;
+        switch (type)
+        {
+            case KnowledgeSourceType.Manual:
+                res = await h.Svc.IngestAsync(Guid.NewGuid(), new CreateKnowledgeRequest(
+                    "MDN — ARIA / Accessibility", JobCategory.FE, KnowledgeSourceType.Manual,
+                    "## Help improve MDN\nphần điều hướng cuối trang.", null));
+                break;
+
+            case KnowledgeSourceType.Url:
+                h.UrlFetcher.Setup(u => u.FetchAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync("<h2>In This Article:</h2><p>mục lục điều hướng.</p>");
+                res = await h.Svc.IngestAsync(Guid.NewGuid(), new CreateKnowledgeRequest(
+                    "PostgreSQL — Transactions", JobCategory.BE, KnowledgeSourceType.Url,
+                    null, "https://www.postgresql.org/docs/current/tutorial-transactions.html"));
+                break;
+
+            case KnowledgeSourceType.Context7:
+                h.Context7.Setup(c => c.GetContextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new List<Context7Snippet> { new("SET TRANSACTION", "nội dung snippet", "https://x/y") });
+                res = await h.Svc.Context7IngestAsync(Guid.NewGuid(),
+                    new Context7IngestRequest("/postgres/postgres", new List<string> { "transactions" }, JobCategory.BE));
+                break;
+
+            default:
+                // Có source_type MỚI mà không ai bổ sung ca kiểm nhãn → ĐỎ ngay, không lọt im lặng.
+                throw new Xunit.Sdk.XunitException(
+                    $"source_type mới `{type}` chưa có ca kiểm nhãn trích dẫn — thêm nhánh vào IngestForTypeAsync.");
+        }
+
+        Assert.NotNull(upserted);
+        Assert.NotEmpty(upserted!);
+        return (res.Title, upserted!);
+    }
+
+    [Fact]
+    public async Task Ingest_NhanTrichDan_MoiSourceType_LuonBatDauBangTenNguon()
+    {
+        foreach (var type in Enum.GetValues<KnowledgeSourceType>())
+        {
+            using var t = new TestDb();
+            var h = Build(t);
+
+            var (sourceTitle, points) = await IngestForTypeAsync(h, type);
+
+            Assert.All(points, p => Assert.StartsWith(sourceTitle, p.SourceTitle, StringComparison.Ordinal));
+        }
+    }
+
+    /// Mục con KHÔNG được vứt đi: tài liệu dài có tới 57 chunk, nhãn chỉ có tên nguồn thì mất vị trí.
+    /// Đây là vế còn lại của bất biến — nếu ai "sửa" bằng cách trả thẳng `source.Title` thì test trên
+    /// vẫn XANH còn test này ĐỎ.
+    [Fact]
+    public async Task Ingest_NhanTrichDan_MoiSourceType_GiuLaiMucCon()
+    {
+        var mucConTheoType = new Dictionary<KnowledgeSourceType, string>
+        {
+            [KnowledgeSourceType.Manual] = "Help improve MDN",
+            [KnowledgeSourceType.Url] = "In This Article:",
+            [KnowledgeSourceType.Context7] = "SET TRANSACTION",
+        };
+
+        foreach (var type in Enum.GetValues<KnowledgeSourceType>())
+        {
+            using var t = new TestDb();
+            var h = Build(t);
+
+            var (sourceTitle, points) = await IngestForTypeAsync(h, type);
+            var mucCon = Assert.Contains(type, mucConTheoType);
+            var label = points[0].SourceTitle;
+
+            Assert.Contains(mucCon, label, StringComparison.Ordinal);   // mục con còn nguyên
+            Assert.NotEqual(mucCon, label);                             // nhưng KHÔNG đè tên nguồn
+            Assert.NotEqual(sourceTitle, label);                        // và KHÔNG bị nuốt mất
+        }
+    }
+
+    // ── Defect 2: reindex phải tra LẠI điểm uy tín (2026-08-08) ────────────────────────────
+    //
+    // `Reputation` chỉ được gán trong Context7IngestAsync ⇒ nguồn nạp trước khi có đường ghi đó vĩnh
+    // viễn null. Đo trên prod: reindex cả 25 nguồn xong, 5/5 nguồn Context7 vẫn null.
+
+    private static void SetupSnippets(Harness h) =>
+        h.Context7.Setup(c => c.GetContextAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Context7Snippet> { new("useEffect", "nội dung snippet", "https://react.dev/x") });
+
+    private static async Task<Guid> SeedContext7Source(TestDb t, string? reputation)
+    {
+        var src = new KnowledgeSource
+        {
+            Id = Guid.NewGuid(),
+            Title = "Context7: /reactjs/react.dev (hooks)",
+            JobCategory = JobCategory.FE,
+            SourceType = KnowledgeSourceType.Context7,
+            SourceRef = "/reactjs/react.dev",
+            RawContent = "hooks",
+            Reputation = reputation,
+            Status = KnowledgeStatus.Active,
+            ChunkCount = 1,
+            CreatedAt = DateTime.UtcNow
+        };
+        t.Db.KnowledgeSources.Add(src);
+        await t.Db.SaveChangesAsync();
+        return src.Id;
+    }
+
+    /// Nguồn nạp từ trước bản vá (uy tín null) → reindex phải điền được. Đây chính là ca prod.
+    [Fact]
+    public async Task Reindex_Context7_TraLaiDiemUyTin_DienDuocChoNguonCu()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        var id = await SeedContext7Source(t, reputation: null);
+        SetupSnippets(h);
+        h.Context7.Setup(c => c.SearchAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Context7Library>
+            {
+                new("/react/react", "React", "8.3", 6165),
+                new("/reactjs/react.dev", "React", "10", 6052),
+            });
+
+        var res = await h.Svc.ReindexAsync(id, default);
+
+        Assert.Equal("10", res!.Reputation);   // khớp bằng ID ĐẦY ĐỦ, không phải theo tên
+        Assert.Equal("10", t.NewContext().KnowledgeSources.Single(x => x.Id == id).Reputation);
+    }
+
+    /// Nguồn ĐÃ có uy tín và Context7 trả giá trị MỚI KHÁC → phải CẬP NHẬT, không giữ số cũ.
+    ///
+    /// <remarks>
+    /// Lỗ test do supervisor tìm ra lúc gộp: hai test "giữ giá trị cũ" ngay dưới đều dựng ca tra
+    /// HỤT, còn test điền-cho-nguồn-cũ thì seed <c>null</c>. Không ca nào phân biệt được
+    /// <c>mới ?? cũ</c> (đúng) với <c>cũ ?? mới</c> (sai) ⇒ đảo thứ tự hai vế vẫn XANH 684/684,
+    /// mà hành vi thật là reindex KHÔNG BAO GIỜ làm mới uy tín đã có. `trustScore` bên Context7
+    /// đổi theo thời gian, và reindex chính là lúc nên đọc lại — hỏng kiểu này không có triệu
+    /// chứng nào, chỉ là số cũ nằm im mãi.
+    /// </remarks>
+    [Fact]
+    public async Task Reindex_Context7_TraVeGiaTriMoi_CapNhat_KhongGiuSoCu()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        var id = await SeedContext7Source(t, reputation: "10");
+        SetupSnippets(h);
+        h.Context7.Setup(c => c.SearchAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Context7Library>
+            {
+                new("/reactjs/react.dev", "React", "9.2", 6052),
+            });
+
+        var res = await h.Svc.ReindexAsync(id, default);
+
+        Assert.Equal("9.2", res!.Reputation);
+        Assert.Equal("9.2", t.NewContext().KnowledgeSources.Single(x => x.Id == id).Reputation);
+    }
+
+    /// Context7 lỗi/rate-limit khi tra lại → GIỮ giá trị cũ. Ghi đè null ở đây là XOÁ dữ liệu tốt vì
+    /// một sự cố tạm thời, mà lần reindex sau không còn gì để khôi phục.
+    [Fact]
+    public async Task Reindex_Context7_TraUyTinLoi_GiuGiaTriCu_KhongGhiDeNull()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        var id = await SeedContext7Source(t, reputation: "10");
+        SetupSnippets(h);
+        h.Context7.Setup(c => c.SearchAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("Context7 rate-limit"));
+
+        var res = await h.Svc.ReindexAsync(id, default);
+
+        Assert.Equal("10", res!.Reputation);
+        Assert.Equal("10", t.NewContext().KnowledgeSources.Single(x => x.Id == id).Reputation);
+        Assert.True(res.ChunkCount > 0);   // reindex VẪN thành công (fail-open)
+    }
+
+    /// Search trả về nhưng không có id nào khớp (id rơi khỏi tập kết quả) → vẫn là "không biết",
+    /// KHÔNG phải "uy tín bị rút" ⇒ giữ giá trị cũ.
+    [Fact]
+    public async Task Reindex_Context7_SearchKhongKhopId_GiuGiaTriCu()
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        var id = await SeedContext7Source(t, reputation: "10");
+        SetupSnippets(h);
+        h.Context7.Setup(c => c.SearchAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<Context7Library> { new("/react/react", "React", "8.3", 6165) });
+
+        var res = await h.Svc.ReindexAsync(id, default);
+
+        Assert.Equal("10", res!.Reputation);   // KHÔNG lấy "8.3" của thư viện trùng tên, cũng không xoá
+    }
+
+    /// Manual/Url không có điểm uy tín → reindex KHÔNG được gọi Context7 (đừng tốn lời gọi vô ích và
+    /// đừng để một nguồn không-Context7 phụ thuộc vào Context7 sống hay chết).
+    ///
+    /// ⚠ PHẢI phủ CẢ Url, không chỉ Manual. Bản đầu của test này chỉ seed Manual — mà Manual có
+    /// `SourceRef == null` nên nó được chặn bởi vế `IsNullOrWhiteSpace(SourceRef)`, KHÔNG phải bởi vế
+    /// `SourceType != Context7`. Mutation gỡ vế source_type vẫn XANH: đường đi rơi vào
+    /// `TryResolveContext7ReputationAsync(null)` → `libraryId.Split` ném NRE → chính catch-all của hàm
+    /// đó nuốt → `SearchAsync` không bao giờ được gọi ⇒ `Times.Never` đúng vì LÝ DO SAI.
+    /// Url mới là ca thật: `SourceRef` là URL (KHÔNG rỗng) nên gỡ vế source_type là gửi thẳng một URL
+    /// sang Context7 làm `libraryId`.
+    [Theory]
+    [InlineData(KnowledgeSourceType.Manual)]
+    [InlineData(KnowledgeSourceType.Url)]
+    public async Task Reindex_NguonKhongPhaiContext7_KhongGoiContext7(KnowledgeSourceType type)
+    {
+        using var t = new TestDb();
+        var h = Build(t);
+        h.UrlFetcher.Setup(u => u.FetchAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("<h2>State</h2><p>useState.</p>");
+
+        var src = new KnowledgeSource
+        {
+            Id = Guid.NewGuid(),
+            Title = type == KnowledgeSourceType.Url ? "PostgreSQL — Transactions" : "seed",
+            JobCategory = JobCategory.BE,
+            SourceType = type,
+            // Url có SourceRef KHÔNG rỗng — đây chính là chỗ vế `SourceType != Context7` phải gánh.
+            SourceRef = type == KnowledgeSourceType.Url ? "https://www.postgresql.org/docs/current/x.html" : null,
+            RawContent = type == KnowledgeSourceType.Manual ? "## x\nfoo" : null,
+            Status = KnowledgeStatus.Active,
+            ChunkCount = 1,
+            CreatedAt = DateTime.UtcNow
+        };
+        t.Db.KnowledgeSources.Add(src);
+        await t.Db.SaveChangesAsync();
+
+        var res = await h.Svc.ReindexAsync(src.Id, default);
+
+        Assert.NotNull(res);
+        h.Context7.Verify(c => c.SearchAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

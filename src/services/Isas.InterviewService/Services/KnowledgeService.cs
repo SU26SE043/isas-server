@@ -121,6 +121,9 @@ public class KnowledgeService(
 
         await vectorStore.DeleteBySourceAsync(id, ct);   // dọn point cũ trước khi upsert lại
         source.ChunkCount = await BuildAndUpsertAsync(source, ct);
+        // Tra lại điểm uy tín SAU khi rebuild xong: rebuild là việc chính, hỏng thì SaveChanges không
+        // chạy nên khỏi tốn thêm một lần gọi Context7 vô ích.
+        await RefreshContext7ReputationAsync(source, ct);
         await db.SaveChangesAsync(ct);
         logger.LogInformation("RAG grounding: reindex nguồn {Id} — {Chunks} chunk", id, source.ChunkCount);
         return Map(source);
@@ -260,6 +263,14 @@ public class KnowledgeService(
     /// citation là để kiểm chứng (D27).
     /// Tên nguồn đứng TRƯỚC nên nhãn không bao giờ vô nghĩa; mục con giữ lại phía sau để không mất vị trí
     /// trong tài liệu dài (MDN Web Performance: 57 chunk).
+    /// <para>
+    /// Áp cho <b>CẢ BA</b> source_type. Lần vá đầu bỏ sót nhánh Context7 (nó dùng thẳng tiêu đề snippet)
+    /// nên đo trên prod sau khi reindex toàn bộ: 607/687 nhãn đúng, 80 sai — và 80 đúng bằng tổng chunk
+    /// của cả 5 nguồn Context7, tức nhánh đó sai <b>100%</b> ("SET TRANSACTION", "CREATE INDEX",
+    /// "Built-in React Hooks"). Bất biến "nhãn luôn bắt đầu bằng <c>source.Title</c>" nay được test khoá
+    /// theo vòng lặp trên <c>Enum.GetValues&lt;KnowledgeSourceType&gt;()</c> để nhánh thêm về sau không
+    /// lọt lần nữa.
+    /// </para>
     /// </remarks>
     private static string CitationLabel(KnowledgeSource source, string? sectionTitle)
     {
@@ -278,6 +289,31 @@ public class KnowledgeService(
     /// thành đường làm hỏng cả lần nạp là đánh đổi tồi — cùng lý do <c>cv_screening</c> không raise khi
     /// thiếu <c>fullName</c>.
     /// </remarks>
+    /// <summary>
+    /// Reindex một nguồn Context7 thì tra LẠI điểm uy tín — nhưng CHỈ ghi đè khi tra ĐƯỢC giá trị.
+    /// </summary>
+    /// <remarks>
+    /// Trước đây <see cref="ReindexAsync"/> chỉ xoá point + re-chunk + re-embed, còn
+    /// <c>Reputation</c> được gán ĐÚNG MỘT LẦN trong <see cref="Context7IngestAsync"/> ⇒ mọi nguồn nạp
+    /// TRƯỚC khi có đường ghi đó vĩnh viễn <c>null</c>, reindex bao nhiêu lần cũng không cứu. Đo trên
+    /// prod: reindex cả 25 nguồn xong thì <b>5/5</b> nguồn Context7 vẫn <c>reputation = null</c> — tức
+    /// bản vá "server tự tra điểm uy tín" không bao giờ với tới dữ liệu đã nạp.
+    /// <para>
+    /// <b>Tra hụt thì GIỮ giá trị cũ, KHÔNG ghi đè <c>null</c>.</b> <c>null</c> ở đây nghĩa là "không
+    /// biết" (Context7 lỗi/rate-limit, hoặc id không nằm trong tập kết quả search) chứ KHÔNG phải "uy
+    /// tín bị rút" — ghi đè sẽ XOÁ dữ liệu tốt mỗi lần Context7 rate-limit, mà lần reindex sau không
+    /// còn gì để khôi phục (điểm chỉ lấy lại được nếu đúng lúc đó Context7 sống). Cùng hướng fail-open
+    /// với <see cref="TryResolveContext7ReputationAsync"/>: nạp/nạp lại corpus là việc admin làm thủ
+    /// công và tốn tiền embedding, đừng để một nhãn phụ phá nó.
+    /// </para>
+    /// </remarks>
+    private async Task RefreshContext7ReputationAsync(KnowledgeSource source, CancellationToken ct)
+    {
+        if (source.SourceType != KnowledgeSourceType.Context7 || string.IsNullOrWhiteSpace(source.SourceRef))
+            return;   // Manual/Url không có điểm uy tín → không tốn lời gọi Context7 nào
+        source.Reputation = await TryResolveContext7ReputationAsync(source.SourceRef, ct) ?? source.Reputation;
+    }
+
     private async Task<string?> TryResolveContext7ReputationAsync(string libraryId, CancellationToken ct)
     {
         try
@@ -332,8 +368,12 @@ public class KnowledgeService(
                         var snippets = await context7.GetContextAsync(source.SourceRef, topic, ct);
                         foreach (var s in snippets)
                             // Snippet Context7 đã phân đoạn sẵn → 1 chunk (chunker split chỉ khi quá dài).
+                            // Nhãn đi qua CitationLabel như Manual/Url: `s.Title` là tiêu đề snippet
+                            // ("SET TRANSACTION", "Built-in React Hooks") — hữu ích làm MỤC CON nhưng một
+                            // mình nó không nêu nguồn nào cả. Chunker Context7 luôn trả SectionTitle=null
+                            // (snippet đã là 1 section) nên `s.Title` chính là mục con của chunk này.
                             foreach (var c in chunker.Chunk(KnowledgeSourceType.Context7, s.Content))
-                                result.Add(new RawChunk(c.Content, s.SourceUrl ?? string.Empty, s.Title));
+                                result.Add(new RawChunk(c.Content, s.SourceUrl ?? string.Empty, CitationLabel(source, s.Title)));
                     }
                     return result;
                 }
