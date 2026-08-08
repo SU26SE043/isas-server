@@ -668,6 +668,71 @@ public class EvidenceDrivenPr160Tests
         Assert.Equal(expected, stored.Seniority);
     }
 
+    /// <summary>
+    /// Buổi luyện theo LỘ TRÌNH phải mang seniority của roadmap, không rơi vào mặc định "Junior".
+    ///
+    /// <para>Test này sinh ra vì mutation "trả roadmap lesson về hardcode Junior" chạy qua XANH: grep cả
+    /// bộ test cho <c>StartLessonAsync</c> ra RỖNG ⇒ đường này chưa từng được phủ, chứ không phải fix
+    /// thừa. Không vô hại: seniority đi vào <c>/decide-next</c> (câu đào sâu hỏi sai tầm) và lộ ra
+    /// <c>PracticeSessionResponse.Seniority</c> cho FE.</para>
+    /// </summary>
+    [Fact]
+    public async Task RoadmapLesson_MangSeniorityCuaRoadmap_KhongPhaiJunior()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var lesson = new RoadmapLesson
+        {
+            Id = Guid.NewGuid(), OrderNo = 1, Title = "Lesson 1", Status = LessonStatus.Theory
+        };
+        t.Db.Roadmaps.Add(new Roadmap
+        {
+            Id = Guid.NewGuid(), CandidateId = candidate, JobCategory = JobCategory.BE,
+            Level = RoadmapLevel.Senior,          // ← nguồn sự thật; hành vi cũ bỏ qua nó
+            Status = RoadmapStatus.Active, CreatedAt = DateTime.UtcNow,
+            Milestones =
+            [
+                new RoadmapMilestone
+                {
+                    Id = Guid.NewGuid(), OrderNo = 1, Title = "Milestone 1",
+                    FocusCriteria = ["Clarity"], Status = MilestoneStatus.Pending,
+                    Lessons = [lesson]
+                }
+            ]
+        });
+        await t.Db.SaveChangesAsync();
+        var roadmap = await t.Db.Roadmaps.AsNoTracking().SingleAsync();
+
+        CreatePracticeSessionRequest? captured = null;
+        var practice = new Mock<IPracticeService>();
+        practice.Setup(p => p.CreateLessonSessionAsync(
+                It.IsAny<Guid>(), It.IsAny<CreatePracticeSessionRequest>(), It.IsAny<Guid>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback((Guid cid, CreatePracticeSessionRequest req, Guid sid,
+                       IReadOnlyList<string>? _, CancellationToken _) =>
+            {
+                captured = req;
+                // Phải tạo row session THẬT: link lesson sau đó chạy FK roadmap_lessons.session_id
+                // (SQLite CÓ enforce FK trong EF10) — mock trả DTO suông sẽ nổ FK, không phải lỗi code.
+                var s = TestDb.Session(cid, SessionStatus.Ready);
+                s.Id = sid;
+                s.Seniority = req.Seniority ?? "Junior";
+                t.Db.PracticeSessions.Add(s);
+                t.Db.SaveChanges();
+            })
+            .ReturnsAsync(new PracticeSessionResponse(
+                Guid.NewGuid(), "Ready", "BE", "vi", null, null, DateTime.UtcNow, null, []));
+
+        var svc = new RoadmapLessonService(
+            t.Db, practice.Object, new Mock<IAiServiceRoadmapGenerator>().Object,
+            NullLogger<RoadmapLessonService>.Instance);
+
+        await svc.StartLessonAsync(candidate, roadmap.Id, lesson.Id);
+
+        Assert.NotNull(captured);
+        Assert.Equal("Senior", captured!.Seniority);
+    }
+
     [Fact]
     public async Task Seniority_B2B_CungHopDong()
     {
