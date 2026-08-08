@@ -143,6 +143,8 @@ public class PracticeService : IPracticeService
         if (request.JobCategory is null)
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = request.JobCategory.Value;
+        var seniority = request.Seniority is "Fresher" or "Junior" or "Middle" or "Senior"
+            ? request.Seniority : throw new InvalidOperationException("seniority phải là Fresher, Junior, Middle hoặc Senior.");
         var language = ValidateLanguage(request.Language);
 
         // F2 — thời lượng mỗi câu. Guard TRƯỚC reserve (PAY-5): giá trị sai → 400 mà KHÔNG giữ credit oan.
@@ -221,6 +223,7 @@ public class PracticeService : IPracticeService
                 CvId = request.CvId,           // có thể null
                 JdId = jdIdToUse,              // null khi JD đến từ text (C11: text ưu tiên file)
                 JobCategory = jobCategory,
+                Seniority = seniority,
                 Language = language,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,

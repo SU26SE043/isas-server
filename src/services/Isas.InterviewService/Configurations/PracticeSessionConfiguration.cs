@@ -27,6 +27,7 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
             .HasConversion<string>()
             .HasMaxLength(8)
             .IsRequired();
+        e.Property(x => x.Seniority).HasMaxLength(16).IsRequired().HasDefaultValue("Junior");
 
         e.Property(x => x.CreatedAt).IsRequired();
 
@@ -42,6 +43,7 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         {
             t.HasCheckConstraint("ck_practice_sessions_max_questions_range", "max_questions BETWEEN 0 AND 20");
             t.HasCheckConstraint("ck_practice_sessions_language", "language IN ('vi', 'en')");
+            t.HasCheckConstraint("ck_practice_sessions_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
             t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
         });
 

@@ -22,7 +22,8 @@ public record CreatePracticeSessionRequest(
     string? JdText = null,     // optional — ưu tiên hơn JdId
     int? TimeLimitSec = null,  // optional — 60/120/240; null = mặc định 120
     int? QuestionCount = null, // optional — 1..20; null = mặc định của AIService (5)
-    string? Language = null
+    string? Language = null,
+    string Seniority = "Junior"
 );
 
 // SC3 — tất cả số liệu nghiệp vụ (đặc biệt SeedCount) do server tính bằng đúng luật tạo session.
