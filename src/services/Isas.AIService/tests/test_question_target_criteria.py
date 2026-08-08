@@ -311,7 +311,8 @@ async def test_provider_grounding_va_criteria_loc_doc_lap(monkeypatch):
 
 def test_endpoint_co_criteria_tra_target_criteria(monkeypatch):
     async def fake_generate(job_category, cv_text, jd_text, count=None,
-                            focus_criteria=None, grounding=None, criteria=None):
+                            focus_criteria=None, grounding=None, criteria=None,
+                            seniority=None):
         # criteria phải xuống tới provider (không bị pydantic nuốt, không bị quên truyền).
         assert criteria == [{"criterionId": C1, "name": "Chiều sâu kỹ thuật"}]
         return QuestionGenerationResult(questions=["Q1", "Q2"], citations=None,
@@ -333,7 +334,8 @@ def test_endpoint_co_criteria_tra_target_criteria(monkeypatch):
 def test_endpoint_khong_criteria_giu_nguyen_shape_cu(monkeypatch):
     """Campaign B2B + mọi caller cũ: response CHỈ có questions, KHÔNG có khoá targetCriteria."""
     async def fake_generate(job_category, cv_text, jd_text, count=None,
-                            focus_criteria=None, grounding=None, criteria=None):
+                            focus_criteria=None, grounding=None, criteria=None,
+                            seniority=None):
         assert criteria is None
         return QuestionGenerationResult(questions=["Q1"], citations=None)
 
@@ -349,7 +351,8 @@ def test_endpoint_criteria_rong_coi_nhu_khong_co(monkeypatch):
     """`criteria: []` (.NET gửi mảng rỗng khi org chưa khai tiêu chí nội dung) ⇒ KHÔNG gắn nhãn,
     KHÔNG phát sinh field — không được biến thành `targetCriteria: [[]]` gây hiểu nhầm 'đã gắn'."""
     async def fake_generate(job_category, cv_text, jd_text, count=None,
-                            focus_criteria=None, grounding=None, criteria=None):
+                            focus_criteria=None, grounding=None, criteria=None,
+                            seniority=None):
         assert criteria is None
         return QuestionGenerationResult(questions=["Q1"], citations=None)
 

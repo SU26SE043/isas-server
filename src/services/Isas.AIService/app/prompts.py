@@ -1,6 +1,10 @@
 from app import prompt_registry
 from app.resources import ALLOWED_HOSTS as ALLOWED_RESOURCE_HOSTS
 from app.language import EN, VI, field_lang, normalize, output_directive, per100_unit, rate_unit, speech_rate_reference
+# Alias tường minh: `normalize` ở trên đã là của NGÔN NGỮ. Hai khái niệm khác hẳn nhau, để trùng tên
+# là mở đường cho một lần import sau này ghi đè cái kia mà không lỗi gì.
+from app.seniority import calibration_block as seniority_calibration_block
+from app.seniority import normalize as normalize_seniority
 
 # ── F21 (FR17) — mảnh nào admin sửa được ────────────────────────────────────────────────────
 #
@@ -152,13 +156,18 @@ def build_prompt(job_category: str, cv_text: str | None,
                  focus_criteria: list[str] | None = None,
                  grounding: list[dict] | None = None,
                  criteria: list[dict] | None = None, retry_feedback: list[str] | None = None,
-                 *, language: str = VI) -> str:
+                 *, language: str = VI, seniority: str | None = None) -> str:
     """Prompt SINH CÂU HỎI.
 
     ``criteria`` (chấm-theo-phạm-vi) = tập tiêu chí NỘI DUNG ``[{criterionId, name}]``; có thì mỗi
     câu hỏi phải kèm ``targetCriterionIds`` — tiêu chí mà câu ĐÓ thực sự đánh giá. Vắng/None ⇒
     prompt GIỮ NGUYÊN XI (không thêm một chữ nào), đúng mẫu ``criteria`` của C14 ở
     :func:`build_cv_analysis_prompt`.
+
+    ``seniority`` (SEN1) = cấp độ ứng viên do người dùng chọn → hiệu chỉnh độ khó bộ CÂU GỐC.
+    ``None`` (KHÔNG truyền) ⇒ prompt byte-identical với trước SEN1 — đây là bất biến được khoá bằng
+    test, để mọi caller nội bộ chưa wire không bị đổi hành vi trong im lặng. Chuỗi bất kỳ (kể cả
+    ``""``) ⇒ chuẩn hoá qua :func:`app.seniority.normalize` rồi mới dùng, KHÔNG raise.
     """
     # F21 — tên nghề lấy qua registry (admin sửa được), mặc định là CATEGORY_NAMES.
     role = category_display_name(job_category)
@@ -190,6 +199,21 @@ def build_prompt(job_category: str, cv_text: str | None,
     guidance = category_guidance(job_category)
     if guidance:
         parts.append(f"ĐỊNH HƯỚNG RIÊNG CHO VỊ TRÍ {role.upper()}:\n{guidance}")
+
+    # SEN1 — hiệu chỉnh độ khó theo cấp độ ứng viên.
+    #
+    # Đặt Ở ĐÂY (sau định hướng nghề, TRƯỚC khối chống prompt-injection và trước CV/JD) vì cùng một
+    # lý do với `category_guidance`: đây là chỉ thị hợp lệ của hệ thống, phải nằm trước phần DỮ LIỆU
+    # của ứng viên/HR — không được để lẫn thứ tự đó.
+    #
+    # Khối HARDCODE, KHÔNG mở khe F21: mức độ khó là thứ ứng viên vừa TRẢ TIỀN để chọn: admin sửa
+    # được nghĩa là một lần gõ nhầm sẽ âm thầm vô hiệu lựa chọn của mọi người dùng, mà triệu chứng
+    # duy nhất là "câu hỏi dạo này lệch tầm" — không lỗi nào nổ (mẫu khối GẮN NHÃN PHẠM VI dưới).
+    #
+    # `is not None` chứ không phải truthiness: `""` là một giá trị SAI mà caller đã gửi (≠ không
+    # gửi), phải rơi vào nhánh chuẩn hoá → Junior + log, chứ không im lặng biến mất.
+    if seniority is not None:
+        parts.append(seniority_calibration_block(normalize_seniority(seniority)))
 
     # Thứ tự ưu tiên định hướng NỘI DUNG câu hỏi: JD > CV > JobCategory.
     # Lưu ý: JobCategory ({role}) luôn là vị trí ứng viên đang luyện và là

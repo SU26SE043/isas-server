@@ -275,11 +275,15 @@ class GeminiProvider(QuestionProvider):
                        focus_criteria: list[str] | None = None,
                        grounding: list[dict] | None = None,
                        criteria: list[dict] | None = None,
-                       language: str = "vi", _retry_feedback: list[str] | None = None,
+                       language: str = "vi", seniority: str | None = None,
+                       _retry_feedback: list[str] | None = None,
                        _attempt: int = 1) -> QuestionGenerationResult:
         """Sinh câu hỏi. ``criteria`` = tiêu chí NỘI DUNG ``[{criterionId, name}]`` để gắn nhãn
         phạm vi đánh giá cho từng câu (chấm-theo-phạm-vi); vắng ⇒ prompt/schema/kết quả GIỮ
-        NGUYÊN XI như trước (mẫu ``criteria`` của C14 ở :meth:`analyze_cv`)."""
+        NGUYÊN XI như trước (mẫu ``criteria`` của C14 ở :meth:`analyze_cv`).
+
+        ``seniority`` (SEN1) = cấp độ ứng viên → hiệu chỉnh độ khó bộ câu gốc; ``None`` ⇒ prompt
+        không đổi một chữ."""
         # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
@@ -287,7 +291,8 @@ class GeminiProvider(QuestionProvider):
         # QV1: grounding vẫn đi trên dây để citations/verify dùng được, nhưng không neo lượt SINH.
         prompt_grounding = None if settings.question_verify_enabled else grounding
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
-                              focus_criteria, prompt_grounding, criteria, _retry_feedback, language=language)
+                              focus_criteria, prompt_grounding, criteria, _retry_feedback,
+                              language=language, seniority=seniority)
 
         # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION).
         # Chấm-theo-phạm-vi — có criteria ⇒ kèm targetCriterionIds.
@@ -359,7 +364,7 @@ class GeminiProvider(QuestionProvider):
             result = QuestionGenerationResult(questions=questions[:effective_count], citations=None)
             return await self._finish(
                 result, criteria, grounding, language, effective_count,
-                job_category, cv_text, jd_text, count, focus_criteria, _attempt)
+                job_category, cv_text, jd_text, count, focus_criteria, seniority, _attempt)
 
         # Có grounding và/hoặc criteria — tách text + lọc id. DROP mọi id KHÔNG thuộc tập đã cấp
         # (chống bịa by-construction — không tin lời hứa của model): id lạ = model tự phịa.
@@ -405,12 +410,13 @@ class GeminiProvider(QuestionProvider):
                                           target_criteria=target_lists if labeled else None)
         return await self._finish(
             result, criteria, grounding, language, effective_count,
-            job_category, cv_text, jd_text, count, focus_criteria, _attempt)
+            job_category, cv_text, jd_text, count, focus_criteria, seniority, _attempt)
 
     async def _finish(self, result: QuestionGenerationResult, criteria: list[dict] | None,
                       grounding: list[dict] | None, language: str, effective_count: int,
                       job_category: str, cv_text: str | None, jd_text: str | None,
                       count: int | None, focus_criteria: list[str] | None,
+                      seniority: str | None,
                       _attempt: int) -> QuestionGenerationResult:
         """Vòng chất lượng (SC1c) + cổng kiểm chứng (QV1), CHUNG cho mọi nhánh của :meth:`generate`.
 
@@ -439,8 +445,13 @@ class GeminiProvider(QuestionProvider):
             except Exception:  # verification is auxiliary; never fail a paid session
                 logger.exception("QV1 verification failed; delivering questions without citations")
         if defects and _attempt < max(1, settings.question_max_attempts):
+            # ⚠ Đuôi truyền bằng TỪ KHOÁ, không positional. Trước SEN1 dòng này là
+            # `..., language, defects, _attempt + 1)` — chèn thêm một tham số vào giữa `generate`
+            # sẽ khiến `defects` lặng lẽ rơi vào ô tham số mới: lượt viết lại vẫn chạy, vẫn 200,
+            # chỉ là mất sạch nhận xét sửa bài. Không lỗi nào nổ.
             return await self.generate(job_category, cv_text, jd_text, count, focus_criteria,
-                                       grounding, criteria, language, defects, _attempt + 1)
+                                       grounding, criteria, language, seniority,
+                                       _retry_feedback=defects, _attempt=_attempt + 1)
         return result
 
     async def suggest_criteria(self, job_category: str, jd_text: str | None,

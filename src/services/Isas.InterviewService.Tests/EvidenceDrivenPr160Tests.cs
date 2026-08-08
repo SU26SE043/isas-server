@@ -88,17 +88,17 @@ public class EvidenceDrivenPr160Tests
         // Đủ CẢ 3 overload không-grounded: rubric rỗng + không focusCriteria + không questionCount rơi
         // xuống overload 4 tham số, không mock thì ném "AIService không trả về câu hỏi nào".
         generator.Setup(g => g.GenerateQuestionsAsync(
-                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Enumerable.Range(1, 5).Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList());
         generator.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Enumerable.Range(1, 5).Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList());
         generator.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new GeneratedQuestionsResult(
                 Enumerable.Range(1, 5).Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList(),
                 Array.Empty<QuestionCitationDto>()));
@@ -514,10 +514,10 @@ public class EvidenceDrivenPr160Tests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Callback((string _, string? _, string? _, IReadOnlyList<string>? _, int? count,
                        IReadOnlyList<GroundingChunk>? _, string _,
-                       IReadOnlyList<QuestionTargetCriterionDto> _, CancellationToken _) => requestedCount = count)
+                       IReadOnlyList<QuestionTargetCriterionDto> _, string _, CancellationToken _) => requestedCount = count)
             .ReturnsAsync(new GeneratedQuestionsResult(
                 Enumerable.Range(1, 7).Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList(),
                 Array.Empty<QuestionCitationDto>()));

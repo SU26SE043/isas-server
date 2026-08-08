@@ -391,7 +391,7 @@ public class PracticeService : IPracticeService
 
                     var result = await _questionGenerator.GenerateQuestionsAsync(
                         session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount,
-                        grounded ? grounding : null, session.Language, targetable, ct);
+                        grounded ? grounding : null, session.Language, targetable, session.Seniority, ct);
                     generated = result.Questions;
                     citations = result.Citations;
                 }
@@ -402,11 +402,13 @@ public class PracticeService : IPracticeService
                     grounding = await _knowledge!.RetrieveAsync(
                         session.JobCategory.ToString(),
                         BuildRetrievalQuery(session.JobCategory.ToString(), cvText, jdText, focusCriteria), ct);
-                    var result = session.Language == "vi"
-                        ? await _questionGenerator.GenerateQuestionsAsync(
-                            session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, ct)
-                        : await _questionGenerator.GenerateQuestionsAsync(
-                            session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, grounding, session.Language, ct);
+                    // SEN1 — bỏ nhánh rẽ `Language == "vi"` ở ĐÂY (chỉ ở đây): overload `grounding+ct`
+                    // không mang được `seniority` (đụng độ chữ ký, xem interface), mà nhánh đó chạy
+                    // đúng khi `session.Language` LÀ "vi" ⇒ gọi thẳng overload `language` với
+                    // `session.Language` cho ra payload y hệt, chỉ thêm `seniority`.
+                    var result = await _questionGenerator.GenerateQuestionsAsync(
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount,
+                        grounding, session.Language, session.Seniority, ct);
                     generated = result.Questions;
                     citations = result.Citations;
                 }
@@ -415,12 +417,12 @@ public class PracticeService : IPracticeService
                 // mock cũ — adaptive TẮT + không chọn số câu vẫn phải rơi vào đúng nhánh này).
                 else if (focusCriteria is { Count: > 0 } || requestedCount is not null)
                     generated = session.Language == "vi"
-                        ? await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, ct)
-                        : (await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, null, session.Language, ct)).Questions;
+                        ? await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, session.Seniority, ct)
+                        : (await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount, null, session.Language, session.Seniority, ct)).Questions;
                 else
                     generated = session.Language == "vi"
-                        ? await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText)
-                        : (await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, null, null, null, session.Language, ct)).Questions;
+                        ? await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, session.Seniority, ct)
+                        : (await _questionGenerator.GenerateQuestionsAsync(session.JobCategory.ToString(), cvText, jdText, null, null, null, session.Language, session.Seniority, ct)).Questions;
             }
             catch (Exception ex)
             {

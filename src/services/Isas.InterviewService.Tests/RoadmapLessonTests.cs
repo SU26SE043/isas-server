@@ -97,10 +97,10 @@ public class RoadmapLessonTests
         var gen = new Mock<IAiServiceQuestionGenerator>();
         var setup = gen.Setup(g => g.GenerateQuestionsAsync(
             It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()));
+            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()));
         if (captureFocus is not null)
-            setup.Callback<string, string?, string?, IReadOnlyList<string>?, int?, CancellationToken>(
-                    (_, _, _, focus, _, _) => captureFocus(focus))
+            setup.Callback<string, string?, string?, IReadOnlyList<string>?, int?, string, CancellationToken>(
+                    (_, _, _, focus, _, _, _) => captureFocus(focus))
                 .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } });
         else
             setup.ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } });
@@ -303,7 +303,7 @@ public class RoadmapLessonTests
         // AI sinh câu hỏi KHÔNG được gọi (reserve chặn trước).
         gen.Verify(g => g.GenerateQuestionsAsync(
             It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // ── (3) /start khi đang Practicing → 409, KHÔNG reserve thêm, KHÔNG tạo session mới ──
