@@ -280,7 +280,8 @@ def test_endpoint_generate_questions_returns_citations(monkeypatch):
     # positional ⇒ double phải nới, nếu không TypeError → 502 (mẫu C14 nới double /analyze-cv).
     # Nhận None ở đây cũng chính là bằng chứng: request không có criteria thì không có gì phát sinh.
     async def fake_generate(job_category, cv_text, jd_text, count=None,
-                            focus_criteria=None, grounding=None, criteria=None):
+                            focus_criteria=None, grounding=None, criteria=None,
+                            seniority=None):
         # grounding phải được truyền xuống (không bị pydantic nuốt).
         assert grounding == [{"chunkId": "c1", "content": "x",
                               "sourceUrl": None, "sourceTitle": None}]
@@ -306,7 +307,8 @@ def test_endpoint_generate_questions_ungrounded_omits_citations(monkeypatch):
     from app.providers.gemini import QuestionGenerationResult
 
     async def fake_generate(job_category, cv_text, jd_text, count=None,
-                            focus_criteria=None, grounding=None, criteria=None):
+                            focus_criteria=None, grounding=None, criteria=None,
+                            seniority=None):
         assert grounding is None
         assert criteria is None
         return QuestionGenerationResult(questions=["Q1", "Q2"], citations=None)

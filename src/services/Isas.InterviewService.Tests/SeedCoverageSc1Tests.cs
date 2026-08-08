@@ -63,13 +63,13 @@ public class SeedCoverageSc1Tests
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Callback((string _, string? _, string? _, IReadOnlyList<string>? _, int? count,
                        IReadOnlyList<GroundingChunk>? _, string _,
-                       IReadOnlyList<QuestionTargetCriterionDto>? _, CancellationToken _) => captureCount(count))
+                       IReadOnlyList<QuestionTargetCriterionDto>? _, string _, CancellationToken _) => captureCount(count))
             .ReturnsAsync((string _, string? _, string? _, IReadOnlyList<string>? _, int? count,
                            IReadOnlyList<GroundingChunk>? _, string _,
-                           IReadOnlyList<QuestionTargetCriterionDto>? _, CancellationToken _)
+                           IReadOnlyList<QuestionTargetCriterionDto>? _, string _, CancellationToken _)
                 => new GeneratedQuestionsResult(questions(count ?? 0), Array.Empty<QuestionCitationDto>()));
         return gen;
     }
@@ -262,9 +262,9 @@ public class SeedCoverageSc1Tests
         var gen = new Mock<IAiServiceQuestionGenerator>();
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, CancellationToken>(
-                (_, _, _, _, c, _) => requested = c)
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string?, string?, IReadOnlyList<string>?, int?, string, CancellationToken>(
+                (_, _, _, _, c, _, _) => requested = c)
             .ReturnsAsync(Enumerable.Range(1, 9)
                 .Select(i => new GeneratedQuestion { Content = $"Q{i}" }).ToList());
 

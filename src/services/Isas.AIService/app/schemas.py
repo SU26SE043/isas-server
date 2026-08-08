@@ -70,6 +70,21 @@ class GenerateQuestionsRequest(BaseModel):
     # NUỐT IM LẶNG field quên khai — .NET gửi mà AI không thấy, không lỗi, không log, tính năng chỉ
     # đơn giản là không chạy (đúng lớp bug `focusCriteria` BC14 và `metricsVersion` 2026-08-05).
     criteria: list[CriterionRef] | None = None
+    # SEN1 — CẤP ĐỘ ỨNG VIÊN do người dùng chọn (`Fresher|Junior|Middle|Senior`), dùng để hiệu chỉnh
+    # độ khó của bộ CÂU GỐC. Trước SEN1, field này chỉ tới được `/decide-next` ⇒ người chọn *Senior*
+    # nhận bộ câu gốc y hệt người chọn *Fresher*, mà câu gốc mới là thứ định khung cả buổi (INT-17b:
+    # mỗi câu gốc còn kéo theo tối đa 3 tầng đào sâu quanh chính chủ đề nó mở ra).
+    #
+    # ⚠ Khai tường minh ở ĐÂY là nửa quyết định của tính năng: thiếu dòng này thì .NET vẫn gửi,
+    # HTTP vẫn 200, không lỗi, không log — pydantic `extra='ignore'` chỉ đơn giản vứt field và
+    # prompt không đổi một chữ. Chính lớp bug đó đã cắn repo 3 lần (`focusCriteria`/BC14 ·
+    # `metricsVersion` · `adaptiveMaxQuestions` vs `maxQuestions`).
+    #
+    # Mặc định `"Junior"` = khớp mặc định của `practice_sessions.seniority` / `campaigns.seniority`
+    # ở DB, nên caller cũ không gửi gì vẫn nhận đúng mức mà DB của chính họ đang ghi.
+    # Giá trị lạ KHÔNG bị từ chối ở tầng schema (`str` chứ không phải Literal/Enum): xem
+    # `app/seniority.normalize` — 422 ở đây sẽ thành 502 trên một buổi ĐÃ TRỪ CREDIT.
+    seniority: str = "Junior"
 
 
 class GenerateQuestionsResponse(BaseModel):
