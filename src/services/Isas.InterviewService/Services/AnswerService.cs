@@ -270,6 +270,23 @@ public class AnswerService : IAnswerService
                     e.State, e.EvidenceFound, e.MissingEvidence, e.DeepCount))
                 .ToListAsync(ct);
 
+            // Evidence là điều kiện dừng thực thi ở server, không chỉ là lời dặn prompt: AI không
+            // được kéo dài buổi khi mọi criterion đã đủ, hoặc khi tất cả đã có kết luận cuối.
+            if (evidenceState.Count > 0 && evidenceState.All(e => e.State is "SATISFIED" or "FAILED"))
+                return EndOutcome("end", pendingCount);
+
+            // Hai criterion liên tiếp không chứng minh được năng lực là tín hiệu giảm tải/đóng buổi
+            // trong spec. Server chưa có protocol "reduce difficulty" riêng, vì vậy chọn nhánh an toàn
+            // là dừng thay vì để model tiếp tục hỏi vô hạn. Chỉ xét criterion đã cập nhật (UpdatedAt).
+            var latestStates = await _db.SessionCriterionEvidence.AsNoTracking()
+                .Where(e => e.SessionId == session.Id && e.State == "FAILED")
+                .OrderByDescending(e => e.UpdatedAt)
+                .Take(2)
+                .Select(e => e.CriterionId)
+                .ToListAsync(ct);
+            if (latestStates.Count == 2)
+                return EndOutcome("end", pendingCount);
+
             // Chế độ chuỗi: kèm câu GỐC (mỏ neo chủ đề) + tên các câu gốc KHÁC (đừng hỏi trùng).
             string? rootQuestion = null;
             List<string>? otherTopics = null;
