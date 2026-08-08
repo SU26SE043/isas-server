@@ -34,11 +34,23 @@ public class CampaignQuestionHrEditedR10Tests
         public int Calls { get; private set; }
         public FakeGenerator(params string[] questions) => _questions = questions;
 
+        /// <summary>SEN1 — mức HR đặt cấp chiến dịch, ghi lại để test khẳng định được nó đi tới đây.</summary>
+        public string? LastSeniority { get; private set; }
+
         public Task<List<string>> GenerateAsync(
             string jobCategory, string? jdText, int? count, CancellationToken ct = default)
         {
             Calls++;
             return Task.FromResult(_questions.ToList());
+        }
+
+        // SEN1 — thành viên BẮT BUỘC (interface cố ý không có default): quên cài = vỡ biên dịch,
+        // thay vì đánh rơi seniority trong im lặng.
+        public Task<List<string>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority, CancellationToken ct)
+        {
+            LastSeniority = seniority;
+            return GenerateAsync(jobCategory, jdText, count, ct);
         }
     }
 

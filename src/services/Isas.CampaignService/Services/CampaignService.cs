@@ -659,7 +659,7 @@ namespace Isas.CampaignService.Services
             // ── 5. Gọi AI (AI-4: jdText là DỮ LIỆU — AIService đã bọc delimiter + chỉ thị bỏ qua lệnh
             //    nhúng trong JD). Lỗi upstream → DownstreamServiceException → controller map 502. ──
             var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
-            var generated = await _questionGenerator.GenerateAsync(jobCategory, jdText, count, ct);
+            var generated = await _questionGenerator.GenerateAsync(jobCategory, jdText, count, campaign.Seniority, ct);
 
             // AI trả rỗng = lượt sinh không dùng được. Trả 502 thay vì lặng lẽ xoá sạch đề cũ rồi
             // báo thành công — HR phải biết là AI hỏng, không phải "campaign của tôi mất hết câu hỏi".
