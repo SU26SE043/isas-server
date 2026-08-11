@@ -161,6 +161,8 @@ builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<PlanService>();
 builder.Services.AddScoped<EntitlementResolver>();
+// Bảng giá cho NGƯỜI MUA (khác PlanService = CRUD admin): catalog chỉ gói đang bán + gói đang dùng của caller.
+builder.Services.AddScoped<PlanCatalogService>();
 // F18: hoàn tiền — đơn Paid→Refunded + bút toán đảo gắn bút toán mua gốc + thu hồi credit (kẹp trần).
 builder.Services.AddScoped<IRefundService, RefundService>();
 // Chi tiền hoàn qua kênh chi payOS: client bọc SDK (mockable) + đổi mã ngân hàng webhook sang BIN.
