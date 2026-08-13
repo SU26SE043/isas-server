@@ -282,16 +282,28 @@ namespace Isas.CampaignService.Services
             return (sorted[n / 4].Score, sorted[Math.Min(n - 1, (int)(n * 0.6))].Score, sorted[n - 1].Score);
         }
 
-        private static List<PreviewCriterionInput> BuildPreviewCriteria(List<CampaignCriterion> criteria)
-            => criteria.Select(c =>
+        /// <summary>
+        /// 🔴 Bộ tiêu chí gửi đi CHẤM THỬ phải dựng từ CHÍNH <see cref="ScoringCriteriaBuilder"/> —
+        /// cùng hàm mà đường CHẤM THẬT dùng. Cả tính năng đứng trên lời hứa "thứ HR kiểm chứng chính
+        /// là thứ ứng viên bị chấm"; tự sort/tự map ở đây là mở đúng cái khe để hai đường trôi xa nhau
+        /// mà KHÔNG có triệu chứng nào (cả hai vẫn ra điểm, chỉ là điểm của hai thước đo khác nhau).
+        /// Phần riêng của chấm thử chỉ là mức kỳ vọng — bọc THÊM lên trên, không dựng lại.
+        /// </summary>
+        internal static List<PreviewCriterionInput> BuildPreviewCriteria(List<CampaignCriterion> criteria)
+        {
+            var shared = ScoringCriteriaBuilder.Build(criteria);
+            var byName = criteria.ToDictionary(c => c.Name, StringComparer.Ordinal);
+
+            return shared.Select(s =>
             {
-                var sorted = SortedLevels(c);
-                var (weak, good, excellent) = ExpectedLevels(sorted);
+                var c = byName[s.Name];
+                var (weak, good, excellent) = ExpectedLevels(SortedLevels(c));
                 return new PreviewCriterionInput(
-                    c.Id, c.Name, c.Description, c.MaxScore, c.Weight,
-                    sorted.Select(l => new SessionCriterionLevelInput(l.Score, l.Descriptor)).ToList(),
+                    c.Id, s.Name, s.Description, s.MaxScore, s.Weight,
+                    s.Levels,   // ĐÚNG mảng mà đường chấm thật gửi đi, không phải bản dựng lại
                     weak, good, excellent);
             }).ToList();
+        }
 
         private static List<RubricPreviewSample> BuildSamples(
             List<CampaignCriterion> criteria, IReadOnlyList<PreviewSample> samples)

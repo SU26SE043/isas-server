@@ -142,6 +142,27 @@ public class ScoringCriteriaBuilderTests
         Assert.Empty(JsonNode.Parse(handler.CapturedBody!)!["criteria"]![0]!["levels"]!.AsArray());
     }
 
+    // ── 🔴 HAI ĐƯỜNG RA PHẢI BẰNG NHAU (failure mode số 1) ────────────────
+
+    // Chấm THẬT (payload gửi Interview) và chấm THỬ (payload gửi AIService) phải mang CÙNG MỘT bộ
+    // thước đo. Trôi xa nhau ở đây là HR kiểm chứng thước A còn ứng viên bị chấm bằng thước B — và
+    // KHÔNG có triệu chứng nào, vì cả hai đường vẫn trả điểm bình thường.
+    [Fact]
+    public void Cham_that_va_Cham_thu_gui_cung_mot_bo_moc_diem()
+    {
+        var rubric = SampleRubric();
+
+        var chamThat = ScoringCriteriaBuilder.Build(rubric);
+        var chamThu = RubricPreviewService.BuildPreviewCriteria(rubric);
+
+        var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        // So phần DÙNG CHUNG (tên/mô tả/trọng số/thang/mốc); chấm thử có thêm mức kỳ vọng, đó là phần
+        // bọc bên ngoài chứ không phải một bản dựng lại.
+        Assert.Equal(
+            JsonSerializer.Serialize(chamThat.Select(c => new { c.Name, c.Description, c.Weight, c.MaxScore, c.Levels }), web),
+            JsonSerializer.Serialize(chamThu.Select(c => new { c.Name, c.Description, c.Weight, c.MaxScore, c.Levels }), web));
+    }
+
     // ── rubricVersion (CAMP-18) ──────────────────────────────────────────
 
     [Fact]
