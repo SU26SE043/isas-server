@@ -137,27 +137,43 @@ public class SystemDefaultCriteriaTests
         Assert.Empty(rows.Single(r => r.Name == "Trôi chảy").Levels);
     }
 
-    // Σweight LỆCH (bộ chuẩn bên kia dùng scale khác) → chuẩn hoá về 1, không tin số nhận về.
+    // Σweight LỆCH (hai service dùng scale numeric khác nhau) → CHUẨN HOÁ, không tin số nhận về.
+    //
+    // 🔴 Assert vào PHÂN BỐ chứ không chỉ vào tổng. Dòng "sửa sai số làm tròn"
+    // (`criteria[0].Weight += 1 - Σ`) ép Σ = 1 BẰNG CẤU TRÚC, nên `Sum == 1.0m` đúng ở cả bản có
+    // chuẩn hoá lẫn bản không — bản đầu của test này chỉ assert tổng và vì thế mutation "bỏ chuẩn
+    // hoá" chạy qua XANH. Thứ thật sự vỡ khi bỏ chuẩn hoá là phân bố: toàn bộ sai lệch dồn hết vào
+    // tiêu chí ĐẦU, nên hai tiêu chí admin khai BẰNG NHAU lại được lưu khác nhau — mà B2B xếp hạng
+    // bằng Σ(điểm × weight), tức thứ hạng đổi trong im lặng.
     [Fact]
-    public async Task SumWeightLech_ChuanHoaVe1()
+    public async Task SumWeightLech_ChuanHoaTheoTyLe_KhongDonHetVaoTieuChiDau()
     {
         using var tdb = new CampaignTestDb();
         var org = Guid.NewGuid();
         var camp = await SeedAsync(tdb, org);
-        // 0.3334 + 0.3333 + 0.3333 = 1.0000 ở phía kia, nhưng làm tròn xuống numeric(5,4) ra 0.9999.
+        // Tổng 1.01 — vẫn trong dải [0.99, 1.01] mà BuildStructuredCriteria chấp nhận.
+        // A và B được khai BẰNG NHAU; nếu bỏ chuẩn hoá thì A gánh trọn −0.01 và thành 0.49 ≠ B 0.50.
         var lech = new B2CRubricResponse("BE", "vi", 1, new List<B2CRubricCriterion>
         {
-            new("A", null, 0.3333m, 5, Array.Empty<B2CRubricLevel>()),
-            new("B", null, 0.3333m, 5, Array.Empty<B2CRubricLevel>()),
-            new("C", null, 0.3333m, 5, Array.Empty<B2CRubricLevel>()),
+            new("A", null, 0.50m, 5, Array.Empty<B2CRubricLevel>()),
+            new("B", null, 0.50m, 5, Array.Empty<B2CRubricLevel>()),
+            new("C", null, 0.01m, 5, Array.Empty<B2CRubricLevel>()),
         });
         var svc = NewService(tdb.NewContext(), StubRubric(lech).Object);
 
         await svc.ApplySystemDefaultCriteriaAsync(org, org, camp.Id, Req(), default);
 
         using var check = tdb.NewContext();
-        var rows = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id).ToListAsync();
-        Assert.Equal(1.0m, rows.Sum(r => r.Weight));
+        var rows = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id)
+            .ToDictionaryAsync(c => c.Name, c => c.Weight);
+
+        decimal a = rows["A"], b = rows["B"], c = rows["C"];
+        Assert.Equal(1.0m, rows.Values.Sum());
+        // Bằng nhau lúc khai ⇒ bằng nhau lúc lưu, sai lệch chỉ ở mức làm tròn numeric(5,4).
+        Assert.True(Math.Abs(a - b) <= 0.0001m,
+            $"A={a} và B={b} được khai bằng nhau nhưng lưu khác nhau");
+        // Và tiêu chí bé không bị nuốt: giữ đúng tỉ lệ ~0.01/1.01.
+        Assert.True(c > 0.0090m && c < 0.0110m, $"C={c}");
     }
 
     // Campaign ĐÃ có tiêu chí → THAY THẾ, không nhân đôi (replace-all như PUT criteria).
