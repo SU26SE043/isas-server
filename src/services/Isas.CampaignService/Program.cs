@@ -52,6 +52,15 @@ builder.Services.AddScoped<IParserService, ParserService>();
 builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 // F9: gọi AIService sinh câu hỏi từ JD cho campaign B2B (đồng bộ; lỗi → 502 ném lên controller)
+// CAMP-19: chấm thử thước đo. Timeout 180s TƯỜNG MINH — lượt này sinh 3 bài rồi chấm cả 3, mất
+// hàng chục giây; mặc định 100s của HttpClient (và nhất là 5s copy nhầm từ EntitlementClient) sẽ
+// cắt ngang một lượt đã tính phí.
+builder.Services.AddScoped<IRubricPreviewService, RubricPreviewService>();
+builder.Services.AddHttpClient<IRubricPreviewClient, AiServiceRubricPreviewClient>(c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000");
+    c.Timeout = TimeSpan.FromSeconds(180);
+});
 // CAMP-16: gọi AIService soạn mốc điểm (đồng bộ; KHÔNG fallback — lỗi nổi lên thành 502)
 builder.Services.AddHttpClient<IAiServiceLevelSuggester, AiServiceLevelSuggester>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
