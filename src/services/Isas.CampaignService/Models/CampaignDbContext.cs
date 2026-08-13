@@ -12,6 +12,7 @@ namespace Isas.CampaignService.Models
         public DbSet<Campaign> Campaigns => Set<Campaign>();
         public DbSet<CampaignQuestion> CampaignQuestions => Set<CampaignQuestion>();
         public DbSet<CampaignCriterion> CampaignCriteria => Set<CampaignCriterion>();
+        public DbSet<CampaignCriterionLevel> CampaignCriterionLevels => Set<CampaignCriterionLevel>();   // CAMP-16/17: mốc điểm
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
         public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
         public DbSet<CampaignSlot> CampaignSlots => Set<CampaignSlot>();
@@ -192,6 +193,35 @@ namespace Isas.CampaignService.Models
                 e.HasOne(x => x.Campaign)
                  .WithMany(x => x.Criteria)
                  .HasForeignKey(x => x.CampaignId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── CampaignCriterionLevel (mốc điểm — CAMP-16/17, nuôi E9 hard-anchor) ──
+            modelBuilder.Entity<CampaignCriterionLevel>(e =>
+            {
+                e.ToTable("campaign_criterion_levels", t =>
+                {
+                    // Điểm âm không có nghĩa ở bất kỳ thang nào; trần trên phụ thuộc criterion.max_score
+                    // (không tham chiếu chéo bảng được trong CHECK) nên kiểm ở code — ValidateCriterionLevels.
+                    t.HasCheckConstraint("ck_campaign_criterion_levels_score_non_negative", "score >= 0");
+                });
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.Descriptor).IsRequired();
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+
+                // LÝ DO TỒN TẠI của bảng con thay vì jsonb: hai mốc trùng score làm việc snap điểm về
+                // mức gần nhất (E9, cả Python lẫn C#) trở nên không xác định ⇒ chấm sai trong im lặng.
+                e.HasIndex(x => new { x.CriterionId, x.Score }).IsUnique();
+
+                // DB13: chained qua Criterion→Campaign (soft-delete filter). Bắt buộc khớp filter của
+                // required nav, nếu không EF phát PossibleIncorrectRequiredNavigation + đọc mốc mồ côi.
+                e.HasQueryFilter(x => x.Criterion.Campaign.DeletedAt == null);
+
+                e.HasOne(x => x.Criterion)
+                 .WithMany(x => x.Levels)
+                 .HasForeignKey(x => x.CriterionId)
                  .OnDelete(DeleteBehavior.Cascade);
             });
 

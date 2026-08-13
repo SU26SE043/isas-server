@@ -19,6 +19,12 @@ namespace Isas.CampaignService.Models
 
         // Navigation
         public Campaign Campaign { get; set; } = null!;
+
+        /// <summary>
+        /// CAMP-16/17 — mốc điểm (E9 hard-anchor). Rỗng = chưa khai mốc ⇒ Interview rơi về dải mặc định
+        /// như trước tính năng này (hành vi cũ giữ nguyên, không phải trạng thái lỗi).
+        /// </summary>
+        public ICollection<CampaignCriterionLevel> Levels { get; set; } = new List<CampaignCriterionLevel>();
     }
 
     public enum CriterionSource
