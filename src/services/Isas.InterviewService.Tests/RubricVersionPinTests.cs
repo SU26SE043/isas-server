@@ -103,18 +103,26 @@ public class RubricVersionPinTests
 
     /// <summary>
     /// Thứ tự trả về phải ỔN ĐỊNH theo tên: AnswerService và republisher đều đọc
-    /// <c>criteria[0].Version</c> làm con dấu rubric_version cho CẢ lượt chấm. Không có OrderBy thì
-    /// con dấu đó phụ thuộc thứ tự DB tình cờ trả — trên Postgres là thứ tự vật lý, đổi được sau
-    /// VACUUM/UPDATE mà không ai đụng vào code.
+    /// <c>criteria[0].Version</c> làm con dấu rubric_version cho CẢ lượt chấm.
+    ///
+    /// ⚠ Id được GÁN NGƯỢC chiều với tên, có chủ đích. `.Include(Levels)` khiến EF tự thêm
+    /// <c>ORDER BY r.id</c> để gom collection, nên nếu seed bằng <c>Guid.NewGuid()</c> thì thứ tự trả
+    /// về là ngẫu nhiên theo Guid và test này ĐỖ HAY TRƯỢT TÙY MAY — đo bằng mutation: gỡ
+    /// <c>OrderBy(Name)</c> mà test vẫn xanh. Ép id ngược chiều tên thì thiếu OrderBy là sai chắc chắn.
     /// </summary>
     [Fact]
     public async Task Loader_ReturnsCriteriaOrderedByName()
     {
         using var t = new TestDb();
         var campaignId = Guid.NewGuid();
-        foreach (var name in new[] { "Zulu", "Alpha", "Mike" })
-            t.Db.RubricCriteria.Add(TestDb.Criterion(
-                JobCategory.BE, version: 3, campaignId: campaignId, name: name));
+        // id tăng dần theo thứ tự NGƯỢC bảng chữ cái ⇒ thứ tự-theo-id khác hẳn thứ tự-theo-tên.
+        var seeded = new[] { "Zulu", "Mike", "Alpha" };
+        for (var i = 0; i < seeded.Length; i++)
+        {
+            var c = TestDb.Criterion(JobCategory.BE, version: 3, campaignId: campaignId, name: seeded[i]);
+            c.Id = new Guid($"00000000-0000-0000-0000-00000000000{i + 1}");
+            t.Db.RubricCriteria.Add(c);
+        }
         await t.Db.SaveChangesAsync();
 
         var loaded = await RubricCriteriaLoader.LoadAsync(
