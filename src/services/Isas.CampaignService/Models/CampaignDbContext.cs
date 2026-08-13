@@ -13,6 +13,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignQuestion> CampaignQuestions => Set<CampaignQuestion>();
         public DbSet<CampaignCriterion> CampaignCriteria => Set<CampaignCriterion>();
         public DbSet<CampaignCriterionLevel> CampaignCriterionLevels => Set<CampaignCriterionLevel>();   // CAMP-16/17: mốc điểm
+        public DbSet<RubricPreviewRun> RubricPreviewRuns => Set<RubricPreviewRun>();                     // CAMP-19: chấm thử
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
         public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
         public DbSet<CampaignSlot> CampaignSlots => Set<CampaignSlot>();
@@ -229,6 +230,49 @@ namespace Isas.CampaignService.Models
                 e.HasOne(x => x.Criterion)
                  .WithMany(x => x.Levels)
                  .HasForeignKey(x => x.CriterionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── RubricPreviewRun (chấm thử — CAMP-19) ────────────────────────
+            modelBuilder.Entity<RubricPreviewRun>(e =>
+            {
+                e.ToTable("rubric_preview_runs", t => t.HasCheckConstraint(
+                    "ck_rubric_preview_runs_status", "status IN ('Running', 'Succeeded', 'Failed')"));
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.QuestionText).IsRequired();
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
+                e.Property(x => x.RubricSnapshot).IsRequired();
+                e.Property(x => x.RubricFingerprint).HasMaxLength(64).IsRequired();
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // jsonb CÓ ĐIỀU KIỆN IsNpgsql (khớp precedent campaigns.required_skills / outbox payload)
+                // — SQLite test không có jsonb. Kiểu C# là string nên KHÔNG cần ValueConverter, và nhờ
+                // thế cũng không có chỗ nào cho EF scaffold `defaultValue: ""` (chuỗi rỗng không phải
+                // JSON hợp lệ ⇒ Postgres từ chối ngay tại ALTER/CREATE, mà SQLite thì nuốt).
+                if (Database.IsNpgsql())
+                {
+                    e.Property(x => x.RubricSnapshot).HasColumnType("jsonb");
+                    e.Property(x => x.Samples).HasColumnType("jsonb");
+                }
+
+                // Lịch sử đọc theo campaign, mới nhất trước.
+                e.HasIndex(x => new { x.CampaignId, x.CreatedAt });
+
+                // Chống double-click / hai tab: chỉ MỘT lượt đang chạy trên mỗi campaign. Partial vì
+                // lượt đã xong thì không còn ràng buộc gì (một campaign có nhiều lượt trong lịch sử).
+                e.HasIndex(x => x.CampaignId)
+                 .HasDatabaseName("ux_rubric_preview_runs_running")
+                 .HasFilter("status = 'Running'")
+                 .IsUnique();
+
+                // DB13: required nav → Campaign (soft-delete filter) → BẮT BUỘC khớp filter.
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
+
+                e.HasOne(x => x.Campaign)
+                 .WithMany()
+                 .HasForeignKey(x => x.CampaignId)
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
