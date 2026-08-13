@@ -1508,7 +1508,14 @@ public class PracticeService : IPracticeService
             needsImprovement,
             OverallComment: s.OverallComment,   // BC10 — nhận xét chung (AI, best-effort); null nếu chưa/AI lỗi.
             CvVsAnswer: cvVsAnswer,
-            Benchmark: benchmark);   // F14 — mốc đối chiếu; null khi tắt / caller không dựng
+            Benchmark: benchmark,   // F14 — mốc đối chiếu; null khi tắt / caller không dựng
+            // Nguồn thước đo — đọc THẲNG con dấu của buổi, không tra lại trạng thái hôm nay (tra lại
+            // là gắn nhãn sai cho buổi cũ của người vừa lưu rubric riêng). `null` = KHÔNG BIẾT, và
+            // KHÔNG được suy thành "bộ chuẩn" (BK23: đừng suy "biết" từ "không biết").
+            RubricSource: s.B2CRubricVersion is null
+                ? null
+                : s.B2CRubricOwnerId is null ? "SystemDefault" : "Custom",
+            RubricVersion: s.B2CRubricVersion);
     }
 
     // BC8: gộp tín hiệu "CV mạnh" = strengths + matched skills (nếu có JD match), khử trùng giữ thứ tự.
