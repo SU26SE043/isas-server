@@ -158,6 +158,32 @@ def test_preview_gui_dung_prompt_cua_build_scoring_prompt(monkeypatch):
         assert expected in prompts, "prompt chấm của /score-preview KHÁC prompt chấm production"
 
 
+def test_luot_cham_thu_dung_temperature_cua_production(monkeypatch):
+    """`score()` ở production chạy attempt-1 với temperature 0.0 (E10). Chấm thử mà dùng nhiệt độ
+    khác thì HR đo một bộ chấm dao động hơn (hoặc ít hơn) bộ chấm thật — cùng hạng lỗi với dùng
+    prompt khác, chỉ tinh vi hơn."""
+    temps: list[float] = []
+    answers_resp = _answers_response()
+    score_resp = AsyncMock()
+    score_resp.text = json.dumps({
+        "scores": [{"criterionId": "c1", "score": 2, "levelMatched": 2, "reasoning": '"x" thiếu'}],
+        "sampleAnswer": "mẫu"})
+
+    async def _fake_generate(*, model, contents, config):
+        temps.append(getattr(config, "temperature", None))
+        # Lượt SINH bài là lượt duy nhất mang luật độ dài trong prompt.
+        return answers_resp if "LUẬT ĐỘ DÀI" in contents else score_resp
+
+    monkeypatch.setattr(main_module.provider._client.aio.models, "generate_content",
+                        AsyncMock(side_effect=_fake_generate))
+
+    assert client.post("/api/v1/score-preview", headers=_HEADERS,
+                       json=_payload()).status_code == 200
+
+    assert temps.count(0.0) == 3       # 3 lượt chấm
+    assert temps.count(0.9) == 1       # 1 lượt sinh bài (cố ý cao, để 3 bài khác nhau THẬT)
+
+
 def test_prompt_cham_noi_ro_KHONG_do_duoc_chi_so_cach_noi(monkeypatch):
     """delivery=None ⇒ khối F11 phải là 'chưa đo được + cấm bịa số'. Bài mẫu là văn bản, không có
     audio; im lặng ở đây sẽ khiến LLM tự nghĩ ra tốc độ nói/khoảng lặng không tồn tại."""
