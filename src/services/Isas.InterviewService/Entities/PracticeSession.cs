@@ -120,6 +120,27 @@ public class PracticeSession : IHasUpdatedAt
     //          chắc chứ không phải phỏng đoán, khác hẳn ScoringScopeVersion ở trên.
     public int? CampaignRubricVersion { get; set; }
 
+    // B2C — GHIM bộ tiêu chí buổi luyện này được chấm bằng. HAI cột đi CẶP, không tách được:
+    //
+    //   b2c_rubric_owner_id : null = bộ chuẩn hệ thống (admin quản) · != null = rubric RIÊNG của
+    //                          chính ứng viên đó (BC16).
+    //   b2c_rubric_version  : số phiên bản TRONG phạm vi chủ đó.
+    //
+    // ⚠ Ghim version mà KHÔNG ghim chủ là vô nghĩa: `RubricLibraryService` đánh số version theo
+    // (candidate | null, nghề, ngôn ngữ), nên "v2" của rubric riêng và "v2" của bộ chuẩn là HAI bộ
+    // khác nhau mang cùng một con số.
+    //
+    // Ngoài việc giữ thước đo ổn định khi admin sửa bộ chuẩn giữa buổi, cặp cột này còn bịt một lỗi
+    // ĐANG TỒN TẠI: `B2CRubricScope.ResolveOwnerAsync` hỏi trạng thái ở THỜI ĐIỂM GỌI, nên ứng viên
+    // bấm "Lưu rubric riêng" giữa buổi làm đường callback resolve ra CHỦ MỚI ⇒ mọi criterionId vừa
+    // gửi đi chấm bị guard E8 coi là "criterion lạ" và BỎ ⇒ answer mất sạch điểm, không exception nào nổ.
+    //
+    //   null = buổi B2B, hoặc buổi B2C có trước cột này mà KHÔNG suy lại được thước đo đã dùng.
+    //          Migration `AddB2CRubricPinning` backfill từ chính `session_criterion_scores` (bằng
+    //          chứng ghi lại được) chứ không phỏng đoán — xem ghi chú trong migration.
+    public Guid? B2CRubricOwnerId { get; set; }
+    public int? B2CRubricVersion { get; set; }
+
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.

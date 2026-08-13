@@ -83,6 +83,23 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
             .HasFilter("campaign_id IS NOT NULL")
             .HasDatabaseName("ux_rubric_criteria_campaign_version_name");
 
+        // Cùng lớp bảo vệ như index ngay trên, cho BỘ CHUẨN B2C do admin quản: hai admin cùng bấm Lưu
+        // trên một (nghề, ngôn ngữ) sẽ cùng đọc `max(version)` ra một số rồi cùng ghi ⇒ 14 dòng active
+        // cùng lúc ⇒ loader nạp 14 tiêu chí và `criteria[0].Version` phụ thuộc may rủi. Đọc
+        // `max(version)` KHÔNG phải trọng tài; ràng buộc DB là thứ duy nhất chặn được.
+        //
+        // Filter `candidate_id IS NULL` BẮT BUỘC: rubric riêng BC16 đánh số version độc lập theo từng
+        // ứng viên, nên hai người khác nhau hoàn toàn được phép trùng (nghề, ngôn ngữ, version, tên).
+        //
+        // ⚠ SQLite (EF Core 10) THẬT SỰ dựng index có filter qua `EnsureCreated` và enforce nó — đã đo
+        // bằng mutation (gỡ index ⇒ test chuyển ĐỎ), nên L1 ở đây KHÔNG phải xanh giả. Nhưng đó là may
+        // mắn về ngữ nghĩa trùng nhau giữa hai engine, không phải bảo đảm: L3 Postgres vẫn là nơi duy
+        // nhất chứng minh câu filter chạy đúng trên bản thật.
+        e.HasIndex(x => new { x.JobCategory, x.Language, x.Version, x.Name })
+            .IsUnique()
+            .HasFilter("campaign_id IS NULL AND candidate_id IS NULL")
+            .HasDatabaseName("ux_rubric_criteria_b2c_default_version_name");
+
         // BC16: tra rubric riêng của candidate theo nghề (resolve ưu-tiên-riêng-else-mặc-định).
         // Non-unique, nullable (null = seed mặc định dùng chung).
         e.HasIndex(x => new { x.CandidateId, x.JobCategory, x.Language, x.IsActive });

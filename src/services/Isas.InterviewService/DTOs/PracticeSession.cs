@@ -229,7 +229,22 @@ public record SessionResultResponse(
     IReadOnlyList<Guid> NeedsImprovement,   // criterionId của tiêu chí dưới ngưỡng
     string? OverallComment = null,  // BC10 — nhận xét chung (AI); null trong BC9
     CvVsAnswerReportResponse? CvVsAnswer = null,  // BC8 — đối chiếu CV↔trả lời; null nếu không có CV đã phân tích
-    BenchmarkResponse? Benchmark = null   // F14 — mốc đối chiếu (lớp 2 của radar); null khi tắt/không dựng được
+    BenchmarkResponse? Benchmark = null,   // F14 — mốc đối chiếu (lớp 2 của radar); null khi tắt/không dựng được
+    /// <summary>
+    /// Thước đo đã chấm buổi này: <c>SystemDefault</c> (bộ chuẩn hệ thống) · <c>Custom</c> (rubric
+    /// riêng của chính người luyện) · <c>null</c> = KHÔNG BIẾT (buổi có trước cặp cột ghim).
+    ///
+    /// <para><b>Vì sao phải nói ra:</b> người luyện sửa rubric riêng cho lệch, điểm tụt, và trước đây
+    /// không một chữ nào nói rằng họ đang bị chấm bằng thước do CHÍNH HỌ đặt — nên họ kết luận hệ
+    /// thống chấm sai.</para>
+    ///
+    /// <para>⚠ Đọc THẲNG từ hai cột con dấu của buổi, KHÔNG tra lại trạng thái lúc hiển thị: tra lại
+    /// là quay về đúng lỗi "hỏi trạng thái lúc chấm" mà con dấu sinh ra để chặn — người vừa lưu rubric
+    /// riêng sẽ thấy buổi CŨ của mình bị gắn nhãn sai. Và <c>null</c> giữ nghĩa "không biết", không
+    /// bao giờ được vẽ thành <c>SystemDefault</c> (BK23).</para>
+    /// </summary>
+    string? RubricSource = null,
+    int? RubricVersion = null
 );
 
 // F14 (FR08) — mốc đối chiếu vẽ chồng lên radar năng lực.

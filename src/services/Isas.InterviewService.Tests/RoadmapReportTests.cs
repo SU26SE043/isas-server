@@ -41,8 +41,22 @@ public class RoadmapReportTests
 
         foreach (var (name, pct) in scores)
         {
-            var criterion = TestDb.Criterion(JobCategory.BE, name: name);   // MaxScore 5, Weight 1.0
-            t.Db.RubricCriteria.Add(criterion);
+            // DÙNG LẠI tiêu chí cùng tên nếu buổi trước đã seed — đúng như production: mọi buổi luyện
+            // cùng (nghề, ngôn ngữ) chia sẻ MỘT bộ tiêu chí, id không đổi giữa các buổi. Tạo bản sao
+            // mới mỗi buổi vừa dựng một trạng thái không tồn tại được (unique
+            // `ux_rubric_criteria_b2c_default_version_name` chặn), vừa làm test yếu hơn ý định của nó:
+            // báo cáo tiến bộ gom theo TÊN nên id trùng mới là ca thật.
+            var criterion = t.Db.RubricCriteria.Local
+                    .FirstOrDefault(c => c.Name == name && c.CandidateId == null
+                                         && c.JobCategory == JobCategory.BE)
+                ?? t.Db.RubricCriteria
+                    .FirstOrDefault(c => c.Name == name && c.CandidateId == null
+                                         && c.JobCategory == JobCategory.BE);
+            if (criterion is null)
+            {
+                criterion = TestDb.Criterion(JobCategory.BE, name: name);   // MaxScore 5, Weight 1.0
+                t.Db.RubricCriteria.Add(criterion);
+            }
             // Điểm thô sinh ra ĐÚNG pct mong muốn khi BC9 tính lại: maxScore 5 ⇒ pct = score/5*100.
             t.Db.AnswerScores.Add(new AnswerScore
             {

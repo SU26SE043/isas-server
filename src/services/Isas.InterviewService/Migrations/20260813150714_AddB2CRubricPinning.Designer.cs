@@ -3,6 +3,7 @@ using System;
 using Isas.InterviewService.ApplicationDbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    partial class InterviewDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260813150714_AddB2CRubricPinning")]
+    partial class AddB2CRubricPinning
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,100 +24,6 @@ namespace Isas.InterviewService.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-            modelBuilder.Entity("Isas.InterviewService.Entities.AdminRubricPreviewRun", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("completed_at");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<Guid>("CreatedByUserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("created_by_user_id");
-
-                    b.Property<string>("ErrorReason")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
-                        .HasColumnName("error_reason");
-
-                    b.Property<string>("JobCategory")
-                        .IsRequired()
-                        .HasMaxLength(8)
-                        .HasColumnType("character varying(8)")
-                        .HasColumnName("job_category");
-
-                    b.Property<string>("Language")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("text")
-                        .HasDefaultValue("vi")
-                        .HasColumnName("language");
-
-                    b.Property<bool>("LengthParityWarning")
-                        .HasColumnType("boolean")
-                        .HasColumnName("length_parity_warning");
-
-                    b.Property<int?>("PromptVersion")
-                        .HasColumnType("integer")
-                        .HasColumnName("prompt_version");
-
-                    b.Property<string>("QuestionText")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("question_text");
-
-                    b.Property<string>("RubricFingerprint")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("rubric_fingerprint");
-
-                    b.Property<string>("RubricSnapshot")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("rubric_snapshot");
-
-                    b.Property<int>("RubricVersion")
-                        .HasColumnType("integer")
-                        .HasColumnName("rubric_version");
-
-                    b.Property<string>("Samples")
-                        .HasColumnType("text")
-                        .HasColumnName("samples");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(24)
-                        .HasColumnType("character varying(24)")
-                        .HasColumnName("status");
-
-                    b.HasKey("Id")
-                        .HasName("pk_admin_rubric_preview_runs");
-
-                    b.HasIndex("JobCategory", "Language", "CreatedAt")
-                        .HasDatabaseName("ix_admin_rubric_preview_runs_scope_created");
-
-                    b.HasIndex("JobCategory", "Language", "RubricVersion")
-                        .IsUnique()
-                        .HasDatabaseName("ux_admin_rubric_preview_runs_running")
-                        .HasFilter("status = 'Running'");
-
-                    b.ToTable("admin_rubric_preview_runs", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_admin_rubric_preview_runs_language", "language IN ('vi', 'en')");
-
-                            t.HasCheckConstraint("ck_admin_rubric_preview_runs_status", "status IN ('Running', 'Succeeded', 'Failed')");
-                        });
-                });
 
             modelBuilder.Entity("Isas.InterviewService.Entities.AnswerScore", b =>
                 {
