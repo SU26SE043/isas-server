@@ -207,6 +207,44 @@ public class AdminB2CRubricTests
         Assert.Contains("mốc 0", ex.Message);
     }
 
+    /// <summary>
+    /// Descriptor 18 ký tự (dưới ngưỡng 20 của <c>CriterionLevelRules</c>) → 400, KHÔNG lọt xuống DB.
+    ///
+    /// <para>🔴 Vì sao đây là ràng buộc LIÊN SERVICE chứ không phải một guard trang trí: đường
+    /// "employer chép bộ chuẩn về campaign" validate lại bộ nhận được bằng CHÍNH luật này. Bộ nào admin
+    /// lưu được mà không thoả luật sẽ khiến employer nhận 502 và không chép được gì — mà lỗi lại nổ ở
+    /// service KHÁC với chỗ nhập sai. Dùng chung <c>CriterionLevelRules</c> làm hai bên khớp
+    /// by-construction; viết luật riêng ở đây là mở đúng khe đó.</para>
+    /// </summary>
+    [Fact]
+    public async Task Replace_DescriptorTooShort_Rejected_NothingPersisted()
+    {
+        using var t = new TestDb();
+        SeedDefaults(t.Db);
+        var svc = Service(t);
+        var v1 = (await svc.GetAsync(JobCategory.BE, "vi"))!;
+
+        var tooShort = "Chưa đủ hai mươi";   // 16 ký tự — dưới ngưỡng CriterionLevelRules.DescriptorMin
+        Assert.True(tooShort.Length < Isas.Shared.Rubric.CriterionLevelRules.DescriptorMin);
+
+        var bad = Echo(v1, levels: _ =>
+        [
+            new(0, tooShort),
+            new(5, "Nêu ý chính, có ví dụ từ dự án thật và chỉ ra được đánh đổi của phương án.")
+        ]);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.ReplaceAsync(JobCategory.BE, bad, "vi"));
+
+        // Không tạo phiên bản mới, không ghi mốc nào.
+        Assert.Empty(await t.Db.RubricLevels.ToListAsync());
+        var versions = await t.Db.RubricCriteria.AsNoTracking()
+            .Where(c => c.CampaignId == null && c.CandidateId == null
+                        && c.JobCategory == JobCategory.BE && c.Language == "vi")
+            .Select(c => c.Version).Distinct().ToListAsync();
+        Assert.Single(versions);
+    }
+
     /// <summary>Không gửi mốc nào = "chưa khai mốc" — hợp lệ, không phải lỗi (⇒ dải mặc định).</summary>
     [Fact]
     public async Task Replace_EmptyLevels_IsValid()

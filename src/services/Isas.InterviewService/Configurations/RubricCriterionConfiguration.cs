@@ -91,8 +91,10 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
         // Filter `candidate_id IS NULL` BẮT BUỘC: rubric riêng BC16 đánh số version độc lập theo từng
         // ứng viên, nên hai người khác nhau hoàn toàn được phép trùng (nghề, ngôn ngữ, version, tên).
         //
-        // ⚠ SQLite (test) KHÔNG dựng index có filter qua EnsureCreated ⇒ test "hai admin lưu cùng lúc"
-        // sẽ XANH kể cả khi index này bị gỡ. L1 không chứng minh được gì ở đây — cần L3 Postgres.
+        // ⚠ SQLite (EF Core 10) THẬT SỰ dựng index có filter qua `EnsureCreated` và enforce nó — đã đo
+        // bằng mutation (gỡ index ⇒ test chuyển ĐỎ), nên L1 ở đây KHÔNG phải xanh giả. Nhưng đó là may
+        // mắn về ngữ nghĩa trùng nhau giữa hai engine, không phải bảo đảm: L3 Postgres vẫn là nơi duy
+        // nhất chứng minh câu filter chạy đúng trên bản thật.
         e.HasIndex(x => new { x.JobCategory, x.Language, x.Version, x.Name })
             .IsUnique()
             .HasFilter("campaign_id IS NULL AND candidate_id IS NULL")

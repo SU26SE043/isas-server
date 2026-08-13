@@ -1,7 +1,15 @@
+using Isas.InterviewService.ApplicationDbContext;
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
+using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Moq;
 
 namespace Isas.InterviewService.Tests;
 
@@ -172,6 +180,77 @@ public class B2CRubricPinTests
         Assert.Null(key.CampaignId);
     }
 
+    // ── (1a) Đường GÁN con dấu lúc tạo buổi ─────────────────────────────────────────────────
+    //
+    // Mutation "B2CRubricOwnerId = null luôn" chạy qua toàn bộ test XANH ở lượt đầu: các test loader
+    // bên trên gán con dấu BẰNG TAY lên entity nên chúng phủ chỗ ĐỌC mà không phủ chỗ GHI. Đó là khe
+    // nguy hiểm — hỏng ở đây thì mọi buổi của người có rubric riêng bị ghim "bộ chuẩn", tức họ luyện
+    // bằng thước mình tự đặt nhưng bị chấm bằng thước hệ thống, im lặng.
+
+    private static PracticeService BuildPractice(TestDb t)
+    {
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        // Đặt CẢ HAI overload: đường B2C không-adaptive gọi bản 4 tham số, còn bản 6 tham số là đường
+        // có focusCriteria/count. Chỉ đặt một bản thì bản kia trả `null` và service ném "AIService
+        // không trả về câu hỏi nào" — một lỗi của TEST, không phải của con dấu đang đo.
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new GeneratedQuestion { Content = "Q1" }]);
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new GeneratedQuestion { Content = "Q1" }]);
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation.Setup(r => r.ReserveAsync(
+                It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        return new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance);
+    }
+
+    /// <summary>Ứng viên CÓ rubric riêng ⇒ buổi mới ghim đúng chủ + phiên bản của bộ riêng đó.</summary>
+    [Fact]
+    public async Task CreateSession_WithCustomRubric_StampsOwnerAndVersion()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        t.Db.RubricCriteria.AddRange(
+            TestDb.Criterion(JobCategory.BE, version: 1, active: false, name: "Tự đặt", candidateId: candidate),
+            TestDb.Criterion(JobCategory.BE, version: 4, active: true, name: "Tự đặt", candidateId: candidate),
+            TestDb.Criterion(JobCategory.BE, version: 1, active: true, name: "Giao tiếp"));
+        await t.Db.SaveChangesAsync();
+
+        var res = await BuildPractice(t).CreateSessionAsync(
+            candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE));
+
+        var session = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(s => s.Id == res.Id);
+        Assert.Equal(candidate, session.B2CRubricOwnerId);
+        Assert.Equal(4, session.B2CRubricVersion);
+    }
+
+    /// <summary>Không có rubric riêng ⇒ ghim BỘ CHUẨN (chủ null) kèm đúng phiên bản đang hiệu lực.</summary>
+    [Fact]
+    public async Task CreateSession_WithoutCustomRubric_StampsSystemOwner()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        t.Db.RubricCriteria.Add(TestDb.Criterion(JobCategory.BE, version: 6, active: true, name: "Giao tiếp"));
+        await t.Db.SaveChangesAsync();
+
+        var res = await BuildPractice(t).CreateSessionAsync(
+            candidate, new CreatePracticeSessionRequest(null, null, JobCategory.BE));
+
+        var session = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(s => s.Id == res.Id);
+        Assert.Null(session.B2CRubricOwnerId);
+        Assert.Equal(6, session.B2CRubricVersion);
+    }
+
     // ── (1b) Khoá chống hai admin cùng lưu một (nghề, ngôn ngữ) ─────────────────────────────
 
     /// <summary>
@@ -182,8 +261,9 @@ public class B2CRubricPinTests
     /// thuộc may rủi. Đọc <c>max(version)</c> KHÔNG phải trọng tài.
     ///
     /// <para>⚠ SQLite (EF Core 10) DỰNG được index có filter qua <c>EnsureCreated</c> và enforce thật —
-    /// đã kiểm bằng chính test này. Nhưng đó là may mắn về ngữ nghĩa trùng nhau, không phải bảo đảm:
-    /// L3 Postgres vẫn là nơi duy nhất chứng minh câu filter chạy đúng trên bản thật.</para>
+    /// đã kiểm bằng chính test này, và mutation gỡ index làm nó chuyển ĐỎ. Nhưng đó là may mắn về ngữ
+    /// nghĩa trùng nhau giữa hai engine, không phải bảo đảm: L3 Postgres vẫn là nơi duy nhất chứng minh
+    /// câu filter chạy đúng trên bản thật.</para>
     /// </summary>
     [Fact]
     public async Task SystemRubric_DuplicateVersionAndName_Rejected()
@@ -212,6 +292,71 @@ public class B2CRubricPinTests
         await t.Db.SaveChangesAsync();   // không được ném
 
         Assert.Equal(2, await t.Db.RubricCriteria.CountAsync(c => c.CandidateId != null));
+    }
+
+    // ── (1c) Republisher — đường cứu answer kẹt phải dùng CÙNG thước đo ─────────────────────
+
+    /// <summary>
+    /// Answer B2C được cứu bằng republisher phải chấm bằng đúng bộ đã GHIM, không phải bộ đang hiệu lực.
+    ///
+    /// Lệch ở đây là cùng một answer sinh HAI <c>rubric_version</c> ⇒ <c>attemptsForVersion</c> không
+    /// bao giờ đủ N ⇒ answer kẹt <c>Scoring</c> VĨNH VIỄN. Mutation "bỏ con dấu B2C khỏi khoá phạm vi"
+    /// chạy qua toàn bộ test XANH ở lượt đầu — đường republisher của B2C chưa từng được phủ, trong khi
+    /// bản B2B thì có. Đúng chỗ F11 và đáp án mẫu đã dính.
+    /// </summary>
+    [Fact]
+    public async Task Republisher_B2C_UsesPinnedSetNotLatestActive()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        // Ứng viên đã lưu rubric riêng SAU khi buổi bắt đầu; buổi ghim bộ CHUẨN v1.
+        var systemV1 = TestDb.Criterion(JobCategory.BE, version: 1, active: true, name: "Giao tiếp");
+        var custom = TestDb.Criterion(JobCategory.BE, version: 1, active: true,
+            name: "Tự đặt", candidateId: candidate);
+        var session = TestDb.Session(candidate, SessionStatus.InProgress, JobCategory.BE);
+        session.B2CRubricOwnerId = null;
+        session.B2CRubricVersion = 1;
+        t.Db.AddRange(systemV1, custom, session);
+        var question = TestDb.Question(session.Id);
+        t.Db.Add(question);
+        t.Db.PracticeAnswers.Add(TestDb.Answer(
+            session.Id, question.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-30), lastPublished: null));
+        await t.Db.SaveChangesAsync();
+
+        var job = await RepublishAndCaptureAsync(t);
+
+        Assert.Single(job.Criteria);
+        Assert.Equal(systemV1.Id, job.Criteria[0].CriterionId);
+        Assert.DoesNotContain(job.Criteria, c => c.CriterionId == custom.Id);
+    }
+
+    private static async Task<ScoringJob> RepublishAndCaptureAsync(TestDb t)
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<InterviewDbContext>(o =>
+            o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
+        var provider = services.BuildServiceProvider();
+
+        var pub = new Mock<IScoringJobPublisher>();
+        ScoringJob? captured = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+            .Callback<ScoringJob, CancellationToken>((j, _) => captured = j)
+            .Returns(Task.CompletedTask);
+
+        var republisher = new StuckAnswerRepublisher(
+            provider.GetRequiredService<IServiceScopeFactory>(), pub.Object,
+            Options.Create(new RepublisherSettings { BatchSize = 200 }),
+            Options.Create(new ScoringOptions()),
+            NullLogger<StuckAnswerRepublisher>.Instance);
+
+        var mi = typeof(StuckAnswerRepublisher).GetMethod(
+            "ScanOnceAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        await (Task)mi.Invoke(republisher, [CancellationToken.None])!;
+
+        Assert.NotNull(captured);
+        return captured!;
     }
 
     // ── (2) Tổng kết buổi (BC9) — bản sao THỨ TƯ, phải đi qua loader ─────────────────────────
