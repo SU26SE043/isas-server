@@ -181,7 +181,12 @@ namespace Isas.CampaignService.Models
                 e.ToTable("campaign_criteria", t =>
                 {
                     t.HasCheckConstraint("ck_campaign_criteria_weight_range", "weight > 0 AND weight <= 1");
-                    t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited')");
+                    // CAMP-20 — 'SystemDefault' là giá trị THỨ BA (bộ chuẩn chép về + bộ dự phòng khi AI
+                    // lỗi). ⚠ CHECK này phải có trên DB TRƯỚC khi code ghi giá trị mới lên (xem docblock
+                    // migration AddCriterionSourceSystemDefault). SQLite của test CÓ enforce CHECK (EF10)
+                    // nhưng nó dựng schema bằng EnsureCreated theo model NÀY — tức luôn là bản ĐÃ nới —
+                    // nên không test nào bắt được thứ tự deploy sai; chỉ Postgres thật mới bắt.
+                    t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited', 'SystemDefault')");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
