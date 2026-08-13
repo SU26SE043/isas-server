@@ -149,7 +149,7 @@ public class StuckAnswerRepublisher : BackgroundService
 
             if (!criteriaCache.TryGetValue(key, out var criteria))
             {
-                criteria = await LoadCriteriaAsync(db, key, ct);
+                criteria = await RubricCriteriaLoader.LoadAsync(db, key, ct);
                 criteriaCache[key] = criteria;
             }
 
@@ -212,30 +212,4 @@ public class StuckAnswerRepublisher : BackgroundService
         }
     }
 
-    // "Chủ" bộ tiêu chí của 1 answer. B2B = campaign (mọi ứng viên trong campaign dùng chung tiêu chí →
-    // KHÔNG kèm candidate vào key, nếu không B2B lại tách nhóm theo từng ứng viên = quay về N+1);
-    // B2C = (candidate, nghề) theo BC16.
-    private readonly record struct RubricScopeKey(Guid? CampaignId, Guid? CandidateId, JobCategory? JobCategory, string Language = "vi");
-
-    // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
-    // E9: nạp kèm rubric_levels để message re-publish cũng mang mức neo. DB15: câu mẫu
-    // (example_answers) là cột jsonb scalar trên level → nạp cùng .Include(Levels).
-    private static async Task<List<RubricCriterion>> LoadCriteriaAsync(
-        InterviewDbContext db, RubricScopeKey key, CancellationToken ct)
-    {
-        var query = db.RubricCriteria.AsNoTracking()
-            .Include(c => c.Levels)
-            .Where(c => c.IsActive);
-
-        if (key.CampaignId is Guid campaignId)
-            return await query.Where(c => c.CampaignId == campaignId).ToListAsync(ct);
-
-        // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định.
-        var jobCategory = key.JobCategory!.Value;
-        var owner = await B2CRubricScope.ResolveOwnerAsync(db, key.CandidateId!.Value, jobCategory, key.Language, ct);
-        query = owner is Guid oid
-            ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory && c.Language == key.Language)
-            : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory && c.Language == key.Language);
-        return await query.ToListAsync(ct);
-    }
 }
