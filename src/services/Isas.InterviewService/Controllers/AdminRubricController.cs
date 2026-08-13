@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services;
@@ -17,8 +18,14 @@ namespace Isas.InterviewService.Controllers;
 [ApiController]
 [Route("api/admin/rubrics")]
 [Authorize(Roles = "Admin")]
-public class AdminRubricController(IAdminB2CRubricService service) : ControllerBase
+public class AdminRubricController(
+    IAdminB2CRubricService service,
+    IAdminRubricPreviewService preview) : ControllerBase
 {
+    private Guid ActorId =>
+        Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"),
+            out var id) ? id : Guid.Empty;
+
     /// <summary>
     /// Ma trận trạng thái (nghề × ngôn ngữ) — bỏ trống <paramref name="language"/> để xem cả hai.
     /// Đây là thứ duy nhất trả lời "còn thiếu mốc ở tổ hợp nào".
@@ -111,6 +118,100 @@ public class AdminRubricController(IAdminB2CRubricService service) : ControllerB
         try
         {
             return Ok(await service.HistoryAsync(jobCategory, language, ct));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    // ── Chấm thử ────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// AI soạn mốc cho cả bộ. KHÔNG ghi DB — xem/sửa rồi lưu qua đúng một cửa <c>PUT</c>, để luật bump
+    /// phiên bản nằm ở một chỗ (mẫu CAMP-16). Lỗi AI → <b>502</b>, CỐ Ý không fallback dải mặc định:
+    /// fallback nghĩa là admin thấy "Mức 3: Mức 3/5" và tin đó là do AI soạn.
+    /// </summary>
+    [HttpPost("{jobCategory}/levels/suggest")]
+    [ProducesResponseType(typeof(AdminSuggestLevelsResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]
+    public async Task<IActionResult> SuggestLevels(
+        JobCategory jobCategory, [FromQuery] string? language, [FromQuery] string? seniority,
+        CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await preview.SuggestLevelsAsync(jobCategory, language, seniority, ct));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (DownstreamServiceException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Chạy một lượt chấm thử: AI viết 3 bài mẫu rồi chấm chính chúng bằng thước đo ĐANG LƯU.
+    ///
+    /// <para>Miễn phí, trần cứng 5 lượt THÀNH CÔNG cho mỗi (nghề, ngôn ngữ, phiên bản) → hết thì
+    /// <b>429</b>. Đang có lượt chạy → <b>409</b>. Chưa khai mốc → <b>400</b> (chấm thử trên dải mặc
+    /// định không kiểm chứng được gì).</para>
+    /// </summary>
+    [HttpPost("{jobCategory}/preview")]
+    [ProducesResponseType(typeof(AdminRubricPreviewRunResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]
+    public async Task<IActionResult> RunPreview(
+        JobCategory jobCategory, [FromBody] AdminRubricPreviewRequest? request,
+        [FromQuery] string? language, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await preview.RunAsync(
+                ActorId, jobCategory, language, request ?? new AdminRubricPreviewRequest(), ct));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (PreviewQuotaExceededException ex)
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = ex.Message });
+        }
+        catch (DownstreamServiceException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("Đang có một lượt"))
+        {
+            return Conflict(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>Lịch sử chấm thử (20 lượt gần nhất) — nguồn để so TRƯỚC/SAU khi sửa mốc.</summary>
+    [HttpGet("{jobCategory}/preview")]
+    [ProducesResponseType(typeof(IReadOnlyList<AdminRubricPreviewRunResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> PreviewHistory(
+        JobCategory jobCategory, [FromQuery] string? language, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await preview.HistoryAsync(jobCategory, language, ct));
         }
         catch (InvalidOperationException ex)
         {
