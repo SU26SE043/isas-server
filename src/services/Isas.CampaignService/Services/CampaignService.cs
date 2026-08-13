@@ -269,6 +269,7 @@ namespace Isas.CampaignService.Services
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
                 .Include(c => c.Criteria)   // C12: trả tiêu chí structured để HR xem/duyệt
+                    .ThenInclude(cr => cr.Levels)   // CAMP-16: mốc điểm (rỗng = chưa khai)
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -296,6 +297,9 @@ namespace Isas.CampaignService.Services
             var rows = await query
                 .Include(c => c.Questions)
                 .Include(c => c.Criteria)   // list card hiện đúng số tiêu chí (khớp detail — C12)
+                    // CAMP-16: nạp cả mốc điểm. Bỏ qua ở đây thì response trả `levels: []` = nói dối
+                    // "chưa khai mốc" (đúng lớp lỗi `roadmaps` list từng trả `milestones: []`).
+                    .ThenInclude(cr => cr.Levels)
                 // 2 Include collection trên cùng 1 root = JOIN fan-out nhân bản dòng gốc
                 // (questions × criteria) rồi EF dedup ở client. Split query tách thành 3 câu lệnh
                 // gọn: đúng thứ tự/limit được EF áp lại cho từng câu, nên phân trang vẫn chuẩn.
@@ -455,16 +459,29 @@ namespace Isas.CampaignService.Services
                 campaign.CriteriaFileUrl = null;
             }
 
-            // C12: ghi đè tiêu chí structured. Chỉ khi Draft (Active → 409);
-            // validate → 400 (ArgumentException) TRƯỚC khi đụng DB để lỗi không để lại nửa vời.
+            // C12: ghi đè tiêu chí structured (replace-all). Validate → 400 (ArgumentException) TRƯỚC khi
+            // đụng DB để lỗi không để lại nửa vời.
             List<CampaignCriterion>? rebuiltCriteria = null;
             if (request.Criteria is not null)
             {
-                if (campaign.Status != CampaignStatus.Draft)
+                // CAMP-1: chiến dịch đã đóng thì thước đo là dữ liệu lịch sử — sửa được nghĩa là sửa lại
+                // được cách chấm của một cuộc tuyển đã kết thúc.
+                if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
                     throw new InvalidOperationException(
-                        $"Cannot edit criteria when campaign is {campaign.Status}. Only Draft is editable.");
+                        $"Cannot edit criteria when campaign is {campaign.Status}. Only Draft/Active are editable.");
 
-                rebuiltCriteria = BuildStructuredCriteria(campaign.Id, request.Criteria);
+                rebuiltCriteria = BuildStructuredCriteria(campaign.Id, request.Criteria, campaign.Criteria);
+
+                // CAMP-2 GIỮ NGUYÊN cho phần LÕI của tiêu chí. Chiến dịch đang chạy chỉ được sửa MỐC
+                // ĐIỂM (quyết định sản phẩm: cho sửa mốc cả khi Active, chỉ áp cho người thi sau).
+                // Đổi tên/trọng số/thang điểm giữa chừng là đổi chính tập tiêu chí mà ứng viên đã chấm
+                // xong đang được xếp hạng theo — vẫn chỉ Draft.
+                if (campaign.Status == CampaignStatus.Active
+                    && RubricFingerprint.Compute(campaign.Criteria, includeLevels: false)
+                       != RubricFingerprint.Compute(rebuiltCriteria, includeLevels: false))
+                    throw new InvalidOperationException(
+                        "Chiến dịch đang chạy chỉ sửa được MỐC ĐIỂM. Tên/mô tả/trọng số/thang điểm/thứ tự "
+                        + "của tiêu chí chỉ đổi được khi campaign ở Draft.");
             }
 
             if (request.StartsAt.HasValue)
@@ -842,6 +859,7 @@ namespace Isas.CampaignService.Services
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
                 .Include(c => c.Criteria)
+                    .ThenInclude(cr => cr.Levels)   // CAMP-16: response publish trả kèm mốc điểm
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -2241,13 +2259,26 @@ namespace Isas.CampaignService.Services
         // Ràng buộc (hỏng → ArgumentException → 400): ≥1 tiêu chí · name non-empty + không trùng (case-insensitive)
         // · 0 < weight ≤ 1 · maxScore ≥ 1 · Σweight ∈ [0.99, 1.01]. Trong khoảng → chuẩn hoá Σ→1.
         // order_no đánh theo thứ tự gửi lên (0-based).
-        private static List<CampaignCriterion> BuildStructuredCriteria(Guid campaignId, List<CriterionItem> items)
+        /// <param name="existingForCarryOver">
+        /// CAMP-16 — bộ tiêu chí ĐANG CÓ, để mang mốc điểm sang khi client không gửi <c>levels</c>.
+        /// Ghép theo TÊN (case-insensitive) chứ không theo id, vì đường ghi này là replace-all mint id mới.
+        /// </param>
+        private static List<CampaignCriterion> BuildStructuredCriteria(
+            Guid campaignId, List<CriterionItem> items,
+            IEnumerable<CampaignCriterion>? existingForCarryOver = null)
         {
             if (items is null || items.Count == 0)
                 throw new ArgumentException("criteria[] phải có ≥1 tiêu chí.");
 
+            // Nguồn carry-over. TryAdd (không phải indexer) vì UNIQUE(campaign_id, name) của Postgres
+            // phân biệt hoa/thường, còn đường AI (BuildCriteriaAsync) không dedup — nên "Abc" và "ABC"
+            // vẫn cùng tồn tại được và indexer sẽ ném ngay giữa một thao tác lưu hợp lệ.
+            var carryOver = new Dictionary<string, List<CampaignCriterionLevel>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var old in existingForCarryOver ?? Enumerable.Empty<CampaignCriterion>())
+                carryOver.TryAdd(old.Name, (old.Levels ?? new List<CampaignCriterionLevel>()).ToList());
+
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var cleaned = new List<(string Name, string? Description, decimal Weight, int MaxScore)>();
+            var cleaned = new List<(string Name, string? Description, decimal Weight, int MaxScore, List<CriterionLevelItem>? Levels)>();
             foreach (var item in items)
             {
                 var name = item.Name?.Trim() ?? string.Empty;
@@ -2262,7 +2293,7 @@ namespace Isas.CampaignService.Services
 
                 cleaned.Add((name,
                     string.IsNullOrWhiteSpace(item.Description) ? null : item.Description!.Trim(),
-                    item.Weight, item.MaxScore));
+                    item.Weight, item.MaxScore, item.Levels));
             }
 
             var total = cleaned.Sum(c => c.Weight);
@@ -2287,7 +2318,90 @@ namespace Isas.CampaignService.Services
 
             // Sửa sai số làm tròn → Σ = 1 tuyệt đối (dồn vào tiêu chí đầu, như nhánh AI).
             criteria[0].Weight += 1m - criteria.Sum(c => c.Weight);
+
+            // CAMP-16/17 — mốc điểm. Làm SAU khi weight đã chốt để thông báo lỗi nhắc đúng tiêu chí.
+            for (var i = 0; i < criteria.Count; i++)
+            {
+                var target = criteria[i];
+                var requested = cleaned[i].Levels;
+
+                var source = requested is null
+                    // null = KHÔNG ĐỔI → mang mốc cũ sang (mint row mới vì tiêu chí cũ sắp bị xoá).
+                    ? carryOver.TryGetValue(target.Name, out var oldLevels)
+                        ? oldLevels.Select(l => new CriterionLevelItem { Score = l.Score, Descriptor = l.Descriptor }).ToList()
+                        : new List<CriterionLevelItem>()
+                    // [] = XOÁ · [...] = thay thế
+                    : requested;
+
+                target.Levels = source.Count == 0
+                    ? new List<CampaignCriterionLevel>()
+                    : BuildCriterionLevels(target, source, now);
+            }
+
             return criteria;
+        }
+
+        // CAMP-17 — trần cấu trúc của một thang điểm. 2 mốc là ít nhất để có "biên"; >10 thì mô tả
+        // giữa các mốc chồng lấn tới mức chính người chấm cũng không phân biệt được.
+        private const int CriterionLevelsMin = 2;
+        private const int CriterionLevelsMax = 10;
+        // Dưới 20 ký tự thì không thể vừa nói "CÓ gì" vừa nói "CÒN THIẾU gì"; trên 500 thì mốc thành
+        // một đoạn văn và prompt chấm phình theo số tiêu chí × số mốc.
+        private const int CriterionLevelDescriptorMin = 20;
+        private const int CriterionLevelDescriptorMax = 500;
+
+        /// <summary>
+        /// CAMP-17 — dựng + kiểm mốc điểm của MỘT tiêu chí. Ném <see cref="ArgumentException"/> (→400)
+        /// kèm tên tiêu chí và mốc vi phạm.
+        ///
+        /// <para>Kiểm ở .NET chứ không tin model: thang méo KHÔNG làm lỗi nào nổ ở đường chấm — nó chỉ
+        /// làm điểm sai. Thiếu mốc 0 thì bài TRỐNG snap về mốc thấp nhất (ứng viên không nói gì vẫn
+        /// được 4/10); thiếu mốc <c>maxScore</c> thì luật "đáp án mẫu ở mức điểm tối đa" trỏ vào một
+        /// mức không tồn tại.</para>
+        /// </summary>
+        private static List<CampaignCriterionLevel> BuildCriterionLevels(
+            CampaignCriterion criterion, List<CriterionLevelItem> items, DateTime now)
+        {
+            var name = criterion.Name;
+            if (items.Count < CriterionLevelsMin || items.Count > CriterionLevelsMax)
+                throw new ArgumentException(
+                    $"Tiêu chí '{name}' phải có {CriterionLevelsMin}–{CriterionLevelsMax} mốc điểm (hiện: {items.Count}).");
+
+            var scores = new HashSet<int>();
+            var levels = new List<CampaignCriterionLevel>(items.Count);
+            foreach (var item in items)
+            {
+                if (item.Score < 0 || item.Score > criterion.MaxScore)
+                    throw new ArgumentException(
+                        $"Mốc {item.Score} của tiêu chí '{name}' phải nằm trong [0, {criterion.MaxScore}].");
+                if (!scores.Add(item.Score))
+                    throw new ArgumentException(
+                        $"Tiêu chí '{name}' có hai mốc cùng điểm {item.Score} — việc chọn mức khi chấm sẽ không xác định.");
+
+                var descriptor = item.Descriptor?.Trim() ?? string.Empty;
+                if (descriptor.Length < CriterionLevelDescriptorMin || descriptor.Length > CriterionLevelDescriptorMax)
+                    throw new ArgumentException(
+                        $"Mô tả mốc {item.Score} của tiêu chí '{name}' phải dài {CriterionLevelDescriptorMin}–{CriterionLevelDescriptorMax} ký tự (hiện: {descriptor.Length}).");
+
+                levels.Add(new CampaignCriterionLevel
+                {
+                    Id = Guid.NewGuid(),
+                    CriterionId = criterion.Id,
+                    Score = item.Score,
+                    Descriptor = descriptor,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+
+            if (!scores.Contains(0))
+                throw new ArgumentException(
+                    $"Tiêu chí '{name}' phải có mốc 0 — thiếu nó thì câu trả lời trống bị chấm về mốc thấp nhất đang có, tức ứng viên không nói gì vẫn có điểm.");
+            if (!scores.Contains(criterion.MaxScore))
+                throw new ArgumentException(
+                    $"Tiêu chí '{name}' phải có mốc {criterion.MaxScore} (điểm tối đa) — thiếu nó thì không có mức nào mô tả câu trả lời đạt điểm cao nhất.");
+
+            return levels;
         }
 
         // C8: gọi AIService đề xuất tiêu chí; lỗi/rỗng → fallback default. Chuẩn hoá Σweight = 1.
