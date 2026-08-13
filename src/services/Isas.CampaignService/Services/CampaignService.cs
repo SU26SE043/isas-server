@@ -1511,6 +1511,7 @@ namespace Isas.CampaignService.Services
                     Result = r.OverrideResult
                         ?? (threshold is null ? null : (effectiveScore >= threshold.Value ? "Pass" : "Fail")),
                     ScoredAt = r.UpdatedAt,
+                    RubricVersion = r.RubricVersion,   // CAMP-18: null = không biết (KHÔNG suy ra v1)
                     Flags = flagsBySession.TryGetValue(r.SessionId, out var f) ? f : new List<FlagDto>(),
                     AiScore = r.TotalScore,
                     OverrideScore = r.OverrideScore,
@@ -1548,6 +1549,9 @@ namespace Isas.CampaignService.Services
             {
                 CampaignId = id,
                 PassScorePct = threshold,
+                // CAMP-18 — thước đo ĐANG hiệu lực, để FE so với rubricVersion từng dòng. Một giá trị
+                // duy nhất ⇒ không hiện gì; từ hai trở lên mới cảnh báo bảng đang trộn hai thước đo.
+                CurrentRubricVersion = campaign.RubricVersion,
                 TotalCandidates = results.Count,
                 Results = results,
                 UnscoredFlagged = unscoredFlagged
@@ -1948,7 +1952,8 @@ namespace Isas.CampaignService.Services
                 Flags = string.Join("; ", r.Flags.Select(f => $"{f.Type}:{f.Count}")),
                 // F5: null → ô rỗng (không tra được danh tính) — CsvHelper tự escape dấu phẩy/nháy trong tên.
                 FullName = r.FullName ?? string.Empty,
-                Email = r.Email ?? string.Empty
+                Email = r.Email ?? string.Empty,
+                RubricVersion = r.RubricVersion   // CAMP-18
             }).ToList();
 
             // R7: nối ứng viên có cờ mà CHƯA Scored — HR đọc bản export cũng thấy nhóm đáng ngờ nhất.
@@ -1990,6 +1995,9 @@ namespace Isas.CampaignService.Services
             public string Flags { get; set; } = string.Empty;   // SEC-4: tóm tắt cờ chống gian lận
             public string FullName { get; set; } = string.Empty;   // F5
             public string Email { get; set; } = string.Empty;      // F5
+            // CAMP-18 — BẮT BUỘC có trong CSV: thiếu nó thì HR xuất Excel rồi trộn điểm của hai thước
+            // đo với nhau, hoàn toàn NGOÀI TẦM mọi cảnh báo mà app hiện trên màn hình.
+            public int? RubricVersion { get; set; }
         }
 
         private sealed class ResultCsvRowMap : ClassMap<ResultCsvRow>
@@ -2008,6 +2016,9 @@ namespace Isas.CampaignService.Services
                 // và đổi thứ tự cột của file HR đang dùng. Thêm ở đuôi = additive, script cũ không vỡ.
                 Map(m => m.FullName).Index(7).Name("full_name");
                 Map(m => m.Email).Index(8).Name("email");
+                // CAMP-18 — thêm ở ĐUÔI: Index là tuyệt đối, chèn vào giữa sẽ đổi thứ tự cột của file
+                // HR đang dùng. null → ô rỗng ("không biết"), KHÔNG ghi 1.
+                Map(m => m.RubricVersion).Index(9).Name("rubric_version");
             }
         }
 

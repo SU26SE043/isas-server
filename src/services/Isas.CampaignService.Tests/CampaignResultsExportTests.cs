@@ -124,9 +124,12 @@ public class CampaignResultsExportTests
 
         var lines = CsvLines(file.FileContents);
         // Header = HỢP ĐỒNG với HR (script/Excel của họ bám tên + thứ tự cột) → so sánh CHÍNH XÁC,
-        // không hạ xuống Contains. SEC-4 thêm `flags`; F5 thêm `full_name`,`email` — đều ở CUỐI (additive).
+        // không hạ xuống Contains. SEC-4 thêm `flags`; F5 thêm `full_name`,`email`; CAMP-18 thêm
+        // `rubric_version` — đều ở CUỐI (additive: thứ tự cột cũ không đổi, script cũ đọc theo chỉ số
+        // vẫn chạy). Chuỗi kỳ vọng đổi CÓ CHỦ ĐÍCH ở CAMP-18: thiếu cột thước đo thì HR xuất Excel
+        // rồi trộn điểm của hai thước đo, hoàn toàn ngoài tầm mọi cảnh báo app hiện trên màn hình.
         Assert.Equal(
-            "rank,candidate_id,session_id,total_score,result,scored_at,flags,full_name,email",
+            "rank,candidate_id,session_id,total_score,result,scored_at,flags,full_name,email,rubric_version",
             lines[0]);
 
         var rows = ParseCsv(file.FileContents);
