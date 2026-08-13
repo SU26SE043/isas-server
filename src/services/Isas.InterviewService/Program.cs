@@ -37,6 +37,7 @@ builder.Services.AddScoped<IQuestionSpeechService, QuestionSpeechService>();   /
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
 builder.Services.AddScoped<IRepoAnalysisService, RepoAnalysisService>(); // BC18
 builder.Services.AddScoped<IRubricLibraryService, RubricLibraryService>();   // BC16 — rubric cá nhân B2C
+builder.Services.AddScoped<IAdminB2CRubricService, AdminB2CRubricService>();   // admin quản bộ chuẩn B2C
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
 builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
