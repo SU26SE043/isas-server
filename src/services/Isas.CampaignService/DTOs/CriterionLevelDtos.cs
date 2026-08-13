@@ -20,4 +20,24 @@ namespace Isas.CampaignService.DTOs
         public int MaxScore { get; set; }
         public List<CriterionLevelResponse> Levels { get; set; } = new();
     }
+
+    /// <summary>
+    /// CAMP-20 — <c>POST /campaign/{id}/criteria/from-system-default</c>: chép bộ chuẩn B2C (admin
+    /// soạn) vào campaign, THAY THẾ toàn bộ tiêu chí đang có.
+    ///
+    /// <para>Cả hai trường đều BẮT BUỘC. Server KHÔNG suy nghề từ <c>campaigns.domain</c> — cột đó là
+    /// chuỗi tự do đang chứa cả <c>"Fullstack"</c>/<c>"QA"</c>/<c>null</c>, và đoán sai ở đây nghĩa là
+    /// chiến dịch được chấm bằng thước của nghề khác mà không có triệu chứng nào.</para>
+    ///
+    /// <para>⚠ Chép về sẽ mang cả MỐC ĐIỂM của bộ chuẩn và <b>xoá mốc HR đang có</b> — thay thước đo
+    /// thì mốc của thước cũ không còn nghĩa. FE phải xác nhận trước khi gọi.</para>
+    /// </summary>
+    public class ApplySystemDefaultCriteriaRequest
+    {
+        /// <summary>BA | BE | FE. Nhận HOA/thường tuỳ ý, server chuẩn hoá.</summary>
+        public string? JobCategory { get; set; }
+
+        /// <summary>vi | en. Không có mặc định — xem docblock <c>ApplySystemDefaultCriteriaAsync</c>.</summary>
+        public string? Language { get; set; }
+    }
 }

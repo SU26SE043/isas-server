@@ -111,6 +111,13 @@ public class CampaignServiceTests
     }
 
     // C8 + C10: publish → Active + campaign_criteria (Σweight=1) + audit Publish
+    //
+    // ⚠ CAMP-20 — TIỀN ĐỀ ĐÃ ĐỔI CÓ CHỦ ĐÍCH: bản trước khẳng định bộ dự phòng mang nhãn
+    // `AiSuggested`, tức test đang KHOÁ ĐÚNG CÁI NHÃN NÓI DỐI. `ICriteriaSuggester` ở đây là
+    // Mock.Of<> (SuggestAsync trả null) ⇒ đường chạy là nhánh AI-lỗi `BuildDefaultCriteria`, và ba
+    // tiêu chí đó là hằng số viết tay trong code — AI chưa từng chạm vào. Nay khẳng định
+    // `SystemDefault`. KHÔNG nới assert thành "bất kỳ nguồn nào": nhãn là thứ HR nhìn để quyết định
+    // có tin bộ tiêu chí này không.
     [Fact]
     public async Task Publish_tao_criteria_Sum1_va_audit()
     {
@@ -133,7 +140,7 @@ public class CampaignServiceTests
         var criteria = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id).ToListAsync();
         Assert.NotEmpty(criteria);
         Assert.Equal(1.0m, criteria.Sum(c => c.Weight));   // Σweight = 1
-        Assert.All(criteria, c => Assert.Equal(CriterionSource.AiSuggested, c.Source));
+        Assert.All(criteria, c => Assert.Equal(CriterionSource.SystemDefault, c.Source));
 
         var audit = await check.AuditLogs
             .Where(a => a.EntityId == camp.Id && a.Action == AuditAction.Publish).ToListAsync();

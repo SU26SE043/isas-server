@@ -37,6 +37,20 @@ namespace Isas.CampaignService.Services
         Task<SuggestCriterionLevelsResponse> SuggestCriterionLevelsAsync(Guid orgId, Guid id, CancellationToken ct);
 
         /// <summary>
+        /// CAMP-20 — chép BỘ CHUẨN B2C (admin soạn, theo nghề + ngôn ngữ) vào campaign: THAY THẾ toàn
+        /// bộ tiêu chí đang có, mang theo mốc điểm, đóng nhãn <c>SystemDefault</c>.
+        ///
+        /// <para>CHÉP chứ không tham chiếu (quyết định 4): admin sửa bản gốc về sau KHÔNG đụng vào
+        /// chiến dịch đang tuyển — đúng thứ cơ chế phiên bản CAMP-18 dựng lên để chặn.</para>
+        ///
+        /// <para>Ném: KeyNotFound (ngoài org) → 404 · InvalidOperation (Closed/Archived) → 409 ·
+        /// Argument (jobCategory/language thiếu hoặc sai) → 400 · DownstreamServiceException
+        /// (Interview lỗi, hoặc admin chưa soạn bộ cho tổ hợp này) → 502.</para>
+        /// </summary>
+        Task<CampaignResponse> ApplySystemDefaultCriteriaAsync(
+            Guid orgId, Guid actorUserId, Guid id, ApplySystemDefaultCriteriaRequest request, CancellationToken ct);
+
+        /// <summary>
         /// Đọc file CSV câu hỏi → trả danh sách để HR xem trước. <b>KHÔNG ghi gì vào cơ sở dữ liệu</b> —
         /// HR bấm Lưu thì mới đi qua <see cref="UpdateCampaignQuestionsAsync"/>.
         /// Ném: KeyNotFound → 404 · InvalidOperation (≠ Draft) → 409 · Argument (file hỏng/sai định dạng/
