@@ -224,6 +224,12 @@ namespace Isas.CampaignService.DTOs
         public int? MaxDeepPerQuestion { get; set; }   // INT-17b: trần đào sâu mỗi câu (null/0 = chế độ cũ)
         // NGÂN HÀNG ĐỀ: số câu mỗi ứng viên thi (null = thi HẾT bộ câu hỏi, hành vi cũ).
         public int? QuestionsPerSession { get; set; }
+        // CAMP-18 — định danh bộ thước đo đang hiệu lực + ai/lúc nào đổi. FE hiện chip "Thước đo v2"
+        // kèm tooltip; ứng viên đã chấm bằng bản cũ giữ nguyên điểm.
+        public int RubricVersion { get; set; } = 1;
+        public DateTime? RubricVersionUpdatedAt { get; set; }
+        public Guid? RubricVersionUpdatedBy { get; set; }
+
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public List<CampaignQuestionResponse> Questions { get; set; }
@@ -259,6 +265,9 @@ namespace Isas.CampaignService.DTOs
             MaxQuestions = c.MaxQuestions,
             MaxDeepPerQuestion = c.MaxDeepPerQuestion,   // INT-17b
             QuestionsPerSession = c.QuestionsPerSession,
+            RubricVersion = c.RubricVersion,                       // CAMP-18
+            RubricVersionUpdatedAt = c.RubricVersionUpdatedAt,
+            RubricVersionUpdatedBy = c.RubricVersionUpdatedBy,
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
             // F10: sắp theo ĐÚNG thứ tự ứng viên sẽ gặp (ParticipationService dùng CreatedAt, Id) —

@@ -361,6 +361,9 @@ namespace Isas.CampaignService.Services
             var campaign = await _db.Campaigns
                 .Include(c => c.Questions)
                 .Include(c => c.Criteria)
+                    // CAMP-18: vân tay thước đo tính CẢ mốc điểm → phải nạp mốc, nếu không mọi lần Lưu
+                    // đều thấy "bộ cũ không có mốc" và bump version oan.
+                    .ThenInclude(cr => cr.Levels)
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -483,9 +486,16 @@ namespace Isas.CampaignService.Services
                 // KHÔNG đụng navigation (nav.Clear()/Add trên quan hệ required làm change-tracker sinh
                 // UPDATE "ma" → DbUpdateConcurrencyException 0 rows). EF tự xếp DELETE trước INSERT theo
                 // UNIQUE(campaign_id, order_no|name) nên bộ mới trùng khoá bộ cũ vẫn an toàn.
+                // CAMP-18 — quyết định bump TRƯỚC khi xoá bộ cũ (sau RemoveRange thì "bộ trước" không
+                // còn đọc được một cách rõ ràng).
+                var bumped = ApplyRubricVersionBump(campaign, actorUserId, campaign.Criteria, rebuiltCriteria);
+
                 _db.CampaignCriteria.RemoveRange(campaign.Criteria);
                 _db.CampaignCriteria.AddRange(rebuiltCriteria);
-                AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id, $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited)");
+                AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id,
+                    bumped
+                        ? $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited) — thước đo v{campaign.RubricVersion - 1} → v{campaign.RubricVersion}"
+                        : $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited)");
                 await _db.SaveChangesAsync(ct);
                 campaign.Criteria = rebuiltCriteria;                 // đồng bộ nav cho response (bộ cũ đã xoá)
             }
@@ -2321,6 +2331,36 @@ namespace Isas.CampaignService.Services
                 new() { Id = Guid.NewGuid(), CampaignId = campaignId, OrderNo = 1, Name = "Giao tiếp / trình bày", Weight = 0.3m, MaxScore = 5, Source = CriterionSource.AiSuggested, CreatedAt = now, UpdatedAt = now },
                 new() { Id = Guid.NewGuid(), CampaignId = campaignId, OrderNo = 2, Name = "Giải quyết vấn đề",     Weight = 0.3m, MaxScore = 5, Source = CriterionSource.AiSuggested, CreatedAt = now, UpdatedAt = now },
             };
+        }
+
+        /// <summary>
+        /// CAMP-18 — bump <c>rubric_version</c> khi thước đo THẬT SỰ đổi trên campaign đang chạy.
+        /// Trả <c>true</c> nếu đã bump (để audit ghi đúng câu chuyện).
+        ///
+        /// <para><b>Draft không bump.</b> Chưa ai bị chấm bằng bộ này và Interview chưa materialize gì,
+        /// nên đánh số ở đó chỉ đẻ ra lỗ số vô nghĩa trước cả khi chiến dịch chạy.</para>
+        ///
+        /// <para><b>Lưu mà không đổi gì cũng không bump.</b> HR bấm Lưu để sửa tiêu đề không được
+        /// làm ứng viên tiếp theo rơi vào một "thước đo mới" — nhãn version sẽ mất hết ý nghĩa và
+        /// bảng xếp hạng nổi băng cảnh báo giả.</para>
+        ///
+        /// <para><b>Bump cả bộ, không bump lẻ từng tiêu chí</b> — phía Interview đọc version của tiêu
+        /// chí đầu tiên với giả định mọi tiêu chí active dùng CHUNG một version.</para>
+        /// </summary>
+        private static bool ApplyRubricVersionBump(
+            Campaign campaign, Guid actorUserId,
+            IEnumerable<CampaignCriterion> before, IEnumerable<CampaignCriterion> after)
+        {
+            if (campaign.Status != CampaignStatus.Active)
+                return false;
+
+            if (RubricFingerprint.Compute(before) == RubricFingerprint.Compute(after))
+                return false;
+
+            campaign.RubricVersion += 1;
+            campaign.RubricVersionUpdatedAt = DateTime.UtcNow;
+            campaign.RubricVersionUpdatedBy = actorUserId;
+            return true;
         }
 
         // C10/BK4: ghi vết thao tác. actor_user_id = cá nhân HR thao tác (user sub, giữ danh tính người);

@@ -59,6 +59,10 @@ namespace Isas.CampaignService.Models
                     t.HasCheckConstraint(
                         "ck_campaigns_questions_per_session_positive",
                         "questions_per_session IS NULL OR questions_per_session >= 1");
+                    // CAMP-18: định danh bộ thước đo. Bắt đầu từ 1 và chỉ tăng — số 0/âm nghĩa là
+                    // có đường ghi nào đó đang đặt bừa, mà nhãn thước đo sai thì bảng xếp hạng trộn
+                    // hai nhóm điểm không so sánh được (CAMP-10) mà không ai thấy.
+                    t.HasCheckConstraint("ck_campaigns_rubric_version_positive", "rubric_version >= 1");
                     t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
                     t.HasCheckConstraint("ck_campaigns_language", "language IN ('vi', 'en')");
                     t.HasCheckConstraint("ck_campaigns_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
@@ -80,6 +84,9 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.FaceVerifyEnabled).HasDefaultValue(false);   // SEC-1: face-verify opt-in (B2B)
                 e.Property(x => x.AdaptiveEnabled).HasDefaultValue(false);     // INT-17: adaptive opt-in (B2B)
                 e.Property(x => x.GroundingEnabled).HasDefaultValue(false);    // T8: entitlement-gated snapshot
+                // CAMP-18 — DEFAULT 1 để campaign đã có trên prod nhận đúng v1 mà không cần backfill:
+                // mọi lượt materialize từng chạy đều ghi Version = 1 phía Interview.
+                e.Property(x => x.RubricVersion).HasDefaultValue(1);
 
                 e.Property(x => x.StartsAt).IsRequired();
 
