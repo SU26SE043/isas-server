@@ -469,6 +469,21 @@ namespace Isas.CampaignService.Services
             List<CampaignCriterion>? rebuiltCriteria = null;
             if (request.Criteria is not null)
             {
+                // 🔴 HAI LUẬT KHÁC NHAU TRONG CÙNG MỘT HÀNH ĐỘNG "Lưu" — ĐỌC TRƯỚC KHI "DỌN CHO NHẤT QUÁN":
+                //
+                //   • TIÊU CHÍ + MỐC ĐIỂM (ở đây)         → Draft VÀ Active đều sửa được.
+                //     NGOẠI LỆ CÓ CHỦ ĐÍCH với CAMP-2 (quyết định sản phẩm 8). An toàn được là nhờ
+                //     rubric_version: bump lên bản mới, buổi thi đã chấm giữ nguyên bản cũ, bảng xếp
+                //     hạng gắn nhãn từng dòng. Cho sửa thước mà không cho sửa là bắt HR chạy tiếp một
+                //     cuộc tuyển với thước đo họ đã biết là sai.
+                //
+                //   • CÂU HỎI (UpdateCampaignQuestionsAsync) → CAMP-2 NGUYÊN VẸN, Active là 409.
+                //     KHÔNG nới theo. Đổi câu hỏi giữa chừng nghĩa là hai ứng viên cùng chiến dịch làm
+                //     HAI ĐỀ KHÁC NHAU rồi vẫn bị xếp chung một bảng — versioning thước đo không cứu
+                //     được chuyện đó, và nó không nằm trong quyết định 8.
+                //
+                // Hai guard CỐ Ý tách rời. Gộp lại "cho gọn" sẽ nới nhầm một trong hai.
+                //
                 // CAMP-1: chiến dịch đã đóng thì thước đo là dữ liệu lịch sử — sửa được nghĩa là sửa lại
                 // được cách chấm của một cuộc tuyển đã kết thúc.
                 if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
@@ -476,17 +491,6 @@ namespace Isas.CampaignService.Services
                         $"Cannot edit criteria when campaign is {campaign.Status}. Only Draft/Active are editable.");
 
                 rebuiltCriteria = BuildStructuredCriteria(campaign.Id, request.Criteria, campaign.Criteria);
-
-                // CAMP-2 GIỮ NGUYÊN cho phần LÕI của tiêu chí. Chiến dịch đang chạy chỉ được sửa MỐC
-                // ĐIỂM (quyết định sản phẩm: cho sửa mốc cả khi Active, chỉ áp cho người thi sau).
-                // Đổi tên/trọng số/thang điểm giữa chừng là đổi chính tập tiêu chí mà ứng viên đã chấm
-                // xong đang được xếp hạng theo — vẫn chỉ Draft.
-                if (campaign.Status == CampaignStatus.Active
-                    && RubricFingerprint.Compute(campaign.Criteria, includeLevels: false)
-                       != RubricFingerprint.Compute(rebuiltCriteria, includeLevels: false))
-                    throw new InvalidOperationException(
-                        "Chiến dịch đang chạy chỉ sửa được MỐC ĐIỂM. Tên/mô tả/trọng số/thang điểm/thứ tự "
-                        + "của tiêu chí chỉ đổi được khi campaign ở Draft.");
             }
 
             if (request.StartsAt.HasValue)
@@ -589,6 +593,9 @@ namespace Isas.CampaignService.Services
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
             // ── Lifecycle (C7): chỉ sửa câu hỏi khi Draft (Active rồi → khóa) ─
+            // ⚠ CAMP-2 NGUYÊN VẸN ở đây, KHÔNG nới theo tiêu chí/mốc điểm (xem khối giải thích trong
+            // UpdateCampaignAsync). Đổi câu hỏi giữa chừng nghĩa là hai ứng viên cùng chiến dịch làm
+            // HAI ĐỀ KHÁC NHAU rồi vẫn bị xếp chung một bảng — rubric_version không cứu được chuyện đó.
             if (campaign.Status != CampaignStatus.Draft)
                 throw new InvalidOperationException($"Cannot edit questions when campaign is {campaign.Status}. Only Draft is editable.");
 

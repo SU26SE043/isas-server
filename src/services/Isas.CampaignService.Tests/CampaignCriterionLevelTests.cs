@@ -332,28 +332,50 @@ public class CampaignCriterionLevelTests
         Assert.Equal(2, (await ReadLevelsAsync(tdb, camp.Id)).Count);
     }
 
-    // CAMP-2 giữ nguyên cho phần LÕI: đổi trọng số/thang điểm giữa chừng là đổi chính tập tiêu chí mà
-    // ứng viên đã chấm xong đang được xếp hạng theo.
+    // 🔴 TEST GHÉP HAI VẾ — CỐ Ý nằm trong MỘT test để người sau không tách ra rồi nới nhầm cả cụm.
+    // Trên CÙNG một campaign Active: sửa tiêu chí/mốc ⇒ ĐƯỢC (+bump), sửa CÂU HỎI ⇒ 409.
+    // Hai luật khác nhau cho cùng một thao tác "Lưu" của HR, và đó là chủ đích:
+    //   • thước đo đổi được vì rubric_version + nhãn ở bảng xếp hạng giữ cho điểm cũ vẫn đọc đúng;
+    //   • câu hỏi KHÔNG, vì hai ứng viên làm hai đề khác nhau thì không nhãn nào cứu được.
     [Fact]
-    public async Task Active_doi_thang_diem_thi_409_va_khong_bump()
+    public async Task Active_sua_tieu_chi_duoc_nhung_sua_CAU_HOI_van_409()
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var (camp, _) = await SeedAsync(tdb, owner, CampaignStatus.Active);
+        tdb.Db.CampaignQuestions.Add(new CampaignQuestion
+        {
+            Id = Guid.NewGuid(), CampaignId = camp.Id, QuestionText = "Câu gốc",
+            Source = QuestionSource.CustomHr, CreatedAt = DateTime.UtcNow
+        });
+        await tdb.Db.SaveChangesAsync();
 
         var svc = NewService(tdb.NewContext());
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.UpdateCampaignAsync(owner, owner, camp.Id, new UpdateCampaignRequest
-            {
-                Criteria = new List<CriterionItem>
-                {
-                    Item("Chuyên môn", Levels((0, D0), (10, D5)), maxScore: 10)
-                }
-            }, default));
 
-        using var check = tdb.NewContext();
-        Assert.Equal(1, (await check.Campaigns.FirstAsync(c => c.Id == camp.Id)).RubricVersion);
-        Assert.Equal(new[] { 0, 5 }, (await ReadLevelsAsync(tdb, camp.Id)).Select(l => l.Score));
+        // Vế 1 — tiêu chí + mốc: ĐƯỢC, và bump thước đo.
+        await svc.UpdateCampaignAsync(owner, owner, camp.Id, new UpdateCampaignRequest
+        {
+            Criteria = new List<CriterionItem>
+            {
+                Item("Chuyên môn", Levels((0, D0), (10, D5Moi)), maxScore: 10)
+            }
+        }, default);
+
+        using (var check = tdb.NewContext())
+        {
+            Assert.Equal(2, (await check.Campaigns.FirstAsync(c => c.Id == camp.Id)).RubricVersion);
+            Assert.Equal(new[] { 0, 10 }, (await ReadLevelsAsync(tdb, camp.Id)).Select(l => l.Score));
+        }
+
+        // Vế 2 — CÂU HỎI: vẫn 409 (CAMP-2 nguyên vẹn).
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NewService(tdb.NewContext()).UpdateCampaignQuestionsAsync(
+                owner, owner, camp.Id,
+                new List<QuestionItem> { new() { QuestionText = "Câu MỚI" } }, default));
+
+        using var final = tdb.NewContext();
+        Assert.Equal("Câu gốc",
+            (await final.CampaignQuestions.FirstAsync(q => q.CampaignId == camp.Id)).QuestionText);
     }
 
     // ── Đọc ──────────────────────────────────────────────────────────────
