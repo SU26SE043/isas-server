@@ -53,11 +53,21 @@ public record PracticeSessionPreset(
 public record PracticeSessionPreview(int QuestionCount, int SeedCount);
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
+/// <summary>
+/// Một MỐC ĐIỂM của tiêu chí campaign (E9 hard-anchor): điểm này nghĩa là ứng viên đã làm/nói được gì.
+/// Map 1-1 sang <c>rubric_levels</c> lúc materialize.
+/// </summary>
+public record CampaignCriterionLevelInput(int Score, string Descriptor);
+
 public record CampaignCriterionInput(
     string Name,
     string? Description,
     decimal Weight,    // Σ/campaign = 1 (chuẩn hoá phía Campaign)
-    int MaxScore
+    int MaxScore,
+    // E9 — mốc điểm HR soạn (AI gợi ý rồi HR sửa). null/rỗng = không có mốc ⇒ AIService rơi về dải
+    // mặc định 0..maxScore như trước, KHÔNG phải lỗi. Optional ở CUỐI record để bản Campaign cũ —
+    // chưa biết field này — vẫn gọi được endpoint mà không vỡ (hai service deploy không nguyên tử).
+    IReadOnlyList<CampaignCriterionLevelInput>? Levels = null
 );
 
 // I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).
@@ -82,6 +92,10 @@ public record CreateCampaignSessionRequest(
     string? Language = null,
     // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
     string? Seniority = null,
+    // Phiên bản bộ tiêu chí do CampaignService cấp (campaigns.rubric_version). Interview chỉ CHÉP —
+    // xem ghi chú ở PracticeSession.CampaignRubricVersion. null (Campaign bản cũ) => 1, tức khớp mọi
+    // row đang có trên prod ⇒ hành vi giống hệt trước thay đổi này.
+    int? RubricVersion = null,
     // Câu hỏi KÈM đáp án mẫu. Cố ý là field RIÊNG chứ không đổi kiểu `Questions` sẵn có: hai service
     // deploy không nguyên tử, nên trong cửa sổ giữa hai lần khởi động phải có một bản Campaign mới nói
     // chuyện được với bản Interview cũ và ngược lại. Campaign gửi CẢ HAI; Interview ưu tiên field này,
@@ -116,7 +130,10 @@ public record CreateCampaignSessionInternalRequest(
     string? Seniority = null,
     // Câu hỏi KÈM đáp án mẫu (xem CreateCampaignSessionRequest.QuestionDetails). Optional ở CUỐI record
     // để bản Campaign cũ — chưa biết field này — vẫn gọi được endpoint mà không vỡ.
-    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null
+    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null,
+    // Phiên bản bộ tiêu chí (campaigns.rubric_version). Khoá JSON trên dây: `rubricVersion`
+    // (JsonSerializerDefaults.Web ⇒ camelCase). null = Campaign bản cũ ⇒ Interview coi là 1.
+    int? RubricVersion = null
 );
 public record PracticeSessionResponse(
     Guid Id,

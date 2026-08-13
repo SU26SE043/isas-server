@@ -115,6 +115,12 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.FillerPer100Words,
                 a.MetricsVersion,
                 CampaignId = a.Session.CampaignId,
+                // Phiên bản rubric buổi thi đã GHIM — PHẢI có trong projection. Thiếu nó thì answer
+                // nào phải cứu bằng republisher sẽ được chấm bằng bộ tiêu chí MỚI NHẤT, trong khi
+                // answer chạy trơn tru được chấm bằng bộ đã ghim ⇒ cùng một answer sinh hai
+                // rubric_version khác nhau ⇒ attemptsForVersion không bao giờ đủ N ⇒ answer kẹt
+                // Scoring vĩnh viễn. Đúng chỗ F11 và đáp án mẫu đã dính.
+                CampaignRubricVersion = a.Session.CampaignRubricVersion,
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
                 Language = a.Session.Language,
@@ -144,7 +150,9 @@ public class StuckAnswerRepublisher : BackgroundService
         foreach (var a in stuck)
         {
             var key = a.CampaignId is Guid cid
-                ? new RubricScopeKey(cid, null, null)                       // B2B: tiêu chí chỉ phụ thuộc campaign
+                // B2B: tiêu chí phụ thuộc campaign + PHIÊN BẢN buổi thi đã ghim (hai buổi cùng campaign
+                // ghim hai phiên bản khác nhau KHÔNG được dùng chung entry cache).
+                ? new RubricScopeKey(cid, null, null, CampaignRubricVersion: a.CampaignRubricVersion)
                 : new RubricScopeKey(null, a.CandidateId, a.JobCategory, a.Language);   // B2C: theo (candidate, nghề, language)
 
             if (!criteriaCache.TryGetValue(key, out var criteria))
