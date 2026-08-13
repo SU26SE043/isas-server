@@ -242,6 +242,12 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 > ⚠ **`employer_id` ở đây là dữ liệu DƯ** (luôn suy được qua `campaign_id → campaigns.employer_id`; lưu 2 nơi → nguy cơ lệch khi campaign đổi chủ). Target: **bỏ** khi wire `org_id`, hoặc đổi nghĩa thành `created_by` (audit ai thêm câu hỏi — lúc đó KHÔNG dùng để lọc ownership, ownership chỉ theo `campaigns`).
 > ⚠ **`is_required` đang "đứt dây"**: `practice_questions` (engine) **không có cột này** → materialize xong engine coi mọi câu như nhau, flag vô tác dụng. Chốt 1 trong 2 khi build D2: **(a) bỏ cột** (mọi câu bắt buộc — đơn giản nhất), hoặc (b) materialize kèm + engine cho phép skip câu optional mà vẫn `Scored` (đổi luật đóng session — đắt). Khuyến nghị **(a)** phase 1.
 
+### Dùng bộ chuẩn hệ thống — ✅ **CAMP-20 (2026-08-13)**, migration `AddCriterionSourceSystemDefault`
+- `GET /campaign/criteria/system-default/preview?jobCategory={BA|BE|FE}&language={vi|en}` — **CHỈ ĐỌC**, `Roles="Employer"`. Trả `{jobCategory, language, version, criteria:[{name, description, weight, maxScore, levelCount}]}`. Chưa có bộ chuẩn → **404** (thông điệp actionable: *"quản trị viên chưa soạn bộ này"*).
+- `POST /campaign/{id}/criteria/from-system-default` body `{jobCategory, language}` → chép về campaign qua **đúng đường ghi hiện có** (dedup tên · chuẩn hoá Σweight→1 · validate mốc bằng `CriterionLevelRules` · bump `rubric_version` nếu Active). Interview lỗi → **502**, 0 row ghi.
+- `CriterionSource` thêm giá trị **`SystemDefault`** (thứ ba, không thay `AiSuggested`) — dùng cho cả bộ chép về lẫn `BuildDefaultCriteria`.
+> Vì sao 404 ở đường xem trước nhưng 502 ở đường chép, và vì sao nghề phải do employer chọn: rules.md **CAMP-20**. `levelCount = 0` là **hợp lệ** (admin chưa khai mốc) — FE hiện badge "chưa có mốc", KHÔNG chặn nút chép.
+
 ### `campaign_criterion_levels` — ✅ **CAMP-16 (2026-08-13), migration `AddCampaignCriterionLevels`**
 ```
 id            uuid PK
