@@ -42,7 +42,7 @@ public class ParticipationServiceTests
         m.Setup(x => x.CreateOrGetSessionAsync(
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-                It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CampaignSessionResult(FixedSession, new List<SessionQuestion>
             {
                 new(Guid.NewGuid(), 1, "Q1", 120)
@@ -586,7 +586,7 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             FixedCandidate, camp.Id, It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            deadline, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
+            deadline, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -606,7 +606,7 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            (DateTime?)null, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
+            (DateTime?)null, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -631,7 +631,7 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            deadline, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
+            deadline, It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
             It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
@@ -651,7 +651,7 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             FixedCandidate, camp.Id, camp.OrgId, It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // PR160: Start PHẢI truyền đúng campaign.Seniority xuống session client (Interview snapshot sang
@@ -676,7 +676,7 @@ public class ParticipationServiceTests
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
             It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
-            "Senior", It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Once);
+            "Senior", It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // INT-17: Start PHẢI truyền toggle + trần adaptive của campaign xuống session client.
@@ -699,7 +699,7 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            It.IsAny<DateTime?>(), true, 2, 8, It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<DateTime?>(), true, 2, 8, It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Once);
 
         // Cờ cũng surface về FE để trang thi biết sẽ có đuôi thích ứng.
         Assert.True(res.AdaptiveEnabled);
@@ -721,7 +721,7 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            It.IsAny<DateTime?>(), false, null, null, It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<DateTime?>(), false, null, null, It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Once);
 
         Assert.False(res.AdaptiveEnabled);
     }
@@ -740,7 +740,7 @@ public class ParticipationServiceTests
         session.Setup(x => x.CreateOrGetSessionAsync(
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-                It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InsufficientOrgCreditException("Tổ chức không đủ credit"));
 
         await Assert.ThrowsAsync<InsufficientOrgCreditException>(() =>
@@ -763,7 +763,7 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -859,7 +859,7 @@ public class ParticipationServiceTests
         session.Verify(x => x.CreateOrGetSessionAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
-            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────────
