@@ -3,15 +3,22 @@ namespace Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
 
 /// <param name="Question">
-/// Câu hỏi đem chấm thử. Bỏ trống → lấy câu đầu trong bộ mẫu hằng số của (nghề, ngôn ngữ).
+/// Câu hỏi admin TỰ GÕ. Ưu tiên cao nhất; bỏ trống thì xét <paramref name="SampleQuestionId"/>.
 /// <para>⚠ CỐ Ý không cho chọn từ <c>practice_questions</c> thật: câu B2C sinh từ CV/JD của chính
 /// người dùng nên chứa tên công ty/dự án của họ — hiện cho admin là rò rỉ dữ liệu.</para>
+/// </param>
+/// <param name="SampleQuestionId">
+/// Id một câu trong <c>sampleQuestions</c> mà <c>GET /api/admin/rubrics/{jobCategory}</c> vừa trả.
+/// Id không thuộc danh sách của (nghề, ngôn ngữ) đang chạy → <b>400 nêu rõ</b>, KHÔNG âm thầm rơi về
+/// câu mặc định: rơi âm thầm thì admin tưởng mình đang kiểm chứng câu A còn hệ thống chấm câu B.
+/// Bỏ trống cả hai → câu đầu trong bộ mẫu.
 /// </param>
 /// <param name="CustomAnswer">Bài thứ tư do admin tự dán — bài DUY NHẤT không do bộ chấm viết ra.</param>
 public record AdminRubricPreviewRequest(
     string? Question = null,
     string? CustomAnswer = null,
-    string? Seniority = null
+    string? Seniority = null,
+    string? SampleQuestionId = null
 );
 
 public record AdminRubricPreviewRunResponse(

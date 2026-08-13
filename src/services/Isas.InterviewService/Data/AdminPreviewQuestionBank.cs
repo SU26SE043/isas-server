@@ -16,6 +16,15 @@ namespace Isas.InterviewService.Data;
 /// </summary>
 public static class AdminPreviewQuestionBank
 {
+    /// <summary>
+    /// Một câu mẫu, kèm ĐỊNH DANH ỔN ĐỊNH để client chọn (<c>"BE-vi-1"</c>).
+    ///
+    /// <para>Id suy từ (nghề, ngôn ngữ, vị trí) chứ không lưu đâu cả — nội dung câu mẫu vẫn chỉ tồn
+    /// tại ở ĐÚNG MỘT chỗ là bảng hằng số dưới đây. Client phải ĐỌC danh sách này rồi mới gửi id: bịa
+    /// id ra thì bị từ chối tường minh, không âm thầm rơi về câu mặc định.</para>
+    /// </summary>
+    public record SampleQuestion(string Id, string Text);
+
     private static readonly Dictionary<(JobCategory, string), string[]> Bank = new()
     {
         [(JobCategory.BA, "vi")] =
@@ -56,7 +65,20 @@ public static class AdminPreviewQuestionBank
         ]
     };
 
-    /// <summary>Bộ câu mẫu của một (nghề, ngôn ngữ). Rỗng nếu chưa soạn cho tổ hợp đó.</summary>
-    public static IReadOnlyList<string> For(JobCategory jobCategory, string language)
-        => Bank.TryGetValue((jobCategory, language), out var questions) ? questions : [];
+    /// <summary>Bộ câu mẫu của một (nghề, ngôn ngữ), kèm id. Rỗng nếu chưa soạn cho tổ hợp đó.</summary>
+    public static IReadOnlyList<SampleQuestion> For(JobCategory jobCategory, string language)
+        => Bank.TryGetValue((jobCategory, language), out var questions)
+            ? questions.Select((text, i) => new SampleQuestion(IdOf(jobCategory, language, i), text)).ToList()
+            : [];
+
+    /// <summary>
+    /// Tra một câu theo id trong phạm vi (nghề, ngôn ngữ). <c>null</c> = id không thuộc danh sách —
+    /// caller PHẢI từ chối tường minh chứ không rơi về câu mặc định: rơi âm thầm thì admin tưởng mình
+    /// đang chấm thử câu A trong khi hệ thống chấm câu B, và cả lượt chấm thử nói về một thứ khác.
+    /// </summary>
+    public static SampleQuestion? Find(JobCategory jobCategory, string language, string id)
+        => For(jobCategory, language).FirstOrDefault(q => q.Id == id);
+
+    private static string IdOf(JobCategory jobCategory, string language, int index)
+        => $"{jobCategory}-{language}-{index + 1}";
 }

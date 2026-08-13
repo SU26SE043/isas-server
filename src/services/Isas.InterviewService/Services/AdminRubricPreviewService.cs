@@ -81,7 +81,7 @@ public class AdminRubricPreviewService(
                 + "Chấm thử cần mốc để kiểm chứng, nếu không nó chỉ đang kiểm chứng dải mặc định.");
 
         // ── 3. chọn câu hỏi ───────────────────────────────────────────────────
-        var question = SelectQuestion(jobCategory, lang, request.Question);
+        var question = SelectQuestion(jobCategory, lang, request.Question, request.SampleQuestionId);
 
         // ── 4. còn lượt nào đang chạy? (self-heal row mồ côi trước) ────────────
         await ResolveStaleRunningAsync(jobCategory, lang, ct);
@@ -207,15 +207,28 @@ public class AdminRubricPreviewService(
             .OrderBy(c => c.Name)
             .ToListAsync(ct);
 
-    private static string SelectQuestion(JobCategory jobCategory, string language, string? custom)
+    private static string SelectQuestion(
+        JobCategory jobCategory, string language, string? custom, string? sampleQuestionId)
     {
         if (!string.IsNullOrWhiteSpace(custom)) return custom.Trim();
 
         var bank = AdminPreviewQuestionBank.For(jobCategory, language);
+
+        if (!string.IsNullOrWhiteSpace(sampleQuestionId))
+        {
+            // Từ chối TƯỜNG MINH thay vì rơi về câu mặc định: rơi âm thầm thì admin tưởng mình đang
+            // kiểm chứng câu A trong khi hệ thống chấm câu B, và cả lượt chấm thử nói về một thứ khác
+            // — mà báo cáo trông vẫn hợp lý.
+            return AdminPreviewQuestionBank.Find(jobCategory, language, sampleQuestionId.Trim())?.Text
+                ?? throw new InvalidOperationException(
+                    $"sampleQuestionId '{sampleQuestionId}' không thuộc bộ câu mẫu của {jobCategory} ({language}). "
+                    + $"Hợp lệ: {string.Join(", ", bank.Select(q => q.Id))}.");
+        }
+
         if (bank.Count == 0)
             throw new InvalidOperationException(
                 $"Chưa có câu hỏi mẫu cho {jobCategory} ({language}) — nhập câu hỏi để chấm thử.");
-        return bank[0];
+        return bank[0].Text;
     }
 
     private async Task ResolveStaleRunningAsync(JobCategory jobCategory, string language, CancellationToken ct)

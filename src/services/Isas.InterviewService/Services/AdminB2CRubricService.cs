@@ -292,6 +292,8 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
         => new(jobCategory, language,
             Version: criteria.Count > 0 ? criteria[0].Version : 0,
             Changed: changed,
+            SampleQuestions: AdminPreviewQuestionBank.For(jobCategory, language)
+                .Select(q => new AdminSampleQuestionItem(q.Id, q.Text)).ToList(),
             Criteria: criteria.OrderBy(c => c.Name, StringComparer.Ordinal).Select(c => new AdminRubricCriterionItem(
                 c.Id, c.Name, c.Description, c.Weight, c.MaxScore, c.ScoringScope.ToString(),
                 // `.Include()` KHÔNG bảo đảm thứ tự — sắp ở đây thay vì tin vào DB, nếu không mốc hiện

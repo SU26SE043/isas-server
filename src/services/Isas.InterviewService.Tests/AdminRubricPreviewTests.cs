@@ -319,7 +319,80 @@ public class AdminRubricPreviewTests
             Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
 
         Assert.DoesNotContain("ACME", run.QuestionText);
-        Assert.Contains(run.QuestionText, AdminPreviewQuestionBank.For(JobCategory.BE, "vi"));
+        Assert.Contains(AdminPreviewQuestionBank.For(JobCategory.BE, "vi"), q => q.Text == run.QuestionText);
+    }
+
+    // ── (4b) Câu mẫu đi qua API — MỘT nguồn sự thật ─────────────────────────────────────────
+
+    /// <summary>
+    /// <c>GET</c> bộ chuẩn trả kèm danh sách câu mẫu của đúng (nghề, ngôn ngữ) đó.
+    ///
+    /// Không có vế này thì giao diện phải tự chép nội dung câu mẫu vào code của nó ⇒ hai nguồn sự
+    /// thật: sửa câu ở backend thì màn hình vẫn hiện câu cũ, và không gì báo.
+    /// </summary>
+    [Fact]
+    public async Task AdminRubricGet_CarriesSampleQuestions_ScopedToCategoryAndLanguage()
+    {
+        using var t = new TestDb();
+        t.Db.RubricCriteria.AddRange(B2CRubricSeed.Build());
+        await t.Db.SaveChangesAsync();
+        var admin = new AdminB2CRubricService(t.Db);
+
+        var beVi = (await admin.GetAsync(JobCategory.BE, "vi"))!;
+        var beEn = (await admin.GetAsync(JobCategory.BE, "en"))!;
+        var faVi = (await admin.GetAsync(JobCategory.BA, "vi"))!;
+
+        Assert.Equal(3, beVi.SampleQuestions.Count);
+        Assert.All(beVi.SampleQuestions, q => Assert.StartsWith("BE-vi-", q.Id));
+        Assert.All(beVi.SampleQuestions, q => Assert.False(string.IsNullOrWhiteSpace(q.Text)));
+        // Không lẫn tổ hợp khác.
+        Assert.Empty(beVi.SampleQuestions.Select(q => q.Text).Intersect(beEn.SampleQuestions.Select(q => q.Text)));
+        Assert.Empty(beVi.SampleQuestions.Select(q => q.Text).Intersect(faVi.SampleQuestions.Select(q => q.Text)));
+    }
+
+    /// <summary>Chọn câu bằng id ⇒ chấm thử dùng ĐÚNG câu đó, không phải câu đầu danh sách.</summary>
+    [Fact]
+    public async Task Run_WithSampleQuestionId_UsesThatExactQuestion()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+        var third = AdminPreviewQuestionBank.For(JobCategory.BE, "vi")[2];
+
+        var run = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
+            new AdminRubricPreviewRequest(SampleQuestionId: third.Id));
+
+        Assert.Equal(third.Text, run.QuestionText);
+    }
+
+    /// <summary>
+    /// Id bịa ⇒ 400 nêu rõ, KHÔNG âm thầm rơi về câu mặc định. Rơi âm thầm thì admin tưởng mình đang
+    /// kiểm chứng câu A trong khi hệ thống chấm câu B — và báo cáo trông vẫn hợp lý.
+    /// </summary>
+    [Fact]
+    public async Task Run_WithUnknownSampleQuestionId_Throws_DoesNotFallBack()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
+                new AdminRubricPreviewRequest(SampleQuestionId: "BE-vi-99")));
+
+        Assert.Contains("BE-vi-99", ex.Message);
+        Assert.Empty(await t.Db.AdminRubricPreviewRuns.ToListAsync());   // không tạo lượt nào
+    }
+
+    /// <summary>Id của tổ hợp KHÁC (đúng dạng nhưng sai nghề) cũng phải bị từ chối.</summary>
+    [Fact]
+    public async Task Run_WithSampleQuestionIdFromOtherCategory_Throws()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+        var otherCategory = AdminPreviewQuestionBank.For(JobCategory.FE, "vi")[0];
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
+                new AdminRubricPreviewRequest(SampleQuestionId: otherCategory.Id)));
     }
 
     [Fact]

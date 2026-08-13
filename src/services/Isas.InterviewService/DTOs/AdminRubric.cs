@@ -41,8 +41,19 @@ public record AdminRubricResponse(
     string Language,
     int Version,
     bool Changed,
-    IReadOnlyList<AdminRubricCriterionItem> Criteria
+    IReadOnlyList<AdminRubricCriterionItem> Criteria,
+    /// <summary>
+    /// Câu mẫu dùng được cho chấm thử ở đúng (nghề, ngôn ngữ) này — client CHỌN từ đây rồi gửi
+    /// <c>sampleQuestionId</c>.
+    ///
+    /// <para>Trả kèm ở đây thay vì để client tự biết: nội dung câu mẫu phải tồn tại ở ĐÚNG MỘT chỗ.
+    /// Chép sang giao diện là hai nguồn sự thật — sửa câu ở backend thì màn hình vẫn hiện câu cũ và
+    /// không gì báo.</para>
+    /// </summary>
+    IReadOnlyList<AdminSampleQuestionItem> SampleQuestions
 );
+
+public record AdminSampleQuestionItem(string Id, string Text);
 
 public record AdminRubricCriterionItem(
     Guid Id,
