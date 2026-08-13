@@ -203,5 +203,88 @@ namespace Isas.CampaignService.Services
 
             return new SessionTranscriptResponse { SessionId = sessionId, Questions = questions };
         }
+
+        // CAMP-20 — shape khớp hợp đồng GET /internal/rubrics/b2c. KHÔNG có `id` (id Interview vô nghĩa
+        // với Campaign) và KHÔNG có `scoringScope` (Campaign không có cột, đường chấm B2B không đọc).
+        // Field lạ bị bỏ qua (case-insensitive) ⇒ Interview thêm field mới không làm vỡ bên này.
+        private record B2CRubricApiResponse(
+            string? JobCategory, string? Language, int Version, List<B2CRubricApiCriterion>? Criteria);
+        private record B2CRubricApiCriterion(
+            string? Name, string? Description, decimal Weight, int MaxScore, List<B2CRubricApiLevel>? Levels);
+        private record B2CRubricApiLevel(int Score, string? Descriptor);
+
+        public async Task<B2CRubricResponse> GetB2CRubricAsync(
+            string jobCategory, string language, CancellationToken ct = default)
+        {
+            using var msg = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"/internal/rubrics/b2c?jobCategory={Uri.EscapeDataString(jobCategory)}" +
+                $"&language={Uri.EscapeDataString(language)}");
+            msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _http.SendAsync(msg, ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                _logger.LogError(ex, "Không gọi được InterviewService /internal/rubrics/b2c");
+                throw new DownstreamServiceException("Không gọi được InterviewService (bộ chuẩn B2C)", ex);
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync(ct);
+                // 404 = admin CHƯA soạn bộ chuẩn cho tổ hợp này. Vẫn là DownstreamServiceException (→502
+                // theo hợp đồng đã chốt với FE) nhưng THÔNG ĐIỆP phải nói đúng chuyện: HR đọc "lỗi hệ
+                // thống" rồi báo sự cố, trong khi việc cần làm là bảo admin soạn bộ đó.
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    _logger.LogWarning(
+                        "Chưa có bộ chuẩn B2C cho ({JobCategory}, {Language}) - {Error}",
+                        jobCategory, language, error);
+                    throw new DownstreamServiceException(
+                        $"Chưa có bộ chuẩn cho ({jobCategory}, {language}) — quản trị viên cần soạn bộ này trước.");
+                }
+                _logger.LogError("InterviewService bộ chuẩn B2C lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+                throw new DownstreamServiceException($"InterviewService bộ chuẩn B2C trả {(int)response.StatusCode}");
+            }
+
+            B2CRubricApiResponse? body;
+            try
+            {
+                body = await response.Content.ReadFromJsonAsync<B2CRubricApiResponse>(Json, ct);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "InterviewService bộ chuẩn B2C trả JSON không hợp lệ");
+                throw new DownstreamServiceException("InterviewService bộ chuẩn B2C trả JSON không hợp lệ", ex);
+            }
+
+            // Bộ RỖNG là lỗi, không phải "bộ chuẩn không có tiêu chí nào": chép về sẽ xoá sạch tiêu chí
+            // của chiến dịch rồi để lại một campaign không thước đo — Interview vẫn chấm ra điểm.
+            if (body is null || body.Criteria is not { Count: > 0 })
+                throw new DownstreamServiceException(
+                    $"InterviewService trả bộ chuẩn rỗng cho ({jobCategory}, {language}).");
+
+            var criteria = body.Criteria
+                .Select(c => new B2CRubricCriterion(
+                    c.Name ?? string.Empty,
+                    c.Description,
+                    c.Weight,
+                    c.MaxScore,
+                    (c.Levels ?? new List<B2CRubricApiLevel>())
+                        // `.Include()` phía Interview không bảo đảm thứ tự mốc; sort tại đây để
+                        // order_no/hiển thị không phụ thuộc thứ tự Postgres trả về.
+                        .OrderBy(l => l.Score)
+                        .Select(l => new B2CRubricLevel(l.Score, l.Descriptor ?? string.Empty))
+                        .ToList()))
+                .ToList();
+
+            // Echo lại tham số đã HỎI, không lấy giá trị Interview trả về: nếu bên đó echo sai (hoặc
+            // bản cũ chưa echo) thì audit/response sẽ ghi một tổ hợp khác với tổ hợp thật sự được chép.
+            return new B2CRubricResponse(jobCategory, language, body.Version, criteria);
+        }
     }
 }

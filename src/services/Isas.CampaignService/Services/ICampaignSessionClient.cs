@@ -38,7 +38,45 @@ namespace Isas.CampaignService.Services
         // Lỗi hạ tầng / non-success → DownstreamServiceException (502).
         Task<SessionTranscriptResponse> GetSessionTranscriptAsync(
             Guid sessionId, CancellationToken ct = default);
+
+        /// <summary>
+        /// CAMP-20 — đọc BỘ CHUẨN B2C (admin soạn) để Employer chép về campaign.
+        /// <c>GET /internal/rubrics/b2c?jobCategory=&amp;language=</c> (máy-máy, X-Internal-Token).
+        ///
+        /// <para>Đặt ở ĐÂY chứ không dựng client thứ hai: đích đến y hệt (InterviewService), nên client
+        /// riêng nghĩa là hai chỗ cấu hình BaseUrl/token/timeout — lệch một chỗ thì hỏng một nửa số
+        /// đường gọi mà nửa kia vẫn chạy, tức triệu chứng khó truy nhất.</para>
+        ///
+        /// <para><b>Không có <c>id</c> và không có <c>scoringScope</c> trong hợp đồng.</b> Id là của
+        /// Interview, vô nghĩa với Campaign (đường ghi bên này replace-all mint id mới). ScoringScope
+        /// thì Campaign KHÔNG có cột tương ứng và đường chấm B2B không đọc — mang về chỉ để lưu là dựng
+        /// một cột nói dối.</para>
+        ///
+        /// <para><c>levels</c> RỖNG = <b>chưa khai mốc</b> (admin chưa soạn), KHÔNG phải lỗi — Interview
+        /// rơi về dải mặc định như trước CAMP-16.</para>
+        ///
+        /// <para>Ném <see cref="DownstreamServiceException"/> cho MỌI thất bại, gồm cả 404 "chưa có bộ
+        /// chuẩn cho tổ hợp này" (controller map 502). Cố ý KHÔNG fallback bịa ra một bộ tiêu chí:
+        /// HR sẽ tin đó là bộ chuẩn do admin soạn rồi phát cho ứng viên thật.</para>
+        /// </summary>
+        Task<B2CRubricResponse> GetB2CRubricAsync(
+            string jobCategory, string language, CancellationToken ct = default);
     }
+
+    /// <summary>
+    /// CAMP-20 — bộ chuẩn B2C nhận từ Interview. <c>Version</c> là số của bộ đang active bên đó, mang
+    /// về CHỈ để ghi audit/hiển thị "chép từ bản mấy" — nó KHÔNG phải <c>campaigns.rubric_version</c>
+    /// (hai trục đánh số khác nhau: một do Interview cấp cho bộ chuẩn, một do Campaign cấp cho thước
+    /// đo của chiến dịch).
+    /// </summary>
+    public record B2CRubricResponse(
+        string JobCategory, string Language, int Version, IReadOnlyList<B2CRubricCriterion> Criteria);
+
+    public record B2CRubricCriterion(
+        string Name, string? Description, decimal Weight, int MaxScore,
+        IReadOnlyList<B2CRubricLevel> Levels);
+
+    public record B2CRubricLevel(int Score, string Descriptor);
 
     /// <summary>
     /// Một tiêu chí chấm gửi sang Interview. <c>Levels</c> là init-only có mặc định RỖNG (không phải
