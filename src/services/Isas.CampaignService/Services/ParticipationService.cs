@@ -441,7 +441,9 @@ namespace Isas.CampaignService.Services
                 throw new InvitationGoneException($"Chiến dịch không còn nhận ứng viên (trạng thái {inv.Campaign.Status}).");
         }
 
-        private static CampaignCriterionResponse MapCriterion(CampaignCriterion c) => new()
+        // Quyết định 7 — KHÔNG map Levels sang ứng viên. Type đích không có trường đó nên đây là
+        // ràng buộc của trình biên dịch, không phải của người đọc code.
+        private static CandidateCriterionResponse MapCriterion(CampaignCriterion c) => new()
         {
             Id = c.Id,
             OrderNo = c.OrderNo,
