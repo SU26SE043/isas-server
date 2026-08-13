@@ -488,6 +488,15 @@ descriptor      text
 example_answers jsonb  ✅ DB15 — list câu mẫu neo cho mức (gộp từ bảng `rubric_anchors` cũ); '[]' nếu không có
                        UNIQUE (criterion_id, score)
 ```
+> **✅ Nguồn dữ liệu (2026-08-13, CAMP-14→19):** trước đó bảng này **0 dòng trên toàn prod** ⇒ nhánh hard-anchor của E9 là code chết. Nay **B2B** được điền lúc materialize: Campaign gửi `criteria[].levels` trong `POST /internal/sessions/campaign` → `PracticeService` tạo `RubricLevel` con (`example_answers = []`, xem ai.md §E9 vì sao anchor cắt khỏi v1). **B2C vẫn rỗng** (seed 42 dòng + rubric riêng BC16 đều không khai mốc) ⇒ vẫn dải mặc định.
+> ⚠ Guard **hai đầu** (CAMP-17): mốc trùng `score` hoặc `score > max_score` ⇒ Interview **bỏ toàn bộ levels của tiêu chí đó** + log Warning (rơi về dải mặc định) — thà chấm như cũ còn hơn chấm bằng thang méo. Bỏ theo **từng tiêu chí**, không kéo cả campaign.
+
+### Ghim phiên bản thước đo theo BUỔI THI — ✅ **CAMP-18**, migration `AddSessionCampaignRubricVersion`
+`practice_sessions.campaign_rubric_version int?` — gán lúc tạo buổi (chép từ `campaigns.rubric_version` Campaign gửi sang; **Interview KHÔNG tự tính `Max+1`**). `null` = B2C **hoặc** buổi có trước cột này (migration đã backfill `= 1` cho mọi buổi B2B, đúng vì `PracticeService` từng hardcode `Version = 1`).
+Cùng mẫu đóng dấu-lúc-tạo đã có: `SelfConsistencyN`, `EntitlementSource`, `ScoringScopeVersion`.
+> 🔴 **`RubricCriteriaLoader` là nguồn DUY NHẤT nạp tiêu chí chấm.** Trước 2026-08-13 câu truy vấn này bị chép **5 bản** (publish · callback guard E8/E9 · republisher · notifier tính điểm tổng · evidence snapshot). Hai hệ quả nếu chúng lệch nhau, **cả hai đều không có exception**: publish↔callback lệch ⇒ mọi `criterionId` vừa gửi đi chấm bị guard E8 coi là "criterion lạ" và **DROP** ⇒ answer mất sạch điểm; upload↔republisher lệch ⇒ cùng answer sinh hai `rubric_version` ⇒ `attemptsForVersion` không bao giờ đủ N ⇒ answer kẹt `Scoring` **vĩnh viễn**.
+> 🛑 Nhánh B2B của loader **cố ý KHÔNG lọc `is_active`** — xem rules.md **CAMP-18** (`is_active` nay nghĩa *"bộ dùng cho buổi thi MỚI"*). Thêm lại ⇒ buổi ghim bản đã hạ cờ nạp **0 tiêu chí** ⇒ mất 1 credit im lặng (PAY-13).
+> ⚠ `.OrderBy(Name)` trong loader là **chốt chặn**, không phải trang trí: `AnswerService` lấy `criteria[0].Version` làm con dấu cho cả lượt chấm.
 
 ### ~~`rubric_anchors`~~ ✅ **DB15 (2026-07-17) — bảng đã DROP, gộp inline vào `rubric_levels.example_answers` (jsonb `List<string>`)**
 > Trước: bảng riêng `rubric_anchors(id, level_id, example_answer)` 1 level ↔ N anchor. Nay mỗi câu mẫu = 1 phần tử trong `rubric_levels.example_answers` jsonb (converter+comparer như `RoadmapMilestone.FocusCriteria`). `ScoringCriteriaBuilder` flatten `l.ExampleAnswers` → `ScoringAnchorDto{Score, ExampleAnswer}` **giữ nguyên output** → **ScoringJob wire contract bất biến** (worker Python không đổi). Migration `SchemaCleanupDb15` (backfill `jsonb_agg(ORDER BY id)` → DROP TABLE; reversible; L3 Postgres verify 0-loss).

@@ -242,6 +242,22 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 > ⚠ **`employer_id` ở đây là dữ liệu DƯ** (luôn suy được qua `campaign_id → campaigns.employer_id`; lưu 2 nơi → nguy cơ lệch khi campaign đổi chủ). Target: **bỏ** khi wire `org_id`, hoặc đổi nghĩa thành `created_by` (audit ai thêm câu hỏi — lúc đó KHÔNG dùng để lọc ownership, ownership chỉ theo `campaigns`).
 > ⚠ **`is_required` đang "đứt dây"**: `practice_questions` (engine) **không có cột này** → materialize xong engine coi mọi câu như nhau, flag vô tác dụng. Chốt 1 trong 2 khi build D2: **(a) bỏ cột** (mọi câu bắt buộc — đơn giản nhất), hoặc (b) materialize kèm + engine cho phép skip câu optional mà vẫn `Scored` (đổi luật đóng session — đắt). Khuyến nghị **(a)** phase 1.
 
+### `campaign_criterion_levels` — ✅ **CAMP-16 (2026-08-13), migration `AddCampaignCriterionLevels`**
+```
+id            uuid PK
+criterion_id  uuid FK → campaign_criteria (Cascade)
+score         int   CHECK (score >= 0);  UNIQUE (criterion_id, score)
+descriptor    text  "CÓ: <hành vi quan sát được> | CÒN THIẾU: <cái mức trên có mà mức này không>"
+created_at / updated_at timestamptz
+```
+> **Bảng con chứ KHÔNG phải jsonb trên `campaign_criteria`** — jsonb không ép được `UNIQUE (criterion_id, score)`, mà hai mốc trùng `score` làm bộ chấm snap **không xác định** (`gemini.py` `min(|Δ|, v)` / `AnswerService.ResolveLevel`) ⇒ E9 sai âm thầm. Shape cũng **trùng khít `rubric_levels`** của Interview ⇒ materialize là map 1-1.
+> Ràng buộc nội dung + ba trạng thái khi ghi: rules.md **CAMP-16/17**. Query filter soft-delete theo `Criterion.Campaign.DeletedAt` (khớp DB13).
+
+### `rubric_preview_runs` — ✅ **CAMP-19 (2026-08-13), migration `AddRubricPreviewRuns`**
+Lịch sử **chấm thử thước đo**: `campaign_id` · `created_by_user_id` · `question_id` (**KHÔNG FK** — câu hỏi bị replace-all) · `question_text` (**snapshot**) · `status` CHECK `Running|Succeeded|Failed` · `billed` · `rubric_snapshot` jsonb · `rubric_fingerprint` varchar(64) · `rubric_version` · `samples` jsonb · `prompt_version` int? · `error_reason` · `created_at`/`completed_at`.
+`INDEX (campaign_id, created_at DESC)` · **`UNIQUE (campaign_id) WHERE status='Running'`** (partial — khoá chống double-click, và row `Running` ghi **TRƯỚC** khi gọi AI nên trình duyệt chết giữa chừng vẫn không mất kết quả).
+> `rubric_snapshot` + `fingerprint` + `prompt_version` là thứ làm "so trước/sau" **trung thực**: cùng fingerprint mà điểm khác = **nhiễu model**; khác = đã đổi thước đo. Thiếu con dấu thì so sánh là bịa (tiền lệ BK23).
+
 ### `campaign_criteria` (tiêu chí CÓ CẤU TRÚC — HR khai thẳng 🔜 / AI đề xuất, HR duyệt)
 | Cột | Kiểu | Ràng buộc / ghi chú |
 |---|---|---|
