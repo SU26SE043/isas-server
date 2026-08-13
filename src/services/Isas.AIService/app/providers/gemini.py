@@ -14,6 +14,7 @@ from app.question_quality import coverage_defects, verify_defect
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
+    build_criterion_levels_prompt,
     build_cv_analysis_prompt, build_repo_analysis_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
     build_summarize_session_prompt, build_decide_next_prompt,
@@ -33,6 +34,14 @@ logger = logging.getLogger(__name__)
 # Dấu câu kết. Cố ý gồm cả `.`/`!` chứ không chỉ `?`: câu mệnh lệnh ("Hãy mô tả cách bạn xử lý lỗi.")
 # là câu hỏi hợp lệ, ép dấu `?` sẽ bắt oan đúng nhóm câu tự nhiên nhất.
 _QUESTION_TERMINATORS = "?.!…。？！"
+
+# E9b — độ dài tối thiểu của một descriptor mốc.
+#
+# KHÔNG phải để đo chất lượng — ngưỡng ký tự không đo được cái đó. Nó chặn đúng một hình dạng đầu
+# ra hỏng: model trả lại chính nhãn điểm ("Mức 3/5", "Khá", "Đạt"). Đó là thứ dải mặc định đang in
+# ra, tức là nếu để lọt thì tính năng vừa xây trả về đúng cái nó sinh ra để thay thế, và HR không
+# có cách nào nhận ra vì màn hình vẫn có chữ.
+LEVEL_DESCRIPTOR_MIN_CHARS = 20
 
 
 def _looks_truncated(question: str) -> bool:
@@ -504,6 +513,140 @@ class GeminiProvider(QuestionProvider):
             c["maxScore"] = int(c.get("maxScore", 5) or 5)
             c["description"] = c.get("description")
         return items
+
+    async def suggest_criterion_levels(self, job_category: str, criteria: list[dict],
+                                       jd_text: str | None = None,
+                                       level_count: int | None = None,
+                                       language: str = "vi",
+                                       seniority: str | None = None) -> list[dict]:
+        """E9b — đề xuất MỐC ĐIỂM cho từng tiêu chí campaign. KHÔNG ghi DB (GEN-4).
+
+        Trả ``[{"criterionId": str, "levels": [{"score": int, "descriptor": str}]}]`` theo ĐÚNG
+        thứ tự ``criteria`` đầu vào; mỗi ``levels`` đã sort tăng, bỏ trùng score, và ⊆ [0, maxScore].
+
+        🛑 **KHÔNG fallback dải mặc định.** Đường ``/suggest-criteria`` để .NET nuốt lỗi rồi dựng
+        bộ tiêu chí cứng — chấp nhận được ở đó vì tiêu chí mặc định là *gợi ý* mà HR nhìn thấy và
+        sửa. Ở đây thì khác: HR sẽ đọc ``Mức 3/10`` và tin đó là mốc AI viết ra, rồi phát link đi
+        tuyển bằng một thang không ai soạn. Không có mốc là TRẠNG THÁI HỢP LỆ (hôm nay 100%
+        campaign đang như vậy), nên fail-loud không chặn ai — nó chỉ từ chối nói dối.
+        """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
+
+        # maxScore là RÀNG BUỘC của từng tiêu chí, không phải hằng chung: hai tiêu chí trong cùng
+        # campaign hoàn toàn có thang khác nhau (thang 5 và thang 10).
+        max_by_id: dict[str, int] = {}
+        for c in criteria:
+            cid = str(c.get("criterionId") or c.get("CriterionId") or "").strip()
+            if not cid:
+                continue
+            max_by_id[cid] = int(c.get("maxScore") or c.get("MaxScore") or 5)
+        if not max_by_id:
+            raise ValueError("Không có tiêu chí hợp lệ để sinh mốc điểm.")
+
+        prompt = build_criterion_levels_prompt(
+            job_category, criteria, jd_text, level_count,
+            language=language, seniority=seniority)
+
+        response = await self._generate(
+            "suggest_criterion_levels",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                # Thấp như `suggest_criteria`: đây là văn bản định nghĩa THƯỚC ĐO, không phải chỗ
+                # cần sáng tạo — dao động ở đây làm hai lần bấm "AI gợi ý" ra hai thang khác nhau.
+                temperature=0.3,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "criteria": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "criterionId": {"type": "string"},
+                                    "levels": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "score": {"type": "integer"},
+                                                "descriptor": {"type": "string"},
+                                            },
+                                            "required": ["score", "descriptor"],
+                                        },
+                                    },
+                                },
+                                "required": ["criterionId", "levels"],
+                            },
+                        }
+                    },
+                    "required": ["criteria"],
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM trả JSON không hợp lệ: {text[:200]}")
+
+        levels_by_id: dict[str, list[dict]] = {}
+        for item in data.get("criteria", []):
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("criterionId", "")).strip()
+            # AI-3 — id không thuộc tập đã cấp là id BỊA (mẫu `citedChunkId` D27 / `criterionId`
+            # C14): drop, KHÔNG cố đoán xem model định nói tiêu chí nào.
+            if cid not in max_by_id or cid in levels_by_id:
+                continue
+
+            mx = max_by_id[cid]
+            by_score: dict[int, str] = {}
+            for lv in (item.get("levels") or []):
+                if not isinstance(lv, dict):
+                    continue
+                raw = lv.get("score")
+                # `bool` là con của `int` trong Python — `True` sẽ lọt thành score 1 nếu không loại.
+                if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                    continue
+                s = int(raw)
+                if s < 0 or s > mx:
+                    continue          # ngoài thang của CHÍNH tiêu chí này → bỏ
+                if s in by_score:
+                    continue          # trùng score → giữ mốc đầu tiên
+                by_score[s] = str(lv.get("descriptor") or "").strip()
+
+            # Hai mốc trùng score làm cả `min(valid_levels, key=…)` phía provider lẫn `ResolveLevel`
+            # phía C# snap KHÔNG XÁC ĐỊNH ⇒ E9 sai âm thầm. Sort + dedupe ở đây là bất biến đầu ra.
+            levels_by_id[cid] = [{"score": s, "descriptor": by_score[s]}
+                                 for s in sorted(by_score)]
+
+            if len(levels_by_id[cid]) < 2:
+                raise ValueError(
+                    f"Tiêu chí {cid}: chỉ có {len(levels_by_id[cid])} mốc hợp lệ, cần ít nhất 2.")
+            # Thiếu mốc 0 ⇒ bài TRỐNG snap về mốc thấp nhất còn lại: ứng viên không nói gì vẫn được
+            # điểm, và KHÔNG lỗi nào nổ. Thiếu mốc maxScore ⇒ luật F13 ("sampleAnswer ở mức ĐIỂM
+            # TỐI ĐA") trỏ vào một mức không tồn tại.
+            if 0 not in by_score:
+                raise ValueError(f"Tiêu chí {cid}: thiếu mốc 0 (mốc 'không có bằng chứng nào').")
+            if mx not in by_score:
+                raise ValueError(f"Tiêu chí {cid}: thiếu mốc {mx} (điểm tối đa của tiêu chí).")
+            for s, desc in sorted(by_score.items()):
+                if len(desc) < LEVEL_DESCRIPTOR_MIN_CHARS:
+                    raise ValueError(
+                        f"Tiêu chí {cid}: mô tả mốc {s} rỗng hoặc quá ngắn "
+                        f"(<{LEVEL_DESCRIPTOR_MIN_CHARS} ký tự) — mốc phải mô tả hành vi quan sát "
+                        "được, không phải nhãn điểm.")
+
+        missing = set(max_by_id) - set(levels_by_id)
+        if missing:
+            raise ValueError(f"LLM không trả mốc cho tiêu chí: {sorted(missing)}")
+
+        # Giữ ĐÚNG thứ tự đầu vào — HR đọc mốc cạnh hàng tiêu chí của mình, thứ tự nhảy theo model
+        # trả về là nhiễu không cần thiết.
+        return [{"criterionId": cid, "levels": levels_by_id[cid]} for cid in max_by_id]
 
     async def analyze_cv(self, cv_text: str, jd_text: str | None,
                            job_category: str | None,

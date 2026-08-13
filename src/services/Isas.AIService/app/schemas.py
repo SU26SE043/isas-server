@@ -125,6 +125,56 @@ class SuggestCriteriaResponse(BaseModel):
     criteria: list[CriterionItem]
 
 
+# ── MỐC ĐIỂM cho tiêu chí campaign (E9b) ────────────────────────────────────
+# E9 (chấm NEO theo mức) đã chạy đủ ở cả hai đầu — C# gửi `Levels[]`, prompt in `• Mức n: …`,
+# provider snap điểm về mức — nhưng B2B **chưa bao giờ có dữ liệu mức**: `campaign_criteria`
+# không có cột mức nên mọi lượt chấm rơi vào dải mặc định `0..maxScore`, và prompt in ra
+# `• Mức 3: Mức 3/5` rồi ngay dòng dưới bắt model "bám descriptor của mức đã chọn" — bám một
+# tautology. Endpoint này đổ NỘI DUNG THẬT vào bộ máy sẵn có; nó KHÔNG ghi DB (GEN-4), chỉ trả
+# về để HR xem/sửa rồi lưu qua đúng một cửa `PUT /campaign/{id}`.
+class CriterionForLevels(BaseModel):
+    """1 tiêu chí HR đã khai, cần AI đề xuất mốc điểm.
+
+    ``maxScore`` là RÀNG BUỘC chứ không phải gợi ý: mốc cao nhất PHẢI đúng bằng nó (luật F13
+    *"sampleAnswer ở mức ĐIỂM TỐI ĐA"* trỏ vào mức đó), và mốc thấp nhất phải là 0 (thiếu mốc 0
+    thì bài TRỐNG snap về mốc thấp nhất còn lại — ứng viên không nói gì vẫn được điểm, và không
+    lỗi nào nổ). Provider kiểm cả hai đầu, xem :meth:`GeminiProvider.suggest_criterion_levels`.
+    """
+    criterionId: str
+    name: str
+    description: str | None = None
+    maxScore: int
+
+
+class SuggestCriterionLevelsRequest(BaseModel):
+    """⚠ Mọi field PHẢI khai tường minh — schema không set ``model_config`` nên pydantic
+    ``extra='ignore'`` NUỐT IM LẶNG field quên khai (.NET gửi, HTTP 200, prompt không đổi một
+    chữ). Đã cắn repo 4 lần: ``focusCriteria``/BC14 · ``metricsVersion`` · ``adaptiveMaxQuestions``
+    · ``fullName``/BK28."""
+    jobCategory: str
+    language: str = "vi"
+    seniority: str | None = None
+    jdText: str | None = None
+    # Số mốc mong muốn; None ⇒ để model tự chọn trong dải 3–6 (luật nằm trong prompt).
+    levelCount: int | None = None
+    criteria: list[CriterionForLevels]
+
+
+class CriterionLevelItem(BaseModel):
+    score: int
+    descriptor: str
+
+
+class CriterionLevels(BaseModel):
+    """Mốc của MỘT tiêu chí — đã sort tăng, bỏ trùng, và ⊆ ``[0, maxScore]`` (provider lọc)."""
+    criterionId: str
+    levels: list[CriterionLevelItem]
+
+
+class SuggestCriterionLevelsResponse(BaseModel):
+    criteria: list[CriterionLevels]
+
+
 # ── Phân tích CV (B2C BC6, D17) — sync HTTP, dùng chung engine với B2B (C14) ─
 class CvCriterion(BaseModel):
     """C14 — 1 tiêu chí campaign gửi kèm để AI chấm khớp CV (`campaign_criteria`).

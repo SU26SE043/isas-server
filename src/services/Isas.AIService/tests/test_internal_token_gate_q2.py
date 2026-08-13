@@ -28,6 +28,8 @@ _HEADERS = {"X-Internal-Token": settings.internal_token}
 _VALID_BODY = {
     "/api/v1/generate-questions":     {"jobCategory": "BA", "language": "vi", "count": 1},
     "/api/v1/suggest-criteria":       {"jobCategory": "BE", "jdText": "JD", "count": 4},
+    "/api/v1/suggest-criterion-levels": {"jobCategory": "BE", "criteria": [
+        {"criterionId": "c1", "name": "Chiều sâu kỹ thuật", "maxScore": 5}]},
     "/api/v1/analyze-cv":             {"cvText": "kinh nghiệm 3 năm Python"},
     "/api/v1/generate-roadmap":       {"jobCategory": "BE", "level": "Junior"},
     "/api/v1/generate-lesson-theory": {"jobCategory": "BE", "level": "Junior",
@@ -63,7 +65,8 @@ def provider_no_touch(monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("Gate hở: đã chạm provider/transcriber trước khi từ chối request.")
 
-    for name in ("generate", "suggest_criteria", "analyze_cv", "generate_roadmap",
+    for name in ("generate", "suggest_criteria", "suggest_criterion_levels", "analyze_cv",
+                 "generate_roadmap",
                  "generate_lesson_theory", "summarize_roadmap", "summarize_session"):
         monkeypatch.setattr(main_module.provider, name, boom)
     monkeypatch.setattr(main_module.transcriber, "transcribe_detailed", boom)

@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse, QuestionCitation,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
+    SuggestCriterionLevelsRequest, SuggestCriterionLevelsResponse, CriterionLevels,
     AnalyzeCvRequest, AnalyzeCvResponse, AnalyzeRepoRequest, AnalyzeRepoResponse, JdMatch,
     CriterionMatch,
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
@@ -118,6 +119,34 @@ async def suggest_criteria(req: SuggestCriteriaRequest,
         return SuggestCriteriaResponse(criteria=[CriterionItem(**c) for c in items])
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đề xuất tiêu chí: {ex}")
+
+@router.post("/suggest-criterion-levels", response_model=SuggestCriterionLevelsResponse)
+async def suggest_criterion_levels(req: SuggestCriterionLevelsRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    """E9b — đề xuất MỐC ĐIỂM cho tiêu chí campaign. KHÔNG ghi DB (GEN-4).
+
+    CampaignService gọi khi HR bấm "AI gợi ý mốc"; kết quả trả thẳng về cho HR xem/sửa, việc LƯU
+    đi qua đúng một cửa `PUT /campaign/{id}` (giữ audit + luật bump version ở một chỗ).
+
+    Lỗi ⇒ 502, **KHÔNG fallback dải mặc định** — xem docstring provider: mốc bịa sẽ được HR tin là
+    do AI viết, mà "không có mốc" vốn là trạng thái hợp lệ nên fail-loud không chặn ai."""
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+    if not req.criteria:
+        raise HTTPException(status_code=400, detail="criteria không được rỗng")
+    try:
+        # `seniority` truyền bằng TỪ KHOÁ: `_call_with_language` chèn `language=` vào kwargs nên
+        # mọi thứ sau `level_count` phải là keyword (mẫu `/generate-questions` SEN1).
+        items = await _call_with_language(req.language, provider.suggest_criterion_levels,
+            req.jobCategory, [c.model_dump() for c in req.criteria],
+            req.jdText, req.levelCount, seniority=req.seniority)
+        return SuggestCriterionLevelsResponse(
+            criteria=[CriterionLevels(**i) for i in items])
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi đề xuất mốc điểm: {ex}")
+
 
 @router.post("/analyze-cv", response_model=AnalyzeCvResponse, response_model_exclude_none=True)
 async def analyze_cv(req: AnalyzeCvRequest,
