@@ -52,6 +52,9 @@ builder.Services.AddScoped<IParserService, ParserService>();
 builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 // F9: gọi AIService sinh câu hỏi từ JD cho campaign B2B (đồng bộ; lỗi → 502 ném lên controller)
+// CAMP-16: gọi AIService soạn mốc điểm (đồng bộ; KHÔNG fallback — lỗi nổi lên thành 502)
+builder.Services.AddHttpClient<IAiServiceLevelSuggester, AiServiceLevelSuggester>(c =>
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 builder.Services.AddHttpClient<IQuestionGenerator, AiServiceQuestionGenerator>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 // SEC-2: gọi AIService so khớp khuôn mặt (đồng bộ qua AiService:BaseUrl; lỗi → 502 ném lên controller)

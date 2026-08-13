@@ -31,6 +31,12 @@ namespace Isas.CampaignService.Services
         Task<CampaignResponse> GenerateCampaignQuestionsAsync(Guid orgId, Guid actorUserId, Guid id, int? count, CancellationToken ct);
 
         /// <summary>
+        /// CAMP-16 — AI đề xuất mốc điểm cho các tiêu chí hiện có. CHỈ ĐỌC, không ghi DB: HR xem/sửa
+        /// rồi lưu qua PUT /campaign/{id} (một cửa ghi duy nhất ⇒ validate/audit/bump ở một chỗ).
+        /// </summary>
+        Task<SuggestCriterionLevelsResponse> SuggestCriterionLevelsAsync(Guid orgId, Guid id, CancellationToken ct);
+
+        /// <summary>
         /// Đọc file CSV câu hỏi → trả danh sách để HR xem trước. <b>KHÔNG ghi gì vào cơ sở dữ liệu</b> —
         /// HR bấm Lưu thì mới đi qua <see cref="UpdateCampaignQuestionsAsync"/>.
         /// Ném: KeyNotFound → 404 · InvalidOperation (≠ Draft) → 409 · Argument (file hỏng/sai định dạng/

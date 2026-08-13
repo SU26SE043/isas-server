@@ -36,6 +36,9 @@ namespace Isas.CampaignService.Services
         // hưởng đúng đường sinh câu hỏi (ném InvalidOperationException = lỗi cấu hình), không đường nào khác.
         private readonly IQuestionGenerator? _questionGenerator;
         private readonly IEntitlementClient? _entitlements;
+        // CAMP-16 — AI soạn mốc điểm. Optional (default null) để mọi call-site test hiện có giữ nguyên;
+        // DI luôn resolve client thật. null → chỉ hỏng đúng endpoint gợi ý mốc, không đường nào khác.
+        private readonly IAiServiceLevelSuggester? _levelSuggester;
         private readonly bool _bilingualEnabled;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
@@ -51,7 +54,8 @@ namespace Isas.CampaignService.Services
             IOptions<InvitationSettings>? invitationOptions = null,
             IQuestionGenerator? questionGenerator = null,
             IEntitlementClient? entitlements = null,
-            IConfiguration? config = null)
+            IConfiguration? config = null,
+            IAiServiceLevelSuggester? levelSuggester = null)
         {
             _questionGenerator = questionGenerator;
             _invitationSettings = invitationOptions?.Value ?? new InvitationSettings();
@@ -63,6 +67,7 @@ namespace Isas.CampaignService.Services
             _emailPublisher = emailPublisher;
             _sessionClient = sessionClient;
             _entitlements = entitlements;
+            _levelSuggester = levelSuggester;
             _bilingualEnabled = bool.TryParse(config?["Campaign:Bilingual:Enabled"], out var bilingual) && bilingual;
         }
 
@@ -851,6 +856,57 @@ namespace Isas.CampaignService.Services
             AddAudit(actorUserId, orgId, AuditAction.Delete, campaign.Id, "Soft delete");
             await _db.SaveChangesAsync(ct);
             return true;
+        }
+
+        // ── CAMP-16: AI đề xuất mốc điểm (CHỈ ĐỌC) ──────────────────────────
+        public async Task<SuggestCriterionLevelsResponse> SuggestCriterionLevelsAsync(
+            Guid orgId, Guid id, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .AsNoTracking()
+                .Include(c => c.Criteria)
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            // Draft + Active đều gợi ý được (Active sửa mốc được — CAMP-18). Chiến dịch đã đóng thì
+            // thước đo là dữ liệu lịch sử.
+            if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
+                throw new InvalidOperationException(
+                    $"Chiến dịch {campaign.Status} không sửa được thước đo.");
+
+            if (campaign.Criteria.Count == 0)
+                throw new ArgumentException(
+                    "Chiến dịch chưa có tiêu chí nào — khai tiêu chí trước rồi mới soạn mốc điểm cho chúng.");
+
+            if (_levelSuggester is null)
+                throw new InvalidOperationException("AIService level suggester chưa được cấu hình.");
+
+            var ordered = campaign.Criteria.OrderBy(c => c.OrderNo).ToList();
+            var suggested = await _levelSuggester.SuggestAsync(
+                string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!,
+                campaign.Language,
+                campaign.Seniority,
+                campaign.JDText,
+                ordered.Select(c => new LevelSuggestionInput(c.Id, c.Name, c.Description, c.MaxScore)).ToList(),
+                ct);
+
+            var byId = suggested.ToDictionary(s => s.CriterionId, s => s.Levels);
+
+            // Ghép theo id tiêu chí (server sở hữu), KHÔNG theo thứ tự mảng AI trả — model trả thiếu
+            // hoặc đảo thứ tự thì mốc sẽ gán sang nhầm tiêu chí và HR không có cách nào nhận ra.
+            return new SuggestCriterionLevelsResponse
+            {
+                Criteria = ordered.Select(c => new SuggestedCriterionLevels
+                {
+                    CriterionId = c.Id,
+                    Name = c.Name,
+                    MaxScore = c.MaxScore,
+                    Levels = (byId.TryGetValue(c.Id, out var levels) ? levels : Array.Empty<SuggestedLevel>())
+                        .OrderBy(l => l.Score)
+                        .Select(l => new CriterionLevelResponse { Score = l.Score, Descriptor = l.Descriptor })
+                        .ToList()
+                }).ToList()
+            };
         }
 
         // ── PUBLISH (C8): Draft → Active + sinh tiêu chí CÓ CẤU TRÚC ────────

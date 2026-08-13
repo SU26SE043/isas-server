@@ -341,6 +341,38 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to import questions: {ex.Message}"); }
         }
 
+        // CAMP-16 — AI đề xuất MỐC ĐIỂM cho các tiêu chí hiện có. CHỈ ĐỌC: trả về để HR xem/sửa; muốn
+        // lưu thì đi qua PUT /campaign/{id} sẵn có (một cửa ghi duy nhất ⇒ validate CAMP-17, audit và
+        // luật bump version nằm đúng một chỗ) — cùng nguyên tắc với POST /questions/import.
+        // 400 chưa có tiêu chí · 404 ngoài org · 409 chiến dịch đã đóng · 502 AIService lỗi.
+        // KHÔNG fallback dải mặc định khi AI hỏng: HR sẽ tin "Mức 3/10" là do AI soạn rồi publish một
+        // thước đo chưa ai viết. "Chưa có mốc" vốn là trạng thái hợp lệ nên fail-loud không chặn ai.
+        [HttpPost("{id:guid}/criteria/levels/suggest")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<SuggestCriterionLevelsResponse>> SuggestCriterionLevels(
+            Guid id, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.SuggestCriterionLevelsAsync(orgId.Value, id, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // Đặt TRƯỚC InvalidOperationException: DownstreamServiceException là lỗi upstream (502),
+            // request của HR hợp lệ — tiền lệ GenerateCampaignQuestions.
+            catch (DownstreamServiceException ex)
+            {
+                _logger.LogError(ex, "AI soạn mốc điểm thất bại cho campaign {CampaignId}", id);
+                return StatusCode(StatusCodes.Status502BadGateway, ex.Message);
+            }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to suggest criterion levels: {ex.Message}"); }
+        }
+
         // File CSV mẫu. Không cần {id} — định dạng giống nhau cho mọi chiến dịch. Route không đụng
         // [HttpGet("{id:guid}")] vì ràng buộc :guid không khớp chuỗi "questions".
         [HttpGet("questions/template")]
