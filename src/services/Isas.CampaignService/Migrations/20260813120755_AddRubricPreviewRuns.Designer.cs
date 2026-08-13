@@ -3,6 +3,7 @@ using System;
 using Isas.CampaignService.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.CampaignService.Migrations
 {
     [DbContext(typeof(CampaignDbContext))]
-    partial class CampaignDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260813120755_AddRubricPreviewRuns")]
+    partial class AddRubricPreviewRuns
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -759,10 +762,6 @@ namespace Isas.CampaignService.Migrations
                     b.Property<decimal?>("OverrideScore")
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("override_score");
-
-                    b.Property<int?>("RubricVersion")
-                        .HasColumnType("integer")
-                        .HasColumnName("rubric_version");
 
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")

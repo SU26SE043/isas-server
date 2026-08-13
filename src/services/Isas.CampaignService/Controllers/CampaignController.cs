@@ -16,16 +16,19 @@ namespace Isas.CampaignService.Controllers
     {
         private readonly ICampaignService _campaignService;
         private readonly ICvScreeningService _screening;   // C14: sàng CV async (publish/shortlist/PATCH)
+        private readonly IRubricPreviewService? _preview;   // CAMP-19: chấm thử thước đo
         private readonly ILogger<CampaignController> _logger;
 
         public CampaignController(
             ICampaignService campaignService,
             ICvScreeningService screening,
-            ILogger<CampaignController> logger)
+            ILogger<CampaignController> logger,
+            IRubricPreviewService? preview = null)
         {
             _campaignService = campaignService;
             _screening = screening;
             _logger = logger;
+            _preview = preview;
         }
 
         // BK4: chủ sở hữu campaign = ORG (AUTH-8/D5 — billing/campaign gắn theo org). JWT mang `org_id`
@@ -339,6 +342,96 @@ namespace Isas.CampaignService.Controllers
             catch (ArgumentException ex) { return BadRequest(ex.Message); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // CAMP-2: không Draft → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to import questions: {ex.Message}"); }
+        }
+
+        // CAMP-16 — AI đề xuất MỐC ĐIỂM cho các tiêu chí hiện có. CHỈ ĐỌC: trả về để HR xem/sửa; muốn
+        // lưu thì đi qua PUT /campaign/{id} sẵn có (một cửa ghi duy nhất ⇒ validate CAMP-17, audit và
+        // luật bump version nằm đúng một chỗ) — cùng nguyên tắc với POST /questions/import.
+        // 400 chưa có tiêu chí · 404 ngoài org · 409 chiến dịch đã đóng · 502 AIService lỗi.
+        // KHÔNG fallback dải mặc định khi AI hỏng: HR sẽ tin "Mức 3/10" là do AI soạn rồi publish một
+        // thước đo chưa ai viết. "Chưa có mốc" vốn là trạng thái hợp lệ nên fail-loud không chặn ai.
+        [HttpPost("{id:guid}/criteria/levels/suggest")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<SuggestCriterionLevelsResponse>> SuggestCriterionLevels(
+            Guid id, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.SuggestCriterionLevelsAsync(orgId.Value, id, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // Đặt TRƯỚC InvalidOperationException: DownstreamServiceException là lỗi upstream (502),
+            // request của HR hợp lệ — tiền lệ GenerateCampaignQuestions.
+            catch (DownstreamServiceException ex)
+            {
+                _logger.LogError(ex, "AI soạn mốc điểm thất bại cho campaign {CampaignId}", id);
+                return StatusCode(StatusCodes.Status502BadGateway, ex.Message);
+            }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to suggest criterion levels: {ex.Message}"); }
+        }
+
+        // CAMP-19 — CHẤM THỬ: AI viết 3 bài mẫu cho một câu hỏi rồi chấm chính chúng bằng thước đo
+        // ĐANG LƯU trong DB (không phải bản HR đang gõ dở) ⇒ FE phải khoá nút khi form còn dirty.
+        // 3 lượt THÀNH CÔNG đầu của mỗi phiên bản thước đo là miễn phí, sau đó trừ 1 credit ví Org.
+        // 400 chưa có tiêu chí/mốc/câu hỏi · 402 org hết credit · 404 ngoài org · 409 chiến dịch đã
+        // đóng hoặc đang có lượt chạy · 502 AIService lỗi.
+        [HttpPost("{id:guid}/rubric-preview")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<RubricPreviewRunResponse>> RunRubricPreview(
+            Guid id, [FromBody] RubricPreviewRequest? request, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+            if (_preview is null)
+                return StatusCode(500, "Rubric preview service chưa được cấu hình.");
+
+            try
+            {
+                return Ok(await _preview.RunAsync(
+                    orgId.Value, GetActorUserId(), id, request ?? new RubricPreviewRequest(), ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // Ví org hết credit = 402 (PAY-5), KHÔNG phải 502 — HR nạp thêm là chạy được.
+            catch (InsufficientOrgCreditException ex)
+            {
+                return StatusCode(StatusCodes.Status402PaymentRequired, ex.Message);
+            }
+            catch (DownstreamServiceException ex)
+            {
+                _logger.LogError(ex, "Chấm thử thất bại cho campaign {CampaignId}", id);
+                return StatusCode(StatusCodes.Status502BadGateway, ex.Message);
+            }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to run rubric preview: {ex.Message}"); }
+        }
+
+        // CAMP-19 — lịch sử chấm thử (20 lượt gần nhất, mới nhất trước) để HR so TRƯỚC/SAU khi sửa mốc.
+        // Badge "cùng/khác thước đo" đọc từ rubricFingerprint + rubricVersion + promptVersion.
+        [HttpGet("{id:guid}/rubric-preview")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<List<RubricPreviewRunResponse>>> GetRubricPreviewHistory(
+            Guid id, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+            if (_preview is null)
+                return StatusCode(500, "Rubric preview service chưa được cấu hình.");
+
+            try
+            {
+                return Ok(await _preview.GetHistoryAsync(orgId.Value, id, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to read rubric preview history: {ex.Message}"); }
         }
 
         // File CSV mẫu. Không cần {id} — định dạng giống nhau cho mọi chiến dịch. Route không đụng

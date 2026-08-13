@@ -38,11 +38,11 @@ namespace Isas.CampaignService.Services
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
-            int? maxDeepPerQuestion = null, string seniority = "Junior",
+            int? maxDeepPerQuestion = null, string seniority = "Junior", int rubricVersion = 1,
             IReadOnlyList<SessionQuestionInput>? questionDetails = null, CancellationToken ct = default)
-            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", seniority, questionDetails, ct);
+            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", seniority, rubricVersion, questionDetails, ct);
 
-        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, IReadOnlyList<SessionQuestionInput>? questionDetails, CancellationToken ct)
+        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CancellationToken ct)
         {
             var payload = new
             {
@@ -51,7 +51,13 @@ namespace Isas.CampaignService.Services
                 orgId,      // BK14 — Interview reserve credit owner=Org theo id này (PAY-6)
                 jobCategory,
                 questions,
-                criteria = criteria.Select(c => new { c.Name, c.Description, c.Weight, c.MaxScore }),
+                // CAMP-16 — `levels` gửi kèm; rỗng = chưa khai mốc ⇒ Interview dùng dải mặc định như
+                // trước tính năng này (hai service deploy không nguyên tử, bản Interview cũ bỏ qua field).
+                criteria = criteria.Select(c => new
+                {
+                    c.Name, c.Description, c.Weight, c.MaxScore,
+                    levels = c.Levels.Select(l => new { l.Score, l.Descriptor })
+                }),
                 expiresAt,  // BK18 — Interview map → session.Deadline (I2); null = không hard-deadline
                 // INT-17 — Interview đóng dấu lên practice_sessions lúc tạo; null = tắt/mặc định.
                 adaptiveEnabled,
@@ -61,6 +67,8 @@ namespace Isas.CampaignService.Services
                 maxDeepPerQuestion
                 ,language,
                 seniority,
+                // CAMP-18 — Interview ghim số này lên buổi thi; vắng thì bên đó dùng 1 (= mọi row đang có).
+                rubricVersion,
                 // Câu hỏi KÈM đáp án mẫu. Gửi SONG SONG với `questions` chứ không thay thế: hai service
                 // deploy không nguyên tử, nên bản Interview cũ (chưa biết field này) vẫn phải chạy được.
                 // Bản Interview mới ưu tiên field này và bỏ qua nếu số lượng lệch với `questions`.

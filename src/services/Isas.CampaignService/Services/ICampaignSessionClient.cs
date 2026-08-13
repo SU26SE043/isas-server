@@ -24,11 +24,14 @@ namespace Isas.CampaignService.Services
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             int? maxDeepPerQuestion = null,
             string seniority = "Junior",
+            // CAMP-18 — định danh bộ thước đo. Interview CHỈ CHÉP số này xuống buổi thi (không tự
+            // đánh số): materialize là lazy nên bên đó không thể suy ra đúng số HR đang nhìn thấy.
+            int rubricVersion = 1,
             IReadOnlyList<SessionQuestionInput>? questionDetails = null,
             CancellationToken ct = default);
         // Overload đầy đủ: KHÔNG đặt default cho `language`/`seniority`/`ct` — caller duy nhất
         // (ParticipationService) truyền đủ, và để trống default thì hai overload không thể nhập nhằng.
-        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, IReadOnlyList<SessionQuestionInput>? questionDetails, CancellationToken ct);
+        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CancellationToken ct);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
         // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).
@@ -37,7 +40,19 @@ namespace Isas.CampaignService.Services
             Guid sessionId, CancellationToken ct = default);
     }
 
-    public record SessionCriterionInput(string Name, string? Description, decimal Weight, int MaxScore);
+    /// <summary>
+    /// Một tiêu chí chấm gửi sang Interview. <c>Levels</c> là init-only có mặc định RỖNG (không phải
+    /// tham số positional thứ 5) để mọi call site 4-tham-số đang có vẫn biên dịch và vẫn mang đúng
+    /// nghĩa "chưa khai mốc" — Interview rơi về dải mặc định như trước CAMP-16.
+    /// </summary>
+    public record SessionCriterionInput(string Name, string? Description, decimal Weight, int MaxScore)
+    {
+        public IReadOnlyList<SessionCriterionLevelInput> Levels { get; init; }
+            = Array.Empty<SessionCriterionLevelInput>();
+    }
+
+    /// <summary>Một mốc điểm (E9 hard-anchor) — map 1-1 sang <c>rubric_levels</c> phía Interview.</summary>
+    public record SessionCriterionLevelInput(int Score, string Descriptor);
 
     /// <summary>
     /// Một câu campaign kèm đáp án mẫu HR soạn (null = chưa soạn).

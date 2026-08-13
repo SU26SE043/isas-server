@@ -22,5 +22,10 @@ namespace Isas.CampaignService.DTOs
         public decimal TotalScore { get; set; }
 
         public DateTime ScoredAt { get; set; }
+
+        // CAMP-18 — bản thước đo Interview đã dùng để chấm buổi này. NULLABLE có chủ đích: bản
+        // Interview cũ không gửi field này, và hai service deploy không nguyên tử ⇒ thiếu thì để
+        // NULL ("không biết"), tuyệt đối không mặc định thành 1.
+        public int? RubricVersion { get; set; }
     }
 }

@@ -1,5 +1,29 @@
 namespace Isas.CampaignService.DTOs
 {
+    /// <summary>
+    /// Tiêu chí chấm như ỨNG VIÊN được thấy. CỐ Ý là type riêng chứ không dùng lại
+    /// <see cref="CampaignCriterionResponse"/>: bản của Employer mang <c>Levels</c> (mốc điểm), mà mốc
+    /// điểm là thước đo nội bộ — lộ ra thì ứng viên viết bài bám đúng câu chữ của mốc và thang đo mất
+    /// hết giá trị phân biệt.
+    ///
+    /// <para>Chống rò bằng CẤU TRÚC, không bằng lời dặn: ở đây KHÔNG khai trường <c>Levels</c>, nên
+    /// gán nhầm là lỗi BIÊN DỊCH. Trước đó hai đường ứng viên an toàn chỉ vì query quên
+    /// <c>ThenInclude(Levels)</c> — tức an toàn do tình cờ, và một dòng "thêm cho đồng bộ" là rò ngay
+    /// mà không test nào kêu. Cùng mẫu với <c>ApiKeyListItem</c> (F17) không khai trường <c>key</c>.</para>
+    ///
+    /// <para>Shape JSON trùng khít bản Employer TRƯỚC khi có mốc điểm ⇒ FE ứng viên không phải sửa gì.</para>
+    /// </summary>
+    public class CandidateCriterionResponse
+    {
+        public Guid Id { get; set; }
+        public int OrderNo { get; set; }
+        public string Name { get; set; } = null!;
+        public string? Description { get; set; }
+        public decimal Weight { get; set; }
+        public int MaxScore { get; set; }
+        public string Source { get; set; } = null!;
+    }
+
     // ── D2: Distribution — ứng viên tham gia campaign qua magic-link (Discord/Classroom model) ──
     // Link CHỈ để tham gia (join); session phỏng vấn tạo khi bấm "Start Interview", KHÔNG khi mở link.
 
@@ -12,7 +36,7 @@ namespace Isas.CampaignService.DTOs
         public string? JobTitle { get; set; }       // vị trí = campaign.Domain
         public string? Description { get; set; }     // JD text
         public DateTime? Deadline { get; set; }      // campaign.ExpiresAt
-        public List<CampaignCriterionResponse> Criteria { get; set; } = new();
+        public List<CandidateCriterionResponse> Criteria { get; set; } = new();
     }
 
     /// <summary>POST /invitations/{token}/join — kết quả tham gia (provision Candidate + membership Joined).</summary>
@@ -44,7 +68,7 @@ namespace Isas.CampaignService.DTOs
         public string? JobTitle { get; set; }
         public string? Description { get; set; }
         public DateTime? Deadline { get; set; }
-        public List<CampaignCriterionResponse> Criteria { get; set; } = new();
+        public List<CandidateCriterionResponse> Criteria { get; set; } = new();
         public string MembershipStatus { get; set; } = null!;
         public string InterviewStatus { get; set; } = null!;
         public Guid? SessionId { get; set; }

@@ -46,6 +46,13 @@ namespace Isas.CampaignService.DTOs
         public string? QuestionGroup { get; set; }
     }
 
+    // CAMP-16 — một mốc điểm khi GHI. Score nguyên ∈ [0, maxScore của tiêu chí], distinct trong cùng tiêu chí.
+    public class CriterionLevelItem
+    {
+        public int Score { get; set; }
+        public string Descriptor { get; set; } = null!;
+    }
+
     // C12: tiêu chí chấm CÓ CẤU TRÚC — HR khai thẳng (name/weight/maxScore/description).
     // Ưu tiên cao nhất (có thì publish bỏ qua AI). Σweight ∈ [0.99,1.01] → chuẩn hoá Σ→1.
     public class CriterionItem
@@ -54,6 +61,26 @@ namespace Isas.CampaignService.DTOs
         public string? Description { get; set; }
         public decimal Weight { get; set; }   // 0 < weight ≤ 1
         public int MaxScore { get; set; }      // ≥ 1
+
+        /// <summary>
+        /// CAMP-16 — mốc điểm. BA trạng thái, không phải hai (cùng hợp đồng với
+        /// <see cref="QuestionItem.SampleAnswer"/>):
+        /// <list type="bullet">
+        /// <item><c>null</c> / vắng mặt = <b>KHÔNG ĐỔI</b> — giữ nguyên mốc đang có</item>
+        /// <item><c>[]</c> = <b>XOÁ</b> hết mốc (quay về dải mặc định phía Interview)</item>
+        /// <item><c>[...]</c> = thay thế toàn bộ</item>
+        /// </list>
+        ///
+        /// <para>Bất đối xứng có chủ đích, và ở đây nó gay gắt hơn <c>SampleAnswer</c>: PUT criteria là
+        /// replace-all MINT ID MỚI, nên coi <c>null</c> là "xoá" thì một lần HR bấm Lưu trên bản FE cũ
+        /// (chưa biết field này) là mất trắng mốc điểm của cả chiến dịch — mà mất mốc KHÔNG có triệu
+        /// chứng: Interview lặng lẽ rơi về dải mặc định và vẫn chấm ra điểm.</para>
+        ///
+        /// <para>⚠ Carry-over ghép theo <b>tên tiêu chí</b> (case-insensitive) vì id bị mint mới. Hệ quả:
+        /// ĐỔI TÊN tiêu chí mà không gửi kèm <c>levels</c> thì mốc MẤT. FE phải luôn gửi <c>levels</c>
+        /// khi người dùng sửa tên.</para>
+        /// </summary>
+        public List<CriterionLevelItem>? Levels { get; set; }
     }
 
     public class CreateCampaignRequest
@@ -190,6 +217,13 @@ namespace Isas.CampaignService.DTOs
         public string? QuestionGroup { get; set; }
     }
 
+    // CAMP-16 — một mốc điểm khi ĐỌC.
+    public class CriterionLevelResponse
+    {
+        public int Score { get; set; }
+        public string Descriptor { get; set; } = null!;
+    }
+
     // C12: tiêu chí có cấu trúc trả về (đọc/duyệt). order_no + source (HrEdited/AiSuggested).
     public class CampaignCriterionResponse
     {
@@ -200,6 +234,14 @@ namespace Isas.CampaignService.DTOs
         public decimal Weight { get; set; }
         public int MaxScore { get; set; }
         public string Source { get; set; } = null!;
+
+        /// <summary>
+        /// CAMP-16 — mốc điểm, sắp tăng dần theo <c>score</c>. Rỗng = CHƯA khai mốc (Interview dùng dải
+        /// mặc định). Field này được nạp ở MỌI đường trả tiêu chí, kể cả danh sách campaign: trả mảng
+        /// rỗng vì "chưa nạp" là nói dối "chưa khai mốc" — cùng lớp lỗi với `roadmaps` list từng trả
+        /// `milestones: []`.
+        /// </summary>
+        public List<CriterionLevelResponse> Levels { get; set; } = new();
     }
 
     public class CampaignResponse
@@ -224,6 +266,12 @@ namespace Isas.CampaignService.DTOs
         public int? MaxDeepPerQuestion { get; set; }   // INT-17b: trần đào sâu mỗi câu (null/0 = chế độ cũ)
         // NGÂN HÀNG ĐỀ: số câu mỗi ứng viên thi (null = thi HẾT bộ câu hỏi, hành vi cũ).
         public int? QuestionsPerSession { get; set; }
+        // CAMP-18 — định danh bộ thước đo đang hiệu lực + ai/lúc nào đổi. FE hiện chip "Thước đo v2"
+        // kèm tooltip; ứng viên đã chấm bằng bản cũ giữ nguyên điểm.
+        public int RubricVersion { get; set; } = 1;
+        public DateTime? RubricVersionUpdatedAt { get; set; }
+        public Guid? RubricVersionUpdatedBy { get; set; }
+
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public List<CampaignQuestionResponse> Questions { get; set; }
@@ -259,6 +307,9 @@ namespace Isas.CampaignService.DTOs
             MaxQuestions = c.MaxQuestions,
             MaxDeepPerQuestion = c.MaxDeepPerQuestion,   // INT-17b
             QuestionsPerSession = c.QuestionsPerSession,
+            RubricVersion = c.RubricVersion,                       // CAMP-18
+            RubricVersionUpdatedAt = c.RubricVersionUpdatedAt,
+            RubricVersionUpdatedBy = c.RubricVersionUpdatedBy,
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
             // F10: sắp theo ĐÚNG thứ tự ứng viên sẽ gặp (ParticipationService dùng CreatedAt, Id) —
@@ -285,7 +336,11 @@ namespace Isas.CampaignService.DTOs
                     Description = cr.Description,
                     Weight = cr.Weight,
                     MaxScore = cr.MaxScore,
-                    Source = cr.Source.ToString()
+                    Source = cr.Source.ToString(),
+                    Levels = (cr.Levels ?? new List<CampaignCriterionLevel>())
+                        .OrderBy(l => l.Score)
+                        .Select(l => new CriterionLevelResponse { Score = l.Score, Descriptor = l.Descriptor })
+                        .ToList()
                 }).ToList(),
             JDText = c.JDText,
             CriteriaText = c.CriteriaText,
