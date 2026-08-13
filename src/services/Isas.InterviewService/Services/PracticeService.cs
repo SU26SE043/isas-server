@@ -636,6 +636,11 @@ public class PracticeService : IPracticeService
                     SessionId = session.Id,
                     OrderNo = idx * seedStride + 1,   // INT-17b — chừa chỗ cho chuỗi đào sâu
                     Content = content,
+                    // SNAPSHOT đáp án mẫu: chép xuống buổi thi, không đọc live từ Campaign lúc chấm —
+                    // đáp án là một phần THƯỚC ĐO, đọc live thì hai ứng viên cùng chiến dịch có thể bị
+                    // chấm theo hai bản khác nhau mà điểm vẫn xếp chung một bảng (CAMP-10).
+                    // Controller đã bảo đảm QuestionDetails khớp số lượng với Questions, hoặc là null.
+                    SampleAnswer = request.QuestionDetails?[idx].SampleAnswer,
                     TimeLimitSec = DefaultTimeLimitSec,
                     Kind = QuestionKind.Seed
                 })

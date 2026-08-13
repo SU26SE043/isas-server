@@ -38,10 +38,11 @@ namespace Isas.CampaignService.Services
             IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria,
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
-            int? maxDeepPerQuestion = null, string seniority = "Junior", CancellationToken ct = default)
-            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", seniority, ct);
+            int? maxDeepPerQuestion = null, string seniority = "Junior",
+            IReadOnlyList<SessionQuestionInput>? questionDetails = null, CancellationToken ct = default)
+            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", seniority, questionDetails, ct);
 
-        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, CancellationToken ct)
+        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, IReadOnlyList<SessionQuestionInput>? questionDetails, CancellationToken ct)
         {
             var payload = new
             {
@@ -59,7 +60,11 @@ namespace Isas.CampaignService.Services
                 // INT-17b — >0 ⇒ mỗi câu campaign mọc chuỗi đào sâu xen kẽ ngay sau nó.
                 maxDeepPerQuestion
                 ,language,
-                seniority
+                seniority,
+                // Câu hỏi KÈM đáp án mẫu. Gửi SONG SONG với `questions` chứ không thay thế: hai service
+                // deploy không nguyên tử, nên bản Interview cũ (chưa biết field này) vẫn phải chạy được.
+                // Bản Interview mới ưu tiên field này và bỏ qua nếu số lượng lệch với `questions`.
+                questionDetails = questionDetails?.Select(q => new { q.Text, q.SampleAnswer })
             };
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/campaign")

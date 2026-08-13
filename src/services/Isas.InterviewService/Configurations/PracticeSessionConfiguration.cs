@@ -150,6 +150,10 @@ public class PracticeQuestionConfiguration : IEntityTypeConfiguration<PracticeQu
         e.HasKey(x => x.Id);
 
         e.Property(x => x.Content).IsRequired();
+        // Snapshot đáp án mẫu HR soạn (B2B). Cột `text` như Content — không HasMaxLength: trần độ dài
+        // đã chặn ở CampaignService (nơi HR nhập, trả 400 có chữ), thêm trần ở đây chỉ đổi lấy một lỗi
+        // Postgres thô ở giữa luồng tạo session, SAU khi đã giữ credit của tổ chức.
+        e.Property(x => x.SampleAnswer);
         e.Property(x => x.OrderNo).IsRequired();
         e.Property(x => x.TimeLimitSec).IsRequired();
         e.Property(x => x.CreatedAt).IsRequired();

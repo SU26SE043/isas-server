@@ -47,10 +47,24 @@ public class InternalSessionsController : ControllerBase
             ? cat
             : JobCategory.BE;
 
+        // QuestionDetails (câu + đáp án mẫu) chỉ dùng khi ĐỦ và KHỚP SỐ LƯỢNG với Questions. Lệch số
+        // lượng nghĩa là hai phía đang nói về hai bộ câu khác nhau — ghép theo chỉ số lúc đó sẽ gán đáp
+        // án của câu này cho câu kia, tức chấm sai mà không lỗi nào nổ. Thà bỏ đáp án (chấm như trước)
+        // còn hơn chấm bằng đáp án gán nhầm.
+        var details = req.QuestionDetails is { Count: > 0 } d && d.Count == req.Questions.Count
+            ? d
+            : null;
+        if (req.QuestionDetails is { Count: > 0 } mismatched && mismatched.Count != req.Questions.Count)
+            _logger.LogWarning(
+                "create-or-get campaign session {CampaignId}: questionDetails có {Details} phần tử nhưng "
+                + "questions có {Questions} — bỏ qua đáp án mẫu cho buổi này",
+                req.CampaignId, mismatched.Count, req.Questions.Count);
+
         var request = new CreateCampaignSessionRequest(
             req.CampaignId, req.OrgId, jobCategory, req.Questions, req.Criteria, req.ExpiresAt,
             req.AdaptiveEnabled, req.MaxFollowUps, req.MaxQuestions,
-            req.MaxDeepPerQuestion, req.Language, req.Seniority);   // phỏng vấn THÍCH ỨNG (B2B) — INT-17b: trần đào sâu mỗi câu
+            req.MaxDeepPerQuestion, req.Language, req.Seniority,   // phỏng vấn THÍCH ỨNG (B2B) — INT-17b: trần đào sâu mỗi câu
+            details);
 
         try
         {

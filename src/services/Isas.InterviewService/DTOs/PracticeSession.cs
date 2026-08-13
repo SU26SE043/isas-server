@@ -64,6 +64,9 @@ public record CampaignCriterionInput(
 // I2: ExpiresAt = hạn chót nhận bài (campaigns.expires_at) → set session.Deadline; null = không hard-deadline.
 // Phỏng vấn THÍCH ỨNG (B2B): Adaptive*/MaxFollowUps/MaxQuestions do Campaign/HR bật (optional; null = tắt).
 // Seed = toàn bộ campaign questions (ai cũng nhận) → câu thích ứng thêm ở đuôi, chấm theo CÙNG tiêu chí.
+/// <summary>Một câu campaign kèm đáp án mẫu HR soạn (null = chưa soạn).</summary>
+public record CampaignQuestionInput(string Text, string? SampleAnswer = null);
+
 public record CreateCampaignSessionRequest(
     Guid CampaignId,
     Guid OrgId,        // BK14: chủ ví credit (owner=Org) để reserve khi tạo session B2B (PAY-6)
@@ -78,7 +81,13 @@ public record CreateCampaignSessionRequest(
     int? MaxDeepPerQuestion = null,
     string? Language = null,
     // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
-    string? Seniority = null
+    string? Seniority = null,
+    // Câu hỏi KÈM đáp án mẫu. Cố ý là field RIÊNG chứ không đổi kiểu `Questions` sẵn có: hai service
+    // deploy không nguyên tử, nên trong cửa sổ giữa hai lần khởi động phải có một bản Campaign mới nói
+    // chuyện được với bản Interview cũ và ngược lại. Campaign gửi CẢ HAI; Interview ưu tiên field này,
+    // vắng thì rơi về `Questions`. Gỡ `Questions` là việc của một đợt sau, khi cả hai bên đã lên.
+    // ⚠ Nếu có thì SỐ LƯỢNG và THỨ TỰ phải khớp `Questions` — Interview không tự ghép lại.
+    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -104,7 +113,10 @@ public record CreateCampaignSessionInternalRequest(
     string? Language = null,
     // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
     // Campaign gửi field này; client cũ chưa gửi vẫn ra Junior thay vì 400.
-    string? Seniority = null
+    string? Seniority = null,
+    // Câu hỏi KÈM đáp án mẫu (xem CreateCampaignSessionRequest.QuestionDetails). Optional ở CUỐI record
+    // để bản Campaign cũ — chưa biết field này — vẫn gọi được endpoint mà không vỡ.
+    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null
 );
 public record PracticeSessionResponse(
     Guid Id,

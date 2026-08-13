@@ -432,6 +432,7 @@ public class TranscriptEngineStampTests
             provider.GetRequiredService<IServiceScopeFactory>(),
             pub.Object,
             Options.Create(new RepublisherSettings { BatchSize = 200 }),
+            Options.Create(new ScoringOptions()),
             NullLogger<StuckAnswerRepublisher>.Instance);
         return (r, pub);
     }

@@ -290,6 +290,10 @@ namespace Isas.CampaignService.Services
                     "Ngân hàng đề campaign {CampaignId}: {Warning}", campaignId, warning));
 
             var questions = selected.Select(q => q.Text).ToList();
+            // Cùng danh sách, cùng thứ tự — Interview ghép theo chỉ số và BỎ QUA nếu số lượng lệch.
+            var questionDetails = selected
+                .Select(q => new SessionQuestionInput(q.Text, q.SampleAnswer))
+                .ToList();
 
             var criteria = campaign.Criteria
                 .OrderBy(c => c.OrderNo)
@@ -304,9 +308,9 @@ namespace Isas.CampaignService.Services
             // Gửi deadline hiệu lực (min campaign expiry và slot) để Interview sweeper tự kết thúc đúng hạn.
             var session = campaign.Language == "vi"
                 ? await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, ct)
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, questionDetails, ct)
                 : await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, ct);
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, questionDetails, ct);
 
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.

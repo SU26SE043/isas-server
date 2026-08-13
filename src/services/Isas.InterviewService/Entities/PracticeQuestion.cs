@@ -42,6 +42,22 @@ public class PracticeQuestion
 
     // Phỏng vấn THÍCH ỨNG — nguồn câu hỏi (Seed = mở đầu; FollowUp/Clarify/NewQuestion = AI sinh sau
     // 1 câu trả lời). Mặc định Seed (rows cũ backfill Seed). Lưu string (GEN-2).
+    /// <summary>
+    /// SNAPSHOT đáp án mẫu HR soạn cho câu này (B2B). null = không có (câu B2C, câu đào sâu AI sinh
+    /// lúc thi, hoặc chiến dịch chưa soạn đáp án).
+    ///
+    /// <para><b>Vì sao snapshot chứ không đọc live từ CampaignService lúc chấm:</b> nó là một phần của
+    /// THƯỚC ĐO. Đọc live thì hai ứng viên cùng chiến dịch có thể bị chấm theo hai bản đáp án khác nhau
+    /// nếu ai đó sửa ở giữa, trong khi điểm vẫn đem xếp hạng chung (CAMP-10). Snapshot cũng giữ cho việc
+    /// chấm không phụ thuộc một service khác còn sống hay không.</para>
+    ///
+    /// <para>Câu ĐÀO SÂU do AI sinh lúc thi không có đáp án mẫu — không ai soạn trước cho chúng. Đó là
+    /// lý do prompt phải nói rõ đây là "một đáp án tốt để tham khảo", không phải đáp án duy nhất đúng:
+    /// nếu không, ứng viên diễn đạt khác mà vẫn đúng sẽ bị trừ điểm ở câu có đáp án, còn câu không có
+    /// đáp án thì không — hai thước trong cùng một buổi.</para>
+    /// </summary>
+    public string? SampleAnswer { get; set; }
+
     public QuestionKind Kind { get; set; } = QuestionKind.Seed;
 
     // Phỏng vấn THÍCH ỨNG — answer đã "đẻ" ra câu hỏi này (null với seed). Vừa là provenance (soi cây

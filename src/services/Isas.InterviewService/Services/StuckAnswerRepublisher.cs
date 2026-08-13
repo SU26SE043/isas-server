@@ -25,17 +25,22 @@ public class StuckAnswerRepublisher : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IScoringJobPublisher _publisher;  // singleton, inject thẳng được
     private readonly RepublisherSettings _options;     // DB29 — trần batch mỗi vòng
+    // Kill-switch đáp án mẫu PHẢI đọc ở cả hai đường publish, nếu không tắt cờ mà answer đi đường cứu
+    // hộ vẫn được chấm kèm đáp án ⇒ "đã tắt" mà hành vi chỉ đổi một nửa.
+    private readonly ScoringOptions _scoring;
     private readonly ILogger<StuckAnswerRepublisher> _logger;
 
     public StuckAnswerRepublisher(
         IServiceScopeFactory scopeFactory,
         IScoringJobPublisher publisher,
         IOptions<RepublisherSettings> options,
+        IOptions<ScoringOptions> scoring,
         ILogger<StuckAnswerRepublisher> logger)
     {
         _scopeFactory = scopeFactory;
         _publisher = publisher;
         _options = options.Value;
+        _scoring = scoring.Value;
         _logger = logger;
     }
 
@@ -117,7 +122,11 @@ public class StuckAnswerRepublisher : BackgroundService
                 // Nhãn tiêu chí của câu hỏi — PHẢI có trong projection, nếu không answer nào phải cứu
                 // bằng republisher sẽ được chấm theo luật KHÁC answer chạy trơn tru (ở đây là chấm đủ
                 // rubric thay vì đúng phạm vi), lệch âm thầm. Đúng chỗ F11 đã dính.
-                QuestionTargetCriterionIds = a.Question.TargetCriterionIds
+                QuestionTargetCriterionIds = a.Question.TargetCriterionIds,
+                // Đáp án mẫu HR soạn — cùng lý do với hai field trên: thiếu ở projection thì answer nào
+                // phải cứu bằng republisher sẽ được chấm KHÔNG có đáp án mẫu, trong khi answer chạy
+                // trơn tru thì có. Hai thước đo trong cùng một chiến dịch, mà điểm vẫn xếp chung bảng.
+                QuestionSampleAnswer = a.Question.SampleAnswer
             })
             .Take(_options.BatchSize > 0 ? _options.BatchSize : 200)   // DB29: chặn nạp cả tồn đọng 1 lần
             .ToListAsync(ct);
@@ -164,6 +173,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 QuestionId = a.QuestionId,
                 AudioObjectKey = a.AudioObjectKey!,
                 QuestionContent = a.QuestionContent,
+                SampleAnswer = _scoring.UseSampleAnswer ? a.QuestionSampleAnswer : null,
                 JobCategory = a.JobCategory.ToString(),
                 Language = a.Language,
                 RubricVersion = criteria[0].Version,

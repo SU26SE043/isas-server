@@ -657,6 +657,11 @@ public class AnswerService : IAnswerService
                     QuestionId = question.Id,
                     AudioObjectKey = answer.AudioObjectKey!,
                     QuestionContent = question.Content,
+                    // Đáp án mẫu HR soạn cho ĐÚNG câu này (B2B). null với câu B2C và câu đào sâu AI sinh
+                    // lúc thi — prompt phải chịu được cả hai, xem ghi chú ở PracticeQuestion.SampleAnswer.
+                    // Kill-switch `Scoring:UseSampleAnswer` để tắt nhanh nếu điểm lệch bất thường: đây là
+                    // thay đổi THƯỚC ĐO, mà chưa ai đo được nó làm điểm lên hay xuống.
+                    SampleAnswer = _scoring.UseSampleAnswer ? question.SampleAnswer : null,
                     JobCategory = session.JobCategory.ToString(),
                     Language = session.Language,
                     RubricVersion = rubricVersion,

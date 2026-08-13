@@ -745,7 +745,8 @@ class GeminiProvider(QuestionProvider):
     async def score(self, question: str, transcript: str,
                     job_category: str, criteria: list[dict],
                     temperature: float = 0.0,
-                    delivery: dict | None = None, language: str = "vi") -> list[dict]:
+                    delivery: dict | None = None, language: str = "vi",
+                    sample_answer: str | None = None) -> list[dict]:
         """
         Chấm 1 câu trả lời theo rubric.
 
@@ -791,7 +792,8 @@ class GeminiProvider(QuestionProvider):
             # Không có levels (phòng hờ) → dải mặc định 0..maxScore.
             levels_by_id[cid] = sorted(scores) if scores else list(range(0, mx + 1))
 
-        prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery, language=language)
+        prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery,
+                                      language=language, sample_answer=sample_answer)
 
         response = await self._generate(
             "score",

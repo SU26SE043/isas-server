@@ -43,6 +43,7 @@ public class StuckAnswerRepublisherTests
             provider.GetRequiredService<IServiceScopeFactory>(),
             pub.Object,
             Options.Create(new RepublisherSettings { BatchSize = batchSize }),
+            Options.Create(new ScoringOptions()),
             NullLogger<StuckAnswerRepublisher>.Instance);
         return (r, pub);
     }
