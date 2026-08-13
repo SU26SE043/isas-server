@@ -69,6 +69,20 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
         // B2B: đọc/materialize tiêu chí theo campaign. Non-unique, nullable.
         e.HasIndex(x => x.CampaignId);
 
+        // Chống NHÂN ĐÔI tiêu chí khi materialize đua nhau: hai ứng viên bấm Start cùng lúc ngay sau
+        // khi HR bump phiên bản rubric ⇒ cả hai đều thấy "chưa có bộ v2" ⇒ cả hai cùng chèn ⇒ campaign
+        // có hai bộ v2, mẫu số điểm tổng (INT-10) sai mà không lỗi nào nổ. Ràng buộc DB là thứ duy
+        // nhất chặn được ca này.
+        //
+        // Filter `campaign_id IS NOT NULL` là BẮT BUỘC, không phải tối ưu: rubric B2C có
+        // campaign_id = NULL và trùng `name` khắp nơi (mỗi candidate một bộ "Giao tiếp & trình bày"),
+        // nên unique không lọc sẽ chặn oan toàn bộ đường rubric riêng BC16.
+        // An toàn về ngữ nghĩa vì Campaign vốn đã có UNIQUE (campaign_id, name).
+        e.HasIndex(x => new { x.CampaignId, x.Version, x.Name })
+            .IsUnique()
+            .HasFilter("campaign_id IS NOT NULL")
+            .HasDatabaseName("ux_rubric_criteria_campaign_version_name");
+
         // BC16: tra rubric riêng của candidate theo nghề (resolve ưu-tiên-riêng-else-mặc-định).
         // Non-unique, nullable (null = seed mặc định dùng chung).
         e.HasIndex(x => new { x.CandidateId, x.JobCategory, x.Language, x.IsActive });

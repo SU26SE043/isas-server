@@ -17,4 +17,14 @@ public class SessionScoredEvent
     public decimal TotalScore { get; set; }
 
     public DateTime ScoredAt { get; set; }
+
+    // B2B — phiên bản bộ tiêu chí buổi này bị chấm bằng (practice_sessions.campaign_rubric_version).
+    // Bảng xếp hạng PHẢI gắn được nhãn này: HR sửa mốc giữa chừng là đổi THƯỚC ĐO, mà CAMP-10 đem
+    // điểm của mọi ứng viên trong campaign so thẳng với nhau. Cùng lý do đã sinh ra
+    // scoring_scope_version (rules.md INT-18) — đổi mốc còn đổi thước mạnh hơn đổi phạm vi.
+    //
+    // Nullable + thêm ở CUỐI ⇒ bản Campaign cũ đọc event mới không vỡ, và event cũ đang nằm trong
+    // outbox (chưa gửi lúc deploy) deserialize ra null thay vì nổ.
+    // ⚠ null nghĩa là "KHÔNG BIẾT" — B2C, hoặc buổi có trước cột ghim. Đừng vẽ null thành v1 (BK23).
+    public int? RubricVersion { get; set; }
 }

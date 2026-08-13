@@ -593,11 +593,23 @@ public class PracticeService : IPracticeService
         try
         {
             var maxDeepPerQuestion = Math.Max(0, request.MaxDeepPerQuestion ?? 0);
+
+            // Phiên bản rubric buổi này bị chấm bằng. Campaign là NGUỒN QUYỀN LỰC DUY NHẤT — ở đây chỉ
+            // CHÉP. `?? 1` phủ bản Campaign cũ chưa gửi field, và khớp đúng mọi row đang có trên prod
+            // (materialize cũ hardcode Version = 1) ⇒ không đổi hành vi cho campaign hiện hữu.
+            // ⚠ TUYỆT ĐỐI không tự tính max(Version)+1: materialize là LAZY nên Campaign có thể đã ở
+            // v3 khi Interview mới có v1; tự đánh số sẽ ra v2 ⇒ số HR thấy và số trên answer_scores
+            // lệch nhau vĩnh viễn (lớp lỗi BK23).
+            var pinnedRubricVersion = request.RubricVersion ?? 1;
+
             var session = new PracticeSession
             {
                 Id = sessionId,
                 CandidateId = candidateId,
                 CampaignId = request.CampaignId,
+                // Ghim DÙ CÓ materialize hay không: buổi thứ hai trở đi của cùng phiên bản không
+                // materialize gì cả, nhưng vẫn phải biết mình đang bị chấm bằng thước nào.
+                CampaignRubricVersion = pinnedRubricVersion,
                 JobCategory = request.JobCategory,
                 Seniority = seniority,
                 Language = language,
@@ -647,11 +659,21 @@ public class PracticeService : IPracticeService
                 .ToList();
             _db.PracticeQuestions.AddRange(questions);
 
-            // Materialize tiêu chí campaign → rubric_criteria(campaign_id), idempotent theo campaign.
+            // Materialize tiêu chí campaign → rubric_criteria(campaign_id), idempotent theo
+            // (campaign, PHIÊN BẢN). HR sửa mốc ⇒ Campaign bump version ⇒ ứng viên kế tiếp Start sẽ
+            // materialize bộ mới; buổi đang chạy dở giữ bộ cũ nhờ pin (xem RubricCriteriaLoader).
             var alreadyMaterialized = await _db.RubricCriteria
-                .AnyAsync(c => c.CampaignId == request.CampaignId, ct);
+                .AnyAsync(c => c.CampaignId == request.CampaignId && c.Version == pinnedRubricVersion, ct);
             if (!alreadyMaterialized)
             {
+                // Hạ cờ bộ cũ = "không dùng cho buổi thi MỚI nữa". KHÔNG hard-delete: answer_scores có
+                // FK Restrict trỏ vào criterion, và điểm đã chấm phải giữ được lai lịch thước đo của nó.
+                // Mẫu soft-versioning đã dùng ở rubric riêng B2C (RubricLibraryService, BC16).
+                var superseded = await _db.RubricCriteria
+                    .Where(c => c.CampaignId == request.CampaignId && c.IsActive)
+                    .ToListAsync(ct);
+                foreach (var old in superseded) old.IsActive = false;
+
                 var criteria = request.Criteria.Select(c => new RubricCriterion
                 {
                     Id = Guid.NewGuid(),
@@ -663,7 +685,18 @@ public class PracticeService : IPracticeService
                     JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
                     CampaignId = request.CampaignId,
                     Language = language,
-                    Version = 1
+                    Version = pinnedRubricVersion,
+                    // E9 — mốc điểm HR soạn. Rỗng/null ⇒ không tạo level nào ⇒ AIService rơi về dải
+                    // mặc định 0..maxScore y như trước (không có mốc là trạng thái HỢP LỆ, không lỗi).
+                    Levels = (c.Levels ?? [])
+                        .Select(l => new RubricLevel
+                        {
+                            Id = Guid.NewGuid(),
+                            Score = l.Score,
+                            Descriptor = l.Descriptor,
+                            ExampleAnswers = []   // anchor cố ý chưa dùng ở vòng này
+                        })
+                        .ToList()
                 });
                 _db.RubricCriteria.AddRange(criteria);
             }
@@ -674,8 +707,10 @@ public class PracticeService : IPracticeService
             // LoadTargetableCriteriaAsync vốn chỉ đúng cho rubric riêng B2C.
             if (session.AdaptiveEnabled)
             {
+                // Theo ĐÚNG phiên bản buổi này ghim, không theo is_active: hai thứ đó đã tách nghĩa từ
+                // khi có versioning, và evidence phải mô tả bộ tiêu chí ứng viên này thực sự bị chấm.
                 var evidenceCriteria = await _db.RubricCriteria.AsNoTracking()
-                    .Where(c => c.CampaignId == request.CampaignId && c.IsActive)
+                    .Where(c => c.CampaignId == request.CampaignId && c.Version == pinnedRubricVersion)
                     .OrderBy(c => c.Name)
                     .Select(c => new { c.Id, c.Name })
                     .ToListAsync(ct);
