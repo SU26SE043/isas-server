@@ -273,12 +273,23 @@ namespace Isas.CampaignService.Services
                 }
             }
 
-            var questions = campaign.Questions
+            // NGÂN HÀNG ĐỀ — chọn đề CHO ỨNG VIÊN NÀY. `QuestionsPerSession = null` (mặc định, và là
+            // trạng thái của mọi chiến dịch có trước tính năng này) ⇒ lấy trọn bộ theo đúng thứ tự HR
+            // soạn, y như trước. Rút deterministic theo (campaignId, candidateId): buổi thi là
+            // create-or-get, ứng viên vào lại phải nhận ĐÚNG đề cũ.
+            var pool = campaign.Questions
                 .OrderBy(q => q.CreatedAt).ThenBy(q => q.Id)
-                .Select(q => q.QuestionText)
+                .Select(q => new PoolQuestion(q.Id, q.QuestionText, q.SampleAnswer, q.IsRequired, q.QuestionGroup))
                 .ToList();
-            if (questions.Count == 0)
+            if (pool.Count == 0)
                 throw new InvalidOperationException("Chiến dịch chưa có câu hỏi.");
+
+            var selected = QuestionPoolSelector.Select(
+                pool, campaign.QuestionsPerSession, campaignId, candidateId,
+                warning => _logger.LogWarning(
+                    "Ngân hàng đề campaign {CampaignId}: {Warning}", campaignId, warning));
+
+            var questions = selected.Select(q => q.Text).ToList();
 
             var criteria = campaign.Criteria
                 .OrderBy(c => c.OrderNo)
