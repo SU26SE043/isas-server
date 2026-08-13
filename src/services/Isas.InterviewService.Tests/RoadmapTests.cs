@@ -93,8 +93,20 @@ public class RoadmapTests
         t.Db.PracticeSessions.Add(session);
         foreach (var (name, pct, needs) in criteria)
         {
-            var crit = TestDb.Criterion(JobCategory.BE, name: name);
-            t.Db.RubricCriteria.Add(crit);
+            // DÙNG LẠI tiêu chí cùng tên nếu buổi trước đã seed — production chỉ có MỘT bộ tiêu chí
+            // cho mỗi (nghề, ngôn ngữ) và mọi buổi trỏ vào chính nó (unique
+            // `ux_rubric_criteria_b2c_default_version_name` khoá điều đó ở tầng DB).
+            var crit = t.Db.RubricCriteria.Local
+                    .FirstOrDefault(c => c.Name == name && c.CandidateId == null
+                                         && c.JobCategory == JobCategory.BE)
+                ?? t.Db.RubricCriteria
+                    .FirstOrDefault(c => c.Name == name && c.CandidateId == null
+                                         && c.JobCategory == JobCategory.BE);
+            if (crit is null)
+            {
+                crit = TestDb.Criterion(JobCategory.BE, name: name);
+                t.Db.RubricCriteria.Add(crit);
+            }
             t.Db.SessionCriterionScores.Add(new SessionCriterionScore
             {
                 Id = Guid.NewGuid(),

@@ -258,6 +258,12 @@ public class PracticeService : IPracticeService
             var adaptiveOn = settings.AdaptiveEnabled;
             var maxDeepPerQuestion = settings.MaxDeepPerQuestion;
 
+            // Con dấu thước đo B2C — đóng NGAY LÚC TẠO, trước khi có answer nào. Từ đây mọi đường
+            // (publish · callback guard · republisher · tổng kết BC9) đọc cùng một bộ, kể cả khi admin
+            // hoặc chính ứng viên lưu bản rubric mới ngay giữa buổi.
+            var (b2cRubricOwnerId, b2cRubricVersion) =
+                await ResolveB2CRubricPinAsync(candidateId, jobCategory, language, ct);
+
             // Tạo session, commit #1. Status set bằng C# initializer của entity.
             var session = new PracticeSession
             {
@@ -270,6 +276,8 @@ public class PracticeService : IPracticeService
                 Language = language,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,
+                B2CRubricOwnerId = b2cRubricOwnerId,
+                B2CRubricVersion = b2cRubricVersion,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
                 AdaptiveEnabled = adaptiveOn,
@@ -1266,6 +1274,36 @@ public class PracticeService : IPracticeService
             .OrderBy(c => c.Name)
             .Select(c => new QuestionTargetCriterionDto(c.Id, c.Name))
             .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// Con dấu rubric B2C đóng lên buổi luyện lúc TẠO: (chủ bộ tiêu chí, phiên bản).
+    ///
+    /// <para>Cùng mẫu với mọi con dấu khác (<c>SelfConsistencyN</c>, <c>EntitlementSource</c>,
+    /// <c>CampaignRubricVersion</c>): "dùng cấu hình LÚC TẠO, không phải cấu hình đổi sau". Ở đây
+    /// "cấu hình đổi sau" có hai nguồn thật — admin lưu bản mới của bộ chuẩn, và chính ứng viên bấm
+    /// Lưu rubric riêng giữa buổi.</para>
+    ///
+    /// <para>Trả <c>(null, null)</c> khi không tìm thấy bộ nào đang hiệu lực ⇒ buổi không ghim và
+    /// loader rơi về nhánh cũ. Ca này không tới được ở đường thường (<see cref="EnsureRubricExistsAsync"/>
+    /// đã chặn), nhưng ghim một phiên bản không tồn tại thì tệ hơn nhiều: nó nạp 0 tiêu chí.</para>
+    /// </summary>
+    private async Task<(Guid? OwnerId, int? Version)> ResolveB2CRubricPinAsync(
+        Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
+    {
+        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, language, ct);
+        var query = _db.RubricCriteria.AsNoTracking()
+            .Where(c => c.CampaignId == null && c.JobCategory == jobCategory
+                        && c.Language == language && c.IsActive);
+        query = owner is Guid oid
+            ? query.Where(c => c.CandidateId == oid)
+            : query.Where(c => c.CandidateId == null);
+
+        // Bộ active của một (chủ, nghề, ngôn ngữ) luôn cùng một Version (replace-all của BC16 và của
+        // màn admin đều ghi cả bộ trong MỘT SaveChanges). Max() chỉ là cách đọc con số đó an toàn khi
+        // tập rỗng.
+        var version = await query.Select(c => (int?)c.Version).MaxAsync(ct);
+        return version is null ? (null, null) : (owner, version);
     }
 
     private async Task EnsureRubricExistsAsync(

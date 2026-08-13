@@ -121,6 +121,12 @@ public class StuckAnswerRepublisher : BackgroundService
                 // rubric_version khác nhau ⇒ attemptsForVersion không bao giờ đủ N ⇒ answer kẹt
                 // Scoring vĩnh viễn. Đúng chỗ F11 và đáp án mẫu đã dính.
                 CampaignRubricVersion = a.Session.CampaignRubricVersion,
+                // Cặp con dấu rubric B2C — cùng lý do với `CampaignRubricVersion` ngay trên: thiếu ở
+                // projection thì answer nào phải cứu bằng republisher rơi về nhánh "bộ đang hiệu lực",
+                // trong khi answer chấm trơn tru dùng bộ đã ghim ⇒ cùng một answer sinh hai
+                // rubric_version ⇒ attemptsForVersion không bao giờ đủ N ⇒ answer kẹt Scoring vĩnh viễn.
+                B2CRubricOwnerId = a.Session.B2CRubricOwnerId,
+                B2CRubricVersion = a.Session.B2CRubricVersion,
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
                 Language = a.Session.Language,
@@ -153,7 +159,9 @@ public class StuckAnswerRepublisher : BackgroundService
                 // B2B: tiêu chí phụ thuộc campaign + PHIÊN BẢN buổi thi đã ghim (hai buổi cùng campaign
                 // ghim hai phiên bản khác nhau KHÔNG được dùng chung entry cache).
                 ? new RubricScopeKey(cid, null, null, CampaignRubricVersion: a.CampaignRubricVersion)
-                : new RubricScopeKey(null, a.CandidateId, a.JobCategory, a.Language);   // B2C: theo (candidate, nghề, language)
+                // B2C: theo (candidate, nghề, language) + CON DẤU rubric buổi đã ghim (chủ + phiên bản).
+                : new RubricScopeKey(null, a.CandidateId, a.JobCategory, a.Language,
+                    B2COwnerId: a.B2CRubricOwnerId, B2CRubricVersion: a.B2CRubricVersion);
 
             if (!criteriaCache.TryGetValue(key, out var criteria))
             {
