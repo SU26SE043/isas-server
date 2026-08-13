@@ -64,6 +64,11 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // biết (BK23). null phải giữ đúng nghĩa "không biết".
         e.Property(x => x.ScoringScopeVersion);
 
+        // Ghim phiên bản rubric campaign — nullable, KHÔNG default: B2C không có rubric campaign nên
+        // null ở đó là đúng nghĩa "không áp dụng". Buổi B2B cũ được backfill = 1 trong migration
+        // (giá trị đã biết chắc, xem ghi chú ở entity), không phải bằng DB default.
+        e.Property(x => x.CampaignRubricVersion);
+
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 
