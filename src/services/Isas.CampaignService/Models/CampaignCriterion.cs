@@ -27,9 +27,30 @@ namespace Isas.CampaignService.Models
         public ICollection<CampaignCriterionLevel> Levels { get; set; } = new List<CampaignCriterionLevel>();
     }
 
+    /// <summary>
+    /// Nguồn gốc tiêu chí — <b>sự thật do SERVER sở hữu</b> (mẫu F10 cho <c>QuestionSource</c>): giá trị
+    /// client gửi lên bị bỏ qua, mỗi đường ghi tự đóng dấu nguồn của nó.
+    /// </summary>
     public enum CriterionSource
     {
+        /// <summary>AIService <c>/suggest-criteria</c> thật sự sinh ra bộ này.</summary>
         AiSuggested = 0,
-        HrEdited = 1
+
+        /// <summary>HR khai/sửa trực tiếp qua <c>PUT /campaign/{id}</c>.</summary>
+        HrEdited = 1,
+
+        /// <summary>
+        /// Bộ do HỆ THỐNG cấp, KHÔNG phải AI: (a) chép từ bộ chuẩn B2C admin soạn
+        /// (<c>POST /criteria/from-system-default</c>), (b) bộ dự phòng <c>BuildDefaultCriteria</c> khi
+        /// AIService lỗi lúc publish.
+        ///
+        /// <para>Giá trị THỨ BA, KHÔNG thay <see cref="AiSuggested"/> — hàng cũ vẫn hợp lệ, không backfill.</para>
+        ///
+        /// <para><b>Vì sao tách khỏi <see cref="AiSuggested"/>:</b> ba tiêu chí dự phòng là hằng số viết
+        /// tay trong code, AI chưa từng chạm vào; gắn nhãn "AI đề xuất" khiến HR tin nó hơn mức đáng
+        /// tin — thước đo đọc như thứ đã được cân nhắc theo JD của họ, trong khi nó giống hệt nhau ở
+        /// mọi chiến dịch.</para>
+        /// </summary>
+        SystemDefault = 2
     }
 }
