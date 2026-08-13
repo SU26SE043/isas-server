@@ -20,7 +20,30 @@ namespace Isas.CampaignService.DTOs
         // là thứ F9/F10 sinh ra để bảo vệ. Giữ lại để không phá hợp đồng JSON đang có (BK20).
         public QuestionSource Source { get; set; }
 
+        // NGÂN HÀNG ĐỀ: true = câu BẮT BUỘC, mọi ứng viên đều gặp; false = nằm trong rổ rút thăm.
+        // Chỉ có tác dụng khi campaign đặt `questionsPerSession`; không đặt thì mọi câu đều được hỏi.
         public bool IsRequired { get; set; } = true;
+
+        /// <summary>
+        /// Đáp án mẫu. Ba trạng thái, KHÔNG phải hai:
+        /// <list type="bullet">
+        /// <item><c>null</c> / vắng mặt trong JSON = <b>KHÔNG ĐỔI</b> (giữ nguyên đáp án đang có)</item>
+        /// <item>chuỗi rỗng <c>""</c> = <b>XOÁ</b> đáp án</item>
+        /// <item>chuỗi có nội dung = ghi đè</item>
+        /// </list>
+        ///
+        /// Bất đối xứng có chủ đích. PUT questions là replace, mà client cũ (FE chưa deploy) không biết
+        /// field này nên gửi thiếu ⇒ nếu coi <c>null</c> là "xoá" thì MỘT lần HR bấm Lưu trên bản FE cũ
+        /// là mất trắng đáp án của cả chiến dịch. Đúng bẫy F10 đã phải đi vá với <c>source</c>.
+        /// Angular textarea rỗng trả <c>''</c> nên FE mới vẫn xoá được tự nhiên.
+        /// </summary>
+        public string? SampleAnswer { get; set; }
+
+        /// <summary>
+        /// Nhóm chủ đề (ngân hàng đề). Cùng hợp đồng ba trạng thái với <see cref="SampleAnswer"/>:
+        /// <c>null</c> = không đổi, <c>""</c> = gỡ khỏi nhóm.
+        /// </summary>
+        public string? QuestionGroup { get; set; }
     }
 
     // C12: tiêu chí chấm CÓ CẤU TRÚC — HR khai thẳng (name/weight/maxScore/description).
@@ -69,6 +92,10 @@ namespace Isas.CampaignService.DTOs
         public int? MaxQuestions { get; set; }
         // INT-17b: trần đào sâu MỖI câu (null/0 = chế độ cũ — đào sâu dồn ở đuôi buổi).
         public int? MaxDeepPerQuestion { get; set; }
+
+        // NGÂN HÀNG ĐỀ: số câu mỗi ứng viên thi, rút từ bộ câu hỏi campaign.
+        // null = thi HẾT (hành vi cũ). Đặt số thì phải ≥ 1 — xem ValidateQuestionsPerSession.
+        public int? QuestionsPerSession { get; set; }
 
         // C11: JD & Criteria nhập TEXT trực tiếp (không bắt buộc PDF). Set *_text, *_file_url = null.
         public string? JdText { get; set; }
@@ -122,6 +149,9 @@ namespace Isas.CampaignService.DTOs
         public int? MaxFollowUps { get; set; }
         public int? MaxQuestions { get; set; }
         public int? MaxDeepPerQuestion { get; set; }   // INT-17b
+        // NGÂN HÀNG ĐỀ — null = KHÔNG ĐỔI (cùng nếp các trần trên). Muốn quay về "thi hết bộ" thì
+        // đặt một số ≥ số câu của chiến dịch; API không gỡ được về null, đúng đánh đổi đã chọn ở trên.
+        public int? QuestionsPerSession { get; set; }
 
         // C11: cập nhật/ghi đè JD & Criteria dạng TEXT trực tiếp (text ưu tiên file → xoá *_file_url).
         public string? JdText { get; set; }
@@ -151,6 +181,13 @@ namespace Isas.CampaignService.DTOs
         // Additive (FE cũ bỏ qua field lạ). FE cần field này để hộp thoại xác nhận đếm đúng: nó đang
         // đếm theo `source` nên vẫn xếp câu AI-đã-chỉnh vào nhóm "sẽ bị THAY" — hiện là dương tính giả.
         public DateTime? HrEditedAt { get; set; }
+
+        // Đáp án mẫu HR soạn. null = chưa soạn HOẶC đây là danh sách campaign (list bỏ field này để
+        // payload không cõng 200 × 5.000 ký tự mỗi lần mở trang) — xem FromEntity(includeSampleAnswer).
+        public string? SampleAnswer { get; set; }
+
+        // Nhóm chủ đề (ngân hàng đề). null = chưa phân nhóm.
+        public string? QuestionGroup { get; set; }
     }
 
     // C12: tiêu chí có cấu trúc trả về (đọc/duyệt). order_no + source (HrEdited/AiSuggested).
@@ -185,6 +222,8 @@ namespace Isas.CampaignService.DTOs
         public int? MaxFollowUps { get; set; }      // INT-17: trần câu thích ứng (null = mặc định Interview)
         public int? MaxQuestions { get; set; }      // INT-17: trần tổng câu (null = mặc định Interview)
         public int? MaxDeepPerQuestion { get; set; }   // INT-17b: trần đào sâu mỗi câu (null/0 = chế độ cũ)
+        // NGÂN HÀNG ĐỀ: số câu mỗi ứng viên thi (null = thi HẾT bộ câu hỏi, hành vi cũ).
+        public int? QuestionsPerSession { get; set; }
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public List<CampaignQuestionResponse> Questions { get; set; }
@@ -194,7 +233,12 @@ namespace Isas.CampaignService.DTOs
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
 
-        public static CampaignResponse FromEntity(Campaign c) => new CampaignResponse
+        /// <param name="includeSampleAnswer">
+        /// <c>false</c> cho DANH SÁCH campaign: `GetCampaignsAsync` cũng `.Include(Questions)` và dùng
+        /// chung mapper này, nên trả đáp án mẫu ở đó là mỗi thẻ campaign cõng thêm tới 200 × 5.000 ký tự.
+        /// Màn danh sách không hiển thị đáp án — chỉ màn chi tiết/sửa mới cần.
+        /// </param>
+        public static CampaignResponse FromEntity(Campaign c, bool includeSampleAnswer = true) => new CampaignResponse
         {
             Id = c.Id,
             OrgId = c.OrgId,
@@ -214,6 +258,7 @@ namespace Isas.CampaignService.DTOs
             MaxFollowUps = c.MaxFollowUps,
             MaxQuestions = c.MaxQuestions,
             MaxDeepPerQuestion = c.MaxDeepPerQuestion,   // INT-17b
+            QuestionsPerSession = c.QuestionsPerSession,
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
             // F10: sắp theo ĐÚNG thứ tự ứng viên sẽ gặp (ParticipationService dùng CreatedAt, Id) —
@@ -226,7 +271,9 @@ namespace Isas.CampaignService.DTOs
                 QuestionText = q.QuestionText,
                 Source = q.Source.ToString(),
                 IsRequired = q.IsRequired,
-                HrEditedAt = q.HrEditedAt   // R10
+                HrEditedAt = q.HrEditedAt,   // R10
+                SampleAnswer = includeSampleAnswer ? q.SampleAnswer : null,
+                QuestionGroup = q.QuestionGroup
             }).ToList(),
             Criteria = c.Criteria
                 .OrderBy(cr => cr.OrderNo)

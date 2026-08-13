@@ -23,6 +23,26 @@
         /// </summary>
         public DateTime? HrEditedAt { get; set; }
 
+        /// <summary>
+        /// Đáp án mẫu HR soạn cho câu này (null = chưa soạn).
+        ///
+        /// Tên `sample_answer` chứ không phải `expected_answer`: "expected" hàm ý bộ chấm đối chiếu để
+        /// tìm câu trả lời ĐÚNG DUY NHẤT. Nó không làm thế — nó chỉ được cấp cho AI như một ví dụ tốt
+        /// để hiệu chỉnh thang điểm. Thống nhất với <c>practice_answers.sample_answer</c> bên Interview.
+        /// </summary>
+        public string? SampleAnswer { get; set; }
+
+        /// <summary>
+        /// Nhóm chủ đề HR khai (vd "Thuật toán", "Thiết kế hệ thống"). null = nhóm mặc định.
+        ///
+        /// Chỉ có nghĩa khi campaign bật ngân hàng đề (<see cref="Campaign.QuestionsPerSession"/>):
+        /// mỗi buổi rút ĐỀU theo nhóm thay vì rút mù. Vì sao phải đều: INT-18 loại tiêu chí không câu
+        /// nào hỏi tới ra khỏi điểm (không tính 0) ⇒ rút mù thì ứng viên A bốc 4 câu thuật toán bị chấm
+        /// gắt mảng đó, còn B bốc 0 câu thì mảng đó BIẾN MẤT khỏi điểm của B — rồi hai người xếp chung
+        /// một bảng (CAMP-10). Đó là đo bằng hai thước khác nhau, không phải "đề khác nhau chút".
+        /// </summary>
+        public string? QuestionGroup { get; set; }
+
         // Navigation
         public Campaign Campaign { get; set; } = null!;
     }

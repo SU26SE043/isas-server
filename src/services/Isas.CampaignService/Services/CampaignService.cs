@@ -3,6 +3,7 @@ using CsvHelper;
 using CsvHelper.Configuration;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
+using Isas.CampaignService.Validation;
 using Isas.Shared.Pagination;
 using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
@@ -81,6 +82,7 @@ namespace Isas.CampaignService.Services
             // mà chỉ đổi một trong hai chỗ thì hai lần gọi có thể lệch nhau.
             var seniority = ValidateSeniority(request.Seniority);
             ValidateConcurrencyCap(request.MaxConcurrentInterviews);
+            ValidateQuestionsPerSession(request.QuestionsPerSession);
 
             // C11 + cap độ dài: chuẩn hoá & kiểm ngưỡng TRƯỚC khi dựng entity/ghi DB → vượt ngưỡng thì
             // 400 mà không để lại gì nửa vời.
@@ -106,6 +108,7 @@ namespace Isas.CampaignService.Services
                 MaxFollowUps = request.MaxFollowUps,
                 MaxQuestions = request.MaxQuestions,
                 MaxDeepPerQuestion = request.MaxDeepPerQuestion,   // INT-17b: trần đào sâu mỗi câu
+                QuestionsPerSession = request.QuestionsPerSession,   // ngân hàng đề (null = thi hết)
                 FaceVerifyEnabled = request.FaceVerifyEnabled,   // SEC-1: face-verify opt-in (B2B)
                 PassScorePct = request.PassScorePct,   // E5: ngưỡng pass/fail (null = HR quyết tay)
                 // C11: JD/Criteria nhập text trực tiếp → *_text set, *_file_url null (không file lúc tạo).
@@ -123,8 +126,15 @@ namespace Isas.CampaignService.Services
             // F10: `source` ép CustomHr, KHÔNG lấy từ client. Campaign vừa tạo thì chưa lần nào gọi AI,
             // nên câu gắn nhãn `AiGenerated` ở đây là nhãn sai theo định nghĩa. Tệ hơn: F9 khi sinh sẽ
             // xoá mọi row `AiGenerated` cũ ⇒ câu HR gõ mà tự nhận là AI sẽ bị lượt sinh kế nuốt mất.
+            ValidateQuestionPayload(request.Questions);
+
+            // Một mốc chung + lệch mili giây theo chỉ số: gọi `DateTime.UtcNow` trong Select như trước
+            // KHÔNG bảo đảm hai phần tử ra hai giá trị khác nhau (độ phân giải đồng hồ), mà thứ tự đọc
+            // ra là (CreatedAt, Id) ⇒ trùng mốc là tie-break rơi vào Guid ngẫu nhiên. Xem ghi chú dài
+            // ở nhánh `fresh` của UpdateCampaignQuestionsAsync.
+            var questionsCreatedAt = DateTime.UtcNow;
             campaign.Questions = request.Questions
-                .Select(q => new CampaignQuestion
+                .Select((q, idx) => new CampaignQuestion
                 {
                     // Id sinh ở app (như F9/F10), không nhờ default `gen_random_uuid()` của Postgres:
                     // 3 đường ghi câu hỏi nay thống nhất, và đường create thành test được trên SQLite
@@ -134,7 +144,9 @@ namespace Isas.CampaignService.Services
                     QuestionText = q.QuestionText.Trim(),
                     Source = QuestionSource.CustomHr,
                     IsRequired = q.IsRequired,
-                    CreatedAt = DateTime.UtcNow,
+                    SampleAnswer = NormalizeOptionalText(q.SampleAnswer),
+                    QuestionGroup = NormalizeOptionalText(q.QuestionGroup),
+                    CreatedAt = questionsCreatedAt.AddMilliseconds(idx),
                 })
                 .ToList();
 
@@ -293,7 +305,9 @@ namespace Isas.CampaignService.Services
                 .Take(take)
                 .ToListAsync(ct);
 
-            var items = rows.Select(CampaignResponse.FromEntity).ToList();
+            // includeSampleAnswer: false — danh sách không hiển thị đáp án mẫu, mà nó có thể tới
+            // 5.000 ký tự/câu × 200 câu/chiến dịch × cả trang. Màn chi tiết/sửa mới cần.
+            var items = rows.Select(c => CampaignResponse.FromEntity(c, includeSampleAnswer: false)).ToList();
             var next = rows.Count == take
                 ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
                 : null;
@@ -417,6 +431,12 @@ namespace Isas.CampaignService.Services
                 if (request.MaxFollowUps.HasValue) campaign.MaxFollowUps = request.MaxFollowUps;
                 if (request.MaxQuestions.HasValue) campaign.MaxQuestions = request.MaxQuestions;
                 if (request.MaxDeepPerQuestion.HasValue) campaign.MaxDeepPerQuestion = request.MaxDeepPerQuestion;
+            }
+
+            if (request.QuestionsPerSession.HasValue)
+            {
+                ValidateQuestionsPerSession(request.QuestionsPerSession);
+                campaign.QuestionsPerSession = request.QuestionsPerSession;
             }
 
             // C11: cập nhật JD/Criteria dạng text → set *_text, xoá *_file_url (text ưu tiên file).
@@ -544,6 +564,8 @@ namespace Isas.CampaignService.Services
             if (questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 throw new ArgumentException("All questions must have non-empty text.");
 
+            ValidateQuestionPayload(questions);
+
             // ── 3. F10 — MERGE theo id thay vì Clear()+tạo lại ──────────────────────────────
             //    Cũ: xoá sạch rồi dựng lại với Guid mới + `source` lấy từ client. Vì FE hardcode
             //    `source:'CustomHr'`, HR sửa MỘT câu là toàn bộ câu F9 sinh mất nhãn `AiGenerated`
@@ -576,11 +598,29 @@ namespace Isas.CampaignService.Services
                     // Chỉ tính đổi TEXT, không tính bật/tắt `IsRequired`: cái HR mất khi sinh lại là câu
                     // chữ họ soạn; giữ một câu AI sống sót chỉ vì ai đó gạt một checkbox sẽ làm đề tồn
                     // đọng câu cũ mà HR không hiểu vì sao.
-                    if (row.Source == QuestionSource.AiGenerated && !string.Equals(row.QuestionText, text, StringComparison.Ordinal))
+                    // null = client không nhắc tới field ⇒ GIỮ NGUYÊN. "" = xoá. Xem QuestionItem.SampleAnswer:
+                    // FE chưa deploy không biết field mới nên gửi thiếu — coi đó là "xoá" thì một lần Lưu
+                    // là mất trắng đáp án cả chiến dịch (đúng bẫy F10 đã dính với `source`).
+                    var newAnswer = item.SampleAnswer is null
+                        ? row.SampleAnswer
+                        : NormalizeOptionalText(item.SampleAnswer);
+                    var newGroup = item.QuestionGroup is null
+                        ? row.QuestionGroup
+                        : NormalizeOptionalText(item.QuestionGroup);
+
+                    // R10 mở rộng: soạn/sửa ĐÁP ÁN MẪU cũng là công sức HR ⇒ lượt F9 kế phải giữ câu đó.
+                    // Thiếu vế này thì HR thêm đáp án cho câu AI (không đụng chữ câu hỏi) → dấu vẫn null
+                    // → bấm "sinh lại" là đáp án bay sạch, không cảnh báo, không khôi phục được.
+                    // `QuestionGroup` KHÔNG tính: gán nhãn nhóm là phân loại, cùng hạng với `IsRequired`.
+                    if (row.Source == QuestionSource.AiGenerated
+                        && (!string.Equals(row.QuestionText, text, StringComparison.Ordinal)
+                            || !string.Equals(row.SampleAnswer, newAnswer, StringComparison.Ordinal)))
                         row.HrEditedAt = now;
 
                     row.QuestionText = text;
                     row.IsRequired = item.IsRequired;
+                    row.SampleAnswer = newAnswer;
+                    row.QuestionGroup = newGroup;
                     // KHÔNG gán row.Source: nguồn gốc là sự thật do server ghi lúc tạo (F9 = AiGenerated,
                     // HR gõ tay = CustomHr). Cho client ghi đè thì nhãn nguồn thành lời khai tự do.
                     // KHÔNG gán row.CreatedAt: thứ tự bài thi sắp theo (CreatedAt, Id) — xem ParticipationService.
@@ -595,7 +635,16 @@ namespace Isas.CampaignService.Services
                         QuestionText = text,
                         Source = QuestionSource.CustomHr,   // F10: câu mới qua đường PUT = HR gõ tay, luôn
                         IsRequired = item.IsRequired,
-                        CreatedAt = now,
+                        SampleAnswer = NormalizeOptionalText(item.SampleAnswer),
+                        QuestionGroup = NormalizeOptionalText(item.QuestionGroup),
+                        // Mỗi câu mới lệch nhau 1ms. Trước đây mọi row `fresh` nhận CÙNG một `now`, mà
+                        // thứ tự đọc ra là (CreatedAt, Id) ⇒ tie-break rơi vào Guid.NewGuid() NGẪU NHIÊN.
+                        // Thêm 1-2 câu thì không ai thấy; nhập 50 dòng từ file là thứ tự HR soạn bị TRỘN,
+                        // cả trên màn hình lẫn trong bài thi. Postgres timestamptz lưu tới micro giây nên
+                        // chênh mili giây sống sót; SQLite (test) cũng giữ.
+                        // Fix đúng đắn hơn là cột `order_no` — đụng 6 call-site + unique index vỡ giữa
+                        // transaction khi merge sửa tại chỗ ⇒ để backlog, không "tiện thể" làm ở đây.
+                        CreatedAt = now.AddMilliseconds(fresh.Count),
                     });
                 }
             }
@@ -1969,6 +2018,18 @@ namespace Isas.CampaignService.Services
                     $"max_concurrent_interviews phải >= 1 (hiện: {c}). Bỏ trống = không giới hạn.");
         }
 
+        // NGÂN HÀNG ĐỀ — số câu mỗi ứng viên thi. null = thi HẾT bộ (hành vi trước tính năng này).
+        // Đặt số thì phải >= 1: `0` nghĩa là buổi thi không có câu nào, mà ParticipationService ném
+        // "Chiến dịch chưa có câu hỏi" khi đề rỗng ⇒ để lọt là tạo ra chiến dịch publish được nhưng
+        // KHÔNG ứng viên nào bắt đầu nổi. Cùng lý do với ValidateConcurrencyCap ngay trên.
+        // KHÔNG đặt trần trên: số lớn hơn ngân hàng = "thi hết", đã xử tường minh ở QuestionPoolSelector.
+        private static void ValidateQuestionsPerSession(int? questionsPerSession)
+        {
+            if (questionsPerSession is int n && n < 1)
+                throw new ArgumentException(
+                    $"questions_per_session phải >= 1 (hiện: {n}). Bỏ trống = ứng viên thi hết bộ câu hỏi.");
+        }
+
         private static void ValidateAdaptiveCaps(int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion = null)
         {
             if (maxFollowUps is int f && f < 0)
@@ -2246,6 +2307,47 @@ namespace Isas.CampaignService.Services
         private static string? NormalizeText(string? text, string fieldLabel)
             => TextInputLimits.NormalizeAndEnsureLimit(
                 text, fieldLabel, msg => new ArgumentException(msg));
+
+        // Chuẩn hoá field text TUỲ CHỌN của câu hỏi (đáp án mẫu, nhóm): trim; rỗng/toàn khoảng trắng → null.
+        // Trả null cho chuỗi rỗng là mấu chốt của hợp đồng "" = XOÁ ở QuestionItem: client gửi ô trống thì
+        // cột về null chứ không lưu chuỗi rỗng — nếu không, "chưa soạn" và "đã xoá" thành hai giá trị khác
+        // nhau trong DB mà mọi chỗ đọc đều phải nhớ kiểm cả hai.
+        private static string? NormalizeOptionalText(string? text)
+            => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+
+        // Trần độ dài + số lượng cho một payload câu hỏi (PUT questions và create campaign dùng chung).
+        // Đo SAU khi trim → khoảng trắng thừa không tính vào ngưỡng, đồng nếp NormalizeText của C11.
+        private static void ValidateQuestionPayload(List<QuestionItem> questions)
+        {
+            if (questions.Count > QuestionLimits.MaxQuestionsPerCampaign)
+                throw new ArgumentException(
+                    $"Chiến dịch có tối đa {QuestionLimits.MaxQuestionsPerCampaign} câu hỏi " +
+                    $"(đang gửi {questions.Count}).");
+
+            for (var i = 0; i < questions.Count; i++)
+            {
+                var q = questions[i];
+                var line = i + 1;
+
+                var text = q.QuestionText?.Trim() ?? string.Empty;
+                if (text.Length > QuestionLimits.QuestionTextMaxChars)
+                    throw new ArgumentException(
+                        $"Câu hỏi thứ {line}: nội dung tối đa {QuestionLimits.QuestionTextMaxChars} ký tự " +
+                        $"(đang gửi {text.Length}).");
+
+                var answer = q.SampleAnswer?.Trim();
+                if (answer is { Length: > QuestionLimits.SampleAnswerMaxChars })
+                    throw new ArgumentException(
+                        $"Câu hỏi thứ {line}: đáp án mẫu tối đa {QuestionLimits.SampleAnswerMaxChars} ký tự " +
+                        $"(đang gửi {answer.Length}).");
+
+                var group = q.QuestionGroup?.Trim();
+                if (group is { Length: > QuestionLimits.QuestionGroupMaxChars })
+                    throw new ArgumentException(
+                        $"Câu hỏi thứ {line}: tên nhóm tối đa {QuestionLimits.QuestionGroupMaxChars} ký tự " +
+                        $"(đang gửi {group.Length}).");
+            }
+        }
 
         // C11: slot đã nhập JD/Criteria dạng TEXT trực tiếp (text có + chưa gắn file) → text ưu tiên, bỏ file.
         // (Có file_url = nguồn từ PDF trước đó → cho phép thay bằng file mới, không coi là "text trực tiếp".)

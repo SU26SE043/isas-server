@@ -52,6 +52,12 @@ namespace Isas.CampaignService.Models
                     t.HasCheckConstraint(
                         "ck_campaigns_adaptive_caps_non_negative",
                         "(max_follow_ups IS NULL OR max_follow_ups >= 0) AND (max_questions IS NULL OR max_questions >= 0) AND (max_deep_per_question IS NULL OR max_deep_per_question >= 0)");
+                    // NGÂN HÀNG ĐỀ: null = lấy hết câu (hành vi cũ). Đặt số thì phải ≥ 1 — `0` nghĩa là
+                    // "buổi thi không câu nào", mà `ParticipationService` đã ném khi đề rỗng ⇒ để lọt là
+                    // tạo ra campaign publish được nhưng KHÔNG ứng viên nào bắt đầu nổi.
+                    t.HasCheckConstraint(
+                        "ck_campaigns_questions_per_session_positive",
+                        "questions_per_session IS NULL OR questions_per_session >= 1");
                     t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
                     t.HasCheckConstraint("ck_campaigns_language", "language IN ('vi', 'en')");
                     t.HasCheckConstraint("ck_campaigns_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
@@ -135,6 +141,13 @@ namespace Isas.CampaignService.Models
 
                 e.Property(x => x.QuestionText).IsRequired();
                 e.Property(x => x.IsRequired).HasDefaultValue(true);
+
+                // Đáp án mẫu: cột `text` như `question_text`, KHÔNG HasMaxLength — vượt trần thì Postgres
+                // ném lỗi thô không ai đọc được; trần độ dài chặn ở code (QuestionLimits) để trả 400 kèm
+                // thông báo tiếng Việt. KHÔNG jsonb: cấu hình jsonb ở context này đều phải gate IsNpgsql()
+                // vì SQLite của test không hỗ trợ.
+                e.Property(x => x.SampleAnswer);
+                e.Property(x => x.QuestionGroup).HasMaxLength(100);
 
                 e.Property(x => x.Source)
                  .HasConversion<string>()

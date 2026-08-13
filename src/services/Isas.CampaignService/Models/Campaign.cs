@@ -36,6 +36,12 @@
         // sau nó — vẫn công bằng vì mọi ứng viên nhận cùng bộ câu gốc và cùng trần độ sâu.
         // ⚠ Độ dài bài nhân lên: N câu campaign × (1 + trần) — HR phải cân nhắc, xem ValidateAdaptiveCaps.
         public int? MaxDeepPerQuestion { get; set; }
+        // NGÂN HÀNG ĐỀ — số câu MỖI ỨNG VIÊN thi, rút từ bộ câu hỏi campaign.
+        // null = lấy HẾT (hành vi trước tính năng này ⇒ campaign cũ không đổi gì, không cần backfill).
+        // > 0  = mỗi buổi rút đúng ngần đó câu: hết câu `IsRequired` + rút ĐỀU theo `QuestionGroup` cho
+        //        đủ số, rồi XÁO thứ tự. Rút deterministic theo (campaignId, candidateId) — xem
+        //        QuestionPoolSelector: buổi thi là create-or-get nên vào lại phải ra ĐÚNG đề cũ.
+        public int? QuestionsPerSession { get; set; }
         public string? JDFileUrl { get; set; }
         public string? JDText { get; set; }
         public string? CriteriaFileUrl { get; set; }
