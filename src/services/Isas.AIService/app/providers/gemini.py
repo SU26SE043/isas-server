@@ -14,7 +14,7 @@ from app.question_quality import coverage_defects, verify_defect
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
-    build_criterion_levels_prompt,
+    build_criterion_levels_prompt, build_preview_answers_prompt, PREVIEW_BANDS,
     build_cv_analysis_prompt, build_repo_analysis_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
     build_summarize_session_prompt, build_decide_next_prompt,
@@ -42,6 +42,35 @@ _QUESTION_TERMINATORS = "?.!…。？！"
 # ra, tức là nếu để lọt thì tính năng vừa xây trả về đúng cái nó sinh ra để thay thế, và HR không
 # có cách nào nhận ra vì màn hình vẫn có chữ.
 LEVEL_DESCRIPTOR_MIN_CHARS = 20
+
+# E9b — trần chênh lệch độ dài giữa bài dài nhất và bài ngắn nhất trong bộ 3 bài chấm thử.
+#
+# Vì sao phải đo chứ không chỉ dặn trong prompt: đây là confound có thể làm CẢ TÍNH NĂNG vô nghĩa
+# mà vẫn "xanh". Ba bài dài 60/150/300 từ sẽ cho ba điểm khác nhau — trông y hệt một thước đo tốt
+# — trong khi thứ được đo là độ dài. Và nếu bộ chấm cũng thưởng độ dài (điều ta đang muốn phát
+# hiện) thì dải điểm đẹp đó lại đi XÁC NHẬN đúng cái lỗi cần thấy.
+#
+# 1.35 chứ không phải 1.0: ép bằng nhau tuyệt đối sẽ khiến model độn chữ cho đủ số từ, và bài độn
+# chữ cũng không còn là bài thật của một ứng viên nữa.
+PREVIEW_LENGTH_RATIO_MAX = 1.35
+
+
+def preview_word_count(text: str) -> int:
+    """Đếm "từ" cho luật parity. Tách theo khoảng trắng — với tiếng Việt đây là số ÂM TIẾT chứ
+    không phải số từ, nhưng luật parity là một TỈ LỆ giữa ba bài cùng ngôn ngữ nên đơn vị tự
+    triệt tiêu. Dùng chung một hàm cho cả 4 band để tỉ lệ luôn so trên cùng thước."""
+    return len(text.split())
+
+
+class PreviewAnswer(NamedTuple):
+    band: str
+    text: str
+    word_count: int
+
+
+class PreviewAnswersResult(NamedTuple):
+    answers: list[PreviewAnswer]
+    length_parity_warning: bool
 
 
 def _looks_truncated(question: str) -> bool:
@@ -647,6 +676,106 @@ class GeminiProvider(QuestionProvider):
         # Giữ ĐÚNG thứ tự đầu vào — HR đọc mốc cạnh hàng tiêu chí của mình, thứ tự nhảy theo model
         # trả về là nhiễu không cần thiết.
         return [{"criterionId": cid, "levels": levels_by_id[cid]} for cid in max_by_id]
+
+    async def generate_preview_answers(self, question: str, criteria: list[dict],
+                                       target_word_count: int = 160,
+                                       sample_answer: str | None = None,
+                                       language: str = "vi",
+                                       seniority: str | None = None) -> PreviewAnswersResult:
+        """E9b — sinh 3 bài mẫu (Weak/Good/Excellent) cho chấm thử. KHÔNG chấm ở đây.
+
+        temperature cao (0.9) là CỐ Ý và ngược hẳn với `score()` (0.0): ba bài phải khác nhau THẬT
+        về nội dung, còn lượt chấm thì phải tái lập được.
+
+        Lệch độ dài quá :data:`PREVIEW_LENGTH_RATIO_MAX` → sinh lại đúng 1 lượt kèm nhận xét; vẫn
+        lệch → **vẫn giao hàng, kèm cờ** ``length_parity_warning``. Không 502: HR vẫn cần xem được
+        bài, và cái cần là NÓI THẬT rằng dải điểm lần này có thể đang phản ánh độ dài.
+        """
+        # F21 — bắt buộc theo guard cấu trúc `test_moi_ham_dung_build_prompt_deu_phai_nap_registry`;
+        # prompt này không có khe admin nhưng `seniority_calibration_block`/`category_*` thì có.
+        await prompt_registry.refresh_if_stale()
+
+        config = types.GenerateContentConfig(
+            temperature=0.9,
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "answers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "band": {"type": "string"},
+                                "text": {"type": "string"},
+                            },
+                            "required": ["band", "text"],
+                        },
+                    }
+                },
+                "required": ["answers"],
+            },
+        )
+
+        attempts = max(1, settings.preview_answers_max_attempts)
+        feedback: str | None = None
+        last: PreviewAnswersResult | None = None
+
+        for _ in range(attempts):
+            prompt = build_preview_answers_prompt(
+                question, criteria, target_word_count, sample_answer,
+                language=language, seniority=seniority, retry_feedback=feedback)
+            response = await self._generate(
+                "score_preview_answers", contents=prompt, config=config)
+
+            try:
+                text = (response.text or "").strip()
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    raise ValueError(f"LLM trả JSON không hợp lệ: {text[:200]}")
+
+                by_band: dict[str, str] = {}
+                for item in (data.get("answers") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    band = str(item.get("band", "")).strip()
+                    if band not in PREVIEW_BANDS or band in by_band:
+                        continue      # band lạ / trùng → bỏ (AI-3)
+                    body = str(item.get("text") or "").strip()
+                    if body:
+                        by_band[band] = body
+
+                missing = [b for b in PREVIEW_BANDS if b not in by_band]
+                if missing:
+                    raise ValueError(f"LLM không trả đủ 3 bài mẫu, thiếu: {missing}")
+
+                answers = [PreviewAnswer(b, by_band[b], preview_word_count(by_band[b]))
+                           for b in PREVIEW_BANDS]
+                counts = [a.word_count for a in answers]
+                ratio = max(counts) / max(1, min(counts))
+                last = PreviewAnswersResult(answers, ratio > PREVIEW_LENGTH_RATIO_MAX)
+                if not last.length_parity_warning:
+                    return last
+
+                # Log để tỉ lệ lệch ĐO ĐƯỢC — không có dòng này thì "chấm thử hay lệch độ dài"
+                # chỉ lộ ra dưới dạng một cờ thỉnh thoảng bật, không ai biết tần suất.
+                logger.info("Chấm thử: 3 bài lệch độ dài %s (tỉ lệ %.2f > %.2f) — sinh lại",
+                            counts, ratio, PREVIEW_LENGTH_RATIO_MAX)
+                feedback = (
+                    f"- Ba bài lượt trước dài lần lượt {counts[0]}/{counts[1]}/{counts[2]} từ "
+                    f"(Weak/Good/Excellent) — chênh nhau quá nhiều. Hãy viết lại CẢ BA bài cho "
+                    f"xấp xỉ {target_word_count} từ mỗi bài; giữ nguyên chênh lệch về NỘI DUNG, "
+                    "chỉ san bằng độ dài.")
+            except ValueError:
+                # Lượt sinh lại hỏng mà lượt trước đã có bộ bài dùng được → giao bộ đó KÈM CỜ.
+                # 502 ở đây là đổi một kết quả thật-thà-nhưng-lệch lấy con số không có gì, trong
+                # khi HR đã chờ hết cả lượt sinh lẫn lượt chấm.
+                if last is None:
+                    raise
+                return last
+
+        return last if last is not None else PreviewAnswersResult([], False)
 
     async def analyze_cv(self, cv_text: str, jd_text: str | None,
                            job_category: str | None,

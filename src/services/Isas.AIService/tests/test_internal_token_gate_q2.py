@@ -30,6 +30,11 @@ _VALID_BODY = {
     "/api/v1/suggest-criteria":       {"jobCategory": "BE", "jdText": "JD", "count": 4},
     "/api/v1/suggest-criterion-levels": {"jobCategory": "BE", "criteria": [
         {"criterionId": "c1", "name": "Chiều sâu kỹ thuật", "maxScore": 5}]},
+    # Đắt nhất nhóm: 1 lượt sinh 3 bài + 3 lượt chấm = 4 lời gọi Gemini cho MỘT request.
+    "/api/v1/score-preview": {"jobCategory": "BE", "question": "Câu hỏi?", "criteria": [
+        {"criterionId": "c1", "name": "Chiều sâu kỹ thuật", "maxScore": 5, "weight": 1.0,
+         "levels": [{"score": 0, "descriptor": "d0"}, {"score": 5, "descriptor": "d5"}],
+         "expectedWeak": 0, "expectedGood": 0, "expectedExcellent": 5}]},
     "/api/v1/analyze-cv":             {"cvText": "kinh nghiệm 3 năm Python"},
     "/api/v1/generate-roadmap":       {"jobCategory": "BE", "level": "Junior"},
     "/api/v1/generate-lesson-theory": {"jobCategory": "BE", "level": "Junior",
@@ -66,7 +71,7 @@ def provider_no_touch(monkeypatch):
         raise AssertionError("Gate hở: đã chạm provider/transcriber trước khi từ chối request.")
 
     for name in ("generate", "suggest_criteria", "suggest_criterion_levels", "analyze_cv",
-                 "generate_roadmap",
+                 "generate_roadmap", "generate_preview_answers", "score",
                  "generate_lesson_theory", "summarize_roadmap", "summarize_session"):
         monkeypatch.setattr(main_module.provider, name, boom)
     monkeypatch.setattr(main_module.transcriber, "transcribe_detailed", boom)
