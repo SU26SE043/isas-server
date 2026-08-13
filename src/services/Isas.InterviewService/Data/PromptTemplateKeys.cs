@@ -38,6 +38,14 @@ public static class PromptTemplateKeys
     public const string SummarizeSessionGuidance = "summarize_session.guidance";
     public const string DecideNextGuidance = "decide_next.guidance";
 
+    /// <summary>
+    /// E9b — hướng dẫn bổ sung cho prompt sinh MỐC ĐIỂM của tiêu chí campaign (B2B).
+    /// Chèn ở CUỐI prompt, SAU mọi luật bắt buộc: luật "mỗi tiêu chí phải có mốc 0 và mốc
+    /// maxScore" do code giữ, vì thang thiếu mốc 0 khiến bài TRỐNG snap về mốc thấp nhất còn lại
+    /// (ứng viên không nói gì vẫn có điểm) mà không lỗi nào nổ.
+    /// </summary>
+    public const string CriterionLevelsGuidance = "criterion_levels.guidance";
+
     // ── Nửa B — NỘI DUNG GẮN VỚI TỪNG NGHỀ ─────────────────────────────────────────────────
     // Tập nghề vẫn ĐÓNG ở 3 giá trị enum (BA/BE/FE) — xem ghi chú dưới. Cái mở ra là nội dung
     // của mỗi nghề.
@@ -65,6 +73,7 @@ public static class PromptTemplateKeys
             ScoringPersona, ScoringExtraGuidance,
             QuestionsIntro, QuestionsGuidance, CriteriaGuidance, CvAnalysisGuidance,
             RoadmapGuidance, LessonTheoryGuidance, SummarizeSessionGuidance, DecideNextGuidance,
+            CriterionLevelsGuidance,
         };
 
         foreach (var c in Enum.GetValues<JobCategory>())

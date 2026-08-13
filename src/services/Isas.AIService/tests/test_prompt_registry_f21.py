@@ -208,7 +208,9 @@ def test_khoa_python_va_dotnet_khong_duoc_lech():
 
     text = keys_cs.read_text()
     for key in ["scoring.persona", "scoring.extra_guidance",
-                "questions.intro", "questions.guidance"]:
+                "questions.intro", "questions.guidance",
+                # E9b — khai một phía là admin PUT thấy 200 mà prompt không đổi gì.
+                "criterion_levels.guidance"]:
         assert f'"{key}"' in text, f"khoá '{key}' phía Python không có bên .NET"
 
     # Khoá theo nghề dựng bằng nội suy ở cả 2 phía → khớp phần hậu tố là đủ.

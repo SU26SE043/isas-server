@@ -7,6 +7,9 @@ from contextlib import asynccontextmanager
 from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse, QuestionCitation,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
+    SuggestCriterionLevelsRequest, SuggestCriterionLevelsResponse, CriterionLevels,
+    ScorePreviewRequest, ScorePreviewResponse, PreviewSample, PreviewCriterionScore,
+    PreviewCriterion,
     AnalyzeCvRequest, AnalyzeCvResponse, AnalyzeRepoRequest, AnalyzeRepoResponse, JdMatch,
     CriterionMatch,
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
@@ -18,6 +21,7 @@ from app.schemas import (
     TtsRequest,
     EmbedRequest, EmbedResponse,
 )
+from app.providers import gemini as gemini_module
 from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
 from app.face_verify import FaceVerifier
@@ -118,6 +122,157 @@ async def suggest_criteria(req: SuggestCriteriaRequest,
         return SuggestCriteriaResponse(criteria=[CriterionItem(**c) for c in items])
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đề xuất tiêu chí: {ex}")
+
+@router.post("/suggest-criterion-levels", response_model=SuggestCriterionLevelsResponse)
+async def suggest_criterion_levels(req: SuggestCriterionLevelsRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    """E9b — đề xuất MỐC ĐIỂM cho tiêu chí campaign. KHÔNG ghi DB (GEN-4).
+
+    CampaignService gọi khi HR bấm "AI gợi ý mốc"; kết quả trả thẳng về cho HR xem/sửa, việc LƯU
+    đi qua đúng một cửa `PUT /campaign/{id}` (giữ audit + luật bump version ở một chỗ).
+
+    Lỗi ⇒ 502, **KHÔNG fallback dải mặc định** — xem docstring provider: mốc bịa sẽ được HR tin là
+    do AI viết, mà "không có mốc" vốn là trạng thái hợp lệ nên fail-loud không chặn ai."""
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+    if not req.criteria:
+        raise HTTPException(status_code=400, detail="criteria không được rỗng")
+    try:
+        # `seniority` truyền bằng TỪ KHOÁ: `_call_with_language` chèn `language=` vào kwargs nên
+        # mọi thứ sau `level_count` phải là keyword (mẫu `/generate-questions` SEN1).
+        items = await _call_with_language(req.language, provider.suggest_criterion_levels,
+            req.jobCategory, [c.model_dump() for c in req.criteria],
+            req.jdText, req.levelCount, seniority=req.seniority)
+        return SuggestCriterionLevelsResponse(
+            criteria=[CriterionLevels(**i) for i in items])
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi đề xuất mốc điểm: {ex}")
+
+
+# E9b — 3 field mức-kỳ-vọng CHỈ dùng cho lượt SINH bài. Chúng phải bị lột bỏ trước khi gọi
+# `score()`: để lọt là mách đáp án cho chính bộ chấm ("bài này đáng mức 2"), và mọi con số
+# expected-vs-actual sau đó thành vô nghĩa — mà nó lại trông rất thuyết phục.
+_PREVIEW_EXPECTED_FIELDS = ("expectedWeak", "expectedGood", "expectedExcellent")
+
+
+def build_preview_scoring_criteria(criteria: list[PreviewCriterion]) -> list[dict]:
+    """Đưa tiêu chí chấm-thử về ĐÚNG shape mà `provider.score()` nhận trên đường production.
+
+    Sau khi lột 3 field kỳ vọng, dict còn lại là `{criterionId, name, description, maxScore,
+    weight, levels}` — trùng khít thứ `ScoringCriteriaBuilder` (C#) gửi qua RabbitMQ cho ứng viên
+    thật. Đây là chỗ dễ trôi nhất của cả tính năng: lệch một field ở đây thì HR kiểm chứng thước
+    A trong khi ứng viên bị chấm thước B, và KHÔNG có triệu chứng nào.
+    """
+    out: list[dict] = []
+    for c in criteria:
+        item = c.model_dump()
+        for field in _PREVIEW_EXPECTED_FIELDS:
+            item.pop(field, None)
+        out.append(item)
+    return out
+
+
+@router.post("/score-preview", response_model=ScorePreviewResponse)
+async def score_preview(req: ScorePreviewRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    """E9b — CHẤM THỬ: AI viết 3 bài mẫu cho 1 câu hỏi rồi chấm THẬT cả 3.
+
+    Employer hiện không có cách nào biết AI sẽ chấm ứng viên của mình thế nào — họ khai tiêu chí
+    rồi phát link, phần còn lại là hộp đen. Endpoint này mở hộp đen đó ra.
+
+    🔴 BA RÀNG BUỘC LÀM NÊN GIÁ TRỊ CỦA NÓ — sửa cái nào cũng làm cả tính năng thành trang trí:
+
+    1. **Đi qua ĐÚNG `build_scoring_prompt` + `provider.score`** mà ứng viên thật đi qua, không
+       một dòng khác. Có golden test khoá lại. Chấm thử qua một prompt khác = HR kiểm chứng thước
+       A, ứng viên bị chấm thước B, và không có triệu chứng nào.
+    2. **Mỗi bài MỘT lời gọi riêng** — bài không biết mình thuộc band nào và không thấy hai bài
+       kia. Gộp 3 bài vào một prompt biến bài toán thành XẾP HẠNG ⇒ thứ tự yếu-khá-giỏi ra đúng
+       bất kể thước đo tốt hay không ⇒ tự bịt mắt đúng chỗ cần nhìn.
+    3. **`delivery=None`** — bài mẫu là văn bản, không có audio, nên không có số đo cách nói (F11)
+       và prompt sẽ nói thẳng "chưa đo được, TUYỆT ĐỐI không bịa số". CỐ Ý **không** loại tiêu chí
+       trôi chảy khỏi danh sách: bỏ một tiêu chí là đổi `rubric_block` ⇒ đổi điểm các tiêu chí còn
+       lại, đổi mẫu số `overall = sumPct / scoredCriteriaCount` (INT-10), và nhận diện nó bằng
+       khớp tên ("trôi chảy|fluency") là heuristic sẽ bắn nhầm — tên do HR gõ và có hai ngôn ngữ.
+    """
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+    if not req.question or not req.question.strip():
+        raise HTTPException(status_code=400, detail="question không được rỗng")
+    if not req.criteria:
+        raise HTTPException(status_code=400, detail="criteria không được rỗng")
+
+    for c in req.criteria:
+        scores = {lv.score for lv in c.levels}
+        # Thiếu mốc ⇒ `score()` rơi về dải mặc định 0..maxScore ⇒ bài kiểm chứng sẽ xác nhận một
+        # thước đo KHÁC thước đo HR vừa soạn. Fail-loud, đừng để nó chạy.
+        if len(scores) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tiêu chí {c.criterionId}: cần ít nhất 2 mốc điểm khác nhau để chấm thử.")
+        # Mức kỳ vọng không nằm trong thang ⇒ báo cáo expected-vs-actual so hai thứ khác đơn vị,
+        # mà nó lại hiện ra như một con số đáng tin.
+        for field in _PREVIEW_EXPECTED_FIELDS:
+            expected = getattr(c, field)
+            if expected not in scores:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Tiêu chí {c.criterionId}: {field}={expected} không phải một mốc "
+                           f"trong thang {sorted(scores)}.")
+
+    try:
+        generated = await provider.generate_preview_answers(
+            req.question, [c.model_dump() for c in req.criteria],
+            req.targetWordCount, req.sampleAnswer,
+            language=req.language, seniority=req.seniority)
+
+        scoring_criteria = build_preview_scoring_criteria(req.criteria)
+
+        pending = [(a.band, a.text, a.word_count) for a in generated.answers]
+        if req.customAnswer and req.customAnswer.strip():
+            # Bài thứ 4 do HR tự dán — bài DUY NHẤT trong bộ này không do chính bộ chấm viết ra,
+            # nên là đối chứng duy nhất không dính self-scoring bias.
+            custom = req.customAnswer.strip()
+            pending.append(("Custom", custom, gemini_module.preview_word_count(custom)))
+
+        # Song song: 3-4 lượt chấm tuần tự sẽ kéo request đồng bộ này lên gấp mấy lần, mà HR đang
+        # ngồi chờ. Mỗi lượt vẫn là một lời gọi ĐỘC LẬP — xem ràng buộc 2 ở docstring.
+        outcomes = await asyncio.gather(*[
+            provider.score(
+                question=req.question,
+                transcript=text,
+                job_category=req.jobCategory,
+                criteria=scoring_criteria,
+                temperature=0.0,          # ĐÚNG attempt-1 của production (E10)
+                delivery=None,            # bài là văn bản → không có số đo cách nói (F11)
+                language=req.language,
+                sample_answer=req.sampleAnswer,
+            )
+            for _, text, _ in pending
+        ])
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi chấm thử: {ex}")
+
+    samples = [
+        PreviewSample(
+            band=band, answerText=text, wordCount=words,
+            scores=[PreviewCriterionScore(**s) for s in outcome.scores],
+        )
+        for (band, text, words), outcome in zip(pending, outcomes)
+    ]
+
+    return ScorePreviewResponse(
+        samples=samples,
+        # BK23 — con dấu của bộ mảnh prompt ĐÃ dựng nên chính những lượt chấm này (`score()` chụp
+        # tại chỗ). Thiếu nó, HR so hai lần chấm thử rồi quy mọi thay đổi cho việc mình sửa mốc,
+        # trong khi admin có thể vừa sửa prompt F21 ở giữa.
+        promptVersion=outcomes[0].prompt_version if outcomes else None,
+        lengthParityWarning=generated.length_parity_warning,
+    )
+
 
 @router.post("/analyze-cv", response_model=AnalyzeCvResponse, response_model_exclude_none=True)
 async def analyze_cv(req: AnalyzeCvRequest,
