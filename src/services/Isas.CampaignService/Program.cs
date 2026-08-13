@@ -99,6 +99,12 @@ builder.Services.AddHttpClient<ICampaignSessionClient, CampaignSessionClient>(c 
     c.BaseAddress = new Uri(
         string.IsNullOrWhiteSpace(builder.Configuration["Interview:BaseUrl"])
             ? "http://localhost:5002" : builder.Configuration["Interview:BaseUrl"]!));
+// CAMP-19: giữ/trừ credit ví Org cho lượt chấm thử tính phí (mẫu Interview CreditReservationClient).
+// ⚠ KHÔNG đặt timeout 5s như EntitlementClient bên dưới — đây là đường TIỀN, cắt ngang giữa chừng
+// để lại chỗ giữ mồ côi; và nó chạy trước một lời gọi AI vốn đã tính bằng chục giây.
+builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient>(c =>
+    c.BaseAddress = new Uri(string.IsNullOrWhiteSpace(builder.Configuration["Payment:BaseUrl"])
+        ? "http://localhost:5004" : builder.Configuration["Payment:BaseUrl"]!));
 builder.Services.AddHttpClient<IEntitlementClient, EntitlementClient>(c =>
 {
     c.BaseAddress = new Uri(string.IsNullOrWhiteSpace(builder.Configuration["Payment:BaseUrl"])
