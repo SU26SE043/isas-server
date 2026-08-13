@@ -5,6 +5,7 @@ using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Validation;
 using Isas.Shared.Pagination;
+using Isas.Shared.Rubric;
 using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -2415,67 +2416,38 @@ namespace Isas.CampaignService.Services
             return criteria;
         }
 
-        // CAMP-17 — trần cấu trúc của một thang điểm. 2 mốc là ít nhất để có "biên"; >10 thì mô tả
-        // giữa các mốc chồng lấn tới mức chính người chấm cũng không phân biệt được.
-        private const int CriterionLevelsMin = 2;
-        private const int CriterionLevelsMax = 10;
-        // Dưới 20 ký tự thì không thể vừa nói "CÓ gì" vừa nói "CÒN THIẾU gì"; trên 500 thì mốc thành
-        // một đoạn văn và prompt chấm phình theo số tiêu chí × số mốc.
-        private const int CriterionLevelDescriptorMin = 20;
-        private const int CriterionLevelDescriptorMax = 500;
-
         /// <summary>
         /// CAMP-17 — dựng + kiểm mốc điểm của MỘT tiêu chí. Ném <see cref="ArgumentException"/> (→400)
         /// kèm tên tiêu chí và mốc vi phạm.
         ///
-        /// <para>Kiểm ở .NET chứ không tin model: thang méo KHÔNG làm lỗi nào nổ ở đường chấm — nó chỉ
-        /// làm điểm sai. Thiếu mốc 0 thì bài TRỐNG snap về mốc thấp nhất (ứng viên không nói gì vẫn
-        /// được 4/10); thiếu mốc <c>maxScore</c> thì luật "đáp án mẫu ở mức điểm tối đa" trỏ vào một
-        /// mức không tồn tại.</para>
+        /// <para>Luật nằm ở <see cref="CriterionLevelRules"/> (dùng chung với bộ chuẩn B2C của admin và
+        /// rubric riêng của người luyện). Hai bản luật lệch nhau nghĩa là cùng một bộ mốc được nhận ở
+        /// chỗ này và từ chối ở chỗ kia — mà thang méo KHÔNG làm lỗi nào nổ ở đường chấm, nó chỉ làm
+        /// điểm sai.</para>
+        ///
+        /// <para><see cref="CriterionLevelRules"/> cố ý TRẢ lỗi thay vì ném: mỗi service map lỗi thành
+        /// 400 theo một đường khác nhau, nên nó để caller ném đúng loại của mình. Ở đây là
+        /// <see cref="ArgumentException"/>.</para>
         /// </summary>
         private static List<CampaignCriterionLevel> BuildCriterionLevels(
             CampaignCriterion criterion, List<CriterionLevelItem> items, DateTime now)
         {
-            var name = criterion.Name;
-            if (items.Count < CriterionLevelsMin || items.Count > CriterionLevelsMax)
-                throw new ArgumentException(
-                    $"Tiêu chí '{name}' phải có {CriterionLevelsMin}–{CriterionLevelsMax} mốc điểm (hiện: {items.Count}).");
+            var (error, normalized) = CriterionLevelRules.Validate(
+                criterion.Name,
+                criterion.MaxScore,
+                items.Select(i => new RubricLevelSnapshot(i.Score, i.Descriptor ?? string.Empty)).ToList());
 
-            var scores = new HashSet<int>();
-            var levels = new List<CampaignCriterionLevel>(items.Count);
-            foreach (var item in items)
+            if (error is not null) throw new ArgumentException(error);
+
+            return normalized.Select(l => new CampaignCriterionLevel
             {
-                if (item.Score < 0 || item.Score > criterion.MaxScore)
-                    throw new ArgumentException(
-                        $"Mốc {item.Score} của tiêu chí '{name}' phải nằm trong [0, {criterion.MaxScore}].");
-                if (!scores.Add(item.Score))
-                    throw new ArgumentException(
-                        $"Tiêu chí '{name}' có hai mốc cùng điểm {item.Score} — việc chọn mức khi chấm sẽ không xác định.");
-
-                var descriptor = item.Descriptor?.Trim() ?? string.Empty;
-                if (descriptor.Length < CriterionLevelDescriptorMin || descriptor.Length > CriterionLevelDescriptorMax)
-                    throw new ArgumentException(
-                        $"Mô tả mốc {item.Score} của tiêu chí '{name}' phải dài {CriterionLevelDescriptorMin}–{CriterionLevelDescriptorMax} ký tự (hiện: {descriptor.Length}).");
-
-                levels.Add(new CampaignCriterionLevel
-                {
-                    Id = Guid.NewGuid(),
-                    CriterionId = criterion.Id,
-                    Score = item.Score,
-                    Descriptor = descriptor,
-                    CreatedAt = now,
-                    UpdatedAt = now
-                });
-            }
-
-            if (!scores.Contains(0))
-                throw new ArgumentException(
-                    $"Tiêu chí '{name}' phải có mốc 0 — thiếu nó thì câu trả lời trống bị chấm về mốc thấp nhất đang có, tức ứng viên không nói gì vẫn có điểm.");
-            if (!scores.Contains(criterion.MaxScore))
-                throw new ArgumentException(
-                    $"Tiêu chí '{name}' phải có mốc {criterion.MaxScore} (điểm tối đa) — thiếu nó thì không có mức nào mô tả câu trả lời đạt điểm cao nhất.");
-
-            return levels;
+                Id = Guid.NewGuid(),
+                CriterionId = criterion.Id,
+                Score = l.Score,
+                Descriptor = l.Descriptor,
+                CreatedAt = now,
+                UpdatedAt = now
+            }).ToList();
         }
 
         // C8: gọi AIService đề xuất tiêu chí; lỗi/rỗng → fallback default. Chuẩn hoá Σweight = 1.

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
+using Isas.Shared.Rubric;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.CampaignService.Services
@@ -275,12 +276,14 @@ namespace Isas.CampaignService.Services
         /// <summary>
         /// MỨC KỲ VỌNG do CODE chọn, không phải model tự đặt — đó là cả điểm mấu chốt: có mức biết
         /// trước thì mới so được "kỳ vọng vs thật" và đo được độ chệch tự-khen-văn-mình.
+        ///
+        /// <para>Phép chọn nằm ở <see cref="Isas.Shared.Rubric.ExpectedLevels"/> vì chấm thử chạy ở
+        /// HAI chỗ (employer kiểm thước campaign · admin kiểm bộ chuẩn B2C). Mỗi bên tự chọn mức kỳ
+        /// vọng thì hai báo cáo "kỳ vọng vs thật" đo hai thứ khác nhau mà trông giống hệt.</para>
         /// </summary>
         internal static (int Weak, int Good, int Excellent) ExpectedLevels(IReadOnlyList<CampaignCriterionLevel> sorted)
-        {
-            var n = sorted.Count;
-            return (sorted[n / 4].Score, sorted[Math.Min(n - 1, (int)(n * 0.6))].Score, sorted[n - 1].Score);
-        }
+            => Isas.Shared.Rubric.ExpectedLevels.For(
+                sorted.Select(l => new RubricLevelSnapshot(l.Score, l.Descriptor)).ToList());
 
         /// <summary>
         /// 🔴 Bộ tiêu chí gửi đi CHẤM THỬ phải dựng từ CHÍNH <see cref="ScoringCriteriaBuilder"/> —
