@@ -1,6 +1,7 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
+using Isas.CampaignService.Validation;
 using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -313,6 +314,39 @@ namespace Isas.CampaignService.Controllers
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // CAMP-2: không Draft → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to generate campaign questions: {ex.Message}"); }
         }
+
+        // Nhập câu hỏi hàng loạt từ file CSV. CHỈ ĐỌC — trả danh sách để HR xem trước; muốn lưu thì HR
+        // bấm Lưu và đi qua PUT /questions sẵn có. Không có đường ghi thứ hai, nên guard Draft, audit và
+        // merge F10 vẫn nằm đúng một chỗ.
+        // 400 file hỏng/sai định dạng/thiếu cột/quá số dòng · 404 ngoài org · 409 không phải Draft (CAMP-2).
+        // Lỗi của TỪNG DÒNG trả trong body với mã 200 — một dòng hỏng không huỷ cả file.
+        [HttpPost("{id:guid}/questions/import")]
+        [Consumes("multipart/form-data")]
+        [RequestSizeLimit(QuestionLimits.ImportMaxFileBytes)]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<ImportQuestionsResult>> ImportQuestions(
+            Guid id, [FromForm] IFormFile file, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.ImportQuestionsAsync(orgId.Value, id, file, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // CAMP-2: không Draft → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to import questions: {ex.Message}"); }
+        }
+
+        // File CSV mẫu. Không cần {id} — định dạng giống nhau cho mọi chiến dịch. Route không đụng
+        // [HttpGet("{id:guid}")] vì ràng buộc :guid không khớp chuỗi "questions".
+        [HttpGet("questions/template")]
+        [Authorize(Roles = "Employer")]
+        public IActionResult DownloadQuestionsTemplate()
+            => File(QuestionCsvImporter.BuildTemplate(), "text/csv; charset=utf-8", "mau-cau-hoi.csv");
 
         [HttpDelete("{id}")]
         [Authorize(Roles = "Employer")]

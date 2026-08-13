@@ -29,6 +29,14 @@ namespace Isas.CampaignService.Services
         /// count ngoài 1..20) → 400 · DownstreamServiceException (AI lỗi hoặc trả rỗng) → 502.
         /// </summary>
         Task<CampaignResponse> GenerateCampaignQuestionsAsync(Guid orgId, Guid actorUserId, Guid id, int? count, CancellationToken ct);
+
+        /// <summary>
+        /// Đọc file CSV câu hỏi → trả danh sách để HR xem trước. <b>KHÔNG ghi gì vào cơ sở dữ liệu</b> —
+        /// HR bấm Lưu thì mới đi qua <see cref="UpdateCampaignQuestionsAsync"/>.
+        /// Ném: KeyNotFound → 404 · InvalidOperation (≠ Draft) → 409 · Argument (file hỏng/sai định dạng/
+        /// thiếu cột/quá số dòng) → 400. Lỗi của TỪNG DÒNG không ném — nằm trong <c>Errors</c>.
+        /// </summary>
+        Task<ImportQuestionsResult> ImportQuestionsAsync(Guid orgId, Guid id, IFormFile file, CancellationToken ct);
         Task<Stream> DownloadCampaignFilesAsync(Guid orgId, Guid id, string fileType, CancellationToken ct);
         Task<CampaignResponse> PublishCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
         Task<CampaignResponse> TransitionStatusAsync(Guid orgId, Guid actorUserId, Guid id, CampaignStatus target, CancellationToken ct);

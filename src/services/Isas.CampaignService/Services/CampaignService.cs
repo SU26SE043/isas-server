@@ -668,6 +668,48 @@ namespace Isas.CampaignService.Services
             return CampaignResponse.FromEntity(campaign);
         }
 
+        // Nhập câu hỏi hàng loạt từ file CSV — CHỈ ĐỌC, KHÔNG ghi DB (xem QuestionCsvImporter).
+        // Có nhận `id` chiến dịch dù không ghi gì: (a) báo 409/404 NGAY thay vì để HR sửa file năm phút
+        // rồi mới biết chiến dịch đã publish; (b) CAMP-2 nằm đúng một chỗ dễ đọc; (c) không biến endpoint
+        // thành máy đọc CSV miễn phí cho người ngoài tổ chức. Giá: một câu SELECT.
+        public async Task<ImportQuestionsResult> ImportQuestionsAsync(
+            Guid orgId, Guid id, IFormFile file, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (campaign.Status != CampaignStatus.Draft)
+                throw new InvalidOperationException(
+                    $"Cannot edit questions when campaign is {campaign.Status}. Only Draft is editable.");
+
+            ValidateImportFile(file);
+
+            var bytes = await ReadFileBytesAsync(file);
+            return QuestionCsvImporter.Parse(bytes);
+        }
+
+        // Hằng số + hàm validate RIÊNG, KHÔNG dùng lại ValidateFile/AllowedMimeTypes: bộ đó dùng chung
+        // cho JD, tiêu chí và CV — nhét "text/csv" vào đấy là mở đường cho file CSV lọt qua đường sàng CV
+        // và đường tải JD.
+        private static void ValidateImportFile(IFormFile file)
+        {
+            if (file is null || file.Length == 0)
+                throw new ArgumentException("File rỗng hoặc chưa chọn file.");
+
+            if (file.Length > QuestionLimits.ImportMaxFileBytes)
+                throw new ArgumentException(
+                    $"File vượt {QuestionLimits.ImportMaxFileBytes / (1024 * 1024)} MB.");
+
+            // Xét ĐUÔI FILE, không xét MIME: Windows gửi `application/vnd.ms-excel` cho file .csv, nên
+            // lọc theo MIME sẽ từ chối phần lớn file HR thật gửi lên.
+            var name = file.FileName ?? string.Empty;
+            if (!name.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException(
+                    "Chỉ nhận file .csv. Trong Excel chọn File → Save As → "
+                    + "\"CSV UTF-8 (Comma delimited)\".");
+        }
+
         // F9 (FR11) — AI sinh câu hỏi từ JD cho campaign B2B.
         // Trần số câu 1 lượt sinh: giữ bounded chi phí token + độ dài bài thi so sánh được (E1 fairness).
         private const int MaxGeneratedQuestions = 20;
