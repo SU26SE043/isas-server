@@ -1,7 +1,11 @@
+using Isas.CampaignService.Controllers;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -527,6 +531,242 @@ public class SystemDefaultCriteriaTests
         var rows = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id).ToListAsync();
         Assert.Equal(2, rows.Count);
         Assert.All(rows, r => Assert.Equal(CriterionSource.AiSuggested, r.Source));
+    }
+
+    // ── XEM TRƯỚC (CHỈ ĐỌC) ─────────────────────────────────────────────
+
+    // Đếm mọi lượt SaveChanges thật sự chạm DbContext. Assert "bảng vẫn còn N dòng" chỉ chứng minh
+    // KẾT QUẢ giống nhau; nó vẫn xanh với một hàm ghi rồi xoá, hoặc ghi vào bảng ta quên đếm.
+    private sealed class SaveChangesCounter : SaveChangesInterceptor
+    {
+        public int Count { get; private set; }
+
+        public override InterceptionResult<int> SavingChanges(
+            DbContextEventData e, InterceptionResult<int> result)
+        {
+            Count++;
+            return base.SavingChanges(e, result);
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData e, InterceptionResult<int> result, CancellationToken ct = default)
+        {
+            Count++;
+            return base.SavingChangesAsync(e, result, ct);
+        }
+    }
+
+    // Trả đủ tiêu chí + levelCount khớp, sắp GIỐNG đường chép (weight giảm dần) — xem trước mà thứ tự
+    // khác lúc chép thì bảng employer vừa đọc không phải bảng họ sắp nhận.
+    [Fact]
+    public async Task XemTruoc_TraDuTieuChi_VaLevelCountKhop()
+    {
+        using var tdb = new CampaignTestDb();
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default);
+
+        Assert.Equal("BE", res.JobCategory);
+        Assert.Equal("vi", res.Language);
+        Assert.Equal(3, res.Version);
+        Assert.Equal(7, res.Criteria.Count);
+
+        Assert.Equal("Chiều sâu kỹ thuật", res.Criteria[0].Name);      // weight 0.30, nặng nhất
+        Assert.Equal(3, res.Criteria[0].LevelCount);
+        Assert.Equal("Hiểu bản chất", res.Criteria[0].Description);
+        Assert.Equal(0.30m, res.Criteria[0].Weight);
+        Assert.Equal(5, res.Criteria[0].MaxScore);
+
+        Assert.Equal(2, res.Criteria.Single(c => c.Name == "Giao tiếp & trình bày").LevelCount);
+        // 0 = admin CHƯA khai mốc — trạng thái HỢP LỆ (Interview dùng dải mặc định), không phải lỗi.
+        Assert.Equal(0, res.Criteria.Single(c => c.Name == "Trôi chảy").LevelCount);
+
+        // Thứ tự khớp đường chép: weight giảm dần.
+        var weights = res.Criteria.Select(c => c.Weight).ToList();
+        Assert.Equal(weights.OrderByDescending(w => w), weights);
+    }
+
+    // 🔴 CHỈ ĐỌC: không một lượt SaveChanges nào. Endpoint xem trước mà lỡ ghi thì employer "chỉ nhìn"
+    // đã đổi dữ liệu chiến dịch — và không ai đi tìm nguyên nhân ở một nút xem trước.
+    [Fact]
+    public async Task XemTruoc_KhongGhiGi()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        await SeedAsync(tdb, org, CampaignStatus.Draft, null, Crit("Giữ nguyên", 1.0m, 0));
+
+        var counter = new SaveChangesCounter();
+        var ctx = tdb.NewContext(counter);
+        var svc = NewService(ctx, StubRubric(Rubric7()).Object);
+
+        await svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default);
+
+        Assert.Equal(0, counter.Count);
+
+        using var check = tdb.NewContext();
+        Assert.Equal("Giữ nguyên", (await check.CampaignCriteria.SingleAsync()).Name);
+        Assert.Empty(await check.AuditLogs.ToListAsync());
+
+        // 🔴 ĐỐI CHỨNG DƯƠNG — bắt buộc. `Count == 0` một mình cũng đúng khi interceptor KHÔNG được
+        // đấu dây (sai overload, quên `AddInterceptors`, EF đổi API): lúc đó test "chứng minh chỉ đọc"
+        // bằng một cái đồng hồ chết. Ghi thật qua CHÍNH context đó và đòi đồng hồ nhảy.
+        ctx.Campaigns.Add(CampaignTestDb.NewCampaign(org));
+        await ctx.SaveChangesAsync();
+        Assert.Equal(1, counter.Count);
+    }
+
+    // Admin chưa soạn bộ → 404 (`SystemRubricNotFoundException`), KHÔNG phải 502. Đây là câu hỏi
+    // "có sẵn không?", nên "chưa có" là câu trả lời bình thường chứ không phải sự cố hệ thống.
+    [Fact]
+    public async Task XemTruoc_ChuaCoBoChuan_404_KhongPhai502()
+    {
+        using var tdb = new CampaignTestDb();
+        var svc = NewService(tdb.NewContext(),
+            StubThrows(new SystemRubricNotFoundException("Chưa có bộ chuẩn cho (BA, en)")).Object);
+
+        var ex = await Assert.ThrowsAsync<SystemRubricNotFoundException>(
+            () => svc.PreviewSystemDefaultCriteriaAsync("BA", "en", default));
+        Assert.Contains("BA", ex.Message);
+    }
+
+    // Interview hỏng THẬT (không phải "chưa có") vẫn là 502 — hai ca phải phân biệt được.
+    [Fact]
+    public async Task XemTruoc_InterviewLoi_VanLa502()
+    {
+        using var tdb = new CampaignTestDb();
+        var svc = NewService(tdb.NewContext(),
+            StubThrows(new DownstreamServiceException("Interview 500")).Object);
+
+        await Assert.ThrowsAsync<DownstreamServiceException>(
+            () => svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default));
+    }
+
+    // Cùng luật đầu vào với đường chép: nghề bắt buộc + chuẩn hoá, ngôn ngữ bắt buộc. Hai màn hình
+    // phải hỏi CÙNG một câu, kẻo cái xem trước không còn là xem trước của cái sẽ chép.
+    [Fact]
+    public async Task XemTruoc_ThieuThamSo_400_VaKhongGoiInterview()
+    {
+        using var tdb = new CampaignTestDb();
+        var session = StubRubric(Rubric7());
+        var svc = NewService(tdb.NewContext(), session.Object);
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => svc.PreviewSystemDefaultCriteriaAsync(null, "vi", default));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => svc.PreviewSystemDefaultCriteriaAsync("Fullstack", "vi", default));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => svc.PreviewSystemDefaultCriteriaAsync("BE", null, default));
+
+        session.Verify(x => x.GetB2CRubricAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task XemTruoc_ChuanHoaHoaThuong()
+    {
+        using var tdb = new CampaignTestDb();
+        var session = StubRubric(Rubric7());
+        var svc = NewService(tdb.NewContext(), session.Object);
+
+        await svc.PreviewSystemDefaultCriteriaAsync(" be ", "VI", default);
+
+        session.Verify(x => x.GetB2CRubricAsync("BE", "vi", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // ── Ánh xạ HTTP của XEM TRƯỚC (đi qua CHÍNH controller) ─────────────
+
+    // 🔴 Nhóm này bắt buộc phải đi qua controller chứ không dừng ở service: thứ tự hai khối `catch`
+    // MỚI là thứ quyết định employer nhận 404 hay 502, mà `SystemRubricNotFoundException` là lớp DẪN
+    // XUẤT — đặt `catch (DownstreamServiceException)` lên trước là nó nuốt trọn, và test cấp service
+    // (chỉ assert LOẠI exception) vẫn xanh 100%.
+    private static CampaignController NewController(CampaignDbContext db, ICampaignSessionClient session)
+    {
+        var controller = new CampaignController(
+            NewService(db, session), Mock.Of<ICvScreeningService>(),
+            Mock.Of<ILogger<CampaignController>>());
+        var identity = new System.Security.Claims.ClaimsIdentity(new[]
+        {
+            new System.Security.Claims.Claim("org_id", Guid.NewGuid().ToString()),
+            new System.Security.Claims.Claim(
+                System.Security.Claims.ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+        }, "Test");
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new System.Security.Claims.ClaimsPrincipal(identity)
+            }
+        };
+        return controller;
+    }
+
+    [Fact]
+    public async Task Controller_XemTruoc_ChuaCoBoChuan_Tra404()
+    {
+        using var tdb = new CampaignTestDb();
+        var ctrl = NewController(tdb.NewContext(),
+            StubThrows(new SystemRubricNotFoundException("Chưa có bộ chuẩn cho (BA, en)")).Object);
+
+        var res = await ctrl.PreviewSystemDefaultCriteria("BA", "en", default);
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(res.Result);
+        Assert.Equal(404, notFound.StatusCode);
+    }
+
+    [Fact]
+    public async Task Controller_XemTruoc_InterviewLoi_Tra502()
+    {
+        using var tdb = new CampaignTestDb();
+        var ctrl = NewController(tdb.NewContext(),
+            StubThrows(new DownstreamServiceException("Interview 500")).Object);
+
+        var res = await ctrl.PreviewSystemDefaultCriteria("BE", "vi", default);
+
+        var obj = Assert.IsType<ObjectResult>(res.Result);
+        Assert.Equal(StatusCodes.Status502BadGateway, obj.StatusCode);
+    }
+
+    [Fact]
+    public async Task Controller_XemTruoc_ThamSoSai_Tra400()
+    {
+        using var tdb = new CampaignTestDb();
+        var ctrl = NewController(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await ctrl.PreviewSystemDefaultCriteria("Fullstack", "vi", default);
+
+        Assert.IsType<BadRequestObjectResult>(res.Result);
+    }
+
+    [Fact]
+    public async Task Controller_XemTruoc_ThanhCong_Tra200KemDanhSach()
+    {
+        using var tdb = new CampaignTestDb();
+        var ctrl = NewController(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await ctrl.PreviewSystemDefaultCriteria("BE", "vi", default);
+
+        var ok = Assert.IsType<OkObjectResult>(res.Result);
+        var body = Assert.IsType<SystemDefaultRubricPreviewResponse>(ok.Value);
+        Assert.Equal(7, body.Criteria.Count);
+    }
+
+    // Đường CHÉP giữ nguyên 502 cho ca "chưa có bộ chuẩn" — hợp đồng đã chốt với FE. Đây là vế khoá
+    // lại tác dụng phụ của việc thêm lớp exception dẫn xuất: nếu ai tách nó khỏi
+    // DownstreamServiceException thì khối catch của đường chép trượt xuống `catch (Exception)` → 500.
+    [Fact]
+    public async Task Controller_Chep_ChuaCoBoChuan_VanTra502()
+    {
+        using var tdb = new CampaignTestDb();
+        var ctrl = NewController(tdb.NewContext(),
+            StubThrows(new SystemRubricNotFoundException("Chưa có bộ chuẩn cho (BE, vi)")).Object);
+        // Campaign phải thuộc đúng org trong claim của controller → lấy ngược ra từ chính controller.
+        var org = Guid.Parse(ctrl.HttpContext.User.FindFirst("org_id")!.Value);
+        var camp = await SeedAsync(tdb, org);
+
+        var res = await ctrl.ApplySystemDefaultCriteria(camp.Id, Req(), default);
+
+        var obj = Assert.IsType<ObjectResult>(res.Result);
+        Assert.Equal(StatusCodes.Status502BadGateway, obj.StatusCode);
     }
 
     // ── Hợp đồng: KHÔNG mang scoringScope ───────────────────────────────

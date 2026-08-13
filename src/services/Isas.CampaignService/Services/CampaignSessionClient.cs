@@ -244,7 +244,10 @@ namespace Isas.CampaignService.Services
                     _logger.LogWarning(
                         "Chưa có bộ chuẩn B2C cho ({JobCategory}, {Language}) - {Error}",
                         jobCategory, language, error);
-                    throw new DownstreamServiceException(
+                    // Loại DẪN XUẤT của DownstreamServiceException: đường CHÉP vẫn ra 502 y như trước
+                    // (catch theo lớp cơ sở), còn đường XEM TRƯỚC bắt loại này để trả 404 — "chưa ai
+                    // soạn" là câu trả lời bình thường cho một câu hỏi "có sẵn không?", không phải sự cố.
+                    throw new SystemRubricNotFoundException(
                         $"Chưa có bộ chuẩn cho ({jobCategory}, {language}) — quản trị viên cần soạn bộ này trước.");
                 }
                 _logger.LogError("InterviewService bộ chuẩn B2C lỗi: {StatusCode} - {Error}", response.StatusCode, error);

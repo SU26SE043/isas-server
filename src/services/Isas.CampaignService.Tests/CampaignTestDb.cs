@@ -1,6 +1,7 @@
 using Isas.CampaignService.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace Isas.CampaignService.Tests;
 
@@ -24,9 +25,16 @@ public sealed class CampaignTestDb : IDisposable
         Db.Database.EnsureCreated();
     }
 
-    public CampaignDbContext NewContext()
+    /// <param name="interceptors">
+    /// Tuỳ chọn (mặc định rỗng ⇒ mọi call-site `NewContext()` hiện có không đổi). Dùng để gắn
+    /// <c>ISaveChangesInterceptor</c>/<c>DbCommandInterceptor</c> khi cần chứng minh một đường đi
+    /// KHÔNG ghi gì — assert "bảng vẫn còn N dòng" chỉ chứng minh *kết quả* giống nhau, không chứng
+    /// minh *không có lượt ghi nào xảy ra*.
+    /// </param>
+    public CampaignDbContext NewContext(params IInterceptor[] interceptors)
     {
         var options = new DbContextOptionsBuilder<CampaignDbContext>()
+            .AddInterceptors(interceptors)
             .UseSqlite(_conn)
             // DB2b — UseSnakeCaseNamingConvention() để cột SQLite mang tên snake_case, khớp partial index
             // model-level `HasFilter("published_at IS NULL")` trên outbox_messages (raw SQL cột snake_case).

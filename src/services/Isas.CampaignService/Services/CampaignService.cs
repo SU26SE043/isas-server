@@ -919,6 +919,47 @@ namespace Isas.CampaignService.Services
             };
         }
 
+        // ── CAMP-20: XEM TRƯỚC bộ chuẩn B2C (CHỈ ĐỌC) ───────────────────────
+        public async Task<SystemDefaultRubricPreviewResponse> PreviewSystemDefaultCriteriaAsync(
+            string? jobCategory, string? language, CancellationToken ct)
+        {
+            var job = ValidateSystemRubricJobCategory(jobCategory);
+            // Khác đường CHÉP: ở đây `language` vắng KHÔNG phải mất mát gì — không có dữ liệu nào bị
+            // ghi đè, employer chỉ đang nhìn. Nhưng vẫn bắt buộc để hộp thoại không lặng lẽ hiện bộ
+            // "vi" rồi employer bấm chép và nhận đúng bộ đó cho chiến dịch tiếng Anh: hai màn hình
+            // phải hỏi CÙNG một câu, kẻo cái xem trước không còn là xem trước của cái sẽ chép.
+            if (language is null)
+                throw new ArgumentException("language là bắt buộc — phải là vi hoặc en.");
+            var lang = ValidateLanguage(language);
+
+            if (_sessionClient is null)
+                throw new InvalidOperationException("ICampaignSessionClient chưa được cấu hình.");
+
+            // KHÔNG chạm _db: không đọc campaign (bộ chuẩn không thuộc campaign nào), không ghi gì.
+            var rubric = await _sessionClient.GetB2CRubricAsync(job, lang, ct);
+
+            return new SystemDefaultRubricPreviewResponse
+            {
+                JobCategory = job,
+                Language = lang,
+                Version = rubric.Version,
+                // Sắp GIỐNG HỆT đường chép (weight giảm dần, tie-break theo tên): xem trước mà thứ tự
+                // khác lúc chép thì bảng employer vừa đọc không phải bảng họ sắp nhận.
+                Criteria = rubric.Criteria
+                    .OrderByDescending(c => c.Weight)
+                    .ThenBy(c => c.Name, StringComparer.Ordinal)
+                    .Select(c => new SystemDefaultRubricCriterionPreview
+                    {
+                        Name = c.Name,
+                        Description = c.Description,
+                        Weight = c.Weight,
+                        MaxScore = c.MaxScore,
+                        LevelCount = c.Levels.Count
+                    })
+                    .ToList()
+            };
+        }
+
         // ── CAMP-20: chép BỘ CHUẨN B2C (admin soạn) vào campaign ────────────
         public async Task<CampaignResponse> ApplySystemDefaultCriteriaAsync(
             Guid orgId, Guid actorUserId, Guid id,

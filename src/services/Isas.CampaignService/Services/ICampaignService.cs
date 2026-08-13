@@ -51,6 +51,17 @@ namespace Isas.CampaignService.Services
             Guid orgId, Guid actorUserId, Guid id, ApplySystemDefaultCriteriaRequest request, CancellationToken ct);
 
         /// <summary>
+        /// CAMP-20 — XEM TRƯỚC bộ chuẩn B2C. <b>CHỈ ĐỌC: không chạm DbContext, không ghi row nào.</b>
+        /// Không nhận <c>campaignId</c> vì bộ chuẩn không thuộc campaign nào (gác role ở controller).
+        ///
+        /// <para>Ném: Argument (thiếu/sai jobCategory|language) → 400 ·
+        /// <see cref="SystemRubricNotFoundException"/> (admin chưa soạn bộ) → <b>404</b> ·
+        /// <see cref="DownstreamServiceException"/> (Interview lỗi) → 502.</para>
+        /// </summary>
+        Task<SystemDefaultRubricPreviewResponse> PreviewSystemDefaultCriteriaAsync(
+            string? jobCategory, string? language, CancellationToken ct);
+
+        /// <summary>
         /// Đọc file CSV câu hỏi → trả danh sách để HR xem trước. <b>KHÔNG ghi gì vào cơ sở dữ liệu</b> —
         /// HR bấm Lưu thì mới đi qua <see cref="UpdateCampaignQuestionsAsync"/>.
         /// Ném: KeyNotFound → 404 · InvalidOperation (≠ Draft) → 409 · Argument (file hỏng/sai định dạng/

@@ -110,17 +110,27 @@ public class B2CRubricClientTests
 
     // 404 = admin chưa soạn bộ cho tổ hợp này. Vẫn ném (KHÔNG fallback), nhưng thông điệp phải nói
     // đúng việc cần làm chứ không phải "lỗi hệ thống".
+    //
+    // ⚠ TIỀN ĐỀ ĐÃ ĐỔI CÓ CHỦ ĐÍCH: bản trước khẳng định loại ném ra là ĐÚNG
+    // `DownstreamServiceException`. Nay là loại DẪN XUẤT `SystemRubricNotFoundException` để đường XEM
+    // TRƯỚC phân biệt được "chưa ai soạn" (→404) với "hệ thống hỏng" (→502). Không nới assert thành
+    // `ThrowsAnyAsync`: loại chính xác là thứ quyết định mã HTTP employer nhận được.
     [Fact]
-    public async Task ChuaCoBoChuan_404_NemKemThongDiepNoiDungViec()
+    public async Task ChuaCoBoChuan_404_NemLoaiRieng_KemThongDiepNoiDungViec()
     {
         var handler = new StubHandler(HttpStatusCode.NotFound, "not found");
         var client = NewClient(handler);
 
-        var ex = await Assert.ThrowsAsync<DownstreamServiceException>(
+        var ex = await Assert.ThrowsAsync<SystemRubricNotFoundException>(
             () => client.GetB2CRubricAsync("BA", "en"));
 
         Assert.Contains("BA", ex.Message);
         Assert.Contains("en", ex.Message);
+
+        // 🔴 Vế thứ hai KHÔNG được bỏ: nhờ KẾ THỪA mà khối `catch (DownstreamServiceException)` của
+        // đường CHÉP vẫn bắt được loại này ⇒ hợp đồng 502 đã chốt với FE không đổi. Tách thành hai lớp
+        // rời nhau sẽ làm đường chép rơi xuống `catch (Exception)` → 500 với MỌI ca "chưa có bộ chuẩn".
+        Assert.IsAssignableFrom<DownstreamServiceException>(ex);
     }
 
     // Token sai (401) / Interview lỗi (500) → ném, KHÔNG trả bộ bịa.

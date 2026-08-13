@@ -376,6 +376,41 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to suggest criterion levels: {ex.Message}"); }
         }
 
+        // CAMP-20 — XEM TRƯỚC bộ chuẩn để employer biết mình sắp chép cái gì. CHỈ ĐỌC, không ghi.
+        //
+        // Employer KHÔNG có cửa nào khác đọc được bộ chuẩn: /internal/rubrics/b2c là máy-máy
+        // (X-Internal-Token) còn màn quản trị đòi Roles="Admin". Thiếu endpoint này thì hộp thoại chỉ
+        // nói được "sẽ thay thế N tiêu chí" ⇒ employer bấm mù vào đúng thao tác thay cả thước đo.
+        //
+        // KHÔNG nhận campaignId — bộ chuẩn không thuộc campaign nào. Vẫn gác Roles="Employer" để đây
+        // không thành endpoint công khai đọc được toàn bộ thước đo của hệ thống.
+        //
+        // ⚠ Route 3 đoạn nên KHÔNG đụng [HttpGet("{id}")] (1 đoạn, không ràng buộc) ở trên.
+        //
+        // 400 thiếu/sai jobCategory|language · 404 admin CHƯA soạn bộ cho tổ hợp này · 502 Interview lỗi.
+        [HttpGet("criteria/system-default/preview")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<SystemDefaultRubricPreviewResponse>> PreviewSystemDefaultCriteria(
+            [FromQuery] string? jobCategory, [FromQuery] string? language, CancellationToken ct)
+        {
+            try
+            {
+                return Ok(await _campaignService.PreviewSystemDefaultCriteriaAsync(jobCategory, language, ct));
+            }
+            // 🔴 PHẢI đứng TRƯỚC DownstreamServiceException — nó là lớp DẪN XUẤT. Đảo thứ tự thì khối
+            // dưới nuốt mất và "chưa ai soạn bộ này" quay lại thành 502, tức lỗi vận hành đội lốt sự cố.
+            catch (SystemRubricNotFoundException ex) { return NotFound(ex.Message); }
+            catch (DownstreamServiceException ex)
+            {
+                _logger.LogError(ex, "Đọc bộ chuẩn để xem trước thất bại ({JobCategory}/{Language})",
+                    jobCategory, language);
+                return StatusCode(StatusCodes.Status502BadGateway, ex.Message);
+            }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to preview system default criteria: {ex.Message}"); }
+        }
+
         // CAMP-20 — chép BỘ CHUẨN B2C (admin soạn) vào campaign. Khác POST .../levels/suggest ở chỗ
         // endpoint này GHI: nó thay thế toàn bộ tiêu chí (kèm mốc) và bump rubric_version khi Active.
         // Ghi thẳng chứ không trả về cho HR bấm Lưu vì đây là thao tác "lấy nguyên bộ có sẵn" — bắt đi
