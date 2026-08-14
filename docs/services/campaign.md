@@ -125,20 +125,34 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 **So khớp hằng-thời-gian: KHÔNG cần ở đây** — khác `X-Internal-Token` (Payment/Interview, commit `0a55343`) vốn so **trực tiếp secret-với-secret** bằng `==` nên timing rò rỉ từng byte. Ở F17, đầu vào bị **SHA-256 trước khi chạm DB**, nên thời gian probe B-tree phụ thuộc hash của key kẻ tấn công tự chọn, không phụ thuộc key thật; hash của key đoán sai không "gần" hash key đúng theo bất kỳ nghĩa nào khai thác được. Thêm `FixedTimeEquals` sau khi DB đã so xong chỉ là trang trí.
 
 ### Lọc ứng viên qua CV — sàng lọc hàng loạt (B2B) (🔜 C13–C15 — cùng prefix `/campaign`)
-> **1 trong 2 cách lọc của app** (cách kia: phỏng vấn AI), **tùy chọn** + **MIỄN PHÍ phase 1** (D19). HR đổ **nhiều CV** ứng viên vào campaign → **lọc hybrid** (rule cứng trước, AI chấm khớp sau) → **shortlist xếp hạng** trước khi mời phỏng vấn (tiết kiệm slot). Engine phân tích = AIService `/analyze-cv` ([ai.md](ai.md)) **dùng chung với B2C**; **TÁI DÙNG** `campaign_criteria` làm rubric — **không** đụng engine phỏng vấn. State machine + luồng tiền chi tiết: §Business rules.
+> **1 trong 2 cách lọc của app** (cách kia: phỏng vấn AI), **tùy chọn** + **MIỄN PHÍ phase 1** (D19). HR đổ **nhiều CV** ứng viên vào campaign → **lọc hybrid** (rule cứng trước, AI đối chiếu sau) → **shortlist xếp hạng** trước khi mời phỏng vấn (tiết kiệm slot). Vai AI = **HR technical screener** ([ai.md](ai.md) §Sàng CV B2B) — **không** đụng engine phỏng vấn. State machine + luồng tiền chi tiết: §Business rules.
+>
+> 🔴 **Thước đo là `campaigns.job_needs`, KHÔNG còn là `campaign_criteria`.** `campaign_criteria` là
+> rubric chấm *câu trả lời nói* của buổi phỏng vấn ("Giao tiếp & Tiếng Anh", mức neo "1-4 điểm
+> (Kém)…"); CV là giấy nên model chỉ đoán được — đo trên prod, hai ứng viên khác hẳn nhau đều nhận
+> đúng 7/10 ở tiêu chí đó. `job_needs` = nhu cầu công việc suy từ JD, **chốt một lần cho cả
+> campaign** (AI đề xuất lúc publish → HR sửa khi `Draft`), nên mọi ứng viên được đo bằng **cùng một
+> thước** — cùng lý do CAMP-10 bắt mọi người nhận cùng bộ câu hỏi.
+>
+> 🔴 **`overall_match_score` do CampaignService TÍNH**, không nhận số nào của AI:
+> `100 × Σ(Strong=1 · Partial=0.5 · Weak=0) / số nhu cầu`. Đo trên prod trước bản này: bốn CV có
+> bằng chứng **giống hệt nhau** nhận 70/70/55/55 và ứng viên yếu hơn xếp trên ứng viên mạnh hơn.
+> Trung bình **đều** giữa 4 nhóm nhu cầu — không có dữ liệu nào nói technical đáng gấp mấy lần
+> communication (bịa hằng số rồi trưng ra như chuẩn ngành đúng thứ F14 đã từ chối làm).
 
 | Method | Path | Mô tả |
 |---|---|---|
 | POST | `/campaign/{id}/candidates` | **🔜 C13** Upload **nhiều PDF** CV (`multipart`: `files[]`, mỗi file ≤ 10MB). Parse → `cv_parsed_text`; chạy **hard-filter** (rule cứng) → mỗi ứng viên `Rejected(reason)`/`Filtered`; mỗi `Filtered` → đẩy job AI lên queue. Cần campaign `Active` + đã có `campaign_criteria`; **cap số CV/campaign** (chặn đốt AI vì free) → vượt **4xx** |
 | GET | `/campaign/{id}/candidates` | ✅ **C14 + keyset paging** Shortlist. Query `?status=&minScore=&skill=&search=&sort=score\|name&cursor=&limit=`; mặc định `sort=score` DESC (`overall_match_score`). **`status`/`minScore`/`search`/`sort` đều đẩy xuống SQL** (trước đây nạp toàn bộ ứng viên của campaign rồi lọc/sắp trong C#, mà `max_candidates` nullable = có thể KHÔNG có trần). `search` khớp `full_name` **hoặc** `email`, case-insensitive. Lọc theo `org_id` (chủ campaign) → ngoài org = 404. ⚠ **`skill` lọc SAU phân trang** (jsonb `string[]`, không push SQL portable Npgsql↔SQLite) ⇒ trang có thể **ngắn hơn `limit` hoặc rỗng mà vẫn còn trang sau** — client PHẢI đi theo `X-Next-Cursor` tới khi header vắng, không dừng khi thấy trang ngắn |
-| GET | `/campaign/{id}/candidates/{candidateId}` | **🔜 C14** Chi tiết 1 ứng viên (summary, skills, điểm + reasoning từng tiêu chí) + **`cvUrl`** (link xem CV gốc, ghép từ `cv_file_url`) |
+| GET | `/campaign/{id}/candidates/{candidateId}` | ✅ Chi tiết 1 ứng viên: `fitSummary` · `strengths[]`/`gaps[]` (`{needId,area,level,evidence}` — `evidence` là **đoạn TRÍCH từ CV**) · `bonusSignals[]` · `verificationRisk` · `verifyQuestions[≤3]` · `screeningVersion` + **`cvFileUrl`** (S3 KEY). Nhóm `gaps` = việc cần hỏi ở vòng phỏng vấn |
+| PUT | `/campaign/{id}/job-needs` | ✅ HR chốt **nhu cầu công việc** dùng để sàng CV (replace-all). Body `[{needId?,category,text}]`, `category ∈ Technical·WorkStyle·Communication·Growth`. `needId` echo lại để kết quả sàng đã lưu còn trỏ đúng dòng (mẫu F10); **`source` KHÔNG nhận từ client** — server sở hữu. Ngoài `Draft` → **409** (CAMP-2: đổi thước giữa chừng thì ứng viên sàng trước/sau không so sánh được); `category` lạ → **400** |
 | GET | `/campaign/{id}/candidates/{candidateId}/cv` | **🔜 C13** Tải/xem **CV gốc (PDF)** — serve từ S3 theo `cv_file_url` (ghép URL từ key). HR muốn tự soi CV thật, không chỉ bản AI tóm tắt. Lọc `employer_id` (chỉ chủ campaign). **404** nếu `cv_file_url` null (chưa archive) |
 | POST | `/campaign/{id}/candidates/{candidateId}/invite` | **🔜 C15** `Analyzed → Invited`, bàn giao luồng magic-link (`campaign_invitations`, **D1**) |
 
 > **Rule cứng** cấu hình trên campaign (set khi `Draft`, qua `POST`/`PUT /campaign`): `requiredSkills?` (phải có **ĐỦ**), `keywordsAny?` (có **≥1**), `minYearsExperience?` — lưu cột `required_skills`/`keywords_any`/`min_years_experience`. Chi tiết luồng ở §Business rules.
 
 **Callback nội bộ** (worker → Campaign, **không qua gateway**, header `X-Internal-Token`):
-- `POST /internal/campaign-candidates/{candidateId}/cv-result` — lưu kết quả AI lên `campaign_candidates` + `candidate_criterion_scores`; status `Analyzed`. **Idempotent** (xóa điểm cũ rồi ghi lại).
+- `POST /internal/campaign-candidates/{candidateId}/cv-result` — body `{ fitSummary, assessments[]{needId,area,level,evidence}, bonusSignals[], verificationRisk, verifyQuestions[], fullName?, skills[], yearsExperience? }` → tách `strengths`(Strong/Partial)/`gaps`(Weak), **TÍNH** `overall_match_score` từ mức, đóng dấu `screening_version=2`; status `Analyzed`. **Idempotent** (replace-all). 🔴 **KHÔNG có field điểm trong body** — nhận số do AI phán là mở lại đúng đường đã bịt. Guard lớp hai: `needId` bịa → drop · mức lạ → `Weak` · mức cao không có evidence → hạ `Weak` + ghi `"Không thấy bằng chứng"` · `verifyQuestions` cắt còn 3.
 - `POST /internal/campaign-candidates/{candidateId}/cv-failed` — `{ reason }` → status `AnalysisFailed`.
 
 ### Request/Response mẫu
@@ -222,6 +236,7 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | domain | varchar(100)? | ⚠ **DƯ — target: bỏ.** Free-text không ai tiêu thụ (AI sinh câu hỏi dùng `jd_text`; phân loại role dùng `job_category` 🔜 dưới). Đang có trong code merged → bỏ bằng migration khi wire `org_id` |
 | seniority | varchar(16) | `Fresher`\|`Junior`\|`Middle`\|`Senior`, default `Junior`; mức HR chọn để adaptive interviewer calibrate độ sâu. ✅ CHECK `ck_campaigns_seniority` |
 | job_category 🔜 | varchar(8) | **enum `BA·BE·FE`, bắt buộc** — hiện **THIẾU**: AIService `generate-questions` đòi `jobCategory` (bắt buộc) + `practice_sessions.job_category` NOT NULL → tạo session B2B (D2) không có nguồn role. Thêm khi build D2 |
+| job_needs | jsonb? | `[{needId,category,text,source}]` — **nhu cầu công việc dùng để SÀNG CV** (khác `campaign_criteria` = thước chấm buổi phỏng vấn). AI suy từ `jd_text` lúc publish → HR sửa khi `Draft` (`PUT /job-needs`). Chốt MỘT LẦN cho cả campaign để mọi ứng viên đo cùng thước (mẫu CAMP-10). `source` = `AiSuggested`/`HrEdited`, **server sở hữu** (F10). null/rỗng ⇒ **chưa sàng CV được** |
 | status | varchar(20) | enum: `Draft`/`Active`/`Closed`/`Archived` (mặc định Draft) |
 | max_candidates | int? | **cap số NGƯỜI** (mời M3 + sàng CV C13 enforce). **BK21:** đếm **HỢP email distinct** của `campaign_invitations` (chưa revoke) ∪ `cv_submission`, cộng số CV không tách được email — "một người = một suất", mời lại bao nhiêu lần cũng vậy. *(Trước BK21 cả ba call site đếm **row**, kể cả đường mời — `existingEmails` là `List<string>` không `.Distinct()`.)* ⚠ `null` = **không có trần RIÊNG**, vẫn chịu `entitlement.MaxCandidatesCap`: hôm nay `Tiering:Enabled=false` ⇒ `CampaignEntitlement.Legacy` cap `int.MaxValue` nên thực tế là không giới hạn, nhưng **bật tiering thì null rơi về cap của gói** (Starter = 25) |
 | time_limit_minutes | int? | 🔸 **TẠM BỎ — không enforce (áp cả B2B & B2C)**: KHÔNG giới hạn tổng buổi, **chỉ giới hạn TỪNG CÂU** (`campaign_questions.time_limit_seconds` → `practice_questions.time_limit_sec`). Giữ cột nullable cho tương thích API/schema nhưng **bỏ qua khi xử lý**; muốn bật lại tổng buổi thì enforce cột này + khôi phục trigger auto-submit ở [interview.md](interview.md) §State machine — Session |
@@ -309,11 +324,22 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | skills | jsonb? | string[] — AI trả (null tới khi `Analyzed`) |
 | years_experience | numeric(4,1)? | AI trả |
 | summary | text? | AI trả |
-| overall_match_score | int? | **0–100** — AI trả; **`ORDER BY` cột này = ranking shortlist** |
+| overall_match_score | int? | **0–100** — `jobFitScore` do CampaignService **TÍNH** từ mức bằng chứng (KHÔNG nhận số của AI); **`ORDER BY` cột này = ranking shortlist** |
+| screening_version | int? | con dấu thang điểm: `1`/null = số cũ do LLM phán trên rubric phỏng vấn · `2` = tính từ bằng chứng. Hai thang **KHÔNG so sánh được** — có dấu để không bị trộn im lặng (tiền lệ `scoring_scope_version`/BK23) |
+| fit_summary | text? | 2-3 câu: hợp/không hợp ở đâu |
+| strengths | jsonb? | `[{needId,area,level,evidence}]` — nhu cầu ĐÁP ỨNG (Strong/Partial), `evidence` TRÍCH từ CV |
+| gaps | jsonb? | `[{needId,area,level,evidence}]` — level `Weak`, `evidence` = `"Không thấy bằng chứng"`; đây là việc cần hỏi ở vòng phỏng vấn |
+| bonus_signals | jsonb? | `string[]` — điểm cộng ngoài bộ nhu cầu |
+| verification_risk | varchar(10)? | `Low·Medium·High` — cờ cho HR, **KHÔNG nhập vào điểm** |
+| verify_questions | jsonb? | `string[]` ≤3 — gợi ý riêng cho hồ sơ này; ⚠ **KHÔNG** đưa vào `campaign_questions` (bộ đó là bộ CHUNG, nền tảng để CAMP-10 so sánh được) |
 | last_screening_published_at | timestamptz? | cho `StuckScreeningRepublisher` |
 | created_at / updated_at | timestamptz | `now()` |
 
-### `candidate_criterion_scores` (🔜 C14 — điểm khớp từng tiêu chí; mẫu `answer_scores`)
+### `candidate_criterion_scores` (⚠ **LEGACY** — chỉ còn ĐỌC dữ liệu cũ)
+> Đường sàng CV **thôi ghi bảng này**: nó neo vào `campaign_criteria` (rubric buổi phỏng vấn) mà CV
+> không quan sát được. Kết quả mới nằm ở `cv_submission.strengths`/`gaps`. Bảng giữ lại để dữ liệu
+> đã chấm trước bản này còn đọc được, không drop.
+
 | Cột | Kiểu | Ràng buộc / ghi chú |
 |---|---|---|
 | id | uuid | PK (`gen_random_uuid()`) |
@@ -373,7 +399,7 @@ Draft ──► Active ──► Closed ──► Archived
 
 **Lưu trữ & lọc:**
 - Parse CV **tại CampaignService** (`ParserService`/PdfPig sẵn có) → `cv_parsed_text` (dùng để sàng lọc). Đồng thời **archive PDF gốc** lên S3 (`IFileService`, key `campaigns/{id}/candidates/{cid}.pdf` → `cv_file_url`) để **HR xem lại CV thật** qua `GET …/candidates/{id}/cv` (ghép URL từ key) — **không** tạo `file_records` (bảng đó của Interview, gắn `user_id` ứng viên; HR up hộ không khớp). *(Sàng lọc AI chỉ cần text; file gốc phục vụ HR duyệt bằng mắt — 2 mục đích khác nhau.)*
-- **Hybrid 2 tầng:** (1) **rule cứng** (`required_skills`/`keywords_any`/`min_years_experience`) chạy **đồng bộ** trên `cv_parsed_text` → rớt = `Rejected` + `reject_reason` (rẻ, **0 cost AI**); (2) **AI chấm khớp** mỗi `Filtered` theo `campaign_criteria` (**async**, [ai.md](ai.md) §queue `cv_screening_queue`) → `criterionMatches` + `overall_match_score`.
+- **Hybrid 2 tầng:** (1) **rule cứng** (`required_skills`/`keywords_any`/`min_years_experience`) chạy **đồng bộ** trên `cv_parsed_text` → rớt = `Rejected` + `reject_reason` (rẻ, **0 cost AI**); (2) **AI đối chiếu** mỗi `Filtered` với `campaigns.job_needs` (**async**, [ai.md](ai.md) §queue `cv_screening_queue`) → `assessments[]{needId,level,evidence}` → CampaignService tách `strengths`/`gaps` và **TÍNH** `overall_match_score`.
 - **Ranking = derived:** `ORDER BY overall_match_score DESC` (hoặc `Σ(match_score×weight)` chuẩn hoá — weight `campaign_criteria` Σ=1, **luôn chia Σweight** phòng sai số). **KHÔNG** dùng `campaign_rankings` (read-model điểm **hậu phỏng vấn** từ `SessionScored`, D10 — khác mục đích).
 
 **State machine — Candidate** (`campaign_candidates.status`; `★` = terminal/handoff — kỷ luật như [payment.md](payment.md) §State machine):
