@@ -70,7 +70,7 @@ UserResponse {
 - 🔑 Bất biến: `ProviderKey` = `sub`, `LoginProvider` = `"Google"` ở **cả hai** đường ⇒ web và mobile vào đúng một account. Chi tiết + lý do: [docs/services/auth.md](../../../docs/services/auth.md) §Đăng nhập Google.
 
 **`POST /refresh`** — Làm mới token. Public.
-- Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn**).
+- Req: `{ refreshToken: string }` → Res **`200`** **`AuthResponse`** (CÓ `accessToken`; trước đây khai nhầm `RefreshTokenResponse` ⇒ OpenAPI mô tả thiếu field, client codegen đọc hụt token). Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn**).
 - **Cửa sổ ân hạn xoay vòng** (`Jwt:RefreshTokenGraceSeconds`, mặc định **60s**, `0`=tắt): token vừa bị xoay vòng vẫn refresh được thêm ngần đó giây — đi theo `replaced_by` tới token **còn sống** ở cuối chuỗi rồi xoay tiếp. Mốc đo = `created_at` của token thay thế (không cần cột `revoked_at` ⇒ **không migration**). Token thu hồi **thẳng tay** (đăng xuất/đổi quyền, `replaced_by` NULL) **KHÔNG** ân hạn. *Vì sao:* đua refresh giữa nhiều tab. *Đánh đổi:* làm yếu reuse-detection trong đúng cửa sổ đó → giữ NGẮN.
 
 **`POST /logout`** — Thu hồi **MỌI** refresh token của user đang đăng nhập. Auth (`Candidate·Employer·Admin`).
@@ -106,7 +106,7 @@ POST /api/v1/auth/register-org
         // accessToken claims: sub, role="Employer", org_id, org_role="OrgAdmin"
 
 POST /api/v1/auth/login    { "email":"hr@acme.vn", "password":"S3cret!2026" }  → 200 AuthResponse
-POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 RefreshTokenResponse  (token cũ revoke + replaced_by=token mới)
+POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 AuthResponse  (token cũ revoke + replaced_by=token mới)
 ```
 
 ### Validation (đầu vào)

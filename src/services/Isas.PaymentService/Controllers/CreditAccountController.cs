@@ -3,6 +3,8 @@ using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Isas.PaymentService.Models;
 using PaymentService.Models;
 using System.Security.Claims;
 
@@ -21,10 +23,12 @@ namespace Isas.PaymentService.Controllers
     public class CreditAccountController : ControllerBase
     {
         private readonly PaymentDbContext _db;
+        private readonly BillingSettings _billing;
 
-        public CreditAccountController(PaymentDbContext db)
+        public CreditAccountController(PaymentDbContext db, IOptions<BillingSettings> billing)
         {
             _db = db;
+            _billing = billing.Value;
         }
 
         // Chủ ví lấy từ JWT (D15) — giống Order/InvoiceController: claim org_id → Org (B2B), không → User (B2C).
@@ -57,8 +61,12 @@ namespace Isas.PaymentService.Controllers
                     a => a.OwnerType == owner.Value.OwnerType && a.OwnerId == owner.Value.OwnerId, ct);
 
             // Chưa có ví = chưa từng mua credit → 0 credit, không phải lỗi (payment.md:120 chỉ liệt kê 401).
+            // Kèm `pendingFreeCredits` để client phân biệt được "chưa có ví, sắp được tặng N lượt" với
+            // "ví đã tiêu hết, phải nạp" — hai màn hình khác hẳn nhau mà cùng có remainingCredits = 0.
             return account is null
-                ? CreditAccountResponse.Empty(owner.Value.OwnerType, owner.Value.OwnerId)
+                ? CreditAccountResponse.Empty(
+                    owner.Value.OwnerType, owner.Value.OwnerId,
+                    _billing.FreeTrialGrantFor(owner.Value.OwnerType))
                 : CreditAccountResponse.ToResponse(account);
         }
 

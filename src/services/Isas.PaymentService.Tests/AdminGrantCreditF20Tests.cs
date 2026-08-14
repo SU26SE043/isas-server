@@ -426,7 +426,7 @@ public class AdminGrantCreditF20Tests
         Assert.Equal("đền bù sự cố", promo.Note);
 
         // Bản của chủ ví KHÔNG lộ hai trường đó.
-        var chuVi = new CreditAccountController(tdb.Db)
+        var chuVi = new CreditAccountController(tdb.Db, Options.Create(new BillingSettings()))
         {
             ControllerContext = new ControllerContext
             {
