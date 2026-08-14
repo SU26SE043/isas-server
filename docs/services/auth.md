@@ -30,6 +30,8 @@ AuthResponse {
   expiresAt:    datetime               // hạn của access token
 }
 
+// ⚠ KHÔNG còn là kiểu trả về của `POST /refresh` — giữ lại vì DTO vẫn tồn tại trong code.
+// `/refresh` trả `AuthResponse` (có `accessToken`), xem ghi chú ở endpoint đó.
 RefreshTokenResponse {
   refreshToken: string
   expiresAt:    datetime
@@ -104,7 +106,8 @@ UserResponse {
 **Config:** `Authentication:Google:IdTokenAudiences` (mảng). **Để trống = rơi về `Authentication:Google:ClientId`** — đúng cho đa số, vì app xin ID token kèm `serverClientId` = **WEB** client ID nên `aud` chính là nó. ⚠ App đặt `serverClientId` bằng Android/iOS client ID là sai (401 câm — log in ra allowlist đang cấu hình để đối chiếu). Android/iOS client kèm SHA-1 trên Google Cloud Console vẫn cần, nhưng chỉ để Google xác thực **app**; SHA-1 khoá theo **chữ ký APK** (một fingerprint dùng cho mọi điện thoại), nên cần một client cho **mỗi keystore**: debug từng máy dev · release · Play App Signing.
 
 **`POST /refresh`** — Làm mới token. Public.
-- Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn** bên dưới).
+- Req: `{ refreshToken: string }` → Res **`200`** **`AuthResponse`** (có `accessToken` — xem cảnh báo dưới). Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn** bên dưới).
+- ⚠ **Trước đây action khai `RefreshTokenResponse`, tức OpenAPI mô tả một response KHÔNG có `accessToken`.** JSON lúc chạy vẫn đúng (`ObjectResult` serialize theo kiểu thật) nên không client nào gãy — cái gãy là **tài liệu**. Client sinh model từ Scalar (app mobile) sẽ đọc hụt access token rồi refresh vô tận mà không hiểu vì sao. Nay khai đúng `AuthResponse`; có test khoá kiểu khai của action, vì chính KIỂU KHAI sinh ra schema.
 - **Cửa sổ ân hạn xoay vòng** (`Jwt:RefreshTokenGraceSeconds`, mặc định **60s**, `0` = tắt): token vừa bị xoay vòng vẫn refresh được thêm ngần đó giây — server đi theo `replaced_by` tới token **còn sống** ở cuối chuỗi và xoay tiếp, trả cặp token mới. Mốc đo là `created_at` của token thay thế (không cần cột `revoked_at`). Token bị thu hồi **thẳng tay** (đăng xuất / đổi quyền — `replaced_by` NULL) **KHÔNG** hưởng ân hạn, chết ngay.
 - *Vì sao:* mỗi tab giữ refresh token riêng nhưng chung một phiên; thu-hồi-tức-thì làm tab đến muộn ăn 401 → đăng xuất oan (mở 2 tab là dính; quay về từ PayOS gần như luôn tạo tab thứ hai). *Đánh đổi:* thu-hồi-tức-thì chính là cơ chế **phát hiện token bị đánh cắp** (reuse detection) — ân hạn làm yếu nó trong đúng cửa sổ đó, nên giữ NGẮN.
 

@@ -227,9 +227,13 @@ namespace Isas.AuthService.Controllers
         // Tính hợp lệ của refresh token do AuthService quyết định MỘT CHỖ DUY NHẤT: trước đây controller
         // tự tiền-kiểm `IsRevoked` rồi mới gọi service, nên token vừa bị xoay vòng chết ở đây và không
         // bao giờ tới được cửa sổ ân hạn (đua refresh nhiều tab). Kiểm hai nơi = một nơi luôn sai.
+        // Kiểu trả về là AuthResponse (accessToken + refreshToken + expiresAt), KHÔNG phải
+        // RefreshTokenResponse: `_authService.RefreshTokenAsync` trả AuthResponse và ObjectResult
+        // serialize theo kiểu THẬT lúc chạy, nên JSON luôn có `accessToken`. Khai sai kiểu chỉ làm
+        // OpenAPI nói dối — client sinh model từ Scalar sẽ đọc hụt access token rồi refresh vô tận.
         [AllowAnonymous]
         [HttpPost("refresh")]
-        public async Task<ActionResult<RefreshTokenResponse>> RefreshTokenAsync(RefreshTokenRequest refreshTokenRequest)
+        public async Task<ActionResult<AuthResponse>> RefreshTokenAsync(RefreshTokenRequest refreshTokenRequest)
         {
             try
             {
