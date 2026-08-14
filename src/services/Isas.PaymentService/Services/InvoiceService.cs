@@ -133,6 +133,12 @@ namespace Isas.PaymentService.Services
             return closedCount;
         }
 
+        /// <summary>
+        /// Danh sách việc cho admin: org nào sắp chạm hạn mức, org nào còn nợ, org nào chưa từng chốt kỳ.
+        /// Trước đây admin chỉ tra được ví theo từng ownerId, nên không có cách nào biết còn sót org nào; và job chốt kỳ tự động sẽ chạy trong bóng tối nếu không có gì để đối chiếu.
+        /// Headroom và LastInvoicePeriodEnd để null khi chưa đặt hạn mức / chưa từng chốt kỳ, không quy về 0 — hai ca đó dẫn tới hành động khác hẳn nhau.
+        /// Mỗi org tốn 3 truy vấn (N+1); chấp nhận được vì số org trả sau nhỏ và đây là màn admin.
+        /// </summary>
         public async Task<List<PostpaidOverviewRow>> GetPostpaidOverviewAsync(CancellationToken ct = default)
         {
             var unitPrice = _billing.Value.UnitPrice;
