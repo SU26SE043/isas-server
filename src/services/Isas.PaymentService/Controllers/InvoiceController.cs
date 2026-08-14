@@ -87,6 +87,14 @@ namespace Isas.PaymentService.Controllers
                 {
                     PayInvoiceOutcome.Created => Ok(result.Order),
                     PayInvoiceOutcome.NotPayable => Conflict(new { message = "Invoice is not payable (already Paid or Void)." }),
+                    // PP6 — đã có đơn Pending còn sống cho đúng hóa đơn này; KHÔNG tạo link PayOS thứ hai
+                    // cho cùng khoản tiền. order.checkoutUrl = null (PayOS không cho lấy lại), client tự
+                    // đối chiếu qua GET /order/{order.id}/status.
+                    PayInvoiceOutcome.AlreadyPending => Conflict(new
+                    {
+                        message = "A payment is already in progress for this invoice.",
+                        order = result.Order
+                    }),
                     _ => NotFound()
                 };
             }

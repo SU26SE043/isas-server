@@ -46,6 +46,8 @@ namespace Isas.PaymentService.Services
         /// Tất toán hóa đơn (owner-scope): tạo đơn <c>InvoiceSettlement</c> + link PayOS (REUSE OrderService).
         /// Hóa đơn không tồn tại / của chủ khác → <see cref="PayInvoiceOutcome.NotFound"/>; đã Paid/Void →
         /// <see cref="PayInvoiceOutcome.NotPayable"/> (no-op); còn Issued/Overdue → <see cref="PayInvoiceOutcome.Created"/>.
+        /// PP6 — đã có đơn Pending còn sống (chưa hết <c>ExpiredAt</c>) cho ĐÚNG hóa đơn này →
+        /// <see cref="PayInvoiceOutcome.AlreadyPending"/> (KHÔNG tạo đơn/link PayOS thứ hai cho cùng tiền).
         /// </summary>
         Task<PayInvoiceResult> PayInvoiceAsync(OwnerType ownerType, Guid ownerId, Guid invoiceId, CancellationToken ct = default);
 

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PaymentService.Models;
 using static Isas.PaymentService.DTOs.InvoiceRequest;
+using static Isas.PaymentService.DTOs.OrderRequest;
 using static Isas.PaymentService.Services.IInvoiceService;
 
 namespace Isas.PaymentService.Services
@@ -256,6 +257,28 @@ namespace Isas.PaymentService.Services
             // Chỉ Issued/Overdue mới tất toán được; Paid (đã trả) / Void (hủy) → 409 no-op.
             if (invoice.Status != InvoiceStatus.Issued && invoice.Status != InvoiceStatus.Overdue)
                 return PayInvoiceResult.NotPayable();
+
+            // PP6 — bấm "Trả" 2 lần (double-click, 2 tab, mất mạng-rồi-thử-lại...) trước đây tạo 2 đơn
+            // InvoiceSettlement CÓ orderCode KHÁC NHAU cho CÙNG hóa đơn ⇒ 2 link PayOS SỐNG cùng lúc, cùng
+            // một khoản tiền. Cả 2 link đều thanh toán được thật — PayOS không biết (và không cần biết)
+            // chúng "trùng" nhau; nếu khách trả CẢ HAI thì tiền rời tài khoản khách 2 lần, còn hệ thống chỉ
+            // lật Issued→Paid một lần (webhook thứ hai vào invoice đã Paid là no-op) ⇒ khoản trả thừa
+            // KHÔNG để lại dấu vết nào để đối soát.
+            //
+            // Guard: còn đơn Pending CHƯA hết hạn (ExpiredAt còn ở tương lai — đơn đã hết hạn coi như link
+            // chết, không chặn tạo đơn mới) cho ĐÚNG invoiceId này → không tạo đơn/link thứ hai, trả lại
+            // đơn đang sống để client tự đối chiếu qua GET /order/{id}/status (P3) thay vì đoán mù.
+            // KHÔNG lùi lại tự hủy đơn cũ rồi tạo mới: PayOS không cho lấy lại checkoutUrl của orderCode
+            // đã tạo (GetAsync không trả CheckoutUrl, chỉ CreateAsync mới có) — hủy-rồi-tạo-lại là hành vi
+            // MỚI có tác dụng phụ (huỷ nhầm đúng lúc khách đang thanh toán ở tab kia), ngoài phạm vi vá này.
+            var pendingOrder = await _db.Orders.AsNoTracking()
+                .Where(o => o.InvoiceId == invoiceId
+                            && o.Status == OrderStatus.Pending
+                            && o.ExpiredAt > DateTime.UtcNow)
+                .OrderByDescending(o => o.CreatedAt)
+                .FirstOrDefaultAsync(ct);
+            if (pendingOrder is not null)
+                return PayInvoiceResult.AlreadyPending(OrderResponse.ToResponse(pendingOrder));
 
             var order = await _orders.CreateInvoiceSettlementOrderAsync(invoice, ct);
             return PayInvoiceResult.Created(order);

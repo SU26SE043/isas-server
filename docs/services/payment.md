@@ -144,7 +144,12 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`GET /payment/me/invoices`** ✅ P8b · **`GET /payment/me/invoices/{id}`** ✅ P8b — Hóa đơn postpaid (owner-scope; non-owner→404) → `Invoice[]`/`Invoice`.
 
-**`POST /payment/invoices/{id}/pay`** ✅ P8b — Tất toán hóa đơn. Auth `Employer`, owner-scope; `HrMember`→**403** (A4). → **`200`** `Order` (**đầy đủ**, kind=`InvoiceSettlement`, invoice_id, kèm `checkoutUrl`; reuse `OrderService` tạo link PayOS). Lỗi: **404** (không tồn tại/non-owner) · **409** (đã Paid/Void) · **502** (PayOS reject).
+**`POST /payment/invoices/{id}/pay`** ✅ P8b — Tất toán hóa đơn. Auth `Employer`, owner-scope; `HrMember`→**403** (A4). → **`200`** `Order` (**đầy đủ**, kind=`InvoiceSettlement`, invoice_id, kèm `checkoutUrl`; reuse `OrderService` tạo link PayOS). Lỗi: **404** (không tồn tại/non-owner) · **409** (đã Paid/Void, hoặc **PP6** — đã có đơn `Pending` còn sống cho ĐÚNG hóa đơn này: body `{ message, order }`, `order.checkoutUrl=null` — bấm "Trả" 2 lần KHÔNG còn tạo 2 link PayOS cho cùng tiền; client tự đối chiếu qua `GET /order/{order.id}/status`) · **502** (PayOS reject).
+
+**`GET /payment/admin/invoices/postpaid-overview`** ✅ PP2/PP-worklist — Danh sách việc cho admin: mọi org đang Postpaid, kèm `headroom`/`pendingAmountVnd`/`unpaidInvoiceCount`/`hasOverdue`/`lastInvoicePeriodEnd` **+ `alertLevel`** (✅ **thang cảnh báo**, PP-alert 2026-08-14). Auth `Roles="Admin"`, `HrMember`→403. Sắp `ORDER BY alertLevel DESC, pendingAmountVnd DESC`.
+> **`alertLevel`** (enum số, tăng dần theo mức khẩn — bậc cao nhất thắng, KHÔNG cộng dồn): `0=None` · `1=ApproachingLimit` (usage+reserved ≥ `Billing:ApproachingLimitRatio` (mặc định 80%) hạn mức, **chưa** hóa đơn nào) · `2=InvoiceIssued` (hóa đơn Issued còn xa `due_at`) · `3=DueSoon` (Issued, `due_at` trong `Billing:DueSoonDays` ngày tới, mặc định 3) · `4=Overdue`. Trước đây admin **không có** đường nào biết org sắp gặp vấn đề TRƯỚC KHI một buổi phỏng vấn thật bị 402 giữa chừng (BK17/F23) — chỉ `headroom`/`hasOverdue` rời rạc, không phải một thang leo dần.
+
+**`POST /payment/admin/credits/payment-mode`** ✅ PP0 — Duyệt/đổi `PaymentMode` (Prepaid↔Postpaid) cho ví Org, đặt `creditLimit`. Postpaid **KHÔNG còn phụ thuộc gói thuê bao** — là thoả thuận admin duyệt riêng, bật là mở hết tính năng (giữ `InterviewFunding=Credit`, KHÔNG rẽ nhánh `Unlimited` — nhánh đó bỏ qua guard hạn mức/Overdue). *(Route `POST /payment/admin/orgs/{orgId}/postpaid` từng ghi ở đây là kế hoạch cũ, chưa từng lên code — route thật là endpoint này.)*
 
 **`POST /payment/webhook/payos`** ✅ — **Webhook PayOS** (🔒 verify checksum), **KHÔNG** qua gateway. Chỉ khi `Paid`, idempotent theo `payos_order_code`. **✅ P8b: BRANCH theo `Order.Kind`** — `CreditPack`→cộng credit (P2); `InvoiceSettlement`→invoice `Issued/Overdue→Paid` (ExecuteUpdate guard, KHÔNG cộng credit). Req: payload PayOS → Res **`200`**.
 
@@ -157,7 +162,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`/payment/admin/plans`** — CRUD catalog tier, chỉ `Admin`. `DELETE /{id}` soft-deactivate (`is_active=false`), không xoá row lịch sử đã được package/subscription tham chiếu. Validation: Metered cần quota dương; B2C không có B2B cap; Unlimited chỉ khi `Tiering:AllowUnlimitedPlans=true`. Sửa catalog không hồi tố subscription snapshot; chỉ activation/mua mới dùng catalog mới.
 
 **`POST/PUT/DELETE /payment/package…`** ✅ **A5** — CRUD gói (Req `ProductPackage`). Auth `Roles="Admin"` (PlatformAdmin, AUTH-3/7 — trước v22 comment hở → mở toang, nay đóng). GET catalog (trên) = Public.
-**`POST /payment/admin/orgs/{orgId}/postpaid`** 🔜 — Duyệt postpaid + đặt `credit_limit` (cần MST). Req: `{ creditLimit: int }`.
+*(Duyệt postpaid + đặt `credit_limit` — xem `POST /payment/admin/credits/payment-mode` ở trên; route `.../orgs/{orgId}/postpaid` ghi ở đây trước kia chưa từng lên code.)*
 **`POST /payment/admin/orgs/{orgId}/suspend`** 🔜 — Đình chỉ org (nợ xấu/quá hạn).
 **`GET/PUT /payment/admin/unit-price`** 🔜 — Đơn giá 1 lượt (`{ unitPriceVnd: long }`).
 **`GET /payment/admin/transactions`** 🔜 — Giao dịch/hóa đơn toàn hệ.
@@ -435,9 +440,13 @@ interview_count int
 unit_price     numeric(16,2)  = Billing:UnitPrice cấu hình
 amount         numeric(16,2)  = interview_count × unit_price
 status         varchar(16)   enum: Issued · Paid · Overdue · Void
+due_at         timestamptz?  ✅ F23/BK24 — periodEnd + Billing:InvoiceDueDays, snapshot lúc lập (đổi config không hồi tố)
+paid_at        timestamptz?  ✅ F23/BK24 — set khi webhook PayOS xác nhận Paid
 created_at     timestamptz
+UNIQUE(owner_type, owner_id, period_end)   ✅ PP3 — chặn 2 hóa đơn cùng kỳ (double-bill) TẦNG DB, không chỉ đọc-rồi-ghi ở app
 ```
-> **P8b reconcile (vòng 14):** dùng `owner_type/owner_id` + `numeric` (nhất quán schema payment còn lại) thay `org_id`+`*_vnd bigint`. Bỏ `issued_at/due_at/paid_at` — paid-ness derive từ `status=Paid` + order settle; thêm lại nếu HR cần hạn hóa đơn (**BK17**). `orders.invoice_id` (nullable FK Restrict, kind=InvoiceSettlement) + `orders.package_id`→nullable (đơn settle không gắn pack).
+> **P8b reconcile (vòng 14):** dùng `owner_type/owner_id` + `numeric` (nhất quán schema payment còn lại) thay `org_id`+`*_vnd bigint`. `orders.invoice_id` (nullable FK Restrict, kind=InvoiceSettlement) + `orders.package_id`→nullable (đơn settle không gắn pack). *(Ghi chú cũ ở đây nói "bỏ due_at/paid_at" — đã lỗi thời, F23/BK24 thêm lại cả hai.)*
+> **PP3 (2026-08-14):** `CloseBillingPeriodAsync`'s guard `alreadyClosed` là đọc-rồi-ghi, KHÔNG cùng transaction với INSERT phía sau ⇒ 2 lượt chốt kỳ đồng thời cho ĐÚNG (org, periodEnd) đều qua được guard rồi cùng insert. `UNIQUE(owner_type, owner_id, period_end)` là hàng rào THẬT ở tầng DB; bên thua nhận `DbUpdateException`, service tra lại (hậu kiểm, mẫu `AdminCreditService.GrantAsync`) → thấy hóa đơn đã tồn tại ⇒ trả `AlreadyClosed` (không 500, không hóa đơn đôi). ⚠ **Apply-window:** migration sẽ FAIL nếu DB thật đã có ≥2 hóa đơn trùng `(owner_type,owner_id,period_end)` — cần preflight read-only trước khi apply (tiền lệ nhiều migration khác trong repo).
 
 ### `subscriptions` ✅ **F8 (2026-07-19) — dựng LẠI, lần này cùng đường tiêu thụ thật**
 > *(Lịch sử: DB15 2026-07-17 DROP bảng + entity vì là **dead scaffold** — 0 query dùng, `SubscriptionService` là stub `NotImplementedException`. F8 tái tạo qua migration `AddSubscriptionsF8`, gắn liền chuỗi order → webhook → activate → gate ở reserve.)*
@@ -581,6 +590,7 @@ Issued ─(tất toán PayOS OK)─► Paid    ★
        (lập sai)─► Void      ★ (hủy hóa đơn, không tính nợ)
 ```
 - **Chốt kỳ là 1 transaction:** snapshot `period_usage` → tạo `invoice(Issued)` → **reset `period_usage = 0` cùng transaction** (fail giữa chừng → rollback cả 2, không mất/nhân nợ).
+> ⚠ **PP5 (2026-08-14, quyết định giữ nguyên, KHÔNG đổi code):** `Issued→Overdue` do `InvoiceOverdueReconciler` đóng dấu, mặc định `InvoiceOverdue:Enabled=false` — job này tắt thì guard BK17 (chặn reserve khi org có hóa đơn Overdue) mãi mãi là dead code, dù postpaid đã "mở hết tính năng" (PP0). Cân nhắc bật mặc định (postpaid là cohort admin đã duyệt riêng, không phải mọi org) nhưng **giữ nguyên `false`** theo đúng tiền lệ MỌI feature flag mới trong repo này (`GROUNDING_ENABLED`/`TIERING_ENABLED`/`CV_SCREENING_ENABLED`/3 job purge S8 P1) — comment gốc `InvoiceOverdueSettings.cs` đã nói rõ: bật là quyết định VẬN HÀNH sau khi soi dữ liệu `invoices` thật, không phải mặc định đi kèm code. Postpaid **chưa từng chạy trên production một lần nào** (0 hóa đơn) nên chưa có dữ liệu để soi.
 
 ### credit_accounts — trạng thái tài khoản (cột `status`)
 ```

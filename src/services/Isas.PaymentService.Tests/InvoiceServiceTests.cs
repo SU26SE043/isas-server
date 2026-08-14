@@ -299,6 +299,110 @@ public class InvoiceServiceTests
         Assert.Equal(0, stub.CallCount);
     }
 
+    // PP6 — bấm "Trả" 2 lần khi đã có 1 đơn Pending còn sống cho ĐÚNG hóa đơn này KHÔNG được tạo đơn/link
+    // PayOS thứ hai cho cùng khoản tiền (2 link sống cùng lúc = rủi ro khách trả cả hai, tiền thừa không
+    // có dấu vết đối soát). Chỉ chặn khi đơn cũ CÒN SỐNG (Pending + chưa hết ExpiredAt) và THUỘC đúng
+    // invoiceId; đơn đã hết hạn / Paid / Cancelled / thuộc hóa đơn khác thì KHÔNG chặn.
+    private static async Task<Order> SeedOrderAsync(
+        PaymentTestDb tdb, OwnerType ownerType, Guid ownerId, Guid? invoiceId, OrderStatus status,
+        DateTime expiredAt, long orderCode)
+    {
+        var order = new Order
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = ownerType,
+            OwnerId = ownerId,
+            Kind = OrderKind.InvoiceSettlement,
+            InvoiceId = invoiceId,
+            Status = status,
+            AmountVnd = 200_000,
+            PayosOrderCode = orderCode,
+            ExpiredAt = expiredAt,
+            CreatedAt = DateTime.UtcNow,
+        };
+        tdb.Db.Orders.Add(order);
+        await tdb.Db.SaveChangesAsync();
+        return order;
+    }
+
+    // (6b) Còn đơn Pending CHƯA hết hạn cho đúng hóa đơn → AlreadyPending, KHÔNG gọi OrderService (không
+    // tạo order/link PayOS thứ hai), trả lại ĐÚNG đơn đang sống (CheckoutUrl null — không lấy lại được).
+    [Fact]
+    public async Task Pay_ConDonPendingChuaHetHan_KhongTaoDonMoi_TraLaiDonDangCho()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var inv = await SeedInvoiceAsync(tdb, orgId, InvoiceStatus.Issued);
+        var pending = await SeedOrderAsync(tdb, OwnerType.Org, orgId, inv.Id, OrderStatus.Pending,
+            expiredAt: DateTime.UtcNow.AddMinutes(20), orderCode: 260814000001);
+        var stub = new StubOrderService();
+
+        var result = await NewService(tdb, stub, unitPrice: 50_000, out _)
+            .PayInvoiceAsync(OwnerType.Org, orgId, inv.Id);
+
+        Assert.Equal(PayInvoiceOutcome.AlreadyPending, result.Outcome);
+        Assert.Equal(0, stub.CallCount);
+        Assert.NotNull(result.Order);
+        Assert.Equal(pending.Id, result.Order!.Id);
+        Assert.Null(result.Order.CheckoutUrl);
+    }
+
+    // (6c) Đơn Pending cũ ĐÃ HẾT HẠN (link chết) → KHÔNG chặn, vẫn tạo đơn/link mới bình thường.
+    [Fact]
+    public async Task Pay_DonPendingCuDaHetHan_VanTaoDonMoi()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var inv = await SeedInvoiceAsync(tdb, orgId, InvoiceStatus.Issued);
+        await SeedOrderAsync(tdb, OwnerType.Org, orgId, inv.Id, OrderStatus.Pending,
+            expiredAt: DateTime.UtcNow.AddMinutes(-5), orderCode: 260814000002);
+        var stub = new StubOrderService();
+
+        var result = await NewService(tdb, stub, unitPrice: 50_000, out _)
+            .PayInvoiceAsync(OwnerType.Org, orgId, inv.Id);
+
+        Assert.Equal(PayInvoiceOutcome.Created, result.Outcome);
+        Assert.Equal(1, stub.CallCount);
+    }
+
+    // (6d) Đơn Pending sống nhưng thuộc HÓA ĐƠN KHÁC → không chặn hóa đơn đang tất toán.
+    [Fact]
+    public async Task Pay_DonPendingThuocHoaDonKhac_KhongChan()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var invKhac = await SeedInvoiceAsync(tdb, orgId, InvoiceStatus.Issued, count: 1);
+        var inv = await SeedInvoiceAsync(tdb, orgId, InvoiceStatus.Issued, count: 4);
+        await SeedOrderAsync(tdb, OwnerType.Org, orgId, invKhac.Id, OrderStatus.Pending,
+            expiredAt: DateTime.UtcNow.AddMinutes(20), orderCode: 260814000003);
+        var stub = new StubOrderService();
+
+        var result = await NewService(tdb, stub, unitPrice: 50_000, out _)
+            .PayInvoiceAsync(OwnerType.Org, orgId, inv.Id);
+
+        Assert.Equal(PayInvoiceOutcome.Created, result.Outcome);
+        Assert.Equal(1, stub.CallCount);
+    }
+
+    // (6e) Đơn CŨ đã Paid (đã trả xong lượt trước, cho tình huống lạ: hóa đơn quay lại Issued hoặc test
+    // dữ liệu cũ) không phải Pending → không chặn.
+    [Fact]
+    public async Task Pay_DonCuDaPaid_KhongChan()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var inv = await SeedInvoiceAsync(tdb, orgId, InvoiceStatus.Issued);
+        await SeedOrderAsync(tdb, OwnerType.Org, orgId, inv.Id, OrderStatus.Paid,
+            expiredAt: DateTime.UtcNow.AddMinutes(20), orderCode: 260814000004);
+        var stub = new StubOrderService();
+
+        var result = await NewService(tdb, stub, unitPrice: 50_000, out _)
+            .PayInvoiceAsync(OwnerType.Org, orgId, inv.Id);
+
+        Assert.Equal(PayInvoiceOutcome.Created, result.Outcome);
+        Assert.Equal(1, stub.CallCount);
+    }
+
     // (7) GetInvoices owner-scope: chỉ hóa đơn của chính chủ ví.
     [Fact]
     public async Task GetInvoices_OwnerScope()
