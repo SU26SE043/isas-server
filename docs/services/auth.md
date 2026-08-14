@@ -87,6 +87,22 @@ UserResponse {
 
 **Config bắt buộc:** `Authentication:Google:ClientId/ClientSecret` · `Frontend:BaseUrl` · `Gateway:PublicBaseUrl`. **Tuỳ chọn:** `Authentication:Google:OneTimeCodeTtlSeconds` (mặc định 60).
 
+**Đăng nhập Google NATIVE (app mobile) — `POST /google/id-token`, Public.** App tự lấy ID token bằng Google Sign-In SDK của hệ điều hành rồi POST thẳng lên; **không có redirect, không có kho mã dùng-một-lần, không dùng `Frontend:BaseUrl`/`Gateway:PublicBaseUrl`** (những thứ đó chỉ phục vụ vòng OAuth trình duyệt ở trên).
+- Req `{ idToken: string }` → Res **`200`** `AuthResponse` (**cùng shape đăng nhập mật khẩu** ⇒ client mobile dùng chung code xử lý phiên).
+- **401** — token sai chữ ký / hết hạn / `aud` ngoài allowlist / **email chưa xác minh** / thiếu `sub`|email. Cố ý **một thông điệp chung** cho mọi lý do; lý do thật vào log.
+- **403** — account bị đình chỉ (F20, soi gương đường mật khẩu: danh tính đúng, cái bị từ chối là quyền dùng).
+- **500** — server chưa cấu hình allowlist `aud`. **Không** trả 401 ở ca này: đó là lỗi cấu hình của ta, trả 401 sẽ khiến dev mobile đi truy token của họ trong khi thứ hỏng nằm ở env server.
+
+> 🔑 **Hai đường Google kết thúc ở CÙNG một hàm `LoginGoogleAsync`.** Web lấy `ExternalLoginInfo` từ cookie do handler OAuth ghi; mobile dựng `ExternalLoginInfo` từ ID token đã verify (`GoogleExternalLogin.Create`). Nhờ vậy account-linking, tạo user + role, chặn ban, `LoginEvent` chỉ có **một bản**. Thêm luồng đăng nhập song song mới là thứ sẽ trôi lệch dần.
+>
+> 🔑 **Bất biến:** `ProviderKey` = claim **`sub`** của Google và `LoginProvider` = **`"Google"`** — trùng khít thứ đường web sinh ra ⇒ người đăng nhập web hôm nay, mai đăng nhập app vào **đúng account cũ**. Lệch (ví dụ lấy email làm khoá) thì mỗi người dần có **hai** liên kết external trong `user_logins`, hỏng dần mà không lỗi nào nổ. Có test khoá (web→mobile cùng user **và** `AddLoginAsync` chỉ gọi 1 lần).
+>
+> 🔴 **`email_verified` là cửa chặn chiếm account, không phải kiểm tra cho đủ:** `LoginGoogleAsync` gắn external login vào account **mật khẩu** sẵn có khi trùng email. Đường web an toàn vì Google chỉ phát cookie cho account thật của người dùng; đường này nhận token **do client gửi lên**, nên bỏ qua cờ đó là để một account Google mang địa chỉ của người khác chiếm được account ISAS.
+>
+> 🔴 **Allowlist `aud` fail-closed:** `ValidationSettings.Audience` rỗng nghĩa là thư viện Google **BỎ QUA** kiểm tra `aud` ⇒ mọi Google ID token trên đời (kể cả token từ project Google của kẻ tấn công) đăng nhập được. Vì vậy trống cả `Authentication:Google:IdTokenAudiences` lẫn `ClientId` thì **ném**, không trả danh sách rỗng.
+
+**Config:** `Authentication:Google:IdTokenAudiences` (mảng). **Để trống = rơi về `Authentication:Google:ClientId`** — đúng cho đa số, vì app xin ID token kèm `serverClientId` = **WEB** client ID nên `aud` chính là nó. ⚠ App đặt `serverClientId` bằng Android/iOS client ID là sai (401 câm — log in ra allowlist đang cấu hình để đối chiếu). Android/iOS client kèm SHA-1 trên Google Cloud Console vẫn cần, nhưng chỉ để Google xác thực **app**; SHA-1 khoá theo **chữ ký APK** (một fingerprint dùng cho mọi điện thoại), nên cần một client cho **mỗi keystore**: debug từng máy dev · release · Play App Signing.
+
 **`POST /refresh`** — Làm mới token. Public.
 - Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn** bên dưới).
 - **Cửa sổ ân hạn xoay vòng** (`Jwt:RefreshTokenGraceSeconds`, mặc định **60s**, `0` = tắt): token vừa bị xoay vòng vẫn refresh được thêm ngần đó giây — server đi theo `replaced_by` tới token **còn sống** ở cuối chuỗi và xoay tiếp, trả cặp token mới. Mốc đo là `created_at` của token thay thế (không cần cột `revoked_at`). Token bị thu hồi **thẳng tay** (đăng xuất / đổi quyền — `replaced_by` NULL) **KHÔNG** hưởng ân hạn, chết ngay.

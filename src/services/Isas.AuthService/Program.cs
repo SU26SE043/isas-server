@@ -47,6 +47,9 @@ builder.Services.AddSingleton<IGoogleLoginRedirects, GoogleLoginRedirects>();
 // hoặc chuyển kho này sang Redis/bảng DB. Xem docs/services/auth.md §Đăng nhập Google.
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IGoogleAuthCodeStore, GoogleAuthCodeStore>();
+// Đăng nhập Google NATIVE (mobile): verify ID token app gửi lên. Không dùng kho mã dùng-một-lần ở
+// trên (đường này không có redirect nên không cần), nhưng kết thúc ở CÙNG một AuthService.LoginGoogleAsync.
+builder.Services.AddSingleton<IGoogleIdTokenVerifier, GoogleIdTokenVerifier>();
 
 // DB28 — dọn refresh_tokens đã chết. Bảng này chỉ có INSERT (rotation) + UPDATE cờ is_revoked, chưa
 // từng có đường xoá → phình vô hạn ngay trên đường login nóng. Enabled=false = tắt an toàn.

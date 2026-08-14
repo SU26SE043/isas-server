@@ -64,7 +64,10 @@ UserResponse {
 **`POST /login`** — Đăng nhập. Public.
 - Req: `{ email: string, password: string }` → Res **`200`** `AuthResponse`. Lỗi: **400/401** (sai thông tin).
 
-**`GET /login-google`** → redirect Google · **`GET /login-google-callback?returnUrl&remoteError`** → OAuth callback, trả `AuthResponse`. Public.
+**Đăng nhập Google — hai đường, cùng đích.** Cả hai kết thúc ở **cùng** `AuthService.LoginGoogleAsync` (account-linking, tạo user + role, chặn ban, `LoginEvent` chỉ có một bản). Public cả hai.
+- **WEB (điều hướng cả trang):** `GET /login-google?returnUrl` → challenge Google · `GET /login-google-callback?returnUrl&remoteError` → **302** về FE kèm **mã dùng-một-lần** (`?code=…`, **KHÔNG** kèm token) · `POST /google/exchange {code}` → `AuthResponse`. *(Trước đây callback trả thẳng `AuthResponse` — dòng đó trong bản copy này đã lỗi thời từ lần redesign one-time-code, sửa kèm.)*
+- **NATIVE (app mobile):** `POST /google/id-token {idToken}` → `AuthResponse`. Không redirect, không kho mã. **401** token hỏng/`aud` ngoài allowlist/**email chưa xác minh** · **403** bị đình chỉ · **500** server chưa cấu hình allowlist `aud` (fail-closed — `aud` rỗng = nhận MỌI Google ID token).
+- 🔑 Bất biến: `ProviderKey` = `sub`, `LoginProvider` = `"Google"` ở **cả hai** đường ⇒ web và mobile vào đúng một account. Chi tiết + lý do: [docs/services/auth.md](../../../docs/services/auth.md) §Đăng nhập Google.
 
 **`POST /refresh`** — Làm mới token. Public.
 - Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn**).

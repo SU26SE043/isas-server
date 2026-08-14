@@ -24,9 +24,11 @@ namespace Isas.AuthService.Controllers
         private readonly IEmailSender _emailSender;
         private readonly IGoogleLoginRedirects _googleRedirects;
         private readonly IGoogleAuthCodeStore _googleCodes;
+        private readonly IGoogleIdTokenVerifier _googleIdTokens;
         private readonly ILogger<AuthController> _logger;
         public AuthController(IAuthService authService, UserManager<User> userManager, SignInManager<User> signInManager, IEmailSender emailSender,
-            IGoogleLoginRedirects googleRedirects, IGoogleAuthCodeStore googleCodes, ILogger<AuthController> logger)
+            IGoogleLoginRedirects googleRedirects, IGoogleAuthCodeStore googleCodes, IGoogleIdTokenVerifier googleIdTokens,
+            ILogger<AuthController> logger)
         {
             _authService = authService;
             _userManager = userManager;
@@ -34,6 +36,7 @@ namespace Isas.AuthService.Controllers
             _emailSender = emailSender;
             _googleRedirects = googleRedirects;
             _googleCodes = googleCodes;
+            _googleIdTokens = googleIdTokens;
             _logger = logger;
         }
 
@@ -178,6 +181,47 @@ namespace Isas.AuthService.Controllers
             }
 
             return Ok(auth);
+        }
+
+        // Đăng nhập Google NATIVE (app mobile) — KHÔNG có vòng redirect nào: app tự lấy ID token bằng
+        // Google Sign-In SDK của hệ điều hành rồi POST thẳng lên đây, nhận về CÙNG một AuthResponse như
+        // đăng nhập mật khẩu (client mobile dùng chung code xử lý phiên).
+        //
+        // Đối xứng có chủ đích với GoogleLoginCallback ở trên: chỗ đó lấy ExternalLoginInfo từ cookie do
+        // handler OAuth ghi, chỗ này dựng ExternalLoginInfo từ ID token đã verify — rồi CẢ HAI gọi chung
+        // _authService.LoginGoogleAsync. Nhờ vậy account-linking, tạo user + role, chặn ban, LoginEvent
+        // chỉ có một bản duy nhất; thêm một luồng đăng nhập song song mới là thứ sẽ trôi lệch dần.
+        //
+        // AllowAnonymous vì đúng lúc này người dùng CHƯA có token — ID token của Google chính là bằng chứng.
+        [AllowAnonymous]
+        [HttpPost("google/id-token")]
+        public async Task<ActionResult<AuthResponse>> LoginWithGoogleIdToken(GoogleIdTokenRequest request)
+        {
+            try
+            {
+                var payload = await _googleIdTokens.VerifyAsync(request.IdToken, HttpContext.RequestAborted);
+                var info = GoogleExternalLogin.Create(payload);
+
+                return Ok(await _authService.LoginGoogleAsync(info));
+            }
+            catch (InvalidGoogleIdTokenException ex)
+            {
+                // 401 với MỘT thông điệp chung cho mọi lý do (sai chữ ký / hết hạn / aud ngoài allowlist /
+                // email chưa xác minh): nói rõ sai ở đâu chỉ giúp người dò token biết mình gần đúng.
+                // Lý do thật đã vào log ở verifier (kèm allowlist aud đang cấu hình) để còn chẩn đoán được.
+                _logger.LogWarning("Từ chối đăng nhập bằng Google ID token: {Reason}", ex.Message);
+                return Unauthorized(new { error = "Google ID token không hợp lệ hoặc đã hết hạn" });
+            }
+            catch (UserBannedException ex)
+            {
+                // 403 chứ không 401 — soi gương đường mật khẩu: danh tính ĐÚNG, cái bị từ chối là quyền
+                // dùng hệ thống. Trả 401 sẽ khiến app mời người dùng đăng nhập lại mãi không vào được. (F20)
+                _logger.LogWarning("Từ chối đăng nhập Google (ID token): account đã bị đình chỉ");
+                return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+            }
+            // InvalidOperationException (server chưa cấu hình allowlist aud) CỐ Ý không bắt → 500.
+            // Đó là lỗi cấu hình của ta, không phải token của người dùng sai; trả 401 sẽ khiến dev mobile
+            // đi truy token của họ trong khi thứ hỏng nằm ở env của server.
         }
 
         // Tính hợp lệ của refresh token do AuthService quyết định MỘT CHỖ DUY NHẤT: trước đây controller
