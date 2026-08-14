@@ -19,6 +19,19 @@ namespace Isas.InterviewService.Controllers
         private readonly ICVParserService _cvParser;
         private readonly ILogger<InterviewController> _logger;
 
+        /// <summary>
+        /// 403 cho file không phải của mình.
+        ///
+        /// ⚠ KHÔNG dùng <c>Forbid("thông điệp")</c> ở đây: overload đó là
+        /// <c>Forbid(params string[] authenticationSchemes)</c>, nên chuỗi tiếng Việt bị hiểu là TÊN
+        /// authentication scheme. Không có handler nào đăng ký với tên đó ⇒ <c>ForbidAsync</c> ném
+        /// <c>InvalidOperationException</c>, mà service này không có <c>UseExceptionHandler</c> ⇒ ra
+        /// <b>500 kèm stack trace</b> thay vì 403. Với tới được chỉ bằng cách đọc file của người khác.
+        /// Dùng <c>StatusCode(403, new { error })</c> như <c>PracticeController</c> vẫn làm.
+        /// </summary>
+        private ObjectResult NoFileAccess(string message = "Bạn không có quyền truy cập file này") =>
+            StatusCode(StatusCodes.Status403Forbidden, new { error = message });
+
         private const long MaxFileSizeBytes = 10 * 1024 * 1024;
         private static readonly string[] AllowedExtensions = [".pdf"];
         private static readonly string[] ValidFileTypes = ["cv", "jd"];
@@ -148,7 +161,7 @@ namespace Isas.InterviewService.Controllers
 
             var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
-                return Forbid("Bạn không có quyền truy cập file này");
+                return NoFileAccess();
 
             return fileRecord;
         }
@@ -161,7 +174,7 @@ namespace Isas.InterviewService.Controllers
 
             var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
-                return Forbid("Bạn không có quyền truy cập file này");
+                return NoFileAccess();
 
             try
             {
@@ -183,7 +196,7 @@ namespace Isas.InterviewService.Controllers
 
             var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
-                return Forbid("Bạn không có quyền truy cập file này");
+                return NoFileAccess();
 
             try
             {
@@ -218,7 +231,7 @@ namespace Isas.InterviewService.Controllers
         {
             var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (!Guid.TryParse(userIdString, out var userId))
-                return Forbid("Bạn không có quyền truy cập file này");
+                return NoFileAccess();
 
             try
             {
@@ -242,7 +255,7 @@ namespace Isas.InterviewService.Controllers
 
             var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
-                return Forbid("Bạn không có quyền xóa file này");
+                return NoFileAccess("Bạn không có quyền xóa file này");
 
             try
             {
