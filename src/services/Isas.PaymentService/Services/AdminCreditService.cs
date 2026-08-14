@@ -203,29 +203,26 @@ namespace Isas.PaymentService.Services
                 return new SetPaymentModeResult(
                     SetPaymentModeOutcome.WalletMissing, ownerType, ownerId, paymentMode, creditLimit, 0, 0);
 
-            var upgrading = acc.PaymentMode == PaymentMode.Prepaid && paymentMode == PaymentMode.Postpaid;
             var downgrading = acc.PaymentMode == PaymentMode.Postpaid && paymentMode == PaymentMode.Prepaid;
 
-            // Prepaid→Postpaid: ví Postpaid KHÔNG dùng `remaining_credits` (nhánh reserve postpaid chỉ xét
-            // period_usage/reserved/credit_limit — xem ReserveAsync). Credit đã mua còn tồn trong
-            // remaining/reserved sẽ bị "mắc kẹt" (không tiêu được, không tự hoàn) nếu chuyển mà không cảnh
-            // báo. CỐ Ý KHÔNG zero remaining_credits kể cả khi opt-in (BK24 plan §Cố ý không làm) — mất mát
-            // không hoàn tác, chỉ cảnh báo + để admin tự quyết định qua opt-in tường minh.
-            if (upgrading && (acc.RemainingCredits > 0 || acc.ReservedCredits > 0) && !allowStrandedCredits)
-                return new SetPaymentModeResult(
-                    SetPaymentModeOutcome.StrandedCredits, ownerType, ownerId, paymentMode, creditLimit,
-                    acc.RemainingCredits, acc.ReservedCredits);
+            // Nâng lên trả sau KHÔNG còn làm credit đã mua bị kẹt: nhánh đặt chỗ của ví Postpaid nay tiêu hết
+            // credit đã mua trước rồi mới dồn nợ kỳ, và chỗ giữ tiêu bằng credit cũ được đóng dấu Prepaid nên
+            // Consume/Release vẫn kế toán đúng. Guard StrandedCredits vì thế bị gỡ; tham số allowStrandedCredits
+            // giữ lại cho tương thích chữ ký nhưng không còn tác dụng.
 
-            // Postpaid→Prepaid: còn nợ (hóa đơn Issued/Overdue) hoặc kỳ hiện tại đã phát sinh sử dụng chưa
-            // chốt (period_usage > 0) → chặn hạ mode. Hạ mode khi còn nợ sẽ làm mất luôn cơ chế đòi nợ
-            // (guard BK17 chỉ áp cho ví Postpaid).
+            // Hạ từ trả sau về trả trước bị chặn khi còn nợ — hoá đơn Issued/Overdue, hoặc kỳ hiện tại đã phát sinh
+            // sử dụng chưa chốt (period_usage > 0) hoặc giữ chưa chốt (reserved_credits > 0). Hạ mode khi còn nợ làm mất luôn cơ chế đòi nợ
+            // vì phanh BK17 chỉ áp cho ví Postpaid. Còn chỗ giữ chưa chốt cũng phải chặn: chỗ giữ đó đã đóng dấu Postpaid nên khi buổi được chấm,
+            // Consume vẫn cộng period_usage — nhưng ví lúc ấy đã là Prepaid nên chốt kỳ trả NotPostpaid và lượt dùng đó KHÔNG BAO GIỜ được xuất hoá đơn.
+            // Đo bằng probe: hạ mode khi reserved=1, sau khi chấm thì period_usage=1 nằm trên ví Prepaid và số hoá đơn = 0.
+
             if (downgrading)
             {
                 var hasUnpaidInvoice = await _db.Invoices.AsNoTracking().AnyAsync(i =>
                     i.OwnerType == ownerType && i.OwnerId == ownerId &&
                     (i.Status == InvoiceStatus.Issued || i.Status == InvoiceStatus.Overdue), ct);
 
-                if (hasUnpaidInvoice || (acc.PeriodUsage ?? 0) > 0)
+                if (hasUnpaidInvoice || (acc.PeriodUsage ?? 0) > 0 || acc.ReservedCredits > 0)
                     return new SetPaymentModeResult(
                         SetPaymentModeOutcome.UnpaidDebt, ownerType, ownerId, paymentMode, creditLimit,
                         acc.RemainingCredits, acc.ReservedCredits);

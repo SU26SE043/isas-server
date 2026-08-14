@@ -168,34 +168,40 @@ public class PostpaidDecoupleTests
     }
 
     /// <summary>
-    /// Gỡ gate thuê bao KHÔNG được làm rơi 4 guard nghiệp vụ còn lại. Ca này khoá `StrandedCredits`:
-    /// credit đã mua nằm trong `remaining` sẽ không tiêu được sau khi chuyển Postpaid (nhánh reserve
-    /// postpaid không đụng `remaining`), nên phải chặn trừ khi admin opt-in tường minh.
+    /// ⚠ ĐỔI TIỀN ĐỀ CÓ CHỦ ĐÍCH: bản cũ khoá guard `StrandedCredits` — chặn nâng mode khi ví còn
+    /// credit đã mua, vì hồi đó nhánh đặt chỗ postpaid không đụng `remaining` nên credit sẽ kẹt cứng.
+    /// Nay ví Postpaid TIÊU HẾT credit đã mua trước rồi mới dồn nợ kỳ, nên không còn gì để kẹt và
+    /// chặn admin là vô nghĩa — guard đã gỡ.
+    ///
+    /// Test này nay khoá hệ quả MẠNH HƠN cái cũ: credit không những sống sót qua lần đổi mode, mà
+    /// còn phải THỰC SỰ TIÊU ĐƯỢC sau đó (chứ không chỉ nằm trong cột `remaining` cho đẹp).
     /// </summary>
     [Fact]
-    public async Task DuyetPostpaid_ViConCreditDaMua_VanChanStrandedCredits()
+    public async Task DuyetPostpaid_ViConCreditDaMua_ChoQua_VaCreditVanTieuDuoc()
     {
         using var tdb = new PaymentTestDb();
         var orgId = Guid.NewGuid();
         await SeedOrgWalletAsync(tdb, orgId, PaymentMode.Prepaid, remaining: 5);
 
-        var admin = NewAdmin(tdb);
-        var blocked = await admin.SetPaymentModeAsync(
+        var result = await NewAdmin(tdb).SetPaymentModeAsync(
             OwnerType.Org, orgId, PaymentMode.Postpaid, creditLimit: 10,
-            note: "x", allowStrandedCredits: false, adminUserId: Guid.NewGuid());
-        Assert.Equal(SetPaymentModeOutcome.StrandedCredits, blocked.Outcome);
-        Assert.Equal(5, blocked.RemainingCredits);
+            note: "hợp đồng trả sau", allowStrandedCredits: false, adminUserId: Guid.NewGuid());
 
-        // Ví KHÔNG được đổi khi bị chặn.
-        var untouched = await tdb.NewContext().CreditAccounts.AsNoTracking()
+        Assert.Equal(SetPaymentModeOutcome.Updated, result.Outcome);
+        var afterUpgrade = await tdb.NewContext().CreditAccounts.AsNoTracking()
             .SingleAsync(a => a.OwnerType == OwnerType.Org && a.OwnerId == orgId);
-        Assert.Equal(PaymentMode.Prepaid, untouched.PaymentMode);
+        Assert.Equal(PaymentMode.Postpaid, afterUpgrade.PaymentMode);
+        Assert.Equal(5, afterUpgrade.RemainingCredits);   // credit KHÔNG bị xoá
 
-        // Opt-in tường minh thì qua.
-        var allowed = await NewAdmin(tdb).SetPaymentModeAsync(
-            OwnerType.Org, orgId, PaymentMode.Postpaid, creditLimit: 10,
-            note: "x", allowStrandedCredits: true, adminUserId: Guid.NewGuid());
-        Assert.Equal(SetPaymentModeOutcome.Updated, allowed.Outcome);
+        // …và tiêu được thật: buổi kế trừ vào credit đã mua, KHÔNG dồn nợ kỳ.
+        var sessionId = Guid.NewGuid();
+        await new CreditAccountService(tdb.NewContext()).ReserveAsync(OwnerType.Org, orgId, sessionId);
+        await new CreditAccountService(tdb.NewContext()).ConsumeAsync(sessionId);
+
+        var afterUse = await tdb.NewContext().CreditAccounts.AsNoTracking()
+            .SingleAsync(a => a.OwnerType == OwnerType.Org && a.OwnerId == orgId);
+        Assert.Equal(4, afterUse.RemainingCredits);
+        Assert.Equal(0, afterUse.PeriodUsage);            // chưa phát sinh nợ kỳ nào
     }
 
     /// <summary>Ví cá nhân vẫn LUÔN Prepaid (D15) — gỡ gate thuê bao không mở cửa cho B2C.</summary>
