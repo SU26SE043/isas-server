@@ -74,7 +74,9 @@ CreditAccount {                         // GET /me/account ✅ (= CreditAccountR
   status:           enum(int)           // 0=Active · 1=Suspended (đình chỉ nợ xấu/quá hạn)
   remainingCredits: int                 // ✅ F7: ĐÃ GỒM credit dùng thử (không tách xô riêng)
   reservedCredits:  int
-  freeCreditsGranted: int               // ✅ F7 — suất dùng thử đã tặng cho ví này (0 = chưa/ví Org). Ví chưa tồn tại → 0 (KHÔNG hứa trước quota cấu hình)
+  freeCreditsGranted: int               // ✅ F7 — suất dùng thử ĐÃ tặng cho ví này (0 = chưa/ví Org). Nói về QUÁ KHỨ; ví chưa tồn tại → 0
+  walletExists:      bool               // ✅ MỚI — false = chưa có row `credit_accounts` (tạo lazy lúc reserve/webhook Paid đầu tiên)
+  pendingFreeCredits: int               // ✅ MỚI — suất dùng thử SẼ nhận khi ví ra đời; 0 khi ví đã có · ví Org (BC-1) · kill-switch tắt
   creditLimit:      int?                // chỉ Org/postpaid
   periodUsage:      int?                // chỉ Org/postpaid — lượt đã dùng kỳ này
   updatedAt:        datetime
@@ -130,6 +132,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`GET /payment/order/{id}/status`** ✅ — **FE active-polling**: server chưa nhận webhook → gọi PayOS đối soát ngay. → `OrderStatusResponse` `{ orderCode: long, status: string, paidAt: datetime? }` (**ngoại lệ:** `status` là **CHUỖI** ở đây). Lỗi: **404** (không tồn tại/non-owner).
 
 **`GET /payment/me/account`** ✅ (2026-07-18) — Số dư ví của **chính caller** → `CreditAccount`. Chủ ví suy từ JWT (D15: claim `org_id`→Org, else `sub`→User) nên **không có đường đọc ví người khác**; HrMember xem được (AUTH-6 chỉ chặn money-mutation). Chưa từng mua credit (chưa có row ví) → **200** ví rỗng `remainingCredits:0` (đọc thuần, KHÔNG tạo ví — ví tạo lazy ở webhook Paid P2). Lỗi: **401**.
+> ⚠ **`walletExists` + `pendingFreeCredits` (mới):** "chưa có ví" và "ví đã tiêu hết" đều cho `remainingCredits:0` nhưng là **hai màn hình ngược nhau** — một bên mời dùng thử, bên kia mời nạp. Client **KHÔNG** suy được từ `freeCreditsGranted == 0`: ví tạo trước F7 cũng bằng 0, và nếu kill-switch `Billing:FreeTrialCredits=0` (PAY-14) thì **mọi** ví đều bằng 0 ⇒ cách suy đó đảo thành lời nói dối cho 100% người dùng. `pendingFreeCredits` lấy từ `BillingSettings.FreeTrialGrantFor` — **cùng một luật** với đường CẤP thật, nên đổi cấu hình không làm hai bên lệch; client cũng khỏi ghi cứng số "3" trong app (app không redeploy nhanh như đổi env).
 
 **`GET /payment/me/credit-transactions`** ✅ **F19** (2026-07-19) — Lịch sử **biến động credit** của chính caller → `CreditTransaction[]`. Chủ ví suy từ JWT (D15) nên không có đường đọc sổ cái người khác. Trước F19 KHÔNG endpoint nào đọc `credit_transactions` cho **bất kỳ ai**: người dùng thấy số dư (`me/account`) nhưng mất credit thì không tra được nó đi đâu. Keyset-paged theo mẫu chung (DB8): body vẫn **mảng JSON**, `?cursor=&limit=` opt-in, next-cursor ở header `X-Next-Cursor`, default 500 ⇒ **FE không phải sửa**. `?reason=` lọc theo loại bút toán. **KHÔNG** trả `grantedBy`/`note` (thông tin vận hành nội bộ — chỉ bản admin có). Chưa có bút toán nào → **200** mảng rỗng. Lỗi: **401**.
 

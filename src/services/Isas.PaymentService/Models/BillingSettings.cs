@@ -1,3 +1,8 @@
+// `global::` là BẮT BUỘC, không phải trang trí: file này nằm trong `Isas.PaymentService.Models`, nên
+// `using PaymentService.Models;` trần sẽ được phân giải thành `Isas.PaymentService.Models` (namespace
+// bao ngoài `Isas` có chứa `PaymentService`) — tức trỏ vào chính nó và không thấy `OwnerType`.
+using global::PaymentService.Models;
+
 namespace Isas.PaymentService.Models
 {
     /// <summary>
@@ -17,6 +22,16 @@ namespace Isas.PaymentService.Models
         /// Đổi giá trị KHÔNG hồi tố: ví đã tạo giữ nguyên <c>free_credits_granted</c> của nó.
         /// </summary>
         public int FreeTrialCredits { get; set; } = 3;
+
+        /// <summary>
+        /// Số credit dùng thử một chủ ví SẼ được tặng khi ví của họ ra đời — <c>0</c> nếu là ví Org
+        /// hoặc kill-switch đang tắt. Đặt ở đây (không phải trong <c>CreditAccountService</c>) vì có
+        /// HAI nơi cần cùng một luật: đường CẤP lúc tạo ví, và đường ĐỌC <c>GET /me/account</c> báo cho
+        /// người chưa có ví biết họ sắp được tặng bao nhiêu. Hai bản sao của luật này sẽ lệch nhau
+        /// trong im lặng — lệch nghĩa là hứa sai với người dùng về số lượt miễn phí.
+        /// </summary>
+        public int FreeTrialGrantFor(OwnerType ownerType) =>
+            ownerType == OwnerType.User && FreeTrialCredits > 0 ? FreeTrialCredits : 0;
 
         /// <summary>F23/BK24 — số ngày từ periodEnd tới hạn tất toán hóa đơn postpaid. Snapshot vào
         /// `Invoice.DueAt` lúc lập; đổi giá trị này KHÔNG hồi tố hóa đơn đã có DueAt.</summary>

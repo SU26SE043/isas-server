@@ -61,10 +61,7 @@ namespace Isas.PaymentService.Services
         /// F7 — suất dùng thử tặng lúc TẠO ví, chỉ cho <see cref="OwnerType.User"/> (B2C).
         /// <c>0</c> khi tắt bằng cấu hình hoặc khi chủ ví là Org (B2B đi ví Org, không dùng thử — BC-1).
         /// </summary>
-        private int FreeTrialGrantFor(OwnerType ownerType) =>
-            ownerType == OwnerType.User && _billing.FreeTrialCredits > 0
-                ? _billing.FreeTrialCredits
-                : 0;
+        private int FreeTrialGrantFor(OwnerType ownerType) => _billing.FreeTrialGrantFor(ownerType);
 
         /// <summary>
         /// Tạo ví rỗng cho chủ sở hữu. Gọi từ ĐÚNG 2 chỗ: webhook Paid lần mua đầu
