@@ -9,15 +9,19 @@ using Moq;
 namespace Isas.CampaignService.Tests;
 
 /// <summary>
-/// C14 — Sàng CV async (AI chấm khớp + callback + shortlist + PATCH). TÁI DÙNG campaign_criteria; 0 credit.
+/// Sàng CV async — vai HR technical screener (đối chiếu nhu cầu công việc + callback + shortlist
+/// + PATCH); 0 credit.
 /// (a) Filtered → publish cv_screening_queue + Analyzing;
-/// (b) callback cv-result → candidate_criterion_scores + overall_match_score + Analyzed;
+/// (b) callback cv-result → strengths/gaps + jobFitScore TÍNH TỪ BẰNG CHỨNG + Analyzed;
 /// (c) cv-failed → AnalysisFailed;
-/// (d) callback 2 lần → không nhân đôi điểm;
+/// (d) callback 2 lần → không nhân đôi;
 /// (e) callback sau Invited → bỏ qua (không lật);
 /// (f) ?sort=score → DESC (null xuống cuối);
 /// (g) PATCH email → audit_logs; đã Invited → InvalidOperationException (409).
-/// Publisher mock (không cần broker); SQLite in-mem (CampaignTestDb).
+///
+/// ⚠ Thước đo là <c>campaigns.job_needs</c>, KHÔNG còn là <c>campaign_criteria</c> (rubric buổi
+/// phỏng vấn — CV là giấy nên model chỉ đoán được). Publisher mock (không cần broker); SQLite
+/// in-mem (CampaignTestDb).
 /// </summary>
 public class CampaignCvScreeningC14Tests
 {
@@ -40,26 +44,25 @@ public class CampaignCvScreeningC14Tests
         return camp;
     }
 
-    private static List<CampaignCriterion> SeedCriteria(CampaignTestDb tdb, Guid campaignId, int count = 2)
+    /// <summary>Chốt bộ nhu cầu công việc cho campaign — thước đo dùng chung cho MỌI ứng viên.</summary>
+    private static List<JobNeed> SeedJobNeeds(CampaignTestDb tdb, Guid campaignId, int count = 2)
     {
-        var now = DateTime.UtcNow;
-        var list = Enumerable.Range(0, count).Select(i => new CampaignCriterion
+        var list = Enumerable.Range(0, count).Select(i => new JobNeed
         {
-            Id = Guid.NewGuid(),
-            CampaignId = campaignId,
-            OrderNo = i,
-            Name = $"Tiêu chí {i}",
-            Description = $"mô tả {i}",
-            Weight = Math.Round(1m / count, 4),
-            MaxScore = 5,
-            Source = CriterionSource.HrEdited,
-            CreatedAt = now,
-            UpdatedAt = now
+            NeedId = $"need-{i}",
+            Category = i % 2 == 0 ? JobNeedCategories.Technical : JobNeedCategories.Communication,
+            Text = $"Nhu cầu {i}",
+            Source = JobNeedSources.AiSuggested,
         }).ToList();
-        tdb.Db.CampaignCriteria.AddRange(list);
+
+        var camp = tdb.Db.Campaigns.First(c => c.Id == campaignId);
+        camp.JobNeeds = list;
         tdb.Db.SaveChanges();
         return list;
     }
+
+    private static NeedAssessmentItem Assess(string needId, string level, string? evidence = "trích từ CV")
+        => new() { NeedId = needId, Area = $"vùng {needId}", Level = level, Evidence = evidence };
 
     private static CvSubmission SeedCandidate(
         CampaignTestDb tdb, Guid campaignId, CvSubmissionStatus status,
@@ -91,7 +94,7 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 2);
+        SeedJobNeeds(tdb, camp.Id, 2);
         var c1 = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: "a@x.com");
         var c2 = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: "b@x.com");
 
@@ -108,7 +111,7 @@ public class CampaignCvScreeningC14Tests
         Assert.Equal(2, published.Count);
         Assert.All(published, j =>
         {
-            Assert.Equal(2, j.Criteria.Count);                 // TÁI DÙNG campaign_criteria
+            Assert.Equal(2, j.JobNeeds.Count);                 // thước đo = job_needs của campaign
             Assert.Equal("BE", j.JobCategory);
             Assert.Equal("http://campaign:8080", j.CallbackBase);
             Assert.False(string.IsNullOrEmpty(j.CvText));
@@ -132,7 +135,7 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        SeedCriteria(tdb, camp.Id, 1);
+        SeedJobNeeds(tdb, camp.Id, 1);
         SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: "a@x.com");
         var rejected = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Rejected, email: "b@x.com");
 
@@ -144,27 +147,34 @@ public class CampaignCvScreeningC14Tests
         Assert.Equal(CvSubmissionStatus.Rejected, (await check.CvSubmissions.FindAsync(rejected.Id))!.Status);
     }
 
-    // (b) cv-result → ghi candidate_criterion_scores + overall_match_score + Analyzed; kẹp điểm + bỏ id bịa.
+    // (b) cv-result → strengths/gaps + jobFitScore TÍNH TỪ BẰNG CHỨNG + Analyzed; bỏ needId bịa.
+    //
+    // ⚠ Tiền đề ĐỔI CÓ CHỦ ĐÍCH so với bản C14: test cũ khẳng định `overall_match_score` = con số
+    // AI gửi lên (kẹp [0,100]). Chính khẳng định đó KHOÁ ĐÚNG CÁI BUG đang sửa — đo trên prod, bốn
+    // CV có bằng chứng giống hệt nhau nhận 70/70/55/55 vì số đó do model phán chứ không tính từ gì.
+    // Nay điểm do service tính, nên request cố ý KHÔNG mang điểm nào cả.
     [Fact]
-    public async Task Callback_cv_result_ghi_diem_va_Analyzed()
+    public async Task Callback_cv_result_ghi_danh_gia_va_tinh_diem()
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 2);
+        var needs = SeedJobNeeds(tdb, camp.Id, 2);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
 
         var req = new CvResultCallbackRequest
         {
             Skills = new() { "C#", "SQL" },
             YearsExperience = 3.5m,
-            Summary = "Ứng viên tốt",
-            OverallMatchScore = 150,   // vượt trần → kẹp về 100
-            CriterionMatches = new()
+            FitSummary = "Ứng viên tốt",
+            VerificationRisk = VerificationRisks.Low,
+            BonusSignals = new() { "CI/CD" },
+            VerifyQuestions = new() { "Hỏi về dự án X" },
+            Assessments = new()
             {
-                new() { CriterionId = criteria[0].Id, MatchScore = 4.0m, Reasoning = "ok" },
-                new() { CriterionId = criteria[1].Id, MatchScore = 99m, Reasoning = "quá max → kẹp 5" },
-                new() { CriterionId = Guid.NewGuid(), MatchScore = 3m, Reasoning = "id AI bịa → bỏ" },
+                Assess(needs[0].NeedId, NeedLevels.Strong),
+                Assess(needs[1].NeedId, NeedLevels.Weak, NeedEvidence.NotFound),
+                Assess("need-khong-ton-tai", NeedLevels.Strong),   // id AI bịa → bỏ
             }
         };
 
@@ -175,13 +185,167 @@ public class CampaignCvScreeningC14Tests
         using var check = tdb.NewContext();
         var row = await check.CvSubmissions.FindAsync(cand.Id);
         Assert.Equal(CvSubmissionStatus.Analyzed, row!.Status);
-        Assert.Equal(100, row.OverallMatchScore);          // kẹp [0,100]
+        // 1 Strong + 1 Weak trên 2 nhu cầu ⇒ (1 + 0)/2 = 50. Id bịa KHÔNG được kéo mẫu số lên 3.
+        Assert.Equal(50, row.OverallMatchScore);
+        Assert.Equal(ScreeningVersions.JobFitFromEvidence, row.ScreeningVersion);
         Assert.Equal(3.5m, row.YearsExperience);
         Assert.Contains("C#", row.Skills!);
+        Assert.Equal(VerificationRisks.Low, row.VerificationRisk);
 
-        var scores = await check.CandidateCriterionScores.Where(s => s.CvSubmissionId == cand.Id).ToListAsync();
-        Assert.Equal(2, scores.Count);                     // id bịa bị bỏ (2 hợp lệ)
-        Assert.Equal(5m, scores.Single(s => s.CriterionId == criteria[1].Id).MatchScore);   // kẹp về max_score=5
+        Assert.Equal(needs[0].NeedId, Assert.Single(row.Strengths!).NeedId);
+        Assert.Equal(needs[1].NeedId, Assert.Single(row.Gaps!).NeedId);
+    }
+
+    // (b-bis) 🔴 BẤT BIẾN CỐT LÕI: cùng bộ mức bằng chứng ⇒ CÙNG điểm.
+    // Đây đúng thứ prod đang vi phạm (4 CV bằng chứng giống hệt → 70/70/55/55, và ứng viên yếu hơn
+    // xếp trên ứng viên mạnh hơn). Chữ nghĩa `area`/`evidence` khác nhau KHÔNG được làm điểm đổi.
+    [Fact]
+    public async Task Cung_bo_muc_bang_chung_thi_cung_diem()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var needs = SeedJobNeeds(tdb, camp.Id, 3);
+        var a = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+        var b = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "b@x.com");
+
+        CvResultCallbackRequest Req(string evidence) => new()
+        {
+            FitSummary = evidence,
+            Assessments = new()
+            {
+                Assess(needs[0].NeedId, NeedLevels.Strong, evidence),
+                Assess(needs[1].NeedId, NeedLevels.Partial, evidence),
+                Assess(needs[2].NeedId, NeedLevels.Weak, NeedEvidence.NotFound),
+            }
+        };
+
+        await NewService(tdb.NewContext()).SaveCvResultAsync(a.Id, Req("dẫn chứng A"), default);
+        await NewService(tdb.NewContext()).SaveCvResultAsync(b.Id, Req("một câu hoàn toàn khác"), default);
+
+        using var check = tdb.NewContext();
+        var scoreA = (await check.CvSubmissions.FindAsync(a.Id))!.OverallMatchScore;
+        var scoreB = (await check.CvSubmissions.FindAsync(b.Id))!.OverallMatchScore;
+        Assert.Equal(scoreA, scoreB);
+        Assert.Equal(50, scoreA);   // (1 + 0.5 + 0)/3 = 0.5 → 50
+    }
+
+    // (b-ter) Mức lạ ⇒ Weak (chưa chứng minh được), KHÔNG phải Partial: mọi hướng khác đều cho
+    // không ứng viên một phần điểm mà không ai đọc được bằng chứng nào.
+    [Fact]
+    public async Task Muc_la_thi_ve_Weak_khong_phai_nua_diem()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+
+        await NewService(tdb.NewContext()).SaveCvResultAsync(cand.Id, new CvResultCallbackRequest
+        {
+            Assessments = new() { Assess(needs[0].NeedId, "Xuất sắc lắm luôn") }
+        }, default);
+
+        using var check = tdb.NewContext();
+        var row = await check.CvSubmissions.FindAsync(cand.Id);
+        Assert.Equal(0, row!.OverallMatchScore);
+        Assert.Equal(NeedLevels.Weak, Assert.Single(row.Gaps!).Level);
+    }
+
+    // (b-quater) Mức cao mà KHÔNG trích được gì trong CV ⇒ hạ Weak + ghi đúng câu "Không thấy bằng
+    // chứng". Một mức Strong không ai kiểm chứng được thì HR không dùng để bảo vệ quyết định được.
+    [Fact]
+    public async Task Strong_khong_co_bang_chung_thi_ha_ve_Weak()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+
+        await NewService(tdb.NewContext()).SaveCvResultAsync(cand.Id, new CvResultCallbackRequest
+        {
+            Assessments = new() { Assess(needs[0].NeedId, NeedLevels.Strong, "   ") }
+        }, default);
+
+        using var check = tdb.NewContext();
+        var row = await check.CvSubmissions.FindAsync(cand.Id);
+        Assert.Equal(0, row!.OverallMatchScore);
+        var gap = Assert.Single(row.Gaps!);
+        Assert.Equal(NeedLevels.Weak, gap.Level);
+        Assert.Equal(NeedEvidence.NotFound, gap.Evidence);
+    }
+
+    // (b-quinquies) verificationRisk KHÔNG nhập vào điểm — nó là cờ đứng cạnh, không phải một
+    // thành phần của con số. Gộp vào là lặp lại đúng sai lầm bản này đang sửa.
+    [Fact]
+    public async Task VerificationRisk_khong_lam_doi_diem()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var needs = SeedJobNeeds(tdb, camp.Id, 2);
+        var low = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "low@x.com");
+        var high = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "high@x.com");
+
+        CvResultCallbackRequest Req(string risk) => new()
+        {
+            VerificationRisk = risk,
+            Assessments = new()
+            {
+                Assess(needs[0].NeedId, NeedLevels.Strong),
+                Assess(needs[1].NeedId, NeedLevels.Strong),
+            }
+        };
+
+        await NewService(tdb.NewContext()).SaveCvResultAsync(low.Id, Req(VerificationRisks.Low), default);
+        await NewService(tdb.NewContext()).SaveCvResultAsync(high.Id, Req(VerificationRisks.High), default);
+
+        using var check = tdb.NewContext();
+        var rowLow = (await check.CvSubmissions.FindAsync(low.Id))!;
+        var rowHigh = (await check.CvSubmissions.FindAsync(high.Id))!;
+        Assert.Equal(100, rowLow.OverallMatchScore);
+        Assert.Equal(100, rowHigh.OverallMatchScore);          // rủi ro cao KHÔNG bị trừ điểm...
+        Assert.Equal(VerificationRisks.High, rowHigh.VerificationRisk);   // ...mà hiện thành cờ
+    }
+
+    // (b-sexies) verifyQuestions cắt còn 3 — spec nói TỐI ĐA 3; cắt ở đây chứ không chỉ dặn model,
+    // vì mọi thứ chỉ dặn bằng lời đều là thứ model được phép bỏ qua.
+    [Fact]
+    public async Task VerifyQuestions_cat_con_3()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
+
+        await NewService(tdb.NewContext()).SaveCvResultAsync(cand.Id, new CvResultCallbackRequest
+        {
+            VerifyQuestions = new() { "q1", "q2", "q3", "q4", "q5" },
+            Assessments = new() { Assess(needs[0].NeedId, NeedLevels.Strong) }
+        }, default);
+
+        using var check = tdb.NewContext();
+        Assert.Equal(3, (await check.CvSubmissions.FindAsync(cand.Id))!.VerifyQuestions!.Count);
+    }
+
+    // (b-septies) Campaign chưa chốt job_needs ⇒ KHÔNG publish job nào (thà đứng im có lý do đọc
+    // được còn hơn sàng một ứng viên mà không đối chiếu với gì rồi trưng ra như đã sàng).
+    [Fact]
+    public async Task Chua_chot_job_needs_thi_khong_sang_duoc()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);   // KHÔNG SeedJobNeeds
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: "a@x.com");
+
+        var pub = new Mock<ICvScreeningPublisher>();
+        var svc = NewService(tdb.NewContext(), pub.Object);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.PublishScreeningJobsAsync(owner, camp.Id, default));
+        pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // (c) cv-failed → AnalysisFailed + reason.
@@ -227,15 +391,14 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.AnalysisFailed, email: "a@x.com");
         cand.RejectReason = "timeout cũ";
         tdb.Db.SaveChanges();
 
         var req = new CvResultCallbackRequest
         {
-            OverallMatchScore = 70,
-            CriterionMatches = new() { new() { CriterionId = criteria[0].Id, MatchScore = 3m } }
+            Assessments = new() { Assess(needs[0].NeedId, NeedLevels.Partial) }
         };
 
         var svc = NewService(tdb.NewContext());
@@ -254,16 +417,15 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 2);
+        var needs = SeedJobNeeds(tdb, camp.Id, 2);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
 
         CvResultCallbackRequest Req() => new()
         {
-            OverallMatchScore = 88,
-            CriterionMatches = new()
+            Assessments = new()
             {
-                new() { CriterionId = criteria[0].Id, MatchScore = 4m },
-                new() { CriterionId = criteria[1].Id, MatchScore = 3m },
+                Assess(needs[0].NeedId, NeedLevels.Strong),
+                Assess(needs[1].NeedId, NeedLevels.Partial),
             }
         };
 
@@ -271,8 +433,9 @@ public class CampaignCvScreeningC14Tests
         await NewService(tdb.NewContext()).SaveCvResultAsync(cand.Id, Req(), default);   // callback lần 2
 
         using var check = tdb.NewContext();
-        Assert.Equal(2, await check.CandidateCriterionScores.CountAsync(s => s.CvSubmissionId == cand.Id));  // vẫn 2, không 4
-        Assert.Equal(88, (await check.CvSubmissions.FindAsync(cand.Id))!.OverallMatchScore);
+        var row = (await check.CvSubmissions.FindAsync(cand.Id))!;
+        Assert.Equal(2, row.Strengths!.Count);          // vẫn 2, không 4 (replace-all, không cộng dồn)
+        Assert.Equal(75, row.OverallMatchScore);        // (1 + 0.5)/2 = 0.75 — lần 2 không làm đổi
     }
 
     // (e) callback cv-result về SAU khi đã Invited → bỏ qua (không ghi điểm, giữ Invited).
@@ -282,13 +445,12 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Invited, email: "a@x.com", overall: 90);
 
         var req = new CvResultCallbackRequest
         {
-            OverallMatchScore = 10,
-            CriterionMatches = new() { new() { CriterionId = criteria[0].Id, MatchScore = 1m } }
+            Assessments = new() { Assess(needs[0].NeedId, NeedLevels.Weak, NeedEvidence.NotFound) }
         };
 
         var svc = NewService(tdb.NewContext());
@@ -299,7 +461,7 @@ public class CampaignCvScreeningC14Tests
         var row = await check.CvSubmissions.FindAsync(cand.Id);
         Assert.Equal(CvSubmissionStatus.Invited, row!.Status);      // giữ nguyên
         Assert.Equal(90, row.OverallMatchScore);                 // KHÔNG bị ghi đè
-        Assert.Equal(0, await check.CandidateCriterionScores.CountAsync(s => s.CvSubmissionId == cand.Id));
+        Assert.Null(row.Strengths);                              // không ghi đánh giá nào
     }
 
     // (e-bis) candidate không tồn tại → KeyNotFoundException (→404).
@@ -393,11 +555,10 @@ public class CampaignCvScreeningC14Tests
     // đẩy lại job cho ứng viên kẹt `Analyzing` nên cv-result tới NHIỀU LẦN — gán thẳng `=` sẽ xoá
     // đúng cái tên HR vừa sửa tay qua PATCH ở lần callback kế tiếp.
 
-    private static CvResultCallbackRequest ResultWithName(string? fullName, Guid criterionId) => new()
+    private static CvResultCallbackRequest ResultWithName(string? fullName, string needId) => new()
     {
         FullName = fullName,
-        OverallMatchScore = 80,
-        CriterionMatches = new() { new() { CriterionId = criterionId, MatchScore = 4m } }
+        Assessments = new() { Assess(needId, NeedLevels.Strong) }
     };
 
     // (h) cv-result mang fullName → điền vào ô đang trống.
@@ -407,12 +568,12 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
         Assert.Null(cand.FullName);   // C13 luôn ghi null — đây chính là trạng thái BK28 sinh ra để sửa
 
         await NewService(tdb.NewContext())
-            .SaveCvResultAsync(cand.Id, ResultWithName("  Nguyễn Văn A  ", criteria[0].Id), default);
+            .SaveCvResultAsync(cand.Id, ResultWithName("  Nguyễn Văn A  ", needs[0].NeedId), default);
 
         using var check = tdb.NewContext();
         Assert.Equal("Nguyễn Văn A", (await check.CvSubmissions.FindAsync(cand.Id))!.FullName);   // trim
@@ -425,12 +586,12 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
 
         // Lần 1: AI điền tên (đọc nhầm từ CV scan).
         await NewService(tdb.NewContext())
-            .SaveCvResultAsync(cand.Id, ResultWithName("Nguyen Van A (OCR sai)", criteria[0].Id), default);
+            .SaveCvResultAsync(cand.Id, ResultWithName("Nguyen Van A (OCR sai)", needs[0].NeedId), default);
 
         // HR sửa tay.
         await NewService(tdb.NewContext()).PatchCandidateAsync(owner, owner, camp.Id, cand.Id,
@@ -438,7 +599,7 @@ public class CampaignCvScreeningC14Tests
 
         // Lần 2: republisher đẩy lại job → cv-result về lần nữa với tên AI cũ.
         await NewService(tdb.NewContext())
-            .SaveCvResultAsync(cand.Id, ResultWithName("Nguyen Van A (OCR sai)", criteria[0].Id), default);
+            .SaveCvResultAsync(cand.Id, ResultWithName("Nguyen Van A (OCR sai)", needs[0].NeedId), default);
 
         using var check = tdb.NewContext();
         Assert.Equal("Nguyễn Văn A", (await check.CvSubmissions.FindAsync(cand.Id))!.FullName);
@@ -451,13 +612,13 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
         cand.FullName = "Tên HR nhập";
         tdb.Db.SaveChanges();
 
         await NewService(tdb.NewContext())
-            .SaveCvResultAsync(cand.Id, ResultWithName(null, criteria[0].Id), default);
+            .SaveCvResultAsync(cand.Id, ResultWithName(null, needs[0].NeedId), default);
 
         using var check = tdb.NewContext();
         Assert.Equal("Tên HR nhập", (await check.CvSubmissions.FindAsync(cand.Id))!.FullName);
@@ -470,11 +631,11 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
 
         await NewService(tdb.NewContext())
-            .SaveCvResultAsync(cand.Id, ResultWithName("   ", criteria[0].Id), default);
+            .SaveCvResultAsync(cand.Id, ResultWithName("   ", needs[0].NeedId), default);
 
         using var check = tdb.NewContext();
         Assert.Null((await check.CvSubmissions.FindAsync(cand.Id))!.FullName);
@@ -489,11 +650,11 @@ public class CampaignCvScreeningC14Tests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedActiveCampaign(tdb, owner);
-        var criteria = SeedCriteria(tdb, camp.Id, 1);
+        var needs = SeedJobNeeds(tdb, camp.Id, 1);
         var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing, email: "a@x.com");
 
         await NewService(tdb.NewContext())
-            .SaveCvResultAsync(cand.Id, ResultWithName(new string('Ạ', 400), criteria[0].Id), default);
+            .SaveCvResultAsync(cand.Id, ResultWithName(new string('Ạ', 400), needs[0].NeedId), default);
 
         using var check = tdb.NewContext();
         Assert.Equal(255, (await check.CvSubmissions.FindAsync(cand.Id))!.FullName!.Length);

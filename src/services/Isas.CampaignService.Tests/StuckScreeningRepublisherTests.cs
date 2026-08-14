@@ -53,6 +53,12 @@ public class StuckScreeningRepublisherTests
         var camp = CampaignTestDb.NewCampaign(owner, CampaignStatus.Active);
         camp.Domain = "BE";
         camp.JDText = "JD: cần Backend .NET";
+        // Thước đo sàng CV: bộ nhu cầu công việc chốt 1 lần cho cả campaign.
+        camp.JobNeeds = new List<JobNeed>
+        {
+            new() { NeedId = "need-1", Category = JobNeedCategories.Technical, Text = "Thạo .NET" },
+            new() { NeedId = "need-2", Category = JobNeedCategories.Communication, Text = "Trao đổi với khách" },
+        };
         tdb.Db.Campaigns.Add(camp);
         tdb.Db.SaveChanges();
         return camp;
@@ -121,7 +127,7 @@ public class StuckScreeningRepublisherTests
         pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Once);
         Assert.NotNull(published);
         Assert.Equal(cand.Id, published!.CandidateId);
-        Assert.Equal(2, published.Criteria.Count);                    // TÁI DÙNG campaign_criteria
+        Assert.Equal(2, published.JobNeeds.Count);                    // thước đo = job_needs của campaign
         Assert.Equal("http://campaign:8080", published.CallbackBase);
 
         var saved = await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id);

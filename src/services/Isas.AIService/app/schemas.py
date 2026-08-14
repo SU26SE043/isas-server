@@ -125,37 +125,18 @@ class SuggestCriteriaResponse(BaseModel):
     criteria: list[CriterionItem]
 
 
-# ── Phân tích CV (B2C BC6, D17) — sync HTTP, dùng chung engine với B2B (C14) ─
-class CvCriterion(BaseModel):
-    """C14 — 1 tiêu chí campaign gửi kèm để AI chấm khớp CV (`campaign_criteria`).
-
-    Worker/endpoint KHÔNG tự đọc DB (GEN-4) → CampaignService đẩy sẵn tiêu chí xuống.
-    ``criterionId`` để trả lại ĐÚNG id trong callback; id nào không có ở đây mà model
-    trả về là id BỊA → bị drop (AI-3).
-    """
-    criterionId: str
-    name: str
-    description: str | None = None
-    maxScore: int = 5
-
-
-class CriterionMatch(BaseModel):
-    """C14 — điểm khớp CV theo 1 tiêu chí. ``matchScore`` đã kẹp [0, maxScore] phía provider."""
-    criterionId: str
-    matchScore: float
-    reasoning: str | None = None
-
-
+# ── Phân tích CV (B2C BC6, D17) — sync HTTP, đường LUYỆN TẬP cá nhân ────────
+#
+# ⚠ Đường sàng CV B2B KHÔNG còn đi qua đây. Trước đây hai dòng dùng chung
+# `analyze_cv` phân nhánh bằng `if criteria:`, nhưng chúng đã tách hẳn về bản chất:
+# B2C = nhận xét hồ sơ giúp ứng viên sửa CV; B2B = HR technical screener (xem
+# `screen_cv` + `JobNeed` bên dưới). Gộp lại còn ép hai khái niệm khác nhau dùng
+# chung tên field `strengths` (`list[str]` ở đây vs `[{area,level,evidence}]` ở kia).
 class AnalyzeCvRequest(BaseModel):
     cvText: str
     language: str = "vi"
     jdText: str | None = None
     jobCategory: str | None = None   # BA | BE | FE — optional (chỉ để cá nhân hoá nhận xét)
-    # C14 (B2B sàng CV) — có criteria ⇒ res thêm criterionMatches + overallMatchScore + trích xuất.
-    # ⚠ PHẢI khai tường minh: schema này không set model_config nên pydantic `extra='ignore'` sẽ
-    # NUỐT IM LẶNG field quên khai (đúng bug BC14/F2b `focusCriteria`) — .NET gửi mà AI không thấy,
-    # không lỗi, không log, tính năng chỉ đơn giản là không chạy.
-    criteria: list[CvCriterion] | None = None
 
 
 class JdMatch(BaseModel):
@@ -171,22 +152,53 @@ class AnalyzeCvResponse(BaseModel):
     suggestions: list[str]
     jdMatch: JdMatch | None = None   # chỉ có khi request có jdText
 
-    # ── C14 (B2B) — ADDITIVE, chỉ có khi request cấp `criteria[]` ────────────────────
-    # Mặc định None (KHÔNG phải [] ) là CÓ CHỦ ĐÍCH: endpoint dùng response_model_exclude_none
-    # nên None ⇒ field biến mất ⇒ đường B2C giữ NGUYÊN XI shape cũ (ai.md: "không có
-    # jdText/criteria → bỏ jdMatch/criterionMatches/overallMatchScore"). Để `= []` thì B2C sẽ
-    # bắt đầu trả `"criterionMatches": []` — đổi hợp đồng của một đường đang chạy.
-    #
-    # BK28 — `fullName` rút từ CV. Trước đó pipeline sàng CV KHÔNG hề có khái niệm tên (grep toàn
-    # AIService = 0 hit) nên `cv_submission.full_name` NULL 100%: bảng kết quả / CSV / PDF / Public
-    # API đều trống cột tên, đường ghi duy nhất là HR sửa tay. None (không phải "") vì CV không có
-    # tên rõ ràng là HỢP LỆ — xem guard ở gemini.analyze_cv.
-    fullName: str | None = None
-    skills: list[str] | None = None
-    yearsExperience: float | None = None
-    education: list[str] | None = None
-    criterionMatches: list[CriterionMatch] | None = None
-    overallMatchScore: int | None = None   # 0-100
+
+# ── Sàng CV B2B — HR technical screener ─────────────────────────────────────
+# Vai: người sàng lọc kỹ thuật, KHÔNG phải máy chấm điểm. Nguyên tắc xuyên suốt:
+# model chỉ được giao việc nó làm được — ĐỌC CV rồi trích bằng chứng; mọi con số
+# dùng để xếp hạng đều do code tính từ bằng chứng đó.
+#
+# Vì sao không tái dùng `campaign_criteria` như trước: đó là rubric chấm CÂU TRẢ LỜI
+# NÓI của buổi phỏng vấn ("Giao tiếp & Tiếng Anh", mức neo "1-4 điểm (Kém)…"). CV là
+# giấy, không quan sát được mấy thứ đó ⇒ model đoán (đo trên prod: hai ứng viên khác
+# hẳn nhau đều nhận đúng 7/10 ở "Giao tiếp & Tiếng Anh"). Tiêu chí campaign giữ
+# nguyên vai trò của nó ở đường chấm phỏng vấn.
+
+JOB_NEED_CATEGORIES = ("Technical", "WorkStyle", "Communication", "Growth")
+NEED_LEVELS = ("Strong", "Partial", "Weak")
+VERIFICATION_RISKS = ("Low", "Medium", "High")
+
+# Câu bắt buộc khi không tìm thấy bằng chứng. Là HẰNG SỐ chứ không phải câu model tự
+# viết: nó phân biệt "đã tìm và không thấy" với "quên đánh giá", và HR đọc bảng thấy
+# đúng một câu duy nhất thay vì mười cách diễn đạt khác nhau.
+NO_EVIDENCE = "Không thấy bằng chứng"
+
+
+class JobNeed(BaseModel):
+    """Bước 1 — 1 nhu cầu công việc suy từ JD.
+
+    Materialize **một lần cho cả campaign** (lúc publish), KHÔNG suy lại theo từng CV:
+    bước này chỉ đọc JD chứ không đọc CV, nên nó là thuộc tính của campaign. Suy lại
+    mỗi CV thì không gì buộc hai lần đọc ra cùng bộ nhu cầu ⇒ hai ứng viên cùng
+    campaign bị đo bằng hai cái thước khác nhau rồi xếp chung một bảng — đúng thứ bất
+    công mà CAMP-10 chặn ở đường phỏng vấn.
+
+    ``needId`` để đối chiếu nhu cầu ↔ đánh giá; id nào model trả mà không có ở đây là
+    id BỊA → bị drop (AI-3), y hệt cách `criterionId` từng được canh.
+    """
+    needId: str
+    category: str   # ∈ JOB_NEED_CATEGORIES
+    text: str
+
+
+class SuggestJobNeedsRequest(BaseModel):
+    jdText: str
+    jobCategory: str | None = None
+    language: str = "vi"
+
+
+class SuggestJobNeedsResponse(BaseModel):
+    needs: list[JobNeed]
 
 
 # ── Phân tích GitHub repository (B2C BC18) ─────────────────────────────────

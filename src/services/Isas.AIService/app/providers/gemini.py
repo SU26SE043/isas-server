@@ -15,9 +15,13 @@ from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_cv_analysis_prompt, build_repo_analysis_prompt,
+    build_job_needs_prompt, build_cv_screening_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
     build_summarize_session_prompt, build_decide_next_prompt,
     build_verify_questions_prompt,
+)
+from app.schemas import (
+    JOB_NEED_CATEGORIES, NEED_LEVELS, NO_EVIDENCE, VERIFICATION_RISKS,
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
@@ -390,7 +394,7 @@ class GeminiProvider(QuestionProvider):
             questions.append(q_text)
             cited_lists.append(_keep_known_ids(cited_raw, allowed_chunks))
             # FAIL-OPEN CÓ CHỦ ĐÍCH — thiếu nhãn / nhãn toàn id lạ ⇒ [] chứ KHÔNG raise (khác
-            # `criterionMatches` của C14, chỗ đó raise là đúng vì nó LÀ kết quả sàng lọc).
+            # `assessments` của `screen_cv`, chỗ đó raise là đúng vì nó LÀ kết quả sàng lọc).
             # Ở đây sinh câu hỏi nằm trên đường tạo buổi luyện ĐÃ RESERVE CREDIT (PAY-5): biến
             # một cái nhãn phụ thành đường làm hỏng cả buổi thì đắt hơn nhiều so với việc thiếu
             # nhãn — .NET nhận [] và tự xử (mẫu `fullName` của BK28 cố ý không raise).
@@ -506,10 +510,9 @@ class GeminiProvider(QuestionProvider):
         return items
 
     async def analyze_cv(self, cv_text: str, jd_text: str | None,
-                           job_category: str | None,
-                         criteria: list[dict] | None = None, language: str = "vi") -> dict:
+                         job_category: str | None, language: str = "vi") -> dict:
         """
-        Phân tích CV (BC6, B2C sync, D17) — feedback + khớp JD (nếu có).
+        Phân tích CV cho người LUYỆN TẬP (BC6, B2C sync, D17) — feedback + khớp JD (nếu có).
 
         Trả về dict:
           { "summary": str, "strengths": [str], "weaknesses": [str],
@@ -518,16 +521,13 @@ class GeminiProvider(QuestionProvider):
 
         jdMatch chỉ xuất hiện khi jd_text được cung cấp.
 
-        C14 (B2B sàng CV) — có ``criteria`` (tiêu chí campaign) thì trả THÊM:
-          "fullName": str|None (BK28), "skills": [str], "yearsExperience": float, "education": [str],
-          "criterionMatches": [{criterionId, matchScore, reasoning}], "overallMatchScore": int
-
-        ``criteria=None`` (đường B2C) ⇒ prompt, response_schema và dict trả về GIỮ NGUYÊN XI.
-        ``criteria`` là tham số có mặc định nên mọi call site 3-đối-số cũ chạy nguyên.
+        ⚠ Đường sàng CV B2B KHÔNG còn dùng hàm này — xem :meth:`screen_cv`. Trước đây nó là
+        nhánh ``if criteria:`` ngay trong hàm này; tách ra vì hai dòng đã khác hẳn bản chất và
+        vì gộp lại buộc hai khái niệm khác nhau dùng chung tên field ``strengths``.
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category, criteria, language=language)
+        prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category, language=language)
 
         properties: dict = {
             "summary": {"type": "string"},
@@ -536,30 +536,6 @@ class GeminiProvider(QuestionProvider):
             "suggestions": {"type": "array", "items": {"type": "string"}},
         }
         required = ["summary", "strengths", "weaknesses", "suggestions"]
-        if criteria:
-            properties.update({
-                # BK28 — KHÔNG đưa vào `required`: CV không có tên rõ ràng là chuyện HỢP LỆ, mà
-                # `required` ở đây nghĩa là model buộc phải bịa ra một chuỗi. `nullable` để model
-                # có đường trả null tường minh thay vì điền bừa.
-                "fullName": {"type": "string", "nullable": True},
-                "skills": {"type": "array", "items": {"type": "string"}},
-                "yearsExperience": {"type": "number"},
-                "education": {"type": "array", "items": {"type": "string"}},
-                "criterionMatches": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "criterionId": {"type": "string"},
-                            "matchScore": {"type": "number"},
-                            "reasoning": {"type": "string"},
-                        },
-                        "required": ["criterionId", "matchScore"],
-                    },
-                },
-                "overallMatchScore": {"type": "integer"},
-            })
-            required += ["skills", "criterionMatches", "overallMatchScore"]
         if jd_text:
             properties["jdMatch"] = {
                 "type": "object",
@@ -623,79 +599,212 @@ class GeminiProvider(QuestionProvider):
                 "missingSkills": _clean_list(jd_match_raw.get("missingSkills")),
             }
 
-        # ── C14 — chấm khớp theo tiêu chí campaign + chống ảo giác (AI-3) ────────────────
-        # KHÔNG tin điểm model trả về: kẹp về thang của ĐÚNG tiêu chí đó, DROP id không nằm
-        # trong `criteria[]` đã gửi xuống (id bịa = tiêu chí model tự nghĩ ra), bỏ id lặp.
-        # Làm ở đây chứ không chỉ trông vào .NET: hai lớp là cố ý — .NET có FK Restrict + clamp,
-        # nhưng endpoint /analyze-cv còn được gọi TRỰC TIẾP (B2C sync) nên guard phải nằm tại nguồn.
-        if criteria:
-            allowed: dict[str, float] = {}
-            for c in criteria:
-                cid = str(c.get("criterionId") or "").strip()
-                if cid:
-                    allowed[cid] = float(c.get("maxScore") or 0)
-
-            matches: list[dict] = []
-            seen: set[str] = set()
-            for m in data.get("criterionMatches") or []:
-                if not isinstance(m, dict):
-                    continue
-                cid = str(m.get("criterionId") or "").strip()
-                if cid not in allowed or cid in seen:
-                    continue    # id BỊA hoặc trùng → bỏ
-                seen.add(cid)
-                raw_score = m.get("matchScore")
-                try:
-                    match_score = float(raw_score if raw_score is not None else 0)
-                except (TypeError, ValueError):
-                    match_score = 0.0
-                reasoning = str(m.get("reasoning") or "").strip()
-                matches.append({
-                    "criterionId": cid,
-                    # Kẹp [0, maxScore] của CHÍNH tiêu chí này (không phải một thang chung).
-                    "matchScore": max(0.0, min(match_score, allowed[cid])),
-                    "reasoning": reasoning or None,
-                })
-
-            if not matches:
-                # 0 tiêu chí nào sống sót = model bịa sạch id hoặc bỏ trắng phần chấm. Nếu cứ trả
-                # về thì Campaign lưu candidate "Analyzed" mà KHÔNG có điểm tiêu chí nào — HR nhìn
-                # thấy đã chấm xong trong khi thực chất chưa chấm gì. Raise ⇒ worker retry, hết
-                # retry thì cv-failed (HR biết mà cho chạy lại), thà thấy lỗi còn hơn sai lặng lẽ.
-                raise ValueError("LLM không trả criterionMatches hợp lệ nào (id bịa hoặc rỗng).")
-            if len(matches) < len(allowed):
-                print(f"[⚠️] Sàng CV: chỉ {len(matches)}/{len(allowed)} tiêu chí được chấm hợp lệ")
-
-            overall = data.get("overallMatchScore")
-            try:
-                overall = float(overall if overall is not None else 0)
-            except (TypeError, ValueError):
-                overall = 0.0
-            years = data.get("yearsExperience")
-            try:
-                years = float(years) if years is not None else None
-            except (TypeError, ValueError):
-                years = None
-
-            # BK28 — `fullName` là DANH TÍNH đi thẳng vào bảng shortlist + bản xuất CSV/PDF của HR,
-            # nên guard đặt tại NGUỒN (AI-3) chứ không chỉ trông vào .NET — endpoint /analyze-cv còn
-            # được gọi TRỰC TIẾP, y như lý do 2 lớp của `criterionMatches` ở trên.
-            #   • rỗng/toàn khoảng trắng ⇒ None (CV không có tên rõ ràng là HỢP LỆ, đừng lưu "");
-            #   • cắt 255 = đúng `varchar(255)` của `cv_submission.full_name`, tràn thì Postgres ném
-            #     lúc SaveChanges ⇒ callback 500 ⇒ worker nack ⇒ vòng lặp republish.
-            # 🔴 CỐ Ý KHÔNG raise khi thiếu/rỗng (khác `criterionMatches`): `cv_screening.py` biến
-            # ValueError thành retry `score_max_attempts` lần rồi `PermanentCvError` ⇒ ứng viên rơi
-            # `AnalysisFailed` và KHÔNG có endpoint nào cho HR chạy lại. Biến một field phụ thành
-            # đường làm hỏng cả hồ sơ đắt hơn nhiều so với việc thiếu một cái tên.
-            full_name = str(data.get("fullName") or "").strip()
-            result["fullName"] = full_name[:255] or None
-            result["skills"] = _clean_list(data.get("skills"))
-            result["yearsExperience"] = max(0.0, years) if years is not None else None
-            result["education"] = _clean_list(data.get("education"))
-            result["criterionMatches"] = matches
-            result["overallMatchScore"] = int(round(max(0.0, min(overall, 100.0))))
-
         return result
+
+    # ── Sàng CV B2B — HR technical screener ──────────────────────────────────────────
+    #
+    # Chia hai lời gọi vì hai bước có đầu vào khác nhau: bước 1 chỉ đọc JD (chạy một lần cho
+    # cả campaign), bước 2-4 đọc CV (chạy từng ứng viên). Phụ thu của việc chia: JD không còn
+    # bị nhét vào prompt của MỌI CV — campaign 200 hồ sơ tiết kiệm 199 lần gửi JD.
+
+    async def suggest_job_needs(self, jd_text: str, job_category: str | None = None,
+                                language: str = "vi") -> list[dict]:
+        """Bước 1 — suy ra nhu cầu công việc từ JD. Trả list ``{category, text}`` đã phẳng.
+
+        ``needId`` KHÔNG sinh ở đây: CampaignService là nơi lưu và là nơi HR sửa, nên id phải
+        do nó cấp — id sinh ở đây sẽ chết ngay khi HR sửa/thêm một dòng.
+        """
+        await prompt_registry.refresh_if_stale()
+        prompt = build_job_needs_prompt(jd_text, job_category, language=language)
+
+        bucket = {"type": "array", "items": {"type": "string"}}
+        response = await self._generate(
+            "suggest_job_needs",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "technicalNeeds": bucket,
+                        "workStyleNeeds": bucket,
+                        "communicationNeeds": bucket,
+                        "growthNeeds": bucket,
+                    },
+                    "required": ["technicalNeeds"],
+                },
+            ),
+        )
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM trả JSON nhu cầu công việc không hợp lệ: {text[:200]}")
+
+        # Bốn mảng có tên riêng trong prompt (dẫn model phủ đủ 4 chiều) nhưng làm phẳng ngay ở
+        # đây: mọi chỗ tiêu thụ đều duyệt cả bộ, giữ 4 mảng chỉ tổ đẻ ra 4 nhánh code song song.
+        needs: list[dict] = []
+        seen: set[str] = set()
+        for category in JOB_NEED_CATEGORIES:
+            raw = data.get(f"{category[0].lower()}{category[1:]}Needs")
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                text_ = str(item or "").strip()
+                # Trùng ý giữa hai nhóm là chuyện thường (JD hay nhắc "làm việc nhóm" ở cả
+                # workStyle lẫn communication) — giữ cả hai thì ứng viên bị đánh giá hai lần
+                # cho cùng một thứ, và nhóm nào đông mục hơn tự nhiên nặng hơn trong điểm.
+                key = text_.casefold()
+                if not text_ or key in seen:
+                    continue
+                seen.add(key)
+                needs.append({"category": category, "text": text_})
+
+        if not needs:
+            raise ValueError("LLM không trả nhu cầu công việc hợp lệ nào.")
+        return needs
+
+    async def screen_cv(self, cv_text: str, job_needs: list[dict],
+                        job_category: str | None = None, language: str = "vi") -> dict:
+        """Bước 2-4 — đối chiếu CV với bộ nhu cầu của campaign.
+
+        Trả dict: ``fitSummary``, ``assessments[{needId, area, level, evidence}]``,
+        ``bonusSignals``, ``verificationRisk``, ``verifyQuestions``, cùng phần trích xuất
+        ``fullName``/``skills``/``yearsExperience``/``education``.
+
+        🔴 KHÔNG trả điểm tổng — và đó là điểm cốt lõi của bản này, không phải thiếu sót.
+        Con số xếp hạng do .NET tính từ ``level``. Lý do đo được trên prod: bốn CV có bằng
+        chứng GIỐNG HỆT nhau nhận điểm tổng 70/70/55/55, tức số holistic do model phán mâu
+        thuẫn với chính bằng chứng nó vừa liệt kê.
+        """
+        if not job_needs:
+            # Không có thước thì không đo được. Ném để worker báo `cv-failed` thay vì lưu một
+            # ứng viên "đã sàng" mà không đối chiếu với gì.
+            raise ValueError("Thiếu jobNeeds — không có nhu cầu công việc nào để đối chiếu.")
+
+        await prompt_registry.refresh_if_stale()
+        prompt = build_cv_screening_prompt(cv_text, job_needs, job_category, language=language)
+
+        response = await self._generate(
+            "screen_cv",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,  # sàng lọc cần nhất quán, không sáng tạo
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "fitSummary": {"type": "string"},
+                        "assessments": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "needId": {"type": "string"},
+                                    "area": {"type": "string"},
+                                    "level": {"type": "string", "enum": list(NEED_LEVELS)},
+                                    "evidence": {"type": "string"},
+                                },
+                                "required": ["needId", "level", "evidence"],
+                            },
+                        },
+                        "bonusSignals": {"type": "array", "items": {"type": "string"}},
+                        "verificationRisk": {"type": "string", "enum": list(VERIFICATION_RISKS)},
+                        "verifyQuestions": {"type": "array", "items": {"type": "string"}},
+                        # BK28 — KHÔNG đưa vào `required`: CV không có tên rõ ràng là chuyện HỢP
+                        # LỆ, mà `required` ở đây nghĩa là model buộc phải bịa ra một chuỗi.
+                        "fullName": {"type": "string", "nullable": True},
+                        "skills": {"type": "array", "items": {"type": "string"}},
+                        "yearsExperience": {"type": "number"},
+                        "education": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["fitSummary", "assessments", "verificationRisk"],
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM sàng CV trả về JSON không hợp lệ: {text[:200]}")
+
+        def _clean_list(items) -> list[str]:
+            if not isinstance(items, list):
+                return []
+            return [str(i).strip() for i in items if str(i).strip()]
+
+        # ── Chống ảo giác (AI-3): id BỊA bị drop, id lặp bỏ, level lạ chuẩn hoá ────────
+        allowed = {str(n.get("needId") or "").strip(): n for n in job_needs}
+        allowed.pop("", None)
+        assessments: list[dict] = []
+        seen: set[str] = set()
+        for a in data.get("assessments") or []:
+            if not isinstance(a, dict):
+                continue
+            need_id = str(a.get("needId") or "").strip()
+            if need_id not in allowed or need_id in seen:
+                continue
+            seen.add(need_id)
+
+            level = str(a.get("level") or "").strip().capitalize()
+            # Mức lạ ⇒ `Weak`, KHÔNG phải `Partial`: mặc định an toàn ở đây là "chưa chứng minh
+            # được", vì mọi hướng khác đều là cho không ứng viên một phần điểm mà không ai đọc
+            # được bằng chứng nào. Cùng chiều với `NO_EVIDENCE` bên dưới.
+            if level not in NEED_LEVELS:
+                level = "Weak"
+
+            evidence = str(a.get("evidence") or "").strip()
+            # `Weak` mà bỏ trống evidence thì HR không phân biệt được "đã tìm và không thấy" với
+            # "model quên đánh giá" — điền đúng hằng số để bảng luôn đọc được.
+            if not evidence:
+                evidence = NO_EVIDENCE if level == "Weak" else ""
+            if level != "Weak" and not evidence:
+                # Strong/Partial mà không trích được gì trong CV thì chính là "không thấy bằng
+                # chứng" — hạ về Weak thay vì để một mức cao không ai kiểm chứng được.
+                level, evidence = "Weak", NO_EVIDENCE
+
+            assessments.append({
+                "needId": need_id,
+                "area": str(a.get("area") or "").strip() or allowed[need_id].get("text") or "",
+                "level": level,
+                "evidence": evidence,
+            })
+
+        if len(assessments) < len(allowed):
+            # Thiếu nhu cầu ⇒ ứng viên bị đo trên tập hẹp hơn người khác rồi xếp chung một bảng.
+            # Ném để worker retry (`score_max_attempts`), hết retry thì `cv-failed` — HR thấy và
+            # bấm rescreen (BK30). Thà lỗi thấy được còn hơn một bảng xếp hạng lệch âm thầm.
+            raise ValueError(
+                f"LLM chỉ đánh giá {len(assessments)}/{len(allowed)} nhu cầu công việc.")
+
+        risk = str(data.get("verificationRisk") or "").strip().capitalize()
+        if risk not in VERIFICATION_RISKS:
+            risk = "Medium"   # không đọc được ⇒ "chưa rõ", không phải "yên tâm"
+
+        years = data.get("yearsExperience")
+        try:
+            years = float(years) if years is not None else None
+        except (TypeError, ValueError):
+            years = None
+
+        full_name = str(data.get("fullName") or "").strip()
+        return {
+            "fitSummary": str(data.get("fitSummary") or "").strip(),
+            "assessments": assessments,
+            "bonusSignals": _clean_list(data.get("bonusSignals")),
+            "verificationRisk": risk,
+            # Spec: TỐI ĐA 3. Cắt ở đây chứ không chỉ dặn trong prompt — mọi thứ chỉ dặn bằng
+            # lời đều là thứ model được phép bỏ qua.
+            "verifyQuestions": _clean_list(data.get("verifyQuestions"))[:3],
+            # BK28 — cắt 255 = đúng `varchar(255)` của `cv_submission.full_name`; tràn thì
+            # Postgres ném lúc SaveChanges ⇒ callback 500 ⇒ worker nack ⇒ vòng republish.
+            "fullName": full_name[:255] or None,
+            "skills": _clean_list(data.get("skills")),
+            "yearsExperience": max(0.0, years) if years is not None else None,
+            "education": _clean_list(data.get("education")),
+        }
 
     async def analyze_repo(self, repo_digest: str, jd_text: str | None,
                            job_category: str | None, language: str = "vi") -> dict:

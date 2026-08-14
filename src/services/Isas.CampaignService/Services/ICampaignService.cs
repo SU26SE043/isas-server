@@ -31,6 +31,8 @@ namespace Isas.CampaignService.Services
         Task<CampaignResponse> GenerateCampaignQuestionsAsync(Guid orgId, Guid actorUserId, Guid id, int? count, CancellationToken ct);
         Task<Stream> DownloadCampaignFilesAsync(Guid orgId, Guid id, string fileType, CancellationToken ct);
         Task<CampaignResponse> PublishCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
+        /// <summary>HR sửa bộ nhu cầu công việc dùng để sàng CV (replace-all, chỉ khi Draft — CAMP-2).</summary>
+        Task<CampaignResponse> ReplaceJobNeedsAsync(Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct);
         Task<CampaignResponse> TransitionStatusAsync(Guid orgId, Guid actorUserId, Guid id, CampaignStatus target, CancellationToken ct);
         Task<IReadOnlyList<CampaignSlotResponse>> GetSlotsAsync(Guid orgId, Guid campaignId, CancellationToken ct);
         Task<CampaignSlotResponse> CreateSlotAsync(Guid orgId, Guid campaignId, CreateCampaignSlotRequest request, CancellationToken ct);

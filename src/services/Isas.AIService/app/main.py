@@ -8,7 +8,7 @@ from app.schemas import (
     GenerateQuestionsRequest, GenerateQuestionsResponse, QuestionCitation,
     SuggestCriteriaRequest, SuggestCriteriaResponse, CriterionItem,
     AnalyzeCvRequest, AnalyzeCvResponse, AnalyzeRepoRequest, AnalyzeRepoResponse, JdMatch,
-    CriterionMatch,
+    JobNeed, SuggestJobNeedsRequest, SuggestJobNeedsResponse,
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
     GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
@@ -127,32 +127,45 @@ async def analyze_cv(req: AnalyzeCvRequest,
     if not req.cvText or not req.cvText.strip():
         raise HTTPException(status_code=400, detail="cvText không được rỗng")
     try:
-        # C14 — criteria vắng ⇒ None (KHÔNG phải []): provider rẽ nhánh theo truthiness, và
-        # response_model_exclude_none bỏ hẳn 5 field B2B ⇒ đường B2C giữ nguyên shape cũ.
-        criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
-        result = await _call_with_language(req.language, provider.analyze_cv, req.cvText, req.jdText, req.jobCategory, criteria)
+        result = await _call_with_language(req.language, provider.analyze_cv,
+                                           req.cvText, req.jdText, req.jobCategory)
         jd_match = JdMatch(**result["jdMatch"]) if result.get("jdMatch") else None
-        matches = ([CriterionMatch(**m) for m in result["criterionMatches"]]
-                   if result.get("criterionMatches") else None)
         return AnalyzeCvResponse(
             summary=result["summary"],
             strengths=result["strengths"],
             weaknesses=result["weaknesses"],
             suggestions=result["suggestions"],
             jdMatch=jd_match,
-            # BK28 — quên dòng này thì pydantic KHÔNG lỗi, field chỉ đơn giản không bao giờ ra wire
-            # (cùng lớp bug `metricsVersion` rụng ở `DeliveryMetrics` 2026-08-05).
-            fullName=result.get("fullName"),
-            skills=result.get("skills"),
-            yearsExperience=result.get("yearsExperience"),
-            education=result.get("education"),
-            criterionMatches=matches,
-            overallMatchScore=result.get("overallMatchScore"),
         )
     except HTTPException:
         raise
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi phân tích CV: {ex}")
+
+
+@router.post("/suggest-job-needs", response_model=SuggestJobNeedsResponse)
+async def suggest_job_needs(req: SuggestJobNeedsRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    """Bước 1 của HR technical screener — CampaignService gọi lúc publish campaign.
+
+    Chỉ đọc JD nên chạy MỘT LẦN cho cả campaign; mọi ứng viên sau đó được đối chiếu với đúng
+    bộ nhu cầu này (đường sàng từng CV không đi qua HTTP mà gọi thẳng provider trong worker).
+
+    ``needId`` không sinh ở đây — CampaignService cấp, vì nó mới là nơi lưu và nơi HR sửa.
+    """
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+    if not req.jdText or not req.jdText.strip():
+        raise HTTPException(status_code=400, detail="jdText không được rỗng")
+    try:
+        needs = await _call_with_language(req.language, provider.suggest_job_needs,
+                                          req.jdText, req.jobCategory)
+        return SuggestJobNeedsResponse(
+            needs=[JobNeed(needId="", category=n["category"], text=n["text"]) for n in needs])
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi đề xuất nhu cầu công việc: {ex}")
 
 
 @router.post("/analyze-repo", response_model=AnalyzeRepoResponse, response_model_exclude_none=True)

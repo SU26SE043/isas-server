@@ -8,10 +8,14 @@ using System.Globalization;
 namespace Isas.CampaignService.Services
 {
     /// <summary>
-    /// C14 — Sàng CV B2B async (D18/D19). Publish job AI chấm khớp cho ứng viên <c>Filtered</c>,
-    /// nhận callback ghi điểm/tiêu chí (idempotent, chống ảo giác), shortlist + PATCH email/fullName.
-    /// TÁI DÙNG <c>campaign_criteria</c> làm rubric; KHÔNG trừ credit (D19). Tách khỏi
-    /// <see cref="CampaignService"/> để giữ nguyên constructor service C13.
+    /// Sàng CV B2B async (D18/D19) — vai <b>HR technical screener</b>. Publish job cho ứng viên
+    /// <c>Filtered</c>, nhận callback ghi kết quả (idempotent, chống ảo giác), shortlist + PATCH
+    /// email/fullName. KHÔNG trừ credit (D19).
+    ///
+    /// Thước đo là <c>campaigns.job_needs</c> — nhu cầu công việc suy từ JD, chốt một lần cho cả
+    /// campaign. KHÔNG còn tái dùng <c>campaign_criteria</c>: đó là rubric chấm CÂU TRẢ LỜI NÓI của
+    /// buổi phỏng vấn ("Giao tiếp &amp; Tiếng Anh", mức neo "1-4 điểm (Kém)…"), CV là giấy nên model
+    /// chỉ có thể đoán — đo trên prod, hai ứng viên khác hẳn nhau đều nhận đúng 7/10 ở tiêu chí đó.
     /// </summary>
     public class CvScreeningService : ICvScreeningService
     {
@@ -32,13 +36,31 @@ namespace Isas.CampaignService.Services
             _logger = logger;
         }
 
+        /// <summary>
+        /// Bộ nhu cầu công việc gửi kèm job. Rỗng ⇒ ném: không có thước thì không đo được, và một
+        /// ứng viên "đã sàng" mà không đối chiếu với gì là kết quả sai nhìn như đúng.
+        /// </summary>
+        private static List<CvScreeningNeed> RequireJobNeeds(Campaign campaign)
+        {
+            var needs = (campaign.JobNeeds ?? new List<JobNeed>())
+                .Where(n => !string.IsNullOrWhiteSpace(n.Text))
+                .Select(n => new CvScreeningNeed(n.NeedId, n.Category, n.Text))
+                .ToList();
+
+            if (needs.Count == 0)
+                throw new InvalidOperationException(
+                    "Campaign chưa chốt nhu cầu công việc (job needs) — không sàng CV được. "
+                    + "Publish lại campaign hoặc khai nhu cầu trước.");
+
+            return needs;
+        }
+
         // ── Publish job sàng cho các ứng viên Filtered → Analyzing ──────────────────────────
         // Best-effort per-candidate: publish hụt → giữ Filtered (last_screening_published_at=null) →
-        // C15 StuckScreeningRepublisher đẩy lại. TÁI DÙNG campaign_criteria làm rubric gửi kèm job.
+        // C15 StuckScreeningRepublisher đẩy lại.
         public async Task<int> PublishScreeningJobsAsync(Guid orgId, Guid campaignId, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
-                .Include(c => c.Criteria)
                 .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
 
@@ -49,10 +71,7 @@ namespace Isas.CampaignService.Services
             if (candidates.Count == 0)
                 return 0;
 
-            var criteria = campaign.Criteria
-                .OrderBy(c => c.OrderNo)
-                .Select(c => new CvScreeningCriterion(c.Id, c.Name, c.Description, c.MaxScore))
-                .ToList();
+            var jobNeeds = RequireJobNeeds(campaign);
 
             // callbackBase đi kèm job vì worker mặc định trỏ Interview — B2B phải trỏ CampaignService (ai.md).
             var callbackBase = _config["Internal:CallbackBase"] ?? "http://localhost:8080";
@@ -67,8 +86,8 @@ namespace Isas.CampaignService.Services
                         cand.Id,
                         cand.CvParsedText ?? string.Empty,
                         campaign.Domain,
-                        campaign.JDText,
-                        criteria,
+                        jobNeeds,
+                        campaign.Language,
                         callbackBase), ct);
 
                     cand.Status = CvSubmissionStatus.Analyzing;
@@ -100,7 +119,6 @@ namespace Isas.CampaignService.Services
         public async Task RescreenCandidateAsync(Guid orgId, Guid campaignId, Guid candidateId, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
-                .Include(c => c.Criteria)
                 .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
 
@@ -123,11 +141,7 @@ namespace Isas.CampaignService.Services
             if (string.IsNullOrWhiteSpace(candidate.CvParsedText))
                 throw new InvalidOperationException("CV không có nội dung đọc được — upload lại thay vì đẩy lại.");
 
-            var criteria = campaign.Criteria
-                .OrderBy(c => c.OrderNo)
-                .Select(c => new CvScreeningCriterion(c.Id, c.Name, c.Description, c.MaxScore))
-                .ToList();
-
+            var jobNeeds = RequireJobNeeds(campaign);
             var callbackBase = _config["Internal:CallbackBase"] ?? "http://localhost:8080";
 
             // Publish TRƯỚC rồi mới đổi trạng thái: publish ném thì ứng viên giữ nguyên trạng thái cũ,
@@ -137,8 +151,8 @@ namespace Isas.CampaignService.Services
                 candidate.Id,
                 candidate.CvParsedText!,
                 campaign.Domain,
-                campaign.JDText,
-                criteria,
+                jobNeeds,
+                campaign.Language,
                 callbackBase), ct);
 
             var now = DateTime.UtcNow;
@@ -166,34 +180,73 @@ namespace Isas.CampaignService.Services
                 return CvResultOutcome.SkippedInvited;
             }
 
-            // Chống ảo giác: chỉ nhận criterion_id có THẬT trong campaign_criteria của campaign này.
-            var criteria = await _db.CampaignCriteria
-                .Where(c => c.CampaignId == candidate.CampaignId)
-                .ToDictionaryAsync(c => c.Id, ct);
+            // Chống ảo giác: chỉ nhận needId có THẬT trong bộ nhu cầu của campaign này.
+            var campaignNeeds = await _db.Campaigns
+                .Where(c => c.Id == candidate.CampaignId)
+                .Select(c => c.JobNeeds)
+                .FirstOrDefaultAsync(ct) ?? new List<JobNeed>();
+            var allowed = campaignNeeds
+                .Where(n => !string.IsNullOrWhiteSpace(n.NeedId))
+                .ToDictionary(n => n.NeedId, n => n);
 
-            // Idempotent: xoá điểm cũ rồi ghi lại → callback 2 lần KHÔNG nhân đôi (EF xếp DELETE trước
-            // INSERT trong 1 SaveChanges dù trùng UNIQUE(candidate_id, criterion_id) — như replace-all C12).
-            var existingScores = await _db.CandidateCriterionScores
-                .Where(s => s.CvSubmissionId == candidateId)
-                .ToListAsync(ct);
-            _db.CandidateCriterionScores.RemoveRange(existingScores);
-
-            var now = DateTime.UtcNow;
-            foreach (var m in req.CriterionMatches ?? new List<CriterionMatchItem>())
+            var assessments = new List<NeedAssessment>();
+            var seen = new HashSet<string>();
+            foreach (var a in req.Assessments ?? new List<NeedAssessmentItem>())
             {
-                if (!criteria.TryGetValue(m.CriterionId, out var crit))
-                    continue;   // bỏ criterion_id AI bịa (FK Restrict cũng chặn, lọc sớm cho sạch)
+                var needId = a.NeedId?.Trim();
+                if (string.IsNullOrEmpty(needId) || !allowed.TryGetValue(needId, out var need) || !seen.Add(needId))
+                    continue;   // id BỊA hoặc trùng → bỏ (AI-3)
 
-                _db.CandidateCriterionScores.Add(new CandidateCriterionScore
+                // Mức lạ ⇒ Weak, KHÔNG phải Partial: mặc định an toàn ở đây là "chưa chứng minh
+                // được", vì mọi hướng khác đều cho không ứng viên một phần điểm mà không ai đọc
+                // được bằng chứng nào. Hai lớp guard (Python + đây) là cố ý — callback là endpoint
+                // mở với X-Internal-Token, không phải chỉ worker của mình mới gọi được.
+                var level = NeedLevels.IsValid(a.Level) ? a.Level! : NeedLevels.Weak;
+                var evidence = a.Evidence?.Trim();
+                if (string.IsNullOrEmpty(evidence))
                 {
-                    Id = Guid.NewGuid(),
-                    CvSubmissionId = candidateId,
-                    CriterionId = m.CriterionId,
-                    MatchScore = Math.Clamp(m.MatchScore, 0m, crit.MaxScore),   // kẹp [0, max_score] (INT-9)
-                    Reasoning = m.Reasoning,
-                    CreatedAt = now
+                    // Không trích được gì trong CV chính là "không thấy bằng chứng" — hạ về Weak
+                    // thay vì để một mức cao không ai kiểm chứng được.
+                    level = NeedLevels.Weak;
+                    evidence = NeedEvidence.NotFound;
+                }
+
+                assessments.Add(new NeedAssessment
+                {
+                    NeedId = needId,
+                    Area = string.IsNullOrWhiteSpace(a.Area) ? need.Text : a.Area!.Trim(),
+                    Level = level,
+                    Evidence = evidence,
                 });
             }
+
+            var now = DateTime.UtcNow;
+
+            // ⚠ Điểm xếp hạng TÍNH TỪ BẰNG CHỨNG, KHÔNG nhận số nào của AI.
+            // Đo trên prod trước bản này: bốn CV có bằng chứng GIỐNG HỆT nhau nhận điểm tổng
+            // 70/70/55/55, và ứng viên yếu hơn xếp trên ứng viên mạnh hơn — số holistic do model
+            // phán mâu thuẫn với chính bằng chứng nó vừa liệt kê. Cùng bộ level ⇒ cùng điểm là
+            // tính chất bắt buộc, có test khoá.
+            // Trung bình ĐỀU giữa các nhu cầu (không đặt trọng số giữa 4 nhóm): không có dữ liệu
+            // nào nói technical đáng gấp mấy lần communication, mà bịa hằng số rồi trưng ra như
+            // chuẩn ngành đúng thứ F14 đã từ chối làm. HR đọc breakdown 4 nhóm để tự nặng nhẹ.
+            int? jobFitScore = assessments.Count == 0
+                ? null
+                : (int)Math.Round(
+                    100m * assessments.Sum(a => NeedLevels.Credit(a.Level)) / assessments.Count,
+                    MidpointRounding.AwayFromZero);
+
+            candidate.Strengths = assessments.Where(a => a.Level != NeedLevels.Weak).ToList();
+            candidate.Gaps = assessments.Where(a => a.Level == NeedLevels.Weak).ToList();
+            candidate.BonusSignals = req.BonusSignals;
+            candidate.VerifyQuestions = req.VerifyQuestions?.Take(3).ToList();
+            // Cờ cho HR, CỐ Ý không nhập vào điểm: gộp hai thứ khác bản chất vào một con số là lặp
+            // lại đúng sai lầm bản này đang sửa — sau đó không ai giải thích được con số nữa.
+            candidate.VerificationRisk = VerificationRisks.IsValid(req.VerificationRisk)
+                ? req.VerificationRisk
+                : VerificationRisks.Medium;   // không đọc được ⇒ "chưa rõ", không phải "yên tâm"
+            candidate.FitSummary = req.FitSummary;
+            candidate.ScreeningVersion = ScreeningVersions.JobFitFromEvidence;
 
             // BK28 — AI CHỈ ĐIỀN CHỖ TRỐNG, KHÔNG BAO GIỜ ghi đè người (`??=`, cùng ngữ nghĩa
             // ParticipationService.ApplyInvitationLink). `StuckScreeningRepublisher` đẩy lại job cho
@@ -201,7 +254,7 @@ namespace Isas.CampaignService.Services
             // tên HR vừa sửa tay qua PATCH ở lần callback kế tiếp.
             // Cắt 255 vì `cv_submission.full_name` là varchar(255): tràn → Postgres ném lúc
             // SaveChanges → callback 500 → worker nack → vòng republish. Không chỉ trông vào guard
-            // phía Python (mẫu 2 lớp của `Math.Clamp` bên trên) — callback là endpoint mở với
+            // phía Python (mẫu 2 lớp của mức/bằng chứng bên trên) — callback là endpoint mở với
             // X-Internal-Token, không phải chỉ worker của mình mới gọi được.
             var aiFullName = req.FullName?.Trim();
             if (!string.IsNullOrEmpty(aiFullName))
@@ -209,8 +262,8 @@ namespace Isas.CampaignService.Services
 
             candidate.Skills = req.Skills;
             candidate.YearsExperience = req.YearsExperience;
-            candidate.Summary = req.Summary;
-            candidate.OverallMatchScore = Math.Clamp(req.OverallMatchScore, 0, 100);
+            candidate.Summary = req.FitSummary;
+            candidate.OverallMatchScore = jobFitScore;
             candidate.RejectReason = null;   // xoá lý do AnalysisFailed cũ khi recover (retry thành công)
             candidate.Status = CvSubmissionStatus.Analyzed;   // recover cả từ Analyzing lẫn AnalysisFailed (doc)
             candidate.UpdatedAt = now;
@@ -388,18 +441,15 @@ namespace Isas.CampaignService.Services
                     c => c.Id == candidateId && c.CampaignId == campaignId && c.Campaign.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
 
-            var scores = await (from s in _db.CandidateCriterionScores
-                                join cr in _db.CampaignCriteria on s.CriterionId equals cr.Id
-                                where s.CvSubmissionId == candidateId
-                                orderby cr.OrderNo
-                                select new CriterionScoreItem
-                                {
-                                    CriterionId = s.CriterionId,
-                                    CriterionName = cr.Name,
-                                    MatchScore = s.MatchScore,
-                                    MaxScore = cr.MaxScore,
-                                    Reasoning = s.Reasoning
-                                }).ToListAsync(ct);
+            static List<NeedAssessmentItem> Map(List<NeedAssessment>? items) =>
+                (items ?? new List<NeedAssessment>())
+                    .Select(a => new NeedAssessmentItem
+                    {
+                        NeedId = a.NeedId,
+                        Area = a.Area,
+                        Level = a.Level,
+                        Evidence = a.Evidence,
+                    }).ToList();
 
             return new CandidateDetailResponse
             {
@@ -413,7 +463,16 @@ namespace Isas.CampaignService.Services
                 Summary = candidate.Summary,
                 RejectReason = candidate.RejectReason,
                 CvFileUrl = candidate.CvFileUrl,
-                CriterionScores = scores
+                ScreeningVersion = candidate.ScreeningVersion,
+                FitSummary = candidate.FitSummary,
+                // Strong trước Partial trong `strengths`: HR đọc từ trên xuống, thứ chắc chắn nhất
+                // phải nằm trên. `gaps` toàn Weak nên giữ nguyên thứ tự nhu cầu.
+                Strengths = Map(candidate.Strengths)
+                    .OrderBy(a => a.Level == NeedLevels.Strong ? 0 : 1).ToList(),
+                Gaps = Map(candidate.Gaps),
+                BonusSignals = candidate.BonusSignals ?? new List<string>(),
+                VerificationRisk = candidate.VerificationRisk,
+                VerifyQuestions = candidate.VerifyQuestions ?? new List<string>(),
             };
         }
 
