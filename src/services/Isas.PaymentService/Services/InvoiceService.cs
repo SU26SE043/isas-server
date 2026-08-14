@@ -46,6 +46,14 @@ namespace Isas.PaymentService.Services
             if (account.PaymentMode != PaymentMode.Postpaid)
                 return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.NotPostpaid, null);
 
+            // Kiểm tra xem kỳ này đã được chốt chưa
+            var alreadyClosed = await _db.Invoices.AsNoTracking().AnyAsync(i => i.OwnerType == OwnerType.Org && i.OwnerId == orgId && i.PeriodEnd == pEnd, ct);
+            if (alreadyClosed)
+                return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.AlreadyClosed, null);
+
+            // Nếu tổng số sử dụng trong kỳ bằng hoặc nhỏ hơn 0, không lập hóa đơn
+            if ((account.PeriodUsage ?? 0) <= 0)
+                return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.NothingToBill, null);
             // 1 transaction (payment.md §Postpaid): snapshot period_usage → tạo invoice → reset period_usage=0.
             // Fail giữa chừng → rollback cả 2 (không mất/nhân nợ).
             // DB25b — bọc IExecutionStrategy vì Npgsql bật EnableRetryOnFailure: chiến lược retry
@@ -93,6 +101,35 @@ namespace Isas.PaymentService.Services
 
                 return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.Closed, InvoiceResponse.ToResponse(invoice));
             });
+        }
+
+        /// <summary>
+        /// Chốt kỳ thanh toán đã đến hạn.
+        /// </summary>
+        /// <param name="asOfUtc">Thời điểm UTC để xác định kỳ cần chốt.</param>
+        /// <param name="ct">Token hủy bỏ.</param>
+        /// <returns>Số lượng kỳ đã chốt.</returns>
+        public async Task<int> CloseDuePeriodsAsync(DateTime asOfUtc, CancellationToken ct = default)
+        {
+            var currentMonthStart = new DateTime(asOfUtc.Year, asOfUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+            var previousMonthStart = currentMonthStart.AddMonths(-1);
+
+            var postpaidOrgIds = await _db.CreditAccounts.AsNoTracking()
+                .Where(a => a.OwnerType == OwnerType.Org && a.PaymentMode == PaymentMode.Postpaid)
+                .Select(a => a.OwnerId)
+                .ToListAsync(ct);
+
+            int closedCount = 0;
+            foreach (var orgId in postpaidOrgIds)
+            {
+                var result = await CloseBillingPeriodAsync(orgId, previousMonthStart, currentMonthStart, ct);
+                if (result.Outcome == CloseBillingPeriodOutcome.Closed)
+                {
+                    closedCount++;
+                }
+            }
+
+            return closedCount;
         }
 
         public async Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default)

@@ -21,7 +21,13 @@ namespace Isas.PaymentService.Services
             NotPostpaid,
 
             /// <summary>Billing:UnitPrice ≤ 0 (chưa cấu hình) — chặn lập hóa đơn 0đ (BK24 finding #4).</summary>
-            UnitPriceNotConfigured
+            UnitPriceNotConfigured,
+
+            /// <summary>Kỳ này period_usage = 0, KHÔNG lập hoá đơn 0 đồng.</summary>
+            NothingToBill,
+
+            /// <summary>Đã có hoá đơn cho đúng kỳ đó rồi (chốt kỳ phải idempotent).</summary>
+            AlreadyClosed
         }
 
         public sealed record CloseBillingPeriodResult(CloseBillingPeriodOutcome Outcome, InvoiceResponse? Invoice);
@@ -54,5 +60,8 @@ namespace Isas.PaymentService.Services
         /// nhìn thấy, không âm thầm bỏ qua mãi mãi). Trả số hóa đơn vừa đóng dấu.
         /// </summary>
         Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default);
+
+        /// <summary>Chốt tự động THÁNG DƯƠNG LỊCH UTC vừa kết thúc cho MỌI ví Org đang Postpaid; trả về số hoá đơn THỰC SỰ lập được (NothingToBill/AlreadyClosed không tính).</summary>
+        Task<int> CloseDuePeriodsAsync(DateTime asOfUtc, CancellationToken ct = default);
     }
 }
