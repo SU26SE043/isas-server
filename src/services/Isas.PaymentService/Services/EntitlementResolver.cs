@@ -11,6 +11,26 @@ public sealed class EntitlementResolver
 
     public async Task<EntitlementSet> ResolveAsync(OwnerType ownerType, Guid ownerId, CancellationToken ct = default)
     {
+        var postpaidAccount = await _db.CreditAccounts.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.OwnerType == ownerType && a.OwnerId == ownerId, ct);
+        if (postpaidAccount is not null && postpaidAccount.PaymentMode == PaymentMode.Postpaid)
+        {
+            var postpaidPlan = await _db.Plans.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Audience == PlanAudience.B2B && p.Code == "enterprise", ct)
+                ?? PlanSeed.All.Single(p => p.Audience == PlanAudience.B2B && p.Code == "enterprise");
+            var postpaidSnapshot = EntitlementSnapshot.Create(postpaidPlan);
+            return new EntitlementSet
+            {
+                Source = "postpaid",
+                Audience = PlanAudience.B2B,
+                TierCode = postpaidPlan.Code,
+                TierRank = postpaidPlan.Rank,
+                InterviewFunding = InterviewFunding.Credit,
+                MonthlyQuota = null,
+                EntitlementSnapshot = postpaidSnapshot.Json
+            };
+        }
+
         var now = DateTime.UtcNow;
         var sub = await _db.Subscriptions.AsNoTracking()
             .Where(s => s.OwnerType == ownerType && s.OwnerId == ownerId)
