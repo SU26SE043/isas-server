@@ -36,5 +36,13 @@ namespace Isas.PaymentService.Models
         /// <summary>F23/BK24 — số ngày từ periodEnd tới hạn tất toán hóa đơn postpaid. Snapshot vào
         /// `Invoice.DueAt` lúc lập; đổi giá trị này KHÔNG hồi tố hóa đơn đã có DueAt.</summary>
         public int InvoiceDueDays { get; set; } = 15;
+
+        /// <summary>Cảnh báo postpaid — số ngày trước <c>DueAt</c> được coi là "sắp tới hạn" (bậc DueSoon
+        /// trong <see cref="Isas.PaymentService.DTOs.PostpaidAlertLevel"/>). Mặc định 3.</summary>
+        public int DueSoonDays { get; set; } = 3;
+
+        /// <summary>Cảnh báo postpaid — tỉ lệ đã dùng trên hạn mức (usage + reserved) / creditLimit từ đó
+        /// coi là "sắp chạm hạn mức" (bậc ApproachingLimit). Mặc định 0.8 (80%).</summary>
+        public decimal ApproachingLimitRatio { get; set; } = 0.8m;
     }
 }

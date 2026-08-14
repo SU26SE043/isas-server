@@ -165,6 +165,10 @@ namespace Isas.PaymentService.Services
         public async Task<List<PostpaidOverviewRow>> GetPostpaidOverviewAsync(CancellationToken ct = default)
         {
             var unitPrice = _billing.Value.UnitPrice;
+            var dueSoonDays = _billing.Value.DueSoonDays;
+            var approachingRatio = _billing.Value.ApproachingLimitRatio;
+            var now = DateTime.UtcNow;
+
             var postpaidAccounts = await _db.CreditAccounts.AsNoTracking()
                 .Where(a => a.OwnerType == OwnerType.Org && a.PaymentMode == PaymentMode.Postpaid)
                 .Select(a => new { a.OwnerId, a.CreditLimit, a.PeriodUsage, a.ReservedCredits })
@@ -187,11 +191,36 @@ namespace Isas.PaymentService.Services
                     .FirstOrDefaultAsync(ct);
                 var headroom = acc.CreditLimit is null ? (int?)null : acc.CreditLimit - usage - acc.ReservedCredits;
 
+                // Thang cảnh báo (bậc khẩn nhất thắng, Overdue TRƯỚC TIÊN): trước vòng này admin không có
+                // đường nào biết org sắp gặp vấn đề TRƯỚC KHI một buổi phỏng vấn thật bị 402 giữa chừng —
+                // worklist chỉ có Headroom/HasOverdue rời rạc, không phải một thang leo dần theo mức khẩn.
+                var nearestIssuedDueAt = await _db.Invoices.AsNoTracking()
+                    .Where(i => i.OwnerType == OwnerType.Org && i.OwnerId == acc.OwnerId && i.Status == InvoiceStatus.Issued)
+                    .OrderBy(i => i.DueAt ?? DateTime.MaxValue)
+                    .Select(i => (DateTime?)i.DueAt)
+                    .FirstOrDefaultAsync(ct);
+                var hasIssued = await _db.Invoices.AsNoTracking()
+                    .AnyAsync(i => i.OwnerType == OwnerType.Org && i.OwnerId == acc.OwnerId && i.Status == InvoiceStatus.Issued, ct);
+
+                var alertLevel = PostpaidAlertLevel.None;
+                if (hasOverdue)
+                    alertLevel = PostpaidAlertLevel.Overdue;
+                else if (hasIssued && nearestIssuedDueAt is DateTime due && due <= now.AddDays(dueSoonDays))
+                    alertLevel = PostpaidAlertLevel.DueSoon;
+                else if (hasIssued)
+                    // Đã lập hoá đơn (kỳ vừa chốt) nhưng DueAt còn xa, hoặc DueAt vắng (hóa đơn cũ trước
+                    // migration/F23) — vẫn cần admin biết có tiền đang chờ trả, chỉ chưa gấp bằng DueSoon.
+                    alertLevel = PostpaidAlertLevel.InvoiceIssued;
+                else if (acc.CreditLimit is int limit && limit > 0 && usage + acc.ReservedCredits >= limit * approachingRatio)
+                    alertLevel = PostpaidAlertLevel.ApproachingLimit;
+
                 overviewRows.Add(new PostpaidOverviewRow(acc.OwnerId, acc.CreditLimit, usage, acc.ReservedCredits,
-                    headroom, usage * unitPrice, unpaidCount, hasOverdue, lastPeriodEnd));
+                    headroom, usage * unitPrice, unpaidCount, hasOverdue, lastPeriodEnd, alertLevel));
             }
 
-            return overviewRows.OrderByDescending(r => r.HasOverdue).ThenByDescending(r => r.PendingAmountVnd).ToList();
+            // AlertLevel là giá trị SỐ tăng dần theo mức khẩn (Overdue=4 cao nhất) — sắp desc lên đúng org
+            // cần chú ý nhất; PendingAmountVnd chỉ tie-break giữa các org CÙNG bậc.
+            return overviewRows.OrderByDescending(r => r.AlertLevel).ThenByDescending(r => r.PendingAmountVnd).ToList();
         }
 
         public async Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default)
