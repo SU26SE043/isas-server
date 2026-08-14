@@ -261,7 +261,7 @@ namespace Isas.PaymentService.Services
                 if (acc is null)
                 {
                     await tx.RollbackAsync(ct);
-                    return ReserveResult.Insufficient();
+                    return ReserveResult.NoWallet();
                 }
 
                 // Chèn reservation TRƯỚC khi trừ số dư: UNIQUE(session_id) chặn 2 request cùng session
@@ -370,7 +370,7 @@ namespace Isas.PaymentService.Services
                     if (hasOverdue)
                     {
                         await tx.RollbackAsync(ct);
-                        return ReserveResult.Insufficient();
+                        return ReserveResult.InvoiceOverdue();
                     }
 
                     // POSTPAID (payment.md §Kế toán): KHÔNG trừ remaining (postpaid remaining=0), chỉ reserved+1;
@@ -408,7 +408,29 @@ namespace Isas.PaymentService.Services
                 if (rows == 0)
                 {
                     await tx.RollbackAsync(ct); // gỡ luôn reservation vừa chèn → KHÔNG để lại reservation dư
-                    return ReserveResult.Insufficient();
+
+                    var walletState = await _db.CreditAccounts
+                        .AsNoTracking()
+                        .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
+                        .Select(a => new { a.Status, a.PaymentMode })
+                        .FirstOrDefaultAsync(ct);
+
+                    if (walletState is null)
+                    {
+                        return ReserveResult.NoWallet();
+                    }
+                    else if (walletState.Status != CreditAccountStatus.Active)
+                    {
+                        return ReserveResult.Suspended();
+                    }
+                    else if (walletState.PaymentMode == PaymentMode.Postpaid)
+                    {
+                        return ReserveResult.LimitReached();
+                    }
+                    else
+                    {
+                        return ReserveResult.OutOfCredit();
+                    }
                 }
 
                 await tx.CommitAsync(ct);

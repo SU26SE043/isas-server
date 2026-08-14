@@ -127,7 +127,7 @@ public class MeteredCreditServiceTests
 
         var result = await Service(t.NewContext()).ReserveAsync(OwnerType.User, owner, Guid.NewGuid());
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.Suspended, result.Outcome);
         using var read = t.NewContext();
         Assert.Empty(await read.CreditReservations.ToListAsync());
         Assert.Empty(await read.SubscriptionMeters.ToListAsync());

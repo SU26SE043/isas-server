@@ -89,7 +89,7 @@ public class CreditReserveServiceTests
         var result = await new CreditAccountService(tdb.NewContext())
             .ReserveAsync(OwnerType.Org, orgId, sessionId);
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.OutOfCredit, result.Outcome);
         Assert.Null(result.ReservationId);
 
         using var read = tdb.NewContext();
@@ -112,7 +112,7 @@ public class CreditReserveServiceTests
         var result = await new CreditAccountService(tdb.NewContext())
             .ReserveAsync(OwnerType.Org, orgId, sessionId);
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.NoWallet, result.Outcome);
         using var read = tdb.NewContext();
         Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
         Assert.Equal(0, await read.CreditAccounts.CountAsync(a => a.OwnerId == orgId));
@@ -190,7 +190,7 @@ public class CreditReserveServiceTests
         var result = await new CreditAccountService(tdb.NewContext())
             .ReserveAsync(OwnerType.Org, orgId, sessionId);
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.Suspended, result.Outcome);
         using var read = tdb.NewContext();
         Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
@@ -263,7 +263,7 @@ public class CreditReserveServiceTests
         var overSession = Guid.NewGuid();
         var over = await svc.ReserveAsync(OwnerType.Org, orgId, overSession); // 0+2+1=3 > 2 → 402
 
-        Assert.Equal(ReserveOutcome.Insufficient, over.Outcome);
+        Assert.Equal(ReserveOutcome.LimitReached, over.Outcome);
         Assert.Null(over.ReservationId);
 
         using var read = tdb.NewContext();
@@ -287,7 +287,7 @@ public class CreditReserveServiceTests
         var over = await svc.ReserveAsync(OwnerType.Org, orgId, Guid.NewGuid()); // 2+1+1=4 > 3 → 402
 
         Assert.Equal(ReserveOutcome.Reserved, ok.Outcome);
-        Assert.Equal(ReserveOutcome.Insufficient, over.Outcome);
+        Assert.Equal(ReserveOutcome.LimitReached, over.Outcome);
 
         using var read = tdb.NewContext();
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
@@ -307,7 +307,7 @@ public class CreditReserveServiceTests
         var result = await new CreditAccountService(tdb.NewContext())
             .ReserveAsync(OwnerType.Org, orgId, sessionId);
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.LimitReached, result.Outcome);
         using var read = tdb.NewContext();
         Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
@@ -326,7 +326,7 @@ public class CreditReserveServiceTests
         var result = await new CreditAccountService(tdb.NewContext())
             .ReserveAsync(OwnerType.Org, orgId, sessionId);
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.Suspended, result.Outcome);
         using var read = tdb.NewContext();
         Assert.Equal(0, await read.CreditReservations.CountAsync(r => r.SessionId == sessionId));
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
@@ -391,7 +391,7 @@ public class CreditReserveServiceTests
         var result = await new CreditAccountService(tdb.NewContext())
             .ReserveAsync(OwnerType.Org, orgId, sessionId);
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.InvoiceOverdue, result.Outcome);
         Assert.Null(result.ReservationId);
 
         using var read = tdb.NewContext();
