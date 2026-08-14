@@ -97,8 +97,31 @@ namespace Isas.PaymentService.Services
                         .SetProperty(a => a.PeriodUsage, a => (int?)((a.PeriodUsage ?? 0) - count))
                         .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
 
-                await _db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
+                try
+                {
+                    await _db.SaveChangesAsync(ct);
+                    await tx.CommitAsync(ct);
+                }
+                // PP3 — hậu kiểm provider-agnostic (mẫu AdminCreditService.GrantAsync/WebhookService).
+                // Guard `alreadyClosed` phía trên đọc-rồi-ghi, KHÔNG cùng transaction với INSERT bên dưới
+                // ⇒ 2 lượt chốt kỳ đồng thời cho CÙNG (org, periodEnd) đều qua được guard rồi cùng insert;
+                // UNIQUE ux_invoices_owner_period_end mới là hàng rào THẬT — lượt THUA ném DbUpdateException
+                // ở đây. Không lọc theo SqlState (PostgresException-only sẽ luôn false trên SQLite, y hệt
+                // lỗ đã sửa ở AdminCreditService): tra lại xem hoá đơn ĐÃ THẬT SỰ tồn tại chưa — có ⇒ đúng
+                // là đụng độ, trả AlreadyClosed (bên thắng đã lập hoá đơn, không mất/nhân đôi); không có ⇒
+                // lỗi khác, `throw;` như cũ.
+                catch (DbUpdateException)
+                {
+                    await tx.RollbackAsync(ct);
+                    _db.ChangeTracker.Clear();
+
+                    var stillThere = await _db.Invoices.AsNoTracking().AnyAsync(
+                        i => i.OwnerType == OwnerType.Org && i.OwnerId == orgId && i.PeriodEnd == pEnd, ct);
+                    if (stillThere)
+                        return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.AlreadyClosed, null);
+
+                    throw;
+                }
 
                 return new CloseBillingPeriodResult(CloseBillingPeriodOutcome.Closed, InvoiceResponse.ToResponse(invoice));
             });

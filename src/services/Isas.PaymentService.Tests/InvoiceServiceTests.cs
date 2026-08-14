@@ -390,6 +390,66 @@ public class InvoiceServiceTests
         Assert.Equal(1, acc.PeriodUsage);         // (5+1) − 5 = 1 (không phải 0)
     }
 
+    // ── PP3 — UNIQUE (owner_type, owner_id, period_end) ─────────────────────────────────────────────
+    // Guard `alreadyClosed` (CloseBillingPeriodAsync) là đọc-rồi-ghi, KHÔNG cùng transaction với câu
+    // INSERT phía sau — hai lượt chốt kỳ ĐỒNG THỜI cho ĐÚNG (org, periodEnd) đều qua được guard rồi cùng
+    // insert. UNIQUE ux_invoices_owner_period_end là hàng rào THẬT: bên thua nhận DbUpdateException thay
+    // vì một hóa đơn đôi âm thầm. Test dưới xác nhận CHÍNH ràng buộc DB (không qua service): 2 hóa đơn
+    // cùng (owner_type, owner_id, period_end) → SaveChanges thứ hai PHẢI ném DbUpdateException.
+    //
+    // ⚠ Nhánh hậu kiểm trong CloseBillingPeriodAsync (catch DbUpdateException → tra lại → AlreadyClosed,
+    // xem InvoiceService.cs) KHÔNG có test riêng mô phỏng đúng race qua service: PaymentTestDb dùng MỘT
+    // connection SQLite in-memory dùng chung cho mọi DbContext trong test, nên "hóa đơn của lượt thắng"
+    // và "INSERT thất bại của lượt thua" buộc phải nằm CHUNG một transaction vật lý — rollback của lượt
+    // thua xoá luôn cả hóa đơn của lượt thắng, làm mất đúng cái cần mô phỏng (hai transaction ĐỘC LẬP,
+    // một cái đã commit). Cần connection thứ hai qua shared-cache SQLite để mô phỏng đúng, ngoài phạm vi
+    // sửa hạ tầng test dùng chung của vòng này. Nhánh hậu kiểm dùng ĐÚNG mẫu đã có test
+    // (`AdminCreditService.GrantAsync` — bắt DbUpdateException rộng, tra lại bằng chính vị ngữ nghiệp vụ
+    // thay vì lọc theo SqlState, KHÔNG dùng lại được vì SQLite luôn không phải PostgresException).
+    [Fact]
+    public async Task Invoices_TrungOwnerVaPeriodEnd_NemDbUpdateException()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        await EnsureOrgAccountAsync(tdb, orgId);
+        var periodEnd = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        using (var first = tdb.NewContext())
+        {
+            first.Invoices.Add(new Invoice
+            {
+                Id = Guid.NewGuid(),
+                OwnerType = OwnerType.Org,
+                OwnerId = orgId,
+                PeriodStart = periodEnd.AddMonths(-1),
+                PeriodEnd = periodEnd,
+                InterviewCount = 1,
+                UnitPrice = 1000m,
+                Amount = 1000m,
+                Status = InvoiceStatus.Issued,
+                CreatedAt = DateTime.UtcNow,
+            });
+            await first.SaveChangesAsync();
+        }
+
+        using var second = tdb.NewContext();
+        second.Invoices.Add(new Invoice
+        {
+            Id = Guid.NewGuid(),
+            OwnerType = OwnerType.Org,
+            OwnerId = orgId,
+            PeriodStart = periodEnd.AddMonths(-1),
+            PeriodEnd = periodEnd,   // ĐÚNG kỳ đã có hóa đơn ở trên
+            InterviewCount = 2,
+            UnitPrice = 1000m,
+            Amount = 2000m,
+            Status = InvoiceStatus.Issued,
+            CreatedAt = DateTime.UtcNow,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => second.SaveChangesAsync());
+    }
+
     // (10) Chốt kỳ → phát sinh usage kỳ mới → chốt kỳ 2: hóa đơn 2 tính ĐÚNG usage kỳ mới (không cộng dồn cũ).
     [Fact]
     public async Task Close_PhatSinhUsageKyMoi_ChotKy2Dung()
