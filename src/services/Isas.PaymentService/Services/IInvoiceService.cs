@@ -1,3 +1,4 @@
+using Isas.PaymentService.DTOs;
 using static Isas.PaymentService.DTOs.InvoiceRequest;
 using PaymentService.Models;
 
@@ -59,6 +60,9 @@ namespace Isas.PaymentService.Services
         /// LOG riêng cho Issued mà DueAt=NULL (hóa đơn không bao giờ bị quét được — "phanh hỏng câm" phải
         /// nhìn thấy, không âm thầm bỏ qua mãi mãi). Trả số hóa đơn vừa đóng dấu.
         /// </summary>
+        /// danh sách việc cho admin — mọi org trả sau kèm hạn mức còn lại, tiền kỳ hiện tại, số hoá đơn chưa trả, có đang bị chặn đặt chỗ không, và lần chốt kỳ gần nhất. Sắp theo mức khẩn.
+        Task<List<PostpaidOverviewRow>> GetPostpaidOverviewAsync(CancellationToken ct = default);
+
         Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default);
 
         /// <summary>Chốt tự động THÁNG DƯƠNG LỊCH UTC vừa kết thúc cho MỌI ví Org đang Postpaid; trả về số hoá đơn THỰC SỰ lập được (NothingToBill/AlreadyClosed không tính).</summary>

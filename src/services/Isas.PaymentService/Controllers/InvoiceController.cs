@@ -1,3 +1,4 @@
+using Isas.PaymentService.DTOs;
 using Isas.PaymentService.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -95,6 +96,17 @@ namespace Isas.PaymentService.Controllers
 
         // Chốt kỳ 1 org — admin-only (payment.md §Admin). Role string "Admin" (AUTH-3 = PlatformAdmin).
         // A4 guard HrMember giữ lại (defense-in-depth; Admin role vốn không có org_role=HrMember).
+        [HttpGet("admin/invoices/postpaid-overview")]
+        [Authorize(Roles = "Admin")]
+        public async Task<ActionResult<List<PostpaidOverviewRow>>> GetPostpaidOverviewAsync(CancellationToken ct = default)
+        {
+            // A4 (AUTH-6) — HrMember không có quyền billing → 403 (defense-in-depth, giống endpoint chốt kỳ).
+            if (User.IsHrMember())
+                return Forbid();
+
+            return Ok(await _invoices.GetPostpaidOverviewAsync(ct));
+        }
+
         [HttpPost("admin/invoices/close")]
         [Authorize(Roles = "Admin")]
         public async Task<ActionResult<InvoiceResponse>> CloseBillingPeriodAsync(

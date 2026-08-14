@@ -1,4 +1,5 @@
 using Isas.PaymentService.Models;
+using Isas.PaymentService.DTOs;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using PaymentService.Models;
@@ -130,6 +131,38 @@ namespace Isas.PaymentService.Services
             }
 
             return closedCount;
+        }
+
+        public async Task<List<PostpaidOverviewRow>> GetPostpaidOverviewAsync(CancellationToken ct = default)
+        {
+            var unitPrice = _billing.Value.UnitPrice;
+            var postpaidAccounts = await _db.CreditAccounts.AsNoTracking()
+                .Where(a => a.OwnerType == OwnerType.Org && a.PaymentMode == PaymentMode.Postpaid)
+                .Select(a => new { a.OwnerId, a.CreditLimit, a.PeriodUsage, a.ReservedCredits })
+                .ToListAsync(ct);
+
+            var overviewRows = new List<PostpaidOverviewRow>();
+
+            foreach (var acc in postpaidAccounts)
+            {
+                var usage = acc.PeriodUsage ?? 0;
+                var unpaidCount = await _db.Invoices.AsNoTracking()
+                    .Where(i => i.OwnerType == OwnerType.Org && i.OwnerId == acc.OwnerId && (i.Status == InvoiceStatus.Issued || i.Status == InvoiceStatus.Overdue))
+                    .CountAsync(ct);
+                var hasOverdue = await _db.Invoices.AsNoTracking()
+                    .AnyAsync(i => i.OwnerType == OwnerType.Org && i.OwnerId == acc.OwnerId && i.Status == InvoiceStatus.Overdue, ct);
+                var lastPeriodEnd = await _db.Invoices.AsNoTracking()
+                    .Where(i => i.OwnerType == OwnerType.Org && i.OwnerId == acc.OwnerId)
+                    .OrderByDescending(i => i.PeriodEnd)
+                    .Select(i => (DateTime?)i.PeriodEnd)
+                    .FirstOrDefaultAsync(ct);
+                var headroom = acc.CreditLimit is null ? (int?)null : acc.CreditLimit - usage - acc.ReservedCredits;
+
+                overviewRows.Add(new PostpaidOverviewRow(acc.OwnerId, acc.CreditLimit, usage, acc.ReservedCredits,
+                    headroom, usage * unitPrice, unpaidCount, hasOverdue, lastPeriodEnd));
+            }
+
+            return overviewRows.OrderByDescending(r => r.HasOverdue).ThenByDescending(r => r.PendingAmountVnd).ToList();
         }
 
         public async Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default)
