@@ -35,6 +35,12 @@ public class CvRescreenBk30Tests
         var camp = CampaignTestDb.NewCampaign(owner, CampaignStatus.Active);
         camp.Domain = "BE";
         camp.JDText = "JD: cần Backend .NET";
+        // Thước đo sàng CV: bộ nhu cầu công việc chốt 1 lần cho cả campaign (chứ không phải
+        // campaign_criteria — đó là rubric buổi phỏng vấn).
+        camp.JobNeeds = new List<JobNeed>
+        {
+            new() { NeedId = "need-1", Category = JobNeedCategories.Technical, Text = "Thạo .NET" },
+        };
         tdb.Db.Campaigns.Add(camp);
         tdb.Db.SaveChanges();
         return camp;
@@ -110,7 +116,7 @@ public class CvRescreenBk30Tests
         var job = Assert.Single(published);
         Assert.Equal(cand.Id, job.CandidateId);
         Assert.Equal("CV text a@x.com", job.CvText);
-        Assert.Equal(crit.Id, Assert.Single(job.Criteria).CriterionId);
+        Assert.Equal("need-1", Assert.Single(job.JobNeeds).NeedId);
         Assert.Equal("http://campaign:8080", job.CallbackBase);
 
         using var check = tdb.NewContext();

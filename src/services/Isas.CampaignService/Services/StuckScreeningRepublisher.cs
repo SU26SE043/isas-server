@@ -107,7 +107,8 @@ namespace Isas.CampaignService.Services
                     c.CvParsedText,
                     c.CreatedAt,
                     Domain = c.Campaign.Domain,
-                    JdText = c.Campaign.JDText
+                    Language = c.Campaign.Language,
+                    JobNeeds = c.Campaign.JobNeeds
                 })
                 .ToListAsync(ct);
 
@@ -116,7 +117,6 @@ namespace Isas.CampaignService.Services
             _logger.LogWarning("Phát hiện {Count} CV sàng kẹt, đang re-publish", stuck.Count);
 
             var callbackBase = _config["Internal:CallbackBase"] ?? "http://localhost:8080";
-            var criteriaCache = new Dictionary<Guid, List<CvScreeningCriterion>>();
 
             // Trần bỏ cuộc: 0 hoặc âm = TẮT trần (giữ hành vi đẩy lại vô hạn — chỉ dùng khi cố ý).
             var giveUpAfter = int.TryParse(_config["Screening:GiveUpAfterHours"], out var h)
@@ -145,21 +145,17 @@ namespace Isas.CampaignService.Services
                     continue;
                 }
 
-                // TÁI DÙNG campaign_criteria làm rubric gửi kèm job (cache theo campaign — N nhỏ do max_candidates).
-                if (!criteriaCache.TryGetValue(c.CampaignId, out var criteria))
-                {
-                    criteria = await db.CampaignCriteria
-                        .Where(cr => cr.CampaignId == c.CampaignId)
-                        .OrderBy(cr => cr.OrderNo)
-                        .Select(cr => new CvScreeningCriterion(cr.Id, cr.Name, cr.Description, cr.MaxScore))
-                        .ToListAsync(ct);
-                    criteriaCache[c.CampaignId] = criteria;
-                }
+                // Thước đo gửi kèm job = bộ nhu cầu công việc của campaign (đã nạp sẵn trong projection,
+                // không cần cache: một campaign chỉ đọc một lần cho cả batch).
+                var jobNeeds = (c.JobNeeds ?? new List<JobNeed>())
+                    .Where(n => !string.IsNullOrWhiteSpace(n.Text))
+                    .Select(n => new CvScreeningNeed(n.NeedId, n.Category, n.Text))
+                    .ToList();
 
-                if (criteria.Count == 0)
+                if (jobNeeds.Count == 0)
                 {
                     _logger.LogWarning(
-                        "Không có campaign_criteria (campaign={CampaignId}), bỏ qua candidate {CandidateId}",
+                        "Campaign {CampaignId} chưa chốt nhu cầu công việc (job_needs), bỏ qua candidate {CandidateId}",
                         c.CampaignId, c.Id);
                     continue;
                 }
@@ -170,8 +166,8 @@ namespace Isas.CampaignService.Services
                         c.Id,
                         c.CvParsedText ?? string.Empty,
                         c.Domain,
-                        c.JdText,
-                        criteria,
+                        jobNeeds,
+                        c.Language,
                         callbackBase), ct);
 
                     // Đẩy lại OK → Analyzing + dời mốc publish sang now, để vòng sau không nhặt lại

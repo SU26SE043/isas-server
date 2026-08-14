@@ -55,6 +55,32 @@
 - **CAMP-3** Chỉ thành viên org sở hữu được sửa/xóa/xem kết quả (sau khi publish thì soft delete). Campaign đã publish muốn huỷ → cập nhật trạng thái sang **Closed** và **gửi mail lại** cho ứng viên.
 - **CAMP-4** Mỗi campaign bắt buộc 1 position/vị trí.
 - **CAMP-5** **JD** nhập bằng **text trực tiếp** (`jdText`) **hoặc** PDF upload; gửi cả hai → **text ưu tiên, bỏ file** — C11 (commit `4425461`). AI đọc JD để sinh câu hỏi bất kể nguồn nào. *(Ratify 2026-07-18: câu cũ "JD nhập bằng PDF" lệch code từ C11 — FE B2B thực tế chỉ có textarea `jdText`, không có ô upload JD.)* **Tiêu chí** nhập **trực tiếp có cấu trúc** trong app (`criteria[]`: name/weight/maxScore/description, Σweight=1) — công ty/HR tự khai (`source=HrEdited`), **publish không cần AI** — C12. *(Không dùng template file / PDF cho tiêu chí.)* **Ngưỡng độ dài text nhập tay: `jdText`/`criteriaText` ≤ 20.000 ký tự** (đo SAU trim; vượt → **400** kèm giới hạn + độ dài đang gửi). Ngưỡng **CHUNG cho cả B2B và B2C** — hằng số dùng chung `Isas.Shared.Validation.TextInputLimits.JdTextMaxChars`, áp ở Campaign (`POST`/`PUT /campaign`) lẫn Interview (tạo session luyện · cv-analysis, guard **trước reserve credit** — PAY-5). *Vì sao 20.000:* JD thật khuyến nghị 300–700 từ (~2.000–5.000 ký tự), JD doanh nghiệp dài dòng hiếm khi quá 8.000–10.000 → ngưỡng rộng gấp ~2–4 lần, không chặn nhầm JD hợp lệ; cửa sổ ngữ cảnh **không** phải ràng buộc (gemini-2.5-flash ~1.048.576 token input, 20.000 ký tự tiếng Việt ≈ 7.000–10.000 token = dưới 1%) — ràng buộc thật là **chi phí token + bề mặt lạm dụng** vì text đi thẳng vào prompt Gemini. *(KHÔNG áp cho text trích từ PDF upload — luồng đó đã chặn bằng cỡ file ≤10MB.)*
+- **CAMP-14** ✅ **Sàng CV = HR technical screener, KHÔNG phải máy chấm điểm.** Thước đo là
+  `campaigns.job_needs` (nhu cầu công việc suy từ JD), **KHÔNG** phải `campaign_criteria` — đó là
+  rubric chấm *câu trả lời nói* của buổi phỏng vấn ("Giao tiếp & Tiếng Anh", mức neo "1-4 điểm
+  (Kém)…"), CV là giấy nên model chỉ đoán được (đo trên prod: hai ứng viên khác hẳn nhau đều nhận
+  đúng 7/10 ở tiêu chí đó).
+  - **Chốt MỘT LẦN cho cả campaign** (AI đề xuất lúc publish → HR sửa khi `Draft`, ngoài Draft → 409
+    theo CAMP-2). Bước suy nhu cầu chỉ đọc JD nên nó là thuộc tính của vị trí; suy lại theo từng CV
+    thì hai ứng viên cùng campaign bị đo bằng hai thước khác nhau rồi xếp chung bảng — đúng thứ bất
+    công **CAMP-10** chặn ở đường phỏng vấn. `source` do **server sở hữu** (F10).
+  - 🔴 **Điểm do CampaignService TÍNH, không nhận số nào của AI:**
+    `100 × Σ(Strong=1 · Partial=0.5 · Weak=0) / số nhu cầu`. Model chỉ gán **mức** + **TRÍCH bằng
+    chứng từ CV**. *Vì sao:* đo trên prod, bốn CV có bằng chứng **giống hệt nhau** nhận 70/70/55/55
+    và ứng viên yếu hơn xếp trên ứng viên mạnh hơn — số holistic mâu thuẫn với chính bằng chứng model
+    vừa liệt kê. Trung bình **đều** giữa 4 nhóm nhu cầu: không có dữ liệu nói technical đáng gấp mấy
+    lần communication, bịa hằng số rồi trưng ra như chuẩn ngành đúng thứ **F14** đã từ chối làm.
+  - **`verificationRisk`** (`Low·Medium·High`) là **cờ đứng cạnh điểm, KHÔNG nhập vào điểm** — gộp hai
+    thứ khác bản chất vào một con số là làm mất khả năng giải thích nó.
+  - **Không tìm thấy bằng chứng ⇒ ghi đúng câu `"Không thấy bằng chứng"`** (hằng số), không để trống:
+    phải phân biệt "đã tìm và không thấy" với "quên đánh giá". Nhóm `Weak` = **việc cần hỏi ở vòng
+    phỏng vấn**, không phải kết luận ứng viên không có.
+  - **`verifyQuestions` (≤3) chỉ hiển thị cho HR**, ⚠ KHÔNG ghi vào `campaign_questions`: bộ câu
+    campaign là bộ **CHUNG cho mọi ứng viên**, đó là nền tảng khiến xếp hạng **CAMP-10** so sánh được.
+  - **Con dấu `cv_submission.screening_version`**: `1`/null = điểm cũ do LLM phán trên rubric phỏng
+    vấn · `2` = tính từ bằng chứng. Hai thang **không so sánh được** — có dấu để không bị trộn im lặng
+    (tiền lệ `scoring_scope_version`/BK23). Chi tiết: [services/campaign.md](services/campaign.md) ·
+    [services/ai.md](services/ai.md) §Sàng CV B2B.
 - **CAMP-8** ✅ Distribution membership (D1–D4): invitation → join → my-campaigns → **Start** → create-or-get session (session tạo khi Start, không khi mở link); resume tới submit (D3); reissue token (D4). *(✅ **D5**: `InvitationEmailConsumer` đã build (branch `feat/b2b-email-anticheat`) tiêu thụ queue → SMTP gửi magic-link; cần SMTP creds thật để gửi live.)*
 - **CAMP-9** Tôn trọng `max_candidates`.
 - **CAMP-10** ✅ Ranking event-driven (E4): `SessionScored` → upsert `campaign_rankings` theo `session_id` (idempotent), đọc local.
