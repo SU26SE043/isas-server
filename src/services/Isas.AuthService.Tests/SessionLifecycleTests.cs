@@ -410,6 +410,7 @@ public class SessionLifecycleTests
             // Thêm khi gộp: luồng Google chuyển sang one-time code nên controller cần kho mã.
             // Test này không đụng đường Google → mock trống là đủ.
             Mock.Of<IGoogleAuthCodeStore>(),
+            Mock.Of<IGoogleIdTokenVerifier>(),
             Mock.Of<ILogger<AuthController>>())
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }

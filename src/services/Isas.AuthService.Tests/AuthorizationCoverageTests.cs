@@ -62,6 +62,7 @@ public class AuthorizationCoverageTests
     [InlineData(nameof(AuthController.Login))]
     [InlineData(nameof(AuthController.LoginWithGoogle))]
     [InlineData(nameof(AuthController.GoogleLoginCallback))]
+    [InlineData(nameof(AuthController.LoginWithGoogleIdToken))]
     [InlineData(nameof(AuthController.RefreshTokenAsync))]
     [InlineData(nameof(AuthController.ForgotPassword))]
     [InlineData(nameof(AuthController.VerifyOtp))]

@@ -191,6 +191,11 @@ services:
       - EmailSettings__From=${SMTP_FROM}
       - Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
       - Authentication__Google__ClientSecret=${GOOGLE_CLIENT_SECRET}
+      # Đăng nhập Google NATIVE cho app mobile (POST /auth/google/id-token) KHÔNG cần env riêng:
+      # allowlist `aud` để trống sẽ rơi về ClientId ngay trên — đúng vì app xin ID token với
+      # serverClientId = WEB client id nên `aud` chính là nó. Chỉ khai
+      # `Authentication__Google__IdTokenAudiences__0=…` khi app cố tình dùng audience khác.
+      # ⚠ Trống CẢ hai ⇒ endpoint trả 500 chứ KHÔNG bỏ qua kiểm tra `aud` (rỗng = nhận mọi Google ID token).
       # Đăng nhập Google: callback 302 về FE kèm MÃ DÙNG-MỘT-LẦN (?code=…), KHÔNG kèm token; FE đổi
       # mã lấy phiên qua POST /auth/google/exchange. Cả 2 URL lấy từ CONFIG SERVER (nhận đích từ
       # client = open-redirect làm rò phiên).
