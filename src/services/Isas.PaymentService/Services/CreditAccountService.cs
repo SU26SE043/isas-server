@@ -573,18 +573,24 @@ namespace Isas.PaymentService.Services
 
                 WarnIfNoAccountRow(accRows, reservation.OwnerType, reservation.OwnerId, "Consume");
 
-                // Bút toán Consume −1 (sổ cái append-only). session_id ref lỏng, order_id null (không gắn order).
-                _db.CreditTransactions.Add(new CreditTransaction
+                // Chỉ ví prepaid mới ghi sổ cái. Ví postpaid không có bút toán dương nào đối ứng — reserve không ghi,
+                // tất toán hoá đơn cũng không cộng credit — nên nếu consume vẫn ghi −1 thì bất biến remaining + reserved = tổng delta sẽ âm dần vĩnh viễn, phá đúng cơ chế dò lệch số dư của hệ thống.
+                // Nợ postpaid đã được ghi ở period_usage và invoices; dấu vết theo từng session vẫn nằm ở credit_reservations. Hai nhánh không-phải-credit khác (Subscription, InvoiceSettlement) cũng cố ý không ghi sổ cái vì cùng lý do.
+
+                if (!isPostpaid)
                 {
-                    Id = Guid.NewGuid(),
-                    OwnerType = reservation.OwnerType,
-                    OwnerId = reservation.OwnerId,
-                    OrderId = null,
-                    SessionId = sessionId,
-                    Delta = -1,
-                    Reason = CreditTransactionReason.Consume,
-                    CreatedAt = DateTime.UtcNow
-                });
+                    _db.CreditTransactions.Add(new CreditTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OwnerType = reservation.OwnerType,
+                        OwnerId = reservation.OwnerId,
+                        OrderId = null,
+                        SessionId = sessionId,
+                        Delta = -1,
+                        Reason = CreditTransactionReason.Consume,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
                 await _db.SaveChangesAsync(ct);
 
                 await tx.CommitAsync(ct);

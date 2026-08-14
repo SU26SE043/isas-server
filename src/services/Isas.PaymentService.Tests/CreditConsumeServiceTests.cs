@@ -172,10 +172,16 @@ public class CreditConsumeServiceTests
 
     // ── BK7 — Postpaid: consume dồn nợ kỳ (payment.md §Kế toán POSTPAID · period_usage += 1) ─────────
 
-    // (BK7-a) postpaid session Scored → consume: reserved−1, period_usage += 1 (dồn nợ kỳ), đúng 1
-    //         credit_transactions(Consume, −1); remaining vẫn 0 (postpaid không dùng remaining).
+    // (BK7-a) postpaid session Scored → consume: reserved−1, period_usage += 1 (dồn nợ kỳ);
+    //         remaining vẫn 0 (postpaid không dùng remaining).
+    //
+    // ⚠ PP1 — ĐỔI TIỀN ĐỀ CÓ CHỦ ĐÍCH: bản cũ khẳng định postpaid GHI đúng 1 dòng ledger(Consume,−1).
+    // Đó chính là defect: ví postpaid không bao giờ có bút toán DƯƠNG đối ứng (reserve không ghi, tất
+    // toán hoá đơn không cộng credit) nên `remaining + reserved = Σ delta` tụt về âm và âm dần vĩnh
+    // viễn — phá đúng máy dò lệch số dư duy nhất của hệ thống. Nay postpaid KHÔNG ghi sổ cái; nợ nằm ở
+    // period_usage + invoices, dấu vết theo session nằm ở credit_reservations.
     [Fact]
-    public async Task Consume_Postpaid_CongPeriodUsage_GhiLedger()
+    public async Task Consume_Postpaid_CongPeriodUsage_KhongGhiSoCai()
     {
         using var tdb = new PaymentTestDb();
         var orgId = Guid.NewGuid();
@@ -200,14 +206,17 @@ public class CreditConsumeServiceTests
         Assert.Equal(0, acc.ReservedCredits);    // reserved −1
         Assert.Equal(1, acc.PeriodUsage);        // nợ kỳ += 1 (nguồn interview_count)
 
-        var ledger = await read.CreditTransactions.Where(t => t.SessionId == sessionId).ToListAsync();
-        Assert.Single(ledger);
-        Assert.Equal(-1, ledger[0].Delta);
-        Assert.Equal(CreditTransactionReason.Consume, ledger[0].Reason);
-        Assert.Equal(orgId, ledger[0].OwnerId);
+        Assert.Empty(await read.CreditTransactions.Where(t => t.SessionId == sessionId).ToListAsync());
+
+        // Bất biến sổ cái phải ĐỨNG VỮNG với ví postpaid (trước PP1 nó là 0 == −1).
+        var delta = await read.CreditTransactions
+            .Where(t => t.OwnerType == OwnerType.Org && t.OwnerId == orgId)
+            .SumAsync(t => (int?)t.Delta) ?? 0;
+        Assert.Equal(delta, acc.RemainingCredits + acc.ReservedCredits);
     }
 
-    // (BK7-b) gọi 2 lần cùng session → period_usage chỉ +1 (idempotent/absorbing PAY-11), đúng 1 ledger.
+    // (BK7-b) gọi 2 lần cùng session → period_usage chỉ +1 (idempotent/absorbing PAY-11).
+    // ⚠ PP1: postpaid nay KHÔNG ghi sổ cái ⇒ số dòng ledger kỳ vọng là 0, không phải 1.
     [Fact]
     public async Task Consume_Postpaid_GoiLai2Lan_PeriodUsageChiCong1()
     {
@@ -225,7 +234,7 @@ public class CreditConsumeServiceTests
         Assert.Equal(ConsumeOutcome.AlreadyFinalized, second.Outcome);   // absorbing PAY-11
 
         using var read = tdb.NewContext();
-        Assert.Equal(1, await read.CreditTransactions.CountAsync(t => t.SessionId == sessionId)); // đúng 1
+        Assert.Equal(0, await read.CreditTransactions.CountAsync(t => t.SessionId == sessionId)); // PP1: postpaid không ghi sổ
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == orgId);
         Assert.Equal(4, acc.PeriodUsage);        // 3 (seed) + 1, KHÔNG cộng lần 2
         Assert.Equal(0, acc.ReservedCredits);    // giảm đúng 1 lần
