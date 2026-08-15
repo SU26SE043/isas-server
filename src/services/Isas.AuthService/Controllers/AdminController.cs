@@ -115,6 +115,43 @@ namespace Isas.AuthService.Controllers
             }
         }
 
+        // POST /auth/admin/users/{userId}/role — đổi platform-role (AUTH-3: Candidate/Employer/Admin).
+        // Tự đổi mình → 400; user lạ → 404; role ngoài danh sách → 400; hạ Admin hoạt động cuối cùng
+        // hoặc rời Employer khi còn thuộc org → 409.
+        //
+        // ⚠ Hiệu lực KHÔNG tức thì (GEN-3, y như ban): access token cũ mang role CŨ tới hết TTL 15'.
+        // Refresh token bị thu hồi ngay nên không gia hạn quyền cũ được. Xem AuthService.ChangePlatformRoleAsync.
+        [HttpPost("users/{userId:guid}/role")]
+        public async Task<ActionResult<AdminUserResponse>> ChangeUserRole(
+            Guid userId, ChangePlatformRoleRequest request, CancellationToken ct = default)
+        {
+            var actingAdminId = User.GetUserId();
+            if (actingAdminId is null)
+                return Forbid();
+
+            // Tự hạ cấp mình = tự khoá mình khỏi trang admin, gần như luôn là thao tác nhầm (mẫu
+            // "tự ban mình" ở trên, và "tự xoá mình" của A6b).
+            if (actingAdminId.Value == userId)
+                return BadRequest(new { error = "Cannot change your own role" });
+
+            try
+            {
+                return Ok(await _authService.ChangePlatformRoleAsync(userId, request.Role, ct));
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(new { error = ex.Message });
+            }
+            catch (AdminActionConflictException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
         // POST /auth/admin/users/{userId}/reset-password — đặt lại mật khẩu hộ user.
         // User lạ → 404; mật khẩu không đạt policy Identity → 400. Thành công → 204 (không trả lại
         // mật khẩu trong response: admin đã có nó, echo lại chỉ thêm một bản sao trong log/history).

@@ -48,4 +48,19 @@ namespace Isas.AuthService.DTOs
         [Required]
         public string NewPassword { get; set; } = null!;
     }
+
+    /// <summary>
+    /// POST /auth/admin/users/{id}/role — đổi platform-role (AUTH-3).
+    ///
+    /// ⚠ <see cref="Role"/> KHÔNG validate bằng "role này có tồn tại trong bảng roles không": role là
+    /// string tự do, được tạo LAZILY (<c>EnsureRoleExistsAsync</c>) nên một cái tên gõ sai vừa lọt
+    /// kiểm tra vừa đẻ thêm một role rác. Chỉ 3 tên trong AUTH-3 được chấp nhận — xem
+    /// <c>AuthService.PlatformRoles</c>.
+    /// </summary>
+    public class ChangePlatformRoleRequest
+    {
+        /// <summary>Một trong: <c>Candidate</c> | <c>Employer</c> | <c>Admin</c>. Phân biệt hoa thường.</summary>
+        [Required]
+        public string Role { get; set; } = null!;
+    }
 }
