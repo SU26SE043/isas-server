@@ -99,7 +99,7 @@ public class AnswerCallbackAuthTests
 
         Assert.IsType<UnauthorizedObjectResult>(result);
         service.Verify(s => s.MarkFailedAsync(
-            It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -107,7 +107,7 @@ public class AnswerCallbackAuthTests
     {
         var answerId = Guid.NewGuid();
         var service = new Mock<IAnswerService>();
-        service.Setup(s => s.MarkFailedAsync(answerId, It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+        service.Setup(s => s.MarkFailedAsync(answerId, It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                .Returns(Task.CompletedTask);
         var controller = Build(service);
 
@@ -115,7 +115,7 @@ public class AnswerCallbackAuthTests
         var result = await controller.MarkFailed(answerId, req, ExpectedToken, default);
 
         Assert.IsType<NoContentResult>(result);
-        service.Verify(s => s.MarkFailedAsync(answerId, "audio hỏng", It.IsAny<CancellationToken>()), Times.Once);
+        service.Verify(s => s.MarkFailedAsync(answerId, "audio hỏng", false, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -129,6 +129,6 @@ public class AnswerCallbackAuthTests
 
         Assert.IsType<UnauthorizedObjectResult>(result);
         service.Verify(s => s.MarkFailedAsync(
-            It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<Guid>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

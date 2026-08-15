@@ -60,4 +60,10 @@ public record DecideNextResult(
     string? TargetCriterionId = null,
     IReadOnlyList<string>? EvidenceFound = null,
     IReadOnlyList<string>? MissingEvidence = null,
-    string? NewEvidenceState = null);
+    string? NewEvidenceState = null,
+    // AIService từ chối bản chép: "no_speech" (VAD không thấy vùng tiếng nói nào — KHÔNG gọi nhà
+    // cung cấp, KHÔNG có transcript) hoặc "junk_transcript" (cả hai engine đều ra chuỗi rác máy sinh).
+    // null = bản chép dùng được (đường thường).
+    // 🔴 Khoá dây phía AIService: `rejectReason` (camelCase) — đổi tên KHÔNG ném lỗi, chỉ làm .NET
+    //    bind hụt rồi im lặng chấm lại sự im lặng, đúng lớp bug `focusCriteria`/`metricsVersion`.
+    string? RejectReason = null);

@@ -19,8 +19,16 @@ public interface IAnswerService
         CancellationToken ct = default);
 
     // Worker báo chấm thất bại vĩnh viễn -> đánh dấu Failed để session thoát kẹt.
+    // `noSpeech` = bản ghi KHÔNG có tiếng nói (VAD) hoặc bản chép là rác máy sinh → Skipped thay vì
+    // Failed (khác NHÃN, không khác luật tiền — xem AnswerService.MarkFailedAsync).
     Task MarkFailedAsync(
         Guid answerId,
         string? reason,
+        bool noSpeech = false,
+        CancellationToken ct = default);
+
+    // Chốt sổ cưỡng bức buổi kẹt `Scoring` quá lâu (SessionAbandonSweeper gọi). Trả true nếu có đụng.
+    Task<bool> FinalizeStuckSessionAsync(
+        Guid sessionId,
         CancellationToken ct = default);
 }
