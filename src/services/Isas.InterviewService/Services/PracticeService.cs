@@ -1192,16 +1192,38 @@ public class PracticeService : IPracticeService
     // existing tiering branches exactly; their known MaxQuestions/adaptiveOn asymmetry is out of scope.
     private SessionGenerationSettings ResolveSessionSettings(int? questionCount, EntitlementSnapshot entitlement)
     {
-        var adaptiveEnabled = _tieringEnabled ? entitlement.AdaptiveEnabled : _adaptive.Enabled;
+        // ADAPTIVE Ở MỌI TIER — `Adaptive:Enabled` là SÀN, gói chỉ được CỘNG chứ không được TRỪ.
+        //
+        // Vì sao không còn `_tieringEnabled ? entitlement.AdaptiveEnabled : …`: một buổi tiêu đúng 1
+        // credit bất kể gói (PAY-1/BC-1), nên gói không được lấy mất chính engine mà ứng viên vừa trả
+        // tiền để chạy. Điều kiện OR còn bịt hai đường tắt ÂM THẦM mà nhánh cũ để hở, cả hai đều làm
+        // ứng viên MẤT credit rồi nhận buổi luồng tĩnh, không lỗi, không cảnh báo:
+        //   (a) Payment sập → fallback `EntitlementSnapshot.Free`;
+        //   (b) admin tạo plan mới mà quên bật `AdaptiveEnabled` (DTO mặc định `false`).
+        // Chiều ngược lại vẫn giữ: gói BẬT adaptive trong khi cờ rollout chung còn tắt ⇒ tier đó có
+        // adaptive. Đó là lý do `Plan.AdaptiveEnabled` vẫn còn ý nghĩa thật, không phải cột chết.
+        var adaptiveEnabled = _adaptive.Enabled || (_tieringEnabled && entitlement.AdaptiveEnabled);
         var maxDeepPerQuestion = adaptiveEnabled ? Math.Max(0, _adaptive.MaxDeepPerQuestion) : 0;
-        var maxQuestions = _tieringEnabled && entitlement.AdaptiveEnabled
-            ? Math.Clamp(questionCount ?? entitlement.MaxQuestions, 0, Math.Min(MaxQuestionCount, entitlement.MaxQuestions))
-            : _adaptive.Enabled ? (questionCount ?? _adaptive.MaxQuestions) : 0;
+
+        // Trần buổi: gói chỉ có tiếng nói khi cấp một con số DƯƠNG. `0` = "gói không khai trần riêng"
+        // (fallback Free, hoặc plan để trống cap) ⇒ rơi về trần cấu hình. KHÔNG được để 0 chảy thẳng
+        // vào `Math.Clamp(x, 0, 0)`: nó XOÁ luôn `questionCount` ứng viên đã chọn về 0.
+        // ⚠ `budget == 0` (config cũng để 0 = "không trần cứng") giữ nguyên hành vi cũ: không kẹp.
+        var budget = _tieringEnabled && entitlement.MaxQuestions > 0
+            ? entitlement.MaxQuestions
+            : _adaptive.MaxQuestions;
+        var maxQuestions = adaptiveEnabled
+            ? budget > 0
+                ? Math.Clamp(questionCount ?? budget, 0, Math.Min(MaxQuestionCount, budget))
+                : questionCount ?? 0
+            : 0;
+
+        // Cùng luật cho trần theo BUỔI (chỉ còn hiệu lực ở chế độ frontier, xem `AdaptiveOptions`).
         var maxFollowUps = maxDeepPerQuestion > 0
             ? 0
-            : _tieringEnabled && entitlement.AdaptiveEnabled
-                ? entitlement.MaxFollowUps
-                : _adaptive.Enabled ? _adaptive.MaxFollowUps : 0;
+            : adaptiveEnabled
+                ? _tieringEnabled && entitlement.MaxFollowUps > 0 ? entitlement.MaxFollowUps : _adaptive.MaxFollowUps
+                : 0;
         return new SessionGenerationSettings(adaptiveEnabled, maxQuestions, maxFollowUps, maxDeepPerQuestion);
     }
 

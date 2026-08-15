@@ -32,8 +32,11 @@ public sealed class EntitlementClient(HttpClient client, IConfiguration config, 
                 throw new JsonException("Payment entitlement response is incomplete.");
             var features = JsonSerializer.Deserialize<Features>(body.EntitlementSnapshot, Json);
             if (features is null) throw new JsonException("Payment entitlement snapshot is invalid.");
+            // Gói KHÔNG khai trần (null) ⇒ **0 = "không có trần riêng"** → PracticeService dùng trần cấu
+            // hình. Mặc định cũ `?? 10` / `?? 3` là hằng số ma: nó âm thầm bóp buổi còn một nửa với bất kỳ
+            // gói nào admin tạo mà quên điền cap, và không có triệu chứng nào ngoài "sao buổi ngắn thế".
             return new EntitlementSnapshot(body.Source ?? "resolved", body.TierCode, body.TierRank,
-                features.AdaptiveEnabled, Math.Clamp(features.AdaptiveMaxQuestions ?? 10, 0, 20), Math.Max(0, features.AdaptiveMaxFollowups ?? 3),
+                features.AdaptiveEnabled, Math.Clamp(features.AdaptiveMaxQuestions ?? 0, 0, 20), Math.Max(0, features.AdaptiveMaxFollowups ?? 0),
                 features.GroundingEnabled, Math.Max(1, features.SelfConsistencyN), features.CvAnalysisIncluded,
                 features.RepoAnalysisIncluded, features.RoadmapEnabled);
         }
