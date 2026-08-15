@@ -268,6 +268,7 @@ public class PracticeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status502BadGateway)]
+    [ProducesResponseType(StatusCodes.Status504GatewayTimeout)]
     public async Task<IActionResult> GetQuestionSpeech(
         Guid sessionId, Guid questionId, CancellationToken ct)
     {
@@ -289,11 +290,19 @@ public class PracticeController : ControllerBase
         }
         catch (AiServiceException ex)
         {
-            // TTS chết/quá tải → 502. FE degrade về CHỈ HIỆN CHỮ — không được chặn luồng
+            // TTS chết/quá tải → 502/504. FE degrade về CHỈ HIỆN CHỮ — không được chặn luồng
             // phỏng vấn chỉ vì không đọc được thành tiếng.
-            _logger.LogError(ex, "AIService lỗi khi đọc câu hỏi thành tiếng.");
-            return StatusCode(StatusCodes.Status502BadGateway,
-                new { error = "Dịch vụ đọc câu hỏi tạm thời không phản hồi. Vui lòng thử lại sau." });
+            //
+            // Tách 504 (hết giờ) khỏi 502 (AIService trả lỗi) vì client cần phân biệt để cư xử
+            // khác: hết giờ thường là CHẬM lần đầu và thử lại là được, còn 502 thì thử lại ngay
+            // cũng thế. Trước đây gộp một mã nên FE chỉ hiện được "có lỗi" (báo cáo 2026-08-15).
+            _logger.LogError(ex, "AIService lỗi khi đọc câu hỏi thành tiếng (timeout={IsTimeout}).",
+                ex.IsTimeout);
+            return ex.IsTimeout
+                ? StatusCode(StatusCodes.Status504GatewayTimeout,
+                    new { error = "Dịch vụ đọc câu hỏi phản hồi chậm. Bạn thử lại sau giây lát nhé." })
+                : StatusCode(StatusCodes.Status502BadGateway,
+                    new { error = "Dịch vụ đọc câu hỏi tạm thời không phản hồi. Vui lòng thử lại sau." });
         }
     }
 }
