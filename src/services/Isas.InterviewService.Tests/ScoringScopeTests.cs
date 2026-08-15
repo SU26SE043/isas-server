@@ -410,6 +410,7 @@ public class ScoringScopeTests
         var republisher = new StuckAnswerRepublisher(
             provider.GetRequiredService<IServiceScopeFactory>(), pub.Object,
             Options.Create(new RepublisherSettings { BatchSize = 200 }),
+            Options.Create(new ScoringOptions()),
             NullLogger<StuckAnswerRepublisher>.Instance);
 
         var mi = typeof(StuckAnswerRepublisher).GetMethod(

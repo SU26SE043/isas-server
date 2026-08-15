@@ -75,6 +75,56 @@ public class SessionAbandonSweeper : BackgroundService
     {
         await ScanExpiredB2BAsync(ct);
         await ScanInactiveB2CAsync(ct);
+        await ScanStuckScoringAsync(ct);
+    }
+
+    // Buổi ĐÃ NỘP nhưng kẹt `Scoring` quá lâu. Đây là vùng mù cũ: hai nhánh trên chỉ quét
+    // Ready/InProgress, nên một message chấm chết là buổi nằm `Scoring` VĨNH VIỄN — không điểm,
+    // không hoàn credit, và republisher thì đẩy lại vô hạn (sự cố 2026-08-15).
+    //
+    // ⚠ Mốc là `CompletedAt` (đóng dấu lúc SubmitSession) — mốc ĐỨNG YÊN. Không dùng `UpdatedAt`:
+    // mỗi lần một attempt về đích là nó nhích lên, nên buổi nào chỉ thiếu 1 attempt sẽ không bao
+    // giờ chạm trần (đúng bẫy "neo vào mốc tự dời" của StuckScreeningRepublisher/C14).
+    private async Task ScanStuckScoringAsync(CancellationToken ct)
+    {
+        var giveUpMinutes = _options.GiveUpAfterMinutes;
+        if (giveUpMinutes <= 0) return;   // 0 = tắt (giữ hành vi cũ: chờ vô hạn)
+
+        List<Guid> stuck;
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<InterviewDbContext>();
+            var cutoff = DateTime.UtcNow.AddMinutes(-giveUpMinutes);
+
+            stuck = await db.PracticeSessions
+                .Where(s => s.Status == SessionStatus.Scoring
+                            && s.CompletedAt != null
+                            && s.CompletedAt < cutoff)
+                .Select(s => s.Id)
+                .ToListAsync(ct);
+        }
+
+        if (stuck.Count == 0) return;
+
+        _logger.LogWarning(
+            "Phát hiện {Count} buổi kẹt Scoring > {Minutes} phút, chốt sổ cưỡng bức",
+            stuck.Count, giveUpMinutes);
+
+        foreach (var sessionId in stuck)
+        {
+            // Scope riêng/buổi: chốt sổ dùng change tracker, không để state lẫn giữa các buổi.
+            using var scope = _scopeFactory.CreateScope();
+            var answers = scope.ServiceProvider.GetRequiredService<IAnswerService>();
+            try
+            {
+                await answers.FinalizeStuckSessionAsync(sessionId, ct);
+            }
+            catch (Exception ex)
+            {
+                // Một buổi hỏng không được giết cả vòng quét (mẫu AutoSubmitAsync).
+                _logger.LogError(ex, "Chốt sổ buổi kẹt Scoring {SessionId} thất bại", sessionId);
+            }
+        }
     }
 
     // B2B — Ready/InProgress + có Deadline THẬT + đã quá hạn nhận bài. `Ready` ở B2B đã

@@ -10,7 +10,7 @@ from app.config import settings
 from app import threadpool
 from app.cv_screening import maybe_start_cv_screening_consumer
 from app.providers.gemini import GeminiProvider
-from app.transcriber import Transcriber
+from app.transcriber import NO_SPEECH, Transcriber
 
 transcriber = Transcriber()
 provider = GeminiProvider()
@@ -26,6 +26,15 @@ s3_client = boto3.client(
 class PermanentError(Exception):
     """Lỗi KHÔNG thể khắc phục bằng retry (audio hỏng, LLM output sai theo cách
     tái lập). Worker sẽ báo .NET đánh dấu answer Failed thay vì retry vô tận."""
+
+
+class NoSpeechError(PermanentError):
+    """Bản ghi KHÔNG có tiếng nói (VAD) — không phải sự cố hệ thống.
+
+    Vẫn là "vĩnh viễn" (chép lại bao nhiêu lần cũng thế) nên đi chung đường PermanentError, nhưng
+    .NET phải đánh answer ``Skipped`` chứ không ``Failed``: người luyện đọc lịch sử cần thấy "câu
+    này không có câu trả lời", không phải "hệ thống hỏng". Về TIỀN hai nhãn như nhau (PAY-13 chỉ
+    hỏi có answer nào ``Scored`` không)."""
 
 
 def make_score_payload(answer_id, transcript, rubric_version, scores, attempt_no,
@@ -78,12 +87,17 @@ async def post_callback(payload: dict):
             print(f"[🎉] Callback .NET OK cho Answer {payload['answerId']}")
 
 
-async def post_failed(answer_id, reason: str):
-    """Báo .NET đánh dấu answer Failed (lỗi chấm vĩnh viễn) để session thoát kẹt."""
+async def post_failed(answer_id, reason: str, no_speech: bool = False):
+    """Báo .NET đánh dấu answer Failed (lỗi chấm vĩnh viễn) để session thoát kẹt.
+
+    ``no_speech=True`` ⇒ .NET đánh ``Skipped`` thay vì ``Failed`` (bản ghi im lặng, không phải sự
+    cố). 🔴 Khoá dây là ``noSpeech`` (camelCase) — khớp `AnswerFailedCallbackRequest.NoSpeech`;
+    đổi tên KHÔNG ném lỗi, .NET chỉ bind hụt rồi rơi về ``Failed`` như cũ."""
     url = f"{settings.dotnet_callback_base}/internal/answers/{answer_id}/failed"
     headers = {"X-Internal-Token": settings.internal_token}
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json={"reason": reason}, headers=headers) as resp:
+        async with session.post(
+                url, json={"reason": reason, "noSpeech": no_speech}, headers=headers) as resp:
             if resp.status >= 300:
                 text = await resp.text()
                 raise RuntimeError(f"Callback failed-endpoint fail {resp.status}: {text}")
@@ -181,6 +195,15 @@ async def process_message(message: aio_pika.IncomingMessage):
                     engine = result.engine
                 except Exception as e:
                     raise PermanentError(f"Transcribe lỗi (audio hỏng?): {e}")
+
+                # Bản chép bị TỪ CHỐI (cổng im lặng / cả hai engine ra rác). Phân biệt hai nhãn:
+                # im lặng là chuyện của người trả lời (Skipped), rác là hỏng hóc kỹ thuật (Failed).
+                if result.reject_reason == NO_SPEECH:
+                    raise NoSpeechError("Bản ghi không có tiếng nói (VAD)")
+                if result.reject_reason is not None:
+                    raise PermanentError(
+                        f"Bản chép không dùng được: {result.reject_reason}")
+
                 if not transcript or not transcript.strip():
                     raise PermanentError("Transcript rỗng — audio không nghe được")
                 print(f"[✅] Transcript: {transcript}")
@@ -232,7 +255,7 @@ async def process_message(message: aio_pika.IncomingMessage):
             # Nếu báo Failed cũng fail (mạng) -> nack để vòng sau thử lại.
             print(f"[⛔] Lỗi vĩnh viễn answer {answer_id}: {e}")
             try:
-                await post_failed(answer_id, str(e))
+                await post_failed(answer_id, str(e), no_speech=isinstance(e, NoSpeechError))
                 await message.ack()
             except Exception as report_err:
                 print(f"[❌] Báo Failed không được: {report_err} -> nack")

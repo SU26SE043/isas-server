@@ -394,11 +394,31 @@ async def decide_next(
             result = await asyncio.to_thread(
                 transcriber.transcribe_detailed, tmp_path, req.language)
             transcript, metrics, engine = result.text, result.metrics, result.engine
+            reject_reason = result.reject_reason
         except Exception as ex:
             raise HTTPException(status_code=502, detail=f"Lỗi transcribe: {ex}")
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
+
+        # Bản chép bị TỪ CHỐI → KHÔNG hỏi Gemini câu kế: không có gì để đào sâu, và hỏi nó về một
+        # transcript rỗng chỉ tốn tiền để nhận một câu hỏi bịa. Trả thẳng cho .NET quyết (nó đánh
+        # answer `Skipped` và không publish job chấm).
+        #
+        # `action="end"` = "lượt này không sinh câu kế", KHÔNG phải "buổi đã xong": .NET bản mới đọc
+        # `rejectReason` và thoát trước khi nhìn tới action, còn .NET bản CŨ (cửa sổ deploy lệch nhịp)
+        # suy `interviewComplete` theo số câu CHƯA trả lời chứ không cứng theo action — nên ca xấu
+        # nhất cũng chỉ là mời nộp bài sớm, không tạo ra điểm giả.
+        if reject_reason is not None:
+            return DecideNextResponse(
+                action="end",
+                nextQuestion=None,
+                transcript=None,
+                reason=f"Bản chép bị từ chối: {reject_reason}",
+                deliveryMetrics=None,
+                transcriptEngine=engine,
+                rejectReason=reject_reason,
+            )
     elif req.answerText and req.answerText.strip():
         transcript = req.answerText.strip()
     else:

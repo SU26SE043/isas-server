@@ -132,6 +132,19 @@ class Settings(BaseSettings):
     # giữ bug. Cờ này là cần gạt rollback, không phải cổng tính năng.
     delivery_metrics_source: str = "vad"
 
+    # ── CỔNG IM LẶNG ─────────────────────────────────────────────
+    # Bản ghi mà VAD không thấy vùng tiếng nói nào ⇒ KHÔNG chép lời, trả `reject_reason="no_speech"`
+    # để .NET đánh answer `Skipped` (không chấm, không trừ theo PAY-13).
+    #
+    # 🔴 Vì sao phải chặn ở đây thay vì tin bộ chấm: đo trên prod 2026-08-15, một bản ghi im lặng 8
+    # giây ra transcript "Hãy subscribe cho kênh Ghiền Mì Gõ…" (vết bẩn dữ liệu huấn luyện của
+    # Whisper) và ĐƯỢC CHẤM ĐIỂM THẬT trên cả 5 tiêu chí. Bộ chấm không có cách nào biết câu đó do
+    # máy bịa; VAD thì biết chắc — và nó đã chạy sẵn cho F11, nên cổng này gần như miễn phí.
+    #
+    # ⚠ Mặc định BẬT — cùng lý do `delivery_metrics_source`: đây là bản vá cho hành vi ĐÃ ĐO ĐƯỢC
+    # LÀ SAI, không phải tính năng mới. Đặt `SILENCE_GATE_ENABLED=false` để quay lui.
+    silence_gate_enabled: bool = True
+
     # ── FACE VERIFY (SEC-2/3) ────────────────────────────────────
     # buffalo_l = pack insightface mặc định (detect + ArcFace embed). CPU-only.
     face_model_name: str = "buffalo_l"
