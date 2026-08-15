@@ -28,7 +28,7 @@ public class CampaignEmailSenderMimeTests
                 PickupDirectoryLocation = pickup
             };
             using var message = CampaignEmailSender.BuildMailMessage(
-                "noreply@isas.test", "candidate@isas.test", "Backend Q3", "https://fe.test/invite/tok", Expires);
+                "noreply@isas.test", "candidate@isas.test", "Backend Q3", "https://fe.test/invite/tok", Expires, null, null);
             client.Send(message);
             return File.ReadAllText(Directory.GetFiles(pickup, "*.eml").Single());
         }
@@ -129,8 +129,8 @@ public class CampaignEmailSenderMimeTests
         {
             CultureInfo.CurrentCulture = exotic;
             var body = html
-                ? CampaignEmailSender.BuildHtmlBody("Backend Q3", "https://fe.test/invite/tok", Expires)
-                : CampaignEmailSender.BuildPlainTextBody("Backend Q3", "https://fe.test/invite/tok", Expires);
+                ? CampaignEmailSender.BuildHtmlBody("Backend Q3", "https://fe.test/invite/tok", Expires, null, null)
+                : CampaignEmailSender.BuildPlainTextBody("Backend Q3", "https://fe.test/invite/tok", Expires, null, null);
 
             Assert.Contains("2026-08-15 09:30 UTC", body);
             Assert.DoesNotContain("•", body);

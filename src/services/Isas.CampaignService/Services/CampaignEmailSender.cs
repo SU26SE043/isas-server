@@ -26,6 +26,8 @@ namespace Isas.CampaignService.Services
             string campaignTitle,
             string joinLink,
             DateTime? expiresAt,
+            DateTime? slotStartsAt,
+            DateTime? slotEndsAt,
             CancellationToken ct = default)
         {
             var host = _config["EmailSettings:Host"]
@@ -43,7 +45,8 @@ namespace Isas.CampaignService.Services
                 EnableSsl = true
             };
 
-            using var mailMessage = BuildMailMessage(from, toEmail, campaignTitle, joinLink, expiresAt);
+            using var mailMessage = BuildMailMessage(
+                from, toEmail, campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt);
 
             await client.SendMailAsync(mailMessage, ct);
         }
@@ -67,7 +70,9 @@ namespace Isas.CampaignService.Services
             string toEmail,
             string campaignTitle,
             string joinLink,
-            DateTime? expiresAt)
+            DateTime? expiresAt,
+            DateTime? slotStartsAt,
+            DateTime? slotEndsAt)
         {
             var mailMessage = new MailMessage
             {
@@ -77,11 +82,11 @@ namespace Isas.CampaignService.Services
             mailMessage.To.Add(toEmail);
 
             mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
-                BuildPlainTextBody(campaignTitle, joinLink, expiresAt),
+                BuildPlainTextBody(campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt),
                 Encoding.UTF8,
                 MediaTypeNames.Text.Plain));
             mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
-                BuildHtmlBody(campaignTitle, joinLink, expiresAt),
+                BuildHtmlBody(campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt),
                 Encoding.UTF8,
                 MediaTypeNames.Text.Html));
 
@@ -97,7 +102,16 @@ namespace Isas.CampaignService.Services
         private static string FormatExpiry(DateTime expiresAt) =>
             expiresAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
 
-        internal static string BuildHtmlBody(string campaignTitle, string joinLink, DateTime? expiresAt)
+        private static string FormatSlot(DateTime startsAt, DateTime endsAt)
+        {
+            var startsAtVn = VietnamTime.From(startsAt);
+            var endsAtVn = VietnamTime.From(endsAt);
+            return $"{startsAtVn:HH:mm}–{endsAtVn:HH:mm}, {startsAtVn:dd/MM/yyyy} (giờ VN)";
+        }
+
+        internal static string BuildHtmlBody(
+            string campaignTitle, string joinLink, DateTime? expiresAt,
+            DateTime? slotStartsAt, DateTime? slotEndsAt)
         {
             var safeCampaignTitle = HtmlEncoder.Default.Encode(campaignTitle);
             var safeJoinLink = HtmlEncoder.Default.Encode(joinLink);
@@ -106,6 +120,15 @@ namespace Isas.CampaignService.Services
   <td style=""padding:16px 20px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;color:#1e3a8a;font-size:14px;line-height:20px;"">
     <strong>Thời hạn tham gia</strong><br/>
     Vui lòng tham gia trước <strong>{FormatExpiry(expiresAt.Value)} UTC</strong>.
+  </td>
+</tr>
+<tr><td style=""height:24px;font-size:1px;line-height:1px;"">&nbsp;</td></tr>"
+                : string.Empty;
+            var slotCard = slotStartsAt.HasValue && slotEndsAt.HasValue
+                ? $@"<tr>
+  <td style=""padding:16px 20px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;color:#14532d;font-size:14px;line-height:20px;"">
+    <strong>Khung giờ phỏng vấn</strong><br/>
+    {FormatSlot(slotStartsAt.Value, slotEndsAt.Value)}
   </td>
 </tr>
 <tr><td style=""height:24px;font-size:1px;line-height:1px;"">&nbsp;</td></tr>"
@@ -134,6 +157,7 @@ namespace Isas.CampaignService.Services
                 <a href=""{safeJoinLink}"" style=""display:inline-block;padding:14px 22px;color:#ffffff;font-size:16px;font-weight:700;line-height:20px;text-decoration:none;"">Tham gia phỏng vấn AI</a>
               </td></tr>
             </table>
+            {slotCard}
             {expiryCard}
             <p style=""margin:0;font-size:13px;line-height:20px;color:#667085;"">Vì bảo mật, không chuyển tiếp email hoặc liên kết này cho người khác. Nếu nút không hoạt động, hãy mở liên kết sau trong trình duyệt:</p>
             <p style=""margin:8px 0 0;font-size:13px;line-height:20px;word-break:break-all;""><a href=""{safeJoinLink}"" style=""color:#2563eb;"">{safeJoinLink}</a></p>
@@ -147,10 +171,15 @@ namespace Isas.CampaignService.Services
 </html>";
         }
 
-        internal static string BuildPlainTextBody(string campaignTitle, string joinLink, DateTime? expiresAt)
+        internal static string BuildPlainTextBody(
+            string campaignTitle, string joinLink, DateTime? expiresAt,
+            DateTime? slotStartsAt, DateTime? slotEndsAt)
         {
             var expiryLine = expiresAt.HasValue
                 ? $"\nThời hạn tham gia: trước {FormatExpiry(expiresAt.Value)} UTC.\n"
+                : string.Empty;
+            var slotLine = slotStartsAt.HasValue && slotEndsAt.HasValue
+                ? $"\nKhung giờ phỏng vấn: {FormatSlot(slotStartsAt.Value, slotEndsAt.Value)}.\n"
                 : string.Empty;
 
             return $"""
@@ -160,6 +189,7 @@ Bạn được mời tham gia chiến dịch đánh giá: {campaignTitle}
 
 Tham gia phỏng vấn AI tại:
 {joinLink}
+{slotLine}
 {expiryLine}
 Vì bảo mật, không chuyển tiếp email hoặc liên kết này cho người khác.
 
