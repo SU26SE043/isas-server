@@ -93,8 +93,12 @@ UserResponse {
 
 > ⚠⚠ **Ban KHÔNG tức thì (AUTH-5 / GEN-3).** Service khác validate JWT **offline** → access token đang lưu hành **không thu hồi được**, còn sống tối đa **1 TTL (15')**. Ban chặn **mọi** đường phát phiên mới (mật khẩu · Google · refresh · `provision-candidate` magic-link) + thu hồi mọi refresh token. Chặt hơn → **rút ngắn TTL access**; ❌ KHÔNG denylist/gọi mạng trong đường validate.
 
+- **`POST /auth/admin/users/{id}/role`** `{ role: "Candidate"|"Employer"|"Admin" }` → **`200`** `AdminUserResponse`. Lỗi: **400** role ngoài 3 tên / tự đổi vai trò mình · **404** · **409** hạ Admin hoạt động cuối cùng / rời `Employer` khi còn hàng `org_members`. **THAY THẾ** role (1 role/user); role không đổi → no-op, **không** thu hồi token; thu hồi mọi refresh token (AUTH-5) ⇒ hiệu lực ≤1 TTL.
+  - ⚠ Allowlist **tường minh**, KHÔNG kiểm "role có trong bảng `roles`": role tạo **lazily** ⇒ tên gõ sai vừa lọt vừa đẻ role rác không endpoint nào gác. Phân biệt hoa thường.
+  - ⚠ 409 "còn thuộc org" giữ bất biến *thành viên org ⇒ `Employer`*; không chặn thì đây là **đường vòng qua guard "cấm hạ OrgAdmin cuối cùng" của A6b**. Chiều **VÀO** `Employer` không chặn.
+
 **🔜 Admin — chưa build:**
-- **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
+- **`GET /auth/admin/users/{id}`** chi tiết 1 user · **`POST …/revoke-sessions`** đá phiên độc lập.
 - **`GET/POST /auth/admin/orgs…`** — duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
 - *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. Còn admin-gated orgs + role-grant — A4/A5.)*
 
