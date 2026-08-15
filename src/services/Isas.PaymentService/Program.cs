@@ -170,6 +170,8 @@ builder.Services.AddScoped<IPayoutClient, PayoutClient>();
 builder.Services.AddScoped<IBankBinResolver, BankBinResolver>();
 // F19: tổng hợp doanh thu theo kỳ cho PlatformAdmin (đọc `orders`, không đụng sổ cái credit).
 builder.Services.AddScoped<IRevenueService, RevenueService>();
+// Finance snapshot: chỉ số kiểu SỐ DƯ (AR + MRR) cho PlatformAdmin — khác F19 (dòng chảy theo kỳ).
+builder.Services.AddScoped<IFinanceSnapshotService, FinanceSnapshotService>();
 // F22: nhận số liệu token AIService đẩy về (GEN-4 — AIService không ghi DB) + tổng hợp chi phí cho admin.
 builder.Services.AddScoped<IAiUsageService, AiUsageService>();
 // F20 (vế Payment): admin cấp credit khuyến mãi — ví tăng + bút toán PromoGrant ghi rõ người cấp.
