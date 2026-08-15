@@ -156,6 +156,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 **`/payment/admin/plans`** — CRUD catalog tier, chỉ `Admin`. `DELETE /{id}` soft-deactivate (`is_active=false`), không xoá row lịch sử đã được package/subscription tham chiếu. Validation: Metered cần quota dương; B2C không có B2B cap; Unlimited chỉ khi `Tiering:AllowUnlimitedPlans=true`. Sửa catalog không hồi tố subscription snapshot; chỉ activation/mua mới dùng catalog mới.
 
+> ⚠ **`adaptive_enabled` = `true` ở MỌI gói seed (INT-19)** — quyết định sản phẩm, không phải sơ suất: một buổi tiêu đúng 1 credit bất kể gói, nên gói không lấy mất engine phỏng vấn. Migration `AllowAdaptiveOnEveryTier` (**thuần `UPDATE` 3 hàng seed, 0 DDL, `Down` đảo ngược đủ**; apply trước hay sau deploy đều an toàn vì prod đang `Tiering:Enabled=false`). B2C đồng trần `adaptive_max_questions = 20` = trần hệ thống — trước đó `plus` bị 10 trong khi `free` (đúng nhóm trả tiền theo từng buổi) không có adaptive gì cả. `PlanSeedAdaptiveTests` khoá lại: **thêm gói mới thì bật adaptive, đừng nới test**. Gói tạo qua API mà quên tick cũng KHÔNG tắt được adaptive — Interview coi `Adaptive:Enabled` là sàn (INT-19 tầng 2). Cần gạt kiếm tiền còn lại giữ nguyên: quota tháng, grounding, self-consistency, CV/repo, roadmap, trần B2B, postpaid, seats.
+
 **`POST/PUT/DELETE /payment/package…`** ✅ **A5** — CRUD gói (Req `ProductPackage`). Auth `Roles="Admin"` (PlatformAdmin, AUTH-3/7 — trước v22 comment hở → mở toang, nay đóng). GET catalog (trên) = Public.
 **`POST /payment/admin/orgs/{orgId}/postpaid`** 🔜 — Duyệt postpaid + đặt `credit_limit` (cần MST). Req: `{ creditLimit: int }`.
 **`POST /payment/admin/orgs/{orgId}/suspend`** 🔜 — Đình chỉ org (nợ xấu/quá hạn).

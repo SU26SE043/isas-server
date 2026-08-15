@@ -2019,25 +2019,33 @@ namespace Isas.CampaignService.Services
                     $"Gói {entitlement.TierCode} chỉ cho phép {entitlement.MaxActiveCampaigns} campaign Active; hiện có {active}.");
         }
 
+        /// <summary>
+        /// ⚠ <b>ADAPTIVE KHÔNG BỊ GÓI CHẶN</b> — đây là quyết định sản phẩm, đừng "sửa lại cho đủ bộ".
+        /// Mỗi buổi phỏng vấn B2B tiêu đúng 1 credit ví org bất kể tier (PAY-6), nên gói không được lấy
+        /// mất chính engine mà org vừa trả tiền để chạy. Tham số <c>adaptiveEnabled</c> GIỮ LẠI để chữ
+        /// ký hai validator vẫn nói đúng những gì HR gửi lên (và để chỗ này là nơi duy nhất phải đọc khi
+        /// team đổi ý), nhưng nó KHÔNG còn là điều kiện từ chối.
+        ///
+        /// Những quyền lợi có chi phí biên khác nhau thật (số ứng viên, grounding) vẫn bị chặn.
+        /// </summary>
         private static void ValidateEntitledSelection(
             int? maxCandidates, bool adaptiveEnabled, bool groundingEnabled, CampaignEntitlement entitlement)
         {
+            _ = adaptiveEnabled;   // cố ý không gate — xem doc ở trên
             if (maxCandidates is > 0 && maxCandidates > entitlement.MaxCandidatesCap)
                 throw new ArgumentException($"maxCandidates vượt trần {entitlement.MaxCandidatesCap} của gói {entitlement.TierCode}.");
-            if (adaptiveEnabled && !entitlement.AdaptiveEnabled)
-                throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ adaptive interview.");
             if (groundingEnabled && !entitlement.GroundingEnabled)
                 throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
         }
 
         // Only requested mutations are gated. A tier expiry must not evict or freeze an existing campaign.
+        // `adaptiveEnabled` cố ý không gate — cùng lý do với ValidateEntitledSelection.
         private static void ValidateEntitledMutation(
             int? maxCandidates, bool? adaptiveEnabled, bool? groundingEnabled, CampaignEntitlement entitlement)
         {
+            _ = adaptiveEnabled;
             if (maxCandidates.HasValue && maxCandidates.Value > entitlement.MaxCandidatesCap)
                 throw new ArgumentException($"maxCandidates vượt trần {entitlement.MaxCandidatesCap} của gói {entitlement.TierCode}.");
-            if (adaptiveEnabled == true && !entitlement.AdaptiveEnabled)
-                throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ adaptive interview.");
             if (groundingEnabled == true && !entitlement.GroundingEnabled)
                 throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
         }
