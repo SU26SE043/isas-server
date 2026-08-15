@@ -94,6 +94,10 @@ builder.Services.Configure<BillingSettings>(
 // Payment biết TIỀN. Mỗi dòng usage snapshot lại đơn giá đã dùng nên đổi giá không hồi tố số liệu cũ.
 builder.Services.Configure<AiPricingSettings>(
     builder.Configuration.GetSection("AiPricing"));
+// F19 (gross margin) — tỷ giá USD→VND quy đổi chi phí AI (ai_usage_logs.cost_usd) sang VND lúc ĐỌC báo
+// cáo doanh thu; không hồi tố, không ghi ngược vào bảng gốc.
+builder.Services.Configure<FinanceSettings>(
+    builder.Configuration.GetSection("Finance"));
 builder.Services.Configure<HttpTrafficRetentionSettings>(
     builder.Configuration.GetSection(HttpTrafficRetentionSettings.SectionName));
 builder.Services.Configure<TieringSettings>(
