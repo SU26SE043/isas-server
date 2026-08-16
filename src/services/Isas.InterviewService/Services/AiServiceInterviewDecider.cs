@@ -38,7 +38,10 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
         // tên property C# đọc được khoá đó; đổi tên property là gãy hợp đồng IM LẶNG (bind hụt → null,
         // không lỗi ở đâu cả) — `TranscriptEngineWireContractTests` khoá lại.
         string? TranscriptEngine, string? TargetCriterionId, List<string>? EvidenceFound,
-        List<string>? MissingEvidence, string? NewEvidenceState);
+        List<string>? MissingEvidence, string? NewEvidenceState,
+        // 🔴 Khoá dây: `rejectReason` — "no_speech" (VAD không thấy tiếng nói) / "junk_transcript".
+        // Bind hụt ở đây KHÔNG ném lỗi, nó chỉ trả null ⇒ hệ quay lại chấm sự im lặng trong im lặng.
+        string? RejectReason);
 
     public async Task<DecideNextResult> DecideNextAsync(
         AdaptiveDecisionRequest request, CancellationToken ct = default)
@@ -115,6 +118,7 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
             TargetCriterionId: body.TargetCriterionId,
             EvidenceFound: body.EvidenceFound,
             MissingEvidence: body.MissingEvidence,
-            NewEvidenceState: body.NewEvidenceState);
+            NewEvidenceState: body.NewEvidenceState,
+            RejectReason: body.RejectReason);
     }
 }

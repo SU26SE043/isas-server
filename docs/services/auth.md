@@ -134,8 +134,16 @@ UserResponse {
 > Ban làm ngay hai việc: **(1)** chặn **mọi** đường phát phiên mới — đăng nhập mật khẩu · đăng nhập Google · refresh · `provision-candidate` (magic-link B2B, cấp JWT chỉ theo email nên là cửa dễ bỏ sót nhất); **(2)** thu hồi **mọi refresh token** → không gia hạn được nữa. Sau ≤15' account chết hẳn.
 > Cần chặt hơn → **rút ngắn TTL access**. ❌ **KHÔNG** thêm denylist / gọi mạng vào đường validate của service khác (vi phạm GEN-3, ràng buộc cứng). Cùng đánh đổi đã chốt ở AUTH-5/BK14 cho việc đổi `org_role`.
 
+- **`POST /auth/admin/users/{id}/role`** — đổi **platform-role** (AUTH-3). Req `{ role: "Candidate" | "Employer" | "Admin" }` → Res **`200`** `AdminUserResponse`. Lỗi: **400** role ngoài 3 tên trên · **400** tự đổi vai trò của chính mình · **404** user lạ · **409** hạ cấp **Admin còn hoạt động cuối cùng** · **409** rời `Employer` khi **vẫn còn hàng `org_members`**.
+  - Mô hình **1 role/user** (`ListAllUsersAsync` đọc `.FirstOrDefault()`) ⇒ **THAY THẾ** role cũ, không cộng dồn. Role mới == role cũ → **no-op**, cố ý **không** thu hồi token (đá người dùng khỏi phiên vì một thao tác chẳng đổi gì).
+  - ⚠ **Allowlist tường minh, KHÔNG kiểm "role có trong bảng `roles` không"**: role là string tự do, `EnsureRoleExistsAsync` tạo **lazily** ⇒ một cái tên gõ sai vừa lọt kiểm tra tồn-tại vừa đẻ ra role rác mà không endpoint nào gác. Phân biệt hoa thường (`"admin"` → 400).
+  - ⚠ **409 "còn thuộc org"** giữ bất biến *thành viên org ⇒ platform-role `Employer`* (`register-org` và A6 đều tạo `Employer`). Không chặn thì đây là **đường vòng qua guard "cấm hạ OrgAdmin cuối cùng" của A6b** — org mất sạch người lo billing/thành viên mà không cảnh báo gì; và JWT sẽ mang `org_id`+`org_role` trong khi platform-role không qua nổi endpoint `Employer` nào. Gỡ khỏi org trước (AUTH-8: việc của OrgAdmin), rồi mới đổi vai trò. Chiều **VÀO** `Employer` không bị chặn — nếu chặn thì không sửa nổi đúng trạng thái lệch mà guard sinh ra để bảo vệ.
+  - Thu hồi **mọi refresh token** theo AUTH-5 ⇒ hiệu lực sau **≤1 TTL access (15')**, cùng ranh giới với ban (khối ⚠⚠ ngay trên).
+  - *Follow-up:* **không có dấu vết ai đổi vai trò của ai** — Auth chưa có hạ tầng audit (khác `audit_logs` của Campaign) và không có cột kiểu `banned_by` cho việc này. Leo thang lên `Admin` vì thế hiện không truy được người ra quyết định.
+
 **🔜 Admin — chưa build:**
-- **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
+- **`GET /auth/admin/users/{id}`** — xem chi tiết một user (nay chỉ có list).
+- **`POST /auth/admin/users/{id}/revoke-sessions`** — đá phiên mà không cần ban/đổi mật khẩu (hiện revoke chỉ chạy kèm ban · reset-password · đổi role).
 - **`GET/POST /auth/admin/orgs…`** — duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
 - *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. ✅ A4 HrMember→403 billing · ✅ A5 `[Authorize(Roles)]` mọi service (v22): `OrgMembers`→`Employer`, auth-entry `[AllowAnonymous]` tường minh; `RoleClaimType=ClaimTypes.Role` khớp mọi service.)*
 

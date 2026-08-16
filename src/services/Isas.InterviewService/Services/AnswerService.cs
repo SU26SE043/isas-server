@@ -153,7 +153,9 @@ public class AnswerService : IAnswerService
 
         // 8. Chấm dần: publish job ngay sau khi lưu (kèm transcript đồng bộ nếu adaptive đã transcribe).
         //    Publish lỗi KHÔNG làm hỏng upload — answer đã lưu, để re-publish sau.
-        await TryPublishScoringJobAsync(session, question, answer, ct);
+        //    Bỏ qua khi bản ghi không có tiếng nói: answer đã `Skipped`, chấm nó là chấm sự im lặng.
+        if (!adaptive.NoSpeech)
+            await TryPublishScoringJobAsync(session, question, answer, ct);
 
         return new UploadAnswerResult(
             answer.Id, questionId, answer.Status.ToString(),
@@ -168,11 +170,19 @@ public class AnswerService : IAnswerService
 
     // ── Phỏng vấn THÍCH ỨNG: transcribe đồng bộ + quyết định + append câu kế ──────────────
     private sealed record AdaptiveOutcome(
-        string? Action, PracticeQuestion? AppendedQuestion, bool InterviewComplete)
+        string? Action, PracticeQuestion? AppendedQuestion, bool InterviewComplete, bool NoSpeech = false)
     {
         // Không chạy adaptive (tắt / chưa tới frontier / decide lỗi) → không có tín hiệu, không "complete".
         public static readonly AdaptiveOutcome None = new(null, null, false);
+
+        // Bản ghi không có tiếng nói → answer đã chốt `Skipped`, KHÔNG được publish job chấm.
+        public static readonly AdaptiveOutcome NoSpeechDetected = new(null, null, false, NoSpeech: true);
     }
+
+    // Lý do AIService từ chối bản chép (hợp đồng dây với `reject_reason` của /decide-next).
+    // Chỉ "không có tiếng nói" mới chốt `Skipped` tại chỗ; bản chép RÁC ("junk_transcript") vẫn đi
+    // đường thường để worker thử chép lại — rác là hỏng hóc kỹ thuật, không phải "người ta không nói".
+    private const string NoSpeechReason = "no_speech";
 
     // Chạy vòng thích ứng SAU khi answer đã lưu durable. Bọc toàn bộ trong try/catch → mọi lỗi (kể cả
     // đua unique index khi double-POST) chỉ log + trả None: upload LUÔN thành công, degrade về luồng tĩnh.
@@ -318,6 +328,23 @@ public class AnswerService : IAnswerService
                     Seniority: session.Seniority,
                     CurrentEvidenceState: evidenceState),
                 ct);
+
+            // (6b) Bản ghi KHÔNG có tiếng nói — AIService đo bằng VAD và KHÔNG chép lời (không gọi nhà
+            //      cung cấp nào). Chốt answer `Skipped` NGAY và KHÔNG publish job chấm.
+            //
+            //      Trước bản vá này im lặng đi tiếp CẢ đường: Whisper ảo giác ra một câu ("Hãy
+            //      subscribe cho kênh…" — vết bẩn dữ liệu huấn luyện, đã quan sát trên prod
+            //      2026-08-15), bộ chấm chấm nó như thật và trả về một ĐIỂM SỐ CÓ THẬT cho một câu
+            //      trả lời KHÔNG TỒN TẠI. Không hỏi câu kế: chưa có gì để đào sâu.
+            if (string.Equals(decision.RejectReason, NoSpeechReason, StringComparison.OrdinalIgnoreCase))
+            {
+                answer.Status = AnswerStatus.Skipped;
+                await _db.SaveChangesAsync(ct);
+                _logger.LogInformation(
+                    "Answer {AnswerId} -> Skipped: bản ghi không có tiếng nói (VAD), không chấm",
+                    answer.Id);
+                return AdaptiveOutcome.NoSpeechDetected;
+            }
 
             // (7) Lưu transcript đồng bộ lên answer (single-source; TryPublishScoringJobAsync đọc lại → job).
             //     F11 — lưu LUÔN chỉ số cách nói đo cùng lượt transcribe đó. Đây là lần đo DUY NHẤT
@@ -866,31 +893,58 @@ public class AnswerService : IAnswerService
         // Persist điểm attempt này (giữ answer.Status = Scoring cho tới khi đủ N attempt).
         await _db.SaveChangesAsync(ct);
 
-        // E10 — self-consistency: chỉ chốt answer khi đã đủ N attempt cho rubric_version hiện tại
-        //   (đếm distinct attempt_no). Chưa đủ → giữ Scoring, chờ callback attempt kế.
-        //   N=1 (mặc định) → 1 attempt là đủ → hành vi cũ.
-        // Session is loaded above with the answer; use the stamped B2C value for the completion gate too.
-        var n = Math.Max(1, session.CampaignId is null && session.EntitlementSource != "legacy"
-            ? session.SelfConsistencyN : _scoring.SelfConsistencyN);
+        await FinalizeAnswerAsync(answer, session!, req.RubricVersion, force: false, ct);
+    }
+
+    /// <summary>
+    /// E10 — chốt answer thành <c>Scored</c> khi đã gom đủ N attempt cho rubric_version hiện tại.
+    /// </summary>
+    /// <param name="force">
+    /// <c>true</c> = CHỐT SỔ CƯỠNG BỨC: chấp nhận ít hơn N attempt và gắn <c>needs_review</c>.
+    /// Chỉ dùng từ đường bỏ cuộc (<see cref="FinalizeStuckSessionAsync"/>) khi answer đã quá trần
+    /// thời gian. Vì sao chốt bằng attempt đã có thay vì đánh Failed: người luyện ĐÃ TRẢ 1 credit
+    /// (PAY-13) và điểm 2/3 attempt vẫn ra được median — vứt đi là phạt oan họ vì một message chết.
+    /// </param>
+    /// <returns><c>true</c> nếu answer được chốt <c>Scored</c> trong lượt này.</returns>
+    private async Task<bool> FinalizeAnswerAsync(
+        PracticeAnswer answer, PracticeSession session, int rubricVersion, bool force, CancellationToken ct)
+    {
+        var answerId = answer.Id;
+
+        // Chỉ chốt khi đã đủ N attempt cho rubric_version hiện tại (đếm distinct attempt_no).
+        // Chưa đủ → giữ Scoring, chờ callback attempt kế. N=1 (mặc định) → 1 attempt là đủ → hành vi cũ.
+        // Con số N phải TRÙNG bên đi bù attempt (StuckAnswerRepublisher) — xem ScoringAttemptPolicy.
+        var n = ScoringAttemptPolicy.Resolve(
+            session.CampaignId, session.EntitlementSource, session.SelfConsistencyN, _scoring.SelfConsistencyN);
         var attemptsForVersion = await _db.AnswerScores.AsNoTracking()
-            .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
+            .Where(s => s.AnswerId == answer.Id && s.RubricVersion == rubricVersion)
             .Select(s => s.AttemptNo)
             .Distinct()
             .CountAsync(ct);
 
-        if (attemptsForVersion < n)
+        var incomplete = attemptsForVersion < n;
+        if (incomplete)
         {
-            _logger.LogInformation(
-                "Answer {AnswerId}: {Got}/{N} attempt (rubric v{Version}) — chờ đủ trước khi Scored",
-                answerId, attemptsForVersion, n, req.RubricVersion);
-            return;   // giữ Scoring
+            // Không có attempt nào ⇒ không có gì để chốt. Đường force phải tự xử (Skipped), ở đây
+            // chốt bừa sẽ tạo answer `Scored` mà không có một dòng điểm nào.
+            if (!force || attemptsForVersion == 0)
+            {
+                _logger.LogInformation(
+                    "Answer {AnswerId}: {Got}/{N} attempt (rubric v{Version}) — chờ đủ trước khi Scored",
+                    answerId, attemptsForVersion, n, rubricVersion);
+                return false;   // giữ Scoring
+            }
+
+            _logger.LogWarning(
+                "Answer {AnswerId}: chốt sổ CƯỠNG BỨC với {Got}/{N} attempt (rubric v{Version}) — "
+                + "quá trần thời gian, gắn needs_review", answerId, attemptsForVersion, n, rubricVersion);
         }
 
         // Đủ N → điểm chốt = median/tiêu chí (tính read-time downstream); ở đây đo SPREAD = max−min
         // mỗi tiêu chí giữa các attempt (materialize rồi tính C#) → spread > ngưỡng bất kỳ tiêu chí →
         // needs_review (cờ soi lại). N=1 → spread = 0. E11: kèm cả Reasoning để chấm "nhận xét OK".
         var perAttempt = await _db.AnswerScores.AsNoTracking()
-            .Where(s => s.AnswerId == answer.Id && s.RubricVersion == req.RubricVersion)
+            .Where(s => s.AnswerId == answer.Id && s.RubricVersion == rubricVersion)
             .Select(s => new { s.CriterionId, s.Score, s.Reasoning, s.PromptVersion })
             .ToListAsync(ct);
 
@@ -927,7 +981,9 @@ public class AnswerService : IAnswerService
                 + "median trộn hai thước đo, gắn cờ soi lại",
                 answerId, string.Join(",", stampedVersions));
 
-        var needsReview = highSpread || shortReasoning || mixedPromptVersion;
+        // `incomplete` = nguồn thứ TƯ của needs_review: điểm chốt trên ít attempt hơn thiết kế, tức
+        // median mỏng hơn — vẫn dùng được, nhưng phải nói ra chứ không im lặng.
+        var needsReview = highSpread || shortReasoning || mixedPromptVersion || incomplete;
 
         answer.NeedsReview = needsReview;
         answer.Status = AnswerStatus.Scored;
@@ -935,9 +991,10 @@ public class AnswerService : IAnswerService
 
         _logger.LogInformation(
             "Answer {AnswerId} -> Scored ({N} attempt, rubric v{Version}), needs_review={NeedsReview}",
-            answerId, attemptsForVersion, req.RubricVersion, needsReview);
+            answerId, attemptsForVersion, rubricVersion, needsReview);
 
         await TryCompleteSessionAsync(answer.SessionId, ct);
+        return true;
     }
 
     // E9 — neo điểm về mức của tiêu chí. Trả (điểm lưu, level_matched).
@@ -976,7 +1033,7 @@ public class AnswerService : IAnswerService
 
     // ── Callback: worker báo chấm thất bại vĩnh viễn ──────────────────────
     public async Task MarkFailedAsync(
-        Guid answerId, string? reason, CancellationToken ct = default)
+        Guid answerId, string? reason, bool noSpeech = false, CancellationToken ct = default)
     {
         var answer = await _db.PracticeAnswers
             .FirstOrDefaultAsync(a => a.Id == answerId, ct)
@@ -990,15 +1047,75 @@ public class AnswerService : IAnswerService
             return;
         }
 
-        answer.Status = AnswerStatus.Failed;
+        // `noSpeech` = AIService xác nhận bản ghi KHÔNG có tiếng nói (VAD không thấy vùng nào) hoặc
+        // bản chép là rác máy sinh. Đó KHÔNG phải sự cố hệ thống nên không đánh `Failed`: người luyện
+        // đọc lịch sử phải thấy "câu này không có câu trả lời", không phải "hệ thống hỏng".
+        // Về TIỀN hai nhánh như nhau — PAY-13 chỉ hỏi "có answer nào Scored không" — nên đổi nhãn ở
+        // đây không đụng luật trừ/hoàn credit.
+        answer.Status = noSpeech ? AnswerStatus.Skipped : AnswerStatus.Failed;
         await _db.SaveChangesAsync(ct);
 
-        _logger.LogWarning(
-            "Answer {AnswerId} -> Failed (worker báo lỗi vĩnh viễn). Lý do: {Reason}",
-            answerId, reason ?? "(không rõ)");
+        if (noSpeech)
+            _logger.LogInformation(
+                "Answer {AnswerId} -> Skipped (không có tiếng nói trong bản ghi). Lý do: {Reason}",
+                answerId, reason ?? "(không rõ)");
+        else
+            _logger.LogWarning(
+                "Answer {AnswerId} -> Failed (worker báo lỗi vĩnh viễn). Lý do: {Reason}",
+                answerId, reason ?? "(không rõ)");
 
-        // Failed cũng tính là "xong" -> mở đường đóng session đang chờ chấm nốt.
+        // Failed/Skipped cũng tính là "xong" -> mở đường đóng session đang chờ chấm nốt.
         await TryCompleteSessionAsync(answer.SessionId, ct);
+    }
+
+    /// <summary>
+    /// Chốt sổ CƯỠNG BỨC một buổi kẹt ở <c>Scoring</c> quá lâu (gọi từ <see cref="SessionAbandonSweeper"/>).
+    /// </summary>
+    /// <remarks>
+    /// Trước bản vá này KHÔNG sweeper nào phủ trạng thái <c>Scoring</c>: sweeper chỉ quét
+    /// <c>Ready</c>/<c>InProgress</c>. Một attempt chết (message rơi vào DLQ) là buổi nằm <c>Scoring</c>
+    /// VĨNH VIỄN — người luyện không bao giờ thấy điểm, và credit đã reserve không bao giờ được
+    /// consume hay release vì <c>OrphanReservationReconciler</c> chỉ xử session TERMINAL.
+    /// Sự cố 2026-08-15 (session <c>39834dbb</c>).
+    ///
+    /// Thứ tự xử: answer đã có điểm → chốt bằng số attempt đang có (needs_review); answer chưa có
+    /// điểm nào → <c>Skipped</c>. Sau đó <see cref="TryCompleteSessionAsync"/> đóng buổi theo đúng
+    /// luật cũ — kể cả nhánh PAY-13 (không answer nào Scored → <c>SessionAbandoned</c> → Payment
+    /// RELEASE credit, không trừ tiền).
+    /// </remarks>
+    public async Task<bool> FinalizeStuckSessionAsync(Guid sessionId, CancellationToken ct = default)
+    {
+        var session = await _db.PracticeSessions.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+
+        // Chỉ đụng buổi ĐANG kẹt chờ chấm. Buổi khác (đang làm dở / đã đóng) không phải việc ở đây.
+        if (session is null || session.Status != SessionStatus.Scoring) return false;
+
+        var pending = await _db.PracticeAnswers
+            .Include(a => a.Scores)
+            .Where(a => a.SessionId == sessionId
+                        && (a.Status == AnswerStatus.Uploaded || a.Status == AnswerStatus.Scoring))
+            .ToListAsync(ct);
+
+        foreach (var answer in pending)
+        {
+            // Chốt theo rubric_version MỚI NHẤT đã có điểm: nếu rubric bị sửa giữa chừng thì các
+            // attempt cũ thuộc thước đo khác, gộp chung là trộn hai thước (BK23).
+            var rubricVersion = answer.Scores.Count > 0 ? answer.Scores.Max(s => s.RubricVersion) : 0;
+
+            if (rubricVersion > 0
+                && await FinalizeAnswerAsync(answer, session, rubricVersion, force: true, ct))
+                continue;
+
+            answer.Status = AnswerStatus.Skipped;
+            _logger.LogWarning(
+                "Answer {AnswerId} -> Skipped khi chốt sổ buổi kẹt {SessionId} (không có attempt nào chấm được)",
+                answer.Id, sessionId);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        await TryCompleteSessionAsync(sessionId, ct);
+        return true;
     }
 
     private async Task TryCompleteSessionAsync(Guid sessionId, CancellationToken ct)

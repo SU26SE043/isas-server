@@ -437,6 +437,15 @@ class DecideNextResponse(BaseModel):
     missingEvidence: list[str] | None = None
     newEvidenceState: str | None = None
 
+    # Vì sao bản chép KHÔNG DÙNG ĐƯỢC: "no_speech" (VAD không thấy vùng tiếng nói nào — không gọi
+    # engine nào) / "junk_transcript" (cả từ xa lẫn cục bộ đều ra chuỗi rác máy sinh). None = bình
+    # thường. .NET đọc field này để đánh answer `Skipped` và KHÔNG publish job chấm.
+    #
+    # 🔴 TÊN KHOÁ LÀ HỢP ĐỒNG DÂY (`DecideNextResult.RejectReason`). Quên KHAI field ở schema này
+    # thì pydantic NUỐT IM LẶNG giá trị `main.py` truyền vào — đúng lớp bug `focusCriteria` (BC14)
+    # và `metricsVersion`, và hậu quả ở đây là hệ quay lại chấm điểm cho sự im lặng.
+    rejectReason: str | None = None
+
 
 # ── Đối chiếu khuôn mặt (SEC-2/3) — sync HTTP, CampaignService gọi khi giám sát ──────
 class FaceVerifyRequest(BaseModel):

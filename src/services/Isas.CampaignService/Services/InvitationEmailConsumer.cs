@@ -170,8 +170,14 @@ namespace Isas.CampaignService.Services
             }
 
             var link = BuildJoinLink(job.Token);
+            var slot = invitation.SlotId is Guid slotId
+                ? await db.CampaignSlots.FirstOrDefaultAsync(
+                    x => x.Id == slotId && x.CampaignId == invitation.CampaignId, ct)
+                : null;
 
-            await sender.SendInvitationEmailAsync(job.Email, job.CampaignTitle, link, job.ExpiresAt, ct);
+            await sender.SendInvitationEmailAsync(
+                job.Email, job.CampaignTitle, link, job.ExpiresAt,
+                slot?.StartsAt, slot?.EndsAt, ct);
 
             // Đánh dấu đã gửi + persist TRƯỚC BasicAckAsync (caller ack sau khi hàm này trả về) → chống
             // gửi trùng khi redeliver. SMTP gửi 2 lần (crash giữa gửi-và-persist) hiếm & không hại như loop.

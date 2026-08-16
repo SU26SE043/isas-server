@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PaymentService.Models;
@@ -11,9 +12,11 @@ using PaymentService.Models;
 namespace Isas.PaymentService.Migrations
 {
     [DbContext(typeof(PaymentDbContext))]
-    partial class PaymentDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260815031915_AllowAdaptiveOnEveryTier")]
+    partial class AllowAdaptiveOnEveryTier
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -510,9 +513,8 @@ namespace Isas.PaymentService.Migrations
                         .HasDatabaseName("ix_invoices_issued_due_at")
                         .HasFilter("status = 'Issued'");
 
-                    b.HasIndex("OwnerType", "OwnerId", "PeriodEnd")
-                        .IsUnique()
-                        .HasDatabaseName("ux_invoices_owner_period_end");
+                    b.HasIndex("OwnerType", "OwnerId")
+                        .HasDatabaseName("ix_invoices_owner_type_owner_id");
 
                     b.ToTable("invoices", null, t =>
                         {

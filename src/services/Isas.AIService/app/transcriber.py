@@ -20,6 +20,12 @@ SAMPLE_RATE = 16000
 ORIGINAL_EXTENSIONS = {".webm", ".ogg", ".oga", ".mp3", ".m4a", ".mp4", ".mpeg", ".mpga", ".flac", ".wav"}
 OPENAI_MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
+# Lý do từ chối bản chép — HỢP ĐỒNG DÂY với .NET (`AnswerService.NoSpeechReason`,
+# `DecideNextResult.RejectReason`). Đổi chuỗi ở đây mà quên bên kia thì .NET bind ra một giá trị
+# nó không nhận ra → quay về hành vi cũ (chấm sự im lặng) mà KHÔNG lỗi ở đâu cả.
+NO_SPEECH = "no_speech"
+JUNK_TRANSCRIPT = "junk_transcript"
+
 # Tham số VAD — KHÔNG dùng mặc định của thư viện, cả hai giá trị dưới đều cần thiết:
 #
 #   • `min_silence_duration_ms` mặc định là **2000**, tức nó GỘP xuyên qua mọi khoảng lặng ngắn
@@ -57,6 +63,17 @@ class TranscriptionResult:
     text: str
     metrics: DeliveryMetrics | None = None
     engine: str | None = None
+
+    # Vì sao bản chép này KHÔNG DÙNG ĐƯỢC (``None`` = dùng được, đường thường):
+    #   • ``"no_speech"``      — VAD không thấy vùng tiếng nói nào. KHÔNG hề gọi engine nào.
+    #   • ``"junk_transcript"``— cả từ xa lẫn cục bộ đều ra chuỗi rác máy sinh (:func:`looks_broken`).
+    # Cả hai ca ``text`` đều RỖNG: caller không được nhận một chuỗi trông-như-câu-trả-lời.
+    #
+    # 🔴 VÌ SAO CẦN: quan sát trên prod 2026-08-15 — bản ghi im lặng 8 giây, `whisper-1` trả
+    # "Hãy subscribe cho kênh Ghiền Mì Gõ…", `looks_broken` bắt được và rơi về Whisper cục bộ,
+    # rồi CỤC BỘ ĐẺ RA ĐÚNG CHUỖI ĐÓ — nhưng nhánh cục bộ không ai kiểm nên nó đi thẳng vào bộ
+    # chấm và sinh ra một điểm số có thật cho một câu trả lời không tồn tại.
+    reject_reason: str | None = None
 
 
 class Transcriber:
@@ -127,7 +144,31 @@ class Transcriber:
         # cuối segment.
         audio_sec = len(pcm) / SAMPLE_RATE
 
-        text, engine, whisper_segments = self._text(pcm, language, audio_sec, audio_path)
+        # CỔNG IM LẶNG — chạy TRƯỚC mọi lượt chép lời. Không có vùng tiếng nói nào ⇒ không có gì để
+        # chép: trả rỗng kèm lý do, KHÔNG gọi nhà cung cấp nào (tiết kiệm luôn một lượt API).
+        #
+        # Cố ý hỏi VAD chứ không hỏi `delivery_metrics_source`: cần gạt đó chọn nguồn MỐC THỜI GIAN
+        # cho F11, còn "bản ghi này có tiếng người không" thì chỉ VAD trả lời được — biên segment
+        # của Whisper trên audio im lặng chính là thứ đang bịa ra câu trả lời.
+        # `None` = CHƯA chạy VAD. Giữ lười để cấu hình quay lui `delivery_metrics_source="whisper"`
+        # + cổng TẮT vẫn không tốn một lượt VAD nào (hợp đồng cũ). Cổng BẬT thì VAD chạy đúng MỘT
+        # lần và `_timing_spans` dùng lại kết quả đó.
+        vad_spans: list[Segment] | None = None
+        if settings.silence_gate_enabled:
+            vad_spans = self._vad_spans(pcm)
+            if not vad_spans:
+                logger.warning(
+                    "Bản ghi %.1fs KHÔNG có vùng tiếng nói nào (VAD) — bỏ chép lời, trả %s",
+                    audio_sec, NO_SPEECH)
+                return TranscriptionResult(
+                    text="", metrics=None, engine=None, reject_reason=NO_SPEECH)
+
+        text, engine, whisper_segments, reject = self._text(pcm, language, audio_sec, audio_path)
+
+        # Bản chép bị từ chối ⇒ KHÔNG kèm chỉ số: số đo của một bản chép không dùng được chỉ làm
+        # prompt chấm tin vào thứ không có thật (đúng lớp lỗi F11 đã diệt).
+        if reject is not None:
+            return TranscriptionResult(text="", metrics=None, engine=engine, reject_reason=reject)
 
         return TranscriptionResult(
             text=text,
@@ -135,15 +176,15 @@ class Transcriber:
                 text,
                 # Nhà cung cấp từ xa KHÔNG trả biên segment ⇒ cần cờ này để cần gạt quay lui
                 # `delivery_metrics_source="whisper"` không âm thầm đo trên danh sách rỗng.
-                self._timing_spans(pcm, whisper_segments,
+                self._timing_spans(pcm, whisper_segments, vad_spans,
                                    whisper_available=engine.startswith(f"{LOCAL}:")),
                 audio_sec, language),
             engine=engine,
         )
 
     def _text(self, pcm, language: str | None, audio_sec: float,
-              audio_path: str) -> tuple[str, str, list[Segment]]:
-        """Lấy phần CHỮ. Trả ``(text, engine, whisper_segments)``.
+              audio_path: str) -> tuple[str, str, list[Segment], str | None]:
+        """Lấy phần CHỮ. Trả ``(text, engine, whisper_segments, reject_reason)``.
 
         Nhà cung cấp từ xa không trả biên segment ⇒ ``whisper_segments`` rỗng ở nhánh đó. Mốc
         thời gian KHÔNG đi qua đây — nó luôn là việc của VAD (:meth:`_timing_spans`), nên đổi
@@ -169,7 +210,7 @@ class Transcriber:
                     text, engine = transcribe_remote(provider, pcm_to_wav_bytes(pcm, SAMPLE_RATE), language, audio_sec)
                 reason = looks_broken(text)
                 if reason is None:
-                    return text, engine, []
+                    return text, engine, [], None
                 # Bản chép hỏng KHÔNG được đi tiếp trong im lặng: nó vẫn là chuỗi ký tự hợp lệ
                 # và bộ chấm sẽ chấm nó như thật. Xem `looks_broken` để biết ca đã quan sát được.
                 logger.warning(
@@ -179,7 +220,19 @@ class Transcriber:
                 logger.warning(
                     "Chép lời bằng %s hỏng — dùng lại Whisper cục bộ", provider, exc_info=True)
 
-        return self._transcribe_local(pcm, language)
+        text, engine, collected = self._transcribe_local(pcm, language)
+
+        # 🔴 Nhánh dự phòng PHẢI qua CÙNG một cổng kiểm với nhánh từ xa. Thiếu vế này chính là lỗ
+        # đã lọt trên prod 2026-08-15: `whisper-1` ra chuỗi rác → guard bắt được → rơi về cục bộ →
+        # cục bộ ra ĐÚNG chuỗi rác đó → không ai kiểm → vào thẳng bộ chấm. Guard chỉ canh cửa trước
+        # trong khi cả hai cửa mở ra cùng một phòng.
+        reason = looks_broken(text)
+        if reason is not None:
+            logger.warning(
+                "Whisper cục bộ CŨNG ra bản chép hỏng (%s) — từ chối, không chấm", reason)
+            return "", engine, collected, JUNK_TRANSCRIPT
+
+        return text, engine, collected, None
 
     @staticmethod
     def _should_retry_original_as_wav(error: Exception) -> bool:
@@ -231,7 +284,20 @@ class Transcriber:
         text = " ".join(s.text.strip() for s in collected).strip()
         return text, f"{LOCAL}:{settings.whisper_model}", collected
 
+    def _vad_spans(self, pcm) -> list[Segment]:
+        """Các vùng CÓ TIẾNG NÓI theo VAD. Rỗng ⇔ bản ghi không có tiếng người.
+
+        Tách hàm vì nay có HAI người dùng: cổng im lặng (:meth:`transcribe_detailed`) và nguồn mốc
+        thời gian của F11 (:meth:`_timing_spans`) — chạy VAD hai lần trên cùng mảng là trả tiền
+        gấp đôi cho cùng một câu trả lời, ngay trên đường ĐỒNG BỘ của `/decide-next`.
+        """
+        return [
+            Segment(start=t["start"] / SAMPLE_RATE, end=t["end"] / SAMPLE_RATE, text="")
+            for t in get_speech_timestamps(pcm, VAD_OPTIONS, sampling_rate=SAMPLE_RATE)
+        ]
+
     def _timing_spans(self, pcm, whisper_segments: list[Segment],
+                      vad_spans: list[Segment] | None = None,
                       *, whisper_available: bool = True) -> list[Segment]:
         """Các vùng CÓ TIẾNG NÓI dùng để tính khoảng lặng / tỉ lệ im lặng / tốc độ nói.
 
@@ -251,10 +317,8 @@ class Transcriber:
             logger.warning(
                 "delivery_metrics_source='whisper' nhưng bản chép đến từ nhà cung cấp từ xa "
                 "(không có biên segment) — đo bằng VAD")
-        return [
-            Segment(start=t["start"] / SAMPLE_RATE, end=t["end"] / SAMPLE_RATE, text="")
-            for t in get_speech_timestamps(pcm, VAD_OPTIONS, sampling_rate=SAMPLE_RATE)
-        ]
+        # `None` = cổng im lặng tắt nên chưa ai chạy VAD → chạy tại đây (đường cũ).
+        return vad_spans if vad_spans is not None else self._vad_spans(pcm)
 
     def transcribe(self, audio_path: str, language: str | None = "vi") -> str:
         """Chỉ lấy text — giữ nguyên chữ ký cũ cho call site không cần chỉ số."""

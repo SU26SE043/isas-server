@@ -38,14 +38,35 @@ public class AiServiceSpeechSynthesizer : IAiServiceSpeechSynthesizer
         };
         msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
 
+        // Đo thời gian để log phân biệt được "hết giờ" với "lỗi ngay lập tức". Không có con số này
+        // thì giả thuyết cold-start (nạp giọng lần đầu) không kiểm chứng được từ log — mà đó đúng
+        // là triệu chứng đã báo: câu ĐẦU của buổi hỏng, các lần sau bình thường.
+        var started = System.Diagnostics.Stopwatch.StartNew();
         HttpResponseMessage response;
         try
         {
             response = await _httpClient.SendAsync(msg, ct);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
         {
-            _logger.LogError(ex, "Không gọi được AIService /tts");
+            // `ct` chưa bị huỷ ⇒ HttpClient tự huỷ vì HẾT GIỜ, không phải người dùng bỏ trang.
+            _logger.LogError(ex,
+                "AIService /tts HẾT GIỜ sau {Elapsed}ms (timeout client {Timeout}s)",
+                started.ElapsedMilliseconds, _httpClient.Timeout.TotalSeconds);
+            throw new AiServiceException("AIService /tts hết giờ", ex) { IsTimeout = true };
+        }
+        catch (TaskCanceledException ex)
+        {
+            // Người dùng rời trang/huỷ request — KHÔNG phải lỗi của TTS, đừng đếm vào lỗi vendor.
+            _logger.LogInformation(ex,
+                "Người gọi huỷ request /tts sau {Elapsed}ms", started.ElapsedMilliseconds);
+            throw new AiServiceException("Request /tts bị huỷ", ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex,
+                "Không nối được AIService /tts sau {Elapsed}ms (mạng/DNS/cổng — KHÔNG phải lỗi vendor TTS)",
+                started.ElapsedMilliseconds);
             throw new AiServiceException("Không gọi được AIService /tts", ex);
         }
 
@@ -54,15 +75,19 @@ public class AiServiceSpeechSynthesizer : IAiServiceSpeechSynthesizer
             if (!response.IsSuccessStatusCode)
             {
                 var error = await response.Content.ReadAsStringAsync(ct);
-                _logger.LogError("AIService /tts lỗi: {StatusCode} - {Error}",
-                    response.StatusCode, error);
+                // Phân biệt rõ trong log: đây là AIService TRẢ LỜI bằng mã lỗi (có thân lỗi để đọc),
+                // khác hẳn hai nhánh hết-giờ/không-nối-được ở trên.
+                _logger.LogError(
+                    "AIService /tts TRẢ LỖI {StatusCode} sau {Elapsed}ms - {Error}",
+                    (int)response.StatusCode, started.ElapsedMilliseconds, error);
                 throw new AiServiceException($"AIService /tts trả {(int)response.StatusCode}");
             }
 
             var bytes = await response.Content.ReadAsByteArrayAsync(ct);
             if (bytes.Length == 0)
             {
-                _logger.LogError("AIService /tts trả audio rỗng");
+                _logger.LogError("AIService /tts trả 200 nhưng audio RỖNG (sau {Elapsed}ms)",
+                    started.ElapsedMilliseconds);
                 throw new AiServiceException("AIService /tts trả audio rỗng");
             }
 
