@@ -53,17 +53,30 @@ public record PracticeSessionPreset(
 public record PracticeSessionPreview(int QuestionCount, int SeedCount);
 
 // I1 (B2B): Campaign gửi tiêu chí CÓ CẤU TRÚC kèm khi tạo session → materialize thành rubric_criteria(campaign_id).
+/// <summary>
+/// Một MỐC ĐIỂM của tiêu chí campaign (E9 hard-anchor): điểm này nghĩa là ứng viên đã làm/nói được gì.
+/// Map 1-1 sang <c>rubric_levels</c> lúc materialize.
+/// </summary>
+public record CampaignCriterionLevelInput(int Score, string Descriptor);
+
 public record CampaignCriterionInput(
     string Name,
     string? Description,
     decimal Weight,    // Σ/campaign = 1 (chuẩn hoá phía Campaign)
-    int MaxScore
+    int MaxScore,
+    // E9 — mốc điểm HR soạn (AI gợi ý rồi HR sửa). null/rỗng = không có mốc ⇒ AIService rơi về dải
+    // mặc định 0..maxScore như trước, KHÔNG phải lỗi. Optional ở CUỐI record để bản Campaign cũ —
+    // chưa biết field này — vẫn gọi được endpoint mà không vỡ (hai service deploy không nguyên tử).
+    IReadOnlyList<CampaignCriterionLevelInput>? Levels = null
 );
 
 // I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).
 // I2: ExpiresAt = hạn chót nhận bài (campaigns.expires_at) → set session.Deadline; null = không hard-deadline.
 // Phỏng vấn THÍCH ỨNG (B2B): Adaptive*/MaxFollowUps/MaxQuestions do Campaign/HR bật (optional; null = tắt).
 // Seed = toàn bộ campaign questions (ai cũng nhận) → câu thích ứng thêm ở đuôi, chấm theo CÙNG tiêu chí.
+/// <summary>Một câu campaign kèm đáp án mẫu HR soạn (null = chưa soạn).</summary>
+public record CampaignQuestionInput(string Text, string? SampleAnswer = null);
+
 public record CreateCampaignSessionRequest(
     Guid CampaignId,
     Guid OrgId,        // BK14: chủ ví credit (owner=Org) để reserve khi tạo session B2B (PAY-6)
@@ -78,7 +91,17 @@ public record CreateCampaignSessionRequest(
     int? MaxDeepPerQuestion = null,
     string? Language = null,
     // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
-    string? Seniority = null
+    string? Seniority = null,
+    // Phiên bản bộ tiêu chí do CampaignService cấp (campaigns.rubric_version). Interview chỉ CHÉP —
+    // xem ghi chú ở PracticeSession.CampaignRubricVersion. null (Campaign bản cũ) => 1, tức khớp mọi
+    // row đang có trên prod ⇒ hành vi giống hệt trước thay đổi này.
+    int? RubricVersion = null,
+    // Câu hỏi KÈM đáp án mẫu. Cố ý là field RIÊNG chứ không đổi kiểu `Questions` sẵn có: hai service
+    // deploy không nguyên tử, nên trong cửa sổ giữa hai lần khởi động phải có một bản Campaign mới nói
+    // chuyện được với bản Interview cũ và ngược lại. Campaign gửi CẢ HAI; Interview ưu tiên field này,
+    // vắng thì rơi về `Questions`. Gỡ `Questions` là việc của một đợt sau, khi cả hai bên đã lên.
+    // ⚠ Nếu có thì SỐ LƯỢNG và THỨ TỰ phải khớp `Questions` — Interview không tự ghép lại.
+    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -104,7 +127,13 @@ public record CreateCampaignSessionInternalRequest(
     string? Language = null,
     // Nullable — cùng hợp đồng với CreatePracticeSessionRequest.Seniority (null = Junior, rỗng = 400).
     // Campaign gửi field này; client cũ chưa gửi vẫn ra Junior thay vì 400.
-    string? Seniority = null
+    string? Seniority = null,
+    // Câu hỏi KÈM đáp án mẫu (xem CreateCampaignSessionRequest.QuestionDetails). Optional ở CUỐI record
+    // để bản Campaign cũ — chưa biết field này — vẫn gọi được endpoint mà không vỡ.
+    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null,
+    // Phiên bản bộ tiêu chí (campaigns.rubric_version). Khoá JSON trên dây: `rubricVersion`
+    // (JsonSerializerDefaults.Web ⇒ camelCase). null = Campaign bản cũ ⇒ Interview coi là 1.
+    int? RubricVersion = null
 );
 public record PracticeSessionResponse(
     Guid Id,
@@ -200,7 +229,22 @@ public record SessionResultResponse(
     IReadOnlyList<Guid> NeedsImprovement,   // criterionId của tiêu chí dưới ngưỡng
     string? OverallComment = null,  // BC10 — nhận xét chung (AI); null trong BC9
     CvVsAnswerReportResponse? CvVsAnswer = null,  // BC8 — đối chiếu CV↔trả lời; null nếu không có CV đã phân tích
-    BenchmarkResponse? Benchmark = null   // F14 — mốc đối chiếu (lớp 2 của radar); null khi tắt/không dựng được
+    BenchmarkResponse? Benchmark = null,   // F14 — mốc đối chiếu (lớp 2 của radar); null khi tắt/không dựng được
+    /// <summary>
+    /// Thước đo đã chấm buổi này: <c>SystemDefault</c> (bộ chuẩn hệ thống) · <c>Custom</c> (rubric
+    /// riêng của chính người luyện) · <c>null</c> = KHÔNG BIẾT (buổi có trước cặp cột ghim).
+    ///
+    /// <para><b>Vì sao phải nói ra:</b> người luyện sửa rubric riêng cho lệch, điểm tụt, và trước đây
+    /// không một chữ nào nói rằng họ đang bị chấm bằng thước do CHÍNH HỌ đặt — nên họ kết luận hệ
+    /// thống chấm sai.</para>
+    ///
+    /// <para>⚠ Đọc THẲNG từ hai cột con dấu của buổi, KHÔNG tra lại trạng thái lúc hiển thị: tra lại
+    /// là quay về đúng lỗi "hỏi trạng thái lúc chấm" mà con dấu sinh ra để chặn — người vừa lưu rubric
+    /// riêng sẽ thấy buổi CŨ của mình bị gắn nhãn sai. Và <c>null</c> giữ nghĩa "không biết", không
+    /// bao giờ được vẽ thành <c>SystemDefault</c> (BK23).</para>
+    /// </summary>
+    string? RubricSource = null,
+    int? RubricVersion = null
 );
 
 // F14 (FR08) — mốc đối chiếu vẽ chồng lên radar năng lực.

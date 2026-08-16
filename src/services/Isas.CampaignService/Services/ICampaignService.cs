@@ -29,6 +29,45 @@ namespace Isas.CampaignService.Services
         /// count ngoài 1..20) → 400 · DownstreamServiceException (AI lỗi hoặc trả rỗng) → 502.
         /// </summary>
         Task<CampaignResponse> GenerateCampaignQuestionsAsync(Guid orgId, Guid actorUserId, Guid id, int? count, CancellationToken ct);
+
+        /// <summary>
+        /// CAMP-16 — AI đề xuất mốc điểm cho các tiêu chí hiện có. CHỈ ĐỌC, không ghi DB: HR xem/sửa
+        /// rồi lưu qua PUT /campaign/{id} (một cửa ghi duy nhất ⇒ validate/audit/bump ở một chỗ).
+        /// </summary>
+        Task<SuggestCriterionLevelsResponse> SuggestCriterionLevelsAsync(Guid orgId, Guid id, CancellationToken ct);
+
+        /// <summary>
+        /// CAMP-20 — chép BỘ CHUẨN B2C (admin soạn, theo nghề + ngôn ngữ) vào campaign: THAY THẾ toàn
+        /// bộ tiêu chí đang có, mang theo mốc điểm, đóng nhãn <c>SystemDefault</c>.
+        ///
+        /// <para>CHÉP chứ không tham chiếu (quyết định 4): admin sửa bản gốc về sau KHÔNG đụng vào
+        /// chiến dịch đang tuyển — đúng thứ cơ chế phiên bản CAMP-18 dựng lên để chặn.</para>
+        ///
+        /// <para>Ném: KeyNotFound (ngoài org) → 404 · InvalidOperation (Closed/Archived) → 409 ·
+        /// Argument (jobCategory/language thiếu hoặc sai) → 400 · DownstreamServiceException
+        /// (Interview lỗi, hoặc admin chưa soạn bộ cho tổ hợp này) → 502.</para>
+        /// </summary>
+        Task<CampaignResponse> ApplySystemDefaultCriteriaAsync(
+            Guid orgId, Guid actorUserId, Guid id, ApplySystemDefaultCriteriaRequest request, CancellationToken ct);
+
+        /// <summary>
+        /// CAMP-20 — XEM TRƯỚC bộ chuẩn B2C. <b>CHỈ ĐỌC: không chạm DbContext, không ghi row nào.</b>
+        /// Không nhận <c>campaignId</c> vì bộ chuẩn không thuộc campaign nào (gác role ở controller).
+        ///
+        /// <para>Ném: Argument (thiếu/sai jobCategory|language) → 400 ·
+        /// <see cref="SystemRubricNotFoundException"/> (admin chưa soạn bộ) → <b>404</b> ·
+        /// <see cref="DownstreamServiceException"/> (Interview lỗi) → 502.</para>
+        /// </summary>
+        Task<SystemDefaultRubricPreviewResponse> PreviewSystemDefaultCriteriaAsync(
+            string? jobCategory, string? language, CancellationToken ct);
+
+        /// <summary>
+        /// Đọc file CSV câu hỏi → trả danh sách để HR xem trước. <b>KHÔNG ghi gì vào cơ sở dữ liệu</b> —
+        /// HR bấm Lưu thì mới đi qua <see cref="UpdateCampaignQuestionsAsync"/>.
+        /// Ném: KeyNotFound → 404 · InvalidOperation (≠ Draft) → 409 · Argument (file hỏng/sai định dạng/
+        /// thiếu cột/quá số dòng) → 400. Lỗi của TỪNG DÒNG không ném — nằm trong <c>Errors</c>.
+        /// </summary>
+        Task<ImportQuestionsResult> ImportQuestionsAsync(Guid orgId, Guid id, IFormFile file, CancellationToken ct);
         Task<Stream> DownloadCampaignFilesAsync(Guid orgId, Guid id, string fileType, CancellationToken ct);
         Task<CampaignResponse> PublishCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
         /// <summary>HR sửa bộ nhu cầu công việc dùng để sàng CV (replace-all, chỉ khi Draft — CAMP-2).</summary>

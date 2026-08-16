@@ -64,6 +64,11 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // biết (BK23). null phải giữ đúng nghĩa "không biết".
         e.Property(x => x.ScoringScopeVersion);
 
+        // Ghim phiên bản rubric campaign — nullable, KHÔNG default: B2C không có rubric campaign nên
+        // null ở đó là đúng nghĩa "không áp dụng". Buổi B2B cũ được backfill = 1 trong migration
+        // (giá trị đã biết chắc, xem ghi chú ở entity), không phải bằng DB default.
+        e.Property(x => x.CampaignRubricVersion);
+
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 
@@ -150,6 +155,10 @@ public class PracticeQuestionConfiguration : IEntityTypeConfiguration<PracticeQu
         e.HasKey(x => x.Id);
 
         e.Property(x => x.Content).IsRequired();
+        // Snapshot đáp án mẫu HR soạn (B2B). Cột `text` như Content — không HasMaxLength: trần độ dài
+        // đã chặn ở CampaignService (nơi HR nhập, trả 400 có chữ), thêm trần ở đây chỉ đổi lấy một lỗi
+        // Postgres thô ở giữa luồng tạo session, SAU khi đã giữ credit của tổ chức.
+        e.Property(x => x.SampleAnswer);
         e.Property(x => x.OrderNo).IsRequired();
         e.Property(x => x.TimeLimitSec).IsRequired();
         e.Property(x => x.CreatedAt).IsRequired();

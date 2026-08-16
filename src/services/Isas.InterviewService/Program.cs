@@ -37,6 +37,8 @@ builder.Services.AddScoped<IQuestionSpeechService, QuestionSpeechService>();   /
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
 builder.Services.AddScoped<IRepoAnalysisService, RepoAnalysisService>(); // BC18
 builder.Services.AddScoped<IRubricLibraryService, RubricLibraryService>();   // BC16 — rubric cá nhân B2C
+builder.Services.AddScoped<IAdminB2CRubricService, AdminB2CRubricService>();   // admin quản bộ chuẩn B2C
+builder.Services.AddScoped<IAdminRubricPreviewService, AdminRubricPreviewService>();   // chấm thử bộ chuẩn
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
 builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
@@ -65,6 +67,20 @@ builder.Services.AddHttpClient<IAiServiceQuestionGenerator,AiServiceQuestionGene
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
     c.Timeout = TimeSpan.FromSeconds(90);  // SC3/QV1: quality retry and verification can exceed one generation
+});
+
+builder.Services.AddHttpClient<IRubricPreviewClient, AiServiceRubricPreviewClient>(c =>   // chấm thử bộ chuẩn
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    // 180s: một lượt sinh 3 bài mẫu RỒI chấm từng bài — đo bên B2B là 25–40s, và ca xấu (retry parity
+    // độ dài) nối thêm một lượt sinh nữa. Copy nhầm 5s của EntitlementClient ở đây thì mọi lượt chấm
+    // thử đều timeout mà không ai hiểu vì sao.
+    c.Timeout = TimeSpan.FromSeconds(180);
+});
+builder.Services.AddHttpClient<IAiServiceLevelSuggester, AiServiceLevelSuggester>(c =>   // AI soạn mốc
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(90);   // 1 lượt LLM + 1 lần thử lại
 });
 
 builder.Services.AddHttpClient<IAiServiceCvAnalyzer, AiServiceCvAnalyzer>(c =>   // BC7

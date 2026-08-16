@@ -218,9 +218,13 @@ public class CampaignStructuredCriteriaTests
             svc.CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), NewCreateReq(criteria), default));
     }
 
-    // (d) sửa criteria khi campaign Active → InvalidOperationException (→409). KHÔNG đụng bộ cũ.
+    // (d) ⚠ TIỀN ĐỀ ĐÃ ĐẢO Ở CAMP-18, CÓ CHỦ ĐÍCH. Trước đây: sửa criteria khi Active → 409.
+    // Nay: Draft VÀ Active đều sửa được (quyết định sản phẩm 8 — cho sửa thước đo trên chiến dịch
+    // đang chạy, chỉ áp cho người thi sau). An toàn nhờ rubric_version bump + nhãn ở bảng xếp hạng.
+    // Vế 409 của CAMP-2 chuyển sang Closed/Archived — xem CampaignRubricVersionTests.
+    // CÂU HỎI thì CAMP-2 nguyên vẹn (Active → 409) — xem test ghép ở CampaignCriterionLevelTests.
     [Fact]
-    public async Task Update_criteria_khi_Active_nem_InvalidOperationException()
+    public async Task Update_criteria_khi_Active_duoc_phep_va_bump_version()
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
@@ -236,14 +240,14 @@ public class CampaignStructuredCriteriaTests
             Criteria = new List<CriterionItem> { new() { Name = "New", Weight = 1.0m, MaxScore = 5 } }
         };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.UpdateCampaignAsync(owner, owner, camp.Id, req, default));
+        await svc.UpdateCampaignAsync(owner, owner, camp.Id, req, default);
 
-        // bộ cũ giữ nguyên (không nửa vời)
         using var check = tdb.NewContext();
         var rows = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id).ToListAsync();
-        Assert.Single(rows);
-        Assert.Equal("Keep", rows[0].Name);
+        Assert.Equal("New", Assert.Single(rows).Name);
+        // Đổi thước đo trên chiến dịch đang chạy PHẢI để lại dấu — nếu không, điểm của người thi
+        // trước và sau bị đem so thẳng ở bảng xếp hạng mà không ai thấy.
+        Assert.Equal(2, (await check.Campaigns.FirstAsync(c => c.Id == camp.Id)).RubricVersion);
     }
 
     // (e) publish với criteria[] HrEdited có sẵn → KHÔNG gọi AI, giữ nguyên tiêu chí.

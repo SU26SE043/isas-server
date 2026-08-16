@@ -22,6 +22,100 @@ namespace Isas.InterviewService.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Isas.InterviewService.Entities.AdminRubricPreviewRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("ErrorReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("error_reason");
+
+                    b.Property<string>("JobCategory")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("job_category");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("vi")
+                        .HasColumnName("language");
+
+                    b.Property<bool>("LengthParityWarning")
+                        .HasColumnType("boolean")
+                        .HasColumnName("length_parity_warning");
+
+                    b.Property<int?>("PromptVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("prompt_version");
+
+                    b.Property<string>("QuestionText")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("question_text");
+
+                    b.Property<string>("RubricFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("rubric_fingerprint");
+
+                    b.Property<string>("RubricSnapshot")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("rubric_snapshot");
+
+                    b.Property<int>("RubricVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("rubric_version");
+
+                    b.Property<string>("Samples")
+                        .HasColumnType("text")
+                        .HasColumnName("samples");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id")
+                        .HasName("pk_admin_rubric_preview_runs");
+
+                    b.HasIndex("JobCategory", "Language", "CreatedAt")
+                        .HasDatabaseName("ix_admin_rubric_preview_runs_scope_created");
+
+                    b.HasIndex("JobCategory", "Language", "RubricVersion")
+                        .IsUnique()
+                        .HasDatabaseName("ux_admin_rubric_preview_runs_running")
+                        .HasFilter("status = 'Running'");
+
+                    b.ToTable("admin_rubric_preview_runs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_admin_rubric_preview_runs_language", "language IN ('vi', 'en')");
+
+                            t.HasCheckConstraint("ck_admin_rubric_preview_runs_status", "status IN ('Running', 'Succeeded', 'Failed')");
+                        });
+                });
+
             modelBuilder.Entity("Isas.InterviewService.Entities.AnswerScore", b =>
                 {
                     b.Property<Guid>("Id")
@@ -479,6 +573,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("root_question_id");
 
+                    b.Property<string>("SampleAnswer")
+                        .HasColumnType("text")
+                        .HasColumnName("sample_answer");
+
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
                         .HasColumnName("session_id");
@@ -530,9 +628,21 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("answered_count");
 
+                    b.Property<Guid?>("B2CRubricOwnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("b2c_rubric_owner_id");
+
+                    b.Property<int?>("B2CRubricVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("b2c_rubric_version");
+
                     b.Property<Guid?>("CampaignId")
                         .HasColumnType("uuid")
                         .HasColumnName("campaign_id");
+
+                    b.Property<int?>("CampaignRubricVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("campaign_rubric_version");
 
                     b.Property<Guid>("CandidateId")
                         .HasColumnType("uuid")
@@ -1126,11 +1236,21 @@ namespace Isas.InterviewService.Migrations
                     b.HasIndex("CampaignId")
                         .HasDatabaseName("ix_rubric_criteria_campaign_id");
 
+                    b.HasIndex("CampaignId", "Version", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ux_rubric_criteria_campaign_version_name")
+                        .HasFilter("campaign_id IS NOT NULL");
+
                     b.HasIndex("JobCategory", "Version", "IsActive")
                         .HasDatabaseName("ix_rubric_criteria_job_category_version_is_active");
 
                     b.HasIndex("CandidateId", "JobCategory", "Language", "IsActive")
                         .HasDatabaseName("ix_rubric_criteria_candidate_id_job_category_language_is_active");
+
+                    b.HasIndex("JobCategory", "Language", "Version", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ux_rubric_criteria_b2c_default_version_name")
+                        .HasFilter("campaign_id IS NULL AND candidate_id IS NULL");
 
                     b.ToTable("rubric_criteria", null, t =>
                         {

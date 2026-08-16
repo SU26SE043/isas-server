@@ -47,10 +47,27 @@ public class InternalSessionsController : ControllerBase
             ? cat
             : JobCategory.BE;
 
+        // QuestionDetails (câu + đáp án mẫu) chỉ dùng khi ĐỦ và KHỚP SỐ LƯỢNG với Questions. Lệch số
+        // lượng nghĩa là hai phía đang nói về hai bộ câu khác nhau — ghép theo chỉ số lúc đó sẽ gán đáp
+        // án của câu này cho câu kia, tức chấm sai mà không lỗi nào nổ. Thà bỏ đáp án (chấm như trước)
+        // còn hơn chấm bằng đáp án gán nhầm.
+        var details = req.QuestionDetails is { Count: > 0 } d && d.Count == req.Questions.Count
+            ? d
+            : null;
+        if (req.QuestionDetails is { Count: > 0 } mismatched && mismatched.Count != req.Questions.Count)
+            _logger.LogWarning(
+                "create-or-get campaign session {CampaignId}: questionDetails có {Details} phần tử nhưng "
+                + "questions có {Questions} — bỏ qua đáp án mẫu cho buổi này",
+                req.CampaignId, mismatched.Count, req.Questions.Count);
+
+        var criteria = SanitizeCriterionLevels(req.Criteria, req.CampaignId);
+
         var request = new CreateCampaignSessionRequest(
-            req.CampaignId, req.OrgId, jobCategory, req.Questions, req.Criteria, req.ExpiresAt,
+            req.CampaignId, req.OrgId, jobCategory, req.Questions, criteria, req.ExpiresAt,
             req.AdaptiveEnabled, req.MaxFollowUps, req.MaxQuestions,
-            req.MaxDeepPerQuestion, req.Language, req.Seniority);   // phỏng vấn THÍCH ỨNG (B2B) — INT-17b: trần đào sâu mỗi câu
+            req.MaxDeepPerQuestion, req.Language, req.Seniority,   // phỏng vấn THÍCH ỨNG (B2B) — INT-17b: trần đào sâu mỗi câu
+            req.RubricVersion,
+            details);
 
         try
         {
@@ -138,5 +155,39 @@ public class InternalSessionsController : ControllerBase
             return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// E9 — bỏ TOÀN BỘ mốc điểm của tiêu chí nào có thang méo, giữ nguyên các tiêu chí khác.
+    ///
+    /// Thang méo là loại hỏng KHÔNG có triệu chứng: hai mốc trùng <c>score</c> làm phép snap điểm về
+    /// mức (cả phía Python lẫn phía C#) chọn KHÔNG XÁC ĐỊNH; mốc vượt <c>maxScore</c> thì điểm ứng
+    /// viên bị neo vào một mức nằm ngoài thang. Cả hai đều ra điểm "trông hợp lệ".
+    ///
+    /// Bỏ mốc ⇒ tiêu chí đó rơi về dải mặc định 0..maxScore, tức chấm ĐÚNG NHƯ TRƯỚC khi có tính năng
+    /// này. Thà chấm như hôm nay còn hơn chấm bằng thang méo. Đây là lá chắn thứ hai — Campaign phải
+    /// chặn 400 ngay lúc HR lưu; ở đây fail-soft vì hai service deploy KHÔNG nguyên tử.
+    /// </summary>
+    private IReadOnlyList<CampaignCriterionInput> SanitizeCriterionLevels(
+        IReadOnlyList<CampaignCriterionInput> criteria, Guid campaignId)
+    {
+        return criteria.Select(c =>
+        {
+            if (c.Levels is not { Count: > 0 } levels) return c;
+
+            var invalidScore = levels.Where(l => l.Score < 0 || l.Score > c.MaxScore).ToList();
+            var duplicated = levels.GroupBy(l => l.Score).Any(g => g.Count() > 1);
+            var blankDescriptor = levels.Any(l => string.IsNullOrWhiteSpace(l.Descriptor));
+            if (invalidScore.Count == 0 && !duplicated && !blankDescriptor) return c;
+
+            _logger.LogWarning(
+                "Campaign {CampaignId}: bỏ mốc điểm của tiêu chí '{Criterion}' vì thang méo "
+                + "(ngoài [0,{MaxScore}]: {Invalid}; trùng điểm: {Duplicated}; mô tả rỗng: {Blank}) "
+                + "— tiêu chí này rơi về dải mặc định",
+                campaignId, c.Name, c.MaxScore,
+                string.Join(",", invalidScore.Select(l => l.Score)), duplicated, blankDescriptor);
+
+            return c with { Levels = null };
+        }).ToList();
     }
 }

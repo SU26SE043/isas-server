@@ -14,6 +14,7 @@ from app.question_quality import coverage_defects, verify_defect
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
+    build_criterion_levels_prompt, build_preview_answers_prompt, PREVIEW_BANDS,
     build_cv_analysis_prompt, build_repo_analysis_prompt,
     build_job_needs_prompt, build_cv_screening_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
@@ -37,6 +38,43 @@ logger = logging.getLogger(__name__)
 # Dấu câu kết. Cố ý gồm cả `.`/`!` chứ không chỉ `?`: câu mệnh lệnh ("Hãy mô tả cách bạn xử lý lỗi.")
 # là câu hỏi hợp lệ, ép dấu `?` sẽ bắt oan đúng nhóm câu tự nhiên nhất.
 _QUESTION_TERMINATORS = "?.!…。？！"
+
+# E9b — độ dài tối thiểu của một descriptor mốc.
+#
+# KHÔNG phải để đo chất lượng — ngưỡng ký tự không đo được cái đó. Nó chặn đúng một hình dạng đầu
+# ra hỏng: model trả lại chính nhãn điểm ("Mức 3/5", "Khá", "Đạt"). Đó là thứ dải mặc định đang in
+# ra, tức là nếu để lọt thì tính năng vừa xây trả về đúng cái nó sinh ra để thay thế, và HR không
+# có cách nào nhận ra vì màn hình vẫn có chữ.
+LEVEL_DESCRIPTOR_MIN_CHARS = 20
+
+# E9b — trần chênh lệch độ dài giữa bài dài nhất và bài ngắn nhất trong bộ 3 bài chấm thử.
+#
+# Vì sao phải đo chứ không chỉ dặn trong prompt: đây là confound có thể làm CẢ TÍNH NĂNG vô nghĩa
+# mà vẫn "xanh". Ba bài dài 60/150/300 từ sẽ cho ba điểm khác nhau — trông y hệt một thước đo tốt
+# — trong khi thứ được đo là độ dài. Và nếu bộ chấm cũng thưởng độ dài (điều ta đang muốn phát
+# hiện) thì dải điểm đẹp đó lại đi XÁC NHẬN đúng cái lỗi cần thấy.
+#
+# 1.35 chứ không phải 1.0: ép bằng nhau tuyệt đối sẽ khiến model độn chữ cho đủ số từ, và bài độn
+# chữ cũng không còn là bài thật của một ứng viên nữa.
+PREVIEW_LENGTH_RATIO_MAX = 1.35
+
+
+def preview_word_count(text: str) -> int:
+    """Đếm "từ" cho luật parity. Tách theo khoảng trắng — với tiếng Việt đây là số ÂM TIẾT chứ
+    không phải số từ, nhưng luật parity là một TỈ LỆ giữa ba bài cùng ngôn ngữ nên đơn vị tự
+    triệt tiêu. Dùng chung một hàm cho cả 4 band để tỉ lệ luôn so trên cùng thước."""
+    return len(text.split())
+
+
+class PreviewAnswer(NamedTuple):
+    band: str
+    text: str
+    word_count: int
+
+
+class PreviewAnswersResult(NamedTuple):
+    answers: list[PreviewAnswer]
+    length_parity_warning: bool
 
 
 def _looks_truncated(question: str) -> bool:
@@ -509,6 +547,240 @@ class GeminiProvider(QuestionProvider):
             c["description"] = c.get("description")
         return items
 
+    async def suggest_criterion_levels(self, job_category: str, criteria: list[dict],
+                                       jd_text: str | None = None,
+                                       level_count: int | None = None,
+                                       language: str = "vi",
+                                       seniority: str | None = None) -> list[dict]:
+        """E9b — đề xuất MỐC ĐIỂM cho từng tiêu chí campaign. KHÔNG ghi DB (GEN-4).
+
+        Trả ``[{"criterionId": str, "levels": [{"score": int, "descriptor": str}]}]`` theo ĐÚNG
+        thứ tự ``criteria`` đầu vào; mỗi ``levels`` đã sort tăng, bỏ trùng score, và ⊆ [0, maxScore].
+
+        🛑 **KHÔNG fallback dải mặc định.** Đường ``/suggest-criteria`` để .NET nuốt lỗi rồi dựng
+        bộ tiêu chí cứng — chấp nhận được ở đó vì tiêu chí mặc định là *gợi ý* mà HR nhìn thấy và
+        sửa. Ở đây thì khác: HR sẽ đọc ``Mức 3/10`` và tin đó là mốc AI viết ra, rồi phát link đi
+        tuyển bằng một thang không ai soạn. Không có mốc là TRẠNG THÁI HỢP LỆ (hôm nay 100%
+        campaign đang như vậy), nên fail-loud không chặn ai — nó chỉ từ chối nói dối.
+        """
+        # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
+        await prompt_registry.refresh_if_stale()
+
+        # maxScore là RÀNG BUỘC của từng tiêu chí, không phải hằng chung: hai tiêu chí trong cùng
+        # campaign hoàn toàn có thang khác nhau (thang 5 và thang 10).
+        max_by_id: dict[str, int] = {}
+        for c in criteria:
+            cid = str(c.get("criterionId") or c.get("CriterionId") or "").strip()
+            if not cid:
+                continue
+            max_by_id[cid] = int(c.get("maxScore") or c.get("MaxScore") or 5)
+        if not max_by_id:
+            raise ValueError("Không có tiêu chí hợp lệ để sinh mốc điểm.")
+
+        prompt = build_criterion_levels_prompt(
+            job_category, criteria, jd_text, level_count,
+            language=language, seniority=seniority)
+
+        response = await self._generate(
+            "suggest_criterion_levels",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                # Thấp như `suggest_criteria`: đây là văn bản định nghĩa THƯỚC ĐO, không phải chỗ
+                # cần sáng tạo — dao động ở đây làm hai lần bấm "AI gợi ý" ra hai thang khác nhau.
+                temperature=0.3,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "criteria": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "criterionId": {"type": "string"},
+                                    "levels": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "score": {"type": "integer"},
+                                                "descriptor": {"type": "string"},
+                                            },
+                                            "required": ["score", "descriptor"],
+                                        },
+                                    },
+                                },
+                                "required": ["criterionId", "levels"],
+                            },
+                        }
+                    },
+                    "required": ["criteria"],
+                },
+            ),
+        )
+
+        text = (response.text or "").strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM trả JSON không hợp lệ: {text[:200]}")
+
+        levels_by_id: dict[str, list[dict]] = {}
+        for item in data.get("criteria", []):
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("criterionId", "")).strip()
+            # AI-3 — id không thuộc tập đã cấp là id BỊA (mẫu `citedChunkId` D27 / `criterionId`
+            # C14): drop, KHÔNG cố đoán xem model định nói tiêu chí nào.
+            if cid not in max_by_id or cid in levels_by_id:
+                continue
+
+            mx = max_by_id[cid]
+            by_score: dict[int, str] = {}
+            for lv in (item.get("levels") or []):
+                if not isinstance(lv, dict):
+                    continue
+                raw = lv.get("score")
+                # `bool` là con của `int` trong Python — `True` sẽ lọt thành score 1 nếu không loại.
+                if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                    continue
+                s = int(raw)
+                if s < 0 or s > mx:
+                    continue          # ngoài thang của CHÍNH tiêu chí này → bỏ
+                if s in by_score:
+                    continue          # trùng score → giữ mốc đầu tiên
+                by_score[s] = str(lv.get("descriptor") or "").strip()
+
+            # Hai mốc trùng score làm cả `min(valid_levels, key=…)` phía provider lẫn `ResolveLevel`
+            # phía C# snap KHÔNG XÁC ĐỊNH ⇒ E9 sai âm thầm. Sort + dedupe ở đây là bất biến đầu ra.
+            levels_by_id[cid] = [{"score": s, "descriptor": by_score[s]}
+                                 for s in sorted(by_score)]
+
+            if len(levels_by_id[cid]) < 2:
+                raise ValueError(
+                    f"Tiêu chí {cid}: chỉ có {len(levels_by_id[cid])} mốc hợp lệ, cần ít nhất 2.")
+            # Thiếu mốc 0 ⇒ bài TRỐNG snap về mốc thấp nhất còn lại: ứng viên không nói gì vẫn được
+            # điểm, và KHÔNG lỗi nào nổ. Thiếu mốc maxScore ⇒ luật F13 ("sampleAnswer ở mức ĐIỂM
+            # TỐI ĐA") trỏ vào một mức không tồn tại.
+            if 0 not in by_score:
+                raise ValueError(f"Tiêu chí {cid}: thiếu mốc 0 (mốc 'không có bằng chứng nào').")
+            if mx not in by_score:
+                raise ValueError(f"Tiêu chí {cid}: thiếu mốc {mx} (điểm tối đa của tiêu chí).")
+            for s, desc in sorted(by_score.items()):
+                if len(desc) < LEVEL_DESCRIPTOR_MIN_CHARS:
+                    raise ValueError(
+                        f"Tiêu chí {cid}: mô tả mốc {s} rỗng hoặc quá ngắn "
+                        f"(<{LEVEL_DESCRIPTOR_MIN_CHARS} ký tự) — mốc phải mô tả hành vi quan sát "
+                        "được, không phải nhãn điểm.")
+
+        missing = set(max_by_id) - set(levels_by_id)
+        if missing:
+            raise ValueError(f"LLM không trả mốc cho tiêu chí: {sorted(missing)}")
+
+        # Giữ ĐÚNG thứ tự đầu vào — HR đọc mốc cạnh hàng tiêu chí của mình, thứ tự nhảy theo model
+        # trả về là nhiễu không cần thiết.
+        return [{"criterionId": cid, "levels": levels_by_id[cid]} for cid in max_by_id]
+
+    async def generate_preview_answers(self, question: str, criteria: list[dict],
+                                       target_word_count: int = 160,
+                                       sample_answer: str | None = None,
+                                       language: str = "vi",
+                                       seniority: str | None = None) -> PreviewAnswersResult:
+        """E9b — sinh 3 bài mẫu (Weak/Good/Excellent) cho chấm thử. KHÔNG chấm ở đây.
+
+        temperature cao (0.9) là CỐ Ý và ngược hẳn với `score()` (0.0): ba bài phải khác nhau THẬT
+        về nội dung, còn lượt chấm thì phải tái lập được.
+
+        Lệch độ dài quá :data:`PREVIEW_LENGTH_RATIO_MAX` → sinh lại đúng 1 lượt kèm nhận xét; vẫn
+        lệch → **vẫn giao hàng, kèm cờ** ``length_parity_warning``. Không 502: HR vẫn cần xem được
+        bài, và cái cần là NÓI THẬT rằng dải điểm lần này có thể đang phản ánh độ dài.
+        """
+        # F21 — bắt buộc theo guard cấu trúc `test_moi_ham_dung_build_prompt_deu_phai_nap_registry`;
+        # prompt này không có khe admin nhưng `seniority_calibration_block`/`category_*` thì có.
+        await prompt_registry.refresh_if_stale()
+
+        config = types.GenerateContentConfig(
+            temperature=0.9,
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "answers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "band": {"type": "string"},
+                                "text": {"type": "string"},
+                            },
+                            "required": ["band", "text"],
+                        },
+                    }
+                },
+                "required": ["answers"],
+            },
+        )
+
+        attempts = max(1, settings.preview_answers_max_attempts)
+        feedback: str | None = None
+        last: PreviewAnswersResult | None = None
+
+        for _ in range(attempts):
+            prompt = build_preview_answers_prompt(
+                question, criteria, target_word_count, sample_answer,
+                language=language, seniority=seniority, retry_feedback=feedback)
+            response = await self._generate(
+                "score_preview_answers", contents=prompt, config=config)
+
+            try:
+                text = (response.text or "").strip()
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    raise ValueError(f"LLM trả JSON không hợp lệ: {text[:200]}")
+
+                by_band: dict[str, str] = {}
+                for item in (data.get("answers") or []):
+                    if not isinstance(item, dict):
+                        continue
+                    band = str(item.get("band", "")).strip()
+                    if band not in PREVIEW_BANDS or band in by_band:
+                        continue      # band lạ / trùng → bỏ (AI-3)
+                    body = str(item.get("text") or "").strip()
+                    if body:
+                        by_band[band] = body
+
+                missing = [b for b in PREVIEW_BANDS if b not in by_band]
+                if missing:
+                    raise ValueError(f"LLM không trả đủ 3 bài mẫu, thiếu: {missing}")
+
+                answers = [PreviewAnswer(b, by_band[b], preview_word_count(by_band[b]))
+                           for b in PREVIEW_BANDS]
+                counts = [a.word_count for a in answers]
+                ratio = max(counts) / max(1, min(counts))
+                last = PreviewAnswersResult(answers, ratio > PREVIEW_LENGTH_RATIO_MAX)
+                if not last.length_parity_warning:
+                    return last
+
+                # Log để tỉ lệ lệch ĐO ĐƯỢC — không có dòng này thì "chấm thử hay lệch độ dài"
+                # chỉ lộ ra dưới dạng một cờ thỉnh thoảng bật, không ai biết tần suất.
+                logger.info("Chấm thử: 3 bài lệch độ dài %s (tỉ lệ %.2f > %.2f) — sinh lại",
+                            counts, ratio, PREVIEW_LENGTH_RATIO_MAX)
+                feedback = (
+                    f"- Ba bài lượt trước dài lần lượt {counts[0]}/{counts[1]}/{counts[2]} từ "
+                    f"(Weak/Good/Excellent) — chênh nhau quá nhiều. Hãy viết lại CẢ BA bài cho "
+                    f"xấp xỉ {target_word_count} từ mỗi bài; giữ nguyên chênh lệch về NỘI DUNG, "
+                    "chỉ san bằng độ dài.")
+            except ValueError:
+                # Lượt sinh lại hỏng mà lượt trước đã có bộ bài dùng được → giao bộ đó KÈM CỜ.
+                # 502 ở đây là đổi một kết quả thật-thà-nhưng-lệch lấy con số không có gì, trong
+                # khi HR đã chờ hết cả lượt sinh lẫn lượt chấm.
+                if last is None:
+                    raise
+                return last
+
+        return last if last is not None else PreviewAnswersResult([], False)
+
     async def analyze_cv(self, cv_text: str, jd_text: str | None,
                          job_category: str | None, language: str = "vi") -> dict:
         """
@@ -854,7 +1126,8 @@ class GeminiProvider(QuestionProvider):
     async def score(self, question: str, transcript: str,
                     job_category: str, criteria: list[dict],
                     temperature: float = 0.0,
-                    delivery: dict | None = None, language: str = "vi") -> list[dict]:
+                    delivery: dict | None = None, language: str = "vi",
+                    sample_answer: str | None = None) -> list[dict]:
         """
         Chấm 1 câu trả lời theo rubric.
 
@@ -900,7 +1173,8 @@ class GeminiProvider(QuestionProvider):
             # Không có levels (phòng hờ) → dải mặc định 0..maxScore.
             levels_by_id[cid] = sorted(scores) if scores else list(range(0, mx + 1))
 
-        prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery, language=language)
+        prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery,
+                                      language=language, sample_answer=sample_answer)
 
         response = await self._generate(
             "score",

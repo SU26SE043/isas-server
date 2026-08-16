@@ -258,6 +258,12 @@ public class PracticeService : IPracticeService
             var adaptiveOn = settings.AdaptiveEnabled;
             var maxDeepPerQuestion = settings.MaxDeepPerQuestion;
 
+            // Con dấu thước đo B2C — đóng NGAY LÚC TẠO, trước khi có answer nào. Từ đây mọi đường
+            // (publish · callback guard · republisher · tổng kết BC9) đọc cùng một bộ, kể cả khi admin
+            // hoặc chính ứng viên lưu bản rubric mới ngay giữa buổi.
+            var (b2cRubricOwnerId, b2cRubricVersion) =
+                await ResolveB2CRubricPinAsync(candidateId, jobCategory, language, ct);
+
             // Tạo session, commit #1. Status set bằng C# initializer của entity.
             var session = new PracticeSession
             {
@@ -270,6 +276,8 @@ public class PracticeService : IPracticeService
                 Language = language,
                 Status = SessionStatus.GeneratingQuestions,
                 CreatedAt = DateTime.UtcNow,
+                B2CRubricOwnerId = b2cRubricOwnerId,
+                B2CRubricVersion = b2cRubricVersion,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
                 AdaptiveEnabled = adaptiveOn,
@@ -593,11 +601,23 @@ public class PracticeService : IPracticeService
         try
         {
             var maxDeepPerQuestion = Math.Max(0, request.MaxDeepPerQuestion ?? 0);
+
+            // Phiên bản rubric buổi này bị chấm bằng. Campaign là NGUỒN QUYỀN LỰC DUY NHẤT — ở đây chỉ
+            // CHÉP. `?? 1` phủ bản Campaign cũ chưa gửi field, và khớp đúng mọi row đang có trên prod
+            // (materialize cũ hardcode Version = 1) ⇒ không đổi hành vi cho campaign hiện hữu.
+            // ⚠ TUYỆT ĐỐI không tự tính max(Version)+1: materialize là LAZY nên Campaign có thể đã ở
+            // v3 khi Interview mới có v1; tự đánh số sẽ ra v2 ⇒ số HR thấy và số trên answer_scores
+            // lệch nhau vĩnh viễn (lớp lỗi BK23).
+            var pinnedRubricVersion = request.RubricVersion ?? 1;
+
             var session = new PracticeSession
             {
                 Id = sessionId,
                 CandidateId = candidateId,
                 CampaignId = request.CampaignId,
+                // Ghim DÙ CÓ materialize hay không: buổi thứ hai trở đi của cùng phiên bản không
+                // materialize gì cả, nhưng vẫn phải biết mình đang bị chấm bằng thước nào.
+                CampaignRubricVersion = pinnedRubricVersion,
                 JobCategory = request.JobCategory,
                 Seniority = seniority,
                 Language = language,
@@ -636,17 +656,32 @@ public class PracticeService : IPracticeService
                     SessionId = session.Id,
                     OrderNo = idx * seedStride + 1,   // INT-17b — chừa chỗ cho chuỗi đào sâu
                     Content = content,
+                    // SNAPSHOT đáp án mẫu: chép xuống buổi thi, không đọc live từ Campaign lúc chấm —
+                    // đáp án là một phần THƯỚC ĐO, đọc live thì hai ứng viên cùng chiến dịch có thể bị
+                    // chấm theo hai bản khác nhau mà điểm vẫn xếp chung một bảng (CAMP-10).
+                    // Controller đã bảo đảm QuestionDetails khớp số lượng với Questions, hoặc là null.
+                    SampleAnswer = request.QuestionDetails?[idx].SampleAnswer,
                     TimeLimitSec = DefaultTimeLimitSec,
                     Kind = QuestionKind.Seed
                 })
                 .ToList();
             _db.PracticeQuestions.AddRange(questions);
 
-            // Materialize tiêu chí campaign → rubric_criteria(campaign_id), idempotent theo campaign.
+            // Materialize tiêu chí campaign → rubric_criteria(campaign_id), idempotent theo
+            // (campaign, PHIÊN BẢN). HR sửa mốc ⇒ Campaign bump version ⇒ ứng viên kế tiếp Start sẽ
+            // materialize bộ mới; buổi đang chạy dở giữ bộ cũ nhờ pin (xem RubricCriteriaLoader).
             var alreadyMaterialized = await _db.RubricCriteria
-                .AnyAsync(c => c.CampaignId == request.CampaignId, ct);
+                .AnyAsync(c => c.CampaignId == request.CampaignId && c.Version == pinnedRubricVersion, ct);
             if (!alreadyMaterialized)
             {
+                // Hạ cờ bộ cũ = "không dùng cho buổi thi MỚI nữa". KHÔNG hard-delete: answer_scores có
+                // FK Restrict trỏ vào criterion, và điểm đã chấm phải giữ được lai lịch thước đo của nó.
+                // Mẫu soft-versioning đã dùng ở rubric riêng B2C (RubricLibraryService, BC16).
+                var superseded = await _db.RubricCriteria
+                    .Where(c => c.CampaignId == request.CampaignId && c.IsActive)
+                    .ToListAsync(ct);
+                foreach (var old in superseded) old.IsActive = false;
+
                 var criteria = request.Criteria.Select(c => new RubricCriterion
                 {
                     Id = Guid.NewGuid(),
@@ -658,7 +693,18 @@ public class PracticeService : IPracticeService
                     JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
                     CampaignId = request.CampaignId,
                     Language = language,
-                    Version = 1
+                    Version = pinnedRubricVersion,
+                    // E9 — mốc điểm HR soạn. Rỗng/null ⇒ không tạo level nào ⇒ AIService rơi về dải
+                    // mặc định 0..maxScore y như trước (không có mốc là trạng thái HỢP LỆ, không lỗi).
+                    Levels = (c.Levels ?? [])
+                        .Select(l => new RubricLevel
+                        {
+                            Id = Guid.NewGuid(),
+                            Score = l.Score,
+                            Descriptor = l.Descriptor,
+                            ExampleAnswers = []   // anchor cố ý chưa dùng ở vòng này
+                        })
+                        .ToList()
                 });
                 _db.RubricCriteria.AddRange(criteria);
             }
@@ -669,8 +715,10 @@ public class PracticeService : IPracticeService
             // LoadTargetableCriteriaAsync vốn chỉ đúng cho rubric riêng B2C.
             if (session.AdaptiveEnabled)
             {
+                // Theo ĐÚNG phiên bản buổi này ghim, không theo is_active: hai thứ đó đã tách nghĩa từ
+                // khi có versioning, và evidence phải mô tả bộ tiêu chí ứng viên này thực sự bị chấm.
                 var evidenceCriteria = await _db.RubricCriteria.AsNoTracking()
-                    .Where(c => c.CampaignId == request.CampaignId && c.IsActive)
+                    .Where(c => c.CampaignId == request.CampaignId && c.Version == pinnedRubricVersion)
                     .OrderBy(c => c.Name)
                     .Select(c => new { c.Id, c.Name })
                     .ToListAsync(ct);
@@ -1250,6 +1298,36 @@ public class PracticeService : IPracticeService
             .ToListAsync(ct);
     }
 
+    /// <summary>
+    /// Con dấu rubric B2C đóng lên buổi luyện lúc TẠO: (chủ bộ tiêu chí, phiên bản).
+    ///
+    /// <para>Cùng mẫu với mọi con dấu khác (<c>SelfConsistencyN</c>, <c>EntitlementSource</c>,
+    /// <c>CampaignRubricVersion</c>): "dùng cấu hình LÚC TẠO, không phải cấu hình đổi sau". Ở đây
+    /// "cấu hình đổi sau" có hai nguồn thật — admin lưu bản mới của bộ chuẩn, và chính ứng viên bấm
+    /// Lưu rubric riêng giữa buổi.</para>
+    ///
+    /// <para>Trả <c>(null, null)</c> khi không tìm thấy bộ nào đang hiệu lực ⇒ buổi không ghim và
+    /// loader rơi về nhánh cũ. Ca này không tới được ở đường thường (<see cref="EnsureRubricExistsAsync"/>
+    /// đã chặn), nhưng ghim một phiên bản không tồn tại thì tệ hơn nhiều: nó nạp 0 tiêu chí.</para>
+    /// </summary>
+    private async Task<(Guid? OwnerId, int? Version)> ResolveB2CRubricPinAsync(
+        Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
+    {
+        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, language, ct);
+        var query = _db.RubricCriteria.AsNoTracking()
+            .Where(c => c.CampaignId == null && c.JobCategory == jobCategory
+                        && c.Language == language && c.IsActive);
+        query = owner is Guid oid
+            ? query.Where(c => c.CandidateId == oid)
+            : query.Where(c => c.CandidateId == null);
+
+        // Bộ active của một (chủ, nghề, ngôn ngữ) luôn cùng một Version (replace-all của BC16 và của
+        // màn admin đều ghi cả bộ trong MỘT SaveChanges). Max() chỉ là cách đọc con số đó an toàn khi
+        // tập rỗng.
+        var version = await query.Select(c => (int?)c.Version).MaxAsync(ct);
+        return version is null ? (null, null) : (owner, version);
+    }
+
     private async Task EnsureRubricExistsAsync(
         Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
     {
@@ -1452,7 +1530,14 @@ public class PracticeService : IPracticeService
             needsImprovement,
             OverallComment: s.OverallComment,   // BC10 — nhận xét chung (AI, best-effort); null nếu chưa/AI lỗi.
             CvVsAnswer: cvVsAnswer,
-            Benchmark: benchmark);   // F14 — mốc đối chiếu; null khi tắt / caller không dựng
+            Benchmark: benchmark,   // F14 — mốc đối chiếu; null khi tắt / caller không dựng
+            // Nguồn thước đo — đọc THẲNG con dấu của buổi, không tra lại trạng thái hôm nay (tra lại
+            // là gắn nhãn sai cho buổi cũ của người vừa lưu rubric riêng). `null` = KHÔNG BIẾT, và
+            // KHÔNG được suy thành "bộ chuẩn" (BK23: đừng suy "biết" từ "không biết").
+            RubricSource: s.B2CRubricVersion is null
+                ? null
+                : s.B2CRubricOwnerId is null ? "SystemDefault" : "Custom",
+            RubricVersion: s.B2CRubricVersion);
     }
 
     // BC8: gộp tín hiệu "CV mạnh" = strengths + matched skills (nếu có JD match), khử trùng giữ thứ tự.

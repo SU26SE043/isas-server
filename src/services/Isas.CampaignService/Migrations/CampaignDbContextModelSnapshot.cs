@@ -262,9 +262,27 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("pass_score_pct");
 
+                    b.Property<int?>("QuestionsPerSession")
+                        .HasColumnType("integer")
+                        .HasColumnName("questions_per_session");
+
                     b.Property<string>("RequiredSkills")
                         .HasColumnType("jsonb")
                         .HasColumnName("required_skills");
+
+                    b.Property<int>("RubricVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("rubric_version");
+
+                    b.Property<DateTime?>("RubricVersionUpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("rubric_version_updated_at");
+
+                    b.Property<Guid?>("RubricVersionUpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rubric_version_updated_by");
 
                     b.Property<string>("Seniority")
                         .IsRequired()
@@ -324,6 +342,10 @@ namespace Isas.CampaignService.Migrations
                             t.HasCheckConstraint("ck_campaigns_language", "language IN ('vi', 'en')");
 
                             t.HasCheckConstraint("ck_campaigns_pass_score_pct_range", "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)");
+
+                            t.HasCheckConstraint("ck_campaigns_questions_per_session_positive", "questions_per_session IS NULL OR questions_per_session >= 1");
+
+                            t.HasCheckConstraint("ck_campaigns_rubric_version_positive", "rubric_version >= 1");
 
                             t.HasCheckConstraint("ck_campaigns_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
 
@@ -396,9 +418,55 @@ namespace Isas.CampaignService.Migrations
 
                     b.ToTable("campaign_criteria", null, t =>
                         {
-                            t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited')");
+                            t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited', 'SystemDefault')");
 
                             t.HasCheckConstraint("ck_campaign_criteria_weight_range", "weight > 0 AND weight <= 1");
+                        });
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.CampaignCriterionLevel", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("CriterionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("criterion_id");
+
+                    b.Property<string>("Descriptor")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("descriptor");
+
+                    b.Property<int>("Score")
+                        .HasColumnType("integer")
+                        .HasColumnName("score");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.HasKey("Id")
+                        .HasName("pk_campaign_criterion_levels");
+
+                    b.HasIndex("CriterionId", "Score")
+                        .IsUnique()
+                        .HasDatabaseName("ix_campaign_criterion_levels_criterion_id_score");
+
+                    b.ToTable("campaign_criterion_levels", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_campaign_criterion_levels_score_non_negative", "score >= 0");
                         });
                 });
 
@@ -627,10 +695,19 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("org_id");
 
+                    b.Property<string>("QuestionGroup")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("question_group");
+
                     b.Property<string>("QuestionText")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("question_text");
+
+                    b.Property<string>("SampleAnswer")
+                        .HasColumnType("text")
+                        .HasColumnName("sample_answer");
 
                     b.Property<string>("Source")
                         .IsRequired()
@@ -686,6 +763,10 @@ namespace Isas.CampaignService.Migrations
                     b.Property<decimal?>("OverrideScore")
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("override_score");
+
+                    b.Property<int?>("RubricVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("rubric_version");
 
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
@@ -1029,6 +1110,99 @@ namespace Isas.CampaignService.Migrations
                     b.ToTable("outbox_messages", (string)null);
                 });
 
+            modelBuilder.Entity("Isas.CampaignService.Models.RubricPreviewRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<bool>("Billed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("billed");
+
+                    b.Property<Guid>("CampaignId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("campaign_id");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("ErrorReason")
+                        .HasColumnType("text")
+                        .HasColumnName("error_reason");
+
+                    b.Property<bool>("LengthParityWarning")
+                        .HasColumnType("boolean")
+                        .HasColumnName("length_parity_warning");
+
+                    b.Property<int?>("PromptVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("prompt_version");
+
+                    b.Property<Guid?>("QuestionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("question_id");
+
+                    b.Property<string>("QuestionText")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("question_text");
+
+                    b.Property<string>("RubricFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("rubric_fingerprint");
+
+                    b.Property<string>("RubricSnapshot")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("rubric_snapshot");
+
+                    b.Property<int>("RubricVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("rubric_version");
+
+                    b.Property<string>("Samples")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("samples");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id")
+                        .HasName("pk_rubric_preview_runs");
+
+                    b.HasIndex("CampaignId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_rubric_preview_runs_running")
+                        .HasFilter("status = 'Running'");
+
+                    b.HasIndex("CampaignId", "CreatedAt")
+                        .HasDatabaseName("ix_rubric_preview_runs_campaign_id_created_at");
+
+                    b.ToTable("rubric_preview_runs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_rubric_preview_runs_status", "status IN ('Running', 'Succeeded', 'Failed')");
+                        });
+                });
+
             modelBuilder.Entity("Isas.CampaignService.Models.SessionFlag", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1087,6 +1261,18 @@ namespace Isas.CampaignService.Migrations
                         .HasConstraintName("fk_campaign_criteria_campaigns_campaign_id");
 
                     b.Navigation("Campaign");
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.CampaignCriterionLevel", b =>
+                {
+                    b.HasOne("Isas.CampaignService.Models.CampaignCriterion", "Criterion")
+                        .WithMany("Levels")
+                        .HasForeignKey("CriterionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_campaign_criterion_levels_campaign_criteria_criterion_id");
+
+                    b.Navigation("Criterion");
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.CampaignInvitation", b =>
@@ -1218,6 +1404,18 @@ namespace Isas.CampaignService.Migrations
                     b.Navigation("Campaign");
                 });
 
+            modelBuilder.Entity("Isas.CampaignService.Models.RubricPreviewRun", b =>
+                {
+                    b.HasOne("Isas.CampaignService.Models.Campaign", "Campaign")
+                        .WithMany()
+                        .HasForeignKey("CampaignId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_rubric_preview_runs_campaigns_campaign_id");
+
+                    b.Navigation("Campaign");
+                });
+
             modelBuilder.Entity("Isas.CampaignService.Models.SessionFlag", b =>
                 {
                     b.HasOne("Isas.CampaignService.Models.Campaign", "Campaign")
@@ -1239,6 +1437,11 @@ namespace Isas.CampaignService.Migrations
                     b.Navigation("Invitations");
 
                     b.Navigation("Questions");
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.CampaignCriterion", b =>
+                {
+                    b.Navigation("Levels");
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.CvSubmission", b =>

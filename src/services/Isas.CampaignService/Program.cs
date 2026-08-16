@@ -55,6 +55,18 @@ builder.Services.AddHttpClient<ICriteriaSuggester, AiServiceCriteriaSuggester>(c
 builder.Services.AddHttpClient<IJobNeedsSuggester, AiServiceJobNeedsSuggester>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 // F9: gọi AIService sinh câu hỏi từ JD cho campaign B2B (đồng bộ; lỗi → 502 ném lên controller)
+// CAMP-19: chấm thử thước đo. Timeout 180s TƯỜNG MINH — lượt này sinh 3 bài rồi chấm cả 3, mất
+// hàng chục giây; mặc định 100s của HttpClient (và nhất là 5s copy nhầm từ EntitlementClient) sẽ
+// cắt ngang một lượt đã tính phí.
+builder.Services.AddScoped<IRubricPreviewService, RubricPreviewService>();
+builder.Services.AddHttpClient<IRubricPreviewClient, AiServiceRubricPreviewClient>(c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000");
+    c.Timeout = TimeSpan.FromSeconds(180);
+});
+// CAMP-16: gọi AIService soạn mốc điểm (đồng bộ; KHÔNG fallback — lỗi nổi lên thành 502)
+builder.Services.AddHttpClient<IAiServiceLevelSuggester, AiServiceLevelSuggester>(c =>
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 builder.Services.AddHttpClient<IQuestionGenerator, AiServiceQuestionGenerator>(c =>
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"] ?? "http://localhost:8000"));
 // SEC-2: gọi AIService so khớp khuôn mặt (đồng bộ qua AiService:BaseUrl; lỗi → 502 ném lên controller)
@@ -99,6 +111,12 @@ builder.Services.AddHttpClient<ICampaignSessionClient, CampaignSessionClient>(c 
     c.BaseAddress = new Uri(
         string.IsNullOrWhiteSpace(builder.Configuration["Interview:BaseUrl"])
             ? "http://localhost:5002" : builder.Configuration["Interview:BaseUrl"]!));
+// CAMP-19: giữ/trừ credit ví Org cho lượt chấm thử tính phí (mẫu Interview CreditReservationClient).
+// ⚠ KHÔNG đặt timeout 5s như EntitlementClient bên dưới — đây là đường TIỀN, cắt ngang giữa chừng
+// để lại chỗ giữ mồ côi; và nó chạy trước một lời gọi AI vốn đã tính bằng chục giây.
+builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient>(c =>
+    c.BaseAddress = new Uri(string.IsNullOrWhiteSpace(builder.Configuration["Payment:BaseUrl"])
+        ? "http://localhost:5004" : builder.Configuration["Payment:BaseUrl"]!));
 builder.Services.AddHttpClient<IEntitlementClient, EntitlementClient>(c =>
 {
     c.BaseAddress = new Uri(string.IsNullOrWhiteSpace(builder.Configuration["Payment:BaseUrl"])

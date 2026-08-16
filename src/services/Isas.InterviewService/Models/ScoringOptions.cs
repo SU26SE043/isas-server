@@ -30,6 +30,17 @@ public class ScoringOptions
     // production bật qua cấu hình Scoring:MinReasoningLen. Điểm AI = gợi ý, HR chốt điểm cuối (E11b).
     public int MinReasoningLen { get; set; } = 0;
 
+    // Ghép ĐÁP ÁN MẪU HR soạn vào prompt chấm, cho đúng câu có nó (B2B).
+    //
+    // Mặc định BẬT — khác tiền lệ các cờ tính năng khác của repo (Grounding/Tiering/CvScreening đều mặc
+    // định tắt). Những cái đó là tính năng mới bật thăm dò; còn đây là dữ liệu HR CHỦ ĐỘNG soạn ra với
+    // mục đích duy nhất là để AI chấm theo. Nhập đáp án xong mà mặc định không dùng thì tính năng im
+    // lặng vô hiệu — đúng kiểu "có tên mà không có ruột".
+    //
+    // Vẫn để cờ, vì đây là thay đổi THƯỚC ĐO: có đáp án mẫu nhiều khả năng làm AI chấm khắt khe hơn, mà
+    // chưa ai đo được điểm sẽ lên hay xuống. Tắt là quay về đúng cách chấm trước đó, không cần deploy.
+    public bool UseSampleAnswer { get; set; } = true;
+
     // P1-1 — B2C (Deadline null) KHÔNG có hard-deadline nên SessionAbandonSweeper (chỉ quét Deadline!=null)
     // không bao giờ đụng → session tạo-rồi-bỏ giữ credit reserve VĨNH VIỄN. Coi buổi B2C là "bỏ ngang"
     // khi KHÔNG có hoạt động (không tạo answer mới) quá số phút này → phát SessionAbandoned để Payment

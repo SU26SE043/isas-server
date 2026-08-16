@@ -101,6 +101,46 @@ public class PracticeSession : IHasUpdatedAt
     // cột ở đó là cái giá không mua lại được gì.
     public int? ScoringScopeVersion { get; set; }
 
+    // B2B — GHIM phiên bản bộ tiêu chí (rubric) mà buổi này được chấm bằng.
+    //
+    // HR được sửa mốc điểm/tiêu chí ngay cả khi campaign đang Active, và thay đổi đó CHỈ áp cho ứng
+    // viên thi SAU. Ghim ở tầng buổi là cách duy nhất giữ được lời hứa đó: ứng viên đang thi dở (hoặc
+    // đã nộp mà worker chưa chấm xong) phải tiếp tục được chấm bằng đúng thước đo lúc họ bắt đầu.
+    // Cùng mẫu với các con dấu khác đóng lúc tạo buổi: SelfConsistencyN, EntitlementSource,
+    // ScoringScopeVersion — "dùng cấu hình lúc tạo, không phải cấu hình đổi sau".
+    //
+    // ⚠ Số này do CampaignService CẤP (campaigns.rubric_version), Interview chỉ CHÉP. Tuyệt đối không
+    // tự tính max(Version)+1: materialize là LAZY, nên Campaign có thể đã ở v3 trong khi Interview mới
+    // có v1 (hai lần sửa mà không ai Start ở giữa). Tự đánh số sẽ ra v2 ⇒ số HR nhìn thấy và số nằm
+    // trên answer_scores lệch nhau vĩnh viễn — đúng loại lỗi BK23 sinh ra để chặn.
+    //
+    //   null = buổi B2C (không có rubric campaign), hoặc buổi B2B có trước cột này. Migration
+    //          AddSessionCampaignRubricVersion backfill = 1 cho mọi buổi B2B đang có, vì đường
+    //          materialize cũ hardcode Version = 1 cho MỌI lượt từng chạy ⇒ ở đây "1" là điều đã biết
+    //          chắc chứ không phải phỏng đoán, khác hẳn ScoringScopeVersion ở trên.
+    public int? CampaignRubricVersion { get; set; }
+
+    // B2C — GHIM bộ tiêu chí buổi luyện này được chấm bằng. HAI cột đi CẶP, không tách được:
+    //
+    //   b2c_rubric_owner_id : null = bộ chuẩn hệ thống (admin quản) · != null = rubric RIÊNG của
+    //                          chính ứng viên đó (BC16).
+    //   b2c_rubric_version  : số phiên bản TRONG phạm vi chủ đó.
+    //
+    // ⚠ Ghim version mà KHÔNG ghim chủ là vô nghĩa: `RubricLibraryService` đánh số version theo
+    // (candidate | null, nghề, ngôn ngữ), nên "v2" của rubric riêng và "v2" của bộ chuẩn là HAI bộ
+    // khác nhau mang cùng một con số.
+    //
+    // Ngoài việc giữ thước đo ổn định khi admin sửa bộ chuẩn giữa buổi, cặp cột này còn bịt một lỗi
+    // ĐANG TỒN TẠI: `B2CRubricScope.ResolveOwnerAsync` hỏi trạng thái ở THỜI ĐIỂM GỌI, nên ứng viên
+    // bấm "Lưu rubric riêng" giữa buổi làm đường callback resolve ra CHỦ MỚI ⇒ mọi criterionId vừa
+    // gửi đi chấm bị guard E8 coi là "criterion lạ" và BỎ ⇒ answer mất sạch điểm, không exception nào nổ.
+    //
+    //   null = buổi B2B, hoặc buổi B2C có trước cột này mà KHÔNG suy lại được thước đo đã dùng.
+    //          Migration `AddB2CRubricPinning` backfill từ chính `session_criterion_scores` (bằng
+    //          chứng ghi lại được) chứ không phỏng đoán — xem ghi chú trong migration.
+    public Guid? B2CRubricOwnerId { get; set; }
+    public int? B2CRubricVersion { get; set; }
+
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.

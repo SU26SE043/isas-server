@@ -125,6 +125,125 @@ class SuggestCriteriaResponse(BaseModel):
     criteria: list[CriterionItem]
 
 
+# ── MỐC ĐIỂM cho tiêu chí campaign (E9b) ────────────────────────────────────
+# E9 (chấm NEO theo mức) đã chạy đủ ở cả hai đầu — C# gửi `Levels[]`, prompt in `• Mức n: …`,
+# provider snap điểm về mức — nhưng B2B **chưa bao giờ có dữ liệu mức**: `campaign_criteria`
+# không có cột mức nên mọi lượt chấm rơi vào dải mặc định `0..maxScore`, và prompt in ra
+# `• Mức 3: Mức 3/5` rồi ngay dòng dưới bắt model "bám descriptor của mức đã chọn" — bám một
+# tautology. Endpoint này đổ NỘI DUNG THẬT vào bộ máy sẵn có; nó KHÔNG ghi DB (GEN-4), chỉ trả
+# về để HR xem/sửa rồi lưu qua đúng một cửa `PUT /campaign/{id}`.
+class CriterionForLevels(BaseModel):
+    """1 tiêu chí HR đã khai, cần AI đề xuất mốc điểm.
+
+    ``maxScore`` là RÀNG BUỘC chứ không phải gợi ý: mốc cao nhất PHẢI đúng bằng nó (luật F13
+    *"sampleAnswer ở mức ĐIỂM TỐI ĐA"* trỏ vào mức đó), và mốc thấp nhất phải là 0 (thiếu mốc 0
+    thì bài TRỐNG snap về mốc thấp nhất còn lại — ứng viên không nói gì vẫn được điểm, và không
+    lỗi nào nổ). Provider kiểm cả hai đầu, xem :meth:`GeminiProvider.suggest_criterion_levels`.
+    """
+    criterionId: str
+    name: str
+    description: str | None = None
+    maxScore: int
+
+
+class SuggestCriterionLevelsRequest(BaseModel):
+    """⚠ Mọi field PHẢI khai tường minh — schema không set ``model_config`` nên pydantic
+    ``extra='ignore'`` NUỐT IM LẶNG field quên khai (.NET gửi, HTTP 200, prompt không đổi một
+    chữ). Đã cắn repo 4 lần: ``focusCriteria``/BC14 · ``metricsVersion`` · ``adaptiveMaxQuestions``
+    · ``fullName``/BK28."""
+    jobCategory: str
+    language: str = "vi"
+    seniority: str | None = None
+    jdText: str | None = None
+    # Số mốc mong muốn; None ⇒ để model tự chọn trong dải 3–6 (luật nằm trong prompt).
+    levelCount: int | None = None
+    criteria: list[CriterionForLevels]
+
+
+class CriterionLevelItem(BaseModel):
+    score: int
+    descriptor: str
+
+
+class CriterionLevels(BaseModel):
+    """Mốc của MỘT tiêu chí — đã sort tăng, bỏ trùng, và ⊆ ``[0, maxScore]`` (provider lọc)."""
+    criterionId: str
+    levels: list[CriterionLevelItem]
+
+
+class SuggestCriterionLevelsResponse(BaseModel):
+    criteria: list[CriterionLevels]
+
+
+# ── CHẤM THỬ (rubric preview) — employer tự kiểm chứng thước đo trước khi phát link ─────────
+# Trái tim: 3 bài mẫu này được chấm bằng ĐÚNG `build_scoring_prompt` + `provider.score` mà ứng
+# viên thật đi qua, mỗi bài MỘT lời gọi riêng. Gộp 3 bài vào một prompt sẽ biến bài toán thành
+# XẾP HẠNG ⇒ thứ tự yếu-khá-giỏi đúng bất kể thước đo tốt hay không ⇒ tự bịt mắt đúng chỗ cần nhìn.
+class PreviewLevelItem(BaseModel):
+    score: int
+    descriptor: str
+
+
+class PreviewCriterion(BaseModel):
+    """1 tiêu chí + mốc + MỨC KỲ VỌNG cho từng bài.
+
+    ``expectedWeak/Good/Excellent`` do **code phía .NET** chọn (không phải model), nên mỗi tiêu
+    chí có một mức biết-trước để đối chiếu ``expected vs actual`` — đây là cách DUY NHẤT đo được
+    self-scoring bias khi cùng một model vừa viết bài vừa chấm bài. Ba field này CHỈ đi vào prompt
+    SINH BÀI; chúng bị lột bỏ trước khi gọi ``score()`` để lượt chấm không hề biết đáp án.
+
+    ``levels`` BẮT BUỘC ≥2: thiếu nó thì lượt chấm rơi về dải mặc định ``0..maxScore`` và bài
+    kiểm chứng sẽ xác nhận một thước đo KHÁC thước đo HR vừa soạn.
+    """
+    criterionId: str
+    name: str
+    description: str | None = None
+    maxScore: int
+    weight: float
+    levels: list[PreviewLevelItem]
+    expectedWeak: int
+    expectedGood: int
+    expectedExcellent: int
+
+
+class ScorePreviewRequest(BaseModel):
+    jobCategory: str
+    language: str = "vi"
+    seniority: str | None = None
+    question: str
+    # Đáp án mẫu HR soạn (F13) — dùng để hiệu chỉnh bài "xuất sắc", KHÔNG phải để chép.
+    sampleAnswer: str | None = None
+    # Bài thứ 4 tuỳ chọn do HR tự dán — bài DUY NHẤT không do bộ chấm viết ra.
+    customAnswer: str | None = None
+    targetWordCount: int = 160
+    criteria: list[PreviewCriterion]
+
+
+class PreviewCriterionScore(BaseModel):
+    criterionId: str
+    score: float
+    levelMatched: int
+    reasoning: str
+
+
+class PreviewSample(BaseModel):
+    band: str                      # Weak | Good | Excellent | Custom
+    answerText: str
+    wordCount: int
+    scores: list[PreviewCriterionScore]
+
+
+class ScorePreviewResponse(BaseModel):
+    samples: list[PreviewSample]
+    # BK23 — con dấu bộ mảnh prompt ĐÃ dựng nên lượt chấm này. Admin sửa prompt F21 giữa hai lần
+    # chấm thử là đổi thước đo mà KHÔNG đổi mốc nào; thiếu con dấu thì HR quy sai mọi thay đổi
+    # cho việc mình vừa sửa mốc.
+    promptVersion: int | None = None
+    # Ba bài lệch độ dài quá ngưỡng sau khi đã sinh lại ⇒ KHÔNG giấu. Dải điểm đẹp lúc đó có thể
+    # chỉ đang phản ánh "dài hơn thì điểm cao hơn" chứ không phải thước đo phân biệt được.
+    lengthParityWarning: bool = False
+
+
 # ── Phân tích CV (B2C BC6, D17) — sync HTTP, đường LUYỆN TẬP cá nhân ────────
 #
 # ⚠ Đường sàng CV B2B KHÔNG còn đi qua đây. Trước đây hai dòng dùng chung

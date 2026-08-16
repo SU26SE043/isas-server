@@ -25,7 +25,10 @@ public class StuckAnswerRepublisher : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IScoringJobPublisher _publisher;  // singleton, inject thẳng được
     private readonly RepublisherSettings _options;     // DB29 — trần batch mỗi vòng
-    private readonly ScoringOptions _scoring;          // E10 — N attempt + trần bỏ cuộc
+    // E10 — N attempt + trần bỏ cuộc. Đồng thời là kill-switch đáp án mẫu: cờ PHẢI đọc ở cả hai
+    // đường publish, nếu không tắt cờ mà answer đi đường cứu hộ vẫn được chấm kèm đáp án ⇒ "đã
+    // tắt" mà hành vi chỉ đổi một nửa.
+    private readonly ScoringOptions _scoring;
     private readonly ILogger<StuckAnswerRepublisher> _logger;
 
     public StuckAnswerRepublisher(
@@ -114,6 +117,18 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.MetricsVersion,
                 a.CreatedAt,   // E10b — mốc trần BỎ CUỘC (KHÔNG dùng LastScoringPublishedAt, xem ScoringOptions)
                 CampaignId = a.Session.CampaignId,
+                // Phiên bản rubric buổi thi đã GHIM — PHẢI có trong projection. Thiếu nó thì answer
+                // nào phải cứu bằng republisher sẽ được chấm bằng bộ tiêu chí MỚI NHẤT, trong khi
+                // answer chạy trơn tru được chấm bằng bộ đã ghim ⇒ cùng một answer sinh hai
+                // rubric_version khác nhau ⇒ attemptsForVersion không bao giờ đủ N ⇒ answer kẹt
+                // Scoring vĩnh viễn. Đúng chỗ F11 và đáp án mẫu đã dính.
+                CampaignRubricVersion = a.Session.CampaignRubricVersion,
+                // Cặp con dấu rubric B2C — cùng lý do với `CampaignRubricVersion` ngay trên: thiếu ở
+                // projection thì answer nào phải cứu bằng republisher rơi về nhánh "bộ đang hiệu lực",
+                // trong khi answer chấm trơn tru dùng bộ đã ghim ⇒ cùng một answer sinh hai
+                // rubric_version ⇒ attemptsForVersion không bao giờ đủ N ⇒ answer kẹt Scoring vĩnh viễn.
+                B2CRubricOwnerId = a.Session.B2CRubricOwnerId,
+                B2CRubricVersion = a.Session.B2CRubricVersion,
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
                 Language = a.Session.Language,
@@ -125,7 +140,11 @@ public class StuckAnswerRepublisher : BackgroundService
                 // Nhãn tiêu chí của câu hỏi — PHẢI có trong projection, nếu không answer nào phải cứu
                 // bằng republisher sẽ được chấm theo luật KHÁC answer chạy trơn tru (ở đây là chấm đủ
                 // rubric thay vì đúng phạm vi), lệch âm thầm. Đúng chỗ F11 đã dính.
-                QuestionTargetCriterionIds = a.Question.TargetCriterionIds
+                QuestionTargetCriterionIds = a.Question.TargetCriterionIds,
+                // Đáp án mẫu HR soạn — cùng lý do với hai field trên: thiếu ở projection thì answer nào
+                // phải cứu bằng republisher sẽ được chấm KHÔNG có đáp án mẫu, trong khi answer chạy
+                // trơn tru thì có. Hai thước đo trong cùng một chiến dịch, mà điểm vẫn xếp chung bảng.
+                QuestionSampleAnswer = a.Question.SampleAnswer
             })
             .Take(_options.BatchSize > 0 ? _options.BatchSize : 200)   // DB29: chặn nạp cả tồn đọng 1 lần
             .ToListAsync(ct);
@@ -170,12 +189,16 @@ public class StuckAnswerRepublisher : BackgroundService
             }
 
             var key = a.CampaignId is Guid cid
-                ? new RubricScopeKey(cid, null, null)                       // B2B: tiêu chí chỉ phụ thuộc campaign
-                : new RubricScopeKey(null, a.CandidateId, a.JobCategory, a.Language);   // B2C: theo (candidate, nghề, language)
+                // B2B: tiêu chí phụ thuộc campaign + PHIÊN BẢN buổi thi đã ghim (hai buổi cùng campaign
+                // ghim hai phiên bản khác nhau KHÔNG được dùng chung entry cache).
+                ? new RubricScopeKey(cid, null, null, CampaignRubricVersion: a.CampaignRubricVersion)
+                // B2C: theo (candidate, nghề, language) + CON DẤU rubric buổi đã ghim (chủ + phiên bản).
+                : new RubricScopeKey(null, a.CandidateId, a.JobCategory, a.Language,
+                    B2COwnerId: a.B2CRubricOwnerId, B2CRubricVersion: a.B2CRubricVersion);
 
             if (!criteriaCache.TryGetValue(key, out var criteria))
             {
-                criteria = await LoadCriteriaAsync(db, key, ct);
+                criteria = await RubricCriteriaLoader.LoadAsync(db, key, ct);
                 criteriaCache[key] = criteria;
             }
 
@@ -226,6 +249,10 @@ public class StuckAnswerRepublisher : BackgroundService
                     QuestionId = a.QuestionId,
                     AudioObjectKey = a.AudioObjectKey!,
                     QuestionContent = a.QuestionContent,
+                    // Đáp án mẫu HR soạn: kill-switch `Scoring:UseSampleAnswer` phải đọc ở CẢ HAI
+                    // đường publish (AnswerService lúc upload + đường cứu hộ này), nếu không tắt cờ
+                    // mà answer đi đường cứu hộ vẫn chấm kèm đáp án ⇒ "đã tắt" mà hành vi chỉ đổi một nửa.
+                    SampleAnswer = _scoring.UseSampleAnswer ? a.QuestionSampleAnswer : null,
                     JobCategory = a.JobCategory.ToString(),
                     Language = a.Language,
                     RubricVersion = rubricVersion,
@@ -282,30 +309,4 @@ public class StuckAnswerRepublisher : BackgroundService
         }
     }
 
-    // "Chủ" bộ tiêu chí của 1 answer. B2B = campaign (mọi ứng viên trong campaign dùng chung tiêu chí →
-    // KHÔNG kèm candidate vào key, nếu không B2B lại tách nhóm theo từng ứng viên = quay về N+1);
-    // B2C = (candidate, nghề) theo BC16.
-    private readonly record struct RubricScopeKey(Guid? CampaignId, Guid? CandidateId, JobCategory? JobCategory, string Language = "vi");
-
-    // Nguồn tiêu chí tùy mode (E1, giống AnswerService): B2B theo campaign, B2C theo nghề.
-    // E9: nạp kèm rubric_levels để message re-publish cũng mang mức neo. DB15: câu mẫu
-    // (example_answers) là cột jsonb scalar trên level → nạp cùng .Include(Levels).
-    private static async Task<List<RubricCriterion>> LoadCriteriaAsync(
-        InterviewDbContext db, RubricScopeKey key, CancellationToken ct)
-    {
-        var query = db.RubricCriteria.AsNoTracking()
-            .Include(c => c.Levels)
-            .Where(c => c.IsActive);
-
-        if (key.CampaignId is Guid campaignId)
-            return await query.Where(c => c.CampaignId == campaignId).ToListAsync(ct);
-
-        // BC16: B2C ưu tiên rubric RIÊNG của candidate cho nghề, else seed mặc định.
-        var jobCategory = key.JobCategory!.Value;
-        var owner = await B2CRubricScope.ResolveOwnerAsync(db, key.CandidateId!.Value, jobCategory, key.Language, ct);
-        query = owner is Guid oid
-            ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory && c.Language == key.Language)
-            : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory && c.Language == key.Language);
-        return await query.ToListAsync(ct);
-    }
 }

@@ -12,6 +12,11 @@ namespace Isas.CampaignService.DTOs
 
         public int TotalCandidates { get; set; }
 
+        // CAMP-18 — thước đo ĐANG hiệu lực của chiến dịch. FE so với rubricVersion từng dòng: chỉ một
+        // giá trị thì KHÔNG hiện gì (95% chiến dịch — đừng tạo nhiễu); từ hai trở lên mới hiện cột
+        // "Thước đo" + băng cảnh báo vì lúc đó bảng đang trộn điểm của hai thước đo khác nhau.
+        public int? CurrentRubricVersion { get; set; }
+
         public List<CampaignResultRow> Results { get; set; } = new();
 
         // R7 — ứng viên CÓ CỜ chống gian lận nhưng CHƯA `Scored` (bỏ ngang / đang thi). `campaign_rankings`
@@ -35,6 +40,10 @@ namespace Isas.CampaignService.DTOs
         // "Pass"/"Fail" so ngưỡng; null khi ngưỡng chưa đặt (HR quyết tay).
         public string? Result { get; set; }
         public DateTime ScoredAt { get; set; }
+
+        // CAMP-18 — thước đo đã chấm dòng này. null = KHÔNG BIẾT (buổi chấm trước khi có nhãn);
+        // FE hiện chip "?" và KHÔNG BAO GIỜ vẽ thành v1 (BK23).
+        public int? RubricVersion { get; set; }
 
         // E11b — HR chốt điểm cuối. Effective (đã áp override) = TotalScore/Result ở trên ĐÃ tính theo override;
         // các cột dưới lộ override thô để FE hiện badge "HR chỉnh" + điểm AI gốc.
