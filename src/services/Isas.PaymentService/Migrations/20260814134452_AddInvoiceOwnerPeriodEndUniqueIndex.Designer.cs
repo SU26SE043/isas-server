@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using PaymentService.Models;
@@ -11,9 +12,11 @@ using PaymentService.Models;
 namespace Isas.PaymentService.Migrations
 {
     [DbContext(typeof(PaymentDbContext))]
-    partial class PaymentDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260814134452_AddInvoiceOwnerPeriodEndUniqueIndex")]
+    partial class AddInvoiceOwnerPeriodEndUniqueIndex
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -888,9 +891,7 @@ namespace Isas.PaymentService.Migrations
                         new
                         {
                             Id = new Guid("10000000-0000-0000-0000-000000000001"),
-                            AdaptiveEnabled = true,
-                            AdaptiveMaxFollowups = 3,
-                            AdaptiveMaxQuestions = 20,
+                            AdaptiveEnabled = false,
                             Audience = "B2C",
                             Code = "free",
                             CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
@@ -900,7 +901,6 @@ namespace Isas.PaymentService.Migrations
                             GroundingEnabled = false,
                             InterviewFunding = "Credit",
                             IsActive = true,
-                            MaxQuestionsCap = 20,
                             Name = "Free",
                             PostpaidEligible = false,
                             Rank = 0,
@@ -914,7 +914,7 @@ namespace Isas.PaymentService.Migrations
                             Id = new Guid("10000000-0000-0000-0000-000000000002"),
                             AdaptiveEnabled = true,
                             AdaptiveMaxFollowups = 3,
-                            AdaptiveMaxQuestions = 20,
+                            AdaptiveMaxQuestions = 10,
                             Audience = "B2C",
                             Code = "plus",
                             CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
@@ -924,7 +924,7 @@ namespace Isas.PaymentService.Migrations
                             GroundingEnabled = true,
                             InterviewFunding = "Metered",
                             IsActive = true,
-                            MaxQuestionsCap = 20,
+                            MaxQuestionsCap = 10,
                             MonthlyQuota = 30,
                             Name = "Plus",
                             PostpaidEligible = false,
@@ -962,7 +962,7 @@ namespace Isas.PaymentService.Migrations
                         new
                         {
                             Id = new Guid("20000000-0000-0000-0000-000000000001"),
-                            AdaptiveEnabled = true,
+                            AdaptiveEnabled = false,
                             Audience = "B2B",
                             Code = "starter",
                             CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),

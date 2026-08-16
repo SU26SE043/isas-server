@@ -379,7 +379,7 @@ public class CatchNarrowingS11Tests
             .ReserveAsync(OwnerType.User, Guid.NewGuid(), Guid.NewGuid());
 
         Assert.True(fault.Fired, "Chưa ép được lỗi ghi ⇒ phép thử không chứng minh được gì.");
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.NoWallet, result.Outcome);
 
         await using var db = tdb.NewContext();
         Assert.Empty(await db.CreditAccounts.ToListAsync());

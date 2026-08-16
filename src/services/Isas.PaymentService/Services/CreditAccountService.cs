@@ -261,7 +261,7 @@ namespace Isas.PaymentService.Services
                 if (acc is null)
                 {
                     await tx.RollbackAsync(ct);
-                    return ReserveResult.Insufficient();
+                    return ReserveResult.NoWallet();
                 }
 
                 // Chèn reservation TRƯỚC khi trừ số dư: UNIQUE(session_id) chặn 2 request cùng session
@@ -359,34 +359,63 @@ namespace Isas.PaymentService.Services
                 }
                 else if (reservation.FundedBy == ReservationFunding.Credit && acc.PaymentMode == PaymentMode.Postpaid)
                 {
-                    // BK17 — Overdue-block: ví Org còn hóa đơn Overdue (nợ kỳ trước chưa tất toán) → chặn reserve
-                    // MỚI (payment.md:379/431 "không có hóa đơn Overdue"; §State machine "Overdue ⇒ chặn reserve
-                    // mới, KHÔNG văng in-flight"). Đọc trong CÙNG transaction; reservation vừa chèn ở trên →
-                    // rollback gỡ luôn ⇒ no orphan (PAY-5). Idempotency vẫn do UNIQUE(session_id) bảo đảm.
-                    var hasOverdue = await _db.Invoices
-                        .AnyAsync(i => i.OwnerType == ownerType
-                                    && i.OwnerId == ownerId
-                                    && i.Status == InvoiceStatus.Overdue, ct);
-                    if (hasOverdue)
-                    {
-                        await tx.RollbackAsync(ct);
-                        return ReserveResult.Insufficient();
-                    }
-
-                    // POSTPAID (payment.md §Kế toán): KHÔNG trừ remaining (postpaid remaining=0), chỉ reserved+1;
-                    // guard ATOMIC period_usage + reserved + 1 ≤ credit_limit → 0 row = chạm hạn mức ⇒ 402
-                    // (PAY-5, no orphan). period_usage CHỈ tăng khi Consume (P5/P8b) — reserve KHÔNG dồn nợ kỳ
-                    // (bỏ ngang/release → không tính nợ). credit_limit chưa đặt (NULL) ⇒ so sánh NULL loại row ⇒
-                    // 402 (postpaid cần PlatformAdmin đặt hạn mức mới reserve được).
+                    // Ví trả sau vẫn có thể còn credit đã mua từ hồi trả trước. Tiêu hết số đó TRƯỚC rồi mới
+                    // dồn nợ kỳ, để credit đã trả tiền không nằm kẹt vô dụng (trước đây `SetPaymentMode` phải
+                    // chặn bằng guard StrandedCredits chính vì chỗ này không tiêu được). Câu UPDATE có điều
+                    // kiện nên 2 lượt đặt chỗ song song KHÔNG cùng giành được credit cuối (chống double-spend,
+                    // PAY-5); vế `PaymentMode` cố ý KHÔNG có trong WHERE vì đây đúng là ví Postpaid.
                     rows = await _db.CreditAccounts
                         .Where(a => a.OwnerType == ownerType
                                     && a.OwnerId == ownerId
-                                    && a.PaymentMode == PaymentMode.Postpaid
                                     && a.Status == CreditAccountStatus.Active
-                                    && (a.PeriodUsage ?? 0) + a.ReservedCredits + 1 <= a.CreditLimit)
+                                    && a.RemainingCredits >= 1)
                         .ExecuteUpdateAsync(s => s
+                            .SetProperty(a => a.RemainingCredits, a => a.RemainingCredits - 1)
                             .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits + 1)
                             .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+
+                    if (rows == 1)
+                    {
+                        // Chốt nguồn chi trả MỘT LẦN tại đây bằng con dấu trên chỗ giữ. Consume/Release về sau
+                        // chỉ ĐỌC LẠI con dấu này chứ không hỏi mode hiện tại của ví — hỏi lại chính là cách
+                        // credit đã trả tiền bốc hơi (BK24: lật mode giữa chừng làm release đọc nhầm nhánh).
+                        // Nhờ vậy hai nhánh kế toán ở Consume/Release KHÔNG phải sửa gì.
+                        await _db.CreditReservations
+                            .Where(r => r.Id == reservation.Id)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(r => r.PaymentMode, PaymentMode.Prepaid)
+                                .SetProperty(r => r.UpdatedAt, _ => DateTime.UtcNow), ct);
+                    }
+                    else
+                    {
+                        // Hết credit đã mua thì mới dồn nợ kỳ. Phanh Overdue (BK17) CHỈ áp ở đây: hoá đơn quá
+                        // hạn là nợ theo LƯỢT TÍNH TIỀN, mà tiêu credit đã trả tiền thì không sinh nợ mới —
+                        // cùng lẽ với nhánh thuê bao ở trên. Đọc trong CÙNG transaction; chỗ giữ vừa chèn sẽ
+                        // bị rollback gỡ luôn nên không để lại rác (PAY-5).
+                        var hasOverdue = await _db.Invoices
+                            .AnyAsync(i => i.OwnerType == ownerType
+                                        && i.OwnerId == ownerId
+                                        && i.Status == InvoiceStatus.Overdue, ct);
+                        if (hasOverdue)
+                        {
+                            await tx.RollbackAsync(ct);
+                            return ReserveResult.InvoiceOverdue();
+                        }
+
+                        // Dồn nợ: KHÔNG trừ remaining, chỉ reserved+1, guard nguyên tử
+                        // period_usage + reserved + 1 ≤ credit_limit. 0 dòng = chạm hạn mức, hoặc chưa đặt hạn
+                        // mức (so sánh với NULL loại row) ⇒ 402, không để lại rác. Kẻ THUA cuộc đua giành credit
+                        // cuối cùng ở trên cũng rơi xuống đây — không bị 402 oan.
+                        rows = await _db.CreditAccounts
+                            .Where(a => a.OwnerType == ownerType
+                                        && a.OwnerId == ownerId
+                                        && a.PaymentMode == PaymentMode.Postpaid
+                                        && a.Status == CreditAccountStatus.Active
+                                        && (a.PeriodUsage ?? 0) + a.ReservedCredits + 1 <= a.CreditLimit)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(a => a.ReservedCredits, a => a.ReservedCredits + 1)
+                                .SetProperty(a => a.UpdatedAt, _ => DateTime.UtcNow), ct);
+                    }
                 }
                 else if (reservation.FundedBy == ReservationFunding.Credit)
                 {
@@ -408,7 +437,29 @@ namespace Isas.PaymentService.Services
                 if (rows == 0)
                 {
                     await tx.RollbackAsync(ct); // gỡ luôn reservation vừa chèn → KHÔNG để lại reservation dư
-                    return ReserveResult.Insufficient();
+
+                    var walletState = await _db.CreditAccounts
+                        .AsNoTracking()
+                        .Where(a => a.OwnerType == ownerType && a.OwnerId == ownerId)
+                        .Select(a => new { a.Status, a.PaymentMode })
+                        .FirstOrDefaultAsync(ct);
+
+                    if (walletState is null)
+                    {
+                        return ReserveResult.NoWallet();
+                    }
+                    else if (walletState.Status != CreditAccountStatus.Active)
+                    {
+                        return ReserveResult.Suspended();
+                    }
+                    else if (walletState.PaymentMode == PaymentMode.Postpaid)
+                    {
+                        return ReserveResult.LimitReached();
+                    }
+                    else
+                    {
+                        return ReserveResult.OutOfCredit();
+                    }
                 }
 
                 await tx.CommitAsync(ct);
@@ -551,18 +602,24 @@ namespace Isas.PaymentService.Services
 
                 WarnIfNoAccountRow(accRows, reservation.OwnerType, reservation.OwnerId, "Consume");
 
-                // Bút toán Consume −1 (sổ cái append-only). session_id ref lỏng, order_id null (không gắn order).
-                _db.CreditTransactions.Add(new CreditTransaction
+                // Chỉ ví prepaid mới ghi sổ cái. Ví postpaid không có bút toán dương nào đối ứng — reserve không ghi,
+                // tất toán hoá đơn cũng không cộng credit — nên nếu consume vẫn ghi −1 thì bất biến remaining + reserved = tổng delta sẽ âm dần vĩnh viễn, phá đúng cơ chế dò lệch số dư của hệ thống.
+                // Nợ postpaid đã được ghi ở period_usage và invoices; dấu vết theo từng session vẫn nằm ở credit_reservations. Hai nhánh không-phải-credit khác (Subscription, InvoiceSettlement) cũng cố ý không ghi sổ cái vì cùng lý do.
+
+                if (!isPostpaid)
                 {
-                    Id = Guid.NewGuid(),
-                    OwnerType = reservation.OwnerType,
-                    OwnerId = reservation.OwnerId,
-                    OrderId = null,
-                    SessionId = sessionId,
-                    Delta = -1,
-                    Reason = CreditTransactionReason.Consume,
-                    CreatedAt = DateTime.UtcNow
-                });
+                    _db.CreditTransactions.Add(new CreditTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OwnerType = reservation.OwnerType,
+                        OwnerId = reservation.OwnerId,
+                        OrderId = null,
+                        SessionId = sessionId,
+                        Delta = -1,
+                        Reason = CreditTransactionReason.Consume,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
                 await _db.SaveChangesAsync(ct);
 
                 await tx.CommitAsync(ct);

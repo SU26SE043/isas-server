@@ -41,7 +41,7 @@ public class FreeTrialGrantTests
         var fourthSession = Guid.NewGuid();
         var fourth = await NewService(tdb).ReserveAsync(OwnerType.User, userId, fourthSession);
 
-        Assert.Equal(ReserveOutcome.Insufficient, fourth.Outcome);
+        Assert.Equal(ReserveOutcome.OutOfCredit, fourth.Outcome);
 
         using var read = tdb.NewContext();
         var acc = await read.CreditAccounts.SingleAsync(a => a.OwnerId == userId);
@@ -114,7 +114,7 @@ public class FreeTrialGrantTests
         var result = await NewService(tdb, freeTrialCredits: 0)
             .ReserveAsync(OwnerType.User, userId, Guid.NewGuid());
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.NoWallet, result.Outcome);
         using var read = tdb.NewContext();
         Assert.Equal(0, await read.CreditAccounts.CountAsync(a => a.OwnerId == userId));
         Assert.Equal(0, await read.CreditTransactions.CountAsync(t => t.OwnerId == userId));

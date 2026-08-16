@@ -464,7 +464,17 @@ namespace PaymentService.Models
 
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
 
-                e.HasIndex(x => new { x.OwnerType, x.OwnerId });
+                // PP3 — CloseBillingPeriodAsync chỉ chặn "chốt trùng kỳ" bằng đọc-rồi-ghi (AnyAsync trước
+                // Add, KHÔNG cùng transaction với câu INSERT vì .NET/EF không khoá theo predicate) — 2 lượt
+                // chốt kỳ đồng thời cho ĐÚNG (org, periodEnd) đều thấy "chưa có" rồi cùng insert, sinh 2 hoá
+                // đơn cho cùng kỳ (double-bill). UNIQUE ở tầng DB là hàng rào THẬT: lượt thua nhận vi phạm
+                // ràng buộc thay vì một dòng invoice ma. Thay THẲNG index (OwnerType, OwnerId) — tiền lệ
+                // DB31: index cũ chỉ là tiền tố trái của index này, giữ cả hai là index thừa không sweeper
+                // nào cần tới. Ba cột (không riêng 2) vì "trùng kỳ" đúng nghĩa PHẢI tính theo period_end —
+                // 1 org có nhiều hoá đơn thuộc nhiều kỳ khác nhau, chỉ cấm trùng CÙNG kỳ.
+                e.HasIndex(x => new { x.OwnerType, x.OwnerId, x.PeriodEnd })
+                 .IsUnique()
+                 .HasDatabaseName("ux_invoices_owner_period_end");
 
                 e.HasIndex(x => x.DueAt)
                  .HasDatabaseName("ix_invoices_issued_due_at")

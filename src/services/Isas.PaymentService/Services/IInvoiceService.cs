@@ -1,3 +1,4 @@
+using Isas.PaymentService.DTOs;
 using static Isas.PaymentService.DTOs.InvoiceRequest;
 using PaymentService.Models;
 
@@ -21,7 +22,13 @@ namespace Isas.PaymentService.Services
             NotPostpaid,
 
             /// <summary>Billing:UnitPrice ≤ 0 (chưa cấu hình) — chặn lập hóa đơn 0đ (BK24 finding #4).</summary>
-            UnitPriceNotConfigured
+            UnitPriceNotConfigured,
+
+            /// <summary>Kỳ này period_usage = 0, KHÔNG lập hoá đơn 0 đồng.</summary>
+            NothingToBill,
+
+            /// <summary>Đã có hoá đơn cho đúng kỳ đó rồi (chốt kỳ phải idempotent).</summary>
+            AlreadyClosed
         }
 
         public sealed record CloseBillingPeriodResult(CloseBillingPeriodOutcome Outcome, InvoiceResponse? Invoice);
@@ -39,6 +46,8 @@ namespace Isas.PaymentService.Services
         /// Tất toán hóa đơn (owner-scope): tạo đơn <c>InvoiceSettlement</c> + link PayOS (REUSE OrderService).
         /// Hóa đơn không tồn tại / của chủ khác → <see cref="PayInvoiceOutcome.NotFound"/>; đã Paid/Void →
         /// <see cref="PayInvoiceOutcome.NotPayable"/> (no-op); còn Issued/Overdue → <see cref="PayInvoiceOutcome.Created"/>.
+        /// PP6 — đã có đơn Pending còn sống (chưa hết <c>ExpiredAt</c>) cho ĐÚNG hóa đơn này →
+        /// <see cref="PayInvoiceOutcome.AlreadyPending"/> (KHÔNG tạo đơn/link PayOS thứ hai cho cùng tiền).
         /// </summary>
         Task<PayInvoiceResult> PayInvoiceAsync(OwnerType ownerType, Guid ownerId, Guid invoiceId, CancellationToken ct = default);
 
@@ -53,6 +62,12 @@ namespace Isas.PaymentService.Services
         /// LOG riêng cho Issued mà DueAt=NULL (hóa đơn không bao giờ bị quét được — "phanh hỏng câm" phải
         /// nhìn thấy, không âm thầm bỏ qua mãi mãi). Trả số hóa đơn vừa đóng dấu.
         /// </summary>
+        /// danh sách việc cho admin — mọi org trả sau kèm hạn mức còn lại, tiền kỳ hiện tại, số hoá đơn chưa trả, có đang bị chặn đặt chỗ không, và lần chốt kỳ gần nhất. Sắp theo mức khẩn.
+        Task<List<PostpaidOverviewRow>> GetPostpaidOverviewAsync(CancellationToken ct = default);
+
         Task<int> MarkOverdueInvoicesAsync(int graceHours, CancellationToken ct = default);
+
+        /// <summary>Chốt tự động THÁNG DƯƠNG LỊCH UTC vừa kết thúc cho MỌI ví Org đang Postpaid; trả về số hoá đơn THỰC SỰ lập được (NothingToBill/AlreadyClosed không tính).</summary>
+        Task<int> CloseDuePeriodsAsync(DateTime asOfUtc, CancellationToken ct = default);
     }
 }
