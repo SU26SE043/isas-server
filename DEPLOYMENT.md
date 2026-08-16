@@ -1,6 +1,6 @@
 # ISAS — Hướng dẫn Deploy (1 host)
 
-**Toàn bộ stack chạy trên MỘT server Linux**: data layer (`postgres`, `redis`, `seaweedfs`,
+**Toàn bộ stack chạy trên MỘT server Linux**: data layer (`postgres`, `seaweedfs`,
 `rabbitmq`, `qdrant`), 5 service .NET (`authservice`, `interviewservice`, `campaignservice`,
 `paymentservice`, `gateway`) và **AIService** Python (`aiapi` + `aiworker`). CI/CD build **6**
 image → push GHCR → SSH deploy.
@@ -53,7 +53,7 @@ ssh duc2834@100.64.204.33 "grep -oE '^[A-Za-z0-9_]+' ~/docker/main/.env"   # ch�
 ```
 SERVER (Linux) — MỘT host, một compose network `isas-main-network`
 ┌───────────────────────────────────────────────────────────────────┐
-│  postgres   redis   qdrant   seaweedfs:8333   rabbitmq:5672       │
+│  postgres   qdrant   seaweedfs:8333   rabbitmq:5672                │
 │      ▲                            ▲                ▲              │
 │      │                            │                │              │
 │  ┌───┴──────────────┐    ┌────────┴────────────────┴───────────┐  │
@@ -124,16 +124,6 @@ services:
       - "5432:5432"
     volumes:
       - postgres_main_data:/var/lib/postgresql
-    networks: [isas-main-network]
-
-  redis:
-    image: redis:7
-    container_name: redis-main
-    restart: always
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_main_data:/data
     networks: [isas-main-network]
 
   seaweedfs:
@@ -218,7 +208,7 @@ services:
       # restart/deploy làm mất mã đang bay (user bấm đăng nhập Google lại là xong). Chạy NHIỀU
       # instance AuthService ⇒ phải bật sticky session hoặc chuyển kho mã sang Redis/DB.
     expose: ["8080"]
-    depends_on: [postgres, redis]
+    depends_on: [postgres]
     networks: [isas-main-network]
     restart: unless-stopped
 
@@ -430,7 +420,6 @@ networks:
 
 volumes:
   postgres_main_data:
-  redis_main_data:
   seaweedfs_main_data:
   qdrant_main_data:   # RAG grounding (D27)
 ```
