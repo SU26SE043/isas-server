@@ -379,6 +379,7 @@ public class AdminUserModerationTests
     [InlineData(nameof(AdminController.BanUser))]
     [InlineData(nameof(AdminController.UnbanUser))]
     [InlineData(nameof(AdminController.ResetUserPassword))]
+    [InlineData(nameof(AdminController.ChangeUserRole))]
     public void AdminMutationEndpoints_AreNotAnonymous(string method)
     {
         var m = typeof(AdminController).GetMethod(method)!;

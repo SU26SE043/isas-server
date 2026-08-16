@@ -37,6 +37,23 @@ namespace Isas.CampaignService.Models
             v => v == null ? 0 : v.Aggregate(0, (h, s) => HashCode.Combine(h, s.GetHashCode())),
             v => v == null ? null : v.ToList());
 
+        // HR technical screener — list OBJECT ↔ JSON (jsonb Npgsql / text SQLite), cùng nguyên tắc
+        // portable như StringListConverter: đọc/ghi cả cục trong C#, KHÔNG query vào trong JSON.
+        //
+        // ⚠ So sánh bằng chuỗi JSON đã serialize chứ không so từng field: object không override
+        // Equals nên SequenceEqual chỉ so tham chiếu ⇒ EF sẽ coi "sửa Level của một phần tử" là
+        // KHÔNG đổi và bỏ qua lúc SaveChanges — sai lặng lẽ, không lỗi gì.
+        private static ValueConverter<List<T>?, string?> JsonListConverter<T>() => new(
+            v => v == null ? null : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => v == null ? null : JsonSerializer.Deserialize<List<T>>(v, (JsonSerializerOptions?)null));
+
+        private static ValueComparer<List<T>?> JsonListComparer<T>() => new(
+            (a, b) => JsonSerializer.Serialize(a, (JsonSerializerOptions?)null)
+                   == JsonSerializer.Serialize(b, (JsonSerializerOptions?)null),
+            v => v == null ? 0 : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null).GetHashCode(),
+            v => v == null ? null : JsonSerializer.Deserialize<List<T>>(
+                JsonSerializer.Serialize(v, (JsonSerializerOptions?)null), (JsonSerializerOptions?)null));
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             // ── Campaign ──────────────────────────────────────────────────
@@ -100,10 +117,13 @@ namespace Isas.CampaignService.Models
                 // C13: rule cứng sàng CV — string[] lưu jsonb (Npgsql) / text (SQLite) qua converter.
                 e.Property(x => x.RequiredSkills).HasConversion(StringListConverter, StringListComparer);
                 e.Property(x => x.KeywordsAny).HasConversion(StringListConverter, StringListComparer);
+                e.Property(x => x.JobNeeds)
+                 .HasConversion(JsonListConverter<JobNeed>(), JsonListComparer<JobNeed>());
                 if (Database.IsNpgsql())
                 {
                     e.Property(x => x.RequiredSkills).HasColumnType("jsonb");
                     e.Property(x => x.KeywordsAny).HasColumnType("jsonb");
+                    e.Property(x => x.JobNeeds).HasColumnType("jsonb");
 
                     // DB10: optimistic concurrency qua system column Postgres `xmin` — KHÔNG thêm DDL
                     // (map cột hệ thống sẵn có làm concurrency token; migration generator bỏ qua xmin).
@@ -398,8 +418,23 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.YearsExperience).HasColumnType("numeric(4,1)");
 
                 e.Property(x => x.Skills).HasConversion(StringListConverter, StringListComparer);
+                e.Property(x => x.BonusSignals).HasConversion(StringListConverter, StringListComparer);
+                e.Property(x => x.VerifyQuestions).HasConversion(StringListConverter, StringListComparer);
+                e.Property(x => x.Strengths)
+                 .HasConversion(JsonListConverter<NeedAssessment>(), JsonListComparer<NeedAssessment>());
+                e.Property(x => x.Gaps)
+                 .HasConversion(JsonListConverter<NeedAssessment>(), JsonListComparer<NeedAssessment>());
+                // 10 = đủ cho "Medium" (6). Cột enum-string ⇒ EnumColumnLengthTests (S11) là guard
+                // sẵn có cho lớp bug varchar-hẹp-hơn-giá-trị đã làm vỡ đường tiền một lần.
+                e.Property(x => x.VerificationRisk).HasMaxLength(10);
                 if (Database.IsNpgsql())
+                {
                     e.Property(x => x.Skills).HasColumnType("jsonb");
+                    e.Property(x => x.BonusSignals).HasColumnType("jsonb");
+                    e.Property(x => x.VerifyQuestions).HasColumnType("jsonb");
+                    e.Property(x => x.Strengths).HasColumnType("jsonb");
+                    e.Property(x => x.Gaps).HasColumnType("jsonb");
+                }
 
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");

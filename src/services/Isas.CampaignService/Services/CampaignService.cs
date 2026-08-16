@@ -24,6 +24,7 @@ namespace Isas.CampaignService.Services
         private readonly IFileService _file;
         private readonly IParserService _parser;
         private readonly ICriteriaSuggester _suggester;
+        private readonly IJobNeedsSuggester? _jobNeedsSuggester;
         private readonly IInvitationEmailPublisher _emailPublisher;
         // AI4 — typed HttpClient gọi Interview /internal/sessions/{sessionId}/answers (transcript cho HR).
         // Optional (default null): giữ nguyên các call-site test 6-tham-số hiện có; DI luôn resolve client
@@ -56,8 +57,10 @@ namespace Isas.CampaignService.Services
             IQuestionGenerator? questionGenerator = null,
             IEntitlementClient? entitlements = null,
             IConfiguration? config = null,
-            IAiServiceLevelSuggester? levelSuggester = null)
+            IAiServiceLevelSuggester? levelSuggester = null,
+            IJobNeedsSuggester? jobNeedsSuggester = null)
         {
+            _jobNeedsSuggester = jobNeedsSuggester;
             _questionGenerator = questionGenerator;
             _invitationSettings = invitationOptions?.Value ?? new InvitationSettings();
             _db = db;
@@ -1086,6 +1089,11 @@ namespace Isas.CampaignService.Services
             // D9/C8: tiêu chí text → CÓ CẤU TRÚC. Gọi AIService /suggest-criteria (fallback default nếu lỗi).
             if (campaign.Criteria.Count == 0)
                 _db.CampaignCriteria.AddRange(await BuildCriteriaAsync(campaign, ct));
+
+            // HR technical screener bước 1 — chốt nhu cầu công việc MỘT LẦN cho cả campaign.
+            // Chỉ chạy khi HR chưa tự khai: bộ HR đã sửa là quyết định của người, AI không đè lên.
+            if (campaign.JobNeeds is not { Count: > 0 })
+                campaign.JobNeeds = await BuildJobNeedsAsync(campaign, ct);
 
             campaign.Status = CampaignStatus.Active;
             campaign.UpdatedAt = DateTime.UtcNow;
@@ -2389,25 +2397,33 @@ namespace Isas.CampaignService.Services
                     $"Gói {entitlement.TierCode} chỉ cho phép {entitlement.MaxActiveCampaigns} campaign Active; hiện có {active}.");
         }
 
+        /// <summary>
+        /// ⚠ <b>ADAPTIVE KHÔNG BỊ GÓI CHẶN</b> — đây là quyết định sản phẩm, đừng "sửa lại cho đủ bộ".
+        /// Mỗi buổi phỏng vấn B2B tiêu đúng 1 credit ví org bất kể tier (PAY-6), nên gói không được lấy
+        /// mất chính engine mà org vừa trả tiền để chạy. Tham số <c>adaptiveEnabled</c> GIỮ LẠI để chữ
+        /// ký hai validator vẫn nói đúng những gì HR gửi lên (và để chỗ này là nơi duy nhất phải đọc khi
+        /// team đổi ý), nhưng nó KHÔNG còn là điều kiện từ chối.
+        ///
+        /// Những quyền lợi có chi phí biên khác nhau thật (số ứng viên, grounding) vẫn bị chặn.
+        /// </summary>
         private static void ValidateEntitledSelection(
             int? maxCandidates, bool adaptiveEnabled, bool groundingEnabled, CampaignEntitlement entitlement)
         {
+            _ = adaptiveEnabled;   // cố ý không gate — xem doc ở trên
             if (maxCandidates is > 0 && maxCandidates > entitlement.MaxCandidatesCap)
                 throw new ArgumentException($"maxCandidates vượt trần {entitlement.MaxCandidatesCap} của gói {entitlement.TierCode}.");
-            if (adaptiveEnabled && !entitlement.AdaptiveEnabled)
-                throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ adaptive interview.");
             if (groundingEnabled && !entitlement.GroundingEnabled)
                 throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
         }
 
         // Only requested mutations are gated. A tier expiry must not evict or freeze an existing campaign.
+        // `adaptiveEnabled` cố ý không gate — cùng lý do với ValidateEntitledSelection.
         private static void ValidateEntitledMutation(
             int? maxCandidates, bool? adaptiveEnabled, bool? groundingEnabled, CampaignEntitlement entitlement)
         {
+            _ = adaptiveEnabled;
             if (maxCandidates.HasValue && maxCandidates.Value > entitlement.MaxCandidatesCap)
                 throw new ArgumentException($"maxCandidates vượt trần {entitlement.MaxCandidatesCap} của gói {entitlement.TierCode}.");
-            if (adaptiveEnabled == true && !entitlement.AdaptiveEnabled)
-                throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ adaptive interview.");
             if (groundingEnabled == true && !entitlement.GroundingEnabled)
                 throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
         }
@@ -2657,6 +2673,82 @@ namespace Isas.CampaignService.Services
             }).ToList();
             criteria[0].Weight += 1m - criteria.Sum(c => c.Weight);   // sửa sai số làm tròn → Σ=1
             return criteria;
+        }
+
+        // ── HR technical screener bước 1 — nhu cầu công việc suy từ JD ────────────────
+        //
+        // 🔴 KHÔNG có fallback "bộ mặc định" như BuildCriteriaAsync, và đó là chủ đích: nhu cầu
+        // công việc là thứ CHỈ đọc được từ JD của chính campaign này. Một bộ mặc định chung sẽ
+        // đo mọi ứng viên của mọi vị trí bằng cùng vài câu chung chung rồi vẫn trưng ra cho HR
+        // như thể đã đối chiếu với JD — sai mà nhìn như đúng. Không suy được ⇒ trả null ⇒ sàng CV
+        // dừng với lý do đọc được (xem PublishScreeningJobsAsync), HR biết mà xử.
+        private async Task<List<JobNeed>?> BuildJobNeedsAsync(Campaign campaign, CancellationToken ct)
+        {
+            if (_jobNeedsSuggester is null || string.IsNullOrWhiteSpace(campaign.JDText))
+                return campaign.JobNeeds;   // giữ nguyên thứ đang có, KHÔNG xoá
+
+            var suggested = await _jobNeedsSuggester.SuggestAsync(
+                campaign.JDText, campaign.Domain, campaign.Language, ct);
+
+            if (suggested is not { Count: > 0 })
+                return campaign.JobNeeds;
+
+            return suggested.Select(s => new JobNeed
+            {
+                // Id do ĐÂY cấp: AIService không biết HR sẽ sửa/thêm dòng nào, id sinh bên đó sẽ
+                // chết ngay lần HR sửa đầu tiên.
+                NeedId = Guid.NewGuid().ToString(),
+                Category = s.Category,
+                Text = s.Text,
+                Source = JobNeedSources.AiSuggested,
+            }).ToList();
+        }
+
+        /// <summary>
+        /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12). Chỉ khi <c>Draft</c> — CAMP-2:
+        /// đổi thước đo giữa chừng làm ứng viên sàng trước và sàng sau không so sánh được nữa.
+        /// </summary>
+        public async Task<CampaignResponse> ReplaceJobNeedsAsync(
+            Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (campaign.Status != CampaignStatus.Draft)
+                throw new InvalidOperationException(
+                    $"Chỉ sửa nhu cầu công việc khi campaign `Draft` (hiện: {campaign.Status}).");
+
+            var cleaned = new List<JobNeed>();
+            foreach (var n in needs ?? new List<JobNeedInput>())
+            {
+                var text = n.Text?.Trim();
+                if (string.IsNullOrEmpty(text))
+                    continue;
+                if (!JobNeedCategories.IsValid(n.Category))
+                    throw new ArgumentException(
+                        $"Nhóm nhu cầu không hợp lệ: '{n.Category}'. Hợp lệ: {string.Join(", ", JobNeedCategories.All)}.");
+
+                cleaned.Add(new JobNeed
+                {
+                    // Giữ id cũ khi HR sửa chữ (client echo lại) để kết quả sàng đã có còn trỏ đúng
+                    // dòng; id lạ/trống ⇒ cấp mới. Cùng lý do F10 giữ id câu hỏi qua vòng sửa.
+                    NeedId = string.IsNullOrWhiteSpace(n.NeedId) ? Guid.NewGuid().ToString() : n.NeedId!,
+                    Category = n.Category!,
+                    Text = text,
+                    // Nguồn gốc là sự thật do SERVER sở hữu — BỎ QUA giá trị client gửi. Cho client
+                    // khai `source` thì HR tự dán nhãn "AI đề xuất" cho dòng mình gõ tay (lỗ F10).
+                    Source = JobNeedSources.HrEdited,
+                });
+            }
+
+            campaign.JobNeeds = cleaned.Count > 0 ? cleaned : null;
+            campaign.UpdatedAt = DateTime.UtcNow;
+            AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id,
+                $"Cập nhật nhu cầu công việc ({cleaned.Count} mục)");
+            await _db.SaveChangesAsync(ct);
+
+            return CampaignResponse.FromEntity(campaign);
         }
 
         /// <summary>

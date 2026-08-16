@@ -150,7 +150,7 @@ public class AnswersController : ControllerBase   // KHÔNG [Route] cấp class
 
         try
         {
-            await _answerService.MarkFailedAsync(answerId, req.Reason, ct);
+            await _answerService.MarkFailedAsync(answerId, req.Reason, req.NoSpeech, ct);
             return NoContent();
         }
         catch (KeyNotFoundException ex)

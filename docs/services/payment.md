@@ -74,7 +74,9 @@ CreditAccount {                         // GET /me/account ✅ (= CreditAccountR
   status:           enum(int)           // 0=Active · 1=Suspended (đình chỉ nợ xấu/quá hạn)
   remainingCredits: int                 // ✅ F7: ĐÃ GỒM credit dùng thử (không tách xô riêng)
   reservedCredits:  int
-  freeCreditsGranted: int               // ✅ F7 — suất dùng thử đã tặng cho ví này (0 = chưa/ví Org). Ví chưa tồn tại → 0 (KHÔNG hứa trước quota cấu hình)
+  freeCreditsGranted: int               // ✅ F7 — suất dùng thử ĐÃ tặng cho ví này (0 = chưa/ví Org). Nói về QUÁ KHỨ; ví chưa tồn tại → 0
+  walletExists:      bool               // ✅ MỚI — false = chưa có row `credit_accounts` (tạo lazy lúc reserve/webhook Paid đầu tiên)
+  pendingFreeCredits: int               // ✅ MỚI — suất dùng thử SẼ nhận khi ví ra đời; 0 khi ví đã có · ví Org (BC-1) · kill-switch tắt
   creditLimit:      int?                // chỉ Org/postpaid
   periodUsage:      int?                // chỉ Org/postpaid — lượt đã dùng kỳ này
   updatedAt:        datetime
@@ -130,6 +132,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`GET /payment/order/{id}/status`** ✅ — **FE active-polling**: server chưa nhận webhook → gọi PayOS đối soát ngay. → `OrderStatusResponse` `{ orderCode: long, status: string, paidAt: datetime? }` (**ngoại lệ:** `status` là **CHUỖI** ở đây). Lỗi: **404** (không tồn tại/non-owner).
 
 **`GET /payment/me/account`** ✅ (2026-07-18) — Số dư ví của **chính caller** → `CreditAccount`. Chủ ví suy từ JWT (D15: claim `org_id`→Org, else `sub`→User) nên **không có đường đọc ví người khác**; HrMember xem được (AUTH-6 chỉ chặn money-mutation). Chưa từng mua credit (chưa có row ví) → **200** ví rỗng `remainingCredits:0` (đọc thuần, KHÔNG tạo ví — ví tạo lazy ở webhook Paid P2). Lỗi: **401**.
+> ⚠ **`walletExists` + `pendingFreeCredits` (mới):** "chưa có ví" và "ví đã tiêu hết" đều cho `remainingCredits:0` nhưng là **hai màn hình ngược nhau** — một bên mời dùng thử, bên kia mời nạp. Client **KHÔNG** suy được từ `freeCreditsGranted == 0`: ví tạo trước F7 cũng bằng 0, và nếu kill-switch `Billing:FreeTrialCredits=0` (PAY-14) thì **mọi** ví đều bằng 0 ⇒ cách suy đó đảo thành lời nói dối cho 100% người dùng. `pendingFreeCredits` lấy từ `BillingSettings.FreeTrialGrantFor` — **cùng một luật** với đường CẤP thật, nên đổi cấu hình không làm hai bên lệch; client cũng khỏi ghi cứng số "3" trong app (app không redeploy nhanh như đổi env).
 
 **`GET /payment/me/credit-transactions`** ✅ **F19** (2026-07-19) — Lịch sử **biến động credit** của chính caller → `CreditTransaction[]`. Chủ ví suy từ JWT (D15) nên không có đường đọc sổ cái người khác. Trước F19 KHÔNG endpoint nào đọc `credit_transactions` cho **bất kỳ ai**: người dùng thấy số dư (`me/account`) nhưng mất credit thì không tra được nó đi đâu. Keyset-paged theo mẫu chung (DB8): body vẫn **mảng JSON**, `?cursor=&limit=` opt-in, next-cursor ở header `X-Next-Cursor`, default 500 ⇒ **FE không phải sửa**. `?reason=` lọc theo loại bút toán. **KHÔNG** trả `grantedBy`/`note` (thông tin vận hành nội bộ — chỉ bản admin có). Chưa có bút toán nào → **200** mảng rỗng. Lỗi: **401**.
 
@@ -152,6 +155,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 **`POST /payment/admin/subscriptions/grant`** — Admin cấp kỳ thuê bao không qua PayOS. Nhận owner, plan, `durationDays`, `activatedAt?`, `idempotencyKey`; User chỉ B2C, Org chỉ B2B. Row `source=AdminGrant`, không order, snapshot entitlement/hash và event `Activated`; activation tương lai chưa mở entitlement.
 
 **`/payment/admin/plans`** — CRUD catalog tier, chỉ `Admin`. `DELETE /{id}` soft-deactivate (`is_active=false`), không xoá row lịch sử đã được package/subscription tham chiếu. Validation: Metered cần quota dương; B2C không có B2B cap; Unlimited chỉ khi `Tiering:AllowUnlimitedPlans=true`. Sửa catalog không hồi tố subscription snapshot; chỉ activation/mua mới dùng catalog mới.
+
+> ⚠ **`adaptive_enabled` = `true` ở MỌI gói seed (INT-19)** — quyết định sản phẩm, không phải sơ suất: một buổi tiêu đúng 1 credit bất kể gói, nên gói không lấy mất engine phỏng vấn. Migration `AllowAdaptiveOnEveryTier` (**thuần `UPDATE` 3 hàng seed, 0 DDL, `Down` đảo ngược đủ**; apply trước hay sau deploy đều an toàn vì prod đang `Tiering:Enabled=false`). B2C đồng trần `adaptive_max_questions = 20` = trần hệ thống — trước đó `plus` bị 10 trong khi `free` (đúng nhóm trả tiền theo từng buổi) không có adaptive gì cả. `PlanSeedAdaptiveTests` khoá lại: **thêm gói mới thì bật adaptive, đừng nới test**. Gói tạo qua API mà quên tick cũng KHÔNG tắt được adaptive — Interview coi `Adaptive:Enabled` là sàn (INT-19 tầng 2). Cần gạt kiếm tiền còn lại giữ nguyên: quota tháng, grounding, self-consistency, CV/repo, roadmap, trần B2B, postpaid, seats.
 
 **`POST/PUT/DELETE /payment/package…`** ✅ **A5** — CRUD gói (Req `ProductPackage`). Auth `Roles="Admin"` (PlatformAdmin, AUTH-3/7 — trước v22 comment hở → mở toang, nay đóng). GET catalog (trên) = Public.
 **`POST /payment/admin/orgs/{orgId}/postpaid`** 🔜 — Duyệt postpaid + đặt `credit_limit` (cần MST). Req: `{ creditLimit: int }`.
@@ -193,6 +198,17 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 - Doanh thu **gộp** đếm theo `paid_at` (đơn Paid); **tiền hoàn** đếm theo `refunded_at` — nếu đếm hoàn theo `paid_at` thì một khoản hoàn hôm nay đi ngược sửa doanh thu kỳ ĐÃ CHỐT. Kỳ có thể có `netRevenueVnd` âm — đúng bản chất kế toán.
 - **Quà không bao giờ thành doanh thu** theo cấu trúc: báo cáo đọc `orders`, còn `FreeGrant`/`PromoGrant` chỉ ghi `credit_transactions` và không sinh đơn nào (có test khoá).
 - Lỗi: **400** `from >= to` hoặc `groupBy` lạ.
+
+**`GET /payment/admin/revenue` mở rộng** ✅ **F27** (2026-08-15) — cùng endpoint trên, thêm 4 nhóm chỉ số Finance vào response: `{ ..., aiCostUsd, aiCostVnd, grossMarginVnd, refundRatePct, payingOwnerCount, arpuVnd, funnel: { createdCount, paidCount, failedCount, expiredCount, cancelledCount, pendingCount, conversionRatePct } }`. **Additive — không đổi field cũ, FE cũ không vỡ.**
+- **`grossMarginVnd = netRevenueVnd − aiCostVnd` (trừ trên NET, không trên gross) — CÓ THỂ ÂM, KHÔNG kẹp về 0.** Số âm là tín hiệu thật (kỳ đang lỗ vận hành AI); che nó đi là nói dối báo cáo. `aiCostVnd` đọc từ `IAiUsageService.GetReportAsync` (bảng `ai_usage_logs`, cùng kỳ `[from,to)` nhưng khớp theo `created_at` của dòng usage — không khớp theo đơn hàng nào), quy đổi qua `Finance:UsdToVndRate` (appsettings, mặc định 26000 — **không phải tỷ giá real-time**, admin tự cập nhật).
+- **`refundRatePct` có thể vượt 100%** — `refundedVnd` đếm theo `refunded_at`, `grossRevenueVnd` đếm theo `paid_at`; một đơn thu kỳ trước hoàn kỳ này làm tử số > mẫu số của kỳ này, hợp lệ. Không kẹp.
+- **`funnel` đếm theo `created_at`, KHÔNG phải `paid_at`** — đơn Pending/Failed/Expired/Cancelled không có `paid_at`. `paidCount` gộp cả `Paid` lẫn `Refunded` (đơn đã từng thu tiền, hoàn không xoá dấu vết chuyển đổi thành công). Hai trục thời gian (funnel theo `created_at` vs gross theo `paid_at`) là HAI BẢNG SỐ KHÁC NHAU, đừng cộng chéo.
+- `arpuVnd`/`refundRatePct`/`conversionRatePct` = 0 khi mẫu số = 0 (không throw).
+
+**`GET /payment/admin/finance-snapshot`** ✅ **F27** (2026-08-15) — chỉ số tài chính kiểu **SỐ DƯ TẠI MỘT THỜI ĐIỂM** (`AsOf`), KHÁC BẢN CHẤT với `/admin/revenue` (dòng chảy theo kỳ `[from,to)`) — không nhận `from`/`to`. Auth `Roles="Admin"`. → **200** `{ asOf, outstandingReceivables: { issuedVnd, issuedCount, overdueVnd, overdueCount, totalVnd }, mrrVnd, activeSubscriptionCount }`.
+- **AR (công nợ phải thu)** — tổng `invoices.amount` theo `status IN (Issued, Overdue)`, toàn hệ thống (không lọc theo 1 org — trước đó chỉ có `me/invoices` tự tra). `Paid`/`Void` không tính.
+- **MRR** — subscription `Active` (`ActivatedAt<=now<ExpiresAt`) + `Source=Purchase` (loại `AdminGrant` — quà tặng không phải doanh thu thật, cùng tinh thần F19 loại `FreeGrant`/`PromoGrant`). **Một chủ ví có thể có NHIỀU row `Active` chồng lấn** (mỗi lần mua = 1 row append-only, D8 tiering) — chỉ tính row **`TierRank` cao nhất** (dùng lại `SubscriptionQueryExtensions.OrderByTierPriority`, cùng thứ tự `EntitlementResolver` dùng để mở khoá tính năng) để không double-count khi khách nâng cấp giữa kỳ. `BillingCycle=Annual` quy đổi `PriceVnd/12`. `PackageId=null` vẫn đếm vào `activeSubscriptionCount` (subscription hợp lệ, chỉ không rõ giá) nhưng góp 0 vào `mrrVnd`.
+- Cả hai đọc thẳng DB, **không migration, không entity EF mới**.
 
 **`POST /payment/admin/credits/grant`** ✅ **F20/R8** (2026-07-27) — Cấp credit khuyến mãi. Auth `Roles="Admin"`. Req `{ ownerType, ownerId, credits (1–10000), note (bắt buộc), idempotencyKey? (≤200) }` → **200** `{ ownerType, ownerId, creditsGranted, remainingCredits, transactionId }`.
 - `remaining += N` + bút toán `PromoGrant +N` mang `granted_by` (lấy từ **JWT**, request DTO cố ý KHÔNG có trường khai người cấp) trong CÙNG transaction ⇒ bất biến sổ cái giữ nguyên.

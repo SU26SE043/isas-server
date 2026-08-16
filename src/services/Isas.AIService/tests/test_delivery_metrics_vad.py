@@ -118,13 +118,32 @@ def test_rollback_ve_segment_whisper_that_su_chay(monkeypatch):
     Cùng đầu vào như test trung tâm nhưng đổi nguồn → chỉ số phải kể câu chuyện của Whisper.
     """
     monkeypatch.setattr(app_settings, "delivery_metrics_source", "whisper")
+    # ⚠ ĐỔI TIỀN ĐỀ 2026-08-15: vế "không gọi VAD" chỉ còn đúng khi CỔNG IM LẶNG tắt — cổng hỏi VAD
+    # một câu KHÁC ("bản ghi này có tiếng người không") mà chỉ VAD trả lời được. Xem test ngay dưới:
+    # cổng bật thì VAD PHẢI chạy kể cả ở chế độ whisper.
+    monkeypatch.setattr(app_settings, "silence_gate_enabled", False)
     t, calls = _make(monkeypatch)
     m = t.transcribe_detailed("/tmp/x.webm", "vi").metrics
 
     assert m.pause_count == 0
     assert m.longest_pause_sec == pytest.approx(0.5)
     assert m.speech_sec == pytest.approx(5.5)
-    assert calls["vad_audio"] is None, "chế độ whisper thì KHÔNG được gọi VAD (phí thời gian)"
+    assert calls["vad_audio"] is None, "chế độ whisper + cổng tắt thì KHÔNG được gọi VAD"
+
+
+def test_cong_im_lang_bat_thi_van_chay_vad_o_che_do_whisper(monkeypatch):
+    """Cổng im lặng THẮNG cần gạt `delivery_metrics_source`.
+
+    Hai cấu hình hợp lệ gặp nhau: nếu cổng bỏ qua VAD ở chế độ whisper thì có đúng một tổ hợp
+    config mà bản ghi im lặng đi lọt — và im lặng chính là ca cổng sinh ra để chặn.
+    """
+    monkeypatch.setattr(app_settings, "delivery_metrics_source", "whisper")
+    monkeypatch.setattr(app_settings, "silence_gate_enabled", True)
+    t, calls = _make(monkeypatch)
+
+    t.transcribe_detailed("/tmp/x.webm", "vi")
+
+    assert calls["vad_audio"] is not None, "cổng bật thì VAD phải chạy dù nguồn mốc là whisper"
 
 
 def test_khong_vung_tieng_noi_thi_metrics_None_chu_khong_phai_so_0(monkeypatch):

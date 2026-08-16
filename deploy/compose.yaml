@@ -67,6 +67,11 @@ x-aiservice-env: &aiservice-env
   # ⚠ Default TRONG CODE là `large-v3` = 2,9 GB tải về + 64-96s/lượt ⇒ vượt timeout decider 90s.
   # Production chạy `small`. ĐỪNG bỏ dòng này.
   WHISPER_MODEL: ${WHISPER_MODEL:-small}
+  # Cổng im lặng: VAD không thấy tiếng người ⇒ KHÔNG chép lời, .NET đánh answer `Skipped`.
+  # ⚠ Mặc định BẬT (khác GROUNDING/TIERING/CV_SCREENING): đây là bản vá cho hành vi ĐÃ ĐO ĐƯỢC LÀ
+  # SAI — bản ghi im lặng 8s từng ra transcript "Hãy subscribe cho kênh Ghiền Mì Gõ…" và được chấm
+  # điểm thật trên cả 5 tiêu chí (prod 2026-08-15). `false` = quay lui.
+  SILENCE_GATE_ENABLED: ${SILENCE_GATE_ENABLED:-true}
   # Ba biến dưới có default trong code nhưng đều trỏ `localhost` ⇒ thiếu thì service khởi động
   # BÌNH THƯỜNG rồi mới hỏng lúc chạy. Đây là loại lỗi khó thấy nhất khi đổi topology.
   S3_ENDPOINT: http://seaweedfs:8333
@@ -191,6 +196,11 @@ services:
       - EmailSettings__From=${SMTP_FROM}
       - Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
       - Authentication__Google__ClientSecret=${GOOGLE_CLIENT_SECRET}
+      # Đăng nhập Google NATIVE cho app mobile (POST /auth/google/id-token) KHÔNG cần env riêng:
+      # allowlist `aud` để trống sẽ rơi về ClientId ngay trên — đúng vì app xin ID token với
+      # serverClientId = WEB client id nên `aud` chính là nó. Chỉ khai
+      # `Authentication__Google__IdTokenAudiences__0=…` khi app cố tình dùng audience khác.
+      # ⚠ Trống CẢ hai ⇒ endpoint trả 500 chứ KHÔNG bỏ qua kiểm tra `aud` (rỗng = nhận mọi Google ID token).
       # Đăng nhập Google: callback 302 về FE kèm MÃ DÙNG-MỘT-LẦN (?code=…), KHÔNG kèm token; FE đổi
       # mã lấy phiên qua POST /auth/google/exchange. Cả 2 URL lấy từ CONFIG SERVER (nhận đích từ
       # client = open-redirect làm rò phiên).
@@ -251,6 +261,10 @@ services:
       - Adaptive__MaxFollowUps=${ADAPTIVE_MAX_FOLLOW_UPS:-3}
       - Adaptive__MaxDeepPerQuestion=${ADAPTIVE_MAX_DEEP_PER_QUESTION:-3}
       - Adaptive__MaxFailuresPerSession=${ADAPTIVE_MAX_FAILURES_PER_SESSION:-3}
+      # Trần BỎ CUỘC cho answer chờ chấm. Quá ngần này phút kể từ lúc TẠO answer mà chưa gom đủ N
+      # attempt (E10) → thôi đẩy lại, chốt sổ bằng điểm đã có (hoặc Skipped) rồi đóng buổi.
+      # 60 chừa ~3 lượt đẩy lại (mốc 15'); 0 = tắt = quay lại hành vi kẹt vô hạn.
+      - Scoring__GiveUpAfterMinutes=${SCORING_GIVE_UP_AFTER_MINUTES:-60}
     ports:
       - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet
     depends_on: [postgres, seaweedfs, rabbitmq, qdrant]

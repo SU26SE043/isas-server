@@ -151,4 +151,15 @@ public class ScoreItemDto
 public class AnswerFailedCallbackRequest
 {
     public string? Reason { get; set; }
+
+    /// <summary>
+    /// Bản ghi KHÔNG có tiếng nói (VAD của AIService không thấy vùng nào) hoặc bản chép là rác máy
+    /// sinh → answer thành <c>Skipped</c> thay vì <c>Failed</c>.
+    /// </summary>
+    /// <remarks>
+    /// Additive, mặc định <c>false</c>: worker bản cũ không gửi field này → hành vi y hệt trước
+    /// (Failed). Không tách endpoint riêng vì đây vẫn là "worker báo answer này không chấm được",
+    /// chỉ khác LÝ DO — mà lý do lại đổi nhãn người dùng nhìn thấy.
+    /// </remarks>
+    public bool NoSpeech { get; set; }
 }

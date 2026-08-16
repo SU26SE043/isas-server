@@ -238,6 +238,7 @@ public class PasswordResetOtpTests
                 Mock.Of<IEmailSender>(),
                 Mock.Of<IGoogleLoginRedirects>(),
                 Mock.Of<IGoogleAuthCodeStore>(),
+                Mock.Of<IGoogleIdTokenVerifier>(),
                 Mock.Of<ILogger<AuthController>>())
             {
                 ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }

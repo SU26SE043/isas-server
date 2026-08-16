@@ -244,6 +244,28 @@ namespace Isas.CampaignService.DTOs
         public List<CriterionLevelResponse> Levels { get; set; } = new();
     }
 
+    /// <summary>HR technical screener bước 1 — 1 nhu cầu công việc (đọc).</summary>
+    public class JobNeedResponse
+    {
+        public string NeedId { get; set; } = null!;
+        public string Category { get; set; } = null!;   // Technical | WorkStyle | Communication | Growth
+        public string Text { get; set; } = null!;
+        public string Source { get; set; } = null!;     // AiSuggested | HrEdited — server sở hữu (F10)
+    }
+
+    /// <summary>
+    /// HR sửa nhu cầu công việc (replace-all). <c>Source</c> KHÔNG có ở đây là CỐ Ý: nguồn gốc là
+    /// sự thật do server sở hữu — cho client khai thì HR tự dán nhãn "AI đề xuất" cho dòng mình gõ
+    /// tay, đúng lỗ F10 đã bịt cho <c>campaign_questions.source</c>.
+    /// </summary>
+    public class JobNeedInput
+    {
+        /// <summary>Echo lại id đang có để kết quả sàng đã lưu còn trỏ đúng dòng; trống ⇒ cấp mới.</summary>
+        public string? NeedId { get; set; }
+        public string? Category { get; set; }
+        public string? Text { get; set; }
+    }
+
     public class CampaignResponse
     {
         public Guid Id { get; set; }
@@ -276,6 +298,9 @@ namespace Isas.CampaignService.DTOs
         public DateTime? ExpiresAt { get; set; }
         public List<CampaignQuestionResponse> Questions { get; set; }
         public List<CampaignCriterionResponse> Criteria { get; set; }   // C12: tiêu chí structured
+        // HR technical screener bước 1 — thước đo dùng cho MỌI CV của campaign này. `[]` khi chưa
+        // chốt (chưa publish hoặc AI không suy được từ JD) ⇒ sàng CV chưa chạy được.
+        public List<JobNeedResponse> JobNeeds { get; set; } = new();
         public string? JDText { get; set; }
         public string? CriteriaText { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -312,6 +337,14 @@ namespace Isas.CampaignService.DTOs
             RubricVersionUpdatedBy = c.RubricVersionUpdatedBy,
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
+            JobNeeds = (c.JobNeeds ?? new List<JobNeed>())
+                .Select(n => new JobNeedResponse
+                {
+                    NeedId = n.NeedId,
+                    Category = n.Category,
+                    Text = n.Text,
+                    Source = n.Source,
+                }).ToList(),
             // F10: sắp theo ĐÚNG thứ tự ứng viên sẽ gặp (ParticipationService dùng CreatedAt, Id) —
             // FE echo `id` lại khi PUT, nên thứ tự response phải ổn định giữa các lần gọi.
             Questions = c.Questions

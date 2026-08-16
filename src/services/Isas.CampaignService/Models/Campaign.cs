@@ -46,6 +46,11 @@
         public string? JDText { get; set; }
         public string? CriteriaFileUrl { get; set; }
         public string? CriteriaText { get; set; }
+        // HR technical screener bước 1: nhu cầu công việc suy từ JD, chốt MỘT LẦN cho cả campaign
+        // (AI đề xuất lúc publish → HR sửa được khi Draft). Mọi ứng viên được đối chiếu với đúng bộ
+        // này ⇒ cùng một thước đo. null/rỗng = chưa chốt ⇒ sàng CV không chạy được (xem
+        // CvScreeningService.PublishScreeningJobsAsync).
+        public List<JobNeed>? JobNeeds { get; set; }        // jsonb
         // C13: rule cứng sàng CV (hard-filter, set khi Draft). null = không áp rule đó.
         public List<string>? RequiredSkills { get; set; }   // jsonb — phải có ĐỦ trong cv_parsed_text
         public List<string>? KeywordsAny { get; set; }      // jsonb — có ≥1 từ khóa

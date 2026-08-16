@@ -46,4 +46,23 @@ public class ScoringOptions
     // khi KHÔNG có hoạt động (không tạo answer mới) quá số phút này → phát SessionAbandoned để Payment
     // release credit ví User. CONSERVATIVE (mặc định 120') để KHÔNG bao giờ quét nhầm người ĐANG luyện.
     public int B2CInactivityMinutes { get; set; } = 120;
+
+    // Trần BỎ CUỘC cho một answer đang chờ chấm. Quá ngần này phút kể từ lúc TẠO answer mà vẫn
+    // chưa gom đủ N attempt (E10) → thôi đẩy lại, chốt bằng những attempt ĐÃ CÓ (hoặc Skipped nếu
+    // chưa có attempt nào) rồi đóng session.
+    //
+    // Vì sao cần: trước đây `StuckAnswerRepublisher` đẩy lại VÔ HẠN và không sweeper nào phủ trạng
+    // thái `Scoring` ⇒ một attempt chết là buổi kẹt vĩnh viễn, mỗi 15 phút lại đốt thêm một lượt
+    // Gemini, còn credit thì treo ở `Reserved` (không consume, không release) vì
+    // `OrphanReservationReconciler` chỉ xử session TERMINAL. Sự cố 2026-08-15.
+    //
+    // ⚠ Mốc đo là `practice_answers.created_at`, KHÔNG phải `last_scoring_published_at`: mốc sau bị
+    // chính vòng đẩy-lại dời về `now` mỗi lần, lấy nó làm trần thì trần KHÔNG BAO GIỜ tới (bài học
+    // `StuckScreeningRepublisher`/C14). 0 = tắt trần (giữ hành vi đẩy-lại vô hạn cũ).
+    //
+    // Vì sao 60 chứ không phải 30: `StuckAnswerRepublisher.ScoringLostThreshold` là 15', nên 60'
+    // chừa ~3 lượt đẩy lại (15/30/45) trước khi bó tay, còn 30' chỉ chừa ĐÚNG MỘT. Đây là ngân sách
+    // sống sót qua sự cố broker: trần quá ngắn thì một lần broker chết 45 phút sẽ biến thành hàng
+    // loạt buổi bị chốt sổ với 0 attempt (tiền hoàn lại, nhưng bài làm thì không chấm nữa).
+    public int GiveUpAfterMinutes { get; set; } = 60;
 }

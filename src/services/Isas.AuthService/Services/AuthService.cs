@@ -715,6 +715,78 @@ namespace Isas.AuthService.Services
             await RevokeAllRefreshTokensAsync(userId, ct);
         }
 
+        /// <summary>
+        /// AUTH-3 — tập ĐÓNG các platform-role hợp lệ. Phải là allowlist tường minh chứ không phải
+        /// "role có trong bảng roles không": <see cref="EnsureRoleExistsAsync"/> tạo role LAZILY, nên
+        /// kiểm tra kiểu tồn-tại vừa cho lọt tên gõ sai vừa đẻ thêm một role rác không ai gán được.
+        /// </summary>
+        private static readonly string[] PlatformRoles = ["Candidate", "Employer", "Admin"];
+
+        // PlatformAdmin đổi platform-role của user (AUTH-3). Mô hình 1 role/user (ListAllUsersAsync đọc
+        // .FirstOrDefault()) → THAY THẾ chứ không cộng dồn.
+        //
+        // ⚠ Ranh giới hiệu lực giống hệt ban (đọc khối chú thích ở BanUserAsync trước khi "sửa cho chặt
+        // hơn"): access token đang lưu hành mang role CŨ tới hết TTL 15' vì service khác validate JWT
+        // offline (GEN-3). Thu hồi refresh token là thứ duy nhất chặn được việc gia hạn quyền cũ.
+        public async Task<AdminUserResponse> ChangePlatformRoleAsync(
+            Guid userId, string newRole, CancellationToken ct = default)
+        {
+            var role = (newRole ?? string.Empty).Trim();
+            if (!PlatformRoles.Contains(role, StringComparer.Ordinal))
+                throw new ArgumentException(
+                    $"Role must be one of: {string.Join(", ", PlatformRoles)}");
+
+            var user = await _authDbContext.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+                ?? throw new KeyNotFoundException("User not found");
+
+            var currentRoles = await _userManager.GetRolesAsync(user);
+            var currentRole = currentRoles.FirstOrDefault();
+
+            // Không đổi gì thì THOÁT SỚM — nếu cứ chạy tiếp, thao tác vô hại này sẽ thu hồi refresh
+            // token và đá người dùng ra khỏi phiên mà chẳng đổi được quyền nào.
+            if (string.Equals(currentRole, role, StringComparison.Ordinal))
+                return await ToAdminUserResponseAsync(user, ct);
+
+            // Bất biến hệ thống: luôn còn ≥1 Admin hoạt động (giống BanUserAsync). Hạ nốt Admin cuối
+            // cùng thì không còn ai nâng lại được cho ai — chỉ sửa được bằng tay trong DB.
+            if (role != "Admin" && await IsLastActiveAdminAsync(userId, ct))
+                throw new AdminActionConflictException(
+                    "Cannot demote the last active platform Admin");
+
+            // Bất biến org: "là thành viên org ⇒ platform-role Employer" (register-org và A6 đều tạo
+            // Employer). Cho phép rời Employer khi vẫn còn hàng org_members sẽ đi VÒNG QUA đúng cái
+            // bất biến A6b bảo vệ (ChangeOrgMemberRoleAsync — cấm hạ OrgAdmin cuối cùng): org mất sạch
+            // người lo billing/thành viên mà không có cảnh báo nào. Ngoài ra JWT sẽ mang org_id +
+            // org_role trong khi platform-role là Candidate → mọi endpoint Employer trả 403, người đó
+            // kẹt trong danh sách thành viên nhưng không làm được gì. Gỡ khỏi org trước (AUTH-8: việc
+            // đó thuộc OrgAdmin), rồi mới đổi vai trò.
+            if (role != "Employer"
+                && await _authDbContext.OrgMembers.AnyAsync(m => m.UserId == userId, ct))
+                throw new AdminActionConflictException(
+                    "User is still a member of an organization — remove them from the organization first");
+
+            if (currentRoles.Count > 0)
+            {
+                var removed = await _userManager.RemoveFromRolesAsync(user, currentRoles);
+                if (!removed.Succeeded)
+                    throw new ArgumentException(string.Join("; ", removed.Errors.Select(e => e.Description)));
+            }
+
+            await EnsureRoleExistsAsync(role);
+            var added = await _userManager.AddToRoleAsync(user, role);
+            if (!added.Succeeded)
+                throw new ArgumentException(string.Join("; ", added.Errors.Select(e => e.Description)));
+
+            user.UpdatedAt = DateTime.UtcNow;
+            await _authDbContext.SaveChangesAsync(ct);
+
+            // AUTH-5, y như ChangeOrgMemberRoleAsync: không thu hồi thì người dùng cứ gia hạn bằng
+            // refresh token cũ và mang quyền CŨ suốt 7 ngày — đổi role sẽ chỉ là cái nhãn trong DB.
+            await RevokeAllRefreshTokensAsync(userId, ct);
+
+            return await ToAdminUserResponseAsync(user, ct);
+        }
+
         // Đếm Admin CÒN HOẠT ĐỘNG (chưa bị ban) khác người đang bị thao tác. Đọc thẳng DB (không qua
         // UserManager.GetUsersInRoleAsync) để đếm được cả cờ ban trong cùng một truy vấn.
         private async Task<bool> IsLastActiveAdminAsync(Guid userId, CancellationToken ct)

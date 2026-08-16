@@ -44,20 +44,19 @@ def _field(body: dict, name: str):
 
 
 def parse_job(body: dict) -> dict:
-    """Chuẩn hoá message .NET → dict nội bộ (tolerant casing cả ở phần tử ``criteria``)."""
-    raw_criteria = _field(body, "criteria") or []
-    criteria = []
-    for c in raw_criteria:
-        if not isinstance(c, dict):
+    """Chuẩn hoá message .NET → dict nội bộ (tolerant casing cả ở phần tử ``jobNeeds``)."""
+    raw_needs = _field(body, "jobNeeds") or []
+    job_needs = []
+    for n in raw_needs:
+        if not isinstance(n, dict):
             continue
-        cid = _field(c, "criterionId")
-        if cid is None:
+        nid = _field(n, "needId")
+        if nid is None:
             continue
-        criteria.append({
-            "criterionId": str(cid),
-            "name": str(_field(c, "name") or ""),
-            "description": _field(c, "description"),
-            "maxScore": int(_field(c, "maxScore") or 5),
+        job_needs.append({
+            "needId": str(nid),
+            "category": str(_field(n, "category") or ""),
+            "text": str(_field(n, "text") or ""),
         })
 
     candidate_id = _field(body, "candidateId")
@@ -67,8 +66,11 @@ def parse_job(body: dict) -> dict:
         "candidateId": str(candidate_id) if candidate_id else None,
         "cvText": cv_text.strip() if isinstance(cv_text, str) else None,
         "jobCategory": _field(body, "jobCategory"),
-        "jdText": _field(body, "jdText"),
-        "criteria": criteria,
+        "jobNeeds": job_needs,
+        # JD KHÔNG còn đi theo từng CV: nó đã được chưng cất một lần thành `jobNeeds` lúc publish
+        # campaign. Gửi lại theo mỗi hồ sơ vừa tốn token vừa mở đường cho hai ứng viên cùng
+        # campaign bị đo bằng hai bộ yêu cầu khác nhau.
+        "language": str(_field(body, "language") or "vi"),
         "callbackBase": str(callback_base).rstrip("/") if callback_base else None,
     }
 
@@ -78,6 +80,10 @@ def make_cv_result_payload(result: dict) -> dict:
 
     Khoá camelCase — ASP.NET bind không phân biệt hoa thường nên khớp
     ``CvResultCallbackRequest`` (`Skills`/`YearsExperience`/…).
+
+    🔴 KHÔNG có điểm tổng ở đây, và đó là chủ đích: `.NET` tính từ `level` của từng nhu cầu.
+    Gửi kèm một con số do model phán là mở lại đúng đường đã bịt — trên prod bốn CV bằng chứng
+    giống hệt nhau từng nhận 70/70/55/55.
     """
     return {
         # BK28 — tên ứng viên rút từ CV. `None` khi CV không có tên rõ ràng: .NET nhận null và
@@ -86,16 +92,19 @@ def make_cv_result_payload(result: dict) -> dict:
         "skills": result.get("skills") or [],
         "yearsExperience": result.get("yearsExperience"),
         "education": result.get("education") or [],
-        "summary": result.get("summary"),
-        "overallMatchScore": result.get("overallMatchScore") or 0,
-        "criterionMatches": [
+        "fitSummary": result.get("fitSummary"),
+        "assessments": [
             {
-                "criterionId": m["criterionId"],
-                "matchScore": m["matchScore"],
-                "reasoning": m.get("reasoning"),
+                "needId": a["needId"],
+                "area": a.get("area"),
+                "level": a["level"],
+                "evidence": a.get("evidence"),
             }
-            for m in (result.get("criterionMatches") or [])
+            for a in (result.get("assessments") or [])
         ],
+        "bonusSignals": result.get("bonusSignals") or [],
+        "verificationRisk": result.get("verificationRisk"),
+        "verifyQuestions": result.get("verifyQuestions") or [],
     }
 
 
@@ -157,17 +166,18 @@ async def process_cv_message(message: aio_pika.IncomingMessage):
     try:
         if not job["cvText"]:
             raise PermanentCvError("cvText rỗng — không parse được nội dung CV")
-        if not job["criteria"]:
-            # Không có tiêu chí thì không có gì để chấm; .NET cũng không lưu được điểm nào.
-            raise PermanentCvError("criteria rỗng — không có tiêu chí campaign để chấm khớp")
+        if not job["jobNeeds"]:
+            # Không có nhu cầu công việc thì không có thước nào để đo; .NET cũng không dựng được
+            # kết quả sàng. Xảy ra khi campaign publish mà bước 1 (suy nhu cầu từ JD) chưa chạy.
+            raise PermanentCvError("jobNeeds rỗng — campaign chưa chốt nhu cầu công việc")
 
         # AI3 — lỗi parse LLM thường chợp nhoáng → thử lại vài lần trước khi bó tay,
         # y hệt vòng retry của score() trong worker.py.
         result = None
         for attempt in range(1, settings.score_max_attempts + 1):
             try:
-                result = await provider.analyze_cv(
-                    job["cvText"], job["jdText"], job["jobCategory"], job["criteria"])
+                result = await provider.screen_cv(
+                    job["cvText"], job["jobNeeds"], job["jobCategory"], job["language"])
                 break
             except ValueError as e:
                 if attempt >= settings.score_max_attempts:

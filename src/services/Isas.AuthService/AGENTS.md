@@ -64,10 +64,13 @@ UserResponse {
 **`POST /login`** — Đăng nhập. Public.
 - Req: `{ email: string, password: string }` → Res **`200`** `AuthResponse`. Lỗi: **400/401** (sai thông tin).
 
-**`GET /login-google`** → redirect Google · **`GET /login-google-callback?returnUrl&remoteError`** → OAuth callback, trả `AuthResponse`. Public.
+**Đăng nhập Google — hai đường, cùng đích.** Cả hai kết thúc ở **cùng** `AuthService.LoginGoogleAsync` (account-linking, tạo user + role, chặn ban, `LoginEvent` chỉ có một bản). Public cả hai.
+- **WEB (điều hướng cả trang):** `GET /login-google?returnUrl` → challenge Google · `GET /login-google-callback?returnUrl&remoteError` → **302** về FE kèm **mã dùng-một-lần** (`?code=…`, **KHÔNG** kèm token) · `POST /google/exchange {code}` → `AuthResponse`. *(Trước đây callback trả thẳng `AuthResponse` — dòng đó trong bản copy này đã lỗi thời từ lần redesign one-time-code, sửa kèm.)*
+- **NATIVE (app mobile):** `POST /google/id-token {idToken}` → `AuthResponse`. Không redirect, không kho mã. **401** token hỏng/`aud` ngoài allowlist/**email chưa xác minh** · **403** bị đình chỉ · **500** server chưa cấu hình allowlist `aud` (fail-closed — `aud` rỗng = nhận MỌI Google ID token).
+- 🔑 Bất biến: `ProviderKey` = `sub`, `LoginProvider` = `"Google"` ở **cả hai** đường ⇒ web và mobile vào đúng một account. Chi tiết + lý do: [docs/services/auth.md](../../../docs/services/auth.md) §Đăng nhập Google.
 
 **`POST /refresh`** — Làm mới token. Public.
-- Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn**).
+- Req: `{ refreshToken: string }` → Res **`200`** **`AuthResponse`** (CÓ `accessToken`; trước đây khai nhầm `RefreshTokenResponse` ⇒ OpenAPI mô tả thiếu field, client codegen đọc hụt token). Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn**).
 - **Cửa sổ ân hạn xoay vòng** (`Jwt:RefreshTokenGraceSeconds`, mặc định **60s**, `0`=tắt): token vừa bị xoay vòng vẫn refresh được thêm ngần đó giây — đi theo `replaced_by` tới token **còn sống** ở cuối chuỗi rồi xoay tiếp. Mốc đo = `created_at` của token thay thế (không cần cột `revoked_at` ⇒ **không migration**). Token thu hồi **thẳng tay** (đăng xuất/đổi quyền, `replaced_by` NULL) **KHÔNG** ân hạn. *Vì sao:* đua refresh giữa nhiều tab. *Đánh đổi:* làm yếu reuse-detection trong đúng cửa sổ đó → giữ NGẮN.
 
 **`POST /logout`** — Thu hồi **MỌI** refresh token của user đang đăng nhập. Auth (`Candidate·Employer·Admin`).
@@ -90,8 +93,12 @@ UserResponse {
 
 > ⚠⚠ **Ban KHÔNG tức thì (AUTH-5 / GEN-3).** Service khác validate JWT **offline** → access token đang lưu hành **không thu hồi được**, còn sống tối đa **1 TTL (15')**. Ban chặn **mọi** đường phát phiên mới (mật khẩu · Google · refresh · `provision-candidate` magic-link) + thu hồi mọi refresh token. Chặt hơn → **rút ngắn TTL access**; ❌ KHÔNG denylist/gọi mạng trong đường validate.
 
+- **`POST /auth/admin/users/{id}/role`** `{ role: "Candidate"|"Employer"|"Admin" }` → **`200`** `AdminUserResponse`. Lỗi: **400** role ngoài 3 tên / tự đổi vai trò mình · **404** · **409** hạ Admin hoạt động cuối cùng / rời `Employer` khi còn hàng `org_members`. **THAY THẾ** role (1 role/user); role không đổi → no-op, **không** thu hồi token; thu hồi mọi refresh token (AUTH-5) ⇒ hiệu lực ≤1 TTL.
+  - ⚠ Allowlist **tường minh**, KHÔNG kiểm "role có trong bảng `roles`": role tạo **lazily** ⇒ tên gõ sai vừa lọt vừa đẻ role rác không endpoint nào gác. Phân biệt hoa thường.
+  - ⚠ 409 "còn thuộc org" giữ bất biến *thành viên org ⇒ `Employer`*; không chặn thì đây là **đường vòng qua guard "cấm hạ OrgAdmin cuối cùng" của A6b**. Chiều **VÀO** `Employer` không chặn.
+
 **🔜 Admin — chưa build:**
-- **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
+- **`GET /auth/admin/users/{id}`** chi tiết 1 user · **`POST …/revoke-sessions`** đá phiên độc lập.
 - **`GET/POST /auth/admin/orgs…`** — duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
 - *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. Còn admin-gated orgs + role-grant — A4/A5.)*
 
@@ -103,7 +110,7 @@ POST /api/v1/auth/register-org
         // accessToken claims: sub, role="Employer", org_id, org_role="OrgAdmin"
 
 POST /api/v1/auth/login    { "email":"hr@acme.vn", "password":"S3cret!2026" }  → 200 AuthResponse
-POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 RefreshTokenResponse  (token cũ revoke + replaced_by=token mới)
+POST /api/v1/auth/refresh  { "refreshToken":"f3a1…" }   → 200 AuthResponse  (token cũ revoke + replaced_by=token mới)
 ```
 
 ### Validation (đầu vào)

@@ -887,7 +887,9 @@ namespace Isas.PaymentService.Migrations
                         new
                         {
                             Id = new Guid("10000000-0000-0000-0000-000000000001"),
-                            AdaptiveEnabled = false,
+                            AdaptiveEnabled = true,
+                            AdaptiveMaxFollowups = 3,
+                            AdaptiveMaxQuestions = 20,
                             Audience = "B2C",
                             Code = "free",
                             CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
@@ -897,6 +899,7 @@ namespace Isas.PaymentService.Migrations
                             GroundingEnabled = false,
                             InterviewFunding = "Credit",
                             IsActive = true,
+                            MaxQuestionsCap = 20,
                             Name = "Free",
                             PostpaidEligible = false,
                             Rank = 0,
@@ -910,7 +913,7 @@ namespace Isas.PaymentService.Migrations
                             Id = new Guid("10000000-0000-0000-0000-000000000002"),
                             AdaptiveEnabled = true,
                             AdaptiveMaxFollowups = 3,
-                            AdaptiveMaxQuestions = 10,
+                            AdaptiveMaxQuestions = 20,
                             Audience = "B2C",
                             Code = "plus",
                             CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),
@@ -920,7 +923,7 @@ namespace Isas.PaymentService.Migrations
                             GroundingEnabled = true,
                             InterviewFunding = "Metered",
                             IsActive = true,
-                            MaxQuestionsCap = 10,
+                            MaxQuestionsCap = 20,
                             MonthlyQuota = 30,
                             Name = "Plus",
                             PostpaidEligible = false,
@@ -958,7 +961,7 @@ namespace Isas.PaymentService.Migrations
                         new
                         {
                             Id = new Guid("20000000-0000-0000-0000-000000000001"),
-                            AdaptiveEnabled = false,
+                            AdaptiveEnabled = true,
                             Audience = "B2B",
                             Code = "starter",
                             CreatedAt = new DateTime(2026, 8, 1, 0, 0, 0, 0, DateTimeKind.Utc),

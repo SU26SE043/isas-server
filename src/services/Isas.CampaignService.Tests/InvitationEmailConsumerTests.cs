@@ -74,6 +74,8 @@ public class InvitationEmailConsumerTests
             "Backend Q3",
             "https://fe.test/invite/tok-123",
             expires,
+            null,
+            null,
             It.IsAny<CancellationToken>()), Times.Once);
         sender.VerifyNoOtherCalls();
 
@@ -81,6 +83,33 @@ public class InvitationEmailConsumerTests
         using var check = tdb.NewContext();
         var saved = await check.CampaignInvitations.FirstAsync(i => i.Id == inv.Id);
         Assert.NotNull(saved.EmailSentAt);
+    }
+
+    [Fact]
+    public async Task ProcessMessage_CoSlot_TruyenKhungGioChoEmail()
+    {
+        using var tdb = new CampaignTestDb();
+        var inv = SeedInvitation(tdb, "slot@acme.test", "slot-token");
+        var startsAt = new DateTime(2026, 8, 16, 1, 0, 0, DateTimeKind.Utc);
+        var endsAt = new DateTime(2026, 8, 16, 2, 0, 0, DateTimeKind.Utc);
+        var slot = new CampaignSlot
+        {
+            Id = Guid.NewGuid(), CampaignId = inv.CampaignId,
+            StartsAt = startsAt, EndsAt = endsAt, Capacity = 1
+        };
+        inv.SlotId = slot.Id;
+        tdb.Db.CampaignSlots.Add(slot);
+        tdb.Db.SaveChanges();
+
+        var sender = new Mock<ICampaignEmailSender>();
+        var consumer = NewConsumer(new Dictionary<string, string?> { ["Invitation:BaseUrl"] = "https://fe.test" });
+        var job = new InvitationEmailJob(inv.Id, inv.CampaignId, inv.Email, "slot-token", "Backend Q3", null);
+
+        await consumer.ProcessMessageAsync(SerializeJob(job), sender.Object, tdb.NewContext(), default);
+
+        sender.Verify(s => s.SendInvitationEmailAsync(
+            inv.Email, "Backend Q3", "https://fe.test/invite/slot-token", null,
+            startsAt, endsAt, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     /// <summary>
@@ -112,6 +141,8 @@ public class InvitationEmailConsumerTests
             "Frontend",
             "/invite/abc",
             null,
+            null,
+            null,
             It.IsAny<CancellationToken>()), Times.Once);
 
         // Chốt lại cho rõ: host của gateway không được xuất hiện trong bất kỳ link nào gửi đi.
@@ -119,6 +150,8 @@ public class InvitationEmailConsumerTests
             It.IsAny<string>(),
             It.IsAny<string>(),
             It.Is<string>(link => link.Contains("gateway.test")),
+            It.IsAny<DateTime?>(),
+            It.IsAny<DateTime?>(),
             It.IsAny<DateTime?>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -141,6 +174,8 @@ public class InvitationEmailConsumerTests
             "QA",
             "/invite/xyz",
             null,
+            null,
+            null,
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -156,7 +191,7 @@ public class InvitationEmailConsumerTests
 
         sender.Verify(s => s.SendInvitationEmailAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // DB2b — dedup: deliver lần 2 khi email_sent_at đã set → KHÔNG gửi trùng (vẫn ack, không throw).
@@ -176,7 +211,7 @@ public class InvitationEmailConsumerTests
 
         sender.Verify(s => s.SendInvitationEmailAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
 
         // email_sent_at giữ mốc cũ (không đè).
         using var check = tdb.NewContext();
@@ -201,7 +236,7 @@ public class InvitationEmailConsumerTests
         await consumer.ProcessMessageAsync(body, sender.Object, tdb.NewContext(), default);
 
         sender.Verify(s => s.SendInvitationEmailAsync(
-            "once@acme.test", "Backend", It.IsAny<string>(), null, It.IsAny<CancellationToken>()), Times.Once);
+            "once@acme.test", "Backend", It.IsAny<string>(), null, null, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // DB2b — invitation không tồn tại (đã xoá / campaign soft-delete) → bỏ qua (không gửi, không throw → ack).
@@ -218,6 +253,6 @@ public class InvitationEmailConsumerTests
 
         sender.Verify(s => s.SendInvitationEmailAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

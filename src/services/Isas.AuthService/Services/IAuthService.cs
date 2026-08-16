@@ -47,6 +47,13 @@ namespace Isas.AuthService.Services
         // ArgumentException; user không tồn tại → KeyNotFoundException.
         Task AdminResetPasswordAsync(Guid userId, string newPassword, CancellationToken ct = default);
 
+        // PlatformAdmin đổi platform-role của user (AUTH-3). Thay THẾ role hiện tại (mô hình 1 role/user)
+        // rồi thu hồi refresh token theo AUTH-5 — quyền mới có hiệu lực sau ≤1 TTL access token (15').
+        // Role ngoài {Candidate, Employer, Admin} → ArgumentException; user không tồn tại →
+        // KeyNotFoundException; hạ cấp Admin hoạt động CUỐI CÙNG, hoặc rời Employer khi còn là thành
+        // viên org → AdminActionConflictException.
+        Task<AdminUserResponse> ChangePlatformRoleAsync(Guid userId, string newRole, CancellationToken ct = default);
+
         // Thông tin tổ chức: đọc (mọi member) + sửa name/taxCode (OrgAdmin — enforce ở controller).
         // Org không tồn tại → KeyNotFoundException.
         Task<OrganizationResponse> GetOrganizationAsync(Guid orgId, CancellationToken ct = default);

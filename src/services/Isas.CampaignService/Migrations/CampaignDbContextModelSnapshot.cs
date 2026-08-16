@@ -215,6 +215,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("text")
                         .HasColumnName("jd_text");
 
+                    b.Property<string>("JobNeeds")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("job_needs");
+
                     b.Property<string>("KeywordsAny")
                         .HasColumnType("jsonb")
                         .HasColumnName("keywords_any");
@@ -881,6 +885,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnName("id")
                         .HasDefaultValueSql("gen_random_uuid()");
 
+                    b.Property<string>("BonusSignals")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("bonus_signals");
+
                     b.Property<Guid>("CampaignId")
                         .HasColumnType("uuid")
                         .HasColumnName("campaign_id");
@@ -904,10 +912,18 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("character varying(255)")
                         .HasColumnName("email");
 
+                    b.Property<string>("FitSummary")
+                        .HasColumnType("text")
+                        .HasColumnName("fit_summary");
+
                     b.Property<string>("FullName")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
                         .HasColumnName("full_name");
+
+                    b.Property<string>("Gaps")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("gaps");
 
                     b.Property<DateTime?>("LastScreeningPublishedAt")
                         .HasColumnType("timestamp with time zone")
@@ -927,6 +943,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("text")
                         .HasColumnName("reject_reason");
 
+                    b.Property<int?>("ScreeningVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("screening_version");
+
                     b.Property<string>("Skills")
                         .HasColumnType("jsonb")
                         .HasColumnName("skills");
@@ -937,6 +957,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("status");
 
+                    b.Property<string>("Strengths")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("strengths");
+
                     b.Property<string>("Summary")
                         .HasColumnType("text")
                         .HasColumnName("summary");
@@ -946,6 +970,15 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("now()");
+
+                    b.Property<string>("VerificationRisk")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("verification_risk");
+
+                    b.Property<string>("VerifyQuestions")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("verify_questions");
 
                     b.Property<decimal?>("YearsExperience")
                         .HasColumnType("numeric(4,1)")

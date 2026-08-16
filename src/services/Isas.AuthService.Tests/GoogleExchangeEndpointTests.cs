@@ -99,6 +99,7 @@ public class GoogleExchangeEndpointTests
             Mock.Of<IEmailSender>(),
             Mock.Of<IGoogleLoginRedirects>(),
             store,
+            Mock.Of<IGoogleIdTokenVerifier>(),
             NullLogger<AuthController>.Instance)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }

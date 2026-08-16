@@ -30,6 +30,8 @@ AuthResponse {
   expiresAt:    datetime               // hạn của access token
 }
 
+// ⚠ KHÔNG còn là kiểu trả về của `POST /refresh` — giữ lại vì DTO vẫn tồn tại trong code.
+// `/refresh` trả `AuthResponse` (có `accessToken`), xem ghi chú ở endpoint đó.
 RefreshTokenResponse {
   refreshToken: string
   expiresAt:    datetime
@@ -87,8 +89,25 @@ UserResponse {
 
 **Config bắt buộc:** `Authentication:Google:ClientId/ClientSecret` · `Frontend:BaseUrl` · `Gateway:PublicBaseUrl`. **Tuỳ chọn:** `Authentication:Google:OneTimeCodeTtlSeconds` (mặc định 60).
 
+**Đăng nhập Google NATIVE (app mobile) — `POST /google/id-token`, Public.** App tự lấy ID token bằng Google Sign-In SDK của hệ điều hành rồi POST thẳng lên; **không có redirect, không có kho mã dùng-một-lần, không dùng `Frontend:BaseUrl`/`Gateway:PublicBaseUrl`** (những thứ đó chỉ phục vụ vòng OAuth trình duyệt ở trên).
+- Req `{ idToken: string }` → Res **`200`** `AuthResponse` (**cùng shape đăng nhập mật khẩu** ⇒ client mobile dùng chung code xử lý phiên).
+- **401** — token sai chữ ký / hết hạn / `aud` ngoài allowlist / **email chưa xác minh** / thiếu `sub`|email. Cố ý **một thông điệp chung** cho mọi lý do; lý do thật vào log.
+- **403** — account bị đình chỉ (F20, soi gương đường mật khẩu: danh tính đúng, cái bị từ chối là quyền dùng).
+- **500** — server chưa cấu hình allowlist `aud`. **Không** trả 401 ở ca này: đó là lỗi cấu hình của ta, trả 401 sẽ khiến dev mobile đi truy token của họ trong khi thứ hỏng nằm ở env server.
+
+> 🔑 **Hai đường Google kết thúc ở CÙNG một hàm `LoginGoogleAsync`.** Web lấy `ExternalLoginInfo` từ cookie do handler OAuth ghi; mobile dựng `ExternalLoginInfo` từ ID token đã verify (`GoogleExternalLogin.Create`). Nhờ vậy account-linking, tạo user + role, chặn ban, `LoginEvent` chỉ có **một bản**. Thêm luồng đăng nhập song song mới là thứ sẽ trôi lệch dần.
+>
+> 🔑 **Bất biến:** `ProviderKey` = claim **`sub`** của Google và `LoginProvider` = **`"Google"`** — trùng khít thứ đường web sinh ra ⇒ người đăng nhập web hôm nay, mai đăng nhập app vào **đúng account cũ**. Lệch (ví dụ lấy email làm khoá) thì mỗi người dần có **hai** liên kết external trong `user_logins`, hỏng dần mà không lỗi nào nổ. Có test khoá (web→mobile cùng user **và** `AddLoginAsync` chỉ gọi 1 lần).
+>
+> 🔴 **`email_verified` là cửa chặn chiếm account, không phải kiểm tra cho đủ:** `LoginGoogleAsync` gắn external login vào account **mật khẩu** sẵn có khi trùng email. Đường web an toàn vì Google chỉ phát cookie cho account thật của người dùng; đường này nhận token **do client gửi lên**, nên bỏ qua cờ đó là để một account Google mang địa chỉ của người khác chiếm được account ISAS.
+>
+> 🔴 **Allowlist `aud` fail-closed:** `ValidationSettings.Audience` rỗng nghĩa là thư viện Google **BỎ QUA** kiểm tra `aud` ⇒ mọi Google ID token trên đời (kể cả token từ project Google của kẻ tấn công) đăng nhập được. Vì vậy trống cả `Authentication:Google:IdTokenAudiences` lẫn `ClientId` thì **ném**, không trả danh sách rỗng.
+
+**Config:** `Authentication:Google:IdTokenAudiences` (mảng). **Để trống = rơi về `Authentication:Google:ClientId`** — đúng cho đa số, vì app xin ID token kèm `serverClientId` = **WEB** client ID nên `aud` chính là nó. ⚠ App đặt `serverClientId` bằng Android/iOS client ID là sai (401 câm — log in ra allowlist đang cấu hình để đối chiếu). Android/iOS client kèm SHA-1 trên Google Cloud Console vẫn cần, nhưng chỉ để Google xác thực **app**; SHA-1 khoá theo **chữ ký APK** (một fingerprint dùng cho mọi điện thoại), nên cần một client cho **mỗi keystore**: debug từng máy dev · release · Play App Signing.
+
 **`POST /refresh`** — Làm mới token. Public.
-- Req: `{ refreshToken: string }` → Res **`200`** `RefreshTokenResponse`. Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn** bên dưới).
+- Req: `{ refreshToken: string }` → Res **`200`** **`AuthResponse`** (có `accessToken` — xem cảnh báo dưới). Lỗi: **401** (token hết hạn / thu hồi / quá **cửa sổ ân hạn** bên dưới).
+- ⚠ **Trước đây action khai `RefreshTokenResponse`, tức OpenAPI mô tả một response KHÔNG có `accessToken`.** JSON lúc chạy vẫn đúng (`ObjectResult` serialize theo kiểu thật) nên không client nào gãy — cái gãy là **tài liệu**. Client sinh model từ Scalar (app mobile) sẽ đọc hụt access token rồi refresh vô tận mà không hiểu vì sao. Nay khai đúng `AuthResponse`; có test khoá kiểu khai của action, vì chính KIỂU KHAI sinh ra schema.
 - **Cửa sổ ân hạn xoay vòng** (`Jwt:RefreshTokenGraceSeconds`, mặc định **60s**, `0` = tắt): token vừa bị xoay vòng vẫn refresh được thêm ngần đó giây — server đi theo `replaced_by` tới token **còn sống** ở cuối chuỗi và xoay tiếp, trả cặp token mới. Mốc đo là `created_at` của token thay thế (không cần cột `revoked_at`). Token bị thu hồi **thẳng tay** (đăng xuất / đổi quyền — `replaced_by` NULL) **KHÔNG** hưởng ân hạn, chết ngay.
 - *Vì sao:* mỗi tab giữ refresh token riêng nhưng chung một phiên; thu-hồi-tức-thì làm tab đến muộn ăn 401 → đăng xuất oan (mở 2 tab là dính; quay về từ PayOS gần như luôn tạo tab thứ hai). *Đánh đổi:* thu-hồi-tức-thì chính là cơ chế **phát hiện token bị đánh cắp** (reuse detection) — ân hạn làm yếu nó trong đúng cửa sổ đó, nên giữ NGẮN.
 
@@ -115,8 +134,16 @@ UserResponse {
 > Ban làm ngay hai việc: **(1)** chặn **mọi** đường phát phiên mới — đăng nhập mật khẩu · đăng nhập Google · refresh · `provision-candidate` (magic-link B2B, cấp JWT chỉ theo email nên là cửa dễ bỏ sót nhất); **(2)** thu hồi **mọi refresh token** → không gia hạn được nữa. Sau ≤15' account chết hẳn.
 > Cần chặt hơn → **rút ngắn TTL access**. ❌ **KHÔNG** thêm denylist / gọi mạng vào đường validate của service khác (vi phạm GEN-3, ràng buộc cứng). Cùng đánh đổi đã chốt ở AUTH-5/BK14 cho việc đổi `org_role`.
 
+- **`POST /auth/admin/users/{id}/role`** — đổi **platform-role** (AUTH-3). Req `{ role: "Candidate" | "Employer" | "Admin" }` → Res **`200`** `AdminUserResponse`. Lỗi: **400** role ngoài 3 tên trên · **400** tự đổi vai trò của chính mình · **404** user lạ · **409** hạ cấp **Admin còn hoạt động cuối cùng** · **409** rời `Employer` khi **vẫn còn hàng `org_members`**.
+  - Mô hình **1 role/user** (`ListAllUsersAsync` đọc `.FirstOrDefault()`) ⇒ **THAY THẾ** role cũ, không cộng dồn. Role mới == role cũ → **no-op**, cố ý **không** thu hồi token (đá người dùng khỏi phiên vì một thao tác chẳng đổi gì).
+  - ⚠ **Allowlist tường minh, KHÔNG kiểm "role có trong bảng `roles` không"**: role là string tự do, `EnsureRoleExistsAsync` tạo **lazily** ⇒ một cái tên gõ sai vừa lọt kiểm tra tồn-tại vừa đẻ ra role rác mà không endpoint nào gác. Phân biệt hoa thường (`"admin"` → 400).
+  - ⚠ **409 "còn thuộc org"** giữ bất biến *thành viên org ⇒ platform-role `Employer`* (`register-org` và A6 đều tạo `Employer`). Không chặn thì đây là **đường vòng qua guard "cấm hạ OrgAdmin cuối cùng" của A6b** — org mất sạch người lo billing/thành viên mà không cảnh báo gì; và JWT sẽ mang `org_id`+`org_role` trong khi platform-role không qua nổi endpoint `Employer` nào. Gỡ khỏi org trước (AUTH-8: việc của OrgAdmin), rồi mới đổi vai trò. Chiều **VÀO** `Employer` không bị chặn — nếu chặn thì không sửa nổi đúng trạng thái lệch mà guard sinh ra để bảo vệ.
+  - Thu hồi **mọi refresh token** theo AUTH-5 ⇒ hiệu lực sau **≤1 TTL access (15')**, cùng ranh giới với ban (khối ⚠⚠ ngay trên).
+  - *Follow-up:* **không có dấu vết ai đổi vai trò của ai** — Auth chưa có hạ tầng audit (khác `audit_logs` của Campaign) và không có cột kiểu `banned_by` cho việc này. Leo thang lên `Admin` vì thế hiện không truy được người ra quyết định.
+
 **🔜 Admin — chưa build:**
-- **`POST /auth/admin/users/{id}/roles`** — gán/thu platform role (vd nâng user → `Employer`).
+- **`GET /auth/admin/users/{id}`** — xem chi tiết một user (nay chỉ có list).
+- **`POST /auth/admin/users/{id}/revoke-sessions`** — đá phiên mà không cần ban/đổi mật khẩu (hiện revoke chỉ chạy kèm ban · reset-password · đổi role).
 - **`GET/POST /auth/admin/orgs…`** — duyệt / khóa tổ chức (verify MST khi duyệt postpaid).
 - *(✅ `register-org` → tạo `Organization` + `OrgAdmin`, JWT mang `org_id`+`org_role` — A1/A2/A3 xong. ✅ A4 HrMember→403 billing · ✅ A5 `[Authorize(Roles)]` mọi service (v22): `OrgMembers`→`Employer`, auth-entry `[AllowAnonymous]` tường minh; `RoleClaimType=ClaimTypes.Role` khớp mọi service.)*
 

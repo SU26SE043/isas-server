@@ -45,12 +45,19 @@ public enum InterviewFunding { Credit, Metered, Unlimited }
 internal static class PlanSeed
 {
     // Stable IDs make package seeding/admin references deterministic. No Unlimited tier is seeded.
+    //
+    // ⚠ ADAPTIVE BẬT Ở **MỌI** TIER — quyết định sản phẩm, không phải sơ suất seed. Một buổi phỏng vấn
+    // tiêu đúng 1 credit (B2C ví cá nhân · B2B ví org) BẤT KỂ gói, nên gói không được lấy mất chính cái
+    // engine mà người dùng vừa trả tiền để chạy. Gói vẫn phân biệt bằng những thứ có chi phí biên khác
+    // nhau THẬT: nguồn tiền (credit vs quota tháng), grounding, self-consistency (×N lần gọi Gemini),
+    // phân tích CV/repo, roadmap, trần campaign/candidate B2B, postpaid, seats.
+    // Khoá bằng test `PlanSeedAdaptiveTests`; đường B2C còn có SÀN thứ hai ở `PracticeService`.
     internal static readonly Plan[] All =
     [
-        New("10000000-0000-0000-0000-000000000001", PlanAudience.B2C, "free", "Free", 0, InterviewFunding.Credit),
-        New("10000000-0000-0000-0000-000000000002", PlanAudience.B2C, "plus", "Plus", 1, InterviewFunding.Metered, 30, adaptive: true, maxQ: 10, followups: 3, grounding: true, roadmap: true),
+        New("10000000-0000-0000-0000-000000000001", PlanAudience.B2C, "free", "Free", 0, InterviewFunding.Credit, adaptive: true, maxQ: 20, followups: 3),
+        New("10000000-0000-0000-0000-000000000002", PlanAudience.B2C, "plus", "Plus", 1, InterviewFunding.Metered, 30, adaptive: true, maxQ: 20, followups: 3, grounding: true, roadmap: true),
         New("10000000-0000-0000-0000-000000000003", PlanAudience.B2C, "pro", "Pro", 2, InterviewFunding.Metered, 100, adaptive: true, maxQ: 20, followups: 5, grounding: true, scn: 3, repo: true, roadmap: true),
-        New("20000000-0000-0000-0000-000000000001", PlanAudience.B2B, "starter", "Starter", 0, InterviewFunding.Credit, campaigns: 1, candidates: 25, seats: 1),
+        New("20000000-0000-0000-0000-000000000001", PlanAudience.B2B, "starter", "Starter", 0, InterviewFunding.Credit, adaptive: true, campaigns: 1, candidates: 25, seats: 1),
         New("20000000-0000-0000-0000-000000000002", PlanAudience.B2B, "business", "Business", 1, InterviewFunding.Credit, adaptive: true, grounding: true, campaigns: 10, candidates: 200, postpaid: true, seats: 10),
         New("20000000-0000-0000-0000-000000000003", PlanAudience.B2B, "enterprise", "Enterprise", 2, InterviewFunding.Credit, adaptive: true, grounding: true, postpaid: true)
     ];

@@ -13,6 +13,8 @@ namespace Isas.CampaignService.Services
             string campaignTitle,
             string joinLink,
             DateTime? expiresAt,
+            DateTime? slotStartsAt,
+            DateTime? slotEndsAt,
             CancellationToken ct = default);
     }
 }

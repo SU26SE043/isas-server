@@ -28,8 +28,23 @@ namespace Isas.CampaignService.Models
         public List<string>? Skills { get; set; }       // jsonb string[] — AI trả (null tới khi Analyzed)
         public decimal? YearsExperience { get; set; }    // numeric(4,1) — AI trả
         public string? Summary { get; set; }             // AI trả
-        public int? OverallMatchScore { get; set; }      // 0–100 — AI trả; ORDER BY = ranking shortlist
+        // 0–100 — ORDER BY = ranking shortlist. Nay là `jobFitScore` do CvScreeningService TÍNH từ
+        // mức bằng chứng, KHÔNG phải số AI phán (xem ScreeningVersion). Giữ nguyên tên cột để
+        // sort/keyset/minScore và nhãn FE "Điểm khớp CV" chạy nguyên.
+        public int? OverallMatchScore { get; set; }
         public DateTime? LastScreeningPublishedAt { get; set; }   // cho StuckScreeningRepublisher (C15)
+
+        // ── HR technical screener (bước 2-4) ──────────────────────────────────
+        // Con dấu thang điểm của OverallMatchScore: null/1 = số cũ do LLM phán trên rubric buổi
+        // phỏng vấn, 2 = jobFitScore tính từ bằng chứng. Hai thang KHÔNG so sánh được — có dấu để
+        // chúng không bị trộn trong im lặng (tiền lệ scoring_scope_version/BK23).
+        public int? ScreeningVersion { get; set; }
+        public string? FitSummary { get; set; }                  // 2-3 câu: hợp/không hợp ở đâu
+        public List<NeedAssessment>? Strengths { get; set; }      // jsonb — level Strong|Partial
+        public List<NeedAssessment>? Gaps { get; set; }           // jsonb — level Weak
+        public List<string>? BonusSignals { get; set; }           // jsonb — điểm cộng ngoài JD
+        public string? VerificationRisk { get; set; }             // Low|Medium|High — cờ, KHÔNG vào điểm
+        public List<string>? VerifyQuestions { get; set; }        // jsonb — tối đa 3, gợi ý cho HR
 
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }

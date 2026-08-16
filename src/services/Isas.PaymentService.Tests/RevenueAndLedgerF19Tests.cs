@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using Isas.PaymentService.Models;
+using Microsoft.Extensions.Options;
 using Isas.PaymentService.Controllers;
 using Isas.PaymentService.DTOs;
 using Isas.PaymentService.Services;
@@ -80,7 +82,7 @@ public class RevenueAndLedgerF19Tests
     }
 
     private static CreditAccountController NewLedgerController(PaymentTestDb tdb, params Claim[] claims) =>
-        new(tdb.Db)
+        new(tdb.Db, Options.Create(new BillingSettings()))
         {
             ControllerContext = new ControllerContext
             {

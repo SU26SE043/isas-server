@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using Isas.PaymentService.Models;
+using Microsoft.Extensions.Options;
 using Isas.PaymentService.Controllers;
 using Isas.PaymentService.DTOs;
 using Microsoft.AspNetCore.Http;
@@ -17,8 +19,12 @@ namespace Isas.PaymentService.Tests;
 public class CreditAccountMeTests
 {
     private static CreditAccountController NewController(PaymentTestDb tdb, params Claim[] claims)
+        => NewController(tdb, new BillingSettings(), claims);
+
+    private static CreditAccountController NewController(
+        PaymentTestDb tdb, BillingSettings billing, params Claim[] claims)
     {
-        var controller = new CreditAccountController(tdb.Db)
+        var controller = new CreditAccountController(tdb.Db, Options.Create(billing))
         {
             ControllerContext = new ControllerContext
             {
@@ -120,5 +126,94 @@ public class CreditAccountMeTests
         var result = await controller.GetMyAccountAsync(CancellationToken.None);
 
         Assert.IsType<ForbidResult>(result.Result);
+    }
+
+    // ------------------------------------------------------------------ walletExists ---
+    //
+    // "Chưa có ví" và "ví đã tiêu hết" đều cho remainingCredits = 0 nhưng là hai màn hình ngược nhau:
+    // một bên mời dùng thử, bên kia mời nạp tiền. Client KHÔNG suy được từ freeCreditsGranted == 0 —
+    // ví tạo trước F7 cũng bằng 0, và nếu kill-switch Billing:FreeTrialCredits = 0 thì MỌI ví bằng 0.
+
+    [Fact]
+    public async Task ChuaCoVi_User_BaoChuaCoViVaSoLuotSeDuocTang()
+    {
+        using var tdb = new PaymentTestDb();
+        var userId = Guid.NewGuid();
+        var controller = NewController(tdb, new Claim(ClaimTypes.NameIdentifier, userId.ToString()));
+
+        var result = await controller.GetMyAccountAsync(CancellationToken.None);
+
+        var account = Assert.IsType<CreditAccountResponse>(result.Value);
+        Assert.False(account.WalletExists);
+        Assert.Equal(3, account.PendingFreeCredits);   // mặc định F7
+        Assert.Empty(tdb.Db.CreditAccounts);           // vẫn đọc thuần
+    }
+
+    [Fact]
+    public async Task DaCoVi_BaoDaCoViVaKhongConSuatChoDuocTang()
+    {
+        using var tdb = new PaymentTestDb();
+        var userId = Guid.NewGuid();
+        await SeedAccountAsync(tdb, OwnerType.User, userId, remaining: 0, reserved: 0);
+        var controller = NewController(tdb, new Claim(ClaimTypes.NameIdentifier, userId.ToString()));
+
+        var result = await controller.GetMyAccountAsync(CancellationToken.None);
+
+        var account = Assert.IsType<CreditAccountResponse>(result.Value);
+        Assert.True(account.WalletExists);
+        // Ví tồn tại = suất dùng thử (nếu có) đã cấp xong từ lúc INSERT. Đây chính là ca "tiêu hết
+        // rồi" — cùng remainingCredits = 0 với ca trên nhưng phải hiện màn hình khác.
+        Assert.Equal(0, account.PendingFreeCredits);
+        Assert.Equal(0, account.RemainingCredits);
+    }
+
+    // BC-1: B2B đi ví Org, không có suất dùng thử. Hứa nhầm cho Org là hứa một thứ ReserveAsync
+    // sẽ không bao giờ cấp.
+    [Fact]
+    public async Task ChuaCoVi_Org_KhongHuaSuatDungThu()
+    {
+        using var tdb = new PaymentTestDb();
+        var orgId = Guid.NewGuid();
+        var controller = NewController(tdb, new Claim("org_id", orgId.ToString()));
+
+        var result = await controller.GetMyAccountAsync(CancellationToken.None);
+
+        var account = Assert.IsType<CreditAccountResponse>(result.Value);
+        Assert.False(account.WalletExists);
+        Assert.Equal(0, account.PendingFreeCredits);
+    }
+
+    // Kill-switch PAY-14: tắt suất dùng thử thì endpoint này phải im theo. Đây là ca mà cách suy
+    // "freeCreditsGranted == 0 ⇒ sắp được tặng 3" đảo thành lời nói dối cho 100% người dùng.
+    [Fact]
+    public async Task ChuaCoVi_KillSwitchTat_KhongHuaSuatDungThu()
+    {
+        using var tdb = new PaymentTestDb();
+        var userId = Guid.NewGuid();
+        var controller = NewController(
+            tdb, new BillingSettings { FreeTrialCredits = 0 },
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString()));
+
+        var result = await controller.GetMyAccountAsync(CancellationToken.None);
+
+        var account = Assert.IsType<CreditAccountResponse>(result.Value);
+        Assert.False(account.WalletExists);
+        Assert.Equal(0, account.PendingFreeCredits);
+    }
+
+    // Con số phải bám CẤU HÌNH chứ không phải hằng số 3 chép tay ở tầng đọc — đó là lý do
+    // BillingSettings.FreeTrialGrantFor là nguồn duy nhất, dùng chung với đường CẤP thật.
+    [Fact]
+    public async Task ChuaCoVi_DoiCauHinh_SoLuotHuaDoiTheo()
+    {
+        using var tdb = new PaymentTestDb();
+        var userId = Guid.NewGuid();
+        var controller = NewController(
+            tdb, new BillingSettings { FreeTrialCredits = 7 },
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString()));
+
+        var result = await controller.GetMyAccountAsync(CancellationToken.None);
+
+        Assert.Equal(7, Assert.IsType<CreditAccountResponse>(result.Value).PendingFreeCredits);
     }
 }

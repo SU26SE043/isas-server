@@ -80,7 +80,9 @@ CreditAccount {                         // GET /me/account
   status:           enum(string)        // Active · Suspended (đình chỉ nợ xấu/quá hạn)
   remainingCredits: int                 // ✅ F7: ĐÃ GỒM credit dùng thử (không tách xô riêng)
   reservedCredits:  int
-  freeCreditsGranted: int               // ✅ F7 — suất dùng thử đã tặng ví này (0 = chưa/ví Org); ví chưa tồn tại → 0
+  freeCreditsGranted: int               // ✅ F7 — suất dùng thử ĐÃ tặng ví này (0 = chưa/ví Org); nói về QUÁ KHỨ
+  walletExists:      bool               // ✅ MỚI — false = chưa có row `credit_accounts` (tạo lazy lúc reserve/webhook Paid đầu)
+  pendingFreeCredits: int               // ✅ MỚI — suất SẼ nhận khi ví ra đời; 0 khi ví đã có · Org (BC-1) · kill-switch tắt
   creditLimit:      int?                // chỉ Org/postpaid
   periodUsage:      int?                // chỉ Org/postpaid — lượt đã dùng kỳ này
   updatedAt:        datetime

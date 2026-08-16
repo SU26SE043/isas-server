@@ -25,8 +25,9 @@ public class StuckAnswerRepublisher : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IScoringJobPublisher _publisher;  // singleton, inject thẳng được
     private readonly RepublisherSettings _options;     // DB29 — trần batch mỗi vòng
-    // Kill-switch đáp án mẫu PHẢI đọc ở cả hai đường publish, nếu không tắt cờ mà answer đi đường cứu
-    // hộ vẫn được chấm kèm đáp án ⇒ "đã tắt" mà hành vi chỉ đổi một nửa.
+    // E10 — N attempt + trần bỏ cuộc. Đồng thời là kill-switch đáp án mẫu: cờ PHẢI đọc ở cả hai
+    // đường publish, nếu không tắt cờ mà answer đi đường cứu hộ vẫn được chấm kèm đáp án ⇒ "đã
+    // tắt" mà hành vi chỉ đổi một nửa.
     private readonly ScoringOptions _scoring;
     private readonly ILogger<StuckAnswerRepublisher> _logger;
 
@@ -34,13 +35,13 @@ public class StuckAnswerRepublisher : BackgroundService
         IServiceScopeFactory scopeFactory,
         IScoringJobPublisher publisher,
         IOptions<RepublisherSettings> options,
-        IOptions<ScoringOptions> scoring,
+        IOptions<ScoringOptions> scoringOptions,
         ILogger<StuckAnswerRepublisher> logger)
     {
         _scopeFactory = scopeFactory;
         _publisher = publisher;
         _options = options.Value;
-        _scoring = scoring.Value;
+        _scoring = scoringOptions.Value;
         _logger = logger;
     }
 
@@ -114,6 +115,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 a.WordCount,
                 a.FillerPer100Words,
                 a.MetricsVersion,
+                a.CreatedAt,   // E10b — mốc trần BỎ CUỘC (KHÔNG dùng LastScoringPublishedAt, xem ScoringOptions)
                 CampaignId = a.Session.CampaignId,
                 // Phiên bản rubric buổi thi đã GHIM — PHẢI có trong projection. Thiếu nó thì answer
                 // nào phải cứu bằng republisher sẽ được chấm bằng bộ tiêu chí MỚI NHẤT, trong khi
@@ -130,6 +132,10 @@ public class StuckAnswerRepublisher : BackgroundService
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
                 Language = a.Session.Language,
+                // E10b — hai cột quyết định "answer này cần MẤY attempt". Thiếu chúng ở projection
+                // thì republisher không thể biết attempt nào còn thiếu và sẽ đẩy lại nhầm attempt.
+                a.Session.SelfConsistencyN,
+                a.Session.EntitlementSource,
                 QuestionContent = a.Question.Content,
                 // Nhãn tiêu chí của câu hỏi — PHẢI có trong projection, nếu không answer nào phải cứu
                 // bằng republisher sẽ được chấm theo luật KHÁC answer chạy trơn tru (ở đây là chấm đủ
@@ -147,6 +153,25 @@ public class StuckAnswerRepublisher : BackgroundService
 
         _logger.LogWarning("Phát hiện {Count} answer kẹt Uploaded, đang re-publish", stuck.Count);
 
+        // E10b — attempt ĐÃ CÓ điểm của cả batch, nạp MỘT lần (không N+1). Republisher phải bù đúng
+        // attempt còn THIẾU: trước đây nó dựng ScoringJob không set AttemptNo ⇒ nhận mặc định 1 ⇒ đẩy
+        // lại attempt 1 mãi mãi. Với buổi N>1 mà một attempt chết, số attempt distinct KHÔNG BAO GIỜ
+        // lên tới N ⇒ answer treo `Scoring` vĩnh viễn (sự cố 2026-08-15).
+        var answerIds = stuck.Select(x => x.Id).ToList();
+        var scoredAttempts = (await db.AnswerScores.AsNoTracking()
+                .Where(s => answerIds.Contains(s.AnswerId))
+                .Select(s => new { s.AnswerId, s.RubricVersion, s.AttemptNo })
+                .Distinct()
+                .ToListAsync(ct))
+            .GroupBy(x => x.AnswerId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        // Trần bỏ cuộc: quá hạn thì THÔI đẩy (SessionAbandonSweeper chốt sổ). Không có vế này thì
+        // vòng đẩy-lại là vô hạn và mỗi vòng đốt thêm một lượt Gemini cho một answer đã hết cứu.
+        var giveUpCutoff = _scoring.GiveUpAfterMinutes > 0
+            ? now.AddMinutes(-_scoring.GiveUpAfterMinutes)
+            : (DateTime?)null;
+
         // DB29 — cache tiêu chí theo "chủ rubric", KHÔNG theo answer. Mọi answer cùng campaign (B2B) hoặc
         // cùng (candidate, nghề) (B2C) dùng CHUNG một bộ tiêu chí, nên tra 1 lần/nhóm thay vì 1 lần/answer:
         // trước đây mỗi answer tốn 3 query (resolve owner + nạp criteria + ExecuteUpdate) ⇒ 3N+1 mỗi 2 phút,
@@ -155,6 +180,14 @@ public class StuckAnswerRepublisher : BackgroundService
 
         foreach (var a in stuck)
         {
+            if (giveUpCutoff is DateTime cutoff && a.CreatedAt < cutoff)
+            {
+                _logger.LogWarning(
+                    "Answer {AnswerId} quá trần bỏ cuộc ({Minutes}') — thôi đẩy lại, chờ sweeper chốt sổ",
+                    a.Id, _scoring.GiveUpAfterMinutes);
+                continue;
+            }
+
             var key = a.CampaignId is Guid cid
                 // B2B: tiêu chí phụ thuộc campaign + PHIÊN BẢN buổi thi đã ghim (hai buổi cùng campaign
                 // ghim hai phiên bản khác nhau KHÔNG được dùng chung entry cache).
@@ -182,34 +215,80 @@ public class StuckAnswerRepublisher : BackgroundService
             var scopedCriteria = ScoringScopeFilter.Apply(
                 criteria, a.QuestionTargetCriterionIds, _logger, a.Id);
 
-            var job = new ScoringJob
+            var rubricVersion = criteria[0].Version;
+
+            // E10b — CHỈ bù attempt còn thiếu, và bù theo ĐÚNG số attempt mà AnswerService sẽ đếm khi
+            // xét "đã đủ chưa" (dùng chung ScoringAttemptPolicy để hai bên không thể lệch nhau).
+            var required = ScoringAttemptPolicy.Resolve(
+                a.CampaignId, a.EntitlementSource, a.SelfConsistencyN, _scoring.SelfConsistencyN);
+            var done = scoredAttempts.TryGetValue(a.Id, out var rows)
+                ? rows.Where(r => r.RubricVersion == rubricVersion).Select(r => r.AttemptNo).ToHashSet()
+                : new HashSet<int>();
+            var missing = Enumerable.Range(1, required).Where(x => !done.Contains(x)).ToList();
+
+            if (missing.Count == 0)
             {
-                AnswerId = a.Id,
-                SessionId = a.SessionId,
-                QuestionId = a.QuestionId,
-                AudioObjectKey = a.AudioObjectKey!,
-                QuestionContent = a.QuestionContent,
-                SampleAnswer = _scoring.UseSampleAnswer ? a.QuestionSampleAnswer : null,
-                JobCategory = a.JobCategory.ToString(),
-                Language = a.Language,
-                RubricVersion = criteria[0].Version,
-                Criteria = ScoringCriteriaBuilder.Build(scopedCriteria),   // E9: kèm levels (+ anchors)
-                Transcript = a.Transcript,  // adaptive: có transcript đồng bộ → worker bỏ Whisper
-                TranscriptEngine = a.TranscriptEngine,   // đi cặp: worker bỏ Whisper thì không tự biết engine
-                // F11 — chỉ số đã đo đi kèm; null (chưa từng đo) → worker tự transcribe rồi tự đo.
-                // Vá 2026-07-19: PHẢI truyền đủ 4 cột audio/speech/word/filler-per-100, nếu không
-                // prompt chấm nhận 0 giây audio dưới nhãn "số liệu thật".
-                DeliveryMetrics = DeliveryMetricsMapper.Read(
-                    a.SpeechRateWpm, a.FillerCount, a.PauseCount,
-                    a.LongestPauseSec, a.SilenceRatio, a.FillerBreakdown,
-                    a.AudioSec, a.SpeechSec, a.WordCount, a.FillerPer100Words,
-                    a.MetricsVersion)
-            };
+                // Đủ attempt mà answer vẫn `Scoring` ⇒ callback cuối cùng đã ghi điểm nhưng bước chốt
+                // (median + đóng session) không chạy tới nơi. Đẩy lại thêm KHÔNG cứu được gì — sweeper
+                // mới là chỗ chốt sổ. Log để hiện tượng này không vô hình.
+                _logger.LogWarning(
+                    "Answer {AnswerId} đã đủ {Required} attempt (rubric v{Version}) nhưng vẫn Scoring — "
+                    + "không đẩy lại, chờ sweeper chốt sổ", a.Id, required, rubricVersion);
+                continue;
+            }
+
+            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria);   // E9: kèm levels (+ anchors)
+            var published = 0;
+
+            foreach (var attempt in missing)
+            {
+                var job = new ScoringJob
+                {
+                    AnswerId = a.Id,
+                    SessionId = a.SessionId,
+                    QuestionId = a.QuestionId,
+                    AudioObjectKey = a.AudioObjectKey!,
+                    QuestionContent = a.QuestionContent,
+                    // Đáp án mẫu HR soạn: kill-switch `Scoring:UseSampleAnswer` phải đọc ở CẢ HAI
+                    // đường publish (AnswerService lúc upload + đường cứu hộ này), nếu không tắt cờ
+                    // mà answer đi đường cứu hộ vẫn chấm kèm đáp án ⇒ "đã tắt" mà hành vi chỉ đổi một nửa.
+                    SampleAnswer = _scoring.UseSampleAnswer ? a.QuestionSampleAnswer : null,
+                    JobCategory = a.JobCategory.ToString(),
+                    Language = a.Language,
+                    RubricVersion = rubricVersion,
+                    Criteria = builtCriteria,
+                    // E10 — giữ ĐÚNG hợp đồng của đường publish lúc upload: attempt 1 luôn temp=0
+                    // (tái lập), 2..N mới dao động. Bù attempt 2 bằng temp=0 sẽ làm spread giả = 0.
+                    AttemptNo = attempt,
+                    Temperature = attempt == 1 ? 0d : _scoring.SelfConsistencyTemperature,
+                    Transcript = a.Transcript,  // adaptive: có transcript đồng bộ → worker bỏ Whisper
+                    TranscriptEngine = a.TranscriptEngine,   // đi cặp: worker bỏ Whisper thì không tự biết engine
+                    // F11 — chỉ số đã đo đi kèm; null (chưa từng đo) → worker tự transcribe rồi tự đo.
+                    // Vá 2026-07-19: PHẢI truyền đủ 4 cột audio/speech/word/filler-per-100, nếu không
+                    // prompt chấm nhận 0 giây audio dưới nhãn "số liệu thật".
+                    DeliveryMetrics = DeliveryMetricsMapper.Read(
+                        a.SpeechRateWpm, a.FillerCount, a.PauseCount,
+                        a.LongestPauseSec, a.SilenceRatio, a.FillerBreakdown,
+                        a.AudioSec, a.SpeechSec, a.WordCount, a.FillerPer100Words,
+                        a.MetricsVersion)
+                };
+
+                try
+                {
+                    await _publisher.PublishAsync(job, ct);
+                    published++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Re-publish thất bại answer {AnswerId} attempt {Attempt}, để vòng sau", a.Id, attempt);
+                }
+            }
+
+            if (published == 0) continue;   // không dời mốc: vòng sau thử lại ngay, không phải chờ 15'
 
             try
             {
-                await _publisher.PublishAsync(job, ct);
-
                 // Đẩy lại OK -> Scoring + dời mốc publish sang now, để vòng quét sau
                 // không nhặt lại trong vòng ScoringLostThreshold. ExecuteUpdate vì
                 // ở đây dùng projection (không track entity).
@@ -219,11 +298,13 @@ public class StuckAnswerRepublisher : BackgroundService
                         .SetProperty(x => x.Status, AnswerStatus.Scoring)
                         .SetProperty(x => x.LastScoringPublishedAt, now), ct);
 
-                _logger.LogInformation("Re-published answer {AnswerId}", a.Id);
+                _logger.LogInformation(
+                    "Re-published answer {AnswerId}: bù attempt {Missing} (cần {Required}, đã có {Done})",
+                    a.Id, string.Join(",", missing), required, done.Count);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Re-publish thất bại answer {AnswerId}, để vòng sau", a.Id);
+                _logger.LogError(ex, "Dời mốc publish thất bại answer {AnswerId}", a.Id);
             }
         }
     }

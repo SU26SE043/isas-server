@@ -301,6 +301,10 @@ def test_transcriber_nguon_whisper_giu_moc_thoi_gian_va_khong_bat_word_timestamp
     from app.transcriber import Transcriber
 
     monkeypatch.setattr(app_settings, "delivery_metrics_source", "whisper")
+    # ⚠ ĐỔI TIỀN ĐỀ 2026-08-15: tắt CỔNG IM LẶNG. Test này nói về NGUỒN MỐC THỜI GIAN, và nó dựng
+    # PCM tổng hợp mà VAD (đúng đắn) coi là không có tiếng người — cổng bật thì bản chép bị từ chối
+    # trước khi tới phần đang đo. Cổng có bộ test riêng (`test_silence_gate.py`).
+    monkeypatch.setattr(app_settings, "silence_gate_enabled", False)
     # 6 giây audio: nay độ dài đo từ chính mảng PCM chứ không lấy `info.duration` nữa (có mảng
     # trong tay thì đo thẳng đáng tin hơn). `__len__` là thứ duy nhất transcriber cần.
     monkeypatch.setattr(transcriber_mod, "decode_audio", lambda *a, **k: _pcm(6.0))

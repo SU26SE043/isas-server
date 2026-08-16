@@ -233,6 +233,31 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to update campaign: {ex.Message}"); }
         }
 
+        /// <summary>
+        /// HR xem/sửa nhu cầu công việc dùng để sàng CV (replace-all). Chỉ khi campaign `Draft`.
+        /// AI đề xuất lúc publish, HR chốt — "AI gợi ý, người quyết" (mẫu D13/SEC-4).
+        /// </summary>
+        [HttpPut("{id:guid}/job-needs")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> UpdateJobNeeds(
+            Guid id, List<JobNeedInput> needs, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                var updated = await _campaignService.ReplaceJobNeedsAsync(
+                    orgId.Value, GetActorUserId(), id, needs, ct);
+                return Ok(updated);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }         // nhóm nhu cầu lạ → 400
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // sửa khi != Draft → 409 (CAMP-2)
+            catch (Exception ex) { return StatusCode(500, $"Failed to update job needs: {ex.Message}"); }
+        }
+
         [HttpPut("{id:guid}/files")]
         [Consumes("multipart/form-data")]
         [Authorize(Roles = "Employer")]
