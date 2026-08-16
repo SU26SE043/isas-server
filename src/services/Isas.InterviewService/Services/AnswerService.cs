@@ -684,6 +684,11 @@ public class AnswerService : IAnswerService
                     QuestionId = question.Id,
                     AudioObjectKey = answer.AudioObjectKey!,
                     QuestionContent = question.Content,
+                    // Đáp án mẫu HR soạn cho ĐÚNG câu này (B2B). null với câu B2C và câu đào sâu AI sinh
+                    // lúc thi — prompt phải chịu được cả hai, xem ghi chú ở PracticeQuestion.SampleAnswer.
+                    // Kill-switch `Scoring:UseSampleAnswer` để tắt nhanh nếu điểm lệch bất thường: đây là
+                    // thay đổi THƯỚC ĐO, mà chưa ai đo được nó làm điểm lên hay xuống.
+                    SampleAnswer = _scoring.UseSampleAnswer ? question.SampleAnswer : null,
                     JobCategory = session.JobCategory.ToString(),
                     Language = session.Language,
                     RubricVersion = rubricVersion,
@@ -723,29 +728,12 @@ public class AnswerService : IAnswerService
         }
     }
 
-    // Nguồn tiêu chí active theo mode (E1/BC16) — dùng chung cho publish chấm + quyết định câu kế (adaptive):
-    //   B2B: theo campaign_id. B2C: rubric RIÊNG của candidate cho nghề (nếu có) else seed mặc định (owner null).
-    // Criteria materialize của campaign cũng mang JobCategory → B2C lọc thêm campaign_id IS NULL (không chấm
-    // nhầm bằng tiêu chí campaign cùng nghề). E9: .Include(Levels) để có mức neo (câu mẫu jsonb trên level, DB15).
-    private async Task<List<RubricCriterion>> LoadActiveCriteriaAsync(
+    // Nguồn tiêu chí active theo mode (E1/BC16) — dùng chung cho publish chấm + quyết định câu kế (adaptive).
+    // Truy vấn thật nằm ở RubricCriteriaLoader (nguồn DUY NHẤT) để đường publish, đường callback-guard và
+    // đường republisher không thể trôi khỏi nhau — xem ghi chú ở RubricCriteriaLoader.
+    private Task<List<RubricCriterion>> LoadActiveCriteriaAsync(
         PracticeSession session, CancellationToken ct)
-    {
-        var query = _db.RubricCriteria.AsNoTracking()
-            .Include(c => c.Levels)
-            .Where(c => c.IsActive);
-        if (session.CampaignId is Guid campaignId)
-        {
-            query = query.Where(c => c.CampaignId == campaignId);
-        }
-        else
-        {
-            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, session.Language, ct);
-            query = owner is Guid oid
-                ? query.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory && c.Language == session.Language)
-                : query.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory && c.Language == session.Language);
-        }
-        return await query.ToListAsync(ct);
-    }
+        => RubricCriteriaLoader.LoadAsync(_db, RubricCriteriaLoader.KeyFor(session), ct);
     // ── Callback: lưu transcript + điểm từ worker Python ──────────────────
     public async Task SaveResultAsync(
         Guid answerId, AnswerScoreCallbackRequest req, CancellationToken ct = default)
@@ -762,22 +750,13 @@ public class AnswerService : IAnswerService
         // Dùng bản đồ criterionId -> maxScore để (a) BỎ criterion ngoài rubric, (b) KẸP [0, maxScore].
         var session = await _db.PracticeSessions.AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == answer.SessionId, ct);
-        var critQuery = _db.RubricCriteria.AsNoTracking().Include(c => c.Levels).Where(c => c.IsActive);
-        if (session?.CampaignId is Guid campaignId)
-        {
-            critQuery = critQuery.Where(c => c.CampaignId == campaignId);
-        }
-        else
-        {
-            // BC16: khớp CHÍNH XÁC nguồn đã dùng lúc publish (E1) — B2C ưu tiên rubric RIÊNG của candidate.
-            var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session!.CandidateId, session.JobCategory, session.Language, ct);
-            critQuery = owner is Guid oid
-                ? critQuery.Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == session.JobCategory && c.Language == session.Language)
-                : critQuery.Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == session.JobCategory && c.Language == session.Language);
-        }
+        // Đi qua ĐÚNG loader mà đường publish đã dùng (RubricCriteriaLoader) — lệch một vế lọc ở đây là
+        // mọi criterionId vừa gửi đi chấm bị coi là "criterion lạ" và BỎ ⇒ answer mất sạch điểm, im lặng.
         // E8/E9: bản đồ criterionId -> tiêu chí (kèm rubric_levels) để BỎ criterion ngoài rubric,
         // KẸP [0,maxScore], và (E9) snap/lưu level_matched theo mức của tiêu chí.
-        var critById = (await critQuery.ToListAsync(ct)).ToDictionary(c => c.Id);
+        var critById = (await RubricCriteriaLoader.LoadAsync(
+                _db, RubricCriteriaLoader.KeyFor(session!), ct))
+            .ToDictionary(c => c.Id);
 
         // E10 — attempt worker vừa chấm (echo từ job). Worker cũ không gửi → DTO default 1.
         var attemptNo = req.AttemptNo <= 0 ? 1 : req.AttemptNo;

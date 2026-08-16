@@ -510,8 +510,9 @@ namespace Isas.PaymentService.Migrations
                         .HasDatabaseName("ix_invoices_issued_due_at")
                         .HasFilter("status = 'Issued'");
 
-                    b.HasIndex("OwnerType", "OwnerId")
-                        .HasDatabaseName("ix_invoices_owner_type_owner_id");
+                    b.HasIndex("OwnerType", "OwnerId", "PeriodEnd")
+                        .IsUnique()
+                        .HasDatabaseName("ux_invoices_owner_period_end");
 
                     b.ToTable("invoices", null, t =>
                         {

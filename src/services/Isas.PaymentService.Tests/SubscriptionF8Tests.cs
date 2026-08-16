@@ -269,7 +269,7 @@ public class SubscriptionF8Tests
 
         var result = await NewCreditSvc(tdb).ReserveAsync(OwnerType.User, owner, Guid.NewGuid());
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.OutOfCredit, result.Outcome);
         Assert.Empty(await tdb.Db.CreditReservations.ToListAsync());   // PAY-5: không để lại chỗ giữ dư
     }
 
@@ -305,7 +305,7 @@ public class SubscriptionF8Tests
 
         var result = await NewCreditSvc(tdb).ReserveAsync(OwnerType.User, owner, Guid.NewGuid());
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.OutOfCredit, result.Outcome);
     }
 
     // PAY-12: ví bị Đình chỉ → thuê bao KHÔNG mua được quyền đi vòng qua lệnh đình chỉ.
@@ -319,7 +319,7 @@ public class SubscriptionF8Tests
 
         var result = await NewCreditSvc(tdb).ReserveAsync(OwnerType.User, owner, Guid.NewGuid());
 
-        Assert.Equal(ReserveOutcome.Insufficient, result.Outcome);
+        Assert.Equal(ReserveOutcome.Suspended, result.Outcome);
         Assert.Empty(await tdb.Db.CreditReservations.ToListAsync());
     }
 

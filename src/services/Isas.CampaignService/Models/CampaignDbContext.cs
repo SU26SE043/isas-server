@@ -12,6 +12,8 @@ namespace Isas.CampaignService.Models
         public DbSet<Campaign> Campaigns => Set<Campaign>();
         public DbSet<CampaignQuestion> CampaignQuestions => Set<CampaignQuestion>();
         public DbSet<CampaignCriterion> CampaignCriteria => Set<CampaignCriterion>();
+        public DbSet<CampaignCriterionLevel> CampaignCriterionLevels => Set<CampaignCriterionLevel>();   // CAMP-16/17: mốc điểm
+        public DbSet<RubricPreviewRun> RubricPreviewRuns => Set<RubricPreviewRun>();                     // CAMP-19: chấm thử
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
         public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
         public DbSet<CampaignSlot> CampaignSlots => Set<CampaignSlot>();
@@ -69,6 +71,16 @@ namespace Isas.CampaignService.Models
                     t.HasCheckConstraint(
                         "ck_campaigns_adaptive_caps_non_negative",
                         "(max_follow_ups IS NULL OR max_follow_ups >= 0) AND (max_questions IS NULL OR max_questions >= 0) AND (max_deep_per_question IS NULL OR max_deep_per_question >= 0)");
+                    // NGÂN HÀNG ĐỀ: null = lấy hết câu (hành vi cũ). Đặt số thì phải ≥ 1 — `0` nghĩa là
+                    // "buổi thi không câu nào", mà `ParticipationService` đã ném khi đề rỗng ⇒ để lọt là
+                    // tạo ra campaign publish được nhưng KHÔNG ứng viên nào bắt đầu nổi.
+                    t.HasCheckConstraint(
+                        "ck_campaigns_questions_per_session_positive",
+                        "questions_per_session IS NULL OR questions_per_session >= 1");
+                    // CAMP-18: định danh bộ thước đo. Bắt đầu từ 1 và chỉ tăng — số 0/âm nghĩa là
+                    // có đường ghi nào đó đang đặt bừa, mà nhãn thước đo sai thì bảng xếp hạng trộn
+                    // hai nhóm điểm không so sánh được (CAMP-10) mà không ai thấy.
+                    t.HasCheckConstraint("ck_campaigns_rubric_version_positive", "rubric_version >= 1");
                     t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
                     t.HasCheckConstraint("ck_campaigns_language", "language IN ('vi', 'en')");
                     t.HasCheckConstraint("ck_campaigns_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
@@ -90,6 +102,9 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.FaceVerifyEnabled).HasDefaultValue(false);   // SEC-1: face-verify opt-in (B2B)
                 e.Property(x => x.AdaptiveEnabled).HasDefaultValue(false);     // INT-17: adaptive opt-in (B2B)
                 e.Property(x => x.GroundingEnabled).HasDefaultValue(false);    // T8: entitlement-gated snapshot
+                // CAMP-18 — DEFAULT 1 để campaign đã có trên prod nhận đúng v1 mà không cần backfill:
+                // mọi lượt materialize từng chạy đều ghi Version = 1 phía Interview.
+                e.Property(x => x.RubricVersion).HasDefaultValue(1);
 
                 e.Property(x => x.StartsAt).IsRequired();
 
@@ -156,6 +171,13 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.QuestionText).IsRequired();
                 e.Property(x => x.IsRequired).HasDefaultValue(true);
 
+                // Đáp án mẫu: cột `text` như `question_text`, KHÔNG HasMaxLength — vượt trần thì Postgres
+                // ném lỗi thô không ai đọc được; trần độ dài chặn ở code (QuestionLimits) để trả 400 kèm
+                // thông báo tiếng Việt. KHÔNG jsonb: cấu hình jsonb ở context này đều phải gate IsNpgsql()
+                // vì SQLite của test không hỗ trợ.
+                e.Property(x => x.SampleAnswer);
+                e.Property(x => x.QuestionGroup).HasMaxLength(100);
+
                 e.Property(x => x.Source)
                  .HasConversion<string>()
                  .HasMaxLength(20);
@@ -179,7 +201,12 @@ namespace Isas.CampaignService.Models
                 e.ToTable("campaign_criteria", t =>
                 {
                     t.HasCheckConstraint("ck_campaign_criteria_weight_range", "weight > 0 AND weight <= 1");
-                    t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited')");
+                    // CAMP-20 — 'SystemDefault' là giá trị THỨ BA (bộ chuẩn chép về + bộ dự phòng khi AI
+                    // lỗi). ⚠ CHECK này phải có trên DB TRƯỚC khi code ghi giá trị mới lên (xem docblock
+                    // migration AddCriterionSourceSystemDefault). SQLite của test CÓ enforce CHECK (EF10)
+                    // nhưng nó dựng schema bằng EnsureCreated theo model NÀY — tức luôn là bản ĐÃ nới —
+                    // nên không test nào bắt được thứ tự deploy sai; chỉ Postgres thật mới bắt.
+                    t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited', 'SystemDefault')");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
@@ -198,6 +225,78 @@ namespace Isas.CampaignService.Models
 
                 e.HasOne(x => x.Campaign)
                  .WithMany(x => x.Criteria)
+                 .HasForeignKey(x => x.CampaignId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── CampaignCriterionLevel (mốc điểm — CAMP-16/17, nuôi E9 hard-anchor) ──
+            modelBuilder.Entity<CampaignCriterionLevel>(e =>
+            {
+                e.ToTable("campaign_criterion_levels", t =>
+                {
+                    // Điểm âm không có nghĩa ở bất kỳ thang nào; trần trên phụ thuộc criterion.max_score
+                    // (không tham chiếu chéo bảng được trong CHECK) nên kiểm ở code — ValidateCriterionLevels.
+                    t.HasCheckConstraint("ck_campaign_criterion_levels_score_non_negative", "score >= 0");
+                });
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.Descriptor).IsRequired();
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+                e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
+
+                // LÝ DO TỒN TẠI của bảng con thay vì jsonb: hai mốc trùng score làm việc snap điểm về
+                // mức gần nhất (E9, cả Python lẫn C#) trở nên không xác định ⇒ chấm sai trong im lặng.
+                e.HasIndex(x => new { x.CriterionId, x.Score }).IsUnique();
+
+                // DB13: chained qua Criterion→Campaign (soft-delete filter). Bắt buộc khớp filter của
+                // required nav, nếu không EF phát PossibleIncorrectRequiredNavigation + đọc mốc mồ côi.
+                e.HasQueryFilter(x => x.Criterion.Campaign.DeletedAt == null);
+
+                e.HasOne(x => x.Criterion)
+                 .WithMany(x => x.Levels)
+                 .HasForeignKey(x => x.CriterionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // ── RubricPreviewRun (chấm thử — CAMP-19) ────────────────────────
+            modelBuilder.Entity<RubricPreviewRun>(e =>
+            {
+                e.ToTable("rubric_preview_runs", t => t.HasCheckConstraint(
+                    "ck_rubric_preview_runs_status", "status IN ('Running', 'Succeeded', 'Failed')"));
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+
+                e.Property(x => x.QuestionText).IsRequired();
+                e.Property(x => x.Status).HasConversion<string>().HasMaxLength(16).IsRequired();
+                e.Property(x => x.RubricSnapshot).IsRequired();
+                e.Property(x => x.RubricFingerprint).HasMaxLength(64).IsRequired();
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // jsonb CÓ ĐIỀU KIỆN IsNpgsql (khớp precedent campaigns.required_skills / outbox payload)
+                // — SQLite test không có jsonb. Kiểu C# là string nên KHÔNG cần ValueConverter, và nhờ
+                // thế cũng không có chỗ nào cho EF scaffold `defaultValue: ""` (chuỗi rỗng không phải
+                // JSON hợp lệ ⇒ Postgres từ chối ngay tại ALTER/CREATE, mà SQLite thì nuốt).
+                if (Database.IsNpgsql())
+                {
+                    e.Property(x => x.RubricSnapshot).HasColumnType("jsonb");
+                    e.Property(x => x.Samples).HasColumnType("jsonb");
+                }
+
+                // Lịch sử đọc theo campaign, mới nhất trước.
+                e.HasIndex(x => new { x.CampaignId, x.CreatedAt });
+
+                // Chống double-click / hai tab: chỉ MỘT lượt đang chạy trên mỗi campaign. Partial vì
+                // lượt đã xong thì không còn ràng buộc gì (một campaign có nhiều lượt trong lịch sử).
+                e.HasIndex(x => x.CampaignId)
+                 .HasDatabaseName("ux_rubric_preview_runs_running")
+                 .HasFilter("status = 'Running'")
+                 .IsUnique();
+
+                // DB13: required nav → Campaign (soft-delete filter) → BẮT BUỘC khớp filter.
+                e.HasQueryFilter(x => x.Campaign.DeletedAt == null);
+
+                e.HasOne(x => x.Campaign)
+                 .WithMany()
                  .HasForeignKey(x => x.CampaignId)
                  .OnDelete(DeleteBehavior.Cascade);
             });

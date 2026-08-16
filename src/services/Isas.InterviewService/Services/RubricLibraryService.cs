@@ -2,6 +2,7 @@ using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.Shared.Rubric;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
@@ -56,7 +57,7 @@ public class RubricLibraryService : IRubricLibraryService
         var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, lang, ct);
         if (owner is Guid oid)
         {
-            var custom = await _db.RubricCriteria.AsNoTracking()
+            var custom = await _db.RubricCriteria.AsNoTracking().Include(c => c.Levels)
                 .Where(c => c.CampaignId == null && c.CandidateId == oid && c.JobCategory == jobCategory
                         && c.Language == lang && c.IsActive)
                 .OrderByDescending(c => c.Weight).ThenBy(c => c.Name)
@@ -68,7 +69,9 @@ public class RubricLibraryService : IRubricLibraryService
         // ⚠ Vế `Language` ở ĐÂY mới là vế phục vụ đa số người dùng: toàn DB prod chỉ có 8 row rubric
         // riêng, còn seed là 7 tiêu chí × 3 nghề × 2 ngôn ngữ. Vá mỗi nhánh custom bên trên thì triệu
         // chứng Q9 (14 tiêu chí Σ=2.0) vẫn còn nguyên với gần như mọi ứng viên.
-        var seed = await _db.RubricCriteria.AsNoTracking()
+        // `.Include(Levels)` ở ĐÂY là vế đóng nghịch lý: mốc do admin soạn đi theo template sang form
+        // sửa, nên ứng viên bấm "tuỳ chỉnh" là đã có sẵn thang để chỉnh, không phải trang trắng.
+        var seed = await _db.RubricCriteria.AsNoTracking().Include(c => c.Levels)
             .Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory
                         && c.Language == lang && c.IsActive)
             .OrderByDescending(c => c.Weight).ThenBy(c => c.Name)
@@ -118,6 +121,10 @@ public class RubricLibraryService : IRubricLibraryService
             CampaignId = null,
             CandidateId = candidateId,
             Version = newVersion,
+            // Mốc điểm (E9). Rỗng = chưa khai ⇒ ScoringCriteriaBuilder sinh dải mặc định như trước.
+            Levels = ValidateLevels(i.Name, i.MaxScore, i.Levels)
+                .Select(l => new RubricLevel { Id = Guid.NewGuid(), Score = l.Score, Descriptor = l.Descriptor })
+                .ToList(),
         }).ToList();
         _db.RubricCriteria.AddRange(rows);
 
@@ -188,6 +195,31 @@ public class RubricLibraryService : IRubricLibraryService
             .ToList();
     }
 
+    /// <summary>
+    /// Kiểm thang điểm bằng luật DÙNG CHUNG với B2B (<see cref="CriterionLevelRules"/>) — không viết
+    /// luật thứ hai: thang méo KHÔNG làm lỗi nào nổ ở đường chấm, nó chỉ làm điểm sai, nên hai bản
+    /// luật lệch nhau là hai kiểu chấm mà không có triệu chứng nào ngoài điểm số trông vẫn hợp lý.
+    /// <c>null</c>/rỗng = chưa khai mốc, hợp lệ.
+    /// </summary>
+    private static IReadOnlyList<RubricLevelSnapshot> ValidateLevels(
+        string criterionName, int maxScore, List<RubricLevelInput>? levels)
+    {
+        if (levels is null || levels.Count == 0) return [];
+
+        var (error, normalized) = CriterionLevelRules.Validate(
+            criterionName, maxScore,
+            levels.Select(l => new RubricLevelSnapshot(l.Score, l.Descriptor)).ToList());
+
+        // InvalidOperationException chứ KHÔNG phải ArgumentException — RubricController chỉ bắt loại
+        // này → 400; ArgumentException rơi xuống ống dẫn chung → 500 (lỗi đã xảy ra ở F2b). Đây cũng
+        // chính là lý do CriterionLevelRules TRẢ lỗi thay vì tự ném.
+        if (error is not null) throw new InvalidOperationException(error);
+        return normalized;
+    }
+
     private static RubricCriterionItem Map(RubricCriterion c)
-        => new(c.Id, c.Name, c.Description, c.Weight, c.MaxScore);
+        => new(c.Id, c.Name, c.Description, c.Weight, c.MaxScore,
+            // `.Include()` KHÔNG bảo đảm thứ tự — sắp ở đây thay vì tin vào DB.
+            (c.Levels ?? []).OrderBy(l => l.Score)
+                .Select(l => new RubricLevelInput(l.Score, l.Descriptor)).ToList());
 }

@@ -118,6 +118,14 @@ async def process_message(message: aio_pika.IncomingMessage):
         criteria = body.get("criteria") or body.get("Criteria") or []
         rubric_version = body.get("rubricVersion") or body.get("RubricVersion")
 
+        # Đáp án mẫu HR soạn cho ĐÚNG câu này (B2B). None với câu B2C, câu đào sâu AI sinh lúc thi,
+        # chiến dịch chưa soạn, hoặc kill-switch `Scoring:UseSampleAnswer` phía .NET đang tắt.
+        # ⚠ Đọc CẢ HAI kiểu viết hoa/thường như `transcript` và `deliveryMetrics` ngay dưới:
+        # `ScoringJobPublisher` serialize job KHÔNG kèm options nên khoá trên hàng đợi là PascalCase,
+        # trong khi các đường khác dùng camelCase. Chỉ đọc một kiểu là field chết im lặng.
+        sample_answer = body.get("sampleAnswer") or body.get("SampleAnswer")
+        sample_answer = sample_answer.strip() if isinstance(sample_answer, str) else None
+
         # E10 — self-consistency: attempt worker phải chấm + nhiệt độ (attempt 1 = 0 tái lập,
         # 2..N > 0 dao động). Job cũ (E9) không có 2 field này → attempt_no=1, temperature=0.
         attempt_no = body.get("attemptNo") or body.get("AttemptNo") or 1
@@ -226,6 +234,7 @@ async def process_message(message: aio_pika.IncomingMessage):
                         temperature=temperature,   # E10: attempt 1 = 0, 2..N > 0
                         delivery=delivery,         # F11: số đo cách nói (None = chưa đo được)
                         language=language,
+                        sample_answer=sample_answer,
                     )
                     break
                 except ValueError as e:

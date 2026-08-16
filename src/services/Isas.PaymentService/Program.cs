@@ -110,6 +110,9 @@ builder.Services.Configure<ReconcileSettings>(
 builder.Services.Configure<InvoiceOverdueSettings>
     (builder.Configuration.GetSection("InvoiceOverdue"));
 
+builder.Services.Configure<BillingCloseSettings>
+    (builder.Configuration.GetSection("BillingClose"));
+
 // DB18 — cấu hình reconciler bù trừ orphan reservation (session không bao giờ được insert lúc Start).
 builder.Services.Configure<OrphanReconcileSettings>(
     builder.Configuration.GetSection(OrphanReconcileSettings.SectionName));
@@ -218,6 +221,7 @@ builder.Services.AddHostedService<SubscriptionExpiryReconciler>();
 // trong một nhịp HTTP), đồng thời là lưới cứu ca timeout: gọi lại bằng ĐÚNG khoá idempotency đã ghi.
 builder.Services.AddHostedService<RefundPayoutReconciler>();
 builder.Services.AddHostedService<InvoiceOverdueReconciler>();
+builder.Services.AddHostedService<BillingCloseReconciler>();
 builder.Services.AddHostedService<HttpTrafficPurger>();
 
 var app = builder.Build();

@@ -44,6 +44,7 @@ namespace Isas.CampaignService.Services
                     CandidateId = evt.CandidateId,
                     SessionId = evt.SessionId,
                     TotalScore = evt.TotalScore,
+                    RubricVersion = evt.RubricVersion,   // CAMP-18: null = không biết
                     UpdatedAt = DateTime.UtcNow
                 });
 
@@ -59,6 +60,7 @@ namespace Isas.CampaignService.Services
                 existing.CampaignId = evt.CampaignId.Value;
                 existing.CandidateId = evt.CandidateId;
                 existing.TotalScore = evt.TotalScore;
+                existing.RubricVersion = evt.RubricVersion;
                 existing.UpdatedAt = DateTime.UtcNow;
 
                 _logger.LogInformation(

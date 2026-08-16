@@ -48,10 +48,12 @@ namespace Isas.PaymentService.Controllers
 
             return result.Outcome switch
             {
-                // Hết credit / hạn mức → 402 (PAY-5), KHÔNG tạo session ở phía caller.
-                ReserveOutcome.Insufficient =>
-                    StatusCode(StatusCodes.Status402PaymentRequired, new { error = "Insufficient credits" }),
-                // Reserved hoặc AlreadyReserved (idempotent) đều trả 200 { reservationId, reservedCredits }.
+                ReserveOutcome.Insufficient => StatusCode(StatusCodes.Status402PaymentRequired, new { error = "Insufficient credits", reason = "insufficient", message = "Không đủ credit." }),
+                ReserveOutcome.NoWallet => StatusCode(StatusCodes.Status402PaymentRequired, new { error = "Insufficient credits", reason = "no_wallet", message = "Chưa có ví credit." }),
+                ReserveOutcome.OutOfCredit => StatusCode(StatusCodes.Status402PaymentRequired, new { error = "Insufficient credits", reason = "out_of_credit", message = "Ví đã hết credit — vui lòng mua thêm." }),
+                ReserveOutcome.LimitReached => StatusCode(StatusCodes.Status402PaymentRequired, new { error = "Insufficient credits", reason = "limit_reached", message = "Đã chạm hạn mức trả sau của kỳ này — vui lòng liên hệ quản trị viên để nâng hạn mức." }),
+                ReserveOutcome.InvoiceOverdue => StatusCode(StatusCodes.Status402PaymentRequired, new { error = "Insufficient credits", reason = "invoice_overdue", message = "Còn hoá đơn quá hạn chưa tất toán — vui lòng thanh toán để tiếp tục." }),
+                ReserveOutcome.Suspended => StatusCode(StatusCodes.Status402PaymentRequired, new { error = "Insufficient credits", reason = "suspended", message = "Ví đang bị đình chỉ." }),
                 _ => Ok(new ReserveResponse
                 {
                     ReservationId = result.ReservationId!.Value,

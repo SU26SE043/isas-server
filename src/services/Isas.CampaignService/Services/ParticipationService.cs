@@ -212,6 +212,10 @@ namespace Isas.CampaignService.Services
             var membership = await _db.CampaignMemberships
                 .Include(m => m.Campaign).ThenInclude(c => c.Questions)
                 .Include(m => m.Campaign).ThenInclude(c => c.Criteria)
+                    // CAMP-16 — mốc điểm đi kèm tiêu chí sang Interview. CHỈ nạp ở đường Start; hai
+                    // đường ứng viên ĐỌC (metadata lời mời, chi tiết campaign) cố ý KHÔNG nạp vì mốc
+                    // là thước đo nội bộ (quyết định 7).
+                    .ThenInclude(cr => cr.Levels)
                 .FirstOrDefaultAsync(m => m.CampaignId == campaignId && m.CandidateId == candidateId, ct);
 
             // Chưa join (không có membership gắn candidate) → 403 (UnauthorizedAccessException).
@@ -273,17 +277,32 @@ namespace Isas.CampaignService.Services
                 }
             }
 
-            var questions = campaign.Questions
+            // NGÂN HÀNG ĐỀ — chọn đề CHO ỨNG VIÊN NÀY. `QuestionsPerSession = null` (mặc định, và là
+            // trạng thái của mọi chiến dịch có trước tính năng này) ⇒ lấy trọn bộ theo đúng thứ tự HR
+            // soạn, y như trước. Rút deterministic theo (campaignId, candidateId): buổi thi là
+            // create-or-get, ứng viên vào lại phải nhận ĐÚNG đề cũ.
+            var pool = campaign.Questions
                 .OrderBy(q => q.CreatedAt).ThenBy(q => q.Id)
-                .Select(q => q.QuestionText)
+                .Select(q => new PoolQuestion(q.Id, q.QuestionText, q.SampleAnswer, q.IsRequired, q.QuestionGroup))
                 .ToList();
-            if (questions.Count == 0)
+            if (pool.Count == 0)
                 throw new InvalidOperationException("Chiến dịch chưa có câu hỏi.");
 
-            var criteria = campaign.Criteria
-                .OrderBy(c => c.OrderNo)
-                .Select(c => new SessionCriterionInput(c.Name, c.Description, c.Weight, c.MaxScore))
+            var selected = QuestionPoolSelector.Select(
+                pool, campaign.QuestionsPerSession, campaignId, candidateId,
+                warning => _logger.LogWarning(
+                    "Ngân hàng đề campaign {CampaignId}: {Warning}", campaignId, warning));
+
+            var questions = selected.Select(q => q.Text).ToList();
+            // Cùng danh sách, cùng thứ tự — Interview ghép theo chỉ số và BỎ QUA nếu số lượng lệch.
+            var questionDetails = selected
+                .Select(q => new SessionQuestionInput(q.Text, q.SampleAnswer))
                 .ToList();
+
+            // CAMP-16 — dựng qua ScoringCriteriaBuilder, KHÔNG map tay tại chỗ: đây là một trong hai
+            // đường phải cho ra CÙNG một bộ thước đo với đường chấm thử của HR, và hai bản map tay sẽ
+            // trôi xa nhau mà không có triệu chứng nào (cả hai vẫn ra điểm, chỉ khác thước).
+            var criteria = ScoringCriteriaBuilder.Build(campaign.Criteria);
             if (criteria.Count == 0)
                 throw new InvalidOperationException("Chiến dịch chưa có tiêu chí chấm.");
 
@@ -293,9 +312,9 @@ namespace Isas.CampaignService.Services
             // Gửi deadline hiệu lực (min campaign expiry và slot) để Interview sweeper tự kết thúc đúng hạn.
             var session = campaign.Language == "vi"
                 ? await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, ct)
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, campaign.RubricVersion, questionDetails, ct)
                 : await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, ct);
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, campaign.RubricVersion, questionDetails, ct);
 
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.
@@ -426,7 +445,9 @@ namespace Isas.CampaignService.Services
                 throw new InvitationGoneException($"Chiến dịch không còn nhận ứng viên (trạng thái {inv.Campaign.Status}).");
         }
 
-        private static CampaignCriterionResponse MapCriterion(CampaignCriterion c) => new()
+        // Quyết định 7 — KHÔNG map Levels sang ứng viên. Type đích không có trường đó nên đây là
+        // ràng buộc của trình biên dịch, không phải của người đọc code.
+        private static CandidateCriterionResponse MapCriterion(CampaignCriterion c) => new()
         {
             Id = c.Id,
             OrderNo = c.OrderNo,

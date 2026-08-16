@@ -36,21 +36,23 @@ public class SessionResultService : ISessionResultService
         // CHỈ B2C (campaign_id null). B2B: điểm tổng phục vụ ranking tính ở CampaignService — không áp BC9.
         if (session.CampaignId is not null) return;
 
-        // Bộ tiêu chí đã chấm (đúng nguồn theo E1/BC16): B2C = rubric nghề active + campaign_id IS NULL,
-        // ưu tiên rubric RIÊNG của candidate (nếu có active), else seed mặc định (candidate_id IS NULL).
-        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, session.CandidateId, session.JobCategory, session.Language, ct);
-        // Q8 — `c.Language` BẮT BUỘC: seed B2C chứa CẢ vi lẫn en cùng nghề, nên thiếu vế này thì mọi buổi
-        // (kể cả buổi tiếng Việt) nạp 14 tiêu chí thay vì 7. Bảy tiêu chí ngôn ngữ kia không bao giờ có
-        // answer_scores (đường chấm đã lọc đúng) ⇒ ghi xuống thành 7 dòng `0.00` gắn cờ needs_improvement.
-        // `overallScore` không sai (scoredCriteriaCount loại chúng) nhưng session_criterion_scores là
-        // nguồn của BC12 weakness / BC15 đo cải thiện / F14 peer benchmark ⇒ dữ liệu bẩn chảy tiếp.
-        var critQuery = _db.RubricCriteria.AsNoTracking()
-            .Where(c => c.IsActive && c.CampaignId == null && c.JobCategory == session.JobCategory
-                        && c.Language == session.Language);
-        critQuery = owner is Guid oid
-            ? critQuery.Where(c => c.CandidateId == oid)
-            : critQuery.Where(c => c.CandidateId == null);
-        var criteria = await critQuery.ToListAsync(ct);
+        // Bộ tiêu chí đã chấm — nạp qua NGUỒN DUY NHẤT `RubricCriteriaLoader`, KHÔNG tự viết truy vấn.
+        //
+        // 🔴 Đây từng là bản sao THỨ TƯ của câu chọn tiêu chí B2C, và nó lọc `IsActive`. Từ khi buổi
+        // luyện ghim phiên bản rubric, bản sao đó sai theo kiểu KHÔNG có triệu chứng: buổi ghim v1 mà
+        // admin đã lên v2 sẽ nạp bộ v2 — cùng tên tiêu chí nhưng **id MỚI** — trong khi `avgByCriterion`
+        // đánh khoá bằng id của v1 ⇒ `TryGetValue` trượt TOÀN BỘ ⇒ `continue` mọi tiêu chí ⇒
+        // `session_criterion_scores` 0 dòng, `scoredCriteriaCount = 0` ⇒ **overall = 0** với đúng một
+        // dòng LogWarning. Ứng viên trả 1 credit, chấm xong, mở ra thấy màn kết quả trống.
+        //
+        // `includeLevels: false` — ở đây chỉ cần weight/maxScore để cộng điểm; nó KHÔNG đổi tập dòng
+        // được chọn, chỉ bỏ phần nạp kèm.
+        //
+        // (Q8 — vế `Language` nay nằm trong loader: seed B2C chứa CẢ vi lẫn en cùng nghề, thiếu nó thì
+        // mọi buổi nạp 14 tiêu chí thay vì 7 ⇒ 7 dòng `0.00` gắn cờ needs_improvement chảy tiếp vào
+        // BC12 weakness / BC15 đo cải thiện / F14 peer benchmark.)
+        var criteria = await RubricCriteriaLoader.LoadAsync(
+            _db, RubricCriteriaLoader.KeyFor(session), ct, includeLevels: false);
 
         // Điểm mỗi (answer, criterion) — MATERIALIZE rồi tính trong C#. KHÔNG dùng AVG SQL:
         // trên SQLite (test) Average(decimal) map hàm ef_avg dễ lệch Postgres → tính LINQ-to-objects.

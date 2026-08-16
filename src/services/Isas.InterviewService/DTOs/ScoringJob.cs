@@ -9,6 +9,17 @@ public class ScoringJob
 
     // Các field worker Python cần để chấm theo rubric:
     public string QuestionContent { get; set; } = null!;
+
+    /// <summary>
+    /// Đáp án mẫu HR soạn cho ĐÚNG câu này (B2B). null = câu B2C, câu đào sâu AI sinh lúc thi, chiến
+    /// dịch chưa soạn đáp án, hoặc kill-switch <c>Scoring:UseSampleAnswer</c> đang tắt.
+    ///
+    /// <para>⚠ Job đi qua RabbitMQ được serialize KHÔNG kèm options (<c>ScoringJobPublisher</c> gọi
+    /// <c>JsonSerializer.Serialize(job)</c> trần) ⇒ khoá trên hàng đợi là <b>PascalCase</b>, không phải
+    /// camelCase. Phía Python phải đọc được cả hai — đó là lý do <c>worker.py</c> vốn đã tra hai kiểu
+    /// cho <c>transcript</c> và <c>deliveryMetrics</c>.</para>
+    /// </summary>
+    public string? SampleAnswer { get; set; }
     public string JobCategory { get; set; } = null!;
     public string Language { get; set; } = "vi";
     public int RubricVersion { get; set; }

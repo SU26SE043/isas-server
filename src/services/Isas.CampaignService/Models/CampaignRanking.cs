@@ -17,6 +17,12 @@ namespace Isas.CampaignService.Models
         public decimal TotalScore { get; set; }
         public DateTime UpdatedAt { get; set; }
 
+        // CAMP-18 — thước đo đã chấm buổi này. NULL = KHÔNG BIẾT (buổi chấm trước khi có nhãn), và
+        // ⚠ null KHÔNG được suy thành v1: suy "biết" từ "không biết" đúng là lỗi BK23 sinh ra để chặn.
+        // Cần nhãn vì đổi mốc là đổi thước đo mạnh hơn cả thu hẹp phạm vi chấm — mà CAMP-10 (xếp hạng),
+        // BC15 (đo cải thiện) và F14 (mốc peer) đang đem điểm so THẲNG với nhau.
+        public int? RubricVersion { get; set; }
+
         // E11b — HR chốt điểm cuối (điểm AI = gợi ý). Null = chưa override → dùng TotalScore/ngưỡng.
         // Điểm/kết-quả effective read-time = OverrideScore ?? TotalScore, OverrideResult ?? (theo ngưỡng).
         // TotalScore giữ nguyên snapshot AI (E4 redelivery không đè override).

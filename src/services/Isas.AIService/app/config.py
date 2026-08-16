@@ -239,6 +239,15 @@ class Settings(BaseSettings):
     # học (đo thật 13-54s/lượt) — nới lên 3 là mời timeout quay lại.
     lesson_theory_max_attempts: int = 2
 
+    # ── Chấm thử rubric (E9b) — sinh 3 bài mẫu yếu/khá/xuất sắc ──────────
+    # LLM mặc định viết yếu=ngắn, giỏi=dài ⇒ bài kiểm chứng sẽ đo ĐỘ DÀI chứ không đo thước đo;
+    # tệ hơn, nếu bộ chấm CŨNG thưởng độ dài thì dải điểm đẹp lại đi XÁC NHẬN một thước đo hỏng.
+    # Lệch quá ngưỡng → sinh lại đúng 1 lượt kèm nhận xét; vẫn lệch → GIAO HÀNG kèm cờ cảnh báo
+    # (không giấu, và cũng không 502 — HR vẫn cần xem được bài).
+    # Trần thấp có chủ đích như `lesson_theory_max_attempts`: mỗi lượt là một lần gọi Gemini nằm
+    # TRONG request đồng bộ mà HR đang ngồi chờ (đã tốn thêm 3-4 lượt chấm phía sau).
+    preview_answers_max_attempts: int = 2
+
     # ── TRẦN THREAD CHO CÔNG VIỆC CHẶN ────────────────────────────
     # `asyncio.to_thread` dùng executor mặc định của event loop, cỡ `min(32, cpu_count + 4)`
     # (CPython `Lib/concurrent/futures/thread.py`) ⇒ **12** trên server 8 core. Việc CHẶN của
