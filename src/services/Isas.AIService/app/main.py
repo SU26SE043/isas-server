@@ -13,6 +13,7 @@ from app.schemas import (
     AnalyzeCvRequest, AnalyzeCvResponse, AnalyzeRepoRequest, AnalyzeRepoResponse, JdMatch,
     CvRequirementMatch, CvSectionAnchor, GroundingChunk,
     JobNeed, SuggestJobNeedsRequest, SuggestJobNeedsResponse,
+    JdRequirement, SuggestJdRequirementsRequest, SuggestJdRequirementsResponse,
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
     GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
@@ -353,6 +354,29 @@ async def suggest_job_needs(req: SuggestJobNeedsRequest,
         raise
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi đề xuất nhu cầu công việc: {ex}")
+
+
+@router.post("/suggest-jd-requirements", response_model=SuggestJdRequirementsResponse)
+async def suggest_jd_requirements(req: SuggestJdRequirementsRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    """B2C — tách JD thành hai danh sách để candidate sửa trước khi phân tích CV."""
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+    if not req.jdText or not req.jdText.strip():
+        raise HTTPException(status_code=400, detail="jdText không được rỗng")
+    try:
+        grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
+        result = await _call_with_language(
+            req.language, provider.suggest_jd_requirements,
+            req.jdText, req.jobCategory, grounding)
+        return SuggestJdRequirementsResponse(
+            mustHave=[JdRequirement(**item) for item in result.get("mustHave", [])],
+            niceToHave=[JdRequirement(**item) for item in result.get("niceToHave", [])],
+        )
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi tách requirement từ JD: {ex}")
 
 
 @router.post("/analyze-repo", response_model=AnalyzeRepoResponse, response_model_exclude_none=True)

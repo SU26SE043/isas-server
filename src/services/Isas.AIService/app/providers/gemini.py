@@ -19,6 +19,7 @@ from app.prompts import (
     build_criterion_levels_prompt, build_preview_answers_prompt, PREVIEW_BANDS,
     build_cv_analysis_prompt, build_repo_analysis_prompt,
     build_job_needs_prompt, build_cv_screening_prompt,
+    build_jd_requirements_prompt,
     build_roadmap_prompt, build_lesson_theory_prompt, build_summarize_roadmap_prompt,
     build_summarize_session_prompt, build_decide_next_prompt,
     build_verify_questions_prompt,
@@ -1012,6 +1013,99 @@ class GeminiProvider(QuestionProvider):
                 ]
 
         return result
+
+    async def suggest_jd_requirements(self, jd_text: str, job_category: str,
+                                      grounding: list[dict] | None = None,
+                                      language: str = "vi") -> dict:
+        """B2C bước 1 — tách JD thành must-have/nice-to-have; không ghi DB."""
+        await prompt_registry.refresh_if_stale()
+        prompt = build_jd_requirements_prompt(
+            jd_text, job_category, grounding, language=language)
+        response = await self._generate(
+            "suggest_jd_requirements",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "mustHave": {"type": "array", "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "citations": {"type": "array", "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "chunkId": {"type": "string"},
+                                        "content": {"type": "string"},
+                                        "sourceUrl": {"type": ["string", "null"]},
+                                        "sourceTitle": {"type": ["string", "null"]},
+                                    },
+                                    "required": ["chunkId", "content"],
+                                }},
+                            },
+                            "required": ["text", "citations"],
+                        }},
+                        "niceToHave": {"type": "array", "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string"},
+                                "citations": {"type": "array", "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "chunkId": {"type": "string"},
+                                        "content": {"type": "string"},
+                                        "sourceUrl": {"type": ["string", "null"]},
+                                        "sourceTitle": {"type": ["string", "null"]},
+                                    },
+                                    "required": ["chunkId", "content"],
+                                }},
+                            },
+                            "required": ["text", "citations"],
+                        }},
+                    },
+                    "required": ["mustHave", "niceToHave"],
+                },
+            ),
+        )
+        try:
+            data = json.loads((response.text or "").strip())
+        except json.JSONDecodeError:
+            raise ValueError("LLM tách requirement từ JD trả về JSON không hợp lệ.")
+
+        allowed = {
+            str(g.get("chunkId")): g for g in (grounding or [])
+            if str(g.get("chunkId") or "").strip()
+        }
+
+        def clean(items) -> list[dict]:
+            if not isinstance(items, list):
+                return []
+            output = []
+            seen: set[str] = set()
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or "").strip()
+                key = " ".join(text.casefold().split())
+                if not text or key in seen:
+                    continue
+                seen.add(key)
+                citations = []
+                for citation in item.get("citations", []):
+                    if not isinstance(citation, dict):
+                        continue
+                    cid = str(citation.get("chunkId") or "").strip()
+                    if cid in allowed:
+                        citations.append(allowed[cid])
+                output.append({"text": text, "citations": citations})
+            return output
+
+        return {
+            "mustHave": clean(data.get("mustHave")),
+            "niceToHave": clean(data.get("niceToHave")),
+        }
 
     # ── Sàng CV B2B — HR technical screener ──────────────────────────────────────────
     #

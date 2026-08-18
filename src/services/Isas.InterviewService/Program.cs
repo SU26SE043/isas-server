@@ -12,6 +12,8 @@ using Scalar.AspNetCore;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
@@ -21,6 +23,28 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddServiceCors(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHealthChecks();
+
+// B2C bước tách JD miễn phí — 5 lượt / 10 phút / candidate. In-process, nên khi scale ngang
+// trần thực tế là N×; triển khai hiện tại single-instance, Redis limiter để backlog.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("JdRequirements", context =>
+    {
+        var subject = context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? context.User.FindFirstValue("sub")
+            ?? "anonymous";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            subject,
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            });
+    });
+});
 
 builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();   // DB17: shared PDF extractor
 builder.Services.AddScoped<ICVParserService, CVParserService>();
@@ -35,6 +59,7 @@ builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
 builder.Services.AddScoped<IQuestionSpeechService, QuestionSpeechService>();   // TTS đọc câu hỏi
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
+builder.Services.AddScoped<IJdRequirementService, JdRequirementService>();
 builder.Services.AddScoped<IRepoAnalysisService, RepoAnalysisService>(); // BC18
 builder.Services.AddScoped<IRubricLibraryService, RubricLibraryService>();   // BC16 — rubric cá nhân B2C
 builder.Services.AddScoped<IAdminB2CRubricService, AdminB2CRubricService>();   // admin quản bộ chuẩn B2C
@@ -279,6 +304,7 @@ if (app.Environment.IsDevelopment())
 
 
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 
 app.MapHealthChecks("/health");

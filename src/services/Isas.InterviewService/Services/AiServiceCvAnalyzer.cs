@@ -42,6 +42,13 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
         List<CvSectionAnchor>? CvSections,
         List<CvAnalysisCitation>? Citations);
 
+    private record JdRequirementsApiResponse(
+        List<JdRequirementApi>? MustHave,
+        List<JdRequirementApi>? NiceToHave);
+
+    private record JdRequirementApi(string? Text, List<GroundingApi>? Citations);
+    private record GroundingApi(string? ChunkId, string? Content, string? SourceUrl, string? SourceTitle);
+
     private record JdMatchApi(int Score, List<string>? MatchedSkills, List<string>? MissingSkills);
 
     public async Task<CvAnalysisAiResult> AnalyzeAsync(
@@ -115,5 +122,60 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
             RequirementMatches: body.RequirementMatches,
             CvSections: body.CvSections,
             Citations: body.Citations);
+    }
+
+    public async Task<(IReadOnlyList<JdRequirementSuggestion> MustHave,
+                       IReadOnlyList<JdRequirementSuggestion> NiceToHave)> SuggestJdRequirementsAsync(
+        string jobCategory,
+        string jdText,
+        IReadOnlyList<GroundingChunk>? grounding,
+        CancellationToken ct = default)
+    {
+        var payload = new
+        {
+            jdText,
+            jobCategory,
+            grounding
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/suggest-jd-requirements")
+        {
+            Content = JsonContent.Create(payload)
+        };
+        request.Headers.TryAddWithoutValidation("X-Internal-Token", _token);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.SendAsync(request, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogError(ex, "Không gọi được AIService /suggest-jd-requirements");
+            throw new AiServiceException("Không gọi được AIService /suggest-jd-requirements", ex);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogError("AIService /suggest-jd-requirements lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+            throw new AiServiceException($"AIService /suggest-jd-requirements trả {(int)response.StatusCode}");
+        }
+
+        var body = await response.Content.ReadFromJsonAsync<JdRequirementsApiResponse>(Json, ct)
+            ?? throw new AiServiceException("AIService /suggest-jd-requirements trả rỗng");
+
+        static List<JdRequirementSuggestion> Map(IEnumerable<JdRequirementApi>? items)
+            => (items ?? []).Where(x => !string.IsNullOrWhiteSpace(x.Text))
+                .Select(x => new JdRequirementSuggestion(
+                    x.Text!.Trim(),
+                    (x.Citations ?? [])
+                        .Where(c => !string.IsNullOrWhiteSpace(c.ChunkId) && c.Content is not null)
+                        .Select(c => new Citation(
+                            c.ChunkId!, c.SourceUrl ?? string.Empty, c.SourceTitle ?? string.Empty))
+                        .ToList()))
+                .ToList();
+
+        return (Map(body.MustHave), Map(body.NiceToHave));
     }
 }
