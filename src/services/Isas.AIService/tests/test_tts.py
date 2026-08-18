@@ -3,6 +3,7 @@
 # Mock provider.synthesize_speech (KHÔNG gọi Gemini thật) + monkeypatch storage (KHÔNG đụng S3)
 # + monkeypatch audio.pcm_to_mp3 (KHÔNG cần ffmpeg trên máy chạy test) — mirror test_face_verify.py
 # / test_decide_next.py. conftest stub faster_whisper/insightface + GEMINI_API_KEY dummy.
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -86,6 +87,130 @@ def test_cache_miss_tong_hop_va_ghi_s3(fake_s3, fake_vendor):
     fake_vendor.assert_awaited_once()
     # Đọc bằng ngôn ngữ cấu hình phía server (vi-VN), không để client truyền.
     assert fake_vendor.await_args.args[2] == settings.tts_language_code
+
+
+@pytest.mark.asyncio
+async def test_cache_miss_dong_thoi_dung_chung_mot_luot_vendor(fake_s3, monkeypatch):
+    """Hai request cùng key khi cache còn miss phải join cùng task, không nhân đôi quota TTS."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_vendor(*_args):
+        started.set()
+        await release.wait()
+        return _PCM, "audio/L16;codec=pcm;rate=24000"
+
+    vendor = AsyncMock(side_effect=slow_vendor)
+    monkeypatch.setattr(main_module.provider, "synthesize_speech", vendor)
+    monkeypatch.setattr(main_module.audio, "pcm_to_mp3", lambda pcm, rate=24000: _MP3)
+    main_module._tts_inflight.clear()
+    key = tts.cache_key(_QUESTION, settings.tts_voice)
+
+    first = asyncio.create_task(main_module._get_or_create_tts(
+        key, _QUESTION, settings.tts_voice, settings.tts_language_code))
+    await started.wait()
+    second = asyncio.create_task(main_module._get_or_create_tts(
+        key, _QUESTION, settings.tts_voice, settings.tts_language_code))
+    await asyncio.sleep(0)
+
+    assert vendor.call_count == 1
+    release.set()
+    assert await first == await second == (_MP3, "miss")
+    assert fake_s3[key] == _MP3
+
+
+@pytest.mark.asyncio
+async def test_browser_huy_request_van_de_luot_tts_ghi_cache(fake_s3, monkeypatch):
+    """FE fail-open sau 9s không được giết lượt vendor đang làm cache cho lần nghe lại."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_vendor(*_args):
+        started.set()
+        await release.wait()
+        return _PCM, "audio/L16;codec=pcm;rate=24000"
+
+    monkeypatch.setattr(main_module.provider, "synthesize_speech", slow_vendor)
+    monkeypatch.setattr(main_module.audio, "pcm_to_mp3", lambda pcm, rate=24000: _MP3)
+    main_module._tts_inflight.clear()
+    key = tts.cache_key(_QUESTION, settings.tts_voice)
+
+    request = asyncio.create_task(main_module._get_or_create_tts(
+        key, _QUESTION, settings.tts_voice, settings.tts_language_code))
+    await started.wait()
+    vendor_task = main_module._tts_inflight[key]
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+
+    assert not vendor_task.cancelled()
+    release.set()
+    await vendor_task
+    assert fake_s3[key] == _MP3
+
+
+@pytest.mark.asyncio
+async def test_vendor_treo_bi_cat_boi_tran_60s(fake_s3, monkeypatch):
+    """Mọi đường mở cache/UI phụ thuộc vendor phải có trần, không giữ lock vô hạn."""
+    never_finishes = asyncio.Event()
+
+    async def hanging_vendor(*_args):
+        await never_finishes.wait()
+
+    monkeypatch.setattr(main_module.provider, "synthesize_speech", hanging_vendor)
+    monkeypatch.setattr(settings, "tts_synthesis_timeout_seconds", 0.01)
+    main_module._tts_inflight.clear()
+    key = tts.cache_key(_QUESTION, settings.tts_voice)
+
+    with pytest.raises(TimeoutError):
+        await main_module._get_or_create_tts(
+            key, _QUESTION, settings.tts_voice, settings.tts_language_code)
+    assert key not in main_module._tts_inflight
+
+
+@pytest.mark.asyncio
+async def test_warmup_cau_vua_sinh_ghi_cache_truoc_khi_fe_goi(fake_s3, fake_vendor):
+    """Câu seed/adaptive vừa sinh được làm nóng ở nền và dedup cùng key."""
+    main_module._tts_inflight.clear()
+
+    await main_module._warm_tts_batch([_QUESTION, _QUESTION], "vi")
+
+    key = tts.cache_key(_QUESTION, settings.tts_voice)
+    assert fake_s3[key] == _MP3
+    assert fake_vendor.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_warmup_hai_lane_de_cau_sau_khong_cho_cau_dau(fake_s3, monkeypatch):
+    """Concurrency=2 giảm thời gian tới câu 4/5 nhưng không burst toàn bộ batch."""
+    active = 0
+    max_active = 0
+    two_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def vendor(*_args):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if active == 2:
+            two_started.set()
+        await release.wait()
+        active -= 1
+        return _PCM, "audio/L16;codec=pcm;rate=24000"
+
+    monkeypatch.setattr(main_module.provider, "synthesize_speech", AsyncMock(side_effect=vendor))
+    monkeypatch.setattr(main_module.audio, "pcm_to_mp3", lambda pcm, rate=24000: _MP3)
+    monkeypatch.setattr(settings, "tts_prewarm_concurrency", 2)
+    main_module._tts_inflight.clear()
+
+    warmup = asyncio.create_task(main_module._warm_tts_batch(
+        [f"{_QUESTION} {index}" for index in range(3)], "vi"))
+    await asyncio.wait_for(two_started.wait(), timeout=0.2)
+
+    assert max_active == 2
+    release.set()
+    await warmup
+    assert len(fake_s3) == 3
 
 
 def test_doi_noi_dung_cau_hoi_thi_khong_dung_lai_audio_cu(fake_s3, fake_vendor):

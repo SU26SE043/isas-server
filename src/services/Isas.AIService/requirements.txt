@@ -26,6 +26,10 @@ aio-pika==10.0.1
 boto3
 aiohttp
 
+# Distributed single-flight cho TTS cache miss giữa nhiều AIService replica. Redis chỉ giữ lock
+# + ready signal ngắn hạn; mp3 vẫn ở SeaweedFS/S3 và code fail-open nếu Redis lỗi.
+redis==8.1.0
+
 # Chép lời qua whisper-1 (app/transcribe_providers.py). Vì sao httpx chứ không aiohttp như mọi
 # lượt gọi mạng khác: đường chép lời là ĐỒNG BỘ có chủ đích (chạy trong thread `asyncio.to_thread`
 # cạnh Whisper), mà aiohttp chỉ có API async — httpx là thứ duy nhất đã có sẵn mà dùng được ở đó.

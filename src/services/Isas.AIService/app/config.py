@@ -54,6 +54,27 @@ class Settings(BaseSettings):
     tts_language_code_en: str = "en-US"
     # Tiền tố key cache S3 — key nội-dung-định-danh: tts/{sha256(voice+text)}.mp3
     tts_cache_prefix: str = "tts/"
+    # Chủ động tổng hợp các câu vừa sinh ở nền. Nhờ vậy cache miss đắt/chậm không đợi tới lúc
+    # ứng viên đã nhìn thấy câu hỏi mới bắt đầu gọi vendor.
+    tts_prewarm_enabled: bool = True
+    # Hai lane để câu 4/5 không phải chờ toàn bộ câu trước; vẫn đủ thấp để tránh burst quota.
+    tts_prewarm_concurrency: int = 2
+    # Redis CHỈ điều phối cache miss giữa nhiều replica; mp3 vẫn nằm ở S3/SeaweedFS. URL rỗng giữ
+    # chế độ single-flight trong process cho local/test. Production compose nối `redis:6379`.
+    tts_redis_enabled: bool = True
+    tts_redis_url: str = ""
+    tts_redis_key_prefix: str = "isas:tts:"
+    # Lease phải dài hơn một lượt Gemini TTS lạnh; waiter chỉ chờ 8s để nằm dưới trần 9s của FE.
+    # Hết 8s KHÔNG gọi vendor lần hai: trả lỗi để FE đọc fallback, owner vẫn làm cache ở nền.
+    tts_redis_lock_ttl_seconds: float = 120.0
+    tts_redis_wait_timeout_seconds: float = 8.0
+    tts_redis_poll_interval_seconds: float = 0.1
+    tts_redis_ready_ttl_seconds: int = 300
+    # Redis lỗi không được kéo dài đường nóng: timeout nhỏ + circuit-break 5s rồi fail-open.
+    tts_redis_socket_timeout_seconds: float = 0.25
+    tts_redis_failure_cooldown_seconds: float = 5.0
+    # Chặn task vendor treo vĩnh viễn và giữ distributed lock mãi. Lease 120s cố ý > trần này.
+    tts_synthesis_timeout_seconds: float = 60.0
 
     # Whisper
     whisper_model: str = "large-v3"

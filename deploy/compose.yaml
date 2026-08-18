@@ -64,6 +64,14 @@ x-aiservice-env: &aiservice-env
   # sinh log lỗi nào. Cách duy nhất phát hiện là đọc `practice_answers.transcript_engine`.
   OPENAI_API_KEY: ${OPENAI_API_KEY}
   TRANSCRIBE_PROVIDER: ${TRANSCRIBE_PROVIDER:-whisper-1}
+  # Warm audio cho seed/câu adaptive ngay lúc AI sinh; false = rollback về cache-on-demand cũ.
+  TTS_PREWARM_ENABLED: ${TTS_PREWARM_ENABLED:-true}
+  TTS_PREWARM_CONCURRENCY: ${TTS_PREWARM_CONCURRENCY:-2}
+  # Redis chỉ giữ distributed lock + ready signal; audio vẫn ở SeaweedFS. Tắt cờ để rollback về
+  # single-flight trong từng process mà không rebuild image.
+  TTS_REDIS_ENABLED: ${TTS_REDIS_ENABLED:-true}
+  TTS_REDIS_URL: redis://redis:6379/0
+  TTS_SYNTHESIS_TIMEOUT_SECONDS: ${TTS_SYNTHESIS_TIMEOUT_SECONDS:-60}
   # ⚠ Default TRONG CODE là `large-v3` = 2,9 GB tải về + 64-96s/lượt ⇒ vượt timeout decider 90s.
   # Production chạy `small`. ĐỪNG bỏ dòng này.
   WHISPER_MODEL: ${WHISPER_MODEL:-small}
@@ -123,6 +131,19 @@ services:
     volumes:
       - postgres_main_data:/var/lib/postgresql
     networks: [isas-main-network]
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-main
+    restart: unless-stopped
+    command: redis-server --appendonly no --save ""
+    # Chỉ chứa lock/signal TTL ngắn; không publish port và không cần volume bền.
+    networks: [isas-main-network]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   seaweedfs:
     image: chrislusf/seaweedfs:latest
@@ -489,7 +510,11 @@ services:
       retries: 3
       # rộng: lần đầu volume rỗng phải tải ~800 MB model trước khi bind cổng.
       start_period: 180s
-    depends_on: [seaweedfs]
+    depends_on:
+      seaweedfs:
+        condition: service_started
+      redis:
+        condition: service_healthy
 
   aiworker:
     <<: *aiservice
@@ -506,7 +531,7 @@ services:
       # `callbackBase` của sàng CV lấy từ CHÍNH message, không phải env này.
       CV_SCREENING_ENABLED: ${CV_SCREENING_ENABLED:-false}
       SCORING_PREFETCH: ${SCORING_PREFETCH:-10}
-    depends_on: [rabbitmq, seaweedfs]
+    depends_on: [rabbitmq, seaweedfs, redis]
 
 networks:
   isas-main-network:

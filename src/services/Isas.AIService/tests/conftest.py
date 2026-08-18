@@ -79,6 +79,9 @@ if "insightface" not in sys.modules:
 import os
 
 os.environ.setdefault("GEMINI_API_KEY", "test-dummy-key")
+# Các test endpoint sinh câu hỏi không được vô tình khởi chạy Gemini TTS thật ở nền. Test TTS
+# chuyên biệt bật cờ này cục bộ khi cần kiểm warmup.
+os.environ.setdefault("TTS_PREWARM_ENABLED", "false")
 
 import pytest
 

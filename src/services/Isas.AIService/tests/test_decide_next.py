@@ -5,7 +5,7 @@
 # (KHÔNG đụng S3/Whisper) — mirror test_scoring.py + test_face_verify.py. conftest
 # stub faster_whisper/insightface + set GEMINI_API_KEY dummy nên import app.main OK.
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -206,6 +206,8 @@ def test_endpoint_with_answer_text(monkeypatch):
     """answerText fallback (không S3) → dùng thẳng làm transcript, echo về response."""
     monkeypatch.setattr(main_module.provider, "decide_next", AsyncMock(return_value={
         "action": "new_question", "nextQuestion": "Câu hỏi mới?", "reason": "chuyển chủ đề"}))
+    warmup = Mock()
+    monkeypatch.setattr(main_module, "_schedule_tts_warmup", warmup)
 
     res = client.post("/api/v1/decide-next", headers=_HEADERS, json={
         "jobCategory": "BE",
@@ -220,6 +222,7 @@ def test_endpoint_with_answer_text(monkeypatch):
     assert body["action"] == "new_question"
     assert body["nextQuestion"] == "Câu hỏi mới?"
     assert body["transcript"] == "Câu trả lời của tôi."
+    warmup.assert_called_once_with(["Câu hỏi mới?"], "vi")
 
 
 def test_endpoint_with_audio_key_transcribes(monkeypatch):

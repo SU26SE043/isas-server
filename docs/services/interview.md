@@ -214,8 +214,8 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 - **Owner-scope (INT-11):** chỉ **chủ buổi**. Không phải buổi của mình → **403** (khớp tiền lệ `GET /sessions/{id}`). `questionId` có thật nhưng **không thuộc** `sessionId` → **404** (không đọc trộm đề buổi khác chỉ vì đoán đúng GUID).
 - **KHÔNG trừ credit** — credit = 1 lượt phỏng vấn **được AI chấm** (PAY-1); nghe lại đề bài không phải lượt chấm, và tính tiền theo số lần bấm nghe sẽ phạt đúng người cần trợ năng. Không reserve/consume gì.
 - **Cache theo NỘI DUNG (⇒ KHÔNG cần migration):** Interview chỉ kiểm quyền rồi chuyển tiếp bytes; toàn bộ vendor + cache nằm ở **AIService `/tts`** — key S3 `tts/{sha256(voice+text)}.mp3` (xem [ai.md](ai.md) §TTS). Câu hỏi **trùng nhau** (nhất là seed B2B phát cho MỌI ứng viên) dùng chung **1 file** ⇒ chỉ tổng hợp/tính tiền **một lần**; sửa nội dung câu hỏi ⇒ hash đổi ⇒ audio cũ **tự vô hiệu hoá**. **KHÔNG thêm cột/bảng nào.**
-- Lỗi: **401** · **403** (không phải buổi của bạn) · **404** (session không có · câu hỏi không thuộc session · nội dung câu hỏi rỗng) · **502** (AIService/TTS gián đoạn).
-- ⚠ **502 KHÔNG được chặn luồng phỏng vấn** — FE degrade về **chỉ hiện chữ**. Vendor chết thì cố tình ném `AiServiceException` → **502**, KHÔNG nuốt thành 404 (404 sẽ khiến FE tưởng câu hỏi không tồn tại thay vì hiểu là TTS tạm hỏng).
+- Lỗi: **401** · **403** (không phải buổi của bạn) · **404** (session không có · câu hỏi không thuộc session · nội dung câu hỏi rỗng) · **502** (AIService/TTS gián đoạn) · **504** (hết trần 60 giây phía InterviewService).
+- ⚠ **502/504 KHÔNG được chặn luồng phỏng vấn** — FE vẫn hiện chữ ngay và hạ cấp sang giọng đọc trình duyệt nếu có. Vendor chết thì cố tình ném `AiServiceException`, KHÔNG nuốt thành 404 (404 sẽ khiến FE tưởng câu hỏi không tồn tại thay vì hiểu là TTS tạm hỏng). AIService đồng thời warm cache khi sinh seed/câu adaptive và gộp cache miss cùng key; xem [ai.md](ai.md) §TTS.
 - **AI-4:** nội dung câu hỏi (do AI sinh) được chuyển **nguyên văn** như **dữ liệu** — không ghép chỉ thị/nội suy gì quanh nó.
 
 ### Files — `/api/v1/interview/files` (JWT) — chỉ `.pdf`, `fileType ∈ {cv,jd}`

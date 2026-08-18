@@ -96,6 +96,7 @@ pydantic_core==2.46.4
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-multipart==0.0.32
+redis==8.1.0
 requests==2.34.2
 s3transfer==0.19.2
 scikit-image==0.26.0
