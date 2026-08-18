@@ -25,8 +25,13 @@ public record CvAnalysisRequest(
     IReadOnlyList<CvRequirementInput>? NiceToHave = null
 );
 
-// N7 — FE chỉ gửi `text`; InterviewService tự mint RequirementId trước khi gọi AIService.
-public record CvRequirementInput(string? RequirementId, string Text);
+// N7 — FE chỉ gửi `{ text }`; InterviewService tự mint RequirementId trước khi gọi AIService.
+// Nullable KHÔNG đồng nghĩa optional đối với positional-record constructor: nếu tham số không có
+// default, ASP.NET/OpenAPI vẫn đánh dấu property là required. Đặt Text trước (required) và cho ID
+// default null để JSON có thể BỎ HẲN `requirementId`, đúng wire contract của FE.
+public record CvRequirementInput(
+    [Required] string Text,
+    string? RequirementId = null);
 
 // Kết quả AI đọc từ AIService `/analyze-cv` (B2C — bỏ criterionMatches/overallMatchScore của B2B).
 public record CvAnalysisAiResult(

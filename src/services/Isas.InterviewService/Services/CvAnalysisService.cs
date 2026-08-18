@@ -101,11 +101,11 @@ public class CvAnalysisService : ICvAnalysisService
         {
             mustHave = normalizedRequirements
                 .Where(x => x.Priority == "MustHave")
-                .Select(x => new CvRequirementInput(x.RequirementId, x.Text))
+                .Select(x => new CvRequirementInput(x.Text, x.RequirementId))
                 .ToList();
             niceToHave = normalizedRequirements
                 .Where(x => x.Priority == "NiceToHave")
-                .Select(x => new CvRequirementInput(x.RequirementId, x.Text))
+                .Select(x => new CvRequirementInput(x.Text, x.RequirementId))
                 .ToList();
 
             if (_grounding.Enabled && _knowledge is not null)
