@@ -211,7 +211,7 @@ async def test_provider_requirement_mode_orders_matches_and_verifies_evidence():
 
 
 @pytest.mark.asyncio
-async def test_provider_requirement_mode_rejects_missing_requirement():
+async def test_provider_requirement_mode_fills_missing_requirement_as_weak():
     provider = GeminiProvider()
     provider._client.aio.models.generate_content = AsyncMock(
         return_value=_fake_gemini_response({
@@ -220,11 +220,18 @@ async def test_provider_requirement_mode_rejects_missing_requirement():
         })
     )
 
-    with pytest.raises(ValueError, match="thiếu requirementMatches"):
-        await provider.analyze_cv(
-            "cv", "JD", "BE", requirements=[
-                {"requirementId": "r1", "priority": "MustHave", "text": "Docker"},
-            ])
+    result = await provider.analyze_cv(
+        "cv", "JD", "BE", requirements=[
+            {"requirementId": "r1", "priority": "MustHave", "text": "Docker"},
+        ])
+
+    assert result["requirementMatches"] == [{
+        "requirementId": "r1",
+        "priority": "MustHave",
+        "text": "Docker",
+        "level": "Weak",
+        "evidence": "Không thấy bằng chứng",
+    }]
 
 
 # ── Endpoint /api/v1/analyze-cv: request/response shape qua HTTP thật ───────

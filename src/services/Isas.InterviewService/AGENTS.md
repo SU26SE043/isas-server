@@ -167,6 +167,11 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 - Res **`201`** `CvAnalysisResponse`. Lỗi: **400** (CV không đọc được) · **401** · **403** (không phải file của bạn) · **404** (`cvId`/`jdId` không có) · **502** (AI lỗi).
 - **Đồng bộ HTTP**, không qua RabbitMQ. **Miễn phí (không trừ credit) phase 1** (D17). Mục (c) "CV vs câu trả lời" sau khi `Scored` = task `BC8`.
 - **`/analyze-cv` nay CHỈ phục vụ B2C.** Sàng CV B2B đã tách sang đường riêng (`suggest-job-needs` + `screen_cv`, vai HR technical screener — [ai.md](ai.md) §Sàng CV B2B): hai dòng khác hẳn bản chất (B2C = nhận xét giúp ứng viên sửa CV; B2B = sàng lọc tuyển dụng), và gộp lại buộc hai khái niệm dùng chung tên field `strengths`. Đường B2C **không đổi một chữ**.
+- **AI-CV1 — cap grounding toàn lượt:** retrieval vẫn lấy TopK theo từng requirement, nhưng trước khi
+  gọi AI sẽ dedupe `chunkId` và chọn round-robin giữa các requirement, tối đa
+  `JdRequirements:MaxGroundingChunks` (mặc định 8; `<=0` tắt grounding riêng CV analysis). Vì vậy
+  7 requirement không còn phình thành tối đa `7 × TopK` chunk, đồng thời requirement đầu không chiếm
+  hết ngân sách nguồn.
 
 **`GET /cv-analysis/{id}`** → `CvAnalysisResponse` (403/404) · **`GET /cv-analysis`** → `CvAnalysisListResponse[]` của user; list giữ field legacy nhưng requirement data là summary-only, detail mới có evidence/anchors/citations.
 

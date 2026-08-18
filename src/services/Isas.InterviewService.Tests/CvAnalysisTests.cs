@@ -3,6 +3,7 @@ using Isas.InterviewService.Controllers;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Http;
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace Isas.InterviewService.Tests;
@@ -59,16 +61,20 @@ public class CvAnalysisTests
 
     private static CvAnalysisController Controller(
         TestDb t, IStorageService storage, IAiServiceCvAnalyzer ai, Guid userId,
-        ICreditReservationClient? credits = null, int cvAnalysisCredits = 1)
+        ICreditReservationClient? credits = null, int cvAnalysisCredits = 1,
+        IKnowledgeService? knowledge = null, bool groundingEnabled = false,
+        int maxGroundingChunks = 8)
     {
         // BC7b — config Billing:CvAnalysisCredits (mặc định 1 = tính phí); credits mock mặc định = reserve OK.
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Billing:CvAnalysisCredits"] = cvAnalysisCredits.ToString()
+            ["Billing:CvAnalysisCredits"] = cvAnalysisCredits.ToString(),
+            ["JdRequirements:MaxGroundingChunks"] = maxGroundingChunks.ToString()
         }).Build();
         var service = new CvAnalysisService(
             t.Db, storage, ai, credits ?? CreditsMock().Object, config,
-            NullLogger<CvAnalysisService>.Instance);
+            NullLogger<CvAnalysisService>.Instance, knowledge: knowledge,
+            groundingOptions: Options.Create(new GroundingOptions { Enabled = groundingEnabled }));
         var controller = new CvAnalysisController(service, NullLogger<CvAnalysisController>.Instance);
         var principal = new ClaimsPrincipal(new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, userId.ToString())], "test"));
@@ -214,6 +220,60 @@ public class CvAnalysisTests
         Assert.Equal("Skills: .NET", row.RequirementMatches[0].Evidence);
         Assert.Single(row.CvSections!);
         Assert.Single(row.Citations!);
+    }
+
+    [Fact]
+    public async Task Post_RequirementGrounding_IsRoundRobinDeduplicatedAndGloballyCapped()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Skills: Python Docker PostgreSQL"));
+
+        static GroundingChunk Chunk(string id) => new(id, $"content-{id}", $"url-{id}", $"title-{id}");
+        var knowledge = new Mock<IKnowledgeService>();
+        knowledge.Setup(x => x.RetrieveBatchAsync(
+                "BE", It.IsAny<IReadOnlyList<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([
+                [Chunk("a1"), Chunk("a2"), Chunk("a3")],
+                [Chunk("b1"), Chunk("b2")],
+                [Chunk("c1"), Chunk("a1")]
+            ]);
+
+        IReadOnlyList<GroundingChunk>? sentGrounding = null;
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? nice,
+                IReadOnlyList<GroundingChunk>? grounding) =>
+            {
+                sentGrounding = grounding;
+                return new CvAnalysisAiResult(
+                    "s", ["Python"], [], ["Giữ kết quả đo được"], null,
+                    (must ?? []).Select(x => new CvRequirementMatch(
+                        x.RequirementId!, "MustHave", x.Text, "Strong", "Python"))
+                    .Concat((nice ?? []).Select(x => new CvRequirementMatch(
+                        x.RequirementId!, "NiceToHave", x.Text, "Weak", "Không thấy bằng chứng")))
+                    .ToList(), [], []);
+            });
+
+        var ctrl = Controller(
+            t, storage.Object, ai.Object, user, cvAnalysisCredits: 0,
+            knowledge: knowledge.Object, groundingEnabled: true, maxGroundingChunks: 4);
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-a", "Python"), new CvRequirementInput("client-b", "Docker")],
+            [new CvRequirementInput("client-c", "PostgreSQL")]), default);
+
+        Assert.IsType<CreatedResult>(result);
+        Assert.Equal(["a1", "b1", "c1", "a2"], sentGrounding!.Select(x => x.ChunkId));
     }
 
     [Fact]

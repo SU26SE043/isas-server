@@ -93,6 +93,10 @@ x-aiservice-env: &aiservice-env
   # được cấp cho lượt SINH (chỉ dùng để KIỂM), citations đến TỪ lượt kiểm, và cộng thêm một lượt
   # Gemini mỗi lần sinh câu hỏi. Chỉ có nghĩa khi `GROUNDING_ENABLED=true` VÀ corpus đã nạp.
   QUESTION_VERIFY_ENABLED: ${QUESTION_VERIFY_ENABLED:-false}
+  # AI-CV1 — structured extraction không cần hàng nghìn thinking token. `-1` quay về mặc định
+  # Gemini; max grounding là lớp phòng thủ cuối nếu caller gửi quá nhiều chunk.
+  ANALYZE_CV_THINKING_BUDGET: ${ANALYZE_CV_THINKING_BUDGET:-0}
+  ANALYZE_CV_MAX_GROUNDING_CHUNKS: ${ANALYZE_CV_MAX_GROUNDING_CHUNKS:-8}
 
 x-aiservice: &aiservice
   image: ghcr.io/su26se043/isas.aiservice:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file
@@ -239,6 +243,9 @@ services:
       - GitHub__Token=${GITHUB_TOKEN}
       # Grounding:Enabled mặc định TẮT (chuỗi rỗng không parse int/bool an toàn → dùng default). Bật khi có corpus.
       - Grounding__Enabled=${GROUNDING_ENABLED:-false}
+      # AI-CV1 — cap TỔNG toàn request; chọn round-robin giữa requirement, không phải 8 chunk
+      # đầu của requirement đầu. 0 tắt grounding riêng cho CV analysis.
+      - JdRequirements__MaxGroundingChunks=${CV_ANALYSIS_MAX_GROUNDING_CHUNKS:-8}
       # Phỏng vấn THÍCH ỨNG (INT-17 / INT-17b). Trước đây 3 khoá này chỉ tồn tại trong compose SỬA TAY trên
       # server, không có trong repo — nên hình dạng buổi phỏng vấn chạy thật chỉ đọc được bằng `docker inspect`,
       # và một khoá mới (`MaxDeepPerQuestion`) thêm vào appsettings là âm thầm đổi hành vi production.

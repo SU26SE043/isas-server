@@ -851,6 +851,14 @@ class GeminiProvider(QuestionProvider):
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
+
+        # AI-CV1 — cap tại chokepoint trước KHI dựng prompt lẫn schema/allowlist citation. Caller
+        # Interview chọn round-robin để công bằng giữa requirement; lớp này vẫn bắt caller cũ hoặc
+        # gọi thẳng endpoint. `-1` giữ hành vi cũ để rollback bằng env, `0` tắt grounding riêng
+        # đường CV mà không ảnh hưởng grounding của câu hỏi/roadmap.
+        max_grounding = settings.analyze_cv_max_grounding_chunks
+        if grounding and max_grounding >= 0:
+            grounding = grounding[:max_grounding]
         prompt = build_cv_analysis_prompt(
             cv_text, jd_text, job_category, language=language,
             requirements=requirements, grounding=grounding)
@@ -917,18 +925,25 @@ class GeminiProvider(QuestionProvider):
                 }
             required.extend(["requirementMatches", "cvSections"])
 
+        config: dict = {
+            "temperature": 0.0,
+            "response_mime_type": "application/json",
+            "response_schema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        }
+        # Requirement matching là trích xuất có schema + hậu kiểm evidence, không phải suy luận mở.
+        # Gemini 2.5 Flash mặc định tự dùng hàng nghìn thinking token; `-1` là kill-switch về cũ.
+        if settings.analyze_cv_thinking_budget >= 0:
+            config["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.analyze_cv_thinking_budget)
+
         response = await self._generate(
             "analyze_cv",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.0,  # phân tích/chấm khớp cần nhất quán, không sáng tạo
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
-            ),
+            config=types.GenerateContentConfig(**config),
         )
 
         text = (response.text or "").strip()
@@ -1004,7 +1019,22 @@ class GeminiProvider(QuestionProvider):
             missing = [str(r.get("requirementId")) for r in requirements
                        if str(r.get("requirementId")) not in by_id]
             if missing:
-                raise ValueError(f"LLM thiếu requirementMatches: {missing}")
+                # Structured output vẫn có thể bỏ một phần tử. Fail cả request ở đây nghĩa là user
+                # chờ + trả tiền trọn lượt Gemini rồi nhận 502. Mặc định an toàn là "chưa chứng minh
+                # được", KHÔNG phải suy diễn Strong/Partial. Log để quan sát drift của model.
+                logger.warning("analyze_cv: LLM thiếu requirementMatches %s; điền Weak", missing)
+                for requirement in requirements:
+                    rid = str(requirement.get("requirementId"))
+                    if rid in by_id:
+                        continue
+                    priority = requirement.get("priority")
+                    by_id[rid] = {
+                        "requirementId": rid,
+                        "priority": priority if priority in ("MustHave", "NiceToHave") else "MustHave",
+                        "text": str(requirement.get("text") or "").strip(),
+                        "level": "Weak",
+                        "evidence": NO_EVIDENCE,
+                    }
             # Server nhận kết quả theo đúng thứ tự input, không tin thứ tự model trả.
             result["requirementMatches"] = [
                 by_id[str(r.get("requirementId"))] for r in requirements
@@ -1023,7 +1053,7 @@ class GeminiProvider(QuestionProvider):
                     if str(g.get("chunkId") or "").strip()
                 }
                 result["citations"] = [
-                    allowed_chunks[cid] for c in (
+                    allowed_chunks[cid] for cid in (
                         str(item.get("chunkId") or "").strip()
                         for item in data.get("citations", [])
                         if isinstance(item, dict)
