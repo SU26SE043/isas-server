@@ -263,6 +263,43 @@ public class CvAnalysisTests
     }
 
     [Fact]
+    public async Task Post_RequirementEvidence_UsesNormalizedOffsetForPage_AndPdfSeparators()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var cvText = "Skills: identiﬁcation ﬂow\nASP.NET-Core\nProjects: micro-\nservices";
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", cvText));
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? _,
+                IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
+                "s", [], [], [], null,
+                (must ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "MustHave", x.Text, "Strong", "ASP.NET Core")).ToList(),
+                [new CvSectionAnchor("Skills", "skills", "Skills")], []));
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-1", "ASP.NET Core")], []), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        var match = Assert.Single(body.MustHaveMatches!);
+        Assert.Equal("Strong", match.Level);
+        Assert.Equal("ASP.NET Core", match.Evidence);
+        Assert.Equal(2, match.Page);
+    }
+
+    [Fact]
     public async Task Post_RequirementMode_DeduplicatesTextAndMintsServerIds()
     {
         using var t = new TestDb();

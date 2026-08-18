@@ -275,20 +275,21 @@ public class CvAnalysisService : ICvAnalysisService
 
             var level = raw.Level is "Strong" or "Partial" or "Weak" ? raw.Level : "Weak";
             var evidence = raw.Evidence?.Trim() ?? string.Empty;
-            var evidenceOffset = FindVerbatimOffset(cvText, evidence);
+            var evidenceMatch = FindVerbatim(cvText, evidence);
             int? page = null;
             string? sectionTitle = null;
             if (string.IsNullOrWhiteSpace(evidence)
                 || evidence == NoEvidence
-                || evidenceOffset is null)
+                || evidenceMatch is null)
             {
                 level = "Weak";
                 evidence = NoEvidence;
             }
             else
             {
-                page = 1 + NormalizeVerbatim(cvText[..evidenceOffset.Value]).Count(c => c == '\n');
-                sectionTitle = FindSectionTitle(cvText, sections, evidenceOffset.Value);
+                // Offset thuộc normalizedCv, nên page cũng phải đếm trên chính chuỗi đó.
+                page = 1 + evidenceMatch.Value.Text[..evidenceMatch.Value.Offset].Count(c => c == '\n');
+                sectionTitle = FindSectionTitle(cvText, sections, evidenceMatch.Value.Offset);
             }
 
             normalized[raw.RequirementId] = new CvRequirementMatch(
@@ -314,17 +315,34 @@ public class CvAnalysisService : ICvAnalysisService
 
     private const string NoEvidence = "Không thấy bằng chứng";
 
-    private static int? FindVerbatimOffset(string cvText, string evidence)
+    private static (string Text, int Offset)? FindVerbatim(string cvText, string evidence)
     {
         var normalizedCv = NormalizeVerbatim(cvText);
         var normalizedEvidence = NormalizeVerbatim(evidence).Trim();
         if (normalizedEvidence.Length == 0) return null;
 
         var pattern = Regex.Escape(normalizedEvidence)
-            .Replace(@"\ ", @"\s+")
-            .Replace(@"\-", @"(?:-|\s)?");
+            .Replace(@"\ ", "__SPACE__")
+            .Replace("-", "__HYPHEN__")
+            .Replace("__SPACE__", @"(?:\s|-)")
+            .Replace("__HYPHEN__", @"(?:-|\s)?");
         var match = Regex.Match(normalizedCv, pattern, RegexOptions.IgnoreCase);
-        return match.Success ? match.Index : null;
+        if (match.Success) return (normalizedCv, match.Index);
+
+        // PDF có thể tách một từ thành `micro-\nservices`. Fallback này đồng bộ với Python:
+        // bỏ separator để so khớp, nhưng map offset ngược về normalizedCv.
+        var compact = new StringBuilder();
+        var offsets = new List<int>();
+        for (var i = 0; i < normalizedCv.Length; i++)
+        {
+            if (char.IsWhiteSpace(normalizedCv[i]) || normalizedCv[i] == '-') continue;
+            compact.Append(normalizedCv[i]);
+            offsets.Add(i);
+        }
+
+        var compactEvidence = Regex.Replace(normalizedEvidence, @"[\s-]+", string.Empty);
+        var compactIndex = compact.ToString().IndexOf(compactEvidence, StringComparison.OrdinalIgnoreCase);
+        return compactIndex >= 0 ? (normalizedCv, offsets[compactIndex]) : null;
     }
 
     private static string? FindSectionTitle(
@@ -335,7 +353,7 @@ public class CvAnalysisService : ICvAnalysisService
         if (sections is null || sections.Count == 0) return null;
 
         return sections
-            .Select(x => (x.Title, Offset: FindVerbatimOffset(cvText, x.StartsWith)))
+            .Select(x => (x.Title, Offset: FindVerbatim(cvText, x.StartsWith)?.Offset))
             .Where(x => x.Offset is not null && x.Offset.Value <= evidenceOffset)
             .OrderByDescending(x => x.Offset)
             .Select(x => x.Title)
