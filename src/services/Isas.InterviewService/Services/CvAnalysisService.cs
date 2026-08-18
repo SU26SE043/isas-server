@@ -1,6 +1,7 @@
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
+using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
 using Isas.Shared.Pagination;
 using Isas.Shared.Validation;
@@ -8,6 +9,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Services;
 
@@ -25,6 +27,7 @@ public class CvAnalysisService : ICvAnalysisService
     private readonly ILogger<CvAnalysisService> _logger;
     private readonly IEntitlementClient? _entitlements;
     private readonly bool _tieringEnabled;
+    private readonly GroundingOptions _grounding;
 
     // BC7b — 0 = miễn phí (kill-switch, bỏ qua reserve/consume/release); >0 = tính phí 1 credit/lần.
     private bool Billed => _cvAnalysisCredits > 0;
@@ -37,7 +40,8 @@ public class CvAnalysisService : ICvAnalysisService
         IConfiguration config,
         ILogger<CvAnalysisService> logger,
         IEntitlementClient? entitlements = null,
-        IKnowledgeService? knowledge = null)
+        IKnowledgeService? knowledge = null,
+        IOptions<GroundingOptions>? groundingOptions = null)
     {
         _db = db;
         _storage = storage;
@@ -50,6 +54,7 @@ public class CvAnalysisService : ICvAnalysisService
         _logger = logger;
         _entitlements = entitlements;
         _tieringEnabled = bool.TryParse(config["Tiering:Enabled"], out var enabled) && enabled;
+        _grounding = groundingOptions?.Value ?? new GroundingOptions();
     }
 
     public async Task<CvAnalysisResponse> AnalyzeAsync(
@@ -103,7 +108,7 @@ public class CvAnalysisService : ICvAnalysisService
                 .Select(x => new CvRequirementInput(x.RequirementId, x.Text))
                 .ToList();
 
-            if (_knowledge is not null)
+            if (_grounding.Enabled && _knowledge is not null)
             {
                 var batches = await _knowledge.RetrieveBatchAsync(
                     jobCategory.ToString(), normalizedRequirements.Select(x => x.Text).ToList(), ct);

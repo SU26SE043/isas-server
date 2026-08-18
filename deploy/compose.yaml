@@ -380,6 +380,7 @@ services:
       # Chỉ override địa chỉ runtime; routing /api/v1 lấy từ appsettings.json trong image.
       - ReverseProxy__Clusters__auth-cluster__Destinations__auth-node-01__Address=http://isas.authservice:8080
       - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
+      - ReverseProxy__Clusters__interview-cluster__HttpRequest__ActivityTimeout=00:03:30
       - ReverseProxy__Clusters__campaign-cluster__Destinations__campaign-node-01__Address=http://isas.campaignservice:8080
       - ReverseProxy__Clusters__payment-cluster__Destinations__payment-node-01__Address=http://isas.paymentservice:8080
       # `ai-cluster` PHẢI trỏ `aiapi:8000` (từ 2026-08-06 AIService là container anh em, trước đó

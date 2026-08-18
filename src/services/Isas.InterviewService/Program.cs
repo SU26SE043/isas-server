@@ -111,7 +111,9 @@ builder.Services.AddHttpClient<IAiServiceLevelSuggester, AiServiceLevelSuggester
 builder.Services.AddHttpClient<IAiServiceCvAnalyzer, AiServiceCvAnalyzer>(c =>   // BC7
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
-    c.Timeout = TimeSpan.FromSeconds(60);  // LLM có thể chậm
+    // Đo prod: analyze-cv/suggest-jd-requirements có thể mất 70–100s do grounding + structured output.
+    // 60s cắt request sau khi Gemini đã xử lý và đã tính phí.
+    c.Timeout = TimeSpan.FromSeconds(180);
 });
 builder.Services.AddHttpClient<IAiServiceRepoAnalyzer, AiServiceRepoAnalyzer>(c =>
 {
