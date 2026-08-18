@@ -299,6 +299,47 @@ public class CvAnalysisTests
         Assert.Equal(2, match.Page);
     }
 
+    [Theory]
+    [InlineData("—")]
+    [InlineData("---")]
+    [InlineData("- -")]
+    [InlineData("  -  ")]
+    public async Task Post_RequirementEvidence_RejectsSeparatorOnlyEvidence(string evidence)
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Skills: PostgreSQL"));
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? _,
+                IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
+                "s", [], [], [], null,
+                (must ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "MustHave", x.Text, "Strong", evidence)).ToList(),
+                [], []));
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-1", "PostgreSQL")], []), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        var match = Assert.Single(body.MustHaveMatches!);
+        Assert.Equal("Weak", match.Level);
+        Assert.Equal("Không thấy bằng chứng", match.Evidence);
+        Assert.Null(match.Page);
+        Assert.Null(match.SectionTitle);
+    }
+
     [Fact]
     public async Task Post_RequirementMode_DeduplicatesTextAndMintsServerIds()
     {

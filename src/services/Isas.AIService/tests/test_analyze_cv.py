@@ -75,6 +75,15 @@ def test_find_verbatim_uses_first_occurrence_and_pdf_normalization():
     assert find_verbatim("Skills: Docker", "Kubernetes") is None
 
 
+@pytest.mark.parametrize("evidence", ["—", "---", "- -", "  -  "])
+def test_find_verbatim_rejects_separator_only_evidence(evidence):
+    assert find_verbatim("Skills: PostgreSQL", evidence) is None
+
+
+def test_find_verbatim_keeps_real_evidence_after_separator_guard():
+    assert find_verbatim("Skills: PostgreSQL", "PostgreSQL") == 8
+
+
 # ── Provider.analyze_cv: shape + chống ảo giác (kẹp điểm) ───────────────────
 @pytest.mark.asyncio
 async def test_provider_analyze_cv_without_jdtext_omits_jdmatch():

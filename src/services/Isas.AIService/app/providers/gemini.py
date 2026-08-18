@@ -83,6 +83,9 @@ def find_verbatim(cv_text: str, evidence: str) -> int | None:
     text = _normalize_verbatim(cv_text)
     if not evidence:
         return None
+    compact_evidence = re.sub(r"[\s-]+", "", evidence)
+    if not compact_evidence:
+        return None
 
     pattern = re.escape(evidence)
     pattern = pattern.replace(r"\ ", r"\s+")
@@ -102,7 +105,6 @@ def find_verbatim(cv_text: str, evidence: str) -> int | None:
         compact_chars.append(char)
         compact_offsets.append(index)
     compact_text = "".join(compact_chars)
-    compact_evidence = re.sub(r"[\s-]+", "", evidence)
     compact_match = compact_text.find(compact_evidence)
     return compact_offsets[compact_match] if compact_match >= 0 else None
 

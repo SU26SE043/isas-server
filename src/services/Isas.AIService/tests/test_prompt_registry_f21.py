@@ -2,6 +2,7 @@
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -135,20 +136,22 @@ def test_jd_requirement_guidance_duoc_chen_sau_schema():
 
 
 def test_khoa_python_va_dotnet_khong_duoc_lech_hai_chieu():
-    keys_cs = (pathlib.Path(__file__).resolve().parents[2]
-               / "Isas.InterviewService" / "Data" / "PromptTemplateKeys.cs")
+    root = pathlib.Path(__file__).resolve().parents[3]
+    keys_cs = root / "src" / "services" / "Isas.InterviewService" / "Data" / "PromptTemplateKeys.cs"
     if not keys_cs.exists():
         pytest.skip("không thấy cây .NET")
 
-    py_text = (pathlib.Path(__file__).resolve().parents[1] / "app" / "prompts.py").read_text()
+    py_text = (root / "src" / "services" / "Isas.AIService" / "app" / "prompts.py").read_text()
     cs_text = keys_cs.read_text()
-    keys = [
-        "scoring.persona", "scoring.extra_guidance", "questions.intro", "questions.guidance",
-        "criterion_levels.guidance", "cv_analysis.guidance", "cv_requirements.workflow",
-        "cv_requirements.level_rubric", "jd_requirements.guidance",
-    ]
-    for key in keys:
-        assert f'"{key}"' in cs_text, f"khoá '{key}' thiếu phía .NET"
+    # Enumerate từ C# để thêm key mới mà quên đấu dây Python thì test đỏ ngay.
+    # Ngoại lệ chỉ ghi nhận 5 key chết cũ; danh sách này chỉ được CO LẠI, không được nở ra.
+    dead_keys = {
+        "criteria.guidance", "roadmap.guidance", "lesson_theory.guidance",
+        "summarize_session.guidance", "decide_next.guidance",
+    }
+    cs_keys = set(re.findall(r'"([a-z_]+\.[a-z_]+)"', cs_text))
+    assert dead_keys <= cs_keys
+    for key in sorted(cs_keys - dead_keys):
         assert f'"{key}"' in py_text, f"khoá '{key}' thiếu phía Python"
 
 

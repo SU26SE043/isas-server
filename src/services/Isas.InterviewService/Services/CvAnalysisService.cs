@@ -320,11 +320,13 @@ public class CvAnalysisService : ICvAnalysisService
         var normalizedCv = NormalizeVerbatim(cvText);
         var normalizedEvidence = NormalizeVerbatim(evidence).Trim();
         if (normalizedEvidence.Length == 0) return null;
+        var compactEvidence = Regex.Replace(normalizedEvidence, @"[\s-]+", string.Empty);
+        if (compactEvidence.Length == 0) return null;
 
         var pattern = Regex.Escape(normalizedEvidence)
             .Replace(@"\ ", "__SPACE__")
             .Replace("-", "__HYPHEN__")
-            .Replace("__SPACE__", @"(?:\s|-)")
+            .Replace("__SPACE__", @"\s+")
             .Replace("__HYPHEN__", @"(?:-|\s)?");
         var match = Regex.Match(normalizedCv, pattern, RegexOptions.IgnoreCase);
         if (match.Success) return (normalizedCv, match.Index);
@@ -340,7 +342,6 @@ public class CvAnalysisService : ICvAnalysisService
             offsets.Add(i);
         }
 
-        var compactEvidence = Regex.Replace(normalizedEvidence, @"[\s-]+", string.Empty);
         var compactIndex = compact.ToString().IndexOf(compactEvidence, StringComparison.OrdinalIgnoreCase);
         return compactIndex >= 0 ? (normalizedCv, offsets[compactIndex]) : null;
     }
