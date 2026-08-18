@@ -260,6 +260,7 @@ class AnalyzeCvRequest(BaseModel):
     # Các id này do service nghiệp vụ cấp, AIService chỉ được phép echo id đã nhận.
     mustHave: list[dict] | None = None
     niceToHave: list[dict] | None = None
+    grounding: list[GroundingChunk] = []
 
 
 class JdMatch(BaseModel):

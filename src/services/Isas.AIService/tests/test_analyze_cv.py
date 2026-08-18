@@ -277,11 +277,15 @@ def test_endpoint_with_jdtext_response_shape(monkeypatch):
 
 
 def test_endpoint_requirement_mode_omits_jdmatch(monkeypatch):
-    async def fake_analyze_cv(cv_text, jd_text, job_category, requirements=None):
+    async def fake_analyze_cv(cv_text, jd_text, job_category, requirements=None, grounding=None):
         assert requirements == [
             {"requirementId": "r1", "text": "Docker", "priority": "MustHave"},
             {"requirementId": "r2", "text": "Kubernetes", "priority": "NiceToHave"},
         ]
+        assert grounding == [{
+            "chunkId": "c1", "content": "Docker guidance",
+            "sourceUrl": None, "sourceTitle": "Docs",
+        }]
         return {
             "summary": "Tóm tắt CV.", "strengths": [], "weaknesses": [], "suggestions": [],
             "requirementMatches": [{
@@ -299,7 +303,9 @@ def test_endpoint_requirement_mode_omits_jdmatch(monkeypatch):
         "/api/v1/analyze-cv", headers=_HEADERS,
         json={"cvText": "Skills: Docker", "jdText": "JD", "jobCategory": "BE",
               "mustHave": [{"requirementId": "r1", "text": "Docker"}],
-              "niceToHave": [{"requirementId": "r2", "text": "Kubernetes"}]},
+              "niceToHave": [{"requirementId": "r2", "text": "Kubernetes"}],
+              "grounding": [{"chunkId": "c1", "content": "Docker guidance",
+                              "sourceTitle": "Docs"}]},
     )
     assert res.status_code == 200
     body = res.json()
