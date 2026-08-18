@@ -109,6 +109,9 @@ public class CvAnalysisService : ICvAnalysisService
                 // jdMatch chỉ có ý nghĩa khi request có JD — gate theo "CÓ NỘI DUNG JD" (text HOẶC file),
                 // KHÔNG theo req.JdId: từ khi nhận jdText, gate cũ sẽ vứt jdMatch của mọi JD nhập tay.
                 JdMatch = jdText is not null ? ai.JdMatch : null,
+                RequirementMatches = ai.RequirementMatches?.ToList(),
+                CvSections = ai.CvSections?.ToList(),
+                Citations = ai.Citations?.ToList(),
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -256,17 +259,49 @@ public class CvAnalysisService : ICvAnalysisService
         return file.ParsedText;
     }
 
-    private static CvAnalysisResponse Map(CvAnalysis e) => new(
-        e.Id,
-        e.CvId,
-        e.JdId,
-        e.JobCategory.ToString(),
-        e.Summary,
-        e.Strengths,
-        e.Weaknesses,
-        e.Suggestions,
-        e.JdMatch is null
-            ? null
-            : new JdMatchResponse(e.JdMatch.Score, e.JdMatch.MatchedSkills, e.JdMatch.MissingSkills),
-        e.CreatedAt);
+    private static CvAnalysisResponse Map(CvAnalysis e)
+    {
+        var matches = e.RequirementMatches;
+        var mustHave = matches?.Where(x => x.Priority == "MustHave").ToList();
+        var niceToHave = matches?.Where(x => x.Priority == "NiceToHave").ToList();
+
+        return new CvAnalysisResponse(
+            e.Id,
+            e.CvId,
+            e.JdId,
+            e.JobCategory.ToString(),
+            e.Summary,
+            e.Strengths,
+            e.Weaknesses,
+            e.Suggestions,
+            e.JdMatch is null
+                ? null
+                : new JdMatchResponse(e.JdMatch.Score, e.JdMatch.MatchedSkills, e.JdMatch.MissingSkills),
+            e.CreatedAt,
+            mustHave,
+            niceToHave,
+            BuildRequirementSummary(matches),
+            e.CvSections,
+            e.Citations);
+    }
+
+    private static RequirementSummary? BuildRequirementSummary(
+        IReadOnlyList<CvRequirementMatch>? matches)
+    {
+        if (matches is null) return null;
+
+        static RequirementSummaryBucket Bucket(IEnumerable<CvRequirementMatch> items)
+        {
+            var list = items.ToList();
+            return new RequirementSummaryBucket(
+                list.Count,
+                list.Count(x => x.Level == "Strong"),
+                list.Count(x => x.Level == "Partial"),
+                list.Count(x => x.Level == "Weak"));
+        }
+
+        return new RequirementSummary(
+            Bucket(matches.Where(x => x.Priority == "MustHave")),
+            Bucket(matches.Where(x => x.Priority == "NiceToHave")));
+    }
 }

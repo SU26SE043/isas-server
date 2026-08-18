@@ -31,24 +31,34 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
         _logger = logger;
     }
 
-    // Shape res AIService (superset) — B2C chỉ lấy summary/strengths/weaknesses/suggestions/jdMatch.
+    // Shape res AIService — nullable field để giữ nguyên LEGACY khi AI không trả requirement data.
     private record AnalyzeCvApiResponse(
         string? Summary,
         List<string>? Strengths,
         List<string>? Weaknesses,
         List<string>? Suggestions,
-        JdMatchApi? JdMatch);
+        JdMatchApi? JdMatch,
+        List<CvRequirementMatch>? RequirementMatches,
+        List<CvSectionAnchor>? CvSections,
+        List<CvAnalysisCitation>? Citations);
 
     private record JdMatchApi(int Score, List<string>? MatchedSkills, List<string>? MissingSkills);
 
     public async Task<CvAnalysisAiResult> AnalyzeAsync(
-        string jobCategory, string cvText, string? jdText, CancellationToken ct = default)
+        string jobCategory,
+        string cvText,
+        string? jdText,
+        CancellationToken ct = default,
+        IReadOnlyList<CvRequirementInput>? mustHave = null,
+        IReadOnlyList<CvRequirementInput>? niceToHave = null)
     {
         var payload = new
         {
             cvText,
             jobCategory,
-            jdText   // null → AI bỏ jdMatch
+            jdText,
+            mustHave,
+            niceToHave
         };
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/analyze-cv")
@@ -101,6 +111,9 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
             Strengths: body.Strengths ?? [],
             Weaknesses: body.Weaknesses ?? [],
             Suggestions: body.Suggestions ?? [],
-            JdMatch: jdMatch);
+            JdMatch: jdMatch,
+            RequirementMatches: body.RequirementMatches,
+            CvSections: body.CvSections,
+            Citations: body.Citations);
     }
 }

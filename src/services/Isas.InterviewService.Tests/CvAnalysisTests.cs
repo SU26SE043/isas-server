@@ -42,6 +42,21 @@ public class CvAnalysisTests
             Suggestions: ["Học thêm React"],
             JdMatch: withJdMatch ? new CvJdMatch(78, ["C#", "SQL"], ["Kubernetes"]) : null);
 
+    private static CvAnalysisAiResult SampleAiWithRequirements()
+        => new(
+            Summary: "Ứng viên backend 3 năm C#/SQL.",
+            Strengths: ["C#"],
+            Weaknesses: [],
+            Suggestions: ["Bổ sung Kubernetes"],
+            JdMatch: null,
+            RequirementMatches:
+            [
+                new CvRequirementMatch("r1", "MustHave", ".NET", "Strong", "Skills: .NET"),
+                new CvRequirementMatch("r2", "NiceToHave", "Kubernetes", "Weak", "Không thấy bằng chứng")
+            ],
+            CvSections: [new CvSectionAnchor("Skills", "skills", "Skills")],
+            Citations: [new CvAnalysisCitation("chunk-1", "ASP.NET documentation", null, "Microsoft")]);
+
     private static CvAnalysisController Controller(
         TestDb t, IStorageService storage, IAiServiceCvAnalyzer ai, Guid userId,
         ICreditReservationClient? credits = null, int cvAnalysisCredits = 1)
@@ -145,6 +160,36 @@ public class CvAnalysisTests
         var row = await t.Db.CvAnalyses.AsNoTracking().SingleAsync();
         Assert.NotNull(row.JdMatch);
         Assert.Equal(78, row.JdMatch!.Score);            // jsonb value-object round-trip
+    }
+
+    [Fact]
+    public async Task Post_WithRequirementData_PersistsAndMapsRequirementHistory()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Skills: .NET"));
+
+        var ctrl = Controller(t, storage.Object, AiMock(SampleAiWithRequirements()).Object, user);
+        var result = await ctrl.Analyze(new CvAnalysisRequest(cvId, null, JobCategory.BE), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        Assert.Single(body.MustHaveMatches!);
+        Assert.Equal("r1", body.MustHaveMatches![0].RequirementId);
+        Assert.Single(body.NiceToHaveMatches!);
+        Assert.Equal(1, body.RequirementSummary!.MustHave.Strong);
+        Assert.Equal(1, body.RequirementSummary.NiceToHave.Weak);
+        Assert.Equal("Skills", body.CvSections![0].Title);
+        Assert.Equal("chunk-1", body.Citations![0].ChunkId);
+
+        var row = await t.Db.CvAnalyses.AsNoTracking().SingleAsync();
+        Assert.Equal(2, row.RequirementMatches!.Count); // jsonb value-object round-trip
+        Assert.Equal("Skills: .NET", row.RequirementMatches[0].Evidence);
+        Assert.Single(row.CvSections!);
+        Assert.Single(row.Citations!);
     }
 
     // ── (b) GET của chủ → đọc đúng ────────────────────────────────────────────────

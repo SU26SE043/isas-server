@@ -52,6 +52,24 @@ public class CvAnalysisConfiguration : IEntityTypeConfiguration<CvAnalysis>
                 v => v == null ? null : JsonSerializer.Deserialize<CvJdMatch>(v, Json))
             .HasColumnType("jsonb");
 
+        e.Property(x => x.RequirementMatches)
+            .HasConversion(
+                v => v == null ? null : JsonSerializer.Serialize(v, Json),
+                v => v == null ? null : JsonSerializer.Deserialize<List<CvRequirementMatch>>(v, Json))
+            .HasColumnType("jsonb");
+
+        e.Property(x => x.CvSections)
+            .HasConversion(
+                v => v == null ? null : JsonSerializer.Serialize(v, Json),
+                v => v == null ? null : JsonSerializer.Deserialize<List<CvSectionAnchor>>(v, Json))
+            .HasColumnType("jsonb");
+
+        e.Property(x => x.Citations)
+            .HasConversion(
+                v => v == null ? null : JsonSerializer.Serialize(v, Json),
+                v => v == null ? null : JsonSerializer.Deserialize<List<CvAnalysisCitation>>(v, Json))
+            .HasColumnType("jsonb");
+
         e.Property(x => x.CreatedAt).IsRequired();
 
         // Lịch sử phân tích CV của 1 user (GET /cv-analysis).
