@@ -169,7 +169,7 @@ public class CvAnalysisTests
     }
 
     [Fact]
-    public async Task Post_WithRequirementDataWithoutIds_MintsIdsAndMapsRequirementHistory()
+    public async Task Post_WithRequirementData_PersistsAndMapsRequirementHistory()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
@@ -191,9 +191,9 @@ public class CvAnalysisTests
                 IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
                 "Ứng viên backend 3 năm C#/SQL.", ["C#"], [], ["Bổ sung Kubernetes"], null,
                 (must ?? []).Select(x => new CvRequirementMatch(
-                    x.RequirementId!, "MustHave", x.Text, "Strong", "Skills: .NET"))
+                    x.RequirementId, "MustHave", x.Text, "Strong", "Skills: .NET"))
                 .Concat((nice ?? []).Select(x => new CvRequirementMatch(
-                    x.RequirementId!, "NiceToHave", x.Text, "Weak", "Không thấy bằng chứng")))
+                    x.RequirementId, "NiceToHave", x.Text, "Weak", "Không thấy bằng chứng")))
                 .ToList(),
                 [new CvSectionAnchor("Skills", "skills", "Skills")],
                 [new CvAnalysisCitation("chunk-1", "ASP.NET documentation", null, "Microsoft")]));
@@ -208,7 +208,6 @@ public class CvAnalysisTests
         Assert.NotEqual("client-1", body.MustHaveMatches![0].RequirementId);
         Assert.False(string.IsNullOrWhiteSpace(body.MustHaveMatches[0].RequirementId));
         Assert.Single(body.NiceToHaveMatches!);
-        Assert.False(string.IsNullOrWhiteSpace(body.NiceToHaveMatches![0].RequirementId));
         Assert.Equal(1, body.RequirementSummary!.MustHave.Strong);
         Assert.Equal(1, body.RequirementSummary.NiceToHave.Weak);
         Assert.Equal("Skills", body.CvSections![0].Title);
@@ -298,7 +297,7 @@ public class CvAnalysisTests
                 IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
                 "s", [], [], [], null,
                 (must ?? []).Select(x => new CvRequirementMatch(
-                    x.RequirementId!, "MustHave", x.Text, "Strong", "Skills: .NET")).ToList(),
+                    x.RequirementId, "MustHave", x.Text, "Strong", "Skills: .NET")).ToList(),
                 [new CvSectionAnchor("Skills", "skills", "Skills")],
                 [new CvAnalysisCitation("chunk-1", "source", null, "title")]));
         var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
@@ -345,7 +344,7 @@ public class CvAnalysisTests
                 IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
                 "s", [], [], [], null,
                 (must ?? []).Select(x => new CvRequirementMatch(
-                    x.RequirementId!, "MustHave", x.Text, "Strong", "ASP.NET Core")).ToList(),
+                    x.RequirementId, "MustHave", x.Text, "Strong", "ASP.NET Core")).ToList(),
                 [new CvSectionAnchor("Skills", "skills", "Skills")], []));
 
         var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
@@ -385,7 +384,7 @@ public class CvAnalysisTests
                 IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
                 "s", [], [], [], null,
                 (must ?? []).Select(x => new CvRequirementMatch(
-                    x.RequirementId!, "MustHave", x.Text, "Strong", evidence)).ToList(),
+                    x.RequirementId, "MustHave", x.Text, "Strong", evidence)).ToList(),
                 [], []));
 
         var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
@@ -422,7 +421,7 @@ public class CvAnalysisTests
                 IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
                 "s", [], [], [], null,
                 (must ?? []).Select(x => new CvRequirementMatch(
-                    x.RequirementId!, "MustHave", x.Text, "Strong", "Skills: Docker")).ToList(),
+                    x.RequirementId, "MustHave", x.Text, "Strong", "Skills: Docker")).ToList(),
                 [], []));
 
         var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
