@@ -181,6 +181,40 @@ async def test_warmup_cau_vua_sinh_ghi_cache_truoc_khi_fe_goi(fake_s3, fake_vend
 
 
 @pytest.mark.asyncio
+async def test_adaptive_warmup_cho_audio_vao_cache_truoc_khi_tra_question(
+    fake_s3, fake_vendor, monkeypatch,
+):
+    monkeypatch.setattr(settings, "tts_prewarm_enabled", True)
+    monkeypatch.setattr(settings, "tts_adaptive_prewarm_wait_seconds", 1.0)
+
+    await main_module._prewarm_adaptive_tts(_QUESTION, "vi")
+
+    key = tts.cache_key(_QUESTION, settings.tts_voice)
+    assert fake_s3[key] == _MP3
+    assert fake_vendor.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_adaptive_warmup_het_tran_van_giu_task_chay_nen(
+    fake_s3, fake_vendor, monkeypatch,
+):
+    async def slow_vendor(*_args):
+        await asyncio.sleep(0.04)
+        return _PCM, "audio/L16;codec=pcm;rate=24000"
+
+    fake_vendor.side_effect = slow_vendor
+    monkeypatch.setattr(settings, "tts_prewarm_enabled", True)
+    monkeypatch.setattr(settings, "tts_adaptive_prewarm_wait_seconds", 0.005)
+
+    await main_module._prewarm_adaptive_tts(_QUESTION, "vi")
+    key = tts.cache_key(_QUESTION, settings.tts_voice)
+    assert key not in fake_s3
+
+    await asyncio.sleep(0.06)
+    assert fake_s3[key] == _MP3
+
+
+@pytest.mark.asyncio
 async def test_warmup_hai_lane_de_cau_sau_khong_cho_cau_dau(fake_s3, monkeypatch):
     """Concurrency=2 giảm thời gian tới câu 4/5 nhưng không burst toàn bộ batch."""
     active = 0

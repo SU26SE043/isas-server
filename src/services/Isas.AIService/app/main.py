@@ -154,15 +154,39 @@ async def _warm_tts_batch(texts: list[str], language: str) -> None:
     await asyncio.gather(*(warm_one(raw_text) for raw_text in texts))
 
 
-def _schedule_tts_warmup(texts: list[str], language: str) -> None:
+def _schedule_tts_warmup(texts: list[str], language: str) -> asyncio.Task[None] | None:
     if not settings.tts_prewarm_enabled:
-        return
+        return None
     unique_texts = list(dict.fromkeys(text.strip() for text in texts if text and text.strip()))
     if not unique_texts:
-        return
+        return None
     task = asyncio.create_task(_warm_tts_batch(unique_texts, language))
     _tts_background_tasks.add(task)
     task.add_done_callback(_tts_background_tasks.discard)
+    return task
+
+
+async def _prewarm_adaptive_tts(text: str, language: str) -> None:
+    """Cache adaptive audio before exposing its question to the browser.
+
+    Seed questions have the whole setup flow to warm in the background. Adaptive questions have
+    no head start: the browser asks for speech roughly 200ms after ``/decide-next`` returns. This
+    bounded, shielded wait makes that GET a cache hit without making TTS a success condition for
+    answer upload; after the bound, the same task keeps running in the background.
+    """
+    task = _schedule_tts_warmup([text], language)
+    if task is None:
+        return
+    wait_seconds = max(0.0, settings.tts_adaptive_prewarm_wait_seconds)
+    if wait_seconds == 0:
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=wait_seconds)
+    except TimeoutError:
+        logger.info(
+            "TTS adaptive warmup chưa xong sau %.1fs; giữ task chạy nền",
+            wait_seconds,
+        )
 
 
 async def _call_with_language(language: str, method, *args, **kwargs):
@@ -780,7 +804,7 @@ async def decide_next(
 
     next_question = decision.get("nextQuestion")
     if next_question:
-        _schedule_tts_warmup([next_question], req.language)
+        await _prewarm_adaptive_tts(next_question, req.language)
 
     return DecideNextResponse(
         action=decision["action"],

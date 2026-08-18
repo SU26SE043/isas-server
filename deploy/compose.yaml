@@ -67,6 +67,7 @@ x-aiservice-env: &aiservice-env
   # Warm audio cho seed/câu adaptive ngay lúc AI sinh; false = rollback về cache-on-demand cũ.
   TTS_PREWARM_ENABLED: ${TTS_PREWARM_ENABLED:-true}
   TTS_PREWARM_CONCURRENCY: ${TTS_PREWARM_CONCURRENCY:-2}
+  TTS_ADAPTIVE_PREWARM_WAIT_SECONDS: ${TTS_ADAPTIVE_PREWARM_WAIT_SECONDS:-15}
   # Redis chỉ giữ distributed lock + ready signal; audio vẫn ở SeaweedFS. Tắt cờ để rollback về
   # single-flight trong từng process mà không rebuild image.
   TTS_REDIS_ENABLED: ${TTS_REDIS_ENABLED:-true}
