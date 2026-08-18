@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, APIRouter, Header, Response
 import hmac
+import logging
 import os
 import tempfile
 import asyncio
@@ -29,6 +30,9 @@ from app.transcriber import Transcriber
 from app.face_verify import FaceVerifier
 from app.config import settings
 from app import storage, audio, threadpool, tts
+from app.tts_redis import TtsRedisCoordinator
+
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -37,13 +41,128 @@ async def _lifespan(_app: FastAPI):
     # Không cần tự shutdown executor: uvicorn chạy qua `asyncio.run`, mà nó gọi
     # `loop.shutdown_default_executor()` lúc đóng.
     threadpool.apply(asyncio.get_running_loop(), settings.thread_pool_max_workers)
-    yield
+    try:
+        yield
+    finally:
+        # Warmup là best-effort; shutdown không được treo chờ Gemini thêm gần một phút.
+        pending = list(_tts_background_tasks)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await tts_redis_coordinator.close()
 
 
 app = FastAPI(title="ISAS AI Service", lifespan=_lifespan)
 transcriber = Transcriber()
 provider = GeminiProvider()
 face_verifier = FaceVerifier()
+
+# Một cache key chỉ có MỘT lượt vendor trong mỗi process. Nếu browser bỏ request sau trần 9s,
+# `shield` giữ lượt nền sống để audio vẫn được ghi cache; lần nghe lại hoặc ứng viên kế tiếp sẽ
+# không lặp lại đúng request đắt/chậm đó.
+_tts_inflight: dict[str, asyncio.Task[tuple[bytes, str]]] = {}
+_tts_background_tasks: set[asyncio.Task[None]] = set()
+tts_redis_coordinator = TtsRedisCoordinator(
+    settings.tts_redis_url if settings.tts_redis_enabled else "",
+    key_prefix=settings.tts_redis_key_prefix,
+    lock_ttl_seconds=settings.tts_redis_lock_ttl_seconds,
+    wait_timeout_seconds=settings.tts_redis_wait_timeout_seconds,
+    poll_interval_seconds=settings.tts_redis_poll_interval_seconds,
+    ready_ttl_seconds=settings.tts_redis_ready_ttl_seconds,
+    socket_timeout_seconds=settings.tts_redis_socket_timeout_seconds,
+    failure_cooldown_seconds=settings.tts_redis_failure_cooldown_seconds,
+)
+
+
+async def _synthesize_and_cache_tts(
+    key: str,
+    text: str,
+    voice: str,
+    language_code: str,
+) -> tuple[bytes, str]:
+    async with asyncio.timeout(settings.tts_synthesis_timeout_seconds):
+        pcm, mime_type = await provider.synthesize_speech(text, voice, language_code)
+        mp3 = await asyncio.to_thread(
+            audio.pcm_to_mp3, pcm, audio.parse_pcm_rate(mime_type))
+
+    cache_state = "miss"
+    try:
+        await asyncio.to_thread(
+            storage.put_object_bytes, key, mp3, tts.MP3_CONTENT_TYPE)
+    except Exception:
+        cache_state = "miss-nostore"
+        logger.exception("Không ghi được cache TTS key %s", key)
+    return mp3, cache_state
+
+
+def _forget_tts_task(key: str, task: asyncio.Task[tuple[bytes, str]]) -> None:
+    if _tts_inflight.get(key) is task:
+        _tts_inflight.pop(key, None)
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        # Nếu request HTTP đã bị huỷ thì không còn waiter nào đọc exception của task nền.
+        logger.error("Lượt TTS single-flight thất bại cho key %s: %s", key, error)
+
+
+async def _get_or_create_tts(
+    key: str,
+    text: str,
+    voice: str,
+    language_code: str,
+) -> tuple[bytes, str]:
+    task = _tts_inflight.get(key)
+    if task is None:
+        async def read_cache() -> bytes | None:
+            return await asyncio.to_thread(storage.try_get_object_bytes, key)
+
+        async def create_audio() -> tuple[bytes, str]:
+            return await _synthesize_and_cache_tts(key, text, voice, language_code)
+
+        task = asyncio.create_task(tts_redis_coordinator.get_or_create(
+            key, read_cache, create_audio))
+        _tts_inflight[key] = task
+        task.add_done_callback(lambda done, cache_key=key: _forget_tts_task(cache_key, done))
+    return await asyncio.shield(task)
+
+
+async def _warm_tts_batch(texts: list[str], language: str) -> None:
+    language_code = (
+        settings.tts_language_code_en if language == "en" else settings.tts_language_code)
+    voice = settings.tts_voice
+    semaphore = asyncio.Semaphore(max(1, settings.tts_prewarm_concurrency))
+
+    async def warm_one(raw_text: str) -> None:
+        text = (raw_text or "").strip()
+        if not text:
+            return
+        key = tts.cache_key(text, voice, language_code)
+        async with semaphore:
+            try:
+                cached = await asyncio.to_thread(storage.try_get_object_bytes, key)
+                if not cached:
+                    await _get_or_create_tts(key, text, voice, language_code)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Warmup không thuộc critical path sinh câu hỏi. Endpoint /tts vẫn fail-loud nếu
+                # người dùng gọi sau đó và lỗi còn tồn tại.
+                logger.exception("TTS warmup thất bại cho key %s", key)
+
+    await asyncio.gather(*(warm_one(raw_text) for raw_text in texts))
+
+
+def _schedule_tts_warmup(texts: list[str], language: str) -> None:
+    if not settings.tts_prewarm_enabled:
+        return
+    unique_texts = list(dict.fromkeys(text.strip() for text in texts if text and text.strip()))
+    if not unique_texts:
+        return
+    task = asyncio.create_task(_warm_tts_batch(unique_texts, language))
+    _tts_background_tasks.add(task)
+    task.add_done_callback(_tts_background_tasks.discard)
 
 
 async def _call_with_language(language: str, method, *args, **kwargs):
@@ -102,6 +221,7 @@ async def generate_questions(req: GenerateQuestionsRequest,
         result = await _call_with_language(req.language, provider.generate,
             req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding,
             criteria, seniority=req.seniority)
+        _schedule_tts_warmup(result.questions, req.language)
         # citations=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ cho Campaign B2B.
         citations = ([QuestionCitation(**c) for c in result.citations]
                      if result.citations is not None else None)
@@ -658,9 +778,13 @@ async def decide_next(
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi quyết định câu hỏi kế: {ex}")
 
+    next_question = decision.get("nextQuestion")
+    if next_question:
+        _schedule_tts_warmup([next_question], req.language)
+
     return DecideNextResponse(
         action=decision["action"],
-        nextQuestion=decision.get("nextQuestion"),
+        nextQuestion=next_question,
         transcript=transcript,
         reason=decision.get("reason"),
         # F11 — trả kèm chỉ số để Interview lưu lên answer + đẩy vào ScoringJob: buổi adaptive
@@ -714,28 +838,14 @@ async def text_to_speech(
         return Response(content=cached, media_type=tts.MP3_CONTENT_TYPE,
                         headers={"X-Tts-Cache": "hit"})
 
-    # ── 2. Miss → gọi vendor + encode ──────────────────────────────────────────
+    # ── 2. Miss → dùng single-flight; disconnect không huỷ lượt đang làm cache ──
     try:
-        pcm, mime_type = await provider.synthesize_speech(
-            text, voice, language_code)
-        # Gemini TTS trả PCM thô, không phải mp3 → encode (ffmpeg, xem app/audio.py).
-        mp3 = await asyncio.to_thread(
-            audio.pcm_to_mp3, pcm, audio.parse_pcm_rate(mime_type))
+        mp3, cache_state = await _get_or_create_tts(
+            key, text, voice, language_code)
     except Exception as ex:
         # Vendor chết/quá tải/encode lỗi → 502 sạch. FE degrade về chỉ hiện chữ;
         # luồng phỏng vấn KHÔNG bị chặn.
         raise HTTPException(status_code=502, detail=f"Lỗi tổng hợp giọng đọc: {ex}")
-
-    # ── 3. Ghi cache (best-effort) ─────────────────────────────────────────────
-    # Ghi hỏng KHÔNG được làm hỏng request: audio đã có trong tay, người dùng nghe được.
-    # Nhưng phải QUAN SÁT ĐƯỢC — nếu ghi luôn hỏng thì mọi request đều gọi vendor, nên
-    # đánh dấu "miss-nostore" để log/monitor thấy, thay vì im lặng.
-    cache_state = "miss"
-    try:
-        await asyncio.to_thread(
-            storage.put_object_bytes, key, mp3, tts.MP3_CONTENT_TYPE)
-    except Exception:
-        cache_state = "miss-nostore"
 
     return Response(content=mp3, media_type=tts.MP3_CONTENT_TYPE,
                     headers={"X-Tts-Cache": cache_state})

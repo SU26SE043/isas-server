@@ -310,6 +310,8 @@ async def test_provider_grounding_va_criteria_loc_doc_lap(monkeypatch):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_endpoint_co_criteria_tra_target_criteria(monkeypatch):
+    warmed = []
+
     async def fake_generate(job_category, cv_text, jd_text, count=None,
                             focus_criteria=None, grounding=None, criteria=None,
                             seniority=None):
@@ -319,6 +321,11 @@ def test_endpoint_co_criteria_tra_target_criteria(monkeypatch):
                                         target_criteria=[[C1], []])
 
     monkeypatch.setattr(main_module.provider, "generate", fake_generate)
+    monkeypatch.setattr(
+        main_module,
+        "_schedule_tts_warmup",
+        lambda questions, language: warmed.append((questions, language)),
+    )
 
     res = client.post("/api/v1/generate-questions", headers=_HEADERS, json={
         "jobCategory": "BE",
@@ -329,6 +336,7 @@ def test_endpoint_co_criteria_tra_target_criteria(monkeypatch):
     body = res.json()
     assert body["questions"] == ["Q1", "Q2"]
     assert body["targetCriteria"] == [[C1], []]     # index-aligned, rỗng được giữ nguyên
+    assert warmed == [(["Q1", "Q2"], "vi")]
 
 
 def test_endpoint_khong_criteria_giu_nguyen_shape_cu(monkeypatch):

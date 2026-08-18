@@ -38,7 +38,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | **CampaignService** | .NET, EF Core | Điều phối B2B: campaign + tiêu chí, distribution, ranking, result/export | ✅ merged main (M2–M5: CRUD/tiêu chí/publish/audit + distribution + ranking + result/export) |
 | **PaymentService** | .NET, EF Core | Thanh toán PayOS, **credit theo chủ ví** (org B2B / cá nhân B2C — D15), prepaid + postpaid, reserve→consume | ✅ merged main + deploy live |
 
-**Hạ tầng:** PostgreSQL 18 — DB-per-service (`isas`/`isas_interview`/`isas_campaign`/`isas_payment`) · SeaweedFS (S3, cổng 8333; CV/JD/Criteria/audio) · RabbitMQ (job chấm `scoring_pipeline_queue` + event) · Redis (provision sẵn cho cache; **lưu ý: refresh token của Auth hiện ở Postgres** — Redis chưa được wire, để dành phase sau) · **Qdrant** (vector store — grounding D27, chỉ InterviewService gọi).
+**Hạ tầng:** PostgreSQL 18 — DB-per-service (`isas`/`isas_interview`/`isas_campaign`/`isas_payment`) · SeaweedFS (S3, cổng 8333; CV/JD/Criteria/audio) · RabbitMQ (job chấm `scoring_pipeline_queue` + event) · Redis (**AIService dùng lock + ready signal TTL cho distributed single-flight TTS; không chứa mp3**; refresh token Auth vẫn ở Postgres) · **Qdrant** (vector store — grounding D27, chỉ InterviewService gọi).
 
 ### 2.1. Tổng hợp "chưa làm" — gap toàn hệ thống
 > **Bức tranh tổng** ở cấp hệ thống. **Tracking chi tiết** (đầu việc + lệnh xác minh + owner) là source of truth ở [work-division.md](work-division.md) §2/§8 + [tasks.md](tasks.md) + [progress.md](progress.md) — bảng này chỉ **trỏ tới**, không thay thế.
@@ -53,7 +53,7 @@ Kiến trúc **microservices** theo mô hình **Engine + Orchestrator** — **kh
 | **PaymentService** ✅ | `credit_accounts(owner_type)` + **reserve/consume/release** (P4/P5/P6) + mua pack/webhook (P2) + active-polling (P3) + **postpaid + hóa đơn** (P8) — in tree, CI image, gateway route, compose | verify tay: PayOS sandbox (webhook HMAC) | tasks `P1`–`P8` ✅; [services/payment.md](services/payment.md) |
 | **CampaignService** 🟢 | merged main: CRUD + JD/Criteria (PdfPig) + 6 bug fix + lifecycle + publish tiêu chí cấu trúc + soft-delete/audit | distribution, ranking/result/export, wire `org_id` | tasks `C1`–`C10` |
 | **AIService** | generate-questions, transcribe, worker chấm, **suggest-criteria** (C8) | **analyze-cv (BC4)**; ✅ đã bỏ `/ai/**` khỏi gateway (GEN-7) · còn `X-Internal-Token` nội bộ · Whisper nhẹ/GPU · chống prompt-injection · DLQ | [services/ai.md](services/ai.md) §Vấn đề |
-| **Gateway / Infra** | Reverse proxy, compose service | ✅ `/ai/**` đã gỡ khỏi gateway (GEN-7, internal-only); **Redis chưa wire** | §6, §8 |
+| **Gateway / Infra** | Reverse proxy, compose service | ✅ `/ai/**` đã gỡ khỏi gateway (GEN-7, internal-only); Redis đã wire vào AIService cho distributed TTS single-flight | §6, §8 |
 | **Nền tảng (Phase 0)** | test project Campaign/Auth/Interview ✅ (`P0.3`) | `docker compose up` máy sạch (verify), `make setup/test/check`, **test project Payment**, readiness 4 điều kiện | work-division §5; tasks `P0.1`–`P0.5` |
 | **CI/CD** | Build+push Auth/Interview/**Campaign**/Gateway → server qua Tailscale | Thêm **Payment** vào pipeline; AIService deploy **tay trên Mac** | §8; [../DEPLOYMENT.md](../DEPLOYMENT.md) |
 
