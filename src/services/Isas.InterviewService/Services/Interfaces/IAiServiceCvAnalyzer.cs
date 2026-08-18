@@ -11,7 +11,8 @@ public interface IAiServiceCvAnalyzer
         string? jdText,
         CancellationToken ct = default,
         IReadOnlyList<CvRequirementInput>? mustHave = null,
-        IReadOnlyList<CvRequirementInput>? niceToHave = null);
+        IReadOnlyList<CvRequirementInput>? niceToHave = null,
+        IReadOnlyList<GroundingChunk>? grounding = null);
 
     Task<(IReadOnlyList<JdRequirementSuggestion> MustHave,
           IReadOnlyList<JdRequirementSuggestion> NiceToHave)> SuggestJdRequirementsAsync(

@@ -57,22 +57,31 @@ public class CvAnalysisConfiguration : IEntityTypeConfiguration<CvAnalysis>
                 v => v == null ? null : JsonSerializer.Serialize(v, Json),
                 v => v == null ? null : JsonSerializer.Deserialize<List<CvRequirementMatch>>(v, Json))
             .HasColumnType("jsonb");
+        e.Property(x => x.RequirementMatches).Metadata.SetValueComparer(JsonListComparer<CvRequirementMatch>());
 
         e.Property(x => x.CvSections)
             .HasConversion(
                 v => v == null ? null : JsonSerializer.Serialize(v, Json),
                 v => v == null ? null : JsonSerializer.Deserialize<List<CvSectionAnchor>>(v, Json))
             .HasColumnType("jsonb");
+        e.Property(x => x.CvSections).Metadata.SetValueComparer(JsonListComparer<CvSectionAnchor>());
 
         e.Property(x => x.Citations)
             .HasConversion(
                 v => v == null ? null : JsonSerializer.Serialize(v, Json),
                 v => v == null ? null : JsonSerializer.Deserialize<List<CvAnalysisCitation>>(v, Json))
             .HasColumnType("jsonb");
+        e.Property(x => x.Citations).Metadata.SetValueComparer(JsonListComparer<CvAnalysisCitation>());
 
         e.Property(x => x.CreatedAt).IsRequired();
 
         // Lịch sử phân tích CV của 1 user (GET /cv-analysis).
         e.HasIndex(x => x.CandidateId);
     }
+
+    private static ValueComparer<List<T>?> JsonListComparer<T>()
+        => new(
+            (a, b) => JsonSerializer.Serialize(a, Json) == JsonSerializer.Serialize(b, Json),
+            value => JsonSerializer.Serialize(value, Json).GetHashCode(),
+            value => value == null ? null : value.ToList());
 }

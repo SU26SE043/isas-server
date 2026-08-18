@@ -57,7 +57,8 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
         string? jdText,
         CancellationToken ct = default,
         IReadOnlyList<CvRequirementInput>? mustHave = null,
-        IReadOnlyList<CvRequirementInput>? niceToHave = null)
+        IReadOnlyList<CvRequirementInput>? niceToHave = null,
+        IReadOnlyList<GroundingChunk>? grounding = null)
     {
         var payload = new
         {
@@ -65,7 +66,8 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
             jobCategory,
             jdText,
             mustHave,
-            niceToHave
+            niceToHave,
+            grounding
         };
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/analyze-cv")
