@@ -28,8 +28,33 @@ public class CvAnalysis
     // jsonb? — chỉ set khi request có jd_id (khớp CV↔JD).
     public CvJdMatch? JdMatch { get; set; }
 
+    // null = LEGACY; khác null = REQUIREMENT. Gộp hai priority trong một jsonb để lịch sử
+    // dựng lại đúng hai danh sách theo thứ tự người dùng gửi.
+    public List<CvRequirementMatch>? RequirementMatches { get; set; }
+    public List<CvSectionAnchor>? CvSections { get; set; }
+    public List<CvAnalysisCitation>? Citations { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
 // Value object lưu trong cột jd_match (jsonb) — không phải entity riêng.
 public record CvJdMatch(int Score, List<string> MatchedSkills, List<string> MissingSkills);
+
+public record CvRequirementMatch(
+    string RequirementId,
+    string Priority,
+    string Text,
+    string Level,
+    string Evidence,
+    int? Page = null,
+    string? SectionTitle = null
+);
+
+public record CvSectionAnchor(string Title, string Kind, string StartsWith);
+
+public record CvAnalysisCitation(
+    string ChunkId,
+    string Content,
+    string? SourceUrl,
+    string? SourceTitle
+);

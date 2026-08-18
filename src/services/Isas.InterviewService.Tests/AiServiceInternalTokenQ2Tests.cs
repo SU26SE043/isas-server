@@ -71,6 +71,18 @@ public class AiServiceInternalTokenQ2Tests
     }
 
     [Fact]
+    public async Task CvAnalyzer_SuggestJdRequirements_dinh_X_Internal_Token()
+    {
+        var handler = new CapturingHandler(
+            """{"mustHave":[{"text":"Docker","citations":[]}],"niceToHave":[]}""");
+        var sut = new AiServiceCvAnalyzer(Http(handler), Config(), NullLogger<AiServiceCvAnalyzer>.Instance);
+
+        await sut.SuggestJdRequirementsAsync("BE", "Need Docker", []);
+
+        AssertTokenSent(handler, "/api/v1/suggest-jd-requirements");
+    }
+
+    [Fact]
     public async Task RoadmapGenerator_GenerateAsync_dinh_X_Internal_Token()
     {
         var handler = new CapturingHandler(

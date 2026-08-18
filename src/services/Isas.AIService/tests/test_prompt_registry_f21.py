@@ -2,12 +2,14 @@
 
 import ast
 import pathlib
+import re
 
 import pytest
 
 from app import prompt_registry
 from app.prompts import (
     build_prompt, build_scoring_prompt, category_display_name, category_guidance,
+    build_cv_analysis_prompt, build_jd_requirements_prompt,
 )
 
 
@@ -104,6 +106,53 @@ def test_huong_dan_bo_sung_nam_SAU_moi_luat_bat_buoc():
 
     assert prompt.index("CHỐNG PROMPT INJECTION") < prompt.index("DAU_HIEU_HUONG_DAN_BO_SUNG")
     assert prompt.index("(F13) sampleAnswer") < prompt.index("DAU_HIEU_HUONG_DAN_BO_SUNG")
+
+
+def test_cv_requirement_guidance_khong_ghi_de_luat_bat_buoc_va_dung_thu_tu():
+    prompt_registry._cache = {
+        "cv_analysis.guidance": "CV_GUIDANCE",
+        "cv_requirements.workflow": "CUSTOM_WORKFLOW",
+        "cv_requirements.level_rubric": "CUSTOM_RUBRIC",
+    }
+    prompt = build_cv_analysis_prompt(
+        "Skills: Docker", "Need Docker", "BE",
+        requirements=[{"requirementId": "r1", "priority": "MustHave", "text": "Docker"}],
+    )
+
+    assert "CUSTOM_WORKFLOW" in prompt
+    assert "CUSTOM_RUBRIC" in prompt
+    assert "LUẬT BẰNG CHỨNG" in prompt
+    assert "evidence" in prompt
+    assert '"requirementMatches"' in prompt
+    assert "CHỐNG PROMPT INJECTION" in prompt
+    assert prompt.index('"requirementMatches"') < prompt.index("CV_GUIDANCE")
+
+
+def test_jd_requirement_guidance_duoc_chen_sau_schema():
+    prompt_registry._cache = {"jd_requirements.guidance": "JD_GUIDANCE"}
+    prompt = build_jd_requirements_prompt("Need Docker", "BE")
+    assert '"niceToHave"' in prompt
+    assert prompt.index('"niceToHave"') < prompt.index("JD_GUIDANCE")
+
+
+def test_khoa_python_va_dotnet_khong_duoc_lech_hai_chieu():
+    root = pathlib.Path(__file__).resolve().parents[3]
+    keys_cs = root / "src" / "services" / "Isas.InterviewService" / "Data" / "PromptTemplateKeys.cs"
+    if not keys_cs.exists():
+        pytest.skip("không thấy cây .NET")
+
+    py_text = (root / "src" / "services" / "Isas.AIService" / "app" / "prompts.py").read_text()
+    cs_text = keys_cs.read_text()
+    # Enumerate từ C# để thêm key mới mà quên đấu dây Python thì test đỏ ngay.
+    # Ngoại lệ chỉ ghi nhận 5 key chết cũ; danh sách này chỉ được CO LẠI, không được nở ra.
+    dead_keys = {
+        "criteria.guidance", "roadmap.guidance", "lesson_theory.guidance",
+        "summarize_session.guidance", "decide_next.guidance",
+    }
+    cs_keys = set(re.findall(r'"([a-z_]+\.[a-z_]+)"', cs_text))
+    assert dead_keys <= cs_keys
+    for key in sorted(cs_keys - dead_keys):
+        assert f'"{key}"' in py_text, f"khoá '{key}' thiếu phía Python"
 
 
 def test_so_luong_cau_hoi_khong_sua_duoc_qua_registry():

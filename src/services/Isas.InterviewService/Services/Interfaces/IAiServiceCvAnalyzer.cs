@@ -6,5 +6,18 @@ namespace Isas.InterviewService.Services.Interfaces;
 public interface IAiServiceCvAnalyzer
 {
     Task<CvAnalysisAiResult> AnalyzeAsync(
-        string jobCategory, string cvText, string? jdText, CancellationToken ct = default);
+        string jobCategory,
+        string cvText,
+        string? jdText,
+        CancellationToken ct = default,
+        IReadOnlyList<CvRequirementInput>? mustHave = null,
+        IReadOnlyList<CvRequirementInput>? niceToHave = null,
+        IReadOnlyList<GroundingChunk>? grounding = null);
+
+    Task<(IReadOnlyList<JdRequirementSuggestion> MustHave,
+          IReadOnlyList<JdRequirementSuggestion> NiceToHave)> SuggestJdRequirementsAsync(
+        string jobCategory,
+        string jdText,
+        IReadOnlyList<GroundingChunk>? grounding,
+        CancellationToken ct = default);
 }

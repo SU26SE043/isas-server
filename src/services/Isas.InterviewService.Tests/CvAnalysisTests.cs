@@ -42,6 +42,21 @@ public class CvAnalysisTests
             Suggestions: ["Học thêm React"],
             JdMatch: withJdMatch ? new CvJdMatch(78, ["C#", "SQL"], ["Kubernetes"]) : null);
 
+    private static CvAnalysisAiResult SampleAiWithRequirements()
+        => new(
+            Summary: "Ứng viên backend 3 năm C#/SQL.",
+            Strengths: ["C#"],
+            Weaknesses: [],
+            Suggestions: ["Bổ sung Kubernetes"],
+            JdMatch: null,
+            RequirementMatches:
+            [
+                new CvRequirementMatch("r1", "MustHave", ".NET", "Strong", "Skills: .NET"),
+                new CvRequirementMatch("r2", "NiceToHave", "Kubernetes", "Weak", "Không thấy bằng chứng")
+            ],
+            CvSections: [new CvSectionAnchor("Skills", "skills", "Skills")],
+            Citations: [new CvAnalysisCitation("chunk-1", "ASP.NET documentation", null, "Microsoft")]);
+
     private static CvAnalysisController Controller(
         TestDb t, IStorageService storage, IAiServiceCvAnalyzer ai, Guid userId,
         ICreditReservationClient? credits = null, int cvAnalysisCredits = 1)
@@ -145,6 +160,244 @@ public class CvAnalysisTests
         var row = await t.Db.CvAnalyses.AsNoTracking().SingleAsync();
         Assert.NotNull(row.JdMatch);
         Assert.Equal(78, row.JdMatch!.Score);            // jsonb value-object round-trip
+    }
+
+    [Fact]
+    public async Task Post_WithRequirementData_PersistsAndMapsRequirementHistory()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Skills: .NET"));
+
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? nice,
+                IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
+                "Ứng viên backend 3 năm C#/SQL.", ["C#"], [], ["Bổ sung Kubernetes"], null,
+                (must ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "MustHave", x.Text, "Strong", "Skills: .NET"))
+                .Concat((nice ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "NiceToHave", x.Text, "Weak", "Không thấy bằng chứng")))
+                .ToList(),
+                [new CvSectionAnchor("Skills", "skills", "Skills")],
+                [new CvAnalysisCitation("chunk-1", "ASP.NET documentation", null, "Microsoft")]));
+        var ctrl = Controller(t, storage.Object, ai.Object, user);
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-1", ".NET")],
+            [new CvRequirementInput("client-2", "Kubernetes")]), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        Assert.Single(body.MustHaveMatches!);
+        Assert.NotEqual("client-1", body.MustHaveMatches![0].RequirementId);
+        Assert.False(string.IsNullOrWhiteSpace(body.MustHaveMatches[0].RequirementId));
+        Assert.Single(body.NiceToHaveMatches!);
+        Assert.Equal(1, body.RequirementSummary!.MustHave.Strong);
+        Assert.Equal(1, body.RequirementSummary.NiceToHave.Weak);
+        Assert.Equal("Skills", body.CvSections![0].Title);
+        Assert.Equal(1, body.MustHaveMatches[0].Page);
+        Assert.Equal("Skills", body.MustHaveMatches[0].SectionTitle);
+        Assert.Equal("chunk-1", body.Citations![0].ChunkId);
+
+        var row = await t.Db.CvAnalyses.AsNoTracking().SingleAsync();
+        Assert.Equal(2, row.RequirementMatches!.Count); // jsonb value-object round-trip
+        Assert.Equal("Skills: .NET", row.RequirementMatches[0].Evidence);
+        Assert.Single(row.CvSections!);
+        Assert.Single(row.Citations!);
+    }
+
+    [Fact]
+    public async Task List_SummarizesRequirementEvidence_WhileDetailKeepsLocation()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Skills: .NET"));
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? _,
+                IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
+                "s", [], [], [], null,
+                (must ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "MustHave", x.Text, "Strong", "Skills: .NET")).ToList(),
+                [new CvSectionAnchor("Skills", "skills", "Skills")],
+                [new CvAnalysisCitation("chunk-1", "source", null, "title")]));
+        var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
+
+        var created = Assert.IsType<CreatedResult>(await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-1", ".NET")], []), default));
+        var detail = Assert.IsType<CvAnalysisResponse>(created.Value);
+
+        var list = Assert.IsType<OkObjectResult>(await ctrl.List(default));
+        var item = Assert.IsType<CvAnalysisListResponse>(Assert.Single(
+            Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisListResponse>>(list.Value)));
+
+        var slim = Assert.Single(item.MustHaveMatches!);
+        Assert.Equal("Strong", slim.Level);
+        Assert.DoesNotContain("evidence", System.Text.Json.JsonSerializer.Serialize(item),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Skills: .NET", detail.MustHaveMatches![0].Evidence);
+        Assert.Equal(1, detail.MustHaveMatches[0].Page);
+        Assert.Equal("Skills", detail.MustHaveMatches[0].SectionTitle);
+        Assert.NotNull(detail.CvSections);
+        Assert.NotNull(detail.Citations);
+    }
+
+    [Fact]
+    public async Task Post_RequirementEvidence_UsesNormalizedOffsetForPage_AndPdfSeparators()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var cvText = "Skills: identiﬁcation ﬂow\nASP.NET-Core\nProjects: micro-\nservices";
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", cvText));
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? _,
+                IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
+                "s", [], [], [], null,
+                (must ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "MustHave", x.Text, "Strong", "ASP.NET Core")).ToList(),
+                [new CvSectionAnchor("Skills", "skills", "Skills")], []));
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-1", "ASP.NET Core")], []), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        var match = Assert.Single(body.MustHaveMatches!);
+        Assert.Equal("Strong", match.Level);
+        Assert.Equal("ASP.NET Core", match.Evidence);
+        Assert.Equal(2, match.Page);
+    }
+
+    [Theory]
+    [InlineData("—")]
+    [InlineData("---")]
+    [InlineData("- -")]
+    [InlineData("  -  ")]
+    public async Task Post_RequirementEvidence_RejectsSeparatorOnlyEvidence(string evidence)
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Skills: PostgreSQL"));
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? _,
+                IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
+                "s", [], [], [], null,
+                (must ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "MustHave", x.Text, "Strong", evidence)).ToList(),
+                [], []));
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-1", "PostgreSQL")], []), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        var match = Assert.Single(body.MustHaveMatches!);
+        Assert.Equal("Weak", match.Level);
+        Assert.Equal("Không thấy bằng chứng", match.Evidence);
+        Assert.Null(match.Page);
+        Assert.Null(match.SectionTitle);
+    }
+
+    [Fact]
+    public async Task Post_RequirementMode_DeduplicatesTextAndMintsServerIds()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Skills: Docker"));
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? _,
+                IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
+                "s", [], [], [], null,
+                (must ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "MustHave", x.Text, "Strong", "Skills: Docker")).ToList(),
+                [], []));
+
+        var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-a", " Docker ")],
+            [new CvRequirementInput("client-b", "docker")]), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        Assert.Single(body.MustHaveMatches!);
+        Assert.Empty(body.NiceToHaveMatches!);
+        Assert.NotEqual("client-a", body.MustHaveMatches[0].RequirementId);
+        Assert.Equal("Docker", body.MustHaveMatches[0].Text);
+    }
+
+    [Fact]
+    public async Task Post_TooManyRequirements_Returns400BeforeCvStorageReserveOrAi()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var storage = new Mock<IStorageService>(MockBehavior.Strict);
+        var ai = new Mock<IAiServiceCvAnalyzer>(MockBehavior.Strict);
+        var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
+        var ctrl = Controller(t, storage.Object, ai.Object, user, credits.Object);
+        var tooMany = Enumerable.Range(0, 21)
+            .Select(i => new CvRequirementInput($"client-{i}", $"skill-{i}"))
+            .ToList();
+
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            Guid.NewGuid(), null, JobCategory.BE, null, tooMany, []), default);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("20", bad.Value!.ToString());
+        storage.VerifyNoOtherCalls();
+        credits.VerifyNoOtherCalls();
+        ai.VerifyNoOtherCalls();
     }
 
     // ── (b) GET của chủ → đọc đúng ────────────────────────────────────────────────
@@ -312,13 +565,13 @@ public class CvAnalysisTests
 
         var listResult = await userCtrl.List(default);
         var ok = Assert.IsType<OkObjectResult>(listResult);
-        var items = Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisResponse>>(ok.Value);
+        var items = Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisListResponse>>(ok.Value);
         Assert.Equal(2, items.Count);
 
         // user khác → rỗng
         var otherCtrl = Controller(t, storage.Object, AiMock(SampleAi(false)).Object, other);
         var otherList = Assert.IsType<OkObjectResult>(await otherCtrl.List(default));
-        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisResponse>>(otherList.Value));
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisListResponse>>(otherList.Value));
     }
 
     // ── BC7b: CV analysis TÍNH PHÍ (BC-4/D22) — reserve/consume/release ────────────

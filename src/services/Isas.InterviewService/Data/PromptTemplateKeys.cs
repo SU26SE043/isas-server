@@ -33,6 +33,9 @@ public static class PromptTemplateKeys
     public const string QuestionsGuidance = "questions.guidance";
     public const string CriteriaGuidance = "criteria.guidance";
     public const string CvAnalysisGuidance = "cv_analysis.guidance";
+    public const string CvRequirementsWorkflow = "cv_requirements.workflow";
+    public const string CvRequirementsLevelRubric = "cv_requirements.level_rubric";
+    public const string JdRequirementsGuidance = "jd_requirements.guidance";
     public const string RoadmapGuidance = "roadmap.guidance";
     public const string LessonTheoryGuidance = "lesson_theory.guidance";
     public const string SummarizeSessionGuidance = "summarize_session.guidance";
@@ -72,6 +75,7 @@ public static class PromptTemplateKeys
         {
             ScoringPersona, ScoringExtraGuidance,
             QuestionsIntro, QuestionsGuidance, CriteriaGuidance, CvAnalysisGuidance,
+            CvRequirementsWorkflow, CvRequirementsLevelRubric, JdRequirementsGuidance,
             RoadmapGuidance, LessonTheoryGuidance, SummarizeSessionGuidance, DecideNextGuidance,
             CriterionLevelsGuidance,
         };

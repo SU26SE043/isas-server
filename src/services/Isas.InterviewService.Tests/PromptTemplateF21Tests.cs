@@ -114,8 +114,19 @@ public class PromptTemplateF21Tests
                  {
                      "scoring.body", "scoring.full", "scoring.injection_guard",
                      "scoring.output_contract", "scoring.rules",
+                     "cv_requirements.evidence_rule", "cv_requirements.output_contract",
+                     "cv_analysis.schema",
                  })
             Assert.DoesNotContain(cam, PromptTemplateKeys.All);
+    }
+
+    [Fact]
+    public void CvRequirementVaJdRequirementKeys_DuocKhaiTrongDanhSach()
+    {
+        Assert.Contains(PromptTemplateKeys.CvAnalysisGuidance, PromptTemplateKeys.All);
+        Assert.Contains(PromptTemplateKeys.CvRequirementsWorkflow, PromptTemplateKeys.All);
+        Assert.Contains(PromptTemplateKeys.CvRequirementsLevelRubric, PromptTemplateKeys.All);
+        Assert.Contains(PromptTemplateKeys.JdRequirementsGuidance, PromptTemplateKeys.All);
     }
 
     // ── (3) Hàng rào chống dựng FRAME GIẢ ──────────────────────────────────────────────────

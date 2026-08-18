@@ -20,8 +20,12 @@ public record CvAnalysisRequest(
     Guid CvId,
     Guid? JdId,
     [Required] JobCategory? JobCategory,
-    string? JdText = null   // optional — ưu tiên hơn JdId
+    string? JdText = null,   // optional — ưu tiên hơn JdId
+    IReadOnlyList<CvRequirementInput>? MustHave = null,
+    IReadOnlyList<CvRequirementInput>? NiceToHave = null
 );
+
+public record CvRequirementInput(string RequirementId, string Text);
 
 // Kết quả AI đọc từ AIService `/analyze-cv` (B2C — bỏ criterionMatches/overallMatchScore của B2B).
 public record CvAnalysisAiResult(
@@ -29,13 +33,46 @@ public record CvAnalysisAiResult(
     List<string> Strengths,
     List<string> Weaknesses,
     List<string> Suggestions,
-    CvJdMatch? JdMatch   // chỉ khi gửi kèm jdText
+    CvJdMatch? JdMatch,   // chỉ khi gửi kèm jdText ở LEGACY
+    IReadOnlyList<CvRequirementMatch>? RequirementMatches = null,
+    IReadOnlyList<CvSectionAnchor>? CvSections = null,
+    IReadOnlyList<CvAnalysisCitation>? Citations = null
 );
 
 public record JdMatchResponse(
     int Score,
     IReadOnlyList<string> MatchedSkills,
     IReadOnlyList<string> MissingSkills
+);
+
+public record RequirementSummaryBucket(int Total, int Strong, int Partial, int Weak);
+
+public record RequirementSummary(
+    RequirementSummaryBucket MustHave,
+    RequirementSummaryBucket NiceToHave
+);
+
+public record CvRequirementListItem(
+    string RequirementId,
+    string Priority,
+    string Text,
+    string Level
+);
+
+public record CvAnalysisListResponse(
+    Guid Id,
+    Guid CvId,
+    Guid? JdId,
+    string JobCategory,
+    string Summary,
+    IReadOnlyList<string> Strengths,
+    IReadOnlyList<string> Weaknesses,
+    IReadOnlyList<string> Suggestions,
+    JdMatchResponse? JdMatch,
+    DateTime CreatedAt,
+    IReadOnlyList<CvRequirementListItem>? MustHaveMatches = null,
+    IReadOnlyList<CvRequirementListItem>? NiceToHaveMatches = null,
+    RequirementSummary? RequirementSummary = null
 );
 
 public record CvAnalysisResponse(
@@ -48,5 +85,10 @@ public record CvAnalysisResponse(
     IReadOnlyList<string> Weaknesses,
     IReadOnlyList<string> Suggestions,
     JdMatchResponse? JdMatch,   // chỉ khi có jdId
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    IReadOnlyList<CvRequirementMatch>? MustHaveMatches = null,
+    IReadOnlyList<CvRequirementMatch>? NiceToHaveMatches = null,
+    RequirementSummary? RequirementSummary = null,
+    IReadOnlyList<CvSectionAnchor>? CvSections = null,
+    IReadOnlyList<CvAnalysisCitation>? Citations = null
 );
