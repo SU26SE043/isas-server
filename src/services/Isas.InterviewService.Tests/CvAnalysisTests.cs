@@ -200,8 +200,8 @@ public class CvAnalysisTests
         var ctrl = Controller(t, storage.Object, ai.Object, user);
         var result = await ctrl.Analyze(new CvAnalysisRequest(
             cvId, null, JobCategory.BE, null,
-            [new CvRequirementInput("client-1", ".NET")],
-            [new CvRequirementInput("client-2", "Kubernetes")]), default);
+            [new CvRequirementInput(".NET")],
+            [new CvRequirementInput("Kubernetes")]), default);
 
         var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
         Assert.Single(body.MustHaveMatches!);
@@ -269,8 +269,8 @@ public class CvAnalysisTests
             knowledge: knowledge.Object, groundingEnabled: true, maxGroundingChunks: 4);
         var result = await ctrl.Analyze(new CvAnalysisRequest(
             cvId, null, JobCategory.BE, null,
-            [new CvRequirementInput("client-a", "Python"), new CvRequirementInput("client-b", "Docker")],
-            [new CvRequirementInput("client-c", "PostgreSQL")]), default);
+            [new CvRequirementInput("Python", "client-a"), new CvRequirementInput("Docker", "client-b")],
+            [new CvRequirementInput("PostgreSQL", "client-c")]), default);
 
         Assert.IsType<CreatedResult>(result);
         Assert.Equal(["a1", "b1", "c1", "a2"], sentGrounding!.Select(x => x.ChunkId));
@@ -304,7 +304,7 @@ public class CvAnalysisTests
 
         var created = Assert.IsType<CreatedResult>(await ctrl.Analyze(new CvAnalysisRequest(
             cvId, null, JobCategory.BE, null,
-            [new CvRequirementInput("client-1", ".NET")], []), default));
+            [new CvRequirementInput(".NET", "client-1")], []), default));
         var detail = Assert.IsType<CvAnalysisResponse>(created.Value);
 
         var list = Assert.IsType<OkObjectResult>(await ctrl.List(default));
@@ -350,7 +350,7 @@ public class CvAnalysisTests
         var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
         var result = await ctrl.Analyze(new CvAnalysisRequest(
             cvId, null, JobCategory.BE, null,
-            [new CvRequirementInput("client-1", "ASP.NET Core")], []), default);
+            [new CvRequirementInput("ASP.NET Core", "client-1")], []), default);
 
         var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
         var match = Assert.Single(body.MustHaveMatches!);
@@ -390,7 +390,7 @@ public class CvAnalysisTests
         var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
         var result = await ctrl.Analyze(new CvAnalysisRequest(
             cvId, null, JobCategory.BE, null,
-            [new CvRequirementInput("client-1", "PostgreSQL")], []), default);
+            [new CvRequirementInput("PostgreSQL", "client-1")], []), default);
 
         var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
         var match = Assert.Single(body.MustHaveMatches!);
@@ -427,8 +427,8 @@ public class CvAnalysisTests
         var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
         var result = await ctrl.Analyze(new CvAnalysisRequest(
             cvId, null, JobCategory.BE, null,
-            [new CvRequirementInput("client-a", " Docker ")],
-            [new CvRequirementInput("client-b", "docker")]), default);
+            [new CvRequirementInput(" Docker ", "client-a")],
+            [new CvRequirementInput("docker", "client-b")]), default);
 
         var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
         Assert.Single(body.MustHaveMatches!);
@@ -447,7 +447,7 @@ public class CvAnalysisTests
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
         var ctrl = Controller(t, storage.Object, ai.Object, user, credits.Object);
         var tooMany = Enumerable.Range(0, 21)
-            .Select(i => new CvRequirementInput($"client-{i}", $"skill-{i}"))
+            .Select(i => new CvRequirementInput($"skill-{i}", $"client-{i}"))
             .ToList();
 
         var result = await ctrl.Analyze(new CvAnalysisRequest(
