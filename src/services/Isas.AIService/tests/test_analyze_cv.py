@@ -11,7 +11,13 @@ from fastapi.testclient import TestClient
 
 from app.prompts import build_cv_analysis_prompt
 from app.config import settings
-from app.providers.gemini import GeminiProvider, find_verbatim
+from app.schemas import NO_EVIDENCE
+from app.providers.gemini import (
+    GeminiProvider,
+    canonicalize_verbatim_evidence,
+    evidence_supports_language_requirement,
+    find_verbatim,
+)
 import app.main as main_module
 
 client = TestClient(main_module.app)
@@ -62,9 +68,21 @@ def test_requirement_prompt_is_cv_first_and_has_no_holistic_jdmatch():
     assert "Skills/Technical Skills" in prompt
     assert 'requirementId="r1"' in prompt
     assert '"requirementMatches"' in prompt
-    assert "Strong: có bằng chứng trực tiếp và rõ ràng trong CV." in prompt
-    assert "Partial: có dấu hiệu liên quan nhưng chưa đủ mạnh." in prompt
-    assert "Weak: gần như không thấy bằng chứng." in prompt
+    assert "Strong: bằng chứng trực tiếp đáp ứng đầy đủ phần cốt lõi." in prompt
+    assert "Partial: có bằng chứng trực tiếp cho một phần" in prompt
+    assert "Weak: sau khi quét toàn bộ CV" in prompt
+    assert "Chức danh công việc/thực tập kèm mốc thời gian" in prompt
+    assert "Expected Graduation" in prompt
+    assert "tối đa là Partial" in prompt
+    assert "MS Visio" in prompt
+    assert "KHÔNG chứng minh Word, Excel hoặc PowerPoint" in prompt
+    assert "đào tạo end-user" in prompt
+    assert "KHÔNG chứng minh đã trình bày/giải thích requirement cho Dev hoặc QA/QC" in prompt
+    assert "Continuous Learning chỉ chứng minh phần học hỏi" in prompt
+    assert "tối đa là Partial, không được Strong" in prompt
+    assert "KHÔNG tự chứng minh trình độ" in prompt
+    assert "đúng MỘT đoạn trích nguyên văn LIÊN TỤC" in prompt
+    assert "server tự gắn lại priority/text nguồn" in prompt
     assert "PHẢI tính thêm jdMatch" not in prompt
 
 
@@ -82,6 +100,72 @@ def test_find_verbatim_rejects_separator_only_evidence(evidence):
 
 def test_find_verbatim_keeps_real_evidence_after_separator_guard():
     assert find_verbatim("Skills: PostgreSQL", "PostgreSQL") == 8
+
+
+def test_canonicalize_verbatim_evidence_keeps_strongest_exact_fragment():
+    cv = (
+        "Business Systems Analyst Alpha Tech Solutions 2024-Present. "
+        "Delivered an ERP rollout. BA Intern Enterprise Solutions VN 2023-2024."
+    )
+    combined = (
+        "Business Systems Analyst Alpha Tech Solutions 2024-Present; "
+        "BA Intern Enterprise Solutions VN 2023-2024"
+    )
+
+    assert canonicalize_verbatim_evidence(cv, combined) == (
+        "Business Systems Analyst Alpha Tech Solutions 2024-Present"
+    )
+
+
+def test_canonicalize_verbatim_evidence_shortens_oversized_exact_section():
+    first = "Business Systems Analyst Alpha Tech 2024-Present"
+    long_bullet = "Delivered ERP requirements and workshops. " * 20
+    evidence = f"{first} • {long_bullet}"
+
+    assert canonicalize_verbatim_evidence(evidence, evidence) == first
+
+
+def test_canonicalize_verbatim_evidence_recovers_joined_quotes_without_separator():
+    cv = (
+        "Process Modeling BPMN 2.0, UML (Activity Diagrams, State Machine). "
+        "Other content. Created BPMN diagrams using MS Visio."
+    )
+    combined = (
+        "Process Modeling BPMN 2.0, UML (Activity Diagrams, State Machine) "
+        "Created BPMN diagrams using MS Visio"
+    )
+
+    assert canonicalize_verbatim_evidence(cv, combined) == (
+        "Process Modeling BPMN 2.0, UML (Activity Diagrams, State Machine)"
+    )
+
+
+def test_canonicalize_verbatim_evidence_rejects_model_commentary():
+    cv = "Led requirement gathering for an ERP implementation. Supported gap analysis."
+    inferred = (
+        "Led requirement gathering for an ERP implementation (thường liên quan quản lý dự án); "
+        "Supported gap analysis"
+    )
+
+    assert canonicalize_verbatim_evidence(cv, inferred) is None
+
+
+@pytest.mark.parametrize("evidence", [
+    "Entry Certificate in Business Analysis (ECBA) - IIBA",
+    "Process-driven Business Analyst specializing in ERP implementations",
+])
+def test_language_requirement_rejects_unrelated_english_text(evidence):
+    assert not evidence_supports_language_requirement(
+        "Có khả năng giao tiếp tiếng Anh tốt", evidence)
+
+
+@pytest.mark.parametrize("evidence", [
+    "English: IELTS 7.0",
+    "Used English as the working language with overseas clients",
+])
+def test_language_requirement_accepts_explicit_proficiency_evidence(evidence):
+    assert evidence_supports_language_requirement(
+        "Có khả năng giao tiếp tiếng Anh tốt", evidence)
 
 
 # ── Provider.analyze_cv: shape + chống ảo giác (kẹp điểm) ───────────────────
@@ -208,6 +292,98 @@ async def test_provider_requirement_mode_orders_matches_and_verifies_evidence():
     assert result["requirementMatches"][0]["evidence"] == "Không thấy bằng chứng"
     assert result["requirementMatches"][1]["level"] == "Strong"
     assert result["cvSections"] == [{"title": "Skills", "kind": "skills", "startsWith": "Skills"}]
+
+
+@pytest.mark.asyncio
+async def test_provider_requirement_mode_preserves_level_when_joined_quotes_are_verifiable():
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "summary": "s", "strengths": [], "weaknesses": [], "suggestions": [],
+            "requirementMatches": [{
+                "requirementId": "r-ba",
+                "level": "Strong",
+                "evidence": (
+                    "Business Systems Analyst Alpha Tech 2024-Present; "
+                    "BA Intern Enterprise VN 2023-2024"
+                ),
+            }],
+            "cvSections": [],
+        })
+    )
+
+    result = await provider.analyze_cv(
+        "Business Systems Analyst Alpha Tech 2024-Present. "
+        "Delivered ERP. BA Intern Enterprise VN 2023-2024.",
+        "JD",
+        "BA",
+        requirements=[{
+            "requirementId": "r-ba",
+            "priority": "MustHave",
+            "text": "Có ít nhất 6 tháng kinh nghiệm BA",
+        }],
+    )
+
+    assert result["requirementMatches"] == [{
+        "requirementId": "r-ba",
+        "priority": "MustHave",
+        "text": "Có ít nhất 6 tháng kinh nghiệm BA",
+        "level": "Strong",
+        "evidence": "Business Systems Analyst Alpha Tech 2024-Present",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_provider_ba_regression_keeps_explicit_cv_evidence_and_rejects_inference():
+    cv = (
+        "Business Systems Analyst Alpha Tech 2024-Present. Delivered ERP. "
+        "BA Intern Enterprise VN 2023-2024. "
+        "Process Modeling BPMN 2.0, UML (Activity Diagrams, State Machine). "
+        "Drafted detailed BRDs and SRSs, ensuring alignment with technical constraints. "
+        "Supported gap analysis."
+    )
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "summary": "BA có kinh nghiệm trực tiếp.",
+            "strengths": [], "weaknesses": [], "suggestions": [],
+            "requirementMatches": [
+                {"requirementId": "experience", "level": "Strong", "evidence": (
+                    "Business Systems Analyst Alpha Tech 2024-Present; "
+                    "BA Intern Enterprise VN 2023-2024"
+                )},
+                {"requirementId": "modeling", "level": "Strong", "evidence": (
+                    "Process Modeling BPMN 2.0, UML (Activity Diagrams, State Machine); "
+                    "Drafted detailed BRDs and SRSs"
+                )},
+                {"requirementId": "documents", "level": "Partial", "evidence": (
+                    "Drafted detailed BRDs and SRSs, ensuring alignment with technical constraints"
+                )},
+                {"requirementId": "sprints", "level": "Partial", "evidence": (
+                    "Delivered ERP (thường liên quan quản lý Sprint); Supported gap analysis"
+                )},
+            ],
+            "cvSections": [],
+        })
+    )
+    requirements = [
+        {"requirementId": "experience", "priority": "MustHave", "text": "6-12 tháng BA"},
+        {"requirementId": "modeling", "priority": "MustHave", "text": "UML và BPMN"},
+        {"requirementId": "documents", "priority": "MustHave", "text": "BRD, SRS, Use cases"},
+        {"requirementId": "sprints", "priority": "MustHave", "text": "Theo dõi Sprint"},
+    ]
+
+    result = await provider.analyze_cv(cv, "JD", "BA", requirements=requirements)
+    by_id = {item["requirementId"]: item for item in result["requirementMatches"]}
+
+    assert by_id["experience"]["level"] == "Strong"
+    assert by_id["experience"]["evidence"] == "Business Systems Analyst Alpha Tech 2024-Present"
+    assert by_id["modeling"]["level"] == "Strong"
+    assert by_id["modeling"]["evidence"].startswith("Process Modeling BPMN 2.0")
+    assert by_id["documents"]["level"] == "Partial"
+    assert by_id["documents"]["evidence"].startswith("Drafted detailed BRDs and SRSs")
+    assert by_id["sprints"]["level"] == "Weak"
+    assert by_id["sprints"]["evidence"] == NO_EVIDENCE
 
 
 @pytest.mark.asyncio

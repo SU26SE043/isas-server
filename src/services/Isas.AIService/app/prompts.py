@@ -39,9 +39,37 @@ _CV_REQUIREMENTS_WORKFLOW_DEFAULT = (
 )
 _CV_REQUIREMENTS_LEVEL_RUBRIC_DEFAULT = (
     "ĐỊNH NGHĨA LEVEL — áp dụng nhất quán cho từng requirement:\n"
-    "- Strong: có bằng chứng trực tiếp và rõ ràng trong CV.\n"
-    "- Partial: có dấu hiệu liên quan nhưng chưa đủ mạnh.\n"
-    "- Weak: gần như không thấy bằng chứng."
+    "- Strong: bằng chứng trực tiếp đáp ứng đầy đủ phần cốt lõi. Với điều kiện A HOẶC B, chỉ cần "
+    "đủ một nhánh; với điều kiện A VÀ B hoặc liệt kê nhiều thành phần bắt buộc, phải đủ các phần "
+    "cốt lõi mới là Strong.\n"
+    "- Partial: có bằng chứng trực tiếp cho một phần, hoặc bằng chứng liên quan nhưng chưa đủ để "
+    "khẳng định toàn bộ requirement.\n"
+    "- Weak: sau khi quét toàn bộ CV vẫn không có bằng chứng trực tiếp phù hợp.\n"
+    "HIỆU CHỈNH BẮT BUỘC:\n"
+    "- Chức danh công việc/thực tập kèm mốc thời gian là bằng chứng trực tiếp cho vai trò và thời "
+    "lượng kinh nghiệm; phải tính khoảng thời gian thay vì đòi CV tự ghi 'X tháng/năm'.\n"
+    "- Kỹ năng/phương pháp được liệt kê rõ trong Skills/Competencies là bằng chứng trực tiếp cho "
+    "mức hiểu biết hoặc khả năng cơ bản tương ứng.\n"
+    "- Phân biệt trạng thái đã hoàn thành với đang học/dự kiến: 'Expected Graduation', 'Present', "
+    "'in progress' hoặc mốc tốt nghiệp ở tương lai KHÔNG chứng minh đã tốt nghiệp. Với requirement "
+    "bắt buộc 'tốt nghiệp/đã hoàn thành', các trạng thái này tối đa là Partial; chỉ Strong khi CV "
+    "thể hiện bằng cấp đã được cấp hoặc chương trình đã hoàn tất.\n"
+    "- Không suy từ sản phẩm/công cụ cùng hãng sang công cụ được nêu đích danh. Ví dụ MS Visio "
+    "KHÔNG chứng minh Word, Excel hoặc PowerPoint. Nếu requirement liệt kê nhiều công cụ bắt buộc, "
+    "chỉ chấm Partial khi CV nêu trực tiếp ít nhất một công cụ trong chính danh sách đó; không có "
+    "công cụ nào thì Weak.\n"
+    "- Không đánh tráo đối tượng hoặc ngữ cảnh được requirement nêu đích danh. Ví dụ đào tạo end-user "
+    "KHÔNG chứng minh đã trình bày/giải thích requirement cho Dev hoặc QA/QC. Khác đối tượng thì "
+    "không được Strong; chỉ Partial khi CV vẫn nêu trực tiếp cùng hành động cốt lõi và cùng loại tài "
+    "liệu/yêu cầu, còn chỉ có kỹ năng liên quan chung chung thì Weak.\n"
+    "- Với requirement ghép nhiều phẩm chất bằng dấu phẩy/'và', một chứng chỉ hoặc mục Continuous "
+    "Learning chỉ chứng minh phần học hỏi, KHÔNG tự chứng minh cẩn thận hay trách nhiệm; trường hợp "
+    "đó tối đa là Partial, không được Strong.\n"
+    "- CV viết bằng tiếng Anh, bằng đại học hoặc chứng chỉ chuyên môn KHÔNG tự chứng minh trình độ "
+    "đọc/giao tiếp tiếng Anh. Chỉ chấm có bằng chứng khi CV ghi rõ ngoại ngữ, cấp độ/chứng chỉ ngôn "
+    "ngữ, điểm thi hoặc công việc thực tế sử dụng tiếng Anh.\n"
+    "- Không biến công việc 'thường liên quan' thành bằng chứng: ERP không tự chứng minh Agile, "
+    "dự án không tự chứng minh theo dõi Sprint, chứng chỉ không tự chứng minh mọi kỹ năng mềm."
 )
 
 
@@ -697,8 +725,11 @@ def build_cv_analysis_prompt(cv_text: str, jd_text: str | None,
         parts.append(prompt_registry.get(K_CV_REQUIREMENTS_WORKFLOW, _CV_REQUIREMENTS_WORKFLOW_DEFAULT))
         parts.append(
             "LUẬT BẰNG CHỨNG — do hệ thống giữ cố định:\n"
-            "Mỗi kết luận phải có evidence là đoạn trích nguyên văn từ CV; nếu không có thì "
-            f"dùng đúng level Weak và evidence \"{NO_EVIDENCE}\"."
+            "Mỗi kết luận phải có evidence là đúng MỘT đoạn trích nguyên văn LIÊN TỤC từ CV. "
+            "Chọn đoạn mạnh nhất; tuyệt đối không nối nhiều đoạn bằng dấu chấm phẩy/xuống dòng, "
+            "không diễn giải và không thêm nhận xét trong ngoặc. Một đoạn CV được phép dùng lại "
+            "cho nhiều requirement. Nếu một đoạn duy nhất chỉ chứng minh được một phần requirement "
+            f"thì dùng Partial; nếu không có thì dùng đúng level Weak và evidence \"{NO_EVIDENCE}\"."
         )
         parts.append(prompt_registry.get(
             K_CV_REQUIREMENTS_LEVEL_RUBRIC, _CV_REQUIREMENTS_LEVEL_RUBRIC_DEFAULT))
@@ -715,8 +746,10 @@ def build_cv_analysis_prompt(cv_text: str, jd_text: str | None,
 
         parts.append(
             "Trả thêm:\n"
-            "- requirementMatches: đúng một mục cho mỗi requirementId, giữ nguyên priority và "
-            "text đã cấp. level chỉ được là Strong, Partial hoặc Weak.\n"
+            "- requirementMatches: đúng một mục cho mỗi requirementId. Chỉ cần trả requirementId, "
+            "level và evidence; server tự gắn lại priority/text nguồn. level chỉ được là Strong, "
+            "Partial hoặc Weak. Trước khi trả, kiểm lại mọi Weak để chắc chắn không bỏ sót chức "
+            "danh + thời gian, Skills/Competencies hoặc bullet Experience/Projects liên quan.\n"
             "- cvSections: các mốc bắt đầu section trong CV, mỗi mốc gồm title, kind và "
             "startsWith là chuỗi xuất hiện nguyên văn để server xác minh. Chỉ trả section thực "
             "sự có trong CV; không gán evidence vào section thay cho server."
@@ -761,8 +794,8 @@ def build_cv_analysis_prompt(cv_text: str, jd_text: str | None,
         schema_hint += ',"jdMatch":{"score":0,"matchedSkills":["..."],"missingSkills":["..."]}'
     if requirement_mode:
         schema_hint += (
-            ',"requirementMatches":[{"requirementId":"...","priority":"MustHave",'
-            '"text":"...","level":"Strong","evidence":"..."}],'
+            ',"requirementMatches":[{"requirementId":"...",'
+            '"level":"Strong","evidence":"một đoạn nguyên văn liên tục"}],'
             '"cvSections":[{"title":"Skills","kind":"skills","startsWith":"Skills"}]'
         )
         if grounding:

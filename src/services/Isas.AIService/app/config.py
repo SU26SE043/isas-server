@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     # hàng nghìn token suy luận ẩn. Prod 2026-08-18 đo 10 lượt: 5.077–9.238 output+thinking token
     # cho chỉ 7 requirement; một lượt chạy 52,5s rồi mới 502 ở bước map citation. `0` tắt thinking
     # trên Flash; `-1` trả về hành vi động của model để rollback không cần sửa code.
-    analyze_cv_thinking_budget: int = 0
+    analyze_cv_thinking_budget: int = 512
 
     # Phòng thủ tại chokepoint AIService: caller cũ/lệch vẫn có thể gửi `TopK × requirements`
     # chunk. InterviewService chọn round-robin trước, còn cap này bảo đảm prompt không phình lại khi
