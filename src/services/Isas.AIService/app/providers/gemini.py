@@ -1,5 +1,7 @@
 import json
 import logging
+import re
+import unicodedata
 from typing import NamedTuple
 
 from google import genai
@@ -57,6 +59,35 @@ LEVEL_DESCRIPTOR_MIN_CHARS = 20
 # 1.35 chứ không phải 1.0: ép bằng nhau tuyệt đối sẽ khiến model độn chữ cho đủ số từ, và bài độn
 # chữ cũng không còn là bài thật của một ứng viên nữa.
 PREVIEW_LENGTH_RATIO_MAX = 1.35
+
+
+def _normalize_verbatim(value: str) -> str:
+    """Chuẩn hoá xác định để kiểm evidence, không phải fuzzy matching."""
+    value = unicodedata.normalize("NFKC", value or "")
+    value = value.replace("\u00a0", " ").replace("\u2009", " ").replace("\u202f", " ")
+    value = value.translate(str.maketrans({
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+        "–": "-", "—": "-", "‐": "-",
+    }))
+    return value.casefold()
+
+
+def find_verbatim(cv_text: str, evidence: str) -> int | None:
+    """Trả offset đầu tiên của evidence; None nếu không có bằng chứng nguyên văn.
+
+    Cho phép khác biệt an toàn do PDF: khoảng trắng mềm, gạch nối bị tách bởi khoảng trắng,
+    và ``ASP.NET-Core``/``ASP.NET Core``. Không dùng fuzzy hoặc so ngữ nghĩa.
+    """
+    evidence = _normalize_verbatim(evidence).strip()
+    text = _normalize_verbatim(cv_text)
+    if not evidence:
+        return None
+
+    pattern = re.escape(evidence)
+    pattern = pattern.replace(r"\ ", r"\s+")
+    pattern = pattern.replace(r"\-", r"(?:-|\s)?")
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    return match.start() if match else None
 
 
 def preview_word_count(text: str) -> int:
@@ -782,7 +813,9 @@ class GeminiProvider(QuestionProvider):
         return last if last is not None else PreviewAnswersResult([], False)
 
     async def analyze_cv(self, cv_text: str, jd_text: str | None,
-                         job_category: str | None, language: str = "vi") -> dict:
+                         job_category: str | None, language: str = "vi",
+                         requirements: list[dict] | None = None,
+                         grounding: list[dict] | None = None) -> dict:
         """
         Phân tích CV cho người LUYỆN TẬP (BC6, B2C sync, D17) — feedback + khớp JD (nếu có).
 
@@ -799,7 +832,9 @@ class GeminiProvider(QuestionProvider):
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
-        prompt = build_cv_analysis_prompt(cv_text, jd_text, job_category, language=language)
+        prompt = build_cv_analysis_prompt(
+            cv_text, jd_text, job_category, language=language,
+            requirements=requirements, grounding=grounding)
 
         properties: dict = {
             "summary": {"type": "string"},
@@ -808,7 +843,8 @@ class GeminiProvider(QuestionProvider):
             "suggestions": {"type": "array", "items": {"type": "string"}},
         }
         required = ["summary", "strengths", "weaknesses", "suggestions"]
-        if jd_text:
+        requirement_mode = requirements is not None
+        if jd_text and not requirement_mode:
             properties["jdMatch"] = {
                 "type": "object",
                 "properties": {
@@ -819,6 +855,48 @@ class GeminiProvider(QuestionProvider):
                 "required": ["score", "matchedSkills", "missingSkills"],
             }
             required.append("jdMatch")
+        if requirement_mode:
+            properties["requirementMatches"] = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "requirementId": {"type": "string"},
+                        "priority": {"type": "string", "enum": ["MustHave", "NiceToHave"]},
+                        "text": {"type": "string"},
+                        "level": {"type": "string", "enum": list(NEED_LEVELS)},
+                        "evidence": {"type": "string"},
+                    },
+                    "required": ["requirementId", "priority", "text", "level", "evidence"],
+                },
+            }
+            properties["cvSections"] = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "kind": {"type": "string"},
+                        "startsWith": {"type": "string"},
+                    },
+                    "required": ["title", "kind", "startsWith"],
+                },
+            }
+            if grounding:
+                properties["citations"] = {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "chunkId": {"type": "string"},
+                            "content": {"type": "string"},
+                            "sourceUrl": {"type": ["string", "null"]},
+                            "sourceTitle": {"type": ["string", "null"]},
+                        },
+                        "required": ["chunkId", "content"],
+                    },
+                }
+            required.extend(["requirementMatches", "cvSections"])
 
         response = await self._generate(
             "analyze_cv",
@@ -856,7 +934,7 @@ class GeminiProvider(QuestionProvider):
             "suggestions": _clean_list(data.get("suggestions")),
         }
 
-        if jd_text:
+        if jd_text and not requirement_mode:
             jd_match_raw = data.get("jdMatch")
             if not isinstance(jd_match_raw, dict):
                 raise ValueError("LLM không trả jdMatch dù request có jdText.")
@@ -870,6 +948,68 @@ class GeminiProvider(QuestionProvider):
                 "matchedSkills": _clean_list(jd_match_raw.get("matchedSkills")),
                 "missingSkills": _clean_list(jd_match_raw.get("missingSkills")),
             }
+
+        if requirement_mode:
+            raw_matches = data.get("requirementMatches")
+            if not isinstance(raw_matches, list):
+                raise ValueError("LLM không trả requirementMatches hợp lệ.")
+
+            allowed = {str(r.get("requirementId")): r for r in requirements}
+            by_id: dict[str, dict] = {}
+            for raw in raw_matches:
+                if not isinstance(raw, dict):
+                    continue
+                rid = str(raw.get("requirementId") or "").strip()
+                if rid not in allowed or rid in by_id:
+                    continue
+                source = allowed[rid]
+                priority = source.get("priority")
+                level = str(raw.get("level") or "")
+                evidence = str(raw.get("evidence") or "").strip()
+                if priority not in ("MustHave", "NiceToHave"):
+                    priority = "MustHave"
+                if level not in NEED_LEVELS:
+                    level = "Weak"
+                if not evidence or evidence == NO_EVIDENCE:
+                    level, evidence = "Weak", NO_EVIDENCE
+                elif find_verbatim(cv_text, evidence) is None:
+                    level, evidence = "Weak", NO_EVIDENCE
+                by_id[rid] = {
+                    "requirementId": rid,
+                    "priority": priority,
+                    "text": str(source.get("text") or "").strip(),
+                    "level": level,
+                    "evidence": evidence,
+                }
+
+            missing = [str(r.get("requirementId")) for r in requirements
+                       if str(r.get("requirementId")) not in by_id]
+            if missing:
+                raise ValueError(f"LLM thiếu requirementMatches: {missing}")
+            # Server nhận kết quả theo đúng thứ tự input, không tin thứ tự model trả.
+            result["requirementMatches"] = [
+                by_id[str(r.get("requirementId"))] for r in requirements
+            ]
+            result["cvSections"] = [
+                s for s in data.get("cvSections", [])
+                if isinstance(s, dict)
+                and str(s.get("title") or "").strip()
+                and str(s.get("kind") or "").strip()
+                and str(s.get("startsWith") or "").strip()
+                and find_verbatim(cv_text, str(s.get("startsWith"))) is not None
+            ]
+            if grounding:
+                allowed_chunks = {
+                    str(g.get("chunkId")): g for g in grounding
+                    if str(g.get("chunkId") or "").strip()
+                }
+                result["citations"] = [
+                    allowed_chunks[cid] for c in (
+                        str(item.get("chunkId") or "").strip()
+                        for item in data.get("citations", [])
+                        if isinstance(item, dict)
+                    ) if cid in allowed_chunks
+                ]
 
         return result
 

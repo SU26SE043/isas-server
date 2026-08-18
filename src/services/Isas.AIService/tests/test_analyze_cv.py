@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.prompts import build_cv_analysis_prompt
 from app.config import settings
-from app.providers.gemini import GeminiProvider
+from app.providers.gemini import GeminiProvider, find_verbatim
 import app.main as main_module
 
 client = TestClient(main_module.app)
@@ -46,6 +46,30 @@ def test_prompt_without_jd_has_no_jdmatch_instruction():
     prompt = build_cv_analysis_prompt(cv_text="CV text", jd_text=None, job_category=None)
     assert "---JD" not in prompt
     assert "PHẢI tính thêm jdMatch" not in prompt
+
+
+def test_requirement_prompt_is_cv_first_and_has_no_holistic_jdmatch():
+    prompt = build_cv_analysis_prompt(
+        cv_text="Skills\n.NET, PostgreSQL\nProjects\nDocker deployment",
+        jd_text="Need .NET and Docker",
+        job_category="BE",
+        requirements=[
+            {"requirementId": "r1", "priority": "MustHave", "text": ".NET"},
+            {"requirementId": "r2", "priority": "NiceToHave", "text": "Docker"},
+        ],
+    )
+    assert "QUY TRÌNH CV-FIRST" in prompt
+    assert "Skills/Technical Skills" in prompt
+    assert 'requirementId="r1"' in prompt
+    assert '"requirementMatches"' in prompt
+    assert "PHẢI tính thêm jdMatch" not in prompt
+
+
+def test_find_verbatim_uses_first_occurrence_and_pdf_normalization():
+    cv = "Skills: ASP.NET-Core\nProjects: micro-\nservices"
+    assert find_verbatim(cv, "ASP.NET Core") == 8
+    assert find_verbatim(cv, "microservices") is not None
+    assert find_verbatim("Skills: Docker", "Kubernetes") is None
 
 
 # ── Provider.analyze_cv: shape + chống ảo giác (kẹp điểm) ───────────────────
@@ -141,6 +165,56 @@ async def test_provider_analyze_cv_raises_on_empty_summary():
         await provider.analyze_cv("cv", None, "BE")
 
 
+@pytest.mark.asyncio
+async def test_provider_requirement_mode_orders_matches_and_verifies_evidence():
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "summary": "s", "strengths": [], "weaknesses": [], "suggestions": [],
+            "requirementMatches": [
+                {"requirementId": "r2", "priority": "NiceToHave", "text": "wrong",
+                 "level": "Strong", "evidence": "Docker"},
+                {"requirementId": "r1", "priority": "MustHave", "text": "wrong",
+                 "level": "Partial", "evidence": "not in cv"},
+            ],
+            "cvSections": [
+                {"title": "Skills", "kind": "skills", "startsWith": "Skills"},
+                {"title": "Missing", "kind": "other", "startsWith": "Missing"},
+            ],
+        })
+    )
+
+    result = await provider.analyze_cv(
+        "Skills: Docker", "JD", "BE", requirements=[
+            {"requirementId": "r1", "priority": "MustHave", "text": "Docker"},
+            {"requirementId": "r2", "priority": "NiceToHave", "text": "Kubernetes"},
+        ])
+
+    assert "jdMatch" not in result
+    assert [m["requirementId"] for m in result["requirementMatches"]] == ["r1", "r2"]
+    assert result["requirementMatches"][0]["level"] == "Weak"
+    assert result["requirementMatches"][0]["evidence"] == "Không thấy bằng chứng"
+    assert result["requirementMatches"][1]["level"] == "Weak"
+    assert result["cvSections"] == [{"title": "Skills", "kind": "skills", "startsWith": "Skills"}]
+
+
+@pytest.mark.asyncio
+async def test_provider_requirement_mode_rejects_missing_requirement():
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "summary": "s", "strengths": [], "weaknesses": [], "suggestions": [],
+            "requirementMatches": [], "cvSections": [],
+        })
+    )
+
+    with pytest.raises(ValueError, match="thiếu requirementMatches"):
+        await provider.analyze_cv(
+            "cv", "JD", "BE", requirements=[
+                {"requirementId": "r1", "priority": "MustHave", "text": "Docker"},
+            ])
+
+
 # ── Endpoint /api/v1/analyze-cv: request/response shape qua HTTP thật ───────
 def test_endpoint_without_jdtext_response_shape(monkeypatch):
     # C14 — `criteria` là tham số THỨ TƯ có mặc định (đường B2C không gửi). Double phải nhận nó,
@@ -197,6 +271,37 @@ def test_endpoint_with_jdtext_response_shape(monkeypatch):
         "matchedSkills": ["Python"],
         "missingSkills": ["Docker"],
     }
+
+
+def test_endpoint_requirement_mode_omits_jdmatch(monkeypatch):
+    async def fake_analyze_cv(cv_text, jd_text, job_category, requirements=None):
+        assert requirements == [
+            {"requirementId": "r1", "text": "Docker", "priority": "MustHave"},
+            {"requirementId": "r2", "text": "Kubernetes", "priority": "NiceToHave"},
+        ]
+        return {
+            "summary": "Tóm tắt CV.", "strengths": [], "weaknesses": [], "suggestions": [],
+            "requirementMatches": [{
+                "requirementId": "r1", "priority": "MustHave", "text": "Docker",
+                "level": "Strong", "evidence": "Docker",
+            }, {
+                "requirementId": "r2", "priority": "NiceToHave", "text": "Kubernetes",
+                "level": "Weak", "evidence": "Không thấy bằng chứng",
+            }],
+            "cvSections": [{"title": "Skills", "kind": "skills", "startsWith": "Skills"}],
+        }
+
+    monkeypatch.setattr(main_module.provider, "analyze_cv", fake_analyze_cv)
+    res = client.post(
+        "/api/v1/analyze-cv", headers=_HEADERS,
+        json={"cvText": "Skills: Docker", "jdText": "JD", "jobCategory": "BE",
+              "mustHave": [{"requirementId": "r1", "text": "Docker"}],
+              "niceToHave": [{"requirementId": "r2", "text": "Kubernetes"}]},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert "jdMatch" not in body
+    assert [m["requirementId"] for m in body["requirementMatches"]] == ["r1", "r2"]
 
 
 def test_endpoint_rejects_empty_cvtext():

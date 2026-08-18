@@ -256,6 +256,10 @@ class AnalyzeCvRequest(BaseModel):
     language: str = "vi"
     jdText: str | None = None
     jobCategory: str | None = None   # BA | BE | FE — optional (chỉ để cá nhân hoá nhận xét)
+    # None/None = LEGACY; ít nhất một list khác None = đối chiếu theo từng requirement.
+    # Các id này do service nghiệp vụ cấp, AIService chỉ được phép echo id đã nhận.
+    mustHave: list[dict] | None = None
+    niceToHave: list[dict] | None = None
 
 
 class JdMatch(BaseModel):
@@ -270,6 +274,49 @@ class AnalyzeCvResponse(BaseModel):
     weaknesses: list[str]
     suggestions: list[str]
     jdMatch: JdMatch | None = None   # chỉ có khi request có jdText
+    requirementMatches: list["CvRequirementMatch"] | None = None
+    cvSections: list["CvSectionAnchor"] | None = None
+    # Nguồn tri thức dùng cho suggestions; không phải citation chứng minh mức chấm.
+    citations: list[GroundingChunk] | None = None
+
+
+REQUIREMENT_PRIORITIES = ("MustHave", "NiceToHave")
+
+
+class JdRequirement(BaseModel):
+    """Một requirement AI tách từ JD; output bước đề xuất, chưa có id bền."""
+    text: str
+    citations: list[GroundingChunk] = []
+
+
+class SuggestJdRequirementsRequest(BaseModel):
+    jdText: str
+    jobCategory: str
+    language: str = "vi"
+    grounding: list[GroundingChunk] = []
+
+
+class SuggestJdRequirementsResponse(BaseModel):
+    mustHave: list[JdRequirement]
+    niceToHave: list[JdRequirement]
+
+
+class CvRequirementMatch(BaseModel):
+    requirementId: str
+    priority: str
+    text: str
+    level: str
+    evidence: str
+
+
+class CvSectionAnchor(BaseModel):
+    title: str
+    kind: str
+    startsWith: str
+
+
+# Các model response ở trên dùng forward reference để giữ nhóm schema liền mạch.
+AnalyzeCvResponse.model_rebuild()
 
 
 # ── Sàng CV B2B — HR technical screener ─────────────────────────────────────

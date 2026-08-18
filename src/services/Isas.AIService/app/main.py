@@ -11,6 +11,7 @@ from app.schemas import (
     ScorePreviewRequest, ScorePreviewResponse, PreviewSample, PreviewCriterionScore,
     PreviewCriterion,
     AnalyzeCvRequest, AnalyzeCvResponse, AnalyzeRepoRequest, AnalyzeRepoResponse, JdMatch,
+    CvRequirementMatch, CvSectionAnchor, GroundingChunk,
     JobNeed, SuggestJobNeedsRequest, SuggestJobNeedsResponse,
     GenerateRoadmapRequest, GenerateRoadmapResponse, RoadmapMilestone, RoadmapLesson,
     GenerateLessonTheoryRequest, GenerateLessonTheoryResponse,
@@ -282,15 +283,46 @@ async def analyze_cv(req: AnalyzeCvRequest,
     if not req.cvText or not req.cvText.strip():
         raise HTTPException(status_code=400, detail="cvText không được rỗng")
     try:
-        result = await _call_with_language(req.language, provider.analyze_cv,
-                                           req.cvText, req.jdText, req.jobCategory)
-        jd_match = JdMatch(**result["jdMatch"]) if result.get("jdMatch") else None
+        requirements = None
+        if req.mustHave is not None or req.niceToHave is not None:
+            requirements = [
+                {**item, "priority": "MustHave"} for item in (req.mustHave or [])
+            ] + [
+                {**item, "priority": "NiceToHave"} for item in (req.niceToHave or [])
+            ]
+        if requirements is None:
+            # Giữ call-shape legacy để provider/test double cũ không bị phá.
+            result = await _call_with_language(
+                req.language, provider.analyze_cv,
+                req.cvText, req.jdText, req.jobCategory)
+        else:
+            result = await _call_with_language(
+                req.language, provider.analyze_cv,
+                req.cvText, req.jdText, req.jobCategory,
+                requirements=requirements)
+        # REQUIREMENT mode có một nguồn sự thật duy nhất; không phát lại jdMatch holistic.
+        jd_match = (
+            JdMatch(**result["jdMatch"])
+            if requirements is None and result.get("jdMatch") else None
+        )
         return AnalyzeCvResponse(
             summary=result["summary"],
             strengths=result["strengths"],
             weaknesses=result["weaknesses"],
             suggestions=result["suggestions"],
             jdMatch=jd_match,
+            requirementMatches=(
+                [CvRequirementMatch(**m) for m in result["requirementMatches"]]
+                if result.get("requirementMatches") is not None else None
+            ),
+            cvSections=(
+                [CvSectionAnchor(**s) for s in result["cvSections"]]
+                if result.get("cvSections") is not None else None
+            ),
+            citations=(
+                [GroundingChunk(**c) for c in result["citations"]]
+                if result.get("citations") is not None else None
+            ),
         )
     except HTTPException:
         raise
