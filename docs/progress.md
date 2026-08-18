@@ -1,6 +1,19 @@
 # ISAS — Progress / Handoff
 
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
+> **Cập nhật 2026-08-18 (AI-CV1 — tối ưu CV analysis, chờ PR review):** production cũ cùng fixture
+> 3 lượt chỉ 2 HTTP 200, p50 **11,903s**, p95 **52,520s** (một 502 do map citation dùng sai biến
+> `cid` sau khi Gemini đã chạy). Candidate tách biệt trên server đạt **3/3 PASS**, đủ 7/7 requirement,
+> evidence nguyên văn/không-bằng-chứng đúng, citation allowlist đúng; p50 **5,737s**, p95 **6,064s**.
+> Token cùng fixture giảm khoảng **4.912–5.507 → 3.036–3.063** và cost **$0,0070–0,0085 →
+> $0,0031/lượt**. Thay đổi: thinking budget 0 có kill-switch `-1`; grounding cap 8 round-robin;
+> thiếu match điền `Weak/Không thấy bằng chứng` thay vì 502. **Đã rollout production** AIService +
+> InterviewService với backup rollback; đo lại container production **3/3 PASS**, p50 **5,943s**,
+> p95 **6,032s**. Gate: AI pytest **727 pass/1 skip** · full .NET **2.608 pass** · solution build
+> **0 error** · health AI/Interview **200** · route Gateway đến CV analysis trả **401** đúng auth gate.
+> Chưa tự đánh `passing`: chưa tạo dữ liệu rác để chạy full B2C E2E trên production
+> (đăng ký→upload CV→reserve/consume credit→lịch sử), và còn người khác review PR theo quy tắc
+> người làm ≠ người kiểm.
 > **Cập nhật mỗi khi đổi trạng thái** (tan ca). Cập nhật lần cuối: **2026-07-12** (vòng giám sát: **D1·BC6·E2·P1** (vòng 1) + **P7·E3·E4·BC13** (vòng 2) + **P4·C11·E8** (vòng 3) + **P5·C12·BC11** (vòng 4) + **P6·E5·BC9** (vòng 5) + **P8a·E6·BC7** (vòng 6) + **E7·C13·BC2** (vòng 7) + **C14·BC8·BK7** (vòng 8) + **BK11·BK1·BK12** (vòng 9 — bug-fix) + **P2·C15·BC12** (vòng 10) + **BC14·BK4·BC10-AI** (vòng 11) + **D2** (vòng 12 — solo cross-service, membership redesign) + **BC10·P3·D3** (vòng 13 — 2 worker sạch + D3 kèm) + **BC15·D4·P8b** (vòng 14 — 3 worktree thật, 0 race) + **I2·A4** (vòng 15 — 2 worker, frontier mỏng) + **BK17·BK18·BK16** (vòng 16 — BK-cleanup, 3 worktree thật) + **E9** (vòng 17 — SOLO cross-service Interview+AIService, chấm neo mức) + **E10** (vòng 18 — SOLO cross-service, self-consistency median+needs_review) + **E11·A6** (vòng 19 — E11 đóng chuỗi chất lượng chấm + A6 org nhiều thành viên) + **BC7b** (vòng 20 — wire billing CV analysis, chốt BK5) + **BK15·BK6·A6b** (vòng 21 — backlog cleanup, 3 worktree disjoint) + **A5** (vòng 22 — SOLO cross-cutting, auth gate `[Authorize(Roles)]` mọi service) + **BC16** (vòng 23 — rubric cá nhân B2C candidate-owned) passing, integrated vào `docs/sync-design-d18-d21`). Cập nhật lần cuối vòng 23: **2026-07-13**.
 > **Cập nhật 2026-07-16 (Đợt 1–3b hardening + BK14 org-credit-reserve + live e2e B2C/B2B verified trên server deploy):** xem §Đợt 1–3b + BK14 bên dưới. **BK14 done** (commit 3399765 — B2B reserve org credit tại Start). **Luồng tiền E2E cả 2 dòng chạy thật** (B2C mua-credit→luyện→chấm→consume · B2B org-credit→campaign→invite→join→start→chấm→ranking Pass).
 > **Cập nhật 2026-07-17 (E2E toàn hệ thống trên deploy Vercel FE + tunnel BE + 2 fix qua PR→CI/CD):** e2e cả **B2C+B2B, UI thật (Chrome) + API** trên site thật → PASS; **luồng tiền PayOS→webhook→credit verify LIVE hôm nay** (order Paid + ledger `+5 Purchase`). Fix: campaign list "0 tiêu chí" (`.Include(Criteria)`, **PR #42**) + FE loading splash (PayOS-return cold-boot, deploy Vercel). CI deploy pull-tolerant (**PR #41**). Xem **§E2E 2026-07-17** bên dưới.

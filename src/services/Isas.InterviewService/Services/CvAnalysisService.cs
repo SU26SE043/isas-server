@@ -112,10 +112,10 @@ public class CvAnalysisService : ICvAnalysisService
             {
                 var batches = await _knowledge.RetrieveBatchAsync(
                     jobCategory.ToString(), normalizedRequirements.Select(x => x.Text).ToList(), ct);
-                grounding = batches.SelectMany(x => x)
-                    .GroupBy(x => x.ChunkId, StringComparer.Ordinal)
-                    .Select(x => x.First())
-                    .ToList();
+                var maxGroundingChunks = int.TryParse(
+                    _config["JdRequirements:MaxGroundingChunks"], out var configuredGrounding)
+                    ? configuredGrounding : DefaultMaxGroundingChunks;
+                grounding = SelectGroundingRoundRobin(batches, maxGroundingChunks);
             }
         }
 
@@ -212,6 +212,7 @@ public class CvAnalysisService : ICvAnalysisService
 
     private const int DefaultMaxRequirementItems = 20;
     private const int DefaultMaxRequirementTextChars = 500;
+    private const int DefaultMaxGroundingChunks = 8;
 
     private sealed record NormalizedRequirement(string RequirementId, string Priority, string Text);
 
@@ -244,6 +245,35 @@ public class CvAnalysisService : ICvAnalysisService
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
         return text.Trim();
+    }
+
+    // AI-CV1 — RetrieveBatch trả TopK CHO MỖI requirement. Flatten thẳng biến 7 requirement ×
+    // TopK=4 thành tối đa 28 chunk trong một prompt. Chọn theo vòng giúp mỗi requirement có cơ hội
+    // góp chunk trước khi lấy chunk thứ hai của requirement đầu; đồng thời dedupe chunkId.
+    // maxChunks <= 0 là kill-switch grounding riêng cho CV analysis.
+    private static IReadOnlyList<GroundingChunk> SelectGroundingRoundRobin(
+        IReadOnlyList<IReadOnlyList<GroundingChunk>> batches,
+        int maxChunks)
+    {
+        if (maxChunks <= 0 || batches.Count == 0) return [];
+
+        var result = new List<GroundingChunk>(Math.Min(maxChunks, batches.Count));
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var depth = 0; result.Count < maxChunks; depth++)
+        {
+            var anyAtDepth = false;
+            foreach (var batch in batches)
+            {
+                if (depth >= batch.Count) continue;
+                anyAtDepth = true;
+                var chunk = batch[depth];
+                if (string.IsNullOrWhiteSpace(chunk.ChunkId) || !seen.Add(chunk.ChunkId)) continue;
+                result.Add(chunk);
+                if (result.Count == maxChunks) break;
+            }
+            if (!anyAtDepth) break;
+        }
+        return result;
     }
 
     private void ValidateRequirementLimits(IReadOnlyList<NormalizedRequirement> requirements)

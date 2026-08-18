@@ -101,6 +101,18 @@ class Settings(BaseSettings):
     # ⚠ Chỉ Gemini **Flash** cho phép 0; Pro không tắt được — đổi model thì phải xem lại.
     decide_next_thinking_budget: int = 0
 
+    # ── NGÂN SÁCH /ANALYZE-CV ─────────────────────────────────────
+    # Requirement-mode là bài toán trích xuất có schema + hậu kiểm evidence xác định, không cần
+    # hàng nghìn token suy luận ẩn. Prod 2026-08-18 đo 10 lượt: 5.077–9.238 output+thinking token
+    # cho chỉ 7 requirement; một lượt chạy 52,5s rồi mới 502 ở bước map citation. `0` tắt thinking
+    # trên Flash; `-1` trả về hành vi động của model để rollback không cần sửa code.
+    analyze_cv_thinking_budget: int = 0
+
+    # Phòng thủ tại chokepoint AIService: caller cũ/lệch vẫn có thể gửi `TopK × requirements`
+    # chunk. InterviewService chọn round-robin trước, còn cap này bảo đảm prompt không phình lại khi
+    # có caller khác. `0` = bỏ grounding của CV analysis; `-1` = không giới hạn (hành vi cũ).
+    analyze_cv_max_grounding_chunks: int = 8
+
     # ── Q16: SỐ LƯỢT SINH CÂU ĐÀO SÂU ────────────────────────────
     # `/decide-next` TỪNG là đường DUY NHẤT của provider không có retry: output hỏng một lượt là
     # raise thẳng → 502. Với `score()` (`score_max_attempts=3`) và `generate_lesson_theory`

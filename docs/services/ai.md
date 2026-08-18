@@ -40,6 +40,14 @@
 `{ summary, strengths[], weaknesses[], suggestions[], jdMatch?{ score 0-100, matchedSkills[], missingSkills[] } }`
 (`jdMatch` chỉ khi có `jdText`). InterviewService gọi **đồng bộ HTTP** → lưu `cv_analyses` (D17, [interview.md](interview.md)).
 
+**AI-CV1 — ngân sách requirement-mode:** khi request có `mustHave[]`/`niceToHave[]`, provider dùng
+structured output và hậu kiểm evidence/citation như trước nhưng mặc định đặt Gemini Flash
+`thinking_budget=0` (`ANALYZE_CV_THINKING_BUDGET=-1` để rollback về model tự quyết). Grounding được
+cap lần cuối ở AIService bởi `ANALYZE_CV_MAX_GROUNDING_CHUNKS=8`; `0` = bỏ grounding riêng đường này,
+`-1` = không giới hạn. Model bỏ sót requirement không còn làm mất cả lượt gọi bằng 502: server điền
+đúng requirement đó thành `Weak` + `"Không thấy bằng chứng"`; evidence không nguyên văn CV và
+citation ngoài allowlist vẫn bị hạ/drop như cũ.
+
 > ⚠ **Đường sàng CV B2B KHÔNG còn đi qua endpoint này.** Trước đây hai dòng dùng chung `analyze_cv`
 > phân nhánh bằng `criteria?[]`; đã tách vì chúng khác hẳn bản chất (B2C = nhận xét giúp ứng viên sửa
 > CV; B2B = sàng lọc tuyển dụng) và vì gộp lại buộc hai khái niệm dùng chung tên field `strengths`
