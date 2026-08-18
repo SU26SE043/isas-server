@@ -172,6 +172,11 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
   `JdRequirements:MaxGroundingChunks` (mặc định 8; `<=0` tắt grounding riêng CV analysis). Vì vậy
   7 requirement không còn phình thành tối đa `7 × TopK` chunk, đồng thời requirement đầu không chiếm
   hết ngân sách nguồn.
+- **Wire requirement N7:** client gửi `mustHave[]`/`niceToHave[]` item dạng `{ "text": "…" }`;
+  **không bắt buộc và không tin `requirementId` từ client**. InterviewService mint ID mới trước khi
+  gọi AI/lưu history; `requirementId` trong response luôn là ID server cấp. DTO phải giữ constructor
+  default `RequirementId=null`, nếu chỉ khai nullable mà không có default thì ASP.NET/OpenAPI vẫn
+  đánh dấu field này required và chặn request trước controller.
 
 **`GET /cv-analysis/{id}`** → `CvAnalysisResponse` (403/404) · **`GET /cv-analysis`** → `CvAnalysisListResponse[]` của user; list giữ field legacy nhưng requirement data là summary-only, detail mới có evidence/anchors/citations.
 
