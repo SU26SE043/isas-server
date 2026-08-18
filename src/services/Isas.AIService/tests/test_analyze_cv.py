@@ -78,6 +78,8 @@ def test_requirement_prompt_is_cv_first_and_has_no_holistic_jdmatch():
     assert "KHÔNG chứng minh Word, Excel hoặc PowerPoint" in prompt
     assert "đào tạo end-user" in prompt
     assert "KHÔNG chứng minh đã trình bày/giải thích requirement cho Dev hoặc QA/QC" in prompt
+    assert "Continuous Learning chỉ chứng minh phần học hỏi" in prompt
+    assert "tối đa là Partial, không được Strong" in prompt
     assert "KHÔNG tự chứng minh trình độ" in prompt
     assert "đúng MỘT đoạn trích nguyên văn LIÊN TỤC" in prompt
     assert "server tự gắn lại priority/text nguồn" in prompt
