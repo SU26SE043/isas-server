@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     tts_prewarm_enabled: bool = True
     # Hai lane để câu 4/5 không phải chờ toàn bộ câu trước; vẫn đủ thấp để tránh burst quota.
     tts_prewarm_concurrency: int = 2
+    # Câu adaptive chỉ xuất hiện SAU /decide-next, nên warm nền cùng lúc FE gọi /tts là quá muộn:
+    # một lượt Gemini lạnh 8–10s sẽ đụng trần 9s của FE và rơi sang Web Speech. Giữ response
+    # /decide-next tối đa thêm khoảng này để mp3 nằm sẵn trong cache trước khi câu hỏi tới browser.
+    # Hết trần thì task vẫn chạy nền; không biến TTS thành điều kiện thành công của answer upload.
+    tts_adaptive_prewarm_wait_seconds: float = 15.0
     # Redis CHỈ điều phối cache miss giữa nhiều replica; mp3 vẫn nằm ở S3/SeaweedFS. URL rỗng giữ
     # chế độ single-flight trong process cho local/test. Production compose nối `redis:6379`.
     tts_redis_enabled: bool = True
