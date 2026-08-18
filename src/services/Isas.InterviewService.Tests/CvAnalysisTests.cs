@@ -205,6 +205,8 @@ public class CvAnalysisTests
         Assert.Equal(1, body.RequirementSummary!.MustHave.Strong);
         Assert.Equal(1, body.RequirementSummary.NiceToHave.Weak);
         Assert.Equal("Skills", body.CvSections![0].Title);
+        Assert.Equal(1, body.MustHaveMatches[0].Page);
+        Assert.Equal("Skills", body.MustHaveMatches[0].SectionTitle);
         Assert.Equal("chunk-1", body.Citations![0].ChunkId);
 
         var row = await t.Db.CvAnalyses.AsNoTracking().SingleAsync();
@@ -212,6 +214,52 @@ public class CvAnalysisTests
         Assert.Equal("Skills: .NET", row.RequirementMatches[0].Evidence);
         Assert.Single(row.CvSections!);
         Assert.Single(row.Citations!);
+    }
+
+    [Fact]
+    public async Task List_SummarizesRequirementEvidence_WhileDetailKeepsLocation()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Skills: .NET"));
+        var ai = new Mock<IAiServiceCvAnalyzer>();
+        ai.Setup(x => x.AnalyzeAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<CvRequirementInput>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>()))
+            .ReturnsAsync((string _, string _, string? _, CancellationToken _,
+                IReadOnlyList<CvRequirementInput>? must,
+                IReadOnlyList<CvRequirementInput>? _,
+                IReadOnlyList<GroundingChunk>? _) => new CvAnalysisAiResult(
+                "s", [], [], [], null,
+                (must ?? []).Select(x => new CvRequirementMatch(
+                    x.RequirementId, "MustHave", x.Text, "Strong", "Skills: .NET")).ToList(),
+                [new CvSectionAnchor("Skills", "skills", "Skills")],
+                [new CvAnalysisCitation("chunk-1", "source", null, "title")]));
+        var ctrl = Controller(t, storage.Object, ai.Object, user, cvAnalysisCredits: 0);
+
+        var created = Assert.IsType<CreatedResult>(await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null,
+            [new CvRequirementInput("client-1", ".NET")], []), default));
+        var detail = Assert.IsType<CvAnalysisResponse>(created.Value);
+
+        var list = Assert.IsType<OkObjectResult>(await ctrl.List(default));
+        var item = Assert.IsType<CvAnalysisListResponse>(Assert.Single(
+            Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisListResponse>>(list.Value)));
+
+        var slim = Assert.Single(item.MustHaveMatches!);
+        Assert.Equal("Strong", slim.Level);
+        Assert.DoesNotContain("evidence", System.Text.Json.JsonSerializer.Serialize(item),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Skills: .NET", detail.MustHaveMatches![0].Evidence);
+        Assert.Equal(1, detail.MustHaveMatches[0].Page);
+        Assert.Equal("Skills", detail.MustHaveMatches[0].SectionTitle);
+        Assert.NotNull(detail.CvSections);
+        Assert.NotNull(detail.Citations);
     }
 
     [Fact]
@@ -439,13 +487,13 @@ public class CvAnalysisTests
 
         var listResult = await userCtrl.List(default);
         var ok = Assert.IsType<OkObjectResult>(listResult);
-        var items = Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisResponse>>(ok.Value);
+        var items = Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisListResponse>>(ok.Value);
         Assert.Equal(2, items.Count);
 
         // user khác → rỗng
         var otherCtrl = Controller(t, storage.Object, AiMock(SampleAi(false)).Object, other);
         var otherList = Assert.IsType<OkObjectResult>(await otherCtrl.List(default));
-        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisResponse>>(otherList.Value));
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<CvAnalysisListResponse>>(otherList.Value));
     }
 
     // ── BC7b: CV analysis TÍNH PHÍ (BC-4/D22) — reserve/consume/release ────────────

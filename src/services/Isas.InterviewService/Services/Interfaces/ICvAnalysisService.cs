@@ -13,7 +13,7 @@ public interface ICvAnalysisService
     // null → 404; ném UnauthorizedAccessException → 403 (khác chủ).
     Task<CvAnalysisResponse?> GetAsync(Guid candidateId, Guid id, CancellationToken ct = default);
 
-    // Danh sách keyset-paged. Payload giữ NGUYÊN shape (FE render đầy đủ ngay trên trang danh sách).
-    Task<KeysetPage<CvAnalysisResponse>> ListAsync(
+    // Danh sách keyset-paged: giữ field legacy, requirement data là summary-only.
+    Task<KeysetPage<CvAnalysisListResponse>> ListAsync(
         Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default);
 }

@@ -52,6 +52,29 @@ public record RequirementSummary(
     RequirementSummaryBucket NiceToHave
 );
 
+public record CvRequirementListItem(
+    string RequirementId,
+    string Priority,
+    string Text,
+    string Level
+);
+
+public record CvAnalysisListResponse(
+    Guid Id,
+    Guid CvId,
+    Guid? JdId,
+    string JobCategory,
+    string Summary,
+    IReadOnlyList<string> Strengths,
+    IReadOnlyList<string> Weaknesses,
+    IReadOnlyList<string> Suggestions,
+    JdMatchResponse? JdMatch,
+    DateTime CreatedAt,
+    IReadOnlyList<CvRequirementListItem>? MustHaveMatches = null,
+    IReadOnlyList<CvRequirementListItem>? NiceToHaveMatches = null,
+    RequirementSummary? RequirementSummary = null
+);
+
 public record CvAnalysisResponse(
     Guid Id,
     Guid CvId,

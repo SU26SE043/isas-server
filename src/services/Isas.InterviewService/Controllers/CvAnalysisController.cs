@@ -111,7 +111,7 @@ public class CvAnalysisController : ControllerBase
     /// <c>CvAnalysisService.ListAsync</c>); vòng này chỉ chặn số dòng mỗi trang.
     /// </summary>
     [HttpGet]
-    [ProducesResponseType(typeof(IReadOnlyList<CvAnalysisResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(IReadOnlyList<CvAnalysisListResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> List(
         CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null)
     {

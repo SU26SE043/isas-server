@@ -139,7 +139,7 @@ public class CvAnalysisService : ICvAnalysisService
                 : await _analyzer.AnalyzeAsync(jobCategory.ToString(), cvText, jdText, ct);
 
             var matches = requirementMode
-                ? NormalizeRequirementMatches(ai.RequirementMatches, normalizedRequirements, cvText)
+                ? NormalizeRequirementMatches(ai.RequirementMatches, normalizedRequirements, cvText, ai.CvSections)
                 : null;
 
             entity = new CvAnalysis
@@ -259,7 +259,8 @@ public class CvAnalysisService : ICvAnalysisService
     private static List<CvRequirementMatch> NormalizeRequirementMatches(
         IReadOnlyList<CvRequirementMatch>? rawMatches,
         IReadOnlyList<NormalizedRequirement> requirements,
-        string cvText)
+        string cvText,
+        IReadOnlyList<CvSectionAnchor>? sections)
     {
         if (rawMatches is null)
             throw new AiServiceException("AIService không trả requirementMatches.");
@@ -274,12 +275,20 @@ public class CvAnalysisService : ICvAnalysisService
 
             var level = raw.Level is "Strong" or "Partial" or "Weak" ? raw.Level : "Weak";
             var evidence = raw.Evidence?.Trim() ?? string.Empty;
+            var evidenceOffset = FindVerbatimOffset(cvText, evidence);
+            int? page = null;
+            string? sectionTitle = null;
             if (string.IsNullOrWhiteSpace(evidence)
                 || evidence == NoEvidence
-                || FindVerbatim(cvText, evidence) is false)
+                || evidenceOffset is null)
             {
                 level = "Weak";
                 evidence = NoEvidence;
+            }
+            else
+            {
+                page = 1 + NormalizeVerbatim(cvText[..evidenceOffset.Value]).Count(c => c == '\n');
+                sectionTitle = FindSectionTitle(cvText, sections, evidenceOffset.Value);
             }
 
             normalized[raw.RequirementId] = new CvRequirementMatch(
@@ -287,7 +296,9 @@ public class CvAnalysisService : ICvAnalysisService
                 requirement.Priority,
                 requirement.Text,
                 level,
-                evidence);
+                evidence,
+                page,
+                sectionTitle);
         }
 
         var missing = requirements
@@ -303,16 +314,32 @@ public class CvAnalysisService : ICvAnalysisService
 
     private const string NoEvidence = "Không thấy bằng chứng";
 
-    private static bool FindVerbatim(string cvText, string evidence)
+    private static int? FindVerbatimOffset(string cvText, string evidence)
     {
         var normalizedCv = NormalizeVerbatim(cvText);
         var normalizedEvidence = NormalizeVerbatim(evidence).Trim();
-        if (normalizedEvidence.Length == 0) return false;
+        if (normalizedEvidence.Length == 0) return null;
 
         var pattern = Regex.Escape(normalizedEvidence)
             .Replace(@"\ ", @"\s+")
             .Replace(@"\-", @"(?:-|\s)?");
-        return Regex.IsMatch(normalizedCv, pattern, RegexOptions.IgnoreCase);
+        var match = Regex.Match(normalizedCv, pattern, RegexOptions.IgnoreCase);
+        return match.Success ? match.Index : null;
+    }
+
+    private static string? FindSectionTitle(
+        string cvText,
+        IReadOnlyList<CvSectionAnchor>? sections,
+        int evidenceOffset)
+    {
+        if (sections is null || sections.Count == 0) return null;
+
+        return sections
+            .Select(x => (x.Title, Offset: FindVerbatimOffset(cvText, x.StartsWith)))
+            .Where(x => x.Offset is not null && x.Offset.Value <= evidenceOffset)
+            .OrderByDescending(x => x.Offset)
+            .Select(x => x.Title)
+            .FirstOrDefault();
     }
 
     private static string NormalizeVerbatim(string value)
@@ -387,7 +414,7 @@ public class CvAnalysisService : ICvAnalysisService
     /// ⇒ ở đây chỉ chặn số dòng (trần 500/trang) chứ không đụng shape. Muốn list gọn thật thì phải
     /// làm trang chi tiết trước (BE + FE cùng nhịp), không phải việc của vòng này.
     /// </summary>
-    public async Task<KeysetPage<CvAnalysisResponse>> ListAsync(
+    public async Task<KeysetPage<CvAnalysisListResponse>> ListAsync(
         Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default)
     {
         var take = KeysetPaging.ClampLimit(limit);
@@ -408,11 +435,11 @@ public class CvAnalysisService : ICvAnalysisService
             .Take(take)
             .ToListAsync(ct);
 
-        var items = rows.Select(Map).ToList();
+        var items = rows.Select(MapList).ToList();
         var next = items.Count == take
             ? new KeysetCursor(items[^1].CreatedAt, items[^1].Id).Encode()
             : null;
-        return new KeysetPage<CvAnalysisResponse>(items, next);
+        return new KeysetPage<CvAnalysisListResponse>(items, next);
     }
 
     // Đọc parsed_text của file thuộc về candidate. null → 404; khác chủ → 403; rỗng → 400.
@@ -455,6 +482,30 @@ public class CvAnalysisService : ICvAnalysisService
             BuildRequirementSummary(matches),
             e.CvSections,
             e.Citations);
+    }
+
+    private static CvAnalysisListResponse MapList(CvAnalysis e)
+    {
+        var matches = e.RequirementMatches;
+        static CvRequirementListItem Slim(CvRequirementMatch x)
+            => new(x.RequirementId, x.Priority, x.Text, x.Level);
+
+        return new CvAnalysisListResponse(
+            e.Id,
+            e.CvId,
+            e.JdId,
+            e.JobCategory.ToString(),
+            e.Summary,
+            e.Strengths,
+            e.Weaknesses,
+            e.Suggestions,
+            e.JdMatch is null
+                ? null
+                : new JdMatchResponse(e.JdMatch.Score, e.JdMatch.MatchedSkills, e.JdMatch.MissingSkills),
+            e.CreatedAt,
+            matches?.Where(x => x.Priority == "MustHave").Select(Slim).ToList(),
+            matches?.Where(x => x.Priority == "NiceToHave").Select(Slim).ToList(),
+            BuildRequirementSummary(matches));
     }
 
     private static RequirementSummary? BuildRequirementSummary(

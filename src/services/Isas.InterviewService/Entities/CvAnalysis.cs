@@ -45,7 +45,9 @@ public record CvRequirementMatch(
     string Priority,
     string Text,
     string Level,
-    string Evidence
+    string Evidence,
+    int? Page = null,
+    string? SectionTitle = null
 );
 
 public record CvSectionAnchor(string Title, string Kind, string StartsWith);
