@@ -1,6 +1,21 @@
 # ISAS — Progress / Handoff
 
 > Trạng thái hiện tại + bước kế tiếp, để phiên/người mới nối tiếp nhanh. Kế hoạch đầy đủ & phân việc: [work-division.md](work-division.md). Lý do quyết định: [decisions.md](decisions.md).
+> **Cập nhật 2026-08-18 (AI-CV1 quality + Candidate L3):** nguyên nhân false-Weak là Gemini
+> ghép nhiều trích dẫn rời bằng `;`/xuống dòng nhưng verifier cũ đòi cả chuỗi liên tục, rồi hạ kết
+> quả đúng về `Weak/Không thấy bằng chứng`. Nhánh `fix/ai` nay canonicalize về đúng đoạn nguyên văn,
+> repair đúng một lượt cho requirement thiếu, dùng thinking budget **512**, và siết các suy diễn đã đo
+> được (CV tiếng Anh ≠ trình độ tiếng Anh; `Expected Graduation` ≠ đã tốt nghiệp; Visio ≠
+> Word/Excel/PowerPoint; end-user ≠ Dev/QA; chứng chỉ học tập chỉ phủ phần học hỏi). Gate mới nhất:
+> AI pytest **738 pass/1 skip** · full .NET **2.610 pass** · build **0 error**. Đã deploy image
+> `isas-ai:quality-1eb813f` cho `aiapi-main` + `aiworker-main`; API healthy, 0 restart, env thực tế
+> `ANALYZE_CV_THINKING_BUDGET=512`; rollback giữ bằng compose override riêng. Candidate L3 dùng đúng
+> CV/JD BA từng hỏng, request chỉ gửi `{text}` không có `requirementId` → **201 trong 16,438s**, đủ
+> **16/16** requirement, không có log missing/error. Kết quả trọng yếu: BA experience/UML+BPMN/
+> BRD+SRS/UAT = Strong với trích dẫn nguyên văn; Expected Graduation = Partial; Continuous Learning
+> = Partial; Office/UI-UX/English/Dev-QA không có bằng chứng trực tiếp = Weak. Reservation
+> `ac22eddb-f6da-4f14-a9b9-36d663b64434` = `Consumed/Subscription` (đúng vì Candidate còn kỳ thuê
+> bao; không ghi ledger credit). Còn đúng cửa reviewer theo luật người làm ≠ người kiểm.
 > **Cập nhật 2026-08-18 (AI-CV1 — tối ưu CV analysis, chờ PR review):** production cũ cùng fixture
 > 3 lượt chỉ 2 HTTP 200, p50 **11,903s**, p95 **52,520s** (một 502 do map citation dùng sai biến
 > `cid` sau khi Gemini đã chạy). Candidate tách biệt trên server đạt **3/3 PASS**, đủ 7/7 requirement,
