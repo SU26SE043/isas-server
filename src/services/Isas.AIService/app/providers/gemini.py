@@ -909,8 +909,8 @@ class GeminiProvider(QuestionProvider):
                         "properties": {
                             "chunkId": {"type": "string"},
                             "content": {"type": "string"},
-                            "sourceUrl": {"type": ["string", "null"]},
-                            "sourceTitle": {"type": ["string", "null"]},
+                            "sourceUrl": {"type": "string", "nullable": True},
+                            "sourceTitle": {"type": "string", "nullable": True},
                         },
                         "required": ["chunkId", "content"],
                     },
@@ -1057,8 +1057,8 @@ class GeminiProvider(QuestionProvider):
                                     "properties": {
                                         "chunkId": {"type": "string"},
                                         "content": {"type": "string"},
-                                        "sourceUrl": {"type": ["string", "null"]},
-                                        "sourceTitle": {"type": ["string", "null"]},
+                                        "sourceUrl": {"type": "string", "nullable": True},
+                                        "sourceTitle": {"type": "string", "nullable": True},
                                     },
                                     "required": ["chunkId", "content"],
                                 }},
@@ -1074,8 +1074,8 @@ class GeminiProvider(QuestionProvider):
                                     "properties": {
                                         "chunkId": {"type": "string"},
                                         "content": {"type": "string"},
-                                        "sourceUrl": {"type": ["string", "null"]},
-                                        "sourceTitle": {"type": ["string", "null"]},
+                                        "sourceUrl": {"type": "string", "nullable": True},
+                                        "sourceTitle": {"type": "string", "nullable": True},
                                     },
                                     "required": ["chunkId", "content"],
                                 }},
