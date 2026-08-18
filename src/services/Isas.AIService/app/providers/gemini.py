@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from typing import NamedTuple
 
 from google import genai
@@ -107,6 +108,84 @@ def find_verbatim(cv_text: str, evidence: str) -> int | None:
     compact_text = "".join(compact_chars)
     compact_match = compact_text.find(compact_evidence)
     return compact_offsets[compact_match] if compact_match >= 0 else None
+
+
+_EVIDENCE_EXPLANATION_MARKERS = (
+    "thường liên quan", "thường yêu cầu", "có thể cho thấy", "có thể suy ra",
+    "điều này cho thấy", "suggests that", "usually involves", "likely indicates",
+)
+_EVIDENCE_TOKEN_RE = re.compile(r"\w+(?:[.+/#-]\w+)*", flags=re.UNICODE)
+_MAX_DISPLAY_EVIDENCE_CHARS = 500
+_LANGUAGE_REQUIREMENT_RE = re.compile(
+    r"\b(?:english|tiếng\s+anh|ngoại\s+ngữ|language\s+proficiency)\b",
+    flags=re.IGNORECASE,
+)
+_LANGUAGE_EVIDENCE_RE = re.compile(
+    r"\b(?:english|tiếng\s+anh|ielts|toeic|toefl|cefr|cambridge|"
+    r"b1|b2|c1|c2|fluent|proficiency|business\s+english|working\s+language)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def canonicalize_verbatim_evidence(cv_text: str, evidence: str) -> str | None:
+    """Trả đúng một quote CV có thể kiểm chứng từ output evidence của model.
+
+    Gemini đôi khi tìm đúng nhiều bằng chứng nhưng nối chúng bằng ``;`` hoặc bỏ luôn separator.
+    Kiểm nguyên cả chuỗi khiến mọi quote đúng bị hạ thành Weak. Hàm này ưu tiên exact-whole, sau
+    đó giữ một fragment exact dài nhất. Fallback token-LCS chỉ chạy khi phần lớn output là chữ CV
+    và không có dấu hiệu model thêm lời suy diễn; kết quả luôn được lấy từ chính ``cv_text``.
+    """
+    raw = (evidence or "").strip()
+    if not raw or raw == NO_EVIDENCE:
+        return None
+    if find_verbatim(cv_text, raw) is not None:
+        if len(raw) > _MAX_DISPLAY_EVIDENCE_CHARS:
+            # PDF parser có thể làm cả section thành một dòng; model khi đó đôi lúc trả nguyên
+            # section dài hàng nghìn ký tự. Giữ fragment đầu tiên mà model đã đặt làm bằng chứng
+            # chính để UI hiện một câu kiểm tra được, không đổ cả trang CV vào một card.
+            for fragment in re.split(r"[•\n]|(?<=[.!?])\s+", raw):
+                fragment = fragment.strip()
+                if len(fragment) >= 15 and find_verbatim(cv_text, fragment) is not None:
+                    return fragment
+        return raw
+
+    normalized_raw = _normalize_verbatim(raw)
+    if any(marker in normalized_raw for marker in _EVIDENCE_EXPLANATION_MARKERS):
+        return None
+
+    fragments = [
+        fragment.strip(" \t\r\n\"'“”‘’")
+        for fragment in re.split(r"[;\n•]|\s+\|\s+", raw)
+    ]
+    verified = [
+        fragment for fragment in fragments
+        if fragment and find_verbatim(cv_text, fragment) is not None
+    ]
+    if verified:
+        return max(verified, key=len)
+
+    evidence_tokens = list(_EVIDENCE_TOKEN_RE.finditer(raw))
+    cv_tokens = list(_EVIDENCE_TOKEN_RE.finditer(cv_text))
+    if not evidence_tokens or not cv_tokens:
+        return None
+    evidence_values = [_normalize_verbatim(match.group(0)) for match in evidence_tokens]
+    cv_values = [_normalize_verbatim(match.group(0)) for match in cv_tokens]
+    match = SequenceMatcher(None, evidence_values, cv_values, autojunk=False).find_longest_match()
+    if match.size < 3 or match.size / len(evidence_values) < 0.35:
+        return None
+    start = cv_tokens[match.b].start()
+    end = cv_tokens[match.b + match.size - 1].end()
+    while end < len(cv_text) and cv_text[end] in ")]}":
+        end += 1
+    candidate = cv_text[start:end].strip()
+    return candidate if len(candidate) >= 15 and find_verbatim(cv_text, candidate) is not None else None
+
+
+def evidence_supports_language_requirement(requirement: str, evidence: str) -> bool:
+    """CV viết bằng tiếng Anh/chứng chỉ nghề không tự chứng minh năng lực ngoại ngữ."""
+    if _LANGUAGE_REQUIREMENT_RE.search(requirement or "") is None:
+        return True
+    return _LANGUAGE_EVIDENCE_RE.search(evidence or "") is not None
 
 
 def preview_word_count(text: str) -> int:
@@ -834,7 +913,8 @@ class GeminiProvider(QuestionProvider):
     async def analyze_cv(self, cv_text: str, jd_text: str | None,
                          job_category: str | None, language: str = "vi",
                          requirements: list[dict] | None = None,
-                         grounding: list[dict] | None = None) -> dict:
+                         grounding: list[dict] | None = None,
+                         _repair_missing: bool = True) -> dict:
         """
         Phân tích CV cho người LUYỆN TẬP (BC6, B2C sync, D17) — feedback + khớp JD (nếu có).
 
@@ -885,16 +965,22 @@ class GeminiProvider(QuestionProvider):
         if requirement_mode:
             properties["requirementMatches"] = {
                 "type": "array",
+                "minItems": len(requirements),
+                "maxItems": len(requirements),
                 "items": {
                     "type": "object",
                     "properties": {
                         "requirementId": {"type": "string"},
-                        "priority": {"type": "string", "enum": ["MustHave", "NiceToHave"]},
-                        "text": {"type": "string"},
                         "level": {"type": "string", "enum": list(NEED_LEVELS)},
-                        "evidence": {"type": "string"},
+                        "evidence": {
+                            "type": "string",
+                            "description": (
+                                "Exactly one contiguous verbatim CV quote, with no joined quotes "
+                                f"or explanation; otherwise exactly: {NO_EVIDENCE}"
+                            ),
+                        },
                     },
-                    "required": ["requirementId", "priority", "text", "level", "evidence"],
+                    "required": ["requirementId", "level", "evidence"],
                 },
             }
             properties["cvSections"] = {
@@ -1004,10 +1090,13 @@ class GeminiProvider(QuestionProvider):
                     priority = "MustHave"
                 if level not in NEED_LEVELS:
                     level = "Weak"
-                if not evidence or evidence == NO_EVIDENCE:
+                verified_evidence = canonicalize_verbatim_evidence(cv_text, evidence)
+                if verified_evidence is None or not evidence_supports_language_requirement(
+                    str(source.get("text") or ""), verified_evidence
+                ):
                     level, evidence = "Weak", NO_EVIDENCE
-                elif find_verbatim(cv_text, evidence) is None:
-                    level, evidence = "Weak", NO_EVIDENCE
+                else:
+                    evidence = verified_evidence
                 by_id[rid] = {
                     "requirementId": rid,
                     "priority": priority,
@@ -1018,11 +1107,30 @@ class GeminiProvider(QuestionProvider):
 
             missing = [str(r.get("requirementId")) for r in requirements
                        if str(r.get("requirementId")) not in by_id]
+            if missing and _repair_missing:
+                logger.warning(
+                    "analyze_cv: LLM thiếu requirementMatches %s; repair một lượt có giới hạn",
+                    missing,
+                )
+                repair_requirements = [allowed[rid] for rid in missing]
+                repaired = await self.analyze_cv(
+                    cv_text,
+                    jd_text,
+                    job_category,
+                    language=language,
+                    requirements=repair_requirements,
+                    grounding=None,
+                    _repair_missing=False,
+                )
+                for match in repaired.get("requirementMatches", []):
+                    rid = str(match.get("requirementId") or "")
+                    if rid in allowed and rid not in by_id:
+                        by_id[rid] = match
+                missing = [rid for rid in missing if rid not in by_id]
             if missing:
-                # Structured output vẫn có thể bỏ một phần tử. Fail cả request ở đây nghĩa là user
-                # chờ + trả tiền trọn lượt Gemini rồi nhận 502. Mặc định an toàn là "chưa chứng minh
-                # được", KHÔNG phải suy diễn Strong/Partial. Log để quan sát drift của model.
-                logger.warning("analyze_cv: LLM thiếu requirementMatches %s; điền Weak", missing)
+                # Repair cũng có thể drift. Không fail cả lượt đã trả tiền; chỉ lúc này mới dùng
+                # fail-safe Weak cho đúng các id vẫn thiếu.
+                logger.warning("analyze_cv: repair vẫn thiếu requirementMatches %s; điền Weak", missing)
                 for requirement in requirements:
                     rid = str(requirement.get("requirementId"))
                     if rid in by_id:

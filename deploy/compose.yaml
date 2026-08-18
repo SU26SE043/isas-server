@@ -93,9 +93,9 @@ x-aiservice-env: &aiservice-env
   # được cấp cho lượt SINH (chỉ dùng để KIỂM), citations đến TỪ lượt kiểm, và cộng thêm một lượt
   # Gemini mỗi lần sinh câu hỏi. Chỉ có nghĩa khi `GROUNDING_ENABLED=true` VÀ corpus đã nạp.
   QUESTION_VERIFY_ENABLED: ${QUESTION_VERIFY_ENABLED:-false}
-  # AI-CV1 — structured extraction không cần hàng nghìn thinking token. `-1` quay về mặc định
-  # Gemini; max grounding là lớp phòng thủ cuối nếu caller gửi quá nhiều chunk.
-  ANALYZE_CV_THINKING_BUDGET: ${ANALYZE_CV_THINKING_BUDGET:-0}
+  # AI-CV1 — 512 đủ cho đối chiếu ngữ nghĩa nhưng chặn hàng nghìn thinking token. `0` ưu tiên tốc
+  # độ tuyệt đối, `-1` quay về mặc định Gemini; max grounding là lớp phòng thủ cuối.
+  ANALYZE_CV_THINKING_BUDGET: ${ANALYZE_CV_THINKING_BUDGET:-512}
   ANALYZE_CV_MAX_GROUNDING_CHUNKS: ${ANALYZE_CV_MAX_GROUNDING_CHUNKS:-8}
 
 x-aiservice: &aiservice

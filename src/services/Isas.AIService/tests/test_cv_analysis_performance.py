@@ -63,6 +63,10 @@ async def test_analyze_cv_caps_grounding_and_disables_thinking(monkeypatch):
     assert "source two" in captured["contents"]
     assert "must be capped" not in captured["contents"]
     assert captured["config"].thinking_config.thinking_budget == 0
+    matches_schema = captured["config"].response_schema["properties"]["requirementMatches"]
+    assert matches_schema["minItems"] == 1
+    assert matches_schema["maxItems"] == 1
+    assert set(matches_schema["items"]["properties"]) == {"requirementId", "level", "evidence"}
     # The model cited c3, but c3 was outside the capped allowlist.
     assert [item["chunkId"] for item in result["citations"]] == ["c1"]
 
@@ -89,8 +93,11 @@ async def test_analyze_cv_minus_one_restores_dynamic_thinking(monkeypatch):
 @pytest.mark.asyncio
 async def test_analyze_cv_missing_match_is_safe_weak_not_502(monkeypatch):
     provider = GeminiProvider()
+    calls = 0
 
     async def fake_generate(operation, *, contents, config, **kwargs):
+        nonlocal calls
+        calls += 1
         return _response(["r-present"])
 
     monkeypatch.setattr(provider, "_generate", fake_generate)
@@ -109,3 +116,41 @@ async def test_analyze_cv_missing_match_is_safe_weak_not_502(monkeypatch):
         "level": "Weak",
         "evidence": "Không thấy bằng chứng",
     }
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_analyze_cv_repairs_only_missing_requirement_once(monkeypatch):
+    provider = GeminiProvider()
+    calls = 0
+
+    async def fake_generate(operation, *, contents, config, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _response(["r-present"])
+        return SimpleNamespace(text=json.dumps({
+            "summary": "Đã repair requirement còn thiếu.",
+            "strengths": [],
+            "weaknesses": [],
+            "suggestions": [],
+            "requirementMatches": [{
+                "requirementId": "r-missing",
+                "level": "Strong",
+                "evidence": "Kubernetes",
+            }],
+            "cvSections": [],
+        }))
+
+    monkeypatch.setattr(provider, "_generate", fake_generate)
+    result = await provider.analyze_cv(
+        "Python Kubernetes", "JD", "BE",
+        requirements=[
+            {"requirementId": "r-present", "priority": "MustHave", "text": "Python"},
+            {"requirementId": "r-missing", "priority": "NiceToHave", "text": "Kubernetes"},
+        ],
+    )
+
+    assert calls == 2
+    assert result["requirementMatches"][1]["level"] == "Strong"
+    assert result["requirementMatches"][1]["evidence"] == "Kubernetes"

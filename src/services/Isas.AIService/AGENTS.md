@@ -49,12 +49,16 @@
 (`jdMatch` chỉ khi có `jdText`). InterviewService gọi **đồng bộ HTTP** → lưu `cv_analyses` (D17, [interview.md](interview.md)).
 
 **AI-CV1 — ngân sách requirement-mode:** khi request có `mustHave[]`/`niceToHave[]`, provider dùng
-structured output và hậu kiểm evidence/citation như trước nhưng mặc định đặt Gemini Flash
-`thinking_budget=0` (`ANALYZE_CV_THINKING_BUDGET=-1` để rollback về model tự quyết). Grounding được
-cap lần cuối ở AIService bởi `ANALYZE_CV_MAX_GROUNDING_CHUNKS=8`; `0` = bỏ grounding riêng đường này,
-`-1` = không giới hạn. Model bỏ sót requirement không còn làm mất cả lượt gọi bằng 502: server điền
-đúng requirement đó thành `Weak` + `"Không thấy bằng chứng"`; evidence không nguyên văn CV và
-citation ngoài allowlist vẫn bị hạ/drop như cũ.
+structured output và hậu kiểm evidence/citation. Sau đo chất lượng BA production, mặc định dùng
+Gemini Flash `thinking_budget=512` — đủ cho đối chiếu ngữ nghĩa nhưng vẫn chặn model tự đốt hàng
+nghìn thinking token (`ANALYZE_CV_THINKING_BUDGET=0` để ưu tiên tốc độ tuyệt đối, `-1` để model
+tự quyết). Grounding được cap lần cuối ở AIService bởi
+`ANALYZE_CV_MAX_GROUNDING_CHUNKS=8`; `0` = bỏ grounding riêng đường này, `-1` = không giới hạn.
+Model chỉ trả `requirementId/level/evidence`; server gắn lại priority/text nguồn. Evidence phải là
+một quote liên tục: server giữ exact quote, cứu một fragment exact khi model nối nhiều quote, loại
+lời suy diễn, rút section quá dài để UI đọc được, và không coi CV/chứng chỉ nghề là bằng chứng ngoại
+ngữ. Schema ép đúng số match; nếu vẫn thiếu/duplicate thì repair đúng nhóm thiếu tối đa một lượt,
+sau đó mới fail-safe `Weak` + `"Không thấy bằng chứng"`. Citation ngoài allowlist vẫn bị drop.
 
 > ⚠ **Đường sàng CV B2B KHÔNG còn đi qua endpoint này.** Trước đây hai dòng dùng chung `analyze_cv`
 > phân nhánh bằng `criteria?[]`; đã tách vì chúng khác hẳn bản chất (B2C = nhận xét giúp ứng viên sửa
