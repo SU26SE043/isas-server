@@ -62,6 +62,9 @@ def test_requirement_prompt_is_cv_first_and_has_no_holistic_jdmatch():
     assert "Skills/Technical Skills" in prompt
     assert 'requirementId="r1"' in prompt
     assert '"requirementMatches"' in prompt
+    assert "Strong: có bằng chứng trực tiếp và rõ ràng trong CV." in prompt
+    assert "Partial: có dấu hiệu liên quan nhưng chưa đủ mạnh." in prompt
+    assert "Weak: gần như không thấy bằng chứng." in prompt
     assert "PHẢI tính thêm jdMatch" not in prompt
 
 
@@ -172,7 +175,7 @@ async def test_provider_requirement_mode_orders_matches_and_verifies_evidence():
         return_value=_fake_gemini_response({
             "summary": "s", "strengths": [], "weaknesses": [], "suggestions": [],
             "requirementMatches": [
-                {"requirementId": "r2", "priority": "NiceToHave", "text": "wrong",
+                {"requirementId": "r2", "priority": "NiceToHave", "text": "Docker",
                  "level": "Strong", "evidence": "Docker"},
                 {"requirementId": "r1", "priority": "MustHave", "text": "wrong",
                  "level": "Partial", "evidence": "not in cv"},
@@ -194,7 +197,7 @@ async def test_provider_requirement_mode_orders_matches_and_verifies_evidence():
     assert [m["requirementId"] for m in result["requirementMatches"]] == ["r1", "r2"]
     assert result["requirementMatches"][0]["level"] == "Weak"
     assert result["requirementMatches"][0]["evidence"] == "Không thấy bằng chứng"
-    assert result["requirementMatches"][1]["level"] == "Weak"
+    assert result["requirementMatches"][1]["level"] == "Strong"
     assert result["cvSections"] == [{"title": "Skills", "kind": "skills", "startsWith": "Skills"}]
 
 

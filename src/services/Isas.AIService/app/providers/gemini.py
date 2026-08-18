@@ -989,8 +989,7 @@ class GeminiProvider(QuestionProvider):
                     level = "Weak"
                 if not evidence or evidence == NO_EVIDENCE:
                     level, evidence = "Weak", NO_EVIDENCE
-                elif (find_verbatim(cv_text, evidence) is None
-                      or find_verbatim(evidence, str(source.get("text") or "")) is None):
+                elif find_verbatim(cv_text, evidence) is None:
                     level, evidence = "Weak", NO_EVIDENCE
                 by_id[rid] = {
                     "requirementId": rid,

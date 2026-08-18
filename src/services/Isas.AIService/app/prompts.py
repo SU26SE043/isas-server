@@ -687,6 +687,12 @@ def build_cv_analysis_prompt(cv_text: str, jd_text: str | None,
             "3. Mỗi kết luận phải có evidence là đoạn trích nguyên văn từ CV; nếu không có thì "
             f"dùng đúng level Weak và evidence \"{NO_EVIDENCE}\"."
         )
+        parts.append(
+            "ĐỊNH NGHĨA LEVEL — áp dụng nhất quán cho từng requirement:\n"
+            "- Strong: có bằng chứng trực tiếp và rõ ràng trong CV.\n"
+            "- Partial: có dấu hiệu liên quan nhưng chưa đủ mạnh.\n"
+            "- Weak: gần như không thấy bằng chứng."
+        )
 
         requirement_lines = "\n".join(
             f'- requirementId="{r.get("requirementId")}" | priority={r.get("priority")} | '
