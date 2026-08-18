@@ -72,6 +72,10 @@ def test_requirement_prompt_is_cv_first_and_has_no_holistic_jdmatch():
     assert "Partial: có bằng chứng trực tiếp cho một phần" in prompt
     assert "Weak: sau khi quét toàn bộ CV" in prompt
     assert "Chức danh công việc/thực tập kèm mốc thời gian" in prompt
+    assert "Expected Graduation" in prompt
+    assert "tối đa là Partial" in prompt
+    assert "MS Visio" in prompt
+    assert "KHÔNG chứng minh Word, Excel hoặc PowerPoint" in prompt
     assert "KHÔNG tự chứng minh trình độ" in prompt
     assert "đúng MỘT đoạn trích nguyên văn LIÊN TỤC" in prompt
     assert "server tự gắn lại priority/text nguồn" in prompt
