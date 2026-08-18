@@ -25,7 +25,8 @@ public record CvAnalysisRequest(
     IReadOnlyList<CvRequirementInput>? NiceToHave = null
 );
 
-public record CvRequirementInput(string RequirementId, string Text);
+// N7 — FE chỉ gửi `text`; InterviewService tự mint RequirementId trước khi gọi AIService.
+public record CvRequirementInput(string? RequirementId, string Text);
 
 // Kết quả AI đọc từ AIService `/analyze-cv` (B2C — bỏ criterionMatches/overallMatchScore của B2B).
 public record CvAnalysisAiResult(
