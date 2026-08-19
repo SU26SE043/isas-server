@@ -92,8 +92,11 @@ public class ScoringStuckRecoveryTests
         using var t = new TestDb();
         var (_, _, a, c) = await SeedStuckAsync(
             t, selfConsistencyN: 3,
-            createdAt: DateTime.UtcNow.AddMinutes(-20),
-            lastPublished: DateTime.UtcNow.AddMinutes(-16));
+            // 2026-08-20 — mốc cũ (-20'/-16') nay NẰM NGOÀI trần bỏ cuộc `Scoring:GiveUpAfterMinutes`
+            // (60' → 20'), nên republisher thôi đẩy và các assert dưới đo nhầm nhánh. -10'/-6' giữ đúng
+            // ý định gốc: đã quá `Republisher:ScoringLostMinutes` (3') mà vẫn trong trần bỏ cuộc.
+            createdAt: DateTime.UtcNow.AddMinutes(-10),
+            lastPublished: DateTime.UtcNow.AddMinutes(-6));
         t.Db.Add(Score(a.Id, c.Id, attemptNo: 2));   // đúng hiện trạng prod: chỉ có attempt 2
         await t.Db.SaveChangesAsync();
 
@@ -115,8 +118,11 @@ public class ScoringStuckRecoveryTests
     {
         using var t = new TestDb();
         await SeedStuckAsync(t, selfConsistencyN: 3,
-            createdAt: DateTime.UtcNow.AddMinutes(-20),
-            lastPublished: DateTime.UtcNow.AddMinutes(-16));
+            // 2026-08-20 — mốc cũ (-20'/-16') nay NẰM NGOÀI trần bỏ cuộc `Scoring:GiveUpAfterMinutes`
+            // (60' → 20'), nên republisher thôi đẩy và các assert dưới đo nhầm nhánh. -10'/-6' giữ đúng
+            // ý định gốc: đã quá `Republisher:ScoringLostMinutes` (3') mà vẫn trong trần bỏ cuộc.
+            createdAt: DateTime.UtcNow.AddMinutes(-10),
+            lastPublished: DateTime.UtcNow.AddMinutes(-6));
 
         var published = new List<ScoringJob>();
         var (r, pub) = BuildRepublisher(t, new ScoringOptions { SelfConsistencyTemperature = 0.4 });
@@ -137,8 +143,10 @@ public class ScoringStuckRecoveryTests
         using var t = new TestDb();
         var (_, _, a, c) = await SeedStuckAsync(
             t, selfConsistencyN: 2,
-            createdAt: DateTime.UtcNow.AddMinutes(-20),
-            lastPublished: DateTime.UtcNow.AddMinutes(-16));
+            // Trong trần bỏ cuộc (20') — để -20' thì test xanh vì nhánh SAI (quá trần), chứ không
+            // phải vì "đã đủ attempt" như tên test nói.
+            createdAt: DateTime.UtcNow.AddMinutes(-10),
+            lastPublished: DateTime.UtcNow.AddMinutes(-6));
         t.Db.AddRange(Score(a.Id, c.Id, 1), Score(a.Id, c.Id, 2));
         await t.Db.SaveChangesAsync();
 
@@ -154,7 +162,7 @@ public class ScoringStuckRecoveryTests
     {
         using var t = new TestDb();
         await SeedStuckAsync(t, selfConsistencyN: 3,
-            createdAt: DateTime.UtcNow.AddMinutes(-90),   // > GiveUpAfterMinutes mặc định 60
+            createdAt: DateTime.UtcNow.AddMinutes(-90),   // > GiveUpAfterMinutes mặc định 20 (trước 2026-08-20: 60)
             lastPublished: DateTime.UtcNow.AddMinutes(-16));
 
         var (r, pub) = BuildRepublisher(t);

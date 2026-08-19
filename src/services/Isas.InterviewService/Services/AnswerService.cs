@@ -667,7 +667,10 @@ public class AnswerService : IAnswerService
                     answer.Id, scopedCriteria.Count, criteria.Count, question.Id,
                     string.Join(",", question.TargetCriterionIds ?? []));
 
-            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria);   // E9: kèm levels (+ anchors)
+            // E9: kèm levels (+ anchors). Cờ dải mặc định PHẢI truyền ở CẢ HAI đường publish (đường
+            // này + StuckAnswerRepublisher), nếu không thì answer đi đường cứu hộ bị chấm bằng thước
+            // khác answer đi đường thường — cùng bài học với kill-switch đáp án mẫu ngay bên dưới.
+            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria, _scoring.DefaultBandStyle);
 
             // E10 — self-consistency: publish N job (attempt 1..N) cho cùng 1 answer để chấm N lần.
             //   attempt 1 → temp=0 (tái lập); 2..N → SelfConsistencyTemperature (dao động thật để đo spread).

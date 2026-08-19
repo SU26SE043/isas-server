@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -334,6 +335,52 @@ def _question_text(item) -> str:
     return str(item.get("text", "") if isinstance(item, dict) else item).strip()
 
 
+# ── Lỗi Gemini TẠM THỜI vs VĨNH VIỄN (dùng ở chokepoint `_generate`) ──────────
+#
+# Danh sách TRẮNG, cố ý: mặc định là "KHÔNG thử lại". Đoán sai theo hướng thử lại một lỗi vĩnh
+# viễn thì mỗi lượt phải trả thêm ngần ấy giây chờ vô ích — mà `decide_next` đang nằm trong
+# request đồng bộ của người dùng, nên cái giá đó rơi thẳng vào mặt người đang ngồi đợi.
+#   • 503 UNAVAILABLE + 429 RESOURCE_EXHAUSTED — đúng hai mã bắt được trong log prod.
+#   • 500 / 504 — hỏng hóc phía Google, tự hết sau vài giây.
+# Ngoài danh sách (400 request sai, 401/403 key hỏng, 404 model lạ) = gọi lại cũng thế ⇒ raise ngay.
+_TRANSIENT_API_CODES = frozenset({429, 500, 503, 504})
+
+
+def _is_transient_api_error(error: Exception) -> bool:
+    """True khi lỗi ĐÁNG thử lại (sự cố chớp nhoáng), False khi thử lại chỉ tốn thời gian.
+
+    ⚠ ``ValueError`` KHÔNG bao giờ rơi vào đây và đó là chủ ý: output hỏng đã có vòng retry riêng
+    ở caller (``score_max_attempts``). Xem :meth:`GeminiProvider._generate`.
+
+    Import cục bộ trong hàm (mẫu ``Transcriber._should_retry_original_as_wav``): phân loại lỗi
+    KHÔNG được tự nó ném ImportError trên môi trường thiếu wheel — chỗ này là đường xử lý sự cố,
+    nó mà hỏng thì hỏng đúng lúc mọi thứ đang hỏng.
+    """
+    try:
+        from google.genai import errors as genai_errors
+        if isinstance(error, genai_errors.APIError):
+            # Đọc `code` chứ không đọc `status`: SDK để `status` là None khi body lỗi không đúng
+            # hình dạng nó chờ (vd HTML của proxy), còn `code` luôn có từ tầng HTTP.
+            return getattr(error, "code", None) in _TRANSIENT_API_CODES
+    except ImportError:  # pragma: no cover — google-genai là dependency cứng, phòng hờ thôi
+        pass
+
+    # Đứt mạng / vendor không trả lời kịp: lượt gọi chưa từng tới được Gemini nên KHÔNG có mã HTTP
+    # nào để đọc — phải nhận diện bằng kiểu exception. `TransportError` là gốc chung của cả timeout
+    # lẫn connect/read/pool error của httpx (google-genai đi trên httpx), bắt ở gốc để không sót
+    # nhánh con nào khi SDK đổi bản.
+    try:
+        import httpx
+        if isinstance(error, (httpx.TransportError, httpx.TimeoutException)):
+            return True
+    except ImportError:  # pragma: no cover
+        pass
+
+    # `asyncio.TimeoutError` là alias của builtin `TimeoutError` từ Python 3.11; `ConnectionError`
+    # phủ nhánh socket trần (OSError) khi có proxy/DNS chen vào giữa.
+    return isinstance(error, (TimeoutError, ConnectionError))
+
+
 class GeminiProvider(QuestionProvider):
     def __init__(self) -> None:
         self._client = genai.Client(api_key=settings.gemini_api_key)
@@ -416,7 +463,7 @@ class GeminiProvider(QuestionProvider):
     # ── F22 (FR18): CHOKEPOINT DUY NHẤT cho mọi lượt gọi Gemini ────────────────
     async def _generate(self, operation: str, *, contents, config,
                         model: str | None = None, defer_report: bool = False):
-        """Bọc ``generate_content`` để ĐO token/chi phí (F22).
+        """Bọc ``generate_content`` để ĐO token/chi phí (F22) + THỬ LẠI lỗi tạm thời.
 
         MỌI lượt gọi Gemini của service đi qua đây — cố ý một cửa thay vì rải
         ``usage_metadata`` ra 10 chỗ: rải thì lần thêm endpoint thứ 11 sẽ quên,
@@ -433,10 +480,53 @@ class GeminiProvider(QuestionProvider):
         try/finally, xem :meth:`generate_lesson_theory`.
 
         ``operation`` = nhãn đường gọi → admin xem tiêu thụ THEO ENDPOINT.
+
+        ── THỬ LẠI LỖI TẠM THỜI ────────────────────────────────────────────────
+        Vá Ở ĐÂY chính vì cái "một cửa" nói trên: MỘT vòng retry tại chokepoint phủ luôn
+        ``score``, ``decide_next``, ``summarize_session`` và mọi endpoint thêm sau này —
+        thay vì ba vòng rời nhau rồi lệch dần mỗi lần ai đó sửa một chỗ.
+
+        Chuyện phải chữa: log worker prod có ``[⚠️] Lỗi tạm thời answer …: 503 UNAVAILABLE ->
+        nack (republish sau)``. Một cú 503 chưa tới một giây khi đó biến thành **15 phút** chờ
+        của người dùng, vì message phải đợi ``StuckAnswerRepublisher`` (.NET, quét mỗi 2') đẩy
+        lại. Lưới cứu hộ đó dành cho sự cố KÉO DÀI; dùng nó để đỡ một cú nấc mạng là sai tầng.
+
+        CHỈ thử lại lỗi API TẠM THỜI (503/429/500/504, đứt mạng, timeout — xem
+        :func:`_is_transient_api_error`). Lỗi 4xx (request sai, key hỏng) và lỗi schema raise
+        NGAY: gọi lại y hệt thì nhận lại y hệt, thử lại chỉ đốt thêm thời gian của người đang chờ.
+
+        🔴 TUYỆT ĐỐI KHÔNG bắt ``ValueError`` ở tầng này. Output hỏng đã có vòng RIÊNG của
+        caller (``score_max_attempts``, ``decide_next_max_attempts``); bắt thêm ở đây thì hai
+        vòng NHÂN với nhau — 3×3 = 9 lượt gọi Gemini cho một answer, và không ai đọc log sẽ
+        hiểu vì sao hoá đơn token gấp ba.
+
+        🔴 NGÂN SÁCH THỜI GIAN: chokepoint này nằm trên cả ``decide_next``, đường chạy ĐỒNG BỘ
+        trong request upload câu trả lời, dưới timeout **90s** phía .NET. Tổng thời gian retry
+        cộng thêm phải ≤ ~5s (mặc định: chờ 1s rồi 2s = 3s). Nới trần thì đọc kỹ phần ràng buộc
+        ở ``config.gemini_retry_attempts`` trước.
+
+        ``report_usage`` vẫn chạy ĐÚNG MỘT LẦN và chỉ cho lượt THÀNH CÔNG: lượt hỏng ném
+        exception nên không có ``response`` — cũng không có ``usage_metadata`` nào để đọc. Không
+        token nào bị bỏ sót, cũng không dòng thống kê ma nào bị ghi thêm.
         """
         used_model = model or settings.gemini_model
-        response = await self._client.aio.models.generate_content(
-            model=used_model, contents=contents, config=config)
+        attempts = max(1, settings.gemini_retry_attempts)
+        delay = max(0.0, settings.gemini_retry_backoff_seconds)
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=used_model, contents=contents, config=config)
+                break
+            except Exception as exc:  # noqa: BLE001 — lọc lại ngay ở dòng dưới
+                # Cạn lượt HOẶC lỗi vĩnh viễn ⇒ ném nguyên si: caller trên (worker) mới là chỗ
+                # biết phải nack hay báo Failed, đừng nuốt rồi dịch nghĩa ở đây.
+                if attempt >= attempts or not _is_transient_api_error(exc):
+                    raise
+                logger.warning(
+                    "Gemini %s lỗi tạm thời lượt %d/%d (%s) — chờ %.1fs rồi thử lại",
+                    operation, attempt, attempts, exc, delay)
+                await asyncio.sleep(delay)
+                delay *= 2   # 1s → 2s: đủ để vượt một cú nấc, chưa chạm ngân sách 90s của .NET
         if not defer_report:
             await report_usage(operation, used_model, response)
         return response
@@ -1566,37 +1656,46 @@ class GeminiProvider(QuestionProvider):
         prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery,
                                       language=language, sample_answer=sample_answer)
 
+        # Chấm 1 câu mất 19,6s (p50) trên prod và ~2.500 token trong đó là suy luận ẩn KHÔNG ai
+        # đọc — đây là đường gọi Gemini cuối cùng còn chưa có trần (số liệu + vì sao 512 chứ không
+        # phải 0: `config.score_thinking_budget`). `-1` = không đụng vào, để model tự quyết như
+        # trước — cùng cách gạt rollback với `decide_next`/`analyze_cv`.
+        cfg = dict(
+            temperature=temperature,  # E9 mặc định 0 (nhất quán); E10 attempt 2..N > 0 để đo spread
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "scores": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "criterionId": {"type": "string"},
+                                "score": {"type": "number"},
+                                "levelMatched": {"type": "integer"},
+                                "reasoning": {"type": "string"},
+                            },
+                            "required": ["criterionId", "score", "levelMatched", "reasoning"],
+                        },
+                    },
+                    # F13 — câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này.
+                    # Sinh CÙNG lượt chấm: prompt đã mang câu hỏi + rubric + transcript
+                    # nên chi phí tăng thêm CHỈ là output token; gọi riêng lúc user mở
+                    # sẽ phải nạp lại toàn bộ ngần ấy input.
+                    "sampleAnswer": {"type": "string"},
+                },
+                "required": ["scores", "sampleAnswer"],
+            },
+        )
+        if settings.score_thinking_budget >= 0:
+            cfg["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.score_thinking_budget)
+
         response = await self._generate(
             "score",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=temperature,  # E9 mặc định 0 (nhất quán); E10 attempt 2..N > 0 để đo spread
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "object",
-                    "properties": {
-                        "scores": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "criterionId": {"type": "string"},
-                                    "score": {"type": "number"},
-                                    "levelMatched": {"type": "integer"},
-                                    "reasoning": {"type": "string"},
-                                },
-                                "required": ["criterionId", "score", "levelMatched", "reasoning"],
-                            },
-                        },
-                        # F13 — câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này.
-                        # Sinh CÙNG lượt chấm: prompt đã mang câu hỏi + rubric + transcript
-                        # nên chi phí tăng thêm CHỈ là output token; gọi riêng lúc user mở
-                        # sẽ phải nạp lại toàn bộ ngần ấy input.
-                        "sampleAnswer": {"type": "string"},
-                    },
-                    "required": ["scores", "sampleAnswer"],
-                },
-            ),
+            config=types.GenerateContentConfig(**cfg),
         )
 
         text = (response.text or "").strip()

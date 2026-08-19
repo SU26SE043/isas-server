@@ -106,6 +106,24 @@ x-aiservice-env: &aiservice-env
   # độ tuyệt đối, `-1` quay về mặc định Gemini; max grounding là lớp phòng thủ cuối.
   ANALYZE_CV_THINKING_BUDGET: ${ANALYZE_CV_THINKING_BUDGET:-512}
   ANALYZE_CV_MAX_GROUNDING_CHUNKS: ${ANALYZE_CV_MAX_GROUNDING_CHUNKS:-8}
+  # Trần suy luận ẩn cho lượt CHẤM. `score` là đường Gemini CUỐI CÙNG chưa có trần, và đo trên prod
+  # 2026-08-20 (`ai_usage_logs`) cho thấy nó tốn nhất: output p50 **3.570 token** trong khi
+  # `decide_next` (đã đặt trần 0) chỉ **126**. `output_tokens = candidates + thoughts`, mà nội dung
+  # nhìn thấy được đo trong DB chỉ ~900-1.000 token ⇒ khoảng **2.500 token là thinking**. Decode là
+  # tuần tự nên đó chính là phần lớn 19,6s p50 của một lượt chấm.
+  # ⚠ KHÔNG hạ về 0 như `decide_next` mà không đo lại: nó chỉ chọn 1 trong 4 nhánh, còn chấm điểm
+  # phải cân nhiều tiêu chí VÀ trích dẫn bằng chứng (E11). Đổi số này là đổi THƯỚC ĐO — chạy
+  # `scripts/benchmark-scoring.py` (chấm lại câu THẬT, có sàn nhiễu) rồi mới chốt. `-1` = quay lui.
+  SCORE_THINKING_BUDGET: ${SCORE_THINKING_BUDGET:-512}
+  # Thử lại lỗi Gemini TẠM THỜI (503/429/500/504, đứt mạng) ngay tại chỗ. Trước đây một cú 503 —
+  # đã bắt được trong log aiworker prod — làm người dùng chờ **15 phút**, vì message bị nack rồi
+  # phải đợi `StuckAnswerRepublisher` phía .NET cứu. Lưới đó dành cho sự cố kéo dài, không phải
+  # cho một cú nấc mạng.
+  # ⚠ Ngân sách: chokepoint này nằm trên cả `/decide-next` — chạy ĐỒNG BỘ trong request upload,
+  # dưới timeout 90s của `AiServiceInterviewDecider`. Mặc định chờ 1s rồi 2s = 3s. Nâng thì đọc
+  # ràng buộc ở `config.gemini_retry_attempts` trước. `1` = tắt hẳn việc thử lại.
+  GEMINI_RETRY_ATTEMPTS: ${GEMINI_RETRY_ATTEMPTS:-3}
+  GEMINI_RETRY_BACKOFF_SECONDS: ${GEMINI_RETRY_BACKOFF_SECONDS:-1.0}
 
 x-aiservice: &aiservice
   image: ghcr.io/su26se043/isas.aiservice:${IMAGE_TAG:-main}   # §IMAGE_TAG đầu file
@@ -280,10 +298,21 @@ services:
       - Adaptive__MaxFollowUps=${ADAPTIVE_MAX_FOLLOW_UPS:-3}
       - Adaptive__MaxDeepPerQuestion=${ADAPTIVE_MAX_DEEP_PER_QUESTION:-3}
       - Adaptive__MaxFailuresPerSession=${ADAPTIVE_MAX_FAILURES_PER_SESSION:-3}
+      # Mốc coi worker là MẤT TÍCH → đẩy lại job chấm. Đây là thứ QUYẾT ĐỊNH đuôi chờ báo cáo:
+      # đo prod 2026-08-20 trên 77 buổi, cả 10 buổi vượt 120s đều có answer bị đẩy lại trễ, và độ
+      # trễ gom cụm ở 909-1025s — đúng bằng 15' cũ + chu kỳ quét 2'. Người dùng chờ 15 phút cho
+      # một cú Gemini 503 chưa tới một giây.
+      # ⚠ 3' chứ KHÔNG phải 90s: ngưỡng phải lớn hơn ca chấm chậm còn HỢP LỆ (chép lời ~24s + 3
+      # lượt Gemini có retry ≈ 90s) cộng biên. Sát quá = chấm trùng, tốn tiền mà không nhanh hơn.
+      - Republisher__ScoringLostMinutes=${REPUBLISHER_SCORING_LOST_MINUTES:-3}
       # Trần BỎ CUỘC cho answer chờ chấm. Quá ngần này phút kể từ lúc TẠO answer mà chưa gom đủ N
       # attempt (E10) → thôi đẩy lại, chốt sổ bằng điểm đã có (hoặc Skipped) rồi đóng buổi.
-      # 60 chừa ~3 lượt đẩy lại (mốc 15'); 0 = tắt = quay lại hành vi kẹt vô hạn.
-      - Scoring__GiveUpAfterMinutes=${SCORING_GIVE_UP_AFTER_MINUTES:-60}
+      # 🔴 ĐI CẶP với `Republisher__ScoringLostMinutes` ngay trên: trần này đong bằng SỐ LƯỢT đẩy
+      # lại = trần ÷ ngưỡng. Cũ 60'/15' ⇒ ~3 lượt. Giữ 60' mà hạ ngưỡng xuống 3' ⇒ ~20 lượt Gemini
+      # đốt cho một answer đã chết. 20'/3' ⇒ ~6 lượt, giữ đúng tinh thần con số cũ.
+      # Đánh đổi đã biết: broker chết quá 20' nay chốt sổ sớm hơn trước (60') — tiền vẫn hoàn theo
+      # PAY-13, nhưng bài làm thì không chấm nữa. 0 = tắt = quay lại hành vi kẹt vô hạn.
+      - Scoring__GiveUpAfterMinutes=${SCORING_GIVE_UP_AFTER_MINUTES:-20}
     ports:
       - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet
     depends_on: [postgres, seaweedfs, rabbitmq, qdrant]

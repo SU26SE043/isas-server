@@ -185,8 +185,19 @@ async def process_message(message: aio_pika.IncomingMessage):
                 # 1. Tải audio từ SeaweedFS (lỗi ở đây = tạm thời -> để retry).
                 suffix = os.path.splitext(storage_path)[1] or ".webm"
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    s3_client.download_fileobj(settings.s3_bucket, storage_path, tmp)
+                    # Gán `tmp_path` TRƯỚC lượt tải, không phải sau: `delete=False` nên file chỉ
+                    # được dọn ở `finally` bên dưới, mà `finally` chỉ dọn được cái tên nó BIẾT.
+                    # Tải hỏng giữa chừng (503/mạng — chính ca ta đang chữa) mà gán sau thì file
+                    # rác nằm lại /tmp vĩnh viễn, mỗi lượt retry thêm một cái.
                     tmp_path = tmp.name
+                    # 🔴 boto3 là BLOCKING. Gọi thẳng trên event loop thì suốt lượt tải, cả
+                    # `scoring_prefetch` (10) coroutine còn lại ĐỨNG HÌNH — kể cả những lượt chỉ
+                    # đang CHỜ MẠNG Gemini, tức là đúng phần song song mà prefetch=10 mua về
+                    # (đo 2026-08-04: 4 lượt song song 13,3s vs 1 lượt 12,6s). Đẩy sang thread
+                    # theo đúng mẫu `/decide-next` đang làm với `storage.get_object_bytes`
+                    # (app/main.py) — cùng lý do, cùng cách.
+                    await asyncio.to_thread(
+                        s3_client.download_fileobj, settings.s3_bucket, storage_path, tmp)
                 print(f"[*] Tải file OK: {tmp_path}")
 
                 # 2. Whisper transcribe — audio hỏng/không nghe được = lỗi VĨNH VIỄN.
