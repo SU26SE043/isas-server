@@ -54,6 +54,12 @@ builder.Services.AddHostedService<BucketInitializer>();
 builder.Services.AddSingleton<IScoringJobPublisher, ScoringJobPublisher>();
 builder.Services.AddSingleton<ISessionEventPublisher, SessionEventPublisher>();
 builder.Services.AddScoped<ISessionResultService, SessionResultService>();   // BC9
+// F14 — `CriterionBenchmarkService` giữ ẢNH CHỤP mẫu cộng đồng trong bộ nhớ (mốc đối chiếu giống
+// nhau cho mọi người dùng cùng nghề nên tính lại từng lượt xem là lãng phí thuần). Thiếu dòng này
+// thì host KHÔNG khởi động được: `ValidateOnBuild` ở Development ném ngay
+// "Unable to resolve service for type 'IMemoryCache'". Không thêm package nào — nó nằm sẵn trong
+// framework reference của ASP.NET Core, và Auth/CampaignService đã dùng đúng mẫu này.
+builder.Services.AddMemoryCache();
 builder.Services.AddScoped<ICriterionBenchmarkService, CriterionBenchmarkService>();   // F14
 builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();

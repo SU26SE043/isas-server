@@ -231,6 +231,56 @@ def _looks_truncated(question: str) -> bool:
     return text[-1] not in _QUESTION_TERMINATORS
 
 
+# ── Q17: câu đào sâu TRÙNG KHÍT câu vừa hỏi ─────────────────────────────────────────────────
+# Ca thật trên prod, một buổi trong DB (order · kind · depth):
+#   1 · Seed    · 0 — "Trong dự án xây dựng hệ thống microservice xử lý 10.000 request…"
+#   2 · Clarify · 1 — "Bạn có thể chia sẻ cụ thể hơn về cách bạn đã thiết kế và triển khai cá…"
+#   3 · Clarify · 2 — TRÙNG KHÍT TỪNG CHỮ câu 2
+# Cả ba nhận CÙNG một bản chép ("Tôi từng làm việc với các API Jestful và cơ sở dữ liệu…").
+# **10 buổi** trong DB có câu trùng khít từng chữ trong cùng một session.
+#
+# Prompt đã được vá (`build_decide_next_prompt` — cấm hỏi lại + "làm rõ MỘT lần rồi đóng chuỗi"),
+# nhưng prompt là LỜI KHUYÊN chứ không phải bảo đảm. Cùng thủ pháp repo đã dùng khắp nơi: nêu hợp
+# đồng trong prompt rồi KIỂM BẰNG MÁY (`_looks_truncated` Q16 · chunkId D27 · tên tiêu chí BC13 ·
+# allowlist URL F15).
+class _RepeatedQuestionError(ValueError):
+    """``nextQuestion`` trùng một câu đã hỏi trong chính chuỗi này.
+
+    Là ``ValueError`` để đi chung ĐƯỜNG TRẢ-LẠI của Q16 (``retry_feedback`` +
+    ``decide_next_max_attempts``) — không dựng cơ chế thử lại thứ hai song song. Nhưng phải là lớp
+    RIÊNG vì kết cục lúc CẠN LƯỢT khác hẳn: câu cụt cạn lượt thì raise → 502 → .NET degrade về luồng
+    tĩnh; câu trùng cạn lượt thì ĐÓNG CHUỖI (``action="end"``), vì đóng chuỗi đã là một degrade an
+    toàn có sẵn của INT-17b — hệ tự chuyển ứng viên sang câu gốc kế tiếp và họ không mất lượt nào.
+    """
+
+
+def _normalize_question(text: str) -> str:
+    """Chuẩn hoá NHẸ trước khi so hai câu hỏi: khoảng trắng thừa · hoa/thường · dấu câu cuối.
+
+    Ba khác biệt đó không biến một câu hỏi thành câu hỏi khác, nên bỏ qua chúng là an toàn.
+
+    CỐ Ý DỪNG ĐÚNG Ở ĐÂY — KHÔNG fuzzy, KHÔNG so ngữ nghĩa, KHÔNG bỏ dấu tiếng Việt: hai câu hỏi
+    trong CÙNG một chủ đề vốn đã giống nhau rất nhiều chữ ("cách bạn thiết kế…" vs "cách bạn triển
+    khai…"), nên bất kỳ ngưỡng "gần giống" nào cũng sẽ chặn nhầm một câu đào sâu HỢP LỆ. Bắt nhầm
+    tốn đúng thứ bản vá này sinh ra để cứu: một lượt hỏi của ứng viên. Bỏ sót một biến thể đổi vài
+    chữ thì vẫn còn lớp prompt (``no_repeat_block``) đứng trước.
+    """
+    compact = " ".join((text or "").split())
+    return compact.rstrip(_QUESTION_TERMINATORS + " ").casefold()
+
+
+def _is_repeat_question(next_question: str, current_question: str,
+                        history: list[dict] | None) -> bool:
+    """Câu kế có trùng câu ĐANG hỏi, hoặc một câu đã hỏi trong lịch sử chuỗi, không?"""
+    candidate = _normalize_question(next_question)
+    if not candidate:
+        # Rỗng / toàn dấu câu đã là việc của `_looks_truncated`; đừng đá nhầm sân và báo "trùng".
+        return False
+    asked = [current_question, *(turn.get("question") for turn in (history or []))]
+    return any(candidate == _normalize_question(q)
+               for q in asked if isinstance(q, str) and q.strip())
+
+
 def _generation_diagnostics(response) -> str:
     """Vì sao lượt sinh này hỏng — dữ liệu để CHỐT nguyên nhân Q16 bằng số thật ở lớp 3.
 
@@ -2163,6 +2213,9 @@ class GeminiProvider(QuestionProvider):
         attempts = max(1, settings.decide_next_max_attempts)
         feedback: str | None = None
         last_error: ValueError | None = None
+        # Q17 — lượt trùng gần nhất, giữ lại để lấy các NHÃN bằng chứng khi phải đóng chuỗi (prompt
+        # yêu cầu `end` vẫn kèm targetCriterionId + trạng thái mới nhất).
+        last_repeat: dict | None = None
 
         for _ in range(attempts):
             prompt = build_decide_next_prompt(
@@ -2180,7 +2233,19 @@ class GeminiProvider(QuestionProvider):
             )
 
             try:
-                return self._parse_decide_next(response)
+                result = self._parse_decide_next(response)
+                # Q17 — chốt chặn phía code cho luật "không hỏi lại câu đã hỏi". Chỉ so CHUỖI sau
+                # chuẩn hoá nhẹ (xem `_normalize_question`): bắt đúng ca đã xảy ra thật (trùng khít
+                # từng chữ) mà không có cửa chặn nhầm một câu đào sâu hợp lệ.
+                if result["action"] != "end" and _is_repeat_question(
+                        result["nextQuestion"] or "", current_question, history):
+                    last_repeat = result
+                    raise _RepeatedQuestionError(
+                        "nextQuestion trùng một câu đã hỏi trong chuỗi này: "
+                        f"{result['nextQuestion']!r}. Câu này đã hỏi rồi — hỏi lại chỉ nhận lại đúng "
+                        "câu trả lời cũ. Đặt MỘT câu hỏi KHÁC về nội dung, hoặc trả "
+                        'action = "end" để đóng chủ đề.')
+                return result
             except ValueError as e:
                 last_error = e
                 feedback = str(e)
@@ -2189,6 +2254,18 @@ class GeminiProvider(QuestionProvider):
                 # "thỉnh thoảng hội thoại thích ứng chết" — đúng kiểu hỏng im lặng mà allowlist URL
                 # F15 đã dính.
                 logger.info("Câu kế bị trả lại (%s): %s", _generation_diagnostics(response), e)
+
+        # Q17 — cạn lượt mà câu kế VẪN trùng: đóng chuỗi, TUYỆT ĐỐI không trả câu trùng ra ngoài.
+        # Khác với các lỗi Q16 khác (raise → 502 → .NET degrade về luồng tĩnh): ở đây ta đã có một
+        # quyết định dùng được — "chủ đề này hết cái để hỏi" — nên `end` vừa đúng nội dung vừa êm
+        # hơn 502. Giữ nguyên các nhãn bằng chứng của lượt cuối, chỉ ghi lại `reason` cho ĐÚNG SỰ
+        # THẬT (lý do model đưa ra là để biện minh cho một câu hỏi mà ta vừa vứt đi).
+        if isinstance(last_error, _RepeatedQuestionError) and last_repeat is not None:
+            logger.info("Đóng chuỗi sau %d lượt vì câu kế vẫn trùng: %r",
+                        attempts, last_repeat["nextQuestion"])
+            return {**last_repeat, "action": "end", "nextQuestion": None,
+                    "reason": "Câu hỏi kế sinh ra vẫn trùng câu đã hỏi sau khi thử lại — đóng chủ đề "
+                              "tại đây thay vì hỏi lại y nguyên."}
 
         raise last_error  # type: ignore[misc]  # attempts >= 1 ⇒ luôn đã gán
 
