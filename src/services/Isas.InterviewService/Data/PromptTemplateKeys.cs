@@ -63,6 +63,22 @@ public static class PromptTemplateKeys
     /// prompt CHẤM. Đây là chỗ "custom 3 ngành" thực sự đổi được hành vi AI.</summary>
     public static string CategoryGuidance(JobCategory c) => $"category.{c}.guidance";
 
+    // ── J4 — CẤP ĐỘ ỨNG VIÊN (Fresher/Junior/Middle/Senior) ────────────────────────────────
+    // `calibration_block` (sinh câu hỏi) thôi hard-code: mỗi mức có khoá RIÊNG cho dòng mô tả
+    // của chính nó (admin sửa một mức không đụng 3 mức còn lại) + một khoá trọng tâm CHẤM riêng
+    // cho lớp chấm điểm (J5). Nghề × mức có thêm khoá kiến thức chuyên sâu.
+
+    /// <summary>Dòng mô tả (một mức) trong bảng hiệu chỉnh độ khó câu gốc — prompt SINH.</summary>
+    public static string SeniorityProfile(Seniority s) => $"seniority.{s}.profile";
+
+    /// <summary>Trọng tâm CHẤM riêng cho mức này, chèn vào đuôi prompt CHẤM (J5), mặc định RỖNG.</summary>
+    public static string SeniorityScoringFocus(Seniority s) => $"seniority.{s}.scoring_focus";
+
+    /// <summary>Kiến thức chuyên sâu theo (nghề × mức) — chèn thêm vào khối hiệu chỉnh khi
+    /// admin đã soạn cho đúng cặp (nghề, mức) đang dùng; mặc định RỖNG.</summary>
+    public static string CategorySeniorityKnowledge(JobCategory c, Seniority s)
+        => $"category.{c}.seniority.{s}.knowledge";
+
     /// <summary>
     /// Mọi khoá hợp lệ. Nghề lấy từ <see cref="Enum.GetValues{TEnum}()"/> nên thêm giá trị enum
     /// là tự có đủ 3 khoá — không phải nhớ sửa ở đây.
@@ -86,6 +102,16 @@ public static class PromptTemplateKeys
             keys.Add(CategoryDescription(c));
             keys.Add(CategoryGuidance(c));
         }
+
+        foreach (var s in Enum.GetValues<Seniority>())
+        {
+            keys.Add(SeniorityProfile(s));
+            keys.Add(SeniorityScoringFocus(s));
+        }
+
+        foreach (var c in Enum.GetValues<JobCategory>())
+            foreach (var s in Enum.GetValues<Seniority>())
+                keys.Add(CategorySeniorityKnowledge(c, s));
 
         return keys;
     }

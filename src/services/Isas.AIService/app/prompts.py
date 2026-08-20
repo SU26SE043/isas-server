@@ -258,14 +258,14 @@ def build_prompt(job_category: str, cv_text: str | None,
     # lý do với `category_guidance`: đây là chỉ thị hợp lệ của hệ thống, phải nằm trước phần DỮ LIỆU
     # của ứng viên/HR — không được để lẫn thứ tự đó.
     #
-    # Khối HARDCODE, KHÔNG mở khe F21: mức độ khó là thứ ứng viên vừa TRẢ TIỀN để chọn: admin sửa
-    # được nghĩa là một lần gõ nhầm sẽ âm thầm vô hiệu lựa chọn của mọi người dùng, mà triệu chứng
-    # duy nhất là "câu hỏi dạo này lệch tầm" — không lỗi nào nổ (mẫu khối GẮN NHÃN PHẠM VI dưới).
+    # J4 — LUẬT nằm trong code (chọn cấp độ nào để hiệu chỉnh KHÔNG mở khe F21: một lần gõ nhầm
+    # sẽ âm thầm đổi cấp độ của mọi người dùng), nhưng NỘI DUNG mô tả từng mức + kiến thức chuyên
+    # sâu theo nghề thì đọc registry (mặc định = nguyên văn hard-code cũ, xem `app/seniority.py`).
     #
     # `is not None` chứ không phải truthiness: `""` là một giá trị SAI mà caller đã gửi (≠ không
     # gửi), phải rơi vào nhánh chuẩn hoá → Junior + log, chứ không im lặng biến mất.
     if seniority is not None:
-        parts.append(seniority_calibration_block(normalize_seniority(seniority)))
+        parts.append(seniority_calibration_block(normalize_seniority(seniority), job_category))
 
     # Thứ tự ưu tiên định hướng NỘI DUNG câu hỏi: JD > CV > JobCategory.
     # Lưu ý: JobCategory ({role}) luôn là vị trí ứng viên đang luyện và là
@@ -528,7 +528,7 @@ def build_criterion_levels_prompt(job_category: str, criteria: list[dict],
     )
 
     if seniority is not None:
-        parts.append(seniority_calibration_block(normalize_seniority(seniority)))
+        parts.append(seniority_calibration_block(normalize_seniority(seniority), job_category))
 
     # AI-4 — tên/mô tả tiêu chí và JD đều là chữ HR gõ vào ô nhập, tức DỮ LIỆU, không phải lệnh.
     # Vành này đứng TRƯỚC mọi khối dữ liệu bên dưới: đặt sau thì nó chỉ còn là lời dặn muộn sau khi
@@ -617,6 +617,9 @@ def build_preview_answers_prompt(question: str, criteria: list[dict],
     if normalize(language) == EN:
         parts.append(output_directive(language))
 
+    # J4: KHÔNG có `job_category` trong scope của prompt này (chấm thử rubric preview không nhận
+    # nghề — `GenerateCriterionLevelsRequest`/`req` không có trường đó ở tầng endpoint) ⇒ khối
+    # kiến thức chuyên sâu theo nghề không áp dụng ở đây, giữ nguyên như trước J4.
     if seniority is not None:
         parts.append(seniority_calibration_block(normalize_seniority(seniority)))
 
