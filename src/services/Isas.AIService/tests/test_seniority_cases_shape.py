@@ -174,3 +174,33 @@ def test_moi_ca_dung_duoc_prompt_khong_seniority(cases):
             language=c.get("language", "vi"),
         )
         assert isinstance(prompt, str) and prompt.strip()
+
+
+# ── HỢP ĐỒNG DÂY: .NET → hàng đợi → worker → provider ────────────────────────────────────────
+#
+# Vì sao phải soi MÃ NGUỒN chứ không gọi hàm: mắt xích này hỏng theo kiểu KHÔNG TRIỆU CHỨNG. Khe
+# `scoring_focus` mặc định RỖNG, nên nếu worker đọc sai tên khoá hoặc quên truyền `seniority=` xuống
+# `provider.score`, prompt chấm sinh ra vẫn GIỐNG HỆT TỪNG BYTE bản đúng. Mọi test so prompt đều
+# xanh. Lỗi chỉ lộ ra vào ngày admin điền nội dung vào khe — có thể là hàng tháng sau, và lúc đó
+# không ai còn nối được triệu chứng với thay đổi này.
+#
+# Repo đã chết đúng kiểu đó ba lần: `focusCriteria` bị pydantic nuốt, `metricsVersion` lệch tên, và
+# `adaptiveMaxQuestions` vs `maxQuestions` làm mọi gói trả phí nhận trần 0 câu. Sau lần đó mới có
+# `test_khoa_hop_dong_scoring_job_doc_ca_hai_kieu_viet` trong `test_sample_answer_scoring.py`. Đây
+# là bản sao của chính lưới đó cho `seniority`.
+
+def _worker_source() -> str:
+    src = (__file__.rsplit("/tests/", 1)[0]) + "/app/worker.py"
+    with open(src, encoding="utf-8") as f:
+        return f.read()
+
+
+def test_worker_doc_seniority_ca_hai_kieu_viet():
+    """Khoá trên hàng đợi là PascalCase (`ScoringJobPublisher` serialize trần, không kèm options),
+    còn các đường HTTP khác dùng camelCase. Đọc một kiểu là field chết im lặng."""
+    assert 'body.get("seniority") or body.get("Seniority")' in _worker_source()
+
+
+def test_worker_truyen_seniority_xuong_provider_score():
+    """Đọc được khỏi hàng đợi mà quên truyền xuống thì cũng hỏng y hệt, và cũng im lặng y hệt."""
+    assert "seniority=seniority" in _worker_source()
