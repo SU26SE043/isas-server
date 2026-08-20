@@ -104,6 +104,29 @@ public class PromptTemplateF21Tests
         }
     }
 
+    // J4 — cùng tính chất đó cho khoá CẤP ĐỘ. Vòng lặp enum hôm nay đúng, nhưng khoá nghề có lưới
+    // canh còn khoá cấp độ thì không — mà chính vòng lặp là thứ dễ bị ai đó "dọn" thành danh sách
+    // tay lúc refactor. Thiếu một khoá ở đây không ném lỗi ở đâu cả: `prompt_registry.get` lặng lẽ
+    // trả bản mặc định, nên cấp độ đó vĩnh viễn không sửa được mà admin vẫn thấy trang bình thường.
+    [Fact]
+    public void MoiCapDo_DeuCoDuKhoa_VaMoiCapNghe_CoKhoaKienThuc()
+    {
+        foreach (var s in Enum.GetValues<Seniority>())
+        {
+            Assert.Contains(PromptTemplateKeys.SeniorityProfile(s), PromptTemplateKeys.All);
+            Assert.Contains(PromptTemplateKeys.SeniorityScoringFocus(s), PromptTemplateKeys.All);
+
+            foreach (var c in Enum.GetValues<JobCategory>())
+                Assert.Contains(PromptTemplateKeys.CategorySeniorityKnowledge(c, s), PromptTemplateKeys.All);
+        }
+
+        // 4 hồ sơ cấp độ + 4 trọng tâm chấm + 3 nghề × 4 cấp = 20. Con số cứng ở đây là CỐ Ý: nó
+        // buộc người thêm/bớt cấp độ hoặc nghề phải dừng lại đọc, thay vì để vòng lặp âm thầm đổi
+        // số khoá mà không ai để ý.
+        var seniorityKeys = PromptTemplateKeys.All.Count(k => k.Contains("seniority."));
+        Assert.Equal(20, seniorityKeys);
+    }
+
     [Fact]
     public void KhoaCuaKhungBatBien_KHONG_duocNamTrongDanhSachSuaDuoc()
     {

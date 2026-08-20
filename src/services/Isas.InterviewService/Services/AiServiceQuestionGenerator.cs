@@ -173,6 +173,15 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
     }
 
     /// <summary>
+    /// J3 — trần "1 tiêu chí chính + tối đa 2 phụ" mỗi câu (đo được: prod có câu đòi hỏi 5+ tiêu
+    /// chí cùng lúc trong một câu hẹp, ứng viên trả lời 10 phút vẫn bị coi là thiếu). Gemini trả
+    /// về danh sách KHÔNG xếp hạng — không có tín hiệu "chính" vs "phụ" — nên trần thực thi CHỈ
+    /// LÀ giữ tối đa <see cref="MaxTargetsPerQuestion"/> id ĐẦU theo đúng thứ tự AIService trả
+    /// về. KHÔNG giả vờ phân biệt được chính/phụ.
+    /// </summary>
+    private const int MaxTargetsPerQuestion = 3;
+
+    /// <summary>
     /// Nhãn của câu thứ <paramref name="index"/>: parse GUID, bỏ id lạ (không nằm trong
     /// <paramref name="allowedIds"/> = tập ta đã gửi), khử trùng.
     ///
@@ -201,7 +210,19 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             if (!Guid.TryParse(s, out var id)) continue;
             if (allowedIds is not null && !allowedIds.Contains(id)) continue;
             if (!parsed.Contains(id)) parsed.Add(id);
+            if (parsed.Count >= MaxTargetsPerQuestion) break;
         }
+
+        // Cắt trần là thay đổi PHẠM VI CHẤM của câu này — id bị bỏ có thể là chỗ duy nhất phủ một
+        // tiêu chí trong cả buổi (SC1 ép phân bổ, nhưng nó ép ở tầng SINH chứ không biết gì về trần
+        // này). Cắt mà không nói thì triệu chứng duy nhất là một tiêu chí không bao giờ được chấm,
+        // và không ai nối được nó với dòng code này. `raw.Count` chứ không phải `parsed.Count`: id
+        // lạ/trùng bị loại ở trên đã có nhánh log riêng, đây chỉ đếm phần bị TRẦN cắt.
+        if (parsed.Count == MaxTargetsPerQuestion && raw.Count > MaxTargetsPerQuestion)
+            _logger.LogWarning(
+                "AIService gắn {Raw} tiêu chí cho câu {Index}, vượt trần {Cap} — giữ {Cap} id đầu, bỏ phần còn lại. "
+                + "Nếu lặp lại nhiều, xem lại luật gắn nhãn trong prompt sinh câu (J3).",
+                raw.Count, index, MaxTargetsPerQuestion, MaxTargetsPerQuestion);
 
         if (parsed.Count == 0)
         {

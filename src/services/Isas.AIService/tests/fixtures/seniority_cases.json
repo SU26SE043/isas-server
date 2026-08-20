@@ -1,0 +1,450 @@
+{
+  "_readme": [
+    "J7 (bộ ca thử) — 1 nghề (BE/vi) × 4 cấp độ × 3 mức chất lượng câu trả lời = 12 ca.",
+    "Production có 0 buổi Middle và 2 buổi Senior trên 222 buổi — không đủ dữ liệu thật để",
+    "nghiệm thu J5/J7 cho hai cấp cao. Bộ này để người có quyền server dùng làm đầu vào cho",
+    "scripts/benchmark-scoring.py khi nghiệm thu — KHÔNG được gọi Gemini trong test của repo này.",
+    "'criteria' đúng shape mà provider.score() nhận: [{criterionId, name, description, maxScore,",
+    "weight, levels: [{score, descriptor}]}]. maxScore=5 cho mọi tiêu chí trong bộ này (khớp",
+    "B2CRubricSeed.DefaultMaxScore) nên 'expected_band' là khoảng LEVEL (0-5) kỳ vọng một người",
+    "chấm tay sẽ chọn cho tiêu chí 'Chiều sâu kỹ thuật' của ca đó — không phải một con số duy nhất,",
+    "vì chấm điểm không tái lập tuyệt đối 100% ngay cả với người chấm giỏi.",
+    "Câu hỏi mỗi cấp được hiệu chỉnh ĐÚNG TẦM cấp độ đó (J4 calibration_block): Fresher = khái niệm",
+    "nền tảng một bước; Junior = áp dụng vào công việc hằng ngày; Middle = thiết kế module + đánh",
+    "đổi; Senior = đánh đổi kiến trúc quy mô hệ thống + độ tin cậy."
+  ],
+  "cases": [
+    {
+      "case_id": "fresher-weak",
+      "seniority": "Fresher",
+      "quality": "weak",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Sự khác nhau giữa GET và POST là gì?",
+      "transcript": "Con không biết ạ, chắc là giống nhau.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Chiều sâu kỹ thuật",
+          "description": "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không nêu được khái niệm kỹ thuật nào liên quan | CÒN THIẾU: mọi thứ."},
+            {"score": 2, "descriptor": "CÓ: giải thích đúng cơ chế hoạt động cơ bản | CÒN THIẾU: ví dụ thực tế."},
+            {"score": 5, "descriptor": "CÓ: giải thích cơ chế, ví dụ thực tế, và đánh đổi kỹ thuật | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [0, 1]
+    },
+    {
+      "case_id": "fresher-decent",
+      "seniority": "Fresher",
+      "quality": "decent",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Sự khác nhau giữa GET và POST là gì?",
+      "transcript": "GET dùng để lấy dữ liệu còn POST dùng để gửi dữ liệu lên server.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Chiều sâu kỹ thuật",
+          "description": "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không nêu được khái niệm kỹ thuật nào liên quan | CÒN THIẾU: mọi thứ."},
+            {"score": 2, "descriptor": "CÓ: giải thích đúng cơ chế hoạt động cơ bản | CÒN THIẾU: ví dụ thực tế."},
+            {"score": 5, "descriptor": "CÓ: giải thích cơ chế, ví dụ thực tế, và đánh đổi kỹ thuật | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [2, 3]
+    },
+    {
+      "case_id": "fresher-strong",
+      "seniority": "Fresher",
+      "quality": "strong",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Sự khác nhau giữa GET và POST là gì?",
+      "transcript": "GET dùng để lấy dữ liệu từ server, tham số thường nằm trên URL, không có body, và có thể cache được. POST dùng để gửi dữ liệu lên server để tạo mới, tham số nằm trong body, và không được cache theo mặc định.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Chiều sâu kỹ thuật",
+          "description": "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không nêu được khái niệm kỹ thuật nào liên quan | CÒN THIẾU: mọi thứ."},
+            {"score": 2, "descriptor": "CÓ: giải thích đúng cơ chế hoạt động cơ bản | CÒN THIẾU: ví dụ thực tế."},
+            {"score": 5, "descriptor": "CÓ: giải thích cơ chế, ví dụ thực tế, và đánh đổi kỹ thuật | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [4, 5]
+    },
+    {
+      "case_id": "junior-weak",
+      "seniority": "Junior",
+      "quality": "weak",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Bạn debug một API trả về lỗi 500 như thế nào?",
+      "transcript": "Em sẽ báo cho leader và nhờ leader xử lý.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Chiều sâu kỹ thuật",
+          "description": "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không nêu được hướng debug nào | CÒN THIẾU: mọi bước xử lý cụ thể."},
+            {"score": 2, "descriptor": "CÓ: nêu được một bước debug cơ bản (xem log) | CÒN THIẾU: quy trình đầy đủ từ log tới sửa lỗi."},
+            {"score": 5, "descriptor": "CÓ: quy trình debug đầy đủ (log, tái hiện, sửa, kiểm chứng) | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [0, 1]
+    },
+    {
+      "case_id": "junior-decent",
+      "seniority": "Junior",
+      "quality": "decent",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Bạn debug một API trả về lỗi 500 như thế nào?",
+      "transcript": "Em sẽ xem log server để tìm lỗi, sau đó thử lại request để xem có tái hiện được không.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Chiều sâu kỹ thuật",
+          "description": "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không nêu được hướng debug nào | CÒN THIẾU: mọi bước xử lý cụ thể."},
+            {"score": 2, "descriptor": "CÓ: nêu được một bước debug cơ bản (xem log) | CÒN THIẾU: quy trình đầy đủ từ log tới sửa lỗi."},
+            {"score": 5, "descriptor": "CÓ: quy trình debug đầy đủ (log, tái hiện, sửa, kiểm chứng) | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [2, 3]
+    },
+    {
+      "case_id": "junior-strong",
+      "seniority": "Junior",
+      "quality": "strong",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Bạn debug một API trả về lỗi 500 như thế nào?",
+      "transcript": "Em sẽ đọc log để tìm stack trace, xác định dòng code gây lỗi, sau đó viết lại test case để tái hiện lỗi cục bộ. Nếu là lỗi liên quan tới dữ liệu đầu vào, em sẽ thêm validate; nếu là lỗi kết nối tới service khác, em sẽ kiểm tra timeout và cơ chế retry.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Chiều sâu kỹ thuật",
+          "description": "Hiểu bản chất ngôn ngữ/framework, cơ chế hoạt động và trade-off kỹ thuật.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không nêu được hướng debug nào | CÒN THIẾU: mọi bước xử lý cụ thể."},
+            {"score": 2, "descriptor": "CÓ: nêu được một bước debug cơ bản (xem log) | CÒN THIẾU: quy trình đầy đủ từ log tới sửa lỗi."},
+            {"score": 5, "descriptor": "CÓ: quy trình debug đầy đủ (log, tái hiện, sửa, kiểm chứng) | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [4, 5]
+    },
+    {
+      "case_id": "middle-weak",
+      "seniority": "Middle",
+      "quality": "weak",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Bạn sẽ thiết kế database cho hệ thống đặt vé xem phim như thế nào?",
+      "transcript": "Em sẽ tạo một bảng lưu hết thông tin vé, phim, suất chiếu vào chung.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Thiết kế hệ thống & CSDL",
+          "description": "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không đề cập mô hình dữ liệu nào | CÒN THIẾU: mọi thành phần thiết kế."},
+            {"score": 2, "descriptor": "CÓ: mô tả quan hệ giữa các bảng dữ liệu chính | CÒN THIẾU: cân nhắc mở rộng/tin cậy."},
+            {"score": 5, "descriptor": "CÓ: mô tả thiết kế, cân nhắc mở rộng/tin cậy, so sánh phương án | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [0, 1]
+    },
+    {
+      "case_id": "middle-decent",
+      "seniority": "Middle",
+      "quality": "decent",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Bạn sẽ thiết kế database cho hệ thống đặt vé xem phim như thế nào?",
+      "transcript": "Em sẽ tách bảng phim, suất chiếu và vé ra riêng, có khóa ngoại liên kết với nhau để tránh trùng lặp dữ liệu.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Thiết kế hệ thống & CSDL",
+          "description": "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không đề cập mô hình dữ liệu nào | CÒN THIẾU: mọi thành phần thiết kế."},
+            {"score": 2, "descriptor": "CÓ: mô tả quan hệ giữa các bảng dữ liệu chính | CÒN THIẾU: cân nhắc mở rộng/tin cậy."},
+            {"score": 5, "descriptor": "CÓ: mô tả thiết kế, cân nhắc mở rộng/tin cậy, so sánh phương án | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [2, 3]
+    },
+    {
+      "case_id": "middle-strong",
+      "seniority": "Middle",
+      "quality": "strong",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Bạn sẽ thiết kế database cho hệ thống đặt vé xem phim như thế nào?",
+      "transcript": "Em sẽ tách bảng phim, rạp, suất chiếu và vé, chuẩn hoá để tránh trùng dữ liệu. Tuy nhiên với bảng vé có lượng đọc lớn vào giờ cao điểm, em sẽ cân nhắc thêm index trên suất chiếu và có thể denormalize một phần thông tin phim vào bảng vé để giảm số lần join, đánh đổi giữa tốc độ đọc và độ phức tạp khi cập nhật.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Thiết kế hệ thống & CSDL",
+          "description": "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không đề cập mô hình dữ liệu nào | CÒN THIẾU: mọi thành phần thiết kế."},
+            {"score": 2, "descriptor": "CÓ: mô tả quan hệ giữa các bảng dữ liệu chính | CÒN THIẾU: cân nhắc mở rộng/tin cậy."},
+            {"score": 5, "descriptor": "CÓ: mô tả thiết kế, cân nhắc mở rộng/tin cậy, so sánh phương án | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [4, 5]
+    },
+    {
+      "case_id": "senior-weak",
+      "seniority": "Senior",
+      "quality": "weak",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Hệ thống của bạn cần xử lý 10.000 request/giây với yêu cầu nhất quán dữ liệu cao — bạn sẽ thiết kế kiến trúc và đảm bảo độ tin cậy thế nào?",
+      "transcript": "Em sẽ mua thêm server mạnh hơn để chịu tải.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Thiết kế hệ thống & CSDL",
+          "description": "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không đề cập kiến trúc phân tán hay giải pháp mở rộng nào | CÒN THIẾU: mọi cân nhắc kiến trúc ở quy mô lớn."},
+            {"score": 2, "descriptor": "CÓ: nêu được cách scale ngang cơ bản | CÒN THIẾU: cân nhắc nhất quán dữ liệu và độ tin cậy."},
+            {"score": 5, "descriptor": "CÓ: kiến trúc scale ngang, cân nhắc nhất quán dữ liệu VÀ cơ chế chịu lỗi (circuit breaker/retry) | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [0, 1]
+    },
+    {
+      "case_id": "senior-decent",
+      "seniority": "Senior",
+      "quality": "decent",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Hệ thống của bạn cần xử lý 10.000 request/giây với yêu cầu nhất quán dữ liệu cao — bạn sẽ thiết kế kiến trúc và đảm bảo độ tin cậy thế nào?",
+      "transcript": "Em sẽ scale ngang bằng cách thêm nhiều instance của service phía sau load balancer, và dùng cache để giảm tải cho database.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Thiết kế hệ thống & CSDL",
+          "description": "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không đề cập kiến trúc phân tán hay giải pháp mở rộng nào | CÒN THIẾU: mọi cân nhắc kiến trúc ở quy mô lớn."},
+            {"score": 2, "descriptor": "CÓ: nêu được cách scale ngang cơ bản | CÒN THIẾU: cân nhắc nhất quán dữ liệu và độ tin cậy."},
+            {"score": 5, "descriptor": "CÓ: kiến trúc scale ngang, cân nhắc nhất quán dữ liệu VÀ cơ chế chịu lỗi (circuit breaker/retry) | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [2, 3]
+    },
+    {
+      "case_id": "senior-strong",
+      "seniority": "Senior",
+      "quality": "strong",
+      "job_category": "BE",
+      "language": "vi",
+      "question": "Hệ thống của bạn cần xử lý 10.000 request/giây với yêu cầu nhất quán dữ liệu cao — bạn sẽ thiết kế kiến trúc và đảm bảo độ tin cậy thế nào?",
+      "transcript": "Em sẽ scale ngang các service không trạng thái phía sau load balancer, tách phần đọc và ghi bằng read replica để giảm tải cho node ghi chính. Với yêu cầu nhất quán cao, em sẽ dùng transaction chặt ở tầng ghi cho phần đặt vé để tránh bán trùng chỗ, còn phần thống kê không quan trọng bằng thì có thể chấp nhận nhất quán cuối cùng để giảm độ trễ. Về độ tin cậy, em sẽ thêm circuit breaker và retry có giới hạn để tránh domino khi một service downstream chậm.",
+      "criteria": [
+        {
+          "criterionId": "tech-depth",
+          "name": "Thiết kế hệ thống & CSDL",
+          "description": "Mô hình hoá dữ liệu, kiến trúc, khả năng mở rộng và độ tin cậy.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không đề cập kiến trúc phân tán hay giải pháp mở rộng nào | CÒN THIẾU: mọi cân nhắc kiến trúc ở quy mô lớn."},
+            {"score": 2, "descriptor": "CÓ: nêu được cách scale ngang cơ bản | CÒN THIẾU: cân nhắc nhất quán dữ liệu và độ tin cậy."},
+            {"score": 5, "descriptor": "CÓ: kiến trúc scale ngang, cân nhắc nhất quán dữ liệu VÀ cơ chế chịu lỗi (circuit breaker/retry) | CÒN THIẾU: —"}
+          ]
+        },
+        {
+          "criterionId": "communication",
+          "name": "Giao tiếp & trình bày",
+          "description": "Giải thích giải pháp kỹ thuật rõ ràng, dễ theo dõi.",
+          "maxScore": 5,
+          "weight": 0.5,
+          "levels": [
+            {"score": 0, "descriptor": "CÓ: không trình bày được ý nào mạch lạc | CÒN THIẾU: mọi cấu trúc."},
+            {"score": 2, "descriptor": "CÓ: trình bày các ý theo trình tự theo dõi được | CÒN THIẾU: dẫn dắt rõ ràng."},
+            {"score": 5, "descriptor": "CÓ: trình bày có cấu trúc, dẫn dắt rõ, nhấn đúng trọng tâm | CÒN THIẾU: —"}
+          ]
+        }
+      ],
+      "expected_band": [4, 5]
+    }
+  ]
+}

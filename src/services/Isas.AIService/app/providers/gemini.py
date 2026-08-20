@@ -15,7 +15,7 @@ from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
 from app.question_quality import coverage_defects, verify_defect
-from app import prompt_registry
+from app import prompt_registry, timing
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_criterion_levels_prompt, build_preview_answers_prompt, PREVIEW_BANDS,
@@ -599,7 +599,11 @@ class GeminiProvider(QuestionProvider):
                 await asyncio.sleep(delay)
                 delay *= 2   # 1s → 2s: đủ để vượt một cú nấc, chưa chạm ngân sách 90s của .NET
         if not defer_report:
-            await report_usage(operation, used_model, response)
+            # Đo tách chặng: POST tới sink của Payment, ĐANG nằm trong critical path của mọi lượt
+            # Gemini (kể cả `decide_next` đồng bộ dưới trần 90s của .NET). Đo trước, rồi mới bàn
+            # chuyện đẩy ra nền — đẩy mà không đo thì không biết có đáng đánh đổi độ tin cậy không.
+            with timing.stage("usage_post"):
+                await report_usage(operation, used_model, response)
         return response
 
     async def generate(self, job_category: str, cv_text: str | None,
@@ -1689,13 +1693,18 @@ class GeminiProvider(QuestionProvider):
                     job_category: str, criteria: list[dict],
                     temperature: float = 0.0,
                     delivery: dict | None = None, language: str = "vi",
-                    sample_answer: str | None = None) -> list[dict]:
+                    sample_answer: str | None = None,
+                    seniority: str | None = None) -> list[dict]:
         """
         Chấm 1 câu trả lời theo rubric.
 
         delivery (F11 — FR06, optional): chỉ số cách nói đo từ audio (tốc độ nói, khoảng lặng,
           từ đệm) — ghép vào prompt để tiêu chí "độ trôi chảy" chấm bằng SỐ ĐO thay vì đoán
           từ text. ``None`` (mặc định) = chưa đo được → prompt nói rõ + cấm bịa số.
+
+        seniority (J5, optional): cấp độ ứng viên — CHỈ buổi B2C có giá trị này (.NET set None
+          cho mọi buổi B2B, CAMP-10). ``None`` (mặc định) ⇒ ``build_scoring_prompt`` không thêm
+          khối cấp độ, prompt không đổi một byte so với trước J5.
 
         criteria: list dict từ C# gửi qua, mỗi phần tử có
           { criterionId, name, description, maxScore, weight,
@@ -1736,7 +1745,8 @@ class GeminiProvider(QuestionProvider):
             levels_by_id[cid] = sorted(scores) if scores else list(range(0, mx + 1))
 
         prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery,
-                                      language=language, sample_answer=sample_answer)
+                                      language=language, sample_answer=sample_answer,
+                                      seniority=seniority)
 
         # Chấm 1 câu mất 19,6s (p50) trên prod và ~2.500 token trong đó là suy luận ẩn KHÔNG ai
         # đọc — đây là đường gọi Gemini cuối cùng còn chưa có trần (số liệu + vì sao 512 chứ không

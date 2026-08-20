@@ -1169,7 +1169,10 @@ public class AnswerService : IAnswerService
                     TranscriptEngine = answer.TranscriptEngine,
                     // F11 — chỉ số PHẢI đi cùng Transcript: worker bỏ Whisper khi có Transcript, nên
                     // thiếu cái này là buổi thích ứng chấm "độ trôi chảy" mà không có số đo nào.
-                    DeliveryMetrics = DeliveryMetricsMapper.Read(answer)
+                    DeliveryMetrics = DeliveryMetricsMapper.Read(answer),
+                    // J5 — CHỈ B2C (CAMP-10: B2B xếp hạng chung một bảng, không được chấm bằng hai
+                    // thước). null với mọi buổi thuộc campaign.
+                    Seniority = session.CampaignId is null ? session.Seniority : null
                 };
 
                 await _scoringPublisher.PublishAsync(job, ct);

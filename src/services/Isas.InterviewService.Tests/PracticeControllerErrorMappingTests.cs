@@ -79,7 +79,7 @@ public class PracticeControllerErrorMappingTests
         var candidate = Guid.NewGuid();
         var service = new Mock<IPracticeService>();
         service.Setup(s => s.GetSessionOptionsAsync(candidate, "BE", null, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PracticeSessionOptionsResponse(false, 0, 0, 1, 20, 12, [], []));
+            .ReturnsAsync(new PracticeSessionOptionsResponse(false, 0, 0, 1, 20, 12, [], [], 0, 0));
         var controller = Build(service, candidate);
 
         var result = await controller.GetSessionOptions("BE", null, default);
@@ -96,7 +96,7 @@ public class PracticeControllerErrorMappingTests
         var candidate = Guid.NewGuid();
         var service = new Mock<IPracticeService>();
         service.Setup(s => s.GetSessionOptionsAsync(candidate, "BE", "en", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new PracticeSessionOptionsResponse(true, 3, 3, 1, 20, 20, [], []));
+            .ReturnsAsync(new PracticeSessionOptionsResponse(true, 3, 3, 1, 20, 20, [], [], 1, 3));
         var controller = Build(service, candidate);
 
         var result = await controller.GetSessionOptions("BE", "en", default);

@@ -21,10 +21,47 @@ hỏng cả buổi.
 
 import logging
 
+from app import prompt_registry
+
 LEVELS: tuple[str, ...] = ("Fresher", "Junior", "Middle", "Senior")
 DEFAULT = "Junior"
 
 _logger = logging.getLogger(__name__)
+
+# J4 — mỗi MỨC có khoá RIÊNG (`seniority.{level}.profile`), để admin sửa một mức không đụng ba
+# mức còn lại. Mặc định của từng khoá là NGUYÊN VĂN dòng đang có trong code — registry rỗng ⇒
+# `calibration_block` ra đúng byte như trước J4 (bất biến khoá bằng test, xem
+# `test_seniority_wire_sen1.py::test_prompt_khong_truyen_thi_giu_nguyen_xi`).
+_PROFILE_DEFAULTS: dict[str, str] = {
+    "Fresher": (
+        "Fresher: kiến thức nền tảng, khái niệm cốt lõi, tình huống đơn giản một bước. KHÔNG hỏi "
+        "vận hành hệ thống quy mô lớn, KHÔNG hỏi đánh đổi kiến trúc."
+    ),
+    "Junior": (
+        "Junior: áp dụng kiến thức vào công việc hằng ngày, gỡ lỗi thường gặp, quy trình làm việc "
+        "nhóm; nghiêng về 'làm thế nào' hơn là 'vì sao chọn phương án này'."
+    ),
+    "Middle": (
+        "Middle: thiết kế module, so sánh đánh đổi giữa các phương án, tối ưu hiệu năng, xử lý ca "
+        "biên, rút kinh nghiệm từ dự án thật."
+    ),
+    "Senior": (
+        "Senior: đánh đổi kiến trúc ở quy mô hệ thống, vận hành và độ tin cậy, chuẩn hoá kỹ thuật, "
+        "ra quyết định dưới ràng buộc thực tế, dẫn dắt và định hướng người khác."
+    ),
+}
+
+
+def _profile_key(level: str) -> str:
+    return f"seniority.{level}.profile"
+
+
+def _scoring_focus_key(level: str) -> str:
+    return f"seniority.{level}.scoring_focus"
+
+
+def _knowledge_key(job_category: str, level: str) -> str:
+    return f"category.{job_category.upper()}.seniority.{level}.knowledge"
 
 
 def normalize(value: str | None) -> str:
@@ -42,29 +79,49 @@ def normalize(value: str | None) -> str:
     return DEFAULT
 
 
-def calibration_block(level: str) -> str:
-    """Khối hiệu chỉnh độ khó câu gốc theo cấp độ.
+def calibration_block(level: str, job_category: str | None = None) -> str:
+    """Khối hiệu chỉnh độ khó câu gốc theo cấp độ (J4: đọc registry, KHÔNG hard-code).
 
     Giữ tiếng Việt kể cả với buổi tiếng Anh — đồng nhất với `build_decide_next_prompt` và với toàn
     bộ phần chỉ thị của `build_prompt`; ngôn ngữ ĐẦU RA đã được ép riêng bằng `output_directive`.
 
+    Bảng 4 mức vẫn được liệt kê ĐỦ (mỗi dòng đọc từ khoá RIÊNG của chính mức đó qua
+    `prompt_registry`, mặc định = nguyên văn dòng cũ) — admin sửa một mức không đụng ba mức còn
+    lại, và registry rỗng cho ra đúng cùng một khối như trước J4.
+
     Câu cuối cố ý nói rõ quan hệ với dòng *"đi từ cơ bản đến nâng cao"* ở đầu prompt: không có nó,
     hai chỉ thị đọc như mâu thuẫn và mô hình tự do chọn bên nào cũng được ⇒ hiệu chỉnh mất tác dụng
     đúng ở cấp Fresher/Senior (hai đầu thang, nơi nó quan trọng nhất).
+
+    ``job_category`` (mới, J4): có thì thêm khối kiến thức chuyên sâu riêng cho CẶP (nghề, mức)
+    đang dùng — mặc định RỖNG (`category.{JOB}.seniority.{level}.knowledge`), nên vắng nội dung
+    thì khối này không xuất hiện, prompt không đổi một byte.
     """
-    return (
+    lines = "\n".join(
+        f"- {prompt_registry.get(_profile_key(lv), _PROFILE_DEFAULTS[lv])}" for lv in LEVELS
+    )
+    block = (
         f"CẤP ĐỘ ỨNG VIÊN DO NGƯỜI DÙNG CHỌN: {level}\n"
         "Toàn bộ câu hỏi PHẢI được hiệu chỉnh ĐÚNG TẦM cấp độ này — đây là lựa chọn tường minh của "
         "người dùng, không phải gợi ý:\n"
-        "- Fresher: kiến thức nền tảng, khái niệm cốt lõi, tình huống đơn giản một bước. KHÔNG hỏi "
-        "vận hành hệ thống quy mô lớn, KHÔNG hỏi đánh đổi kiến trúc.\n"
-        "- Junior: áp dụng kiến thức vào công việc hằng ngày, gỡ lỗi thường gặp, quy trình làm việc "
-        "nhóm; nghiêng về 'làm thế nào' hơn là 'vì sao chọn phương án này'.\n"
-        "- Middle: thiết kế module, so sánh đánh đổi giữa các phương án, tối ưu hiệu năng, xử lý ca "
-        "biên, rút kinh nghiệm từ dự án thật.\n"
-        "- Senior: đánh đổi kiến trúc ở quy mô hệ thống, vận hành và độ tin cậy, chuẩn hoá kỹ thuật, "
-        "ra quyết định dưới ràng buộc thực tế, dẫn dắt và định hướng người khác.\n"
+        f"{lines}\n"
         f"CHỈ áp dụng dòng ứng với cấp độ {level}; bỏ qua các dòng còn lại. Thang 'đi từ cơ bản đến "
         f"nâng cao' nêu trên áp dụng TRONG phạm vi cấp độ {level}, không được vượt lên cấp cao hơn "
         "hay tụt xuống cấp thấp hơn."
     )
+
+    knowledge = prompt_registry.get(_knowledge_key(job_category, level), "") if job_category else ""
+    if knowledge:
+        block += f"\n{knowledge}"
+    return block
+
+
+def scoring_focus(level: str) -> str:
+    """J5 — trọng tâm CHẤM riêng theo cấp độ, chèn vào ĐUÔI prompt CHẤM (`extra_bits`, SAU mọi
+    luật bắt buộc — bất biến F21, KHÔNG mở khe mới ở vị trí mới).
+
+    Mặc định RỖNG: khe rỗng ⇒ `build_scoring_prompt` không đổi một byte, kể cả khi
+    ``seniority`` được truyền — đây là bất biến âm quan trọng nhất của J5, cho phép đo tách bạch
+    ảnh hưởng của J1 (luật công bằng) với J5 (cấp độ) trên dữ liệu thật.
+    """
+    return prompt_registry.get(_scoring_focus_key(level), "")

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Isas.InterviewService.DTOs;
@@ -76,6 +77,15 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
         };
         msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
 
+        // Đo phía GỌI, không chỉ phía AIService. `/decide-next` chạy ĐỒNG BỘ trong request upload câu
+        // trả lời, nên đây là thứ ứng viên thật sự ngồi chờ. Dòng `[⏱]` của AIService chỉ tính thân
+        // handler — không gồm serialize response, mạng nội bộ, và phần .NET quanh nó — nên một mình
+        // nó không giải thích được con số đo ở client (p50 6,5s · p90 27,6s). Hiệu số hai bên CHÍNH
+        // LÀ phần chưa ai nhìn thấy. Khuôn `Stopwatch` + `{Elapsed}ms` lấy từ AiServiceSpeechSynthesizer.
+        //
+        // Đo ở CẢ 4 nhánh (ok / non-2xx / transport / JSON hỏng): ca hỏng thường là ca CHẬM — một lượt
+        // chạm trần 90s rồi ném là mẫu quý nhất, mà đo mỗi nhánh thành công thì mất đúng cái đuôi đó.
+        var sw = Stopwatch.StartNew();
         HttpResponseMessage response;
         try
         {
@@ -83,14 +93,16 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            _logger.LogError(ex, "Không gọi được AIService /decide-next");
+            _logger.LogError(ex, "[⏱] decide-next-call outcome=transport elapsed={Elapsed}ms", sw.ElapsedMilliseconds);
             throw new AiServiceException("Không gọi được AIService /decide-next", ex);
         }
 
         if (!response.IsSuccessStatusCode)
         {
             var error = await response.Content.ReadAsStringAsync(ct);
-            _logger.LogError("AIService /decide-next lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+            _logger.LogError(
+                "[⏱] decide-next-call outcome=http{StatusCode} elapsed={Elapsed}ms error={Error}",
+                (int)response.StatusCode, sw.ElapsedMilliseconds, error);
             throw new AiServiceException($"AIService /decide-next trả {(int)response.StatusCode}");
         }
 
@@ -101,12 +113,16 @@ public class AiServiceInterviewDecider : IAiServiceInterviewDecider
         }
         catch (JsonException ex)
         {
-            _logger.LogError(ex, "AIService /decide-next trả JSON không hợp lệ");
+            _logger.LogError(ex, "[⏱] decide-next-call outcome=badjson elapsed={Elapsed}ms", sw.ElapsedMilliseconds);
             throw new AiServiceException("AIService /decide-next trả JSON không hợp lệ", ex);
         }
 
         if (body?.Action is null)
             throw new AiServiceException("AIService /decide-next trả thiếu action");
+
+        _logger.LogInformation(
+            "[⏱] decide-next-call outcome=ok elapsed={Elapsed}ms action={Action}",
+            sw.ElapsedMilliseconds, body.Action);
 
         return new DecideNextResult(
             Action: body.Action,

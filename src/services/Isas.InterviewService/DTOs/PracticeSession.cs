@@ -29,7 +29,20 @@ public record CreatePracticeSessionRequest(
     // biệt được hai ca đó: System.Text.Json vẫn bind `"seniority": null` thành null (nullable ref
     // types không được enforce lúc chạy) ⇒ nhánh mặc định không bao giờ với tới được, client gửi
     // null nhận 400 thay vì Junior.
-    string? Seniority = null
+    string? Seniority = null,
+    // ── Ứng viên tự chọn CHẾ ĐỘ và ĐỘ SÂU (đặt CUỐI + có default: call site positional cũ không đổi)
+    //
+    // AdaptiveEnabled: null = "không có ý kiến" ⇒ giữ nguyên cấu hình server. `false` = ứng viên xin
+    // buổi TĨNH, nhận đúng số câu đã chọn, không câu chèn. Ngữ nghĩa CHỈ-CHO-TỪ-CHỐI (xem
+    // ResolveSessionSettings): gửi `true` khi admin/gói đã tắt thì KHÔNG bật lên được — cấu hình
+    // admin là trần, không phải gợi ý.
+    bool? AdaptiveEnabled = null,
+    // MaxDeepPerQuestion: số câu đào sâu tối đa MỖI câu gốc. null = giữ mặc định server.
+    // ⚠ Dải hợp lệ là 1..cấu-hình, KHÔNG nhận 0: `0` không có nghĩa "tắt đào sâu" mà là BỘ CHỌN
+    // CHẾ ĐỘ (chế độ frontier cũ — vẫn có câu chèn, chỉ dồn ở đuôi buổi; xem PracticeSession.
+    // MaxDeepPerQuestion). Muốn tắt phải gửi AdaptiveEnabled=false. Nhận 0 ở đây là mở đường cho
+    // UI diễn đạt "tắt" bằng một giá trị đổi hẳn thuật toán mà không ai biết.
+    int? MaxDeepPerQuestion = null
 );
 
 // SC3 — tất cả số liệu nghiệp vụ (đặc biệt SeedCount) do server tính bằng đúng luật tạo session.
@@ -42,7 +55,13 @@ public record PracticeSessionOptionsResponse(
     int QuestionCountMax,
     int DefaultQuestionCount,
     IReadOnlyList<PracticeSessionPreset> Presets,
-    IReadOnlyList<PracticeSessionPreview> Preview);
+    IReadOnlyList<PracticeSessionPreview> Preview,
+    // Dải độ sâu ứng viên được chọn. PHẢI trả về, và phải bằng ĐÚNG dải mà server dùng để từ chối:
+    // repo đã dính một lần lỗi "trần báo cho UI khác trần dùng để từ chối" với questionCount, triệu
+    // chứng là UI cho bấm rồi server trả 400 — người dùng không hiểu mình sai ở đâu.
+    // Adaptive tắt ⇒ cả hai bằng 0 ⇒ UI ẩn ô chọn.
+    int MaxDeepPerQuestionMin,
+    int MaxDeepPerQuestionMax);
 
 public record PracticeSessionPreset(
     string Key,
@@ -217,7 +236,13 @@ public record PracticeSessionSummary(
     string JobCategory,
     DateTime CreatedAt,
     DateTime? CompletedAt,
-    decimal? OverallScore   // BC9 — điểm tổng 0–100 nếu đã Scored (B2C); null nếu chưa
+    decimal? OverallScore,   // BC9 — điểm tổng 0–100 nếu đã Scored (B2C); null nếu chưa
+    // J8 — cấp độ ứng viên đã chọn CHO ĐÚNG BUỔI ĐÓ (không phải cấp độ hiện tại của người dùng).
+    // Cấp độ ảnh hưởng cả câu hỏi (J4) lẫn trọng tâm chấm (J5) ⇒ đổi cấp độ là đổi bối cảnh: biểu
+    // đồ tiến bộ so điểm buổi Junior với buổi Senior là so hai thứ khác nhau, không phải "tiến bộ
+    // hay tụt lùi". Cột đã có sẵn trên practice_sessions — thêm THUẦN vào projection/DTO, không
+    // migration.
+    string Seniority
 );
 
 // BC9 — tổng kết cả buổi luyện B2C (số liệu), đọc từ practice_sessions + session_criterion_scores.

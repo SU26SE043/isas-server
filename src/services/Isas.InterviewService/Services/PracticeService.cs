@@ -157,9 +157,14 @@ public class PracticeService : IPracticeService
         var defaultQuestionCount = Math.Clamp(
             baseline.MaxQuestions > 0 ? baseline.MaxQuestions : AiServiceDefaultQuestionCount, min, max);
 
+        // Dải độ sâu — dựng bằng ĐÚNG hàm mà đường tạo buổi dùng để từ chối, nên hai bên không thể
+        // lệch nhau. `max == 0` (adaptive tắt) ⇒ min cũng 0 ⇒ UI ẩn ô chọn thay vì hiện một ô vô hiệu.
+        var selectableMaxDeep = SelectableMaxDeepPerQuestion(entitlement);
+        var selectableMinDeep = selectableMaxDeep > 0 ? 1 : 0;
+
         return new PracticeSessionOptionsResponse(
             baseline.AdaptiveEnabled, baseline.MaxDeepPerQuestion, criteriaCount, min, max,
-            defaultQuestionCount, presets, preview);
+            defaultQuestionCount, presets, preview, selectableMinDeep, selectableMaxDeep);
     }
 
     // Lõi dùng chung cho CreateSessionAsync (sessionId ngẫu nhiên, không focus) và
@@ -182,6 +187,10 @@ public class PracticeService : IPracticeService
 
         // F2b — số câu. Cùng lý do đặt trước reserve: 21 câu phải bị từ chối mà không trừ credit.
         var questionCount = ValidateQuestionCount(request.QuestionCount);
+
+        // Độ sâu ứng viên chọn. Trần tuyệt đối kiểm ở đây (rẻ, chưa cần entitlement); trần THẬT theo
+        // cấu hình kiểm ngay sau khi resolve entitlement — cả hai vẫn nằm TRƯỚC reserve.
+        var maxDeepChoice = ValidateMaxDeepPerQuestion(request.MaxDeepPerQuestion);
         // Vietnamese seed existed before the bilingual rollout; the guard is needed for the new
         // English path, whose seed can be absent if its migration has not yet been applied.
         if (language == "en")
@@ -202,6 +211,23 @@ public class PracticeService : IPracticeService
             throw new InvalidOperationException(
                 $"questionCount phải nằm trong khoảng {MinQuestionCount}..{effectiveMaxQuestions} "
                 + $"(đang gửi: {chosenQuestionCount}).");
+
+        // Trần độ sâu THẬT. Bất đối xứng có chủ đích ở nhánh `selectableMaxDeep == 0`:
+        //   • cap >= 1 mà ứng viên chọn cao hơn ⇒ NÉM 400 (họ gõ một con số sai, phải biết).
+        //   • cap == 0 ⇒ KẸP LẶNG + cảnh báo log, KHÔNG ném. `0` không phải "người dùng sai" mà là
+        //     TRẠNG THÁI VẬN HÀNH (adaptive tắt / kill-switch). Kéo cần gạt lúc sự cố mà làm mọi tab
+        //     FE đang mở — options cache của chúng vẫn báo max = 3 — nhận 400 khi bấm "Bắt đầu" thì
+        //     cần gạt giảm tải tự nó thành sự cố. Câu lỗi cũng vô nghĩa: "phải trong khoảng 1..0".
+        //     FE chỉ gửi trường này khi `maxDeepPerQuestionMax > 0`, nên nhánh này gần như chỉ còn
+        //     phục vụ đúng cửa sổ giữa lúc gạt cần và lúc tab được tải lại.
+        var selectableMaxDeep = SelectableMaxDeepPerQuestion(entitlement);
+        if (maxDeepChoice is int chosenDeep && selectableMaxDeep > 0 && chosenDeep > selectableMaxDeep)
+            throw new InvalidOperationException(
+                $"maxDeepPerQuestion phải nằm trong khoảng 1..{selectableMaxDeep} (đang gửi: {chosenDeep}).");
+        if (maxDeepChoice is not null && selectableMaxDeep == 0)
+            _logger.LogWarning(
+                "Buổi {SessionId}: ứng viên chọn maxDeepPerQuestion={Chosen} nhưng đào sâu đang tắt — bỏ qua lựa chọn.",
+                sessionId, maxDeepChoice.Value);
 
         // JD nhập tay: chuẩn hoá + cap độ dài NGAY ĐẦU, TRƯỚC cả đọc CV và reserve — guard rẻ nhất
         // (thuần in-memory) chạy trước → JD quá dài → 400 mà không tốn round-trip storage và KHÔNG giữ
@@ -254,7 +280,8 @@ public class PracticeService : IPracticeService
             // INT-17b — chế độ chuỗi đào sâu. Nguồn bật/tắt adaptive nay có thể là ENTITLEMENT (T7) chứ
             // không chỉ `Adaptive:Enabled`, nên bám theo đúng cờ đã resolve — đọc lại `_adaptive.Enabled`
             // ở đây sẽ khiến buổi bật adaptive bằng gói dịch vụ lại chạy chế độ cũ mà không lỗi gì.
-            var settings = ResolveSessionSettings(questionCount, entitlement);
+            var settings = ResolveSessionSettings(
+                questionCount, entitlement, maxDeepChoice, request.AdaptiveEnabled);
             var adaptiveOn = settings.AdaptiveEnabled;
             var maxDeepPerQuestion = settings.MaxDeepPerQuestion;
 
@@ -998,7 +1025,8 @@ public class PracticeService : IPracticeService
             .Take(take)
             .Select(s => new PracticeSessionSummary(
                 s.Id, s.Status.ToString(), s.JobCategory.ToString(),
-                s.CreatedAt, s.CompletedAt, s.OverallScore))   // BC9: lịch sử hiện điểm tổng
+                s.CreatedAt, s.CompletedAt, s.OverallScore,   // BC9: lịch sử hiện điểm tổng
+                s.Seniority))   // J8: cấp độ đã chọn CHO ĐÚNG BUỔI ĐÓ
             .ToListAsync(ct);
 
         var next = rows.Count == take
@@ -1238,7 +1266,16 @@ public class PracticeService : IPracticeService
 
     // SC3 — single source of truth shared by session creation and the UI-options endpoint. Preserve the
     // existing tiering branches exactly; their known MaxQuestions/adaptiveOn asymmetry is out of scope.
-    private SessionGenerationSettings ResolveSessionSettings(int? questionCount, EntitlementSnapshot entitlement)
+    /// <remarks>
+    /// <paramref name="requestedMaxDeep"/> và <paramref name="requestedAdaptive"/> là lựa chọn của
+    /// ỨNG VIÊN, cả hai đều <c>null</c> = "không có ý kiến". Đặt optional ở CUỐI có chủ đích: mọi call
+    /// site cũ biên dịch không sửa và chạy y hệt từng byte, nên bộ test đang khoá hàm này (độ phủ
+    /// seed SC1, adaptive theo tier, kill-switch INT-17b) vẫn là lưới an toàn thật chứ không phải
+    /// vừa được nới ra cho vừa thay đổi mới.
+    /// </remarks>
+    private SessionGenerationSettings ResolveSessionSettings(
+        int? questionCount, EntitlementSnapshot entitlement,
+        int? requestedMaxDeep = null, bool? requestedAdaptive = null)
     {
         // ADAPTIVE Ở MỌI TIER — `Adaptive:Enabled` là SÀN, gói chỉ được CỘNG chứ không được TRỪ.
         //
@@ -1250,8 +1287,21 @@ public class PracticeService : IPracticeService
         //   (b) admin tạo plan mới mà quên bật `AdaptiveEnabled` (DTO mặc định `false`).
         // Chiều ngược lại vẫn giữ: gói BẬT adaptive trong khi cờ rollout chung còn tắt ⇒ tier đó có
         // adaptive. Đó là lý do `Plan.AdaptiveEnabled` vẫn còn ý nghĩa thật, không phải cột chết.
-        var adaptiveEnabled = _adaptive.Enabled || (_tieringEnabled && entitlement.AdaptiveEnabled);
-        var maxDeepPerQuestion = adaptiveEnabled ? Math.Max(0, _adaptive.MaxDeepPerQuestion) : 0;
+        // Ứng viên CHỈ TỪ CHỐI ĐƯỢC, không tự bật được: `requestedAdaptive == false` cho ra buổi tĩnh
+        // (đúng số câu đã chọn, không câu chèn), còn gửi `true` khi admin/gói đã tắt thì KHÔNG bật lên.
+        // Cấu hình admin là TRẦN, không phải gợi ý — nếu không, một ô chọn trên wizard sẽ vô hiệu hoá
+        // được cả kill-switch vận hành.
+        var adaptiveEnabled = (_adaptive.Enabled || (_tieringEnabled && entitlement.AdaptiveEnabled))
+            && (requestedAdaptive ?? true);
+
+        // Độ sâu: ứng viên chọn thấp hơn hoặc bằng cấu hình, không bao giờ cao hơn. `Math.Clamp` ở đây
+        // là LƯỚI AN TOÀN cho đường internal — đường HTTP đã bị `SelectableMaxDeepPerQuestion` chặn
+        // bằng 400 từ trước reserve, vì cắt im lặng nghĩa là ứng viên trả 1 credit cho một buổi khác
+        // thứ họ đã chọn (đúng bài học của `questionCount`).
+        var configuredDeep = Math.Max(0, _adaptive.MaxDeepPerQuestion);
+        var maxDeepPerQuestion = adaptiveEnabled
+            ? Math.Clamp(requestedMaxDeep ?? configuredDeep, 0, configuredDeep)
+            : 0;
 
         // Trần buổi: gói chỉ có tiếng nói khi cấp một con số DƯƠNG. `0` = "gói không khai trần riêng"
         // (fallback Free, hoặc plan để trống cap) ⇒ rơi về trần cấu hình. KHÔNG được để 0 chảy thẳng
@@ -1410,6 +1460,16 @@ public class PracticeService : IPracticeService
             : MaxQuestionCount;
     }
 
+    /// <summary>
+    /// Trần TUYỆT ĐỐI của hệ thống cho độ sâu ứng viên B2C được chọn — khớp đúng
+    /// <c>CampaignService.MaxDeepPerQuestionCap</c> của B2B, để hai dòng sản phẩm không lệch thang.
+    ///
+    /// <para>Vì sao có hằng này bên cạnh <c>Adaptive:MaxDeepPerQuestion</c>: admin nâng cấu hình lên 5
+    /// là quyết định VẬN HÀNH (đổi hình dạng buổi cho toàn hệ), không phải quyết định mở thêm hai mức
+    /// cho ứng viên tự chọn — wizard cũng chỉ có 3 nhãn. Trần thật = min(hằng này, cấu hình).</para>
+    /// </summary>
+    private const int MaxDeepPerQuestionCap = 3;
+
     // null = client không chọn → trả null để KHÔNG ghi đè mặc định của AIService (giữ hành vi cũ = 5 câu).
     //
     // ⚠ Đây là trần TUYỆT ĐỐI của hệ thống, kiểm sớm và rẻ (không cần entitlement). Trần theo GÓI hẹp
@@ -1422,6 +1482,41 @@ public class PracticeService : IPracticeService
                 $"questionCount phải nằm trong khoảng {MinQuestionCount}..{MaxQuestionCount} (đang gửi: {requested.Value}).");
         return requested.Value;
     }
+
+    /// <summary>
+    /// Độ sâu ứng viên chọn — <c>null</c> = không chọn (giữ mặc định server); ngoài <c>1..3</c> → 400.
+    ///
+    /// <para>⚠ Miền bắt đầu từ <b>1</b>, KHÔNG phải 0. <c>0</c> không có nghĩa "tắt đào sâu" mà là
+    /// BỘ CHỌN CHẾ ĐỘ ENGINE (frontier cũ — vẫn chèn câu, chỉ dồn ở đuôi buổi) và nó lật cả nghĩa
+    /// của <c>MaxFollowUps</c> trong <see cref="ResolveSessionSettings"/>. Nhận 0 từ client là để ứng
+    /// viên đổi thuật toán của buổi thi bằng một ô chọn mà không quyết định sản phẩm nào phủ. Muốn
+    /// buổi tĩnh thì gửi <c>adaptiveEnabled: false</c>.</para>
+    ///
+    /// <para>Đây là trần tuyệt đối, kiểm sớm và rẻ (chưa cần entitlement) — cùng khuôn
+    /// <see cref="ValidateQuestionCount"/>. Trần THẬT theo cấu hình được kiểm riêng sau khi resolve
+    /// entitlement, xem <see cref="SelectableMaxDeepPerQuestion"/>.</para>
+    /// </summary>
+    private static int? ValidateMaxDeepPerQuestion(int? requested)
+    {
+        if (requested is null) return null;
+        if (requested.Value is < 1 or > MaxDeepPerQuestionCap)
+            throw new InvalidOperationException(
+                $"maxDeepPerQuestion phải nằm trong khoảng 1..{MaxDeepPerQuestionCap} (đang gửi: {requested.Value}).");
+        return requested.Value;
+    }
+
+    /// <summary>
+    /// Trần độ sâu THẬT của một người dùng = <c>min(</c><see cref="MaxDeepPerQuestionCap"/><c>, cấu hình đã resolve)</c>.
+    ///
+    /// <para>Một hàm duy nhất cho CẢ số báo cho UI (<see cref="GetSessionOptionsAsync"/>) lẫn số dùng
+    /// để từ chối (<see cref="CreateSessionInternalAsync"/>) — cùng lý do với
+    /// <see cref="EffectiveMaxQuestionCount"/>: hai chỗ tính khác nhau CHÍNH LÀ bug, và repo đã dính
+    /// đúng lớp đó một lần với <c>questionCount</c>.</para>
+    ///
+    /// <para>Trả <c>0</c> khi adaptive tắt hoặc cấu hình để 0 ⇒ "không có gì để chọn" ⇒ UI ẩn ô.</para>
+    /// </summary>
+    private int SelectableMaxDeepPerQuestion(EntitlementSnapshot entitlement)
+        => Math.Min(MaxDeepPerQuestionCap, ResolveSessionSettings(null, entitlement).MaxDeepPerQuestion);
 
     /// <summary>
     /// INT-17b — khoảng cách <c>OrderNo</c> giữa hai câu GỐC liền nhau, để chuỗi đào sâu của câu trước

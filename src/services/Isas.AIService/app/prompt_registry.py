@@ -59,6 +59,8 @@ from __future__ import annotations
 import logging
 import time
 
+from app import timing
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -137,7 +139,10 @@ async def refresh_if_stale() -> None:
     if _ever_loaded and age < settings.prompt_cache_ttl_seconds:
         return
 
-    await _fetch()
+    # Đo tách chặng: đây là một lượt HTTP ẩn nằm trong đường nóng của MỌI lượt gọi Gemini, chỉ nổ
+    # ra khi TTL vừa hết — tức nó vắng mặt ở phần lớn request rồi bất chợt cộng vào một request.
+    with timing.stage("registry_refresh"):
+        await _fetch()
 
 
 def get(key: str, default: str) -> str:

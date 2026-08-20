@@ -29,7 +29,7 @@ from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
 from app.face_verify import FaceVerifier
 from app.config import settings
-from app import storage, audio, threadpool, tts
+from app import storage, audio, threadpool, timing, tts
 from app.tts_redis import TtsRedisCoordinator
 
 logger = logging.getLogger(__name__)
@@ -720,6 +720,7 @@ async def transcribe(file: UploadFile = File(...), language: str = "vi",
 
 
 @router.post("/decide-next", response_model=DecideNextResponse)
+@timing.timed_request("decide-next")
 async def decide_next(
     req: DecideNextRequest,
     x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
@@ -742,20 +743,24 @@ async def decide_next(
     if req.audioObjectKey and req.audioObjectKey.strip():
         tmp_path = None
         try:
-            data = await asyncio.to_thread(storage.get_object_bytes, req.audioObjectKey)
+            with timing.stage("s3"):
+                data = await asyncio.to_thread(storage.get_object_bytes, req.audioObjectKey)
             suffix = os.path.splitext(req.audioObjectKey)[1] or ".webm"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            with timing.stage("tmp_write"), \
+                    tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(data)
                 tmp_path = tmp.name
-            result = await asyncio.to_thread(
-                transcriber.transcribe_detailed, tmp_path, req.language)
+            with timing.stage("asr"):
+                result = await asyncio.to_thread(
+                    transcriber.transcribe_detailed, tmp_path, req.language)
             transcript, metrics, engine = result.text, result.metrics, result.engine
             reject_reason = result.reject_reason
         except Exception as ex:
             raise HTTPException(status_code=502, detail=f"Lỗi transcribe: {ex}")
         finally:
             if tmp_path and os.path.exists(tmp_path):
-                os.remove(tmp_path)
+                with timing.stage("cleanup"):
+                    os.remove(tmp_path)
 
         # Bản chép bị TỪ CHỐI → KHÔNG hỏi Gemini câu kế: không có gì để đào sâu, và hỏi nó về một
         # transcript rỗng chỉ tốn tiền để nhận một câu hỏi bịa. Trả thẳng cho .NET quyết (nó đánh
@@ -781,30 +786,32 @@ async def decide_next(
         raise HTTPException(status_code=400, detail="Thiếu audioObjectKey hoặc answerText")
 
     try:
-        decision = await _call_with_language(req.language, provider.decide_next,
-            job_category=req.jobCategory,
-            current_question=req.currentQuestion,
-            transcript=transcript or "",
-            history=[t.model_dump() for t in req.history],
-            asked_count=req.askedCount,
-            follow_up_count=req.followUpCount,
-            max_questions=req.maxQuestions,
-            max_follow_ups=req.maxFollowUps,
-            criteria=[c.model_dump() for c in req.criteria],
-            # INT-17b — ngữ cảnh chuỗi đào sâu (maxDepth = 0 ⇒ giữ nguyên hành vi cũ).
-            root_question=req.rootQuestion,
-            current_depth=req.currentDepth,
-            max_depth=req.maxDepth,
-            other_topics=req.otherTopics,
-            seniority=req.seniority,
-            current_evidence_state=[e.model_dump() for e in req.currentEvidenceState],
-        )
+        with timing.stage("gemini"):
+            decision = await _call_with_language(req.language, provider.decide_next,
+                job_category=req.jobCategory,
+                current_question=req.currentQuestion,
+                transcript=transcript or "",
+                history=[t.model_dump() for t in req.history],
+                asked_count=req.askedCount,
+                follow_up_count=req.followUpCount,
+                max_questions=req.maxQuestions,
+                max_follow_ups=req.maxFollowUps,
+                criteria=[c.model_dump() for c in req.criteria],
+                # INT-17b — ngữ cảnh chuỗi đào sâu (maxDepth = 0 ⇒ giữ nguyên hành vi cũ).
+                root_question=req.rootQuestion,
+                current_depth=req.currentDepth,
+                max_depth=req.maxDepth,
+                other_topics=req.otherTopics,
+                seniority=req.seniority,
+                current_evidence_state=[e.model_dump() for e in req.currentEvidenceState],
+            )
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi quyết định câu hỏi kế: {ex}")
 
     next_question = decision.get("nextQuestion")
     if next_question:
-        await _prewarm_adaptive_tts(next_question, req.language)
+        with timing.stage("tts_prewarm"):
+            await _prewarm_adaptive_tts(next_question, req.language)
 
     return DecideNextResponse(
         action=decision["action"],
