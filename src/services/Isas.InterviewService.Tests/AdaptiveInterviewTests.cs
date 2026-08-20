@@ -303,5 +303,100 @@ public class AdaptiveInterviewTests
         Assert.Equal(1, await t.Db.PracticeQuestions.CountAsync(x => x.SessionId == session.Id));
         Assert.Null(result.NextQuestion);
         Assert.Null(result.NextAction);
+        // fix/session-autocomplete — buổi tĩnh với 1 câu duy nhất, câu đó vừa được trả lời ⇒ không còn
+        // câu nào pending ⇒ PHẢI tự nộp được. Trước bản vá, cờ này im lặng ở lại `false` mãi mãi (đúng
+        // lỗi 3 buổi kẹt trên production) mà chính test này không hề bắt được vì chưa từng assert nó.
+        Assert.True(result.InterviewComplete);
+    }
+
+    // ── fix/session-autocomplete — buổi tĩnh CÒN câu chưa trả lời KHÔNG được báo complete ──────
+    [Fact]
+    public async Task StaticSession_StillHasPendingQuestion_InterviewCompleteFalse()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready);   // AdaptiveEnabled = false (mặc định)
+        var q1 = TestDb.Question(session.Id, order: 1);
+        var q2 = TestDb.Question(session.Id, order: 2);   // câu thứ 2 CHƯA có answer
+        var crit = TestDb.Criterion(session.JobCategory);
+        t.Db.AddRange(session, q1, q2, crit);
+        await t.Db.SaveChangesAsync();
+
+        var decider = Decider(new DecideNextResult("follow_up", "X?", "t", "r"));
+        var svc = BuildAdaptive(t, decider, out _, out _);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        var result = await svc.UploadAnswerAsync(session.Id, q1.Id, candidate, audio, "audio/webm", 30);
+
+        Assert.False(result.InterviewComplete);
+        Assert.Null(result.NextQuestion);
+        Assert.Null(result.NextAction);
+    }
+
+    // ── fix/session-autocomplete — buổi tĩnh B2B: đúng nhóm đang thật sự mất bài trên production ──
+    // (2/3 buổi kẹt trên production là B2B). Test riêng, KHÔNG suy từ ca B2C: CampaignId != null đi
+    // qua nhánh khác ở nhiều chỗ trong AnswerService, nên "B2C đã đúng" không chứng minh B2B cũng đúng.
+    [Fact]
+    public async Task StaticSession_B2B_LastQuestion_AutoCompletes()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var campaignId = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready, campaignId: campaignId);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory, campaignId: campaignId);
+        t.Db.AddRange(session, q, crit);
+        await t.Db.SaveChangesAsync();
+
+        var decider = Decider(new DecideNextResult("follow_up", "X?", "t", "r"));
+        var svc = BuildAdaptive(t, decider, out _, out _);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        var result = await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
+
+        decider.Verify(x => x.DecideNextAsync(
+            It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.True(result.InterviewComplete);
+        Assert.Null(result.NextQuestion);
+        Assert.Null(result.NextAction);
+    }
+
+    // ── fix/session-autocomplete — `_decider is null` là NỬA KIA của điều kiện OR ở :200. Session
+    // này cố ý để AdaptiveEnabled = true, để chứng minh nhánh tĩnh chạy vì THIẾU decider (AIService
+    // chưa cấu hình), không phải vì cờ session — hai đường phải cùng dẫn vào một chỗ.
+    [Fact]
+    public async Task NoDeciderConfigured_StaticBehavior_AutoCompletes()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Ready);
+        session.AdaptiveEnabled = true;
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        t.Db.AddRange(session, q, crit);
+        await t.Db.SaveChangesAsync();
+
+        var publisher = new Mock<IScoringJobPublisher>();
+        publisher
+            .Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        var storage = new Mock<IStorageService>();
+        storage
+            .Setup(s => s.UploadAsync(
+                It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<Guid>(),
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("answer-audio/seed.webm");
+        // 6 tham số — KHÔNG truyền decider ⇒ null (default), đúng cấu hình khi AIService chưa dựng.
+        var svc = new AnswerService(
+            t.Db, storage.Object, publisher.Object,
+            new Mock<ISessionScoringNotifier>().Object, TestDb.ScoringOpts(),
+            NullLogger<AnswerService>.Instance);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        var result = await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
+
+        Assert.True(result.InterviewComplete);
+        Assert.Null(result.NextQuestion);
+        Assert.Null(result.NextAction);
     }
 }

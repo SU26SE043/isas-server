@@ -197,8 +197,29 @@ public class AnswerService : IAnswerService
     private async Task<AdaptiveOutcome> TryRunAdaptiveAsync(
         PracticeSession session, PracticeQuestion question, PracticeAnswer answer, CancellationToken ct)
     {
+        // BUỔI TĨNH (adaptive tắt, hoặc decider chưa cấu hình) VẪN PHẢI BIẾT MÌNH ĐÃ HẾT CÂU.
+        //
+        // `InterviewComplete` là cờ DUY NHẤT frontend dùng để tự nộp bài và chuyển sang màn kết quả
+        // (`useB2cPracticeAnswerSubmit`: `else if (response.interviewComplete)` → `submitPracticeSession`).
+        // Trả `AdaptiveOutcome.None` ở đây khiến cờ đó VĨNH VIỄN `false` cho mọi buổi không adaptive:
+        // ứng viên trả lời xong câu cuối, không có câu kế để hiện, không có tín hiệu kết thúc — màn
+        // hình đứng nguyên ở câu vừa nộp và buổi không bao giờ tự đóng. Chỉ thoát được bằng cách tự
+        // tìm ra nút "Kết thúc", mà nút đó cũng chỉ thành nút CHÍNH khi cờ này bật.
+        //
+        // "Không chạy adaptive" chỉ có nghĩa là KHÔNG CÓ CÂU KẾ ĐƯỢC SINH THÊM. Nó không có nghĩa là
+        // ta không biết gì về buổi: đếm câu chưa trả lời là một truy vấn thuần DB, không liên quan gì
+        // tới AI. Đó cũng chính là luật mà nhánh adaptive đang dùng (`EndOutcome(..., pendingCount)`),
+        // nên chỗ này không phải luật mới — chỉ là luật cũ vốn bị nhánh tĩnh bỏ sót. Dùng thẳng
+        // `EndOutcome(null, ...)`: `action=null` giữ `Action` luôn null bất kể complete hay không (buổi
+        // tĩnh không có quyết định nào của AI để báo), `AppendedQuestion` cũng null từ chính helper đó
+        // (câu kế đã nằm sẵn trong danh sách FE tải lúc vào phòng, không cần append).
         if (_decider is null || !session.AdaptiveEnabled)
-            return AdaptiveOutcome.None;
+        {
+            var pendingStatic = await _db.PracticeQuestions
+                .CountAsync(q => q.SessionId == session.Id
+                                 && !_db.PracticeAnswers.Any(a => a.QuestionId == q.Id), ct);
+            return EndOutcome(null, pendingStatic);
+        }
 
         var perQuestionMode = session.MaxDeepPerQuestion > 0;
 
