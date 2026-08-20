@@ -230,11 +230,24 @@ public class AdaptiveInterviewTests
         using var audio = new MemoryStream(new byte[] { 1 });
         var result = await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
 
-        // Không append, không complete, transcript null (decide lỗi trước khi set) → worker sẽ transcribe async.
+        // Không append, transcript null (decide lỗi trước khi set) → worker sẽ transcribe async.
         Assert.Equal(1, await t.Db.PracticeQuestions.CountAsync(x => x.SessionId == session.Id));
         Assert.Null(result.NextQuestion);
-        Assert.False(result.InterviewComplete);
         Assert.Null(result.Transcript);
+
+        // ⚠ ĐỔI TIỀN ĐỀ CÓ CHỦ ĐÍCH: trước đây assert `False`.
+        //
+        // Tiền đề cũ CHÍNH LÀ lỗi. Buổi này có đúng 1 câu và nó vừa được trả lời — không còn gì để
+        // hỏi. `False` nghĩa là ứng viên trả lời xong câu cuối, AI hỏng, và buổi KHÔNG BAO GIỜ đóng:
+        // frontend chỉ tự nộp khi thấy cờ này, nên màn hình đứng im vĩnh viễn.
+        //
+        // Đo được trên production đúng ca này (buổi `3cfce61d`): ứng viên trả lời "tôi không biết",
+        // AI đóng chuỗi đúng, lượt `decide-next` cuối ném lỗi ⇒ buổi kẹt `InProgress` với 4/4 câu đã
+        // trả lời và đã chấm. Cùng với 3 buổi khác, hai trong đó là bài đánh giá tuyển dụng thật.
+        //
+        // Nay "buổi đã hết câu chưa" được tính ở chỗ hợp lưu trong `UploadAnswerAsync`, độc lập với
+        // việc lượt gọi AI thành công hay hỏng — AI hỏng không còn là lý do giam ứng viên lại.
+        Assert.True(result.InterviewComplete);
 
         // Answer vẫn lưu + vẫn publish chấm (job.Transcript null → worker Whisper như cũ).
         var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(a => a.Id == result.AnswerId);
@@ -398,5 +411,62 @@ public class AdaptiveInterviewTests
         Assert.True(result.InterviewComplete);
         Assert.Null(result.NextQuestion);
         Assert.Null(result.NextAction);
+    }
+
+    // ── Trần lỗi: degrade tĩnh ở câu CUỐI vẫn phải đóng buổi ──────────────────────────────
+    //
+    // Chạm `MaxFailuresPerSession` thì `TryRunAdaptiveAsync` thôi gọi decide-next và trả `None`.
+    // Đó là cần gạt giảm tải đúng đắn — nhưng nó KHÔNG được kéo theo việc giam ứng viên lại.
+    [Fact]
+    public async Task ChamTranLoiAdaptive_CauCuoi_VanTuDongDongBuoi()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = AdaptiveSession(candidate);
+        session.MaxDeepPerQuestion = 3;        // chế độ chuỗi ⇒ cổng đếm lỗi mới có hiệu lực
+        session.AdaptiveFailures = 99;         // đã vượt xa trần
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        t.Db.AddRange(session, q, crit);
+        await t.Db.SaveChangesAsync();
+
+        var decider = Decider(new DecideNextResult("follow_up", "X?", "t", "r"));
+        var svc = BuildAdaptive(t, decider, out _, out _);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        var result = await svc.UploadAnswerAsync(session.Id, q.Id, candidate, audio, "audio/webm", 30);
+
+        decider.Verify(x => x.DecideNextAsync(
+            It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Null(result.NextQuestion);
+        Assert.True(result.InterviewComplete);
+    }
+
+    // ── Còn câu chưa trả lời thì TUYỆT ĐỐI không được tự đóng ─────────────────────────────
+    //
+    // Mặt trái của luật ở chỗ hợp lưu. Bật cờ nhầm còn tệ hơn không bật: buổi tự nộp khi mới hỏi
+    // nửa chừng, ứng viên mất phần còn lại của bài mà không kịp làm gì.
+    [Fact]
+    public async Task AiHong_NhungConCauChuaTraLoi_KhongDuocTuDongDong()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = AdaptiveSession(candidate);
+        var q1 = TestDb.Question(session.Id);
+        var q2 = TestDb.Question(session.Id, order: 2);
+        var crit = TestDb.Criterion(session.JobCategory);
+        t.Db.AddRange(session, q1, q2, crit);
+        await t.Db.SaveChangesAsync();
+
+        var decider = new Mock<IAiServiceInterviewDecider>();
+        decider.Setup(x => x.DecideNextAsync(
+                It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new AiServiceException("AIService /decide-next down"));
+        var svc = BuildAdaptive(t, decider, out _, out _);
+
+        using var audio = new MemoryStream(new byte[] { 1 });
+        var result = await svc.UploadAnswerAsync(session.Id, q1.Id, candidate, audio, "audio/webm", 30);
+
+        Assert.False(result.InterviewComplete);
     }
 }

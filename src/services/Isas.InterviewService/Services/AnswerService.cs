@@ -159,6 +159,40 @@ public class AnswerService : IAnswerService
         // → worker bỏ Whisper, (b) client hiện câu kế ngay trong response (không cần poll GET).
         var adaptive = await TryRunAdaptiveAsync(session, question, answer, ct);
 
+        // ── BUỔI ĐÃ HẾT CÂU THÌ PHẢI ĐÓNG ĐƯỢC, BẤT KỂ AI CÓ CHẠY HAY KHÔNG ────────────────────
+        //
+        // `InterviewComplete` là cờ DUY NHẤT frontend dùng để tự nộp bài và chuyển sang màn kết quả
+        // (`useB2cPracticeAnswerSubmit`: `else if (response.interviewComplete)` → `submitPracticeSession`).
+        // Trước đây nó chỉ được bật bên trong nhánh adaptive, nên MỌI đường ra khác của
+        // `TryRunAdaptiveAsync` đều để nó `false` — và `AdaptiveOutcome.None` được trả ở SÁU chỗ:
+        // buổi tĩnh · chạm trần `MaxFailuresPerSession` · frontier còn câu chờ · re-upload đã đẻ câu
+        // kế · đua unique index lúc append · `decide-next` NÉM LỖI. Năm trong sáu chỗ đó xảy ra được
+        // khi đã hết câu, và mỗi chỗ là một đường làm ứng viên mắc kẹt: không câu kế để hiện, không
+        // tín hiệu kết thúc, màn hình đứng im.
+        //
+        // Đo trên production: 4 buổi ứng viên đã trả lời hết mà `completed_at` vẫn NULL. Hai trong đó
+        // là bài đánh giá tuyển dụng THẬT, từng câu đã chấm xong, nhà tuyển dụng không bao giờ thấy
+        // kết quả. Một buổi khác (`3cfce61d`) có adaptive BẬT: ứng viên trả lời "tôi không biết", AI
+        // đóng chuỗi đúng, nhưng lượt `decide-next` cuối ném lỗi ⇒ rơi vào `catch` ⇒ vừa không được bù
+        // câu vừa không có tín hiệu kết thúc.
+        //
+        // Vì sao đặt Ở ĐÂY chứ không vá từng nhánh: "còn câu nào chưa trả lời không" là SỰ THẬT VỀ DB,
+        // không phải quyết định của mô hình. Gắn nó vào kết quả lượt gọi AI là gắn nhầm chỗ. Đặt ở chỗ
+        // hợp lưu thì nhánh thứ bảy thêm sau này tự động được phủ — vá rời năm chỗ thì không.
+        //
+        // CHỈ nâng false → true, KHÔNG BAO GIỜ hạ true → false: nhánh adaptive kết luận "xong" thì nó
+        // biết nhiều hơn phép đếm này (vd hết ngân sách buổi trong khi vẫn còn câu chưa trả lời).
+        // Có ~20 assertion đang khoá `InterviewComplete` ở 4 file test adaptive; bất biến này là thứ
+        // giữ chúng đúng.
+        if (adaptive.AppendedQuestion is null && !adaptive.InterviewComplete)
+        {
+            var pending = await _db.PracticeQuestions
+                .CountAsync(q => q.SessionId == session.Id
+                                 && !_db.PracticeAnswers.Any(a => a.QuestionId == q.Id), ct);
+            if (pending == 0)
+                adaptive = adaptive with { InterviewComplete = true };
+        }
+
         // 8. Chấm dần: publish job ngay sau khi lưu (kèm transcript đồng bộ nếu adaptive đã transcribe).
         //    Publish lỗi KHÔNG làm hỏng upload — answer đã lưu, để re-publish sau.
         //    Bỏ qua khi bản ghi không có tiếng nói: answer đã `Skipped`, chấm nó là chấm sự im lặng.
@@ -197,29 +231,11 @@ public class AnswerService : IAnswerService
     private async Task<AdaptiveOutcome> TryRunAdaptiveAsync(
         PracticeSession session, PracticeQuestion question, PracticeAnswer answer, CancellationToken ct)
     {
-        // BUỔI TĨNH (adaptive tắt, hoặc decider chưa cấu hình) VẪN PHẢI BIẾT MÌNH ĐÃ HẾT CÂU.
-        //
-        // `InterviewComplete` là cờ DUY NHẤT frontend dùng để tự nộp bài và chuyển sang màn kết quả
-        // (`useB2cPracticeAnswerSubmit`: `else if (response.interviewComplete)` → `submitPracticeSession`).
-        // Trả `AdaptiveOutcome.None` ở đây khiến cờ đó VĨNH VIỄN `false` cho mọi buổi không adaptive:
-        // ứng viên trả lời xong câu cuối, không có câu kế để hiện, không có tín hiệu kết thúc — màn
-        // hình đứng nguyên ở câu vừa nộp và buổi không bao giờ tự đóng. Chỉ thoát được bằng cách tự
-        // tìm ra nút "Kết thúc", mà nút đó cũng chỉ thành nút CHÍNH khi cờ này bật.
-        //
-        // "Không chạy adaptive" chỉ có nghĩa là KHÔNG CÓ CÂU KẾ ĐƯỢC SINH THÊM. Nó không có nghĩa là
-        // ta không biết gì về buổi: đếm câu chưa trả lời là một truy vấn thuần DB, không liên quan gì
-        // tới AI. Đó cũng chính là luật mà nhánh adaptive đang dùng (`EndOutcome(..., pendingCount)`),
-        // nên chỗ này không phải luật mới — chỉ là luật cũ vốn bị nhánh tĩnh bỏ sót. Dùng thẳng
-        // `EndOutcome(null, ...)`: `action=null` giữ `Action` luôn null bất kể complete hay không (buổi
-        // tĩnh không có quyết định nào của AI để báo), `AppendedQuestion` cũng null từ chính helper đó
-        // (câu kế đã nằm sẵn trong danh sách FE tải lúc vào phòng, không cần append).
+        // Không chạy adaptive (tắt / chưa có decider) = KHÔNG SINH THÊM CÂU. Việc "buổi đã hết câu
+        // chưa" KHÔNG quyết ở đây — nó được tính một lần ở chỗ hợp lưu trong `UploadAnswerAsync`,
+        // cho MỌI đường ra của hàm này. Xem khối chú thích ở đó.
         if (_decider is null || !session.AdaptiveEnabled)
-        {
-            var pendingStatic = await _db.PracticeQuestions
-                .CountAsync(q => q.SessionId == session.Id
-                                 && !_db.PracticeAnswers.Any(a => a.QuestionId == q.Id), ct);
-            return EndOutcome(null, pendingStatic);
-        }
+            return AdaptiveOutcome.None;
 
         var perQuestionMode = session.MaxDeepPerQuestion > 0;
 
