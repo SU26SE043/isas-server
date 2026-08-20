@@ -140,6 +140,10 @@ public class StuckAnswerRepublisher : BackgroundService
                 CandidateId = a.Session.CandidateId,   // BC16: resolve rubric riêng B2C
                 JobCategory = a.Session.JobCategory,
                 Language = a.Session.Language,
+                // J5 — PHẢI có trong projection: thiếu nó thì answer nào phải cứu bằng republisher
+                // sẽ chấm KHÔNG hiệu chỉnh theo cấp độ, trong khi answer chạy trơn tru (AnswerService)
+                // có — cùng đúng lớp lệch mà mọi field trên đã dính (F11/đáp án mẫu/rubric ghim).
+                Seniority = a.Session.Seniority,
                 // E10b — hai cột quyết định "answer này cần MẤY attempt". Thiếu chúng ở projection
                 // thì republisher không thể biết attempt nào còn thiếu và sẽ đẩy lại nhầm attempt.
                 a.Session.SelfConsistencyN,
@@ -281,7 +285,9 @@ public class StuckAnswerRepublisher : BackgroundService
                         a.SpeechRateWpm, a.FillerCount, a.PauseCount,
                         a.LongestPauseSec, a.SilenceRatio, a.FillerBreakdown,
                         a.AudioSec, a.SpeechSec, a.WordCount, a.FillerPer100Words,
-                        a.MetricsVersion)
+                        a.MetricsVersion),
+                    // J5 — CHỈ B2C, giữ ĐÚNG van của đường publish lúc upload (AnswerService).
+                    Seniority = a.CampaignId is null ? a.Seniority : null
                 };
 
                 try

@@ -236,7 +236,13 @@ public record PracticeSessionSummary(
     string JobCategory,
     DateTime CreatedAt,
     DateTime? CompletedAt,
-    decimal? OverallScore   // BC9 — điểm tổng 0–100 nếu đã Scored (B2C); null nếu chưa
+    decimal? OverallScore,   // BC9 — điểm tổng 0–100 nếu đã Scored (B2C); null nếu chưa
+    // J8 — cấp độ ứng viên đã chọn CHO ĐÚNG BUỔI ĐÓ (không phải cấp độ hiện tại của người dùng).
+    // Cấp độ ảnh hưởng cả câu hỏi (J4) lẫn trọng tâm chấm (J5) ⇒ đổi cấp độ là đổi bối cảnh: biểu
+    // đồ tiến bộ so điểm buổi Junior với buổi Senior là so hai thứ khác nhau, không phải "tiến bộ
+    // hay tụt lùi". Cột đã có sẵn trên practice_sessions — thêm THUẦN vào projection/DTO, không
+    // migration.
+    string Seniority
 );
 
 // BC9 — tổng kết cả buổi luyện B2C (số liệu), đọc từ practice_sessions + session_criterion_scores.

@@ -91,7 +91,14 @@ _GOLDEN_ARGS = dict(
 # ý nghĩa của mọi điểm số đang dùng để xếp hạng ứng viên (CAMP-10) và đo cải thiện (BC15), và
 # cũng là thứ mà chấm-thử hứa với HR rằng nó tái hiện đúng. Nếu đổi là CÓ CHỦ ĐÍCH thì: xác nhận
 # /score-preview vẫn đi qua đúng hàm này (test nhóm 2 phải còn xanh), rồi mới cập nhật hash.
-_GOLDEN_SHA = "e589c10e1472a73f40c0e7f9861f0e6db8e2fc4eb2362c82eaad8b73e9b5c9e9"
+#
+# J1 (F24, 2026-08-20) — CẬP NHẬT CÓ CHỦ ĐÍCH: chèn thêm 3 gạch đầu dòng chống bắt-keyword-ngoài-
+# phạm-vi vào khối YÊU CẦU của `build_scoring_prompt` (giữa "chấm khách quan theo bằng chứng" và
+# "(F13) sampleAnswer") — đúng vị trí quy định của F21 (TRƯỚC extra_block, sau mọi luật bắt buộc
+# khác). Test nhóm (2) "ĐƯỜNG ĐI" và (3) "CÁCH LY" trong file này vẫn xanh nguyên — xác nhận
+# /score-preview vẫn gọi ĐÚNG `build_scoring_prompt`, không lệch. Xem
+# `tests/test_scoring_scope_fairness_f24.py` để khoá nội dung 3 luật mới.
+_GOLDEN_SHA = "35c092241c8a65764f8c22d35866085f36ffb322498060dee63919e81332d036"
 
 
 def test_golden_prompt_cham_khong_doi_mot_byte():
