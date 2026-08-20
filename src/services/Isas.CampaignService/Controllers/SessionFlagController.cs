@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -140,12 +142,23 @@ namespace Isas.CampaignService.Controllers
         private bool IsValidInternalToken(string? token)
         {
             var expected = _config["Internal:Token"];
-            if (string.IsNullOrEmpty(expected) || token != expected)
+            // Fail-closed: token chưa cấu hình → từ chối hết (không mở toang). Loại null/rỗng trước khi so
+            // khớp (FixedTimeEquals cần 2 span; guard sớm giữ nguyên hành vi cũ) — mẫu InternalCreditsController
+            // (Payment, commit 0a55343).
+            if (string.IsNullOrEmpty(expected) || string.IsNullOrEmpty(token))
             {
-                _logger.LogWarning("Ingest cờ chống gian lận bị từ chối: X-Internal-Token sai.");
+                _logger.LogWarning("Ingest cờ chống gian lận bị từ chối: X-Internal-Token sai/thiếu.");
                 return false;
             }
-            return true;
+
+            // So khớp HẰNG-THỜI-GIAN trên UTF-8 bytes: `token != expected` rò rỉ timing (string compare
+            // thoát sớm ở byte lệch đầu tiên) → kẻ tấn công dò được từng ký tự token nội bộ. Cùng ranh giới
+            // tin cậy (GEN-7, X-Internal-Token) mà Payment/Interview đã sửa — Campaign đồng bộ theo.
+            var ok = CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected));
+            if (!ok)
+                _logger.LogWarning("Ingest cờ chống gian lận bị từ chối: X-Internal-Token sai/thiếu.");
+            return ok;
         }
     }
 }

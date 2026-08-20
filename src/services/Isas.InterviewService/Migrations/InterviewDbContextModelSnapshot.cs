@@ -813,6 +813,10 @@ namespace Isas.InterviewService.Migrations
                         .IsDescending(false, true, true)
                         .HasDatabaseName("ix_practice_sessions_candidate_history");
 
+                    b.HasIndex("JobCategory", "Language", "CreatedAt")
+                        .HasDatabaseName("ix_practice_sessions_peer_benchmark")
+                        .HasFilter("campaign_id IS NULL AND status = 'Scored'");
+
                     b.ToTable("practice_sessions", null, t =>
                         {
                             t.HasCheckConstraint("ck_practice_sessions_language", "language IN ('vi', 'en')");

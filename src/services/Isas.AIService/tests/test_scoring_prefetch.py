@@ -8,9 +8,16 @@
 #
 # Không cần broker: dùng AsyncMock channel (mẫu `declare_topology` của AI2).
 import inspect
+import json
+import threading
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app import worker
 from app.config import Settings, settings
+from app.providers.gemini import ScoreOutcome
+from app.transcriber import TranscriptionResult
 
 
 def test_prefetch_mac_dinh_cho_song_song():
@@ -52,3 +59,52 @@ def test_scoring_va_cv_screening_tach_tran_rieng():
     assert hasattr(settings, "cv_screening_prefetch")
     assert (Settings(scoring_prefetch=7).cv_screening_prefetch
             == settings.cv_screening_prefetch), "đổi trần chấm không được kéo theo trần sàng CV"
+
+
+# ── Trần đồng thời chỉ có nghĩa nếu KHÔNG có ai chặn event loop ───────────────
+@pytest.mark.asyncio
+async def test_tai_audio_khong_chan_event_loop(monkeypatch):
+    """boto3 là BLOCKING — gọi thẳng trên event loop thì `prefetch=10` là con số trên giấy.
+
+    Đây là mặt còn lại của chính test đầu file: nâng prefetch lên 10 rồi để một lượt tải S3 chạy
+    đồng bộ trên loop thì suốt lượt tải đó, cả 9 coroutine kia ĐỨNG HÌNH — kể cả những lượt chỉ
+    đang chờ mạng Gemini, tức là đúng phần song song mà prefetch=10 mua về. Hỏng câm tuyệt đối:
+    không lỗi, không log, chỉ là throughput không bao giờ đạt con số đã cấu hình.
+
+    Kiểm bằng thứ quan sát được thay vì đọc mã nguồn: ghi lại thread chạy `download_fileobj` và
+    đòi nó KHÁC thread của event loop. `asyncio.to_thread` cho ra điều đó; gọi thẳng thì không.
+    """
+    loop_thread = threading.get_ident()
+    download_thread: dict = {}
+
+    def fake_download(bucket, key, fileobj):
+        download_thread["ident"] = threading.get_ident()
+
+    monkeypatch.setattr(worker.s3_client, "download_fileobj", MagicMock(side_effect=fake_download))
+    monkeypatch.setattr(worker.transcriber, "transcribe_detailed",
+                        MagicMock(return_value=TranscriptionResult(text="một câu trả lời")))
+    monkeypatch.setattr(worker.provider, "score", AsyncMock(return_value=ScoreOutcome(
+        scores=[{"criterionId": "c1", "score": 3.0, "levelMatched": 3, "reasoning": "ok"}],
+        sample_answer=None)))
+    monkeypatch.setattr(worker, "post_callback", AsyncMock())
+    monkeypatch.setattr(worker, "post_failed", AsyncMock())
+
+    message = MagicMock(name="message")
+    message.body = json.dumps({
+        "answerId": "answer-to-thread",
+        "audioObjectKey": "recordings/a1.webm",
+        "questionContent": "Q?",
+        "jobCategory": "BE",
+        "criteria": [],
+        "rubricVersion": 1,
+    }).encode()
+    message.ack = AsyncMock()
+    message.nack = AsyncMock()
+
+    await worker.process_message(message)
+
+    message.ack.assert_awaited_once()   # đường Scored chạy trọn, không phải xanh vì bỏ qua tải
+    assert download_thread.get("ident") is not None, "worker không hề gọi download_fileobj"
+    assert download_thread["ident"] != loop_thread, (
+        "download_fileobj (boto3, blocking) chạy THẲNG trên event loop — cả prefetch còn lại "
+        "đứng hình suốt lượt tải; phải bọc asyncio.to_thread như /decide-next đang làm")

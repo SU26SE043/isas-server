@@ -123,6 +123,28 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
             .HasDatabaseName("ix_practice_sessions_b2c_active")
             .HasFilter("status IN ('Ready', 'InProgress') AND deadline IS NULL");
 
+        // F14 — mẫu cộng đồng cho mốc đối chiếu (CriterionBenchmarkService): buổi B2C đã Scored, cùng
+        // nghề + cùng ngôn ngữ, trong cửa sổ N ngày. Trước đây KHÔNG index nào che vị từ này ⇒ mỗi lượt
+        // mở trang Kết quả là một lượt quét practice_sessions rồi nạp breakdown vào RAM.
+        //
+        // ⚠ PHÒNG XA, không phải chữa sự cố: bảng hiện mới vài trăm dòng nên chưa ai thấy chậm. Index
+        // này để chi phí khỏi bám theo TOÀN BỘ lịch sử khi dữ liệu lớn dần.
+        //
+        // Hình: (job_category, language) lọc '=', created_at là RANGE (>= cutoff) ⇒ đặt cuối, đúng quy
+        // tắc cột range đứng sau cột equality. KHÔNG khai DESC: truy vấn chỉ quét khoảng, không ORDER BY
+        // (khác ix_practice_sessions_candidate_history — chỗ đó DESC là để khớp ORDER BY keyset).
+        //
+        // FILTER thay vì thêm 2 cột vào khoá: `campaign_id IS NULL AND status = 'Scored'` chọn lọc rất
+        // mạnh (bỏ hết B2B + mọi buổi chưa chấm xong) và giữ index nhỏ. Partial index chỉ dùng được nếu
+        // planner CHỨNG MINH được vị từ ⇒ hai vế đều so với HẰNG trong truy vấn (EF render literal cho
+        // enum status và cho IS NULL — cùng lập luận đã verify ở ix_practice_sessions_deadline ngay trên).
+        //
+        // Phía session_criterion_scores KHÔNG cần index mới: nối vào bằng session_id, mà
+        // ix_session_criterion_scores_session_id_criterion_id đã có session_id làm tiền tố trái.
+        e.HasIndex(x => new { x.JobCategory, x.Language, x.CreatedAt })
+            .HasDatabaseName("ix_practice_sessions_peer_benchmark")
+            .HasFilter("campaign_id IS NULL AND status = 'Scored'");
+
         e.HasMany(x => x.Questions)
             .WithOne(q => q.Session)
             .HasForeignKey(q => q.SessionId)

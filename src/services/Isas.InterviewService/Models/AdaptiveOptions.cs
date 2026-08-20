@@ -34,4 +34,38 @@ public class AdaptiveOptions
     // như MỌI câu trả lời; AIService hỏng mà vẫn gọi thì mỗi lượt phải chờ hết timeout ⇒ cộng hàng chục
     // phút chờ chết vào đúng một buổi thi. Chạm trần → degrade về luồng tĩnh (answer vẫn lưu bình thường).
     public int MaxFailuresPerSession { get; set; } = 3;
+
+    // ── TU1 — BÙ CÂU GỐC khi chuỗi hết sớm mà ngân sách buổi vẫn còn ────────────────────────────
+    //
+    // VẤN ĐỀ ĐÃ ĐO trên production (chỉ tính buổi chạy trọn, `status='Scored'`) — buổi thích ứng
+    // giao ÍT CÂU HƠN số ứng viên đã chọn và đã trả credit:
+    //
+    //   | chọn (max_questions) | max_deep_per_question | số buổi | câu thực tế TB | ít nhất | thiếu |
+    //   |---------------------:|----------------------:|--------:|---------------:|--------:|------:|
+    //   |                   20 |                     3 |       6 |            9,5 |       6 |  6/6  |
+    //   |                    5 |                     3 |      17 |            4,9 |       4 |  1/17 |
+    //   |                    5 |                     0 |      10 |            3,6 |       2 |  7/10 |
+    //   |                    6 |                     0 |       9 |            2,9 |       1 |  9/9  |
+    //   |                    4 |                     3 |       8 |            3,6 |       2 |  2/8  |
+    //
+    // Chọn 20 nhận về 9,5 — chưa tới một nửa. Theo F2b ứng viên trả 1 credit cho ĐÚNG số câu họ chọn,
+    // nên đây là giao thiếu thứ đã bán. Nguyên nhân: `AnswerService.TryRunAdaptiveAsync` đóng chuỗi khi
+    // chạm trần độ sâu hoặc khi AI trả `end`; hết câu gốc chưa trả lời ⇒ buổi đóng, dù ngân sách còn.
+    //
+    // MẶC ĐỊNH BẬT — cố ý khác tiền lệ Grounding/Tiering/CvScreening (mặc định TẮT). Những cái đó là
+    // tính năng MỚI bật thăm dò; đây là bản vá KHÔI PHỤC thứ ứng viên đã trả tiền. Để mặc định tắt thì
+    // đúng cái lỗi vừa đo được vẫn chạy trong mọi buổi production cho tới khi có người nhớ bật, mà lỗi
+    // này KHÔNG có triệu chứng nào ngoài con số trong bảng trên. Cùng lập luận đã dùng cho
+    // `Scoring:UseSampleAnswer`. Vẫn để cờ vì nó thêm một lời gọi AI mỗi lần chuỗi kết thúc: điểm số
+    // không đổi nghĩa, nhưng chất lượng câu bù thì phụ thuộc model ⇒ tắt được ngay, không cần deploy.
+    public bool TopUpRootQuestions { get; set; } = true;
+
+    // Trần SỐ LẦN bù mỗi buổi (0 = không trần riêng, chỉ còn `MaxQuestions`).
+    //
+    // Vì sao cần thêm trần này khi `MaxQuestions` đã là trần cứng: câu bù là câu GỐC, nên nó tự mọc
+    // chuỗi đào sâu của chính nó (tối đa `MaxDeepPerQuestion` tầng). 5 lần bù × (1 + 3) = 20 khe —
+    // đúng bằng trần `max_questions` cao nhất mà DB cho phép (CHECK 0..20), tức đủ để lấp cả khoảng
+    // hụt tệ nhất trong bảng trên (20 chọn → 9,5 giao). Trên con số đó thì mỗi lần bù thêm chỉ còn là
+    // một lượt gọi `/generate-questions` nữa cho một AI đang trả câu vô dụng.
+    public int MaxTopUpsPerSession { get; set; } = 5;
 }

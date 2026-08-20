@@ -422,13 +422,15 @@ public class ScoringScopeTests
         return captured!;
     }
 
-    // Answer kẹt: Uploaded, chưa publish lần nào, tạo đã lâu → republisher nhặt.
+    // Answer kẹt: Uploaded, chưa publish lần nào, tạo đã quá `Republisher:PublishFailedMinutes` (2')
+    // → republisher nhặt. ⚠ Phải giữ trong `Scoring:GiveUpAfterMinutes` (20' từ 2026-08-20): quá trần
+    // thì republisher THÔI đẩy và test dưới không còn đo được gì (mốc cũ -30' đã rơi vào đúng bẫy đó).
     private static void SeedStuckAnswer(TestDb t, PracticeSession session, PracticeQuestion question)
     {
         session.Status = SessionStatus.InProgress;
         t.Db.PracticeAnswers.Add(TestDb.Answer(
             session.Id, question.Id, AnswerStatus.Uploaded,
-            DateTime.UtcNow.AddMinutes(-30), lastPublished: null));
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null));
         t.Db.SaveChanges();
     }
 

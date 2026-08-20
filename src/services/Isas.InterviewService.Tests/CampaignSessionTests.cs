@@ -269,9 +269,13 @@ public class CampaignSessionTests
         var created = await svc.CreateCampaignSessionAsync(
             candidate, CampaignReq(Guid.NewGuid(), new[] { "G1", "G2", "G3", "G4" }, maxDeep: 2, maxFollowUps: 3));
 
+        // Nội dung KHÁC NHAU mỗi lượt: từ khi có chốt DUP1 (`AnswerService.IsDuplicateQuestionAsync`),
+        // một mock trả đúng một chuỗi cho mọi lượt chính là mô phỏng cái hỏng đang được vá (prod: câu
+        // Clarify depth 1 và depth 2 giống nhau từng ký tự) ⇒ lượt thứ hai trở đi bị chặn không append.
+        var deep = 0;
         var decider = new Mock<IAiServiceInterviewDecider>();
         decider.Setup(x => x.DecideNextAsync(It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()))
-               .ReturnsAsync(new DecideNextResult("follow_up", "Đào sâu", "ts", null));
+               .ReturnsAsync(() => new DecideNextResult("follow_up", $"Đào sâu {++deep}", "ts", null));
 
         var publisher = new Mock<IScoringJobPublisher>();
         publisher.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))

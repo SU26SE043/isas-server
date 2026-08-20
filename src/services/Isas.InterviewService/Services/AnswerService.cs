@@ -18,6 +18,9 @@ public class AnswerService : IAnswerService
     private readonly ScoringOptions _scoring;   // E10 — self-consistency (N, ngưỡng spread, temp)
     private readonly IAiServiceInterviewDecider? _decider;   // phỏng vấn THÍCH ỨNG (null = tắt / test cũ)
     private readonly AdaptiveOptions _adaptive;   // INT-17b — chỉ đọc trần số lần lỗi (phần còn lại đóng dấu trên session)
+    // TU1 — sinh CÂU GỐC BÙ khi chuỗi hết sớm mà ngân sách buổi còn. Cùng client `PracticeService` dùng
+    // để sinh câu gốc lúc tạo buổi (null = không đăng ký / test cũ ⇒ không bù, hành vi y như trước).
+    private readonly IAiServiceQuestionGenerator? _questionGenerator;
     private readonly ILogger<AnswerService> _logger;
 
     public AnswerService(
@@ -32,7 +35,11 @@ public class AnswerService : IAnswerService
         IAiServiceInterviewDecider? decider = null,
         // Optional cùng lý do: null → mặc định AdaptiveOptions (trần lỗi 3). Trần/toggle của BUỔI đọc từ
         // session (đã đóng dấu lúc tạo), không đọc lại config ở đây — buổi đang chạy không bị đổi luật giữa chừng.
-        IOptions<AdaptiveOptions>? adaptiveOptions = null)
+        IOptions<AdaptiveOptions>? adaptiveOptions = null,
+        // TU1 — cũng optional (default null) để mọi test dựng AnswerService cũ vẫn compile: thiếu nó thì
+        // đơn giản là KHÔNG bù câu, đúng hành vi trước TU1. DI có đăng ký (AddHttpClient) nên production
+        // luôn nhận bản thật.
+        IAiServiceQuestionGenerator? questionGenerator = null)
     {
         _db = db;
         _storage = storage;
@@ -41,6 +48,7 @@ public class AnswerService : IAnswerService
         _scoring = scoringOptions.Value;
         _decider = decider;
         _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
+        _questionGenerator = questionGenerator;
         _logger = logger;
     }
 
@@ -237,10 +245,11 @@ public class AnswerService : IAnswerService
 
             if (perQuestionMode && question.Depth >= session.MaxDeepPerQuestion)
             {
-                // Chuỗi này hết độ sâu → chuyển sang câu gốc kế (nếu còn). KHÔNG gọi AI.
+                // Chuỗi này hết độ sâu → chuyển sang câu gốc kế (nếu còn). KHÔNG gọi `/decide-next`.
                 // Phải trả `InterviewComplete` theo pendingCount chứ không trả None: câu CUỐI CÙNG chạm
                 // trần độ sâu thì buổi đã xong thật, không báo thì ứng viên không được mời nộp bài.
-                return EndOutcome("end", pendingCount);
+                // TU1 — trước khi chốt "xong", thử BÙ một câu gốc mới nếu ngân sách buổi vẫn còn.
+                return await EndChainAsync(session, answer, "end", pendingCount, perQuestionMode, ct);
             }
 
             // (2) Idempotency: answer này đã "đẻ" câu kế rồi (re-upload) → không sinh trùng (unique index backstop).
@@ -374,42 +383,94 @@ public class AnswerService : IAnswerService
             if (!string.IsNullOrWhiteSpace(decision.TargetCriterionId)
                 || !string.IsNullOrWhiteSpace(decision.NewEvidenceState))
             {
-                var parsed = Guid.TryParse(decision.TargetCriterionId, out var targetId);
+                // EV1 — nhận CẢ tên tiêu chí, không chỉ GUID. LƯỚI AN TOÀN PHÒNG XA, không phải bản vá
+                // cho một lỗi đã chứng minh — đọc kỹ trước khi suy rộng:
+                //
+                //  • Prod CÓ dòng log `targetCriterionId='Giao tiếp & trình bày' (parse=False),
+                //    newEvidenceState='PARTIAL' (hợp lệ=True)` ⇒ nhìn qua tưởng "model hay gọi tên".
+                //  • Nhưng probe gọi lại `/decide-next` trên 20 ca THẬT lấy từ prod, prompt CHƯA sửa gì:
+                //    **20/20 trả về GUID hợp lệ**. Model KHÔNG gọi bằng tên khi nó có danh sách ID.
+                //  • Ca trả tên đến từ buổi có **0 dòng** `session_criterion_evidence`: snapshot rỗng ⇒
+                //    prompt không có ID nào ⇒ model chỉ còn cách gọi bằng tên. ⚠ Và chính vì snapshot
+                //    rỗng nên lưới này KHÔNG cứu được ca đó — không có dòng nào để mà giải mã.
+                //  • NGUYÊN NHÂN GỐC là **SC2**: 112/176 buổi adaptive không có snapshot, vì snapshot
+                //    gieo từ `targetable` mà rubric riêng BC16 nhận DEFAULT `ScoringScope = Always` ⇒
+                //    rỗng (tương quan 94% trên 90 buổi). Vá ở `RubricLibraryService`, không phải ở đây.
+                //
+                // Vậy giữ nhánh này để làm gì: nó là guard by-construction đúng nếp repo (`ParseTargets`
+                // bỏ id lạ · `verify_jd_quote` bỏ quote không đối chiếu được) — nhận đầu vào rộng hơn
+                // nhưng chỉ ghi thứ KIỂM ĐƯỢC. Nó phủ ca image AIService lệch nhịp / model đổi hành vi
+                // sau này, và nó rẻ. Tên phải khớp CHÍNH XÁC một dòng evidence CỦA CHÍNH BUỔI NÀY sau
+                // chuẩn hoá nhẹ (trim + hoa/thường). KHÔNG fuzzy, KHÔNG so ngữ nghĩa — khớp nhầm ở đây
+                // là gán bằng chứng cho SAI tiêu chí, tệ hơn hẳn bỏ qua (bỏ qua chỉ mất một lượt).
                 var stateOk = decision.NewEvidenceState is "UNKNOWN" or "PARTIAL" or "SATISFIED" or "FAILED";
-                if (!parsed || !stateOk)
+                SessionCriterionEvidence? evidence = null;
+                var parsed = Guid.TryParse(decision.TargetCriterionId, out var targetId);
+                var resolvedByName = false;
+                if (stateOk && parsed)
                 {
-                    _logger.LogWarning(
-                        "Evidence: bỏ qua cập nhật cho answer {AnswerId} (session {SessionId}) — "
-                        + "targetCriterionId='{TargetCriterionId}' (parse={Parsed}), newEvidenceState='{State}' (hợp lệ={StateOk})",
-                        answer.Id, session.Id, decision.TargetCriterionId, parsed, decision.NewEvidenceState, stateOk);
-                }
-                else
-                {
-                    var evidence = await _db.SessionCriterionEvidence
+                    evidence = await _db.SessionCriterionEvidence
                         .SingleOrDefaultAsync(e => e.SessionId == session.Id && e.CriterionId == targetId, ct);
                     if (evidence is null)
-                    {
                         _logger.LogWarning(
                             "Evidence: criterion {CriterionId} KHÔNG thuộc snapshot của session {SessionId} — bỏ qua",
                             targetId, session.Id);
-                    }
-                    else
+                }
+                else if (stateOk && !string.IsNullOrWhiteSpace(decision.TargetCriterionId))
+                {
+                    var wanted = NormalizeName(decision.TargetCriterionId);
+                    var rows = await _db.SessionCriterionEvidence
+                        .Where(e => e.SessionId == session.Id)
+                        .ToListAsync(ct);
+                    var hits = rows.Where(e => NormalizeName(e.CriterionName) == wanted).ToList();
+                    if (hits.Count == 1)
                     {
-                        evidence.State = decision.NewEvidenceState!;
-                        evidence.EvidenceFound = decision.EvidenceFound?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
-                        evidence.MissingEvidence = decision.MissingEvidence?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
-                        // CỘNG DỒN theo TIÊU CHÍ, không gán `question.Depth`.
-                        //
-                        // `PracticeQuestion.Depth` là độ sâu trong CHUỖI ĐÀO SÂU của một câu GỐC (INT-17b) —
-                        // thuộc về câu, không phải tiêu chí. Gán đè bằng nó sai hai lần: (a) sai đại lượng;
-                        // (b) là phép GÁN nên một decision đến từ câu gốc (`Depth == 0`) RESET bộ đếm về 0,
-                        // xoá luôn lịch sử đào sâu của tiêu chí. Cột này chỉ có nghĩa nếu nó đếm "đã đào sâu
-                        // tiêu chí này mấy lần" — và AIService dùng chính con số đó để biết khi nào nên
-                        // chuyển tiêu chí.
-                        evidence.DeepCount += 1;
-                        evidence.UpdatedAt = DateTime.UtcNow;
-                        await _db.SaveChangesAsync(ct);
+                        evidence = hits[0];
+                        resolvedByName = true;
                     }
+                    else if (hits.Count > 1)
+                    {
+                        // Không nên xảy ra (tên tiêu chí trong một rubric là duy nhất), nhưng rubric riêng
+                        // BC16 do ứng viên tự CRUD nên không có gì BẢO ĐẢM điều đó. Đoán bừa một dòng =
+                        // ghi bằng chứng vào tiêu chí có thể sai → thà bỏ qua.
+                        _logger.LogWarning(
+                            "Evidence: tên '{Name}' khớp {Count} tiêu chí của session {SessionId} — bỏ qua (không đoán)",
+                            decision.TargetCriterionId, hits.Count, session.Id);
+                    }
+                }
+
+                if (evidence is null)
+                {
+                    if (!stateOk || !parsed)
+                        _logger.LogWarning(
+                            "Evidence: bỏ qua cập nhật cho answer {AnswerId} (session {SessionId}) — "
+                            + "targetCriterionId='{TargetCriterionId}' (parse={Parsed}, khớp theo tên=False), "
+                            + "newEvidenceState='{State}' (hợp lệ={StateOk})",
+                            answer.Id, session.Id, decision.TargetCriterionId, parsed,
+                            decision.NewEvidenceState, stateOk);
+                }
+                else
+                {
+                    if (resolvedByName)
+                        _logger.LogInformation(
+                            "Evidence: giải mã '{Name}' theo TÊN → criterion {CriterionId} (session {SessionId}) "
+                            + "— AIService gửi tên thay vì GUID",
+                            decision.TargetCriterionId, evidence.CriterionId, session.Id);
+
+                    evidence.State = decision.NewEvidenceState!;
+                    evidence.EvidenceFound = decision.EvidenceFound?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
+                    evidence.MissingEvidence = decision.MissingEvidence?.Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
+                    // CỘNG DỒN theo TIÊU CHÍ, không gán `question.Depth`.
+                    //
+                    // `PracticeQuestion.Depth` là độ sâu trong CHUỖI ĐÀO SÂU của một câu GỐC (INT-17b) —
+                    // thuộc về câu, không phải tiêu chí. Gán đè bằng nó sai hai lần: (a) sai đại lượng;
+                    // (b) là phép GÁN nên một decision đến từ câu gốc (`Depth == 0`) RESET bộ đếm về 0,
+                    // xoá luôn lịch sử đào sâu của tiêu chí. Cột này chỉ có nghĩa nếu nó đếm "đã đào sâu
+                    // tiêu chí này mấy lần" — và AIService dùng chính con số đó để biết khi nào nên
+                    // chuyển tiêu chí.
+                    evidence.DeepCount += 1;
+                    evidence.UpdatedAt = DateTime.UtcNow;
+                    await _db.SaveChangesAsync(ct);
                 }
             }
 
@@ -425,7 +486,29 @@ public class AnswerService : IAnswerService
                             || string.IsNullOrWhiteSpace(decision.NextQuestion)
                             || (perQuestionMode && decision.Action == "new_question");
             if (endsChain)
-                return EndOutcome(decision.Action, pendingCount);
+                // TU1 — hết chuỗi KHÔNG còn đồng nghĩa "hết buổi": còn ngân sách thì bù một câu GỐC mới.
+                return await EndChainAsync(session, answer, decision.Action, pendingCount, perQuestionMode, ct);
+
+            // (8b) DUP1 — chốt chặn CHỐNG TRÙNG, chạy TRƯỚC khi append.
+            //
+            // Prod có 10 buổi chứa câu trùng khít từng chữ; một buổi có câu Clarify depth 1 và depth 2
+            // GIỐNG NHAU TỪNG KÝ TỰ và cả hai nhận cùng một bản chép của ứng viên — tức ứng viên bị hỏi
+            // lại đúng câu vừa trả lời, rồi bị chấm hai lần trên cùng một bài. Phía AIService đang được
+            // vá để thôi sinh trùng, nhưng prompt là lời khuyên: chốt chặn phía .NET mới là thứ chịu
+            // được image AIService lệch nhịp (đúng nếp `ParseTargets` · `GroundingMapper` ·
+            // `verify_jd_quote` — nhận đầu vào rộng, nhưng chỉ ghi thứ tự kiểm được).
+            //
+            // Trùng ⇒ ĐÓNG CHUỖI qua đúng đường `EndChainAsync` (nên vẫn có thể bù câu gốc nếu còn
+            // ngân sách) — không append, và PHẢI log: im lặng ở đây nghĩa là lỗi AI quay lại mà không
+            // ai biết, vì buổi vẫn "chạy bình thường", chỉ ngắn đi.
+            if (await IsDuplicateQuestionAsync(session.Id, decision.NextQuestion!, ct))
+            {
+                _logger.LogWarning(
+                    "DUP1: /decide-next trả câu TRÙNG khít câu đã có trong session {SessionId} "
+                    + "(answer {AnswerId}, action {Action}) — KHÔNG append, đóng chuỗi. Nội dung: '{Content}'",
+                    session.Id, answer.Id, decision.Action, decision.NextQuestion);
+                return await EndChainAsync(session, answer, decision.Action, pendingCount, perQuestionMode, ct);
+            }
 
             // (9) Append 1 câu kế, gắn GeneratedFromAnswerId (idempotency).
             // CHẾ ĐỘ CHUỖI: OrderNo = câu cha + 1 — chỗ này đã được `SeedOrderStride` chừa sẵn khi đánh số
@@ -497,24 +580,403 @@ public class AnswerService : IAnswerService
             // INT-17b — đếm lỗi để cổng (0) ngắt hẳn sau vài lần. Best-effort: đếm lỗi mà ném thì
             // thành nuốt luôn cả upload, nên bọc riêng.
             if (perQuestionMode)
-            {
-                try
-                {
-                    await _db.PracticeSessions
-                        .Where(s => s.Id == session.Id)
-                        .ExecuteUpdateAsync(
-                            u => u.SetProperty(s => s.AdaptiveFailures, s => s.AdaptiveFailures + 1)
-                                  .SetProperty(s => s.UpdatedAt, DateTime.UtcNow), ct);
-                }
-                catch (Exception counterEx)
-                {
-                    _logger.LogWarning(counterEx,
-                        "Adaptive: không tăng được adaptive_failures cho session {SessionId}", session.Id);
-                }
-            }
+                await BumpAdaptiveFailuresAsync(session.Id, ct);
 
             return AdaptiveOutcome.None;
         }
+    }
+
+    /// <summary>
+    /// INT-17b — cộng 1 vào bộ đếm lỗi AI của buổi (cổng (0) ngắt hẳn khi chạm
+    /// <see cref="AdaptiveOptions.MaxFailuresPerSession"/>). BEST-EFFORT: đếm lỗi mà ném thì thành
+    /// nuốt luôn cả upload, nên nuốt mọi exception tại chỗ.
+    ///
+    /// <para>Tách thành hàm riêng vì TU1 có lời gọi AI thứ HAI trong cùng một lượt upload
+    /// (<c>/generate-questions</c> để bù câu gốc). Cả hai lời gọi đều phải nạp cùng một cái phanh:
+    /// AIService hỏng thì mỗi lượt upload chờ hết timeout ×2, và đó chính là thứ cổng (0) sinh ra để
+    /// chặn — bỏ vế mới ra ngoài là để hở đúng nửa mới thêm.</para>
+    /// </summary>
+    private async Task BumpAdaptiveFailuresAsync(Guid sessionId, CancellationToken ct)
+    {
+        try
+        {
+            await _db.PracticeSessions
+                .Where(s => s.Id == sessionId)
+                .ExecuteUpdateAsync(
+                    u => u.SetProperty(s => s.AdaptiveFailures, s => s.AdaptiveFailures + 1)
+                          .SetProperty(s => s.UpdatedAt, DateTime.UtcNow), ct);
+        }
+        catch (Exception counterEx)
+        {
+            _logger.LogWarning(counterEx,
+                "Adaptive: không tăng được adaptive_failures cho session {SessionId}", sessionId);
+        }
+    }
+
+    /// <summary>
+    /// TU1 — điểm KẾT THÚC CHUỖI dùng chung: thử BÙ một câu GỐC mới trước khi chốt "hết buổi".
+    ///
+    /// <para>Ba đường vào, đều là "chuỗi này không mọc thêm được nữa": chạm trần độ sâu (bước 1),
+    /// AI trả <c>end</c>/câu rỗng/<c>new_question</c> (bước 8), và câu mới TRÙNG câu đã có (bước 8b).
+    /// Bù được ⇒ trả câu đó như câu kế; không bù được ⇒ đúng <see cref="EndOutcome"/> như trước TU1.</para>
+    ///
+    /// <para>⚠ CỐ Ý KHÔNG gắn vào bước (3) "hết ngân sách": ca <c>askedCount >= MaxQuestions</c> theo
+    /// định nghĩa không còn gì để bù, còn ca <c>followUpCount >= MaxFollowUps</c> (chỉ tồn tại ở chế độ
+    /// frontier) là một trần ĐÃ ĐÓNG DẤU LÊN BUỔI lúc tạo — lách nó bằng cơ chế mới là đổi luật của
+    /// buổi đang chạy, đúng thứ mọi con dấu trên session sinh ra để cấm.</para>
+    /// </summary>
+    private async Task<AdaptiveOutcome> EndChainAsync(
+        PracticeSession session, PracticeAnswer answer, string? action, int pendingCount,
+        bool perQuestionMode, CancellationToken ct)
+    {
+        var topUp = await TryTopUpRootQuestionAsync(session, answer, pendingCount, perQuestionMode, ct);
+        if (topUp is null)
+            return EndOutcome(action, pendingCount);
+
+        // Câu bù là câu ĐỔI CHỦ ĐỀ ⇒ action "new_question" (cùng từ vựng dây với `/decide-next` nên FE
+        // không phải học thêm giá trị mới). InterviewComplete = false: vừa có đúng 1 câu chưa trả lời.
+        return new AdaptiveOutcome("new_question", topUp, InterviewComplete: false);
+    }
+
+    /// <summary>
+    /// TU1 — sinh MỘT câu GỐC BÙ (<c>Depth = 0</c>, <c>RootQuestionId = null</c>) khi chuỗi vừa kết
+    /// thúc, KHÔNG còn câu nào chưa trả lời, mà ngân sách buổi vẫn còn. Trả <c>null</c> = không bù
+    /// (mọi lý do), caller degrade về hành vi trước TU1.
+    ///
+    /// <para><b>Vì sao cần</b> — số đo prod ở <see cref="AdaptiveOptions.TopUpRootQuestions"/>: chọn 20
+    /// câu nhận về trung bình 9,5. Ứng viên trả 1 credit cho ĐÚNG số câu họ chọn (F2b), nên hụt ở đây
+    /// là giao thiếu thứ đã bán.</para>
+    ///
+    /// <para><b>CHỈ B2C</b> (<c>CampaignId == null</c>). B2B xếp hạng ứng viên chung một bảng (CAMP-10)
+    /// nên số câu phải bằng nhau — đó chính là lý do code hiện ép <c>MaxFollowUps = 0</c> cho B2B. Bù
+    /// câu cho B2B là phá công bằng, và phá theo kiểu KHÔNG ai thấy: điểm vẫn ra, chỉ là hai ứng viên
+    /// được đo bằng số câu khác nhau.</para>
+    ///
+    /// <para><b>Idempotency</b> dùng lại đúng khoá của chuỗi: <c>GeneratedFromAnswerId = answer.Id</c>
+    /// + unique filtered index <c>generated_from_answer_id</c>. Câu bù là câu GỐC nhưng nó VẪN sinh ra
+    /// TỪ một câu trả lời cụ thể (câu đóng chuỗi), nên cột provenance này mô tả đúng sự thật — và nhờ
+    /// vậy double-POST/re-upload không đẻ ra hai câu bù mà không cần migration nào. Không có code nào
+    /// suy "là câu đào sâu" từ cột này (đã rà: chỉ dùng làm khoá idempotency + provenance), nên
+    /// "câu gốc có <c>GeneratedFromAnswerId</c>" không phá bất biến nào đang có; ngược lại nó thành
+    /// đúng dấu hiệu nhận biết câu BÙ (gốc + có nguồn) để đếm trần bên dưới.</para>
+    ///
+    /// <para><b>Mọi lỗi đều nuốt</b>: một lượt upload đã lưu answer durable từ trước KHÔNG được phép
+    /// hỏng vì AIService trả 500 — cùng kỷ luật với vòng <c>/decide-next</c>.</para>
+    /// </summary>
+    private async Task<PracticeQuestion?> TryTopUpRootQuestionAsync(
+        PracticeSession session, PracticeAnswer answer, int pendingCount,
+        bool perQuestionMode, CancellationToken ct)
+    {
+        if (!_adaptive.TopUpRootQuestions || _questionGenerator is null)
+            return null;
+
+        // B2B: xem ghi chú CAMP-10 ở summary.
+        if (session.CampaignId is not null)
+            return null;
+
+        // Chỉ bù khi HẾT câu chưa trả lời. Còn câu đang chờ thì buổi chưa hụt — thêm câu lúc này là
+        // kéo dài buổi vượt thứ ứng viên chọn, tức lỗi ngược lại của lỗi đang sửa.
+        if (pendingCount != 0)
+            return null;
+
+        // `MaxQuestions <= 0` = buổi KHÔNG có trần cứng (adaptive tắt / config để 0) ⇒ không có "số câu
+        // đã bán" nào để đối chiếu, mà bù không trần thì thành phỏng vấn vô tận. Không bù.
+        if (session.MaxQuestions <= 0)
+            return null;
+
+        try
+        {
+            var askedCount = await _db.PracticeQuestions.CountAsync(q => q.SessionId == session.Id, ct);
+            if (askedCount >= session.MaxQuestions)
+                return null;
+
+            // Idempotency (xem summary). Ở đường bước-8/8b thì bước (2) đã kiểm rồi nên đây là kiểm
+            // thừa; ở đường bước-1 (chạm trần độ sâu) thì bước (2) CHƯA chạy nên đây là chốt duy nhất
+            // phía ứng dụng — unique index vẫn là backstop cho đua thật.
+            if (await _db.PracticeQuestions.AnyAsync(q => q.GeneratedFromAnswerId == answer.Id, ct))
+                return null;
+
+            // Trần số lần bù: đếm câu GỐC (Depth 0, không thuộc chuỗi nào) mà lại CÓ nguồn = câu bù.
+            if (_adaptive.MaxTopUpsPerSession > 0)
+            {
+                var toppedUp = await _db.PracticeQuestions.CountAsync(
+                    q => q.SessionId == session.Id
+                         && q.RootQuestionId == null && q.Depth == 0
+                         && q.GeneratedFromAnswerId != null, ct);
+                if (toppedUp >= _adaptive.MaxTopUpsPerSession)
+                {
+                    _logger.LogWarning(
+                        "TU1: session {SessionId} đã bù {Count} câu (trần {Max}) — thôi bù dù còn "
+                        + "{Asked}/{Budget} ngân sách",
+                        session.Id, toppedUp, _adaptive.MaxTopUpsPerSession, askedCount, session.MaxQuestions);
+                    return null;
+                }
+            }
+
+            // Tiêu chí NỘI DUNG của rubric ĐÃ GHIM cho buổi này — gửi để AIService gắn nhãn câu bù, và
+            // để `ParseTargets` có tập hợp lệ mà loại id lạ. Rỗng (rubric riêng BC16 toàn `Always` —
+            // đúng lỗi SC2) → gửi null ⇒ câu bù không nhãn ⇒ chấm đủ rubric, đúng lùi-an-toàn có sẵn.
+            var targetable = (await LoadActiveCriteriaAsync(session, ct))
+                .Where(c => c.ScoringScope == ScoringScope.WhenTargeted)
+                .Select(c => new QuestionTargetCriterionDto(c.Id, c.Name))
+                .ToList();
+
+            var (focusName, focusNote) = await PickTopUpFocusAsync(session, targetable, ct);
+            var (cvText, jdText) = await LoadSessionDocsAsync(session, ct);
+
+            var result = await _questionGenerator.GenerateQuestionsAsync(
+                session.JobCategory.ToString(), cvText, jdText,
+                focusCriteria: focusName is null ? null : new[] { focusName },
+                count: 1,
+                grounding: null,
+                language: session.Language,
+                criteria: targetable.Count > 0 ? targetable : null,
+                seniority: session.Seniority,
+                ct: ct);
+
+            var generated = result.Questions.FirstOrDefault(q => !string.IsNullOrWhiteSpace(q.Content));
+            if (generated is null)
+            {
+                _logger.LogWarning(
+                    "TU1: /generate-questions không trả câu nào cho session {SessionId} (bù sau answer {AnswerId}) — bỏ bù",
+                    session.Id, answer.Id);
+                return null;
+            }
+
+            // DUP1 — cùng chốt chặn với đường đào sâu: câu bù trùng câu đã hỏi thì bù cũng vô nghĩa.
+            if (await IsDuplicateQuestionAsync(session.Id, generated.Content, ct))
+            {
+                _logger.LogWarning(
+                    "DUP1: câu BÙ trùng khít câu đã có trong session {SessionId} — KHÔNG append. Nội dung: '{Content}'",
+                    session.Id, generated.Content);
+                return null;
+            }
+
+            // OrderNo phải rơi đúng LƯỚI câu gốc (1, 1+stride, 1+2·stride, …) mà `PracticeService` đã
+            // đánh khi tạo buổi, nếu không thì chuỗi đào sâu của chính câu bù (OrderNo cha + 1) đâm vào
+            // khe của câu khác ⇒ unique (session_id, order_no) vỡ, hoặc thứ tự hội thoại hiển thị loạn.
+            //
+            // ⚠ `stride` là bản SAO của `PracticeService.SeedOrderStride` (cùng công thức
+            // `1 + max(0, maxDeepPerQuestion)`). Gom về một chỗ thì phải sửa `PracticeService`, ngoài
+            // phạm vi thay đổi này — nên chép kèm con trỏ chéo thay vì để hai công thức trôi khỏi nhau
+            // trong im lặng.
+            var stride = 1 + Math.Max(0, session.MaxDeepPerQuestion);
+            var maxOrder = await _db.PracticeQuestions
+                .Where(q => q.SessionId == session.Id)
+                .MaxAsync(q => q.OrderNo, ct);
+            var orderNo = maxOrder < 1 ? 1 : 1 + ((maxOrder - 1) / stride + 1) * stride;
+
+            var topUp = new PracticeQuestion
+            {
+                Id = Guid.NewGuid(),
+                SessionId = session.Id,
+                OrderNo = orderNo,
+                Content = generated.Content,
+                TimeLimitSec = session.TimeLimitSec,   // F2 — theo lựa chọn của ứng viên, như mọi câu khác
+                // Đúng nghĩa enum: "AI chuyển sang năng lực/tiêu chí khác (còn ngân sách)". KHÔNG đánh
+                // `Seed`: câu này KHÔNG có lúc mở đầu, và `Kind` là cột duy nhất ghi lại nguồn gốc câu hỏi.
+                Kind = QuestionKind.NewQuestion,
+                GeneratedFromAnswerId = answer.Id,
+                // Câu GỐC: mở chuỗi đào sâu của riêng nó (Depth 0 ⇒ bước (1) cho phép đào sâu tiếp).
+                Depth = 0,
+                RootQuestionId = null,
+                // Nhãn LẤY NGUYÊN từ AIService (đã qua guard `ParseTargets` loại id lạ). CỐ Ý không tự
+                // gán `[focus.CriterionId]` khi AI trả null: ta mới chỉ ĐỀ NGHỊ chủ đề, còn nhãn là lời
+                // KHẲNG ĐỊNH "câu này đo tiêu chí đó" — tự khẳng định thay AI rồi thu hẹp phạm vi chấm
+                // theo nó là đúng lỗi mà chấm-theo-phạm-vi sinh ra để diệt (chấm thứ không được hỏi).
+                // null ⇒ chấm đủ rubric = lùi an toàn.
+                TargetCriterionIds = generated.TargetCriterionIds?.ToList()
+            };
+            _db.PracticeQuestions.Add(topUp);
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex)
+            {
+                // Đua double-POST: unique generated_from_answer_id (hoặc (session_id, order_no)) chặn
+                // row thứ 2. Detach để lần SaveChanges kế (TryPublishScoringJobAsync) không cố lưu lại.
+                _db.Entry(topUp).State = EntityState.Detached;
+                _logger.LogWarning(ex,
+                    "TU1: append câu bù bị chặn (đua unique) cho answer {AnswerId} — bỏ qua", answer.Id);
+                return null;
+            }
+
+            _logger.LogInformation(
+                "TU1: session {SessionId} bù câu gốc {QuestionId} (order {Order}) sau answer {AnswerId} — "
+                + "đã hỏi {Asked}/{Budget}, chủ đề nhắm '{Focus}' ({FocusSource})",
+                session.Id, topUp.Id, topUp.OrderNo, answer.Id, askedCount, session.MaxQuestions,
+                focusName ?? "(không chọn được)", focusNote);
+
+            return topUp;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "TU1: bù câu gốc lỗi cho session {SessionId} (answer {AnswerId}) — bỏ bù (degrade: buổi đóng như trước)",
+                session.Id, answer.Id);
+
+            // Nạp cùng cái phanh với `/decide-next`: AIService hỏng thì thôi gọi hẳn, đừng để mỗi lượt
+            // upload phải chờ hết timeout của hai lời gọi AI. Chỉ ở chế độ chuỗi — đối xứng cổng (0).
+            if (perQuestionMode)
+                await BumpAdaptiveFailuresAsync(session.Id, ct);
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// TU1 — chọn CHỦ ĐỀ cho câu bù. Trả (tên tiêu chí để nhắm, ghi chú nguồn cho log).
+    /// <c>null</c> = không chọn được ⇒ VẪN bù, chỉ là không lái chủ đề.
+    ///
+    /// <para><b>Đường chính — bảng bằng chứng</b> (<c>SessionCriterionEvidence</c>): ưu tiên tiêu chí
+    /// còn thiếu bằng chứng, <c>UNKNOWN</c> trước <c>PARTIAL</c>, rồi tới tiêu chí được đào sâu ÍT
+    /// NHẤT. KHÔNG có luật "hết tiêu chí thiếu bằng chứng thì thôi bù": ngân sách là thứ ứng viên đã
+    /// trả tiền (F2b), không phải phần thưởng cho việc trả lời tốt. Cũng không viết luật nào giả định
+    /// phân bố phong phú — thực đo prod là 178 <c>UNKNOWN</c> · 13 <c>PARTIAL</c> · 5 <c>FAILED</c> ·
+    /// <b>0</b> <c>SATISFIED</c> (chưa tiêu chí nào từng đạt).</para>
+    ///
+    /// <para><b>Đường dự phòng — snapshot RỖNG. Đây là ĐA SỐ, không phải ca hiếm:</b> đo được
+    /// <b>112/176</b> buổi adaptive không có dòng bằng chứng nào (64%). Snapshot gieo ở
+    /// <c>PracticeService</c> từ biến <c>targetable</c>, mà biến đó rỗng đúng khi rubric riêng BC16 có
+    /// toàn <c>ScoringScope = Always</c> — chính lỗi SC2 (tương quan 94% trên 90 buổi: dùng rubric
+    /// riêng ⇒ không có snapshot). SC2 được vá ở chỗ khác, nhưng <b>buổi CŨ rỗng vĩnh viễn</b> ⇒ nhánh
+    /// này KHÔNG phải tạm thời. Bám vào bảng bằng chứng mà không có dự phòng nghĩa là cơ chế bù im
+    /// lặng không chạy cho đúng nhóm buổi đang thiếu câu nhất.</para>
+    ///
+    /// <para>Dự phòng chọn theo thứ đã quan sát được TRỰC TIẾP: tiêu chí NỘI DUNG chưa câu nào trong
+    /// buổi nhắm tới (<c>practice_questions.target_criterion_ids</c>) — vừa lấp chỗ trống của điểm,
+    /// vừa là cách tránh trùng chủ đề rẻ nhất mà không cần state nào.</para>
+    ///
+    /// <para>⚠ Ghi chú nguồn đi vào log CÓ CHỦ ĐÍCH: đọc log phải phân biệt ngay buổi nào đang chạy
+    /// có bằng chứng và buổi nào chạy mù.</para>
+    /// </summary>
+    private async Task<(string? FocusName, string Source)> PickTopUpFocusAsync(
+        PracticeSession session, IReadOnlyList<QuestionTargetCriterionDto> targetable, CancellationToken ct)
+    {
+        var evidence = await _db.SessionCriterionEvidence.AsNoTracking()
+            .Where(e => e.SessionId == session.Id)
+            .ToListAsync(ct);
+
+        if (evidence.Count > 0)
+        {
+            var pick = evidence
+                .OrderBy(e => EvidenceRank(e.State))
+                .ThenBy(e => e.DeepCount)
+                .ThenBy(e => e.CriterionName, StringComparer.Ordinal)
+                .First();
+            return (pick.CriterionName, $"evidence {pick.State}, deep {pick.DeepCount}");
+        }
+
+        if (targetable.Count == 0)
+            return (null, "KHÔNG có snapshot bằng chứng VÀ rubric không có tiêu chí nội dung (SC2) — bù mù");
+
+        var covered = (await _db.PracticeQuestions.AsNoTracking()
+                .Where(q => q.SessionId == session.Id)
+                .Select(q => q.TargetCriterionIds)
+                .ToListAsync(ct))
+            .Where(ids => ids is not null)
+            .SelectMany(ids => ids!)
+            .ToHashSet();
+
+        var uncovered = targetable.FirstOrDefault(c => !covered.Contains(c.CriterionId));
+        return uncovered is not null
+            ? (uncovered.Name, "KHÔNG có snapshot bằng chứng — chọn tiêu chí chưa câu nào nhắm tới")
+            : (null, "KHÔNG có snapshot bằng chứng, mọi tiêu chí nội dung đã được nhắm — bù không lái chủ đề");
+    }
+
+    /// <summary>Thứ tự ưu tiên chủ đề bù: thiếu bằng chứng trước. Giá trị lạ xếp cuối (không đoán).</summary>
+    private static int EvidenceRank(string? state) => state switch
+    {
+        "UNKNOWN" => 0,
+        "PARTIAL" => 1,
+        "FAILED" => 2,
+        "SATISFIED" => 3,
+        _ => 4
+    };
+
+    /// <summary>
+    /// Nội dung CV/JD đã parse của buổi, để câu bù bám đúng hồ sơ ứng viên như câu gốc lúc tạo buổi.
+    /// Thiếu file / chưa parse → <c>null</c>, prompt tự xử (sinh câu chung theo <c>jobCategory</c>).
+    /// <para>JD nhập bằng TEXT (C11) không có <c>JdId</c> và buổi không lưu lại nội dung đó ⇒ câu bù
+    /// của buổi ấy không có JD. Nói ra ở đây để lần sau không đọc nhầm thành bug.</para>
+    /// </summary>
+    private async Task<(string? CvText, string? JdText)> LoadSessionDocsAsync(
+        PracticeSession session, CancellationToken ct)
+    {
+        if (session.CvId is null && session.JdId is null)
+            return (null, null);
+
+        var ids = new List<Guid>();
+        if (session.CvId is Guid cv) ids.Add(cv);
+        if (session.JdId is Guid jd) ids.Add(jd);
+
+        var rows = await _db.FileRecords.AsNoTracking()
+            .Where(f => ids.Contains(f.Id))
+            .Select(f => new { f.Id, f.ParsedText })
+            .ToListAsync(ct);
+
+        string? TextOf(Guid? id) => id is Guid g
+            ? rows.FirstOrDefault(r => r.Id == g)?.ParsedText
+            : null;
+
+        return (TextOf(session.CvId), TextOf(session.JdId));
+    }
+
+    /// <summary>
+    /// DUP1 — câu mới có TRÙNG KHÍT câu nào đã có trong buổi không (so với MỌI câu, gốc lẫn đào sâu).
+    ///
+    /// <para>Chuẩn hoá NHẸ và chỉ nhẹ: trim · không phân biệt hoa/thường · gộp khoảng trắng thừa.
+    /// <b>KHÔNG fuzzy, KHÔNG so ngữ nghĩa</b> — chặn nhầm một câu hỏi hợp lệ là cắt bớt buổi của ứng
+    /// viên đã trả tiền, đắt hơn hẳn việc để lọt một câu chỉ na ná. Chốt này nhắm đúng hình dạng lỗi đã
+    /// quan sát: trùng TỪNG KÝ TỰ.</para>
+    ///
+    /// <para>So trong bộ nhớ chứ không đẩy xuống SQL: một buổi tối đa 20 câu, mà collation của Postgres
+    /// và SQLite (test) không giống nhau ⇒ đẩy phép so hoa/thường xuống DB là để hai môi trường chạy
+    /// hai luật khác nhau.</para>
+    /// </summary>
+    private async Task<bool> IsDuplicateQuestionAsync(Guid sessionId, string content, CancellationToken ct)
+    {
+        var key = NormalizeName(content);
+        if (key.Length == 0)
+            return false;   // câu rỗng đã bị `endsChain` chặn từ trước — không phải việc của chốt này
+
+        var existing = await _db.PracticeQuestions.AsNoTracking()
+            .Where(q => q.SessionId == sessionId)
+            .Select(q => q.Content)
+            .ToListAsync(ct);
+
+        return existing.Any(c => NormalizeName(c) == key);
+    }
+
+    /// <summary>
+    /// Chuẩn hoá NHẸ dùng chung cho hai chốt so-khớp-chính-xác: tên tiêu chí (EV1) và nội dung câu hỏi
+    /// (DUP1). Trim, hạ hoa/thường theo invariant, gộp mọi cụm khoảng trắng về đúng một dấu cách.
+    /// Không bỏ dấu, không bỏ dấu câu, không stem — mọi bước "thông minh" thêm đều là bước tiến về phía
+    /// khớp nhầm, mà khớp nhầm ở cả hai chỗ đều ghi dữ liệu SAI chứ không chỉ bỏ sót.
+    /// </summary>
+    private static string NormalizeName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+
+        var sb = new System.Text.StringBuilder(raw.Length);
+        var pendingSpace = false;
+        foreach (var ch in raw.AsSpan().Trim())
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                pendingSpace = sb.Length > 0;
+                continue;
+            }
+            if (pendingSpace)
+            {
+                sb.Append(' ');
+                pendingSpace = false;
+            }
+            sb.Append(char.ToLowerInvariant(ch));
+        }
+        return sb.ToString();
     }
 
     /// <summary>
@@ -667,7 +1129,10 @@ public class AnswerService : IAnswerService
                     answer.Id, scopedCriteria.Count, criteria.Count, question.Id,
                     string.Join(",", question.TargetCriterionIds ?? []));
 
-            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria);   // E9: kèm levels (+ anchors)
+            // E9: kèm levels (+ anchors). Cờ dải mặc định PHẢI truyền ở CẢ HAI đường publish (đường
+            // này + StuckAnswerRepublisher), nếu không thì answer đi đường cứu hộ bị chấm bằng thước
+            // khác answer đi đường thường — cùng bài học với kill-switch đáp án mẫu ngay bên dưới.
+            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria, _scoring.DefaultBandStyle);
 
             // E10 — self-consistency: publish N job (attempt 1..N) cho cùng 1 answer để chấm N lần.
             //   attempt 1 → temp=0 (tái lập); 2..N → SelfConsistencyTemperature (dao động thật để đo spread).

@@ -155,6 +155,29 @@ public class FaceVerifyTests
         Assert.Equal(0, check.SessionFlags.Count(f => f.CampaignId == campaign.Id));
     }
 
+    // ── (1'') AIService lỗi hạ tầng (timeout/5xx) → 502 có log, KHÔNG 500 trần ────────
+    // Trước đây VerifyAsync ném thẳng ra ngoài action (không try/catch) → 500 mất log rõ ràng, không nhất
+    // quán với mọi controller khác trong service (đều map DownstreamServiceException → 502).
+    [Fact]
+    public async Task Check_AiServiceThrows_Maps502_NotBare500()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, faceVerify: true);
+        SeedMember(tdb.Db, campaign.Id, candidateId, referenceImageKey: "campaigns/ref.jpg");
+
+        var ai = new Mock<IAiServiceFaceVerifyClient>();
+        ai.Setup(x => x.VerifyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<double?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new DownstreamServiceException("Không gọi được AIService face-verify."));
+
+        var result = await NewController(tdb.NewContext(), candidateId, Mock.Of<IFileService>(), ai.Object)
+            .Check(campaign.Id, FixedSession, FakeImage(), default);
+
+        var status = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status502BadGateway, status.StatusCode);
+    }
+
     // ── (2) face-check không có ảnh tham chiếu → cờ identity_unverified, KHÔNG gọi AI ─
     [Fact]
     public async Task Check_NoReference_RecordsIdentityUnverified()

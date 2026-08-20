@@ -285,9 +285,17 @@ REQUIREMENT_PRIORITIES = ("MustHave", "NiceToHave")
 
 
 class JdRequirement(BaseModel):
-    """Một requirement AI tách từ JD; output bước đề xuất, chưa có id bền."""
+    """Một requirement AI tách từ JD; output bước đề xuất, chưa có id bền.
+
+    ``citations`` là tài liệu chuẩn ngành lấy từ kho tri thức (Qdrant) — KHÔNG phải trích từ JD
+    của user. ``jdQuote`` mới là câu NGUYÊN VĂN trong ``jdText`` sinh ra requirement này, để user
+    kiểm chứng "câu này lấy từ đâu trong JD của tôi". AIService xác minh quote thật sự là substring
+    của ``jdText`` (gộp whitespace, không phân biệt hoa thường); không phải ⇒ ``None`` — cùng kỷ
+    luật chống bịa by-construction đang dùng cho ``chunkId``. ``None`` là hợp lệ (FE ẩn tính năng).
+    """
     text: str
     citations: list[GroundingChunk] = []
+    jdQuote: str | None = None
 
 
 class SuggestJdRequirementsRequest(BaseModel):

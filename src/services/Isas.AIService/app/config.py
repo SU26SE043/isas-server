@@ -16,10 +16,36 @@ class Settings(BaseSettings):
     embed_model: str = "gemini-embedding-001"
     embed_dim: int = 768
 
+    # ── RETRY LỖI TẠM THỜI CỦA GEMINI (chokepoint `_generate`) ───
+    # Log worker prod bắt được nguyên văn: `[⚠️] Lỗi tạm thời answer …: 503 UNAVAILABLE -> nack
+    # (republish sau)`. Một cú 503 chớp nhoáng của Google KHÔNG được thử lại ở chỗ nó xảy ra:
+    # message rơi thẳng xuống nhánh tạm thời → nack → phải chờ `StuckAnswerRepublisher` (.NET,
+    # quét mỗi 2 phút) đẩy lại. Người dùng đo được **15 phút** chờ cho một sự cố kéo dài chưa
+    # tới một giây — cứu hộ phía .NET là lưới an toàn cho lỗi kéo dài, dùng nó để đỡ một cú
+    # nấc mạng là sai tầng.
+    #
+    # `3` = 1 lượt đầu + 2 lượt thử lại. Backoff NHÂN ĐÔI: chờ 1,0s rồi 2,0s ⇒ tối đa **3s nằm
+    # chờ**, cộng phần gọi hỏng thì tổng cộng thêm ~5s cho ca xấu nhất.
+    #
+    # 🔴 RÀNG BUỘC CỨNG của hai con số này: `_generate` là chokepoint CHUNG nên nó nằm trên CẢ
+    # `/decide-next` — đường chạy ĐỒNG BỘ trong request upload câu trả lời của người dùng, dưới
+    # timeout **90s** phía .NET (cả request đo ~9,4s). Nới attempts/backoff là ăn thẳng vào ngân
+    # sách đó và biến một cú 503 của Gemini thành timeout của .NET — hỏng to hơn cái đang vá.
+    # Muốn kiên nhẫn hơn cho đường ASYNC (worker chấm) thì phải tách cấu hình theo đường gọi,
+    # ĐỪNG nâng số dùng chung này.
+    #
+    # `1` = tắt hẳn việc thử lại (về đúng hành vi trước bản vá).
+    gemini_retry_attempts: int = 3
+    gemini_retry_backoff_seconds: float = 1.0
+
     # ── SCORING RETRY (AI3) ──────────────────────────────────────
     # score() raise ValueError khi LLM trả output không parse/không hợp lệ. Lỗi
     # parse thường CHỢP NHOÁNG (JSON cụt, thỉnh thoảng malformed) → thử lại vài
     # lần trước khi bó tay báo answer Failed. 3 = 1 lần đầu + 2 lần retry.
+    #
+    # ⚠ KHÁC HẲN `gemini_retry_attempts` ở trên, đừng gộp: vòng này thử lại OUTPUT hỏng (đã gọi
+    # được Gemini, đã trả tiền token), vòng kia thử lại LỜI GỌI hỏng (chưa có output nào). Chính
+    # vì thế `_generate` TUYỆT ĐỐI không bắt ValueError — bắt là hai vòng NHÂN nhau thành 9 lượt.
     score_max_attempts: int = 3
 
     # ── SC1c: VÒNG CHẤT LƯỢNG CÂU HỎI ────────────────────────────
@@ -138,6 +164,27 @@ class Settings(BaseSettings):
     # chunk. InterviewService chọn round-robin trước, còn cap này bảo đảm prompt không phình lại khi
     # có caller khác. `0` = bỏ grounding của CV analysis; `-1` = không giới hạn (hành vi cũ).
     analyze_cv_max_grounding_chunks: int = 8
+
+    # ── NGÂN SÁCH "THINKING" CHO CHẤM ĐIỂM (`score`) ─────────────
+    # Chấm MỘT câu trả lời mất **19,6s (p50)** trên prod, và `ai_usage_logs` chỉ thẳng chỗ chảy:
+    # operation `score` có output p50 **3.570 token**, trong khi `decide_next` (đã đặt trần 0)
+    # chỉ **126**. `output_tokens = candidates + thoughts` (xem `app/usage.py`) nên con số đó ĐÃ
+    # gộp token suy luận; phần nhìn thấy được (điểm + reasoning + sampleAnswer) đo trong DB chỉ
+    # ~900–1.000 token ⇒ **~2.500 token là suy luận ẩn** — không ai đọc, mà vẫn tính tiền theo
+    # giá output VÀ vẫn nằm trong thời gian ứng viên ngồi chờ.
+    #
+    # `score()` là đường gọi Gemini DUY NHẤT còn chưa có trần: `decide_next` và `analyze_cv` đã
+    # đặt từ các vòng trước.
+    #
+    # `512` chứ KHÔNG phải `0` như decide_next: chấm là cân nhắc nhiều tiêu chí, mỗi tiêu chí một
+    # thang mức, và mỗi mức phải kèm dẫn chứng lấy từ transcript (E11) — khác hẳn decide_next
+    # (chọn 1 trong 4 nhánh rồi viết một câu hỏi ngắn). Cắt sạch suy luận ở đây là đánh đổi vào
+    # ĐỘ ĐÚNG CỦA ĐIỂM, thứ đắt nhất service này bán. Cùng con số + cùng lý lẽ với
+    # `analyze_cv_thinking_budget`.
+    #
+    # `0` = tắt · `>0` = trần token suy luận · `-1` = trả về mặc định động của model (cần gạt
+    # quay lui, không phải sửa code + deploy lại).
+    score_thinking_budget: int = 512
 
     # ── Q16: SỐ LƯỢT SINH CÂU ĐÀO SÂU ────────────────────────────
     # `/decide-next` TỪNG là đường DUY NHẤT của provider không có retry: output hỏng một lượt là

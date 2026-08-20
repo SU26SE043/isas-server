@@ -523,9 +523,11 @@ public class RubricVersionPinTests
         t.Db.Add(session);
         var question = TestDb.Question(session.Id);
         t.Db.Add(question);
+        // -10': đã quá grace publish-hụt (2') nhưng CHƯA quá trần bỏ cuộc `Scoring:GiveUpAfterMinutes`
+        // (20' từ 2026-08-20) — quá trần thì republisher thôi đẩy, test mất hiệu lực trong im lặng.
         t.Db.PracticeAnswers.Add(TestDb.Answer(
             session.Id, question.Id, AnswerStatus.Uploaded,
-            DateTime.UtcNow.AddMinutes(-30), lastPublished: null));
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null));
         await t.Db.SaveChangesAsync();
 
         var job = await RepublishAndCapture(t);

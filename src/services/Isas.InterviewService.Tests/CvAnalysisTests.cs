@@ -437,6 +437,116 @@ public class CvAnalysisTests
         Assert.Equal("Docker", body.MustHaveMatches[0].Text);
     }
 
+    /// <summary>
+    /// `mustHave: []` + `niceToHave: []` phải đi nhánh LEGACY, không phải "requirement mode với 0
+    /// requirement".
+    ///
+    /// <para>Trước đây điều kiện là "mảng có mặt hay không" (<c>is not null</c>), nên client gửi hai
+    /// mảng rỗng — chuyện xảy ra ngay khi bước tách JD không ra requirement nào — sẽ bật requirement
+    /// mode: AI được gọi với danh sách rỗng, <c>jdMatch</c> bị vứt (requirement mode gate nó thành
+    /// null) và <c>requirementMatches</c> cũng rỗng ⇒ báo cáo TRẮNG, mà 1 credit của user vẫn bị
+    /// trừ. Không có use case hợp lệ nào cần hành vi đó.</para>
+    ///
+    /// <para>Mấu chốt của test: setup/verify chỉ liệt kê 4 tham số đầu. Moq điền default (null) cho
+    /// optional bị bỏ, nên biểu thức này CHỈ khớp lời gọi legacy — vào requirement mode thì mock
+    /// không khớp, trả null và test đỏ ngay.</para>
+    /// </summary>
+    [Fact]
+    public async Task Post_EmptyRequirementArrays_FallsBackToLegacy_AndKeepsJdMatch()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Nội dung CV..."));
+
+        var ai = AiMock(SampleAi(withJdMatch: true));
+        var ctrl = Controller(t, storage.Object, ai.Object, user);
+
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, "JD: cần C# và SQL", [], []), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        Assert.NotNull(body.JdMatch);            // legacy giữ jdMatch…
+        Assert.Null(body.MustHaveMatches);       // …và KHÔNG có nhánh requirement rỗng
+        Assert.Null(body.NiceToHaveMatches);
+        Assert.Null(body.RequirementSummary);
+
+        ai.Verify(x => x.AnalyzeAsync(
+            "BE", "Nội dung CV...", "JD: cần C# và SQL", It.IsAny<CancellationToken>()), Times.Once);
+        ai.VerifyNoOtherCalls();   // chặn hẳn overload requirement-mode
+    }
+
+    /// <summary>
+    /// Cửa hẹp hơn của cùng cái bẫy: mảng KHÔNG rỗng nhưng mọi text đều là khoảng trắng.
+    ///
+    /// <para>Đếm số phần tử gửi lên (thay vì số requirement dùng được) mới chỉ vá được
+    /// `[] + []`. `[{ "text": "   " }]` vẫn là requirement mode với 0 requirement, và hậu quả y hệt:
+    /// báo cáo trắng đổi lấy 1 credit. Quyết định phải dựa trên kết quả CHUẨN HOÁ, vì mọi cách viết
+    /// "không có requirement nào" buộc phải ra cùng một nhánh.</para>
+    /// </summary>
+    [Fact]
+    public async Task Post_RequirementToanKhoangTrang_FallsBackToLegacy_AndKeepsJdMatch()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Nội dung CV..."));
+
+        var ai = AiMock(SampleAi(withJdMatch: true));
+        var ctrl = Controller(t, storage.Object, ai.Object, user);
+
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, "JD: cần C# và SQL",
+            [new CvRequirementInput("   ")], null), default);
+
+        var body = Assert.IsType<CvAnalysisResponse>(((CreatedResult)result).Value);
+        Assert.NotNull(body.JdMatch);
+        Assert.Null(body.MustHaveMatches);
+        Assert.Null(body.NiceToHaveMatches);
+        Assert.Null(body.RequirementSummary);
+
+        ai.Verify(x => x.AnalyzeAsync(
+            "BE", "Nội dung CV...", "JD: cần C# và SQL", It.IsAny<CancellationToken>()), Times.Once);
+        ai.VerifyNoOtherCalls();
+    }
+
+    /// <summary>
+    /// Trần 20 requirement phải đo trên requirement THẬT: 25 dòng trắng là "không khai gì" nên về
+    /// legacy êm ả, KHÔNG phải 400 "vượt quá 20" — báo lỗi giới hạn cho một danh sách rỗng thì
+    /// người dùng không thể hiểu nổi mình sai ở đâu.
+    /// </summary>
+    [Fact]
+    public async Task Post_NhieuDongTrangVuotTran_VanLaLegacy_KhongBao400()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cvId = Guid.NewGuid();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OwnedFile(cvId, user, "cv", "Nội dung CV..."));
+
+        var ai = AiMock(SampleAi(withJdMatch: false));
+        var ctrl = Controller(t, storage.Object, ai.Object, user);
+        var toanTrang = Enumerable.Range(0, 25)
+            .Select(_ => new CvRequirementInput("   "))
+            .ToList();
+
+        var result = await ctrl.Analyze(new CvAnalysisRequest(
+            cvId, null, JobCategory.BE, null, toanTrang, []), default);
+
+        Assert.IsType<CreatedResult>(result);
+        ai.Verify(x => x.AnalyzeAsync(
+            "BE", "Nội dung CV...", null, It.IsAny<CancellationToken>()), Times.Once);
+        ai.VerifyNoOtherCalls();
+    }
+
     [Fact]
     public async Task Post_TooManyRequirements_Returns400BeforeCvStorageReserveOrAi()
     {

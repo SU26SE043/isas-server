@@ -48,6 +48,22 @@ public class AdaptiveChainDepthInt17bTests
         return d;
     }
 
+    /// Decider trả câu KHÁC NHAU mỗi lượt.
+    ///
+    /// ⚠ Cần thiết từ khi có chốt DUP1 (<c>AnswerService.IsDuplicateQuestionAsync</c>): một mock trả
+    /// đúng một chuỗi cho MỌI lượt là mô phỏng đúng cái hỏng đang được vá — prod có 10 buổi chứa câu
+    /// trùng khít từng chữ, một buổi có câu Clarify depth 1 và depth 2 giống nhau từng ký tự. Từ nay
+    /// lượt thứ hai bị chặn không append, nên test nào cần chuỗi dài phải cấp nội dung khác nhau.
+    private static Mock<IAiServiceInterviewDecider> SeriesDecider(string action, string prefix)
+    {
+        var n = 0;
+        var d = new Mock<IAiServiceInterviewDecider>();
+        d.Setup(x => x.DecideNextAsync(
+                It.IsAny<AdaptiveDecisionRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => new DecideNextResult(action, $"{prefix} {++n}", "ts", null));
+        return d;
+    }
+
     private static Mock<IAiServiceInterviewDecider> ThrowingDecider()
     {
         var d = new Mock<IAiServiceInterviewDecider>();
@@ -134,7 +150,7 @@ public class AdaptiveChainDepthInt17bTests
         t.Db.AddRange(session, root, TestDb.Criterion(session.JobCategory));
         await t.Db.SaveChangesAsync();
 
-        var decider = Decider(new DecideNextResult("follow_up", "sâu hơn nữa", "ts", null));
+        var decider = SeriesDecider("follow_up", "sâu hơn nữa");
         var svc = BuildAdaptive(t, decider);
 
         // Trả lời câu gốc rồi trả lời lần lượt từng câu đào sâu → chuỗi dài dần.
@@ -175,7 +191,7 @@ public class AdaptiveChainDepthInt17bTests
         t.Db.AddRange(session, q1, q2, TestDb.Criterion(session.JobCategory));
         await t.Db.SaveChangesAsync();
 
-        var svc = BuildAdaptive(t, Decider(new DecideNextResult("clarify", "làm rõ", "ts", null)));
+        var svc = BuildAdaptive(t, SeriesDecider("clarify", "làm rõ"));
 
         // Trả lời câu GỐC 2 trước, rồi mới tới GỐC 1.
         await UploadAsync(svc, session.Id, q2.Id, candidate);

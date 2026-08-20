@@ -11,16 +11,14 @@ namespace Isas.InterviewService.Services;
 
 public class StuckAnswerRepublisher : BackgroundService
 {
-    private static readonly TimeSpan ScanInterval = TimeSpan.FromMinutes(2);
-
-    // Uploaded mà chưa publish lần nào (LastScoringPublishedAt == null) quá ngưỡng này
-    // = publish hụt lúc upload -> đẩy lại sớm. Đo theo CreatedAt để chừa cửa sổ
-    // upload đang dở (request còn chạy, status chưa kịp thành Scoring).
-    private static readonly TimeSpan PublishFailedThreshold = TimeSpan.FromMinutes(2);
-
-    // Đã publish nhưng quá lâu không thấy callback = worker mất tích (crash/mất message)
-    // -> đẩy lại. Để dài để không đua với worker đang chấm chậm. Đo theo LastScoringPublishedAt.
-    private static readonly TimeSpan ScoringLostThreshold = TimeSpan.FromMinutes(15);
+    // ⚠ 2026-08-20 — ba mốc dưới đây TỪNG là hằng `static readonly` ngay tại đây. Chúng đã dọn sang
+    // `RepublisherSettings` (đọc từ cấu hình `Republisher:*`), vì đo prod cho thấy `ScoringLostMinutes`
+    // 15' là thứ QUYẾT ĐỊNH độ trễ thấy điểm của người dùng (p90 = 572,9s), mà đổi nó lại phải build
+    // lại image. **Lý do CHỌN từng con số nằm ở `RepublisherSettings` — đọc ở đó, đừng đoán ở đây.**
+    // Chốt một lần lúc dựng service: `IOptions<T>` không nóng lại, đọc lại mỗi vòng chỉ tạo ảo giác.
+    private readonly TimeSpan _scanInterval;
+    private readonly TimeSpan _publishFailedThreshold;   // publish hụt lúc upload (đo theo CreatedAt)
+    private readonly TimeSpan _scoringLostThreshold;     // worker mất tích (đo theo LastScoringPublishedAt)
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IScoringJobPublisher _publisher;  // singleton, inject thẳng được
@@ -43,6 +41,16 @@ public class StuckAnswerRepublisher : BackgroundService
         _options = options.Value;
         _scoring = scoringOptions.Value;
         _logger = logger;
+
+        // Giá trị ≤ 0 (env khai nhầm / khai rỗng) KHÔNG được phép lọt: chu kỳ 0 biến vòng quét thành
+        // vòng lặp nóng, còn ngưỡng 0 thì đẩy lại MỌI answer đang chấm ở mỗi vòng ⇒ nhân đôi hoá đơn
+        // Gemini một cách im lặng. Rơi về mặc định, đúng mẫu `BatchSize > 0 ? ... : 200` bên dưới.
+        _scanInterval = Minutes(_options.ScanIntervalMinutes, 2);
+        _publishFailedThreshold = Minutes(_options.PublishFailedMinutes, 2);
+        _scoringLostThreshold = Minutes(_options.ScoringLostMinutes, 3);
+
+        static TimeSpan Minutes(int value, int fallback)
+            => TimeSpan.FromMinutes(value > 0 ? value : fallback);
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -62,7 +70,7 @@ public class StuckAnswerRepublisher : BackgroundService
                 _logger.LogError(ex, "Lỗi khi quét answer kẹt");
             }
 
-            await Task.Delay(ScanInterval, ct);
+            await Task.Delay(_scanInterval, ct);
         }
     }
 
@@ -73,8 +81,8 @@ public class StuckAnswerRepublisher : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<InterviewDbContext>();
 
         var now = DateTime.UtcNow;
-        var publishGrace = now - PublishFailedThreshold;  // cho upload kịp publish
-        var scoringCutoff = now - ScoringLostThreshold;   // mốc coi là worker mất tích
+        var publishGrace = now - _publishFailedThreshold;  // cho upload kịp publish
+        var scoringCutoff = now - _scoringLostThreshold;   // mốc coi là worker mất tích
 
         // Answer cần (re)publish: thuộc session InProgress/Scoring, đã có audio, và:
         //  - publish hụt: chưa publish lần nào (null) và upload đã quá grace, HOẶC
@@ -237,7 +245,10 @@ public class StuckAnswerRepublisher : BackgroundService
                 continue;
             }
 
-            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria);   // E9: kèm levels (+ anchors)
+            // E9: kèm levels (+ anchors). Cờ dải mặc định đọc ở ĐÂY NỮA, không chỉ ở AnswerService:
+            // một answer có thể được chấm bởi cả hai đường, và hai đường dùng thước khác nhau thì
+            // median E10 gộp hai thước đo mà không có triệu chứng nào.
+            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria, _scoring.DefaultBandStyle);
             var published = 0;
 
             foreach (var attempt in missing)
@@ -285,12 +296,13 @@ public class StuckAnswerRepublisher : BackgroundService
                 }
             }
 
-            if (published == 0) continue;   // không dời mốc: vòng sau thử lại ngay, không phải chờ 15'
+            // không dời mốc: vòng sau thử lại ngay, không phải chờ hết `Republisher:ScoringLostMinutes`
+            if (published == 0) continue;
 
             try
             {
                 // Đẩy lại OK -> Scoring + dời mốc publish sang now, để vòng quét sau
-                // không nhặt lại trong vòng ScoringLostThreshold. ExecuteUpdate vì
+                // không nhặt lại trong vòng `Republisher:ScoringLostMinutes`. ExecuteUpdate vì
                 // ở đây dùng projection (không track entity).
                 await db.PracticeAnswers
                     .Where(x => x.Id == a.Id)

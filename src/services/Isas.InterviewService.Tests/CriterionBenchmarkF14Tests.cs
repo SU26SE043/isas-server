@@ -3,6 +3,7 @@ using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
 namespace Isas.InterviewService.Tests;
@@ -18,17 +19,33 @@ namespace Isas.InterviewService.Tests;
 ///     khít điểm của họ (vô nghĩa nhưng nhìn rất thuyết phục).
 ///   • Gom theo TÊN tiêu chí ⇒ người dùng rubric riêng (BC16, id khác nhau) vẫn có mẫu.
 ///   • Thiếu mẫu ⇒ rơi về ngưỡng nội bộ và NÓI RÕ nó là ngưỡng nội bộ.
+///
+/// Nhóm sau (cửa sổ thời gian + cache) là PHÒNG XA cho hình dạng truy vấn, nhưng vẫn phải khoá
+/// bằng test vì cả hai đều có thể làm SAI con số một cách âm thầm: cửa sổ cắt nhầm thì mẫu tụt
+/// mà nhãn vẫn nói "n=…", còn cache thiếu một vế trong khoá thì người này nhìn mốc của người khác.
 /// </summary>
 public class CriterionBenchmarkF14Tests
 {
     private const string Clarity = "Độ rõ ràng";
     private const string Tech = "Kỹ thuật";
 
+    /// <param name="cache">
+    /// Mặc định MỖI service một cache riêng ⇒ test không dính nhau. Test nào cần chứng minh ảnh chụp
+    /// được DÙNG CHUNG (hoặc KHÔNG được lẫn giữa hai nghề/hai ngôn ngữ) thì truyền cùng một instance.
+    /// </param>
     private static CriterionBenchmarkService Build(
-        InterviewDbContext db, int minSample = 5, bool enabled = true, decimal passPct = 50m)
+        InterviewDbContext db, int minSample = 5, bool enabled = true, decimal passPct = 50m,
+        int windowDays = 90, int ttlSeconds = 300, IMemoryCache? cache = null)
         => new(
             db,
-            Options.Create(new BenchmarkOptions { Enabled = enabled, MinSampleSize = minSample }),
+            cache ?? new MemoryCache(new MemoryCacheOptions()),
+            Options.Create(new BenchmarkOptions
+            {
+                Enabled = enabled,
+                MinSampleSize = minSample,
+                PeerWindowDays = windowDays,
+                CacheTtlSeconds = ttlSeconds
+            }),
             Options.Create(new ScoringOptions { ImprovementThresholdPct = passPct }));
 
     /// <summary>
@@ -41,12 +58,19 @@ public class CriterionBenchmarkF14Tests
     private static PracticeSession AddScoredSession(
         InterviewDbContext db, Guid candidateId, JobCategory cat,
         params (string Name, decimal Pct)[] criteria)
+        => AddScoredSession(db, candidateId, cat, null, "vi", criteria);
+
+    /// <summary>Biến thể chốt thêm thời điểm tạo buổi (cửa sổ) + ngôn ngữ (khoá cache).</summary>
+    private static PracticeSession AddScoredSession(
+        InterviewDbContext db, Guid candidateId, JobCategory cat,
+        DateTime? createdAt, string language,
+        params (string Name, decimal Pct)[] criteria)
     {
-        var s = TestDb.Session(candidateId, SessionStatus.Scored, cat);
+        var s = TestDb.Session(candidateId, SessionStatus.Scored, cat, createdAt: createdAt, language: language);
         db.PracticeSessions.Add(s);
         foreach (var (name, pct) in criteria)
         {
-            var crit = TestDb.Criterion(cat, name: name, candidateId: candidateId);
+            var crit = TestDb.Criterion(cat, name: name, candidateId: candidateId, language: language);
             db.RubricCriteria.Add(crit);
             db.SessionCriterionScores.Add(new SessionCriterionScore
             {
@@ -267,5 +291,219 @@ public class CriterionBenchmarkF14Tests
         var result = await Build(t.Db, minSample: 5).BuildAsync(mine, BreakdownOf(t.Db, mine.Id));
 
         Assert.All(result!.Criteria, c => Assert.InRange(c.TargetPercentage, 0m, 100m));
+    }
+
+    // ── Cửa sổ thời gian ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CuaSoThoiGian_BuoiNgoaiCuaSoKhongVaoMau_KhongVaoTrungBinhLanVaoN()
+    {
+        // Cửa sổ là trần chi phí (mẫu nạp hết vào RAM), nhưng nó ĐỔI CẢ CON SỐ nên phải khoá: buổi
+        // ngoài cửa sổ không được góp vào trung bình, và cũng không được góp vào `n` trên nhãn — `n`
+        // nói "bao nhiêu người luyện", nói dư là nói dối về độ dày của mẫu.
+        using var t = new TestDb();
+        var me = Guid.NewGuid();
+        var mine = AddScoredSession(t.Db, me, JobCategory.BE, (Clarity, 30m));
+        var old = DateTime.UtcNow.AddDays(-200);
+        foreach (var _ in Enumerable.Range(0, 5))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, old, "vi", (Clarity, 90m));
+        foreach (var _ in Enumerable.Range(0, 5))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, DateTime.UtcNow, "vi", (Clarity, 60m));
+        await t.Db.SaveChangesAsync();
+
+        var result = await Build(t.Db, minSample: 5, windowDays: 90).BuildAsync(mine, BreakdownOf(t.Db, mine.Id));
+
+        Assert.Equal("PeerAverage", result!.Source);
+        Assert.Equal(60m, Assert.Single(result.Criteria).TargetPercentage);   // 90 KHÔNG được trộn vào
+        Assert.Equal(5, result.SampleSize);                                   // 10 buổi tồn tại, chỉ 5 trong cửa sổ
+    }
+
+    [Fact]
+    public async Task CuaSoThoiGian_ChiCoBuoiCu_TutXuongDuoiNguongMau_RoiVeNguongNoiBo()
+    {
+        using var t = new TestDb();
+        var me = Guid.NewGuid();
+        var mine = AddScoredSession(t.Db, me, JobCategory.BE, (Clarity, 30m));
+        foreach (var _ in Enumerable.Range(0, 20))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, DateTime.UtcNow.AddDays(-120), "vi", (Clarity, 90m));
+        await t.Db.SaveChangesAsync();
+
+        var result = await Build(t.Db, minSample: 5, windowDays: 90).BuildAsync(mine, BreakdownOf(t.Db, mine.Id));
+
+        // 20 buổi nhưng đều quá cũ ⇒ n=0 ⇒ nói thẳng là ngưỡng nội bộ, KHÔNG dựng mốc từ dữ liệu cũ.
+        Assert.Equal("PassThreshold", result!.Source);
+        Assert.Equal(0, result.SampleSize);
+    }
+
+    [Fact]
+    public async Task CuaSoThoiGian_KhongDuong_TatCuaSo_GiuHanhViCu_LayToanBoLichSu()
+    {
+        // Kill-switch: PeerWindowDays <= 0 phải trả lại đúng hành vi trước khi có cửa sổ (toàn bộ lịch
+        // sử) — để nếu cửa sổ gây tranh cãi về sản phẩm thì tắt được bằng cấu hình, không cần deploy.
+        using var t = new TestDb();
+        var me = Guid.NewGuid();
+        var mine = AddScoredSession(t.Db, me, JobCategory.BE, (Clarity, 30m));
+        foreach (var _ in Enumerable.Range(0, 5))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, DateTime.UtcNow.AddDays(-200), "vi", (Clarity, 90m));
+        foreach (var _ in Enumerable.Range(0, 5))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, DateTime.UtcNow, "vi", (Clarity, 60m));
+        await t.Db.SaveChangesAsync();
+
+        var result = await Build(t.Db, minSample: 5, windowDays: 0).BuildAsync(mine, BreakdownOf(t.Db, mine.Id));
+
+        Assert.Equal("PeerAverage", result!.Source);
+        Assert.Equal(75m, Assert.Single(result.Criteria).TargetPercentage);   // (90×5 + 60×5) / 10
+        Assert.Equal(10, result.SampleSize);
+    }
+
+    [Fact]
+    public async Task CuaSoThoiGian_VanLoaiChinhMinh_DuBuoiCuaMinhNamTrongCuaSo()
+    {
+        // Cửa sổ và "loại chính mình" là hai bộ lọc ĐỘC LẬP — thêm cửa sổ không được làm mất bộ lọc kia.
+        using var t = new TestDb();
+        var me = Guid.NewGuid();
+        var mine = AddScoredSession(t.Db, me, JobCategory.BE, (Clarity, 30m));
+        for (var i = 0; i < 9; i++)
+            AddScoredSession(t.Db, me, JobCategory.BE, DateTime.UtcNow.AddDays(-1), "vi", (Clarity, 30m));
+        await t.Db.SaveChangesAsync();
+
+        var result = await Build(t.Db, minSample: 5, windowDays: 90).BuildAsync(mine, BreakdownOf(t.Db, mine.Id));
+
+        Assert.Equal("PassThreshold", result!.Source);
+        Assert.Equal(0, result.SampleSize);
+    }
+
+    // ── Cache ảnh chụp cộng đồng ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Cache_KhongTraNhamGiuaHaiNghe()
+    {
+        // Khoá cache thiếu job_category ⇒ ứng viên BE nhìn thấy mốc của FE. Sai kiểu này KHÔNG có
+        // triệu chứng nào trên UI: vẫn đúng một đường đứt nét, vẫn đúng một nhãn "n=…".
+        using var t = new TestDb();
+        using var shared = new MemoryCache(new MemoryCacheOptions());
+        var beMine = AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, (Clarity, 30m));
+        var feMine = AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.FE, (Clarity, 30m));
+        foreach (var _ in Enumerable.Range(0, 5))
+        {
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, (Clarity, 60m));
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.FE, (Clarity, 90m));
+        }
+        await t.Db.SaveChangesAsync();
+
+        var be = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(beMine, BreakdownOf(t.Db, beMine.Id));
+        var fe = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(feMine, BreakdownOf(t.Db, feMine.Id));
+
+        Assert.Equal(60m, Assert.Single(be!.Criteria).TargetPercentage);
+        Assert.Equal(90m, Assert.Single(fe!.Criteria).TargetPercentage);
+    }
+
+    [Fact]
+    public async Task Cache_KhongTraNhamGiuaHaiNgonNgu()
+    {
+        // Trên thực tế rubric vi/en đặt tên tiêu chí khác nhau nên hai ngôn ngữ đã tự tách. Test này
+        // dựng ĐÚNG ca hiếm mà sự tách đó không còn: cùng một TÊN tiêu chí ở hai ngôn ngữ (rubric riêng
+        // BC16 hoàn toàn có thể như vậy). Nếu ngôn ngữ chỉ tách nhờ cách đặt tên chứ không nằm trong
+        // vị từ + khoá cache, đây là lúc mốc lẳng lặng trộn hai bộ tiêu chí khác nhau.
+        using var t = new TestDb();
+        using var shared = new MemoryCache(new MemoryCacheOptions());
+        var viMine = AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, DateTime.UtcNow, "vi", (Clarity, 30m));
+        var enMine = AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, DateTime.UtcNow, "en", (Clarity, 30m));
+        foreach (var _ in Enumerable.Range(0, 5))
+        {
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, DateTime.UtcNow, "vi", (Clarity, 60m));
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, DateTime.UtcNow, "en", (Clarity, 90m));
+        }
+        await t.Db.SaveChangesAsync();
+
+        var vi = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(viMine, BreakdownOf(t.Db, viMine.Id));
+        var en = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(enMine, BreakdownOf(t.Db, enMine.Id));
+
+        Assert.Equal(60m, Assert.Single(vi!.Criteria).TargetPercentage);
+        Assert.Equal(5, vi.SampleSize);
+        Assert.Equal(90m, Assert.Single(en!.Criteria).TargetPercentage);
+        Assert.Equal(5, en.SampleSize);
+    }
+
+    [Fact]
+    public async Task Cache_DungChungAnhChup_MoiNguoiVanBiLoaiKhoiMauCuaChinhHo()
+    {
+        // Đây là bất biến mà cache dễ phá nhất: ảnh chụp được chia sẻ giữa MỌI người cùng nghề (khoá
+        // KHÔNG có candidate_id — cố ý, xem docstring service), nên "loại chính mình" phải được làm
+        // bằng phép TRỪ sau khi đọc cache. Hỏng vế trừ thì mốc của A vẫn có A trong đó — vòng tròn,
+        // và nhìn trên UI thì không phân biệt được với mốc đúng.
+        using var t = new TestDb();
+        using var shared = new MemoryCache(new MemoryCacheOptions());
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var aSession = AddScoredSession(t.Db, a, JobCategory.BE, (Clarity, 0m));
+        var bSession = AddScoredSession(t.Db, b, JobCategory.BE, (Clarity, 100m));
+        foreach (var _ in Enumerable.Range(0, 5))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, (Clarity, 50m));
+        await t.Db.SaveChangesAsync();
+
+        // Lượt đầu nạp + chụp; lượt sau đọc lại ĐÚNG ảnh chụp đó nhưng trừ phần của người xem khác.
+        var forA = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(aSession, BreakdownOf(t.Db, aSession.Id));
+        var forB = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(bSession, BreakdownOf(t.Db, bSession.Id));
+
+        // A không thấy 0 của mình: (100 + 50×5) / 6 = 58.33 — B không thấy 100 của mình: (0 + 50×5) / 6 = 41.67
+        Assert.Equal(58.33m, Assert.Single(forA!.Criteria).TargetPercentage);
+        Assert.Equal(41.67m, Assert.Single(forB!.Criteria).TargetPercentage);
+        Assert.Equal(6, forA.SampleSize);
+        Assert.Equal(6, forB.SampleSize);
+    }
+
+    [Fact]
+    public async Task Cache_TrongTTL_KhongQuetLaiDb_TTL0_ThiQuetLai()
+    {
+        // Không đo được "có gọi DB không" từ ngoài, nên đo bằng hệ quả: thêm buổi của NGƯỜI KHÁC rồi
+        // hỏi lại. Còn TTL ⇒ vẫn là ảnh chụp cũ (bằng chứng cache thật sự chặn được lượt quét thứ hai);
+        // TTL=0 ⇒ thấy ngay dữ liệu mới (kill-switch còn dùng được khi cần điều tra).
+        using var t = new TestDb();
+        using var shared = new MemoryCache(new MemoryCacheOptions());
+        var me = Guid.NewGuid();
+        var mine = AddScoredSession(t.Db, me, JobCategory.BE, (Clarity, 30m));
+        foreach (var _ in Enumerable.Range(0, 5))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, (Clarity, 60m));
+        await t.Db.SaveChangesAsync();
+
+        var first = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(mine, BreakdownOf(t.Db, mine.Id));
+        Assert.Equal(60m, Assert.Single(first!.Criteria).TargetPercentage);
+
+        foreach (var _ in Enumerable.Range(0, 5))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, (Clarity, 100m));
+        await t.Db.SaveChangesAsync();
+
+        var cached = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(mine, BreakdownOf(t.Db, mine.Id));
+        Assert.Equal(60m, Assert.Single(cached!.Criteria).TargetPercentage);
+        Assert.Equal(5, cached.SampleSize);
+
+        var fresh = await Build(t.Db, minSample: 5, ttlSeconds: 0, cache: shared)
+            .BuildAsync(mine, BreakdownOf(t.Db, mine.Id));
+        Assert.Equal(80m, Assert.Single(fresh!.Criteria).TargetPercentage);   // (60×5 + 100×5) / 10
+        Assert.Equal(10, fresh.SampleSize);
+    }
+
+    [Fact]
+    public async Task Cache_BoTenTieuChiKhacNhau_KhongDungChungAnhChup()
+    {
+        // BC16 cho mỗi ứng viên một bộ tiêu chí riêng ⇒ bộ TÊN là một phần vị từ của truy vấn, phải
+        // nằm trong khoá. Thiếu nó thì người có rubric 1 trục đọc nhầm ảnh chụp của rubric 2 trục.
+        using var t = new TestDb();
+        using var shared = new MemoryCache(new MemoryCacheOptions());
+        // Cùng một người xem cho cả hai buổi ⇒ khác biệt duy nhất giữa hai lượt là BỘ TÊN tiêu chí.
+        var me = Guid.NewGuid();
+        var oneAxis = AddScoredSession(t.Db, me, JobCategory.BE, (Clarity, 30m));
+        var twoAxis = AddScoredSession(t.Db, me, JobCategory.BE, (Clarity, 30m), (Tech, 30m));
+        foreach (var _ in Enumerable.Range(0, 5))
+            AddScoredSession(t.Db, Guid.NewGuid(), JobCategory.BE, (Clarity, 60m), (Tech, 80m));
+        await t.Db.SaveChangesAsync();
+
+        var one = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(oneAxis, BreakdownOf(t.Db, oneAxis.Id));
+        var two = await Build(t.Db, minSample: 5, cache: shared).BuildAsync(twoAxis, BreakdownOf(t.Db, twoAxis.Id));
+
+        Assert.Equal(60m, Assert.Single(one!.Criteria).TargetPercentage);
+        Assert.Equal(60m, two!.Criteria.Single(c => c.Name == Clarity).TargetPercentage);
+        Assert.Equal(80m, two.Criteria.Single(c => c.Name == Tech).TargetPercentage);
     }
 }

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -108,6 +109,27 @@ def find_verbatim(cv_text: str, evidence: str) -> int | None:
     compact_text = "".join(compact_chars)
     compact_match = compact_text.find(compact_evidence)
     return compact_offsets[compact_match] if compact_match >= 0 else None
+
+
+def verify_jd_quote(jd_text: str, quote) -> str | None:
+    """Giữ ``quote`` CHỈ KHI nó thật sự nằm trong ``jd_text``; ngược lại trả ``None``.
+
+    ``jdQuote`` sinh ra để người dùng bấm "Xem trong JD" và tự kiểm chứng requirement lấy từ đâu —
+    một quote bịa phá hỏng đúng thứ mà nó tồn tại để bảo đảm. Nên KHÔNG tin model: kiểm rồi mới
+    trả, cùng kỷ luật by-construction đang dùng cho ``chunkId`` (drop id lạ) và
+    ``cvSections.startsWith``.
+
+    Dùng :func:`find_verbatim` nên chấp nhận các khác biệt an toàn khi copy từ PDF/soạn thảo
+    (khoảng trắng mềm, xuống dòng, gạch nối bị tách, hoa/thường) — nhưng KHÔNG fuzzy, KHÔNG so ngữ
+    nghĩa: model diễn đạt lại một câu trong JD vẫn bị loại. ``None`` là giá trị hợp lệ trên wire,
+    FE chỉ ẩn tính năng chứ không hỏng.
+    """
+    if not isinstance(quote, str):
+        return None
+    quote = quote.strip()
+    if not quote:
+        return None
+    return quote if find_verbatim(jd_text, quote) is not None else None
 
 
 _EVIDENCE_EXPLANATION_MARKERS = (
@@ -230,6 +252,56 @@ def _looks_truncated(question: str) -> bool:
     return text[-1] not in _QUESTION_TERMINATORS
 
 
+# ── Q17: câu đào sâu TRÙNG KHÍT câu vừa hỏi ─────────────────────────────────────────────────
+# Ca thật trên prod, một buổi trong DB (order · kind · depth):
+#   1 · Seed    · 0 — "Trong dự án xây dựng hệ thống microservice xử lý 10.000 request…"
+#   2 · Clarify · 1 — "Bạn có thể chia sẻ cụ thể hơn về cách bạn đã thiết kế và triển khai cá…"
+#   3 · Clarify · 2 — TRÙNG KHÍT TỪNG CHỮ câu 2
+# Cả ba nhận CÙNG một bản chép ("Tôi từng làm việc với các API Jestful và cơ sở dữ liệu…").
+# **10 buổi** trong DB có câu trùng khít từng chữ trong cùng một session.
+#
+# Prompt đã được vá (`build_decide_next_prompt` — cấm hỏi lại + "làm rõ MỘT lần rồi đóng chuỗi"),
+# nhưng prompt là LỜI KHUYÊN chứ không phải bảo đảm. Cùng thủ pháp repo đã dùng khắp nơi: nêu hợp
+# đồng trong prompt rồi KIỂM BẰNG MÁY (`_looks_truncated` Q16 · chunkId D27 · tên tiêu chí BC13 ·
+# allowlist URL F15).
+class _RepeatedQuestionError(ValueError):
+    """``nextQuestion`` trùng một câu đã hỏi trong chính chuỗi này.
+
+    Là ``ValueError`` để đi chung ĐƯỜNG TRẢ-LẠI của Q16 (``retry_feedback`` +
+    ``decide_next_max_attempts``) — không dựng cơ chế thử lại thứ hai song song. Nhưng phải là lớp
+    RIÊNG vì kết cục lúc CẠN LƯỢT khác hẳn: câu cụt cạn lượt thì raise → 502 → .NET degrade về luồng
+    tĩnh; câu trùng cạn lượt thì ĐÓNG CHUỖI (``action="end"``), vì đóng chuỗi đã là một degrade an
+    toàn có sẵn của INT-17b — hệ tự chuyển ứng viên sang câu gốc kế tiếp và họ không mất lượt nào.
+    """
+
+
+def _normalize_question(text: str) -> str:
+    """Chuẩn hoá NHẸ trước khi so hai câu hỏi: khoảng trắng thừa · hoa/thường · dấu câu cuối.
+
+    Ba khác biệt đó không biến một câu hỏi thành câu hỏi khác, nên bỏ qua chúng là an toàn.
+
+    CỐ Ý DỪNG ĐÚNG Ở ĐÂY — KHÔNG fuzzy, KHÔNG so ngữ nghĩa, KHÔNG bỏ dấu tiếng Việt: hai câu hỏi
+    trong CÙNG một chủ đề vốn đã giống nhau rất nhiều chữ ("cách bạn thiết kế…" vs "cách bạn triển
+    khai…"), nên bất kỳ ngưỡng "gần giống" nào cũng sẽ chặn nhầm một câu đào sâu HỢP LỆ. Bắt nhầm
+    tốn đúng thứ bản vá này sinh ra để cứu: một lượt hỏi của ứng viên. Bỏ sót một biến thể đổi vài
+    chữ thì vẫn còn lớp prompt (``no_repeat_block``) đứng trước.
+    """
+    compact = " ".join((text or "").split())
+    return compact.rstrip(_QUESTION_TERMINATORS + " ").casefold()
+
+
+def _is_repeat_question(next_question: str, current_question: str,
+                        history: list[dict] | None) -> bool:
+    """Câu kế có trùng câu ĐANG hỏi, hoặc một câu đã hỏi trong lịch sử chuỗi, không?"""
+    candidate = _normalize_question(next_question)
+    if not candidate:
+        # Rỗng / toàn dấu câu đã là việc của `_looks_truncated`; đừng đá nhầm sân và báo "trùng".
+        return False
+    asked = [current_question, *(turn.get("question") for turn in (history or []))]
+    return any(candidate == _normalize_question(q)
+               for q in asked if isinstance(q, str) and q.strip())
+
+
 def _generation_diagnostics(response) -> str:
     """Vì sao lượt sinh này hỏng — dữ liệu để CHỐT nguyên nhân Q16 bằng số thật ở lớp 3.
 
@@ -334,6 +406,52 @@ def _question_text(item) -> str:
     return str(item.get("text", "") if isinstance(item, dict) else item).strip()
 
 
+# ── Lỗi Gemini TẠM THỜI vs VĨNH VIỄN (dùng ở chokepoint `_generate`) ──────────
+#
+# Danh sách TRẮNG, cố ý: mặc định là "KHÔNG thử lại". Đoán sai theo hướng thử lại một lỗi vĩnh
+# viễn thì mỗi lượt phải trả thêm ngần ấy giây chờ vô ích — mà `decide_next` đang nằm trong
+# request đồng bộ của người dùng, nên cái giá đó rơi thẳng vào mặt người đang ngồi đợi.
+#   • 503 UNAVAILABLE + 429 RESOURCE_EXHAUSTED — đúng hai mã bắt được trong log prod.
+#   • 500 / 504 — hỏng hóc phía Google, tự hết sau vài giây.
+# Ngoài danh sách (400 request sai, 401/403 key hỏng, 404 model lạ) = gọi lại cũng thế ⇒ raise ngay.
+_TRANSIENT_API_CODES = frozenset({429, 500, 503, 504})
+
+
+def _is_transient_api_error(error: Exception) -> bool:
+    """True khi lỗi ĐÁNG thử lại (sự cố chớp nhoáng), False khi thử lại chỉ tốn thời gian.
+
+    ⚠ ``ValueError`` KHÔNG bao giờ rơi vào đây và đó là chủ ý: output hỏng đã có vòng retry riêng
+    ở caller (``score_max_attempts``). Xem :meth:`GeminiProvider._generate`.
+
+    Import cục bộ trong hàm (mẫu ``Transcriber._should_retry_original_as_wav``): phân loại lỗi
+    KHÔNG được tự nó ném ImportError trên môi trường thiếu wheel — chỗ này là đường xử lý sự cố,
+    nó mà hỏng thì hỏng đúng lúc mọi thứ đang hỏng.
+    """
+    try:
+        from google.genai import errors as genai_errors
+        if isinstance(error, genai_errors.APIError):
+            # Đọc `code` chứ không đọc `status`: SDK để `status` là None khi body lỗi không đúng
+            # hình dạng nó chờ (vd HTML của proxy), còn `code` luôn có từ tầng HTTP.
+            return getattr(error, "code", None) in _TRANSIENT_API_CODES
+    except ImportError:  # pragma: no cover — google-genai là dependency cứng, phòng hờ thôi
+        pass
+
+    # Đứt mạng / vendor không trả lời kịp: lượt gọi chưa từng tới được Gemini nên KHÔNG có mã HTTP
+    # nào để đọc — phải nhận diện bằng kiểu exception. `TransportError` là gốc chung của cả timeout
+    # lẫn connect/read/pool error của httpx (google-genai đi trên httpx), bắt ở gốc để không sót
+    # nhánh con nào khi SDK đổi bản.
+    try:
+        import httpx
+        if isinstance(error, (httpx.TransportError, httpx.TimeoutException)):
+            return True
+    except ImportError:  # pragma: no cover
+        pass
+
+    # `asyncio.TimeoutError` là alias của builtin `TimeoutError` từ Python 3.11; `ConnectionError`
+    # phủ nhánh socket trần (OSError) khi có proxy/DNS chen vào giữa.
+    return isinstance(error, (TimeoutError, ConnectionError))
+
+
 class GeminiProvider(QuestionProvider):
     def __init__(self) -> None:
         self._client = genai.Client(api_key=settings.gemini_api_key)
@@ -416,7 +534,7 @@ class GeminiProvider(QuestionProvider):
     # ── F22 (FR18): CHOKEPOINT DUY NHẤT cho mọi lượt gọi Gemini ────────────────
     async def _generate(self, operation: str, *, contents, config,
                         model: str | None = None, defer_report: bool = False):
-        """Bọc ``generate_content`` để ĐO token/chi phí (F22).
+        """Bọc ``generate_content`` để ĐO token/chi phí (F22) + THỬ LẠI lỗi tạm thời.
 
         MỌI lượt gọi Gemini của service đi qua đây — cố ý một cửa thay vì rải
         ``usage_metadata`` ra 10 chỗ: rải thì lần thêm endpoint thứ 11 sẽ quên,
@@ -433,10 +551,53 @@ class GeminiProvider(QuestionProvider):
         try/finally, xem :meth:`generate_lesson_theory`.
 
         ``operation`` = nhãn đường gọi → admin xem tiêu thụ THEO ENDPOINT.
+
+        ── THỬ LẠI LỖI TẠM THỜI ────────────────────────────────────────────────
+        Vá Ở ĐÂY chính vì cái "một cửa" nói trên: MỘT vòng retry tại chokepoint phủ luôn
+        ``score``, ``decide_next``, ``summarize_session`` và mọi endpoint thêm sau này —
+        thay vì ba vòng rời nhau rồi lệch dần mỗi lần ai đó sửa một chỗ.
+
+        Chuyện phải chữa: log worker prod có ``[⚠️] Lỗi tạm thời answer …: 503 UNAVAILABLE ->
+        nack (republish sau)``. Một cú 503 chưa tới một giây khi đó biến thành **15 phút** chờ
+        của người dùng, vì message phải đợi ``StuckAnswerRepublisher`` (.NET, quét mỗi 2') đẩy
+        lại. Lưới cứu hộ đó dành cho sự cố KÉO DÀI; dùng nó để đỡ một cú nấc mạng là sai tầng.
+
+        CHỈ thử lại lỗi API TẠM THỜI (503/429/500/504, đứt mạng, timeout — xem
+        :func:`_is_transient_api_error`). Lỗi 4xx (request sai, key hỏng) và lỗi schema raise
+        NGAY: gọi lại y hệt thì nhận lại y hệt, thử lại chỉ đốt thêm thời gian của người đang chờ.
+
+        🔴 TUYỆT ĐỐI KHÔNG bắt ``ValueError`` ở tầng này. Output hỏng đã có vòng RIÊNG của
+        caller (``score_max_attempts``, ``decide_next_max_attempts``); bắt thêm ở đây thì hai
+        vòng NHÂN với nhau — 3×3 = 9 lượt gọi Gemini cho một answer, và không ai đọc log sẽ
+        hiểu vì sao hoá đơn token gấp ba.
+
+        🔴 NGÂN SÁCH THỜI GIAN: chokepoint này nằm trên cả ``decide_next``, đường chạy ĐỒNG BỘ
+        trong request upload câu trả lời, dưới timeout **90s** phía .NET. Tổng thời gian retry
+        cộng thêm phải ≤ ~5s (mặc định: chờ 1s rồi 2s = 3s). Nới trần thì đọc kỹ phần ràng buộc
+        ở ``config.gemini_retry_attempts`` trước.
+
+        ``report_usage`` vẫn chạy ĐÚNG MỘT LẦN và chỉ cho lượt THÀNH CÔNG: lượt hỏng ném
+        exception nên không có ``response`` — cũng không có ``usage_metadata`` nào để đọc. Không
+        token nào bị bỏ sót, cũng không dòng thống kê ma nào bị ghi thêm.
         """
         used_model = model or settings.gemini_model
-        response = await self._client.aio.models.generate_content(
-            model=used_model, contents=contents, config=config)
+        attempts = max(1, settings.gemini_retry_attempts)
+        delay = max(0.0, settings.gemini_retry_backoff_seconds)
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=used_model, contents=contents, config=config)
+                break
+            except Exception as exc:  # noqa: BLE001 — lọc lại ngay ở dòng dưới
+                # Cạn lượt HOẶC lỗi vĩnh viễn ⇒ ném nguyên si: caller trên (worker) mới là chỗ
+                # biết phải nack hay báo Failed, đừng nuốt rồi dịch nghĩa ở đây.
+                if attempt >= attempts or not _is_transient_api_error(exc):
+                    raise
+                logger.warning(
+                    "Gemini %s lỗi tạm thời lượt %d/%d (%s) — chờ %.1fs rồi thử lại",
+                    operation, attempt, attempts, exc, delay)
+                await asyncio.sleep(delay)
+                delay *= 2   # 1s → 2s: đủ để vượt một cú nấc, chưa chạm ngân sách 90s của .NET
         if not defer_report:
             await report_usage(operation, used_model, response)
         return response
@@ -1190,6 +1351,10 @@ class GeminiProvider(QuestionProvider):
                             "type": "object",
                             "properties": {
                                 "text": {"type": "string"},
+                                # Câu nguyên văn trong JD sinh ra requirement này. nullable vì JD
+                                # thật không phải lúc nào cũng có câu tương ứng — và vì server
+                                # loại quote không verify được (xem verify_jd_quote).
+                                "jdQuote": {"type": "string", "nullable": True},
                                 "citations": {"type": "array", "items": {
                                     "type": "object",
                                     "properties": {
@@ -1207,6 +1372,7 @@ class GeminiProvider(QuestionProvider):
                             "type": "object",
                             "properties": {
                                 "text": {"type": "string"},
+                                "jdQuote": {"type": "string", "nullable": True},
                                 "citations": {"type": "array", "items": {
                                     "type": "object",
                                     "properties": {
@@ -1255,7 +1421,13 @@ class GeminiProvider(QuestionProvider):
                     cid = str(citation.get("chunkId") or "").strip()
                     if cid in allowed:
                         citations.append(allowed[cid])
-                output.append({"text": text, "citations": citations})
+                # Quote không đối chiếu được với JD ⇒ bỏ hẳn (None), KHÔNG bỏ cả requirement:
+                # text vẫn có giá trị, chỉ mất phần "xem trong JD".
+                output.append({
+                    "text": text,
+                    "citations": citations,
+                    "jdQuote": verify_jd_quote(jd_text, item.get("jdQuote")),
+                })
             return output
 
         return {
@@ -1566,37 +1738,46 @@ class GeminiProvider(QuestionProvider):
         prompt = build_scoring_prompt(question, transcript, job_category, criteria, delivery,
                                       language=language, sample_answer=sample_answer)
 
+        # Chấm 1 câu mất 19,6s (p50) trên prod và ~2.500 token trong đó là suy luận ẩn KHÔNG ai
+        # đọc — đây là đường gọi Gemini cuối cùng còn chưa có trần (số liệu + vì sao 512 chứ không
+        # phải 0: `config.score_thinking_budget`). `-1` = không đụng vào, để model tự quyết như
+        # trước — cùng cách gạt rollback với `decide_next`/`analyze_cv`.
+        cfg = dict(
+            temperature=temperature,  # E9 mặc định 0 (nhất quán); E10 attempt 2..N > 0 để đo spread
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "scores": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "criterionId": {"type": "string"},
+                                "score": {"type": "number"},
+                                "levelMatched": {"type": "integer"},
+                                "reasoning": {"type": "string"},
+                            },
+                            "required": ["criterionId", "score", "levelMatched", "reasoning"],
+                        },
+                    },
+                    # F13 — câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này.
+                    # Sinh CÙNG lượt chấm: prompt đã mang câu hỏi + rubric + transcript
+                    # nên chi phí tăng thêm CHỈ là output token; gọi riêng lúc user mở
+                    # sẽ phải nạp lại toàn bộ ngần ấy input.
+                    "sampleAnswer": {"type": "string"},
+                },
+                "required": ["scores", "sampleAnswer"],
+            },
+        )
+        if settings.score_thinking_budget >= 0:
+            cfg["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.score_thinking_budget)
+
         response = await self._generate(
             "score",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=temperature,  # E9 mặc định 0 (nhất quán); E10 attempt 2..N > 0 để đo spread
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "object",
-                    "properties": {
-                        "scores": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "criterionId": {"type": "string"},
-                                    "score": {"type": "number"},
-                                    "levelMatched": {"type": "integer"},
-                                    "reasoning": {"type": "string"},
-                                },
-                                "required": ["criterionId", "score", "levelMatched", "reasoning"],
-                            },
-                        },
-                        # F13 — câu trả lời mẫu mức tối đa cho ĐÚNG câu hỏi này.
-                        # Sinh CÙNG lượt chấm: prompt đã mang câu hỏi + rubric + transcript
-                        # nên chi phí tăng thêm CHỈ là output token; gọi riêng lúc user mở
-                        # sẽ phải nạp lại toàn bộ ngần ấy input.
-                        "sampleAnswer": {"type": "string"},
-                    },
-                    "required": ["scores", "sampleAnswer"],
-                },
-            ),
+            config=types.GenerateContentConfig(**cfg),
         )
 
         text = (response.text or "").strip()
@@ -2064,6 +2245,9 @@ class GeminiProvider(QuestionProvider):
         attempts = max(1, settings.decide_next_max_attempts)
         feedback: str | None = None
         last_error: ValueError | None = None
+        # Q17 — lượt trùng gần nhất, giữ lại để lấy các NHÃN bằng chứng khi phải đóng chuỗi (prompt
+        # yêu cầu `end` vẫn kèm targetCriterionId + trạng thái mới nhất).
+        last_repeat: dict | None = None
 
         for _ in range(attempts):
             prompt = build_decide_next_prompt(
@@ -2081,7 +2265,19 @@ class GeminiProvider(QuestionProvider):
             )
 
             try:
-                return self._parse_decide_next(response)
+                result = self._parse_decide_next(response)
+                # Q17 — chốt chặn phía code cho luật "không hỏi lại câu đã hỏi". Chỉ so CHUỖI sau
+                # chuẩn hoá nhẹ (xem `_normalize_question`): bắt đúng ca đã xảy ra thật (trùng khít
+                # từng chữ) mà không có cửa chặn nhầm một câu đào sâu hợp lệ.
+                if result["action"] != "end" and _is_repeat_question(
+                        result["nextQuestion"] or "", current_question, history):
+                    last_repeat = result
+                    raise _RepeatedQuestionError(
+                        "nextQuestion trùng một câu đã hỏi trong chuỗi này: "
+                        f"{result['nextQuestion']!r}. Câu này đã hỏi rồi — hỏi lại chỉ nhận lại đúng "
+                        "câu trả lời cũ. Đặt MỘT câu hỏi KHÁC về nội dung, hoặc trả "
+                        'action = "end" để đóng chủ đề.')
+                return result
             except ValueError as e:
                 last_error = e
                 feedback = str(e)
@@ -2090,6 +2286,18 @@ class GeminiProvider(QuestionProvider):
                 # "thỉnh thoảng hội thoại thích ứng chết" — đúng kiểu hỏng im lặng mà allowlist URL
                 # F15 đã dính.
                 logger.info("Câu kế bị trả lại (%s): %s", _generation_diagnostics(response), e)
+
+        # Q17 — cạn lượt mà câu kế VẪN trùng: đóng chuỗi, TUYỆT ĐỐI không trả câu trùng ra ngoài.
+        # Khác với các lỗi Q16 khác (raise → 502 → .NET degrade về luồng tĩnh): ở đây ta đã có một
+        # quyết định dùng được — "chủ đề này hết cái để hỏi" — nên `end` vừa đúng nội dung vừa êm
+        # hơn 502. Giữ nguyên các nhãn bằng chứng của lượt cuối, chỉ ghi lại `reason` cho ĐÚNG SỰ
+        # THẬT (lý do model đưa ra là để biện minh cho một câu hỏi mà ta vừa vứt đi).
+        if isinstance(last_error, _RepeatedQuestionError) and last_repeat is not None:
+            logger.info("Đóng chuỗi sau %d lượt vì câu kế vẫn trùng: %r",
+                        attempts, last_repeat["nextQuestion"])
+            return {**last_repeat, "action": "end", "nextQuestion": None,
+                    "reason": "Câu hỏi kế sinh ra vẫn trùng câu đã hỏi sau khi thử lại — đóng chủ đề "
+                              "tại đây thay vì hỏi lại y nguyên."}
 
         raise last_error  # type: ignore[misc]  # attempts >= 1 ⇒ luôn đã gán
 

@@ -27,8 +27,13 @@ public class StuckAnswerRepublisherTests
 
     // ServiceProvider thật để CreateScope() trả về DbContext dùng chung connection.
     // DB29: interceptor tuỳ chọn để ĐẾM query thật (chứng minh rubric lookup được hoist khỏi vòng lặp).
+    // `settings`/`scoring` (2026-08-20): ba mốc thời gian của republisher nay là CẤU HÌNH
+    // (`Republisher:ScanIntervalMinutes/PublishFailedMinutes/ScoringLostMinutes`), nên test phải bơm
+    // được chúng — chính đó là thứ mấy test cuối file chứng minh. Truyền `settings` thì `batchSize` bị
+    // bỏ qua (đặt thẳng trong `settings`).
     private static (StuckAnswerRepublisher r, Mock<IScoringJobPublisher> pub) Build(
-        TestDb t, int batchSize = 200, IInterceptor? interceptor = null)
+        TestDb t, int batchSize = 200, IInterceptor? interceptor = null,
+        RepublisherSettings? settings = null, ScoringOptions? scoring = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<InterviewDbContext>(o =>
@@ -42,8 +47,8 @@ public class StuckAnswerRepublisherTests
         var r = new StuckAnswerRepublisher(
             provider.GetRequiredService<IServiceScopeFactory>(),
             pub.Object,
-            Options.Create(new RepublisherSettings { BatchSize = batchSize }),
-            Options.Create(new ScoringOptions()),
+            Options.Create(settings ?? new RepublisherSettings { BatchSize = batchSize }),
+            Options.Create(scoring ?? new ScoringOptions()),
             NullLogger<StuckAnswerRepublisher>.Instance);
         return (r, pub);
     }
@@ -148,6 +153,41 @@ public class StuckAnswerRepublisherTests
         Assert.NotNull(published);
         var c = Assert.Single(published!.Criteria);
         Assert.Equal(new[] { 0, 1, 2, 3, 4, 5 }, c.Levels.Select(l => l.Score).ToArray());
+    }
+
+    /// <summary>
+    /// Cờ <c>Scoring:DefaultBandStyle</c> phải được đọc Ở ĐÂY NỮA, không chỉ ở <c>AnswerService</c>.
+    ///
+    /// <para>Một answer có thể được chấm bởi CẢ HAI đường (publish lúc upload + đẩy lại khi kẹt), và
+    /// E10 lấy median qua các attempt. Một đường nghe cờ còn đường kia không nghe ⇒ median gộp HAI
+    /// THƯỚC ĐO — con số vẫn ra, vẫn trông bình thường, và không có gì nói rằng nó vô nghĩa. Đúng bài
+    /// học của kill-switch đáp án mẫu (<c>Scoring:UseSampleAnswer</c>) đã ghi ở đầu class.</para>
+    /// </summary>
+    [Fact]
+    public async Task PublishHut_DocCoDefaultBandStyle_NhuDuongUploadThuong()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);   // maxScore 5, không khai rubric_levels
+
+        var (r, pub) = Build(t, scoring: new ScoringOptions { DefaultBandStyle = DefaultBandStyle.Descriptive });
+        ScoringJob? published = null;
+        pub.Setup(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()))
+           .Callback<ScoringJob, CancellationToken>((j, _) => published = j)
+           .Returns(Task.CompletedTask);
+
+        await ScanOnce(r);
+
+        Assert.NotNull(published);
+        var c = Assert.Single(published!.Criteria);
+        Assert.Equal(new[] { 0, 1, 2, 3, 4, 5 }, c.Levels.Select(l => l.Score).ToArray());
+        Assert.StartsWith("Không đáp ứng", c.Levels[0].Descriptor);   // dải mới, KHÔNG phải "Mức 0/5"
+        Assert.DoesNotContain(c.Levels, l => l.Descriptor.StartsWith("Mức "));
     }
 
     // Adaptive: answer đã có transcript đồng bộ → re-publish job mang theo transcript (worker bỏ Whisper).
@@ -296,8 +336,11 @@ public class StuckAnswerRepublisherTests
         var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Scoring);
         var q = TestDb.Question(session.Id);
         // Đang Scoring, mới publish 2 phút trước -> worker còn đang chấm, đừng đụng.
+        // ⚠ 2026-08-20: ngưỡng mất-tích hạ 15' → 3', nên 2' là cửa sổ CÒN LẠI cho một ca chấm chậm
+        // mà vẫn hợp lệ (chép lời ~24s + 3 lượt Gemini có retry ≈ 90s). Đây chính là biên an toàn
+        // mà `Republisher:ScoringLostMinutes` mua bằng việc không hạ xuống 90s.
         var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring,
-            DateTime.UtcNow.AddMinutes(-20), lastPublished: DateTime.UtcNow.AddMinutes(-2));
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: DateTime.UtcNow.AddMinutes(-2));
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
         await SeedActiveCriterion(t, session.JobCategory);
@@ -314,9 +357,10 @@ public class StuckAnswerRepublisherTests
         using var t = new TestDb();
         var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Scoring);
         var q = TestDb.Question(session.Id);
-        // Đang Scoring nhưng publish 20 phút trước, không thấy callback -> worker mất tích.
+        // Đang Scoring nhưng publish 5 phút trước, không thấy callback -> worker mất tích.
+        // (Mốc cũ -40'/-20' nay quá trần bỏ cuộc 20' ⇒ republisher thôi đẩy ⇒ test đo nhầm nhánh.)
         var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring,
-            DateTime.UtcNow.AddMinutes(-40), lastPublished: DateTime.UtcNow.AddMinutes(-20));
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: DateTime.UtcNow.AddMinutes(-5));
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
         await SeedActiveCriterion(t, session.JobCategory);
@@ -336,8 +380,10 @@ public class StuckAnswerRepublisherTests
         using var t = new TestDb();
         var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Scoring);
         var q = TestDb.Question(session.Id);
+        // Trong trần bỏ cuộc (20') để test đo ĐÚNG cái nó nói — trạng thái `Scored`, chứ không phải
+        // xanh nhờ nhánh "quá trần bỏ cuộc" như mốc cũ -60'/-50' sẽ vô tình làm.
         var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scored,
-            DateTime.UtcNow.AddMinutes(-60), lastPublished: DateTime.UtcNow.AddMinutes(-50));
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: DateTime.UtcNow.AddMinutes(-5));
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
         await SeedActiveCriterion(t, session.JobCategory);
@@ -355,8 +401,9 @@ public class StuckAnswerRepublisherTests
         // Session Ready (chưa làm) -> answer cũ cũng không nên bị đẩy.
         var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Ready);
         var q = TestDb.Question(session.Id);
+        // -10' (không phải -30'): trong trần bỏ cuộc 20', để test đo ĐÚNG vế "session không active".
         var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
-            DateTime.UtcNow.AddMinutes(-30), lastPublished: null);
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
         t.Db.AddRange(session, q, a);
         await t.Db.SaveChangesAsync();
         await SeedActiveCriterion(t, session.JobCategory);
@@ -456,5 +503,144 @@ public class StuckAnswerRepublisherTests
         var seedJob = published.Single(j => j.SessionId == sessions[withSeed]);
         Assert.Equal(custom.Id, Assert.Single(customJob.Criteria).CriterionId);
         Assert.Equal(seed.Id, Assert.Single(seedJob.Criteria).CriterionId);
+    }
+
+    // ── Ngưỡng cứu hộ = CẤU HÌNH, không phải hằng số (2026-08-20) ─────────────
+    //
+    // ĐO PROD (77 buổi đã chấm xong, từ `practice_sessions.completed_at` tới `max(answer_scores.created_at)`):
+    // p50 = 18,6s · p90 = 572,9s · max = 4529s · 10/77 buổi (13%) vượt 120s. Cả 10 buổi chậm đều có
+    // answer bị publish lại trễ, độ trễ gom cụm ở 909·919·949·966·1001·1014·1025s — ĐÚNG bằng ngưỡng
+    // cũ 15' cộng một chu kỳ quét 2'. Tức người dùng chờ CÁI ĐỒNG HỒ này, không phải chờ AI chấm.
+    //
+    // Ba mốc thời gian vì thế rời khỏi `static readonly` vào `RepublisherSettings`. Nhóm test dưới
+    // ghim đúng hai điều: (a) mốc đọc từ cấu hình — kẹp cả hai chiều để một hằng số lén quay lại là ĐỎ,
+    // (b) mặc định mới, kèm ràng buộc ĐI CẶP với `Scoring:GiveUpAfterMinutes`.
+
+    private static TimeSpan Moc(StuckAnswerRepublisher r, string field)
+        => (TimeSpan)typeof(StuckAnswerRepublisher)
+            .GetField(field, BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(r)!;
+
+    // Chiều 1 — hạ ngưỡng qua cấu hình thì answer mất tích 2 phút ĐÃ được cứu.
+    // Bất kỳ hằng số nào ≥ 2' (15' cũ, hay cả mặc định mới 3') đều làm test này ĐỎ ⇒ nó chứng minh
+    // giá trị THẬT SỰ đi ra từ `Republisher:ScoringLostMinutes`, không phải trùng hợp với mặc định.
+    [Fact]
+    public async Task ScoringLostMinutes_DocTuCauHinh_HaXuong1Phut_ThiCuuSom()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: DateTime.UtcNow.AddMinutes(-2));
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t, settings: new RepublisherSettings { ScoringLostMinutes = 1 });
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // Chiều 2 — nâng ngưỡng qua cấu hình thì answer mất tích 20 phút vẫn được ĐỂ YÊN.
+    // Với hằng 15' cũ (và với mặc định mới 3') chỗ này sẽ đẩy lại ⇒ ĐỎ.
+    // ⚠ Phải tắt trần bỏ cuộc (`GiveUpAfterMinutes = 0`) vì answer 25' tuổi đã quá trần 20' — không
+    // tắt thì test xanh nhờ NHÁNH KHÁC và không còn đo ngưỡng mất-tích nữa.
+    [Fact]
+    public async Task ScoringLostMinutes_DocTuCauHinh_NangLen30Phut_ThiDeYen()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring,
+            DateTime.UtcNow.AddMinutes(-25), lastPublished: DateTime.UtcNow.AddMinutes(-20));
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t,
+            settings: new RepublisherSettings { ScoringLostMinutes = 30 },
+            scoring: new ScoringOptions { GiveUpAfterMinutes = 0 });
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // Nhánh "publish hụt" cũng phải đọc cấu hình, không riêng nhánh mất-tích: nâng grace lên 30' thì
+    // answer 10 phút tuổi chưa publish lần nào vẫn được để yên (hằng 2' cũ → đẩy lại → ĐỎ).
+    [Fact]
+    public async Task PublishFailedMinutes_DocTuCauHinh_NangGrace_ThiChuaDay()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Uploaded,
+            DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t, settings: new RepublisherSettings { PublishFailedMinutes = 30 });
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // Chu kỳ quét nằm trong `ExecuteAsync` (không gọi thẳng được) nên soi mốc đã chốt lúc dựng service.
+    // Kèm luôn vế PHÒNG THỦ: env khai nhầm 0/âm KHÔNG được biến vòng quét thành vòng lặp nóng, cũng
+    // không được biến ngưỡng thành 0 (đẩy lại MỌI answer đang chấm mỗi vòng = nhân đôi hoá đơn Gemini
+    // trong im lặng) — phải rơi về mặc định, đúng mẫu `BatchSize > 0 ? … : 200` đã có.
+    [Fact]
+    public void MocThoiGian_DocTuCauHinh_VaGiaTriSaiRoiVeMacDinh()
+    {
+        using var t = new TestDb();
+        var (r, _) = Build(t, settings: new RepublisherSettings
+        {
+            ScanIntervalMinutes = 7,
+            PublishFailedMinutes = 0,     // khai rỗng/nhầm
+            ScoringLostMinutes = -5       // khai âm
+        });
+
+        Assert.Equal(TimeSpan.FromMinutes(7), Moc(r, "_scanInterval"));
+        Assert.Equal(TimeSpan.FromMinutes(2), Moc(r, "_publishFailedThreshold"));
+        Assert.Equal(TimeSpan.FromMinutes(3), Moc(r, "_scoringLostThreshold"));
+    }
+
+    // Mặc định mới + ràng buộc ĐI CẶP. `Scoring:GiveUpAfterMinutes` đong bằng SỐ LƯỢT đẩy lại
+    // (= trần / ngưỡng), nên hạ ngưỡng mà quên hạ trần là lặng lẽ nhân số lượt Gemini đốt cho một
+    // answer đã chết: 15'/60' ⇒ ~3 lượt, còn 3'/60' ⇒ ~20 lượt. Test này ĐỎ khi ai đó đổi một con số
+    // mà bỏ quên con kia — đó mới là điều nó canh, không phải hai hằng số rời.
+    [Fact]
+    public void MacDinh_NgungCuuHo_VaTranBoCuoc_PhaiDiCAP()
+    {
+        var republisher = new RepublisherSettings();
+        var scoring = new ScoringOptions();
+
+        Assert.Equal(3, republisher.ScoringLostMinutes);    // 15' cũ = nguồn gốc p90 572,9s
+        Assert.Equal(20, scoring.GiveUpAfterMinutes);       // 60' cũ, hạ theo cho khớp nhịp mới
+
+        var soLuotDayLai = scoring.GiveUpAfterMinutes / republisher.ScoringLostMinutes;
+        Assert.InRange(soLuotDayLai, 4, 8);
+    }
+
+    // Vế người dùng cảm nhận được: với MẶC ĐỊNH (không bơm cấu hình), answer mất tích 5 phút đã được
+    // cứu. Cũng chính test này sẽ ĐỎ nếu ai đó trả ngưỡng về 15' — khi đó buổi tiếp tục nằm im đúng
+    // như 10 buổi chậm đã đo ở prod.
+    [Fact]
+    public async Task MacDinhMoi_AnswerMatTich5Phut_DuocCuuNgay_KhongPhaiCho15Phut()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Scoring);
+        var q = TestDb.Question(session.Id);
+        var a = TestDb.Answer(session.Id, q.Id, AnswerStatus.Scoring,
+            DateTime.UtcNow.AddMinutes(-6), lastPublished: DateTime.UtcNow.AddMinutes(-5));
+        t.Db.AddRange(session, q, a);
+        await t.Db.SaveChangesAsync();
+        await SeedActiveCriterion(t, session.JobCategory);
+
+        var (r, pub) = Build(t);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<ScoringJob>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 }

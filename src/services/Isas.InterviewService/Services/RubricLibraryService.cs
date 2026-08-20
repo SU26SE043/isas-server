@@ -4,6 +4,7 @@ using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.Shared.Rubric;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Isas.InterviewService.Services;
 
@@ -19,6 +20,13 @@ namespace Isas.InterviewService.Services;
 ///
 /// <para><b>Additive</b>: <c>language</c> tuỳ chọn, mặc định <c>"vi"</c> ⇒ client không gửi param nhận
 /// đúng rubric tiếng Việt như trước ⇒ FE không phải sửa dòng nào.</para>
+///
+/// <para><b>SC2</b> — <see cref="ReplaceAsync"/> KẾ THỪA <see cref="ScoringScope"/> từ tiêu chí bộ
+/// chuẩn cùng <c>(nghề, ngôn ngữ, tên)</c>. Trước SC2 nó không set cột này ⇒ mọi tiêu chí riêng nhận
+/// default <c>Always</c> ⇒ <c>LoadTargetableCriteriaAsync</c> trả rỗng ⇒ câu hỏi của buổi luyện KHÔNG
+/// được gắn nhãn tiêu chí ⇒ mọi câu bị chấm trên TOÀN BỘ rubric. Đo trên prod: 400/593 câu (67%)
+/// trắng nhãn, 37/96 buổi (39%) hỏng trọn vẹn, chỉ đúng hai (nghề, ngôn ngữ) có rubric riêng.
+/// Backfill 16 dòng đang tồn tại: <c>scripts/backfill-rubric-scoring-scope.sql</c> (chạy TAY).</para>
 /// </summary>
 public interface IRubricLibraryService
 {
@@ -40,13 +48,16 @@ public class RubricLibraryService : IRubricLibraryService
 {
     private readonly InterviewDbContext _db;
     private readonly bool _bilingualEnabled;
+    private readonly ILogger<RubricLibraryService> _logger;
 
-    // `config` optional (mẫu RoadmapService): DI tự resolve IConfiguration, còn test dựng thẳng
-    // `new RubricLibraryService(db)` vẫn compile và chạy ở chế độ đơn ngữ như trước.
-    public RubricLibraryService(InterviewDbContext db, IConfiguration? config = null)
+    // `config` + `logger` optional (mẫu RoadmapService): DI tự resolve IConfiguration/ILogger, còn test
+    // dựng thẳng `new RubricLibraryService(db)` vẫn compile và chạy ở chế độ đơn ngữ như trước.
+    public RubricLibraryService(
+        InterviewDbContext db, IConfiguration? config = null, ILogger<RubricLibraryService>? logger = null)
     {
         _db = db;
         _bilingualEnabled = bool.TryParse(config?["Interview:Bilingual:Enabled"], out var bilingual) && bilingual;
+        _logger = logger ?? NullLogger<RubricLibraryService>.Instance;
     }
 
     public async Task<RubricResponse> GetEffectiveAsync(
@@ -108,6 +119,53 @@ public class RubricLibraryService : IRubricLibraryService
             .Select(c => (int?)c.Version).MaxAsync(ct) ?? 0;
         var newVersion = maxVersion + 1;
 
+        // ── SC2 — PHẠM VI CHẤM kế thừa từ BỘ CHUẨN cùng tên ────────────────────────────────────
+        //
+        // Trước SC2 khối `new RubricCriterion` dưới đây KHÔNG set `ScoringScope` ⇒ mọi tiêu chí rơi về
+        // default của EF là `Always` (xem RubricCriterionConfiguration). Hệ quả đo trên production:
+        //   • rubric riêng BA/vi có 7/7 dòng `Always`, BE/vi 9/9 `Always` — KHÔNG một dòng
+        //     `WhenTargeted` nào, trong khi bộ seed cùng nghề là 4 `Always` (cách nói) + 3
+        //     `WhenTargeted` (nội dung);
+        //   • `PracticeService.LoadTargetableCriteriaAsync` lọc đúng `WhenTargeted` ⇒ trả RỖNG ⇒ nhánh
+        //     `if (targetable.Count > 0)` trượt ⇒ gọi overload `GenerateQuestionsAsync` KHÔNG kèm
+        //     criteria ⇒ AIService không gắn nhãn ⇒ `practice_questions.target_criterion_ids = null`;
+        //   • đo được: 400/593 câu hỏi (67%) trắng nhãn, hỏng THEO CẢ BUỔI — 37/96 buổi (39%) trắng
+        //     sạch, 0 buổi nửa nọ nửa kia, và chỉ đúng hai nghề có rubric riêng (BA/vi + BE/vi) dính,
+        //     FE/vi và BA/en đạt 100%. Đúng chữ ký của một thuộc tính RUBRIC cố định suốt buổi, không
+        //     phải lỗi ngẫu nhiên của mô hình.
+        //   • triệu chứng cuối cùng người dùng thấy: câu đào sâu chỉ hỏi cơ chế xoay vòng refresh token
+        //     vẫn bị chấm tiêu chí "Thiết kế hệ thống & CSDL" 2–3/5 — chính bộ chấm viết trong nhận xét
+        //     rằng "câu trả lời tập trung vào cơ chế bảo mật hơn là thiết kế hệ thống tổng thể hay CSDL"
+        //     rồi VẪN trừ điểm.
+        //
+        // Chú thích ở PracticeService (~dòng 310) đã lường ca này và coi là degrade chấp nhận được
+        // ("rubric riêng BC16 chưa phân loại → không có gì để gắn nhãn"). Số đo nói ngược lại: nó không
+        // hiếm, nó là 39% số buổi. Nên chỗ vá đúng là ở NGUỒN, không phải ở nhánh tiêu thụ.
+        //
+        // Vì sao kế thừa theo TÊN chạy được ở đây mà vẫn KHÔNG mâu thuẫn với cảnh báo "cấm khớp tên"
+        // trên `RubricCriterion.ScoringScope`: cảnh báo đó cấm khớp tên ở ĐƯỜNG CHẤM (runtime, mọi
+        // lượt, mọi ngôn ngữ). Còn đây là lúc GHI, khớp trong đúng một (nghề, ngôn ngữ) với bộ chuẩn
+        // của chính ngôn ngữ đó, và khớp trượt chỉ rơi về `Always` = hành vi cũ. Kiểm trên prod: rubric
+        // riêng dùng ĐÚNG 7 tên của bộ seed, trùng khít từng chữ — người dùng chép bộ seed
+        // (`GetEffectiveAsync` trả seed làm template) rồi chỉ chỉnh trọng số + thang điểm.
+        //
+        // Chuẩn hoá NHẸ (trim + không phân biệt hoa thường), KHÔNG fuzzy: khớp SAI còn tệ hơn không
+        // khớp — gán nhầm `WhenTargeted` cho một tiêu chí cách nói thì nó chỉ được chấm ở vài câu, và
+        // không có triệu chứng nào ngoài điểm lặng lẽ đổi nghĩa.
+        var seedScopes = await _db.RubricCriteria.AsNoTracking()
+            .Where(c => c.CampaignId == null && c.CandidateId == null
+                        && c.JobCategory == jobCategory && c.Language == lang && c.IsActive)
+            .Select(c => new { c.Name, c.ScoringScope })
+            .ToListAsync(ct);
+
+        // `TryAdd` chứ không `ToDictionary`: unique index ux_rubric_criteria_b2c_default_version_name
+        // đã cấm trùng tên trong một (nghề, ngôn ngữ, version), nhưng bộ chuẩn CÓ nhiều version và câu
+        // trên lọc `IsActive` chứ không lọc version — một lần ghi bộ chuẩn hỏng nửa chừng là đủ để có
+        // hai bản active. Ném `ArgumentException` ở đây sẽ thành 500 cho một thao tác lưu rubric vốn
+        // không liên quan (tiền lệ F2b).
+        var scopeByName = new Dictionary<string, ScoringScope>(StringComparer.OrdinalIgnoreCase);
+        foreach (var seedRow in seedScopes) scopeByName.TryAdd(seedRow.Name.Trim(), seedRow.ScoringScope);
+
         var rows = normalized.Select(i => new RubricCriterion
         {
             Id = Guid.NewGuid(),
@@ -121,11 +179,34 @@ public class RubricLibraryService : IRubricLibraryService
             CampaignId = null,
             CandidateId = candidateId,
             Version = newVersion,
+            // Trượt khớp ⇒ `Always` = ĐÚNG default cũ ⇒ ứng viên tự thêm tiêu chí lạ không bị đổi hành vi.
+            ScoringScope = scopeByName.TryGetValue(i.Name, out var scope) ? scope : ScoringScope.Always,
             // Mốc điểm (E9). Rỗng = chưa khai ⇒ ScoringCriteriaBuilder sinh dải mặc định như trước.
             Levels = ValidateLevels(i.Name, i.MaxScore, i.Levels)
                 .Select(l => new RubricLevel { Id = Guid.NewGuid(), Score = l.Score, Descriptor = l.Descriptor })
                 .ToList(),
         }).ToList();
+
+        // Tên KHÔNG khớp bộ chuẩn nào = ứng viên tự thêm tiêu chí mới. Giữ `Always` (hành vi AN TOÀN:
+        // vẫn được chấm, chấm thừa chứ không bỏ sót) NHƯNG phải nói ra, vì cả hai chiều đều sai IM
+        // LẶNG: là tiêu chí NỘI DUNG mà để `Always` thì nó bị chấm cho mọi câu (đúng lỗi SC2 này);
+        // để `WhenTargeted` mà không câu nào nhắm tới thì nó không bao giờ được chấm và biến mất khỏi
+        // kết quả. Không log thì không ai biết bộ tiêu chí của ai đang đo bằng thước nào.
+        var unmatched = normalized.Where(i => !scopeByName.ContainsKey(i.Name)).Select(i => i.Name).ToList();
+        if (unmatched.Count > 0 && scopeByName.Count == 0)
+            _logger.LogWarning(
+                "SC2: không tìm thấy BỘ CHUẨN active cho ({JobCategory}, {Language}) — toàn bộ "
+                + "{Count} tiêu chí của rubric riêng (candidate {CandidateId}, version {Version}) giữ "
+                + "ScoringScope=Always ⇒ câu hỏi buổi luyện sẽ KHÔNG được gắn nhãn tiêu chí. Nhiều khả "
+                + "năng seed BC11 chưa apply trên môi trường này.",
+                jobCategory, lang, unmatched.Count, candidateId, newVersion);
+        else if (unmatched.Count > 0)
+            _logger.LogWarning(
+                "SC2: {Count} tiêu chí của rubric riêng (candidate {CandidateId}, {JobCategory}/{Language}, "
+                + "version {Version}) không khớp tên nào trong bộ chuẩn nên giữ ScoringScope=Always: "
+                + "{Names}. Nếu đây là tiêu chí NỘI DUNG thì nó sẽ bị chấm cho MỌI câu hỏi.",
+                unmatched.Count, candidateId, jobCategory, lang, newVersion, string.Join(" · ", unmatched));
+
         _db.RubricCriteria.AddRange(rows);
 
         // 1 SaveChanges = 1 transaction: deactivate cũ + add mới atomic.
