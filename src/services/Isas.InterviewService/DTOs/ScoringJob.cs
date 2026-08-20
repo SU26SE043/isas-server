@@ -50,6 +50,17 @@ public class ScoringJob
     // bao giờ có chỉ số trong khi buổi TĨNH vẫn có — hỏng âm thầm, không lỗi nào nổ.
     // null (luồng tĩnh / adaptive tắt / decide lỗi) → worker tự transcribe rồi tự đo.
     public DeliveryMetricsDto? DeliveryMetrics { get; set; }
+
+    /// <summary>
+    /// J5 — cấp độ ứng viên do người dùng chọn, để prompt CHẤM hiệu chỉnh trọng tâm theo đúng
+    /// cấp độ (cùng khối câu hỏi đã được hiệu chỉnh ở J4). <b>null = buổi B2B HOẶC worker cũ</b>
+    /// ⇒ AIService KHÔNG chèn khối cấp độ vào prompt chấm — đây chính là van B2B (CAMP-10): buổi
+    /// thuộc chiến dịch xếp hạng chung một bảng, không được chấm bằng hai thước khác nhau. Chỉ có
+    /// <c>AnswerService</c>/<c>StuckAnswerRepublisher</c> được set field này, và CẢ HAI chỉ set
+    /// khi <c>session.CampaignId is null</c> — bỏ sót MỘT trong hai đường publish là buổi đi
+    /// đường cứu hộ được chấm bằng thước khác buổi đi đường thường, hỏng âm thầm.
+    /// </summary>
+    public string? Seniority { get; set; }
 }
 
 public class ScoringCriterionDto

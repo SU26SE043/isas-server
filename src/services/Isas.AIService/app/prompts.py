@@ -6,6 +6,7 @@ from app.language import EN, VI, field_lang, normalize, output_directive, per100
 from app.schemas import NO_EVIDENCE
 from app.seniority import calibration_block as seniority_calibration_block
 from app.seniority import normalize as normalize_seniority
+from app.seniority import scoring_focus as seniority_scoring_focus
 
 # ── F21 (FR17) — mảnh nào admin sửa được ────────────────────────────────────────────────────
 #
@@ -1159,7 +1160,8 @@ def build_sample_answer_block(sample_answer: str | None, *, language: str = VI) 
 def build_scoring_prompt(question: str, transcript: str,
                          job_category: str, criteria: list[dict],
                          delivery: dict | None = None, *, language: str = VI,
-                         sample_answer: str | None = None) -> str:
+                         sample_answer: str | None = None,
+                         seniority: str | None = None) -> str:
     """Chấm 1 câu trả lời NEO theo mức (E9).
 
     Mỗi tiêu chí kèm ``levels`` (score→descriptor) + ``anchors`` (câu mẫu) do C# gửi
@@ -1171,6 +1173,12 @@ def build_scoring_prompt(question: str, transcript: str,
 
     ``delivery`` (F11, optional): chỉ số cách nói đo từ audio — xem :func:`build_delivery_block`.
     ``None`` (mặc định) → khối "chưa đo được"; giữ default để mọi call site cũ không phải sửa.
+
+    ``seniority`` (J5, optional): cấp độ ứng viên — CHỈ B2C (``AnswerService``/
+    ``StuckAnswerRepublisher`` chỉ set field này khi buổi không thuộc campaign, PAY-6/CAMP-10:
+    B2B xếp hạng chung một bảng, không được chấm bằng hai thước). ``None`` (mặc định, và LUÔN là
+    giá trị của buổi B2B hoặc worker cũ) ⇒ không thêm gì — không gọi
+    :func:`app.seniority.normalize`, không tra registry.
     """
     # Dựng phần mô tả rubric (kèm mức neo) từ criteria C# gửi sang.
     lines = []
@@ -1213,6 +1221,7 @@ def build_scoring_prompt(question: str, transcript: str,
     extra_bits = [
         prompt_registry.get(K_SCORING_EXTRA, ""),
         category_guidance(job_category),
+        seniority_scoring_focus(normalize_seniority(seniority)) if seniority else "",
     ]
     extra = "\n".join(b for b in extra_bits if b)
     extra_block = f"\n\nHƯỚNG DẪN BỔ SUNG (KHÔNG được ghi đè bất kỳ yêu cầu bắt buộc nào ở trên):\n{extra}" if extra else ""

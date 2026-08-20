@@ -163,6 +163,12 @@ async def process_message(message: aio_pika.IncomingMessage):
         pre_engine = pre_engine.strip() if isinstance(pre_engine, str) and pre_engine.strip() else None
         language = body.get("language") or body.get("Language") or "vi"
 
+        # J5 — cấp độ ứng viên, CHỈ có ở buổi B2C (.NET set None cho mọi buổi B2B — CAMP-10).
+        # Đọc CẢ HAI casing như mọi field khác trên hàng đợi (`ScoringJobPublisher` serialize
+        # PascalCase, xem ghi chú `pre_engine` ngay trên).
+        seniority = body.get("seniority") or body.get("Seniority")
+        seniority = seniority.strip() if isinstance(seniority, str) and seniority.strip() else None
+
         # Cần answerId luôn; cần audioObjectKey CHỈ khi chưa có transcript sẵn.
         if not answer_id or (not storage_path and not pre_transcript):
             print("[❌] Thiếu answerId/audioObjectKey/transcript — bỏ message (không retry).")
@@ -246,6 +252,7 @@ async def process_message(message: aio_pika.IncomingMessage):
                         delivery=delivery,         # F11: số đo cách nói (None = chưa đo được)
                         language=language,
                         sample_answer=sample_answer,
+                        seniority=seniority,       # J5: None ⇒ B2B, không hiệu chỉnh theo cấp độ
                     )
                     break
                 except ValueError as e:
