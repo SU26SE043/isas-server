@@ -998,7 +998,8 @@ public class PracticeService : IPracticeService
             .Take(take)
             .Select(s => new PracticeSessionSummary(
                 s.Id, s.Status.ToString(), s.JobCategory.ToString(),
-                s.CreatedAt, s.CompletedAt, s.OverallScore))   // BC9: lịch sử hiện điểm tổng
+                s.CreatedAt, s.CompletedAt, s.OverallScore,   // BC9: lịch sử hiện điểm tổng
+                s.Seniority))   // J8: cấp độ đã chọn CHO ĐÚNG BUỔI ĐÓ
             .ToListAsync(ct);
 
         var next = rows.Count == take
