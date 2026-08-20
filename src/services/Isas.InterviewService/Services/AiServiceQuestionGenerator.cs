@@ -187,6 +187,15 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
     ///   khẳng định "không nhắm gì cả".</item>
     /// </list>
     /// </summary>
+    /// <summary>
+    /// J3 — trần "1 tiêu chí chính + tối đa 2 phụ" mỗi câu (đo được: prod có câu đòi hỏi 5+ tiêu
+    /// chí cùng lúc trong một câu hẹp, ứng viên trả lời 10 phút vẫn bị coi là thiếu). Gemini trả
+    /// về danh sách KHÔNG xếp hạng — không có tín hiệu "chính" vs "phụ" — nên trần thực thi CHỈ
+    /// LÀ giữ tối đa <see cref="MaxTargetsPerQuestion"/> id ĐẦU theo đúng thứ tự AIService trả
+    /// về. KHÔNG giả vờ phân biệt được chính/phụ.
+    /// </summary>
+    private const int MaxTargetsPerQuestion = 3;
+
     private IReadOnlyList<Guid>? ParseTargets(
         List<List<string>?>? targets, int index, HashSet<Guid>? allowedIds)
     {
@@ -201,6 +210,7 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             if (!Guid.TryParse(s, out var id)) continue;
             if (allowedIds is not null && !allowedIds.Contains(id)) continue;
             if (!parsed.Contains(id)) parsed.Add(id);
+            if (parsed.Count >= MaxTargetsPerQuestion) break;
         }
 
         if (parsed.Count == 0)

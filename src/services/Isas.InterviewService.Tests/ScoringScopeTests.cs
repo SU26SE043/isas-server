@@ -302,6 +302,39 @@ public class ScoringScopeTests
         Assert.Null(result.Questions[1].TargetCriterionIds);   // toàn id lạ → không đủ tin để thu hẹp
     }
 
+    // J3 — trần "1 chính + tối đa 2 phụ": AI trả 5 id hợp lệ ⇒ chỉ giữ ĐÚNG 3 id ĐẦU theo thứ tự
+    // trả về (Gemini không xếp hạng chính/phụ, nên không giả vờ phân biệt được).
+    [Fact]
+    public async Task Wire_CapsTargetCriteriaAtThreePerQuestion()
+    {
+        var ids = Enumerable.Range(0, 5).Select(_ => Guid.NewGuid()).ToList();
+        var json = $$"""
+            {"questions":["Q1"],"targetCriteria":[[{{string.Join(",", ids.Select(i => $"\"{i}\""))}}]]}
+            """;
+        var (gen, _) = Generator(json);
+
+        var result = await gen.GenerateQuestionsAsync(
+            "BE", null, null, null, null, null, "vi",
+            ids.Select(i => new QuestionTargetCriterionDto(i, i.ToString())).ToList());
+
+        Assert.Equal(ids.Take(3), result.Questions[0].TargetCriterionIds);
+    }
+
+    // AI trả 2 id hợp lệ (dưới trần 3) ⇒ giữ nguyên 2, KHÔNG độn thêm gì.
+    [Fact]
+    public async Task Wire_TwoTargetCriteria_KeepsBothWithoutPadding()
+    {
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+        var (gen, _) = Generator($$"""{"questions":["Q1"],"targetCriteria":[["{{a}}","{{b}}"]]}""");
+
+        var result = await gen.GenerateQuestionsAsync(
+            "BE", null, null, null, null, null, "vi",
+            new[] { new QuestionTargetCriterionDto(a, "A"), new QuestionTargetCriterionDto(b, "B") });
+
+        Assert.Equal(new[] { a, b }, result.Questions[0].TargetCriterionIds);
+    }
+
     // ── (4) Đường publish lúc upload (AnswerService) ─────────────────────────────────
     private static (AnswerService svc, Mock<IScoringJobPublisher> pub) Answering(TestDb t)
     {
