@@ -759,6 +759,26 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to get transcript: {ex.Message}"); }
         }
 
+        // Log cờ chống gian lận THEO GIÂY (dòng thời gian, khác `Flags` gộp count trong /results). Org-scoped
+        // như /results (KHÔNG đòi ranking row như /transcript) — xem được cả session chưa Scored/bỏ ngang.
+        [HttpGet("{id:guid}/results/{sessionId:guid}/flags")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<SessionFlagTimelineResponse>> GetSessionFlagTimeline(
+            Guid id, Guid sessionId, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                var timeline = await _campaignService.GetSessionFlagTimelineAsync(orgId.Value, id, sessionId, ct);
+                return Ok(timeline);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get flag timeline: {ex.Message}"); }
+        }
+
         // E6: xuất bảng kết quả (E5) ra file. `?format=csv` (mặc định khi thiếu); `pdf`/khác → 400.
         // Ownership giống E5 (lọc theo org_id) → ngoài org = 404. Bám pattern `return File(...)`.
         [HttpGet("{id:guid}/results/export")]

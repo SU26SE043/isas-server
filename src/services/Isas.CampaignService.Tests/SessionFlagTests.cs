@@ -308,6 +308,51 @@ public class SessionFlagTests
         Assert.Equal(0, FlagCount(tdb, campaign.Id));
     }
 
+    // ── (b) Token compare NAY hằng-thời-gian (FixedTimeEquals) — hành vi reject giữ nguyên, chỉ đổi
+    // cơ chế so sánh. Token SAI KHÁC ĐỘ DÀI với token thật (path length-mismatch của FixedTimeEquals
+    // trả false, KHÔNG ném exception) vẫn 401, không ghi row.
+    [Fact]
+    public async Task Internal_token_khac_do_dai_van_401_khong_nem_loi()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+
+        var result = await NewController(tdb.NewContext()).ReportInternalFlag(
+            new InternalFlagRequest
+            {
+                SessionId = Guid.NewGuid(),
+                CampaignId = campaign.Id,
+                CandidateId = Guid.NewGuid(),
+                SignalType = "no_face"
+            },
+            "ngan-hon-nhieu", default);   // ngắn hơn Token ("internal-secret") — khác độ dài
+
+        Assert.IsType<UnauthorizedObjectResult>(result);
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));
+    }
+
+    // ── (b) Token CÙNG ĐỘ DÀI nhưng khác nội dung (path so-khớp-hằng-thời-gian thật sự chạy tới cuối) → 401.
+    [Fact]
+    public async Task Internal_token_cung_do_dai_khac_noi_dung_van_401()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        Assert.Equal(Token.Length, "internal-secreX".Length);   // giữ đúng "cùng độ dài" nếu Token đổi
+
+        var result = await NewController(tdb.NewContext()).ReportInternalFlag(
+            new InternalFlagRequest
+            {
+                SessionId = Guid.NewGuid(),
+                CampaignId = campaign.Id,
+                CandidateId = Guid.NewGuid(),
+                SignalType = "no_face"
+            },
+            "internal-secreX", default);   // đổi ký tự cuối, cùng độ dài với Token
+
+        Assert.IsType<UnauthorizedObjectResult>(result);
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));
+    }
+
     // ── (b) Tín hiệu DANH TÍNH lưu khi CHỈ face-verify bật (anti-cheat tắt); tín hiệu thường thì no-op ──
     [Fact]
     public async Task Identity_signal_persisted_when_only_faceverify_on()

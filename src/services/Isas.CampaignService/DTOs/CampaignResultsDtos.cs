@@ -129,4 +129,26 @@ namespace Isas.CampaignService.DTOs
         public int? MaxScore { get; set; }
         public string? Reasoning { get; set; }
     }
+
+    // Log cờ chống gian lận THEO GIÂY cho 1 buổi (`GET /campaign/{id}/results/{sessionId}/flags`).
+    // Khác `CampaignResultRow.Flags`/`UnscoredFlaggedRow.Flags` (SEC-4, GOM theo signal_type→count):
+    // đây là DÒNG THỜI GIAN từng sự kiện — `session_flags.DetectedAt` vốn đã có sẵn theo giây nhưng bị
+    // gộp mất trước khi tới HR (đếm gộp đúng chỗ dùng cho bảng/CSV/PDF, không phù hợp khi HR cần soi
+    // "lúc mấy giờ, mấy lần, cách nhau bao lâu"). Additive — KHÔNG đổi shape `CampaignResultsResponse`.
+    // KHÔNG đòi ranking row tồn tại (khác transcript AI4): phải xem được cả session CHƯA Scored/bỏ ngang
+    // (R7 — nhóm đáng ngờ nhất). Không có cờ nào → Events=[] (không 404).
+    public class SessionFlagTimelineResponse
+    {
+        public System.Guid SessionId { get; set; }
+        public System.Guid CandidateId { get; set; }
+        public List<SessionFlagEvent> Events { get; set; } = new();
+    }
+
+    // 1 dòng session_flags = 1 sự kiện phát hiện, giữ nguyên mốc thời gian gốc (UTC).
+    public class SessionFlagEvent
+    {
+        public string SignalType { get; set; } = null!;
+        public System.DateTime DetectedAt { get; set; }
+        public string? Note { get; set; }
+    }
 }

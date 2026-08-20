@@ -1782,6 +1782,39 @@ namespace Isas.CampaignService.Services
             return await _sessionClient.GetSessionTranscriptAsync(sessionId, ct);
         }
 
+        // Log cờ chống gian lận THEO GIÂY cho 1 buổi (drill-down cho HR). `session_flags.DetectedAt` có
+        // sẵn theo giây trong DB nhưng bị GroupFlagsBySession gộp thành count trước khi vào
+        // CampaignResultsResponse — đây là đường đọc TRỰC TIẾP, không gộp, giữ nguyên mốc thời gian.
+        //
+        // Gate CHỈ theo ownership campaign (org_id) — KHÔNG đòi ranking row như GetSessionTranscriptAsync:
+        // session CHƯA Scored/bỏ ngang (R7 — nhóm đáng ngờ nhất, đã bỏ ngang giữa buổi) vẫn phải xem được
+        // log cờ của nó. Không có cờ nào (session sạch, hoặc sessionId không thuộc campaign) → Events=[],
+        // KHÔNG 404 — 404 chỉ dành cho "không phải chủ org", không phải "không có dữ liệu".
+        public async Task<SessionFlagTimelineResponse> GetSessionFlagTimelineAsync(
+            Guid orgId, Guid campaignId, Guid sessionId, CancellationToken ct)
+        {
+            _ = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            var flags = await _db.SessionFlags
+                .Where(f => f.CampaignId == campaignId && f.SessionId == sessionId)
+                .OrderBy(f => f.DetectedAt)
+                .ToListAsync(ct);
+
+            return new SessionFlagTimelineResponse
+            {
+                SessionId = sessionId,
+                CandidateId = flags.Count > 0 ? flags[0].CandidateId : Guid.Empty,
+                Events = flags.Select(f => new SessionFlagEvent
+                {
+                    SignalType = f.SignalType,
+                    DetectedAt = f.DetectedAt,
+                    Note = f.Note
+                }).ToList()
+            };
+        }
+
         // SEC-4: gom session_flags (đã materialize) của 1 campaign → Dictionary<session_id, List<FlagDto>>.
         // Group theo (session_id, signal_type) → count; Note = ghi chú non-empty đầu tiên (đại diện cho HR).
         // In-memory (số cờ/campaign nhỏ; tránh phụ thuộc dịch GROUP BY của provider). Caller nạp list 1 lần

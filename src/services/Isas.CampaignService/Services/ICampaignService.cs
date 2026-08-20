@@ -108,6 +108,11 @@ namespace Isas.CampaignService.Services
         // Transcript OWNED bởi Interview (GEN-2) → đọc xuyên-service qua internal client; Interview lỗi → 502.
         Task<SessionTranscriptResponse> GetSessionTranscriptAsync(Guid orgId, Guid campaignId, Guid sessionId, CancellationToken ct);
 
+        // Log cờ chống gian lận THEO GIÂY (dòng thời gian, khác Flags gộp count trong CampaignResultsResponse).
+        // Chỉ org-scoped (404 nếu sai org) — KHÔNG đòi ranking row (khác GetSessionTranscriptAsync), vì
+        // phải xem được cả session chưa Scored/bỏ ngang (R7 — nhóm đáng ngờ nhất). Không có cờ → Events=[].
+        Task<SessionFlagTimelineResponse> GetSessionFlagTimelineAsync(Guid orgId, Guid campaignId, Guid sessionId, CancellationToken ct);
+
         // C13: sàng CV hàng loạt — parse + archive PDF (S3 KEY) + hard-filter (rule cứng, 0 credit).
         Task<ScreenCandidatesResponse> ScreenCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, IFormFileCollection files, CancellationToken ct);
 

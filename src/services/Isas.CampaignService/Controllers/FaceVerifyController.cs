@@ -133,7 +133,22 @@ namespace Isas.CampaignService.Controllers
                 });
             }
 
-            var result = await _faceVerify.VerifyAsync(membership.ReferenceImageKey!, liveKey, null, ct);
+            FaceVerifyResult result;
+            try
+            {
+                result = await _faceVerify.VerifyAsync(membership.ReferenceImageKey!, liveKey, null, ct);
+            }
+            catch (DownstreamServiceException ex)
+            {
+                // Lỗi hạ tầng AIService (timeout/5xx/body hỏng) — KHÔNG phải lỗi của ứng viên/HR, và KHÔNG
+                // được để lộ 500 trần (mất log rõ ràng, không nhất quán với mọi controller khác trong service
+                // vốn đều map DownstreamServiceException → 502, mẫu CampaignController.cs GetSessionTranscript).
+                // Ảnh live + dòng sổ (BK25) đã ghi trước đó nên KHÔNG mồ côi dù so khớp thất bại.
+                _logger.LogError(ex,
+                    "SEC-2 check: AIService face-verify lỗi hạ tầng (candidate {CandidateId} campaign {CampaignId}).",
+                    candidateId, campaignId);
+                return StatusCode(StatusCodes.Status502BadGateway, new { error = ex.Message });
+            }
 
             // Mỗi tín hiệu AIService (no_face/multiple_faces/face_mismatch) → 1 cờ session_flags cho HR (D13).
             await RecordFlagsAsync(campaign, sessionId, candidateId.Value, result.Signals, null, ct);
