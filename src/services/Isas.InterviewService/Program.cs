@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using Scalar.AspNetCore;
+using System.Globalization;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
@@ -24,8 +25,19 @@ builder.Services.AddServiceCors(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddHealthChecks();
 
-// B2C bước tách JD miễn phí — 5 lượt / 10 phút / candidate. In-process, nên khi scale ngang
+// B2C bước tách JD miễn phí — 10 lượt / 10 phút / candidate. In-process, nên khi scale ngang
 // trần thực tế là N×; triển khai hiện tại single-instance, Redis limiter để backlog.
+//
+// Vì sao 10 chứ không phải 5: một phiên dùng NGHIÊM TÚC là "dán JD → tìm → sửa JD → tìm lại →
+// đổi việc → tìm → sửa → tìm lại" = đúng 5 lượt, tức trần cũ chặn ngay người dùng bình thường ở
+// lần dùng đầu tiên chứ không chặn lạm dụng. Đọc từ config (default 10) theo đúng lối
+// `JdRequirements:MaxItems`/`MaxTextChars` để chỉnh trần không phải build lại.
+var jdRequirementsWindow = TimeSpan.FromMinutes(10);
+var jdRequirementsPermitLimit =
+    int.TryParse(builder.Configuration["JdRequirements:PermitLimit"], out var configuredPermits)
+        && configuredPermits > 0
+        ? configuredPermits
+        : 10;
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -38,12 +50,36 @@ builder.Services.AddRateLimiter(options =>
             subject,
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 5,
-                Window = TimeSpan.FromMinutes(10),
+                PermitLimit = jdRequirementsPermitLimit,
+                Window = jdRequirementsWindow,
                 QueueLimit = 0,
                 QueueProcessingOrder = QueueProcessingOrder.OldestFirst
             });
     });
+
+    // 429 phải nói RÕ "chờ bao lâu": không có con số thì client chỉ còn cách retry mù, và mỗi lần
+    // retry sớm lại tiêu một lượt của cửa sổ kế.
+    // ⚠ MetadataName.RetryAfter là TUỲ CHỌN của lease, không phải bảo đảm: cấu hình hiện tại có
+    // cấp (đo tay 2026-08-19: fixed-window, PermitLimit thật → header 600), nhưng đổi loại limiter
+    // hay tham số là có thể mất. Vắng metadata thì TỰ TÍNH từ Window — tuyệt đối không để rơi vào
+    // trạng thái 429 không kèm Retry-After, vì đó đúng là thứ client cần để đếm ngược.
+    options.OnRejected = async (context, ct) =>
+    {
+        var retryAfter = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var leaseRetryAfter)
+            ? leaseRetryAfter
+            : jdRequirementsWindow;
+        // Làm tròn LÊN + sàn 1s: 0 giây là lời khuyên sai (client retry ngay ⇒ lại 429).
+        var retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.Headers.RetryAfter =
+            retryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            error = "Bạn đã dùng hết lượt tách yêu cầu từ JD. Vui lòng thử lại sau.",
+            retryAfterSeconds
+        }, ct);
+    };
 });
 
 builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();   // DB17: shared PDF extractor

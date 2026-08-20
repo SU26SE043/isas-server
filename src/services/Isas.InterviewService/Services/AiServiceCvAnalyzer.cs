@@ -46,7 +46,10 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
         List<JdRequirementApi>? MustHave,
         List<JdRequirementApi>? NiceToHave);
 
-    private record JdRequirementApi(string? Text, List<GroundingApi>? Citations);
+    // JdQuote — câu nguyên văn trong JD của user sinh ra requirement (AIService đã verify là
+    // substring thật của jdText, không verify được thì trả null). Khác hẳn Citations = tài liệu
+    // chuẩn ngành từ Qdrant. Nullable ⇒ AIService bản cũ (chưa có field) vẫn map được, ra null.
+    private record JdRequirementApi(string? Text, List<GroundingApi>? Citations, string? JdQuote);
     private record GroundingApi(string? ChunkId, string? Content, string? SourceUrl, string? SourceTitle);
 
     private record JdMatchApi(int Score, List<string>? MatchedSkills, List<string>? MissingSkills);
@@ -175,7 +178,10 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
                         .Where(c => !string.IsNullOrWhiteSpace(c.ChunkId) && c.Content is not null)
                         .Select(c => new Citation(
                             c.ChunkId!, c.SourceUrl ?? string.Empty, c.SourceTitle ?? string.Empty))
-                        .ToList()))
+                        .ToList(),
+                    // Chuỗi rỗng/khoảng trắng ⇒ null: "không có quote" phải có ĐÚNG MỘT biểu diễn
+                    // trên wire để FE chỉ cần kiểm null.
+                    string.IsNullOrWhiteSpace(x.JdQuote) ? null : x.JdQuote.Trim()))
                 .ToList();
 
         return (Map(body.MustHave), Map(body.NiceToHave));

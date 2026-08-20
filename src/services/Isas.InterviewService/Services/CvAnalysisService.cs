@@ -1,4 +1,4 @@
-using Isas.InterviewService.ApplicationDbContext;
+﻿using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Models;
@@ -69,10 +69,22 @@ public class CvAnalysisService : ICvAnalysisService
             throw new InvalidOperationException("jobCategory là bắt buộc.");
         var jobCategory = req.JobCategory.Value;
 
-        var requirementMode = req.MustHave is not null || req.NiceToHave is not null;
-        var normalizedRequirements = requirementMode
-            ? NormalizeRequirements(req.MustHave, req.NiceToHave)
-            : [];
+        // Requirement mode bật theo SỐ requirement DÙNG ĐƯỢC, không theo hình dạng của request.
+        // Chuẩn hoá TRƯỚC rồi mới quyết định, vì mọi cách viết "0 requirement" đều phải ra cùng một
+        // kết quả — trước đây mỗi cách lại rơi vào một nhánh khác nhau:
+        //   • mảng vắng (null)                → legacy (đúng)
+        //   • `mustHave: []` + `niceToHave: []` → requirement mode với 0 requirement (SAI)
+        //   • `[{ "text": "   " }]`             → requirement mode với 0 requirement (SAI)
+        // Hai nhánh SAI cho ra cùng một hậu quả: AI được gọi với danh sách rỗng ⇒ báo cáo trắng
+        // (không jdMatch vì requirement mode gate nó thành null, cũng không requirementMatches) mà
+        // vẫn trừ 1 credit của user. Không có use case hợp lệ nào cần hành vi đó.
+        //
+        // NormalizeRequirements tự xử lý null (`source ?? []`), loại text rỗng/khoảng trắng, và
+        // thuần in-memory — gọi vô điều kiện vừa an toàn vừa rẻ, chạy TRƯỚC cả đọc CV/reserve.
+        var normalizedRequirements = NormalizeRequirements(req.MustHave, req.NiceToHave);
+        var requirementMode = normalizedRequirements.Count > 0;
+        // Chỉ chặn giới hạn khi thật sự có requirement: 25 dòng toàn khoảng trắng là "không khai
+        // requirement nào", phải về legacy êm ả chứ không phải 400 "vượt quá 20".
         if (requirementMode)
             ValidateRequirementLimits(normalizedRequirements);
 

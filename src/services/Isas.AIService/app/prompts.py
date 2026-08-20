@@ -898,11 +898,21 @@ def build_jd_requirements_prompt(jd_text: str, job_category: str,
         "- niceToHave: yêu cầu có thì tốt, giúp ứng viên nổi bật nhưng thiếu không đồng nghĩa bị loại.",
         "Gộp các yêu cầu trùng ý, không bịa yêu cầu không có trong JD. Mỗi requirement là một "
         f"câu ngắn, cụ thể, bằng {field_lang(language)}.",
+        "jdQuote — BẮT BUỘC với mỗi requirement:\n"
+        "- Là đoạn CHÉP NGUYÊN VĂN từ JD ở trên, đúng từng ký tự, KHÔNG dịch, KHÔNG viết lại, "
+        "KHÔNG rút gọn, KHÔNG ghép hai đoạn rời nhau.\n"
+        "- Chép đúng MỘT câu hoặc MỘT gạch đầu dòng trong JD — chính đoạn làm bạn nghĩ ra "
+        "requirement đó.\n"
+        "- Người dùng sẽ dùng jdQuote để TÌM lại đoạn đó trong JD của họ; quote không tìm thấy sẽ "
+        "bị loại bỏ, nên chép sai còn tệ hơn để trống.\n"
+        "- Không có đoạn nào trong JD nói đúng ý đó ⇒ đặt jdQuote = null (và cân nhắc bỏ hẳn "
+        "requirement, vì nó không có trong JD).",
         "Nếu có tài liệu tham chiếu, chỉ dùng tài liệu đó để hiểu thuật ngữ và trả citations cho "
-        "requirement tương ứng; không biến citation thành bằng chứng về ứng viên.",
+        "requirement tương ứng; không biến citation thành bằng chứng về ứng viên. citations là "
+        "tài liệu chuẩn ngành, KHÁC jdQuote (trích từ JD của người dùng) — không lẫn hai thứ.",
         'CHỈ trả JSON hợp lệ, không markdown: '
-        '{"mustHave":[{"text":"...","citations":[]}],'
-        '"niceToHave":[{"text":"...","citations":[]}]}'
+        '{"mustHave":[{"text":"...","jdQuote":"...","citations":[]}],'
+        '"niceToHave":[{"text":"...","jdQuote":"...","citations":[]}]}'
     ]
     grounding_block = build_grounding_block(grounding, cite=True)
     if grounding_block:

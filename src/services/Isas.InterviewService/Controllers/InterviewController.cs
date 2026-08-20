@@ -188,6 +188,22 @@ namespace Isas.InterviewService.Controllers
             }
         }
 
+        /// <summary>
+        /// Toàn văn đã tách của file CV/JD. Client (bước JD của B2C) POLL endpoint này, nên status
+        /// code phải phân biệt được "chờ thêm" với "hỏng hẳn" — trước đây MỌI trường hợp đều rơi vào
+        /// một `422` kèm message chung, client không có cách nào biết nên poll tiếp hay dừng:
+        /// <list type="bullet">
+        ///   <item>`200 { parsedText, parsedStatus: "completed" }` — có nội dung, dùng được ngay.</item>
+        ///   <item>`202 { parsedStatus: "pending" }` — chưa parse xong ⇒ client POLL TIẾP.</item>
+        ///   <item>`409 { parsedStatus: "failed" }` — parse hỏng ⇒ client NGỪNG poll (poll nữa cũng
+        ///         không bao giờ có kết quả).</item>
+        ///   <item>`500` — lỗi hạ tầng thật (DB/storage), khác hẳn ba trạng thái parse ở trên.</item>
+        /// </list>
+        /// Trạng thái đọc từ <c>FileRecord.ParseStatus</c>; upload hiện ghi `completed`/`failed`
+        /// (<see cref="StorageService.SaveMetadata"/>) còn <see cref="Enums.ParseStatus"/> khai báo
+        /// thêm `pending`/`done` ⇒ so khớp phải nhận cả hai bộ giá trị, và `parsed_text` NULL cũng
+        /// tính là chưa có nội dung để trả.
+        /// </summary>
         [HttpGet("{id:guid}/parsed-text")]
         public async Task<IActionResult> GetParsedText(Guid id, CancellationToken ct)
         {
@@ -198,16 +214,29 @@ namespace Isas.InterviewService.Controllers
             if (!Guid.TryParse(userIdString, out var userId) || fileRecord.UserId != userId)
                 return NoFileAccess();
 
+            var parseStatus = fileRecord.ParseStatus?.Trim().ToLowerInvariant();
+
+            // Parse hỏng — trạng thái CUỐI, poll tiếp cũng vô ích.
+            if (parseStatus == Enums.ParseStatus.Failed)
+                return Conflict(new { parsedStatus = "failed" });
+
+            // Chưa parse xong (đang chờ, hoặc chưa có parsed_text) — client poll lại sau.
+            if (parseStatus == Enums.ParseStatus.Pending || fileRecord.ParsedText is null)
+                return Accepted(new { parsedStatus = "pending" });
+
             try
             {
                 // Gọi hàm có hậu tố Async
                 var parsedText = await _storage.GetParseTextAsync(id, ct);
-                return Ok(new { parsedText });
+                return Ok(new { parsedText, parsedStatus = "completed" });
             }
             catch (Exception ex)
             {
+                // Tới đây nghĩa là metadata đọc được nhưng đọc nội dung hỏng ⇒ lỗi hạ tầng, KHÔNG
+                // phải trạng thái parse. Trả 500 để client biết là lỗi phía server chứ không phải
+                // "file này chưa/không parse được".
                 _logger.LogError(ex, "Error retrieving parsed text for file {FileId}", id);
-                return StatusCode(422, "Lỗi khi lấy dữ liệu. Vui lòng thử lại.");
+                return StatusCode(500, new { error = "Lỗi khi lấy dữ liệu. Vui lòng thử lại." });
             }
         }
 

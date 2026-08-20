@@ -111,6 +111,27 @@ def find_verbatim(cv_text: str, evidence: str) -> int | None:
     return compact_offsets[compact_match] if compact_match >= 0 else None
 
 
+def verify_jd_quote(jd_text: str, quote) -> str | None:
+    """Giữ ``quote`` CHỈ KHI nó thật sự nằm trong ``jd_text``; ngược lại trả ``None``.
+
+    ``jdQuote`` sinh ra để người dùng bấm "Xem trong JD" và tự kiểm chứng requirement lấy từ đâu —
+    một quote bịa phá hỏng đúng thứ mà nó tồn tại để bảo đảm. Nên KHÔNG tin model: kiểm rồi mới
+    trả, cùng kỷ luật by-construction đang dùng cho ``chunkId`` (drop id lạ) và
+    ``cvSections.startsWith``.
+
+    Dùng :func:`find_verbatim` nên chấp nhận các khác biệt an toàn khi copy từ PDF/soạn thảo
+    (khoảng trắng mềm, xuống dòng, gạch nối bị tách, hoa/thường) — nhưng KHÔNG fuzzy, KHÔNG so ngữ
+    nghĩa: model diễn đạt lại một câu trong JD vẫn bị loại. ``None`` là giá trị hợp lệ trên wire,
+    FE chỉ ẩn tính năng chứ không hỏng.
+    """
+    if not isinstance(quote, str):
+        return None
+    quote = quote.strip()
+    if not quote:
+        return None
+    return quote if find_verbatim(jd_text, quote) is not None else None
+
+
 _EVIDENCE_EXPLANATION_MARKERS = (
     "thường liên quan", "thường yêu cầu", "có thể cho thấy", "có thể suy ra",
     "điều này cho thấy", "suggests that", "usually involves", "likely indicates",
@@ -1330,6 +1351,10 @@ class GeminiProvider(QuestionProvider):
                             "type": "object",
                             "properties": {
                                 "text": {"type": "string"},
+                                # Câu nguyên văn trong JD sinh ra requirement này. nullable vì JD
+                                # thật không phải lúc nào cũng có câu tương ứng — và vì server
+                                # loại quote không verify được (xem verify_jd_quote).
+                                "jdQuote": {"type": "string", "nullable": True},
                                 "citations": {"type": "array", "items": {
                                     "type": "object",
                                     "properties": {
@@ -1347,6 +1372,7 @@ class GeminiProvider(QuestionProvider):
                             "type": "object",
                             "properties": {
                                 "text": {"type": "string"},
+                                "jdQuote": {"type": "string", "nullable": True},
                                 "citations": {"type": "array", "items": {
                                     "type": "object",
                                     "properties": {
@@ -1395,7 +1421,13 @@ class GeminiProvider(QuestionProvider):
                     cid = str(citation.get("chunkId") or "").strip()
                     if cid in allowed:
                         citations.append(allowed[cid])
-                output.append({"text": text, "citations": citations})
+                # Quote không đối chiếu được với JD ⇒ bỏ hẳn (None), KHÔNG bỏ cả requirement:
+                # text vẫn có giá trị, chỉ mất phần "xem trong JD".
+                output.append({
+                    "text": text,
+                    "citations": citations,
+                    "jdQuote": verify_jd_quote(jd_text, item.get("jdQuote")),
+                })
             return output
 
         return {
