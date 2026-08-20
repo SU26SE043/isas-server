@@ -65,6 +65,7 @@ x-aiservice-env: &aiservice-env
   OPENAI_API_KEY: ${OPENAI_API_KEY}
   TRANSCRIBE_PROVIDER: ${TRANSCRIBE_PROVIDER:-whisper-1}
   # Warm audio cho seed/câu adaptive ngay lúc AI sinh; false = rollback về cache-on-demand cũ.
+  TIMING_LOG_ENABLED: ${TIMING_LOG_ENABLED:-true}
   TTS_PREWARM_ENABLED: ${TTS_PREWARM_ENABLED:-true}
   TTS_PREWARM_CONCURRENCY: ${TTS_PREWARM_CONCURRENCY:-2}
   TTS_ADAPTIVE_PREWARM_WAIT_SECONDS: ${TTS_ADAPTIVE_PREWARM_WAIT_SECONDS:-15}

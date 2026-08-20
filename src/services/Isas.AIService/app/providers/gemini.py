@@ -15,7 +15,7 @@ from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
 from app.question_quality import coverage_defects, verify_defect
-from app import prompt_registry
+from app import prompt_registry, timing
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
     build_criterion_levels_prompt, build_preview_answers_prompt, PREVIEW_BANDS,
@@ -599,7 +599,11 @@ class GeminiProvider(QuestionProvider):
                 await asyncio.sleep(delay)
                 delay *= 2   # 1s → 2s: đủ để vượt một cú nấc, chưa chạm ngân sách 90s của .NET
         if not defer_report:
-            await report_usage(operation, used_model, response)
+            # Đo tách chặng: POST tới sink của Payment, ĐANG nằm trong critical path của mọi lượt
+            # Gemini (kể cả `decide_next` đồng bộ dưới trần 90s của .NET). Đo trước, rồi mới bàn
+            # chuyện đẩy ra nền — đẩy mà không đo thì không biết có đáng đánh đổi độ tin cậy không.
+            with timing.stage("usage_post"):
+                await report_usage(operation, used_model, response)
         return response
 
     async def generate(self, job_category: str, cv_text: str | None,

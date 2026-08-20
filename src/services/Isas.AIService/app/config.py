@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     tts_cache_prefix: str = "tts/"
     # Chủ động tổng hợp các câu vừa sinh ở nền. Nhờ vậy cache miss đắt/chậm không đợi tới lúc
     # ứng viên đã nhìn thấy câu hỏi mới bắt đầu gọi vendor.
+    # ── ĐO TÁCH CHẶNG (một dòng log mỗi request) ─────────────────────
+    # Bật mặc định: `/decide-next` có 10 chặng mà trước đây không đo được chặng nào, nên "chờ lâu"
+    # chỉ có thể đoán. Chi phí là một `perf_counter` mỗi chặng + một dòng INFO mỗi request.
+    # Tắt (`TIMING_LOG_ENABLED=false`) khi log quá ồn — lúc đó `timing.record` cũng thành no-op.
+    timing_log_enabled: bool = True
+
     tts_prewarm_enabled: bool = True
     # Hai lane để câu 4/5 không phải chờ toàn bộ câu trước; vẫn đủ thấp để tránh burst quota.
     tts_prewarm_concurrency: int = 2

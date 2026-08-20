@@ -46,6 +46,7 @@ import unicodedata
 import wave
 from collections import Counter
 
+from app import timing
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -283,8 +284,12 @@ def transcribe_openai(audio_bytes: bytes, language: str | None,
     # whisper-1 tính tiền theo PHÚT (không phải token) ⇒ số đo phải là GIÂY AUDIO. Best-effort,
     # xem `usage.report_blocking`. HTTP 200 vẫn là một lượt đã bị tính tiền, kể cả khi payload
     # rỗng và caller thử lại định dạng WAV.
-    report_blocking(report_audio_usage(
-        "transcribe", settings.openai_transcribe_model, audio_seconds))
+    # Đo tách chặng: `report_blocking` dựng hẳn một event loop (`asyncio.run`) để POST, và nó chạy
+    # BÊN TRONG thread ASR. `asyncio.to_thread` sao chép context nên `timing.record` vẫn ghi đúng
+    # vào bảng của request đang gọi.
+    with timing.stage("usage_post_asr"):
+        report_blocking(report_audio_usage(
+            "transcribe", settings.openai_transcribe_model, audio_seconds))
     if not text:
         raise ValueError("whisper-1 trả bản chép rỗng")
     return text, settings.openai_transcribe_model
