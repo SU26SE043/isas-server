@@ -423,9 +423,11 @@ public class RoadmapService : IRoadmapService
         return file.ParsedText;
     }
 
+    // BK36 — chỉ `null` (client KHÔNG gửi field) mới rơi về mặc định "vi". Chuỗi rỗng là GIÁ TRỊ SAI,
+    // phải bị từ chối chứ không được âm thầm nuốt thành "vi" — mẫu khớp PracticeService.ValidateLanguage.
     private string ValidateLanguage(string? requested)
     {
-        if (string.IsNullOrWhiteSpace(requested)) return "vi";
+        if (requested is null) return "vi";
         var language = requested.Trim().ToLowerInvariant();
         if (language is not ("vi" or "en"))
             throw new InvalidOperationException("language chỉ nhận vi hoặc en.");
