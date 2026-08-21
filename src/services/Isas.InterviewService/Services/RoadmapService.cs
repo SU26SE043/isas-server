@@ -55,6 +55,11 @@ public class RoadmapService : IRoadmapService
         Guid candidateId, CreateRoadmapRequest req, CancellationToken ct = default)
     {
         var language = ValidateLanguage(req.Language);
+        // BE-6 — chuẩn hoá tên NGAY ĐẦU HÀM, trước cả kiểm gói và lời gọi AI: tên sai là lỗi đầu vào,
+        // để nó nổ sau khi đã đốt một lượt Gemini là bắt người dùng trả giá cho lỗi gõ của mình.
+        // Cùng lý do `ValidateLanguage` đứng ở đây.
+        var requestedName = RoadmapNaming.Normalize(req.Name);
+        var createdAt = DateTime.UtcNow;
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
         // CV optional — đọc parsed_text (kiểm chủ sở hữu). null → 404; khác chủ → 403; rỗng → 400.
@@ -164,6 +169,9 @@ public class RoadmapService : IRoadmapService
         {
             Id = Guid.NewGuid(),
             CandidateId = candidateId,
+            // BE-6 — tên người dùng gửi đã được chuẩn hoá ở ĐẦU hàm (trước lời gọi AI); vắng thì
+            // sinh mặc định tại đây để `CreatedAt` dùng cho tên khớp đúng giá trị vừa gán bên dưới.
+            Name = requestedName ?? RoadmapNaming.BuildDefault(req.JobCategory, req.Level, language, createdAt),
             JobCategory = req.JobCategory,
             Level = req.Level,
             Language = language,
@@ -171,7 +179,7 @@ public class RoadmapService : IRoadmapService
             SourceSessionIds = sourceSessionIds,
             Baseline = baseline,
             Status = RoadmapStatus.Active,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = createdAt
         };
 
         var milestoneOrder = 1;
@@ -290,6 +298,34 @@ public class RoadmapService : IRoadmapService
             .ToListAsync(ct);
     }
 
+    /// <summary>
+    /// BE-6 — đổi tên lộ trình. Trả `null` khi không tồn tại (404); khác chủ → 403.
+    ///
+    /// Cho đổi ở MỌI trạng thái, kể cả `Completed`: tên là nhãn người dùng tự đặt để phân biệt các
+    /// lộ trình của mình, không phải dữ liệu kết quả bị đóng băng khi học xong.
+    /// </summary>
+    public async Task<RoadmapResponse?> RenameAsync(
+        Guid candidateId, Guid id, string? requestedName, CancellationToken ct = default)
+    {
+        // Ở đường ĐỔI TÊN, tên là thứ DUY NHẤT người dùng gửi — nên `null` cũng là đầu vào sai,
+        // khác đường TẠO nơi `null` hợp lệ và có nghĩa "để server đặt hộ".
+        var name = RoadmapNaming.Normalize(requestedName)
+            ?? throw new InvalidOperationException("Tên lộ trình không được để trống.");
+
+        var r = await _db.Set<Roadmap>()
+            .Include(x => x.Milestones).ThenInclude(m => m.Lessons)
+            .FirstOrDefaultAsync(x => x.Id == id, ct);
+
+        if (r is null) return null;                                        // 404
+        if (r.CandidateId != candidateId)
+            throw new UnauthorizedAccessException("Không phải roadmap của bạn");   // 403
+
+        r.Name = name;
+        await _db.SaveChangesAsync(ct);
+
+        return Map(r, includeTheory: false);
+    }
+
     public async Task<RoadmapResponse?> GetAsync(
         Guid candidateId, Guid id, CancellationToken ct = default)
     {
@@ -329,19 +365,39 @@ public class RoadmapService : IRoadmapService
             query = query.Where(x => x.CreatedAt < cur.CreatedAt
                 || (x.CreatedAt == cur.CreatedAt && x.Id.CompareTo(cur.Id) < 0));
 
-        var rows = await query
+        // BE-6 — chiếu các cột CẦN xuống SQL rồi mới dựng response trong bộ nhớ. Không gọi
+        // `RoadmapNaming.Resolve` thẳng trong `.Select` được: EF phải dịch cây biểu thức sang SQL và
+        // sẽ hoặc ném, hoặc âm thầm kéo cả bảng về client để đánh giá. Vẫn KHÔNG có `Include` cây
+        // milestone→lesson — xem chú thích trên `RoadmapSummaryResponse` về lý do list bỏ nó.
+        var raw = await query
             .OrderByDescending(x => x.CreatedAt)
             .ThenByDescending(x => x.Id)
             .Take(take)
+            .Select(x => new
+            {
+                x.Id,
+                x.Name,
+                x.JobCategory,
+                x.Level,
+                x.Language,
+                x.CvId,
+                x.Status,
+                x.CreatedAt,
+                x.CompletedAt
+            })
+            .ToListAsync(ct);
+
+        var rows = raw
             .Select(x => new RoadmapSummaryResponse(
                 x.Id,
+                RoadmapNaming.Resolve(x.Name, x.JobCategory, x.Level, x.Language, x.CreatedAt),
                 x.JobCategory.ToString(),
                 x.Level.ToString(),
                 x.CvId,
                 x.Status.ToString(),
                 x.CreatedAt,
                 x.CompletedAt))
-            .ToListAsync(ct);
+            .ToList();
 
         var next = rows.Count == take
             ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
@@ -438,6 +494,7 @@ public class RoadmapService : IRoadmapService
 
     private static RoadmapResponse Map(Roadmap r, bool includeTheory) => new(
         r.Id,
+        RoadmapNaming.Resolve(r.Name, r.JobCategory, r.Level, r.Language, r.CreatedAt),
         r.JobCategory.ToString(),
         r.Level.ToString(),
         r.Language,

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
+using Isas.InterviewService.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -55,6 +56,13 @@ public class RoadmapConfiguration : IEntityTypeConfiguration<Roadmap>
         e.HasKey(x => x.Id);
 
         e.Property(x => x.CandidateId).IsRequired();
+
+        // BE-6 — NULL cho hàng tạo trước BE-6 (không backfill; đường đọc tự suy tên).
+        // `MaxLength` khớp hằng số dùng chung `RoadmapNaming.MaxLength` — lệch giữa DB và tầng
+        // validate thì người dùng gõ qua được ở API rồi bị DB từ chối, hoặc ngược lại.
+        e.Property(x => x.Name)
+            .HasColumnType("text")
+            .HasMaxLength(RoadmapNaming.MaxLength);
 
         e.Property(x => x.JobCategory)
             .HasConversion<string>()
