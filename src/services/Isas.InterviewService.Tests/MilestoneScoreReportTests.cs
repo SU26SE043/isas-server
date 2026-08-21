@@ -114,8 +114,11 @@ public class MilestoneScoreReportTests
                 It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<RoadmapCriteriaProgress>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new RoadmapSummaryAiResult([], [], [], null));
+        // Ngưỡng đạt nay đi qua IRoadmapThresholdService (DB → appsettings → mặc định) chứ không
+        // còn nhận thẳng IOptions<RoadmapOptions>. Hai nhánh sinh song song nên git gộp sạch —
+        // chỉ trình biên dịch bắt được chỗ lệch này.
         return new RoadmapReportService(
-            t.Db, gen.Object, Options.Create(new RoadmapOptions()),
+            t.Db, gen.Object, TestDb.Thresholds(t.Db),
             NullLogger<RoadmapReportService>.Instance);
     }
 
