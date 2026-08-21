@@ -108,3 +108,77 @@ public record RoadmapSummaryAiResult(
     IReadOnlyList<string> Improvements,
     string? OverallComment
 );
+
+// ── Phần TÍNH của một chặng ────────────────────────────────────────────────────────────────────
+// GET /roadmaps/{roadmapId}/milestones/{milestoneId}/score-report
+//
+// Trang lộ trình hiện "So với chặng trước: −20% Giao tiếp & trình bày". Con số đó là một khẳng
+// định KHÔNG kiểm chứng được cho tới khi người học xem được nó cộng ra từ đâu. Đây là phần tính đó.
+//
+// Mọi chặng đều có báo cáo: điểm từng tiêu chí + các buổi đã cộng vào là thông tin có ích ngay cả
+// khi CHƯA có mốc để so (chặng 1 không có chặng trước, lộ trình không có baseline). Delta là phần
+// THÊM, không phải điều kiện.
+
+/// <param name="Source">
+/// Số trong báo cáo này từ đâu ra — client PHẢI phân biệt, vì độ tin cậy khác nhau:
+/// <list type="bullet">
+/// <item><c>"snapshot"</c> — chốt cùng lúc, cùng vòng lặp với con số ở tiêu đề
+/// (<c>roadmap_milestones.improvement</c>) ⇒ <c>deltaPct</c> == <c>headlineDeltaPct</c>, không thể lệch.</item>
+/// <item><c>"computed"</c> — chặng CHƯA hoàn thành nên chưa có gì được chốt; tính tại thời điểm đọc.
+/// Không có số chốt nào để mà lệch. <c>headlineDeltaPct</c> luôn null.</item>
+/// <item><c>"recomputed"</c> — chặng hoàn thành TRƯỚC bản này ⇒ không có snapshot; tính lại từ dữ
+/// liệu HIỆN TẠI. <b>Có thể lệch</b> <c>headlineDeltaPct</c> nếu người học đã luyện lại bài nào đó
+/// sau khi chặng chốt sổ. Client nên nói rõ điều này thay vì trình bày như số đã chốt.</item>
+/// </list>
+/// </param>
+/// <param name="ComparedWith">
+/// Mốc so: <c>"previousMilestone"</c> · <c>"baseline"</c> (đo lúc lập lộ trình) · <c>"none"</c>
+/// (không có mốc nào — mọi <c>deltaPct</c> sẽ là null).
+/// </param>
+public record MilestoneScoreReportResponse(
+    Guid MilestoneId,
+    string MilestoneTitle,
+    int OrderNo,
+    string MilestoneStatus,
+    string Source,
+    string ComparedWith,
+    string? ComparedWithTitle,
+    IReadOnlyList<MilestoneScoreCriterionResponse> Criteria
+);
+
+/// <param name="CurrentAveragePercentage">
+/// Trung bình cộng <b>đúng</b> các dòng trong <paramref name="CurrentSessions"/>, làm tròn 2 chữ số.
+/// Bất biến này có test khoá: phần tính phải cộng ra đúng con số ở tiêu đề, nếu không thì cả tính
+/// năng phản tác dụng.
+/// </param>
+/// <param name="DeltaPct">
+/// <c>currentAveragePercentage − referenceAveragePercentage</c>. <c>null</c> = tiêu chí này KHÔNG
+/// CÓ MỐC để so. ⚠ <b>Đừng hiển thị thành 0</b>: 0 nghĩa là "không tiến bộ", null nghĩa là "chưa có
+/// gì để so" — hai điều khác hẳn nhau (BK23).
+/// </param>
+/// <param name="HeadlineDeltaPct">
+/// Chính con số đang hiện ở tiêu đề, đọc thẳng từ <c>roadmap_milestones.improvement</c> (đã chốt sổ).
+/// <c>null</c> khi chặng chưa chốt, hoặc tiêu chí không có mốc.
+///
+/// <para>Có mặt ở đây để mọi sai lệch đều <b>nhìn thấy được</b> thay vì âm thầm: với
+/// <c>source = "snapshot"</c> nó luôn bằng <paramref name="DeltaPct"/>; với <c>"recomputed"</c> nó
+/// có thể khác, và đó chính là tín hiệu client cần để cảnh báo người đọc.</para>
+/// </param>
+public record MilestoneScoreCriterionResponse(
+    string Name,
+    decimal CurrentAveragePercentage,
+    IReadOnlyList<MilestoneScoreSessionResponse> CurrentSessions,
+    decimal? ReferenceAveragePercentage,
+    IReadOnlyList<MilestoneScoreSessionResponse> ReferenceSessions,
+    decimal? DeltaPct,
+    decimal? HeadlineDeltaPct
+);
+
+/// <summary>Một buổi luyện đã cộng vào điểm của tiêu chí. Xem <see cref="Entities.MilestoneScoreSessionSnapshot"/>.</summary>
+public record MilestoneScoreSessionResponse(
+    Guid SessionId,
+    string LessonTitle,
+    int? AttemptNo,
+    decimal Percentage,
+    DateTime ScoredAt
+);

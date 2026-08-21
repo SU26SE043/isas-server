@@ -3,6 +3,7 @@ using System;
 using Isas.InterviewService.ApplicationDbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    partial class InterviewDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260821180904_AddMilestoneScoreSnapshot")]
+    partial class AddMilestoneScoreSnapshot
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1174,44 +1177,6 @@ namespace Isas.InterviewService.Migrations
                         .HasDatabaseName("ix_roadmap_lesson_attempts_lesson_id_attempt_no");
 
                     b.ToTable("roadmap_lesson_attempts", (string)null);
-                });
-
-            modelBuilder.Entity("Isas.InterviewService.Entities.RoadmapLevelThreshold", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Level")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("level");
-
-                    b.Property<int>("ThresholdPct")
-                        .HasColumnType("integer")
-                        .HasColumnName("threshold_pct");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at");
-
-                    b.Property<Guid>("UpdatedBy")
-                        .HasColumnType("uuid")
-                        .HasColumnName("updated_by");
-
-                    b.HasKey("Id")
-                        .HasName("pk_roadmap_level_thresholds");
-
-                    b.HasIndex("Level")
-                        .IsUnique()
-                        .HasDatabaseName("ix_roadmap_level_thresholds_level");
-
-                    b.ToTable("roadmap_level_thresholds", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_roadmap_level_thresholds_pct_range", "threshold_pct >= 0 AND threshold_pct <= 100");
-                        });
                 });
 
             modelBuilder.Entity("Isas.InterviewService.Entities.RoadmapMilestone", b =>
