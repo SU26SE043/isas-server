@@ -1,0 +1,451 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# STACK DEV — môi trường thử nghiệm, TÁCH HOÀN TOÀN khỏi `main` (production).
+#
+# Sinh ra bằng cách MIRROR `~/docker/main/docker-compose.yml` rồi đổi định danh: viết tay lại
+# 11 service là cách chắc chắn để bỏ sót một biến môi trường mà không ai phát hiện.
+#
+# Khác `main` ở đúng bốn chỗ:
+#   1. Container `-dev`, network `isas-dev-network`, volume `*_dev_data` → không đụng main
+#   2. Ảnh mặc định tag `:dev` (CI build cho nhánh `dev`)
+#   3. KHÔNG publish cổng nào ngoài gateway `5051` (main giữ 5050) — dev không nhận webhook từ
+#      ngoài và không có worker ở máy khác, nên mở thêm cổng chỉ tạo bề mặt tấn công
+#   4. Database trùng TÊN với main (`isas`, `isas_interview`, …) nhưng nằm trong `postgres-dev`;
+#      service name `postgres` chỉ resolve trong mạng dev nên không có đường nào chạm dữ liệu
+#      production
+#
+# ⚠ Giữ `.env` và `seaweed-s3.json` NGAY CẠNH file này.
+# ⚠ CI deploy vào `~/docker/$STACK` với `STACK = tên nhánh` ⇒ push lên `dev` sẽ recreate stack này.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+x-aiservice-env: &aiservice-env
+  GEMINI_API_KEY: ${GEMINI_API_KEY}          # env DUY NHẤT bắt buộc: thiếu → chết lúc import app.config
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+  INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+  # ⚠ Thiếu key → OpenAI 401 → RƠI ÂM THẦM về Whisper cục bộ (lỗi từ 0,7% lên 4,2%), KHÔNG
+  # sinh log lỗi nào. Cách duy nhất phát hiện là đọc `practice_answers.transcript_engine`.
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+  TRANSCRIBE_PROVIDER: ${TRANSCRIBE_PROVIDER:-whisper-1}
+  # Warm audio cho seed/câu adaptive ngay lúc AI sinh; false = rollback về cache-on-demand cũ.
+  TTS_PREWARM_ENABLED: ${TTS_PREWARM_ENABLED:-true}
+  TTS_PREWARM_CONCURRENCY: ${TTS_PREWARM_CONCURRENCY:-2}
+  # Redis chỉ giữ distributed lock + ready signal; audio vẫn ở SeaweedFS.
+  TTS_REDIS_ENABLED: ${TTS_REDIS_ENABLED:-true}
+  TTS_REDIS_URL: redis://redis:6379/0
+  TTS_SYNTHESIS_TIMEOUT_SECONDS: ${TTS_SYNTHESIS_TIMEOUT_SECONDS:-60}
+  # Thiếu 'en' ở đây thì AIService ÂM THẦM hạ EN→VI dù Interview đã bật cờ.
+  BILINGUAL_ALLOWED_LANGUAGES: ${BILINGUAL_ALLOWED_LANGUAGES:-vi}
+  # ⚠ Default TRONG CODE là `large-v3` = 2,9 GB tải về + 64-96s/lượt ⇒ vượt timeout decider 90s.
+  # Production chạy `small`. ĐỪNG bỏ dòng này.
+  WHISPER_MODEL: ${WHISPER_MODEL:-small}
+  # Ba biến dưới có default trong code nhưng đều trỏ `localhost` ⇒ thiếu thì service khởi động
+  # BÌNH THƯỜNG rồi mới hỏng lúc chạy. Đây là loại lỗi khó thấy nhất khi đổi topology.
+  S3_ENDPOINT: http://seaweedfs:8333
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY}
+  S3_BUCKET: isas-files
+  USAGE_SINK_BASE: http://isas.paymentservice:8080        # F22 — nội bộ, KHÔNG qua gateway (GEN-1)
+  PROMPT_REGISTRY_BASE: http://isas.interviewservice:8080  # F21
+  # 0 = giữ mặc định asyncio (min(32,cpu+4)=12). Nới từng nấc sau khi đo: 0 → 32 → 64.
+  THREAD_POOL_MAX_WORKERS: ${AI_THREAD_POOL:-0}
+
+x-aiservice: &aiservice
+  image: ghcr.io/su26se043/isas.aiservice:${IMAGE_TAG:-dev}
+  volumes:
+    # Model tải lúc CHẠY (~480 MB whisper small + ~300 MB buffalo_l). Thiếu 2 volume này là tải
+    # lại mỗi lần recreate — mà từ nay MỌI push lên `main` đều recreate.
+    - ai_hf_cache:/root/.cache/huggingface
+    - ai_insightface:/root/.insightface
+  networks: [isas-dev-network]
+  restart: unless-stopped
+
+services:
+  # ===== DATA LAYER =====
+  postgres:
+    image: postgres:18
+    container_name: postgres-dev
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql
+    networks: [isas-dev-network]
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-dev
+    restart: unless-stopped
+    command: redis-server --appendonly no --save ""
+    # Chỉ chứa lock/signal TTL ngắn; không publish port và không cần volume bền.
+    networks: [isas-dev-network]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
+    container_name: seaweedfs-dev
+    restart: always
+    # -s3.config bật S3 auth bằng file identities (seaweed-s3.json). THIẾU nó → S3 mở toang, key bị bỏ qua.
+    command: "server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -ip.bind=0.0.0.0"
+    volumes:
+      - seaweedfs_dev_data:/data
+      - ./seaweed-s3.json:/etc/seaweedfs/s3.json:ro   # identities S3 (access/secret key)
+    networks: [isas-dev-network]
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq-dev
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    networks: [isas-dev-network]
+
+  # RAG grounding — kho vector (chunk tri thức). InterviewService quản + gọi (gRPC 6334). Volume bền.
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-dev
+    restart: unless-stopped
+    # ⚠ CỐ Ý KHÔNG publish 6333/6334 ra host — khớp production. InterviewService gọi qdrant qua
+    # network nội bộ (`Qdrant__Url=http://qdrant:6334`), không cần cổng ngoài; publish ra là mở
+    # dashboard REST 6333 cho mọi thứ tới được host. Cần xem dashboard thì `docker compose port`
+    # hoặc ssh tunnel, đừng mở cố định.
+    volumes:
+      - qdrant_dev_data:/qdrant/storage
+    networks: [isas-dev-network]
+
+  # ===== APP SERVICES =====
+  isas.authservice:
+    image: ghcr.io/su26se043/isas.authservice:${IMAGE_TAG:-dev}
+    container_name: authservice-dev
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      # Auth cũng phục vụ callback máy-máy `/internal/auth/provision-candidate` (D2 — join magic-link
+      # B2B tạo tài khoản Candidate nhẹ). Thiếu token này → Campaign gọi sang bị từ chối, join B2B hỏng.
+      - Internal__Token=${INTERNAL_TOKEN}
+      # DB28 — job dọn refresh_token hết hạn. Giữ TẮT như production: xoá dữ liệu auth là không đảo
+      # ngược được, và vị ngữ dọn có ngữ nghĩa NULL/so-sánh-thời-gian khác nhau giữa SQLite (test) và
+      # Postgres (thật). Bật sau khi quan sát 1 chu kỳ — đây là quyết định ops, không phải mặc định.
+      - RefreshTokenRetention__Enabled=false
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Jwt__RefreshTokenDays=7
+      - Jwt__AccessTokenMinutes=15
+      - EmailSettings__Host=${SMTP_HOST}
+      - EmailSettings__Port=${SMTP_PORT}
+      - EmailSettings__Username=${SMTP_USER}
+      - EmailSettings__Password=${SMTP_PASS}
+      - EmailSettings__From=${SMTP_FROM}
+      - Authentication__Google__ClientId=${GOOGLE_CLIENT_ID}
+      - Authentication__Google__ClientSecret=${GOOGLE_CLIENT_SECRET}
+      # Đăng nhập Google: callback 302 về FE kèm MÃ DÙNG-MỘT-LẦN (?code=…), KHÔNG kèm token; FE đổi
+      # mã lấy phiên qua POST /auth/google/exchange. Cả 2 URL lấy từ CONFIG SERVER (nhận đích từ
+      # client = open-redirect làm rò phiên).
+      # ⚠ Tên biến theo .env ĐANG CHẠY trên server (`FRONTEND_PUBLIC_URL` / `GOOGLE_PUBLIC_BASE_URL`).
+      # DEPLOYMENT.md §4 còn ghi tên cũ `FRONTEND_BASE_URL` / `GATEWAY_PUBLIC_BASE_URL` — chưa hợp nhất.
+      # `GOOGLE_PUBLIC_BASE_URL` phải KÈM `/api/v1` (gateway strip tiền tố) và khớp "Authorized
+      # redirect URI" khai trên Google Cloud Console: {GOOGLE_PUBLIC_BASE_URL}/auth/signin-google.
+      - Gateway__PublicBaseUrl=${GOOGLE_PUBLIC_BASE_URL}
+      - Frontend__BaseUrl=${FRONTEND_PUBLIC_URL}
+    expose: ["8080"]
+    depends_on: [postgres]
+    networks: [isas-dev-network]
+    restart: unless-stopped
+
+  isas.interviewservice:
+    image: ghcr.io/su26se043/isas.interviewservice:${IMAGE_TAG:-dev}
+    container_name: interviewservice-dev
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      # DB28 — dọn outbox_messages đã publish. Giữ TẮT như production (cùng lý do RefreshTokenRetention
+      # bên authservice: xoá là không đảo ngược, bật sau khi quan sát 1 chu kỳ).
+      - Outbox__PurgeEnabled=false
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_interview;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}                         # KHỚP authservice
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}           # KHỚP aiservice-worker
+      - SeaweedFS__ServiceURL=http://seaweedfs:8333
+      - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
+      - SeaweedFS__SecretKey=${S3_SECRET_KEY}
+      - SeaweedFS__BucketName=isas-files
+      - SeaweedFS__ForcePathStyle=true
+      - SeaweedFS__UseHttp=true
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
+      - AiService__BaseUrl=http://aiapi:8000   # sinh câu hỏi chạy trên Mac (Tailscale IP)
+      # RAG grounding — kho vector (Qdrant, cùng compose) + ingest Context7 + toggle bật retrieval.
+      - Qdrant__Url=http://qdrant:6334
+      - Context7__ApiKey=${CONTEXT7_API_KEY}
+      # BC18 phan tich repo GitHub. RONG = an toan, hanh xu y nhu khong co (GitHubRepoFetcher.cs:67
+      # gac !IsNullOrWhiteSpace truoc khi gan header Authorization) nhung khi do la GitHub API AN DANH:
+      # 60 req/h DUNG CHUNG theo IP server, moi luot phan tich 4-9 call => ~7-15 luot/gio cho TOAN BO
+      # nguoi dung, sau do moi ai cung an 429. Dat gia tri that vao GITHUB_TOKEN trong .env de len 5000 req/h.
+      - GitHub__Token=${GITHUB_TOKEN}
+      # Grounding:Enabled mặc định TẮT (chuỗi rỗng không parse int/bool an toàn → dùng default). Bật khi có corpus.
+      - Grounding__Enabled=${GROUNDING_ENABLED:-false}
+      - JdRequirements__MaxGroundingChunks=8
+      - Tiering__Enabled=${TIERING_ENABLED:-false}
+      # Phỏng vấn THÍCH ỨNG (INT-17 / INT-17b). Trước đây 3 khoá này chỉ tồn tại trong compose SỬA TAY trên
+      # server, không có trong repo — nên hình dạng buổi phỏng vấn chạy thật chỉ đọc được bằng `docker inspect`,
+      # và một khoá mới (`MaxDeepPerQuestion`) thêm vào appsettings là âm thầm đổi hành vi production.
+      # ⚠ KILL-SWITCH = `MaxDeepPerQuestion`: đặt 0 → quay lại chế độ frontier trước INT-17b (`MaxFollowUps`
+      # lúc đó mới có hiệu lực; chế độ chuỗi thì code tự ép về 0). Đặt `Adaptive__Enabled=false` → tắt hẳn
+      # Song ngữ Anh–Việt (PR #145). Bật để lộ tuỳ chọn language cho B2C/B2B.
+      - Interview__Bilingual__Enabled=${BILINGUAL_ENABLED:-false}
+      # phỏng vấn thích ứng, về luồng batch tĩnh.
+      - Adaptive__Enabled=${ADAPTIVE_ENABLED:-false}
+      - Adaptive__SeedCount=${ADAPTIVE_SEED_COUNT:-5}
+      - Adaptive__MaxQuestions=${ADAPTIVE_MAX_QUESTIONS:-20}
+      - Adaptive__MaxFollowUps=${ADAPTIVE_MAX_FOLLOW_UPS:-3}
+      - Adaptive__MaxDeepPerQuestion=${ADAPTIVE_MAX_DEEP_PER_QUESTION:-3}
+      - Adaptive__MaxFailuresPerSession=${ADAPTIVE_MAX_FAILURES_PER_SESSION:-3}
+    depends_on: [postgres, seaweedfs, rabbitmq, qdrant]
+    networks: [isas-dev-network]
+    restart: unless-stopped
+
+  isas.campaignservice:
+    image: ghcr.io/su26se043/isas.campaignservice:${IMAGE_TAG:-dev}
+    container_name: campaignservice-dev
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      # DB2b — dọn outbox_messages (email mời) đã publish. Giữ TẮT như production.
+      - Outbox__PurgeEnabled=false
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_campaign;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - AiService__BaseUrl=http://aiapi:8000
+      - SeaweedFS__ServiceURL=http://seaweedfs:8333
+      - SeaweedFS__AccessKey=${S3_ACCESS_KEY}
+      - SeaweedFS__SecretKey=${S3_SECRET_KEY}
+      - SeaweedFS__BucketName=isas-files
+      - SeaweedFS__ForcePathStyle=true
+      # RabbitMQ — Campaign publish email mời (D1) + cv-screening (C14) + consume ranking (E4).
+      # THIẾU → POST /invitations 500 "endpoints not reachable" (bắt ở API sweep 2026-07-13).
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
+      # D28 — B2B tier gate stays off until staging verification. When enabled, this client must
+      # resolve Payment directly with the internal token; it never goes through Gateway.
+      - Payment__BaseUrl=http://isas.paymentservice:8080
+      # D2 — join magic-link: Campaign gọi Auth `/internal/auth/provision-candidate` (tạo/lấy tài khoản
+      # Candidate theo email) rồi Interview `/internal/sessions/campaign` (create-or-get session lúc
+      # Start). THIẾU 2 base URL này → join/start B2B 500 (bắt ở đợt hardening 2026-07-15).
+      - Auth__BaseUrl=http://isas.authservice:8080
+      - Interview__BaseUrl=http://isas.interviewservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}
+      # C14 — callback sàng CV, KHÔNG qua gateway (GEN-1).
+      # 🔴 OPS8: trước đây là `http://${SERVER_TS_IP}:5247` với lý do "IP tailnet tới được từ CẢ
+      # container trên server LẪN Mac". Tiền đề đó SAI: container trên bridge network KHÔNG tới
+      # được IP Tailscale của chính host. Từ 2026-08-06 aiworker chạy trên server ⇒ callback
+      # timeout → nack → republish vô hạn, ứng viên kẹt `Analyzing`; sau `Screening:GiveUpAfterHours`
+      # (6h) → `AnalysisFailed`, mà KHÔNG có endpoint HR retry.
+      # Triệu chứng đánh lừa: publish OK, queue có consumer, worker vẫn chấm answer bình thường.
+      # ⚠ Đường lùi chạy aiworker trên Mac PHẢI đổi khoá này về `http://${SERVER_TS_IP}:5247`
+      # (cổng 5247 vẫn publish bên dưới nên đường đó còn dùng được).
+      - Internal__CallbackBase=http://isas.campaignservice:8080
+      # OPS9 — dùng CHUNG biến với Interview__Bilingual__Enabled (dòng trên, service interviewservice)
+      # để hai nửa B2C/B2B không bao giờ lệch nhau nữa: 2026-08-07 bật cờ Interview mà quên cờ này
+      # ⇒ POST /campaign {"language":"en"} trả 400, nửa B2B của PR #145 không verify được.
+      - Campaign__Bilingual__Enabled=${BILINGUAL_ENABLED:-false}
+      - Tiering__Enabled=${TIERING_ENABLED:-false}
+      # SMTP — InvitationEmailConsumer gửi email mời (magic-link) khi tiêu thụ campaign_invitation_email_queue.
+      - EmailSettings__Host=${SMTP_HOST}
+      - EmailSettings__Port=${SMTP_PORT}
+      - EmailSettings__Username=${SMTP_USER}
+      - EmailSettings__Password=${SMTP_PASS}
+      - EmailSettings__From=${SMTP_FROM}
+      # Magic-link ứng viên = {baseUrl}/invite/{token} — PHẢI là origin của FRONTEND.
+      # 🔴 Trước đây chỗ này ghi `${GATEWAY_PUBLIC_URL}` + path `/invitations/`: sai HAI lớp (gateway chỉ
+      # phục vụ `/api/v1/...`, còn `/invitations/:token` là route API trả JSON — route FE là `invite/:token`)
+      # ⇒ link trong email trả 404 body RỖNG = trang trắng, nhìn y như đang tải, sống nhiều ngày không ai
+      # báo. Sửa ở `6507b2e` (+ gỡ hẳn fallback về `Gateway:Url`, vì fallback làm cấu hình TRÔNG như đã đặt).
+      - Invitation__BaseUrl=${FRONTEND_PUBLIC_URL}
+    depends_on: [postgres, seaweedfs, rabbitmq]
+    networks: [isas-dev-network]
+    restart: unless-stopped
+
+  isas.paymentservice:
+    image: ghcr.io/su26se043/isas.paymentservice:${IMAGE_TAG:-dev}
+    container_name: paymentservice-dev
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=isas_payment;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_KEY}
+      - Jwt__Issuer=http://isas.authservice:8080
+      - Jwt__Audience=http://isas.authservice:8080
+      - Internal__Token=${INTERNAL_TOKEN}
+      - RabbitMQ__HostName=rabbitmq
+      - RabbitMQ__UserName=${RABBITMQ_USER}
+      - RabbitMQ__Password=${RABBITMQ_PASS}
+      - PayOS__ClientId=${PAYOS_CLIENT_ID}
+      - PayOS__ApiKey=${PAYOS_API_KEY}
+      - PayOS__ChecksumKey=${PAYOS_CHECKSUM_KEY}
+      - PayOS__ReturnUrl=${PAYOS_RETURN_URL}     # BF3 — bắt buộc, PayOS reject tạo link nếu null
+      - PayOS__CancelUrl=${PAYOS_CANCEL_URL}     # BF3 — bắt buộc
+      # Kenh CHI (hoan tien tu dong) — credential RIENG, khong dung chung kenh thu.
+      - PayOS__Payout__ClientId=${PAYOS_PAYOUT_CLIENT_ID:-}
+      - PayOS__Payout__ApiKey=${PAYOS_PAYOUT_API_KEY:-}
+      - PayOS__Payout__ChecksumKey=${PAYOS_PAYOUT_CHECKSUM_KEY:-}
+      - RefundPayout__Enabled=${REFUND_PAYOUT_ENABLED:-false}
+      - RefundPayout__MaxAutoPayoutVnd=${REFUND_PAYOUT_MAX_VND:-2000000}
+      # CITAD Vietcombank -> BIN NAPAS (doi chieu api.vietqr.io/v2/banks). Du lieu tra cuu cong khai.
+      - RefundPayout__BankBinMap__01203001=970436
+      - Interview__BaseUrl=http://isas.interviewservice:8080   # DB18 — OrphanReservationReconciler gọi Interview /internal/sessions/exists (trống → reconciler safe-skip)
+      # BK24 — `InvoiceOverdueReconciler` đóng dấu hoá đơn postpaid Issued→Overdue quá hạn. Đó là cái
+      # PHANH của BK17 (org có hoá đơn Overdue thì reserve → 402): không bật thì postpaid là "trả sau"
+      # KHÔNG có phanh. Bật thật trên server 2026-07-23.
+      - InvoiceOverdue__Enabled=true
+      - InvoiceOverdue__GraceHours=24
+      - InvoiceOverdue__ScanIntervalSeconds=600
+      # D28 — keep both safeguards explicit during additive rollout. Unlimited plans remain disabled.
+      - Tiering__Enabled=${TIERING_ENABLED:-false}
+      - Tiering__AllowUnlimitedPlans=${TIERING_ALLOW_UNLIMITED_PLANS:-false}
+      # F7 — suất dùng thử tặng lúc tạo ví User. Có default :-3 vì chuỗi RỖNG không parse được thành int
+      # (env thiếu sẽ làm options binder ném lúc khởi động). Đặt 0 để tắt hẳn.
+      - Billing__FreeTrialCredits=${FREE_TRIAL_CREDITS:-3}
+    depends_on: [postgres, rabbitmq]
+    networks: [isas-dev-network]
+    restart: unless-stopped
+
+  isas.gateway:
+    image: ghcr.io/su26se043/isas.gateway:${IMAGE_TAG:-dev}
+    container_name: gateway-dev
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      # Chỉ override địa chỉ runtime; routing /api/v1 lấy từ appsettings.json trong image.
+      - ReverseProxy__Clusters__auth-cluster__Destinations__auth-node-01__Address=http://isas.authservice:8080
+      - ReverseProxy__Clusters__interview-cluster__Destinations__interview-node-01__Address=http://isas.interviewservice:8080
+      - ReverseProxy__Clusters__campaign-cluster__Destinations__campaign-node-01__Address=http://isas.campaignservice:8080
+      - ReverseProxy__Clusters__payment-cluster__Destinations__payment-node-01__Address=http://isas.paymentservice:8080
+      - ReverseProxy__Clusters__interview-cluster__HttpRequest__ActivityTimeout=00:03:30  
+      # GEN-7: AIService internal-only — KHÔNG override `ai-cluster` ở đây (Interview/Campaign gọi thẳng
+      # qua `AiService:BaseUrl`). ⚠ Server hiện VẪN còn dòng override ai-cluster; nên xoá bên đó, đừng
+      # thêm lại vào đây. Lưu ý: `ai-route` + khối chặn `/internal/*` chỉ ĐƯỢC BẬT khi môi trường ≠
+      # Development — mà production đang chạy Development (OPS6) ⇒ /api/v1/ai hiện vẫn đi qua gateway.
+      #
+      # 🔴 ApiServices phải khai theo TÊN (`ApiServices__<tên>__OpenApiUrl`), KHÔNG theo index.
+      # Dạng cũ `ApiServices__0__…` là bug đã sửa ở PR #100: appsettings khai 5 entry còn compose khai
+      # 4 URL ⇒ mỗi service ghép nhầm `Prefix` của service khác (119/144 op sai đường dẫn trên Scalar),
+      # Payment không có entry nên đổ hết path ra root. Với bản keyed hiện tại, `__0__` còn tệ hơn: nó
+      # tạo entry tên "0" KHÔNG có Prefix (bị bỏ qua + log Error) trong khi 4 service thật giữ nguyên URL
+      # localhost:517x của appsettings ⇒ gộp OpenAPI hỏng SẠCH. Tên hợp lệ: auth · interview · campaign · payment.
+      - ApiServices__auth__OpenApiUrl=http://isas.authservice:8080/openapi/v1.json
+      - ApiServices__interview__OpenApiUrl=http://isas.interviewservice:8080/openapi/v1.json
+      - ApiServices__campaign__OpenApiUrl=http://isas.campaignservice:8080/openapi/v1.json
+      - ApiServices__payment__OpenApiUrl=http://isas.paymentservice:8080/openapi/v1.json
+      # Scalar (Development) phải thấy + gọi được CẢ AIService. FastAPI phục vụ schema ở /openapi.json.
+      # Production: aggregator bỏ qua tên `ai` + IsGatewayAiPath trả 404 ⇒ vẫn internal-only (GEN-7).
+      - ApiServices__ai__OpenApiUrl=http://aiapi:8000/openapi.json
+      - ReverseProxy__Clusters__ai-cluster__Destinations__ai-node-01__Address=http://aiapi:8000
+      - Gateway__Url=${GATEWAY_PUBLIC_URL}
+      # ⚠ Mỗi `Cors__AllowedOrigins__N` GHI ĐÈ phần tử thứ N của mảng trong appsettings.json (5 phần tử:
+      # localhost:4200 · localhost:3000 · localhost:5173 · issa.app · sep-490-angular.vercel.app) — không
+      # phải nối thêm. Vì thế phải khai LẠI tường minh origin FE production ở index 5 và localhost:4200 ở
+      # index 6, nếu không chúng bị chính các dòng 0-4 dưới đây ghi đè mất.
+      # ⚠ Server đang khai TRÙNG index 4 hai lần (`${GATEWAY_PUBLIC_URL}` rồi `http://localhost:4200`) →
+      # dòng sau thắng, `GATEWAY_PUBLIC_URL` rơi khỏi CORS. Bố cục dưới đây giữ đủ cả hai; sửa bên server theo.
+      - Cors__AllowedOrigins__0=http://localhost:3000
+      - Cors__AllowedOrigins__1=http://localhost:5173
+      - Cors__AllowedOrigins__2=http://localhost:5174
+      - Cors__AllowedOrigins__3=https://isas-web-client.vercel.app
+      - Cors__AllowedOrigins__4=${GATEWAY_PUBLIC_URL}
+      - Cors__AllowedOrigins__5=https://sep-490-angular.vercel.app
+      - Cors__AllowedOrigins__6=http://localhost:4200
+      #
+      # ===== FR18 — gom HTTP traffic rồi FLUSH về PaymentService =====
+      # `TrafficFlushService.cs:11` thoat ngay (log "FR18 traffic flush disabled or incomplete
+      # configuration") neu THIEU BAT KY ve nao trong BA ve duoi. Truoc 2026-08-07 gateway thieu
+      # ca ba ⇒ tinh nang tat cam, `http_traffic_stats` = 0 row.
+      # ⚠ Ten section la `Analytics`, KHONG phai `TrafficAnalytics` (TrafficAnalyticsOptions.cs:4).
+      - Analytics__Enabled=true
+      # ⚠ Mac dinh appsettings la http://localhost:5271 — PARSE DUOC nen guard Uri.TryCreate cho qua,
+      # roi moi POST deu hong vi trong container gateway thi localhost la chinh no. Hong IM LANG.
+      - Analytics__SinkBaseUrl=http://isas.paymentservice:8080
+      # ⚠ 4 service .NET kia deu co dong nay; gateway thi khong ⇒ ve thu ba cua guard luon rong.
+      - Internal__Token=${INTERNAL_TOKEN}
+    depends_on: [isas.authservice, isas.interviewservice, isas.campaignservice, isas.paymentservice]
+    ports:
+      - "5051:8080"
+    networks: [isas-dev-network]
+    restart: unless-stopped
+
+  # ===== AI LAYER (Python) — MỘT image, HAI tiến trình =====
+  # Trước 2026-08-06 hai container này chạy trên MAC, gọi S3/RabbitMQ của server qua Tailscale.
+  # Đo được link đó bão hoà ở ~1 MB/s, và audio phải đi vòng server(S3) → Mac → OpenAI ⇒ quét tải
+  # `/decide-next` knee ở 0,5 req/s (~60 người đồng thời). Đưa về đây: chặng S3 thành loopback,
+  # chỉ còn upload ra OpenAI qua đường 6,5 MB/s.
+  #
+  # Anchor dưới đây KHÔNG phải để tiết kiệm dòng: 2026-08-05 hai container này chạy HAI IMAGE khác
+  # nhau 3 ngày (cùng tag `:local`), và trước đó USAGE_SINK_BASE/PROMPT_REGISTRY_BASE vắng ở một
+  # bên khiến F21 + F22 tắt câm nhiều ngày. Khối env chung phải KHÔNG THỂ lệch giữa hai bên.
+  aiapi:
+    <<: *aiservice
+    container_name: aiapi-dev
+    environment:
+      <<: *aiservice-env
+      ANALYZE_CV_THINKING_BUDGET: 0
+      ANALYZE_CV_MAX_GROUNDING_CHUNKS: 8
+    # GEN-7 internal-only: `expose`, KHÔNG `ports`. Interview/Campaign gọi qua tên `aiapi`.
+    # ⚠ ĐỪNG thêm lại override `ai-cluster` ở gateway chỉ vì nay aiapi là container anh em —
+    # appsettings gateway trỏ `localhost:8000` nên `/api/v1/ai` vẫn chết đúng như thiết kế.
+    expose: ["8000"]
+    healthcheck:
+      # image không có curl/wget — dùng chính python trong image.
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/v1/health',timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # rộng: lần đầu volume rỗng phải tải ~800 MB model trước khi bind cổng.
+      start_period: 180s
+    depends_on: [seaweedfs, redis]
+
+  aiworker:
+    <<: *aiservice
+    container_name: aiworker-dev
+    command: python -m app.worker
+    environment:
+      <<: *aiservice-env
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
+      QUEUE_NAME: scoring_pipeline_queue
+      # ⚠ KHÔNG dấu `/` cuối — worker.py ghép chuỗi trần, không rstrip.
+      DOTNET_CALLBACK_BASE: http://isas.interviewservice:8080
+      # C14 — giữ TẮT. Trình tự bật: deploy (tắt) → XẢ cv_screening_queue → true. Bật cùng lúc
+      # deploy = 713 lượt Gemini cho 8 ứng viên (republisher đã nhân bản, đo 2026-08-02).
+      # `callbackBase` của sàng CV lấy từ CHÍNH message, không phải env này.
+      CV_SCREENING_ENABLED: ${CV_SCREENING_ENABLED:-false}
+      SCORING_PREFETCH: ${SCORING_PREFETCH:-10}
+    depends_on: [rabbitmq, seaweedfs, redis]
+
+networks:
+  isas-dev-network:
+    driver: bridge
+
+volumes:
+  # ⚠ BIND MOUNT sang /home (sda8) chứ KHÔNG dùng named volume.
+  # Lý do: Docker data root nằm ở /var/lib/docker trên sda7 — phân vùng đó chỉ còn ~14G và đang
+  # phải nuôi cả stack main. sda8 mount ở /home có 64G gần như trống. Named volume sẽ âm thầm
+  # đổ dữ liệu vào sda7 và làm đầy phân vùng hệ thống.
+  postgres_dev_data:
+    driver: local
+    driver_opts: {type: none, o: bind, device: /home/duc2834/docker-data/dev/postgres}
+  seaweedfs_dev_data:
+    driver: local
+    driver_opts: {type: none, o: bind, device: /home/duc2834/docker-data/dev/seaweedfs}
+  qdrant_dev_data:
+    driver: local
+    driver_opts: {type: none, o: bind, device: /home/duc2834/docker-data/dev/qdrant}
+  ai_hf_cache:
+    driver: local
+    driver_opts: {type: none, o: bind, device: /home/duc2834/docker-data/dev/hf_cache}
+  ai_insightface:
+    driver: local
+    driver_opts: {type: none, o: bind, device: /home/duc2834/docker-data/dev/insightface}
