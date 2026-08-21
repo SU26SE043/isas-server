@@ -38,6 +38,10 @@ public class RoadmapLesson
     public List<GroundingChunk>? GroundingRefs { get; set; }
 
     public LessonStatus Status { get; set; } = LessonStatus.Theory;
+
+    // Lịch sử MỌI lần làm bài này (kể cả các lần làm lại). `SessionId` ở trên vẫn trỏ lần MỚI NHẤT.
+    // Cascade theo lesson_id.
+    public ICollection<RoadmapLessonAttempt> Attempts { get; set; } = [];
 }
 
 /// <summary>

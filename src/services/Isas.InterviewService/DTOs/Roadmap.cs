@@ -71,7 +71,23 @@ public record LessonResponse(
     // RAG grounding — nguồn UY TÍN đã cite cho lý thuyết bài học ({chunkId, sourceUrl, sourceTitle}).
     // 3 trạng thái như QuestionResponse.Citations: null = roadmap cũ (chưa precompute); [] = precompute
     // chạy nhưng corpus không phủ → ungrounded; non-empty = grounded. Chỉ surface khi kèm theory.
-    IReadOnlyList<Citation>? Citations = null
+    IReadOnlyList<Citation>? Citations = null,
+
+    // Số lần ĐÃ làm bài này (0 = chưa bấm Bắt đầu lần nào). Đếm từ `roadmap_lesson_attempts`, nên
+    // bài học xong từ trước khi có bảng đó vẫn ra 1 nhờ backfill của migration.
+    int AttemptCount = 0,
+
+    /// <summary>
+    /// Có hiện nút "Làm lại" không — SERVER quyết, FE KHÔNG tự suy từ <c>status</c>.
+    ///
+    /// <para>Nay = "bài đã hoàn thành" (chủ sở hữu là hiển nhiên: chỉ chủ roadmap mới đọc được
+    /// response này). ⚠ CỐ Ý KHÔNG bao gồm số dư ví: đọc số dư là một lời gọi HTTP sang
+    /// PaymentService, mà đường đọc lesson/roadmap hiện KHÔNG phụ thuộc Payment — thêm vào là đặt
+    /// Payment lên đường tới hạn của việc XEM lộ trình (Payment chết → trang lộ trình chết hoặc nói
+    /// dối). Số dư còn đổi được giữa lúc đọc và lúc bấm, nên FE vẫn PHẢI xử lý 402 dù cờ này là gì;
+    /// đường "Bắt đầu" hôm nay cũng không gác theo số dư, giữ nguyên như vậy cho đối xứng.</para>
+    /// </summary>
+    bool CanRetry = false
 );
 
 public record MilestoneResponse(

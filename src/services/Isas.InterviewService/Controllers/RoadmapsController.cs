@@ -240,6 +240,63 @@ public class RoadmapsController : ControllerBase
         }
     }
 
+    // POST /roadmaps/{id}/lessons/{lessonId}/retry — LÀM LẠI bài đã hoàn thành để nâng điểm.
+    //
+    // Endpoint RIÊNG chứ không nới /start: /start mang nghĩa "bắt đầu / tiếp tục", còn FE phải phân
+    // biệt được "tiếp tục buổi dở" với "tạo buổi mới" để hiện đúng nút. Response cùng SHAPE với
+    // /start (PracticeSessionResponse) nên FE dùng lại nguyên bộ mapper.
+    //
+    // 200 · 402 hết credit (KHÔNG tạo session) · 409 khi bài còn Theory hoặc đang Practicing ·
+    // 404 ngoài quyền sở hữu · 502 AI/Payment lỗi.
+    [HttpPost("{id:guid}/lessons/{lessonId:guid}/retry")]
+    [ProducesResponseType(typeof(PracticeSessionResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status402PaymentRequired)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]
+    public async Task<IActionResult> RetryLesson(Guid id, Guid lessonId, CancellationToken ct)
+    {
+        if (!TryGetCandidateId(out var candidateId))
+            return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
+
+        try
+        {
+            var result = await _lessonService.RetryLessonAsync(candidateId, id, lessonId, ct);
+            return Ok(result);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (LessonRetryNotAllowedException ex)
+        {
+            // 409: chưa học lần nào (bấm Bắt đầu) / đang có buổi dở (tiếp tục buổi đó).
+            return Conflict(new { error = ex.Message, sessionId = ex.SessionId });
+        }
+        catch (InsufficientCreditException ex)
+        {
+            _logger.LogWarning(ex, "Ví không đủ credit để làm lại lesson {LessonId}", lessonId);
+            return StatusCode(StatusCodes.Status402PaymentRequired, new { error = ex.Message });
+        }
+        catch (PaymentServiceException ex)
+        {
+            _logger.LogError(ex, "PaymentService lỗi khi reserve credit để làm lại lesson {LessonId}", lessonId);
+            return StatusCode(StatusCodes.Status502BadGateway,
+                new { error = "Dịch vụ thanh toán tạm thời không phản hồi. Vui lòng thử lại sau." });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Lỗi logic khi làm lại lesson {LessonId}", lessonId);
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     // GET /roadmaps/{id}/report — report roadmap. BC15. Active → interim (radar + levelEvaluation, kết luận
     // có thể rỗng/null); Completed → snapshot final_report + overallComment (không tính lại). Chủ mới xem.
     [HttpGet("{id:guid}/report")]
