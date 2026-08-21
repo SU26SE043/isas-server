@@ -416,6 +416,13 @@ class GenerateRoadmapRequest(BaseModel):
     # RAG grounding (Contract 2) — cấu trúc roadmap KHÔNG emit citation (Phase 1), nhưng nếu W2
     # cấp grounding thì nó được chèn làm căn cứ. Khai tường minh để pydantic không nuốt (BC14).
     grounding: list[GroundingChunk] | None = None
+    # BE-1 — tiêu chí năng lực THẬT của (jobCategory, language), cùng shape `CriterionRef` dùng cho
+    # chấm-theo-phạm-vi. Milestone.focusCriteria CHỈ được chọn tên trong tập này (sao chép nguyên
+    # văn); vắng/rỗng ⇒ không ràng buộc gì thêm (hành vi cũ). ⚠ PHẢI khai tường minh ở đây — lệch
+    # với comment `focus`/`cvAnalysisSummary` ngay trên: schema này KHÔNG set model_config, nên
+    # pydantic `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai (đúng lớp bug BC14/F2b
+    # `focusCriteria`, và là chính lý do đo được chỉ 7% focusCriteria khớp rubric thật trên prod).
+    criteria: list[CriterionRef] | None = None
 
 
 class RoadmapLesson(BaseModel):

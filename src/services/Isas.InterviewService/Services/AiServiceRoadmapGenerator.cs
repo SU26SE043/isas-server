@@ -56,10 +56,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         string jobCategory, string level,
         IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText,
         string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
         CancellationToken ct = default)
-        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi");
+        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria);
 
-    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language)
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null)
     {
         var payload = new
         {
@@ -73,7 +74,14 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             // camelCase này (extra='ignore' sẽ nuốt im lặng nếu lệch tên) và tự bọc như DỮ LIỆU (AI-4).
             focus,
             cvAnalysisSummary,
-            priorRoadmapSummary
+            priorRoadmapSummary,
+            // BE-1 — tiêu chí năng lực THẬT để milestone.focusCriteria chọn NGUYÊN VĂN thay vì bịa tên.
+            // Anonymous object viết tay tên trường camelCase — mẫu `criteria` của AiServiceQuestionGenerator:
+            // JsonContent.Create dùng JsonSerializerDefaults.Web (camelCase) nên tên TRƯỜNG không phải rủi ro
+            // thật, nhưng ĐỔI TÊN trường thì pydantic extra='ignore' vẫn nuốt im lặng — giữ nguyên mẫu cho nhất quán.
+            criteria = criteria is { Count: > 0 }
+                ? criteria.Select(c => new { criterionId = c.CriterionId, name = c.Name })
+                : null
         };
 
         HttpResponseMessage response;

@@ -15,6 +15,7 @@ from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
 from app.question_quality import coverage_defects, verify_defect
+from app.roadmap_quality import filter_milestone_criteria, message as roadmap_message
 from app import prompt_registry, timing
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
@@ -1863,7 +1864,10 @@ class GeminiProvider(QuestionProvider):
                                focus: str | None = None,
                                cv_analysis_summary: str | None = None,
                                prior_roadmap_summary: str | None = None,
-                               grounding: list[dict] | None = None, language: str = "vi") -> list[dict]:
+                               grounding: list[dict] | None = None,
+                               criteria: list[dict] | None = None, language: str = "vi",
+                               _retry_feedback: str | None = None,
+                               _attempt: int = 1) -> list[dict]:
         """
         BC13/D20 — sinh cấu trúc roadmap ôn tập (sync, stateless, KHÔNG ghi DB).
 
@@ -1873,17 +1877,32 @@ class GeminiProvider(QuestionProvider):
         ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ định hình cấu trúc.
         Cấu trúc roadmap KHÔNG emit citation ở Phase 1 → output shape KHÔNG đổi (list dict cũ).
 
+        BE-1 — ``criteria`` = tiêu chí năng lực THẬT của (nghề, ngôn ngữ) này, cùng shape
+        ``CriterionRef`` dùng cho chấm-theo-phạm-vi (``{criterionId, name}``; id không dùng ở
+        đây nhưng giữ hợp đồng đồng nhất với ``.NET``/``/generate-questions``). Model chỉ được
+        chọn ``focusCriteria`` bằng cách SAO CHÉP NGUYÊN VĂN tên trong danh sách này; tên KHÔNG
+        khớp bị LỌC BỎ sau khi model trả lời (chống bịa by-construction, mẫu RAG/chấm-theo-phạm-vi
+        — KHÔNG fuzzy-match, xem ``app.roadmap_quality``). Milestone mất hết tiêu chí sau khi lọc
+        → retry ĐÚNG MỘT LẦN kèm nhận xét liệt kê tên hợp lệ (mẫu SC1c); vẫn rỗng sau retry →
+        GIỮ milestone (focusCriteria rỗng), chỉ log lỗi — KHÔNG raise: tạo roadmap không trừ credit
+        (D7/D15), nên biến một milestone thiếu nhãn thành cả roadmap lỗi (mất luôn các milestone
+        khác đã đúng) là đắt hơn nhiều so với việc milestone đó tạm thời không bám baseline.
+
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
+        known_names = [str(c.get("name", "")).strip() for c in (criteria or [])
+                       if isinstance(c, dict) and str(c.get("name", "")).strip()]
         prompt = build_roadmap_prompt(
             job_category, level, weaknesses, cv_text,
             focus=focus,
             cv_analysis_summary=cv_analysis_summary,
             prior_roadmap_summary=prior_roadmap_summary,
-            grounding=grounding, language=language,
+            grounding=grounding, criteria=known_names or None,
+            retry_feedback=_retry_feedback,
+            language=language,
         )
 
         response = await self._generate(
@@ -1943,7 +1962,10 @@ class GeminiProvider(QuestionProvider):
             if not title:
                 continue  # bỏ milestone bịa không có title
 
-            focus = [str(f).strip() for f in (m.get("focusCriteria") or []) if str(f).strip()]
+            # BE-1: KHÔNG gọi biến này `focus` — đã dùng tên đó cho tham số free-text phía trên,
+            # và retry sau vòng lặp này cần dùng lại giá trị GỐC của `focus` (parameter), không phải
+            # focusCriteria của milestone cuối cùng vừa duyệt.
+            focus_names = [str(f).strip() for f in (m.get("focusCriteria") or []) if str(f).strip()]
 
             lessons: list[dict] = []
             for l in (m.get("lessons") or []):
@@ -1955,10 +1977,34 @@ class GeminiProvider(QuestionProvider):
             if not lessons:
                 continue  # milestone không có lesson nào hợp lệ -> bỏ
 
-            milestones.append({"title": title, "focusCriteria": focus, "lessons": lessons})
+            milestones.append({"title": title, "focusCriteria": focus_names, "lessons": lessons})
 
         if not milestones:
             raise ValueError("LLM trả về roadmap rỗng sau khi lọc.")
+
+        # BE-1 — lọc focusCriteria về đúng tập tên đã cấp (chống bịa by-construction). Không lọc
+        # gì nếu caller không truyền criteria (known_names rỗng) → giữ nguyên hành vi cũ.
+        if known_names:
+            milestones, empty_titles = filter_milestone_criteria(milestones, known_names)
+            if empty_titles:
+                logger.warning(
+                    "Roadmap: %d milestone mất hết focusCriteria hợp lệ sau khi lọc theo tên "
+                    "tiêu chí đã cấp: %s", len(empty_titles), "; ".join(empty_titles))
+                if _attempt < 2:  # SC1c — ĐÚNG MỘT lượt viết lại, không hơn.
+                    feedback = roadmap_message(
+                        "milestone_no_criteria", language,
+                        titles="; ".join(empty_titles), allowed=", ".join(known_names))
+                    return await self.generate_roadmap(
+                        job_category, level, weaknesses, cv_text, focus=focus,
+                        cv_analysis_summary=cv_analysis_summary,
+                        prior_roadmap_summary=prior_roadmap_summary,
+                        grounding=grounding, criteria=criteria, language=language,
+                        _retry_feedback=feedback, _attempt=_attempt + 1)
+                # Hết lượt retry — GIỮ milestone (focusCriteria rỗng), KHÔNG raise: xem docstring
+                # (một milestone thiếu nhãn không đáng đánh đổi mất TOÀN BỘ roadmap đã sinh đúng).
+                logger.error(
+                    "Roadmap: %d milestone vẫn không có focusCriteria hợp lệ sau %d lượt: %s",
+                    len(empty_titles), _attempt, "; ".join(empty_titles))
 
         return milestones
 
