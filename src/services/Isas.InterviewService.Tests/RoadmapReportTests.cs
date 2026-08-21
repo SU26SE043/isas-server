@@ -181,9 +181,15 @@ public class RoadmapReportTests
             It.IsAny<IReadOnlyList<RoadmapCriteriaProgress>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    // baseline null cho mile 1 → improvement = điểm đạt (không có delta).
+    // ⚠ ĐẢO TIỀN ĐỀ CÓ CHỦ ĐÍCH (tên cũ: Milestone1_NullBaseline_ImprovementShowsAchievedScore).
+    // Bản cũ khẳng định "không có mốc → hiện điểm đạt" và coi đó là hành vi ĐÚNG — thực ra đó là
+    // BUG: `improvement` lên UI dưới nhãn "tiến độ" (delta), nhét điểm tuyệt đối (72m) vào đó là
+    // nói cho người học một điều SAI theo hướng CÓ LỢI (trông như tiến bộ +72% trong khi bài chỉ
+    // đạt 72/100 điểm). Sự cố thật trên production: milestone Completed lưu
+    // {"Ngữ pháp & dùng từ": 25.01}. Tiêu chí không có mốc → BỎ QUA, không có tiêu chí nào còn lại
+    // → Improvement = null (không phải dictionary rỗng).
     [Fact]
-    public async Task Milestone1_NullBaseline_ImprovementShowsAchievedScore()
+    public async Task Milestone1_NullBaseline_ImprovementIsNull()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
@@ -202,7 +208,65 @@ public class RoadmapReportTests
 
         var mile1 = await t.NewContext().RoadmapMilestones.AsNoTracking().FirstAsync(m => m.Id == m1.Id);
         Assert.Equal(MilestoneStatus.Completed, mile1.Status);
-        Assert.Equal(72m, mile1.Improvement!["Clarity"]);   // không có mốc → hiện điểm đạt
+        Assert.Null(mile1.Improvement);
+    }
+
+    // mile 2 KHÔNG có baseline (null từ lúc tạo roadmap) nhưng mile 1 CÓ điểm → vẫn phải so đúng
+    // với mile 1 (không phải rơi về baseline null rồi trả rỗng/lỗi). Đây chính là ca "milestone 2
+    // trở đi lấy reference từ milestone trước" đang ĐÚNG — không được để sửa lỗi (1) làm hỏng nó.
+    [Fact]
+    public async Task Milestone2_NoBaseline_ButMilestone1HasScores_StillUsesMilestone1AsReference()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var s1 = AddScoredSession(t, user, ("Clarity", 50m));   // mile 1
+        var s2 = AddScoredSession(t, user, ("Clarity", 80m));   // mile 2
+
+        var r = NewRoadmap(user, baseline: null);   // KHÔNG có baseline
+        var m1 = AddMilestone(r, 1, MilestoneStatus.Completed, "Clarity");
+        AddLesson(m1, 1, LessonStatus.Done, s1);
+        var m2 = AddMilestone(r, 2, MilestoneStatus.InProgress, "Clarity");
+        AddLesson(m2, 1, LessonStatus.Done, s2);
+        t.Db.Roadmaps.Add(r);
+        await t.Db.SaveChangesAsync();
+
+        var (svc, _) = Svc(t);
+        await svc.OnLessonDoneAsync(s2);
+
+        var mile2 = await t.NewContext().RoadmapMilestones.AsNoTracking().FirstAsync(m => m.Id == m2.Id);
+        Assert.Equal(MilestoneStatus.Completed, mile2.Status);
+        // delta mile2(80) − mile1(50) = 30, dù roadmap.Baseline null.
+        Assert.Equal(30m, mile2.Improvement!["Clarity"]);
+    }
+
+    // baseline chỉ khai 2/7 tiêu chí của milestone → improvement CHỈ có đúng 2 entry, 5 tiêu chí
+    // còn lại (không có mốc) bị BỎ QUA thay vì nhét điểm tuyệt đối vào slot delta.
+    [Fact]
+    public async Task BaselineCoversOnlySomeCriteria_ImprovementHasOnlyThoseEntries()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var names = new[] { "C1", "C2", "C3", "C4", "C5", "C6", "C7" };
+        var s1 = AddScoredSession(t, user, names.Select(n => (n, 60m)).ToArray());
+
+        // baseline chỉ khai C1/C2 — 5 tiêu chí kia không có mốc.
+        var baseline = new Dictionary<string, decimal> { ["C1"] = 40m, ["C2"] = 50m };
+        var r = NewRoadmap(user, baseline);
+        var m1 = AddMilestone(r, 1, MilestoneStatus.InProgress, names);
+        AddLesson(m1, 1, LessonStatus.Done, s1);
+        t.Db.Roadmaps.Add(r);
+        await t.Db.SaveChangesAsync();
+
+        var (svc, _) = Svc(t);
+        await svc.OnLessonDoneAsync(s1);
+
+        var mile1 = await t.NewContext().RoadmapMilestones.AsNoTracking().FirstAsync(m => m.Id == m1.Id);
+        Assert.NotNull(mile1.Improvement);
+        Assert.Equal(2, mile1.Improvement!.Count);
+        Assert.Equal(20m, mile1.Improvement["C1"]);   // 60 − 40
+        Assert.Equal(10m, mile1.Improvement["C2"]);   // 60 − 50
+        foreach (var dropped in new[] { "C3", "C4", "C5", "C6", "C7" })
+            Assert.False(mile1.Improvement.ContainsKey(dropped));
     }
 
     // mile N (N≥2) so mile N−1.

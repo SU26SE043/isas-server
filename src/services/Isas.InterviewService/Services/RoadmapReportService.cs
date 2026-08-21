@@ -193,8 +193,19 @@ public class RoadmapReportService : IRoadmapReportService
     }
 
     // Improvement mile N = avg% mile N − reference; reference = mile N−1 (nếu có điểm) else baseline;
-    // mile 1 = baseline. Thiếu reference cho 1 tiêu chí → hiện điểm đạt (avg% mile N) — "không có delta".
-    private async Task<Dictionary<string, decimal>> ComputeImprovementAsync(
+    // mile 1 = baseline.
+    //
+    // Tiêu chí THIẾU reference (không có mốc để so) → BỎ QUA tiêu chí đó, KHÔNG gán điểm tuyệt đối
+    // vào slot "delta". Field này lên UI dưới nhãn "tiến độ" (progress) — gán một điểm số tuyệt
+    // đối vào đó là nói cho người học một điều SAI, và sai theo hướng CÓ LỢI (trông như đã tiến bộ).
+    // Sự cố thật trên production: một milestone Completed lưu {"Ngữ pháp & dùng từ": 25.01} — đọc
+    // report tưởng đâu tiến bộ +25%, thực ra bài chỉ ĐẠT 25/100 điểm, không phải một delta nào cả.
+    //
+    // Bỏ THEO TỪNG TIÊU CHÍ, không phải "thiếu baseline thì tắt cả milestone": milestone 2 trở đi
+    // vẫn so đúng với milestone trước (hành vi đó đang ĐÚNG — không được động vào). Kết quả rỗng
+    // hoàn toàn (không tiêu chí nào có mốc) → null, không phải dictionary rỗng — UI/DTO đã có sẵn
+    // nhánh null-check (`RoadmapService.cs` Improvement is null → trả null, không phải mảng rỗng).
+    private async Task<Dictionary<string, decimal>?> ComputeImprovementAsync(
         Roadmap roadmap, RoadmapMilestone milestone, CancellationToken ct)
     {
         var current = await AvgPctByCriterionForMilestoneAsync(milestone.Id, ct);
@@ -216,11 +227,11 @@ public class RoadmapReportService : IRoadmapReportService
         var improvement = new Dictionary<string, decimal>();
         foreach (var kv in current)
         {
-            improvement[kv.Key] = reference is not null && reference.TryGetValue(kv.Key, out var refPct)
-                ? Math.Round(kv.Value - refPct, 2)   // delta so mốc
-                : kv.Value;                          // không có mốc → hiện điểm đạt
+            if (reference is not null && reference.TryGetValue(kv.Key, out var refPct))
+                improvement[kv.Key] = Math.Round(kv.Value - refPct, 2);   // delta so mốc
+            // Không có mốc cho tiêu chí này → bỏ qua, KHÔNG thêm entry (xem comment ở trên).
         }
-        return improvement;
+        return improvement.Count > 0 ? improvement : null;
     }
 
     // avg% per tiêu chí (theo TÊN) qua các session Scored gắn các lesson của 1 milestone.
