@@ -550,12 +550,16 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
     try:
         weaknesses = [w.model_dump() for w in req.weaknesses] if req.weaknesses else None
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
+        # BE-1 — tiêu chí THẬT của (nghề, ngôn ngữ) để milestone.focusCriteria chọn NGUYÊN VĂN từ
+        # đây thay vì bịa tên. Vắng/rỗng ⇒ None (giữ hành vi cũ, không ràng buộc gì thêm).
+        criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
         milestones = await _call_with_language(req.language, provider.generate_roadmap,
             req.jobCategory, req.level, weaknesses, req.cvText,
             focus=req.focus,
             cv_analysis_summary=req.cvAnalysisSummary,
             prior_roadmap_summary=req.priorRoadmapSummary,
             grounding=grounding,
+            criteria=criteria,
         )
         return GenerateRoadmapResponse(
             milestones=[

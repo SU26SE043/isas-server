@@ -45,12 +45,14 @@ public class RoadmapTests
         });
 
     // BC17 — snapshot mọi tham số bối cảnh gửi xuống generator (để assert cái gì tới được AI).
+    // BE-1 — thêm `Criteria`: mutation-check anchor cho "criteria rỗng thay vì tiêu chí thật".
     private sealed record GenArgs(
         IReadOnlyList<RoadmapWeakness>? Weaknesses,
         string? CvText,
         string? Focus,
         string? CvAnalysisSummary,
-        string? PriorRoadmapSummary);
+        string? PriorRoadmapSummary,
+        IReadOnlyList<QuestionTargetCriterionDto>? Criteria);
 
     private static Mock<IAiServiceRoadmapGenerator> GenMock(
         RoadmapGenAiResult result, Action<GenArgs>? capture = null)
@@ -59,10 +61,11 @@ public class RoadmapTests
         var setup = m.Setup(x => x.GenerateAsync(
             It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
-            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()));
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+            It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()));
         if (capture is not null)
-            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, CancellationToken>(
-                    (_, _, w, cv, f, ca, pr, _) => capture(new GenArgs(w, cv, f, ca, pr)))
+            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, CancellationToken>(
+                    (_, _, w, cv, f, ca, pr, crit, _) => capture(new GenArgs(w, cv, f, ca, pr, crit)))
                 .ReturnsAsync(result);
         else
             setup.ReturnsAsync(result);
@@ -320,6 +323,56 @@ public class RoadmapTests
         Assert.Null(captured!.Weaknesses);    // không đẩy weakness nào xuống AI
     }
 
+    // ── BE-1 — CreateAsync phải gửi TIÊU CHÍ NĂNG LỰC THẬT xuống AIService, không phải rỗng ──
+    //
+    // Đo trên production: chỉ 7% `milestone.focusCriteria` khớp tên tiêu chí thật vì AIService
+    // trước đây KHÔNG hề được cấp danh sách này. Mutation-check anchor: gỡ `LoadCriteriaNamesAsync`
+    // khỏi `CreateAsync` (hoặc gửi rỗng thay vì danh sách thật) → test này ĐỎ.
+    [Fact]
+    public async Task Post_SendsRealCriterionNames_ForJobCategoryAndLanguage_ToGenerator()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        // Seed đúng bộ tiêu chí mặc định (candidate_id=null, campaign_id=null) cho (BE, vi) —
+        // giống hệt cách production seed rubric B2C (BC11).
+        t.Db.RubricCriteria.Add(TestDb.Criterion(JobCategory.BE, name: "Phân tích yêu cầu"));
+        t.Db.RubricCriteria.Add(TestDb.Criterion(JobCategory.BE, name: "Giao tiếp & trình bày"));
+        // Tiêu chí nghề KHÁC (FE) không được lẫn vào.
+        t.Db.RubricCriteria.Add(TestDb.Criterion(JobCategory.FE, name: "Không liên quan"));
+        t.Db.SaveChanges();
+
+        GenArgs? captured = null;
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+
+        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
+        Assert.IsType<CreatedResult>(result);
+
+        Assert.NotNull(captured);
+        Assert.NotNull(captured!.Criteria);
+        var names = captured.Criteria!.Select(c => c.Name).OrderBy(n => n).ToList();
+        Assert.Equal(["Giao tiếp & trình bày", "Phân tích yêu cầu"], names);
+    }
+
+    // Không có tiêu chí nào seed cho (nghề, ngôn ngữ) đó → gửi rỗng, KHÔNG lỗi (backward-compat: hệ
+    // thống prod luôn có seed BC11, nhưng test này khoá lại rằng thiếu dữ liệu không làm gãy roadmap).
+    [Fact]
+    public async Task Post_NoCriterionSeeded_SendsEmptyCriteria_NoError()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+
+        GenArgs? captured = null;
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+
+        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
+        Assert.IsType<CreatedResult>(result);
+
+        Assert.NotNull(captured);
+        Assert.Empty(captured!.Criteria!);
+    }
+
     // ── (2d) BC17 — id buổi thiếu / khác chủ / chưa Scored → 404 batch, KHÔNG lộ id nào, KHÔNG lưu row ──
     [Theory]
     [InlineData("missing")]      // id không tồn tại
@@ -464,7 +517,8 @@ public class RoadmapTests
         gen.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-roadmap trả 500"));
 
         var ctrl = Controller(t, new Mock<IStorageService>().Object, gen.Object, user);

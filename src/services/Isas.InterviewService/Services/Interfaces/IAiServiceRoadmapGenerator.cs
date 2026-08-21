@@ -7,6 +7,12 @@ namespace Isas.InterviewService.Services.Interfaces;
 public interface IAiServiceRoadmapGenerator
 {
     // BC17 — focus/cvAnalysisSummary/priorRoadmapSummary = ngữ cảnh thêm do candidate chọn (đều optional).
+    //
+    // BE-1 — `criteria` = tiêu chí năng lực THẬT của (jobCategory, language) này (cùng shape
+    // `QuestionTargetCriterionDto` dùng cho chấm-theo-phạm-vi). AIService chỉ cho model chọn
+    // `focusCriteria` bằng cách sao chép NGUYÊN VĂN tên trong tập này — vắng/rỗng ⇒ hành vi cũ
+    // (không ràng buộc gì thêm, model tự đặt tên). Đo trên production: chỉ 7% `focusCriteria` khớp
+    // tên tiêu chí thật khi thiếu tham số này.
     Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory,
         string level,
@@ -15,8 +21,9 @@ public interface IAiServiceRoadmapGenerator
         string? focus,                 // BC17 — mô tả tự do
         string? cvAnalysisSummary,     // BC17 — tóm tắt từ cv_analyses (BC7)
         string? priorRoadmapSummary,   // BC17 — tóm tắt từ final_report roadmap trước (BC15)
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
         CancellationToken ct = default);
-    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language);
+    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null);
 
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
     // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là

@@ -148,12 +148,17 @@ public class RoadmapService : IRoadmapService
                 throw new InvalidOperationException($"Mô tả focus vượt quá {FocusMaxChars} ký tự.");
         }
 
+        // BE-1 — tiêu chí năng lực THẬT của (nghề, ngôn ngữ) này, để milestone.focusCriteria chọn
+        // NGUYÊN VĂN thay vì bịa tên (đo trên production: chỉ 7% focusCriteria khớp tên tiêu chí
+        // thật khi AIService không được cấp danh sách này).
+        var criteria = await LoadCriteriaNamesAsync(candidateId, req.JobCategory, language, ct);
+
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
             ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct)
+                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, ct)
             : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language);
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria);
 
         var roadmap = new Roadmap
         {
@@ -253,6 +258,36 @@ public class RoadmapService : IRoadmapService
         _logger.LogInformation(
             "RAG grounding: precompute roadmap {Id} — {Grounded}/{Total} lesson có nguồn",
             roadmap.Id, grounded, flat.Count);
+    }
+
+    /// <summary>
+    /// BE-1 — tên THẬT của mọi tiêu chí năng lực (nghề, ngôn ngữ) đang hiệu lực cho candidate, để
+    /// AIService chỉ chọn <c>milestone.focusCriteria</c> bằng cách sao chép NGUYÊN VĂN từ đây thay
+    /// vì tự bịa tên.
+    ///
+    /// Dùng CHUNG <see cref="B2CRubricScope"/> với mọi chỗ chọn tiêu chí B2C khác (publish · callback
+    /// · republisher · BC9 · <c>LoadTargetableCriteriaAsync</c> của <c>PracticeService</c>): resolve
+    /// khác đi ở đây thì tên gửi cho roadmap trỏ vào một bộ rubric KHÁC bộ dùng để chấm điểm thật.
+    ///
+    /// KHÔNG lọc theo <see cref="ScoringScope"/> (khác <c>LoadTargetableCriteriaAsync</c> chỉ lấy
+    /// <c>WhenTargeted</c>) — roadmap cần TOÀN BỘ tên tiêu chí năng lực (cả 4 tiêu chí CÁCH NÓI lẫn
+    /// 3 tiêu chí NỘI DUNG của seed B2C), vì milestone có thể hợp lý nhắm cả hai nhóm.
+    /// </summary>
+    private async Task<List<QuestionTargetCriterionDto>> LoadCriteriaNamesAsync(
+        Guid candidateId, JobCategory jobCategory, string language, CancellationToken ct)
+    {
+        var owner = await B2CRubricScope.ResolveOwnerAsync(_db, candidateId, jobCategory, language, ct);
+        var query = _db.RubricCriteria.AsNoTracking()
+            .Where(c => c.IsActive && c.CampaignId == null
+                        && c.JobCategory == jobCategory && c.Language == language);
+        query = owner is Guid oid
+            ? query.Where(c => c.CandidateId == oid)
+            : query.Where(c => c.CandidateId == null);
+
+        return await query
+            .OrderBy(c => c.Name)
+            .Select(c => new QuestionTargetCriterionDto(c.Id, c.Name))
+            .ToListAsync(ct);
     }
 
     public async Task<RoadmapResponse?> GetAsync(
