@@ -235,9 +235,17 @@ public class RubricLibraryService : IRubricLibraryService
     // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: RubricController chỉ bắt
     // InvalidOperationException → 400; ArgumentException rơi xuống ống dẫn chung → 500 (Interview không
     // có exception handler toàn cục). Đây là lỗi đã xảy ra ở F2b.
+    //
+    // BK36 — CHỈ `null` (query `?language=` vắng mặt, ASP.NET bind `null`) mới rơi về mặc định "vi".
+    // Chuỗi rỗng (`?language=`, bind ra `""`) LÀ GIÁ TRỊ SAI, phải 400 chứ không được nuốt thành "vi".
+    // Ở SERVICE NÀY hậu quả nặng hơn PracticeService/RoadmapService: `language` không chỉ quyết định
+    // field ghi vào record mới — nó là BỘ CHỌN HÀNG cho `ReplaceAsync`/`ResetAsync` (`c.Language == lang`
+    // ở dòng lọc `current` phía trên). `ReplaceAsync` DEACTIVATE mọi rubric khớp bộ chọn đó rồi mới tạo
+    // bản mới ⇒ nuốt `""` thành "vi" nghĩa là candidate định thay rubric EN lại xoá nhầm rubric VI đang
+    // dùng — mất bộ tiêu chí, không lỗi nào báo, HTTP vẫn 200.
     private string ValidateLanguage(string? requested)
     {
-        if (string.IsNullOrWhiteSpace(requested)) return "vi";
+        if (requested is null) return "vi";
         var language = requested.Trim().ToLowerInvariant();
         if (language is not ("vi" or "en"))
             throw new InvalidOperationException("language chỉ nhận vi hoặc en.");

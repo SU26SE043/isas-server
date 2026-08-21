@@ -68,6 +68,69 @@ public class RubricLibraryTests
         Assert.All(rows, r => Assert.Null(r.CampaignId));
     }
 
+    // BK36 — chuỗi RỖNG cho `language` là một GIÁ TRỊ SAI, KHÔNG được coi như "không gửi". Ở SERVICE
+    // NÀY hậu quả nặng hơn PracticeService/RoadmapService: `language` là BỘ CHỌN HÀNG cho
+    // `ReplaceAsync` (`c.Language == lang`), và `ReplaceAsync` DEACTIVATE bản đang active khớp bộ
+    // chọn đó rồi mới tạo bản mới. Nuốt `""` thành "vi" ⇒ candidate định thay rubric EN mà gõ nhầm
+    // (hoặc client gửi query `?language=` rỗng) sẽ deactivate NHẦM rubric VI đang dùng.
+    [Fact]
+    public async Task Replace_EmptyLanguage_Throws_DoesNotDeactivateExistingViRubric()
+    {
+        using var t = new TestDb();
+        var me = Guid.NewGuid();
+
+        // Rubric "vi" đang active — nếu guard bị nuốt, request "" sẽ rơi vào nhánh "vi" và
+        // deactivate đúng bản này.
+        await Svc(t.Db).ReplaceAsync(me, JobCategory.BE, TwoCriteria("vi-A", "vi-B"), language: "vi");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Svc(t.Db).ReplaceAsync(me, JobCategory.BE, TwoCriteria("evil-A", "evil-B"), language: ""));
+
+        // Rubric "vi" PHẢI còn nguyên active — không có bản "evil-*" nào được tạo.
+        var rows = await t.Db.RubricCriteria.AsNoTracking()
+            .Where(c => c.CandidateId == me && c.JobCategory == JobCategory.BE).ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.True(r.IsActive));
+        Assert.All(rows, r => Assert.Equal("vi", r.Language));
+        Assert.DoesNotContain(rows, r => r.Name.StartsWith("evil-"));
+    }
+
+    // Null vẫn giữ nghĩa "không gửi" → mặc định "vi" — đối chứng dương cho test rỗng ở trên.
+    [Fact]
+    public async Task GetEffective_NullLanguage_DefaultsToVi()
+    {
+        using var t = new TestDb();
+        await SeedDefaultAsync(t.Db, JobCategory.BE);
+
+        var got = await Svc(t.Db).GetEffectiveAsync(Guid.NewGuid(), JobCategory.BE, language: null);
+
+        Assert.False(got.IsCustom);
+        Assert.Equal(2, got.Criteria.Count);
+    }
+
+    [Fact]
+    public async Task GetEffective_EmptyLanguage_Throws()
+    {
+        using var t = new TestDb();
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Svc(t.Db).GetEffectiveAsync(Guid.NewGuid(), JobCategory.BE, language: ""));
+    }
+
+    [Fact]
+    public async Task Reset_EmptyLanguage_Throws_DoesNotDeactivateExistingViRubric()
+    {
+        using var t = new TestDb();
+        var me = Guid.NewGuid();
+        await Svc(t.Db).ReplaceAsync(me, JobCategory.BE, TwoCriteria("vi-A", "vi-B"), language: "vi");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Svc(t.Db).ResetAsync(me, JobCategory.BE, language: ""));
+
+        var rows = await t.Db.RubricCriteria.AsNoTracking()
+            .Where(c => c.CandidateId == me && c.JobCategory == JobCategory.BE).ToListAsync();
+        Assert.All(rows, r => Assert.True(r.IsActive));
+    }
+
     [Fact]
     public async Task Replace_Twice_DeactivatesOld_BumpsVersion_OnlyNewActive()
     {
