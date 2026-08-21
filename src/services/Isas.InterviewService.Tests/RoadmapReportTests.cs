@@ -142,7 +142,7 @@ public class RoadmapReportTests
         else setup.ReturnsAsync(aiResult ?? new RoadmapSummaryAiResult([], [], [], null));
 
         var svc = new RoadmapReportService(
-            t.Db, gen.Object, Options.Create(new RoadmapOptions()),
+            t.Db, gen.Object, TestDb.Thresholds(t.Db),
             NullLogger<RoadmapReportService>.Instance);
         return (svc, gen);
     }
