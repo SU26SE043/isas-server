@@ -471,6 +471,56 @@ public class MilestoneScoreReportTests
         Assert.Equal(Math.Round(c.CurrentSessions.Average(x => x.Percentage), 2), c.CurrentAveragePercentage);
     }
 
+    // Một buổi có HAI dòng cùng TÊN tiêu chí (rubric đổi version ⇒ hai criterion_id khác nhau,
+    // tên trùng — UNIQUE là (session_id, criterion_id) nên trạng thái này dựng được thật).
+    //
+    // Đây là chỗ DUY NHẤT mà "trung bình trên dòng điểm" khác "trung bình trên buổi", nên cũng là
+    // chỗ duy nhất chứng minh được phần tính hiển thị và con số chốt đi chung MỘT đường: liệt kê
+    // đủ cả hai dòng thì trung bình danh sách == con số chặng; gộp lại thì lệch.
+    [Fact]
+    public async Task MotBuoiHaiDongCungTenTieuChi_LietKeDu_TrungBinhVanKhop()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var at = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var session = TestDb.Session(user, SessionStatus.Scored, createdAt: at);
+        t.Db.PracticeSessions.Add(session);
+        // Hai bản rubric khác version, TRÙNG TÊN.
+        var v1 = TestDb.Criterion(JobCategory.BE, version: 1, active: false, name: "Clarity");
+        var v2 = TestDb.Criterion(JobCategory.BE, version: 2, name: "Clarity");
+        t.Db.RubricCriteria.AddRange(v1, v2);
+        foreach (var (crit, pct) in new[] { (v1, 20m), (v2, 80m) })
+            t.Db.SessionCriterionScores.Add(new SessionCriterionScore
+            {
+                Id = Guid.NewGuid(),
+                SessionId = session.Id,
+                CriterionId = crit.Id,
+                CriterionName = "Clarity",
+                AverageScore = Math.Round(pct / 20m, 2),
+                MaxScore = 5,
+                Percentage = pct,
+                Weight = 1m,
+                NeedsImprovement = pct < 50m,
+                CreatedAt = at
+            });
+        await t.Db.SaveChangesAsync();
+
+        var r = NewRoadmap(user, new Dictionary<string, decimal> { ["Clarity"] = 40m });
+        var m1 = AddMilestone(r, 1, MilestoneStatus.InProgress);
+        AddLesson(m1, 1, LessonStatus.Done, session.Id);
+        t.Db.Roadmaps.Add(r);
+        await t.Db.SaveChangesAsync();
+
+        var report = await Svc(t).GetMilestoneScoreReportAsync(user, r.Id, m1.Id);
+
+        var c = Crit(report!, "Clarity");
+        Assert.Equal(2, c.CurrentSessions.Count);                    // KHÔNG gộp
+        Assert.Equal(50m, c.CurrentAveragePercentage);               // (20+80)/2 — trên DÒNG điểm
+        Assert.Equal(Math.Round(c.CurrentSessions.Average(x => x.Percentage), 2), c.CurrentAveragePercentage);
+        Assert.Equal(10m, c.DeltaPct);                               // 50 − 40, cộng ra từ chính hai dòng trên
+    }
+
     // ══ QUYỀN SỞ HỮU / 404 ═════════════════════════════════════════════════════════════════
     [Fact]
     public async Task ChangLa_404_LoTrinhLa_404_NguoiKhac_403()
