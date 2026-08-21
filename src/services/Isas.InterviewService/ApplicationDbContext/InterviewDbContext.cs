@@ -35,6 +35,9 @@ namespace Isas.InterviewService.ApplicationDbContext
 
         public DbSet<PromptTemplate> PromptTemplates => Set<PromptTemplate>();    // F21 — prompt tuỳ biến (FR17)
 
+        // BC15 — ngưỡng ĐẠT theo cấp độ lộ trình, admin chỉnh runtime. Bảng rỗng = chạy mặc định code.
+        public DbSet<RoadmapLevelThreshold> RoadmapLevelThresholds => Set<RoadmapLevelThreshold>();
+
         // DB14 — đóng dấu updated_at TỰ ĐỘNG cho entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()
         // parameterless của EF gọi xuống overload (bool) này → override 2 overload dưới là đủ mọi đường ghi
         // tracked. LƯU Ý: ExecuteUpdateAsync KHÔNG đi qua SaveChanges → các call flip practice_sessions.status

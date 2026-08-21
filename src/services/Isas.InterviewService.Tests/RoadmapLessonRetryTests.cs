@@ -406,7 +406,7 @@ public class RoadmapLessonRetryTests
 
         var svc = new RoadmapReportService(
             t.NewContext(), new Mock<IAiServiceRoadmapGenerator>().Object,
-            Options.Create(new RoadmapOptions()), NullLogger<RoadmapReportService>.Instance);
+            TestDb.Thresholds(t.Db), NullLogger<RoadmapReportService>.Instance);
         var report = await svc.GetReportAsync(user, roadmapId);
 
         Assert.NotNull(report);

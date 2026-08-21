@@ -14,14 +14,16 @@ namespace Isas.InterviewService.Services;
 // KHÔNG tính lại từ answer_scores; so tiêu chí theo TÊN (rubric đổi version không hồi tố).
 //   • Improvement mile N = avg% mile N − avg% mile N−1; mile 1 so baseline (baseline null → hiện điểm đạt).
 //   • Radar = avg% per tiêu chí qua TỐI ĐA 3 BUỔI GẦN NHẤT (không phải mọi buổi) + progress từng buổi.
-//   • levelEvaluation: passed = pct ≥ ngưỡng level (Fresher 50 · Junior 60 · Middle 70 · Senior 80).
+//   • levelEvaluation: passed = pct ≥ ngưỡng level — ngưỡng lấy từ roadmap_level_thresholds (admin
+//     chỉnh runtime), chưa ai chỉnh thì rơi về mặc định RoadmapOptions (Fresher 50 · Junior 60 ·
+//     Middle 70 · Senior 80). Ngưỡng CHỐT lúc build → vào snapshot, KHÔNG hồi tố report đã đóng.
 //   • Kết luận (strengths/weaknesses/improvements + overallComment): AIService /summarize-roadmap best-effort.
 // Final report snapshot vào roadmaps.final_report; interim tính on-read (không lưu).
 public class RoadmapReportService : IRoadmapReportService
 {
     private readonly InterviewDbContext _db;
     private readonly IAiServiceRoadmapGenerator _generator;
-    private readonly RoadmapOptions _options;
+    private readonly IRoadmapThresholdService _thresholds;
     private readonly ILogger<RoadmapReportService> _logger;
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -44,12 +46,12 @@ public class RoadmapReportService : IRoadmapReportService
     public RoadmapReportService(
         InterviewDbContext db,
         IAiServiceRoadmapGenerator generator,
-        IOptions<RoadmapOptions> options,
+        IRoadmapThresholdService thresholds,
         ILogger<RoadmapReportService> logger)
     {
         _db = db;
         _generator = generator;
-        _options = options.Value;
+        _thresholds = thresholds;
         _logger = logger;
     }
 
@@ -222,7 +224,10 @@ public class RoadmapReportService : IRoadmapReportService
             })
             .ToList();
 
-        var threshold = _options.ThresholdFor(roadmap.Level.ToString());
+        // Ngưỡng đọc từ DB (admin chỉnh runtime), rơi về mặc định code khi chưa ai chỉnh.
+        // CHỐT tại đây rồi đi vào snapshot final_report ⇒ lộ trình đã đóng sổ KHÔNG bị ngưỡng mới
+        // sửa lại kết luận (xem GetReportAsync: Completed đọc thẳng snapshot).
+        var threshold = await _thresholds.ThresholdForAsync(roadmap.Level.ToString(), ct);
         var levelEval = radar
             .Select(c => new RoadmapLevelEvaluationResponse(
                 c.Name, c.Percentage, threshold, c.Percentage >= threshold))
