@@ -26,6 +26,8 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<Roadmap> Roadmaps => Set<Roadmap>();                          // BC12
         public DbSet<RoadmapMilestone> RoadmapMilestones => Set<RoadmapMilestone>();  // BC12
         public DbSet<RoadmapLesson> RoadmapLessons => Set<RoadmapLesson>();        // BC12
+        // Lịch sử các lần làm 1 bài luyện (làm lại để nâng điểm).
+        public DbSet<RoadmapLessonAttempt> RoadmapLessonAttempts => Set<RoadmapLessonAttempt>();
 
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();        // DB2 — transactional outbox
 

@@ -231,7 +231,8 @@ public class RoadmapService : IRoadmapService
             roadmap.Id, candidateId, req.JobCategory, req.Level,
             roadmap.Milestones.Count, sourceSessionIds?.Count ?? 0);
 
-        return Map(roadmap, includeTheory: true, scope: scope);
+        // Roadmap vừa tạo — chưa bài nào được làm, nên rỗng là ĐÚNG do cấu trúc (không phải bỏ sót).
+        return Map(roadmap, includeTheory: true, attemptCounts: EmptyAttemptCounts, scope: scope);
     }
 
     // RAG grounding (Cách 2) — precompute snapshot cho MỌI lesson trong roadmap. 1 lần /embed cho tất cả
@@ -331,7 +332,7 @@ public class RoadmapService : IRoadmapService
         r.Name = name;
         await _db.SaveChangesAsync(ct);
 
-        return Map(r, includeTheory: false);
+        return Map(r, includeTheory: false, await LoadAttemptCountsAsync(id, ct));
     }
 
     public async Task<RoadmapResponse?> GetAsync(
@@ -345,7 +346,7 @@ public class RoadmapService : IRoadmapService
         if (r.CandidateId != candidateId)
             throw new UnauthorizedAccessException("Không phải roadmap của bạn");   // 403
 
-        return Map(r, includeTheory: true);
+        return Map(r, includeTheory: true, await LoadAttemptCountsAsync(id, ct));
     }
 
     /// <summary>
@@ -516,7 +517,29 @@ public class RoadmapService : IRoadmapService
         return scope;
     }
 
-    private static RoadmapResponse Map(Roadmap r, bool includeTheory, string? scope = null) => new(
+    private static readonly IReadOnlyDictionary<Guid, int> EmptyAttemptCounts =
+        new Dictionary<Guid, int>();
+
+    /// <summary>
+    /// Số lần đã làm của MỌI bài trong 1 lộ trình — 1 truy vấn gộp, không N+1.
+    /// Bài chưa từng làm không có dòng nào ⇒ vắng khỏi dictionary ⇒ <c>Map</c> đọc ra 0.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<Guid, int>> LoadAttemptCountsAsync(
+        Guid roadmapId, CancellationToken ct)
+        => await _db.Set<RoadmapLessonAttempt>().AsNoTracking()
+            .Where(a => a.Lesson.Milestone.RoadmapId == roadmapId)
+            .GroupBy(a => a.LessonId)
+            .Select(g => new { LessonId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.LessonId, x => x.Count, ct);
+
+    /// <summary>
+    /// <paramref name="attemptCounts"/> = số lần đã làm, theo lessonId. THAM SỐ BẮT BUỘC (không có
+    /// giá trị mặc định) là có chủ đích: một call site mới quên nạp sẽ phải TỰ QUYẾT truyền gì, thay
+    /// vì âm thầm nhận 0 và nói dối FE là bài chưa từng được làm.
+    /// </summary>
+    private static RoadmapResponse Map(
+        Roadmap r, bool includeTheory, IReadOnlyDictionary<Guid, int> attemptCounts,
+        string? scope = null) => new(
         r.Id,
         RoadmapNaming.Resolve(r.Name, r.JobCategory, r.Level, r.Language, r.CreatedAt),
         r.JobCategory.ToString(),
@@ -549,7 +572,11 @@ public class RoadmapService : IRoadmapService
                 // sự cite, narrow ở OpenLessonAsync). Chưa mở → null (chưa claim nguồn nào).
                 includeTheory && l.TheoryContent != null
                     ? GroundingMapper.ToCitations(l.GroundingRefs)
-                    : null)).ToList()
+                    : null,
+                attemptCounts.TryGetValue(l.Id, out var attempts) ? attempts : 0,
+                // Luật "được làm lại không" dùng CHUNG một hàm với đường chi tiết lesson — hai bản
+                // sao lệch nhau nghĩa là FE hiện nút ở màn này mà không hiện ở màn kia.
+                RoadmapLessonService.CanRetry(l.Status))).ToList()
         )).ToList(),
         r.CreatedAt,
         r.CompletedAt,

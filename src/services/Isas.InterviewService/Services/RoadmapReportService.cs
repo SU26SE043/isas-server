@@ -357,11 +357,29 @@ public class RoadmapReportService : IRoadmapReportService
     private async Task<List<RoadmapSessionScores>> LoadRoadmapSessionsAsync(
         Guid roadmapId, CancellationToken ct)
     {
-        var lessons = await _db.RoadmapLessons.AsNoTracking()
+        // Nguồn CHÍNH: roadmap_lesson_attempts — MỌI lần làm của mọi bài, kể cả các lần làm lại.
+        // Đọc qua `lesson.session_id` (1–1, chỉ giữ lần MỚI NHẤT) sẽ làm các lần trước biến mất khỏi
+        // đường xu hướng, đúng thứ mà việc luyện lại sinh ra để cho người học thấy.
+        var attempts = await _db.RoadmapLessonAttempts.AsNoTracking()
+            .Where(a => a.Lesson.Milestone.RoadmapId == roadmapId)
+            .OrderBy(a => a.Lesson.Milestone.OrderNo).ThenBy(a => a.Lesson.OrderNo).ThenBy(a => a.AttemptNo)
+            .Select(a => new { a.SessionId, a.Lesson.Title })
+            .ToListAsync(ct);
+
+        // Nguồn DỰ PHÒNG: buổi gắn thẳng vào lesson mà chưa có dòng attempt nào trỏ tới. Backfill của
+        // migration đã sinh đủ các dòng đó, nên trong thực tế tập này rỗng — giữ lại vì cái giá của
+        // một lỗ hổng backfill là MẤT một buổi đã hoàn thành khỏi báo cáo, im lặng, và người học
+        // không có cách nào biết. Hợp (không phải thay thế) nên vẫn quan sát được lần làm lại.
+        var covered = attempts.Select(x => x.SessionId).ToHashSet();
+        var orphanLessons = await _db.RoadmapLessons.AsNoTracking()
             .Where(l => l.Milestone.RoadmapId == roadmapId && l.SessionId != null)
             .OrderBy(l => l.Milestone.OrderNo).ThenBy(l => l.OrderNo)
             .Select(l => new { SessionId = l.SessionId!.Value, l.Title })
             .ToListAsync(ct);
+
+        var lessons = attempts
+            .Concat(orphanLessons.Where(l => !covered.Contains(l.SessionId)))
+            .ToList();
         if (lessons.Count == 0) return [];
 
         var sessionIds = lessons.Select(x => x.SessionId).Distinct().ToList();
@@ -370,8 +388,10 @@ public class RoadmapReportService : IRoadmapReportService
             .ToListAsync(ct);
         if (scores.Count == 0) return [];
 
-        // 1 buổi ↔ 1 lesson (RoadmapLesson.SessionId set lúc /start). Không ràng buộc nào chặn hai
-        // lesson trỏ chung 1 session, nên chốt deterministic: lesson đầu theo (milestone, lesson).
+        // 1 buổi ↔ 1 LẦN LÀM (UNIQUE(session_id) trên roadmap_lesson_attempts), nhưng một bài có
+        // nhiều lần làm ⇒ nhiều buổi cùng mang MỘT tên bài — đó là ý đồ: đường xu hướng hiện nhiều
+        // điểm cùng tên, cho thấy chính bài đó đã khá lên. Vẫn chốt deterministic (dòng đầu tiên)
+        // vì không ràng buộc nào chặn hai lesson trỏ chung 1 session ở nguồn dự phòng.
         var titleBySession = lessons
             .GroupBy(x => x.SessionId)
             .ToDictionary(g => g.Key, g => g.First().Title);

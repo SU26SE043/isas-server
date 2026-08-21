@@ -228,5 +228,39 @@ public class RoadmapLessonConfiguration : IEntityTypeConfiguration<RoadmapLesson
             .HasForeignKey(x => x.SessionId)
             .IsRequired(false)
             .OnDelete(DeleteBehavior.Restrict);
+
+        e.HasMany(x => x.Attempts)
+            .WithOne(a => a.Lesson)
+            .HasForeignKey(a => a.LessonId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+/// <summary>
+/// Lịch sử các lần làm một bài luyện (làm lại để nâng điểm). Xem <see cref="RoadmapLessonAttempt"/>.
+/// </summary>
+public class RoadmapLessonAttemptConfiguration : IEntityTypeConfiguration<RoadmapLessonAttempt>
+{
+    public void Configure(EntityTypeBuilder<RoadmapLessonAttempt> e)
+    {
+        e.HasKey(x => x.Id);
+
+        e.Property(x => x.AttemptNo).IsRequired();
+        e.Property(x => x.CreatedAt).IsRequired();
+
+        // UNIQUE(lesson_id, attempt_no) — lá chắn TẦNG DB cho việc cấp số thứ tự. Số được tính bằng
+        // `count + 1` SAU khi đã thắng cú lật trạng thái của lesson, nên về logic chỉ một request tới
+        // được đây; ràng buộc này để nếu giả định đó sai thì vỡ TO chứ không cấp trùng số im lặng.
+        e.HasIndex(x => new { x.LessonId, x.AttemptNo }).IsUnique();
+
+        // UNIQUE(session_id) — 1 buổi luyện thuộc đúng 1 lần làm. Cũng là thứ giữ cho báo cáo tiến
+        // độ không đếm một buổi hai lần khi hợp hai nguồn (xem RoadmapReportService).
+        e.HasIndex(x => x.SessionId).IsUnique();
+
+        // session_id → practice_sessions Restrict — cùng ràng buộc như roadmap_lessons.session_id.
+        e.HasOne<PracticeSession>()
+            .WithMany()
+            .HasForeignKey(x => x.SessionId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
