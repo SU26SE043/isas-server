@@ -581,6 +581,51 @@ public class PracticeServiceTests
             Times.Never);
     }
 
+    // BE-2/BK35 — chuỗi RỖNG cho `language` là một GIÁ TRỊ SAI, KHÔNG được coi như "không gửi".
+    // Cùng lớp lỗi vừa sửa cho seniority: `ValidateLanguage` trước đây dùng `IsNullOrWhiteSpace`,
+    // gộp "không gửi" (null) với "gửi rỗng" (""), nên caller gõ nhầm `language: ""` (vd bug ở tầng
+    // trên vô tình gán rỗng thay vì để trống) ÂM THẦM nhận "vi" thay vì bị từ chối — sai ở đúng chỗ
+    // khó phát hiện nhất vì HTTP vẫn 200. Guard TRƯỚC reserve → không giữ credit oan (PAY-5).
+    [Fact]
+    public async Task Create_EmptyLanguage_Throws_NoReserve_NoSessionRow()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        var svc = Build(t, gen, out _, out var reservation);
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE, Language: "");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            svc.CreateSessionAsync(candidate, req));
+
+        reservation.Verify(r => r.ReserveAsync(
+                It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        Assert.Equal(0, await t.Db.PracticeSessions.CountAsync());
+    }
+
+    // Null vẫn giữ nghĩa "không gửi" → mặc định "vi" (hành vi trước bilingual, KHÔNG phải lỗi) —
+    // đối chứng dương cho test rỗng ở trên, để phân biệt hai giá trị đó thật sự tách bạch nhau chứ
+    // không phải guard chặn luôn cả null.
+    [Fact]
+    public async Task Create_NullLanguage_DefaultsToVietnamese()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
+        var svc = Build(t, gen, out _, out _);
+        var req = new CreatePracticeSessionRequest(null, null, JobCategory.BE, Language: null);
+
+        var res = await svc.CreateSessionAsync(candidate, req);
+
+        Assert.Equal("vi", res.Language);
+    }
+
     // P1-2: reserve THÀNH CÔNG (credit đã trừ) rồi bước hậu-reserve NÉM (ở đây: insert session lỗi
     // UNIQUE PK) → phải hoàn credit (ReleaseAsync đúng sessionId, đúng 1 lần) TRƯỚC khi ném lại lỗi gốc,
     // để credit ví User không treo. Dùng CreateLessonSessionAsync để cấp sẵn sessionId đã tồn tại trong DB.

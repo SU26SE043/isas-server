@@ -11,6 +11,7 @@ using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -74,6 +75,23 @@ public class RoadmapLessonTests
             new Mock<ISessionScoringNotifier>().Object, reservation.Object,
             NullLogger<PracticeService>.Instance);
 
+    // BE-2 — cùng RealPractice nhưng bật `Interview:Bilingual:Enabled`, cần cho buổi luyện của
+    // roadmap tiếng Anh: thiếu cờ này, `ValidateLanguage("en")` ném "Bilingual interview chưa được
+    // bật" dù roadmap đã hợp lệ ở tầng của nó (mẫu `BilingualPractice` trong EvidenceDrivenPr160Tests).
+    private static PracticeService RealPracticeBilingual(
+        TestDb t, Mock<IAiServiceQuestionGenerator> gen, Mock<ICreditReservationClient> reservation)
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Interview:Bilingual:Enabled"] = "true"
+        }).Build();
+        return new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance,
+            config: config);
+    }
+
     private static RoadmapsController Controller(
         TestDb t, IPracticeService practice, IAiServiceRoadmapGenerator gen, Guid userId)
     {
@@ -104,6 +122,24 @@ public class RoadmapLessonTests
                 .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } });
         else
             setup.ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } });
+        return gen;
+    }
+
+    // BE-2 — mock overload NGÔN-NGỮ-HOÁ (jobCategory,cvText,jdText,focusCriteria,count,grounding,
+    // language,seniority,ct): đường được gọi khi `session.Language != "vi"` và không có tiêu chí
+    // NỘI DUNG nào để gắn nhãn (targetable.Count == 0, ca của rubric EN mới seed 1 tiêu chí Always
+    // trong test này) — KHÁC overload 7-tham-số mà `QuestionGenOk` mock cho đường "vi".
+    private static Mock<IAiServiceQuestionGenerator> QuestionGenOkEnglish()
+    {
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GeneratedQuestionsResult(
+                new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } },
+                Array.Empty<QuestionCitationDto>()));
         return gen;
     }
 
@@ -272,6 +308,64 @@ public class RoadmapLessonTests
         Assert.Equal(MilestoneStatus.InProgress, mile.Status);
 
         Assert.True(await db.PracticeSessions.AsNoTracking().AnyAsync(s => s.Id == session.Id));
+    }
+
+    // ── (2c) BE-2 — buổi luyện của lesson phải LẤY ĐÚNG ngôn ngữ của roadmap ────────────────
+    //
+    // Trước bản vá: `CreatePracticeSessionRequest` dựng ở `RoadmapLessonService.StartLessonAsync`
+    // KHÔNG truyền `Language` ⇒ rơi về default `null` ⇒ `ValidateLanguage` luôn trả "vi", bất kể
+    // roadmap là tiếng gì. Cùng lớp lỗi với Seniority (đã sửa ngay trên) — chưa đổ máu chỉ vì tình
+    // cờ: 8 buổi hiện có trên production đều bắt nguồn từ roadmap tiếng Việt, nhưng đã có 1 roadmap
+    // tiếng Anh chưa ai bấm Bắt đầu.
+    [Fact]
+    public async Task StartLesson_VietnameseRoadmap_CreatesVietnameseSession()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var r = SeedRoadmap(t, user, MilestoneStatus.Pending, cvId: null, "Clarity", "Depth");
+        var (roadmapId, _, lesson1, _) = Ids(r);
+        Assert.Equal("vi", r.Language);   // mặc định entity — khoá tiền đề của test này
+
+        var gen = QuestionGenOk();
+        var reservation = ReserveOk();
+        var practice = RealPractice(t, gen, reservation);
+        var ctrl = Controller(t, practice, new Mock<IAiServiceRoadmapGenerator>().Object, user);
+
+        var created = Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+        var session = Assert.IsType<PracticeSessionResponse>(created.Value);
+        Assert.Equal("vi", session.Language);
+
+        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(s => s.Id == session.Id);
+        Assert.Equal("vi", saved.Language);
+    }
+
+    [Fact]
+    public async Task StartLesson_EnglishRoadmap_CreatesEnglishSession()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var r = SeedRoadmap(t, user, MilestoneStatus.Pending, cvId: null, "Clarity", "Depth");
+        var (roadmapId, _, lesson1, _) = Ids(r);
+
+        // Roadmap tiếng Anh — mô phỏng đúng ca đang treo trên production (chưa ai bấm Bắt đầu).
+        await t.Db.Roadmaps.Where(x => x.Id == roadmapId)
+            .ExecuteUpdateAsync(u => u.SetProperty(x => x.Language, "en"));
+        // `EnsureRubricExistsAsync` đòi rubric EN đang active cho (BE, en) trước khi cho tạo buổi —
+        // mẫu seed của RubricLanguageQ9Tests.
+        t.Db.RubricCriteria.Add(TestDb.Criterion(JobCategory.BE, language: "en"));
+        await t.Db.SaveChangesAsync();
+
+        var gen = QuestionGenOkEnglish();
+        var reservation = ReserveOk();
+        var practice = RealPracticeBilingual(t, gen, reservation);
+        var ctrl = Controller(t, practice, new Mock<IAiServiceRoadmapGenerator>().Object, user);
+
+        var created = Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+        var session = Assert.IsType<PracticeSessionResponse>(created.Value);
+        Assert.Equal("en", session.Language);
+
+        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(s => s.Id == session.Id);
+        Assert.Equal("en", saved.Language);
     }
 
     // ── (2b) ví hết → 402, KHÔNG có row session, lesson vẫn Theory, mile vẫn Pending ──────

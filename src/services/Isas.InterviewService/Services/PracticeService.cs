@@ -1196,13 +1196,18 @@ public class PracticeService : IPracticeService
     // đổi lựa chọn sau này (thêm 180s chẳng hạn) sẽ phải chạy migration chỉ để sửa một danh sách UI.
     private static readonly int[] AllowedTimeLimitsSec = [60, 120, 240];
 
-    // null = client cũ không gửi → giữ mặc định 120 (hành vi trước F2, không phải lỗi).
+    // null = client cũ không gửi → giữ mặc định "vi" (hành vi trước bilingual, không phải lỗi).
+    // Chuỗi RỖNG/toàn khoảng trắng là một GIÁ TRỊ SAI, KHÔNG được coi như "không gửi" — cùng lớp
+    // lỗi BK35 (ValidateLanguage phía Campaign) và cùng mẫu ValidateSeniority ngay trên: dùng
+    // `IsNullOrWhiteSpace` gộp "không gửi" với "gửi rỗng" làm caller gõ `language: ""` (vd lỗi
+    // client, hoặc field bị xoá tay) ÂM THẦM nhận "vi" thay vì bị từ chối — sai ở đúng chỗ khó
+    // phát hiện nhất vì HTTP vẫn 200.
     // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: PracticeController chỉ bắt
     // InvalidOperationException → 400; ArgumentException rơi xuống catch(Exception) → 500. Cùng kiểu với
     // guard jobCategory ngay đầu CreateSessionInternalAsync.
     private string ValidateLanguage(string? requested)
     {
-        if (string.IsNullOrWhiteSpace(requested)) return "vi";
+        if (requested is null) return "vi";
         var language = requested.Trim().ToLowerInvariant();
         if (language is not ("vi" or "en"))
             throw new InvalidOperationException("language chỉ nhận vi hoặc en.");
