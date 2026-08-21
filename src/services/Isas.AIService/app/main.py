@@ -553,6 +553,8 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
         # BE-1 — tiêu chí THẬT của (nghề, ngôn ngữ) để milestone.focusCriteria chọn NGUYÊN VĂN từ
         # đây thay vì bịa tên. Vắng/rỗng ⇒ None (giữ hành vi cũ, không ràng buộc gì thêm).
         criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
+        # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu. Vắng/rỗng ⇒ None (giữ hành vi cũ).
+        evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
         milestones = await _call_with_language(req.language, provider.generate_roadmap,
             req.jobCategory, req.level, weaknesses, req.cvText,
             focus=req.focus,
@@ -561,6 +563,7 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
             grounding=grounding,
             criteria=criteria,
             scope=req.scope,
+            evidence=evidence,
         )
         return GenerateRoadmapResponse(
             milestones=[
@@ -589,9 +592,11 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest,
     try:
         # RAG grounding (Contract 2) — vắng → ungrounded (cited_chunk_ids = None → field ẩn).
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
+        # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu. Vắng/rỗng ⇒ None (giữ hành vi cũ).
+        evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
         theory, resources, cited = await _call_with_language(req.language, provider.generate_lesson_theory,
             req.jobCategory, req.level, req.lessonTitle, req.focusCriteria,
-            req.weaknesses, grounding)
+            req.weaknesses, grounding, evidence=evidence)
         # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
         # cited=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ giữ nguyên.
         return GenerateLessonTheoryResponse(

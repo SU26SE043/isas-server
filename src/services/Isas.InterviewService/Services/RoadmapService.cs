@@ -154,12 +154,19 @@ public class RoadmapService : IRoadmapService
         // thật khi AIService không được cấp danh sách này).
         var criteria = await LoadCriteriaNamesAsync(candidateId, req.JobCategory, language, ct);
 
+        // BE-5 — bằng chứng hành vi: Reasoning (E11) của answer điểm THẤP NHẤT cho ≤3 tiêu chí yếu
+        // nhất, thay cho việc chỉ gửi con số %. `sourceSessionIds`/`weaknesses` null → rỗng (không
+        // chọn buổi nào ⇒ không có gì để trích).
+        var evidence = weaknesses is { Count: > 0 } && sourceSessionIds is { Count: > 0 }
+            ? await RoadmapEvidenceLoader.LoadAsync(_db, sourceSessionIds, weaknesses, ct)
+            : [];
+
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
             ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, ct)
+                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, evidence, ct)
             : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope);
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope, evidence);
 
         var roadmap = new Roadmap
         {

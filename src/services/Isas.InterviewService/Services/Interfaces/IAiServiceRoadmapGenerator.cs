@@ -16,6 +16,9 @@ public interface IAiServiceRoadmapGenerator
     //
     // BE-4 — `scope` = độ dài roadmap candidate CHỌN ("Quick"/"Standard", xem
     // `RoadmapService.ValidateScope`). Mặc định "Standard" giữ hành vi client cũ chưa gửi field.
+    //
+    // BE-5 — `evidence` = Reasoning (E11) của answer điểm THẤP NHẤT cho tiêu chí yếu, đã tải + cắt
+    // trần sẵn (xem `RoadmapEvidenceLoader`). Chẩn đoán hành vi cụ thể thay vì chỉ % trừu tượng.
     Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory,
         string level,
@@ -26,8 +29,9 @@ public interface IAiServiceRoadmapGenerator
         string? priorRoadmapSummary,   // BC17 — tóm tắt từ final_report roadmap trước (BC15)
         IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
         string scope = "Standard",
+        IReadOnlyList<CriterionEvidence>? evidence = null,
         CancellationToken ct = default);
-    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard");
+    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null);
 
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
     // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là
@@ -35,6 +39,7 @@ public interface IAiServiceRoadmapGenerator
     // RAG grounding — grounding[] (snapshot precompute từ roadmap_lessons.grounding_refs) → AIService chèn
     // block "TÀI LIỆU THAM CHIẾU UY TÍN" + trả CitedChunkIds (Contract 2). null/rỗng → ungrounded (vẫn sinh).
     // Lỗi → AiServiceException (→ 502; mở lại được vì chưa lưu).
+    // BE-5 — `evidence`, cùng shape/lý do như overload GenerateAsync ở trên.
     Task<LessonTheoryResult> GenerateLessonTheoryAsync(
         string jobCategory,
         string level,
@@ -42,8 +47,9 @@ public interface IAiServiceRoadmapGenerator
         IReadOnlyList<string> focusCriteria,
         IReadOnlyList<string>? weaknesses,
         IReadOnlyList<GroundingChunk>? grounding = null,
+        IReadOnlyList<CriterionEvidence>? evidence = null,
         CancellationToken ct = default);
-    Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language);
+    Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null);
 
     // BC15 — nhận xét chung khi roadmap Completed (kết luận chi tiết theo tiến độ tiêu chí). AI KHÔNG ghi DB.
     // best-effort: lỗi → AiServiceException; caller (RoadmapReportService) nuốt → để rỗng/null, KHÔNG chặn Completed.

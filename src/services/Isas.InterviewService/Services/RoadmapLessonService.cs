@@ -50,11 +50,18 @@ public class RoadmapLessonService : IRoadmapLessonService
         // Lazy-gen: gọi AIService (sync). Lỗi → AiServiceException (502) → chưa lưu gì (mở lại được).
         // RAG grounding (Cách 2) — feed snapshot precompute (lesson.GroundingRefs) → AI cite trong tập đó.
         var focus = lesson.Milestone.FocusCriteria ?? new List<string>();
+        var weakCriteria = FilterWeakCriteria(roadmap, focus);
+        var weaknesses = FormatWeaknesses(weakCriteria);
+        // BE-5 — cùng bằng chứng như lúc TẠO roadmap (RoadmapEvidenceLoader), tính lại từ
+        // `roadmap.SourceSessionIds` (persisted, không cần migration để lưu riêng cho lesson).
+        var evidence = weakCriteria.Count > 0 && roadmap.SourceSessionIds is { Count: > 0 }
+            ? await RoadmapEvidenceLoader.LoadAsync(_db, roadmap.SourceSessionIds, weakCriteria, ct)
+            : [];
         var generated = roadmap.Language == "vi"
             ? await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
-                lesson.Title, focus, BuildWeaknesses(roadmap, focus), lesson.GroundingRefs, ct)
+                lesson.Title, focus, weaknesses, lesson.GroundingRefs, evidence, ct)
             : await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
-                lesson.Title, focus, BuildWeaknesses(roadmap, focus), lesson.GroundingRefs, ct, roadmap.Language);
+                lesson.Title, focus, weaknesses, lesson.GroundingRefs, ct, roadmap.Language, evidence);
         var theory = generated.TheoryMarkdown;
         // F15 — tài liệu học sinh CÙNG lượt với lý thuyết; lưu chung 1 lần ghi để không có trạng
         // thái "có theory mà chưa có resources" (guard idempotent bên dưới chỉ nhìn theory_content).
@@ -223,21 +230,27 @@ public class RoadmapLessonService : IRoadmapLessonService
     /// đồng bộ, mà Baseline chính là snapshot của cùng dữ liệu đó.
     ///
     /// Giao với FocusCriteria để không "mách" AI những điểm yếu lạc đề với bài học đang mở.
-    /// Rỗng → null (giữ nguyên hành vi cũ, prompt bỏ qua nhánh này).
+    ///
+    /// BE-5 — tách khỏi bước ĐỊNH DẠNG (<see cref="FormatWeaknesses"/>) để trả về DANH SÁCH TÊN
+    /// THÔ, tái dùng cho <see cref="RoadmapEvidenceLoader"/> (cần tên tiêu chí, không cần chuỗi
+    /// "Tên: 40%" đã ghép sẵn cho prompt).
     /// </summary>
-    private List<string>? BuildWeaknesses(Roadmap roadmap, IReadOnlyList<string> focus)
+    private List<RoadmapWeakness> FilterWeakCriteria(Roadmap roadmap, IReadOnlyList<string> focus)
     {
         if (roadmap.Baseline is not { Count: > 0 } baseline || focus.Count == 0)
-            return null;
+            return [];
 
-        var weaknesses = focus
+        return focus
             .Where(name => baseline.TryGetValue(name, out var pct)
                            && pct < _scoring.ImprovementThresholdPct)
-            .Select(name => $"{name}: {baseline[name]:0.#}%")
+            .Select(name => new RoadmapWeakness(name, baseline[name]))
             .ToList();
-
-        return weaknesses.Count > 0 ? weaknesses : null;
     }
+
+    /// <summary>Định dạng cho prompt ("Tên tiêu chí: 40%"). Rỗng → null (giữ nguyên hành vi cũ,
+    /// prompt bỏ qua nhánh weaknesses).</summary>
+    private static List<string>? FormatWeaknesses(IReadOnlyList<RoadmapWeakness> weak)
+        => weak.Count > 0 ? weak.Select(w => $"{w.CriterionName}: {w.Percentage:0.#}%").ToList() : null;
 
     private static LessonResponse MapLesson(RoadmapLesson l)
         => new(l.Id, l.OrderNo, l.Title, l.TheoryContent, l.SessionId, l.Status.ToString(),

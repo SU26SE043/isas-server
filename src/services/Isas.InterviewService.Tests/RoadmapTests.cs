@@ -47,6 +47,7 @@ public class RoadmapTests
     // BC17 — snapshot mọi tham số bối cảnh gửi xuống generator (để assert cái gì tới được AI).
     // BE-1 — thêm `Criteria`: mutation-check anchor cho "criteria rỗng thay vì tiêu chí thật".
     // BE-4 — thêm `Scope`: mutation-check anchor cho "quên forward scope xuống generator".
+    // BE-5 — thêm `Evidence`: mutation-check anchor cho "quên forward bằng chứng xuống generator".
     private sealed record GenArgs(
         IReadOnlyList<RoadmapWeakness>? Weaknesses,
         string? CvText,
@@ -54,7 +55,8 @@ public class RoadmapTests
         string? CvAnalysisSummary,
         string? PriorRoadmapSummary,
         IReadOnlyList<QuestionTargetCriterionDto>? Criteria,
-        string Scope);
+        string Scope,
+        IReadOnlyList<CriterionEvidence>? Evidence);
 
     private static Mock<IAiServiceRoadmapGenerator> GenMock(
         RoadmapGenAiResult result, Action<GenArgs>? capture = null)
@@ -65,10 +67,10 @@ public class RoadmapTests
             It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-            It.IsAny<CancellationToken>()));
+            It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<CancellationToken>()));
         if (capture is not null)
-            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, CancellationToken>(
-                    (_, _, w, cv, f, ca, pr, crit, scope, _) => capture(new GenArgs(w, cv, f, ca, pr, crit, scope)))
+            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?, CancellationToken>(
+                    (_, _, w, cv, f, ca, pr, crit, scope, evidence, _) => capture(new GenArgs(w, cv, f, ca, pr, crit, scope, evidence)))
                 .ReturnsAsync(result);
         else
             setup.ReturnsAsync(result);
@@ -261,6 +263,7 @@ public class RoadmapTests
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -386,6 +389,7 @@ public class RoadmapTests
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -578,6 +582,79 @@ public class RoadmapTests
         Assert.Empty(captured!.Criteria!);
     }
 
+    // BE-5 — thêm 1 AnswerScore (attempt chuẩn) vào buổi `sessionId`, gắn tiêu chí `criterionName`.
+    // Reasoning trích NGUYÊN VĂN (mô phỏng E11) — nguồn cho RoadmapEvidenceLoader.
+    private static void SeedAnswerScore(
+        TestDb t, Guid sessionId, string criterionName, decimal score, string reasoning)
+    {
+        var question = TestDb.Question(sessionId, order: 99);
+        t.Db.PracticeQuestions.Add(question);
+        var answer = TestDb.Answer(sessionId, question.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.PracticeAnswers.Add(answer);
+        var crit = t.Db.RubricCriteria.Local.FirstOrDefault(c => c.Name == criterionName && c.CandidateId == null)
+            ?? t.Db.RubricCriteria.FirstOrDefault(c => c.Name == criterionName && c.CandidateId == null)
+            ?? TestDb.Criterion(JobCategory.BE, name: criterionName);
+        if (t.Db.Entry(crit).State == EntityState.Detached) t.Db.RubricCriteria.Add(crit);
+        t.Db.AnswerScores.Add(new AnswerScore
+        {
+            Id = Guid.NewGuid(),
+            AnswerId = answer.Id,
+            CriterionId = crit.Id,
+            AttemptNo = 1,
+            Score = score,
+            Reasoning = reasoning,
+            RubricVersion = 1,
+            CreatedAt = DateTime.UtcNow
+        });
+        t.Db.SaveChanges();
+    }
+
+    // BE-5 — anchor mutation-check: bằng chứng HÀNH VI (Reasoning thật, không phải placeholder null)
+    // của tiêu chí yếu nhất phải tới ĐƯỢC generator qua CreateAsync → RoadmapEvidenceLoader.
+    [Fact]
+    public async Task Post_WeakCriterionHasReasoning_EvidenceReachesGenerator()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, ("Clarity", 30m, true), ("Depth", 90m, false));
+        SeedAnswerScore(t, sid, "Clarity",
+            score: 1m,
+            reasoning: "Câu trả lời không cân nhắc đánh đổi khi ưu tiên tính năng với nguồn lực hạn chế.");
+
+        GenArgs? captured = null;
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null, SessionIds: [sid]), default);
+        Assert.IsType<CreatedResult>(result);
+
+        Assert.NotNull(captured);
+        var ev = Assert.Single(captured!.Evidence!);
+        Assert.Equal("Clarity", ev.CriterionName);
+        Assert.Contains("đánh đổi khi ưu tiên tính năng với nguồn lực hạn chế", Assert.Single(ev.Reasoning));
+        // "Depth" đạt (needsImprovement=false) → KHÔNG nằm trong danh sách weakness → KHÔNG kéo bằng chứng
+        Assert.DoesNotContain(captured.Evidence!, e => e.CriterionName == "Depth");
+    }
+
+    // BE-5 — không có buổi Scored nào được chọn (baseline null) → evidence rỗng, KHÔNG lỗi.
+    [Fact]
+    public async Task Post_NoScoredSession_SendsEmptyEvidence_NoError()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+
+        GenArgs? captured = null;
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+
+        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
+        Assert.IsType<CreatedResult>(result);
+
+        Assert.NotNull(captured);
+        Assert.Empty(captured!.Evidence!);
+    }
+
     // ── (2d) BC17 — id buổi thiếu / khác chủ / chưa Scored → 404 batch, KHÔNG lộ id nào, KHÔNG lưu row ──
     [Theory]
     [InlineData("missing")]      // id không tồn tại
@@ -724,6 +801,7 @@ public class RoadmapTests
                 It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-roadmap trả 500"));
 

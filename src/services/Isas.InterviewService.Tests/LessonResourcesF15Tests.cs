@@ -69,7 +69,7 @@ public class LessonResourcesF15Tests
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
-                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LessonTheoryResult(theory, resources));
         return gen;
     }
@@ -186,7 +186,7 @@ public class LessonResourcesF15Tests
         gen.Verify(g => g.GenerateLessonTheoryAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
-            It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // (5) Lesson chưa mở → resources rỗng (chưa sinh), không null → FE duyệt @for an toàn.
