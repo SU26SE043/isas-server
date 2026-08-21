@@ -55,6 +55,12 @@ _OLD_CALIBRATION_BLOCK_TEMPLATE = (
 )
 
 
+# Nghề GIẢ, cố ý không nằm trong `JobCategory` (.NET) lẫn `_KNOWLEDGE_DEFAULTS` (Python) — dùng
+# làm ca "job_category chưa được seed" cho các test ở mục (1)/(3). BA/BE/FE thật đều đã có seed
+# (BE-3.2/BE-3) nên không còn nghề THẬT nào để đóng vai control rỗng nữa.
+_UNSEEDED_JOB_CATEGORY = "QA_UNSEEDED_CONTROL"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # (1) Registry rỗng ⇒ byte-identical với bản hard-code cũ
 # ══════════════════════════════════════════════════════════════════════════════
@@ -66,10 +72,17 @@ def test_registry_rong_calibration_block_giong_het_ban_hardcode_cu(level):
 
 
 def test_registry_rong_calibration_block_voi_job_category_cung_giong_het():
-    """Truyền `job_category` (mới ở J4) mà registry rỗng ⇒ vẫn không đổi một byte — khối kiến
-    thức chuyên sâu mặc định rỗng nên không được nối thêm gì."""
+    """Truyền `job_category` CHƯA TỪNG được seed (registry rỗng, `_KNOWLEDGE_DEFAULTS` cũng không
+    có khoá này) ⇒ vẫn không đổi một byte — khối kiến thức chuyên sâu mặc định rỗng nên không được
+    nối thêm gì.
+
+    BE-3.2/BE-3 (BA rồi BE+FE) đã seed đủ 3 nghề thật (BA/BE/FE) — dùng "BE" làm ca "chưa seed"
+    không còn đúng NỮA, dùng khoá tổng hợp `_UNSEEDED_JOB_CATEGORY` để giữ đúng CƠ CHẾ đang test
+    (job_category không có trong `_KNOWLEDGE_DEFAULTS` → không nối gì) mà không phụ thuộc vào
+    nghề nào đang được seed hay chưa.
+    """
     expected = _OLD_CALIBRATION_BLOCK_TEMPLATE.format(level="Senior")
-    assert seniority_module.calibration_block("Senior", "BE") == expected
+    assert seniority_module.calibration_block("Senior", _UNSEEDED_JOB_CATEGORY) == expected
     assert seniority_module.calibration_block("Senior", job_category=None) == expected
 
 
@@ -121,7 +134,9 @@ def test_khong_khai_job_category_thi_khong_co_khoi_kien_thuc():
 
 
 def test_khoa_kien_thuc_rong_khong_them_gi():
-    block = seniority_module.calibration_block("Senior", "BE")
+    """Ca "nghề chưa được seed" — xem giải thích ở
+    `test_registry_rong_calibration_block_voi_job_category_cung_giong_het`."""
+    block = seniority_module.calibration_block("Senior", _UNSEEDED_JOB_CATEGORY)
     assert block == _OLD_CALIBRATION_BLOCK_TEMPLATE.format(level="Senior")
 
 

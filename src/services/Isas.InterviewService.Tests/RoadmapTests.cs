@@ -237,6 +237,47 @@ public class RoadmapTests
             l => Assert.Equal(LessonStatus.Theory, l.Status));
     }
 
+    // BK36 — chuỗi RỖNG cho `language` là một GIÁ TRỊ SAI, KHÔNG được coi như "không gửi". Mẫu
+    // PracticeServiceTests.Create_EmptyLanguage_Throws_NoReserve_NoSessionRow — `ValidateLanguage`
+    // trước đây dùng `IsNullOrWhiteSpace`, gộp "không gửi" (null → "vi") với "gửi rỗng" (""), nên
+    // caller gõ nhầm `language: ""` ÂM THẦM nhận roadmap tiếng Việt thay vì bị từ chối.
+    [Fact]
+    public async Task Create_EmptyLanguage_Throws_NoRoadmapRow()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var gen = GenMock(SampleRoadmap());
+        var service = new RoadmapService(t.Db, new Mock<IStorageService>().Object, gen.Object,
+            NullLogger<RoadmapService>.Instance);
+        var req = new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Language: "");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(user, req));
+
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.Verify(g => g.GenerateAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // Null vẫn giữ nghĩa "không gửi" → mặc định "vi" — đối chứng dương cho test rỗng ở trên, để
+    // phân biệt hai giá trị đó thật sự tách bạch nhau chứ không phải cả hai cùng vô hiệu guard.
+    [Fact]
+    public async Task Create_NullLanguage_DefaultsToVi()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Language: null), default);
+
+        var created = Assert.IsType<CreatedResult>(result);
+        var body = Assert.IsType<RoadmapResponse>(created.Value);
+        Assert.Equal("vi", body.Language);
+    }
+
     // ── (2a) BC17: chọn TẬP CON buổi → baseline/weakness CHỈ từ buổi được chọn; sources = đúng id đó ──
     // (2 buổi Scored, chỉ chọn 1 → buổi kia KHÔNG lọt baseline lẫn sourceSessionIds.)
     [Fact]

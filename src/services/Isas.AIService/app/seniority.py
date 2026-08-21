@@ -63,11 +63,22 @@ _PROFILE_DEFAULTS: dict[str, str] = {
 # "Phân tích yêu cầu" · "Hiểu nghiệp vụ & các bên liên quan" · "Tư duy giải quyết vấn đề" — không
 # đụng "Giao tiếp & Tiếng Anh" (tiêu chí `Always`, không phải nội dung chuyên môn).
 #
-# ⚠ CHƯA HIỆU CHỈNH bằng JD/BA thật (team không có BA — xem §Rà soát roadmap 2026-08-21). Cố ý
-# giữ mức độ vừa phải, tránh thuật ngữ có thể lệch thị trường VN (vd "ROI"/"business case" ở
-# mức Fresher/Junior) — nếu sau này hiệu chỉnh sai thì sửa ĐÚNG DÒNG cần sửa qua registry, không
-# cần deploy lại. Seed BE/FE để trống có chủ đích: `test_prompt_khong_truyen_thi_giu_nguyen_xi`
-# chạy trên nghề BE và phải giữ nguyên byte — seed thêm BE/FE PHẢI re-check test đó trước.
+# ⚠ CHƯA HIỆU CHỈNH bằng JD thật (team không có BA/BE/FE senior để đối chiếu — xem §Rà soát
+# roadmap 2026-08-21). Cố ý giữ mức độ vừa phải, tránh thuật ngữ có thể lệch thị trường VN — nếu
+# sau này hiệu chỉnh sai thì sửa ĐÚNG DÒNG cần sửa qua registry, không cần deploy lại.
+#
+# Seed BE/FE dưới nhắm THẲNG vào các tiêu chí NỘI DUNG (`ScoringScope.WhenTargeted`, `B2CRubricSeed.cs`)
+# của đúng nghề đó — KHÔNG đụng "Giao tiếp & trình bày"/"Ngữ pháp & dùng từ"/"Thuật ngữ chuyên
+# ngành"/"Độ trôi chảy & tự tin" (đều `Always`, đo CÁCH NÓI chứ không phải chuyên môn):
+#   • BE: "Chiều sâu kỹ thuật" · "Thiết kế hệ thống & CSDL" · "Giải quyết vấn đề & thuật toán".
+#   • FE: "Chiều sâu kỹ thuật" · "Giải quyết vấn đề" · "Ý thức UI/UX & accessibility".
+#
+# ⚠ `test_prompt_khong_truyen_thi_giu_nguyen_xi` (job_category="BE") chỉ khoá ca `seniority=None`
+# — nhánh đó SKIP hẳn `calibration_block` (xem `build_prompt`, `if seniority is not None:`) nên
+# KHÔNG đọc `_KNOWLEDGE_DEFAULTS` bất kể nghề nào đã seed; seed BE ở đây không chạm byte nào của
+# test đó (đã verify bằng chạy test thật, không chỉ đọc code). Seed BE/FE PHẢI verify lại các test
+# job_category="BE"/"FE" có truyền `seniority` tường minh (substring/index, không phải equality
+# tuyệt đối với chuỗi cũ) — none trong số đó đòi rỗng nội dung kiến thức.
 _KNOWLEDGE_DEFAULTS: dict[str, dict[str, str]] = {
     "BA": {
         "Fresher": (
@@ -95,6 +106,66 @@ _KNOWLEDGE_DEFAULTS: dict[str, dict[str, str]] = {
             "nhiệm chất lượng yêu cầu ở quy mô nhiều dự án. Câu hỏi nên xoay quanh cách ra quyết "
             "định khi thiếu thông tin, thuyết phục stakeholder cấp cao, và đo lường giá trị "
             "nghiệp vụ sau triển khai."
+        ),
+    },
+    "BE": {
+        "Fresher": (
+            "Kiến thức BE mức Fresher: cấu trúc dữ liệu cơ bản (mảng, list, hash map), viết CRUD "
+            "API đơn giản, phân biệt GET/POST/PUT/DELETE, câu SQL SELECT/INSERT/UPDATE cơ bản. "
+            "Câu hỏi nên xoay quanh MỘT khái niệm hoặc thao tác cụ thể — vd cách viết một câu JOIN "
+            "đơn giản, vì sao dùng đúng HTTP method — KHÔNG hỏi thiết kế hệ thống nhiều thành "
+            "phần, KHÔNG hỏi đánh đổi giữa các kiến trúc."
+        ),
+        "Junior": (
+            "Kiến thức BE mức Junior: viết API hoàn chỉnh cho một tính năng (validate input, xử "
+            "lý lỗi, trả đúng status code), viết truy vấn có JOIN/GROUP BY, hiểu cơ chế index cơ "
+            "bản, debug lỗi runtime thường gặp. Câu hỏi nên xoay quanh tình huống thực tế: API trả "
+            "sai dữ liệu do thiếu điều kiện lọc, truy vấn chạy chậm do thiếu index — KHÔNG hỏi "
+            "thiết kế hệ thống chịu tải lớn hay đánh đổi kiến trúc microservice."
+        ),
+        "Middle": (
+            "Kiến thức BE mức Middle: thiết kế schema database cho một module, chọn giữa các "
+            "phương án lưu trữ/caching, tối ưu truy vấn chậm, xử lý race condition/deadlock, viết "
+            "test cho logic nghiệp vụ phức tạp. Câu hỏi nên đào sâu cách đưa ra quyết định kỹ "
+            "thuật có đánh đổi (consistency vs performance, chuẩn hoá vs phi chuẩn hoá dữ liệu) và "
+            "cách gỡ lỗi một hệ thống đang chạy thật."
+        ),
+        "Senior": (
+            "Kiến thức BE mức Senior: thiết kế kiến trúc hệ thống nhiều service (đồng bộ dữ liệu, "
+            "idempotency, retry/backoff), đánh giá đánh đổi giữa các mô hình lưu trữ ở quy mô lớn, "
+            "đảm bảo độ tin cậy/khả năng mở rộng, dẫn dắt kỹ thuật cho team. Câu hỏi nên xoay "
+            "quanh cách xử lý sự cố sản xuất, thiết kế hệ thống chịu lỗi, và đánh đổi giữa chi phí "
+            "vận hành với độ phức tạp kỹ thuật."
+        ),
+    },
+    "FE": {
+        "Fresher": (
+            "Kiến thức FE mức Fresher: HTML semantic cơ bản, CSS box model/flexbox, JavaScript cơ "
+            "bản (biến, hàm, thao tác DOM), gọi API bằng fetch. Câu hỏi nên xoay quanh MỘT khái "
+            "niệm cụ thể — vd khác nhau giữa `let`/`const`, cách căn giữa một phần tử bằng "
+            "flexbox — KHÔNG hỏi tối ưu hiệu năng render hay quản lý state phức tạp."
+        ),
+        "Junior": (
+            "Kiến thức FE mức Junior: dựng UI hoàn chỉnh cho một tính năng bằng framework (React/"
+            "Vue/Angular), quản lý state cục bộ, xử lý form/validate, gọi API bất đồng bộ và xử "
+            "lý trạng thái loading/error, sửa lỗi UI thường gặp (layout vỡ, chưa responsive). Câu "
+            "hỏi nên xoay quanh tình huống thực tế: component re-render không cần thiết, dữ liệu "
+            "hiển thị sai do race condition khi gọi API — KHÔNG hỏi tối ưu bundle size hay kiến "
+            "trúc micro-frontend."
+        ),
+        "Middle": (
+            "Kiến thức FE mức Middle: thiết kế cấu trúc component tái sử dụng, chọn giải pháp "
+            "quản lý state toàn cục, tối ưu hiệu năng render (memoization, lazy-load), đảm bảo "
+            "accessibility, viết test cho component. Câu hỏi nên đào sâu cách đưa ra quyết định "
+            "có đánh đổi (chọn thư viện state management nào, khi nào nên tách nhỏ component) và "
+            "cách gỡ vấn đề hiệu năng thực tế."
+        ),
+        "Senior": (
+            "Kiến thức FE mức Senior: thiết kế kiến trúc frontend cho hệ thống lớn (micro-"
+            "frontend, module federation, chiến lược caching/CDN), chuẩn hoá quy trình build/"
+            "deploy, đảm bảo hiệu năng và khả năng bảo trì ở quy mô nhiều team, dẫn dắt kỹ thuật. "
+            "Câu hỏi nên xoay quanh cách xử lý sự cố hiệu năng ở production, đánh đổi giữa trải "
+            "nghiệm người dùng với chi phí kỹ thuật, và cách chuẩn hoá kỹ thuật cho nhiều team."
         ),
     },
 }
