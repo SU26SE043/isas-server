@@ -177,7 +177,8 @@ public class RoadmapTests
                 Weaknesses: ["Chưa sâu thuật toán"],
                 Improvements: ["Luyện thêm quy hoạch động"],
                 OverallComment: "Tiến bộ rõ rệt qua các buổi.",
-                RoadmapStatus: nameof(Enums.RoadmapStatus.Active));
+                RoadmapStatus: nameof(Enums.RoadmapStatus.Active),
+                Progress: []);
             finalReport = JsonSerializer.Serialize(report, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         }
 

@@ -13,7 +13,7 @@ namespace Isas.InterviewService.Services;
 // BC15 (D20) — hoàn tất milestone/roadmap + report. Đọc điểm từ session_criterion_scores (BC9),
 // KHÔNG tính lại từ answer_scores; so tiêu chí theo TÊN (rubric đổi version không hồi tố).
 //   • Improvement mile N = avg% mile N − avg% mile N−1; mile 1 so baseline (baseline null → hiện điểm đạt).
-//   • Radar = avg% per tiêu chí qua MỌI session thuộc roadmap.
+//   • Radar = avg% per tiêu chí qua TỐI ĐA 3 BUỔI GẦN NHẤT (không phải mọi buổi) + progress từng buổi.
 //   • levelEvaluation: passed = pct ≥ ngưỡng level (Fresher 50 · Junior 60 · Middle 70 · Senior 80).
 //   • Kết luận (strengths/weaknesses/improvements + overallComment): AIService /summarize-roadmap best-effort.
 // Final report snapshot vào roadmaps.final_report; interim tính on-read (không lưu).
@@ -25,6 +25,21 @@ public class RoadmapReportService : IRoadmapReportService
     private readonly ILogger<RoadmapReportService> _logger;
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Số buổi GẦN NHẤT dùng để chốt con số hiển thị của một tiêu chí (radar + levelEvaluation).
+    ///
+    /// <para><b>Vì sao không phải trung bình mọi buổi:</b> trung bình toàn cục che mất xu hướng, và
+    /// che theo hướng CÓ LỢI cho người học. Đo trên dữ liệu thật: radar báo ĐẠT 5/6 tiêu chí trong
+    /// khi buổi gần nhất chỉ ĐẠT 3/6. Càng nhiều buổi thì một buổi mới càng không nhấc nổi trung
+    /// bình (+20 điểm khi mới có 1 buổi, chỉ +6,7 khi đã có 5) ⇒ "luyện lại để nâng điểm" trở thành
+    /// vô nghĩa đúng lúc người học cần nó nhất.</para>
+    ///
+    /// <para><b>Vì sao 3 chứ không phải 1:</b> điểm mỗi buổi bị lượng tử hoá rất thô — rubric 1..5 sao
+    /// nên một tiêu chí chỉ nhận được 20/40/60/80/100. Một buổi đơn lẻ quá nhiễu để phán
+    /// "Đạt/Chưa đạt"; 3 buổi vừa đủ làm phẳng nhiễu mà vẫn bám sát hiện tại.</para>
+    /// </summary>
+    private const int RecentSessionWindow = 3;
 
     public RoadmapReportService(
         InterviewDbContext db,
@@ -122,7 +137,18 @@ public class RoadmapReportService : IRoadmapReportService
             // Ghi đè status bằng trạng thái HIỆN TẠI: snapshot được chốt NGAY TRƯỚC lệnh cập nhật
             // roadmap sang Completed, nên bản thân nó còn mang "Active". Trả thẳng snapshot ra sẽ
             // khiến client gắn nhãn "báo cáo tạm thời" cho một roadmap đã đóng.
-            if (snapshot is not null) return snapshot with { RoadmapStatus = roadmap.Status.ToString() };
+            if (snapshot is not null)
+                return snapshot with
+                {
+                    RoadmapStatus = roadmap.Status.ToString(),
+                    // Snapshot chốt TRƯỚC khi có `progress` không mang khoá đó ⇒ deserialize gán null
+                    // vào một thuộc tính khai là non-nullable ⇒ NRE ngay khi serialize trả về (hoặc ở
+                    // client, tuỳ chỗ chạm trước). Chuẩn hoá về rỗng: "lộ trình cũ không có dữ liệu
+                    // diễn tiến" — đó là sự thật, không phải lỗi.
+                    // ⚠ Mọi field THÊM vào RoadmapReportResponse sau này đều cần đúng một dòng như
+                    // dòng này, vì snapshot cũ nằm sẵn trong DB và không migration nào chạm tới.
+                    Progress = snapshot.Progress ?? []
+                };
             _logger.LogWarning("BC15: final_report roadmap {RoadmapId} hỏng → tính interim", roadmapId);
         }
 
@@ -132,27 +158,68 @@ public class RoadmapReportService : IRoadmapReportService
 
     // ── Helpers ─────────────────────────────────────────────────────────────────────────
 
-    // radar (avg% per tiêu chí qua MỌI session thuộc roadmap) + levelEvaluation + (tùy chọn) kết luận AI.
+    // radar (avg% per tiêu chí qua TỐI ĐA `RecentSessionWindow` buổi gần nhất) + progress từng buổi
+    // + levelEvaluation + (tùy chọn) kết luận AI.
     private async Task<RoadmapReportResponse> BuildReportAsync(
         Roadmap roadmap, bool withAiConclusion, CancellationToken ct)
     {
-        var scores = await LoadRoadmapCriterionScoresAsync(roadmap.Id, ct);
+        // Đã sắp theo thứ tự thời gian được chấm (cũ → mới).
+        var sessions = await LoadRoadmapSessionsAsync(roadmap.Id, ct);
 
-        // Gộp theo TÊN tiêu chí (rubric đổi version so theo tên). Percentage = radar; các field khác lấy row mới nhất.
-        var radar = scores
-            .GroupBy(sc => sc.CriterionName)
+        // Gộp theo TÊN tiêu chí (rubric đổi version so theo tên) rồi theo BUỔI: cửa sổ "3 buổi gần
+        // nhất" phải đếm theo BUỔI, không theo dòng điểm. `GroupBy` của LINQ-to-Objects giữ thứ tự
+        // xuất hiện đầu tiên ⇒ thứ tự thời gian của `sessions` được bảo toàn xuống tận đây.
+        var radar = sessions
+            .SelectMany(s => s.Scores.Select(sc => (Session: s, Score: sc)))
+            .GroupBy(x => x.Score.CriterionName)
             .Select(g =>
             {
-                var latest = g.OrderByDescending(sc => sc.CreatedAt).First();
-                return new CriterionScoreResponse(
+                var perSession = g
+                    .GroupBy(x => x.Session.SessionId)
+                    .Select(sg => new
+                    {
+                        Pct = sg.Average(x => x.Score.Percentage),
+                        Avg = sg.Average(x => x.Score.AverageScore)
+                    })
+                    .ToList();
+
+                var recent = perSession.TakeLast(RecentSessionWindow).ToList();
+                var latest = g.Last().Score;   // buổi gần nhất → id/maxScore/weight (snapshot rubric mới nhất)
+
+                return new RoadmapRadarCriterionResponse(
                     latest.CriterionId,
                     g.Key,
-                    Math.Round(g.Average(x => x.AverageScore), 2),
                     latest.MaxScore,
-                    Math.Round(g.Average(x => x.Percentage), 2),
-                    latest.Weight);
+                    latest.Weight,
+                    Math.Round(recent.Average(x => x.Pct), 2),
+                    Math.Round(recent.Average(x => x.Avg), 2),
+                    // Chỉ có 1 buổi ⇒ không có mốc xuất phát để so. Trả null (= KHÔNG BIẾT) thay vì
+                    // lặp lại chính điểm hiện tại, vốn sẽ hiện thành "tiến bộ 0%" — một kết luận sai.
+                    perSession.Count > 1 ? Math.Round(perSession[0].Pct, 2) : null,
+                    perSession.Count,
+                    recent.Count);
             })
             .OrderBy(c => c.Name, StringComparer.Ordinal)
+            .ToList();
+
+        var sessionProgress = sessions
+            .Select((s, i) =>
+            {
+                var perCriterion = s.Scores
+                    .GroupBy(sc => sc.CriterionName)
+                    .Select(cg => new RoadmapProgressCriterionResponse(
+                        cg.Key, Math.Round(cg.Average(x => x.Percentage), 2)))
+                    .OrderBy(c => c.Name, StringComparer.Ordinal)
+                    .ToList();
+
+                return new RoadmapSessionProgressResponse(
+                    i + 1,
+                    s.LessonTitle,
+                    s.ScoredAt,
+                    // Trung bình cộng các tiêu chí CỦA CHÍNH buổi đó (equal weight, như INT-10 B2C).
+                    Math.Round(perCriterion.Average(c => c.Percentage), 2),
+                    perCriterion);
+            })
             .ToList();
 
         var threshold = _options.ThresholdFor(roadmap.Level.ToString());
@@ -171,9 +238,24 @@ public class RoadmapReportService : IRoadmapReportService
         {
             try
             {
+                // Mốc so cho AI, theo THỨ TỰ ƯU TIÊN — đừng đảo:
+                //   ① baseline đo LÚC TẠO lộ trình (trước khi học) — mốc tốt nhất;
+                //   ② % ở buổi ĐẦU TIÊN trong lộ trình (đã học rồi, nên chỉ là dự phòng);
+                //   ③ null = KHÔNG BIẾT.
+                //
+                // Vì sao cần ②: prompt /summarize-roadmap định nghĩa "cải thiện" là so với baseline,
+                // mà roadmap tạo khi người dùng chưa luyện buổi nào thì `Baseline` là null — đo được
+                // 86% roadmap rơi vào ca đó ⇒ model không có gì để so nên liệt kê SẠCH tiêu chí vào
+                // mục "cần cải thiện", kể cả những tiêu chí nó vừa xếp vào "điểm mạnh".
+                //
+                // ⚠ ③ phải giữ đúng null: prompt đã có nhánh in "chưa có baseline". Lấp bằng
+                // `c.Percentage` làm mọi tiêu chí trông như KHÔNG tiến bộ; lấp bằng 0 làm mọi tiêu chí
+                // trông như tiến bộ vượt bậc — cả hai đều bịa, và cái sau bịa theo hướng khen.
                 var progress = radar.Select(c => new RoadmapCriteriaProgress(
                     c.Name,
-                    roadmap.Baseline is not null && roadmap.Baseline.TryGetValue(c.Name, out var bp) ? bp : null,
+                    roadmap.Baseline is not null && roadmap.Baseline.TryGetValue(c.Name, out var bp)
+                        ? bp
+                        : c.StartPercentage,
                     c.Percentage,
                     threshold,
                     c.Percentage >= threshold)).ToList();
@@ -193,7 +275,8 @@ public class RoadmapReportService : IRoadmapReportService
         }
 
         return new RoadmapReportResponse(
-            radar, levelEval, strengths, weaknesses, improvements, overallComment, roadmap.Status.ToString());
+            radar, levelEval, strengths, weaknesses, improvements, overallComment,
+            roadmap.Status.ToString(), sessionProgress);
     }
 
     // Improvement mile N = avg% mile N − reference; reference = mile N−1 (nếu có điểm) else baseline;
@@ -257,18 +340,52 @@ public class RoadmapReportService : IRoadmapReportService
             .ToDictionary(g => g.Key, g => Math.Round(g.Average(x => x.Percentage), 2));
     }
 
-    // Mọi session_criterion_scores của các session Scored gắn lesson (bất kỳ milestone) của roadmap.
-    private async Task<List<SessionCriterionScore>> LoadRoadmapCriterionScoresAsync(
+    // Điểm của 1 buổi luyện thuộc roadmap, kèm mốc thời gian + tên bài học để dựng đường xu hướng.
+    private sealed record RoadmapSessionScores(
+        Guid SessionId, string LessonTitle, DateTime ScoredAt, List<SessionCriterionScore> Scores);
+
+    // Các buổi (đã có breakdown điểm) gắn lesson của roadmap, XẾP THEO THỜI GIAN CHẤM (cũ → mới).
+    //
+    // Mốc thời gian = max(session_criterion_scores.created_at) của buổi — tức lúc buổi được CHẤM
+    // (SessionResultService ghi bảng này khi session -> Scored). KHÔNG dùng practice_sessions
+    // .completed_at: mốc đó là lúc BẤM NỘP, và nó nullable — trong khi mốc ở đây chắc chắn tồn tại
+    // cho đúng tập dòng ta phát ra (chỉ buổi CÓ breakdown mới lọt vào danh sách này).
+    //
+    // Một thứ tự DUY NHẤT dùng cho cả cửa sổ "3 buổi gần nhất" của radar lẫn thứ tự của progress —
+    // hai bên xài hai khoá khác nhau thì "3 buổi gần nhất" trên radar sẽ không phải 3 điểm cuối của
+    // đường xu hướng, và người đọc không có cách nào biết.
+    private async Task<List<RoadmapSessionScores>> LoadRoadmapSessionsAsync(
         Guid roadmapId, CancellationToken ct)
     {
-        var sessionIds = await _db.RoadmapLessons.AsNoTracking()
+        var lessons = await _db.RoadmapLessons.AsNoTracking()
             .Where(l => l.Milestone.RoadmapId == roadmapId && l.SessionId != null)
-            .Select(l => l.SessionId!.Value)
+            .OrderBy(l => l.Milestone.OrderNo).ThenBy(l => l.OrderNo)
+            .Select(l => new { SessionId = l.SessionId!.Value, l.Title })
             .ToListAsync(ct);
-        if (sessionIds.Count == 0) return new List<SessionCriterionScore>();
+        if (lessons.Count == 0) return [];
 
-        return await _db.SessionCriterionScores.AsNoTracking()
+        var sessionIds = lessons.Select(x => x.SessionId).Distinct().ToList();
+        var scores = await _db.SessionCriterionScores.AsNoTracking()
             .Where(sc => sessionIds.Contains(sc.SessionId))
             .ToListAsync(ct);
+        if (scores.Count == 0) return [];
+
+        // 1 buổi ↔ 1 lesson (RoadmapLesson.SessionId set lúc /start). Không ràng buộc nào chặn hai
+        // lesson trỏ chung 1 session, nên chốt deterministic: lesson đầu theo (milestone, lesson).
+        var titleBySession = lessons
+            .GroupBy(x => x.SessionId)
+            .ToDictionary(g => g.Key, g => g.First().Title);
+
+        return scores
+            .GroupBy(sc => sc.SessionId)
+            .Select(g => new RoadmapSessionScores(
+                g.Key,
+                titleBySession.TryGetValue(g.Key, out var title) ? title : string.Empty,
+                g.Max(sc => sc.CreatedAt),
+                g.ToList()))
+            // Tiebreak bằng SessionId: hai buổi chấm xong trong cùng một tick sẽ làm "3 buổi gần
+            // nhất" thành không xác định nếu chỉ so mốc thời gian.
+            .OrderBy(s => s.ScoredAt).ThenBy(s => s.SessionId)
+            .ToList();
     }
 }
