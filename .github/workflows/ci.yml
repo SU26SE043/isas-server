@@ -382,6 +382,34 @@ jobs:
 
           docker compose up -d --remove-orphans
           docker image prune -f
+
+          # ── Dọn ảnh cũ theo NGƯỠNG, không phải theo "còn dùng hay không" ──────────────────
+          # `docker image prune -f` phía trên chỉ gỡ ảnh DANGLING (mất tag). Mỗi lần deploy lại
+          # đẩy thêm một tag `<nhánh>-<sha>` mới, và tag cũ thì KHÔNG ai gỡ ⇒ tích vĩnh viễn.
+          #
+          # Đo thật ngày 2026-08-21: 303 ảnh trên máy, chỉ 21 ảnh có container dùng. Sáu service
+          # mỗi service giữ 44-47 bản. Docker báo 41,1GB, thu hồi được 27,45GB (66%) — đủ để làm
+          # đầy phân vùng hệ thống (sda7 lúc đó chỉ còn 7GB, tức sát mức không deploy được nữa).
+          #
+          # KHÔNG dùng `docker image prune -a`: nó gỡ MỌI ảnh không có container, tức xoá sạch cả
+          # đường lùi. Giữ 3 bản gần nhất cho phép rollback vài lần deploy mà chỉ tốn ~2GB.
+          # Ảnh nào đang được container dùng thì bỏ qua tuyệt đối, kể cả khi đã ngoài ngưỡng —
+          # stack `dev` và `main` cùng sống trên máy này và không chạy cùng một commit.
+          #
+          # Bọc `|| true`: dọn ổ đĩa thất bại KHÔNG được phép làm đỏ một lần deploy đã thành công.
+          {
+            KEEP=3
+            INUSE="$(docker ps -a --format '{{.Image}}' | sort -u)"
+            for repo in $(docker images --format '{{.Repository}}' | grep '^ghcr.io/su26se043/isas\.' | sort -u); do
+              docker images --format '{{.Tag}}	{{.CreatedAt}}' "$repo" \
+                | grep -E "^${STACK}-" | sort -k2 -r | cut -f1 | tail -n +$((KEEP+1)) \
+                | while read -r tag; do
+                    printf '%s\n' "$INUSE" | grep -qx "$repo:$tag" && continue
+                    docker rmi "$repo:$tag" >/dev/null 2>&1 || true
+                  done
+            done
+            echo "Ổ đĩa sau khi dọn: $(df -h / | awk 'NR==2{print $4" trống ("$5" đã dùng)"}')"
+          } || true
           REMOTE
 
       # `up -d` trả về khi container ĐƯỢC TẠO, không phải khi app phục vụ được request. Không có
