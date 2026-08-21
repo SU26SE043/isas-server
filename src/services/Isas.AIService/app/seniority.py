@@ -52,6 +52,54 @@ _PROFILE_DEFAULTS: dict[str, str] = {
 }
 
 
+# BE-3 — kiến thức chuyên sâu THEO NGHỀ cho từng mức, khoá `category.{JOB}.seniority.{level}
+# .knowledge` (đã tồn tại từ J4, registry luôn rỗng vì chưa ai seed). Cùng pattern
+# `_PROFILE_DEFAULTS`: mặc định nằm trong SOURCE, registry vẫn ghi đè được từng cặp (nghề, mức)
+# — admin sửa một mức của BA không đụng BE/FE hay 3 mức BA còn lại.
+#
+# Thang mặc định trước BE-3 nghiêng hẳn về kỹ thuật ("đánh đổi kiến trúc", "vận hành quy mô
+# lớn") — hợp với BE/FE nhưng sai bản chất với BA, và BA chiếm 14/29 roadmap đo được (2026-08-21).
+# Bốn dòng BA dưới đây nhắm THẲNG vào 3 tiêu chí NỘI DUNG của rubric BA (`B2CRubricSeed.cs`):
+# "Phân tích yêu cầu" · "Hiểu nghiệp vụ & các bên liên quan" · "Tư duy giải quyết vấn đề" — không
+# đụng "Giao tiếp & Tiếng Anh" (tiêu chí `Always`, không phải nội dung chuyên môn).
+#
+# ⚠ CHƯA HIỆU CHỈNH bằng JD/BA thật (team không có BA — xem §Rà soát roadmap 2026-08-21). Cố ý
+# giữ mức độ vừa phải, tránh thuật ngữ có thể lệch thị trường VN (vd "ROI"/"business case" ở
+# mức Fresher/Junior) — nếu sau này hiệu chỉnh sai thì sửa ĐÚNG DÒNG cần sửa qua registry, không
+# cần deploy lại. Seed BE/FE để trống có chủ đích: `test_prompt_khong_truyen_thi_giu_nguyen_xi`
+# chạy trên nghề BE và phải giữ nguyên byte — seed thêm BE/FE PHẢI re-check test đó trước.
+_KNOWLEDGE_DEFAULTS: dict[str, dict[str, str]] = {
+    "BA": {
+        "Fresher": (
+            "Kiến thức BA mức Fresher: khái niệm nền — user story, use case, đặc tả yêu cầu "
+            "(SRS), phân biệt yêu cầu chức năng/phi chức năng. Câu hỏi nên xoay quanh đọc hiểu "
+            "MỘT yêu cầu cụ thể và đặt câu hỏi làm rõ với một stakeholder — KHÔNG hỏi đàm phán "
+            "đa bên liên quan hay phân tích rủi ro cả dự án."
+        ),
+        "Junior": (
+            "Kiến thức BA mức Junior: tự viết user story/use case hoàn chỉnh cho một tính năng, "
+            "chạy workshop thu thập yêu cầu với 1-2 stakeholder, viết acceptance criteria rõ "
+            "ràng, phát hiện yêu cầu mơ hồ/thiếu và hỏi lại đúng chỗ. Câu hỏi nên xoay quanh tình "
+            "huống thực tế: khách hàng đổi ý giữa chừng, yêu cầu chồng chéo giữa hai bộ phận."
+        ),
+        "Middle": (
+            "Kiến thức BA mức Middle: chủ trì workshop nhiều stakeholder có quan điểm mâu thuẫn, "
+            "vẽ quy trình nghiệp vụ (process mapping), phân tích đánh đổi giữa các phương án "
+            "giải pháp (phạm vi vs thời hạn, xây vs mua), đánh giá tác động khi yêu cầu đổi giữa "
+            "dự án. Câu hỏi nên đào sâu cách xử lý xung đột lợi ích và ưu tiên hoá backlog theo "
+            "giá trị nghiệp vụ."
+        ),
+        "Senior": (
+            "Kiến thức BA mức Senior: định hình giải pháp cho cả một mảng nghiệp vụ, cân bằng "
+            "ràng buộc kỹ thuật-ngân sách-chính trị nội bộ, dẫn dắt BA/PO junior, chịu trách "
+            "nhiệm chất lượng yêu cầu ở quy mô nhiều dự án. Câu hỏi nên xoay quanh cách ra quyết "
+            "định khi thiếu thông tin, thuyết phục stakeholder cấp cao, và đo lường giá trị "
+            "nghiệp vụ sau triển khai."
+        ),
+    },
+}
+
+
 def _profile_key(level: str) -> str:
     return f"seniority.{level}.profile"
 
@@ -93,9 +141,11 @@ def calibration_block(level: str, job_category: str | None = None) -> str:
     hai chỉ thị đọc như mâu thuẫn và mô hình tự do chọn bên nào cũng được ⇒ hiệu chỉnh mất tác dụng
     đúng ở cấp Fresher/Senior (hai đầu thang, nơi nó quan trọng nhất).
 
-    ``job_category`` (mới, J4): có thì thêm khối kiến thức chuyên sâu riêng cho CẶP (nghề, mức)
-    đang dùng — mặc định RỖNG (`category.{JOB}.seniority.{level}.knowledge`), nên vắng nội dung
-    thì khối này không xuất hiện, prompt không đổi một byte.
+    ``job_category`` (J4, seed BE-3): có thì thêm khối kiến thức chuyên sâu riêng cho CẶP (nghề,
+    mức) đang dùng — đọc `category.{JOB}.seniority.{level}.knowledge` qua registry, mặc định rơi
+    về :data:`_KNOWLEDGE_DEFAULTS`. Cặp KHÔNG có trong cả registry lẫn default (mọi nghề ngoài BA
+    tính tới BE-3) ⇒ khối này không xuất hiện, prompt không đổi một byte cho nghề đó — đúng bất
+    biến J4 cũ, chỉ thu hẹp phạm vi còn "nghề chưa được seed" thay vì "mọi nghề".
     """
     lines = "\n".join(
         f"- {prompt_registry.get(_profile_key(lv), _PROFILE_DEFAULTS[lv])}" for lv in LEVELS
@@ -110,7 +160,13 @@ def calibration_block(level: str, job_category: str | None = None) -> str:
         "hay tụt xuống cấp thấp hơn."
     )
 
-    knowledge = prompt_registry.get(_knowledge_key(job_category, level), "") if job_category else ""
+    default_knowledge = (
+        _KNOWLEDGE_DEFAULTS.get(job_category.upper(), {}).get(level, "") if job_category else ""
+    )
+    knowledge = (
+        prompt_registry.get(_knowledge_key(job_category, level), default_knowledge)
+        if job_category else ""
+    )
     if knowledge:
         block += f"\n{knowledge}"
     return block
