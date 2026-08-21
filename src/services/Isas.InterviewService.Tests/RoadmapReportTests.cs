@@ -415,7 +415,11 @@ public class RoadmapReportTests
         var snapshot = new RoadmapReportResponse(
             [new CriterionScoreResponse(Guid.NewGuid(), "Clarity", 4.95m, 5, 99m, 1m)],
             [new RoadmapLevelEvaluationResponse("Clarity", 99m, 60, true)],
-            ["SNAP mạnh"], ["SNAP yếu"], ["SNAP cải thiện"], "SNAP nhận xét");
+            // Snapshot cố ý mang "Active": nó được chốt NGAY TRƯỚC lệnh cập nhật roadmap sang
+            // Completed nên trong thực tế luôn lưu trạng thái cũ. Đường đọc phải ghi đè bằng trạng
+            // thái HIỆN TẠI, nếu không client gắn nhãn "báo cáo tạm thời" cho lộ trình đã đóng.
+            ["SNAP mạnh"], ["SNAP yếu"], ["SNAP cải thiện"], "SNAP nhận xét",
+            RoadmapStatus: nameof(Enums.RoadmapStatus.Active));
         var snapshotJson = JsonSerializer.Serialize(snapshot, Json);
 
         var r = NewRoadmap(user, null);

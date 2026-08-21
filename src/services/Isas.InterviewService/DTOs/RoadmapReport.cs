@@ -10,7 +10,15 @@ public record RoadmapReportResponse(
     IReadOnlyList<string> Strengths,                       // kết luận chi tiết — AI /summarize-roadmap (best-effort)
     IReadOnlyList<string> Weaknesses,
     IReadOnlyList<string> Improvements,                    // cần cải thiện + gợi ý luyện tiếp
-    string? OverallComment
+    string? OverallComment,
+    // Trạng thái roadmap tại thời điểm đọc. Client dùng để biết đây là báo cáo TẠM THỜI (Active,
+    // tính on-read) hay báo cáo CUỐI (Completed, đọc snapshot đã chốt) — hai thứ khác nhau về ý
+    // nghĩa: bản cuối sẽ không đổi nữa, bản tạm thời còn dịch chuyển theo mỗi buổi luyện.
+    //
+    // Thiếu field này thì client KHÔNG có cách nào phân biệt: đo trên deploy, màn báo cáo của một
+    // roadmap đã Completed vẫn ghi "Báo cáo tạm thời" vì frontend đã có sẵn nhánh suy từ status
+    // (`status === 'completed'` → snapshot) nhưng response chưa bao giờ mang status.
+    string RoadmapStatus
 );
 
 // Đánh giá 1 tiêu chí theo ngưỡng level (Fresher 50 · Junior 60 · Middle 70 · Senior 80).

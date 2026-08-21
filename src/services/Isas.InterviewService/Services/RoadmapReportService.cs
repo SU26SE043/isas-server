@@ -119,7 +119,10 @@ public class RoadmapReportService : IRoadmapReportService
         if (roadmap.Status == RoadmapStatus.Completed && !string.IsNullOrEmpty(roadmap.FinalReport))
         {
             var snapshot = JsonSerializer.Deserialize<RoadmapReportResponse>(roadmap.FinalReport, Json);
-            if (snapshot is not null) return snapshot;
+            // Ghi đè status bằng trạng thái HIỆN TẠI: snapshot được chốt NGAY TRƯỚC lệnh cập nhật
+            // roadmap sang Completed, nên bản thân nó còn mang "Active". Trả thẳng snapshot ra sẽ
+            // khiến client gắn nhãn "báo cáo tạm thời" cho một roadmap đã đóng.
+            if (snapshot is not null) return snapshot with { RoadmapStatus = roadmap.Status.ToString() };
             _logger.LogWarning("BC15: final_report roadmap {RoadmapId} hỏng → tính interim", roadmapId);
         }
 
@@ -189,7 +192,8 @@ public class RoadmapReportService : IRoadmapReportService
             }
         }
 
-        return new RoadmapReportResponse(radar, levelEval, strengths, weaknesses, improvements, overallComment);
+        return new RoadmapReportResponse(
+            radar, levelEval, strengths, weaknesses, improvements, overallComment, roadmap.Status.ToString());
     }
 
     // Improvement mile N = avg% mile N − reference; reference = mile N−1 (nếu có điểm) else baseline;
