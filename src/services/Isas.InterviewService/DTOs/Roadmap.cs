@@ -15,6 +15,7 @@ public record CreateRoadmapRequest(
     JobCategory JobCategory,
     RoadmapLevel Level,
     Guid? CvId,
+    string? Name = null,                      // BE-6 — tên tự đặt; vắng → server sinh mặc định
     IReadOnlyList<Guid>? SessionIds = null,   // BC17 — buổi luyện Scored candidate chọn làm baseline
     Guid? CvAnalysisId = null,                // BC17 — cv_analyses (BC7)
     Guid? PriorRoadmapId = null,              // BC17 — roadmaps.final_report (BC15)
@@ -78,6 +79,7 @@ public record MilestoneResponse(
 
 public record RoadmapResponse(
     Guid Id,
+    string Name,                                   // BE-6 — luôn có giá trị, kể cả hàng cũ (suy lúc đọc)
     string JobCategory,
     string Level,
     string Language,
@@ -104,6 +106,9 @@ public record RoadmapResponse(
 /// </summary>
 public record RoadmapSummaryResponse(
     Guid Id,
+    string Name,                                   // BE-6 — BẮT BUỘC có ở list, không chỉ ở chi tiết:
+                                                   // trang danh sách mới là nơi ba lộ trình cùng hiện
+                                                   // "Roadmap" cạnh nhau, tức chỗ vấn đề lộ ra rõ nhất
     string JobCategory,
     string Level,
     Guid? CvId,
@@ -111,3 +116,7 @@ public record RoadmapSummaryResponse(
     DateTime CreatedAt,
     DateTime? CompletedAt
 );
+
+// BE-6 — PATCH /roadmaps/{id}: đổi tên lộ trình. Cho đổi ở MỌI trạng thái, kể cả Completed — tên là
+// nhãn của người dùng, không phải dữ liệu bị đóng băng theo kết quả học.
+public record RenameRoadmapRequest(string Name);

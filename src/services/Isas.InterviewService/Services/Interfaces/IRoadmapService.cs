@@ -12,6 +12,10 @@ public interface IRoadmapService
     // GET /roadmaps/{id} — đầy đủ (kèm theoryContent). null → 404; khác chủ → UnauthorizedAccessException (403).
     Task<RoadmapResponse?> GetAsync(Guid candidateId, Guid id, CancellationToken ct = default);
 
+    // BE-6 — đổi tên. null = không tìm thấy (404); khác chủ → UnauthorizedAccessException (403);
+    // tên rỗng/quá dài → InvalidOperationException (400).
+    Task<RoadmapResponse?> RenameAsync(Guid candidateId, Guid id, string? requestedName, CancellationToken ct = default);
+
     // GET /roadmaps — của chính user (không kèm theoryContent).
     // Danh sách keyset-paged, KHÔNG kèm cây milestone/lesson (chi tiết dùng GetAsync).
     Task<KeysetPage<RoadmapSummaryResponse>> ListAsync(

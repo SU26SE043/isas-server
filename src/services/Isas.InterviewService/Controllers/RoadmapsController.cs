@@ -120,6 +120,41 @@ public class RoadmapsController : ControllerBase
         return Ok(page.Items);
     }
 
+    /// <summary>
+    /// BE-6 — PATCH /roadmaps/{id} → đổi tên lộ trình. Chỉ chủ sở hữu.
+    ///
+    /// Tên rỗng / toàn khoảng trắng / quá dài → 400 (KHÔNG âm thầm rơi về tên máy sinh — người dùng
+    /// gõ tên toàn dấu cách phải biết vì sao tên mình biến mất). Trả về roadmap sau khi đổi, KHÔNG
+    /// kèm nội dung lý thuyết bài học vì màn đổi tên không cần và payload đó rất nặng.
+    /// </summary>
+    [HttpPatch("{id:guid}")]
+    [ProducesResponseType(typeof(RoadmapResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Rename(Guid id, [FromBody] RenameRoadmapRequest request, CancellationToken ct)
+    {
+        if (!TryGetCandidateId(out var candidateId))
+            return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
+
+        try
+        {
+            var result = await _service.RenameAsync(candidateId, id, request?.Name, ct);
+            if (result is null)
+                return NotFound(new { error = "Không tìm thấy roadmap này." });
+
+            return Ok(result);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     // GET /roadmaps/{id}/lessons/{lessonId} — mở lesson (lý thuyết lazy). theory null → sinh & lưu 1 lần.
     // BC14. Miễn phí. Chủ mới xem (khác chủ → 403; không có → 404); AI lỗi → 502.
     [HttpGet("{id:guid}/lessons/{lessonId:guid}")]

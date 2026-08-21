@@ -13,6 +13,10 @@ public class Roadmap
     // Ref lỏng sang AuthService (chủ sở hữu) — không FK xuyên service. Lịch sử chỉ của chính user (BC-3).
     public Guid CandidateId { get; set; }
 
+    // BE-6 — tên hiển thị. NULL ở tầng DB để hàng tạo trước BE-6 không phải backfill; đường ĐỌC
+    // luôn suy ra tên dùng được (RoadmapNaming.Resolve) nên null không bao giờ chảy ra API.
+    public string? Name { get; set; }
+
     public JobCategory JobCategory { get; set; }
     public RoadmapLevel Level { get; set; }
     public string Language { get; set; } = "vi";
