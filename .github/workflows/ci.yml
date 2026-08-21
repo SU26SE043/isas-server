@@ -107,7 +107,15 @@ jobs:
     name: Build & Push Docker images
     runs-on: ubuntu-latest
     needs: [guard, test, test-python]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    # `dev` đã BỎ khỏi điều kiện (2026-08-21). Đường CI mất ~10 phút mỗi vòng mà phần đắt
+    # nhất là đẩy ảnh lên registry rồi kéo ngược về CÙNG một máy chủ — dữ liệu đi vòng qua
+    # Internet hai lần cho không. `scripts/deploy-dev.sh` build thẳng trên server, chỉ build
+    # service thật sự đổi, và chỉ đồng bộ mã nguồn (vài trăm KB) thay vì ảnh (~2GB).
+    #
+    # Job test/guard vẫn chạy cho `dev` — chúng là lưới an toàn, chạy song song và KHÔNG chặn
+    # việc triển khai tay. Chỉ hai job build+deploy bị cắt, vì nếu để chúng chạy thì CI sẽ ghi
+    # đè bản vừa triển khai tay bằng một bản khác, tức hai đường cùng ghi vào một stack.
+    if: github.ref == 'refs/heads/main'
     timeout-minutes: 60
     permissions:
       contents: read
@@ -288,7 +296,15 @@ jobs:
     name: Deploy to server
     runs-on: ubuntu-latest
     needs: [docker, schema-gate]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    # `dev` đã BỎ khỏi điều kiện (2026-08-21). Đường CI mất ~10 phút mỗi vòng mà phần đắt
+    # nhất là đẩy ảnh lên registry rồi kéo ngược về CÙNG một máy chủ — dữ liệu đi vòng qua
+    # Internet hai lần cho không. `scripts/deploy-dev.sh` build thẳng trên server, chỉ build
+    # service thật sự đổi, và chỉ đồng bộ mã nguồn (vài trăm KB) thay vì ảnh (~2GB).
+    #
+    # Job test/guard vẫn chạy cho `dev` — chúng là lưới an toàn, chạy song song và KHÔNG chặn
+    # việc triển khai tay. Chỉ hai job build+deploy bị cắt, vì nếu để chúng chạy thì CI sẽ ghi
+    # đè bản vừa triển khai tay bằng một bản khác, tức hai đường cùng ghi vào một stack.
+    if: github.ref == 'refs/heads/main'
     timeout-minutes: 20
     permissions:
       contents: read
