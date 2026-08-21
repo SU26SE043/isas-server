@@ -423,6 +423,11 @@ class GenerateRoadmapRequest(BaseModel):
     # pydantic `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai (đúng lớp bug BC14/F2b
     # `focusCriteria`, và là chính lý do đo được chỉ 7% focusCriteria khớp rubric thật trên prod).
     criteria: list[CriterionRef] | None = None
+    # BE-4 — độ dài roadmap candidate CHỌN (Quick=2 milestone×2 lesson · Standard=4×3, xem
+    # app.roadmap_quality). Mặc định "Standard" giữ hành vi client cũ (chưa gửi field này). ⚠ PHẢI
+    # khai tường minh — cùng bẫy `extra='ignore'` nêu ở `criteria` ngay trên: thiếu dòng này thì
+    # .NET gửi `scope` mà pydantic nuốt im lặng, mọi request luôn rơi về mặc định trong code.
+    scope: str = "Standard"
 
 
 class RoadmapLesson(BaseModel):

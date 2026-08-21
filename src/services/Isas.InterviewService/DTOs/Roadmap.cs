@@ -20,7 +20,8 @@ public record CreateRoadmapRequest(
     Guid? CvAnalysisId = null,                // BC17 — cv_analyses (BC7)
     Guid? PriorRoadmapId = null,              // BC17 — roadmaps.final_report (BC15)
     string? Focus = null,                     // BC17 — free-text
-    string? Language = null
+    string? Language = null,
+    string? Scope = null                      // BE-4 — "Quick"/"Standard"; null → "Standard" (hành vi cũ)
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).
@@ -77,6 +78,16 @@ public record MilestoneResponse(
     IReadOnlyList<LessonResponse> Lessons
 );
 
+// BE-4 — provenance của roadmap: NGUỒN đã dùng để tạo (sessionIds/baseline, ghi xuống DB từ BC12
+// nhưng trước đây không endpoint nào trả lại — cột chết ở tầng API dù có ở tầng lưu trữ) + SCOPE
+// đã dùng lúc tạo. `Scope` chỉ có giá trị NGAY LÚC TẠO (không lưu DB) — đọc roadmap cũ → null,
+// KHÔNG suy đoán (xem ghi chú tại `RoadmapService.Map`).
+public record RoadmapResolvedFromResponse(
+    IReadOnlyList<Guid> SessionIds,
+    bool BaselineAvailable,
+    string? Scope
+);
+
 public record RoadmapResponse(
     Guid Id,
     string Name,                                   // BE-6 — luôn có giá trị, kể cả hàng cũ (suy lúc đọc)
@@ -87,7 +98,8 @@ public record RoadmapResponse(
     string Status,
     IReadOnlyList<MilestoneResponse> Milestones,   // theo orderNo
     DateTime CreatedAt,
-    DateTime? CompletedAt
+    DateTime? CompletedAt,
+    RoadmapResolvedFromResponse ResolvedFrom       // BE-4 — additive, xem RoadmapResolvedFromResponse
 );
 
 /// <summary>

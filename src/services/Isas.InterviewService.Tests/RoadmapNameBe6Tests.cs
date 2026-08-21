@@ -34,7 +34,9 @@ public class RoadmapNameBe6Tests
                 It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(),
+                It.IsAny<string>(),                                   // BE-4 — scope, chèn TRƯỚC ct
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(Sample());
         return m;
     }

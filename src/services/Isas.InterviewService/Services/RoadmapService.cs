@@ -57,9 +57,10 @@ public class RoadmapService : IRoadmapService
         var language = ValidateLanguage(req.Language);
         // BE-6 — chuẩn hoá tên NGAY ĐẦU HÀM, trước cả kiểm gói và lời gọi AI: tên sai là lỗi đầu vào,
         // để nó nổ sau khi đã đốt một lượt Gemini là bắt người dùng trả giá cho lỗi gõ của mình.
-        // Cùng lý do `ValidateLanguage` đứng ở đây.
+        // Cùng lý do `ValidateLanguage` đứng ở đây — và cùng lý do `ValidateScope` (BE-4) đứng ngay dưới.
         var requestedName = RoadmapNaming.Normalize(req.Name);
         var createdAt = DateTime.UtcNow;
+        var scope = ValidateScope(req.Scope);
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
         // CV optional — đọc parsed_text (kiểm chủ sở hữu). null → 404; khác chủ → 403; rỗng → 400.
@@ -161,9 +162,9 @@ public class RoadmapService : IRoadmapService
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
             ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, ct)
+                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, ct)
             : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria);
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope);
 
         var roadmap = new Roadmap
         {
@@ -223,7 +224,7 @@ public class RoadmapService : IRoadmapService
             roadmap.Id, candidateId, req.JobCategory, req.Level,
             roadmap.Milestones.Count, sourceSessionIds?.Count ?? 0);
 
-        return Map(roadmap, includeTheory: true);
+        return Map(roadmap, includeTheory: true, scope: scope);
     }
 
     // RAG grounding (Cách 2) — precompute snapshot cho MỌI lesson trong roadmap. 1 lần /embed cho tất cả
@@ -492,7 +493,23 @@ public class RoadmapService : IRoadmapService
         return language;
     }
 
-    private static RoadmapResponse Map(Roadmap r, bool includeTheory) => new(
+    // BE-4 — độ dài roadmap candidate CHỌN. Tập đóng, case-sensitive (mẫu ValidateSeniority của
+    // PracticeService) — chỉ `null` (client KHÔNG gửi field) mặc định "Standard"; chuỗi rỗng/giá
+    // trị lạ là GIÁ TRỊ SAI, bị từ chối 400 chứ không âm thầm rơi về mặc định (BK36).
+    private static readonly string[] AllowedScopes = ["Quick", "Standard"];
+    private const string DefaultScope = "Standard";
+
+    private static string ValidateScope(string? requested)
+    {
+        if (requested is null) return DefaultScope;
+        var scope = requested.Trim();
+        if (!AllowedScopes.Contains(scope, StringComparer.Ordinal))
+            throw new InvalidOperationException(
+                $"scope chỉ nhận {string.Join(" / ", AllowedScopes)} (đang gửi: '{requested}').");
+        return scope;
+    }
+
+    private static RoadmapResponse Map(Roadmap r, bool includeTheory, string? scope = null) => new(
         r.Id,
         RoadmapNaming.Resolve(r.Name, r.JobCategory, r.Level, r.Language, r.CreatedAt),
         r.JobCategory.ToString(),
@@ -528,5 +545,15 @@ public class RoadmapService : IRoadmapService
                     : null)).ToList()
         )).ToList(),
         r.CreatedAt,
-        r.CompletedAt);
+        r.CompletedAt,
+        // BE-4 — provenance: `sourceSessionIds`/`baseline` được GHI xuống DB từ BC12 nhưng trước đây
+        // KHÔNG endpoint nào đọc lại — candidate chọn report trong wizard rồi sau khi tạo xong KHÔNG
+        // CÒN cách nào xem lại đã dựa trên gì. `Scope` KHÔNG được lưu (không migration cho task này)
+        // nên CHỈ có nghĩa NGAY LÚC TẠO (CreateAsync truyền `scope` từ request đang xử lý); đọc lại
+        // roadmap CŨ (GetAsync) không biết scope lúc tạo → `null`, KHÔNG suy đoán từ số milestone/
+        // lesson hiện có (mẫu BK23: null = không biết, đừng bịa "khác" từ "không biết").
+        new RoadmapResolvedFromResponse(
+            r.SourceSessionIds ?? [],
+            r.Baseline is not null,
+            scope));
 }
