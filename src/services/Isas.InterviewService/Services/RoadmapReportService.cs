@@ -78,13 +78,19 @@ public class RoadmapReportService : IRoadmapReportService
         if (roadmap is null) return;
         var milestone = roadmap.Milestones.First(m => m.Id == milestoneId);
 
-        // Improvement (jsonb) + milestone Completed. Guard status != Completed → idempotent (absorbing).
-        var improvement = await ComputeImprovementAsync(roadmap, milestone, ct);
+        // Improvement (jsonb) + PHẦN TÍNH ra nó (score_snapshot) + milestone Completed.
+        // Guard status != Completed → idempotent (absorbing).
+        //
+        // ⚠ Hai cột phải đi trong CÙNG một ExecuteUpdate và sinh ra từ CÙNG một vòng lặp
+        // (`ComputeMilestoneScoreAsync`). Tách ra thì "con số ở tiêu đề" và "phần tính cộng ra nó"
+        // lệch được — đúng thứ score_snapshot sinh ra để chống.
+        var (improvement, snapshot) = await ComputeMilestoneScoreAsync(roadmap, milestone, ct);
         var mUpdated = await _db.RoadmapMilestones
             .Where(m => m.Id == milestoneId && m.Status != MilestoneStatus.Completed)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(m => m.Status, MilestoneStatus.Completed)
                 .SetProperty(m => m.Improvement, improvement)
+                .SetProperty(m => m.ScoreSnapshot, snapshot)
                 .SetProperty(m => m.CompletedAt, DateTime.UtcNow), ct);
         if (mUpdated > 0)
             _logger.LogInformation(
@@ -155,6 +161,85 @@ public class RoadmapReportService : IRoadmapReportService
         // Active (hoặc Completed thiếu snapshot — defensive) → interim, KHÔNG gọi AI.
         return await BuildReportAsync(roadmap, withAiConclusion: false, ct);
     }
+
+    // ── Read path: GET /roadmaps/{id}/milestones/{mid}/score-report ─────────────────────
+    //
+    // "Phần tính" đứng sau con số delta hiển thị ở trang lộ trình. Mọi chặng đều xem được — điểm
+    // từng tiêu chí + các buổi đã cộng vào là thông tin có ích ngay cả khi chưa có mốc để so.
+    public async Task<MilestoneScoreReportResponse?> GetMilestoneScoreReportAsync(
+        Guid candidateId, Guid roadmapId, Guid milestoneId, CancellationToken ct = default)
+    {
+        var roadmap = await _db.Roadmaps.AsNoTracking()
+            .Include(r => r.Milestones)
+            .FirstOrDefaultAsync(r => r.Id == roadmapId, ct);
+        if (roadmap is null) return null;                                          // 404
+        if (roadmap.CandidateId != candidateId)
+            throw new UnauthorizedAccessException("Không phải roadmap của bạn");    // 403
+
+        // Chặng không thuộc lộ trình này → 404 (chứ không phải 403): với người KHÔNG sở hữu lộ
+        // trình ta đã 403 ở trên rồi, nên tới được đây nghĩa là chủ sở hữu hỏi một id không có
+        // trong lộ trình của chính mình.
+        var milestone = roadmap.Milestones.FirstOrDefault(m => m.Id == milestoneId);
+        if (milestone is null) return null;                                        // 404
+
+        // Đã chốt sổ → ĐỌC, không tính lại. Đây là điều duy nhất bảo đảm phần tính cộng ra đúng con
+        // số ở tiêu đề kể cả sau khi người học luyện lại một bài của chặng.
+        if (milestone.ScoreSnapshot is not null)
+            return MapMilestoneScore(milestone, milestone.ScoreSnapshot, MilestoneScoreSource.Snapshot);
+
+        var (_, snapshot) = await ComputeMilestoneScoreAsync(roadmap, milestone, ct);
+
+        // Chưa hoàn thành → chưa có delta nào được chốt, tính lúc đọc là đúng và không lệch được gì.
+        // Đã hoàn thành mà không có snapshot → chặng chốt sổ TRƯỚC bản này: ta CỐ Ý không backfill
+        // (xem MapMilestoneScore) và gắn nhãn `recomputed` để client nói rõ đây là số tính lại.
+        var source = milestone.Status == MilestoneStatus.Completed
+            ? MilestoneScoreSource.Recomputed
+            : MilestoneScoreSource.Computed;
+        return MapMilestoneScore(milestone, snapshot, source);
+    }
+
+    /// <summary>
+    /// Snapshot (đã lưu hoặc vừa tính) → response, gắn kèm <c>headlineDeltaPct</c> = chính con số
+    /// đang hiện ở tiêu đề, đọc thẳng từ <c>improvement</c>.
+    ///
+    /// <para><b>Vì sao trả cả hai con số:</b> với <c>snapshot</c> chúng luôn bằng nhau (cùng một
+    /// vòng lặp ghi ra) nên đây là phép tự kiểm; với <c>recomputed</c> chúng có thể khác, và lúc đó
+    /// sai lệch phải NHÌN THẤY ĐƯỢC chứ không âm thầm — client có đủ dữ liệu để cảnh báo.</para>
+    ///
+    /// <para><b>Vì sao KHÔNG backfill chặng cũ:</b> backfill = tính lại từ dữ liệu HIỆN TẠI rồi
+    /// đóng dấu "đã chốt". Với chặng có bài đã luyện lại, con số đó mâu thuẫn với <c>improvement</c>
+    /// mà UI đang hiện, và mâu thuẫn đó sẽ KHÔNG còn dấu vết nào để nhận ra — đúng thất bại mà cột
+    /// snapshot sinh ra để chống. Giữ null = KHÔNG BIẾT (BK23) và nói ra bằng <c>source</c>.</para>
+    /// </summary>
+    private static MilestoneScoreReportResponse MapMilestoneScore(
+        RoadmapMilestone milestone, MilestoneScoreSnapshot snapshot, string source)
+    {
+        var headline = milestone.Improvement;
+
+        var criteria = snapshot.Criteria
+            .Select(c => new MilestoneScoreCriterionResponse(
+                c.Name,
+                c.CurrentAveragePercentage,
+                c.CurrentSessions.Select(MapMilestoneScoreSession).ToList(),
+                c.ReferenceAveragePercentage,
+                c.ReferenceSessions.Select(MapMilestoneScoreSession).ToList(),
+                c.DeltaPct,
+                headline is not null && headline.TryGetValue(c.Name, out var h) ? h : null))
+            .ToList();
+
+        return new MilestoneScoreReportResponse(
+            milestone.Id,
+            milestone.Title,
+            milestone.OrderNo,
+            milestone.Status.ToString(),
+            source,
+            snapshot.ComparedWith,
+            snapshot.ComparedWithTitle,
+            criteria);
+    }
+
+    private static MilestoneScoreSessionResponse MapMilestoneScoreSession(MilestoneScoreSessionSnapshot s)
+        => new(s.SessionId, s.LessonTitle, s.AttemptNo, s.Percentage, s.ScoredAt);
 
     // ── Helpers ─────────────────────────────────────────────────────────────────────────
 
@@ -280,24 +365,31 @@ public class RoadmapReportService : IRoadmapReportService
     }
 
     // Improvement mile N = avg% mile N − reference; reference = mile N−1 (nếu có điểm) else baseline;
-    // mile 1 = baseline.
+    // mile 1 = baseline. Trả về CẢ hai thứ được chốt cùng lúc: dictionary delta (lên tiêu đề UI) và
+    // phần TÍNH đầy đủ ra nó (score_snapshot) — xem <see cref="MilestoneScoreSnapshot"/>.
     //
-    // Tiêu chí THIẾU reference (không có mốc để so) → BỎ QUA tiêu chí đó, KHÔNG gán điểm tuyệt đối
-    // vào slot "delta". Field này lên UI dưới nhãn "tiến độ" (progress) — gán một điểm số tuyệt
+    // Tiêu chí THIẾU reference (không có mốc để so) → delta BỎ QUA tiêu chí đó, KHÔNG gán điểm tuyệt
+    // đối vào slot "delta". Field này lên UI dưới nhãn "tiến độ" (progress) — gán một điểm số tuyệt
     // đối vào đó là nói cho người học một điều SAI, và sai theo hướng CÓ LỢI (trông như đã tiến bộ).
     // Sự cố thật trên production: một milestone Completed lưu {"Ngữ pháp & dùng từ": 25.01} — đọc
     // report tưởng đâu tiến bộ +25%, thực ra bài chỉ ĐẠT 25/100 điểm, không phải một delta nào cả.
+    // (Snapshot vẫn liệt kê tiêu chí đó với deltaPct = null — "chưa có gì để so", khác hẳn 0.)
     //
     // Bỏ THEO TỪNG TIÊU CHÍ, không phải "thiếu baseline thì tắt cả milestone": milestone 2 trở đi
     // vẫn so đúng với milestone trước (hành vi đó đang ĐÚNG — không được động vào). Kết quả rỗng
     // hoàn toàn (không tiêu chí nào có mốc) → null, không phải dictionary rỗng — UI/DTO đã có sẵn
     // nhánh null-check (`RoadmapService.cs` Improvement is null → trả null, không phải mảng rỗng).
-    private async Task<Dictionary<string, decimal>?> ComputeImprovementAsync(
-        Roadmap roadmap, RoadmapMilestone milestone, CancellationToken ct)
+    private async Task<(Dictionary<string, decimal>? Improvement, MilestoneScoreSnapshot Snapshot)>
+        ComputeMilestoneScoreAsync(Roadmap roadmap, RoadmapMilestone milestone, CancellationToken ct)
     {
-        var current = await AvgPctByCriterionForMilestoneAsync(milestone.Id, ct);
+        var current = await LoadMilestoneBreakdownAsync(milestone.Id, ct);
 
+        // Chọn mốc — giữ NGUYÊN XI luật cũ (đường tính delta không được đổi hành vi), chỉ rút thêm
+        // NHÃN và chi tiết buổi của mốc để hiển thị.
         Dictionary<string, decimal>? reference;
+        string? comparedWithTitle = null;
+        List<MilestoneScoreCriterionSnapshot>? referenceBreakdown = null;
+
         if (milestone.OrderNo <= 1)
         {
             reference = roadmap.Baseline;
@@ -305,39 +397,141 @@ public class RoadmapReportService : IRoadmapReportService
         else
         {
             var prev = roadmap.Milestones.FirstOrDefault(m => m.OrderNo == milestone.OrderNo - 1);
-            var prevAvg = prev is not null
-                ? await AvgPctByCriterionForMilestoneAsync(prev.Id, ct)
-                : new Dictionary<string, decimal>();
-            reference = prevAvg.Count > 0 ? prevAvg : roadmap.Baseline;
+            var prevBreakdown = prev is not null
+                ? await LoadMilestoneBreakdownAsync(prev.Id, ct)
+                : [];
+            var prevAvg = prevBreakdown.ToDictionary(c => c.Name, c => c.CurrentAveragePercentage);
+            if (prevAvg.Count > 0)
+            {
+                reference = prevAvg;
+                comparedWithTitle = prev!.Title;
+                referenceBreakdown = prevBreakdown;
+            }
+            else
+            {
+                reference = roadmap.Baseline;
+            }
         }
 
+        // Nhãn nói đúng mốc THỰC SỰ dùng được. `baseline` rỗng/null đều → "none": gắn nhãn
+        // "baseline" cho một mốc không có tiêu chí nào là hứa một phép so không tồn tại.
+        var comparedWith = referenceBreakdown is not null
+            ? MilestoneScoreReference.PreviousMilestone
+            : reference is { Count: > 0 } ? MilestoneScoreReference.Baseline : MilestoneScoreReference.None;
+
+        // Buổi của mốc CHỈ có khi mốc là chặng liền trước. `baseline` là một snapshot số đo lúc lập
+        // lộ trình, không có buổi nào đứng sau nó ⇒ rỗng (không phải null — "không có buổi nào", chứ
+        // không phải "không biết").
+        var referenceSessions = referenceBreakdown?
+            .ToDictionary(c => c.Name, c => c.CurrentSessions)
+            ?? [];
+
+        // MỘT vòng lặp sinh ra CẢ delta lên tiêu đề LẪN phần tính — đây là chỗ khiến hai bên không
+        // thể lệch nhau do cấu trúc.
         var improvement = new Dictionary<string, decimal>();
-        foreach (var kv in current)
+        var criteria = new List<MilestoneScoreCriterionSnapshot>(current.Count);
+        foreach (var c in current)
         {
-            if (reference is not null && reference.TryGetValue(kv.Key, out var refPct))
-                improvement[kv.Key] = Math.Round(kv.Value - refPct, 2);   // delta so mốc
-            // Không có mốc cho tiêu chí này → bỏ qua, KHÔNG thêm entry (xem comment ở trên).
+            decimal? refPct = null;
+            decimal? delta = null;
+            if (reference is not null && reference.TryGetValue(c.Name, out var rp))
+            {
+                refPct = rp;
+                delta = Math.Round(c.CurrentAveragePercentage - rp, 2);   // delta so mốc
+                improvement[c.Name] = delta.Value;
+            }
+            // Không có mốc cho tiêu chí này → KHÔNG thêm entry vào improvement (xem comment ở trên),
+            // nhưng VẪN liệt kê trong snapshot: "chặng này được bao nhiêu, từ những buổi nào" là
+            // thông tin có ích ngay cả khi chưa có gì để so.
+
+            criteria.Add(c with
+            {
+                ReferenceAveragePercentage = refPct,
+                ReferenceSessions = referenceSessions.TryGetValue(c.Name, out var rs) ? rs : [],
+                DeltaPct = delta
+            });
         }
-        return improvement.Count > 0 ? improvement : null;
+
+        return (
+            improvement.Count > 0 ? improvement : null,
+            new MilestoneScoreSnapshot(comparedWith, comparedWithTitle, criteria));
     }
 
-    // avg% per tiêu chí (theo TÊN) qua các session Scored gắn các lesson của 1 milestone.
-    private async Task<Dictionary<string, decimal>> AvgPctByCriterionForMilestoneAsync(
+    /// <summary>
+    /// Điểm từng tiêu chí của một chặng, KÈM đúng những dòng điểm đã cộng vào nó.
+    ///
+    /// <para><b>Đây là đường tính DUY NHẤT</b> cho cả delta (<c>improvement</c>) lẫn phần tính hiển
+    /// thị. Viết một truy vấn thứ hai để "tính lại cho tiện" thì hai bên trôi xa nhau và triệu chứng
+    /// là <i>phần tính không cộng ra con số ở tiêu đề</i> — đúng thứ tính năng này sinh ra để chống.</para>
+    ///
+    /// <para><b>Trung bình tính trên DÒNG điểm, không trên buổi</b> — giữ nguyên xi phép tính cũ. Hai
+    /// thứ chỉ khác nhau khi một buổi có hai dòng cùng TÊN tiêu chí (rubric đổi version, id khác
+    /// nhau nhưng tên trùng); lúc đó cả hai dòng đều được liệt kê ⇒ trung bình của danh sách hiển
+    /// thị vẫn đúng bằng con số chốt.</para>
+    ///
+    /// <para>⚠ Nguồn buổi là <c>roadmap_lessons.session_id</c> = buổi MỚI NHẤT của mỗi bài, nên một
+    /// bài đã luyện lại chỉ đóng góp lần làm gần nhất. Đó là hành vi sẵn có của phép tính delta;
+    /// <c>AttemptNo</c> được trả kèm để người học thấy "Lần 2" thay vì tưởng mất một buổi.</para>
+    /// </summary>
+    private async Task<List<MilestoneScoreCriterionSnapshot>> LoadMilestoneBreakdownAsync(
         Guid milestoneId, CancellationToken ct)
     {
-        var sessionIds = await _db.RoadmapLessons.AsNoTracking()
+        var lessons = await _db.RoadmapLessons.AsNoTracking()
             .Where(l => l.MilestoneId == milestoneId && l.SessionId != null)
-            .Select(l => l.SessionId!.Value)
+            .Select(l => new { SessionId = l.SessionId!.Value, l.Title })
             .ToListAsync(ct);
-        if (sessionIds.Count == 0) return new Dictionary<string, decimal>();
+        if (lessons.Count == 0) return [];
+
+        var sessionIds = lessons.Select(x => x.SessionId).Distinct().ToList();
 
         var scores = await _db.SessionCriterionScores.AsNoTracking()
             .Where(sc => sessionIds.Contains(sc.SessionId))
             .ToListAsync(ct);
+        if (scores.Count == 0) return [];
+
+        // Lần làm thứ mấy — chỉ để hiển thị. Buổi không có dòng lần-làm nào (dữ liệu trước khi có
+        // bảng đó) → null = KHÔNG BIẾT, không bịa thành 1.
+        var attemptNoBySession = await _db.RoadmapLessonAttempts.AsNoTracking()
+            .Where(a => sessionIds.Contains(a.SessionId))
+            .ToDictionaryAsync(a => a.SessionId, a => a.AttemptNo, ct);
+
+        // Chốt deterministic (dòng đầu tiên) — không ràng buộc nào chặn hai lesson trỏ chung 1 buổi.
+        var titleBySession = lessons
+            .GroupBy(x => x.SessionId)
+            .ToDictionary(g => g.Key, g => g.First().Title);
+
+        // Mốc CHẤM của buổi = max(created_at) các dòng điểm của buổi — CÙNG mốc mà `progress[]` của
+        // báo cáo lộ trình dùng, để hai màn hình không nói hai mốc thời gian khác nhau cho cùng buổi.
+        var scoredAtBySession = scores
+            .GroupBy(sc => sc.SessionId)
+            .ToDictionary(g => g.Key, g => g.Max(sc => sc.CreatedAt));
 
         return scores
             .GroupBy(sc => sc.CriterionName)
-            .ToDictionary(g => g.Key, g => Math.Round(g.Average(x => x.Percentage), 2));
+            .Select(g =>
+            {
+                var sessions = g
+                    .Select(sc => new MilestoneScoreSessionSnapshot(
+                        sc.SessionId,
+                        titleBySession.TryGetValue(sc.SessionId, out var title) ? title : string.Empty,
+                        attemptNoBySession.TryGetValue(sc.SessionId, out var no) ? no : null,
+                        sc.Percentage,
+                        scoredAtBySession[sc.SessionId]))
+                    .OrderBy(x => x.ScoredAt).ThenBy(x => x.SessionId)
+                    .ToList();
+
+                return new MilestoneScoreCriterionSnapshot(
+                    g.Key,
+                    // Trung bình của ĐÚNG danh sách vừa dựng ⇒ "phần tính cộng ra con số" là bất biến
+                    // theo cấu trúc, không phải nhờ hai chỗ tình cờ giống nhau.
+                    Math.Round(sessions.Average(x => x.Percentage), 2),
+                    sessions,
+                    ReferenceAveragePercentage: null,
+                    ReferenceSessions: [],
+                    DeltaPct: null);
+            })
+            .OrderBy(c => c.Name, StringComparer.Ordinal)
+            .ToList();
     }
 
     // Điểm của 1 buổi luyện thuộc roadmap, kèm mốc thời gian + tên bài học để dựng đường xu hướng.

@@ -161,6 +161,25 @@ public class RoadmapMilestoneConfiguration : IEntityTypeConfiguration<RoadmapMil
             .HasColumnType("jsonb");
         improvement.Metadata.SetValueComparer(RoadmapConfiguration.DecimalDictComparer);
 
+        // jsonb? — phần TÍNH đã chốt của chặng (xem MilestoneScoreSnapshot). Converter null-safe
+        // (mẫu RoadmapLesson.GroundingRefs) ⇒ hàng cũ giữ SQL NULL và migration KHỎI `defaultValue`.
+        // ⚠ `defaultValue: ""` cho cột jsonb là lỗi migration mà test .NET KHÔNG bắt được: chuỗi rỗng
+        // không phải JSON hợp lệ nên Postgres từ chối ngay tại ALTER TABLE, trong khi SQLite
+        // (EnsureCreated) bỏ qua migration nên xanh 100% (tiền lệ F15).
+        var snapshotConverter = new ValueConverter<MilestoneScoreSnapshot?, string?>(
+            v => v == null ? null : JsonSerializer.Serialize(v, Json),
+            v => v == null ? null : JsonSerializer.Deserialize<MilestoneScoreSnapshot>(v, Json));
+        var snapshot = e.Property(x => x.ScoreSnapshot);
+        snapshot.HasConversion(snapshotConverter);
+        // So sánh bằng chính JSON đã serialize: record `with` các List lồng nhau nên so tham chiếu
+        // sẽ báo "đã đổi" mỗi lần load ⇒ ghi thừa; so cấu trúc bằng tay thì phải bảo trì 3 record.
+        snapshot.Metadata.SetValueComparer(new ValueComparer<MilestoneScoreSnapshot?>(
+            (a, b) => JsonSerializer.Serialize(a, Json) == JsonSerializer.Serialize(b, Json),
+            v => v == null ? 0 : JsonSerializer.Serialize(v, Json).GetHashCode(),
+            v => v == null ? null : JsonSerializer.Deserialize<MilestoneScoreSnapshot>(
+                JsonSerializer.Serialize(v, Json), Json)));
+        snapshot.HasColumnType("jsonb");
+
         // UNIQUE(roadmap_id, order_no).
         e.HasIndex(x => new { x.RoadmapId, x.OrderNo }).IsUnique();
 

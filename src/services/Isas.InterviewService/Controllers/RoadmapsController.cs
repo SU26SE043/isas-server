@@ -321,4 +321,35 @@ public class RoadmapsController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
         }
     }
+
+    // GET /roadmaps/{id}/milestones/{milestoneId}/score-report — PHẦN TÍNH đứng sau con số delta.
+    //
+    // Trang lộ trình hiện "So với chặng trước: −20% Giao tiếp & trình bày"; endpoint này trả về đúng
+    // phép tính ra con số đó: điểm từng tiêu chí của chặng + các buổi đã cộng vào + mốc so.
+    // Chỉ đọc, không trừ credit. Mọi chặng đều xem được — chặng chưa hoàn thành thì chỉ chưa có
+    // delta chốt, phần "chặng này được bao nhiêu, từ những buổi nào" vẫn đầy đủ.
+    //
+    // 404 chặng không thuộc lộ trình / lộ trình không tồn tại · 403 lộ trình của người khác.
+    [HttpGet("{id:guid}/milestones/{milestoneId:guid}/score-report")]
+    [ProducesResponseType(typeof(MilestoneScoreReportResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetMilestoneScoreReport(Guid id, Guid milestoneId, CancellationToken ct)
+    {
+        if (!TryGetCandidateId(out var candidateId))
+            return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
+
+        try
+        {
+            var report = await _reportService.GetMilestoneScoreReportAsync(candidateId, id, milestoneId, ct);
+            if (report is null)
+                return NotFound(new { error = "Không tìm thấy chặng này trong lộ trình." });
+
+            return Ok(report);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+    }
 }
