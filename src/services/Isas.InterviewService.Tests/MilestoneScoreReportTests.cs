@@ -521,6 +521,67 @@ public class MilestoneScoreReportTests
         Assert.Equal(10m, c.DeltaPct);                               // 50 − 40, cộng ra từ chính hai dòng trên
     }
 
+    // Tiếp ca trên, nhưng SỐ DÒNG LỆCH NHAU giữa các buổi (buổi A 2 dòng, buổi B 1 dòng) —
+    // rubric đổi version giữa chừng chặng là dựng được thật.
+    //
+    // Chỉ ở đây "trung bình trên dòng" mới TÁCH KHỎI "trung bình trên buổi" (33.33 vs 25). Ca cân
+    // bằng ở test trên không phân biệt được hai phép tính, nên nếu ai đó cho `deltaPct` đi một
+    // đường tính riêng thì không test nào đỏ — mà `deltaPct` chính là con số lên tiêu đề.
+    [Fact]
+    public async Task SoDongLechNhauGiuaCacBuoi_DeltaVanBamConSoHienThi()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var at = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var v1 = TestDb.Criterion(JobCategory.BE, version: 1, active: false, name: "Clarity");
+        var v2 = TestDb.Criterion(JobCategory.BE, version: 2, name: "Clarity");
+        t.Db.RubricCriteria.AddRange(v1, v2);
+
+        Guid AddSession(params (RubricCriterion crit, decimal pct)[] rows)
+        {
+            var session = TestDb.Session(user, SessionStatus.Scored, createdAt: at);
+            t.Db.PracticeSessions.Add(session);
+            foreach (var (crit, pct) in rows)
+                t.Db.SessionCriterionScores.Add(new SessionCriterionScore
+                {
+                    Id = Guid.NewGuid(),
+                    SessionId = session.Id,
+                    CriterionId = crit.Id,
+                    CriterionName = "Clarity",
+                    AverageScore = Math.Round(pct / 20m, 2),
+                    MaxScore = 5,
+                    Percentage = pct,
+                    Weight = 1m,
+                    NeedsImprovement = pct < 50m,
+                    CreatedAt = at
+                });
+            return session.Id;
+        }
+
+        var sA = AddSession((v1, 20m), (v2, 80m));   // 2 dòng
+        var sB = AddSession((v2, 0m));               // 1 dòng
+        await t.Db.SaveChangesAsync();
+
+        var r = NewRoadmap(user, new Dictionary<string, decimal> { ["Clarity"] = 13.33m });
+        var m1 = AddMilestone(r, 1, MilestoneStatus.InProgress);
+        AddLesson(m1, 1, LessonStatus.Done, sA);
+        AddLesson(m1, 2, LessonStatus.Done, sB);
+        t.Db.Roadmaps.Add(r);
+        await t.Db.SaveChangesAsync();
+
+        var report = await Svc(t).GetMilestoneScoreReportAsync(user, r.Id, m1.Id);
+
+        var c = Crit(report!, "Clarity");
+        Assert.Equal(3, c.CurrentSessions.Count);
+        // Trên DÒNG: (20+80+0)/3 = 33.33.  Trên BUỔI thì sẽ là (50+0)/2 = 25 — khác hẳn.
+        Assert.Equal(33.33m, c.CurrentAveragePercentage);
+        Assert.Equal(Math.Round(c.CurrentSessions.Average(x => x.Percentage), 2), c.CurrentAveragePercentage);
+        // delta phải bám ĐÚNG con số đang hiển thị, không phải một phép tính thứ hai.
+        Assert.Equal(c.CurrentAveragePercentage - c.ReferenceAveragePercentage, c.DeltaPct);
+        Assert.Equal(20m, c.DeltaPct);
+    }
+
     // ══ QUYỀN SỞ HỮU / 404 ═════════════════════════════════════════════════════════════════
     [Fact]
     public async Task ChangLa_404_LoTrinhLa_404_NguoiKhac_403()
