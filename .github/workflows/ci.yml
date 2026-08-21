@@ -422,8 +422,13 @@ jobs:
       - name: Wait for gateway
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          STACK: ${{ github.ref_name }}
         run: |
-          url="http://$SERVER_HOST:5050/openapi/merged.json"
+          # Cổng theo STACK. Trước đây ghim cứng 5050 — cổng của stack `main`. Job này chạy cho CẢ
+          # `dev` (xem `if:` ở đầu job), nên deploy `dev` sẽ đi hỏi gateway của `main`: nó luôn trả
+          # lời (main vẫn sống) nên bước này XANH mà chẳng kiểm gì về bản vừa deploy.
+          if [ "$STACK" = "main" ]; then PORT=5050; else PORT=5051; fi
+          url="http://$SERVER_HOST:$PORT/openapi/merged.json"
           deadline=$(( SECONDS + 600 ))
           until curl -fsS --max-time 10 -o /dev/null "$url"; do
             if [ "$SECONDS" -ge "$deadline" ]; then
@@ -446,14 +451,20 @@ jobs:
         env:
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          STACK: ${{ github.ref_name }}
         run: |
-          ssh -o StrictHostKeyChecking=accept-new "$SERVER_USER@$SERVER_HOST" 'bash -s' > revisions.txt <<'REMOTE'
+          ssh -o StrictHostKeyChecking=accept-new "$SERVER_USER@$SERVER_HOST" "STACK='$STACK' bash -s" > revisions.txt <<'REMOTE'
           # KHÔNG dùng `-e` ở khối này (khác khối Deploy): nó chỉ ĐỌC và báo cáo, ta muốn liệt kê
           # đủ cả 7 container rồi mới kết luận ở runner — dừng ngay container đầu tiên đọc lỗi thì
           # mất thông tin của 6 cái còn lại. Phán quyết nằm ở phần dưới, chạy trên runner.
+          #
+          # ⚠ Hậu tố phải theo $STACK. Trước đây ghim cứng `-main`, nên deploy nhánh `dev` đi đọc
+          # container của `main` — chúng chạy revision của `main` chứ không phải $GITHUB_SHA vừa
+          # đẩy, nên bước này ĐỎ VĨNH VIỄN với mọi lần deploy `dev` dù bản deploy hoàn toàn đúng.
+          # Đo thật 2026-08-21: 2/2 lần deploy `dev` đều đỏ đúng ở bước này.
           set -uo pipefail
-          for c in authservice-main interviewservice-main campaignservice-main \
-                   paymentservice-main gateway-main aiapi-main aiworker-main; do
+          for c in authservice-$STACK interviewservice-$STACK campaignservice-$STACK \
+                   paymentservice-$STACK gateway-$STACK aiapi-$STACK aiworker-$STACK; do
             rev=$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$c" 2>/dev/null || true)
             printf '%s %s\n' "$c" "${rev:-KHONG-DOC-DUOC}"
           done
@@ -492,4 +503,10 @@ jobs:
       - name: Smoke (gateway OpenAPI ↔ routing thật)
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
-        run: python3 scripts/verify-gateway-openapi.py "http://$SERVER_HOST:5050"
+          STACK: ${{ github.ref_name }}
+        run: |
+          # Cùng lý do với bước chờ gateway: 5050 là cổng của `main`. Chạy smoke của một lần deploy
+          # `dev` vào gateway `main` không chỉ vô nghĩa — nó còn bắn 106 request đổi trạng thái vào
+          # PRODUCTION (xem cảnh báo ngay trên), tức tệ hơn là không chạy.
+          if [ "$STACK" = "main" ]; then PORT=5050; else PORT=5051; fi
+          python3 scripts/verify-gateway-openapi.py "http://$SERVER_HOST:$PORT"
