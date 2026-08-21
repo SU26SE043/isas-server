@@ -1870,6 +1870,7 @@ class GeminiProvider(QuestionProvider):
                                grounding: list[dict] | None = None,
                                criteria: list[dict] | None = None,
                                scope: str = DEFAULT_SCOPE, language: str = "vi",
+                               evidence: list[dict] | None = None,
                                _retry_feedback: str | None = None,
                                _attempt: int = 1) -> list[dict]:
         """
@@ -1897,6 +1898,10 @@ class GeminiProvider(QuestionProvider):
         khi trả lời (``truncate_to_scope`` — milestone/lesson có thứ tự Ý NGHĨA, nền tảng trước nên
         phải là phần sống sót). KHÔNG raise khi vượt trần — cùng lý do "không trừ credit" ở trên.
 
+        BE-5 — ``evidence`` = Reasoning (E11, trích NGUYÊN VĂN lời ứng viên) của answer điểm THẤP
+        NHẤT cho tiêu chí yếu, đã tải + cắt trần sẵn (.NET ``RoadmapEvidenceLoader``). Chẩn đoán
+        hành vi cụ thể thay cho con số % trừu tượng — xem ``build_evidence_block``.
+
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
         """
@@ -1913,6 +1918,7 @@ class GeminiProvider(QuestionProvider):
             retry_feedback=_retry_feedback,
             language=language,
             scope=scope,
+            evidence=evidence,
         )
 
         response = await self._generate(
@@ -2024,6 +2030,7 @@ class GeminiProvider(QuestionProvider):
                         cv_analysis_summary=cv_analysis_summary,
                         prior_roadmap_summary=prior_roadmap_summary,
                         grounding=grounding, criteria=criteria, scope=scope, language=language,
+                        evidence=evidence,
                         _retry_feedback=feedback, _attempt=_attempt + 1)
                 # Hết lượt retry — GIỮ milestone (focusCriteria rỗng), KHÔNG raise: xem docstring
                 # (một milestone thiếu nhãn không đáng đánh đổi mất TOÀN BỘ roadmap đã sinh đúng).
@@ -2036,7 +2043,8 @@ class GeminiProvider(QuestionProvider):
     async def generate_lesson_theory(self, job_category: str, level: str,
                                      lesson_title: str, focus_criteria: list[str],
                                      weaknesses: list[str] | None,
-                                     grounding: list[dict] | None = None, language: str = "vi"
+                                     grounding: list[dict] | None = None, language: str = "vi",
+                                     evidence: list[dict] | None = None
                                      ) -> LessonTheoryResult:
         """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
 
@@ -2048,6 +2056,9 @@ class GeminiProvider(QuestionProvider):
 
         resources rỗng KHÔNG phải lỗi (lý thuyết vẫn dùng được) → không raise,
         khác với theoryMarkdown rỗng.
+
+        BE-5 — ``evidence`` = Reasoning (E11) của answer điểm THẤP NHẤT cho tiêu chí yếu, cùng
+        nguồn/lý do như ``generate_roadmap`` — xem ``build_evidence_block``.
 
         ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ + đòi trích dẫn.
         ``cited_chunk_ids`` = None khi ungrounded (endpoint không trả field, giữ shape cũ);
@@ -2110,7 +2121,7 @@ class GeminiProvider(QuestionProvider):
         for _ in range(attempts):
             prompt = build_lesson_theory_prompt(
                 job_category, level, lesson_title, focus_criteria, weaknesses,
-                grounding, retry_feedback=feedback, language=language)
+                grounding, retry_feedback=feedback, language=language, evidence=evidence)
 
             # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
             # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist

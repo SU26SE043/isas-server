@@ -27,6 +27,12 @@ public record CreateRoadmapRequest(
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).
 public record RoadmapWeakness(string CriterionName, decimal Percentage);
 
+// BE-5 — bằng chứng HÀNH VI cho 1 tiêu chí YẾU: Reasoning (E11, luôn trích NGUYÊN VĂN lời ứng
+// viên) của 2-3 answer điểm THẤP NHẤT — đã tải + cắt trần sẵn (RoadmapEvidenceLoader). Khớp
+// WeaknessScore ở chỗ criterionName là snapshot tên (không phải id — rubric có thể đổi version),
+// nhưng mang thêm chẩn đoán CỤ THỂ thay vì chỉ con số %.
+public record CriterionEvidence(string CriterionName, IReadOnlyList<string> Reasoning);
+
 // Kết quả AI /generate-roadmap (sync) — chỉ cấu trúc (title/focusCriteria/lessons.title), không điểm.
 public record RoadmapGenAiResult(IReadOnlyList<GeneratedMilestone> Milestones);
 public record GeneratedMilestone(string Title, IReadOnlyList<string> FocusCriteria, IReadOnlyList<GeneratedLesson> Lessons);

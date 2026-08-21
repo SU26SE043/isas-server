@@ -58,10 +58,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
         string scope = "Standard",
+        IReadOnlyList<CriterionEvidence>? evidence = null,
         CancellationToken ct = default)
-        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope);
+        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence);
 
-    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard")
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null)
     {
         var payload = new
         {
@@ -86,6 +87,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             // BE-4 — độ dài roadmap ("Quick"/"Standard"). AIService pydantic schema khai `scope: str =
             // "Standard"` tường minh (cùng bẫy extra='ignore' nêu ở `criteria`) nên luôn gửi, không để null.
             scope,
+            // BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, đã tải + cắt trần sẵn
+            // (RoadmapEvidenceLoader). Anonymous object camelCase, cùng lý do như `criteria` ở trên.
+            evidence = evidence is { Count: > 0 }
+                ? evidence.Select(e => new { criterionName = e.CriterionName, reasoning = e.Reasoning })
+                : null,
         };
 
         HttpResponseMessage response;
@@ -142,10 +148,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         string jobCategory, string level, string lessonTitle,
         IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses,
         IReadOnlyList<GroundingChunk>? grounding = null,
+        IReadOnlyList<CriterionEvidence>? evidence = null,
         CancellationToken ct = default)
-        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi");
+        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi", evidence);
 
-    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language)
+    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null)
     {
         var payload = new
         {
@@ -158,7 +165,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             // RAG grounding — snapshot precompute (roadmap_lessons.grounding_refs). null → sinh ungrounded.
             grounding = grounding is { Count: > 0 }
                 ? grounding.Select(g => new { chunkId = g.ChunkId, content = g.Content, sourceUrl = g.SourceUrl, sourceTitle = g.SourceTitle })
-                : null
+                : null,
+            // BE-5 — bằng chứng (Reasoning E11), cùng shape/lý do như AiServiceRoadmapGenerator.GenerateAsync.
+            evidence = evidence is { Count: > 0 }
+                ? evidence.Select(e => new { criterionName = e.CriterionName, reasoning = e.Reasoning })
+                : null,
         };
 
         HttpResponseMessage response;

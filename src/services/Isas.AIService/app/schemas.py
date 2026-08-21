@@ -400,6 +400,14 @@ class WeaknessScore(BaseModel):
     percentage: float
 
 
+class CriterionEvidence(BaseModel):
+    """BE-5 — bằng chứng HÀNH VI cho 1 tiêu chí yếu: Reasoning (E11, trích NGUYÊN VĂN lời ứng
+    viên) của answer điểm THẤP NHẤT. .NET đã tải + cắt trần sẵn (RoadmapEvidenceLoader: ≤3 tiêu
+    chí × ≤3 answer/tiêu chí)."""
+    criterionName: str
+    reasoning: list[str]
+
+
 class GenerateRoadmapRequest(BaseModel):
     jobCategory: str
     language: str = "vi"
@@ -428,6 +436,9 @@ class GenerateRoadmapRequest(BaseModel):
     # khai tường minh — cùng bẫy `extra='ignore'` nêu ở `criteria` ngay trên: thiếu dòng này thì
     # .NET gửi `scope` mà pydantic nuốt im lặng, mọi request luôn rơi về mặc định trong code.
     scope: str = "Standard"
+    # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, xem CriterionEvidence. Vắng/rỗng ⇒ không
+    # ràng buộc gì thêm (hành vi cũ). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` ở trên.
+    evidence: list[CriterionEvidence] | None = None
 
 
 class RoadmapLesson(BaseModel):
@@ -453,6 +464,9 @@ class GenerateLessonTheoryRequest(BaseModel):
     weaknesses: list[str] | None = None
     # RAG grounding (Contract 2) — vắng/rỗng → ungrounded. Khai tường minh (BC14).
     grounding: list[GroundingChunk] | None = None
+    # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, xem CriterionEvidence ở trên. Vắng/rỗng
+    # ⇒ không ràng buộc gì thêm (hành vi cũ). ⚠ Khai tường minh — mẫu `grounding`/`weaknesses`.
+    evidence: list[CriterionEvidence] | None = None
 
 
 class LessonResource(BaseModel):
