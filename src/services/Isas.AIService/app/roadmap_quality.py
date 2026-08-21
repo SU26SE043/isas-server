@@ -62,15 +62,34 @@ def filter_milestone_criteria(
     """
     if not known_names:
         return milestones, []
-    allowed = {_norm(n) for n in known_names if n.strip()}
-    if not allowed:
+    # Ánh xạ dạng-đã-chuẩn-hoá → TÊN CHUẨN (nguyên văn trong rubric), không phải một tập tên.
+    #
+    # 🔴 Vì sao phải trả TÊN CHUẨN chứ không phải chữ model gõ: phép khớp ở đây bỏ qua hoa/thường
+    # (`_norm` = trim + casefold), nên `"phân tích yêu cầu"` được nhận là hợp lệ. Nhưng nếu ta LƯU
+    # lại đúng chữ model trả thì downstream vỡ ở chỗ KHÁC, và vỡ IM LẶNG:
+    #   RoadmapService persist nguyên văn `focusCriteria`
+    #     → baseline là Dictionary<string,decimal> keyed bằng `SessionCriterionScore.CriterionName`
+    #       (tên CHUẨN, hoa/thường đúng như rubric)
+    #     → RoadmapLessonService.BuildWeaknesses gọi `baseline.TryGetValue(name)` — khớp CHÍNH XÁC
+    #   ⇒ `"phân tích yêu cầu"` không bao giờ tìm thấy `"Phân tích yêu cầu"` ⇒ giao rỗng
+    #   ⇒ bài giảng KHÔNG nhận được điểm yếu — đúng con bug BE-1 sinh ra để diệt, chỉ thu hẹp lại
+    #      thành "tên lệch hoa/thường" thay vì "mọi tên bịa".
+    #
+    # Chuẩn hoá tại ĐÂY (biên nhận dữ liệu từ model) chứ không phải ở chỗ đọc, vì chỗ đọc có nhiều
+    # call site còn biên nhận chỉ có một.
+    canonical: dict[str, str] = {}
+    for n in known_names:
+        name = n.strip()
+        if name:
+            canonical.setdefault(_norm(name), name)
+    if not canonical:
         return milestones, []
 
     empty_after_filter: list[str] = []
     filtered: list[dict] = []
     for m in milestones:
         original = m.get("focusCriteria") or []
-        kept = [f for f in original if _norm(f) in allowed]
+        kept = [canonical[k] for f in original if (k := _norm(f)) in canonical]
         if original and not kept:
             empty_after_filter.append(str(m.get("title", "")))
         filtered.append({**m, "focusCriteria": kept})

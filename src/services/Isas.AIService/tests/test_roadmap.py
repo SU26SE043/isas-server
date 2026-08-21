@@ -200,9 +200,14 @@ async def test_provider_generate_roadmap_filters_out_names_not_in_criteria_list(
     milestones = await provider.generate_roadmap(
         "BA", "Junior", None, None, criteria=_criteria("Phân tích yêu cầu", "Tư duy giải quyết vấn đề"))
 
-    # Tên khớp (chuẩn hoá hoa/thường khi SO SÁNH — khoảng trắng thừa đã bị `.strip()` từ bước dựng
-    # milestone phía trên) được GIỮ NGUYÊN CASING model trả; tên bịa bị loại.
-    assert milestones[0]["focusCriteria"] == ["phân tích yêu cầu"]
+    # 🔴 TIỀN ĐỀ ĐÃ ĐẢO (trước đây khẳng định "GIỮ NGUYÊN CASING model trả" → `"phân tích yêu cầu"`).
+    # Giữ chữ model là hỏng IM LẶNG ở downstream: `focusCriteria` được persist nguyên văn, rồi
+    # `RoadmapLessonService.BuildWeaknesses` tra `baseline.TryGetValue(name)` với baseline keyed
+    # bằng TÊN CHUẨN — phép tra đó khớp CHÍNH XÁC, nên `"phân tích yêu cầu"` không bao giờ tìm thấy
+    # `"Phân tích yêu cầu"` ⇒ giao rỗng ⇒ bài giảng mất điểm yếu. Đúng con bug BE-1 sinh ra để diệt,
+    # chỉ thu hẹp từ "mọi tên bịa" thành "tên lệch hoa/thường".
+    # Nay bộ lọc trả về TÊN CHUẨN trong rubric, bất kể model gõ hoa hay thường.
+    assert milestones[0]["focusCriteria"] == ["Phân tích yêu cầu"]
     assert provider._client.aio.models.generate_content.await_count == 1  # còn tiêu chí hợp lệ, không retry
 
 
