@@ -15,7 +15,10 @@ from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
 from app.question_quality import coverage_defects, verify_defect
-from app.roadmap_quality import filter_milestone_criteria, message as roadmap_message
+from app.roadmap_quality import (
+    DEFAULT_SCOPE, filter_milestone_criteria, message as roadmap_message,
+    scope_counts, truncate_to_scope,
+)
 from app import prompt_registry, timing
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
@@ -1865,7 +1868,8 @@ class GeminiProvider(QuestionProvider):
                                cv_analysis_summary: str | None = None,
                                prior_roadmap_summary: str | None = None,
                                grounding: list[dict] | None = None,
-                               criteria: list[dict] | None = None, language: str = "vi",
+                               criteria: list[dict] | None = None,
+                               scope: str = DEFAULT_SCOPE, language: str = "vi",
                                _retry_feedback: str | None = None,
                                _attempt: int = 1) -> list[dict]:
         """
@@ -1888,6 +1892,11 @@ class GeminiProvider(QuestionProvider):
         (D7/D15), nên biến một milestone thiếu nhãn thành cả roadmap lỗi (mất luôn các milestone
         khác đã đúng) là đắt hơn nhiều so với việc milestone đó tạm thời không bám baseline.
 
+        BE-4 — ``scope`` (Quick/Standard, xem ``app.roadmap_quality``) thay "số lượng hợp lý (3-5)"
+        mơ hồ cũ bằng chỉ thị CHÍNH XÁC trong prompt; model lờ chỉ thị vẫn bị cắt CỨNG TỪ ĐUÔI sau
+        khi trả lời (``truncate_to_scope`` — milestone/lesson có thứ tự Ý NGHĨA, nền tảng trước nên
+        phải là phần sống sót). KHÔNG raise khi vượt trần — cùng lý do "không trừ credit" ở trên.
+
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
         """
@@ -1903,6 +1912,7 @@ class GeminiProvider(QuestionProvider):
             grounding=grounding, criteria=known_names or None,
             retry_feedback=_retry_feedback,
             language=language,
+            scope=scope,
         )
 
         response = await self._generate(
@@ -1982,6 +1992,21 @@ class GeminiProvider(QuestionProvider):
         if not milestones:
             raise ValueError("LLM trả về roadmap rỗng sau khi lọc.")
 
+        # BE-4 — model có thể lờ chỉ thị scope trong prompt (giống ca focusCriteria bịa tên ở
+        # BE-1) → cắt CỨNG sau khi trả lời, KHÔNG raise (xem docstring). Đặt TRƯỚC lọc BE-1 để
+        # lọc/retry chỉ tính trên tập milestone THẬT SỰ còn giữ lại, không lãng phí lượt retry cho
+        # milestone sắp bị cắt bỏ.
+        milestones, dropped_milestones, dropped_lessons = truncate_to_scope(milestones, scope)
+        if dropped_milestones:
+            max_m, _ = scope_counts(scope)
+            logger.warning(
+                "Roadmap scope=%s: model trả %d milestone thừa trần %d — cắt từ cuối, giữ %d đầu.",
+                scope, dropped_milestones + len(milestones), max_m, len(milestones))
+        for title, n in dropped_lessons.items():
+            logger.warning(
+                "Roadmap scope=%s milestone '%s': model trả lesson thừa trần — cắt %d, giữ đúng "
+                "trần đã cấu hình cho scope này.", scope, title, n)
+
         # BE-1 — lọc focusCriteria về đúng tập tên đã cấp (chống bịa by-construction). Không lọc
         # gì nếu caller không truyền criteria (known_names rỗng) → giữ nguyên hành vi cũ.
         if known_names:
@@ -1998,7 +2023,7 @@ class GeminiProvider(QuestionProvider):
                         job_category, level, weaknesses, cv_text, focus=focus,
                         cv_analysis_summary=cv_analysis_summary,
                         prior_roadmap_summary=prior_roadmap_summary,
-                        grounding=grounding, criteria=criteria, language=language,
+                        grounding=grounding, criteria=criteria, scope=scope, language=language,
                         _retry_feedback=feedback, _attempt=_attempt + 1)
                 # Hết lượt retry — GIỮ milestone (focusCriteria rỗng), KHÔNG raise: xem docstring
                 # (một milestone thiếu nhãn không đáng đánh đổi mất TOÀN BỘ roadmap đã sinh đúng).

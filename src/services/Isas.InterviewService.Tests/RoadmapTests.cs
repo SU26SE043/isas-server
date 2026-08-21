@@ -46,13 +46,15 @@ public class RoadmapTests
 
     // BC17 — snapshot mọi tham số bối cảnh gửi xuống generator (để assert cái gì tới được AI).
     // BE-1 — thêm `Criteria`: mutation-check anchor cho "criteria rỗng thay vì tiêu chí thật".
+    // BE-4 — thêm `Scope`: mutation-check anchor cho "quên forward scope xuống generator".
     private sealed record GenArgs(
         IReadOnlyList<RoadmapWeakness>? Weaknesses,
         string? CvText,
         string? Focus,
         string? CvAnalysisSummary,
         string? PriorRoadmapSummary,
-        IReadOnlyList<QuestionTargetCriterionDto>? Criteria);
+        IReadOnlyList<QuestionTargetCriterionDto>? Criteria,
+        string Scope);
 
     private static Mock<IAiServiceRoadmapGenerator> GenMock(
         RoadmapGenAiResult result, Action<GenArgs>? capture = null)
@@ -62,10 +64,11 @@ public class RoadmapTests
             It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-            It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()));
+            It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+            It.IsAny<CancellationToken>()));
         if (capture is not null)
-            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, CancellationToken>(
-                    (_, _, w, cv, f, ca, pr, crit, _) => capture(new GenArgs(w, cv, f, ca, pr, crit)))
+            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, CancellationToken>(
+                    (_, _, w, cv, f, ca, pr, crit, scope, _) => capture(new GenArgs(w, cv, f, ca, pr, crit, scope)))
                 .ReturnsAsync(result);
         else
             setup.ReturnsAsync(result);
@@ -257,7 +260,8 @@ public class RoadmapTests
         gen.Verify(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -362,6 +366,61 @@ public class RoadmapTests
         Assert.Null(row.SourceSessionIds);
         Assert.NotNull(captured);
         Assert.Null(captured!.Weaknesses);    // không đẩy weakness nào xuống AI
+    }
+
+    // ── BE-4 — `scope`: tập đóng, case-sensitive, "" là GIÁ TRỊ SAI (mẫu ValidateLanguage/BK36) ──
+    [Fact]
+    public async Task Post_InvalidScope_Throws_NoRoadmapRow_NoGeneratorCall()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var gen = GenMock(SampleRoadmap());
+        var service = new RoadmapService(t.Db, new Mock<IStorageService>().Object, gen.Object,
+            NullLogger<RoadmapService>.Instance);
+        var req = new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Scope: "Extreme");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(user, req));
+
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.Verify(g => g.GenerateAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
+                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // BK36 — chuỗi RỖNG là GIÁ TRỊ SAI đã gửi, KHÔNG được nuốt thành mặc định "Standard".
+    [Fact]
+    public async Task Post_EmptyScope_Throws_NoRoadmapRow()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var service = new RoadmapService(t.Db, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap()).Object, NullLogger<RoadmapService>.Instance);
+        var req = new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Scope: "");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.CreateAsync(user, req));
+
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+    }
+
+    [Theory]
+    [InlineData("Quick")]
+    [InlineData("Standard")]
+    public async Task Post_ValidScope_ForwardsToGenerator(string scope)
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        GenArgs? captured = null;
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Scope: scope), default);
+
+        Assert.IsType<CreatedResult>(result);
+        Assert.Equal(scope, captured!.Scope);
     }
 
     // ── BE-1 — CreateAsync phải gửi TIÊU CHÍ NĂNG LỰC THẬT xuống AIService, không phải rỗng ──
@@ -559,7 +618,8 @@ public class RoadmapTests
                 It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-roadmap trả 500"));
 
         var ctrl = Controller(t, new Mock<IStorageService>().Object, gen.Object, user);

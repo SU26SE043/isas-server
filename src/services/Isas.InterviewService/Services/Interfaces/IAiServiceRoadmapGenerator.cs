@@ -13,6 +13,9 @@ public interface IAiServiceRoadmapGenerator
     // `focusCriteria` bằng cách sao chép NGUYÊN VĂN tên trong tập này — vắng/rỗng ⇒ hành vi cũ
     // (không ràng buộc gì thêm, model tự đặt tên). Đo trên production: chỉ 7% `focusCriteria` khớp
     // tên tiêu chí thật khi thiếu tham số này.
+    //
+    // BE-4 — `scope` = độ dài roadmap candidate CHỌN ("Quick"/"Standard", xem
+    // `RoadmapService.ValidateScope`). Mặc định "Standard" giữ hành vi client cũ chưa gửi field.
     Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory,
         string level,
@@ -22,8 +25,9 @@ public interface IAiServiceRoadmapGenerator
         string? cvAnalysisSummary,     // BC17 — tóm tắt từ cv_analyses (BC7)
         string? priorRoadmapSummary,   // BC17 — tóm tắt từ final_report roadmap trước (BC15)
         IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
+        string scope = "Standard",
         CancellationToken ct = default);
-    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null);
+    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard");
 
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
     // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là

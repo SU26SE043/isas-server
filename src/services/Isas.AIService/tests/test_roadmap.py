@@ -307,6 +307,98 @@ async def test_provider_generate_roadmap_without_criteria_keeps_names_unfiltered
     assert provider._client.aio.models.generate_content.await_count == 1
 
 
+# ── BE-4 — scope (Quick/Standard): prompt tường minh + cắt cứng sau khi model trả lời ───────
+def test_roadmap_prompt_scope_quick_states_exact_counts():
+    prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None, cv_text=None, scope="Quick")
+    assert "Tạo ĐÚNG 2 milestone, MỖI milestone ĐÚNG 2 lesson (tổng 4 lesson)" in prompt
+
+
+def test_roadmap_prompt_scope_standard_states_exact_counts():
+    prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None, cv_text=None, scope="Standard")
+    assert "Tạo ĐÚNG 4 milestone, MỖI milestone ĐÚNG 3 lesson (tổng 12 lesson)" in prompt
+
+
+def test_roadmap_prompt_scope_unspecified_defaults_to_standard():
+    """Client cũ (chưa biết `scope`) ⇒ hành vi KHÔNG đổi — mặc định Standard, byte-identical."""
+    default_prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None, cv_text=None)
+    standard_prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None, cv_text=None, scope="Standard")
+    assert default_prompt == standard_prompt
+
+
+def test_roadmap_prompt_scope_unknown_value_falls_back_to_standard():
+    """FAIL-OPEN mẫu `app.seniority.normalize`: scope lạ KHÔNG raise, rơi về Standard."""
+    prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None, cv_text=None, scope="Xtra-Long")
+    assert "Tạo ĐÚNG 4 milestone, MỖI milestone ĐÚNG 3 lesson (tổng 12 lesson)" in prompt
+
+
+def _scope_gemini_payload(n_milestones: int, n_lessons: int) -> dict:
+    """Payload Gemini giả — n_milestones milestone, mỗi cái n_lessons lesson, title đánh số thứ tự
+    để test truncation phân biệt được ĐẦU (giữ) với ĐUÔI (bị cắt)."""
+    return {
+        "milestones": [
+            {"title": f"M{i}", "focusCriteria": [],
+             "lessons": [{"title": f"M{i}L{j}"} for j in range(1, n_lessons + 1)]}
+            for i in range(1, n_milestones + 1)
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_provider_generate_roadmap_truncates_excess_for_quick_scope():
+    """🔒 Mutation-check anchor: xoá lời gọi `truncate_to_scope` khỏi
+    `GeminiProvider.generate_roadmap` ⇒ test này đỏ. Model trả 4 milestone × 3 lesson = 12 lesson
+    trong khi scope=Quick chỉ cho phép 2 milestone × 2 lesson = 4 lesson."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response(_scope_gemini_payload(4, 3))
+    )
+
+    milestones = await provider.generate_roadmap("BE", "Junior", None, None, scope="Quick")
+
+    assert len(milestones) == 2
+    assert all(len(m["lessons"]) == 2 for m in milestones)
+    # Cắt TỪ ĐUÔI — 2 milestone ĐẦU (nền tảng) sống sót, không phải 2 milestone cuối (nâng cao).
+    assert [m["title"] for m in milestones] == ["M1", "M2"]
+    assert [l["title"] for l in milestones[0]["lessons"]] == ["M1L1", "M1L2"]
+    assert [l["title"] for l in milestones[1]["lessons"]] == ["M2L1", "M2L2"]
+
+
+@pytest.mark.asyncio
+async def test_provider_generate_roadmap_standard_scope_untouched_when_exactly_at_cap():
+    """Đối chứng: model trả ĐÚNG khớp trần Standard (4×3=12) ⇒ KHÔNG bị cắt gì — chứng minh
+    truncate chỉ chạm tới khi THẬT SỰ vượt trần, không cắt oan khi vừa khít cap."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response(_scope_gemini_payload(4, 3))
+    )
+
+    milestones = await provider.generate_roadmap("BE", "Junior", None, None, scope="Standard")
+
+    assert len(milestones) == 4
+    assert all(len(m["lessons"]) == 3 for m in milestones)
+    assert [m["title"] for m in milestones] == ["M1", "M2", "M3", "M4"]
+
+
+@pytest.mark.asyncio
+async def test_provider_generate_roadmap_scope_unspecified_truncates_to_standard():
+    """KHÔNG truyền scope ⇒ mặc định Standard (4 milestone) — model trả THỪA vẫn bị cắt đúng trần
+    mặc định, khớp default DTO .NET/pydantic schema."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response(_scope_gemini_payload(6, 3))
+    )
+
+    milestones = await provider.generate_roadmap("BE", "Junior", None, None)
+
+    assert len(milestones) == 4
+    assert [m["title"] for m in milestones] == ["M1", "M2", "M3", "M4"]
+
+
 # ── Provider.generate_lesson_theory: shape ──────────────────────────────────
 # LLM nay trả CẤU TRÚC (sections/example/commonMistakes) chứ không phải một chuỗi markdown tự do —
 # provider chấm cấu trúc đó rồi mới ghép markdown. Tiền đề của các test dưới đổi theo, có chủ đích.
@@ -389,7 +481,7 @@ def test_endpoint_generate_roadmap_response_shape(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None):
+                                    criteria=None, scope=None):
         assert job_category == "BE"
         assert level == "Junior"
         return [
@@ -432,7 +524,7 @@ def test_endpoint_generate_roadmap_rejects_empty_level():
 def test_endpoint_generate_roadmap_returns_502_when_gemini_fails(monkeypatch):
     async def failing(job_category, level, weaknesses, cv_text,
                       focus=None, cv_analysis_summary=None, prior_roadmap_summary=None,
-                      grounding=None, criteria=None):
+                      grounding=None, criteria=None, scope=None):
         raise ValueError("LLM trả JSON không hợp lệ")
 
     monkeypatch.setattr(main_module.provider, "generate_roadmap", failing)
@@ -456,7 +548,7 @@ def test_endpoint_generate_roadmap_forwards_bc17_fields(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None):
+                                    criteria=None, scope=None):
         received["focus"] = focus
         received["cv_analysis_summary"] = cv_analysis_summary
         received["prior_roadmap_summary"] = prior_roadmap_summary
@@ -479,6 +571,74 @@ def test_endpoint_generate_roadmap_forwards_bc17_fields(monkeypatch):
     assert received["focus"] == "Tập trung vào system design"
     assert received["cv_analysis_summary"] == "Thiếu kinh nghiệm hệ phân tán"
     assert received["prior_roadmap_summary"] == "Đã hoàn thành nền tảng SQL"
+
+
+# ── BE-4: hợp đồng dây `scope` (mẫu `criteria` ngay dưới) ────────────────────
+def test_generate_roadmap_request_khai_tuong_minh_scope():
+    """Mẫu `test_generate_roadmap_request_khai_tuong_minh_criteria`: khai thiếu ⇒ pydantic
+    `extra='ignore'` NUỐT IM LẶNG field — .NET gửi `scope` mà AIService không thấy."""
+    from app.schemas import GenerateRoadmapRequest
+
+    assert "scope" in GenerateRoadmapRequest.model_fields
+
+    req = GenerateRoadmapRequest.model_validate(
+        {"jobCategory": "BA", "level": "Junior", "scope": "Quick"})
+    assert req.scope == "Quick"
+
+
+def test_generate_roadmap_request_scope_defaults_to_standard():
+    from app.schemas import GenerateRoadmapRequest
+
+    req = GenerateRoadmapRequest.model_validate({"jobCategory": "BA", "level": "Junior"})
+    assert req.scope == "Standard"
+
+
+def test_endpoint_generate_roadmap_forwards_scope_to_provider(monkeypatch):
+    """Mutation-check anchor cho hợp đồng dây: quên forward `scope` ở endpoint → provider nhận
+    None thay vì giá trị request → test này đỏ."""
+    received = {}
+
+    async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
+                                    focus=None, cv_analysis_summary=None,
+                                    prior_roadmap_summary=None, grounding=None,
+                                    criteria=None, scope=None):
+        received["scope"] = scope
+        return [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]
+
+    monkeypatch.setattr(main_module.provider, "generate_roadmap", fake_generate_roadmap)
+
+    res = client.post(
+        "/api/v1/generate-roadmap",
+        headers=_HEADERS,
+        json={"jobCategory": "BE", "level": "Junior", "scope": "Quick"},
+    )
+
+    assert res.status_code == 200
+    assert received["scope"] == "Quick"
+
+
+def test_endpoint_generate_roadmap_scope_omitted_forwards_standard(monkeypatch):
+    """Client cũ chưa biết `scope` (chưa gửi field) ⇒ provider vẫn nhận "Standard" tường minh —
+    hành vi hôm nay được BẢO TOÀN, không phải suy diễn ngầm ở phía provider."""
+    received = {}
+
+    async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
+                                    focus=None, cv_analysis_summary=None,
+                                    prior_roadmap_summary=None, grounding=None,
+                                    criteria=None, scope=None):
+        received["scope"] = scope
+        return [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]
+
+    monkeypatch.setattr(main_module.provider, "generate_roadmap", fake_generate_roadmap)
+
+    res = client.post(
+        "/api/v1/generate-roadmap",
+        headers=_HEADERS,
+        json={"jobCategory": "BE", "level": "Junior"},
+    )
+
+    assert res.status_code == 200
+    assert received["scope"] == "Standard"
 
 
 # ── BE-1: hợp đồng dây `criteria` ────────────────────────────────────────────
@@ -504,7 +664,7 @@ def test_endpoint_generate_roadmap_forwards_criteria_to_provider(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None):
+                                    criteria=None, scope=None):
         received["criteria"] = criteria
         return [{"title": "M1", "focusCriteria": ["Phân tích yêu cầu"], "lessons": [{"title": "L1"}]}]
 
@@ -532,7 +692,7 @@ def test_endpoint_generate_roadmap_without_criteria_forwards_none(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None):
+                                    criteria=None, scope=None):
         received["criteria"] = criteria
         return [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]
 

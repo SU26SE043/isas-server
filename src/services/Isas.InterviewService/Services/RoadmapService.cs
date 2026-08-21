@@ -55,6 +55,7 @@ public class RoadmapService : IRoadmapService
         Guid candidateId, CreateRoadmapRequest req, CancellationToken ct = default)
     {
         var language = ValidateLanguage(req.Language);
+        var scope = ValidateScope(req.Scope);
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
         // CV optional — đọc parsed_text (kiểm chủ sở hữu). null → 404; khác chủ → 403; rỗng → 400.
@@ -156,9 +157,9 @@ public class RoadmapService : IRoadmapService
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
             ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, ct)
+                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, ct)
             : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria);
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope);
 
         var roadmap = new Roadmap
         {
@@ -434,6 +435,22 @@ public class RoadmapService : IRoadmapService
         if (!_bilingualEnabled && language != "vi")
             throw new InvalidOperationException("Bilingual interview chưa được bật.");
         return language;
+    }
+
+    // BE-4 — độ dài roadmap candidate CHỌN. Tập đóng, case-sensitive (mẫu ValidateSeniority của
+    // PracticeService) — chỉ `null` (client KHÔNG gửi field) mặc định "Standard"; chuỗi rỗng/giá
+    // trị lạ là GIÁ TRỊ SAI, bị từ chối 400 chứ không âm thầm rơi về mặc định (BK36).
+    private static readonly string[] AllowedScopes = ["Quick", "Standard"];
+    private const string DefaultScope = "Standard";
+
+    private static string ValidateScope(string? requested)
+    {
+        if (requested is null) return DefaultScope;
+        var scope = requested.Trim();
+        if (!AllowedScopes.Contains(scope, StringComparer.Ordinal))
+            throw new InvalidOperationException(
+                $"scope chỉ nhận {string.Join(" / ", AllowedScopes)} (đang gửi: '{requested}').");
+        return scope;
     }
 
     private static RoadmapResponse Map(Roadmap r, bool includeTheory) => new(

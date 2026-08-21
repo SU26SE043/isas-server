@@ -560,6 +560,7 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
             prior_roadmap_summary=req.priorRoadmapSummary,
             grounding=grounding,
             criteria=criteria,
+            scope=req.scope,
         )
         return GenerateRoadmapResponse(
             milestones=[

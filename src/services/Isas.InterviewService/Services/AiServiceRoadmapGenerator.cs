@@ -57,10 +57,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText,
         string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
+        string scope = "Standard",
         CancellationToken ct = default)
-        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria);
+        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope);
 
-    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null)
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard")
     {
         var payload = new
         {
@@ -81,7 +82,10 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             // thật, nhưng ĐỔI TÊN trường thì pydantic extra='ignore' vẫn nuốt im lặng — giữ nguyên mẫu cho nhất quán.
             criteria = criteria is { Count: > 0 }
                 ? criteria.Select(c => new { criterionId = c.CriterionId, name = c.Name })
-                : null
+                : null,
+            // BE-4 — độ dài roadmap ("Quick"/"Standard"). AIService pydantic schema khai `scope: str =
+            // "Standard"` tường minh (cùng bẫy extra='ignore' nêu ở `criteria`) nên luôn gửi, không để null.
+            scope,
         };
 
         HttpResponseMessage response;

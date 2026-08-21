@@ -19,7 +19,8 @@ public record CreateRoadmapRequest(
     Guid? CvAnalysisId = null,                // BC17 — cv_analyses (BC7)
     Guid? PriorRoadmapId = null,              // BC17 — roadmaps.final_report (BC15)
     string? Focus = null,                     // BC17 — free-text
-    string? Language = null
+    string? Language = null,
+    string? Scope = null                      // BE-4 — "Quick"/"Standard"; null → "Standard" (hành vi cũ)
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).

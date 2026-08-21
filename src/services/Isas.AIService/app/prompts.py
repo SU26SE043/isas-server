@@ -3,6 +3,7 @@ from app.resources import ALLOWED_HOSTS as ALLOWED_RESOURCE_HOSTS
 from app.language import EN, VI, field_lang, normalize, output_directive, per100_unit, rate_unit, speech_rate_reference
 # Alias tường minh: `normalize` ở trên đã là của NGÔN NGỮ. Hai khái niệm khác hẳn nhau, để trùng tên
 # là mở đường cho một lần import sau này ghi đè cái kia mà không lỗi gì.
+from app.roadmap_quality import DEFAULT_SCOPE, scope_instruction
 from app.schemas import NO_EVIDENCE
 from app.seniority import calibration_block as seniority_calibration_block
 from app.seniority import normalize as normalize_seniority
@@ -1275,7 +1276,8 @@ def build_roadmap_prompt(job_category: str, level: str,
                          prior_roadmap_summary: str | None = None,
                          grounding: list[dict] | None = None,
                          criteria: list[str] | None = None,
-                         retry_feedback: str | None = None, *, language: str = VI) -> str:
+                         retry_feedback: str | None = None, *, language: str = VI,
+                         scope: str = DEFAULT_SCOPE) -> str:
     """BC13/D20 — sinh cấu trúc roadmap ôn tập (milestone → lesson) cá nhân hoá.
 
     weaknesses/cvText là DỮ LIỆU của ứng viên (điểm số quá khứ + hồ sơ), KHÔNG
@@ -1301,6 +1303,10 @@ def build_roadmap_prompt(job_category: str, level: str,
     :func:`app.seniority.calibration_block` (mô tả 4 mức + kiến thức chuyên sâu theo nghề khi có
     seed, xem `_KNOWLEDGE_DEFAULTS`). Trước bản này roadmap Senior/Fresher chỉ khác nhau ở CHỮ
     "Senior"/"Fresher" trong câu dẫn, không khác gì về độ sâu thật của milestone.
+
+    BE-4 — ``scope`` (Quick/Standard, xem `app.roadmap_quality`) thay câu chỉ thị mơ hồ cũ
+    "số lượng hợp lý (3-5)" bằng số CHÍNH XÁC — model bám lệch vẫn bị cắt cứng sau khi trả lời
+    (:func:`app.roadmap_quality.truncate_to_scope`, gọi ở `GeminiProvider.generate_roadmap`).
     """
     role = CATEGORY_NAMES.get(job_category.upper(), job_category)
     lvl = LEVEL_NAMES.get(level.upper(), level)
@@ -1412,7 +1418,7 @@ def build_roadmap_prompt(job_category: str, level: str,
         )
 
     parts.append(
-        "Số lượng milestone hợp lý (3-5), mỗi milestone 2-4 lesson. "
+        f"{scope_instruction(scope)} "
         "CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown: "
         '{"milestones":[{"title":"...","focusCriteria":["..."],'
         '"lessons":[{"title":"..."}]}]}'
