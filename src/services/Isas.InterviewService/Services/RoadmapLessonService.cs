@@ -154,8 +154,15 @@ public class RoadmapLessonService : IRoadmapLessonService
         // request POSITIONAL 3 tham số ⇒ nhận default ⇒ MỌI buổi luyện theo lộ trình đóng dấu "Junior"
         // vĩnh viễn, kể cả roadmap Senior. Không vô hại: seniority đi vào `/decide-next` (câu đào sâu
         // hỏi sai tầm) và lộ ra `PracticeSessionResponse.Seniority` cho FE.
+        //
+        // Language: CÙNG LỚP LỖI vừa sửa ở trên, và chưa đổ máu chỉ vì tình cờ — cả 8 buổi luyện
+        // hiện có trên production đều bắt nguồn từ roadmap tiếng Việt, nhưng production ĐÃ CÓ 1
+        // roadmap tiếng Anh chưa ai bấm Bắt đầu. Thiếu dòng này → request rơi về default `null` →
+        // `ValidateLanguage` hạ mọi buổi luyện của roadmap English xuống "vi": câu hỏi/chấm/nhận xét
+        // sai ngôn ngữ hoàn toàn, trong khi người học đã trả credit cho đúng buổi đó.
         var req = new CreatePracticeSessionRequest(
-            roadmap.CvId, JdId: null, roadmap.JobCategory, Seniority: roadmap.Level.ToString());
+            roadmap.CvId, JdId: null, roadmap.JobCategory,
+            Language: roadmap.Language, Seniority: roadmap.Level.ToString());
         var response = await _practiceService.CreateLessonSessionAsync(
             candidateId, req, sessionId, lesson.Milestone.FocusCriteria, ct);
 
