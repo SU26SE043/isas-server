@@ -216,7 +216,7 @@ public class RoadmapService : IRoadmapService
             roadmap.Id, candidateId, req.JobCategory, req.Level,
             roadmap.Milestones.Count, sourceSessionIds?.Count ?? 0);
 
-        return Map(roadmap, includeTheory: true);
+        return Map(roadmap, includeTheory: true, scope: scope);
     }
 
     // RAG grounding (Cách 2) — precompute snapshot cho MỌI lesson trong roadmap. 1 lần /embed cho tất cả
@@ -453,7 +453,7 @@ public class RoadmapService : IRoadmapService
         return scope;
     }
 
-    private static RoadmapResponse Map(Roadmap r, bool includeTheory) => new(
+    private static RoadmapResponse Map(Roadmap r, bool includeTheory, string? scope = null) => new(
         r.Id,
         r.JobCategory.ToString(),
         r.Level.ToString(),
@@ -488,5 +488,15 @@ public class RoadmapService : IRoadmapService
                     : null)).ToList()
         )).ToList(),
         r.CreatedAt,
-        r.CompletedAt);
+        r.CompletedAt,
+        // BE-4 — provenance: `sourceSessionIds`/`baseline` được GHI xuống DB từ BC12 nhưng trước đây
+        // KHÔNG endpoint nào đọc lại — candidate chọn report trong wizard rồi sau khi tạo xong KHÔNG
+        // CÒN cách nào xem lại đã dựa trên gì. `Scope` KHÔNG được lưu (không migration cho task này)
+        // nên CHỈ có nghĩa NGAY LÚC TẠO (CreateAsync truyền `scope` từ request đang xử lý); đọc lại
+        // roadmap CŨ (GetAsync) không biết scope lúc tạo → `null`, KHÔNG suy đoán từ số milestone/
+        // lesson hiện có (mẫu BK23: null = không biết, đừng bịa "khác" từ "không biết").
+        new RoadmapResolvedFromResponse(
+            r.SourceSessionIds ?? [],
+            r.Baseline is not null,
+            scope));
 }

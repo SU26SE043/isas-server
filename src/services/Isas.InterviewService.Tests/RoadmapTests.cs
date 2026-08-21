@@ -423,6 +423,111 @@ public class RoadmapTests
         Assert.Equal(scope, captured!.Scope);
     }
 
+    // ── BE-4 — `resolvedFrom`: provenance echo lại trong response (không chỉ ghi xuống DB) ──────
+    //
+    // Trước BE-4, `sourceSessionIds`/`baseline` được RoadmapService.CreateAsync ghi xuống DB nhưng
+    // KHÔNG endpoint nào đọc lại — cột chết ở tầng API dù có ở tầng lưu trữ (candidate chọn report
+    // trong wizard rồi sau khi tạo xong KHÔNG CÒN cách nào xem lại đã dựa trên gì).
+    [Fact]
+    public async Task Post_ResolvedFrom_EchoesSelectedSessionIds_AndBaselineAvailable()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var chosenId = SeedScoredSession(t, user, ("Clarity", 40m, true));
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap()).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null, SessionIds: [chosenId]),
+            default);
+
+        var created = Assert.IsType<CreatedResult>(result);
+        var body = Assert.IsType<RoadmapResponse>(created.Value);
+
+        // 🔒 Mutation-check anchor: `resolvedFrom.sessionIds` luôn trả [] bất kể input → test này đỏ.
+        var only = Assert.Single(body.ResolvedFrom.SessionIds);
+        Assert.Equal(chosenId, only);
+        Assert.True(body.ResolvedFrom.BaselineAvailable);
+    }
+
+    [Fact]
+    public async Task Post_ResolvedFrom_NoSessionsSelected_EmptySessionIds_BaselineUnavailable()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap()).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Fresher, null), default);
+
+        var created = Assert.IsType<CreatedResult>(result);
+        var body = Assert.IsType<RoadmapResponse>(created.Value);
+
+        Assert.Empty(body.ResolvedFrom.SessionIds);
+        Assert.False(body.ResolvedFrom.BaselineAvailable);
+    }
+
+    [Fact]
+    public async Task Post_ResolvedFrom_EchoesScope_Quick()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap()).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Scope: "Quick"), default);
+
+        var created = Assert.IsType<CreatedResult>(result);
+        var body = Assert.IsType<RoadmapResponse>(created.Value);
+        Assert.Equal("Quick", body.ResolvedFrom.Scope);
+    }
+
+    [Fact]
+    public async Task Post_ResolvedFrom_ScopeOmitted_DefaultsToStandardInResponse()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap()).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null), default);
+
+        var created = Assert.IsType<CreatedResult>(result);
+        var body = Assert.IsType<RoadmapResponse>(created.Value);
+        Assert.Equal("Standard", body.ResolvedFrom.Scope);
+    }
+
+    // `scope` KHÔNG được lưu DB (task BE-4 cố ý không thêm cột/migration) — đọc lại roadmap CŨ qua
+    // GetAsync không thể biết scope lúc tạo. Response PHẢI nói thật "không biết" (null), KHÔNG suy
+    // đoán từ số milestone/lesson hiện có (mẫu BK23: null = không biết, đừng bịa "khác" từ "không
+    // biết"). `sessionIds`/`baselineAvailable` VẪN echo đúng vì hai cái đó CÓ persist ở DB sẵn.
+    [Fact]
+    public async Task Get_ResolvedFrom_ScopeIsNull_ButSessionIdsAndBaselineStillEchoFromDb()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var chosenId = SeedScoredSession(t, user, ("Clarity", 40m, true));
+        var ctrl = Controller(t, new Mock<IStorageService>().Object,
+            GenMock(SampleRoadmap()).Object, user);
+        var created = Assert.IsType<CreatedResult>(await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null, SessionIds: [chosenId],
+                Scope: "Quick"),
+            default));
+        var createdBody = Assert.IsType<RoadmapResponse>(created.Value);
+        Assert.Equal("Quick", createdBody.ResolvedFrom.Scope);   // đối chứng: NGAY LÚC TẠO có giá trị
+
+        var getResult = await ctrl.Get(createdBody.Id, default);
+
+        var getBody = Assert.IsType<RoadmapResponse>(Assert.IsType<OkObjectResult>(getResult).Value);
+        Assert.Null(getBody.ResolvedFrom.Scope);                 // đọc lại → KHÔNG biết → null
+        var only = Assert.Single(getBody.ResolvedFrom.SessionIds);
+        Assert.Equal(chosenId, only);
+        Assert.True(getBody.ResolvedFrom.BaselineAvailable);
+    }
+
     // ── BE-1 — CreateAsync phải gửi TIÊU CHÍ NĂNG LỰC THẬT xuống AIService, không phải rỗng ──
     //
     // Đo trên production: chỉ 7% `milestone.focusCriteria` khớp tên tiêu chí thật vì AIService

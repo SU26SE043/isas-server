@@ -77,6 +77,16 @@ public record MilestoneResponse(
     IReadOnlyList<LessonResponse> Lessons
 );
 
+// BE-4 — provenance của roadmap: NGUỒN đã dùng để tạo (sessionIds/baseline, ghi xuống DB từ BC12
+// nhưng trước đây không endpoint nào trả lại — cột chết ở tầng API dù có ở tầng lưu trữ) + SCOPE
+// đã dùng lúc tạo. `Scope` chỉ có giá trị NGAY LÚC TẠO (không lưu DB) — đọc roadmap cũ → null,
+// KHÔNG suy đoán (xem ghi chú tại `RoadmapService.Map`).
+public record RoadmapResolvedFromResponse(
+    IReadOnlyList<Guid> SessionIds,
+    bool BaselineAvailable,
+    string? Scope
+);
+
 public record RoadmapResponse(
     Guid Id,
     string JobCategory,
@@ -86,7 +96,8 @@ public record RoadmapResponse(
     string Status,
     IReadOnlyList<MilestoneResponse> Milestones,   // theo orderNo
     DateTime CreatedAt,
-    DateTime? CompletedAt
+    DateTime? CompletedAt,
+    RoadmapResolvedFromResponse ResolvedFrom       // BE-4 — additive, xem RoadmapResolvedFromResponse
 );
 
 /// <summary>
