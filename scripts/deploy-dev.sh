@@ -55,6 +55,15 @@ watch_of() { case "$1" in
   gateway)   echo src/gateway/Isas.Gateway ;;
   ai)        echo src/services/Isas.AIService ;;
 esac; }
+# Build context KHÔNG đồng nhất giữa các service — phải khớp ĐÚNG những gì CI dùng, nếu không
+# ảnh build tay sẽ khác ảnh CI ở chỗ không ai ngờ. Service .NET COPY từ gốc repo (cần cả
+# `src/shared`) nên context = `.`; AIService là cây Python độc lập, Dockerfile của nó `COPY app ./app`
+# nên context phải là chính thư mục service — dùng `.` ở đây thì `/app` không tồn tại và build chết.
+context_of() { case "$1" in
+  ai) echo src/services/Isas.AIService ;;
+  *)  echo . ;;
+esac; }
+
 container_of() { case "$1" in
   auth)      echo authservice-dev ;;
   interview) echo interviewservice-dev ;;
@@ -140,7 +149,7 @@ for k in $TARGETS; do
   echo "→ build $k…"
   ssh -o ConnectTimeout=10 "$SERVER" \
     "cd $REMOTE_SRC && docker build -f '$df' -t '$(image_of "$k"):dev' \
-       --label 'org.opencontainers.image.revision=$SHA' -q . >/dev/null" \
+       --label 'org.opencontainers.image.revision=$SHA' -q '$(context_of "$k")' >/dev/null" \
     || { echo "❌ build $k THẤT BẠI." >&2; exit 1; }
 done
 
