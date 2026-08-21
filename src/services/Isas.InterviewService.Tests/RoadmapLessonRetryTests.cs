@@ -417,6 +417,117 @@ public class RoadmapLessonRetryTests
         Assert.All(report.Progress, p => Assert.Equal("Lesson 1", p.LessonTitle));
     }
 
+    // ── (11) HAI request đồng thời → chỉ MỘT thắng ────────────────────────────────────
+    //
+    // Điều kiện trạng thái trong câu ExecuteUpdate là thứ DUY NHẤT chặn việc này, và nó CHỈ với tới
+    // được dưới đua: guard `if (lesson.Status == ...)` ở đầu hàm đọc trạng thái CŨ, nên hai request
+    // song song đều qua được nó. Bỏ điều kiện đó đi thì cả hai cùng link ⇒ hai buổi cùng mở cho một
+    // bài, cả hai đều đã TRỪ CREDIT, và `session_id` bị kẻ về sau ghi đè ⇒ buổi kia thành mồ côi.
+    //
+    // Dàn dựng đua bằng callback của reserve: nó chạy ĐÚNG khe giữa lúc đọc trạng thái và lúc lật —
+    // mô phỏng request kia vừa thắng.
+    private static void FlipLessonToPracticing(TestDb t, Guid lessonId)
+    {
+        using var cmd = t.Connection.CreateCommand();
+        cmd.CommandText = "UPDATE roadmap_lessons SET status = 'Practicing' WHERE id = $id;";
+        var p = cmd.CreateParameter();
+        p.ParameterName = "$id";
+        p.Value = lessonId.ToString().ToUpperInvariant();   // EF lưu Guid dạng TEXT hoa trên SQLite
+        cmd.Parameters.Add(p);
+        Assert.Equal(1, cmd.ExecuteNonQuery());
+    }
+
+    [Fact]
+    public async Task Retry_DuaVoiRequestKhac_ChiMotThang_KeThuaKhongLink()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lessonId) = Ids(SeedRoadmap(t, user));
+
+        var reservation = ReserveOk();
+        var ctrl = Controller(t, RealPractice(t, QuestionGenOk(), reservation), user);
+        var firstSession = await StartThenFinishAsync(t, ctrl, roadmapId, lessonId);
+
+        // Request "kia" thắng ngay trong khe giữa đọc-trạng-thái và lật-trạng-thái.
+        reservation.Setup(r => r.ReserveAsync("User", It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Callback(() => FlipLessonToPracticing(t, lessonId))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var conflict = Assert.IsType<ConflictObjectResult>(
+            await ctrl.RetryLesson(roadmapId, lessonId, default));
+        Assert.Equal(StatusCodes.Status409Conflict, conflict.StatusCode);
+
+        var db = t.NewContext();
+        // Kẻ thua KHÔNG được ghi đè session_id và KHÔNG được ghi thêm dòng lịch sử.
+        var lesson = await db.RoadmapLessons.AsNoTracking().FirstAsync(l => l.Id == lessonId);
+        Assert.Equal(firstSession, lesson.SessionId);
+        Assert.Equal(1, await db.RoadmapLessonAttempts.AsNoTracking().CountAsync(a => a.LessonId == lessonId));
+    }
+
+    [Fact]
+    public async Task Start_DuaVoiRequestKhac_ChiMotThang_KeThuaKhongLink()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lessonId) = Ids(SeedRoadmap(t, user));
+
+        var reservation = ReserveOk();
+        reservation.Setup(r => r.ReserveAsync("User", It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Callback(() => FlipLessonToPracticing(t, lessonId))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+        var ctrl = Controller(t, RealPractice(t, QuestionGenOk(), reservation), user);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(
+            await ctrl.StartLesson(roadmapId, lessonId, default));
+        Assert.Equal(StatusCodes.Status409Conflict, conflict.StatusCode);
+
+        var db = t.NewContext();
+        var lesson = await db.RoadmapLessons.AsNoTracking().FirstAsync(l => l.Id == lessonId);
+        Assert.Null(lesson.SessionId);       // kẻ thua không link được
+        Assert.Equal(0, await db.RoadmapLessonAttempts.AsNoTracking().CountAsync());
+    }
+
+    // ── (12) Màn CHI TIẾT LỘ TRÌNH cũng phải trả đúng số lần làm + cờ làm lại ─────────
+    //
+    // Đây là màn FE render danh sách bài + nút "Làm lại". Nó đi qua `RoadmapService.Map`, một đường
+    // KHÁC hẳn `OpenLessonAsync`. Hai đường lệch nhau nghĩa là nút hiện ở màn này mà không hiện ở
+    // màn kia — đúng lý do luật `canRetry` được gom về một hàm dùng chung.
+    [Fact]
+    public async Task ChiTietLoTrinh_TraSoLanLam_VaCoCanRetry()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var r = SeedRoadmap(t, user);
+        var (roadmapId, milestoneId, doneLessonId) = Ids(r);
+
+        // Bài thứ hai CHƯA làm lần nào — để phân biệt "0 lần" với "đếm nhầm sang bài khác".
+        var freshLessonId = Guid.NewGuid();
+        t.Db.RoadmapLessons.Add(new RoadmapLesson
+        {
+            Id = freshLessonId, MilestoneId = milestoneId, OrderNo = 2,
+            Title = "Lesson 2", Status = LessonStatus.Theory
+        });
+        await t.Db.SaveChangesAsync();
+
+        var ctrl = Controller(t, RealPractice(t, QuestionGenOk(), ReserveOk()), user);
+        await StartThenFinishAsync(t, ctrl, roadmapId, doneLessonId);
+        Assert.IsType<OkObjectResult>(await ctrl.RetryLesson(roadmapId, doneLessonId, default));
+        await t.Db.RoadmapLessons.Where(l => l.Id == doneLessonId)
+            .ExecuteUpdateAsync(u => u.SetProperty(l => l.Status, LessonStatus.Done));
+
+        var svc = new RoadmapService(
+            t.NewContext(), new Mock<IStorageService>().Object,
+            new Mock<IAiServiceRoadmapGenerator>().Object, NullLogger<RoadmapService>.Instance);
+        var detail = await svc.GetAsync(user, roadmapId);
+
+        Assert.NotNull(detail);
+        var lessons = detail!.Milestones.Single().Lessons.ToDictionary(l => l.Id);
+        Assert.Equal(2, lessons[doneLessonId].AttemptCount);
+        Assert.True(lessons[doneLessonId].CanRetry);
+        Assert.Equal(0, lessons[freshLessonId].AttemptCount);
+        Assert.False(lessons[freshLessonId].CanRetry);
+    }
+
     // Buổi B2C đã chấm + breakdown 1 tiêu chí, ghim mốc thời gian chấm (khoá sắp xếp của báo cáo).
     private static Guid AddScoredSession(
         TestDb t, Guid cand, DateTime at, params (string name, decimal pct)[] scores)
