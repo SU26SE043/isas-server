@@ -551,7 +551,8 @@ public class CvAnalysisService : ICvAnalysisService
             niceToHave,
             BuildRequirementSummary(matches),
             e.CvSections,
-            e.Citations);
+            e.Citations,
+            e.CurrentLevel);
     }
 
     private static CvAnalysisListResponse MapList(CvAnalysis e)
@@ -575,7 +576,8 @@ public class CvAnalysisService : ICvAnalysisService
             e.CreatedAt,
             matches?.Where(x => x.Priority == "MustHave").Select(Slim).ToList(),
             matches?.Where(x => x.Priority == "NiceToHave").Select(Slim).ToList(),
-            BuildRequirementSummary(matches));
+            BuildRequirementSummary(matches),
+            e.CurrentLevel);
     }
 
     private static RequirementSummary? BuildRequirementSummary(

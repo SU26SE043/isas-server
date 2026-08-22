@@ -25,7 +25,13 @@ public record CreateRoadmapRequest(
     // Chế độ lộ trình: "LevelUp" (mặc định — tiến lên cấp mục tiêu, hành vi cũ) hoặc "Reinforce"
     // (ôn lại: giữ nguyên trình độ, bám điểm yếu đo được). null → "LevelUp"; chuỗi rỗng/giá trị
     // lạ → 400 (BK36 — KHÔNG âm thầm rơi về mặc định). Xem RoadmapService.ValidateMode.
-    string? Mode = null
+    string? Mode = null,
+    // Trình độ NGHỀ NGHIỆP HIỆN TẠI candidate tự khai ở wizard — "Fresher"/"Junior"/"Middle"/
+    // "Senior". null → suy từ cv_analyses (hành vi cũ, xem CvAnalysisId); có gửi → THẮNG giá trị
+    // suy từ CV (người dùng biết trình độ của mình rõ hơn một suy đoán từ CV, và ~2/5 bản phân
+    // tích không suy ra được gì — xem Entities/CvAnalysis.cs). Chuỗi rỗng/giá trị lạ → 400 (BK36 —
+    // KHÔNG âm thầm rơi về mặc định). Xem RoadmapService.ValidateCurrentLevel.
+    string? CurrentLevel = null
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).
@@ -160,7 +166,18 @@ public record RoadmapSummaryResponse(
     Guid? CvId,
     string Status,
     DateTime CreatedAt,
-    DateTime? CompletedAt
+    DateTime? CompletedAt,
+    // Roadmap này có báo cáo tổng kết (BC15) hay chưa — cờ để picker "chọn lộ trình đã hoàn tất"
+    // của wizard lọc ĐÚNG thứ `RoadmapService.CreateAsync` chấp nhận.
+    //
+    // 🔑 KHÔNG lọc bằng `Status == Completed` được: `CreateAsync` gác theo `FinalReport` RỖNG HAY
+    // KHÔNG (RoadmapService.cs, `IsNullOrWhiteSpace(prior.FinalReport)` → 400), còn
+    // `RoadmapLessonService.RetryLessonAsync` mở lại roadmap `Completed → Active` và XOÁ
+    // `FinalReport` ⇒ tồn tại roadmap từng hoàn tất mà nay không có báo cáo. Lọc theo status là
+    // mời một roadmap rồi để người dùng ăn 400 SAU KHI đã chờ 13–54s tạo roadmap.
+    //
+    // Cùng nguyên tắc với RoadmapSessionEligibility: picker phải mang ĐÚNG vị ngữ mà guard dùng.
+    bool HasFinalReport = false
 );
 
 // BE-6 — PATCH /roadmaps/{id}: đổi tên lộ trình. Cho đổi ở MỌI trạng thái, kể cả Completed — tên là

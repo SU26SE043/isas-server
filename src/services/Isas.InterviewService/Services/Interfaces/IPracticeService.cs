@@ -46,8 +46,14 @@ public interface IPracticeService
 
     // DB31 — keyset-paged (mẫu DB8): cursor opaque + limit opt-in; body giữ mảng JSON,
     // next-cursor trả ở header X-Next-Cursor. cursor=null ⇒ trang đầu.
+    // status/excludeCampaign đều OPT-IN — vắng cả hai ⇒ shape và tập kết quả y hệt hành vi cũ
+    // (trang "Lịch sử phỏng vấn" dùng chính endpoint này). status khớp fail-open như
+    // ListAllCampaignsAsync (CampaignService): giá trị lạ KHÔNG parse được ⇒ filter đơn giản
+    // không được áp (trả nguyên, không lọc gì), không 400 — đây là filter duyệt-danh-sách,
+    // không phải input dẫn nghiệp vụ như RoadmapService.ValidateMode.
     Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(
-        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default);
+        Guid candidateId, string? cursor = null, int? limit = null,
+        string? status = null, bool? excludeCampaign = null, CancellationToken ct = default);
 
     // DB18 — Payment gọi (internal) để phát hiện orphan reservation: trả TẬP CON sessionIds thực sự có
     // row practice_sessions (bất kể status). Reservation Reserved mà session KHÔNG tồn tại (crash giữa
