@@ -84,8 +84,10 @@ public class KnowledgeServiceTests
     {
         using var t = new TestDb();
         var h = Build(t);
+        // ⚠ Thân mục CỐ Ý dài hơn `Chunker.MinSectionChars` (60) — xem lý do ở `ChunkerTests`.
         h.UrlFetcher.Setup(u => u.FetchAsync("https://react.dev/learn", It.IsAny<CancellationToken>()))
-            .ReturnsAsync("<h2>State</h2><p>useState.</p><h3>Effects</h3><p>useEffect.</p>");
+            .ReturnsAsync("<h2>State</h2><p>useState giữ giá trị giữa các lần render và trả về hàm cập nhật.</p>"
+                        + "<h3>Effects</h3><p>useEffect chạy sau render, dùng để đồng bộ với hệ thống bên ngoài.</p>");
 
         var req = new CreateKnowledgeRequest("React learn", JobCategory.FE, KnowledgeSourceType.Url,
             Content: null, Url: "https://react.dev/learn");
@@ -357,7 +359,11 @@ public class KnowledgeServiceTests
 
             case KnowledgeSourceType.Url:
                 h.UrlFetcher.Setup(u => u.FetchAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-                    .ReturnsAsync("<h2>In This Article:</h2><p>mục lục điều hướng.</p>");
+                    // 🔑 Tiêu đề điều hướng GIỮ NGUYÊN — test này kiểm NHÃN trích dẫn, và chunker cố ý
+                    // KHÔNG lọc theo tiêu đề (đo được: bắt 0 mục, mà "Notes" là tiêu đề tài liệu thật).
+                    // Chỉ kéo dài thân cho qua sàn độ dài của nguồn `Url`.
+                    .ReturnsAsync("<h2>In This Article:</h2><p>Mục lục điều hướng liệt kê các phần chính "
+                                + "của trang, giúp người đọc nhảy nhanh tới nội dung cần tìm.</p>");
                 res = await h.Svc.IngestAsync(Guid.NewGuid(), new CreateKnowledgeRequest(
                     "PostgreSQL — Transactions", JobCategory.BE, KnowledgeSourceType.Url,
                     null, "https://www.postgresql.org/docs/current/tutorial-transactions.html"));
@@ -556,7 +562,7 @@ public class KnowledgeServiceTests
         using var t = new TestDb();
         var h = Build(t);
         h.UrlFetcher.Setup(u => u.FetchAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync("<h2>State</h2><p>useState.</p>");
+            .ReturnsAsync("<h2>State</h2><p>useState giữ giá trị giữa các lần render và trả về hàm cập nhật.</p>");
 
         var src = new KnowledgeSource
         {
