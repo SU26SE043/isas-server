@@ -299,6 +299,12 @@ services:
       - Adaptive__MaxFollowUps=${ADAPTIVE_MAX_FOLLOW_UPS:-3}
       - Adaptive__MaxDeepPerQuestion=${ADAPTIVE_MAX_DEEP_PER_QUESTION:-3}
       - Adaptive__MaxFailuresPerSession=${ADAPTIVE_MAX_FAILURES_PER_SESSION:-3}
+      # Buổi luyện trong BÀI HỌC ROADMAP là ĐƯỜNG RIÊNG, cố ý TĨNH — không đọc khối `Adaptive__*` ở
+      # trên. Bài học đã có `focusCriteria` khoanh sẵn chủ đề nên đào sâu ở đó ít giá trị hơn buổi
+      # luyện tự do, còn số câu bập bênh (5 gốc + chuỗi đào sâu + câu bù) làm người học không lường
+      # trước thời lượng. Mặc định đã đúng nên KHÔNG bắt buộc đặt 2 khoá này.
+      - Roadmap__LessonQuestionCount=${ROADMAP_LESSON_QUESTION_COUNT:-5}
+      - Roadmap__LessonAdaptiveEnabled=${ROADMAP_LESSON_ADAPTIVE_ENABLED:-false}
       # Mốc coi worker là MẤT TÍCH → đẩy lại job chấm. Đây là thứ QUYẾT ĐỊNH đuôi chờ báo cáo:
       # đo prod 2026-08-20 trên 77 buổi, cả 10 buổi vượt 120s đều có answer bị đẩy lại trễ, và độ
       # trễ gom cụm ở 909-1025s — đúng bằng 15' cũ + chu kỳ quét 2'. Người dùng chờ 15 phút cho
