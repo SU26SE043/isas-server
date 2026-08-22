@@ -72,11 +72,21 @@ public static class B2CRubricSeed
     /// <inheritdoc cref="LanguageName"/>
     public const string TerminologyName = "Thuật ngữ chuyên ngành";
 
+    // ⚠ Vế "ít từ đệm/lặp thừa" ĐÃ BỊ GỠ khỏi tiêu chí này (cùng đợt với việc chuyển
+    // `FluencyName` sang chấm bằng số đo). Trước đó CẢ HAI tiêu chí đều tính từ đệm ⇒ một thói
+    // quen bị trừ điểm HAI LẦN, rồi cả hai cùng vào trung bình cộng của B2C (INT-10) nên phần
+    // trừ đó nặng gấp đôi mọi thứ khác. Từ đệm là tín hiệu CÁCH NÓI, đo được từ âm thanh; tiêu
+    // chí này chỉ giữ thứ đọc được TRONG CHỮ (chọn từ + cấu trúc câu).
+    //
+    // Câu cuối KHÔNG phải lời giải thích cho người đọc — nó là chỉ thị gửi thẳng vào prompt chấm
+    // (mô tả tiêu chí đi nguyên văn vào `build_scoring_prompt`). Bỏ vế cũ mà không nói ra thì
+    // LLM vẫn tự do trừ điểm ngập ngừng ở đây, và việc gỡ chỉ có tác dụng trên giấy.
     private const string LanguageDesc =
-        "Dùng từ chính xác, câu đủ ý và đúng cấu trúc, ít từ đệm/lặp thừa (\"ờ\", \"kiểu như\"). " +
+        "Dùng từ chính xác, câu đủ ý và đúng cấu trúc. " +
         "Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, " +
-        "dùng từ sai nghĩa, lặp từ đệm liên tục gây khó hiểu. " +
-        "KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói).";
+        "dùng từ sai nghĩa, diễn đạt lủng củng khiến người nghe khó bám ý. " +
+        "KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói). " +
+        "KHÔNG xét từ đệm hay ngập ngừng — đó là CÁCH NÓI, đã có tiêu chí riêng đo bằng số đo âm thanh.";
 
     private static string TerminologyDesc(string role, string examples) =>
         $"Dùng ĐÚNG thuật ngữ chuyên ngành {role} và giải thích được thuật ngữ mình dùng " +
@@ -100,12 +110,12 @@ public static class B2CRubricSeed
     public const string FluencyName = "Độ trôi chảy & tự tin";
 
     private const string FluencyDesc =
-        "Nói liền mạch, có nhịp, ít ngập ngừng — nghe ra sự tự tin. " +
-        "Điểm cao: nhịp nói đều, dừng đúng chỗ ngắt ý, hiếm từ đệm, không phải dò tìm từ giữa câu. " +
-        "Điểm thấp: dừng lâu giữa câu, nói nhát gừng, lặp lại đầu câu nhiều lần, " +
-        "chèn dày từ đệm (\"ừm\", \"ờ\", \"kiểu như\") khiến người nghe khó bám ý. " +
-        "CHỈ xét CÁCH NÓI — không xét câu trả lời đúng/sai hay đủ/thiếu kiến thức " +
-        "(đã có tiêu chí khác lo).";
+        "Đo NHỊP NÓI từ chính bản ghi âm: tỉ lệ thời gian im lặng và số lần dừng đáng kể. " +
+        "Điểm cao: nói liền mạch, ít quãng lặng giữa câu. " +
+        "Điểm thấp: dừng lâu và dừng nhiều lần, phải dò tìm từ giữa chừng. " +
+        "Tiêu chí này do hệ thống TỰ TÍNH từ số đo âm thanh, không do AI đọc bản chép lời chấm, " +
+        "nên nó không phụ thuộc câu trả lời đúng/sai hay đủ/thiếu kiến thức. " +
+        "Không đo được (bản ghi quá ngắn hoặc thiếu số đo) thì tiêu chí bị LOẠI khỏi điểm, không tính 0.";
 
     /// <summary>
     /// Tạo MỚI danh sách tiêu chí seed (GUID cố định, giá trị bất biến). Trả instance mới mỗi lần
@@ -131,7 +141,8 @@ public static class B2CRubricSeed
         Criterion(BaTerminology,    JobCategory.BA, TerminologyName,
             TerminologyDesc("phân tích nghiệp vụ",
                 "stakeholder, user story, acceptance criteria, use case, business rule, backlog"), 0.0900m),
-        Criterion(BaFluency,        JobCategory.BA, FluencyName, FluencyDesc, 0.1000m),
+        Criterion(BaFluency,        JobCategory.BA, FluencyName, FluencyDesc, 0.1000m,
+            scoringMethod: CriterionScoringMethod.DeliveryMetrics),
 
         // ── BE — Backend (Σweight = 1.0000) ─────────────────────────────────────────────────
         Criterion(BeTechnical,      JobCategory.BE, "Chiều sâu kỹ thuật",
@@ -149,7 +160,8 @@ public static class B2CRubricSeed
         Criterion(BeTerminology,    JobCategory.BE, TerminologyName,
             TerminologyDesc("backend",
                 "transaction, index, deadlock, idempotent, cache, race condition, ACID"), 0.0900m),
-        Criterion(BeFluency,        JobCategory.BE, FluencyName, FluencyDesc, 0.1000m),
+        Criterion(BeFluency,        JobCategory.BE, FluencyName, FluencyDesc, 0.1000m,
+            scoringMethod: CriterionScoringMethod.DeliveryMetrics),
 
         // ── FE — Frontend (Σweight = 1.0000) ────────────────────────────────────────────────
         Criterion(FeTechnical,      JobCategory.FE, "Chiều sâu kỹ thuật",
@@ -167,7 +179,8 @@ public static class B2CRubricSeed
         Criterion(FeTerminology,    JobCategory.FE, TerminologyName,
             TerminologyDesc("frontend",
                 "reflow/repaint, hydration, virtual DOM, debounce, bundle, lazy-load, accessibility"), 0.0900m),
-        Criterion(FeFluency,        JobCategory.FE, FluencyName, FluencyDesc, 0.1000m),
+        Criterion(FeFluency,        JobCategory.FE, FluencyName, FluencyDesc, 0.1000m,
+            scoringMethod: CriterionScoringMethod.DeliveryMetrics),
         };
 
         // English has an independent, deterministic id per Vietnamese seed. It keeps the exact
@@ -187,6 +200,10 @@ public static class B2CRubricSeed
             // Phạm vi chấm là thuộc tính của TIÊU CHÍ, không phải của ngôn ngữ ⇒ thừa kế nguyên từ
             // bản `vi`. Khai lại bằng tay ở đây là mở đường cho hai ngôn ngữ lệch nhau trong im lặng.
             ScoringScope = v.ScoringScope,
+            // Cùng lý do: NGUỒN ĐIỂM là thuộc tính của tiêu chí. Khai lại tay ở đây thì bản `en`
+            // sẽ vẫn nhờ LLM chấm độ trôi chảy trong khi bản `vi` đã chuyển sang số đo — hai
+            // ngôn ngữ chấm bằng hai thước, không lỗi nào nổ.
+            ScoringMethod = v.ScoringMethod,
         });
         return vietnamese.Concat(english).ToList();
     }
@@ -227,9 +244,9 @@ public static class B2CRubricSeed
         (JobCategory.FE, "Giải quyết vấn đề") => "Solves UI and application-logic problems methodically, including debugging and trade-off analysis.",
         (JobCategory.FE, "Giao tiếp & trình bày") => "Communicates product and technical ideas clearly, coherently, and with an appropriate level of detail.",
         (JobCategory.FE, "Ý thức UI/UX & accessibility") => "Considers user experience, accessibility, and consistent interface behavior in proposed solutions.",
-        (_, "Ngữ pháp & dùng từ") => "Uses accurate word choice and complete, well-structured sentences with few fillers or unnecessary repetitions. Do not assess spelling or punctuation because the transcript is produced from speech recognition.",
+        (_, "Ngữ pháp & dùng từ") => "Uses accurate word choice and complete, well-structured sentences. Do not assess spelling or punctuation because the transcript is produced from speech recognition. Do not assess fillers or hesitation either: that is delivery, and a separate criterion measures it from the audio.",
         (_, "Thuật ngữ chuyên ngành") => "Uses relevant professional terminology accurately and can explain terms in context. Assess the evidence in the spoken answer, not transcription spelling.",
-        (_, "Độ trôi chảy & tự tin") => "Speaks with a steady, confident rhythm and limited hesitation. Assess delivery only, not the correctness or completeness of technical content.",
+        (_, "Độ trôi chảy & tự tin") => "Measures speaking rhythm directly from the recording: the proportion of silent time and the number of significant pauses. The system computes this from acoustic measurements rather than having AI judge the transcript, so it does not depend on whether the answer was correct or complete. When it cannot be measured (recording too short, or metrics missing) the criterion is excluded from the score instead of being scored zero.",
         _ => fallback,
     };
 
@@ -242,7 +259,8 @@ public static class B2CRubricSeed
     /// </param>
     private static RubricCriterion Criterion(
         Guid id, JobCategory cat, string name, string description, decimal weight,
-        ScoringScope scope = ScoringScope.Always) =>
+        ScoringScope scope = ScoringScope.Always,
+        CriterionScoringMethod scoringMethod = CriterionScoringMethod.Ai) =>
         new()
         {
             Id = id,
@@ -256,5 +274,6 @@ public static class B2CRubricSeed
             CampaignId = null,        // B2C: rubric theo JobCategory, không thuộc campaign
             Version = RubricVersion,
             ScoringScope = scope,
+            ScoringMethod = scoringMethod,
         };
 }

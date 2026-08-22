@@ -304,6 +304,8 @@ builder.Services.Configure<FileStorageOptions>(
 
 builder.Services.Configure<ScoringOptions>(
     builder.Configuration.GetSection(ScoringOptions.SectionName));   // BC9
+builder.Services.Configure<DeliveryScoringOptions>(
+    builder.Configuration.GetSection(DeliveryScoringOptions.SectionName));   // chấm cách nói bằng số đo
 builder.Services.Configure<CapacityOptions>(
     builder.Configuration.GetSection(CapacityOptions.SectionName));
 builder.Services.Configure<AdaptiveOptions>(

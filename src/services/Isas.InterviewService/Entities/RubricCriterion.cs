@@ -31,6 +31,21 @@ public class RubricCriterion
     // (rubric riêng BC16, tiêu chí campaign B2B, row cũ) tự động an toàn: chấm thừa chứ không bỏ sót.
     public ScoringScope ScoringScope { get; set; } = ScoringScope.Always;
 
+    // NGUỒN sinh ra điểm của tiêu chí này: LLM chấm từ transcript, hay hệ TỰ TÍNH từ số đo.
+    // Lưu string (GEN-2).
+    //
+    // ⚠ Nhận diện bằng CỘT NÀY, KHÔNG khớp theo TÊN lúc chấm — y hệt ràng buộc đã ghi cho
+    // `ScoringScope` ngay trên: rubric tồn tại ở cả `vi` lẫn `en` (F12) và candidate tự đặt tên
+    // rubric riêng (BC16), nên so tên ở đường chấm là hợp đồng gãy ngay khi ai đó đổi một chữ.
+    // (Kế thừa theo tên lúc GHI rubric riêng thì được — xem RubricLibraryService, cùng lý do
+    // đã ghi ở đó cho `ScoringScope`: khớp trong đúng một (nghề, ngôn ngữ), trượt thì rơi về
+    // mặc định = hành vi cũ.)
+    //
+    // Mặc định `Ai` (= hành vi trước thay đổi này) ⇒ tiêu chí campaign B2B và mọi row cũ không
+    // đổi gì. Chiều mặc định cố ý là "vẫn nhờ LLM chấm": bật nhầm sang số đo cho một tiêu chí
+    // NỘI DUNG sẽ thay điểm chuyên môn bằng một con số đo nhịp nói, sai mà không có triệu chứng.
+    public CriterionScoringMethod ScoringMethod { get; set; } = CriterionScoringMethod.Ai;
+
     // B2B: tiêu chí thuộc về 1 campaign (thay cho job_category); null = rubric B2C theo JobCategory.
     // Ref lỏng sang CampaignService - KHÔNG FK xuyên service.
     public Guid? CampaignId { get; set; }
