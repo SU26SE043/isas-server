@@ -183,14 +183,25 @@ public class DeliveryFluencyScorerTests
         Assert.Contains("KHÔNG tham gia tính điểm", Assert.NotNull(r).Reasoning);
     }
 
-    [Fact]
-    public void TocDoNoi_KhongLamDoiDiem()
+    [Theory]
+    [InlineData(60)]     // rất chậm — ngoài dải tham chiếu của prompts.py
+    [InlineData(179)]    // ngay dưới biên dải
+    [InlineData(199)]    // p50 đo được — TRONG dải
+    [InlineData(321)]    // ngay trên biên dải
+    [InlineData(400)]    // rất nhanh
+    public void TocDoNoi_KhongLamDoiDiem_DuNhanhHayCham(double wpm)
     {
         // Đơn vị của chỉ số này KHÔNG đồng nhất giữa hai ngôn ngữ (vi đếm ÂM TIẾT, en đếm TỪ) và
-        // dải "bình thường" duy nhất hệ đang có thì chưa ai hiệu chuẩn — nên nó không được chạm vào điểm.
-        var slow = DeliveryFluencyScorer.Score(M(silence: 0.2, wpm: 60), 5, "vi", Opts());
-        var fast = DeliveryFluencyScorer.Score(M(silence: 0.2, wpm: 400), 5, "vi", Opts());
-        Assert.Equal(Assert.NotNull(slow).Score, Assert.NotNull(fast).Score);
+        // dải "bình thường" duy nhất hệ đang có (180–320 trong prompts.py) thì chưa ai hiệu chuẩn —
+        // nên nó không được chạm vào điểm.
+        //
+        // ⚠ Bản ĐẦU của test này so "rất chậm (60)" với "rất nhanh (400)" và mutation thêm phạt
+        // hai chiều đã chạy qua XANH: cả hai đều nằm NGOÀI dải nên bị phạt BẰNG NHAU, hiệu số vẫn 0.
+        // Test khi đó hẹp hơn chính cái tên của nó. Mốc so đúng là bản KHÔNG CÓ số đo tốc độ — nếu
+        // tốc độ có tác động thì ít nhất một giá trị phải lệch khỏi mốc đó.
+        var baseline = DeliveryFluencyScorer.Score(M(silence: 0.2, wpm: null), 5, "vi", Opts());
+        var actual = DeliveryFluencyScorer.Score(M(silence: 0.2, wpm: wpm), 5, "vi", Opts());
+        Assert.Equal(Assert.NotNull(baseline).Score, Assert.NotNull(actual).Score);
     }
 
     // ── CON DẤU: bảng mặc định gắn chặt với RuleVersion ─────────────────────────────────
