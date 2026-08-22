@@ -67,10 +67,10 @@ public class RoadmapTests
             It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<CancellationToken>()));
+            It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()));
         if (capture is not null)
-            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?, CancellationToken>(
-                    (_, _, w, cv, f, ca, pr, crit, scope, evidence, _) => capture(new GenArgs(w, cv, f, ca, pr, crit, scope, evidence)))
+            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?, RoadmapMode, CancellationToken>(
+                    (_, _, w, cv, f, ca, pr, crit, scope, evidence, _, _) => capture(new GenArgs(w, cv, f, ca, pr, crit, scope, evidence)))
                 .ReturnsAsync(result);
         else
             setup.ReturnsAsync(result);
@@ -266,6 +266,7 @@ public class RoadmapTests
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
+                It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -392,6 +393,7 @@ public class RoadmapTests
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
+                It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -804,6 +806,7 @@ public class RoadmapTests
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
+                It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-roadmap trả 500"));
 

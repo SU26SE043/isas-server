@@ -26,6 +26,7 @@ public class RoadmapService : IRoadmapService
     private readonly GroundingOptions _grounding;     // RAG grounding — Enabled/TopK/threshold
     private readonly ILogger<RoadmapService> _logger;
     private readonly IEntitlementClient? _entitlements;
+    private readonly RoadmapOptions _roadmap;         // ngưỡng buổi tối thiểu cho chế độ ôn tập
     private readonly bool _tieringEnabled;
     private readonly bool _bilingualEnabled;
 
@@ -38,7 +39,8 @@ public class RoadmapService : IRoadmapService
         IKnowledgeService? knowledge = null,
         IOptions<GroundingOptions>? groundingOptions = null,
         IEntitlementClient? entitlements = null,
-        IConfiguration? config = null)
+        IConfiguration? config = null,
+        IOptions<RoadmapOptions>? roadmapOptions = null)
     {
         _db = db;
         _storage = storage;
@@ -47,6 +49,7 @@ public class RoadmapService : IRoadmapService
         _grounding = groundingOptions?.Value ?? new GroundingOptions();
         _logger = logger;
         _entitlements = entitlements;
+        _roadmap = roadmapOptions?.Value ?? new RoadmapOptions();
         _tieringEnabled = bool.TryParse(config?["Tiering:Enabled"], out var enabled) && enabled;
         _bilingualEnabled = bool.TryParse(config?["Interview:Bilingual:Enabled"], out var bilingual) && bilingual;
     }
@@ -61,6 +64,9 @@ public class RoadmapService : IRoadmapService
         var requestedName = RoadmapNaming.Normalize(req.Name);
         var createdAt = DateTime.UtcNow;
         var scope = ValidateScope(req.Scope);
+        // Cùng lý do đã nêu cho `ValidateLanguage`/`ValidateScope`: lỗi đầu vào phải nổ TRƯỚC khi
+        // đốt một lượt Gemini.
+        var mode = ValidateMode(req.Mode);
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
         // CV optional — đọc parsed_text (kiểm chủ sở hữu). null → 404; khác chủ → 403; rỗng → 400.
@@ -113,6 +119,32 @@ public class RoadmapService : IRoadmapService
 
             // sourceSessionIds = ĐÚNG các buổi được chọn (đều đã Scored/owned nhờ guard phủ ở trên).
             sourceSessionIds = chosen.Select(s => s.Id).ToList();
+        }
+
+        // 🔴 Chế độ ôn tập BẮT BUỘC có dữ liệu điểm yếu — và khi thiếu thì phải NÓI RA, tuyệt đối
+        // không âm thầm sinh một lộ trình LevelUp rồi dán nhãn "ôn tập". Nếu để rơi im lặng,
+        // `build_roadmap_prompt` sẽ đi đúng nhánh else "ứng viên CHƯA có buổi luyện nào được chấm
+        // → tạo roadmap CHUẨN theo level" — tức chính hành vi LevelUp — mà người dùng vẫn thấy
+        // lộ trình của mình được ghi là Reinforce. Đây là lớp lỗi "nén im lặng" đã cắn dự án
+        // nhiều lần (chọn Thực tập nhận Mới-tốt-nghiệp; chọn Lead nhận Senior).
+        //
+        // HAI guard TÁCH RỜI, mỗi cái một câu lỗi riêng, vì người dùng phải làm hai việc khác nhau:
+        //   • thiếu BUỔI  → đi luyện thêm (hoặc chọn thêm buổi cũ vào danh sách),
+        //   • thiếu ĐIỂM YẾU → các buổi đó không có tiêu chí nào cần cải thiện, phải chọn buổi khác.
+        // Gộp thành một câu chung sẽ bảo người vừa luyện 5 buổi rất tốt rằng họ "chưa luyện đủ".
+        if (mode == RoadmapMode.Reinforce)
+        {
+            var chosenCount = sourceSessionIds?.Count ?? 0;
+            if (chosenCount < _roadmap.ReinforceMinSessions)
+                throw new InvalidOperationException(
+                    $"Chế độ ôn tập cần ít nhất {_roadmap.ReinforceMinSessions} buổi luyện đã được " +
+                    $"chấm để biết bạn hay sai ở đâu (đang chọn {chosenCount}). Hãy luyện thêm rồi " +
+                    "chọn các buổi đó, hoặc tạo lộ trình ở chế độ LevelUp.");
+
+            if (weaknesses is not { Count: > 0 })
+                throw new InvalidOperationException(
+                    "Các buổi luyện đã chọn không có tiêu chí nào bị đánh dấu cần cải thiện, nên " +
+                    "không có gì để ôn lại. Hãy chọn buổi khác, hoặc tạo lộ trình ở chế độ LevelUp.");
         }
 
         // BC17 — phân tích CV đã có (BC7) làm NGỮ CẢNH prompt. CHỈ ĐỌC row đã lưu — KHÔNG gọi lại
@@ -169,9 +201,9 @@ public class RoadmapService : IRoadmapService
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
             ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, evidence, ct)
+                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, evidence, mode, ct)
             : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope, evidence);
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope, evidence, mode);
 
         var roadmap = new Roadmap
         {
@@ -181,6 +213,7 @@ public class RoadmapService : IRoadmapService
             // sinh mặc định tại đây để `CreatedAt` dùng cho tên khớp đúng giá trị vừa gán bên dưới.
             Name = requestedName ?? RoadmapNaming.BuildDefault(req.JobCategory, req.Level, language, createdAt),
             JobCategory = req.JobCategory,
+            Mode = mode,
             Level = req.Level,
             Language = language,
             CvId = req.CvId,
@@ -227,8 +260,8 @@ public class RoadmapService : IRoadmapService
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation(
-            "BC12: roadmap {Id} candidate {CandidateId} ({Cat}/{Level}) milestones={M} sources={S}",
-            roadmap.Id, candidateId, req.JobCategory, req.Level,
+            "BC12: roadmap {Id} candidate {CandidateId} ({Cat}/{Level}/{Mode}) milestones={M} sources={S}",
+            roadmap.Id, candidateId, req.JobCategory, req.Level, mode,
             roadmap.Milestones.Count, sourceSessionIds?.Count ?? 0);
 
         // Roadmap vừa tạo — chưa bài nào được làm, nên rỗng là ĐÚNG do cấu trúc (không phải bỏ sót).
@@ -388,6 +421,7 @@ public class RoadmapService : IRoadmapService
                 x.Name,
                 x.JobCategory,
                 x.Level,
+                x.Mode,
                 x.Language,
                 x.CvId,
                 x.Status,
@@ -402,6 +436,7 @@ public class RoadmapService : IRoadmapService
                 RoadmapNaming.Resolve(x.Name, x.JobCategory, x.Level, x.Language, x.CreatedAt),
                 x.JobCategory.ToString(),
                 x.Level.ToString(),
+                x.Mode.ToString(),
                 x.CvId,
                 x.Status.ToString(),
                 x.CreatedAt,
@@ -517,6 +552,29 @@ public class RoadmapService : IRoadmapService
         return scope;
     }
 
+    /// <summary>
+    /// Chế độ lộ trình candidate CHỌN. Tập đóng, case-sensitive — mẫu <see cref="ValidateScope"/>:
+    /// chỉ <c>null</c> (client KHÔNG gửi field) mới mặc định <c>LevelUp</c>; chuỗi rỗng hoặc giá
+    /// trị lạ là GIÁ TRỊ SAI và bị từ chối 400, KHÔNG âm thầm rơi về mặc định (BK36).
+    ///
+    /// ⚠ Nghiêm hơn phía AIService có chủ đích: <c>app.roadmap_mode.normalize_mode</c> fail-OPEN
+    /// (giá trị lạ → LevelUp) vì ở đó một lỗi gõ chỉ nên làm mất tính năng chứ không nên thành
+    /// 502. Chỗ TỪ CHỐI phải là đây — nơi biết đây là request của người dùng thật và trả lời
+    /// được cho họ biết sai chỗ nào.
+    /// </summary>
+    private static RoadmapMode ValidateMode(string? requested)
+    {
+        if (requested is null) return RoadmapMode.LevelUp;
+        // Enum.TryParse mặc định CHẤP NHẬN cả chuỗi số ("1" → Reinforce) lẫn sai hoa/thường —
+        // cả hai đều là đầu vào ta không hứa hỗ trợ, nên so khớp tường minh thay vì dùng nó.
+        var mode = requested.Trim();
+        if (mode == nameof(RoadmapMode.LevelUp)) return RoadmapMode.LevelUp;
+        if (mode == nameof(RoadmapMode.Reinforce)) return RoadmapMode.Reinforce;
+        throw new InvalidOperationException(
+            $"mode chỉ nhận {nameof(RoadmapMode.LevelUp)} / {nameof(RoadmapMode.Reinforce)} " +
+            $"(đang gửi: '{requested}').");
+    }
+
     private static readonly IReadOnlyDictionary<Guid, int> EmptyAttemptCounts =
         new Dictionary<Guid, int>();
 
@@ -544,6 +602,9 @@ public class RoadmapService : IRoadmapService
         RoadmapNaming.Resolve(r.Name, r.JobCategory, r.Level, r.Language, r.CreatedAt),
         r.JobCategory.ToString(),
         r.Level.ToString(),
+        // Đọc THẲNG con dấu của lộ trình, không suy lại từ trạng thái hôm nay (mẫu `rubricSource`
+        // của BC-8): người dùng phải thấy đúng chế độ mình đã chọn lúc tạo.
+        r.Mode.ToString(),
         r.Language,
         r.CvId,
         r.Status.ToString(),

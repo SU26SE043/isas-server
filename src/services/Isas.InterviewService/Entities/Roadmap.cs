@@ -18,6 +18,15 @@ public class Roadmap
     public string? Name { get; set; }
 
     public JobCategory JobCategory { get; set; }
+
+    /// <summary>
+    /// Ý nghĩa của <see cref="Level"/> PHỤ THUỘC cột này: <c>LevelUp</c> ⇒ trình độ MỤC TIÊU;
+    /// <c>Reinforce</c> ⇒ trình độ HIỆN TẠI phải giữ nguyên. Vì vậy phải LƯU chứ không suy lại
+    /// lúc đọc — mọi thứ hạ nguồn (prompt roadmap, prompt lý thuyết bài học) đọc cột này để biết
+    /// đang sinh nội dung theo hướng nào.
+    /// </summary>
+    public RoadmapMode Mode { get; set; } = RoadmapMode.LevelUp;
+
     public RoadmapLevel Level { get; set; }
     public string Language { get; set; } = "vi";
 

@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
+using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services.Interfaces;
 
 namespace Isas.InterviewService.Services;
@@ -59,10 +60,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
         string scope = "Standard",
         IReadOnlyList<CriterionEvidence>? evidence = null,
+        RoadmapMode mode = RoadmapMode.LevelUp,
         CancellationToken ct = default)
-        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence);
+        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence, mode);
 
-    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null)
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp)
     {
         var payload = new
         {
@@ -92,6 +94,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             evidence = evidence is { Count: > 0 }
                 ? evidence.Select(e => new { criterionName = e.CriterionName, reasoning = e.Reasoning })
                 : null,
+            // Chế độ lộ trình — gửi dạng CHUỖI ("LevelUp"/"Reinforce") khớp `app.roadmap_mode`.
+            // AIService khai `mode: str = "LevelUp"` tường minh trong pydantic schema; thiếu dòng
+            // khai đó thì `extra='ignore'` NUỐT IM LẶNG và mọi lộ trình ôn tập được sinh như
+            // LevelUp mà không lỗi ở đâu cả (bẫy đã cắn repo 4 lần) — có test khoá hai đầu.
+            mode = mode.ToString(),
         };
 
         HttpResponseMessage response;
@@ -149,10 +156,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses,
         IReadOnlyList<GroundingChunk>? grounding = null,
         IReadOnlyList<CriterionEvidence>? evidence = null,
+        RoadmapMode mode = RoadmapMode.LevelUp,
         CancellationToken ct = default)
-        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi", evidence);
+        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi", evidence, mode);
 
-    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null)
+    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp)
     {
         var payload = new
         {
@@ -170,6 +178,9 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             evidence = evidence is { Count: > 0 }
                 ? evidence.Select(e => new { criterionName = e.CriterionName, reasoning = e.Reasoning })
                 : null,
+            // Chế độ ôn tập đổi TRỌNG TÂM bài giảng (giải thích vì sao lần trước sai) — cùng hợp
+            // đồng chuỗi + cùng bẫy `extra='ignore'` như ở `/generate-roadmap` ngay trên.
+            mode = mode.ToString(),
         };
 
         HttpResponseMessage response;

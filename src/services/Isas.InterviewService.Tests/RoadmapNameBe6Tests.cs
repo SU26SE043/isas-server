@@ -37,6 +37,7 @@ public class RoadmapNameBe6Tests
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(),
                 It.IsAny<string>(),                                   // BE-4 — scope
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),         // BE-5 — evidence
+                It.IsAny<RoadmapMode>(),                              // chế độ lộ trình
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Sample());
         return m;
