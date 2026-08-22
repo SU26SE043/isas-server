@@ -15,6 +15,7 @@ from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
 from app.question_quality import coverage_defects, verify_defect
+from app.roadmap_mode import DEFAULT_MODE
 from app.roadmap_quality import (
     DEFAULT_SCOPE, filter_milestone_criteria, message as roadmap_message,
     scope_counts, truncate_to_scope,
@@ -1871,6 +1872,7 @@ class GeminiProvider(QuestionProvider):
                                criteria: list[dict] | None = None,
                                scope: str = DEFAULT_SCOPE, language: str = "vi",
                                evidence: list[dict] | None = None,
+                               mode: str = DEFAULT_MODE,
                                _retry_feedback: str | None = None,
                                _attempt: int = 1) -> list[dict]:
         """
@@ -1919,6 +1921,7 @@ class GeminiProvider(QuestionProvider):
             language=language,
             scope=scope,
             evidence=evidence,
+            mode=mode,
         )
 
         response = await self._generate(
@@ -2031,6 +2034,9 @@ class GeminiProvider(QuestionProvider):
                         prior_roadmap_summary=prior_roadmap_summary,
                         grounding=grounding, criteria=criteria, scope=scope, language=language,
                         evidence=evidence,
+                        # Lượt viết lại PHẢI mang theo `mode`: thiếu nó thì roadmap ôn tập nào
+                        # rơi vào nhánh retry sẽ âm thầm được sinh lại ở chế độ LevelUp.
+                        mode=mode,
                         _retry_feedback=feedback, _attempt=_attempt + 1)
                 # Hết lượt retry — GIỮ milestone (focusCriteria rỗng), KHÔNG raise: xem docstring
                 # (một milestone thiếu nhãn không đáng đánh đổi mất TOÀN BỘ roadmap đã sinh đúng).
@@ -2044,7 +2050,8 @@ class GeminiProvider(QuestionProvider):
                                      lesson_title: str, focus_criteria: list[str],
                                      weaknesses: list[str] | None,
                                      grounding: list[dict] | None = None, language: str = "vi",
-                                     evidence: list[dict] | None = None
+                                     evidence: list[dict] | None = None,
+                                     mode: str = DEFAULT_MODE
                                      ) -> LessonTheoryResult:
         """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
 
@@ -2121,7 +2128,8 @@ class GeminiProvider(QuestionProvider):
         for _ in range(attempts):
             prompt = build_lesson_theory_prompt(
                 job_category, level, lesson_title, focus_criteria, weaknesses,
-                grounding, retry_feedback=feedback, language=language, evidence=evidence)
+                grounding, retry_feedback=feedback, language=language, evidence=evidence,
+                mode=mode)
 
             # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
             # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist

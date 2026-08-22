@@ -550,7 +550,7 @@ def test_endpoint_generate_roadmap_response_shape(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None, scope=None, evidence=None):
+                                    criteria=None, scope=None, evidence=None, mode=None):
         assert job_category == "BE"
         assert level == "Junior"
         return [
@@ -593,7 +593,7 @@ def test_endpoint_generate_roadmap_rejects_empty_level():
 def test_endpoint_generate_roadmap_returns_502_when_gemini_fails(monkeypatch):
     async def failing(job_category, level, weaknesses, cv_text,
                       focus=None, cv_analysis_summary=None, prior_roadmap_summary=None,
-                      grounding=None, criteria=None, scope=None, evidence=None):
+                      grounding=None, criteria=None, scope=None, evidence=None, mode=None):
         raise ValueError("LLM trả JSON không hợp lệ")
 
     monkeypatch.setattr(main_module.provider, "generate_roadmap", failing)
@@ -617,7 +617,7 @@ def test_endpoint_generate_roadmap_forwards_bc17_fields(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None, scope=None, evidence=None):
+                                    criteria=None, scope=None, evidence=None, mode=None):
         received["focus"] = focus
         received["cv_analysis_summary"] = cv_analysis_summary
         received["prior_roadmap_summary"] = prior_roadmap_summary
@@ -670,7 +670,7 @@ def test_endpoint_generate_roadmap_forwards_scope_to_provider(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None, scope=None, evidence=None):
+                                    criteria=None, scope=None, evidence=None, mode=None):
         received["scope"] = scope
         return [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]
 
@@ -694,7 +694,7 @@ def test_endpoint_generate_roadmap_scope_omitted_forwards_standard(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None, scope=None, evidence=None):
+                                    criteria=None, scope=None, evidence=None, mode=None):
         received["scope"] = scope
         return [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]
 
@@ -733,7 +733,7 @@ def test_endpoint_generate_roadmap_forwards_criteria_to_provider(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None, scope=None, evidence=None):
+                                    criteria=None, scope=None, evidence=None, mode=None):
         received["criteria"] = criteria
         return [{"title": "M1", "focusCriteria": ["Phân tích yêu cầu"], "lessons": [{"title": "L1"}]}]
 
@@ -761,7 +761,7 @@ def test_endpoint_generate_roadmap_without_criteria_forwards_none(monkeypatch):
     async def fake_generate_roadmap(job_category, level, weaknesses, cv_text,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None, scope=None, evidence=None):
+                                    criteria=None, scope=None, evidence=None, mode=None):
         received["criteria"] = criteria
         return [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]
 
@@ -781,7 +781,7 @@ def test_endpoint_generate_roadmap_without_criteria_forwards_none(monkeypatch):
 def test_endpoint_generate_lesson_theory_response_shape(monkeypatch):
     async def fake_generate_lesson_theory(job_category, level, lesson_title,
                                           focus_criteria, weaknesses, grounding=None,
-                                          evidence=None):
+                                          evidence=None, mode=None):
         assert lesson_title == "Chuẩn hoá DB"
         return "# Chuẩn hoá DB\n\nNội dung lý thuyết...", [], None
 
