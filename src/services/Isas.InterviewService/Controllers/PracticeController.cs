@@ -132,16 +132,21 @@ public class PracticeController : ControllerBase
     /// DB31 — keyset-paged: `?limit=` (mặc định/tối đa 500) + `?cursor=` (opaque, lấy từ header
     /// `X-Next-Cursor` của trang trước; vắng header = hết trang). Body giữ nguyên mảng JSON nên
     /// client cũ không phải sửa gì — trước đây endpoint này trả lịch sử TRỌN ĐỜI trong 1 payload.
+    /// `?status=` (vd Scored) + `?excludeCampaign=true` — OPT-IN cho wizard tạo roadmap chọn
+    /// buổi làm baseline (RoadmapService.CreateAsync chỉ nhận buổi B2C đã Scored); vắng cả hai ⇒
+    /// hành vi y hệt hôm nay.
     /// </summary>
     [HttpGet("history")]
     [ProducesResponseType(typeof(IReadOnlyList<PracticeSessionSummary>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetHistory(
-        CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null)
+        CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null,
+        [FromQuery] string? status = null, [FromQuery] bool? excludeCampaign = null)
     {
         try
         {
             var candidateId = GetCandidateId();
-            var page = await _practiceService.GetHistoryAsync(candidateId, cursor, limit, ct);
+            var page = await _practiceService.GetHistoryAsync(
+                candidateId, cursor, limit, status, excludeCampaign, ct);
             if (page.NextCursor is not null)
                 Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
             return Ok(page.Items);

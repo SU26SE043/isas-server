@@ -25,7 +25,13 @@ public record CreateRoadmapRequest(
     // Chế độ lộ trình: "LevelUp" (mặc định — tiến lên cấp mục tiêu, hành vi cũ) hoặc "Reinforce"
     // (ôn lại: giữ nguyên trình độ, bám điểm yếu đo được). null → "LevelUp"; chuỗi rỗng/giá trị
     // lạ → 400 (BK36 — KHÔNG âm thầm rơi về mặc định). Xem RoadmapService.ValidateMode.
-    string? Mode = null
+    string? Mode = null,
+    // Trình độ NGHỀ NGHIỆP HIỆN TẠI candidate tự khai ở wizard — "Fresher"/"Junior"/"Middle"/
+    // "Senior". null → suy từ cv_analyses (hành vi cũ, xem CvAnalysisId); có gửi → THẮNG giá trị
+    // suy từ CV (người dùng biết trình độ của mình rõ hơn một suy đoán từ CV, và ~2/5 bản phân
+    // tích không suy ra được gì — xem Entities/CvAnalysis.cs). Chuỗi rỗng/giá trị lạ → 400 (BK36 —
+    // KHÔNG âm thầm rơi về mặc định). Xem RoadmapService.ValidateCurrentLevel.
+    string? CurrentLevel = null
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).

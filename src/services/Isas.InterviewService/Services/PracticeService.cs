@@ -1006,7 +1006,8 @@ public class PracticeService : IPracticeService
     // Backward-compat y hệt DB8: body vẫn là mảng JSON, cursor opaque + limit là opt-in
     // (`?cursor=&limit=`), next-cursor ở header X-Next-Cursor, limit mặc định = trần cũ.
     public async Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(
-        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default)
+        Guid candidateId, string? cursor = null, int? limit = null,
+        string? status = null, bool? excludeCampaign = null, CancellationToken ct = default)
     {
         var take = KeysetPaging.ClampLimit(limit);
         var cur = KeysetCursor.Decode(cursor);
@@ -1014,6 +1015,19 @@ public class PracticeService : IPracticeService
         var query = _db.PracticeSessions
             .AsNoTracking()
             .Where(s => s.CandidateId == candidateId);
+
+        // Opt-in — mẫu ListAllCampaignsAsync (CampaignService): parse fail-open, giá trị lạ
+        // KHÔNG parse được ⇒ filter đơn giản không được áp (trả nguyên, không lọc gì) thay vì
+        // 400 (đây là filter duyệt-danh-sách, không phải input dẫn nghiệp vụ).
+        if (!string.IsNullOrWhiteSpace(status)
+            && Enum.TryParse<SessionStatus>(status.Trim(), ignoreCase: true, out var parsedStatus))
+            query = query.Where(s => s.Status == parsedStatus);
+
+        // Loại buổi B2B (campaign_id != null) — dùng cho wizard roadmap: CreateAsync chỉ nhận
+        // buổi B2C (CampaignId == null), nên picker phải loại B2B TRƯỚC khi người dùng chọn được,
+        // thay vì để họ ăn 404 batch không nói id nào sai (RoadmapService.CreateAsync).
+        if (excludeCampaign == true)
+            query = query.Where(s => s.CampaignId == null);
 
         if (cur is not null)
             query = query.Where(s => s.CreatedAt < cur.CreatedAt

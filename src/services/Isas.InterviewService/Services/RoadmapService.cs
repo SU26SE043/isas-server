@@ -67,6 +67,8 @@ public class RoadmapService : IRoadmapService
         // Cùng lý do đã nêu cho `ValidateLanguage`/`ValidateScope`: lỗi đầu vào phải nổ TRƯỚC khi
         // đốt một lượt Gemini.
         var mode = ValidateMode(req.Mode);
+        // Cùng lý do — trình độ hiện tại candidate tự khai ở wizard, kiểm TRƯỚC mọi I/O.
+        var currentLevelOverride = ValidateCurrentLevel(req.CurrentLevel);
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
         // CV optional — VẪN kiểm chủ sở hữu (null → 404; khác chủ → 403; rỗng → 400) và vẫn lưu
@@ -173,6 +175,10 @@ public class RoadmapService : IRoadmapService
             cvAnalysisSummary = BuildCvAnalysisSummary(ca);
             currentLevel = ca.CurrentLevel;
         }
+        // Giá trị candidate TỰ KHAI ở wizard THẮNG giá trị suy từ CV: người dùng biết trình độ
+        // của mình rõ hơn một suy đoán, và một phần đáng kể bản phân tích CV không suy ra được gì
+        // (xem Entities/CvAnalysis.cs) nên để CV thắng sẽ im lặng bỏ mất lựa chọn của người dùng.
+        currentLevel = currentLevelOverride ?? currentLevel;
 
         // BC17 — final_report của roadmap đã hoàn thành (BC15) làm NGỮ CẢNH. Thiếu → 404; khác chủ → 403;
         // chưa có báo cáo (chưa hoàn thành) → 400.
@@ -587,6 +593,27 @@ public class RoadmapService : IRoadmapService
         throw new InvalidOperationException(
             $"mode chỉ nhận {nameof(RoadmapMode.LevelUp)} / {nameof(RoadmapMode.Reinforce)} " +
             $"(đang gửi: '{requested}').");
+    }
+
+    /// <summary>
+    /// Trình độ NGHỀ NGHIỆP HIỆN TẠI candidate tự khai ở wizard. Tập đóng, case-sensitive — mẫu
+    /// <see cref="ValidateMode"/>: chỉ <c>null</c> (client KHÔNG gửi field) mới giữ hành vi cũ
+    /// (suy từ <c>cv_analyses</c>, xem <c>CreateAsync</c>); chuỗi rỗng hoặc giá trị lạ là GIÁ TRỊ
+    /// SAI và bị từ chối 400, KHÔNG âm thầm rơi về mặc định (BK36).
+    /// </summary>
+    private static string? ValidateCurrentLevel(string? requested)
+    {
+        if (requested is null) return null;
+        // Enum.TryParse mặc định CHẤP NHẬN cả chuỗi số ("1" → Junior) lẫn sai hoa/thường — cả hai
+        // đều là đầu vào ta không hứa hỗ trợ, nên so khớp tường minh thay vì dùng nó (mẫu ValidateMode).
+        var level = requested.Trim();
+        if (level == nameof(RoadmapLevel.Fresher)) return level;
+        if (level == nameof(RoadmapLevel.Junior)) return level;
+        if (level == nameof(RoadmapLevel.Middle)) return level;
+        if (level == nameof(RoadmapLevel.Senior)) return level;
+        throw new InvalidOperationException(
+            $"currentLevel chỉ nhận {nameof(RoadmapLevel.Fresher)} / {nameof(RoadmapLevel.Junior)} / " +
+            $"{nameof(RoadmapLevel.Middle)} / {nameof(RoadmapLevel.Senior)} (đang gửi: '{requested}').");
     }
 
     private static readonly IReadOnlyDictionary<Guid, int> EmptyAttemptCounts =
