@@ -167,6 +167,10 @@ public class CvAnalysisService : ICvAnalysisService
                 JdId = jdIdToUse,   // null khi JD đến từ text (C11: text ưu tiên file)
                 JobCategory = jobCategory,
                 Summary = ai.Summary,
+                // 🔴 Object initializer gán TAY từng trường — quên một dòng ở đây là bug IM LẶNG:
+                // AI trả đúng, deserialize đúng, DB có cột, mà giá trị luôn null. Không exception,
+                // không log, không test nào hiện có bắt được. Xem CvCurrentLevelWireTests.
+                CurrentLevel = ai.CurrentLevel,
                 Strengths = ai.Strengths,
                 Weaknesses = ai.Weaknesses,
                 Suggestions = ai.Suggestions,

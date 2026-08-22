@@ -32,8 +32,10 @@ public class RoadmapGroundingTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
+                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(SampleRoadmap());
 
         // 1 batch → 3 lesson: L1 có nguồn, L2 miss, L3 có nguồn.
@@ -70,8 +72,10 @@ public class RoadmapGroundingTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
+                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()))
             .ReturnsAsync(SampleRoadmap());
         var knowledge = new Mock<IKnowledgeService>();
 

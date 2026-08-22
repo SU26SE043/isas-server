@@ -62,7 +62,7 @@ public class RoadmapModeWireTests
         RoadmapMode mode, string expected)
     {
         var (gen, handler) = Generator(RoadmapJson);
-        await gen.GenerateAsync("BA", "Junior", null, null, null, null, null,
+        await gen.GenerateAsync("BA", "Junior", null, null, null, null,
             criteria: null, mode: mode);
 
         using var doc = JsonDocument.Parse(handler.LastBody!);
@@ -98,7 +98,7 @@ public class RoadmapModeWireTests
         foreach (var mode in Enum.GetValues<RoadmapMode>())
         {
             var (gen, handler) = Generator(RoadmapJson);
-            await gen.GenerateAsync("BA", "Junior", null, null, null, null, null,
+            await gen.GenerateAsync("BA", "Junior", null, null, null, null,
                 criteria: null, mode: mode);
             using var doc = JsonDocument.Parse(handler.LastBody!);
             var sent = doc.RootElement.GetProperty("mode").GetString();

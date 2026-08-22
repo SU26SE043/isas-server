@@ -69,10 +69,19 @@ public class RoadmapService : IRoadmapService
         var mode = ValidateMode(req.Mode);
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
-        // CV optional — đọc parsed_text (kiểm chủ sở hữu). null → 404; khác chủ → 403; rỗng → 400.
-        string? cvText = null;
+        // CV optional — VẪN kiểm chủ sở hữu (null → 404; khác chủ → 403; rỗng → 400) và vẫn lưu
+        // `roadmaps.cv_id`, nhưng NỘI DUNG CV không còn đi vào prompt nữa.
+        //
+        // Vì sao gỡ: đo trên production, roadmap có CV và không CV cho tên chặng KHÔNG phân biệt
+        // được, và nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1% số bài). Prompt sinh
+        // roadmap là bài toán dựng *cấu trúc giáo trình*, mà chủ đề của một nghề không đổi theo
+        // người ⇒ CV thô không có chỗ tác động. Phần CV đóng góp được nay đi qua `cvAnalysisSummary`
+        // (bản đã chưng cất, có sẵn Điểm mạnh/Điểm yếu/Gợi ý) và `currentLevel` (sàn trình độ).
+        //
+        // Giữ lại lời gọi kiểm quyền: bỏ nó đi thì người dùng gửi `cvId` của người khác sẽ nhận
+        // 201 thay vì 403, tức nới quyền một cách âm thầm.
         if (req.CvId is not null)
-            cvText = await ReadOwnedParsedTextAsync(req.CvId.Value, candidateId, "CV", ct);
+            _ = await ReadOwnedParsedTextAsync(req.CvId.Value, candidateId, "CV", ct);
 
         // BC17 — baseline lấy từ CÁC BUỔI CANDIDATE CHỌN (thôi tự gom MỌI buổi Scored). SessionIds
         // rỗng/null → roadmap CHUẨN theo level (baseline/weakness/sources = null, KHÔNG query buổi nào).
@@ -150,6 +159,10 @@ public class RoadmapService : IRoadmapService
         // BC17 — phân tích CV đã có (BC7) làm NGỮ CẢNH prompt. CHỈ ĐỌC row đã lưu — KHÔNG gọi lại
         // /analyze-cv, KHÔNG reserve/consume credit (D22, tạo roadmap free). Thiếu → 404; khác chủ → 403.
         string? cvAnalysisSummary = null;
+        // Trình độ HIỆN TẠI suy từ CV — đi bằng KHOÁ RIÊNG xuống AIService, KHÔNG nhúng vào chuỗi
+        // `cvAnalysisSummary`: chuỗi đó nằm trong khối prompt đã tuyên bố là DỮ LIỆU chứ không
+        // phải lệnh, mà đây LÀ chỉ thị (bỏ phần nhập môn đã nắm) ⇒ nhét vào đó là tự vô hiệu hoá.
+        string? currentLevel = null;
         if (req.CvAnalysisId is not null)
         {
             var ca = await _db.Set<CvAnalysis>().AsNoTracking()
@@ -158,6 +171,7 @@ public class RoadmapService : IRoadmapService
             if (ca.CandidateId != candidateId)
                 throw new UnauthorizedAccessException("Không phải phân tích CV của bạn");
             cvAnalysisSummary = BuildCvAnalysisSummary(ca);
+            currentLevel = ca.CurrentLevel;
         }
 
         // BC17 — final_report của roadmap đã hoàn thành (BC15) làm NGỮ CẢNH. Thiếu → 404; khác chủ → 403;
@@ -200,10 +214,10 @@ public class RoadmapService : IRoadmapService
 
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
-            ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, evidence, mode, ct)
-            : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses, cvText,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope, evidence, mode);
+            ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses,
+                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, evidence, mode, currentLevel, ct)
+            : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses,
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope, evidence, mode, currentLevel);
 
         var roadmap = new Roadmap
         {
