@@ -1026,8 +1026,12 @@ public class PracticeService : IPracticeService
         // Loại buổi B2B (campaign_id != null) — dùng cho wizard roadmap: CreateAsync chỉ nhận
         // buổi B2C (CampaignId == null), nên picker phải loại B2B TRƯỚC khi người dùng chọn được,
         // thay vì để họ ăn 404 batch không nói id nào sai (RoadmapService.CreateAsync).
+        //
+        // DÙNG LẠI CHÍNH expression object của RoadmapSessionEligibility (không chép tay lần thứ
+        // hai): nó cũng là vế "không phải campaign" trong RoadmapService.CreateAsync — lệch nhau
+        // một chữ giữa hai nơi là picker cho chọn buổi mà CreateAsync sẽ từ chối bằng 404 mù.
         if (excludeCampaign == true)
-            query = query.Where(s => s.CampaignId == null);
+            query = query.Where(RoadmapSessionEligibility.NotCampaign);
 
         if (cur is not null)
             query = query.Where(s => s.CreatedAt < cur.CreatedAt

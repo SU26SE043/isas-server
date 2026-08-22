@@ -163,6 +163,30 @@ public class RoadmapCurrentLevelTests
         Assert.Equal("Fresher", captured);   // của NGƯỜI DÙNG, không phải "Senior" từ CV
     }
 
+    // ── (4b) 🔴 KHÔNG chọn CV nào — currentLevel vẫn phải chảy tới AI ────────────────────
+    //
+    // Bổ sung sau khi giao brief: nếu merge "người dùng thắng CV" bị đặt NGƯỢC — vào TRONG khối
+    // `if (req.CvAnalysisId is not null)` thay vì chạy vô điều kiện — thì candidate KHÔNG chọn
+    // bản phân tích CV nào (bỏ qua bước CV, nhánh hợp lệ đã chốt trong wizard) sẽ có lựa chọn ở
+    // bước "Trình độ hiện tại" bị RƠI IM LẶNG: không lỗi gì, chỉ là giá trị không bao giờ tới AI.
+    [Fact]
+    public async Task CurrentLevel_KhongChonCvAnalysis_VanDiXuongAi()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        string? captured = null;
+        var ctrl = Controller(t, GenMock(v => captured = v).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(
+                JobCategory.BE, RoadmapLevel.Junior, null,
+                CvAnalysisId: null, CurrentLevel: "Middle"),
+            default);
+
+        Assert.IsType<CreatedResult>(result);
+        Assert.Equal("Middle", captured);
+    }
+
     // ── (5) Validate chạy TRƯỚC mọi I/O — không đốt lượt AI khi giá trị lạ ───────────────
     [Fact]
     public async Task CurrentLevel_GiaTriLa_KhongGoiAi_KhongLuuRoadmap()

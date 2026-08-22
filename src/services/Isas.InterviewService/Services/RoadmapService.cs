@@ -97,12 +97,16 @@ public class RoadmapService : IRoadmapService
 
             // CHỈ những buổi được chọn, owner-scoped + B2C + đã Scored (BC-3). Không phủ đủ MỌI id yêu
             // cầu → 404 batch (KHÔNG lộ id nào thiếu / không thuộc mình / chưa chấm).
+            //
+            // Vế "B2C + đã Scored" tách riêng thành .Where(RoadmapSessionEligibility.Predicate) —
+            // MỘT nguồn sự thật dùng chung với PracticeService.GetHistoryAsync (wizard picker gọi
+            // ?status=Scored&excludeCampaign=true). Gộp chung một Where() với id/owner thì vẫn dịch
+            // đúng SQL (EF AND các vị từ), nhưng tách riêng biểu thức là thứ cho phép hai nơi CHIA
+            // SẺ cùng một object thay vì chép tay hai lần.
             var chosen = await _db.PracticeSessions.AsNoTracking()
                 .Include(s => s.CriterionScores)
-                .Where(s => requestedIds.Contains(s.Id)
-                            && s.CandidateId == candidateId
-                            && s.CampaignId == null
-                            && s.Status == SessionStatus.Scored)
+                .Where(s => requestedIds.Contains(s.Id) && s.CandidateId == candidateId)
+                .Where(RoadmapSessionEligibility.Predicate)
                 .OrderByDescending(s => s.CreatedAt)
                 .ToListAsync(ct);
 
@@ -178,6 +182,12 @@ public class RoadmapService : IRoadmapService
         // Giá trị candidate TỰ KHAI ở wizard THẮNG giá trị suy từ CV: người dùng biết trình độ
         // của mình rõ hơn một suy đoán, và một phần đáng kể bản phân tích CV không suy ra được gì
         // (xem Entities/CvAnalysis.cs) nên để CV thắng sẽ im lặng bỏ mất lựa chọn của người dùng.
+        //
+        // 🔴 Dòng này BẮT BUỘC nằm NGOÀI khối `if (req.CvAnalysisId is not null)` ở trên, chạy
+        // VÔ ĐIỀU KIỆN. Nhét nó vào TRONG khối (`currentLevel = currentLevelOverride ?? ca.CurrentLevel;`
+        // rồi xoá dòng này) sẽ làm candidate KHÔNG chọn bản phân tích CV nào — bỏ qua bước CV, một
+        // nhánh hợp lệ đã chốt trong wizard — có `currentLevelOverride` bị RƠI IM LẶNG: họ chọn
+        // trình độ ở bước 2, không lỗi gì, và lựa chọn đó biến mất trước khi tới prompt.
         currentLevel = currentLevelOverride ?? currentLevel;
 
         // BC17 — final_report của roadmap đã hoàn thành (BC15) làm NGỮ CẢNH. Thiếu → 404; khác chủ → 403;
