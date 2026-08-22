@@ -28,6 +28,17 @@ public class CvAnalysisConfiguration : IEntityTypeConfiguration<CvAnalysis>
 
         e.Property(x => x.Summary).HasColumnType("text").IsRequired();
 
+        // Trình độ hiện tại suy từ CV. Lưu STRING (GEN-2) + CHECK ở TẦNG DB — mẫu `roadmaps.mode`
+        // / `practice_sessions.seniority`. Khác hai chỗ đó ở ĐÚNG một điểm: cột này **nullable và
+        // KHÔNG có default**, vì "CV không đủ căn cứ" là trạng thái hợp lệ (87% CV thật rơi vào
+        // đó). Đặt default là bịa một mức cho phần lớn người dùng, rồi mức bịa đó thành SÀN của
+        // prompt roadmap và cắt mất đúng phần nền họ đang cần.
+        e.Property(x => x.CurrentLevel).HasMaxLength(16);
+
+        e.ToTable("cv_analyses", t => t.HasCheckConstraint(
+            "ck_cv_analyses_current_level",
+            "current_level IS NULL OR current_level IN ('Fresher', 'Junior', 'Middle', 'Senior')"));
+
         var listConverter = new ValueConverter<List<string>, string>(
             v => JsonSerializer.Serialize(v, Json),
             v => JsonSerializer.Deserialize<List<string>>(v, Json) ?? new List<string>());

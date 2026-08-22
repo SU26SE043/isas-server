@@ -32,7 +32,7 @@ from app.prompts import (
     build_verify_questions_prompt,
 )
 from app.schemas import (
-    JOB_NEED_CATEGORIES, NEED_LEVELS, NO_EVIDENCE, VERIFICATION_RISKS,
+    CV_CURRENT_LEVELS, JOB_NEED_CATEGORIES, NEED_LEVELS, NO_EVIDENCE, VERIFICATION_RISKS,
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
@@ -1118,6 +1118,11 @@ class GeminiProvider(QuestionProvider):
             "strengths": {"type": "array", "items": {"type": "string"}},
             "weaknesses": {"type": "array", "items": {"type": "string"}},
             "suggestions": {"type": "array", "items": {"type": "string"}},
+            # Trình độ CV chứng minh được. `nullable` + KHÔNG vào `required`: "không đủ căn cứ"
+            # phải là câu trả lời hợp lệ, không phải lỗi. Ép required là buộc model đoán.
+            "currentLevel": {
+                "type": "string", "enum": list(CV_CURRENT_LEVELS), "nullable": True,
+            },
         }
         required = ["summary", "strengths", "weaknesses", "suggestions"]
         requirement_mode = requirements is not None
@@ -1223,6 +1228,21 @@ class GeminiProvider(QuestionProvider):
             "weaknesses": _clean_list(data.get("weaknesses")),
             "suggestions": _clean_list(data.get("suggestions")),
         }
+
+        # Trình độ suy từ CV — mẫu guard của `verificationRisk` (xem `screen_cv`), nhưng fallback
+        # là BỎ HẲN KHOÁ chứ không phải một giá trị an toàn: ở đây "không biết" là câu trả lời
+        # đúng, còn đoán bừa sẽ đẩy một mức trông-như-đã-xác-định vào prompt roadmap.
+        #
+        # ⚠ Chỉ set khoá khi HỢP LỆ, không set `None`: `test_provider_b2c_analyze_cv_giu_nguyen_shape`
+        # khoá TẬP KHOÁ CHÍNH XÁC của dict này, nên gắn khoá vô điều kiện sẽ làm nó đỏ.
+        #
+        # ⚠ `.capitalize()` — CỐ Ý khác `app.seniority.normalize` (phân biệt hoa/thường và
+        # fail-open về "Junior"). Ở đó giá trị đến từ .NET/DB nên đã canonical; ở đây giá trị do
+        # MODEL sinh rồi mới ghi xuống DB, nên nhận `"senior"` và chuẩn hoá là đúng — CHECK ở DB
+        # là lưới cuối.
+        current_level = str(data.get("currentLevel") or "").strip().capitalize()
+        if current_level in CV_CURRENT_LEVELS:
+            result["currentLevel"] = current_level
 
         if jd_text and not requirement_mode:
             jd_match_raw = data.get("jdMatch")
@@ -1864,7 +1884,6 @@ class GeminiProvider(QuestionProvider):
 
     async def generate_roadmap(self, job_category: str, level: str,
                                weaknesses: list[dict] | None,
-                               cv_text: str | None,
                                focus: str | None = None,
                                cv_analysis_summary: str | None = None,
                                prior_roadmap_summary: str | None = None,
@@ -1873,6 +1892,7 @@ class GeminiProvider(QuestionProvider):
                                scope: str = DEFAULT_SCOPE, language: str = "vi",
                                evidence: list[dict] | None = None,
                                mode: str = DEFAULT_MODE,
+                               current_level: str | None = None,
                                _retry_feedback: str | None = None,
                                _attempt: int = 1) -> list[dict]:
         """
@@ -1912,7 +1932,7 @@ class GeminiProvider(QuestionProvider):
         known_names = [str(c.get("name", "")).strip() for c in (criteria or [])
                        if isinstance(c, dict) and str(c.get("name", "")).strip()]
         prompt = build_roadmap_prompt(
-            job_category, level, weaknesses, cv_text,
+            job_category, level, weaknesses,
             focus=focus,
             cv_analysis_summary=cv_analysis_summary,
             prior_roadmap_summary=prior_roadmap_summary,
@@ -1922,6 +1942,7 @@ class GeminiProvider(QuestionProvider):
             scope=scope,
             evidence=evidence,
             mode=mode,
+            current_level=current_level,
         )
 
         response = await self._generate(
@@ -2029,14 +2050,15 @@ class GeminiProvider(QuestionProvider):
                         "milestone_no_criteria", language,
                         titles="; ".join(empty_titles), allowed=", ".join(known_names))
                     return await self.generate_roadmap(
-                        job_category, level, weaknesses, cv_text, focus=focus,
+                        job_category, level, weaknesses, focus=focus,
                         cv_analysis_summary=cv_analysis_summary,
                         prior_roadmap_summary=prior_roadmap_summary,
                         grounding=grounding, criteria=criteria, scope=scope, language=language,
                         evidence=evidence,
-                        # Lượt viết lại PHẢI mang theo `mode`: thiếu nó thì roadmap ôn tập nào
-                        # rơi vào nhánh retry sẽ âm thầm được sinh lại ở chế độ LevelUp.
-                        mode=mode,
+                        # Lượt viết lại PHẢI mang theo `mode` VÀ `current_level`: thiếu chúng
+                        # thì roadmap nào rơi vào nhánh retry sẽ âm thầm mất chế độ / mất sàn
+                        # trình độ, mà không lỗi ở đâu cả.
+                        mode=mode, current_level=current_level,
                         _retry_feedback=feedback, _attempt=_attempt + 1)
                 # Hết lượt retry — GIỮ milestone (focusCriteria rỗng), KHÔNG raise: xem docstring
                 # (một milestone thiếu nhãn không đáng đánh đổi mất TOÀN BỘ roadmap đã sinh đúng).

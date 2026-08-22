@@ -55,16 +55,17 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
 
     public async Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory, string level,
-        IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText,
+        IReadOnlyList<RoadmapWeakness>? weaknesses,
         string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
         string scope = "Standard",
         IReadOnlyList<CriterionEvidence>? evidence = null,
         RoadmapMode mode = RoadmapMode.LevelUp,
+        string? currentLevel = null,
         CancellationToken ct = default)
-        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence, mode);
+        => await GenerateAsync(jobCategory, level, weaknesses, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence, mode, currentLevel);
 
-    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp)
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null)
     {
         var payload = new
         {
@@ -73,7 +74,13 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             level,
             // rỗng/null → AI sinh roadmap chuẩn theo level (schema WeaknessScore: criterionName + percentage).
             weaknesses = weaknesses?.Select(w => new { criterionName = w.CriterionName, percentage = w.Percentage }),
-            cvText,
+            // 🔴 `cvText` ĐÃ BỊ GỠ khỏi payload — đừng nối lại; lý do đầy đủ ở
+            // IAiServiceRoadmapGenerator. Đo được là CV thô không tác động gì lên cấu trúc roadmap.
+            // Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU). Khoá RIÊNG chứ không nhúng
+            // vào `cvAnalysisSummary`: chuỗi đó vào prompt dưới nhãn DỮ LIỆU, còn đây là CHỈ THỊ.
+            // ⚠ AIService khai `currentLevel: str | None` tường minh — thiếu dòng khai đó thì
+            // `extra='ignore'` NUỐT IM LẶNG (bẫy đã cắn repo 4 lần); có test khoá hai đầu.
+            currentLevel,
             // BC17 — ngữ cảnh thêm do candidate chọn (đều null → hành vi cũ). Worker Python khai đúng 3 field
             // camelCase này (extra='ignore' sẽ nuốt im lặng nếu lệch tên) và tự bọc như DỮ LIỆU (AI-4).
             focus,

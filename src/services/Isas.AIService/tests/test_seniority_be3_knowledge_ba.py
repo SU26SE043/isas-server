@@ -28,7 +28,7 @@ def _clean_registry():
 
 def test_roadmap_prompt_ba_co_kien_thuc_chuyen_sau_mac_dinh():
     prompt = build_roadmap_prompt(
-        job_category="BA", level="Senior", weaknesses=None, cv_text=None)
+        job_category="BA", level="Senior", weaknesses=None)
     assert "dẫn dắt BA/PO junior" in prompt
 
 
@@ -42,7 +42,7 @@ def test_lesson_theory_prompt_ba_co_kien_thuc_chuyen_sau_mac_dinh():
 def test_roadmap_prompt_be_khong_ro_ri_kien_thuc_ba():
     """Nghề KHÁC (chưa được seed) không được vô tình nhận nội dung của BA."""
     prompt = build_roadmap_prompt(
-        job_category="BE", level="Senior", weaknesses=None, cv_text=None)
+        job_category="BE", level="Senior", weaknesses=None)
     assert "dẫn dắt BA/PO junior" not in prompt
 
 

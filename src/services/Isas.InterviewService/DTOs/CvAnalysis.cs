@@ -42,7 +42,10 @@ public record CvAnalysisAiResult(
     CvJdMatch? JdMatch,   // chỉ khi gửi kèm jdText ở LEGACY
     IReadOnlyList<CvRequirementMatch>? RequirementMatches = null,
     IReadOnlyList<CvSectionAnchor>? CvSections = null,
-    IReadOnlyList<CvAnalysisCitation>? Citations = null
+    IReadOnlyList<CvAnalysisCitation>? Citations = null,
+    // Trình độ hiện tại suy từ CV; null = CV không đủ căn cứ. Đặt CUỐI + có default
+    // để mọi call-site positional sẵn có không vỡ.
+    string? CurrentLevel = null
 );
 
 public record JdMatchResponse(

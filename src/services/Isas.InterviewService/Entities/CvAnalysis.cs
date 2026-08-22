@@ -20,6 +20,18 @@ public class CvAnalysis
 
     public string Summary { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Trình độ NGHỀ NGHIỆP hiện tại mà CV chứng minh được (Fresher/Junior/Middle/Senior).
+    /// Khác hẳn <c>roadmaps.level</c> — cái đó là trình độ MỤC TIÊU người dùng tự chọn ở wizard.
+    /// Prompt sinh roadmap dùng trường này làm SÀN: bỏ phần nhập môn người học đã nắm.
+    ///
+    /// <para><c>null</c> = CV KHÔNG đủ căn cứ, và đó là trạng thái hợp lệ chứ không phải lỗi —
+    /// đo trên production: 87% bản phân tích CV không nhắc tới trình độ ở đâu. Vì vậy cột
+    /// nullable và CHECK cho phép NULL; KHÔNG có default, vì mặc định một mức nào đó là bịa cho
+    /// phần lớn người dùng.</para>
+    /// </summary>
+    public string? CurrentLevel { get; set; }
+
     // jsonb string[] — lưu qua value converter (xem CvAnalysisConfiguration).
     public List<string> Strengths { get; set; } = [];
     public List<string> Weaknesses { get; set; } = [];

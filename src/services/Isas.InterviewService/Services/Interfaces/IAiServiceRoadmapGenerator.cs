@@ -28,7 +28,11 @@ public interface IAiServiceRoadmapGenerator
         string jobCategory,
         string level,
         IReadOnlyList<RoadmapWeakness>? weaknesses,
-        string? cvText,
+        // 🔴 `cvText` ĐÃ BỊ GỠ — đừng nối lại. Đo trên production: roadmap có CV và không CV cho
+        // tên chặng không phân biệt được, nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs
+        // 12,1% số bài). Prompt này sinh một *cấu trúc giáo trình*, mà chủ đề của một nghề không
+        // đổi theo người ⇒ CV thô không có chỗ tác động. Phần CV đóng góp được đi qua hai đường
+        // đúng hình dạng: `cvAnalysisSummary` và `currentLevel`.
         string? focus,                 // BC17 — mô tả tự do
         string? cvAnalysisSummary,     // BC17 — tóm tắt từ cv_analyses (BC7)
         string? priorRoadmapSummary,   // BC17 — tóm tắt từ final_report roadmap trước (BC15)
@@ -36,8 +40,11 @@ public interface IAiServiceRoadmapGenerator
         string scope = "Standard",
         IReadOnlyList<CriterionEvidence>? evidence = null,
         RoadmapMode mode = RoadmapMode.LevelUp,
+        // Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU người dùng chọn). Làm SÀN: bỏ phần
+        // nhập môn đã nắm. null = CV không đủ căn cứ ⇒ không có sàn, hành vi như cũ.
+        string? currentLevel = null,
         CancellationToken ct = default);
-    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp);
+    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null);
 
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
     // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là

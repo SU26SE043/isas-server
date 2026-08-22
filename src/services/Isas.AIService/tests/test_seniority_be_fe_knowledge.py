@@ -30,7 +30,7 @@ def _clean_registry():
 
 def test_roadmap_prompt_be_co_kien_thuc_chuyen_sau_mac_dinh():
     prompt = build_roadmap_prompt(
-        job_category="BE", level="Senior", weaknesses=None, cv_text=None)
+        job_category="BE", level="Senior", weaknesses=None)
     assert "đồng bộ dữ liệu" in prompt
 
 
@@ -43,7 +43,7 @@ def test_lesson_theory_prompt_be_co_kien_thuc_chuyen_sau_mac_dinh():
 
 def test_roadmap_prompt_fe_co_kien_thuc_chuyen_sau_mac_dinh():
     prompt = build_roadmap_prompt(
-        job_category="FE", level="Senior", weaknesses=None, cv_text=None)
+        job_category="FE", level="Senior", weaknesses=None)
     assert "module federation" in prompt
 
 

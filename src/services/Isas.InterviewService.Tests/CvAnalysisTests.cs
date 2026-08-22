@@ -42,7 +42,8 @@ public class CvAnalysisTests
             Strengths: ["C#", "Kiến trúc microservice"],
             Weaknesses: ["Ít kinh nghiệm frontend"],
             Suggestions: ["Học thêm React"],
-            JdMatch: withJdMatch ? new CvJdMatch(78, ["C#", "SQL"], ["Kubernetes"]) : null);
+            JdMatch: withJdMatch ? new CvJdMatch(78, ["C#", "SQL"], ["Kubernetes"]) : null,
+            CurrentLevel: "Middle");
 
     private static CvAnalysisAiResult SampleAiWithRequirements()
         => new(
@@ -135,6 +136,10 @@ public class CvAnalysisTests
         Assert.Equal(2, row.Strengths.Count);            // jsonb round-trip
         Assert.Single(row.Weaknesses);
         Assert.Null(row.JdMatch);
+        // 🔴 `CvAnalysisService` dựng entity bằng object initializer gán TAY từng trường. Quên một
+        // dòng ở đó là bug IM LẶNG — AI trả đúng, deserialize đúng, DB có cột, mà giá trị luôn null;
+        // không exception, không log. Đây là thứ duy nhất bắt được.
+        Assert.Equal("Middle", row.CurrentLevel);
     }
 
     // POST có JD → jdMatch được lưu + trả về.

@@ -50,13 +50,15 @@ public class RoadmapTests
     // BE-5 — thêm `Evidence`: mutation-check anchor cho "quên forward bằng chứng xuống generator".
     private sealed record GenArgs(
         IReadOnlyList<RoadmapWeakness>? Weaknesses,
-        string? CvText,
         string? Focus,
         string? CvAnalysisSummary,
         string? PriorRoadmapSummary,
         IReadOnlyList<QuestionTargetCriterionDto>? Criteria,
         string Scope,
-        IReadOnlyList<CriterionEvidence>? Evidence);
+        IReadOnlyList<CriterionEvidence>? Evidence,
+        // `CvText` đã bị gỡ khỏi chữ ký generator (CV thô không còn vào prompt roadmap);
+        // `CurrentLevel` thay chỗ nó — trình độ HIỆN TẠI suy từ CV, dùng làm sàn.
+        string? CurrentLevel);
 
     private static Mock<IAiServiceRoadmapGenerator> GenMock(
         RoadmapGenAiResult result, Action<GenArgs>? capture = null)
@@ -64,13 +66,14 @@ public class RoadmapTests
         var m = new Mock<IAiServiceRoadmapGenerator>();
         var setup = m.Setup(x => x.GenerateAsync(
             It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
+            It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()));
+            It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()));
         if (capture is not null)
-            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?, RoadmapMode, CancellationToken>(
-                    (_, _, w, cv, f, ca, pr, crit, scope, evidence, _, _) => capture(new GenArgs(w, cv, f, ca, pr, crit, scope, evidence)))
+            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?, RoadmapMode, string?, CancellationToken>(
+                    (_, _, w, f, ca, pr, crit, scope, evidence, _, cur, _) => capture(new GenArgs(w, f, ca, pr, crit, scope, evidence, cur)))
                 .ReturnsAsync(result);
         else
             setup.ReturnsAsync(result);
@@ -263,10 +266,11 @@ public class RoadmapTests
         Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
         gen.Verify(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
                 It.IsAny<RoadmapMode>(),
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -390,10 +394,11 @@ public class RoadmapTests
         Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
         gen.Verify(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
                 It.IsAny<RoadmapMode>(),
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -802,11 +807,12 @@ public class RoadmapTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), 
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
                 It.IsAny<RoadmapMode>(),
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-roadmap trả 500"));
 

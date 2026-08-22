@@ -32,12 +32,13 @@ public class RoadmapNameBe6Tests
         var m = new Mock<IAiServiceRoadmapGenerator>();
         m.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), 
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(),
                 It.IsAny<string>(),                                   // BE-4 — scope
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),         // BE-5 — evidence
-                It.IsAny<RoadmapMode>(),                              // chế độ lộ trình
+                It.IsAny<RoadmapMode>(),                              // chế độ lộ trình,
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Sample());
         return m;
