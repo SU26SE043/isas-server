@@ -324,7 +324,7 @@ def test_endpoint_generate_questions_ungrounded_omits_citations(monkeypatch):
 
 def test_endpoint_generate_lesson_theory_returns_cited_chunkids(monkeypatch):
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None, evidence=None):
+                   grounding=None, evidence=None, mode=None):
         assert grounding == [{"chunkId": "c1", "content": "x",
                               "sourceUrl": None, "sourceTitle": None}]
         return "# useEffect\n\nND", [], ["c1"]
@@ -345,7 +345,7 @@ def test_endpoint_generate_lesson_theory_returns_cited_chunkids(monkeypatch):
 
 def test_endpoint_generate_lesson_theory_ungrounded_omits_cited(monkeypatch):
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None, evidence=None):
+                   grounding=None, evidence=None, mode=None):
         assert grounding is None
         return "# Bài\n\nND", [], None
 

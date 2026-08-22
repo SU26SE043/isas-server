@@ -439,6 +439,12 @@ class GenerateRoadmapRequest(BaseModel):
     # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, xem CriterionEvidence. Vắng/rỗng ⇒ không
     # ràng buộc gì thêm (hành vi cũ). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` ở trên.
     evidence: list[CriterionEvidence] | None = None
+    # Chế độ lộ trình: "LevelUp" (mặc định — tiến lên cấp mục tiêu, hành vi cũ) hoặc
+    # "Reinforce" (ôn lại: giữ nguyên trình độ, bám điểm yếu đo được, nghiêng về lý thuyết
+    # giải thích chỗ đã sai). Xem app.roadmap_mode. ⚠ PHẢI khai tường minh — cùng bẫy
+    # `extra='ignore'` đã nêu ở `criteria`/`scope`: thiếu dòng này thì .NET gửi `mode` mà
+    # pydantic NUỐT IM LẶNG, mọi lộ trình ôn tập âm thầm được sinh như LevelUp.
+    mode: str = "LevelUp"
 
 
 class RoadmapLesson(BaseModel):
@@ -467,6 +473,12 @@ class GenerateLessonTheoryRequest(BaseModel):
     # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, xem CriterionEvidence ở trên. Vắng/rỗng
     # ⇒ không ràng buộc gì thêm (hành vi cũ). ⚠ Khai tường minh — mẫu `grounding`/`weaknesses`.
     evidence: list[CriterionEvidence] | None = None
+    # Chế độ lộ trình: "LevelUp" (mặc định — tiến lên cấp mục tiêu, hành vi cũ) hoặc
+    # "Reinforce" (ôn lại: giữ nguyên trình độ, bám điểm yếu đo được, nghiêng về lý thuyết
+    # giải thích chỗ đã sai). Xem app.roadmap_mode. ⚠ PHẢI khai tường minh — cùng bẫy
+    # `extra='ignore'` đã nêu ở `criteria`/`scope`: thiếu dòng này thì .NET gửi `mode` mà
+    # pydantic NUỐT IM LẶNG, mọi lộ trình ôn tập âm thầm được sinh như LevelUp.
+    mode: str = "LevelUp"
 
 
 class LessonResource(BaseModel):

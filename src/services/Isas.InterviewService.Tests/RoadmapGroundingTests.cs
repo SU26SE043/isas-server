@@ -33,7 +33,7 @@ public class RoadmapGroundingTests
         gen.Setup(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SampleRoadmap());
 
         // 1 batch → 3 lesson: L1 có nguồn, L2 miss, L3 có nguồn.
@@ -71,7 +71,7 @@ public class RoadmapGroundingTests
         gen.Setup(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(SampleRoadmap());
         var knowledge = new Mock<IKnowledgeService>();
 
@@ -100,9 +100,10 @@ public class RoadmapGroundingTests
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
+                It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>()))
-            .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?, IReadOnlyList<GroundingChunk>?, IReadOnlyList<CriterionEvidence>?, CancellationToken>(
-                (_, _, _, _, _, grounding, _, _) => passedGrounding = grounding)
+            .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?, IReadOnlyList<GroundingChunk>?, IReadOnlyList<CriterionEvidence>?, RoadmapMode, CancellationToken>(
+                (_, _, _, _, _, grounding, _, _, _) => passedGrounding = grounding)
             // AI cite CHỈ "A" (không cite "B").
             .ReturnsAsync(new LessonTheoryResult("## Lý thuyết", [], new List<string> { "A" }));
 
@@ -137,6 +138,7 @@ public class RoadmapGroundingTests
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
+                It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LessonTheoryResult("## Lý thuyết", [], null));
 

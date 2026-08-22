@@ -21,7 +21,11 @@ public record CreateRoadmapRequest(
     Guid? PriorRoadmapId = null,              // BC17 — roadmaps.final_report (BC15)
     string? Focus = null,                     // BC17 — free-text
     string? Language = null,
-    string? Scope = null                      // BE-4 — "Quick"/"Standard"; null → "Standard" (hành vi cũ)
+    string? Scope = null,                     // BE-4 — "Quick"/"Standard"; null → "Standard" (hành vi cũ)
+    // Chế độ lộ trình: "LevelUp" (mặc định — tiến lên cấp mục tiêu, hành vi cũ) hoặc "Reinforce"
+    // (ôn lại: giữ nguyên trình độ, bám điểm yếu đo được). null → "LevelUp"; chuỗi rỗng/giá trị
+    // lạ → 400 (BK36 — KHÔNG âm thầm rơi về mặc định). Xem RoadmapService.ValidateMode.
+    string? Mode = null
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).
@@ -115,6 +119,10 @@ public record RoadmapResponse(
     string Name,                                   // BE-6 — luôn có giá trị, kể cả hàng cũ (suy lúc đọc)
     string JobCategory,
     string Level,
+    // Chế độ lộ trình ("LevelUp" | "Reinforce"). ĐỌC THẲNG cột đã lưu — khác `ResolvedFrom.Scope`
+    // vốn chỉ có nghĩa lúc tạo. Đặt cạnh `Level` vì nó QUYẾT ĐỊNH cách đọc `Level`: "Junior" là
+    // đích nhắm tới ở LevelUp, nhưng là mức đang đứng ở Reinforce — FE hiện hai thứ đó khác nhau.
+    string Mode,
     string Language,
     Guid? CvId,
     string Status,
@@ -145,6 +153,10 @@ public record RoadmapSummaryResponse(
                                                    // "Roadmap" cạnh nhau, tức chỗ vấn đề lộ ra rõ nhất
     string JobCategory,
     string Level,
+    // Cùng lý do như ở `RoadmapResponse`, và trang DANH SÁCH mới là nơi cần nhất: ba lộ trình
+    // cùng nghề + cùng level nằm cạnh nhau thì "ôn tập" hay "tiến lên" là thứ DUY NHẤT phân biệt
+    // được chúng (đúng lập luận đã dùng cho `Name` ở BE-6).
+    string Mode,
     Guid? CvId,
     string Status,
     DateTime CreatedAt,

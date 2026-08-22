@@ -564,6 +564,7 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
             criteria=criteria,
             scope=req.scope,
             evidence=evidence,
+            mode=req.mode,
         )
         return GenerateRoadmapResponse(
             milestones=[
@@ -596,7 +597,7 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest,
         evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
         theory, resources, cited = await _call_with_language(req.language, provider.generate_lesson_theory,
             req.jobCategory, req.level, req.lessonTitle, req.focusCriteria,
-            req.weaknesses, grounding, evidence=evidence)
+            req.weaknesses, grounding, evidence=evidence, mode=req.mode)
         # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
         # cited=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ giữ nguyên.
         return GenerateLessonTheoryResponse(

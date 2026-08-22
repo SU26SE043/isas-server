@@ -62,11 +62,14 @@ public class RoadmapLessonService : IRoadmapLessonService
         var evidence = weakCriteria.Count > 0 && roadmap.SourceSessionIds is { Count: > 0 }
             ? await RoadmapEvidenceLoader.LoadAsync(_db, roadmap.SourceSessionIds, weakCriteria, ct)
             : [];
+        // Chế độ ôn tập phải theo lộ trình xuống TỚI bài giảng — đây mới là chỗ người học đọc nội
+        // dung. Chỉ đổi cấu trúc roadmap mà để lý thuyết y như cũ thì tính năng chỉ đổi được tiêu
+        // đề bài, còn thứ họ thật sự học vẫn là bài của chế độ tiến-lên.
         var generated = roadmap.Language == "vi"
             ? await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
-                lesson.Title, focus, weaknesses, lesson.GroundingRefs, evidence, ct)
+                lesson.Title, focus, weaknesses, lesson.GroundingRefs, evidence, roadmap.Mode, ct)
             : await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
-                lesson.Title, focus, weaknesses, lesson.GroundingRefs, ct, roadmap.Language, evidence);
+                lesson.Title, focus, weaknesses, lesson.GroundingRefs, ct, roadmap.Language, evidence, roadmap.Mode);
         var theory = generated.TheoryMarkdown;
         // F15 — tài liệu học sinh CÙNG lượt với lý thuyết; lưu chung 1 lần ghi để không có trạng
         // thái "có theory mà chưa có resources" (guard idempotent bên dưới chỉ nhìn theory_content).

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
+using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
@@ -76,6 +77,17 @@ public class RoadmapConfiguration : IEntityTypeConfiguration<Roadmap>
 
         e.Property(x => x.Language).HasColumnType("text").HasDefaultValue("vi").IsRequired();
         e.HasCheckConstraint("ck_roadmaps_language", "language IN ('vi', 'en')");
+
+        // Chế độ lộ trình (LevelUp | Reinforce). Lưu STRING (GEN-2) + CHECK ở TẦNG DB, mẫu
+        // `language` ngay trên: enum .NET chỉ chắn được đường đi qua code, còn CHECK chắn cả
+        // đường ghi thẳng bằng SQL. Default 'LevelUp' phủ mọi hàng tạo trước cột này ⇒ migration
+        // KHÔNG cần backfill, và hàng cũ mang đúng ngữ nghĩa vốn có của chúng.
+        e.Property(x => x.Mode)
+            .HasConversion<string>()
+            .HasMaxLength(16)
+            .HasDefaultValue(RoadmapMode.LevelUp)
+            .IsRequired();
+        e.HasCheckConstraint("ck_roadmaps_mode", "mode IN ('LevelUp', 'Reinforce')");
 
         e.Property(x => x.Status)
             .HasConversion<string>()

@@ -3,6 +3,7 @@ using System;
 using Isas.InterviewService.ApplicationDbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Isas.InterviewService.Migrations
 {
     [DbContext(typeof(InterviewDbContext))]
-    partial class InterviewDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260822033320_AddRoadmapMode")]
+    partial class AddRoadmapMode
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -138,10 +141,6 @@ namespace Isas.InterviewService.Migrations
                     b.Property<Guid>("CriterionId")
                         .HasColumnType("uuid")
                         .HasColumnName("criterion_id");
-
-                    b.Property<int?>("DeliveryScoringVersion")
-                        .HasColumnType("integer")
-                        .HasColumnName("delivery_scoring_version");
 
                     b.Property<int?>("LevelMatched")
                         .HasColumnType("integer")
@@ -1328,14 +1327,6 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("character varying(128)")
                         .HasColumnName("name");
 
-                    b.Property<string>("ScoringMethod")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasDefaultValue("Ai")
-                        .HasColumnName("scoring_method");
-
                     b.Property<string>("ScoringScope")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -1378,8 +1369,6 @@ namespace Isas.InterviewService.Migrations
                         {
                             t.HasCheckConstraint("ck_rubric_criteria_language", "language IN ('vi', 'en')");
 
-                            t.HasCheckConstraint("ck_rubric_criteria_scoring_method", "scoring_method IN ('Ai', 'DeliveryMetrics')");
-
                             t.HasCheckConstraint("ck_rubric_criteria_scoring_scope", "scoring_scope IN ('Always', 'WhenTargeted')");
 
                             t.HasCheckConstraint("ck_rubric_criteria_single_owner", "campaign_id IS NULL OR candidate_id IS NULL");
@@ -1397,7 +1386,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Phân tích yêu cầu",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.2200m
@@ -1411,7 +1399,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Giao tiếp & trình bày",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1800m
@@ -1425,7 +1412,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Hiểu nghiệp vụ & các bên liên quan",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1800m
@@ -1439,7 +1425,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Tư duy giải quyết vấn đề",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1400m
@@ -1447,13 +1432,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0b100000-0000-0000-0000-000000000005"),
-                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc. Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, diễn đạt lủng củng khiến người nghe khó bám ý. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói). KHÔNG xét từ đệm hay ngập ngừng — đó là CÁCH NÓI, đã có tiêu chí riêng đo bằng số đo âm thanh.",
+                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc, ít từ đệm/lặp thừa (\"ờ\", \"kiểu như\"). Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, lặp từ đệm liên tục gây khó hiểu. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói).",
                             IsActive = true,
                             JobCategory = "BA",
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Ngữ pháp & dùng từ",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1467,7 +1451,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Thuật ngữ chuyên ngành",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1475,13 +1458,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0b100000-0000-0000-0000-000000000007"),
-                            Description = "Đo NHỊP NÓI từ chính bản ghi âm: tỉ lệ thời gian im lặng và số lần dừng đáng kể. Điểm cao: nói liền mạch, ít quãng lặng giữa câu. Điểm thấp: dừng lâu và dừng nhiều lần, phải dò tìm từ giữa chừng. Tiêu chí này do hệ thống TỰ TÍNH từ số đo âm thanh, không do AI đọc bản chép lời chấm, nên nó không phụ thuộc câu trả lời đúng/sai hay đủ/thiếu kiến thức. Không đo được (bản ghi quá ngắn hoặc thiếu số đo) thì tiêu chí bị LOẠI khỏi điểm, không tính 0.",
+                            Description = "Nói liền mạch, có nhịp, ít ngập ngừng — nghe ra sự tự tin. Điểm cao: nhịp nói đều, dừng đúng chỗ ngắt ý, hiếm từ đệm, không phải dò tìm từ giữa câu. Điểm thấp: dừng lâu giữa câu, nói nhát gừng, lặp lại đầu câu nhiều lần, chèn dày từ đệm (\"ừm\", \"ờ\", \"kiểu như\") khiến người nghe khó bám ý. CHỈ xét CÁCH NÓI — không xét câu trả lời đúng/sai hay đủ/thiếu kiến thức (đã có tiêu chí khác lo).",
                             IsActive = true,
                             JobCategory = "BA",
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Độ trôi chảy & tự tin",
-                            ScoringMethod = "DeliveryMetrics",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1000m
@@ -1495,7 +1477,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Chiều sâu kỹ thuật",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.2200m
@@ -1509,7 +1490,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Thiết kế hệ thống & CSDL",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1800m
@@ -1523,7 +1503,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Giải quyết vấn đề & thuật toán",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1800m
@@ -1537,7 +1516,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Giao tiếp & trình bày",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1400m
@@ -1545,13 +1523,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0be00000-0000-0000-0000-000000000005"),
-                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc. Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, diễn đạt lủng củng khiến người nghe khó bám ý. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói). KHÔNG xét từ đệm hay ngập ngừng — đó là CÁCH NÓI, đã có tiêu chí riêng đo bằng số đo âm thanh.",
+                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc, ít từ đệm/lặp thừa (\"ờ\", \"kiểu như\"). Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, lặp từ đệm liên tục gây khó hiểu. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói).",
                             IsActive = true,
                             JobCategory = "BE",
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Ngữ pháp & dùng từ",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1565,7 +1542,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Thuật ngữ chuyên ngành",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1573,13 +1549,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0be00000-0000-0000-0000-000000000007"),
-                            Description = "Đo NHỊP NÓI từ chính bản ghi âm: tỉ lệ thời gian im lặng và số lần dừng đáng kể. Điểm cao: nói liền mạch, ít quãng lặng giữa câu. Điểm thấp: dừng lâu và dừng nhiều lần, phải dò tìm từ giữa chừng. Tiêu chí này do hệ thống TỰ TÍNH từ số đo âm thanh, không do AI đọc bản chép lời chấm, nên nó không phụ thuộc câu trả lời đúng/sai hay đủ/thiếu kiến thức. Không đo được (bản ghi quá ngắn hoặc thiếu số đo) thì tiêu chí bị LOẠI khỏi điểm, không tính 0.",
+                            Description = "Nói liền mạch, có nhịp, ít ngập ngừng — nghe ra sự tự tin. Điểm cao: nhịp nói đều, dừng đúng chỗ ngắt ý, hiếm từ đệm, không phải dò tìm từ giữa câu. Điểm thấp: dừng lâu giữa câu, nói nhát gừng, lặp lại đầu câu nhiều lần, chèn dày từ đệm (\"ừm\", \"ờ\", \"kiểu như\") khiến người nghe khó bám ý. CHỈ xét CÁCH NÓI — không xét câu trả lời đúng/sai hay đủ/thiếu kiến thức (đã có tiêu chí khác lo).",
                             IsActive = true,
                             JobCategory = "BE",
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Độ trôi chảy & tự tin",
-                            ScoringMethod = "DeliveryMetrics",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1000m
@@ -1593,7 +1568,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Chiều sâu kỹ thuật",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.2200m
@@ -1607,7 +1581,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Giải quyết vấn đề",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1800m
@@ -1621,7 +1594,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Giao tiếp & trình bày",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1800m
@@ -1635,7 +1607,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Ý thức UI/UX & accessibility",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1400m
@@ -1643,13 +1614,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0fe00000-0000-0000-0000-000000000005"),
-                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc. Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, diễn đạt lủng củng khiến người nghe khó bám ý. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói). KHÔNG xét từ đệm hay ngập ngừng — đó là CÁCH NÓI, đã có tiêu chí riêng đo bằng số đo âm thanh.",
+                            Description = "Dùng từ chính xác, câu đủ ý và đúng cấu trúc, ít từ đệm/lặp thừa (\"ờ\", \"kiểu như\"). Điểm cao: câu gọn, chủ-vị rõ, chuyển ý mượt. Điểm thấp: câu cụt/dài lê thê không dứt ý, dùng từ sai nghĩa, lặp từ đệm liên tục gây khó hiểu. KHÔNG xét chính tả/dấu câu (transcript do máy chuyển từ giọng nói).",
                             IsActive = true,
                             JobCategory = "FE",
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Ngữ pháp & dùng từ",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1663,7 +1633,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Thuật ngữ chuyên ngành",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1671,13 +1640,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0fe00000-0000-0000-0000-000000000007"),
-                            Description = "Đo NHỊP NÓI từ chính bản ghi âm: tỉ lệ thời gian im lặng và số lần dừng đáng kể. Điểm cao: nói liền mạch, ít quãng lặng giữa câu. Điểm thấp: dừng lâu và dừng nhiều lần, phải dò tìm từ giữa chừng. Tiêu chí này do hệ thống TỰ TÍNH từ số đo âm thanh, không do AI đọc bản chép lời chấm, nên nó không phụ thuộc câu trả lời đúng/sai hay đủ/thiếu kiến thức. Không đo được (bản ghi quá ngắn hoặc thiếu số đo) thì tiêu chí bị LOẠI khỏi điểm, không tính 0.",
+                            Description = "Nói liền mạch, có nhịp, ít ngập ngừng — nghe ra sự tự tin. Điểm cao: nhịp nói đều, dừng đúng chỗ ngắt ý, hiếm từ đệm, không phải dò tìm từ giữa câu. Điểm thấp: dừng lâu giữa câu, nói nhát gừng, lặp lại đầu câu nhiều lần, chèn dày từ đệm (\"ừm\", \"ờ\", \"kiểu như\") khiến người nghe khó bám ý. CHỈ xét CÁCH NÓI — không xét câu trả lời đúng/sai hay đủ/thiếu kiến thức (đã có tiêu chí khác lo).",
                             IsActive = true,
                             JobCategory = "FE",
                             Language = "vi",
                             MaxScore = 5,
                             Name = "Độ trôi chảy & tự tin",
-                            ScoringMethod = "DeliveryMetrics",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1000m
@@ -1691,7 +1659,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Requirements analysis",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.2200m
@@ -1705,7 +1672,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Communication & presentation",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1800m
@@ -1719,7 +1685,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Business domain & stakeholders",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1800m
@@ -1733,7 +1698,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Problem solving",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1400m
@@ -1741,13 +1705,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0b100011-0000-0000-0000-000000000005"),
-                            Description = "Uses accurate word choice and complete, well-structured sentences. Do not assess spelling or punctuation because the transcript is produced from speech recognition. Do not assess fillers or hesitation either: that is delivery, and a separate criterion measures it from the audio.",
+                            Description = "Uses accurate word choice and complete, well-structured sentences with few fillers or unnecessary repetitions. Do not assess spelling or punctuation because the transcript is produced from speech recognition.",
                             IsActive = true,
                             JobCategory = "BA",
                             Language = "en",
                             MaxScore = 5,
                             Name = "Grammar & word choice",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1761,7 +1724,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Professional terminology",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1769,13 +1731,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0b100011-0000-0000-0000-000000000007"),
-                            Description = "Measures speaking rhythm directly from the recording: the proportion of silent time and the number of significant pauses. The system computes this from acoustic measurements rather than having AI judge the transcript, so it does not depend on whether the answer was correct or complete. When it cannot be measured (recording too short, or metrics missing) the criterion is excluded from the score instead of being scored zero.",
+                            Description = "Speaks with a steady, confident rhythm and limited hesitation. Assess delivery only, not the correctness or completeness of technical content.",
                             IsActive = true,
                             JobCategory = "BA",
                             Language = "en",
                             MaxScore = 5,
                             Name = "Fluency & confidence",
-                            ScoringMethod = "DeliveryMetrics",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1000m
@@ -1789,7 +1750,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Technical depth",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.2200m
@@ -1803,7 +1763,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "System design & databases",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1800m
@@ -1817,7 +1776,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Problem solving",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1800m
@@ -1831,7 +1789,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Communication & presentation",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1400m
@@ -1839,13 +1796,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0be00011-0000-0000-0000-000000000005"),
-                            Description = "Uses accurate word choice and complete, well-structured sentences. Do not assess spelling or punctuation because the transcript is produced from speech recognition. Do not assess fillers or hesitation either: that is delivery, and a separate criterion measures it from the audio.",
+                            Description = "Uses accurate word choice and complete, well-structured sentences with few fillers or unnecessary repetitions. Do not assess spelling or punctuation because the transcript is produced from speech recognition.",
                             IsActive = true,
                             JobCategory = "BE",
                             Language = "en",
                             MaxScore = 5,
                             Name = "Grammar & word choice",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1859,7 +1815,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Professional terminology",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1867,13 +1822,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0be00011-0000-0000-0000-000000000007"),
-                            Description = "Measures speaking rhythm directly from the recording: the proportion of silent time and the number of significant pauses. The system computes this from acoustic measurements rather than having AI judge the transcript, so it does not depend on whether the answer was correct or complete. When it cannot be measured (recording too short, or metrics missing) the criterion is excluded from the score instead of being scored zero.",
+                            Description = "Speaks with a steady, confident rhythm and limited hesitation. Assess delivery only, not the correctness or completeness of technical content.",
                             IsActive = true,
                             JobCategory = "BE",
                             Language = "en",
                             MaxScore = 5,
                             Name = "Fluency & confidence",
-                            ScoringMethod = "DeliveryMetrics",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1000m
@@ -1887,7 +1841,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Technical depth",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.2200m
@@ -1901,7 +1854,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Problem solving",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1800m
@@ -1915,7 +1867,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Communication & presentation",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1800m
@@ -1929,7 +1880,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "UI/UX & accessibility awareness",
-                            ScoringMethod = "Ai",
                             ScoringScope = "WhenTargeted",
                             Version = 1,
                             Weight = 0.1400m
@@ -1937,13 +1887,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0fe00011-0000-0000-0000-000000000005"),
-                            Description = "Uses accurate word choice and complete, well-structured sentences. Do not assess spelling or punctuation because the transcript is produced from speech recognition. Do not assess fillers or hesitation either: that is delivery, and a separate criterion measures it from the audio.",
+                            Description = "Uses accurate word choice and complete, well-structured sentences with few fillers or unnecessary repetitions. Do not assess spelling or punctuation because the transcript is produced from speech recognition.",
                             IsActive = true,
                             JobCategory = "FE",
                             Language = "en",
                             MaxScore = 5,
                             Name = "Grammar & word choice",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1957,7 +1906,6 @@ namespace Isas.InterviewService.Migrations
                             Language = "en",
                             MaxScore = 5,
                             Name = "Professional terminology",
-                            ScoringMethod = "Ai",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.0900m
@@ -1965,13 +1913,12 @@ namespace Isas.InterviewService.Migrations
                         new
                         {
                             Id = new Guid("0fe00011-0000-0000-0000-000000000007"),
-                            Description = "Measures speaking rhythm directly from the recording: the proportion of silent time and the number of significant pauses. The system computes this from acoustic measurements rather than having AI judge the transcript, so it does not depend on whether the answer was correct or complete. When it cannot be measured (recording too short, or metrics missing) the criterion is excluded from the score instead of being scored zero.",
+                            Description = "Speaks with a steady, confident rhythm and limited hesitation. Assess delivery only, not the correctness or completeness of technical content.",
                             IsActive = true,
                             JobCategory = "FE",
                             Language = "en",
                             MaxScore = 5,
                             Name = "Fluency & confidence",
-                            ScoringMethod = "DeliveryMetrics",
                             ScoringScope = "Always",
                             Version = 1,
                             Weight = 0.1000m

@@ -130,6 +130,9 @@ RoadmapResponse  ✅ {                  // BC5 (BC12) — roadmap ôn tập cá 
   id:           uuid
   jobCategory:  enum(string)           // BA·BE·FE
   level:        enum(string)           // Fresher·Junior·Middle·Senior
+  mode:         enum(string)           // LevelUp·Reinforce — QUYẾT ĐỊNH cách đọc `level`:
+                                       //   LevelUp   → `level` là trình độ MỤC TIÊU (mặc định)
+                                       //   Reinforce → `level` là trình độ HIỆN TẠI, giữ nguyên
   cvId:         uuid?
   status:       enum(string)           // Active·Completed·Abandoned
   milestones:   MilestoneResponse[]    // theo orderNo
@@ -265,14 +268,26 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 > Nền tảng **ôn tập cá nhân hoá**: từ **report các buổi đã chấm** (`session_criterion_scores` — điểm yếu) + **CV** (upload mới hoặc hệ thống tự lấy CV có sẵn) + **level** → AI sinh **milestone roadmap**; mỗi milestone gồm các **lesson** = *lý thuyết trước* (AI sinh bám điểm yếu, lưu lại) → *luyện session* (engine chấm như thường). Xong mỗi mile → xem **độ cải thiện**; xong roadmap → `Completed` → **report cuối** (radar + đánh giá tiêu chí theo level + kết luận chi tiết). State machine + công thức: xem §Roadmap ôn tập cá nhân hoá (Business rules).
 
 **`POST /roadmaps`** — Tạo roadmap.
-- Req: `{ "jobCategory": "BA"|"BE"|"FE", "level": "Fresher"|"Junior"|"Middle"|"Senior", "cvId": uuid? }`.
+- Req: `{ "jobCategory": "BA"|"BE"|"FE", "level": "Fresher"|"Junior"|"Middle"|"Senior", "cvId": uuid?, "mode": "LevelUp"|"Reinforce"? }`.
 - Server gom **điểm yếu** từ các session `Scored` gần nhất (`session_criterion_scores.needs_improvement`) + `parsed_text` CV (nếu có) → gọi AIService `/generate-roadmap` (**sync**) → lưu `roadmaps` + `roadmap_milestones` + `roadmap_lessons`; snapshot `baseline` (% hiện tại per tiêu chí) + `source_session_ids`.
 - **Chưa có buổi nào đã chấm** → vẫn **`201`**: `baseline=null` + `source_session_ids=null`, AI sinh **roadmap chuẩn theo `level`** (không có điểm yếu để bám) — ✅ BC12 (khớp `tasks.md` BC12; **bỏ** quy tắc "403" cũ).
 - **Tạo roadmap KHÔNG trừ credit** — chỉ session luyện bên trong mới reserve→consume (D7/D15).
-- Res **`201`** `RoadmapResponse`. Lỗi: **400** (`jobCategory`/`level` sai · CV không đọc được) · **401** · **403** (`cvId` không phải của bạn) · **404** (`cvId`) · **502** (AI lỗi).
+- **`mode`** (tuỳ chọn, mặc định `LevelUp` = hành vi cũ). **`Reinforce`** = *ôn lại*: giữ nguyên
+  trình độ, bám điểm yếu ĐO ĐƯỢC (`session_criterion_scores` + `answer_scores.reasoning`), nội
+  dung nghiêng về lý thuyết giải thích *vì sao lần trước sai*. Chế độ được **LƯU** (khác `scope`)
+  và chảy xuống cả `/generate-roadmap` lẫn `/generate-lesson-theory`.
+  - 🔴 `Reinforce` cần dữ liệu thật, thiếu thì **400 — KHÔNG âm thầm rơi về `LevelUp`**: (a) chọn
+    ít hơn `Roadmap:ReinforceMinSessions` buổi **distinct** đã `Scored` (mặc định **2**); (b) các
+    buổi đã chọn không có tiêu chí nào `needs_improvement`. Hai câu lỗi **tách rời** vì người dùng
+    phải làm hai việc khác nhau (luyện thêm vs chọn buổi khác). Cả hai guard chạy **TRƯỚC** lời gọi
+    AI (không đốt lượt Gemini cho request sẽ bị từ chối).
+  - Vì sao ngưỡng **2**: "hay sai" cần tín hiệu LẶP; 1 buổi không phân biệt được với "hôm đó làm
+    tệ". Không chọn 3 vì đo trên production chỉ **4 người** đạt ≥3 buổi đã chấm.
+  - `mode` sai (chuỗi rỗng · sai hoa/thường · số) → **400**, không rơi về mặc định (BK36).
+- Res **`201`** `RoadmapResponse`. Lỗi: **400** (`jobCategory`/`level`/`mode` sai · CV không đọc được · `Reinforce` thiếu dữ liệu) · **401** · **403** (`cvId` không phải của bạn) · **404** (`cvId`) · **502** (AI lỗi).
 
 **`GET /roadmaps`** → `RoadmapSummaryResponse[]` của user — **keyset-paged** (`?cursor=&limit=`, mặc định/tối đa 500; header `X-Next-Cursor`; body vẫn là mảng JSON) · **`GET /roadmaps/{id}`** → `RoadmapResponse` đầy đủ. Lỗi: **401** · **403** · **404**.
-- `RoadmapSummaryResponse` = `{ id, jobCategory, level, cvId, status, createdAt, completedAt }` — **KHÔNG** có `milestones`. Trước đây list `Include(Milestones).ThenInclude(Lessons)` nên payload nhân theo cây cho một màn hình chỉ vẽ tiêu đề/ngày/trạng thái. Cần cây đầy đủ (kèm `theoryContent`) → gọi `GET /roadmaps/{id}`.
+- `RoadmapSummaryResponse` = `{ id, name, jobCategory, level, mode, cvId, status, createdAt, completedAt }` — **KHÔNG** có `milestones`. (`mode` có ở list vì đây là nơi cần nhất: ba lộ trình cùng nghề + cùng level nằm cạnh nhau thì "ôn tập" hay "tiến lên" là thứ duy nhất phân biệt được chúng.) Trước đây list `Include(Milestones).ThenInclude(Lessons)` nên payload nhân theo cây cho một màn hình chỉ vẽ tiêu đề/ngày/trạng thái. Cần cây đầy đủ (kèm `theoryContent`) → gọi `GET /roadmaps/{id}`.
 - ⚠ Model FE (`roadmap.models.ts`) hiện khai **một** interface `RoadmapResponse` dùng chung cho cả list lẫn detail, với `milestones` **required**. Runtime không vỡ (trang danh sách không đọc field đó) nhưng model đang lệch thực tế — tách interface list/detail khi FE có dịp chạm vào.
 
 **`GET /roadmaps/{id}/lessons/{lessonId}`** — Mở lesson (lý thuyết).
@@ -560,6 +575,10 @@ id                 uuid          PK
 candidate_id       uuid          NOT NULL, index; ref lỏng → Auth
 job_category       varchar(8)    enum: BA·BE·FE
 level              varchar(16)   enum: Fresher·Junior·Middle·Senior
+mode               varchar(16)   enum: LevelUp·Reinforce — NOT NULL, DEFAULT 'LevelUp',
+                                 CHECK ck_roadmaps_mode (migration `AddRoadmapMode`).
+                                 Quyết định ý nghĩa của `level` (mục tiêu vs hiện tại).
+                                 Hàng tạo trước cột này nhận 'LevelUp' = đúng ngữ nghĩa vốn có.
 cv_id              uuid?         FK → file_records (Restrict)
 source_session_ids jsonb?        uuid[] — session `Scored` làm input điểm yếu (snapshot lúc tạo)
 baseline           jsonb?        { criterionName: pct } — % per tiêu chí lúc tạo (mốc so cải thiện); null nếu chưa có buổi nào
