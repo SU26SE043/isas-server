@@ -176,3 +176,30 @@ def test_reinforce_khong_bi_doi_thanh_tron_doi():
         weaknesses=[{"criterionName": "SQL", "percentage": 30}], mode="Reinforce")
     assert _TRON not in p
     assert "CHẾ ĐỘ ÔN TẬP (REINFORCE)" in p
+
+
+# ── (6) HỒI QUY: `grounding: null` KHÔNG được làm hỏng phân tích CV ──────────────────────────
+
+def test_analyze_cv_request_nhan_grounding_null():
+    """🔴 Bug production sống 4 ngày (18/08 → 22/08), tìm ra khi chạy L3 cho `currentLevel`.
+
+    `AiServiceCvAnalyzer.AnalyzeAsync` để `grounding` mặc định `null` ở đường phân tích CV
+    THƯỜNG (không requirement), và `JsonContent.Create` KHÔNG bỏ khoá null ⇒ payload luôn có
+    `"grounding": null`. Schema khai `list[GroundingChunk] = []` (non-nullable) nên pydantic trả
+    **422**, InterviewService map thành **502**, và người dùng chỉ thấy "AIService gặp lỗi".
+
+    Đo được: 26 lượt legacy-mode trên production, lượt cuối **17/08** — đúng một ngày trước hai
+    thay đổi ngày 18/08 dựng nên cái bẫy. Nhánh requirement không dính vì nó luôn truyền list.
+    """
+    from app.schemas import AnalyzeCvRequest
+
+    r = AnalyzeCvRequest.model_validate(
+        {"cvText": "CV", "jobCategory": "BE", "grounding": None})
+    assert r.grounding is None
+
+    # vắng khoá cũng phải chạy (đường cũ)
+    assert AnalyzeCvRequest.model_validate({"cvText": "CV"}).grounding is None
+    # có list thì giữ nguyên
+    r3 = AnalyzeCvRequest.model_validate(
+        {"cvText": "CV", "grounding": [{"chunkId": "c1", "content": "x"}]})
+    assert r3.grounding is not None and len(r3.grounding) == 1

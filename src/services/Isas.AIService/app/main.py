@@ -445,7 +445,7 @@ async def analyze_cv(req: AnalyzeCvRequest,
                 req.language, provider.analyze_cv,
                 req.cvText, req.jdText, req.jobCategory,
                 requirements=requirements,
-                grounding=[g.model_dump() for g in req.grounding])
+                grounding=[g.model_dump() for g in req.grounding] if req.grounding else None)
         # REQUIREMENT mode có một nguồn sự thật duy nhất; không phát lại jdMatch holistic.
         jd_match = (
             JdMatch(**result["jdMatch"])

@@ -260,7 +260,13 @@ class AnalyzeCvRequest(BaseModel):
     # Các id này do service nghiệp vụ cấp, AIService chỉ được phép echo id đã nhận.
     mustHave: list[dict] | None = None
     niceToHave: list[dict] | None = None
-    grounding: list[GroundingChunk] = []
+    # ⚠ PHẢI nhận `None`: .NET gửi `grounding: null` ở đường phân tích CV THƯỜNG (không
+    # requirement) vì tham số mặc định là null và `JsonContent.Create` KHÔNG bỏ null.
+    # Khai `= []` (non-nullable) làm pydantic trả 422 ⇒ InterviewService map thành 502
+    # ⇒ MỌI lượt phân tích CV thường hỏng, im lặng với người dùng. Đo được: lượt
+    # legacy-mode cuối cùng trên production là 17/08 — đúng một ngày trước hai thay
+    # đổi ngày 18/08 dựng nên cái bẫy này.
+    grounding: list[GroundingChunk] | None = None
 
 
 class JdMatch(BaseModel):
