@@ -456,6 +456,10 @@ async def analyze_cv(req: AnalyzeCvRequest,
             strengths=result["strengths"],
             weaknesses=result["weaknesses"],
             suggestions=result["suggestions"],
+            # Provider chỉ set khoá này khi giá trị hợp lệ ⇒ `.get()` chứ không `[...]`.
+            # Thiếu dòng này thì field LUÔN `None` và `exclude_none` xoá hẳn khỏi body —
+            # .NET không bao giờ thấy, mà cũng không có lỗi nào nổ.
+            currentLevel=result.get("currentLevel"),
             jdMatch=jd_match,
             requirementMatches=(
                 [CvRequirementMatch(**m) for m in result["requirementMatches"]]
@@ -556,7 +560,7 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
         # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu. Vắng/rỗng ⇒ None (giữ hành vi cũ).
         evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
         milestones = await _call_with_language(req.language, provider.generate_roadmap,
-            req.jobCategory, req.level, weaknesses, req.cvText,
+            req.jobCategory, req.level, weaknesses,
             focus=req.focus,
             cv_analysis_summary=req.cvAnalysisSummary,
             prior_roadmap_summary=req.priorRoadmapSummary,
@@ -565,6 +569,7 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
             scope=req.scope,
             evidence=evidence,
             mode=req.mode,
+            current_level=req.currentLevel,
         )
         return GenerateRoadmapResponse(
             milestones=[

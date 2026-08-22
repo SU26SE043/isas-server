@@ -274,6 +274,10 @@ class AnalyzeCvResponse(BaseModel):
     strengths: list[str]
     weaknesses: list[str]
     suggestions: list[str]
+    # Trình độ nghề nghiệp CV chứng minh được. `None` = KHÔNG đủ căn cứ — đo được 87% CV thật
+    # không ghi trình độ ở đâu, nên đây là câu trả lời hạng nhất chứ không phải fallback.
+    # ⚠ `response_model_exclude_none=True` ở route ⇒ `None` bị XOÁ khỏi JSON, không trả `null`.
+    currentLevel: str | None = None
     jdMatch: JdMatch | None = None   # chỉ có khi request có jdText
     requirementMatches: list["CvRequirementMatch"] | None = None
     cvSections: list["CvSectionAnchor"] | None = None
@@ -342,6 +346,12 @@ AnalyzeCvResponse.model_rebuild()
 JOB_NEED_CATEGORIES = ("Technical", "WorkStyle", "Communication", "Growth")
 NEED_LEVELS = ("Strong", "Partial", "Weak")
 VERIFICATION_RISKS = ("Low", "Medium", "High")
+
+# Tập giá trị hợp lệ của `AnalyzeCvResponse.currentLevel`. Khai LẠI ở đây thay vì import
+# `app.seniority.LEVELS` để giữ `schemas.py` là module dữ liệu thuần (hiện chỉ phụ thuộc
+# pydantic) — `seniority` kéo theo `prompt_registry` → `config`. Trôi khỏi nhau thì
+# `test_cv_current_level.py` đỏ.
+CV_CURRENT_LEVELS = ("Fresher", "Junior", "Middle", "Senior")
 
 # Câu bắt buộc khi không tìm thấy bằng chứng. Là HẰNG SỐ chứ không phải câu model tự
 # viết: nó phân biệt "đã tìm và không thấy" với "quên đánh giá", và HR đọc bảng thấy
@@ -413,7 +423,13 @@ class GenerateRoadmapRequest(BaseModel):
     language: str = "vi"
     level: str                                     # Fresher | Junior | Middle | Senior
     weaknesses: list[WeaknessScore] | None = None  # từ session_criterion_scores; rỗng → roadmap chuẩn theo level
-    cvText: str | None = None
+    # 🔴 `cvText` ĐÃ BỊ GỠ — đừng khai lại. Đo trên production: roadmap có CV và không CV cho tên
+    # chặng không phân biệt được, nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%). CV
+    # thô là đầu vào SAI HÌNH DẠNG cho một bài toán sinh *cấu trúc giáo trình*. Phần CV đóng góp
+    # được nay đi qua `cvAnalysisSummary` (bản tinh luyện) và `currentLevel` (sàn trình độ).
+    # Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU người dùng chọn). `None` = CV không đủ
+    # căn cứ ⇒ không có sàn. ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` nêu ngay dưới.
+    currentLevel: str | None = None
     # BC17 — cá nhân hoá roadmap từ report cũ do ứng viên CHỌN + ô mô tả mong muốn. 3 field này là
     # free-text/tóm tắt do ứng viên/hệ thống cung cấp ⇒ bọc-làm-DỮ-LIỆU trong prompt (AI-4), KHÔNG
     # phải chỉ thị. ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'`

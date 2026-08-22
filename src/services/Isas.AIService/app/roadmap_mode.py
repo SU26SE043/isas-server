@@ -62,15 +62,40 @@ def roadmap_headline(mode: str, role: str, level_name: str, output_language: str
     )
 
 
-def roadmap_mode_block(mode: str, level_name: str) -> str | None:
-    """Khối chỉ thị chế độ cho `build_roadmap_prompt`; `None` với `LevelUp` (không chèn gì).
+def roadmap_mode_block(
+    mode: str, level_name: str, *, has_weaknesses: bool = False
+) -> str | None:
+    """Khối chỉ thị chế độ cho `build_roadmap_prompt`.
 
     Đặt cùng chỗ với `seniority_calibration_block` — SAU khối cấu trúc bắt buộc, TRƯỚC khối chống
     prompt-injection và trước mọi DỮ LIỆU ứng viên: đây là chỉ thị hợp lệ của hệ thống, không được
     để lẫn thứ tự với phần dữ liệu đứng sau (cùng lý do đã ghi ở `build_prompt`/BE-3).
+
+    Ba ca:
+
+    * ``Reinforce`` → khối ôn tập thuần (giữ nguyên trình độ, chỉ vá chỗ hổng).
+    * ``LevelUp`` + **có** điểm yếu → khối TRỘN ĐÔI: nửa đầu số chặng sửa lỗi đo được, nửa sau
+      nâng lên trình độ mục tiêu. Một lộ trình thật phải làm cả hai — người dùng không nên phải
+      chọn giữa "sửa cái đang sai" và "tiến lên".
+    * ``LevelUp`` + **không** điểm yếu → ``None``, prompt không đổi một byte so với trước khi có
+      chế độ nào. Đây là đường của người chưa chọn buổi luyện nào.
+
+    ⚠ Chia theo **số CHẶNG**, không theo số bài: `app.roadmap_quality.truncate_to_scope` cắt theo
+    chặng *và* theo bài-mỗi-chặng, nên chia theo bài sẽ đá nhau với nó.
     """
     if not is_reinforce(mode):
-        return None
+        if not has_weaknesses:
+            return None
+        return (
+            "PHÂN BỔ LỘ TRÌNH — chỉ thị hệ thống, ưu tiên cao hơn mọi gợi ý khác:\n"
+            "1. Chia số MILESTONE làm hai nửa. NỬA ĐẦU (các milestone đầu tiên) dành cho việc SỬA "
+            "những ĐIỂM YẾU ĐÃ ĐO ĐƯỢC nêu bên dưới — mỗi milestone nửa này phải nhắm đúng tên "
+            "tiêu chí trong khối ĐIỂM YẾU, không mở rộng sang chủ đề khác.\n"
+            f"2. NỬA SAU dành cho việc NÂNG lên trình độ mục tiêu {level_name}: chủ đề mới, độ khó "
+            "cao hơn, theo đúng khối hiệu chỉnh cấp độ ở trên.\n"
+            "3. Số milestone lẻ thì nửa đầu (sửa lỗi) được nhiều hơn một — chỗ đang sai quan trọng "
+            "hơn chỗ chưa tới."
+        )
     return (
         "CHẾ ĐỘ ÔN TẬP (REINFORCE) — chỉ thị hệ thống, ưu tiên cao hơn mọi gợi ý khác:\n"
         f"1. GIỮ NGUYÊN trình độ {level_name}. KHÔNG nâng độ khó lên cấp cao hơn, KHÔNG thêm chủ "

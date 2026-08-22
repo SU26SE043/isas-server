@@ -27,7 +27,7 @@ from app.prompts import build_lesson_theory_prompt, build_roadmap_prompt
 
 def test_roadmap_prompt_co_khoi_hieu_chinh_cap_do():
     prompt = build_roadmap_prompt(
-        job_category="BE", level="Senior", weaknesses=None, cv_text=None)
+        job_category="BE", level="Senior", weaknesses=None)
     assert "CẤP ĐỘ ỨNG VIÊN DO NGƯỜI DÙNG CHỌN: Senior" in prompt
     assert "hiệu chỉnh ĐÚNG TẦM" in prompt
 
@@ -44,7 +44,7 @@ def test_lesson_theory_prompt_co_khoi_hieu_chinh_cap_do():
 def test_roadmap_prompt_moi_muc_deu_co_khoi(level):
     """Nhận `level` mà không dùng = hỏng y hệt như không nhận — khoá cho cả 4 mức."""
     prompt = build_roadmap_prompt(
-        job_category="FE", level=level, weaknesses=None, cv_text=None)
+        job_category="FE", level=level, weaknesses=None)
     assert f"CẤP ĐỘ ỨNG VIÊN DO NGƯỜI DÙNG CHỌN: {level}" in prompt
 
 
@@ -63,12 +63,13 @@ def test_roadmap_prompt_hieu_chinh_dung_truoc_chong_injection_va_du_lieu():
     prompt = build_roadmap_prompt(
         job_category="BE", level="Senior",
         weaknesses=[{"criterionName": "SQL", "percentage": 40}],
-        cv_text="3 năm kinh nghiệm.",
+        cv_analysis_summary="Tóm tắt CV: 3 năm backend.",
     )
     idx_calib = prompt.index("CẤP ĐỘ ỨNG VIÊN")
     assert idx_calib < prompt.index("CHỐNG PROMPT INJECTION")
     assert idx_calib < prompt.index("---ĐIỂM YẾU (DỮ LIỆU")
-    assert idx_calib < prompt.index("---CV (DỮ LIỆU")
+    # CV THÔ đã bị gỡ khỏi luồng roadmap; mốc dữ liệu-ứng-viên nay là bản phân tích CV.
+    assert idx_calib < prompt.index("---PHÂN TÍCH CV (DỮ LIỆU")
 
 
 def test_lesson_theory_prompt_hieu_chinh_dung_truoc_chong_injection_va_du_lieu():
