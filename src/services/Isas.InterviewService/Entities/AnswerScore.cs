@@ -39,5 +39,24 @@ public class AnswerScore
     /// </summary>
     public int? PromptVersion { get; set; }
 
+    /// <summary>
+    /// Con dấu BỘ NGƯỠNG đã sinh ra dòng điểm này, khi tiêu chí được chấm bằng SỐ ĐO
+    /// (<see cref="Enums.CriterionScoringMethod.DeliveryMetrics"/>) thay vì bằng LLM.
+    ///
+    /// <para>Vì sao cần: điểm do số đo và điểm do LLM chấm trước đó <b>không so sánh được với
+    /// nhau</b> — cùng một bản ghi từng nhận 0%/40%/60% tuỳ câu hỏi, nay nhận một con số cố định.
+    /// Mà điểm vẫn bị đem so ở đo tiến bộ roadmap (BC15) và mốc peer (F14). Cùng lý do tồn tại của
+    /// <c>metrics_version</c> / <c>scoring_scope_version</c> / <c>screening_version</c>.</para>
+    ///
+    /// <para>⚠ <b><c>null</c> = KHÔNG BIẾT</b> (dòng do LLM chấm, hoặc ghi trước cột này) — TUYỆT
+    /// ĐỐI không suy ra "phiên bản khác" từ nó, đó là bịa từ chỗ không biết (BK23). Chiều dùng
+    /// được là chiều ngược lại: dòng có giá trị thì CHẮC CHẮN do số đo sinh ra, nên
+    /// <c>delivery_scoring_version IS NOT NULL</c> là cách nhận diện đáng tin.</para>
+    ///
+    /// <para>Đóng dấu PER-ROW chứ không per-answer, cùng lý do với <see cref="PromptVersion"/>:
+    /// một answer có N attempt (E10) và republisher có thể bù attempt sau một lần deploy đổi ngưỡng.</para>
+    /// </summary>
+    public int? DeliveryScoringVersion { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

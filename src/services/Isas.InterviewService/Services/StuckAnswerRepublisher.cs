@@ -252,7 +252,12 @@ public class StuckAnswerRepublisher : BackgroundService
             // E9: kèm levels (+ anchors). Cờ dải mặc định đọc ở ĐÂY NỮA, không chỉ ở AnswerService:
             // một answer có thể được chấm bởi cả hai đường, và hai đường dùng thước khác nhau thì
             // median E10 gộp hai thước đo mà không có triệu chứng nào.
-            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria, _scoring.DefaultBandStyle);
+            //
+            // Tiêu chí chấm bằng SỐ ĐO bị BỎ khỏi bộ gửi đi — ĐỌC Ở ĐÂY NỮA, không chỉ ở AnswerService:
+            // một answer có thể được chấm bởi cả hai đường, hai đường lệch luật thì median E10 gộp hai
+            // thước đo mà không có triệu chứng nào.
+            var aiCriteria = MeasuredCriteriaSplit.ForAi(scopedCriteria, _logger, a.Id);
+            var builtCriteria = ScoringCriteriaBuilder.Build(aiCriteria, _scoring.DefaultBandStyle);
             var published = 0;
 
             foreach (var attempt in missing)

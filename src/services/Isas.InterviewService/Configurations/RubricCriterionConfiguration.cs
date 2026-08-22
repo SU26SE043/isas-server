@@ -35,6 +35,11 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
             t.HasCheckConstraint(
                 "ck_rubric_criteria_scoring_scope",
                 "scoring_scope IN ('Always', 'WhenTargeted')");
+
+            // Nguồn điểm lưu string (GEN-2) → CHECK chặn giá trị lạ ở tầng DB (cùng mẫu ngay trên).
+            t.HasCheckConstraint(
+                "ck_rubric_criteria_scoring_method",
+                "scoring_method IN ('Ai', 'DeliveryMetrics')");
         });
 
         e.HasKey(x => x.Id);
@@ -61,6 +66,17 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
             .HasMaxLength(24)
             .IsRequired()
             .HasDefaultValue(ScoringScope.Always);
+
+        // Nguồn điểm — string (GEN-2) + default 'Ai' ở TẦNG DB để `AddColumn` tự điền cho mọi row
+        // đang có (tiêu chí campaign B2B + rubric riêng BC16 + bộ chuẩn) mà không cần backfill tay.
+        // Chuỗi dài nhất 'DeliveryMetrics' = 15 ký tự; chừa gấp đôi (bài học S11 `funded_by`
+        // varchar(16) gặp enum 19 ký tự: vỡ mọi lượt ghi trên Postgres trong khi SQLite không
+        // enforce độ dài nên test vẫn xanh 100%).
+        e.Property(x => x.ScoringMethod)
+            .HasConversion<string>()
+            .HasMaxLength(32)
+            .IsRequired()
+            .HasDefaultValue(CriterionScoringMethod.Ai);
 
         e.Property(x => x.Version).IsRequired();
 
