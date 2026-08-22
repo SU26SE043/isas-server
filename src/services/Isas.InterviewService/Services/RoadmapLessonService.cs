@@ -21,6 +21,7 @@ public class RoadmapLessonService : IRoadmapLessonService
     private readonly ILogger<RoadmapLessonService> _logger;
 
     private readonly ScoringOptions _scoring;   // F6a — ngưỡng "điểm yếu" (dùng chung với BC9)
+    private readonly RoadmapOptions _roadmap;   // số câu + adaptive cho buổi luyện trong bài học
 
     public RoadmapLessonService(
         InterviewDbContext db,
@@ -28,13 +29,15 @@ public class RoadmapLessonService : IRoadmapLessonService
         IAiServiceRoadmapGenerator generator,
         ILogger<RoadmapLessonService> logger,
         // Optional (default null) → test cũ dựng 4 tham số vẫn compile; DI inject bản thật.
-        IOptions<ScoringOptions>? scoringOptions = null)
+        IOptions<ScoringOptions>? scoringOptions = null,
+        IOptions<RoadmapOptions>? roadmapOptions = null)
     {
         _db = db;
         _practiceService = practiceService;
         _generator = generator;
         _logger = logger;
         _scoring = scoringOptions?.Value ?? new ScoringOptions();
+        _roadmap = roadmapOptions?.Value ?? new RoadmapOptions();
     }
 
     public async Task<LessonResponse> OpenLessonAsync(
@@ -221,9 +224,30 @@ public class RoadmapLessonService : IRoadmapLessonService
         // roadmap tiếng Anh chưa ai bấm Bắt đầu. Thiếu dòng này → request rơi về default `null` →
         // `ValidateLanguage` hạ mọi buổi luyện của roadmap English xuống "vi": câu hỏi/chấm/nhận xét
         // sai ngôn ngữ hoàn toàn, trong khi người học đã trả credit cho đúng buổi đó.
+        //
+        // QuestionCount/AdaptiveEnabled: CÙNG LỚP LỖI với Seniority/Language ở trên. Bỏ trống 2
+        // trường này để request rơi về default toàn cục `Adaptive:*` (Enabled=true, SeedCount=5,
+        // MaxDeepPerQuestion=3) ⇒ buổi bài học sinh 5 câu gốc + chuỗi đào sâu + câu bù tự động
+        // (TopUpRootQuestions) tới khi chạm trần MaxQuestions=20 — người học không lường trước được
+        // số câu/thời lượng. Bài học đã có `focusCriteria` khoanh sẵn chủ đề nên đào sâu ở đây ít
+        // giá trị hơn hẳn buổi luyện tự do; ép TĨNH bằng cấu hình riêng (RoadmapOptions), KHÔNG
+        // dùng `Adaptive:MaxDeepPerQuestion=0` — cờ đó đổi CHẾ ĐỘ (frontier cũ, MaxFollowUps quay
+        // lại 3) chứ không tắt, vẫn chèn thêm câu ở đuôi.
+        var lessonQuestionCount = _roadmap.LessonQuestionCount;
+        if (lessonQuestionCount is < 1 or > 20)
+        {
+            var clamped = Math.Clamp(lessonQuestionCount, 1, 20);
+            _logger.LogWarning(
+                "Roadmap:LessonQuestionCount={Configured} ngoài dải [1,20], dùng {Clamped}",
+                lessonQuestionCount, clamped);
+            lessonQuestionCount = clamped;
+        }
+
         var req = new CreatePracticeSessionRequest(
             roadmap.CvId, JdId: null, roadmap.JobCategory,
-            Language: roadmap.Language, Seniority: roadmap.Level.ToString());
+            Language: roadmap.Language, Seniority: roadmap.Level.ToString(),
+            QuestionCount: lessonQuestionCount,
+            AdaptiveEnabled: _roadmap.LessonAdaptiveEnabled);
         var response = await _practiceService.CreateLessonSessionAsync(
             candidateId, req, sessionId, lesson.Milestone.FocusCriteria, ct);
 

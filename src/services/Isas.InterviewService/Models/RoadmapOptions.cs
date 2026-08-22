@@ -33,6 +33,24 @@ public class RoadmapOptions
     /// </summary>
     public int ReinforceMinSessions { get; set; } = 2;
 
+    /// <summary>
+    /// Số câu hỏi của buổi luyện khi bấm "Bắt đầu" một bài học roadmap.
+    ///
+    /// <para>Vì sao TĨNH, không adaptive: bài học đã có <c>focusCriteria</c> khoanh sẵn chủ đề nên
+    /// giá trị của việc hỏi sâu/hỏi thêm thấp hơn hẳn buổi luyện tự do, trong khi số câu bập bênh
+    /// (5 câu gốc + chuỗi đào sâu + câu bù tự động) làm người học không lường trước được thời lượng.</para>
+    /// </summary>
+    public int LessonQuestionCount { get; set; } = 5;
+
+    /// <summary>
+    /// Bật/tắt adaptive cho buổi luyện trong bài học roadmap. Mặc định TẮT.
+    ///
+    /// <para>⚠ KHÔNG dùng <c>Adaptive:MaxDeepPerQuestion=0</c> để tắt đào sâu ở đây — nó đổi CHẾ ĐỘ
+    /// (frontier cũ) chứ không tắt, và <c>MaxFollowUps</c> quay lại 3 nên vẫn chèn thêm câu ở đuôi.
+    /// Cờ này là kill-switch per-session thật (<c>PracticeService.ResolveAdaptive</c>).</para>
+    /// </summary>
+    public bool LessonAdaptiveEnabled { get; set; } = false;
+
     // Ngưỡng cho 1 level — fallback về mặc định nếu config thiếu key (không vỡ khi cấu hình chưa đủ).
     public int ThresholdFor(string level) =>
         LevelThresholdPct.TryGetValue(level, out var pct)

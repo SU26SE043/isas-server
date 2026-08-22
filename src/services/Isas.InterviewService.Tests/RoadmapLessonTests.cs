@@ -544,6 +544,149 @@ public class RoadmapLessonTests
         Assert.False(await t.NewContext().PracticeSessions.AsNoTracking().AnyAsync());
     }
 
+    // ── Số câu buổi luyện trong bài học TĨNH theo RoadmapOptions ────────────────────────
+    //
+    // Trước bản vá: `RoadmapLessonService.BeginSessionAsync` dựng `CreatePracticeSessionRequest`
+    // KHÔNG truyền `QuestionCount`/`AdaptiveEnabled` ⇒ rơi về mặc định toàn cục `Adaptive:*`
+    // (Enabled=true, SeedCount=5, MaxDeepPerQuestion=3) ⇒ buổi ra 5 câu gốc + chuỗi đào sâu + câu
+    // bù tự động tới trần 20 — không phải 5 câu cố định như người học tưởng.
+    private static (Mock<IPracticeService> practice, Func<CreatePracticeSessionRequest?> captured)
+        CapturingPractice(TestDb t)
+    {
+        CreatePracticeSessionRequest? captured = null;
+        var practice = new Mock<IPracticeService>();
+        practice.Setup(p => p.CreateLessonSessionAsync(
+                It.IsAny<Guid>(), It.IsAny<CreatePracticeSessionRequest>(), It.IsAny<Guid>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+            .Callback((Guid cid, CreatePracticeSessionRequest req, Guid sid,
+                       IReadOnlyList<string>? _, CancellationToken _) =>
+            {
+                captured = req;
+                // Link lesson sau đó chạy FK roadmap_lessons.session_id (SQLite CÓ enforce FK
+                // trong EF10) — mock trả DTO suông sẽ nổ FK, không phải lỗi code (mẫu Seniority
+                // test ở EvidenceDrivenPr160Tests.cs).
+                var s = TestDb.Session(cid, SessionStatus.Ready);
+                s.Id = sid;
+                t.Db.PracticeSessions.Add(s);
+                t.Db.SaveChanges();
+            })
+            .ReturnsAsync(new PracticeSessionResponse(
+                Guid.NewGuid(), "Ready", "BE", "vi", null, null, DateTime.UtcNow, null, []));
+        return (practice, () => captured);
+    }
+
+    private static RoadmapsController ControllerWithRoadmapOptions(
+        TestDb t, IPracticeService practice, Guid userId, RoadmapOptions? roadmapOptions = null)
+    {
+        var lessonService = new RoadmapLessonService(
+            t.Db, practice, new Mock<IAiServiceRoadmapGenerator>().Object,
+            NullLogger<RoadmapLessonService>.Instance,
+            scoringOptions: null,
+            roadmapOptions: Options.Create(roadmapOptions ?? new RoadmapOptions()));
+        var controller = new RoadmapsController(
+            new Mock<IRoadmapService>().Object, lessonService,
+            new Mock<IRoadmapReportService>().Object, NullLogger<RoadmapsController>.Instance);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, userId.ToString())], "test"));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = principal }
+        };
+        return controller;
+    }
+
+    // (a) Mặc định: đúng 5 câu, adaptive tắt — không câu chèn, không câu bù.
+    [Fact]
+    public async Task StartLesson_MacDinh_5CauCoDinh_AdaptiveTat()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(t, practice.Object, user);
+
+        Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+
+        Assert.NotNull(captured());
+        Assert.Equal(5, captured()!.QuestionCount);
+        Assert.False(captured()!.AdaptiveEnabled);
+    }
+
+    // (b) Cấu hình có tác dụng THẬT — không phải hằng số ghi cứng.
+    [Fact]
+    public async Task StartLesson_CauHinhDoi_SoCauTheoCauHinh()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(
+            t, practice.Object, user, new RoadmapOptions { LessonQuestionCount = 8 });
+
+        Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+
+        Assert.Equal(8, captured()!.QuestionCount);
+    }
+
+    // (c) Cấu hình sai — kẹp về dải hợp lệ, KHÔNG ném.
+    [Theory]
+    [InlineData(99, 20)]
+    [InlineData(0, 1)]
+    public async Task StartLesson_CauHinhNgoaiDai_KepKhongNem(int configured, int expected)
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(
+            t, practice.Object, user, new RoadmapOptions { LessonQuestionCount = configured });
+
+        Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+
+        Assert.Equal(expected, captured()!.QuestionCount);
+    }
+
+    // (d) Đường lùi vẫn sống: bật lại adaptive cho bài học qua cấu hình.
+    [Fact]
+    public async Task StartLesson_LessonAdaptiveEnabledTrue_BatAdaptive()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(
+            t, practice.Object, user, new RoadmapOptions { LessonAdaptiveEnabled = true });
+
+        Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+
+        Assert.True(captured()!.AdaptiveEnabled);
+    }
+
+    // (e) RetryLessonAsync đi qua CÙNG thân BeginSessionAsync — khoá luôn đường làm lại, kẻo sau
+    // này ai tách hai đường ra thì chỉ một bên được vá.
+    [Fact]
+    public async Task RetryLesson_5CauCoDinh_AdaptiveTat()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var r = SeedRoadmap(t, user);
+        var (roadmapId, _, lesson1, _) = Ids(r);
+        await t.Db.RoadmapLessons.Where(l => l.Id == lesson1)
+            .ExecuteUpdateAsync(u => u.SetProperty(l => l.Status, LessonStatus.Done));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(t, practice.Object, user);
+
+        Assert.IsType<OkObjectResult>(await ctrl.RetryLesson(roadmapId, lesson1, default));
+
+        Assert.Equal(5, captured()!.QuestionCount);
+        Assert.False(captured()!.AdaptiveEnabled);
+    }
+
     // ── sweeper harness (mirror SessionAbandonSweeperTests) ─────────────────────────────
     private static async Task ScanOnce(SessionAbandonSweeper s)
     {
