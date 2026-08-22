@@ -166,7 +166,18 @@ public record RoadmapSummaryResponse(
     Guid? CvId,
     string Status,
     DateTime CreatedAt,
-    DateTime? CompletedAt
+    DateTime? CompletedAt,
+    // Roadmap này có báo cáo tổng kết (BC15) hay chưa — cờ để picker "chọn lộ trình đã hoàn tất"
+    // của wizard lọc ĐÚNG thứ `RoadmapService.CreateAsync` chấp nhận.
+    //
+    // 🔑 KHÔNG lọc bằng `Status == Completed` được: `CreateAsync` gác theo `FinalReport` RỖNG HAY
+    // KHÔNG (RoadmapService.cs, `IsNullOrWhiteSpace(prior.FinalReport)` → 400), còn
+    // `RoadmapLessonService.RetryLessonAsync` mở lại roadmap `Completed → Active` và XOÁ
+    // `FinalReport` ⇒ tồn tại roadmap từng hoàn tất mà nay không có báo cáo. Lọc theo status là
+    // mời một roadmap rồi để người dùng ăn 400 SAU KHI đã chờ 13–54s tạo roadmap.
+    //
+    // Cùng nguyên tắc với RoadmapSessionEligibility: picker phải mang ĐÚNG vị ngữ mà guard dùng.
+    bool HasFinalReport = false
 );
 
 // BE-6 — PATCH /roadmaps/{id}: đổi tên lộ trình. Cho đổi ở MỌI trạng thái, kể cả Completed — tên là

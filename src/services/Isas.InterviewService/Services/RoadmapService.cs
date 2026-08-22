@@ -456,7 +456,17 @@ public class RoadmapService : IRoadmapService
                 x.CvId,
                 x.Status,
                 x.CreatedAt,
-                x.CompletedAt
+                x.CompletedAt,
+                // Tính TRONG SQL, KHÔNG kéo cả `final_report` về: cột đó là jsonb chứa nguyên báo
+                // cáo tổng kết, kéo về chỉ để kiểm rỗng là phình payload của một endpoint DANH SÁCH.
+                //
+                // ⚠ CỐ Ý chỉ so `!= null`, KHÔNG thêm `&& != ""`: cột là jsonb, so với chuỗi rỗng
+                // trong SQL là chỗ Npgsql và SQLite hành xử khác nhau (SQLite lưu jsonb như TEXT nên
+                // test vẫn xanh trong khi Postgres vỡ) — đúng lớp bug đã cắn repo nhiều lần. Không
+                // cần vế đó: chỉ có HAI chỗ ghi cột này (RoadmapReportService đặt JSON khi hoàn tất,
+                // RoadmapLessonService.RetryLessonAsync đặt `null` khi làm lại), không đường nào sinh
+                // ra chuỗi rỗng — đo trên dev: 3/3 Completed non-null, 26/26 Active null, 0 rỗng.
+                HasFinalReport = x.FinalReport != null
             })
             .ToListAsync(ct);
 
@@ -470,7 +480,8 @@ public class RoadmapService : IRoadmapService
                 x.CvId,
                 x.Status.ToString(),
                 x.CreatedAt,
-                x.CompletedAt))
+                x.CompletedAt,
+                x.HasFinalReport))
             .ToList();
 
         var next = rows.Count == take

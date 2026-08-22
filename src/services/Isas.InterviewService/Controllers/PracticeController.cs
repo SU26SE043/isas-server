@@ -151,6 +151,14 @@ public class PracticeController : ControllerBase
                 Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
             return Ok(page.Items);
         }
+        // ⚠ Nhánh này BẮT BUỘC có: `ValidateHistoryStatus` ném `InvalidOperationException` cho giá
+        // trị lạ, mà action này trước đó CHỈ bắt `UnauthorizedAccessException` ⇒ thiếu nó thì siết
+        // validate lại biến `?status=xyz` thành **500** thay vì 400 — tệ hơn hẳn fail-open. Đúng lớp
+        // lỗi F2b (ném sai loại exception → rơi xuống catch-all → 500 với MỌI input sai).
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
         catch (UnauthorizedAccessException ex)
         {
             return Unauthorized(new { error = ex.Message });

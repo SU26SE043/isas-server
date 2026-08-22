@@ -1005,6 +1005,23 @@ public class PracticeService : IPracticeService
     // Skip/Take/cursor → trả TOÀN BỘ lịch sử phỏng vấn trọn đời của candidate trong 1 payload.
     // Backward-compat y hệt DB8: body vẫn là mảng JSON, cursor opaque + limit là opt-in
     // (`?cursor=&limit=`), next-cursor ở header X-Next-Cursor, limit mặc định = trần cũ.
+    /// <summary>
+    /// Trạng thái lọc cho <c>GET /practice/history</c>. Tập đóng, case-sensitive — mẫu
+    /// <c>RoadmapService.ValidateMode</c>: <c>null</c>/rỗng = không lọc; giá trị lạ = GIÁ TRỊ SAI
+    /// và bị từ chối 400, KHÔNG âm thầm bỏ qua filter (BK36 — xem lý do tại call site).
+    /// </summary>
+    private static SessionStatus? ValidateHistoryStatus(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return null;
+        var value = requested.Trim();
+        foreach (var name in Enum.GetNames<SessionStatus>())
+            if (string.Equals(value, name, StringComparison.Ordinal))
+                return Enum.Parse<SessionStatus>(name);
+        throw new InvalidOperationException(
+            $"status chỉ nhận {string.Join(" / ", Enum.GetNames<SessionStatus>())} " +
+            $"(đang gửi: '{requested}').");
+    }
+
     public async Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(
         Guid candidateId, string? cursor = null, int? limit = null,
         string? status = null, bool? excludeCampaign = null, CancellationToken ct = default)
@@ -1016,12 +1033,22 @@ public class PracticeService : IPracticeService
             .AsNoTracking()
             .Where(s => s.CandidateId == candidateId);
 
-        // Opt-in — mẫu ListAllCampaignsAsync (CampaignService): parse fail-open, giá trị lạ
-        // KHÔNG parse được ⇒ filter đơn giản không được áp (trả nguyên, không lọc gì) thay vì
-        // 400 (đây là filter duyệt-danh-sách, không phải input dẫn nghiệp vụ).
-        if (!string.IsNullOrWhiteSpace(status)
-            && Enum.TryParse<SessionStatus>(status.Trim(), ignoreCase: true, out var parsedStatus))
-            query = query.Where(s => s.Status == parsedStatus);
+        // Opt-in. Vắng/rỗng ⇒ KHÔNG lọc (hành vi mặc định giữ nguyên cho trang Lịch sử phỏng vấn).
+        //
+        // 🔑 Giá trị lạ → 400, KHÔNG fail-open. Đổi so với bản đầu (vốn theo mẫu fail-open của
+        // `ListAllCampaignsAsync`): mẫu đó đúng cho một filter duyệt-danh-sách thuần, nhưng endpoint
+        // này còn nuôi PICKER của wizard roadmap, nơi "không lọc được" KHÔNG vô hại — nó trả lại
+        // buổi B2B/chưa chấm cho người dùng chọn, rồi `RoadmapService.CreateAsync` từ chối bằng
+        // 404 batch không nói id nào sai. Tức nuốt im lặng ở đây tái sinh đúng con bug mà hai
+        // filter này sinh ra để diệt.
+        //
+        // Và khớp CHẶT (`Ordinal`, không `ignoreCase`, không nhận chuỗi số) — cùng khuôn
+        // `RoadmapService.ValidateMode`/`ValidateCurrentLevel` (BK36), thay vì `Enum.TryParse` vốn
+        // nhận cả `"3"` lẫn sai hoa/thường. Hai chuẩn cho cùng loại đầu vào trong cùng một service
+        // là thứ khiến người sau đoán sai.
+        var parsedStatus = ValidateHistoryStatus(status);
+        if (parsedStatus is not null)
+            query = query.Where(s => s.Status == parsedStatus.Value);
 
         // Loại buổi B2B (campaign_id != null) — dùng cho wizard roadmap: CreateAsync chỉ nhận
         // buổi B2C (CampaignId == null), nên picker phải loại B2B TRƯỚC khi người dùng chọn được,

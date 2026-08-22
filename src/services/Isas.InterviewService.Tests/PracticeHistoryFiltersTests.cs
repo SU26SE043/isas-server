@@ -1,8 +1,12 @@
+using System.Security.Claims;
 using Isas.InterviewService.ApplicationDbContext;
+using Isas.InterviewService.Controllers;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -70,19 +74,70 @@ public class PracticeHistoryFiltersTests
         Assert.DoesNotContain(page.Items, x => x.Id == inProgressB2C);
     }
 
-    // Giá trị lạ — fail-open ĐÚNG MẪU ListAllCampaignsAsync (CampaignService): `Enum.TryParse`
-    // thất bại ⇒ filter KHÔNG được áp (bỏ qua, không lọc gì), KHÔNG 400 (đây là filter
-    // duyệt-danh-sách, khác RoadmapService.ValidateCurrentLevel — input đó dẫn nghiệp vụ/tốn
-    // một lượt Gemini nên phải từ chối tường minh; ở đây gõ sai chỉ mất tác dụng lọc, không
-    // gây hậu quả gì đáng phải chặn cứng).
-    [Fact]
-    public async Task Status_GiaTriLa_KhongLocGi_TraTatCa()
+    // ⚠ TIỀN ĐỀ ĐÃ ĐẢO (22/08). Bản đầu khoá hành vi FAIL-OPEN theo mẫu `ListAllCampaignsAsync`
+    // (CampaignService): `Enum.TryParse` thất bại ⇒ bỏ qua filter, không 400 — lập luận khi đó là
+    // "filter duyệt-danh-sách, gõ sai chỉ mất tác dụng lọc, không hậu quả".
+    //
+    // Lập luận đó KHÔNG đứng vững cho ĐÚNG endpoint này: nó còn nuôi PICKER của wizard roadmap.
+    // "Không lọc được" ở đây không vô hại — nó trả lại buổi B2B/chưa chấm cho người dùng CHỌN, rồi
+    // `RoadmapService.CreateAsync` từ chối bằng 404 batch KHÔNG nói id nào sai. Tức nuốt im lặng
+    // tái sinh đúng con bug mà hai filter này sinh ra để diệt. Mẫu CampaignService vẫn đúng cho
+    // CHÍNH NÓ (không có guard downstream nào ăn theo) — khác bối cảnh, không phải khác chuẩn.
+    [Theory]
+    [InlineData("KhongTonTai")]
+    [InlineData("scored")]        // sai hoa/thường — KHÔNG nhận (mẫu ValidateMode/ValidateCurrentLevel)
+    [InlineData("3")]             // chuỗi số — `Enum.TryParse` vốn nhận, ta KHÔNG hứa hỗ trợ
+    public async Task Status_GiaTriLa_TuChoiTuongMinh(string status)
     {
         using var t = new TestDb();
         var candidate = Guid.NewGuid();
         await SeedMixed(t, candidate);
 
-        var page = await BuildPractice(t.Db).GetHistoryAsync(candidate, status: "KhongTonTai");
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => BuildPractice(t.Db).GetHistoryAsync(candidate, status: status));
+        Assert.Contains(status, ex.Message);   // câu lỗi phải nêu giá trị đang gửi
+    }
+
+    // 🔑 Ném `InvalidOperationException` chỉ có nghĩa nếu controller map nó thành 400. Action
+    // `GetHistory` trước đó CHỈ bắt `UnauthorizedAccessException` ⇒ thiếu nhánh bắt thì siết
+    // validate lại biến `?status=xyz` thành 500 — tệ hơn hẳn fail-open. Đúng lớp lỗi F2b.
+    [Fact]
+    public async Task Controller_StatusGiaTriLa_Tra400_KhongPhai500()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        await SeedMixed(t, candidate);
+
+        var ctrl = new PracticeController(BuildPractice(t.Db), Mock.Of<IQuestionSpeechService>(),
+            NullLogger<PracticeController>.Instance)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        [new Claim(ClaimTypes.NameIdentifier, candidate.ToString())], "test"))
+                }
+            }
+        };
+
+        var result = await ctrl.GetHistory(default, status: "KhongTonTai");
+
+        Assert.IsType<BadRequestObjectResult>(result);
+    }
+
+    // Vắng/rỗng ⇒ KHÔNG lọc — hành vi mặc định của trang Lịch sử phỏng vấn giữ nguyên.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Status_VangHoacRong_KhongLocGi(string? status)
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        await SeedMixed(t, candidate);
+
+        var page = await BuildPractice(t.Db).GetHistoryAsync(candidate, status: status);
 
         Assert.Equal(3, page.Items.Count);
     }
