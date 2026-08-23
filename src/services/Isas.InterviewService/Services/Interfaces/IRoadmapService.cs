@@ -18,6 +18,9 @@ public interface IRoadmapService
 
     // GET /roadmaps — của chính user (không kèm theoryContent).
     // Danh sách keyset-paged, KHÔNG kèm cây milestone/lesson (chi tiết dùng GetAsync).
+    // `status` + `hasFinalReport` OPT-IN cho picker "chọn lộ trình đã hoàn tất" của wizard; vắng cả
+    // hai ⇒ hành vi y hệt hôm nay. `status` lạ → InvalidOperationException (400).
     Task<KeysetPage<RoadmapSummaryResponse>> ListAsync(
-        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default);
+        Guid candidateId, string? cursor = null, int? limit = null,
+        string? status = null, bool? hasFinalReport = null, CancellationToken ct = default);
 }
