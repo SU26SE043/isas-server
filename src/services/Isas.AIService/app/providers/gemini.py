@@ -617,6 +617,7 @@ class GeminiProvider(QuestionProvider):
                        grounding: list[dict] | None = None,
                        criteria: list[dict] | None = None,
                        language: str = "vi", seniority: str | None = None,
+                       lesson_context: dict | None = None,
                        _retry_feedback: list[str] | None = None,
                        _attempt: int = 1) -> QuestionGenerationResult:
         """Sinh câu hỏi. ``criteria`` = tiêu chí NỘI DUNG ``[{criterionId, name}]`` để gắn nhãn
@@ -633,7 +634,8 @@ class GeminiProvider(QuestionProvider):
         prompt_grounding = None if settings.question_verify_enabled else grounding
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
                               focus_criteria, prompt_grounding, criteria, _retry_feedback,
-                              language=language, seniority=seniority)
+                              language=language, seniority=seniority,
+                              lesson_context=lesson_context)
 
         # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION).
         # Chấm-theo-phạm-vi — có criteria ⇒ kèm targetCriterionIds.
@@ -705,7 +707,8 @@ class GeminiProvider(QuestionProvider):
             result = QuestionGenerationResult(questions=questions[:effective_count], citations=None)
             return await self._finish(
                 result, criteria, grounding, language, effective_count,
-                job_category, cv_text, jd_text, count, focus_criteria, seniority, _attempt)
+                job_category, cv_text, jd_text, count, focus_criteria, seniority,
+                lesson_context, _attempt)
 
         # Có grounding và/hoặc criteria — tách text + lọc id. DROP mọi id KHÔNG thuộc tập đã cấp
         # (chống bịa by-construction — không tin lời hứa của model): id lạ = model tự phịa.
@@ -751,13 +754,14 @@ class GeminiProvider(QuestionProvider):
                                           target_criteria=target_lists if labeled else None)
         return await self._finish(
             result, criteria, grounding, language, effective_count,
-            job_category, cv_text, jd_text, count, focus_criteria, seniority, _attempt)
+            job_category, cv_text, jd_text, count, focus_criteria, seniority,
+            lesson_context, _attempt)
 
     async def _finish(self, result: QuestionGenerationResult, criteria: list[dict] | None,
                       grounding: list[dict] | None, language: str, effective_count: int,
                       job_category: str, cv_text: str | None, jd_text: str | None,
                       count: int | None, focus_criteria: list[str] | None,
-                      seniority: str | None,
+                      seniority: str | None, lesson_context: dict | None,
                       _attempt: int) -> QuestionGenerationResult:
         """Vòng chất lượng (SC1c) + cổng kiểm chứng (QV1), CHUNG cho mọi nhánh của :meth:`generate`.
 
@@ -792,6 +796,7 @@ class GeminiProvider(QuestionProvider):
             # chỉ là mất sạch nhận xét sửa bài. Không lỗi nào nổ.
             return await self.generate(job_category, cv_text, jd_text, count, focus_criteria,
                                        grounding, criteria, language, seniority,
+                                       lesson_context=lesson_context,
                                        _retry_feedback=defects, _attempt=_attempt + 1)
         return result
 

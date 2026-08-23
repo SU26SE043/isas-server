@@ -243,13 +243,41 @@ public class RoadmapLessonService : IRoadmapLessonService
             lessonQuestionCount = clamped;
         }
 
+        // ⚠ CvId = null CÓ CHỦ ĐÍCH — buổi bài học KHÔNG gắn CV của lộ trình.
+        //
+        // Trước đây truyền `roadmap.CvId`, tức CV chọn MỘT LẦN lúc lập lộ trình được nhét vào prompt
+        // của CẢ 14 bài. Đo trên dev: 2 lộ trình `BE` đang dùng CV mở đầu bằng "NGUYEN VAN NAM -
+        // Business Analyst", và bài "Phân tích và tối ưu hiệu năng truy vấn SQL" nhận câu hỏi
+        // "Với kinh nghiệm làm Business Analyst, bạn đã quen thuộc với việc thu thập và đặc tả yêu
+        // cầu…" — hỏi nghề khác trong một lộ trình BE.
+        //
+        // KHÔNG chặn được bằng cách kiểm nghề: `file_records` không có cột nghề nào (CV thô không
+        // tự khai nghề; chỉ `cv_analyses` mới có `job_category`, mà phân tích CV tốn credit nên
+        // phần lớn CV không có). Nên lựa chọn thật chỉ còn "gửi" hoặc "không gửi".
+        //
+        // Chọn KHÔNG gửi, theo đúng tiền lệ đã ĐO của `RoadmapService.CreateAsync`: nội dung CV đã
+        // bị gỡ khỏi prompt sinh lộ trình vì nhóm có CV cho tên chặng không khá hơn (còn nêu công
+        // nghệ cụ thể ÍT hơn: 8,6% vs 12,1%). Sinh câu hỏi cho một BÀI cũng là bài toán bám CHỦ ĐỀ,
+        // không phải cá nhân hoá — và từ bản này bài đã có `lessonContext` khoanh chủ đề thật.
+        //
+        // Buổi luyện TỰ DO không đổi: ở đó người dùng chọn CV cho ĐÚNG buổi đó, một cách có ý thức.
+        //
+        // Đánh đổi đã biết: buổi bài học mất báo cáo đối chiếu CV↔câu trả lời (BC8, cần
+        // `session.cv_id`). Phạm vi thực tế nhỏ — trên dev chỉ 1/17 buổi bài học hội đủ điều kiện
+        // (6 buổi có cv_id, và phải có `cv_analyses` cho đúng CV đó).
         var req = new CreatePracticeSessionRequest(
-            roadmap.CvId, JdId: null, roadmap.JobCategory,
+            CvId: null, JdId: null, roadmap.JobCategory,
             Language: roadmap.Language, Seniority: roadmap.Level.ToString(),
             QuestionCount: lessonQuestionCount,
             AdaptiveEnabled: _roadmap.LessonAdaptiveEnabled);
+
+        // Chủ đề của ĐÚNG bài này. `FocusCriteria` là của CHẶNG nên một mình nó không phân biệt
+        // được 4 bài trong cùng chặng; mục lục bài giảng là lớp thứ hai (null khi người học bấm
+        // "Bắt đầu" mà chưa mở bài lần nào — hợp lệ, `theory_content` sinh lazy lúc mở bài).
+        var lessonContext = new LessonContext(lesson.Title, LessonOutline.From(lesson.TheoryContent));
+
         var response = await _practiceService.CreateLessonSessionAsync(
-            candidateId, req, sessionId, lesson.Milestone.FocusCriteria, ct);
+            candidateId, req, sessionId, lesson.Milestone.FocusCriteria, lessonContext, ct);
 
         // Link atomic (guard Status == expectedStatus chống double-start): chỉ khi lesson CÒN đang ở
         // đúng trạng thái tiền điều kiện mới set Practicing + session_id. Đua 2 request cùng lúc →

@@ -19,9 +19,15 @@ public interface IPracticeService
 
     // BC14 — /start roadmap lesson: session B2C bình thường nhưng sessionId do caller cấp (để link lesson
     // sau khi tạo, thoả FK) + câu hỏi bám focusCriteria của milestone. Reserve/gen/BK12 như CreateSessionAsync.
+    //
+    // `lessonContext` (chủ đề của ĐÚNG bài đang mở) là thứ phân biệt bài này với các bài KHÁC cùng
+    // chặng: `focusCriteria` thuộc về CHẶNG nên mọi bài trong chặng gửi xuống y hệt nhau (đo trên
+    // dev: 1 chặng / 4 bài / cùng 3 tiêu chí; trung bình 2,8 bài/chặng trên 87 chặng).
+    // Optional để caller cũ (test gọi trực tiếp) không phải sửa; production LUÔN truyền.
     Task<PracticeSessionResponse> CreateLessonSessionAsync(
         Guid candidateId, CreatePracticeSessionRequest request, Guid sessionId,
-        IReadOnlyList<string>? focusCriteria, CancellationToken ct = default);
+        IReadOnlyList<string>? focusCriteria, LessonContext? lessonContext = null,
+        CancellationToken ct = default);
 
     // I1: tạo session B2B (gắn campaign_id) + materialize tiêu chí campaign → rubric_criteria(campaign_id).
     Task<PracticeSessionResponse> CreateCampaignSessionAsync(
@@ -46,14 +52,19 @@ public interface IPracticeService
 
     // DB31 — keyset-paged (mẫu DB8): cursor opaque + limit opt-in; body giữ mảng JSON,
     // next-cursor trả ở header X-Next-Cursor. cursor=null ⇒ trang đầu.
-    // status/excludeCampaign đều OPT-IN — vắng cả hai ⇒ shape và tập kết quả y hệt hành vi cũ
-    // (trang "Lịch sử phỏng vấn" dùng chính endpoint này). status khớp fail-open như
-    // ListAllCampaignsAsync (CampaignService): giá trị lạ KHÔNG parse được ⇒ filter đơn giản
-    // không được áp (trả nguyên, không lọc gì), không 400 — đây là filter duyệt-danh-sách,
-    // không phải input dẫn nghiệp vụ như RoadmapService.ValidateMode.
+    // status/excludeCampaign/source đều OPT-IN — vắng cả ba ⇒ shape và tập kết quả y hệt hành vi cũ
+    // (trang "Lịch sử phỏng vấn" dùng chính endpoint này).
+    //
+    // ⚠ Cả ba filter đều TỪ CHỐI giá trị lạ bằng InvalidOperationException → 400 (BK36), KHÔNG
+    // fail-open. *(Đoạn mô tả cũ ở đây nói `status` fail-open theo mẫu ListAllCampaignsAsync — SAI
+    // so với code từ khi `ValidateHistoryStatus` ra đời; lý do đổi ghi tại call site.)*
+    //
+    // `source`: "lesson" = buổi sinh từ bài học lộ trình · "free" = buổi KHÔNG sinh từ bài học.
+    // Hai giá trị là PHÂN HOẠCH của tập chưa lọc (trực giao với excludeCampaign, xem call site).
     Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(
         Guid candidateId, string? cursor = null, int? limit = null,
-        string? status = null, bool? excludeCampaign = null, CancellationToken ct = default);
+        string? status = null, bool? excludeCampaign = null, string? source = null,
+        CancellationToken ct = default);
 
     // DB18 — Payment gọi (internal) để phát hiện orphan reservation: trả TẬP CON sessionIds thực sự có
     // row practice_sessions (bất kể status). Reservation Reserved mà session KHÔNG tồn tại (crash giữa
