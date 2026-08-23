@@ -235,4 +235,31 @@ public class LessonSessionTopicTests
         Assert.Equal("Tổng quan OOP", seen!.Title);
         Assert.Equal("Đóng gói", seen.Outline);
     }
+
+    // ═══════════ (2) KHÔNG nhét CV của lộ trình vào buổi bài học ═══════════
+
+    [Fact]
+    public async Task StartLesson_KhongGanCvCuaLoTrinh()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var cv = new FileRecord
+        {
+            Id = Guid.NewGuid(), UserId = user, FileType = "CV", OriginalName = "cv.pdf",
+            StoragePath = "k", StorageBucket = "b", MimeType = "application/pdf", FileSize = 1,
+            ParsedText = "NGUYEN VAN NAM - Business Analyst", ParseStatus = "Parsed",
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+        };
+        t.Db.Add(cv);
+        await t.Db.SaveChangesAsync();
+        var r = SeedRoadmap(t, user, cvId: cv.Id);
+        var lesson1 = r.Milestones.First().Lessons.First(l => l.OrderNo == 1);
+        var (practice, captured) = CapturingPractice(t);
+
+        await Service(t, practice.Object).StartLessonAsync(user, r.Id, lesson1.Id);
+
+        // Lộ trình VẪN giữ cv_id (provenance + kiểm quyền lúc tạo); chỉ buổi luyện không mang nó.
+        Assert.Equal(cv.Id, (await t.Db.Roadmaps.FindAsync(r.Id))!.CvId);
+        Assert.Null(captured[0].Request.CvId);
+    }
 }
