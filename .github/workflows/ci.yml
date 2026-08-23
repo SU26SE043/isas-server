@@ -275,14 +275,48 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SERVER_SSH_KEY }}
 
+      # Container Postgres phải khớp MÔI TRƯỜNG của ref đang chạy. Trước bản này bước dump KHÔNG
+      # truyền `PG_CONTAINER` ⇒ script rơi về mặc định `postgres-main` (`dump-prod-migrations.sh:30`)
+      # ⇒ mỗi lần push `dev`, gate đem migration của nhánh `dev` so với DB của **production**. `dev`
+      # theo định nghĩa đi TRƯỚC `main`, nên gate ĐỎ VĨNH VIỄN và cái đỏ đó không mang tin gì.
+      # Đo được 2026-08-23: cùng repo, so với `postgres-main` → FAIL "8 migration interview chưa áp";
+      # so với `postgres-dev` → PASS 4/4 DB, 0 thiếu 0 thừa. 8 cái đó đã áp đúng trên dev rồi, chúng
+      # chỉ chưa lên production — chuyện bình thường của một nhánh đi trước.
+      # Hại nặng nhất KHÔNG phải sự phiền: gate lúc nào cũng đỏ thì thôi làm tín hiệu, người ta học
+      # cách bỏ qua nó kể cả lúc nó đỏ thật; và khi `SCHEMA_GATE_MODE` đổi sang `enforce` (kế hoạch
+      # ghi ở bước dưới) thì mọi push `dev` thành fail cứng.
+      #
+      # ⚠ KHÔNG đặt `PG_CONTAINER` vào `env:` của bước này — trông như sửa mà KHÔNG sửa gì. Script
+      # chạy ở **shell TỪ XA** (`ssh 'bash -s'`), mà ssh không chuyển biến môi trường của runner
+      # sang máy đích (cần `SendEnv` phía client + `AcceptEnv` phía sshd, không có). Đã đo: đặt kiểu
+      # đó thì remote nhận `<UNSET>` ⇒ script lại rơi về `postgres-main` **im lặng** và gate vẫn so
+      # nhầm DB. Phải gán INLINE trong chính lệnh chạy từ xa như dưới đây.
       - name: Dump prod migration heads
         env:
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          ssh -o StrictHostKeyChecking=accept-new "$SERVER_USER@$SERVER_HOST" 'bash -s' \
+          # Fail-closed: ref lạ thì DỪNG, không đoán bừa một container. Hôm nay `if:` của job đã
+          # chặn (chỉ `main`/`dev`) nên nhánh `*)` không tới được — nó là lưới cho ngày ai đó nới
+          # `if:`, để gate báo lỗi thay vì âm thầm so nhầm DB. Chiều mặc định an toàn ở đây là
+          # "không biết thì dừng", vì kết luận sai về schema chính là thứ gate này sinh ra để chặn.
+          case "$REF_NAME" in
+            main) PG_CONTAINER=postgres-main ;;
+            dev)  PG_CONTAINER=postgres-dev ;;
+            *)
+              echo "::error::schema-gate chưa biết ref '$REF_NAME' dùng DB nào. Thêm ánh xạ ref→container ở bước này trước khi cho nhánh đó chạy gate."
+              exit 1
+              ;;
+          esac
+          echo "ref '$REF_NAME' → container '$PG_CONTAINER'"
+          ssh -o StrictHostKeyChecking=accept-new "$SERVER_USER@$SERVER_HOST" \
+            "PG_CONTAINER='$PG_CONTAINER' bash -s" \
             < scripts/dump-prod-migrations.sh > prod-migrations.txt
-          echo "--- head đọc được từ prod:"
+          # In tên container ngay trên bảng so sánh: `check-schema-gate.py` gọi vế kia là
+          # "production" trong mọi thông điệp, nên chạy trên `dev` mà không có dòng này thì log
+          # xanh sẽ đọc thành một lời khẳng định về production.
+          echo "--- head đọc được từ $PG_CONTAINER:"
           cat prod-migrations.txt
 
       # `SCHEMA_GATE_MODE` là **biến repo** (Settings → Variables), không phải secret: mặc định
