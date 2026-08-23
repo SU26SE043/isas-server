@@ -105,19 +105,38 @@ public class RoadmapsController : ControllerBase
     ///
     /// Item là <see cref="RoadmapSummaryResponse"/> — KHÔNG còn `milestones` (trước đây list kéo cả
     /// cây milestone→lesson). Cần cây đầy đủ → `GET /roadmaps/{id}`.
+    ///
+    /// `?status=` (vd Completed) + `?hasFinalReport=true` — OPT-IN cho picker "chọn lộ trình đã hoàn
+    /// tất" của wizard tạo lộ trình; vắng cả hai ⇒ hành vi y hệt hôm nay. Lọc chạy TRONG SQL trước
+    /// khi cắt trang, nên không còn cảnh lộ trình hợp lệ nằm ngoài trang đầu thì biến mất khỏi
+    /// dropdown. Dùng `hasFinalReport` chứ đừng dùng `status=Completed` cho picker — xem
+    /// <see cref="RoadmapSummaryResponse.HasFinalReport"/>.
     /// </summary>
     [HttpGet]
     [ProducesResponseType(typeof(IReadOnlyList<RoadmapSummaryResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> List(
-        CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null)
+        CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null,
+        [FromQuery] string? status = null, [FromQuery] bool? hasFinalReport = null)
     {
         if (!TryGetCandidateId(out var candidateId))
             return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
 
-        var page = await _service.ListAsync(candidateId, cursor, limit, ct);
-        if (page.NextCursor is not null)
-            Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
-        return Ok(page.Items);
+        try
+        {
+            var page = await _service.ListAsync(candidateId, cursor, limit, status, hasFinalReport, ct);
+            if (page.NextCursor is not null)
+                Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
+            return Ok(page.Items);
+        }
+        // ⚠ Nhánh này BẮT BUỘC có: `ValidateRoadmapStatus` ném `InvalidOperationException` cho giá
+        // trị lạ, mà action này trước đó KHÔNG bắt gì cả ⇒ thiếu nó thì việc siết validate biến
+        // `?status=xyz` thành **500** — tệ hơn hẳn fail-open. Đúng lớp lỗi F2b, và là đúng cái bẫy
+        // đã phải vá một lần ở `PracticeController.GetHistory`.
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
     }
 
     /// <summary>

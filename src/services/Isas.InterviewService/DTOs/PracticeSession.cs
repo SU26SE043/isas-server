@@ -242,7 +242,29 @@ public record PracticeSessionSummary(
     // đồ tiến bộ so điểm buổi Junior với buổi Senior là so hai thứ khác nhau, không phải "tiến bộ
     // hay tụt lùi". Cột đã có sẵn trên practice_sessions — thêm THUẦN vào projection/DTO, không
     // migration.
-    string Seniority
+    string Seniority,
+    /// <summary>
+    /// Tên BÀI HỌC của lộ trình mà buổi luyện này thuộc về; <c>null</c> = buổi luyện TỰ DO (không
+    /// sinh ra từ một bài học nào).
+    ///
+    /// <para><b>Vì sao cần:</b> <c>practice_sessions</c> KHÔNG có cột tên/tiêu đề nào, nên bảng
+    /// "chọn báo cáo phỏng vấn" của wizard lộ trình chỉ có <c>jobCategory</c> để hiển thị ⇒ mọi buổi
+    /// Backend đều hiện đúng một chữ "BE". Đo trên dev: 8 buổi <c>BE|Junior</c> liên tiếp của cùng
+    /// một người — không dòng nào phân biệt được với dòng nào.</para>
+    ///
+    /// <para><b>Nguồn là dữ liệu THẬT, không phải tên máy sinh:</b> <c>roadmap_lesson_attempts</c>
+    /// (UNIQUE <c>session_id</c> ⇒ ghép 1–1) → <c>roadmap_lessons.title</c>, ví dụ <i>"Truy vấn SQL
+    /// nâng cao (JOIN, GROUP BY) và cơ chế Index cơ bản"</i>. Ghép qua bảng LẦN LÀM chứ không qua
+    /// <c>roadmap_lessons.session_id</c>: cột đó chỉ trỏ buổi MỚI NHẤT nên bài đã luyện lại sẽ làm
+    /// buổi cũ mất nhãn (đo trên dev: đúng 1 buổi rơi vào ca này). Chiều ngược lại không mất gì —
+    /// migration <c>AddRoadmapLessonAttempts</c> đã backfill, đo được 0 buổi có
+    /// <c>lessons.session_id</c> mà thiếu dòng lần-làm.</para>
+    ///
+    /// <para>⚠ <c>null</c> KHÔNG phải lỗi và KHÔNG phải hiếm — đo trên dev 3/18 buổi B2C đã chấm là
+    /// luyện tự do. Với nhóm đó hệ thống KHÔNG có nhãn nào để trả; client tự ghép nhãn hiển thị từ
+    /// nghề + cấp độ + thời điểm, và tuyệt đối không dựng một cái tên rồi trình bày như tên thật.</para>
+    /// </summary>
+    string? LessonTitle = null
 );
 
 // BC9 — tổng kết cả buổi luyện B2C (số liệu), đọc từ practice_sessions + session_criterion_scores.

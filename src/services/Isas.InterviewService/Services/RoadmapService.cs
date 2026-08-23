@@ -423,13 +423,39 @@ public class RoadmapService : IRoadmapService
     /// đọc, và nó gọi endpoint khác).
     /// </summary>
     public async Task<KeysetPage<RoadmapSummaryResponse>> ListAsync(
-        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default)
+        Guid candidateId, string? cursor = null, int? limit = null,
+        string? status = null, bool? hasFinalReport = null, CancellationToken ct = default)
     {
         var take = KeysetPaging.ClampLimit(limit);
         var cur = KeysetCursor.Decode(cursor);
 
         var query = _db.Set<Roadmap>().AsNoTracking()
             .Where(x => x.CandidateId == candidateId);
+
+        // ── Lọc OPT-IN cho picker "chọn lộ trình đã hoàn tất" của wizard ────────────────────
+        //
+        // 🔑 Lọc PHẢI nằm ở đây, TRƯỚC `Take` — tức trong SQL, không phải sau khi đã lấy trang.
+        // Trước bản này client lọc trên TRANG ĐẦU của keyset paging: người có nhiều lộ trình thì
+        // cái đã hoàn tất nằm ở trang 2 trở đi BIẾN MẤT khỏi dropdown mà không ai biết — không
+        // báo lỗi, không dòng trống, chỉ là một lựa chọn đáng lẽ có mà không thấy.
+        var parsedStatus = ValidateRoadmapStatus(status);
+        if (parsedStatus is not null)
+            query = query.Where(x => x.Status == parsedStatus.Value);
+
+        // ⚠ `hasFinalReport` mới là vị ngữ ĐÚNG NGHIỆP VỤ, không phải `status == Completed`:
+        // `CreateAsync` gác bằng `IsNullOrWhiteSpace(prior.FinalReport)` → 400, còn
+        // `RoadmapLessonService.RetryLessonAsync` mở lại roadmap `Completed → Active` và XOÁ
+        // `FinalReport` ⇒ hai vị ngữ KHÔNG đồng nhất theo cả hai chiều. Lọc theo status là mời một
+        // lộ trình rồi để người dùng ăn 400 SAU KHI đã chờ 13–54s tạo roadmap. Giữ cả hai tham số
+        // vì chúng trả lời hai câu hỏi khác nhau; picker của wizard dùng `hasFinalReport`.
+        //
+        // Vị ngữ so `!= null` khớp CHÍNH XÁC cách cột được chiếu ra `HasFinalReport` ở dưới —
+        // lệch nhau thì cờ trả về và tập được lọc mâu thuẫn nhau. Lý do không thêm `&& != ""`:
+        // xem chú thích tại chỗ chiếu.
+        if (hasFinalReport == true)
+            query = query.Where(x => x.FinalReport != null);
+        else if (hasFinalReport == false)
+            query = query.Where(x => x.FinalReport == null);
 
         // Keyset (CreatedAt DESC, Id DESC) — Id tie-break để hai roadmap trùng created_at vẫn có thứ
         // tự tổng, không lặp/sót dòng khi lật trang.
@@ -613,6 +639,29 @@ public class RoadmapService : IRoadmapService
         if (mode == nameof(RoadmapMode.Reinforce)) return RoadmapMode.Reinforce;
         throw new InvalidOperationException(
             $"mode chỉ nhận {nameof(RoadmapMode.LevelUp)} / {nameof(RoadmapMode.Reinforce)} " +
+            $"(đang gửi: '{requested}').");
+    }
+
+    /// <summary>
+    /// Trạng thái lọc cho <c>GET /roadmaps</c>. Tập đóng, case-sensitive — cùng khuôn
+    /// <see cref="ValidateMode"/> / <c>PracticeService.ValidateHistoryStatus</c>: <c>null</c>/rỗng =
+    /// không lọc; giá trị lạ = GIÁ TRỊ SAI và bị từ chối 400, KHÔNG âm thầm bỏ qua filter.
+    ///
+    /// <para>Vì sao khớp chặt chứ không <c>Enum.TryParse</c>: nó nhận cả chuỗi số (<c>"1"</c> →
+    /// <c>Completed</c>) lẫn sai hoa/thường — hai thứ ta không hứa hỗ trợ. Và vì sao không fail-open:
+    /// endpoint này nuôi PICKER của wizard, nơi "không lọc được" KHÔNG vô hại — nó trả lại lộ trình
+    /// chưa có báo cáo cho người dùng chọn, rồi <c>CreateAsync</c> từ chối bằng 400 sau khi họ đã chờ
+    /// tạo roadmap. Cùng lập luận đã dùng cho <c>?status=</c> của <c>/practice/history</c>.</para>
+    /// </summary>
+    private static RoadmapStatus? ValidateRoadmapStatus(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return null;
+        var value = requested.Trim();
+        foreach (var name in Enum.GetNames<RoadmapStatus>())
+            if (string.Equals(value, name, StringComparison.Ordinal))
+                return Enum.Parse<RoadmapStatus>(name);
+        throw new InvalidOperationException(
+            $"status chỉ nhận {string.Join(" / ", Enum.GetNames<RoadmapStatus>())} " +
             $"(đang gửi: '{requested}').");
     }
 
