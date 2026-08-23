@@ -114,6 +114,30 @@ public class RoadmapService : IRoadmapService
                 throw new KeyNotFoundException(
                     "Một số buổi luyện không tồn tại, không thuộc về bạn, hoặc chưa được chấm.");
 
+            // 🔴 Buổi luyện phải CÙNG NGHỀ với lộ trình đang tạo. Guard sở hữu ở trên KHÔNG có vế
+            // này, nên trước bản vá `POST /practice/roadmaps {jobCategory:"BE"}` kèm sessionIds của
+            // buổi BA vẫn trả 201: baseline/điểm yếu/bằng chứng của nghề KHÁC chảy thẳng vào prompt,
+            // trong khi `LoadCriteriaNamesAsync` bên dưới lại nạp tiêu chí của BE ⇒ AI được yêu cầu
+            // bám một bộ tiêu chí không hề sinh ra con số nào nó đang đọc. Frontend đã lọc phía
+            // client, nhưng UI giấu đi ≠ hợp đồng từ chối.
+            //
+            // 🔴 Vị trí BẮT BUỘC là ở ĐÂY — sau guard sở hữu, TRƯỚC guard `Reinforce` bên dưới:
+            //   • sau guard sở hữu, vì thông báo này NÊU ĐÍCH DANH id, mà chỉ những id đã chứng minh
+            //     thuộc người gọi mới được phép nêu tên. Guard sở hữu cố ý gộp "không tồn tại /
+            //     không thuộc mình / chưa chấm" vào MỘT câu 404 câm để không lộ id nào của người
+            //     khác tồn tại — nói về một id chưa qua cửa đó là mở lại đúng lỗ rò ấy.
+            //   • trước guard `Reinforce`, vì buổi lệch nghề mà tình cờ không có tiêu chí nào cần
+            //     cải thiện sẽ nhận câu "hãy chọn buổi khác" — đúng lời khuyên nhưng SAI nguyên
+            //     nhân, người dùng đi chọn thêm buổi BA nữa và vẫn hỏng.
+            var crossCategory = chosen.Where(s => s.JobCategory != req.JobCategory).ToList();
+            if (crossCategory.Count > 0)
+                throw CrossCategorySource(
+                    "Buổi luyện đã chọn", req.JobCategory,
+                    string.Join("; ", crossCategory
+                        .GroupBy(s => s.JobCategory)
+                        .OrderBy(g => g.Key)
+                        .Select(g => $"{g.Key} ({string.Join(", ", g.Select(s => s.Id))})")));
+
             // Newest-first: tiêu chí xuất hiện lần đầu (buổi mới nhất) thắng → baseline = % hiện tại.
             var withScores = chosen.Where(s => s.CriterionScores.Count > 0).ToList();
             if (withScores.Count > 0)
@@ -176,6 +200,13 @@ public class RoadmapService : IRoadmapService
                 ?? throw new KeyNotFoundException("Phân tích CV không tồn tại.");
             if (ca.CandidateId != candidateId)
                 throw new UnauthorizedAccessException("Không phải phân tích CV của bạn");
+            // Cùng lý do đã nêu ở guard lệch nghề của buổi luyện, và cũng phải đứng SAU cửa sở hữu
+            // vì câu lỗi nêu đích danh id. `cv_analyses.job_category` là nghề bản phân tích được
+            // chạy cho — bản phân tích CV nghề BA nói về điểm mạnh/yếu của BA, và `CurrentLevel`
+            // rút từ nó là trình độ BA; bơm cả hai vào lộ trình BE là đặt sàn trình độ sai nghề.
+            if (ca.JobCategory != req.JobCategory)
+                throw CrossCategorySource(
+                    "Phân tích CV đã chọn", req.JobCategory, $"{ca.JobCategory} ({ca.Id})");
             cvAnalysisSummary = BuildCvAnalysisSummary(ca);
             currentLevel = ca.CurrentLevel;
         }
@@ -200,6 +231,13 @@ public class RoadmapService : IRoadmapService
                 ?? throw new KeyNotFoundException("Roadmap được chọn không tồn tại.");
             if (prior.CandidateId != candidateId)
                 throw new UnauthorizedAccessException("Không phải roadmap của bạn");
+            // Cùng lý do — và đứng TRƯỚC guard "chưa có báo cáo" bên dưới: một lộ trình BA đã hoàn
+            // thành thì có báo cáo hợp lệ, nên nếu để guard kia chạy trước thì lộ trình BA sẽ lọt
+            // qua sạch sẽ; còn lộ trình BA CHƯA hoàn thành lại nhận câu "chưa có báo cáo" — đúng
+            // sự thật nhưng che mất nguyên nhân thật, người dùng đi hoàn thành nó rồi vẫn hỏng.
+            if (prior.JobCategory != req.JobCategory)
+                throw CrossCategorySource(
+                    "Lộ trình tham chiếu đã chọn", req.JobCategory, $"{prior.JobCategory} ({prior.Id})");
             if (string.IsNullOrWhiteSpace(prior.FinalReport))
                 throw new InvalidOperationException("Roadmap được chọn chưa có báo cáo (chưa hoàn thành).");
 
@@ -602,6 +640,21 @@ public class RoadmapService : IRoadmapService
             throw new InvalidOperationException("Bilingual interview chưa được bật.");
         return language;
     }
+
+    /// <summary>
+    /// Câu 400 dùng chung cho MỌI nguồn dữ liệu lệch nghề (buổi luyện · phân tích CV · lộ trình
+    /// tham chiếu). Ba chỗ gọi chứ không phải một, vì người dùng bỏ chọn ba nguồn đó ở ba chỗ khác
+    /// nhau trên wizard và câu lỗi phải chỉ đúng chỗ cần sửa (mẫu hai guard tách rời của chế độ
+    /// <c>Reinforce</c>) — nhưng cách DIỄN ĐẠT chỉ được định nghĩa MỘT LẦN ở đây, vì đây là cùng
+    /// một khái niệm và ba câu chữ trôi khỏi nhau sẽ khiến frontend phải nhận dạng ba dạng lỗi.
+    ///
+    /// <para><c>offending</c> LUÔN nêu nghề thật + id, nên chỉ được truyền vào những id ĐÃ qua cửa
+    /// kiểm sở hữu — xem ghi chú tại từng chỗ gọi.</para>
+    /// </summary>
+    private static InvalidOperationException CrossCategorySource(
+        string source, JobCategory wanted, string offending)
+        => new($"{source} thuộc nghề khác với lộ trình đang tạo ({wanted}): {offending}. " +
+               "Hãy bỏ chọn nguồn lệch nghề, hoặc đổi nghề của lộ trình cho khớp.");
 
     // BE-4 — độ dài roadmap candidate CHỌN. Tập đóng, case-sensitive (mẫu ValidateSeniority của
     // PracticeService) — chỉ `null` (client KHÔNG gửi field) mặc định "Standard"; chuỗi rỗng/giá
