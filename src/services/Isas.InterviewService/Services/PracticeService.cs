@@ -1071,7 +1071,20 @@ public class PracticeService : IPracticeService
             .Select(s => new PracticeSessionSummary(
                 s.Id, s.Status.ToString(), s.JobCategory.ToString(),
                 s.CreatedAt, s.CompletedAt, s.OverallScore,   // BC9: lịch sử hiện điểm tổng
-                s.Seniority))   // J8: cấp độ đã chọn CHO ĐÚNG BUỔI ĐÓ
+                s.Seniority,   // J8: cấp độ đã chọn CHO ĐÚNG BUỔI ĐÓ
+                // Nhãn phân biệt cho bảng chọn báo cáo của wizard lộ trình: `practice_sessions`
+                // không có cột tên nào, nên không có dòng này thì mọi buổi cùng nghề hiện y hệt
+                // nhau ("BE"). Subquery tương quan (KHÔNG kéo bảng về client): UNIQUE(session_id)
+                // trên roadmap_lesson_attempts bảo đảm tối đa 1 dòng ⇒ `FirstOrDefault` là ghép
+                // 1–1 chứ không phải "chọn bừa một trong nhiều".
+                //
+                // Qua bảng LẦN LÀM, không qua `roadmap_lessons.session_id` — cột đó chỉ trỏ buổi
+                // MỚI NHẤT, nên bài đã luyện lại làm buổi cũ mất nhãn. Buổi luyện tự do → null,
+                // đó là câu trả lời ĐÚNG ("hệ thống không có tên cho buổi này"), không phải thiếu sót.
+                _db.RoadmapLessonAttempts
+                    .Where(a => a.SessionId == s.Id)
+                    .Select(a => a.Lesson.Title)
+                    .FirstOrDefault()))
             .ToListAsync(ct);
 
         var next = rows.Count == take
