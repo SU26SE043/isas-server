@@ -1048,9 +1048,33 @@ public class PracticeService : IPracticeService
             $"(đang gửi: '{requested}').");
     }
 
+    /// <summary>Giá trị hợp lệ của <c>?source=</c> — tập ĐÓNG, case-sensitive.</summary>
+    private const string SourceLesson = "lesson";
+    private const string SourceFree = "free";
+
+    /// <summary>
+    /// Nguồn gốc buổi luyện cho <c>GET /practice/history</c>. <c>null</c> = có lọc gì đâu;
+    /// <c>true</c> = chỉ buổi sinh từ bài học lộ trình; <c>false</c> = chỉ buổi KHÔNG sinh từ bài học.
+    ///
+    /// <para>Giá trị lạ → <b>400</b> nêu tập hợp lệ + giá trị đang gửi, KHÔNG âm thầm bỏ qua filter
+    /// (BK36, cùng khuôn <see cref="ValidateHistoryStatus"/> và <c>RoadmapService.ValidateMode</c>).
+    /// Khớp CHẶT bằng <see cref="StringComparison.Ordinal"/> — không nhận sai hoa/thường, để trong
+    /// cùng một service không có hai chuẩn cho cùng loại đầu vào.</para>
+    /// </summary>
+    private static bool? ValidateHistorySource(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return null;
+        var value = requested.Trim();
+        if (string.Equals(value, SourceLesson, StringComparison.Ordinal)) return true;
+        if (string.Equals(value, SourceFree, StringComparison.Ordinal)) return false;
+        throw new InvalidOperationException(
+            $"source chỉ nhận {SourceLesson} / {SourceFree} (đang gửi: '{requested}').");
+    }
+
     public async Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(
         Guid candidateId, string? cursor = null, int? limit = null,
-        string? status = null, bool? excludeCampaign = null, CancellationToken ct = default)
+        string? status = null, bool? excludeCampaign = null, string? source = null,
+        CancellationToken ct = default)
     {
         var take = KeysetPaging.ClampLimit(limit);
         var cur = KeysetCursor.Decode(cursor);
@@ -1085,6 +1109,24 @@ public class PracticeService : IPracticeService
         // một chữ giữa hai nơi là picker cho chọn buổi mà CreateAsync sẽ từ chối bằng 404 mù.
         if (excludeCampaign == true)
             query = query.Where(RoadmapSessionEligibility.NotCampaign);
+
+        // Nguồn gốc buổi: có/không có dòng trong `roadmap_lesson_attempts` (UNIQUE(session_id) ⇒
+        // quan hệ 1–1). Đọc qua bảng LẦN LÀM chứ không qua `roadmap_lessons.session_id` — cột đó chỉ
+        // trỏ buổi MỚI NHẤT, nên bài đã luyện lại sẽ làm buổi cũ rơi khỏi nhóm "lesson" dù nó đúng là
+        // buổi bài học. CÙNG nguồn với nhãn `LessonTitle` ở dưới ⇒ lọc và nhãn không thể nói ngược nhau.
+        //
+        // 🔑 Lọc Ở ĐÂY, tức TRONG SQL và TRƯỚC `Take` — lọc sau phân trang thì buổi hợp lệ nằm ngoài
+        // trang đầu biến mất khỏi danh sách (đúng lỗi vừa sửa ở `hasFinalReport`).
+        //
+        // ⚠ `lesson` và `free` là PHÂN HOẠCH của tập chưa lọc: mọi buổi thuộc đúng một trong hai.
+        // Cố ý KHÔNG cho `free` ngầm loại buổi B2B — làm vậy thì có buổi không nằm trong tab nào,
+        // tức người dùng bật tab nào cũng không thấy nó. Muốn "tự do và chỉ B2C" thì ghép
+        // `?source=free&excludeCampaign=true`; hai filter trực giao với nhau.
+        var fromLesson = ValidateHistorySource(source);
+        if (fromLesson == true)
+            query = query.Where(s => _db.RoadmapLessonAttempts.Any(a => a.SessionId == s.Id));
+        else if (fromLesson == false)
+            query = query.Where(s => !_db.RoadmapLessonAttempts.Any(a => a.SessionId == s.Id));
 
         if (cur is not null)
             query = query.Where(s => s.CreatedAt < cur.CreatedAt

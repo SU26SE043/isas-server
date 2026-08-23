@@ -135,18 +135,22 @@ public class PracticeController : ControllerBase
     /// `?status=` (vd Scored) + `?excludeCampaign=true` — OPT-IN cho wizard tạo roadmap chọn
     /// buổi làm baseline (RoadmapService.CreateAsync chỉ nhận buổi B2C đã Scored); vắng cả hai ⇒
     /// hành vi y hệt hôm nay.
+    /// `?source=lesson|free` — OPT-IN, tách buổi sinh từ bài học lộ trình khỏi buổi luyện tự do
+    /// (dữ liệu đã có sẵn qua `roadmap_lesson_attempts` / nhãn `lessonTitle`, chỉ chưa lọc được).
+    /// Hai giá trị là PHÂN HOẠCH: `lesson` + `free` = đúng tập khi không lọc. Giá trị lạ → 400.
     /// </summary>
     [HttpGet("history")]
     [ProducesResponseType(typeof(IReadOnlyList<PracticeSessionSummary>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetHistory(
         CancellationToken ct, [FromQuery] string? cursor = null, [FromQuery] int? limit = null,
-        [FromQuery] string? status = null, [FromQuery] bool? excludeCampaign = null)
+        [FromQuery] string? status = null, [FromQuery] bool? excludeCampaign = null,
+        [FromQuery] string? source = null)
     {
         try
         {
             var candidateId = GetCandidateId();
             var page = await _practiceService.GetHistoryAsync(
-                candidateId, cursor, limit, status, excludeCampaign, ct);
+                candidateId, cursor, limit, status, excludeCampaign, source, ct);
             if (page.NextCursor is not null)
                 Response.Headers[KeysetPaging.NextCursorHeader] = page.NextCursor;
             return Ok(page.Items);
