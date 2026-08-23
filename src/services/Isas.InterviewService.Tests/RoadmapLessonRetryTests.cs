@@ -99,6 +99,16 @@ public class RoadmapLessonRetryTests
     private static Mock<IAiServiceQuestionGenerator> QuestionGenOk()
     {
         var gen = new Mock<IAiServiceQuestionGenerator>();
+        // Đường BÀI HỌC nay đi overload mang `lessonContext` (11 tham số) — thiếu setup này thì Moq
+        // trả `null` và mọi test /start, /retry hỏng với "Sinh câu hỏi thất bại".
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<LessonContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GeneratedQuestionsResult(
+                [new GeneratedQuestion { Content = "Q1" }, new GeneratedQuestion { Content = "Q2" }], []));
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(),
@@ -259,10 +269,14 @@ public class RoadmapLessonRetryTests
         Assert.Equal(1, await db.RoadmapLessonAttempts.AsNoTracking().CountAsync());
 
         // AI sinh câu hỏi KHÔNG được gọi — reserve chặn trước.
+        // ⚠ Nhắm ĐÚNG overload mà đường bài học dùng: `Times.Never` trên overload cũ nay là assert
+        // RỖNG NGHĨA (overload đó không còn được đường này gọi tới, nên luôn đúng).
         gen.Verify(g => g.GenerateQuestionsAsync(
             It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(),
-            It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+            It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+            It.IsAny<LessonContext>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // ── (6) Lộ trình ĐÃ ĐÓNG → mở lại Active + xoá bản báo cáo chốt sổ ──────────────────

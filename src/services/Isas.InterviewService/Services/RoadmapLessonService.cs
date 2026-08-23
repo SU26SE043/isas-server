@@ -248,8 +248,14 @@ public class RoadmapLessonService : IRoadmapLessonService
             Language: roadmap.Language, Seniority: roadmap.Level.ToString(),
             QuestionCount: lessonQuestionCount,
             AdaptiveEnabled: _roadmap.LessonAdaptiveEnabled);
+
+        // Chủ đề của ĐÚNG bài này. `FocusCriteria` là của CHẶNG nên một mình nó không phân biệt
+        // được 4 bài trong cùng chặng; mục lục bài giảng là lớp thứ hai (null khi người học bấm
+        // "Bắt đầu" mà chưa mở bài lần nào — hợp lệ, `theory_content` sinh lazy lúc mở bài).
+        var lessonContext = new LessonContext(lesson.Title, LessonOutline.From(lesson.TheoryContent));
+
         var response = await _practiceService.CreateLessonSessionAsync(
-            candidateId, req, sessionId, lesson.Milestone.FocusCriteria, ct);
+            candidateId, req, sessionId, lesson.Milestone.FocusCriteria, lessonContext, ct);
 
         // Link atomic (guard Status == expectedStatus chống double-start): chỉ khi lesson CÒN đang ở
         // đúng trạng thái tiền điều kiện mới set Practicing + session_id. Đua 2 request cùng lúc →

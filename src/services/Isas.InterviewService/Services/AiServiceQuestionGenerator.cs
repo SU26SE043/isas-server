@@ -77,6 +77,29 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
         IReadOnlyList<GroundingChunk>? grounding, string language,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria,
         string seniority = "Junior", CancellationToken ct = default)
+        => await GenerateCoreAsync(
+            jobCategory, cvText, jdText, focusCriteria, count, grounding, language,
+            criteria, seniority, lessonContext: null, ct);
+
+    // Overload BÀI HỌC LỘ TRÌNH. Chỉ khác overload trên đúng một thứ: mang theo chủ đề của bài.
+    public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria,
+        string seniority, LessonContext lessonContext, CancellationToken ct = default)
+        => await GenerateCoreAsync(
+            jobCategory, cvText, jdText, focusCriteria, count, grounding, language,
+            criteria, seniority, lessonContext, ct);
+
+    // MỘT thân duy nhất cho mọi overload — hai bản sao của khối dựng payload là hai cơ hội để tên
+    // khoá ra dây lệch nhau, mà lệch tên thì pydantic `extra='ignore'` nuốt im lặng.
+    private async Task<GeneratedQuestionsResult> GenerateCoreAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria,
+        string seniority, LessonContext? lessonContext, CancellationToken ct)
     {
         var payload = new
         {
@@ -115,7 +138,21 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             // `ReserveAsync` ⇒ một giá trị rỗng lọt xuống đây sẽ thành buổi hỏng ĐÃ TRỪ CREDIT
             // (PAY-5). Giá trị lạ NHƯNG khác rỗng thì cứ gửi — AIService tự hạ về "Junior" và ghi
             // log, đúng chỗ để phát hiện caller gửi sai.
-            seniority = string.IsNullOrWhiteSpace(seniority) ? "Junior" : seniority
+            seniority = string.IsNullOrWhiteSpace(seniority) ? "Junior" : seniority,
+            // Ngữ cảnh BÀI HỌC (buổi luyện sinh từ lộ trình). Vắng → null ⇒ AIService KHÔNG thêm
+            // một chữ nào vào prompt (mọi caller cũ: luyện tự do, campaign B2B — giữ nguyên xi).
+            //
+            // ⚠ Tên khoá `lessonContext` / `title` / `outline` ở ĐÂY là hợp đồng với pydantic
+            // (`app/schemas.LessonContextDto`). Anonymous object lồng nhau nên phải viết tay đúng
+            // camelCase — đổi tên KHÔNG ném lỗi ở đâu cả, chỉ im lặng bỏ field và câu hỏi lặng lẽ
+            // quay về bám CHẶNG thay vì bám BÀI (đúng lớp bug `focusCriteria`/BC14 ·
+            // `metricsVersion` · `adaptiveMaxQuestions` — repo đã dính 4 lần).
+            //
+            // `Title` rỗng ⇒ gửi null cả khối: một tiêu đề rỗng không phân biệt được bài nào với
+            // bài nào, mà vẫn tốn một khối "CHỦ ĐỀ BẮT BUỘC" rỗng nghĩa trong prompt.
+            lessonContext = lessonContext is not null && !string.IsNullOrWhiteSpace(lessonContext.Title)
+                ? new { title = lessonContext.Title, outline = lessonContext.Outline }
+                : null
         };
 
         // RAG grounding — /generate-questions là endpoint AIService (GEN-1/GEN-7 internal-only) → gắn

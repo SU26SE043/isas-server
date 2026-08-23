@@ -299,7 +299,8 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 - Res **`200`** `LessonResponse`. **Miễn phí** (text-only — như D17). Lỗi: **401/403/404** · **502**.
 
 **`POST /roadmaps/{id}/lessons/{lessonId}/start`** — Bắt đầu luyện lesson.
-- Tạo **practice session B2C bình thường** (**reserve 1 credit** ví cá nhân như BC2 — hết → **402, KHÔNG tạo session**), câu hỏi sinh bám `focusCriteria` của milestone; set `roadmap_lessons.session_id`; lesson `Theory → Practicing`.
+- Tạo **practice session B2C bình thường** (**reserve 1 credit** ví cá nhân như BC2 — hết → **402, KHÔNG tạo session**); set `roadmap_lessons.session_id`; lesson `Theory → Practicing`.
+- **Câu hỏi bám ĐÚNG BÀI, không chỉ bám chặng.** Ngoài `focusCriteria` (của **milestone**) nay còn gửi `lessonContext = { title, outline }` xuống `/generate-questions`: `title` = tên bài, `outline` = các đề mục `##` rút từ `theory_content` (trần 12 đề mục × 120 ký tự; `null` nếu người học chưa mở bài — lý thuyết sinh lazy). ⚠ Thiếu lớp này thì **mọi bài trong cùng một chặng cho AI đúng một đầu vào** (đo trên dev: 1 chặng/4 bài/cùng 3 tiêu chí; trung bình 2,8 bài/chặng trên 87 chặng) ⇒ bài "tối ưu truy vấn SQL" nhận câu hỏi về xử lý lỗi API. Chi tiết wire: [ai.md](ai.md) §generate-questions.
 - Res **`201`** `PracticeSessionResponse`. Lỗi: **401/403/404** · **402** (hết credit) · **409** (lesson đang `Practicing` — resume session cũ thay vì tạo mới) · **502**.
 
 **`GET /roadmaps/{id}/report`** — Report roadmap → **`200`** `RoadmapReportResponse`.

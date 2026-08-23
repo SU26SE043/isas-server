@@ -242,9 +242,15 @@ async def generate_questions(req: GenerateQuestionsRequest,
         # phải là keyword, và keyword thì không lệch khi provider thêm tham số về sau.
         # Quên dòng này thì schema có khai, .NET có gửi, HTTP vẫn 200 — prompt chỉ đơn giản không
         # đổi một chữ (cùng lớp bug `targetCriteria` ngay dưới đây và `metricsVersion` 2026-08-05).
+        # Ngữ cảnh bài học — chuyển sang dict cho provider; vắng → None (KHÔNG {}): prompt rẽ nhánh
+        # theo truthiness và một dict rỗng sẽ chèn khối "CHỦ ĐỀ BẮT BUỘC" rỗng nghĩa.
+        lesson_context = req.lessonContext.model_dump() if req.lessonContext else None
+        # Truyền bằng TỪ KHOÁ như `seniority`: `_call_with_language` chèn `language=` vào kwargs nên
+        # mọi thứ sau `criteria` phải là keyword. Quên dòng này thì schema có khai, .NET có gửi,
+        # HTTP vẫn 200 — prompt chỉ đơn giản không đổi một chữ.
         result = await _call_with_language(req.language, provider.generate,
             req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding,
-            criteria, seniority=req.seniority)
+            criteria, seniority=req.seniority, lesson_context=lesson_context)
         _schedule_tts_warmup(result.questions, req.language)
         # citations=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ cho Campaign B2B.
         citations = ([QuestionCitation(**c) for c in result.citations]

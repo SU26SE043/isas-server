@@ -707,9 +707,10 @@ public class EvidenceDrivenPr160Tests
         var practice = new Mock<IPracticeService>();
         practice.Setup(p => p.CreateLessonSessionAsync(
                 It.IsAny<Guid>(), It.IsAny<CreatePracticeSessionRequest>(), It.IsAny<Guid>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<LessonContext?>(),
+                It.IsAny<CancellationToken>()))
             .Callback((Guid cid, CreatePracticeSessionRequest req, Guid sid,
-                       IReadOnlyList<string>? _, CancellationToken _) =>
+                       IReadOnlyList<string>? _, LessonContext? _, CancellationToken _) =>
             {
                 captured = req;
                 // Phải tạo row session THẬT: link lesson sau đó chạy FK roadmap_lessons.session_id

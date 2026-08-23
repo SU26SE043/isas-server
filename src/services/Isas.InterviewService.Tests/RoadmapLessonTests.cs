@@ -113,6 +113,21 @@ public class RoadmapLessonTests
         Action<IReadOnlyList<string>?>? captureFocus = null)
     {
         var gen = new Mock<IAiServiceQuestionGenerator>();
+        // Đường BÀI HỌC nay đi overload mang `lessonContext` (11 tham số) — phải setup RIÊNG, không
+        // thì Moq trả `null` và `/start` hỏng với "Sinh câu hỏi thất bại" (đỏ ồn ào, không im lặng).
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<LessonContext>(), It.IsAny<CancellationToken>()))
+            .Callback((string _, string? _, string? _, IReadOnlyList<string>? focus, int? _,
+                       IReadOnlyList<GroundingChunk>? _, string _,
+                       IReadOnlyList<QuestionTargetCriterionDto>? _, string _,
+                       LessonContext _, CancellationToken _) => captureFocus?.Invoke(focus))
+            .ReturnsAsync(new GeneratedQuestionsResult(
+                [new GeneratedQuestion { Content = "Q1" }, new GeneratedQuestion { Content = "Q2" }], []));
+
         var setup = gen.Setup(g => g.GenerateQuestionsAsync(
             It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()));
@@ -132,6 +147,15 @@ public class RoadmapLessonTests
     private static Mock<IAiServiceQuestionGenerator> QuestionGenOkEnglish()
     {
         var gen = new Mock<IAiServiceQuestionGenerator>();
+        // Đường bài học nay đi overload mang `lessonContext` — setup riêng (xem QuestionGenOk).
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<LessonContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GeneratedQuestionsResult(
+                [new GeneratedQuestion { Content = "Q1" }, new GeneratedQuestion { Content = "Q2" }], []));
         gen.Setup(g => g.GenerateQuestionsAsync(
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
@@ -395,9 +419,15 @@ public class RoadmapLessonTests
         var mile = await db.RoadmapMilestones.AsNoTracking().FirstAsync(m => m.Id == milestoneId);
         Assert.Equal(MilestoneStatus.Pending, mile.Status);
         // AI sinh câu hỏi KHÔNG được gọi (reserve chặn trước).
+        // ⚠ Phải nhắm ĐÚNG overload mà đường bài học dùng (overload mang `lessonContext`). Để
+        // nguyên `Times.Never` trên overload cũ thì assert này thành RỖNG NGHĨA: nó canh một
+        // overload mà đường này không bao giờ gọi tới nữa, nên luôn đúng bất kể code làm gì.
         gen.Verify(g => g.GenerateQuestionsAsync(
             It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+            It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+            It.IsAny<LessonContext>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // ── (3) /start khi đang Practicing → 409, KHÔNG reserve thêm, KHÔNG tạo session mới ──
@@ -557,9 +587,10 @@ public class RoadmapLessonTests
         var practice = new Mock<IPracticeService>();
         practice.Setup(p => p.CreateLessonSessionAsync(
                 It.IsAny<Guid>(), It.IsAny<CreatePracticeSessionRequest>(), It.IsAny<Guid>(),
-                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<LessonContext?>(),
+                It.IsAny<CancellationToken>()))
             .Callback((Guid cid, CreatePracticeSessionRequest req, Guid sid,
-                       IReadOnlyList<string>? _, CancellationToken _) =>
+                       IReadOnlyList<string>? _, LessonContext? _, CancellationToken _) =>
             {
                 captured = req;
                 // Link lesson sau đó chạy FK roadmap_lessons.session_id (SQLite CÓ enforce FK

@@ -50,6 +50,21 @@ class CriterionRef(BaseModel):
     name: str
 
 
+class LessonContextDto(BaseModel):
+    """Chủ đề của ĐÚNG bài học mà buổi luyện này sinh ra từ (lộ trình B2C).
+
+    Trước khi có nó, .NET chỉ gửi ``focusCriteria`` — tiêu chí của CHẶNG — nên mọi bài trong cùng
+    một chặng cho lớp SINH đúng một đầu vào. Đo trên dev: 1 chặng có 4 bài (ôn ngôn ngữ · cấu trúc
+    dữ liệu · thuật toán · OOP) dùng chung 3 tiêu chí, và một buổi của bài "tối ưu truy vấn SQL"
+    nhận câu hỏi về xử lý lỗi API — chủ đề của bài KHÁC cùng chặng.
+    """
+
+    title: str
+    # Mục lục bài giảng (đề mục ``##``), .NET đã cắt trần. Vắng = người học bấm Bắt đầu mà chưa mở
+    # bài lần nào (lý thuyết sinh lazy) — hợp lệ, chỉ mất một lớp ngữ cảnh.
+    outline: str | None = None
+
+
 class GenerateQuestionsRequest(BaseModel):
     jobCategory: str            # BA | BE | FE
     language: str = "vi"
@@ -85,6 +100,15 @@ class GenerateQuestionsRequest(BaseModel):
     # Giá trị lạ KHÔNG bị từ chối ở tầng schema (`str` chứ không phải Literal/Enum): xem
     # `app/seniority.normalize` — 422 ở đây sẽ thành 502 trên một buổi ĐÃ TRỪ CREDIT.
     seniority: str = "Junior"
+    # Ngữ cảnh BÀI HỌC (chỉ đường bài học lộ trình gửi). Vắng ⇒ prompt GIỮ NGUYÊN XI cho mọi caller
+    # cũ (luyện tự do, campaign B2B).
+    #
+    # ⚠ Khai tường minh ở ĐÂY là nửa quyết định của tính năng — y hệt `focusCriteria`/`seniority`
+    # ngay trên: thiếu dòng này thì .NET vẫn gửi, HTTP vẫn 200, không lỗi, không log, và pydantic
+    # `extra='ignore'` chỉ đơn giản vứt field ⇒ câu hỏi lặng lẽ bám CHẶNG thay vì bám BÀI. Đúng lớp
+    # bug đã cắn repo 4 lần (`focusCriteria`/BC14 · `metricsVersion` · `adaptiveMaxQuestions` ·
+    # `seniority`/SEN1).
+    lessonContext: LessonContextDto | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):

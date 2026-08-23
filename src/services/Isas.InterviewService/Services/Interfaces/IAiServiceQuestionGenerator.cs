@@ -65,6 +65,25 @@ public interface IAiServiceQuestionGenerator
         IReadOnlyList<GroundingChunk>? grounding, string language,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria,
         string seniority = "Junior", CancellationToken ct = default);
+
+    // ── Overload BÀI HỌC LỘ TRÌNH — thêm `lessonContext` (chủ đề của ĐÚNG bài đang mở) ─────────
+    //
+    // Vì sao overload RIÊNG thay vì thêm `LessonContext?` vào overload giàu nhất: 24 setup Moq
+    // trên 11 file test đang liệt kê ĐỦ tham số của overload đó (kèm lambda `Callback`/
+    // `ReturnsAsync` khớp arity). Chèn thêm một tham số buộc phải sửa cả 24 chỗ — churn lớn trên
+    // những test KHÔNG liên quan gì đến bài học, và mỗi lần sửa là một cơ hội làm yếu một assert
+    // đang canh thứ khác.
+    //
+    // `lessonContext` KHÔNG nullable và KHÔNG có giá trị mặc định — đó là thứ giữ cho overload này
+    // phân biệt được với overload ngay trên (cùng tiền tố tham số): một lời gọi 10 tham số chỉ khớp
+    // được overload cũ, 11 tham số chỉ khớp được overload này. Cho nó default sẽ dựng lại đúng
+    // CS0121 mà ghi chú ở overload `grounding+ct` phía trên đang cảnh báo.
+    Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria,
+        string seniority, LessonContext lessonContext, CancellationToken ct = default);
 }
 
 /// <summary>

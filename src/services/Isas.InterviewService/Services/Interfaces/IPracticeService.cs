@@ -19,9 +19,15 @@ public interface IPracticeService
 
     // BC14 — /start roadmap lesson: session B2C bình thường nhưng sessionId do caller cấp (để link lesson
     // sau khi tạo, thoả FK) + câu hỏi bám focusCriteria của milestone. Reserve/gen/BK12 như CreateSessionAsync.
+    //
+    // `lessonContext` (chủ đề của ĐÚNG bài đang mở) là thứ phân biệt bài này với các bài KHÁC cùng
+    // chặng: `focusCriteria` thuộc về CHẶNG nên mọi bài trong chặng gửi xuống y hệt nhau (đo trên
+    // dev: 1 chặng / 4 bài / cùng 3 tiêu chí; trung bình 2,8 bài/chặng trên 87 chặng).
+    // Optional để caller cũ (test gọi trực tiếp) không phải sửa; production LUÔN truyền.
     Task<PracticeSessionResponse> CreateLessonSessionAsync(
         Guid candidateId, CreatePracticeSessionRequest request, Guid sessionId,
-        IReadOnlyList<string>? focusCriteria, CancellationToken ct = default);
+        IReadOnlyList<string>? focusCriteria, LessonContext? lessonContext = null,
+        CancellationToken ct = default);
 
     // I1: tạo session B2B (gắn campaign_id) + materialize tiêu chí campaign → rubric_criteria(campaign_id).
     Task<PracticeSessionResponse> CreateCampaignSessionAsync(
