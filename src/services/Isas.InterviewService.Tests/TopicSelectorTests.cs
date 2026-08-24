@@ -63,6 +63,20 @@ public class TopicSelectorTests
         Assert.Contains(LogLevel.Warning, logger.Levels);
     }
 
+    // ── pool.Count == slots CHÍNH XÁC ⇒ trả hết pool, KHÔNG log Warning giả (biên khác "pool < slots") ─
+    [Fact]
+    public void PoolCountEqualsSlots_ReturnsWholePool_DoesNotLogWarning()
+    {
+        var pool = Enumerable.Range(1, 5).Select(i => Topic($"t{i}")).ToList();
+        var logger = new CapturingLogger<TopicSelector>();
+        var selector = new TopicSelector(new Random(1), logger);
+
+        var result = selector.Select(JobCategory.BE, "Middle", "vi", 5, [], pool);
+
+        Assert.Equal(5, result.Count);
+        Assert.DoesNotContain(LogLevel.Warning, logger.Levels);
+    }
+
     // ── targetable 3 / slots 5 ⇒ tập CriterionName của kết quả ⊇ 3 tên đó, lặp nhiều seed ────────
     [Fact]
     public void Targetable3_Slots5_ResultCoversAllThree_AcrossManySeeds()
@@ -113,6 +127,31 @@ public class TopicSelectorTests
         }
     }
 
+    // ── CriterionName khớp PHÂN BIỆT hoa/thường (Ordinal) — "C1" ≠ "c1", dù cùng ký tự ────────────
+    [Fact]
+    public void CriterionNameMatch_IsCaseSensitive_DifferentCaseTopicNeverChosen()
+    {
+        // c1-upper mang đúng "C1" (khớp targetable); c1-lower mang "c1" (khác case, KHÔNG được
+        // tính là khớp) — nếu so khớp lỡ dùng OrdinalIgnoreCase thì cả hai đều là ứng viên hợp lệ
+        // và "c1-lower" có cơ hội bị chọn ngẫu nhiên; đúng thiết kế thì "c1-lower" không bao giờ
+        // được chọn cho tiêu chí "C1".
+        var pool = new List<PracticeTopic>
+        {
+            Topic("c1-upper", "C1"),
+            Topic("c1-lower", "c1"),
+        };
+        string[] targetable = ["C1"];
+
+        for (var seed = 0; seed < 50; seed++)
+        {
+            var selector = new TopicSelector(new Random(seed));
+            var result = selector.Select(JobCategory.BE, "Middle", "vi", 1, targetable, pool);
+
+            Assert.Equal(1, result.Count);
+            Assert.Equal("c1-upper", result[0].TopicKey);
+        }
+    }
+
     // ── Random(42) ⇒ hai lần chạy ra danh sách GIỐNG HỆT ─────────────────────────────────────────
     [Fact]
     public void SameSeed42_TwoRuns_ProduceIdenticalOrderedResult()
@@ -130,6 +169,38 @@ public class TopicSelectorTests
         var run2 = new TopicSelector(new Random(42)).Select(JobCategory.BE, "Middle", "vi", 5, targetable, pool);
 
         Assert.Equal(run1.Select(t => t.TopicKey), run2.Select(t => t.TopicKey));
+    }
+
+    // ── Chiều ngược lại của SameSeed42: KHÁC seed ⇒ CÓ THỂ ra kết quả khác nhau ─────────────────────
+    // slots == số tiêu chí targetable CHÍNH XÁC (2 == 2) ⇒ toàn bộ kết quả đến từ vòng lặp phủ tiêu
+    // chí (không có khe dư nào rơi vào phần bốc phần còn lại của pool) — mỗi tiêu chí có 2 ứng viên
+    // nên việc bốc ngẫu nhiên đúng ứng viên nào PHẢI ảnh hưởng tới kết quả cuối. Nếu việc bốc bị thay
+    // bằng "luôn chọn ứng viên đầu tiên" (mất ngẫu nhiên) thì mọi seed sẽ ra CÙNG một kết quả — test
+    // này đỏ đúng ca đó.
+    [Fact]
+    public void DifferentSeeds_CanProduceDifferentOrderedResults()
+    {
+        var pool = new List<PracticeTopic>
+        {
+            Topic("c1-a", "C1"), Topic("c1-b", "C1"),
+            Topic("c2-a", "C2"), Topic("c2-b", "C2"),
+        };
+        string[] targetable = ["C1", "C2"];
+
+        var signatures = new HashSet<string>();
+        for (var seed = 0; seed < 20; seed++)
+        {
+            var selector = new TopicSelector(new Random(seed));
+            var result = selector.Select(JobCategory.BE, "Middle", "vi", 2, targetable, pool);
+
+            Assert.Equal(2, result.Count);
+            signatures.Add(string.Join(",", result.Select(t => t.TopicKey)));
+        }
+
+        Assert.True(
+            signatures.Count > 1,
+            $"20 seed khác nhau nhưng chỉ ra {signatures.Count} kết quả khác nhau — nghi việc bốc " +
+            "ứng viên trong pool không còn dùng Random (vd bị thay bằng chọn cố định phần tử đầu).");
     }
 
     // ── pool rỗng ⇒ trả rỗng, không ném ────────────────────────────────────────────────────────────
