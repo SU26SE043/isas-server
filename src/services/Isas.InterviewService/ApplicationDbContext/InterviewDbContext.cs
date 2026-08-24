@@ -18,6 +18,9 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<RubricLevel> RubricLevels => Set<RubricLevel>();
         // DB15 — rubric_anchors gộp thành cột jsonb rubric_levels.example_answers (bỏ bảng/entity).
 
+        // TOP1 — danh mục chủ đề luyện tập B2C (schema-only; chưa seed, chưa wire luồng tạo buổi).
+        public DbSet<PracticeTopic> PracticeTopics => Set<PracticeTopic>();
+
         public DbSet<FileRecord> FileRecords => Set<FileRecord>();
 
         public DbSet<CvAnalysis> CvAnalyses => Set<CvAnalysis>();   // BC7
