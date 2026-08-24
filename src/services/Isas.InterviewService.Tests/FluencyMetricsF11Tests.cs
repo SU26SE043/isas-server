@@ -102,8 +102,18 @@ public class FluencyMetricsF11Tests
         var desc = B2CRubricSeed.Build()
             .First(c => c.Name == B2CRubricSeed.FluencyName).Description!;
 
-        Assert.Contains("CHỈ xét CÁCH NÓI", desc);
-        Assert.Contains("không xét câu trả lời đúng/sai", desc);
+        // ⚠ TIỀN ĐỀ ĐÃ ĐỔI CÓ CHỦ ĐÍCH. Trước đây mô tả này là CHỈ THỊ gửi cho LLM ("CHỈ xét CÁCH
+        // NÓI") — một lời dặn, và nó đã KHÔNG giữ được: đo trên production, cùng một file ghi âm
+        // nộp cho 4 câu khác nhau nhận 0%/40%/60%. Nay tiêu chí được hệ TỰ TÍNH từ số đo nên sự cô
+        // lập là do CẤU TRÚC, không do lời dặn: `DeliveryFluencyScorer` không hề nhận transcript
+        // hay câu hỏi làm đầu vào.
+        //
+        // Test vì thế đổi từ "mô tả có dặn đúng không" sang "mô tả có nói ĐÚNG phương pháp không" —
+        // mô tả là thứ người luyện đọc, nói sai phương pháp thì họ không hiểu vì sao điểm ra thế.
+        Assert.Contains("TỰ TÍNH từ số đo âm thanh", desc);
+        Assert.Contains("không phụ thuộc câu trả lời đúng/sai", desc);
+        // Và phải nói ra luật LOẠI-chứ-không-cho-0, vì đó là thứ người luyện sẽ thấy trên màn kết quả.
+        Assert.Contains("LOẠI khỏi điểm, không tính 0", desc);
     }
 
     // ── (3) INT-9: publish và callback phải khớp bộ tiêu chí (gồm cả tiêu chí F11) ────────
@@ -127,7 +137,11 @@ public class FluencyMetricsF11Tests
             session.Id, q.Id, candidate, new MemoryStream([1, 2, 3]), "audio/webm", 42);
 
         var published = Assert.Single(jobs);
-        Assert.Contains(published.Criteria, c => c.Name == B2CRubricSeed.FluencyName);
+        // ⚠ TIỀN ĐỀ ĐÃ ĐỔI CÓ CHỦ ĐÍCH: tiêu chí trôi chảy nay KHÔNG được gửi cho LLM nữa (hệ tự
+        // tính từ số đo). Ý ĐỊNH của test — "publish và callback dùng CÙNG một bộ, không rơi tiêu
+        // chí nào ⇒ không Failed ⇒ không mất credit" — giữ nguyên và vẫn là thứ được kiểm ở dưới.
+        Assert.DoesNotContain(published.Criteria, c => c.Name == B2CRubricSeed.FluencyName);
+        Assert.Contains(published.Criteria, c => c.Name == B2CRubricSeed.TerminologyName);
 
         // Callback chấm ĐỦ đúng bộ tiêu chí vừa publish → answer phải Scored, không rơi tiêu chí nào.
         var answer = await t.Db.PracticeAnswers.FirstAsync(a => a.SessionId == session.Id);

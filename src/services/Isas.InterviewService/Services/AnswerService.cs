@@ -16,6 +16,7 @@ public class AnswerService : IAnswerService
     private readonly IScoringJobPublisher _scoringPublisher;
     private readonly ISessionScoringNotifier _scoringNotifier;
     private readonly ScoringOptions _scoring;   // E10 — self-consistency (N, ngưỡng spread, temp)
+    private readonly DeliveryScoringOptions _deliveryScoring;   // ngưỡng chấm tiêu chí cách nói bằng số đo
     private readonly IAiServiceInterviewDecider? _decider;   // phỏng vấn THÍCH ỨNG (null = tắt / test cũ)
     private readonly AdaptiveOptions _adaptive;   // INT-17b — chỉ đọc trần số lần lỗi (phần còn lại đóng dấu trên session)
     // TU1 — sinh CÂU GỐC BÙ khi chuỗi hết sớm mà ngân sách buổi còn. Cùng client `PracticeService` dùng
@@ -39,13 +40,17 @@ public class AnswerService : IAnswerService
         // TU1 — cũng optional (default null) để mọi test dựng AnswerService cũ vẫn compile: thiếu nó thì
         // đơn giản là KHÔNG bù câu, đúng hành vi trước TU1. DI có đăng ký (AddHttpClient) nên production
         // luôn nhận bản thật.
-        IAiServiceQuestionGenerator? questionGenerator = null)
+        IAiServiceQuestionGenerator? questionGenerator = null,
+        // Optional cùng lý do như hai tham số trên: thiếu nó → dùng mặc định trong code (bảng ngưỡng
+        // phân vị + kill-switch BẬT), đúng hành vi production. DI có đăng ký ở Program.cs.
+        IOptions<DeliveryScoringOptions>? deliveryScoringOptions = null)
     {
         _db = db;
         _storage = storage;
         _scoringPublisher = scoringPublisher;
         _scoringNotifier = scoringNotifier;
         _scoring = scoringOptions.Value;
+        _deliveryScoring = deliveryScoringOptions?.Value ?? new DeliveryScoringOptions();
         _decider = decider;
         _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
         _questionGenerator = questionGenerator;
@@ -1169,7 +1174,12 @@ public class AnswerService : IAnswerService
             // E9: kèm levels (+ anchors). Cờ dải mặc định PHẢI truyền ở CẢ HAI đường publish (đường
             // này + StuckAnswerRepublisher), nếu không thì answer đi đường cứu hộ bị chấm bằng thước
             // khác answer đi đường thường — cùng bài học với kill-switch đáp án mẫu ngay bên dưới.
-            var builtCriteria = ScoringCriteriaBuilder.Build(scopedCriteria, _scoring.DefaultBandStyle);
+            //
+            // Tiêu chí chấm bằng SỐ ĐO bị BỎ khỏi bộ gửi đi — hệ tự tính ở callback. Luật này PHẢI
+            // giống hệt ở StuckAnswerRepublisher (dùng chung MeasuredCriteriaSplit), nếu không thì
+            // answer đi đường cứu hộ sẽ bị LLM chấm độ trôi chảy còn answer đường thường thì không.
+            var aiCriteria = MeasuredCriteriaSplit.ForAi(scopedCriteria, _logger, answer.Id);
+            var builtCriteria = ScoringCriteriaBuilder.Build(aiCriteria, _scoring.DefaultBandStyle);
 
             // E10 — self-consistency: publish N job (attempt 1..N) cho cùng 1 answer để chấm N lần.
             //   attempt 1 → temp=0 (tái lập); 2..N → SelfConsistencyTemperature (dao động thật để đo spread).
@@ -1337,6 +1347,19 @@ public class AnswerService : IAnswerService
                 continue;
             }
 
+            // Tiêu chí chấm bằng SỐ ĐO: BỎ điểm LLM trả về (defense-in-depth, cùng mẫu E8 ngay trên).
+            // Đường publish đã không gửi chúng đi, nên tới đây được nghĩa là: image AIService lệch, job
+            // cũ còn trong queue, hoặc nhánh lùi-an-toàn của MeasuredCriteriaSplit đã gửi nguyên bộ. Cả
+            // ba ca đều KHÔNG được phép ghi đè con số hệ tự tính — hai nguồn cho cùng một tiêu chí là
+            // thứ tệ hơn cả cái bug đang sửa.
+            if (crit.ScoringMethod == CriterionScoringMethod.DeliveryMetrics)
+            {
+                _logger.LogInformation(
+                    "Bỏ điểm LLM cho tiêu chí {CriterionId} (answer {AnswerId}) — tiêu chí này chấm bằng số đo",
+                    item.CriterionId, answerId);
+                continue;
+            }
+
             var maxScore = crit.MaxScore;
 
             // E8: kẹp điểm về [0, maxScore] của tiêu chí (INT-9) — chống worker/image trả điểm lệch trần.
@@ -1374,10 +1397,68 @@ public class AnswerService : IAnswerService
             });
         }
 
+        AddMeasuredScores(answer, session!, critById.Values, attemptNo, req.RubricVersion);
+
         // Persist điểm attempt này (giữ answer.Status = Scoring cho tới khi đủ N attempt).
         await _db.SaveChangesAsync(ct);
 
         await FinalizeAnswerAsync(answer, session!, req.RubricVersion, force: false, ct);
+    }
+
+    /// <summary>
+    /// Ghi dòng điểm cho các tiêu chí chấm bằng SỐ ĐO — nguồn là chính
+    /// <c>practice_answers</c> (đã được cập nhật ngay trên bởi <c>DeliveryMetricsMapper.Apply</c>),
+    /// KHÔNG phải payload điểm của LLM.
+    ///
+    /// <para><b>KHÔNG đo được ⇒ KHÔNG ghi dòng nào</b> — và đó chính là cách "LOẠI tiêu chí khỏi
+    /// điểm" được thực hiện: <c>SessionResultService</c> bỏ qua tiêu chí không có dòng
+    /// <c>answer_scores</c> nào (<c>if (!avgByCriterion.TryGetValue(...)) continue;</c>) nên nó tự
+    /// rơi khỏi mẫu số trung bình cộng. Ghi 0 sẽ kéo tụt điểm buổi khoảng 20% vì một thứ người học
+    /// không gây ra — đúng luật INT-18 đã chốt cho tiêu chí không được hỏi tới.</para>
+    ///
+    /// <para>Ghi theo TỪNG attempt (E10) với cùng <paramref name="rubricVersion"/>: <c>FinalizeAnswerAsync</c>
+    /// đếm attempt distinct theo version để biết đã đủ N chưa, và stale-removal ở đầu
+    /// <see cref="SaveResultAsync"/> khoá theo (attempt, version) — dùng khoá khác là vừa hỏng
+    /// idempotency vừa hỏng phép đếm. Số đo tất định nên N dòng giống hệt nhau ⇒ median = chính nó
+    /// và spread = 0 ⇒ KHÔNG sinh <c>needs_review</c> giả.</para>
+    /// </summary>
+    private void AddMeasuredScores(
+        PracticeAnswer answer, PracticeSession session,
+        IEnumerable<RubricCriterion> criteria, int attemptNo, int rubricVersion)
+    {
+        var metrics = DeliveryMetricsMapper.Read(answer);
+
+        foreach (var crit in criteria.Where(c => c.ScoringMethod == CriterionScoringMethod.DeliveryMetrics))
+        {
+            var measured = DeliveryFluencyScorer.Score(
+                metrics, crit.MaxScore, session.Language, _deliveryScoring);
+
+            if (measured is not { } result)
+            {
+                _logger.LogInformation(
+                    "Tiêu chí {CriterionId} (answer {AnswerId}) KHÔNG đo được cách nói — LOẠI khỏi điểm, "
+                    + "không ghi dòng nào (KHÔNG phải 0 điểm)", crit.Id, answer.Id);
+                continue;
+            }
+
+            _db.AnswerScores.Add(new AnswerScore
+            {
+                Id = Guid.NewGuid(),
+                AnswerId = answer.Id,
+                CriterionId = crit.Id,
+                Score = result.Score,
+                // Mức neo (E9) là khái niệm của đường LLM ("chọn mức khớp nhất"). Ở đây không có LLM
+                // nào chọn gì, nên để null thay vì gán bậc — bậc của bảng ngưỡng KHÔNG phải rubric_levels.
+                LevelMatched = null,
+                Reasoning = result.Reasoning,
+                AttemptNo = attemptNo,
+                RubricVersion = rubricVersion,
+                // Không có prompt nào tham gia ⇒ null = "không biết/không áp dụng", đúng nghĩa BK23.
+                PromptVersion = null,
+                DeliveryScoringVersion = _deliveryScoring.RuleVersion,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
     }
 
     /// <summary>

@@ -164,7 +164,7 @@ def test_lesson_theory_prompt_forbids_guessing_urls():
 
 def test_endpoint_returns_resources(monkeypatch):
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None):
+                   grounding=None, evidence=None, mode=None):
         return "# Bài\n\nND", [
             {"title": "MDN", "type": "Doc", "publisher": "Mozilla",
              "url": "https://developer.mozilla.org/"},

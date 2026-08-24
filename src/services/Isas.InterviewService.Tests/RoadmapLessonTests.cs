@@ -11,6 +11,7 @@ using Isas.InterviewService.Services.Interfaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -74,6 +75,23 @@ public class RoadmapLessonTests
             new Mock<ISessionScoringNotifier>().Object, reservation.Object,
             NullLogger<PracticeService>.Instance);
 
+    // BE-2 — cùng RealPractice nhưng bật `Interview:Bilingual:Enabled`, cần cho buổi luyện của
+    // roadmap tiếng Anh: thiếu cờ này, `ValidateLanguage("en")` ném "Bilingual interview chưa được
+    // bật" dù roadmap đã hợp lệ ở tầng của nó (mẫu `BilingualPractice` trong EvidenceDrivenPr160Tests).
+    private static PracticeService RealPracticeBilingual(
+        TestDb t, Mock<IAiServiceQuestionGenerator> gen, Mock<ICreditReservationClient> reservation)
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Interview:Bilingual:Enabled"] = "true"
+        }).Build();
+        return new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance,
+            config: config);
+    }
+
     private static RoadmapsController Controller(
         TestDb t, IPracticeService practice, IAiServiceRoadmapGenerator gen, Guid userId)
     {
@@ -95,6 +113,21 @@ public class RoadmapLessonTests
         Action<IReadOnlyList<string>?>? captureFocus = null)
     {
         var gen = new Mock<IAiServiceQuestionGenerator>();
+        // Đường BÀI HỌC nay đi overload mang `lessonContext` (11 tham số) — phải setup RIÊNG, không
+        // thì Moq trả `null` và `/start` hỏng với "Sinh câu hỏi thất bại" (đỏ ồn ào, không im lặng).
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<LessonContext>(), It.IsAny<CancellationToken>()))
+            .Callback((string _, string? _, string? _, IReadOnlyList<string>? focus, int? _,
+                       IReadOnlyList<GroundingChunk>? _, string _,
+                       IReadOnlyList<QuestionTargetCriterionDto>? _, string _,
+                       LessonContext _, CancellationToken _) => captureFocus?.Invoke(focus))
+            .ReturnsAsync(new GeneratedQuestionsResult(
+                [new GeneratedQuestion { Content = "Q1" }, new GeneratedQuestion { Content = "Q2" }], []));
+
         var setup = gen.Setup(g => g.GenerateQuestionsAsync(
             It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()));
@@ -104,6 +137,33 @@ public class RoadmapLessonTests
                 .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } });
         else
             setup.ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } });
+        return gen;
+    }
+
+    // BE-2 — mock overload NGÔN-NGỮ-HOÁ (jobCategory,cvText,jdText,focusCriteria,count,grounding,
+    // language,seniority,ct): đường được gọi khi `session.Language != "vi"` và không có tiêu chí
+    // NỘI DUNG nào để gắn nhãn (targetable.Count == 0, ca của rubric EN mới seed 1 tiêu chí Always
+    // trong test này) — KHÁC overload 7-tham-số mà `QuestionGenOk` mock cho đường "vi".
+    private static Mock<IAiServiceQuestionGenerator> QuestionGenOkEnglish()
+    {
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        // Đường bài học nay đi overload mang `lessonContext` — setup riêng (xem QuestionGenOk).
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<LessonContext>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GeneratedQuestionsResult(
+                [new GeneratedQuestion { Content = "Q1" }, new GeneratedQuestion { Content = "Q2" }], []));
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GeneratedQuestionsResult(
+                new List<GeneratedQuestion> { new() { Content = "Q1" }, new() { Content = "Q2" } },
+                Array.Empty<QuestionCitationDto>()));
         return gen;
     }
 
@@ -141,7 +201,7 @@ public class RoadmapLessonTests
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
-                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LessonTheoryResult(TheoryDuDung, []));
 
         var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
@@ -187,7 +247,7 @@ public class RoadmapLessonTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LessonTheoryResult(TheoryDuDung, []));
 
         var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
@@ -209,7 +269,7 @@ public class RoadmapLessonTests
 
         gen.Verify(g => g.GenerateLessonTheoryAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -223,7 +283,7 @@ public class RoadmapLessonTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-lesson-theory trả 500"));
 
         var ctrl = Controller(t, new Mock<IPracticeService>().Object, gen.Object, user);
@@ -274,6 +334,64 @@ public class RoadmapLessonTests
         Assert.True(await db.PracticeSessions.AsNoTracking().AnyAsync(s => s.Id == session.Id));
     }
 
+    // ── (2c) BE-2 — buổi luyện của lesson phải LẤY ĐÚNG ngôn ngữ của roadmap ────────────────
+    //
+    // Trước bản vá: `CreatePracticeSessionRequest` dựng ở `RoadmapLessonService.StartLessonAsync`
+    // KHÔNG truyền `Language` ⇒ rơi về default `null` ⇒ `ValidateLanguage` luôn trả "vi", bất kể
+    // roadmap là tiếng gì. Cùng lớp lỗi với Seniority (đã sửa ngay trên) — chưa đổ máu chỉ vì tình
+    // cờ: 8 buổi hiện có trên production đều bắt nguồn từ roadmap tiếng Việt, nhưng đã có 1 roadmap
+    // tiếng Anh chưa ai bấm Bắt đầu.
+    [Fact]
+    public async Task StartLesson_VietnameseRoadmap_CreatesVietnameseSession()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var r = SeedRoadmap(t, user, MilestoneStatus.Pending, cvId: null, "Clarity", "Depth");
+        var (roadmapId, _, lesson1, _) = Ids(r);
+        Assert.Equal("vi", r.Language);   // mặc định entity — khoá tiền đề của test này
+
+        var gen = QuestionGenOk();
+        var reservation = ReserveOk();
+        var practice = RealPractice(t, gen, reservation);
+        var ctrl = Controller(t, practice, new Mock<IAiServiceRoadmapGenerator>().Object, user);
+
+        var created = Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+        var session = Assert.IsType<PracticeSessionResponse>(created.Value);
+        Assert.Equal("vi", session.Language);
+
+        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(s => s.Id == session.Id);
+        Assert.Equal("vi", saved.Language);
+    }
+
+    [Fact]
+    public async Task StartLesson_EnglishRoadmap_CreatesEnglishSession()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var r = SeedRoadmap(t, user, MilestoneStatus.Pending, cvId: null, "Clarity", "Depth");
+        var (roadmapId, _, lesson1, _) = Ids(r);
+
+        // Roadmap tiếng Anh — mô phỏng đúng ca đang treo trên production (chưa ai bấm Bắt đầu).
+        await t.Db.Roadmaps.Where(x => x.Id == roadmapId)
+            .ExecuteUpdateAsync(u => u.SetProperty(x => x.Language, "en"));
+        // `EnsureRubricExistsAsync` đòi rubric EN đang active cho (BE, en) trước khi cho tạo buổi —
+        // mẫu seed của RubricLanguageQ9Tests.
+        t.Db.RubricCriteria.Add(TestDb.Criterion(JobCategory.BE, language: "en"));
+        await t.Db.SaveChangesAsync();
+
+        var gen = QuestionGenOkEnglish();
+        var reservation = ReserveOk();
+        var practice = RealPracticeBilingual(t, gen, reservation);
+        var ctrl = Controller(t, practice, new Mock<IAiServiceRoadmapGenerator>().Object, user);
+
+        var created = Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+        var session = Assert.IsType<PracticeSessionResponse>(created.Value);
+        Assert.Equal("en", session.Language);
+
+        var saved = await t.NewContext().PracticeSessions.AsNoTracking().FirstAsync(s => s.Id == session.Id);
+        Assert.Equal("en", saved.Language);
+    }
+
     // ── (2b) ví hết → 402, KHÔNG có row session, lesson vẫn Theory, mile vẫn Pending ──────
     [Fact]
     public async Task StartLesson_OutOfCredit_Returns402_NoSession_LessonStaysTheory()
@@ -301,9 +419,15 @@ public class RoadmapLessonTests
         var mile = await db.RoadmapMilestones.AsNoTracking().FirstAsync(m => m.Id == milestoneId);
         Assert.Equal(MilestoneStatus.Pending, mile.Status);
         // AI sinh câu hỏi KHÔNG được gọi (reserve chặn trước).
+        // ⚠ Phải nhắm ĐÚNG overload mà đường bài học dùng (overload mang `lessonContext`). Để
+        // nguyên `Times.Never` trên overload cũ thì assert này thành RỖNG NGHĨA: nó canh một
+        // overload mà đường này không bao giờ gọi tới nữa, nên luôn đúng bất kể code làm gì.
         gen.Verify(g => g.GenerateQuestionsAsync(
             It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
-            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<IReadOnlyList<string>?>(), It.IsAny<int?>(),
+            It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+            It.IsAny<LessonContext>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // ── (3) /start khi đang Practicing → 409, KHÔNG reserve thêm, KHÔNG tạo session mới ──
@@ -410,7 +534,7 @@ public class RoadmapLessonTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LessonTheoryResult("## Theory", []));
 
         // stranger → 403
@@ -425,7 +549,7 @@ public class RoadmapLessonTests
         // AI KHÔNG được gọi cho request 403/404.
         gen.Verify(g => g.GenerateLessonTheoryAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -448,6 +572,150 @@ public class RoadmapLessonTests
         reservation.Verify(x => x.ReserveAsync(
             It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         Assert.False(await t.NewContext().PracticeSessions.AsNoTracking().AnyAsync());
+    }
+
+    // ── Số câu buổi luyện trong bài học TĨNH theo RoadmapOptions ────────────────────────
+    //
+    // Trước bản vá: `RoadmapLessonService.BeginSessionAsync` dựng `CreatePracticeSessionRequest`
+    // KHÔNG truyền `QuestionCount`/`AdaptiveEnabled` ⇒ rơi về mặc định toàn cục `Adaptive:*`
+    // (Enabled=true, SeedCount=5, MaxDeepPerQuestion=3) ⇒ buổi ra 5 câu gốc + chuỗi đào sâu + câu
+    // bù tự động tới trần 20 — không phải 5 câu cố định như người học tưởng.
+    private static (Mock<IPracticeService> practice, Func<CreatePracticeSessionRequest?> captured)
+        CapturingPractice(TestDb t)
+    {
+        CreatePracticeSessionRequest? captured = null;
+        var practice = new Mock<IPracticeService>();
+        practice.Setup(p => p.CreateLessonSessionAsync(
+                It.IsAny<Guid>(), It.IsAny<CreatePracticeSessionRequest>(), It.IsAny<Guid>(),
+                It.IsAny<IReadOnlyList<string>?>(), It.IsAny<LessonContext?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback((Guid cid, CreatePracticeSessionRequest req, Guid sid,
+                       IReadOnlyList<string>? _, LessonContext? _, CancellationToken _) =>
+            {
+                captured = req;
+                // Link lesson sau đó chạy FK roadmap_lessons.session_id (SQLite CÓ enforce FK
+                // trong EF10) — mock trả DTO suông sẽ nổ FK, không phải lỗi code (mẫu Seniority
+                // test ở EvidenceDrivenPr160Tests.cs).
+                var s = TestDb.Session(cid, SessionStatus.Ready);
+                s.Id = sid;
+                t.Db.PracticeSessions.Add(s);
+                t.Db.SaveChanges();
+            })
+            .ReturnsAsync(new PracticeSessionResponse(
+                Guid.NewGuid(), "Ready", "BE", "vi", null, null, DateTime.UtcNow, null, []));
+        return (practice, () => captured);
+    }
+
+    private static RoadmapsController ControllerWithRoadmapOptions(
+        TestDb t, IPracticeService practice, Guid userId, RoadmapOptions? roadmapOptions = null)
+    {
+        var lessonService = new RoadmapLessonService(
+            t.Db, practice, new Mock<IAiServiceRoadmapGenerator>().Object,
+            NullLogger<RoadmapLessonService>.Instance,
+            scoringOptions: null,
+            roadmapOptions: Options.Create(roadmapOptions ?? new RoadmapOptions()));
+        var controller = new RoadmapsController(
+            new Mock<IRoadmapService>().Object, lessonService,
+            new Mock<IRoadmapReportService>().Object, NullLogger<RoadmapsController>.Instance);
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, userId.ToString())], "test"));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = principal }
+        };
+        return controller;
+    }
+
+    // (a) Mặc định: đúng 5 câu, adaptive tắt — không câu chèn, không câu bù.
+    [Fact]
+    public async Task StartLesson_MacDinh_5CauCoDinh_AdaptiveTat()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(t, practice.Object, user);
+
+        Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+
+        Assert.NotNull(captured());
+        Assert.Equal(5, captured()!.QuestionCount);
+        Assert.False(captured()!.AdaptiveEnabled);
+    }
+
+    // (b) Cấu hình có tác dụng THẬT — không phải hằng số ghi cứng.
+    [Fact]
+    public async Task StartLesson_CauHinhDoi_SoCauTheoCauHinh()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(
+            t, practice.Object, user, new RoadmapOptions { LessonQuestionCount = 8 });
+
+        Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+
+        Assert.Equal(8, captured()!.QuestionCount);
+    }
+
+    // (c) Cấu hình sai — kẹp về dải hợp lệ, KHÔNG ném.
+    [Theory]
+    [InlineData(99, 20)]
+    [InlineData(0, 1)]
+    public async Task StartLesson_CauHinhNgoaiDai_KepKhongNem(int configured, int expected)
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(
+            t, practice.Object, user, new RoadmapOptions { LessonQuestionCount = configured });
+
+        Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+
+        Assert.Equal(expected, captured()!.QuestionCount);
+    }
+
+    // (d) Đường lùi vẫn sống: bật lại adaptive cho bài học qua cấu hình.
+    [Fact]
+    public async Task StartLesson_LessonAdaptiveEnabledTrue_BatAdaptive()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var (roadmapId, _, lesson1, _) = Ids(SeedRoadmap(t, user));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(
+            t, practice.Object, user, new RoadmapOptions { LessonAdaptiveEnabled = true });
+
+        Assert.IsType<CreatedResult>(await ctrl.StartLesson(roadmapId, lesson1, default));
+
+        Assert.True(captured()!.AdaptiveEnabled);
+    }
+
+    // (e) RetryLessonAsync đi qua CÙNG thân BeginSessionAsync — khoá luôn đường làm lại, kẻo sau
+    // này ai tách hai đường ra thì chỉ một bên được vá.
+    [Fact]
+    public async Task RetryLesson_5CauCoDinh_AdaptiveTat()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var r = SeedRoadmap(t, user);
+        var (roadmapId, _, lesson1, _) = Ids(r);
+        await t.Db.RoadmapLessons.Where(l => l.Id == lesson1)
+            .ExecuteUpdateAsync(u => u.SetProperty(l => l.Status, LessonStatus.Done));
+
+        var (practice, captured) = CapturingPractice(t);
+        var ctrl = ControllerWithRoadmapOptions(t, practice.Object, user);
+
+        Assert.IsType<OkObjectResult>(await ctrl.RetryLesson(roadmapId, lesson1, default));
+
+        Assert.Equal(5, captured()!.QuestionCount);
+        Assert.False(captured()!.AdaptiveEnabled);
     }
 
     // ── sweeper harness (mirror SessionAbandonSweeperTests) ─────────────────────────────

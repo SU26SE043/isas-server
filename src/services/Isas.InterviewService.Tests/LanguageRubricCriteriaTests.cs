@@ -119,11 +119,19 @@ public class LanguageRubricCriteriaTests
         var names = published!.Criteria.Select(c => c.Name).ToList();
         Assert.Contains(B2CRubricSeed.LanguageName, names);
         Assert.Contains(B2CRubricSeed.TerminologyName, names);
-        // Publish phải mang ĐÚNG TOÀN BỘ bộ seed của nghề đó — không rơi tiêu chí nào (INT-9).
+        // Publish phải mang ĐÚNG TOÀN BỘ tiêu chí DO LLM CHẤM của nghề đó — không rơi cái nào (INT-9).
         // So theo TẬP thay vì đếm số cứng: mỗi lần thêm tiêu chí (F12 → 6 · F11 → 7) mà chỉ sửa
         // lại con số thì test đang chạy theo hiện thực; so tập thì giữ nguyên được Ý ĐỊNH.
+        //
+        // ⚠ TIỀN ĐỀ ĐÃ ĐỔI CÓ CHỦ ĐÍCH: trước đây tập kỳ vọng là TOÀN BỘ seed. Nay tiêu chí chấm
+        // bằng SỐ ĐO (`CriterionScoringMethod.DeliveryMetrics`) cố ý KHÔNG được gửi cho LLM — gửi thì
+        // LLM vẫn chấm và hệ có hai con số cho cùng một tiêu chí. Lọc theo CỘT chứ không loại trừ
+        // theo TÊN: khớp tên ở đường chấm là hợp đồng gãy ngay khi ai đó đổi một chữ, và nó cũng sẽ
+        // không bắt được nếu mai này có tiêu chí thứ hai chuyển sang chấm bằng số đo.
         var expectedNames = B2CRubricSeed.Build()
-            .Where(c => c.JobCategory == cat && c.Language == "vi").Select(c => c.Name).OrderBy(n => n);
+            .Where(c => c.JobCategory == cat && c.Language == "vi"
+                        && c.ScoringMethod == CriterionScoringMethod.Ai)
+            .Select(c => c.Name).OrderBy(n => n);
         Assert.Equal(expectedNames, names.OrderBy(n => n));
     }
 
@@ -142,8 +150,13 @@ public class LanguageRubricCriteriaTests
         t.Db.AddRange(session, q, answer);
         await t.Db.SaveChangesAsync();
 
+        // ⚠ TIỀN ĐỀ ĐÃ ĐỔI CÓ CHỦ ĐÍCH: chỉ lấy tiêu chí DO LLM CHẤM, vì đó đúng là bộ mà đường
+        // publish gửi đi. Tiêu chí chấm bằng số đo đi đường riêng (hệ tự tính ở callback từ
+        // `practice_answers`) và điểm LLM trả về cho nó sẽ bị BỎ — nên nhét nó vào payload ở đây
+        // sẽ biến test "E8 không drop nhầm" thành test đo một đường không tồn tại.
         var criteria = await t.Db.RubricCriteria.AsNoTracking()
-            .Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == JobCategory.BE && c.Language == "vi")
+            .Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == JobCategory.BE
+                        && c.Language == "vi" && c.ScoringMethod == CriterionScoringMethod.Ai)
             .ToListAsync();
 
         // Ứng viên dùng SAI thuật ngữ → tiêu chí "Thuật ngữ chuyên ngành" điểm thấp (1/5),

@@ -21,6 +21,7 @@ public class RoadmapLessonService : IRoadmapLessonService
     private readonly ILogger<RoadmapLessonService> _logger;
 
     private readonly ScoringOptions _scoring;   // F6a — ngưỡng "điểm yếu" (dùng chung với BC9)
+    private readonly RoadmapOptions _roadmap;   // số câu + adaptive cho buổi luyện trong bài học
 
     public RoadmapLessonService(
         InterviewDbContext db,
@@ -28,13 +29,15 @@ public class RoadmapLessonService : IRoadmapLessonService
         IAiServiceRoadmapGenerator generator,
         ILogger<RoadmapLessonService> logger,
         // Optional (default null) → test cũ dựng 4 tham số vẫn compile; DI inject bản thật.
-        IOptions<ScoringOptions>? scoringOptions = null)
+        IOptions<ScoringOptions>? scoringOptions = null,
+        IOptions<RoadmapOptions>? roadmapOptions = null)
     {
         _db = db;
         _practiceService = practiceService;
         _generator = generator;
         _logger = logger;
         _scoring = scoringOptions?.Value ?? new ScoringOptions();
+        _roadmap = roadmapOptions?.Value ?? new RoadmapOptions();
     }
 
     public async Task<LessonResponse> OpenLessonAsync(
@@ -43,18 +46,33 @@ public class RoadmapLessonService : IRoadmapLessonService
         var lesson = await LoadOwnedLessonAsync(candidateId, roadmapId, lessonId, ct);
         var roadmap = lesson.Milestone.Roadmap;
 
+        // Số lần đã làm bài này — đọc 1 lần, dùng cho mọi nhánh trả về bên dưới (trạng thái lesson
+        // không đổi trong lời gọi này: đường sinh lý thuyết không chạm `status`).
+        var attemptCount = await _db.RoadmapLessonAttempts
+            .CountAsync(a => a.LessonId == lessonId, ct);
+
         // Đã có lý thuyết DÙNG ĐƯỢC → đọc DB, KHÔNG gọi AI lần 2 (lazy, idempotent).
         if (HasUsableTheory(lesson.TheoryContent))
-            return MapLesson(lesson);
+            return MapLesson(lesson, attemptCount);
 
         // Lazy-gen: gọi AIService (sync). Lỗi → AiServiceException (502) → chưa lưu gì (mở lại được).
         // RAG grounding (Cách 2) — feed snapshot precompute (lesson.GroundingRefs) → AI cite trong tập đó.
         var focus = lesson.Milestone.FocusCriteria ?? new List<string>();
+        var weakCriteria = FilterWeakCriteria(roadmap, focus);
+        var weaknesses = FormatWeaknesses(weakCriteria);
+        // BE-5 — cùng bằng chứng như lúc TẠO roadmap (RoadmapEvidenceLoader), tính lại từ
+        // `roadmap.SourceSessionIds` (persisted, không cần migration để lưu riêng cho lesson).
+        var evidence = weakCriteria.Count > 0 && roadmap.SourceSessionIds is { Count: > 0 }
+            ? await RoadmapEvidenceLoader.LoadAsync(_db, roadmap.SourceSessionIds, weakCriteria, ct)
+            : [];
+        // Chế độ ôn tập phải theo lộ trình xuống TỚI bài giảng — đây mới là chỗ người học đọc nội
+        // dung. Chỉ đổi cấu trúc roadmap mà để lý thuyết y như cũ thì tính năng chỉ đổi được tiêu
+        // đề bài, còn thứ họ thật sự học vẫn là bài của chế độ tiến-lên.
         var generated = roadmap.Language == "vi"
             ? await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
-                lesson.Title, focus, BuildWeaknesses(roadmap, focus), lesson.GroundingRefs, ct)
+                lesson.Title, focus, weaknesses, lesson.GroundingRefs, evidence, roadmap.Mode, ct)
             : await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
-                lesson.Title, focus, BuildWeaknesses(roadmap, focus), lesson.GroundingRefs, ct, roadmap.Language);
+                lesson.Title, focus, weaknesses, lesson.GroundingRefs, ct, roadmap.Language, evidence, roadmap.Mode);
         var theory = generated.TheoryMarkdown;
         // F15 — tài liệu học sinh CÙNG lượt với lý thuyết; lưu chung 1 lần ghi để không có trạng
         // thái "có theory mà chưa có resources" (guard idempotent bên dưới chỉ nhìn theory_content).
@@ -86,7 +104,7 @@ public class RoadmapLessonService : IRoadmapLessonService
         {
             // Request khác vừa sinh xong trước → trả bản đã lưu (không ghi đè).
             var fresh = await _db.RoadmapLessons.AsNoTracking().FirstAsync(l => l.Id == lessonId, ct);
-            return MapLesson(fresh);
+            return MapLesson(fresh, attemptCount);
         }
 
         _logger.LogInformation("BC14: sinh lý thuyết lesson {LessonId} (roadmap {RoadmapId})", lessonId, roadmapId);
@@ -96,7 +114,7 @@ public class RoadmapLessonService : IRoadmapLessonService
         lesson.Resources = resources;
         lesson.GroundingRefs = citedRefs;
         lesson.TheoryGeneratedAt = now;
-        return MapLesson(lesson);
+        return MapLesson(lesson, attemptCount);
     }
 
     /// <summary>
@@ -135,13 +153,59 @@ public class RoadmapLessonService : IRoadmapLessonService
         Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default)
     {
         var lesson = await LoadOwnedLessonAsync(candidateId, roadmapId, lessonId, ct);
-        var roadmap = lesson.Milestone.Roadmap;
 
         // Đang luyện / đã xong → 409 (resume session cũ, KHÔNG reserve thêm credit).
+        // ⚠ Ca `Done` KHÔNG được nới thành "tạo buổi mới" ở đây: làm lại đi qua endpoint RIÊNG
+        // (`RetryLessonAsync`) để FE phân biệt được "tiếp tục buổi dở" với "tạo buổi mới" — nhét cả
+        // hai vào một route thì phân biệt bằng trạng thái ngầm, về sau không ai đọc ra được.
         if (lesson.Status == LessonStatus.Practicing)
             throw new LessonAlreadyStartedException("Lesson đang luyện — tiếp tục buổi hiện tại.", lesson.SessionId);
         if (lesson.Status == LessonStatus.Done)
             throw new LessonAlreadyStartedException("Lesson đã hoàn thành.", lesson.SessionId);
+
+        return await BeginSessionAsync(candidateId, lesson, LessonStatus.Theory, retry: false, ct);
+    }
+
+    /// <summary>
+    /// Làm lại một bài ĐÃ hoàn thành để nâng điểm. Tốn ĐÚNG 1 credit như mọi buổi luyện khác (đi qua
+    /// cùng đường reserve, không có nhánh miễn phí — nó là một buổi phỏng vấn thật) và câu hỏi được
+    /// SINH MỚI (tái dùng nguyên <c>CreateLessonSessionAsync</c>, không chép câu cũ).
+    ///
+    /// <para>Tiền điều kiện NGƯỢC với <see cref="StartLessonAsync"/>: chỉ <c>Done</c> mới làm lại
+    /// được. Còn <c>Theory</c> → 409 (chưa học lần nào thì bấm Bắt đầu); đang <c>Practicing</c> →
+    /// 409 (tiếp tục buổi dở, không mở buổi thứ hai).</para>
+    ///
+    /// <para><b>Lộ trình đã đóng thì MỞ LẠI:</b> roadmap <c>Completed</c> → về <c>Active</c> và xoá
+    /// bản báo cáo chốt sổ. Không làm vậy thì người học nâng điểm xong mà báo cáo vẫn là bản cũ ⇒
+    /// nút bấm thành vô nghĩa. Khi bài đó xong lần nữa, BC15 tự đóng sổ lại với số MỚI.</para>
+    /// </summary>
+    public async Task<PracticeSessionResponse> RetryLessonAsync(
+        Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default)
+    {
+        var lesson = await LoadOwnedLessonAsync(candidateId, roadmapId, lessonId, ct);
+
+        if (lesson.Status == LessonStatus.Theory)
+            throw new LessonRetryNotAllowedException(
+                "Lesson chưa được luyện lần nào — hãy bấm Bắt đầu.", null);
+        if (lesson.Status == LessonStatus.Practicing)
+            throw new LessonRetryNotAllowedException(
+                "Lesson đang luyện — tiếp tục buổi hiện tại.", lesson.SessionId);
+
+        return await BeginSessionAsync(candidateId, lesson, LessonStatus.Done, retry: true, ct);
+    }
+
+    /// <summary>
+    /// Thân chung của "Bắt đầu" và "Làm lại": reserve credit → tạo buổi → lật trạng thái lesson ATOMIC.
+    ///
+    /// <paramref name="expectedStatus"/> là trạng thái mà lesson PHẢI còn đang ở khi cú lật xảy ra —
+    /// đây là thứ DUY NHẤT chặn hai request đồng thời mở hai buổi cho cùng một bài. Không được bỏ.
+    /// </summary>
+    private async Task<PracticeSessionResponse> BeginSessionAsync(
+        Guid candidateId, RoadmapLesson lesson, LessonStatus expectedStatus, bool retry, CancellationToken ct)
+    {
+        var roadmap = lesson.Milestone.Roadmap;
+        var lessonId = lesson.Id;
+        var roadmapId = roadmap.Id;
 
         // Practice session B2C: reserve 1 credit (hết → 402 KHÔNG tạo session), câu hỏi bám focusCriteria.
         // sessionId cấp trước để link lesson SAU khi session tồn tại (thoả FK roadmap_lessons.session_id).
@@ -154,16 +218,77 @@ public class RoadmapLessonService : IRoadmapLessonService
         // request POSITIONAL 3 tham số ⇒ nhận default ⇒ MỌI buổi luyện theo lộ trình đóng dấu "Junior"
         // vĩnh viễn, kể cả roadmap Senior. Không vô hại: seniority đi vào `/decide-next` (câu đào sâu
         // hỏi sai tầm) và lộ ra `PracticeSessionResponse.Seniority` cho FE.
-        var req = new CreatePracticeSessionRequest(
-            roadmap.CvId, JdId: null, roadmap.JobCategory, Seniority: roadmap.Level.ToString());
-        var response = await _practiceService.CreateLessonSessionAsync(
-            candidateId, req, sessionId, lesson.Milestone.FocusCriteria, ct);
+        //
+        // Language: CÙNG LỚP LỖI vừa sửa ở trên, và chưa đổ máu chỉ vì tình cờ — cả 8 buổi luyện
+        // hiện có trên production đều bắt nguồn từ roadmap tiếng Việt, nhưng production ĐÃ CÓ 1
+        // roadmap tiếng Anh chưa ai bấm Bắt đầu. Thiếu dòng này → request rơi về default `null` →
+        // `ValidateLanguage` hạ mọi buổi luyện của roadmap English xuống "vi": câu hỏi/chấm/nhận xét
+        // sai ngôn ngữ hoàn toàn, trong khi người học đã trả credit cho đúng buổi đó.
+        //
+        // QuestionCount/AdaptiveEnabled: CÙNG LỚP LỖI với Seniority/Language ở trên. Bỏ trống 2
+        // trường này để request rơi về default toàn cục `Adaptive:*` (Enabled=true, SeedCount=5,
+        // MaxDeepPerQuestion=3) ⇒ buổi bài học sinh 5 câu gốc + chuỗi đào sâu + câu bù tự động
+        // (TopUpRootQuestions) tới khi chạm trần MaxQuestions=20 — người học không lường trước được
+        // số câu/thời lượng. Bài học đã có `focusCriteria` khoanh sẵn chủ đề nên đào sâu ở đây ít
+        // giá trị hơn hẳn buổi luyện tự do; ép TĨNH bằng cấu hình riêng (RoadmapOptions), KHÔNG
+        // dùng `Adaptive:MaxDeepPerQuestion=0` — cờ đó đổi CHẾ ĐỘ (frontier cũ, MaxFollowUps quay
+        // lại 3) chứ không tắt, vẫn chèn thêm câu ở đuôi.
+        var lessonQuestionCount = _roadmap.LessonQuestionCount;
+        if (lessonQuestionCount is < 1 or > 20)
+        {
+            var clamped = Math.Clamp(lessonQuestionCount, 1, 20);
+            _logger.LogWarning(
+                "Roadmap:LessonQuestionCount={Configured} ngoài dải [1,20], dùng {Clamped}",
+                lessonQuestionCount, clamped);
+            lessonQuestionCount = clamped;
+        }
 
-        // Link atomic (guard Status==Theory chống double-start): chỉ khi còn Theory mới set Practicing +
-        // session_id. Đua 2 /start cùng lúc → chỉ 1 thắng; kẻ thua để lại session mồ côi (rất hiếm, cùng
-        // 1 user) — credit sẽ được E7 hoàn khi session đó bỏ ngang/hết hạn.
+        // ⚠ CvId = null CÓ CHỦ ĐÍCH — buổi bài học KHÔNG gắn CV của lộ trình.
+        //
+        // Trước đây truyền `roadmap.CvId`, tức CV chọn MỘT LẦN lúc lập lộ trình được nhét vào prompt
+        // của CẢ 14 bài. Đo trên dev: 2 lộ trình `BE` đang dùng CV mở đầu bằng "NGUYEN VAN NAM -
+        // Business Analyst", và bài "Phân tích và tối ưu hiệu năng truy vấn SQL" nhận câu hỏi
+        // "Với kinh nghiệm làm Business Analyst, bạn đã quen thuộc với việc thu thập và đặc tả yêu
+        // cầu…" — hỏi nghề khác trong một lộ trình BE.
+        //
+        // KHÔNG chặn được bằng cách kiểm nghề: `file_records` không có cột nghề nào (CV thô không
+        // tự khai nghề; chỉ `cv_analyses` mới có `job_category`, mà phân tích CV tốn credit nên
+        // phần lớn CV không có). Nên lựa chọn thật chỉ còn "gửi" hoặc "không gửi".
+        //
+        // Chọn KHÔNG gửi, theo đúng tiền lệ đã ĐO của `RoadmapService.CreateAsync`: nội dung CV đã
+        // bị gỡ khỏi prompt sinh lộ trình vì nhóm có CV cho tên chặng không khá hơn (còn nêu công
+        // nghệ cụ thể ÍT hơn: 8,6% vs 12,1%). Sinh câu hỏi cho một BÀI cũng là bài toán bám CHỦ ĐỀ,
+        // không phải cá nhân hoá — và từ bản này bài đã có `lessonContext` khoanh chủ đề thật.
+        //
+        // Buổi luyện TỰ DO không đổi: ở đó người dùng chọn CV cho ĐÚNG buổi đó, một cách có ý thức.
+        //
+        // Đánh đổi đã biết: buổi bài học mất báo cáo đối chiếu CV↔câu trả lời (BC8, cần
+        // `session.cv_id`). Phạm vi thực tế nhỏ — trên dev chỉ 1/17 buổi bài học hội đủ điều kiện
+        // (6 buổi có cv_id, và phải có `cv_analyses` cho đúng CV đó).
+        var req = new CreatePracticeSessionRequest(
+            CvId: null, JdId: null, roadmap.JobCategory,
+            Language: roadmap.Language, Seniority: roadmap.Level.ToString(),
+            QuestionCount: lessonQuestionCount,
+            AdaptiveEnabled: _roadmap.LessonAdaptiveEnabled);
+
+        // Chủ đề của ĐÚNG bài này. `FocusCriteria` là của CHẶNG nên một mình nó không phân biệt
+        // được 4 bài trong cùng chặng; mục lục bài giảng là lớp thứ hai (null khi người học bấm
+        // "Bắt đầu" mà chưa mở bài lần nào — hợp lệ, `theory_content` sinh lazy lúc mở bài).
+        var lessonContext = new LessonContext(lesson.Title, LessonOutline.From(lesson.TheoryContent));
+
+        var response = await _practiceService.CreateLessonSessionAsync(
+            candidateId, req, sessionId, lesson.Milestone.FocusCriteria, lessonContext, ct);
+
+        // Link atomic (guard Status == expectedStatus chống double-start): chỉ khi lesson CÒN đang ở
+        // đúng trạng thái tiền điều kiện mới set Practicing + session_id. Đua 2 request cùng lúc →
+        // chỉ 1 thắng; kẻ thua để lại session mồ côi (rất hiếm, cùng 1 user) — credit sẽ được E7 hoàn
+        // khi session đó bỏ ngang/hết hạn.
+        //
+        // ⚠ `session_id` bị GHI ĐÈ ở lần làm lại — CÓ CHỦ ĐÍCH: cột đó mang nghĩa "buổi MỚI NHẤT" và
+        // mọi chỗ đang đọc nó (BC15 rollup, improvement, FE) muốn đúng nghĩa đó. Lịch sử KHÔNG mất:
+        // buổi cũ nằm trong `roadmap_lesson_attempts` (ghi ngay bên dưới).
         var linked = await _db.RoadmapLessons
-            .Where(l => l.Id == lessonId && l.Status == LessonStatus.Theory)
+            .Where(l => l.Id == lessonId && l.Status == expectedStatus)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(l => l.Status, LessonStatus.Practicing)
                 .SetProperty(l => l.SessionId, sessionId), ct);
@@ -171,19 +296,57 @@ public class RoadmapLessonService : IRoadmapLessonService
         if (linked == 0)
         {
             _logger.LogWarning(
-                "BC14: lesson {LessonId} bị /start đồng thời — session {SessionId} không link được (mồ côi)",
+                "BC14: lesson {LessonId} bị mở đồng thời — session {SessionId} không link được (mồ côi)",
                 lessonId, sessionId);
+            if (retry)
+                throw new LessonRetryNotAllowedException("Lesson vừa được mở ở một yêu cầu khác.", null);
             throw new LessonAlreadyStartedException("Lesson vừa được bắt đầu ở một yêu cầu khác.", null);
         }
 
+        // Ghi lại LẦN LÀM này. Số thứ tự cấp bằng `count + 1` — an toàn vì chỉ request vừa THẮNG cú
+        // lật trạng thái ở trên mới tới được đây, và một lesson chỉ lật được một lần cho tới khi nó
+        // quay về Done. UNIQUE(lesson_id, attempt_no) là lá chắn nếu giả định đó sai.
+        var attemptNo = await _db.RoadmapLessonAttempts
+            .CountAsync(a => a.LessonId == lessonId, ct) + 1;
+        _db.RoadmapLessonAttempts.Add(new RoadmapLessonAttempt
+        {
+            LessonId = lessonId,
+            SessionId = sessionId,
+            AttemptNo = attemptNo,
+            CreatedAt = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync(ct);
+
         // Milestone Pending→InProgress khi lesson đầu tiên của mile được /start (idempotent — lesson kế no-op).
+        //
+        // ⚠ Guard `== Pending` cũng chính là thứ giữ cho việc LÀM LẠI không hạ cấp một milestone đã
+        // `Completed`: cái đã hoàn thành thì vẫn hoàn thành, người học chỉ đang cải thiện điểm.
         await _db.RoadmapMilestones
             .Where(m => m.Id == lesson.MilestoneId && m.Status == MilestoneStatus.Pending)
             .ExecuteUpdateAsync(u => u.SetProperty(m => m.Status, MilestoneStatus.InProgress), ct);
 
+        // Làm lại trên một lộ trình ĐÃ ĐÓNG → mở lại. Xoá đúng 4 thứ mà BC15 đặt lúc đóng sổ
+        // (status/final_report/overall_comment/completed_at) — để sót thứ nào thì lộ trình mang một
+        // nửa trạng thái "đã xong", và `GET /report` sẽ đọc snapshot CŨ thay vì tính lại.
+        // BC15 tự đóng sổ lại (với số mới) khi bài này Done lần nữa.
+        if (retry)
+        {
+            var reopened = await _db.Roadmaps
+                .Where(r => r.Id == roadmapId && r.Status == RoadmapStatus.Completed)
+                .ExecuteUpdateAsync(u => u
+                    .SetProperty(r => r.Status, RoadmapStatus.Active)
+                    .SetProperty(r => r.FinalReport, (string?)null)
+                    .SetProperty(r => r.OverallComment, (string?)null)
+                    .SetProperty(r => r.CompletedAt, (DateTime?)null), ct);
+            if (reopened > 0)
+                _logger.LogInformation(
+                    "Roadmap {RoadmapId} mở lại (Completed -> Active) vì lesson {LessonId} được làm lại",
+                    roadmapId, lessonId);
+        }
+
         _logger.LogInformation(
-            "BC14: /start lesson {LessonId} (roadmap {RoadmapId}) -> session {SessionId} Practicing",
-            lessonId, roadmapId, sessionId);
+            "BC14: {Action} lesson {LessonId} (roadmap {RoadmapId}) -> session {SessionId} Practicing (lần {AttemptNo})",
+            retry ? "làm lại" : "/start", lessonId, roadmapId, sessionId, attemptNo);
 
         return response;
     }
@@ -216,27 +379,45 @@ public class RoadmapLessonService : IRoadmapLessonService
     /// đồng bộ, mà Baseline chính là snapshot của cùng dữ liệu đó.
     ///
     /// Giao với FocusCriteria để không "mách" AI những điểm yếu lạc đề với bài học đang mở.
-    /// Rỗng → null (giữ nguyên hành vi cũ, prompt bỏ qua nhánh này).
+    ///
+    /// BE-5 — tách khỏi bước ĐỊNH DẠNG (<see cref="FormatWeaknesses"/>) để trả về DANH SÁCH TÊN
+    /// THÔ, tái dùng cho <see cref="RoadmapEvidenceLoader"/> (cần tên tiêu chí, không cần chuỗi
+    /// "Tên: 40%" đã ghép sẵn cho prompt).
     /// </summary>
-    private List<string>? BuildWeaknesses(Roadmap roadmap, IReadOnlyList<string> focus)
+    private List<RoadmapWeakness> FilterWeakCriteria(Roadmap roadmap, IReadOnlyList<string> focus)
     {
         if (roadmap.Baseline is not { Count: > 0 } baseline || focus.Count == 0)
-            return null;
+            return [];
 
-        var weaknesses = focus
+        return focus
             .Where(name => baseline.TryGetValue(name, out var pct)
                            && pct < _scoring.ImprovementThresholdPct)
-            .Select(name => $"{name}: {baseline[name]:0.#}%")
+            .Select(name => new RoadmapWeakness(name, baseline[name]))
             .ToList();
-
-        return weaknesses.Count > 0 ? weaknesses : null;
     }
 
-    private static LessonResponse MapLesson(RoadmapLesson l)
+    /// <summary>Định dạng cho prompt ("Tên tiêu chí: 40%"). Rỗng → null (giữ nguyên hành vi cũ,
+    /// prompt bỏ qua nhánh weaknesses).</summary>
+    private static List<string>? FormatWeaknesses(IReadOnlyList<RoadmapWeakness> weak)
+        => weak.Count > 0 ? weak.Select(w => $"{w.CriterionName}: {w.Percentage:0.#}%").ToList() : null;
+
+    private static LessonResponse MapLesson(RoadmapLesson l, int attemptCount)
         => new(l.Id, l.OrderNo, l.Title, l.TheoryContent, l.SessionId, l.Status.ToString(),
                (l.Resources ?? []).Select(MapResource).ToList(),
                // RAG grounding — nguồn AI đã cite (narrow ở OpenLessonAsync). null = chưa precompute.
-               GroundingMapper.ToCitations(l.GroundingRefs));
+               GroundingMapper.ToCitations(l.GroundingRefs),
+               attemptCount,
+               CanRetry(l.Status));
+
+    /// <summary>
+    /// Luật "được làm lại không" — MỘT chỗ duy nhất, dùng chung với <see cref="RoadmapService"/>.
+    /// Hai bản sao của luật này lệch nhau nghĩa là FE hiện nút ở màn này mà không hiện ở màn kia,
+    /// hoặc hiện nút rồi bấm vào ăn 409.
+    ///
+    /// Chỉ dựa vào trạng thái bài; quyền sở hữu là hiển nhiên (chỉ chủ roadmap đọc được response).
+    /// KHÔNG dựa vào số dư ví — lý do ghi ở <see cref="LessonResponse.CanRetry"/>.
+    /// </summary>
+    internal static bool CanRetry(LessonStatus status) => status == LessonStatus.Done;
 
     /// <summary>F15 — entity → DTO. Dùng chung với <see cref="RoadmapService"/> để 2 đường trả
     /// cùng shape (chi tiết lesson vs roadmap detail).</summary>

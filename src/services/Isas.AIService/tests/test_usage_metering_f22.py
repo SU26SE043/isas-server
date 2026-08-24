@@ -98,7 +98,7 @@ _ALL_CALLS = [
                               "levels": [{"score": 5, "descriptor": "tốt"}]}]),
      {"scores": [{"criterionId": "c1", "score": 5, "levelMatched": 5, "reasoning": "vì X"}],
       "sampleAnswer": "mẫu"}),
-    ("generate_roadmap", dict(job_category="BE", level="Junior", weaknesses=None, cv_text=None),
+    ("generate_roadmap", dict(job_category="BE", level="Junior", weaknesses=None),
      {"milestones": [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]}),
     ("generate_lesson_theory", dict(job_category="BE", level="Junior", lesson_title="L",
                                     focus_criteria=[], weaknesses=None),

@@ -14,4 +14,11 @@ public interface IRoadmapReportService
     // null → 404; khác chủ → UnauthorizedAccessException (403). Active → interim (kết luận rỗng/null);
     // Completed → snapshot roadmaps.final_report (KHÔNG tính lại).
     Task<RoadmapReportResponse?> GetReportAsync(Guid candidateId, Guid roadmapId, CancellationToken ct = default);
+
+    // GET /roadmaps/{id}/milestones/{mid}/score-report — PHẦN TÍNH đứng sau con số delta hiển thị:
+    // điểm từng tiêu chí của chặng + đúng những buổi đã cộng vào + mốc so. Mọi chặng đều xem được
+    // (delta chỉ là phần THÊM khi có mốc). Chặng đã chốt sổ → đọc snapshot, KHÔNG tính lại.
+    // Lộ trình/chặng không tồn tại → null (404); lộ trình khác chủ → UnauthorizedAccessException (403).
+    Task<MilestoneScoreReportResponse?> GetMilestoneScoreReportAsync(
+        Guid candidateId, Guid roadmapId, Guid milestoneId, CancellationToken ct = default);
 }

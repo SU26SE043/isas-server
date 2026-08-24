@@ -108,6 +108,7 @@ builder.Services.AddScoped<IAdminB2CRubricService, AdminB2CRubricService>();   /
 builder.Services.AddScoped<IAdminRubricPreviewService, AdminRubricPreviewService>();   // chấm thử bộ chuẩn
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
+builder.Services.AddScoped<IRoadmapThresholdService, RoadmapThresholdService>();   // BC15 — ngưỡng đạt admin chỉnh runtime
 builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
 builder.Services.AddScoped<PromptTemplateService>();   // F21 — prompt tuỳ biến (FR17)
 
@@ -303,6 +304,8 @@ builder.Services.Configure<FileStorageOptions>(
 
 builder.Services.Configure<ScoringOptions>(
     builder.Configuration.GetSection(ScoringOptions.SectionName));   // BC9
+builder.Services.Configure<DeliveryScoringOptions>(
+    builder.Configuration.GetSection(DeliveryScoringOptions.SectionName));   // chấm cách nói bằng số đo
 builder.Services.Configure<CapacityOptions>(
     builder.Configuration.GetSection(CapacityOptions.SectionName));
 builder.Services.Configure<AdaptiveOptions>(

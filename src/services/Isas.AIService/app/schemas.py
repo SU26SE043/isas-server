@@ -50,6 +50,21 @@ class CriterionRef(BaseModel):
     name: str
 
 
+class LessonContextDto(BaseModel):
+    """Chủ đề của ĐÚNG bài học mà buổi luyện này sinh ra từ (lộ trình B2C).
+
+    Trước khi có nó, .NET chỉ gửi ``focusCriteria`` — tiêu chí của CHẶNG — nên mọi bài trong cùng
+    một chặng cho lớp SINH đúng một đầu vào. Đo trên dev: 1 chặng có 4 bài (ôn ngôn ngữ · cấu trúc
+    dữ liệu · thuật toán · OOP) dùng chung 3 tiêu chí, và một buổi của bài "tối ưu truy vấn SQL"
+    nhận câu hỏi về xử lý lỗi API — chủ đề của bài KHÁC cùng chặng.
+    """
+
+    title: str
+    # Mục lục bài giảng (đề mục ``##``), .NET đã cắt trần. Vắng = người học bấm Bắt đầu mà chưa mở
+    # bài lần nào (lý thuyết sinh lazy) — hợp lệ, chỉ mất một lớp ngữ cảnh.
+    outline: str | None = None
+
+
 class GenerateQuestionsRequest(BaseModel):
     jobCategory: str            # BA | BE | FE
     language: str = "vi"
@@ -85,6 +100,15 @@ class GenerateQuestionsRequest(BaseModel):
     # Giá trị lạ KHÔNG bị từ chối ở tầng schema (`str` chứ không phải Literal/Enum): xem
     # `app/seniority.normalize` — 422 ở đây sẽ thành 502 trên một buổi ĐÃ TRỪ CREDIT.
     seniority: str = "Junior"
+    # Ngữ cảnh BÀI HỌC (chỉ đường bài học lộ trình gửi). Vắng ⇒ prompt GIỮ NGUYÊN XI cho mọi caller
+    # cũ (luyện tự do, campaign B2B).
+    #
+    # ⚠ Khai tường minh ở ĐÂY là nửa quyết định của tính năng — y hệt `focusCriteria`/`seniority`
+    # ngay trên: thiếu dòng này thì .NET vẫn gửi, HTTP vẫn 200, không lỗi, không log, và pydantic
+    # `extra='ignore'` chỉ đơn giản vứt field ⇒ câu hỏi lặng lẽ bám CHẶNG thay vì bám BÀI. Đúng lớp
+    # bug đã cắn repo 4 lần (`focusCriteria`/BC14 · `metricsVersion` · `adaptiveMaxQuestions` ·
+    # `seniority`/SEN1).
+    lessonContext: LessonContextDto | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):
@@ -260,7 +284,13 @@ class AnalyzeCvRequest(BaseModel):
     # Các id này do service nghiệp vụ cấp, AIService chỉ được phép echo id đã nhận.
     mustHave: list[dict] | None = None
     niceToHave: list[dict] | None = None
-    grounding: list[GroundingChunk] = []
+    # ⚠ PHẢI nhận `None`: .NET gửi `grounding: null` ở đường phân tích CV THƯỜNG (không
+    # requirement) vì tham số mặc định là null và `JsonContent.Create` KHÔNG bỏ null.
+    # Khai `= []` (non-nullable) làm pydantic trả 422 ⇒ InterviewService map thành 502
+    # ⇒ MỌI lượt phân tích CV thường hỏng, im lặng với người dùng. Đo được: lượt
+    # legacy-mode cuối cùng trên production là 17/08 — đúng một ngày trước hai thay
+    # đổi ngày 18/08 dựng nên cái bẫy này.
+    grounding: list[GroundingChunk] | None = None
 
 
 class JdMatch(BaseModel):
@@ -274,6 +304,10 @@ class AnalyzeCvResponse(BaseModel):
     strengths: list[str]
     weaknesses: list[str]
     suggestions: list[str]
+    # Trình độ nghề nghiệp CV chứng minh được. `None` = KHÔNG đủ căn cứ — đo được 87% CV thật
+    # không ghi trình độ ở đâu, nên đây là câu trả lời hạng nhất chứ không phải fallback.
+    # ⚠ `response_model_exclude_none=True` ở route ⇒ `None` bị XOÁ khỏi JSON, không trả `null`.
+    currentLevel: str | None = None
     jdMatch: JdMatch | None = None   # chỉ có khi request có jdText
     requirementMatches: list["CvRequirementMatch"] | None = None
     cvSections: list["CvSectionAnchor"] | None = None
@@ -343,6 +377,12 @@ JOB_NEED_CATEGORIES = ("Technical", "WorkStyle", "Communication", "Growth")
 NEED_LEVELS = ("Strong", "Partial", "Weak")
 VERIFICATION_RISKS = ("Low", "Medium", "High")
 
+# Tập giá trị hợp lệ của `AnalyzeCvResponse.currentLevel`. Khai LẠI ở đây thay vì import
+# `app.seniority.LEVELS` để giữ `schemas.py` là module dữ liệu thuần (hiện chỉ phụ thuộc
+# pydantic) — `seniority` kéo theo `prompt_registry` → `config`. Trôi khỏi nhau thì
+# `test_cv_current_level.py` đỏ.
+CV_CURRENT_LEVELS = ("Fresher", "Junior", "Middle", "Senior")
+
 # Câu bắt buộc khi không tìm thấy bằng chứng. Là HẰNG SỐ chứ không phải câu model tự
 # viết: nó phân biệt "đã tìm và không thấy" với "quên đánh giá", và HR đọc bảng thấy
 # đúng một câu duy nhất thay vì mười cách diễn đạt khác nhau.
@@ -400,12 +440,26 @@ class WeaknessScore(BaseModel):
     percentage: float
 
 
+class CriterionEvidence(BaseModel):
+    """BE-5 — bằng chứng HÀNH VI cho 1 tiêu chí yếu: Reasoning (E11, trích NGUYÊN VĂN lời ứng
+    viên) của answer điểm THẤP NHẤT. .NET đã tải + cắt trần sẵn (RoadmapEvidenceLoader: ≤3 tiêu
+    chí × ≤3 answer/tiêu chí)."""
+    criterionName: str
+    reasoning: list[str]
+
+
 class GenerateRoadmapRequest(BaseModel):
     jobCategory: str
     language: str = "vi"
     level: str                                     # Fresher | Junior | Middle | Senior
     weaknesses: list[WeaknessScore] | None = None  # từ session_criterion_scores; rỗng → roadmap chuẩn theo level
-    cvText: str | None = None
+    # 🔴 `cvText` ĐÃ BỊ GỠ — đừng khai lại. Đo trên production: roadmap có CV và không CV cho tên
+    # chặng không phân biệt được, nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%). CV
+    # thô là đầu vào SAI HÌNH DẠNG cho một bài toán sinh *cấu trúc giáo trình*. Phần CV đóng góp
+    # được nay đi qua `cvAnalysisSummary` (bản tinh luyện) và `currentLevel` (sàn trình độ).
+    # Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU người dùng chọn). `None` = CV không đủ
+    # căn cứ ⇒ không có sàn. ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` nêu ngay dưới.
+    currentLevel: str | None = None
     # BC17 — cá nhân hoá roadmap từ report cũ do ứng viên CHỌN + ô mô tả mong muốn. 3 field này là
     # free-text/tóm tắt do ứng viên/hệ thống cung cấp ⇒ bọc-làm-DỮ-LIỆU trong prompt (AI-4), KHÔNG
     # phải chỉ thị. ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'`
@@ -416,6 +470,27 @@ class GenerateRoadmapRequest(BaseModel):
     # RAG grounding (Contract 2) — cấu trúc roadmap KHÔNG emit citation (Phase 1), nhưng nếu W2
     # cấp grounding thì nó được chèn làm căn cứ. Khai tường minh để pydantic không nuốt (BC14).
     grounding: list[GroundingChunk] | None = None
+    # BE-1 — tiêu chí năng lực THẬT của (jobCategory, language), cùng shape `CriterionRef` dùng cho
+    # chấm-theo-phạm-vi. Milestone.focusCriteria CHỈ được chọn tên trong tập này (sao chép nguyên
+    # văn); vắng/rỗng ⇒ không ràng buộc gì thêm (hành vi cũ). ⚠ PHẢI khai tường minh ở đây — lệch
+    # với comment `focus`/`cvAnalysisSummary` ngay trên: schema này KHÔNG set model_config, nên
+    # pydantic `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai (đúng lớp bug BC14/F2b
+    # `focusCriteria`, và là chính lý do đo được chỉ 7% focusCriteria khớp rubric thật trên prod).
+    criteria: list[CriterionRef] | None = None
+    # BE-4 — độ dài roadmap candidate CHỌN (Quick=2 milestone×2 lesson · Standard=4×3, xem
+    # app.roadmap_quality). Mặc định "Standard" giữ hành vi client cũ (chưa gửi field này). ⚠ PHẢI
+    # khai tường minh — cùng bẫy `extra='ignore'` nêu ở `criteria` ngay trên: thiếu dòng này thì
+    # .NET gửi `scope` mà pydantic nuốt im lặng, mọi request luôn rơi về mặc định trong code.
+    scope: str = "Standard"
+    # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, xem CriterionEvidence. Vắng/rỗng ⇒ không
+    # ràng buộc gì thêm (hành vi cũ). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` ở trên.
+    evidence: list[CriterionEvidence] | None = None
+    # Chế độ lộ trình: "LevelUp" (mặc định — tiến lên cấp mục tiêu, hành vi cũ) hoặc
+    # "Reinforce" (ôn lại: giữ nguyên trình độ, bám điểm yếu đo được, nghiêng về lý thuyết
+    # giải thích chỗ đã sai). Xem app.roadmap_mode. ⚠ PHẢI khai tường minh — cùng bẫy
+    # `extra='ignore'` đã nêu ở `criteria`/`scope`: thiếu dòng này thì .NET gửi `mode` mà
+    # pydantic NUỐT IM LẶNG, mọi lộ trình ôn tập âm thầm được sinh như LevelUp.
+    mode: str = "LevelUp"
 
 
 class RoadmapLesson(BaseModel):
@@ -441,6 +516,15 @@ class GenerateLessonTheoryRequest(BaseModel):
     weaknesses: list[str] | None = None
     # RAG grounding (Contract 2) — vắng/rỗng → ungrounded. Khai tường minh (BC14).
     grounding: list[GroundingChunk] | None = None
+    # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, xem CriterionEvidence ở trên. Vắng/rỗng
+    # ⇒ không ràng buộc gì thêm (hành vi cũ). ⚠ Khai tường minh — mẫu `grounding`/`weaknesses`.
+    evidence: list[CriterionEvidence] | None = None
+    # Chế độ lộ trình: "LevelUp" (mặc định — tiến lên cấp mục tiêu, hành vi cũ) hoặc
+    # "Reinforce" (ôn lại: giữ nguyên trình độ, bám điểm yếu đo được, nghiêng về lý thuyết
+    # giải thích chỗ đã sai). Xem app.roadmap_mode. ⚠ PHẢI khai tường minh — cùng bẫy
+    # `extra='ignore'` đã nêu ở `criteria`/`scope`: thiếu dòng này thì .NET gửi `mode` mà
+    # pydantic NUỐT IM LẶNG, mọi lộ trình ôn tập âm thầm được sinh như LevelUp.
+    mode: str = "LevelUp"
 
 
 class LessonResource(BaseModel):

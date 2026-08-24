@@ -15,6 +15,11 @@ from app.lesson_quality import (
     evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
 )
 from app.question_quality import coverage_defects, verify_defect
+from app.roadmap_mode import DEFAULT_MODE
+from app.roadmap_quality import (
+    DEFAULT_SCOPE, filter_milestone_criteria, message as roadmap_message,
+    scope_counts, truncate_to_scope,
+)
 from app import prompt_registry, timing
 from app.prompts import (
     build_prompt, build_scoring_prompt, build_criteria_prompt,
@@ -27,7 +32,7 @@ from app.prompts import (
     build_verify_questions_prompt,
 )
 from app.schemas import (
-    JOB_NEED_CATEGORIES, NEED_LEVELS, NO_EVIDENCE, VERIFICATION_RISKS,
+    CV_CURRENT_LEVELS, JOB_NEED_CATEGORIES, NEED_LEVELS, NO_EVIDENCE, VERIFICATION_RISKS,
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
@@ -612,6 +617,7 @@ class GeminiProvider(QuestionProvider):
                        grounding: list[dict] | None = None,
                        criteria: list[dict] | None = None,
                        language: str = "vi", seniority: str | None = None,
+                       lesson_context: dict | None = None,
                        _retry_feedback: list[str] | None = None,
                        _attempt: int = 1) -> QuestionGenerationResult:
         """Sinh câu hỏi. ``criteria`` = tiêu chí NỘI DUNG ``[{criterionId, name}]`` để gắn nhãn
@@ -628,7 +634,8 @@ class GeminiProvider(QuestionProvider):
         prompt_grounding = None if settings.question_verify_enabled else grounding
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
                               focus_criteria, prompt_grounding, criteria, _retry_feedback,
-                              language=language, seniority=seniority)
+                              language=language, seniority=seniority,
+                              lesson_context=lesson_context)
 
         # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION).
         # Chấm-theo-phạm-vi — có criteria ⇒ kèm targetCriterionIds.
@@ -700,7 +707,8 @@ class GeminiProvider(QuestionProvider):
             result = QuestionGenerationResult(questions=questions[:effective_count], citations=None)
             return await self._finish(
                 result, criteria, grounding, language, effective_count,
-                job_category, cv_text, jd_text, count, focus_criteria, seniority, _attempt)
+                job_category, cv_text, jd_text, count, focus_criteria, seniority,
+                lesson_context, _attempt)
 
         # Có grounding và/hoặc criteria — tách text + lọc id. DROP mọi id KHÔNG thuộc tập đã cấp
         # (chống bịa by-construction — không tin lời hứa của model): id lạ = model tự phịa.
@@ -746,13 +754,14 @@ class GeminiProvider(QuestionProvider):
                                           target_criteria=target_lists if labeled else None)
         return await self._finish(
             result, criteria, grounding, language, effective_count,
-            job_category, cv_text, jd_text, count, focus_criteria, seniority, _attempt)
+            job_category, cv_text, jd_text, count, focus_criteria, seniority,
+            lesson_context, _attempt)
 
     async def _finish(self, result: QuestionGenerationResult, criteria: list[dict] | None,
                       grounding: list[dict] | None, language: str, effective_count: int,
                       job_category: str, cv_text: str | None, jd_text: str | None,
                       count: int | None, focus_criteria: list[str] | None,
-                      seniority: str | None,
+                      seniority: str | None, lesson_context: dict | None,
                       _attempt: int) -> QuestionGenerationResult:
         """Vòng chất lượng (SC1c) + cổng kiểm chứng (QV1), CHUNG cho mọi nhánh của :meth:`generate`.
 
@@ -787,6 +796,7 @@ class GeminiProvider(QuestionProvider):
             # chỉ là mất sạch nhận xét sửa bài. Không lỗi nào nổ.
             return await self.generate(job_category, cv_text, jd_text, count, focus_criteria,
                                        grounding, criteria, language, seniority,
+                                       lesson_context=lesson_context,
                                        _retry_feedback=defects, _attempt=_attempt + 1)
         return result
 
@@ -1113,6 +1123,11 @@ class GeminiProvider(QuestionProvider):
             "strengths": {"type": "array", "items": {"type": "string"}},
             "weaknesses": {"type": "array", "items": {"type": "string"}},
             "suggestions": {"type": "array", "items": {"type": "string"}},
+            # Trình độ CV chứng minh được. `nullable` + KHÔNG vào `required`: "không đủ căn cứ"
+            # phải là câu trả lời hợp lệ, không phải lỗi. Ép required là buộc model đoán.
+            "currentLevel": {
+                "type": "string", "enum": list(CV_CURRENT_LEVELS), "nullable": True,
+            },
         }
         required = ["summary", "strengths", "weaknesses", "suggestions"]
         requirement_mode = requirements is not None
@@ -1218,6 +1233,21 @@ class GeminiProvider(QuestionProvider):
             "weaknesses": _clean_list(data.get("weaknesses")),
             "suggestions": _clean_list(data.get("suggestions")),
         }
+
+        # Trình độ suy từ CV — mẫu guard của `verificationRisk` (xem `screen_cv`), nhưng fallback
+        # là BỎ HẲN KHOÁ chứ không phải một giá trị an toàn: ở đây "không biết" là câu trả lời
+        # đúng, còn đoán bừa sẽ đẩy một mức trông-như-đã-xác-định vào prompt roadmap.
+        #
+        # ⚠ Chỉ set khoá khi HỢP LỆ, không set `None`: `test_provider_b2c_analyze_cv_giu_nguyen_shape`
+        # khoá TẬP KHOÁ CHÍNH XÁC của dict này, nên gắn khoá vô điều kiện sẽ làm nó đỏ.
+        #
+        # ⚠ `.capitalize()` — CỐ Ý khác `app.seniority.normalize` (phân biệt hoa/thường và
+        # fail-open về "Junior"). Ở đó giá trị đến từ .NET/DB nên đã canonical; ở đây giá trị do
+        # MODEL sinh rồi mới ghi xuống DB, nên nhận `"senior"` và chuẩn hoá là đúng — CHECK ở DB
+        # là lưới cuối.
+        current_level = str(data.get("currentLevel") or "").strip().capitalize()
+        if current_level in CV_CURRENT_LEVELS:
+            result["currentLevel"] = current_level
 
         if jd_text and not requirement_mode:
             jd_match_raw = data.get("jdMatch")
@@ -1859,11 +1889,17 @@ class GeminiProvider(QuestionProvider):
 
     async def generate_roadmap(self, job_category: str, level: str,
                                weaknesses: list[dict] | None,
-                               cv_text: str | None,
                                focus: str | None = None,
                                cv_analysis_summary: str | None = None,
                                prior_roadmap_summary: str | None = None,
-                               grounding: list[dict] | None = None, language: str = "vi") -> list[dict]:
+                               grounding: list[dict] | None = None,
+                               criteria: list[dict] | None = None,
+                               scope: str = DEFAULT_SCOPE, language: str = "vi",
+                               evidence: list[dict] | None = None,
+                               mode: str = DEFAULT_MODE,
+                               current_level: str | None = None,
+                               _retry_feedback: str | None = None,
+                               _attempt: int = 1) -> list[dict]:
         """
         BC13/D20 — sinh cấu trúc roadmap ôn tập (sync, stateless, KHÔNG ghi DB).
 
@@ -1873,17 +1909,45 @@ class GeminiProvider(QuestionProvider):
         ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ định hình cấu trúc.
         Cấu trúc roadmap KHÔNG emit citation ở Phase 1 → output shape KHÔNG đổi (list dict cũ).
 
+        BE-1 — ``criteria`` = tiêu chí năng lực THẬT của (nghề, ngôn ngữ) này, cùng shape
+        ``CriterionRef`` dùng cho chấm-theo-phạm-vi (``{criterionId, name}``; id không dùng ở
+        đây nhưng giữ hợp đồng đồng nhất với ``.NET``/``/generate-questions``). Model chỉ được
+        chọn ``focusCriteria`` bằng cách SAO CHÉP NGUYÊN VĂN tên trong danh sách này; tên KHÔNG
+        khớp bị LỌC BỎ sau khi model trả lời (chống bịa by-construction, mẫu RAG/chấm-theo-phạm-vi
+        — KHÔNG fuzzy-match, xem ``app.roadmap_quality``). Milestone mất hết tiêu chí sau khi lọc
+        → retry ĐÚNG MỘT LẦN kèm nhận xét liệt kê tên hợp lệ (mẫu SC1c); vẫn rỗng sau retry →
+        GIỮ milestone (focusCriteria rỗng), chỉ log lỗi — KHÔNG raise: tạo roadmap không trừ credit
+        (D7/D15), nên biến một milestone thiếu nhãn thành cả roadmap lỗi (mất luôn các milestone
+        khác đã đúng) là đắt hơn nhiều so với việc milestone đó tạm thời không bám baseline.
+
+        BE-4 — ``scope`` (Quick/Standard, xem ``app.roadmap_quality``) thay "số lượng hợp lý (3-5)"
+        mơ hồ cũ bằng chỉ thị CHÍNH XÁC trong prompt; model lờ chỉ thị vẫn bị cắt CỨNG TỪ ĐUÔI sau
+        khi trả lời (``truncate_to_scope`` — milestone/lesson có thứ tự Ý NGHĨA, nền tảng trước nên
+        phải là phần sống sót). KHÔNG raise khi vượt trần — cùng lý do "không trừ credit" ở trên.
+
+        BE-5 — ``evidence`` = Reasoning (E11, trích NGUYÊN VĂN lời ứng viên) của answer điểm THẤP
+        NHẤT cho tiêu chí yếu, đã tải + cắt trần sẵn (.NET ``RoadmapEvidenceLoader``). Chẩn đoán
+        hành vi cụ thể thay cho con số % trừu tượng — xem ``build_evidence_block``.
+
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
+        known_names = [str(c.get("name", "")).strip() for c in (criteria or [])
+                       if isinstance(c, dict) and str(c.get("name", "")).strip()]
         prompt = build_roadmap_prompt(
-            job_category, level, weaknesses, cv_text,
+            job_category, level, weaknesses,
             focus=focus,
             cv_analysis_summary=cv_analysis_summary,
             prior_roadmap_summary=prior_roadmap_summary,
-            grounding=grounding, language=language,
+            grounding=grounding, criteria=known_names or None,
+            retry_feedback=_retry_feedback,
+            language=language,
+            scope=scope,
+            evidence=evidence,
+            mode=mode,
+            current_level=current_level,
         )
 
         response = await self._generate(
@@ -1943,7 +2007,10 @@ class GeminiProvider(QuestionProvider):
             if not title:
                 continue  # bỏ milestone bịa không có title
 
-            focus = [str(f).strip() for f in (m.get("focusCriteria") or []) if str(f).strip()]
+            # BE-1: KHÔNG gọi biến này `focus` — đã dùng tên đó cho tham số free-text phía trên,
+            # và retry sau vòng lặp này cần dùng lại giá trị GỐC của `focus` (parameter), không phải
+            # focusCriteria của milestone cuối cùng vừa duyệt.
+            focus_names = [str(f).strip() for f in (m.get("focusCriteria") or []) if str(f).strip()]
 
             lessons: list[dict] = []
             for l in (m.get("lessons") or []):
@@ -1955,17 +2022,63 @@ class GeminiProvider(QuestionProvider):
             if not lessons:
                 continue  # milestone không có lesson nào hợp lệ -> bỏ
 
-            milestones.append({"title": title, "focusCriteria": focus, "lessons": lessons})
+            milestones.append({"title": title, "focusCriteria": focus_names, "lessons": lessons})
 
         if not milestones:
             raise ValueError("LLM trả về roadmap rỗng sau khi lọc.")
+
+        # BE-4 — model có thể lờ chỉ thị scope trong prompt (giống ca focusCriteria bịa tên ở
+        # BE-1) → cắt CỨNG sau khi trả lời, KHÔNG raise (xem docstring). Đặt TRƯỚC lọc BE-1 để
+        # lọc/retry chỉ tính trên tập milestone THẬT SỰ còn giữ lại, không lãng phí lượt retry cho
+        # milestone sắp bị cắt bỏ.
+        milestones, dropped_milestones, dropped_lessons = truncate_to_scope(milestones, scope)
+        if dropped_milestones:
+            max_m, _ = scope_counts(scope)
+            logger.warning(
+                "Roadmap scope=%s: model trả %d milestone thừa trần %d — cắt từ cuối, giữ %d đầu.",
+                scope, dropped_milestones + len(milestones), max_m, len(milestones))
+        for title, n in dropped_lessons.items():
+            logger.warning(
+                "Roadmap scope=%s milestone '%s': model trả lesson thừa trần — cắt %d, giữ đúng "
+                "trần đã cấu hình cho scope này.", scope, title, n)
+
+        # BE-1 — lọc focusCriteria về đúng tập tên đã cấp (chống bịa by-construction). Không lọc
+        # gì nếu caller không truyền criteria (known_names rỗng) → giữ nguyên hành vi cũ.
+        if known_names:
+            milestones, empty_titles = filter_milestone_criteria(milestones, known_names)
+            if empty_titles:
+                logger.warning(
+                    "Roadmap: %d milestone mất hết focusCriteria hợp lệ sau khi lọc theo tên "
+                    "tiêu chí đã cấp: %s", len(empty_titles), "; ".join(empty_titles))
+                if _attempt < 2:  # SC1c — ĐÚNG MỘT lượt viết lại, không hơn.
+                    feedback = roadmap_message(
+                        "milestone_no_criteria", language,
+                        titles="; ".join(empty_titles), allowed=", ".join(known_names))
+                    return await self.generate_roadmap(
+                        job_category, level, weaknesses, focus=focus,
+                        cv_analysis_summary=cv_analysis_summary,
+                        prior_roadmap_summary=prior_roadmap_summary,
+                        grounding=grounding, criteria=criteria, scope=scope, language=language,
+                        evidence=evidence,
+                        # Lượt viết lại PHẢI mang theo `mode` VÀ `current_level`: thiếu chúng
+                        # thì roadmap nào rơi vào nhánh retry sẽ âm thầm mất chế độ / mất sàn
+                        # trình độ, mà không lỗi ở đâu cả.
+                        mode=mode, current_level=current_level,
+                        _retry_feedback=feedback, _attempt=_attempt + 1)
+                # Hết lượt retry — GIỮ milestone (focusCriteria rỗng), KHÔNG raise: xem docstring
+                # (một milestone thiếu nhãn không đáng đánh đổi mất TOÀN BỘ roadmap đã sinh đúng).
+                logger.error(
+                    "Roadmap: %d milestone vẫn không có focusCriteria hợp lệ sau %d lượt: %s",
+                    len(empty_titles), _attempt, "; ".join(empty_titles))
 
         return milestones
 
     async def generate_lesson_theory(self, job_category: str, level: str,
                                      lesson_title: str, focus_criteria: list[str],
                                      weaknesses: list[str] | None,
-                                     grounding: list[dict] | None = None, language: str = "vi"
+                                     grounding: list[dict] | None = None, language: str = "vi",
+                                     evidence: list[dict] | None = None,
+                                     mode: str = DEFAULT_MODE
                                      ) -> LessonTheoryResult:
         """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
 
@@ -1977,6 +2090,9 @@ class GeminiProvider(QuestionProvider):
 
         resources rỗng KHÔNG phải lỗi (lý thuyết vẫn dùng được) → không raise,
         khác với theoryMarkdown rỗng.
+
+        BE-5 — ``evidence`` = Reasoning (E11) của answer điểm THẤP NHẤT cho tiêu chí yếu, cùng
+        nguồn/lý do như ``generate_roadmap`` — xem ``build_evidence_block``.
 
         ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ + đòi trích dẫn.
         ``cited_chunk_ids`` = None khi ungrounded (endpoint không trả field, giữ shape cũ);
@@ -2039,7 +2155,8 @@ class GeminiProvider(QuestionProvider):
         for _ in range(attempts):
             prompt = build_lesson_theory_prompt(
                 job_category, level, lesson_title, focus_criteria, weaknesses,
-                grounding, retry_feedback=feedback, language=language)
+                grounding, retry_feedback=feedback, language=language, evidence=evidence,
+                mode=mode)
 
             # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
             # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist

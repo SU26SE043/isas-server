@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
+using Isas.InterviewService.Enums;
+using Isas.InterviewService.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -56,6 +58,13 @@ public class RoadmapConfiguration : IEntityTypeConfiguration<Roadmap>
 
         e.Property(x => x.CandidateId).IsRequired();
 
+        // BE-6 — NULL cho hàng tạo trước BE-6 (không backfill; đường đọc tự suy tên).
+        // `MaxLength` khớp hằng số dùng chung `RoadmapNaming.MaxLength` — lệch giữa DB và tầng
+        // validate thì người dùng gõ qua được ở API rồi bị DB từ chối, hoặc ngược lại.
+        e.Property(x => x.Name)
+            .HasColumnType("text")
+            .HasMaxLength(RoadmapNaming.MaxLength);
+
         e.Property(x => x.JobCategory)
             .HasConversion<string>()
             .HasMaxLength(8)
@@ -68,6 +77,17 @@ public class RoadmapConfiguration : IEntityTypeConfiguration<Roadmap>
 
         e.Property(x => x.Language).HasColumnType("text").HasDefaultValue("vi").IsRequired();
         e.HasCheckConstraint("ck_roadmaps_language", "language IN ('vi', 'en')");
+
+        // Chế độ lộ trình (LevelUp | Reinforce). Lưu STRING (GEN-2) + CHECK ở TẦNG DB, mẫu
+        // `language` ngay trên: enum .NET chỉ chắn được đường đi qua code, còn CHECK chắn cả
+        // đường ghi thẳng bằng SQL. Default 'LevelUp' phủ mọi hàng tạo trước cột này ⇒ migration
+        // KHÔNG cần backfill, và hàng cũ mang đúng ngữ nghĩa vốn có của chúng.
+        e.Property(x => x.Mode)
+            .HasConversion<string>()
+            .HasMaxLength(16)
+            .HasDefaultValue(RoadmapMode.LevelUp)
+            .IsRequired();
+        e.HasCheckConstraint("ck_roadmaps_mode", "mode IN ('LevelUp', 'Reinforce')");
 
         e.Property(x => x.Status)
             .HasConversion<string>()
@@ -153,6 +173,25 @@ public class RoadmapMilestoneConfiguration : IEntityTypeConfiguration<RoadmapMil
             .HasColumnType("jsonb");
         improvement.Metadata.SetValueComparer(RoadmapConfiguration.DecimalDictComparer);
 
+        // jsonb? — phần TÍNH đã chốt của chặng (xem MilestoneScoreSnapshot). Converter null-safe
+        // (mẫu RoadmapLesson.GroundingRefs) ⇒ hàng cũ giữ SQL NULL và migration KHỎI `defaultValue`.
+        // ⚠ `defaultValue: ""` cho cột jsonb là lỗi migration mà test .NET KHÔNG bắt được: chuỗi rỗng
+        // không phải JSON hợp lệ nên Postgres từ chối ngay tại ALTER TABLE, trong khi SQLite
+        // (EnsureCreated) bỏ qua migration nên xanh 100% (tiền lệ F15).
+        var snapshotConverter = new ValueConverter<MilestoneScoreSnapshot?, string?>(
+            v => v == null ? null : JsonSerializer.Serialize(v, Json),
+            v => v == null ? null : JsonSerializer.Deserialize<MilestoneScoreSnapshot>(v, Json));
+        var snapshot = e.Property(x => x.ScoreSnapshot);
+        snapshot.HasConversion(snapshotConverter);
+        // So sánh bằng chính JSON đã serialize: record `with` các List lồng nhau nên so tham chiếu
+        // sẽ báo "đã đổi" mỗi lần load ⇒ ghi thừa; so cấu trúc bằng tay thì phải bảo trì 3 record.
+        snapshot.Metadata.SetValueComparer(new ValueComparer<MilestoneScoreSnapshot?>(
+            (a, b) => JsonSerializer.Serialize(a, Json) == JsonSerializer.Serialize(b, Json),
+            v => v == null ? 0 : JsonSerializer.Serialize(v, Json).GetHashCode(),
+            v => v == null ? null : JsonSerializer.Deserialize<MilestoneScoreSnapshot>(
+                JsonSerializer.Serialize(v, Json), Json)));
+        snapshot.HasColumnType("jsonb");
+
         // UNIQUE(roadmap_id, order_no).
         e.HasIndex(x => new { x.RoadmapId, x.OrderNo }).IsUnique();
 
@@ -219,6 +258,40 @@ public class RoadmapLessonConfiguration : IEntityTypeConfiguration<RoadmapLesson
             .WithMany()
             .HasForeignKey(x => x.SessionId)
             .IsRequired(false)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        e.HasMany(x => x.Attempts)
+            .WithOne(a => a.Lesson)
+            .HasForeignKey(a => a.LessonId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+/// <summary>
+/// Lịch sử các lần làm một bài luyện (làm lại để nâng điểm). Xem <see cref="RoadmapLessonAttempt"/>.
+/// </summary>
+public class RoadmapLessonAttemptConfiguration : IEntityTypeConfiguration<RoadmapLessonAttempt>
+{
+    public void Configure(EntityTypeBuilder<RoadmapLessonAttempt> e)
+    {
+        e.HasKey(x => x.Id);
+
+        e.Property(x => x.AttemptNo).IsRequired();
+        e.Property(x => x.CreatedAt).IsRequired();
+
+        // UNIQUE(lesson_id, attempt_no) — lá chắn TẦNG DB cho việc cấp số thứ tự. Số được tính bằng
+        // `count + 1` SAU khi đã thắng cú lật trạng thái của lesson, nên về logic chỉ một request tới
+        // được đây; ràng buộc này để nếu giả định đó sai thì vỡ TO chứ không cấp trùng số im lặng.
+        e.HasIndex(x => new { x.LessonId, x.AttemptNo }).IsUnique();
+
+        // UNIQUE(session_id) — 1 buổi luyện thuộc đúng 1 lần làm. Cũng là thứ giữ cho báo cáo tiến
+        // độ không đếm một buổi hai lần khi hợp hai nguồn (xem RoadmapReportService).
+        e.HasIndex(x => x.SessionId).IsUnique();
+
+        // session_id → practice_sessions Restrict — cùng ràng buộc như roadmap_lessons.session_id.
+        e.HasOne<PracticeSession>()
+            .WithMany()
+            .HasForeignKey(x => x.SessionId)
             .OnDelete(DeleteBehavior.Restrict);
     }
 }

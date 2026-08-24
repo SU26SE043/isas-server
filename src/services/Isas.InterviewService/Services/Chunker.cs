@@ -14,6 +14,21 @@ public partial class Chunker : IChunker
     private const int OverlapChars = 280;     // ~70 token
     private const int MinChunkChars = 120;    // merge mảnh quá ngắn (~30 token)
 
+    // RAG-1 — SÀN ĐỘ DÀI cho một section. Khác `MinChunkChars` (vốn chỉ dùng để GỘP mảnh đuôi
+    // vào window trước, không phải để LOẠI): trước bản này không có sàn nào cho section, nên
+    // "Agile Agile" hay một cụm hai chữ dưới nút điều hướng vẫn thành một chunk và vẫn được
+    // nhét vào prompt sinh bài giảng như thể là tài liệu.
+    //
+    // Chọn 60 THEO SỐ ĐO, không theo cảm tính: đo trên các chunk đã thực sự được dùng để sinh
+    // bài, 57 chunk dưới 60 ký tự thì KHÔNG cái nào mang nghĩa. Đặt thấp hơn `MinChunkChars`
+    // một cách có chủ đích — 120 là ngưỡng "đủ dài để đứng riêng", còn đây là ngưỡng "đủ dài để
+    // KHÔNG phải rác"; nhập hai ngưỡng làm một sẽ vứt luôn những đoạn ngắn nhưng có nội dung.
+    private const int MinSectionChars = 60;
+
+    // RAG-1 — heading do NÚT ĐIỀU HƯỚNG của trang web sinh ra, không phải tiêu đề nội dung.
+    // Quan sát thật trên corpus: "Help improve MDN" (49 chunk của NN/g toàn dạng này),
+    // "Related Topics", "Notes", "In this article". Giữ thành hằng số CÓ TÊN để nhìn là biết
+
     public IReadOnlyList<TextChunk> Chunk(KnowledgeSourceType type, string content)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -27,10 +42,19 @@ public partial class Chunker : IChunker
             _ => SplitMarkdownByHeading(content),   // Manual
         };
 
+        // RAG-1 — hai bộ lọc dưới chỉ áp cho nguồn CÀO TỪ WEB. Đo được: 100% chunk rác đến từ
+        // `Url` (MDN, NN/g), còn `Manual` là admin TỰ TAY soạn và `Context7` là snippet đã phân
+        // đoạn sẵn — áp sàn ở đó là âm thầm vứt nội dung có người cố ý curate, tức đổi một lỗi
+        // nhìn thấy được (rác lọt vào) lấy một lỗi KHÔNG nhìn thấy được (mất bài đã duyệt).
+        var isScraped = type == KnowledgeSourceType.Url;
+
         var chunks = new List<TextChunk>();
         foreach (var (title, body) in sections)
         {
             if (string.IsNullOrWhiteSpace(body)) continue;
+            // Section quá ngắn thì LOẠI hẳn (xem `MinSectionChars`). Trước đây chỉ bỏ section
+            // RỖNG, nên mọi mẩu hai ba chữ ("Agile Agile") đều lọt vào corpus.
+            if (isScraped && body.Trim().Length < MinSectionChars) continue;
             var sectionTitle = string.IsNullOrWhiteSpace(title) ? null : title.Trim();
             foreach (var window in Window(body.Trim()))
                 chunks.Add(new TextChunk(window, sectionTitle));
@@ -153,9 +177,18 @@ public partial class Chunker : IChunker
             yield return tail;
     }
 
+    // Tiêu đề có phải nút điều hướng không — so sau khi chuẩn hoá hoa/thường, khớp theo tiền tố
+    // vì trang web hay nối thêm tên site ("Help improve MDN").
+
     private static string StripHtml(string html)
     {
-        var noTags = HtmlTagRegex().Replace(html, " ");
+        // RAG-1 — gỡ RUỘT của script/style/noscript và comment TRƯỚC khi bóc thẻ. Trước bản này
+        // `StripHtml` chỉ xoá THẺ (`<[^>]+>`), nên `<script>window.dataLayer…gtag("consent"…)</script>`
+        // mất thẻ rồi phần JavaScript SỐNG SÓT vào corpus y như văn xuôi — và nó thật sự đã được
+        // nhét vào prompt sinh bài giảng (19/687 chunk đo được mang mã cookie-consent, mỗi cái 1.800 ký tự).
+        var cleaned = ScriptStyleRegex().Replace(html, " ");
+        cleaned = HtmlCommentRegex().Replace(cleaned, " ");
+        var noTags = HtmlTagRegex().Replace(cleaned, " ");
         var decoded = System.Net.WebUtility.HtmlDecode(noTags);
         return WhitespaceRegex().Replace(decoded, " ").Trim();
     }
@@ -168,6 +201,14 @@ public partial class Chunker : IChunker
 
     [GeneratedRegex(@"<[^>]+>")]
     private static partial Regex HtmlTagRegex();
+
+    // Khớp CẢ cặp thẻ lẫn ruột. `Singleline` để `.` ăn cả xuống dòng — script thật luôn nhiều dòng.
+    [GeneratedRegex(@"<(script|style|noscript)\b[^>]*>.*?</\1>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex ScriptStyleRegex();
+
+    [GeneratedRegex(@"<!--.*?-->", RegexOptions.Singleline)]
+    private static partial Regex HtmlCommentRegex();
 
     [GeneratedRegex(@"\n\s*\n")]
     private static partial Regex ParagraphSplitRegex();

@@ -281,7 +281,7 @@ def test_endpoint_generate_questions_returns_citations(monkeypatch):
     # Nhận None ở đây cũng chính là bằng chứng: request không có criteria thì không có gì phát sinh.
     async def fake_generate(job_category, cv_text, jd_text, count=None,
                             focus_criteria=None, grounding=None, criteria=None,
-                            seniority=None):
+                            seniority=None, lesson_context=None):
         # grounding phải được truyền xuống (không bị pydantic nuốt).
         assert grounding == [{"chunkId": "c1", "content": "x",
                               "sourceUrl": None, "sourceTitle": None}]
@@ -308,7 +308,7 @@ def test_endpoint_generate_questions_ungrounded_omits_citations(monkeypatch):
 
     async def fake_generate(job_category, cv_text, jd_text, count=None,
                             focus_criteria=None, grounding=None, criteria=None,
-                            seniority=None):
+                            seniority=None, lesson_context=None):
         assert grounding is None
         assert criteria is None
         return QuestionGenerationResult(questions=["Q1", "Q2"], citations=None)
@@ -324,7 +324,7 @@ def test_endpoint_generate_questions_ungrounded_omits_citations(monkeypatch):
 
 def test_endpoint_generate_lesson_theory_returns_cited_chunkids(monkeypatch):
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None):
+                   grounding=None, evidence=None, mode=None, current_level=None):
         assert grounding == [{"chunkId": "c1", "content": "x",
                               "sourceUrl": None, "sourceTitle": None}]
         return "# useEffect\n\nND", [], ["c1"]
@@ -345,7 +345,7 @@ def test_endpoint_generate_lesson_theory_returns_cited_chunkids(monkeypatch):
 
 def test_endpoint_generate_lesson_theory_ungrounded_omits_cited(monkeypatch):
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None):
+                   grounding=None, evidence=None, mode=None, current_level=None):
         assert grounding is None
         return "# Bài\n\nND", [], None
 

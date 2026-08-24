@@ -16,6 +16,41 @@ public class RoadmapOptions
         ["Senior"] = 80
     };
 
+    /// <summary>
+    /// Số buổi luyện ĐÃ CHẤM tối thiểu để được tạo lộ trình chế độ <c>Reinforce</c>.
+    ///
+    /// <para>Vì sao <b>2</b>: chế độ ôn tập bán lời hứa "vá chỗ bạn HAY sai". Một buổi duy nhất
+    /// không phân biệt được "hay sai" với "hôm đó làm tệ" — không có tín hiệu LẶP LẠI nào, mà
+    /// lặp lại chính là thứ khiến việc ôn có nghĩa. 2 là số NHỎ NHẤT cho thấy sự lặp.</para>
+    ///
+    /// <para>Vì sao KHÔNG phải 3: đo trên production chỉ có <b>4 người</b> đạt ≥3 buổi đã chấm —
+    /// đặt 3 là tính năng chết ngay lúc ra mắt. Ngưỡng để ở config để nâng dần khi lượng dữ liệu
+    /// lớn lên, thay vì phải sửa code.</para>
+    ///
+    /// <para><c>0</c> = tắt ngưỡng này. ⚠ KHÔNG tắt được guard "phải có điểm yếu": không có tiêu
+    /// chí nào cần cải thiện thì chế độ ôn tập không có gì để ôn — bất khả thi theo cấu trúc, chứ
+    /// không phải một mức chất lượng có thể hạ xuống.</para>
+    /// </summary>
+    public int ReinforceMinSessions { get; set; } = 2;
+
+    /// <summary>
+    /// Số câu hỏi của buổi luyện khi bấm "Bắt đầu" một bài học roadmap.
+    ///
+    /// <para>Vì sao TĨNH, không adaptive: bài học đã có <c>focusCriteria</c> khoanh sẵn chủ đề nên
+    /// giá trị của việc hỏi sâu/hỏi thêm thấp hơn hẳn buổi luyện tự do, trong khi số câu bập bênh
+    /// (5 câu gốc + chuỗi đào sâu + câu bù tự động) làm người học không lường trước được thời lượng.</para>
+    /// </summary>
+    public int LessonQuestionCount { get; set; } = 5;
+
+    /// <summary>
+    /// Bật/tắt adaptive cho buổi luyện trong bài học roadmap. Mặc định TẮT.
+    ///
+    /// <para>⚠ KHÔNG dùng <c>Adaptive:MaxDeepPerQuestion=0</c> để tắt đào sâu ở đây — nó đổi CHẾ ĐỘ
+    /// (frontier cũ) chứ không tắt, và <c>MaxFollowUps</c> quay lại 3 nên vẫn chèn thêm câu ở đuôi.
+    /// Cờ này là kill-switch per-session thật (<c>PracticeService.ResolveAdaptive</c>).</para>
+    /// </summary>
+    public bool LessonAdaptiveEnabled { get; set; } = false;
+
     // Ngưỡng cho 1 level — fallback về mặc định nếu config thiếu key (không vỡ khi cấu hình chưa đủ).
     public int ThresholdFor(string level) =>
         LevelThresholdPct.TryGetValue(level, out var pct)

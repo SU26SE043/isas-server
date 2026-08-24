@@ -42,7 +42,10 @@ public record CvAnalysisAiResult(
     CvJdMatch? JdMatch,   // chỉ khi gửi kèm jdText ở LEGACY
     IReadOnlyList<CvRequirementMatch>? RequirementMatches = null,
     IReadOnlyList<CvSectionAnchor>? CvSections = null,
-    IReadOnlyList<CvAnalysisCitation>? Citations = null
+    IReadOnlyList<CvAnalysisCitation>? Citations = null,
+    // Trình độ hiện tại suy từ CV; null = CV không đủ căn cứ. Đặt CUỐI + có default
+    // để mọi call-site positional sẵn có không vỡ.
+    string? CurrentLevel = null
 );
 
 public record JdMatchResponse(
@@ -78,7 +81,10 @@ public record CvAnalysisListResponse(
     DateTime CreatedAt,
     IReadOnlyList<CvRequirementListItem>? MustHaveMatches = null,
     IReadOnlyList<CvRequirementListItem>? NiceToHaveMatches = null,
-    RequirementSummary? RequirementSummary = null
+    RequirementSummary? RequirementSummary = null,
+    // Trình độ NGHỀ NGHIỆP suy từ CV — null là giá trị HỢP LỆ (CV không đủ căn cứ), không phải
+    // thiếu dữ liệu. Wizard tạo roadmap dùng đây để điền mặc định bước "Trình độ hiện tại".
+    string? CurrentLevel = null
 );
 
 public record CvAnalysisResponse(
@@ -96,5 +102,8 @@ public record CvAnalysisResponse(
     IReadOnlyList<CvRequirementMatch>? NiceToHaveMatches = null,
     RequirementSummary? RequirementSummary = null,
     IReadOnlyList<CvSectionAnchor>? CvSections = null,
-    IReadOnlyList<CvAnalysisCitation>? Citations = null
+    IReadOnlyList<CvAnalysisCitation>? Citations = null,
+    // Trình độ NGHỀ NGHIỆP suy từ CV — null là giá trị HỢP LỆ (CV không đủ căn cứ), không phải
+    // thiếu dữ liệu. Wizard tạo roadmap dùng đây để điền mặc định bước "Trình độ hiện tại".
+    string? CurrentLevel = null
 );

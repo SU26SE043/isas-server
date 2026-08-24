@@ -138,8 +138,18 @@ public sealed class TestDb : IDisposable
         => new(
             db,
             generator ?? new Mock<IAiServiceRoadmapGenerator>().Object,
-            Options.Create(new Isas.InterviewService.Models.RoadmapOptions()),
+            Thresholds(db),
             NullLogger<RoadmapReportService>.Instance);
+
+    /// <summary>
+    /// BC15 — service ngưỡng ĐẠT chạy trên chính DB test (không mock): nó đọc bảng
+    /// <c>roadmap_level_thresholds</c> rồi mới rơi về mặc định, nên test muốn kiểm "admin chỉnh
+    /// ngưỡng" chỉ cần seed hàng vào DB như production. Mock ở đây sẽ làm đúng đường DB-trước
+    /// không bao giờ được chạy trong test.
+    /// </summary>
+    public static RoadmapThresholdService Thresholds(
+        InterviewDbContext db, Isas.InterviewService.Models.RoadmapOptions? options = null)
+        => new(db, Options.Create(options ?? new Isas.InterviewService.Models.RoadmapOptions()));
 
     // ── Seed helpers ──────────────────────────────────────────────────────
     // Q8 — `language` có DEFAULT "vi" nên mọi test cũ không phải sửa dòng nào, nhưng chính vì trước

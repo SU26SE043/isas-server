@@ -17,4 +17,11 @@ public interface IRoadmapLessonService
     // Pending→InProgress. Đang Practicing/Done → LessonAlreadyStartedException (409, không reserve thêm).
     Task<PracticeSessionResponse> StartLessonAsync(
         Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default);
+
+    // POST /roadmaps/{id}/lessons/{lessonId}/retry — LÀM LẠI bài đã hoàn thành để nâng điểm. Cùng
+    // giá (1 credit) và cùng đường tạo buổi như /start, câu hỏi SINH MỚI; giữ trọn lịch sử các lần
+    // làm trong roadmap_lesson_attempts. Còn Theory / đang Practicing →
+    // LessonRetryNotAllowedException (409). Lộ trình đã Completed → mở lại Active + xoá báo cáo chốt.
+    Task<PracticeSessionResponse> RetryLessonAsync(
+        Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default);
 }

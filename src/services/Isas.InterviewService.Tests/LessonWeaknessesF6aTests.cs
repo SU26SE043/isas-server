@@ -65,9 +65,9 @@ public class LessonWeaknessesF6aTests
         gen.Setup(g => g.GenerateLessonTheoryAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
-                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<CancellationToken>()))
-            .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?, IReadOnlyList<GroundingChunk>?, CancellationToken>(
-                (_, _, _, _, weaknesses, _, _) => captured = weaknesses)
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>()))
+            .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?, IReadOnlyList<GroundingChunk>?, IReadOnlyList<CriterionEvidence>?, RoadmapMode, CancellationToken>(
+                (_, _, _, _, weaknesses, _, _, _, _) => captured = weaknesses)
             .ReturnsAsync(new LessonTheoryResult("## Lý thuyết", []));
 
         var options = threshold is null

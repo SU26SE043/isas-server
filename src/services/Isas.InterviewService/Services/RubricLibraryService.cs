@@ -152,10 +152,17 @@ public class RubricLibraryService : IRubricLibraryService
         // Chuẩn hoá NHẸ (trim + không phân biệt hoa thường), KHÔNG fuzzy: khớp SAI còn tệ hơn không
         // khớp — gán nhầm `WhenTargeted` cho một tiêu chí cách nói thì nó chỉ được chấm ở vài câu, và
         // không có triệu chứng nào ngoài điểm lặng lẽ đổi nghĩa.
+        //
+        // NGUỒN ĐIỂM (`ScoringMethod`) đi CHUNG một phép kế thừa, không tách vòng truy vấn thứ hai:
+        // hai thuộc tính này trả lời hai nửa của cùng một câu hỏi ("tiêu chí này chấm khi nào" và
+        // "chấm bằng cái gì") và cùng chỉ có nghĩa khi khớp đúng tiêu chí của bộ chuẩn. Kế thừa cái
+        // này mà quên cái kia thì rubric riêng có tiêu chí "Độ trôi chảy & tự tin" vẫn bị LLM chấm —
+        // tức đúng người tự tuỳ chỉnh rubric lại là người KHÔNG được hưởng bản vá, y hệt nghịch lý
+        // "tự tuỳ chỉnh xong thì chấm tệ đi" mà BC-8 đã phải đi sửa một lần.
         var seedScopes = await _db.RubricCriteria.AsNoTracking()
             .Where(c => c.CampaignId == null && c.CandidateId == null
                         && c.JobCategory == jobCategory && c.Language == lang && c.IsActive)
-            .Select(c => new { c.Name, c.ScoringScope })
+            .Select(c => new { c.Name, c.ScoringScope, c.ScoringMethod })
             .ToListAsync(ct);
 
         // `TryAdd` chứ không `ToDictionary`: unique index ux_rubric_criteria_b2c_default_version_name
@@ -164,7 +171,12 @@ public class RubricLibraryService : IRubricLibraryService
         // hai bản active. Ném `ArgumentException` ở đây sẽ thành 500 cho một thao tác lưu rubric vốn
         // không liên quan (tiền lệ F2b).
         var scopeByName = new Dictionary<string, ScoringScope>(StringComparer.OrdinalIgnoreCase);
-        foreach (var seedRow in seedScopes) scopeByName.TryAdd(seedRow.Name.Trim(), seedRow.ScoringScope);
+        var methodByName = new Dictionary<string, CriterionScoringMethod>(StringComparer.OrdinalIgnoreCase);
+        foreach (var seedRow in seedScopes)
+        {
+            scopeByName.TryAdd(seedRow.Name.Trim(), seedRow.ScoringScope);
+            methodByName.TryAdd(seedRow.Name.Trim(), seedRow.ScoringMethod);
+        }
 
         var rows = normalized.Select(i => new RubricCriterion
         {
@@ -181,6 +193,10 @@ public class RubricLibraryService : IRubricLibraryService
             Version = newVersion,
             // Trượt khớp ⇒ `Always` = ĐÚNG default cũ ⇒ ứng viên tự thêm tiêu chí lạ không bị đổi hành vi.
             ScoringScope = scopeByName.TryGetValue(i.Name, out var scope) ? scope : ScoringScope.Always,
+            // Trượt khớp ⇒ `Ai` = ĐÚNG hành vi cũ ⇒ tiêu chí ứng viên tự nghĩ ra KHÔNG bị thay điểm
+            // bằng một con số đo nhịp nói. Chiều mặc định phải là "vẫn nhờ LLM chấm": gán nhầm sang
+            // số đo cho một tiêu chí NỘI DUNG là đổi hẳn thứ đang được đo, mà không có triệu chứng.
+            ScoringMethod = methodByName.TryGetValue(i.Name, out var method) ? method : CriterionScoringMethod.Ai,
             // Mốc điểm (E9). Rỗng = chưa khai ⇒ ScoringCriteriaBuilder sinh dải mặc định như trước.
             Levels = ValidateLevels(i.Name, i.MaxScore, i.Levels)
                 .Select(l => new RubricLevel { Id = Guid.NewGuid(), Score = l.Score, Descriptor = l.Descriptor })
@@ -235,9 +251,17 @@ public class RubricLibraryService : IRubricLibraryService
     // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: RubricController chỉ bắt
     // InvalidOperationException → 400; ArgumentException rơi xuống ống dẫn chung → 500 (Interview không
     // có exception handler toàn cục). Đây là lỗi đã xảy ra ở F2b.
+    //
+    // BK36 — CHỈ `null` (query `?language=` vắng mặt, ASP.NET bind `null`) mới rơi về mặc định "vi".
+    // Chuỗi rỗng (`?language=`, bind ra `""`) LÀ GIÁ TRỊ SAI, phải 400 chứ không được nuốt thành "vi".
+    // Ở SERVICE NÀY hậu quả nặng hơn PracticeService/RoadmapService: `language` không chỉ quyết định
+    // field ghi vào record mới — nó là BỘ CHỌN HÀNG cho `ReplaceAsync`/`ResetAsync` (`c.Language == lang`
+    // ở dòng lọc `current` phía trên). `ReplaceAsync` DEACTIVATE mọi rubric khớp bộ chọn đó rồi mới tạo
+    // bản mới ⇒ nuốt `""` thành "vi" nghĩa là candidate định thay rubric EN lại xoá nhầm rubric VI đang
+    // dùng — mất bộ tiêu chí, không lỗi nào báo, HTTP vẫn 200.
     private string ValidateLanguage(string? requested)
     {
-        if (string.IsNullOrWhiteSpace(requested)) return "vi";
+        if (requested is null) return "vi";
         var language = requested.Trim().ToLowerInvariant();
         if (language is not ("vi" or "en"))
             throw new InvalidOperationException("language chỉ nhận vi hoặc en.");

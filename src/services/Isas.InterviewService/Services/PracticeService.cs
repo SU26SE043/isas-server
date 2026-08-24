@@ -79,14 +79,17 @@ public class PracticeService : IPracticeService
     // ── CREATE: tạo session + sinh câu hỏi (1 call) ───────────────────────
     public Task<PracticeSessionResponse> CreateSessionAsync(
         Guid candidateId, CreatePracticeSessionRequest request, CancellationToken ct = default)
-        => CreateSessionInternalAsync(candidateId, request, Guid.NewGuid(), focusCriteria: null, ct);
+        => CreateSessionInternalAsync(
+            candidateId, request, Guid.NewGuid(), focusCriteria: null, lessonContext: null, ct);
 
     // BC14 — /start roadmap lesson: sessionId do caller cấp (link lesson sau khi tạo → thoả FK
     // roadmap_lessons.session_id) + câu hỏi bám focusCriteria của milestone. Reserve/gen/BK12 giữ nguyên.
     public Task<PracticeSessionResponse> CreateLessonSessionAsync(
         Guid candidateId, CreatePracticeSessionRequest request, Guid sessionId,
-        IReadOnlyList<string>? focusCriteria, CancellationToken ct = default)
-        => CreateSessionInternalAsync(candidateId, request, sessionId, focusCriteria, ct);
+        IReadOnlyList<string>? focusCriteria, LessonContext? lessonContext = null,
+        CancellationToken ct = default)
+        => CreateSessionInternalAsync(
+            candidateId, request, sessionId, focusCriteria, lessonContext, ct);
 
     /// <summary>
     /// SC3 — preview số câu/số câu gốc do SERVER tính bằng ĐÚNG luật tạo session.
@@ -171,7 +174,7 @@ public class PracticeService : IPracticeService
     // CreateLessonSessionAsync (sessionId caller cấp + focusCriteria roadmap lesson).
     private async Task<PracticeSessionResponse> CreateSessionInternalAsync(
         Guid candidateId, CreatePracticeSessionRequest request, Guid sessionId,
-        IReadOnlyList<string>? focusCriteria, CancellationToken ct)
+        IReadOnlyList<string>? focusCriteria, LessonContext? lessonContext, CancellationToken ct)
     {
         // jobCategory BẮT BUỘC. Guard NGAY ĐẦU (trước cả đọc CV/reserve) → thiếu → 400 (controller map
         // InvalidOperationException → BadRequest), KHÔNG giữ credit oan (PAY-5). HTTP thật cũng 400 sớm
@@ -417,7 +420,30 @@ public class PracticeService : IPracticeService
 
             try
             {
-                if (targetable.Count > 0)
+                // Buổi BÀI HỌC LỘ TRÌNH — luôn đi overload mang `lessonContext`, bất kể rubric có
+                // tiêu chí nội dung hay không.
+                //
+                // Gộp 4 nhánh dưới thành 1 ở đây là AN TOÀN chứ không phải rút gọn cho gọn:
+                // `AiServiceQuestionGenerator` tự hạ `criteria`/`grounding` rỗng về `null` khi dựng
+                // payload, nên truyền tập rỗng cho ra JSON y hệt nhánh cũ. Cái KHÔNG được đánh mất
+                // là quyết định `grounded` (có truy hồi hay không) — nó vẫn nguyên ở đây.
+                if (lessonContext is not null)
+                {
+                    if (grounded)
+                        grounding = await _knowledge!.RetrieveAsync(
+                            session.JobCategory.ToString(),
+                            BuildRetrievalQuery(
+                                session.JobCategory.ToString(), cvText, jdText, focusCriteria,
+                                lessonContext), ct);
+
+                    var result = await _questionGenerator.GenerateQuestionsAsync(
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount,
+                        grounded ? grounding : null, session.Language,
+                        targetable.Count > 0 ? targetable : null, session.Seniority, lessonContext, ct);
+                    generated = result.Questions;
+                    citations = result.Citations;
+                }
+                else if (targetable.Count > 0)
                 {
                     if (grounded)
                         grounding = await _knowledge!.RetrieveAsync(
@@ -1005,8 +1031,50 @@ public class PracticeService : IPracticeService
     // Skip/Take/cursor → trả TOÀN BỘ lịch sử phỏng vấn trọn đời của candidate trong 1 payload.
     // Backward-compat y hệt DB8: body vẫn là mảng JSON, cursor opaque + limit là opt-in
     // (`?cursor=&limit=`), next-cursor ở header X-Next-Cursor, limit mặc định = trần cũ.
+    /// <summary>
+    /// Trạng thái lọc cho <c>GET /practice/history</c>. Tập đóng, case-sensitive — mẫu
+    /// <c>RoadmapService.ValidateMode</c>: <c>null</c>/rỗng = không lọc; giá trị lạ = GIÁ TRỊ SAI
+    /// và bị từ chối 400, KHÔNG âm thầm bỏ qua filter (BK36 — xem lý do tại call site).
+    /// </summary>
+    private static SessionStatus? ValidateHistoryStatus(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return null;
+        var value = requested.Trim();
+        foreach (var name in Enum.GetNames<SessionStatus>())
+            if (string.Equals(value, name, StringComparison.Ordinal))
+                return Enum.Parse<SessionStatus>(name);
+        throw new InvalidOperationException(
+            $"status chỉ nhận {string.Join(" / ", Enum.GetNames<SessionStatus>())} " +
+            $"(đang gửi: '{requested}').");
+    }
+
+    /// <summary>Giá trị hợp lệ của <c>?source=</c> — tập ĐÓNG, case-sensitive.</summary>
+    private const string SourceLesson = "lesson";
+    private const string SourceFree = "free";
+
+    /// <summary>
+    /// Nguồn gốc buổi luyện cho <c>GET /practice/history</c>. <c>null</c> = có lọc gì đâu;
+    /// <c>true</c> = chỉ buổi sinh từ bài học lộ trình; <c>false</c> = chỉ buổi KHÔNG sinh từ bài học.
+    ///
+    /// <para>Giá trị lạ → <b>400</b> nêu tập hợp lệ + giá trị đang gửi, KHÔNG âm thầm bỏ qua filter
+    /// (BK36, cùng khuôn <see cref="ValidateHistoryStatus"/> và <c>RoadmapService.ValidateMode</c>).
+    /// Khớp CHẶT bằng <see cref="StringComparison.Ordinal"/> — không nhận sai hoa/thường, để trong
+    /// cùng một service không có hai chuẩn cho cùng loại đầu vào.</para>
+    /// </summary>
+    private static bool? ValidateHistorySource(string? requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested)) return null;
+        var value = requested.Trim();
+        if (string.Equals(value, SourceLesson, StringComparison.Ordinal)) return true;
+        if (string.Equals(value, SourceFree, StringComparison.Ordinal)) return false;
+        throw new InvalidOperationException(
+            $"source chỉ nhận {SourceLesson} / {SourceFree} (đang gửi: '{requested}').");
+    }
+
     public async Task<KeysetPage<PracticeSessionSummary>> GetHistoryAsync(
-        Guid candidateId, string? cursor = null, int? limit = null, CancellationToken ct = default)
+        Guid candidateId, string? cursor = null, int? limit = null,
+        string? status = null, bool? excludeCampaign = null, string? source = null,
+        CancellationToken ct = default)
     {
         var take = KeysetPaging.ClampLimit(limit);
         var cur = KeysetCursor.Decode(cursor);
@@ -1014,6 +1082,51 @@ public class PracticeService : IPracticeService
         var query = _db.PracticeSessions
             .AsNoTracking()
             .Where(s => s.CandidateId == candidateId);
+
+        // Opt-in. Vắng/rỗng ⇒ KHÔNG lọc (hành vi mặc định giữ nguyên cho trang Lịch sử phỏng vấn).
+        //
+        // 🔑 Giá trị lạ → 400, KHÔNG fail-open. Đổi so với bản đầu (vốn theo mẫu fail-open của
+        // `ListAllCampaignsAsync`): mẫu đó đúng cho một filter duyệt-danh-sách thuần, nhưng endpoint
+        // này còn nuôi PICKER của wizard roadmap, nơi "không lọc được" KHÔNG vô hại — nó trả lại
+        // buổi B2B/chưa chấm cho người dùng chọn, rồi `RoadmapService.CreateAsync` từ chối bằng
+        // 404 batch không nói id nào sai. Tức nuốt im lặng ở đây tái sinh đúng con bug mà hai
+        // filter này sinh ra để diệt.
+        //
+        // Và khớp CHẶT (`Ordinal`, không `ignoreCase`, không nhận chuỗi số) — cùng khuôn
+        // `RoadmapService.ValidateMode`/`ValidateCurrentLevel` (BK36), thay vì `Enum.TryParse` vốn
+        // nhận cả `"3"` lẫn sai hoa/thường. Hai chuẩn cho cùng loại đầu vào trong cùng một service
+        // là thứ khiến người sau đoán sai.
+        var parsedStatus = ValidateHistoryStatus(status);
+        if (parsedStatus is not null)
+            query = query.Where(s => s.Status == parsedStatus.Value);
+
+        // Loại buổi B2B (campaign_id != null) — dùng cho wizard roadmap: CreateAsync chỉ nhận
+        // buổi B2C (CampaignId == null), nên picker phải loại B2B TRƯỚC khi người dùng chọn được,
+        // thay vì để họ ăn 404 batch không nói id nào sai (RoadmapService.CreateAsync).
+        //
+        // DÙNG LẠI CHÍNH expression object của RoadmapSessionEligibility (không chép tay lần thứ
+        // hai): nó cũng là vế "không phải campaign" trong RoadmapService.CreateAsync — lệch nhau
+        // một chữ giữa hai nơi là picker cho chọn buổi mà CreateAsync sẽ từ chối bằng 404 mù.
+        if (excludeCampaign == true)
+            query = query.Where(RoadmapSessionEligibility.NotCampaign);
+
+        // Nguồn gốc buổi: có/không có dòng trong `roadmap_lesson_attempts` (UNIQUE(session_id) ⇒
+        // quan hệ 1–1). Đọc qua bảng LẦN LÀM chứ không qua `roadmap_lessons.session_id` — cột đó chỉ
+        // trỏ buổi MỚI NHẤT, nên bài đã luyện lại sẽ làm buổi cũ rơi khỏi nhóm "lesson" dù nó đúng là
+        // buổi bài học. CÙNG nguồn với nhãn `LessonTitle` ở dưới ⇒ lọc và nhãn không thể nói ngược nhau.
+        //
+        // 🔑 Lọc Ở ĐÂY, tức TRONG SQL và TRƯỚC `Take` — lọc sau phân trang thì buổi hợp lệ nằm ngoài
+        // trang đầu biến mất khỏi danh sách (đúng lỗi vừa sửa ở `hasFinalReport`).
+        //
+        // ⚠ `lesson` và `free` là PHÂN HOẠCH của tập chưa lọc: mọi buổi thuộc đúng một trong hai.
+        // Cố ý KHÔNG cho `free` ngầm loại buổi B2B — làm vậy thì có buổi không nằm trong tab nào,
+        // tức người dùng bật tab nào cũng không thấy nó. Muốn "tự do và chỉ B2C" thì ghép
+        // `?source=free&excludeCampaign=true`; hai filter trực giao với nhau.
+        var fromLesson = ValidateHistorySource(source);
+        if (fromLesson == true)
+            query = query.Where(s => _db.RoadmapLessonAttempts.Any(a => a.SessionId == s.Id));
+        else if (fromLesson == false)
+            query = query.Where(s => !_db.RoadmapLessonAttempts.Any(a => a.SessionId == s.Id));
 
         if (cur is not null)
             query = query.Where(s => s.CreatedAt < cur.CreatedAt
@@ -1026,7 +1139,20 @@ public class PracticeService : IPracticeService
             .Select(s => new PracticeSessionSummary(
                 s.Id, s.Status.ToString(), s.JobCategory.ToString(),
                 s.CreatedAt, s.CompletedAt, s.OverallScore,   // BC9: lịch sử hiện điểm tổng
-                s.Seniority))   // J8: cấp độ đã chọn CHO ĐÚNG BUỔI ĐÓ
+                s.Seniority,   // J8: cấp độ đã chọn CHO ĐÚNG BUỔI ĐÓ
+                // Nhãn phân biệt cho bảng chọn báo cáo của wizard lộ trình: `practice_sessions`
+                // không có cột tên nào, nên không có dòng này thì mọi buổi cùng nghề hiện y hệt
+                // nhau ("BE"). Subquery tương quan (KHÔNG kéo bảng về client): UNIQUE(session_id)
+                // trên roadmap_lesson_attempts bảo đảm tối đa 1 dòng ⇒ `FirstOrDefault` là ghép
+                // 1–1 chứ không phải "chọn bừa một trong nhiều".
+                //
+                // Qua bảng LẦN LÀM, không qua `roadmap_lessons.session_id` — cột đó chỉ trỏ buổi
+                // MỚI NHẤT, nên bài đã luyện lại làm buổi cũ mất nhãn. Buổi luyện tự do → null,
+                // đó là câu trả lời ĐÚNG ("hệ thống không có tên cho buổi này"), không phải thiếu sót.
+                _db.RoadmapLessonAttempts
+                    .Where(a => a.SessionId == s.Id)
+                    .Select(a => a.Lesson.Title)
+                    .FirstOrDefault()))
             .ToListAsync(ct);
 
         var next = rows.Count == take
@@ -1181,9 +1307,15 @@ public class PracticeService : IPracticeService
     // focusCriteria (lesson) + JD (ưu tiên) hoặc CV. RetrieveAsync tự cắt độ dài. Query VN↔EN cross-lingual
     // (gemini-embedding-001) nên không cần dịch.
     private static string BuildRetrievalQuery(
-        string jobCategory, string? cvText, string? jdText, IReadOnlyList<string>? focusCriteria)
+        string jobCategory, string? cvText, string? jdText, IReadOnlyList<string>? focusCriteria,
+        LessonContext? lessonContext = null)
     {
         var parts = new List<string> { jobCategory };
+        // Tiêu đề bài đứng TRƯỚC focusCriteria: nó là tín hiệu chủ đề HẸP NHẤT ta có. Thiếu nó thì
+        // 4 bài trong cùng một chặng truy hồi bằng đúng một câu query (jobCategory + tiêu chí của
+        // CHẶNG) ⇒ nhận về cùng một bộ chunk — chính con bug đang vá, chỉ nằm ở tầng RAG.
+        if (lessonContext is not null && !string.IsNullOrWhiteSpace(lessonContext.Title))
+            parts.Add(lessonContext.Title);
         if (focusCriteria is { Count: > 0 })
             parts.Add(string.Join(", ", focusCriteria));
         if (!string.IsNullOrWhiteSpace(jdText)) parts.Add(jdText);
@@ -1196,13 +1328,18 @@ public class PracticeService : IPracticeService
     // đổi lựa chọn sau này (thêm 180s chẳng hạn) sẽ phải chạy migration chỉ để sửa một danh sách UI.
     private static readonly int[] AllowedTimeLimitsSec = [60, 120, 240];
 
-    // null = client cũ không gửi → giữ mặc định 120 (hành vi trước F2, không phải lỗi).
+    // null = client cũ không gửi → giữ mặc định "vi" (hành vi trước bilingual, không phải lỗi).
+    // Chuỗi RỖNG/toàn khoảng trắng là một GIÁ TRỊ SAI, KHÔNG được coi như "không gửi" — cùng lớp
+    // lỗi BK35 (ValidateLanguage phía Campaign) và cùng mẫu ValidateSeniority ngay trên: dùng
+    // `IsNullOrWhiteSpace` gộp "không gửi" với "gửi rỗng" làm caller gõ `language: ""` (vd lỗi
+    // client, hoặc field bị xoá tay) ÂM THẦM nhận "vi" thay vì bị từ chối — sai ở đúng chỗ khó
+    // phát hiện nhất vì HTTP vẫn 200.
     // ⚠ Ném InvalidOperationException chứ KHÔNG phải ArgumentException: PracticeController chỉ bắt
     // InvalidOperationException → 400; ArgumentException rơi xuống catch(Exception) → 500. Cùng kiểu với
     // guard jobCategory ngay đầu CreateSessionInternalAsync.
     private string ValidateLanguage(string? requested)
     {
-        if (string.IsNullOrWhiteSpace(requested)) return "vi";
+        if (requested is null) return "vi";
         var language = requested.Trim().ToLowerInvariant();
         if (language is not ("vi" or "en"))
             throw new InvalidOperationException("language chỉ nhận vi hoặc en.");

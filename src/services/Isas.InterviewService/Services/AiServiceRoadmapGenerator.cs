@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
+using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services.Interfaces;
 
 namespace Isas.InterviewService.Services;
@@ -54,12 +55,17 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
 
     public async Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory, string level,
-        IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText,
+        IReadOnlyList<RoadmapWeakness>? weaknesses,
         string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
+        string scope = "Standard",
+        IReadOnlyList<CriterionEvidence>? evidence = null,
+        RoadmapMode mode = RoadmapMode.LevelUp,
+        string? currentLevel = null,
         CancellationToken ct = default)
-        => await GenerateAsync(jobCategory, level, weaknesses, cvText, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi");
+        => await GenerateAsync(jobCategory, level, weaknesses, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence, mode, currentLevel);
 
-    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? cvText, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language)
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null)
     {
         var payload = new
         {
@@ -68,12 +74,38 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             level,
             // rỗng/null → AI sinh roadmap chuẩn theo level (schema WeaknessScore: criterionName + percentage).
             weaknesses = weaknesses?.Select(w => new { criterionName = w.CriterionName, percentage = w.Percentage }),
-            cvText,
+            // 🔴 `cvText` ĐÃ BỊ GỠ khỏi payload — đừng nối lại; lý do đầy đủ ở
+            // IAiServiceRoadmapGenerator. Đo được là CV thô không tác động gì lên cấu trúc roadmap.
+            // Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU). Khoá RIÊNG chứ không nhúng
+            // vào `cvAnalysisSummary`: chuỗi đó vào prompt dưới nhãn DỮ LIỆU, còn đây là CHỈ THỊ.
+            // ⚠ AIService khai `currentLevel: str | None` tường minh — thiếu dòng khai đó thì
+            // `extra='ignore'` NUỐT IM LẶNG (bẫy đã cắn repo 4 lần); có test khoá hai đầu.
+            currentLevel,
             // BC17 — ngữ cảnh thêm do candidate chọn (đều null → hành vi cũ). Worker Python khai đúng 3 field
             // camelCase này (extra='ignore' sẽ nuốt im lặng nếu lệch tên) và tự bọc như DỮ LIỆU (AI-4).
             focus,
             cvAnalysisSummary,
-            priorRoadmapSummary
+            priorRoadmapSummary,
+            // BE-1 — tiêu chí năng lực THẬT để milestone.focusCriteria chọn NGUYÊN VĂN thay vì bịa tên.
+            // Anonymous object viết tay tên trường camelCase — mẫu `criteria` của AiServiceQuestionGenerator:
+            // JsonContent.Create dùng JsonSerializerDefaults.Web (camelCase) nên tên TRƯỜNG không phải rủi ro
+            // thật, nhưng ĐỔI TÊN trường thì pydantic extra='ignore' vẫn nuốt im lặng — giữ nguyên mẫu cho nhất quán.
+            criteria = criteria is { Count: > 0 }
+                ? criteria.Select(c => new { criterionId = c.CriterionId, name = c.Name })
+                : null,
+            // BE-4 — độ dài roadmap ("Quick"/"Standard"). AIService pydantic schema khai `scope: str =
+            // "Standard"` tường minh (cùng bẫy extra='ignore' nêu ở `criteria`) nên luôn gửi, không để null.
+            scope,
+            // BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, đã tải + cắt trần sẵn
+            // (RoadmapEvidenceLoader). Anonymous object camelCase, cùng lý do như `criteria` ở trên.
+            evidence = evidence is { Count: > 0 }
+                ? evidence.Select(e => new { criterionName = e.CriterionName, reasoning = e.Reasoning })
+                : null,
+            // Chế độ lộ trình — gửi dạng CHUỖI ("LevelUp"/"Reinforce") khớp `app.roadmap_mode`.
+            // AIService khai `mode: str = "LevelUp"` tường minh trong pydantic schema; thiếu dòng
+            // khai đó thì `extra='ignore'` NUỐT IM LẶNG và mọi lộ trình ôn tập được sinh như
+            // LevelUp mà không lỗi ở đâu cả (bẫy đã cắn repo 4 lần) — có test khoá hai đầu.
+            mode = mode.ToString(),
         };
 
         HttpResponseMessage response;
@@ -130,10 +162,12 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         string jobCategory, string level, string lessonTitle,
         IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses,
         IReadOnlyList<GroundingChunk>? grounding = null,
+        IReadOnlyList<CriterionEvidence>? evidence = null,
+        RoadmapMode mode = RoadmapMode.LevelUp,
         CancellationToken ct = default)
-        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi");
+        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi", evidence, mode);
 
-    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language)
+    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp)
     {
         var payload = new
         {
@@ -146,7 +180,14 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             // RAG grounding — snapshot precompute (roadmap_lessons.grounding_refs). null → sinh ungrounded.
             grounding = grounding is { Count: > 0 }
                 ? grounding.Select(g => new { chunkId = g.ChunkId, content = g.Content, sourceUrl = g.SourceUrl, sourceTitle = g.SourceTitle })
-                : null
+                : null,
+            // BE-5 — bằng chứng (Reasoning E11), cùng shape/lý do như AiServiceRoadmapGenerator.GenerateAsync.
+            evidence = evidence is { Count: > 0 }
+                ? evidence.Select(e => new { criterionName = e.CriterionName, reasoning = e.Reasoning })
+                : null,
+            // Chế độ ôn tập đổi TRỌNG TÂM bài giảng (giải thích vì sao lần trước sai) — cùng hợp
+            // đồng chuỗi + cùng bẫy `extra='ignore'` như ở `/generate-roadmap` ngay trên.
+            mode = mode.ToString(),
         };
 
         HttpResponseMessage response;

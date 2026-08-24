@@ -242,9 +242,15 @@ async def generate_questions(req: GenerateQuestionsRequest,
         # phải là keyword, và keyword thì không lệch khi provider thêm tham số về sau.
         # Quên dòng này thì schema có khai, .NET có gửi, HTTP vẫn 200 — prompt chỉ đơn giản không
         # đổi một chữ (cùng lớp bug `targetCriteria` ngay dưới đây và `metricsVersion` 2026-08-05).
+        # Ngữ cảnh bài học — chuyển sang dict cho provider; vắng → None (KHÔNG {}): prompt rẽ nhánh
+        # theo truthiness và một dict rỗng sẽ chèn khối "CHỦ ĐỀ BẮT BUỘC" rỗng nghĩa.
+        lesson_context = req.lessonContext.model_dump() if req.lessonContext else None
+        # Truyền bằng TỪ KHOÁ như `seniority`: `_call_with_language` chèn `language=` vào kwargs nên
+        # mọi thứ sau `criteria` phải là keyword. Quên dòng này thì schema có khai, .NET có gửi,
+        # HTTP vẫn 200 — prompt chỉ đơn giản không đổi một chữ.
         result = await _call_with_language(req.language, provider.generate,
             req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding,
-            criteria, seniority=req.seniority)
+            criteria, seniority=req.seniority, lesson_context=lesson_context)
         _schedule_tts_warmup(result.questions, req.language)
         # citations=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ cho Campaign B2B.
         citations = ([QuestionCitation(**c) for c in result.citations]
@@ -445,7 +451,7 @@ async def analyze_cv(req: AnalyzeCvRequest,
                 req.language, provider.analyze_cv,
                 req.cvText, req.jdText, req.jobCategory,
                 requirements=requirements,
-                grounding=[g.model_dump() for g in req.grounding])
+                grounding=[g.model_dump() for g in req.grounding] if req.grounding else None)
         # REQUIREMENT mode có một nguồn sự thật duy nhất; không phát lại jdMatch holistic.
         jd_match = (
             JdMatch(**result["jdMatch"])
@@ -456,6 +462,10 @@ async def analyze_cv(req: AnalyzeCvRequest,
             strengths=result["strengths"],
             weaknesses=result["weaknesses"],
             suggestions=result["suggestions"],
+            # Provider chỉ set khoá này khi giá trị hợp lệ ⇒ `.get()` chứ không `[...]`.
+            # Thiếu dòng này thì field LUÔN `None` và `exclude_none` xoá hẳn khỏi body —
+            # .NET không bao giờ thấy, mà cũng không có lỗi nào nổ.
+            currentLevel=result.get("currentLevel"),
             jdMatch=jd_match,
             requirementMatches=(
                 [CvRequirementMatch(**m) for m in result["requirementMatches"]]
@@ -550,12 +560,22 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
     try:
         weaknesses = [w.model_dump() for w in req.weaknesses] if req.weaknesses else None
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
+        # BE-1 — tiêu chí THẬT của (nghề, ngôn ngữ) để milestone.focusCriteria chọn NGUYÊN VĂN từ
+        # đây thay vì bịa tên. Vắng/rỗng ⇒ None (giữ hành vi cũ, không ràng buộc gì thêm).
+        criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
+        # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu. Vắng/rỗng ⇒ None (giữ hành vi cũ).
+        evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
         milestones = await _call_with_language(req.language, provider.generate_roadmap,
-            req.jobCategory, req.level, weaknesses, req.cvText,
+            req.jobCategory, req.level, weaknesses,
             focus=req.focus,
             cv_analysis_summary=req.cvAnalysisSummary,
             prior_roadmap_summary=req.priorRoadmapSummary,
             grounding=grounding,
+            criteria=criteria,
+            scope=req.scope,
+            evidence=evidence,
+            mode=req.mode,
+            current_level=req.currentLevel,
         )
         return GenerateRoadmapResponse(
             milestones=[
@@ -584,9 +604,11 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest,
     try:
         # RAG grounding (Contract 2) — vắng → ungrounded (cited_chunk_ids = None → field ẩn).
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
+        # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu. Vắng/rỗng ⇒ None (giữ hành vi cũ).
+        evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
         theory, resources, cited = await _call_with_language(req.language, provider.generate_lesson_theory,
             req.jobCategory, req.level, req.lessonTitle, req.focusCriteria,
-            req.weaknesses, grounding)
+            req.weaknesses, grounding, evidence=evidence, mode=req.mode)
         # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
         # cited=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ giữ nguyên.
         return GenerateLessonTheoryResponse(

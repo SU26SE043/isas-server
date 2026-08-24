@@ -52,6 +52,125 @@ _PROFILE_DEFAULTS: dict[str, str] = {
 }
 
 
+# BE-3 — kiến thức chuyên sâu THEO NGHỀ cho từng mức, khoá `category.{JOB}.seniority.{level}
+# .knowledge` (đã tồn tại từ J4, registry luôn rỗng vì chưa ai seed). Cùng pattern
+# `_PROFILE_DEFAULTS`: mặc định nằm trong SOURCE, registry vẫn ghi đè được từng cặp (nghề, mức)
+# — admin sửa một mức của BA không đụng BE/FE hay 3 mức BA còn lại.
+#
+# Thang mặc định trước BE-3 nghiêng hẳn về kỹ thuật ("đánh đổi kiến trúc", "vận hành quy mô
+# lớn") — hợp với BE/FE nhưng sai bản chất với BA, và BA chiếm 14/29 roadmap đo được (2026-08-21).
+# Bốn dòng BA dưới đây nhắm THẲNG vào 3 tiêu chí NỘI DUNG của rubric BA (`B2CRubricSeed.cs`):
+# "Phân tích yêu cầu" · "Hiểu nghiệp vụ & các bên liên quan" · "Tư duy giải quyết vấn đề" — không
+# đụng "Giao tiếp & Tiếng Anh" (tiêu chí `Always`, không phải nội dung chuyên môn).
+#
+# ⚠ CHƯA HIỆU CHỈNH bằng JD thật (team không có BA/BE/FE senior để đối chiếu — xem §Rà soát
+# roadmap 2026-08-21). Cố ý giữ mức độ vừa phải, tránh thuật ngữ có thể lệch thị trường VN — nếu
+# sau này hiệu chỉnh sai thì sửa ĐÚNG DÒNG cần sửa qua registry, không cần deploy lại.
+#
+# Seed BE/FE dưới nhắm THẲNG vào các tiêu chí NỘI DUNG (`ScoringScope.WhenTargeted`, `B2CRubricSeed.cs`)
+# của đúng nghề đó — KHÔNG đụng "Giao tiếp & trình bày"/"Ngữ pháp & dùng từ"/"Thuật ngữ chuyên
+# ngành"/"Độ trôi chảy & tự tin" (đều `Always`, đo CÁCH NÓI chứ không phải chuyên môn):
+#   • BE: "Chiều sâu kỹ thuật" · "Thiết kế hệ thống & CSDL" · "Giải quyết vấn đề & thuật toán".
+#   • FE: "Chiều sâu kỹ thuật" · "Giải quyết vấn đề" · "Ý thức UI/UX & accessibility".
+#
+# ⚠ `test_prompt_khong_truyen_thi_giu_nguyen_xi` (job_category="BE") chỉ khoá ca `seniority=None`
+# — nhánh đó SKIP hẳn `calibration_block` (xem `build_prompt`, `if seniority is not None:`) nên
+# KHÔNG đọc `_KNOWLEDGE_DEFAULTS` bất kể nghề nào đã seed; seed BE ở đây không chạm byte nào của
+# test đó (đã verify bằng chạy test thật, không chỉ đọc code). Seed BE/FE PHẢI verify lại các test
+# job_category="BE"/"FE" có truyền `seniority` tường minh (substring/index, không phải equality
+# tuyệt đối với chuỗi cũ) — none trong số đó đòi rỗng nội dung kiến thức.
+_KNOWLEDGE_DEFAULTS: dict[str, dict[str, str]] = {
+    "BA": {
+        "Fresher": (
+            "Kiến thức BA mức Fresher: khái niệm nền — user story, use case, đặc tả yêu cầu "
+            "(SRS), phân biệt yêu cầu chức năng/phi chức năng. Câu hỏi nên xoay quanh đọc hiểu "
+            "MỘT yêu cầu cụ thể và đặt câu hỏi làm rõ với một stakeholder — KHÔNG hỏi đàm phán "
+            "đa bên liên quan hay phân tích rủi ro cả dự án."
+        ),
+        "Junior": (
+            "Kiến thức BA mức Junior: tự viết user story/use case hoàn chỉnh cho một tính năng, "
+            "chạy workshop thu thập yêu cầu với 1-2 stakeholder, viết acceptance criteria rõ "
+            "ràng, phát hiện yêu cầu mơ hồ/thiếu và hỏi lại đúng chỗ. Câu hỏi nên xoay quanh tình "
+            "huống thực tế: khách hàng đổi ý giữa chừng, yêu cầu chồng chéo giữa hai bộ phận."
+        ),
+        "Middle": (
+            "Kiến thức BA mức Middle: chủ trì workshop nhiều stakeholder có quan điểm mâu thuẫn, "
+            "vẽ quy trình nghiệp vụ (process mapping), phân tích đánh đổi giữa các phương án "
+            "giải pháp (phạm vi vs thời hạn, xây vs mua), đánh giá tác động khi yêu cầu đổi giữa "
+            "dự án. Câu hỏi nên đào sâu cách xử lý xung đột lợi ích và ưu tiên hoá backlog theo "
+            "giá trị nghiệp vụ."
+        ),
+        "Senior": (
+            "Kiến thức BA mức Senior: định hình giải pháp cho cả một mảng nghiệp vụ, cân bằng "
+            "ràng buộc kỹ thuật-ngân sách-chính trị nội bộ, dẫn dắt BA/PO junior, chịu trách "
+            "nhiệm chất lượng yêu cầu ở quy mô nhiều dự án. Câu hỏi nên xoay quanh cách ra quyết "
+            "định khi thiếu thông tin, thuyết phục stakeholder cấp cao, và đo lường giá trị "
+            "nghiệp vụ sau triển khai."
+        ),
+    },
+    "BE": {
+        "Fresher": (
+            "Kiến thức BE mức Fresher: cấu trúc dữ liệu cơ bản (mảng, list, hash map), viết CRUD "
+            "API đơn giản, phân biệt GET/POST/PUT/DELETE, câu SQL SELECT/INSERT/UPDATE cơ bản. "
+            "Câu hỏi nên xoay quanh MỘT khái niệm hoặc thao tác cụ thể — vd cách viết một câu JOIN "
+            "đơn giản, vì sao dùng đúng HTTP method — KHÔNG hỏi thiết kế hệ thống nhiều thành "
+            "phần, KHÔNG hỏi đánh đổi giữa các kiến trúc."
+        ),
+        "Junior": (
+            "Kiến thức BE mức Junior: viết API hoàn chỉnh cho một tính năng (validate input, xử "
+            "lý lỗi, trả đúng status code), viết truy vấn có JOIN/GROUP BY, hiểu cơ chế index cơ "
+            "bản, debug lỗi runtime thường gặp. Câu hỏi nên xoay quanh tình huống thực tế: API trả "
+            "sai dữ liệu do thiếu điều kiện lọc, truy vấn chạy chậm do thiếu index — KHÔNG hỏi "
+            "thiết kế hệ thống chịu tải lớn hay đánh đổi kiến trúc microservice."
+        ),
+        "Middle": (
+            "Kiến thức BE mức Middle: thiết kế schema database cho một module, chọn giữa các "
+            "phương án lưu trữ/caching, tối ưu truy vấn chậm, xử lý race condition/deadlock, viết "
+            "test cho logic nghiệp vụ phức tạp. Câu hỏi nên đào sâu cách đưa ra quyết định kỹ "
+            "thuật có đánh đổi (consistency vs performance, chuẩn hoá vs phi chuẩn hoá dữ liệu) và "
+            "cách gỡ lỗi một hệ thống đang chạy thật."
+        ),
+        "Senior": (
+            "Kiến thức BE mức Senior: thiết kế kiến trúc hệ thống nhiều service (đồng bộ dữ liệu, "
+            "idempotency, retry/backoff), đánh giá đánh đổi giữa các mô hình lưu trữ ở quy mô lớn, "
+            "đảm bảo độ tin cậy/khả năng mở rộng, dẫn dắt kỹ thuật cho team. Câu hỏi nên xoay "
+            "quanh cách xử lý sự cố sản xuất, thiết kế hệ thống chịu lỗi, và đánh đổi giữa chi phí "
+            "vận hành với độ phức tạp kỹ thuật."
+        ),
+    },
+    "FE": {
+        "Fresher": (
+            "Kiến thức FE mức Fresher: HTML semantic cơ bản, CSS box model/flexbox, JavaScript cơ "
+            "bản (biến, hàm, thao tác DOM), gọi API bằng fetch. Câu hỏi nên xoay quanh MỘT khái "
+            "niệm cụ thể — vd khác nhau giữa `let`/`const`, cách căn giữa một phần tử bằng "
+            "flexbox — KHÔNG hỏi tối ưu hiệu năng render hay quản lý state phức tạp."
+        ),
+        "Junior": (
+            "Kiến thức FE mức Junior: dựng UI hoàn chỉnh cho một tính năng bằng framework (React/"
+            "Vue/Angular), quản lý state cục bộ, xử lý form/validate, gọi API bất đồng bộ và xử "
+            "lý trạng thái loading/error, sửa lỗi UI thường gặp (layout vỡ, chưa responsive). Câu "
+            "hỏi nên xoay quanh tình huống thực tế: component re-render không cần thiết, dữ liệu "
+            "hiển thị sai do race condition khi gọi API — KHÔNG hỏi tối ưu bundle size hay kiến "
+            "trúc micro-frontend."
+        ),
+        "Middle": (
+            "Kiến thức FE mức Middle: thiết kế cấu trúc component tái sử dụng, chọn giải pháp "
+            "quản lý state toàn cục, tối ưu hiệu năng render (memoization, lazy-load), đảm bảo "
+            "accessibility, viết test cho component. Câu hỏi nên đào sâu cách đưa ra quyết định "
+            "có đánh đổi (chọn thư viện state management nào, khi nào nên tách nhỏ component) và "
+            "cách gỡ vấn đề hiệu năng thực tế."
+        ),
+        "Senior": (
+            "Kiến thức FE mức Senior: thiết kế kiến trúc frontend cho hệ thống lớn (micro-"
+            "frontend, module federation, chiến lược caching/CDN), chuẩn hoá quy trình build/"
+            "deploy, đảm bảo hiệu năng và khả năng bảo trì ở quy mô nhiều team, dẫn dắt kỹ thuật. "
+            "Câu hỏi nên xoay quanh cách xử lý sự cố hiệu năng ở production, đánh đổi giữa trải "
+            "nghiệm người dùng với chi phí kỹ thuật, và cách chuẩn hoá kỹ thuật cho nhiều team."
+        ),
+    },
+}
+
+
 def _profile_key(level: str) -> str:
     return f"seniority.{level}.profile"
 
@@ -93,9 +212,11 @@ def calibration_block(level: str, job_category: str | None = None) -> str:
     hai chỉ thị đọc như mâu thuẫn và mô hình tự do chọn bên nào cũng được ⇒ hiệu chỉnh mất tác dụng
     đúng ở cấp Fresher/Senior (hai đầu thang, nơi nó quan trọng nhất).
 
-    ``job_category`` (mới, J4): có thì thêm khối kiến thức chuyên sâu riêng cho CẶP (nghề, mức)
-    đang dùng — mặc định RỖNG (`category.{JOB}.seniority.{level}.knowledge`), nên vắng nội dung
-    thì khối này không xuất hiện, prompt không đổi một byte.
+    ``job_category`` (J4, seed BE-3): có thì thêm khối kiến thức chuyên sâu riêng cho CẶP (nghề,
+    mức) đang dùng — đọc `category.{JOB}.seniority.{level}.knowledge` qua registry, mặc định rơi
+    về :data:`_KNOWLEDGE_DEFAULTS`. Cặp KHÔNG có trong cả registry lẫn default (mọi nghề ngoài BA
+    tính tới BE-3) ⇒ khối này không xuất hiện, prompt không đổi một byte cho nghề đó — đúng bất
+    biến J4 cũ, chỉ thu hẹp phạm vi còn "nghề chưa được seed" thay vì "mọi nghề".
     """
     lines = "\n".join(
         f"- {prompt_registry.get(_profile_key(lv), _PROFILE_DEFAULTS[lv])}" for lv in LEVELS
@@ -110,7 +231,13 @@ def calibration_block(level: str, job_category: str | None = None) -> str:
         "hay tụt xuống cấp thấp hơn."
     )
 
-    knowledge = prompt_registry.get(_knowledge_key(job_category, level), "") if job_category else ""
+    default_knowledge = (
+        _KNOWLEDGE_DEFAULTS.get(job_category.upper(), {}).get(level, "") if job_category else ""
+    )
+    knowledge = (
+        prompt_registry.get(_knowledge_key(job_category, level), default_knowledge)
+        if job_category else ""
+    )
     if knowledge:
         block += f"\n{knowledge}"
     return block

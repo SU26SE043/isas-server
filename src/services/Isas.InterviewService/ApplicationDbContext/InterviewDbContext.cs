@@ -26,12 +26,17 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<Roadmap> Roadmaps => Set<Roadmap>();                          // BC12
         public DbSet<RoadmapMilestone> RoadmapMilestones => Set<RoadmapMilestone>();  // BC12
         public DbSet<RoadmapLesson> RoadmapLessons => Set<RoadmapLesson>();        // BC12
+        // Lịch sử các lần làm 1 bài luyện (làm lại để nâng điểm).
+        public DbSet<RoadmapLessonAttempt> RoadmapLessonAttempts => Set<RoadmapLessonAttempt>();
 
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();        // DB2 — transactional outbox
 
         public DbSet<KnowledgeSource> KnowledgeSources => Set<KnowledgeSource>();  // RAG grounding — metadata nguồn (chunk ở Qdrant)
 
         public DbSet<PromptTemplate> PromptTemplates => Set<PromptTemplate>();    // F21 — prompt tuỳ biến (FR17)
+
+        // BC15 — ngưỡng ĐẠT theo cấp độ lộ trình, admin chỉnh runtime. Bảng rỗng = chạy mặc định code.
+        public DbSet<RoadmapLevelThreshold> RoadmapLevelThresholds => Set<RoadmapLevelThreshold>();
 
         // DB14 — đóng dấu updated_at TỰ ĐỘNG cho entity IHasUpdatedAt bị SỬA (Modified). SaveChanges()
         // parameterless của EF gọi xuống overload (bool) này → override 2 overload dưới là đủ mọi đường ghi

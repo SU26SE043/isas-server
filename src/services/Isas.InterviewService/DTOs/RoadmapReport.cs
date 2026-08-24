@@ -5,27 +5,98 @@ namespace Isas.InterviewService.DTOs;
 
 // GET /roadmaps/{id}/report. radar + levelEvaluation luôn có (kể cả interim); kết luận (AI) rỗng/null khi interim.
 public record RoadmapReportResponse(
-    IReadOnlyList<CriterionScoreResponse> Radar,          // avg % per tiêu chí qua các session thuộc roadmap
+    IReadOnlyList<RoadmapRadarCriterionResponse> Radar,   // xu hướng GẦN ĐÂY per tiêu chí (xem record bên dưới)
     IReadOnlyList<RoadmapLevelEvaluationResponse> LevelEvaluation,
     IReadOnlyList<string> Strengths,                       // kết luận chi tiết — AI /summarize-roadmap (best-effort)
     IReadOnlyList<string> Weaknesses,
     IReadOnlyList<string> Improvements,                    // cần cải thiện + gợi ý luyện tiếp
-    string? OverallComment
+    string? OverallComment,
+    // Trạng thái roadmap tại thời điểm đọc. Client dùng để biết đây là báo cáo TẠM THỜI (Active,
+    // tính on-read) hay báo cáo CUỐI (Completed, đọc snapshot đã chốt) — hai thứ khác nhau về ý
+    // nghĩa: bản cuối sẽ không đổi nữa, bản tạm thời còn dịch chuyển theo mỗi buổi luyện.
+    //
+    // Thiếu field này thì client KHÔNG có cách nào phân biệt: đo trên deploy, màn báo cáo của một
+    // roadmap đã Completed vẫn ghi "Báo cáo tạm thời" vì frontend đã có sẵn nhánh suy từ status
+    // (`status === 'completed'` → snapshot) nhưng response chưa bao giờ mang status.
+    string RoadmapStatus,
+    // Diễn tiến TỪNG BUỔI theo thời gian — lớp dữ liệu mà radar (dù đã thu về cửa sổ gần đây) vẫn
+    // không thể hiện: radar trả lời "đang ở đâu", progress trả lời "đi lên hay đi xuống".
+    //
+    // ⚠ Snapshot final_report lưu TRƯỚC bản này KHÔNG có khoá `progress` ⇒ deserialize ra null.
+    // Đường đọc phải chuẩn hoá về [] (xem RoadmapReportService.GetReportAsync).
+    IReadOnlyList<RoadmapSessionProgressResponse> Progress
 );
+
+/// <summary>
+/// Một nan radar của báo cáo lộ trình. KHÔNG dùng lại <see cref="CriterionScoreResponse"/> (BC9):
+/// record đó mô tả điểm của MỘT buổi luyện và đang nằm trong payload kết quả buổi — nhét thêm
+/// trường xu hướng vào đó là phình payload của một màn hình không dùng tới chúng.
+/// </summary>
+/// <param name="Percentage">
+/// Trung bình % qua <b>tối đa 3 buổi GẦN NHẤT</b> có chấm tiêu chí này (KHÔNG phải mọi buổi).
+/// Đây là con số <see cref="RoadmapLevelEvaluationResponse"/> dùng để kết luận Đạt/Chưa đạt.
+/// </param>
+/// <param name="AverageScore">Điểm thô trung bình, CÙNG cửa sổ buổi với <paramref name="Percentage"/>.</param>
+/// <param name="StartPercentage">
+/// % ở buổi ĐẦU TIÊN có chấm tiêu chí này — mốc để người học thấy mình đi từ đâu tới.
+/// <c>null</c> khi tiêu chí mới chỉ có đúng 1 buổi: không có gì để so, và bịa ra một mốc bằng chính
+/// điểm hiện tại sẽ hiện thành "tiến bộ 0%" thay vì "chưa đủ dữ liệu" (BK23 — <c>null</c> nghĩa là
+/// KHÔNG BIẾT, đừng vẽ thành số).
+/// </param>
+/// <param name="SessionCount">
+/// Tổng số buổi có chấm tiêu chí này — CỠ MẪU. Các nan radar KHÔNG bằng nhau về cỡ mẫu: INT-18 chỉ
+/// chấm tiêu chí nội dung khi câu hỏi nhắm tới nó, nên một nan có thể dựng trên 1 buổi còn nan bên
+/// cạnh dựng trên 5. Client cần con số này để không trình bày hai nan như nhau về độ tin cậy.
+/// </param>
+/// <param name="RecentCount">Số buổi THỰC dùng cho <paramref name="Percentage"/> (≤ 3).</param>
+public record RoadmapRadarCriterionResponse(
+    Guid CriterionId,
+    string Name,
+    decimal MaxScore,
+    decimal Weight,
+    decimal Percentage,
+    decimal AverageScore,
+    decimal? StartPercentage,
+    int SessionCount,
+    int RecentCount
+);
+
+/// <summary>
+/// Kết quả MỘT buổi luyện thuộc lộ trình, xếp theo thời gian được chấm. Dùng để vẽ đường xu hướng.
+/// </summary>
+/// <param name="Order">Thứ tự thời gian trong lộ trình, 1-based.</param>
+/// <param name="CompletedAt">
+/// Thời điểm buổi được CHẤM (mốc ghi <c>session_criterion_scores</c>), không phải lúc bấm nộp.
+/// Lấy mốc sẵn có, KHÔNG thêm cột; và đây là mốc duy nhất chắc chắn tồn tại cho mọi dòng ở đây —
+/// dòng progress chỉ sinh ra từ buổi ĐÃ có breakdown điểm.
+/// </param>
+/// <param name="OverallPercentage">Trung bình % các tiêu chí CỦA CHÍNH buổi đó (equal weight, như INT-10 B2C).</param>
+public record RoadmapSessionProgressResponse(
+    int Order,
+    string LessonTitle,
+    DateTime CompletedAt,
+    decimal OverallPercentage,
+    IReadOnlyList<RoadmapProgressCriterionResponse> Scores
+);
+
+// Điểm 1 tiêu chí trong 1 buổi (thang %). Gọn có chủ đích — đường xu hướng chỉ cần tên + %.
+public record RoadmapProgressCriterionResponse(string Name, decimal Percentage);
 
 // Đánh giá 1 tiêu chí theo ngưỡng level (Fresher 50 · Junior 60 · Middle 70 · Senior 80).
 public record RoadmapLevelEvaluationResponse(
     string CriterionName,
-    decimal Percentage,      // avg % tiêu chí (= radar)
+    decimal Percentage,      // = radar (TB tối đa 3 buổi gần nhất), không phải TB mọi buổi
     int LevelThreshold,      // ngưỡng đạt theo level roadmap
     bool Passed              // percentage ≥ levelThreshold
 );
 
-// Tiến độ 1 tiêu chí gửi xuống AIService /summarize-roadmap: startPct (baseline lúc tạo) → endPct (radar cuối).
+// Tiến độ 1 tiêu chí gửi xuống AIService /summarize-roadmap: startPct (mốc xuất phát) → endPct (hiện tại).
 public record RoadmapCriteriaProgress(
     string CriterionName,
-    decimal? StartPct,       // baseline % lúc tạo roadmap (null nếu chưa có buổi nào lúc tạo)
-    decimal EndPct,          // radar % hiện tại
+    // Mốc xuất phát, ưu tiên: baseline lúc TẠO roadmap → % buổi ĐẦU TIÊN trong roadmap → null.
+    // null = KHÔNG BIẾT (tiêu chí mới chỉ được chấm ở đúng 1 buổi và roadmap không có baseline).
+    decimal? StartPct,
+    decimal EndPct,          // radar % hiện tại (TB tối đa 3 buổi gần nhất)
     int LevelThreshold,
     bool Passed
 );
@@ -36,4 +107,78 @@ public record RoadmapSummaryAiResult(
     IReadOnlyList<string> Weaknesses,
     IReadOnlyList<string> Improvements,
     string? OverallComment
+);
+
+// ── Phần TÍNH của một chặng ────────────────────────────────────────────────────────────────────
+// GET /roadmaps/{roadmapId}/milestones/{milestoneId}/score-report
+//
+// Trang lộ trình hiện "So với chặng trước: −20% Giao tiếp & trình bày". Con số đó là một khẳng
+// định KHÔNG kiểm chứng được cho tới khi người học xem được nó cộng ra từ đâu. Đây là phần tính đó.
+//
+// Mọi chặng đều có báo cáo: điểm từng tiêu chí + các buổi đã cộng vào là thông tin có ích ngay cả
+// khi CHƯA có mốc để so (chặng 1 không có chặng trước, lộ trình không có baseline). Delta là phần
+// THÊM, không phải điều kiện.
+
+/// <param name="Source">
+/// Số trong báo cáo này từ đâu ra — client PHẢI phân biệt, vì độ tin cậy khác nhau:
+/// <list type="bullet">
+/// <item><c>"snapshot"</c> — chốt cùng lúc, cùng vòng lặp với con số ở tiêu đề
+/// (<c>roadmap_milestones.improvement</c>) ⇒ <c>deltaPct</c> == <c>headlineDeltaPct</c>, không thể lệch.</item>
+/// <item><c>"computed"</c> — chặng CHƯA hoàn thành nên chưa có gì được chốt; tính tại thời điểm đọc.
+/// Không có số chốt nào để mà lệch. <c>headlineDeltaPct</c> luôn null.</item>
+/// <item><c>"recomputed"</c> — chặng hoàn thành TRƯỚC bản này ⇒ không có snapshot; tính lại từ dữ
+/// liệu HIỆN TẠI. <b>Có thể lệch</b> <c>headlineDeltaPct</c> nếu người học đã luyện lại bài nào đó
+/// sau khi chặng chốt sổ. Client nên nói rõ điều này thay vì trình bày như số đã chốt.</item>
+/// </list>
+/// </param>
+/// <param name="ComparedWith">
+/// Mốc so: <c>"previousMilestone"</c> · <c>"baseline"</c> (đo lúc lập lộ trình) · <c>"none"</c>
+/// (không có mốc nào — mọi <c>deltaPct</c> sẽ là null).
+/// </param>
+public record MilestoneScoreReportResponse(
+    Guid MilestoneId,
+    string MilestoneTitle,
+    int OrderNo,
+    string MilestoneStatus,
+    string Source,
+    string ComparedWith,
+    string? ComparedWithTitle,
+    IReadOnlyList<MilestoneScoreCriterionResponse> Criteria
+);
+
+/// <param name="CurrentAveragePercentage">
+/// Trung bình cộng <b>đúng</b> các dòng trong <paramref name="CurrentSessions"/>, làm tròn 2 chữ số.
+/// Bất biến này có test khoá: phần tính phải cộng ra đúng con số ở tiêu đề, nếu không thì cả tính
+/// năng phản tác dụng.
+/// </param>
+/// <param name="DeltaPct">
+/// <c>currentAveragePercentage − referenceAveragePercentage</c>. <c>null</c> = tiêu chí này KHÔNG
+/// CÓ MỐC để so. ⚠ <b>Đừng hiển thị thành 0</b>: 0 nghĩa là "không tiến bộ", null nghĩa là "chưa có
+/// gì để so" — hai điều khác hẳn nhau (BK23).
+/// </param>
+/// <param name="HeadlineDeltaPct">
+/// Chính con số đang hiện ở tiêu đề, đọc thẳng từ <c>roadmap_milestones.improvement</c> (đã chốt sổ).
+/// <c>null</c> khi chặng chưa chốt, hoặc tiêu chí không có mốc.
+///
+/// <para>Có mặt ở đây để mọi sai lệch đều <b>nhìn thấy được</b> thay vì âm thầm: với
+/// <c>source = "snapshot"</c> nó luôn bằng <paramref name="DeltaPct"/>; với <c>"recomputed"</c> nó
+/// có thể khác, và đó chính là tín hiệu client cần để cảnh báo người đọc.</para>
+/// </param>
+public record MilestoneScoreCriterionResponse(
+    string Name,
+    decimal CurrentAveragePercentage,
+    IReadOnlyList<MilestoneScoreSessionResponse> CurrentSessions,
+    decimal? ReferenceAveragePercentage,
+    IReadOnlyList<MilestoneScoreSessionResponse> ReferenceSessions,
+    decimal? DeltaPct,
+    decimal? HeadlineDeltaPct
+);
+
+/// <summary>Một buổi luyện đã cộng vào điểm của tiêu chí. Xem <see cref="Entities.MilestoneScoreSessionSnapshot"/>.</summary>
+public record MilestoneScoreSessionResponse(
+    Guid SessionId,
+    string LessonTitle,
+    int? AttemptNo,
+    decimal Percentage,
+    DateTime ScoredAt
 );

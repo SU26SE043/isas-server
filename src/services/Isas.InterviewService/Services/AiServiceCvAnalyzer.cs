@@ -37,6 +37,9 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
         List<string>? Strengths,
         List<string>? Weaknesses,
         List<string>? Suggestions,
+        // Trình độ hiện tại AIService suy từ CV. Vắng khoá (AIService dùng
+        // `response_model_exclude_none`) hoặc null ⇒ CV không đủ căn cứ.
+        string? CurrentLevel,
         JdMatchApi? JdMatch,
         List<CvRequirementMatch>? RequirementMatches,
         List<CvSectionAnchor>? CvSections,
@@ -123,6 +126,7 @@ public class AiServiceCvAnalyzer : IAiServiceCvAnalyzer
             Strengths: body.Strengths ?? [],
             Weaknesses: body.Weaknesses ?? [],
             Suggestions: body.Suggestions ?? [],
+            CurrentLevel: body.CurrentLevel,
             JdMatch: jdMatch,
             RequirementMatches: body.RequirementMatches,
             CvSections: body.CvSections,
