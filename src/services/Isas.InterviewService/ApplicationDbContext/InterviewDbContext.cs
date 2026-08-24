@@ -18,7 +18,7 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<RubricLevel> RubricLevels => Set<RubricLevel>();
         // DB15 — rubric_anchors gộp thành cột jsonb rubric_levels.example_answers (bỏ bảng/entity).
 
-        // TOP1 — danh mục chủ đề luyện tập B2C (schema-only; chưa seed, chưa wire luồng tạo buổi).
+        // TOP1 — danh mục chủ đề luyện tập B2C (seed ở HasData dưới; chưa wire luồng tạo buổi).
         public DbSet<PracticeTopic> PracticeTopics => Set<PracticeTopic>();
 
         public DbSet<FileRecord> FileRecords => Set<FileRecord>();
@@ -99,6 +99,11 @@ namespace Isas.InterviewService.ApplicationDbContext
                 // Test SQLite giữ rubric "controlled" như cũ (không seed sẵn) để không phá E1/E2/E8;
                 // test BC11 tự nạp seed khi cần.
                 b.Entity<RubricCriterion>().HasData(B2CRubricSeed.Build());
+
+                // TOP1-B2: seed danh mục chủ đề luyện tập B2C — cùng cách giao với B2CRubricSeed
+                // (HasData → InsertData literal trong migration, không seed runtime). Test SQLite tự
+                // nạp PracticeTopicSeed.Build() khi cần (PracticeTopicSeedTests).
+                b.Entity<PracticeTopic>().HasData(PracticeTopicSeed.Build());
             }
         }
     }
