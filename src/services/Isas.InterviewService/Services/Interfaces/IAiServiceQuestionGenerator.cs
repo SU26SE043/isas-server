@@ -84,6 +84,21 @@ public interface IAiServiceQuestionGenerator
         IReadOnlyList<GroundingChunk>? grounding, string language,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria,
         string seniority, LessonContext lessonContext, CancellationToken ct = default);
+
+    // ── TOP1-B5 — Overload DANH MỤC ĐỀ TÀI: topics chọn sẵn bằng TopicSelector (B3) ──────────────
+    //
+    // Chỉ dùng khi buổi KHÔNG phải bài học lộ trình (buổi đó luôn đi overload lessonContext ngay
+    // trên — xem PracticeService, "bài học thắng" đối xứng với prompts.py::build_prompt phía Python
+    // B4). `topics` KHÔNG nullable + KHÔNG default — cùng lý do overload lessonContext: giữ cho nó
+    // phân biệt được với overload `criteria` ngay trên bằng KIỂU tham số kế `seniority`
+    // (LessonContext vs IReadOnlyList<SessionTopic>), không phải bằng arity — hai kiểu không tương
+    // thích nên không có CS0121 ambiguous kiểu ghi chú ở overload `grounding+ct` phía trên.
+    Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria,
+        string seniority, IReadOnlyList<SessionTopic> topics, CancellationToken ct = default);
 }
 
 /// <summary>

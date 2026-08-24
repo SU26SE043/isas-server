@@ -320,6 +320,10 @@ builder.Services.Configure<RepublisherSettings>(
     builder.Configuration.GetSection(RepublisherSettings.SectionName));   // DB29
 builder.Services.Configure<GroundingOptions>(
     builder.Configuration.GetSection(GroundingOptions.SectionName));   // RAG grounding — Enabled/TopK/threshold
+builder.Services.Configure<TopicsOptions>(
+    builder.Configuration.GetSection(TopicsOptions.SectionName));   // TOP1-B5 — kill-switch danh mục đề tài
+// Thuần hàm, không giữ state ngoài Random.Shared (thread-safe) → singleton an toàn (mẫu TopicSelector B3).
+builder.Services.AddSingleton<TopicSelector>();
 
 builder.Services.AddSingleton<IAmazonS3>(sp =>
 {

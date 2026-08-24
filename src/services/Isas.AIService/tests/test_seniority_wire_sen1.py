@@ -67,7 +67,7 @@ def test_seniority_doc_dung_khoa_camelcase_tu_json():
 def _capture_generate(bucket):
     async def fake_generate(job_category, cv_text, jd_text, count=None,
                             focus_criteria=None, grounding=None, criteria=None,
-                            seniority=None, lesson_context=None):
+                            seniority=None, lesson_context=None, topics=None):
         bucket.append(seniority)
         return QuestionGenerationResult(questions=["Q1"], citations=None)
     return fake_generate
