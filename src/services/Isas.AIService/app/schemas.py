@@ -65,6 +65,18 @@ class LessonContextDto(BaseModel):
     outline: str | None = None
 
 
+class SessionTopic(BaseModel):
+    """TOP1-B4 — 1 đề tài của danh mục chủ đề luyện tập (TOP1) gắn cho buổi này.
+
+    ``cvLevel``/``cvEvidence`` là ngữ cảnh TUỲ CHỌN suy từ CV ứng viên cho ĐÚNG đề tài này (vd
+    mức độ thể hiện trong CV + trích dẫn bằng chứng) — optional-safe để một field thiếu không làm
+    cả request 422, mẫu ``sourceUrl``/``sourceTitle`` của :class:`GroundingChunk`.
+    """
+    label: str
+    cvLevel: str | None = None
+    cvEvidence: str | None = None
+
+
 class GenerateQuestionsRequest(BaseModel):
     jobCategory: str            # BA | BE | FE
     language: str = "vi"
@@ -109,6 +121,15 @@ class GenerateQuestionsRequest(BaseModel):
     # bug đã cắn repo 4 lần (`focusCriteria`/BC14 · `metricsVersion` · `adaptiveMaxQuestions` ·
     # `seniority`/SEN1).
     lessonContext: LessonContextDto | None = None
+    # TOP1-B4 — danh mục đề tài của buổi (TOP1), chọn sẵn ở tầng .NET (TopicSelector, B3). Vắng ⇒
+    # prompt GIỮ NGUYÊN XI cho mọi caller cũ. Có cả `lessonContext` lẫn `topics` ⇒ bài học THẮNG
+    # (hẹp hơn — một bài cụ thể trong lộ trình), khối đề tài không xuất hiện.
+    #
+    # ⚠ Khai tường minh ở ĐÂY là nửa quyết định của tính năng — y hệt `lessonContext`/`seniority`
+    # ngay trên: thiếu dòng này thì .NET vẫn gửi, HTTP vẫn 200, không lỗi, không log, và pydantic
+    # `extra='ignore'` chỉ đơn giản vứt field. Đúng lớp bug đã cắn repo 4 lần (`focusCriteria`/BC14
+    # · `metricsVersion` · `adaptiveMaxQuestions` · `seniority`/SEN1).
+    topics: list[SessionTopic] | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):
