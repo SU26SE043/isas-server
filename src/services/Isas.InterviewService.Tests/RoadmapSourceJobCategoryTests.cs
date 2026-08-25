@@ -49,6 +49,11 @@ public class RoadmapSourceJobCategoryTests
                 new List<GeneratedLesson> { new("L1") })
         });
 
+    // MIS1-B6 — thêm It.IsAny<IReadOnlyList<RoadmapMistake>?>() (13ᵗʰ tham số, MIS1-B5) khớp arity
+    // interface hiện tại. Thiếu nó, Setup chỉ khớp lời gọi có `mistakes == null` theo NGHĨA ĐEN
+    // (tham số optional thiếu trong expression tree biên dịch thành literal null) — mà Guard 3 nay
+    // BẢO ĐẢM `mistakes` luôn khác null khi gọi thật, nên Setup không bao giờ khớp ⇒ Moq loose-mock
+    // trả về Task<null> ⇒ NullReferenceException tại `ai.Milestones`.
     private static Mock<IAiServiceRoadmapGenerator> GenMock()
     {
         var m = new Mock<IAiServiceRoadmapGenerator>();
@@ -58,7 +63,8 @@ public class RoadmapSourceJobCategoryTests
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-                It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))
             .ReturnsAsync(Sample());
         return m;
     }
@@ -91,41 +97,16 @@ public class RoadmapSourceJobCategoryTests
     }
 
     /// <summary>Buổi B2C đã Scored + 1 tiêu chí có điểm (BC9). <paramref name="weak"/> quyết định
-    /// buổi đó có điểm yếu hay không — dùng để tách bạch guard lệch nghề với guard Reinforce.</summary>
+    /// buổi đó có điểm yếu hay không — dùng để tách bạch guard lệch nghề với guard điểm yếu.
+    /// MIS1-B6 — thân hàm chuyển vào TestSeed.ScoredSessionWithAnswers (dùng chung 3 file); giữ
+    /// NGUYÊN chữ ký để 12 call site trong file này không phải sửa. `seedContentMistakes: true` vì
+    /// mọi test ở đây gọi CreateAsync (Guard 3 nay đòi ≥1 lỗi nội dung khi buổi có điểm yếu —
+    /// xem TestSeed.cs).</summary>
     private static Guid SeedScoredSession(
         TestDb t, Guid owner, JobCategory cat, bool weak = true)
-    {
-        var session = TestDb.Session(owner, SessionStatus.Scored, cat);
-        t.Db.PracticeSessions.Add(session);
-        // Production chỉ có MỘT bộ tiêu chí seed cho mỗi (nghề, ngôn ngữ) — mọi buổi cùng nghề trỏ
-        // vào chính nó. Tạo bản mới mỗi lần seed sẽ đụng UNIQUE
-        // (job_category, language, version, name) ngay khi một test cần HAI buổi cùng nghề.
-        const string CritName = "Tư duy giải quyết vấn đề";
-        var crit = t.Db.RubricCriteria.Local
-                .FirstOrDefault(c => c.Name == CritName && c.CandidateId == null && c.JobCategory == cat)
-            ?? t.Db.RubricCriteria
-                .FirstOrDefault(c => c.Name == CritName && c.CandidateId == null && c.JobCategory == cat);
-        if (crit is null)
-        {
-            crit = TestDb.Criterion(cat, name: CritName);
-            t.Db.RubricCriteria.Add(crit);
-        }
-        t.Db.SessionCriterionScores.Add(new SessionCriterionScore
-        {
-            Id = Guid.NewGuid(),
-            SessionId = session.Id,
-            CriterionId = crit.Id,
-            CriterionName = crit.Name,
-            AverageScore = weak ? 2m : 5m,
-            MaxScore = 5,
-            Percentage = weak ? 40m : 100m,
-            Weight = 1m,
-            NeedsImprovement = weak,
-            CreatedAt = DateTime.UtcNow
-        });
-        t.Db.SaveChanges();
-        return session.Id;
-    }
+        => TestSeed.ScoredSessionWithAnswers(
+            t, owner, cat, seedContentMistakes: true,
+            ("Tư duy giải quyết vấn đề", weak ? 40m : 100m, weak));
 
     private static Guid SeedCvAnalysis(TestDb t, Guid owner, JobCategory cat)
     {
@@ -286,9 +267,10 @@ public class RoadmapSourceJobCategoryTests
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var caId = SeedCvAnalysis(t, user, Other);
+        var sid = SeedScoredSession(t, user, Wanted);   // MIS1-B6 — Guard 1/2/3
         var gen = GenMock();
 
-        var result = await Controller(t, gen.Object, user).Create(Req(cvAnalysisId: caId), default);
+        var result = await Controller(t, gen.Object, user).Create(Req([sid], cvAnalysisId: caId), default);
 
         var message = Message(result);
         Assert.Contains(Other.ToString(), message);
@@ -303,8 +285,9 @@ public class RoadmapSourceJobCategoryTests
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var caId = SeedCvAnalysis(t, user, Wanted);
+        var sid = SeedScoredSession(t, user, Wanted);   // MIS1-B6 — Guard 1/2/3
 
-        var result = await Controller(t, GenMock().Object, user).Create(Req(cvAnalysisId: caId), default);
+        var result = await Controller(t, GenMock().Object, user).Create(Req([sid], cvAnalysisId: caId), default);
 
         Assert.IsType<CreatedResult>(result);
     }
@@ -313,10 +296,12 @@ public class RoadmapSourceJobCategoryTests
     public async Task PhanTichCvLechNghe_CuaNguoiKhac_Van403_KhongLoId()
     {
         using var t = new TestDb();
+        var caller = Guid.NewGuid();
         var caId = SeedCvAnalysis(t, Guid.NewGuid(), Other);
+        var sid = SeedScoredSession(t, caller, Wanted);   // MIS1-B6 — Guard 1/2/3
         var gen = GenMock();
 
-        var result = await Controller(t, gen.Object, Guid.NewGuid()).Create(Req(cvAnalysisId: caId), default);
+        var result = await Controller(t, gen.Object, caller).Create(Req([sid], cvAnalysisId: caId), default);
 
         var forbidden = Assert.IsType<ObjectResult>(result);
         Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);
@@ -332,9 +317,10 @@ public class RoadmapSourceJobCategoryTests
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var priorId = SeedPriorRoadmap(t, user, Other);
+        var sid = SeedScoredSession(t, user, Wanted);   // MIS1-B6 — Guard 1/2/3
         var gen = GenMock();
 
-        var result = await Controller(t, gen.Object, user).Create(Req(priorRoadmapId: priorId), default);
+        var result = await Controller(t, gen.Object, user).Create(Req([sid], priorRoadmapId: priorId), default);
 
         var message = Message(result);
         Assert.Contains(Other.ToString(), message);
@@ -350,8 +336,9 @@ public class RoadmapSourceJobCategoryTests
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var priorId = SeedPriorRoadmap(t, user, Wanted);
+        var sid = SeedScoredSession(t, user, Wanted);   // MIS1-B6 — Guard 1/2/3
 
-        var result = await Controller(t, GenMock().Object, user).Create(Req(priorRoadmapId: priorId), default);
+        var result = await Controller(t, GenMock().Object, user).Create(Req([sid], priorRoadmapId: priorId), default);
 
         Assert.IsType<CreatedResult>(result);
         Assert.Equal(2, (await t.Db.Roadmaps.ToListAsync()).Count);
@@ -366,9 +353,10 @@ public class RoadmapSourceJobCategoryTests
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var priorId = SeedPriorRoadmap(t, user, Other, withReport: false);
+        var sid = SeedScoredSession(t, user, Wanted);   // MIS1-B6 — Guard 1/2/3
         var gen = GenMock();
 
-        var result = await Controller(t, gen.Object, user).Create(Req(priorRoadmapId: priorId), default);
+        var result = await Controller(t, gen.Object, user).Create(Req([sid], priorRoadmapId: priorId), default);
 
         var message = Message(result);
         Assert.Contains(Other.ToString(), message);
@@ -380,11 +368,13 @@ public class RoadmapSourceJobCategoryTests
     public async Task LoTrinhThamChieuLechNghe_CuaNguoiKhac_Van403_KhongLoId()
     {
         using var t = new TestDb();
+        var caller = Guid.NewGuid();
         var priorId = SeedPriorRoadmap(t, Guid.NewGuid(), Other);
+        var sid = SeedScoredSession(t, caller, Wanted);   // MIS1-B6 — Guard 1/2/3
         var gen = GenMock();
 
-        var result = await Controller(t, gen.Object, Guid.NewGuid())
-            .Create(Req(priorRoadmapId: priorId), default);
+        var result = await Controller(t, gen.Object, caller)
+            .Create(Req([sid], priorRoadmapId: priorId), default);
 
         var forbidden = Assert.IsType<ObjectResult>(result);
         Assert.Equal(StatusCodes.Status403Forbidden, forbidden.StatusCode);

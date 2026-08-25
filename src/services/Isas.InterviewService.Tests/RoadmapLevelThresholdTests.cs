@@ -285,29 +285,11 @@ public class RoadmapLevelThresholdTests
 
     // Buổi luyện ĐÃ CHẤM + breakdown BC9 (session_criterion_scores) — nguồn của radar/levelEvaluation.
     // criterion_id có FK Restrict về rubric_criteria nên phải seed tiêu chí trước.
+    // MIS1-B6 — thân hàm chuyển vào TestSeed.ScoredSessionForReport (dùng chung, xem lý do TÁCH
+    // RIÊNG với ScoredSessionWithAnswers ở đầu file TestSeed.cs — file này dựng Roadmap TRỰC TIẾP,
+    // không qua CreateAsync, nên KHÔNG cần content mistake). Giữ nguyên chữ ký, không đụng call site.
     private static Guid SeedScoredSession(TestDb t, Guid cand, string criterionName, decimal pct)
-    {
-        var at = DateTime.UtcNow;
-        var session = TestDb.Session(cand, SessionStatus.Scored, createdAt: at);
-        var criterion = TestDb.Criterion(JobCategory.BE, name: criterionName);
-        t.Db.PracticeSessions.Add(session);
-        t.Db.RubricCriteria.Add(criterion);
-        t.Db.SessionCriterionScores.Add(new SessionCriterionScore
-        {
-            Id = Guid.NewGuid(),
-            SessionId = session.Id,
-            CriterionId = criterion.Id,
-            CriterionName = criterionName,
-            AverageScore = Math.Round(pct / 20m, 2),   // MaxScore 5 ⇒ pct = avg/5*100
-            MaxScore = 5,
-            Percentage = pct,
-            Weight = 1m,
-            NeedsImprovement = pct < 50m,
-            CreatedAt = at
-        });
-        t.Db.SaveChanges();
-        return session.Id;
-    }
+        => TestSeed.ScoredSessionForReport(t, cand, criterionName, pct);
 
     // ── (8) Cấp độ LẠ không làm đường đọc NÉM ────────────────────────────────────────
     // ThresholdForAsync nằm trên đường build report: ném ở đây là làm hỏng cả trang kết quả của

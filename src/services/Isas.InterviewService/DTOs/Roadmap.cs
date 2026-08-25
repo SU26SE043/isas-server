@@ -205,8 +205,14 @@ public record RoadmapSummaryResponse(
     string JobCategory,
     string Level,
     // Cùng lý do như ở `RoadmapResponse`, và trang DANH SÁCH mới là nơi cần nhất: ba lộ trình
-    // cùng nghề + cùng level nằm cạnh nhau thì "ôn tập" hay "tiến lên" là thứ DUY NHẤT phân biệt
-    // được chúng (đúng lập luận đã dùng cho `Name` ở BE-6).
+    // cùng nghề + cùng level nằm cạnh nhau thì "ôn tập" hay "tiến lên" từng là thứ DUY NHẤT phân
+    // biệt được chúng (đúng lập luận đã dùng cho `Name` ở BE-6).
+    //
+    // 🔴 MIS1-B6 — câu trên nay SAI: Guard 1/2/3 mới (RoadmapService.CreateAsync) buộc CẢ HAI mode
+    // đều xây từ cùng một loại dữ liệu (buổi luyện đã chấm + lỗi nội dung trích được), nên khác biệt
+    // hành vi thật sự giữa chúng đã thu hẹp lại chỉ còn CÁCH DIỄN GIẢI của prompt (mục tiêu hướng
+    // lên vs giữ nguyên trình độ đang đứng). `Mode` vẫn LƯU đúng — chỉ là NHÃN LỊCH SỬ của dữ liệu
+    // đã có từ trước MIS1-B6, không còn là "thứ duy nhất phân biệt" theo nghĩa hành vi tạo lộ trình.
     string Mode,
     Guid? CvId,
     string Status,

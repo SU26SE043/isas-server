@@ -35,7 +35,8 @@ public class RoadmapGroundingTests
                  It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
                 It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))   // MIS1-B6 — arity khớp interface (mistakes, MIS1-B5)
             .ReturnsAsync(SampleRoadmap());
 
         // 1 batch → 3 lesson: L1 có nguồn, L2 miss, L3 có nguồn.
@@ -51,8 +52,13 @@ public class RoadmapGroundingTests
         var svc = new RoadmapService(
             t.Db, new Mock<IStorageService>().Object, gen.Object, NullLogger<RoadmapService>.Instance,
             knowledge: knowledge.Object, groundingOptions: Options.Create(new GroundingOptions { Enabled = true }));
+        // MIS1-B6 — Guard 1/2/3: cần 1 buổi FE hợp lệ đã chấm + có điểm yếu + lỗi nội dung.
+        var sid = TestSeed.ScoredSessionWithAnswers(
+            t, candidate, JobCategory.FE, seedContentMistakes: true, ("Clarity", 40m, true));
 
-        var res = await svc.CreateAsync(candidate, new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Fresher, null), default);
+        var res = await svc.CreateAsync(
+            candidate,
+            new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Fresher, null, SessionIds: [sid]), default);
 
         var lessons = await t.NewContext().RoadmapLessons.AsNoTracking().OrderBy(l => l.Title).ToListAsync();
         Assert.Equal(3, lessons.Count);
@@ -69,21 +75,27 @@ public class RoadmapGroundingTests
     public async Task Create_GroundingDisabled_GroundingRefsNull_NoPrecompute()
     {
         using var t = new TestDb();
+        var candidate = Guid.NewGuid();
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
                  It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
                 It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))   // MIS1-B6 — arity khớp interface (mistakes, MIS1-B5)
             .ReturnsAsync(SampleRoadmap());
         var knowledge = new Mock<IKnowledgeService>();
 
         var svc = new RoadmapService(
             t.Db, new Mock<IStorageService>().Object, gen.Object, NullLogger<RoadmapService>.Instance,
             knowledge: knowledge.Object, groundingOptions: Options.Create(new GroundingOptions { Enabled = false }));
+        // MIS1-B6 — Guard 1/2/3
+        var sid = TestSeed.ScoredSessionWithAnswers(
+            t, candidate, JobCategory.FE, seedContentMistakes: true, ("Clarity", 40m, true));
 
-        await svc.CreateAsync(Guid.NewGuid(), new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Fresher, null), default);
+        await svc.CreateAsync(
+            candidate, new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Fresher, null, SessionIds: [sid]), default);
 
         var lessons = await t.NewContext().RoadmapLessons.AsNoTracking().ToListAsync();
         Assert.All(lessons, l => Assert.Null(l.GroundingRefs));

@@ -32,17 +32,23 @@ public class RoadmapNameBe6Tests
         var m = new Mock<IAiServiceRoadmapGenerator>();
         m.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), 
+                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(),
                 It.IsAny<string>(),                                   // BE-4 — scope
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(),         // BE-5 — evidence
                 It.IsAny<RoadmapMode>(),                              // chế độ lộ trình,
                 It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))          // MIS1-B6 — arity khớp interface (mistakes, MIS1-B5)
             .ReturnsAsync(Sample());
         return m;
     }
+
+    // MIS1-B6 — Guard 1/2/3 đòi ≥1 buổi đã chấm, có điểm yếu, có lỗi nội dung trích được. File này
+    // không quan tâm NỘI DUNG tiêu chí (chỉ test tên/quyền lộ trình) nên dùng 1 tiêu chí cố định.
+    private static Guid SeedScoredSession(TestDb t, Guid candidateId, JobCategory cat)
+        => TestSeed.ScoredSessionWithAnswers(t, candidateId, cat, seedContentMistakes: true, ("Clarity", 40m, true));
 
     private static RoadmapService Service(TestDb t)
         => new(t.Db, new Mock<IStorageService>().Object, Gen().Object, NullLogger<RoadmapService>.Instance);
@@ -72,9 +78,10 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
 
         var res = await Service(t).CreateAsync(user,
-            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null));
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid]));
 
         Assert.Contains("Business Analyst", res.Name);
         Assert.Contains("Senior", res.Name);
@@ -86,9 +93,10 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.BE);   // MIS1-B6 — Guard 1/2/3
 
         var res = await Service(t).CreateAsync(user,
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Name: "Ôn phỏng vấn FPT"));
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid], Name: "Ôn phỏng vấn FPT"));
 
         Assert.Equal("Ôn phỏng vấn FPT", res.Name);
         Assert.Equal("Ôn phỏng vấn FPT", (await t.Db.Set<Roadmap>().SingleAsync()).Name);
@@ -98,8 +106,10 @@ public class RoadmapNameBe6Tests
     public async Task TenCoKhoangTrangThua_DuocCatTruocKhiLuu()
     {
         using var t = new TestDb();
-        var res = await Service(t).CreateAsync(Guid.NewGuid(),
-            new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Middle, null, Name: "   Lộ trình của tôi   "));
+        var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.FE);   // MIS1-B6 — Guard 1/2/3
+        var res = await Service(t).CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Middle, null, SessionIds: [sid], Name: "   Lộ trình của tôi   "));
 
         Assert.Equal("Lộ trình của tôi", res.Name);
     }
@@ -138,10 +148,12 @@ public class RoadmapNameBe6Tests
     public async Task TenDaiVuaTran_VanDuocChapNhan()
     {
         using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
         var vua = new string('x', RoadmapNaming.MaxLength);
 
-        var res = await Service(t).CreateAsync(Guid.NewGuid(),
-            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Fresher, null, Name: vua));
+        var res = await Service(t).CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Fresher, null, SessionIds: [sid], Name: vua));
 
         Assert.Equal(vua, res.Name);
     }
@@ -155,8 +167,10 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
         var svc = Service(t);
-        await svc.CreateAsync(user, new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, Name: "Lộ trình A"));
+        await svc.CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid], Name: "Lộ trình A"));
 
         var page = await svc.ListAsync(user, null, null);
 
@@ -230,7 +244,9 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var tao = await Service(t).CreateAsync(user, new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null));
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
+        var tao = await Service(t).CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid]));
 
         var res = await Controller(t, user).Rename(tao.Id, new RenameRoadmapRequest("Tên mới"), default);
 
@@ -245,7 +261,9 @@ public class RoadmapNameBe6Tests
         using var t = new TestDb();
         var chu = Guid.NewGuid();
         var nguoiLa = Guid.NewGuid();
-        var tao = await Service(t).CreateAsync(chu, new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, Name: "Của tôi"));
+        var sid = SeedScoredSession(t, chu, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
+        var tao = await Service(t).CreateAsync(chu,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid], Name: "Của tôi"));
 
         var res = await Controller(t, nguoiLa).Rename(tao.Id, new RenameRoadmapRequest("Cướp"), default);
 
@@ -269,7 +287,9 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var tao = await Service(t).CreateAsync(user, new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, Name: "Tên cũ"));
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
+        var tao = await Service(t).CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid], Name: "Tên cũ"));
 
         var res = await Controller(t, user).Rename(tao.Id, new RenameRoadmapRequest(name), default);
 
