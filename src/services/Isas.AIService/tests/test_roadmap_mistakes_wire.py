@@ -252,8 +252,12 @@ async def test_provider_generate_roadmap_chuyen_mistakes_xuong_builder(monkeypat
 
     async def fake_generate(self, operation, *, contents, config,
                             model=None, defer_report=False):
-        return _fake_gemini_response(
-            {"milestones": [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]})
+        # MIS1-B2 — milestone PHẢI mang `mistakeIds` khớp id đã cấp, nếu không
+        # `filter_milestone_mistakes` sẽ lọc rỗng → kích hoạt retry/drop (hành vi ĐÚNG của B2,
+        # nhưng không phải điều test này muốn đo — test này chỉ đo dây provider→builder).
+        return _fake_gemini_response({"milestones": [
+            {"title": "M1", "focusCriteria": [], "mistakeIds": ["m1"],
+             "lessons": [{"title": "L1"}]}]})
 
     monkeypatch.setattr(gemini_module, "build_roadmap_prompt", fake_build)
     monkeypatch.setattr(GeminiProvider, "_generate", fake_generate)
@@ -298,19 +302,20 @@ async def test_provider_generate_lesson_theory_chuyen_mistakes_xuong_builder(mon
 # ══════════════════ (6) GOLDEN — builder CHƯA dùng mistakes trong prompt ══════════════════
 # Mẫu tests/test_lesson_context_wire.py:62-68 (`test_prompt_khong_co_bai_hoc_thi_giu_nguyen_xi`):
 # so NGUYÊN VĂN, không phải "không chứa chuỗi X" (quá yếu — vẫn đúng khi prompt mọc thêm chỗ khác).
+#
+# 🔴 MIS1-B2 — `test_golden_build_roadmap_prompt_co_mistakes_van_giu_nguyen_xi` (khẳng định
+# `mistakes` CÓ giá trị KHÔNG đổi prompt) đã bị XOÁ khỏi đây: đó ĐÚNG LÀ bất biến của bước B1
+# (nội dung prompt CHƯA đụng), và MIS1-B2 CỐ Ý đảo NGƯỢC nó — `mistakes` giờ là nguồn GOM CHỦ ĐỀ
+# chính. Bất biến MỚI (mistakes CÓ giá trị ⇒ prompt ĐỔI) được khoá ở
+# `tests/test_roadmap.py::test_roadmap_prompt_mistakes_thay_the_evidence_lam_nguon_gom_chu_de`.
+# Vế "không truyền mistakes ⇒ giữ nguyên xi" NGAY DƯỚI ĐÂY vẫn đúng cho `build_roadmap_prompt`
+# (không truyền và truyền `mistakes=None` phải ra cùng một prompt — không liên quan gì đến việc
+# TRUYỀN GIÁ TRỊ).
 
 def test_golden_build_roadmap_prompt_khong_truyen_mistakes_giu_nguyen_xi():
     base = build_roadmap_prompt("BE", "Junior", None)
     same = build_roadmap_prompt("BE", "Junior", None, mistakes=None)
     assert base == same
-
-
-def test_golden_build_roadmap_prompt_co_mistakes_van_giu_nguyen_xi():
-    """CẤM #1 của MIS1-B1: dù `mistakes` CÓ giá trị, builder vẫn KHÔNG được đổi một byte nào của
-    prompt — nội dung là việc của MIS1-B2."""
-    base = build_roadmap_prompt("BE", "Junior", None)
-    with_mistakes = build_roadmap_prompt("BE", "Junior", None, mistakes=[_MISTAKE_JSON])
-    assert base == with_mistakes
 
 
 def test_golden_build_lesson_theory_prompt_khong_truyen_mistakes_giu_nguyen_xi():
