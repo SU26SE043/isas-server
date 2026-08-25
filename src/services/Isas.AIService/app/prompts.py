@@ -1709,25 +1709,77 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     BE-5 — ``evidence``: bằng chứng HÀNH VI cụ thể (Reasoning E11) cho tiêu chí yếu, xem
     :func:`build_evidence_block`. Đặt NGAY SAU khối ``weaknesses`` — bổ sung, không thay thế.
 
-    MIS1-B1 — ``mistakes``: hợp đồng dây ĐÃ MỞ (nhận tham số), NỘI DUNG PROMPT CHƯA ĐỤNG — cố ý
-    không dùng ở đây (đó là MIS1-B2, cùng lúc với ``mistakeReview`` ở response). Nhận rồi bỏ qua
-    để bất biến lùi giữ nguyên: caller không gửi ``mistakes`` (hoặc gửi ``None``) phải ra ĐÚNG
-    chuỗi prompt như trước khi có tham số này — xem test golden
-    ``tests/test_roadmap_mistakes_wire.py``.
+    MIS1-B3 — ``mistakes`` (id do .NET mint, mẫu :func:`build_mistake_block`) nay THỰC SỰ được
+    dùng: chèn thành khối dữ liệu LỖI CỦA ỨNG VIÊN (bọc delimiter, có transcript nên bắt buộc —
+    AI-4) + đòi model trả thêm phần thứ 4 ``mistakeReview`` (mỗi lỗi: vì sao câu trả lời trước
+    CHƯA ĐẠT + nên trình bày sao). ``sections``/``example``/``commonMistakes`` (3 phần cũ) đổi
+    GIỌNG khi có mistakes: neo vào đúng lỗi đã cấp thay vì tóm tắt chủ đề chung chung — nhưng
+    KHÔNG đổi CẤU TRÚC (``evaluate_lesson_theory`` vẫn chấm y hệt, xem MIS1-B3 docstring ở đó).
+    ``mistakeReview`` được chấm RIÊNG, ADVISORY, bởi :func:`app.lesson_quality.
+    evaluate_mistake_coverage` — không chung rubric với 3 phần cũ.
+
+    ``mistakes`` rỗng/None (hoặc mọi mục bị lọc vì thiếu ``criterionName``/``reasoning``) ⇒
+    KHÔNG chèn khối LỖI CỦA ỨNG VIÊN, KHÔNG đòi ``mistakeReview``, giọng 3 phần cũ GIỮ NGUYÊN
+    XI — bất biến lùi cho mọi caller cũ, xem test golden ``tests/test_roadmap_mistakes_wire.py``.
     """
     role = CATEGORY_NAMES.get(job_category.upper(), job_category)
     lvl = LEVEL_NAMES.get(level.upper(), level)
 
+    # MIS1-B3 — tính TRƯỚC khi dựng `parts`: cả khối cấu trúc bắt buộc (mistakeReview có/không)
+    # lẫn giọng của 4 nhánh focus_criteria bên dưới đều rẽ theo CHÍNH biến này — không phải theo
+    # `mistakes` thô, để khớp NHẤT QUÁN với việc khối dữ liệu có thực sự được chèn hay không (mục
+    # nào bị lọc bỏ vì thiếu criterionName/reasoning thì không được HỨA là "4 phần" mà không có
+    # gì để model trỏ vào).
+    mistake_block = build_mistake_block(mistakes)
+    if mistake_block:
+        if normalize(language) == EN:
+            _mistake_anchor_note = (
+                " Anchor each section in the mistake(s) tied to this lesson (see CANDIDATE "
+                "MISTAKES below): teach the foundational knowledge the candidate needs so they do "
+                "NOT repeat that exact mistake — not a topic summary. The mistake is the ANCHOR, "
+                "not the whole scope; a section that only restates the mistake and stops there "
+                "has taught nothing."
+            )
+        else:
+            _mistake_anchor_note = (
+                " Neo mỗi mục vào (các) lỗi gắn với bài học này (xem khối LỖI CỦA ỨNG VIÊN bên "
+                "dưới): dạy đúng kiến thức nền cần để KHÔNG MẮC LẠI lỗi đó — không phải tóm tắt "
+                "chủ đề. Lỗi là ĐIỂM NEO, không phải toàn bộ phạm vi; một mục chỉ nhắc lại lỗi rồi "
+                "kết thúc là mục không dạy được gì."
+            )
+    else:
+        _mistake_anchor_note = ""
+
+    if mistake_block:
+        structure_block = (
+            "Bài giảng PHẢI gồm đủ 4 phần:\n"
+            "1. mistakeReview — với MỖI lỗi ở khối LỖI CỦA ỨNG VIÊN bên dưới (khớp đúng "
+            "mistakeId), gồm whatWentWrong (câu trả lời trước đó CHƯA ĐẠT ở đâu, hiểu sai khái "
+            "niệm nào) và howToFixIt (nên trình bày thế nào cho đúng). Phần này nói về LỖI CỤ THỂ "
+            "của ứng viên — KHÁC HẲN commonMistakes ở phần 4 (lỗi CHUNG của mọi người).\n"
+            "2. sections — các mục giải thích, MỖI mục gồm criterion (tiêu chí mục này phục vụ), "
+            "heading (tên mục) và body (nội dung markdown).\n"
+            "3. example — ví dụ minh hoạ CỤ THỂ cho chủ đề bài học.\n"
+            "4. commonMistakes — lỗi/hiểu lầm thường gặp khi trả lời phỏng vấn về chủ đề này (của "
+            "MỌI người nói chung, không phải riêng ứng viên này).\n"
+            "Mỗi phần phải giải thích đủ để người học hiểu và tự trả lời được câu hỏi phỏng vấn về "
+            "nội dung đó. Phần rỗng hoặc chỉ có tiêu đề sẽ bị TRẢ LẠI."
+        )
+    else:
+        structure_block = (
+            "Bài giảng PHẢI gồm đủ 3 phần:\n"
+            "1. sections — các mục giải thích, MỖI mục gồm criterion (tiêu chí mục này phục vụ), "
+            "heading (tên mục) và body (nội dung markdown).\n"
+            "2. example — ví dụ minh hoạ CỤ THỂ cho chủ đề bài học.\n"
+            "3. commonMistakes — lỗi/hiểu lầm thường gặp khi trả lời phỏng vấn về chủ đề này.\n"
+            "Mỗi phần phải giải thích đủ để người học hiểu và tự trả lời được câu hỏi phỏng vấn về "
+            "nội dung đó. Phần rỗng hoặc chỉ có tiêu đề sẽ bị TRẢ LẠI."
+        )
+
     parts = [
         f"Bạn là giảng viên ôn luyện phỏng vấn cho vị trí {role}, trình độ {lvl}.",
         f'Soạn nội dung LÝ THUYẾT ôn tập cho bài học "{lesson_title}", bằng {field_lang(language)}.',
-        "Bài giảng PHẢI gồm đủ 3 phần:\n"
-        "1. sections — các mục giải thích, MỖI mục gồm criterion (tiêu chí mục này phục vụ), "
-        "heading (tên mục) và body (nội dung markdown).\n"
-        "2. example — ví dụ minh hoạ CỤ THỂ cho chủ đề bài học.\n"
-        "3. commonMistakes — lỗi/hiểu lầm thường gặp khi trả lời phỏng vấn về chủ đề này.\n"
-        "Mỗi phần phải giải thích đủ để người học hiểu và tự trả lời được câu hỏi phỏng vấn về "
-        "nội dung đó. Phần rỗng hoặc chỉ có tiêu đề sẽ bị TRẢ LẠI.",
+        structure_block,
     ]
 
     # Q10 — chỉ dẫn "ghi ĐÚNG NGUYÊN VĂN, không dịch lại" PHẢI cùng ngôn ngữ với bài. Đây không
@@ -1746,7 +1798,7 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
                 "VERBATIM — do not rename it, do not abbreviate it, and DO NOT TRANSLATE IT, even "
                 "when the criterion name is not in English. Only the lesson content is written in "
                 "English; the criterion names are identifiers and must be copied character for "
-                "character."
+                "character." + _mistake_anchor_note
             )
         else:
             parts.append(
@@ -1754,17 +1806,18 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
                 "một mục trong sections giải thích nó:\n"
                 + listed + "\n"
                 "Trường criterion của mỗi mục phải ghi ĐÚNG NGUYÊN VĂN một trong các tên trên — "
-                "không tự đặt tên khác, không viết tắt, không dịch lại."
+                "không tự đặt tên khác, không viết tắt, không dịch lại." + _mistake_anchor_note
             )
     elif normalize(language) == EN:
         parts.append(
             "The milestone declares no focus criteria → `sections` must follow the lesson topic "
             f'itself, and every section must set `criterion` to "{lesson_title}" verbatim.'
+            + _mistake_anchor_note
         )
     else:
         parts.append(
             "Milestone không khai tiêu chí trọng tâm → sections phải bám chính chủ đề bài học; "
-            f'trường criterion của mỗi mục ghi "{lesson_title}".'
+            f'trường criterion của mỗi mục ghi "{lesson_title}".' + _mistake_anchor_note
         )
 
     # BE-3 — hiệu chỉnh độ sâu nội dung bài giảng theo cấp độ MỤC TIÊU ứng viên chọn. Đặt Ở ĐÂY
@@ -1794,6 +1847,13 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     evidence_block = build_evidence_block(evidence)
     if evidence_block:
         parts.append(evidence_block)
+
+    # MIS1-B3 — khối LỖI CỦA ỨNG VIÊN (đã tính `mistake_block` ở đầu hàm, dùng chung với quyết
+    # định "3 hay 4 phần" ở trên) — data BỔ SUNG cho evidence, không thay thế: đường lesson-theory
+    # nhận cả answer/sampleAnswer (mà evidence không có) nên KHÔNG áp luật "không render đồng
+    # thời" của MIS1-B2 (luật đó chỉ áp cho build_roadmap_prompt).
+    if mistake_block:
+        parts.append(mistake_block)
 
     # F15 (FR09) — kèm TÀI LIỆU HỌC. Chỉ thị về URL cố ý NGHIÊM: mô hình có xu
     # hướng bịa link trông rất thật. Prompt là lớp phòng thủ THỨ NHẤT (bảo mô hình
@@ -1840,6 +1900,12 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     ]
     if grounding_block:
         schema_lines.append(',"citedChunkIds":["chunkId..."]')
+    # MIS1-B3 — mistakeReview CÓ ĐIỀU KIỆN theo `mistake_block` (mẫu `citedChunkIds` ngay trên):
+    # model đọc câu này để biết SHAPE output, thiếu điều kiện thì lượt không-mistakes vẫn bị bắt
+    # trả field không có gì gán vào.
+    if mistake_block:
+        schema_lines.append(
+            ',"mistakeReview":[{"mistakeId":"m1","whatWentWrong":"...","howToFixIt":"..."}]')
     schema_lines.append("}")
 
     parts.append(

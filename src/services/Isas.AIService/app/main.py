@@ -622,7 +622,9 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest,
             mistakes=mistakes)
         # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
         # cited=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ giữ nguyên.
-        # MIS1-B1 — mistake_review LUÔN None ở bước này (provider chưa sinh nó) → field ẩn.
+        # MIS1-B3 — mistake_review: None khi caller không gửi mistakes (field ẩn, exclude_none);
+        # [] khi có mistakes nhưng model chưa nói tới (advisory, không chặn bài); đủ mục khi model
+        # trả đúng.
         return GenerateLessonTheoryResponse(
             theoryMarkdown=theory, resources=resources, citedChunkIds=cited,
             mistakeReview=mistake_review)

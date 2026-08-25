@@ -62,6 +62,15 @@ _MESSAGES: dict[str, dict[str, str]] = {
         VI: "Bản trước không phải JSON hợp lệ: {raw}",
         EN: "Your previous answer was not valid JSON: {raw}",
     },
+    # MIS1-B3 — ADVISORY (xem evaluate_mistake_coverage): câu chữ này CHỈ đi vào log.error, KHÔNG
+    # bao giờ trở thành retry_feedback (khác mọi key khác trong bảng này) — nên có thể lỏng tay
+    # hơn về văn phong, nhưng vẫn giữ song ngữ cho nhất quán với cả bảng.
+    "mistake_review_incomplete": {
+        VI: ("Chưa nói đúng chỗ đã sai cho các lỗi sau (mistakeReview thiếu mục, hoặc mục có "
+             "nhưng thiếu ruột whatWentWrong/howToFixIt): {items}"),
+        EN: ("The review is missing or incomplete for these mistakes (mistakeReview has no entry, "
+             "or the entry lacks whatWentWrong/howToFixIt content): {items}"),
+    },
 }
 
 
@@ -136,6 +145,68 @@ def evaluate_lesson_theory(data: dict, focus_criteria: list[str] | None,
         defects.append(message("no_mistakes", language))
 
     return defects
+
+
+def _renderable_mistake_ids(mistakes: list[dict] | None) -> list[str]:
+    """Tập id THỰC SỰ được model nhìn thấy trong khối LỖI CỦA ỨNG VIÊN.
+
+    ⚠ PHẢI khớp ĐÚNG bộ lọc của :func:`app.prompts.build_mistake_block` (``id`` +
+    ``criterionName`` + ``reasoning`` đều có ruột) — lệch bộ lọc ở đây thì
+    :func:`evaluate_mistake_coverage` đòi phủ một id CHƯA TỪNG xuất hiện trong prompt, không công
+    bằng với model (nó không thể review thứ nó chưa từng thấy).
+    """
+    wanted: list[str] = []
+    for item in (mistakes or []):
+        if not isinstance(item, dict):
+            continue
+        mistake_id = _text(item.get("id"))
+        name = _text(item.get("criterionName"))
+        reasoning = _text(item.get("reasoning"))
+        if mistake_id and name and reasoning:
+            wanted.append(mistake_id)
+    return wanted
+
+
+def evaluate_mistake_coverage(data: dict, mistakes: list[dict] | None,
+                              *, language: str = VI) -> list[str]:
+    """MIS1-B3 — chấm PHỦ LỖI của ``mistakeReview``.
+
+    🔴 ADVISORY, KHÔNG BLOCKING — khác hẳn :func:`evaluate_lesson_theory`: khiếm khuyết trả về từ
+    đây chỉ được caller (``GeminiProvider.generate_lesson_theory``) ghi ``log.error``, KHÔNG bao
+    giờ retry và KHÔNG bao giờ raise. Bài thiếu mục review lỗi vẫn là bài DÙNG ĐƯỢC (lý thuyết vẫn
+    đủ 3 phần bắt buộc); bài trắng thì không — đó là ranh giới `evaluate_lesson_theory` canh giữ,
+    hàm này KHÔNG được lấn sang.
+
+    Mỗi id trong :func:`_renderable_mistake_ids` (mistake THỰC SỰ được cấp cho model) phải có ĐÚNG
+    một mục trong ``mistakeReview`` với ruột ở CẢ HAI trường ``whatWentWrong``/``howToFixIt``.
+
+    ``mistakes`` rỗng/None, hoặc mọi mục đều bị lọc bỏ (thiếu criterionName/reasoning) → ``[]``
+    (không có gì để đòi phủ — khớp nhánh ``if mistake_block:`` ở ``build_lesson_theory_prompt``,
+    nơi khối LỖI CỦA ỨNG VIÊN/yêu cầu mistakeReview không được chèn trong ca này).
+    """
+    wanted = _renderable_mistake_ids(mistakes)
+    if not wanted:
+        return []
+
+    raw = data.get("mistakeReview")
+    items = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+
+    covered: dict[str, dict] = {}
+    for item in items:
+        mistake_id = _text(item.get("mistakeId"))
+        if mistake_id:
+            covered[mistake_id] = item
+
+    missing: list[str] = []
+    for mistake_id in wanted:
+        item = covered.get(mistake_id)
+        if (item is None or not _text(item.get("whatWentWrong"))
+                or not _text(item.get("howToFixIt"))):
+            missing.append(mistake_id)
+
+    if not missing:
+        return []
+    return [message("mistake_review_incomplete", language, items=", ".join(missing))]
 
 
 def render_lesson_markdown(lesson_title: str, data: dict, *, language: str = VI) -> str:

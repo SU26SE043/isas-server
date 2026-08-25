@@ -12,7 +12,8 @@ from google.genai import types
 from app.config import settings
 from app.resources import sanitize_resources, count_rejected_urls
 from app.lesson_quality import (
-    evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
+    evaluate_lesson_theory, evaluate_mistake_coverage, message as lesson_message,
+    render_lesson_markdown,
 )
 from app.question_quality import coverage_defects, verify_defect
 from app.roadmap_mode import DEFAULT_MODE
@@ -2194,12 +2195,20 @@ class GeminiProvider(QuestionProvider):
         ``cited_chunk_ids`` = None khi ungrounded (endpoint không trả field, giữ shape cũ);
         ⊆ tập grounding đã cấp khi grounded (drop id lạ = chống bịa).
 
-        MIS1-B1 — ``mistakes`` chuyền THẲNG xuống ``build_lesson_theory_prompt`` nhưng builder
-        CHƯA dùng nó trong nội dung prompt (đó là MIS1-B2). ``mistake_review`` trả về tạm thời
-        LUÔN là ``None`` — sinh nó cũng là việc của MIS1-B2/B3, không phải bước mở dây này.
+        MIS1-B3 — ``mistakes`` nay thực sự dùng: ``build_lesson_theory_prompt`` chèn khối LỖI CỦA
+        ỨNG VIÊN + đòi phần thứ 4 ``mistakeReview`` (khi có mistakes hợp lệ). Phủ lỗi được chấm
+        RIÊNG — :func:`app.lesson_quality.evaluate_mistake_coverage` — và là ADVISORY: khiếm
+        khuyết ở đó chỉ ``log.error``, KHÔNG retry, KHÔNG raise (khác 4 khiếm khuyết BLOCKING của
+        ``evaluate_lesson_theory``, vẫn raise/retry như cũ). ``mistake_review`` trả về khớp đúng
+        những gì model thực sự trả (có thể rỗng nếu model bỏ sót — advisory không chặn bài).
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
+
+        # MIS1-B3 — id do .NET MINT (khớp CHÍNH XÁC, mẫu `known_ids` của `generate_roadmap`) —
+        # gate response_schema (CÓ ĐIỀU KIỆN, không thêm vào required).
+        known_ids = [str(m.get("id", "")).strip() for m in (mistakes or [])
+                     if isinstance(m, dict) and str(m.get("id", "")).strip()]
 
         grounded = bool(grounding)
         response_properties: dict = {
@@ -2234,6 +2243,21 @@ class GeminiProvider(QuestionProvider):
         if grounded:
             response_properties["citedChunkIds"] = {
                 "type": "array", "items": {"type": "string"}}
+        # MIS1-B3 — CÓ ĐIỀU KIỆN, đúng khuôn `if grounded:` ngay trên. KHÔNG thêm vào `required`
+        # (mục 3 của task): phủ lỗi là ADVISORY, JSON schema không được bắt cứng field này.
+        if known_ids:
+            response_properties["mistakeReview"] = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "mistakeId": {"type": "string"},
+                        "whatWentWrong": {"type": "string"},
+                        "howToFixIt": {"type": "string"},
+                    },
+                    "required": ["mistakeId", "whatWentWrong", "howToFixIt"],
+                },
+            }
 
         config = types.GenerateContentConfig(
             temperature=0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
@@ -2287,6 +2311,8 @@ class GeminiProvider(QuestionProvider):
 
                 url_meta = count_rejected_urls(data.get("resources"))
 
+                # BLOCKING — 4 khiếm khuyết cũ (sections/example/commonMistakes). Hết lượt vẫn
+                # còn thì raise (xem cuối hàm), y hệt trước MIS1-B3.
                 last_defects = evaluate_lesson_theory(
                     data, focus_criteria, lesson_title, language=language)
                 if last_defects:
@@ -2310,8 +2336,38 @@ class GeminiProvider(QuestionProvider):
                              if isinstance(c, str) and c.strip() in allowed]
                     cited = list(dict.fromkeys(cited))  # bỏ trùng, giữ thứ tự
 
+                # MIS1-B3 — id do .NET mint (khớp CHÍNH XÁC, chống bịa by-construction, mẫu
+                # `cited` ngay trên/`filter_milestone_mistakes`). `known_ids` rỗng ⇒ None (endpoint
+                # exclude_none ẩn field, khớp caller cũ không gửi mistakes).
+                mistake_review: list[dict] | None = None
+                if known_ids:
+                    allowed_ids = set(known_ids)
+                    raw_review = data.get("mistakeReview")
+                    review_items = ([r for r in raw_review if isinstance(r, dict)]
+                                    if isinstance(raw_review, list) else [])
+                    mistake_review = []
+                    for item in review_items:
+                        mistake_id = str(item.get("mistakeId") or "").strip()
+                        what = str(item.get("whatWentWrong") or "").strip()
+                        how = str(item.get("howToFixIt") or "").strip()
+                        if mistake_id in allowed_ids and what and how:
+                            mistake_review.append({
+                                "mistakeId": mistake_id, "whatWentWrong": what,
+                                "howToFixIt": how,
+                            })
+
+                # ADVISORY — phủ lỗi (evaluate_mistake_coverage). CHỈ log, KHÔNG retry, KHÔNG
+                # raise: bài thiếu mục review lỗi vẫn là bài DÙNG ĐƯỢC (khác 4 khiếm khuyết
+                # BLOCKING ở trên). Đặt NGAY TRƯỚC return để chạy đúng MỘT lần cho mỗi bài, kể cả
+                # bài pass ngay lượt đầu (không nằm trong nhánh `if last_defects: continue`).
+                mistake_defects = evaluate_mistake_coverage(data, mistakes, language=language)
+                if mistake_defects:
+                    logger.error(
+                        'Bài giảng "%s" thiếu phần review lỗi (advisory, vẫn nhận bài): %s',
+                        lesson_title, "; ".join(mistake_defects))
+
                 return LessonTheoryResult(theory=theory, resources=resources,
-                                          cited_chunk_ids=cited, mistake_review=None)
+                                          cited_chunk_ids=cited, mistake_review=mistake_review)
             finally:
                 await report_usage("generate_lesson_theory", settings.gemini_model,
                                    response, meta=url_meta)

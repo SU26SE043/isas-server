@@ -295,8 +295,10 @@ async def test_provider_generate_lesson_theory_chuyen_mistakes_xuong_builder(mon
         "BE", "Junior", "L", ["L"], None, mistakes=given)
 
     assert captured.get("mistakes") == given
-    # MIS1-B1 — provider tạm trả mistake_review=None (sinh nó là việc của B2/B3).
-    assert result.mistake_review is None
+    # 🔴 MIS1-B3 — provider nay TÍNH THẬT `mistake_review` (id hợp lệ ⇒ [], không phải None; model
+    # giả không trả `mistakeReview` nên rỗng — advisory, không raise). Chi tiết khoá ở
+    # tests/test_lesson_mistake_review.py.
+    assert result.mistake_review == []
 
 
 # ══════════════════ (6) GOLDEN — builder CHƯA dùng mistakes trong prompt ══════════════════
@@ -308,9 +310,15 @@ async def test_provider_generate_lesson_theory_chuyen_mistakes_xuong_builder(mon
 # (nội dung prompt CHƯA đụng), và MIS1-B2 CỐ Ý đảo NGƯỢC nó — `mistakes` giờ là nguồn GOM CHỦ ĐỀ
 # chính. Bất biến MỚI (mistakes CÓ giá trị ⇒ prompt ĐỔI) được khoá ở
 # `tests/test_roadmap.py::test_roadmap_prompt_mistakes_thay_the_evidence_lam_nguon_gom_chu_de`.
-# Vế "không truyền mistakes ⇒ giữ nguyên xi" NGAY DƯỚI ĐÂY vẫn đúng cho `build_roadmap_prompt`
-# (không truyền và truyền `mistakes=None` phải ra cùng một prompt — không liên quan gì đến việc
-# TRUYỀN GIÁ TRỊ).
+#
+# 🔴 MIS1-B3 — cùng số phận cho `test_golden_build_lesson_theory_prompt_co_mistakes_van_giu_
+# nguyen_xi`: `build_lesson_theory_prompt` nay THỰC SỰ dùng `mistakes` (khối LỖI CỦA ỨNG VIÊN +
+# đòi phần thứ 4 `mistakeReview`) — bất biến mới khoá ở
+# `tests/test_lesson_mistake_review.py::test_prompt_co_mistakes_thi_doi_giong_va_them_phan_4`.
+#
+# Vế "không truyền mistakes ⇒ giữ nguyên xi" NGAY DƯỚI ĐÂY vẫn đúng cho CẢ HAI builder (không
+# truyền và truyền `mistakes=None` phải ra cùng một prompt — không liên quan gì đến việc TRUYỀN
+# GIÁ TRỊ).
 
 def test_golden_build_roadmap_prompt_khong_truyen_mistakes_giu_nguyen_xi():
     base = build_roadmap_prompt("BE", "Junior", None)
@@ -322,10 +330,3 @@ def test_golden_build_lesson_theory_prompt_khong_truyen_mistakes_giu_nguyen_xi()
     base = build_lesson_theory_prompt("BE", "Junior", "Bài", ["A"], None)
     same = build_lesson_theory_prompt("BE", "Junior", "Bài", ["A"], None, mistakes=None)
     assert base == same
-
-
-def test_golden_build_lesson_theory_prompt_co_mistakes_van_giu_nguyen_xi():
-    base = build_lesson_theory_prompt("BE", "Junior", "Bài", ["A"], None)
-    with_mistakes = build_lesson_theory_prompt(
-        "BE", "Junior", "Bài", ["A"], None, mistakes=[_MISTAKE_JSON])
-    assert base == with_mistakes
