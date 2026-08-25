@@ -212,7 +212,8 @@ def _patch_roadmap(monkeypatch, received):
     async def fake_generate_roadmap(job_category, level, weaknesses,
                                     focus=None, cv_analysis_summary=None,
                                     prior_roadmap_summary=None, grounding=None,
-                                    criteria=None, scope=None, evidence=None, mode=None, current_level=None):
+                                    criteria=None, scope=None, evidence=None, mode=None,
+                                    current_level=None, mistakes=None):
         received["mode"] = mode
         return [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}]
 
@@ -241,9 +242,10 @@ def test_endpoint_lesson_theory_chuyen_tiep_mode_xuong_provider(monkeypatch):
     received: dict = {}
 
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None, evidence=None, mode=None, current_level=None):
+                   grounding=None, evidence=None, mode=None, current_level=None,
+                   mistakes=None):
         received["mode"] = mode
-        return "# T\n\nND", [], None
+        return "# T\n\nND", [], None, None
 
     monkeypatch.setattr(main_module.provider, "generate_lesson_theory", fake)
     res = client.post("/api/v1/generate-lesson-theory", headers=_HEADERS, json={

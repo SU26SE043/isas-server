@@ -382,10 +382,16 @@ class LessonTheoryResult(NamedTuple):
     ``generate_lesson_theory()`` TRƯỚC ĐÂY trả ``(theory, resources)``; nay thêm
     ``cited_chunk_ids`` (danh sách phẳng ⊆ tập grounding đã cấp) → 3 trường, call site cũ
     ``theory, resources = ...`` vỡ TO ngay lần chạy đầu (mẫu F13). ``cited_chunk_ids`` = None khi
-    ungrounded → endpoint không trả field citedChunkIds (giữ shape cũ)."""
+    ungrounded → endpoint không trả field citedChunkIds (giữ shape cũ).
+
+    MIS1 thêm ``mistake_review`` (danh sách dict khớp shape ``MistakeReviewItem``) — None khi
+    request không gửi ``mistakes`` (endpoint không trả field mistakeReview, giữ shape cũ). Có
+    mặc định nên mọi unpack 3-trường cũ vẫn vỡ TO đúng như thiết kế (mẫu ``cited_chunk_ids``) —
+    call site PHẢI được sửa để nhận đủ 4 giá trị, không phải âm thầm bỏ qua."""
     theory: str
     resources: list[dict]
     cited_chunk_ids: list[str] | None = None
+    mistake_review: list[dict] | None = None
 
 
 def _keep_known_ids(raw, allowed: set[str]) -> list[str]:
@@ -1908,6 +1914,7 @@ class GeminiProvider(QuestionProvider):
                                evidence: list[dict] | None = None,
                                mode: str = DEFAULT_MODE,
                                current_level: str | None = None,
+                               mistakes: list[dict] | None = None,
                                _retry_feedback: str | None = None,
                                _attempt: int = 1) -> list[dict]:
         """
@@ -1939,6 +1946,9 @@ class GeminiProvider(QuestionProvider):
         NHẤT cho tiêu chí yếu, đã tải + cắt trần sẵn (.NET ``RoadmapEvidenceLoader``). Chẩn đoán
         hành vi cụ thể thay cho con số % trừu tượng — xem ``build_evidence_block``.
 
+        MIS1-B1 — ``mistakes`` chuyền THẲNG xuống ``build_roadmap_prompt`` nhưng builder CHƯA
+        dùng nó trong nội dung prompt (đó là MIS1-B2). Đây chỉ là bước mở dây.
+
         Trả về: list dict milestone
           [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
         """
@@ -1958,6 +1968,7 @@ class GeminiProvider(QuestionProvider):
             evidence=evidence,
             mode=mode,
             current_level=current_level,
+            mistakes=mistakes,
         )
 
         response = await self._generate(
@@ -2088,12 +2099,13 @@ class GeminiProvider(QuestionProvider):
                                      weaknesses: list[str] | None,
                                      grounding: list[dict] | None = None, language: str = "vi",
                                      evidence: list[dict] | None = None,
-                                     mode: str = DEFAULT_MODE
+                                     mode: str = DEFAULT_MODE,
+                                     mistakes: list[dict] | None = None
                                      ) -> LessonTheoryResult:
         """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
 
-        Trả ``LessonTheoryResult(theory, resources, cited_chunk_ids)`` — RAG grounding thêm
-        ``cited_chunk_ids`` (đổi shape so với trước, mẫu F13). ``resources`` đã qua
+        Trả ``LessonTheoryResult(theory, resources, cited_chunk_ids, mistake_review)`` — RAG
+        grounding thêm ``cited_chunk_ids`` (đổi shape so với trước, mẫu F13). ``resources`` đã qua
         :func:`app.resources.sanitize_resources`: url KHÔNG thuộc allowlist tên
         miền bị BỎ CẢ MỤC. Xem docstring app/resources.py cho lý
         do — tóm tắt: LLM sinh url là đoán chuỗi, domain bịa là rủi ro thật.
@@ -2107,6 +2119,10 @@ class GeminiProvider(QuestionProvider):
         ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ + đòi trích dẫn.
         ``cited_chunk_ids`` = None khi ungrounded (endpoint không trả field, giữ shape cũ);
         ⊆ tập grounding đã cấp khi grounded (drop id lạ = chống bịa).
+
+        MIS1-B1 — ``mistakes`` chuyền THẲNG xuống ``build_lesson_theory_prompt`` nhưng builder
+        CHƯA dùng nó trong nội dung prompt (đó là MIS1-B2). ``mistake_review`` trả về tạm thời
+        LUÔN là ``None`` — sinh nó cũng là việc của MIS1-B2/B3, không phải bước mở dây này.
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
@@ -2166,7 +2182,7 @@ class GeminiProvider(QuestionProvider):
             prompt = build_lesson_theory_prompt(
                 job_category, level, lesson_title, focus_criteria, weaknesses,
                 grounding, retry_feedback=feedback, language=language, evidence=evidence,
-                mode=mode)
+                mode=mode, mistakes=mistakes)
 
             # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
             # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist
@@ -2221,7 +2237,7 @@ class GeminiProvider(QuestionProvider):
                     cited = list(dict.fromkeys(cited))  # bỏ trùng, giữ thứ tự
 
                 return LessonTheoryResult(theory=theory, resources=resources,
-                                          cited_chunk_ids=cited)
+                                          cited_chunk_ids=cited, mistake_review=None)
             finally:
                 await report_usage("generate_lesson_theory", settings.gemini_model,
                                    response, meta=url_meta)

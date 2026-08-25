@@ -35,7 +35,7 @@ def test_schema_khai_lesson_context():
     Đúng lớp bug đã cắn repo 4 lần (`focusCriteria`/BC14 · `metricsVersion` ·
     `adaptiveMaxQuestions` · `seniority`/SEN1)."""
     assert "lessonContext" in GenerateQuestionsRequest.model_fields
-    assert set(LessonContextDto.model_fields) == {"title", "outline"}
+    assert set(LessonContextDto.model_fields) == {"title", "outline", "mistakes"}
 
 
 def test_schema_nhan_lesson_context_tu_json_that():
@@ -220,7 +220,8 @@ def test_endpoint_truyen_lesson_context_xuong_provider(monkeypatch):
                        json={"jobCategory": "BE", "lessonContext": LESSON})
 
     assert res.status_code == 200, res.text
-    assert seen == [LESSON]
+    # MIS1-B1 — model_dump() nay mọc thêm "mistakes" (None, caller chưa gửi).
+    assert seen == [{**LESSON, "mistakes": None}]
 
 
 def test_endpoint_caller_cu_khong_gui_thi_provider_nhan_none(monkeypatch):

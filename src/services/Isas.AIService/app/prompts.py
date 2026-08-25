@@ -1413,7 +1413,8 @@ def build_roadmap_prompt(job_category: str, level: str,
                          scope: str = DEFAULT_SCOPE,
                          evidence: list[dict] | None = None,
                          mode: str = DEFAULT_MODE,
-                         current_level: str | None = None) -> str:
+                         current_level: str | None = None,
+                         mistakes: list[dict] | None = None) -> str:
     """BC13/D20 — sinh cấu trúc roadmap ôn tập (milestone → lesson) cá nhân hoá.
 
     weaknesses là DỮ LIỆU của ứng viên (điểm số quá khứ), KHÔNG phải chỉ thị
@@ -1459,6 +1460,11 @@ def build_roadmap_prompt(job_category: str, level: str,
     từ answer điểm THẤP NHẤT) cho ≤3 tiêu chí yếu nhất, xem :func:`build_evidence_block`. Đặt
     NGAY SAU khối weaknesses (bổ sung, không thay thế — weaknesses nói CÁI GÌ yếu, evidence nói
     CỤ THỂ nó yếu ở đâu).
+
+    MIS1-B1 — ``mistakes``: hợp đồng dây ĐÃ MỞ (nhận tham số), NỘI DUNG PROMPT CHƯA ĐỤNG — cố ý
+    không dùng ở đây (đó là MIS1-B2). Nhận rồi bỏ qua để bất biến lùi giữ nguyên: caller không
+    gửi ``mistakes`` (hoặc gửi ``None``) phải ra ĐÚNG chuỗi prompt như trước khi có tham số này —
+    xem test golden ``tests/test_roadmap_mistakes_wire.py``.
     """
     role = CATEGORY_NAMES.get(job_category.upper(), job_category)
     lvl = LEVEL_NAMES.get(level.upper(), level)
@@ -1616,7 +1622,8 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
                                grounding: list[dict] | None = None,
                                retry_feedback: str | None = None, *, language: str = VI,
                                evidence: list[dict] | None = None,
-                               mode: str = DEFAULT_MODE) -> str:
+                               mode: str = DEFAULT_MODE,
+                               mistakes: list[dict] | None = None) -> str:
     """BC13/D20 — sinh nội dung lý thuyết ôn tập cho 1 lesson, bám điểm yếu.
 
     Đề bài ra theo ĐÚNG cấu trúc mà :func:`app.lesson_quality.evaluate_lesson_theory` chấm
@@ -1641,6 +1648,12 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
 
     BE-5 — ``evidence``: bằng chứng HÀNH VI cụ thể (Reasoning E11) cho tiêu chí yếu, xem
     :func:`build_evidence_block`. Đặt NGAY SAU khối ``weaknesses`` — bổ sung, không thay thế.
+
+    MIS1-B1 — ``mistakes``: hợp đồng dây ĐÃ MỞ (nhận tham số), NỘI DUNG PROMPT CHƯA ĐỤNG — cố ý
+    không dùng ở đây (đó là MIS1-B2, cùng lúc với ``mistakeReview`` ở response). Nhận rồi bỏ qua
+    để bất biến lùi giữ nguyên: caller không gửi ``mistakes`` (hoặc gửi ``None``) phải ra ĐÚNG
+    chuỗi prompt như trước khi có tham số này — xem test golden
+    ``tests/test_roadmap_mistakes_wire.py``.
     """
     role = CATEGORY_NAMES.get(job_category.upper(), job_category)
     lvl = LEVEL_NAMES.get(level.upper(), level)

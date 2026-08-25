@@ -123,8 +123,9 @@ async def test_provider_sanitizes_resources_from_llm(lesson_theory_payload):
         ))
     )
 
-    # RAG grounding: generate_lesson_theory() nay trả 3 trường (theory, resources, cited) — mẫu F13.
-    theory, resources, cited = await provider.generate_lesson_theory(
+    # RAG grounding: generate_lesson_theory() nay trả 4 trường (theory, resources, cited,
+    # mistake_review) — mẫu F13, mở rộng MIS1-B1.
+    theory, resources, cited, _ = await provider.generate_lesson_theory(
         "BE", "Junior", "Transaction", ["Thiết kế CSDL"], None)
 
     assert theory.startswith("# Transaction")
@@ -141,7 +142,7 @@ async def test_provider_missing_resources_is_not_an_error(lesson_theory_payload)
         return_value=_fake_gemini_response(lesson_theory_payload(["Bài"]))
     )
 
-    theory, resources, _ = await provider.generate_lesson_theory("BE", "Junior", "Bài", [], None)
+    theory, resources, _, _ = await provider.generate_lesson_theory("BE", "Junior", "Bài", [], None)
     assert theory
     assert resources == []
 
@@ -164,11 +165,11 @@ def test_lesson_theory_prompt_forbids_guessing_urls():
 
 def test_endpoint_returns_resources(monkeypatch):
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None, evidence=None, mode=None):
+                   grounding=None, evidence=None, mode=None, mistakes=None):
         return "# Bài\n\nND", [
             {"title": "MDN", "type": "Doc", "publisher": "Mozilla",
              "url": "https://developer.mozilla.org/"},
-        ], None
+        ], None, None
 
     monkeypatch.setattr(main_module.provider, "generate_lesson_theory", fake)
 
