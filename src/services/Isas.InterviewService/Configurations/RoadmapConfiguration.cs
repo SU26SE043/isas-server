@@ -52,6 +52,18 @@ public class RoadmapConfiguration : IEntityTypeConfiguration<Roadmap>
         return h;
     }
 
+    // MIS1-B4 — jsonb List<string>? NULLABLE dùng chung cho MistakeRefs (milestone + lesson).
+    // Mẫu GroundingRefs (dưới): provider `string?` (có dấu ?) — thiếu dấu ? thì EF coi cột required,
+    // scaffold ra `nullable: false`, dính lỗi `defaultValue` đã biết (F15).
+    internal static readonly ValueConverter<List<string>?, string?> NullableStringListConverter = new(
+        v => v == null ? null : JsonSerializer.Serialize(v, Json),
+        v => v == null ? null : JsonSerializer.Deserialize<List<string>>(v, Json));
+
+    internal static readonly ValueComparer<List<string>?> NullableStringListComparer = new(
+        (a, b) => (a ?? new List<string>()).SequenceEqual(b ?? new List<string>()),
+        v => v == null ? 0 : v.Aggregate(0, (h, s) => HashCode.Combine(h, s.GetHashCode())),
+        v => v == null ? null : v.ToList());
+
     public void Configure(EntityTypeBuilder<Roadmap> e)
     {
         e.HasKey(x => x.Id);
@@ -130,6 +142,12 @@ public class RoadmapConfiguration : IEntityTypeConfiguration<Roadmap>
             .WithOne(m => m.Roadmap)
             .HasForeignKey(m => m.RoadmapId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        // MIS1-B4 — Cascade theo roadmap_id (xoá roadmap → xoá luôn lỗi đã trích của nó).
+        e.HasMany(x => x.Mistakes)
+            .WithOne(m => m.Roadmap)
+            .HasForeignKey(m => m.RoadmapId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -192,6 +210,13 @@ public class RoadmapMilestoneConfiguration : IEntityTypeConfiguration<RoadmapMil
                 JsonSerializer.Serialize(v, Json), Json)));
         snapshot.HasColumnType("jsonb");
 
+        // MIS1-B4 — mistake_key AI gom vào chặng này. jsonb? — mẫu ScoreSnapshot/GroundingRefs
+        // (converter null-safe, KHÔNG defaultValue).
+        var mistakeRefs = e.Property(x => x.MistakeRefs);
+        mistakeRefs.HasConversion(RoadmapConfiguration.NullableStringListConverter);
+        mistakeRefs.Metadata.SetValueComparer(RoadmapConfiguration.NullableStringListComparer);
+        mistakeRefs.HasColumnType("jsonb");
+
         // UNIQUE(roadmap_id, order_no).
         e.HasIndex(x => new { x.RoadmapId, x.OrderNo }).IsUnique();
 
@@ -245,6 +270,30 @@ public class RoadmapLessonConfiguration : IEntityTypeConfiguration<RoadmapLesson
         grounding.Metadata.SetValueComparer(groundingComparer);
         grounding.HasColumnType("jsonb");
 
+        // MIS1-B4 — mistake_key lesson này bám riêng. jsonb? — mẫu GroundingRefs (converter chung
+        // RoadmapConfiguration.NullableStringListConverter, cùng type List<string>? với milestone).
+        var lessonMistakeRefs = e.Property(x => x.MistakeRefs);
+        lessonMistakeRefs.HasConversion(RoadmapConfiguration.NullableStringListConverter);
+        lessonMistakeRefs.Metadata.SetValueComparer(RoadmapConfiguration.NullableStringListComparer);
+        lessonMistakeRefs.HasColumnType("jsonb");
+
+        // MIS1-B4 — "vì sao sai / sửa sao" (MIS1-B3 mistakeReview), sinh CÙNG lượt TheoryContent.
+        // jsonb? — LessonMistakeReviewItem là record toàn string (immutable) nên SequenceEqual +
+        // v.ToList() đã là deep-clone thật, khỏi cần khuôn riêng như MilestoneScoreSnapshot.
+        var mistakeReviewConverter = new ValueConverter<List<LessonMistakeReviewItem>?, string?>(
+            v => v == null ? null : JsonSerializer.Serialize(v, RoadmapConfiguration.LessonJson),
+            v => v == null ? null
+                : JsonSerializer.Deserialize<List<LessonMistakeReviewItem>>(v, RoadmapConfiguration.LessonJson));
+        var mistakeReviewComparer = new ValueComparer<List<LessonMistakeReviewItem>?>(
+            (a, b) => (a ?? new List<LessonMistakeReviewItem>())
+                .SequenceEqual(b ?? new List<LessonMistakeReviewItem>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, r) => HashCode.Combine(h, r.GetHashCode())),
+            v => v == null ? null : v.ToList());
+        var mistakeReview = e.Property(x => x.MistakeReview);
+        mistakeReview.HasConversion(mistakeReviewConverter);
+        mistakeReview.Metadata.SetValueComparer(mistakeReviewComparer);
+        mistakeReview.HasColumnType("jsonb");
+
         e.Property(x => x.Status)
             .HasConversion<string>()
             .HasMaxLength(16)
@@ -293,5 +342,53 @@ public class RoadmapLessonAttemptConfiguration : IEntityTypeConfiguration<Roadma
             .WithMany()
             .HasForeignKey(x => x.SessionId)
             .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+/// <summary>
+/// MIS1-B4 — bảng CON thay vì jsonb trên <c>roadmaps</c> (xem lý do TOAST ở
+/// <see cref="RoadmapMistake"/>). UNIQUE(roadmap_id, mistake_key) ép "mint 1 lần" ở TẦNG DB.
+/// 3 CHECK <c>jsonb_typeof(...)='array'</c> cho <c>mistake_refs</c>/<c>mistake_review</c> (2 bảng
+/// trên) nằm ở MIGRATION (raw SQL cuối <c>Up()</c>), KHÔNG ở đây — <c>HasCheckConstraint</c> sẽ
+/// nhúng thẳng vào <c>CREATE TABLE</c> cho MỌI provider kể cả SQLite, mà SQLite không có
+/// <c>jsonb_typeof</c> ⇒ nổ ngay lúc <c>TestDb</c> khởi tạo schema (F15 tiền lệ).
+/// </summary>
+public class RoadmapMistakeConfiguration : IEntityTypeConfiguration<RoadmapMistake>
+{
+    public void Configure(EntityTypeBuilder<RoadmapMistake> e)
+    {
+        e.HasKey(x => x.Id);
+
+        e.Property(x => x.MistakeKey).HasMaxLength(8).IsRequired();
+        e.Property(x => x.CriterionName).HasMaxLength(256).IsRequired();
+        e.Property(x => x.Question).HasColumnType("text").IsRequired();
+        e.Property(x => x.Answer).HasColumnType("text").IsRequired();
+        e.Property(x => x.Reasoning).HasColumnType("text").IsRequired();
+        e.Property(x => x.SampleAnswer).HasColumnType("text");
+
+        // numeric(5,2) — nguồn là phép chia; "lưu đủ" (làm tròn lúc GỬI ở B5, không phải lúc LƯU).
+        e.Property(x => x.ScorePct).HasColumnType("numeric(5,2)").IsRequired();
+        e.Property(x => x.ThresholdPct).HasColumnType("numeric(5,2)").IsRequired();
+
+        e.Property(x => x.CreatedAt).IsRequired();
+
+        // UNIQUE(roadmap_id, mistake_key) — DB-enforce "mint 1 lần, không re-derive từ index".
+        e.HasIndex(x => new { x.RoadmapId, x.MistakeKey }).IsUnique();
+
+        // criterion_id → rubric_criteria Restrict — cùng khuôn AnswerScore.CriterionId /
+        // SessionCriterionScore.CriterionId (đều Restrict).
+        e.HasOne(x => x.Criterion)
+            .WithMany()
+            .HasForeignKey(x => x.CriterionId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // answer_id → practice_answers SetNull (KHÔNG navigation — mẫu Roadmap.CvId /
+        // RoadmapLesson.SessionId). Xoá answer/session gốc không được sập roadmap đã tạo trước đó;
+        // hàng lỗi tự mang đủ snapshot Question/Answer/Reasoning để sống thiếu con trỏ này.
+        e.HasOne<PracticeAnswer>()
+            .WithMany()
+            .HasForeignKey(x => x.AnswerId)
+            .IsRequired(false)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }

@@ -52,4 +52,7 @@ public class Roadmap
 
     // Navigation — Cascade theo roadmap_id.
     public ICollection<RoadmapMilestone> Milestones { get; set; } = [];
+
+    // MIS1-B4 — Cascade theo roadmap_id. Trích lúc TẠO (RoadmapMistakeLoader), đọc lại lúc gửi AI (B5).
+    public ICollection<RoadmapMistake> Mistakes { get; set; } = [];
 }

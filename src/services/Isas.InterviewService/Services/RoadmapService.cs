@@ -29,6 +29,9 @@ public class RoadmapService : IRoadmapService
     private readonly RoadmapOptions _roadmap;         // ngưỡng buổi tối thiểu cho chế độ ôn tập
     private readonly bool _tieringEnabled;
     private readonly bool _bilingualEnabled;
+    // MIS1-B4 — ngưỡng CÙNG cấu hình mà RoadmapLessonService.cs dùng để tính weaknesses (BC9/E10);
+    // RoadmapMistakeLoader (B5) lọc answer dưới ngưỡng NÀY, không phải một ngưỡng riêng.
+    private readonly ScoringOptions _scoring;
 
     public RoadmapService(
         InterviewDbContext db,
@@ -40,7 +43,8 @@ public class RoadmapService : IRoadmapService
         IOptions<GroundingOptions>? groundingOptions = null,
         IEntitlementClient? entitlements = null,
         IConfiguration? config = null,
-        IOptions<RoadmapOptions>? roadmapOptions = null)
+        IOptions<RoadmapOptions>? roadmapOptions = null,
+        IOptions<ScoringOptions>? scoringOptions = null)
     {
         _db = db;
         _storage = storage;
@@ -52,6 +56,7 @@ public class RoadmapService : IRoadmapService
         _roadmap = roadmapOptions?.Value ?? new RoadmapOptions();
         _tieringEnabled = bool.TryParse(config?["Tiering:Enabled"], out var enabled) && enabled;
         _bilingualEnabled = bool.TryParse(config?["Interview:Bilingual:Enabled"], out var bilingual) && bilingual;
+        _scoring = scoringOptions?.Value ?? new ScoringOptions();
     }
 
     public async Task<RoadmapResponse> CreateAsync(
@@ -139,19 +144,43 @@ public class RoadmapService : IRoadmapService
                         .Select(g => $"{g.Key} ({string.Join(", ", g.Select(s => s.Id))})")));
 
             // Newest-first: tiêu chí xuất hiện lần đầu (buổi mới nhất) thắng → baseline = % hiện tại.
+            //
+            // MIS1-B4 — `CriterionIds` KHÔNG thể lấy theo cùng luật "chỉ buổi mới nhất": rubric_criteria
+            // có Version + custom-per-candidate (BC16), nên "cùng một TÊN tiêu chí" ở hai buổi khác
+            // nhau có thể mang hai ID KHÁC NHAU (đổi version rubric, hoặc chuyển rubric riêng giữa
+            // các buổi). Lấy 1 id (của buổi mới nhất) sẽ âm thầm bỏ sót RoadmapMistakeLoader của
+            // những buổi mang id khác — 0 lỗi, 0 cảnh báo, một nhánh hiếm gặp lặng lẽ thành đường
+            // chính. `RoadmapWeakness` là record bất biến ⇒ BẮT BUỘC 2 lượt: gom hết id ở lượt 1 rồi
+            // mới dựng record ở lượt 2 (không patch được record đã tạo).
             var withScores = chosen.Where(s => s.CriterionScores.Count > 0).ToList();
             if (withScores.Count > 0)
             {
                 baseline = new Dictionary<string, decimal>();
-                var weak = new List<RoadmapWeakness>();
+                var criterionIdsByName = new Dictionary<string, HashSet<Guid>>(StringComparer.Ordinal);
+                var weakNamesInOrder = new List<string>();
+                var weakNamesSeen = new HashSet<string>(StringComparer.Ordinal);
+
+                // Lượt 1 — gom SONG SONG: baseline/danh sách yếu lấy % + cờ NeedsImprovement của
+                // buổi MỚI NHẤT (first-seen thắng, giữ nguyên luật cũ); CriterionIds gom từ MỌI buổi
+                // (kể cả buổi cũ hơn gặp SAU trong vòng lặp newest-first này).
                 foreach (var s in withScores)
                     foreach (var cs in s.CriterionScores)
                     {
+                        if (!criterionIdsByName.TryGetValue(cs.CriterionName, out var ids))
+                            criterionIdsByName[cs.CriterionName] = ids = [];
+                        ids.Add(cs.CriterionId);
+
                         if (baseline.ContainsKey(cs.CriterionName)) continue;
                         baseline[cs.CriterionName] = cs.Percentage;
-                        if (cs.NeedsImprovement)
-                            weak.Add(new RoadmapWeakness(cs.CriterionName, cs.Percentage));
+                        if (cs.NeedsImprovement && weakNamesSeen.Add(cs.CriterionName))
+                            weakNamesInOrder.Add(cs.CriterionName);
                     }
+
+                // Lượt 2 — dựng RoadmapWeakness (bất biến) từ 2 dict đã gom XONG ở lượt 1, giữ
+                // ĐÚNG thứ tự first-seen của lượt 1 (khớp hành vi cũ khi chưa có CriterionIds).
+                var weak = weakNamesInOrder
+                    .Select(name => new RoadmapWeakness(name, baseline[name], criterionIdsByName[name]))
+                    .ToList();
 
                 weaknesses = weak.Count > 0 ? weak : null;
             }

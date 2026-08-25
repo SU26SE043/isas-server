@@ -32,6 +32,9 @@ namespace Isas.InterviewService.ApplicationDbContext
         // Lịch sử các lần làm 1 bài luyện (làm lại để nâng điểm).
         public DbSet<RoadmapLessonAttempt> RoadmapLessonAttempts => Set<RoadmapLessonAttempt>();
 
+        // MIS1-B4 — 1 LỖI SAI trích từ buổi luyện đã chấm, gắn cho 1 roadmap. CHƯA nối vào AI (B5).
+        public DbSet<RoadmapMistake> RoadmapMistakes => Set<RoadmapMistake>();
+
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();        // DB2 — transactional outbox
 
         public DbSet<KnowledgeSource> KnowledgeSources => Set<KnowledgeSource>();  // RAG grounding — metadata nguồn (chunk ở Qdrant)

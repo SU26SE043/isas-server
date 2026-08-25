@@ -29,6 +29,11 @@ public class RoadmapMilestone
     // hoàn thành trước bản này (KHÔNG BIẾT), hoặc chặng chưa hoàn thành.
     public MilestoneScoreSnapshot? ScoreSnapshot { get; set; }
 
+    // MIS1-B4 — mistake_key (RoadmapMistake) mà AI gom vào chặng này (MIS1-B2 mistakeIds). jsonb
+    // NULLABLE: null = roadmap tạo trước MIS1-B4 hoặc buổi này không có lỗi để trích; KHÔNG suy null
+    // thành [] (BK23 — "không biết" khác "biết là rỗng").
+    public List<string>? MistakeRefs { get; set; }
+
     // Navigation — Cascade theo milestone_id.
     public ICollection<RoadmapLesson> Lessons { get; set; } = [];
 }

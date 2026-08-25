@@ -35,7 +35,21 @@ public record CreateRoadmapRequest(
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).
-public record RoadmapWeakness(string CriterionName, decimal Percentage);
+// MIS1-B4 — CriterionIds: MỌI id rubric_criteria từng đứng sau CriterionName này trong các buổi đã
+// chọn (KHÔNG chỉ id của buổi mới nhất). rubric_criteria có Version + custom-per-candidate: đổi
+// version hoặc rubric giữa các buổi sinh ra id MỚI cho "cùng một tên" ⇒ lấy 1 id sẽ âm thầm bỏ sót
+// mistake của những buổi mang id khác. Nullable vì record cũ (RoadmapLessonService.cs dựng từ
+// Baseline — Dictionary<string,decimal> không mang id) không có id để gắn. KHÔNG dùng để gửi AI
+// (AiServiceRoadmapGenerator.cs chỉ project criterionName+percentage — id không rò ra ngoài).
+public record RoadmapWeakness(
+    string CriterionName,
+    decimal Percentage,
+    IReadOnlyCollection<Guid>? CriterionIds = null);
+
+// MIS1-B4 — 1 mục "vì sao sai / sửa sao" AI sinh khi mở lesson (MIS1-B3), khớp mistake_key của
+// RoadmapMistake/Milestone.MistakeRefs. Shape giống MistakeReviewItem bên AIService NHƯNG là type
+// ĐỘC LẬP — không share, hai bên chỉ khớp nhau qua hợp đồng JSON.
+public record LessonMistakeReviewItem(string MistakeId, string WhatWentWrong, string HowToFixIt);
 
 // BE-5 — bằng chứng HÀNH VI cho 1 tiêu chí YẾU: Reasoning (E11, luôn trích NGUYÊN VĂN lời ứng
 // viên) của 2-3 answer điểm THẤP NHẤT — đã tải + cắt trần sẵn (RoadmapEvidenceLoader). Khớp
