@@ -58,7 +58,9 @@ public class RoadmapTests
         IReadOnlyList<CriterionEvidence>? Evidence,
         // `CvText` đã bị gỡ khỏi chữ ký generator (CV thô không còn vào prompt roadmap);
         // `CurrentLevel` thay chỗ nó — trình độ HIỆN TẠI suy từ CV, dùng làm sàn.
-        string? CurrentLevel);
+        string? CurrentLevel,
+        // MIS1-B5 — mutation-check anchor cho "quên forward mistakes xuống generator".
+        IReadOnlyList<RoadmapMistake>? Mistakes);
 
     private static Mock<IAiServiceRoadmapGenerator> GenMock(
         RoadmapGenAiResult result, Action<GenArgs>? capture = null)
@@ -70,10 +72,11 @@ public class RoadmapTests
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()));
+            It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+            It.IsAny<IReadOnlyList<RoadmapMistake>?>()));
         if (capture is not null)
-            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?, RoadmapMode, string?, CancellationToken>(
-                    (_, _, w, f, ca, pr, crit, scope, evidence, _, cur, _) => capture(new GenArgs(w, f, ca, pr, crit, scope, evidence, cur)))
+            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?, RoadmapMode, string?, CancellationToken, IReadOnlyList<RoadmapMistake>?>(
+                    (_, _, w, f, ca, pr, crit, scope, evidence, _, cur, _, mistakes) => capture(new GenArgs(w, f, ca, pr, crit, scope, evidence, cur, mistakes)))
                 .ReturnsAsync(result);
         else
             setup.ReturnsAsync(result);
@@ -618,10 +621,12 @@ public class RoadmapTests
         t.Db.SaveChanges();
     }
 
-    // BE-5 — anchor mutation-check: bằng chứng HÀNH VI (Reasoning thật, không phải placeholder null)
-    // của tiêu chí yếu nhất phải tới ĐƯỢC generator qua CreateAsync → RoadmapEvidenceLoader.
+    // 🔴 MIS1-B5 — CẤM: `evidence` KHÔNG còn được gửi xuống generator (đi cùng chế độ giáo trình
+    // MIS1-B2 đã gỡ; `mistakes`/RoadmapMistakeLoader nay là nguồn GOM CHỦ ĐỀ, giàu hơn vì có id để
+    // AI trỏ ngược). Test này CỐ Ý ĐẢO NGƯỢC tiền đề gốc của BE-5 ("evidence phải tới generator") —
+    // giữ lại làm mutation-check anchor cho việc lỡ tay khôi phục lại đường evidence.
     [Fact]
-    public async Task Post_WeakCriterionHasReasoning_EvidenceReachesGenerator()
+    public async Task Post_WeakCriterionHasReasoning_EvidenceKhongConDuocGuiXuongGenerator()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
@@ -639,16 +644,12 @@ public class RoadmapTests
         Assert.IsType<CreatedResult>(result);
 
         Assert.NotNull(captured);
-        var ev = Assert.Single(captured!.Evidence!);
-        Assert.Equal("Clarity", ev.CriterionName);
-        Assert.Contains("đánh đổi khi ưu tiên tính năng với nguồn lực hạn chế", Assert.Single(ev.Reasoning));
-        // "Depth" đạt (needsImprovement=false) → KHÔNG nằm trong danh sách weakness → KHÔNG kéo bằng chứng
-        Assert.DoesNotContain(captured.Evidence!, e => e.CriterionName == "Depth");
+        Assert.Null(captured!.Evidence);
     }
 
-    // BE-5 — không có buổi Scored nào được chọn (baseline null) → evidence rỗng, KHÔNG lỗi.
+    // MIS1-B5 — cùng lý do trên: evidence luôn null, kể cả khi không chọn buổi nào.
     [Fact]
-    public async Task Post_NoScoredSession_SendsEmptyEvidence_NoError()
+    public async Task Post_NoScoredSession_EvidenceLuonNull()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
@@ -661,7 +662,7 @@ public class RoadmapTests
         Assert.IsType<CreatedResult>(result);
 
         Assert.NotNull(captured);
-        Assert.Empty(captured!.Evidence!);
+        Assert.Null(captured!.Evidence);
     }
 
     // ── (2d) BC17 — id buổi thiếu / khác chủ / chưa Scored → 404 batch, KHÔNG lộ id nào, KHÔNG lưu row ──

@@ -105,9 +105,9 @@ public class RoadmapGroundingTests
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
                 It.IsAny<RoadmapMode>(),
-                It.IsAny<CancellationToken>()))
-            .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?, IReadOnlyList<GroundingChunk>?, IReadOnlyList<CriterionEvidence>?, RoadmapMode, CancellationToken>(
-                (_, _, _, _, _, grounding, _, _, _) => passedGrounding = grounding)
+                It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyList<RoadmapMistake>?>()))
+            .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?, IReadOnlyList<GroundingChunk>?, IReadOnlyList<CriterionEvidence>?, RoadmapMode, CancellationToken, IReadOnlyList<RoadmapMistake>?>(
+                (_, _, _, _, _, grounding, _, _, _, _) => passedGrounding = grounding)
             // AI cite CHỈ "A" (không cite "B").
             .ReturnsAsync(new LessonTheoryResult("## Lý thuyết", [], new List<string> { "A" }));
 

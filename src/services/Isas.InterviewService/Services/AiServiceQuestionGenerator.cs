@@ -164,7 +164,25 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             // `Title` rỗng ⇒ gửi null cả khối: một tiêu đề rỗng không phân biệt được bài nào với
             // bài nào, mà vẫn tốn một khối "CHỦ ĐỀ BẮT BUỘC" rỗng nghĩa trong prompt.
             lessonContext = lessonContext is not null && !string.IsNullOrWhiteSpace(lessonContext.Title)
-                ? new { title = lessonContext.Title, outline = lessonContext.Outline }
+                ? new
+                  {
+                      title = lessonContext.Title,
+                      outline = lessonContext.Outline,
+                      // MIS1-B5 — id/criterionName/question/reasoning CHỈ 4 trường — TUYỆT ĐỐI
+                      // KHÔNG answer, KHÔNG sampleAnswer (đáp án): đưa đáp án vào prompt sinh câu
+                      // hỏi thì model lấy luôn nội dung đáp án làm câu hỏi. `RoadmapMistakeWire`
+                      // (kiểu của `lessonContext.Mistakes`) còn mang ScorePct/Answer nhưng CỐ Ý
+                      // KHÔNG chiếu 2 trường đó ra đây.
+                      mistakes = lessonContext.Mistakes is { Count: > 0 }
+                          ? lessonContext.Mistakes.Select(m => new
+                            {
+                                id = m.Id,
+                                criterionName = m.CriterionName,
+                                question = m.Question,
+                                reasoning = m.Reasoning,
+                            })
+                          : null,
+                  }
                 : null,
             // TOP1-B5 — danh mục đề tài (TopicSelector, B3). CHỈ 3 field — KHÔNG gửi `key`/`source`/
             // `criterionName`: criterionName là dữ liệu NỘI BỘ .NET (đối chiếu rubric buổi tạo), CẤM

@@ -288,23 +288,47 @@ public class RoadmapService : IRoadmapService
         // thật khi AIService không được cấp danh sách này).
         var criteria = await LoadCriteriaNamesAsync(candidateId, req.JobCategory, language, ct);
 
-        // BE-5 — bằng chứng hành vi: Reasoning (E11) của answer điểm THẤP NHẤT cho ≤3 tiêu chí yếu
-        // nhất, thay cho việc chỉ gửi con số %. `sourceSessionIds`/`weaknesses` null → rỗng (không
-        // chọn buổi nào ⇒ không có gì để trích).
-        var evidence = weaknesses is { Count: > 0 } && sourceSessionIds is { Count: > 0 }
-            ? await RoadmapEvidenceLoader.LoadAsync(_db, sourceSessionIds, weaknesses, ct)
-            : [];
+        // MIS1-B5 — id CẤP TRƯỚC (không phải lúc `new Roadmap`) vì RoadmapMistakeLoader/entity
+        // RoadmapMistake cần `RoadmapId` NGAY để gắn FK trước khi roadmap được Add. Chưa `SaveChangesAsync`
+        // nên chưa có gì ràng buộc ở DB tại thời điểm này (AI lỗi → không Add gì, id vứt đi vô hại).
+        var roadmapId = Guid.NewGuid();
 
+        // MIS1-B4/B5 — trích LỖI SAI cụ thể (tối đa 4 tiêu chí yếu nhất × 3 lỗi/tiêu chí) từ các
+        // buổi đã chọn, dưới ngưỡng CÙNG cấu hình với NeedsImprovement (BC9/E10) — `_scoring`,
+        // KHÔNG một ngưỡng riêng. `sourceSessionIds`/`weaknesses` null → loader tự trả rỗng (không
+        // chọn buổi nào ⇒ không có gì để trích, xem RoadmapMistakeLoader.LoadAsync).
+        var loadedMistakes = await RoadmapMistakeLoader.LoadAsync(
+            _db, roadmapId, sourceSessionIds ?? [], weaknesses ?? [], _scoring.ImprovementThresholdPct, ct);
+        // Rỗng → gửi `null` (không phải `[]`) xuống generator: khớp ĐÚNG hành vi caller cũ không
+        // biết tham số này (mẫu `evidence`/`criteria` ngay dưới) — giữ tương thích cho mọi test/
+        // caller chưa có dữ liệu lỗi để gom.
+        var mistakesForAi = loadedMistakes.Count > 0 ? loadedMistakes : null;
+
+        // 🔴 MIS1-B5 — `evidence` GỠ KHỎI ĐÂY (đi cùng chế độ giáo trình MIS1-B2 đã bỏ): `mistakes`
+        // ở trên nay là nguồn GOM CHỦ ĐỀ, giàu hơn evidence (có id để AI trỏ ngược). KHÔNG xoá
+        // tham số `evidence` khỏi interface/`build_roadmap_prompt` — chỉ đơn giản KHÔNG còn caller
+        // nào truyền dữ liệu cho nó (giữ `RoadmapEvidenceLoader.cs`/test nguyên vẹn, xem MIS1-B5).
+        //
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
             ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses,
-                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, evidence, mode, currentLevel, ct)
+                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope,
+                mode: mode, currentLevel: currentLevel, ct: ct, mistakes: mistakesForAi)
             : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope, evidence, mode, currentLevel);
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope,
+                mode: mode, currentLevel: currentLevel, mistakes: mistakesForAi);
+
+        // 🔴 MIS1-B5 — NARROW LẠI Ở .NET: AI tự gán `mistakeIds` khi gom chủ đề (MIS1-B2), nhưng
+        // CẤM tin thẳng — id lạ/bịa phải bị lọc trước khi chạm DB (mẫu NarrowToCited của
+        // RoadmapLessonService, chống bịa BY-CONSTRUCTION như focusCriteria/BE-1 lẽ ra phải làm ở
+        // .NET nhưng hiện chỉ lọc phía Python — KHÔNG lặp lại lỗ đó ở đây: hai service deploy RỜI
+        // NHAU, một bản AIService lỗi ghi thẳng id treo là ghi thẳng vào DB InterviewService).
+        var validMistakeKeys = new HashSet<string>(
+            loadedMistakes.Select(m => m.MistakeKey), StringComparer.Ordinal);
 
         var roadmap = new Roadmap
         {
-            Id = Guid.NewGuid(),
+            Id = roadmapId,
             CandidateId = candidateId,
             // BE-6 — tên người dùng gửi đã được chuẩn hoá ở ĐẦU hàm (trước lời gọi AI); vắng thì
             // sinh mặc định tại đây để `CreatedAt` dùng cho tên khớp đúng giá trị vừa gán bên dưới.
@@ -329,7 +353,12 @@ public class RoadmapService : IRoadmapService
                 OrderNo = milestoneOrder++,
                 Title = m.Title,
                 FocusCriteria = m.FocusCriteria.ToList(),
-                Status = MilestoneStatus.Pending
+                Status = MilestoneStatus.Pending,
+                // MIS1-B5 — narrow: null (AI không trả field này) giữ null; có trả (kể cả rỗng sau
+                // lọc) → GIỮ milestone với refs rỗng, KHÔNG drop (khác id lạ ở focusCriteria: một
+                // milestone không gom được lỗi nào vẫn là milestone hợp lệ ở tầng .NET — quyết định
+                // "có nên tồn tại không" đã chốt xong ở AIService/MIS1-B2, .NET chỉ lọc id).
+                MistakeRefs = NarrowMistakeRefs(m.MistakeIds, validMistakeKeys)
             };
 
             var lessonOrder = 1;
@@ -340,11 +369,17 @@ public class RoadmapService : IRoadmapService
                     OrderNo = lessonOrder++,
                     Title = l.Title,
                     Status = LessonStatus.Theory,
-                    TheoryContent = null
+                    TheoryContent = null,
+                    MistakeRefs = NarrowMistakeRefs(l.MistakeIds, validMistakeKeys)
                 });
 
             roadmap.Milestones.Add(milestone);
         }
+
+        // MIS1-B4/B5 — lưu CÙNG transaction với roadmap (roadmap_mistakes.roadmap_id FK Cascade tới
+        // `roadmaps`; roadmap AI lỗi ở trên đã throw TRƯỚC khi tới đây nên không có hàng mồ côi).
+        if (loadedMistakes.Count > 0)
+            _db.Set<RoadmapMistake>().AddRange(loadedMistakes);
 
         // RAG grounding (Cách 2 — precompute): batch-embed query từng lesson (tên bài + focus milestone +
         // jobCategory) trong 1 lần /embed → Qdrant search → LƯU snapshot vào lesson.GroundingRefs. Lúc MỞ
@@ -641,6 +676,22 @@ public class RoadmapService : IRoadmapService
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
 
+    /// <summary>
+    /// MIS1-B5 — lọc <paramref name="ids"/> (mistake_key AI tự gán) về đúng tập
+    /// <paramref name="validKeys"/> (mistake_key ĐÃ CẤP thật cho lượt gọi này). Chống bịa
+    /// BY-CONSTRUCTION (mẫu <c>RoadmapLessonService.NarrowToCited</c>) — CHÍNH .NET phải lọc,
+    /// không tin nhãn AIService trả về dù phía Python đã có <c>filter_milestone_mistakes</c>: hai
+    /// service deploy RỜI NHAU, một bản AIService cũ/lỗi ghi thẳng id treo xuống đây là ghi thẳng
+    /// vào DB InterviewService.
+    ///
+    /// <c>null</c> (AI không trả field này — bản cũ, hoặc lượt không gửi mistakes) → giữ
+    /// <c>null</c>. Có trả (kể cả rỗng SAU lọc) → danh sách đã lọc, KHÔNG BAO GIỜ drop milestone/
+    /// lesson vì lý do này — quyết định "gom được lỗi nào chưa" là việc của AIService (MIS1-B2).
+    /// </summary>
+    private static List<string>? NarrowMistakeRefs(
+        IReadOnlyList<string>? ids, HashSet<string> validKeys)
+        => ids?.Where(validKeys.Contains).ToList();
+
     // Đọc parsed_text của file thuộc về candidate. null → 404; khác chủ → 403; rỗng → 400 (mẫu CvAnalysisService).
     private async Task<string> ReadOwnedParsedTextAsync(
         Guid fileId, Guid candidateId, string label, CancellationToken ct)
@@ -830,7 +881,13 @@ public class RoadmapService : IRoadmapService
                 attemptCounts.TryGetValue(l.Id, out var attempts) ? attempts : 0,
                 // Luật "được làm lại không" dùng CHUNG một hàm với đường chi tiết lesson — hai bản
                 // sao lệch nhau nghĩa là FE hiện nút ở màn này mà không hiện ở màn kia.
-                RoadmapLessonService.CanRetry(l.Status))).ToList()
+                RoadmapLessonService.CanRetry(l.Status)
+                // MIS1-B5 — CẤM tường minh: KHÔNG truyền `mistakes` ở đường GET /roadmaps/{id} này
+                // (hợp đồng không hứa mistakeReview ở đây — chỉ OpenLessonAsync mới trả, xem
+                // RoadmapLessonService.MapLesson). Để mặc định null.
+                )).ToList(),
+            // MIS1-B5 — đã NARROW ở lúc tạo (CreateAsync); đọc thẳng Count, không lọc lại.
+            m.MistakeRefs?.Count ?? 0
         )).ToList(),
         r.CreatedAt,
         r.CompletedAt,

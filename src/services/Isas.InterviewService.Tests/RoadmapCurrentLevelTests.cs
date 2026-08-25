@@ -36,12 +36,13 @@ public class RoadmapCurrentLevelTests
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()));
+            It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+            It.IsAny<IReadOnlyList<RoadmapMistake>?>()));
         if (captureCurrentLevel is not null)
             setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?,
                     IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?,
-                    RoadmapMode, string?, CancellationToken>(
-                    (_, _, _, _, _, _, _, _, _, _, cur, _) => captureCurrentLevel(cur))
+                    RoadmapMode, string?, CancellationToken, IReadOnlyList<RoadmapMistake>?>(
+                    (_, _, _, _, _, _, _, _, _, _, cur, _, _) => captureCurrentLevel(cur))
                 .ReturnsAsync(SampleRoadmap());
         else
             setup.ReturnsAsync(SampleRoadmap());

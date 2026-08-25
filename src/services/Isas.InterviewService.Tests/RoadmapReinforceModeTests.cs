@@ -41,17 +41,19 @@ public class RoadmapReinforceModeTests
         var m = new Mock<IAiServiceRoadmapGenerator>();
         var setup = m.Setup(x => x.GenerateAsync(
             It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), 
+            It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
                 It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()));
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()));
         if (capture is not null)
             setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?,
                     IReadOnlyList<QuestionTargetCriterionDto>?, string,
-                    IReadOnlyList<CriterionEvidence>?, RoadmapMode, string?, CancellationToken>(
-                    (_, _, w, _, _, _, _, _, _, mode, _, _) => capture(new Captured(mode, w)))
+                    IReadOnlyList<CriterionEvidence>?, RoadmapMode, string?, CancellationToken,
+                    IReadOnlyList<RoadmapMistake>?>(
+                    (_, _, w, _, _, _, _, _, _, mode, _, _, _) => capture(new Captured(mode, w)))
                 .ReturnsAsync(Sample());
         else
             setup.ReturnsAsync(Sample());
@@ -371,10 +373,10 @@ public class RoadmapReinforceModeTests
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyList<RoadmapMistake>?>()))
             .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?,
                 IReadOnlyList<GroundingChunk>?, IReadOnlyList<CriterionEvidence>?, RoadmapMode,
-                CancellationToken>((_, _, _, _, _, _, _, m, _) => seen = m)
+                CancellationToken, IReadOnlyList<RoadmapMistake>?>((_, _, _, _, _, _, _, m, _, _) => seen = m)
             .ReturnsAsync(new LessonTheoryResult("## Lý thuyết\n\nNội dung đủ dài để dùng được.", []));
 
         var lessonService = new RoadmapLessonService(
