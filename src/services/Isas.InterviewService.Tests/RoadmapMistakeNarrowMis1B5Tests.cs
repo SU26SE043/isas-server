@@ -272,6 +272,105 @@ public class RoadmapMistakeNarrowMis1B5Tests
             Times.Once);
     }
 
+    // ═══ Vá theo báo cáo kiểm — NarrowMistakeReview: AI trả mistakeId BỊA (không nằm trong tập đã
+    // cấp) ⇒ item đó bị lọc khỏi response, KHÔNG rơi thẳng xuống DB/API. Trước bài này,
+    // RoadmapLessonService.cs:155-161 (lớp "CẤM tin thẳng AI" thứ hai — mistakeReview, song song
+    // NarrowMistakeRefs ở RoadmapService.CreateAsync đã có Test 1) hoàn toàn không có test dựng ca
+    // AI trả id KHÔNG khớp — mutation-verified: gỡ vế lọc `allowed.Contains(...)` (đổi thành
+    // `review.ToList()`) chạy qua 254 test Roadmap vẫn XANH 100%. ═══
+
+    /// <summary>
+    /// mistakesForLesson gửi AI CHỈ có "m1" (đúng bài này bám). AI trả về mistakeReview cho CẢ "m1"
+    /// (khớp) LẪN "m99" (bịa — không nằm trong tập vừa cấp, không tồn tại ở bất kỳ nguồn nào) ⇒
+    /// response/DB CHỈ giữ "m1", mẫu chính hệt Test 1 (<see cref="Create_AiTraIdBiaLanIdThat_ChiLuuIdThatVaoMistakeRefs"/>)
+    /// nhưng ở tầng <c>OpenLessonAsync</c> thay vì <c>CreateAsync</c>.
+    /// </summary>
+    [Fact]
+    public async Task OpenLesson_AiTraMistakeReviewChoIdBia_ChiGiuIdThatTrongResponseVaDb()
+    {
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+        var crit = TestDb.Criterion(JobCategory.BE, name: "Clarity");
+        t.Db.RubricCriteria.Add(crit);
+
+        var roadmapId = Guid.NewGuid();
+        var roadmap = new Roadmap
+        {
+            Id = roadmapId,
+            CandidateId = candidateId,
+            JobCategory = JobCategory.BE,
+            Level = RoadmapLevel.Junior,
+            Language = "vi",
+            Status = RoadmapStatus.Active,
+            CreatedAt = DateTime.UtcNow
+        };
+        var milestone = new RoadmapMilestone
+        {
+            Id = Guid.NewGuid(),
+            OrderNo = 1,
+            Title = "M1",
+            FocusCriteria = ["Clarity"],
+            Status = MilestoneStatus.Pending,
+            MistakeRefs = ["m1"]   // CHỈ "m1" — "m99" không nằm trong tập bám của bài này.
+        };
+        var lesson = new RoadmapLesson
+        {
+            Id = Guid.NewGuid(),
+            OrderNo = 1,
+            Title = "L1",
+            Status = LessonStatus.Theory,
+            TheoryContent = null
+        };
+        milestone.Lessons.Add(lesson);
+        roadmap.Milestones.Add(milestone);
+        t.Db.Set<Roadmap>().Add(roadmap);
+
+        // CHỈ seed "m1" — "m99" không tồn tại ở BẤT KỲ hàng roadmap_mistakes nào ⇒ mistakesForLesson
+        // gửi AI (LoadLessonMistakesAsync) chắc chắn KHÔNG chứa "m99".
+        t.Db.Set<RoadmapMistake>().Add(new RoadmapMistake
+        {
+            Id = Guid.NewGuid(),
+            RoadmapId = roadmapId,
+            MistakeKey = "m1",
+            CriterionId = crit.Id,
+            CriterionName = "Clarity",
+            Question = "Giải thích dependency injection?",
+            Answer = "câu trả lời sai của ứng viên",
+            Reasoning = "Không phân biệt được DI với Service Locator",
+            ScorePct = 20m,
+            ThresholdPct = 50m,
+            CreatedAt = DateTime.UtcNow
+        });
+        await t.Db.SaveChangesAsync();
+
+        var gen = new Mock<IAiServiceRoadmapGenerator>();
+        gen.Setup(g => g.GenerateLessonTheoryAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
+                It.IsAny<IReadOnlyList<GroundingChunk>?>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
+                It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyList<RoadmapMistake>?>()))
+            .ReturnsAsync(new LessonTheoryResult(
+                "## Lý thuyết\n\nNội dung bài giảng", [], null,
+                [
+                    new LessonMistakeReviewItem("m1", "Sai vì lẫn DI với Service Locator", "Đọc lại định nghĩa DI"),
+                    new LessonMistakeReviewItem("m99", "LÝ DO BỊA — id này chưa từng được cấp cho lượt gọi này", "SỬA BỊA"),
+                ]));
+
+        var svc = new RoadmapLessonService(
+            t.Db, new Mock<IPracticeService>().Object, gen.Object, NullLogger<RoadmapLessonService>.Instance);
+
+        var res = await svc.OpenLessonAsync(candidateId, roadmapId, lesson.Id, default);
+
+        Assert.NotNull(res.Mistakes);
+        var item = Assert.Single(res.Mistakes!);
+        Assert.Equal("m1", item.MistakeId);
+
+        // DB cũng chỉ giữ "m1" — narrow chạy TRƯỚC khi ExecuteUpdate ghi cột MistakeReview.
+        var saved = await t.NewContext().RoadmapLessons.AsNoTracking().SingleAsync(l => l.Id == lesson.Id);
+        Assert.NotNull(saved.MistakeReview);
+        Assert.Equal(["m1"], saved.MistakeReview!.Select(m => m.MistakeId));
+    }
+
     // ═══════════ Test 7 — refs KHÔNG khớp gì cả ⇒ mistakes=null, KHÔNG ném lỗi tuỳ tiện ═══════════
 
     /// <summary>
