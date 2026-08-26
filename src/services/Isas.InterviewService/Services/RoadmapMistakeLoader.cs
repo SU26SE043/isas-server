@@ -96,6 +96,12 @@ public static class RoadmapMistakeLoader
                     SampleAnswer = s.Answer.SampleAnswer,
                     s.Score,
                     MaxScore = s.Criterion.MaxScore,
+                    // REC1-B2 mục B — SNAPSHOT trình độ buổi luyện lỗi này bám, NGAY TRONG cùng
+                    // truy vấn (PracticeAnswer.Session là nav CÓ SẴN, s.Answer.SessionId đã dùng ở
+                    // trên) — không thêm round-trip. PHẢI snapshot ở đây, KHÔNG join lúc đọc: đọc
+                    // lại qua `answer.Session.Seniority` sẽ mất mức khi buổi luyện gốc bị xoá
+                    // (answer_id là FK SetNull — xem Entities/RoadmapMistake.cs).
+                    Seniority = s.Answer.Session.Seniority,
                 })
                 .ToListAsync(ct);
 
@@ -118,6 +124,7 @@ public static class RoadmapMistakeLoader
                     // guard chia-0 ở đây an toàn, khác vế lọc SQL phía trên phải né chia bằng nhân chéo.
                     ScorePct = r.MaxScore > 0 ? r.Score * 100m / r.MaxScore : 0m,
                     ThresholdPct = thresholdPct,
+                    Seniority = r.Seniority,
                     CreatedAt = DateTime.UtcNow,
                 });
             }

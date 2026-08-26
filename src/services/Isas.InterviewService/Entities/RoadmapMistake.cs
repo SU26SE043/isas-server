@@ -47,6 +47,13 @@ public class RoadmapMistake
     // Nullable — PracticeAnswer.SampleAnswer bản thân đã nullable (F13: null = chưa chấm/model không trả).
     public string? SampleAnswer { get; set; }
 
+    // REC1-B2 mục B — SNAPSHOT trình độ của buổi luyện lỗi này bám (`PracticeSession.Seniority`),
+    // chụp NGAY LÚC TRÍCH (RoadmapMistakeLoader). PHẢI snapshot, KHÔNG join lúc đọc: `answer_id`
+    // ở trên là FK SetNull — xoá buổi luyện gốc (hoặc chỉ answer) làm mất luôn đường join, và mức
+    // của bài học không được phép biến mất theo. null = hàng tạo TRƯỚC cột này tồn tại (lùi về
+    // roadmap.Level ở nơi đọc — RoadmapLessonService — chứ KHÔNG suy "Junior" ở đây).
+    public string? Seniority { get; set; }
+
     // numeric(5,2) — nguồn là phép chia, làm tròn lúc GỬI (B5), không phải lúc LƯU (luật "lưu đủ").
     public decimal ScorePct { get; set; }
     public decimal ThresholdPct { get; set; }

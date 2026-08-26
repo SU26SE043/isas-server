@@ -72,8 +72,6 @@ public class RoadmapService : IRoadmapService
         // Cùng lý do đã nêu cho `ValidateLanguage`/`ValidateScope`: lỗi đầu vào phải nổ TRƯỚC khi
         // đốt một lượt Gemini.
         var mode = ValidateMode(req.Mode);
-        // Cùng lý do — trình độ hiện tại candidate tự khai ở wizard, kiểm TRƯỚC mọi I/O.
-        var currentLevelOverride = ValidateCurrentLevel(req.CurrentLevel);
 
         // MIS1-B6 — GUARD 1: roadmap nay XÂY TỪ LỖI THẬT (MIS1-B4/B5), nên không còn nhánh "roadmap
         // CHUẨN theo level" khi không chọn buổi nào — thiếu buổi = không có gì để xây. Đặt TRƯỚC lời
@@ -118,6 +116,12 @@ public class RoadmapService : IRoadmapService
         Dictionary<string, decimal>? baseline = null;
         List<RoadmapWeakness>? weaknesses = null;
         List<Guid>? sourceSessionIds = null;
+        // REC1-B2 mục A — mức LỘ TRÌNH SUY từ buổi nguồn, KHÔNG còn là lời tự khai của `req.Level`
+        // (đo trên production: chỉ 4/61 buổi đạt ngưỡng cấp của chính mình). `DefaultRoadmapLevel`
+        // chỉ dùng khi `chosen` rỗng — về lý thuyết không xảy ra ở đây (Guard 1 phía trên đã ép
+        // `req.SessionIds` luôn {Count:>0}, và `chosen.Count == requestedIds.Count` vừa được assert
+        // bên trong khối `if` ngay dưới) nhưng giữ làm phòng thủ, không phải đường thật.
+        var roadmapLevel = DefaultRoadmapLevel;
 
         if (req.SessionIds is { Count: > 0 })
         {
@@ -179,6 +183,19 @@ public class RoadmapService : IRoadmapService
                         .GroupBy(s => s.Language)
                         .OrderBy(g => g.Key)
                         .Select(g => $"{g.Key} ({string.Join(", ", g.Select(s => s.Id))})")));
+
+            // REC1-B2 mục A — mức LỘ TRÌNH = mức CAO NHẤT trong các buổi đã chọn. `chosen` đã
+            // `.ToListAsync()` ĐẦY ĐỦ ở trên (KHÔNG projection) nên `s.Seniority` nằm sẵn trong bộ
+            // nhớ — KHÔNG thêm truy vấn nào. `chosen.Count > 0` LUÔN đúng tới đây (đã assert ở guard
+            // sở hữu phía trên `chosen.Count == requestedIds.Count`, và `requestedIds` không rỗng
+            // theo Guard 1) — nhánh else giữ `DefaultRoadmapLevel` chỉ là phòng thủ.
+            //
+            // `PracticeSession.Seniority` là string TỰ DO ở tầng entity nhưng bị CHECK
+            // `ck_practice_sessions_seniority`/`PracticeService.AllowedSeniorities` ép về đúng 4
+            // tên (Fresher/Junior/Middle/Senior) trùng khít thứ tự tăng dần của `RoadmapLevel` —
+            // `Enum.Parse` ở đây an toàn, không phải xấp xỉ.
+            if (chosen.Count > 0)
+                roadmapLevel = chosen.Select(s => Enum.Parse<RoadmapLevel>(s.Seniority)).Max();
 
             // Newest-first: tiêu chí xuất hiện lần đầu (buổi mới nhất) thắng → baseline = % hiện tại.
             //
@@ -296,16 +313,10 @@ public class RoadmapService : IRoadmapService
             cvAnalysisSummary = BuildCvAnalysisSummary(ca);
             currentLevel = ca.CurrentLevel;
         }
-        // Giá trị candidate TỰ KHAI ở wizard THẮNG giá trị suy từ CV: người dùng biết trình độ
-        // của mình rõ hơn một suy đoán, và một phần đáng kể bản phân tích CV không suy ra được gì
-        // (xem Entities/CvAnalysis.cs) nên để CV thắng sẽ im lặng bỏ mất lựa chọn của người dùng.
-        //
-        // 🔴 Dòng này BẮT BUỘC nằm NGOÀI khối `if (req.CvAnalysisId is not null)` ở trên, chạy
-        // VÔ ĐIỀU KIỆN. Nhét nó vào TRONG khối (`currentLevel = currentLevelOverride ?? ca.CurrentLevel;`
-        // rồi xoá dòng này) sẽ làm candidate KHÔNG chọn bản phân tích CV nào — bỏ qua bước CV, một
-        // nhánh hợp lệ đã chốt trong wizard — có `currentLevelOverride` bị RƠI IM LẶNG: họ chọn
-        // trình độ ở bước 2, không lỗi gì, và lựa chọn đó biến mất trước khi tới prompt.
-        currentLevel = currentLevelOverride ?? currentLevel;
+        // REC1-B2 — "trình độ hiện tại candidate TỰ KHAI ở wizard" (ValidateCurrentLevel +
+        // currentLevelOverride) đã GỠ: `currentLevel` giờ CHỈ tới từ `cv_analyses.CurrentLevel`
+        // (đã gán ở nhánh `if (req.CvAnalysisId is not null)` ngay trên; không chọn CV nào → giữ
+        // `null`). `req.CurrentLevel` không còn được đọc ở bất kỳ đâu trong hàm này.
 
         // BC17 — final_report của roadmap đã hoàn thành (BC15) làm NGỮ CẢNH. Thiếu → 404; khác chủ → 403;
         // chưa có báo cáo (chưa hoàn thành) → 400.
@@ -386,10 +397,10 @@ public class RoadmapService : IRoadmapService
         //
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
-            ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses,
+            ? await _generator.GenerateAsync(req.JobCategory.ToString(), roadmapLevel.ToString(), weaknesses,
                 focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope,
                 mode: mode, currentLevel: currentLevel, ct: ct, mistakes: mistakesForAi)
-            : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses,
+            : await _generator.GenerateAsync(req.JobCategory.ToString(), roadmapLevel.ToString(), weaknesses,
                 focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope,
                 mode: mode, currentLevel: currentLevel, mistakes: mistakesForAi);
 
@@ -407,10 +418,11 @@ public class RoadmapService : IRoadmapService
             CandidateId = candidateId,
             // BE-6 — tên người dùng gửi đã được chuẩn hoá ở ĐẦU hàm (trước lời gọi AI); vắng thì
             // sinh mặc định tại đây để `CreatedAt` dùng cho tên khớp đúng giá trị vừa gán bên dưới.
-            Name = requestedName ?? RoadmapNaming.BuildDefault(req.JobCategory, req.Level, language, createdAt),
+            Name = requestedName ?? RoadmapNaming.BuildDefault(req.JobCategory, roadmapLevel, language, createdAt),
             JobCategory = req.JobCategory,
             Mode = mode,
-            Level = req.Level,
+            // REC1-B2 mục A — SUY từ buổi nguồn, KHÔNG dùng `req.Level` (client gửi gì cũng bị bỏ qua).
+            Level = roadmapLevel,
             Language = language,
             CvId = req.CvId,
             SourceSessionIds = sourceSessionIds,
@@ -468,7 +480,7 @@ public class RoadmapService : IRoadmapService
 
         _logger.LogInformation(
             "BC12: roadmap {Id} candidate {CandidateId} ({Cat}/{Level}/{Mode}) milestones={M} sources={S}",
-            roadmap.Id, candidateId, req.JobCategory, req.Level, mode,
+            roadmap.Id, candidateId, req.JobCategory, roadmapLevel, mode,
             roadmap.Milestones.Count, sourceSessionIds?.Count ?? 0);
 
         // Roadmap vừa tạo — chưa bài nào được làm, nên rỗng là ĐÚNG do cấu trúc (không phải bỏ sót).
@@ -704,6 +716,11 @@ public class RoadmapService : IRoadmapService
     // đi kèm mỗi buổi). 20 đủ rộng cho mọi wizard picker thực tế, đủ hẹp để chặn payload bất thường.
     private const int MaxSourceSessions = 20;
 
+    // REC1-B2 mục A — sàn khi KHÔNG suy được mức nào từ buổi nguồn (phòng thủ; xem CreateAsync —
+    // trên đường thật `chosen` luôn có ≥1 phần tử tới điểm dùng hằng số này). Junior khớp default
+    // của chính `PracticeSession.Seniority`/`PracticeService.DefaultSeniority` — không bịa mốc mới.
+    private const RoadmapLevel DefaultRoadmapLevel = RoadmapLevel.Junior;
+
     // BC17 — deserialize final_report khớp cách RoadmapReportService serialize (Web defaults).
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
@@ -888,27 +905,6 @@ public class RoadmapService : IRoadmapService
         throw new InvalidOperationException(
             $"status chỉ nhận {string.Join(" / ", Enum.GetNames<RoadmapStatus>())} " +
             $"(đang gửi: '{requested}').");
-    }
-
-    /// <summary>
-    /// Trình độ NGHỀ NGHIỆP HIỆN TẠI candidate tự khai ở wizard. Tập đóng, case-sensitive — mẫu
-    /// <see cref="ValidateMode"/>: chỉ <c>null</c> (client KHÔNG gửi field) mới giữ hành vi cũ
-    /// (suy từ <c>cv_analyses</c>, xem <c>CreateAsync</c>); chuỗi rỗng hoặc giá trị lạ là GIÁ TRỊ
-    /// SAI và bị từ chối 400, KHÔNG âm thầm rơi về mặc định (BK36).
-    /// </summary>
-    private static string? ValidateCurrentLevel(string? requested)
-    {
-        if (requested is null) return null;
-        // Enum.TryParse mặc định CHẤP NHẬN cả chuỗi số ("1" → Junior) lẫn sai hoa/thường — cả hai
-        // đều là đầu vào ta không hứa hỗ trợ, nên so khớp tường minh thay vì dùng nó (mẫu ValidateMode).
-        var level = requested.Trim();
-        if (level == nameof(RoadmapLevel.Fresher)) return level;
-        if (level == nameof(RoadmapLevel.Junior)) return level;
-        if (level == nameof(RoadmapLevel.Middle)) return level;
-        if (level == nameof(RoadmapLevel.Senior)) return level;
-        throw new InvalidOperationException(
-            $"currentLevel chỉ nhận {nameof(RoadmapLevel.Fresher)} / {nameof(RoadmapLevel.Junior)} / " +
-            $"{nameof(RoadmapLevel.Middle)} / {nameof(RoadmapLevel.Senior)} (đang gửi: '{requested}').");
     }
 
     private static readonly IReadOnlyDictionary<Guid, int> EmptyAttemptCounts =

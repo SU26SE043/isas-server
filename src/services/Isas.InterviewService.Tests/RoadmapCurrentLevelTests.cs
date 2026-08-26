@@ -14,10 +14,20 @@ using Moq;
 namespace Isas.InterviewService.Tests;
 
 /// <summary>
-/// Wizard tạo roadmap cho candidate KHAI trình độ hiện tại ở bước riêng, thay vì chỉ suy ngầm từ
-/// <c>cvAnalysisId</c>. Mẫu <see cref="RoadmapReinforceModeTests"/>/<see cref="RoadmapModeWireTests"/>:
-/// tập đóng, case-sensitive, chỉ <c>null</c> mới rơi về hành vi cũ (BK36 — không âm thầm nuốt giá
-/// trị lạ). Giá trị người dùng khai PHẢI THẮNG giá trị suy từ <c>cv_analyses</c>.
+/// REC1-B2 — ĐỔI TIỀN ĐỀ hoàn toàn so với bản gốc của file này (MIS1-era: "wizard cho candidate
+/// khai trình độ hiện tại ở bước riêng, giá trị đó THẮNG giá trị suy từ CV"). `ValidateCurrentLevel`
+/// + khối `currentLevelOverride` đã bị GỠ khỏi <see cref="RoadmapService.CreateAsync"/> — "trình độ
+/// hiện tại" đi xuống AI nay CHỈ còn suy từ <c>cv_analyses.CurrentLevel</c> (qua <c>CvAnalysisId</c>).
+///
+/// <para><c>req.CurrentLevel</c> (client tự khai) KHÔNG CÒN ĐƯỢC ĐỌC Ở BẤT KỲ ĐÂU — không xác thực
+/// (không còn 400 dù gửi giá trị lạ), không override CV, không tác dụng. Field vẫn tồn tại trên DTO
+/// (backward-compat cho FE cũ), nhưng gửi gì vào đó cũng như không gửi.</para>
+///
+/// <para>Bốn test dưới đây (1)(2)(4)(5) của bản gốc bị XOÁ vì đo đúng cơ chế đã gỡ (tự khai thắng
+/// CV / validate 400 giá trị lạ / validate chạy trước I/O) — không còn gì để đo. Thay bằng 3 test
+/// mới đo ĐÚNG bất biến hiện tại: tự khai bị bỏ qua HOÀN TOÀN (dù giá trị "hợp lệ" theo enum cũ hay
+/// "lạ" tuỳ tiện), và CV luôn thắng vô điều kiện. Test (3) <c>CurrentLevel_Null_GiuHanhViCu_SuyTuCvAnalysis</c>
+/// GIỮ NGUYÊN — hành vi "suy từ CV khi có" chưa từng đổi, chỉ là nó không còn cạnh tranh với ai.</para>
 /// </summary>
 public class RoadmapCurrentLevelTests
 {
@@ -88,51 +98,40 @@ public class RoadmapCurrentLevelTests
         return ca.Id;
     }
 
-    // ── (1) Giá trị hợp lệ được nhận và chuyển xuống AI ─────────────────────────────────
+    // ── (1) Tự khai — dù "hợp lệ" theo enum cũ hay lạ tuỳ tiện — KHÔNG còn đi xuống AI ───────────
+    //
+    // Gộp hai bài test cũ (CurrentLevel_HopLe_DiXuongAi + CurrentLevel_GiaTriLa_Nem400_...) thành
+    // MỘT bất biến: không còn khác biệt nào giữa "giá trị hợp lệ" và "giá trị lạ" nữa, vì cả hai
+    // đều không được đọc. Không có CvAnalysisId ⇒ captured PHẢI là null bất kể client gửi gì.
     [Theory]
     [InlineData("Fresher")]
-    [InlineData("Junior")]
-    [InlineData("Middle")]
     [InlineData("Senior")]
-    public async Task CurrentLevel_HopLe_DiXuongAi(string level)
+    [InlineData("fresher")]     // sai hoa/thường — trước đây 400, nay chỉ đơn giản bị lờ đi
+    [InlineData("Master")]      // không thuộc tập cũ
+    [InlineData("")]            // chuỗi rỗng
+    [InlineData("1")]
+    public async Task TuKhai_KhongConDuocDoc_CapturedNullKhiKhongCoCv(string requested)
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var sid = SeedScoredSession(t, user);   // MIS1-B6 — Guard 1/2/3
-        string? captured = null;
+        string? captured = "chưa gán";
         var ctrl = Controller(t, GenMock(v => captured = v).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid], CurrentLevel: level), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null,
+                SessionIds: [sid], CurrentLevel: requested),
+            default);
 
+        // Roadmap VẪN tạo được (201) — garbage currentLevel không còn là lỗi đầu vào.
         Assert.IsType<CreatedResult>(result);
-        Assert.Equal(level, captured);
+        Assert.Null(captured);
     }
 
-    // ── (2) Giá trị lạ → 400, kèm giá trị đang gửi ───────────────────────────────────────
-    [Theory]
-    [InlineData("fresher")]      // sai hoa/thường — mẫu ValidateMode: KHÔNG chấp nhận
-    [InlineData("Master")]       // không thuộc tập
-    [InlineData("")]             // chuỗi rỗng — GIÁ TRỊ SAI, khác null
-    [InlineData("1")]            // Enum.TryParse sẽ chấp nhận — so khớp tường minh thì không
-    public async Task CurrentLevel_GiaTriLa_Nem400_KemGiaTriDangGui(string invalid)
-    {
-        using var t = new TestDb();
-        var user = Guid.NewGuid();
-        var gen = GenMock();
-        var ctrl = Controller(t, gen.Object, user);
-
-        var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, CurrentLevel: invalid), default);
-
-        var bad = Assert.IsType<BadRequestObjectResult>(result);
-        var message = bad.Value!.ToString()!;
-        Assert.Contains(invalid, message);
-        Assert.Contains("Fresher", message);
-        Assert.Contains("Senior", message);
-    }
-
-    // ── (3) null → giữ hành vi cũ: suy từ cv_analyses khi có CvAnalysisId ────────────────
+    // ── (2) null → giữ hành vi cũ: suy từ cv_analyses khi có CvAnalysisId ────────────────
+    //
+    // GIỮ NGUYÊN từ bản gốc — hành vi "suy từ CV khi có, null khi không" KHÔNG đổi; chỉ là nó
+    // không còn phải cạnh tranh ưu tiên với giá trị tự khai của người dùng nữa.
     [Fact]
     public async Task CurrentLevel_Null_GiuHanhViCu_SuyTuCvAnalysis()
     {
@@ -150,13 +149,16 @@ public class RoadmapCurrentLevelTests
         Assert.Equal("Middle", captured);
     }
 
-    // ── (4) Người dùng gửi THẮNG giá trị suy từ cv_analyses ──────────────────────────────
+    // ── (3) CV LUÔN THẮNG — vô điều kiện, kể cả khi client gửi kèm currentLevel khác ─────────────
+    //
+    // Đảo NGƯỢC bài test cũ "người dùng gửi thắng CV": trước đây "Fresher" (client) phải thắng
+    // "Senior" (CV); nay CV luôn thắng vì client không còn đường nào can thiệp. Hai giá trị KHÁC
+    // NHAU có chủ đích — nếu cơ chế cũ hồi sinh (bug regression), test này bắt được ngay.
     [Fact]
-    public async Task CurrentLevel_NguoiDungGui_ThangGiaTriTuCvAnalysis()
+    public async Task CvAnalysis_LuonThang_KeCaKhiClientGuiKemCurrentLevelKhac()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        // Hai giá trị KHÁC NHAU có chủ đích — nếu ưu tiên bị đảo, test này bắt được ngay.
         var caId = SeedCvAnalysis(t, user, currentLevel: "Senior");
         var sid = SeedScoredSession(t, user);   // MIS1-B6 — Guard 1/2/3
         string? captured = null;
@@ -169,22 +171,17 @@ public class RoadmapCurrentLevelTests
             default);
 
         Assert.IsType<CreatedResult>(result);
-        Assert.Equal("Fresher", captured);   // của NGƯỜI DÙNG, không phải "Senior" từ CV
+        Assert.Equal("Senior", captured);   // của CV — KHÔNG PHẢI "Fresher" client gửi
     }
 
-    // ── (4b) 🔴 KHÔNG chọn CV nào — currentLevel vẫn phải chảy tới AI ────────────────────
-    //
-    // Bổ sung sau khi giao brief: nếu merge "người dùng thắng CV" bị đặt NGƯỢC — vào TRONG khối
-    // `if (req.CvAnalysisId is not null)` thay vì chạy vô điều kiện — thì candidate KHÔNG chọn
-    // bản phân tích CV nào (bỏ qua bước CV, nhánh hợp lệ đã chốt trong wizard) sẽ có lựa chọn ở
-    // bước "Trình độ hiện tại" bị RƠI IM LẶNG: không lỗi gì, chỉ là giá trị không bao giờ tới AI.
+    // ── (4) Không chọn CV nào — tự khai vẫn KHÔNG đi xuống AI (không còn lối vòng nào) ───────────
     [Fact]
-    public async Task CurrentLevel_KhongChonCvAnalysis_VanDiXuongAi()
+    public async Task KhongChonCv_TuKhaiVanKhongDiXuongAi_CapturedNull()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var sid = SeedScoredSession(t, user);   // MIS1-B6 — Guard 1/2/3
-        string? captured = null;
+        string? captured = "chưa gán";
         var ctrl = Controller(t, GenMock(v => captured = v).Object, user);
 
         var result = await ctrl.Create(
@@ -194,29 +191,6 @@ public class RoadmapCurrentLevelTests
             default);
 
         Assert.IsType<CreatedResult>(result);
-        Assert.Equal("Middle", captured);
-    }
-
-    // ── (5) Validate chạy TRƯỚC mọi I/O — không đốt lượt AI khi giá trị lạ ───────────────
-    [Fact]
-    public async Task CurrentLevel_GiaTriLa_KhongGoiAi_KhongLuuRoadmap()
-    {
-        using var t = new TestDb();
-        var user = Guid.NewGuid();
-        var gen = GenMock();
-        var ctrl = Controller(t, gen.Object, user);
-
-        var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, CurrentLevel: "Master"),
-            default);
-
-        Assert.IsType<BadRequestObjectResult>(result);
-        gen.Verify(x => x.GenerateAsync(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-            It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
-        Assert.False(await t.Db.Roadmaps.AsNoTracking().AnyAsync());
+        Assert.Null(captured);
     }
 }

@@ -73,17 +73,28 @@ public class RoadmapNameBe6Tests
     // (1) Tên mặc định do server sinh · tên người dùng không bị ghi đè
     // ══════════════════════════════════════════════════════════════════════════
 
+    // REC1-B2 — ĐỔI TIỀN ĐỀ: mức trong tên mặc định trước đây là `req.Level` (client tự khai, nay
+    // bị bỏ qua); nay là mức SUY từ buổi nguồn (mục A, RoadmapService.CreateAsync). `SeedScoredSession`
+    // dựng buổi qua `TestSeed.ScoredSessionWithAnswers` với `Seniority` mặc định "Junior" (không
+    // set tường minh) — muốn khoá đúng "tên mặc định mang mức Senior" thì phải seed buổi Seniority
+    // = "Senior" THẬT, không phải gửi `RoadmapLevel.Senior` trong request (giá trị đó nay bị bỏ qua).
     [Fact]
     public async Task KhongTuDatTen_ServerSinhTenCoNgheVaCapDo()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
+        // REC1-B2 — set mức THẬT của buổi nguồn (mặc định TestSeed là "Junior") để tên mặc định
+        // phản ánh đúng cơ chế mới: mức SUY từ buổi, không phải mức client GỬI.
+        t.Db.PracticeSessions.Single(s => s.Id == sid).Seniority = nameof(RoadmapLevel.Senior);
+        t.Db.SaveChanges();
 
         var res = await Service(t).CreateAsync(user,
-            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid]));
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Fresher, null, SessionIds: [sid]));
 
         Assert.Contains("Business Analyst", res.Name);
+        // "Senior" tới từ Seniority của BUỔI vừa set ở trên — KHÔNG PHẢI `RoadmapLevel.Fresher`
+        // cố tình gửi trong request (client gửi gì bây giờ cũng bị bỏ qua).
         Assert.Contains("Senior", res.Name);
         Assert.NotEqual("Roadmap", res.Name);   // đúng chuỗi dự phòng cũ của frontend
     }

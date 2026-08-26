@@ -100,14 +100,18 @@ public class RoadmapLessonService : IRoadmapLessonService
         var mistakeRefs = ResolveLessonMistakes(lesson, lesson.Milestone);
         var mistakesForLesson = await LoadLessonMistakesAsync(roadmap.Id, mistakeRefs, ct);
 
+        // REC1-B2 mục B — mức bài giảng bám ĐÚNG các lỗi bài này gom, KHÔNG phải mức chung của cả
+        // lộ trình (roadmap.Level). Xem ResolveLessonSeniorityAsync.
+        var lessonSeniority = await ResolveLessonSeniorityAsync(lesson, lesson.Milestone, roadmap, ct);
+
         // Chế độ ôn tập phải theo lộ trình xuống TỚI bài giảng — đây mới là chỗ người học đọc nội
         // dung. Chỉ đổi cấu trúc roadmap mà để lý thuyết y như cũ thì tính năng chỉ đổi được tiêu
         // đề bài, còn thứ họ thật sự học vẫn là bài của chế độ tiến-lên.
         var generated = roadmap.Language == "vi"
-            ? await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
+            ? await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), lessonSeniority.ToString(),
                 lesson.Title, focus, weaknesses, lesson.GroundingRefs, mode: roadmap.Mode, ct: ct,
                 mistakes: mistakesForLesson.Count > 0 ? mistakesForLesson : null)
-            : await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), roadmap.Level.ToString(),
+            : await _generator.GenerateLessonTheoryAsync(roadmap.JobCategory.ToString(), lessonSeniority.ToString(),
                 lesson.Title, focus, weaknesses, lesson.GroundingRefs, ct, roadmap.Language,
                 mode: roadmap.Mode, mistakes: mistakesForLesson.Count > 0 ? mistakesForLesson : null);
         var theory = generated.TheoryMarkdown;
@@ -272,13 +276,21 @@ public class RoadmapLessonService : IRoadmapLessonService
         // sessionId cấp trước để link lesson SAU khi session tồn tại (thoả FK roadmap_lessons.session_id).
         // Reserve/gen lỗi → CreateLessonSessionAsync ném (402/gen-fail) TRƯỚC khi link ⇒ lesson vẫn Theory.
         var sessionId = Guid.NewGuid();
-        // Seniority lấy từ ĐÚNG mức của roadmap, không để rơi vào mặc định "Junior".
+        // REC1-B2 mục B — Seniority lấy từ mức của CHÍNH CÁC LỖI bài này bám (ResolveLessonSeniorityAsync),
+        // KHÔNG PHẢI mức chung `roadmap.Level` của cả lộ trình nữa.
+        //
+        // Vì sao cần dù roadmap đã có mức riêng (mục A, max các buổi nguồn): mức lộ trình chỉ né
+        // được MỘT chiều sai. Lộ trình rút từ 1 buổi Junior + 1 buổi Senior thì bài bám lỗi Junior
+        // bị ôn ở tầm Senior ⇒ câu hỏi KHÓ HƠN chỗ đã sai ⇒ phép đo cải thiện (BC15) cho ÂM TÍNH
+        // GIẢ. Bài không bám lỗi nào (hoặc lỗi đã trích không có snapshot mức — hàng cũ) ⇒ lùi về
+        // `roadmap.Level`.
         //
         // `RoadmapLevel` và tập seniority của session trùng khít 4 giá trị (Fresher/Junior/Middle/
         // Senior) nên `.ToString()` là ánh xạ đúng, không phải xấp xỉ. Trước đây call site này dựng
         // request POSITIONAL 3 tham số ⇒ nhận default ⇒ MỌI buổi luyện theo lộ trình đóng dấu "Junior"
         // vĩnh viễn, kể cả roadmap Senior. Không vô hại: seniority đi vào `/decide-next` (câu đào sâu
         // hỏi sai tầm) và lộ ra `PracticeSessionResponse.Seniority` cho FE.
+        var lessonSeniority = await ResolveLessonSeniorityAsync(lesson, lesson.Milestone, roadmap, ct);
         //
         // Language: CÙNG LỚP LỖI vừa sửa ở trên, và chưa đổ máu chỉ vì tình cờ — cả 8 buổi luyện
         // hiện có trên production đều bắt nguồn từ roadmap tiếng Việt, nhưng production ĐÃ CÓ 1
@@ -328,7 +340,7 @@ public class RoadmapLessonService : IRoadmapLessonService
         // (6 buổi có cv_id, và phải có `cv_analyses` cho đúng CV đó).
         var req = new CreatePracticeSessionRequest(
             CvId: null, JdId: null, roadmap.JobCategory,
-            Language: roadmap.Language, Seniority: roadmap.Level.ToString(),
+            Language: roadmap.Language, Seniority: lessonSeniority.ToString(),
             QuestionCount: lessonQuestionCount,
             AdaptiveEnabled: _roadmap.LessonAdaptiveEnabled);
 
@@ -496,6 +508,42 @@ public class RoadmapLessonService : IRoadmapLessonService
         if (lesson.MistakeRefs is { Count: > 0 } lessonRefs) return lessonRefs;
         if (milestone.MistakeRefs is { Count: > 0 } milestoneRefs) return milestoneRefs;
         return [];
+    }
+
+    /// <summary>
+    /// REC1-B2 mục B — mức NGHỀ NGHIỆP mà bài học này nên được ôn ở, suy từ CHÍNH các lỗi bài đó
+    /// bám (<see cref="RoadmapMistake.Seniority"/> — snapshot lúc trích ở <see cref="RoadmapMistakeLoader"/>),
+    /// KHÔNG PHẢI <c>roadmap.Level</c> (mức chung cả lộ trình, mục A). Dùng CHUNG tập ref với
+    /// <see cref="ResolveLessonMistakes"/> — không tự khớp lại theo cách khác.
+    ///
+    /// Vì sao cần dù roadmap đã có mức riêng: mức lộ trình (max các buổi NGUỒN) chỉ né được MỘT
+    /// chiều sai. Lộ trình rút từ 1 buổi Junior + 1 buổi Senior thì bài bám lỗi Junior bị ôn ở tầm
+    /// Senior ⇒ câu hỏi KHÓ HƠN chỗ đã sai ⇒ phép đo cải thiện (BC15) cho ÂM TÍNH GIẢ. Lấy MIN thì
+    /// lật ngược thành DƯƠNG TÍNH GIẢ — nên vẫn lấy CAO NHẤT, chỉ thu hẹp phạm vi về ĐÚNG các lỗi
+    /// bài này bám thay vì mọi buổi nguồn của cả lộ trình.
+    ///
+    /// Truy TOÀN BỘ <paramref name="refs"/> (không giới hạn theo trần AI-payload 3/4 lỗi của
+    /// <see cref="LoadLessonMistakesAsync"/>/query ở <c>BeginSessionAsync</c>) — số lượng lỗi mỗi
+    /// lộ trình đã bị <see cref="RoadmapMistakeLoader"/> ép trần 12 nên đây LUÔN là 1 truy vấn nhẹ.
+    ///
+    /// Không bám lỗi nào (refs rỗng) HOẶC mọi lỗi đã trích đều <c>Seniority = null</c> (hàng tạo
+    /// TRƯỚC migration này) ⇒ lùi về <c>roadmap.Level</c>.
+    /// </summary>
+    private async Task<RoadmapLevel> ResolveLessonSeniorityAsync(
+        RoadmapLesson lesson, RoadmapMilestone milestone, Roadmap roadmap, CancellationToken ct)
+    {
+        var refs = ResolveLessonMistakes(lesson, milestone);
+        if (refs.Count == 0) return roadmap.Level;
+
+        var seniorities = await _db.RoadmapMistakes.AsNoTracking()
+            .Where(m => m.RoadmapId == roadmap.Id && refs.Contains(m.MistakeKey) && m.Seniority != null)
+            .Select(m => m.Seniority!)
+            .ToListAsync(ct);
+        if (seniorities.Count == 0) return roadmap.Level;
+
+        // Cùng lập luận Enum.Parse an toàn của RoadmapService.CreateAsync — 4 tên trùng khít CHECK
+        // `ck_roadmap_mistakes_seniority`.
+        return seniorities.Select(Enum.Parse<RoadmapLevel>).Max();
     }
 
     /// <param name="mistakes">MIS1-B7 — hàng <see cref="RoadmapMistake"/> ĐÃ NẠP cho đúng bài này

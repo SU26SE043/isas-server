@@ -4,7 +4,7 @@ using Isas.InterviewService.Enums;
 
 // BC12 (D20) — DTO roadmap ôn tập cá nhân hoá B2C.
 
-// POST /roadmaps — cvId optional (parse sẵn ở Files). jobCategory/level bắt buộc (enum sai → 400).
+// POST /roadmaps — cvId optional (parse sẵn ở Files). jobCategory bắt buộc (enum sai → 400).
 // BC17 — candidate CHỌN nguồn nuôi roadmap thay vì tự gom MỌI buổi Scored:
 //   • SessionIds     — buổi luyện đã Scored làm baseline; rỗng/null → roadmap CHUẨN theo level (không gom).
 //   • CvAnalysisId   — 1 phân tích CV đã có (BC7) → CHỈ ngữ cảnh prompt (không gọi lại /analyze-cv, KHÔNG trừ credit).
@@ -13,7 +13,14 @@ using Isas.InterviewService.Enums;
 // CvAnalysis + prior-roadmap + focus KHÔNG vào baseline — chỉ là bối cảnh cho AI.
 public record CreateRoadmapRequest(
     JobCategory JobCategory,
-    RoadmapLevel Level,
+    // REC1-B2 — NULLABLE, GIỮ NGUYÊN vị trí 2, KHÔNG thêm default: một tham số positional không
+    // default bị ASP.NET coi là BẮT BUỘC — client bỏ gửi `level` sẽ ăn 400 (repo đã dính đúng lỗi
+    // này, N7). Service KHÔNG CÒN ĐỌC giá trị này — mức lộ trình nay SUY từ chính buổi nguồn (mức
+    // CAO NHẤT trong các buổi đã chọn), không phải lời tự khai chưa ai hiệu chuẩn (đo trên
+    // production: chỉ 4/61 buổi đạt ngưỡng cấp của chính mình). Field vẫn khai để 59+ call site
+    // positional cũ (gửi `RoadmapLevel` thật) không vỡ biên dịch — `RoadmapLevel` → `RoadmapLevel?`
+    // là chuyển đổi ngầm định hợp lệ.
+    RoadmapLevel? Level,
     Guid? CvId,
     string? Name = null,                      // BE-6 — tên tự đặt; vắng → server sinh mặc định
     IReadOnlyList<Guid>? SessionIds = null,   // BC17 — buổi luyện Scored candidate chọn làm baseline
@@ -26,11 +33,10 @@ public record CreateRoadmapRequest(
     // (ôn lại: giữ nguyên trình độ, bám điểm yếu đo được). null → "LevelUp"; chuỗi rỗng/giá trị
     // lạ → 400 (BK36 — KHÔNG âm thầm rơi về mặc định). Xem RoadmapService.ValidateMode.
     string? Mode = null,
-    // Trình độ NGHỀ NGHIỆP HIỆN TẠI candidate tự khai ở wizard — "Fresher"/"Junior"/"Middle"/
-    // "Senior". null → suy từ cv_analyses (hành vi cũ, xem CvAnalysisId); có gửi → THẮNG giá trị
-    // suy từ CV (người dùng biết trình độ của mình rõ hơn một suy đoán từ CV, và ~2/5 bản phân
-    // tích không suy ra được gì — xem Entities/CvAnalysis.cs). Chuỗi rỗng/giá trị lạ → 400 (BK36 —
-    // KHÔNG âm thầm rơi về mặc định). Xem RoadmapService.ValidateCurrentLevel.
+    // REC1-B2 — KHÔNG CÒN ĐƯỢC ĐỌC (ValidateCurrentLevel + currentLevelOverride đã gỡ khỏi
+    // RoadmapService.CreateAsync). "Trình độ hiện tại" đi xuống AI CHỈ còn suy từ `cv_analyses`
+    // qua `CvAnalysisId` — client gửi gì vào field này cũng bị bỏ qua, không 400, không tác dụng.
+    // Giữ field lại (không xoá) để call site cũ dùng named argument không vỡ biên dịch.
     string? CurrentLevel = null
 );
 

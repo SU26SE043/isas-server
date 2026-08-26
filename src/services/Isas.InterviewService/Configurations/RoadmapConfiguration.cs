@@ -366,6 +366,13 @@ public class RoadmapMistakeConfiguration : IEntityTypeConfiguration<RoadmapMista
         e.Property(x => x.Reasoning).HasColumnType("text").IsRequired();
         e.Property(x => x.SampleAnswer).HasColumnType("text");
 
+        // REC1-B2 mục B — snapshot trình độ lúc trích, NULLABLE (hàng cũ không có, xem entity).
+        // CHECK cùng tập giá trị với `ck_practice_sessions_seniority`/`Seniority` enum — NULL vẫn
+        // qua CHECK bình thường (Postgres: NULL trong IN(...) không vi phạm) nên additive an toàn.
+        e.Property(x => x.Seniority).HasMaxLength(16);
+        e.HasCheckConstraint("ck_roadmap_mistakes_seniority",
+            "seniority IS NULL OR seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
+
         // numeric(5,2) — nguồn là phép chia; "lưu đủ" (làm tròn lúc GỬI ở B5, không phải lúc LƯU).
         e.Property(x => x.ScorePct).HasColumnType("numeric(5,2)").IsRequired();
         e.Property(x => x.ThresholdPct).HasColumnType("numeric(5,2)").IsRequired();
