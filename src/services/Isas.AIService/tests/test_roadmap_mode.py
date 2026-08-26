@@ -64,7 +64,17 @@ _GOLDEN_ARGS = dict(
 #       nói "độ khó tương ứng trình độ {level}" — frontend nay gửi TRÌNH ĐỘ HIỆN TẠI vào `level`,
 #       câu cũ sẽ ra lệnh sai nghĩa. Xem `app.roadmap_mode.roadmap_headline`.
 # ⚠ Hệ quả phải biết: lộ trình sinh SAU mốc này KHÔNG so sánh được với lộ trình sinh trước đó.
-_GOLDEN_SHA = "cfbaf482cf5c2c8cceab9068622f5543d00a93e4bac144e61e902b9ca70dcc82"
+# 📌 ĐỔI HASH NGÀY 2026-08-27 (REC1-B5) — CÓ CHỦ ĐÍCH, đúng ngoại lệ mà cảnh báo trên cho phép.
+# Hai thay đổi chạm CẢ HAI dạng roadmap (kể cả nhánh không có `mistakes` như `_GOLDEN_ARGS` ở
+# đây — nên KHÔNG phải chỉ là chuyện "khi có mistakes"): (1) `scope_instruction` đổi từ ép-buộc
+# "Tạo ĐÚNG N milestone... KHÔNG tạo nhiều hơn hay ít hơn" sang TRẦN "Tối đa N milestone... ít
+# hơn trần là HỢP LỆ..." (gỡ mâu thuẫn với luật 3 GOM CHỦ ĐỀ TỪ LỖI — cụm thật ít hơn N từng bị
+# model xé thành nhiều milestone giả cho đủ số); (2) hợp đồng JSON thêm 2 khoá cấp gốc LUÔN có
+# mặt `milestoneCount`/`milestoneCountReason` (model tự khai số cụm THẬT trước khi tạo mảng,
+# GeminiProvider.generate_roadmap đối chiếu với len(milestones) — lệch chỉ log, không raise/
+# retry). `_GOLDEN_ARGS` KHÔNG truyền `mistakes` nên LUẬT SỐ 6 (thứ tự chặng theo FOCUS/
+# weakSessions, chỉ render `if mistake_block:`) KHÔNG chạm nhánh này.
+_GOLDEN_SHA = "e9f85e04e8f9f33863ff85b7437193cc26691dbaec477a5f94fb2f6197647989"
 
 
 def test_golden_prompt_roadmap_levelup_khong_doi_mot_byte():

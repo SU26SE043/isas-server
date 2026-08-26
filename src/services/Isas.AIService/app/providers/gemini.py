@@ -1938,10 +1938,18 @@ class GeminiProvider(QuestionProvider):
         (D7/D15), nên biến một milestone thiếu nhãn thành cả roadmap lỗi (mất luôn các milestone
         khác đã đúng) là đắt hơn nhiều so với việc milestone đó tạm thời không bám baseline.
 
-        BE-4 — ``scope`` (Quick/Standard, xem ``app.roadmap_quality``) thay "số lượng hợp lý (3-5)"
-        mơ hồ cũ bằng chỉ thị CHÍNH XÁC trong prompt; model lờ chỉ thị vẫn bị cắt CỨNG TỪ ĐUÔI sau
-        khi trả lời (``truncate_to_scope`` — milestone/lesson có thứ tự Ý NGHĨA, nền tảng trước nên
+        BE-4/REC1-B5 — ``scope`` (Quick/Standard, xem ``app.roadmap_quality``) là TRẦN, không phải
+        số ép buộc: chỉ thị nói rõ ít milestone hơn trần là HỢP LỆ, số milestone THẬT phải bám số
+        CỤM CHỦ ĐỀ rút ra được từ lỗi — cấm xé cụm/độn cho đủ số (bản chỉ thị "Tạo ĐÚNG N..." cũ tự
+        mâu thuẫn với luật gom-chủ-đề khi cụm thật ít hơn N, khiến model xé một cụm thành nhiều
+        milestone giả — đo được: 8 lỗi ra 12 bài). Model lờ chỉ thị vẫn bị cắt CỨNG TỪ ĐUÔI sau khi
+        trả lời (``truncate_to_scope`` — milestone/lesson có thứ tự Ý NGHĨA, nền tảng trước nên
         phải là phần sống sót). KHÔNG raise khi vượt trần — cùng lý do "không trừ credit" ở trên.
+
+        REC1-B5 — model tự khai ``milestoneCount``/``milestoneCountReason`` (cấp gốc JSON, LUÔN có
+        mặt) TRƯỚC khi tạo mảng ``milestones`` — lệch với ``len(milestones)`` THẬT chỉ ``log.
+        warning`` rồi DÙNG ĐỘ DÀI MẢNG THẬT, KHÔNG raise/retry (mảng mới là nguồn sự thật;
+        ``milestoneCountReason`` KHÔNG được lưu xuống DB ở đợt này — tính năng hiển thị, để sau).
 
         BE-5 — ``evidence`` KHÔNG còn dùng trong hàm này kể từ MIS1-B2 (xem ``mistakes`` ngay
         dưới) — vẫn nhận tham số để không vỡ chữ ký caller, nhưng không render vào prompt.
@@ -1956,6 +1964,13 @@ class GeminiProvider(QuestionProvider):
         không — milestone không rút ra từ lỗi nào là milestone không nên tồn tại). Drop sạch
         không còn milestone nào → ``ValueError`` với prefix cố định ``ROADMAP_ALL_MILESTONES_
         DROPPED`` để .NET/test phân biệt được với lỗi AI thường.
+
+        REC1-B5 — luật "mỗi lỗi CHỈ nên thuộc một milestone" nay BẮT BUỘC: id ĐÃ CẤP mà KHÔNG
+        milestone nào gom (khác ca rỗng-sau-lọc ở trên — đây là id THẬT, có thật, chưa từng được
+        gán ở đâu) là khiếm khuyết THỨ BA, dùng CHUNG thang retry (không dựng thang riêng); hết
+        lượt vẫn thiếu → ``log.error`` rồi ĐI TIẾP với các milestone đã có, KHÔNG raise (mất một
+        vài lỗi chưa được gán không đáng làm hỏng cả roadmap). Id bị gán TRÙNG (≥2 milestone) chỉ
+        ``log.warning`` — dạy hai lần thì thừa, không sai, không tính là khiếm khuyết retry.
 
         ``mistakes`` rỗng/None → không lọc gì, không retry vì lý do này, không raise — hành vi cũ.
 
@@ -2019,6 +2034,12 @@ class GeminiProvider(QuestionProvider):
                 response_schema={
                     "type": "object",
                     "properties": {
+                        # REC1-B5 — khai TRƯỚC "milestones" trong properties, khớp thứ tự chỉ thị
+                        # prompt ("khai milestoneCount... TRƯỚC, rồi mới tạo..."). LUÔN required
+                        # (không điều kiện theo known_ids như mistakeIds) — mọi roadmap đều cần
+                        # model tự cam kết số cụm THẬT trước khi sinh mảng.
+                        "milestoneCount": {"type": "integer"},
+                        "milestoneCountReason": {"type": "string"},
                         "milestones": {
                             "type": "array",
                             "items": {
@@ -2028,7 +2049,7 @@ class GeminiProvider(QuestionProvider):
                             },
                         }
                     },
-                    "required": ["milestones"],
+                    "required": ["milestoneCount", "milestoneCountReason", "milestones"],
                 },
             ),
         )
@@ -2080,6 +2101,21 @@ class GeminiProvider(QuestionProvider):
         if not milestones:
             raise ValueError("LLM trả về roadmap rỗng sau khi lọc.")
 
+        # REC1-B5 — milestoneCount là con số model TỰ KHAI (build_roadmap_prompt bắt khai TRƯỚC
+        # khi tạo mảng milestones). Lệch với len(milestones) THẬT (model nói một đằng, làm một
+        # nẻo) KHÔNG được biến thành 502/retry — tạo roadmap KHÔNG trừ credit, và mảng milestones
+        # (không phải con số model tự xưng) mới là nguồn sự thật vận hành mọi bước sau (truncate_
+        # to_scope/lọc/retry). Chỉ log để ĐO ĐƯỢC tỉ lệ model tự mâu thuẫn — đặt TRƯỚC truncate_to_
+        # scope vì đây là đối chiếu "model nói gì" với "model làm gì", chưa liên quan gì đến trần
+        # scope (truncate_to_scope cắt VÌ VƯỢT TRẦN, không phải vì model khai sai số).
+        claimed_count = data.get("milestoneCount")
+        if isinstance(claimed_count, int) and not isinstance(claimed_count, bool) \
+                and claimed_count != len(milestones):
+            logger.warning(
+                "Roadmap: model khai milestoneCount=%d nhưng mảng milestones thực tế có %d phần "
+                "tử (lý do khai: %s) — dùng độ dài mảng thật, không sửa theo con số đã khai.",
+                claimed_count, len(milestones), data.get("milestoneCountReason", ""))
+
         # BE-4 — model có thể lờ chỉ thị scope trong prompt (giống ca focusCriteria bịa tên ở
         # BE-1) → cắt CỨNG sau khi trả lời, KHÔNG raise (xem docstring). Đặt TRƯỚC lọc BE-1 để
         # lọc/retry chỉ tính trên tập milestone THẬT SỰ còn giữ lại, không lãng phí lượt retry cho
@@ -2099,9 +2135,10 @@ class GeminiProvider(QuestionProvider):
         # đã cấp (cả hai chống bịa by-construction). KHÔNG lọc gì với tập tương ứng rỗng (caller
         # không truyền criteria/mistakes) → giữ nguyên hành vi cũ cho từng loại độc lập.
         #
-        # ⚠ CẢ HAI chạy TRƯỚC khi quyết định retry, và dùng CHUNG một thang retry (tối đa 1 lượt
-        # viết lại) — dựng thang thứ hai riêng cho mistakes sẽ thành 4 lượt Gemini cho một roadmap
-        # khi caller gửi cả criteria lẫn mistakes cùng lúc.
+        # ⚠ CẢ BA (empty_criteria_titles/empty_mistake_titles/missing_mistake_ids REC1-B5 bên
+        # dưới) chạy TRƯỚC khi quyết định retry, và dùng CHUNG một thang retry (tối đa 1 lượt viết
+        # lại) — dựng thang thứ hai riêng cho BẤT KỲ loại nào trong ba sẽ thành nhiều lượt Gemini
+        # cho một roadmap khi caller gửi cả criteria lẫn mistakes cùng lúc.
         empty_criteria_titles: list[str] = []
         if known_names:
             milestones, empty_criteria_titles = filter_milestone_criteria(milestones, known_names)
@@ -2119,9 +2156,38 @@ class GeminiProvider(QuestionProvider):
                     "Roadmap: %d milestone không gom được lỗi nào sau khi lọc theo id đã cấp: %s",
                     len(empty_mistake_titles), "; ".join(empty_mistake_titles))
 
-        if (empty_criteria_titles or empty_mistake_titles) and _attempt < 2:
-            # SC1c — ĐÚNG MỘT lượt viết lại, gộp feedback của CẢ HAI loại khiếm khuyết nếu cả hai
-            # cùng xảy ra (không phải hai lượt riêng).
+        # REC1-B5 — luật 4 (mỗi lỗi CHỈ thuộc một milestone) nay BẮT BUỘC: MỌI id đã cấp phải được
+        # gán vào ĐÚNG một milestone. Union tất cả mistakeIds CÒN GIỮ (đã qua filter_milestone_
+        # mistakes ở trên nên chỉ chứa id hợp lệ, không lẫn id bịa) — thiếu id nào so với known_ids
+        # nghĩa là KHÔNG milestone nào gom được lỗi đó (khác empty_mistake_titles — đó là milestone
+        # gom TOÀN id bịa nên rỗng SAU LỌC; đây là id THẬT chưa từng được gán ở đâu cả). Đây MỚI là
+        # thứ khiến milestoneCount trung thực: model không thể đạt số bằng cách lặng lẽ bỏ bớt lỗi.
+        # TRÙNG id (cùng id ở ≥2 milestone) là dạy hai lần — thừa nhưng không sai, CHỈ log, KHÔNG
+        # tính là khiếm khuyết retry (khác THIẾU).
+        missing_mistake_ids: list[str] = []
+        if known_ids:
+            assigned_ids: list[str] = []
+            for m in milestones:
+                assigned_ids.extend(m.get("mistakeIds") or [])
+            missing_mistake_ids = [i for i in known_ids if i not in assigned_ids]
+
+            seen_ids: set[str] = set()
+            duplicated_ids: list[str] = []
+            for i in assigned_ids:
+                if i in seen_ids and i not in duplicated_ids:
+                    duplicated_ids.append(i)
+                seen_ids.add(i)
+            if duplicated_ids:
+                logger.warning(
+                    "Roadmap: %d mistakeId bị gán vào nhiều hơn một milestone (dạy hai lần thì "
+                    "thừa, không sai, không tính là khiếm khuyết): %s",
+                    len(duplicated_ids), ", ".join(duplicated_ids))
+
+        if (empty_criteria_titles or empty_mistake_titles or missing_mistake_ids) \
+                and _attempt < 2:
+            # SC1c/REC1-B5 — ĐÚNG MỘT lượt viết lại, gộp feedback của CẢ BA loại khiếm khuyết nếu
+            # xảy ra cùng lúc (không phải nhiều lượt riêng — comment ngay trên `empty_criteria_
+            # titles` cảnh báo thẳng việc dựng thang thứ hai sẽ thành nhiều lượt Gemini/roadmap).
             feedback_parts: list[str] = []
             if empty_criteria_titles:
                 feedback_parts.append(roadmap_message(
@@ -2130,6 +2196,9 @@ class GeminiProvider(QuestionProvider):
             if empty_mistake_titles:
                 feedback_parts.append(roadmap_message(
                     "milestone_no_mistakes", language, titles="; ".join(empty_mistake_titles)))
+            if missing_mistake_ids:
+                feedback_parts.append(roadmap_message(
+                    "milestone_missing_ids", language, ids=", ".join(missing_mistake_ids)))
             feedback = "\n".join(feedback_parts)
             return await self.generate_roadmap(
                 job_category, level, weaknesses, focus=focus,
@@ -2161,6 +2230,14 @@ class GeminiProvider(QuestionProvider):
             logger.error(
                 "Roadmap: bỏ %d milestone không gom được lỗi nào sau %d lượt: %s",
                 before - len(milestones), _attempt, "; ".join(empty_mistake_titles))
+
+        if missing_mistake_ids:
+            # REC1-B5 — KHÔNG drop gì, KHÔNG raise: đây là lỗ hổng PHỦ (id chưa được gán ở đâu cả),
+            # không phải một milestone cụ thể hỏng — log để ĐO ĐƯỢC tỉ lệ bỏ sót rồi đi tiếp với
+            # đúng những milestone model đã sinh (mẫu empty_criteria_titles ngay trên).
+            logger.error(
+                "Roadmap: %d lỗi vẫn KHÔNG được gán vào milestone nào sau %d lượt: %s",
+                len(missing_mistake_ids), _attempt, ", ".join(missing_mistake_ids))
 
         if not milestones:
             raise ValueError(

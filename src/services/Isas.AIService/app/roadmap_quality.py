@@ -47,6 +47,19 @@ _MESSAGES: dict[str, dict[str, str]] = {
              "copied VERBATIM, NEVER invent new ones. If you cannot gather any mistake for a theme, "
              "do NOT create that milestone."),
     },
+    # REC1-B5 — khác `milestone_no_mistakes` (milestone GOM SAI/id bịa): đây là id HOÀN TOÀN chưa
+    # xuất hiện ở BẤT KỲ milestone nào — luật 4 "mỗi lỗi CHỈ nên thuộc một milestone" siết bắt buộc
+    # thành "MỌI lỗi PHẢI được gán", nên bỏ sót một id là khiếm khuyết đáng retry, không chỉ log.
+    "milestone_missing_ids": {
+        VI: ("Các id sau có trong danh sách LỖI CỦA ỨNG VIÊN nhưng CHƯA được gán vào milestone nào "
+             "(không xuất hiện trong bất kỳ mistakeIds nào): {ids}. MỌI id trong khối LỖI CỦA ỨNG "
+             "VIÊN đã cấp PHẢI được gán vào ĐÚNG MỘT milestone — không được bỏ sót lỗi nào, kể cả "
+             "khi phải gộp nó vào một milestone đã có sẵn thay vì tạo milestone mới."),
+        EN: ("The following ids exist in the given CANDIDATE MISTAKES list but have NOT been "
+             "assigned to any milestone (they never appear in any mistakeIds): {ids}. EVERY id in "
+             "that block MUST be assigned to EXACTLY ONE milestone — none may be left out, even if "
+             "it means folding it into an existing milestone instead of creating a new one."),
+    },
 }
 
 
@@ -59,10 +72,15 @@ _MESSAGES: dict[str, dict[str, str]] = {
 #   Quick     2 milestone × 2 lesson  = 4 lesson  (xem trước nhanh)
 #   Standard  4 milestone × 3 lesson  = 12 lesson (mặc định — giữ hành vi client cũ chưa gửi scope)
 #
-# Model vẫn có thể lờ chỉ thị (giống ca focusCriteria bịa tên ở BE-1) — validate SAU khi model trả
-# lời, cắt CỨNG theo trần, KHÔNG raise: một roadmap dài hơn cam kết một chút vẫn dùng được, và tạo
-# roadmap KHÔNG trừ credit (D7/D15) nên biến việc "AI lỡ tay sinh dư" thành lỗi 502 là đắt hơn
-# nhiều so với âm thầm cắt bớt.
+# 🔴 REC1-B5 — hai con số này là TRẦN, KHÔNG phải số ép buộc (xem `scope_instruction`). Bản chỉ
+# thị cũ ("Tạo ĐÚNG N milestone... KHÔNG tạo nhiều hơn hay ít hơn") tự MÂU THUẪN với luật gom chủ
+# đề TỪ LỖI ("Không gom được lỗi nào cho một chủ đề thì ĐỪNG tạo milestone đó", `build_roadmap_
+# prompt`/GOM CHỦ ĐỀ TỪ LỖI luật 3): cụm lỗi thật ít hơn N ⇒ hai câu chỉ thị chọi nhau ⇒ model xé
+# một cụm thành nhiều milestone giả cho ĐỦ số — đo được: 8 lỗi ra 12 bài. `_SCOPES` GIỮ NGUYÊN số
+# (chỉ đổi Ý NGHĨA của con số, không đổi giá trị) — model vẫn có thể lờ chỉ thị (giống ca
+# focusCriteria bịa tên ở BE-1) → validate SAU khi model trả lời, cắt CỨNG theo trần, KHÔNG raise:
+# một roadmap dài hơn cam kết một chút vẫn dùng được, và tạo roadmap KHÔNG trừ credit (D7/D15) nên
+# biến việc "AI lỡ tay sinh dư" thành lỗi 502 là đắt hơn nhiều so với âm thầm cắt bớt.
 _SCOPES: dict[str, tuple[int, int]] = {
     "Quick": (2, 2),
     "Standard": (4, 3),
@@ -86,12 +104,20 @@ def scope_counts(scope: str) -> tuple[int, int]:
 
 
 def scope_instruction(scope: str) -> str:
-    """Câu chỉ thị TƯỜNG MINH thay cho "số lượng hợp lý (3-5)" mơ hồ cũ — nêu đúng con số để model
-    bám theo, và để bước cắt sau đó (`truncate_to_scope`) hiếm khi phải chạm tới."""
+    """Câu chỉ thị TƯỜNG MINH thay cho "số lượng hợp lý (3-5)" mơ hồ cũ — nêu đúng TRẦN để model
+    bám theo, và để bước cắt sau đó (`truncate_to_scope`) hiếm khi phải chạm tới.
+
+    🔴 REC1-B5 — đây là TRẦN, không phải số ép buộc (xem docstring `_SCOPES`). Bản cũ "Tạo ĐÚNG N
+    milestone... KHÔNG tạo nhiều hơn hay ít hơn" tự mâu thuẫn với luật gom chủ đề TỪ LỖI khi cụm
+    lỗi thật ít hơn N, khiến model xé một cụm thành nhiều milestone giả cho đủ số. Câu mới nói rõ
+    ít hơn trần là HỢP LỆ (và được khuyến khích) và CẤM tuyệt đối việc xé cụm/độn cho đủ số.
+    """
     milestones, lessons = scope_counts(scope)
     return (
-        f"Tạo ĐÚNG {milestones} milestone, MỖI milestone ĐÚNG {lessons} lesson "
-        f"(tổng {milestones * lessons} lesson). KHÔNG tạo nhiều hơn hay ít hơn."
+        f"Tối đa {milestones} milestone, mỗi milestone tối đa {lessons} lesson. Số milestone THẬT "
+        "phải bằng số CỤM CHỦ ĐỀ rút ra được từ khối LỖI CỦA ỨNG VIÊN — ít hơn trần là HỢP LỆ và "
+        "được khuyến khích. TUYỆT ĐỐI KHÔNG xé một cụm thành nhiều milestone, hay thêm milestone/"
+        "lesson chỉ để chạm trần."
     )
 
 

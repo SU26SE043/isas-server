@@ -207,6 +207,53 @@ def test_roadmap_prompt_khong_co_mistakes_thi_khong_co_chi_thi_gom_chu_de():
     assert "mistakeIds" not in prompt
 
 
+# ── REC1-B5 — luật 6: XẾP THỨ TỰ milestone theo FOCUS + weakSessions ─────────────────────────
+def test_roadmap_prompt_luat_6_co_mat_khi_co_mistakes():
+    """Khối GOM CHỦ ĐỀ TỪ LỖI trước đây có 5 luật, KHÔNG luật nào nói về thứ tự — mutation-check:
+    xoá luật 6 khỏi prompts.py làm test này ĐỎ."""
+    prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None,
+        mistakes=[{"id": "m1", "criterionName": "SQL", "reasoning": "sai"}])
+    assert "6. XẾP THỨ TỰ milestone" in prompt
+    assert "khối FOCUS" in prompt
+    assert "weakSessions cao nhất" in prompt
+
+
+def test_roadmap_prompt_khong_co_mistakes_thi_khong_co_luat_6():
+    prompt = build_roadmap_prompt(job_category="BE", level="Junior", weaknesses=None)
+    assert "XẾP THỨ TỰ milestone" not in prompt
+
+
+def test_roadmap_prompt_luat_6_dung_truoc_khoi_du_lieu_focus_khong_lo_noi_dung_focus():
+    """AI-4: luật 6 chỉ được NHẮC TÊN khối FOCUS (chỉ thị hệ thống), TUYỆT ĐỐI không lặp lại nội
+    dung focus người dùng tự gõ vào khối chỉ thị — bọc chuỗi đó vào khối hệ thống là mở bề mặt
+    prompt-injection. Verify bằng SO INDEX (mẫu file: mutation dễ lọt nhất là đặt SAU dữ liệu vẫn
+    cho ra đúng substring mà assert hời hợt sẽ tìm) + đếm số lần xuất hiện của chuỗi focus."""
+    focus_text = "MUỐN HỌC SÂU VỀ INDEXING TRƯỚC TIÊN — đây là nội dung do NGƯỜI DÙNG tự gõ"
+    prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None,
+        mistakes=[{"id": "m1", "criterionName": "SQL", "reasoning": "sai"}],
+        focus=focus_text,
+    )
+    idx_rule6 = prompt.index("6. XẾP THỨ TỰ milestone")
+    idx_focus_data = prompt.index("---FOCUS (DỮ LIỆU")
+    assert idx_rule6 < idx_focus_data  # luật 6 (chỉ thị hệ thống) đứng TRƯỚC khối DỮ LIỆU focus
+    # Nội dung focus CHỈ xuất hiện đúng MỘT lần trong toàn prompt — bên trong khối DỮ LIỆU của nó,
+    # không bị lặp lại/nhúng vào câu chỉ thị luật 6.
+    assert prompt.count(focus_text) == 1
+
+
+def test_roadmap_prompt_luat_6_nhac_ten_khoi_focus_ke_ca_khi_khong_co_focus():
+    """Luật 6 là chỉ thị TĨNH trong khối GOM CHỦ ĐỀ TỪ LỖI (luôn render khi có mistakes) — không
+    phụ thuộc việc caller CÓ thật sự truyền `focus` hay không (vế đầu vô nghĩa nếu không có focus,
+    nhưng vế weakSessions tie-break vẫn có ý nghĩa)."""
+    prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None,
+        mistakes=[{"id": "m1", "criterionName": "SQL", "reasoning": "sai"}], focus=None)
+    assert "6. XẾP THỨ TỰ milestone" in prompt
+    assert "---FOCUS (DỮ LIỆU" not in prompt  # không có khối FOCUS vì focus=None
+
+
 def test_lesson_theory_prompt_includes_evidence_block_after_weaknesses():
     prompt = build_lesson_theory_prompt(
         job_category="BE", level="Middle", lesson_title="Chuẩn hoá DB",
@@ -427,17 +474,30 @@ async def test_provider_generate_roadmap_without_criteria_keeps_names_unfiltered
     assert provider._client.aio.models.generate_content.await_count == 1
 
 
-# ── BE-4 — scope (Quick/Standard): prompt tường minh + cắt cứng sau khi model trả lời ───────
-def test_roadmap_prompt_scope_quick_states_exact_counts():
+# ── BE-4/REC1-B5 — scope (Quick/Standard) là TRẦN: prompt nêu trần + cắt cứng sau khi model trả
+# lời, KHÔNG ép model tạo ĐÚNG bằng số (bản chỉ thị "Tạo ĐÚNG N..." cũ tự mâu thuẫn với luật gom
+# chủ đề TỪ LỖI khi cụm thật ít hơn N — đo được: 8 lỗi ra 12 bài, xem roadmap_quality.py) ───────
+def test_roadmap_prompt_scope_quick_states_max_counts():
     prompt = build_roadmap_prompt(
         job_category="BE", level="Junior", weaknesses=None, scope="Quick")
-    assert "Tạo ĐÚNG 2 milestone, MỖI milestone ĐÚNG 2 lesson (tổng 4 lesson)" in prompt
+    assert "Tối đa 2 milestone, mỗi milestone tối đa 2 lesson" in prompt
+    assert "Tạo ĐÚNG" not in prompt  # câu ép-buộc cũ không còn
 
 
-def test_roadmap_prompt_scope_standard_states_exact_counts():
+def test_roadmap_prompt_scope_standard_states_max_counts():
     prompt = build_roadmap_prompt(
         job_category="BE", level="Junior", weaknesses=None, scope="Standard")
-    assert "Tạo ĐÚNG 4 milestone, MỖI milestone ĐÚNG 3 lesson (tổng 12 lesson)" in prompt
+    assert "Tối đa 4 milestone, mỗi milestone tối đa 3 lesson" in prompt
+
+
+def test_roadmap_prompt_scope_it_hon_tran_la_hop_le_va_cam_xe_cum():
+    """REC1-B5 — câu chỉ thị phải nói RÕ ít hơn trần là hợp lệ, và cấm xé cụm/độn cho đủ số —
+    đây chính là hai câu chữ gỡ mâu thuẫn với luật 3 GOM CHỦ ĐỀ TỪ LỖI."""
+    prompt = build_roadmap_prompt(
+        job_category="BE", level="Junior", weaknesses=None, scope="Standard")
+    assert "ít hơn trần là HỢP LỆ" in prompt
+    assert "TUYỆT ĐỐI KHÔNG xé một cụm thành nhiều milestone" in prompt
+    assert "thêm milestone/lesson chỉ để chạm trần" in prompt
 
 
 def test_roadmap_prompt_scope_unspecified_defaults_to_standard():
@@ -453,7 +513,7 @@ def test_roadmap_prompt_scope_unknown_value_falls_back_to_standard():
     """FAIL-OPEN mẫu `app.seniority.normalize`: scope lạ KHÔNG raise, rơi về Standard."""
     prompt = build_roadmap_prompt(
         job_category="BE", level="Junior", weaknesses=None, scope="Xtra-Long")
-    assert "Tạo ĐÚNG 4 milestone, MỖI milestone ĐÚNG 3 lesson (tổng 12 lesson)" in prompt
+    assert "Tối đa 4 milestone, mỗi milestone tối đa 3 lesson" in prompt
 
 
 def _scope_gemini_payload(n_milestones: int, n_lessons: int) -> dict:
@@ -505,6 +565,23 @@ async def test_provider_generate_roadmap_standard_scope_untouched_when_exactly_a
 
 
 @pytest.mark.asyncio
+async def test_provider_generate_roadmap_scope_it_hon_tran_khong_bi_don():
+    """REC1-B5 — scope là TRẦN, không phải số ép buộc: model trả 2 milestone (ít hơn trần
+    Standard=4) ⇒ GIỮ NGUYÊN 2, KHÔNG độn thêm milestone/lesson giả cho đủ số. `truncate_to_scope`
+    chỉ CẮT (`[:max]`), không bao giờ pad — test này khoá đúng vế "ít hơn là hợp lệ" của câu chỉ
+    thị mới, đối xứng với test cắt-thừa/khít-trần ngay trên."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response(_scope_gemini_payload(2, 3))
+    )
+
+    milestones = await provider.generate_roadmap("BE", "Junior", None, None, scope="Standard")
+
+    assert len(milestones) == 2
+    assert [m["title"] for m in milestones] == ["M1", "M2"]
+
+
+@pytest.mark.asyncio
 async def test_provider_generate_roadmap_scope_unspecified_truncates_to_standard():
     """KHÔNG truyền scope ⇒ mặc định Standard (4 milestone) — model trả THỪA vẫn bị cắt đúng trần
     mặc định, khớp default DTO .NET/pydantic schema."""
@@ -517,6 +594,71 @@ async def test_provider_generate_roadmap_scope_unspecified_truncates_to_standard
 
     assert len(milestones) == 4
     assert [m["title"] for m in milestones] == ["M1", "M2", "M3", "M4"]
+
+
+# ── REC1-B5 — milestoneCount model tự khai: đối chiếu, KHÔNG bao giờ raise/retry ─────────────
+@pytest.mark.asyncio
+async def test_milestone_count_lech_len_milestones_thi_dung_do_dai_mang_that(caplog):
+    """XONG-KHI: milestoneCount lệch len(milestones) ⇒ logger.warning + DÙNG ĐỘ DÀI MẢNG THẬT.
+
+    Mutation-check anchor: đổi nhánh này thành `raise` khi lệch (thay vì chỉ log rồi dùng mảng
+    thật) làm test này ĐỎ — model tự khai sai KHÔNG đáng biến cả roadmap KHÔNG-trừ-credit thành
+    502 (mẫu `truncate_to_scope`/`filter_milestone_criteria` — luôn ưu tiên dữ liệu THẬT, không
+    raise vì model tự mâu thuẫn)."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "milestoneCount": 5, "milestoneCountReason": "sai lệch cố ý để test",
+            "milestones": [
+                {"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]},
+                {"title": "M2", "focusCriteria": [], "lessons": [{"title": "L1"}]},
+            ],
+        })
+    )
+
+    with caplog.at_level("WARNING", logger="app.providers.gemini"):
+        milestones = await provider.generate_roadmap("BE", "Junior", None, None)
+
+    # Độ dài mảng THẬT (2) — KHÔNG raise, KHÔNG cố "sửa" mảng cho khớp con số model khai (5).
+    assert len(milestones) == 2
+    assert any("milestoneCount" in r.message for r in caplog.records)
+    assert any("2" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_milestone_count_khop_thi_khong_log_gi():
+    """Đối chứng: khai đúng khớp thực tế ⇒ không có gì đáng log."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "milestoneCount": 1, "milestoneCountReason": "1 cụm chủ đề duy nhất",
+            "milestones": [
+                {"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]},
+            ],
+        })
+    )
+
+    milestones = await provider.generate_roadmap("BE", "Junior", None, None)
+
+    assert len(milestones) == 1
+
+
+@pytest.mark.asyncio
+async def test_milestone_count_vang_mat_khong_lam_hong_gi(caplog):
+    """Payload KHÔNG có milestoneCount (mock cũ trước REC1-B5, hoặc model bỏ sót dù schema
+    required — Gemini structured output có thể lệch) ⇒ bỏ qua đối chiếu, KHÔNG log, KHÔNG raise."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({
+            "milestones": [{"title": "M1", "focusCriteria": [], "lessons": [{"title": "L1"}]}],
+        })
+    )
+
+    with caplog.at_level("WARNING", logger="app.providers.gemini"):
+        milestones = await provider.generate_roadmap("BE", "Junior", None, None)
+
+    assert len(milestones) == 1
+    assert not any("milestoneCount" in r.message for r in caplog.records)
 
 
 # ── Provider.generate_lesson_theory: shape ──────────────────────────────────

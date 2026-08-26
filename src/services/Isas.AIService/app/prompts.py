@@ -1653,10 +1653,13 @@ def build_roadmap_prompt(job_category: str, level: str,
             "id mới, không tự đặt id khác.\n"
             "3. Không gom được lỗi nào cho một chủ đề thì ĐỪNG tạo milestone đó — mistakeIds "
             "rỗng không phải là milestone hợp lệ.\n"
-            "4. Mỗi lỗi CHỈ nên thuộc về ĐÚNG MỘT milestone — không lặp lại cùng một id ở nhiều "
-            "milestone khác nhau.\n"
+            "4. Mỗi lỗi ĐÃ CẤP PHẢI được gán vào ĐÚNG MỘT milestone — không được bỏ sót lỗi nào, "
+            "và không lặp lại cùng một id ở nhiều milestone khác nhau.\n"
             "5. lessons[].mistakeIds (nếu một bài học bám riêng vài lỗi cụ thể trong milestone) "
-            "PHẢI là tập con của mistakeIds ở milestone chứa nó."
+            "PHẢI là tập con của mistakeIds ở milestone chứa nó.\n"
+            "6. XẾP THỨ TỰ milestone: chặng khớp mong muốn nêu ở khối FOCUS đứng TRƯỚC. Trong số "
+            "các chặng ngang nhau về mong muốn, chặng gom lỗi thuộc tiêu chí có weakSessions cao "
+            "nhất đứng trước."
         )
 
     # BE-1 — danh sách tiêu chí năng lực THẬT (do server cấp, KHÔNG phải dữ liệu ứng viên) để
@@ -1724,15 +1727,29 @@ def build_roadmap_prompt(job_category: str, level: str,
     # mistake_block là None, và khi đó KHÔNG có gì để model trỏ ngược). Model đọc câu này để biết
     # SHAPE output; thiếu điều kiện thì lượt không-mistakes vẫn bị bắt trả `mistakeIds` không có
     # gì gán vào, hoặc lượt có mistakes lại không biết phải trả field đó.
+    #
+    # REC1-B5 — `milestoneCount`/`milestoneCountReason` là hai khoá CẤP GỐC MỚI, LUÔN có mặt
+    # (không điều kiện theo mistake_block như mistakeIds — mọi roadmap, có mistakes hay không,
+    # đều cần model tự khai số cụm THẬT trước khi tạo mảng). Đặt câu khai TRƯỚC câu "tạo đúng
+    # milestoneCount milestone" để model cam kết một con số RỒI MỚI sinh mảng, thay vì tạo mảng
+    # tuỳ hứng rồi đếm ngược lại — phía Python (GeminiProvider.generate_roadmap) chỉ ĐỐI CHIẾU con
+    # số này với len(milestones) THẬT SỰ để đo tỉ lệ model tự mâu thuẫn (log, KHÔNG raise/retry —
+    # milestoneCount lệch không đáng biến cả roadmap thành 502; mảng milestones vẫn luôn là nguồn
+    # sự thật vận hành mọi bước sau). KHÔNG lưu milestoneCountReason xuống DB ở đợt này.
     json_shape = (
-        '{"milestones":[{"title":"...","focusCriteria":["..."],"mistakeIds":["..."],'
+        '{"milestoneCount":3,"milestoneCountReason":"...",'
+        '"milestones":[{"title":"...","focusCriteria":["..."],"mistakeIds":["..."],'
         '"lessons":[{"title":"...","mistakeIds":["..."]}]}]}'
         if mistake_block else
-        '{"milestones":[{"title":"...","focusCriteria":["..."],'
+        '{"milestoneCount":3,"milestoneCountReason":"...",'
+        '"milestones":[{"title":"...","focusCriteria":["..."],'
         '"lessons":[{"title":"..."}]}]}'
     )
     parts.append(
         f"{scope_instruction(scope)} "
+        "Khai milestoneCount (số milestone THẬT bạn sẽ tạo, ví dụ: 8 lỗi gom được 3 cụm nguyên "
+        "nhân) và milestoneCountReason (giải thích ngắn gọn vì sao đúng bấy nhiêu) TRƯỚC, rồi mới "
+        "tạo ĐÚNG milestoneCount milestone. "
         "CHỈ trả về JSON hợp lệ, không thêm giải thích, không markdown: " + json_shape
     )
     return "\n\n".join(parts)

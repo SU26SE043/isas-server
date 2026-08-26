@@ -362,3 +362,90 @@ async def test_provider_khong_truyen_mistakes_thi_khong_loc_khong_raise():
     assert len(milestones) == 1
     assert milestones[0]["mistakeIds"] == []
     assert provider._client.aio.models.generate_content.await_count == 1  # không retry, không raise
+
+
+# ══ (7) REC1-B5 — MỌI mistakeId đã cấp PHẢI được gán (thiếu → retry, trùng → chỉ log) ═══════════
+# Khác mục (4)/(5): ở đó milestone GOM SAI (toàn id bịa) rồi rỗng SAU LỌC. Ở đây id là THẬT (nằm
+# trong known_ids) nhưng chưa từng xuất hiện ở BẤT KỲ milestone nào — luật 4 GOM CHỦ ĐỀ TỪ LỖI
+# ("mỗi lỗi CHỈ nên thuộc một milestone") nay siết bắt buộc thành "MỌI lỗi PHẢI được gán".
+
+@pytest.mark.asyncio
+async def test_provider_thieu_mistake_id_duoc_gan_thi_retry_dung_1_luot_lan_sau_du():
+    """XONG-KHI test 1: bài giảng thiếu phần về một lỗi ⇒ có lượt viết lại, và lượt sau đạt.
+
+    Lượt 1: model chỉ gom m1 vào M1, BỎ SÓT m2 hoàn toàn (m2 không xuất hiện ở milestone nào).
+    Lượt 2: model gom đủ cả hai. Dùng CHUNG thang retry đã có (không dựng thang riêng cho ca
+    này) — mutation-check: đếm await_count."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(side_effect=[
+        _fake_gemini_response({"milestones": [
+            {"title": "M1", "focusCriteria": [], "mistakeIds": ["m1"],
+             "lessons": [{"title": "L1"}]}]}),
+        _fake_gemini_response({"milestones": [
+            {"title": "M1", "focusCriteria": [], "mistakeIds": ["m1", "m2"],
+             "lessons": [{"title": "L1"}]}]}),
+    ])
+
+    milestones = await provider.generate_roadmap(
+        "BE", "Junior", None, None,
+        mistakes=[{"id": "m1", "criterionName": "SQL", "reasoning": "sai 1"},
+                  {"id": "m2", "criterionName": "SQL", "reasoning": "sai 2"}])
+
+    assert milestones[0]["mistakeIds"] == ["m1", "m2"]
+    assert provider._client.aio.models.generate_content.await_count == 2  # ĐÚNG 1 lượt viết lại
+
+    prompt_lan_2 = provider._client.aio.models.generate_content.await_args_list[1].kwargs["contents"]
+    assert "BỊ TRẢ LẠI" in prompt_lan_2
+    assert "CHƯA được gán vào milestone nào" in prompt_lan_2
+    assert "m2" in prompt_lan_2
+
+
+@pytest.mark.asyncio
+async def test_provider_het_luot_van_thieu_mistake_id_thi_log_roi_di_tiep_khong_raise(caplog):
+    """XONG-KHI test 2: hết lượt vẫn thiếu ⇒ log rồi ĐI TIẾP, KHÔNG raise (mẫu :2148 — criteria/
+    mistakes rỗng-sau-lọc; ở đây là id THIẾU, không phải milestone hỏng, nên KHÔNG drop gì).
+
+    Mutation-check: dựng thang retry thứ hai riêng cho ca này ⇒ await_count lệch khỏi 2 (sẽ thành
+    3/4 nếu ai đó thêm một vòng gọi lại nữa cho riêng missing_mistake_ids)."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({"milestones": [
+            {"title": "M1", "focusCriteria": [], "mistakeIds": ["m1"],
+             "lessons": [{"title": "L1"}]}]})  # MỌI lượt đều bỏ sót m2
+    )
+
+    with caplog.at_level("ERROR", logger="app.providers.gemini"):
+        milestones = await provider.generate_roadmap(
+            "BE", "Junior", None, None,
+            mistakes=[{"id": "m1", "criterionName": "SQL", "reasoning": "sai 1"},
+                      {"id": "m2", "criterionName": "SQL", "reasoning": "sai 2"}])
+
+    assert len(milestones) == 1               # KHÔNG raise, KHÔNG drop milestone đã có
+    assert milestones[0]["mistakeIds"] == ["m1"]
+    assert provider._client.aio.models.generate_content.await_count == 2  # đúng attempts=2, không hơn
+    assert any("m2" in r.message and "KHÔNG được gán" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_provider_id_trung_o_hai_milestone_chi_warning_khong_retry(caplog):
+    """TRÙNG id (cùng id ở ≥2 milestone) — dạy hai lần thì thừa, không sai: CHỈ log.warning, KHÔNG
+    tiêu lượt retry. Đối chứng với ca THIẾU ngay trên (ĐÓ mới retry, CA NÀY thì không)."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(
+        return_value=_fake_gemini_response({"milestones": [
+            {"title": "M1", "focusCriteria": [], "mistakeIds": ["m1"],
+             "lessons": [{"title": "L1"}]},
+            {"title": "M2", "focusCriteria": [], "mistakeIds": ["m1"],  # TRÙNG — m1 ở cả 2 milestone
+             "lessons": [{"title": "L2"}]},
+        ]})
+    )
+
+    with caplog.at_level("WARNING", logger="app.providers.gemini"):
+        milestones = await provider.generate_roadmap(
+            "BE", "Junior", None, None,
+            mistakes=[{"id": "m1", "criterionName": "SQL", "reasoning": "sai 1"}])
+
+    assert len(milestones) == 2
+    assert provider._client.aio.models.generate_content.await_count == 1  # KHÔNG retry vì trùng
+    assert any("m1" in r.message and "nhiều hơn một milestone" in r.message
+               for r in caplog.records)
