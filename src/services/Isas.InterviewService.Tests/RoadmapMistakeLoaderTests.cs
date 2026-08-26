@@ -179,6 +179,41 @@ public class RoadmapMistakeLoaderTests
         Assert.DoesNotContain("E-4", eGroup);
     }
 
+    /// <summary>
+    /// REC1-B1 — tiêu chí TÁI PHẠM NHIỀU BUỔI (<c>WeakSessions</c>) phải xếp TRƯỚC tiêu chí ít tái
+    /// phạm hơn, KỂ CẢ KHI <c>Percentage</c> (điểm buổi mới nhất) của nó CAO HƠN hẳn. Trước bản vá,
+    /// sort chỉ nhìn <c>Percentage</c> — một tiêu chí lụt điểm đúng MỘT buổi (rồi cải thiện) sẽ vượt
+    /// mặt một tiêu chí sai đi sai lại nhiều buổi, chọn nhầm thứ đáng ưu tiên đưa vào lộ trình.
+    /// </summary>
+    [Fact]
+    public async Task TaiPhamNhieuBuoiXetTruoc_KeCaKhiPercentageCaoHon()
+    {
+        using var t = new TestDb();
+        var sid = AddSession(t, Guid.NewGuid());
+        var critItYeu = AiCriterion("ItYeu");
+        var critTaiPham = AiCriterion("TaiPham");
+
+        AddMistakeAnswer(t, sid, critItYeu, 1, "it-yeu-1");
+        AddMistakeAnswer(t, sid, critTaiPham, 1, "tai-pham-1");
+        await t.Db.SaveChangesAsync();
+
+        var weaknesses = new List<RoadmapWeakness>
+        {
+            // Percentage 10 < 40 ⇒ theo luật CŨ (OrderBy Percentage) "ItYeu" xét TRƯỚC — SAI, vì nó
+            // chỉ lụt điểm ĐÚNG MỘT buổi trong khi "TaiPham" sai đi sai lại 3/4 buổi.
+            new("ItYeu", 10, [critItYeu.Id], WeakSessions: 1, TotalSessions: 4),
+            new("TaiPham", 40, [critTaiPham.Id], WeakSessions: 3, TotalSessions: 4),
+        };
+        var result = await RoadmapMistakeLoader.LoadAsync(
+            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, default);
+
+        Assert.Equal(2, result.Count);
+        // "m1" (mint đầu tiên, theo đúng thứ tự sort) phải thuộc về tiêu chí TÁI PHẠM NHIỀU HƠN,
+        // bất kể Percentage của nó cao hơn "ItYeu".
+        Assert.Equal("TaiPham", result.Single(r => r.MistakeKey == "m1").CriterionName);
+        Assert.Equal("ItYeu", result.Single(r => r.MistakeKey == "m2").CriterionName);
+    }
+
     [Fact]
     public async Task MintMistakeKey_TheoDungThuTu_M1DenMN()
     {

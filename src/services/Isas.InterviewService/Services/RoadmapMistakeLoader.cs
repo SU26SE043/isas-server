@@ -11,27 +11,35 @@ namespace Isas.InterviewService.Services;
 /// cụ thể (không phải trích dẫn nguyên câu như <see cref="RoadmapEvidenceLoader"/>) làm nguyên liệu
 /// cho AI gom vào milestone (MIS1-B2) và anchor bài giảng (MIS1-B3).
 ///
-/// <c>mistake_key</c> ("m1".."m12") MINT Ở ĐÂY, MỘT LẦN, theo ĐÚNG thứ tự đã sort (tiêu chí YẾU
-/// NHẤT trước, trong mỗi tiêu chí answer ĐIỂM THẤP NHẤT trước, tie-break AnswerId). Không nơi nào
-/// khác được re-derive key này từ chỉ số mảng — <c>RoadmapMistake.MistakeKey</c> lưu nguyên chuỗi.
+/// <c>mistake_key</c> ("m1".."m12") MINT Ở ĐÂY, MỘT LẦN, theo ĐÚNG thứ tự đã sort (REC1-B1: tiêu
+/// chí TÁI PHẠM NHIỀU BUỔI NHẤT trước — <c>WeakSessions</c> giảm dần, hoà thì <c>Percentage</c>
+/// tăng dần làm tie-break phụ; trong mỗi tiêu chí answer ĐIỂM THẤP NHẤT trước, tie-break AnswerId).
+/// Không nơi nào khác được re-derive key này từ chỉ số mảng — <c>RoadmapMistake.MistakeKey</c> lưu
+/// nguyên chuỗi. Đổi thứ tự sort ⇒ đổi thứ tự "m1".."m12" gắn cho từng lỗi — ĐÚNG và có chủ đích:
+/// key chỉ định danh trong phạm vi MỘT lộ trình, không phải hằng số toàn cục.
 ///
 /// CHƯA được ai gọi (B5 sẽ nối vào <see cref="RoadmapService.CreateAsync"/>) — hàm này CHỈ trích,
 /// KHÔNG <c>Add</c>/<c>SaveChanges</c> — caller quyết định lúc nào persist.
 /// </summary>
 public static class RoadmapMistakeLoader
 {
-    /// <summary>Tối đa bao nhiêu tiêu chí yếu được trích lỗi — tiêu chí YẾU NHẤT trước.</summary>
+    /// <summary>Tối đa bao nhiêu tiêu chí yếu được trích lỗi — tiêu chí TÁI PHẠM NHIỀU BUỔI NHẤT
+    /// trước (REC1-B1).</summary>
     public const int MaxCriteria = 4;
 
     /// <summary>Tối đa bao nhiêu lỗi/tiêu chí — answer ĐIỂM THẤP NHẤT trước.</summary>
     public const int MaxMistakesPerCriterion = 3;
 
     /// <summary>
-    /// Chọn tối đa <see cref="MaxCriteria"/> tiêu chí YẾU NHẤT trong <paramref name="weaknesses"/>
-    /// (đã là tập <c>NeedsImprovement</c> — "yếu nhất TRONG SỐ đã yếu", không phải yếu nhất toàn cục);
-    /// với mỗi tiêu chí, tải tối đa <see cref="MaxMistakesPerCriterion"/> answer <c>Ai</c>-scoring
-    /// dưới ngưỡng <paramref name="thresholdPct"/> trong đúng <paramref name="sessionIds"/>, điểm
-    /// THẤP NHẤT trước.
+    /// Chọn tối đa <see cref="MaxCriteria"/> tiêu chí TÁI PHẠM NHIỀU BUỔI NHẤT trong
+    /// <paramref name="weaknesses"/> (đã là tập <c>NeedsImprovement</c> — "tái phạm nhiều TRONG SỐ
+    /// đã yếu", không phải toàn cục). REC1-B1: xếp theo <c>WeakSessions</c> giảm dần (số buổi bị
+    /// gắn cờ, không phải điểm ở một buổi) — "yếu 3/4 buổi" đứng trước "yếu 1/4 buổi" dù
+    /// <c>Percentage</c> (điểm buổi mới nhất) của mục thứ hai có thấp hơn; <c>Percentage</c> tăng
+    /// dần chỉ làm tie-break khi <c>WeakSessions</c> bằng nhau. Với mỗi tiêu chí, tải tối đa
+    /// <see cref="MaxMistakesPerCriterion"/> answer <c>Ai</c>-scoring dưới ngưỡng
+    /// <paramref name="thresholdPct"/> trong đúng <paramref name="sessionIds"/>, điểm THẤP NHẤT
+    /// trước.
     ///
     /// Khớp theo <c>CriterionId</c> (KHÔNG khớp theo tên — tên là snapshot điểm-tại-thời-điểm, còn
     /// rubric_criteria là giá trị SỐNG hiện đang sửa được; admin đổi tên tiêu chí sẽ làm khớp-theo-tên
@@ -53,7 +61,10 @@ public static class RoadmapMistakeLoader
         var result = new List<RoadmapMistake>();
         var seq = 0;
 
-        foreach (var w in weaknesses.OrderBy(x => x.Percentage).Take(MaxCriteria))
+        // REC1-B1 — TÁI PHẠM (WeakSessions) trước, điểm-một-buổi (Percentage) chỉ tie-break.
+        foreach (var w in weaknesses
+                     .OrderByDescending(x => x.WeakSessions).ThenBy(x => x.Percentage)
+                     .Take(MaxCriteria))
         {
             // CriterionIds nullable (rubric_criteria có Version — 1 tên có thể ứng nhiều id qua các
             // buổi). Không có id nào để lọc theo → bỏ qua tiêu chí này, KHÔNG khớp theo tên.

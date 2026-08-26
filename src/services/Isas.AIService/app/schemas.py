@@ -463,6 +463,13 @@ class AnalyzeRepoResponse(BaseModel):
 class WeaknessScore(BaseModel):
     criterionName: str
     percentage: float
+    # REC1-B1 — số buổi (trong SỐ buổi candidate đã chọn) từng gắn cờ NeedsImprovement cho tiêu chí
+    # này, trên tổng số buổi đã chọn. "Yếu 3/4 buổi" đáng tin hơn hẳn "yếu 3/12 buổi" dù percentage
+    # giống nhau — thiếu 2 trường này thì model không biết tin tới đâu. Default 0 vì extra='ignore'
+    # nuốt field lạ IM LẶNG — .NET cũ chưa gửi vẫn không vỡ; PHẢI khai tường minh ở đây, không thì
+    # cùng lớp bug đã cắn repo nhiều lần: field gửi lên nhưng bị nuốt câm ở tầng pydantic.
+    weakSessions: int = 0
+    totalSessions: int = 0
 
 
 class CriterionEvidence(BaseModel):

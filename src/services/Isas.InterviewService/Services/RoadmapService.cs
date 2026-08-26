@@ -196,10 +196,20 @@ public class RoadmapService : IRoadmapService
                 var criterionIdsByName = new Dictionary<string, HashSet<Guid>>(StringComparer.Ordinal);
                 var weakNamesInOrder = new List<string>();
                 var weakNamesSeen = new HashSet<string>(StringComparer.Ordinal);
+                // REC1-B1 — đếm SỐ BUỔI (trong withScores) mà tiêu chí này bị NeedsImprovement, trên
+                // MỌI buổi — cùng nguồn dữ liệu quyết định CÓ CHỌN tiêu chí vào weaknesses hay không
+                // (xem nhánh if ngay dưới, tách khỏi guard first-seen của baseline).
+                var weakCountByName = new Dictionary<string, int>(StringComparer.Ordinal);
 
-                // Lượt 1 — gom SONG SONG: baseline/danh sách yếu lấy % + cờ NeedsImprovement của
-                // buổi MỚI NHẤT (first-seen thắng, giữ nguyên luật cũ); CriterionIds gom từ MỌI buổi
-                // (kể cả buổi cũ hơn gặp SAU trong vòng lặp newest-first này).
+                // Lượt 1 — gom SONG SONG, NHƯNG hai việc KHÔNG còn cùng một guard nữa:
+                //   • baseline[name]   — first-seen THẮNG (buổi MỚI NHẤT trong vòng lặp newest-first
+                //                        này) → vẫn là "% hiện tại", giữ nguyên luật cũ.
+                //   • weak/weakCount   — CHẠY TRÊN MỌI buổi, không bị chặn bởi baseline đã có hay
+                //                        chưa. REC1-B1: trước bản vá, `continue` ở dưới chặn LUÔN cả
+                //                        việc đọc NeedsImprovement của mọi buổi CŨ HƠN buổi đã set
+                //                        baseline ⇒ tiêu chí yếu 3 buổi trước mà buổi mới nhất ổn
+                //                        KHÔNG BAO GIỜ vào lộ trình — không lỗi, không cảnh báo.
+                // CriterionIds vẫn gom từ MỌI buổi như cũ (không đổi).
                 foreach (var s in withScores)
                     foreach (var cs in s.CriterionScores)
                     {
@@ -207,16 +217,30 @@ public class RoadmapService : IRoadmapService
                             criterionIdsByName[cs.CriterionName] = ids = [];
                         ids.Add(cs.CriterionId);
 
+                        if (cs.NeedsImprovement)
+                        {
+                            weakCountByName[cs.CriterionName] =
+                                weakCountByName.GetValueOrDefault(cs.CriterionName) + 1;
+                            if (weakNamesSeen.Add(cs.CriterionName))
+                                weakNamesInOrder.Add(cs.CriterionName);
+                        }
+
                         if (baseline.ContainsKey(cs.CriterionName)) continue;
                         baseline[cs.CriterionName] = cs.Percentage;
-                        if (cs.NeedsImprovement && weakNamesSeen.Add(cs.CriterionName))
-                            weakNamesInOrder.Add(cs.CriterionName);
                     }
 
-                // Lượt 2 — dựng RoadmapWeakness (bất biến) từ 2 dict đã gom XONG ở lượt 1, giữ
-                // ĐÚNG thứ tự first-seen của lượt 1 (khớp hành vi cũ khi chưa có CriterionIds).
+                // Lượt 2 — dựng RoadmapWeakness (bất biến) từ các dict đã gom XONG ở lượt 1.
+                // `baseline[name]` LUÔN có giá trị cho mọi name trong weakNamesInOrder: lần đầu gặp
+                // một tên (dù có NeedsImprovement hay không) đều rơi xuống nhánh set-baseline ngay
+                // trong cùng vòng lặp phía trên — không có đường nào một tên vào được weakNamesInOrder
+                // mà baseline chưa từng thấy nó.
+                // TotalSessions = withScores.Count CỐ ĐỊNH cho mọi mục — cỡ mẫu của CẢ lộ trình,
+                // không phải "số buổi tiêu chí này từng xuất hiện" (khác WeakSessions, vốn LÀ theo
+                // từng tiêu chí).
                 var weak = weakNamesInOrder
-                    .Select(name => new RoadmapWeakness(name, baseline[name], criterionIdsByName[name]))
+                    .Select(name => new RoadmapWeakness(
+                        name, baseline[name], criterionIdsByName[name],
+                        weakCountByName.GetValueOrDefault(name), withScores.Count))
                     .ToList();
 
                 weaknesses = weak.Count > 0 ? weak : null;

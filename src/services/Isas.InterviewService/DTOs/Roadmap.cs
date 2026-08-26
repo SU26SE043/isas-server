@@ -34,17 +34,26 @@ public record CreateRoadmapRequest(
     string? CurrentLevel = null
 );
 
-// Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).
+// Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage +
+// weakSessions + totalSessions — REC1-B1).
 // MIS1-B4 — CriterionIds: MỌI id rubric_criteria từng đứng sau CriterionName này trong các buổi đã
 // chọn (KHÔNG chỉ id của buổi mới nhất). rubric_criteria có Version + custom-per-candidate: đổi
 // version hoặc rubric giữa các buổi sinh ra id MỚI cho "cùng một tên" ⇒ lấy 1 id sẽ âm thầm bỏ sót
 // mistake của những buổi mang id khác. Nullable vì record cũ (RoadmapLessonService.cs dựng từ
 // Baseline — Dictionary<string,decimal> không mang id) không có id để gắn. KHÔNG dùng để gửi AI
-// (AiServiceRoadmapGenerator.cs chỉ project criterionName+percentage — id không rò ra ngoài).
+// (AiServiceRoadmapGenerator.cs project criterionName+percentage+weakSessions+totalSessions — id
+// KHÔNG rò ra ngoài).
+// REC1-B1 — Percentage là "% ở buổi MỚI NHẤT" (baseline hiện tại, không đổi — xem RoadmapService).
+// WeakSessions/TotalSessions là trục THỜI GIAN riêng: bao nhiêu trong SỐ buổi đã chọn từng đánh dấu
+// tiêu chí này NeedsImprovement, trên tổng bao nhiêu buổi có điểm — "yếu 3/4 buổi" khác hẳn "yếu
+// 3/12 buổi" dù Percentage giống nhau. THAM SỐ CUỐI + có default để mọi call site cũ (positional,
+// 2-3 tham số) không vỡ.
 public record RoadmapWeakness(
     string CriterionName,
     decimal Percentage,
-    IReadOnlyCollection<Guid>? CriterionIds = null);
+    IReadOnlyCollection<Guid>? CriterionIds = null,
+    int WeakSessions = 0,
+    int TotalSessions = 0);
 
 // MIS1-B4 — 1 mục "vì sao sai / sửa sao" AI sinh khi mở lesson (MIS1-B3), khớp mistake_key của
 // RoadmapMistake/Milestone.MistakeRefs. Shape giống MistakeReviewItem bên AIService NHƯNG là type

@@ -83,8 +83,17 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             jobCategory,
             language,
             level,
-            // rỗng/null → AI sinh roadmap chuẩn theo level (schema WeaknessScore: criterionName + percentage).
-            weaknesses = weaknesses?.Select(w => new { criterionName = w.CriterionName, percentage = w.Percentage }),
+            // rỗng/null → AI sinh roadmap chuẩn theo level (schema WeaknessScore: criterionName +
+            // percentage + weakSessions + totalSessions — REC1-B1). weakSessions/totalSessions cho
+            // model biết ĐÃ TÁI PHẠM bao nhiêu lần trên cỡ mẫu nào — "yếu 3/4 buổi" đáng tin hơn hẳn
+            // "yếu 3/12 buổi" dù percentage giống nhau; thiếu mẫu số này model không biết tin tới đâu.
+            weaknesses = weaknesses?.Select(w => new
+            {
+                criterionName = w.CriterionName,
+                percentage = w.Percentage,
+                weakSessions = w.WeakSessions,
+                totalSessions = w.TotalSessions,
+            }),
             // 🔴 `cvText` ĐÃ BỊ GỠ khỏi payload — đừng nối lại; lý do đầy đủ ở
             // IAiServiceRoadmapGenerator. Đo được là CV thô không tác động gì lên cấu trúc roadmap.
             // Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU). Khoá RIÊNG chứ không nhúng
