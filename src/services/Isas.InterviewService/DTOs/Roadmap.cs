@@ -51,6 +51,27 @@ public record RoadmapWeakness(
 // ĐỘC LẬP — không share, hai bên chỉ khớp nhau qua hợp đồng JSON.
 public record LessonMistakeReviewItem(string MistakeId, string WhatWentWrong, string HowToFixIt);
 
+// MIS1-B7 — hình chiếu ra CLIENT của 1 RoadmapMistake cho LessonResponse.Mistakes. KHÁC hẳn
+// LessonMistakeReviewItem ngay trên (đó là hợp đồng dây NỘI BỘ .NET↔Python — 3 trường model tự
+// trả về): record này là 8 trường FE cần để hiển thị, gồm cả câu hỏi/câu trả lời GỐC (đã có sẵn
+// trong RoadmapMistake, không phải chờ AI sinh) chứ không chỉ phần nhận xét AI mới thêm.
+//
+// `Id` = RoadmapMistake.MistakeKey ("m1".."m12"), KHÔNG PHẢI RoadmapMistake.Id (Guid) — FE dùng
+// giá trị này làm khoá đối chiếu với MistakeReview (cùng namespace mistake_key xuyên suốt B4→B7).
+//
+// `WhatWentWrong`/`HowToFixIt` nullable CÓ CHỦ ĐÍCH: bài đọc lại (chưa mở lần nào sau bản B7, hoặc
+// mở trước khi AI trả review) chưa có 2 trường này — vẫn trả 6 trường còn lại thay vì bỏ cả mục,
+// vì câu hỏi/câu trả lời/đáp án mẫu tự nó đã có giá trị với người học.
+public record LessonMistakeResponse(
+    string Id,
+    string CriterionName,
+    decimal ScorePct,
+    string Question,
+    string Answer,
+    string? WhatWentWrong,
+    string? HowToFixIt,
+    string? SampleAnswer);
+
 // MIS1-B5 — hình chiếu GỬI của 1 RoadmapMistake dùng RIÊNG cho LessonContext.Mistakes: khác 2
 // endpoint kia (/generate-roadmap, /generate-lesson-theory) vốn chiếu bằng ANONYMOUS TYPE ngay
 // tại chỗ dựng payload (AiServiceRoadmapGenerator), record này phải đi QUA NHIỀU LỚP có chữ ký
@@ -134,11 +155,14 @@ public record LessonResponse(
     /// </summary>
     bool CanRetry = false,
 
-    // MIS1-B5 — "vì sao sai / sửa sao" cho các lỗi bài này bám (RoadmapLessonService đã NARROW theo
-    // id thật, không tin thẳng AI). THAM SỐ CUỐI, OPTIONAL — additive, không đụng caller cũ.
-    // null = bài không bám lỗi nào (RoadmapLessonService.ResolveLessonMistakes rỗng) HOẶC chưa mở
-    // lesson lần nào SAU bản này. KHÔNG cắt ở server — FE tự quyết định hiển thị bao nhiêu.
-    IReadOnlyList<LessonMistakeReviewItem>? Mistakes = null
+    // MIS1-B7 — mục lỗi ĐẦY ĐỦ (câu hỏi/câu trả lời gốc + "vì sao sai / sửa sao" khi đã có review;
+    // RoadmapLessonService đã NARROW review theo id thật, không tin thẳng AI). THAM SỐ CUỐI,
+    // OPTIONAL — additive, không đụng caller cũ.
+    // null  = bài không bám lỗi nào (RoadmapLessonService.ResolveLessonMistakes rỗng).
+    // []    = bám lỗi nhưng không nạp được hàng nào từ DB (dữ liệu lệch — không nên xảy ra).
+    // [...] = có lỗi để hiển thị; whatWentWrong/howToFixIt từng phần tử có thể null (chưa có review).
+    // KHÔNG cắt độ dài ở server — FE tự quyết định hiển thị bao nhiêu.
+    IReadOnlyList<LessonMistakeResponse>? Mistakes = null
 );
 
 public record MilestoneResponse(

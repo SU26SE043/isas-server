@@ -252,14 +252,14 @@ public class RoadmapMistakeNarrowMis1B5Tests
         // LẦN MỞ ĐẦU — sinh lý thuyết, lưu MistakeReview.
         var first = await svc.OpenLessonAsync(candidateId, roadmapId, lesson.Id, default);
         Assert.NotNull(first.Mistakes);
-        Assert.Equal("m1", Assert.Single(first.Mistakes!).MistakeId);
+        Assert.Equal("m1", Assert.Single(first.Mistakes!).Id);
 
         // LẦN MỞ THỨ HAI — HasUsableTheory=true ⇒ đọc thẳng DB, KHÔNG gọi AI lần nữa. Đây là nhánh
         // dễ bị bỏ sót nhất nếu chỉ wire MapLesson ở nhánh "vừa sinh".
         var second = await svc.OpenLessonAsync(candidateId, roadmapId, lesson.Id, default);
         Assert.NotNull(second.Mistakes);
         var item = Assert.Single(second.Mistakes!);
-        Assert.Equal("m1", item.MistakeId);
+        Assert.Equal("m1", item.Id);
         Assert.Equal("Sai vì lẫn DI với Service Locator", item.WhatWentWrong);
         Assert.Equal("Đọc lại định nghĩa DI và phân biệt với anti-pattern", item.HowToFixIt);
 
@@ -363,7 +363,7 @@ public class RoadmapMistakeNarrowMis1B5Tests
 
         Assert.NotNull(res.Mistakes);
         var item = Assert.Single(res.Mistakes!);
-        Assert.Equal("m1", item.MistakeId);
+        Assert.Equal("m1", item.Id);
 
         // DB cũng chỉ giữ "m1" — narrow chạy TRƯỚC khi ExecuteUpdate ghi cột MistakeReview.
         var saved = await t.NewContext().RoadmapLessons.AsNoTracking().SingleAsync(l => l.Id == lesson.Id);

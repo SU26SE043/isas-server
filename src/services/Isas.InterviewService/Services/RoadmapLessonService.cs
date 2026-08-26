@@ -42,16 +42,28 @@ public class RoadmapLessonService : IRoadmapLessonService
 
     /// <summary>MIS1-B5 — ≤3 lỗi ĐÚNG bài này cho /generate-lesson-theory (6 trường, kể cả answer/
     /// sampleAnswer — bài học cần NGUYÊN VĂN, khác /generate-roadmap chỉ cần đủ để gom chủ đề).
-    /// <paramref name="refs"/> rỗng → không query (không có gì để lấy).</summary>
+    /// <paramref name="refs"/> rỗng → không query (không có gì để lấy).
+    ///
+    /// MIS1-B7 — sắp theo PHẦN SỐ của <c>mistake_key</c> ("m1".."m12"), KHÔNG phải sắp CHUỖI: sắp
+    /// chuỗi cho "m10" đứng trước "m2" (so ký tự '1' &lt; '2'), nên với fallback
+    /// <c>milestone.MistakeRefs</c> (có thể &gt;3 phần tử) thì <c>Take(3)</c> phía dưới sẽ lấy
+    /// SAI — m10/m11/m12 thay vì m1/m2/m3. Vì Postgres/SQLite không dịch được phép tách-số-rồi-
+    /// so-sánh-int một cách portable trong LINQ-to-entities, sắp ở PHÍA CLIENT sau khi đã lọc theo
+    /// <paramref name="refs"/> (tập refs tối đa vài phần tử — không phải toàn bảng).</summary>
     private async Task<List<RoadmapMistake>> LoadLessonMistakesAsync(
         Guid roadmapId, IReadOnlyList<string> refs, CancellationToken ct)
-        => refs.Count == 0
-            ? []
-            : await _db.RoadmapMistakes.AsNoTracking()
-                .Where(m => m.RoadmapId == roadmapId && refs.Contains(m.MistakeKey))
-                .OrderBy(m => m.MistakeKey)
-                .Take(3)
-                .ToListAsync(ct);
+    {
+        if (refs.Count == 0) return [];
+        var rows = await _db.RoadmapMistakes.AsNoTracking()
+            .Where(m => m.RoadmapId == roadmapId && refs.Contains(m.MistakeKey))
+            .ToListAsync(ct);
+        return rows.OrderBy(MistakeKeyOrdinal).Take(3).ToList();
+    }
+
+    /// <summary>Phần số của "m1".."m12" để sắp đúng thứ tự sinh (m1 &lt; m2 &lt; ... &lt; m10).
+    /// Key lạ (không khớp mẫu "m"+số) → trôi xuống cuối thay vì ném lỗi khi hiển thị.</summary>
+    private static int MistakeKeyOrdinal(RoadmapMistake m)
+        => m.MistakeKey.Length > 1 && int.TryParse(m.MistakeKey.AsSpan(1), out var n) ? n : int.MaxValue;
 
     public async Task<LessonResponse> OpenLessonAsync(
         Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default)
@@ -65,8 +77,14 @@ public class RoadmapLessonService : IRoadmapLessonService
             .CountAsync(a => a.LessonId == lessonId, ct);
 
         // Đã có lý thuyết DÙNG ĐƯỢC → đọc DB, KHÔNG gọi AI lần 2 (lazy, idempotent).
+        // MIS1-B7 — đây là đường ĐỌC LẠI, phổ biến NHẤT (mở lại bài đã sinh); trước bản này nhánh
+        // này không nạp `mistakes` nên client luôn nhận null/rỗng dù DB có đủ dữ liệu.
         if (HasUsableTheory(lesson.TheoryContent))
-            return MapLesson(lesson, lesson.Milestone, attemptCount);
+        {
+            var refsForReread = ResolveLessonMistakes(lesson, lesson.Milestone);
+            var mistakesForReread = await LoadLessonMistakesAsync(roadmap.Id, refsForReread, ct);
+            return MapLesson(lesson, lesson.Milestone, attemptCount, mistakesForReread);
+        }
 
         // Lazy-gen: gọi AIService (sync). Lỗi → AiServiceException (502) → chưa lưu gì (mở lại được).
         // RAG grounding (Cách 2) — feed snapshot precompute (lesson.GroundingRefs) → AI cite trong tập đó.
@@ -131,7 +149,7 @@ public class RoadmapLessonService : IRoadmapLessonService
             // đổi giữa hai request (chỉ TheoryContent/Resources/GroundingRefs/MistakeReview bị
             // ExecuteUpdate ở trên) nên dùng lại milestone ĐÃ Include từ đầu hàm là đúng.
             var fresh = await _db.RoadmapLessons.AsNoTracking().FirstAsync(l => l.Id == lessonId, ct);
-            return MapLesson(fresh, lesson.Milestone, attemptCount);
+            return MapLesson(fresh, lesson.Milestone, attemptCount, mistakesForLesson);
         }
 
         _logger.LogInformation("BC14: sinh lý thuyết lesson {LessonId} (roadmap {RoadmapId})", lessonId, roadmapId);
@@ -142,7 +160,7 @@ public class RoadmapLessonService : IRoadmapLessonService
         lesson.GroundingRefs = citedRefs;
         lesson.TheoryGeneratedAt = now;
         lesson.MistakeReview = mistakeReview;
-        return MapLesson(lesson, lesson.Milestone, attemptCount);
+        return MapLesson(lesson, lesson.Milestone, attemptCount, mistakesForLesson);
     }
 
     /// <summary>
@@ -480,11 +498,17 @@ public class RoadmapLessonService : IRoadmapLessonService
         return [];
     }
 
-    private static LessonResponse MapLesson(RoadmapLesson l, RoadmapMilestone milestone, int attemptCount)
+    /// <param name="mistakes">MIS1-B7 — hàng <see cref="RoadmapMistake"/> ĐÃ NẠP cho đúng bài này
+    /// (mọi call site nạp bằng <see cref="LoadLessonMistakesAsync"/>, cùng tập refs với
+    /// <see cref="ResolveLessonMistakes"/>). Đây là NGUỒN 6/8 trường của <see cref="LessonMistakeResponse"/>
+    /// (câu hỏi/câu trả lời/đáp án mẫu gốc) — <c>l.MistakeReview</c> chỉ góp 2 trường còn lại
+    /// (whatWentWrong/howToFixIt), và có thể null/thiếu vài mistakeId nếu bài chưa mở lại sau bản này.</param>
+    private static LessonResponse MapLesson(
+        RoadmapLesson l, RoadmapMilestone milestone, int attemptCount, IReadOnlyList<RoadmapMistake> mistakes)
     {
-        // MIS1-B5 — nơi QUYẾT ĐỊNH "bài không có mục lỗi": refs rỗng ⇒ Mistakes = null, BẤT KỂ
-        // `l.MistakeReview` trong DB có gì (phòng hờ dữ liệu cũ/lệch — mẫu BK23 "đừng suy khác từ
-        // không biết", ở đây ngược lại: đừng suy "có" từ refs rỗng).
+        // MIS1-B5/B7 — nơi QUYẾT ĐỊNH "bài không có mục lỗi": refs rỗng ⇒ Mistakes = null. refs
+        // KHÔNG rỗng nhưng `mistakes` rỗng (dữ liệu lệch, không nên xảy ra) ⇒ `[]` — phân biệt
+        // "không bám lỗi nào" với "bám lỗi nhưng không nạp được hàng nào" (xem LessonResponse.Mistakes).
         var refs = ResolveLessonMistakes(l, milestone);
         return new(l.Id, l.OrderNo, l.Title, l.TheoryContent, l.SessionId, l.Status.ToString(),
                (l.Resources ?? []).Select(MapResource).ToList(),
@@ -492,7 +516,28 @@ public class RoadmapLessonService : IRoadmapLessonService
                GroundingMapper.ToCitations(l.GroundingRefs),
                attemptCount,
                CanRetry(l.Status),
-               refs.Count == 0 ? null : l.MistakeReview);
+               refs.Count == 0 ? null : BuildMistakeResponses(mistakes, l.MistakeReview));
+    }
+
+    /// <summary>MIS1-B7 — ghép 8 trường ra client: 6 trường LUÔN có từ <see cref="RoadmapMistake"/>
+    /// (nguồn thật, đã lưu từ lúc tạo roadmap) + 2 trường whatWentWrong/howToFixIt LEFT-JOIN từ
+    /// <paramref name="review"/> theo <c>mistake_key</c> — thiếu review (chưa mở lại bài sau bản
+    /// này, hoặc model không trả field) thì hai trường đó null, KHÔNG loại hàng lỗi khỏi kết quả.</summary>
+    private static List<LessonMistakeResponse> BuildMistakeResponses(
+        IReadOnlyList<RoadmapMistake> mistakes, IReadOnlyList<LessonMistakeReviewItem>? review)
+    {
+        // GroupBy trước ToDictionary — AI có thể trả trùng mistakeId (chưa từng thấy nhưng KHÔNG
+        // được tin), ToDictionary thẳng trên input model sinh sẽ ném ArgumentException giữa lượt đọc.
+        var byKey = (review ?? [])
+            .GroupBy(r => r.MistakeId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        return mistakes.Select(m =>
+        {
+            byKey.TryGetValue(m.MistakeKey, out var found);
+            return new LessonMistakeResponse(
+                m.MistakeKey, m.CriterionName, m.ScorePct, m.Question, m.Answer,
+                found?.WhatWentWrong, found?.HowToFixIt, m.SampleAnswer);
+        }).ToList();
     }
 
     /// <summary>
