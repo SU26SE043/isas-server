@@ -7,6 +7,7 @@ from app.roadmap_mode import DEFAULT_MODE, lesson_mode_block, roadmap_headline
 from app.roadmap_quality import DEFAULT_SCOPE, scope_instruction
 from app.schemas import NO_EVIDENCE
 from app.seniority import calibration_block as seniority_calibration_block
+from app.seniority import knowledge_block as seniority_knowledge_block
 from app.seniority import normalize as normalize_seniority
 from app.seniority import scoring_focus as seniority_scoring_focus
 
@@ -1762,10 +1763,13 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     ``grounding`` (RAG, Contract 2): tài liệu uy tín truy hồi từ Qdrant — chèn làm căn cứ +
     yêu cầu trích dẫn citedChunkIds. Đây là đường ground QUAN TRỌNG NHẤT (AI dạy kiến thức).
 
-    BE-3 — ``level`` hiệu chỉnh độ SÂU nội dung bài giảng qua
-    :func:`app.seniority.calibration_block` (cùng khối dùng ở roadmap/build_prompt), đặt SAU
-    khối ``focus_criteria`` (chỉ thị hệ thống) và TRƯỚC ``weaknesses`` (dữ liệu ứng viên duy nhất
-    của hàm này).
+    REC1-B3 — ``level`` gợi Ý CHỦ ĐỀ kiến thức cho bài giảng qua :func:`app.seniority.knowledge_block`,
+    đặt SAU khối ``focus_criteria`` (chỉ thị hệ thống) và TRƯỚC ``weaknesses`` (dữ liệu ứng viên duy
+    nhất của hàm này). KHÔNG dùng ``calibration_block`` (khác roadmap/``build_prompt``): khối đó mở
+    đầu bằng chỉ thị TRẦN/SÀN "Toàn bộ CÂU HỎI phải được hiệu chỉnh…" và kết bằng "KHÔNG ĐƯỢC VƯỢT
+    LÊN CẤP CAO HƠN" — viết cho prompt SINH CÂU HỎI, vô nghĩa với một bài giảng không sinh câu hỏi
+    nào, và bó bài giảng không được nói sâu hơn cấp độ hiện tại của người học. ``knowledge_block``
+    tách đúng phần có nội dung THẬT (kiến thức chuyên sâu theo nghề/mức) ra khỏi phần chỉ thị đó.
 
     BE-5 — ``evidence``: bằng chứng HÀNH VI cụ thể (Reasoning E11) cho tiêu chí yếu, xem
     :func:`build_evidence_block`. Đặt NGAY SAU khối ``weaknesses`` — bổ sung, không thay thế.
@@ -1881,11 +1885,18 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
             f'trường criterion của mỗi mục ghi "{lesson_title}".' + _mistake_anchor_note
         )
 
-    # BE-3 — hiệu chỉnh độ sâu nội dung bài giảng theo cấp độ MỤC TIÊU ứng viên chọn. Đặt Ở ĐÂY
-    # (sau khối cấu trúc bắt buộc + focus_criteria — cả hai là chỉ thị hợp lệ của hệ thống, KHÔNG
-    # phải dữ liệu ứng viên — TRƯỚC khối chống prompt-injection và trước weaknesses, thứ DUY NHẤT
-    # trong hàm này là dữ liệu do ứng viên tạo ra) vì cùng lý do với `build_prompt`.
-    parts.append(seniority_calibration_block(normalize_seniority(level), job_category))
+    # REC1-B3 — gợi ý CHỦ ĐỀ kiến thức theo cấp độ, KHÔNG PHẢI khối trần/sàn `calibration_block`
+    # (khối đó viết cho prompt SINH CÂU HỎI — mở đầu "Toàn bộ CÂU HỎI phải được hiệu chỉnh…", kết
+    # bằng "KHÔNG ĐƯỢC VƯỢT LÊN CẤP CAO HƠN" — vô nghĩa và BÓ bài giảng vốn không sinh câu hỏi nào).
+    # Đặt Ở ĐÂY (sau khối cấu trúc bắt buộc + focus_criteria — cả hai là chỉ thị hợp lệ của hệ
+    # thống, KHÔNG phải dữ liệu ứng viên — TRƯỚC khối chống prompt-injection và trước weaknesses,
+    # thứ DUY NHẤT trong hàm này là dữ liệu do ứng viên tạo ra) vì cùng lý do với `build_prompt`.
+    # Rỗng (nghề chưa seed BE-3, hoặc `job_category` không xác định) ⇒ KHÔNG append — mẫu
+    # `weaknesses`/`lesson_mode` ngay dưới, tránh một đoạn trống chen giữa hai khối thật khi nối
+    # bằng "\n\n".
+    knowledge = seniority_knowledge_block(job_category, normalize_seniority(level))
+    if knowledge:
+        parts.append(knowledge)
 
     # Chế độ ôn tập (`Reinforce`) — cùng vị trí/lý do như ở `build_roadmap_prompt`: chỉ thị hệ
     # thống, đứng TRƯỚC dữ liệu ứng viên. 🔴 Khối này CỐ Ý không đụng 3 phần bắt buộc nêu trên —

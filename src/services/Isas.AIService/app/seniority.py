@@ -198,6 +198,27 @@ def normalize(value: str | None) -> str:
     return DEFAULT
 
 
+def knowledge_block(job_category: str | None, level: str) -> str:
+    """REC1-B3 — kiến thức chuyên sâu THEO NGHỀ cho ĐÚNG cấp độ, TÁCH RIÊNG khỏi
+    :func:`calibration_block`.
+
+    Đây là phần DUY NHẤT bên trong khối cũ có nội dung thật, không phải chỉ thị trần/sàn: nội dung
+    môn học cho CẶP (nghề, mức) đang dùng — đọc `category.{JOB}.seniority.{level}.knowledge` qua
+    `prompt_registry`, mặc định rơi về :data:`_KNOWLEDGE_DEFAULTS`.
+
+    ``job_category`` là ``None`` HOẶC cặp (nghề, mức) không có trong cả registry lẫn default (mọi
+    nghề ngoài BA/BE/FE tính tới BE-3) ⇒ trả chuỗi RỖNG — người gọi (roadmap/bài giảng/build_prompt)
+    tự quyết định có chèn gì tiếp hay không; hàm này KHÔNG bịa nội dung khi thiếu seed.
+
+    CỐ Ý chỉ trả về ĐÚNG MỘT mức (``level``) — không phải cả 4: kiến thức là gợi ý CHỦ ĐỀ cho đúng
+    tầm người học đang ở, nhồi cả 4 mức vào một bài giảng là nhiễu, không phải "đầy đủ hơn".
+    """
+    if not job_category:
+        return ""
+    default_knowledge = _KNOWLEDGE_DEFAULTS.get(job_category.upper(), {}).get(level, "")
+    return prompt_registry.get(_knowledge_key(job_category, level), default_knowledge)
+
+
 def calibration_block(level: str, job_category: str | None = None) -> str:
     """Khối hiệu chỉnh độ khó câu gốc theo cấp độ (J4: đọc registry, KHÔNG hard-code).
 
@@ -210,13 +231,16 @@ def calibration_block(level: str, job_category: str | None = None) -> str:
 
     Câu cuối cố ý nói rõ quan hệ với dòng *"đi từ cơ bản đến nâng cao"* ở đầu prompt: không có nó,
     hai chỉ thị đọc như mâu thuẫn và mô hình tự do chọn bên nào cũng được ⇒ hiệu chỉnh mất tác dụng
-    đúng ở cấp Fresher/Senior (hai đầu thang, nơi nó quan trọng nhất).
+    đúng ở cấp Fresher/Senior (hai đầu thang, nơi nó quan trọng nhất). ⚠ Câu này CHỈ hợp lý cho
+    prompt SINH CÂU HỎI (đây là nơi nó THUỘC VỀ) — nó cấm "vượt lên cấp cao hơn", điều không có ý
+    nghĩa gì với một bài GIẢNG (không sinh câu hỏi nào). Bài giảng dùng thẳng :func:`knowledge_block`
+    thay vì hàm này (REC1-B3).
 
     ``job_category`` (J4, seed BE-3): có thì thêm khối kiến thức chuyên sâu riêng cho CẶP (nghề,
-    mức) đang dùng — đọc `category.{JOB}.seniority.{level}.knowledge` qua registry, mặc định rơi
-    về :data:`_KNOWLEDGE_DEFAULTS`. Cặp KHÔNG có trong cả registry lẫn default (mọi nghề ngoài BA
-    tính tới BE-3) ⇒ khối này không xuất hiện, prompt không đổi một byte cho nghề đó — đúng bất
-    biến J4 cũ, chỉ thu hẹp phạm vi còn "nghề chưa được seed" thay vì "mọi nghề".
+    mức) đang dùng, GỌI LẠI :func:`knowledge_block` — không lặp logic. Cặp KHÔNG có trong cả
+    registry lẫn default (mọi nghề ngoài BA tính tới BE-3) ⇒ khối này không xuất hiện, prompt
+    không đổi một byte cho nghề đó — đúng bất biến J4 cũ, chỉ thu hẹp phạm vi còn "nghề chưa được
+    seed" thay vì "mọi nghề".
     """
     lines = "\n".join(
         f"- {prompt_registry.get(_profile_key(lv), _PROFILE_DEFAULTS[lv])}" for lv in LEVELS
@@ -231,13 +255,7 @@ def calibration_block(level: str, job_category: str | None = None) -> str:
         "hay tụt xuống cấp thấp hơn."
     )
 
-    default_knowledge = (
-        _KNOWLEDGE_DEFAULTS.get(job_category.upper(), {}).get(level, "") if job_category else ""
-    )
-    knowledge = (
-        prompt_registry.get(_knowledge_key(job_category, level), default_knowledge)
-        if job_category else ""
-    )
+    knowledge = knowledge_block(job_category, level)
     if knowledge:
         block += f"\n{knowledge}"
     return block
