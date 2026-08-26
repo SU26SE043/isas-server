@@ -1,8 +1,16 @@
 # tests/test_lesson_mistake_review.py — MIS1-B3: bài giảng có phần thứ 4 "mistakeReview" (nói
 # đúng chỗ đã sai), và lý thuyết bám lỗi. Sáu chỗ phải sửa ĐỒNG THỜI (prompt structure · 4 nhánh
-# giọng sections · response_schema · evaluate_mistake_coverage (ADVISORY) · tách BLOCKING/ADVISORY
-# trong vòng lặp · nối mistake_review ra ngoài) — file này khoá cả sáu, bổ sung cho
+# giọng sections · response_schema · evaluate_mistake_coverage · nối kết quả vào vòng trả-lại-
+# viết-lại · nối mistake_review ra ngoài) — file này khoá cả sáu, bổ sung cho
 # tests/test_roadmap_mistakes_wire.py (hợp đồng dây B1) và tests/test_roadmap.py (giọng B2).
+#
+# 🔴 REC1-B4 — mục (4) dưới đây ĐỔI TIỀN ĐỀ so với bản MIS1-B3 gốc: `evaluate_mistake_coverage`
+# lúc đó chỉ ADVISORY (caller chỉ `log.error`, không retry/raise — cơ chế đã chạy nhưng kết quả bị
+# vứt vào log). REC1-B4 nối khiếm khuyết trả về từ hàm này vào ĐÚNG vòng trả-lại-viết-lại đã có
+# cho 4 khiếm khuyết BLOCKING (sections/example/commonMistakes): thiếu phủ lỗi ⇒ CŨNG bị trả lại
+# và viết lại; hết lượt (2, KHÔNG được nới) vẫn thiếu ⇒ raise, KHÔNG LƯU. Hàm
+# `evaluate_mistake_coverage` (mục 2) không đổi tính toán — chỉ cách caller DÙNG kết quả của nó
+# đổi, nên các test ở mục (2)/(3) GIỮ NGUYÊN.
 import json
 from unittest.mock import AsyncMock
 
@@ -215,58 +223,86 @@ async def test_response_schema_co_mistakes_thi_khai_mistakeReview_khong_bat_buoc
     assert "mistakeReview" not in captured["config"].response_schema["required"]
 
 
-# ══════════════════ (4) provider — pass/advisory/blocking, đúng theo XONG-KHI ══════════════════
+# ══════════════════ (4) provider — pass/blocking (5 khiếm khuyết, REC1-B4) ═════════════════
 
 @pytest.mark.asyncio
-async def test_co_mistakes_model_tra_du_thi_pass_va_khong_log_advisory(monkeypatch, caplog):
+async def test_co_mistakes_model_tra_du_thi_pass_ngay_luot_dau(monkeypatch, caplog):
     """🔑 Test quan trọng: khoá mục 6 (nối ra ngoài) — verify qua PROVIDER trả đúng shape; verify
-    endpoint thật ở nhóm (5) bên dưới."""
+    endpoint thật ở nhóm (5) bên dưới. Phủ đủ lỗi ngay lượt đầu ⇒ không có gì để trả lại."""
     provider = GeminiProvider()
     provider._client.aio.models.generate_content = AsyncMock(
         return_value=_fake_gemini_response(_lesson(mistake_review=[
             {"mistakeId": "m1", "whatWentWrong": "chưa nêu lý do",
              "howToFixIt": "nêu rõ đánh đổi"}])))
 
-    with caplog.at_level("ERROR", logger="app.providers.gemini"):
+    with caplog.at_level("INFO", logger="app.providers.gemini"):
         result = await provider.generate_lesson_theory(
             "BE", "Junior", "Bài", ["A"], None, mistakes=[_MISTAKE])
 
     assert result.mistake_review == [
         {"mistakeId": "m1", "whatWentWrong": "chưa nêu lý do", "howToFixIt": "nêu rõ đánh đổi"}]
-    assert provider._client.aio.models.generate_content.await_count == 1  # không retry
-    assert not any("review lỗi" in r.message for r in caplog.records)
+    assert provider._client.aio.models.generate_content.await_count == 1  # không bị trả lại
+    assert not any("bị trả lại" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_co_mistakes_khong_tra_mistake_review_thi_TRA_BAI_khong_raise_co_log(monkeypatch, caplog):
-    """🔑 ĐÂY LÀ TEST QUAN TRỌNG NHẤT của bước này (đề bài tự ghi)."""
+async def test_thieu_mistake_review_lan_dau_bi_tra_lai_lan_sau_dat(monkeypatch, caplog):
+    """🔑 REC1-B4 — bài giảng thiếu phần review cho MỘT lỗi ⇒ có lượt viết lại, và lượt sau đạt.
+    Đây là test bắt buộc theo đề bài REC1-B4."""
     provider = GeminiProvider()
-    provider._client.aio.models.generate_content = AsyncMock(
-        return_value=_fake_gemini_response(_lesson()))  # KHÔNG có mistakeReview
+    provider._client.aio.models.generate_content = AsyncMock(side_effect=[
+        _fake_gemini_response(_lesson()),                    # lượt 1: KHÔNG có mistakeReview
+        _fake_gemini_response(_lesson(mistake_review=[        # lượt 2: đủ ruột cho m1
+            {"mistakeId": "m1", "whatWentWrong": "chưa nêu lý do",
+             "howToFixIt": "nêu rõ đánh đổi"}])),
+    ])
 
-    with caplog.at_level("ERROR", logger="app.providers.gemini"):
+    with caplog.at_level("INFO", logger="app.providers.gemini"):
         result = await provider.generate_lesson_theory(
             "BE", "Junior", "Bài", ["A"], None, mistakes=[_MISTAKE])
 
-    assert result.theory  # bài được nhận, có nội dung
-    assert result.mistake_review == []
-    assert provider._client.aio.models.generate_content.await_count == 1  # KHÔNG retry
-    assert any("review lỗi" in r.message and "m1" in r.message for r in caplog.records)
+    assert result.theory
+    assert result.mistake_review == [
+        {"mistakeId": "m1", "whatWentWrong": "chưa nêu lý do", "howToFixIt": "nêu rõ đánh đổi"}]
+    assert provider._client.aio.models.generate_content.await_count == 2  # ĐÚNG một lượt viết lại
+    assert any("bị trả lại" in r.message and "m1" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_advisory_khong_bao_gio_lam_dinh_retry_du_nhieu_luot_khong_phu():
-    """CẤM: cho ADVISORY retry. Kể cả trả sai/rỗng nhiều mistakeId vẫn KHÔNG retry."""
+async def test_het_luot_van_thieu_mistake_review_thi_raise_khong_gi_duoc_luu():
+    """🔑 REC1-B4 — hết lượt (2, KHÔNG được nới) vẫn thiếu phủ lỗi ⇒ raise (InterviewService nhận
+    502, KHÔNG lưu gì — mẫu `test_blocking_thieu_example_van_raise_nhu_cu` ngay dưới: AIService
+    chỉ chịu trách nhiệm raise, "không lưu" là hệ quả phía .NET không gọi đường lưu khi 502)."""
     provider = GeminiProvider()
     provider._client.aio.models.generate_content = AsyncMock(
-        return_value=_fake_gemini_response(_lesson(mistake_review=[
-            {"mistakeId": "id-khong-ton-tai", "whatWentWrong": "", "howToFixIt": ""}])))
+        return_value=_fake_gemini_response(_lesson()))  # KHÔNG có mistakeReview, MỌI lượt
+
+    with pytest.raises(ValueError):
+        await provider.generate_lesson_theory(
+            "BE", "Junior", "Bài", ["A"], None, mistakes=[_MISTAKE])
+
+    # ĐÚNG bằng attempts (2) — CẤM nới lesson_theory_max_attempts để "cho thêm cơ hội".
+    assert provider._client.aio.models.generate_content.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_mistake_review_voi_id_sai_cung_bi_tra_lai_khong_duoc_nhan_am_tham():
+    """Đảo NGƯỢC bài test MIS1-B3 gốc (`test_advisory_khong_bao_gio_lam_dinh_retry...`, đã xoá):
+    trước REC1-B4, trả sai/rỗng mistakeId vẫn được NHẬN NGAY (advisory không retry) — nay id sai
+    (không khớp mistake nào thật sự được cấp) vẫn tính là THIẾU PHỦ, nên vẫn bị trả lại."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(side_effect=[
+        _fake_gemini_response(_lesson(mistake_review=[            # lượt 1: id KHÔNG tồn tại
+            {"mistakeId": "id-khong-ton-tai", "whatWentWrong": "", "howToFixIt": ""}])),
+        _fake_gemini_response(_lesson(mistake_review=[            # lượt 2: đúng id, đủ ruột
+            {"mistakeId": "m1", "whatWentWrong": "a", "howToFixIt": "b"}])),
+    ])
 
     result = await provider.generate_lesson_theory(
         "BE", "Junior", "Bài", ["A"], None, mistakes=[_MISTAKE])
 
     assert result.theory
-    assert provider._client.aio.models.generate_content.await_count == 1
+    assert provider._client.aio.models.generate_content.await_count == 2  # KHÔNG được nhận ngay lượt 1
 
 
 @pytest.mark.asyncio
@@ -305,34 +341,28 @@ async def test_attempts_van_la_2_khong_bi_nang():
 
 
 @pytest.mark.asyncio
-async def test_blocking_retry_thanh_cong_thi_advisory_log_dung_mot_lan():
-    """Vị trí log ADVISORY: NGAY TRƯỚC return của lượt ĐƯỢC NHẬN — lượt 1 (BLOCKING fail) không
-    được chạy advisory-check (nó chưa tới được `return`), chỉ lượt 2 (pass) mới log."""
+async def test_lan_dau_hong_ca_hai_loai_lan_sau_dat_ca_hai_chi_bi_tra_lai_dung_mot_lan(caplog):
+    """REC1-B4 — một lượt CÓ THỂ hỏng CẢ HAI loại cùng lúc (4 khiếm khuyết cũ + phủ lỗi): chỉ
+    đúng MỘT dòng "bị trả lại" cho lượt đó (không phải 2 dòng tách rời cho 2 loại), và lượt kế
+    sửa được cả hai cùng lúc nhờ đứng chung một `feedback`."""
     provider = GeminiProvider()
     provider._client.aio.models.generate_content = AsyncMock(side_effect=[
-        _fake_gemini_response(_lesson(example="")),        # lượt 1: BLOCKING fail
-        _fake_gemini_response(_lesson()),                  # lượt 2: BLOCKING pass, advisory thiếu
+        _fake_gemini_response(_lesson(example="")),               # lượt 1: hỏng CẢ HAI (BLOCKING
+                                                                    # thiếu example + thiếu mistakeReview)
+        _fake_gemini_response(_lesson(mistake_review=[             # lượt 2: đạt CẢ HAI
+            {"mistakeId": "m1", "whatWentWrong": "a", "howToFixIt": "b"}])),
     ])
 
-    import logging
-    calls: list[str] = []
-
-    class _Handler(logging.Handler):
-        def emit(self, record):
-            calls.append(record.getMessage())
-
-    logger = logging.getLogger("app.providers.gemini")
-    handler = _Handler()
-    logger.addHandler(handler)
-    try:
+    with caplog.at_level("INFO", logger="app.providers.gemini"):
         result = await provider.generate_lesson_theory(
             "BE", "Junior", "Bài", ["A"], None, mistakes=[_MISTAKE])
-    finally:
-        logger.removeHandler(handler)
 
     assert result.theory
-    advisory_logs = [c for c in calls if "review lỗi" in c]
-    assert len(advisory_logs) == 1  # đúng MỘT lần, không phải mỗi lượt
+    assert result.mistake_review == [{"mistakeId": "m1", "whatWentWrong": "a", "howToFixIt": "b"}]
+    retry_logs = [r.message for r in caplog.records if "bị trả lại" in r.message]
+    assert len(retry_logs) == 1  # đúng MỘT dòng cho lượt 1, không phải 2 dòng tách rời
+    assert "example" in retry_logs[0].lower() or "ví dụ" in retry_logs[0].lower()
+    assert "m1" in retry_logs[0]  # cả hai loại khiếm khuyết nằm CHUNG một dòng
 
 
 # ══════════════════ (5) đi hết dây — endpoint HTTP thật ══════════════════

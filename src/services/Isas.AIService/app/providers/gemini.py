@@ -2311,10 +2311,19 @@ class GeminiProvider(QuestionProvider):
 
                 url_meta = count_rejected_urls(data.get("resources"))
 
-                # BLOCKING — 4 khiếm khuyết cũ (sections/example/commonMistakes). Hết lượt vẫn
-                # còn thì raise (xem cuối hàm), y hệt trước MIS1-B3.
+                # BLOCKING — 4 khiếm khuyết cũ (sections/example/commonMistakes) + REC1-B4: khiếm
+                # khuyết THỨ 5 (phủ lỗi, evaluate_mistake_coverage) NỐI VÀO ĐÚNG vòng trả-lại-viết-
+                # lại này — không dựng vòng riêng, không tự ý raise ở nhánh khác. Hết lượt vẫn còn
+                # (dù là 1 trong 5 loại) thì raise (xem cuối hàm), y hệt trước MIS1-B3/REC1-B4.
+                #
+                # Tính CẢ HAI trong CÙNG một lượt (không chỉ khi 4-khiếm-khuyết-cũ đã sạch) để một
+                # lượt viết lại sửa được đồng thời mọi loại lỗi model đang mắc, thay vì bắt Gemini
+                # sửa từng loại một cách tách rời — mistake_defects RỖNG khi không có `mistakes`
+                # nào được cấp (xem evaluate_mistake_coverage), nên caller cũ không đổi hành vi.
                 last_defects = evaluate_lesson_theory(
                     data, focus_criteria, lesson_title, language=language)
+                last_defects = last_defects + evaluate_mistake_coverage(
+                    data, mistakes, language=language)
                 if last_defects:
                     # Log để tỉ lệ trả-lại ĐO ĐƯỢC. Không có dòng này thì rubric siết quá tay sẽ chỉ
                     # lộ ra dưới dạng "thỉnh thoảng mở bài bị 502" — đúng kiểu hỏng im lặng mà
@@ -2355,16 +2364,6 @@ class GeminiProvider(QuestionProvider):
                                 "mistakeId": mistake_id, "whatWentWrong": what,
                                 "howToFixIt": how,
                             })
-
-                # ADVISORY — phủ lỗi (evaluate_mistake_coverage). CHỈ log, KHÔNG retry, KHÔNG
-                # raise: bài thiếu mục review lỗi vẫn là bài DÙNG ĐƯỢC (khác 4 khiếm khuyết
-                # BLOCKING ở trên). Đặt NGAY TRƯỚC return để chạy đúng MỘT lần cho mỗi bài, kể cả
-                # bài pass ngay lượt đầu (không nằm trong nhánh `if last_defects: continue`).
-                mistake_defects = evaluate_mistake_coverage(data, mistakes, language=language)
-                if mistake_defects:
-                    logger.error(
-                        'Bài giảng "%s" thiếu phần review lỗi (advisory, vẫn nhận bài): %s',
-                        lesson_title, "; ".join(mistake_defects))
 
                 return LessonTheoryResult(theory=theory, resources=resources,
                                           cited_chunk_ids=cited, mistake_review=mistake_review)

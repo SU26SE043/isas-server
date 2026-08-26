@@ -283,6 +283,13 @@ async def test_provider_generate_lesson_theory_chuyen_mistakes_xuong_builder(mon
         return _fake_gemini_response({
             "sections": [{"criterion": "L", "heading": "L", "body": "Nội dung."}],
             "example": "Ví dụ.", "commonMistakes": "Lỗi hay gặp.", "resources": [],
+            # REC1-B4: evaluate_mistake_coverage nay BLOCKING (nối vào vòng trả-lại-viết-lại) —
+            # model giả PHẢI trả đủ ruột cho "m1" (khớp _MISTAKE_JSON["id"]) để đạt ngay lượt đầu,
+            # nếu không test này (đo dây B1 "mistakes có xuống builder không") sẽ hỏng vì lý do
+            # KHÁC (hết lượt do thiếu phủ lỗi), không phải vì dây gãy. Chi tiết BLOCKING khoá ở
+            # tests/test_lesson_mistake_review.py.
+            "mistakeReview": [{"mistakeId": "m1", "whatWentWrong": "chưa nêu lý do",
+                               "howToFixIt": "nêu rõ đánh đổi"}],
         })
 
     monkeypatch.setattr(gemini_module, "build_lesson_theory_prompt", fake_build)
@@ -295,10 +302,10 @@ async def test_provider_generate_lesson_theory_chuyen_mistakes_xuong_builder(mon
         "BE", "Junior", "L", ["L"], None, mistakes=given)
 
     assert captured.get("mistakes") == given
-    # 🔴 MIS1-B3 — provider nay TÍNH THẬT `mistake_review` (id hợp lệ ⇒ [], không phải None; model
-    # giả không trả `mistakeReview` nên rỗng — advisory, không raise). Chi tiết khoá ở
-    # tests/test_lesson_mistake_review.py.
-    assert result.mistake_review == []
+    # 🔴 MIS1-B3/REC1-B4 — provider nay TÍNH THẬT `mistake_review` (id hợp lệ + đủ ruột ⇒ mọc
+    # đúng mục đó). Chi tiết BLOCKING/phủ-lỗi khoá ở tests/test_lesson_mistake_review.py.
+    assert result.mistake_review == [
+        {"mistakeId": "m1", "whatWentWrong": "chưa nêu lý do", "howToFixIt": "nêu rõ đánh đổi"}]
 
 
 # ══════════════════ (6) GOLDEN — builder CHƯA dùng mistakes trong prompt ══════════════════

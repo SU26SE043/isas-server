@@ -171,11 +171,11 @@ def evaluate_mistake_coverage(data: dict, mistakes: list[dict] | None,
                               *, language: str = VI) -> list[str]:
     """MIS1-B3 — chấm PHỦ LỖI của ``mistakeReview``.
 
-    🔴 ADVISORY, KHÔNG BLOCKING — khác hẳn :func:`evaluate_lesson_theory`: khiếm khuyết trả về từ
-    đây chỉ được caller (``GeminiProvider.generate_lesson_theory``) ghi ``log.error``, KHÔNG bao
-    giờ retry và KHÔNG bao giờ raise. Bài thiếu mục review lỗi vẫn là bài DÙNG ĐƯỢC (lý thuyết vẫn
-    đủ 3 phần bắt buộc); bài trắng thì không — đó là ranh giới `evaluate_lesson_theory` canh giữ,
-    hàm này KHÔNG được lấn sang.
+    🔴 REC1-B4 — nay là BLOCKING ở tầng caller (``GeminiProvider.generate_lesson_theory`` nối
+    khiếm khuyết trả về từ đây vào ĐÚNG vòng trả-lại-viết-lại đã có cho 4 khiếm khuyết của
+    :func:`evaluate_lesson_theory`): hết lượt vẫn thiếu ⇒ raise, KHÔNG LƯU bài. Trước REC1-B4 hàm
+    này chỉ ADVISORY (caller chỉ ``log.error``, không retry/raise) — cơ chế đã chạy nhưng kết quả
+    bị vứt vào log; REC1-B4 nối dây, KHÔNG đổi bất kỳ tính toán nào trong THÂN hàm này.
 
     Mỗi id trong :func:`_renderable_mistake_ids` (mistake THỰC SỰ được cấp cho model) phải có ĐÚNG
     một mục trong ``mistakeReview`` với ruột ở CẢ HAI trường ``whatWentWrong``/``howToFixIt``.
