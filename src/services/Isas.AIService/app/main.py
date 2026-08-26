@@ -568,6 +568,8 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
         criteria = [c.model_dump() for c in req.criteria] if req.criteria else None
         # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu. Vắng/rỗng ⇒ None (giữ hành vi cũ).
         evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
+        # MIS1-B1 — LỖI SAI trích từ buổi luyện đã chấm. Vắng/rỗng ⇒ None (giữ hành vi cũ).
+        mistakes = [ms.model_dump() for ms in req.mistakes] if req.mistakes else None
         milestones = await _call_with_language(req.language, provider.generate_roadmap,
             req.jobCategory, req.level, weaknesses,
             focus=req.focus,
@@ -579,6 +581,7 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
             evidence=evidence,
             mode=req.mode,
             current_level=req.currentLevel,
+            mistakes=mistakes,
         )
         return GenerateRoadmapResponse(
             milestones=[
@@ -586,6 +589,7 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
                     title=m["title"],
                     focusCriteria=m["focusCriteria"],
                     lessons=[RoadmapLesson(**l) for l in m["lessons"]],
+                    mistakeIds=m.get("mistakeIds", []),
                 )
                 for m in milestones
             ]
@@ -609,13 +613,21 @@ async def generate_lesson_theory(req: GenerateLessonTheoryRequest,
         grounding = [g.model_dump() for g in req.grounding] if req.grounding else None
         # BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu. Vắng/rỗng ⇒ None (giữ hành vi cũ).
         evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
-        theory, resources, cited = await _call_with_language(req.language, provider.generate_lesson_theory,
+        # MIS1-B1 — LỖI SAI trích từ buổi luyện đã chấm. Vắng/rỗng ⇒ None (giữ hành vi cũ).
+        mistakes = [ms.model_dump() for ms in req.mistakes] if req.mistakes else None
+        theory, resources, cited, mistake_review = await _call_with_language(
+            req.language, provider.generate_lesson_theory,
             req.jobCategory, req.level, req.lessonTitle, req.focusCriteria,
-            req.weaknesses, grounding, evidence=evidence, mode=req.mode)
+            req.weaknesses, grounding, evidence=evidence, mode=req.mode,
+            mistakes=mistakes)
         # F15 — resources đã sanitize ở provider (allowlist tên miền); rỗng là hợp lệ.
         # cited=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ giữ nguyên.
+        # MIS1-B3 — mistake_review: None khi caller không gửi mistakes (field ẩn, exclude_none);
+        # [] khi có mistakes nhưng model chưa nói tới (advisory, không chặn bài); đủ mục khi model
+        # trả đúng.
         return GenerateLessonTheoryResponse(
-            theoryMarkdown=theory, resources=resources, citedChunkIds=cited)
+            theoryMarkdown=theory, resources=resources, citedChunkIds=cited,
+            mistakeReview=mistake_review)
     except HTTPException:
         raise
     except Exception as ex:

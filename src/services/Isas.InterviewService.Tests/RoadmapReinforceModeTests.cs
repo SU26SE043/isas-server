@@ -41,32 +41,32 @@ public class RoadmapReinforceModeTests
         var m = new Mock<IAiServiceRoadmapGenerator>();
         var setup = m.Setup(x => x.GenerateAsync(
             It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), 
+            It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
                 It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()));
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()));
         if (capture is not null)
             setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?,
                     IReadOnlyList<QuestionTargetCriterionDto>?, string,
-                    IReadOnlyList<CriterionEvidence>?, RoadmapMode, string?, CancellationToken>(
-                    (_, _, w, _, _, _, _, _, _, mode, _, _) => capture(new Captured(mode, w)))
+                    IReadOnlyList<CriterionEvidence>?, RoadmapMode, string?, CancellationToken,
+                    IReadOnlyList<RoadmapMistake>?>(
+                    (_, _, w, _, _, _, _, _, _, mode, _, _, _) => capture(new Captured(mode, w)))
                 .ReturnsAsync(Sample());
         else
             setup.ReturnsAsync(Sample());
         return m;
     }
 
-    private static RoadmapsController Controller(
-        TestDb t, IAiServiceRoadmapGenerator gen, Guid userId, int? minSessions = null)
+    // MIS1-B6 — `minSessions`/`RoadmapOptions.ReinforceMinSessions` đã GỠ HẲN (Guard 1 thay thế,
+    // sàn CỐ ĐỊNH ≥1 buổi, không cấu hình được nữa). Tham số này XOÁ khỏi helper — 3 call site cũ
+    // truyền `minSessions:` đã được cập nhật cùng lúc (xem mục "(4) Ngưỡng KHÔNG còn cấu hình được").
+    private static RoadmapsController Controller(TestDb t, IAiServiceRoadmapGenerator gen, Guid userId)
     {
-        var options = minSessions is null
-            ? null
-            : Options.Create(new RoadmapOptions { ReinforceMinSessions = minSessions.Value });
         var service = new RoadmapService(
-            t.Db, new Mock<IStorageService>().Object, gen, NullLogger<RoadmapService>.Instance,
-            roadmapOptions: options);
+            t.Db, new Mock<IStorageService>().Object, gen, NullLogger<RoadmapService>.Instance);
         var controller = new RoadmapsController(
             service, new Mock<IRoadmapLessonService>().Object,
             new Mock<IRoadmapReportService>().Object, NullLogger<RoadmapsController>.Instance);
@@ -81,42 +81,13 @@ public class RoadmapReinforceModeTests
         return controller;
     }
 
-    /// <summary>Seed 1 buổi B2C đã Scored + các tiêu chí có điểm (BC9) → nguồn baseline/điểm yếu.</summary>
+    /// <summary>Seed 1 buổi B2C đã Scored + các tiêu chí có điểm (BC9) → nguồn baseline/điểm yếu.
+    /// MIS1-B6 — thân hàm chuyển vào TestSeed.ScoredSessionWithAnswers (dùng chung 3 file); giữ
+    /// NGUYÊN chữ ký để 12 call site trong file này không phải sửa. `seedContentMistakes: true` vì
+    /// mọi test ở đây gọi CreateAsync (Guard 3 nay đòi ≥1 lỗi nội dung — xem TestSeed.cs).</summary>
     private static Guid SeedScoredSession(
         TestDb t, Guid candidateId, params (string name, decimal pct, bool needsImprovement)[] criteria)
-    {
-        var session = TestDb.Session(candidateId, SessionStatus.Scored, JobCategory.BE);
-        t.Db.PracticeSessions.Add(session);
-        foreach (var (name, pct, needs) in criteria)
-        {
-            // Production chỉ có MỘT bộ tiêu chí cho mỗi (nghề, ngôn ngữ) — mọi buổi trỏ vào chính nó.
-            var crit = t.Db.RubricCriteria.Local
-                    .FirstOrDefault(c => c.Name == name && c.CandidateId == null
-                                         && c.JobCategory == JobCategory.BE)
-                ?? t.Db.RubricCriteria.FirstOrDefault(
-                    c => c.Name == name && c.CandidateId == null && c.JobCategory == JobCategory.BE);
-            if (crit is null)
-            {
-                crit = TestDb.Criterion(JobCategory.BE, name: name);
-                t.Db.RubricCriteria.Add(crit);
-            }
-            t.Db.SessionCriterionScores.Add(new SessionCriterionScore
-            {
-                Id = Guid.NewGuid(),
-                SessionId = session.Id,
-                CriterionId = crit.Id,
-                CriterionName = name,
-                AverageScore = 2m,
-                MaxScore = 5,
-                Percentage = pct,
-                Weight = 1m,
-                NeedsImprovement = needs,
-                CreatedAt = DateTime.UtcNow
-            });
-        }
-        t.Db.SaveChanges();
-        return session.Id;
-    }
+        => TestSeed.ScoredSessionWithAnswers(t, candidateId, JobCategory.BE, seedContentMistakes: true, criteria);
 
     private static CreateRoadmapRequest Req(
         string? mode, IReadOnlyList<Guid>? sessionIds = null)
@@ -129,17 +100,22 @@ public class RoadmapReinforceModeTests
         SeedScoredSession(t, user, ("Tư duy giải quyết vấn đề", 45m, true))
     ];
 
-    // ── (1) LevelUp — hành vi cũ, không đổi ─────────────────────────────────────────────────
+    // ── (1) LevelUp — MIS1-B6: nay CŨNG đòi buổi luyện + điểm yếu + lỗi nội dung (Guard 1/2/3) ──
 
     [Fact]
     public async Task ModeVangMat_MacDinh_LevelUp()
     {
+        // MIS1-B6 — Guard 1 nay đòi ≥1 buổi BẤT KỂ mode; test này đo MẶC ĐỊNH MODE khi client
+        // không gửi field `mode` (không còn đo được "0 buổi vẫn tạo được" — ca đó nay bị Guard 1
+        // chặn, xem LevelUp_KhongCoBuoiLuyenNao_400_KhongTaoDuocNua ngay dưới). Seed 1 buổi hợp lệ
+        // chỉ để VƯỢT QUA Guard 1/2/3, không phải trọng tâm của test này.
         using var t = new TestDb();
         var user = Guid.NewGuid();
         Captured? seen = null;
         var gen = GenMock(c => seen = c);
+        var one = SeedScoredSession(t, user, ("Tư duy giải quyết vấn đề", 40m, true));
 
-        var res = await Controller(t, gen.Object, user).Create(Req(null), default);
+        var res = await Controller(t, gen.Object, user).Create(Req(null, [one]), default);
 
         var created = Assert.IsType<CreatedResult>(res);
         var body = Assert.IsType<RoadmapResponse>(created.Value);
@@ -149,14 +125,33 @@ public class RoadmapReinforceModeTests
     }
 
     [Fact]
-    public async Task LevelUp_KhongCanBuoiLuyenNao_VanTaoDuoc()
+    public async Task LevelUp_KhongCoBuoiLuyenNao_400_KhongTaoDuocNua()
     {
-        // Bất biến quan trọng: ngưỡng buổi tối thiểu CHỈ áp cho chế độ ôn tập. Áp nhầm cho LevelUp
-        // sẽ chặn đúng nhóm người dùng mới — nhóm đông nhất, và là nhóm chưa có buổi nào để chọn.
+        // 🔴 MIS1-B6 — ĐẢO BẤT BIẾN CÓ CHỦ ĐÍCH (yêu cầu tường minh của task, tên cũ:
+        // `LevelUp_KhongCanBuoiLuyenNao_VanTaoDuoc`). Bài gốc khoá ĐÚNG CHIỀU NGƯỢC LẠI, với lý do
+        // viết sẵn: "ngưỡng buổi tối thiểu CHỈ áp cho chế độ ôn tập. Áp nhầm cho LevelUp sẽ chặn
+        // đúng nhóm người dùng mới — nhóm đông nhất, và là nhóm chưa có buổi nào để chọn."
+        //
+        // VÌ SAO ĐẢO: roadmap nay XÂY TỪ LỖI THẬT trích từ buổi luyện đã chấm (RoadmapMistakeLoader,
+        // MIS1-B4/B5) — không còn nhánh "roadmap CHUẨN theo level" để LevelUp rơi vào khi thiếu dữ
+        // liệu. Guard 1 (ROADMAP_SESSIONS_REQUIRED) áp CHO CẢ HAI mode, không riêng Reinforce.
+        //
+        // AI QUYẾT: chốt trong đặc tả MIS1-B6 ("Bối cảnh": "không có buổi luyện đã chấm thì không
+        // có gì để xây") — không phải quyết định tại chỗ của người viết code.
+        //
+        // CÁCH BÙ ĐẮP nhóm người dùng mới (đúng lo ngại của bài test gốc, KHÔNG bị bỏ qua): frontend
+        // phải DẪN người dùng CHƯA CÓ buổi nào đi LUYỆN MỘT BUỔI TỰ DO trước, rồi mới cho vào wizard
+        // tạo roadmap — không còn đường "tạo roadmap trước, luyện sau" làm bước khởi động.
         using var t = new TestDb();
-        var res = await Controller(t, GenMock().Object, Guid.NewGuid())
+        var gen = GenMock();
+
+        var res = await Controller(t, gen.Object, Guid.NewGuid())
             .Create(Req(nameof(RoadmapMode.LevelUp)), default);
-        Assert.IsType<CreatedResult>(res);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(res);
+        Assert.Contains("ROADMAP_SESSIONS_REQUIRED", bad.Value!.ToString());
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.VerifyNoOtherCalls();
     }
 
     // ── (2) Reinforce — đường hạnh phúc ─────────────────────────────────────────────────────
@@ -203,10 +198,19 @@ public class RoadmapReinforceModeTests
     }
 
     // ── (3) Thiếu dữ liệu ⇒ NÓI RA, không âm thầm rơi về LevelUp ────────────────────────────
+    //
+    // MIS1-B6 — "thiếu dữ liệu" nay tách thành 3 GUARD RIÊNG trong RoadmapService.CreateAsync,
+    // áp CHO CẢ HAI mode (không riêng Reinforce nữa): Guard 1 (thiếu buổi) · Guard 2 (thiếu điểm
+    // yếu) · Guard 3 (có điểm yếu nhưng không trích được lỗi NỘI DUNG nào). Các test dưới đây vẫn
+    // seed ở mode Reinforce (không đổi để giữ phạm vi file), nhưng nay đang xác nhận hành vi CỦA
+    // GUARD UNIVERSAL, không phải một cơ chế riêng của Reinforce.
 
     [Fact]
     public async Task Reinforce_KhongChonBuoiNao_400_KhongTaoVaKhongGoiAI()
     {
+        // Trước MIS1-B6: đây là guard RIÊNG của Reinforce (chosenCount < ReinforceMinSessions).
+        // Nay: chính Guard 1 (ROADMAP_SESSIONS_REQUIRED, áp cho MỌI mode) nổ ở đây — assertion
+        // "chứa ít nhất" vẫn đúng vì câu chữ mới cũng dùng cụm đó, nên KHÔNG cần đổi assert.
         using var t = new TestDb();
         var gen = GenMock();
 
@@ -220,8 +224,13 @@ public class RoadmapReinforceModeTests
     }
 
     [Fact]
-    public async Task Reinforce_ChiMotBuoi_DuoiNguong_400_KhongGoiAI()
+    public async Task Reinforce_ChiMotBuoiCoDiemYeuVaLoiNoiDung_DuDeTao()
     {
+        // 🔴 MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc (`..._DuoiNguong_400_KhongGoiAI`) mong 1 buổi bị
+        // từ chối vì DƯỚI ngưỡng `ReinforceMinSessions=2` (đã GỠ — mục 5). Guard 1 thay thế chỉ đòi
+        // ≥1 buổi; 1 buổi có điểm yếu + `SeedScoredSession` (qua TestSeed) nay LUÔN kèm 1 content
+        // mistake cho tiêu chí yếu ⇒ Guard 2 VÀ Guard 3 đều qua ⇒ tạo THÀNH CÔNG. Không còn gì để
+        // "dưới ngưỡng" — repurpose bài test thành đối chứng dương cho đúng ca này.
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var gen = GenMock();
@@ -230,16 +239,18 @@ public class RoadmapReinforceModeTests
         var res = await Controller(t, gen.Object, user)
             .Create(Req(nameof(RoadmapMode.Reinforce), [one]), default);
 
-        var bad = Assert.IsType<BadRequestObjectResult>(res);
-        Assert.Contains("2 buổi", bad.Value!.ToString());
-        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
-        gen.VerifyNoOtherCalls();
+        Assert.IsType<CreatedResult>(res);
+        Assert.Equal(1, await t.Db.Roadmaps.CountAsync());
     }
 
     [Fact]
     public async Task Reinforce_TrungIdKhongDuocTinhThanhHaiBuoi()
     {
-        // Gửi cùng một id hai lần không tạo ra tín hiệu lặp lại nào — nó vẫn là MỘT buổi.
+        // 🔴 MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc gửi TRÙNG id để "lách" xuống dưới ngưỡng tối
+        // thiểu 2 buổi PHÂN BIỆT (đã GỠ cùng `ReinforceMinSessions`, mục 5) — không còn khái niệm
+        // đó để lách. Giữ lại test, đổi mục tiêu sang bất biến CÒN Ý NGHĨA: gửi trùng id vẫn ĐỦ
+        // (Guard 1 chỉ đòi ≥1 buổi) NHƯNG dedup đúng — `ResolvedFrom.SessionIds` phải ghi 1 id,
+        // không nhân đôi thành [one, one].
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var one = SeedScoredSession(t, user, ("Tư duy giải quyết vấn đề", 40m, true));
@@ -247,8 +258,9 @@ public class RoadmapReinforceModeTests
         var res = await Controller(t, GenMock().Object, user)
             .Create(Req(nameof(RoadmapMode.Reinforce), [one, one]), default);
 
-        Assert.IsType<BadRequestObjectResult>(res);
-        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        var created = Assert.IsType<CreatedResult>(res);
+        var body = Assert.IsType<RoadmapResponse>(created.Value);
+        Assert.Equal([one], body.ResolvedFrom.SessionIds);
     }
 
     [Fact]
@@ -256,6 +268,9 @@ public class RoadmapReinforceModeTests
     {
         // Người vừa luyện rất tốt: đủ buổi nhưng không tiêu chí nào cần cải thiện. Phải nói ĐÚNG
         // lý do — bảo họ "chưa luyện đủ" là sai sự thật và họ sẽ đi luyện thêm vô ích.
+        //
+        // MIS1-B6 — câu chữ Guard 2 đổi ("không có gì để ôn lại" → "không có gì để xây lộ trình",
+        // vì guard nay áp CẢ LevelUp lẫn Reinforce — "ôn lại" không còn đúng cho cả hai mode).
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var gen = GenMock();
@@ -270,44 +285,63 @@ public class RoadmapReinforceModeTests
 
         var bad = Assert.IsType<BadRequestObjectResult>(res);
         var msg = bad.Value!.ToString()!;
-        Assert.Contains("không có gì để ôn lại", msg);
+        Assert.Contains("không có gì để xây lộ trình", msg);
         Assert.DoesNotContain("ít nhất", msg);   // KHÔNG được đổ cho "chưa đủ buổi"
         Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
         gen.VerifyNoOtherCalls();
     }
 
-    // ── (4) Ngưỡng cấu hình được ────────────────────────────────────────────────────────────
+    // ── (4) Ngưỡng KHÔNG còn cấu hình được — ReinforceMinSessions đã GỠ (mục 5 MIS1-B6) ─────
+    //
+    // Toàn bộ 3 test dưới đây từng xoay quanh việc CẤU HÌNH `ReinforceMinSessions`. Property đó
+    // không còn tồn tại — Guard 1 có sàn CỐ ĐỊNH ≥1 buổi, không qua config nào. Giữ NGUYÊN 3
+    // phương thức test (KHÔNG xoá, đúng CẤM) nhưng đổi mục tiêu mỗi bài sang một bất biến CÒN
+    // ĐÚNG trong thế giới mới, ghi rõ lý do đảo tại từng chỗ.
 
     [Fact]
-    public async Task NguongCauHinhDuoc_Nang_Len_3_Thi_2_Buoi_Bi_Tu_Choi()
+    public async Task KhongConNguongCauHinh_HaiBuoiCoDiemYeu_LuonTaoDuoc()
     {
+        // 🔴 MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc (`NguongCauHinhDuoc_Nang_Len_3_...`) cấu hình
+        // `minSessions=3` để CHỦ Ý làm 2 buổi hợp lệ bị từ chối. Không còn cách nào "nâng ngưỡng"
+        // — 2 buổi có điểm yếu (kèm content mistake mặc định của TestSeed) nay LUÔN đủ, bất kể số
+        // lượng. Đổi thành đối chứng dương cho đúng thực tế đó.
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var res = await Controller(t, GenMock().Object, user, minSessions: 3)
+        var res = await Controller(t, GenMock().Object, user)
             .Create(Req(nameof(RoadmapMode.Reinforce), TwoWeakSessions(t, user)), default);
-        Assert.Contains("3 buổi", Assert.IsType<BadRequestObjectResult>(res).Value!.ToString());
-    }
-
-    [Fact]
-    public async Task NguongCauHinhDuoc_Ha_Xuong_1_Thi_1_Buoi_Du()
-    {
-        using var t = new TestDb();
-        var user = Guid.NewGuid();
-        var one = SeedScoredSession(t, user, ("Tư duy giải quyết vấn đề", 40m, true));
-        var res = await Controller(t, GenMock().Object, user, minSessions: 1)
-            .Create(Req(nameof(RoadmapMode.Reinforce), [one]), default);
         Assert.IsType<CreatedResult>(res);
     }
 
     [Fact]
-    public async Task NguongBang0_VanKhongBoQuaGuardDiemYeu()
+    public void KhongConCauHinhReinforceMinSessions()
     {
-        // Ngưỡng buổi là một mức chất lượng, hạ được. "Phải có điểm yếu" thì KHÔNG — không có
-        // tiêu chí nào cần cải thiện nghĩa là chế độ ôn tập không có gì để ôn.
+        // 🔴 MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc (`NguongCauHinhDuoc_Ha_Xuong_1_...`) cấu hình
+        // `minSessions=1` để chứng minh 1 buổi ĐỦ khi hạ ngưỡng. Guard 1 nay mặc định ≥1 buổi VÔ
+        // ĐIỀU KIỆN (xem Reinforce_ChiMotBuoiCoDiemYeuVaLoiNoiDung_DuDeTao ở trên cho vế hành vi
+        // "1 buổi đủ" — trùng lặp không tránh được vì cùng một sự thật, không còn hai cơ chế khác
+        // nhau để tách biệt). Bài test này đổi vai trò thành ANCHOR chống hồi sinh property đã gỡ:
+        // nếu ai đó thêm lại `ReinforceMinSessions`, bài test đỏ ngay, nhắc lại quyết định đã chốt.
+        Assert.Null(typeof(RoadmapOptions).GetProperty("ReinforceMinSessions"));
+    }
+
+    [Fact]
+    public async Task KhongConNguongCauHinh_VanKhongBoQuaGuardDiemYeu()
+    {
+        // 🔴 MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc (`NguongBang0_VanKhongBoQuaGuardDiemYeu`) dùng
+        // `minSessions=0` (đã GỠ) + sessionIds RỖNG để chứng minh "hạ ngưỡng buổi về 0 không lách
+        // được guard điểm yếu". Với sessionIds rỗng, THỨ TỰ guard MỚI cho Guard 1
+        // (ROADMAP_SESSIONS_REQUIRED) nổ TRƯỚC — không còn tới được nhánh muốn kiểm (đây là 1
+        // trong 2 test "đỏ vì thứ tự guard đổi, không phải nội dung" task đã cảnh báo). Đổi cách
+        // tiếp cận: chọn ĐỦ Guard 1 (1 buổi) nhưng KHÔNG điểm yếu — xác nhận Guard 2 vẫn chặn dù
+        // chỉ 1 buổi (không phụ thuộc SỐ buổi, chỉ phụ thuộc CÓ điểm yếu hay không).
         using var t = new TestDb();
-        var res = await Controller(t, GenMock().Object, Guid.NewGuid(), minSessions: 0)
-            .Create(Req(nameof(RoadmapMode.Reinforce)), default);
-        Assert.Contains("không có gì để ôn lại",
+        var user = Guid.NewGuid();
+        var strong = SeedScoredSession(t, user, ("Tư duy giải quyết vấn đề", 95m, false));
+
+        var res = await Controller(t, GenMock().Object, user)
+            .Create(Req(nameof(RoadmapMode.Reinforce), [strong]), default);
+
+        Assert.Contains("không có gì để xây lộ trình",
             Assert.IsType<BadRequestObjectResult>(res).Value!.ToString());
     }
 
@@ -371,10 +405,10 @@ public class RoadmapReinforceModeTests
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(),
                 It.IsAny<IReadOnlyList<GroundingChunk>?>(),
                 It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>(), It.IsAny<IReadOnlyList<RoadmapMistake>?>()))
             .Callback<string, string, string, IReadOnlyList<string>, IReadOnlyList<string>?,
                 IReadOnlyList<GroundingChunk>?, IReadOnlyList<CriterionEvidence>?, RoadmapMode,
-                CancellationToken>((_, _, _, _, _, _, _, m, _) => seen = m)
+                CancellationToken, IReadOnlyList<RoadmapMistake>?>((_, _, _, _, _, _, _, m, _, _) => seen = m)
             .ReturnsAsync(new LessonTheoryResult("## Lý thuyết\n\nNội dung đủ dài để dùng được.", []));
 
         var lessonService = new RoadmapLessonService(

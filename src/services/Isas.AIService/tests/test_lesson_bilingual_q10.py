@@ -81,7 +81,7 @@ async def test_provider_ghep_bai_tieng_anh_bang_nhan_tieng_anh(english_allowed):
     provider._client.aio.models.generate_content = AsyncMock(
         return_value=_fake_gemini_response(_lesson_en(["Database design"])))
 
-    theory, _, _ = await provider.generate_lesson_theory(
+    theory, _, _, _ = await provider.generate_lesson_theory(
         "BE", "Junior", "Normalisation", ["Database design"], None, language="en")
 
     assert f"## {lesson_example_heading('en')}" in theory
@@ -97,7 +97,7 @@ async def test_provider_khong_khai_ngon_ngu_van_ghep_nhan_tieng_viet():
     provider._client.aio.models.generate_content = AsyncMock(
         return_value=_fake_gemini_response(_lesson_en(["Thiết kế CSDL"])))
 
-    theory, _, _ = await provider.generate_lesson_theory(
+    theory, _, _, _ = await provider.generate_lesson_theory(
         "BE", "Junior", "Chuẩn hoá DB", ["Thiết kế CSDL"], None)
 
     assert f"## {EXAMPLE_HEADING}" in theory
@@ -159,7 +159,7 @@ async def test_nhan_xet_lua_hai_cua_bai_tieng_anh_khong_lan_tieng_viet(english_a
         _fake_gemini_response(_lesson_en(["Database design", "Indexing"])),     # đủ
     ])
 
-    theory, _, _ = await provider.generate_lesson_theory(
+    theory, _, _, _ = await provider.generate_lesson_theory(
         "BE", "Junior", "Normalisation", ["Database design", "Indexing"], None,
         language="en")
 

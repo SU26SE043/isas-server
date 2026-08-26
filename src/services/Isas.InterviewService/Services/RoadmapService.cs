@@ -29,6 +29,9 @@ public class RoadmapService : IRoadmapService
     private readonly RoadmapOptions _roadmap;         // ngưỡng buổi tối thiểu cho chế độ ôn tập
     private readonly bool _tieringEnabled;
     private readonly bool _bilingualEnabled;
+    // MIS1-B4 — ngưỡng CÙNG cấu hình mà RoadmapLessonService.cs dùng để tính weaknesses (BC9/E10);
+    // RoadmapMistakeLoader (B5) lọc answer dưới ngưỡng NÀY, không phải một ngưỡng riêng.
+    private readonly ScoringOptions _scoring;
 
     public RoadmapService(
         InterviewDbContext db,
@@ -40,7 +43,8 @@ public class RoadmapService : IRoadmapService
         IOptions<GroundingOptions>? groundingOptions = null,
         IEntitlementClient? entitlements = null,
         IConfiguration? config = null,
-        IOptions<RoadmapOptions>? roadmapOptions = null)
+        IOptions<RoadmapOptions>? roadmapOptions = null,
+        IOptions<ScoringOptions>? scoringOptions = null)
     {
         _db = db;
         _storage = storage;
@@ -52,6 +56,7 @@ public class RoadmapService : IRoadmapService
         _roadmap = roadmapOptions?.Value ?? new RoadmapOptions();
         _tieringEnabled = bool.TryParse(config?["Tiering:Enabled"], out var enabled) && enabled;
         _bilingualEnabled = bool.TryParse(config?["Interview:Bilingual:Enabled"], out var bilingual) && bilingual;
+        _scoring = scoringOptions?.Value ?? new ScoringOptions();
     }
 
     public async Task<RoadmapResponse> CreateAsync(
@@ -69,6 +74,27 @@ public class RoadmapService : IRoadmapService
         var mode = ValidateMode(req.Mode);
         // Cùng lý do — trình độ hiện tại candidate tự khai ở wizard, kiểm TRƯỚC mọi I/O.
         var currentLevelOverride = ValidateCurrentLevel(req.CurrentLevel);
+
+        // MIS1-B6 — GUARD 1: roadmap nay XÂY TỪ LỖI THẬT (MIS1-B4/B5), nên không còn nhánh "roadmap
+        // CHUẨN theo level" khi không chọn buổi nào — thiếu buổi = không có gì để xây. Đặt TRƯỚC lời
+        // gọi I/O đầu tiên (entitlement) — cùng lý do các `Validate*` ở trên: lỗi đầu vào phải nổ
+        // TRƯỚC khi đốt một lượt Gemini hay chạm mạng.
+        //
+        // Mã lỗi PREFIX (ROADMAP_...) đứng trước câu tiếng Việt để frontend so khớp MÃ, không phải
+        // văn xuôi: ba loại 400 của Guard 1/2/3 khác nhau về việc người dùng phải làm (luyện thêm /
+        // chọn buổi khác / bớt buổi) — so khớp câu chữ sẽ vỡ khi đổi UI string hoặc đổi ngôn ngữ.
+        if (req.SessionIds is not { Count: > 0 })
+            throw new InvalidOperationException(
+                "ROADMAP_SESSIONS_REQUIRED: Lộ trình được xây từ chính những chỗ bạn còn hụt trong " +
+                "các buổi luyện đã chấm, nên cần chọn ít nhất một buổi đã có kết quả. Hãy luyện một " +
+                "buổi rồi quay lại.");
+        // Trần — mã RIÊNG với ca "chưa chọn buổi nào" ngay trên: dùng chung mã thì người chọn 25
+        // buổi sẽ nhận nhầm câu "bạn chưa chọn buổi luyện nào".
+        if (req.SessionIds.Count > MaxSourceSessions)
+            throw new InvalidOperationException(
+                $"ROADMAP_TOO_MANY_SESSIONS: Một lộ trình chỉ xây được từ tối đa {MaxSourceSessions} " +
+                $"buổi luyện (đang chọn {req.SessionIds.Count}). Hãy bớt bớt rồi chọn lại.");
+
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
         // CV optional — VẪN kiểm chủ sở hữu (null → 404; khác chủ → 403; rỗng → 400) và vẫn lưu
@@ -85,8 +111,10 @@ public class RoadmapService : IRoadmapService
         if (req.CvId is not null)
             _ = await ReadOwnedParsedTextAsync(req.CvId.Value, candidateId, "CV", ct);
 
-        // BC17 — baseline lấy từ CÁC BUỔI CANDIDATE CHỌN (thôi tự gom MỌI buổi Scored). SessionIds
-        // rỗng/null → roadmap CHUẨN theo level (baseline/weakness/sources = null, KHÔNG query buổi nào).
+        // BC17 — baseline lấy từ CÁC BUỔI CANDIDATE CHỌN (thôi tự gom MỌI buổi Scored). MIS1-B6 —
+        // GUARD 1 (ngay trên) đã đảm bảo `req.SessionIds` LUÔN {Count: > 0} tới đây; khối `if` dưới
+        // đây giờ luôn vào — GIỮ NGUYÊN dạng `if` (không tháo dỡ) để không phải viết lại/thụt lề toàn
+        // bộ thân hàm cho một thay đổi ngoài phạm vi bước này.
         Dictionary<string, decimal>? baseline = null;
         List<RoadmapWeakness>? weaknesses = null;
         List<Guid>? sourceSessionIds = null;
@@ -138,20 +166,58 @@ public class RoadmapService : IRoadmapService
                         .OrderBy(g => g.Key)
                         .Select(g => $"{g.Key} ({string.Join(", ", g.Select(s => s.Id))})")));
 
+            // MIS1-B6 — GUARD NGÔN NGỮ: cùng vị trí (sau guard sở hữu, để nêu đích danh id an toàn)
+            // và cùng lý do với guard lệch nghề ngay trên. Buổi tiếng Anh làm nguồn cho lộ trình
+            // tiếng Việt sẽ trích NGUYÊN VĂN câu hỏi/lý do tiếng Anh (RoadmapMistakeLoader) vào bài
+            // giảng tiếng Việt — khác lệch nghề (chỉ sai TÊN tiêu chí bám vào), lệch ngôn ngữ làm
+            // toàn bộ nội dung trích ra sai NGÔN NGỮ của bài giảng.
+            var languageMismatch = chosen.Where(s => s.Language != language).ToList();
+            if (languageMismatch.Count > 0)
+                throw LanguageMismatchSource(
+                    "Buổi luyện đã chọn", language,
+                    string.Join("; ", languageMismatch
+                        .GroupBy(s => s.Language)
+                        .OrderBy(g => g.Key)
+                        .Select(g => $"{g.Key} ({string.Join(", ", g.Select(s => s.Id))})")));
+
             // Newest-first: tiêu chí xuất hiện lần đầu (buổi mới nhất) thắng → baseline = % hiện tại.
+            //
+            // MIS1-B4 — `CriterionIds` KHÔNG thể lấy theo cùng luật "chỉ buổi mới nhất": rubric_criteria
+            // có Version + custom-per-candidate (BC16), nên "cùng một TÊN tiêu chí" ở hai buổi khác
+            // nhau có thể mang hai ID KHÁC NHAU (đổi version rubric, hoặc chuyển rubric riêng giữa
+            // các buổi). Lấy 1 id (của buổi mới nhất) sẽ âm thầm bỏ sót RoadmapMistakeLoader của
+            // những buổi mang id khác — 0 lỗi, 0 cảnh báo, một nhánh hiếm gặp lặng lẽ thành đường
+            // chính. `RoadmapWeakness` là record bất biến ⇒ BẮT BUỘC 2 lượt: gom hết id ở lượt 1 rồi
+            // mới dựng record ở lượt 2 (không patch được record đã tạo).
             var withScores = chosen.Where(s => s.CriterionScores.Count > 0).ToList();
             if (withScores.Count > 0)
             {
                 baseline = new Dictionary<string, decimal>();
-                var weak = new List<RoadmapWeakness>();
+                var criterionIdsByName = new Dictionary<string, HashSet<Guid>>(StringComparer.Ordinal);
+                var weakNamesInOrder = new List<string>();
+                var weakNamesSeen = new HashSet<string>(StringComparer.Ordinal);
+
+                // Lượt 1 — gom SONG SONG: baseline/danh sách yếu lấy % + cờ NeedsImprovement của
+                // buổi MỚI NHẤT (first-seen thắng, giữ nguyên luật cũ); CriterionIds gom từ MỌI buổi
+                // (kể cả buổi cũ hơn gặp SAU trong vòng lặp newest-first này).
                 foreach (var s in withScores)
                     foreach (var cs in s.CriterionScores)
                     {
+                        if (!criterionIdsByName.TryGetValue(cs.CriterionName, out var ids))
+                            criterionIdsByName[cs.CriterionName] = ids = [];
+                        ids.Add(cs.CriterionId);
+
                         if (baseline.ContainsKey(cs.CriterionName)) continue;
                         baseline[cs.CriterionName] = cs.Percentage;
-                        if (cs.NeedsImprovement)
-                            weak.Add(new RoadmapWeakness(cs.CriterionName, cs.Percentage));
+                        if (cs.NeedsImprovement && weakNamesSeen.Add(cs.CriterionName))
+                            weakNamesInOrder.Add(cs.CriterionName);
                     }
+
+                // Lượt 2 — dựng RoadmapWeakness (bất biến) từ 2 dict đã gom XONG ở lượt 1, giữ
+                // ĐÚNG thứ tự first-seen của lượt 1 (khớp hành vi cũ khi chưa có CriterionIds).
+                var weak = weakNamesInOrder
+                    .Select(name => new RoadmapWeakness(name, baseline[name], criterionIdsByName[name]))
+                    .ToList();
 
                 weaknesses = weak.Count > 0 ? weak : null;
             }
@@ -160,31 +226,27 @@ public class RoadmapService : IRoadmapService
             sourceSessionIds = chosen.Select(s => s.Id).ToList();
         }
 
-        // 🔴 Chế độ ôn tập BẮT BUỘC có dữ liệu điểm yếu — và khi thiếu thì phải NÓI RA, tuyệt đối
-        // không âm thầm sinh một lộ trình LevelUp rồi dán nhãn "ôn tập". Nếu để rơi im lặng,
-        // `build_roadmap_prompt` sẽ đi đúng nhánh else "ứng viên CHƯA có buổi luyện nào được chấm
-        // → tạo roadmap CHUẨN theo level" — tức chính hành vi LevelUp — mà người dùng vẫn thấy
-        // lộ trình của mình được ghi là Reinforce. Đây là lớp lỗi "nén im lặng" đã cắn dự án
-        // nhiều lần (chọn Thực tập nhận Mới-tốt-nghiệp; chọn Lead nhận Senior).
+        // MIS1-B6 — GUARD 2: roadmap BẮT BUỘC có dữ liệu điểm yếu để xây từ — và khi thiếu thì phải
+        // NÓI RA, tuyệt đối không âm thầm sinh một lộ trình rỗng nội dung rồi dán nhãn như bình
+        // thường. Trước bước này guard CHỈ chạy cho `Reinforce` (roadmap LevelUp "hợp lý" khi không
+        // có điểm yếu — nó vốn không xây từ lỗi thật). Nay roadmap XÂY TỪ LỖI THẬT ở CẢ HAI mode
+        // (MIS1-B4/B5) nên guard PHẢI vô điều kiện — thiếu nó, LevelUp không chọn buổi có điểm yếu
+        // vẫn "thành công" với một lộ trình không bám gì cụ thể, đúng lớp lỗi "nén im lặng" mà bản
+        // gốc của guard này sinh ra để chặn (chọn Thực tập nhận Mới-tốt-nghiệp; chọn Lead nhận Senior).
         //
-        // HAI guard TÁCH RỜI, mỗi cái một câu lỗi riêng, vì người dùng phải làm hai việc khác nhau:
-        //   • thiếu BUỔI  → đi luyện thêm (hoặc chọn thêm buổi cũ vào danh sách),
-        //   • thiếu ĐIỂM YẾU → các buổi đó không có tiêu chí nào cần cải thiện, phải chọn buổi khác.
-        // Gộp thành một câu chung sẽ bảo người vừa luyện 5 buổi rất tốt rằng họ "chưa luyện đủ".
-        if (mode == RoadmapMode.Reinforce)
-        {
-            var chosenCount = sourceSessionIds?.Count ?? 0;
-            if (chosenCount < _roadmap.ReinforceMinSessions)
-                throw new InvalidOperationException(
-                    $"Chế độ ôn tập cần ít nhất {_roadmap.ReinforceMinSessions} buổi luyện đã được " +
-                    $"chấm để biết bạn hay sai ở đâu (đang chọn {chosenCount}). Hãy luyện thêm rồi " +
-                    "chọn các buổi đó, hoặc tạo lộ trình ở chế độ LevelUp.");
-
-            if (weaknesses is not { Count: > 0 })
-                throw new InvalidOperationException(
-                    "Các buổi luyện đã chọn không có tiêu chí nào bị đánh dấu cần cải thiện, nên " +
-                    "không có gì để ôn lại. Hãy chọn buổi khác, hoặc tạo lộ trình ở chế độ LevelUp.");
-        }
+        // Câu chữ khác Guard 1 (:74 phía trên) có chủ đích — người dùng phải làm HAI việc khác nhau:
+        //   • Guard 1 (thiếu BUỔI)      → đi luyện thêm (hoặc chọn thêm buổi cũ vào danh sách),
+        //   • Guard 2 (thiếu ĐIỂM YẾU)  → các buổi đó không có tiêu chí nào cần cải thiện, phải
+        //     CHỌN BUỔI KHÁC — không phải luyện thêm. Gộp chung một câu sẽ bảo người vừa luyện 5
+        //     buổi rất tốt rằng họ "chưa luyện đủ".
+        //
+        // 🔴 Bỏ nhánh thoát "hoặc tạo lộ trình ở chế độ LevelUp" khỏi câu chữ gốc (guard cũ, chỉ
+        // chạy cho Reinforce): LevelUp nay CŨNG bị chặn bởi chính guard này, giữ câu đó sẽ là lời
+        // khuyên SAI (đề nghị một lối thoát không tồn tại).
+        if (weaknesses is not { Count: > 0 })
+            throw new InvalidOperationException(
+                "ROADMAP_NO_WEAKNESS: Các buổi luyện đã chọn không có tiêu chí nào bị đánh dấu cần " +
+                "cải thiện, nên không có gì để xây lộ trình. Hãy chọn buổi khác.");
 
         // BC17 — phân tích CV đã có (BC7) làm NGỮ CẢNH prompt. CHỈ ĐỌC row đã lưu — KHÔNG gọi lại
         // /analyze-cv, KHÔNG reserve/consume credit (D22, tạo roadmap free). Thiếu → 404; khác chủ → 403.
@@ -259,23 +321,65 @@ public class RoadmapService : IRoadmapService
         // thật khi AIService không được cấp danh sách này).
         var criteria = await LoadCriteriaNamesAsync(candidateId, req.JobCategory, language, ct);
 
-        // BE-5 — bằng chứng hành vi: Reasoning (E11) của answer điểm THẤP NHẤT cho ≤3 tiêu chí yếu
-        // nhất, thay cho việc chỉ gửi con số %. `sourceSessionIds`/`weaknesses` null → rỗng (không
-        // chọn buổi nào ⇒ không có gì để trích).
-        var evidence = weaknesses is { Count: > 0 } && sourceSessionIds is { Count: > 0 }
-            ? await RoadmapEvidenceLoader.LoadAsync(_db, sourceSessionIds, weaknesses, ct)
-            : [];
+        // MIS1-B5 — id CẤP TRƯỚC (không phải lúc `new Roadmap`) vì RoadmapMistakeLoader/entity
+        // RoadmapMistake cần `RoadmapId` NGAY để gắn FK trước khi roadmap được Add. Chưa `SaveChangesAsync`
+        // nên chưa có gì ràng buộc ở DB tại thời điểm này (AI lỗi → không Add gì, id vứt đi vô hại).
+        var roadmapId = Guid.NewGuid();
 
+        // MIS1-B4/B5 — trích LỖI SAI cụ thể (tối đa 4 tiêu chí yếu nhất × 3 lỗi/tiêu chí) từ các
+        // buổi đã chọn, dưới ngưỡng CÙNG cấu hình với NeedsImprovement (BC9/E10) — `_scoring`,
+        // KHÔNG một ngưỡng riêng.
+        var loadedMistakes = await RoadmapMistakeLoader.LoadAsync(
+            _db, roadmapId, sourceSessionIds ?? [], weaknesses ?? [], _scoring.ImprovementThresholdPct, ct);
+
+        // MIS1-B6 — GUARD 3: Guard 2 chỉ đảm bảo CÓ tiêu chí bị đánh dấu yếu (session_criterion_
+        // scores), KHÔNG đảm bảo trích được LỖI NỘI DUNG nào — RoadmapMistakeLoader loại bỏ tiêu chí
+        // `DeliveryMetrics` (chấm bằng số đo âm học, không có "câu trả lời hụt" dạng văn bản để
+        // trích). Ca "yếu toàn bộ ở cách nói" lọt qua Guard 2 nhưng KHÔNG có gì để roadmap bám vào —
+        // phải chặn RIÊNG ở đây, SAU khi loader đã chạy thật (không suy được từ session_criterion_
+        // scores, phải hỏi tận answer_scores).
+        //
+        // 🔴 ĐÃ CÂN NHẮC VÀ CẮT phương án khác: dựng 1 hàng roadmap_mistakes tổng hợp ("d1") chứa
+        // số đo cách nói cho AI bám thay. Cắt vì: prod đo 13/13 user có buổi đã chấm đều trích được
+        // lỗi nội dung ⇒ nhánh này gần như không chạy; nó lại kéo theo một hợp đồng dây MỚI (số đo
+        // phải đi tới tận frontend), một nhánh render toàn null-field bên FE, và một cách gộp số đo
+        // chưa ai chốt. Một câu từ chối trung thực rẻ hơn bốn chỗ có thể sai.
+        if (loadedMistakes.Count == 0)
+            throw new InvalidOperationException(
+                "ROADMAP_NO_CONTENT_MISTAKES: Các buổi bạn chọn không có câu trả lời nào hụt về " +
+                "nội dung — bạn đang yếu ở cách trình bày, không phải kiến thức. Hãy luyện một buổi " +
+                "khó hơn để tìm đúng chỗ hụt.");
+
+        // Guard 3 vừa đảm bảo `loadedMistakes.Count > 0` — không còn nhánh rỗng cần gửi `null`
+        // xuống generator nữa (khác lúc `mistakes` mới ra đời ở MIS1-B5, khi caller có thể chưa có
+        // gì để gom).
+        var mistakesForAi = loadedMistakes;
+
+        // 🔴 MIS1-B5 — `evidence` GỠ KHỎI ĐÂY (đi cùng chế độ giáo trình MIS1-B2 đã bỏ): `mistakes`
+        // ở trên nay là nguồn GOM CHỦ ĐỀ, giàu hơn evidence (có id để AI trỏ ngược). KHÔNG xoá
+        // tham số `evidence` khỏi interface/`build_roadmap_prompt` — chỉ đơn giản KHÔNG còn caller
+        // nào truyền dữ liệu cho nó (giữ `RoadmapEvidenceLoader.cs`/test nguyên vẹn, xem MIS1-B5).
+        //
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
             ? await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses,
-                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope, evidence, mode, currentLevel, ct)
+                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope,
+                mode: mode, currentLevel: currentLevel, ct: ct, mistakes: mistakesForAi)
             : await _generator.GenerateAsync(req.JobCategory.ToString(), req.Level.ToString(), weaknesses,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope, evidence, mode, currentLevel);
+                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope,
+                mode: mode, currentLevel: currentLevel, mistakes: mistakesForAi);
+
+        // 🔴 MIS1-B5 — NARROW LẠI Ở .NET: AI tự gán `mistakeIds` khi gom chủ đề (MIS1-B2), nhưng
+        // CẤM tin thẳng — id lạ/bịa phải bị lọc trước khi chạm DB (mẫu NarrowToCited của
+        // RoadmapLessonService, chống bịa BY-CONSTRUCTION như focusCriteria/BE-1 lẽ ra phải làm ở
+        // .NET nhưng hiện chỉ lọc phía Python — KHÔNG lặp lại lỗ đó ở đây: hai service deploy RỜI
+        // NHAU, một bản AIService lỗi ghi thẳng id treo là ghi thẳng vào DB InterviewService).
+        var validMistakeKeys = new HashSet<string>(
+            loadedMistakes.Select(m => m.MistakeKey), StringComparer.Ordinal);
 
         var roadmap = new Roadmap
         {
-            Id = Guid.NewGuid(),
+            Id = roadmapId,
             CandidateId = candidateId,
             // BE-6 — tên người dùng gửi đã được chuẩn hoá ở ĐẦU hàm (trước lời gọi AI); vắng thì
             // sinh mặc định tại đây để `CreatedAt` dùng cho tên khớp đúng giá trị vừa gán bên dưới.
@@ -300,7 +404,12 @@ public class RoadmapService : IRoadmapService
                 OrderNo = milestoneOrder++,
                 Title = m.Title,
                 FocusCriteria = m.FocusCriteria.ToList(),
-                Status = MilestoneStatus.Pending
+                Status = MilestoneStatus.Pending,
+                // MIS1-B5 — narrow: null (AI không trả field này) giữ null; có trả (kể cả rỗng sau
+                // lọc) → GIỮ milestone với refs rỗng, KHÔNG drop (khác id lạ ở focusCriteria: một
+                // milestone không gom được lỗi nào vẫn là milestone hợp lệ ở tầng .NET — quyết định
+                // "có nên tồn tại không" đã chốt xong ở AIService/MIS1-B2, .NET chỉ lọc id).
+                MistakeRefs = NarrowMistakeRefs(m.MistakeIds, validMistakeKeys)
             };
 
             var lessonOrder = 1;
@@ -311,11 +420,17 @@ public class RoadmapService : IRoadmapService
                     OrderNo = lessonOrder++,
                     Title = l.Title,
                     Status = LessonStatus.Theory,
-                    TheoryContent = null
+                    TheoryContent = null,
+                    MistakeRefs = NarrowMistakeRefs(l.MistakeIds, validMistakeKeys)
                 });
 
             roadmap.Milestones.Add(milestone);
         }
+
+        // MIS1-B4/B5 — lưu CÙNG transaction với roadmap (roadmap_mistakes.roadmap_id FK Cascade tới
+        // `roadmaps`; roadmap AI lỗi ở trên đã throw TRƯỚC khi tới đây nên không có hàng mồ côi).
+        if (loadedMistakes.Count > 0)
+            _db.Set<RoadmapMistake>().AddRange(loadedMistakes);
 
         // RAG grounding (Cách 2 — precompute): batch-embed query từng lesson (tên bài + focus milestone +
         // jobCategory) trong 1 lần /embed → Qdrant search → LƯU snapshot vào lesson.GroundingRefs. Lúc MỞ
@@ -559,6 +674,12 @@ public class RoadmapService : IRoadmapService
     private const int FocusMaxChars = 2000;
     private const int SummaryMaxChars = 4000;
 
+    // MIS1-B6 — GUARD 1: trần số buổi làm nguồn cho 1 lộ trình. Không phải giá trị tuỳ ý — RoadmapMistakeLoader
+    // đã tự ép trần 4 tiêu chí × 3 lỗi = 12 rồi, nhưng KHÔNG ép trần số buổi ĐẦU VÀO của truy vấn
+    // (Distinct + IN-list) lẫn kích thước prompt gửi AI (cvAnalysisSummary/priorRoadmapSummary/criteria
+    // đi kèm mỗi buổi). 20 đủ rộng cho mọi wizard picker thực tế, đủ hẹp để chặn payload bất thường.
+    private const int MaxSourceSessions = 20;
+
     // BC17 — deserialize final_report khớp cách RoadmapReportService serialize (Web defaults).
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
@@ -612,6 +733,22 @@ public class RoadmapService : IRoadmapService
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
 
+    /// <summary>
+    /// MIS1-B5 — lọc <paramref name="ids"/> (mistake_key AI tự gán) về đúng tập
+    /// <paramref name="validKeys"/> (mistake_key ĐÃ CẤP thật cho lượt gọi này). Chống bịa
+    /// BY-CONSTRUCTION (mẫu <c>RoadmapLessonService.NarrowToCited</c>) — CHÍNH .NET phải lọc,
+    /// không tin nhãn AIService trả về dù phía Python đã có <c>filter_milestone_mistakes</c>: hai
+    /// service deploy RỜI NHAU, một bản AIService cũ/lỗi ghi thẳng id treo xuống đây là ghi thẳng
+    /// vào DB InterviewService.
+    ///
+    /// <c>null</c> (AI không trả field này — bản cũ, hoặc lượt không gửi mistakes) → giữ
+    /// <c>null</c>. Có trả (kể cả rỗng SAU lọc) → danh sách đã lọc, KHÔNG BAO GIỜ drop milestone/
+    /// lesson vì lý do này — quyết định "gom được lỗi nào chưa" là việc của AIService (MIS1-B2).
+    /// </summary>
+    private static List<string>? NarrowMistakeRefs(
+        IReadOnlyList<string>? ids, HashSet<string> validKeys)
+        => ids?.Where(validKeys.Contains).ToList();
+
     // Đọc parsed_text của file thuộc về candidate. null → 404; khác chủ → 403; rỗng → 400 (mẫu CvAnalysisService).
     private async Task<string> ReadOwnedParsedTextAsync(
         Guid fileId, Guid candidateId, string label, CancellationToken ct)
@@ -655,6 +792,17 @@ public class RoadmapService : IRoadmapService
         string source, JobCategory wanted, string offending)
         => new($"{source} thuộc nghề khác với lộ trình đang tạo ({wanted}): {offending}. " +
                "Hãy bỏ chọn nguồn lệch nghề, hoặc đổi nghề của lộ trình cho khớp.");
+
+    // MIS1-B6 — Guard NGÔN NGỮ, mẫu CrossCategorySource ngay trên (đứng riêng, không tái dùng
+    // chung hàm: CrossCategorySource còn được 2 guard KHÁC không thuộc bước này gọi tới — cùng sửa
+    // vào một hàm dùng chung là chạm cả những call site ngoài phạm vi bước này). Mang PREFIX mã lỗi
+    // — ROADMAP_LANGUAGE_MISMATCH — vì đây là guard MỚI của MIS1-B6, khác CrossCategorySource cũ
+    // chưa có mã (ngoài phạm vi bước này để thêm).
+    private static InvalidOperationException LanguageMismatchSource(
+        string source, string wanted, string offending)
+        => new($"ROADMAP_LANGUAGE_MISMATCH: {source} thuộc ngôn ngữ khác với lộ trình đang tạo " +
+               $"({wanted}): {offending}. Hãy bỏ chọn buổi lệch ngôn ngữ, hoặc đổi ngôn ngữ của " +
+               "lộ trình cho khớp.");
 
     // BE-4 — độ dài roadmap candidate CHỌN. Tập đóng, case-sensitive (mẫu ValidateSeniority của
     // PracticeService) — chỉ `null` (client KHÔNG gửi field) mặc định "Standard"; chuỗi rỗng/giá
@@ -801,7 +949,13 @@ public class RoadmapService : IRoadmapService
                 attemptCounts.TryGetValue(l.Id, out var attempts) ? attempts : 0,
                 // Luật "được làm lại không" dùng CHUNG một hàm với đường chi tiết lesson — hai bản
                 // sao lệch nhau nghĩa là FE hiện nút ở màn này mà không hiện ở màn kia.
-                RoadmapLessonService.CanRetry(l.Status))).ToList()
+                RoadmapLessonService.CanRetry(l.Status)
+                // MIS1-B5 — CẤM tường minh: KHÔNG truyền `mistakes` ở đường GET /roadmaps/{id} này
+                // (hợp đồng không hứa mistakeReview ở đây — chỉ OpenLessonAsync mới trả, xem
+                // RoadmapLessonService.MapLesson). Để mặc định null.
+                )).ToList(),
+            // MIS1-B5 — đã NARROW ở lúc tạo (CreateAsync); đọc thẳng Count, không lọc lại.
+            m.MistakeRefs?.Count ?? 0
         )).ToList(),
         r.CreatedAt,
         r.CompletedAt,

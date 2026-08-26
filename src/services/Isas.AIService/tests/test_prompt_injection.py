@@ -88,20 +88,19 @@ def test_roadmap_prompt_wraps_weaknesses_as_data():
 def test_roadmap_prompt_current_level_khong_lot_thanh_lenh():
     """`current_level` do LLM sinh (từ CV) nên vẫn là đầu vào KHÔNG tin được.
 
-    Nó được đưa vào prompt như CHỈ THỊ chứ không bọc delimiter — cố ý, vì cả tác dụng của nó là
-    ra lệnh bỏ phần nhập môn. An toàn không đến từ delimiter mà từ chỗ khác: provider chỉ nhận
-    đúng 4 giá trị trong `CV_CURRENT_LEVELS`, mọi thứ khác thành `None`. Test này khoá đúng vế
-    đó — chuỗi lạ không bao giờ tới được prompt.
+    🔴 MIS1-B2 — khối SÀN "TRÌNH ĐỘ HIỆN TẠI CỦA NGƯỜI HỌC" đã bị GỠ HẲN khỏi
+    `build_roadmap_prompt` (vô nghĩa khi nội dung roadmap nay gom từ LỖI THẬT, không còn suy từ
+    CV) — `current_level` giờ KHÔNG render bất kỳ nội dung nào trong prompt, dù giá trị hợp lệ
+    hay không. An toàn nay MẠNH HƠN bản trước: không chỉ chuỗi lạ không lọt vào, mà kể cả giá trị
+    hợp lệ (`"Junior"`) cũng không còn đường vào — không có gì để inject vào.
     """
-    from app.schemas import CV_CURRENT_LEVELS
     prompt = build_roadmap_prompt(
         job_category="BE", level="Senior", weaknesses=None, current_level=INJECT)
     assert INJECT not in prompt, "chuỗi tự do không được lọt vào prompt qua current_level"
 
     hop_le = build_roadmap_prompt(
         job_category="BE", level="Senior", weaknesses=None, current_level="Junior")
-    assert "TRÌNH ĐỘ HIỆN TẠI CỦA NGƯỜI HỌC" in hop_le
-    assert "Junior" in CV_CURRENT_LEVELS
+    assert "TRÌNH ĐỘ HIỆN TẠI CỦA NGƯỜI HỌC" not in hop_le
 
 
 # ── build_roadmap_prompt → focus, cvAnalysisSummary, priorRoadmapSummary (BC17) ─

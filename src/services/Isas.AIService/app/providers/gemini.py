@@ -12,13 +12,14 @@ from google.genai import types
 from app.config import settings
 from app.resources import sanitize_resources, count_rejected_urls
 from app.lesson_quality import (
-    evaluate_lesson_theory, message as lesson_message, render_lesson_markdown,
+    evaluate_lesson_theory, evaluate_mistake_coverage, message as lesson_message,
+    render_lesson_markdown,
 )
 from app.question_quality import coverage_defects, verify_defect
 from app.roadmap_mode import DEFAULT_MODE
 from app.roadmap_quality import (
-    DEFAULT_SCOPE, filter_milestone_criteria, message as roadmap_message,
-    scope_counts, truncate_to_scope,
+    DEFAULT_SCOPE, filter_milestone_criteria, filter_milestone_mistakes,
+    message as roadmap_message, scope_counts, truncate_to_scope,
 )
 from app import prompt_registry, timing
 from app.prompts import (
@@ -382,10 +383,16 @@ class LessonTheoryResult(NamedTuple):
     ``generate_lesson_theory()`` TRƯỚC ĐÂY trả ``(theory, resources)``; nay thêm
     ``cited_chunk_ids`` (danh sách phẳng ⊆ tập grounding đã cấp) → 3 trường, call site cũ
     ``theory, resources = ...`` vỡ TO ngay lần chạy đầu (mẫu F13). ``cited_chunk_ids`` = None khi
-    ungrounded → endpoint không trả field citedChunkIds (giữ shape cũ)."""
+    ungrounded → endpoint không trả field citedChunkIds (giữ shape cũ).
+
+    MIS1 thêm ``mistake_review`` (danh sách dict khớp shape ``MistakeReviewItem``) — None khi
+    request không gửi ``mistakes`` (endpoint không trả field mistakeReview, giữ shape cũ). Có
+    mặc định nên mọi unpack 3-trường cũ vẫn vỡ TO đúng như thiết kế (mẫu ``cited_chunk_ids``) —
+    call site PHẢI được sửa để nhận đủ 4 giá trị, không phải âm thầm bỏ qua."""
     theory: str
     resources: list[dict]
     cited_chunk_ids: list[str] | None = None
+    mistake_review: list[dict] | None = None
 
 
 def _keep_known_ids(raw, allowed: set[str]) -> list[str]:
@@ -1908,6 +1915,7 @@ class GeminiProvider(QuestionProvider):
                                evidence: list[dict] | None = None,
                                mode: str = DEFAULT_MODE,
                                current_level: str | None = None,
+                               mistakes: list[dict] | None = None,
                                _retry_feedback: str | None = None,
                                _attempt: int = 1) -> list[dict]:
         """
@@ -1935,17 +1943,33 @@ class GeminiProvider(QuestionProvider):
         khi trả lời (``truncate_to_scope`` — milestone/lesson có thứ tự Ý NGHĨA, nền tảng trước nên
         phải là phần sống sót). KHÔNG raise khi vượt trần — cùng lý do "không trừ credit" ở trên.
 
-        BE-5 — ``evidence`` = Reasoning (E11, trích NGUYÊN VĂN lời ứng viên) của answer điểm THẤP
-        NHẤT cho tiêu chí yếu, đã tải + cắt trần sẵn (.NET ``RoadmapEvidenceLoader``). Chẩn đoán
-        hành vi cụ thể thay cho con số % trừu tượng — xem ``build_evidence_block``.
+        BE-5 — ``evidence`` KHÔNG còn dùng trong hàm này kể từ MIS1-B2 (xem ``mistakes`` ngay
+        dưới) — vẫn nhận tham số để không vỡ chữ ký caller, nhưng không render vào prompt.
+
+        MIS1-B2 — ``mistakes`` = LỖI SAI (``id`` do .NET MINT) THAY THẾ ``evidence`` làm nguồn GOM
+        CHỦ ĐỀ: mỗi milestone model sinh ra PHẢI liệt kê ``mistakeIds`` gồm đúng id nó gom lại — id
+        lạ bị :func:`app.roadmap_quality.filter_milestone_mistakes` lọc (chống bịa
+        BY-CONSTRUCTION, mẫu ``citedChunkId``/``filter_milestone_criteria``). Milestone gom KHÔNG
+        được lỗi nào (rỗng ngay từ đầu, hoặc rỗng sau khi lọc id bịa) → retry ĐÚNG MỘT LẦN (CHUNG
+        thang retry với ``criteria`` — không dựng thang thứ hai); hết lượt vẫn rỗng → milestone đó
+        bị DROP hẳn (khác ``criteria``: focusCriteria rỗng vẫn có nghĩa, mistakeIds rỗng thì
+        không — milestone không rút ra từ lỗi nào là milestone không nên tồn tại). Drop sạch
+        không còn milestone nào → ``ValueError`` với prefix cố định ``ROADMAP_ALL_MILESTONES_
+        DROPPED`` để .NET/test phân biệt được với lỗi AI thường.
+
+        ``mistakes`` rỗng/None → không lọc gì, không retry vì lý do này, không raise — hành vi cũ.
 
         Trả về: list dict milestone
-          [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}] }, ... ]
+          [ { "title": str, "focusCriteria": [str], "lessons": [{"title": str}],
+              "mistakeIds": [str] }, ... ]  (``mistakeIds`` luôn có mặt, có thể rỗng)
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
         known_names = [str(c.get("name", "")).strip() for c in (criteria or [])
                        if isinstance(c, dict) and str(c.get("name", "")).strip()]
+        # MIS1-B2 — id do .NET MINT (không phải model tự đặt) → khớp CHÍNH XÁC, không casefold.
+        known_ids = [str(m.get("id", "")).strip() for m in (mistakes or [])
+                     if isinstance(m, dict) and str(m.get("id", "")).strip()]
         prompt = build_roadmap_prompt(
             job_category, level, weaknesses,
             focus=focus,
@@ -1958,7 +1982,33 @@ class GeminiProvider(QuestionProvider):
             evidence=evidence,
             mode=mode,
             current_level=current_level,
+            mistakes=mistakes,
         )
+
+        # MIS1-B2 — khai TƯỜNG MINH `mistakeIds` ở CẢ HAI cấp (milestone + lesson), CÓ ĐIỀU KIỆN
+        # theo `known_ids`: Gemini structured-output CHỈ emit field có trong response_schema, dù
+        # prompt có bảo cite bao nhiêu lần — thiếu chỗ này thì mistakeIds KHÔNG BAO GIỜ ra khỏi
+        # model. KHÔNG thêm vào `required`: model gom milestone không được lỗi nào (rồi bị lọc/
+        # drop sau đó) không nên bị JSON schema bắt lỗi cứng ngay tại chỗ.
+        lesson_properties: dict = {"title": {"type": "string"}}
+        milestone_properties: dict = {
+            "title": {"type": "string"},
+            "focusCriteria": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "lessons": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": lesson_properties,
+                    "required": ["title"],
+                },
+            },
+        }
+        if known_ids:
+            milestone_properties["mistakeIds"] = {"type": "array", "items": {"type": "string"}}
+            lesson_properties["mistakeIds"] = {"type": "array", "items": {"type": "string"}}
 
         response = await self._generate(
             "generate_roadmap",
@@ -1973,23 +2023,7 @@ class GeminiProvider(QuestionProvider):
                             "type": "array",
                             "items": {
                                 "type": "object",
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "focusCriteria": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                    },
-                                    "lessons": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "title": {"type": "string"},
-                                            },
-                                            "required": ["title"],
-                                        },
-                                    },
-                                },
+                                "properties": milestone_properties,
                                 "required": ["title", "focusCriteria", "lessons"],
                             },
                         }
@@ -2021,18 +2055,27 @@ class GeminiProvider(QuestionProvider):
             # và retry sau vòng lặp này cần dùng lại giá trị GỐC của `focus` (parameter), không phải
             # focusCriteria của milestone cuối cùng vừa duyệt.
             focus_names = [str(f).strip() for f in (m.get("focusCriteria") or []) if str(f).strip()]
+            # MIS1-B2 — giữ mistakeIds THÔ (chưa lọc theo known_ids — lọc là việc của
+            # filter_milestone_mistakes, SAU truncate_to_scope, mẫu focusCriteria/BE-1). Không giữ
+            # ở đây thì mistakeIds bị DROP trước khi tới bước lọc, và B5 sẽ narrow một tập rỗng mà
+            # không ai biết vì sao.
+            mistake_ids = [str(i).strip() for i in (m.get("mistakeIds") or []) if str(i).strip()]
 
             lessons: list[dict] = []
             for l in (m.get("lessons") or []):
                 if not isinstance(l, dict):
                     continue
                 l_title = str(l.get("title", "")).strip()
-                if l_title:
-                    lessons.append({"title": l_title})
+                if not l_title:
+                    continue
+                lesson_mistake_ids = [str(i).strip() for i in (l.get("mistakeIds") or [])
+                                      if str(i).strip()]
+                lessons.append({"title": l_title, "mistakeIds": lesson_mistake_ids})
             if not lessons:
                 continue  # milestone không có lesson nào hợp lệ -> bỏ
 
-            milestones.append({"title": title, "focusCriteria": focus_names, "lessons": lessons})
+            milestones.append({"title": title, "focusCriteria": focus_names, "lessons": lessons,
+                               "mistakeIds": mistake_ids})
 
         if not milestones:
             raise ValueError("LLM trả về roadmap rỗng sau khi lọc.")
@@ -2052,34 +2095,77 @@ class GeminiProvider(QuestionProvider):
                 "Roadmap scope=%s milestone '%s': model trả lesson thừa trần — cắt %d, giữ đúng "
                 "trần đã cấu hình cho scope này.", scope, title, n)
 
-        # BE-1 — lọc focusCriteria về đúng tập tên đã cấp (chống bịa by-construction). Không lọc
-        # gì nếu caller không truyền criteria (known_names rỗng) → giữ nguyên hành vi cũ.
+        # BE-1 — lọc focusCriteria về đúng tập tên đã cấp; MIS1-B2 — lọc mistakeIds về đúng tập id
+        # đã cấp (cả hai chống bịa by-construction). KHÔNG lọc gì với tập tương ứng rỗng (caller
+        # không truyền criteria/mistakes) → giữ nguyên hành vi cũ cho từng loại độc lập.
+        #
+        # ⚠ CẢ HAI chạy TRƯỚC khi quyết định retry, và dùng CHUNG một thang retry (tối đa 1 lượt
+        # viết lại) — dựng thang thứ hai riêng cho mistakes sẽ thành 4 lượt Gemini cho một roadmap
+        # khi caller gửi cả criteria lẫn mistakes cùng lúc.
+        empty_criteria_titles: list[str] = []
         if known_names:
-            milestones, empty_titles = filter_milestone_criteria(milestones, known_names)
-            if empty_titles:
+            milestones, empty_criteria_titles = filter_milestone_criteria(milestones, known_names)
+            if empty_criteria_titles:
                 logger.warning(
                     "Roadmap: %d milestone mất hết focusCriteria hợp lệ sau khi lọc theo tên "
-                    "tiêu chí đã cấp: %s", len(empty_titles), "; ".join(empty_titles))
-                if _attempt < 2:  # SC1c — ĐÚNG MỘT lượt viết lại, không hơn.
-                    feedback = roadmap_message(
-                        "milestone_no_criteria", language,
-                        titles="; ".join(empty_titles), allowed=", ".join(known_names))
-                    return await self.generate_roadmap(
-                        job_category, level, weaknesses, focus=focus,
-                        cv_analysis_summary=cv_analysis_summary,
-                        prior_roadmap_summary=prior_roadmap_summary,
-                        grounding=grounding, criteria=criteria, scope=scope, language=language,
-                        evidence=evidence,
-                        # Lượt viết lại PHẢI mang theo `mode` VÀ `current_level`: thiếu chúng
-                        # thì roadmap nào rơi vào nhánh retry sẽ âm thầm mất chế độ / mất sàn
-                        # trình độ, mà không lỗi ở đâu cả.
-                        mode=mode, current_level=current_level,
-                        _retry_feedback=feedback, _attempt=_attempt + 1)
-                # Hết lượt retry — GIỮ milestone (focusCriteria rỗng), KHÔNG raise: xem docstring
-                # (một milestone thiếu nhãn không đáng đánh đổi mất TOÀN BỘ roadmap đã sinh đúng).
-                logger.error(
-                    "Roadmap: %d milestone vẫn không có focusCriteria hợp lệ sau %d lượt: %s",
-                    len(empty_titles), _attempt, "; ".join(empty_titles))
+                    "tiêu chí đã cấp: %s", len(empty_criteria_titles),
+                    "; ".join(empty_criteria_titles))
+
+        empty_mistake_titles: list[str] = []
+        if known_ids:
+            milestones, empty_mistake_titles = filter_milestone_mistakes(milestones, known_ids)
+            if empty_mistake_titles:
+                logger.warning(
+                    "Roadmap: %d milestone không gom được lỗi nào sau khi lọc theo id đã cấp: %s",
+                    len(empty_mistake_titles), "; ".join(empty_mistake_titles))
+
+        if (empty_criteria_titles or empty_mistake_titles) and _attempt < 2:
+            # SC1c — ĐÚNG MỘT lượt viết lại, gộp feedback của CẢ HAI loại khiếm khuyết nếu cả hai
+            # cùng xảy ra (không phải hai lượt riêng).
+            feedback_parts: list[str] = []
+            if empty_criteria_titles:
+                feedback_parts.append(roadmap_message(
+                    "milestone_no_criteria", language,
+                    titles="; ".join(empty_criteria_titles), allowed=", ".join(known_names)))
+            if empty_mistake_titles:
+                feedback_parts.append(roadmap_message(
+                    "milestone_no_mistakes", language, titles="; ".join(empty_mistake_titles)))
+            feedback = "\n".join(feedback_parts)
+            return await self.generate_roadmap(
+                job_category, level, weaknesses, focus=focus,
+                cv_analysis_summary=cv_analysis_summary,
+                prior_roadmap_summary=prior_roadmap_summary,
+                grounding=grounding, criteria=criteria, scope=scope, language=language,
+                evidence=evidence,
+                # Lượt viết lại PHẢI mang theo mode/current_level/mistakes: thiếu bất kỳ cái nào
+                # thì roadmap rơi vào nhánh retry sẽ âm thầm mất chế độ / mất sàn trình độ / mất
+                # tập id hợp lệ để gom lỗi, mà không lỗi ở đâu cả.
+                mode=mode, current_level=current_level, mistakes=mistakes,
+                _retry_feedback=feedback, _attempt=_attempt + 1)
+
+        # Hết lượt retry (hoặc không cần retry ngay từ đầu) — hai loại khiếm khuyết xử lý KHÁC
+        # nhau, xem docstring hàm: criteria → GIỮ milestone (focusCriteria rỗng vẫn có nghĩa);
+        # mistakes → DROP milestone (mistakeIds rỗng nghĩa là milestone không rút ra từ lỗi nào —
+        # vô nghĩa với luật gom chủ đề TỪ LỖI).
+        if empty_criteria_titles:
+            logger.error(
+                "Roadmap: %d milestone vẫn không có focusCriteria hợp lệ sau %d lượt: %s",
+                len(empty_criteria_titles), _attempt, "; ".join(empty_criteria_titles))
+
+        if empty_mistake_titles:
+            # Lọc theo CHÍNH `mistakeIds` đã có trên milestone (tham chiếu đối tượng — milestone
+            # nào bây giờ rỗng thì bỏ milestone đó), KHÔNG so khớp lại theo title: hai milestone
+            # trùng title thì so theo title sẽ giết NHẦM (cả hai, hoặc đúng cái không đáng).
+            before = len(milestones)
+            milestones = [m for m in milestones if m.get("mistakeIds")]
+            logger.error(
+                "Roadmap: bỏ %d milestone không gom được lỗi nào sau %d lượt: %s",
+                before - len(milestones), _attempt, "; ".join(empty_mistake_titles))
+
+        if not milestones:
+            raise ValueError(
+                "ROADMAP_ALL_MILESTONES_DROPPED: mọi milestone đều bị bỏ vì không gom được lỗi "
+                f"nào sau {_attempt} lượt.")
 
         return milestones
 
@@ -2088,12 +2174,13 @@ class GeminiProvider(QuestionProvider):
                                      weaknesses: list[str] | None,
                                      grounding: list[dict] | None = None, language: str = "vi",
                                      evidence: list[dict] | None = None,
-                                     mode: str = DEFAULT_MODE
+                                     mode: str = DEFAULT_MODE,
+                                     mistakes: list[dict] | None = None
                                      ) -> LessonTheoryResult:
         """BC13/D20 — sinh lý thuyết (Markdown, tiếng Việt) + F15 tài liệu học.
 
-        Trả ``LessonTheoryResult(theory, resources, cited_chunk_ids)`` — RAG grounding thêm
-        ``cited_chunk_ids`` (đổi shape so với trước, mẫu F13). ``resources`` đã qua
+        Trả ``LessonTheoryResult(theory, resources, cited_chunk_ids, mistake_review)`` — RAG
+        grounding thêm ``cited_chunk_ids`` (đổi shape so với trước, mẫu F13). ``resources`` đã qua
         :func:`app.resources.sanitize_resources`: url KHÔNG thuộc allowlist tên
         miền bị BỎ CẢ MỤC. Xem docstring app/resources.py cho lý
         do — tóm tắt: LLM sinh url là đoán chuỗi, domain bịa là rủi ro thật.
@@ -2107,9 +2194,21 @@ class GeminiProvider(QuestionProvider):
         ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ + đòi trích dẫn.
         ``cited_chunk_ids`` = None khi ungrounded (endpoint không trả field, giữ shape cũ);
         ⊆ tập grounding đã cấp khi grounded (drop id lạ = chống bịa).
+
+        MIS1-B3 — ``mistakes`` nay thực sự dùng: ``build_lesson_theory_prompt`` chèn khối LỖI CỦA
+        ỨNG VIÊN + đòi phần thứ 4 ``mistakeReview`` (khi có mistakes hợp lệ). Phủ lỗi được chấm
+        RIÊNG — :func:`app.lesson_quality.evaluate_mistake_coverage` — và là ADVISORY: khiếm
+        khuyết ở đó chỉ ``log.error``, KHÔNG retry, KHÔNG raise (khác 4 khiếm khuyết BLOCKING của
+        ``evaluate_lesson_theory``, vẫn raise/retry như cũ). ``mistake_review`` trả về khớp đúng
+        những gì model thực sự trả (có thể rỗng nếu model bỏ sót — advisory không chặn bài).
         """
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
+
+        # MIS1-B3 — id do .NET MINT (khớp CHÍNH XÁC, mẫu `known_ids` của `generate_roadmap`) —
+        # gate response_schema (CÓ ĐIỀU KIỆN, không thêm vào required).
+        known_ids = [str(m.get("id", "")).strip() for m in (mistakes or [])
+                     if isinstance(m, dict) and str(m.get("id", "")).strip()]
 
         grounded = bool(grounding)
         response_properties: dict = {
@@ -2144,6 +2243,21 @@ class GeminiProvider(QuestionProvider):
         if grounded:
             response_properties["citedChunkIds"] = {
                 "type": "array", "items": {"type": "string"}}
+        # MIS1-B3 — CÓ ĐIỀU KIỆN, đúng khuôn `if grounded:` ngay trên. KHÔNG thêm vào `required`
+        # (mục 3 của task): phủ lỗi là ADVISORY, JSON schema không được bắt cứng field này.
+        if known_ids:
+            response_properties["mistakeReview"] = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "mistakeId": {"type": "string"},
+                        "whatWentWrong": {"type": "string"},
+                        "howToFixIt": {"type": "string"},
+                    },
+                    "required": ["mistakeId", "whatWentWrong", "howToFixIt"],
+                },
+            }
 
         config = types.GenerateContentConfig(
             temperature=0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
@@ -2166,7 +2280,7 @@ class GeminiProvider(QuestionProvider):
             prompt = build_lesson_theory_prompt(
                 job_category, level, lesson_title, focus_criteria, weaknesses,
                 grounding, retry_feedback=feedback, language=language, evidence=evidence,
-                mode=mode)
+                mode=mode, mistakes=mistakes)
 
             # F22 — lượt gọi DUY NHẤT hoãn ghi nhận (defer_report): số liệu đáng giá ở
             # đây không chỉ là token mà còn là "AI bịa tên miền bao nhiêu lần" (allowlist
@@ -2197,6 +2311,8 @@ class GeminiProvider(QuestionProvider):
 
                 url_meta = count_rejected_urls(data.get("resources"))
 
+                # BLOCKING — 4 khiếm khuyết cũ (sections/example/commonMistakes). Hết lượt vẫn
+                # còn thì raise (xem cuối hàm), y hệt trước MIS1-B3.
                 last_defects = evaluate_lesson_theory(
                     data, focus_criteria, lesson_title, language=language)
                 if last_defects:
@@ -2220,8 +2336,38 @@ class GeminiProvider(QuestionProvider):
                              if isinstance(c, str) and c.strip() in allowed]
                     cited = list(dict.fromkeys(cited))  # bỏ trùng, giữ thứ tự
 
+                # MIS1-B3 — id do .NET mint (khớp CHÍNH XÁC, chống bịa by-construction, mẫu
+                # `cited` ngay trên/`filter_milestone_mistakes`). `known_ids` rỗng ⇒ None (endpoint
+                # exclude_none ẩn field, khớp caller cũ không gửi mistakes).
+                mistake_review: list[dict] | None = None
+                if known_ids:
+                    allowed_ids = set(known_ids)
+                    raw_review = data.get("mistakeReview")
+                    review_items = ([r for r in raw_review if isinstance(r, dict)]
+                                    if isinstance(raw_review, list) else [])
+                    mistake_review = []
+                    for item in review_items:
+                        mistake_id = str(item.get("mistakeId") or "").strip()
+                        what = str(item.get("whatWentWrong") or "").strip()
+                        how = str(item.get("howToFixIt") or "").strip()
+                        if mistake_id in allowed_ids and what and how:
+                            mistake_review.append({
+                                "mistakeId": mistake_id, "whatWentWrong": what,
+                                "howToFixIt": how,
+                            })
+
+                # ADVISORY — phủ lỗi (evaluate_mistake_coverage). CHỈ log, KHÔNG retry, KHÔNG
+                # raise: bài thiếu mục review lỗi vẫn là bài DÙNG ĐƯỢC (khác 4 khiếm khuyết
+                # BLOCKING ở trên). Đặt NGAY TRƯỚC return để chạy đúng MỘT lần cho mỗi bài, kể cả
+                # bài pass ngay lượt đầu (không nằm trong nhánh `if last_defects: continue`).
+                mistake_defects = evaluate_mistake_coverage(data, mistakes, language=language)
+                if mistake_defects:
+                    logger.error(
+                        'Bài giảng "%s" thiếu phần review lỗi (advisory, vẫn nhận bài): %s',
+                        lesson_title, "; ".join(mistake_defects))
+
                 return LessonTheoryResult(theory=theory, resources=resources,
-                                          cited_chunk_ids=cited)
+                                          cited_chunk_ids=cited, mistake_review=mistake_review)
             finally:
                 await report_usage("generate_lesson_theory", settings.gemini_model,
                                    response, meta=url_meta)

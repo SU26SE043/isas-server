@@ -1,4 +1,5 @@
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 
 namespace Isas.InterviewService.Services.Interfaces;
@@ -43,8 +44,13 @@ public interface IAiServiceRoadmapGenerator
         // Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU người dùng chọn). Làm SÀN: bỏ phần
         // nhập môn đã nắm. null = CV không đủ căn cứ ⇒ không có sàn, hành vi như cũ.
         string? currentLevel = null,
-        CancellationToken ct = default);
-    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null);
+        CancellationToken ct = default,
+        // MIS1-B5 — LỖI SAI trích từ buổi luyện đã chấm (RoadmapMistakeLoader), làm nguồn GOM CHỦ
+        // ĐỀ (MIS1-B2). Đặt SAU CÙNG (kể cả sau `ct`) — CỐ Ý, để mọi call site cũ (kể cả test dựng
+        // đủ tham số cũ) không vỡ chữ ký khi thêm tham số này. Vắng/rỗng ⇒ hành vi cũ, không ràng
+        // buộc gì thêm (mẫu `evidence`/`criteria`).
+        IReadOnlyList<RoadmapMistake>? mistakes = null);
+    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null, IReadOnlyList<RoadmapMistake>? mistakes = null);
 
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
     // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là
@@ -62,8 +68,12 @@ public interface IAiServiceRoadmapGenerator
         IReadOnlyList<GroundingChunk>? grounding = null,
         IReadOnlyList<CriterionEvidence>? evidence = null,
         RoadmapMode mode = RoadmapMode.LevelUp,
-        CancellationToken ct = default);
-    Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp);
+        CancellationToken ct = default,
+        // MIS1-B5 — ≤3 lỗi ĐÚNG bài này (RoadmapLessonService.ResolveLessonMistakes), làm anchor
+        // bài giảng (MIS1-B3) + nguồn mistakeReview. Đặt SAU `ct` — cùng lý do đã nêu ở
+        // GenerateAsync: không vỡ chữ ký call site cũ. Vắng/rỗng ⇒ hành vi cũ.
+        IReadOnlyList<RoadmapMistake>? mistakes = null);
+    Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, IReadOnlyList<RoadmapMistake>? mistakes = null);
 
     // BC15 — nhận xét chung khi roadmap Completed (kết luận chi tiết theo tiến độ tiêu chí). AI KHÔNG ghi DB.
     // best-effort: lỗi → AiServiceException; caller (RoadmapReportService) nuốt → để rỗng/null, KHÔNG chặn Completed.

@@ -140,7 +140,7 @@ def test_generate_roadmap_dung_token_tra_200(monkeypatch):
 
 def test_generate_lesson_theory_dung_token_tra_200(monkeypatch):
     async def fake(*a, **k):
-        return ("# Bài\n\nNội dung", [], None)
+        return ("# Bài\n\nNội dung", [], None, None)
 
     monkeypatch.setattr(main_module.provider, "generate_lesson_theory", fake)
     assert _post("/api/v1/generate-lesson-theory", _HEADERS).status_code == 200

@@ -32,6 +32,21 @@ _MESSAGES: dict[str, dict[str, str]] = {
              "from the criteria list, copied VERBATIM — no abbreviations, no translation, no new "
              "names. Allowed criteria: {allowed}"),
     },
+    # MIS1-B2 — không kèm danh sách id hợp lệ (khác milestone_no_criteria): mistake_block đã liệt
+    # kê đủ nội dung + id ngay trong prompt gửi lại (mistakes chuyền qua lời gọi đệ quy), nhồi
+    # thêm một danh sách id trần (không kèm ngữ cảnh câu hỏi/lý do) vào feedback chỉ làm rối.
+    "milestone_no_mistakes": {
+        VI: ("Các milestone sau không gom được lỗi nào sau khi lọc (mistakeIds trước đó không khớp "
+             "id nào trong danh sách LỖI CỦA ỨNG VIÊN đã cho): {titles}. Mỗi milestone PHẢI là một "
+             "chủ đề rút ra từ ÍT NHẤT một lỗi ở khối LỖI CỦA ỨNG VIÊN — CHỈ được dùng id có trong "
+             "khối đó, SAO CHÉP NGUYÊN VĂN, TUYỆT ĐỐI không bịa id mới. Không gom được lỗi nào cho "
+             "một chủ đề thì ĐỪNG tạo milestone đó."),
+        EN: ("These milestones did not gather any mistake after filtering (their mistakeIds did not "
+             "match any id in the given CANDIDATE MISTAKES list): {titles}. Every milestone MUST be "
+             "a theme drawn from AT LEAST one mistake in that block — you may ONLY use ids from it, "
+             "copied VERBATIM, NEVER invent new ones. If you cannot gather any mistake for a theme, "
+             "do NOT create that milestone."),
+    },
 }
 
 
@@ -172,4 +187,51 @@ def filter_milestone_criteria(
         if original and not kept:
             empty_after_filter.append(str(m.get("title", "")))
         filtered.append({**m, "focusCriteria": kept})
+    return filtered, empty_after_filter
+
+
+def filter_milestone_mistakes(
+    milestones: list[dict], known_ids: list[str],
+) -> tuple[list[dict], list[str]]:
+    """MIS1-B2 — lọc `mistakeIds` từng milestone (và mỗi lesson bên trong) về đúng tập `known_ids`.
+
+    Trả về ``(milestones đã lọc, tên các milestone RỖNG SAU LỌC)``.
+
+    Khớp CHÍNH XÁC — id ở đây do .NET MINT (không phải chữ tự do model gõ như tên tiêu chí), nên
+    KHÔNG casefold, KHÔNG fuzzy: nới khớp gần đúng là mở lại đúng lỗ mà cơ chế này sinh ra để bịt
+    (mẫu `filter_milestone_criteria`, `citedChunkId` của grounding).
+
+    ⚠ NGỮ NGHĨA KHÁC `filter_milestone_criteria` — CỐ Ý không có vế "if original and not kept":
+    milestone không nhắm riêng tiêu chí nào (focusCriteria rỗng) vẫn là milestone hợp lệ, nhưng
+    milestone GOM KHÔNG ĐƯỢC LỖI NÀO là vô nghĩa với luật gom chủ đề TỪ LỖI (mỗi milestone PHẢI
+    rút ra từ ít nhất một lỗi thật). Nên ở đây `mistakeIds` rỗng NGAY TỪ ĐẦU (model không gán
+    milestone này cho lỗi nào) CŨNG là khiếm khuyết — y hệt trường hợp toàn bộ id bị lọc vì bịa.
+
+    Lọc CẢ lesson-level `mistakeIds` (không chỉ milestone) — chỉ thị "GOM CHỦ ĐỀ TỪ LỖI" đòi
+    ``lessons[].mistakeIds`` là tập con của milestone chứa nó; id lạ lọt qua ở tầng lesson thì
+    lời hứa "id không bịa được" của cả cơ chế chỉ đúng một nửa. Lesson rỗng sau lọc KHÔNG tính là
+    khiếm khuyết (mistakeIds ở lesson là bổ sung tuỳ chọn — chỉ milestone mới bắt buộc).
+
+    ``known_ids`` rỗng ⇒ không lọc gì (giữ nguyên hành vi cũ — caller không có gì để đối chiếu).
+    """
+    if not known_ids:
+        return milestones, []
+
+    allowed = set(known_ids)
+
+    empty_after_filter: list[str] = []
+    filtered: list[dict] = []
+    for m in milestones:
+        original = m.get("mistakeIds") or []
+        kept = [i for i in original if i in allowed]
+        if not kept:
+            empty_after_filter.append(str(m.get("title", "")))
+
+        filtered_lessons: list[dict] = []
+        for lesson in (m.get("lessons") or []):
+            lesson_ids = lesson.get("mistakeIds") or []
+            filtered_lessons.append(
+                {**lesson, "mistakeIds": [i for i in lesson_ids if i in allowed]})
+
+        filtered.append({**m, "mistakeIds": kept, "lessons": filtered_lessons})
     return filtered, empty_after_filter

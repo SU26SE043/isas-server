@@ -49,9 +49,19 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
     }
 
     // Shape res AIService — chỉ cấu trúc (không điểm).
+    // MIS1-B5 — MistakeIds: mistake_key model gán khi gom chủ đề (MIS1-B2). CHƯA lọc theo id thật ở
+    // đây — System.Text.Json sẽ VỨT field này ngay lúc deserialize nếu thiếu khai, nên phải khai ở
+    // CẢ HAI record (milestone lẫn lesson), y hệt bẫy `focusCriteria`/BC14 đã cắn repo nhiều lần.
     private record RoadmapApiResponse(List<MilestoneApi>? Milestones);
-    private record MilestoneApi(string? Title, List<string>? FocusCriteria, List<LessonApi>? Lessons);
-    private record LessonApi(string? Title);
+    private record MilestoneApi(
+        string? Title, List<string>? FocusCriteria, List<LessonApi>? Lessons,
+        List<string>? MistakeIds);
+    private record LessonApi(string? Title, List<string>? MistakeIds);
+
+    // MIS1-B5 — trần độ dài đo phân vị 90 trên production, KHÔNG phải phỏng đoán.
+    private const int MistakeQuestionMaxChars = 260;
+    private const int MistakeReasoningMaxChars = 350;
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
 
     public async Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory, string level,
@@ -62,10 +72,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         IReadOnlyList<CriterionEvidence>? evidence = null,
         RoadmapMode mode = RoadmapMode.LevelUp,
         string? currentLevel = null,
-        CancellationToken ct = default)
-        => await GenerateAsync(jobCategory, level, weaknesses, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence, mode, currentLevel);
+        CancellationToken ct = default,
+        IReadOnlyList<RoadmapMistake>? mistakes = null)
+        => await GenerateAsync(jobCategory, level, weaknesses, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence, mode, currentLevel, mistakes);
 
-    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null)
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null, IReadOnlyList<RoadmapMistake>? mistakes = null)
     {
         var payload = new
         {
@@ -96,16 +107,33 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             // BE-4 — độ dài roadmap ("Quick"/"Standard"). AIService pydantic schema khai `scope: str =
             // "Standard"` tường minh (cùng bẫy extra='ignore' nêu ở `criteria`) nên luôn gửi, không để null.
             scope,
-            // BE-5 — bằng chứng (Reasoning E11) cho tiêu chí yếu, đã tải + cắt trần sẵn
-            // (RoadmapEvidenceLoader). Anonymous object camelCase, cùng lý do như `criteria` ở trên.
-            evidence = evidence is { Count: > 0 }
-                ? evidence.Select(e => new { criterionName = e.CriterionName, reasoning = e.Reasoning })
-                : null,
+            // 🔴 MIS1-B5 — CẤM: khoá `evidence` KHÔNG còn xuất hiện trong payload (không phải chỉ
+            // luôn gửi `null`). `JsonContent.Create` dùng `JsonSerializerDefaults.Web`
+            // (DefaultIgnoreCondition = Never) nên MỘT property `evidence = null` trong anonymous
+            // type vẫn ra `"evidence":null` trên dây — phải BỎ HẲN property này, không phải gán null.
+            // Tham số `evidence` của HÀM này vẫn GIỮ (interface/call site cũ không vỡ chữ ký) —
+            // chỉ đơn giản KHÔNG còn được chiếu vào payload. `mistakes` ngay dưới đây thay thế nó
+            // làm nguồn GOM CHỦ ĐỀ (MIS1-B2).
+            //
             // Chế độ lộ trình — gửi dạng CHUỖI ("LevelUp"/"Reinforce") khớp `app.roadmap_mode`.
             // AIService khai `mode: str = "LevelUp"` tường minh trong pydantic schema; thiếu dòng
             // khai đó thì `extra='ignore'` NUỐT IM LẶNG và mọi lộ trình ôn tập được sinh như
             // LevelUp mà không lỗi ở đâu cả (bẫy đã cắn repo 4 lần) — có test khoá hai đầu.
             mode = mode.ToString(),
+            // MIS1-B5 — LỖI SAI làm nguồn GOM CHỦ ĐỀ (MIS1-B2). 5 trường — KHÔNG answer, KHÔNG
+            // sampleAnswer (roadmap chỉ cần đủ để gom, không cần nguyên văn câu trả lời/đáp án mẫu
+            // — mẫu docstring `app.schemas.RoadmapMistake`). id = mistake_key (.NET MINT, không
+            // phải model tự đặt) để filter_milestone_mistakes lọc CHÍNH XÁC phía AIService.
+            mistakes = mistakes is { Count: > 0 }
+                ? mistakes.Select(m => new
+                  {
+                      id = m.MistakeKey,
+                      criterionName = m.CriterionName,
+                      scorePct = (int)Math.Round(m.ScorePct),
+                      question = Truncate(m.Question, MistakeQuestionMaxChars),
+                      reasoning = Truncate(m.Reasoning, MistakeReasoningMaxChars),
+                  })
+                : null,
         };
 
         HttpResponseMessage response;
@@ -140,20 +168,32 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         if (body?.Milestones is null || body.Milestones.Count == 0)
             throw new AiServiceException("AIService /generate-roadmap trả rỗng");
 
+        // MIS1-B5 — MistakeIds đi THẲNG, CHƯA lọc theo id thật (CẤM: tin thẳng AI) — narrow là việc
+        // của RoadmapService.CreateAsync (nó mới biết tập id ĐÃ CẤP thật sự cho lượt gọi này).
         var milestones = body.Milestones.Select(m => new GeneratedMilestone(
             m.Title ?? string.Empty,
             m.FocusCriteria ?? [],
-            (m.Lessons ?? []).Select(l => new GeneratedLesson(l.Title ?? string.Empty)).ToList()
+            (m.Lessons ?? []).Select(l => new GeneratedLesson(l.Title ?? string.Empty, l.MistakeIds)).ToList(),
+            m.MistakeIds
         )).ToList();
 
         return new RoadmapGenAiResult(milestones);
     }
 
     // Shape res AIService /generate-lesson-theory (GenerateLessonTheoryResponse):
-    // markdown + F15 tài liệu học (đã sanitize allowlist tên miền phía AIService) + RAG citedChunkIds.
+    // markdown + F15 tài liệu học (đã sanitize allowlist tên miền phía AIService) + RAG citedChunkIds
+    // + MIS1-B5 mistakeReview (CHƯA lọc theo id thật — narrow ở RoadmapLessonService.OpenLessonAsync).
     private record LessonTheoryApiResponse(
-        string? TheoryMarkdown, List<LessonResourceApi>? Resources, List<string>? CitedChunkIds);
+        string? TheoryMarkdown, List<LessonResourceApi>? Resources, List<string>? CitedChunkIds,
+        List<MistakeReviewApi>? MistakeReview);
     private record LessonResourceApi(string? Title, string? Type, string? Publisher, string? Url);
+    private record MistakeReviewApi(string? MistakeId, string? WhatWentWrong, string? HowToFixIt);
+
+    // MIS1-B5 — trần độ dài đo phân vị 90 trên production, KHÔNG phải phỏng đoán.
+    private const int LessonMistakeQuestionMaxChars = 260;
+    private const int LessonMistakeAnswerMaxChars = 400;
+    private const int LessonMistakeReasoningMaxChars = 350;
+    private const int LessonMistakeSampleAnswerMaxChars = 700;
 
     // BC14 — POST /generate-lesson-theory {jobCategory, level, lessonTitle, focusCriteria[], weaknesses?}
     // → {theoryMarkdown}. Sync như /generate-roadmap. Lỗi → AiServiceException (→ 502).
@@ -164,10 +204,11 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         IReadOnlyList<GroundingChunk>? grounding = null,
         IReadOnlyList<CriterionEvidence>? evidence = null,
         RoadmapMode mode = RoadmapMode.LevelUp,
-        CancellationToken ct = default)
-        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi", evidence, mode);
+        CancellationToken ct = default,
+        IReadOnlyList<RoadmapMistake>? mistakes = null)
+        => await GenerateLessonTheoryAsync(jobCategory, level, lessonTitle, focusCriteria, weaknesses, grounding, ct, "vi", evidence, mode, mistakes);
 
-    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp)
+    public async Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, IReadOnlyList<RoadmapMistake>? mistakes = null)
     {
         var payload = new
         {
@@ -181,13 +222,29 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             grounding = grounding is { Count: > 0 }
                 ? grounding.Select(g => new { chunkId = g.ChunkId, content = g.Content, sourceUrl = g.SourceUrl, sourceTitle = g.SourceTitle })
                 : null,
-            // BE-5 — bằng chứng (Reasoning E11), cùng shape/lý do như AiServiceRoadmapGenerator.GenerateAsync.
-            evidence = evidence is { Count: > 0 }
-                ? evidence.Select(e => new { criterionName = e.CriterionName, reasoning = e.Reasoning })
-                : null,
+            // 🔴 MIS1-B5 — CẤM: khoá `evidence` KHÔNG còn xuất hiện trong payload (cùng lý do
+            // `JsonContent.Create`/`DefaultIgnoreCondition=Never` như ở `GenerateAsync` phía trên —
+            // xoá hẳn property, không gán null). Tham số hàm vẫn giữ nguyên chữ ký.
+            //
             // Chế độ ôn tập đổi TRỌNG TÂM bài giảng (giải thích vì sao lần trước sai) — cùng hợp
             // đồng chuỗi + cùng bẫy `extra='ignore'` như ở `/generate-roadmap` ngay trên.
             mode = mode.ToString(),
+            // MIS1-B5 — ≤3 lỗi ĐÚNG bài này, anchor bài giảng + nguồn mistakeReview (MIS1-B3). 6
+            // trường ĐỦ (kể cả answer/sampleAnswer — bài học cần NGUYÊN VĂN để giải thích sai ở
+            // đâu), KHÔNG như /generate-roadmap chỉ cần đủ để gom chủ đề.
+            mistakes = mistakes is { Count: > 0 }
+                ? mistakes.Select(m => new
+                  {
+                      id = m.MistakeKey,
+                      criterionName = m.CriterionName,
+                      question = Truncate(m.Question, LessonMistakeQuestionMaxChars),
+                      answer = Truncate(m.Answer, LessonMistakeAnswerMaxChars),
+                      reasoning = Truncate(m.Reasoning, LessonMistakeReasoningMaxChars),
+                      sampleAnswer = m.SampleAnswer is null
+                          ? null
+                          : Truncate(m.SampleAnswer, LessonMistakeSampleAnswerMaxChars),
+                  })
+                : null,
         };
 
         HttpResponseMessage response;
@@ -233,7 +290,20 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
                 string.IsNullOrWhiteSpace(r.Url) ? null : r.Url!.Trim()))
             .ToList();
 
-        return new LessonTheoryResult(body.TheoryMarkdown, resources, body.CitedChunkIds);
+        // MIS1-B5 — mistakeReview đi THẲNG, CHƯA lọc theo id thật (CẤM: tin thẳng AI) và CHƯA đòi
+        // ruột whatWentWrong/howToFixIt — narrow là việc của RoadmapLessonService.OpenLessonAsync
+        // (nó mới biết tập id ĐÃ CẤP thật sự cho lượt gọi này). Mục thiếu id/what/how bị bỏ ở đây
+        // (biên nhận hỏng, mẫu lọc resources ngay trên) — không đáng làm hỏng cả danh sách.
+        var mistakeReview = body.MistakeReview is null
+            ? null
+            : body.MistakeReview
+                .Where(r => !string.IsNullOrWhiteSpace(r.MistakeId)
+                            && !string.IsNullOrWhiteSpace(r.WhatWentWrong)
+                            && !string.IsNullOrWhiteSpace(r.HowToFixIt))
+                .Select(r => new LessonMistakeReviewItem(r.MistakeId!, r.WhatWentWrong!, r.HowToFixIt!))
+                .ToList();
+
+        return new LessonTheoryResult(body.TheoryMarkdown, resources, body.CitedChunkIds, mistakeReview);
     }
 
     // Shape res AIService /summarize-roadmap — kết luận chi tiết + nhận xét chung.

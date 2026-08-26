@@ -63,6 +63,10 @@ class LessonContextDto(BaseModel):
     # Mục lục bài giảng (đề mục ``##``), .NET đã cắt trần. Vắng = người học bấm Bắt đầu mà chưa mở
     # bài lần nào (lý thuyết sinh lazy) — hợp lệ, chỉ mất một lớp ngữ cảnh.
     outline: str | None = None
+    # MIS1 — LỖI SAI trích từ các buổi luyện đã chấm, gắn cho ĐÚNG bài học này. Vắng/rỗng ⇒ prompt
+    # GIỮ NGUYÊN XI (hành vi trước MIS1). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` đã cắn
+    # repo nhiều lần (`focusCriteria`/BC14 · `metricsVersion` · `seniority`/SEN1 · `lessonContext`).
+    mistakes: list["RoadmapMistake"] | None = None
 
 
 class SessionTopic(BaseModel):
@@ -469,6 +473,31 @@ class CriterionEvidence(BaseModel):
     reasoning: list[str]
 
 
+class RoadmapMistake(BaseModel):
+    """MIS1 — 1 LỖI SAI trích từ các buổi luyện đã chấm, dùng để gom chủ đề roadmap/bài học.
+
+    ``answer`` (transcript) và ``sampleAnswer`` CHỈ ``/generate-lesson-theory`` nhận — bài học cần
+    NGUYÊN VĂN câu trả lời + bài mẫu để giải thích "sai ở đâu, đúng phải thế nào"; roadmap
+    (`/generate-roadmap`) chỉ cần đủ để GOM CHỦ ĐỀ nên .NET không tải 2 trường nặng đó cho nó.
+    ``reasoning`` là nhận xét đã có sẵn (E11, trích transcript) — bọc-làm-DỮ-LIỆU trong prompt
+    (AI-4), KHÔNG phải chỉ thị, mẫu ``evidence``/``focus`` ở trên."""
+    id: str
+    criterionName: str
+    scorePct: int | None = None
+    question: str | None = None
+    answer: str | None = None
+    reasoning: str
+    sampleAnswer: str | None = None
+
+
+class MistakeReviewItem(BaseModel):
+    """MIS1 — nhận xét lại 1 lỗi sai cụ thể trong ``GenerateLessonTheoryResponse.mistakeReview``:
+    ``mistakeId`` khớp ngược ``RoadmapMistake.id`` mà .NET đã gửi lên."""
+    mistakeId: str
+    whatWentWrong: str
+    howToFixIt: str
+
+
 class GenerateRoadmapRequest(BaseModel):
     jobCategory: str
     language: str = "vi"
@@ -512,16 +541,25 @@ class GenerateRoadmapRequest(BaseModel):
     # `extra='ignore'` đã nêu ở `criteria`/`scope`: thiếu dòng này thì .NET gửi `mode` mà
     # pydantic NUỐT IM LẶNG, mọi lộ trình ôn tập âm thầm được sinh như LevelUp.
     mode: str = "LevelUp"
+    # MIS1 — LỖI SAI trích từ các buổi luyện đã chấm, dùng để gom chủ đề. Vắng/rỗng ⇒ prompt GIỮ
+    # NGUYÊN XI (hành vi trước MIS1). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` đã nêu ở
+    # `criteria`/`scope`/`mode` ngay trên.
+    mistakes: list[RoadmapMistake] | None = None
 
 
 class RoadmapLesson(BaseModel):
     title: str
+    # MIS1 — id của các RoadmapMistake (request) mà bài học này gom vào. Mặc định [] = hành vi cũ
+    # (không lỗi sai nào được gán).
+    mistakeIds: list[str] = []
 
 
 class RoadmapMilestone(BaseModel):
     title: str
     focusCriteria: list[str]
     lessons: list[RoadmapLesson]
+    # MIS1 — id của các RoadmapMistake (request) mà chặng này gom vào. Mặc định [] = hành vi cũ.
+    mistakeIds: list[str] = []
 
 
 class GenerateRoadmapResponse(BaseModel):
@@ -546,6 +584,11 @@ class GenerateLessonTheoryRequest(BaseModel):
     # `extra='ignore'` đã nêu ở `criteria`/`scope`: thiếu dòng này thì .NET gửi `mode` mà
     # pydantic NUỐT IM LẶNG, mọi lộ trình ôn tập âm thầm được sinh như LevelUp.
     mode: str = "LevelUp"
+    # MIS1 — LỖI SAI trích từ các buổi luyện đã chấm, gắn cho ĐÚNG bài học này (khác `weaknesses`
+    # ở trên — đó là tên tiêu chí yếu, đây là từng lỗi cụ thể). Vắng/rỗng ⇒ prompt GIỮ NGUYÊN XI
+    # (hành vi trước MIS1). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` đã nêu ở
+    # `grounding`/`evidence`/`mode` ngay trên.
+    mistakes: list[RoadmapMistake] | None = None
 
 
 class LessonResource(BaseModel):
@@ -567,6 +610,9 @@ class GenerateLessonTheoryResponse(BaseModel):
     # ADDITIVE (Contract 2) — chunkId (⊆ tập grounding đã cấp) mà lý thuyết dựa vào. Ungrounded →
     # None (endpoint exclude_none giữ shape cũ). Grounded-nhưng-không-cite → [] (ungrounded label).
     citedChunkIds: list[str] | None = None
+    # MIS1 — nhận xét lại từng lỗi sai (request `mistakes`) mà bài học này gom vào. None = không
+    # có `mistakes` nào được gửi (endpoint exclude_none giữ shape cũ — hành vi trước MIS1).
+    mistakeReview: list[MistakeReviewItem] | None = None
 
 
 class CriterionProgress(BaseModel):

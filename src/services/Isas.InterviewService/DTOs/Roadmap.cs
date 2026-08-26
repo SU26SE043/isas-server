@@ -35,7 +35,54 @@ public record CreateRoadmapRequest(
 );
 
 // Điểm yếu gửi xuống AIService /generate-roadmap (khớp WeaknessScore: criterionName + percentage).
-public record RoadmapWeakness(string CriterionName, decimal Percentage);
+// MIS1-B4 — CriterionIds: MỌI id rubric_criteria từng đứng sau CriterionName này trong các buổi đã
+// chọn (KHÔNG chỉ id của buổi mới nhất). rubric_criteria có Version + custom-per-candidate: đổi
+// version hoặc rubric giữa các buổi sinh ra id MỚI cho "cùng một tên" ⇒ lấy 1 id sẽ âm thầm bỏ sót
+// mistake của những buổi mang id khác. Nullable vì record cũ (RoadmapLessonService.cs dựng từ
+// Baseline — Dictionary<string,decimal> không mang id) không có id để gắn. KHÔNG dùng để gửi AI
+// (AiServiceRoadmapGenerator.cs chỉ project criterionName+percentage — id không rò ra ngoài).
+public record RoadmapWeakness(
+    string CriterionName,
+    decimal Percentage,
+    IReadOnlyCollection<Guid>? CriterionIds = null);
+
+// MIS1-B4 — 1 mục "vì sao sai / sửa sao" AI sinh khi mở lesson (MIS1-B3), khớp mistake_key của
+// RoadmapMistake/Milestone.MistakeRefs. Shape giống MistakeReviewItem bên AIService NHƯNG là type
+// ĐỘC LẬP — không share, hai bên chỉ khớp nhau qua hợp đồng JSON.
+public record LessonMistakeReviewItem(string MistakeId, string WhatWentWrong, string HowToFixIt);
+
+// MIS1-B7 — hình chiếu ra CLIENT của 1 RoadmapMistake cho LessonResponse.Mistakes. KHÁC hẳn
+// LessonMistakeReviewItem ngay trên (đó là hợp đồng dây NỘI BỘ .NET↔Python — 3 trường model tự
+// trả về): record này là 8 trường FE cần để hiển thị, gồm cả câu hỏi/câu trả lời GỐC (đã có sẵn
+// trong RoadmapMistake, không phải chờ AI sinh) chứ không chỉ phần nhận xét AI mới thêm.
+//
+// `Id` = RoadmapMistake.MistakeKey ("m1".."m12"), KHÔNG PHẢI RoadmapMistake.Id (Guid) — FE dùng
+// giá trị này làm khoá đối chiếu với MistakeReview (cùng namespace mistake_key xuyên suốt B4→B7).
+//
+// `WhatWentWrong`/`HowToFixIt` nullable CÓ CHỦ ĐÍCH: bài đọc lại (chưa mở lần nào sau bản B7, hoặc
+// mở trước khi AI trả review) chưa có 2 trường này — vẫn trả 6 trường còn lại thay vì bỏ cả mục,
+// vì câu hỏi/câu trả lời/đáp án mẫu tự nó đã có giá trị với người học.
+public record LessonMistakeResponse(
+    string Id,
+    string CriterionName,
+    decimal ScorePct,
+    string Question,
+    string Answer,
+    string? WhatWentWrong,
+    string? HowToFixIt,
+    string? SampleAnswer);
+
+// MIS1-B5 — hình chiếu GỬI của 1 RoadmapMistake dùng RIÊNG cho LessonContext.Mistakes: khác 2
+// endpoint kia (/generate-roadmap, /generate-lesson-theory) vốn chiếu bằng ANONYMOUS TYPE ngay
+// tại chỗ dựng payload (AiServiceRoadmapGenerator), record này phải đi QUA NHIỀU LỚP có chữ ký
+// tường minh (RoadmapLessonService.BeginSessionAsync → PracticeService → AiServiceQuestionGenerator)
+// nên cần một type có tên. CỐ Ý KHÔNG có SampleAnswer (ĐÁP ÁN) — loại khỏi TYPE thay vì chỉ loại
+// khỏi payload, để không có đường nào lỡ tay serialize nó xuống /generate-questions (CẤM tuyệt đối).
+// ScorePct/Answer optional — /generate-questions không cần (chỉ id/criterionName/question/
+// reasoning ra JSON, xem AiServiceQuestionGenerator), giữ ở đây cho record đủ hình dạng.
+public record RoadmapMistakeWire(
+    string Id, string CriterionName, string Question, string Reasoning,
+    decimal? ScorePct = null, string? Answer = null);
 
 // BE-5 — bằng chứng HÀNH VI cho 1 tiêu chí YẾU: Reasoning (E11, luôn trích NGUYÊN VĂN lời ứng
 // viên) của 2-3 answer điểm THẤP NHẤT — đã tải + cắt trần sẵn (RoadmapEvidenceLoader). Khớp
@@ -44,9 +91,14 @@ public record RoadmapWeakness(string CriterionName, decimal Percentage);
 public record CriterionEvidence(string CriterionName, IReadOnlyList<string> Reasoning);
 
 // Kết quả AI /generate-roadmap (sync) — chỉ cấu trúc (title/focusCriteria/lessons.title), không điểm.
+// MIS1-B5 — MistakeIds: mistake_key (MIS1-B2 gom chủ đề) model tự gán, CHƯA lọc theo id thật —
+// RoadmapService.CreateAsync PHẢI narrow lại trước khi lưu (CẤM: tin thẳng AI). Mặc định null =
+// model không trả field này (caller cũ / AIService bản cũ không biết field này).
 public record RoadmapGenAiResult(IReadOnlyList<GeneratedMilestone> Milestones);
-public record GeneratedMilestone(string Title, IReadOnlyList<string> FocusCriteria, IReadOnlyList<GeneratedLesson> Lessons);
-public record GeneratedLesson(string Title);
+public record GeneratedMilestone(
+    string Title, IReadOnlyList<string> FocusCriteria, IReadOnlyList<GeneratedLesson> Lessons,
+    IReadOnlyList<string>? MistakeIds = null);
+public record GeneratedLesson(string Title, IReadOnlyList<string>? MistakeIds = null);
 
 // { criterionName, deltaPct } — set khi milestone Completed (BC15); BC12 luôn null.
 public record MilestoneImprovementResponse(string CriterionName, decimal DeltaPct);
@@ -55,10 +107,14 @@ public record MilestoneImprovementResponse(string CriterionName, decimal DeltaPc
 // tên miền phía AIService). Resources rỗng KHÔNG phải lỗi.
 // RAG grounding — CitedChunkIds: id chunk grounding mà AI THẬT SỰ cite (Contract 2). Rỗng khi không
 // truyền grounding / AI không cite → lesson ungrounded.
+// MIS1-B5 — MistakeReview: "vì sao sai / sửa sao" cho từng lỗi ĐÃ GỬI (MIS1-B3). CHƯA lọc theo id
+// thật — RoadmapLessonService.OpenLessonAsync PHẢI narrow lại trước khi lưu (CẤM: tin thẳng AI).
+// null = không gửi mistakes cho lượt này (caller cũ / AIService bản cũ không biết field này).
 public record LessonTheoryResult(
     string TheoryMarkdown,
     IReadOnlyList<Entities.LessonResource> Resources,
-    IReadOnlyList<string>? CitedChunkIds = null);
+    IReadOnlyList<string>? CitedChunkIds = null,
+    IReadOnlyList<LessonMistakeReviewItem>? MistakeReview = null);
 
 // F15 — 1 tài liệu học gợi ý trả cho FE. `url` CÓ THỂ NULL vì có chủ đích: link do AI sinh chỉ
 // được giữ khi tên miền thuộc allowlist (AIService app/resources.py). FE: có url → render link kèm
@@ -97,7 +153,16 @@ public record LessonResponse(
     /// dối). Số dư còn đổi được giữa lúc đọc và lúc bấm, nên FE vẫn PHẢI xử lý 402 dù cờ này là gì;
     /// đường "Bắt đầu" hôm nay cũng không gác theo số dư, giữ nguyên như vậy cho đối xứng.</para>
     /// </summary>
-    bool CanRetry = false
+    bool CanRetry = false,
+
+    // MIS1-B7 — mục lỗi ĐẦY ĐỦ (câu hỏi/câu trả lời gốc + "vì sao sai / sửa sao" khi đã có review;
+    // RoadmapLessonService đã NARROW review theo id thật, không tin thẳng AI). THAM SỐ CUỐI,
+    // OPTIONAL — additive, không đụng caller cũ.
+    // null  = bài không bám lỗi nào (RoadmapLessonService.ResolveLessonMistakes rỗng).
+    // []    = bám lỗi nhưng không nạp được hàng nào từ DB (dữ liệu lệch — không nên xảy ra).
+    // [...] = có lỗi để hiển thị; whatWentWrong/howToFixIt từng phần tử có thể null (chưa có review).
+    // KHÔNG cắt độ dài ở server — FE tự quyết định hiển thị bao nhiêu.
+    IReadOnlyList<LessonMistakeResponse>? Mistakes = null
 );
 
 public record MilestoneResponse(
@@ -107,7 +172,11 @@ public record MilestoneResponse(
     IReadOnlyList<string> FocusCriteria,
     string Status,
     IReadOnlyList<MilestoneImprovementResponse>? Improvement,
-    IReadOnlyList<LessonResponse> Lessons
+    IReadOnlyList<LessonResponse> Lessons,
+
+    // MIS1-B5 — số lỗi (MIS1-B2 gom chủ đề) chặng này bám, ĐÃ NARROW theo id thật. 0 = chặng không
+    // bám lỗi nào (roadmap cũ trước MIS1-B4, hoặc buổi không có lỗi để gom).
+    int MistakeCount = 0
 );
 
 // BE-4 — provenance của roadmap: NGUỒN đã dùng để tạo (sessionIds/baseline, ghi xuống DB từ BC12
@@ -160,8 +229,14 @@ public record RoadmapSummaryResponse(
     string JobCategory,
     string Level,
     // Cùng lý do như ở `RoadmapResponse`, và trang DANH SÁCH mới là nơi cần nhất: ba lộ trình
-    // cùng nghề + cùng level nằm cạnh nhau thì "ôn tập" hay "tiến lên" là thứ DUY NHẤT phân biệt
-    // được chúng (đúng lập luận đã dùng cho `Name` ở BE-6).
+    // cùng nghề + cùng level nằm cạnh nhau thì "ôn tập" hay "tiến lên" từng là thứ DUY NHẤT phân
+    // biệt được chúng (đúng lập luận đã dùng cho `Name` ở BE-6).
+    //
+    // 🔴 MIS1-B6 — câu trên nay SAI: Guard 1/2/3 mới (RoadmapService.CreateAsync) buộc CẢ HAI mode
+    // đều xây từ cùng một loại dữ liệu (buổi luyện đã chấm + lỗi nội dung trích được), nên khác biệt
+    // hành vi thật sự giữa chúng đã thu hẹp lại chỉ còn CÁCH DIỄN GIẢI của prompt (mục tiêu hướng
+    // lên vs giữ nguyên trình độ đang đứng). `Mode` vẫn LƯU đúng — chỉ là NHÃN LỊCH SỬ của dữ liệu
+    // đã có từ trước MIS1-B6, không còn là "thứ duy nhất phân biệt" theo nghĩa hành vi tạo lộ trình.
     string Mode,
     Guid? CvId,
     string Status,

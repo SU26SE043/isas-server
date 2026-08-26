@@ -36,12 +36,13 @@ public class RoadmapCurrentLevelTests
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()));
+            It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+            It.IsAny<IReadOnlyList<RoadmapMistake>?>()));
         if (captureCurrentLevel is not null)
             setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?,
                     IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?,
-                    RoadmapMode, string?, CancellationToken>(
-                    (_, _, _, _, _, _, _, _, _, _, cur, _) => captureCurrentLevel(cur))
+                    RoadmapMode, string?, CancellationToken, IReadOnlyList<RoadmapMistake>?>(
+                    (_, _, _, _, _, _, _, _, _, _, cur, _, _) => captureCurrentLevel(cur))
                 .ReturnsAsync(SampleRoadmap());
         else
             setup.ReturnsAsync(SampleRoadmap());
@@ -64,6 +65,11 @@ public class RoadmapCurrentLevelTests
         };
         return controller;
     }
+
+    // MIS1-B6 — Guard 1/2/3 đòi ≥1 buổi đã chấm, có điểm yếu, có lỗi nội dung trích được. File này
+    // không quan tâm NỘI DUNG tiêu chí (chỉ test currentLevel) nên dùng 1 tiêu chí cố định.
+    private static Guid SeedScoredSession(TestDb t, Guid candidateId)
+        => TestSeed.ScoredSessionWithAnswers(t, candidateId, JobCategory.BE, seedContentMistakes: true, ("Clarity", 40m, true));
 
     private static Guid SeedCvAnalysis(TestDb t, Guid ownerId, string? currentLevel)
     {
@@ -92,11 +98,12 @@ public class RoadmapCurrentLevelTests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user);   // MIS1-B6 — Guard 1/2/3
         string? captured = null;
         var ctrl = Controller(t, GenMock(v => captured = v).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, CurrentLevel: level), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid], CurrentLevel: level), default);
 
         Assert.IsType<CreatedResult>(result);
         Assert.Equal(level, captured);
@@ -132,11 +139,12 @@ public class RoadmapCurrentLevelTests
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var caId = SeedCvAnalysis(t, user, currentLevel: "Middle");
+        var sid = SeedScoredSession(t, user);   // MIS1-B6 — Guard 1/2/3
         string? captured = null;
         var ctrl = Controller(t, GenMock(v => captured = v).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, CvAnalysisId: caId), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid], CvAnalysisId: caId), default);
 
         Assert.IsType<CreatedResult>(result);
         Assert.Equal("Middle", captured);
@@ -150,13 +158,14 @@ public class RoadmapCurrentLevelTests
         var user = Guid.NewGuid();
         // Hai giá trị KHÁC NHAU có chủ đích — nếu ưu tiên bị đảo, test này bắt được ngay.
         var caId = SeedCvAnalysis(t, user, currentLevel: "Senior");
+        var sid = SeedScoredSession(t, user);   // MIS1-B6 — Guard 1/2/3
         string? captured = null;
         var ctrl = Controller(t, GenMock(v => captured = v).Object, user);
 
         var result = await ctrl.Create(
             new CreateRoadmapRequest(
                 JobCategory.BE, RoadmapLevel.Junior, null,
-                CvAnalysisId: caId, CurrentLevel: "Fresher"),
+                SessionIds: [sid], CvAnalysisId: caId, CurrentLevel: "Fresher"),
             default);
 
         Assert.IsType<CreatedResult>(result);
@@ -174,13 +183,14 @@ public class RoadmapCurrentLevelTests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user);   // MIS1-B6 — Guard 1/2/3
         string? captured = null;
         var ctrl = Controller(t, GenMock(v => captured = v).Object, user);
 
         var result = await ctrl.Create(
             new CreateRoadmapRequest(
                 JobCategory.BE, RoadmapLevel.Junior, null,
-                CvAnalysisId: null, CurrentLevel: "Middle"),
+                SessionIds: [sid], CvAnalysisId: null, CurrentLevel: "Middle"),
             default);
 
         Assert.IsType<CreatedResult>(result);

@@ -39,6 +39,15 @@ public class RoadmapLesson
 
     public LessonStatus Status { get; set; } = LessonStatus.Theory;
 
+    // MIS1-B4 — mistake_key (RoadmapMistake) mà lesson này bám riêng (MIS1-B2 lessons[].mistakeIds).
+    // jsonb NULLABLE: null = roadmap tạo trước MIS1-B4/lesson không nhắm lỗi nào cụ thể.
+    public List<string>? MistakeRefs { get; set; }
+
+    // MIS1-B4 — "vì sao sai / sửa sao" AI sinh CÙNG lượt với TheoryContent (MIS1-B3 mistakeReview).
+    // jsonb NULLABLE: null = chưa mở lesson lần nào SAU bản này, hoặc lesson không có mistake để review
+    // (KHÔNG suy null thành [] — BK23).
+    public List<LessonMistakeReviewItem>? MistakeReview { get; set; }
+
     // Lịch sử MỌI lần làm bài này (kể cả các lần làm lại). `SessionId` ở trên vẫn trỏ lần MỚI NHẤT.
     // Cascade theo lesson_id.
     public ICollection<RoadmapLessonAttempt> Attempts { get; set; } = [];
