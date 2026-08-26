@@ -251,6 +251,12 @@ public class RoadmapsController : ControllerBase
             return StatusCode(StatusCodes.Status502BadGateway,
                 new { error = "Dịch vụ thanh toán tạm thời không phản hồi. Vui lòng thử lại sau." });
         }
+        catch (AiServiceException ex)
+        {
+            _logger.LogWarning(ex, "AIService lỗi khi /start lesson {LessonId}", lessonId);
+            return StatusCode(StatusCodes.Status502BadGateway,
+                new { error = "AIService gặp lỗi. Vui lòng thử lại sau." });
+        }
         catch (InvalidOperationException ex)
         {
             // Sinh câu hỏi lỗi / CV không đọc được.
@@ -308,6 +314,12 @@ public class RoadmapsController : ControllerBase
             _logger.LogError(ex, "PaymentService lỗi khi reserve credit để làm lại lesson {LessonId}", lessonId);
             return StatusCode(StatusCodes.Status502BadGateway,
                 new { error = "Dịch vụ thanh toán tạm thời không phản hồi. Vui lòng thử lại sau." });
+        }
+        catch (AiServiceException ex)
+        {
+            _logger.LogWarning(ex, "AIService lỗi khi làm lại lesson {LessonId}", lessonId);
+            return StatusCode(StatusCodes.Status502BadGateway,
+                new { error = "AIService gặp lỗi. Vui lòng thử lại sau." });
         }
         catch (InvalidOperationException ex)
         {
