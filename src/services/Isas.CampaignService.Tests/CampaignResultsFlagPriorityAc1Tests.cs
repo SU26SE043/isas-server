@@ -209,6 +209,32 @@ public class CampaignResultsFlagPriorityAc1Tests
         Assert.Equal(sUnverified, res.UnscoredFlagged[1].SessionId);
     }
 
+    // 🔴 `monitoring_gap` (loại MỚI của B1) cũng thuộc tầng MÔI TRƯỜNG. Test này bổ sung sau khi
+    // mutation của người kiểm cho thấy đổi nó sang tầng danh tính vẫn XANH: mọi test monitoring_gap
+    // khác đều kiểm ĐƯỜNG NẠP (whitelist · gate IdentitySignals · quyền Q4), không cái nào kiểm
+    // TẦNG HIỂN THỊ. Hai cơ chế khác nhau nhưng câu chữ gần giống ("môi trường vs danh tính") nên
+    // rất dễ tưởng đã phủ. Gián đoạn nhịp giám sát là sự cố THIẾT BỊ/MẠNG — đẩy nó lên ngang
+    // `face_mismatch` là bắt HR đọc nhiễu trước bằng chứng thật.
+    [Fact]
+    public async Task Ac1_Monitoring_gap_thuoc_tang_moi_truong_khong_phai_danh_tinh()
+    {
+        using var tdb = new CampaignTestDb();
+        var orgId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, orgId);
+
+        var sGap = Guid.NewGuid();
+        SeedFlag(tdb.Db, campaign.Id, sGap, Guid.NewGuid(), "monitoring_gap");
+
+        var sBehavior = Guid.NewGuid();
+        SeedFlag(tdb.Db, campaign.Id, sBehavior, Guid.NewGuid(), "tab_switch");
+
+        var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
+
+        // Cùng 1 cờ mỗi buổi → chỉ TẦNG phân định. Hành vi (2) > môi trường (1).
+        Assert.Equal(sBehavior, res.UnscoredFlagged[0].SessionId);
+        Assert.Equal(sGap, res.UnscoredFlagged[1].SessionId);
+    }
+
     // Loại lạ (FE/AIService deploy trước Campaign, hoặc dữ liệu cũ) → tầng THẤP NHẤT, KHÔNG ném.
     // Chiều mặc định có chủ đích: cờ chưa ai phân loại không được tự leo lên đầu danh sách HR.
     [Fact]
