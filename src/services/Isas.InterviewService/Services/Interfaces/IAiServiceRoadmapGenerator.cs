@@ -16,11 +16,18 @@ public interface IAiServiceRoadmapGenerator
     // roadmap CÓ chọn CV nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%); lộ trình trước chỉ 4/37 đủ
     // điều kiện trên dev, 0 trên môi trường chính (điều kiện quá hẹp để có tác động thật). `cvText`
     // thô cũng đã bị gỡ TRƯỚC bước này (MIS1-B5) với cùng lý do đo được — CV không có chỗ tác động
-    // lên một *cấu trúc giáo trình* vốn không đổi theo người. `RoadmapService` VẪN kiểm quyền sở
-    // hữu `req.CvAnalysisId`/`req.PriorRoadmapId` (404/403/400) và VẪN lưu `roadmaps.cv_id` —
-    // CHỈ nội dung không còn đi vào prompt. DTO `CreateRoadmapRequest` GIỮ NGUYÊN 4 trường liên
-    // quan (CvId/CvAnalysisId/PriorRoadmapId/CurrentLevel) — expand/contract, dọn ở đợt sau khi
-    // frontend ngừng gửi.
+    // lên một *cấu trúc giáo trình* vốn không đổi theo người.
+    //
+    // 🔴 ĐÍNH CHÍNH review sau REC1-B7 (bản trước ghi SAI ở đây — mâu thuẫn với comment tại
+    // `RoadmapService.CreateAsync`): `req.CvAnalysisId`/`req.PriorRoadmapId` KHÔNG còn được
+    // `RoadmapService` kiểm quyền sở hữu gì cả — 2 khối guard 404/403/400 đã gỡ HẲN cùng với
+    // `cvAnalysisSummary`/`priorRoadmapSummary`, và cả hai id này KHÔNG được lưu ở bất kỳ đâu
+    // (không phải cột nào của `Roadmap` entity — verify bằng grep). Chỉ `req.CvId` còn ý nghĩa
+    // THẬT: vẫn lưu xuống `roadmaps.cv_id` (FK Restrict → file_records), và `RoadmapsController.
+    // Create` bắt `DbUpdateException` để trả 404 "CV không tồn tại" khi id đó không có row —
+    // KHÔNG còn qua đường guard 404 riêng ở service như trước bước này. DTO `CreateRoadmapRequest`
+    // GIỮ NGUYÊN 4 trường liên quan (CvId/CvAnalysisId/PriorRoadmapId/CurrentLevel) — expand/
+    // contract, dọn ở đợt sau khi frontend ngừng gửi.
     //
     // BE-1 — `criteria` = tiêu chí năng lực THẬT của (jobCategory, language) này (cùng shape
     // `QuestionTargetCriterionDto` dùng cho chấm-theo-phạm-vi). AIService chỉ cho model chọn

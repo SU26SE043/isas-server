@@ -5,6 +5,7 @@ using Isas.InterviewService.Services.Interfaces;
 using Isas.Shared.Pagination;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Controllers;
 
@@ -67,6 +68,22 @@ public class RoadmapsController : ControllerBase
         {
             _logger.LogWarning(ex, "AIService /generate-roadmap lỗi khi tạo roadmap cho {CandidateId}", candidateId);
             return StatusCode(StatusCodes.Status502BadGateway, new { error = "AIService gặp lỗi. Vui lòng thử lại sau." });
+        }
+        // 🔴 REC1-B7 review — `RoadmapService.CreateAsync` không còn kiểm sự TỒN TẠI của `req.CvId`
+        // bằng `ReadOwnedParsedTextAsync` (gỡ ở đó, xem comment tại vị trí gọi). CvId vẫn được lưu
+        // xuống `roadmaps.cv_id` (FK Restrict → file_records) — id không tồn tại chặn ở chính
+        // `SaveChangesAsync` bằng `DbUpdateException`, mà TRƯỚC bản vá này không action nào bắt nó
+        // ⇒ ASP.NET trả 500 mặc định (rò stack trace ở môi trường Development — repro độc lập bằng
+        // probe test: `Microsoft.EntityFrameworkCore.DbUpdateException` / inner `SQLite Error 19:
+        // 'FOREIGN KEY constraint failed'`). Bắt tại đây để khôi phục ĐÚNG hành vi 404 sạch trước
+        // REC1-B7 — không dùng `catch (Exception)` chung chung vì sẽ nuốt luôn lỗi thật không liên
+        // quan CvId (Roadmap không có concurrency token nào ở đây nên không có ca
+        // `DbUpdateConcurrencyException`; `CvAnalysisId`/`PriorRoadmapId` KHÔNG được lưu ở bất kỳ
+        // đâu nữa nên không thể là nguồn của FK khác tại call site này — đã verify bằng grep).
+        catch (DbUpdateException ex)
+        {
+            _logger.LogWarning(ex, "CvId không tồn tại (FK vi phạm) khi tạo roadmap cho {CandidateId}", candidateId);
+            return NotFound(new { error = "CV không tồn tại." });
         }
         catch (InvalidOperationException ex)
         {
