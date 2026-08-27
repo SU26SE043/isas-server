@@ -1219,7 +1219,14 @@ public class AnswerService : IAnswerService
                     DeliveryMetrics = DeliveryMetricsMapper.Read(answer),
                     // J5 — CHỈ B2C (CAMP-10: B2B xếp hạng chung một bảng, không được chấm bằng hai
                     // thước). null với mọi buổi thuộc campaign.
-                    Seniority = session.CampaignId is null ? session.Seniority : null
+                    Seniority = session.CampaignId is null ? session.Seniority : null,
+                    // AC1 — ngữ cảnh để worker gửi cờ chống gian lận về ĐÚNG buổi thi. Van NGƯỢC
+                    // chiều với `Seniority` ngay trên: CHỈ B2B. Session nào cũng có CandidateId nên
+                    // vế null chỉ tới được nhờ van này — B2C không có anti-cheat (BC-6). Van PHẢI
+                    // giống hệt ở StuckAnswerRepublisher, bỏ sót một đường là buổi đi đường cứu hộ
+                    // mất ngữ cảnh im lặng.
+                    CampaignId = session.CampaignId,
+                    CandidateId = session.CampaignId is null ? null : (Guid?)session.CandidateId
                 };
 
                 await _scoringPublisher.PublishAsync(job, ct);
