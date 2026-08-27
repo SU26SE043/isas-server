@@ -3,7 +3,8 @@ namespace Isas.CampaignService.Models
     /// <summary>
     /// Cờ chống gian lận cho HR (D13/CAMP-12 — FLAG cho HR, KHÔNG auto-hủy). 1 dòng = 1 tín hiệu phát hiện.
     /// Backend CHỈ NHẬN + LƯU + PHƠI cờ; KHÔNG tự phát hiện gian lận. Nguồn phát:
-    ///  - Frontend (webcam/tab-switch, repo riêng): tab_switch · paste · focus_lost.
+    ///  - Frontend (webcam/tab-switch, repo riêng): tab_switch · paste · focus_lost · camera_blocked ·
+    ///    monitoring_gap (hai cờ sau là MÔI TRƯỜNG — "không quan sát được", không phải "sai người").
     ///  - AIService (face-match / multi-voice, service riêng): face_mismatch · no_face · multiple_faces ·
     ///    multi_voice · identity_unverified.
     /// Chỉ B2B (campaign org-owned). Ref lỏng (Guid, GEN-2) — KHÔNG FK xuyên service tới session/candidate.

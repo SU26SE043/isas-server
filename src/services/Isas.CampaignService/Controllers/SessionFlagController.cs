@@ -13,7 +13,8 @@ namespace Isas.CampaignService.Controllers
     /// SEC-1 ingest — NHẬN + LƯU cờ chống gian lận cho HR (D13/CAMP-12: FLAG cho HR, KHÔNG auto-hủy).
     /// Backend KHÔNG tự phát hiện gian lận — nguồn phát là FE (webcam/tab-switch, repo riêng) và AIService
     /// (face-match/multi-voice, service riêng). 2 đường, đều idempotent → 204:
-    ///  1) Cờ FE/ứng viên (tab_switch/paste/focus_lost): JWT Candidate + phải là thành viên campaign.
+    ///  1) Cờ FE/ứng viên (tab_switch/paste/focus_lost/camera_blocked/monitoring_gap): JWT Candidate +
+    ///     phải là thành viên campaign.
     ///  2) Cờ AIService (face_mismatch/no_face/multiple_faces/multi_voice/identity_unverified): X-Internal-Token
     ///     (KHÔNG qua gateway — GEN-1), mirror InternalCampaignCandidatesController.
     /// Chỉ lưu khi campaign bật anti_cheat_enabled (hoặc face_verify_enabled cho tín hiệu danh tính) — else 204 no-op.
@@ -39,8 +40,13 @@ namespace Isas.CampaignService.Controllers
         // thi tiếp KHÔNG bị giám sát mặt mà KHÔNG có cờ nào ⇒ HR không phân biệt được "sạch" với "camera
         // chưa từng bật". Đây là cờ MÔI TRƯỜNG (thiết bị), KHÔNG phải tín hiệu danh tính → CỐ Ý không thêm
         // vào IdentitySignals: làm vậy sẽ đổi điều kiện lưu (lưu cả khi chỉ bật face_verify_enabled).
+        //
+        // AC1 — `monitoring_gap`: nhịp giám sát 30s bị đứt (tab ngủ / máy sleep / mạng rớt) nên KHÔNG CÓ
+        // ảnh nào để so trong khoảng đó. Cùng lập luận F4 và CỐ Ý cũng KHÔNG vào IdentitySignals: nó nói
+        // "không quan sát được", KHÔNG nói "sai người" — thêm vào danh tính là đổi điều kiện lưu sang cả
+        // nhánh chỉ-bật-face_verify, tức bắt đầu ghi cờ ở campaign mà HR đã tắt anti-cheat.
         private static readonly HashSet<string> FeSignals = new(StringComparer.OrdinalIgnoreCase)
-            { "tab_switch", "paste", "focus_lost", "camera_blocked" };
+            { "tab_switch", "paste", "focus_lost", "camera_blocked", "monitoring_gap" };
 
         // Cờ do AIService phát (giám sát khuôn mặt/giọng nói).
         private static readonly HashSet<string> AiSignals = new(StringComparer.OrdinalIgnoreCase)

@@ -242,6 +242,90 @@ public class SessionFlagTests
         Assert.Equal(0, FlagCount(tdb, campaign.Id));    // nhưng KHÔNG lưu
     }
 
+    // ── AC1 — `monitoring_gap`: nhịp giám sát 30s bị đứt (tab ngủ/máy sleep/mạng rớt) ────────────
+    // Không có ảnh nào để so trong khoảng đó ⇒ HR phải thấy "khoảng mù", nếu không thì buổi bị đứt
+    // giám sát trông y hệt buổi sạch. Whitelist FE phải nhận loại này, else 400 và cờ rơi mất.
+    [Fact]
+    public async Task AC1_Monitoring_gap_duoc_chap_nhan_va_ghi_row()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
+
+        var result = await NewController(tdb.NewContext(), candidateId)
+            .ReportCandidateFlag(campaign.Id, sessionId,
+                new CandidateFlagRequest { SignalType = "monitoring_gap", Note = "gián đoạn 94s" }, default);
+
+        Assert.IsType<NoContentResult>(result);
+
+        using var check = tdb.NewContext();
+        var flag = Assert.Single(check.SessionFlags.Where(f => f.CampaignId == campaign.Id));
+        Assert.Equal("monitoring_gap", flag.SignalType);
+        Assert.Equal(sessionId, flag.SessionId);
+        Assert.Equal(candidateId, flag.CandidateId);
+        Assert.Equal("gián đoạn 94s", flag.Note);
+    }
+
+    // 🔴 AC1 — `monitoring_gap` là cờ MÔI TRƯỜNG, KHÔNG phải tín hiệu DANH TÍNH (cùng lập luận F4).
+    // Thêm nhầm vào IdentitySignals ⇒ đổi điều kiện lưu: campaign chỉ bật face_verify (anti-cheat TẮT)
+    // sẽ bắt đầu ghi cờ này. Nó nói "không quan sát được", KHÔNG nói "sai người".
+    [Fact]
+    public async Task AC1_Monitoring_gap_khong_phai_tin_hieu_danh_tinh()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        // anti-cheat TẮT, face-verify BẬT → chỉ tín hiệu danh tính mới được lưu.
+        var campaign = SeedCampaign(tdb.Db, antiCheat: false, faceVerify: true);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
+
+        var result = await NewController(tdb.NewContext(), candidateId)
+            .ReportCandidateFlag(campaign.Id, sessionId,
+                new CandidateFlagRequest { SignalType = "monitoring_gap" }, default);
+
+        Assert.IsType<NoContentResult>(result);          // vẫn 204 (no-op idempotent)
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));    // nhưng KHÔNG lưu
+    }
+
+    // AC1 — ẩn danh (không claim NameIdentifier) → 401, KHÔNG ghi row. [Authorize] chặn ở tầng
+    // pipeline, guard này là lớp thứ hai (controller cũng chạy được khi test gọi thẳng).
+    [Fact]
+    public async Task AC1_Monitoring_gap_an_danh_401()
+    {
+        using var tdb = new CampaignTestDb();
+        var sessionId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+
+        var result = await NewController(tdb.NewContext(), candidateId: null)
+            .ReportCandidateFlag(campaign.Id, sessionId,
+                new CandidateFlagRequest { SignalType = "monitoring_gap" }, default);
+
+        Assert.IsType<UnauthorizedResult>(result);
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));
+    }
+
+    // AC1 — thành viên campaign cắm `monitoring_gap` vào buổi NGƯỜI KHÁC → 403 (Q4 áp cho cả loại mới).
+    [Fact]
+    public async Task AC1_Monitoring_gap_buoi_nguoi_khac_403()
+    {
+        using var tdb = new CampaignTestDb();
+        var attacker = Guid.NewGuid();
+        var victim = Guid.NewGuid();
+        var victimSession = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        SeedMember(tdb.Db, campaign.Id, attacker, Guid.NewGuid());
+        SeedMember(tdb.Db, campaign.Id, victim, victimSession);
+
+        var result = await NewController(tdb.NewContext(), attacker)
+            .ReportCandidateFlag(campaign.Id, victimSession,
+                new CandidateFlagRequest { SignalType = "monitoring_gap" }, default);
+
+        Assert.IsType<ForbidResult>(result);
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));
+    }
+
     // ── (a) Anti-cheat tắt (+ face-verify tắt) → no-op 204, KHÔNG ghi row (giám sát tắt) ──
     [Fact]
     public async Task Anti_cheat_disabled_no_op_204()
