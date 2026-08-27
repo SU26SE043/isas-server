@@ -361,11 +361,14 @@ public class RoadmapService : IRoadmapService
         // nên chưa có gì ràng buộc ở DB tại thời điểm này (AI lỗi → không Add gì, id vứt đi vô hại).
         var roadmapId = Guid.NewGuid();
 
-        // MIS1-B4/B5 — trích LỖI SAI cụ thể (tối đa 4 tiêu chí yếu nhất × 3 lỗi/tiêu chí) từ các
-        // buổi đã chọn, dưới ngưỡng CÙNG cấu hình với NeedsImprovement (BC9/E10) — `_scoring`,
-        // KHÔNG một ngưỡng riêng.
+        // MIS1-B4/B5 — trích LỖI SAI cụ thể (tối đa 4 tiêu chí yếu nhất × 3 lỗi/tiêu chí — hoặc
+        // 2×2 cho scope Quick, REC1-B6) từ các buổi đã chọn, dưới ngưỡng CÙNG cấu hình với
+        // NeedsImprovement (BC9/E10) — `_scoring`, KHÔNG một ngưỡng riêng. `scope` ĐÃ chuẩn hoá
+        // fail-CLOSED ở `ValidateScope` phía trên — loader tự CapsFor về "Standard" nếu lỡ nhận
+        // chuỗi lạ (lớp phòng thủ thứ hai, xem RoadmapMistakeLoader.ScopeCaps).
         var loadedMistakes = await RoadmapMistakeLoader.LoadAsync(
-            _db, roadmapId, sourceSessionIds ?? [], weaknesses ?? [], _scoring.ImprovementThresholdPct, ct);
+            _db, roadmapId, sourceSessionIds ?? [], weaknesses ?? [], _scoring.ImprovementThresholdPct,
+            scope, ct);
 
         // MIS1-B6 — GUARD 3: Guard 2 chỉ đảm bảo CÓ tiêu chí bị đánh dấu yếu (session_criterion_
         // scores), KHÔNG đảm bảo trích được LỖI NỘI DUNG nào — RoadmapMistakeLoader loại bỏ tiêu chí

@@ -6,11 +6,12 @@ using Isas.InterviewService.Services;
 namespace Isas.InterviewService.Tests;
 
 /// <summary>
-/// MIS1-B4 — <see cref="RoadmapMistakeLoader"/>: chỉ lấy tiêu chí <c>Ai</c>-scoring, chỉ lấy answer
-/// DƯỚI ngưỡng, ép trần 4 tiêu chí × 3 lỗi = 12 NGAY TRONG loader (caller không bypass được), khớp
-/// theo <c>CriterionId</c> (KHÔNG theo tên), bỏ answer <c>Skipped</c>/transcript rỗng/Reasoning
-/// rỗng, <c>MaxScore=0</c> không nổ, thứ tự tất định + <c>mistake_key</c> mint đúng "m1".."mN" theo
-/// ĐÚNG thứ tự đã sort (tiêu chí yếu nhất trước, trong mỗi tiêu chí điểm thấp nhất trước).
+/// MIS1-B4/REC1-B6 — <see cref="RoadmapMistakeLoader"/>: chỉ lấy tiêu chí <c>Ai</c>-scoring, chỉ
+/// lấy answer DƯỚI ngưỡng, ép trần THEO SCOPE (Standard 4 tiêu chí × 3 lỗi = 12; Quick 2×2=4 —
+/// REC1-B6) NGAY TRONG loader (caller không bypass được, không truyền số tuỳ ý), khớp theo
+/// <c>CriterionId</c> (KHÔNG theo tên), bỏ answer <c>Skipped</c>/transcript rỗng/Reasoning rỗng,
+/// <c>MaxScore=0</c> không nổ, thứ tự tất định + <c>mistake_key</c> mint đúng "m1".."mN" theo ĐÚNG
+/// thứ tự đã sort (tiêu chí yếu nhất trước, trong mỗi tiêu chí điểm thấp nhất trước).
 /// </summary>
 public class RoadmapMistakeLoaderTests
 {
@@ -71,12 +72,12 @@ public class RoadmapMistakeLoaderTests
         using var t = new TestDb();
         var criterion = AiCriterion();
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [], [new RoadmapWeakness("Clarity", 30, [criterion.Id])], 50m, default);
+            t.Db, Guid.NewGuid(), [], [new RoadmapWeakness("Clarity", 30, [criterion.Id])], 50m, "Standard", default);
         Assert.Empty(result);
 
         var sid = AddSession(t, Guid.NewGuid());
         await t.Db.SaveChangesAsync();
-        result = await RoadmapMistakeLoader.LoadAsync(t.Db, Guid.NewGuid(), [sid], [], 50m, default);
+        result = await RoadmapMistakeLoader.LoadAsync(t.Db, Guid.NewGuid(), [sid], [], 50m, "Standard", default);
         Assert.Empty(result);
     }
 
@@ -92,11 +93,11 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, null)], 50m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, null)], 50m, "Standard", default);
         Assert.Empty(result);
 
         result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [])], 50m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [])], 50m, "Standard", default);
         Assert.Empty(result);
     }
 
@@ -119,7 +120,7 @@ public class RoadmapMistakeLoaderTests
             new("Fluency", 20, [deliveryCrit.Id])
         };
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], weaknesses, 50m, default);
+            t.Db, Guid.NewGuid(), [sid], weaknesses, 50m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Equal("Clarity", mistake.CriterionName);
@@ -136,7 +137,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 30, [crit.Id])], 50m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 30, [crit.Id])], 50m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Equal("dưới ngưỡng 50% (3/10=30%)", mistake.Reasoning);
@@ -165,7 +166,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, default); // ngưỡng cao để mọi answer đều "dưới ngưỡng"
+            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, "Standard", default); // ngưỡng cao để mọi answer đều "dưới ngưỡng"
 
         Assert.Equal(RoadmapMistakeLoader.MaxCriteria * RoadmapMistakeLoader.MaxMistakesPerCriterion, result.Count);
 
@@ -177,6 +178,93 @@ public class RoadmapMistakeLoaderTests
         var eGroup = result.Where(r => r.CriterionName == "E").Select(r => r.Reasoning).ToList();
         Assert.Equal(["E-1", "E-2", "E-3"], eGroup);
         Assert.DoesNotContain("E-4", eGroup);
+    }
+
+    /// <summary>
+    /// REC1-B6 — XONG-KHI: "Quick nạp đúng 4 lỗi, Standard nạp đúng 12." Dữ liệu giống hệt
+    /// <see cref="EpTranToiDa4TieuChiX3Loi_TheoDungThuTuYeuNhatVaDiemThapNhat"/> (cùng seed, cùng
+    /// weaknesses) — CHỈ đổi <c>scope</c> — để chứng minh trần bám scope chứ không phải một bộ dữ
+    /// liệu khác cho ra số khác trùng hợp.
+    /// </summary>
+    [Fact]
+    public async Task ScopeQuick_NapDung4Loi_ScopeStandard_NapDung12_CungMotBoDuLieu()
+    {
+        using var t = new TestDb();
+        var sid = AddSession(t, Guid.NewGuid());
+
+        var criteria = new[] { "A", "B", "C", "D", "E" }
+            .Select(n => AiCriterion(n)).ToArray();
+        var weaknesses = new List<RoadmapWeakness>();
+        for (var i = 0; i < criteria.Length; i++)
+        {
+            var pct = new[] { 60m, 50m, 40m, 30m, 10m }[i]; // E yếu nhất
+            weaknesses.Add(new RoadmapWeakness(criteria[i].Name, pct, [criteria[i].Id]));
+            AddMistakeAnswer(t, sid, criteria[i], 4, $"{criteria[i].Name}-4");
+            AddMistakeAnswer(t, sid, criteria[i], 1, $"{criteria[i].Name}-1");
+            AddMistakeAnswer(t, sid, criteria[i], 3, $"{criteria[i].Name}-3");
+            AddMistakeAnswer(t, sid, criteria[i], 2, $"{criteria[i].Name}-2");
+        }
+        await t.Db.SaveChangesAsync();
+
+        var quick = await RoadmapMistakeLoader.LoadAsync(
+            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, "Quick", default);
+        Assert.Equal(4, quick.Count); // 2 tiêu chí × 2 lỗi (mutation-check anchor)
+
+        var standard = await RoadmapMistakeLoader.LoadAsync(
+            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, "Standard", default);
+        Assert.Equal(12, standard.Count); // 4 tiêu chí × 3 lỗi — hành vi TRƯỚC bản vá, giữ nguyên
+    }
+
+    /// <summary>
+    /// REC1-B6 mục 2 — "Lỗi bị cắt là lỗi ÍT TÁI PHẠM NHẤT (thứ tự đã dựng ở B1), không phải model
+    /// tuỳ ý bỏ." Cắt cả TẦNG TIÊU CHÍ (Quick giữ 2/3, bỏ tiêu chí ít tái phạm nhất — REC1-B1
+    /// WeakSessions) LẪN TẦNG LỖI-TRONG-TIÊU-CHÍ (Quick giữ 2/4 lỗi điểm thấp nhất mỗi tiêu chí).
+    /// </summary>
+    [Fact]
+    public async Task ScopeQuick_CatDungTieuChiItTaiPhamNhat_VaLoiDiemCaoNhatTrongTieuChiConLai()
+    {
+        using var t = new TestDb();
+        var sid = AddSession(t, Guid.NewGuid());
+        var critTaiPhamNhieuNhat = AiCriterion("TaiPhamNhieuNhat");
+        var critTaiPhamVua = AiCriterion("TaiPhamVua");
+        var critItTaiPhamNhat = AiCriterion("ItTaiPhamNhat");
+
+        // Mỗi tiêu chí 4 answer dưới ngưỡng — Quick chỉ giữ 2 điểm THẤP NHẤT/tiêu chí.
+        foreach (var (crit, prefix) in new[]
+                 {
+                     (critTaiPhamNhieuNhat, "TPN"), (critTaiPhamVua, "TPV"), (critItTaiPhamNhat, "ITP"),
+                 })
+        {
+            AddMistakeAnswer(t, sid, crit, 4, $"{prefix}-4");
+            AddMistakeAnswer(t, sid, crit, 1, $"{prefix}-1");
+            AddMistakeAnswer(t, sid, crit, 3, $"{prefix}-3");
+            AddMistakeAnswer(t, sid, crit, 2, $"{prefix}-2");
+        }
+        await t.Db.SaveChangesAsync();
+
+        var weaknesses = new List<RoadmapWeakness>
+        {
+            new("TaiPhamNhieuNhat", 50, [critTaiPhamNhieuNhat.Id], WeakSessions: 4, TotalSessions: 4),
+            new("TaiPhamVua", 50, [critTaiPhamVua.Id], WeakSessions: 2, TotalSessions: 4),
+            // Percentage THẤP NHẤT (tưởng "yếu nhất" nếu chỉ nhìn điểm một buổi) nhưng WeakSessions
+            // THẤP NHẤT (REC1-B1: đây mới là tiêu chí đáng bị cắt trước) — đúng bẫy B1 dựng ra để bắt.
+            new("ItTaiPhamNhat", 5, [critItTaiPhamNhat.Id], WeakSessions: 1, TotalSessions: 4),
+        };
+
+        var quick = await RoadmapMistakeLoader.LoadAsync(
+            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, "Quick", default);
+
+        Assert.Equal(4, quick.Count); // 2 tiêu chí × 2 lỗi
+        var names = quick.Select(r => r.CriterionName).Distinct().ToList();
+        Assert.Equal(["TaiPhamNhieuNhat", "TaiPhamVua"], names); // 2 tái phạm nhiều nhất, đúng thứ tự
+        Assert.DoesNotContain("ItTaiPhamNhat", names); // ÍT TÁI PHẠM NHẤT bị cắt — dù Percentage thấp nhất
+
+        // Trong mỗi tiêu chí còn lại — CHỈ 2 lỗi điểm THẤP NHẤT (1, 2), điểm 3/4 bị cắt.
+        var tpnGroup = quick.Where(r => r.CriterionName == "TaiPhamNhieuNhat")
+            .Select(r => r.Reasoning).ToList();
+        Assert.Equal(["TPN-1", "TPN-2"], tpnGroup);
+        Assert.DoesNotContain("TPN-3", tpnGroup);
+        Assert.DoesNotContain("TPN-4", tpnGroup);
     }
 
     /// <summary>
@@ -205,7 +293,7 @@ public class RoadmapMistakeLoaderTests
             new("TaiPham", 40, [critTaiPham.Id], WeakSessions: 3, TotalSessions: 4),
         };
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, default);
+            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, "Standard", default);
 
         Assert.Equal(2, result.Count);
         // "m1" (mint đầu tiên, theo đúng thứ tự sort) phải thuộc về tiêu chí TÁI PHẠM NHIỀU HƠN,
@@ -233,7 +321,7 @@ public class RoadmapMistakeLoaderTests
             new("Yeu", 10, [critYeuNhat.Id])    // yếu nhất → xét TRƯỚC
         };
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, default);
+            t.Db, Guid.NewGuid(), [sid], weaknesses, 100m, "Standard", default);
 
         Assert.Equal(3, result.Count);
         // "Yeu" xét trước (yếu hơn), trong đó điểm thấp nhất (yeu-1) trước yeu-2 → m1, m2.
@@ -257,7 +345,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Equal("hop le", mistake.Reasoning);
@@ -275,7 +363,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Equal("lý do thật", mistake.Reasoning);
@@ -292,7 +380,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Equal("chuẩn - attempt 1", mistake.Reasoning);
@@ -311,7 +399,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sidTrong], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 90m, default);
+            t.Db, Guid.NewGuid(), [sidTrong], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 90m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Equal("trong phạm vi", mistake.Reasoning);
@@ -332,7 +420,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [critCu.Id])], 50m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [critCu.Id])], 50m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Equal("answer gắn tiêu chí CŨ", mistake.Reasoning);
@@ -352,7 +440,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("ZeroMax", 20, [crit.Id])], 100m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("ZeroMax", 20, [crit.Id])], 100m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Equal(0m, mistake.ScorePct);
@@ -369,7 +457,7 @@ public class RoadmapMistakeLoaderTests
         await t.Db.SaveChangesAsync();
 
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, default);
+            t.Db, Guid.NewGuid(), [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, "Standard", default);
 
         var mistake = Assert.Single(result);
         Assert.Null(mistake.SampleAnswer);
@@ -388,7 +476,7 @@ public class RoadmapMistakeLoaderTests
 
         var roadmapId = Guid.NewGuid();
         var result = await RoadmapMistakeLoader.LoadAsync(
-            t.Db, roadmapId, [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, default);
+            t.Db, roadmapId, [sid], [new RoadmapWeakness("Clarity", 20, [crit.Id])], 50m, "Standard", default);
 
         Assert.Equal(roadmapId, Assert.Single(result).RoadmapId);
     }
