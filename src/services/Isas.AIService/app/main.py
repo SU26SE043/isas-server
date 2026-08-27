@@ -570,17 +570,16 @@ async def generate_roadmap(req: GenerateRoadmapRequest,
         evidence = [e.model_dump() for e in req.evidence] if req.evidence else None
         # MIS1-B1 — LỖI SAI trích từ buổi luyện đã chấm. Vắng/rỗng ⇒ None (giữ hành vi cũ).
         mistakes = [ms.model_dump() for ms in req.mistakes] if req.mistakes else None
+        # REC1-B7 — `cvAnalysisSummary`/`priorRoadmapSummary`/`currentLevel` đã gỡ khỏi
+        # GenerateRoadmapRequest (schemas.py) — không còn field nào để đọc/forward ở đây.
         milestones = await _call_with_language(req.language, provider.generate_roadmap,
             req.jobCategory, req.level, weaknesses,
             focus=req.focus,
-            cv_analysis_summary=req.cvAnalysisSummary,
-            prior_roadmap_summary=req.priorRoadmapSummary,
             grounding=grounding,
             criteria=criteria,
             scope=req.scope,
             evidence=evidence,
             mode=req.mode,
-            current_level=req.currentLevel,
             mistakes=mistakes,
         )
         return GenerateRoadmapResponse(

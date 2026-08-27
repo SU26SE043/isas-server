@@ -1907,22 +1907,27 @@ class GeminiProvider(QuestionProvider):
     async def generate_roadmap(self, job_category: str, level: str,
                                weaknesses: list[dict] | None,
                                focus: str | None = None,
-                               cv_analysis_summary: str | None = None,
-                               prior_roadmap_summary: str | None = None,
                                grounding: list[dict] | None = None,
                                criteria: list[dict] | None = None,
                                scope: str = DEFAULT_SCOPE, language: str = "vi",
                                evidence: list[dict] | None = None,
                                mode: str = DEFAULT_MODE,
-                               current_level: str | None = None,
                                mistakes: list[dict] | None = None,
                                _retry_feedback: str | None = None,
                                _attempt: int = 1) -> list[dict]:
         """
         BC13/D20 — sinh cấu trúc roadmap ôn tập (sync, stateless, KHÔNG ghi DB).
 
-        BC17 — focus/cvAnalysisSummary/priorRoadmapSummary: cá nhân hoá theo report ứng viên CHỌN
-        + ô mô tả mong muốn. Đều là DỮ LIỆU (bọc delimiter trong prompt, AI-4).
+        BC17 — focus: cá nhân hoá theo ô mô tả mong muốn ứng viên gõ. Là DỮ LIỆU (bọc delimiter
+        trong prompt, AI-4).
+
+        🔴 REC1-B7 — `cv_analysis_summary`/`prior_roadmap_summary`/`current_level` ĐÃ GỠ KHỎI CHỮ
+        KÝ này (không chỉ khỏi nội dung prompt như trước) — đừng nối lại. Prompt roadmap chỉ xuất
+        ra CẤU TRÚC (milestone/lesson), mà cả hai nguồn CV/lộ trình trước đều bị chèn kèm câu
+        "không đổi cấu trúc roadmap" — mệnh lệnh tự phủ định. Đo được: nhóm CÓ chọn CV nêu công
+        nghệ cụ thể ÍT hơn (8,6% vs 12,1%); lộ trình trước chỉ 4/37 đủ điều kiện trên dev, 0 trên
+        môi trường chính (điều kiện quá hẹp để có tác động thật). `cvText` thô đã bị gỡ TRƯỚC bước
+        này (MIS1-B5) với cùng lý do đo được.
 
         ``grounding`` (RAG, Contract 2): tài liệu uy tín — chèn làm căn cứ định hình cấu trúc.
         Cấu trúc roadmap KHÔNG emit citation ở Phase 1 → output shape KHÔNG đổi (list dict cũ).
@@ -1988,15 +1993,12 @@ class GeminiProvider(QuestionProvider):
         prompt = build_roadmap_prompt(
             job_category, level, weaknesses,
             focus=focus,
-            cv_analysis_summary=cv_analysis_summary,
-            prior_roadmap_summary=prior_roadmap_summary,
             grounding=grounding, criteria=known_names or None,
             retry_feedback=_retry_feedback,
             language=language,
             scope=scope,
             evidence=evidence,
             mode=mode,
-            current_level=current_level,
             mistakes=mistakes,
         )
 
@@ -2200,16 +2202,19 @@ class GeminiProvider(QuestionProvider):
                 feedback_parts.append(roadmap_message(
                     "milestone_missing_ids", language, ids=", ".join(missing_mistake_ids)))
             feedback = "\n".join(feedback_parts)
+            # 🔴 REC1-B7 — lời gọi RETRY cũng phải theo ĐÚNG chữ ký mới (đã gỡ cv_analysis_summary/
+            # prior_roadmap_summary/current_level). Bỏ sót ở ĐÂY thì lượt viết lại vỡ TypeError —
+            # mà lượt viết lại CHỈ chạy khi ĐÃ CÓ khiếm khuyết, nên lỗi chỉ lộ ra lúc đang có sự cố
+            # (một milestone/lesson thật sự bị lọc rỗng), không phải ngay từ lượt đầu tiên.
+            #
+            # Lượt viết lại PHẢI mang theo mode/mistakes: thiếu bất kỳ cái nào thì roadmap rơi vào
+            # nhánh retry sẽ âm thầm mất chế độ / mất tập id hợp lệ để gom lỗi, mà không lỗi ở đâu
+            # cả.
             return await self.generate_roadmap(
                 job_category, level, weaknesses, focus=focus,
-                cv_analysis_summary=cv_analysis_summary,
-                prior_roadmap_summary=prior_roadmap_summary,
                 grounding=grounding, criteria=criteria, scope=scope, language=language,
                 evidence=evidence,
-                # Lượt viết lại PHẢI mang theo mode/current_level/mistakes: thiếu bất kỳ cái nào
-                # thì roadmap rơi vào nhánh retry sẽ âm thầm mất chế độ / mất sàn trình độ / mất
-                # tập id hợp lệ để gom lỗi, mà không lỗi ở đâu cả.
-                mode=mode, current_level=current_level, mistakes=mistakes,
+                mode=mode, mistakes=mistakes,
                 _retry_feedback=feedback, _attempt=_attempt + 1)
 
         # Hết lượt retry (hoặc không cần retry ngay từ đầu) — hai loại khiếm khuyết xử lý KHÁC

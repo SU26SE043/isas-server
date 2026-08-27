@@ -34,15 +34,14 @@ public class RoadmapWeaknessRepeatCountRec1B1Tests
         m.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-                It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>(),
                 It.IsAny<IReadOnlyList<RoadmapMistake>?>()))
-            .Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?,
-                IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?,
-                RoadmapMode, string?, CancellationToken, IReadOnlyList<RoadmapMistake>?>(
-                (_, _, w, _, _, _, _, _, _, _, _, _, _) => weaknesses = w)
+            .Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?,
+                IReadOnlyList<QuestionTargetCriterionDto>?, string,
+                RoadmapMode, CancellationToken, IReadOnlyList<RoadmapMistake>?>(
+                (_, _, w, _, _, _, _, _, _) => weaknesses = w)
             .ReturnsAsync(new RoadmapGenAiResult(new List<GeneratedMilestone>
             {
                 new("Milestone 1", new List<string> { "Clarity" },

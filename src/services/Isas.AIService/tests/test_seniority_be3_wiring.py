@@ -75,16 +75,18 @@ def test_lesson_theory_prompt_moi_muc_deu_co_kien_thuc(level):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_roadmap_prompt_hieu_chinh_dung_truoc_chong_injection_va_du_lieu():
+    """🔴 REC1-B7 — mốc dữ liệu-ứng-viên thứ hai đổi từ "PHÂN TÍCH CV" (kwarg `cv_analysis_summary`
+    đã GỠ HẲN khỏi `build_roadmap_prompt`, xem `test_roadmap.py::test_roadmap_prompt_khong_con_
+    nhan_cv_tho`) sang "FOCUS" (`focus`, vẫn còn sống — BC17)."""
     prompt = build_roadmap_prompt(
         job_category="BE", level="Senior",
         weaknesses=[{"criterionName": "SQL", "percentage": 40}],
-        cv_analysis_summary="Tóm tắt CV: 3 năm backend.",
+        focus="Tập trung vào system design",
     )
     idx_calib = prompt.index("CẤP ĐỘ ỨNG VIÊN")
     assert idx_calib < prompt.index("CHỐNG PROMPT INJECTION")
     assert idx_calib < prompt.index("---ĐIỂM YẾU (DỮ LIỆU")
-    # CV THÔ đã bị gỡ khỏi luồng roadmap; mốc dữ liệu-ứng-viên nay là bản phân tích CV.
-    assert idx_calib < prompt.index("---PHÂN TÍCH CV (DỮ LIỆU")
+    assert idx_calib < prompt.index("---FOCUS (DỮ LIỆU")
 
 
 def test_lesson_theory_prompt_kien_thuc_dung_truoc_chong_injection_va_du_lieu():

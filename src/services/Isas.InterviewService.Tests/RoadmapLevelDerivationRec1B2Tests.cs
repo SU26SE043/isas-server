@@ -34,10 +34,9 @@ public class RoadmapLevelDerivationRec1B2Tests
         m.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
                 It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-                It.IsAny<string?>(), It.IsAny<CancellationToken>(),
+                It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>(),
                 It.IsAny<IReadOnlyList<RoadmapMistake>?>()))
             .ReturnsAsync(new RoadmapGenAiResult(new List<GeneratedMilestone>
             {

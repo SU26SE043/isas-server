@@ -95,19 +95,19 @@ public class RoadmapService : IRoadmapService
 
         if (_tieringEnabled && _entitlements is not null && !(await _entitlements.ResolveUserAsync(candidateId, ct)).RoadmapEnabled)
             throw new UnauthorizedAccessException("Gói hiện tại không bao gồm roadmap ôn tập.");
-        // CV optional — VẪN kiểm chủ sở hữu (null → 404; khác chủ → 403; rỗng → 400) và vẫn lưu
-        // `roadmaps.cv_id`, nhưng NỘI DUNG CV không còn đi vào prompt nữa.
-        //
-        // Vì sao gỡ: đo trên production, roadmap có CV và không CV cho tên chặng KHÔNG phân biệt
-        // được, và nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1% số bài). Prompt sinh
-        // roadmap là bài toán dựng *cấu trúc giáo trình*, mà chủ đề của một nghề không đổi theo
-        // người ⇒ CV thô không có chỗ tác động. Phần CV đóng góp được nay đi qua `cvAnalysisSummary`
-        // (bản đã chưng cất, có sẵn Điểm mạnh/Điểm yếu/Gợi ý) và `currentLevel` (sàn trình độ).
-        //
-        // Giữ lại lời gọi kiểm quyền: bỏ nó đi thì người dùng gửi `cvId` của người khác sẽ nhận
-        // 201 thay vì 403, tức nới quyền một cách âm thầm.
-        if (req.CvId is not null)
-            _ = await ReadOwnedParsedTextAsync(req.CvId.Value, candidateId, "CV", ct);
+        // 🔴 REC1-B7 — `req.CvId` KHÔNG còn được kiểm chủ sở hữu ở đây (đã gỡ lời gọi
+        // `ReadOwnedParsedTextAsync`, vốn CHỈ kiểm quyền rồi vứt nội dung `_ =` — nội dung CV đã
+        // ngừng đi vào prompt từ trước bước này). `CvId` VẪN được lưu xuống `roadmaps.cv_id`
+        // (FK Restrict → file_records, xem gán `CvId = req.CvId` bên dưới) — id không tồn tại sẽ bị
+        // chính ràng buộc FK đó chặn ở SaveChanges, chỉ là KHÔNG còn câu lỗi 404/403 thân thiện
+        // riêng cho trường hợp này. `CvAnalysisId`/`PriorRoadmapId`/`CurrentLevel` cũng cùng số phận
+        // (gỡ toàn bộ guard 404/403/400 phía dưới) — bốn field này giờ chỉ còn Ý NGHĨA LƯU TRỮ
+        // (CvId) hoặc BỊ BỎ QUA HOÀN TOÀN (ba field kia), không còn validate/dùng làm ngữ cảnh
+        // prompt. Lý do: prompt roadmap chỉ xuất ra CẤU TRÚC, mà cả CV lẫn lộ trình trước đều bị
+        // chèn kèm câu "không đổi cấu trúc roadmap" — mệnh lệnh tự phủ định. Đo được: nhóm CÓ chọn
+        // CV nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%); lộ trình trước chỉ 4/37 đủ điều kiện trên
+        // dev, 0 trên môi trường chính. DTO GIỮ NGUYÊN cả 4 field (expand/contract — dọn ở đợt sau
+        // khi frontend ngừng gửi).
 
         // BC17 — baseline lấy từ CÁC BUỔI CANDIDATE CHỌN (thôi tự gom MỌI buổi Scored). MIS1-B6 —
         // GUARD 1 (ngay trên) đã đảm bảo `req.SessionIds` LUÔN {Count: > 0} tới đây; khối `if` dưới
@@ -289,57 +289,11 @@ public class RoadmapService : IRoadmapService
                 "ROADMAP_NO_WEAKNESS: Các buổi luyện đã chọn không có tiêu chí nào bị đánh dấu cần " +
                 "cải thiện, nên không có gì để xây lộ trình. Hãy chọn buổi khác.");
 
-        // BC17 — phân tích CV đã có (BC7) làm NGỮ CẢNH prompt. CHỈ ĐỌC row đã lưu — KHÔNG gọi lại
-        // /analyze-cv, KHÔNG reserve/consume credit (D22, tạo roadmap free). Thiếu → 404; khác chủ → 403.
-        string? cvAnalysisSummary = null;
-        // Trình độ HIỆN TẠI suy từ CV — đi bằng KHOÁ RIÊNG xuống AIService, KHÔNG nhúng vào chuỗi
-        // `cvAnalysisSummary`: chuỗi đó nằm trong khối prompt đã tuyên bố là DỮ LIỆU chứ không
-        // phải lệnh, mà đây LÀ chỉ thị (bỏ phần nhập môn đã nắm) ⇒ nhét vào đó là tự vô hiệu hoá.
-        string? currentLevel = null;
-        if (req.CvAnalysisId is not null)
-        {
-            var ca = await _db.Set<CvAnalysis>().AsNoTracking()
-                .FirstOrDefaultAsync(x => x.Id == req.CvAnalysisId.Value, ct)
-                ?? throw new KeyNotFoundException("Phân tích CV không tồn tại.");
-            if (ca.CandidateId != candidateId)
-                throw new UnauthorizedAccessException("Không phải phân tích CV của bạn");
-            // Cùng lý do đã nêu ở guard lệch nghề của buổi luyện, và cũng phải đứng SAU cửa sở hữu
-            // vì câu lỗi nêu đích danh id. `cv_analyses.job_category` là nghề bản phân tích được
-            // chạy cho — bản phân tích CV nghề BA nói về điểm mạnh/yếu của BA, và `CurrentLevel`
-            // rút từ nó là trình độ BA; bơm cả hai vào lộ trình BE là đặt sàn trình độ sai nghề.
-            if (ca.JobCategory != req.JobCategory)
-                throw CrossCategorySource(
-                    "Phân tích CV đã chọn", req.JobCategory, $"{ca.JobCategory} ({ca.Id})");
-            cvAnalysisSummary = BuildCvAnalysisSummary(ca);
-            currentLevel = ca.CurrentLevel;
-        }
-        // REC1-B2 — "trình độ hiện tại candidate TỰ KHAI ở wizard" (ValidateCurrentLevel +
-        // currentLevelOverride) đã GỠ: `currentLevel` giờ CHỈ tới từ `cv_analyses.CurrentLevel`
-        // (đã gán ở nhánh `if (req.CvAnalysisId is not null)` ngay trên; không chọn CV nào → giữ
-        // `null`). `req.CurrentLevel` không còn được đọc ở bất kỳ đâu trong hàm này.
-
-        // BC17 — final_report của roadmap đã hoàn thành (BC15) làm NGỮ CẢNH. Thiếu → 404; khác chủ → 403;
-        // chưa có báo cáo (chưa hoàn thành) → 400.
-        string? priorRoadmapSummary = null;
-        if (req.PriorRoadmapId is not null)
-        {
-            var prior = await _db.Set<Roadmap>().AsNoTracking()
-                .FirstOrDefaultAsync(x => x.Id == req.PriorRoadmapId.Value, ct)
-                ?? throw new KeyNotFoundException("Roadmap được chọn không tồn tại.");
-            if (prior.CandidateId != candidateId)
-                throw new UnauthorizedAccessException("Không phải roadmap của bạn");
-            // Cùng lý do — và đứng TRƯỚC guard "chưa có báo cáo" bên dưới: một lộ trình BA đã hoàn
-            // thành thì có báo cáo hợp lệ, nên nếu để guard kia chạy trước thì lộ trình BA sẽ lọt
-            // qua sạch sẽ; còn lộ trình BA CHƯA hoàn thành lại nhận câu "chưa có báo cáo" — đúng
-            // sự thật nhưng che mất nguyên nhân thật, người dùng đi hoàn thành nó rồi vẫn hỏng.
-            if (prior.JobCategory != req.JobCategory)
-                throw CrossCategorySource(
-                    "Lộ trình tham chiếu đã chọn", req.JobCategory, $"{prior.JobCategory} ({prior.Id})");
-            if (string.IsNullOrWhiteSpace(prior.FinalReport))
-                throw new InvalidOperationException("Roadmap được chọn chưa có báo cáo (chưa hoàn thành).");
-
-            priorRoadmapSummary = BuildPriorRoadmapSummary(prior.FinalReport, prior.Id);
-        }
+        // 🔴 REC1-B7 — khối `CvAnalysisId` (3 guard 404/403/400 + tóm tắt làm ngữ cảnh prompt) và
+        // khối `PriorRoadmapId` (4 guard + tóm tắt) đã GỠ HẲN khỏi đây — lý do đầy đủ ở comment
+        // đầu hàm (ngay sau guard `RoadmapEnabled`). `req.CvAnalysisId`/`req.PriorRoadmapId`/
+        // `req.CurrentLevel` không còn được đọc ở bất kỳ đâu trong hàm này; DTO vẫn khai đủ 3 field
+        // (client gửi gì cũng bị bỏ qua, không 404/403/400, không tác dụng).
 
         // BC17 — mô tả tự do: trim (khoảng-trắng-thuần = không nhập) + cap độ dài → vượt 400. Chống
         // prompt-injection (bọc như dữ liệu) là việc phía AIService (worker Python), không phải ở đây.
@@ -393,19 +347,23 @@ public class RoadmapService : IRoadmapService
         // gì để gom).
         var mistakesForAi = loadedMistakes;
 
-        // 🔴 MIS1-B5 — `evidence` GỠ KHỎI ĐÂY (đi cùng chế độ giáo trình MIS1-B2 đã bỏ): `mistakes`
-        // ở trên nay là nguồn GOM CHỦ ĐỀ, giàu hơn evidence (có id để AI trỏ ngược). KHÔNG xoá
-        // tham số `evidence` khỏi interface/`build_roadmap_prompt` — chỉ đơn giản KHÔNG còn caller
-        // nào truyền dữ liệu cho nó (giữ `RoadmapEvidenceLoader.cs`/test nguyên vẹn, xem MIS1-B5).
+        // 🔴 MIS1-B5 — `evidence` từng gỡ KHỎI ĐÂY (đi cùng chế độ giáo trình MIS1-B2 đã bỏ):
+        // `mistakes` ở trên nay là nguồn GOM CHỦ ĐỀ, giàu hơn evidence (có id để AI trỏ ngược).
+        // REC1-B7 đi thêm một bước: tham số `evidence` đã GỠ HẲN khỏi chữ ký `GenerateAsync` này
+        // (nó chết sẵn từ MIS1-B5 — không caller nào từng truyền) — khác `GenerateLessonTheoryAsync`
+        // vẫn giữ `evidence` nguyên vẹn (`RoadmapEvidenceLoader.cs`/test không đụng, ngoài phạm vi
+        // bước này).
+        //
+        // 🔴 REC1-B7 — `cvAnalysisSummary`/`priorRoadmapSummary`/`currentLevel` cũng GỠ khỏi lời
+        // gọi này (cùng lúc với việc gỡ hẳn khỏi chữ ký `GenerateAsync`) — lý do đầy đủ ở comment
+        // đầu hàm.
         //
         // Gọi AIService sinh cấu trúc (sync). Lỗi → AiServiceException (502) → KHÔNG lưu gì.
         var ai = language == "vi"
             ? await _generator.GenerateAsync(req.JobCategory.ToString(), roadmapLevel.ToString(), weaknesses,
-                focus, cvAnalysisSummary, priorRoadmapSummary, criteria, scope,
-                mode: mode, currentLevel: currentLevel, ct: ct, mistakes: mistakesForAi)
+                focus, criteria, scope, mode: mode, ct: ct, mistakes: mistakesForAi)
             : await _generator.GenerateAsync(req.JobCategory.ToString(), roadmapLevel.ToString(), weaknesses,
-                focus, cvAnalysisSummary, priorRoadmapSummary, ct, language, criteria, scope,
-                mode: mode, currentLevel: currentLevel, mistakes: mistakesForAi);
+                focus, ct, language, criteria, scope, mode: mode, mistakes: mistakesForAi);
 
         // 🔴 MIS1-B5 — NARROW LẠI Ở .NET: AI tự gán `mistakeIds` khi gom chủ đề (MIS1-B2), nhưng
         // CẤM tin thẳng — id lạ/bịa phải bị lọc trước khi chạm DB (mẫu NarrowToCited của
@@ -708,15 +666,14 @@ public class RoadmapService : IRoadmapService
         return new KeysetPage<RoadmapSummaryResponse>(rows, next);
     }
 
-    // BC17 — trần độ dài. focus: cap input tự do (rẻ, chống prompt phình). summary: cắt bối cảnh gửi AI
-    // (giữ HttpClient timeout + chi phí token trong tầm — nhồi nhiều report/CV dễ vượt).
+    // BC17 — trần độ dài mô tả tự do (rẻ, chống prompt phình). `SummaryMaxChars` (từng cắt bối cảnh
+    // CV/roadmap trước gửi AI) đã GỠ cùng REC1-B7 — hai nguồn đó không còn được chưng cất/gửi đi.
     private const int FocusMaxChars = 2000;
-    private const int SummaryMaxChars = 4000;
 
     // MIS1-B6 — GUARD 1: trần số buổi làm nguồn cho 1 lộ trình. Không phải giá trị tuỳ ý — RoadmapMistakeLoader
-    // đã tự ép trần 4 tiêu chí × 3 lỗi = 12 rồi, nhưng KHÔNG ép trần số buổi ĐẦU VÀO của truy vấn
-    // (Distinct + IN-list) lẫn kích thước prompt gửi AI (cvAnalysisSummary/priorRoadmapSummary/criteria
-    // đi kèm mỗi buổi). 20 đủ rộng cho mọi wizard picker thực tế, đủ hẹp để chặn payload bất thường.
+    // đã tự ép trần 4 tiêu chí × 3 lỗi = 12 rồi (REC1-B6: theo scope), nhưng KHÔNG ép trần số buổi
+    // ĐẦU VÀO của truy vấn (Distinct + IN-list) lẫn kích thước tập weaknesses/criteria đi kèm mỗi
+    // buổi. 20 đủ rộng cho mọi wizard picker thực tế, đủ hẹp để chặn payload bất thường.
     private const int MaxSourceSessions = 20;
 
     // REC1-B2 mục A — sàn khi KHÔNG suy được mức nào từ buổi nguồn (phòng thủ; xem CreateAsync —
@@ -724,58 +681,13 @@ public class RoadmapService : IRoadmapService
     // của chính `PracticeSession.Seniority`/`PracticeService.DefaultSeniority` — không bịa mốc mới.
     private const RoadmapLevel DefaultRoadmapLevel = RoadmapLevel.Junior;
 
-    // BC17 — deserialize final_report khớp cách RoadmapReportService serialize (Web defaults).
-    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
-
-    // BC17 — dựng bối cảnh text từ 1 phân tích CV (BC7) đã lưu: summary + strengths/weaknesses/suggestions
-    // + mức khớp JD (nếu có). Cắt ≤ SummaryMaxChars.
-    private static string BuildCvAnalysisSummary(CvAnalysis ca)
-    {
-        var sb = new StringBuilder();
-        if (!string.IsNullOrWhiteSpace(ca.Summary))
-            sb.Append("Tóm tắt CV: ").AppendLine(ca.Summary.Trim());
-        if (ca.Strengths.Count > 0)
-            sb.Append("Điểm mạnh: ").AppendLine(string.Join("; ", ca.Strengths));
-        if (ca.Weaknesses.Count > 0)
-            sb.Append("Điểm yếu: ").AppendLine(string.Join("; ", ca.Weaknesses));
-        if (ca.Suggestions.Count > 0)
-            sb.Append("Gợi ý: ").AppendLine(string.Join("; ", ca.Suggestions));
-        if (ca.JdMatch is not null)
-            sb.Append("Mức khớp JD: ").Append(ca.JdMatch.Score).AppendLine("%");
-        return Truncate(sb.ToString().Trim(), SummaryMaxChars);
-    }
-
-    // BC17 — dựng bối cảnh text từ final_report roadmap trước (BC15): overallComment + strengths/weaknesses
-    // /improvements. Cắt ≤ SummaryMaxChars. final_report hỏng (defensive, đáng lẽ không xảy ra) → null.
-    private string? BuildPriorRoadmapSummary(string finalReportJson, Guid roadmapId)
-    {
-        RoadmapReportResponse? report;
-        try
-        {
-            report = JsonSerializer.Deserialize<RoadmapReportResponse>(finalReportJson, WebJson);
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogWarning(ex, "BC17: final_report roadmap {RoadmapId} hỏng → bỏ qua bối cảnh", roadmapId);
-            return null;
-        }
-        if (report is null) return null;
-
-        var sb = new StringBuilder();
-        if (!string.IsNullOrWhiteSpace(report.OverallComment))
-            sb.Append("Nhận xét roadmap trước: ").AppendLine(report.OverallComment!.Trim());
-        if (report.Strengths.Count > 0)
-            sb.Append("Điểm mạnh: ").AppendLine(string.Join("; ", report.Strengths));
-        if (report.Weaknesses.Count > 0)
-            sb.Append("Điểm yếu: ").AppendLine(string.Join("; ", report.Weaknesses));
-        if (report.Improvements.Count > 0)
-            sb.Append("Đã cải thiện / cần luyện tiếp: ").AppendLine(string.Join("; ", report.Improvements));
-
-        var text = sb.ToString().Trim();
-        return text.Length == 0 ? null : Truncate(text, SummaryMaxChars);
-    }
-
-    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
+    // 🔴 REC1-B7 — `BuildCvAnalysisSummary`/`BuildPriorRoadmapSummary` (dựng bối cảnh text từ CV/
+    // roadmap trước cho prompt) đã XOÁ cùng `WebJson`/`Truncate`/`SummaryMaxChars` — cả năm chỉ
+    // phục vụ đúng hai khối `CvAnalysisId`/`PriorRoadmapId` đã gỡ khỏi `CreateAsync` (xem comment
+    // đầu hàm đó), không còn caller nào khác. `ReadOwnedParsedTextAsync` (bên dưới) CỐ Ý GIỮ LẠI dù
+    // cũng mất caller duy nhất — xoá nó kéo theo xoá field `_storage`/tham số constructor, một thay
+    // đổi RIPPLE sang 11 nơi dựng `RoadmapService` trực tiếp mà đề bài KHÔNG yêu cầu (phạm vi item 3
+    // chỉ là lời gọi 2 dòng, không phải định nghĩa hàm).
 
     /// <summary>
     /// MIS1-B5 — lọc <paramref name="ids"/> (mistake_key AI tự gán) về đúng tập

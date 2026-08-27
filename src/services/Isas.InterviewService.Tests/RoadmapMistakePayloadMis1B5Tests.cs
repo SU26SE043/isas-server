@@ -69,7 +69,7 @@ public class RoadmapMistakePayloadMis1B5Tests
         var (gen, handler) = Generator("""{"milestones":[{"title":"M1","focusCriteria":[],"lessons":[{"title":"L1"}]}]}""");
 
         await gen.GenerateAsync(
-            "BE", "Junior", weaknesses: null, focus: null, cvAnalysisSummary: null, priorRoadmapSummary: null,
+            "BE", "Junior", weaknesses: null, focus: null,
             mistakes: [Mistake()]);
 
         using var doc = JsonDocument.Parse(handler.LastBody!);
@@ -98,7 +98,7 @@ public class RoadmapMistakePayloadMis1B5Tests
         longMistake.Reasoning = new string('r', 400);
 
         await gen.GenerateAsync(
-            "BE", "Junior", weaknesses: null, focus: null, cvAnalysisSummary: null, priorRoadmapSummary: null,
+            "BE", "Junior", weaknesses: null, focus: null,
             mistakes: [longMistake]);
 
         using var doc = JsonDocument.Parse(handler.LastBody!);
@@ -123,7 +123,7 @@ public class RoadmapMistakePayloadMis1B5Tests
         var (gen, handler) = Generator("""{"milestones":[{"title":"M1","focusCriteria":[],"lessons":[{"title":"L1"}]}]}""");
 
         var ex = await Record.ExceptionAsync(() => gen.GenerateAsync(
-            "BE", "Junior", weaknesses: null, focus: null, cvAnalysisSummary: null, priorRoadmapSummary: null));
+            "BE", "Junior", weaknesses: null, focus: null));
         Assert.Null(ex);
 
         using var doc = JsonDocument.Parse(handler.LastBody!);

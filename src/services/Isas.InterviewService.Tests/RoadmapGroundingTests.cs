@@ -32,11 +32,10 @@ public class RoadmapGroundingTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
                 It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>(),
-                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))   // MIS1-B6 — arity khớp interface (mistakes, MIS1-B5)
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))   // REC1-B7 — arity khớp interface (9 tham số)
             .ReturnsAsync(SampleRoadmap());
 
         // 1 batch → 3 lesson: L1 có nguồn, L2 miss, L3 có nguồn.
@@ -79,11 +78,10 @@ public class RoadmapGroundingTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
                 It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(), It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>(),
-                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))   // MIS1-B6 — arity khớp interface (mistakes, MIS1-B5)
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))   // REC1-B7 — arity khớp interface (9 tham số)
             .ReturnsAsync(SampleRoadmap());
         var knowledge = new Mock<IKnowledgeService>();
 

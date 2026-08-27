@@ -1,8 +1,15 @@
 # tests/test_cv_current_level.py — `currentLevel`: trình độ HIỆN TẠI suy từ CV.
 #
-# Khác `level` (= trình độ MỤC TIÊU người dùng chọn ở wizard). Dùng làm SÀN cho prompt roadmap:
-# bỏ phần nhập môn người học đã nắm. `None` = CV không đủ căn cứ — đo được 87% CV thật không ghi
-# trình độ ở đâu, nên "không biết" là câu trả lời hạng nhất chứ không phải fallback.
+# Khác `level` (= trình độ MỤC TIÊU người dùng chọn ở wizard). `None` = CV không đủ căn cứ — đo
+# được 87% CV thật không ghi trình độ ở đâu, nên "không biết" là câu trả lời hạng nhất chứ không
+# phải fallback.
+#
+# 🔴 REC1-B7 — TIỀN ĐỀ ĐÃ ĐẢO: `currentLevel` KHÔNG CÒN "dùng làm SÀN cho prompt roadmap" như
+# comment gốc phía trên nói. `GenerateRoadmapRequest` (schemas.py) đã GỠ HẲN field này —
+# `currentLevel` nay CHỈ còn sống trong `AnalyzeCvResponse` (kết quả `/analyze-cv`, lưu vào
+# `cv_analyses.current_level` phía .NET) và KHÔNG BAO GIỜ chảy tiếp sang roadmap nữa. Mục (1)-(6)
+# CÒN LẠI của file này (guard chuẩn hoá giá trị, prompt phân tích CV hỏi đúng thứ) đo đúng phần
+# CÒN SỐNG của cơ chế — không đổi.
 import inspect
 import json
 from unittest.mock import AsyncMock
@@ -26,15 +33,22 @@ _BASE = {"summary": "Tóm tắt", "strengths": [], "weaknesses": [], "suggestion
 
 # ── (1) HỢP ĐỒNG DÂY — lớp bug `extra='ignore'` đã cắn repo 4 lần ─────────────────────────────
 
-def test_wire_hai_dau_deu_khai_current_level():
-    """Thiếu khai ở BẤT KỲ đầu nào là hỏng IM LẶNG: .NET gửi, pydantic nuốt, không lỗi nào nổ.
+def test_wire_analyze_cv_response_khai_current_level():
+    """Thiếu khai là hỏng IM LẶNG: .NET đọc, pydantic không trả field, không lỗi nào nổ.
 
     Tiền lệ: `focusCriteria` (BC14/F2b) · `metricsVersion` · `adaptiveMaxQuestions` · `grounding`.
     """
     assert "currentLevel" in AnalyzeCvResponse.model_fields, \
         "AIService không khai ⇒ field bị xoá khỏi response, .NET không bao giờ thấy"
-    assert "currentLevel" in GenerateRoadmapRequest.model_fields, \
-        "AIService không khai ⇒ .NET gửi mà prompt roadmap không bao giờ nhận"
+
+
+def test_wire_generate_roadmap_request_KHONG_CON_khai_current_level():
+    """🔴 REC1-B7 — ĐẢO NGƯỢC test gốc (từng khẳng định `GenerateRoadmapRequest` PHẢI khai
+    `currentLevel`, cùng lý do `focusCriteria`/`metricsVersion`). Field này đã GỠ HẲN khỏi
+    `GenerateRoadmapRequest`: dù .NET có lỡ gửi lại, `extra='ignore'` (mặc định pydantic không
+    `model_config`) sẽ nuốt câm — CỐ Ý, vì phía .NET cũng đã gỡ hẳn field này khỏi payload rồi
+    (xem `AiServiceRoadmapGenerator.cs`), nên đây không còn là lớp bug "quên khai" nữa."""
+    assert "currentLevel" not in GenerateRoadmapRequest.model_fields
 
 
 def test_tap_gia_tri_khong_troi_khoi_seniority_levels():
@@ -115,10 +129,12 @@ async def test_KHONG_fallback_ve_junior(monkeypatch):
 #   - `roadmap_mode_block` nhánh LevelUp+điểm yếu ("PHÂN BỔ LỘ TRÌNH" — nửa sau nâng lên mục
 #     tiêu) VÀ nhánh Reinforce ("CHẾ ĐỘ ÔN TẬP (REINFORCE)") — cả hai mâu thuẫn thẳng với luật
 #     gom chủ đề TỪ LỖI (mọi milestone phải rút ra từ lỗi thật, không phải nửa-tự-do/giữ-nguyên).
-# `current_level`/`mode` vẫn là tham số HỢP LỆ của `build_roadmap_prompt` (giữ tương thích chữ
-# ký; `mode` còn chỉnh câu dẫn — xem `test_roadmap_mode.py`) nhưng KHÔNG còn tự render khối nội
-# dung nào trong hàm này. §(1)-(3)-(6) ở trên/dưới KHÔNG đụng tới `build_roadmap_prompt` nên vẫn
-# giữ nguyên giá trị (hợp đồng dây `currentLevel`, prompt phân tích CV, guard provider).
+#
+# 🔴 REC1-B7 đi thêm một bước so với ghi chú gốc phía trên: `current_level` KHÔNG còn là "tham số
+# hợp lệ giữ tương thích chữ ký" nữa — nó đã GỠ HẲN khỏi chữ ký `build_roadmap_prompt` (chỉ `mode`
+# còn giữ, vẫn chỉnh câu dẫn — xem `test_roadmap_mode.py`). §(1)-(3)-(6) ở trên/dưới KHÔNG đụng
+# tới `build_roadmap_prompt` nên vẫn giữ nguyên giá trị (prompt phân tích CV, guard provider) —
+# CHỈ §(1) đổi (xem `test_wire_generate_roadmap_request_KHONG_CON_khai_current_level` ở trên).
 
 
 # ── (6) HỒI QUY: `grounding: null` KHÔNG được làm hỏng phân tích CV ──────────────────────────

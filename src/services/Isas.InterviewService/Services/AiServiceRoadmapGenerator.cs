@@ -66,17 +66,15 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
     public async Task<RoadmapGenAiResult> GenerateAsync(
         string jobCategory, string level,
         IReadOnlyList<RoadmapWeakness>? weaknesses,
-        string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary,
+        string? focus,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
         string scope = "Standard",
-        IReadOnlyList<CriterionEvidence>? evidence = null,
         RoadmapMode mode = RoadmapMode.LevelUp,
-        string? currentLevel = null,
         CancellationToken ct = default,
         IReadOnlyList<RoadmapMistake>? mistakes = null)
-        => await GenerateAsync(jobCategory, level, weaknesses, focus, cvAnalysisSummary, priorRoadmapSummary, ct, "vi", criteria, scope, evidence, mode, currentLevel, mistakes);
+        => await GenerateAsync(jobCategory, level, weaknesses, focus, ct, "vi", criteria, scope, mode, mistakes);
 
-    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null, IReadOnlyList<RoadmapMistake>? mistakes = null)
+    public async Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", RoadmapMode mode = RoadmapMode.LevelUp, IReadOnlyList<RoadmapMistake>? mistakes = null)
     {
         var payload = new
         {
@@ -94,18 +92,17 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
                 weakSessions = w.WeakSessions,
                 totalSessions = w.TotalSessions,
             }),
-            // 🔴 `cvText` ĐÃ BỊ GỠ khỏi payload — đừng nối lại; lý do đầy đủ ở
-            // IAiServiceRoadmapGenerator. Đo được là CV thô không tác động gì lên cấu trúc roadmap.
-            // Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU). Khoá RIÊNG chứ không nhúng
-            // vào `cvAnalysisSummary`: chuỗi đó vào prompt dưới nhãn DỮ LIỆU, còn đây là CHỈ THỊ.
-            // ⚠ AIService khai `currentLevel: str | None` tường minh — thiếu dòng khai đó thì
-            // `extra='ignore'` NUỐT IM LẶNG (bẫy đã cắn repo 4 lần); có test khoá hai đầu.
-            currentLevel,
-            // BC17 — ngữ cảnh thêm do candidate chọn (đều null → hành vi cũ). Worker Python khai đúng 3 field
-            // camelCase này (extra='ignore' sẽ nuốt im lặng nếu lệch tên) và tự bọc như DỮ LIỆU (AI-4).
+            // 🔴 REC1-B7 — CẤM: `cvAnalysisSummary`/`priorRoadmapSummary`/`currentLevel` KHÔNG còn
+            // xuất hiện trong payload (không phải chỉ luôn gửi `null` — `JsonContent.Create` dùng
+            // `JsonSerializerDefaults.Web`, `DefaultIgnoreCondition = Never`, nên một property gán
+            // `null` trong anonymous type vẫn ra `"x":null` trên dây; phải BỎ HẲN property). `cvText`
+            // thô đã bị gỡ TRƯỚC bước này (MIS1-B5) cùng lý do đo được — lý do đầy đủ ở
+            // IAiServiceRoadmapGenerator. `RoadmapService` vẫn kiểm quyền sở hữu CV/roadmap trước và
+            // vẫn lưu `roadmaps.cv_id` — chỉ nội dung không còn đi vào prompt.
+            //
+            // BC17 — ngữ cảnh thêm do candidate chọn. Worker Python khai đúng field camelCase này
+            // (extra='ignore' sẽ nuốt im lặng nếu lệch tên) và tự bọc như DỮ LIỆU (AI-4).
             focus,
-            cvAnalysisSummary,
-            priorRoadmapSummary,
             // BE-1 — tiêu chí năng lực THẬT để milestone.focusCriteria chọn NGUYÊN VĂN thay vì bịa tên.
             // Anonymous object viết tay tên trường camelCase — mẫu `criteria` của AiServiceQuestionGenerator:
             // JsonContent.Create dùng JsonSerializerDefaults.Web (camelCase) nên tên TRƯỜNG không phải rủi ro
@@ -116,13 +113,10 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
             // BE-4 — độ dài roadmap ("Quick"/"Standard"). AIService pydantic schema khai `scope: str =
             // "Standard"` tường minh (cùng bẫy extra='ignore' nêu ở `criteria`) nên luôn gửi, không để null.
             scope,
-            // 🔴 MIS1-B5 — CẤM: khoá `evidence` KHÔNG còn xuất hiện trong payload (không phải chỉ
-            // luôn gửi `null`). `JsonContent.Create` dùng `JsonSerializerDefaults.Web`
-            // (DefaultIgnoreCondition = Never) nên MỘT property `evidence = null` trong anonymous
-            // type vẫn ra `"evidence":null` trên dây — phải BỎ HẲN property này, không phải gán null.
-            // Tham số `evidence` của HÀM này vẫn GIỮ (interface/call site cũ không vỡ chữ ký) —
-            // chỉ đơn giản KHÔNG còn được chiếu vào payload. `mistakes` ngay dưới đây thay thế nó
-            // làm nguồn GOM CHỦ ĐỀ (MIS1-B2).
+            // REC1-B7 — `evidence` (BE-5) đã GỠ KHỎI CHỮ KÝ hàm này hoàn toàn (không chỉ khỏi
+            // payload — khác `cvAnalysisSummary`/`priorRoadmapSummary`/`currentLevel` ngay trên,
+            // vì `evidence` đã chết sẵn từ MIS1-B5: còn tham số nhưng không caller nào truyền).
+            // `mistakes` ngay dưới đây thay thế nó làm nguồn GOM CHỦ ĐỀ (MIS1-B2).
             //
             // Chế độ lộ trình — gửi dạng CHUỖI ("LevelUp"/"Reinforce") khớp `app.roadmap_mode`.
             // AIService khai `mode: str = "LevelUp"` tường minh trong pydantic schema; thiếu dòng

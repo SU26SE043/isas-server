@@ -510,20 +510,17 @@ class GenerateRoadmapRequest(BaseModel):
     language: str = "vi"
     level: str                                     # Fresher | Junior | Middle | Senior
     weaknesses: list[WeaknessScore] | None = None  # từ session_criterion_scores; rỗng → roadmap chuẩn theo level
-    # 🔴 `cvText` ĐÃ BỊ GỠ — đừng khai lại. Đo trên production: roadmap có CV và không CV cho tên
-    # chặng không phân biệt được, nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%). CV
-    # thô là đầu vào SAI HÌNH DẠNG cho một bài toán sinh *cấu trúc giáo trình*. Phần CV đóng góp
-    # được nay đi qua `cvAnalysisSummary` (bản tinh luyện) và `currentLevel` (sàn trình độ).
-    # Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU người dùng chọn). `None` = CV không đủ
-    # căn cứ ⇒ không có sàn. ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` nêu ngay dưới.
-    currentLevel: str | None = None
-    # BC17 — cá nhân hoá roadmap từ report cũ do ứng viên CHỌN + ô mô tả mong muốn. 3 field này là
-    # free-text/tóm tắt do ứng viên/hệ thống cung cấp ⇒ bọc-làm-DỮ-LIỆU trong prompt (AI-4), KHÔNG
-    # phải chỉ thị. ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'`
-    # sẽ NUỐT IM LẶNG field quên khai (đúng bug BC14/F2b `focusCriteria`) → .NET gửi mà AI không thấy.
+    # 🔴 `cvText` ĐÃ BỊ GỠ — đừng khai lại. REC1-B7 gỡ NỐT hai đường thay thế của nó
+    # (`cvAnalysisSummary`/`currentLevel`, xem ngay dưới) — đừng khai lại BẤT KỲ đường nào trong ba.
+    # Đo trên production: roadmap có CV và không CV cho tên chặng không phân biệt được, nhóm có CV
+    # còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%). Lý do cấu trúc: prompt roadmap chỉ xuất ra
+    # CẤU TRÚC (milestone/lesson), mà cả CV lẫn lộ trình trước đều bị chèn kèm câu "không đổi cấu
+    # trúc roadmap" — mệnh lệnh tự phủ định. Lộ trình trước (`priorRoadmapSummary`, cũng đã gỡ)
+    # cùng lý do: chỉ 4/37 đủ điều kiện trên dev, 0 trên môi trường chính.
+    # BC17 — cá nhân hoá roadmap từ ô mô tả mong muốn. ⚠ PHẢI khai tường minh: schema này không set
+    # model_config nên pydantic `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai (đúng bug BC14/F2b
+    # `focusCriteria`) → .NET gửi mà AI không thấy.
     focus: str | None = None                       # ô ứng viên mô tả mong muốn định hướng (free-text)
-    cvAnalysisSummary: str | None = None           # tóm tắt phân tích CV (BC7) ứng viên đã chọn
-    priorRoadmapSummary: str | None = None         # tóm tắt roadmap/report trước ứng viên đã chọn
     # RAG grounding (Contract 2) — cấu trúc roadmap KHÔNG emit citation (Phase 1), nhưng nếu W2
     # cấp grounding thì nó được chèn làm căn cứ. Khai tường minh để pydantic không nuốt (BC14).
     grounding: list[GroundingChunk] | None = None

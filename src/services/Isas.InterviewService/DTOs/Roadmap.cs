@@ -7,10 +7,16 @@ using Isas.InterviewService.Enums;
 // POST /roadmaps — cvId optional (parse sẵn ở Files). jobCategory bắt buộc (enum sai → 400).
 // BC17 — candidate CHỌN nguồn nuôi roadmap thay vì tự gom MỌI buổi Scored:
 //   • SessionIds     — buổi luyện đã Scored làm baseline; rỗng/null → roadmap CHUẨN theo level (không gom).
-//   • CvAnalysisId   — 1 phân tích CV đã có (BC7) → CHỈ ngữ cảnh prompt (không gọi lại /analyze-cv, KHÔNG trừ credit).
-//   • PriorRoadmapId — final_report của 1 roadmap đã hoàn thành (BC15) → CHỈ ngữ cảnh prompt.
-//   • Focus          — mô tả tự do muốn AI tập trung vào đâu (≤ 2000 ký tự).
-// CvAnalysis + prior-roadmap + focus KHÔNG vào baseline — chỉ là bối cảnh cho AI.
+//   • Focus          — mô tả tự do muốn AI tập trung vào đâu (≤ 2000 ký tự). KHÔNG vào baseline —
+//                       chỉ là bối cảnh cho AI.
+//
+// 🔴 REC1-B7 — `CvAnalysisId`/`PriorRoadmapId`/`CurrentLevel` (cùng `CvId` bên dưới, riêng field
+// này VẪN được lưu xuống `roadmaps.cv_id`) KHÔNG còn được service dùng làm ngữ cảnh prompt —
+// service BỎ QUA hoàn toàn, không 404/403/400, không tác dụng lên nội dung sinh ra. Lý do: prompt
+// roadmap chỉ xuất ra CẤU TRÚC, mà cả hai nguồn này từng bị chèn kèm câu "không đổi cấu trúc
+// roadmap" — mệnh lệnh tự phủ định. Đo được: nhóm CÓ chọn CV nêu công nghệ cụ thể ÍT hơn (8,6% vs
+// 12,1%); lộ trình trước chỉ 4/37 đủ điều kiện trên dev, 0 trên môi trường chính. GIỮ NGUYÊN cả 3
+// field trong DTO (expand/contract — dọn ở đợt sau khi frontend ngừng gửi).
 public record CreateRoadmapRequest(
     JobCategory JobCategory,
     // REC1-B2 — NULLABLE, GIỮ NGUYÊN vị trí 2, KHÔNG thêm default: một tham số positional không
@@ -21,9 +27,14 @@ public record CreateRoadmapRequest(
     // positional cũ (gửi `RoadmapLevel` thật) không vỡ biên dịch — `RoadmapLevel` → `RoadmapLevel?`
     // là chuyển đổi ngầm định hợp lệ.
     RoadmapLevel? Level,
+    // REC1-B7 — VẪN lưu xuống `roadmaps.cv_id` (FK Restrict → file_records) — chỉ KHÔNG còn được
+    // kiểm quyền sở hữu/đọc nội dung trước khi lưu (id không tồn tại sẽ bị chính FK chặn ở
+    // SaveChanges thay vì một câu 404 riêng).
     Guid? CvId,
     string? Name = null,                      // BE-6 — tên tự đặt; vắng → server sinh mặc định
     IReadOnlyList<Guid>? SessionIds = null,   // BC17 — buổi luyện Scored candidate chọn làm baseline
+    // REC1-B7 — KHÔNG CÒN ĐƯỢC ĐỌC (guard 404/403/400 + tóm tắt làm ngữ cảnh prompt đã gỡ khỏi
+    // RoadmapService.CreateAsync). Giữ field lại để call site cũ không vỡ biên dịch.
     Guid? CvAnalysisId = null,                // BC17 — cv_analyses (BC7)
     Guid? PriorRoadmapId = null,              // BC17 — roadmaps.final_report (BC15)
     string? Focus = null,                     // BC17 — free-text
@@ -34,9 +45,11 @@ public record CreateRoadmapRequest(
     // lạ → 400 (BK36 — KHÔNG âm thầm rơi về mặc định). Xem RoadmapService.ValidateMode.
     string? Mode = null,
     // REC1-B2 — KHÔNG CÒN ĐƯỢC ĐỌC (ValidateCurrentLevel + currentLevelOverride đã gỡ khỏi
-    // RoadmapService.CreateAsync). "Trình độ hiện tại" đi xuống AI CHỈ còn suy từ `cv_analyses`
-    // qua `CvAnalysisId` — client gửi gì vào field này cũng bị bỏ qua, không 400, không tác dụng.
-    // Giữ field lại (không xoá) để call site cũ dùng named argument không vỡ biên dịch.
+    // RoadmapService.CreateAsync). REC1-B7 đi thêm một bước: nguồn còn lại từng nuôi field này
+    // ("Trình độ hiện tại" suy từ `cv_analyses` qua `CvAnalysisId`) CŨNG đã gỡ — trình độ hiện tại
+    // giờ KHÔNG đi xuống AI qua bất kỳ đường nào nữa. Client gửi gì vào field này cũng bị bỏ qua,
+    // không 400, không tác dụng. Giữ field lại (không xoá) để call site cũ dùng named argument
+    // không vỡ biên dịch.
     string? CurrentLevel = null
 );
 

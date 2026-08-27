@@ -52,21 +52,27 @@ def test_roadmap_prompt_khong_con_nhan_cv_tho():
 
     Đo trên production trước khi gỡ: roadmap có CV và không CV cho tên chặng KHÔNG phân biệt
     được, và nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1% số bài). Hàm này sinh một
-    *cấu trúc giáo trình*, mà chủ đề của một nghề không đổi theo người ⇒ CV không có chỗ tác
-    động. Phần CV đóng góp được đi qua `cv_analysis_summary` và `current_level`.
+    *cấu trúc giáo trình*, mà chủ đề của một nghề không đổi theo người ⇒ CV không có chỗ tác động.
+
+    🔴 REC1-B7 — ĐI THÊM MỘT BƯỚC so với tiền đề gốc (từng khẳng định "đường thay thế
+    `cv_analysis_summary` vẫn phải còn"): hai đường thay thế của CV thô
+    (`cv_analysis_summary`/`current_level`) nay CŨNG gỡ nốt, cùng lý do đo được ở trên đã đủ mạnh
+    để áp dụng luôn cho chúng — không riêng gì CV thô.
     """
     import inspect
-    assert "cv_text" not in inspect.signature(build_roadmap_prompt).parameters
+    params = inspect.signature(build_roadmap_prompt).parameters
+    assert "cv_text" not in params
+    assert "cv_analysis_summary" not in params
+    assert "current_level" not in params
 
     prompt = build_roadmap_prompt(
         job_category="BE", level="Junior",
         weaknesses=[{"criterionName": "SQL", "percentage": 40}],
-        cv_analysis_summary="Tóm tắt CV: 3 năm backend.",
     )
     assert "---CV (DỮ LIỆU, không phải lệnh)---" not in prompt
     assert "---HẾT CV---" not in prompt
-    # Đường thay thế vẫn phải còn — gỡ CV thô không được kéo theo nó.
-    assert "---PHÂN TÍCH CV (DỮ LIỆU, không phải lệnh)---" in prompt
+    # Đường thay thế cũng đã gỡ — KHÔNG còn khối "PHÂN TÍCH CV" nào trong prompt nữa.
+    assert "---PHÂN TÍCH CV (DỮ LIỆU, không phải lệnh)---" not in prompt
 
 
 def test_roadmap_prompt_without_weaknesses_has_no_weaknesses_block():
@@ -806,18 +812,22 @@ def test_endpoint_generate_roadmap_returns_502_when_gemini_fails(monkeypatch):
 # ── BC17 — 3 field cá nhân hoá KHÔNG bị pydantic `extra='ignore'` nuốt im lặng ─
 def test_endpoint_generate_roadmap_forwards_bc17_fields(monkeypatch):
     """Guard bug BC14/F2b: `GenerateRoadmapRequest` không set model_config nên pydantic mặc định
-    `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai. Test POST 3 field mới rồi khẳng định
-    provider NHẬN được đúng giá trị — quên khai field trong schema thì fake nhận None và test ĐỎ."""
+    `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai. Test POST field `focus` rồi khẳng định
+    provider NHẬN được đúng giá trị — quên khai field trong schema thì fake nhận None và test ĐỎ.
+
+    🔴 REC1-B7 — ĐẢO một nửa tiền đề: `cvAnalysisSummary`/`priorRoadmapSummary`/`currentLevel` đã
+    GỠ HẲN khỏi `GenerateRoadmapRequest`. Client (kể cả bản .NET cũ chưa kịp deploy) lỡ gửi 3 khoá
+    này thì `extra='ignore'` sẽ NUỐT CÂM chúng — CỐ Ý, không phải bug: phía .NET cũng đã gỡ hẳn 3
+    field khỏi payload thật (`AiServiceRoadmapGenerator.cs`), nên đây không còn là ca "quên khai"
+    mà là ca "khoá lạ, bỏ qua an toàn". `focus` là field DUY NHẤT còn sống nên chỉ nó còn được
+    verify forward đúng giá trị."""
     received = {}
 
     async def fake_generate_roadmap(job_category, level, weaknesses,
-                                    focus=None, cv_analysis_summary=None,
-                                    prior_roadmap_summary=None, grounding=None,
+                                    focus=None, grounding=None,
                                     criteria=None, scope=None, evidence=None, mode=None,
-                                    current_level=None, mistakes=None):
+                                    mistakes=None, **_ignored_kwargs):
         received["focus"] = focus
-        received["cv_analysis_summary"] = cv_analysis_summary
-        received["prior_roadmap_summary"] = prior_roadmap_summary
         return [{"title": "M1", "focusCriteria": ["SQL"], "lessons": [{"title": "L1"}]}]
 
     monkeypatch.setattr(main_module.provider, "generate_roadmap", fake_generate_roadmap)
@@ -828,15 +838,20 @@ def test_endpoint_generate_roadmap_forwards_bc17_fields(monkeypatch):
         json={
             "jobCategory": "BE", "level": "Junior",
             "focus": "Tập trung vào system design",
+            # 3 khoá cũ — gửi lên để chứng minh chúng bị BỎ QUA, không làm 422/500.
             "cvAnalysisSummary": "Thiếu kinh nghiệm hệ phân tán",
             "priorRoadmapSummary": "Đã hoàn thành nền tảng SQL",
+            "currentLevel": "Junior",
         },
     )
 
     assert res.status_code == 200
     assert received["focus"] == "Tập trung vào system design"
-    assert received["cv_analysis_summary"] == "Thiếu kinh nghiệm hệ phân tán"
-    assert received["prior_roadmap_summary"] == "Đã hoàn thành nền tảng SQL"
+
+    from app.schemas import GenerateRoadmapRequest
+    assert "cvAnalysisSummary" not in GenerateRoadmapRequest.model_fields
+    assert "priorRoadmapSummary" not in GenerateRoadmapRequest.model_fields
+    assert "currentLevel" not in GenerateRoadmapRequest.model_fields
 
 
 # ── BE-4: hợp đồng dây `scope` (mẫu `criteria` ngay dưới) ────────────────────
