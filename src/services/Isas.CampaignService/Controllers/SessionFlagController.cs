@@ -135,6 +135,35 @@ namespace Isas.CampaignService.Controllers
                 return;   // no-op idempotent (SEC-1 toggle off)
             }
 
+            var noteTrimmed = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+
+            // ── B4 — dedup HẸP, CHỈ `multi_voice` ────────────────────────────────────────────────
+            // Detector giọng chạy trên ĐƯỜNG CHẤM, mà đường đó cố ý chạy answer NHIỀU LẦN: self-consistency
+            // (E10, N attempt) + `StuckAnswerRepublisher` đẩy lại job kẹt. Cùng một sự kiện âm thanh vì thế
+            // tới đây vài lần ⇒ HR thấy `multi_voice: 3` cho MỘT lần nghi vấn = bằng chứng giả, và AC1 vừa
+            // đẩy tầng danh tính lên đầu danh sách nên số đếm phồng ăn thẳng vào thứ tự HR đọc.
+            // Note của detector là DETERMINISTIC (answerId + giây làm tròn) ⇒ trùng note = trùng sự kiện.
+            //
+            // 🔴 CỐ Ý KHÔNG nới ra mọi cờ AI. `FaceVerifyController.RecordFlagsAsync` (hàm RIÊNG, guard này
+            // không chạm tới) ghi note gần như TĨNH mỗi lượt check 30s — đường phát hiện thường truyền
+            // `note: null`. Dedup rộng sẽ nén "rời khung 5 lần trong buổi" thành `no_face: 1`, tức xoá đúng
+            // tín hiệu "vắng mặt THƯỜNG XUYÊN" mà HR cần: với nhóm cờ đó, số LẦN chính là bằng chứng.
+            // Ở `multi_voice` thì ngược lại — số lần chỉ phản ánh số lượt chấm lại, không phản ánh sự kiện.
+            if (normalized == "multi_voice")
+            {
+                bool alreadyRecorded = await _db.SessionFlags.AnyAsync(
+                    f => f.SessionId == sessionId
+                        && f.SignalType == normalized
+                        && f.Note == noteTrimmed, ct);
+                if (alreadyRecorded)
+                {
+                    _logger.LogDebug(
+                        "Bỏ qua cờ 'multi_voice' trùng (session {SessionId}): cùng note ⇒ cùng sự kiện (chấm lại).",
+                        sessionId);
+                    return;   // no-op idempotent — caller vẫn 204
+                }
+            }
+
             _db.SessionFlags.Add(new SessionFlag
             {
                 Id = Guid.NewGuid(),
@@ -142,7 +171,7 @@ namespace Isas.CampaignService.Controllers
                 CampaignId = campaign.Id,
                 CandidateId = candidateId,
                 SignalType = normalized,
-                Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
+                Note = noteTrimmed,
                 DetectedAt = DateTime.UtcNow
             });
             await _db.SaveChangesAsync(ct);
