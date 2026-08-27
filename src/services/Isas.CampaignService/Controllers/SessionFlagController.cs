@@ -78,9 +78,12 @@ namespace Isas.CampaignService.Controllers
             // Q4 — vế `m.SessionId == sessionId` là BẮT BUỘC, không phải siết cho chặt: `sessionId` đến từ
             // ROUTE và đi thẳng vào session_flags. Chỉ kiểm "là thành viên campaign" thì MỌI thành viên
             // cắm được cờ vào buổi thi của NGƯỜI KHÁC cùng campaign (đã xảy ra trên prod: 1 buổi có cờ do
-            // 2 candidate khác nhau gửi). Hại thật: `unscoredFlagged` (R7) xếp theo TỔNG số cờ mỗi buổi ⇒
-            // đối thủ đẩy được ứng viên khác lên đầu danh sách "đáng ngờ" của HR; cột candidate_id có lưu
+            // 2 candidate khác nhau gửi). Hại thật: `unscoredFlagged` (R7) đẩy buổi đáng ngờ lên đầu cho
+            // HR ⇒ đối thủ bơm cờ là đẩy được ứng viên khác lên đầu danh sách; cột candidate_id có lưu
             // thủ phạm nhưng đường đọc gom theo session_id nên HR không phân biệt được.
+            // AC1 thu hẹp một phần chứ KHÔNG đóng: thứ tự nay theo TẦNG trước, mà cờ FE chỉ chạm tầng
+            // hành vi/môi trường (không bơm lên tầng danh tính được) — nhưng tổng số cờ vẫn là tie-break
+            // TRONG cùng tầng, nên guard này vẫn là thứ duy nhất chặn.
             // KHÔNG chặn nhầm: membership.SessionId chỉ được ghi lúc Start (ParticipationService), mà ứng
             // viên cũng chỉ có sessionId sau khi Start trả về ⇒ không tồn tại ca "gửi cờ trước Start".
             var isOwnSession = await _db.CampaignMemberships

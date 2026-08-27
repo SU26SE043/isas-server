@@ -133,8 +133,10 @@ public class SessionFlagTests
 
     // ── 🔴 Q4 — THÀNH VIÊN campaign cắm cờ vào buổi thi của THÀNH VIÊN KHÁC → 403, KHÔNG ghi row ──
     // Đã xảy ra trên prod (1 buổi mang cờ do 2 candidate khác nhau gửi): guard cũ chỉ hỏi "có phải
-    // thành viên campaign không", còn sessionId lấy thẳng từ route. Vì `unscoredFlagged` (R7) xếp theo
-    // TỔNG số cờ mỗi buổi, đây là đường bôi bẩn ứng viên khác trong bảng "đáng ngờ" của HR.
+    // thành viên campaign không", còn sessionId lấy thẳng từ route. Vì `unscoredFlagged` (R7) đẩy buổi
+    // đáng ngờ lên đầu cho HR, đây là đường bôi bẩn ứng viên khác trong bảng "đáng ngờ" đó. (AC1 đổi
+    // thứ tự sang TẦNG-trước; cờ FE không chạm tầng danh tính nên hẹp hơn, nhưng chưa đóng — xem
+    // comment Q4 trong SessionFlagController.)
     [Fact]
     public async Task Q4_ThanhVien_CamCoVaoBuoiCuaNguoiKhac_403()
     {
