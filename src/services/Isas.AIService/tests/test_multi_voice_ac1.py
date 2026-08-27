@@ -459,3 +459,23 @@ def test_dockerfile_ghim_ca_URL_lan_sha256_va_TAI_LUC_BUILD():
         "sha256 phải được ĐỐI CHIẾU lúc build, không chỉ ghi ra")
     assert settings.multi_voice_model_path == "/app/models/speaker-embedding.onnx", (
         "đường dẫn model trong config phải khớp chỗ Dockerfile đặt file")
+
+
+# 🔴 GIÁ TRỊ MẶC ĐỊNH của kill-switch — bổ sung sau khi mutation của người kiểm cho thấy lật
+# `multi_voice_enabled` từ False sang True vẫn XANH 1140/1140: cả ba chỗ chạm cờ này đều
+# `monkeypatch.setattr` tường minh, nên KHÔNG chỗ nào phủ giá trị MẶC ĐỊNH. Bẫy này đã cắn repo
+# trước đây (đổi mặc định `MaxFollowUps` cũng xanh vì mọi test tự dựng options).
+#
+# ⚠ Phải đọc mặc định KHAI BÁO (`model_fields`), KHÔNG đọc `settings` lúc chạy: file này có
+# fixture `autouse` bật cờ cho mọi test, nên assert trên instance sẽ luôn thấy True — tôi đã tự
+# vấp đúng chỗ đó. `model_fields` cũng miễn nhiễm với `.env` và biến môi trường của máy chạy test.
+#
+# Vì sao đáng khoá: B5 là detector EXPERIMENTAL và chính bảng hiệu chuẩn khuyến nghị CHƯA bật
+# (25 ca âm đều của MỘT người — F0 median 116–158 Hz; mọi ca dương đều là giọng tổng hợp `say`).
+# Bật nhầm nghĩa là phát cờ CÁO BUỘC GIAN LẬN cho HR từ một mô hình chưa hiệu chuẩn trên người
+# thật. Bật phải là hành động TƯỜNG MINH qua env, không bao giờ là hệ quả phụ của một lần refactor.
+def test_kill_switch_mac_dinh_khai_bao_phai_TAT():
+    from app.config import Settings
+    assert Settings.model_fields["multi_voice_enabled"].default is False, (
+        "MULTI_VOICE_ENABLED phải mặc định TẮT — đọc bảng hiệu chuẩn AC1/B5 trước khi đổi"
+    )
