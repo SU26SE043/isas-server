@@ -64,6 +64,14 @@ namespace Isas.CampaignService.DTOs
         public string Type { get; set; } = null!;
         public int Count { get; set; }
         public string? Note { get; set; }
+
+        // AC1 — mốc thời gian của NHÓM này (min/max `session_flags.detected_at`). Count một mình không
+        // phân biệt được "5 lần chuyển tab trong 10 giây" (một cú alt-tab) với "5 lần rải đều 40 phút"
+        // (hành vi có hệ thống) — hai thứ HR xử lý khác hẳn nhau. Additive, ĐẶT Ở CUỐI: client cũ bỏ qua.
+        // Nullable để DTO không nói dối khi được dựng ở chỗ không có dữ liệu thời gian; đường đọc
+        // GroupFlagsBySession luôn điền cả hai. Drill-down từng giây vẫn ở SessionFlagTimelineResponse.
+        public DateTime? FirstAt { get; set; }
+        public DateTime? LastAt { get; set; }
     }
 
     // R7 — 1 ứng viên có cờ mà CHƯA Scored: chỉ danh tính (F5) + cờ (không rank/điểm vì chưa chấm).

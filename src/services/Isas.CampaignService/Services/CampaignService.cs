@@ -1686,8 +1686,13 @@ namespace Isas.CampaignService.Services
             }
 
             // R7: cờ của buổi CHƯA có row ranking (chưa Scored — bỏ ngang / đang thi) → không lọt vào `results`
-            // ở trên. Gom riêng để HR vẫn thấy nhóm đáng ngờ nhất (SEC-4/D13). Nhiều cờ hơn = đáng ngờ hơn → lên
-            // trước; tie-break session_id cho ổn định. Danh tính reuse identityByCandidate (F5, không thêm query).
+            // ở trên. Gom riêng để HR vẫn thấy nhóm đáng ngờ nhất (SEC-4/D13). Danh tính reuse
+            // identityByCandidate (F5, không thêm query).
+            //
+            // AC1 — xếp theo TẦNG NẶNG NHẤT của buổi trước, rồi mới tổng số cờ. Sắp thuần theo tổng count
+            // (hành vi cũ) đẩy buổi "8 lần mất focus vì mạng chập" lên trên buổi "1 lần face_mismatch" —
+            // HR đọc từ trên xuống nên nhóm nghi SAI NGƯỜI bị chôn dưới nhiễu môi trường. Tổng count giữ
+            // nguyên vai trò tie-break trong CÙNG một tầng; session_id chốt cho ổn định.
             var scoredSessions = new HashSet<Guid>(ordered.Select(r => r.SessionId));
             var unscoredFlagged = allFlags
                 .Where(f => !scoredSessions.Contains(f.SessionId))
@@ -1705,7 +1710,10 @@ namespace Isas.CampaignService.Services
                         Flags = flagsBySession.TryGetValue(g.Key, out var f) ? f : new List<FlagDto>()
                     };
                 })
-                .OrderByDescending(u => u.Flags.Sum(f => f.Count))
+                // Flags rỗng không xảy ra ở đây (row dựng từ chính allFlags), nhưng DefaultIfEmpty giữ
+                // Max() khỏi ném nếu đường dựng row đổi về sau — rẻ, không đổi hành vi hiện tại.
+                .OrderByDescending(u => u.Flags.Select(f => TierOf(f.Type)).DefaultIfEmpty(TierEnvironment).Max())
+                .ThenByDescending(u => u.Flags.Sum(f => f.Count))
                 .ThenBy(u => u.SessionId)
                 .ToList();
 
@@ -1815,8 +1823,57 @@ namespace Isas.CampaignService.Services
             };
         }
 
+        // AC1 — thứ tự HR NÊN soi, 3 tầng. Trước đây cờ xếp theo ALPHABET, nên `camera_blocked` (hỏng
+        // thiết bị) luôn đứng trên `face_mismatch` (nghi người khác ngồi thay) chỉ vì 'c' < 'f' — thứ tự
+        // đọc của HR bị quyết định bởi chính tả. Ba tầng, CỐ Ý không mịn hơn: mịn hơn là bịa ra thứ bậc
+        // mà không có dữ liệu nào đỡ, và mọi tranh cãi "cái nào nặng hơn cái nào" sẽ dồn vào đây.
+        //
+        // ĐÂY KHÔNG PHẢI ĐIỂM RỦI RO. Không có con số 0-100, không có nhãn "nghi gian lận" — D13/CAMP-12:
+        // cờ là GỢI Ý cho HR, hệ thống không kết luận. Tầng chỉ trả lời "đọc cái nào trước".
+        private const int TierIdentity = 3;      // nghi SAI NGƯỜI — hỏi lại danh tính trước tiên
+        private const int TierBehavior = 2;      // hành vi ứng viên trong lúc thi
+        private const int TierEnvironment = 1;   // thiết bị/mạng — cũng là tầng THẤP NHẤT (xem TierOf)
+
+        private static readonly Dictionary<string, int> ReviewPriority = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // DANH TÍNH — tín hiệu "người trong khung không phải ứng viên".
+            ["face_mismatch"] = TierIdentity,
+            ["multiple_faces"] = TierIdentity,
+            ["multi_voice"] = TierIdentity,
+
+            // HÀNH VI — ứng viên làm gì trong lúc thi. `no_face` nằm đây chứ không phải danh tính: nó
+            // nghĩa là "không thấy mặt ai" (rời chỗ / quay đi), không nói gì về việc AI đó là ai.
+            ["no_face"] = TierBehavior,
+            ["tab_switch"] = TierBehavior,
+            ["paste"] = TierBehavior,
+            ["focus_lost"] = TierBehavior,
+            // ⚠ `fullscreen_exit` CHƯA được nhận ở đường ghi (không nằm trong whitelist nào của
+            // SessionFlagController) — mới chỉ là tín hiệu khai trong AGENTS.md §session_integrity_events.
+            // Phân loại sẵn để ngày FE gửi thì nó không rơi về tầng thấp nhất; ĐỪNG đọc bảng này như
+            // whitelist ingest, hai thứ khác nhau.
+            ["fullscreen_exit"] = TierBehavior,
+
+            // MÔI TRƯỜNG — "không quan sát được", KHÔNG phải "phát hiện sai phạm".
+            // `identity_unverified` nằm ở ĐÂY, không phải tầng danh tính: nó sinh ra từ bản vá ảnh mốc
+            // đen (08/08) và nghĩa đen là "KHÔNG KẾT LUẬN ĐƯỢC danh tính" — thường vì ảnh tham chiếu
+            // hỏng/chưa enroll, tức lỗi của HỆ THỐNG. Xếp nó cạnh `multiple_faces` là đảo ngược đúng
+            // mục đích của chính nó: biến "chưa đo được" thành "đã bắt được", và đẩy lên đầu danh sách
+            // của HR đúng nhóm ứng viên mà ta không có bằng chứng gì.
+            ["camera_blocked"] = TierEnvironment,
+            ["monitoring_gap"] = TierEnvironment,
+            ["identity_unverified"] = TierEnvironment,
+        };
+
+        // Loại chưa có trong bảng (cờ tương lai, FE/AIService deploy trước Campaign) → tầng THẤP NHẤT.
+        // Chiều mặc định có chủ đích: cờ lạ KHÔNG được tự leo lên đầu danh sách HR chỉ vì chưa ai phân
+        // loại nó. Không ném — cờ lạ đã bị whitelist controller chặn ở đường ghi; đường ĐỌC còn phải
+        // hiển thị được dữ liệu cũ mà whitelist hôm nay không còn biết.
+        private static int TierOf(string signalType)
+            => ReviewPriority.TryGetValue(signalType, out var tier) ? tier : TierEnvironment;
+
         // SEC-4: gom session_flags (đã materialize) của 1 campaign → Dictionary<session_id, List<FlagDto>>.
-        // Group theo (session_id, signal_type) → count; Note = ghi chú non-empty đầu tiên (đại diện cho HR).
+        // Group theo (session_id, signal_type) → count + mốc thời gian (AC1); Note = ghi chú non-empty
+        // đầu tiên (đại diện cho HR).
         // In-memory (số cờ/campaign nhỏ; tránh phụ thuộc dịch GROUP BY của provider). Caller nạp list 1 lần
         // (dùng chung cho cả bảng ranking lẫn nhóm R7 chưa-Scored) rồi truyền vào.
         private static Dictionary<Guid, List<FlagDto>> GroupFlagsBySession(IEnumerable<SessionFlag> flags)
@@ -1825,13 +1882,19 @@ namespace Isas.CampaignService.Services
                 .GroupBy(f => f.SessionId)
                 .ToDictionary(
                     g => g.Key,
+                    // AC1: tầng nặng trước, rồi nhiều lần trước. Tên (Ordinal) chỉ còn là tie-break CUỐI
+                    // — bỏ nó đi thì thứ tự hai cờ cùng tầng cùng count phụ thuộc thứ tự row trả về từ DB.
                     g => g.GroupBy(x => x.SignalType)
-                          .OrderBy(t => t.Key, StringComparer.Ordinal)
+                          .OrderByDescending(t => TierOf(t.Key))
+                          .ThenByDescending(t => t.Count())
+                          .ThenBy(t => t.Key, StringComparer.Ordinal)
                           .Select(t => new FlagDto
                           {
                               Type = t.Key,
                               Count = t.Count(),
-                              Note = t.Select(x => x.Note).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))
+                              Note = t.Select(x => x.Note).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)),
+                              FirstAt = t.Min(x => x.DetectedAt),
+                              LastAt = t.Max(x => x.DetectedAt)
                           })
                           .ToList());
         }
