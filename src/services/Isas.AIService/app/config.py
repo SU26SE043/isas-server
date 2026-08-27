@@ -284,6 +284,48 @@ class Settings(BaseSettings):
     # republisher tự đẩy lại đúng 8 job trong 15'.
     cv_screening_enabled: bool = False
 
+    # ── AC1/B5: PHÁT HIỆN ≥2 GIỌNG NÓI (multi_voice) ─────────────
+    # THỬ NGHIỆM. Mặc định TẮT theo đúng tiền lệ mọi rollout khác (`GROUNDING_ENABLED`,
+    # `TIERING_ENABLED`, `CV_SCREENING_ENABLED`). Ở đây lý do riêng còn nặng hơn: đầu ra của nó là
+    # một CÁO BUỘC GIAN LẬN gắn lên hồ sơ ứng viên, mà `session_flags` không có đường cho ứng viên
+    # phản hồi. Chỉ bật khi bảng hiệu chuẩn (7 ca âm ghi âm THẬT + 4 ca dương) đạt.
+    # ⚠ Cờ này chỉ mở CỔNG. Cờ tới được HR còn cần `campaign.anti_cheat_enabled` bật —
+    # `multi_voice` KHÔNG nằm trong `IdentitySignals` của SessionFlagController nên
+    # `face_verify_enabled` một mình KHÔNG đủ để nó được lưu.
+    multi_voice_enabled: bool = False
+    # Model nhúng giọng nói ONNX, TẢI LÚC BUILD IMAGE (xem Dockerfile) — không tải lúc chạy: một
+    # lượt tải 28 MB nằm giữa đường chấm là thêm một cách hỏng mới cho đường tiền.
+    multi_voice_model_path: str = "/app/models/speaker-embedding.onnx"
+    # `normalize_samples` trong metadata model quyết định vế này: WeSpeaker CAM++ khai `0`
+    # (mẫu ở thang int16) ⇒ PHẢI nhân 32768. Đổi model mà quên đổi cờ này thì fbank lệch một hằng
+    # số — mà CMN khử gần hết hằng số đó nên vector nhúng vẫn "trông hợp lý" trong khi đã sai.
+    multi_voice_scale_int16: bool = True
+    # Cửa sổ 1,5s / bước 0,75s: 1,5s là mức tối thiểu quen thuộc để một vector nhúng giọng ổn định,
+    # bước nửa cửa sổ để một quãng 3s của người thứ hai không bị rơi lọt giữa hai cửa sổ.
+    multi_voice_window_sec: float = 1.5
+    multi_voice_hop_sec: float = 0.75
+    # Trần chi phí CPU: 80 cửa sổ ≈ 60s tiếng nói ở độ phân giải đầy đủ. Vượt trần thì LẤY MẪU ĐỀU
+    # trên toàn bộ (xem `plan_windows`), KHÔNG cắt đuôi.
+    multi_voice_max_windows: int = 80
+    # Hai ngưỡng phải ĐỒNG THỜI đạt mới gắn cờ. Con số ĐO ra, không đặt cho tròn (bảng hiệu chuẩn
+    # đầy đủ trong báo cáo AC1/B5):
+    #   • `min_second_sec = 3.0` — chống ca "một tiếng ho / một từ lạ / một cửa sổ ngoại lai" biến
+    #     thành cáo buộc gian lận. Nó gánh phần lớn công việc: 18/25 ca âm bị chặn ở ĐÂY.
+    #   • `separation_threshold = 0.50` — nằm giữa khe đo được trên tập hiệu chuẩn:
+    #       ÂM cao nhất (đã qua cổng 3s) = 0.407  |  DƯƠNG thấp nhất cần bắt = 0.527.
+    #     Chọn 0.50 chứ không phải giữa khe (0.467) vì hai phía KHÔNG đối xứng về hậu quả: cờ này
+    #     là một CÁO BUỘC GIAN LẬN gắn lên hồ sơ ứng viên và `session_flags` không có đường cho họ
+    #     phản hồi, còn bỏ sót thì chỉ mất một tín hiệu phụ trong khi HR vẫn còn face-verify +
+    #     cờ hành vi. Nghiêng về phía im lặng là có chủ đích.
+    # ⚠ Khe 0.120 này đo trên MỘT giọng nói (13 bản ghi dev, F0 116–158 Hz) và các ca dương là
+    # TỔNG HỢP. Nó chứng minh pipeline phân biệt được, KHÔNG chứng minh ngưỡng đúng với người thật.
+    multi_voice_min_second_sec: float = 3.0
+    multi_voice_separation_threshold: float = 0.50
+    # Đích gửi cờ = CampaignService (chủ sở hữu `session_flags`), KHÔNG qua gateway (GEN-1).
+    # RỖNG = chưa cấu hình ⇒ detector bỏ qua kèm CẢNH BÁO (mẫu `usage_sink_base`): thà nói to còn
+    # hơn im lặng như `USAGE_SINK_BASE`/`PROMPT_REGISTRY_BASE` từng làm F22/F21 tắt câm nhiều ngày.
+    campaign_callback_base: str = ""
+
     # ── S3 / SEAWEEDFS CONFIG ────────────────────────────────────
     s3_endpoint: str = "http://localhost:8333"
     s3_access_key: str = "your-access-key"

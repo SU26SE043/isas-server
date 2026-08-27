@@ -568,6 +568,17 @@ services:
       # `callbackBase` của sàng CV lấy từ CHÍNH message, không phải env này.
       CV_SCREENING_ENABLED: ${CV_SCREENING_ENABLED:-false}
       SCORING_PREFETCH: ${SCORING_PREFETCH:-10}
+      # AC1/B5 — detector ≥2 giọng nói (cờ `multi_voice`). THỬ NGHIỆM, giữ TẮT.
+      # ⚠ CHỈ đặt ở `aiworker`, KHÔNG ở `aiapi`: detector chạy trên đường chấm BẤT ĐỒNG BỘ. Đặt
+      # nhầm sang aiapi không bật được gì (api không consume queue) nhưng sẽ khiến người đọc tưởng
+      # `/decide-next` cũng chạy detector — mà đường đó ĐỒNG BỘ trong request upload và đã đo 96s
+      # trên bài dài (trần decider 90s).
+      MULTI_VOICE_ENABLED: ${MULTI_VOICE_ENABLED:-false}
+      # Đích gửi cờ = CampaignService (chủ sở hữu `session_flags`), KHÔNG qua gateway (GEN-1).
+      # ⚠ KHÔNG dấu `/` cuối — cùng lý do như DOTNET_CALLBACK_BASE ngay trên.
+      # Rỗng ⇒ detector bỏ qua kèm CẢNH BÁO. Đặt sẵn ngay cả khi cờ còn tắt: thiếu env lúc bật là
+      # đúng cách `USAGE_SINK_BASE`/`PROMPT_REGISTRY_BASE` từng làm F22 và F21 tắt câm nhiều ngày.
+      CAMPAIGN_CALLBACK_BASE: ${CAMPAIGN_CALLBACK_BASE:-http://isas.campaignservice:8080}
     depends_on: [rabbitmq, seaweedfs, redis]
 
 networks:
