@@ -61,6 +61,31 @@ public class ScoringJob
     /// đường cứu hộ được chấm bằng thước khác buổi đi đường thường, hỏng âm thầm.
     /// </summary>
     public string? Seniority { get; set; }
+
+    /// <summary>
+    /// AC1 — chiến dịch của buổi thi này. <b>Chỉ điền khi B2B</b> (<c>session.CampaignId != null</c>);
+    /// <b>B2C = null</b> ⇒ AIService bỏ qua <c>multi_voice</c> (BC-6: B2C là luyện tập, KHÔNG có
+    /// giám sát chống gian lận theo thiết kế — cắm cờ vào buổi luyện là đo sai đối tượng).
+    ///
+    /// <para>Cặp <see cref="CampaignId"/>/<see cref="CandidateId"/> tồn tại để worker AIService gửi
+    /// cờ chống gian lận về ĐÚNG buổi thi: đường cờ đi qua CampaignService (chủ sở hữu
+    /// <c>session_flags</c>), mà nó định danh theo (campaign, candidate) chứ không theo
+    /// <c>answer_id</c> của Interview.</para>
+    /// </summary>
+    public Guid? CampaignId { get; set; }
+
+    /// <summary>
+    /// AC1 — ứng viên của buổi thi này, đi CẶP với <see cref="CampaignId"/>. Session nào cũng có
+    /// <c>CandidateId</c>, nên field này <b>chỉ null nhờ van B2C</b> — null ở đây là bằng chứng van
+    /// đang chạy, không phải "chưa ai set".
+    ///
+    /// <para>⚠ Van phải áp ở <b>CẢ HAI</b> đường publish (<c>AnswerService</c> lúc upload +
+    /// <c>StuckAnswerRepublisher</c> đường cứu hộ) — cùng bài học với <see cref="Seniority"/> ngay
+    /// trên, chỉ ngược chiều (Seniority chỉ B2C, cặp này chỉ B2B). Bỏ sót MỘT đường thì buổi nào
+    /// phải cứu bằng republisher mất ngữ cảnh IM LẶNG: cờ chống gian lận của nó không về được
+    /// buổi thi, không lỗi nào nổ ở đâu cả.</para>
+    /// </summary>
+    public Guid? CandidateId { get; set; }
 }
 
 public class ScoringCriterionDto
