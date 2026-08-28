@@ -2636,6 +2636,13 @@ namespace Isas.CampaignService.Services
         /// CAMP-16 — bộ tiêu chí ĐANG CÓ, để mang mốc điểm sang khi client không gửi <c>levels</c>.
         /// Ghép theo TÊN (case-insensitive) chứ không theo id, vì đường ghi này là replace-all mint id mới.
         /// </param>
+        // EVA1-B3 — trần thang điểm 1 tiêu chí. Thang thật lớn nhất từng dùng là 30 ⇒ 100 rộng
+        // gấp hơn 3 lần. Không có cận trên: prod từng đặt 2147483647 ⇒ ScoringCriteriaBuilder
+        // dựng Enumerable.Range(0, top + 1) ⇒ top + 1 TRÀN INT ⇒ ném khi đẩy job chấm ⇒ answer
+        // không bao giờ chấm ⇒ buổi không đóng ⇒ MẤT 1 CREDIT, im lặng. Ngoài ra model có scale
+        // theo thang nên thang khác nhau làm campaign không so sánh được (CAMP-17).
+        private const int MaxCriterionScore = 100;
+
         private static List<CampaignCriterion> BuildStructuredCriteria(
             Guid campaignId, List<CriterionItem> items, CriterionSource source,
             IEnumerable<CampaignCriterion>? existingForCarryOver = null)
@@ -2663,6 +2670,9 @@ namespace Isas.CampaignService.Services
                     throw new ArgumentException($"weight của '{name}' phải trong khoảng (0, 1] (hiện: {item.Weight}).");
                 if (item.MaxScore < 1)
                     throw new ArgumentException($"maxScore của '{name}' phải ≥ 1 (hiện: {item.MaxScore}).");
+                if (item.MaxScore > MaxCriterionScore)
+                    throw new ArgumentException(
+                        $"maxScore của '{name}' vượt trần {MaxCriterionScore} (hiện: {item.MaxScore}).");
 
                 cleaned.Add((name,
                     string.IsNullOrWhiteSpace(item.Description) ? null : item.Description!.Trim(),
@@ -2770,7 +2780,10 @@ namespace Isas.CampaignService.Services
                 Name = s.Name,
                 Description = s.Description,
                 Weight = Math.Round(s.Weight / total, 4),
-                MaxScore = s.MaxScore <= 0 ? 5 : s.MaxScore,
+                // EVA1-B3 — kẹp vào [1, trần]: AI có thể trả 0/âm (→ trước đây thành 5) HOẶC một
+                // số quá lớn làm TRÀN INT ở ScoringCriteriaBuilder. Clamp ở đường ghi, không ở
+                // đường chấm (che lỗi tương lai).
+                MaxScore = Math.Clamp(s.MaxScore, 1, MaxCriterionScore),
                 Source = CriterionSource.AiSuggested,
                 CreatedAt = now,
                 UpdatedAt = now

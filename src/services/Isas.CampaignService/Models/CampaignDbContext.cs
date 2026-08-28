@@ -201,6 +201,11 @@ namespace Isas.CampaignService.Models
                 e.ToTable("campaign_criteria", t =>
                 {
                     t.HasCheckConstraint("ck_campaign_criteria_weight_range", "weight > 0 AND weight <= 1");
+                    // EVA1-B3: max_score ∈ [1, 100] — khớp guard BuildStructuredCriteria. Không có
+                    // cận trên thì thang 2147483647 làm TRÀN INT ở ScoringCriteriaBuilder ⇒ answer
+                    // không bao giờ chấm ⇒ mất 1 credit im lặng (CAMP-17). Thang thật lớn nhất
+                    // từng dùng là 30.
+                    t.HasCheckConstraint("ck_campaign_criteria_max_score_range", "max_score >= 1 AND max_score <= 100");
                     // CAMP-20 — 'SystemDefault' là giá trị THỨ BA (bộ chuẩn chép về + bộ dự phòng khi AI
                     // lỗi). ⚠ CHECK này phải có trên DB TRƯỚC khi code ghi giá trị mới lên (xem docblock
                     // migration AddCriterionSourceSystemDefault). SQLite của test CÓ enforce CHECK (EF10)

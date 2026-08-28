@@ -218,6 +218,44 @@ public class CampaignStructuredCriteriaTests
             svc.CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), NewCreateReq(criteria), default));
     }
 
+    // (c) EVA1-B3 — maxScore vượt trần 100 → ArgumentException. Không có cận trên thì thang
+    // 2147483647 làm TRÀN INT ở ScoringCriteriaBuilder ⇒ answer không bao giờ chấm ⇒ mất 1
+    // credit im lặng (CAMP-17). Thang thật lớn nhất từng dùng là 30.
+    [Fact]
+    public async Task Create_criteria_maxScore_vuot_tran_nem_ArgumentException()
+    {
+        using var tdb = new CampaignTestDb();
+        var svc = NewService(tdb.NewContext());
+        var criteria = new List<CriterionItem>
+        {
+            new() { Name = "A", Weight = 0.5m, MaxScore = int.MaxValue },   // > 100
+            new() { Name = "B", Weight = 0.5m, MaxScore = 5 },
+        };
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            svc.CreateCampaignAsync(Guid.NewGuid(), Guid.NewGuid(), NewCreateReq(criteria), default));
+    }
+
+    // (c) EVA1-B3 — maxScore = 100 (đúng biên trần) → qua cả guard code lẫn CHECK
+    // ck_campaign_criteria_max_score_range (SQLite EnsureCreated enforce CHECK — EF10).
+    [Fact]
+    public async Task Create_criteria_maxScore_bang_100_duoc_phep()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var svc = NewService(tdb.NewContext());
+        var criteria = new List<CriterionItem>
+        {
+            new() { Name = "A", Weight = 0.5m, MaxScore = 100 },   // đúng biên
+            new() { Name = "B", Weight = 0.5m, MaxScore = 5 },
+        };
+
+        var res = await svc.CreateCampaignAsync(owner, owner, NewCreateReq(criteria), default);
+
+        using var check = tdb.NewContext();
+        var rows = await check.CampaignCriteria.Where(c => c.CampaignId == res.Id).ToListAsync();
+        Assert.Equal(100, rows.Single(r => r.Name == "A").MaxScore);
+    }
+
     // (d) ⚠ TIỀN ĐỀ ĐÃ ĐẢO Ở CAMP-18, CÓ CHỦ ĐÍCH. Trước đây: sửa criteria khi Active → 409.
     // Nay: Draft VÀ Active đều sửa được (quyết định sản phẩm 8 — cho sửa thước đo trên chiến dịch
     // đang chạy, chỉ áp cho người thi sau). An toàn nhờ rubric_version bump + nhãn ở bảng xếp hạng.
