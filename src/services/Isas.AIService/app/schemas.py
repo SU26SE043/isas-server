@@ -413,6 +413,13 @@ CV_CURRENT_LEVELS = ("Fresher", "Junior", "Middle", "Senior")
 # đúng một câu duy nhất thay vì mười cách diễn đạt khác nhau.
 NO_EVIDENCE = "Không thấy bằng chứng"
 
+# Câu khi HỆ THỐNG không lấy được đánh giá cho một nhu cầu — model không giải được id
+# đã cấp và một lượt repair có giới hạn vẫn không lấp được. KHÁC HẲN NO_EVIDENCE ("đã
+# tìm và không thấy"): đây là "chưa đo được". CAMP-14 đòi phân biệt hai ca này. Chuỗi
+# khác rỗng nên guard .NET (`CvScreeningService.SaveCvResultAsync`) để nó đi thẳng qua
+# tới DB + UI — không cần sửa một dòng .cs nào.
+NOT_ASSESSED = "Không đánh giá được"
+
 
 class JobNeed(BaseModel):
     """Bước 1 — 1 nhu cầu công việc suy từ JD.
