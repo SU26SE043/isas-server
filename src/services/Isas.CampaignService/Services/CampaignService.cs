@@ -1872,8 +1872,12 @@ namespace Isas.CampaignService.Services
             => ReviewPriority.TryGetValue(signalType, out var tier) ? tier : TierEnvironment;
 
         // SEC-4: gom session_flags (đã materialize) của 1 campaign → Dictionary<session_id, List<FlagDto>>.
-        // Group theo (session_id, signal_type) → count + mốc thời gian (AC1); Note = ghi chú non-empty
-        // đầu tiên (đại diện cho HR).
+        // Group theo (session_id, signal_type, SOURCE) → count + mốc thời gian (AC1); Note = ghi chú
+        // non-empty đầu tiên (đại diện cho HR).
+        // MON1-B4 — TÁCH theo source: một signal_type có cả cờ Client (ứng viên tự báo, chặn được) lẫn
+        // Server (server suy từ face_images, không chặn được) ⇒ HAI FlagDto. Gộp lại là xoá đúng cái
+        // phân biệt HR cần. Cờ tạo qua SessionFlagController luôn source=Client ⇒ chỉ campaign có sweeper
+        // B2/B3 (source=Server) mới thấy nhóm tách đôi.
         // In-memory (số cờ/campaign nhỏ; tránh phụ thuộc dịch GROUP BY của provider). Caller nạp list 1 lần
         // (dùng chung cho cả bảng ranking lẫn nhóm R7 chưa-Scored) rồi truyền vào.
         private static Dictionary<Guid, List<FlagDto>> GroupFlagsBySession(IEnumerable<SessionFlag> flags)
@@ -1882,19 +1886,22 @@ namespace Isas.CampaignService.Services
                 .GroupBy(f => f.SessionId)
                 .ToDictionary(
                     g => g.Key,
-                    // AC1: tầng nặng trước, rồi nhiều lần trước. Tên (Ordinal) chỉ còn là tie-break CUỐI
-                    // — bỏ nó đi thì thứ tự hai cờ cùng tầng cùng count phụ thuộc thứ tự row trả về từ DB.
-                    g => g.GroupBy(x => x.SignalType)
-                          .OrderByDescending(t => TierOf(t.Key))
+                    // AC1: tầng nặng trước, rồi nhiều lần trước. Tên (Ordinal) + source chỉ còn là
+                    // tie-break CUỐI — bỏ đi thì thứ tự hai nhóm cùng tầng cùng count phụ thuộc thứ tự
+                    // row từ DB. `.ThenBy(source)` ⇒ Client(0) trước Server(1), deterministic.
+                    g => g.GroupBy(x => new { x.SignalType, x.Source })
+                          .OrderByDescending(t => TierOf(t.Key.SignalType))
                           .ThenByDescending(t => t.Count())
-                          .ThenBy(t => t.Key, StringComparer.Ordinal)
+                          .ThenBy(t => t.Key.SignalType, StringComparer.Ordinal)
+                          .ThenBy(t => t.Key.Source)
                           .Select(t => new FlagDto
                           {
-                              Type = t.Key,
+                              Type = t.Key.SignalType,
                               Count = t.Count(),
                               Note = t.Select(x => x.Note).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n)),
                               FirstAt = t.Min(x => x.DetectedAt),
-                              LastAt = t.Max(x => x.DetectedAt)
+                              LastAt = t.Max(x => x.DetectedAt),
+                              Source = t.Key.Source.ToString()   // "Client" / "Server" (khớp tên FlagSource)
                           })
                           .ToList());
         }
@@ -2208,8 +2215,9 @@ namespace Isas.CampaignService.Services
                 TotalScore = r.TotalScore,
                 Result = r.Result ?? string.Empty,   // ngưỡng null → ô result rỗng (HR quyết tay)
                 ScoredAt = r.ScoredAt,
-                // SEC-4: tóm tắt cờ chống gian lận "type:count" ngăn bởi "; " (rỗng nếu không có cờ) cho HR đọc.
-                Flags = string.Join("; ", r.Flags.Select(f => $"{f.Type}:{f.Count}")),
+                // SEC-4 + MON1-B4: tóm tắt cờ "type(source):count" ngăn bởi "; " (rỗng nếu không có cờ).
+                // Helper DÙNG CHUNG với PDF (F16 — hai bản xuất không được lệch nhau).
+                Flags = FlagDto.SummarizeForExport(r.Flags),
                 // F5: null → ô rỗng (không tra được danh tính) — CsvHelper tự escape dấu phẩy/nháy trong tên.
                 FullName = r.FullName ?? string.Empty,
                 Email = r.Email ?? string.Empty,
@@ -2226,7 +2234,7 @@ namespace Isas.CampaignService.Services
                 TotalScore = null,
                 Result = "Chưa chấm",
                 ScoredAt = null,
-                Flags = string.Join("; ", u.Flags.Select(f => $"{f.Type}:{f.Count}")),
+                Flags = FlagDto.SummarizeForExport(u.Flags),   // MON1-B4: cùng helper với results + PDF
                 FullName = u.FullName ?? string.Empty,
                 Email = u.Email ?? string.Empty
             }));
