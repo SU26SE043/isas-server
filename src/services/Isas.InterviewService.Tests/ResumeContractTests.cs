@@ -217,7 +217,12 @@ public class ResumeContractTests
         Assert.True(await read.PracticeAnswers.AnyAsync(a => a.Id == a1 && a.QuestionId == q1));
     }
 
-    // ── (5) chấm dần: answer đã Scored kèm điểm SỐNG qua resume (Include Scores) ─
+    // ── (5) chấm dần: answer đã Scored SỐNG qua resume ─
+    // ⚠ TIỀN ĐỀ ĐÃ ĐỔI Ở EVA1-B4 (CAMP-15): đường ứng viên B2B (create-or-get / GetSessionAsync)
+    // nay CHE điểm per-criterion — trước đây test này assert `a1.Scores` trên chính response ứng
+    // viên, tức đọc được đúng nội bộ chấm mà CAMP-15 cấm. Bản chất "chấm dần không mất" vẫn phải
+    // giữ: nay verify điểm SỐNG ở (a) DB sau resume và (b) đường HR/nội bộ AI4 — nơi điểm ĐƯỢC
+    // PHÉP hiện. Trên response ứng viên, chỉ còn assert answer vẫn Scored (trạng thái không bị che).
     [Fact]
     public async Task Resume_GiuAnswerScored_KemDiem()
     {
@@ -258,14 +263,27 @@ public class ResumeContractTests
 
         Assert.Equal(session.Id, resumed.Id);
 
+        // Response ứng viên B2B: answer vẫn Scored (trạng thái KHÔNG bị che), nhưng điểm
+        // per-criterion đã che (EVA1-B4/CAMP-15).
         var a1 = resumed.Questions.Single(x => x.Id == q1.Id).Answer;
         Assert.NotNull(a1);
         Assert.Equal(nameof(AnswerStatus.Scored), a1!.Status);
-        var sc = Assert.Single(a1.Scores);
-        Assert.Equal(4m, sc.Score);
+        Assert.Empty(a1.Scores);
 
         // Câu 2 chưa nộp → vẫn trống (làm được sau).
         Assert.Null(resumed.Questions.Single(x => x.Id == q2.Id).Answer);
+
+        // "chấm dần không mất" — điểm SỐNG ở DB sau resume …
+        await using (var read = t.NewContext())
+        {
+            var dbScore = await read.AnswerScores.SingleAsync(x => x.AnswerId == answer.Id);
+            Assert.Equal(4m, dbScore.Score);
+        }
+
+        // … và ở đường HR/nội bộ (AI4) — nơi điểm ĐƯỢC PHÉP hiện.
+        var hrView = await BuildPractice(t.NewContext()).GetSessionAnswersInternalAsync(session.Id);
+        var hrA1 = hrView!.Single(x => x.Id == q1.Id).Answer;
+        Assert.Equal(4m, Assert.Single(hrA1!.Scores).Score);
     }
 
     // ── (6) GetSession chủ khác → 403 (INT-11 chỉ chủ session) ────────────────
