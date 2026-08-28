@@ -283,5 +283,193 @@ public class MonitoringGapSweeperTests
         Assert.Equal(90, d.GapThresholdSeconds);
         Assert.Equal(120, d.ScanIntervalSeconds);
         Assert.Equal(48, d.LookbackHours);
+        Assert.Equal(120, d.MinDurationSeconds);   // MON1-B3
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    //  MON1-B3 — LUẬT 2: KHÔNG có lượt kiểm nào trong suốt buổi thi
+    //  Lấp đòn B2 (cần 2 điểm để so) không bắt được: chặn endpoint giây đầu ⇒ 0 ảnh.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+    private static void SeedTerminalMembership(
+        CampaignTestDb t, Guid campaignId, Guid sessionId, Guid candidateId,
+        DateTime startedAt, DateTime updatedAt,
+        InterviewProgressStatus status = InterviewProgressStatus.Completed)
+    {
+        var m = CampaignTestDb.NewMembership(campaignId, candidateId, sessionId: sessionId, interviewStatus: status);
+        m.InterviewStartedAt = startedAt;
+        m.UpdatedAt = updatedAt;
+        t.Db.CampaignMemberships.Add(m);
+        t.Db.SaveChanges();
+    }
+
+    // ── buổi CÓ ảnh (≥1 Live) → KHÔNG cờ B3 (hasShot). 1 ảnh ⇒ cũng không có gap B2. ─────────────
+    [Fact]
+    public async Task NoShot_BuoiCoAnh_KhongCo()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var cid = Guid.NewGuid();
+        var start = DateTime.UtcNow.AddMinutes(-20);
+        SeedTerminalMembership(t, camp.Id, sid, cid, start, start.AddMinutes(15));
+        SeedLiveShot(t, camp.Id, sid, cid, start.AddMinutes(1));   // có đúng 1 lượt kiểm
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(0, r.NoShotSessions);
+        Assert.Equal(0, r.FlagsWritten);
+        Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
+    }
+
+    // ── buổi 0 ảnh nhưng NGẮN hơn ngưỡng → KHÔNG cờ ───────────────────────────────────────────────
+    [Fact]
+    public async Task NoShot_BuoiNganHonNguong_KhongCo()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var cid = Guid.NewGuid();
+        var start = DateTime.UtcNow.AddMinutes(-5);
+        SeedTerminalMembership(t, camp.Id, sid, cid, start, start.AddSeconds(60));   // 60s < 120s
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(0, r.NoShotSessions);
+        Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
+    }
+
+    // ── buổi 0 ảnh, ĐỦ DÀI → đúng 1 cờ, đủ trường ────────────────────────────────────────────────
+    [Fact]
+    public async Task NoShot_BuoiDuDai_DungMotCo()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var cid = Guid.NewGuid();
+        var start = DateTime.UtcNow.AddMinutes(-25);
+        SeedTerminalMembership(t, camp.Id, sid, cid, start, start.AddMinutes(10));   // 10' > 120s
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(1, r.NoShotSessions);
+        Assert.Equal(1, r.FlagsWritten);
+
+        using var db = t.NewContext();
+        var flag = await db.SessionFlags.SingleAsync();
+        Assert.Equal("monitoring_gap", flag.SignalType);
+        Assert.Equal(FlagSource.Server, flag.Source);
+        Assert.Equal(sid, flag.SessionId);
+        Assert.Equal(camp.Id, flag.CampaignId);
+        Assert.Equal(cid, flag.CandidateId);
+        Assert.NotNull(flag.Note);
+        Assert.Contains("trong suốt buổi thi", flag.Note!);
+        Assert.Contains("(10 phút)", flag.Note!);
+        Assert.Contains("[monitor#none]", flag.Note!);
+        Assert.DoesNotContain("gian lận", flag.Note!);
+        Assert.DoesNotContain("rời đi", flag.Note!);
+    }
+
+    // ── chống trùng: quét 2 lần → vẫn 1 cờ (mỗi session tối đa 1 cờ loại này) ─────────────────────
+    [Fact]
+    public async Task NoShot_ChayHaiLan_VanMotCo()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var cid = Guid.NewGuid();
+        var start = DateTime.UtcNow.AddMinutes(-25);
+        SeedTerminalMembership(t, camp.Id, sid, cid, start, start.AddMinutes(10));
+
+        var first = await ScanOnce(Build(t));
+        var second = await ScanOnce(Build(t));
+
+        Assert.Equal(1, first.FlagsWritten);
+        Assert.Equal(1, second.NoShotSessions);   // vẫn phát hiện
+        Assert.Equal(0, second.FlagsWritten);     // nhưng KHÔNG ghi thêm
+        Assert.Equal(1, await t.NewContext().SessionFlags.CountAsync());
+    }
+
+    // ── campaign KHÔNG bật face_verify → KHÔNG cờ (có 1 fve campaign khác để không đi early-return) ─
+    [Fact]
+    public async Task NoShot_FaceVerifyTat_KhongCo()
+    {
+        using var t = new CampaignTestDb();
+        var campTat = SeedCampaign(t, faceVerify: false);
+        var campBat = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var cid = Guid.NewGuid();
+        var start = DateTime.UtcNow.AddMinutes(-25);
+        SeedTerminalMembership(t, campTat.Id, sid, cid, start, start.AddMinutes(10));
+        // fve campaign khác: 1 membership terminal CÓ ảnh — chỉ để fveCampaignIds ≠ rỗng.
+        var sid2 = Guid.NewGuid();
+        SeedTerminalMembership(t, campBat.Id, sid2, Guid.NewGuid(), start, start.AddMinutes(10));
+        SeedLiveShot(t, campBat.Id, sid2, Guid.NewGuid(), start.AddMinutes(1));
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(0, r.NoShotSessions);
+        Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
+    }
+
+    // ── buổi CHƯA terminal (InProgress) → KHÔNG cờ. Seed StartedAt cũ + UpdatedAt mới (duration dài)
+    //    để CÔ LẬP điều kiện terminal khỏi ngưỡng thời lượng: nếu chỉ ngưỡng chặn thì mutation "bỏ
+    //    điều kiện terminal" sẽ không ĐỎ. ───────────────────────────────────────────────────────────
+    [Fact]
+    public async Task NoShot_ChuaTerminal_KhongCo()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var cid = Guid.NewGuid();
+        var start = DateTime.UtcNow.AddMinutes(-15);
+        SeedTerminalMembership(t, camp.Id, sid, cid, start, DateTime.UtcNow,
+            status: InterviewProgressStatus.InProgress);   // duration ~15' nhưng CHƯA terminal
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(0, r.NoShotSessions);
+        Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
+    }
+
+    // ── chế độ bóng: Enabled=false → NoShotSessions>0 nhưng 0 row vào DB ─────────────────────────
+    [Fact]
+    public async Task NoShot_EnabledFalse_KhongGhiVaoDB()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var cid = Guid.NewGuid();
+        var start = DateTime.UtcNow.AddMinutes(-25);
+        SeedTerminalMembership(t, camp.Id, sid, cid, start, start.AddMinutes(10));
+
+        var r = await ScanOnce(Build(t, new MonitoringGapSettings
+        {
+            Enabled = false,
+            GapThresholdSeconds = 90,
+            MinDurationSeconds = 120,
+            LookbackHours = 48
+        }));
+
+        Assert.Equal(1, r.NoShotSessions);   // đã TÍNH
+        Assert.Equal(0, r.FlagsWritten);     // nhưng KHÔNG ghi
+        Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
+    }
+
+    // ── buổi terminal kết thúc quá lâu (ngoài LookbackHours) → KHÔNG xét ─────────────────────────
+    [Fact]
+    public async Task NoShot_NgoaiLookback_KhongXet()
+    {
+        using var t = new CampaignTestDb();
+        var camp = SeedCampaign(t, faceVerify: true);
+        var sid = Guid.NewGuid();
+        var cid = Guid.NewGuid();
+        var start = DateTime.UtcNow.AddHours(-51);
+        SeedTerminalMembership(t, camp.Id, sid, cid, start, start.AddMinutes(10));   // UpdatedAt ~ now-50h
+
+        var r = await ScanOnce(Build(t));
+
+        Assert.Equal(0, r.NoShotSessions);
+        Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
     }
 }

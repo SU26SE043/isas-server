@@ -37,6 +37,13 @@ namespace Isas.CampaignService.Models
         public int ScanIntervalSeconds { get; set; } = 120;
 
         /// <summary>
+        /// LUẬT 2 (B3) — buổi thi phải dài hơn ngần này (giây) mới xét "0 ảnh giám sát nào". Buổi ngắn
+        /// hơn thì chưa tới nhịp kiểm mặt đầu tiên nên 0 ảnh là bình thường, không phải tín hiệu.
+        /// Mặc định 120 (= 4× nhịp kiểm 30s).
+        /// </summary>
+        public int MinDurationSeconds { get; set; } = 120;
+
+        /// <summary>
         /// Chỉ xét ảnh Live có <c>captured_at</c> trong ngần này giờ trở lại. Cận trên cho vòng quét:
         /// <c>face_images</c> tích tới <c>FaceImageRetention:RetentionDays</c> (90) ngày trước khi bị
         /// dọn, nên không có cận này thì mỗi vòng (2 phút) phải nạp + hậu-kiểm-chống-trùng trên
