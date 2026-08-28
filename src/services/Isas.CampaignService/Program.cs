@@ -92,6 +92,12 @@ builder.Services.AddHostedService<OutboxPurger>();
 builder.Services.Configure<FaceImageRetentionSettings>(
     builder.Configuration.GetSection(FaceImageRetentionSettings.SectionName));
 builder.Services.AddHostedService<FaceImagePurger>();
+// MON1-B2: phép đo ĐỘC LẬP phía server — quét face_images (Live) tìm khoảng trống giám sát GIỮA buổi
+// thi → cờ monitoring_gap source='Server'. 🔴 CHẾ ĐỘ BÓNG mặc định (tính+log, KHÔNG ghi cờ) → bật
+// bằng `MonitoringGap__Enabled=true` sau khi quan sát log một chu kỳ (ngưỡng hiệu chuẩn ở B5).
+builder.Services.Configure<MonitoringGapSettings>(
+    builder.Configuration.GetSection(MonitoringGapSettings.SectionName));
+builder.Services.AddHostedService<MonitoringGapSweeper>();
 // C14: sàng CV async — đẩy job AI chấm khớp (cv_screening_queue) + xử lý callback/shortlist/PATCH
 builder.Services.AddSingleton<ICvScreeningPublisher, CvScreeningPublisher>();
 builder.Services.AddScoped<ICvScreeningService, CvScreeningService>();
