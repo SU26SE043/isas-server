@@ -573,11 +573,20 @@ namespace Isas.CampaignService.Models
             // ── SessionFlag (cờ chống gian lận cho HR — SEC-1/D13) ─────────────────
             modelBuilder.Entity<SessionFlag>(e =>
             {
-                e.ToTable("session_flags");
+                e.ToTable("session_flags", t =>
+                {
+                    // MON1-B1 — khoá miền enum-string ở tầng DB (khớp pattern ck_campaign_membership_interview_status).
+                    t.HasCheckConstraint("ck_session_flags_source", "source IN ('Client', 'Server')");
+                });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.SignalType).IsRequired().HasMaxLength(32);
                 e.Property(x => x.DetectedAt).HasDefaultValueSql("now()");
+                // MON1-B1 — enum→STRING (GEN-2). NOT NULL DEFAULT 'Client': cờ cũ + cờ client hiện tại
+                // đều là 'Client'; chỉ sweeper server (B2/B3) ghi 'Server'. maxLength 16 (chỗ chừa cho
+                // giá trị nguồn dài hơn về sau) — CampaignEnumColumnLengthTests khoá "đủ dài".
+                e.Property(x => x.Source).HasConversion<string>().HasMaxLength(16)
+                 .IsRequired().HasDefaultValue(FlagSource.Client);
 
                 // Gom cờ theo buổi (surface cho HR + aggregate results). SessionId/CandidateId = ref
                 // XUYÊN service → giữ Guid lỏng (GEN-2), KHÔNG FK.

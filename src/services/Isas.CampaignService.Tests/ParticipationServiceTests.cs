@@ -543,6 +543,97 @@ public class ParticipationServiceTests
         Assert.Equal(InterviewProgressStatus.InProgress, after.InterviewStatus);
     }
 
+    // ── MON1-B1: mốc buổi thi bắt đầu (campaign_membership.interview_started_at) ──────────────────
+    // B3 sweeper dùng mốc này làm điểm neo đối chiếu nhịp face_images.captured_at. Bất biến: đóng dấu
+    // MỘT lần lúc chuyển sang InProgress, resume KHÔNG dời, và membership cũ (mốc null, có trước
+    // migration) resume KHÔNG bị backdate về thời điểm resume.
+
+    // B1(a): start lần đầu (membership vừa Joined) → interview_started_at được đóng dấu.
+    [Fact]
+    public async Task Start_LanDau_DongDauInterviewStartedAt()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var before = DateTime.UtcNow;
+        await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        using var check = tdb.NewContext();
+        var m = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.NotNull(m.InterviewStartedAt);
+        Assert.InRange(m.InterviewStartedAt!.Value, before.AddSeconds(-5), DateTime.UtcNow.AddSeconds(5));
+    }
+
+    // B1(b): resume (membership đã InProgress + đã có mốc) → start lại KHÔNG dời mốc.
+    [Fact]
+    public async Task Start_Resume_KhongDoiInterviewStartedAt()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        var moc = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);   // mốc quá khứ cố định
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SessionId = FixedSession;
+        membership.InterviewStatus = InterviewProgressStatus.InProgress;
+        membership.InterviewStartedAt = moc;
+        tdb.Db.CampaignMemberships.Add(membership);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        using var check = tdb.NewContext();
+        var after = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal(moc, after.InterviewStartedAt);
+    }
+
+    // B1(c): membership cũ (có trước migration) — InProgress nhưng interview_started_at = null.
+    // Resume KHÔNG được backdate mốc về thời điểm resume: null = "không biết", trung thực hơn mốc sai.
+    // Đây là guard cho việc đặt dòng `??=` BÊN TRONG khối chuyển-trạng-thái (không phải ngoài).
+    [Fact]
+    public async Task Start_ResumeMembershipCu_StartedAtNull_VanNull()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SessionId = FixedSession;
+        membership.InterviewStatus = InterviewProgressStatus.InProgress;
+        membership.InterviewStartedAt = null;
+        tdb.Db.CampaignMemberships.Add(membership);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        using var check = tdb.NewContext();
+        var after = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Null(after.InterviewStartedAt);
+    }
+
+    // B1(d): làm dở rồi bỏ (Abandoned) + đã có mốc → khởi động LẠI đi vào khối chuyển-trạng-thái
+    // (Abandoned ∈ tập cho phép ở dòng 322) NHƯNG `??=` phải giữ mốc GỐC, không đóng dấu lại lúc
+    // restart. Đây là ca DUY NHẤT phân biệt `??=` với `=`: resume-từ-InProgress không vào khối, nên
+    // chỉ Abandoned→restart mới chứng minh được toán tử coalesce có tác dụng.
+    [Fact]
+    public async Task Start_RestartTuAbandoned_GiuMocGoc()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWithQuestionAndCriterion(tdb);
+        var moc = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        var membership = Membership(camp.Id, FixedCandidate);
+        membership.SessionId = FixedSession;
+        membership.InterviewStatus = InterviewProgressStatus.Abandoned;
+        membership.InterviewStartedAt = moc;
+        tdb.Db.CampaignMemberships.Add(membership);
+        await tdb.Db.SaveChangesAsync();
+
+        await NewService(tdb.NewContext()).StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        using var check = tdb.NewContext();
+        var after = await check.CampaignMemberships.SingleAsync(x => x.CampaignId == camp.Id);
+        Assert.Equal(InterviewProgressStatus.InProgress, after.InterviewStatus);   // restart chạy khối
+        Assert.Equal(moc, after.InterviewStartedAt);                               // nhưng KHÔNG dời mốc
+    }
+
     // D3(c): sau start, GET /my-campaigns/{id} surface trạng thái resume — Started=true + SessionId khớp
     // + InterviewStatus=InProgress (FE biết đang dở → cho "tiếp tục").
     [Fact]

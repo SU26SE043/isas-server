@@ -320,7 +320,15 @@ namespace Isas.CampaignService.Services
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.
             membership.InterviewDeadlineAt ??= interviewDeadline;
             if (membership.InterviewStatus is null or InterviewProgressStatus.NotStarted or InterviewProgressStatus.Abandoned)
+            {
                 membership.InterviewStatus = InterviewProgressStatus.InProgress;
+                // MON1-B1: mốc buổi thi bắt đầu — điểm neo cho sweeper heartbeat (B3) đối chiếu với
+                // face_images.captured_at. Chỉ đóng dấu khi ĐANG quan sát chuyển sang InProgress:
+                // resume (đã InProgress) không vào khối này ⇒ mốc gốc giữ nguyên; membership cũ
+                // (interview_started_at = null, có trước migration) resume cũng KHÔNG bị backdate về
+                // thời điểm resume — null = "không biết", trung thực hơn một mốc sai (BK23).
+                membership.InterviewStartedAt ??= DateTime.UtcNow;
+            }
             membership.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
 

@@ -19,9 +19,27 @@ namespace Isas.CampaignService.Models
         public string? Note { get; set; }        // chi tiết cho HR (vd "2 khuôn mặt trong khung")
         public DateTime DetectedAt { get; set; }  // thời điểm phát hiện (server nhận)
 
+        // MON1-B1 — ai ghi cờ này. Enum lưu STRING (GEN-2). Mặc định Client: mọi cờ hôm nay đều đi qua
+        // createCampaignFlag từ trình duyệt ứng viên (kể cả no_face — ảnh cũng do client chụp rồi gửi),
+        // nên ứng viên CHẶN được. Server = cờ server tự suy từ face_images (B2/B3: captured_at ngừng
+        // tiến trong khi buổi vẫn chạy) — nằm trên dòng client không can thiệp được.
+        public FlagSource Source { get; set; } = FlagSource.Client;
+
         // Navigation (DB9) — FK nội-service session_flags.campaign_id → campaigns.id (Restrict).
         // Required nav (CampaignId NOT NULL) → cần query filter khớp soft-delete Campaign (xem DbContext).
         // Ref XUYÊN service SessionId/CandidateId → giữ Guid lỏng (GEN-2), KHÔNG FK.
         public Campaign Campaign { get; set; } = null!;
+    }
+
+    /// <summary>
+    /// Nguồn ghi <see cref="SessionFlag"/> (lưu string — GEN-2). <c>Client = 0</c> có chủ đích:
+    /// giá trị zero của enum = mặc định an toàn (mọi cờ chưa gán rõ nguồn = do client báo).
+    /// </summary>
+    public enum FlagSource
+    {
+        /// <summary>Cờ do trình duyệt ứng viên tự báo (webcam/tab-switch/paste…). Ứng viên CHẶN được endpoint.</summary>
+        Client = 0,
+        /// <summary>Cờ do server tự suy ra từ face_images (nhịp captured_at). Ứng viên KHÔNG chặn được.</summary>
+        Server = 1
     }
 }
