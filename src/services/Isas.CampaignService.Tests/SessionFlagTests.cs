@@ -133,8 +133,10 @@ public class SessionFlagTests
 
     // ── 🔴 Q4 — THÀNH VIÊN campaign cắm cờ vào buổi thi của THÀNH VIÊN KHÁC → 403, KHÔNG ghi row ──
     // Đã xảy ra trên prod (1 buổi mang cờ do 2 candidate khác nhau gửi): guard cũ chỉ hỏi "có phải
-    // thành viên campaign không", còn sessionId lấy thẳng từ route. Vì `unscoredFlagged` (R7) xếp theo
-    // TỔNG số cờ mỗi buổi, đây là đường bôi bẩn ứng viên khác trong bảng "đáng ngờ" của HR.
+    // thành viên campaign không", còn sessionId lấy thẳng từ route. Vì `unscoredFlagged` (R7) đẩy buổi
+    // đáng ngờ lên đầu cho HR, đây là đường bôi bẩn ứng viên khác trong bảng "đáng ngờ" đó. (AC1 đổi
+    // thứ tự sang TẦNG-trước; cờ FE không chạm tầng danh tính nên hẹp hơn, nhưng chưa đóng — xem
+    // comment Q4 trong SessionFlagController.)
     [Fact]
     public async Task Q4_ThanhVien_CamCoVaoBuoiCuaNguoiKhac_403()
     {
@@ -240,6 +242,90 @@ public class SessionFlagTests
 
         Assert.IsType<NoContentResult>(result);          // vẫn 204 (no-op idempotent)
         Assert.Equal(0, FlagCount(tdb, campaign.Id));    // nhưng KHÔNG lưu
+    }
+
+    // ── AC1 — `monitoring_gap`: nhịp giám sát 30s bị đứt (tab ngủ/máy sleep/mạng rớt) ────────────
+    // Không có ảnh nào để so trong khoảng đó ⇒ HR phải thấy "khoảng mù", nếu không thì buổi bị đứt
+    // giám sát trông y hệt buổi sạch. Whitelist FE phải nhận loại này, else 400 và cờ rơi mất.
+    [Fact]
+    public async Task AC1_Monitoring_gap_duoc_chap_nhan_va_ghi_row()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
+
+        var result = await NewController(tdb.NewContext(), candidateId)
+            .ReportCandidateFlag(campaign.Id, sessionId,
+                new CandidateFlagRequest { SignalType = "monitoring_gap", Note = "gián đoạn 94s" }, default);
+
+        Assert.IsType<NoContentResult>(result);
+
+        using var check = tdb.NewContext();
+        var flag = Assert.Single(check.SessionFlags.Where(f => f.CampaignId == campaign.Id));
+        Assert.Equal("monitoring_gap", flag.SignalType);
+        Assert.Equal(sessionId, flag.SessionId);
+        Assert.Equal(candidateId, flag.CandidateId);
+        Assert.Equal("gián đoạn 94s", flag.Note);
+    }
+
+    // 🔴 AC1 — `monitoring_gap` là cờ MÔI TRƯỜNG, KHÔNG phải tín hiệu DANH TÍNH (cùng lập luận F4).
+    // Thêm nhầm vào IdentitySignals ⇒ đổi điều kiện lưu: campaign chỉ bật face_verify (anti-cheat TẮT)
+    // sẽ bắt đầu ghi cờ này. Nó nói "không quan sát được", KHÔNG nói "sai người".
+    [Fact]
+    public async Task AC1_Monitoring_gap_khong_phai_tin_hieu_danh_tinh()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        // anti-cheat TẮT, face-verify BẬT → chỉ tín hiệu danh tính mới được lưu.
+        var campaign = SeedCampaign(tdb.Db, antiCheat: false, faceVerify: true);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
+
+        var result = await NewController(tdb.NewContext(), candidateId)
+            .ReportCandidateFlag(campaign.Id, sessionId,
+                new CandidateFlagRequest { SignalType = "monitoring_gap" }, default);
+
+        Assert.IsType<NoContentResult>(result);          // vẫn 204 (no-op idempotent)
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));    // nhưng KHÔNG lưu
+    }
+
+    // AC1 — ẩn danh (không claim NameIdentifier) → 401, KHÔNG ghi row. [Authorize] chặn ở tầng
+    // pipeline, guard này là lớp thứ hai (controller cũng chạy được khi test gọi thẳng).
+    [Fact]
+    public async Task AC1_Monitoring_gap_an_danh_401()
+    {
+        using var tdb = new CampaignTestDb();
+        var sessionId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+
+        var result = await NewController(tdb.NewContext(), candidateId: null)
+            .ReportCandidateFlag(campaign.Id, sessionId,
+                new CandidateFlagRequest { SignalType = "monitoring_gap" }, default);
+
+        Assert.IsType<UnauthorizedResult>(result);
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));
+    }
+
+    // AC1 — thành viên campaign cắm `monitoring_gap` vào buổi NGƯỜI KHÁC → 403 (Q4 áp cho cả loại mới).
+    [Fact]
+    public async Task AC1_Monitoring_gap_buoi_nguoi_khac_403()
+    {
+        using var tdb = new CampaignTestDb();
+        var attacker = Guid.NewGuid();
+        var victim = Guid.NewGuid();
+        var victimSession = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        SeedMember(tdb.Db, campaign.Id, attacker, Guid.NewGuid());
+        SeedMember(tdb.Db, campaign.Id, victim, victimSession);
+
+        var result = await NewController(tdb.NewContext(), attacker)
+            .ReportCandidateFlag(campaign.Id, victimSession,
+                new CandidateFlagRequest { SignalType = "monitoring_gap" }, default);
+
+        Assert.IsType<ForbidResult>(result);
+        Assert.Equal(0, FlagCount(tdb, campaign.Id));
     }
 
     // ── (a) Anti-cheat tắt (+ face-verify tắt) → no-op 204, KHÔNG ghi row (giám sát tắt) ──
@@ -382,6 +468,140 @@ public class SessionFlagTests
         var flags = check.SessionFlags.Where(f => f.CampaignId == campaign.Id).ToList();
         Assert.Single(flags);
         Assert.Equal("identity_unverified", flags[0].SignalType);
+    }
+
+    // ── B4 — dedup HẸP cho `multi_voice` ─────────────────────────────────────────────────────
+    // Detector giọng chạy trên đường CHẤM, mà đường đó cố ý chạy answer nhiều lần (self-consistency E10
+    // + StuckAnswerRepublisher) ⇒ cùng một sự kiện tới nhiều lần ⇒ HR thấy `multi_voice: 3` cho MỘT lần
+    // nghi vấn = bằng chứng giả. Note detector deterministic (answerId + giây làm tròn) ⇒ trùng = trùng.
+    private static InternalFlagRequest VoiceFlag(Guid campaignId, Guid sessionId, Guid candidateId, string? note) =>
+        new()
+        {
+            SessionId = sessionId,
+            CampaignId = campaignId,
+            CandidateId = candidateId,
+            SignalType = "multi_voice",
+            Note = note
+        };
+
+    [Fact]
+    public async Task B4_Multi_voice_trung_note_chi_ghi_1_row()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        var sessionId = Guid.NewGuid();
+        var candidateId = Guid.NewGuid();
+        const string note = "answer=6f1b answer_t=42s";   // deterministic — 2 lượt chấm cùng answer
+
+        var first = await NewController(tdb.NewContext()).ReportInternalFlag(
+            VoiceFlag(campaign.Id, sessionId, candidateId, note), Token, default);
+        var second = await NewController(tdb.NewContext()).ReportInternalFlag(
+            VoiceFlag(campaign.Id, sessionId, candidateId, note), Token, default);
+
+        Assert.IsType<NoContentResult>(first);
+        Assert.IsType<NoContentResult>(second);   // lần hai VẪN 204 (no-op idempotent, không phải lỗi)
+        Assert.Equal(1, FlagCount(tdb, campaign.Id));
+    }
+
+    // Note KHÁC = sự kiện KHÁC (answer khác / mốc thời gian khác) → phải giữ đủ 2 dòng, else dedup
+    // nuốt mất lần nghi vấn thứ hai trong cùng buổi.
+    [Fact]
+    public async Task B4_Multi_voice_khac_note_ghi_du_2_row()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        var sessionId = Guid.NewGuid();
+        var candidateId = Guid.NewGuid();
+
+        await NewController(tdb.NewContext()).ReportInternalFlag(
+            VoiceFlag(campaign.Id, sessionId, candidateId, "answer=6f1b answer_t=42s"), Token, default);
+        await NewController(tdb.NewContext()).ReportInternalFlag(
+            VoiceFlag(campaign.Id, sessionId, candidateId, "answer=9c22 answer_t=310s"), Token, default);
+
+        Assert.Equal(2, FlagCount(tdb, campaign.Id));
+    }
+
+    // Cùng note nhưng BUỔI KHÁC → 2 dòng (dedup không được trộn hai ứng viên).
+    [Fact]
+    public async Task B4_Multi_voice_cung_note_khac_session_ghi_du_2_row()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        const string note = "answer=6f1b answer_t=42s";
+
+        await NewController(tdb.NewContext()).ReportInternalFlag(
+            VoiceFlag(campaign.Id, Guid.NewGuid(), Guid.NewGuid(), note), Token, default);
+        await NewController(tdb.NewContext()).ReportInternalFlag(
+            VoiceFlag(campaign.Id, Guid.NewGuid(), Guid.NewGuid(), note), Token, default);
+
+        Assert.Equal(2, FlagCount(tdb, campaign.Id));
+    }
+
+    // Note VẮNG (caller không theo hợp đồng deterministic của detector) — hai dòng không phân biệt được
+    // nhau ⇒ vẫn coi là trùng. Khoá ngữ nghĩa `Note == null` để nó không phụ thuộc cách provider dịch
+    // phép so sánh với tham số null.
+    [Fact]
+    public async Task B4_Multi_voice_note_null_van_dedup()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        var sessionId = Guid.NewGuid();
+        var candidateId = Guid.NewGuid();
+
+        await NewController(tdb.NewContext()).ReportInternalFlag(
+            VoiceFlag(campaign.Id, sessionId, candidateId, null), Token, default);
+        var second = await NewController(tdb.NewContext()).ReportInternalFlag(
+            VoiceFlag(campaign.Id, sessionId, candidateId, null), Token, default);
+
+        Assert.IsType<NoContentResult>(second);
+        Assert.Equal(1, FlagCount(tdb, campaign.Id));
+    }
+
+    // 🔴 B4 — dedup CHỈ áp cho `multi_voice`. Hai cờ `no_face` cùng note VẪN phải ra 2 DÒNG.
+    // Nới guard ra mọi cờ AI sẽ nén "rời khung 5 lần trong buổi" thành `no_face: 1` — xoá đúng tín hiệu
+    // "vắng mặt THƯỜNG XUYÊN" mà HR cần, vì với nhóm cờ đó SỐ LẦN chính là bằng chứng. Đường face-check
+    // (`FaceVerifyController.RecordFlagsAsync`) còn truyền note null mỗi lượt 30s ⇒ thiệt hại là toàn bộ.
+    [Fact]
+    public async Task B4_Khong_dedup_no_face_du_trung_note()
+    {
+        using var tdb = new CampaignTestDb();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        var sessionId = Guid.NewGuid();
+        var candidateId = Guid.NewGuid();
+        const string note = "khong thay mat trong khung";
+
+        await NewController(tdb.NewContext()).ReportInternalFlag(
+            new InternalFlagRequest
+            {
+                SessionId = sessionId, CampaignId = campaign.Id,
+                CandidateId = candidateId, SignalType = "no_face", Note = note
+            }, Token, default);
+        await NewController(tdb.NewContext()).ReportInternalFlag(
+            new InternalFlagRequest
+            {
+                SessionId = sessionId, CampaignId = campaign.Id,
+                CandidateId = candidateId, SignalType = "no_face", Note = note
+            }, Token, default);
+
+        Assert.Equal(2, FlagCount(tdb, campaign.Id));   // số LẦN là bằng chứng — không được nén
+    }
+
+    // Cùng ranh giới, cờ FE: `tab_switch` trùng note vẫn 2 dòng (đếm số lần chuyển tab là mục đích của nó).
+    [Fact]
+    public async Task B4_Khong_dedup_tab_switch_du_trung_note()
+    {
+        using var tdb = new CampaignTestDb();
+        var candidateId = Guid.NewGuid();
+        var sessionId = Guid.NewGuid();
+        var campaign = SeedCampaign(tdb.Db, antiCheat: true);
+        SeedMember(tdb.Db, campaign.Id, candidateId, sessionId);
+
+        await NewController(tdb.NewContext(), candidateId).ReportCandidateFlag(campaign.Id, sessionId,
+            new CandidateFlagRequest { SignalType = "tab_switch", Note = "hidden" }, default);
+        await NewController(tdb.NewContext(), candidateId).ReportCandidateFlag(campaign.Id, sessionId,
+            new CandidateFlagRequest { SignalType = "tab_switch", Note = "hidden" }, default);
+
+        Assert.Equal(2, FlagCount(tdb, campaign.Id));
     }
 
     // ── (c) SEC-4 — GetCampaignResults gom cờ theo buổi vào Flags[] (signal_type → count) ──

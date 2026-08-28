@@ -79,7 +79,7 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
         string seniority = "Junior", CancellationToken ct = default)
         => await GenerateCoreAsync(
             jobCategory, cvText, jdText, focusCriteria, count, grounding, language,
-            criteria, seniority, lessonContext: null, ct);
+            criteria, seniority, lessonContext: null, topics: null, ct);
 
     // Overload BÀI HỌC LỘ TRÌNH. Chỉ khác overload trên đúng một thứ: mang theo chủ đề của bài.
     public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
@@ -90,7 +90,19 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
         string seniority, LessonContext lessonContext, CancellationToken ct = default)
         => await GenerateCoreAsync(
             jobCategory, cvText, jdText, focusCriteria, count, grounding, language,
-            criteria, seniority, lessonContext, ct);
+            criteria, seniority, lessonContext, topics: null, ct);
+
+    // TOP1-B5 — Overload DANH MỤC ĐỀ TÀI. Chỉ khác overload `criteria` (2 overload phía trên) đúng
+    // một thứ: mang theo topics đã chọn (TopicSelector, B3).
+    public async Task<GeneratedQuestionsResult> GenerateQuestionsAsync(
+        string jobCategory, string? cvText, string? jdText,
+        IReadOnlyList<string>? focusCriteria, int? count,
+        IReadOnlyList<GroundingChunk>? grounding, string language,
+        IReadOnlyList<QuestionTargetCriterionDto>? criteria,
+        string seniority, IReadOnlyList<SessionTopic> topics, CancellationToken ct = default)
+        => await GenerateCoreAsync(
+            jobCategory, cvText, jdText, focusCriteria, count, grounding, language,
+            criteria, seniority, lessonContext: null, topics, ct);
 
     // MỘT thân duy nhất cho mọi overload — hai bản sao của khối dựng payload là hai cơ hội để tên
     // khoá ra dây lệch nhau, mà lệch tên thì pydantic `extra='ignore'` nuốt im lặng.
@@ -99,7 +111,8 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
         IReadOnlyList<string>? focusCriteria, int? count,
         IReadOnlyList<GroundingChunk>? grounding, string language,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria,
-        string seniority, LessonContext? lessonContext, CancellationToken ct)
+        string seniority, LessonContext? lessonContext,
+        IReadOnlyList<SessionTopic>? topics, CancellationToken ct)
     {
         var payload = new
         {
@@ -151,7 +164,37 @@ public class AiServiceQuestionGenerator : IAiServiceQuestionGenerator
             // `Title` rỗng ⇒ gửi null cả khối: một tiêu đề rỗng không phân biệt được bài nào với
             // bài nào, mà vẫn tốn một khối "CHỦ ĐỀ BẮT BUỘC" rỗng nghĩa trong prompt.
             lessonContext = lessonContext is not null && !string.IsNullOrWhiteSpace(lessonContext.Title)
-                ? new { title = lessonContext.Title, outline = lessonContext.Outline }
+                ? new
+                  {
+                      title = lessonContext.Title,
+                      outline = lessonContext.Outline,
+                      // MIS1-B5 — id/criterionName/question/reasoning CHỈ 4 trường — TUYỆT ĐỐI
+                      // KHÔNG answer, KHÔNG sampleAnswer (đáp án): đưa đáp án vào prompt sinh câu
+                      // hỏi thì model lấy luôn nội dung đáp án làm câu hỏi. `RoadmapMistakeWire`
+                      // (kiểu của `lessonContext.Mistakes`) còn mang ScorePct/Answer nhưng CỐ Ý
+                      // KHÔNG chiếu 2 trường đó ra đây.
+                      mistakes = lessonContext.Mistakes is { Count: > 0 }
+                          ? lessonContext.Mistakes.Select(m => new
+                            {
+                                id = m.Id,
+                                criterionName = m.CriterionName,
+                                question = m.Question,
+                                reasoning = m.Reasoning,
+                            })
+                          : null,
+                  }
+                : null,
+            // TOP1-B5 — danh mục đề tài (TopicSelector, B3). CHỈ 3 field — KHÔNG gửi `key`/`source`/
+            // `criterionName`: criterionName là dữ liệu NỘI BỘ .NET (đối chiếu rubric buổi tạo), CẤM
+            // tường minh của B5 là không được để nó lộ ra ngoài .NET (không AIService, không client).
+            // Anonymous object viết tay tên trường — cùng lý do `grounding`/`criteria` ngay trên:
+            // JsonContent.Create không áp naming policy, record .NET đưa thẳng vào sẽ ra PascalCase.
+            //
+            // ⚠ Tên khoá `topics`/`label`/`cvLevel`/`cvEvidence` là hợp đồng với pydantic
+            // (`app/schemas.SessionTopic`, TOP1-B4). Vắng/rỗng → null ⇒ AIService không thêm một
+            // chữ nào vào prompt (mọi caller cũ giữ nguyên xi).
+            topics = topics is { Count: > 0 }
+                ? topics.Select(t => new { label = t.Label, cvLevel = t.CvLevel, cvEvidence = t.CvEvidence })
                 : null
         };
 

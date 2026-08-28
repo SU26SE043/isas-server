@@ -81,8 +81,13 @@ public class CvCurrentLevelWireTests
 }
 
 /// <summary>
-/// Payload gửi xuống <c>/generate-roadmap</c>: `currentLevel` phải có mặt bằng KHOÁ RIÊNG, và
-/// `cvText` phải BIẾN MẤT.
+/// REC1-B7 — 🔴 TIỀN ĐỀ ĐÃ ĐẢO so với bản gốc (từng khoá "currentLevel/cvAnalysisSummary PHẢI có
+/// mặt trên dây"): payload gửi xuống <c>/generate-roadmap</c> nay PHẢI SẠCH cả ba khoá
+/// `cvAnalysisSummary`/`priorRoadmapSummary`/`currentLevel` — không chỉ `cvText` thô (đã gỡ TRƯỚC
+/// bước này, MIS1-B5). Lý do đảo: prompt roadmap chỉ xuất ra CẤU TRÚC, mà cả hai nguồn CV/lộ trình
+/// trước đều bị chèn kèm câu "không đổi cấu trúc roadmap" — mệnh lệnh tự phủ định. Đo được: nhóm
+/// CÓ chọn CV nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%); lộ trình trước chỉ 4/37 đủ điều kiện
+/// trên dev, 0 trên môi trường chính.
 /// </summary>
 public class RoadmapCurrentLevelPayloadTests
 {
@@ -114,49 +119,47 @@ public class RoadmapCurrentLevelPayloadTests
     }
 
     [Fact]
-    public async Task Payload_CoKhoaCurrentLevel_DungTen()
+    public async Task Payload_KHONG_CON_KhoaCurrentLevel()
     {
-        // ⚠ Lệch tên khoá là lớp bug đã cắn repo 4 lần: AIService khai `extra='ignore'` nên field
-        // sai tên bị NUỐT IM LẶNG — roadmap vẫn sinh, không lỗi, chỉ là mất sàn trình độ.
+        // 🔴 REC1-B7 — CẤM: gán `currentLevel = null` để "bỏ" field KHÔNG đủ (JsonContent.Create
+        // dùng JsonSerializerDefaults.Web, DefaultIgnoreCondition = Never ⇒ vẫn ra "currentLevel":
+        // null trên dây). Tham số `currentLevel` đã GỠ HẲN khỏi chữ ký GenerateAsync — không còn
+        // cách nào truyền nó nữa, nên chỉ cần gọi bình thường rồi khẳng định khoá vắng mặt.
         var (gen, handler) = Generator();
 
-        await gen.GenerateAsync("BE", "Senior", null, null, null, null, currentLevel: "Junior");
+        await gen.GenerateAsync("BE", "Senior", null, null);
 
         using var doc = JsonDocument.Parse(handler.LastBody!);
-        Assert.True(doc.RootElement.TryGetProperty("currentLevel", out var v),
-            "payload /generate-roadmap phải có khoá 'currentLevel' — đúng tên app.schemas đọc");
-        Assert.Equal("Junior", v.GetString());
+        Assert.False(doc.RootElement.TryGetProperty("currentLevel", out _),
+            "payload /generate-roadmap KHÔNG được mang khoá 'currentLevel' nữa");
     }
 
     [Fact]
-    public async Task Payload_KHONG_CON_CvText()
+    public async Task Payload_KHONG_CON_CvText_LanCvAnalysisSummary()
     {
-        // CV thô đã bị gỡ khỏi luồng roadmap. Đo trên production trước khi gỡ: roadmap có CV và
-        // không CV cho tên chặng không phân biệt được, nhóm có CV còn nêu công nghệ cụ thể ÍT hơn
-        // (8,6% vs 12,1% số bài). Test này chặn việc nối lại theo phản xạ.
+        // CV thô đã bị gỡ khỏi luồng roadmap TRƯỚC bước này (MIS1-B5). REC1-B7 gỡ nốt đường thay
+        // thế `cvAnalysisSummary` — đo trên production: roadmap có CV và không CV cho tên chặng
+        // KHÔNG phân biệt được, nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1% số bài).
         var (gen, handler) = Generator();
 
-        await gen.GenerateAsync("BE", "Senior", null, null, "Tóm tắt CV", null);
+        await gen.GenerateAsync("BE", "Senior", null, null);
 
         using var doc = JsonDocument.Parse(handler.LastBody!);
         Assert.False(doc.RootElement.TryGetProperty("cvText", out _),
-            "payload không được mang CV thô nữa");
-        // Đường thay thế vẫn phải còn — gỡ CV thô không được kéo theo nó.
-        Assert.True(doc.RootElement.TryGetProperty("cvAnalysisSummary", out var s));
-        Assert.Equal("Tóm tắt CV", s.GetString());
+            "payload không được mang CV thô");
+        Assert.False(doc.RootElement.TryGetProperty("cvAnalysisSummary", out _),
+            "payload không được mang tóm tắt CV nữa — REC1-B7 gỡ luôn đường thay thế");
     }
 
     [Fact]
-    public async Task KhongTruyen_ThiKhoaVanCoMatVoiGiaTriNull()
+    public async Task Payload_KHONG_CON_KhoaPriorRoadmapSummary()
     {
-        // Giữ khoá với giá trị null (thay vì bỏ hẳn) để phía Python luôn thấy một hợp đồng ổn định;
-        // `currentLevel: str | None = None` nhận null bình thường.
         var (gen, handler) = Generator();
 
-        await gen.GenerateAsync("BE", "Senior", null, null, null, null);
+        await gen.GenerateAsync("BE", "Senior", null, null);
 
         using var doc = JsonDocument.Parse(handler.LastBody!);
-        Assert.True(doc.RootElement.TryGetProperty("currentLevel", out var v));
-        Assert.Equal(JsonValueKind.Null, v.ValueKind);
+        Assert.False(doc.RootElement.TryGetProperty("priorRoadmapSummary", out _),
+            "payload không được mang tóm tắt roadmap trước nữa");
     }
 }

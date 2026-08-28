@@ -13,7 +13,8 @@ namespace Isas.CampaignService.Controllers
     /// SEC-1 ingest — NHẬN + LƯU cờ chống gian lận cho HR (D13/CAMP-12: FLAG cho HR, KHÔNG auto-hủy).
     /// Backend KHÔNG tự phát hiện gian lận — nguồn phát là FE (webcam/tab-switch, repo riêng) và AIService
     /// (face-match/multi-voice, service riêng). 2 đường, đều idempotent → 204:
-    ///  1) Cờ FE/ứng viên (tab_switch/paste/focus_lost): JWT Candidate + phải là thành viên campaign.
+    ///  1) Cờ FE/ứng viên (tab_switch/paste/focus_lost/camera_blocked/monitoring_gap): JWT Candidate +
+    ///     phải là thành viên campaign.
     ///  2) Cờ AIService (face_mismatch/no_face/multiple_faces/multi_voice/identity_unverified): X-Internal-Token
     ///     (KHÔNG qua gateway — GEN-1), mirror InternalCampaignCandidatesController.
     /// Chỉ lưu khi campaign bật anti_cheat_enabled (hoặc face_verify_enabled cho tín hiệu danh tính) — else 204 no-op.
@@ -39,8 +40,13 @@ namespace Isas.CampaignService.Controllers
         // thi tiếp KHÔNG bị giám sát mặt mà KHÔNG có cờ nào ⇒ HR không phân biệt được "sạch" với "camera
         // chưa từng bật". Đây là cờ MÔI TRƯỜNG (thiết bị), KHÔNG phải tín hiệu danh tính → CỐ Ý không thêm
         // vào IdentitySignals: làm vậy sẽ đổi điều kiện lưu (lưu cả khi chỉ bật face_verify_enabled).
+        //
+        // AC1 — `monitoring_gap`: nhịp giám sát 30s bị đứt (tab ngủ / máy sleep / mạng rớt) nên KHÔNG CÓ
+        // ảnh nào để so trong khoảng đó. Cùng lập luận F4 và CỐ Ý cũng KHÔNG vào IdentitySignals: nó nói
+        // "không quan sát được", KHÔNG nói "sai người" — thêm vào danh tính là đổi điều kiện lưu sang cả
+        // nhánh chỉ-bật-face_verify, tức bắt đầu ghi cờ ở campaign mà HR đã tắt anti-cheat.
         private static readonly HashSet<string> FeSignals = new(StringComparer.OrdinalIgnoreCase)
-            { "tab_switch", "paste", "focus_lost", "camera_blocked" };
+            { "tab_switch", "paste", "focus_lost", "camera_blocked", "monitoring_gap" };
 
         // Cờ do AIService phát (giám sát khuôn mặt/giọng nói).
         private static readonly HashSet<string> AiSignals = new(StringComparer.OrdinalIgnoreCase)
@@ -72,9 +78,12 @@ namespace Isas.CampaignService.Controllers
             // Q4 — vế `m.SessionId == sessionId` là BẮT BUỘC, không phải siết cho chặt: `sessionId` đến từ
             // ROUTE và đi thẳng vào session_flags. Chỉ kiểm "là thành viên campaign" thì MỌI thành viên
             // cắm được cờ vào buổi thi của NGƯỜI KHÁC cùng campaign (đã xảy ra trên prod: 1 buổi có cờ do
-            // 2 candidate khác nhau gửi). Hại thật: `unscoredFlagged` (R7) xếp theo TỔNG số cờ mỗi buổi ⇒
-            // đối thủ đẩy được ứng viên khác lên đầu danh sách "đáng ngờ" của HR; cột candidate_id có lưu
+            // 2 candidate khác nhau gửi). Hại thật: `unscoredFlagged` (R7) đẩy buổi đáng ngờ lên đầu cho
+            // HR ⇒ đối thủ bơm cờ là đẩy được ứng viên khác lên đầu danh sách; cột candidate_id có lưu
             // thủ phạm nhưng đường đọc gom theo session_id nên HR không phân biệt được.
+            // AC1 thu hẹp một phần chứ KHÔNG đóng: thứ tự nay theo TẦNG trước, mà cờ FE chỉ chạm tầng
+            // hành vi/môi trường (không bơm lên tầng danh tính được) — nhưng tổng số cờ vẫn là tie-break
+            // TRONG cùng tầng, nên guard này vẫn là thứ duy nhất chặn.
             // KHÔNG chặn nhầm: membership.SessionId chỉ được ghi lúc Start (ParticipationService), mà ứng
             // viên cũng chỉ có sessionId sau khi Start trả về ⇒ không tồn tại ca "gửi cờ trước Start".
             var isOwnSession = await _db.CampaignMemberships
@@ -126,6 +135,35 @@ namespace Isas.CampaignService.Controllers
                 return;   // no-op idempotent (SEC-1 toggle off)
             }
 
+            var noteTrimmed = string.IsNullOrWhiteSpace(note) ? null : note.Trim();
+
+            // ── B4 — dedup HẸP, CHỈ `multi_voice` ────────────────────────────────────────────────
+            // Detector giọng chạy trên ĐƯỜNG CHẤM, mà đường đó cố ý chạy answer NHIỀU LẦN: self-consistency
+            // (E10, N attempt) + `StuckAnswerRepublisher` đẩy lại job kẹt. Cùng một sự kiện âm thanh vì thế
+            // tới đây vài lần ⇒ HR thấy `multi_voice: 3` cho MỘT lần nghi vấn = bằng chứng giả, và AC1 vừa
+            // đẩy tầng danh tính lên đầu danh sách nên số đếm phồng ăn thẳng vào thứ tự HR đọc.
+            // Note của detector là DETERMINISTIC (answerId + giây làm tròn) ⇒ trùng note = trùng sự kiện.
+            //
+            // 🔴 CỐ Ý KHÔNG nới ra mọi cờ AI. `FaceVerifyController.RecordFlagsAsync` (hàm RIÊNG, guard này
+            // không chạm tới) ghi note gần như TĨNH mỗi lượt check 30s — đường phát hiện thường truyền
+            // `note: null`. Dedup rộng sẽ nén "rời khung 5 lần trong buổi" thành `no_face: 1`, tức xoá đúng
+            // tín hiệu "vắng mặt THƯỜNG XUYÊN" mà HR cần: với nhóm cờ đó, số LẦN chính là bằng chứng.
+            // Ở `multi_voice` thì ngược lại — số lần chỉ phản ánh số lượt chấm lại, không phản ánh sự kiện.
+            if (normalized == "multi_voice")
+            {
+                bool alreadyRecorded = await _db.SessionFlags.AnyAsync(
+                    f => f.SessionId == sessionId
+                        && f.SignalType == normalized
+                        && f.Note == noteTrimmed, ct);
+                if (alreadyRecorded)
+                {
+                    _logger.LogDebug(
+                        "Bỏ qua cờ 'multi_voice' trùng (session {SessionId}): cùng note ⇒ cùng sự kiện (chấm lại).",
+                        sessionId);
+                    return;   // no-op idempotent — caller vẫn 204
+                }
+            }
+
             _db.SessionFlags.Add(new SessionFlag
             {
                 Id = Guid.NewGuid(),
@@ -133,7 +171,7 @@ namespace Isas.CampaignService.Controllers
                 CampaignId = campaign.Id,
                 CandidateId = candidateId,
                 SignalType = normalized,
-                Note = string.IsNullOrWhiteSpace(note) ? null : note.Trim(),
+                Note = noteTrimmed,
                 DetectedAt = DateTime.UtcNow
             });
             await _db.SaveChangesAsync(ct);

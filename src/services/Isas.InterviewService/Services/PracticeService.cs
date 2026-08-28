@@ -32,6 +32,8 @@ public class PracticeService : IPracticeService
     private readonly bool _consumeAtGeneration;   // PONR1 — kill-switch Billing:ConsumeAtQuestionGeneration
     private readonly bool _bilingualEnabled;
     private readonly CapacityOptions _capacity;
+    private readonly TopicsOptions _topics;        // TOP1-B5 — kill-switch Interview:Topics:Enabled
+    private readonly TopicSelector _topicSelector;  // TOP1-B3 — thuần hàm, an toàn dùng chung
 
     public PracticeService(
         InterviewDbContext db,
@@ -52,7 +54,11 @@ public class PracticeService : IPracticeService
         IKnowledgeService? knowledge = null,
         IOptions<GroundingOptions>? groundingOptions = null,
         IEntitlementClient? entitlements = null,
-        IOptions<CapacityOptions>? capacityOptions = null)
+        IOptions<CapacityOptions>? capacityOptions = null,
+        // TOP1-B5 — optional cùng lý do các Options ở trên: test cũ không truyền → Enabled=false,
+        // TopicSelector mặc định Random.Shared (chỉ test cần tái lập mới tự truyền seed riêng).
+        IOptions<TopicsOptions>? topicsOptions = null,
+        TopicSelector? topicSelector = null)
     {
         _db = db;
         _storage = storage;
@@ -74,6 +80,8 @@ public class PracticeService : IPracticeService
             config?["Billing:ConsumeAtQuestionGeneration"], out var consumeAtGeneration)
             && consumeAtGeneration;
         _capacity = capacityOptions?.Value ?? new CapacityOptions();
+        _topics = topicsOptions?.Value ?? new TopicsOptions();
+        _topicSelector = topicSelector ?? new TopicSelector();
     }
 
     // ── CREATE: tạo session + sinh câu hỏi (1 call) ───────────────────────
@@ -405,6 +413,41 @@ public class PracticeService : IPracticeService
             // `questionCount` như trước INT-17b.
             var requestedCount = seedCount ?? questionCount;
 
+            // TOP1-B5 — danh mục chủ đề: chọn TRƯỚC khi sinh câu hỏi (câu gốc bám các đề tài này).
+            // Đặt Ở ĐÂY (ngay sau LoadTargetableCriteriaAsync VÀ sau khi tính seedCount) vì cần CẢ
+            // HAI: targetable để ưu tiên phủ tiêu chí nội dung, requestedCount (gồm cả seedCount) để
+            // biết cần chọn tối đa bao nhiêu đề tài.
+            //
+            // Buổi BÀI HỌC LỘ TRÌNH bỏ qua HẲN TopicSelector — bài học là ràng buộc HẸP hơn danh
+            // mục và luôn đi overload lessonContext riêng (đối xứng "bài học thắng" ở
+            // prompts.py::build_prompt, B4).
+            //
+            // Kill-switch Interview:Topics:Enabled (mặc định TẮT): pool mới vừa seed (B1/B2), giữ
+            // tắt để không đổi hành vi luồng cũ tới khi verify xong.
+            List<SessionTopic>? sessionTopics = null;
+            if (lessonContext is null && _topics.Enabled)
+            {
+                var topicPool = await _db.PracticeTopics.AsNoTracking()
+                    .Where(t => t.JobCategory == jobCategory && t.Seniority == seniority
+                        && t.Language == language && t.IsActive)
+                    .ToListAsync(ct);
+
+                var topicSlots = requestedCount ?? AiServiceDefaultQuestionCount;
+                var targetableNames = targetable.Select(c => c.Name).ToList();
+                var pickedTopics = _topicSelector.Select(
+                    jobCategory, seniority, language, topicSlots, targetableNames, topicPool);
+
+                // Snapshot lúc chọn — KHÔNG lưu criterionId (GUID khác nhau giữa vi/en và rubric
+                // riêng BC16), lưu TÊN, resolve lúc cần (mẫu B2CRubricSeed/SC2). Giai đoạn 1: mọi
+                // đề tài đều từ danh mục sống → Source luôn Catalog; CvLevel/CvEvidence chưa có
+                // nguồn CV nào cấp → luôn null (đúng hợp đồng wire đã chốt với FE).
+                if (pickedTopics.Count > 0)
+                    sessionTopics = pickedTopics
+                        .Select(t => new SessionTopic(t.TopicKey, t.Label, TopicSource.Catalog, t.CriterionName))
+                        .ToList();
+            }
+            session.Topics = sessionTopics;   // theo dõi bởi change tracker — flush ở commit #2 (dưới)
+
             // Gọi Gemini NGOÀI transaction — không giữ DB connection lúc chờ AI.
             // Prompt tự xử 3 kịch bản: có JD ưu tiên JD; chỉ CV thì bám CV; không có
             // gì thì sinh câu hỏi chung theo JobCategory. focusCriteria (lesson /start) đưa thêm để bám tiêu chí.
@@ -440,6 +483,23 @@ public class PracticeService : IPracticeService
                         session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount,
                         grounded ? grounding : null, session.Language,
                         targetable.Count > 0 ? targetable : null, session.Seniority, lessonContext, ct);
+                    generated = result.Questions;
+                    citations = result.Citations;
+                }
+                // TOP1-B5 — buổi có danh mục đề tài (kill-switch bật + pool không rỗng). Overload này
+                // MANG SẴN cả grounding/criteria (như overload `criteria` ngay dưới) nên phủ được mọi
+                // tổ hợp grounded/targetable mà không cần thêm nhánh riêng cho từng tổ hợp.
+                else if (sessionTopics is { Count: > 0 })
+                {
+                    if (grounded)
+                        grounding = await _knowledge!.RetrieveAsync(
+                            session.JobCategory.ToString(),
+                            BuildRetrievalQuery(session.JobCategory.ToString(), cvText, jdText, focusCriteria), ct);
+
+                    var result = await _questionGenerator.GenerateQuestionsAsync(
+                        session.JobCategory.ToString(), cvText, jdText, focusCriteria, requestedCount,
+                        grounded ? grounding : null, session.Language,
+                        targetable.Count > 0 ? targetable : null, session.Seniority, sessionTopics, ct);
                     generated = result.Questions;
                     citations = result.Citations;
                 }
@@ -1728,7 +1788,14 @@ public class PracticeService : IPracticeService
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
             MapResult(s, questions.Count, criterionScores, cvStrengths, benchmark),
             s.Seniority,
-            criterionEvidence is { Count: > 0 } ? criterionEvidence : null);
+            criterionEvidence is { Count: > 0 } ? criterionEvidence : null,
+            // TOP1-B5 — đọc THẲNG s.Topics (snapshot lúc tạo, xem entity) → cả POST lẫn GET (cùng hàm
+            // này) đều trả. Bỏ CriterionName khi ánh xạ sang response — CẤM lộ trường đó ra client.
+            s.Topics is { Count: > 0 }
+                ? s.Topics
+                    .Select(t => new SessionTopicResponse(t.Key, t.Label, t.Source, t.CvLevel, t.CvEvidence))
+                    .ToList()
+                : null);
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.

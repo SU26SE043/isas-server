@@ -587,6 +587,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("interview_deadline_at");
 
+                    b.Property<DateTime?>("InterviewStartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("interview_started_at");
+
                     b.Property<string>("InterviewStatus")
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)")
@@ -1239,6 +1243,14 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("character varying(32)")
                         .HasColumnName("signal_type");
 
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Client")
+                        .HasColumnName("source");
+
                     b.HasKey("Id")
                         .HasName("pk_session_flags");
 
@@ -1248,7 +1260,10 @@ namespace Isas.CampaignService.Migrations
                     b.HasIndex("CampaignId", "SessionId")
                         .HasDatabaseName("ix_session_flags_campaign_id_session_id");
 
-                    b.ToTable("session_flags", (string)null);
+                    b.ToTable("session_flags", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_session_flags_source", "source IN ('Client', 'Server')");
+                        });
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.CampaignCriterion", b =>

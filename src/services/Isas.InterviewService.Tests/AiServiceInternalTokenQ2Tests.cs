@@ -89,7 +89,7 @@ public class AiServiceInternalTokenQ2Tests
             """{"milestones":[{"title":"M1","focusCriteria":["A"],"lessons":[{"title":"L1"}]}]}""");
         var sut = new AiServiceRoadmapGenerator(Http(handler), Config(), NullLogger<AiServiceRoadmapGenerator>.Instance);
 
-        await sut.GenerateAsync("BE", "Junior", null, null, null, null, null);
+        await sut.GenerateAsync("BE", "Junior", null, null, null);
 
         AssertTokenSent(handler, "/api/v1/generate-roadmap");
     }

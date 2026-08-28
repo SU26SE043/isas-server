@@ -251,7 +251,7 @@ async def test_lesson_theory_grounded_filters_cited_ids():
         "resources": [],
         "citedChunkIds": ["c1", "GHOST", "c2"],
     })
-    theory, resources, cited = await provider.generate_lesson_theory(
+    theory, resources, cited, _ = await provider.generate_lesson_theory(
         "FE", "Junior", "useEffect", ["React"], None, _GROUNDING)
 
     assert theory.startswith("# useEffect")
@@ -264,7 +264,7 @@ async def test_lesson_theory_ungrounded_cited_is_none():
         "sections": [{"criterion": "React", "heading": "Bài", "body": "ND đủ ý."}],
         "example": "Ví dụ.", "commonMistakes": "Lỗi hay gặp.", "resources": [],
     })
-    theory, resources, cited = await provider.generate_lesson_theory(
+    theory, resources, cited, _ = await provider.generate_lesson_theory(
         "FE", "Junior", "useEffect", ["React"], None)
     assert cited is None
 
@@ -281,7 +281,7 @@ def test_endpoint_generate_questions_returns_citations(monkeypatch):
     # Nhận None ở đây cũng chính là bằng chứng: request không có criteria thì không có gì phát sinh.
     async def fake_generate(job_category, cv_text, jd_text, count=None,
                             focus_criteria=None, grounding=None, criteria=None,
-                            seniority=None, lesson_context=None):
+                            seniority=None, lesson_context=None, topics=None):
         # grounding phải được truyền xuống (không bị pydantic nuốt).
         assert grounding == [{"chunkId": "c1", "content": "x",
                               "sourceUrl": None, "sourceTitle": None}]
@@ -308,7 +308,7 @@ def test_endpoint_generate_questions_ungrounded_omits_citations(monkeypatch):
 
     async def fake_generate(job_category, cv_text, jd_text, count=None,
                             focus_criteria=None, grounding=None, criteria=None,
-                            seniority=None, lesson_context=None):
+                            seniority=None, lesson_context=None, topics=None):
         assert grounding is None
         assert criteria is None
         return QuestionGenerationResult(questions=["Q1", "Q2"], citations=None)
@@ -324,10 +324,11 @@ def test_endpoint_generate_questions_ungrounded_omits_citations(monkeypatch):
 
 def test_endpoint_generate_lesson_theory_returns_cited_chunkids(monkeypatch):
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None, evidence=None, mode=None, current_level=None):
+                   grounding=None, evidence=None, mode=None, current_level=None,
+                   mistakes=None):
         assert grounding == [{"chunkId": "c1", "content": "x",
                               "sourceUrl": None, "sourceTitle": None}]
-        return "# useEffect\n\nND", [], ["c1"]
+        return "# useEffect\n\nND", [], ["c1"], None
 
     monkeypatch.setattr(main_module.provider, "generate_lesson_theory", fake)
 
@@ -345,9 +346,10 @@ def test_endpoint_generate_lesson_theory_returns_cited_chunkids(monkeypatch):
 
 def test_endpoint_generate_lesson_theory_ungrounded_omits_cited(monkeypatch):
     async def fake(job_category, level, lesson_title, focus_criteria, weaknesses,
-                   grounding=None, evidence=None, mode=None, current_level=None):
+                   grounding=None, evidence=None, mode=None, current_level=None,
+                   mistakes=None):
         assert grounding is None
-        return "# Bài\n\nND", [], None
+        return "# Bài\n\nND", [], None, None
 
     monkeypatch.setattr(main_module.provider, "generate_lesson_theory", fake)
 

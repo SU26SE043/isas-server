@@ -174,8 +174,9 @@ public class CampaignResultsUnscoredFlaggedR7Tests
         Assert.Equal(string.Empty, unscored["rank"]);
         Assert.Equal(string.Empty, unscored["total_score"]);
         Assert.Equal(string.Empty, unscored["scored_at"]);
-        Assert.Contains("face_mismatch:1", unscored["flags"]);
-        Assert.Contains("paste:1", unscored["flags"]);
+        // MON1-B4: cột flags nay là "type(source):count"; cờ seed không set source ⇒ "Client".
+        Assert.Contains("face_mismatch(Client):1", unscored["flags"]);
+        Assert.Contains("paste(Client):1", unscored["flags"]);
     }
 
     // (d) PDF export cũng nối nhóm chưa-Scored (đọc chữ THẬT bằng PdfPig) — CSV/PDF không lệch (F16).
@@ -198,7 +199,7 @@ public class CampaignResultsUnscoredFlaggedR7Tests
         Assert.Equal("application/pdf", export.ContentType);
         var text = ExtractPdfText(export.Content);
         Assert.Contains("Chưa chấm", text);
-        Assert.Contains("multiple_faces:1", text);
+        Assert.Contains("multiple_faces(Client):1", text);   // MON1-B4: "type(source):count"
     }
 
     private static List<Dictionary<string, string>> ParseCsv(byte[] bytes)

@@ -292,7 +292,13 @@ public class StuckAnswerRepublisher : BackgroundService
                         a.AudioSec, a.SpeechSec, a.WordCount, a.FillerPer100Words,
                         a.MetricsVersion),
                     // J5 — CHỈ B2C, giữ ĐÚNG van của đường publish lúc upload (AnswerService).
-                    Seniority = a.CampaignId is null ? a.Seniority : null
+                    Seniority = a.CampaignId is null ? a.Seniority : null,
+                    // AC1 — ngữ cảnh cờ chống gian lận, van NGƯỢC chiều `Seniority` ngay trên: CHỈ
+                    // B2B (B2C không có anti-cheat, BC-6). Đây là đường DỄ ĐÁNH RƠI NHẤT vì nguồn
+                    // là anonymous projection tách hẳn khỏi entity — nhưng `CampaignId`/`CandidateId`
+                    // đã có sẵn trong projection (dùng cho RubricScopeKey), không phải thêm cột.
+                    CampaignId = a.CampaignId,
+                    CandidateId = a.CampaignId is null ? null : (Guid?)a.CandidateId
                 };
 
                 try

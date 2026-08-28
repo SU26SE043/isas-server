@@ -165,7 +165,12 @@ public record PracticeSessionResponse(
     IReadOnlyList<QuestionResponse> Questions,
     SessionResultResponse? Result = null,  // BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa
     string Seniority = "Junior",           // snapshot mức do ứng viên chọn khi tạo B2C session
-    IReadOnlyList<CriterionEvidenceResponse>? CriterionEvidence = null
+    IReadOnlyList<CriterionEvidenceResponse>? CriterionEvidence = null,
+    // TOP1-B5 — danh mục đề tài gắn cho buổi (snapshot lúc tạo). null = tắt tính năng / buổi bài
+    // học lộ trình / pool rỗng / buổi cũ trước cột này tồn tại — client cũ (không biết field) không
+    // vỡ. Đặt CUỐI + có default (mẫu CriterionEvidence ngay trên): call site positional cũ không
+    // phải sửa.
+    IReadOnlyList<SessionTopicResponse>? Topics = null
 );
 
 // Evidence state được trả dạng additive ở GET session để client khôi phục đúng ngữ cảnh đã dùng

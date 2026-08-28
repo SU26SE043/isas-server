@@ -272,21 +272,32 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 **`POST /roadmaps`** — Tạo roadmap.
 - Req: `{ "jobCategory": "BA"|"BE"|"FE", "level": "Fresher"|"Junior"|"Middle"|"Senior", "cvId": uuid?, "mode": "LevelUp"|"Reinforce"? }`.
 - Server gom **điểm yếu** từ các session `Scored` gần nhất (`session_criterion_scores.needs_improvement`) + `parsed_text` CV (nếu có) → gọi AIService `/generate-roadmap` (**sync**) → lưu `roadmaps` + `roadmap_milestones` + `roadmap_lessons`; snapshot `baseline` (% hiện tại per tiêu chí) + `source_session_ids`.
-- **Chưa có buổi nào đã chấm** → vẫn **`201`**: `baseline=null` + `source_session_ids=null`, AI sinh **roadmap chuẩn theo `level`** (không có điểm yếu để bám) — ✅ BC12 (khớp `tasks.md` BC12; **bỏ** quy tắc "403" cũ).
+- **`sessionIds` BẮT BUỘC ≥1 buổi đã chấm** (MIS1-B6 — GUARD 1, chạy TRƯỚC mọi I/O): rỗng/thiếu →
+  **400** `ROADMAP_SESSIONS_REQUIRED` ("luyện thêm rồi quay lại"); quá `MaxSourceSessions=20` buổi
+  → **400** `ROADMAP_TOO_MANY_SESSIONS` ("bớt buổi rồi chọn lại"). *(Đảo NGƯỢC hành vi BC12 cũ:
+  trước đây rỗng `sessionIds` vẫn `201` với `baseline=null` + roadmap chuẩn theo `level`; nay
+  roadmap LUÔN xây từ lỗi thật của buổi đã chọn, không còn nhánh "không có gì để bám".)*
 - **Tạo roadmap KHÔNG trừ credit** — chỉ session luyện bên trong mới reserve→consume (D7/D15).
 - **`mode`** (tuỳ chọn, mặc định `LevelUp` = hành vi cũ). **`Reinforce`** = *ôn lại*: giữ nguyên
   trình độ, bám điểm yếu ĐO ĐƯỢC (`session_criterion_scores` + `answer_scores.reasoning`), nội
   dung nghiêng về lý thuyết giải thích *vì sao lần trước sai*. Chế độ được **LƯU** (khác `scope`)
-  và chảy xuống cả `/generate-roadmap` lẫn `/generate-lesson-theory`.
-  - 🔴 `Reinforce` cần dữ liệu thật, thiếu thì **400 — KHÔNG âm thầm rơi về `LevelUp`**: (a) chọn
-    ít hơn `Roadmap:ReinforceMinSessions` buổi **distinct** đã `Scored` (mặc định **2**); (b) các
-    buổi đã chọn không có tiêu chí nào `needs_improvement`. Hai câu lỗi **tách rời** vì người dùng
-    phải làm hai việc khác nhau (luyện thêm vs chọn buổi khác). Cả hai guard chạy **TRƯỚC** lời gọi
-    AI (không đốt lượt Gemini cho request sẽ bị từ chối).
-  - Vì sao ngưỡng **2**: "hay sai" cần tín hiệu LẶP; 1 buổi không phân biệt được với "hôm đó làm
-    tệ". Không chọn 3 vì đo trên production chỉ **4 người** đạt ≥3 buổi đã chấm.
-  - `mode` sai (chuỗi rỗng · sai hoa/thường · số) → **400**, không rơi về mặc định (BK36).
-- Res **`201`** `RoadmapResponse`. Lỗi: **400** (`jobCategory`/`level`/`mode` sai · CV không đọc được · `Reinforce` thiếu dữ liệu) · **401** · **403** (`cvId` không phải của bạn) · **404** (`cvId`) · **502** (AI lỗi).
+  và chảy xuống cả `/generate-roadmap` lẫn `/generate-lesson-theory`. `mode` sai (chuỗi rỗng · sai
+  hoa/thường · số) → **400**, không rơi về mặc định (BK36).
+  - 🔴 **Yêu cầu dữ liệu thật KHÔNG còn riêng cho `Reinforce`** — cấu hình
+    `Roadmap:ReinforceMinSessions` (ngưỡng buổi tối thiểu, mặc định 2, trước đây chỉ áp cho
+    `Reinforce`) đã **BỊ THAY THẾ (MIS1-B4→B6)** bởi 3 guard chạy **VÔ ĐIỀU KIỆN cho cả hai
+    mode** — roadmap giờ LUÔN xây từ lỗi thật, không riêng gì `Reinforce`. Mỗi guard chạy
+    **TRƯỚC** lời gọi AI (không đốt lượt Gemini cho request sẽ bị từ chối) và trả một **mã lỗi
+    PREFIX riêng** (frontend so khớp mã, không so câu chữ) vì người dùng phải làm việc khác nhau
+    để sửa từng ca:
+    1. **GUARD 1 — thiếu/thừa buổi** (xem trên): `ROADMAP_SESSIONS_REQUIRED` / `ROADMAP_TOO_MANY_SESSIONS`.
+    2. **GUARD 2 — không có điểm yếu**: các buổi đã chọn không có tiêu chí nào `needs_improvement`
+       → **400** `ROADMAP_NO_WEAKNESS` ("chọn buổi khác" — KHÔNG phải "luyện thêm", vì luyện
+       thêm một buổi tốt như nhau vẫn hỏng y hệt).
+    3. **GUARD 3 — không trích được lỗi nội dung**: `RoadmapMistakeLoader` (MIS1-B5) rỗng (chỉ
+       yếu ở tiêu chí `DeliveryMetrics`/cách nói, không có tiêu chí NỘI DUNG nào hụt để bám) →
+       **400** `ROADMAP_NO_CONTENT_MISTAKES` ("luyện một buổi khó hơn để tìm đúng chỗ hụt").
+- Res **`201`** `RoadmapResponse`. Lỗi: **400** (`jobCategory`/`level`/`mode` sai · CV không đọc được · Guard 1/2/3 ở trên) · **401** · **403** (`cvId` không phải của bạn) · **404** (`cvId`/`sessionIds` không thuộc bạn hoặc chưa chấm) · **502** (AI lỗi).
 
 **`GET /roadmaps`** → `RoadmapSummaryResponse[]` của user — **keyset-paged** (`?cursor=&limit=`, mặc định/tối đa 500; header `X-Next-Cursor`; body vẫn là mảng JSON) · **`GET /roadmaps/{id}`** → `RoadmapResponse` đầy đủ. Lỗi: **400** (`status` lạ) · **401** · **403** · **404**.
 - **Lọc OPT-IN** (vắng ⇒ hành vi cũ): `?status=` (`Active`/`Completed`/`Abandoned`, khớp chặt case-sensitive; lạ → **400**, KHÔNG fail-open) · `?hasFinalReport=true|false`. Cả hai chạy **TRONG SQL trước khi cắt trang** — lọc phía client trên trang đầu làm lộ trình hợp lệ nằm ngoài trang đầu biến mất khỏi dropdown mà không báo gì.

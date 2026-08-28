@@ -31,6 +31,11 @@ namespace Isas.CampaignService.Models
         public Guid? SlotId { get; set; }
         public DateTime? InterviewDeadlineAt { get; set; }
         public InterviewProgressStatus? InterviewStatus { get; set; }   // NotStarted/InProgress/Completed (enum string)
+        // MON1-B1 — mốc SERVER ghi lúc buổi thi chuyển sang InProgress (ParticipationService). Set 1 lần,
+        // resume KHÔNG dời (`??=` trong khối chuyển trạng thái). null = "chưa bắt đầu" HOẶC "không biết"
+        // (membership có trước migration). B3 dùng làm điểm neo đối chiếu nhịp face_images.captured_at —
+        // client ngừng gửi thì captured_at ngừng tiến, mốc này thì không, nên server thấy được khoảng lặng.
+        public DateTime? InterviewStartedAt { get; set; }
         // SEC-2/DATA-2: ảnh tham chiếu face-verify — 1 bản/ứng viên/campaign. Lưu S3 KEY (không ảnh trong DB), null tới khi có.
         public string? ReferenceImageKey { get; set; }
 

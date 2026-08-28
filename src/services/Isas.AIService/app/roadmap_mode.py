@@ -45,10 +45,20 @@ def is_reinforce(mode: str | None) -> bool:
 
 
 def roadmap_headline(mode: str, role: str, level_name: str, output_language: str) -> str:
-    """Câu dẫn của `build_roadmap_prompt`.
+    """Câu dẫn của `build_roadmap_prompt` — câu ĐẦU TIÊN của mọi prompt roadmap.
 
-    ⚠ Nhánh `LevelUp` phải trả về CHUỖI Y HỆT bản trước khi có chế độ ôn tập — đây là chỗ dễ làm
-    vỡ bất biến golden nhất, vì nó nằm ngay câu đầu tiên của mọi prompt roadmap.
+    🔴 MIS1-B2 — nhánh `LevelUp` KHÔNG còn giữ nguyên xi: bản cũ nói "trình độ MỤC TIÊU
+    {level_name}", coi `level` là ĐÍCH ĐẾN ứng viên muốn tới. Từ MIS1-B2, roadmap được gom TỪ LỖI
+    THẬT (xem `build_mistake_block`/khối GOM CHỦ ĐỀ TỪ LỖI trong `build_roadmap_prompt`), không
+    còn "chế độ giáo trình" đi lên một cấp nữa — và frontend nay gửi TRÌNH ĐỘ HIỆN TẠI vào field
+    `level`, nên câu cũ sẽ ra lệnh sai nghĩa "trình độ mục tiêu <mức người học đang ở>". Câu mới
+    nói về ĐỘ KHÓ (khớp đúng việc `level` thật sự làm — hiệu chỉnh qua
+    `app.seniority.calibration_block`), không nói về đích đến. Golden hash
+    `tests/test_roadmap_mode.py` đã ghi lại theo đúng thay đổi này — ngoại lệ DUY NHẤT cho phép sửa
+    golden ở bước MIS1-B2.
+
+    Nhánh `Reinforce` KHÔNG đổi — nó vốn đã nói đúng "trình độ HIỆN TẠI", không mâu thuẫn với
+    field `level` mang nghĩa mới.
     """
     if is_reinforce(mode):
         return (
@@ -58,7 +68,7 @@ def roadmap_headline(mode: str, role: str, level_name: str, output_language: str
         )
     return (
         f"Xây dựng ROADMAP ôn tập gồm nhiều MILESTONE cho vị trí {role}, "
-        f"trình độ mục tiêu {level_name}, bằng {output_language}."
+        f"độ khó tương ứng trình độ {level_name}, bằng {output_language}."
     )
 
 
@@ -66,6 +76,12 @@ def roadmap_mode_block(
     mode: str, level_name: str, *, has_weaknesses: bool = False
 ) -> str | None:
     """Khối chỉ thị chế độ cho `build_roadmap_prompt`.
+
+    🔴 MIS1-B2 — KHÔNG còn được gọi từ `build_roadmap_prompt`: nhánh `LevelUp` "nửa sau nâng lên
+    trình độ mục tiêu" mâu thuẫn thẳng với luật gom chủ đề TỪ LỖI (mọi milestone phải rút ra từ
+    lỗi thật, không phải nửa-nâng-cấp-tự-do), và đây CHÍNH LÀ chế độ "giáo trình" mà MIS1-B2 gỡ bỏ.
+    Giữ lại định nghĩa (không xoá) để không mất lịch sử/khả năng tái dùng, nhưng hiện KHÔNG có
+    caller nào trong `app/`.
 
     Đặt cùng chỗ với `seniority_calibration_block` — SAU khối cấu trúc bắt buộc, TRƯỚC khối chống
     prompt-injection và trước mọi DỮ LIỆU ứng viên: đây là chỉ thị hợp lệ của hệ thống, không được

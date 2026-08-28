@@ -1,4 +1,5 @@
 using Isas.InterviewService.DTOs;
+using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 
 namespace Isas.InterviewService.Services.Interfaces;
@@ -7,7 +8,26 @@ namespace Isas.InterviewService.Services.Interfaces;
 // Lỗi → AiServiceException (→ 502).
 public interface IAiServiceRoadmapGenerator
 {
-    // BC17 — focus/cvAnalysisSummary/priorRoadmapSummary = ngữ cảnh thêm do candidate chọn (đều optional).
+    // BC17 — `focus` = mô tả tự do do candidate chọn (optional).
+    //
+    // 🔴 REC1-B7 — `cvAnalysisSummary`/`priorRoadmapSummary`/`currentLevel` ĐÃ BỊ GỠ khỏi chữ ký
+    // này — đừng nối lại. Prompt roadmap chỉ xuất ra CẤU TRÚC (milestone/lesson), mà cả hai nguồn
+    // này từng bị chèn kèm câu "không đổi cấu trúc roadmap" — mệnh lệnh tự phủ định. Đo được: nhóm
+    // roadmap CÓ chọn CV nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%); lộ trình trước chỉ 4/37 đủ
+    // điều kiện trên dev, 0 trên môi trường chính (điều kiện quá hẹp để có tác động thật). `cvText`
+    // thô cũng đã bị gỡ TRƯỚC bước này (MIS1-B5) với cùng lý do đo được — CV không có chỗ tác động
+    // lên một *cấu trúc giáo trình* vốn không đổi theo người.
+    //
+    // 🔴 ĐÍNH CHÍNH review sau REC1-B7 (bản trước ghi SAI ở đây — mâu thuẫn với comment tại
+    // `RoadmapService.CreateAsync`): `req.CvAnalysisId`/`req.PriorRoadmapId` KHÔNG còn được
+    // `RoadmapService` kiểm quyền sở hữu gì cả — 2 khối guard 404/403/400 đã gỡ HẲN cùng với
+    // `cvAnalysisSummary`/`priorRoadmapSummary`, và cả hai id này KHÔNG được lưu ở bất kỳ đâu
+    // (không phải cột nào của `Roadmap` entity — verify bằng grep). Chỉ `req.CvId` còn ý nghĩa
+    // THẬT: vẫn lưu xuống `roadmaps.cv_id` (FK Restrict → file_records), và `RoadmapsController.
+    // Create` bắt `DbUpdateException` để trả 404 "CV không tồn tại" khi id đó không có row —
+    // KHÔNG còn qua đường guard 404 riêng ở service như trước bước này. DTO `CreateRoadmapRequest`
+    // GIỮ NGUYÊN 4 trường liên quan (CvId/CvAnalysisId/PriorRoadmapId/CurrentLevel) — expand/
+    // contract, dọn ở đợt sau khi frontend ngừng gửi.
     //
     // BE-1 — `criteria` = tiêu chí năng lực THẬT của (jobCategory, language) này (cùng shape
     // `QuestionTargetCriterionDto` dùng cho chấm-theo-phạm-vi). AIService chỉ cho model chọn
@@ -18,8 +38,9 @@ public interface IAiServiceRoadmapGenerator
     // BE-4 — `scope` = độ dài roadmap candidate CHỌN ("Quick"/"Standard", xem
     // `RoadmapService.ValidateScope`). Mặc định "Standard" giữ hành vi client cũ chưa gửi field.
     //
-    // BE-5 — `evidence` = Reasoning (E11) của answer điểm THẤP NHẤT cho tiêu chí yếu, đã tải + cắt
-    // trần sẵn (xem `RoadmapEvidenceLoader`). Chẩn đoán hành vi cụ thể thay vì chỉ % trừu tượng.
+    // 🔴 `evidence` (BE-5) ĐÃ GỠ khỏi chữ ký NÀY — nó chết sẵn từ MIS1-B5 (còn tham số, không caller
+    // nào truyền, đã bỏ khỏi payload). `mistakes` thay thế nó làm nguồn GOM CHỦ ĐỀ (MIS1-B2).
+    // `GenerateLessonTheoryAsync` bên dưới VẪN giữ `evidence` — phạm vi gỡ CHỈ áp cho roadmap.
     //
     // `mode` = chế độ lộ trình (`LevelUp` mặc định | `Reinforce` ôn lại). Đổi CHÍNH câu dẫn của
     // prompt (`level` là đích nhắm tới hay mức phải giữ nguyên) nên KHÔNG được quên truyền —
@@ -28,23 +49,17 @@ public interface IAiServiceRoadmapGenerator
         string jobCategory,
         string level,
         IReadOnlyList<RoadmapWeakness>? weaknesses,
-        // 🔴 `cvText` ĐÃ BỊ GỠ — đừng nối lại. Đo trên production: roadmap có CV và không CV cho
-        // tên chặng không phân biệt được, nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs
-        // 12,1% số bài). Prompt này sinh một *cấu trúc giáo trình*, mà chủ đề của một nghề không
-        // đổi theo người ⇒ CV thô không có chỗ tác động. Phần CV đóng góp được đi qua hai đường
-        // đúng hình dạng: `cvAnalysisSummary` và `currentLevel`.
         string? focus,                 // BC17 — mô tả tự do
-        string? cvAnalysisSummary,     // BC17 — tóm tắt từ cv_analyses (BC7)
-        string? priorRoadmapSummary,   // BC17 — tóm tắt từ final_report roadmap trước (BC15)
         IReadOnlyList<QuestionTargetCriterionDto>? criteria = null,
         string scope = "Standard",
-        IReadOnlyList<CriterionEvidence>? evidence = null,
         RoadmapMode mode = RoadmapMode.LevelUp,
-        // Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU người dùng chọn). Làm SÀN: bỏ phần
-        // nhập môn đã nắm. null = CV không đủ căn cứ ⇒ không có sàn, hành vi như cũ.
-        string? currentLevel = null,
-        CancellationToken ct = default);
-    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, string? cvAnalysisSummary, string? priorRoadmapSummary, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, string? currentLevel = null);
+        CancellationToken ct = default,
+        // MIS1-B5 — LỖI SAI trích từ buổi luyện đã chấm (RoadmapMistakeLoader), làm nguồn GOM CHỦ
+        // ĐỀ (MIS1-B2). Đặt SAU CÙNG (kể cả sau `ct`) — CỐ Ý, để mọi call site cũ (kể cả test dựng
+        // đủ tham số cũ) không vỡ chữ ký khi thêm tham số này. Vắng/rỗng ⇒ hành vi cũ, không ràng
+        // buộc gì thêm (mẫu `criteria`).
+        IReadOnlyList<RoadmapMistake>? mistakes = null);
+    Task<RoadmapGenAiResult> GenerateAsync(string jobCategory, string level, IReadOnlyList<RoadmapWeakness>? weaknesses, string? focus, CancellationToken ct, string language, IReadOnlyList<QuestionTargetCriterionDto>? criteria = null, string scope = "Standard", RoadmapMode mode = RoadmapMode.LevelUp, IReadOnlyList<RoadmapMistake>? mistakes = null);
 
     // BC14 — sinh lý thuyết lesson (lazy, sync) khi mở lesson lần đầu. AI KHÔNG ghi DB.
     // F15 — trả kèm TÀI LIỆU HỌC (cùng 1 lần gọi, không thêm round-trip AI); danh sách rỗng là
@@ -62,8 +77,12 @@ public interface IAiServiceRoadmapGenerator
         IReadOnlyList<GroundingChunk>? grounding = null,
         IReadOnlyList<CriterionEvidence>? evidence = null,
         RoadmapMode mode = RoadmapMode.LevelUp,
-        CancellationToken ct = default);
-    Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp);
+        CancellationToken ct = default,
+        // MIS1-B5 — ≤3 lỗi ĐÚNG bài này (RoadmapLessonService.ResolveLessonMistakes), làm anchor
+        // bài giảng (MIS1-B3) + nguồn mistakeReview. Đặt SAU `ct` — cùng lý do đã nêu ở
+        // GenerateAsync: không vỡ chữ ký call site cũ. Vắng/rỗng ⇒ hành vi cũ.
+        IReadOnlyList<RoadmapMistake>? mistakes = null);
+    Task<LessonTheoryResult> GenerateLessonTheoryAsync(string jobCategory, string level, string lessonTitle, IReadOnlyList<string> focusCriteria, IReadOnlyList<string>? weaknesses, IReadOnlyList<GroundingChunk>? grounding, CancellationToken ct, string language, IReadOnlyList<CriterionEvidence>? evidence = null, RoadmapMode mode = RoadmapMode.LevelUp, IReadOnlyList<RoadmapMistake>? mistakes = null);
 
     // BC15 — nhận xét chung khi roadmap Completed (kết luận chi tiết theo tiến độ tiêu chí). AI KHÔNG ghi DB.
     // best-effort: lỗi → AiServiceException; caller (RoadmapReportService) nuốt → để rỗng/null, KHÔNG chặn Completed.

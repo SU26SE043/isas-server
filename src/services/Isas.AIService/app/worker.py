@@ -9,6 +9,7 @@ import aio_pika
 from app.config import settings
 from app import threadpool
 from app.cv_screening import maybe_start_cv_screening_consumer
+from app.multi_voice import maybe_report_multi_voice
 from app.providers.gemini import GeminiProvider
 from app.transcriber import NO_SPEECH, Transcriber
 
@@ -176,6 +177,35 @@ async def process_message(message: aio_pika.IncomingMessage):
             return
 
         tmp_path = None
+
+        async def ensure_audio():
+            """Tải audio về file tạm, idempotent trong MỘT lượt xử lý message.
+
+            Tách ra vì nay có HAI người dùng: đường chép lời (bên dưới) và detector multi_voice
+            (AC1/B5). Đường THÍCH ỨNG bỏ qua Whisper hoàn toàn nên ở đó chưa ai tải audio —
+            detector phải tự tải, nhưng CHỈ khi nó thực sự chạy (B2B + attempt 1 + cờ bật), nên
+            đây là callable LƯỜI chứ không phải một lượt tải vô điều kiện.
+            """
+            nonlocal tmp_path
+            if tmp_path:
+                return tmp_path
+            if not storage_path:
+                return None
+            suffix = os.path.splitext(storage_path)[1] or ".webm"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                # Gán `tmp_path` TRƯỚC lượt tải, không phải sau: `delete=False` nên file chỉ được
+                # dọn ở `finally` bên dưới, mà `finally` chỉ dọn được cái tên nó BIẾT. Tải hỏng
+                # giữa chừng (503/mạng) mà gán sau thì file rác nằm lại /tmp vĩnh viễn, mỗi lượt
+                # retry thêm một cái.
+                tmp_path = tmp.name
+                # 🔴 boto3 là BLOCKING. Gọi thẳng trên event loop thì suốt lượt tải, cả
+                # `scoring_prefetch` (10) coroutine còn lại ĐỨNG HÌNH — kể cả những lượt chỉ đang
+                # CHỜ MẠNG Gemini, tức là đúng phần song song mà prefetch=10 mua về (đo 2026-08-04:
+                # 4 lượt song song 13,3s vs 1 lượt 12,6s).
+                await asyncio.to_thread(
+                    s3_client.download_fileobj, settings.s3_bucket, storage_path, tmp)
+            return tmp_path
+
         try:
             delivery = pre_metrics   # F11 — mặc định dùng bản đo sẵn (đường thích ứng)
             engine = pre_engine      # con dấu engine đi kèm transcript có sẵn (nếu có)
@@ -189,21 +219,7 @@ async def process_message(message: aio_pika.IncomingMessage):
                     print("[⚠️] Không có deliveryMetrics kèm transcript (job cũ?) — chấm không số đo")
             else:
                 # 1. Tải audio từ SeaweedFS (lỗi ở đây = tạm thời -> để retry).
-                suffix = os.path.splitext(storage_path)[1] or ".webm"
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    # Gán `tmp_path` TRƯỚC lượt tải, không phải sau: `delete=False` nên file chỉ
-                    # được dọn ở `finally` bên dưới, mà `finally` chỉ dọn được cái tên nó BIẾT.
-                    # Tải hỏng giữa chừng (503/mạng — chính ca ta đang chữa) mà gán sau thì file
-                    # rác nằm lại /tmp vĩnh viễn, mỗi lượt retry thêm một cái.
-                    tmp_path = tmp.name
-                    # 🔴 boto3 là BLOCKING. Gọi thẳng trên event loop thì suốt lượt tải, cả
-                    # `scoring_prefetch` (10) coroutine còn lại ĐỨNG HÌNH — kể cả những lượt chỉ
-                    # đang CHỜ MẠNG Gemini, tức là đúng phần song song mà prefetch=10 mua về
-                    # (đo 2026-08-04: 4 lượt song song 13,3s vs 1 lượt 12,6s). Đẩy sang thread
-                    # theo đúng mẫu `/decide-next` đang làm với `storage.get_object_bytes`
-                    # (app/main.py) — cùng lý do, cùng cách.
-                    await asyncio.to_thread(
-                        s3_client.download_fileobj, settings.s3_bucket, storage_path, tmp)
+                await ensure_audio()
                 print(f"[*] Tải file OK: {tmp_path}")
 
                 # 2. Whisper transcribe — audio hỏng/không nghe được = lỗi VĨNH VIỄN.
@@ -276,6 +292,13 @@ async def process_message(message: aio_pika.IncomingMessage):
                 prompt_version=outcome.prompt_version, transcript_engine=engine))
 
             await message.ack()
+
+            # AC1/B5 — phát hiện ≥2 giọng nói (cờ `multi_voice` cho HR). Đặt SAU `ack()` có chủ ý:
+            # lượt chấm là ĐƯỜNG TIỀN (PAY-13) và nó đã xong, nên không việc gì phải giữ message
+            # chờ một tính năng THỬ NGHIỆM mặc định tắt. `maybe_report_multi_voice` nuốt mọi
+            # exception và tự lo ba cổng (cờ bật · B2B · attempt 1) nên nhánh này không thêm được
+            # đường hỏng nào cho việc chấm.
+            await maybe_report_multi_voice(body, ensure_audio)
 
         except PermanentError as e:
             # Không retry được -> báo .NET đánh dấu Failed rồi ack (bỏ message).

@@ -64,6 +64,27 @@ namespace Isas.CampaignService.DTOs
         public string Type { get; set; } = null!;
         public int Count { get; set; }
         public string? Note { get; set; }
+
+        // AC1 — mốc thời gian của NHÓM này (min/max `session_flags.detected_at`). Count một mình không
+        // phân biệt được "5 lần chuyển tab trong 10 giây" (một cú alt-tab) với "5 lần rải đều 40 phút"
+        // (hành vi có hệ thống) — hai thứ HR xử lý khác hẳn nhau. Additive, ĐẶT Ở CUỐI: client cũ bỏ qua.
+        // Nullable để DTO không nói dối khi được dựng ở chỗ không có dữ liệu thời gian; đường đọc
+        // GroupFlagsBySession luôn điền cả hai. Drill-down từng giây vẫn ở SessionFlagTimelineResponse.
+        public DateTime? FirstAt { get; set; }
+        public DateTime? LastAt { get; set; }
+
+        // MON1-B4 — nguồn ghi cờ (B1 `session_flags.source`). "Client" = ứng viên tự báo qua trình duyệt
+        // ⇒ CHẶN được; "Server" = server suy ra từ face_images ⇒ ứng viên KHÔNG chặn được. NOT null,
+        // mặc định "Client" (khớp cờ cũ + cờ client hiện tại). Nhóm cờ TÁCH theo (type, source): một
+        // signal_type có cả hai nguồn ⇒ HAI FlagDto — gộp làm mất chính thông tin đang muốn nói.
+        // ĐẶT Ở CUỐI (sau firstAt/lastAt) theo quy ước additive: client cũ đọc tuần tự không lệch.
+        public string Source { get; set; } = "Client";   // = FlagSource.Client
+
+        // MON1-B4 — tóm tắt cờ cho CSV/PDF (F16: một chiến dịch → hai bản xuất KHÔNG được lệch nhau).
+        // MỘT hàm duy nhất cho cả 4 chỗ (CSV results/unscored + PDF results/unscored) — fork logic là
+        // đường để hai bản trôi xa nhau mà không test nào đỏ. "type(source):count" ngăn bởi "; ".
+        public static string SummarizeForExport(IEnumerable<FlagDto> flags)
+            => string.Join("; ", flags.Select(f => $"{f.Type}({f.Source}):{f.Count}"));
     }
 
     // R7 — 1 ứng viên có cờ mà CHƯA Scored: chỉ danh tính (F5) + cờ (không rank/điểm vì chưa chấm).

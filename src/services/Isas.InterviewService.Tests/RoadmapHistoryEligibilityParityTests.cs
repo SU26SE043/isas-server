@@ -44,10 +44,10 @@ public class RoadmapHistoryEligibilityParityTests
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-                It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))   // REC1-B7 — arity khớp interface (9 tham số)
             .ReturnsAsync(SampleRoadmap());
         var service = new RoadmapService(
             t.Db, new Mock<IStorageService>().Object, gen.Object, NullLogger<RoadmapService>.Instance);
@@ -73,6 +73,31 @@ public class RoadmapHistoryEligibilityParityTests
         var isCampaign = TestDb.Session(
             candidate, SessionStatus.Scored, campaignId: Guid.NewGuid(), createdAt: now.AddMinutes(-2));
         t.Db.AddRange(eligible, wrongStatus, isCampaign);
+
+        // MIS1-B6 — Guard 1/2/3: `eligible` phải mang điểm yếu + 1 lỗi nội dung trích được, nếu
+        // không CreateAsync sẽ từ chối nó ở Guard 2/3 dù picker đã chấp nhận — test này CHỈ đo
+        // parity ELIGIBILITY (trạng thái/không-campaign), không đo Guard 2/3, nên chỉ `eligible`
+        // cần dữ liệu này (wrongStatus/isCampaign đã bị loại ở bước sở hữu/eligibility, KHÔNG bao
+        // giờ chạm tới Guard 2/3).
+        var crit = TestDb.Criterion(JobCategory.BE, name: "Clarity");
+        t.Db.RubricCriteria.Add(crit);
+        t.Db.SessionCriterionScores.Add(new SessionCriterionScore
+        {
+            Id = Guid.NewGuid(), SessionId = eligible.Id, CriterionId = crit.Id, CriterionName = "Clarity",
+            AverageScore = 2m, MaxScore = crit.MaxScore, Percentage = 40m, Weight = 1m,
+            NeedsImprovement = true, CreatedAt = now
+        });
+        var question = TestDb.Question(eligible.Id, order: 500);
+        t.Db.PracticeQuestions.Add(question);
+        var answer = TestDb.Answer(eligible.Id, question.Id, AnswerStatus.Scored, now, now);
+        answer.Transcript = "Câu trả lời của ứng viên cho Clarity";
+        t.Db.PracticeAnswers.Add(answer);
+        t.Db.AnswerScores.Add(new AnswerScore
+        {
+            Id = Guid.NewGuid(), AnswerId = answer.Id, CriterionId = crit.Id, AttemptNo = 1, Score = 1,
+            Reasoning = "Chưa nắm vững Clarity.", RubricVersion = 1, CreatedAt = now
+        });
+
         await t.Db.SaveChangesAsync();
         return (eligible.Id, wrongStatus.Id, isCampaign.Id);
     }

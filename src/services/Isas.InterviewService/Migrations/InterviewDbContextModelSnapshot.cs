@@ -785,6 +785,10 @@ namespace Isas.InterviewService.Migrations
                         .HasDefaultValue(120)
                         .HasColumnName("time_limit_sec");
 
+                    b.Property<string>("Topics")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("topics");
+
                     b.Property<DateTime>("UpdatedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -838,6 +842,2573 @@ namespace Isas.InterviewService.Migrations
                             t.HasCheckConstraint("ck_practice_sessions_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
 
                             t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
+                        });
+                });
+
+            modelBuilder.Entity("Isas.InterviewService.Entities.PracticeTopic", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CriterionName")
+                        .HasColumnType("text")
+                        .HasColumnName("criterion_name");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("display_order");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("JobCategory")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("job_category");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("label");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("vi")
+                        .HasColumnName("language");
+
+                    b.Property<string>("Seniority")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("seniority");
+
+                    b.Property<string>("TopicKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("topic_key");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_practice_topics");
+
+                    b.HasIndex("TopicKey", "Language", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ux_practice_topics_key_language_version");
+
+                    b.HasIndex("JobCategory", "Seniority", "Language", "IsActive")
+                        .HasDatabaseName("ix_practice_topics_lookup");
+
+                    b.ToTable("practice_topics", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_practice_topics_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
+                        });
+
+                    b.HasData(
+                        new
+                        {
+                            Id = new Guid("1ba00000-0000-0000-0000-000000000001"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "User story: cấu trúc và cách viết cơ bản",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.user-story-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00011-0000-0000-0000-000000000001"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "User stories: structure and how to write one",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.user-story-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00000-0000-0000-0000-000000000002"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Use case: xác định tác nhân (actor) và luồng chính",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.use-case-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00011-0000-0000-0000-000000000002"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Use cases: identifying the actor and the main flow",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.use-case-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00000-0000-0000-0000-000000000003"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Tài liệu đặc tả yêu cầu (SRS): mục đích và nội dung chính",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.srs-purpose",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00011-0000-0000-0000-000000000003"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Software Requirements Specification (SRS): purpose and typical content",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.srs-purpose",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00000-0000-0000-0000-000000000004"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Phân biệt yêu cầu chức năng và phi chức năng qua ví dụ",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.functional-vs-nonfunctional",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00011-0000-0000-0000-000000000004"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Telling functional and non-functional requirements apart, with examples",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.functional-vs-nonfunctional",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00000-0000-0000-0000-000000000005"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Đọc và diễn giải lại một yêu cầu cụ thể bằng lời của mình",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.read-single-requirement",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00011-0000-0000-0000-000000000005"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Reading a single requirement and restating it in your own words",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.read-single-requirement",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00000-0000-0000-0000-000000000006"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Đặt câu hỏi làm rõ khi một yêu cầu chưa rõ ràng",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.clarifying-question",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00011-0000-0000-0000-000000000006"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Asking a clarifying question when a requirement is unclear",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.clarifying-question",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00000-0000-0000-0000-000000000007"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Trao đổi với một stakeholder để xác nhận hiểu đúng yêu cầu",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.single-stakeholder-check",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00011-0000-0000-0000-000000000007"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Talking with one stakeholder to confirm you understood a requirement correctly",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.single-stakeholder-check",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00000-0000-0000-0000-000000000008"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Vai trò và trách nhiệm cơ bản của BA trong dự án",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.ba-role-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba00011-0000-0000-0000-000000000008"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "A BA's basic role and responsibilities on a project",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.ba.fresher.ba-role-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01000-0000-0000-0000-000000000001"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Tự viết user story/use case hoàn chỉnh cho một tính năng",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.write-user-story-full-feature",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01011-0000-0000-0000-000000000001"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Writing a complete user story or use case for one feature on your own",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.write-user-story-full-feature",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01000-0000-0000-0000-000000000002"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Chạy workshop thu thập yêu cầu với 1-2 stakeholder",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.workshop-few-stakeholders",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01011-0000-0000-0000-000000000002"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Running a requirements-gathering workshop with one or two stakeholders",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.workshop-few-stakeholders",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01000-0000-0000-0000-000000000003"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Viết acceptance criteria rõ ràng cho một tính năng",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.acceptance-criteria",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01011-0000-0000-0000-000000000003"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Writing clear acceptance criteria for a feature",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.acceptance-criteria",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01000-0000-0000-0000-000000000004"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Phát hiện yêu cầu mơ hồ hoặc thiếu sót",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.spot-ambiguous-requirement",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01011-0000-0000-0000-000000000004"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Spotting a requirement that is ambiguous or incomplete",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.spot-ambiguous-requirement",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01000-0000-0000-0000-000000000005"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Hỏi lại đúng chỗ khi phát hiện vấn đề trong yêu cầu",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.ask-follow-up-right-spot",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01011-0000-0000-0000-000000000005"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Asking the right follow-up question when something in a requirement looks off",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.ask-follow-up-right-spot",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01000-0000-0000-0000-000000000006"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Xử lý tình huống khách hàng đổi ý giữa chừng",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.client-changes-mind",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01011-0000-0000-0000-000000000006"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Handling a situation where the client changes their mind midway through",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.client-changes-mind",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01000-0000-0000-0000-000000000007"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Xử lý yêu cầu chồng chéo giữa hai bộ phận",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.conflicting-department-requirements",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Handling requirements that conflict between two departments",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.conflicting-department-requirements",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01000-0000-0000-0000-000000000008"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Làm việc trực tiếp với 1-2 stakeholder trong một buổi workshop",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.small-workshop-facilitation",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba01011-0000-0000-0000-000000000008"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Working directly with one or two stakeholders during a small workshop",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.ba.junior.small-workshop-facilitation",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02000-0000-0000-0000-000000000001"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Chủ trì workshop với nhiều stakeholder có quan điểm mâu thuẫn",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.workshop-conflicting-stakeholders",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02011-0000-0000-0000-000000000001"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Facilitating a workshop with multiple stakeholders who disagree",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.workshop-conflicting-stakeholders",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02000-0000-0000-0000-000000000002"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Vẽ quy trình nghiệp vụ (process mapping) cho một luồng công việc",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.process-mapping",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02011-0000-0000-0000-000000000002"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Mapping a business process for one workflow",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.process-mapping",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02000-0000-0000-0000-000000000003"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Phân tích đánh đổi giữa phạm vi và thời hạn dự án",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.scope-vs-deadline",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02011-0000-0000-0000-000000000003"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Weighing the trade-off between project scope and deadline",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.scope-vs-deadline",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02000-0000-0000-0000-000000000004"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "So sánh phương án tự xây dựng và mua giải pháp có sẵn",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.build-vs-buy",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02011-0000-0000-0000-000000000004"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Comparing building a solution in-house versus buying one",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.build-vs-buy",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02000-0000-0000-0000-000000000005"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Đánh giá tác động khi yêu cầu thay đổi giữa dự án",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.change-impact-analysis",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02011-0000-0000-0000-000000000005"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Assessing the impact when a requirement changes mid-project",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.change-impact-analysis",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02000-0000-0000-0000-000000000006"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Xử lý xung đột lợi ích giữa các bên liên quan",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.stakeholder-conflict-of-interest",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02011-0000-0000-0000-000000000006"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Handling a conflict of interest between stakeholders",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.stakeholder-conflict-of-interest",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02000-0000-0000-0000-000000000007"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Ưu tiên hoá backlog theo giá trị nghiệp vụ",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.backlog-prioritization",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Prioritizing the backlog by business value",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.backlog-prioritization",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02000-0000-0000-0000-000000000008"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Dẫn dắt một cuộc họp yêu cầu phức tạp",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.facilitate-complex-meeting",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba02011-0000-0000-0000-000000000008"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Leading a complex requirements meeting",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.ba.middle.facilitate-complex-meeting",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03000-0000-0000-0000-000000000001"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Định hình giải pháp cho cả một mảng nghiệp vụ",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.shape-business-area-solution",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03011-0000-0000-0000-000000000001"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Shaping the solution direction for an entire business area",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.shape-business-area-solution",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03000-0000-0000-0000-000000000002"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Cân bằng ràng buộc kỹ thuật, ngân sách và chính trị nội bộ",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.balance-tech-budget-politics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03011-0000-0000-0000-000000000002"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Balancing technical, budget, and internal-politics constraints",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.balance-tech-budget-politics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03000-0000-0000-0000-000000000003"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Dẫn dắt và kèm cặp BA/PO junior",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.mentor-junior-ba",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03011-0000-0000-0000-000000000003"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Mentoring and guiding junior BAs or POs",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.mentor-junior-ba",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03000-0000-0000-0000-000000000004"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Chịu trách nhiệm chất lượng yêu cầu ở quy mô nhiều dự án",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.requirement-quality-multi-project",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03011-0000-0000-0000-000000000004"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Owning requirement quality across multiple projects",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.requirement-quality-multi-project",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03000-0000-0000-0000-000000000005"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Ra quyết định khi thiếu thông tin đầy đủ",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.decide-with-incomplete-info",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03011-0000-0000-0000-000000000005"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Making a decision when information is incomplete",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.decide-with-incomplete-info",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03000-0000-0000-0000-000000000006"),
+                            CriterionName = "Hiểu nghiệp vụ & các bên liên quan",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Thuyết phục stakeholder cấp cao",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.persuade-senior-stakeholder",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03011-0000-0000-0000-000000000006"),
+                            CriterionName = "Business domain & stakeholders",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Persuading a senior stakeholder",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.persuade-senior-stakeholder",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03000-0000-0000-0000-000000000007"),
+                            CriterionName = "Tư duy giải quyết vấn đề",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Đo lường giá trị nghiệp vụ sau khi triển khai",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.measure-value-after-rollout",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Measuring business value after a solution goes live",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.measure-value-after-rollout",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03000-0000-0000-0000-000000000008"),
+                            CriterionName = "Phân tích yêu cầu",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Quản lý rủi ro chất lượng yêu cầu ở quy mô lớn",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.manage-requirement-risk-at-scale",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1ba03011-0000-0000-0000-000000000008"),
+                            CriterionName = "Requirements analysis",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BA",
+                            Label = "Managing requirement-quality risk at scale",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.ba.senior.manage-requirement-risk-at-scale",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00000-0000-0000-0000-000000000001"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Cấu trúc dữ liệu mảng và list: khi nào dùng cái nào",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.array-list-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00011-0000-0000-0000-000000000001"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Arrays vs. lists: when to use which",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.array-list-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00000-0000-0000-0000-000000000002"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Hash map: khái niệm và tình huống áp dụng",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.hash-map-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00011-0000-0000-0000-000000000002"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Hash maps: the concept and when to use one",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.hash-map-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00000-0000-0000-0000-000000000003"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Viết một API CRUD đơn giản cho một tài nguyên",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.simple-crud-api",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00011-0000-0000-0000-000000000003"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Writing a simple CRUD API for one resource",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.simple-crud-api",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00000-0000-0000-0000-000000000004"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Câu lệnh SQL SELECT cơ bản để lấy dữ liệu",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.sql-select-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00011-0000-0000-0000-000000000004"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Basic SQL SELECT to fetch data",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.sql-select-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00000-0000-0000-0000-000000000005"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Câu lệnh SQL INSERT và UPDATE cơ bản",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.sql-insert-update-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00011-0000-0000-0000-000000000005"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Basic SQL INSERT and UPDATE statements",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.sql-insert-update-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00000-0000-0000-0000-000000000006"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Viết một câu JOIN đơn giản giữa hai bảng",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.simple-join",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00011-0000-0000-0000-000000000006"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Writing a simple JOIN across two tables",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.simple-join",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00000-0000-0000-0000-000000000007"),
+                            CriterionName = "Giải quyết vấn đề & thuật toán",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Phân biệt và chọn đúng HTTP method cho một thao tác",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.http-method-choice",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Telling HTTP methods apart and picking the right one for an action",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.http-method-choice",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00000-0000-0000-0000-000000000008"),
+                            CriterionName = "Giải quyết vấn đề & thuật toán",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Vì sao một thao tác API nên dùng đúng HTTP method",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.http-method-why",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be00011-0000-0000-0000-000000000008"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Why an API action should use the correct HTTP method",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.be.fresher.http-method-why",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01000-0000-0000-0000-000000000001"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Validate input đầu vào cho một API",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.validate-input",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01011-0000-0000-0000-000000000001"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Validating input for an API",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.validate-input",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01000-0000-0000-0000-000000000002"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Xử lý lỗi và trả đúng status code",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.error-handling-status-code",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01011-0000-0000-0000-000000000002"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Handling errors and returning the right status code",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.error-handling-status-code",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01000-0000-0000-0000-000000000003"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Viết một API hoàn chỉnh cho một tính năng cụ thể",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.full-feature-api",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01011-0000-0000-0000-000000000003"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Writing a complete API for one feature",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.full-feature-api",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01000-0000-0000-0000-000000000004"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Viết truy vấn có JOIN và GROUP BY",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.join-group-by",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01011-0000-0000-0000-000000000004"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Writing a query with JOIN and GROUP BY",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.join-group-by",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01000-0000-0000-0000-000000000005"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Cơ chế index cơ bản: khi nào một truy vấn cần index",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.index-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01011-0000-0000-0000-000000000005"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Basic indexing: when a query needs an index",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.index-basics",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01000-0000-0000-0000-000000000006"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Chẩn đoán vì sao một truy vấn chạy chậm do thiếu index",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.slow-query-missing-index",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01011-0000-0000-0000-000000000006"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Diagnosing why a query is slow because of a missing index",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.slow-query-missing-index",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01000-0000-0000-0000-000000000007"),
+                            CriterionName = "Giải quyết vấn đề & thuật toán",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Debug một lỗi runtime thường gặp",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.debug-runtime-error",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Debugging a common runtime error",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.debug-runtime-error",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01000-0000-0000-0000-000000000008"),
+                            CriterionName = "Giải quyết vấn đề & thuật toán",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Chẩn đoán vì sao API trả sai dữ liệu do thiếu điều kiện lọc",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.wrong-data-missing-filter",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be01011-0000-0000-0000-000000000008"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Diagnosing why an API returns wrong data because of a missing filter condition",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.be.junior.wrong-data-missing-filter",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02000-0000-0000-0000-000000000001"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Thiết kế schema database cho một module cụ thể",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.module-schema-design",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02011-0000-0000-0000-000000000001"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Designing a database schema for one module",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.module-schema-design",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02000-0000-0000-0000-000000000002"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Chọn giữa các phương án lưu trữ dữ liệu và caching",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.storage-caching-choice",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02011-0000-0000-0000-000000000002"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Choosing between storage and caching approaches",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.storage-caching-choice",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02000-0000-0000-0000-000000000003"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Tối ưu một truy vấn đang chạy chậm",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.optimize-slow-query",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02011-0000-0000-0000-000000000003"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Optimizing a slow-running query",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.optimize-slow-query",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02000-0000-0000-0000-000000000004"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Xử lý race condition trong hệ thống đồng thời",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.race-condition",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02011-0000-0000-0000-000000000004"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Handling a race condition in a concurrent system",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.race-condition",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02000-0000-0000-0000-000000000005"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Xử lý deadlock giữa các giao dịch",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.deadlock",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02011-0000-0000-0000-000000000005"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Handling a deadlock between transactions",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.deadlock",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02000-0000-0000-0000-000000000006"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Viết test cho logic nghiệp vụ phức tạp",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.test-complex-logic",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02011-0000-0000-0000-000000000006"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Writing tests for complex business logic",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.test-complex-logic",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02000-0000-0000-0000-000000000007"),
+                            CriterionName = "Giải quyết vấn đề & thuật toán",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Đánh đổi giữa consistency và performance khi thiết kế",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.consistency-vs-performance",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Trading off consistency against performance in a design",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.consistency-vs-performance",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02000-0000-0000-0000-000000000008"),
+                            CriterionName = "Giải quyết vấn đề & thuật toán",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Gỡ lỗi một hệ thống đang chạy thật trong production",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.debug-production-system",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be02011-0000-0000-0000-000000000008"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Debugging a live production system",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.be.middle.debug-production-system",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03000-0000-0000-0000-000000000001"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Thiết kế kiến trúc hệ thống nhiều service",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.multi-service-architecture",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03011-0000-0000-0000-000000000001"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Designing the architecture for a multi-service system",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.multi-service-architecture",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03000-0000-0000-0000-000000000002"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Cơ chế đồng bộ dữ liệu giữa các service",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.data-sync-across-services",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03011-0000-0000-0000-000000000002"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Mechanisms for keeping data in sync across services",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.data-sync-across-services",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03000-0000-0000-0000-000000000003"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Idempotency khi thiết kế API/service",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.idempotency",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03011-0000-0000-0000-000000000003"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Idempotency when designing an API or service",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.idempotency",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03000-0000-0000-0000-000000000004"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Chiến lược retry và backoff khi gọi service khác",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.retry-backoff",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03011-0000-0000-0000-000000000004"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Retry and backoff strategy when calling another service",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.retry-backoff",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03000-0000-0000-0000-000000000005"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Đánh giá đánh đổi giữa các mô hình lưu trữ ở quy mô lớn",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.storage-tradeoff-at-scale",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03011-0000-0000-0000-000000000005"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Weighing storage-model trade-offs at large scale",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.storage-tradeoff-at-scale",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03000-0000-0000-0000-000000000006"),
+                            CriterionName = "Giải quyết vấn đề & thuật toán",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Xử lý sự cố sản xuất (production incident)",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.production-incident",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03011-0000-0000-0000-000000000006"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Handling a production incident",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.production-incident",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03000-0000-0000-0000-000000000007"),
+                            CriterionName = "Thiết kế hệ thống & CSDL",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Thiết kế hệ thống chịu lỗi (fault-tolerant)",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.fault-tolerant-design",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03011-0000-0000-0000-000000000007"),
+                            CriterionName = "System design & databases",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Designing a fault-tolerant system",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.fault-tolerant-design",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03000-0000-0000-0000-000000000008"),
+                            CriterionName = "Giải quyết vấn đề & thuật toán",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Đánh đổi giữa chi phí vận hành và độ phức tạp kỹ thuật",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.ops-cost-vs-complexity",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1be03011-0000-0000-0000-000000000008"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "BE",
+                            Label = "Trading off operating cost against technical complexity",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.be.senior.ops-cost-vs-complexity",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00000-0000-0000-0000-000000000001"),
+                            CriterionName = "Ý thức UI/UX & accessibility",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "HTML semantic: chọn đúng thẻ ngữ nghĩa cho một đoạn nội dung",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.semantic-html",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00011-0000-0000-0000-000000000001"),
+                            CriterionName = "UI/UX & accessibility awareness",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Semantic HTML: picking the right tag for a piece of content",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.semantic-html",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00000-0000-0000-0000-000000000002"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "CSS box model: margin, border, padding hoạt động thế nào",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.box-model",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00011-0000-0000-0000-000000000002"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "The CSS box model: how margin, border, and padding work",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.box-model",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00000-0000-0000-0000-000000000003"),
+                            CriterionName = "Ý thức UI/UX & accessibility",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Căn giữa một phần tử bằng flexbox",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.flexbox-center",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00011-0000-0000-0000-000000000003"),
+                            CriterionName = "UI/UX & accessibility awareness",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Centering an element with flexbox",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.flexbox-center",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00000-0000-0000-0000-000000000004"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Khác nhau giữa let và const trong JavaScript",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.let-vs-const",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00011-0000-0000-0000-000000000004"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "The difference between let and const in JavaScript",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.let-vs-const",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00000-0000-0000-0000-000000000005"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Viết một hàm JavaScript xử lý dữ liệu đơn giản",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.simple-function",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00011-0000-0000-0000-000000000005"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Writing a simple JavaScript function to process data",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.simple-function",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00000-0000-0000-0000-000000000006"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Thao tác DOM: chọn và đổi nội dung một phần tử",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.dom-manipulation",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00011-0000-0000-0000-000000000006"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "DOM manipulation: selecting and changing an element's content",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.dom-manipulation",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00000-0000-0000-0000-000000000007"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Gọi một API bằng fetch và đọc kết quả trả về",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.fetch-api",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Calling an API with fetch and reading the response",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.fetch-api",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00000-0000-0000-0000-000000000008"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Xử lý khi một phần tử không hiển thị đúng như mong đợi",
+                            Language = "vi",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.element-not-showing",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe00011-0000-0000-0000-000000000008"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Handling a case where an element does not display as expected",
+                            Language = "en",
+                            Seniority = "Fresher",
+                            TopicKey = "top1.fe.fresher.element-not-showing",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01000-0000-0000-0000-000000000001"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Dựng UI hoàn chỉnh cho một tính năng bằng framework",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.full-feature-ui",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01011-0000-0000-0000-000000000001"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Building a complete UI for one feature with a framework",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.full-feature-ui",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01000-0000-0000-0000-000000000002"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Quản lý state cục bộ trong component",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.local-state",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01011-0000-0000-0000-000000000002"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Managing local state inside a component",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.local-state",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01000-0000-0000-0000-000000000003"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Xử lý form và validate dữ liệu nhập",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.form-validate",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01011-0000-0000-0000-000000000003"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Handling forms and validating input",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.form-validate",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01000-0000-0000-0000-000000000004"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Gọi API bất đồng bộ và xử lý trạng thái loading/error",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.async-loading-error",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01011-0000-0000-0000-000000000004"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Calling an API asynchronously and handling loading/error states",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.async-loading-error",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01000-0000-0000-0000-000000000005"),
+                            CriterionName = "Ý thức UI/UX & accessibility",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Xử lý layout vỡ hoặc chưa responsive",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.responsive-broken-layout",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01011-0000-0000-0000-000000000005"),
+                            CriterionName = "UI/UX & accessibility awareness",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Fixing a broken or non-responsive layout",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.responsive-broken-layout",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01000-0000-0000-0000-000000000006"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Chẩn đoán vì sao một component re-render không cần thiết",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.unnecessary-rerender",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01011-0000-0000-0000-000000000006"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Diagnosing why a component re-renders unnecessarily",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.unnecessary-rerender",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01000-0000-0000-0000-000000000007"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Chẩn đoán dữ liệu hiển thị sai do race condition khi gọi API",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.race-condition-display",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Diagnosing data shown incorrectly because of a race condition when calling an API",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.race-condition-display",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01000-0000-0000-0000-000000000008"),
+                            CriterionName = "Ý thức UI/UX & accessibility",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Sửa một lỗi UI thường gặp trên nhiều kích thước màn hình",
+                            Language = "vi",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.cross-device-ui-fix",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe01011-0000-0000-0000-000000000008"),
+                            CriterionName = "UI/UX & accessibility awareness",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Fixing a common UI bug across different screen sizes",
+                            Language = "en",
+                            Seniority = "Junior",
+                            TopicKey = "top1.fe.junior.cross-device-ui-fix",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02000-0000-0000-0000-000000000001"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Thiết kế cấu trúc component tái sử dụng",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.reusable-component-structure",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02011-0000-0000-0000-000000000001"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Designing a reusable component structure",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.reusable-component-structure",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02000-0000-0000-0000-000000000002"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Chọn giải pháp quản lý state toàn cục phù hợp",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.global-state-choice",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02011-0000-0000-0000-000000000002"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Choosing a suitable global state-management solution",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.global-state-choice",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02000-0000-0000-0000-000000000003"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Tối ưu hiệu năng render bằng memoization",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.memoization",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02011-0000-0000-0000-000000000003"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Optimizing render performance with memoization",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.memoization",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02000-0000-0000-0000-000000000004"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Tối ưu hiệu năng render bằng lazy-load",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.lazy-load",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02011-0000-0000-0000-000000000004"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Optimizing render performance with lazy-loading",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.lazy-load",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02000-0000-0000-0000-000000000005"),
+                            CriterionName = "Ý thức UI/UX & accessibility",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Đảm bảo accessibility cho một giao diện",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.accessibility",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02011-0000-0000-0000-000000000005"),
+                            CriterionName = "UI/UX & accessibility awareness",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Making an interface accessible",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.accessibility",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02000-0000-0000-0000-000000000006"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Viết test cho một component",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.component-testing",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02011-0000-0000-0000-000000000006"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Writing tests for a component",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.component-testing",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02000-0000-0000-0000-000000000007"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Quyết định khi nào nên tách nhỏ một component",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.split-component-decision",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Deciding when to split a component into smaller pieces",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.split-component-decision",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02000-0000-0000-0000-000000000008"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Gỡ một vấn đề hiệu năng thực tế trên giao diện",
+                            Language = "vi",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.real-performance-issue",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe02011-0000-0000-0000-000000000008"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Fixing a real-world performance issue in the UI",
+                            Language = "en",
+                            Seniority = "Middle",
+                            TopicKey = "top1.fe.middle.real-performance-issue",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03000-0000-0000-0000-000000000001"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Thiết kế kiến trúc micro-frontend cho hệ thống lớn",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.micro-frontend-architecture",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03011-0000-0000-0000-000000000001"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 1,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Designing a micro-frontend architecture for a large system",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.micro-frontend-architecture",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03000-0000-0000-0000-000000000002"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Module federation: khái niệm và tình huống áp dụng",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.module-federation",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03011-0000-0000-0000-000000000002"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 2,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Module federation: the concept and when to use it",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.module-federation",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03000-0000-0000-0000-000000000003"),
+                            CriterionName = "Chiều sâu kỹ thuật",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Chiến lược caching và CDN cho frontend",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.caching-cdn-strategy",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03011-0000-0000-0000-000000000003"),
+                            CriterionName = "Technical depth",
+                            DisplayOrder = 3,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Caching and CDN strategy for a frontend",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.caching-cdn-strategy",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03000-0000-0000-0000-000000000004"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Chuẩn hoá quy trình build và deploy cho nhiều team",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.build-deploy-standard",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03011-0000-0000-0000-000000000004"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 4,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Standardizing the build and deploy process across teams",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.build-deploy-standard",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03000-0000-0000-0000-000000000005"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Xử lý sự cố hiệu năng ở production",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.production-performance-incident",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03011-0000-0000-0000-000000000005"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 5,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Handling a production performance incident",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.production-performance-incident",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03000-0000-0000-0000-000000000006"),
+                            CriterionName = "Ý thức UI/UX & accessibility",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Đánh đổi giữa trải nghiệm người dùng và chi phí kỹ thuật",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.ux-vs-technical-cost",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03011-0000-0000-0000-000000000006"),
+                            CriterionName = "UI/UX & accessibility awareness",
+                            DisplayOrder = 6,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Trading off user experience against technical cost",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.ux-vs-technical-cost",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03000-0000-0000-0000-000000000007"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Đảm bảo khả năng bảo trì frontend ở quy mô nhiều team",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.maintainability-multi-team",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03011-0000-0000-0000-000000000007"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 7,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Ensuring frontend maintainability at multi-team scale",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.maintainability-multi-team",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03000-0000-0000-0000-000000000008"),
+                            CriterionName = "Giải quyết vấn đề",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Dẫn dắt kỹ thuật và chuẩn hoá cách làm cho nhiều team",
+                            Language = "vi",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.tech-leadership-standardization",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("1fe03011-0000-0000-0000-000000000008"),
+                            CriterionName = "Problem solving",
+                            DisplayOrder = 8,
+                            IsActive = true,
+                            JobCategory = "FE",
+                            Label = "Providing technical leadership and standardizing practices across teams",
+                            Language = "en",
+                            Seniority = "Senior",
+                            TopicKey = "top1.fe.senior.tech-leadership-standardization",
+                            Version = 1
                         });
                 });
 
@@ -1115,6 +3686,14 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("milestone_id");
 
+                    b.Property<string>("MistakeRefs")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("mistake_refs");
+
+                    b.Property<string>("MistakeReview")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("mistake_review");
+
                     b.Property<int>("OrderNo")
                         .HasColumnType("integer")
                         .HasColumnName("order_no");
@@ -1256,6 +3835,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("improvement");
 
+                    b.Property<string>("MistakeRefs")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("mistake_refs");
+
                     b.Property<int>("OrderNo")
                         .HasColumnType("integer")
                         .HasColumnName("order_no");
@@ -1288,6 +3871,92 @@ namespace Isas.InterviewService.Migrations
                         .HasDatabaseName("ix_roadmap_milestones_roadmap_id_order_no");
 
                     b.ToTable("roadmap_milestones", (string)null);
+                });
+
+            modelBuilder.Entity("Isas.InterviewService.Entities.RoadmapMistake", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Answer")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("answer");
+
+                    b.Property<Guid?>("AnswerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("answer_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("CriterionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("criterion_id");
+
+                    b.Property<string>("CriterionName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("criterion_name");
+
+                    b.Property<string>("MistakeKey")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("mistake_key");
+
+                    b.Property<string>("Question")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("question");
+
+                    b.Property<string>("Reasoning")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reasoning");
+
+                    b.Property<Guid>("RoadmapId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("roadmap_id");
+
+                    b.Property<string>("SampleAnswer")
+                        .HasColumnType("text")
+                        .HasColumnName("sample_answer");
+
+                    b.Property<decimal>("ScorePct")
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("score_pct");
+
+                    b.Property<string>("Seniority")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("seniority");
+
+                    b.Property<decimal>("ThresholdPct")
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("threshold_pct");
+
+                    b.HasKey("Id")
+                        .HasName("pk_roadmap_mistakes");
+
+                    b.HasIndex("AnswerId")
+                        .HasDatabaseName("ix_roadmap_mistakes_answer_id");
+
+                    b.HasIndex("CriterionId")
+                        .HasDatabaseName("ix_roadmap_mistakes_criterion_id");
+
+                    b.HasIndex("RoadmapId", "MistakeKey")
+                        .IsUnique()
+                        .HasDatabaseName("ix_roadmap_mistakes_roadmap_id_mistake_key");
+
+                    b.ToTable("roadmap_mistakes", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_roadmap_mistakes_seniority", "seniority IS NULL OR seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
+                        });
                 });
 
             modelBuilder.Entity("Isas.InterviewService.Entities.RubricCriterion", b =>
@@ -2267,6 +4936,33 @@ namespace Isas.InterviewService.Migrations
                     b.Navigation("Roadmap");
                 });
 
+            modelBuilder.Entity("Isas.InterviewService.Entities.RoadmapMistake", b =>
+                {
+                    b.HasOne("Isas.InterviewService.Entities.PracticeAnswer", null)
+                        .WithMany()
+                        .HasForeignKey("AnswerId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_roadmap_mistakes_practice_answers_answer_id");
+
+                    b.HasOne("Isas.InterviewService.Entities.RubricCriterion", "Criterion")
+                        .WithMany()
+                        .HasForeignKey("CriterionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_roadmap_mistakes_rubric_criteria_criterion_id");
+
+                    b.HasOne("Isas.InterviewService.Entities.Roadmap", "Roadmap")
+                        .WithMany("Mistakes")
+                        .HasForeignKey("RoadmapId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_roadmap_mistakes_roadmaps_roadmap_id");
+
+                    b.Navigation("Criterion");
+
+                    b.Navigation("Roadmap");
+                });
+
             modelBuilder.Entity("Isas.InterviewService.Entities.RubricLevel", b =>
                 {
                     b.HasOne("Isas.InterviewService.Entities.RubricCriterion", "Criterion")
@@ -2339,6 +5035,8 @@ namespace Isas.InterviewService.Migrations
             modelBuilder.Entity("Isas.InterviewService.Entities.Roadmap", b =>
                 {
                     b.Navigation("Milestones");
+
+                    b.Navigation("Mistakes");
                 });
 
             modelBuilder.Entity("Isas.InterviewService.Entities.RoadmapLesson", b =>

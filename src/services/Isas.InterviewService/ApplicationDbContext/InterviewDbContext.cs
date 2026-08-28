@@ -18,6 +18,9 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<RubricLevel> RubricLevels => Set<RubricLevel>();
         // DB15 — rubric_anchors gộp thành cột jsonb rubric_levels.example_answers (bỏ bảng/entity).
 
+        // TOP1 — danh mục chủ đề luyện tập B2C (seed ở HasData dưới; chưa wire luồng tạo buổi).
+        public DbSet<PracticeTopic> PracticeTopics => Set<PracticeTopic>();
+
         public DbSet<FileRecord> FileRecords => Set<FileRecord>();
 
         public DbSet<CvAnalysis> CvAnalyses => Set<CvAnalysis>();   // BC7
@@ -28,6 +31,9 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<RoadmapLesson> RoadmapLessons => Set<RoadmapLesson>();        // BC12
         // Lịch sử các lần làm 1 bài luyện (làm lại để nâng điểm).
         public DbSet<RoadmapLessonAttempt> RoadmapLessonAttempts => Set<RoadmapLessonAttempt>();
+
+        // MIS1-B4 — 1 LỖI SAI trích từ buổi luyện đã chấm, gắn cho 1 roadmap. CHƯA nối vào AI (B5).
+        public DbSet<RoadmapMistake> RoadmapMistakes => Set<RoadmapMistake>();
 
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();        // DB2 — transactional outbox
 
@@ -96,6 +102,11 @@ namespace Isas.InterviewService.ApplicationDbContext
                 // Test SQLite giữ rubric "controlled" như cũ (không seed sẵn) để không phá E1/E2/E8;
                 // test BC11 tự nạp seed khi cần.
                 b.Entity<RubricCriterion>().HasData(B2CRubricSeed.Build());
+
+                // TOP1-B2: seed danh mục chủ đề luyện tập B2C — cùng cách giao với B2CRubricSeed
+                // (HasData → InsertData literal trong migration, không seed runtime). Test SQLite tự
+                // nạp PracticeTopicSeed.Build() khi cần (PracticeTopicSeedTests).
+                b.Entity<PracticeTopic>().HasData(PracticeTopicSeed.Build());
             }
         }
     }

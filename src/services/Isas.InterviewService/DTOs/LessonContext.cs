@@ -27,4 +27,10 @@ namespace Isas.InterviewService.DTOs;
 /// tiêu chí trọng tâm. Mục lục trung bình 7,4 đề mục ≈ 300 ký tự, giữ được đúng thứ cần: bài này
 /// gồm những phần nào.</para>
 /// </param>
-public record LessonContext(string Title, string? Outline);
+/// <param name="Mistakes">
+/// MIS1-B5 — lỗi cụ thể (≤4, RoadmapLessonService.ResolveLessonMistakes) mà buổi luyện này phải
+/// hỏi LẠI ở tình huống khác (xem <c>build_prompt</c> khối "Người học đã trả lời HỤT"). Vắng/null
+/// ⇒ AIService KHÔNG thêm một chữ nào (mọi caller cũ — luyện tự do, campaign B2B — giữ nguyên xi).
+/// </param>
+public record LessonContext(string Title, string? Outline,
+                            IReadOnlyList<RoadmapMistakeWire>? Mistakes = null);

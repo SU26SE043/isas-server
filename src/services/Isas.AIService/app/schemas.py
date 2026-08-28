@@ -63,6 +63,22 @@ class LessonContextDto(BaseModel):
     # Mục lục bài giảng (đề mục ``##``), .NET đã cắt trần. Vắng = người học bấm Bắt đầu mà chưa mở
     # bài lần nào (lý thuyết sinh lazy) — hợp lệ, chỉ mất một lớp ngữ cảnh.
     outline: str | None = None
+    # MIS1 — LỖI SAI trích từ các buổi luyện đã chấm, gắn cho ĐÚNG bài học này. Vắng/rỗng ⇒ prompt
+    # GIỮ NGUYÊN XI (hành vi trước MIS1). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` đã cắn
+    # repo nhiều lần (`focusCriteria`/BC14 · `metricsVersion` · `seniority`/SEN1 · `lessonContext`).
+    mistakes: list["RoadmapMistake"] | None = None
+
+
+class SessionTopic(BaseModel):
+    """TOP1-B4 — 1 đề tài của danh mục chủ đề luyện tập (TOP1) gắn cho buổi này.
+
+    ``cvLevel``/``cvEvidence`` là ngữ cảnh TUỲ CHỌN suy từ CV ứng viên cho ĐÚNG đề tài này (vd
+    mức độ thể hiện trong CV + trích dẫn bằng chứng) — optional-safe để một field thiếu không làm
+    cả request 422, mẫu ``sourceUrl``/``sourceTitle`` của :class:`GroundingChunk`.
+    """
+    label: str
+    cvLevel: str | None = None
+    cvEvidence: str | None = None
 
 
 class GenerateQuestionsRequest(BaseModel):
@@ -109,6 +125,15 @@ class GenerateQuestionsRequest(BaseModel):
     # bug đã cắn repo 4 lần (`focusCriteria`/BC14 · `metricsVersion` · `adaptiveMaxQuestions` ·
     # `seniority`/SEN1).
     lessonContext: LessonContextDto | None = None
+    # TOP1-B4 — danh mục đề tài của buổi (TOP1), chọn sẵn ở tầng .NET (TopicSelector, B3). Vắng ⇒
+    # prompt GIỮ NGUYÊN XI cho mọi caller cũ. Có cả `lessonContext` lẫn `topics` ⇒ bài học THẮNG
+    # (hẹp hơn — một bài cụ thể trong lộ trình), khối đề tài không xuất hiện.
+    #
+    # ⚠ Khai tường minh ở ĐÂY là nửa quyết định của tính năng — y hệt `lessonContext`/`seniority`
+    # ngay trên: thiếu dòng này thì .NET vẫn gửi, HTTP vẫn 200, không lỗi, không log, và pydantic
+    # `extra='ignore'` chỉ đơn giản vứt field. Đúng lớp bug đã cắn repo 4 lần (`focusCriteria`/BC14
+    # · `metricsVersion` · `adaptiveMaxQuestions` · `seniority`/SEN1).
+    topics: list[SessionTopic] | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):
@@ -438,6 +463,13 @@ class AnalyzeRepoResponse(BaseModel):
 class WeaknessScore(BaseModel):
     criterionName: str
     percentage: float
+    # REC1-B1 — số buổi (trong SỐ buổi candidate đã chọn) từng gắn cờ NeedsImprovement cho tiêu chí
+    # này, trên tổng số buổi đã chọn. "Yếu 3/4 buổi" đáng tin hơn hẳn "yếu 3/12 buổi" dù percentage
+    # giống nhau — thiếu 2 trường này thì model không biết tin tới đâu. Default 0 vì extra='ignore'
+    # nuốt field lạ IM LẶNG — .NET cũ chưa gửi vẫn không vỡ; PHẢI khai tường minh ở đây, không thì
+    # cùng lớp bug đã cắn repo nhiều lần: field gửi lên nhưng bị nuốt câm ở tầng pydantic.
+    weakSessions: int = 0
+    totalSessions: int = 0
 
 
 class CriterionEvidence(BaseModel):
@@ -448,25 +480,47 @@ class CriterionEvidence(BaseModel):
     reasoning: list[str]
 
 
+class RoadmapMistake(BaseModel):
+    """MIS1 — 1 LỖI SAI trích từ các buổi luyện đã chấm, dùng để gom chủ đề roadmap/bài học.
+
+    ``answer`` (transcript) và ``sampleAnswer`` CHỈ ``/generate-lesson-theory`` nhận — bài học cần
+    NGUYÊN VĂN câu trả lời + bài mẫu để giải thích "sai ở đâu, đúng phải thế nào"; roadmap
+    (`/generate-roadmap`) chỉ cần đủ để GOM CHỦ ĐỀ nên .NET không tải 2 trường nặng đó cho nó.
+    ``reasoning`` là nhận xét đã có sẵn (E11, trích transcript) — bọc-làm-DỮ-LIỆU trong prompt
+    (AI-4), KHÔNG phải chỉ thị, mẫu ``evidence``/``focus`` ở trên."""
+    id: str
+    criterionName: str
+    scorePct: int | None = None
+    question: str | None = None
+    answer: str | None = None
+    reasoning: str
+    sampleAnswer: str | None = None
+
+
+class MistakeReviewItem(BaseModel):
+    """MIS1 — nhận xét lại 1 lỗi sai cụ thể trong ``GenerateLessonTheoryResponse.mistakeReview``:
+    ``mistakeId`` khớp ngược ``RoadmapMistake.id`` mà .NET đã gửi lên."""
+    mistakeId: str
+    whatWentWrong: str
+    howToFixIt: str
+
+
 class GenerateRoadmapRequest(BaseModel):
     jobCategory: str
     language: str = "vi"
     level: str                                     # Fresher | Junior | Middle | Senior
     weaknesses: list[WeaknessScore] | None = None  # từ session_criterion_scores; rỗng → roadmap chuẩn theo level
-    # 🔴 `cvText` ĐÃ BỊ GỠ — đừng khai lại. Đo trên production: roadmap có CV và không CV cho tên
-    # chặng không phân biệt được, nhóm có CV còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%). CV
-    # thô là đầu vào SAI HÌNH DẠNG cho một bài toán sinh *cấu trúc giáo trình*. Phần CV đóng góp
-    # được nay đi qua `cvAnalysisSummary` (bản tinh luyện) và `currentLevel` (sàn trình độ).
-    # Trình độ HIỆN TẠI suy từ CV (khác `level` = MỤC TIÊU người dùng chọn). `None` = CV không đủ
-    # căn cứ ⇒ không có sàn. ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` nêu ngay dưới.
-    currentLevel: str | None = None
-    # BC17 — cá nhân hoá roadmap từ report cũ do ứng viên CHỌN + ô mô tả mong muốn. 3 field này là
-    # free-text/tóm tắt do ứng viên/hệ thống cung cấp ⇒ bọc-làm-DỮ-LIỆU trong prompt (AI-4), KHÔNG
-    # phải chỉ thị. ⚠ PHẢI khai đủ: schema này không set model_config nên pydantic `extra='ignore'`
-    # sẽ NUỐT IM LẶNG field quên khai (đúng bug BC14/F2b `focusCriteria`) → .NET gửi mà AI không thấy.
+    # 🔴 `cvText` ĐÃ BỊ GỠ — đừng khai lại. REC1-B7 gỡ NỐT hai đường thay thế của nó
+    # (`cvAnalysisSummary`/`currentLevel`, xem ngay dưới) — đừng khai lại BẤT KỲ đường nào trong ba.
+    # Đo trên production: roadmap có CV và không CV cho tên chặng không phân biệt được, nhóm có CV
+    # còn nêu công nghệ cụ thể ÍT hơn (8,6% vs 12,1%). Lý do cấu trúc: prompt roadmap chỉ xuất ra
+    # CẤU TRÚC (milestone/lesson), mà cả CV lẫn lộ trình trước đều bị chèn kèm câu "không đổi cấu
+    # trúc roadmap" — mệnh lệnh tự phủ định. Lộ trình trước (`priorRoadmapSummary`, cũng đã gỡ)
+    # cùng lý do: chỉ 4/37 đủ điều kiện trên dev, 0 trên môi trường chính.
+    # BC17 — cá nhân hoá roadmap từ ô mô tả mong muốn. ⚠ PHẢI khai tường minh: schema này không set
+    # model_config nên pydantic `extra='ignore'` sẽ NUỐT IM LẶNG field quên khai (đúng bug BC14/F2b
+    # `focusCriteria`) → .NET gửi mà AI không thấy.
     focus: str | None = None                       # ô ứng viên mô tả mong muốn định hướng (free-text)
-    cvAnalysisSummary: str | None = None           # tóm tắt phân tích CV (BC7) ứng viên đã chọn
-    priorRoadmapSummary: str | None = None         # tóm tắt roadmap/report trước ứng viên đã chọn
     # RAG grounding (Contract 2) — cấu trúc roadmap KHÔNG emit citation (Phase 1), nhưng nếu W2
     # cấp grounding thì nó được chèn làm căn cứ. Khai tường minh để pydantic không nuốt (BC14).
     grounding: list[GroundingChunk] | None = None
@@ -491,16 +545,25 @@ class GenerateRoadmapRequest(BaseModel):
     # `extra='ignore'` đã nêu ở `criteria`/`scope`: thiếu dòng này thì .NET gửi `mode` mà
     # pydantic NUỐT IM LẶNG, mọi lộ trình ôn tập âm thầm được sinh như LevelUp.
     mode: str = "LevelUp"
+    # MIS1 — LỖI SAI trích từ các buổi luyện đã chấm, dùng để gom chủ đề. Vắng/rỗng ⇒ prompt GIỮ
+    # NGUYÊN XI (hành vi trước MIS1). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` đã nêu ở
+    # `criteria`/`scope`/`mode` ngay trên.
+    mistakes: list[RoadmapMistake] | None = None
 
 
 class RoadmapLesson(BaseModel):
     title: str
+    # MIS1 — id của các RoadmapMistake (request) mà bài học này gom vào. Mặc định [] = hành vi cũ
+    # (không lỗi sai nào được gán).
+    mistakeIds: list[str] = []
 
 
 class RoadmapMilestone(BaseModel):
     title: str
     focusCriteria: list[str]
     lessons: list[RoadmapLesson]
+    # MIS1 — id của các RoadmapMistake (request) mà chặng này gom vào. Mặc định [] = hành vi cũ.
+    mistakeIds: list[str] = []
 
 
 class GenerateRoadmapResponse(BaseModel):
@@ -525,6 +588,11 @@ class GenerateLessonTheoryRequest(BaseModel):
     # `extra='ignore'` đã nêu ở `criteria`/`scope`: thiếu dòng này thì .NET gửi `mode` mà
     # pydantic NUỐT IM LẶNG, mọi lộ trình ôn tập âm thầm được sinh như LevelUp.
     mode: str = "LevelUp"
+    # MIS1 — LỖI SAI trích từ các buổi luyện đã chấm, gắn cho ĐÚNG bài học này (khác `weaknesses`
+    # ở trên — đó là tên tiêu chí yếu, đây là từng lỗi cụ thể). Vắng/rỗng ⇒ prompt GIỮ NGUYÊN XI
+    # (hành vi trước MIS1). ⚠ PHẢI khai tường minh — cùng bẫy `extra='ignore'` đã nêu ở
+    # `grounding`/`evidence`/`mode` ngay trên.
+    mistakes: list[RoadmapMistake] | None = None
 
 
 class LessonResource(BaseModel):
@@ -546,6 +614,9 @@ class GenerateLessonTheoryResponse(BaseModel):
     # ADDITIVE (Contract 2) — chunkId (⊆ tập grounding đã cấp) mà lý thuyết dựa vào. Ungrounded →
     # None (endpoint exclude_none giữ shape cũ). Grounded-nhưng-không-cite → [] (ungrounded label).
     citedChunkIds: list[str] | None = None
+    # MIS1 — nhận xét lại từng lỗi sai (request `mistakes`) mà bài học này gom vào. None = không
+    # có `mistakes` nào được gửi (endpoint exclude_none giữ shape cũ — hành vi trước MIS1).
+    mistakeReview: list[MistakeReviewItem] | None = None
 
 
 class CriterionProgress(BaseModel):

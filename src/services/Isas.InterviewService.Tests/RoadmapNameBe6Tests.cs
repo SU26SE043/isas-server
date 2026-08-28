@@ -32,17 +32,21 @@ public class RoadmapNameBe6Tests
         var m = new Mock<IAiServiceRoadmapGenerator>();
         m.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), 
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
+                It.IsAny<string?>(),
                 It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(),
                 It.IsAny<string>(),                                   // BE-4 — scope
-                It.IsAny<IReadOnlyList<CriterionEvidence>?>(),         // BE-5 — evidence
                 It.IsAny<RoadmapMode>(),                              // chế độ lộ trình,
-                It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))          // REC1-B7 — arity khớp interface (9 tham số)
             .ReturnsAsync(Sample());
         return m;
     }
+
+    // MIS1-B6 — Guard 1/2/3 đòi ≥1 buổi đã chấm, có điểm yếu, có lỗi nội dung trích được. File này
+    // không quan tâm NỘI DUNG tiêu chí (chỉ test tên/quyền lộ trình) nên dùng 1 tiêu chí cố định.
+    private static Guid SeedScoredSession(TestDb t, Guid candidateId, JobCategory cat)
+        => TestSeed.ScoredSessionWithAnswers(t, candidateId, cat, seedContentMistakes: true, ("Clarity", 40m, true));
 
     private static RoadmapService Service(TestDb t)
         => new(t.Db, new Mock<IStorageService>().Object, Gen().Object, NullLogger<RoadmapService>.Instance);
@@ -67,16 +71,28 @@ public class RoadmapNameBe6Tests
     // (1) Tên mặc định do server sinh · tên người dùng không bị ghi đè
     // ══════════════════════════════════════════════════════════════════════════
 
+    // REC1-B2 — ĐỔI TIỀN ĐỀ: mức trong tên mặc định trước đây là `req.Level` (client tự khai, nay
+    // bị bỏ qua); nay là mức SUY từ buổi nguồn (mục A, RoadmapService.CreateAsync). `SeedScoredSession`
+    // dựng buổi qua `TestSeed.ScoredSessionWithAnswers` với `Seniority` mặc định "Junior" (không
+    // set tường minh) — muốn khoá đúng "tên mặc định mang mức Senior" thì phải seed buổi Seniority
+    // = "Senior" THẬT, không phải gửi `RoadmapLevel.Senior` trong request (giá trị đó nay bị bỏ qua).
     [Fact]
     public async Task KhongTuDatTen_ServerSinhTenCoNgheVaCapDo()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
+        // REC1-B2 — set mức THẬT của buổi nguồn (mặc định TestSeed là "Junior") để tên mặc định
+        // phản ánh đúng cơ chế mới: mức SUY từ buổi, không phải mức client GỬI.
+        t.Db.PracticeSessions.Single(s => s.Id == sid).Seniority = nameof(RoadmapLevel.Senior);
+        t.Db.SaveChanges();
 
         var res = await Service(t).CreateAsync(user,
-            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null));
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Fresher, null, SessionIds: [sid]));
 
         Assert.Contains("Business Analyst", res.Name);
+        // "Senior" tới từ Seniority của BUỔI vừa set ở trên — KHÔNG PHẢI `RoadmapLevel.Fresher`
+        // cố tình gửi trong request (client gửi gì bây giờ cũng bị bỏ qua).
         Assert.Contains("Senior", res.Name);
         Assert.NotEqual("Roadmap", res.Name);   // đúng chuỗi dự phòng cũ của frontend
     }
@@ -86,9 +102,10 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.BE);   // MIS1-B6 — Guard 1/2/3
 
         var res = await Service(t).CreateAsync(user,
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Name: "Ôn phỏng vấn FPT"));
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid], Name: "Ôn phỏng vấn FPT"));
 
         Assert.Equal("Ôn phỏng vấn FPT", res.Name);
         Assert.Equal("Ôn phỏng vấn FPT", (await t.Db.Set<Roadmap>().SingleAsync()).Name);
@@ -98,8 +115,10 @@ public class RoadmapNameBe6Tests
     public async Task TenCoKhoangTrangThua_DuocCatTruocKhiLuu()
     {
         using var t = new TestDb();
-        var res = await Service(t).CreateAsync(Guid.NewGuid(),
-            new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Middle, null, Name: "   Lộ trình của tôi   "));
+        var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.FE);   // MIS1-B6 — Guard 1/2/3
+        var res = await Service(t).CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Middle, null, SessionIds: [sid], Name: "   Lộ trình của tôi   "));
 
         Assert.Equal("Lộ trình của tôi", res.Name);
     }
@@ -138,10 +157,12 @@ public class RoadmapNameBe6Tests
     public async Task TenDaiVuaTran_VanDuocChapNhan()
     {
         using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
         var vua = new string('x', RoadmapNaming.MaxLength);
 
-        var res = await Service(t).CreateAsync(Guid.NewGuid(),
-            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Fresher, null, Name: vua));
+        var res = await Service(t).CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Fresher, null, SessionIds: [sid], Name: vua));
 
         Assert.Equal(vua, res.Name);
     }
@@ -155,8 +176,10 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
         var svc = Service(t);
-        await svc.CreateAsync(user, new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, Name: "Lộ trình A"));
+        await svc.CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid], Name: "Lộ trình A"));
 
         var page = await svc.ListAsync(user, null, null);
 
@@ -230,7 +253,9 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var tao = await Service(t).CreateAsync(user, new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null));
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
+        var tao = await Service(t).CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid]));
 
         var res = await Controller(t, user).Rename(tao.Id, new RenameRoadmapRequest("Tên mới"), default);
 
@@ -245,7 +270,9 @@ public class RoadmapNameBe6Tests
         using var t = new TestDb();
         var chu = Guid.NewGuid();
         var nguoiLa = Guid.NewGuid();
-        var tao = await Service(t).CreateAsync(chu, new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, Name: "Của tôi"));
+        var sid = SeedScoredSession(t, chu, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
+        var tao = await Service(t).CreateAsync(chu,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid], Name: "Của tôi"));
 
         var res = await Controller(t, nguoiLa).Rename(tao.Id, new RenameRoadmapRequest("Cướp"), default);
 
@@ -269,7 +296,9 @@ public class RoadmapNameBe6Tests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var tao = await Service(t).CreateAsync(user, new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, Name: "Tên cũ"));
+        var sid = SeedScoredSession(t, user, JobCategory.BA);   // MIS1-B6 — Guard 1/2/3
+        var tao = await Service(t).CreateAsync(user,
+            new CreateRoadmapRequest(JobCategory.BA, RoadmapLevel.Senior, null, SessionIds: [sid], Name: "Tên cũ"));
 
         var res = await Controller(t, user).Rename(tao.Id, new RenameRoadmapRequest(name), default);
 

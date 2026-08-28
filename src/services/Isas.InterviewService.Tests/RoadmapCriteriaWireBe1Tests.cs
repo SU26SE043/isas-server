@@ -57,7 +57,7 @@ public class RoadmapCriteriaWireBe1Tests
         CaptureHandler handler, AiServiceRoadmapGenerator gen,
         IReadOnlyList<QuestionTargetCriterionDto>? criteria)
     {
-        await gen.GenerateAsync("BA", "Junior", null, null, null, null, criteria, default);
+        await gen.GenerateAsync("BA", "Junior", null, null, criteria);
         using var doc = JsonDocument.Parse(handler.LastBody!);
         return doc.RootElement.Clone();
     }

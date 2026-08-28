@@ -229,7 +229,7 @@ async def test_lesson_theory_dinh_kem_so_lieu_url():
     }))
 
     with patch("app.providers.gemini.report_usage", new=AsyncMock()) as spy:
-        theory, resources, _ = await provider.generate_lesson_theory(
+        theory, resources, _, _ = await provider.generate_lesson_theory(
             job_category="BE", level="Junior", lesson_title="L",
             focus_criteria=[], weaknesses=None)
 

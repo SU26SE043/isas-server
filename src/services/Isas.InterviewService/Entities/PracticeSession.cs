@@ -1,3 +1,4 @@
+using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Enums;
 
 namespace Isas.InterviewService.Entities;
@@ -146,6 +147,12 @@ public class PracticeSession : IHasUpdatedAt
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.
     // Default 120 = hành vi cũ ⇒ row cũ + B2B (chưa cho chọn) không đổi gì.
     public int TimeLimitSec { get; set; } = 120;
+
+    // TOP1-B5 — danh mục đề tài GẮN cho buổi này lúc tạo session (TopicSelector, B3) — SNAPSHOT,
+    // không phải tham chiếu sống tới practice_topics: sửa/xoá danh mục về sau không đổi buổi cũ.
+    // null = tính năng tắt (kill-switch Interview:Topics:Enabled) · buổi bài học lộ trình (bỏ qua
+    // TopicSelector hẳn) · pool rỗng lúc tạo · buổi tạo trước cột này tồn tại.
+    public List<SessionTopic>? Topics { get; set; }
 
     // Navigation
     public ICollection<PracticeQuestion> Questions { get; set; } = [];

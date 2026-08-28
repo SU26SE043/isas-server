@@ -104,9 +104,10 @@ namespace Isas.CampaignService.Services
                             table.Cell().Element(Cell).Text(r.Result ?? string.Empty);
                             table.Cell().Element(Cell)
                                 .Text(r.ScoredAt.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture));
-                            // SEC-4: "type:count" ngăn bởi "; " — cùng định dạng cột flags của CSV.
+                            // SEC-4 + MON1-B4: "type(source):count" ngăn bởi "; " — HELPER DÙNG CHUNG
+                            // với CSV (BuildResultsCsv). Fork định dạng ở đây = F16 lệch, không test bắt.
                             table.Cell().Element(Cell)
-                                .Text(string.Join("; ", r.Flags.Select(f => $"{f.Type}:{f.Count}")));
+                                .Text(FlagDto.SummarizeForExport(r.Flags));
                         }
 
                         // R7: ứng viên có cờ mà CHƯA Scored — nối SAU bảng ranking. Hạng/Điểm/Chấm-lúc để TRỐNG
@@ -120,7 +121,7 @@ namespace Isas.CampaignService.Services
                             table.Cell().Element(Cell).Text("Chưa chấm");
                             table.Cell().Element(Cell).Text(string.Empty);
                             table.Cell().Element(Cell)
-                                .Text(string.Join("; ", u.Flags.Select(f => $"{f.Type}:{f.Count}")));
+                                .Text(FlagDto.SummarizeForExport(u.Flags));   // MON1-B4: cùng helper
                         }
                     });
 

@@ -47,18 +47,18 @@ public class RoadmapTests
     // BC17 — snapshot mọi tham số bối cảnh gửi xuống generator (để assert cái gì tới được AI).
     // BE-1 — thêm `Criteria`: mutation-check anchor cho "criteria rỗng thay vì tiêu chí thật".
     // BE-4 — thêm `Scope`: mutation-check anchor cho "quên forward scope xuống generator".
-    // BE-5 — thêm `Evidence`: mutation-check anchor cho "quên forward bằng chứng xuống generator".
+    //
+    // 🔴 REC1-B7 — `CvAnalysisSummary`/`PriorRoadmapSummary`/`Evidence`/`CurrentLevel` đã XOÁ khỏi
+    // record này — cả bốn đã GỠ HẲN khỏi chữ ký `IAiServiceRoadmapGenerator.GenerateAsync`, không
+    // còn gì để snapshot. `CvText` (thô) đã gỡ TRƯỚC bước này (MIS1-B5); `CurrentLevel` là con
+    // đường CUỐI CÙNG từng thay chỗ nó, nay cũng gỡ nốt — không còn khoá thay thế nào.
     private sealed record GenArgs(
         IReadOnlyList<RoadmapWeakness>? Weaknesses,
         string? Focus,
-        string? CvAnalysisSummary,
-        string? PriorRoadmapSummary,
         IReadOnlyList<QuestionTargetCriterionDto>? Criteria,
         string Scope,
-        IReadOnlyList<CriterionEvidence>? Evidence,
-        // `CvText` đã bị gỡ khỏi chữ ký generator (CV thô không còn vào prompt roadmap);
-        // `CurrentLevel` thay chỗ nó — trình độ HIỆN TẠI suy từ CV, dùng làm sàn.
-        string? CurrentLevel);
+        // MIS1-B5 — mutation-check anchor cho "quên forward mistakes xuống generator".
+        IReadOnlyList<RoadmapMistake>? Mistakes);
 
     private static Mock<IAiServiceRoadmapGenerator> GenMock(
         RoadmapGenAiResult result, Action<GenArgs>? capture = null)
@@ -67,13 +67,13 @@ public class RoadmapTests
         var setup = m.Setup(x => x.GenerateAsync(
             It.IsAny<string>(), It.IsAny<string>(),
             It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+            It.IsAny<string?>(),
             It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(),
-            It.IsAny<string?>(), It.IsAny<CancellationToken>()));
+            It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>(),
+            It.IsAny<IReadOnlyList<RoadmapMistake>?>()));
         if (capture is not null)
-            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, string?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, IReadOnlyList<CriterionEvidence>?, RoadmapMode, string?, CancellationToken>(
-                    (_, _, w, f, ca, pr, crit, scope, evidence, _, cur, _) => capture(new GenArgs(w, f, ca, pr, crit, scope, evidence, cur)))
+            setup.Callback<string, string, IReadOnlyList<RoadmapWeakness>?, string?, IReadOnlyList<QuestionTargetCriterionDto>?, string, RoadmapMode, CancellationToken, IReadOnlyList<RoadmapMistake>?>(
+                    (_, _, w, f, crit, scope, _, _, mistakes) => capture(new GenArgs(w, f, crit, scope, mistakes)))
                 .ReturnsAsync(result);
         else
             setup.ReturnsAsync(result);
@@ -96,45 +96,13 @@ public class RoadmapTests
         return controller;
     }
 
-    // Seed 1 buổi B2C đã Scored + N tiêu chí có điểm (BC9) → nguồn baseline/weakness.
+    // Seed 1 buổi B2C đã Scored + N tiêu chí có điểm (BC9) → nguồn baseline/weakness. MIS1-B6 —
+    // thân hàm chuyển vào TestSeed.ScoredSessionWithAnswers (dùng chung 3 file); giữ NGUYÊN chữ ký
+    // ở đây để 32 call site trong file này không phải sửa. `seedContentMistakes: true` vì mọi test
+    // ở đây gọi CreateAsync (Guard 3 nay đòi ≥1 lỗi nội dung — xem TestSeed.cs).
     private static Guid SeedScoredSession(
         TestDb t, Guid candidateId, params (string name, decimal pct, bool needsImprovement)[] criteria)
-    {
-        var session = TestDb.Session(candidateId, SessionStatus.Scored, JobCategory.BE);
-        t.Db.PracticeSessions.Add(session);
-        foreach (var (name, pct, needs) in criteria)
-        {
-            // DÙNG LẠI tiêu chí cùng tên nếu buổi trước đã seed — production chỉ có MỘT bộ tiêu chí
-            // cho mỗi (nghề, ngôn ngữ) và mọi buổi trỏ vào chính nó (unique
-            // `ux_rubric_criteria_b2c_default_version_name` khoá điều đó ở tầng DB).
-            var crit = t.Db.RubricCriteria.Local
-                    .FirstOrDefault(c => c.Name == name && c.CandidateId == null
-                                         && c.JobCategory == JobCategory.BE)
-                ?? t.Db.RubricCriteria
-                    .FirstOrDefault(c => c.Name == name && c.CandidateId == null
-                                         && c.JobCategory == JobCategory.BE);
-            if (crit is null)
-            {
-                crit = TestDb.Criterion(JobCategory.BE, name: name);
-                t.Db.RubricCriteria.Add(crit);
-            }
-            t.Db.SessionCriterionScores.Add(new SessionCriterionScore
-            {
-                Id = Guid.NewGuid(),
-                SessionId = session.Id,
-                CriterionId = crit.Id,
-                CriterionName = name,
-                AverageScore = 2m,
-                MaxScore = 5,
-                Percentage = pct,
-                Weight = 1m,
-                NeedsImprovement = needs,
-                CreatedAt = DateTime.UtcNow
-            });
-        }
-        t.Db.SaveChanges();
-        return session.Id;
-    }
+        => TestSeed.ScoredSessionWithAnswers(t, candidateId, JobCategory.BE, seedContentMistakes: true, criteria);
 
     // BC17 — buổi B2C của `ownerId` nhưng CHƯA Scored (InProgress) → không hợp lệ làm baseline.
     private static Guid SeedUnscoredSession(TestDb t, Guid ownerId)
@@ -201,14 +169,18 @@ public class RoadmapTests
     }
 
     // ── (1) POST → 201 + rows đủ 3 bảng, status + order_no đúng ────────────────────
+    // MIS1-B6 — cần 1 buổi hợp lệ (Guard 1/2/3); Baseline/SourceSessionIds đổi từ Assert.Null (ca
+    // "không chọn buổi nào" nay KHÔNG còn tồn tại) sang Assert.NotNull khớp buổi vừa seed.
     [Fact]
     public async Task Post_Returns201_AndPersistsThreeTables()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));
 
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null), default);
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid]), default);
 
         var created = Assert.IsType<CreatedResult>(result);
         Assert.Equal(StatusCodes.Status201Created, created.StatusCode);
@@ -236,8 +208,9 @@ public class RoadmapTests
         Assert.Equal(user, roadmapRow.CandidateId);
         Assert.Equal(RoadmapStatus.Active, roadmapRow.Status);
         Assert.Equal(RoadmapLevel.Junior, roadmapRow.Level);
-        Assert.Null(roadmapRow.Baseline);
-        Assert.Null(roadmapRow.SourceSessionIds);
+        Assert.NotNull(roadmapRow.Baseline);
+        Assert.Equal(40m, roadmapRow.Baseline!["Clarity"]);
+        Assert.Equal([sid], roadmapRow.SourceSessionIds);
 
         Assert.Equal(2, await t.Db.RoadmapMilestones.CountAsync());
         Assert.Equal(3, await t.Db.RoadmapLessons.CountAsync());
@@ -266,26 +239,26 @@ public class RoadmapTests
         Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
         gen.Verify(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
-                It.IsAny<RoadmapMode>(),
                 It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
     // Null vẫn giữ nghĩa "không gửi" → mặc định "vi" — đối chứng dương cho test rỗng ở trên, để
     // phân biệt hai giá trị đó thật sự tách bạch nhau chứ không phải cả hai cùng vô hiệu guard.
+    // MIS1-B6 — thêm 1 buổi hợp lệ (Guard 1/2/3) để test còn tới được chỗ đo ngôn ngữ mặc định.
     [Fact]
     public async Task Create_NullLanguage_DefaultsToVi()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Language: null), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Language: null, SessionIds: [sid]), default);
 
         var created = Assert.IsType<CreatedResult>(result);
         var body = Assert.IsType<RoadmapResponse>(created.Value);
@@ -332,50 +305,176 @@ public class RoadmapTests
         Assert.Equal(40m, weak.Percentage);
     }
 
-    // ── (2b) không chọn buổi nào + không có buổi Scored → baseline/sources null, roadmap CHUẨN ──────
+    // ── (2b) MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc (`Post_NoScoredSessions_BaselineNull`) khoá "không
+    // chọn buổi nào + không có buổi Scored ⇒ 201, baseline/sources null, roadmap CHUẨN theo level".
+    // Guard 1 (ROADMAP_SESSIONS_REQUIRED) nay chặn CHÍNH ca đó — không còn nhánh "roadmap chuẩn theo
+    // level" khi thiếu buổi. Đổi hẳn sang đối chứng: xác nhận 400, không tạo row nào, AI không được gọi.
     [Fact]
-    public async Task Post_NoScoredSessions_BaselineNull()
+    public async Task Post_KhongChonBuoiNao_VaKhongCoBuoiScored_400_KhongTao()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var gen = GenMock(SampleRoadmap());
 
-        GenArgs? captured = null;
-        var ctrl = Controller(t, new Mock<IStorageService>().Object,
-            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+        var result = await Controller(t, new Mock<IStorageService>().Object, gen.Object, user)
+            .Create(new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Fresher, null), default);
 
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Fresher, null), default);
-        Assert.IsType<CreatedResult>(result);
-
-        var row = await t.Db.Roadmaps.AsNoTracking().SingleAsync();
-        Assert.Null(row.Baseline);
-        Assert.Null(row.SourceSessionIds);
-        Assert.Null(captured!.Weaknesses);   // rỗng → AI sinh roadmap chuẩn theo level
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("ROADMAP_SESSIONS_REQUIRED", bad.Value!.ToString());
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.VerifyNoOtherCalls();
     }
 
-    // ── (2c) BC17 — ĐẢO TIỀN ĐỀ CŨ (cố ý): trước đây tạo roadmap tự GOM MỌI buổi Scored làm baseline.
-    // Nay không chọn buổi nào (SessionIds null) → roadmap CHUẨN theo level: buổi Scored đang có VẪN bị
-    // BỎ QUA (baseline/sources/weakness null), KHÔNG auto-gather. Đây là thay đổi hành vi có chủ đích của BC17.
+    // ── (2c) MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc
+    // (`Post_EmptySelection_IgnoresExistingScoredSessions_StandardRoadmap`, chính nó đã là một lần
+    // đảo tiền đề của BC17) khoá "SessionIds null ⇒ 201, BỎ QUA mọi buổi Scored đang có, roadmap
+    // CHUẨN theo level". Guard 1 nay chặn NGAY việc gửi `SessionIds` rỗng/null — không còn đường
+    // "tạo roadmap chuẩn rồi bỏ qua buổi đã có" để mà bỏ qua. Đổi hẳn sang đối chứng: dù có buổi
+    // Scored sẵn trong DB, KHÔNG chọn nó (SessionIds rỗng) vẫn bị từ chối 400 — không "âm thầm
+    // thành công theo cách khác" bằng cách tự động gom buổi đang có.
     [Fact]
-    public async Task Post_EmptySelection_IgnoresExistingScoredSessions_StandardRoadmap()
+    public async Task Post_KhongChonBuoiNao_MacDuCoBuoiScoredSan_400_KhongTuDongGom()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
         // Có buổi Scored trong DB, nhưng KHÔNG được chọn.
         SeedScoredSession(t, user, ("Clarity", 40m, true), ("Depth", 80m, false));
+        var gen = GenMock(SampleRoadmap());
 
-        GenArgs? captured = null;
-        var ctrl = Controller(t, new Mock<IStorageService>().Object,
-            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+        // SessionIds null (mặc định) → Guard 1 chặn, KHÔNG tự động gom buổi Scored đang có.
+        var result = await Controller(t, new Mock<IStorageService>().Object, gen.Object, user)
+            .Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
 
-        // SessionIds null (mặc định) → KHÔNG query buổi nào.
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("ROADMAP_SESSIONS_REQUIRED", bad.Value!.ToString());
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.VerifyNoOtherCalls();
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // MIS1-B6 — Guard 1 (trần số buổi) · Guard NGÔN NGỮ · Guard 3 (không lỗi nội dung)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // Guard 1, vế trần — mã RIÊNG với vế "chưa chọn buổi nào" (ROADMAP_SESSIONS_REQUIRED).
+    [Fact]
+    public async Task Post_QuaTranSoBuoi_400_KhongTaoVaKhongGoiAI()
+    {
+        using var t = new TestDb();
+        var gen = GenMock(SampleRoadmap());
+        var tooMany = Enumerable.Range(0, 21).Select(_ => Guid.NewGuid()).ToList();
+
+        var result = await Controller(t, new Mock<IStorageService>().Object, gen.Object, Guid.NewGuid())
+            .Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: tooMany), default);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("ROADMAP_TOO_MANY_SESSIONS", bad.Value!.ToString());
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.VerifyNoOtherCalls();
+    }
+
+    // Guard NGÔN NGỮ — buổi tiếng Anh làm nguồn cho lộ trình tiếng Việt (mặc định, không gửi
+    // Language) phải bị từ chối TRƯỚC khi RoadmapMistakeLoader trích nguyên văn tiếng Anh.
+    [Fact]
+    public async Task Post_BuoiLechNgonNgu_400_KhongGoiAI()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var session = TestDb.Session(user, SessionStatus.Scored, JobCategory.BE, language: "en");
+        t.Db.PracticeSessions.Add(session);
+        var crit = TestDb.Criterion(JobCategory.BE, name: "Clarity");
+        t.Db.RubricCriteria.Add(crit);
+        t.Db.SessionCriterionScores.Add(new SessionCriterionScore
+        {
+            Id = Guid.NewGuid(), SessionId = session.Id, CriterionId = crit.Id, CriterionName = "Clarity",
+            AverageScore = 2m, MaxScore = crit.MaxScore, Percentage = 40m, Weight = 1m,
+            NeedsImprovement = true, CreatedAt = DateTime.UtcNow
+        });
+        t.Db.SaveChanges();
+        var gen = GenMock(SampleRoadmap());
+
+        // Request KHÔNG gửi Language → mặc định "vi", lệch với session "en".
+        var result = await Controller(t, new Mock<IStorageService>().Object, gen.Object, user)
+            .Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [session.Id]), default);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        var message = bad.Value!.ToString()!;
+        Assert.Contains("ROADMAP_LANGUAGE_MISMATCH", message);
+        Assert.Contains(session.Id.ToString(), message);
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.VerifyNoOtherCalls();
+    }
+
+    // 🔒 Vá theo báo cáo kiểm — mutation "Count > MaxSourceSessions → Count >= MaxSourceSessions"
+    // (off-by-one) chạy qua XANH vì KHÔNG test nào gửi ĐÚNG 20 buổi hợp lệ. Bài này khoá biên TRÊN:
+    // đúng 20 buổi (mỗi buổi có điểm yếu + lỗi nội dung riêng) phải qua được Guard 1, không bị chặn
+    // nhầm là "quá nhiều".
+    [Fact]
+    public async Task Post_DungTranSoBuoi_20Buoi_201_KhongBiGuard1ChanNham()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var sessionIds = Enumerable.Range(0, 20)
+            .Select(_ => SeedScoredSession(t, user, ("Clarity", 40m, true)))
+            .ToList();
+
+        var result = await Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user)
+            .Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: sessionIds), default);
+
         Assert.IsType<CreatedResult>(result);
+        Assert.Equal(1, await t.Db.Roadmaps.CountAsync());
+    }
 
-        var row = await t.Db.Roadmaps.AsNoTracking().SingleAsync();
-        Assert.Null(row.Baseline);            // KHÔNG gom buổi Scored đang có
-        Assert.Null(row.SourceSessionIds);
-        Assert.NotNull(captured);
-        Assert.Null(captured!.Weaknesses);    // không đẩy weakness nào xuống AI
+    // 🔒 Vá theo báo cáo kiểm — mutation "gỡ vế `Count: > 0` khỏi Guard 1 (chỉ còn `is null`)" chạy
+    // qua XANH vì không test nào gửi `SessionIds: []` (mảng RỖNG TƯỜNG MINH — khác hẳn không gửi
+    // field/null, vốn đã có test riêng ở `LevelUp_KhongCoBuoiLuyenNao_400_KhongTaoDuocNua`). Thiếu
+    // vế `Count: > 0`, request `[]` rơi lọt qua Guard 1, quá cửa `is { Count: > 0 }` (SAI —
+    // `req.SessionIds is { Count: > 0 }` với mảng rỗng khớp `false`... nhưng vòng `if (req.SessionIds
+    // is { Count: > 0 }) { ... }` bên dưới KHÔNG chạy nên `weaknesses` vẫn null) ⇒ rơi xuống Guard 2
+    // với message SAI: "ROADMAP_NO_WEAKNESS" thay vì "ROADMAP_SESSIONS_REQUIRED" — đúng mã lỗi
+    // frontend cần so khớp để hiển thị đúng lời khuyên cho người dùng.
+    [Fact]
+    public async Task Post_SessionIdsMangRong_400_ROADMAP_SESSIONS_REQUIRED_PhanBietVoiNull()
+    {
+        using var t = new TestDb();
+        var gen = GenMock(SampleRoadmap());
+
+        var result = await Controller(t, new Mock<IStorageService>().Object, gen.Object, Guid.NewGuid())
+            .Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: []), default);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("ROADMAP_SESSIONS_REQUIRED", bad.Value!.ToString());
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.VerifyNoOtherCalls();
+    }
+
+    // Guard 3 — buổi CÓ điểm yếu (Guard 2 qua) nhưng tiêu chí yếu đó chấm bằng DeliveryMetrics
+    // (số đo âm học, không phải câu trả lời) ⇒ RoadmapMistakeLoader trích được 0 lỗi NỘI DUNG.
+    [Fact]
+    public async Task Post_KhongTrichDuocLoiNoiDung_400_ROADMAP_NO_CONTENT_MISTAKES_KhongTao()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var session = TestDb.Session(user, SessionStatus.Scored, JobCategory.BE);
+        t.Db.PracticeSessions.Add(session);
+        var crit = TestDb.Criterion(JobCategory.BE, name: "Sự trôi chảy");
+        crit.ScoringMethod = CriterionScoringMethod.DeliveryMetrics;   // chấm bằng VAD, không phải câu trả lời
+        t.Db.RubricCriteria.Add(crit);
+        t.Db.SessionCriterionScores.Add(new SessionCriterionScore
+        {
+            Id = Guid.NewGuid(), SessionId = session.Id, CriterionId = crit.Id, CriterionName = "Sự trôi chảy",
+            AverageScore = 2m, MaxScore = crit.MaxScore, Percentage = 20m, Weight = 1m,
+            NeedsImprovement = true, CreatedAt = DateTime.UtcNow   // Guard 2 (weakness) QUA được
+        });
+        t.Db.SaveChanges();
+        var gen = GenMock(SampleRoadmap());
+
+        var result = await Controller(t, new Mock<IStorageService>().Object, gen.Object, user)
+            .Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [session.Id]), default);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("ROADMAP_NO_CONTENT_MISTAKES", bad.Value!.ToString());
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.VerifyNoOtherCalls();
     }
 
     // ── BE-4 — `scope`: tập đóng, case-sensitive, "" là GIÁ TRỊ SAI (mẫu ValidateLanguage/BK36) ──
@@ -394,11 +493,9 @@ public class RoadmapTests
         Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
         gen.Verify(g => g.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
-                 It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
-                It.IsAny<RoadmapMode>(),
                 It.IsAny<string?>(),
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<RoadmapMode>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
@@ -428,9 +525,10 @@ public class RoadmapTests
         GenArgs? captured = null;
         var ctrl = Controller(t, new Mock<IStorageService>().Object,
             GenMock(SampleRoadmap(), a => captured = a).Object, user);
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Scope: scope), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid], Scope: scope), default);
 
         Assert.IsType<CreatedResult>(result);
         Assert.Equal(scope, captured!.Scope);
@@ -464,8 +562,14 @@ public class RoadmapTests
     }
 
     [Fact]
-    public async Task Post_ResolvedFrom_NoSessionsSelected_EmptySessionIds_BaselineUnavailable()
+    public async Task Post_KhongChonBuoiNao_400_KhongConDuongBaselineUnavailable()
     {
+        // 🔴 MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc
+        // (`Post_ResolvedFrom_NoSessionsSelected_EmptySessionIds_BaselineUnavailable`) khoá đúng
+        // hành vi "không chọn buổi nào" trả 201 với `resolvedFrom.sessionIds=[]`/`baselineAvailable
+        // =false`. Guard 1 (ROADMAP_SESSIONS_REQUIRED) nay chặn CHÍNH kịch bản đó — không còn
+        // đường nào để roadmap "chuẩn theo level" ra đời mà không có buổi làm nguồn. Đổi hẳn sang
+        // đối chứng: xác nhận đây LÀ 400, không phải 201 rỗng nghĩa.
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var ctrl = Controller(t, new Mock<IStorageService>().Object,
@@ -474,11 +578,9 @@ public class RoadmapTests
         var result = await ctrl.Create(
             new CreateRoadmapRequest(JobCategory.FE, RoadmapLevel.Fresher, null), default);
 
-        var created = Assert.IsType<CreatedResult>(result);
-        var body = Assert.IsType<RoadmapResponse>(created.Value);
-
-        Assert.Empty(body.ResolvedFrom.SessionIds);
-        Assert.False(body.ResolvedFrom.BaselineAvailable);
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("ROADMAP_SESSIONS_REQUIRED", bad.Value!.ToString());
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
     }
 
     [Fact]
@@ -488,9 +590,10 @@ public class RoadmapTests
         var user = Guid.NewGuid();
         var ctrl = Controller(t, new Mock<IStorageService>().Object,
             GenMock(SampleRoadmap()).Object, user);
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, Scope: "Quick"), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid], Scope: "Quick"), default);
 
         var created = Assert.IsType<CreatedResult>(result);
         var body = Assert.IsType<RoadmapResponse>(created.Value);
@@ -504,9 +607,10 @@ public class RoadmapTests
         var user = Guid.NewGuid();
         var ctrl = Controller(t, new Mock<IStorageService>().Object,
             GenMock(SampleRoadmap()).Object, user);
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid]), default);
 
         var created = Assert.IsType<CreatedResult>(result);
         var body = Assert.IsType<RoadmapResponse>(created.Value);
@@ -558,12 +662,14 @@ public class RoadmapTests
         // Tiêu chí nghề KHÁC (FE) không được lẫn vào.
         t.Db.RubricCriteria.Add(TestDb.Criterion(JobCategory.FE, name: "Không liên quan"));
         t.Db.SaveChanges();
+        var sid = SeedScoredSession(t, user, ("Phân tích yêu cầu", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         GenArgs? captured = null;
         var ctrl = Controller(t, new Mock<IStorageService>().Object,
             GenMock(SampleRoadmap(), a => captured = a).Object, user);
 
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null, SessionIds: [sid]), default);
         Assert.IsType<CreatedResult>(result);
 
         Assert.NotNull(captured);
@@ -579,89 +685,73 @@ public class RoadmapTests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-
-        GenArgs? captured = null;
-        var ctrl = Controller(t, new Mock<IStorageService>().Object,
-            GenMock(SampleRoadmap(), a => captured = a).Object, user);
-
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
-        Assert.IsType<CreatedResult>(result);
-
-        Assert.NotNull(captured);
-        Assert.Empty(captured!.Criteria!);
-    }
-
-    // BE-5 — thêm 1 AnswerScore (attempt chuẩn) vào buổi `sessionId`, gắn tiêu chí `criterionName`.
-    // Reasoning trích NGUYÊN VĂN (mô phỏng E11) — nguồn cho RoadmapEvidenceLoader.
-    private static void SeedAnswerScore(
-        TestDb t, Guid sessionId, string criterionName, decimal score, string reasoning)
-    {
-        var question = TestDb.Question(sessionId, order: 99);
+        // MIS1-B6 — cần 1 buổi hợp lệ (Guard 1/2/3) mà KHÔNG được lộ tiêu chí (BE, vi) nào cho
+        // LoadCriteriaNamesAsync — dùng thẳng SeedScoredSession sẽ VÔ TÌNH tạo đúng tiêu chí (BE, vi)
+        // mà test này cố tình kiểm là RỖNG. Seed TAY 1 buổi + 1 tiêu chí NGÔN NGỮ KHÁC ("en"):
+        // LoadCriteriaNamesAsync lọc theo Language=="vi" nên vẫn thấy rỗng, trong khi Guard 1/2/3
+        // (chỉ đòi khớp CriterionId, không đòi khớp Language của tiêu chí) vẫn qua được.
+        var session = TestDb.Session(user, SessionStatus.Scored, JobCategory.BE);
+        t.Db.PracticeSessions.Add(session);
+        var crit = TestDb.Criterion(JobCategory.BE, name: "Clarity", language: "en");
+        t.Db.RubricCriteria.Add(crit);
+        t.Db.SessionCriterionScores.Add(new SessionCriterionScore
+        {
+            Id = Guid.NewGuid(), SessionId = session.Id, CriterionId = crit.Id, CriterionName = "Clarity",
+            AverageScore = 2m, MaxScore = crit.MaxScore, Percentage = 40m, Weight = 1m,
+            NeedsImprovement = true, CreatedAt = DateTime.UtcNow
+        });
+        var question = TestDb.Question(session.Id, order: 500);
         t.Db.PracticeQuestions.Add(question);
-        var answer = TestDb.Answer(sessionId, question.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        var answer = TestDb.Answer(session.Id, question.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        answer.Transcript = "Câu trả lời của ứng viên cho Clarity";
         t.Db.PracticeAnswers.Add(answer);
-        var crit = t.Db.RubricCriteria.Local.FirstOrDefault(c => c.Name == criterionName && c.CandidateId == null)
-            ?? t.Db.RubricCriteria.FirstOrDefault(c => c.Name == criterionName && c.CandidateId == null)
-            ?? TestDb.Criterion(JobCategory.BE, name: criterionName);
-        if (t.Db.Entry(crit).State == EntityState.Detached) t.Db.RubricCriteria.Add(crit);
         t.Db.AnswerScores.Add(new AnswerScore
         {
-            Id = Guid.NewGuid(),
-            AnswerId = answer.Id,
-            CriterionId = crit.Id,
-            AttemptNo = 1,
-            Score = score,
-            Reasoning = reasoning,
-            RubricVersion = 1,
-            CreatedAt = DateTime.UtcNow
+            Id = Guid.NewGuid(), AnswerId = answer.Id, CriterionId = crit.Id, AttemptNo = 1, Score = 1,
+            Reasoning = "Chưa nắm vững Clarity.", RubricVersion = 1, CreatedAt = DateTime.UtcNow
         });
         t.Db.SaveChanges();
-    }
-
-    // BE-5 — anchor mutation-check: bằng chứng HÀNH VI (Reasoning thật, không phải placeholder null)
-    // của tiêu chí yếu nhất phải tới ĐƯỢC generator qua CreateAsync → RoadmapEvidenceLoader.
-    [Fact]
-    public async Task Post_WeakCriterionHasReasoning_EvidenceReachesGenerator()
-    {
-        using var t = new TestDb();
-        var user = Guid.NewGuid();
-        var sid = SeedScoredSession(t, user, ("Clarity", 30m, true), ("Depth", 90m, false));
-        SeedAnswerScore(t, sid, "Clarity",
-            score: 1m,
-            reasoning: "Câu trả lời không cân nhắc đánh đổi khi ưu tiên tính năng với nguồn lực hạn chế.");
 
         GenArgs? captured = null;
         var ctrl = Controller(t, new Mock<IStorageService>().Object,
             GenMock(SampleRoadmap(), a => captured = a).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null, SessionIds: [sid]), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null, SessionIds: [session.Id]), default);
         Assert.IsType<CreatedResult>(result);
 
         Assert.NotNull(captured);
-        var ev = Assert.Single(captured!.Evidence!);
-        Assert.Equal("Clarity", ev.CriterionName);
-        Assert.Contains("đánh đổi khi ưu tiên tính năng với nguồn lực hạn chế", Assert.Single(ev.Reasoning));
-        // "Depth" đạt (needsImprovement=false) → KHÔNG nằm trong danh sách weakness → KHÔNG kéo bằng chứng
-        Assert.DoesNotContain(captured.Evidence!, e => e.CriterionName == "Depth");
+        Assert.Empty(captured!.Criteria!);
     }
 
-    // BE-5 — không có buổi Scored nào được chọn (baseline null) → evidence rỗng, KHÔNG lỗi.
+    // 🔴 REC1-B7 — test gốc `Post_WeakCriterionHasReasoning_EvidenceKhongConDuocGuiXuongGenerator`
+    // (MIS1-B5: chứng minh "evidence luôn null tới generator" bằng runtime null-check) đã XOÁ —
+    // `evidence` nay đã gỡ HẲN khỏi chữ ký `IAiServiceRoadmapGenerator.GenerateAsync` (không chỉ
+    // khỏi payload như MIS1-B5), nên KHÔNG CÒN GÌ để null-check: `GenArgs` không có field `Evidence`
+    // nữa, và bản thân trình biên dịch đã chặn mọi caller cố gửi nó — bảo đảm mạnh hơn một bài test
+    // runtime. `SeedAnswerScore` (helper dựng riêng cho test đã xoá, zero caller khác trong file)
+    // xoá cùng — mẫu `BuildCvAnalysisSummary`/`RoadmapService.cs` (REC1-B7): helper tự chứa, xoá
+    // không kéo theo thay đổi field/DI nào khác thì xoá luôn, đừng để rác.
+    //
+    // 🔴 MIS1-B6 — ĐẢO TIỀN ĐỀ, LÝ DO: bài gốc (MIS1-B5, nay đã xoá — xem comment ngay trên) chứng
+    // minh "evidence luôn null, KỂ CẢ KHI không chọn buổi nào" — dùng ca "không chọn buổi" làm một
+    // trong hai điểm đo. Guard 1 nay chặn đúng ca đó TRƯỚC khi evidence (khi nó còn tồn tại) có cơ
+    // hội được tính tới. Bài này giữ nguyên vai trò xác nhận vế còn lại: "không chọn buổi nào" là
+    // 400, không phải một đường tạo-thành-công.
     [Fact]
-    public async Task Post_NoScoredSession_SendsEmptyEvidence_NoError()
+    public async Task Post_KhongChonBuoiNao_400_KhongConDuongEvidenceLuonNull()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var gen = GenMock(SampleRoadmap());
 
-        GenArgs? captured = null;
-        var ctrl = Controller(t, new Mock<IStorageService>().Object,
-            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+        var result = await Controller(t, new Mock<IStorageService>().Object, gen.Object, user)
+            .Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
 
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Middle, null), default);
-        Assert.IsType<CreatedResult>(result);
-
-        Assert.NotNull(captured);
-        Assert.Empty(captured!.Evidence!);
+        var bad = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Contains("ROADMAP_SESSIONS_REQUIRED", bad.Value!.ToString());
+        Assert.Equal(0, await t.Db.Roadmaps.CountAsync());
+        gen.VerifyNoOtherCalls();
     }
 
     // ── (2d) BC17 — id buổi thiếu / khác chủ / chưa Scored → 404 batch, KHÔNG lộ id nào, KHÔNG lưu row ──
@@ -701,8 +791,10 @@ public class RoadmapTests
         var stranger = Guid.NewGuid();
 
         var ownerCtrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, owner);
+        var sid = SeedScoredSession(t, owner, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
         var created = Assert.IsType<CreatedResult>(
-            await ownerCtrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null), default));
+            await ownerCtrl.Create(
+                new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid]), default));
         var id = ((RoadmapResponse)created.Value!).Id;
 
         // owner → 200 đầy đủ
@@ -732,8 +824,10 @@ public class RoadmapTests
         var other = Guid.NewGuid();
 
         var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
         var created = Assert.IsType<CreatedResult>(
-            await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null), default));
+            await ctrl.Create(
+                new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid]), default));
         var id = ((RoadmapResponse)created.Value!).Id;
 
         // Giả lập BC14 đã sinh lý thuyết cho 1 lesson.
@@ -760,42 +854,38 @@ public class RoadmapTests
         Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<RoadmapSummaryResponse>>(otherOk.Value));
     }
 
-    // ── (4) cvId không phải của mình → 403; không tồn tại → 404 ─────────────────────
+    // 🔴 REC1-B7 — ĐẢO TIỀN ĐỀ: mục (4) gốc "cvId không phải của mình → 403; không tồn tại → 404"
+    // không còn đúng — `ReadOwnedParsedTextAsync` (kiểm quyền rồi vứt nội dung `_ =`) đã gỡ khỏi
+    // `CreateAsync`. `CvId` nay CHỈ còn lưu xuống `roadmaps.cv_id` (FK Restrict → file_records).
+    //
+    // `Post_CvOwnedByOther_Returns403_NoRow` (gốc) → viết lại: cùng fixture (file thật, CHỦ KHÁC)
+    // nhưng seed THẲNG vào `t.Db.FileRecords` thay vì mock `IStorageService` — sau khi gỡ
+    // `ReadOwnedParsedTextAsync`, service không còn gọi `IStorageService` cho `CvId` nữa, nên mock
+    // đó không còn mô phỏng đúng đường đi thật (cái THẬT SỰ chặn/không-chặn `CvId` bây giờ là FK
+    // của chính DB). `OwnedFile` (helper cũ) TÁI DÙNG để dựng đúng shape hàng — chỉ đổi chỗ ghi.
     [Fact]
-    public async Task Post_CvOwnedByOther_Returns403_NoRow()
+    public async Task Post_CvOwnedByOther_VanTao201_KhongNem403()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
         var cvId = Guid.NewGuid();
-        var storage = new Mock<IStorageService>();
-        storage.Setup(s => s.GetMetadata(cvId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(OwnedFile(cvId, Guid.NewGuid(), "CV nội dung"));   // chủ khác
+        t.Db.FileRecords.Add(OwnedFile(cvId, Guid.NewGuid(), "CV nội dung"));   // chủ khác — file THẬT
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
+        await t.Db.SaveChangesAsync();
 
-        var ctrl = Controller(t, storage.Object, GenMock(SampleRoadmap()).Object, user);
+        var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
 
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, cvId), default);
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, cvId, SessionIds: [sid]), default);
 
-        var obj = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status403Forbidden, obj.StatusCode);
-        Assert.False(await t.Db.Roadmaps.AnyAsync());
+        Assert.IsType<CreatedResult>(result);
     }
 
-    [Fact]
-    public async Task Post_CvNotFound_Returns404_NoRow()
-    {
-        using var t = new TestDb();
-        var user = Guid.NewGuid();
-        var storage = new Mock<IStorageService>();
-        storage.Setup(s => s.GetMetadata(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((FileRecord?)null);
-
-        var ctrl = Controller(t, storage.Object, GenMock(SampleRoadmap()).Object, user);
-
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, Guid.NewGuid()), default);
-
-        Assert.IsType<NotFoundObjectResult>(result);
-        Assert.False(await t.Db.Roadmaps.AnyAsync());
-    }
+    // `Post_CvNotFound_Returns404_NoRow` (gốc) KHÔNG viết lại theo cùng khuôn: id hoàn toàn không
+    // tồn tại (không có row `file_records` nào) nay phụ thuộc hành vi FK Restrict của chính DB
+    // (chặn bằng lỗi ràng buộc thay vì một câu 404 riêng) — đây là mối quan tâm KHÁC, ngoài phạm vi
+    // XONG-KHI của bước này (chỉ đòi "gửi cvId ⇒ 201, bị bỏ qua", không đòi "cvId bịa cũng phải
+    // qua được"). Đã nêu rõ trong RoadmapCurrentLevelTests.cs.
 
     // ── (5) generator throw → 502, KHÔNG có row roadmap (rollback) ──────────────────
     [Fact]
@@ -803,22 +893,23 @@ public class RoadmapTests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         var gen = new Mock<IAiServiceRoadmapGenerator>();
         gen.Setup(x => x.GenerateAsync(
                 It.IsAny<string>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(), 
-                It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
-                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<CriterionEvidence>?>(),
-                It.IsAny<RoadmapMode>(),
+                It.IsAny<IReadOnlyList<RoadmapWeakness>?>(),
                 It.IsAny<string?>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<QuestionTargetCriterionDto>?>(), It.IsAny<string>(),
+                It.IsAny<RoadmapMode>(),
+                It.IsAny<CancellationToken>(),
+                It.IsAny<IReadOnlyList<RoadmapMistake>?>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-roadmap trả 500"));
 
         var ctrl = Controller(t, new Mock<IStorageService>().Object, gen.Object, user);
 
-        var result = await ctrl.Create(new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null), default);
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid]), default);
 
         var obj = Assert.IsType<ObjectResult>(result);
         Assert.Equal(StatusCodes.Status502BadGateway, obj.StatusCode);
@@ -827,123 +918,97 @@ public class RoadmapTests
         Assert.False(await t.Db.RoadmapLessons.AnyAsync());
     }
 
-    // ══ BC17 — CV analysis làm bối cảnh (BC7) ════════════════════════════════════════════
-    // RoadmapService KHÔNG có phụ thuộc ICreditReservationClient (tạo roadmap free — D22) ⇒ "không
-    // reserve/consume credit" được bảo đảm BẰNG CẤU TRÚC. Ở đây khẳng định thêm: chỉ ĐỌC row cv_analyses
-    // (bối cảnh tới được AI), KHÔNG gọi /analyze-cv (không có analyzer trong service này).
-
+    // 🔴 REC1-B7 — ĐẢO TIỀN ĐỀ TOÀN BỘ MỤC "BC17 — CV analysis làm bối cảnh (BC7)": khối
+    // `CvAnalysisId` (3 guard 404/403/400 + `BuildCvAnalysisSummary` làm ngữ cảnh prompt) đã GỠ HẲN
+    // khỏi `CreateAsync`. `SeedCvAnalysis` (fixture cũ) TÁI DÙNG NGUYÊN VẸN — chính vì dữ liệu đó
+    // TỪNG kích hoạt 404/403 mà nay không còn nữa mới là bằng chứng có giá trị (không phải một
+    // fixture rỗng ngẫu nhiên tình cờ không trúng guard nào).
     [Fact]
-    public async Task Post_CvAnalysisOwned_SummaryReachesGenerator()
+    public async Task Post_CvAnalysisId_GuiGiCungDuoc_VanTao201_KhongConTacDung()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var caId = SeedCvAnalysis(t, user);
+        var caCuaNguoiKhac = SeedCvAnalysis(t, Guid.NewGuid());   // chủ khác — TỪNG là ca 403
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
-        GenArgs? captured = null;
-        var ctrl = Controller(t, new Mock<IStorageService>().Object,
-            GenMock(SampleRoadmap(), a => captured = a).Object, user);
+        var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, CvAnalysisId: caId), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null,
+                SessionIds: [sid], CvAnalysisId: caCuaNguoiKhac), default);
+
         Assert.IsType<CreatedResult>(result);
-
-        Assert.NotNull(captured);
-        Assert.NotNull(captured!.CvAnalysisSummary);
-        Assert.Contains("Ứng viên 3 năm kinh nghiệm backend.", captured.CvAnalysisSummary!);
-        Assert.Contains("75", captured.CvAnalysisSummary!);   // mức khớp JD
-
-        // KHÔNG lưu cvAnalysisId vào roadmap (không có cột → tránh migration).
-        var row = await t.Db.Roadmaps.AsNoTracking().SingleAsync();
-        Assert.Null(row.SourceSessionIds);   // cv-analysis KHÔNG phải baseline
     }
 
     [Fact]
-    public async Task Post_CvAnalysisOtherOwner_Returns403_NoRow()
+    public async Task Post_CvAnalysisId_KhongTonTai_VanTao201_KhongConTacDung()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var caId = SeedCvAnalysis(t, Guid.NewGuid());   // chủ khác
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, CvAnalysisId: caId), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null,
+                SessionIds: [sid], CvAnalysisId: Guid.NewGuid()), default);   // id KHÔNG tồn tại — TỪNG là ca 404
 
-        var o = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status403Forbidden, o.StatusCode);
-        Assert.False(await t.Db.Roadmaps.AnyAsync());
-    }
-
-    [Fact]
-    public async Task Post_CvAnalysisMissing_Returns404_NoRow()
-    {
-        using var t = new TestDb();
-        var user = Guid.NewGuid();
-
-        var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
-
-        var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, CvAnalysisId: Guid.NewGuid()), default);
-
-        Assert.IsType<NotFoundObjectResult>(result);
-        Assert.False(await t.Db.Roadmaps.AnyAsync());
-    }
-
-    // ══ BC17 — roadmap trước làm bối cảnh (final_report, BC15) ════════════════════════════
-    [Fact]
-    public async Task Post_PriorRoadmapCompleted_SummaryReachesGenerator()
-    {
-        using var t = new TestDb();
-        var user = Guid.NewGuid();
-        var priorId = SeedPriorRoadmap(t, user, completed: true);
-
-        GenArgs? captured = null;
-        var ctrl = Controller(t, new Mock<IStorageService>().Object,
-            GenMock(SampleRoadmap(), a => captured = a).Object, user);
-
-        var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, PriorRoadmapId: priorId), default);
         Assert.IsType<CreatedResult>(result);
-
-        Assert.NotNull(captured);
-        Assert.NotNull(captured!.PriorRoadmapSummary);
-        Assert.Contains("Tiến bộ rõ rệt qua các buổi.", captured.PriorRoadmapSummary!);   // overallComment
-        Assert.Contains("Giao tiếp tốt", captured.PriorRoadmapSummary!);                  // strengths
     }
 
+    // 🔴 REC1-B7 — cùng lý do, ĐẢO TIỀN ĐỀ TOÀN BỘ mục "BC17 — roadmap trước làm bối cảnh (BC15)":
+    // khối `PriorRoadmapId` (4 guard + `BuildPriorRoadmapSummary` làm ngữ cảnh) đã GỠ HẲN.
+    // `SeedPriorRoadmap` (fixture cũ) TÁI DÙNG NGUYÊN VẸN cho cùng lý do đã nêu ở CvAnalysisId.
     [Fact]
-    public async Task Post_PriorRoadmapNotCompleted_Returns400_NoRow()
+    public async Task Post_PriorRoadmapId_GuiGiCungDuoc_VanTao201_KhongConTacDung()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var priorId = SeedPriorRoadmap(t, user, completed: false);   // Active, final_report null
+        var priorCuaNguoiKhac = SeedPriorRoadmap(t, Guid.NewGuid(), completed: true);   // chủ khác — TỪNG là ca 403
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, PriorRoadmapId: priorId), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null,
+                SessionIds: [sid], PriorRoadmapId: priorCuaNguoiKhac), default);
 
-        // Chỉ có roadmap được chọn (Active) trong DB — roadmap MỚI không được tạo (400 trước persist).
-        Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal(1, await t.Db.Roadmaps.CountAsync());
-        Assert.Equal(priorId, (await t.Db.Roadmaps.AsNoTracking().SingleAsync()).Id);
+        Assert.IsType<CreatedResult>(result);
     }
 
     [Fact]
-    public async Task Post_PriorRoadmapOtherOwner_Returns403_NoRow()
+    public async Task Post_PriorRoadmapId_ChuaHoanThanh_VanTao201_KhongConTacDung()
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
-        var priorId = SeedPriorRoadmap(t, Guid.NewGuid(), completed: true);   // chủ khác
+        var priorChuaXong = SeedPriorRoadmap(t, user, completed: false);   // Active, final_report null — TỪNG là ca 400
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, PriorRoadmapId: priorId), default);
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null,
+                SessionIds: [sid], PriorRoadmapId: priorChuaXong), default);
 
-        var o = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status403Forbidden, o.StatusCode);
-        Assert.Equal(1, await t.Db.Roadmaps.CountAsync());   // chỉ roadmap của người khác, không tạo mới
+        Assert.IsType<CreatedResult>(result);
+        // 2 roadmap trong DB: 1 cái Active seed sẵn (priorChuaXong) + 1 cái MỚI vừa tạo.
+        Assert.Equal(2, await t.Db.Roadmaps.CountAsync());
+    }
+
+    [Fact]
+    public async Task Post_PriorRoadmapId_KhongTonTai_VanTao201_KhongConTacDung()
+    {
+        using var t = new TestDb();
+        var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
+
+        var ctrl = Controller(t, new Mock<IStorageService>().Object, GenMock(SampleRoadmap()).Object, user);
+
+        var result = await ctrl.Create(
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null,
+                SessionIds: [sid], PriorRoadmapId: Guid.NewGuid()), default);   // id KHÔNG tồn tại — TỪNG là ca 404
+
+        Assert.IsType<CreatedResult>(result);
     }
 
     // ══ BC17 — focus free-text ═══════════════════════════════════════════════════════════
@@ -952,13 +1017,14 @@ public class RoadmapTests
     {
         using var t = new TestDb();
         var user = Guid.NewGuid();
+        var sid = SeedScoredSession(t, user, ("Clarity", 40m, true));   // MIS1-B6 — Guard 1/2/3
 
         GenArgs? captured = null;
         var ctrl = Controller(t, new Mock<IStorageService>().Object,
             GenMock(SampleRoadmap(), a => captured = a).Object, user);
 
         var result = await ctrl.Create(
-            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null,
+            new CreateRoadmapRequest(JobCategory.BE, RoadmapLevel.Junior, null, SessionIds: [sid],
                 Focus: "  Tập trung vào system design  "), default);
         Assert.IsType<CreatedResult>(result);
 

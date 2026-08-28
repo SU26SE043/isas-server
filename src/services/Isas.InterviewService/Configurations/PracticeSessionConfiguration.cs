@@ -72,6 +72,22 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 
+        // TOP1-B5 — danh mục đề tài GẮN cho buổi (jsonb NULLABLE — mẫu TargetCriterionIds/GroundingRefs
+        // ngay trên/dưới: converter null-safe, NULLABLE nên `AddColumn` KHÔNG cần defaultValue → né hẳn
+        // bug jsonb-rỗng-default F15 (Postgres từ chối tại ALTER TABLE, SQLite/EnsureCreated bỏ qua
+        // migration nên test xanh 100% mà không phát hiện được).
+        var topicsConverter = new ValueConverter<List<SessionTopic>?, string?>(
+            v => v == null ? null : JsonSerializer.Serialize(v, KnowledgeJson.Options),
+            v => v == null ? null : JsonSerializer.Deserialize<List<SessionTopic>>(v, KnowledgeJson.Options));
+        var topicsComparer = new ValueComparer<List<SessionTopic>?>(
+            (a, b) => (a ?? new List<SessionTopic>()).SequenceEqual(b ?? new List<SessionTopic>()),
+            v => v == null ? 0 : v.Aggregate(0, (h, t) => HashCode.Combine(h, t.GetHashCode())),
+            v => v == null ? null : v.ToList());
+        var topics = e.Property(x => x.Topics);
+        topics.HasConversion(topicsConverter);
+        topics.Metadata.SetValueComparer(topicsComparer);
+        topics.HasColumnType("jsonb");
+
         // B2B: lookup session theo campaign (S3/S4). Non-unique, nullable.
         e.HasIndex(x => x.CampaignId);
 
