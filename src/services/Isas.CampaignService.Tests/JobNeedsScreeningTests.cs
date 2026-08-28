@@ -183,11 +183,12 @@ public class JobNeedsScreeningTests
     }
 
     // CAMP-2: đổi thước đo giữa chừng làm ứng viên sàng trước và sàng sau không so sánh được nữa.
+    // ⚠ `Active` KHÔNG còn ở đây: EVA1-B6/HĐ-3 cho sửa khi Active MÀ needs còn rỗng + chưa ai được
+    // sàng (đường cứu khi AI hụt lúc publish). Các ca Active → 409 nằm ở EVA1-B6 test bên dưới.
     [Theory]
-    [InlineData(CampaignStatus.Active)]
     [InlineData(CampaignStatus.Closed)]
     [InlineData(CampaignStatus.Archived)]
-    public async Task Sua_job_needs_khi_khong_con_Draft_thi_409(CampaignStatus status)
+    public async Task Sua_job_needs_khi_Closed_Archived_thi_409(CampaignStatus status)
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
@@ -201,6 +202,108 @@ public class JobNeedsScreeningTests
             {
                 new() { Category = JobNeedCategories.Technical, Text = "x" },
             }, default));
+    }
+
+    // ── EVA1-B6 / HĐ-3 — đường CỨU: Active + job_needs rỗng + chưa ai được sàng ───────────────
+
+    private static void SetStatus(CampaignTestDb tdb, Guid campaignId, CampaignStatus status,
+        List<JobNeed>? jobNeeds = null)
+    {
+        var camp = tdb.Db.Campaigns.First(c => c.Id == campaignId);
+        camp.Status = status;
+        camp.JobNeeds = jobNeeds;
+        tdb.Db.SaveChanges();
+    }
+
+    private static void SeedScreenedCandidate(CampaignTestDb tdb, Guid campaignId, int overallMatchScore)
+    {
+        tdb.Db.CvSubmissions.Add(new CvSubmission
+        {
+            Id = Guid.NewGuid(), CampaignId = campaignId, Email = "cand@x.com", CvParsedText = "CV",
+            ParseStatus = CvParseStatus.Done, Status = CvSubmissionStatus.Analyzed,
+            OverallMatchScore = overallMatchScore,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
+        });
+        tdb.Db.SaveChanges();
+    }
+
+    private static List<JobNeedInput> OneInput() => new()
+    {
+        new() { Category = JobNeedCategories.Technical, Text = "Thạo .NET production" },
+    };
+
+    // (1) Draft → 200 (không đổi).
+    [Fact]
+    public async Task B6_Draft_thi_cho_sua()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedDraft(tdb, owner);
+
+        var res = await NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default);
+        Assert.Single(res.JobNeeds);
+    }
+
+    // (2) Active + job_needs RỖNG + chưa ai được sàng → 200 (đường cứu).
+    [Fact]
+    public async Task B6_Active_needs_rong_chua_ai_sang_thi_cho_sua()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedDraft(tdb, owner);
+        SetStatus(tdb, camp.Id, CampaignStatus.Active, jobNeeds: null);
+
+        var res = await NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default);
+        Assert.Single(res.JobNeeds);
+        Assert.Equal(nameof(CampaignStatus.Active), res.Status);
+    }
+
+    // (3) Active + job_needs CÓ mục → 409 (đã chốt thước đo, sửa = trộn hai bộ nhu cầu).
+    [Fact]
+    public async Task B6_Active_needs_co_muc_thi_409()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedDraft(tdb, owner);
+        SetStatus(tdb, camp.Id, CampaignStatus.Active, jobNeeds: new List<JobNeed>
+        {
+            new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "đã có", Source = JobNeedSources.AiSuggested },
+        });
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default));
+
+        // Thông điệp nêu CẢ HAI điều kiện — HR đọc trên màn hình.
+        Assert.Contains("Draft", ex.Message);
+        Assert.Contains("RỖNG", ex.Message);
+        Assert.Contains("sàng", ex.Message);
+    }
+
+    // (4) Closed + job_needs rỗng → 409 (chỉ Draft/Active nằm trong đường cứu).
+    [Fact]
+    public async Task B6_Closed_needs_rong_thi_409()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedDraft(tdb, owner);
+        SetStatus(tdb, camp.Id, CampaignStatus.Closed, jobNeeds: null);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default));
+    }
+
+    // (5) Active + job_needs RỖNG NHƯNG đã có 1 ứng viên OverallMatchScore = 80 → 409 (khoá vế thứ hai).
+    [Fact]
+    public async Task B6_Active_needs_rong_nhung_da_co_ung_vien_duoc_sang_thi_409()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedDraft(tdb, owner);
+        SetStatus(tdb, camp.Id, CampaignStatus.Active, jobNeeds: null);
+        SeedScreenedCandidate(tdb, camp.Id, overallMatchScore: 80);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default));
     }
 
     // Nhóm lạ bị chặn tại cửa: `job_needs` đi thẳng vào prompt sàng CV và vào màn HR, nên giá trị

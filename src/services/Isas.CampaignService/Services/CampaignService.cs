@@ -2888,8 +2888,13 @@ namespace Isas.CampaignService.Services
         }
 
         /// <summary>
-        /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12). Chỉ khi <c>Draft</c> — CAMP-2:
-        /// đổi thước đo giữa chừng làm ứng viên sàng trước và sàng sau không so sánh được nữa.
+        /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12).
+        /// <para>Cho sửa khi <c>Draft</c> (CAMP-2: đổi thước đo giữa chừng làm ứng viên sàng
+        /// trước/sau không so sánh được), HOẶC — đường CỨU của EVA1-B6/HĐ-3 — khi <c>Active</c> mà
+        /// <c>job_needs</c> còn RỖNG và CHƯA có ứng viên nào được sàng: nếu AIService hụt đúng lúc
+        /// publish (<see cref="PublishCampaignAsync"/> ~:1095) thì campaign thành Active với
+        /// job_needs rỗng, mà máy trạng thái một chiều KHÔNG có đường về Draft ⇒ campaign đó vĩnh
+        /// viễn không sàng CV được, chỉ còn UPDATE SQL tay.</para>
         /// </summary>
         public async Task<CampaignResponse> ReplaceJobNeedsAsync(
             Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
@@ -2898,9 +2903,25 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            if (campaign.Status != CampaignStatus.Draft)
+            // EVA1-B6 / HĐ-3 — vế `!anyScreened` THỪA về logic hôm nay (Active + needs rỗng KHÔNG
+            // thể có screening đang chạy: RequireJobNeeds ném khi rỗng, worker ném PermanentCvError
+            // khi rỗng, callback dựng `allowed` từ job_needs nên rỗng ⇒ mọi assessment bị loại ⇒
+            // điểm null). Viết thẳng ở đây để bất biến "không sửa needs khi đã có người sàng" (job_needs
+            // KHÔNG có nhãn phiên bản như rubric_version) sống sót qua một refactor tương lai cho phép
+            // xoá needs.
+            var jobNeedsEmpty = campaign.JobNeeds is not { Count: > 0 };
+            var anyScreened = await _db.CvSubmissions
+                .AnyAsync(c => c.CampaignId == id && c.OverallMatchScore != null, ct);
+
+            var canEdit = campaign.Status == CampaignStatus.Draft
+                || (campaign.Status == CampaignStatus.Active && jobNeedsEmpty && !anyScreened);
+            if (!canEdit)
                 throw new InvalidOperationException(
-                    $"Chỉ sửa nhu cầu công việc khi campaign `Draft` (hiện: {campaign.Status}).");
+                    "Chỉ sửa nhu cầu công việc khi campaign `Draft`, HOẶC `Active` mà nhu cầu công việc " +
+                    "còn RỖNG VÀ CHƯA có ứng viên nào được sàng (điểm khớp CV). " +
+                    $"Hiện: trạng thái {campaign.Status}, nhu cầu " +
+                    $"{(jobNeedsEmpty ? "rỗng" : $"có {campaign.JobNeeds!.Count} mục")}, " +
+                    $"{(anyScreened ? "đã có ứng viên được sàng" : "chưa ai được sàng")}.");
 
             var cleaned = new List<JobNeed>();
             foreach (var n in needs ?? new List<JobNeedInput>())
