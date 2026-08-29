@@ -45,4 +45,31 @@ namespace Isas.CampaignService.DTOs
         decimal? SampleScore,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         IReadOnlyList<ScoringError>? Errors);
+
+    /// <summary>
+    /// SCP1 · HĐ-3 — body của <c>POST /api/v1/campaign/{id}/scoring-policies</c> (tạo version MỚI).
+    /// Có thể khởi từ một mẫu (<see cref="SourceTemplateId"/>) hoặc từ biểu thức tự gõ — dù nguồn nào,
+    /// server lưu GIÁ TRỊ trong body thành một dòng độc lập (CHÉP, không tham chiếu sống — CAMP-20).
+    /// </summary>
+    public sealed class CreateScoringPolicyRequest
+    {
+        /// <summary>"Interview" | "CvScreening" (phân biệt hoa/thường). Sai/thiếu → 400.</summary>
+        public string? Kind { get; set; }
+
+        /// <summary>Bắt buộc.</summary>
+        public string? Name { get; set; }
+        public string? Description { get; set; }
+
+        /// <summary>Bắt buộc. Được <c>ScoringExpression.Validate</c> kiểm lại (đường B3) TRƯỚC khi lưu —
+        /// không tin dữ liệu vào. Không hợp lệ ⇒ 400 <c>{ "errors": [{code,start,end}] }</c>.</summary>
+        public string? Expression { get; set; }
+
+        /// <summary>Ngưỡng % Đạt/Không đạt. <c>null</c> = HR quyết tay.</summary>
+        public int? PassScorePct { get; set; }
+
+        /// <summary>PROVENANCE — id mẫu hệ thống mà bản này khởi từ. Nếu có: phải là mẫu
+        /// (<c>campaign_id = NULL</c>) CÙNG <see cref="Kind"/>. KHÔNG dùng để deref giá trị lúc chạy;
+        /// admin sửa mẫu KHÔNG đổi bản đã chép.</summary>
+        public Guid? SourceTemplateId { get; set; }
+    }
 }

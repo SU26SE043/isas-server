@@ -44,6 +44,10 @@ namespace Isas.CampaignService.Controllers
         private Guid GetActorUserId()
             => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var g) ? g : Guid.Empty;
 
+        // AUTH-4/AUTH-5: org_role trong JWT (đọc OFFLINE — GEN-3). Mẫu như ApiKeysController.
+        private bool IsOrgAdmin()
+            => User.HasClaim(c => c.Type == "org_role" && c.Value == "OrgAdmin");
+
         // GET /campaign — campaign của org caller (mới nhất trước; keyset-paged DB31, mẫu DB8).
         // ?limit= (mặc định/tối đa 500) + ?cursor= (opaque) để phân trang; next-cursor trả ở header
         // X-Next-Cursor (vắng = hết trang). Body giữ nguyên mảng JSON → FE hiện tại không phải sửa gì.
@@ -455,6 +459,37 @@ namespace Isas.CampaignService.Controllers
                     orgId.Value, id, kind.Value, req!.Expression ?? string.Empty, ct));
             }
             catch (KeyNotFoundException) { return NotFound(); }
+        }
+
+        // SCP1 · HĐ-3/HĐ-6 — tạo VERSION MỚI chính sách chấm cho campaign, khởi từ mẫu
+        // (sourceTemplateId) hoặc biểu thức tự gõ. CHÉP giá trị, KHÔNG tham chiếu sống tới mẫu
+        // (CAMP-20). Con trỏ campaigns.{interview,cv}_policy_version chuyển sang version vừa tạo.
+        //   · HĐ-6: HrMember chỉ tạo khi campaign còn Draft; ngoài Draft cần OrgAdmin.
+        //   · CẤM B4: campaign đã có người được chấm → 409 (phải qua xem trước B8). Sửa policy đã tạo
+        //     KHÔNG có ở đây — tạo version mới.
+        [HttpPost("{id:guid}/scoring-policies")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<DTOs.ScoringPolicyResponse>> CreateScoringPolicy(
+            Guid id, [FromBody] DTOs.CreateScoringPolicyRequest req, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            try
+            {
+                var created = await _policies.CreatePolicyAsync(
+                    orgId.Value, GetActorUserId(), IsOrgAdmin(), id, req ?? new(), ct);
+                return Ok(created);
+            }
+            // ScoringExpressionInvalidException KHÔNG dẫn xuất InvalidOperationException → bắt riêng, trả
+            // body { errors: [{code,start,end}] } như HĐ-2 (FE dùng lại mã dịch của B3).
+            catch (ScoringExpressionInvalidException ex) { return BadRequest(new { errors = ex.Errors }); }
+            // EntitlementForbiddenException DẪN XUẤT InvalidOperationException → PHẢI đứng trước khối 409.
+            catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
+            catch (KeyNotFoundException) { return NotFound(); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }
         }
 
         // ⚠ Route 3 đoạn nên KHÔNG đụng [HttpGet("{id}")] (1 đoạn, không ràng buộc) ở trên.
