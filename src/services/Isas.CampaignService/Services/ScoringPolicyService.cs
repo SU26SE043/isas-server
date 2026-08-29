@@ -61,6 +61,7 @@ namespace Isas.CampaignService.Services
                 "CvScreening" => ScoringExpressionKind.CvScreening,
                 _ => throw new ArgumentException("kind phải là 'Interview' hoặc 'CvScreening'."),
             };
+            RejectCvPassScore(kind, req.PassScorePct);   // B9 — sàng CV không có đạt/trượt
             if (string.IsNullOrWhiteSpace(req.Name))
                 throw new ArgumentException("name là bắt buộc.");
             var expression = req.Expression ?? string.Empty;
@@ -127,7 +128,13 @@ namespace Isas.CampaignService.Services
             // relabel). Campaign đã chấm ⇒ để con trỏ đứng yên; HR phải preview + apply (B8).
             if (!hasScored)
             {
-                if (kind == ScoringExpressionKind.Interview) campaign.InterviewPolicyVersion = policy.Version;
+                if (kind == ScoringExpressionKind.Interview)
+                {
+                    campaign.InterviewPolicyVersion = policy.Version;
+                    // B9 — ngưỡng đạt nay do CHÍNH SÁCH sở hữu. policy.PassScorePct == null ⇒ chính sách
+                    // không quy định ⇒ giữ nguyên giá trị HR đã đặt (ngữ nghĩa null của E5: "HR quyết tay").
+                    if (policy.PassScorePct is int pp) campaign.PassScorePct = pp;
+                }
                 else campaign.CvPolicyVersion = policy.Version;
             }
 
@@ -145,6 +152,9 @@ namespace Isas.CampaignService.Services
                 "CvScreening" => ScoringExpressionKind.CvScreening,
                 _ => throw new ArgumentException("kind phải là 'Interview' hoặc 'CvScreening'."),
             };
+            // B9 — giữ parity với đường tạo: sàng CV không có đạt/trượt ⇒ đừng để FE xem trước với một
+            // ngưỡng nó sẽ không lưu được (rồi fingerprint lệch lúc apply).
+            RejectCvPassScore(kind, req.PassScorePct);
             var expression = req.Expression ?? string.Empty;
 
             var campaign = await _db.Campaigns
@@ -238,6 +248,11 @@ namespace Isas.CampaignService.Services
                 }
 
                 campaign.InterviewPolicyVersion = policy.Version;
+                // B9 — đồng bộ ngưỡng đạt: đường Pass/Fail (E5, CampaignService.cs:1681) đọc
+                // campaign.PassScorePct, và cột đó nằm trong hợp đồng API công khai (PublicApiController,
+                // CSV, PDF) nên phải ĐỒNG BỘ VÀO CỘT, không đổi nguồn đọc. policy.PassScorePct == null ⇒
+                // chính sách không quy định ⇒ giữ nguyên ngưỡng HR đã đặt.
+                if (policy.PassScorePct is int pp) campaign.PassScorePct = pp;
                 AddApplyAudit(actorUserId, orgId, campaign.Id, kind, policy.Version, oldSnapshot);
                 await _db.SaveChangesAsync(ct);
                 return new ApplyScoringPolicyResult(ranks.Count, rankChanged, policy.Version);
@@ -482,6 +497,15 @@ namespace Isas.CampaignService.Services
                 return int.TryParse(s, out var n) && n >= 0 ? n : 0;
             }
             catch { return 0; }
+        }
+
+        // B9 — sàng CV KHÔNG có khái niệm đạt/trượt (không cột, không consumer, không màn hiển thị).
+        // Nhận passScorePct cho kind CvScreening = hứa với employer một quyết định không tồn tại.
+        private static void RejectCvPassScore(ScoringExpressionKind kind, int? passScorePct)
+        {
+            if (kind == ScoringExpressionKind.CvScreening && passScorePct is not null)
+                throw new ArgumentException(
+                    "Sàng CV không có ngưỡng đạt/trượt — bỏ passScorePct (chỉ chính sách chấm phỏng vấn dùng ngưỡng).");
         }
 
         private static ScoringPolicyResponse Map(ScoringPolicy p) => new(

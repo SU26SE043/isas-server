@@ -10,9 +10,10 @@ namespace Isas.CampaignService.Models
     /// lấy từ <see cref="ScoringEngine.Version"/> (đổi hằng đó ⇒ mẫu seed lần deploy sau mang số mới —
     /// đúng ý đồ HĐ-4).</para>
     ///
-    /// <para><c>pass_score_pct</c> mẫu: <b>Phỏng vấn 60 · Sàng CV 50</b> — điểm khởi đầu hợp lý để HR
-    /// chỉnh, không phải chuẩn ngành. HĐ-3 §4 không quy định con số này nên chọn ở đây; HR đổi được sau
-    /// (đây chỉ là mẫu để chép).</para>
+    /// <para><c>pass_score_pct</c> mẫu: <b>Phỏng vấn 60</b> — điểm khởi đầu hợp lý để HR chỉnh, không
+    /// phải chuẩn ngành. HĐ-3 §4 không quy định con số này nên chọn ở đây; HR đổi được sau (đây chỉ là
+    /// mẫu để chép). <b>Sàng CV KHÔNG có ngưỡng</b> (B9): hệ thống không có khái niệm đạt/trượt CV —
+    /// không cột, không consumer, không màn hiển thị. Seed CV để <c>PassScorePct = null</c>.</para>
     /// </summary>
     internal static class ScoringPolicySeed
     {
@@ -75,7 +76,7 @@ namespace Isas.CampaignService.Models
                 Name = "Như hiện nay",
                 Description = "Tỷ lệ nhu cầu đạt: mỗi nhu cầu Strong tính 1, Partial tính 0.5, chia tổng số nhu cầu rồi nhân 100.",
                 Expression = "100 * (strong_count + 0.5 * partial_count) / need_count",
-                PassScorePct = 50,
+                // B9 — sàng CV không có ngưỡng đạt/trượt.
                 SourceTemplateId = null,
                 CreatedAt = At,
                 CreatedBy = null,
@@ -90,7 +91,7 @@ namespace Isas.CampaignService.Models
                 Name = "Bắt buộc must-have",
                 Description = "Thiếu bất kỳ nhu cầu must-have nào → 0 điểm; đủ must-have thì tính như 'Như hiện nay'.",
                 Expression = "if(must_have_met < must_have_total, 0, 100 * (strong_count + 0.5 * partial_count) / need_count)",
-                PassScorePct = 50,
+                // B9 — sàng CV không có ngưỡng đạt/trượt.
                 SourceTemplateId = null,
                 CreatedAt = At,
                 CreatedBy = null,

@@ -115,7 +115,7 @@ public class ScoringPolicyCreateTests
 
         await Created(e.Controller, e.CampaignId, Req(kind: "Interview", name: "iv"));
         await Created(e.Controller, e.CampaignId,
-            Req(kind: "CvScreening", name: "cv", expr: "100 * strong_count / need_count", pass: 50));
+            Req(kind: "CvScreening", name: "cv", expr: "100 * strong_count / need_count", pass: null));
 
         using var db = e.Db.NewContext();
         var camp = await db.Campaigns.SingleAsync(x => x.Id == e.CampaignId);
@@ -273,9 +273,9 @@ public class ScoringPolicyCreateTests
         var iv = await Created(e.Controller, e.CampaignId, Req(kind: "Interview"));
         Assert.Equal(1, iv.Version);
 
-        // CvScreening kind: đã có điểm ⇒ tạo được nhưng con trỏ đứng yên.
+        // CvScreening kind: đã có điểm ⇒ tạo được nhưng con trỏ đứng yên. (B9 — CV không nhận ngưỡng.)
         var cv = await Created(e.Controller, e.CampaignId,
-            Req(kind: "CvScreening", expr: "100 * strong_count / need_count", pass: 50));
+            Req(kind: "CvScreening", expr: "100 * strong_count / need_count", pass: null));
         Assert.Equal(1, cv.Version);
 
         using var db = e.Db.NewContext();

@@ -6,6 +6,7 @@ using Isas.CampaignService.Models;
 using Isas.CampaignService.Validation;
 using Isas.Shared.Pagination;
 using Isas.Shared.Rubric;
+using Isas.Shared.Scoring;
 using Isas.Shared.Validation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -455,6 +456,25 @@ namespace Isas.CampaignService.Services
             if (request.PassScorePct.HasValue)
             {
                 ValidatePassScorePct(request.PassScorePct);
+
+                // B9 — nếu campaign đang áp một chính sách chấm phỏng vấn CÓ quy định ngưỡng, thì ngưỡng
+                // đạt thuộc CHÍNH SÁCH: sửa ở đây là ghi chồng câm (bảng vẫn chấm ở con số của policy).
+                // Chỉ chặn khi giá trị KHÁC ngưỡng hiện hành — FE echo lại cả form là chuyện thường, 400
+                // ở đó biến mọi lần bấm Lưu thành lỗi. Campaign CHƯA có policy → đường ghi cũ nguyên vẹn.
+                if (campaign.InterviewPolicyVersion is int piv)
+                {
+                    var policyThreshold = await _db.ScoringPolicies
+                        .Where(p => p.CampaignId == id
+                            && p.Kind == ScoringExpressionKind.Interview
+                            && p.Version == piv)
+                        .Select(p => p.PassScorePct)
+                        .FirstOrDefaultAsync(ct);
+                    if (policyThreshold is int pt && request.PassScorePct.Value != pt)
+                        throw new ArgumentException(
+                            $"Ngưỡng đạt nay thuộc chính sách chấm phỏng vấn v{piv} ({pt}%) — "
+                            + "sửa trong trình soạn chính sách chấm, không ở đây.");
+                }
+
                 campaign.PassScorePct = request.PassScorePct;
             }
 

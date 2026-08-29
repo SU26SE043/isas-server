@@ -42,10 +42,11 @@ public class ScoringPolicySeedTests
     [InlineData("Interview", "Như hiện nay", "weighted_avg_pct", 60)]
     [InlineData("Interview", "Phạt bỏ câu", "weighted_avg_pct * completeness", 60)]
     [InlineData("Interview", "Không bù trừ", "if(min_pct < 40, min_pct, weighted_avg_pct)", 60)]
-    [InlineData("CvScreening", "Như hiện nay", "100 * (strong_count + 0.5 * partial_count) / need_count", 50)]
+    // B9 — sàng CV KHÔNG có ngưỡng đạt/trượt (không cột/consumer/màn hiển thị) ⇒ seed để null.
+    [InlineData("CvScreening", "Như hiện nay", "100 * (strong_count + 0.5 * partial_count) / need_count", null)]
     [InlineData("CvScreening", "Bắt buộc must-have",
-        "if(must_have_met < must_have_total, 0, 100 * (strong_count + 0.5 * partial_count) / need_count)", 50)]
-    public void Seed_bieu_thuc_va_nguong_dung_verbatim(string kind, string name, string expr, int pass)
+        "if(must_have_met < must_have_total, 0, 100 * (strong_count + 0.5 * partial_count) / need_count)", null)]
+    public void Seed_bieu_thuc_va_nguong_dung_verbatim(string kind, string name, string expr, int? pass)
     {
         using var tdb = new CampaignTestDb();
         var k = Enum.Parse<ScoringExpressionKind>(kind);

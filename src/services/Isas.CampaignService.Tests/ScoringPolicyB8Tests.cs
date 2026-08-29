@@ -319,10 +319,10 @@ public class ScoringPolicyB8Tests
 
         // must-have gate: 1/2 met ⇒ 0.
         const string gate = "if(must_have_met < must_have_total, 0, 100)";
-        var preview = await Preview(e.Controller, e.CampaignId, "CvScreening", gate, pass: 50);
+        var preview = await Preview(e.Controller, e.CampaignId, "CvScreening", gate, pass: null);
         Assert.Equal(0m, preview.Rows.Single().NewScore);
 
-        var policy = await CreatePolicy(e.Controller, e.CampaignId, "CvScreening", gate, pass: 50);
+        var policy = await CreatePolicy(e.Controller, e.CampaignId, "CvScreening", gate, pass: null);
         var action = await e.Controller.ApplyScoringPolicy(
             e.CampaignId, policy.Id, new ApplyScoringPolicyRequest { Fingerprint = preview.Fingerprint }, default);
         var result = Assert.IsType<ApplyScoringPolicyResult>(Assert.IsType<OkObjectResult>(action.Result).Value);
