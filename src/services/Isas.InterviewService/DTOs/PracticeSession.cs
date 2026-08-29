@@ -120,7 +120,13 @@ public record CreateCampaignSessionRequest(
     // chuyện được với bản Interview cũ và ngược lại. Campaign gửi CẢ HAI; Interview ưu tiên field này,
     // vắng thì rơi về `Questions`. Gỡ `Questions` là việc của một đợt sau, khi cả hai bên đã lên.
     // ⚠ Nếu có thì SỐ LƯỢNG và THỨ TỰ phải khớp `Questions` — Interview không tự ghép lại.
-    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null
+    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null,
+    // SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức) của campaign, ghim vào practice_sessions.
+    // Cả 4 nullable + CUỐI record. null = Campaign chưa áp chính sách (dùng weighted mặc định).
+    int? CampaignPolicyVersion = null,
+    string? CampaignPolicyExpression = null,
+    int? CampaignPolicyPassScorePct = null,
+    string? CampaignPolicyEngineVersion = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -152,7 +158,15 @@ public record CreateCampaignSessionInternalRequest(
     IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null,
     // Phiên bản bộ tiêu chí (campaigns.rubric_version). Khoá JSON trên dây: `rubricVersion`
     // (JsonSerializerDefaults.Web ⇒ camelCase). null = Campaign bản cũ ⇒ Interview coi là 1.
-    int? RubricVersion = null
+    int? RubricVersion = null,
+    // SCP1 · B5 — HỢP ĐỒNG CHẤM ĐIỂM (chính sách biểu thức) của campaign, ghim vào practice_sessions
+    // lúc tạo. Cả 4 nullable + ở CUỐI record: bản Campaign cũ chưa gửi ⇒ null ⇒ buổi dùng công thức
+    // weighted mặc định (hành vi trước SCP1). Ghim CẢ biểu thức — Interview không đọc được bảng
+    // scoring_policies của Campaign lúc chấm/preview.
+    int? CampaignPolicyVersion = null,
+    string? CampaignPolicyExpression = null,
+    int? CampaignPolicyPassScorePct = null,
+    string? CampaignPolicyEngineVersion = null
 );
 public record PracticeSessionResponse(
     Guid Id,

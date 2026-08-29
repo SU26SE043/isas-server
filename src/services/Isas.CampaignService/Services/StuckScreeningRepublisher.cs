@@ -108,7 +108,9 @@ namespace Isas.CampaignService.Services
                     c.CreatedAt,
                     Domain = c.Campaign.Domain,
                     Language = c.Campaign.Language,
-                    JobNeeds = c.Campaign.JobNeeds
+                    JobNeeds = c.Campaign.JobNeeds,
+                    // SCP1 · B5 — để COALESCE pin nếu lần publish đầu chưa kịp lưu (giữ pin cũ nếu đã có).
+                    CvPolicyVersion = c.Campaign.CvPolicyVersion
                 })
                 .ToListAsync(ct);
 
@@ -177,6 +179,9 @@ namespace Isas.CampaignService.Services
                         .ExecuteUpdateAsync(s => s
                             .SetProperty(x => x.Status, CvSubmissionStatus.Analyzing)
                             .SetProperty(x => x.LastScreeningPublishedAt, now)
+                            // SCP1 · B5 — RETRY: GIỮ pin cũ (COALESCE). Chỉ set khi còn null (lần publish
+                            // đầu ném trước khi kịp lưu pin) ⇒ dùng chính sách chấm CV hiện hành của campaign.
+                            .SetProperty(x => x.ScoringPolicyVersion, x => x.ScoringPolicyVersion ?? c.CvPolicyVersion)
                             .SetProperty(x => x.UpdatedAt, now), ct);
 
                     _logger.LogInformation("Re-published CV sàng candidate {CandidateId}", c.Id);

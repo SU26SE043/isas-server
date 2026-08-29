@@ -39,10 +39,11 @@ namespace Isas.CampaignService.Services
             DateTime? expiresAt = null,
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             int? maxDeepPerQuestion = null, string seniority = "Junior", int rubricVersion = 1,
-            IReadOnlyList<SessionQuestionInput>? questionDetails = null, CancellationToken ct = default)
-            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", seniority, rubricVersion, questionDetails, ct);
+            IReadOnlyList<SessionQuestionInput>? questionDetails = null,
+            CampaignScoringPolicyInput? scoringPolicy = null, CancellationToken ct = default)
+            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", seniority, rubricVersion, questionDetails, scoringPolicy, ct);
 
-        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CancellationToken ct)
+        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, CancellationToken ct)
         {
             var payload = new
             {
@@ -72,7 +73,13 @@ namespace Isas.CampaignService.Services
                 // Câu hỏi KÈM đáp án mẫu. Gửi SONG SONG với `questions` chứ không thay thế: hai service
                 // deploy không nguyên tử, nên bản Interview cũ (chưa biết field này) vẫn phải chạy được.
                 // Bản Interview mới ưu tiên field này và bỏ qua nếu số lượng lệch với `questions`.
-                questionDetails = questionDetails?.Select(q => new { q.Text, q.SampleAnswer })
+                questionDetails = questionDetails?.Select(q => new { q.Text, q.SampleAnswer }),
+                // SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức). Interview ghim CẢ 4 vào
+                // practice_sessions; null (campaign chưa áp chính sách) ⇒ bên đó dùng weighted mặc định.
+                campaignPolicyVersion = scoringPolicy?.Version,
+                campaignPolicyExpression = scoringPolicy?.Expression,
+                campaignPolicyPassScorePct = scoringPolicy?.PassScorePct,
+                campaignPolicyEngineVersion = scoringPolicy?.EngineVersion
             };
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/campaign")

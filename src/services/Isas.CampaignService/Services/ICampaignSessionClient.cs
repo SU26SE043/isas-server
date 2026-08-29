@@ -28,10 +28,13 @@ namespace Isas.CampaignService.Services
             // đánh số): materialize là lazy nên bên đó không thể suy ra đúng số HR đang nhìn thấy.
             int rubricVersion = 1,
             IReadOnlyList<SessionQuestionInput>? questionDetails = null,
+            // SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức) đang áp cho campaign. null =
+            // campaign chưa áp chính sách nào ⇒ buổi thi dùng công thức weighted mặc định.
+            CampaignScoringPolicyInput? scoringPolicy = null,
             CancellationToken ct = default);
         // Overload đầy đủ: KHÔNG đặt default cho `language`/`seniority`/`ct` — caller duy nhất
         // (ParticipationService) truyền đủ, và để trống default thì hai overload không thể nhập nhằng.
-        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CancellationToken ct);
+        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, CancellationToken ct);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
         // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).
@@ -91,6 +94,15 @@ namespace Isas.CampaignService.Services
 
     /// <summary>Một mốc điểm (E9 hard-anchor) — map 1-1 sang <c>rubric_levels</c> phía Interview.</summary>
     public record SessionCriterionLevelInput(int Score, string Descriptor);
+
+    /// <summary>
+    /// SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức) của campaign, gửi sang Interview để ghim
+    /// vào <c>practice_sessions</c>. Ghim CẢ biểu thức: Interview không đọc được bảng
+    /// <c>scoring_policies</c> của Campaign lúc chấm/preview (DB-per-service). Chỉ tồn tại khi campaign
+    /// ĐÃ áp một chính sách (<c>campaigns.interview_policy_version != null</c>); null = dùng công thức
+    /// weighted mặc định.
+    /// </summary>
+    public record CampaignScoringPolicyInput(int Version, string Expression, int? PassScorePct, string EngineVersion);
 
     /// <summary>
     /// Một câu campaign kèm đáp án mẫu HR soạn (null = chưa soạn).

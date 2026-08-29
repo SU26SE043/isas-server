@@ -69,6 +69,14 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // (giá trị đã biết chắc, xem ghi chú ở entity), không phải bằng DB default.
         e.Property(x => x.CampaignRubricVersion);
 
+        // SCP1 · B5 — ghim hợp đồng chấm điểm (chính sách biểu thức) của buổi B2B. 4 cột NULLABLE,
+        // KHÔNG default: null = B2C / B2B chưa áp chính sách / buổi trước cột này (xem entity). Ghim
+        // CẢ biểu thức vì Interview không đọc được bảng scoring_policies của Campaign lúc chấm.
+        e.Property(x => x.CampaignPolicyVersion);
+        e.Property(x => x.CampaignPolicyExpression).HasColumnType("text");
+        e.Property(x => x.CampaignPolicyPassScorePct);
+        e.Property(x => x.CampaignPolicyEngineVersion).HasMaxLength(16);
+
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 

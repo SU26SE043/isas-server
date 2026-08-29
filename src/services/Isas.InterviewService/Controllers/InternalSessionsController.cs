@@ -67,7 +67,10 @@ public class InternalSessionsController : ControllerBase
             req.AdaptiveEnabled, req.MaxFollowUps, req.MaxQuestions,
             req.MaxDeepPerQuestion, req.Language, req.Seniority,   // phỏng vấn THÍCH ỨNG (B2B) — INT-17b: trần đào sâu mỗi câu
             req.RubricVersion,
-            details);
+            details,
+            // SCP1 · B5 — chuyển tiếp hợp đồng chấm điểm (chính sách biểu thức) từ Campaign xuống session.
+            req.CampaignPolicyVersion, req.CampaignPolicyExpression,
+            req.CampaignPolicyPassScorePct, req.CampaignPolicyEngineVersion);
 
         try
         {

@@ -1,3 +1,5 @@
+using Isas.Shared.Scoring;
+
 namespace Isas.InterviewService.DTOs;
 
 // Message phát lên RabbitMQ khi session đóng sang Scored (E2 — interview.md §Sự kiện phát ra).
@@ -27,4 +29,13 @@ public class SessionScoredEvent
     // outbox (chưa gửi lúc deploy) deserialize ra null thay vì nổ.
     // ⚠ null nghĩa là "KHÔNG BIẾT" — B2C, hoặc buổi có trước cột ghim. Đừng vẽ null thành v1 (BK23).
     public int? RubricVersion { get; set; }
+
+    // SCP1 · B5 — BÓ BIẾN ĐẦU VÀO THÔ (per-criterion pct/weight/maxScore/name + answered/
+    // totalQuestions). Campaign ghim vào campaign_rankings.scoring_inputs để B8 (xem trước / áp
+    // chính sách) tính lại điểm từ dữ liệu THÔ.
+    //
+    // ⚠ NULLABLE bắt buộc: field đến QUA EVENT. Bản Interview cũ (rollout skew) không gửi field
+    // này, và event cũ đang nằm trong outbox deserialize ra null ⇒ cột campaign_rankings.scoring_inputs
+    // KHÔNG được NOT NULL, nếu không consumer crash trong cửa sổ rollout.
+    public ScoringInputsSnapshot? ScoringInputs { get; set; }
 }

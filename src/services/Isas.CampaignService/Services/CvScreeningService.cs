@@ -78,6 +78,13 @@ namespace Isas.CampaignService.Services
             var now = DateTime.UtcNow;
             int published = 0;
 
+            // SCP1 · B5 — GHIM chính sách chấm CV cho LẦN ĐÁNH GIÁ này, TẠI ĐÂY (lúc đẩy job), không
+            // lúc upload. `??=` : chỉ set khi chưa có ⇒ chạy lại hàm này hoặc republisher đẩy lại
+            // KHÔNG đổi pin (retry = cùng một lần đánh giá). HR bấm rescreen mới re-pin
+            // (RescreenCandidateAsync). null (campaign chưa áp chính sách CV) ⇒ chấm mặc định.
+            foreach (var cand in candidates)
+                cand.ScoringPolicyVersion ??= campaign.CvPolicyVersion;
+
             foreach (var cand in candidates)
             {
                 try
@@ -102,8 +109,9 @@ namespace Isas.CampaignService.Services
                 }
             }
 
-            if (published > 0)
-                await _db.SaveChangesAsync(ct);
+            // LUÔN lưu (không chỉ khi published > 0): pin ScoringPolicyVersion đã set ở trên phải bền
+            // vững kể cả khi publish HỤT cho mọi CV — republisher đẩy lại sau đó GIỮ pin này (retry).
+            await _db.SaveChangesAsync(ct);
 
             return published;
         }
@@ -158,6 +166,9 @@ namespace Isas.CampaignService.Services
             var now = DateTime.UtcNow;
             candidate.Status = CvSubmissionStatus.Analyzing;
             candidate.LastScreeningPublishedAt = now;
+            // SCP1 · B5 — HR bấm rescreen = LẦN ĐÁNH GIÁ MỚI ⇒ RE-PIN theo chính sách chấm CV HIỆN
+            // HÀNH (kể cả về null nếu chính sách đã bị gỡ). Khác retry của republisher (giữ pin cũ).
+            candidate.ScoringPolicyVersion = campaign.CvPolicyVersion;
             candidate.UpdatedAt = now;
             await _db.SaveChangesAsync(ct);
 

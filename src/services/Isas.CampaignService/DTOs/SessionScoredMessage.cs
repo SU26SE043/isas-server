@@ -1,3 +1,5 @@
+using Isas.Shared.Scoring;
+
 namespace Isas.CampaignService.DTOs
 {
     /// <summary>
@@ -27,5 +29,10 @@ namespace Isas.CampaignService.DTOs
         // Interview cũ không gửi field này, và hai service deploy không nguyên tử ⇒ thiếu thì để
         // NULL ("không biết"), tuyệt đối không mặc định thành 1.
         public int? RubricVersion { get; set; }
+
+        // SCP1 · B5 — BÓ BIẾN ĐẦU VÀO THÔ (per-criterion pct/weight/maxScore/name + answered/
+        // totalQuestions). Ghim vào campaign_rankings.scoring_inputs lúc upsert. NULLABLE: bản
+        // Interview cũ / event cũ trong outbox không mang field này ⇒ để null, KHÔNG crash consumer.
+        public ScoringInputsSnapshot? ScoringInputs { get; set; }
     }
 }

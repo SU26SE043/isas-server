@@ -1,6 +1,7 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.Shared.Pagination;
+using Isas.Shared.Scoring;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.CampaignService.Services
@@ -308,13 +309,31 @@ namespace Isas.CampaignService.Services
 
             var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
 
+            // SCP1 · B5 — HỢP ĐỒNG CHẤM ĐIỂM đang áp: đọc scoring_policies của CHÍNH campaign này
+            // (Campaign sở hữu bảng), gửi CẢ biểu thức xuống buổi thi để Interview ghim — bên đó không
+            // đọc được bảng này lúc chấm. `interview_policy_version` null = chưa áp chính sách nào ⇒
+            // gửi null ⇒ Interview dùng công thức weighted mặc định (hành vi trước SCP1). Policy là
+            // BẤT BIẾN (B2) nên chép xuống an toàn; đọc theo con trỏ, KHÔNG lọc is_active (không có
+            // cột đó — RubricCriteriaLoader.cs:81-92: pin thì đọc theo version, không theo "đang bật").
+            CampaignScoringPolicyInput? scoringPolicy = null;
+            if (campaign.InterviewPolicyVersion is int policyVer)
+            {
+                var policy = await _db.ScoringPolicies.AsNoTracking().FirstOrDefaultAsync(
+                    p => p.CampaignId == campaignId
+                        && p.Kind == ScoringExpressionKind.Interview
+                        && p.Version == policyVer, ct);
+                if (policy is not null)
+                    scoringPolicy = new CampaignScoringPolicyInput(
+                        policy.Version, policy.Expression, policy.PassScorePct, policy.EngineVersion);
+            }
+
             // Create-or-get session (Interview dedup theo candidate+campaign) → bấm nhiều lần vẫn ra CÙNG session.
             // Gửi deadline hiệu lực (min campaign expiry và slot) để Interview sweeper tự kết thúc đúng hạn.
             var session = campaign.Language == "vi"
                 ? await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, campaign.RubricVersion, questionDetails, ct)
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, ct)
                 : await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, campaign.RubricVersion, questionDetails, ct);
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, ct);
 
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.

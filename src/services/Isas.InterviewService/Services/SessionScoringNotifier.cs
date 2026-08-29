@@ -3,6 +3,7 @@ using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Scoring;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
@@ -42,7 +43,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
         if (session is null) return;
 
-        var totalScore = await ComputeWeightedTotalScoreAsync(session, ct);
+        var (totalScore, scoringInputs) = await ComputeScoreAndInputsAsync(session, ct);
 
         var evt = new SessionScoredEvent
         {
@@ -52,7 +53,11 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             TotalScore = totalScore,
             ScoredAt = DateTime.UtcNow,
             // Nhãn thước đo cho bảng xếp hạng (CAMP-10) — xem SessionScoredEvent.RubricVersion.
-            RubricVersion = session.CampaignRubricVersion
+            RubricVersion = session.CampaignRubricVersion,
+            // SCP1 · B5 — bó biến RAW để B8 tính lại điểm bằng chính sách biểu thức. null nếu chưa
+            // chấm được tiêu chí nào (session bỏ ngang đường này không phát SessionScored, nhưng
+            // giữ null-safe).
+            ScoringInputs = scoringInputs
         };
 
         _db.OutboxMessages.Add(OutboxMessage.ForScored(evt));
@@ -169,7 +174,12 @@ public class SessionScoringNotifier : ISessionScoringNotifier
 
     // Điểm tổng có trọng số dùng cho event (ranking B2B — campaign.md §campaign_rankings:
     // "total_score = Σ pct×weight, chuẩn hoá chia Σweight — Interview tính"). Áp dụng chung cho cả B2C.
-    private async Task<decimal> ComputeWeightedTotalScoreAsync(
+    //
+    // SCP1 · B5 — trả kèm BÓ BIẾN THÔ per-criterion (name/pct/weight/maxScore) + answered/totalQuestions.
+    // Dựng từ CÙNG `criteria` + `scores` đang tính điểm ⇒ không thêm query nào ngoài 2 CountAsync.
+    // Lưu RAW, KHÔNG lưu scalar đã tính (weighted_avg_pct…) — CẤM #3: append thêm biến sau này thì
+    // hàng lịch sử vẫn tính lại được (B8).
+    private async Task<(decimal Total, ScoringInputsSnapshot? Inputs)> ComputeScoreAndInputsAsync(
         PracticeSession session, CancellationToken ct)
     {
         var sessionId = session.Id;
@@ -191,14 +201,17 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         // hẳn, giao ID rỗng, TotalScore = 0. Cả hai vế nay nằm trong loader dùng chung.
         var criteria = await RubricCriteriaLoader.LoadAsync(
             _db, RubricCriteriaLoader.KeyFor(session), ct, includeLevels: false);
-        if (criteria.Count == 0) return 0m;
+        if (criteria.Count == 0) return (0m, null);
 
         var scores = await _db.AnswerScores
             .AsNoTracking()
             .Where(sc => sc.Answer.SessionId == sessionId)
             .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.Score })
             .ToListAsync(ct);
-        if (scores.Count == 0) return 0m;
+        if (scores.Count == 0) return (0m, null);
+
+        var answered = await _db.PracticeAnswers.CountAsync(a => a.SessionId == sessionId, ct);
+        var totalQuestions = await _db.PracticeQuestions.CountAsync(q => q.SessionId == sessionId, ct);
 
         // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency).
         var medianPerAnswerCriterion = scores
@@ -213,6 +226,9 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         // maxScore khác nhau giữa các tiêu chí ⇒ chuẩn theo % trước khi gộp trọng số.
         decimal weightedSum = 0m;
         decimal weightSum = 0m;
+        // Bó biến THÔ per-criterion — chỉ những tiêu chí THỰC SỰ có điểm (giống mẫu số của công thức
+        // tổng: tiêu chí không ai hỏi/không có điểm rơi khỏi cả hai). B8 dựng ScoringContext từ đây.
+        var bag = new List<CriterionInputSnapshot>(criteria.Count);
         foreach (var c in criteria)
         {
             if (!avgByCriterion.TryGetValue(c.Id, out var avgScore)) continue;
@@ -220,9 +236,11 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             var pct = Math.Clamp(avgScore / maxScore * 100m, 0m, 100m);
             weightedSum += pct * c.Weight;
             weightSum += c.Weight;
+            bag.Add(new CriterionInputSnapshot(c.Name, Math.Round(pct, 4), c.Weight, c.MaxScore));
         }
 
-        if (weightSum <= 0m) return 0m;
-        return Math.Clamp(Math.Round(weightedSum / weightSum, 2), 0m, 100m);
+        var inputs = new ScoringInputsSnapshot(bag, answered, totalQuestions);
+        if (weightSum <= 0m) return (0m, inputs);
+        return (Math.Clamp(Math.Round(weightedSum / weightSum, 2), 0m, 100m), inputs);
     }
 }

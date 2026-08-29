@@ -142,6 +142,25 @@ public class PracticeSession : IHasUpdatedAt
     public Guid? B2CRubricOwnerId { get; set; }
     public int? B2CRubricVersion { get; set; }
 
+    // SCP1 · B5 — GHIM HỢP ĐỒNG CHẤM ĐIỂM (chính sách biểu thức) của buổi B2B này.
+    //
+    // InterviewService có 0 tham chiếu tới CampaignDbContext ⇒ lúc chấm nó KHÔNG đọc được bảng
+    // scoring_policies của Campaign. Nên phải NHẬN qua lời gọi tạo session (CreateCampaignSessionInternalRequest)
+    // và GHIM LẠI ở đây — y hệt mẫu CampaignRubricVersion ngay trên: "dùng cấu hình LÚC TẠO, không
+    // phải cấu hình đổi sau". HR đổi/tạo version chính sách mới CHỈ áp cho buổi thi SAU.
+    //
+    // ⚠ GHIM CẢ BIỂU THỨC, không chỉ số phiên bản: chỉ có số thì lúc chấm/preview lại phải gọi sang
+    // CampaignService để lấy biểu thức ⇒ phá DB-per-service + tạo phụ thuộc runtime ở đúng đường nóng.
+    // Biểu thức là bất biến bên Campaign (scoring_policies immutable) nên chép xuống là an toàn.
+    //
+    //   null (cả 4 cột) = buổi B2C · buổi B2B mà campaign chưa áp chính sách nào (dùng công thức
+    //          weighted mặc định) · buổi tạo TRƯỚC cột này. KHÔNG suy "có/không có chính sách" từ
+    //          một cột lẻ — 4 cột đi cùng nhau, set cùng lúc lúc tạo session.
+    public int? CampaignPolicyVersion { get; set; }
+    public string? CampaignPolicyExpression { get; set; }
+    public int? CampaignPolicyPassScorePct { get; set; }
+    public string? CampaignPolicyEngineVersion { get; set; }
+
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.

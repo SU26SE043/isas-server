@@ -731,6 +731,13 @@ public class PracticeService : IPracticeService
                 // Ghim DÙ CÓ materialize hay không: buổi thứ hai trở đi của cùng phiên bản không
                 // materialize gì cả, nhưng vẫn phải biết mình đang bị chấm bằng thước nào.
                 CampaignRubricVersion = pinnedRubricVersion,
+                // SCP1 · B5 — ghim hợp đồng chấm điểm (chính sách biểu thức) NHẬN từ Campaign. Cả 4
+                // null (Campaign chưa áp chính sách / bản cũ) ⇒ đường chấm dùng công thức weighted
+                // mặc định. Chép nguyên, KHÔNG hỏi lại Campaign lúc chấm (DB-per-service).
+                CampaignPolicyVersion = request.CampaignPolicyVersion,
+                CampaignPolicyExpression = request.CampaignPolicyExpression,
+                CampaignPolicyPassScorePct = request.CampaignPolicyPassScorePct,
+                CampaignPolicyEngineVersion = request.CampaignPolicyEngineVersion,
                 JobCategory = request.JobCategory,
                 Seniority = seniority,
                 Language = language,

@@ -45,6 +45,7 @@ namespace Isas.CampaignService.Services
                     SessionId = evt.SessionId,
                     TotalScore = evt.TotalScore,
                     RubricVersion = evt.RubricVersion,   // CAMP-18: null = không biết
+                    ScoringInputs = evt.ScoringInputs,   // SCP1 · B5: bó biến RAW cho B8; null = event cũ
                     UpdatedAt = DateTime.UtcNow
                 });
 
@@ -61,6 +62,7 @@ namespace Isas.CampaignService.Services
                 existing.CandidateId = evt.CandidateId;
                 existing.TotalScore = evt.TotalScore;
                 existing.RubricVersion = evt.RubricVersion;
+                existing.ScoringInputs = evt.ScoringInputs;   // SCP1 · B5 — event là nguồn quyền lực, đè lại
                 existing.UpdatedAt = DateTime.UtcNow;
 
                 _logger.LogInformation(

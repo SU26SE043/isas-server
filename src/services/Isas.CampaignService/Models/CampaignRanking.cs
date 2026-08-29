@@ -1,3 +1,5 @@
+using Isas.Shared.Scoring;
+
 namespace Isas.CampaignService.Models
 {
     /// <summary>
@@ -22,6 +24,15 @@ namespace Isas.CampaignService.Models
         // Cần nhãn vì đổi mốc là đổi thước đo mạnh hơn cả thu hẹp phạm vi chấm — mà CAMP-10 (xếp hạng),
         // BC15 (đo cải thiện) và F14 (mốc peer) đang đem điểm so THẲNG với nhau.
         public int? RubricVersion { get; set; }
+
+        // SCP1 · B5 — BÓ BIẾN ĐẦU VÀO THÔ của lượt chấm này, đến QUA event SessionScored, ghi lúc
+        // upsert ranking. Lưu RAW per-criterion ({name,pct,weight,maxScore} + answered/totalQuestions),
+        // KHÔNG lưu scalar đã tính — B8 (xem trước / áp chính sách) dựng lại ScoringContext từ đây và
+        // chạy biểu thức, kể cả cho hàng lịch sử khi HĐ-1 thêm biến mới.
+        //
+        // ⚠ NULLABLE bắt buộc (CẤM #4): field đến qua event ⇒ bản Interview cũ / event cũ trong outbox
+        // không mang nó ⇒ NOT NULL sẽ crash consumer trong cửa sổ rollout. jsonb (Npgsql) / text (SQLite).
+        public ScoringInputsSnapshot? ScoringInputs { get; set; }
 
         // E11b — HR chốt điểm cuối (điểm AI = gợi ý). Null = chưa override → dùng TotalScore/ngưỡng.
         // Điểm/kết-quả effective read-time = OverrideScore ?? TotalScore, OverrideResult ?? (theo ngưỡng).

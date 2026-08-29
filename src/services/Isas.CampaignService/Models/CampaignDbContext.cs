@@ -57,6 +57,21 @@ namespace Isas.CampaignService.Models
             v => v == null ? null : JsonSerializer.Deserialize<List<T>>(
                 JsonSerializer.Serialize(v, (JsonSerializerOptions?)null), (JsonSerializerOptions?)null));
 
+        // SCP1 · B5 — cùng nguyên tắc JsonListConverter nhưng cho MỘT object (không phải List): dùng
+        // cho campaign_rankings.scoring_inputs (ScoringInputsSnapshot). So sánh bằng chuỗi JSON đã
+        // serialize (record snapshot bất biến sau khi ghi, nhưng vẫn giữ để EF không coi mọi lần load
+        // là "đã đổi").
+        private static ValueConverter<T?, string?> JsonObjectConverter<T>() where T : class => new(
+            v => v == null ? null : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => v == null ? null : JsonSerializer.Deserialize<T>(v, (JsonSerializerOptions?)null));
+
+        private static ValueComparer<T?> JsonObjectComparer<T>() where T : class => new(
+            (a, b) => JsonSerializer.Serialize(a, (JsonSerializerOptions?)null)
+                   == JsonSerializer.Serialize(b, (JsonSerializerOptions?)null),
+            v => v == null ? 0 : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null).GetHashCode(),
+            v => v == null ? null : JsonSerializer.Deserialize<T>(
+                JsonSerializer.Serialize(v, (JsonSerializerOptions?)null), (JsonSerializerOptions?)null));
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             // ── Campaign ──────────────────────────────────────────────────
@@ -379,6 +394,13 @@ namespace Isas.CampaignService.Models
                 // E11b — HR override (nullable; null = chưa chốt tay).
                 e.Property(x => x.OverrideScore).HasColumnType("numeric(5,2)");
                 e.Property(x => x.OverrideResult).HasMaxLength(10);
+
+                // SCP1 · B5 — bó biến RAW đến qua event. NULLABLE (CẤM #4 — không NOT NULL cho cột
+                // đến qua event). jsonb (Npgsql) / text (SQLite) qua converter object đơn.
+                e.Property(x => x.ScoringInputs)
+                 .HasConversion(JsonObjectConverter<ScoringInputsSnapshot>(), JsonObjectComparer<ScoringInputsSnapshot>());
+                if (Database.IsNpgsql())
+                    e.Property(x => x.ScoringInputs).HasColumnType("jsonb");
 
                 // Idempotent upsert theo session_id: event tới 2 lần vẫn 1 row.
                 e.HasIndex(x => x.SessionId).IsUnique();

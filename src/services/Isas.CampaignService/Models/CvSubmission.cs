@@ -39,6 +39,16 @@ namespace Isas.CampaignService.Models
         // phỏng vấn, 2 = jobFitScore tính từ bằng chứng. Hai thang KHÔNG so sánh được — có dấu để
         // chúng không bị trộn trong im lặng (tiền lệ scoring_scope_version/BK23).
         public int? ScreeningVersion { get; set; }
+
+        // SCP1 · B5 — GHIM chính sách chấm CV (scoring_policies, kind=CvScreening) mà LẦN ĐÁNH GIÁ này
+        // chạy dưới. Ghim TẠI LÚC ĐẨY JOB SÀNG (PublishScreeningJobsAsync), KHÔNG lúc upload.
+        //   · Republisher đẩy lại (retry) → GIỮ pin cũ (cùng một lần đánh giá).
+        //   · HR bấm rescreen                → PIN LẠI theo campaigns.cv_policy_version hiện hành
+        //                                      (lần đánh giá MỚI).
+        // Chỉ ghim SỐ VERSION (không ghim biểu thức): Campaign SỞ HỮU bảng scoring_policies và các dòng
+        // là BẤT BIẾN (B2) ⇒ (campaign_id, CvScreening, version) resolve về đúng một biểu thức cố định,
+        // KHÔNG cần gọi service khác. null = campaign chưa áp chính sách CV / sàng trước cột này.
+        public int? ScoringPolicyVersion { get; set; }
         public string? FitSummary { get; set; }                  // 2-3 câu: hợp/không hợp ở đâu
         public List<NeedAssessment>? Strengths { get; set; }      // jsonb — level Strong|Partial
         public List<NeedAssessment>? Gaps { get; set; }           // jsonb — level Weak

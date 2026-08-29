@@ -66,10 +66,11 @@ public class StartInterviewRubricWiringTests
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
                 It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(),
                 It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(),
-                It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<CancellationToken>()))
             .Callback((Guid _, Guid _, Guid _, string _, IReadOnlyList<string> _,
                     IReadOnlyList<SessionCriterionInput> criteria, DateTime? _, bool? _, int? _, int? _,
-                    int? _, string _, int rubricVersion, IReadOnlyList<SessionQuestionInput>? _, CancellationToken _)
+                    int? _, string _, int rubricVersion, IReadOnlyList<SessionQuestionInput>? _,
+                    CampaignScoringPolicyInput? _, CancellationToken _)
                 => capture(criteria, rubricVersion))
             .ReturnsAsync(new CampaignSessionResult(Guid.NewGuid(), new List<SessionQuestion>()));
         return m;
