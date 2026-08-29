@@ -1,5 +1,7 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Isas.Shared.Scoring;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Text.Json;
 
@@ -25,6 +27,7 @@ namespace Isas.CampaignService.Models
         public DbSet<FaceImage> FaceImages => Set<FaceImage>();                                  // BK25: sổ theo dõi ảnh sinh trắc trong S3 (DATA-3)
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();                      // DB2b: transactional outbox (invitation-email)
         public DbSet<ApiKey> ApiKeys => Set<ApiKey>();                                           // F17: API key bên thứ ba (ATS), gắn theo org
+        public DbSet<ScoringPolicy> ScoringPolicies => Set<ScoringPolicy>();                     // SCP1: chính sách chấm điểm (biểu thức) + mẫu hệ thống
 
         // C13: string[] ↔ JSON (jsonb trên Npgsql; text trên SQLite test). Portable — filter đọc/ghi trong C#,
         // không query trong JSON. Comparer để EF theo dõi thay đổi phần tử đúng (list là mutable reference).
@@ -700,6 +703,58 @@ namespace Isas.CampaignService.Models
 
                 // Liệt kê/đếm key active theo org.
                 e.HasIndex(x => new { x.OrgId, x.CreatedAt });
+            });
+
+            // ── ScoringPolicy (SCP1 · HĐ-3) ───────────────────────────────
+            modelBuilder.Entity<ScoringPolicy>(e =>
+            {
+                e.ToTable("scoring_policies", t =>
+                {
+                    t.HasCheckConstraint("ck_scoring_policies_kind", "kind IN ('Interview', 'CvScreening')");
+                    t.HasCheckConstraint("ck_scoring_policies_version", "version >= 1");
+                    t.HasCheckConstraint(
+                        "ck_scoring_policies_pass_score_pct",
+                        "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)");
+                });
+                e.HasKey(x => x.Id);
+
+                e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+                e.Property(x => x.Version).IsRequired();
+                e.Property(x => x.EngineVersion).HasMaxLength(16).IsRequired();
+                e.Property(x => x.Name).HasMaxLength(255).IsRequired();
+                // text: trần độ dài biểu thức (ScoringLimits.MaxExpressionLength) ép lúc PHÂN TÍCH ở
+                // B1/B3, không ở DB — một câu 1001 ký tự phải ra lỗi TOO_LONG có vị trí, không phải
+                // bị Postgres cắt cụt.
+                e.Property(x => x.Expression).IsRequired();
+                e.Property(x => x.CreatedAt).IsRequired();
+
+                // 🔴 HĐ-3 — sau INSERT chỉ name/description sửa được. EF ném InvalidOperationException
+                // nếu SaveChanges thấy một trong các trường dưới bị đổi trên entity đã có trong DB.
+                // Chốt ở TẦNG MODEL (chạy cả trên SQLite test) — không dựa vào kỷ luật của service.
+                foreach (var p in new[]
+                {
+                    nameof(ScoringPolicy.CampaignId), nameof(ScoringPolicy.Kind), nameof(ScoringPolicy.Version),
+                    nameof(ScoringPolicy.EngineVersion), nameof(ScoringPolicy.Expression),
+                    nameof(ScoringPolicy.PassScorePct), nameof(ScoringPolicy.SourceTemplateId),
+                    nameof(ScoringPolicy.CreatedAt), nameof(ScoringPolicy.CreatedBy),
+                })
+                    e.Property(p).Metadata.SetAfterSaveBehavior(PropertySaveBehavior.Throw);
+
+                // HĐ-3 §2 — HAI partial unique RIÊNG. Postgres coi NULL là distinct ⇒ một UNIQUE chung
+                // (campaign_id, kind, version) KHÔNG chặn được hai MẪU trùng nhau (campaign_id = NULL).
+                //   · mẫu hệ thống : một bản / (kind, name)
+                //   · bản campaign : một bản / (campaign_id, kind, version)
+                e.HasIndex(x => new { x.Kind, x.Name })
+                 .HasDatabaseName("ux_scoring_policies_template")
+                 .HasFilter("campaign_id IS NULL")
+                 .IsUnique();
+                e.HasIndex(x => new { x.CampaignId, x.Kind, x.Version })
+                 .HasDatabaseName("ux_scoring_policies_campaign")
+                 .HasFilter("campaign_id IS NOT NULL")
+                 .IsUnique();
+
+                // HĐ-3 §4 — 5 mẫu hệ thống (campaign_id = NULL). Xem ScoringPolicySeed.
+                e.HasData(ScoringPolicySeed.Templates);
             });
         }
     }

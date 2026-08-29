@@ -148,6 +148,8 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.Configure<ApiKeySettings>(builder.Configuration.GetSection(ApiKeySettings.SectionName));
 builder.Services.AddScoped<IApiKeyService, ApiKeyService>();
 
+builder.Services.AddScoped<IScoringPolicyService, ScoringPolicyService>();   // SCP1 · HĐ-3
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     // F17 — scheme "ApiKey" ĐỨNG RIÊNG cạnh Bearer. Mặc định vẫn là Bearer nên API key KHÔNG mở
     // được endpoint JWT nào; ngược lại Public API khai tường minh AuthenticationSchemes=ApiKey nên

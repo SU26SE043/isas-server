@@ -21,6 +21,12 @@
         public bool FaceVerifyEnabled { get; set; }
         // E5: ngưỡng % điểm tổng để auto pass/fail (0–100, CAMP-11). null = không auto → HR quyết tay.
         public int? PassScorePct { get; set; }
+        // SCP1 · HĐ-3 — CON TRỎ tới chính sách chấm đang dùng. = scoring_policies.version của bản
+        // (campaign_id = this, kind = ...) đang hiệu lực. null = chưa áp chính sách nào → dùng công
+        // thức mặc định (weighted / trung bình cộng). KHÔNG có cột is_active bên scoring_policies —
+        // "đang dùng" CHỈ được xác định bằng cặp con trỏ này (xem ScoringPolicy).
+        public int? InterviewPolicyVersion { get; set; }
+        public int? CvPolicyVersion { get; set; }
         // INT-17: HR bật phỏng vấn THÍCH ỨNG cho chiến dịch này (mặc định false = luồng batch tĩnh cũ).
         // Seed = TOÀN BỘ campaign questions (ai cũng nhận, công bằng); AI chỉ thêm câu ở ĐUÔI sau khi
         // ứng viên trả lời hết seed, chấm theo CÙNG tiêu chí campaign ⇒ ranking vẫn so sánh được.

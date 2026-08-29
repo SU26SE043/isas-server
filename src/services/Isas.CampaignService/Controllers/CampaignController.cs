@@ -17,18 +17,21 @@ namespace Isas.CampaignService.Controllers
         private readonly ICampaignService _campaignService;
         private readonly ICvScreeningService _screening;   // C14: sàng CV async (publish/shortlist/PATCH)
         private readonly IRubricPreviewService? _preview;   // CAMP-19: chấm thử thước đo
+        private readonly IScoringPolicyService? _policies;  // SCP1: chính sách chấm điểm (HĐ-3)
         private readonly ILogger<CampaignController> _logger;
 
         public CampaignController(
             ICampaignService campaignService,
             ICvScreeningService screening,
             ILogger<CampaignController> logger,
-            IRubricPreviewService? preview = null)
+            IRubricPreviewService? preview = null,
+            IScoringPolicyService? policies = null)
         {
             _campaignService = campaignService;
             _screening = screening;
             _logger = logger;
             _preview = preview;
+            _policies = policies;
         }
 
         // BK4: chủ sở hữu campaign = ORG (AUTH-8/D5 — billing/campaign gắn theo org). JWT mang `org_id`
@@ -410,6 +413,18 @@ namespace Isas.CampaignService.Controllers
         // KHÔNG nhận campaignId — bộ chuẩn không thuộc campaign nào. Vẫn gác Roles="Employer" để đây
         // không thành endpoint công khai đọc được toàn bộ thước đo của hệ thống.
         //
+        // SCP1 · HĐ-3 — danh sách MẪU chính sách chấm điểm hệ thống (seed). GLOBAL, không org-scoped:
+        // mọi Employer thấy cùng bộ mẫu. Route literal 2 đoạn ⇒ KHÔNG đụng [HttpGet("{id}")] (mẫu như
+        // "criteria/system-default/preview", "questions/template").
+        [HttpGet("scoring-policy-templates")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<IReadOnlyList<DTOs.ScoringPolicyResponse>>> GetScoringPolicyTemplates(
+            CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            return Ok(await _policies.GetTemplatesAsync(ct));
+        }
+
         // ⚠ Route 3 đoạn nên KHÔNG đụng [HttpGet("{id}")] (1 đoạn, không ràng buộc) ở trên.
         //
         // 400 thiếu/sai jobCategory|language · 404 admin CHƯA soạn bộ cho tổ hợp này · 502 Interview lỗi.
