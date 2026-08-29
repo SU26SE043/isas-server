@@ -1306,7 +1306,9 @@ public class PracticeService : IPracticeService
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 
-        return MapToResponse(session, questions, answers).Questions;
+        // EVA1-B4 — đây là đường HR/nội bộ (AI4): HR PHẢI xem đủ điểm + reasoning + needs_review.
+        // GetSessionAsync (đường ứng viên) KHÔNG truyền cờ này ⇒ B2B bị che theo CAMP-15.
+        return MapToResponse(session, questions, answers, revealCampaignScoring: true).Questions;
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
@@ -1769,15 +1771,25 @@ public class PracticeService : IPracticeService
         IReadOnlyList<SessionCriterionScore>? criterionScores = null,
         IReadOnlyList<string>? cvStrengths = null,
         BenchmarkResponse? benchmark = null,   // F14
-        IReadOnlyList<CriterionEvidenceResponse>? criterionEvidence = null)
+        IReadOnlyList<CriterionEvidenceResponse>? criterionEvidence = null,
+        // EVA1-B4 — mặc định che nội bộ chấm điểm cho session B2B. CHỈ đường HR/nội bộ
+        // (GetSessionAnswersInternalAsync, X-Internal-Token, AI4) truyền `true` để xem đủ.
+        bool revealCampaignScoring = false)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
+
+        // CAMP-15 — ứng viên B2B là CHỦ session (Start trả về sessionId) nên đọc được qua
+        // GetSessionAsync; nhưng nội bộ chấm điểm phải che: lộ mốc điểm ⇒ họ viết bài "đánh trúng
+        // rubric" thay vì trả lời thật; và bộ câu campaign là bộ CHUNG ⇒ đáp án mẫu của người thi
+        // TRƯỚC = của người thi SAU. Che ở DỮ LIỆU chứ không chặn truy cập — họ cần chính endpoint
+        // này để lấy câu hỏi mà làm bài. Khối tổng kết (MapResult) đã chặn B2B tường minh từ trước.
+        var maskScoring = s.CampaignId is not null && !revealCampaignScoring;
 
         var qResponses = questions
             .OrderBy(q => q.OrderNo)
             .Select(q => new QuestionResponse(
                 q.Id, q.OrderNo, q.Content, q.TimeLimitSec,
-                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(s.Id, a) : null,
+                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(s.Id, a, maskScoring) : null,
                 q.Kind.ToString(),   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion
                 q.GroundingRefs))    // RAG grounding — null (không grounding) / [] (ungrounded) / non-empty (grounded)
             .ToList();
@@ -1853,30 +1865,40 @@ public class PracticeService : IPracticeService
         return merged;
     }
 
-    private static AnswerResponse MapAnswer(Guid sessionId, PracticeAnswer a)
+    private static AnswerResponse MapAnswer(Guid sessionId, PracticeAnswer a, bool maskScoring = false)
     {
+        // EVA1-B4 / CAMP-15 — `maskScoring` (session B2B, đường ứng viên): che ĐÚNG nội bộ chấm điểm
+        //   · perCriterion (điểm + reasoning + levelMatched) → rỗng
+        //   · needsReview → false
+        //   · sampleAnswer → null
+        // GIỮ transcript / status / durationSec / audioUrl / deliveryMetrics: đó là bài làm và dữ
+        // liệu trình bày của CHÍNH ứng viên, không phải rubric.
+        //
         // E10 — mỗi tiêu chí: điểm chốt = MEDIAN qua các attempt (self-consistency); reasoning/level
         // lấy từ attempt ĐẠI DIỆN (điểm gần median nhất, tie-break attempt mới nhất) để nhận xét khớp
         // điểm hiển thị. N=1 → median = giá trị attempt đó, đại diện = chính nó → giữ hiển thị cũ.
-        var perCriterion = a.Scores
-            .GroupBy(sc => sc.CriterionId)
-            .Select(g =>
-            {
-                var median = ScoreStatistics.Median(g.Select(s => s.Score));
-                var rep = g.OrderBy(s => Math.Abs(s.Score - median))
-                           .ThenByDescending(s => s.AttemptNo)
-                           .First();
-                // Criterion nạp qua .ThenInclude ở các site đọc; dùng `?.` để site nào lỡ quên Include
-                // thì ra null (client lùi về nhãn chung) thay vì ném NRE giữa luồng xem kết quả.
-                return new AnswerScoreResponse(
-                    g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched,
-                    rep.Criterion?.Name, rep.Criterion?.MaxScore);
-            })
-            .ToList();
+        IReadOnlyList<AnswerScoreResponse> perCriterion = maskScoring
+            ? Array.Empty<AnswerScoreResponse>()
+            : a.Scores
+                .GroupBy(sc => sc.CriterionId)
+                .Select(g =>
+                {
+                    var median = ScoreStatistics.Median(g.Select(s => s.Score));
+                    var rep = g.OrderBy(s => Math.Abs(s.Score - median))
+                               .ThenByDescending(s => s.AttemptNo)
+                               .First();
+                    // Criterion nạp qua .ThenInclude ở các site đọc; dùng `?.` để site nào lỡ quên Include
+                    // thì ra null (client lùi về nhãn chung) thay vì ném NRE giữa luồng xem kết quả.
+                    return new AnswerScoreResponse(
+                        g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched,
+                        rep.Criterion?.Name, rep.Criterion?.MaxScore);
+                })
+                .ToList();
 
         return new AnswerResponse(
-            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview,
-            a.SampleAnswer,   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
+            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion,
+            maskScoring ? false : a.NeedsReview,
+            maskScoring ? null : a.SampleAnswer,   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
             DeliveryMetricsMapper.Read(a),   // F11 — chỉ số trôi chảy (null khi chưa đo được)
             string.IsNullOrWhiteSpace(a.AudioObjectKey)
                 ? null

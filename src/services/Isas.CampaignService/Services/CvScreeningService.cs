@@ -401,7 +401,13 @@ namespace Isas.CampaignService.Services
                 Email = c.Email,
                 Status = c.Status.ToString(),
                 OverallMatchScore = c.OverallMatchScore,
-                Skills = c.Skills
+                Skills = c.Skills,
+                // EVA1-B2 — cờ rủi ro + con dấu thang điểm phải ra tới màn DANH SÁCH, không chỉ
+                // màn chi tiết: đó chính là chỗ HR đặt ứng viên cạnh nhau để so. `page` là
+                // IEnumerable trên `rows` đã ToListAsync ⇒ đây là LINQ-to-Objects, đọc cột đã
+                // nằm trong bộ nhớ, KHÔNG phát sinh query (CAMP-14 — screening_version/BK23).
+                VerificationRisk = c.VerificationRisk,
+                ScreeningVersion = c.ScreeningVersion
             }).ToList();
 
             return new KeysetPage<CandidateListItem>(items, next);

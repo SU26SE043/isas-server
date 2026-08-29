@@ -494,6 +494,41 @@ public class CampaignCvScreeningC14Tests
         Assert.Null(list[2].OverallMatchScore);     // null xuống cuối
     }
 
+    // (f-ter) EVA1-B2 — cờ rủi ro + con dấu thang điểm ra tới màn DANH SÁCH (chỗ HR so ứng viên
+    // cạnh nhau), không chỉ màn chi tiết. Trước bản này projection list bỏ 2 cột ⇒ luôn null.
+    [Fact]
+    public async Task Shortlist_tra_VerificationRisk_va_ScreeningVersion()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedActiveCampaign(tdb, owner);
+
+        var risky = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzed, email: "risky@x.com", overall: 82);
+        risky.VerificationRisk = "High";
+        risky.ScreeningVersion = 2;
+        // Ứng viên chưa sàng xong → hai trường null. null KHÁC 0, null KHÁC "Low" (CAMP-14).
+        SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered, email: "pending@x.com", overall: null);
+        tdb.Db.SaveChanges();
+
+        var list = (await NewService(tdb.NewContext())
+            .GetCandidatesAsync(owner, camp.Id, null, null, null, "score", null, null, null, default)).Items;
+
+        var top = list.Single(x => x.Id == risky.Id);
+        Assert.Equal("High", top.VerificationRisk);
+        Assert.Equal(2, top.ScreeningVersion);
+
+        var pending = list.Single(x => x.Email == "pending@x.com");
+        Assert.Null(pending.VerificationRisk);
+        Assert.Null(pending.ScreeningVersion);
+
+        // ĐỐI CHỨNG — đường CHI TIẾT vẫn gán đúng: nếu ai sửa nhầm đường (lỗi khu trú ở list)
+        // thì test này đỏ ngay ở vế danh sách, không ở vế chi tiết.
+        var detail = await NewService(tdb.NewContext())
+            .GetCandidateAsync(owner, camp.Id, risky.Id, default);
+        Assert.Equal("High", detail.VerificationRisk);
+        Assert.Equal(2, detail.ScreeningVersion);
+    }
+
     // (f-bis) filter minScore + status; ngoài org → 404.
     [Fact]
     public async Task Shortlist_filter_minScore_va_ngoai_org_404()

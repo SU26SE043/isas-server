@@ -98,6 +98,11 @@ namespace Isas.CampaignService.Services
             var jdText = NormalizeText(request.JdText, JdTextLabel);
             var criteriaText = NormalizeText(request.CriteriaText, CriteriaTextLabel);
 
+            // EVA1-B5 / HĐ-2 — 3 luật lọc CỨNG sàng CV (D19). Chuẩn hoá + kiểm (400 nếu minYears ∉
+            // [0,60]) TRƯỚC khi dựng entity. Campaign mới luôn Draft ⇒ không cần cửa trạng thái.
+            var (requiredSkills, keywordsAny, minYears) = ValidateHardFilters(
+                request.RequiredSkills, request.KeywordsAny, request.MinYearsExperience);
+
             // ── 2. Build campaign entity ────────────────────────
             var campaign = new Campaign
             {
@@ -118,6 +123,9 @@ namespace Isas.CampaignService.Services
                 MaxQuestions = request.MaxQuestions,
                 MaxDeepPerQuestion = request.MaxDeepPerQuestion,   // INT-17b: trần đào sâu mỗi câu
                 QuestionsPerSession = request.QuestionsPerSession,   // ngân hàng đề (null = thi hết)
+                RequiredSkills = requiredSkills,   // EVA1-B5 — luật lọc cứng sàng CV (đã chuẩn hoá)
+                KeywordsAny = keywordsAny,
+                MinYearsExperience = minYears,
                 FaceVerifyEnabled = request.FaceVerifyEnabled,   // SEC-1: face-verify opt-in (B2B)
                 PassScorePct = request.PassScorePct,   // E5: ngưỡng pass/fail (null = HR quyết tay)
                 // C11: JD/Criteria nhập text trực tiếp → *_text set, *_file_url null (không file lúc tạo).
@@ -420,6 +428,28 @@ namespace Isas.CampaignService.Services
             // SEC-1: merge-only-if-provided (như AntiCheatEnabled C3) — null giữ nguyên giá trị cũ.
             if (request.FaceVerifyEnabled.HasValue)
                 campaign.FaceVerifyEnabled = request.FaceVerifyEnabled.Value;
+
+            // EVA1-B5 / HĐ-2 — 3 luật lọc CỨNG sàng CV. Merge-only-if-provided như AntiCheatEnabled/
+            // FaceVerifyEnabled: null/vắng = KHÔNG ĐỔI · [] = XOÁ luật · minYears 0 = XOÁ luật.
+            // Cửa trạng thái (D19 — đổi thước sàng giữa chừng thì ứng viên sàng trước/sau không so được):
+            // Draft, HOẶC Active khi campaign CHƯA có ứng viên nào; Closed/Archived → 409.
+            if (request.RequiredSkills is not null || request.KeywordsAny is not null
+                || request.MinYearsExperience.HasValue)
+            {
+                if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
+                    throw new InvalidOperationException(
+                        $"Không sửa được luật lọc CV khi campaign {campaign.Status} (chỉ Draft, hoặc Active chưa có ứng viên).");
+                if (campaign.Status == CampaignStatus.Active
+                    && await _db.CvSubmissions.AnyAsync(c => c.CampaignId == id, ct))
+                    throw new InvalidOperationException(
+                        "Không sửa được luật lọc CV khi campaign Active đã có ứng viên.");
+
+                var (req, kw, my) = ValidateHardFilters(
+                    request.RequiredSkills, request.KeywordsAny, request.MinYearsExperience);
+                if (request.RequiredSkills is not null) campaign.RequiredSkills = req;
+                if (request.KeywordsAny is not null) campaign.KeywordsAny = kw;
+                if (request.MinYearsExperience.HasValue) campaign.MinYearsExperience = my;
+            }
 
             // E5: cập nhật ngưỡng pass/fail (chỉ khi gửi lên; validate ∈ [0,100]).
             if (request.PassScorePct.HasValue)
@@ -2459,6 +2489,42 @@ namespace Isas.CampaignService.Services
                     $"questions_per_session phải >= 1 (hiện: {n}). Bỏ trống = ứng viên thi hết bộ câu hỏi.");
         }
 
+        // EVA1-B5 / HĐ-2 — trần số năm KN hợp lý cho luật lọc cứng. > 60 gần như chắc chắn là gõ nhầm.
+        private const int MaxYearsExperience = 60;
+
+        /// <summary>
+        /// EVA1-B5 / HĐ-2 — chuẩn hoá + kiểm 3 luật lọc CỨNG sàng CV (D19).
+        /// <list type="bullet">
+        /// <item>Mục rỗng/chỉ khoảng trắng bị loại <b>lặng</b>.</item>
+        /// <item>Rỗng sau khi loại ⇒ <c>null</c> (đồng nghĩa <c>[]</c> = XOÁ luật; <c>RunHardFilter</c>
+        /// chỉ áp khi <c>Count &gt; 0</c>).</item>
+        /// <item><c>minYearsExperience</c> ∉ [0, 60] ⇒ <see cref="ArgumentException"/> (400). <c>0</c>
+        /// hợp lệ = "không ràng buộc" (<c>RunHardFilter</c> chỉ áp <c>min &gt; 0</c>) — KHÔNG cần
+        /// sentinel "clear" riêng.</item>
+        /// </list>
+        /// KHÔNG áp cửa trạng thái ở đây (caller lo): create luôn Draft; update kiểm Draft/Active-chưa-có-ứng-viên.
+        /// </summary>
+        private static (List<string>? RequiredSkills, List<string>? KeywordsAny, int? MinYears) ValidateHardFilters(
+            List<string>? requiredSkills, List<string>? keywordsAny, int? minYears)
+        {
+            if (minYears is int y && (y < 0 || y > MaxYearsExperience))
+                throw new ArgumentException(
+                    $"minYearsExperience phải trong khoảng [0, {MaxYearsExperience}] (hiện: {y}).");
+
+            static List<string>? Clean(List<string>? raw)
+            {
+                if (raw is null) return null;   // vắng/null = KHÔNG ĐỔI (caller kiểm `is not null` trước)
+                var cleaned = raw
+                    .Select(s => s?.Trim())
+                    .Where(s => !string.IsNullOrEmpty(s))
+                    .Select(s => s!)
+                    .ToList();
+                return cleaned.Count > 0 ? cleaned : null;   // rỗng sau khi loại ⇒ [] ⇒ XOÁ luật
+            }
+
+            return (Clean(requiredSkills), Clean(keywordsAny), minYears);
+        }
+
         private static void ValidateAdaptiveCaps(int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion = null)
         {
             if (maxFollowUps is int f && f < 0)
@@ -2636,6 +2702,13 @@ namespace Isas.CampaignService.Services
         /// CAMP-16 — bộ tiêu chí ĐANG CÓ, để mang mốc điểm sang khi client không gửi <c>levels</c>.
         /// Ghép theo TÊN (case-insensitive) chứ không theo id, vì đường ghi này là replace-all mint id mới.
         /// </param>
+        // EVA1-B3 — trần thang điểm 1 tiêu chí. Thang thật lớn nhất từng dùng là 30 ⇒ 100 rộng
+        // gấp hơn 3 lần. Không có cận trên: prod từng đặt 2147483647 ⇒ ScoringCriteriaBuilder
+        // dựng Enumerable.Range(0, top + 1) ⇒ top + 1 TRÀN INT ⇒ ném khi đẩy job chấm ⇒ answer
+        // không bao giờ chấm ⇒ buổi không đóng ⇒ MẤT 1 CREDIT, im lặng. Ngoài ra model có scale
+        // theo thang nên thang khác nhau làm campaign không so sánh được (CAMP-17).
+        private const int MaxCriterionScore = 100;
+
         private static List<CampaignCriterion> BuildStructuredCriteria(
             Guid campaignId, List<CriterionItem> items, CriterionSource source,
             IEnumerable<CampaignCriterion>? existingForCarryOver = null)
@@ -2663,6 +2736,9 @@ namespace Isas.CampaignService.Services
                     throw new ArgumentException($"weight của '{name}' phải trong khoảng (0, 1] (hiện: {item.Weight}).");
                 if (item.MaxScore < 1)
                     throw new ArgumentException($"maxScore của '{name}' phải ≥ 1 (hiện: {item.MaxScore}).");
+                if (item.MaxScore > MaxCriterionScore)
+                    throw new ArgumentException(
+                        $"maxScore của '{name}' vượt trần {MaxCriterionScore} (hiện: {item.MaxScore}).");
 
                 cleaned.Add((name,
                     string.IsNullOrWhiteSpace(item.Description) ? null : item.Description!.Trim(),
@@ -2770,7 +2846,10 @@ namespace Isas.CampaignService.Services
                 Name = s.Name,
                 Description = s.Description,
                 Weight = Math.Round(s.Weight / total, 4),
-                MaxScore = s.MaxScore <= 0 ? 5 : s.MaxScore,
+                // EVA1-B3 — kẹp vào [1, trần]: AI có thể trả 0/âm (→ trước đây thành 5) HOẶC một
+                // số quá lớn làm TRÀN INT ở ScoringCriteriaBuilder. Clamp ở đường ghi, không ở
+                // đường chấm (che lỗi tương lai).
+                MaxScore = Math.Clamp(s.MaxScore, 1, MaxCriterionScore),
                 Source = CriterionSource.AiSuggested,
                 CreatedAt = now,
                 UpdatedAt = now
@@ -2809,8 +2888,13 @@ namespace Isas.CampaignService.Services
         }
 
         /// <summary>
-        /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12). Chỉ khi <c>Draft</c> — CAMP-2:
-        /// đổi thước đo giữa chừng làm ứng viên sàng trước và sàng sau không so sánh được nữa.
+        /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12).
+        /// <para>Cho sửa khi <c>Draft</c> (CAMP-2: đổi thước đo giữa chừng làm ứng viên sàng
+        /// trước/sau không so sánh được), HOẶC — đường CỨU của EVA1-B6/HĐ-3 — khi <c>Active</c> mà
+        /// <c>job_needs</c> còn RỖNG và CHƯA có ứng viên nào được sàng: nếu AIService hụt đúng lúc
+        /// publish (<see cref="PublishCampaignAsync"/> ~:1095) thì campaign thành Active với
+        /// job_needs rỗng, mà máy trạng thái một chiều KHÔNG có đường về Draft ⇒ campaign đó vĩnh
+        /// viễn không sàng CV được, chỉ còn UPDATE SQL tay.</para>
         /// </summary>
         public async Task<CampaignResponse> ReplaceJobNeedsAsync(
             Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
@@ -2819,9 +2903,25 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            if (campaign.Status != CampaignStatus.Draft)
+            // EVA1-B6 / HĐ-3 — vế `!anyScreened` THỪA về logic hôm nay (Active + needs rỗng KHÔNG
+            // thể có screening đang chạy: RequireJobNeeds ném khi rỗng, worker ném PermanentCvError
+            // khi rỗng, callback dựng `allowed` từ job_needs nên rỗng ⇒ mọi assessment bị loại ⇒
+            // điểm null). Viết thẳng ở đây để bất biến "không sửa needs khi đã có người sàng" (job_needs
+            // KHÔNG có nhãn phiên bản như rubric_version) sống sót qua một refactor tương lai cho phép
+            // xoá needs.
+            var jobNeedsEmpty = campaign.JobNeeds is not { Count: > 0 };
+            var anyScreened = await _db.CvSubmissions
+                .AnyAsync(c => c.CampaignId == id && c.OverallMatchScore != null, ct);
+
+            var canEdit = campaign.Status == CampaignStatus.Draft
+                || (campaign.Status == CampaignStatus.Active && jobNeedsEmpty && !anyScreened);
+            if (!canEdit)
                 throw new InvalidOperationException(
-                    $"Chỉ sửa nhu cầu công việc khi campaign `Draft` (hiện: {campaign.Status}).");
+                    "Chỉ sửa nhu cầu công việc khi campaign `Draft`, HOẶC `Active` mà nhu cầu công việc " +
+                    "còn RỖNG VÀ CHƯA có ứng viên nào được sàng (điểm khớp CV). " +
+                    $"Hiện: trạng thái {campaign.Status}, nhu cầu " +
+                    $"{(jobNeedsEmpty ? "rỗng" : $"có {campaign.JobNeeds!.Count} mục")}, " +
+                    $"{(anyScreened ? "đã có ứng viên được sàng" : "chưa ai được sàng")}.");
 
             var cleaned = new List<JobNeed>();
             foreach (var n in needs ?? new List<JobNeedInput>())

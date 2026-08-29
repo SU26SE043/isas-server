@@ -131,6 +131,15 @@ namespace Isas.CampaignService.DTOs
         // C12: tiêu chí structured HR khai thẳng — ưu tiên cao nhất (publish bỏ qua AI). Chỉ set khi Draft.
         public List<CriterionItem>? Criteria { get; set; }
 
+        // EVA1-B5 / HĐ-2 — 3 luật lọc CỨNG cho sàng CV (D19: lá chắn chi phí Gemini số 1 — hard-filter
+        // TRƯỚC AI). Cột đã có (Models/Campaign.cs); mục rỗng/trắng bị loại lặng.
+        //   requiredSkills:      CV phải có ĐỦ mọi mục
+        //   keywordsAny:         CV phải có ÍT NHẤT 1 mục
+        //   minYearsExperience:  số năm tối thiểu; ∈ [0, 60]; 0 = không ràng buộc (KHÔNG cần sentinel "clear")
+        public List<string>? RequiredSkills { get; set; }
+        public List<string>? KeywordsAny { get; set; }
+        public int? MinYearsExperience { get; set; }
+
         [Required]
         public DateTime? StartsAt { get; set; }
 
@@ -186,6 +195,16 @@ namespace Isas.CampaignService.DTOs
 
         // C12: ghi đè tiêu chí structured (replace-all atomic) — chỉ khi Draft, ngược lại 409.
         public List<CriterionItem>? Criteria { get; set; }
+
+        // EVA1-B5 / HĐ-2 — 3 luật lọc CỨNG cho sàng CV. LỚP TÁCH RỜI với CreateCampaignRequest (không
+        // kế thừa) — thiếu ở đây thì mỗi lần HR bấm Lưu là âm thầm xoá cấu hình lọc.
+        //   null / vắng  = KHÔNG ĐỔI
+        //   []           = XOÁ luật
+        //   minYearsExperience: 0 = XOÁ luật ("tối thiểu 0 năm" = không ràng buộc), KHÔNG phải sentinel bẩn.
+        // Cửa trạng thái: Draft, HOẶC Active khi campaign chưa có ứng viên nào; Closed/Archived → 409.
+        public List<string>? RequiredSkills { get; set; }
+        public List<string>? KeywordsAny { get; set; }
+        public int? MinYearsExperience { get; set; }
 
         public DateTime? StartsAt { get; set; }
 
@@ -301,6 +320,10 @@ namespace Isas.CampaignService.DTOs
         // HR technical screener bước 1 — thước đo dùng cho MỌI CV của campaign này. `[]` khi chưa
         // chốt (chưa publish hoặc AI không suy được từ JD) ⇒ sàng CV chưa chạy được.
         public List<JobNeedResponse> JobNeeds { get; set; } = new();
+        // EVA1-B5 / HĐ-2 — 3 luật lọc CỨNG sàng CV (đọc lại đúng kiểu đã ghi). null = không áp luật đó.
+        public List<string>? RequiredSkills { get; set; }
+        public List<string>? KeywordsAny { get; set; }
+        public int? MinYearsExperience { get; set; }
         public string? JDText { get; set; }
         public string? CriteriaText { get; set; }
         public DateTime CreatedAt { get; set; }
@@ -375,6 +398,9 @@ namespace Isas.CampaignService.DTOs
                         .Select(l => new CriterionLevelResponse { Score = l.Score, Descriptor = l.Descriptor })
                         .ToList()
                 }).ToList(),
+            RequiredSkills = c.RequiredSkills,        // EVA1-B5 — luật lọc cứng sàng CV
+            KeywordsAny = c.KeywordsAny,
+            MinYearsExperience = c.MinYearsExperience,
             JDText = c.JDText,
             CriteriaText = c.CriteriaText,
             CreatedAt = c.CreatedAt,

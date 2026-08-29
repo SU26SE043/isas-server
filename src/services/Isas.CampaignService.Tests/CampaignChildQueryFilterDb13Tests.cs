@@ -49,7 +49,10 @@ public class CampaignChildQueryFilterDb13Tests
         });
         tdb.Db.CampaignCriteria.Add(new CampaignCriterion
         {
-            Id = crId, CampaignId = camp.Id, Name = "Crit1", Weight = 1m,
+            // MaxScore = 5: EVA1-B3 thêm CHECK ck_campaign_criteria_max_score_range (∈ [1,100]);
+            // seed cũ để MaxScore mặc định 0 ⇒ vi phạm CHECK lúc SaveChanges. Giá trị không liên
+            // quan tới điều test này khẳng định (query filter soft-delete).
+            Id = crId, CampaignId = camp.Id, Name = "Crit1", Weight = 1m, MaxScore = 5,
             OrderNo = 0, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
         });
         tdb.Db.CampaignInvitations.Add(new CampaignInvitation
