@@ -67,6 +67,9 @@ namespace Isas.CampaignService.DTOs
         /// <summary>1 = điểm cũ do LLM phán trên rubric phỏng vấn · 2 = tính từ bằng chứng. Hai
         /// thang KHÔNG so sánh được — có dấu để không bị trộn trong im lặng (tiền lệ BK23).</summary>
         public int? ScreeningVersion { get; set; }
+        /// <summary>SCP1 · HĐ-5 — true = biểu thức chính sách sàng CV lỗi lúc chạy ⇒ điểm này tính
+        /// bằng công thức CAMP-14 mặc định. Phải hiện ra UI (không thì lại là thứ hỏng im lặng).</summary>
+        public bool ScoreFallback { get; set; }
     }
 
     /// <summary>
@@ -87,6 +90,8 @@ namespace Isas.CampaignService.DTOs
 
         // ── HR technical screener ─────────────────────────────────────────────
         public int? ScreeningVersion { get; set; }
+        /// <summary>SCP1 · HĐ-5 — xem <see cref="CandidateListItem.ScoreFallback"/>.</summary>
+        public bool ScoreFallback { get; set; }
         public string? FitSummary { get; set; }
         /// <summary>Nhu cầu ứng viên ĐÁP ỨNG (Strong/Partial), kèm trích dẫn từ CV.</summary>
         public List<NeedAssessmentItem> Strengths { get; set; } = new();

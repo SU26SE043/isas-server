@@ -49,6 +49,12 @@ namespace Isas.CampaignService.Models
         // là BẤT BIẾN (B2) ⇒ (campaign_id, CvScreening, version) resolve về đúng một biểu thức cố định,
         // KHÔNG cần gọi service khác. null = campaign chưa áp chính sách CV / sàng trước cột này.
         public int? ScoringPolicyVersion { get; set; }
+
+        // SCP1 · B7 / HĐ-5 — CỜ LÙI AN TOÀN của OverallMatchScore. true = biểu thức chính sách sàng CV
+        // (đã ghim) LỖI lúc chạy (chia 0 / tràn số / ném / kết quả ngoài [0,100]) ⇒ điểm tính bằng
+        // công thức CAMP-14 mặc định. Ghi CÙNG transaction với hàng (SaveCvResultAsync) ⇒ NOT NULL
+        // default false: hàng sàng trước B7 = false = "không lùi an toàn". Phải hiện ra màn HR (HĐ-5).
+        public bool ScoreFallback { get; set; }
         public string? FitSummary { get; set; }                  // 2-3 câu: hợp/không hợp ở đâu
         public List<NeedAssessment>? Strengths { get; set; }      // jsonb — level Strong|Partial
         public List<NeedAssessment>? Gaps { get; set; }           // jsonb — level Weak

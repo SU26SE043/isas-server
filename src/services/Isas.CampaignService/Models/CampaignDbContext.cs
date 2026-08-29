@@ -442,6 +442,9 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.FullName).HasMaxLength(255);
                 e.Property(x => x.Email).HasMaxLength(255);
+                // SCP1 · B7 — cờ lùi an toàn của điểm sàng CV. NOT NULL default false (ghi cùng
+                // transaction với hàng ⇒ hàng cũ = false = "không lùi an toàn").
+                e.Property(x => x.ScoreFallback).HasDefaultValue(false);
 
                 e.Property(x => x.ParseStatus).HasConversion<string>().HasMaxLength(16);
                 e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
