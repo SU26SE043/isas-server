@@ -43,7 +43,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
         if (session is null) return;
 
-        var (totalScore, scoringInputs) = await ComputeScoreAndInputsAsync(session, ct);
+        var (totalScore, scoringInputs, scoreFallback) = await ComputeScoreAndInputsAsync(session, ct);
 
         var evt = new SessionScoredEvent
         {
@@ -57,7 +57,11 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             // SCP1 · B5 — bó biến RAW để B8 tính lại điểm bằng chính sách biểu thức. null nếu chưa
             // chấm được tiêu chí nào (session bỏ ngang đường này không phát SessionScored, nhưng
             // giữ null-safe).
-            ScoringInputs = scoringInputs
+            ScoringInputs = scoringInputs,
+            // SCP1 · B6 / HĐ-5 — cờ RIÊNG: true = biểu thức chính sách LỖI lúc chạy trên buổi này ⇒
+            // điểm tính bằng công thức mặc định. Bảng kết quả (HĐ-5) phải hiện được, nếu không đây lại
+            // là một thứ hỏng im lặng.
+            ScoreFallback = scoreFallback
         };
 
         _db.OutboxMessages.Add(OutboxMessage.ForScored(evt));
@@ -179,7 +183,11 @@ public class SessionScoringNotifier : ISessionScoringNotifier
     // Dựng từ CÙNG `criteria` + `scores` đang tính điểm ⇒ không thêm query nào ngoài 2 CountAsync.
     // Lưu RAW, KHÔNG lưu scalar đã tính (weighted_avg_pct…) — CẤM #3: append thêm biến sau này thì
     // hàng lịch sử vẫn tính lại được (B8).
-    private async Task<(decimal Total, ScoringInputsSnapshot? Inputs)> ComputeScoreAndInputsAsync(
+    //
+    // SCP1 · B6 — nếu buổi ĐÃ GHIM chính sách (campaign_policy_expression), điểm = đánh giá biểu thức
+    // đó trên bó biến RAW; lỗi lúc chạy ⇒ LÙI về công thức weighted mặc định + cờ scoreFallback.
+    // `weighted_avg_pct` giữ NGUYÊN công thức hiện tại — nó chỉ trở thành MỘT BIẾN (B1), không bị thay.
+    private async Task<(decimal Total, ScoringInputsSnapshot? Inputs, bool ScoreFallback)> ComputeScoreAndInputsAsync(
         PracticeSession session, CancellationToken ct)
     {
         var sessionId = session.Id;
@@ -201,14 +209,14 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         // hẳn, giao ID rỗng, TotalScore = 0. Cả hai vế nay nằm trong loader dùng chung.
         var criteria = await RubricCriteriaLoader.LoadAsync(
             _db, RubricCriteriaLoader.KeyFor(session), ct, includeLevels: false);
-        if (criteria.Count == 0) return (0m, null);
+        if (criteria.Count == 0) return (0m, null, false);
 
         var scores = await _db.AnswerScores
             .AsNoTracking()
             .Where(sc => sc.Answer.SessionId == sessionId)
             .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.Score })
             .ToListAsync(ct);
-        if (scores.Count == 0) return (0m, null);
+        if (scores.Count == 0) return (0m, null, false);
 
         var answered = await _db.PracticeAnswers.CountAsync(a => a.SessionId == sessionId, ct);
         var totalQuestions = await _db.PracticeQuestions.CountAsync(q => q.SessionId == sessionId, ct);
@@ -240,7 +248,73 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         }
 
         var inputs = new ScoringInputsSnapshot(bag, answered, totalQuestions);
-        if (weightSum <= 0m) return (0m, inputs);
-        return (Math.Clamp(Math.Round(weightedSum / weightSum, 2), 0m, 100m), inputs);
+
+        // Công thức MẶC ĐỊNH (weighted). Giữ NGUYÊN — nó là biến `weighted_avg_pct` (B1, append-only)
+        // và là đích LÙI AN TOÀN khi biểu thức chính sách lỗi.
+        var defaultTotal = weightSum <= 0m
+            ? 0m
+            : Math.Clamp(Math.Round(weightedSum / weightSum, 2), 0m, 100m);
+
+        // (5) Buổi CHƯA ghim chính sách (B2C, hoặc B2B chưa áp, hoặc dữ liệu trước SCP1) → công thức mặc định.
+        if (string.IsNullOrWhiteSpace(session.CampaignPolicyExpression))
+            return (defaultTotal, inputs, ScoreFallback: false);
+
+        // (4) BÁO LỖI ĐÁNH GIÁ — KHÔNG lùi an toàn, KHÔNG bịa điểm. total_questions = 0 trong khi đã
+        // ghim chính sách là BẤT BIẾN HỆ THỐNG bị vi phạm (mọi buổi B2B tạo với ≥1 câu campaign), không
+        // phải một cấu hình hợp lệ mà biểu thức "không may" hỏng trên đó. Ném để có người điều tra.
+        if (totalQuestions <= 0)
+        {
+            _logger.LogError(
+                "SCP1/B6: session {SessionId} đã ghim chính sách chấm (v{Ver}) nhưng total_questions = 0 "
+                + "— bất biến hệ thống bị vi phạm, KHÔNG tính điểm.",
+                sessionId, session.CampaignPolicyVersion);
+            throw new InvalidOperationException(
+                $"SCP1: session {sessionId} có total_questions = 0 với chính sách chấm đã ghim.");
+        }
+
+        // (2)+(3) Đánh giá biểu thức đã ghim trên bó biến RAW CỦA CHÍNH BUỔI NÀY. Lỗi lúc chạy — chia 0,
+        // tràn số, bộ đánh giá ném, kết quả < 0 hoặc > 100 (Evaluate tự trả RESULT_OUT_OF_RANGE, KHÔNG
+        // clamp) — ⇒ LÙI về `defaultTotal` + cờ RIÊNG scoreFallback. KHÔNG dùng needs_review (cờ đó đã
+        // có ba nguồn khác, UI không phân biệt được lý do). KHÔNG nuốt lỗi: mọi lần lùi ghi log.
+        var ctx = ScoringContext.ForInterview(inputs.ToInterviewInputs());
+        decimal? policyScore = null;
+        string failReason = "UNKNOWN";
+        try
+        {
+            var parsed = ScoringExpression.Parse(session.CampaignPolicyExpression);
+            if (!parsed.Ok)
+                failReason = parsed.Errors.Count > 0 ? parsed.Errors[0].Code : "PARSE_ERROR";
+            else
+            {
+                var eval = parsed.Evaluate(ctx);
+                if (eval.Ok)
+                    policyScore = eval.Value;   // đã trong [0,100]; ngược lại eval.Ok = false
+                else
+                    failReason = eval.Errors.Count > 0 ? eval.Errors[0].Code : "EVAL_ERROR";
+            }
+        }
+        catch (OverflowException)
+        {
+            failReason = "OVERFLOW";
+        }
+        catch (Exception ex)
+        {
+            failReason = "ENGINE_THREW";
+            _logger.LogError(ex, "SCP1/B6: bộ đánh giá ném cho session {SessionId}", sessionId);
+        }
+
+        if (policyScore is decimal ps)
+        {
+            _logger.LogInformation(
+                "SCP1/B6: session {SessionId} chấm bằng chính sách v{Ver} = {Score}",
+                sessionId, session.CampaignPolicyVersion, ps);
+            return (Math.Round(ps, 2), inputs, ScoreFallback: false);
+        }
+
+        _logger.LogWarning(
+            "SCP1/B6: session {SessionId} — chính sách chấm v{Ver} LỖI [{Reason}] ⇒ lùi về công thức "
+            + "mặc định = {Default}, scoreFallback = true.",
+            sessionId, session.CampaignPolicyVersion, failReason, defaultTotal);
+        return (defaultTotal, inputs, ScoreFallback: true);
     }
 }

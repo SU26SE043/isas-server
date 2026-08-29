@@ -38,4 +38,13 @@ public class SessionScoredEvent
     // này, và event cũ đang nằm trong outbox deserialize ra null ⇒ cột campaign_rankings.scoring_inputs
     // KHÔNG được NOT NULL, nếu không consumer crash trong cửa sổ rollout.
     public ScoringInputsSnapshot? ScoringInputs { get; set; }
+
+    // SCP1 · B6 / HĐ-5 — CỜ LÙI AN TOÀN của điểm. true = biểu thức chính sách chấm (đã ghim trên
+    // buổi) LỖI lúc chạy (chia 0 / tràn số / bộ đánh giá ném / kết quả ngoài [0,100]) ⇒ TotalScore
+    // được tính bằng công thức weighted MẶC ĐỊNH. Cờ RIÊNG, KHÔNG dùng chung needs_review (cờ đó đã
+    // có ba nguồn khác và UI không phân biệt được lý do).
+    //
+    // bool (mặc định false), KHÔNG nullable: bản Interview cũ không gửi ⇒ deserialize ra false ⇒
+    // "không phải lùi an toàn" — đúng nghĩa an toàn cho event cũ.
+    public bool ScoreFallback { get; set; }
 }
