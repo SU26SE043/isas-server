@@ -492,6 +492,57 @@ namespace Isas.CampaignService.Controllers
             catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }
         }
 
+        // SCP1 · HĐ-4 — XEM TRƯỚC tác động của một biểu thức chấm lên TOÀN BỘ ứng viên đã chấm: điểm
+        // cũ↔mới, hạng cũ↔mới, cờ đổi hạng, + fingerprint để nối sang apply. KHÔNG ghi gì. Tính LOCAL
+        // từ campaign_rankings.scoring_inputs (B5) / cv_submission + job_needs — không gọi xuyên service.
+        //   · Hạng tính trên TOÀN BỘ tập; ?cursor=&limit= chỉ phân trang phần trả về (next ở body).
+        [HttpPost("{id:guid}/scoring-policies/preview")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<DTOs.ScoringPolicyPreviewResponse>> PreviewScoringPolicy(
+            Guid id, [FromBody] DTOs.ScoringPolicyPreviewRequest req,
+            [FromQuery] string? cursor, [FromQuery] int? limit, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            try
+            {
+                return Ok(await _policies.PreviewPolicyAsync(orgId.Value, id, req ?? new(), cursor, limit, ct));
+            }
+            catch (ScoringExpressionInvalidException ex) { return BadRequest(new { errors = ex.Errors }); }
+            catch (KeyNotFoundException) { return NotFound(); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+        }
+
+        // SCP1 · HĐ-4/HĐ-6 — ÁP chính sách chấm: chỉ OrgAdmin. So fingerprint body với vân tay tính
+        // lại từ dòng chính sách đã lưu — lệch ⇒ 409 POLICY_CHANGED_AFTER_PREVIEW. Khớp ⇒ ghi đè điểm
+        // chính thức của MỌI ứng viên đã chấm (loại của policy) + audit điểm cũ + dời con trỏ version.
+        [HttpPost("{id:guid}/scoring-policies/{policyId:guid}/apply")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<DTOs.ApplyScoringPolicyResult>> ApplyScoringPolicy(
+            Guid id, Guid policyId, [FromBody] DTOs.ApplyScoringPolicyRequest req, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            try
+            {
+                var result = await _policies.ApplyPolicyAsync(
+                    orgId.Value, GetActorUserId(), IsOrgAdmin(), id, policyId, req ?? new(), ct);
+                return Ok(result);
+            }
+            // ScoringPolicyChangedException KHÔNG dẫn xuất InvalidOperationException → bắt riêng cho 409.
+            catch (ScoringPolicyChangedException ex)
+            {
+                return Conflict(new { error = "POLICY_CHANGED_AFTER_PREVIEW", message = ex.Message });
+            }
+            catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
+            catch (KeyNotFoundException) { return NotFound(); }
+            catch (InvalidOperationException ex) { return BadRequest(new { error = ex.Message }); }
+        }
+
         // ⚠ Route 3 đoạn nên KHÔNG đụng [HttpGet("{id}")] (1 đoạn, không ràng buộc) ở trên.
         //
         // 400 thiếu/sai jobCategory|language · 404 admin CHƯA soạn bộ cho tổ hợp này · 502 Interview lỗi.

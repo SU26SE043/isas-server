@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.Shared.Scoring;
@@ -70,14 +72,14 @@ namespace Isas.CampaignService.Services
             if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
                 throw new InvalidOperationException("Chiến dịch đã đóng — không tạo chính sách chấm mới.");
 
-            // CẤM B4 — đã có người được chấm (theo LOẠI): tạo version mới lúc này đổi kết quả người ta
-            // ⇒ phải qua xem-trước-rồi-áp của B8.
+            // Đã có người được chấm (theo LOẠI) ⇒ tạo version mới lúc này KHÔNG được tự dời con trỏ:
+            // dời ngay = đổi kết quả người ta trong im lặng. VẪN cho tạo dòng (để HR có id + biểu thức
+            // mà xem trước / áp — B8/HĐ-4), chỉ giữ con trỏ đứng yên tới khi apply.
+            //   · Trước B8 chỗ này ném POLICY_NEEDS_PREVIEW (409) — nhưng như vậy thì KHÔNG có đường
+            //     nào tạo được version để mà preview → apply. B4 đã ghi "luồng đó thuộc B8".
             var hasScored = kind == ScoringExpressionKind.Interview
                 ? await _db.CampaignRankings.AnyAsync(r => r.CampaignId == campaignId, ct)
                 : await _db.CvSubmissions.AnyAsync(s => s.CampaignId == campaignId && s.OverallMatchScore != null, ct);
-            if (hasScored)
-                throw new InvalidOperationException(
-                    "POLICY_NEEDS_PREVIEW: chiến dịch đã có người được chấm — phải xem trước rồi mới áp (B8).");
 
             // HĐ-6 — HrMember chỉ sửa chính sách chấm khi campaign còn Draft.
             if (campaign.Status != CampaignStatus.Draft && !isOrgAdmin)
@@ -121,13 +123,365 @@ namespace Isas.CampaignService.Services
             };
             _db.ScoringPolicies.Add(policy);
 
-            // B4 chỉ chạy khi 0 người được chấm ⇒ trỏ con trỏ vào version vừa tạo là an toàn (không có
-            // kết quả cũ để relabel). Đổi thước đo cho campaign đã chấm là việc của B8.
-            if (kind == ScoringExpressionKind.Interview) campaign.InterviewPolicyVersion = policy.Version;
-            else campaign.CvPolicyVersion = policy.Version;
+            // Chưa ai được chấm ⇒ trỏ con trỏ vào version vừa tạo là an toàn (không có kết quả cũ để
+            // relabel). Campaign đã chấm ⇒ để con trỏ đứng yên; HR phải preview + apply (B8).
+            if (!hasScored)
+            {
+                if (kind == ScoringExpressionKind.Interview) campaign.InterviewPolicyVersion = policy.Version;
+                else campaign.CvPolicyVersion = policy.Version;
+            }
 
             await _db.SaveChangesAsync(ct);
             return Map(policy);
+        }
+
+        public async Task<ScoringPolicyPreviewResponse> PreviewPolicyAsync(
+            Guid orgId, Guid campaignId, ScoringPolicyPreviewRequest req,
+            string? cursor, int? limit, CancellationToken ct = default)
+        {
+            var kind = req.Kind switch
+            {
+                "Interview" => ScoringExpressionKind.Interview,
+                "CvScreening" => ScoringExpressionKind.CvScreening,
+                _ => throw new ArgumentException("kind phải là 'Interview' hoặc 'CvScreening'."),
+            };
+            var expression = req.Expression ?? string.Empty;
+
+            var campaign = await _db.Campaigns
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            // Không tin dữ liệu vào — validate như đường tạo (B3/B4).
+            var check = ScoringExpression.Validate(kind, expression);
+            if (!check.Valid)
+                throw new ScoringExpressionInvalidException(check.Errors);
+
+            var fingerprint = ScoringPolicyFingerprint.Compute(
+                expression, req.PassScorePct, ScoringEngine.Version);
+
+            // Chạy TOÀN BỘ ứng viên đã chấm (LOCAL, không xuyên service). Đánh giá bó biến scalar rất
+            // rẻ ⇒ tính hết rồi mới phân trang phần TRẢ VỀ (CẤM #1: hạng trên tập con là hạng SAI).
+            var cvNeedCount = campaign.JobNeeds?.Count ?? 0;
+            var scored = kind == ScoringExpressionKind.Interview
+                ? await LoadInterviewScoredAsync(campaignId, ct)
+                : await LoadCvScoredAsync(campaign, ct);
+
+            var computed = ComputeAll(kind, expression, scored, cvNeedCount);
+            var rows = computed
+                .Select(x => new ScoringPolicyPreviewRow(
+                    x.CandidateId, FullName: null,
+                    x.OldScore, x.NewScore, x.OldRank, x.NewRank, x.RankChanged))
+                .ToList();
+
+            var lim = limit is > 0 and <= 2000 ? limit.Value : 500;
+            var skip = DecodeCursor(cursor);
+            var page = rows.Skip(skip).Take(lim).ToList();
+            var next = skip + page.Count < rows.Count
+                ? EncodeCursor(skip + page.Count)
+                : null;
+
+            return new ScoringPolicyPreviewResponse(fingerprint, rows.Count, page, next);
+        }
+
+        public async Task<ApplyScoringPolicyResult> ApplyPolicyAsync(
+            Guid orgId, Guid actorUserId, bool isOrgAdmin,
+            Guid campaignId, Guid policyId, ApplyScoringPolicyRequest req, CancellationToken ct = default)
+        {
+            // HĐ-6 — chỉ OrgAdmin đánh giá lại toàn bộ.
+            if (!isOrgAdmin)
+                throw new EntitlementForbiddenException("Chỉ OrgAdmin được áp chính sách chấm mới (HĐ-6).");
+
+            var campaign = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            // Policy phải là BẢN CỦA CHÍNH campaign này (không phải mẫu hệ thống, không phải campaign khác).
+            var policy = await _db.ScoringPolicies
+                .FirstOrDefaultAsync(p => p.Id == policyId && p.CampaignId == campaignId, ct)
+                ?? throw new KeyNotFoundException($"Scoring policy {policyId} not found.");
+
+            // HĐ-4 — vân tay tính LẠI từ dòng đã lưu; lệch ⇒ 409 (ai đó đổi biểu thức sau khi HR xem trước).
+            var actual = ScoringPolicyFingerprint.Compute(
+                policy.Expression, policy.PassScorePct, policy.EngineVersion);
+            if (!string.Equals(actual, req.Fingerprint, StringComparison.OrdinalIgnoreCase))
+                throw new ScoringPolicyChangedException();
+
+            var kind = policy.Kind;
+
+            if (kind == ScoringExpressionKind.Interview)
+            {
+                var ranks = await _db.CampaignRankings
+                    .Where(r => r.CampaignId == campaignId && r.ScoringInputs != null)
+                    .ToListAsync(ct);
+                if (ranks.Count == 0)
+                    throw new InvalidOperationException("Chưa có ứng viên nào được chấm để đánh giá lại.");
+
+                var scored = ranks
+                    .Select(r => new ScoredRow(r.CandidateId, r.TotalScore, r.ScoringInputs!, null))
+                    .ToList();
+                var byId = ComputeAll(kind, policy.Expression, scored)
+                    .ToDictionary(x => x.CandidateId);
+
+                var oldSnapshot = new List<object>(ranks.Count);
+                int rankChanged = 0;
+                foreach (var r in ranks)
+                {
+                    var x = byId[r.CandidateId];
+                    oldSnapshot.Add(new { c = r.CandidateId, s = r.TotalScore });
+                    r.TotalScore = x.NewScore ?? r.TotalScore;   // Interview: NewScore luôn có
+                    r.PolicyVersion = policy.Version;
+                    r.PolicyName = policy.Name;
+                    r.ScoreFallback = x.FellBack;
+                    r.UpdatedAt = DateTime.UtcNow;
+                    if (x.RankChanged) rankChanged++;
+                }
+
+                campaign.InterviewPolicyVersion = policy.Version;
+                AddApplyAudit(actorUserId, orgId, campaign.Id, kind, policy.Version, oldSnapshot);
+                await _db.SaveChangesAsync(ct);
+                return new ApplyScoringPolicyResult(ranks.Count, rankChanged, policy.Version);
+            }
+            else
+            {
+                var cands = await _db.CvSubmissions
+                    .Where(s => s.CampaignId == campaignId && s.OverallMatchScore != null)
+                    .ToListAsync(ct);
+                if (cands.Count == 0)
+                    throw new InvalidOperationException("Chưa có ứng viên nào được chấm để đánh giá lại.");
+
+                var needCount = campaign.JobNeeds?.Count ?? 0;
+                var scored = cands
+                    .Select(c => new ScoredRow(c.Id, c.OverallMatchScore!.Value, null, BuildAssessments(c)))
+                    .ToList();
+                var byId = ComputeAll(kind, policy.Expression, scored, needCount)
+                    .ToDictionary(x => x.CandidateId);
+
+                var oldSnapshot = new List<object>(cands.Count);
+                int applied = 0, rankChanged = 0;
+                foreach (var c in cands)
+                {
+                    var x = byId[c.Id];
+                    oldSnapshot.Add(new { c = c.Id, s = c.OverallMatchScore });
+                    // newScore null (0 assessment + biểu thức lỗi) ⇒ GIỮ điểm cũ, không "bỏ chấm" người ta.
+                    if (x.NewScore is decimal ns)
+                    {
+                        c.OverallMatchScore = (int)ns;
+                        c.ScoringPolicyVersion = policy.Version;   // re-pin (như rescreen)
+                        c.ScoreFallback = x.FellBack;
+                        c.UpdatedAt = DateTime.UtcNow;
+                        applied++;
+                    }
+                    if (x.RankChanged) rankChanged++;
+                }
+
+                campaign.CvPolicyVersion = policy.Version;
+                AddApplyAudit(actorUserId, orgId, campaign.Id, kind, policy.Version, oldSnapshot);
+                await _db.SaveChangesAsync(ct);
+                return new ApplyScoringPolicyResult(applied, rankChanged, policy.Version);
+            }
+        }
+
+        // ── Nội bộ B8 ────────────────────────────────────────────────────────────────────────────
+
+        /// <summary>1 ứng viên đã chấm — bó biến để chạy lại biểu thức. Interview mang
+        /// <see cref="Bag"/>; CvScreening mang <see cref="Assessments"/>.</summary>
+        private sealed record ScoredRow(
+            Guid CandidateId,
+            decimal OldScore,
+            ScoringInputsSnapshot? Bag,
+            IReadOnlyList<NeedAssessment>? Assessments);
+
+        private async Task<List<ScoredRow>> LoadInterviewScoredAsync(Guid campaignId, CancellationToken ct)
+        {
+            var rows = await _db.CampaignRankings
+                .AsNoTracking()
+                .Where(r => r.CampaignId == campaignId && r.ScoringInputs != null)
+                .Select(r => new { r.CandidateId, r.TotalScore, r.ScoringInputs })
+                .ToListAsync(ct);
+            return rows
+                .Select(r => new ScoredRow(r.CandidateId, r.TotalScore, r.ScoringInputs, null))
+                .ToList();
+        }
+
+        private async Task<List<ScoredRow>> LoadCvScoredAsync(Campaign campaign, CancellationToken ct)
+        {
+            var rows = await _db.CvSubmissions
+                .AsNoTracking()
+                .Where(s => s.CampaignId == campaign.Id && s.OverallMatchScore != null)
+                .Select(s => new { s.Id, s.OverallMatchScore, s.Strengths, s.Gaps })
+                .ToListAsync(ct);
+            return rows
+                .Select(s => new ScoredRow(
+                    s.Id,
+                    s.OverallMatchScore!.Value,
+                    null,
+                    Concat(s.Strengths, s.Gaps)))
+                .ToList();
+
+            static List<NeedAssessment> Concat(List<NeedAssessment>? a, List<NeedAssessment>? b)
+            {
+                var r = new List<NeedAssessment>();
+                if (a is not null) r.AddRange(a);
+                if (b is not null) r.AddRange(b);
+                return r;
+            }
+        }
+
+        private static IReadOnlyList<NeedAssessment> BuildAssessments(CvSubmission c)
+        {
+            var r = new List<NeedAssessment>();
+            if (c.Strengths is not null) r.AddRange(c.Strengths);
+            if (c.Gaps is not null) r.AddRange(c.Gaps);
+            return r;
+        }
+
+        /// <summary>1 dòng đã tính đủ: điểm/hạng cũ↔mới + cờ lùi an toàn (<c>FellBack</c>).</summary>
+        private sealed record ComputedRow(
+            Guid CandidateId, decimal? OldScore, decimal? NewScore, bool FellBack,
+            int OldRank, int NewRank)
+        {
+            public bool RankChanged => OldRank != NewRank;
+        }
+
+        /// <summary>
+        /// Điểm/hạng cũ↔mới + cờ lùi an toàn cho MỌI dòng — hạng gán trên TOÀN BỘ tập (competition
+        /// ranking, khớp <c>GetCampaignResultsAsync</c>: rank = số điểm cao hơn + 1, đồng điểm cùng
+        /// rank). Sắp theo <c>newRank</c> rồi <c>candidateId</c> để phân trang tất định.
+        /// </summary>
+        private static List<ComputedRow> ComputeAll(
+            ScoringExpressionKind kind, string expression, List<ScoredRow> scored, int cvNeedCount = 0)
+        {
+            var mid = scored
+                .Select(s =>
+                {
+                    var (newScore, fellBack) = kind == ScoringExpressionKind.Interview
+                        ? ScoreInterview(expression, s.Bag)
+                        : ScoreCv(expression, s.Assessments ?? Array.Empty<NeedAssessment>(), cvNeedCount);
+                    return (s.CandidateId, OldScore: (decimal?)s.OldScore, NewScore: newScore, FellBack: fellBack);
+                })
+                .ToList();
+
+            var oldRank = AssignRanks(mid.Select(x => (x.CandidateId, x.OldScore)));
+            var newRank = AssignRanks(mid.Select(x => (x.CandidateId, x.NewScore)));
+
+            return mid
+                .Select(x => new ComputedRow(
+                    x.CandidateId, x.OldScore, x.NewScore, x.FellBack,
+                    oldRank[x.CandidateId], newRank[x.CandidateId]))
+                .OrderBy(r => r.NewRank)
+                .ThenBy(r => r.CandidateId)
+                .ToList();
+        }
+
+        /// <summary>Điểm 1 ứng viên phỏng vấn dưới <paramref name="expression"/>; lỗi lúc chạy ⇒ công
+        /// thức weighted mặc định (B6) + cờ true. Bag null (event trước B5) ⇒ (0, true) — không dùng được.</summary>
+        private static (decimal? Score, bool FellBack) ScoreInterview(string expression, ScoringInputsSnapshot? bag)
+        {
+            if (bag is null) return (0m, true);
+            var def = DefaultInterviewTotal(bag);
+            var ctx = ScoringContext.ForInterview(bag.ToInterviewInputs());
+            var outcome = ScoringPolicyRunner.Evaluate(expression, ctx);
+            return outcome.Value is decimal v
+                ? (Math.Round(v, 2), false)
+                : ((decimal?)def, true);
+        }
+
+        /// <summary>Điểm 1 ứng viên sàng CV dưới <paramref name="expression"/>; lỗi ⇒ CAMP-14 mặc định
+        /// (B7) + cờ true. need_count = 0 ⇒ (null, true) — B7 ném; ở batch mình BỎ QUA dòng đó.</summary>
+        private static (decimal? Score, bool FellBack) ScoreCv(
+            string expression, IReadOnlyList<NeedAssessment> assessments, int needCount)
+        {
+            int? def = assessments.Count == 0
+                ? null
+                : (int)Math.Round(
+                    100m * assessments.Sum(a => NeedLevels.Credit(a.Level)) / assessments.Count,
+                    MidpointRounding.AwayFromZero);
+
+            if (needCount <= 0)
+                return (def, true);   // không tính được biểu thức — chỉ có mặc định (có thể null)
+
+            var strong = assessments.Count(a => a.Level == NeedLevels.Strong);
+            var partial = assessments.Count(a => a.Level == NeedLevels.Partial);
+            var weak = assessments.Count(a => a.Level == NeedLevels.Weak);
+            var ctx = ScoringContext.ForCvScreening(new CvScreeningScoringInputs(
+                StrongCount: strong, PartialCount: partial, WeakCount: weak,
+                NeedCount: needCount, MustHaveTotal: needCount, MustHaveMet: strong + partial));
+
+            var outcome = ScoringPolicyRunner.Evaluate(expression, ctx);
+            return outcome.Value is decimal v
+                ? ((int)Math.Round(v, MidpointRounding.AwayFromZero), false)
+                : ((decimal?)def, true);
+        }
+
+        private static decimal DefaultInterviewTotal(ScoringInputsSnapshot bag)
+        {
+            decimal weightedSum = 0m, weightSum = 0m;
+            foreach (var c in bag.Criteria)
+            {
+                weightedSum += c.Pct * c.Weight;
+                weightSum += c.Weight;
+            }
+            return weightSum <= 0m
+                ? 0m
+                : Math.Clamp(Math.Round(weightedSum / weightSum, 2), 0m, 100m);
+        }
+
+        /// <summary>Competition ranking: rank = số điểm CAO HƠN + 1; đồng điểm cùng rank (1,1,3). null
+        /// (không tính được) xuống đáy.</summary>
+        private static Dictionary<Guid, int> AssignRanks(IEnumerable<(Guid Id, decimal? Score)> rows)
+        {
+            var ordered = rows
+                .OrderByDescending(x => x.Score.HasValue)
+                .ThenByDescending(x => x.Score ?? decimal.MinValue)
+                .ThenBy(x => x.Id)
+                .ToList();
+
+            var result = new Dictionary<Guid, int>(ordered.Count);
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                var same = i > 0
+                    && Nullable.Equals(ordered[i - 1].Score, ordered[i].Score);
+                result[ordered[i].Id] = same ? result[ordered[i - 1].Id] : i + 1;
+            }
+            return result;
+        }
+
+        private void AddApplyAudit(
+            Guid actorUserId, Guid orgId, Guid campaignId,
+            ScoringExpressionKind kind, int version, IReadOnlyList<object> oldScores)
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                policyVersion = version,
+                kind = kind.ToString(),
+                old = oldScores,
+            });
+            _db.AuditLogs.Add(new AuditLog
+            {
+                Id = Guid.NewGuid(),
+                OrgId = orgId,
+                ActorUserId = actorUserId,
+                Action = AuditAction.ApplyScoringPolicy,
+                Entity = "Campaign",
+                EntityId = campaignId,
+                Summary = payload,
+                At = DateTime.UtcNow,
+            });
+        }
+
+        private static string EncodeCursor(int skip) =>
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(skip.ToString()));
+
+        private static int DecodeCursor(string? cursor)
+        {
+            if (string.IsNullOrWhiteSpace(cursor)) return 0;
+            try
+            {
+                var s = Encoding.UTF8.GetString(Convert.FromBase64String(cursor));
+                return int.TryParse(s, out var n) && n >= 0 ? n : 0;
+            }
+            catch { return 0; }
         }
 
         private static ScoringPolicyResponse Map(ScoringPolicy p) => new(

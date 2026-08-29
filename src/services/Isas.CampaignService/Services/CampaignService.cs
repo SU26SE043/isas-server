@@ -1706,6 +1706,9 @@ namespace Isas.CampaignService.Services
                         ?? (threshold is null ? null : (effectiveScore >= threshold.Value ? "Pass" : "Fail")),
                     ScoredAt = r.UpdatedAt,
                     RubricVersion = r.RubricVersion,   // CAMP-18: null = không biết (KHÔNG suy ra v1)
+                    PolicyVersion = r.PolicyVersion,   // SCP1/HĐ-5 — chính sách chấm đã áp (null = mặc định)
+                    PolicyName = r.PolicyName,
+                    ScoreFallback = r.ScoreFallback,   // SCP1/HĐ-5 — biểu thức lỗi ⇒ dùng công thức mặc định
                     Flags = flagsBySession.TryGetValue(r.SessionId, out var f) ? f : new List<FlagDto>(),
                     AiScore = r.TotalScore,
                     OverrideScore = r.OverrideScore,
@@ -2251,7 +2254,10 @@ namespace Isas.CampaignService.Services
                 // F5: null → ô rỗng (không tra được danh tính) — CsvHelper tự escape dấu phẩy/nháy trong tên.
                 FullName = r.FullName ?? string.Empty,
                 Email = r.Email ?? string.Empty,
-                RubricVersion = r.RubricVersion   // CAMP-18
+                RubricVersion = r.RubricVersion,   // CAMP-18
+                PolicyVersion = r.PolicyVersion,   // SCP1/HĐ-5
+                PolicyName = r.PolicyName ?? string.Empty,
+                ScoreFallback = r.ScoreFallback
             }).ToList();
 
             // R7: nối ứng viên có cờ mà CHƯA Scored — HR đọc bản export cũng thấy nhóm đáng ngờ nhất.
@@ -2296,6 +2302,11 @@ namespace Isas.CampaignService.Services
             // CAMP-18 — BẮT BUỘC có trong CSV: thiếu nó thì HR xuất Excel rồi trộn điểm của hai thước
             // đo với nhau, hoàn toàn NGOÀI TẦM mọi cảnh báo mà app hiện trên màn hình.
             public int? RubricVersion { get; set; }
+            // SCP1/HĐ-5 — chính sách chấm đã áp + cờ lùi an toàn. Cùng lý do RubricVersion: bảng có
+            // thể trộn điểm của hai chính sách, HR cần thấy điều đó cả trong file xuất.
+            public int? PolicyVersion { get; set; }
+            public string PolicyName { get; set; } = string.Empty;
+            public bool ScoreFallback { get; set; }
         }
 
         private sealed class ResultCsvRowMap : ClassMap<ResultCsvRow>
@@ -2317,6 +2328,10 @@ namespace Isas.CampaignService.Services
                 // CAMP-18 — thêm ở ĐUÔI: Index là tuyệt đối, chèn vào giữa sẽ đổi thứ tự cột của file
                 // HR đang dùng. null → ô rỗng ("không biết"), KHÔNG ghi 1.
                 Map(m => m.RubricVersion).Index(9).Name("rubric_version");
+                // SCP1/HĐ-5 — ĐUÔI bảng (additive, cùng lý do trên).
+                Map(m => m.PolicyVersion).Index(10).Name("policy_version");
+                Map(m => m.PolicyName).Index(11).Name("policy_name");
+                Map(m => m.ScoreFallback).Index(12).Name("score_fallback");
             }
         }
 

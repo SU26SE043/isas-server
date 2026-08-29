@@ -72,4 +72,53 @@ namespace Isas.CampaignService.DTOs
         /// admin sửa mẫu KHÔNG đổi bản đã chép.</summary>
         public Guid? SourceTemplateId { get; set; }
     }
+
+    // ── SCP1 · HĐ-4 — XEM TRƯỚC + ÁP ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Body của <c>POST /api/v1/campaign/{id}/scoring-policies/preview</c>. Chạy biểu thức đề xuất
+    /// trên bó biến của MỌI ứng viên đã chấm (loại <see cref="Kind"/>), trả điểm/hạng cũ↔mới. KHÔNG
+    /// ghi gì. <c>passScorePct</c> vào vân tay + để tính Pass/Fail của bảng preview (chưa lưu).
+    /// </summary>
+    public sealed class ScoringPolicyPreviewRequest
+    {
+        /// <summary>"Interview" | "CvScreening" (phân biệt hoa/thường). Sai/thiếu → 400.</summary>
+        public string? Kind { get; set; }
+        public string? Expression { get; set; }
+        public int? PassScorePct { get; set; }
+    }
+
+    /// <summary>1 dòng bảng xem trước: điểm/hạng của ứng viên TRƯỚC ↔ SAU khi đổi công thức.</summary>
+    public sealed record ScoringPolicyPreviewRow(
+        Guid CandidateId,
+        string? FullName,
+        decimal? OldScore,
+        decimal? NewScore,
+        int OldRank,
+        int NewRank,
+        bool RankChanged);
+
+    /// <summary>
+    /// Kết quả xem trước. <c>fingerprint</c> nối sang <c>apply</c> (HĐ-4). <c>total</c> = tổng số ứng
+    /// viên đã chấm (KHÔNG phải số dòng trang này). Hạng ở mỗi dòng tính trên TOÀN BỘ tập, chỉ phân
+    /// trang phần TRẢ VỀ (<c>nextCursor</c> null = hết).
+    /// </summary>
+    public sealed record ScoringPolicyPreviewResponse(
+        string Fingerprint,
+        int Total,
+        IReadOnlyList<ScoringPolicyPreviewRow> Rows,
+        string? NextCursor);
+
+    /// <summary>
+    /// Body của <c>POST /api/v1/campaign/{id}/scoring-policies/{policyId}/apply</c>. Chỉ có
+    /// <c>fingerprint</c>: server tính LẠI vân tay từ dòng chính sách đã lưu và so — lệch ⇒
+    /// <c>409 POLICY_CHANGED_AFTER_PREVIEW</c>.
+    /// </summary>
+    public sealed class ApplyScoringPolicyRequest
+    {
+        public string? Fingerprint { get; set; }
+    }
+
+    /// <summary>Kết quả áp: số dòng đã ghi đè + số dòng đổi hạng + version chính sách nay là con trỏ.</summary>
+    public sealed record ApplyScoringPolicyResult(int Applied, int RankChanged, int Version);
 }

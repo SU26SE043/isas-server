@@ -38,5 +38,36 @@ namespace Isas.CampaignService.Services
         Task<ScoringPolicyResponse> CreatePolicyAsync(
             Guid orgId, Guid actorUserId, bool isOrgAdmin,
             Guid campaignId, CreateScoringPolicyRequest req, CancellationToken ct = default);
+
+        /// <summary>
+        /// HĐ-4 · B8 — <c>POST /campaign/{id}/scoring-policies/preview</c>: chạy biểu thức đề xuất trên
+        /// bó biến của MỌI ứng viên đã chấm (loại <c>kind</c>), trả điểm/hạng cũ↔mới + <c>fingerprint</c>.
+        /// Tính LOCAL từ <c>campaign_rankings.scoring_inputs</c> (Interview) / <c>cv_submission</c> +
+        /// <c>job_needs</c> (CvScreening) — KHÔNG gọi xuyên service. <b>KHÔNG ghi gì.</b> Hạng tính trên
+        /// TOÀN BỘ tập; chỉ phần trả về được phân trang (<paramref name="cursor"/>/<paramref name="limit"/>).
+        ///
+        /// <para>Ném: <see cref="KeyNotFoundException"/> (campaign ngoài org → 404) ·
+        /// <see cref="System.ArgumentException"/> (kind sai → 400) ·
+        /// <see cref="ScoringExpressionInvalidException"/> (biểu thức hỏng → 400 kèm errors).</para>
+        /// </summary>
+        Task<ScoringPolicyPreviewResponse> PreviewPolicyAsync(
+            Guid orgId, Guid campaignId, ScoringPolicyPreviewRequest req,
+            string? cursor, int? limit, CancellationToken ct = default);
+
+        /// <summary>
+        /// HĐ-4/HĐ-6 · B8 — <c>POST /campaign/{id}/scoring-policies/{policyId}/apply</c>: CHỈ OrgAdmin.
+        /// So <c>fingerprint</c> body với vân tay tính LẠI từ dòng chính sách đã lưu — lệch ⇒
+        /// <see cref="ScoringPolicyChangedException"/> (→ 409 POLICY_CHANGED_AFTER_PREVIEW). Khớp ⇒ ghi
+        /// đè điểm chính thức của MỌI ứng viên đã chấm (loại của policy) + ghi <c>audit_logs</c> điểm cũ
+        /// + trỏ <c>campaigns.{interview,cv}_policy_version</c> vào version của policy. 1 transaction.
+        ///
+        /// <para>Ném: <see cref="KeyNotFoundException"/> (campaign/policy ngoài org, hoặc policy là mẫu
+        /// hệ thống → 404) · <see cref="EntitlementForbiddenException"/> (không phải OrgAdmin → 403) ·
+        /// <see cref="ScoringPolicyChangedException"/> (fingerprint lệch → 409) ·
+        /// <see cref="System.InvalidOperationException"/> (chưa có ai được chấm để đánh giá lại → 400).</para>
+        /// </summary>
+        Task<ApplyScoringPolicyResult> ApplyPolicyAsync(
+            Guid orgId, Guid actorUserId, bool isOrgAdmin,
+            Guid campaignId, Guid policyId, ApplyScoringPolicyRequest req, CancellationToken ct = default);
     }
 }

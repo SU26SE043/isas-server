@@ -227,9 +227,11 @@ public class ScoringPolicyCreateTests
         Assert.Equal(1, r.Version);
     }
 
-    // ── CẤM B4: đã có người được chấm → 409 (thuộc B8) ───────────────────────────────────────
+    // ── B8 đảo tiền đề B4: đã có người được chấm ⇒ VẪN tạo được version (để HR preview → apply),
+    //    nhưng con trỏ KHÔNG tự dời (chỉ apply mới dời). Trước B8 chỗ này 409 POLICY_NEEDS_PREVIEW —
+    //    nhưng như vậy thì không có đường nào tạo version để mà preview. B4 đã ghi "luồng đó thuộc B8".
     [Fact]
-    public async Task Interview_da_co_ranking_thi_409_POLICY_NEEDS_PREVIEW()
+    public async Task Interview_da_co_ranking_thi_tao_duoc_nhung_KHONG_doi_con_tro()
     {
         var e = Setup(status: CampaignStatus.Active, orgRole: "OrgAdmin");
         using var _d = e.Db;
@@ -243,14 +245,16 @@ public class ScoringPolicyCreateTests
             await w.SaveChangesAsync();
         }
 
-        var action = await e.Controller.CreateScoringPolicy(e.CampaignId, Req(kind: "Interview"), default);
+        var r = await Created(e.Controller, e.CampaignId, Req(kind: "Interview"));
+        Assert.Equal(1, r.Version);
 
-        var conflict = Assert.IsType<ConflictObjectResult>(action.Result);
-        Assert.Contains("POLICY_NEEDS_PREVIEW", JsonSerializer.Serialize(conflict.Value));
+        // Con trỏ campaign KHÔNG dịch — kết quả người đã chấm chưa bị đổi.
+        using var db = e.Db.NewContext();
+        Assert.Null((await db.Campaigns.SingleAsync(x => x.Id == e.CampaignId)).InterviewPolicyVersion);
     }
 
     [Fact]
-    public async Task CvScreening_da_co_diem_khop_thi_409()
+    public async Task CvScreening_da_co_diem_khop_thi_tao_duoc_nhung_KHONG_doi_con_tro()
     {
         var e = Setup(status: CampaignStatus.Active, orgRole: "OrgAdmin");
         using var _d = e.Db;
@@ -265,13 +269,19 @@ public class ScoringPolicyCreateTests
             await w.SaveChangesAsync();
         }
 
-        // Interview kind vẫn tạo được (chưa có ranking) — chỉ CvScreening bị chặn.
-        var iv = await e.Controller.CreateScoringPolicy(e.CampaignId, Req(kind: "Interview"), default);
-        Assert.IsType<OkObjectResult>(iv.Result);
+        // Interview kind: chưa có ranking ⇒ tạo + DỜI con trỏ như thường.
+        var iv = await Created(e.Controller, e.CampaignId, Req(kind: "Interview"));
+        Assert.Equal(1, iv.Version);
 
-        var cv = await e.Controller.CreateScoringPolicy(e.CampaignId,
-            Req(kind: "CvScreening", expr: "100 * strong_count / need_count", pass: 50), default);
-        Assert.IsType<ConflictObjectResult>(cv.Result);
+        // CvScreening kind: đã có điểm ⇒ tạo được nhưng con trỏ đứng yên.
+        var cv = await Created(e.Controller, e.CampaignId,
+            Req(kind: "CvScreening", expr: "100 * strong_count / need_count", pass: 50));
+        Assert.Equal(1, cv.Version);
+
+        using var db = e.Db.NewContext();
+        var camp = await db.Campaigns.SingleAsync(x => x.Id == e.CampaignId);
+        Assert.Equal(1, camp.InterviewPolicyVersion);   // dời (chưa ai chấm phỏng vấn)
+        Assert.Null(camp.CvPolicyVersion);              // KHÔNG dời (đã có điểm CV)
     }
 
     // ── khác ────────────────────────────────────────────────────────────────────────────────

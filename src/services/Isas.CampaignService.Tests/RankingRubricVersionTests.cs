@@ -129,10 +129,13 @@ public class RankingRubricVersionTests
             (await NewService(tdb.NewContext()).ExportCampaignResultsAsync(owner, camp.Id, "csv", default)).Content);
         var lines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
-        Assert.EndsWith("rubric_version", lines[0].TrimEnd('\r'));   // thêm ở ĐUÔI ⇒ script cũ không vỡ
-        Assert.EndsWith("2", lines[1].TrimEnd('\r'));
-        // null → ô RỖNG, không phải "1": bản xuất không được khẳng định thứ mình không biết.
-        Assert.EndsWith(",", lines[2].TrimEnd('\r'));
+        // SCP1/HĐ-5 thêm policy_version,policy_name,score_fallback ở SAU rubric_version (vẫn ở ĐUÔI).
+        Assert.Contains(",rubric_version,policy_version,policy_name,score_fallback", lines[0].TrimEnd('\r'));
+        Assert.EndsWith(",score_fallback", lines[0].TrimEnd('\r'));
+        // dòng có rubric_version=2 rồi tới ba ô SCP1 rỗng/rỗng/False (chưa áp chính sách chấm nào).
+        Assert.EndsWith(",2,,,False", lines[1].TrimEnd('\r'));
+        // rubric_version null → ô RỖNG, không phải "1": bản xuất không khẳng định thứ mình không biết.
+        Assert.EndsWith(",,,,False", lines[2].TrimEnd('\r'));
     }
 
     // Thứ tự cột cũ phải giữ nguyên — HR/script đang đọc theo chỉ số.
@@ -149,7 +152,8 @@ public class RankingRubricVersionTests
             (await NewService(tdb.NewContext()).ExportCampaignResultsAsync(owner, camp.Id, "csv", default)).Content);
 
         Assert.Equal(
-            "rank,candidate_id,session_id,total_score,result,scored_at,flags,full_name,email,rubric_version",
+            "rank,candidate_id,session_id,total_score,result,scored_at,flags,full_name,email,rubric_version,"
+            + "policy_version,policy_name,score_fallback",
             csv.Split('\n')[0].TrimEnd('\r'));
     }
 }

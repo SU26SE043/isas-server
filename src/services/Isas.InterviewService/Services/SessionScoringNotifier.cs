@@ -276,34 +276,14 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         // tràn số, bộ đánh giá ném, kết quả < 0 hoặc > 100 (Evaluate tự trả RESULT_OUT_OF_RANGE, KHÔNG
         // clamp) — ⇒ LÙI về `defaultTotal` + cờ RIÊNG scoreFallback. KHÔNG dùng needs_review (cờ đó đã
         // có ba nguồn khác, UI không phân biệt được lý do). KHÔNG nuốt lỗi: mọi lần lùi ghi log.
+        // Parse + eval + phân loại lỗi đi qua ScoringPolicyRunner — CÙNG một hàm đường xem-trước/áp (B8)
+        // dùng, để điểm preview = điểm apply = điểm một lần chấm mới. Lùi-an-toàn + log giữ ở đây.
         var ctx = ScoringContext.ForInterview(inputs.ToInterviewInputs());
-        decimal? policyScore = null;
-        string failReason = "UNKNOWN";
-        try
-        {
-            var parsed = ScoringExpression.Parse(session.CampaignPolicyExpression);
-            if (!parsed.Ok)
-                failReason = parsed.Errors.Count > 0 ? parsed.Errors[0].Code : "PARSE_ERROR";
-            else
-            {
-                var eval = parsed.Evaluate(ctx);
-                if (eval.Ok)
-                    policyScore = eval.Value;   // đã trong [0,100]; ngược lại eval.Ok = false
-                else
-                    failReason = eval.Errors.Count > 0 ? eval.Errors[0].Code : "EVAL_ERROR";
-            }
-        }
-        catch (OverflowException)
-        {
-            failReason = "OVERFLOW";
-        }
-        catch (Exception ex)
-        {
-            failReason = "ENGINE_THREW";
-            _logger.LogError(ex, "SCP1/B6: bộ đánh giá ném cho session {SessionId}", sessionId);
-        }
+        var outcome = ScoringPolicyRunner.Evaluate(session.CampaignPolicyExpression, ctx);
+        if (outcome.Exception is not null)
+            _logger.LogError(outcome.Exception, "SCP1/B6: bộ đánh giá ném cho session {SessionId}", sessionId);
 
-        if (policyScore is decimal ps)
+        if (outcome.Value is decimal ps)
         {
             _logger.LogInformation(
                 "SCP1/B6: session {SessionId} chấm bằng chính sách v{Ver} = {Score}",
@@ -314,7 +294,7 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         _logger.LogWarning(
             "SCP1/B6: session {SessionId} — chính sách chấm v{Ver} LỖI [{Reason}] ⇒ lùi về công thức "
             + "mặc định = {Default}, scoreFallback = true.",
-            sessionId, session.CampaignPolicyVersion, failReason, defaultTotal);
+            sessionId, session.CampaignPolicyVersion, outcome.FailReason, defaultTotal);
         return (defaultTotal, inputs, ScoreFallback: true);
     }
 }

@@ -328,7 +328,7 @@ namespace Isas.CampaignService.Models
             modelBuilder.Entity<AuditLog>(e =>
             {
                 e.ToTable("audit_logs", t => t.HasCheckConstraint(
-                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey')"));
+                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey', 'ApplyScoringPolicy')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Entity).IsRequired().HasMaxLength(64);
@@ -401,6 +401,10 @@ namespace Isas.CampaignService.Models
                  .HasConversion(JsonObjectConverter<ScoringInputsSnapshot>(), JsonObjectComparer<ScoringInputsSnapshot>());
                 if (Database.IsNpgsql())
                     e.Property(x => x.ScoringInputs).HasColumnType("jsonb");
+
+                // SCP1 · B8 / HĐ-5 — nhãn chính sách chấm đã áp + cờ lùi an toàn (xem CampaignRanking).
+                e.Property(x => x.PolicyName).HasMaxLength(255);
+                e.Property(x => x.ScoreFallback).HasDefaultValue(false);
 
                 // Idempotent upsert theo session_id: event tới 2 lần vẫn 1 row.
                 e.HasIndex(x => x.SessionId).IsUnique();

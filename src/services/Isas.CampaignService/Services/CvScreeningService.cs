@@ -347,31 +347,13 @@ namespace Isas.CampaignService.Services
                 StrongCount: strong, PartialCount: partial, WeakCount: weak,
                 NeedCount: needCount, MustHaveTotal: mustHaveTotal, MustHaveMet: mustHaveMet));
 
-            string failReason = "UNKNOWN";
-            decimal? policyScore = null;
-            try
-            {
-                var parsed = ScoringExpression.Parse(expression);
-                if (!parsed.Ok)
-                    failReason = parsed.Errors.Count > 0 ? parsed.Errors[0].Code : "PARSE_ERROR";
-                else
-                {
-                    var eval = parsed.Evaluate(ctx);
-                    if (eval.Ok) policyScore = eval.Value;   // ∈ [0,100]; ngược lại eval.Ok = false
-                    else failReason = eval.Errors.Count > 0 ? eval.Errors[0].Code : "EVAL_ERROR";
-                }
-            }
-            catch (OverflowException)
-            {
-                failReason = "OVERFLOW";
-            }
-            catch (Exception ex)
-            {
-                failReason = "ENGINE_THREW";
-                _logger.LogError(ex, "SCP1/B7: bộ đánh giá ném cho candidate {CandidateId}", candidate.Id);
-            }
+            // Parse + eval + phân loại lỗi đi qua ScoringPolicyRunner — CÙNG một hàm đường xem-trước/áp
+            // (B8) dùng. Lùi-an-toàn + log giữ ở đây (B7 làm tròn AwayFromZero khác B6).
+            var outcome = ScoringPolicyRunner.Evaluate(expression, ctx);
+            if (outcome.Exception is not null)
+                _logger.LogError(outcome.Exception, "SCP1/B7: bộ đánh giá ném cho candidate {CandidateId}", candidate.Id);
 
-            if (policyScore is decimal ps)
+            if (outcome.Value is decimal ps)
             {
                 _logger.LogInformation(
                     "SCP1/B7: candidate {CandidateId} chấm bằng chính sách sàng CV v{Ver} = {Score}",
@@ -382,7 +364,8 @@ namespace Isas.CampaignService.Services
             // (3) LÙI AN TOÀN + cờ (như B6). KHÔNG clamp (clamp che lỗi policy). KHÔNG nuốt lỗi.
             _logger.LogWarning(
                 "SCP1/B7: candidate {CandidateId} — chính sách sàng CV v{Ver} LỖI [{Reason}] ⇒ lùi về "
-                + "CAMP-14 = {Default}, scoreFallback = true.", candidate.Id, pinnedVersion, failReason, defaultScore);
+                + "CAMP-14 = {Default}, scoreFallback = true.",
+                candidate.Id, pinnedVersion, outcome.FailReason, defaultScore);
             return (defaultScore, true);
         }
 

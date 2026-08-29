@@ -45,6 +45,13 @@ namespace Isas.CampaignService.DTOs
         // FE hiện chip "?" và KHÔNG BAO GIỜ vẽ thành v1 (BK23).
         public int? RubricVersion { get; set; }
 
+        // SCP1 · B8 / HĐ-5 — chính sách chấm đã áp cho dòng này. null = công thức mặc định / trước
+        // SCP1 ⇒ FE không hiện nhãn. `ScoreFallback` = true ⇒ biểu thức lỗi lúc chạy, điểm này là
+        // công thức weighted mặc định — PHẢI hiện ra UI (không thì lại là thứ hỏng im lặng).
+        public int? PolicyVersion { get; set; }
+        public string? PolicyName { get; set; }
+        public bool ScoreFallback { get; set; }
+
         // E11b — HR chốt điểm cuối. Effective (đã áp override) = TotalScore/Result ở trên ĐÃ tính theo override;
         // các cột dưới lộ override thô để FE hiện badge "HR chỉnh" + điểm AI gốc.
         public decimal AiScore { get; set; }          // điểm AI gốc (snapshot, không đổi khi override)

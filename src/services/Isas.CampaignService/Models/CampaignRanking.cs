@@ -34,6 +34,17 @@ namespace Isas.CampaignService.Models
         // không mang nó ⇒ NOT NULL sẽ crash consumer trong cửa sổ rollout. jsonb (Npgsql) / text (SQLite).
         public ScoringInputsSnapshot? ScoringInputs { get; set; }
 
+        // SCP1 · B8 / HĐ-5 — chính sách chấm ĐÃ ÁP cho dòng điểm này (apply ghi đè lại toàn bộ). NULL =
+        // dòng chấm bằng công thức mặc định / trước SCP1 ⇒ FE không hiện nhãn. Phải lộ ra bảng kết quả
+        // + CSV: bảng có thể trộn điểm của hai chính sách khác nhau (giống nhãn RubricVersion CAMP-18).
+        public int? PolicyVersion { get; set; }
+        public string? PolicyName { get; set; }
+
+        // SCP1 · B8 / HĐ-5 — CỜ LÙI AN TOÀN: true = biểu thức chính sách LỖI lúc chạy lại (chia 0 / tràn /
+        // ném / kết quả ngoài [0,100]) ⇒ điểm này = công thức weighted mặc định. NOT NULL default false
+        // (dòng trước B8 = false = "không lùi"). Phải hiện ra màn HR — không thì lại là thứ hỏng im lặng.
+        public bool ScoreFallback { get; set; }
+
         // E11b — HR chốt điểm cuối (điểm AI = gợi ý). Null = chưa override → dùng TotalScore/ngưỡng.
         // Điểm/kết-quả effective read-time = OverrideScore ?? TotalScore, OverrideResult ?? (theo ngưỡng).
         // TotalScore giữ nguyên snapshot AI (E4 redelivery không đè override).
