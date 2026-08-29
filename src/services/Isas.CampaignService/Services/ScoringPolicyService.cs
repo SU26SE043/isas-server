@@ -1,5 +1,6 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
+using Isas.Shared.Scoring;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.CampaignService.Services
@@ -10,6 +11,24 @@ namespace Isas.CampaignService.Services
         private readonly CampaignDbContext _db;
 
         public ScoringPolicyService(CampaignDbContext db) => _db = db;
+
+        public async Task<ScoringPolicyValidateResponse> ValidateExpressionAsync(
+            Guid orgId, Guid campaignId, ScoringExpressionKind kind, string expression,
+            CancellationToken ct = default)
+        {
+            // Chỉ để chặn dò campaign của org khác — 1 index probe, KHÔNG chạm dữ liệu ứng viên.
+            // Query filter soft-delete (D11) tự lọc ⇒ campaign đã xoá cũng ra 404.
+            var owned = await _db.Campaigns.AnyAsync(c => c.Id == campaignId && c.OrgId == orgId, ct);
+            if (!owned) throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            // BỘ MẪU nằm trong code (ScoringContext.Sample) — endpoint chạy được cả khi campaign chưa
+            // có ứng viên nào. Không ghi gì.
+            var r = ScoringExpression.Validate(kind, expression ?? string.Empty);
+            return new ScoringPolicyValidateResponse(
+                r.Valid,
+                r.Valid ? r.SampleScore : null,
+                r.Valid ? null : r.Errors);
+        }
 
         public async Task<IReadOnlyList<ScoringPolicyResponse>> GetTemplatesAsync(CancellationToken ct = default)
         {

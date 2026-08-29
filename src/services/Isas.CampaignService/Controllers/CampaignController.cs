@@ -3,6 +3,7 @@ using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Isas.CampaignService.Validation;
 using Isas.Shared.Pagination;
+using Isas.Shared.Scoring;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -423,6 +424,37 @@ namespace Isas.CampaignService.Controllers
         {
             if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
             return Ok(await _policies.GetTemplatesAsync(ct));
+        }
+
+        // SCP1 · HĐ-2 — kiểm cú pháp/biến/kết-quả MỘT biểu thức chấm điểm. THUẦN kiểm tra:
+        //   · chạy trên BỘ MẪU cố định trong code (ScoringContext.Sample) — không đọc dữ liệu ứng viên,
+        //     endpoint dùng được cả khi campaign chưa có ai;
+        //   · KHÔNG ghi DB (chỉ 1 lần đọc campaigns để chặn dò campaign org khác → 404).
+        // Lỗi biểu thức trả MÃ + [start,end) ký tự (HĐ-2), FE map i18n. `kind` sai/thiếu → 400 (lỗi
+        // phong bì request, KHÔNG phải mã lỗi biểu thức).
+        [HttpPost("{id:guid}/scoring-policies/validate")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<DTOs.ScoringPolicyValidateResponse>> ValidateScoringPolicy(
+            Guid id, [FromBody] DTOs.ScoringPolicyValidateRequest req, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            var kind = req?.Kind switch
+            {
+                "Interview" => ScoringExpressionKind.Interview,
+                "CvScreening" => ScoringExpressionKind.CvScreening,
+                _ => (ScoringExpressionKind?)null,
+            };
+            if (kind is null) return BadRequest("kind phải là 'Interview' hoặc 'CvScreening'.");
+
+            try
+            {
+                return Ok(await _policies.ValidateExpressionAsync(
+                    orgId.Value, id, kind.Value, req!.Expression ?? string.Empty, ct));
+            }
+            catch (KeyNotFoundException) { return NotFound(); }
         }
 
         // ⚠ Route 3 đoạn nên KHÔNG đụng [HttpGet("{id}")] (1 đoạn, không ràng buộc) ở trên.
