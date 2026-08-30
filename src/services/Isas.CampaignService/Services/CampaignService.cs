@@ -2442,12 +2442,8 @@ namespace Isas.CampaignService.Services
         }
 
         // E5: ngưỡng pass/fail là % điểm tổng → phải ∈ [0,100] khi có (null = HR quyết tay).
-        // (Dòng chú thích này vốn nằm lạc trên ValidateLanguage — trả về đúng hàm nó mô tả.)
-        private static void ValidatePassScorePct(int? pct)
-        {
-            if (pct is int p && (p < 0 || p > 100))
-                throw new ArgumentException($"pass_score_pct phải trong khoảng [0, 100] (hiện: {p}).");
-        }
+        // Luật CHUNG với đường tạo/xem-trước chính sách chấm (SCP1/B11) — xem PassScorePctRule.
+        private static void ValidatePassScorePct(int? pct) => PassScorePctRule.Validate(pct);
 
         /// <summary>
         /// Q12 (E11b) — điểm HR chốt tay phải CÙNG THANG với điểm AI và ngưỡng đạt: phần trăm [0,100].

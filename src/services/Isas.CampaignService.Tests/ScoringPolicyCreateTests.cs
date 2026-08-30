@@ -388,4 +388,66 @@ public class ScoringPolicyCreateTests
         Assert.Null(res.InterviewPolicyVersion);
         Assert.Null(res.CvPolicyVersion);
     }
+
+    // ── SCP1-B11 — passScorePct ngoài [0,100] → 400, KHÔNG để CHECK DB nổ thành 500 ───────────
+    // Đường TẠO. 101/-1 = ngoài khoảng → 400; 0/100/null = hợp lệ → 200.
+    [Theory]
+    [InlineData(101)]
+    [InlineData(-1)]
+    public async Task B11_tao_passScorePct_ngoai_khoang_tra_400(int pass)
+    {
+        var e = Setup();
+        using var _d = e.Db;
+
+        var action = await e.Controller.CreateScoringPolicy(e.CampaignId, Req(pass: pass), default);
+
+        // 400 vì NGOÀI KHOẢNG (ArgumentException → BadRequest), KHÔNG phải 500 (DbUpdateException từ CHECK).
+        var bad = Assert.IsType<BadRequestObjectResult>(action.Result);
+        Assert.Contains("[0, 100]", bad.Value!.ToString());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(100)]
+    [InlineData(null)]
+    public async Task B11_tao_passScorePct_trong_khoang_tra_200(int? pass)
+    {
+        var e = Setup();
+        using var _d = e.Db;
+
+        var action = await e.Controller.CreateScoringPolicy(e.CampaignId, Req(pass: pass), default);
+
+        var ok = Assert.IsType<OkObjectResult>(action.Result);
+        Assert.Equal(pass, Assert.IsType<ScoringPolicyResponse>(ok.Value).PassScorePct);
+    }
+
+    // Đường XEM TRƯỚC — parity: ngưỡng nó sẽ không lưu được thì không cho xem trước (fingerprint lệch lúc áp).
+    [Theory]
+    [InlineData(101)]
+    [InlineData(-1)]
+    public async Task B11_preview_passScorePct_ngoai_khoang_tra_400(int pass)
+    {
+        var e = Setup();
+        using var _d = e.Db;
+
+        var action = await e.Controller.PreviewScoringPolicy(e.CampaignId,
+            new ScoringPolicyPreviewRequest { Kind = "Interview", Expression = "weighted_avg_pct", PassScorePct = pass },
+            cursor: null, limit: null, default);
+
+        var bad = Assert.IsType<BadRequestObjectResult>(action.Result);
+        Assert.Contains("[0, 100]", bad.Value!.ToString());
+    }
+
+    [Fact]
+    public async Task B11_preview_passScorePct_trong_khoang_tra_200()
+    {
+        var e = Setup();
+        using var _d = e.Db;
+
+        var action = await e.Controller.PreviewScoringPolicy(e.CampaignId,
+            new ScoringPolicyPreviewRequest { Kind = "Interview", Expression = "weighted_avg_pct", PassScorePct = 100 },
+            cursor: null, limit: null, default);
+
+        Assert.IsType<OkObjectResult>(action.Result);
+    }
 }

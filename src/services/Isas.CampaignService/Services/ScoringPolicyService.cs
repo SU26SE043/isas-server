@@ -62,6 +62,7 @@ namespace Isas.CampaignService.Services
                 _ => throw new ArgumentException("kind phải là 'Interview' hoặc 'CvScreening'."),
             };
             RejectCvPassScore(kind, req.PassScorePct);   // B9 — sàng CV không có đạt/trượt
+            PassScorePctRule.Validate(req.PassScorePct); // B11 — ngoài [0,100] → 400, KHÔNG để CHECK DB nổ thành 500
             if (string.IsNullOrWhiteSpace(req.Name))
                 throw new ArgumentException("name là bắt buộc.");
             var expression = req.Expression ?? string.Empty;
@@ -152,9 +153,11 @@ namespace Isas.CampaignService.Services
                 "CvScreening" => ScoringExpressionKind.CvScreening,
                 _ => throw new ArgumentException("kind phải là 'Interview' hoặc 'CvScreening'."),
             };
-            // B9 — giữ parity với đường tạo: sàng CV không có đạt/trượt ⇒ đừng để FE xem trước với một
-            // ngưỡng nó sẽ không lưu được (rồi fingerprint lệch lúc apply).
+            // B9/B11 — giữ parity với đường tạo: sàng CV không có đạt/trượt, và ngưỡng ngoài [0,100]
+            // phải 400 NGAY ở xem trước — không thì FE xem trước với một ngưỡng nó sẽ không lưu được
+            // (CHECK DB nổ thành 500 lúc apply, hoặc fingerprint lệch).
             RejectCvPassScore(kind, req.PassScorePct);
+            PassScorePctRule.Validate(req.PassScorePct);
             var expression = req.Expression ?? string.Empty;
 
             var campaign = await _db.Campaigns
