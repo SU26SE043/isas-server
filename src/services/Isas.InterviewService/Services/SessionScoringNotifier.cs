@@ -61,7 +61,10 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             // SCP1 · B6 / HĐ-5 — cờ RIÊNG: true = biểu thức chính sách LỖI lúc chạy trên buổi này ⇒
             // điểm tính bằng công thức mặc định. Bảng kết quả (HĐ-5) phải hiện được, nếu không đây lại
             // là một thứ hỏng im lặng.
-            ScoreFallback = scoreFallback
+            ScoreFallback = scoreFallback,
+            // SCP1 · B10 / HĐ-5 — nhãn chính sách cho campaign_rankings.policy_version. Đã ghim sẵn
+            // trên session (B5) ⇒ đọc thẳng, KHÔNG query thêm.
+            CampaignPolicyVersion = session.CampaignPolicyVersion
         };
 
         _db.OutboxMessages.Add(OutboxMessage.ForScored(evt));

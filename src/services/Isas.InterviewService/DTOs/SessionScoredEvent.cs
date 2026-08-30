@@ -47,4 +47,14 @@ public class SessionScoredEvent
     // bool (mặc định false), KHÔNG nullable: bản Interview cũ không gửi ⇒ deserialize ra false ⇒
     // "không phải lùi an toàn" — đúng nghĩa an toàn cho event cũ.
     public bool ScoreFallback { get; set; }
+
+    // SCP1 · B10 / HĐ-5 — phiên bản chính sách chấm ĐÃ GHIM trên buổi này
+    // (practice_sessions.campaign_policy_version). Campaign ghi vào campaign_rankings.policy_version
+    // để bảng kết quả + CSV gắn được nhãn "điểm này do chính sách v{N}" — và để phân biệt điểm chấm
+    // THƯỜNG (đã có nhãn từ đây) với điểm sau khi HR bấm "áp" (B8). null = buổi KHÔNG ghim chính
+    // sách (B2C, hoặc B2B chưa áp, hoặc dữ liệu trước SCP1) ⇒ điểm bằng công thức mặc định.
+    //
+    // Nullable + thêm ở CUỐI ⇒ bản Campaign cũ đọc event mới không vỡ; event cũ trong outbox (chưa
+    // gửi lúc deploy) deserialize ra null thay vì nổ. ⚠ null nghĩa là "không ghim", KHÔNG suy thành v1.
+    public int? CampaignPolicyVersion { get; set; }
 }

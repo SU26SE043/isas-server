@@ -1,5 +1,6 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
+using Isas.Shared.Scoring;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.CampaignService.Services
@@ -35,6 +36,20 @@ namespace Isas.CampaignService.Services
             var existing = await _db.CampaignRankings
                 .FirstOrDefaultAsync(x => x.SessionId == evt.SessionId, ct);
 
+            // SCP1 · B10 / HĐ-5 — nhãn chính sách cho đường chấm THƯỜNG. Tên tra theo version CỦA SỰ
+            // KIỆN (= bản buổi ĐÃ GHIM), KHÔNG theo campaigns.interview_policy_version: con trỏ có thể
+            // đã dịch tới v3 trong khi buổi này chấm bằng v1 — lấy theo con trỏ là dán nhãn SAI cho
+            // điểm của người ta. ux_scoring_policies_campaign ⇒ ≤ 1 dòng. null (buổi không ghim) ⇒
+            // cả policy_version lẫn policy_name để null (FE không hiện nhãn — như trước SCP1).
+            string? policyName = null;
+            if (evt.CampaignPolicyVersion is int policyVer)
+                policyName = await _db.ScoringPolicies
+                    .Where(p => p.CampaignId == evt.CampaignId.Value
+                             && p.Kind == ScoringExpressionKind.Interview
+                             && p.Version == policyVer)
+                    .Select(p => p.Name)
+                    .FirstOrDefaultAsync(ct);
+
             if (existing is null)
             {
                 _db.CampaignRankings.Add(new CampaignRanking
@@ -46,6 +61,9 @@ namespace Isas.CampaignService.Services
                     TotalScore = evt.TotalScore,
                     RubricVersion = evt.RubricVersion,   // CAMP-18: null = không biết
                     ScoringInputs = evt.ScoringInputs,   // SCP1 · B5: bó biến RAW cho B8; null = event cũ
+                    PolicyVersion = evt.CampaignPolicyVersion,   // SCP1 · B10 / HĐ-5
+                    PolicyName = policyName,                     // SCP1 · B10 / HĐ-5
+                    ScoreFallback = evt.ScoreFallback,           // SCP1 · B10 / HĐ-5 — cờ lùi trên đường chấm thường
                     UpdatedAt = DateTime.UtcNow
                 });
 
@@ -63,6 +81,13 @@ namespace Isas.CampaignService.Services
                 existing.TotalScore = evt.TotalScore;
                 existing.RubricVersion = evt.RubricVersion;
                 existing.ScoringInputs = evt.ScoringInputs;   // SCP1 · B5 — event là nguồn quyền lực, đè lại
+                // SCP1 · B10 — bàn giao lại (outbox at-least-once) đi vào ĐÚNG nhánh này; nhãn chính
+                // sách phải đè lại như mọi field khác của event. (Ứng viên đã qua B8 "áp" rồi mà event
+                // redeliver muộn thì TotalScore ở dòng trên cũng đã bị đè — nhất quán, B10 không mở
+                // thêm khe hở.)
+                existing.PolicyVersion = evt.CampaignPolicyVersion;
+                existing.PolicyName = policyName;
+                existing.ScoreFallback = evt.ScoreFallback;
                 existing.UpdatedAt = DateTime.UtcNow;
 
                 _logger.LogInformation(
