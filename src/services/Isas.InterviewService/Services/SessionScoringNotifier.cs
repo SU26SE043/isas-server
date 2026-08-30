@@ -218,7 +218,24 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             .ToListAsync(ct);
         if (scores.Count == 0) return (0m, null, false);
 
-        var answered = await _db.PracticeAnswers.CountAsync(a => a.SessionId == sessionId, ct);
+        // SCP1/B12 — `answered` = số câu ứng viên THỰC SỰ TRẢ LỜI, đo bằng "có ghi âm"
+        // (AudioObjectKey != null). Đường upload luôn gán AudioObjectKey (AnswerService.cs:120, :132),
+        // còn MarkUnansweredAsSkippedAsync (PracticeService.cs:1004) tạo hàng THẬT cho câu chưa trả lời
+        // với AudioObjectKey = NULL. Trước B12 chỗ này đếm MỌI hàng ⇒ answered == totalQuestions ở
+        // 100% buổi được chấm ⇒ biến `completeness` LUÔN = 1 ⇒ mẫu chính sách "phạt bỏ câu" vô hiệu.
+        //
+        // KHÔNG lọc theo `Status != Skipped`: `Skipped` mang BA nghĩa và hai trong số đó là ghi âm
+        // THẬT — VAD không thấy tiếng nói (AnswerService.cs:392, :1627) và buổi kẹt bị chốt sổ khi
+        // không attempt nào chấm được (:1682). Lọc theo Status sẽ phạt ứng viên vì bộ chấm/VAD của ta,
+        // không phải vì họ bỏ câu. "Có ghi âm hay không" phân biệt đúng: chỉ nhóm hệ-thống-tự-đánh
+        // (không audio) mới rơi ra.
+        //
+        // ĐỔI NGHĨA biến TẠI CHỖ (thay vì thêm biến mới) là ngoại lệ hợp lệ với luật append-only của
+        // ScoringVariableCatalog: `completeness` CHƯA TỪNG cho ra giá trị khác 1 trên bất kỳ môi
+        // trường nào, và prod CHƯA CÓ cột scoring_inputs ⇒ không có điểm lịch sử nào để phá. Giữ cả
+        // hai biến chỉ để lại một biến nói dối vĩnh viễn.
+        var answered = await _db.PracticeAnswers.CountAsync(
+            a => a.SessionId == sessionId && a.AudioObjectKey != null, ct);
         var totalQuestions = await _db.PracticeQuestions.CountAsync(q => q.SessionId == sessionId, ct);
 
         // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency).
