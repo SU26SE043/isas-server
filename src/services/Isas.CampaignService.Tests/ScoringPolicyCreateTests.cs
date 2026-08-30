@@ -354,4 +354,38 @@ public class ScoringPolicyCreateTests
         p.Expression = "avg_pct";
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.SaveChangesAsync());
     }
+
+    // ── SCP1-B13 — con trỏ chính sách ĐANG ÁP lộ ra GET /campaign/{id} ────────────────────────
+    private static Isas.CampaignService.Services.CampaignService NewCampaignService(CampaignDbContext db) =>
+        new(db, Mock.Of<IFileService>(),
+            Mock.Of<ILogger<Isas.CampaignService.Services.CampaignService>>(),
+            Mock.Of<IParserService>(), Mock.Of<ICriteriaSuggester>(),
+            Mock.Of<IInvitationEmailPublisher>());
+
+    [Fact]
+    public async Task B13_tao_policy_xong_GET_campaign_tra_dung_interviewPolicyVersion()
+    {
+        var e = Setup();
+        using var _d = e.Db;
+        await Created(e.Controller, e.CampaignId, Req());   // Interview v1 → dời con trỏ (chưa ai chấm)
+
+        var res = await NewCampaignService(e.Db.NewContext())
+            .GetCampaignAsync(e.OrgId, e.CampaignId, default);
+
+        Assert.Equal(1, res.InterviewPolicyVersion);
+        Assert.Null(res.CvPolicyVersion);
+    }
+
+    [Fact]
+    public async Task B13_campaign_chua_co_policy_thi_ca_hai_con_tro_null()
+    {
+        var e = Setup();
+        using var _d = e.Db;
+
+        var res = await NewCampaignService(e.Db.NewContext())
+            .GetCampaignAsync(e.OrgId, e.CampaignId, default);
+
+        Assert.Null(res.InterviewPolicyVersion);
+        Assert.Null(res.CvPolicyVersion);
+    }
 }

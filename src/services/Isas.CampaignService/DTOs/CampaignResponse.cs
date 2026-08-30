@@ -299,6 +299,12 @@ namespace Isas.CampaignService.DTOs
         public bool AntiCheatEnabled { get; set; }
         public bool FaceVerifyEnabled { get; set; }   // SEC-1: bật face-verify (B2B-only)
         public int? PassScorePct { get; set; }   // E5: ngưỡng % pass/fail (null = HR quyết tay)
+        // SCP1-B13 — con trỏ chính sách chấm ĐANG ÁP (khớp campaigns.{interview,cv}_policy_version).
+        // null = chưa áp chính sách nào ⇒ điểm bằng công thức mặc định. CHỈ số version — nội dung biểu
+        // thức xem qua endpoint danh sách chính sách (đã có kiểm soát quyền). KHÔNG lộ cho ứng viên
+        // (CAMP-15): DTO ứng viên KHÔNG mang trường này.
+        public int? InterviewPolicyVersion { get; set; }
+        public int? CvPolicyVersion { get; set; }
         public bool AdaptiveEnabled { get; set; }   // INT-17: phỏng vấn thích ứng (B2B opt-in)
         public bool GroundingEnabled { get; set; }  // T8: grounding snapshot (B2B opt-in)
         public int? MaxConcurrentInterviews { get; set; }   // trần thi đồng thời (null = không giới hạn)
@@ -348,6 +354,8 @@ namespace Isas.CampaignService.DTOs
             AntiCheatEnabled = c.AntiCheatEnabled,
             FaceVerifyEnabled = c.FaceVerifyEnabled,
             PassScorePct = c.PassScorePct,
+            InterviewPolicyVersion = c.InterviewPolicyVersion,   // SCP1-B13
+            CvPolicyVersion = c.CvPolicyVersion,                 // SCP1-B13
             AdaptiveEnabled = c.AdaptiveEnabled,   // INT-17
             GroundingEnabled = c.GroundingEnabled,
             MaxConcurrentInterviews = c.MaxConcurrentInterviews,
