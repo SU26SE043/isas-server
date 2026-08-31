@@ -12,6 +12,20 @@ namespace Isas.CampaignService.Services
         Task<IReadOnlyList<ScoringPolicyResponse>> GetTemplatesAsync(CancellationToken ct = default);
 
         /// <summary>
+        /// SCP1 · B14 — <c>GET /campaign/{id}/scoring-policies</c>: các version chính sách chấm ĐÃ TẠO
+        /// cho <paramref name="campaignId"/> (KHÔNG gồm mẫu hệ thống). Sắp <c>Kind</c> rồi <c>Version</c>
+        /// GIẢM DẦN (bản mới nhất lên đầu). "Đang dùng" = version trùng con trỏ
+        /// <c>campaigns.{interview,cv}_policy_version</c> (GET /campaign — B13); response KHÔNG mang cờ
+        /// nào cho việc đó ⇒ một nguồn sự thật.
+        ///
+        /// <para><paramref name="kind"/> = bộ lọc TUỲ CHỌN ("Interview" | "CvScreening"); giá trị khác
+        /// ⇒ <see cref="System.ArgumentException"/> (→ 400). Campaign ngoài <paramref name="orgId"/> ⇒
+        /// <see cref="KeyNotFoundException"/> (→ 404). Chưa có policy nào ⇒ danh sách rỗng (KHÔNG 404).</para>
+        /// </summary>
+        Task<IReadOnlyList<ScoringPolicyResponse>> ListPoliciesAsync(
+            Guid orgId, Guid campaignId, string? kind, CancellationToken ct = default);
+
+        /// <summary>
         /// HĐ-2 — <c>POST /campaign/{id}/scoring-policies/validate</c>: phân tích biểu thức, kiểm biến
         /// thuộc danh sách cho phép của <paramref name="kind"/>, rồi chạy thử trên BỘ MẪU CỐ ĐỊNH
         /// trong code (<see cref="ScoringContext.Sample"/>). KHÔNG đọc dữ liệu ứng viên, KHÔNG ghi DB.
