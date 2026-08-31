@@ -51,6 +51,38 @@ namespace Isas.CampaignService.Services
                 .ToList();
         }
 
+        public async Task<IReadOnlyList<ScoringPolicyResponse>> ListPoliciesAsync(
+            Guid orgId, Guid campaignId, string? kind, CancellationToken ct = default)
+        {
+            // Bộ lọc TUỲ CHỌN — null/rỗng ⇒ trả cả hai loại; giá trị lạ ⇒ 400 (cùng câu với đường tạo).
+            ScoringExpressionKind? kindFilter = kind switch
+            {
+                null or "" => null,
+                "Interview" => ScoringExpressionKind.Interview,
+                "CvScreening" => ScoringExpressionKind.CvScreening,
+                _ => throw new ArgumentException("kind phải là 'Interview' hoặc 'CvScreening'."),
+            };
+
+            // Chặn dò campaign của org khác (query filter soft-delete D11 tự lọc campaign đã xoá).
+            var owned = await _db.Campaigns.AnyAsync(c => c.Id == campaignId && c.OrgId == orgId, ct);
+            if (!owned) throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            // Chỉ BẢN CỦA campaign này (campaign_id != NULL) — mẫu hệ thống có route riêng.
+            var q = _db.ScoringPolicies.AsNoTracking()
+                .Where(p => p.CampaignId == campaignId);
+            if (kindFilter is { } k)
+                q = q.Where(p => p.Kind == k);
+            var rows = await q.ToListAsync(ct);
+
+            // Sắp trong bộ nhớ cho tất định giữa SQLite (test) và Postgres — Kind theo giá trị ENUM
+            // (Interview 0 trước CvScreening 1), rồi Version GIẢM DẦN (bản mới nhất lên đầu).
+            return rows
+                .OrderBy(p => p.Kind)
+                .ThenByDescending(p => p.Version)
+                .Select(Map)
+                .ToList();
+        }
+
         public async Task<ScoringPolicyResponse> CreatePolicyAsync(
             Guid orgId, Guid actorUserId, bool isOrgAdmin,
             Guid campaignId, CreateScoringPolicyRequest req, CancellationToken ct = default)

@@ -430,6 +430,29 @@ namespace Isas.CampaignService.Controllers
             return Ok(await _policies.GetTemplatesAsync(ct));
         }
 
+        // SCP1 · B14 — LIỆT KÊ các version chính sách chấm ĐÃ TẠO cho campaign (KHÔNG gồm mẫu hệ thống).
+        // FE B14/F2 cần đúng danh sách này để so với con trỏ campaigns.{interview,cv}_policy_version
+        // (GET /campaign — B13) mà tô "Đang dùng". CHỈ ĐỌC.
+        //   · ?kind= (tuỳ chọn) "Interview" | "CvScreening"; giá trị khác → 400.
+        //   · campaign ngoài org → 404 (BK15 — không lộ campaign có tồn tại hay không).
+        //   · campaign chưa có policy nào → [] (KHÔNG 404).
+        [HttpGet("{id:guid}/scoring-policies")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<IReadOnlyList<DTOs.ScoringPolicyResponse>>> ListScoringPolicies(
+            Guid id, [FromQuery] string? kind, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            try
+            {
+                return Ok(await _policies.ListPoliciesAsync(orgId.Value, id, kind, ct));
+            }
+            catch (KeyNotFoundException) { return NotFound(); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+        }
+
         // SCP1 · HĐ-2 — kiểm cú pháp/biến/kết-quả MỘT biểu thức chấm điểm. THUẦN kiểm tra:
         //   · chạy trên BỘ MẪU cố định trong code (ScoringContext.Sample) — không đọc dữ liệu ứng viên,
         //     endpoint dùng được cả khi campaign chưa có ai;
