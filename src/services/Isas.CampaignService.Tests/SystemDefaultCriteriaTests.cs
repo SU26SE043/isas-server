@@ -586,6 +586,48 @@ public class SystemDefaultCriteriaTests
         Assert.Equal(weights.OrderByDescending(w => w), weights);
     }
 
+    // RNK1 · HĐ-4 — preview trả CẢ nội dung mốc (Score + Descriptor), sắp theo Score, LevelCount khớp.
+    [Fact]
+    public async Task XemTruoc_TraCaMocDiem_SapTheoScore()
+    {
+        using var tdb = new CampaignTestDb();
+        // Mốc CỐ Ý gửi ngược thứ tự để chứng minh preview tự sắp theo Score.
+        var rubric = new B2CRubricResponse("BE", "vi", 3, new List<B2CRubricCriterion>
+        {
+            new("Chiều sâu kỹ thuật", "Hiểu bản chất", 0.60m, 5, new List<B2CRubricLevel>
+            {
+                new(5, D5), new(0, D0), new(3, D3)
+            }),
+            new("Trôi chảy", null, 0.40m, 5, Array.Empty<B2CRubricLevel>()),
+        });
+        var svc = NewService(tdb.NewContext(), StubRubric(rubric).Object);
+
+        var res = await svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default);
+
+        var withLevels = res.Criteria.Single(c => c.Name == "Chiều sâu kỹ thuật");
+        Assert.Equal(new[] { 0, 3, 5 }, withLevels.Levels.Select(l => l.Score));   // đã sắp theo Score
+        Assert.Equal(new[] { D0, D3, D5 }, withLevels.Levels.Select(l => l.Descriptor));
+        Assert.Equal(withLevels.LevelCount, withLevels.Levels.Count);              // LevelCount khớp
+    }
+
+    // RNK1 · HĐ-4 — admin CHƯA soạn mốc ⇒ Levels = [] (KHÔNG null) + LevelCount = 0.
+    [Fact]
+    public async Task XemTruoc_KhongCoMoc_LevelsRong_KhongNull()
+    {
+        using var tdb = new CampaignTestDb();
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default);
+
+        var noLevels = res.Criteria.Single(c => c.Name == "Trôi chảy");
+        Assert.NotNull(noLevels.Levels);
+        Assert.Empty(noLevels.Levels);
+        Assert.Equal(0, noLevels.LevelCount);
+
+        // Tiêu chí có mốc thì Levels đầy — không bị "rỗng hoá" nhầm.
+        Assert.Equal(3, res.Criteria.Single(c => c.Name == "Chiều sâu kỹ thuật").Levels.Count);
+    }
+
     // 🔴 CHỈ ĐỌC: không một lượt SaveChanges nào. Endpoint xem trước mà lỡ ghi thì employer "chỉ nhìn"
     // đã đổi dữ liệu chiến dịch — và không ai đi tìm nguyên nhân ở một nút xem trước.
     [Fact]

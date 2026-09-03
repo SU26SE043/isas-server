@@ -69,13 +69,22 @@ namespace Isas.CampaignService.DTOs
         public int MaxScore { get; set; }
 
         /// <summary>
-        /// SỐ mốc, không phải danh sách mốc: hộp thoại chỉ cần cho biết "tiêu chí này đã khai mấy mốc",
-        /// còn nội dung mốc thì employer xem được ngay sau khi chép. Đổ cả descriptor vào đây là payload
-        /// lớn cho một màn xem lướt.
+        /// SỐ mốc. Giữ lại (không thay bằng <see cref="Levels"/>): hộp thoại xem lướt chỉ cần con số,
+        /// và FE cũ đọc field này không vỡ.
         ///
         /// <para><c>0</c> = admin CHƯA khai mốc cho tiêu chí này ⇒ chép về vẫn hợp lệ, Interview rơi về
         /// dải mặc định (CAMP-14). FE nên hiện badge "chưa có mốc" thay vì coi là lỗi.</para>
         /// </summary>
         public int LevelCount { get; set; }
+
+        /// <summary>
+        /// RNK1 · HĐ-4 — nội dung mốc (Score + Descriptor, sắp theo Score tăng dần). Employer thấy
+        /// TRƯỚC khi bấm chép mình sắp nhận thang điểm nào, thay vì chép mù rồi mới xem.
+        ///
+        /// <para>LUÔN là list (không bao giờ null): admin chưa soạn mốc ⇒ <c>[]</c> (và
+        /// <see cref="LevelCount"/> = 0). Cùng nguồn với đường chép (<c>ApplySystemDefaultCriteriaAsync</c>)
+        /// nên "xem trước" khớp đúng "sẽ chép".</para>
+        /// </summary>
+        public List<CriterionLevelResponse> Levels { get; set; } = new();
     }
 }

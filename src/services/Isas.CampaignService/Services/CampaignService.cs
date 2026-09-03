@@ -1007,7 +1007,14 @@ namespace Isas.CampaignService.Services
                         Description = c.Description,
                         Weight = c.Weight,
                         MaxScore = c.MaxScore,
-                        LevelCount = c.Levels.Count
+                        LevelCount = c.Levels.Count,
+                        // RNK1 · HĐ-4 — CÙNG nguồn c.Levels mà ApplySystemDefaultCriteriaAsync dùng
+                        // (từ lời gọi GetB2CRubricAsync ngay trên — KHÔNG gọi Interview lần hai).
+                        // Sắp theo Score; admin chưa soạn mốc ⇒ [] (không null).
+                        Levels = c.Levels
+                            .OrderBy(l => l.Score)
+                            .Select(l => new CriterionLevelResponse { Score = l.Score, Descriptor = l.Descriptor })
+                            .ToList()
                     })
                     .ToList()
             };
