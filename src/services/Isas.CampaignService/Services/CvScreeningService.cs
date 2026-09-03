@@ -337,15 +337,16 @@ namespace Isas.CampaignService.Services
                     $"SCP1: candidate {candidate.Id} có need_count = 0 với chính sách sàng CV đã ghim.");
             }
 
-            // JobNeed KHÔNG có cột must-have ⇒ MỌI nhu cầu campaign coi là bắt buộc; "met" = có bằng
-            // chứng (Strong/Partial). Nhu cầu THIẾU đánh giá ⇒ không tính met (⇒ gate must-have chặn
-            // được ứng viên thiếu bằng chứng). Khi HR khai được priority per-need thì đổi ĐÚNG chỗ này.
-            var mustHaveTotal = needCount;
-            var mustHaveMet = strong + partial;
+            // RNK1 · HĐ-6 — must_have_* đếm CHỈ nhu cầu IsMustHave (bỏ "mọi nhu cầu coi là bắt buộc").
+            // NGUỒN TÍNH DUY NHẤT = CvMustHaveEvaluator, dùng chung với ScoringPolicyService.ScoreCv.
+            var mh = CvMustHaveEvaluator.Evaluate(
+                campaignNeeds,
+                assessments.Where(a => a.Level != NeedLevels.Weak),
+                assessments.Where(a => a.Level == NeedLevels.Weak));
 
             var ctx = ScoringContext.ForCvScreening(new CvScreeningScoringInputs(
                 StrongCount: strong, PartialCount: partial, WeakCount: weak,
-                NeedCount: needCount, MustHaveTotal: mustHaveTotal, MustHaveMet: mustHaveMet));
+                NeedCount: needCount, MustHaveTotal: mh.MustHaveTotal, MustHaveMet: mh.MustHaveMet));
 
             // Parse + eval + phân loại lỗi đi qua ScoringPolicyRunner — CÙNG một hàm đường xem-trước/áp
             // (B8) dùng. Lùi-an-toàn + log giữ ở đây (B7 làm tròn AwayFromZero khác B6).
@@ -412,9 +413,15 @@ namespace Isas.CampaignService.Services
             string? search, string? cursor, int? limit, CancellationToken ct)
         {
             // Ownership: campaign phải của org (query filter loại soft-deleted) → không thấy = 404.
-            var owns = await _db.Campaigns.AnyAsync(c => c.Id == campaignId && c.OrgId == orgId, ct);
-            if (!owns)
+            // RNK1 · HĐ-6 — nạp job_needs CÙNG lượt (jsonb trên campaigns, không phải nav) để đánh giá
+            // điều kiện loại read-time cho từng dòng; KHÔNG query mới.
+            var campaignRow = await _db.Campaigns
+                .Where(c => c.Id == campaignId && c.OrgId == orgId)
+                .Select(c => new { c.JobNeeds })
+                .FirstOrDefaultAsync(ct);
+            if (campaignRow is null)
                 throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+            var jobNeeds = campaignRow.JobNeeds ?? new List<JobNeed>();
 
             var take = KeysetPaging.ClampLimit(limit);
             var cur = SortKeysetCursor.Decode(cursor);
@@ -491,22 +498,42 @@ namespace Isas.CampaignService.Services
                     c.Skills.Any(s => s.Contains(needle, StringComparison.OrdinalIgnoreCase)));
             }
 
-            var items = page.Select(c => new CandidateListItem
+            var items = page.Select(c =>
             {
-                Id = c.Id,
-                FullName = c.FullName,
-                Email = c.Email,
-                Status = c.Status.ToString(),
-                OverallMatchScore = c.OverallMatchScore,
-                Skills = c.Skills,
-                // EVA1-B2 — cờ rủi ro + con dấu thang điểm phải ra tới màn DANH SÁCH, không chỉ
-                // màn chi tiết: đó chính là chỗ HR đặt ứng viên cạnh nhau để so. `page` là
-                // IEnumerable trên `rows` đã ToListAsync ⇒ đây là LINQ-to-Objects, đọc cột đã
-                // nằm trong bộ nhớ, KHÔNG phát sinh query (CAMP-14 — screening_version/BK23).
-                VerificationRisk = c.VerificationRisk,
-                ScreeningVersion = c.ScreeningVersion,
-                ScoreFallback = c.ScoreFallback   // SCP1 · B7 (HĐ-5)
+                // RNK1 · HĐ-6 — điều kiện loại đánh giá READ-TIME trên dòng đã ở bộ nhớ (như
+                // VerificationRisk bên dưới — LINQ-to-Objects, KHÔNG query). job_needs cố định cho cả
+                // campaign nên eligible ổn định.
+                var mh = CvMustHaveEvaluator.Evaluate(jobNeeds, c.Strengths, c.Gaps);
+                return new CandidateListItem
+                {
+                    Id = c.Id,
+                    FullName = c.FullName,
+                    Email = c.Email,
+                    Status = c.Status.ToString(),
+                    OverallMatchScore = c.OverallMatchScore,
+                    Skills = c.Skills,
+                    // EVA1-B2 — cờ rủi ro + con dấu thang điểm phải ra tới màn DANH SÁCH, không chỉ
+                    // màn chi tiết: đó chính là chỗ HR đặt ứng viên cạnh nhau để so.
+                    VerificationRisk = c.VerificationRisk,
+                    ScreeningVersion = c.ScreeningVersion,
+                    ScoreFallback = c.ScoreFallback,   // SCP1 · B7 (HĐ-5)
+                    Eligible = mh.Eligible,            // RNK1 · HĐ-6
+                    MustHaveMet = mh.MustHaveMet,
+                    MustHaveTotal = mh.MustHaveTotal,
+                };
             }).ToList();
+
+            // RNK1 · HĐ-6 — sort mặc định "Eligible desc, rồi điểm". `eligible` KHÔNG phải cột nên
+            // KHÔNG vào được ORDER BY / khoá keyset của DB → chỉ đảo thứ tự TRONG TRANG đang xem, sau
+            // khi `next` cursor đã chốt từ dòng cuối theo thứ tự DB (score DESC, id DESC). Hệ quả:
+            // ứng viên không đủ điều kiện chìm xuống đáy TRANG HR đang xem, không xuyên trang — cùng
+            // lớp giới hạn đã ghi cho `?skill=`. Chỉ áp cho sort mặc định (score); `sort=name` không đụng.
+            if (normalizedSort != "name")
+                items = items
+                    .OrderByDescending(i => i.Eligible)
+                    .ThenByDescending(i => i.OverallMatchScore ?? -1)
+                    .ThenByDescending(i => i.Id)
+                    .ToList();
 
             return new KeysetPage<CandidateListItem>(items, next);
         }
@@ -545,6 +572,14 @@ namespace Isas.CampaignService.Services
                     c => c.Id == candidateId && c.CampaignId == campaignId && c.Campaign.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
 
+            // RNK1 · HĐ-6 — job_needs (jsonb trên campaigns) cho điều kiện loại read-time. 1 projection
+            // scalar, không nạp cả entity campaign.
+            var jobNeeds = await _db.Campaigns
+                .Where(c => c.Id == campaignId)
+                .Select(c => c.JobNeeds)
+                .FirstOrDefaultAsync(ct) ?? new List<JobNeed>();
+            var mh = CvMustHaveEvaluator.Evaluate(jobNeeds, candidate.Strengths, candidate.Gaps);
+
             static List<NeedAssessmentItem> Map(List<NeedAssessment>? items) =>
                 (items ?? new List<NeedAssessment>())
                     .Select(a => new NeedAssessmentItem
@@ -569,6 +604,10 @@ namespace Isas.CampaignService.Services
                 CvFileUrl = candidate.CvFileUrl,
                 ScreeningVersion = candidate.ScreeningVersion,
                 ScoreFallback = candidate.ScoreFallback,   // SCP1 · B7 (HĐ-5)
+                Eligible = mh.Eligible,                    // RNK1 · HĐ-6
+                MustHaveMet = mh.MustHaveMet,
+                MustHaveTotal = mh.MustHaveTotal,
+                MissingMustHave = mh.Missing.Select(n => n.Text).ToList(),
                 FitSummary = candidate.FitSummary,
                 // Strong trước Partial trong `strengths`: HR đọc từ trên xuống, thứ chắc chắn nhất
                 // phải nằm trên. `gaps` toàn Weak nên giữ nguyên thứ tự nhu cầu.

@@ -840,7 +840,7 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var result = await _campaignService.InviteShortlistedCandidatesAsync(orgId.Value, GetActorUserId(), id, request.CandidateIds, ct);
+                var result = await _campaignService.InviteShortlistedCandidatesAsync(orgId.Value, GetActorUserId(), id, request.CandidateIds, request.IncludeIneligible, ct);
                 return Ok(result);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }

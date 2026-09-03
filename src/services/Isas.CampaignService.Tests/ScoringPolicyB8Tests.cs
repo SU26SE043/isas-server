@@ -288,10 +288,12 @@ public class ScoringPolicyB8Tests
         using (var w = e.Db.NewContext())
         {
             var camp = await w.Campaigns.SingleAsync(x => x.Id == e.CampaignId);
+            // RNK1 · HĐ-6 — must_have_* nay đếm CHỈ nhu cầu IsMustHave. Test dùng gate must-have ⇒
+            // đánh dấu cả 2 nhu cầu là điều kiện loại.
             camp.JobNeeds = Enumerable.Range(0, 2).Select(i => new JobNeed
             {
                 NeedId = $"need-{i}", Category = JobNeedCategories.Technical, Text = $"Nhu cầu {i}",
-                Source = JobNeedSources.HrEdited,
+                Source = JobNeedSources.HrEdited, IsMustHave = true,
             }).ToList();
             await w.SaveChangesAsync();
         }

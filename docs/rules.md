@@ -77,6 +77,20 @@
     và ứng viên yếu hơn xếp trên ứng viên mạnh hơn — số holistic mâu thuẫn với chính bằng chứng model
     vừa liệt kê. Trung bình **đều** giữa 4 nhóm nhu cầu: không có dữ liệu nói technical đáng gấp mấy
     lần communication, bịa hằng số rồi trưng ra như chuẩn ngành đúng thứ **F14** đã từ chối làm.
+  - ✅ **RNK1 · HĐ-6 — Điều kiện LOẠI (`job_needs[].isMustHave`).** HR đánh dấu nhu cầu nào là **bắt
+    buộc**; thiếu bằng chứng **Strong/Partial** cho BẤT KỲ must-have nào ⇒ ứng viên **không đủ điều
+    kiện** (`eligible = false`) ngay lúc sàng. `isMustHave` **HR sở hữu** (client GIỮ giá trị — KHÁC
+    `source` vốn server ép; đây là quyết định nghiệp vụ, không phải nhãn nguồn gốc); **AI KHÔNG đề
+    xuất** (`BuildJobNeedsAsync` ép `false`). Đánh giá **READ-TIME** từ `job_needs` hiện tại ∩
+    `strengths`/`gaps` đã lưu — **KHÔNG cột, KHÔNG ghim, KHÔNG gọi lại `screen_cv`**; ổn định vì
+    `job_needs` bị khoá sau khi có người sàng (đổi `isMustHave` lúc đó → **409**, cùng đường
+    `ReplaceJobNeedsAsync`). **0 must-have ⇒ không loại ai** (`eligible = true`). `must_have_total`/
+    `must_have_met` nay đếm **CHỈ** nhu cầu `isMustHave` (**bỏ "mọi nhu cầu coi là bắt buộc"** — trước
+    RNK1 mọi need bị coi là gate) — một nguồn tính duy nhất `CvMustHaveEvaluator`, dùng chung đường
+    chấm LIVE và đường xem-trước/áp. `POST .../candidates/invite` **bỏ qua** ứng viên `eligible = false`
+    (vào `failed[]`) trừ khi body `includeIneligible = true`. Danh sách ứng viên (`GET .../candidates`)
+    sort mặc định `eligible desc, rồi điểm` — **trong phạm vi trang** (eligible không phải cột nên
+    không vào được ORDER BY/keyset DB; cùng giới hạn `?skill=`).
   - **`verificationRisk`** (`Low·Medium·High`) là **cờ đứng cạnh điểm, KHÔNG nhập vào điểm** — gộp hai
     thứ khác bản chất vào một con số là làm mất khả năng giải thích nó.
   - **Không tìm thấy bằng chứng ⇒ ghi đúng câu `"Không thấy bằng chứng"`** (hằng số), không để trống:

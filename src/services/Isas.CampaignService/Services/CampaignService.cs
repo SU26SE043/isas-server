@@ -1511,7 +1511,7 @@ namespace Isas.CampaignService.Services
         // KHÔNG chặn item khác); đã Invited → skip (absorbing). Vượt max_candidates → chặn CẢ request (400),
         // nhất quán D1. Campaign phải Active (không → 409); ngoài org → 404.
         public async Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(
-            Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, CancellationToken ct)
+            Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, bool includeIneligible, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
@@ -1554,6 +1554,20 @@ namespace Isas.CampaignService.Services
                 if (cand.Status != CvSubmissionStatus.Analyzed)
                 {
                     response.Failed.Add(new FailedInviteItem { CandidateId = cid, Reason = $"Chỉ mời được ứng viên Analyzed (hiện: {cand.Status})." });
+                    continue;
+                }
+
+                // RNK1 · HĐ-6 — bỏ qua ứng viên KHÔNG đủ điều kiện loại (thiếu bằng chứng cho nhu cầu
+                // must-have), trừ khi HR chủ động mời cả nhóm đó. Đọc job_needs của campaign (đã nạp) +
+                // strengths/gaps đã lưu — KHÔNG gọi lại screen_cv.
+                if (!includeIneligible
+                    && !CvMustHaveEvaluator.Evaluate(campaign.JobNeeds, cand.Strengths, cand.Gaps).Eligible)
+                {
+                    response.Failed.Add(new FailedInviteItem
+                    {
+                        CandidateId = cid,
+                        Reason = "Không đủ điều kiện loại (thiếu bằng chứng cho nhu cầu bắt buộc).",
+                    });
                     continue;
                 }
 
@@ -3112,6 +3126,10 @@ namespace Isas.CampaignService.Services
                 Category = s.Category,
                 Text = s.Text,
                 Source = JobNeedSources.AiSuggested,
+                // RNK1 · HĐ-6 — AI KHÔNG đề xuất điều kiện loại. Ép false tường minh (dù default đã
+                // false): điều kiện loại là quyết định HR, gán mặc định "bắt buộc" cho gợi ý AI sẽ
+                // loại oan ứng viên vì một dòng HR chưa từng cân nhắc.
+                IsMustHave = false,
             }).ToList();
         }
 
@@ -3171,6 +3189,9 @@ namespace Isas.CampaignService.Services
                     // Nguồn gốc là sự thật do SERVER sở hữu — BỎ QUA giá trị client gửi. Cho client
                     // khai `source` thì HR tự dán nhãn "AI đề xuất" cho dòng mình gõ tay (lỗ F10).
                     Source = JobNeedSources.HrEdited,
+                    // RNK1 · HĐ-6 — điều kiện loại: GIỮ giá trị client (khác `Source`). Đây là quyết
+                    // định nghiệp vụ của HR (nhu cầu này bắt buộc hay không), không phải nhãn nguồn gốc.
+                    IsMustHave = n.IsMustHave ?? false,
                 });
             }
 

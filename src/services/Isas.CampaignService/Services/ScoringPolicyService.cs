@@ -224,7 +224,7 @@ namespace Isas.CampaignService.Services
 
             // Chạy TOÀN BỘ ứng viên đã chấm (LOCAL, không xuyên service). Đánh giá bó biến scalar rất
             // rẻ ⇒ tính hết rồi mới phân trang phần TRẢ VỀ (CẤM #1: hạng trên tập con là hạng SAI).
-            var cvNeedCount = campaign.JobNeeds?.Count ?? 0;
+            var cvNeeds = campaign.JobNeeds ?? new List<JobNeed>();
             var scored = kind == ScoringExpressionKind.Interview
                 ? await LoadInterviewScoredAsync(campaignId, ct)
                 : await LoadCvScoredAsync(campaign, ct);
@@ -232,7 +232,7 @@ namespace Isas.CampaignService.Services
             if (kind == ScoringExpressionKind.Interview)
                 WarnOnPreRnk1Snapshots(campaignId, scored);
 
-            var computed = ComputeAll(kind, expression, scored, cvNeedCount);
+            var computed = ComputeAll(kind, expression, scored, cvNeeds);
             var rows = computed
                 .Select(x => new ScoringPolicyPreviewRow(
                     x.CandidateId, FullName: null,
@@ -286,7 +286,7 @@ namespace Isas.CampaignService.Services
                     .Select(r => new ScoredRow(r.CandidateId, r.TotalScore, r.ScoringInputs!, null))
                     .ToList();
                 WarnOnPreRnk1Snapshots(campaignId, scored);
-                var byId = ComputeAll(kind, policy.Expression, scored)
+                var byId = ComputeAll(kind, policy.Expression, scored, Array.Empty<JobNeed>())
                     .ToDictionary(x => x.CandidateId);
 
                 var oldSnapshot = new List<object>(ranks.Count);
@@ -321,11 +321,11 @@ namespace Isas.CampaignService.Services
                 if (cands.Count == 0)
                     throw new InvalidOperationException("Chưa có ứng viên nào được chấm để đánh giá lại.");
 
-                var needCount = campaign.JobNeeds?.Count ?? 0;
+                var cvNeeds = campaign.JobNeeds ?? new List<JobNeed>();
                 var scored = cands
                     .Select(c => new ScoredRow(c.Id, c.OverallMatchScore!.Value, null, BuildAssessments(c)))
                     .ToList();
-                var byId = ComputeAll(kind, policy.Expression, scored, needCount)
+                var byId = ComputeAll(kind, policy.Expression, scored, cvNeeds)
                     .ToDictionary(x => x.CandidateId);
 
                 var oldSnapshot = new List<object>(cands.Count);
@@ -436,14 +436,15 @@ namespace Isas.CampaignService.Services
         /// rank). Sắp theo <c>newRank</c> rồi <c>candidateId</c> để phân trang tất định.
         /// </summary>
         private static List<ComputedRow> ComputeAll(
-            ScoringExpressionKind kind, string expression, List<ScoredRow> scored, int cvNeedCount = 0)
+            ScoringExpressionKind kind, string expression, List<ScoredRow> scored,
+            IReadOnlyList<JobNeed> cvNeeds)
         {
             var mid = scored
                 .Select(s =>
                 {
                     var (newScore, fellBack) = kind == ScoringExpressionKind.Interview
                         ? ScoreInterview(expression, s.Bag)
-                        : ScoreCv(expression, s.Assessments ?? Array.Empty<NeedAssessment>(), cvNeedCount);
+                        : ScoreCv(expression, s.Assessments ?? Array.Empty<NeedAssessment>(), cvNeeds);
                     return (s.CandidateId, OldScore: (decimal?)s.OldScore, NewScore: newScore, FellBack: fellBack);
                 })
                 .ToList();
@@ -484,9 +485,13 @@ namespace Isas.CampaignService.Services
         }
 
         /// <summary>Điểm 1 ứng viên sàng CV dưới <paramref name="expression"/>; lỗi ⇒ CAMP-14 mặc định
-        /// (B7) + cờ true. need_count = 0 ⇒ (null, true) — B7 ném; ở batch mình BỎ QUA dòng đó.</summary>
+        /// (B7) + cờ true. need_count = 0 ⇒ (null, true) — B7 ném; ở batch mình BỎ QUA dòng đó.
+        ///
+        /// <para>RNK1 · HĐ-6 — <c>must_have_*</c> lấy từ <see cref="CvMustHaveEvaluator"/>, CÙNG hàm
+        /// mà <see cref="CvScreeningService"/> dùng trên đường chấm LIVE ⇒ "must_have preview = must_have
+        /// một lần chấm mới". <paramref name="cvNeeds"/> = bộ nhu cầu campaign (thay cho chỉ need_count).</para></summary>
         private static (decimal? Score, bool FellBack) ScoreCv(
-            string expression, IReadOnlyList<NeedAssessment> assessments, int needCount)
+            string expression, IReadOnlyList<NeedAssessment> assessments, IReadOnlyList<JobNeed> cvNeeds)
         {
             int? def = assessments.Count == 0
                 ? null
@@ -494,15 +499,20 @@ namespace Isas.CampaignService.Services
                     100m * assessments.Sum(a => NeedLevels.Credit(a.Level)) / assessments.Count,
                     MidpointRounding.AwayFromZero);
 
+            var needCount = cvNeeds.Count;
             if (needCount <= 0)
                 return (def, true);   // không tính được biểu thức — chỉ có mặc định (có thể null)
 
             var strong = assessments.Count(a => a.Level == NeedLevels.Strong);
             var partial = assessments.Count(a => a.Level == NeedLevels.Partial);
             var weak = assessments.Count(a => a.Level == NeedLevels.Weak);
+            var mh = CvMustHaveEvaluator.Evaluate(
+                cvNeeds,
+                assessments.Where(a => a.Level != NeedLevels.Weak),
+                assessments.Where(a => a.Level == NeedLevels.Weak));
             var ctx = ScoringContext.ForCvScreening(new CvScreeningScoringInputs(
                 StrongCount: strong, PartialCount: partial, WeakCount: weak,
-                NeedCount: needCount, MustHaveTotal: needCount, MustHaveMet: strong + partial));
+                NeedCount: needCount, MustHaveTotal: mh.MustHaveTotal, MustHaveMet: mh.MustHaveMet));
 
             var outcome = ScoringPolicyRunner.Evaluate(expression, ctx);
             return outcome.Value is decimal v

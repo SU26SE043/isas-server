@@ -281,6 +281,9 @@ namespace Isas.CampaignService.DTOs
         public string Category { get; set; } = null!;   // Technical | WorkStyle | Communication | Growth
         public string Text { get; set; } = null!;
         public string Source { get; set; } = null!;     // AiSuggested | HrEdited — server sở hữu (F10)
+        /// <summary>RNK1 · HĐ-6 — nhu cầu bắt buộc: thiếu bằng chứng Strong/Partial ⇒ ứng viên
+        /// bị loại (<c>eligible = false</c>) ngay lúc sàng. HR sở hữu; AI không đề xuất.</summary>
+        public bool IsMustHave { get; set; }
     }
 
     /// <summary>
@@ -294,6 +297,11 @@ namespace Isas.CampaignService.DTOs
         public string? NeedId { get; set; }
         public string? Category { get; set; }
         public string? Text { get; set; }
+        /// <summary>
+        /// RNK1 · HĐ-6 — nhu cầu bắt buộc (điều kiện loại). CÓ ở đây (khác <c>Source</c>): là quyết
+        /// định nghiệp vụ của HR, không phải nhãn nguồn gốc ⇒ giá trị client GIỮ NGUYÊN. null ⇒ false.
+        /// </summary>
+        public bool? IsMustHave { get; set; }
     }
 
     public class CampaignResponse
@@ -390,6 +398,7 @@ namespace Isas.CampaignService.DTOs
                     Category = n.Category,
                     Text = n.Text,
                     Source = n.Source,
+                    IsMustHave = n.IsMustHave,   // RNK1 · HĐ-6
                 }).ToList(),
             // F10: sắp theo ĐÚNG thứ tự ứng viên sẽ gặp (ParticipationService dùng CreatedAt, Id) —
             // FE echo `id` lại khi PUT, nên thứ tự response phải ổn định giữa các lần gọi.
