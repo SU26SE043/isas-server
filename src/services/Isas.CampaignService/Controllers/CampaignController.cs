@@ -732,6 +732,7 @@ namespace Isas.CampaignService.Controllers
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (AdaptiveBudgetTooSmallException ex) { return BadRequest(ex.Body); }   // RNK1 · HĐ-7 — 3 số adaptive lệch → 400
+            catch (QuestionBankInvalidException ex) { return BadRequest(ex.Body); }      // RNK1 · HĐ-8 — ngân hàng đề có cảnh báo → 400
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // sai trạng thái / thiếu câu hỏi → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to publish campaign: {ex.Message}"); }
         }

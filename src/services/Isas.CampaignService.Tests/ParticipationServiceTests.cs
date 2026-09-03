@@ -956,6 +956,73 @@ public class ParticipationServiceTests
             It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    // ── RNK1 · HĐ-8 — DÂY ngân hàng đề: Start rút K câu rồi gửi ĐÚNG K câu xuống Interview ──────────
+    // K = 2, bộ có 5 câu OPTIONAL ⇒ selector rút đúng 2. K = null ⇒ gửi trọn bộ (5).
+
+    private static Campaign ActiveCampaignWith5OptionalQuestions(CampaignTestDb tdb, int? questionsPerSession)
+    {
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        camp.Domain = "BE";
+        camp.QuestionsPerSession = questionsPerSession;
+        for (var i = 0; i < 5; i++)
+            camp.Questions.Add(new CampaignQuestion
+            {
+                Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = camp.OrgId,
+                QuestionText = $"Q{i}", Source = QuestionSource.CustomHr,
+                IsRequired = false, CreatedAt = DateTime.UtcNow.AddMilliseconds(i),
+            });
+        camp.Criteria.Add(new CampaignCriterion
+        {
+            Id = Guid.NewGuid(), CampaignId = camp.Id, OrderNo = 0, Name = "Communication",
+            Weight = 1.0m, MaxScore = 5, Source = CriterionSource.HrEdited,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        tdb.Db.Campaigns.Add(camp);
+        return camp;
+    }
+
+    [Fact]
+    public async Task Start_QuestionsPerSession2_GuiDung2CauXuongInterview()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWith5OptionalQuestions(tdb, questionsPerSession: 2);
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.Is<IReadOnlyList<string>>(q => q.Count == 2),
+            It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
+            It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Start_QuestionsPerSessionNull_GuiTronBo5Cau()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = ActiveCampaignWith5OptionalQuestions(tdb, questionsPerSession: null);
+        tdb.Db.CampaignMemberships.Add(Membership(camp.Id, FixedCandidate));
+        await tdb.Db.SaveChangesAsync();
+
+        var session = DefaultSession();
+        await NewService(tdb.NewContext(), session: session)
+            .StartInterviewAsync(FixedCandidate, camp.Id, default);
+
+        session.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.Is<IReadOnlyList<string>>(q => q.Count == 5),
+            It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
+            It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────────
     private static Campaign ActiveCampaignWithQuestionAndCriterion(CampaignTestDb tdb)
     {

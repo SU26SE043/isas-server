@@ -510,8 +510,24 @@ namespace Isas.CampaignService.Services
 
             if (request.QuestionsPerSession.HasValue)
             {
-                ValidateQuestionsPerSession(request.QuestionsPerSession);
-                campaign.QuestionsPerSession = request.QuestionsPerSession;
+                // RNK1 · HĐ-8 — ba trạng thái trên PUT (mẫu CAMP-16 `levels`):
+                //   • vắng (null)  = KHÔNG ĐỔI — đã lọc bởi `.HasValue`.
+                //   • `0`          = RESET về "thi hết bộ" (SET NULL). Sentinel này CHỈ có trên PUT.
+                //   • `1..20`      = đặt K; ngoài dải → 400 (ValidateQuestionsPerSession).
+                var newK = request.QuestionsPerSession.Value == 0
+                    ? (int?)null
+                    : request.QuestionsPerSession;
+                if (newK is not null)
+                    ValidateQuestionsPerSession(newK);
+
+                // Đổi K = đổi ĐỀ mỗi ứng viên gặp ⇒ CÙNG luật `PUT /questions` (CAMP-18: `questions` vẫn
+                // 409 trên Active — hai ứng viên làm hai đề khác nhau). Giá trị KHÔNG đổi ⇒ no-op, không 409.
+                if (newK != campaign.QuestionsPerSession && campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException(
+                        $"Chỉ đổi questions_per_session khi campaign `Draft` (hiện: {campaign.Status}). "
+                        + "Đổi số câu mỗi ứng viên gặp = đổi đề, hai ứng viên làm hai đề khác nhau.");
+
+                campaign.QuestionsPerSession = newK;
             }
 
             // RNK1 · HĐ-7 — ràng buộc chéo trên giá trị ĐÃ HỢP NHẤT (request phủ lên campaign). Chỉ chạy
@@ -1202,6 +1218,14 @@ namespace Isas.CampaignService.Services
             // BUS-03 — d > 0 ⇒ trần theo BUỔI ép về 0 (xem chú thích ở CreateCampaignAsync).
             if ((campaign.MaxDeepPerQuestion ?? 0) > 0)
                 campaign.MaxFollowUps = 0;
+
+            // RNK1 · HĐ-8 — hàng rào NGÂN HÀNG ĐỀ ở publish: cảnh báo (tính read-time, xem
+            // QuestionBankSummary) KHÔNG rỗng ⇒ 400 { code: "QUESTION_BANK_INVALID", warnings[] }.
+            // Ca "K×(1+d) > T" đã bị EnforceAdaptiveBudget ngay trên ném (ADAPTIVE_BUDGET_TOO_SMALL,
+            // cụ thể hơn) nên tới đây warnings chỉ còn "K > total" / "alwaysAsked > K".
+            var bankWarnings = ComputeQuestionBankWarnings(campaign);
+            if (bankWarnings.Count > 0)
+                throw new QuestionBankInvalidException(bankWarnings);
 
             campaign.Status = CampaignStatus.Active;
             campaign.UpdatedAt = DateTime.UtcNow;
@@ -2712,16 +2736,22 @@ namespace Isas.CampaignService.Services
                     $"max_concurrent_interviews phải >= 1 (hiện: {c}). Bỏ trống = không giới hạn.");
         }
 
-        // NGÂN HÀNG ĐỀ — số câu mỗi ứng viên thi. null = thi HẾT bộ (hành vi trước tính năng này).
-        // Đặt số thì phải >= 1: `0` nghĩa là buổi thi không có câu nào, mà ParticipationService ném
-        // "Chiến dịch chưa có câu hỏi" khi đề rỗng ⇒ để lọt là tạo ra chiến dịch publish được nhưng
-        // KHÔNG ứng viên nào bắt đầu nổi. Cùng lý do với ValidateConcurrencyCap ngay trên.
-        // KHÔNG đặt trần trên: số lớn hơn ngân hàng = "thi hết", đã xử tường minh ở QuestionPoolSelector.
+        // NGÂN HÀNG ĐỀ — số câu mỗi ứng viên thi (K). null = thi HẾT bộ (hành vi trước tính năng này).
+        // RNK1 · HĐ-8 — K ∈ [1, 20]:
+        //   • `< 1` (gồm `0`): `0` nghĩa "buổi thi không có câu nào" — ParticipationService ném "Chiến
+        //     dịch chưa có câu hỏi" khi đề rỗng ⇒ để lọt là tạo chiến dịch publish được mà KHÔNG ứng
+        //     viên nào bắt đầu nổi. Trên đường PUT, `0` KHÔNG rơi vào đây — nó là sentinel RESET
+        //     (xử ở UpdateCampaignAsync → SET NULL).
+        //   • `> 20`: K là số câu GỐC của một buổi, mà cả buổi (gốc + đào sâu) bị CHECK
+        //     `ck_practice_sessions_max_questions_range` kẹp ≤ 20 bên Interview ⇒ K một mình vượt 20
+        //     là bất khả thi. Trước đây guard chỉ chặn số âm ⇒ HR gõ 999 lọt tới lúc INSERT session
+        //     (SAU reserve credit — PAY-5), đúng bài học F2b.
         private static void ValidateQuestionsPerSession(int? questionsPerSession)
         {
-            if (questionsPerSession is int n && n < 1)
+            if (questionsPerSession is int n && (n < 1 || n > MaxQuestionsPerSession))
                 throw new ArgumentException(
-                    $"questions_per_session phải >= 1 (hiện: {n}). Bỏ trống = ứng viên thi hết bộ câu hỏi.");
+                    $"questions_per_session phải trong [1, {MaxQuestionsPerSession}] (hiện: {n}). "
+                    + "Bỏ trống (create) / gửi 0 (PUT) = ứng viên thi hết bộ câu hỏi.");
         }
 
         // EVA1-B5 / HĐ-2 — trần số năm KN hợp lý cho luật lọc cứng. > 60 gần như chắc chắn là gõ nhầm.
@@ -2796,6 +2826,13 @@ namespace Isas.CampaignService.Services
             if (AdaptiveBudgetRule.Check(k, d, t) is { } v)
                 throw new AdaptiveBudgetTooSmallException(v);
         }
+
+        // RNK1 · HĐ-8 — cảnh báo ngân hàng đề (NGUỒN DUY NHẤT = QuestionBankSummary.Build, cùng hàm
+        // FromEntity dùng để trả read-time). Publish: không rỗng ⇒ QuestionBankInvalidException.
+        private static IReadOnlyList<string> ComputeQuestionBankWarnings(Campaign campaign)
+            => QuestionBankSummary.Build(
+                campaign.Questions, campaign.QuestionsPerSession,
+                campaign.MaxDeepPerQuestion, campaign.MaxQuestions).Warnings;
 
         private async Task<CampaignEntitlement> ResolveEntitlementAsync(Guid orgId, CancellationToken ct)
             => _entitlements is null

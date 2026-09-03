@@ -304,6 +304,95 @@ namespace Isas.CampaignService.DTOs
         public bool? IsMustHave { get; set; }
     }
 
+    /// <summary>RNK1 · HĐ-8 — một nhóm chủ đề trong ngân hàng đề + số câu thuộc nhóm đó.</summary>
+    public class QuestionBankGroup
+    {
+        public string Name { get; set; } = null!;
+        public int Count { get; set; }
+    }
+
+    /// <summary>
+    /// RNK1 · HĐ-8 — tóm tắt NGÂN HÀNG ĐỀ, tính READ-TIME trên mọi <see cref="CampaignResponse"/>.
+    /// <c>Warnings</c> KHÔNG rỗng ⇒ publish trả <b>400</b> <c>{ code: "QUESTION_BANK_INVALID", warnings }</c>.
+    /// </summary>
+    public class QuestionBankSummary
+    {
+        /// <summary>Tổng số câu trong bộ.</summary>
+        public int Total { get; set; }
+        /// <summary>Số câu <c>isRequired</c> — MỌI ứng viên đều gặp (selector giữ hết, kể cả khi vượt K).</summary>
+        public int AlwaysAsked { get; set; }
+        /// <summary>K = số câu mỗi buổi. null = thi trọn bộ.</summary>
+        public int? QuestionsPerSession { get; set; }
+        /// <summary>Phân bố theo nhóm. Nhóm null/"" gộp thành <c>"Chung"</c>, gộp không phân biệt hoa/thường (như selector).</summary>
+        public List<QuestionBankGroup> Groups { get; set; } = new();
+        /// <summary>Ca bất thường (đọc được cho HR + là gate publish). Rỗng = ổn.</summary>
+        public List<string> Warnings { get; set; } = new();
+
+        /// <summary>
+        /// NGUỒN DUY NHẤT: dùng chung cho <see cref="CampaignResponse.FromEntity"/> (read-time) và
+        /// gate publish (đọc <see cref="Warnings"/>).
+        /// </summary>
+        public static QuestionBankSummary Build(
+            IEnumerable<CampaignQuestion> questionsSource,
+            int? questionsPerSession, int? maxDeepPerQuestion, int? maxQuestions)
+        {
+            // Sắp theo (CreatedAt, Id) TRƯỚC — như `FromEntity` sắp `Questions` — để:
+            //   • casing hiển thị của nhóm = casing HR gõ ở câu SỚM NHẤT của nhóm đó (tất định);
+            //   • thứ tự nhóm ổn định giữa các lần gọi (không phụ thuộc thứ tự EF nạp).
+            var questions = (questionsSource as IEnumerable<CampaignQuestion> ?? Array.Empty<CampaignQuestion>())
+                .OrderBy(q => q.CreatedAt).ThenBy(q => q.Id)
+                .ToList();
+            var total = questions.Count;
+            var alwaysAsked = questions.Count(q => q.IsRequired);
+
+            // Nhóm: normalize null/whitespace → null; gộp OrdinalIgnoreCase (như QuestionPoolSelector).
+            // Thứ tự: nhóm "Chung" (null) trước, rồi theo tên hiển thị.
+            var groups = questions
+                .GroupBy(
+                    q => string.IsNullOrWhiteSpace(q.QuestionGroup) ? null : q.QuestionGroup!.Trim(),
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(g => new
+                {
+                    IsGeneral = g.Key is null,
+                    // g giữ thứ tự nguồn (đã sắp CreatedAt,Id) ⇒ First() = casing của câu sớm nhất.
+                    Name = g.Key is null ? "Chung" : g.First().QuestionGroup!.Trim(),
+                    Count = g.Count(),
+                })
+                .OrderBy(x => x.IsGeneral ? 0 : 1)
+                .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new QuestionBankGroup { Name = x.Name, Count = x.Count })
+                .ToList();
+
+            var k = questionsPerSession ?? total;
+            var d = maxDeepPerQuestion ?? 0;
+            var t = maxQuestions ?? 0;
+
+            var warnings = new List<string>();
+            // (1) K > total: không phải lỗi ở save (FE gửi PUT campaign trước questions) — selector rơi
+            //     về "thi trọn bộ". Nhưng publish thì phải sạch.
+            if (questionsPerSession is int kSet && kSet > total)
+                warnings.Add(
+                    $"questions_per_session ({kSet}) lớn hơn số câu trong bộ ({total}) — ứng viên sẽ thi trọn bộ.");
+            // (2) alwaysAsked > K: selector giữ HẾT câu bắt buộc ⇒ buổi dài hơn K, không còn khe cho câu rút.
+            if (alwaysAsked > k)
+                warnings.Add(
+                    $"Số câu bắt buộc ({alwaysAsked}) nhiều hơn số câu mỗi buổi ({k}) — mỗi buổi sẽ dài hơn {k} câu.");
+            // (3) K×(1+d) > T — dùng chung luật với RNK1-B6 (AdaptiveBudgetRule).
+            if (Isas.CampaignService.Validation.AdaptiveBudgetRule.Check(k, d, t) is { } v)
+                warnings.Add(
+                    $"Ngân sách buổi ({v.Have}) không đủ cho {v.Questions} câu × (1 + {v.Deep} đào sâu) = {v.Need} câu.");
+
+            return new QuestionBankSummary
+            {
+                Total = total,
+                AlwaysAsked = alwaysAsked,
+                QuestionsPerSession = questionsPerSession,
+                Groups = groups,
+                Warnings = warnings,
+            };
+        }
+    }
+
     public class CampaignResponse
     {
         public Guid Id { get; set; }
@@ -344,6 +433,8 @@ namespace Isas.CampaignService.DTOs
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public List<CampaignQuestionResponse> Questions { get; set; }
+        // RNK1 · HĐ-8 — tóm tắt ngân hàng đề (total / alwaysAsked / K / groups / warnings), tính read-time.
+        public QuestionBankSummary QuestionBank { get; set; } = new();
         public List<CampaignCriterionResponse> Criteria { get; set; }   // C12: tiêu chí structured
         // HR technical screener bước 1 — thước đo dùng cho MỌI CV của campaign này. `[]` khi chưa
         // chốt (chưa publish hoặc AI không suy được từ JD) ⇒ sàng CV chưa chạy được.
@@ -414,6 +505,9 @@ namespace Isas.CampaignService.DTOs
                 SampleAnswer = includeSampleAnswer ? q.SampleAnswer : null,
                 QuestionGroup = q.QuestionGroup
             }).ToList(),
+            // RNK1 · HĐ-8 — tóm tắt ngân hàng đề (đọc từ CÙNG c.Questions đã nạp, không query thêm).
+            QuestionBank = QuestionBankSummary.Build(
+                c.Questions, c.QuestionsPerSession, c.MaxDeepPerQuestion, c.MaxQuestions),
             Criteria = c.Criteria
                 .OrderBy(cr => cr.OrderNo)
                 .Select(cr => new CampaignCriterionResponse
