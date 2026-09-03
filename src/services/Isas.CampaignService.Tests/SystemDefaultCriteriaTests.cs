@@ -856,4 +856,26 @@ public class SystemDefaultCriteriaTests
         Assert.Equal(7, rows.Count);
         Assert.All(rows, r => Assert.Null(r.MinPct));
     }
+
+    // ── RNK1 · HĐ-8: response của ApplySystemDefaultCriteriaAsync PHẢI mang questionBank ĐÚNG ─────
+    // Trước fix: load chỉ `.Include(Criteria)` ⇒ c.Questions rỗng ⇒ questionBank.total = 0 (chạy được
+    // trên Active theo CAMP-18). DTO khẳng định "tính read-time trên MỌI CampaignResponse".
+    [Fact]
+    public async Task Rnk1B7_ChepBoChuan_Response_QuestionBank_DemDungCau()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = await SeedAsync(tdb, org, CampaignStatus.Active);
+        tdb.Db.CampaignQuestions.AddRange(
+            new CampaignQuestion { Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = org, QuestionText = "Q1", Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow },
+            new CampaignQuestion { Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = org, QuestionText = "Q2", Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow.AddSeconds(1) });
+        await tdb.Db.SaveChangesAsync();
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await svc.ApplySystemDefaultCriteriaAsync(org, org, camp.Id, Req(), default);
+
+        Assert.Equal(2, res.QuestionBank.Total);
+        Assert.Equal(2, res.QuestionBank.AlwaysAsked);
+        Assert.Empty(res.QuestionBank.Warnings);
+    }
 }

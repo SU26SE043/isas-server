@@ -244,6 +244,23 @@ public class JobNeedsScreeningTests
         Assert.Single(res.JobNeeds);
     }
 
+    // RNK1 · HĐ-8 — response của ReplaceJobNeedsAsync PHẢI mang questionBank ĐÚNG (nạp c.Questions).
+    // Trước fix: load `FirstOrDefaultAsync` trần ⇒ c.Questions rỗng ⇒ questionBank.total = 0 + cảnh
+    // báo GIẢ "questions_per_session > số câu trong bộ (0)" cho campaign có câu hỏi thật (chạy trên Active).
+    [Fact]
+    public async Task Rnk1B7_ReplaceJobNeeds_Response_QuestionBank_DemDungCau()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedDraft(tdb, owner);   // 1 câu hỏi
+        SetStatus(tdb, camp.Id, CampaignStatus.Active, jobNeeds: null);   // đường cứu B6 (Active + rỗng)
+
+        var res = await NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default);
+
+        Assert.Equal(1, res.QuestionBank.Total);
+        Assert.Empty(res.QuestionBank.Warnings);   // KHÔNG cảnh báo giả "K > total(0)"
+    }
+
     // (2) Active + job_needs RỖNG + chưa ai được sàng → 200 (đường cứu).
     [Fact]
     public async Task B6_Active_needs_rong_chua_ai_sang_thi_cho_sua()

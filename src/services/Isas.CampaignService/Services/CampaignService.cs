@@ -236,6 +236,7 @@ namespace Isas.CampaignService.Services
         public async Task<CampaignResponse> UploadCampaignFilesAsync(Guid orgId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
         {
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)   // RNK1 · HĐ-8 — CampaignResponse.questionBank tính từ Questions
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException();
 
@@ -640,6 +641,7 @@ namespace Isas.CampaignService.Services
         {
             // ── 1. Fetch & verify ownership ─────────────────────
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)   // RNK1 · HĐ-8 — CampaignResponse.questionBank tính từ Questions
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -1088,6 +1090,7 @@ namespace Isas.CampaignService.Services
             var language = ValidateLanguage(request.Language);
 
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)   // RNK1 · HĐ-8 — CampaignResponse.questionBank tính từ Questions
                 .Include(c => c.Criteria)
                     .ThenInclude(cr => cr.Levels)
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
@@ -3226,6 +3229,7 @@ namespace Isas.CampaignService.Services
             Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)   // RNK1 · HĐ-8 — CampaignResponse.questionBank tính từ Questions
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 

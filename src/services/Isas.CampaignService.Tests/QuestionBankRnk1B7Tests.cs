@@ -2,6 +2,7 @@ using System.Text.Json;
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -299,6 +300,47 @@ public class QuestionBankRnk1B7Tests
         var res = await NewService(tdb.NewContext()).PublishCampaignAsync(org, org, camp.Id, default);
 
         Assert.Equal("Active", res.Status);
+        Assert.Empty(res.QuestionBank.Warnings);
+    }
+
+    // ── questionBank ĐÚNG trên MỌI CampaignResponse — kể cả các load KHÔNG .Include(Questions) ────
+    // Trước fix: 4 load trần ⇒ c.Questions rỗng ⇒ questionBank.total = 0 + cảnh báo giả.
+
+    [Fact]
+    public async Task Rnk1B7_UploadFiles_Response_QuestionBank_DemDungCau()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = Seed(tdb.Db, org, questionsPerSession: 3, questions: new[]
+        {
+            Q(Guid.Empty, org, "Q1", required: true), Q(Guid.Empty, org, "Q2"), Q(Guid.Empty, org, "Q3"),
+        });
+
+        // UploadCampaignFilesRequest rỗng ⇒ no-op nhưng vẫn trả FromEntity(campaign).
+        var res = await NewService(tdb.NewContext())
+            .UploadCampaignFilesAsync(org, camp.Id, new UploadCampaignFilesRequest(), default);
+
+        Assert.Equal(3, res.QuestionBank.Total);
+        Assert.Equal(1, res.QuestionBank.AlwaysAsked);
+        Assert.Empty(res.QuestionBank.Warnings);
+    }
+
+    [Fact]
+    public async Task Rnk1B7_UpdateFiles_Response_QuestionBank_DemDungCau()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = Seed(tdb.Db, org, questionsPerSession: 3, questions: new[]
+        {
+            Q(Guid.Empty, org, "Q1"), Q(Guid.Empty, org, "Q2"), Q(Guid.Empty, org, "Q3"),
+        });
+        camp.JDText = "JD có sẵn";   // ⇒ file JD bị lọc bỏ (HasDirectText) ⇒ no-op, vẫn trả FromEntity
+        tdb.Db.SaveChanges();
+
+        var res = await NewService(tdb.NewContext()).UpdateCampaignFilesAsync(
+            org, camp.Id, new UploadCampaignFilesRequest { JdFile = Mock.Of<IFormFile>() }, default);
+
+        Assert.Equal(3, res.QuestionBank.Total);
         Assert.Empty(res.QuestionBank.Warnings);
     }
 }
