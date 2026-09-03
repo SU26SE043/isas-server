@@ -274,9 +274,11 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             var pct = Math.Clamp(avgScore / maxScore * 100m, 0m, 100m);
             weightedSum += pct * c.Weight;
             weightSum += c.Weight;
-            // RNK1 · HĐ-1/HĐ-5 — CriterionId (rubric_criteria.source_criterion_id) để null Ở BƯỚC NÀY;
-            // B4 đổi loader cho nạp kèm rồi điền. Điểm sàn theo tiêu chí (HĐ-5) tạm khớp theo TÊN.
-            bag.Add(new CriterionInputSnapshot(c.Name, Math.Round(pct, 4), c.Weight, c.MaxScore, CriterionId: null));
+            // RNK1 · HĐ-5 — CriterionId = campaign_criteria.id (ref lỏng, materialize lúc tạo buổi B2B).
+            // Đi vào event SessionScored ⇒ Campaign khớp điểm sàn read-time theo id (ổn định qua PUT).
+            // null cho: rubric B2C · buổi B2B tạo trước RNK1 · bản Campaign cũ chưa gửi criterionId
+            // ⇒ Campaign lùi về khớp theo TÊN.
+            bag.Add(new CriterionInputSnapshot(c.Name, Math.Round(pct, 4), c.Weight, c.MaxScore, CriterionId: c.SourceCriterionId));
         }
 
         // RNK1 · HĐ-1 — snapshot mang seed_* + skip_penalty (ghim trên buổi). Đường preview/apply (B8)

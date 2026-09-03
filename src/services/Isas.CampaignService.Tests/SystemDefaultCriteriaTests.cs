@@ -836,4 +836,24 @@ public class SystemDefaultCriteriaTests
         Assert.DoesNotContain(typeof(B2CRubricCriterion).GetProperties(),
             p => p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase));
     }
+
+    // ── RNK1 · HĐ-5: from-system-default KHÔNG chép điểm sàn ─────────────
+
+    // Bộ chuẩn B2C không có khái niệm min_pct; chép về ⇒ MinPct = null trên MỌI tiêu chí (HR đặt sau
+    // qua PUT nếu cần). Chép một giá trị sàn "mặc định" nào đó là gán luật kết luận HR chưa từng khai.
+    [Fact]
+    public async Task ChepVe_MinPct_TatCaNull()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = await SeedAsync(tdb, org);
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        await svc.ApplySystemDefaultCriteriaAsync(org, org, camp.Id, Req(), default);
+
+        using var check = tdb.NewContext();
+        var rows = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id).ToListAsync();
+        Assert.Equal(7, rows.Count);
+        Assert.All(rows, r => Assert.Null(r.MinPct));
+    }
 }

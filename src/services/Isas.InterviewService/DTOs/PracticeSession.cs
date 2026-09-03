@@ -86,7 +86,11 @@ public record CampaignCriterionInput(
     // E9 — mốc điểm HR soạn (AI gợi ý rồi HR sửa). null/rỗng = không có mốc ⇒ AIService rơi về dải
     // mặc định 0..maxScore như trước, KHÔNG phải lỗi. Optional ở CUỐI record để bản Campaign cũ —
     // chưa biết field này — vẫn gọi được endpoint mà không vỡ (hai service deploy không nguyên tử).
-    IReadOnlyList<CampaignCriterionLevelInput>? Levels = null
+    IReadOnlyList<CampaignCriterionLevelInput>? Levels = null,
+    // RNK1 · HĐ-5 — campaign_criteria.id (khoá JSON `criterionId`). Ghi vào
+    // rubric_criteria.source_criterion_id lúc materialize ⇒ snapshot chấm khớp điểm sàn read-time
+    // theo id. null = bản Campaign cũ chưa gửi. Optional ở CUỐI record.
+    Guid? CriterionId = null
 );
 
 // I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).

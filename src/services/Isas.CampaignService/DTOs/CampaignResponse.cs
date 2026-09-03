@@ -57,10 +57,18 @@ namespace Isas.CampaignService.DTOs
     // Ưu tiên cao nhất (có thì publish bỏ qua AI). Σweight ∈ [0.99,1.01] → chuẩn hoá Σ→1.
     public class CriterionItem
     {
+        // RNK1 · HĐ-5 — echo id tiêu chí đang có ⇒ server GIỮ id (update tại chỗ), để snapshot chấm
+        // (criterionId) có khoá ỔN ĐỊNH khớp về. Vắng / id lạ ⇒ id mới. FE luôn echo id khi sửa.
+        public Guid? Id { get; set; }
+
         public string Name { get; set; } = null!;
         public string? Description { get; set; }
         public decimal Weight { get; set; }   // 0 < weight ≤ 1
         public int MaxScore { get; set; }      // ≥ 1
+
+        // RNK1 · HĐ-5 — điểm sàn % (0..100; null = không sàn; PUT gửi thiếu = null = bỏ sàn). Là luật
+        // KẾT LUẬN, KHÔNG bump rubric_version — xem CampaignCriterion.MinPct.
+        public int? MinPct { get; set; }
 
         /// <summary>
         /// CAMP-16 — mốc điểm. BA trạng thái, không phải hai (cùng hợp đồng với
@@ -72,13 +80,14 @@ namespace Isas.CampaignService.DTOs
         /// </list>
         ///
         /// <para>Bất đối xứng có chủ đích, và ở đây nó gay gắt hơn <c>SampleAnswer</c>: PUT criteria là
-        /// replace-all MINT ID MỚI, nên coi <c>null</c> là "xoá" thì một lần HR bấm Lưu trên bản FE cũ
+        /// replace-all, nên coi <c>null</c> là "xoá" thì một lần HR bấm Lưu trên bản FE cũ
         /// (chưa biết field này) là mất trắng mốc điểm của cả chiến dịch — mà mất mốc KHÔNG có triệu
         /// chứng: Interview lặng lẽ rơi về dải mặc định và vẫn chấm ra điểm.</para>
         ///
-        /// <para>⚠ Carry-over ghép theo <b>tên tiêu chí</b> (case-insensitive) vì id bị mint mới. Hệ quả:
-        /// ĐỔI TÊN tiêu chí mà không gửi kèm <c>levels</c> thì mốc MẤT. FE phải luôn gửi <c>levels</c>
-        /// khi người dùng sửa tên.</para>
+        /// <para>⚠ Carry-over ghép theo <b>tên tiêu chí</b> (case-insensitive). RNK1 · HĐ-5 nay cho
+        /// <see cref="Id"/> echo lại được để GIỮ id (khoá ổn định cho snapshot chấm), nhưng carry-over
+        /// mốc vẫn theo TÊN. Hệ quả không đổi: ĐỔI TÊN tiêu chí mà không gửi kèm <c>levels</c> thì mốc
+        /// MẤT. FE phải luôn gửi <c>levels</c> khi người dùng sửa tên.</para>
         /// </summary>
         public List<CriterionLevelItem>? Levels { get; set; }
     }
@@ -252,6 +261,8 @@ namespace Isas.CampaignService.DTOs
         public string? Description { get; set; }
         public decimal Weight { get; set; }
         public int MaxScore { get; set; }
+        // RNK1 · HĐ-5 — điểm sàn %. null = không sàn. FE echo lại field này ở PUT (cùng với Id) khi sửa.
+        public int? MinPct { get; set; }
         public string Source { get; set; } = null!;
 
         /// <summary>
@@ -404,6 +415,7 @@ namespace Isas.CampaignService.DTOs
                     Description = cr.Description,
                     Weight = cr.Weight,
                     MaxScore = cr.MaxScore,
+                    MinPct = cr.MinPct,                 // RNK1 · HĐ-5
                     Source = cr.Source.ToString(),
                     Levels = (cr.Levels ?? new List<CampaignCriterionLevel>())
                         .OrderBy(l => l.Score)

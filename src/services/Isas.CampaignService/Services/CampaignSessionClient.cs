@@ -57,6 +57,9 @@ namespace Isas.CampaignService.Services
                 criteria = criteria.Select(c => new
                 {
                     c.Name, c.Description, c.Weight, c.MaxScore,
+                    // RNK1 · HĐ-5 — khoá JSON camelCase "criterionId" (= campaign_criteria.id). Bản
+                    // Interview cũ chưa biết field ⇒ bỏ qua ⇒ source_criterion_id = null (khớp theo tên).
+                    criterionId = c.CriterionId,
                     levels = c.Levels.Select(l => new { l.Score, l.Descriptor })
                 }),
                 expiresAt,  // BK18 — Interview map → session.Deadline (I2); null = không hard-deadline

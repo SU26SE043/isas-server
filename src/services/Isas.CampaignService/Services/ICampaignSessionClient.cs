@@ -94,6 +94,12 @@ namespace Isas.CampaignService.Services
     {
         public IReadOnlyList<SessionCriterionLevelInput> Levels { get; init; }
             = Array.Empty<SessionCriterionLevelInput>();
+
+        /// <summary>RNK1 · HĐ-5 — <c>campaign_criteria.id</c>. Interview ghi vào
+        /// <c>rubric_criteria.source_criterion_id</c> (ref lỏng, không FK xuyên service) để snapshot
+        /// chấm khớp về đúng tiêu chí khi tính điểm sàn read-time. Khoá JSON trên dây: <c>criterionId</c>.
+        /// Init-only có mặc định null ⇒ call site cũ không phải sửa.</summary>
+        public Guid? CriterionId { get; init; }
     }
 
     /// <summary>Một mốc điểm (E9 hard-anchor) — map 1-1 sang <c>rubric_levels</c> phía Interview.</summary>

@@ -228,6 +228,11 @@ namespace Isas.CampaignService.Models
                     // không bao giờ chấm ⇒ mất 1 credit im lặng (CAMP-17). Thang thật lớn nhất
                     // từng dùng là 30.
                     t.HasCheckConstraint("ck_campaign_criteria_max_score_range", "max_score >= 1 AND max_score <= 100");
+                    // RNK1 · HĐ-5 — điểm sàn %: null = không sàn, hoặc 0..100. Khớp guard code trong
+                    // BuildStructuredCriteria (ném ArgumentException → 400 kèm tên tiêu chí).
+                    t.HasCheckConstraint(
+                        "ck_campaign_criteria_min_pct_range",
+                        "min_pct IS NULL OR (min_pct >= 0 AND min_pct <= 100)");
                     // CAMP-20 — 'SystemDefault' là giá trị THỨ BA (bộ chuẩn chép về + bộ dự phòng khi AI
                     // lỗi). ⚠ CHECK này phải có trên DB TRƯỚC khi code ghi giá trị mới lên (xem docblock
                     // migration AddCriterionSourceSystemDefault). SQLite của test CÓ enforce CHECK (EF10)

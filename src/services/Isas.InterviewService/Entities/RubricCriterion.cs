@@ -50,6 +50,13 @@ public class RubricCriterion
     // Ref lỏng sang CampaignService - KHÔNG FK xuyên service.
     public Guid? CampaignId { get; set; }
 
+    // RNK1 · HĐ-5 — id tiêu chí BÊN CAMPAIGN (campaign_criteria.id) mà tiêu chí này được materialize
+    // từ. Ref lỏng sang CampaignService, KHÔNG FK xuyên service (GEN-2). Đi vào
+    // CriterionInputSnapshot.CriterionId của event SessionScored ⇒ Campaign khớp điểm sàn read-time
+    // theo id (ổn định qua PUT) thay vì theo tên. null = rubric B2C, hoặc buổi B2B tạo trước RNK1,
+    // hoặc bản Campaign cũ chưa gửi criterionId.
+    public Guid? SourceCriterionId { get; set; }
+
     // BC16 — B2C rubric CÁ NHÂN theo JobCategory. Ref lỏng sang AuthService (candidate), KHÔNG FK xuyên service.
     //  - CandidateId == null && CampaignId == null → seed mặc định dùng chung (BC11, fallback).
     //  - CandidateId != null && CampaignId == null → rubric riêng của candidate đó cho 1 nghề.

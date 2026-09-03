@@ -814,6 +814,9 @@ public class PracticeService : IPracticeService
                     IsActive = true,
                     JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
                     CampaignId = request.CampaignId,
+                    // RNK1 · HĐ-5 — id tiêu chí bên Campaign (ổn định qua PUT). null (bản Campaign cũ) ⇒
+                    // snapshot chấm khớp điểm sàn theo TÊN thay vì id.
+                    SourceCriterionId = c.CriterionId,
                     Language = language,
                     Version = pinnedRubricVersion,
                     // E9 — mốc điểm HR soạn. Rỗng/null ⇒ không tạo level nào ⇒ AIService rơi về dải
