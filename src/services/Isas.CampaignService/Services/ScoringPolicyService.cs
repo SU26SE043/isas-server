@@ -4,6 +4,7 @@ using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.Shared.Scoring;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Isas.CampaignService.Services
 {
@@ -11,8 +12,23 @@ namespace Isas.CampaignService.Services
     public sealed class ScoringPolicyService : IScoringPolicyService
     {
         private readonly CampaignDbContext _db;
+        private readonly ILogger<ScoringPolicyService> _logger;
 
-        public ScoringPolicyService(CampaignDbContext db) => _db = db;
+        // RNK1 · HĐ-1 — mẫu bị RÚT khỏi danh sách employer (KHÔNG xoá row: policy đã tạo có
+        // sourceTemplateId trỏ tới, và CreatePolicyAsync còn kiểm id này là mẫu hệ thống hợp lệ).
+        // "Phạt bỏ câu" 5c900002 nay là LUẬT engine (CAMP-21), không phải lựa chọn.
+        private static readonly IReadOnlySet<Guid> RetiredTemplateIds = new HashSet<Guid>
+        {
+            new("5c900002-0000-0000-0000-000000000000"),
+        };
+
+        // logger OPTIONAL (mặc định NullLogger): DI container vẫn tiêm bản thật vì ILogger<T> luôn
+        // đăng ký; default chỉ để `new ScoringPolicyService(db)` trong test khỏi phải sửa hàng loạt.
+        public ScoringPolicyService(CampaignDbContext db, ILogger<ScoringPolicyService>? logger = null)
+        {
+            _db = db;
+            _logger = logger ?? NullLogger<ScoringPolicyService>.Instance;
+        }
 
         public async Task<ScoringPolicyValidateResponse> ValidateExpressionAsync(
             Guid orgId, Guid campaignId, ScoringExpressionKind kind, string expression,
@@ -45,6 +61,7 @@ namespace Isas.CampaignService.Services
                 .ToListAsync(ct);
 
             return rows
+                .Where(p => !RetiredTemplateIds.Contains(p.Id))   // RNK1 · HĐ-1 — bỏ mẫu "Phạt bỏ câu"
                 .OrderBy(p => p.Kind)
                 .ThenBy(p => p.Name, StringComparer.Ordinal)
                 .Select(Map)
@@ -212,6 +229,9 @@ namespace Isas.CampaignService.Services
                 ? await LoadInterviewScoredAsync(campaignId, ct)
                 : await LoadCvScoredAsync(campaign, ct);
 
+            if (kind == ScoringExpressionKind.Interview)
+                WarnOnPreRnk1Snapshots(campaignId, scored);
+
             var computed = ComputeAll(kind, expression, scored, cvNeedCount);
             var rows = computed
                 .Select(x => new ScoringPolicyPreviewRow(
@@ -265,6 +285,7 @@ namespace Isas.CampaignService.Services
                 var scored = ranks
                     .Select(r => new ScoredRow(r.CandidateId, r.TotalScore, r.ScoringInputs!, null))
                     .ToList();
+                WarnOnPreRnk1Snapshots(campaignId, scored);
                 var byId = ComputeAll(kind, policy.Expression, scored)
                     .ToDictionary(x => x.CandidateId);
 
@@ -386,6 +407,21 @@ namespace Isas.CampaignService.Services
             return r;
         }
 
+        /// <summary>RNK1 · HĐ-2 — báo (1 lần, gộp) khi tập ứng viên đang tính lại có dòng mang snapshot
+        /// GHI TRƯỚC RNK1 (thiếu <c>seedAnswered</c>/<c>seedTotal</c>). Luật câu bỏ trống (CAMP-21)
+        /// KHÔNG áp cho các dòng đó — <see cref="SkipPenaltyRule.Apply"/> trả điểm nguyên — nên điểm
+        /// preview/apply của chúng = điểm tính lúc chấm, đúng ý đồ "không đổi thước đo giữa chừng".
+        /// Không lùi-an-toàn, không ném: đây là ghi nhận để người đọc bảng hiểu vì sao nhóm cũ không bị phạt.</summary>
+        private void WarnOnPreRnk1Snapshots(Guid campaignId, IReadOnlyList<ScoredRow> scored)
+        {
+            var stale = scored.Count(s => s.Bag is null || s.Bag.SeedTotal is null);
+            if (stale > 0)
+                _logger.LogWarning(
+                    "RNK1/HĐ-2: campaign {CampaignId} — {Stale}/{Total} dòng có snapshot trước RNK1 "
+                    + "(thiếu seedAnswered/seedTotal). Luật câu bỏ trống KHÔNG áp cho các dòng đó.",
+                    campaignId, stale, scored.Count);
+        }
+
         /// <summary>1 dòng đã tính đủ: điểm/hạng cũ↔mới + cờ lùi an toàn (<c>FellBack</c>).</summary>
         private sealed record ComputedRow(
             Guid CandidateId, decimal? OldScore, decimal? NewScore, bool FellBack,
@@ -425,16 +461,26 @@ namespace Isas.CampaignService.Services
         }
 
         /// <summary>Điểm 1 ứng viên phỏng vấn dưới <paramref name="expression"/>; lỗi lúc chạy ⇒ công
-        /// thức weighted mặc định (B6) + cờ true. Bag null (event trước B5) ⇒ (0, true) — không dùng được.</summary>
+        /// thức weighted mặc định (B6) + cờ true. Bag null (event trước B5) ⇒ (0, true) — không dùng được.
+        ///
+        /// <para>RNK1 · HĐ-2 / CAMP-21 — điểm (nhánh policy-ok LẪN nhánh lùi mặc định) đi qua
+        /// <see cref="SkipPenaltyRule.Apply"/>, CÙNG hàm Shared mà SessionScoringNotifier dùng trên
+        /// đường chấm thường ⇒ "điểm preview = điểm apply = điểm một lần chấm mới". Snapshot trước RNK1
+        /// (SkipPenalty/SeedTotal null) ⇒ Apply trả nguyên ⇒ hàng lịch sử KHÔNG bị đổi điểm.</para></summary>
         private static (decimal? Score, bool FellBack) ScoreInterview(string expression, ScoringInputsSnapshot? bag)
         {
             if (bag is null) return (0m, true);
+            var inputs = bag.ToInterviewInputs();
             var def = DefaultInterviewTotal(bag);
-            var ctx = ScoringContext.ForInterview(bag.ToInterviewInputs());
+            var ctx = ScoringContext.ForInterview(inputs);
             var outcome = ScoringPolicyRunner.Evaluate(expression, ctx);
-            return outcome.Value is decimal v
-                ? (Math.Round(v, 2), false)
-                : ((decimal?)def, true);
+
+            decimal raw;
+            bool fellBack;
+            if (outcome.Value is decimal v) { raw = Math.Round(v, 2); fellBack = false; }
+            else { raw = def; fellBack = true; }
+
+            return (SkipPenaltyRule.Apply(raw, inputs), fellBack);
         }
 
         /// <summary>Điểm 1 ứng viên sàng CV dưới <paramref name="expression"/>; lỗi ⇒ CAMP-14 mặc định

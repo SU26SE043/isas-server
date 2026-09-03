@@ -281,7 +281,7 @@ public class ScoringPolicyConstraintTests
 public class ScoringPolicyTemplatesEndpointTests
 {
     [Fact]
-    public async Task GET_scoring_policy_templates_tra_5_dung_shape_HĐ3()
+    public async Task GET_scoring_policy_templates_tra_4_bo_5c900002_RNK1()
     {
         using var tdb = new CampaignTestDb();
         var controller = new CampaignController(
@@ -294,15 +294,17 @@ public class ScoringPolicyTemplatesEndpointTests
 
         var ok = Assert.IsType<OkObjectResult>(action.Result);
         var list = Assert.IsAssignableFrom<IReadOnlyList<ScoringPolicyResponse>>(ok.Value);
-        Assert.Equal(5, list.Count);
+        // RNK1 · HĐ-1 — mẫu "Phạt bỏ câu" (5c900002) bị RÚT: luật câu bỏ trống nay là engine (CAMP-21).
+        Assert.Equal(4, list.Count);
+        Assert.DoesNotContain(list, p => p.Name == "Phạt bỏ câu");
+        Assert.DoesNotContain(list, p => p.Id == new Guid("5c900002-0000-0000-0000-000000000000"));
 
-        // HĐ-3 shape + sắp Kind (enum) rồi Name (ordinal): Interview trước, "Không.." < "Như.." < "Phạt..".
+        // HĐ-3 shape + sắp Kind (enum) rồi Name (ordinal): Interview trước, "Không.." < "Như..".
         Assert.Equal(
             new[]
             {
                 ("Interview", "Không bù trừ"),
                 ("Interview", "Như hiện nay"),
-                ("Interview", "Phạt bỏ câu"),
                 ("CvScreening", "Bắt buộc must-have"),
                 ("CvScreening", "Như hiện nay"),
             },
@@ -340,7 +342,7 @@ public class ScoringPolicyTemplatesEndpointTests
         }
 
         var list = await new ScoringPolicyService(tdb.NewContext()).GetTemplatesAsync();
-        Assert.Equal(5, list.Count);
+        Assert.Equal(4, list.Count);   // RNK1 — 5 seed − 1 rút (5c900002 "Phạt bỏ câu")
         Assert.DoesNotContain(list, p => p.Name == "Bản campaign");
     }
 }

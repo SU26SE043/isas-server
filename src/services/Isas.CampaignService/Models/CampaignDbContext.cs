@@ -118,6 +118,10 @@ namespace Isas.CampaignService.Models
 
                 e.Property(x => x.AntiCheatEnabled).HasDefaultValue(true);
                 e.Property(x => x.FaceVerifyEnabled).HasDefaultValue(false);   // SEC-1: face-verify opt-in (B2B)
+                // RNK1 · HĐ-2 / CAMP-21 — LUẬT câu bỏ trống. DEFAULT true = campaign tạo TỪ bản này bị
+                // phạt. Campaign đã có TRƯỚC bản này: migration AddColumn(defaultValue: true) rồi
+                // UPDATE campaigns SET skip_penalty = false ⇒ chúng KHÔNG bị đổi thước đo giữa chừng.
+                e.Property(x => x.SkipPenalty).HasDefaultValue(true);
                 e.Property(x => x.AdaptiveEnabled).HasDefaultValue(false);     // INT-17: adaptive opt-in (B2B)
                 e.Property(x => x.GroundingEnabled).HasDefaultValue(false);    // T8: entitlement-gated snapshot
                 // CAMP-18 — DEFAULT 1 để campaign đã có trên prod nhận đúng v1 mà không cần backfill:

@@ -241,6 +241,16 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             a => a.SessionId == sessionId && a.AudioObjectKey != null, ct);
         var totalQuestions = await _db.PracticeQuestions.CountAsync(q => q.SessionId == sessionId, ct);
 
+        // RNK1 · HĐ-1 — câu GỐC (kind = Seed): tổng = K câu rút cho ứng viên này; "đã trả lời" đo bằng
+        // "có ghi âm" (AudioObjectKey != null), CÙNG tiêu chí với `answered` ở trên. FollowUp/Clarify/
+        // NewQuestion KHÔNG tính vào seed_* (chúng vẫn vào answered/totalQuestions). Đo bằng ghi âm,
+        // KHÔNG bằng Status != Skipped: `Skipped` mang ba nghĩa và hai trong số đó là ghi âm THẬT.
+        var seedTotal = await _db.PracticeQuestions.CountAsync(
+            q => q.SessionId == sessionId && q.Kind == QuestionKind.Seed, ct);
+        var seedAnswered = await _db.PracticeAnswers.CountAsync(
+            a => a.SessionId == sessionId && a.AudioObjectKey != null
+                 && a.Question.Kind == QuestionKind.Seed, ct);
+
         // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency).
         var medianPerAnswerCriterion = scores
             .GroupBy(s => (s.AnswerId, s.CriterionId))
@@ -264,10 +274,16 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             var pct = Math.Clamp(avgScore / maxScore * 100m, 0m, 100m);
             weightedSum += pct * c.Weight;
             weightSum += c.Weight;
-            bag.Add(new CriterionInputSnapshot(c.Name, Math.Round(pct, 4), c.Weight, c.MaxScore));
+            // RNK1 · HĐ-1/HĐ-5 — CriterionId (rubric_criteria.source_criterion_id) để null Ở BƯỚC NÀY;
+            // B4 đổi loader cho nạp kèm rồi điền. Điểm sàn theo tiêu chí (HĐ-5) tạm khớp theo TÊN.
+            bag.Add(new CriterionInputSnapshot(c.Name, Math.Round(pct, 4), c.Weight, c.MaxScore, CriterionId: null));
         }
 
-        var inputs = new ScoringInputsSnapshot(bag, answered, totalQuestions);
+        // RNK1 · HĐ-1 — snapshot mang seed_* + skip_penalty (ghim trên buổi). Đường preview/apply (B8)
+        // dựng lại InterviewScoringInputs từ đây ⇒ luật câu bỏ trống áp giống hệt đường chấm thường.
+        var inputs = new ScoringInputsSnapshot(
+            bag, answered, totalQuestions, seedAnswered, seedTotal, session.SkipPenalty);
+        var scoringInputs = inputs.ToInterviewInputs();
 
         // Công thức MẶC ĐỊNH (weighted). Giữ NGUYÊN — nó là biến `weighted_avg_pct` (B1, append-only)
         // và là đích LÙI AN TOÀN khi biểu thức chính sách lỗi.
@@ -276,8 +292,10 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             : Math.Clamp(Math.Round(weightedSum / weightSum, 2), 0m, 100m);
 
         // (5) Buổi CHƯA ghim chính sách (B2C, hoặc B2B chưa áp, hoặc dữ liệu trước SCP1) → công thức mặc định.
+        // RNK1 · HĐ-2 — luật câu bỏ trống áp NGAY trên đường mặc định: buổi B2B mới (skip_penalty=true)
+        // phạt cả khi campaign chưa áp chính sách biểu thức. B2C / campaign cũ ⇒ Apply trả nguyên.
         if (string.IsNullOrWhiteSpace(session.CampaignPolicyExpression))
-            return (defaultTotal, inputs, ScoreFallback: false);
+            return (SkipPenaltyRule.Apply(defaultTotal, scoringInputs), inputs, ScoreFallback: false);
 
         // (4) BÁO LỖI ĐÁNH GIÁ — KHÔNG lùi an toàn, KHÔNG bịa điểm. total_questions = 0 trong khi đã
         // ghim chính sách là BẤT BIẾN HỆ THỐNG bị vi phạm (mọi buổi B2B tạo với ≥1 câu campaign), không
@@ -298,23 +316,26 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         // có ba nguồn khác, UI không phân biệt được lý do). KHÔNG nuốt lỗi: mọi lần lùi ghi log.
         // Parse + eval + phân loại lỗi đi qua ScoringPolicyRunner — CÙNG một hàm đường xem-trước/áp (B8)
         // dùng, để điểm preview = điểm apply = điểm một lần chấm mới. Lùi-an-toàn + log giữ ở đây.
-        var ctx = ScoringContext.ForInterview(inputs.ToInterviewInputs());
+        var ctx = ScoringContext.ForInterview(scoringInputs);
         var outcome = ScoringPolicyRunner.Evaluate(session.CampaignPolicyExpression, ctx);
         if (outcome.Exception is not null)
             _logger.LogError(outcome.Exception, "SCP1/B6: bộ đánh giá ném cho session {SessionId}", sessionId);
 
         if (outcome.Value is decimal ps)
         {
+            // RNK1 · HĐ-2 — điểm chính sách rồi mới nhân luật câu bỏ trống (CÙNG helper Shared với B8).
+            var withPenalty = SkipPenaltyRule.Apply(Math.Round(ps, 2), scoringInputs);
             _logger.LogInformation(
-                "SCP1/B6: session {SessionId} chấm bằng chính sách v{Ver} = {Score}",
-                sessionId, session.CampaignPolicyVersion, ps);
-            return (Math.Round(ps, 2), inputs, ScoreFallback: false);
+                "SCP1/B6: session {SessionId} chấm bằng chính sách v{Ver} = {Score} (sau luật câu bỏ trống = {Final})",
+                sessionId, session.CampaignPolicyVersion, ps, withPenalty);
+            return (withPenalty, inputs, ScoreFallback: false);
         }
 
+        var fallbackWithPenalty = SkipPenaltyRule.Apply(defaultTotal, scoringInputs);
         _logger.LogWarning(
             "SCP1/B6: session {SessionId} — chính sách chấm v{Ver} LỖI [{Reason}] ⇒ lùi về công thức "
-            + "mặc định = {Default}, scoreFallback = true.",
-            sessionId, session.CampaignPolicyVersion, outcome.FailReason, defaultTotal);
-        return (defaultTotal, inputs, ScoreFallback: true);
+            + "mặc định = {Default} (sau luật câu bỏ trống = {Final}), scoreFallback = true.",
+            sessionId, session.CampaignPolicyVersion, outcome.FailReason, defaultTotal, fallbackWithPenalty);
+        return (fallbackWithPenalty, inputs, ScoreFallback: true);
     }
 }

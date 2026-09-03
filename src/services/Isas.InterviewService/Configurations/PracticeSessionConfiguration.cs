@@ -77,6 +77,11 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         e.Property(x => x.CampaignPolicyPassScorePct);
         e.Property(x => x.CampaignPolicyEngineVersion).HasMaxLength(16);
 
+        // RNK1 · HĐ-2 / CAMP-21 — luật câu bỏ trống, ghim lúc tạo buổi. Required + default false ⇒
+        // row cũ + B2C tự nhận "không phạt" ngay lúc AddColumn (khỏi backfill riêng). Campaign gửi
+        // giá trị thật (campaigns.skip_penalty) qua CreateCampaignSessionInternalRequest.
+        e.Property(x => x.SkipPenalty).IsRequired().HasDefaultValue(false);
+
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 

@@ -738,6 +738,8 @@ public class PracticeService : IPracticeService
                 CampaignPolicyExpression = request.CampaignPolicyExpression,
                 CampaignPolicyPassScorePct = request.CampaignPolicyPassScorePct,
                 CampaignPolicyEngineVersion = request.CampaignPolicyEngineVersion,
+                // RNK1 · HĐ-2 / CAMP-21 — ghim luật câu bỏ trống. null (bản Campaign cũ) ⇒ false.
+                SkipPenalty = request.SkipPenalty ?? false,
                 JobCategory = request.JobCategory,
                 Seniority = seniority,
                 Language = language,

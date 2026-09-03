@@ -13,7 +13,12 @@ public class ScoringVariableCatalogTests
     [Fact]
     public void PhongVan_DanhSachBien_CoDinh()
         => Assert.Equal(
-            new[] { "weighted_avg_pct", "avg_pct", "min_pct", "max_pct", "answered", "total_questions", "completeness" },
+            // RNK1 · HĐ-1 — 3 tên seed_* NỐI THÊM ở cuối (append-only). Phần đầu KHÔNG đổi.
+            new[]
+            {
+                "weighted_avg_pct", "avg_pct", "min_pct", "max_pct", "answered", "total_questions", "completeness",
+                "seed_answered", "seed_total", "seed_completeness",
+            },
             ScoringVariableCatalog.Interview);
 
     [Fact]

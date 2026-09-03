@@ -126,7 +126,10 @@ public record CreateCampaignSessionRequest(
     int? CampaignPolicyVersion = null,
     string? CampaignPolicyExpression = null,
     int? CampaignPolicyPassScorePct = null,
-    string? CampaignPolicyEngineVersion = null
+    string? CampaignPolicyEngineVersion = null,
+    // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty. null (bản Campaign cũ chưa gửi) ⇒ session
+    // skip_penalty = false (không phạt). Optional ở CUỐI record.
+    bool? SkipPenalty = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -166,7 +169,10 @@ public record CreateCampaignSessionInternalRequest(
     int? CampaignPolicyVersion = null,
     string? CampaignPolicyExpression = null,
     int? CampaignPolicyPassScorePct = null,
-    string? CampaignPolicyEngineVersion = null
+    string? CampaignPolicyEngineVersion = null,
+    // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty (khoá JSON trên dây: `skipPenalty`, camelCase
+    // Web). null (bản Campaign cũ) ⇒ session.skip_penalty = false ⇒ không phạt. Optional ở CUỐI record.
+    bool? SkipPenalty = null
 );
 public record PracticeSessionResponse(
     Guid Id,

@@ -331,9 +331,9 @@ namespace Isas.CampaignService.Services
             // Gửi deadline hiệu lực (min campaign expiry và slot) để Interview sweeper tự kết thúc đúng hạn.
             var session = campaign.Language == "vi"
                 ? await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, ct)
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, campaign.SkipPenalty, ct)
                 : await _sessionClient.CreateOrGetSessionAsync(candidateId, campaignId, campaign.OrgId, jobCategory, questions, criteria, interviewDeadline,
-                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, ct);
+                    campaign.AdaptiveEnabled, campaign.MaxFollowUps, campaign.MaxQuestions, campaign.MaxDeepPerQuestion, campaign.Language, campaign.Seniority, campaign.RubricVersion, questionDetails, scoringPolicy, campaign.SkipPenalty, ct);
 
             membership.SessionId = session.SessionId;
             // Deadline được chốt lần start đầu; HR đổi slot sau đó không được hồi tố session đang chạy.

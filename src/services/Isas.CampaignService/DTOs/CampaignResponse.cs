@@ -299,6 +299,9 @@ namespace Isas.CampaignService.DTOs
         public bool AntiCheatEnabled { get; set; }
         public bool FaceVerifyEnabled { get; set; }   // SEC-1: bật face-verify (B2B-only)
         public int? PassScorePct { get; set; }   // E5: ngưỡng % pass/fail (null = HR quyết tay)
+        // RNK1 · HĐ-2 / CAMP-21 — luật câu bỏ trống tính 0 điểm. SERVER SỞ HỮU (không có trên
+        // Create/Update request): campaign mới = true, campaign trước RNK1 = false. FE chỉ hiển thị.
+        public bool SkipPenalty { get; set; }
         // SCP1-B13 — con trỏ chính sách chấm ĐANG ÁP (khớp campaigns.{interview,cv}_policy_version).
         // null = chưa áp chính sách nào ⇒ điểm bằng công thức mặc định. CHỈ số version — nội dung biểu
         // thức xem qua endpoint danh sách chính sách (đã có kiểm soát quyền). KHÔNG lộ cho ứng viên
@@ -354,6 +357,7 @@ namespace Isas.CampaignService.DTOs
             AntiCheatEnabled = c.AntiCheatEnabled,
             FaceVerifyEnabled = c.FaceVerifyEnabled,
             PassScorePct = c.PassScorePct,
+            SkipPenalty = c.SkipPenalty,                         // RNK1 · HĐ-2 / CAMP-21
             InterviewPolicyVersion = c.InterviewPolicyVersion,   // SCP1-B13
             CvPolicyVersion = c.CvPolicyVersion,                 // SCP1-B13
             AdaptiveEnabled = c.AdaptiveEnabled,   // INT-17

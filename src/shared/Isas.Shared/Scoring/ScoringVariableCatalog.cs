@@ -33,6 +33,12 @@ public static class ScoringVariableCatalog
         "answered",
         "total_questions",
         "completeness",
+        // RNK1 · HĐ-1 — APPEND (không đổi/không gỡ phần tử trên). `seed_*` chỉ đặt trong ScoringContext
+        // khi buổi mang dữ liệu câu GỐC (seed); snapshot trước RNK1 thiếu ⇒ biến không tồn tại ⇒ biểu
+        // thức tham chiếu → UNKNOWN_VARIABLE → lùi an toàn (giống mọi biến chưa có context).
+        "seed_answered",
+        "seed_total",
+        "seed_completeness",
     ];
 
     /// <summary>Biến cho chính sách SÀNG CV.</summary>
