@@ -1670,7 +1670,11 @@ namespace Isas.CampaignService.Services
         // Ownership: chỉ chủ org (org_id) xem được — không phải chủ → 404 (KeyNotFoundException).
         public async Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid orgId, Guid id, CancellationToken ct)
         {
+            // RNK1 · HĐ-3 — .Include(Questions) để có QuestionBankTotal (tổng câu ngân hàng đề) mà KHÔNG
+            // thêm query: EF gộp vào chính câu ownership này (1 LEFT JOIN; campaign ≤ ~100 câu). Query
+            // filter DB13 (Campaign.DeletedAt == null) áp cho nav ⇒ đếm đúng câu còn sống.
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -1734,7 +1738,19 @@ namespace Isas.CampaignService.Services
                     OverrideScore = r.OverrideScore,
                     OverrideResult = r.OverrideResult,
                     OverrideNote = r.OverrideNote,
-                    OverriddenAt = r.OverriddenAt
+                    OverriddenAt = r.OverriddenAt,
+                    // RNK1 · HĐ-3 — số câu từ snapshot (campaign_rankings.scoring_inputs); snapshot trước
+                    // RNK1 thiếu seed_*/skip_penalty ⇒ null (KHÔNG suy từ answered/totalQuestions).
+                    Answered = r.ScoringInputs?.Answered,
+                    TotalQuestions = r.ScoringInputs?.TotalQuestions,
+                    SeedAnswered = r.ScoringInputs?.SeedAnswered,
+                    SeedTotal = r.ScoringInputs?.SeedTotal,
+                    SkipPenalty = r.ScoringInputs?.SkipPenalty,
+                    // RNK1 · HĐ-3 — sàng CV từ CÙNG LEFT JOIN identity (không query phụ). null = mời bằng email.
+                    CvMatchScore = identity.CvMatchScore,
+                    CvVerificationRisk = identity.CvVerificationRisk,
+                    CvScreeningVersion = identity.CvScreeningVersion,
+                    BelowCutoff = new List<BelowCutoffItem>()   // B4 điền
                 });
             }
 
@@ -1760,7 +1776,10 @@ namespace Isas.CampaignService.Services
                         CandidateId = candidateId,
                         FullName = identity.FullName,
                         Email = identity.Email,
-                        Flags = flagsBySession.TryGetValue(g.Key, out var f) ? f : new List<FlagDto>()
+                        Flags = flagsBySession.TryGetValue(g.Key, out var f) ? f : new List<FlagDto>(),
+                        // RNK1 · HĐ-3 — điểm sàng CV vẫn xem được dù buổi bỏ ngang (cùng identity, không query phụ).
+                        CvMatchScore = identity.CvMatchScore,
+                        CvVerificationRisk = identity.CvVerificationRisk
                     };
                 })
                 // Flags rỗng không xảy ra ở đây (row dựng từ chính allFlags), nhưng DefaultIfEmpty giữ
@@ -1777,6 +1796,9 @@ namespace Isas.CampaignService.Services
                 // CAMP-18 — thước đo ĐANG hiệu lực, để FE so với rubricVersion từng dòng. Một giá trị
                 // duy nhất ⇒ không hiện gì; từ hai trở lên mới cảnh báo bảng đang trộn hai thước đo.
                 CurrentRubricVersion = campaign.RubricVersion,
+                // RNK1 · HĐ-3 — ngân hàng đề: K câu/ứng viên + tổng câu trong bộ. Questions từ .Include ở trên.
+                QuestionsPerSession = campaign.QuestionsPerSession,
+                QuestionBankTotal = campaign.Questions.Count,
                 TotalCandidates = results.Count,
                 Results = results,
                 UnscoredFlagged = unscoredFlagged
@@ -1959,12 +1981,17 @@ namespace Isas.CampaignService.Services
                           .ToList());
         }
 
-        // F5: tra danh tính ứng viên của 1 campaign → Dictionary<candidate_id, (full_name, email)>.
+        // F5 + RNK1 · HĐ-3 — tra danh tính + số liệu sàng CV của 1 campaign → Dictionary theo candidate_id.
         // ĐÚNG 1 query cho cả bảng kết quả (mẫu GetFlagsBySessionAsync) — không N+1 theo từng dòng.
         // Nav `CvSubmission` là OPTIONAL nên EF dịch thành LEFT JOIN NGAY TRONG query này ⇒ vẫn 1 round-trip.
         // Fallback `?? m.CvSubmission.X`: che luôn membership đường-2 cũ mà backfill của migration sót
         // (và mọi row tạo trước F5 chưa join lại) → HR vẫn thấy tên/email thay vì ô trống.
-        private async Task<Dictionary<Guid, (string? FullName, string? Email)>> GetIdentityByCandidateAsync(
+        // RNK1: 3 field CV (score/risk/version) lấy THẲNG từ cùng LEFT JOIN — không query phụ theo ứng viên.
+        private readonly record struct CandidateIdentity(
+            string? FullName, string? Email,
+            int? CvMatchScore, string? CvVerificationRisk, int? CvScreeningVersion);
+
+        private async Task<Dictionary<Guid, CandidateIdentity>> GetIdentityByCandidateAsync(
             Guid campaignId, CancellationToken ct)
         {
             var rows = await _db.CampaignMemberships
@@ -1973,7 +2000,10 @@ namespace Isas.CampaignService.Services
                 {
                     CandidateId = m.CandidateId!.Value,
                     FullName = m.FullName ?? (m.CvSubmission != null ? m.CvSubmission.FullName : null),
-                    Email = m.Email ?? (m.CvSubmission != null ? m.CvSubmission.Email : null)
+                    Email = m.Email ?? (m.CvSubmission != null ? m.CvSubmission.Email : null),
+                    CvMatchScore = m.CvSubmission != null ? m.CvSubmission.OverallMatchScore : null,
+                    CvVerificationRisk = m.CvSubmission != null ? m.CvSubmission.VerificationRisk : null,
+                    CvScreeningVersion = m.CvSubmission != null ? m.CvSubmission.ScreeningVersion : null
                 })
                 .ToListAsync(ct);
 
@@ -1981,7 +2011,12 @@ namespace Isas.CampaignService.Services
             // (dữ liệu cũ trước khi index unique được áp có thể còn trùng).
             return rows
                 .GroupBy(x => x.CandidateId)
-                .ToDictionary(g => g.Key, g => (g.First().FullName, g.First().Email));
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var x = g.First();
+                    return new CandidateIdentity(
+                        x.FullName, x.Email, x.CvMatchScore, x.CvVerificationRisk, x.CvScreeningVersion);
+                });
         }
 
         // ── E6: xuất bảng kết quả (E5) ra file ──────────────────────────────
@@ -2277,7 +2312,18 @@ namespace Isas.CampaignService.Services
                 RubricVersion = r.RubricVersion,   // CAMP-18
                 PolicyVersion = r.PolicyVersion,   // SCP1/HĐ-5
                 PolicyName = r.PolicyName ?? string.Empty,
-                ScoreFallback = r.ScoreFallback
+                ScoreFallback = r.ScoreFallback,
+                // RNK1 · HĐ-3 — cột ĐUÔI (Index 13..21), snake_case. below_cutoff = "name<pct/minPct"
+                // nối ';' — RỖNG ở B2 (B4 điền BelowCutoff). Helper dùng chung với PDF.
+                Answered = r.Answered,
+                TotalQuestions = r.TotalQuestions,
+                SeedAnswered = r.SeedAnswered,
+                SeedTotal = r.SeedTotal,
+                SkipPenalty = r.SkipPenalty,
+                CvMatchScore = r.CvMatchScore,
+                CvVerificationRisk = r.CvVerificationRisk ?? string.Empty,
+                CvScreeningVersion = r.CvScreeningVersion,
+                BelowCutoff = FormatBelowCutoff(r.BelowCutoff)
             }).ToList();
 
             // R7: nối ứng viên có cờ mà CHƯA Scored — HR đọc bản export cũng thấy nhóm đáng ngờ nhất.
@@ -2292,7 +2338,10 @@ namespace Isas.CampaignService.Services
                 ScoredAt = null,
                 Flags = FlagDto.SummarizeForExport(u.Flags),   // MON1-B4: cùng helper với results + PDF
                 FullName = u.FullName ?? string.Empty,
-                Email = u.Email ?? string.Empty
+                Email = u.Email ?? string.Empty,
+                // RNK1 · HĐ-3 — buổi chưa Scored: không có snapshot ⇒ số câu để trống; CV vẫn có.
+                CvMatchScore = u.CvMatchScore,
+                CvVerificationRisk = u.CvVerificationRisk ?? string.Empty
             }));
 
             using var buffer = new MemoryStream();
@@ -2305,6 +2354,14 @@ namespace Isas.CampaignService.Services
             }
             return buffer.ToArray();
         }
+
+        // RNK1 · HĐ-3 — "name<pct/minPct" nối ';' (rỗng ở B2 — BelowCutoff luôn []). InvariantCulture
+        // để khớp CSV/PDF bất kể locale server (bài học F16).
+        private static string FormatBelowCutoff(IReadOnlyList<BelowCutoffItem> items)
+            => items.Count == 0
+                ? string.Empty
+                : string.Join(";", items.Select(b => string.Format(
+                    CultureInfo.InvariantCulture, "{0}<{1}/{2}", b.Name, b.Pct, b.MinPct)));
 
         // Model dòng CSV — tách khỏi DTO API để kiểm soát header + định dạng (scoped nội bộ E6).
         private sealed class ResultCsvRow
@@ -2327,6 +2384,16 @@ namespace Isas.CampaignService.Services
             public int? PolicyVersion { get; set; }
             public string PolicyName { get; set; } = string.Empty;
             public bool ScoreFallback { get; set; }
+            // RNK1 · HĐ-3 — cột ĐUÔI (Index 13..21). null → CsvHelper ghi ô rỗng.
+            public int? Answered { get; set; }
+            public int? TotalQuestions { get; set; }
+            public int? SeedAnswered { get; set; }
+            public int? SeedTotal { get; set; }
+            public bool? SkipPenalty { get; set; }
+            public int? CvMatchScore { get; set; }
+            public string CvVerificationRisk { get; set; } = string.Empty;
+            public int? CvScreeningVersion { get; set; }
+            public string BelowCutoff { get; set; } = string.Empty;
         }
 
         private sealed class ResultCsvRowMap : ClassMap<ResultCsvRow>
@@ -2352,6 +2419,16 @@ namespace Isas.CampaignService.Services
                 Map(m => m.PolicyVersion).Index(10).Name("policy_version");
                 Map(m => m.PolicyName).Index(11).Name("policy_name");
                 Map(m => m.ScoreFallback).Index(12).Name("score_fallback");
+                // RNK1 · HĐ-3 — cột ĐUÔI 13..21 (additive, cùng lý do: Index tuyệt đối, KHÔNG chèn giữa).
+                Map(m => m.Answered).Index(13).Name("answered");
+                Map(m => m.TotalQuestions).Index(14).Name("total_questions");
+                Map(m => m.SeedAnswered).Index(15).Name("seed_answered");
+                Map(m => m.SeedTotal).Index(16).Name("seed_total");
+                Map(m => m.SkipPenalty).Index(17).Name("skip_penalty");
+                Map(m => m.CvMatchScore).Index(18).Name("cv_match_score");
+                Map(m => m.CvVerificationRisk).Index(19).Name("cv_verification_risk");
+                Map(m => m.CvScreeningVersion).Index(20).Name("cv_screening_version");
+                Map(m => m.BelowCutoff).Index(21).Name("below_cutoff");
             }
         }
 

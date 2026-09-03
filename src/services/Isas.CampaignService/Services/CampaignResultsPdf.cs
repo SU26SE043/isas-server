@@ -67,6 +67,8 @@ namespace Isas.CampaignService.Services
                             columns.ConstantColumn(50);    // Điểm
                             columns.ConstantColumn(60);    // Kết quả
                             columns.ConstantColumn(95);    // Chấm lúc
+                            columns.ConstantColumn(48);    // RNK1 · HĐ-3 — Câu (seed đã trả lời / seed tổng)
+                            columns.ConstantColumn(56);    // RNK1 · HĐ-3 — CV (điểm% · mức rủi ro)
                             columns.RelativeColumn(3);     // Cờ
                         });
 
@@ -78,6 +80,8 @@ namespace Isas.CampaignService.Services
                             header.Cell().Element(HeaderCell).AlignRight().Text("Điểm");
                             header.Cell().Element(HeaderCell).Text("Kết quả");
                             header.Cell().Element(HeaderCell).Text("Chấm lúc");
+                            header.Cell().Element(HeaderCell).Text("Câu");   // RNK1 · HĐ-3
+                            header.Cell().Element(HeaderCell).Text("CV");    // RNK1 · HĐ-3
                             header.Cell().Element(HeaderCell).Text("Cờ");
 
                             static IContainer HeaderCell(IContainer c) => c
@@ -104,6 +108,16 @@ namespace Isas.CampaignService.Services
                             table.Cell().Element(Cell).Text(r.Result ?? string.Empty);
                             table.Cell().Element(Cell)
                                 .Text(r.ScoredAt.ToString("dd/MM/yyyy HH:mm", CultureInfo.InvariantCulture));
+                            // RNK1 · HĐ-3 — "Câu": dòng chính = câu GỐC đã trả lời / tổng (mẫu số luật
+                            // câu bỏ trống); dòng nhỏ xám = mọi câu buổi. null (snapshot trước RNK1) → trống.
+                            table.Cell().Element(Cell).Column(cc =>
+                            {
+                                cc.Item().Text(Ratio(r.SeedAnswered, r.SeedTotal));
+                                cc.Item().Text(Ratio(r.Answered, r.TotalQuestions))
+                                    .FontSize(7).FontColor(Colors.Grey.Darken1);
+                            });
+                            // RNK1 · HĐ-3 — "CV": điểm sàng % · mức rủi ro (cờ ĐỨNG CẠNH, KHÔNG vào điểm).
+                            table.Cell().Element(Cell).Text(CvText(r.CvMatchScore, r.CvVerificationRisk));
                             // SEC-4 + MON1-B4: "type(source):count" ngăn bởi "; " — HELPER DÙNG CHUNG
                             // với CSV (BuildResultsCsv). Fork định dạng ở đây = F16 lệch, không test bắt.
                             table.Cell().Element(Cell)
@@ -120,8 +134,24 @@ namespace Isas.CampaignService.Services
                             table.Cell().Element(Cell).AlignRight().Text(string.Empty);
                             table.Cell().Element(Cell).Text("Chưa chấm");
                             table.Cell().Element(Cell).Text(string.Empty);
+                            table.Cell().Element(Cell).Text(string.Empty);   // RNK1 · HĐ-3 — "Câu": chưa có snapshot
+                            table.Cell().Element(Cell).Text(CvText(u.CvMatchScore, u.CvVerificationRisk));   // RNK1 · HĐ-3 — "CV"
                             table.Cell().Element(Cell)
                                 .Text(FlagDto.SummarizeForExport(u.Flags));   // MON1-B4: cùng helper
+                        }
+
+                        // RNK1 · HĐ-3 — "x/y" hoặc "" nếu thiếu vế nào (snapshot trước RNK1).
+                        static string Ratio(int? a, int? b)
+                            => a is int x && b is int y
+                                ? string.Format(CultureInfo.InvariantCulture, "{0}/{1}", x, y)
+                                : string.Empty;
+
+                        // RNK1 · HĐ-3 — "72% · High" / "72%" / "" (không CV).
+                        static string CvText(int? score, string? risk)
+                        {
+                            if (score is not int s) return string.Empty;
+                            var pct = string.Format(CultureInfo.InvariantCulture, "{0}%", s);
+                            return string.IsNullOrWhiteSpace(risk) ? pct : $"{pct} · {risk}";
                         }
                     });
 

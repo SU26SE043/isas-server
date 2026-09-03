@@ -90,8 +90,9 @@ public class ScoringPolicyRankingLabelB10Tests
         var csv = Encoding.UTF8.GetString(
             (await NewService(tdb.NewContext()).ExportCampaignResultsAsync(owner, camp.Id, "csv", default)).Content);
         var line = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries)[1].TrimEnd('\r');
-        // đuôi: ...,rubric_version,policy_version,policy_name,score_fallback (rubric_version rỗng ở đây)
-        Assert.EndsWith(",,1,Chinh sach v1,True", line);
+        // đuôi: ...,rubric_version,policy_version,policy_name,score_fallback + 9 ô RNK1/HĐ-3 rỗng
+        // (ranking seed không có ScoringInputs/CvSubmission). rubric_version rỗng ở đây.
+        Assert.EndsWith(",,1,Chinh sach v1,True,,,,,,,,,", line);
     }
 
     // (c) buổi KHÔNG ghim chính sách (campaign chưa áp) → cả ba vẫn null/false, KHÔNG hồi quy.
