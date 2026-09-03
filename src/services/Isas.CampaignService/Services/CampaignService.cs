@@ -87,6 +87,12 @@ namespace Isas.CampaignService.Services
 
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
             ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);   // INT-17: trần ≥ 0 nếu có
+            // RNK1 · HĐ-7 — ràng buộc chéo: trần buổi T phải đủ cho MỌI chuỗi đào sâu tối đa
+            // K × (1 + d). K = questionsPerSession ?? số câu campaign (controller đã chặn 0 câu).
+            EnforceAdaptiveBudget(
+                request.QuestionsPerSession ?? request.Questions.Count,
+                request.MaxDeepPerQuestion ?? 0,
+                request.MaxQuestions ?? 0);
             // Giữ KẾT QUẢ ở đây thay vì gọi lại lúc dựng entity: trước đó `ValidateSeniority` chạy hai
             // lần (lần này vứt kết quả, lần sau mới dùng) — thừa một lần validate, và nếu ai sửa luật
             // mà chỉ đổi một trong hai chỗ thì hai lần gọi có thể lệch nhau.
@@ -120,7 +126,9 @@ namespace Isas.CampaignService.Services
                 AdaptiveEnabled = request.AdaptiveEnabled,   // INT-17: HR bật thích ứng cho campaign
                 GroundingEnabled = request.GroundingEnabled,
                 MaxConcurrentInterviews = request.MaxConcurrentInterviews,
-                MaxFollowUps = request.MaxFollowUps,
+                // RNK1 · HĐ-7 / BUS-03 — chế độ chuỗi (d > 0): ép trần theo BUỔI về 0 để nó không bó
+                // chặt hơn trần theo CÂU (5×3 = 15 < K×(1+d)). Trần buổi 0 = "không trần" ở Interview.
+                MaxFollowUps = (request.MaxDeepPerQuestion ?? 0) > 0 ? 0 : request.MaxFollowUps,
                 MaxQuestions = request.MaxQuestions,
                 MaxDeepPerQuestion = request.MaxDeepPerQuestion,   // INT-17b: trần đào sâu mỗi câu
                 QuestionsPerSession = request.QuestionsPerSession,   // ngân hàng đề (null = thi hết)
@@ -504,6 +512,21 @@ namespace Isas.CampaignService.Services
             {
                 ValidateQuestionsPerSession(request.QuestionsPerSession);
                 campaign.QuestionsPerSession = request.QuestionsPerSession;
+            }
+
+            // RNK1 · HĐ-7 — ràng buộc chéo trên giá trị ĐÃ HỢP NHẤT (request phủ lên campaign). Chỉ chạy
+            // khi request thật sự chạm 1 trong 3 số; các field khác của PUT không kéo theo kiểm này.
+            if (request.MaxQuestions.HasValue || request.MaxDeepPerQuestion.HasValue
+                || request.QuestionsPerSession.HasValue)
+            {
+                EnforceAdaptiveBudget(
+                    campaign.QuestionsPerSession ?? campaign.Questions.Count,
+                    campaign.MaxDeepPerQuestion ?? 0,
+                    campaign.MaxQuestions ?? 0);
+
+                // BUS-03 — d > 0 ⇒ trần theo BUỔI ép về 0 (xem chú thích ở CreateCampaignAsync).
+                if ((campaign.MaxDeepPerQuestion ?? 0) > 0)
+                    campaign.MaxFollowUps = 0;
             }
 
             // C11: cập nhật JD/Criteria dạng text → set *_text, xoá *_file_url (text ưu tiên file).
@@ -1167,6 +1190,18 @@ namespace Isas.CampaignService.Services
             // Chỉ chạy khi HR chưa tự khai: bộ HR đã sửa là quyết định của người, AI không đè lên.
             if (campaign.JobNeeds is not { Count: > 0 })
                 campaign.JobNeeds = await BuildJobNeedsAsync(campaign, ct);
+
+            // RNK1 · HĐ-7 — kiểm CỨNG ở publish: một campaign có thể tới đây với 3 số adaptive lệch
+            // (đặt rải rác qua nhiều lần PUT trước khi có ràng buộc này, hoặc PUT không chạm cả 3).
+            // K câu campaign nay đã chắc chắn ≥ 1 (guard "phải có ≥1 câu hỏi" ngay trên).
+            EnforceAdaptiveBudget(
+                campaign.QuestionsPerSession ?? campaign.Questions.Count,
+                campaign.MaxDeepPerQuestion ?? 0,
+                campaign.MaxQuestions ?? 0);
+
+            // BUS-03 — d > 0 ⇒ trần theo BUỔI ép về 0 (xem chú thích ở CreateCampaignAsync).
+            if ((campaign.MaxDeepPerQuestion ?? 0) > 0)
+                campaign.MaxFollowUps = 0;
 
             campaign.Status = CampaignStatus.Active;
             campaign.UpdatedAt = DateTime.UtcNow;
@@ -2752,6 +2787,14 @@ namespace Isas.CampaignService.Services
             if (maxQuestions is int mq && mq > MaxQuestionsPerSession)
                 throw new ArgumentException(
                     $"max_questions tối đa {MaxQuestionsPerSession} (hiện: {mq}).");
+        }
+
+        // RNK1 · HĐ-7 — ràng buộc CHÉO. Lệch ⇒ AdaptiveBudgetTooSmallException (controller → 400 body
+        // { code, need, have, questions, deep }). Luật thuần ở Validation/AdaptiveBudgetRule; ở đây chỉ ném.
+        private static void EnforceAdaptiveBudget(int k, int d, int t)
+        {
+            if (AdaptiveBudgetRule.Check(k, d, t) is { } v)
+                throw new AdaptiveBudgetTooSmallException(v);
         }
 
         private async Task<CampaignEntitlement> ResolveEntitlementAsync(Guid orgId, CancellationToken ct)

@@ -152,6 +152,10 @@ namespace Isas.CampaignService.Controllers
                 var campaign = await _campaignService.CreateCampaignAsync(orgId.Value, GetActorUserId(), request, ct);
                 return Ok(campaign);
             }
+            catch (AdaptiveBudgetTooSmallException ex)   // RNK1 · HĐ-7 — 400 body { code, need, have, questions, deep }
+            {
+                return BadRequest(ex.Body);
+            }
             catch (ArgumentException ex)
             {
                 return BadRequest(ex.Message);
@@ -235,6 +239,7 @@ namespace Isas.CampaignService.Controllers
                 return Ok(updatedCampaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (AdaptiveBudgetTooSmallException ex) { return BadRequest(ex.Body); }   // RNK1 · HĐ-7
             catch (ArgumentException ex) { return BadRequest(ex.Message); }         // C12: criteria không hợp lệ → 400
             catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // C12: sửa criteria khi != Draft → 409
@@ -726,6 +731,7 @@ namespace Isas.CampaignService.Controllers
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (AdaptiveBudgetTooSmallException ex) { return BadRequest(ex.Body); }   // RNK1 · HĐ-7 — 3 số adaptive lệch → 400
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // sai trạng thái / thiếu câu hỏi → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to publish campaign: {ex.Message}"); }
         }
