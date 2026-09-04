@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Isas.AuthService.DTOs;
 using Isas.AuthService.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -77,12 +78,17 @@ namespace Isas.AuthService.Controllers
             }
         }
 
-        private bool IsValidInternalToken(string? token)
+        // CMP1 fix — dùng chung cho CẢ HAI endpoint (ProvisionCandidate + GetOrganization). Trước đó
+        // log hardcode "provision-candidate bị từ chối" nên một token sai ở GetOrganization cũng in
+        // ra log của endpoint kia — sai khi chẩn đoán ai đang gọi hỏng. [CallerMemberName] lấy tên
+        // action gọi tới KHÔNG cần sửa call-site nào.
+        private bool IsValidInternalToken(
+            string? token, [CallerMemberName] string caller = "")
         {
             var expected = _config["Internal:Token"];
             if (string.IsNullOrEmpty(expected) || token != expected)
             {
-                _logger.LogWarning("provision-candidate bị từ chối: X-Internal-Token sai.");
+                _logger.LogWarning("{Caller} bị từ chối: X-Internal-Token sai.", caller);
                 return false;
             }
             return true;
