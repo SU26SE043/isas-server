@@ -129,9 +129,12 @@ public class CampaignResultsExportTests
         // vẫn chạy). Chuỗi kỳ vọng đổi CÓ CHỦ ĐÍCH ở CAMP-18: thiếu cột thước đo thì HR xuất Excel
         // rồi trộn điểm của hai thước đo, hoàn toàn ngoài tầm mọi cảnh báo app hiện trên màn hình.
         // SCP1/HĐ-5 thêm policy_version,policy_name,score_fallback ở ĐUÔI cùng lý do.
+        // RNK1/HĐ-3 thêm 9 cột số câu + CV + điểm sàn ở ĐUÔI (Index 13..21), thứ tự cột cũ không đổi.
         Assert.Equal(
             "rank,candidate_id,session_id,total_score,result,scored_at,flags,full_name,email,rubric_version,"
-            + "policy_version,policy_name,score_fallback",
+            + "policy_version,policy_name,score_fallback,"
+            + "answered,total_questions,seed_answered,seed_total,skip_penalty,"
+            + "cv_match_score,cv_verification_risk,cv_screening_version,below_cutoff",
             lines[0]);
 
         var rows = ParseCsv(file.FileContents);

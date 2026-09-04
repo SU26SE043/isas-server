@@ -781,6 +781,12 @@ namespace Isas.InterviewService.Migrations
                         .HasDefaultValue("Junior")
                         .HasColumnName("seniority");
 
+                    b.Property<bool>("SkipPenalty")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("skip_penalty");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -4037,6 +4043,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("character varying(24)")
                         .HasDefaultValue("Always")
                         .HasColumnName("scoring_scope");
+
+                    b.Property<Guid?>("SourceCriterionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_criterion_id");
 
                     b.Property<int>("Version")
                         .HasColumnType("integer")

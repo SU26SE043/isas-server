@@ -13,6 +13,14 @@ namespace Isas.CampaignService.Models
         public string? Description { get; set; }
         public decimal Weight { get; set; }        // numeric(5,4) — Σ/campaign = 1
         public int MaxScore { get; set; }
+        // RNK1 · HĐ-5 — điểm sàn %: pct tiêu chí này < min_pct ⇒ kết luận buổi = "Fail" (đọc READ-TIME
+        // ở GetCampaignResultsAsync, KHÔNG ghim vào snapshot). null = không sàn. 0..100.
+        //
+        // ⚠ Sàn là LUẬT KẾT LUẬN (như pass_score_pct), KHÔNG phải thước đo ⇒ đổi min_pct KHÔNG bump
+        // rubric_version (không nằm trong RubricCriterionSnapshot / vân tay) và áp NGAY cho cả người
+        // đã thi. Cố ý — CAMP-18 versioning là để giữ "cách chấm điểm" ổn định, còn "ngưỡng đạt/rớt"
+        // thì HR chỉnh được lúc chạy.
+        public int? MinPct { get; set; }
         public CriterionSource Source { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }     // C12

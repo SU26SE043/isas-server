@@ -50,6 +50,11 @@ public sealed class ScoringContext
     /// <item><c>answered</c> = số câu đã trả lời; <c>total_questions</c> = tổng số câu của buổi.</item>
     /// <item><c>completeness</c> = answered / total_questions (PHÂN SỐ 0..1, không nhân 100).
     ///       total_questions = 0 → 0.</item>
+    /// <item>RNK1 · HĐ-1 — <c>seed_answered</c>/<c>seed_total</c> = câu GỐC (kind = Seed) có ghi âm /
+    ///       tổng câu gốc; <c>seed_completeness</c> = seed_answered / seed_total (PHÂN SỐ 0..1;
+    ///       seed_total = 0 → 0). CHỈ đặt khi CẢ HAI <c>SeedAnswered</c> và <c>SeedTotal</c> non-null
+    ///       (snapshot có từ RNK1 trở đi). Thiếu ⇒ ba khoá KHÔNG tồn tại ⇒ biểu thức tham chiếu →
+    ///       <c>UNKNOWN_VARIABLE</c> → caller lùi an toàn (giống mọi biến chưa có context).</item>
     /// </list>
     /// <c>count_below</c> chạy trên danh sách pct từng tiêu chí.
     /// </summary>
@@ -88,6 +93,16 @@ public sealed class ScoringContext
             ["total_questions"] = input.TotalQuestions,
             ["completeness"] = completeness,
         };
+
+        // RNK1 · HĐ-1 — biến seed_* CHỈ tồn tại khi snapshot mang dữ liệu câu gốc (từ RNK1 trở đi).
+        // Đặt-thiếu-thì-vắng: biểu thức của policy tham chiếu seed_completeness trên snapshot cũ sẽ
+        // ra UNKNOWN_VARIABLE ⇒ lùi an toàn + cờ, KHÔNG bịa seed_completeness = 1.
+        if (input.SeedAnswered is int seedAnswered && input.SeedTotal is int seedTotal)
+        {
+            vars["seed_answered"] = seedAnswered;
+            vars["seed_total"] = seedTotal;
+            vars["seed_completeness"] = seedTotal > 0 ? (decimal)seedAnswered / seedTotal : 0m;
+        }
 
         return new ScoringContext(ScoringExpressionKind.Interview, vars, pcts);
     }
@@ -135,7 +150,12 @@ public sealed class ScoringContext
                 new CriterionScore(40m, 0.2m),
             ],
             Answered: 8,
-            TotalQuestions: 10)),
+            TotalQuestions: 10,
+            // RNK1 · HĐ-1 — bộ mẫu mang cả câu gốc: seed_completeness = 4/5 = 0.8 (mẫu số > 0,
+            // không tạo chia-0 tự nhiên). SkipPenalty true để validate biểu thức "phạt bỏ câu" chạy qua.
+            SeedAnswered: 4,
+            SeedTotal: 5,
+            SkipPenalty: true)),
         ScoringExpressionKind.CvScreening => ForCvScreening(new CvScreeningScoringInputs(
             StrongCount: 3, PartialCount: 2, WeakCount: 1,
             NeedCount: 6, MustHaveTotal: 4, MustHaveMet: 3)),

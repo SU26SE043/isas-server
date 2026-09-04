@@ -25,6 +25,9 @@ namespace Isas.CampaignService.Services
                 .ThenBy(c => c.Name, StringComparer.Ordinal)
                 .Select(c => new SessionCriterionInput(c.Name, c.Description, c.Weight, c.MaxScore)
                 {
+                    // RNK1 · HĐ-5 — khoá ỔN ĐỊNH để snapshot chấm khớp về campaign_criteria (điểm sàn
+                    // read-time). Interview ghi vào rubric_criteria.source_criterion_id.
+                    CriterionId = c.Id,
                     Levels = (c.Levels ?? new List<CampaignCriterionLevel>())
                         .OrderBy(l => l.Score)
                         .Select(l => new SessionCriterionLevelInput(l.Score, l.Descriptor))

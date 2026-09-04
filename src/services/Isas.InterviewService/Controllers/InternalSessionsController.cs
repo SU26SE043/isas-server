@@ -70,7 +70,9 @@ public class InternalSessionsController : ControllerBase
             details,
             // SCP1 · B5 — chuyển tiếp hợp đồng chấm điểm (chính sách biểu thức) từ Campaign xuống session.
             req.CampaignPolicyVersion, req.CampaignPolicyExpression,
-            req.CampaignPolicyPassScorePct, req.CampaignPolicyEngineVersion);
+            req.CampaignPolicyPassScorePct, req.CampaignPolicyEngineVersion,
+            // RNK1 · HĐ-2 / CAMP-21 — chuyển tiếp luật câu bỏ trống.
+            req.SkipPenalty);
 
         try
         {

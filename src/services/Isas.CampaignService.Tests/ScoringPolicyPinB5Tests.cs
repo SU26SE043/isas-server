@@ -183,11 +183,11 @@ public class ScoringPolicyPinB5Tests
                 It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
                 It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(),
                 It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(),
-                It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<SessionQuestionInput>?>(), It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .Callback((Guid _, Guid _, Guid _, string _, IReadOnlyList<string> _,
                     IReadOnlyList<SessionCriterionInput> _, DateTime? _, bool? _, int? _, int? _,
                     int? _, string _, int _, IReadOnlyList<SessionQuestionInput>? _,
-                    CampaignScoringPolicyInput? p, CancellationToken _) => captured = p)
+                    CampaignScoringPolicyInput? p, bool _, CancellationToken _) => { captured = p; })
             .ReturnsAsync(new CampaignSessionResult(Guid.NewGuid(), new List<SessionQuestion>()));
         return (null, m);
     }
@@ -244,6 +244,7 @@ public class ScoringPolicyPinB5Tests
             It.Is<CampaignScoringPolicyInput?>(p =>
                 p != null && p.Version == 2 && p.Expression == "weighted_avg_pct * completeness"
                 && p.PassScorePct == 55 && p.EngineVersion == "1"),
+            It.IsAny<bool>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -266,6 +267,7 @@ public class ScoringPolicyPinB5Tests
             It.IsAny<int?>(), It.IsAny<string>(), It.IsAny<int>(),
             It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
             (CampaignScoringPolicyInput?)null,
+            It.IsAny<bool>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 }

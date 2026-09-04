@@ -89,7 +89,7 @@ namespace Isas.CampaignService.Services
             Guid orgId, Guid id, string? status, string? search, string? cursor, int? limit, CancellationToken ct);
 
         // C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV (candidateIds → tách email từ CV).
-        Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, CancellationToken ct);
+        Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, bool includeIneligible, CancellationToken ct);
 
         // D4: phát lại lời mời — vô hiệu token cũ (revoke → 410) + tạo invitation mới cùng email/candidate + resend.
         Task<InvitationItem> ReissueInvitationAsync(Guid orgId, Guid actorUserId, Guid id, Guid invitationId, CancellationToken ct);

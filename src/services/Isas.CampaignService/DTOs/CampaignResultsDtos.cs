@@ -17,6 +17,12 @@ namespace Isas.CampaignService.DTOs
         // "Thước đo" + băng cảnh báo vì lúc đó bảng đang trộn điểm của hai thước đo khác nhau.
         public int? CurrentRubricVersion { get; set; }
 
+        // RNK1 · HĐ-3 — NGÂN HÀNG ĐỀ: số câu MỖI ứng viên thi (campaigns.questions_per_session; null =
+        // thi trọn bộ) + TỔNG số câu trong ngân hàng đề của chiến dịch. FE hiện "K/QuestionBankTotal câu"
+        // để HR biết mỗi ứng viên chỉ làm một tập con.
+        public int? QuestionsPerSession { get; set; }
+        public int QuestionBankTotal { get; set; }
+
         public List<CampaignResultRow> Results { get; set; } = new();
 
         // R7 — ứng viên CÓ CỜ chống gian lận nhưng CHƯA `Scored` (bỏ ngang / đang thi). `campaign_rankings`
@@ -52,6 +58,25 @@ namespace Isas.CampaignService.DTOs
         public string? PolicyName { get; set; }
         public bool ScoreFallback { get; set; }
 
+        // RNK1 · HĐ-3 — số câu (từ campaign_rankings.scoring_inputs; snapshot trước RNK1 thiếu khoá
+        // ⇒ null). `Answered`/`TotalQuestions` = mọi câu buổi; `SeedAnswered`/`SeedTotal` = riêng câu
+        // GỐC (kind=Seed) = mẫu số của luật câu bỏ trống (HĐ-2). `SkipPenalty` = buổi này có áp luật.
+        public int? Answered { get; set; }
+        public int? TotalQuestions { get; set; }
+        public int? SeedAnswered { get; set; }
+        public int? SeedTotal { get; set; }
+        public bool? SkipPenalty { get; set; }
+
+        // RNK1 · HĐ-3 — sàng CV (cv_submission; null = mời bằng email KHÔNG có CV). Score do
+        // CampaignService TÍNH (CAMP-14), risk là CỜ ĐỨNG CẠNH điểm — KHÔNG gộp vào TotalScore.
+        // `CvScreeningVersion`: 1/null = thang cũ (LLM phán) · 2 = tính từ bằng chứng.
+        public int? CvMatchScore { get; set; }
+        public string? CvVerificationRisk { get; set; }   // "Low" | "Medium" | "High"
+        public int? CvScreeningVersion { get; set; }
+
+        // RNK1 · HĐ-5 — tiêu chí có pct < minPct (điểm sàn) ⇒ kết luận Fail. B4 điền; B2 để RỖNG.
+        public List<BelowCutoffItem> BelowCutoff { get; set; } = new();
+
         // E11b — HR chốt điểm cuối. Effective (đã áp override) = TotalScore/Result ở trên ĐÃ tính theo override;
         // các cột dưới lộ override thô để FE hiện badge "HR chỉnh" + điểm AI gốc.
         public decimal AiScore { get; set; }          // điểm AI gốc (snapshot, không đổi khi override)
@@ -63,6 +88,17 @@ namespace Isas.CampaignService.DTOs
         // SEC-4: cờ chống gian lận gom theo buổi (signal_type → count). Additive — mặc định rỗng
         // (campaign không bật anti-cheat / không có cờ → []), KHÔNG phá client cũ. HR đánh giá lại (không auto-hủy).
         public List<FlagDto> Flags { get; set; } = new();
+    }
+
+    // RNK1 · HĐ-5 — 1 tiêu chí rớt điểm sàn. `CriterionId` null khi khớp theo TÊN (snapshot cũ không
+    // có id) ⇒ `MatchedBy = "name"`; có id ⇒ `"id"`.
+    public class BelowCutoffItem
+    {
+        public Guid? CriterionId { get; set; }
+        public string Name { get; set; } = null!;
+        public decimal Pct { get; set; }
+        public decimal MinPct { get; set; }
+        public string MatchedBy { get; set; } = null!;   // "id" | "name"
     }
 
     // SEC-4: 1 loại cờ đã gom cho HR — Type=signal_type, Count=số lần trong buổi, Note=1 ghi chú đại diện (nếu có).
@@ -102,6 +138,11 @@ namespace Isas.CampaignService.DTOs
         public string? FullName { get; set; }
         public string? Email { get; set; }
         public List<FlagDto> Flags { get; set; } = new();
+
+        // RNK1 · HĐ-3 — điểm sàng CV vẫn xem được kể cả khi buổi phỏng vấn bỏ ngang (cv_submission,
+        // null = mời bằng email không có CV). Risk = cờ đứng cạnh, KHÔNG vào điểm.
+        public int? CvMatchScore { get; set; }
+        public string? CvVerificationRisk { get; set; }
     }
 
     // E11b — HR chốt/sửa điểm cuối. Note bắt buộc (ghi audit). Score/Result đều null = CLEAR override (về AI).

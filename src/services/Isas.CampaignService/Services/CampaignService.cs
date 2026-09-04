@@ -87,6 +87,12 @@ namespace Isas.CampaignService.Services
 
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
             ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);   // INT-17: trần ≥ 0 nếu có
+            // RNK1 · HĐ-7 — ràng buộc chéo: trần buổi T phải đủ cho MỌI chuỗi đào sâu tối đa
+            // K × (1 + d). K = questionsPerSession ?? số câu campaign (controller đã chặn 0 câu).
+            EnforceAdaptiveBudget(
+                request.QuestionsPerSession ?? request.Questions.Count,
+                request.MaxDeepPerQuestion ?? 0,
+                request.MaxQuestions ?? 0);
             // Giữ KẾT QUẢ ở đây thay vì gọi lại lúc dựng entity: trước đó `ValidateSeniority` chạy hai
             // lần (lần này vứt kết quả, lần sau mới dùng) — thừa một lần validate, và nếu ai sửa luật
             // mà chỉ đổi một trong hai chỗ thì hai lần gọi có thể lệch nhau.
@@ -120,7 +126,9 @@ namespace Isas.CampaignService.Services
                 AdaptiveEnabled = request.AdaptiveEnabled,   // INT-17: HR bật thích ứng cho campaign
                 GroundingEnabled = request.GroundingEnabled,
                 MaxConcurrentInterviews = request.MaxConcurrentInterviews,
-                MaxFollowUps = request.MaxFollowUps,
+                // RNK1 · HĐ-7 / BUS-03 — chế độ chuỗi (d > 0): ép trần theo BUỔI về 0 để nó không bó
+                // chặt hơn trần theo CÂU (5×3 = 15 < K×(1+d)). Trần buổi 0 = "không trần" ở Interview.
+                MaxFollowUps = (request.MaxDeepPerQuestion ?? 0) > 0 ? 0 : request.MaxFollowUps,
                 MaxQuestions = request.MaxQuestions,
                 MaxDeepPerQuestion = request.MaxDeepPerQuestion,   // INT-17b: trần đào sâu mỗi câu
                 QuestionsPerSession = request.QuestionsPerSession,   // ngân hàng đề (null = thi hết)
@@ -228,6 +236,7 @@ namespace Isas.CampaignService.Services
         public async Task<CampaignResponse> UploadCampaignFilesAsync(Guid orgId, Guid id, UploadCampaignFilesRequest request, CancellationToken ct = default)
         {
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)   // RNK1 · HĐ-8 — CampaignResponse.questionBank tính từ Questions
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException();
 
@@ -502,8 +511,39 @@ namespace Isas.CampaignService.Services
 
             if (request.QuestionsPerSession.HasValue)
             {
-                ValidateQuestionsPerSession(request.QuestionsPerSession);
-                campaign.QuestionsPerSession = request.QuestionsPerSession;
+                // RNK1 · HĐ-8 — ba trạng thái trên PUT (mẫu CAMP-16 `levels`):
+                //   • vắng (null)  = KHÔNG ĐỔI — đã lọc bởi `.HasValue`.
+                //   • `0`          = RESET về "thi hết bộ" (SET NULL). Sentinel này CHỈ có trên PUT.
+                //   • `1..20`      = đặt K; ngoài dải → 400 (ValidateQuestionsPerSession).
+                var newK = request.QuestionsPerSession.Value == 0
+                    ? (int?)null
+                    : request.QuestionsPerSession;
+                if (newK is not null)
+                    ValidateQuestionsPerSession(newK);
+
+                // Đổi K = đổi ĐỀ mỗi ứng viên gặp ⇒ CÙNG luật `PUT /questions` (CAMP-18: `questions` vẫn
+                // 409 trên Active — hai ứng viên làm hai đề khác nhau). Giá trị KHÔNG đổi ⇒ no-op, không 409.
+                if (newK != campaign.QuestionsPerSession && campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException(
+                        $"Chỉ đổi questions_per_session khi campaign `Draft` (hiện: {campaign.Status}). "
+                        + "Đổi số câu mỗi ứng viên gặp = đổi đề, hai ứng viên làm hai đề khác nhau.");
+
+                campaign.QuestionsPerSession = newK;
+            }
+
+            // RNK1 · HĐ-7 — ràng buộc chéo trên giá trị ĐÃ HỢP NHẤT (request phủ lên campaign). Chỉ chạy
+            // khi request thật sự chạm 1 trong 3 số; các field khác của PUT không kéo theo kiểm này.
+            if (request.MaxQuestions.HasValue || request.MaxDeepPerQuestion.HasValue
+                || request.QuestionsPerSession.HasValue)
+            {
+                EnforceAdaptiveBudget(
+                    campaign.QuestionsPerSession ?? campaign.Questions.Count,
+                    campaign.MaxDeepPerQuestion ?? 0,
+                    campaign.MaxQuestions ?? 0);
+
+                // BUS-03 — d > 0 ⇒ trần theo BUỔI ép về 0 (xem chú thích ở CreateCampaignAsync).
+                if ((campaign.MaxDeepPerQuestion ?? 0) > 0)
+                    campaign.MaxFollowUps = 0;
             }
 
             // C11: cập nhật JD/Criteria dạng text → set *_text, xoá *_file_url (text ưu tiên file).
@@ -522,6 +562,7 @@ namespace Isas.CampaignService.Services
             // C12: ghi đè tiêu chí structured (replace-all). Validate → 400 (ArgumentException) TRƯỚC khi
             // đụng DB để lỗi không để lại nửa vời.
             List<CampaignCriterion>? rebuiltCriteria = null;
+            string? beforeCriteriaFingerprint = null;   // RNK1 · HĐ-5 — vân tay "trước" chốt trước khi Build mutate
             if (request.Criteria is not null)
             {
                 // 🔴 HAI LUẬT KHÁC NHAU TRONG CÙNG MỘT HÀNH ĐỘNG "Lưu" — ĐỌC TRƯỚC KHI "DỌN CHO NHẤT QUÁN":
@@ -545,6 +586,13 @@ namespace Isas.CampaignService.Services
                     throw new InvalidOperationException(
                         $"Cannot edit criteria when campaign is {campaign.Status}. Only Draft/Active are editable.");
 
+                // RNK1 · HĐ-5 — BuildStructuredCriteria nay MUTATE tiêu chí đang tracked (echo id ⇒
+                // update tại chỗ), nên vân tay "trước" phải chốt TRƯỚC lời gọi đó, không thể so
+                // campaign.Criteria (đã đổi) với rebuilt về sau.
+                beforeCriteriaFingerprint = campaign.Status == CampaignStatus.Active
+                    ? RubricFingerprint.Compute(campaign.Criteria)
+                    : null;
+
                 rebuiltCriteria = BuildStructuredCriteria(
                     campaign.Id, request.Criteria, CriterionSource.HrEdited, campaign.Criteria);
             }
@@ -564,22 +612,26 @@ namespace Isas.CampaignService.Services
             }
             else
             {
-                // Replace-all ATOMIC (1 SaveChanges = 1 transaction): XOÁ bộ cũ + INSERT bộ mới qua DbSet.
-                // KHÔNG đụng navigation (nav.Clear()/Add trên quan hệ required làm change-tracker sinh
-                // UPDATE "ma" → DbUpdateConcurrencyException 0 rows). EF tự xếp DELETE trước INSERT theo
-                // UNIQUE(campaign_id, order_no|name) nên bộ mới trùng khoá bộ cũ vẫn an toàn.
-                // CAMP-18 — quyết định bump TRƯỚC khi xoá bộ cũ (sau RemoveRange thì "bộ trước" không
-                // còn đọc được một cách rõ ràng).
-                var bumped = ApplyRubricVersionBump(campaign, actorUserId, campaign.Criteria, rebuiltCriteria);
+                // 1 SaveChanges = 1 transaction. RNK1 · HĐ-5 — KHÔNG còn "xoá sạch + insert sạch": tiêu
+                // chí HR echo id được TÁI DÙNG (BuildStructuredCriteria mutate tại chỗ ⇒ EF UPDATE, id
+                // giữ nguyên). Chỉ tiêu chí KHÔNG được echo mới bị xoá; chỉ tiêu chí id-mới mới Add.
+                var bumped = ApplyRubricVersionBump(campaign, actorUserId, beforeCriteriaFingerprint, rebuiltCriteria);
 
-                _db.CampaignCriteria.RemoveRange(campaign.Criteria);
-                _db.CampaignCriteria.AddRange(rebuiltCriteria);
+                var keptIds = rebuiltCriteria.Select(x => x.Id).ToHashSet();
+                var removed = campaign.Criteria.Where(x => !keptIds.Contains(x.Id)).ToList();
+                _db.CampaignCriteria.RemoveRange(removed);   // FK Cascade → mốc của tiêu chí bị xoá đi theo
+
+                var oldIds = campaign.Criteria.Select(x => x.Id).ToHashSet();
+                var added = rebuiltCriteria.Where(x => !oldIds.Contains(x.Id)).ToList();
+                _db.CampaignCriteria.AddRange(added);
+                // tiêu chí id-cũ (giao của hai tập) đã tracked + đã mutate ⇒ EF tự UPDATE.
+
                 AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id,
                     bumped
                         ? $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited) — thước đo v{campaign.RubricVersion - 1} → v{campaign.RubricVersion}"
                         : $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited)");
                 await _db.SaveChangesAsync(ct);
-                campaign.Criteria = rebuiltCriteria;                 // đồng bộ nav cho response (bộ cũ đã xoá)
+                campaign.Criteria = rebuiltCriteria;                 // đồng bộ nav cho response
             }
 
             return CampaignResponse.FromEntity(campaign);
@@ -589,6 +641,7 @@ namespace Isas.CampaignService.Services
         {
             // ── 1. Fetch & verify ownership ─────────────────────
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)   // RNK1 · HĐ-8 — CampaignResponse.questionBank tính từ Questions
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -1007,7 +1060,14 @@ namespace Isas.CampaignService.Services
                         Description = c.Description,
                         Weight = c.Weight,
                         MaxScore = c.MaxScore,
-                        LevelCount = c.Levels.Count
+                        LevelCount = c.Levels.Count,
+                        // RNK1 · HĐ-4 — CÙNG nguồn c.Levels mà ApplySystemDefaultCriteriaAsync dùng
+                        // (từ lời gọi GetB2CRubricAsync ngay trên — KHÔNG gọi Interview lần hai).
+                        // Sắp theo Score; admin chưa soạn mốc ⇒ [] (không null).
+                        Levels = c.Levels
+                            .OrderBy(l => l.Score)
+                            .Select(l => new CriterionLevelResponse { Score = l.Score, Descriptor = l.Descriptor })
+                            .ToList()
                     })
                     .ToList()
             };
@@ -1030,6 +1090,7 @@ namespace Isas.CampaignService.Services
             var language = ValidateLanguage(request.Language);
 
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)   // RNK1 · HĐ-8 — CampaignResponse.questionBank tính từ Questions
                 .Include(c => c.Criteria)
                     .ThenInclude(cr => cr.Levels)
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
@@ -1058,10 +1119,14 @@ namespace Isas.CampaignService.Services
                 .ThenBy(c => c.Name, StringComparer.Ordinal)
                 .Select(c => new CriterionItem
                 {
+                    // KHÔNG echo Id: chép bộ chuẩn là dựng bộ MỚI, mọi tiêu chí nhận id mới.
                     Name = c.Name,
                     Description = c.Description,
                     Weight = c.Weight,
                     MaxScore = c.MaxScore,
+                    // RNK1 · HĐ-5 — bộ chuẩn không mang điểm sàn (đó là luật kết luận của HR, không phải
+                    // thước đo). from-system-default ⇒ MinPct null (HR đặt sau qua PUT nếu cần).
+                    MinPct = null,
                     // LUÔN gửi list (không bao giờ null): null mang nghĩa "KHÔNG ĐỔI" ⇒ mốc cũ của
                     // chiến dịch sẽ carry-over theo TÊN sang bộ vừa chép. Bộ chuẩn chưa khai mốc mà
                     // lại đội mốc do HR viết cho một thước đo khác = trộn hai bộ, không triệu chứng.
@@ -1144,6 +1209,26 @@ namespace Isas.CampaignService.Services
             // Chỉ chạy khi HR chưa tự khai: bộ HR đã sửa là quyết định của người, AI không đè lên.
             if (campaign.JobNeeds is not { Count: > 0 })
                 campaign.JobNeeds = await BuildJobNeedsAsync(campaign, ct);
+
+            // RNK1 · HĐ-7 — kiểm CỨNG ở publish: một campaign có thể tới đây với 3 số adaptive lệch
+            // (đặt rải rác qua nhiều lần PUT trước khi có ràng buộc này, hoặc PUT không chạm cả 3).
+            // K câu campaign nay đã chắc chắn ≥ 1 (guard "phải có ≥1 câu hỏi" ngay trên).
+            EnforceAdaptiveBudget(
+                campaign.QuestionsPerSession ?? campaign.Questions.Count,
+                campaign.MaxDeepPerQuestion ?? 0,
+                campaign.MaxQuestions ?? 0);
+
+            // BUS-03 — d > 0 ⇒ trần theo BUỔI ép về 0 (xem chú thích ở CreateCampaignAsync).
+            if ((campaign.MaxDeepPerQuestion ?? 0) > 0)
+                campaign.MaxFollowUps = 0;
+
+            // RNK1 · HĐ-8 — hàng rào NGÂN HÀNG ĐỀ ở publish: cảnh báo (tính read-time, xem
+            // QuestionBankSummary) KHÔNG rỗng ⇒ 400 { code: "QUESTION_BANK_INVALID", warnings[] }.
+            // Ca "K×(1+d) > T" đã bị EnforceAdaptiveBudget ngay trên ném (ADAPTIVE_BUDGET_TOO_SMALL,
+            // cụ thể hơn) nên tới đây warnings chỉ còn "K > total" / "alwaysAsked > K".
+            var bankWarnings = ComputeQuestionBankWarnings(campaign);
+            if (bankWarnings.Count > 0)
+                throw new QuestionBankInvalidException(bankWarnings);
 
             campaign.Status = CampaignStatus.Active;
             campaign.UpdatedAt = DateTime.UtcNow;
@@ -1488,7 +1573,7 @@ namespace Isas.CampaignService.Services
         // KHÔNG chặn item khác); đã Invited → skip (absorbing). Vượt max_candidates → chặn CẢ request (400),
         // nhất quán D1. Campaign phải Active (không → 409); ngoài org → 404.
         public async Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(
-            Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, CancellationToken ct)
+            Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, bool includeIneligible, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
@@ -1531,6 +1616,20 @@ namespace Isas.CampaignService.Services
                 if (cand.Status != CvSubmissionStatus.Analyzed)
                 {
                     response.Failed.Add(new FailedInviteItem { CandidateId = cid, Reason = $"Chỉ mời được ứng viên Analyzed (hiện: {cand.Status})." });
+                    continue;
+                }
+
+                // RNK1 · HĐ-6 — bỏ qua ứng viên KHÔNG đủ điều kiện loại (thiếu bằng chứng cho nhu cầu
+                // must-have), trừ khi HR chủ động mời cả nhóm đó. Đọc job_needs của campaign (đã nạp) +
+                // strengths/gaps đã lưu — KHÔNG gọi lại screen_cv.
+                if (!includeIneligible
+                    && !CvMustHaveEvaluator.Evaluate(campaign.JobNeeds, cand.Strengths, cand.Gaps).Eligible)
+                {
+                    response.Failed.Add(new FailedInviteItem
+                    {
+                        CandidateId = cid,
+                        Reason = "Không đủ điều kiện loại (thiếu bằng chứng cho nhu cầu bắt buộc).",
+                    });
                     continue;
                 }
 
@@ -1670,7 +1769,12 @@ namespace Isas.CampaignService.Services
         // Ownership: chỉ chủ org (org_id) xem được — không phải chủ → 404 (KeyNotFoundException).
         public async Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid orgId, Guid id, CancellationToken ct)
         {
+            // RNK1 · HĐ-3/HĐ-5 — .Include(Questions) cho QuestionBankTotal; .Include(Criteria) cho điểm
+            // sàn read-time (id + name + min_pct). Cả hai gộp vào chính câu ownership này (JOIN, không
+            // thêm query; một campaign nên Q×C bị chặn). Query filter DB13 áp cho cả hai nav.
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)
+                .Include(c => c.Criteria)
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -1713,6 +1817,11 @@ namespace Isas.CampaignService.Services
 
                 identityByCandidate.TryGetValue(r.CandidateId, out var identity);
 
+                // RNK1 · HĐ-5 — điểm sàn theo tiêu chí, ĐỌC READ-TIME (không ghim vào snapshot ⇒ HR
+                // đổi min_pct là áp NGAY cho cả người đã thi). Rank KHÔNG đổi (sàn đổi KẾT LUẬN, không
+                // thứ tự). override thắng.
+                var belowCutoff = ComputeBelowCutoff(r.ScoringInputs, campaign.Criteria);
+
                 results.Add(new CampaignResultRow
                 {
                     Rank = rank,
@@ -1721,9 +1830,12 @@ namespace Isas.CampaignService.Services
                     Email = identity.Email,
                     SessionId = r.SessionId,
                     TotalScore = effectiveScore,   // điểm effective (đã áp override); FE có AiScore để đối chiếu
-                    // Pass/fail: HR override thắng ngưỡng; else so ngưỡng Employer (CAMP-11); ngưỡng null → null.
+                    // Pass/fail: HR override thắng; else rớt SÀN nào ⇒ Fail; else so ngưỡng Employer
+                    // (CAMP-11); ngưỡng null → null.
                     Result = r.OverrideResult
-                        ?? (threshold is null ? null : (effectiveScore >= threshold.Value ? "Pass" : "Fail")),
+                        ?? (belowCutoff.Count > 0 ? "Fail"
+                            : threshold is null ? null
+                            : effectiveScore >= threshold.Value ? "Pass" : "Fail"),
                     ScoredAt = r.UpdatedAt,
                     RubricVersion = r.RubricVersion,   // CAMP-18: null = không biết (KHÔNG suy ra v1)
                     PolicyVersion = r.PolicyVersion,   // SCP1/HĐ-5 — chính sách chấm đã áp (null = mặc định)
@@ -1734,7 +1846,19 @@ namespace Isas.CampaignService.Services
                     OverrideScore = r.OverrideScore,
                     OverrideResult = r.OverrideResult,
                     OverrideNote = r.OverrideNote,
-                    OverriddenAt = r.OverriddenAt
+                    OverriddenAt = r.OverriddenAt,
+                    // RNK1 · HĐ-3 — số câu từ snapshot (campaign_rankings.scoring_inputs); snapshot trước
+                    // RNK1 thiếu seed_*/skip_penalty ⇒ null (KHÔNG suy từ answered/totalQuestions).
+                    Answered = r.ScoringInputs?.Answered,
+                    TotalQuestions = r.ScoringInputs?.TotalQuestions,
+                    SeedAnswered = r.ScoringInputs?.SeedAnswered,
+                    SeedTotal = r.ScoringInputs?.SeedTotal,
+                    SkipPenalty = r.ScoringInputs?.SkipPenalty,
+                    // RNK1 · HĐ-3 — sàng CV từ CÙNG LEFT JOIN identity (không query phụ). null = mời bằng email.
+                    CvMatchScore = identity.CvMatchScore,
+                    CvVerificationRisk = identity.CvVerificationRisk,
+                    CvScreeningVersion = identity.CvScreeningVersion,
+                    BelowCutoff = belowCutoff   // RNK1 · HĐ-5 — read-time, khớp criterionId / else tên
                 });
             }
 
@@ -1760,7 +1884,10 @@ namespace Isas.CampaignService.Services
                         CandidateId = candidateId,
                         FullName = identity.FullName,
                         Email = identity.Email,
-                        Flags = flagsBySession.TryGetValue(g.Key, out var f) ? f : new List<FlagDto>()
+                        Flags = flagsBySession.TryGetValue(g.Key, out var f) ? f : new List<FlagDto>(),
+                        // RNK1 · HĐ-3 — điểm sàng CV vẫn xem được dù buổi bỏ ngang (cùng identity, không query phụ).
+                        CvMatchScore = identity.CvMatchScore,
+                        CvVerificationRisk = identity.CvVerificationRisk
                     };
                 })
                 // Flags rỗng không xảy ra ở đây (row dựng từ chính allFlags), nhưng DefaultIfEmpty giữ
@@ -1777,6 +1904,9 @@ namespace Isas.CampaignService.Services
                 // CAMP-18 — thước đo ĐANG hiệu lực, để FE so với rubricVersion từng dòng. Một giá trị
                 // duy nhất ⇒ không hiện gì; từ hai trở lên mới cảnh báo bảng đang trộn hai thước đo.
                 CurrentRubricVersion = campaign.RubricVersion,
+                // RNK1 · HĐ-3 — ngân hàng đề: K câu/ứng viên + tổng câu trong bộ. Questions từ .Include ở trên.
+                QuestionsPerSession = campaign.QuestionsPerSession,
+                QuestionBankTotal = campaign.Questions.Count,
                 TotalCandidates = results.Count,
                 Results = results,
                 UnscoredFlagged = unscoredFlagged
@@ -1959,12 +2089,17 @@ namespace Isas.CampaignService.Services
                           .ToList());
         }
 
-        // F5: tra danh tính ứng viên của 1 campaign → Dictionary<candidate_id, (full_name, email)>.
+        // F5 + RNK1 · HĐ-3 — tra danh tính + số liệu sàng CV của 1 campaign → Dictionary theo candidate_id.
         // ĐÚNG 1 query cho cả bảng kết quả (mẫu GetFlagsBySessionAsync) — không N+1 theo từng dòng.
         // Nav `CvSubmission` là OPTIONAL nên EF dịch thành LEFT JOIN NGAY TRONG query này ⇒ vẫn 1 round-trip.
         // Fallback `?? m.CvSubmission.X`: che luôn membership đường-2 cũ mà backfill của migration sót
         // (và mọi row tạo trước F5 chưa join lại) → HR vẫn thấy tên/email thay vì ô trống.
-        private async Task<Dictionary<Guid, (string? FullName, string? Email)>> GetIdentityByCandidateAsync(
+        // RNK1: 3 field CV (score/risk/version) lấy THẲNG từ cùng LEFT JOIN — không query phụ theo ứng viên.
+        private readonly record struct CandidateIdentity(
+            string? FullName, string? Email,
+            int? CvMatchScore, string? CvVerificationRisk, int? CvScreeningVersion);
+
+        private async Task<Dictionary<Guid, CandidateIdentity>> GetIdentityByCandidateAsync(
             Guid campaignId, CancellationToken ct)
         {
             var rows = await _db.CampaignMemberships
@@ -1973,7 +2108,10 @@ namespace Isas.CampaignService.Services
                 {
                     CandidateId = m.CandidateId!.Value,
                     FullName = m.FullName ?? (m.CvSubmission != null ? m.CvSubmission.FullName : null),
-                    Email = m.Email ?? (m.CvSubmission != null ? m.CvSubmission.Email : null)
+                    Email = m.Email ?? (m.CvSubmission != null ? m.CvSubmission.Email : null),
+                    CvMatchScore = m.CvSubmission != null ? m.CvSubmission.OverallMatchScore : null,
+                    CvVerificationRisk = m.CvSubmission != null ? m.CvSubmission.VerificationRisk : null,
+                    CvScreeningVersion = m.CvSubmission != null ? m.CvSubmission.ScreeningVersion : null
                 })
                 .ToListAsync(ct);
 
@@ -1981,7 +2119,58 @@ namespace Isas.CampaignService.Services
             // (dữ liệu cũ trước khi index unique được áp có thể còn trùng).
             return rows
                 .GroupBy(x => x.CandidateId)
-                .ToDictionary(g => g.Key, g => (g.First().FullName, g.First().Email));
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var x = g.First();
+                    return new CandidateIdentity(
+                        x.FullName, x.Email, x.CvMatchScore, x.CvVerificationRisk, x.CvScreeningVersion);
+                });
+        }
+
+        // RNK1 · HĐ-5 — điểm sàn theo tiêu chí, READ-TIME. Với mỗi tiêu chí trong bó biến (snapshot),
+        // khớp về campaign_criteria: có `criterionId` ⇒ khớp theo id (matchedBy "id"); snapshot GHI
+        // TRƯỚC RNK1 không có id ⇒ khớp theo TÊN (Trim / OrdinalIgnoreCase, matchedBy "name"). Tiêu chí
+        // khớp có `min_pct` và `pct < min_pct` ⇒ dòng đó rớt sàn.
+        //
+        // KHÔNG ghim sàn vào snapshot: `min_pct` phải đổi được lúc chạy (như pass_score_pct), nên phải
+        // đọc từ campaign_criteria HIỆN TẠI, không phải giá trị lúc buổi thi đóng.
+        private static List<BelowCutoffItem> ComputeBelowCutoff(
+            ScoringInputsSnapshot? snapshot, IEnumerable<CampaignCriterion> criteria)
+        {
+            var result = new List<BelowCutoffItem>();
+            if (snapshot?.Criteria is not { Count: > 0 } snapCriteria) return result;
+
+            var byId = criteria.ToDictionary(c => c.Id);
+            var byName = new Dictionary<string, CampaignCriterion>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in criteria) byName.TryAdd(c.Name.Trim(), c);
+
+            foreach (var sc in snapCriteria)
+            {
+                CampaignCriterion? match;
+                string matchedBy;
+                if (sc.CriterionId is Guid cid && byId.TryGetValue(cid, out var byIdMatch))
+                {
+                    match = byIdMatch;
+                    matchedBy = "id";
+                }
+                else if (byName.TryGetValue((sc.Name ?? string.Empty).Trim(), out var byNameMatch))
+                {
+                    match = byNameMatch;
+                    matchedBy = "name";
+                }
+                else continue;
+
+                if (match.MinPct is int minPct && sc.Pct < minPct)
+                    result.Add(new BelowCutoffItem
+                    {
+                        CriterionId = match.Id,
+                        Name = match.Name,
+                        Pct = sc.Pct,
+                        MinPct = minPct,
+                        MatchedBy = matchedBy,
+                    });
+            }
+            return result;
         }
 
         // ── E6: xuất bảng kết quả (E5) ra file ──────────────────────────────
@@ -2277,7 +2466,18 @@ namespace Isas.CampaignService.Services
                 RubricVersion = r.RubricVersion,   // CAMP-18
                 PolicyVersion = r.PolicyVersion,   // SCP1/HĐ-5
                 PolicyName = r.PolicyName ?? string.Empty,
-                ScoreFallback = r.ScoreFallback
+                ScoreFallback = r.ScoreFallback,
+                // RNK1 · HĐ-3 — cột ĐUÔI (Index 13..21), snake_case. below_cutoff = "name<pct/minPct"
+                // nối ';' — RỖNG ở B2 (B4 điền BelowCutoff). Helper dùng chung với PDF.
+                Answered = r.Answered,
+                TotalQuestions = r.TotalQuestions,
+                SeedAnswered = r.SeedAnswered,
+                SeedTotal = r.SeedTotal,
+                SkipPenalty = r.SkipPenalty,
+                CvMatchScore = r.CvMatchScore,
+                CvVerificationRisk = r.CvVerificationRisk ?? string.Empty,
+                CvScreeningVersion = r.CvScreeningVersion,
+                BelowCutoff = FormatBelowCutoff(r.BelowCutoff)
             }).ToList();
 
             // R7: nối ứng viên có cờ mà CHƯA Scored — HR đọc bản export cũng thấy nhóm đáng ngờ nhất.
@@ -2292,7 +2492,10 @@ namespace Isas.CampaignService.Services
                 ScoredAt = null,
                 Flags = FlagDto.SummarizeForExport(u.Flags),   // MON1-B4: cùng helper với results + PDF
                 FullName = u.FullName ?? string.Empty,
-                Email = u.Email ?? string.Empty
+                Email = u.Email ?? string.Empty,
+                // RNK1 · HĐ-3 — buổi chưa Scored: không có snapshot ⇒ số câu để trống; CV vẫn có.
+                CvMatchScore = u.CvMatchScore,
+                CvVerificationRisk = u.CvVerificationRisk ?? string.Empty
             }));
 
             using var buffer = new MemoryStream();
@@ -2305,6 +2508,14 @@ namespace Isas.CampaignService.Services
             }
             return buffer.ToArray();
         }
+
+        // RNK1 · HĐ-3 — "name<pct/minPct" nối ';' (rỗng ở B2 — BelowCutoff luôn []). InvariantCulture
+        // để khớp CSV/PDF bất kể locale server (bài học F16).
+        private static string FormatBelowCutoff(IReadOnlyList<BelowCutoffItem> items)
+            => items.Count == 0
+                ? string.Empty
+                : string.Join(";", items.Select(b => string.Format(
+                    CultureInfo.InvariantCulture, "{0}<{1}/{2}", b.Name, b.Pct, b.MinPct)));
 
         // Model dòng CSV — tách khỏi DTO API để kiểm soát header + định dạng (scoped nội bộ E6).
         private sealed class ResultCsvRow
@@ -2327,6 +2538,16 @@ namespace Isas.CampaignService.Services
             public int? PolicyVersion { get; set; }
             public string PolicyName { get; set; } = string.Empty;
             public bool ScoreFallback { get; set; }
+            // RNK1 · HĐ-3 — cột ĐUÔI (Index 13..21). null → CsvHelper ghi ô rỗng.
+            public int? Answered { get; set; }
+            public int? TotalQuestions { get; set; }
+            public int? SeedAnswered { get; set; }
+            public int? SeedTotal { get; set; }
+            public bool? SkipPenalty { get; set; }
+            public int? CvMatchScore { get; set; }
+            public string CvVerificationRisk { get; set; } = string.Empty;
+            public int? CvScreeningVersion { get; set; }
+            public string BelowCutoff { get; set; } = string.Empty;
         }
 
         private sealed class ResultCsvRowMap : ClassMap<ResultCsvRow>
@@ -2352,6 +2573,16 @@ namespace Isas.CampaignService.Services
                 Map(m => m.PolicyVersion).Index(10).Name("policy_version");
                 Map(m => m.PolicyName).Index(11).Name("policy_name");
                 Map(m => m.ScoreFallback).Index(12).Name("score_fallback");
+                // RNK1 · HĐ-3 — cột ĐUÔI 13..21 (additive, cùng lý do: Index tuyệt đối, KHÔNG chèn giữa).
+                Map(m => m.Answered).Index(13).Name("answered");
+                Map(m => m.TotalQuestions).Index(14).Name("total_questions");
+                Map(m => m.SeedAnswered).Index(15).Name("seed_answered");
+                Map(m => m.SeedTotal).Index(16).Name("seed_total");
+                Map(m => m.SkipPenalty).Index(17).Name("skip_penalty");
+                Map(m => m.CvMatchScore).Index(18).Name("cv_match_score");
+                Map(m => m.CvVerificationRisk).Index(19).Name("cv_verification_risk");
+                Map(m => m.CvScreeningVersion).Index(20).Name("cv_screening_version");
+                Map(m => m.BelowCutoff).Index(21).Name("below_cutoff");
             }
         }
 
@@ -2508,16 +2739,22 @@ namespace Isas.CampaignService.Services
                     $"max_concurrent_interviews phải >= 1 (hiện: {c}). Bỏ trống = không giới hạn.");
         }
 
-        // NGÂN HÀNG ĐỀ — số câu mỗi ứng viên thi. null = thi HẾT bộ (hành vi trước tính năng này).
-        // Đặt số thì phải >= 1: `0` nghĩa là buổi thi không có câu nào, mà ParticipationService ném
-        // "Chiến dịch chưa có câu hỏi" khi đề rỗng ⇒ để lọt là tạo ra chiến dịch publish được nhưng
-        // KHÔNG ứng viên nào bắt đầu nổi. Cùng lý do với ValidateConcurrencyCap ngay trên.
-        // KHÔNG đặt trần trên: số lớn hơn ngân hàng = "thi hết", đã xử tường minh ở QuestionPoolSelector.
+        // NGÂN HÀNG ĐỀ — số câu mỗi ứng viên thi (K). null = thi HẾT bộ (hành vi trước tính năng này).
+        // RNK1 · HĐ-8 — K ∈ [1, 20]:
+        //   • `< 1` (gồm `0`): `0` nghĩa "buổi thi không có câu nào" — ParticipationService ném "Chiến
+        //     dịch chưa có câu hỏi" khi đề rỗng ⇒ để lọt là tạo chiến dịch publish được mà KHÔNG ứng
+        //     viên nào bắt đầu nổi. Trên đường PUT, `0` KHÔNG rơi vào đây — nó là sentinel RESET
+        //     (xử ở UpdateCampaignAsync → SET NULL).
+        //   • `> 20`: K là số câu GỐC của một buổi, mà cả buổi (gốc + đào sâu) bị CHECK
+        //     `ck_practice_sessions_max_questions_range` kẹp ≤ 20 bên Interview ⇒ K một mình vượt 20
+        //     là bất khả thi. Trước đây guard chỉ chặn số âm ⇒ HR gõ 999 lọt tới lúc INSERT session
+        //     (SAU reserve credit — PAY-5), đúng bài học F2b.
         private static void ValidateQuestionsPerSession(int? questionsPerSession)
         {
-            if (questionsPerSession is int n && n < 1)
+            if (questionsPerSession is int n && (n < 1 || n > MaxQuestionsPerSession))
                 throw new ArgumentException(
-                    $"questions_per_session phải >= 1 (hiện: {n}). Bỏ trống = ứng viên thi hết bộ câu hỏi.");
+                    $"questions_per_session phải trong [1, {MaxQuestionsPerSession}] (hiện: {n}). "
+                    + "Bỏ trống (create) / gửi 0 (PUT) = ứng viên thi hết bộ câu hỏi.");
         }
 
         // EVA1-B5 / HĐ-2 — trần số năm KN hợp lý cho luật lọc cứng. > 60 gần như chắc chắn là gõ nhầm.
@@ -2584,6 +2821,21 @@ namespace Isas.CampaignService.Services
                 throw new ArgumentException(
                     $"max_questions tối đa {MaxQuestionsPerSession} (hiện: {mq}).");
         }
+
+        // RNK1 · HĐ-7 — ràng buộc CHÉO. Lệch ⇒ AdaptiveBudgetTooSmallException (controller → 400 body
+        // { code, need, have, questions, deep }). Luật thuần ở Validation/AdaptiveBudgetRule; ở đây chỉ ném.
+        private static void EnforceAdaptiveBudget(int k, int d, int t)
+        {
+            if (AdaptiveBudgetRule.Check(k, d, t) is { } v)
+                throw new AdaptiveBudgetTooSmallException(v);
+        }
+
+        // RNK1 · HĐ-8 — cảnh báo ngân hàng đề (NGUỒN DUY NHẤT = QuestionBankSummary.Build, cùng hàm
+        // FromEntity dùng để trả read-time). Publish: không rỗng ⇒ QuestionBankInvalidException.
+        private static IReadOnlyList<string> ComputeQuestionBankWarnings(Campaign campaign)
+            => QuestionBankSummary.Build(
+                campaign.Questions, campaign.QuestionsPerSession,
+                campaign.MaxDeepPerQuestion, campaign.MaxQuestions).Warnings;
 
         private async Task<CampaignEntitlement> ResolveEntitlementAsync(Guid orgId, CancellationToken ct)
             => _entitlements is null
@@ -2747,15 +2999,22 @@ namespace Isas.CampaignService.Services
             if (items is null || items.Count == 0)
                 throw new ArgumentException("criteria[] phải có ≥1 tiêu chí.");
 
+            var existingList = (existingForCarryOver ?? Enumerable.Empty<CampaignCriterion>()).ToList();
+
             // Nguồn carry-over. TryAdd (không phải indexer) vì UNIQUE(campaign_id, name) của Postgres
             // phân biệt hoa/thường, còn đường AI (BuildCriteriaAsync) không dedup — nên "Abc" và "ABC"
             // vẫn cùng tồn tại được và indexer sẽ ném ngay giữa một thao tác lưu hợp lệ.
             var carryOver = new Dictionary<string, List<CampaignCriterionLevel>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var old in existingForCarryOver ?? Enumerable.Empty<CampaignCriterion>())
+            foreach (var old in existingList)
                 carryOver.TryAdd(old.Name, (old.Levels ?? new List<CampaignCriterionLevel>()).ToList());
 
+            // RNK1 · HĐ-5 — echo id ⇒ GIỮ id (update tại chỗ). Lookup theo id của bộ ĐANG CÓ; item.Id
+            // lạ/vắng ⇒ id mới. Chỉ tái dùng khi bộ này thật sự được truyền vào (đường PUT campaign) —
+            // đường Create / from-system-default không truyền nên mọi tiêu chí là id mới.
+            var existingById = existingList.ToDictionary(c => c.Id);
+
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var cleaned = new List<(string Name, string? Description, decimal Weight, int MaxScore, List<CriterionLevelItem>? Levels)>();
+            var cleaned = new List<(Guid? Id, string Name, string? Description, decimal Weight, int MaxScore, int? MinPct, List<CriterionLevelItem>? Levels)>();
             foreach (var item in items)
             {
                 var name = item.Name?.Trim() ?? string.Empty;
@@ -2770,10 +3029,14 @@ namespace Isas.CampaignService.Services
                 if (item.MaxScore > MaxCriterionScore)
                     throw new ArgumentException(
                         $"maxScore của '{name}' vượt trần {MaxCriterionScore} (hiện: {item.MaxScore}).");
+                // RNK1 · HĐ-5 — điểm sàn 0..100. Guard ở CODE (400 kèm tên) đối xứng CHECK
+                // ck_campaign_criteria_min_pct_range để lỗi HR không đội lốt lỗi Postgres (500).
+                if (item.MinPct is int mp && (mp < 0 || mp > 100))
+                    throw new ArgumentException($"minPct của '{name}' phải trong [0, 100] (hiện: {mp}).");
 
-                cleaned.Add((name,
+                cleaned.Add((item.Id, name,
                     string.IsNullOrWhiteSpace(item.Description) ? null : item.Description!.Trim(),
-                    item.Weight, item.MaxScore, item.Levels));
+                    item.Weight, item.MaxScore, item.MinPct, item.Levels));
             }
 
             var total = cleaned.Sum(c => c.Weight);
@@ -2782,19 +3045,45 @@ namespace Isas.CampaignService.Services
                     $"Σweight phải trong khoảng [0.99, 1.01] để chuẩn hoá về 1 (hiện: {total}).");
 
             var now = DateTime.UtcNow;
-            var criteria = cleaned.Select((c, i) => new CampaignCriterion
+            var reusedIds = new HashSet<Guid>();
+            var criteria = new List<CampaignCriterion>(cleaned.Count);
+            for (var i = 0; i < cleaned.Count; i++)
             {
-                Id = Guid.NewGuid(),
-                CampaignId = campaignId,
-                OrderNo = i,                          // 0-based theo thứ tự gửi lên
-                Name = c.Name,
-                Description = c.Description,
-                Weight = Math.Round(c.Weight / total, 4),   // chuẩn hoá Σ→1
-                MaxScore = c.MaxScore,
-                Source = source,
-                CreatedAt = now,
-                UpdatedAt = now
-            }).ToList();
+                var c = cleaned[i];
+                var weight = Math.Round(c.Weight / total, 4);   // chuẩn hoá Σ→1
+
+                // Tái dùng instance đang tracked ⇒ EF sinh UPDATE (id GIỮ NGUYÊN). reusedIds chống
+                // echo trùng id (hai item cùng id ⇒ item thứ hai lấy id mới, không ghi đè nhau).
+                if (c.Id is Guid gid && existingById.TryGetValue(gid, out var reuse) && reusedIds.Add(gid))
+                {
+                    reuse.OrderNo = i;
+                    reuse.Name = c.Name;
+                    reuse.Description = c.Description;
+                    reuse.Weight = weight;
+                    reuse.MaxScore = c.MaxScore;
+                    reuse.MinPct = c.MinPct;
+                    reuse.Source = source;
+                    reuse.UpdatedAt = now;
+                    criteria.Add(reuse);
+                }
+                else
+                {
+                    criteria.Add(new CampaignCriterion
+                    {
+                        Id = Guid.NewGuid(),
+                        CampaignId = campaignId,
+                        OrderNo = i,                          // 0-based theo thứ tự gửi lên
+                        Name = c.Name,
+                        Description = c.Description,
+                        Weight = weight,
+                        MaxScore = c.MaxScore,
+                        MinPct = c.MinPct,
+                        Source = source,
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    });
+                }
+            }
 
             // Sửa sai số làm tròn → Σ = 1 tuyệt đối (dồn vào tiêu chí đầu, như nhánh AI).
             criteria[0].Weight += 1m - criteria.Sum(c => c.Weight);
@@ -2806,16 +3095,21 @@ namespace Isas.CampaignService.Services
                 var requested = cleaned[i].Levels;
 
                 var levelSource = requested is null
-                    // null = KHÔNG ĐỔI → mang mốc cũ sang (mint row mới vì tiêu chí cũ sắp bị xoá).
+                    // null = KHÔNG ĐỔI → mang mốc cũ sang.
                     ? carryOver.TryGetValue(target.Name, out var oldLevels)
                         ? oldLevels.Select(l => new CriterionLevelItem { Score = l.Score, Descriptor = l.Descriptor }).ToList()
                         : new List<CriterionLevelItem>()
                     // [] = XOÁ · [...] = thay thế
                     : requested;
 
-                target.Levels = levelSource.Count == 0
+                var newLevels = levelSource.Count == 0
                     ? new List<CampaignCriterionLevel>()
                     : BuildCriterionLevels(target, levelSource, now);
+
+                // Tiêu chí tái dùng: xoá mốc cũ (EF orphan-delete required FK) rồi gán bộ mới. Tiêu chí
+                // mới thì nav mặc định rỗng nên gán thẳng.
+                if (target.Levels is { Count: > 0 }) target.Levels.Clear();
+                foreach (var l in newLevels) target.Levels.Add(l);
             }
 
             return criteria;
@@ -2915,6 +3209,10 @@ namespace Isas.CampaignService.Services
                 Category = s.Category,
                 Text = s.Text,
                 Source = JobNeedSources.AiSuggested,
+                // RNK1 · HĐ-6 — AI KHÔNG đề xuất điều kiện loại. Ép false tường minh (dù default đã
+                // false): điều kiện loại là quyết định HR, gán mặc định "bắt buộc" cho gợi ý AI sẽ
+                // loại oan ứng viên vì một dòng HR chưa từng cân nhắc.
+                IsMustHave = false,
             }).ToList();
         }
 
@@ -2931,6 +3229,7 @@ namespace Isas.CampaignService.Services
             Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
+                .Include(c => c.Questions)   // RNK1 · HĐ-8 — CampaignResponse.questionBank tính từ Questions
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
@@ -2974,6 +3273,9 @@ namespace Isas.CampaignService.Services
                     // Nguồn gốc là sự thật do SERVER sở hữu — BỎ QUA giá trị client gửi. Cho client
                     // khai `source` thì HR tự dán nhãn "AI đề xuất" cho dòng mình gõ tay (lỗ F10).
                     Source = JobNeedSources.HrEdited,
+                    // RNK1 · HĐ-6 — điều kiện loại: GIỮ giá trị client (khác `Source`). Đây là quyết
+                    // định nghiệp vụ của HR (nhu cầu này bắt buộc hay không), không phải nhãn nguồn gốc.
+                    IsMustHave = n.IsMustHave ?? false,
                 });
             }
 
@@ -3029,11 +3331,22 @@ namespace Isas.CampaignService.Services
         private static bool ApplyRubricVersionBump(
             Campaign campaign, Guid actorUserId,
             IEnumerable<CampaignCriterion> before, IEnumerable<CampaignCriterion> after)
+            => ApplyRubricVersionBump(
+                campaign, actorUserId,
+                campaign.Status == CampaignStatus.Active ? RubricFingerprint.Compute(before) : null,
+                after);
+
+        // RNK1 · HĐ-5 — nhận vân tay "trước" ĐÃ TÍNH SẴN: đường PUT campaign nay mutate tiêu chí đang
+        // tracked lúc dựng bộ mới, nên không thể tính lại vân tay "trước" từ campaign.Criteria về sau.
+        // beforeFingerprint == null ⇒ campaign chưa Active (không bao giờ bump) hoặc caller không cần.
+        private static bool ApplyRubricVersionBump(
+            Campaign campaign, Guid actorUserId,
+            string? beforeFingerprint, IEnumerable<CampaignCriterion> after)
         {
             if (campaign.Status != CampaignStatus.Active)
                 return false;
 
-            if (RubricFingerprint.Compute(before) == RubricFingerprint.Compute(after))
+            if (beforeFingerprint is null || beforeFingerprint == RubricFingerprint.Compute(after))
                 return false;
 
             campaign.RubricVersion += 1;

@@ -106,11 +106,37 @@ public class ScoringCriteriaBuilderTests
             ScoringCriteriaBuilder.Build(rubric).Select(c => new
             {
                 c.Name, c.Description, c.Weight, c.MaxScore,
+                // RNK1 · HĐ-5 — khoá JSON "criterionId" (= campaign_criteria.id) đi giữa maxScore và levels.
+                criterionId = c.CriterionId,
                 levels = c.Levels.Select(l => new { l.Score, l.Descriptor })
             }),
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
         Assert.Equal(JsonNode.Parse(expected)!.ToJsonString(), sent);
+    }
+
+    // RNK1 · HĐ-5 — test HỢP ĐỒNG dây `criterionId`: mỗi tiêu chí trên payload mang khoá JSON
+    // camelCase "criterionId" = campaign_criteria.id. Interview ghi nó vào
+    // rubric_criteria.source_criterion_id ⇒ snapshot chấm khớp điểm sàn read-time THEO ID (ổn định
+    // qua PUT). Đổi tên khoá / bỏ field = Campaign khớp sàn theo TÊN, gãy ngay khi HR đổi tên tiêu chí.
+    [Fact]
+    public async Task Payload_moi_tieu_chi_mang_khoa_criterionId_bang_campaign_criteria_id()
+    {
+        var rubric = SampleRubric();
+        var handler = new CapturingHandler();
+
+        await NewClient(handler).CreateOrGetSessionAsync(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BE",
+            new[] { "Q1" }, ScoringCriteriaBuilder.Build(rubric), null, default);
+
+        var criteria = JsonNode.Parse(handler.CapturedBody!)!["criteria"]!.AsArray();
+        Assert.Equal(rubric.Count, criteria.Count);
+        for (var i = 0; i < rubric.Count; i++)
+        {
+            var node = criteria[i]!.AsObject();
+            Assert.True(node.ContainsKey("criterionId"), "thiếu khoá 'criterionId' trên payload tiêu chí");
+            Assert.Equal(rubric[i].Id, (Guid)node["criterionId"]!);
+        }
     }
 
     [Fact]
@@ -188,7 +214,7 @@ public class ScoringCriteriaBuilderTests
         await NewClient(handler).CreateOrGetSessionAsync(
             Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BE",
             new[] { "Q1" }, ScoringCriteriaBuilder.Build(SampleRubric()),
-            null, null, null, null, null, "en", "Senior", 3, null, null, default);
+            null, null, null, null, null, "en", "Senior", 3, null, null, true, default);
 
         using var doc = JsonDocument.Parse(handler.CapturedBody!);
         Assert.Equal(3, doc.RootElement.GetProperty("rubricVersion").GetInt32());

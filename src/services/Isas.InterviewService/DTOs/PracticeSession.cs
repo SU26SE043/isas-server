@@ -86,7 +86,11 @@ public record CampaignCriterionInput(
     // E9 — mốc điểm HR soạn (AI gợi ý rồi HR sửa). null/rỗng = không có mốc ⇒ AIService rơi về dải
     // mặc định 0..maxScore như trước, KHÔNG phải lỗi. Optional ở CUỐI record để bản Campaign cũ —
     // chưa biết field này — vẫn gọi được endpoint mà không vỡ (hai service deploy không nguyên tử).
-    IReadOnlyList<CampaignCriterionLevelInput>? Levels = null
+    IReadOnlyList<CampaignCriterionLevelInput>? Levels = null,
+    // RNK1 · HĐ-5 — campaign_criteria.id (khoá JSON `criterionId`). Ghi vào
+    // rubric_criteria.source_criterion_id lúc materialize ⇒ snapshot chấm khớp điểm sàn read-time
+    // theo id. null = bản Campaign cũ chưa gửi. Optional ở CUỐI record.
+    Guid? CriterionId = null
 );
 
 // I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).
@@ -126,7 +130,10 @@ public record CreateCampaignSessionRequest(
     int? CampaignPolicyVersion = null,
     string? CampaignPolicyExpression = null,
     int? CampaignPolicyPassScorePct = null,
-    string? CampaignPolicyEngineVersion = null
+    string? CampaignPolicyEngineVersion = null,
+    // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty. null (bản Campaign cũ chưa gửi) ⇒ session
+    // skip_penalty = false (không phạt). Optional ở CUỐI record.
+    bool? SkipPenalty = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -166,7 +173,10 @@ public record CreateCampaignSessionInternalRequest(
     int? CampaignPolicyVersion = null,
     string? CampaignPolicyExpression = null,
     int? CampaignPolicyPassScorePct = null,
-    string? CampaignPolicyEngineVersion = null
+    string? CampaignPolicyEngineVersion = null,
+    // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty (khoá JSON trên dây: `skipPenalty`, camelCase
+    // Web). null (bản Campaign cũ) ⇒ session.skip_penalty = false ⇒ không phạt. Optional ở CUỐI record.
+    bool? SkipPenalty = null
 );
 public record PracticeSessionResponse(
     Guid Id,

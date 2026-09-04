@@ -34,10 +34,13 @@ public class ScoringPolicyCvB7Tests
         camp.Domain = "BE";
         camp.JDText = "JD";
         camp.CvPolicyVersion = cvPolicyVersion;
+        // RNK1 · HĐ-6 — trước B5 "mọi nhu cầu coi là bắt buộc"; nay must_have_* CHỈ đếm nhu cầu
+        // IsMustHave. Các test file này dùng biểu thức `MustHaveGate` với giả định mọi nhu cầu đều
+        // là điều kiện loại ⇒ seed IsMustHave = true để giữ đúng ý định test.
         camp.JobNeeds = Enumerable.Range(0, needCount).Select(i => new JobNeed
         {
             NeedId = $"need-{i}", Category = JobNeedCategories.Technical, Text = $"Nhu cầu {i}",
-            Source = JobNeedSources.HrEdited,
+            Source = JobNeedSources.HrEdited, IsMustHave = true,
         }).ToList();
         tdb.Db.Campaigns.Add(camp);
         tdb.Db.SaveChanges();

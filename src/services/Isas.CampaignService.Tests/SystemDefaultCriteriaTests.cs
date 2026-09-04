@@ -586,6 +586,48 @@ public class SystemDefaultCriteriaTests
         Assert.Equal(weights.OrderByDescending(w => w), weights);
     }
 
+    // RNK1 · HĐ-4 — preview trả CẢ nội dung mốc (Score + Descriptor), sắp theo Score, LevelCount khớp.
+    [Fact]
+    public async Task XemTruoc_TraCaMocDiem_SapTheoScore()
+    {
+        using var tdb = new CampaignTestDb();
+        // Mốc CỐ Ý gửi ngược thứ tự để chứng minh preview tự sắp theo Score.
+        var rubric = new B2CRubricResponse("BE", "vi", 3, new List<B2CRubricCriterion>
+        {
+            new("Chiều sâu kỹ thuật", "Hiểu bản chất", 0.60m, 5, new List<B2CRubricLevel>
+            {
+                new(5, D5), new(0, D0), new(3, D3)
+            }),
+            new("Trôi chảy", null, 0.40m, 5, Array.Empty<B2CRubricLevel>()),
+        });
+        var svc = NewService(tdb.NewContext(), StubRubric(rubric).Object);
+
+        var res = await svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default);
+
+        var withLevels = res.Criteria.Single(c => c.Name == "Chiều sâu kỹ thuật");
+        Assert.Equal(new[] { 0, 3, 5 }, withLevels.Levels.Select(l => l.Score));   // đã sắp theo Score
+        Assert.Equal(new[] { D0, D3, D5 }, withLevels.Levels.Select(l => l.Descriptor));
+        Assert.Equal(withLevels.LevelCount, withLevels.Levels.Count);              // LevelCount khớp
+    }
+
+    // RNK1 · HĐ-4 — admin CHƯA soạn mốc ⇒ Levels = [] (KHÔNG null) + LevelCount = 0.
+    [Fact]
+    public async Task XemTruoc_KhongCoMoc_LevelsRong_KhongNull()
+    {
+        using var tdb = new CampaignTestDb();
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default);
+
+        var noLevels = res.Criteria.Single(c => c.Name == "Trôi chảy");
+        Assert.NotNull(noLevels.Levels);
+        Assert.Empty(noLevels.Levels);
+        Assert.Equal(0, noLevels.LevelCount);
+
+        // Tiêu chí có mốc thì Levels đầy — không bị "rỗng hoá" nhầm.
+        Assert.Equal(3, res.Criteria.Single(c => c.Name == "Chiều sâu kỹ thuật").Levels.Count);
+    }
+
     // 🔴 CHỈ ĐỌC: không một lượt SaveChanges nào. Endpoint xem trước mà lỡ ghi thì employer "chỉ nhìn"
     // đã đổi dữ liệu chiến dịch — và không ai đi tìm nguyên nhân ở một nút xem trước.
     [Fact]
@@ -793,5 +835,47 @@ public class SystemDefaultCriteriaTests
         // `id` thì chỉ cấm ở phía NHẬN từ Interview — CampaignCriterion tất nhiên có Id của chính nó.
         Assert.DoesNotContain(typeof(B2CRubricCriterion).GetProperties(),
             p => p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ── RNK1 · HĐ-5: from-system-default KHÔNG chép điểm sàn ─────────────
+
+    // Bộ chuẩn B2C không có khái niệm min_pct; chép về ⇒ MinPct = null trên MỌI tiêu chí (HR đặt sau
+    // qua PUT nếu cần). Chép một giá trị sàn "mặc định" nào đó là gán luật kết luận HR chưa từng khai.
+    [Fact]
+    public async Task ChepVe_MinPct_TatCaNull()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = await SeedAsync(tdb, org);
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        await svc.ApplySystemDefaultCriteriaAsync(org, org, camp.Id, Req(), default);
+
+        using var check = tdb.NewContext();
+        var rows = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id).ToListAsync();
+        Assert.Equal(7, rows.Count);
+        Assert.All(rows, r => Assert.Null(r.MinPct));
+    }
+
+    // ── RNK1 · HĐ-8: response của ApplySystemDefaultCriteriaAsync PHẢI mang questionBank ĐÚNG ─────
+    // Trước fix: load chỉ `.Include(Criteria)` ⇒ c.Questions rỗng ⇒ questionBank.total = 0 (chạy được
+    // trên Active theo CAMP-18). DTO khẳng định "tính read-time trên MỌI CampaignResponse".
+    [Fact]
+    public async Task Rnk1B7_ChepBoChuan_Response_QuestionBank_DemDungCau()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = await SeedAsync(tdb, org, CampaignStatus.Active);
+        tdb.Db.CampaignQuestions.AddRange(
+            new CampaignQuestion { Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = org, QuestionText = "Q1", Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow },
+            new CampaignQuestion { Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = org, QuestionText = "Q2", Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow.AddSeconds(1) });
+        await tdb.Db.SaveChangesAsync();
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await svc.ApplySystemDefaultCriteriaAsync(org, org, camp.Id, Req(), default);
+
+        Assert.Equal(2, res.QuestionBank.Total);
+        Assert.Equal(2, res.QuestionBank.AlwaysAsked);
+        Assert.Empty(res.QuestionBank.Warnings);
     }
 }

@@ -57,10 +57,18 @@ namespace Isas.CampaignService.DTOs
     // Ưu tiên cao nhất (có thì publish bỏ qua AI). Σweight ∈ [0.99,1.01] → chuẩn hoá Σ→1.
     public class CriterionItem
     {
+        // RNK1 · HĐ-5 — echo id tiêu chí đang có ⇒ server GIỮ id (update tại chỗ), để snapshot chấm
+        // (criterionId) có khoá ỔN ĐỊNH khớp về. Vắng / id lạ ⇒ id mới. FE luôn echo id khi sửa.
+        public Guid? Id { get; set; }
+
         public string Name { get; set; } = null!;
         public string? Description { get; set; }
         public decimal Weight { get; set; }   // 0 < weight ≤ 1
         public int MaxScore { get; set; }      // ≥ 1
+
+        // RNK1 · HĐ-5 — điểm sàn % (0..100; null = không sàn; PUT gửi thiếu = null = bỏ sàn). Là luật
+        // KẾT LUẬN, KHÔNG bump rubric_version — xem CampaignCriterion.MinPct.
+        public int? MinPct { get; set; }
 
         /// <summary>
         /// CAMP-16 — mốc điểm. BA trạng thái, không phải hai (cùng hợp đồng với
@@ -72,13 +80,14 @@ namespace Isas.CampaignService.DTOs
         /// </list>
         ///
         /// <para>Bất đối xứng có chủ đích, và ở đây nó gay gắt hơn <c>SampleAnswer</c>: PUT criteria là
-        /// replace-all MINT ID MỚI, nên coi <c>null</c> là "xoá" thì một lần HR bấm Lưu trên bản FE cũ
+        /// replace-all, nên coi <c>null</c> là "xoá" thì một lần HR bấm Lưu trên bản FE cũ
         /// (chưa biết field này) là mất trắng mốc điểm của cả chiến dịch — mà mất mốc KHÔNG có triệu
         /// chứng: Interview lặng lẽ rơi về dải mặc định và vẫn chấm ra điểm.</para>
         ///
-        /// <para>⚠ Carry-over ghép theo <b>tên tiêu chí</b> (case-insensitive) vì id bị mint mới. Hệ quả:
-        /// ĐỔI TÊN tiêu chí mà không gửi kèm <c>levels</c> thì mốc MẤT. FE phải luôn gửi <c>levels</c>
-        /// khi người dùng sửa tên.</para>
+        /// <para>⚠ Carry-over ghép theo <b>tên tiêu chí</b> (case-insensitive). RNK1 · HĐ-5 nay cho
+        /// <see cref="Id"/> echo lại được để GIỮ id (khoá ổn định cho snapshot chấm), nhưng carry-over
+        /// mốc vẫn theo TÊN. Hệ quả không đổi: ĐỔI TÊN tiêu chí mà không gửi kèm <c>levels</c> thì mốc
+        /// MẤT. FE phải luôn gửi <c>levels</c> khi người dùng sửa tên.</para>
         /// </summary>
         public List<CriterionLevelItem>? Levels { get; set; }
     }
@@ -252,6 +261,8 @@ namespace Isas.CampaignService.DTOs
         public string? Description { get; set; }
         public decimal Weight { get; set; }
         public int MaxScore { get; set; }
+        // RNK1 · HĐ-5 — điểm sàn %. null = không sàn. FE echo lại field này ở PUT (cùng với Id) khi sửa.
+        public int? MinPct { get; set; }
         public string Source { get; set; } = null!;
 
         /// <summary>
@@ -270,6 +281,9 @@ namespace Isas.CampaignService.DTOs
         public string Category { get; set; } = null!;   // Technical | WorkStyle | Communication | Growth
         public string Text { get; set; } = null!;
         public string Source { get; set; } = null!;     // AiSuggested | HrEdited — server sở hữu (F10)
+        /// <summary>RNK1 · HĐ-6 — nhu cầu bắt buộc: thiếu bằng chứng Strong/Partial ⇒ ứng viên
+        /// bị loại (<c>eligible = false</c>) ngay lúc sàng. HR sở hữu; AI không đề xuất.</summary>
+        public bool IsMustHave { get; set; }
     }
 
     /// <summary>
@@ -283,6 +297,100 @@ namespace Isas.CampaignService.DTOs
         public string? NeedId { get; set; }
         public string? Category { get; set; }
         public string? Text { get; set; }
+        /// <summary>
+        /// RNK1 · HĐ-6 — nhu cầu bắt buộc (điều kiện loại). CÓ ở đây (khác <c>Source</c>): là quyết
+        /// định nghiệp vụ của HR, không phải nhãn nguồn gốc ⇒ giá trị client GIỮ NGUYÊN. null ⇒ false.
+        /// </summary>
+        public bool? IsMustHave { get; set; }
+    }
+
+    /// <summary>RNK1 · HĐ-8 — một nhóm chủ đề trong ngân hàng đề + số câu thuộc nhóm đó.</summary>
+    public class QuestionBankGroup
+    {
+        public string Name { get; set; } = null!;
+        public int Count { get; set; }
+    }
+
+    /// <summary>
+    /// RNK1 · HĐ-8 — tóm tắt NGÂN HÀNG ĐỀ, tính READ-TIME trên mọi <see cref="CampaignResponse"/>.
+    /// <c>Warnings</c> KHÔNG rỗng ⇒ publish trả <b>400</b> <c>{ code: "QUESTION_BANK_INVALID", warnings }</c>.
+    /// </summary>
+    public class QuestionBankSummary
+    {
+        /// <summary>Tổng số câu trong bộ.</summary>
+        public int Total { get; set; }
+        /// <summary>Số câu <c>isRequired</c> — MỌI ứng viên đều gặp (selector giữ hết, kể cả khi vượt K).</summary>
+        public int AlwaysAsked { get; set; }
+        /// <summary>K = số câu mỗi buổi. null = thi trọn bộ.</summary>
+        public int? QuestionsPerSession { get; set; }
+        /// <summary>Phân bố theo nhóm. Nhóm null/"" gộp thành <c>"Chung"</c>, gộp không phân biệt hoa/thường (như selector).</summary>
+        public List<QuestionBankGroup> Groups { get; set; } = new();
+        /// <summary>Ca bất thường (đọc được cho HR + là gate publish). Rỗng = ổn.</summary>
+        public List<string> Warnings { get; set; } = new();
+
+        /// <summary>
+        /// NGUỒN DUY NHẤT: dùng chung cho <see cref="CampaignResponse.FromEntity"/> (read-time) và
+        /// gate publish (đọc <see cref="Warnings"/>).
+        /// </summary>
+        public static QuestionBankSummary Build(
+            IEnumerable<CampaignQuestion> questionsSource,
+            int? questionsPerSession, int? maxDeepPerQuestion, int? maxQuestions)
+        {
+            // Sắp theo (CreatedAt, Id) TRƯỚC — như `FromEntity` sắp `Questions` — để:
+            //   • casing hiển thị của nhóm = casing HR gõ ở câu SỚM NHẤT của nhóm đó (tất định);
+            //   • thứ tự nhóm ổn định giữa các lần gọi (không phụ thuộc thứ tự EF nạp).
+            var questions = (questionsSource as IEnumerable<CampaignQuestion> ?? Array.Empty<CampaignQuestion>())
+                .OrderBy(q => q.CreatedAt).ThenBy(q => q.Id)
+                .ToList();
+            var total = questions.Count;
+            var alwaysAsked = questions.Count(q => q.IsRequired);
+
+            // Nhóm: normalize null/whitespace → null; gộp OrdinalIgnoreCase (như QuestionPoolSelector).
+            // Thứ tự: nhóm "Chung" (null) trước, rồi theo tên hiển thị.
+            var groups = questions
+                .GroupBy(
+                    q => string.IsNullOrWhiteSpace(q.QuestionGroup) ? null : q.QuestionGroup!.Trim(),
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(g => new
+                {
+                    IsGeneral = g.Key is null,
+                    // g giữ thứ tự nguồn (đã sắp CreatedAt,Id) ⇒ First() = casing của câu sớm nhất.
+                    Name = g.Key is null ? "Chung" : g.First().QuestionGroup!.Trim(),
+                    Count = g.Count(),
+                })
+                .OrderBy(x => x.IsGeneral ? 0 : 1)
+                .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(x => new QuestionBankGroup { Name = x.Name, Count = x.Count })
+                .ToList();
+
+            var k = questionsPerSession ?? total;
+            var d = maxDeepPerQuestion ?? 0;
+            var t = maxQuestions ?? 0;
+
+            var warnings = new List<string>();
+            // (1) K > total: không phải lỗi ở save (FE gửi PUT campaign trước questions) — selector rơi
+            //     về "thi trọn bộ". Nhưng publish thì phải sạch.
+            if (questionsPerSession is int kSet && kSet > total)
+                warnings.Add(
+                    $"questions_per_session ({kSet}) lớn hơn số câu trong bộ ({total}) — ứng viên sẽ thi trọn bộ.");
+            // (2) alwaysAsked > K: selector giữ HẾT câu bắt buộc ⇒ buổi dài hơn K, không còn khe cho câu rút.
+            if (alwaysAsked > k)
+                warnings.Add(
+                    $"Số câu bắt buộc ({alwaysAsked}) nhiều hơn số câu mỗi buổi ({k}) — mỗi buổi sẽ dài hơn {k} câu.");
+            // (3) K×(1+d) > T — dùng chung luật với RNK1-B6 (AdaptiveBudgetRule).
+            if (Isas.CampaignService.Validation.AdaptiveBudgetRule.Check(k, d, t) is { } v)
+                warnings.Add(
+                    $"Ngân sách buổi ({v.Have}) không đủ cho {v.Questions} câu × (1 + {v.Deep} đào sâu) = {v.Need} câu.");
+
+            return new QuestionBankSummary
+            {
+                Total = total,
+                AlwaysAsked = alwaysAsked,
+                QuestionsPerSession = questionsPerSession,
+                Groups = groups,
+                Warnings = warnings,
+            };
+        }
     }
 
     public class CampaignResponse
@@ -299,6 +407,9 @@ namespace Isas.CampaignService.DTOs
         public bool AntiCheatEnabled { get; set; }
         public bool FaceVerifyEnabled { get; set; }   // SEC-1: bật face-verify (B2B-only)
         public int? PassScorePct { get; set; }   // E5: ngưỡng % pass/fail (null = HR quyết tay)
+        // RNK1 · HĐ-2 / CAMP-21 — luật câu bỏ trống tính 0 điểm. SERVER SỞ HỮU (không có trên
+        // Create/Update request): campaign mới = true, campaign trước RNK1 = false. FE chỉ hiển thị.
+        public bool SkipPenalty { get; set; }
         // SCP1-B13 — con trỏ chính sách chấm ĐANG ÁP (khớp campaigns.{interview,cv}_policy_version).
         // null = chưa áp chính sách nào ⇒ điểm bằng công thức mặc định. CHỈ số version — nội dung biểu
         // thức xem qua endpoint danh sách chính sách (đã có kiểm soát quyền). KHÔNG lộ cho ứng viên
@@ -322,6 +433,8 @@ namespace Isas.CampaignService.DTOs
         public DateTime? StartsAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public List<CampaignQuestionResponse> Questions { get; set; }
+        // RNK1 · HĐ-8 — tóm tắt ngân hàng đề (total / alwaysAsked / K / groups / warnings), tính read-time.
+        public QuestionBankSummary QuestionBank { get; set; } = new();
         public List<CampaignCriterionResponse> Criteria { get; set; }   // C12: tiêu chí structured
         // HR technical screener bước 1 — thước đo dùng cho MỌI CV của campaign này. `[]` khi chưa
         // chốt (chưa publish hoặc AI không suy được từ JD) ⇒ sàng CV chưa chạy được.
@@ -354,6 +467,7 @@ namespace Isas.CampaignService.DTOs
             AntiCheatEnabled = c.AntiCheatEnabled,
             FaceVerifyEnabled = c.FaceVerifyEnabled,
             PassScorePct = c.PassScorePct,
+            SkipPenalty = c.SkipPenalty,                         // RNK1 · HĐ-2 / CAMP-21
             InterviewPolicyVersion = c.InterviewPolicyVersion,   // SCP1-B13
             CvPolicyVersion = c.CvPolicyVersion,                 // SCP1-B13
             AdaptiveEnabled = c.AdaptiveEnabled,   // INT-17
@@ -375,6 +489,7 @@ namespace Isas.CampaignService.DTOs
                     Category = n.Category,
                     Text = n.Text,
                     Source = n.Source,
+                    IsMustHave = n.IsMustHave,   // RNK1 · HĐ-6
                 }).ToList(),
             // F10: sắp theo ĐÚNG thứ tự ứng viên sẽ gặp (ParticipationService dùng CreatedAt, Id) —
             // FE echo `id` lại khi PUT, nên thứ tự response phải ổn định giữa các lần gọi.
@@ -390,6 +505,9 @@ namespace Isas.CampaignService.DTOs
                 SampleAnswer = includeSampleAnswer ? q.SampleAnswer : null,
                 QuestionGroup = q.QuestionGroup
             }).ToList(),
+            // RNK1 · HĐ-8 — tóm tắt ngân hàng đề (đọc từ CÙNG c.Questions đã nạp, không query thêm).
+            QuestionBank = QuestionBankSummary.Build(
+                c.Questions, c.QuestionsPerSession, c.MaxDeepPerQuestion, c.MaxQuestions),
             Criteria = c.Criteria
                 .OrderBy(cr => cr.OrderNo)
                 .Select(cr => new CampaignCriterionResponse
@@ -400,6 +518,7 @@ namespace Isas.CampaignService.DTOs
                     Description = cr.Description,
                     Weight = cr.Weight,
                     MaxScore = cr.MaxScore,
+                    MinPct = cr.MinPct,                 // RNK1 · HĐ-5
                     Source = cr.Source.ToString(),
                     Levels = (cr.Levels ?? new List<CampaignCriterionLevel>())
                         .OrderBy(l => l.Score)

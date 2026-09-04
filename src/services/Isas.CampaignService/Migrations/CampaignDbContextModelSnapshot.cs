@@ -300,6 +300,12 @@ namespace Isas.CampaignService.Migrations
                         .HasDefaultValue("Junior")
                         .HasColumnName("seniority");
 
+                    b.Property<bool>("SkipPenalty")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("skip_penalty");
+
                     b.Property<DateTime>("StartsAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("starts_at");
@@ -387,6 +393,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("max_score");
 
+                    b.Property<int?>("MinPct")
+                        .HasColumnType("integer")
+                        .HasColumnName("min_pct");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -427,6 +437,8 @@ namespace Isas.CampaignService.Migrations
                     b.ToTable("campaign_criteria", null, t =>
                         {
                             t.HasCheckConstraint("ck_campaign_criteria_max_score_range", "max_score >= 1 AND max_score <= 100");
+
+                            t.HasCheckConstraint("ck_campaign_criteria_min_pct_range", "min_pct IS NULL OR (min_pct >= 0 AND min_pct <= 100)");
 
                             t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited', 'SystemDefault')");
 

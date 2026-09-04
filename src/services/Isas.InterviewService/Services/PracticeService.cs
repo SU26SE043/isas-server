@@ -738,24 +738,32 @@ public class PracticeService : IPracticeService
                 CampaignPolicyExpression = request.CampaignPolicyExpression,
                 CampaignPolicyPassScorePct = request.CampaignPolicyPassScorePct,
                 CampaignPolicyEngineVersion = request.CampaignPolicyEngineVersion,
+                // RNK1 · HĐ-2 / CAMP-21 — ghim luật câu bỏ trống. null (bản Campaign cũ) ⇒ false.
+                SkipPenalty = request.SkipPenalty ?? false,
                 JobCategory = request.JobCategory,
                 Seniority = seniority,
                 Language = language,
                 Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
                 CreatedAt = DateTime.UtcNow,
                 Deadline = request.ExpiresAt,   // I2: hạn chót nhận bài (B2B); null → không hard-deadline
-                // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = TOÀN BỘ campaign questions (ai cũng
-                // nhận cùng bộ, công bằng), chấm theo cùng tiêu chí. null → tắt.
-                // INT-17b: `MaxDeepPerQuestion > 0` → mỗi câu campaign có chuỗi đào sâu XEN KẼ ngay sau nó
-                // (thay vì dồn ở đuôi buổi); vẫn công bằng vì mọi ứng viên nhận cùng bộ câu gốc và cùng trần.
+                // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = K câu (`request.Questions` —
+                // ParticipationService đã RÚT ĐỀU theo nhóm từ ngân hàng đề, RNK1 · HĐ-8), chấm theo
+                // cùng tiêu chí. null → tắt.
+                // ⚠ CÔNG BẰNG (CAMP-10) = mọi ứng viên nhận CÙNG K câu gốc + rút ĐỀU theo nhóm — KHÔNG
+                // phải "cùng đề": HR up 60 câu, mỗi người bốc K=20 khác nhau. Ràng buộc chéo `T ≥ K×(1+d)`
+                // (RNK1 · HĐ-7) bảo đảm mọi chuỗi đủ khe.
+                // INT-17b: `MaxDeepPerQuestion > 0` → mỗi câu gốc có chuỗi đào sâu XEN KẼ ngay sau nó
+                // (thay vì dồn ở đuôi buổi).
                 AdaptiveEnabled = request.AdaptiveEnabled ?? false,
                 MaxQuestions = ClampCampaignMaxQuestions(request.MaxQuestions, request.CampaignId),
                 // INT-17b — ĐỐI XỨNG đường B2C (:195-199): ở chế độ chuỗi, trần theo BUỔI phải để 0.
                 // Để nguyên giá trị HR khai thì nó bó chặt hơn trần theo CÂU, vì `AnswerService` đếm
-                // `followUpCount` trên MỌI câu non-Seed của cả buổi ⇒ ngân sách cạn giữa chuỗi. Đo được:
-                // campaign maxDeep=2 + maxFollowUps=3, 4 câu gốc → phân bố câu sâu 2/1/0/0 PHỤ THUỘC
-                // THỨ TỰ TRẢ LỜI ⇒ hai ứng viên cùng campaign nhận số câu và chủ đề khác nhau, trong khi
-                // điểm vẫn đem xếp hạng chung (CAMP-10). `MaxQuestions` mới là trần buổi.
+                // `followUpCount` trên MỌI câu non-Seed của cả buổi ⇒ ngân sách cạn giữa chuỗi ⇒ hai
+                // ứng viên cùng campaign nhận số câu và chủ đề khác nhau, trong khi điểm vẫn đem xếp
+                // hạng chung (CAMP-10). `MaxQuestions` mới là trần buổi.
+                // RNK1 · HĐ-7 — Campaign nay CŨNG ép `MaxFollowUps = 0` khi `d > 0` (create/update/
+                // publish) + chặn `T < K×(1+d)`; vế này là LƯỚI thứ hai (đường internal có thể được
+                // gọi bởi bản Campaign cũ hoặc test).
                 // Điều kiện MỘT vế, source-independent: đường B2B không đọc entitlement (Campaign chỉ
                 // CHẶN lúc HR bật, không CẤP giá trị; EntitlementSnapshot không có MaxDeepPerQuestion).
                 MaxFollowUps = maxDeepPerQuestion > 0 ? 0 : (request.MaxFollowUps ?? 0),
@@ -812,6 +820,9 @@ public class PracticeService : IPracticeService
                     IsActive = true,
                     JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
                     CampaignId = request.CampaignId,
+                    // RNK1 · HĐ-5 — id tiêu chí bên Campaign (ổn định qua PUT). null (bản Campaign cũ) ⇒
+                    // snapshot chấm khớp điểm sàn theo TÊN thay vì id.
+                    SourceCriterionId = c.CriterionId,
                     Language = language,
                     Version = pinnedRubricVersion,
                     // E9 — mốc điểm HR soạn. Rỗng/null ⇒ không tạo level nào ⇒ AIService rơi về dải

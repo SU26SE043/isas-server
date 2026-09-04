@@ -161,6 +161,15 @@ public class PracticeSession : IHasUpdatedAt
     public int? CampaignPolicyPassScorePct { get; set; }
     public string? CampaignPolicyEngineVersion { get; set; }
 
+    // RNK1 · HĐ-2 / CAMP-21 — GHIM luật "câu HR khai mà ứng viên bỏ trống tính 0 điểm" của buổi B2B
+    // này. Nhận từ CreateCampaignSessionInternalRequest (campaigns.skip_penalty), ghim lại — cùng mẫu
+    // CampaignRubricVersion/CampaignPolicy*: dùng cấu hình LÚC TẠO, không phải cấu hình đổi sau.
+    //
+    //   false (default) = buổi B2C · buổi B2B của campaign có TRƯỚC RNK1 (backfill skip_penalty=false)
+    //          · buổi tạo trước cột này. true = campaign tạo từ RNK1 trở đi ⇒ điểm tổng =
+    //          clamp(expr × seed_completeness, 0, 100) (SessionScoringNotifier + ScoringPolicyService).
+    public bool SkipPenalty { get; set; }
+
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.

@@ -227,7 +227,7 @@ public class CampaignCapacityBk21Tests
         // 2 CV = 2 suất = đúng cap. Mời chính 2 người đó phải QUA (0 suất mới).
         // Đếm row invitation như trước BK21 sẽ ra 0 + 2 > 2 → chặn oan.
         var result = await svc.InviteShortlistedCandidatesAsync(
-            owner, owner, camp.Id, new List<Guid> { a.Id, b.Id }, default);
+            owner, owner, camp.Id, new List<Guid> { a.Id, b.Id }, includeIneligible: false, default);
 
         Assert.Equal(2, result.Invited.Count);
         Assert.Empty(result.Failed);

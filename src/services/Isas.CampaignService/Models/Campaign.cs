@@ -21,6 +21,12 @@
         public bool FaceVerifyEnabled { get; set; }
         // E5: ngưỡng % điểm tổng để auto pass/fail (0–100, CAMP-11). null = không auto → HR quyết tay.
         public int? PassScorePct { get; set; }
+        // RNK1 · HĐ-2 / CAMP-21 — LUẬT: câu HR khai mà ứng viên bỏ trống tính 0 điểm. SERVER SỞ HỮU,
+        // KHÔNG nhận từ POST/PUT. Campaign tạo TỪ bản này = true (default); campaign đã có TRƯỚC bản
+        // này = false (migration backfill UPDATE) — không đổi thước đo giữa chiến dịch đang chạy.
+        // Gửi sang Interview lúc tạo buổi (ghim practice_sessions.skip_penalty). skipPenalty = true ⇒
+        // điểm tổng B2B = clamp(expr × seed_completeness, 0, 100).
+        public bool SkipPenalty { get; set; } = true;
         // SCP1 · HĐ-3 — CON TRỎ tới chính sách chấm đang dùng. = scoring_policies.version của bản
         // (campaign_id = this, kind = ...) đang hiệu lực. null = chưa áp chính sách nào → dùng công
         // thức mặc định (weighted / trung bình cộng). KHÔNG có cột is_active bên scoring_policies —

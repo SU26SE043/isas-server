@@ -31,10 +31,14 @@ namespace Isas.CampaignService.Services
             // SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức) đang áp cho campaign. null =
             // campaign chưa áp chính sách nào ⇒ buổi thi dùng công thức weighted mặc định.
             CampaignScoringPolicyInput? scoringPolicy = null,
+            // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty (server-owned). Interview ghim
+            // practice_sessions.skip_penalty; true ⇒ điểm tổng = clamp(expr × seed_completeness, 0, 100).
+            // Default true = campaign tạo từ bản RNK1 trở đi (caller thực luôn truyền campaign.SkipPenalty).
+            bool skipPenalty = true,
             CancellationToken ct = default);
         // Overload đầy đủ: KHÔNG đặt default cho `language`/`seniority`/`ct` — caller duy nhất
         // (ParticipationService) truyền đủ, và để trống default thì hai overload không thể nhập nhằng.
-        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, CancellationToken ct);
+        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, bool skipPenalty, CancellationToken ct);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
         // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).
@@ -90,6 +94,12 @@ namespace Isas.CampaignService.Services
     {
         public IReadOnlyList<SessionCriterionLevelInput> Levels { get; init; }
             = Array.Empty<SessionCriterionLevelInput>();
+
+        /// <summary>RNK1 · HĐ-5 — <c>campaign_criteria.id</c>. Interview ghi vào
+        /// <c>rubric_criteria.source_criterion_id</c> (ref lỏng, không FK xuyên service) để snapshot
+        /// chấm khớp về đúng tiêu chí khi tính điểm sàn read-time. Khoá JSON trên dây: <c>criterionId</c>.
+        /// Init-only có mặc định null ⇒ call site cũ không phải sửa.</summary>
+        public Guid? CriterionId { get; init; }
     }
 
     /// <summary>Một mốc điểm (E9 hard-anchor) — map 1-1 sang <c>rubric_levels</c> phía Interview.</summary>
