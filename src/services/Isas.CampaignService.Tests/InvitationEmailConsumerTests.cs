@@ -69,6 +69,8 @@ public class InvitationEmailConsumerTests
         // Sender được gọi đúng 1 lần với email + link magic-link mong đợi (deserialize PascalCase OK).
         // Path '/invite/' khớp route FE `app.routes.ts: path: 'invite/:token'` — KHÔNG phải '/invitations/'
         // (đó là route API của ParticipationController, trả JSON, không phải trang bấm được).
+        // CMP1-B4 — job không set 4 trường mới (dùng constructor 6-arg cũ) ⇒ default null/null/false/
+        // null phải tới sender NGUYÊN VẸN — chứng minh chặng dây không âm thầm đổi giá trị mặc định.
         sender.Verify(s => s.SendInvitationEmailAsync(
             "cand@acme.test",
             "Backend Q3",
@@ -76,6 +78,7 @@ public class InvitationEmailConsumerTests
             expires,
             null,
             null,
+            null, null, false, null,
             It.IsAny<CancellationToken>()), Times.Once);
         sender.VerifyNoOtherCalls();
 
@@ -109,7 +112,7 @@ public class InvitationEmailConsumerTests
 
         sender.Verify(s => s.SendInvitationEmailAsync(
             inv.Email, "Backend Q3", "https://fe.test/invite/slot-token", null,
-            startsAt, endsAt, It.IsAny<CancellationToken>()), Times.Once);
+            startsAt, endsAt, null, null, false, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     /// <summary>
@@ -143,6 +146,7 @@ public class InvitationEmailConsumerTests
             null,
             null,
             null,
+            null, null, false, null,
             It.IsAny<CancellationToken>()), Times.Once);
 
         // Chốt lại cho rõ: host của gateway không được xuất hiện trong bất kỳ link nào gửi đi.
@@ -153,6 +157,7 @@ public class InvitationEmailConsumerTests
             It.IsAny<DateTime?>(),
             It.IsAny<DateTime?>(),
             It.IsAny<DateTime?>(),
+            It.IsAny<DateTime?>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -176,6 +181,7 @@ public class InvitationEmailConsumerTests
             null,
             null,
             null,
+            null, null, false, null,
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -191,7 +197,9 @@ public class InvitationEmailConsumerTests
 
         sender.Verify(s => s.SendInvitationEmailAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(),
+            It.IsAny<DateTime?>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // DB2b — dedup: deliver lần 2 khi email_sent_at đã set → KHÔNG gửi trùng (vẫn ack, không throw).
@@ -211,7 +219,9 @@ public class InvitationEmailConsumerTests
 
         sender.Verify(s => s.SendInvitationEmailAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(),
+            It.IsAny<DateTime?>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
 
         // email_sent_at giữ mốc cũ (không đè).
         using var check = tdb.NewContext();
@@ -236,7 +246,8 @@ public class InvitationEmailConsumerTests
         await consumer.ProcessMessageAsync(body, sender.Object, tdb.NewContext(), default);
 
         sender.Verify(s => s.SendInvitationEmailAsync(
-            "once@acme.test", "Backend", It.IsAny<string>(), null, null, null, It.IsAny<CancellationToken>()), Times.Once);
+            "once@acme.test", "Backend", It.IsAny<string>(), null, null, null,
+            null, null, false, null, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // DB2b — invitation không tồn tại (đã xoá / campaign soft-delete) → bỏ qua (không gửi, không throw → ack).
@@ -253,6 +264,8 @@ public class InvitationEmailConsumerTests
 
         sender.Verify(s => s.SendInvitationEmailAsync(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
-            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<CancellationToken>()), Times.Never);
+            It.IsAny<DateTime?>(), It.IsAny<DateTime?>(), It.IsAny<DateTime?>(),
+            It.IsAny<DateTime?>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 }

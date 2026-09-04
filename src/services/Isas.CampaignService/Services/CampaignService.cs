@@ -42,6 +42,10 @@ namespace Isas.CampaignService.Services
         // CAMP-16 — AI soạn mốc điểm. Optional (default null) để mọi call-site test hiện có giữ nguyên;
         // DI luôn resolve client thật. null → chỉ hỏng đúng endpoint gợi ý mốc, không đường nào khác.
         private readonly IAiServiceLevelSuggester? _levelSuggester;
+        // CMP1-B4 — resolve tên org cho thư mời (chữ ký + có thể mở rộng sau). Optional (null → thư
+        // vẫn gửi, chữ ký fallback "Đội ngũ ISAS", KHÔNG chặn đường mời) — cùng nếp _sessionClient/
+        // _entitlements ở trên: DI luôn resolve client thật (đăng ký từ B1), test có thể bỏ qua.
+        private readonly IOrgNameResolver? _orgNameResolver;
         private readonly bool _bilingualEnabled;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
@@ -59,7 +63,8 @@ namespace Isas.CampaignService.Services
             IEntitlementClient? entitlements = null,
             IConfiguration? config = null,
             IAiServiceLevelSuggester? levelSuggester = null,
-            IJobNeedsSuggester? jobNeedsSuggester = null)
+            IJobNeedsSuggester? jobNeedsSuggester = null,
+            IOrgNameResolver? orgNameResolver = null)
         {
             _jobNeedsSuggester = jobNeedsSuggester;
             _questionGenerator = questionGenerator;
@@ -73,7 +78,25 @@ namespace Isas.CampaignService.Services
             _sessionClient = sessionClient;
             _entitlements = entitlements;
             _levelSuggester = levelSuggester;
+            _orgNameResolver = orgNameResolver;
             _bilingualEnabled = bool.TryParse(config?["Campaign:Bilingual:Enabled"], out var bilingual) && bilingual;
+        }
+
+        // CMP1-B4 — resolve tên org cho thư mời, fail-soft ở HAI LỚP (mẫu ParticipationService B1):
+        // resolver tự nuốt lỗi (AuthOrgNameResolver), nhưng bọc thêm ở đây để một resolver tương lai
+        // regress cũng KHÔNG chặn được đường mời — mất chữ ký công ty còn hơn mất cả lời mời.
+        private async Task<string?> ResolveOrgNameSafeAsync(Guid orgId, CancellationToken ct)
+        {
+            if (_orgNameResolver is null) return null;
+            try
+            {
+                return await _orgNameResolver.ResolveOrgNameAsync(orgId, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Resolve tên org {OrgId} ném khi soạn thư mời — orgName = null.", orgId);
+                return null;
+            }
         }
 
         public async Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct = default)
@@ -1379,6 +1402,10 @@ namespace Isas.CampaignService.Services
             {
                 _db.CampaignInvitations.AddRange(invitations.Select(x => x.Invitation));
 
+                // CMP1-B4 — resolve MỘT LẦN cho cả batch (không phải mỗi invitation), org_id không
+                // đổi trong vòng lặp này.
+                var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
+
                 // DB2b — Transactional Outbox: ghi outbox-row CÙNG SaveChanges tạo invitation (thay
                 // "publish best-effort SAU commit" cũ = dual-write mất mail khi broker down giữa 2 lần
                 // SaveChanges). SentAt = "đã vào outbox" (dispatcher publish sau). Response giữ shape cũ.
@@ -1386,8 +1413,11 @@ namespace Isas.CampaignService.Services
                 {
                     invitation.SentAt = now;
                     // Job mang token THÔ (email phải chứa link dùng được) — DB chỉ có hash.
+                    // CMP1-B4 — StartsAt/FaceVerifyEnabled/TimeLimitMinutes đọc thẳng từ campaign đã
+                    // nạp; OrgName resolve ở trên. Thiếu 1 trong 4 ở đây = thư gửi được, chỉ thiếu chữ.
                     _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                        invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt)));
+                        invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt,
+                        campaign.StartsAt, orgName, campaign.FaceVerifyEnabled, campaign.TimeLimitMinutes)));
                     response.Created.Add(new InvitationItem { Id = invitation.Id, Email = invitation.Email, ExpiresAt = invitation.ExpiresAt });
                 }
 
@@ -1692,6 +1722,8 @@ namespace Isas.CampaignService.Services
             var now = DateTime.UtcNow;
             var expiresAt = ResolveInvitationExpiry(campaign, now);
             var assignedSlots = await AssignSlotsAsync(campaign.Id, toInvite.Count, ct);
+            // CMP1-B4 — resolve MỘT LẦN cho cả batch.
+            var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
             foreach (var (cand, index) in toInvite.Select((value, index) => (value, index)))
             {
                 var rawToken = InvitationTokens.NewRawToken();   // DB23 — thô cho email, hash cho DB
@@ -1712,8 +1744,10 @@ namespace Isas.CampaignService.Services
                 _db.CampaignInvitations.Add(invitation);
 
                 // DB2b — outbox-row CÙNG SaveChanges tạo invitation (không dual-write mất mail khi broker down).
+                // CMP1-B4 — += StartsAt/OrgName/FaceVerifyEnabled/TimeLimitMinutes (xem site đường-1 ở trên).
                 _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                    invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt)));
+                    invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt,
+                    campaign.StartsAt, orgName, campaign.FaceVerifyEnabled, campaign.TimeLimitMinutes)));
 
                 response.Invited.Add(new InvitedCandidateItem
                 {
@@ -1778,8 +1812,11 @@ namespace Isas.CampaignService.Services
 
             // DB2b — outbox-row CÙNG transaction (revoke token cũ + tạo fresh + outbox = 1 SaveChanges).
             // Thay "resend best-effort SAU commit" cũ (mất mail khi broker down) — dispatcher publish sau.
+            // CMP1-B4 — += StartsAt/OrgName/FaceVerifyEnabled/TimeLimitMinutes (1 invitation/lần, resolve tại chỗ).
+            var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
             _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                fresh.Id, campaign.Id, fresh.Email, rawToken, campaign.Title, fresh.ExpiresAt)));
+                fresh.Id, campaign.Id, fresh.Email, rawToken, campaign.Title, fresh.ExpiresAt,
+                campaign.StartsAt, orgName, campaign.FaceVerifyEnabled, campaign.TimeLimitMinutes)));
 
             AddAudit(actorUserId, orgId, AuditAction.ReissueInvitation, campaign.Id, $"Phát lại lời mời cho {old.Email}");
             await _db.SaveChangesAsync(ct);

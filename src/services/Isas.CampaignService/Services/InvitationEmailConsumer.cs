@@ -175,9 +175,14 @@ namespace Isas.CampaignService.Services
                     x => x.Id == slotId && x.CampaignId == invitation.CampaignId, ct)
                 : null;
 
+            // CMP1-B4 — 4 trường cuối truyền THẲNG từ payload (đã resolve/chốt lúc tạo job phía
+            // CampaignService — xem InvitationEmailJob). Đây là chặng dây dễ rụng nhất: bỏ sót một
+            // trường ở đây thì thư vẫn gửi, chỉ thiếu đúng chữ đó, không lỗi ở đâu cả.
             await sender.SendInvitationEmailAsync(
                 job.Email, job.CampaignTitle, link, job.ExpiresAt,
-                slot?.StartsAt, slot?.EndsAt, ct);
+                slot?.StartsAt, slot?.EndsAt,
+                job.StartsAt, job.OrgName, job.FaceVerifyEnabled, job.TimeLimitMinutes,
+                ct);
 
             // Đánh dấu đã gửi + persist TRƯỚC BasicAckAsync (caller ack sau khi hàm này trả về) → chống
             // gửi trùng khi redeliver. SMTP gửi 2 lần (crash giữa gửi-và-persist) hiếm & không hại như loop.
