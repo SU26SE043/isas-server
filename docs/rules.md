@@ -67,10 +67,14 @@
   rubric chấm *câu trả lời nói* của buổi phỏng vấn ("Giao tiếp & Tiếng Anh", mức neo "1-4 điểm
   (Kém)…"), CV là giấy nên model chỉ đoán được (đo trên prod: hai ứng viên khác hẳn nhau đều nhận
   đúng 7/10 ở tiêu chí đó).
-  - **Chốt MỘT LẦN cho cả campaign** (AI đề xuất lúc publish → HR sửa khi `Draft`, ngoài Draft → 409
-    theo CAMP-2). Bước suy nhu cầu chỉ đọc JD nên nó là thuộc tính của vị trí; suy lại theo từng CV
-    thì hai ứng viên cùng campaign bị đo bằng hai thước khác nhau rồi xếp chung bảng — đúng thứ bất
-    công **CAMP-10** chặn ở đường phỏng vấn. `source` do **server sở hữu** (F10).
+  - **Chốt theo BẤT BIẾN "chưa ai được sàng", KHÔNG theo trạng thái Draft/Active** (CMP1-B2, sửa
+    ratify sai của bản trước — "AI đề xuất lúc publish → HR sửa khi Draft" là hai vế **loại trừ nhau
+    về thời gian**: AI sinh `job_needs` LÚC PUBLISH, tức đúng lúc campaign vừa chuyển `Active`, nên
+    "sửa khi Draft" không bao giờ chạm được nội dung AI vừa sinh). Cửa sửa thật: `Draft` HOẶC
+    `Active` mà **CHƯA có ứng viên nào được sàng** (điểm khớp CV) — `Closed`/`Archived` → 409 luôn.
+    Bước suy nhu cầu chỉ đọc JD nên nó là thuộc tính của vị trí; suy lại theo từng CV thì hai ứng
+    viên cùng campaign bị đo bằng hai thước khác nhau rồi xếp chung bảng — đúng thứ bất công
+    **CAMP-10** chặn ở đường phỏng vấn. `source` do **server sở hữu** (F10).
   - 🔴 **Điểm do CampaignService TÍNH, không nhận số nào của AI:**
     `100 × Σ(Strong=1 · Partial=0.5 · Weak=0) / số nhu cầu`. Model chỉ gán **mức** + **TRÍCH bằng
     chứng từ CV**. *Vì sao:* đo trên prod, bốn CV có bằng chứng **giống hệt nhau** nhận 70/70/55/55

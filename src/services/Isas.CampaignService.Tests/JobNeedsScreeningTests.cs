@@ -16,7 +16,10 @@ namespace Isas.CampaignService.Tests;
 /// buộc hai lần đọc ra cùng bộ nhu cầu ⇒ hai ứng viên cùng campaign bị đo bằng hai cái thước khác
 /// nhau rồi xếp chung một bảng — đúng thứ bất công CAMP-10 chặn ở đường phỏng vấn.
 ///
-/// "AI đề xuất, HR chốt" (mẫu D13/SEC-4): AI điền sẵn lúc publish, HR sửa được khi còn Draft.
+/// "AI đề xuất, HR chốt" (mẫu D13/SEC-4): AI điền sẵn lúc publish. CMP1-B2 — cửa sửa KHÔNG khoá theo
+/// Draft/Active, mà theo bất biến "chưa ai được sàng": AI sinh job_needs LÚC PUBLISH (đúng lúc
+/// campaign vừa chuyển Active), nên "chỉ sửa khi Draft" sẽ không bao giờ chạm được nội dung AI vừa
+/// sinh — đó là bug đã sống trên dev tới trước bản vá này.
 /// </summary>
 public class JobNeedsScreeningTests
 {
@@ -183,8 +186,8 @@ public class JobNeedsScreeningTests
     }
 
     // CAMP-2: đổi thước đo giữa chừng làm ứng viên sàng trước và sàng sau không so sánh được nữa.
-    // ⚠ `Active` KHÔNG còn ở đây: EVA1-B6/HĐ-3 cho sửa khi Active MÀ needs còn rỗng + chưa ai được
-    // sàng (đường cứu khi AI hụt lúc publish). Các ca Active → 409 nằm ở EVA1-B6 test bên dưới.
+    // ⚠ `Active` KHÔNG còn ở đây: CMP1-B2 cho sửa khi Active MÀ CHƯA ai được sàng (không đòi
+    // job_needs rỗng nữa). Các ca Active nằm ở nhóm test bên dưới.
     [Theory]
     [InlineData(CampaignStatus.Closed)]
     [InlineData(CampaignStatus.Archived)]
@@ -197,14 +200,16 @@ public class JobNeedsScreeningTests
         tdb.Db.SaveChanges();
 
         var svc = NewService(tdb.NewContext());
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.ReplaceJobNeedsAsync(owner, owner, camp.Id, new List<JobNeedInput>
             {
                 new() { Category = JobNeedCategories.Technical, Text = "x" },
             }, default));
+
+        Assert.Contains(status.ToString(), ex.Message);   // thông điệp nêu đúng trạng thái đang khoá
     }
 
-    // ── EVA1-B6 / HĐ-3 — đường CỨU: Active + job_needs rỗng + chưa ai được sàng ───────────────
+    // ── CMP1-B2 — cửa sửa: Draft, HOẶC Active mà CHƯA có người được sàng ───────────────────────
 
     private static void SetStatus(CampaignTestDb tdb, Guid campaignId, CampaignStatus status,
         List<JobNeed>? jobNeeds = null)
@@ -261,9 +266,9 @@ public class JobNeedsScreeningTests
         Assert.Empty(res.QuestionBank.Warnings);   // KHÔNG cảnh báo giả "K > total(0)"
     }
 
-    // (2) Active + job_needs RỖNG + chưa ai được sàng → 200 (đường cứu).
+    // (2) Active + job_needs RỖNG + chưa ai được sàng → 200.
     [Fact]
-    public async Task B6_Active_needs_rong_chua_ai_sang_thi_cho_sua()
+    public async Task Cmp1B2_Active_needs_rong_chua_ai_sang_thi_cho_sua()
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
@@ -275,28 +280,32 @@ public class JobNeedsScreeningTests
         Assert.Equal(nameof(CampaignStatus.Active), res.Status);
     }
 
-    // (3) Active + job_needs CÓ mục → 409 (đã chốt thước đo, sửa = trộn hai bộ nhu cầu).
+    // (3) CA MỚI — Active + job_needs ĐÃ CÓ mục (đúng hình dạng thật: AI sinh needs lúc publish) +
+    // chưa ai được sàng → NAY 200 (trước CMP1-B2 là 409 vĩnh viễn — đây chính là bug đã đo trên dev:
+    // HR không bao giờ khai được isMustHave vì list luôn có nội dung ngay khi Active).
     [Fact]
-    public async Task B6_Active_needs_co_muc_thi_409()
+    public async Task Cmp1B2_Active_needs_co_muc_nhung_chua_ai_sang_thi_cho_sua()
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var camp = SeedDraft(tdb, owner);
         SetStatus(tdb, camp.Id, CampaignStatus.Active, jobNeeds: new List<JobNeed>
         {
-            new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "đã có", Source = JobNeedSources.AiSuggested },
+            new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "AI đề xuất", Source = JobNeedSources.AiSuggested },
         });
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default));
+        var res = await NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id,
+            new List<JobNeedInput>
+            {
+                new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "HR đánh dấu bắt buộc", IsMustHave = true },
+            }, default);
 
-        // Thông điệp nêu CẢ HAI điều kiện — HR đọc trên màn hình.
-        Assert.Contains("Draft", ex.Message);
-        Assert.Contains("RỖNG", ex.Message);
-        Assert.Contains("sàng", ex.Message);
+        Assert.Single(res.JobNeeds);
+        Assert.True(res.JobNeeds[0].IsMustHave);   // HR khai được điều kiện loại — tính năng dùng được
+        Assert.Equal(nameof(CampaignStatus.Active), res.Status);
     }
 
-    // (4) Closed + job_needs rỗng → 409 (chỉ Draft/Active nằm trong đường cứu).
+    // (4) Closed + job_needs rỗng → 409, thông điệp nêu đúng lý do "đã Closed" (không nhắc "RỖNG").
     [Fact]
     public async Task B6_Closed_needs_rong_thi_409()
     {
@@ -305,11 +314,15 @@ public class JobNeedsScreeningTests
         var camp = SeedDraft(tdb, owner);
         SetStatus(tdb, camp.Id, CampaignStatus.Closed, jobNeeds: null);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default));
+
+        Assert.Contains("Closed", ex.Message);
+        Assert.DoesNotContain("RỖNG", ex.Message);   // luật mới không còn nói về job_needs rỗng
     }
 
-    // (5) Active + job_needs RỖNG NHƯNG đã có 1 ứng viên OverallMatchScore = 80 → 409 (khoá vế thứ hai).
+    // (5) Active + job_needs RỖNG NHƯNG đã có 1 ứng viên OverallMatchScore = 80 → 409 — đây MỚI là
+    // bất biến thật, và thông điệp phải nói đúng lý do "đã sàng", không nói "còn rỗng".
     [Fact]
     public async Task B6_Active_needs_rong_nhung_da_co_ung_vien_duoc_sang_thi_409()
     {
@@ -319,8 +332,30 @@ public class JobNeedsScreeningTests
         SetStatus(tdb, camp.Id, CampaignStatus.Active, jobNeeds: null);
         SeedScreenedCandidate(tdb, camp.Id, overallMatchScore: 80);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default));
+
+        Assert.Contains("1 ứng viên được sàng", ex.Message);
+        Assert.Contains("đã chốt", ex.Message);
+        Assert.DoesNotContain("RỖNG", ex.Message);
+    }
+
+    // (6) AI KHÔNG đề xuất isMustHave — publish luôn ép false, kể cả khi HR đã bật must-have cho một
+    // dòng cũ (BuildJobNeedsAsync sinh ARRAY MỚI hoàn toàn khi AI thành công, không carry-over cờ).
+    [Fact]
+    public async Task Publish_AI_ep_isMustHave_false()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var camp = SeedDraft(tdb, owner);
+
+        var svc = NewService(tdb.NewContext(), Suggester(
+            new SuggestedJobNeed(JobNeedCategories.Technical, "Thạo .NET")));
+        await svc.PublishCampaignAsync(owner, owner, camp.Id, default);
+
+        using var check = tdb.NewContext();
+        var saved = await check.Campaigns.FirstAsync(c => c.Id == camp.Id);
+        Assert.All(saved.JobNeeds!, n => Assert.False(n.IsMustHave));
     }
 
     // Nhóm lạ bị chặn tại cửa: `job_needs` đi thẳng vào prompt sàng CV và vào màn HR, nên giá trị
