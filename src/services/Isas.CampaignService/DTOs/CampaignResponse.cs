@@ -454,9 +454,12 @@ namespace Isas.CampaignService.DTOs
         public DateTime UpdatedAt { get; set; }
 
         /// <param name="includeSampleAnswer">
-        /// <c>false</c> cho DANH SÁCH campaign: `GetCampaignsAsync` cũng `.Include(Questions)` và dùng
-        /// chung mapper này, nên trả đáp án mẫu ở đó là mỗi thẻ campaign cõng thêm tới 200 × 5.000 ký tự.
-        /// Màn danh sách không hiển thị đáp án — chỉ màn chi tiết/sửa mới cần.
+        /// Mặc định <c>true</c> — mọi call-site còn lại của <c>FromEntity</c> đều là kết quả một
+        /// mutation trên MỘT campaign (create/update/publish/...), hình dạng giống <c>GET /campaign/{id}</c>.
+        /// Danh sách campaign (<c>GetCampaignsAsync</c>) KHÔNG còn dùng mapper này — nó cần một hình
+        /// dạng khác hẳn (bỏ jdText/questions/criteria, thêm 3 số đếm), xem
+        /// <see cref="CampaignListItemResponse"/> (CMP1-B3). Tham số này giữ lại vì lịch sử để không
+        /// đổi chữ ký công khai; hiện chỉ còn dùng ở test.
         /// </param>
         public static CampaignResponse FromEntity(Campaign c, bool includeSampleAnswer = true) => new CampaignResponse
         {
@@ -538,6 +541,129 @@ namespace Isas.CampaignService.DTOs
             JdFileUrl = c.JDFileUrl,   // CMP1-B1
             CreatedAt = c.CreatedAt,
             UpdatedAt = c.UpdatedAt
+        };
+    }
+
+    /// <summary>
+    /// CMP1-B3 — hình dạng của <c>GET /campaign</c> (danh sách), TÁCH khỏi <see cref="CampaignResponse"/>
+    /// (hình dạng của <c>GET /campaign/{id}</c>, chi tiết).
+    ///
+    /// <para><b>Đo được trước bản này:</b> danh sách trả 37 trường, KHÔNG trường nào là số đếm — FE
+    /// đọc "applicants"/"capacity" ra <c>null</c>/0 dù DB có CV + lời mời thật. Đồng thời
+    /// <c>jdText + questions + criteria</c> chiếm 69% payload của một trang campaign, mà bảng danh
+    /// sách không hiển thị chúng.</para>
+    ///
+    /// <para><b>Chống rò bằng CẤU TRÚC, không bằng lời dặn</b> (mẫu <c>CandidateCriterionResponse</c>
+    /// F17/CAMP-15): type này KHÔNG khai <c>JDText</c>/<c>Questions</c>/<c>Criteria</c> ⇒ một dòng
+    /// "thêm cho đồng bộ" vô tình gán field không tồn tại là lỗi BIÊN DỊCH, không phải một khoá JSON
+    /// âm thầm quay lại. <see cref="ThreeCountsForListCmp1B3Tests.ListShape_KhopTungTruongVoiCampaignResponse_TruParent3TruongVaCong3SoDem"/>
+    /// khoá bằng reflection: mọi trường của <see cref="CampaignResponse"/> (trừ 3 trường bị bỏ) phải
+    /// có mặt ở đây cùng tên + kiểu, và type này không được có thêm trường lạ ngoài 3 số đếm.</para>
+    ///
+    /// <para><b>3 số đếm tính CHO CẢ TRANG bằng GroupBy, KHÔNG per-campaign</b> (N+1) — xem
+    /// <c>CampaignService.GetCampaignsAsync</c>. <c>QuestionBank</c> GIỮ LẠI (nhỏ, và FE dùng cho
+    /// cảnh báo K/adaptive) dù nó cần <c>c.Questions</c> nạp — chỉ MẢNG <c>Questions</c> tự nó bị bỏ
+    /// khỏi JSON, không phải Include bị bỏ.</para>
+    /// </summary>
+    public class CampaignListItemResponse
+    {
+        public Guid Id { get; set; }
+        public Guid OrgId { get; set; }
+        public string Title { get; set; } = null!;
+        public string? Domain { get; set; }
+        public string Language { get; set; } = "vi";
+        public string Seniority { get; set; } = "Junior";
+        public string Status { get; set; } = null!;
+        public int? MaxCandidates { get; set; }
+        public int? TimeLimitMinutes { get; set; }
+        public bool AntiCheatEnabled { get; set; }
+        public bool FaceVerifyEnabled { get; set; }
+        public int? PassScorePct { get; set; }
+        public bool SkipPenalty { get; set; }
+        public int? InterviewPolicyVersion { get; set; }
+        public int? CvPolicyVersion { get; set; }
+        public bool AdaptiveEnabled { get; set; }
+        public bool GroundingEnabled { get; set; }
+        public int? MaxConcurrentInterviews { get; set; }
+        public int? MaxFollowUps { get; set; }
+        public int? MaxQuestions { get; set; }
+        public int? MaxDeepPerQuestion { get; set; }
+        public int? QuestionsPerSession { get; set; }
+        public int RubricVersion { get; set; } = 1;
+        public DateTime? RubricVersionUpdatedAt { get; set; }
+        public Guid? RubricVersionUpdatedBy { get; set; }
+        public DateTime? StartsAt { get; set; }
+        public DateTime? ExpiresAt { get; set; }
+        // RNK1 · HĐ-8 — tóm tắt ngân hàng đề. GIỮ trong danh sách (nhỏ; FE dùng cho cảnh báo).
+        public QuestionBankSummary QuestionBank { get; set; } = new();
+        public List<JobNeedResponse> JobNeeds { get; set; } = new();
+        public List<string>? RequiredSkills { get; set; }
+        public List<string>? KeywordsAny { get; set; }
+        public int? MinYearsExperience { get; set; }
+        public string? CriteriaText { get; set; }
+        public string? JdFileUrl { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+
+        // CMP1-B3 — 3 số đếm mới, tính GroupBy cho cả trang (không N+1). Xem CampaignService.GetCampaignsAsync.
+        /// <summary>Số hồ sơ CV đã nộp (<c>cv_submission</c>, campaign chưa xoá mềm — theo query filter DB13).</summary>
+        public int CvCount { get; set; }
+        /// <summary>Số lời mời CÒN HIỆU LỰC (<c>campaign_invitations.revoked_at IS NULL</c>).</summary>
+        public int InvitedCount { get; set; }
+        /// <summary>Số ứng viên ĐÃ CÓ ĐIỂM (số dòng <c>campaign_rankings</c> — mỗi dòng = 1 buổi đã chấm).</summary>
+        public int CompletedCount { get; set; }
+
+        public static CampaignListItemResponse FromEntity(
+            Campaign c, int cvCount, int invitedCount, int completedCount) => new()
+        {
+            Id = c.Id,
+            OrgId = c.OrgId,
+            Title = c.Title,
+            Domain = c.Domain,
+            Language = c.Language,
+            Seniority = c.Seniority,
+            Status = c.Status.ToString(),
+            MaxCandidates = c.MaxCandidates,
+            TimeLimitMinutes = c.TimeLimitMinutes,
+            AntiCheatEnabled = c.AntiCheatEnabled,
+            FaceVerifyEnabled = c.FaceVerifyEnabled,
+            PassScorePct = c.PassScorePct,
+            SkipPenalty = c.SkipPenalty,
+            InterviewPolicyVersion = c.InterviewPolicyVersion,
+            CvPolicyVersion = c.CvPolicyVersion,
+            AdaptiveEnabled = c.AdaptiveEnabled,
+            GroundingEnabled = c.GroundingEnabled,
+            MaxConcurrentInterviews = c.MaxConcurrentInterviews,
+            MaxFollowUps = c.MaxFollowUps,
+            MaxQuestions = c.MaxQuestions,
+            MaxDeepPerQuestion = c.MaxDeepPerQuestion,
+            QuestionsPerSession = c.QuestionsPerSession,
+            RubricVersion = c.RubricVersion,
+            RubricVersionUpdatedAt = c.RubricVersionUpdatedAt,
+            RubricVersionUpdatedBy = c.RubricVersionUpdatedBy,
+            StartsAt = c.StartsAt,
+            ExpiresAt = c.ExpiresAt,
+            QuestionBank = QuestionBankSummary.Build(
+                c.Questions, c.QuestionsPerSession, c.MaxDeepPerQuestion, c.MaxQuestions),
+            JobNeeds = (c.JobNeeds ?? new List<JobNeed>())
+                .Select(n => new JobNeedResponse
+                {
+                    NeedId = n.NeedId,
+                    Category = n.Category,
+                    Text = n.Text,
+                    Source = n.Source,
+                    IsMustHave = n.IsMustHave,
+                }).ToList(),
+            RequiredSkills = c.RequiredSkills,
+            KeywordsAny = c.KeywordsAny,
+            MinYearsExperience = c.MinYearsExperience,
+            CriteriaText = c.CriteriaText,
+            JdFileUrl = c.JDFileUrl,
+            CreatedAt = c.CreatedAt,
+            UpdatedAt = c.UpdatedAt,
+            CvCount = cvCount,
+            InvitedCount = invitedCount,
+            CompletedCount = completedCount,
         };
     }
 }

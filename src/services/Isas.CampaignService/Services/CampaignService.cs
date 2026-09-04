@@ -310,7 +310,12 @@ namespace Isas.CampaignService.Services
         // convention DB8 (`ListAllCampaignsAsync` ngay dưới): cursor opaque `(CreatedAt DESC, Id DESC)`,
         // limit mặc định 500 = hành vi cũ, body vẫn mảng JSON, next-cursor ở header X-Next-Cursor.
         // Index `(org_id, created_at, id)` (DB26) phủ trọn khoá sắp xếp này.
-        public async Task<KeysetPage<CampaignResponse>> GetCampaignsAsync(
+        //
+        // CMP1-B3 — hình dạng KHÁC endpoint chi tiết (CampaignListItemResponse, không CampaignResponse):
+        // bỏ jdText/questions/criteria (69% payload của 1 trang, danh sách không hiển thị), thêm 3 số
+        // đếm (cvCount/invitedCount/completedCount) tính bằng GroupBy CHO CẢ TRANG — 3 câu lệnh cố
+        // định bất kể trang có bao nhiêu campaign, KHÔNG per-campaign (N+1).
+        public async Task<KeysetPage<CampaignListItemResponse>> GetCampaignsAsync(
             Guid orgId, string? cursor, int? limit, CancellationToken ct)
         {
             var take = KeysetPaging.ClampLimit(limit);
@@ -323,27 +328,47 @@ namespace Isas.CampaignService.Services
                     || (c.CreatedAt == cur.CreatedAt && c.Id.CompareTo(cur.Id) < 0));
 
             var rows = await query
-                .Include(c => c.Questions)
-                .Include(c => c.Criteria)   // list card hiện đúng số tiêu chí (khớp detail — C12)
-                    // CAMP-16: nạp cả mốc điểm. Bỏ qua ở đây thì response trả `levels: []` = nói dối
-                    // "chưa khai mốc" (đúng lớp lỗi `roadmaps` list từng trả `milestones: []`).
-                    .ThenInclude(cr => cr.Levels)
-                // 2 Include collection trên cùng 1 root = JOIN fan-out nhân bản dòng gốc
-                // (questions × criteria) rồi EF dedup ở client. Split query tách thành 3 câu lệnh
-                // gọn: đúng thứ tự/limit được EF áp lại cho từng câu, nên phân trang vẫn chuẩn.
-                .AsSplitQuery()
+                // Criteria KHÔNG còn Include ở đây — danh sách không mang trường `criteria` nữa
+                // (CMP1-B3), nên nạp nó chỉ để vứt đi là lãng phí đúng thứ đang muốn cắt.
+                .Include(c => c.Questions)   // vẫn cần: QuestionBankSummary.Build đọc c.Questions
                 .OrderByDescending(c => c.CreatedAt)
                 .ThenByDescending(c => c.Id)
                 .Take(take)
                 .ToListAsync(ct);
 
-            // includeSampleAnswer: false — danh sách không hiển thị đáp án mẫu, mà nó có thể tới
-            // 5.000 ký tự/câu × 200 câu/chiến dịch × cả trang. Màn chi tiết/sửa mới cần.
-            var items = rows.Select(c => CampaignResponse.FromEntity(c, includeSampleAnswer: false)).ToList();
+            if (rows.Count == 0)
+                return new KeysetPage<CampaignListItemResponse>(new List<CampaignListItemResponse>(), null);
+
+            // 3 số đếm — GroupBy theo campaign_id CHO CẢ TRANG, không lặp gọi DB từng campaign.
+            var campaignIds = rows.Select(c => c.Id).ToList();
+
+            var cvCounts = await _db.CvSubmissions
+                .Where(x => campaignIds.Contains(x.CampaignId))
+                .GroupBy(x => x.CampaignId)
+                .Select(g => new { CampaignId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.CampaignId, x => x.Count, ct);
+
+            var invitedCounts = await _db.CampaignInvitations
+                .Where(x => campaignIds.Contains(x.CampaignId) && x.RevokedAt == null)
+                .GroupBy(x => x.CampaignId)
+                .Select(g => new { CampaignId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.CampaignId, x => x.Count, ct);
+
+            var completedCounts = await _db.CampaignRankings
+                .Where(x => campaignIds.Contains(x.CampaignId))
+                .GroupBy(x => x.CampaignId)
+                .Select(g => new { CampaignId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.CampaignId, x => x.Count, ct);
+
+            var items = rows.Select(c => CampaignListItemResponse.FromEntity(
+                c,
+                cvCounts.GetValueOrDefault(c.Id),
+                invitedCounts.GetValueOrDefault(c.Id),
+                completedCounts.GetValueOrDefault(c.Id))).ToList();
             var next = rows.Count == take
                 ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
                 : null;
-            return new KeysetPage<CampaignResponse>(items, next);
+            return new KeysetPage<CampaignListItemResponse>(items, next);
         }
 
         // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org_id, khác GetCampaignsAsync).

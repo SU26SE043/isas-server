@@ -10,7 +10,7 @@ namespace Isas.CampaignService.Services
     {
         Task<CampaignResponse> GetCampaignAsync(Guid orgId, Guid id, CancellationToken ct);
         // DB31 — keyset-paged (mẫu DB8): body vẫn là mảng, next-cursor ở header X-Next-Cursor.
-        Task<KeysetPage<CampaignResponse>> GetCampaignsAsync(Guid orgId, string? cursor, int? limit, CancellationToken ct);
+        Task<KeysetPage<CampaignListItemResponse>> GetCampaignsAsync(Guid orgId, string? cursor, int? limit, CancellationToken ct);
 
         // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org), read-only. Tôn trọng
         // soft-delete (D11). Optional lọc status/orgId. Cap 500, mới nhất trước.
