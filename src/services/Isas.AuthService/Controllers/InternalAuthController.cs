@@ -53,6 +53,30 @@ namespace Isas.AuthService.Controllers
             }
         }
 
+        // CMP1-B1 — resolve tên tổ chức theo org_id (máy-máy). CampaignService chỉ giữ org_id (GEN-2:
+        // không FK xuyên service) nên trang lời mời phải hỏi Auth để hiển thị tên công ty mời.
+        // Không tồn tại → 404 (caller coi như orgName = null). Token sai → 401.
+        [HttpGet("organizations/{orgId:guid}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<InternalOrganizationResponse>> GetOrganization(
+            Guid orgId,
+            [FromHeader(Name = "X-Internal-Token")] string? token,
+            CancellationToken ct)
+        {
+            if (!IsValidInternalToken(token))
+                return Unauthorized(new { error = "Invalid internal token" });
+
+            try
+            {
+                var org = await _authService.GetOrganizationAsync(orgId, ct);
+                return Ok(new InternalOrganizationResponse(org.Id, org.Name));
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound();
+            }
+        }
+
         private bool IsValidInternalToken(string? token)
         {
             var expected = _config["Internal:Token"];

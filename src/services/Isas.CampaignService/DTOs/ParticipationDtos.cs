@@ -35,7 +35,10 @@ namespace Isas.CampaignService.DTOs
         public string? OrgName { get; set; }        // tên công ty — Campaign chỉ có org_id (không call Auth) → null (chờ resolve)
         public string? JobTitle { get; set; }       // vị trí = campaign.Domain
         public string? Description { get; set; }     // JD text
-        public DateTime? Deadline { get; set; }      // campaign.ExpiresAt
+        // CMP1-B1 — giờ MỞ phỏng vấn của campaign (campaign.StartsAt). KHÁC nghĩa với Deadline:
+        // Deadline là hạn của LỜI MỜI (campaign.ExpiresAt), StartsAt là lúc ứng viên được phép bấm Start.
+        public DateTime? StartsAt { get; set; }
+        public DateTime? Deadline { get; set; }      // campaign.ExpiresAt — hạn lời mời (KHÔNG đổi nghĩa)
         public List<CandidateCriterionResponse> Criteria { get; set; } = new();
     }
 

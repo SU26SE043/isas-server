@@ -20,17 +20,20 @@ namespace Isas.CampaignService.Services
         private readonly CampaignDbContext _db;
         private readonly IAuthProvisionClient _authClient;
         private readonly ICampaignSessionClient _sessionClient;
+        private readonly IOrgNameResolver? _orgNameResolver;
         private readonly ILogger<ParticipationService> _logger;
 
         public ParticipationService(
             CampaignDbContext db,
             IAuthProvisionClient authClient,
             ICampaignSessionClient sessionClient,
-            ILogger<ParticipationService> logger)
+            ILogger<ParticipationService> logger,
+            IOrgNameResolver? orgNameResolver = null)
         {
             _db = db;
             _authClient = authClient;
             _sessionClient = sessionClient;
+            _orgNameResolver = orgNameResolver;   // CMP1-B1 — null ⇒ orgName không resolve (giữ null, không ném)
             _logger = logger;
         }
 
@@ -50,12 +53,30 @@ namespace Isas.CampaignService.Services
             {
                 CampaignId = inv.CampaignId,
                 Title = inv.Campaign.Title,
-                OrgName = null,   // Campaign chỉ có org_id — tên org phải resolve qua Auth (ngoài phạm vi D2)
+                // CMP1-B1 — resolve tên org qua Auth. Fail-soft: bọc thêm try/catch ở đây (ngoài
+                // fail-soft trong resolver) để một resolver tương lai regress cũng không hạ được
+                // đường đọc lời mời của ứng viên ẩn danh.
+                OrgName = await ResolveOrgNameSafeAsync(inv.Campaign.OrgId, ct),
                 JobTitle = inv.Campaign.Domain,
                 Description = inv.Campaign.JDText,
-                Deadline = inv.Campaign.ExpiresAt,
+                StartsAt = inv.Campaign.StartsAt,        // CMP1-B1 — giờ MỞ phỏng vấn (≠ Deadline)
+                Deadline = inv.Campaign.ExpiresAt,       // hạn LỜI MỜI — KHÔNG đổi nghĩa
                 Criteria = inv.Campaign.Criteria.OrderBy(c => c.OrderNo).Select(MapCriterion).ToList()
             };
+        }
+
+        private async Task<string?> ResolveOrgNameSafeAsync(Guid orgId, CancellationToken ct)
+        {
+            if (_orgNameResolver is null) return null;
+            try
+            {
+                return await _orgNameResolver.ResolveOrgNameAsync(orgId, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Resolve tên org {OrgId} ném — orgName = null.", orgId);
+                return null;
+            }
         }
 
         // ── POST /invitations/{token}/join — tham gia campaign ───────────────────────

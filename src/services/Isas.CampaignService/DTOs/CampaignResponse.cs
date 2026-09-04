@@ -445,6 +445,11 @@ namespace Isas.CampaignService.DTOs
         public int? MinYearsExperience { get; set; }
         public string? JDText { get; set; }
         public string? CriteriaText { get; set; }
+        // CMP1-B1 — khoá S3 của tệp JD đã lưu; null = CHƯA có tệp (hoặc luật C11 "text ưu tiên file"
+        // đã bỏ tệp vì campaign có jdText trực tiếp). FE dùng đúng trường này để biết upload có thật
+        // sự lưu hay không — trước đây API im lặng nên FE báo "Tải lên thành công" cho tệp bị vứt.
+        // Thuần additive, không cột DB mới: dữ liệu đã có ở campaigns.jd_file_url.
+        public string? JdFileUrl { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
 
@@ -530,6 +535,7 @@ namespace Isas.CampaignService.DTOs
             MinYearsExperience = c.MinYearsExperience,
             JDText = c.JDText,
             CriteriaText = c.CriteriaText,
+            JdFileUrl = c.JDFileUrl,   // CMP1-B1
             CreatedAt = c.CreatedAt,
             UpdatedAt = c.UpdatedAt
         };
