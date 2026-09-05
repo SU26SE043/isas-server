@@ -42,6 +42,10 @@ namespace Isas.CampaignService.Services
         // CAMP-16 — AI soạn mốc điểm. Optional (default null) để mọi call-site test hiện có giữ nguyên;
         // DI luôn resolve client thật. null → chỉ hỏng đúng endpoint gợi ý mốc, không đường nào khác.
         private readonly IAiServiceLevelSuggester? _levelSuggester;
+        // CMP1-B4 — resolve tên org cho thư mời (chữ ký + có thể mở rộng sau). Optional (null → thư
+        // vẫn gửi, chữ ký fallback "Đội ngũ ISAS", KHÔNG chặn đường mời) — cùng nếp _sessionClient/
+        // _entitlements ở trên: DI luôn resolve client thật (đăng ký từ B1), test có thể bỏ qua.
+        private readonly IOrgNameResolver? _orgNameResolver;
         private readonly bool _bilingualEnabled;
         private static readonly HashSet<string> AllowedMimeTypes = new()
             {
@@ -59,7 +63,8 @@ namespace Isas.CampaignService.Services
             IEntitlementClient? entitlements = null,
             IConfiguration? config = null,
             IAiServiceLevelSuggester? levelSuggester = null,
-            IJobNeedsSuggester? jobNeedsSuggester = null)
+            IJobNeedsSuggester? jobNeedsSuggester = null,
+            IOrgNameResolver? orgNameResolver = null)
         {
             _jobNeedsSuggester = jobNeedsSuggester;
             _questionGenerator = questionGenerator;
@@ -73,7 +78,25 @@ namespace Isas.CampaignService.Services
             _sessionClient = sessionClient;
             _entitlements = entitlements;
             _levelSuggester = levelSuggester;
+            _orgNameResolver = orgNameResolver;
             _bilingualEnabled = bool.TryParse(config?["Campaign:Bilingual:Enabled"], out var bilingual) && bilingual;
+        }
+
+        // CMP1-B4 — resolve tên org cho thư mời, fail-soft ở HAI LỚP (mẫu ParticipationService B1):
+        // resolver tự nuốt lỗi (AuthOrgNameResolver), nhưng bọc thêm ở đây để một resolver tương lai
+        // regress cũng KHÔNG chặn được đường mời — mất chữ ký công ty còn hơn mất cả lời mời.
+        private async Task<string?> ResolveOrgNameSafeAsync(Guid orgId, CancellationToken ct)
+        {
+            if (_orgNameResolver is null) return null;
+            try
+            {
+                return await _orgNameResolver.ResolveOrgNameAsync(orgId, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Resolve tên org {OrgId} ném khi soạn thư mời — orgName = null.", orgId);
+                return null;
+            }
         }
 
         public async Task<CampaignResponse> CreateCampaignAsync(Guid orgId, Guid actorUserId, CreateCampaignRequest request, CancellationToken ct = default)
@@ -310,7 +333,12 @@ namespace Isas.CampaignService.Services
         // convention DB8 (`ListAllCampaignsAsync` ngay dưới): cursor opaque `(CreatedAt DESC, Id DESC)`,
         // limit mặc định 500 = hành vi cũ, body vẫn mảng JSON, next-cursor ở header X-Next-Cursor.
         // Index `(org_id, created_at, id)` (DB26) phủ trọn khoá sắp xếp này.
-        public async Task<KeysetPage<CampaignResponse>> GetCampaignsAsync(
+        //
+        // CMP1-B3 — hình dạng KHÁC endpoint chi tiết (CampaignListItemResponse, không CampaignResponse):
+        // bỏ jdText/questions/criteria (69% payload của 1 trang, danh sách không hiển thị), thêm 3 số
+        // đếm (cvCount/invitedCount/completedCount) tính bằng GroupBy CHO CẢ TRANG — 3 câu lệnh cố
+        // định bất kể trang có bao nhiêu campaign, KHÔNG per-campaign (N+1).
+        public async Task<KeysetPage<CampaignListItemResponse>> GetCampaignsAsync(
             Guid orgId, string? cursor, int? limit, CancellationToken ct)
         {
             var take = KeysetPaging.ClampLimit(limit);
@@ -323,27 +351,47 @@ namespace Isas.CampaignService.Services
                     || (c.CreatedAt == cur.CreatedAt && c.Id.CompareTo(cur.Id) < 0));
 
             var rows = await query
-                .Include(c => c.Questions)
-                .Include(c => c.Criteria)   // list card hiện đúng số tiêu chí (khớp detail — C12)
-                    // CAMP-16: nạp cả mốc điểm. Bỏ qua ở đây thì response trả `levels: []` = nói dối
-                    // "chưa khai mốc" (đúng lớp lỗi `roadmaps` list từng trả `milestones: []`).
-                    .ThenInclude(cr => cr.Levels)
-                // 2 Include collection trên cùng 1 root = JOIN fan-out nhân bản dòng gốc
-                // (questions × criteria) rồi EF dedup ở client. Split query tách thành 3 câu lệnh
-                // gọn: đúng thứ tự/limit được EF áp lại cho từng câu, nên phân trang vẫn chuẩn.
-                .AsSplitQuery()
+                // Criteria KHÔNG còn Include ở đây — danh sách không mang trường `criteria` nữa
+                // (CMP1-B3), nên nạp nó chỉ để vứt đi là lãng phí đúng thứ đang muốn cắt.
+                .Include(c => c.Questions)   // vẫn cần: QuestionBankSummary.Build đọc c.Questions
                 .OrderByDescending(c => c.CreatedAt)
                 .ThenByDescending(c => c.Id)
                 .Take(take)
                 .ToListAsync(ct);
 
-            // includeSampleAnswer: false — danh sách không hiển thị đáp án mẫu, mà nó có thể tới
-            // 5.000 ký tự/câu × 200 câu/chiến dịch × cả trang. Màn chi tiết/sửa mới cần.
-            var items = rows.Select(c => CampaignResponse.FromEntity(c, includeSampleAnswer: false)).ToList();
+            if (rows.Count == 0)
+                return new KeysetPage<CampaignListItemResponse>(new List<CampaignListItemResponse>(), null);
+
+            // 3 số đếm — GroupBy theo campaign_id CHO CẢ TRANG, không lặp gọi DB từng campaign.
+            var campaignIds = rows.Select(c => c.Id).ToList();
+
+            var cvCounts = await _db.CvSubmissions
+                .Where(x => campaignIds.Contains(x.CampaignId))
+                .GroupBy(x => x.CampaignId)
+                .Select(g => new { CampaignId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.CampaignId, x => x.Count, ct);
+
+            var invitedCounts = await _db.CampaignInvitations
+                .Where(x => campaignIds.Contains(x.CampaignId) && x.RevokedAt == null)
+                .GroupBy(x => x.CampaignId)
+                .Select(g => new { CampaignId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.CampaignId, x => x.Count, ct);
+
+            var completedCounts = await _db.CampaignRankings
+                .Where(x => campaignIds.Contains(x.CampaignId))
+                .GroupBy(x => x.CampaignId)
+                .Select(g => new { CampaignId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.CampaignId, x => x.Count, ct);
+
+            var items = rows.Select(c => CampaignListItemResponse.FromEntity(
+                c,
+                cvCounts.GetValueOrDefault(c.Id),
+                invitedCounts.GetValueOrDefault(c.Id),
+                completedCounts.GetValueOrDefault(c.Id))).ToList();
             var next = rows.Count == take
                 ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
                 : null;
-            return new KeysetPage<CampaignResponse>(items, next);
+            return new KeysetPage<CampaignListItemResponse>(items, next);
         }
 
         // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org_id, khác GetCampaignsAsync).
@@ -1354,6 +1402,10 @@ namespace Isas.CampaignService.Services
             {
                 _db.CampaignInvitations.AddRange(invitations.Select(x => x.Invitation));
 
+                // CMP1-B4 — resolve MỘT LẦN cho cả batch (không phải mỗi invitation), org_id không
+                // đổi trong vòng lặp này.
+                var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
+
                 // DB2b — Transactional Outbox: ghi outbox-row CÙNG SaveChanges tạo invitation (thay
                 // "publish best-effort SAU commit" cũ = dual-write mất mail khi broker down giữa 2 lần
                 // SaveChanges). SentAt = "đã vào outbox" (dispatcher publish sau). Response giữ shape cũ.
@@ -1361,8 +1413,11 @@ namespace Isas.CampaignService.Services
                 {
                     invitation.SentAt = now;
                     // Job mang token THÔ (email phải chứa link dùng được) — DB chỉ có hash.
+                    // CMP1-B4 — StartsAt/FaceVerifyEnabled/TimeLimitMinutes đọc thẳng từ campaign đã
+                    // nạp; OrgName resolve ở trên. Thiếu 1 trong 4 ở đây = thư gửi được, chỉ thiếu chữ.
                     _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                        invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt)));
+                        invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt,
+                        campaign.StartsAt, orgName, campaign.FaceVerifyEnabled, campaign.TimeLimitMinutes)));
                     response.Created.Add(new InvitationItem { Id = invitation.Id, Email = invitation.Email, ExpiresAt = invitation.ExpiresAt });
                 }
 
@@ -1667,6 +1722,8 @@ namespace Isas.CampaignService.Services
             var now = DateTime.UtcNow;
             var expiresAt = ResolveInvitationExpiry(campaign, now);
             var assignedSlots = await AssignSlotsAsync(campaign.Id, toInvite.Count, ct);
+            // CMP1-B4 — resolve MỘT LẦN cho cả batch.
+            var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
             foreach (var (cand, index) in toInvite.Select((value, index) => (value, index)))
             {
                 var rawToken = InvitationTokens.NewRawToken();   // DB23 — thô cho email, hash cho DB
@@ -1687,8 +1744,10 @@ namespace Isas.CampaignService.Services
                 _db.CampaignInvitations.Add(invitation);
 
                 // DB2b — outbox-row CÙNG SaveChanges tạo invitation (không dual-write mất mail khi broker down).
+                // CMP1-B4 — += StartsAt/OrgName/FaceVerifyEnabled/TimeLimitMinutes (xem site đường-1 ở trên).
                 _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                    invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt)));
+                    invitation.Id, campaign.Id, invitation.Email, rawToken, campaign.Title, invitation.ExpiresAt,
+                    campaign.StartsAt, orgName, campaign.FaceVerifyEnabled, campaign.TimeLimitMinutes)));
 
                 response.Invited.Add(new InvitedCandidateItem
                 {
@@ -1753,8 +1812,11 @@ namespace Isas.CampaignService.Services
 
             // DB2b — outbox-row CÙNG transaction (revoke token cũ + tạo fresh + outbox = 1 SaveChanges).
             // Thay "resend best-effort SAU commit" cũ (mất mail khi broker down) — dispatcher publish sau.
+            // CMP1-B4 — += StartsAt/OrgName/FaceVerifyEnabled/TimeLimitMinutes (1 invitation/lần, resolve tại chỗ).
+            var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
             _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
-                fresh.Id, campaign.Id, fresh.Email, rawToken, campaign.Title, fresh.ExpiresAt)));
+                fresh.Id, campaign.Id, fresh.Email, rawToken, campaign.Title, fresh.ExpiresAt,
+                campaign.StartsAt, orgName, campaign.FaceVerifyEnabled, campaign.TimeLimitMinutes)));
 
             AddAudit(actorUserId, orgId, AuditAction.ReissueInvitation, campaign.Id, $"Phát lại lời mời cho {old.Email}");
             await _db.SaveChangesAsync(ct);
@@ -3218,12 +3280,18 @@ namespace Isas.CampaignService.Services
 
         /// <summary>
         /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12).
-        /// <para>Cho sửa khi <c>Draft</c> (CAMP-2: đổi thước đo giữa chừng làm ứng viên sàng
-        /// trước/sau không so sánh được), HOẶC — đường CỨU của EVA1-B6/HĐ-3 — khi <c>Active</c> mà
-        /// <c>job_needs</c> còn RỖNG và CHƯA có ứng viên nào được sàng: nếu AIService hụt đúng lúc
-        /// publish (<see cref="PublishCampaignAsync"/> ~:1095) thì campaign thành Active với
-        /// job_needs rỗng, mà máy trạng thái một chiều KHÔNG có đường về Draft ⇒ campaign đó vĩnh
-        /// viễn không sàng CV được, chỉ còn UPDATE SQL tay.</para>
+        /// <para>Cho sửa khi <c>Draft</c>, HOẶC khi <c>Active</c> mà CHƯA có ứng viên nào được sàng
+        /// (điểm khớp CV). <c>Closed</c>/<c>Archived</c> → 409.</para>
+        /// <para>CMP1-B2 — cửa <c>Active</c> nay KHÔNG còn đòi <c>job_needs</c> rỗng. Lý do: AI sinh
+        /// <c>job_needs</c> LÚC PUBLISH (<see cref="BuildJobNeedsAsync"/> qua <see cref="PublishCampaignAsync"/>),
+        /// nên khi HR muốn khai <c>isMustHave</c> (điều kiện loại — HĐ-6) thì danh sách đã có nội
+        /// dung do AI đề xuất và trạng thái đã là <c>Active</c>. Vế "còn rỗng" cũ khoá chết đúng
+        /// tính năng đó: Draft thì list rỗng (chưa có gì để đánh dấu), Active thì list có nội dung
+        /// ⇒ 409 vĩnh viễn. Bất biến THẬT chỉ là <c>!anyScreened</c>: không đổi thước đo khi đã có
+        /// người được đo bằng thước cũ (<c>job_needs</c> KHÔNG mang nhãn phiên bản như
+        /// <c>rubric_version</c>). Đường cứu "AIService hụt lúc publish ⇒ Active + job_needs rỗng,
+        /// máy trạng thái một chiều không về Draft được" vẫn được phục vụ — nó là tập con của
+        /// <c>Active &amp;&amp; !anyScreened</c>.</para>
         /// </summary>
         public async Task<CampaignResponse> ReplaceJobNeedsAsync(
             Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
@@ -3233,25 +3301,33 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            // EVA1-B6 / HĐ-3 — vế `!anyScreened` THỪA về logic hôm nay (Active + needs rỗng KHÔNG
-            // thể có screening đang chạy: RequireJobNeeds ném khi rỗng, worker ném PermanentCvError
-            // khi rỗng, callback dựng `allowed` từ job_needs nên rỗng ⇒ mọi assessment bị loại ⇒
-            // điểm null). Viết thẳng ở đây để bất biến "không sửa needs khi đã có người sàng" (job_needs
-            // KHÔNG có nhãn phiên bản như rubric_version) sống sót qua một refactor tương lai cho phép
-            // xoá needs.
-            var jobNeedsEmpty = campaign.JobNeeds is not { Count: > 0 };
-            var anyScreened = await _db.CvSubmissions
-                .AnyAsync(c => c.CampaignId == id && c.OverallMatchScore != null, ct);
+            // CMP1-B2 — cửa sửa: `Draft` HOẶC `Active` mà CHƯA có người được sàng.
+            //
+            // ⚠ Vế `jobNeedsEmpty` cũ đã BỊ BỎ. Nó chỉ phục vụ một đường cứu hộ hẹp (AIService hụt
+            // lúc publish ⇒ Active + job_needs rỗng), KHÔNG phục vụ bất biến "một thước đo". Giữ nó
+            // lại thì HR không bao giờ khai được `isMustHave` (HĐ-6): job_needs do AI sinh LÚC
+            // PUBLISH nên tới khi HR muốn đánh dấu điều kiện loại thì list đã có nội dung + trạng
+            // thái đã Active ⇒ 409 vĩnh viễn (đã đo trên dev). Đường cứu hộ đó là tập con của
+            // `Active && !anyScreened` nên vẫn được phục vụ.
+            //
+            // Bất biến THẬT là `!anyScreened`: không đổi thước đo khi đã có người được đo bằng thước
+            // cũ — job_needs KHÔNG mang nhãn phiên bản như rubric_version, nên sàng trước/sau sẽ
+            // không so sánh được mà không có gì báo. Vế này giữ nguyên.
+            var screenedCount = await _db.CvSubmissions
+                .CountAsync(c => c.CampaignId == id && c.OverallMatchScore != null, ct);
 
             var canEdit = campaign.Status == CampaignStatus.Draft
-                || (campaign.Status == CampaignStatus.Active && jobNeedsEmpty && !anyScreened);
+                || (campaign.Status == CampaignStatus.Active && screenedCount == 0);
             if (!canEdit)
+            {
+                var reason = campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived
+                    ? $"campaign đã `{campaign.Status}`"
+                    : $"đã có {screenedCount} ứng viên được sàng nên bộ nhu cầu đã chốt " +
+                      "(đổi thước đo lúc này khiến ứng viên sàng trước/sau không so sánh được)";
                 throw new InvalidOperationException(
-                    "Chỉ sửa nhu cầu công việc khi campaign `Draft`, HOẶC `Active` mà nhu cầu công việc " +
-                    "còn RỖNG VÀ CHƯA có ứng viên nào được sàng (điểm khớp CV). " +
-                    $"Hiện: trạng thái {campaign.Status}, nhu cầu " +
-                    $"{(jobNeedsEmpty ? "rỗng" : $"có {campaign.JobNeeds!.Count} mục")}, " +
-                    $"{(anyScreened ? "đã có ứng viên được sàng" : "chưa ai được sàng")}.");
+                    "Chỉ sửa nhu cầu công việc khi campaign `Draft`, HOẶC `Active` mà CHƯA có ứng " +
+                    $"viên nào được sàng (điểm khớp CV). Hiện: {reason}.");
+            }
 
             var cleaned = new List<JobNeed>();
             foreach (var n in needs ?? new List<JobNeedInput>())

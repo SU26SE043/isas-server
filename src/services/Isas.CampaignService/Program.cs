@@ -113,6 +113,14 @@ builder.Services.AddHttpClient<IAuthProvisionClient, AuthProvisionClient>(c =>
     c.BaseAddress = new Uri(
         string.IsNullOrWhiteSpace(builder.Configuration["Auth:BaseUrl"])
             ? "http://localhost:5001" : builder.Configuration["Auth:BaseUrl"]!));
+// CMP1-B1: resolve tên tổ chức cho trang lời mời (fail-soft → null; cùng Auth:BaseUrl với client trên).
+builder.Services.AddHttpClient<IOrgNameResolver, AuthOrgNameResolver>(c =>
+{
+    c.BaseAddress = new Uri(
+        string.IsNullOrWhiteSpace(builder.Configuration["Auth:BaseUrl"])
+            ? "http://localhost:5001" : builder.Configuration["Auth:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(3);   // đường đọc cho ứng viên ẩn danh — không chờ Auth lâu
+});
 builder.Services.AddHttpClient<ICampaignSessionClient, CampaignSessionClient>(c =>
     c.BaseAddress = new Uri(
         string.IsNullOrWhiteSpace(builder.Configuration["Interview:BaseUrl"])

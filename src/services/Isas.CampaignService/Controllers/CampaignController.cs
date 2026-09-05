@@ -53,7 +53,12 @@ namespace Isas.CampaignService.Controllers
         // X-Next-Cursor (vắng = hết trang). Body giữ nguyên mảng JSON → FE hiện tại không phải sửa gì.
         [HttpGet]
         [Authorize(Roles = "Employer")]
-        public async Task<ActionResult<List<CampaignResponse>>> GetAllCampaign(
+        // CMP1-B3 — kiểu khai PHẢI khớp kiểu thật trả về (CampaignListItemResponse, không
+        // CampaignResponse): OpenAPI/Scalar tự sinh từ chữ ký này, và `ActionResult<T>` có phép
+        // chuyển đổi ngầm từ `OkObjectResult` mà KHÔNG kiểm tra T ở compile-time — khai sai kiểu vẫn
+        // build xanh, nhưng tài liệu API sẽ nói dối hình dạng thật (đúng lớp lỗ đã vá ở vòng Scalar
+        // 2026-07-23: OpenAPI auto-gen chỉ đúng khi chữ ký controller đúng).
+        public async Task<ActionResult<List<CampaignListItemResponse>>> GetAllCampaign(
             [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
             var orgId = GetOrgId();

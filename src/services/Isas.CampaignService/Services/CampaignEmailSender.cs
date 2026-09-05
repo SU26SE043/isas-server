@@ -28,6 +28,10 @@ namespace Isas.CampaignService.Services
             DateTime? expiresAt,
             DateTime? slotStartsAt,
             DateTime? slotEndsAt,
+            DateTime? startsAt = null,
+            string? orgName = null,
+            bool faceVerifyEnabled = false,
+            int? timeLimitMinutes = null,
             CancellationToken ct = default)
         {
             var host = _config["EmailSettings:Host"]
@@ -46,7 +50,8 @@ namespace Isas.CampaignService.Services
             };
 
             using var mailMessage = BuildMailMessage(
-                from, toEmail, campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt);
+                from, toEmail, campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt,
+                startsAt, orgName, faceVerifyEnabled, timeLimitMinutes);
 
             await client.SendMailAsync(mailMessage, ct);
         }
@@ -72,7 +77,11 @@ namespace Isas.CampaignService.Services
             string joinLink,
             DateTime? expiresAt,
             DateTime? slotStartsAt,
-            DateTime? slotEndsAt)
+            DateTime? slotEndsAt,
+            DateTime? startsAt = null,
+            string? orgName = null,
+            bool faceVerifyEnabled = false,
+            int? timeLimitMinutes = null)
         {
             var mailMessage = new MailMessage
             {
@@ -82,11 +91,13 @@ namespace Isas.CampaignService.Services
             mailMessage.To.Add(toEmail);
 
             mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
-                BuildPlainTextBody(campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt),
+                BuildPlainTextBody(campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt,
+                    startsAt, orgName, faceVerifyEnabled, timeLimitMinutes),
                 Encoding.UTF8,
                 MediaTypeNames.Text.Plain));
             mailMessage.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
-                BuildHtmlBody(campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt),
+                BuildHtmlBody(campaignTitle, joinLink, expiresAt, slotStartsAt, slotEndsAt,
+                    startsAt, orgName, faceVerifyEnabled, timeLimitMinutes),
                 Encoding.UTF8,
                 MediaTypeNames.Text.Html));
 
@@ -109,9 +120,33 @@ namespace Isas.CampaignService.Services
             return $"{startsAtVn:HH:mm}–{endsAtVn:HH:mm}, {startsAtVn:dd/MM/yyyy} (giờ VN)";
         }
 
+        // CMP1-B4 — giờ chiến dịch MỞ (campaign.StartsAt), in theo giờ VN như FormatSlot (không phải
+        // InvariantCulture như FormatExpiry: đây là mốc để NGƯỜI ĐỌC hình dung "mấy giờ tôi bấm vào
+        // được", không phải mốc kỹ thuật UTC như hạn lời mời).
+        private static string FormatOpensAt(DateTime startsAt)
+        {
+            var vn = VietnamTime.From(startsAt);
+            return $"{vn:HH:mm} ngày {vn:dd/MM/yyyy} (giờ VN)";
+        }
+
+        /// <summary>
+        /// CMP1-B4 — dòng chuẩn bị: "<c>{phút} phút</c>" và/hoặc "<c>cần camera và micro</c>", nối
+        /// bằng " · " — CHỈ phần nào có dữ liệu mới xuất hiện. Dùng chung cho cả 2 bản thư nên hai bản
+        /// không thể trôi lệch nhau (mẫu <c>ScoringCriteriaBuilder</c> — một nguồn cho hai nơi đọc).
+        /// </summary>
+        private static string? BuildPrepLine(bool faceVerifyEnabled, int? timeLimitMinutes)
+        {
+            var parts = new List<string>();
+            if (timeLimitMinutes is int m) parts.Add($"{m} phút");
+            if (faceVerifyEnabled) parts.Add("cần camera và micro");
+            return parts.Count > 0 ? string.Join(" · ", parts) : null;
+        }
+
         internal static string BuildHtmlBody(
             string campaignTitle, string joinLink, DateTime? expiresAt,
-            DateTime? slotStartsAt, DateTime? slotEndsAt)
+            DateTime? slotStartsAt, DateTime? slotEndsAt,
+            DateTime? startsAt = null, string? orgName = null,
+            bool faceVerifyEnabled = false, int? timeLimitMinutes = null)
         {
             var safeCampaignTitle = HtmlEncoder.Default.Encode(campaignTitle);
             var safeJoinLink = HtmlEncoder.Default.Encode(joinLink);
@@ -133,6 +168,36 @@ namespace Isas.CampaignService.Services
 </tr>
 <tr><td style=""height:24px;font-size:1px;line-height:1px;"">&nbsp;</td></tr>"
                 : string.Empty;
+            // CMP1-B4 — chỉ in khi startsAt còn Ở TƯƠNG LAI: quá khứ nghĩa là chiến dịch đã mở, nói
+            // "mở từ" một mốc đã qua chỉ gây khó hiểu chứ không giúp ứng viên chuẩn bị gì thêm.
+            var opensCard = startsAt.HasValue && startsAt.Value > DateTime.UtcNow
+                ? $@"<tr>
+  <td style=""padding:16px 20px;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;color:#78350f;font-size:14px;line-height:20px;"">
+    <strong>Phỏng vấn mở từ</strong><br/>
+    {FormatOpensAt(startsAt.Value)}
+  </td>
+</tr>
+<tr><td style=""height:24px;font-size:1px;line-height:1px;"">&nbsp;</td></tr>"
+                : string.Empty;
+            // KHÔNG HtmlEncoder ở đây (khác campaignTitle/joinLink/orgName): prepLine dựng HOÀN TOÀN
+            // từ số nguyên + chuỗi hằng trong code, không có ký tự nào do người dùng nhập — encode
+            // vào sẽ chỉ mã hoá tiếng Việt thành entity số vô ích (đúng cách FormatExpiry/FormatSlot
+            // cũng KHÔNG encode vì cùng lý do: dữ liệu server tự tính, không phải input).
+            var prepLine = BuildPrepLine(faceVerifyEnabled, timeLimitMinutes);
+            var prepCard = prepLine is not null
+                ? $@"<tr>
+  <td style=""padding:16px 20px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;color:#334155;font-size:14px;line-height:20px;"">
+    <strong>Chuẩn bị trước khi vào phỏng vấn</strong><br/>
+    {prepLine}
+  </td>
+</tr>
+<tr><td style=""height:24px;font-size:1px;line-height:1px;"">&nbsp;</td></tr>"
+                : string.Empty;
+
+            var safeOrgName = string.IsNullOrWhiteSpace(orgName) ? null : HtmlEncoder.Default.Encode(orgName);
+            var signatureHtml = safeOrgName is not null
+                ? $"<strong>{safeOrgName}</strong><br/><span style=\"color:#94a3b8;\">Gửi qua nền tảng ISAS</span>"
+                : "<strong>Đội ngũ ISAS</strong>";
 
             return $@"<!doctype html>
 <html lang=""vi"">
@@ -158,12 +223,14 @@ namespace Isas.CampaignService.Services
               </td></tr>
             </table>
             {slotCard}
+            {opensCard}
+            {prepCard}
             {expiryCard}
             <p style=""margin:0;font-size:13px;line-height:20px;color:#667085;"">Vì bảo mật, không chuyển tiếp email hoặc liên kết này cho người khác. Nếu nút không hoạt động, hãy mở liên kết sau trong trình duyệt:</p>
             <p style=""margin:8px 0 0;font-size:13px;line-height:20px;word-break:break-all;""><a href=""{safeJoinLink}"" style=""color:#2563eb;"">{safeJoinLink}</a></p>
           </td>
         </tr>
-        <tr><td style=""padding:20px 32px;background:#f8fafc;color:#667085;font-size:13px;line-height:20px;"">Trân trọng,<br/><strong>Đội ngũ ISAS</strong></td></tr>
+        <tr><td style=""padding:20px 32px;background:#f8fafc;color:#667085;font-size:13px;line-height:20px;"">Trân trọng,<br/>{signatureHtml}</td></tr>
       </table>
     </td></tr>
   </table>
@@ -173,7 +240,9 @@ namespace Isas.CampaignService.Services
 
         internal static string BuildPlainTextBody(
             string campaignTitle, string joinLink, DateTime? expiresAt,
-            DateTime? slotStartsAt, DateTime? slotEndsAt)
+            DateTime? slotStartsAt, DateTime? slotEndsAt,
+            DateTime? startsAt = null, string? orgName = null,
+            bool faceVerifyEnabled = false, int? timeLimitMinutes = null)
         {
             var expiryLine = expiresAt.HasValue
                 ? $"\nThời hạn tham gia: trước {FormatExpiry(expiresAt.Value)} UTC.\n"
@@ -181,6 +250,15 @@ namespace Isas.CampaignService.Services
             var slotLine = slotStartsAt.HasValue && slotEndsAt.HasValue
                 ? $"\nKhung giờ phỏng vấn: {FormatSlot(slotStartsAt.Value, slotEndsAt.Value)}.\n"
                 : string.Empty;
+            // CMP1-B4 — cùng điều kiện "còn ở tương lai" như bản HTML.
+            var opensLine = startsAt.HasValue && startsAt.Value > DateTime.UtcNow
+                ? $"\nPhỏng vấn mở từ: {FormatOpensAt(startsAt.Value)}.\n"
+                : string.Empty;
+            var prepLine = BuildPrepLine(faceVerifyEnabled, timeLimitMinutes);
+            var prepLineText = prepLine is not null ? $"\nChuẩn bị trước khi vào phỏng vấn: {prepLine}.\n" : string.Empty;
+            var signature = string.IsNullOrWhiteSpace(orgName)
+                ? "Đội ngũ ISAS"
+                : $"{orgName}\n(Gửi qua nền tảng ISAS)";
 
             return $"""
 Xin chào,
@@ -190,11 +268,13 @@ Bạn được mời tham gia chiến dịch đánh giá: {campaignTitle}
 Tham gia phỏng vấn AI tại:
 {joinLink}
 {slotLine}
+{opensLine}
+{prepLineText}
 {expiryLine}
 Vì bảo mật, không chuyển tiếp email hoặc liên kết này cho người khác.
 
 Trân trọng,
-Đội ngũ ISAS
+{signature}
 """;
         }
     }
