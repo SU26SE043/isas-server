@@ -57,4 +57,14 @@ public class SessionScoredEvent
     // Nullable + thêm ở CUỐI ⇒ bản Campaign cũ đọc event mới không vỡ; event cũ trong outbox (chưa
     // gửi lúc deploy) deserialize ra null thay vì nổ. ⚠ null nghĩa là "không ghim", KHÔNG suy thành v1.
     public int? CampaignPolicyVersion { get; set; }
+
+    // ADP1 — CÁCH GỘP ĐIỂM đã dùng để tính `TotalScore` ở trên (1 = theo answer · 2 = theo CÂU GỐC;
+    // xem CriterionScoreAggregator). Campaign ghi vào campaign_rankings.score_aggregation_version để
+    // bảng xếp hạng phân biệt được điểm của hai thang: CAMP-10 xếp mọi ứng viên trong campaign bằng
+    // cách so điểm THẲNG với nhau, mà ứng viên chấm trước/sau lần deploy này mang hai cách gộp khác nhau.
+    //
+    // Nullable + thêm ở CUỐI ⇒ bản Campaign cũ đọc event mới không vỡ; event cũ còn nằm trong outbox
+    // (chưa gửi lúc deploy) deserialize ra null thay vì nổ.
+    // ⚠ null = "KHÔNG BIẾT", KHÔNG suy thành 1 (BK23).
+    public int? ScoreAggregationVersion { get; set; }
 }

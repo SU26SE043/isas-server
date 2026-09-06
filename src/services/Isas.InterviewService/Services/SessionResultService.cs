@@ -56,24 +56,30 @@ public class SessionResultService : ISessionResultService
 
         // Điểm mỗi (answer, criterion) — MATERIALIZE rồi tính trong C#. KHÔNG dùng AVG SQL:
         // trên SQLite (test) Average(decimal) map hàm ef_avg dễ lệch Postgres → tính LINQ-to-objects.
+        //
+        // ADP1 — projection mang thêm CÂU GỐC HIỆU DỤNG (`RootQuestionId ?? QuestionId`) để bước gộp
+        // biết chuỗi đào sâu nào thuộc về câu gốc nào. `??` render thành COALESCE trên Npgsql (đã soi
+        // bằng ToQueryString trên provider thật — đừng suy đoán chuyện dịch được hay không, tiền lệ
+        // DB27: một vị ngữ tưởng dịch được, thực tế không, và hỏng trong IM LẶNG).
         var rawScores = await _db.AnswerScores.AsNoTracking()
             .Where(sc => sc.Answer.SessionId == sessionId)
-            .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.Score })
+            .Select(sc => new AnswerCriterionScore(
+                sc.AnswerId,
+                sc.Answer.Question.RootQuestionId ?? sc.Answer.QuestionId,
+                sc.CriterionId,
+                sc.Score))
             .ToListAsync(ct);
 
-        // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency),
-        // thay cho "attempt mới nhất". N=1 → median-of-1 = giá trị cũ (không đổi hành vi).
-        var median = rawScores
-            .GroupBy(s => (s.AnswerId, s.CriterionId))
-            .Select(g => new { g.Key.AnswerId, g.Key.CriterionId, Score = ScoreStatistics.Median(g.Select(s => s.Score)) })
-            .ToList();
-
-        var avgByCriterion = median
-            .GroupBy(s => s.CriterionId)
-            .ToDictionary(g => g.Key, g => g.Average(s => s.Score));
+        // E10 median mỗi (answer, criterion) → ADP1 gộp về CÂU GỐC → TB qua các câu gốc.
+        // Cả ba bước nằm trong MỘT hàm dùng chung với SessionScoringNotifier: hai đường phải cho
+        // cùng một con số trên cùng một buổi (mẫu SkipPenaltyRule.Apply).
+        var avgByCriterion = CriterionScoreAggregator.AverageByCriterion(rawScores);
 
         // Câu Skipped/Failed/chưa trả lời không có answer_scores → không tính vào answeredCount.
-        var answeredCount = median.Select(s => s.AnswerId).Distinct().Count();
+        // Đếm theo ANSWER (không phải câu gốc): đây là "trả lời được bao nhiêu câu", không phải mẫu số
+        // của điểm. Trước đây đếm trên tập đã gom (answer, criterion) — cùng kết quả, vì gom theo khoá
+        // có chứa AnswerId thì tập AnswerId phân biệt không đổi.
+        var answeredCount = rawScores.Select(s => s.AnswerId).Distinct().Count();
 
         // Idempotent: xoá breakdown cũ của session rồi ghi lại (đóng lại cùng session không nhân đôi).
         var existing = await _db.SessionCriterionScores

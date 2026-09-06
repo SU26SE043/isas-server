@@ -45,6 +45,27 @@ public class SessionScoringNotifier : ISessionScoringNotifier
 
         var (totalScore, scoringInputs, scoreFallback) = await ComputeScoreAndInputsAsync(session, ct);
 
+        // ADP1 — ĐÓNG CON DẤU CÁCH GỘP ĐIỂM LÊN BUỔI, ngay tại chỗ điểm vừa được tính, bằng đúng
+        // bản code vừa tính nó. Đây là chokepoint DUY NHẤT của mọi buổi chuyển sang Scored (hai đường
+        // đóng: AnswerService.TryCompleteSessionAsync + PracticeService.SubmitSessionAsync, cả hai gọi
+        // hàm này rồi mới SaveChanges) ⇒ không buổi nào lọt, và con dấu commit CÙNG transaction với
+        // state-flip + outbox-row: không có trạng thái "đã Scored mà chưa có dấu".
+        //
+        // Đường B2C ghi breakdown (SessionResultService.ComputeAndStoreAsync) chạy SAU, ngoài transaction
+        // này, nhưng dùng CHUNG CriterionScoreAggregator trong CÙNG một binary ⇒ nó không thể gộp kiểu
+        // khác với con dấu vừa đóng. Đóng dấu ở cả hai chỗ là tạo ra hai nguồn sự thật phải cùng đúng mãi.
+        //
+        // ⚠ Phải ghi lên bản ĐANG ĐƯỢC THEO DÕI thì caller mới lưu được: `session` ở trên đọc bằng
+        // AsNoTracking (cố ý — đọc trạng thái đã commit, không lẫn thay đổi chưa lưu của caller) nên nó
+        // là một bản SAO rời, gán vào đó thì mất trắng, IM LẶNG. `FindAsync` lấy từ identity map (không
+        // sinh query khi caller đã nạp) ⇒ đúng instance caller sắp commit.
+        //
+        // ⚠ KHÔNG dùng ExecuteUpdate ở đây: practice_sessions mang concurrency token xmin (DB10),
+        // ExecuteUpdate đổi xmin ⇒ SaveChanges ngay sau của caller ném DbUpdateConcurrencyException.
+        var tracked = await _db.PracticeSessions.FindAsync(new object?[] { sessionId }, ct);
+        if (tracked is not null)
+            tracked.ScoreAggregationVersion = CriterionScoreAggregator.CurrentVersion;
+
         var evt = new SessionScoredEvent
         {
             SessionId = session.Id,
@@ -64,7 +85,12 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             ScoreFallback = scoreFallback,
             // SCP1 · B10 / HĐ-5 — nhãn chính sách cho campaign_rankings.policy_version. Đã ghim sẵn
             // trên session (B5) ⇒ đọc thẳng, KHÔNG query thêm.
-            CampaignPolicyVersion = session.CampaignPolicyVersion
+            CampaignPolicyVersion = session.CampaignPolicyVersion,
+            // ADP1 — cùng HẰNG SỐ đã đóng lên buổi ở trên, KHÔNG đọc lại `tracked.ScoreAggregationVersion`:
+            // con dấu trên buổi và nhãn trên bảng xếp hạng phải nói về CÙNG một lượt tính, nên chúng
+            // lấy từ cùng một nguồn. Đọc lại còn để lọt ca `tracked is null` ⇒ event mang null trong
+            // khi điểm rõ ràng vừa được gộp theo câu gốc.
+            ScoreAggregationVersion = CriterionScoreAggregator.CurrentVersion
         };
 
         _db.OutboxMessages.Add(OutboxMessage.ForScored(evt));
@@ -214,10 +240,16 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             _db, RubricCriteriaLoader.KeyFor(session), ct, includeLevels: false);
         if (criteria.Count == 0) return (0m, null, false);
 
+        // ADP1 — projection mang thêm CÂU GỐC HIỆU DỤNG (`RootQuestionId ?? QuestionId`); `??` render
+        // thành COALESCE trên Npgsql (đã soi bằng ToQueryString trên provider thật).
         var scores = await _db.AnswerScores
             .AsNoTracking()
             .Where(sc => sc.Answer.SessionId == sessionId)
-            .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.Score })
+            .Select(sc => new AnswerCriterionScore(
+                sc.AnswerId,
+                sc.Answer.Question.RootQuestionId ?? sc.Answer.QuestionId,
+                sc.CriterionId,
+                sc.Score))
             .ToListAsync(ct);
         if (scores.Count == 0) return (0m, null, false);
 
@@ -251,15 +283,15 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             a => a.SessionId == sessionId && a.AudioObjectKey != null
                  && a.Question.Kind == QuestionKind.Seed, ct);
 
-        // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency).
-        var medianPerAnswerCriterion = scores
-            .GroupBy(s => (s.AnswerId, s.CriterionId))
-            .Select(g => new { g.Key.CriterionId, Score = ScoreStatistics.Median(g.Select(s => s.Score)) });
-
-        // Điểm TB mỗi tiêu chí qua các answer đã chấm (BC9 §Công thức bước 1, tái dùng cho B2B).
-        var avgByCriterion = medianPerAnswerCriterion
-            .GroupBy(s => s.CriterionId)
-            .ToDictionary(g => g.Key, g => g.Average(s => s.Score));
+        // E10 median mỗi (answer, criterion) → ADP1 gộp về CÂU GỐC → TB qua các câu gốc.
+        // MỘT hàm dùng chung với SessionResultService (đường ghi breakdown B2C): điểm đi vào xếp hạng
+        // B2B và điểm hiện trên màn kết quả phải là CÙNG một con số (mẫu SkipPenaltyRule.Apply).
+        //
+        // Bước gộp-về-câu-gốc là thứ sửa việc chuỗi đào sâu dài ăn nhiều phiếu hơn chuỗi ngắn — mà độ
+        // dài chuỗi do AI quyết lúc thi, không phải do thước đo. Với B2B nó còn nặng hơn B2C: điểm này
+        // đi thẳng vào `campaign_rankings`, nên hai ứng viên cùng chiến dịch đang được xếp cạnh nhau
+        // bằng hai cách phân bổ trọng số khác nhau.
+        var avgByCriterion = CriterionScoreAggregator.AverageByCriterion(scores);
 
         // maxScore khác nhau giữa các tiêu chí ⇒ chuẩn theo % trước khi gộp trọng số.
         decimal weightedSum = 0m;

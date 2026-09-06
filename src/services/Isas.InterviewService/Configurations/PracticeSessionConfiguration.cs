@@ -69,6 +69,10 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // (giá trị đã biết chắc, xem ghi chú ở entity), không phải bằng DB default.
         e.Property(x => x.CampaignRubricVersion);
 
+        // ADP1 — con dấu cách gộp điểm. NULLABLE, KHÔNG default: default sẽ khai rằng ta biết cách
+        // gộp của MỌI buổi cũ, kể cả buổi chưa chấm bao giờ. null phải giữ nguyên nghĩa "không biết".
+        e.Property(x => x.ScoreAggregationVersion);
+
         // SCP1 · B5 — ghim hợp đồng chấm điểm (chính sách biểu thức) của buổi B2B. 4 cột NULLABLE,
         // KHÔNG default: null = B2C / B2B chưa áp chính sách / buổi trước cột này (xem entity). Ghim
         // CẢ biểu thức vì Interview không đọc được bảng scoring_policies của Campaign lúc chấm.
