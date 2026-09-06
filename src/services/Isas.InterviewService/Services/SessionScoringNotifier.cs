@@ -214,10 +214,16 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             _db, RubricCriteriaLoader.KeyFor(session), ct, includeLevels: false);
         if (criteria.Count == 0) return (0m, null, false);
 
+        // ADP1 — projection mang thêm CÂU GỐC HIỆU DỤNG (`RootQuestionId ?? QuestionId`); `??` render
+        // thành COALESCE trên Npgsql (đã soi bằng ToQueryString trên provider thật).
         var scores = await _db.AnswerScores
             .AsNoTracking()
             .Where(sc => sc.Answer.SessionId == sessionId)
-            .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.Score })
+            .Select(sc => new AnswerCriterionScore(
+                sc.AnswerId,
+                sc.Answer.Question.RootQuestionId ?? sc.Answer.QuestionId,
+                sc.CriterionId,
+                sc.Score))
             .ToListAsync(ct);
         if (scores.Count == 0) return (0m, null, false);
 
@@ -251,15 +257,15 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             a => a.SessionId == sessionId && a.AudioObjectKey != null
                  && a.Question.Kind == QuestionKind.Seed, ct);
 
-        // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency).
-        var medianPerAnswerCriterion = scores
-            .GroupBy(s => (s.AnswerId, s.CriterionId))
-            .Select(g => new { g.Key.CriterionId, Score = ScoreStatistics.Median(g.Select(s => s.Score)) });
-
-        // Điểm TB mỗi tiêu chí qua các answer đã chấm (BC9 §Công thức bước 1, tái dùng cho B2B).
-        var avgByCriterion = medianPerAnswerCriterion
-            .GroupBy(s => s.CriterionId)
-            .ToDictionary(g => g.Key, g => g.Average(s => s.Score));
+        // E10 median mỗi (answer, criterion) → ADP1 gộp về CÂU GỐC → TB qua các câu gốc.
+        // MỘT hàm dùng chung với SessionResultService (đường ghi breakdown B2C): điểm đi vào xếp hạng
+        // B2B và điểm hiện trên màn kết quả phải là CÙNG một con số (mẫu SkipPenaltyRule.Apply).
+        //
+        // Bước gộp-về-câu-gốc là thứ sửa việc chuỗi đào sâu dài ăn nhiều phiếu hơn chuỗi ngắn — mà độ
+        // dài chuỗi do AI quyết lúc thi, không phải do thước đo. Với B2B nó còn nặng hơn B2C: điểm này
+        // đi thẳng vào `campaign_rankings`, nên hai ứng viên cùng chiến dịch đang được xếp cạnh nhau
+        // bằng hai cách phân bổ trọng số khác nhau.
+        var avgByCriterion = CriterionScoreAggregator.AverageByCriterion(scores);
 
         // maxScore khác nhau giữa các tiêu chí ⇒ chuẩn theo % trước khi gộp trọng số.
         decimal weightedSum = 0m;
