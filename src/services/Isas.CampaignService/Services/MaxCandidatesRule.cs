@@ -25,8 +25,14 @@ namespace Isas.CampaignService.Services
     /// bằng không.</para>
     ///
     /// <para>Ném <see cref="System.ArgumentException"/> ⇒ controller map <b>400</b> (create:
-    /// <c>CampaignController</c> POST · update: PUT). Kiểm cận dưới chạy TRƯỚC cận trên: nói với HR
-    /// rằng <c>-5</c> "vượt trần 25" là vô nghĩa, cái sai thật là số âm.</para>
+    /// <c>CampaignController</c> POST · update: PUT).</para>
+    ///
+    /// <para>⚠ Thứ tự cận-dưới-trước-cận-trên là PHÒNG THỦ, không phải để đổi thông điệp: một số
+    /// <c>&lt; 1</c> không bao giờ lớn hơn <c>MaxCandidatesCap</c> nên nó chưa từng chạm được nhánh
+    /// cận trên — đảo thứ tự hôm nay là no-op. Nó chỉ quan sát được nếu cap thành ÂM, mà
+    /// <c>EntitlementClient</c> loại snapshot khai cap <c>&lt; 1</c> nên trạng thái đó không tới được.
+    /// (Bản đầu chú thích ở đây nêu lý do "nói với HR rằng -5 vượt trần 25 là vô nghĩa" — SAI:
+    /// <c>-5 &gt; 25</c> là false, nhánh đó không bao giờ chạy với giá trị âm.)</para>
     /// </summary>
     internal static class MaxCandidatesRule
     {
