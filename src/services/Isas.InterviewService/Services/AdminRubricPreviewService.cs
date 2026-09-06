@@ -70,11 +70,24 @@ public class AdminRubricPreviewService(
             throw new KeyNotFoundException($"Chưa có bộ chuẩn cho {jobCategory} ({lang}).");
         var rubricVersion = criteria[0].Version;
 
+        // ── 1b. LOẠI tiêu chí chấm bằng SỐ ĐO, đúng như đường chấm THẬT ───────
+        // 🔴 Cả tính năng đứng trên lời hứa "thứ admin kiểm chứng chính là thứ người luyện bị chấm".
+        // Hai đường publish thật (`AnswerService`, `StuckAnswerRepublisher`) đều gọi
+        // `MeasuredCriteriaSplit.ForAi` trước khi gửi job, nên tiêu chí `DeliveryMetrics` KHÔNG bao giờ
+        // tới LLM — nó được `DeliveryFluencyScorer` tính từ số đo VAD, và điểm LLM (nếu lọt tới) bị BỎ.
+        // Chấm thử trước đây bỏ qua bước này ⇒ nó chấm tiêu chí đó BẰNG LLM, tức con số chấm thử KHÔNG
+        // so được với điểm thật — hỏng đúng thứ tính năng sinh ra để bảo đảm.
+        var aiCriteria = MeasuredCriteriaSplit.ForAi(criteria);
+
         // ── 2. mốc hợp lệ? ────────────────────────────────────────────────────
         // Chấm thử là để kiểm chứng THANG ĐIỂM. Không có mốc thì đường chấm dùng dải mặc định và lượt
         // chấm thử chẳng kiểm chứng được gì ngoài chính dải mặc định đó — tức đốt một lượt AI để xác
         // nhận hiện trạng mà ta đang tìm cách thoát ra.
-        var thieuMoc = criteria.Where(c => c.Levels.Count < 2).Select(c => c.Name).ToList();
+        //
+        // ⚠ Chỉ đòi mốc ở tiêu chí ĐI ĐƯỜNG LLM. Tiêu chí chấm bằng số đo theo THIẾT KẾ không có mốc
+        // (ngưỡng của nó nằm ở `DeliveryScoringOptions`, không phải `rubric_levels`), nên đòi mốc ở đó
+        // là coi cấu hình ĐÚNG thành thiếu — và khoá chấm thử vĩnh viễn với mọi bộ rubric đúng.
+        var thieuMoc = aiCriteria.Where(c => c.Levels.Count < 2).Select(c => c.Name).ToList();
         if (thieuMoc.Count > 0)
             throw new InvalidOperationException(
                 $"Chưa khai mốc điểm cho tiêu chí: {string.Join(", ", thieuMoc)}. "
@@ -134,9 +147,9 @@ public class AdminRubricPreviewService(
             var result = await ai.RunAsync(
                 jobCategory.ToString(), lang, request.Seniority,
                 question, sampleAnswer: null, request.CustomAnswer,
-                TargetWordCount, BuildPreviewCriteria(criteria), ct);
+                TargetWordCount, BuildPreviewCriteria(aiCriteria), ct);
 
-            var samples = BuildSamples(criteria, result.Samples);
+            var samples = BuildSamples(aiCriteria, result.Samples);
             run.Samples = JsonSerializer.Serialize(samples, Json);
             run.PromptVersion = result.PromptVersion;
             run.LengthParityWarning = result.LengthParityWarning;
