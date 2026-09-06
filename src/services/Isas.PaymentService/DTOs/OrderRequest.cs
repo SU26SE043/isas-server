@@ -34,6 +34,11 @@ namespace Isas.PaymentService.DTOs
             public Guid? InvoiceId { get; set; }
             public OrderStatus Status { get; set; }
             public long AmountVnd { get; set; }   // khớp Order.AmountVnd (amount_vnd bigint — payment.md §DB)
+            // UX3-B1 — số lượt phỏng vấn của gói đơn này mua (biên lai FE đọc order.interviewCredits).
+            // NULLABLE, KHÔNG default 0: đơn tất toán hoá đơn (Kind=InvoiceSettlement) không gắn package
+            // ⇒ "không mua lượt nào" (null) khác hẳn "gói 0 lượt" (0). Lấy từ Order.Package (navigation
+            // đã Include ở GetOrderAsync/GetOwnerOrdersAsync — nơi FE render biên lai + my-orders).
+            public int? InterviewCredits { get; set; }
             public long PayosOrderCode { get; set; }
             public DateTime ExpiredAt { get; set; }
             public DateTime? PaidAt { get; set; }
@@ -50,6 +55,7 @@ namespace Isas.PaymentService.DTOs
                 InvoiceId = order.InvoiceId,
                 Status = order.Status,
                 AmountVnd = order.AmountVnd,
+                InterviewCredits = order.Package?.InterviewCredits,
                 PayosOrderCode = order.PayosOrderCode,
                 ExpiredAt = order.ExpiredAt,
                 PaidAt = order.PaidAt,
