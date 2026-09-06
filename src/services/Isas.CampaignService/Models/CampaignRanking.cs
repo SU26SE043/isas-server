@@ -25,6 +25,15 @@ namespace Isas.CampaignService.Models
         // BC15 (đo cải thiện) và F14 (mốc peer) đang đem điểm so THẲNG với nhau.
         public int? RubricVersion { get; set; }
 
+        // ADP1 — CÁCH GỘP ĐIỂM ra con số TotalScore này (1 = theo answer · 2 = theo CÂU GỐC), đến QUA
+        // event SessionScored. Hai cách cho ra hai thang KHÔNG so sánh được, mà bảng này chính là chỗ
+        // CAMP-10 đem điểm của mọi ứng viên trong campaign so THẲNG với nhau — campaign đang tuyển vắt
+        // qua lần deploy ADP1 sẽ có ứng viên ở cả hai thang nằm chung một bảng.
+        //
+        // ⚠ NULL = KHÔNG BIẾT (dòng ghi trước bản này, hoặc bản Interview cũ chưa gửi field) — KHÔNG
+        // được vẽ thành 1 (BK23), y như RubricVersion ngay trên.
+        public int? ScoreAggregationVersion { get; set; }
+
         // SCP1 · B5 — BÓ BIẾN ĐẦU VÀO THÔ của lượt chấm này, đến QUA event SessionScored, ghi lúc
         // upsert ranking. Lưu RAW per-criterion ({name,pct,weight,maxScore} + answered/totalQuestions),
         // KHÔNG lưu scalar đã tính — B8 (xem trước / áp chính sách) dựng lại ScoringContext từ đây và

@@ -54,6 +54,28 @@ public sealed record AnswerCriterionScore(
 public static class CriterionScoreAggregator
 {
     /// <summary>
+    /// ĐÃ BIẾT: mỗi <c>answer</c> là một quan sát ngang hàng ⇒ chuỗi đào sâu dài đóng góp nhiều
+    /// phiếu hơn chuỗi ngắn. Hành vi TRƯỚC ADP1.
+    ///
+    /// <para>⚠ Code hiện tại KHÔNG BAO GIỜ ghi giá trị này — nó chỉ tồn tại để giữ nghĩa cho ô số 1,
+    /// và để phân biệt "biết chắc là cách cũ" với <c>null</c> = "không biết". Buổi chấm trước bản
+    /// này mang <c>null</c>, KHÔNG được backfill thành 1 (xem migration).</para>
+    /// </summary>
+    public const int VersionPerAnswer = 1;
+
+    /// <summary>
+    /// ĐÃ BIẾT: chuỗi đào sâu gộp về CÂU GỐC ⇒ mỗi câu gốc một phiếu, dài mấy cũng vậy (ADP1).
+    /// </summary>
+    public const int VersionPerRootQuestion = 2;
+
+    /// <summary>
+    /// Con dấu mà <b>bản code này</b> đóng lên mọi buổi nó chấm. Đặt cạnh chính thuật toán chứ không
+    /// ở service gọi: đổi cách gộp ở đây mà quên đổi số thì con dấu nói dối, và con dấu nói dối tệ
+    /// hơn không có con dấu — nó trả lời "hai điểm này cùng thước đo không?" một cách SAI mà tự tin.
+    /// </summary>
+    public const int CurrentVersion = VersionPerRootQuestion;
+
+    /// <summary>
     /// Trả về <c>criterionId → điểm THÔ trung bình</c> (chưa chuẩn hoá theo <c>maxScore</c>, chưa
     /// gộp trọng số — hai việc đó thuộc về từng caller vì B2C dùng equal-weight còn B2B dùng weighted).
     ///

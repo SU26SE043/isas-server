@@ -182,6 +182,26 @@ public class PracticeSession : IHasUpdatedAt
     // TopicSelector hẳn) · pool rỗng lúc tạo · buổi tạo trước cột này tồn tại.
     public List<SessionTopic>? Topics { get; set; }
 
+    // ADP1 — CON DẤU CÁCH GỘP ĐIỂM. Trả lời đúng một câu: "điểm buổi này gộp theo ANSWER hay theo
+    // CÂU GỐC?". Cần vì hai cách cho ra HAI THANG KHÔNG SO SÁNH ĐƯỢC (đo thật: cùng một buổi, chuỗi
+    // 4 answer @4đ + một gốc trần @1đ ⇒ cũ 34.00, mới 25.00), mà CAMP-10 (xếp hạng) đem điểm của mọi
+    // ứng viên trong campaign so THẲNG, còn BC15 (đo cải thiện) · F14 (mốc peer) so điểm qua thời gian.
+    // Tiền lệ cùng loại: scoring_scope_version (INT-18) · metrics_version (F11) · campaign_rubric_version
+    // (CAMP-18) · screening_version (CAMP-14) · policy_version (SCP1).
+    //
+    //   null = KHÔNG BIẾT — buổi chấm trước khi cột này tồn tại. ⚠ KHÔNG suy thành 1 (BK23: suy
+    //          "biết" từ "không biết" là bịa). Trên thực tế row null đều là cách cũ, nhưng đó là suy
+    //          đoán của người đọc chứ không phải điều dữ liệu khẳng định.
+    //      1 = ĐÃ BIẾT: gộp theo ANSWER (trước ADP1). Code hiện tại không ghi giá trị này.
+    //      2 = ĐÃ BIẾT: gộp về CÂU GỐC (ADP1) — xem CriterionScoreAggregator.
+    //
+    // ⚠ ĐÓNG LÚC CHẤM, KHÔNG phải lúc tạo buổi — khác hẳn CampaignRubricVersion/CampaignPolicy*/
+    // SkipPenalty ở trên. Ba cái đó ghim một LỜI HỨA về đầu vào bên ngoài ("bạn được chấm bằng thước
+    // đo lúc bạn bắt đầu"). Cái này ghi lại một SỰ THẬT về đoạn code đã tính ra con số: buổi tạo
+    // trước lúc deploy nhưng chấm sau lúc deploy thì được gộp bằng cách MỚI, vì code là code. Ghim
+    // lúc tạo sẽ nói dối đúng ở nhóm buổi vắt qua cửa sổ rollout — tức đúng nhóm dễ bị trộn thang nhất.
+    public int? ScoreAggregationVersion { get; set; }
+
     // Navigation
     public ICollection<PracticeQuestion> Questions { get; set; } = [];
     public ICollection<PracticeAnswer> Answers { get; set; } = [];

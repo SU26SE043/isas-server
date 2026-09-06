@@ -45,6 +45,27 @@ public class SessionScoringNotifier : ISessionScoringNotifier
 
         var (totalScore, scoringInputs, scoreFallback) = await ComputeScoreAndInputsAsync(session, ct);
 
+        // ADP1 — ĐÓNG CON DẤU CÁCH GỘP ĐIỂM LÊN BUỔI, ngay tại chỗ điểm vừa được tính, bằng đúng
+        // bản code vừa tính nó. Đây là chokepoint DUY NHẤT của mọi buổi chuyển sang Scored (hai đường
+        // đóng: AnswerService.TryCompleteSessionAsync + PracticeService.SubmitSessionAsync, cả hai gọi
+        // hàm này rồi mới SaveChanges) ⇒ không buổi nào lọt, và con dấu commit CÙNG transaction với
+        // state-flip + outbox-row: không có trạng thái "đã Scored mà chưa có dấu".
+        //
+        // Đường B2C ghi breakdown (SessionResultService.ComputeAndStoreAsync) chạy SAU, ngoài transaction
+        // này, nhưng dùng CHUNG CriterionScoreAggregator trong CÙNG một binary ⇒ nó không thể gộp kiểu
+        // khác với con dấu vừa đóng. Đóng dấu ở cả hai chỗ là tạo ra hai nguồn sự thật phải cùng đúng mãi.
+        //
+        // ⚠ Phải ghi lên bản ĐANG ĐƯỢC THEO DÕI thì caller mới lưu được: `session` ở trên đọc bằng
+        // AsNoTracking (cố ý — đọc trạng thái đã commit, không lẫn thay đổi chưa lưu của caller) nên nó
+        // là một bản SAO rời, gán vào đó thì mất trắng, IM LẶNG. `FindAsync` lấy từ identity map (không
+        // sinh query khi caller đã nạp) ⇒ đúng instance caller sắp commit.
+        //
+        // ⚠ KHÔNG dùng ExecuteUpdate ở đây: practice_sessions mang concurrency token xmin (DB10),
+        // ExecuteUpdate đổi xmin ⇒ SaveChanges ngay sau của caller ném DbUpdateConcurrencyException.
+        var tracked = await _db.PracticeSessions.FindAsync(new object?[] { sessionId }, ct);
+        if (tracked is not null)
+            tracked.ScoreAggregationVersion = CriterionScoreAggregator.CurrentVersion;
+
         var evt = new SessionScoredEvent
         {
             SessionId = session.Id,
@@ -64,7 +85,12 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             ScoreFallback = scoreFallback,
             // SCP1 · B10 / HĐ-5 — nhãn chính sách cho campaign_rankings.policy_version. Đã ghim sẵn
             // trên session (B5) ⇒ đọc thẳng, KHÔNG query thêm.
-            CampaignPolicyVersion = session.CampaignPolicyVersion
+            CampaignPolicyVersion = session.CampaignPolicyVersion,
+            // ADP1 — cùng HẰNG SỐ đã đóng lên buổi ở trên, KHÔNG đọc lại `tracked.ScoreAggregationVersion`:
+            // con dấu trên buổi và nhãn trên bảng xếp hạng phải nói về CÙNG một lượt tính, nên chúng
+            // lấy từ cùng một nguồn. Đọc lại còn để lọt ca `tracked is null` ⇒ event mang null trong
+            // khi điểm rõ ràng vừa được gộp theo câu gốc.
+            ScoreAggregationVersion = CriterionScoreAggregator.CurrentVersion
         };
 
         _db.OutboxMessages.Add(OutboxMessage.ForScored(evt));

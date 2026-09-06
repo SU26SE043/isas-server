@@ -60,6 +60,7 @@ namespace Isas.CampaignService.Services
                     SessionId = evt.SessionId,
                     TotalScore = evt.TotalScore,
                     RubricVersion = evt.RubricVersion,   // CAMP-18: null = không biết
+                    ScoreAggregationVersion = evt.ScoreAggregationVersion,   // ADP1: null = không biết
                     ScoringInputs = evt.ScoringInputs,   // SCP1 · B5: bó biến RAW cho B8; null = event cũ
                     PolicyVersion = evt.CampaignPolicyVersion,   // SCP1 · B10 / HĐ-5
                     PolicyName = policyName,                     // SCP1 · B10 / HĐ-5
@@ -80,6 +81,7 @@ namespace Isas.CampaignService.Services
                 existing.CandidateId = evt.CandidateId;
                 existing.TotalScore = evt.TotalScore;
                 existing.RubricVersion = evt.RubricVersion;
+                existing.ScoreAggregationVersion = evt.ScoreAggregationVersion;   // ADP1 — event là nguồn quyền lực, đè lại
                 existing.ScoringInputs = evt.ScoringInputs;   // SCP1 · B5 — event là nguồn quyền lực, đè lại
                 // SCP1 · B10 — bàn giao lại (outbox at-least-once) đi vào ĐÚNG nhánh này; nhãn chính
                 // sách phải đè lại như mọi field khác của event. (Ứng viên đã qua B8 "áp" rồi mà event
