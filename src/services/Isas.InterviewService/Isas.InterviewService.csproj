@@ -10,6 +10,13 @@
     <Content Include="..\..\..\.dockerignore" Link=".dockerignore" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- UX3-B2 — RoadmapService.BuildSummaryQuery + RoadmapSummaryRow là `internal` để test khoá
+         được SQL sinh ra của GET /roadmaps (ToQueryString): hai con số đếm chặng PHẢI là subquery
+         scalar COUNT, KHÔNG Include cây milestone→lesson. -->
+    <InternalsVisibleTo Include="Isas.InterviewService.Tests" />
+  </ItemGroup>
+
 	<ItemGroup>
 		<PackageReference Include="AWSSDK.Extensions.NETCore.Setup" Version="4.0.4.1" />
 		<PackageReference Include="AWSSDK.S3" Version="4.0.23.4" />
