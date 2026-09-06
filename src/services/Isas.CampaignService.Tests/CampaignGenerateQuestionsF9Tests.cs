@@ -40,6 +40,14 @@ public class CampaignGenerateQuestionsF9Tests
         /// <summary>SEN1 — mức HR đặt cấp chiến dịch, ghi lại để test khẳng định được nó đi tới đây.</summary>
         public string? LastSeniority { get; private set; }
 
+        /// <summary>
+        /// CMP2-BE1 — bộ tiêu chí chấm gửi làm BỐI CẢNH. GHI LẠI chứ không chỉ nuốt-rồi-ủy-quyền:
+        /// một double chỉ ủy quyền xuống overload cũ sẽ biên dịch được và mọi test vẫn xanh trong
+        /// khi <c>criteriaContext</c> rơi mất trên đường — không có gì để khẳng định nó tới nơi.
+        /// <c>null</c> = chưa lượt nào gọi (phân biệt với <c>[]</c> = có gọi nhưng không tiêu chí nào).
+        /// </summary>
+        public IReadOnlyList<QuestionCriterionContext>? LastCriteriaContext { get; private set; }
+
         public FakeGenerator(Func<List<string>> result) => _result = result;
 
         public static FakeGenerator Returning(params string[] questions)
@@ -52,6 +60,15 @@ public class CampaignGenerateQuestionsF9Tests
         {
             LastSeniority = seniority;
             return GenerateAsync(jobCategory, jdText, count, ct);
+        }
+
+        // CMP2-BE1 — cũng là thành viên BẮT BUỘC, cùng lý do SEN1 ở trên.
+        public Task<List<string>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority,
+            IReadOnlyList<QuestionCriterionContext> criteriaContext, CancellationToken ct)
+        {
+            LastCriteriaContext = criteriaContext;
+            return GenerateAsync(jobCategory, jdText, count, seniority, ct);
         }
 
         public static FakeGenerator Throwing()
