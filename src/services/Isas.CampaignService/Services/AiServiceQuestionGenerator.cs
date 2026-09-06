@@ -10,6 +10,9 @@ namespace Isas.CampaignService.Services
     /// Endpoint này B2C đã dùng sẵn (Isas.InterviewService/Services/AiServiceQuestionGenerator.cs) — bản này
     /// là phía Campaign (B2B), chỉ gửi jdText (B2B không có CV của một ứng viên cụ thể lúc soạn đề).
     ///
+    /// CMP2-BE1 — kèm <c>criteriaContext</c>: bộ tiêu chí chấm của chiến dịch, gửi làm BỐI CẢNH để
+    /// prompt biết buổi này sẽ được chấm bằng thước nào. Rỗng ⇒ khoá không ra dây ⇒ prompt nguyên xi.
+    ///
     /// Response AIService: {"questions": ["câu 1", "câu 2", ...]} (mảng string thuần).
     /// Lỗi transport/timeout hoặc non-2xx → <see cref="DownstreamServiceException"/> → controller map 502
     /// (KHÔNG nuốt thành 400: lỗi upstream không phải lỗi request của HR — tiền lệ commit b1239d4 bên Interview).
@@ -39,8 +42,16 @@ namespace Isas.CampaignService.Services
             string jobCategory, string? jdText, int? count, CancellationToken ct = default)
             => GenerateAsync(jobCategory, jdText, count, "Junior", ct);
 
-        public async Task<List<string>> GenerateAsync(
+        public Task<List<string>> GenerateAsync(
             string jobCategory, string? jdText, int? count, string seniority, CancellationToken ct)
+            // CMP2-BE1 — không có bối cảnh tiêu chí ⇒ mảng rỗng ⇒ khoá `criteriaContext` ra dây là
+            // `null` ⇒ prompt AIService GIỮ NGUYÊN XI. Đây là đường của mọi caller cũ.
+            => GenerateAsync(jobCategory, jdText, count, seniority,
+                Array.Empty<QuestionCriterionContext>(), ct);
+
+        public async Task<List<string>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority,
+            IReadOnlyList<QuestionCriterionContext> criteriaContext, CancellationToken ct)
         {
             HttpResponseMessage resp;
             try
@@ -57,6 +68,30 @@ namespace Isas.CampaignService.Services
                 // Không để rỗng/null ra dây: `GenerateQuestionsRequest.seniority` bên Python khai `str`
                 // (không Optional) ⇒ `null` là 422, tức HR bấm "sinh câu hỏi" nhận 502 mà nguyên nhân
                 // thật nằm ở một field phụ.
+                //
+                // CMP2-BE1 — BỐI CẢNH thước đo. Rỗng ⇒ gửi `null` chứ không phải `[]`: bên Python
+                // `criteriaContext` khai `list[...] | None`, và khối prompt rẽ nhánh theo truthiness —
+                // hai giá trị này cho cùng kết quả, nhưng `null` nói đúng ý "chiến dịch chưa khai
+                // tiêu chí" thay vì "khai một bộ rỗng".
+                //
+                // ⚠ Tên khoá `criteriaContext` phải KHỚP TỪNG CHỮ với field pydantic. Lệch tên KHÔNG
+                // ném lỗi ở đâu cả: `GenerateQuestionsRequest` không set `model_config` nên pydantic
+                // `extra='ignore'` NUỐT IM LẶNG — .NET vẫn gửi, HTTP vẫn 200, prompt chỉ đơn giản
+                // không đổi một chữ. Lớp bug này đã cắn repo bốn lần (`focusCriteria`/BC14 ·
+                // `metricsVersion` · `adaptiveMaxQuestions` · `transcriptEngine`).
+                //
+                // ⚠ KHÔNG dùng lại khoá `criteria` sẵn có: khoá đó là đường GẮN NHÃN
+                // (targetCriterionIds) và nó kéo theo ràng buộc PHÂN BỔ BẮT BUỘC của SC1 — đúng thứ
+                // đợt này cố ý chưa làm (xem docblock `IQuestionGenerator`).
+                var contextPayload = criteriaContext is { Count: > 0 }
+                    ? criteriaContext
+                        .Where(c => !string.IsNullOrWhiteSpace(c.Name))
+                        .Select(c => new { name = c.Name.Trim(), description = c.Description?.Trim() })
+                        .ToArray()
+                    : null;
+                if (contextPayload is { Length: 0 })
+                    contextPayload = null;
+
                 using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/generate-questions")
                 {
                     Content = JsonContent.Create(new
@@ -65,7 +100,8 @@ namespace Isas.CampaignService.Services
                         cvText = (string?)null,
                         jdText,
                         count,
-                        seniority = string.IsNullOrWhiteSpace(seniority) ? "Junior" : seniority
+                        seniority = string.IsNullOrWhiteSpace(seniority) ? "Junior" : seniority,
+                        criteriaContext = contextPayload
                     })
                 };
                 msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);

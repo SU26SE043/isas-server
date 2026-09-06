@@ -627,6 +627,7 @@ class GeminiProvider(QuestionProvider):
                        language: str = "vi", seniority: str | None = None,
                        lesson_context: dict | None = None,
                        topics: list[dict] | None = None,
+                       criteria_context: list[dict] | None = None,
                        _retry_feedback: list[str] | None = None,
                        _attempt: int = 1) -> QuestionGenerationResult:
         """Sinh câu hỏi. ``criteria`` = tiêu chí NỘI DUNG ``[{criterionId, name}]`` để gắn nhãn
@@ -638,7 +639,12 @@ class GeminiProvider(QuestionProvider):
 
         ``topics`` (TOP1-B4) = danh mục đề tài của buổi (chọn sẵn ở .NET, ``TopicSelector``);
         vắng ⇒ prompt không đổi một chữ. Có ``lesson_context`` ⇒ bài học thắng, khối đề tài
-        không xuất hiện (xem :func:`app.prompts.build_prompt`)."""
+        không xuất hiện (xem :func:`app.prompts.build_prompt`).
+
+        ``criteria_context`` (CMP2-BE1) = bộ tiêu chí chấm của chiến dịch B2B, chỉ làm BỐI CẢNH
+        ("buổi này chấm bằng thước nào") — KHÔNG đòi nhãn nào về, KHÔNG đổi schema/kết quả, KHÔNG
+        ép phủ đều. Vắng ⇒ prompt không đổi một chữ. Đây là đường KHÁC hẳn ``criteria`` (gắn nhãn
+        + PHÂN BỔ BẮT BUỘC của SC1); xem :class:`app.schemas.CriterionContext`."""
         # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
@@ -648,7 +654,8 @@ class GeminiProvider(QuestionProvider):
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
                               focus_criteria, prompt_grounding, criteria, _retry_feedback,
                               language=language, seniority=seniority,
-                              lesson_context=lesson_context, topics=topics)
+                              lesson_context=lesson_context, topics=topics,
+                              criteria_context=criteria_context)
 
         # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION).
         # Chấm-theo-phạm-vi — có criteria ⇒ kèm targetCriterionIds.
@@ -721,7 +728,7 @@ class GeminiProvider(QuestionProvider):
             return await self._finish(
                 result, criteria, grounding, language, effective_count,
                 job_category, cv_text, jd_text, count, focus_criteria, seniority,
-                lesson_context, topics, _attempt)
+                lesson_context, topics, _attempt, criteria_context=criteria_context)
 
         # Có grounding và/hoặc criteria — tách text + lọc id. DROP mọi id KHÔNG thuộc tập đã cấp
         # (chống bịa by-construction — không tin lời hứa của model): id lạ = model tự phịa.
@@ -768,7 +775,7 @@ class GeminiProvider(QuestionProvider):
         return await self._finish(
             result, criteria, grounding, language, effective_count,
             job_category, cv_text, jd_text, count, focus_criteria, seniority,
-            lesson_context, topics, _attempt)
+            lesson_context, topics, _attempt, criteria_context=criteria_context)
 
     async def _finish(self, result: QuestionGenerationResult, criteria: list[dict] | None,
                       grounding: list[dict] | None, language: str, effective_count: int,
@@ -776,12 +783,19 @@ class GeminiProvider(QuestionProvider):
                       count: int | None, focus_criteria: list[str] | None,
                       seniority: str | None, lesson_context: dict | None,
                       topics: list[dict] | None,
-                      _attempt: int) -> QuestionGenerationResult:
+                      _attempt: int, *,
+                      criteria_context: list[dict] | None) -> QuestionGenerationResult:
         """Vòng chất lượng (SC1c) + cổng kiểm chứng (QV1), CHUNG cho mọi nhánh của :meth:`generate`.
 
         Tách ra vì `generate` có hai đường về (chuỗi trần / object) và trước đây đường chuỗi trần
         return SỚM ⇒ buổi grounded bật QV1 (lượt sinh cố ý ungrounded, model trả chuỗi trần) nhảy
         qua cả kiểm chứng lẫn citations mà không lỗi gì.
+
+        ``criteria_context`` (CMP2-BE1) là KEYWORD BẮT BUỘC — cố ý không cho giá trị mặc định.
+        Hàm này chỉ dùng nó để CHUYỂN TIẾP sang lượt sinh lại (SC1c/QV1), nên nếu để mặc định
+        ``None`` thì một call-site quên truyền sẽ làm lượt viết lại âm thầm mất bối cảnh thước đo
+        trong khi lượt 1 vẫn có — đúng lớp bug đã cắn ``topics``/``lesson_context``. Bắt buộc
+        keyword ⇒ quên = ``TypeError`` ngay, và vị trí tham số không còn ảnh hưởng gì.
         """
         # SC1c fail-open: only retry the complete set once; remaining defects still deliver a session.
         # `effective_count` và `language` PHẢI truyền: thiếu count thì bản kiểm đòi phủ 100% ngay cả khi
@@ -815,6 +829,7 @@ class GeminiProvider(QuestionProvider):
             return await self.generate(job_category, cv_text, jd_text, count, focus_criteria,
                                        grounding, criteria, language, seniority,
                                        lesson_context=lesson_context, topics=topics,
+                                       criteria_context=criteria_context,
                                        _retry_feedback=defects, _attempt=_attempt + 1)
         return result
 

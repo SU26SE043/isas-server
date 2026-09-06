@@ -946,7 +946,43 @@ namespace Isas.CampaignService.Services
             // ── 5. Gọi AI (AI-4: jdText là DỮ LIỆU — AIService đã bọc delimiter + chỉ thị bỏ qua lệnh
             //    nhúng trong JD). Lỗi upstream → DownstreamServiceException → controller map 502. ──
             var jobCategory = string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!;
-            var generated = await _questionGenerator.GenerateAsync(jobCategory, jdText, count, campaign.Seniority, ct);
+
+            // ── 5b. CMP2-BE1 — BỐI CẢNH thước đo: gửi kèm bộ tiêu chí chấm của chiến dịch ─────────
+            //
+            // 🔴 Đọc bằng TRUY VẤN RIÊNG, cố ý KHÔNG dùng `campaign.Criteria`:
+            //   (a) `campaign` ở trên chỉ `.Include(c => c.Questions)`. Đọc thẳng navigation
+            //       `campaign.Criteria` sẽ trả về RỖNG — không exception, không log, prompt vẫn gửi
+            //       đi bình thường, tính năng no-op hoàn toàn trong khi mọi thứ trông như đang chạy.
+            //       Repo đã dính đúng lỗi này một lần (thiếu `.Include(Criteria)` → màn danh sách
+            //       campaign hiện "0 tiêu chí", PR #42).
+            //   (b) Tệ hơn: nếu đọc qua navigation thì một TEST seed dữ liệu qua CÙNG `DbContext` sẽ
+            //       XANH nhờ relationship-fixup của change-tracker (entity đã nằm sẵn trong bộ nhớ)
+            //       trong khi production RỖNG. Truy vấn riêng không có cửa đó — nó luôn đi xuống DB,
+            //       nên test và production đo cùng một thứ.
+            //   (c) Thêm `.Include(c => c.Criteria)` cạnh `.Include(c => c.Questions)` thì đúng về
+            //       kết quả nhưng đẻ ra tích Descartes |Questions| × |Criteria| trong một câu SQL, và
+            //       `campaign` là graph ĐANG ĐƯỢC THEO DÕI mà đoạn dưới còn mutate `campaign.Questions`
+            //       (RemoveRange + AddRange) — không đáng đụng vào nó chỉ để đọc thêm vài dòng.
+            //
+            // `AsNoTracking` + projection: chỉ lấy đúng hai cột cần cho prompt, không kéo entity vào
+            // change-tracker (tránh mọi tương tác với đoạn ghi câu hỏi ngay bên dưới). Query filter
+            // DB13 (`Campaign.DeletedAt == null`) vẫn áp như mọi truy vấn khác.
+            //
+            // Sắp theo `OrderNo` (thứ tự HR sắp, UNIQUE theo campaign) để prompt TẤT ĐỊNH: cùng một
+            // chiến dịch luôn sinh cùng một chuỗi prompt, không phụ thuộc thứ tự DB trả về.
+            var criteriaContext = await _db.CampaignCriteria
+                .AsNoTracking()
+                .Where(c => c.CampaignId == campaign.Id)
+                .OrderBy(c => c.OrderNo)
+                .Select(c => new QuestionCriterionContext(c.Name, c.Description))
+                .ToListAsync(ct);
+
+            // Chiến dịch Draft chưa khai tiêu chí ⇒ danh sách rỗng ⇒ prompt AIService giữ nguyên xi.
+            // Đây là trạng thái HỢP LỆ, KHÔNG phải lỗi: tiêu chí có thể được sinh lúc publish (C8),
+            // HR gõ tay qua `PUT /campaign` (C12), hay chép từ bộ chuẩn (CAMP-20) — cả ba đều có thể
+            // xảy ra SAU lúc HR bấm sinh câu hỏi.
+            var generated = await _questionGenerator.GenerateAsync(
+                jobCategory, jdText, count, campaign.Seniority, criteriaContext, ct);
 
             // AI trả rỗng = lượt sinh không dùng được. Trả 502 thay vì lặng lẽ xoá sạch đề cũ rồi
             // báo thành công — HR phải biết là AI hỏng, không phải "campaign của tôi mất hết câu hỏi".

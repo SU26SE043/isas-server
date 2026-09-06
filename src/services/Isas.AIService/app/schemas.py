@@ -50,6 +50,33 @@ class CriterionRef(BaseModel):
     name: str
 
 
+class CriterionContext(BaseModel):
+    """CMP2-BE1 — 1 tiêu chí chấm của CHIẾN DỊCH B2B, gửi xuống làm **BỐI CẢNH** cho lượt sinh câu
+    hỏi: "buổi này sẽ được chấm bằng thước nào".
+
+    ⚠ **KHÁC hẳn** :class:`CriterionRef` ngay trên, đừng gộp hai cái làm một:
+
+    * :class:`CriterionRef` (khoá ``criteria``) là đường **GẮN NHÃN** — model phải trả
+      ``targetCriterionIds`` cho từng câu, và nó kéo theo ràng buộc PHÂN BỔ BẮT BUỘC (SC1).
+    * :class:`CriterionContext` (khoá ``criteriaContext``) chỉ **NÓI CHO MODEL BIẾT** thước đo,
+      không đòi nhãn nào về, không ép phủ đều.
+
+    Vì sao B2B chưa đi đường gắn nhãn: bảng ``campaign_criteria`` **không có cột
+    ``scoring_scope``** ⇒ Campaign không phân biệt được tiêu chí *cách nói* với tiêu chí *nội
+    dung*; ép phủ đều sẽ đẻ ra câu hỏi phỏng vấn cho *"Ngữ pháp & dùng từ"*. Mở lại ở task ``SC2``.
+
+    Mang ``description`` (khác ``CriterionRef``) vì đây là bài toán HIỂU NGHĨA tiêu chí, mà mô tả
+    HR gõ mới là chỗ nói rõ tiêu chí đó đo cái gì. Vẫn KHÔNG mang ``weight``/``maxScore``: chúng
+    thuộc bài toán TÍNH ĐIỂM, và đưa trọng số vào prompt là ngầm ra lệnh phân bổ số câu theo trọng
+    số — đúng ràng buộc phủ đều đang cố ý hoãn.
+
+    Không mang ``criterionId``: bối cảnh một chiều, không có nhãn nào để map ngược.
+    """
+
+    name: str
+    description: str | None = None
+
+
 class LessonContextDto(BaseModel):
     """Chủ đề của ĐÚNG bài học mà buổi luyện này sinh ra từ (lộ trình B2C).
 
@@ -134,6 +161,18 @@ class GenerateQuestionsRequest(BaseModel):
     # `extra='ignore'` chỉ đơn giản vứt field. Đúng lớp bug đã cắn repo 4 lần (`focusCriteria`/BC14
     # · `metricsVersion` · `adaptiveMaxQuestions` · `seniority`/SEN1).
     topics: list[SessionTopic] | None = None
+    # CMP2-BE1 — BỐI CẢNH thước đo cho campaign B2B (`CampaignService.GenerateCampaignQuestionsAsync`).
+    # Vắng/rỗng ⇒ prompt GIỮ NGUYÊN XI cho mọi caller cũ (B2C luyện tự do, bài học lộ trình).
+    #
+    # ⚠ Khai tường minh ở ĐÂY là nửa quyết định của tính năng — y hệt `topics`/`lessonContext`/
+    # `seniority` ngay trên: thiếu dòng này thì .NET vẫn gửi, HTTP vẫn 200, không lỗi, không log,
+    # và pydantic `extra='ignore'` chỉ đơn giản vứt field ⇒ prompt không đổi một chữ. Đúng lớp bug
+    # đã cắn repo 4 lần (`focusCriteria`/BC14 · `metricsVersion` · `adaptiveMaxQuestions` ·
+    # `seniority`/SEN1).
+    #
+    # ⚠ KHÔNG gộp vào `criteria` ở trên: `criteria` là đường GẮN NHÃN + PHÂN BỔ BẮT BUỘC (SC1) —
+    # xem docstring `CriterionContext` để biết vì sao B2B chưa đi đường đó.
+    criteriaContext: list[CriterionContext] | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):
