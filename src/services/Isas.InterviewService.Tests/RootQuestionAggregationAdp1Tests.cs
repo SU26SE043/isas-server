@@ -1,3 +1,5 @@
+using Isas.InterviewService.ApplicationDbContext;
+using Isas.InterviewService.Services;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Microsoft.EntityFrameworkCore;
@@ -325,6 +327,44 @@ public class RootQuestionAggregationAdp1Tests
         Assert.Equal(4.0m, rows.Single(r => r.CriterionId == x.Id).AverageScore);   // 2.0 = tính gốc B thành 0
         Assert.Equal(3.5m, rows.Single(r => r.CriterionId == y.Id).AverageScore);   // 2.6 = hành vi CŨ
         Assert.Equal(37.5m, s.OverallScore);
+    }
+
+    // ── Gốc hiệu dụng phải tính TRONG SQL trên provider THẬT (Npgsql), không phải client-eval ──
+    //
+    // Cả bộ test này chạy trên SQLite, nên nó KHÔNG thể chứng minh gì về SQL mà Postgres nhận. Commit
+    // ADP1 nói đã soi `ToQueryString` trên provider thật — đúng, nhưng một lần soi tay không phải hàng
+    // rào: lần sửa sau không có ai soi lại.
+    //
+    // Thứ cần giữ: `RootQuestionId ?? QuestionId` render thành COALESCE và đi kèm JOIN sang
+    // practice_questions, tức gốc hiệu dụng do DB tính trong MỘT câu truy vấn. Nếu ai đó "đơn giản hoá"
+    // thành nạp câu hỏi rồi ghép trong C#, phép gộp vẫn ra đúng số (test kia vẫn xanh) nhưng đường
+    // chấm ăn thêm một vòng truy vấn nữa mỗi buổi — hỏng theo kiểu không có triệu chứng.
+    //
+    // ⚠ Giới hạn tự khai: test dựng LẠI hình dạng projection thay vì gọi vào production (mẫu
+    // SweeperIndexTests/DB27 của repo). Nó bắt được "Npgsql dịch được câu này thành gì", KHÔNG bắt
+    // được việc production đổi sang câu khác — vế đó do các ca số ở trên giữ.
+    [Fact]
+    public void GocHieuDung_RenderThanhCoalesceTrenNpgsql_KhongPhaiClientEval()
+    {
+        var opt = new DbContextOptionsBuilder<InterviewDbContext>()
+            .UseNpgsql("Host=localhost;Database=probe;Username=x;Password=y")
+            .UseSnakeCaseNamingConvention()
+            .Options;
+        using var db = new InterviewDbContext(opt);
+
+        var sessionId = Guid.NewGuid();
+        var sql = db.AnswerScores.AsNoTracking()
+            .Where(sc => sc.Answer.SessionId == sessionId)
+            .Select(sc => new AnswerCriterionScore(
+                sc.AnswerId,
+                sc.Answer.Question.RootQuestionId ?? sc.Answer.QuestionId,
+                sc.CriterionId,
+                sc.Score))
+            .ToQueryString();
+
+        Assert.Contains("COALESCE", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("root_question_id", sql);
+        Assert.Contains("practice_questions", sql);   // JOIN có thật ⇒ không phải nạp rời rồi ghép C#
     }
 
     // ── VIỆC 1 — E10 vẫn chạy TRƯỚC bước gộp về gốc ─────────────────────────────────────────
