@@ -390,9 +390,14 @@ public class ListPagingTests
         Assert.Equal(2, page.Items.Count);
     }
 
-    // List KHÔNG được kéo bảng milestone/lesson. Trả lại Include cây ⇒ SQL chạm roadmap_milestones ⇒ ĐỎ.
+    // UX3-B2 — tiền đề đổi CÓ CHỦ ĐÍCH: trước đây list "KHÔNG được chạm roadmap_milestones" chút nào.
+    // Nay list PHẢI đếm số chặng (MilestoneCount/MilestoneDoneCount) để trang danh sách khỏi gọi
+    // GET /roadmaps/{id} cho từng thẻ (N+1 cố định). Hợp đồng mới: đếm bằng SUBQUERY SCALAR trong
+    // ĐÚNG MỘT câu SELECT — KHÔNG Include cây milestone→lesson, KHÔNG round-trip thêm. Trả lại
+    // `.Include(x => x.Milestones)` (kéo cả cây) hoặc đếm trong bộ nhớ ⇒ ĐỎ (xem
+    // RoadmapMilestoneCountsUx3B2Tests.BuildSummaryQuery_DemChangLaSubqueryScalar_KhongJoinCaCay).
     [Fact]
-    public async Task Roadmaps_ListQuery_DoesNotTouchMilestoneTables()
+    public async Task Roadmaps_ListQuery_CountsMilestonesViaScalarSubquery_NoTreeJoin_NoNPlus1()
     {
         using var t = new TestDb();
         var candidate = Guid.NewGuid();
@@ -407,8 +412,19 @@ public class ListPagingTests
         var page = await BuildRoadmap(db).ListAsync(candidate, limit: 500);
 
         Assert.Equal(3, page.Items.Count);
-        Assert.All(spy.Commands, sql =>
-            Assert.DoesNotContain("roadmap_milestones", sql, StringComparison.OrdinalIgnoreCase));
+        Assert.All(page.Items, r => Assert.Equal(2, r.MilestoneCount));
+
+        // (1) N+1 chết hẳn: cả list = ĐÚNG MỘT câu SELECT, bất kể có bao nhiêu roadmap.
+        var listSelect = Assert.Single(spy.Commands,
+            s => s.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase));
+
+        // (2) Chặng được đếm TRONG SQL (subquery scalar) — không nạp rời rồi đếm ở C#.
+        Assert.Contains("roadmap_milestones", listSelect, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("COUNT(", listSelect, StringComparison.OrdinalIgnoreCase);
+
+        // (3) Nhưng KHÔNG kéo cả cây: không JOIN bảng milestone ở FROM câu ngoài, không đụng lesson.
+        Assert.DoesNotContain("JOIN \"roadmap_milestones\"", listSelect, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("roadmap_lessons", listSelect, StringComparison.OrdinalIgnoreCase);
     }
 
     // Chi tiết KHÔNG được rụng cây theo — regression cho việc list bỏ Include.
