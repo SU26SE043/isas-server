@@ -2961,8 +2961,7 @@ namespace Isas.CampaignService.Services
             int? maxCandidates, bool adaptiveEnabled, bool groundingEnabled, CampaignEntitlement entitlement)
         {
             _ = adaptiveEnabled;   // cố ý không gate — xem doc ở trên
-            if (maxCandidates is > 0 && maxCandidates > entitlement.MaxCandidatesCap)
-                throw new ArgumentException($"maxCandidates vượt trần {entitlement.MaxCandidatesCap} của gói {entitlement.TierCode}.");
+            MaxCandidatesRule.Validate(maxCandidates, entitlement);
             if (groundingEnabled && !entitlement.GroundingEnabled)
                 throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
         }
@@ -2973,8 +2972,7 @@ namespace Isas.CampaignService.Services
             int? maxCandidates, bool? adaptiveEnabled, bool? groundingEnabled, CampaignEntitlement entitlement)
         {
             _ = adaptiveEnabled;
-            if (maxCandidates.HasValue && maxCandidates.Value > entitlement.MaxCandidatesCap)
-                throw new ArgumentException($"maxCandidates vượt trần {entitlement.MaxCandidatesCap} của gói {entitlement.TierCode}.");
+            MaxCandidatesRule.Validate(maxCandidates, entitlement);
             if (groundingEnabled == true && !entitlement.GroundingEnabled)
                 throw new EntitlementForbiddenException($"Gói {entitlement.TierCode} không hỗ trợ grounding.");
         }
