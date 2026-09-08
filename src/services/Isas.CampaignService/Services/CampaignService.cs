@@ -111,7 +111,9 @@ namespace Isas.CampaignService.Services
             ValidatePassScorePct(request.PassScorePct);   // E5: ngưỡng ∈ [0,100] nếu có
             ValidateAdaptiveCaps(request.MaxFollowUps, request.MaxQuestions, request.MaxDeepPerQuestion);   // INT-17: trần ≥ 0 nếu có
             // RNK1 · HĐ-7 — ràng buộc chéo: trần buổi T phải đủ cho MỌI chuỗi đào sâu tối đa
-            // K × (1 + d). K = questionsPerSession ?? số câu campaign (controller đã chặn 0 câu).
+            // K × (1 + d). K = questionsPerSession ?? số câu campaign. CMP-B1: bản nháp có thể 0 câu
+            // (ràng buộc "≥1 câu hỏi" đã chuyển sang publish — PublishCampaignAsync ~:1285); khi đó
+            // K = 0 ⇒ AdaptiveBudgetRule.Check trả need = 0 ⇒ không bao giờ vi phạm.
             EnforceAdaptiveBudget(
                 request.QuestionsPerSession ?? request.Questions.Count,
                 request.MaxDeepPerQuestion ?? 0,
