@@ -1352,6 +1352,71 @@ namespace Isas.CampaignService.Services
             return CampaignResponse.FromEntity(campaign);
         }
 
+        // ── CMP3-B4: POST /campaign/{id}/start-now — kéo start_at về hiện tại ─────────────────
+        // Đường RIÊNG, KHÔNG dùng lại PUT /campaign: (a) nhánh không-criteria của UpdateCampaignAsync
+        // không ghi audit nào → thao tác mở cửa cho ứng viên (đụng credit + công bằng khung giờ) sẽ
+        // không để lại vết; (b) mẫu React hay PUT lại nguyên form kèm criteria ⇒ vân tay thước đo
+        // được tính ⇒ rubric_version nhảy + sinh audit EditCriteria SAI SỰ THẬT chỉ vì HR bấm
+        // "Bắt đầu sớm". Ở đây KHÔNG chạm criteria/rubric_version bao giờ.
+        public async Task<CampaignResponse> StartEarlyAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .Include(c => c.Questions)
+                .Include(c => c.Criteria)
+                    .ThenInclude(cr => cr.Levels)   // FromEntity trả kèm mốc điểm
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (campaign.Status != CampaignStatus.Active)
+                throw new InvalidOperationException(
+                    $"Chỉ mở phỏng vấn ngay khi campaign đang Active (hiện: {campaign.Status}).");
+
+            // Campaign có ca thi → nút này KHÔNG mở cửa cho ai: ParticipationService vẫn chặn
+            // `now < slot.StartsAt` cho từng ứng viên. Nói thẳng bằng 409, KHÔNG im lặng trả 200.
+            if (await _db.CampaignSlots.AnyAsync(s => s.CampaignId == id, ct))
+                throw new InvalidOperationException(
+                    "Campaign có khung giờ phỏng vấn (ca thi) — mỗi ứng viên vào thi theo ca đã phân, "
+                    + "kéo giờ mở chung không có tác dụng. Sửa từng ca trong phần khung giờ phỏng vấn.");
+
+            var now = DateTime.UtcNow;
+
+            // Idempotent: chỉ kéo về khi start_at CÒN Ở TƯƠNG LAI. start_at đã ở quá khứ ⇒ campaign
+            // đã mở ⇒ no-op, KHÔNG ghi gì (updated_at giữ nguyên, không audit, không outbox). KHÔNG
+            // bao giờ đẩy start_at về tương lai qua cửa này. (start_at là NOT NULL ở DB — IsRequired
+            // — nên nhánh `is not DateTime` chỉ là phòng thủ.)
+            if (campaign.StartsAt is not DateTime s || s <= now)
+                return CampaignResponse.FromEntity(campaign);
+
+            var previous = s;
+            campaign.StartsAt = now;
+            campaign.UpdatedAt = now;
+
+            // Vết: mốc CŨ phải nằm trong summary (không chỉ "đã bắt đầu sớm") — để đối chất được
+            // "giờ mở đã bị kéo từ đâu về đâu, lúc nào, ai".
+            var iso = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+            AddAudit(actorUserId, orgId, AuditAction.StartEarly, campaign.Id,
+                $"Bắt đầu sớm: start_at {previous.ToString(iso, CultureInfo.InvariantCulture)} → "
+                + $"{now.ToString(iso, CultureInfo.InvariantCulture)}");
+
+            // Re-notify: ứng viên đã nhận thư mời mang giờ CŨ cần biết. Outbox-row/lời-mời-chưa-revoke,
+            // chèn CÙNG SaveChanges (DB2b — không mất khi broker down). KHÔNG có token (DB chỉ giữ
+            // hash) ⇒ Kind="OpenedEarly", consumer gửi thư trỏ ứng viên về link trong thư mời gốc.
+            var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
+            var liveInvites = await _db.CampaignInvitations
+                .Where(iv => iv.CampaignId == id && iv.RevokedAt == null)
+                .Select(iv => new { iv.Id, iv.Email, iv.ExpiresAt })
+                .ToListAsync(ct);
+            foreach (var iv in liveInvites)
+                _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
+                    iv.Id, campaign.Id, iv.Email, string.Empty, campaign.Title, iv.ExpiresAt,
+                    StartsAt: now, OrgName: orgName,
+                    FaceVerifyEnabled: campaign.FaceVerifyEnabled, TimeLimitMinutes: campaign.TimeLimitMinutes,
+                    Kind: "OpenedEarly", PreviousStartsAt: previous)));
+
+            await _db.SaveChangesAsync(ct);
+            return CampaignResponse.FromEntity(campaign);
+        }
+
         // ── D1: Distribution đường 1 — mời thẳng qua danh sách email ────────
         // Thứ tự xử lý (đúng doc): validate định dạng → dedup → cap max_candidates.
         // Email hỏng/trùng/đã mời → failed[] per-item, KHÔNG chặn cả batch.

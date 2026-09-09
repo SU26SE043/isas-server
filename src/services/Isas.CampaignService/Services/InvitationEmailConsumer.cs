@@ -160,6 +160,26 @@ namespace Isas.CampaignService.Services
                 return;
             }
 
+            // CMP3-B4 — thư "mở sớm": KHÔNG kèm magic-link, KHÔNG dedup theo email_sent_at (đó là cờ
+            // của thư mời) và KHÔNG set nó. Lời mời đã revoke → bỏ (ứng viên đó không còn vào được).
+            if (string.Equals(job.Kind, "OpenedEarly", StringComparison.OrdinalIgnoreCase))
+            {
+                if (invitation.RevokedAt is not null)
+                {
+                    _logger.LogInformation(
+                        "Invitation {InvitationId} đã revoke — bỏ thư 'mở sớm'", job.InvitationId);
+                    return;
+                }
+
+                await sender.SendCampaignOpenedEarlyEmailAsync(
+                    job.Email, job.CampaignTitle, job.PreviousStartsAt, job.StartsAt ?? DateTime.UtcNow,
+                    job.OrgName, ct);
+
+                _logger.LogInformation(
+                    "Đã gửi thư 'mở sớm' cho Invitation {InvitationId} ({Email})", job.InvitationId, job.Email);
+                return;
+            }
+
             if (invitation.EmailSentAt is not null)
             {
                 // Redeliver (at-least-once) — email đã gửi trước đó → bỏ trùng, vẫn ack.

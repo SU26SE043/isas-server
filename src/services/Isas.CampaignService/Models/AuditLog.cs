@@ -31,6 +31,7 @@ namespace Isas.CampaignService.Models
         OverrideResult = 10,  // E11b: HR chốt/sửa điểm-kết-quả cuối của ứng viên (điểm AI = gợi ý)
         CreateApiKey = 11,    // F17: OrgAdmin cấp API key cho bên thứ ba (ATS)
         RevokeApiKey = 12,    // F17: OrgAdmin thu hồi API key
-        ApplyScoringPolicy = 13  // SCP1/B8: OrgAdmin áp chính sách chấm mới → ghi đè điểm chính thức (audit điểm cũ)
+        ApplyScoringPolicy = 13, // SCP1/B8: OrgAdmin áp chính sách chấm mới → ghi đè điểm chính thức (audit điểm cũ)
+        StartEarly = 14       // CMP3-B4: HR kéo campaigns.start_at về hiện tại (POST /campaign/{id}/start-now)
     }
 }

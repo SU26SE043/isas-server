@@ -796,6 +796,27 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to transition campaign: {ex.Message}"); }
         }
 
+        // CMP3-B4: kéo start_at về hiện tại để ứng viên vào thi ngay. KHÔNG NHẬN BODY (đường riêng —
+        // KHÔNG dùng PUT /campaign: nhánh không-criteria của PUT không ghi audit, và body React kèm
+        // criteria làm rubric_version nhảy oan). 409 chưa Active / có ca thi · 404 ngoài org.
+        // Idempotent: start_at đã ở quá khứ → no-op. Trả CampaignResponse (shape cũ).
+        [HttpPost("{id:guid}/start-now")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> StartNow(Guid id, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.StartEarlyAsync(orgId.Value, GetActorUserId(), id, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // chưa Active / có ca thi → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to start campaign early: {ex.Message}"); }
+        }
+
         // D1: Distribution đường 1 — mời thẳng qua danh sách email
         [HttpPost("{id:guid}/invitations")]
         [Authorize(Roles = "Employer")]

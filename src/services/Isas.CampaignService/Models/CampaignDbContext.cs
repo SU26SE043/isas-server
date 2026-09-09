@@ -337,7 +337,7 @@ namespace Isas.CampaignService.Models
             modelBuilder.Entity<AuditLog>(e =>
             {
                 e.ToTable("audit_logs", t => t.HasCheckConstraint(
-                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey', 'ApplyScoringPolicy')"));
+                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey', 'ApplyScoringPolicy', 'StartEarly')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Entity).IsRequired().HasMaxLength(64);
