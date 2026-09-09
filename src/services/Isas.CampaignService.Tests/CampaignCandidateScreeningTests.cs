@@ -63,13 +63,19 @@ public class CampaignCandidateScreeningTests
         int? maxCandidates = null,
         List<string>? requiredSkills = null,
         List<string>? keywordsAny = null,
-        int? minYears = null)
+        int? minYears = null,
+        bool withJobNeeds = true)   // CMP3-B1: sàng CV nay đòi job_needs — mặc định có để happy-path chạy
     {
         var camp = CampaignTestDb.NewCampaign(owner, status);
         camp.MaxCandidates = maxCandidates;
         camp.RequiredSkills = requiredSkills;
         camp.KeywordsAny = keywordsAny;
         camp.MinYearsExperience = minYears;
+        if (withJobNeeds)
+            camp.JobNeeds = new List<JobNeed>
+            {
+                new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "Thạo .NET", Source = JobNeedSources.HrEdited },
+            };
         tdb.Db.Campaigns.Add(camp);
         tdb.Db.SaveChanges();
         return camp;

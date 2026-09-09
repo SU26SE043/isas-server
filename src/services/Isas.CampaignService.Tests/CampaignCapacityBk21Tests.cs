@@ -274,6 +274,10 @@ public class CampaignCapacityBk21Tests
         var owner = Guid.NewGuid();
         var camp = CampaignTestDb.NewCampaign(owner, CampaignStatus.Active);
         camp.MaxCandidates = 1;
+        camp.JobNeeds = new List<JobNeed>   // CMP3-B1: sàng CV đòi job_needs đã chốt
+        {
+            new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "Thạo .NET", Source = JobNeedSources.HrEdited },
+        };
         tdb.Db.Campaigns.Add(camp);
         tdb.Db.CampaignInvitations.Add(NewInvitation(camp.Id, "invited@example.com"));
         await tdb.Db.SaveChangesAsync();

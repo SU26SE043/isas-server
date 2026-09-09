@@ -2327,6 +2327,25 @@ namespace Isas.CampaignService.Services
             if (campaign.Status != CampaignStatus.Active)
                 throw new InvalidOperationException($"Chỉ sàng CV khi campaign đang Active (hiện: {campaign.Status}).");
 
+            // CMP3-B1 — CHẶN NGAY nếu campaign chưa chốt nhu cầu công việc (job_needs). Phải đứng TRƯỚC
+            // vòng lặp đọc file / ArchiveCvAsync bên dưới ⇒ không sinh row cv_submission nào, không đẩy
+            // object nào lên S3.
+            //
+            // Vì sao chặn ở ĐƯỜNG VÀO thay vì để republisher lo: sàng CV khi job_needs rỗng hiện đi TRỌN
+            // đường mà không ai kêu — controller nuốt lỗi publish-job (best-effort, đúng) rồi trả 202;
+            // row nằm Filtered với marker null; StuckScreeningRepublisher nhặt nhưng TRẦN BỎ CUỘC chạy
+            // TRƯỚC phép kiểm job_needs của nó, nên sau ~6 giờ mọi ứng viên lật AnalysisFailed kèm lý do
+            // "kiểm tra consumer cv_screening_queue" — trong khi consumer vẫn chạy — và HR không có đường
+            // retry AnalysisFailed. Thứ sai là chỗ này.
+            //
+            // Check KHÔNG rẽ theo Status: ở Active nó bịt lỗ "AI hụt lúc publish ⇒ campaign Active mà
+            // job_needs rỗng ⇒ cùng lời nói dối 6 giờ".
+            if (campaign.JobNeeds is null || !campaign.JobNeeds.Any(n => !string.IsNullOrWhiteSpace(n.Text)))
+                throw new InvalidOperationException(
+                    "Campaign chưa chốt nhu cầu công việc (job needs) — sàng CV không đối chiếu được với "
+                    + "gì. Khai nhu cầu qua PUT /campaign/{id}/job-needs, hoặc publish lại campaign để AI "
+                    + "đề xuất từ JD, rồi sàng CV lại.");
+
             if (files is null || files.Count == 0)
                 throw new ArgumentException("Cần ít nhất 1 file CV (PDF).");
 
