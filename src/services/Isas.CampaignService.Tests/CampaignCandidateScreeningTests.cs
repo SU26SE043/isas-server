@@ -233,17 +233,22 @@ public class CampaignCandidateScreeningTests
         Assert.Equal(0, await check.CvSubmissions.CountAsync(c => c.CampaignId == camp.Id));
     }
 
-    // (f) campaign chưa Active (Draft) → InvalidOperationException (→409).
-    [Fact]
-    public async Task Campaign_chua_Active_nem_InvalidOperationException()
+    // (f) CMP3-B2 — Draft nay sàng được (xem CampaignScreenRequiresJobNeedsCmp3B1Tests). Chỉ
+    //     Closed/Archived còn 409.
+    [Theory]
+    [InlineData(CampaignStatus.Closed)]
+    [InlineData(CampaignStatus.Archived)]
+    public async Task Campaign_Closed_Archived_nem_InvalidOperationException(CampaignStatus status)
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
-        var camp = SeedCampaign(tdb, owner, status: CampaignStatus.Draft);
+        var camp = SeedCampaign(tdb, owner, status: status);
 
         var svc = NewService(tdb.NewContext(), new[] { "a@x.com" });
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.ScreenCandidatesAsync(owner, owner, camp.Id, Files(Pdf()), default));
+
+        Assert.Equal(0, await tdb.NewContext().CvSubmissions.CountAsync(c => c.CampaignId == camp.Id));
     }
 
     // (f-bis) campaign không tồn tại / ngoài org → KeyNotFoundException (→404).
