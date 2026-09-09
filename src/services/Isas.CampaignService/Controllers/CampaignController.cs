@@ -137,9 +137,15 @@ namespace Isas.CampaignService.Controllers
             if (orgId is null)
                 return Forbid();
 
-            if (request.Questions == null || !request.Questions.Any())
-                return BadRequest("At least one question is required.");
-
+            // CMP-B1 — KHÔNG chặn "phải có ≥1 câu hỏi" khi TẠO. Bản nháp mới hợp lệ với 0 câu: FE
+            // dựng nháp trước rồi mới gọi endpoint sinh câu hỏi bằng AI, nên nháp lúc POST chưa có câu
+            // nào. Ràng buộc "≥1 câu hỏi" thuộc về lúc XUẤT BẢN và ĐÃ nằm ở đó —
+            // CampaignService.PublishCampaignAsync (CampaignService.cs:1285) ném InvalidOperationException
+            // → CampaignController:741 → 409 Conflict. Chiến dịch rỗng vẫn KHÔNG thể lên sóng.
+            // ĐỪNG "sửa lại cho chặt" ở đây (thêm chốt / [Required] / [MinLength] trên request):
+            // làm vậy tái tạo đúng bế tắc "sinh câu hỏi bằng AI cho chiến dịch mới" — bản nháp chưa
+            // soạn câu nào ⇒ POST /campaign 400. Khối dưới (câu nào CÓ thì không được rỗng chữ) GIỮ
+            // NGUYÊN: mảng rỗng đi qua bình thường, mảng có câu rỗng vẫn bị chặn.
             if (request.Questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 return BadRequest("All questions must have non-empty text.");
 
