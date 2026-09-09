@@ -282,6 +282,35 @@ namespace Isas.CampaignService.Controllers
             catch (Exception ex) { return StatusCode(500, $"Failed to update job needs: {ex.Message}"); }
         }
 
+        // CMP3-B3 — AI đọc JD → đề xuất nhu cầu công việc để HR chốt (qua PUT /job-needs) TRƯỚC khi
+        // sàng CV. CHỈ ĐỌC: KHÔNG ghi campaigns.job_needs (một cửa ghi duy nhất — mẫu
+        // POST /questions/import, /criteria/levels/suggest). Không body.
+        // 400 chưa có jdText · 404 ngoài org · 502 AIService lỗi hoặc không suy được (KHÔNG fallback
+        // bộ mặc định — HR sẽ tin là do AI soạn rồi chốt).
+        [HttpPost("{id:guid}/job-needs/suggest")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<SuggestJobNeedsResponse>> SuggestJobNeeds(Guid id, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.SuggestJobNeedsAsync(orgId.Value, id, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // Lỗi upstream AIService = 502, request của HR hợp lệ (tiền lệ GenerateCampaignQuestions,
+            // SuggestCriterionLevels). Đặt TRƯỚC ArgumentException.
+            catch (DownstreamServiceException ex)
+            {
+                _logger.LogError(ex, "AI gợi ý nhu cầu công việc thất bại cho campaign {CampaignId}", id);
+                return StatusCode(StatusCodes.Status502BadGateway, ex.Message);
+            }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }   // chưa có jdText → 400
+            catch (Exception ex) { return StatusCode(500, $"Failed to suggest job needs: {ex.Message}"); }
+        }
+
         [HttpPut("{id:guid}/files")]
         [Consumes("multipart/form-data")]
         [Authorize(Roles = "Employer")]

@@ -3414,6 +3414,50 @@ namespace Isas.CampaignService.Services
             return CampaignResponse.FromEntity(campaign);
         }
 
+        // ── CMP3-B3: AI gợi ý nhu cầu công việc từ JD — CHỈ ĐỌC ─────────────────────────────
+        // Cùng bộ gợi ý mà publish dùng (BuildJobNeedsAsync). KHÔNG ghi campaigns.job_needs: HR lưu
+        // qua PUT /job-needs (một cửa ghi duy nhất — mẫu POST /questions/import, /criteria/levels/suggest).
+        // KHÔNG fallback bộ mặc định khi AI hỏng: HR sẽ tin đó là do AI soạn theo JD của họ rồi chốt
+        // luôn — "chưa có nhu cầu" là trạng thái hợp lệ, nên fail-loud (502) không chặn ai.
+        public async Task<SuggestJobNeedsResponse> SuggestJobNeedsAsync(Guid orgId, Guid id, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .AsNoTracking()   // CHỈ ĐỌC — không tracked, không đường nào SaveChanges ghi nhầm.
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (string.IsNullOrWhiteSpace(campaign.JDText))
+                throw new ArgumentException(
+                    "Campaign chưa có mô tả công việc (jdText) — không suy được nhu cầu. "
+                    + "Nhập JD qua PUT /campaign/{id} trước.");
+
+            if (_jobNeedsSuggester is null)
+                throw new DownstreamServiceException(
+                    "Dịch vụ gợi ý nhu cầu công việc chưa được cấu hình.");
+
+            var suggested = await _jobNeedsSuggester.SuggestAsync(
+                campaign.JDText, campaign.Domain, campaign.Language, ct);
+
+            // null ⇒ AIService lỗi/timeout/trả rác (SuggestAsync đã nuốt exception + non-2xx → null).
+            // KHÔNG bịa bộ mặc định (mẫu BuildJobNeedsAsync :3308 — "KHÔNG có fallback").
+            if (suggested is null)
+                throw new DownstreamServiceException(
+                    "AIService không suy được nhu cầu công việc từ JD. Thử lại, hoặc HR tự khai qua "
+                    + "PUT /campaign/{id}/job-needs.");
+
+            // Danh sách rỗng (AI 2xx nhưng 0 dòng hợp lệ) ⇒ 200 với jobNeeds: [] — không phải lỗi.
+            return new SuggestJobNeedsResponse
+            {
+                JobNeeds = suggested.Select(s => new SuggestedJobNeedItem
+                {
+                    Category = s.Category,
+                    Text = s.Text,
+                    Source = JobNeedSources.AiSuggested,   // server sở hữu nhãn nguồn (F10)
+                    IsMustHave = false,                    // AI không đề xuất điều kiện loại (HĐ-6)
+                }).ToList(),
+            };
+        }
+
         /// <summary>
         /// Bộ dự phòng khi AIService không khả dụng lúc publish — Σweight = 1 (0.4+0.3+0.3).
         /// Id/CreatedAt/UpdatedAt/OrderNo set sẵn.
