@@ -656,7 +656,16 @@ namespace Isas.CampaignService.Services
             }
 
             if (request.StartsAt.HasValue)
+            {
+                // CMP4-B3 — sau khi Active, đổi giờ mở CHỈ qua POST /campaign/{id}/start-now: đường đó
+                // kiểm ca thi + hạn campaign, ghi audit StartEarly, re-notify ứng viên. Nhánh không-
+                // criteria của PUT ở đây KHÔNG guard, KHÔNG audit — là cửa sau. Draft thì sửa bình thường.
+                if (campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException(
+                        "Sau khi campaign Active, đổi giờ bắt đầu qua POST /campaign/{id}/start-now — "
+                        + "PUT /campaign chỉ đổi startsAt được khi campaign còn Draft.");
                 campaign.StartsAt = request.StartsAt;
+            }
 
             if (request.ExpiresAt.HasValue)
                 campaign.ExpiresAt = request.ExpiresAt;
@@ -1378,14 +1387,24 @@ namespace Isas.CampaignService.Services
                 throw new InvalidOperationException(
                     $"Chỉ mở phỏng vấn ngay khi campaign đang Active (hiện: {campaign.Status}).");
 
+            var now = DateTime.UtcNow;
+
+            // CMP4-B3 — campaign đã hết hạn ⇒ "mở phỏng vấn ngay" vô nghĩa: hạn của MỌI lời mời lấy từ
+            // chính campaign.ExpiresAt (ResolveInvitationExpiry) nên ExpiresAt quá khứ = 100% lời mời
+            // cũng đã chết, và ai bấm link cũng ăn 409 "đã hết hạn" ở ParticipationService ⇒ thư gửi ra
+            // toàn bộ vô nghĩa. 409 TRƯỚC khi ghi bất cứ gì (không audit, không outbox). start-now
+            // KHÔNG tự dời ExpiresAt để "cứu" campaign — đó là quyết định riêng của HR (PUT /campaign).
+            if (campaign.ExpiresAt is DateTime exp && exp < now)
+                throw new InvalidOperationException(
+                    "Campaign đã hết hạn phỏng vấn (expires_at đã qua) — mở phỏng vấn ngay không có tác "
+                    + "dụng, mọi lời mời cũng đã hết hạn. Gia hạn qua PUT /campaign (trường expiresAt) trước.");
+
             // Campaign có ca thi → nút này KHÔNG mở cửa cho ai: ParticipationService vẫn chặn
             // `now < slot.StartsAt` cho từng ứng viên. Nói thẳng bằng 409, KHÔNG im lặng trả 200.
             if (await _db.CampaignSlots.AnyAsync(s => s.CampaignId == id, ct))
                 throw new InvalidOperationException(
                     "Campaign có khung giờ phỏng vấn (ca thi) — mỗi ứng viên vào thi theo ca đã phân, "
                     + "kéo giờ mở chung không có tác dụng. Sửa từng ca trong phần khung giờ phỏng vấn.");
-
-            var now = DateTime.UtcNow;
 
             // Idempotent: chỉ kéo về khi start_at CÒN Ở TƯƠNG LAI. start_at đã ở quá khứ ⇒ campaign
             // đã mở ⇒ no-op, KHÔNG ghi gì (updated_at giữ nguyên, không audit, không outbox). KHÔNG
@@ -1409,8 +1428,11 @@ namespace Isas.CampaignService.Services
             // chèn CÙNG SaveChanges (DB2b — không mất khi broker down). KHÔNG có token (DB chỉ giữ
             // hash) ⇒ Kind="OpenedEarly", consumer gửi thư trỏ ứng viên về link trong thư mời gốc.
             var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
+            // CMP4-B3 — chỉ re-notify lời mời CÒN SỐNG: chưa revoke VÀ chưa hết hạn. Lời mời đã hết hạn
+            // thì magic-link trong thư gốc redeem cũng ăn 409 (ParticipationService `inv.ExpiresAt < now`)
+            // ⇒ gửi "mở sớm" cho nó chỉ là thư rác.
             var liveInvites = await _db.CampaignInvitations
-                .Where(iv => iv.CampaignId == id && iv.RevokedAt == null)
+                .Where(iv => iv.CampaignId == id && iv.RevokedAt == null && iv.ExpiresAt > now)
                 .Select(iv => new { iv.Id, iv.Email, iv.ExpiresAt })
                 .ToListAsync(ct);
             foreach (var iv in liveInvites)
