@@ -135,14 +135,24 @@ public class CampaignEmailSenderMimeTests
     /// <para>Test dùng HAI mốc thời gian khác định dạng hiển thị RÕ RỆT (startsAt →
     /// <c>dd/MM/yyyy</c> giờ VN qua <c>FormatOpensAt</c>; expiresAt → <c>yyyy-MM-dd HH:mm UTC</c>
     /// qua <c>FormatExpiry</c>) để một lần hoán đổi tham số lộ ra ngay: nếu <c>startsAt</c> bị thay
-    /// bằng <c>expiresAt</c> thì dòng "Phỏng vấn mở từ" sẽ mất mốc <c>10/09/2026</c> — assertion đó
+    /// bằng <c>expiresAt</c> thì dòng "Phỏng vấn mở từ" sẽ mất mốc ngày của startsAt — assertion đó
     /// PHẢI đỏ khi mutation đó được áp lại.</para>
+    /// <para>⚠ Mốc là <b>tương đối</b> (<c>DateTime.UtcNow.AddDays(...)</c>), KHÔNG hardcode ngày:
+    /// <c>FormatOpensAt</c> chỉ render khi <c>startsAt &gt; DateTime.UtcNow</c> (CMP1-B4), nên một
+    /// ngày tuyệt đối làm test tự hỏng khi lịch vượt qua nó — đúng bẫy đã xảy ra. Chuỗi kỳ vọng
+    /// tính TỪ mốc bằng đúng cách production format (CurrentCulture cho giờ VN, InvariantCulture
+    /// cho <c>FormatExpiry</c>) nên khớp bất kể culture máy chạy.</para>
     /// </summary>
     [Fact]
     public void Mime_BuildMailMessage_TruyenDungBienVaoDungBan_KhongLanLonStartsAtVoiExpiresAt()
     {
-        var expiresAt = new DateTime(2026, 12, 31, 23, 59, 0, DateTimeKind.Utc);
-        var startsAt = new DateTime(2026, 9, 10, 2, 0, 0, DateTimeKind.Utc);   // 09:00 giờ VN, 10/09/2026
+        // Mốc TƯƠNG ĐỐI — KHÔNG hardcode ngày (xem <summary>). startsAt ở 02:00 UTC = 09:00 giờ VN;
+        // expiresAt cách hẳn 90 ngày + 23:59 UTC → mốc & định dạng khác rõ rệt để một lần hoán vị
+        // tham số lộ ra ngay.
+        var startsAt = DateTime.UtcNow.Date.AddDays(30).AddHours(2);
+        var expiresAt = startsAt.Date.AddDays(90).AddHours(23).AddMinutes(59);
+        var startsAtVn = VietnamTime.From(startsAt);
+        var expiresAtVn = VietnamTime.From(expiresAt);
 
         var parts = ParseParts(WriteEml(
             expiresAt: expiresAt, startsAt: startsAt, orgName: "Công ty Acme",
@@ -153,14 +163,15 @@ public class CampaignEmailSenderMimeTests
 
         foreach (var body in new[] { plain, html })
         {
-            // Giờ MỞ (startsAt) — đúng vai, đúng mốc.
-            Assert.Contains("10/09/2026", body);
-            Assert.Contains("09:00", body);
-            // Hạn CHÓT (expiresAt) — đúng vai, đúng mốc, ĐÚNG định dạng (UTC, không phải giờ VN).
-            Assert.Contains("2026-12-31 23:59 UTC", body);
-            // Đối chứng ngược: mốc của bên kia KHÔNG được lọt vào — nếu hai tham số bị hoán, ngày
-            // 31/12/2026 sẽ xuất hiện dưới định dạng dd/MM/yyyy (dòng "Phỏng vấn mở từ").
-            Assert.DoesNotContain("31/12/2026", body);
+            // Giờ MỞ (startsAt) — đúng vai, đúng mốc, dd/MM/yyyy giờ VN qua FormatOpensAt (CurrentCulture).
+            Assert.Contains(startsAtVn.ToString("dd/MM/yyyy"), body);
+            Assert.Contains(startsAtVn.ToString("HH:mm"), body);
+            // Hạn CHÓT (expiresAt) — đúng vai, đúng mốc, ĐÚNG định dạng yyyy-MM-dd HH:mm UTC
+            // (InvariantCulture, không phải giờ VN) qua FormatExpiry.
+            Assert.Contains(expiresAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) + " UTC", body);
+            // Đối chứng ngược: nếu hai tham số bị hoán, ngày expiresAt sẽ xuất hiện dưới định dạng
+            // dd/MM/yyyy (dòng "Phỏng vấn mở từ") — phải VẮNG.
+            Assert.DoesNotContain(expiresAtVn.ToString("dd/MM/yyyy"), body);
         }
 
         // 3 trường B4 còn lại cũng phải TỚI ĐÚNG BẢN — cả hai, không chỉ một.
@@ -182,9 +193,15 @@ public class CampaignEmailSenderMimeTests
     [Fact]
     public void Mime_BuildMailMessage_KhungGioSlot_KhongLanLonVoiGioCampaignMo()
     {
-        var slotStarts = new DateTime(2026, 10, 1, 1, 0, 0, DateTimeKind.Utc);   // 08:00 VN 01/10
-        var slotEnds = new DateTime(2026, 10, 1, 2, 0, 0, DateTimeKind.Utc);     // 09:00 VN 01/10
-        var campaignOpens = new DateTime(2026, 9, 20, 3, 0, 0, DateTimeKind.Utc); // 10:00 VN 20/09
+        // Mốc TƯƠNG ĐỐI — KHÔNG hardcode ngày: campaignOpens phải > DateTime.UtcNow để opens card
+        // render (CMP1-B4), nên ngày tuyệt đối tự hỏng test khi lịch vượt qua. slot ở 01:00 UTC =
+        // 08:00 VN; campaignOpens ở 03:00 UTC = 10:00 VN; hai NGÀY khác nhau (10 ngày) để hoán vị lộ ra.
+        var slotStarts = DateTime.UtcNow.Date.AddDays(20).AddHours(1);
+        var slotEnds = slotStarts.AddHours(1);
+        var campaignOpens = DateTime.UtcNow.Date.AddDays(10).AddHours(3);
+        var slotStartsVn = VietnamTime.From(slotStarts);
+        var slotEndsVn = VietnamTime.From(slotEnds);
+        var campaignOpensVn = VietnamTime.From(campaignOpens);
 
         var parts = ParseParts(WriteEmlWithSlot(slotStarts, slotEnds, campaignOpens));
 
@@ -193,10 +210,10 @@ public class CampaignEmailSenderMimeTests
 
         foreach (var body in new[] { plain, html })
         {
-            // Khung giờ SLOT (per-invitation) — đúng ngày, đúng khoảng giờ.
-            Assert.Contains("08:00–09:00, 01/10/2026", body);
-            // Giờ campaign MỞ — mốc RIÊNG, KHÔNG lẫn vào dòng slot.
-            Assert.Contains("20/09/2026", body);
+            // Khung giờ SLOT (per-invitation) qua FormatSlot — đúng ngày, đúng khoảng giờ.
+            Assert.Contains($"{slotStartsVn:HH:mm}–{slotEndsVn:HH:mm}, {slotStartsVn:dd/MM/yyyy}", body);
+            // Giờ campaign MỞ — mốc RIÊNG (ngày khác slot), KHÔNG lẫn vào dòng slot.
+            Assert.Contains(campaignOpensVn.ToString("dd/MM/yyyy"), body);
         }
     }
 
