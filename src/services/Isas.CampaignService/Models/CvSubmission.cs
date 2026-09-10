@@ -32,6 +32,11 @@ namespace Isas.CampaignService.Models
         // mức bằng chứng, KHÔNG phải số AI phán (xem ScreeningVersion). Giữ nguyên tên cột để
         // sort/keyset/minScore và nhãn FE "Điểm khớp CV" chạy nguyên.
         public int? OverallMatchScore { get; set; }
+        // CMP4-B4 — mốc BẮT ĐẦU LƯỢT ĐÁNH GIÁ hiện tại (không phải "lần publish gần nhất"): set 1 lần
+        // ở đầu lượt (PublishScreeningJobsAsync / RescreenCandidateAsync / lần Filtered→Analyzing đầu
+        // của StuckScreeningRepublisher), KHÔNG dời khi republisher đẩy lại (nhịp đẩy-lại đọc UpdatedAt).
+        // StuckScreeningRepublisher neo TRẦN BỎ CUỘC 6h vào (LastScreeningPublishedAt ?? CreatedAt).
+        // null = Filtered chưa từng publish (publish hụt lúc sàng).
         public DateTime? LastScreeningPublishedAt { get; set; }   // cho StuckScreeningRepublisher (C15)
 
         // ── HR technical screener (bước 2-4) ──────────────────────────────────

@@ -8,8 +8,10 @@ namespace Isas.CampaignService.Services
     /// InterviewService.StuckAnswerRepublisher). 2 loại kẹt:
     ///  • <c>Filtered</c> + <c>last_screening_published_at = null</c> quá 2 phút → publish HỤT lúc sàng
     ///    (broker down khi <see cref="CvScreeningService.PublishScreeningJobsAsync"/>) → đẩy lại.
-    ///  • <c>Analyzing</c> + <c>last_screening_published_at</c> quá 15 phút không callback → worker mất tích.
-    /// Đẩy lại OK → set <c>Analyzing</c> + <c>last_screening_published_at = now</c> (chống nhặt lại ngay).
+    ///  • <c>Analyzing</c> + <c>updated_at</c> quá 15 phút không callback → worker mất tích.
+    /// Đẩy lại OK → set <c>Analyzing</c> + <c>updated_at = now</c> (chống nhặt lại ngay). CMP4-B4 —
+    /// <c>last_screening_published_at</c> nay là mốc BẮT ĐẦU lượt đánh giá (set 1 lần ở đầu lượt),
+    /// KHÔNG dời khi republisher đẩy lại; nhịp đẩy-lại đọc <c>updated_at</c> (vẫn bị dời mỗi lần).
     /// <c>Analyzed</c>/<c>Rejected</c>/<c>Invited</c>/<c>AnalysisFailed</c> KHÔNG bị nhặt (terminal / chờ HR retry).
     /// Chỉ PUBLISH (không consume) — nhẹ hơn <see cref="SessionScoredConsumer"/>.
     /// </summary>
@@ -22,7 +24,9 @@ namespace Isas.CampaignService.Services
         private static readonly TimeSpan PublishFailedThreshold = TimeSpan.FromMinutes(2);
 
         // Đã publish (Analyzing) nhưng quá lâu không callback = worker mất tích → đẩy lại.
-        // Để dài để không đua với worker đang chấm chậm. Đo theo LastScreeningPublishedAt.
+        // Để dài để không đua với worker đang chấm chậm. CMP4-B4 — đo theo `UpdatedAt` (mốc lần ghi
+        // gần nhất: đầu lượt HOẶC lần republisher đẩy lại), KHÔNG theo `LastScreeningPublishedAt`
+        // (nay đông cứng ở mốc bắt đầu lượt).
         private static readonly TimeSpan AnalyzingLostThreshold = TimeSpan.FromMinutes(15);
 
         // TRẦN BỎ CUỘC — vòng lặp này KHÔNG có điểm dừng nếu không có nó.
@@ -32,8 +36,16 @@ namespace Isas.CampaignService.Services
         // (96 lần/ngày) và hàng đợi lớn mãi mà KHÔNG có gì báo — không alert nào đọc `list_queues`.
         // Mỗi bản nhân đôi là một lượt Gemini nếu consumer bật lên.
         //
-        // Neo theo `CreatedAt` chứ KHÔNG theo `LastScreeningPublishedAt`: mốc sau bị chính vòng lặp
-        // này dời về `now` mỗi lần đẩy, nên lấy nó làm trần thì trần không bao giờ tới.
+        // CMP4-B4 — Neo trần vào `LastScreeningPublishedAt ?? CreatedAt` = mốc BẮT ĐẦU LƯỢT ĐÁNH GIÁ
+        // hiện tại, KHÔNG phải mốc upload. Trước đây neo vào `CreatedAt` (upload): CMP3-B2 cho
+        // cv_submission sống nhiều ngày trong Draft trước khi campaign chạy, nên rescreen một hồ sơ
+        // cũ ⇒ 15' sau sweeper nhặt ⇒ `CreatedAt` đã quá 6h ⇒ AnalysisFailed NGAY, đổ oan worker vừa
+        // chạy 15'. Không neo vào `LastScreeningPublishedAt` một mình được VÌ trước CMP4-B4 chính vòng
+        // lặp này dời nó về `now` mỗi lần đẩy ⇒ trần không bao giờ tới; CMP4-B4 đã bỏ việc dời đó
+        // (republisher chỉ dời `UpdatedAt`), nên nay `LastScreeningPublishedAt` đông cứng ở mốc đầu
+        // lượt (chỉ `PublishScreeningJobsAsync`/`RescreenCandidateAsync` set nó). `CreatedAt` là dự
+        // phòng cho hàng `Filtered` chưa từng publish (marker null) — với chúng `CreatedAt` ≈ lúc sàng
+        // (publish job chạy CÙNG request với ScreenCandidatesAsync) = đúng mốc bắt đầu lượt.
         //
         // Quá trần → `AnalysisFailed` + log Error. Cố ý biến một rò rỉ vô hình thành một trạng thái
         // HR NHÌN THẤY: ⚠ hiện KHÔNG có endpoint nào cho HR retry `AnalysisFailed` (chỉ callback
@@ -91,11 +103,13 @@ namespace Isas.CampaignService.Services
 
             var now = DateTime.UtcNow;
             var publishGrace = now - PublishFailedThreshold;    // cho request sàng kịp publish
-            var analyzingCutoff = now - AnalyzingLostThreshold; // mốc coi worker mất tích
+            var analyzingCutoff = now - AnalyzingLostThreshold; // mốc coi worker mất tích (đo theo UpdatedAt)
 
             // Ứng viên cần (re)publish (Campaign nav có query filter DeletedAt==null → bỏ campaign đã xoá):
             //  - publish hụt: Filtered, chưa publish (null), tạo đã quá grace; HOẶC
-            //  - kẹt thật: Analyzing, đã publish nhưng quá lâu (< cutoff).
+            //  - kẹt thật: Analyzing, lần ghi gần nhất (UpdatedAt: đầu lượt hoặc lần đẩy trước) đã quá
+            //    lâu. CMP4-B4 — đo `UpdatedAt`, KHÔNG `LastScreeningPublishedAt` (nay đông cứng ở mốc
+            //    bắt đầu lượt): nếu đo mốc-bắt-đầu-lượt thì mọi scan đều khớp ⇒ đẩy lại mỗi 2' thay vì 15'.
             var stuck = await db.CvSubmissions
                 .Where(c =>
                     (c.Status == CvSubmissionStatus.Filtered
@@ -103,13 +117,15 @@ namespace Isas.CampaignService.Services
                         && c.CreatedAt < publishGrace)
                     || (c.Status == CvSubmissionStatus.Analyzing
                         && c.LastScreeningPublishedAt != null
-                        && c.LastScreeningPublishedAt < analyzingCutoff))
+                        && c.UpdatedAt < analyzingCutoff))
                 .Select(c => new
                 {
                     c.Id,
                     c.CampaignId,
                     c.CvParsedText,
                     c.CreatedAt,
+                    // CMP4-B4 — mốc bắt đầu lượt đánh giá; null (Filtered chưa publish) ⇒ COALESCE về CreatedAt.
+                    c.LastScreeningPublishedAt,
                     Domain = c.Campaign.Domain,
                     Language = c.Campaign.Language,
                     JobNeeds = c.Campaign.JobNeeds,
@@ -132,6 +148,11 @@ namespace Isas.CampaignService.Services
 
             foreach (var c in stuck)
             {
+                // CMP4-B4 — mốc trần bỏ cuộc neo vào = BẮT ĐẦU LƯỢT ĐÁNH GIÁ hiện tại
+                // (LastScreeningPublishedAt), KHÔNG phải mốc upload (CreatedAt). null (Filtered chưa
+                // từng publish) ⇒ về CreatedAt, mốc đó ≈ lúc sàng cho hàng Filtered.
+                var roundStart = c.LastScreeningPublishedAt ?? c.CreatedAt;
+
                 // CMP4-B1 — kiểm THƯỚC ĐO (job_needs) TRƯỚC trần bỏ cuộc. KHÔNG có job_needs = lỗi
                 // CẤU HÌNH (campaign chưa chốt nhu cầu công việc), KHÔNG phải worker mất tích. Trước
                 // đây trần bỏ cuộc chạy trước ⇒ 6h sau row bị lật AnalysisFailed với lý do "worker
@@ -147,7 +168,7 @@ namespace Isas.CampaignService.Services
                     // Quá trần + KHÔNG có thước đo: vẫn lật AnalysisFailed để HR NHÌN THẤY (đúng mục
                     // đích của trần bỏ cuộc — biến rò rỉ vô hình thành trạng thái nhìn thấy được),
                     // NHƯNG lý do phải chỉ đúng chỗ hỏng: chưa chốt job_needs, không phải worker.
-                    if (giveUpCutoff is DateTime noNeedsCutoff && c.CreatedAt < noNeedsCutoff)
+                    if (giveUpCutoff is DateTime noNeedsCutoff && roundStart < noNeedsCutoff)
                     {
                         await db.CvSubmissions
                             .Where(x => x.Id == c.Id)
@@ -174,7 +195,7 @@ namespace Isas.CampaignService.Services
 
                 // Có thước đo → giờ mới xét trần bỏ cuộc: đây là worker THẬT SỰ mất tích (đã publish
                 // hoặc lẽ ra phải publish được nhưng quá lâu không có callback).
-                if (giveUpCutoff is DateTime cutoff && c.CreatedAt < cutoff)
+                if (giveUpCutoff is DateTime cutoff && roundStart < cutoff)
                 {
                     await db.CvSubmissions
                         .Where(x => x.Id == c.Id)
@@ -201,13 +222,16 @@ namespace Isas.CampaignService.Services
                         c.Language,
                         callbackBase), ct);
 
-                    // Đẩy lại OK → Analyzing + dời mốc publish sang now, để vòng sau không nhặt lại
+                    // Đẩy lại OK → Analyzing + dời `UpdatedAt` sang now, để vòng sau không nhặt lại
                     // trong AnalyzingLostThreshold. ExecuteUpdate vì đang dùng projection (không track entity).
                     await db.CvSubmissions
                         .Where(x => x.Id == c.Id)
                         .ExecuteUpdateAsync(s => s
                             .SetProperty(x => x.Status, CvSubmissionStatus.Analyzing)
-                            .SetProperty(x => x.LastScreeningPublishedAt, now)
+                            // CMP4-B4 — set mốc BẮT ĐẦU LƯỢT chỉ ở lần ĐẦU (Filtered→Analyzing: marker null
+                            // ⇒ lượt đánh giá thực sự bắt đầu bây giờ). Retry của một lượt đã chạy (marker
+                            // đã có) GIỮ NGUYÊN — nếu dời thì trần bỏ cuộc không bao giờ tới (lỗi cũ).
+                            .SetProperty(x => x.LastScreeningPublishedAt, x => x.LastScreeningPublishedAt ?? now)
                             // SCP1 · B5 — RETRY: GIỮ pin cũ (COALESCE). Chỉ set khi còn null (lần publish
                             // đầu ném trước khi kịp lưu pin) ⇒ dùng chính sách chấm CV hiện hành của campaign.
                             .SetProperty(x => x.ScoringPolicyVersion, x => x.ScoringPolicyVersion ?? c.CvPolicyVersion)

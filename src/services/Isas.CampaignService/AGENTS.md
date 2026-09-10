@@ -337,7 +337,7 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | bonus_signals | jsonb? | `string[]` — điểm cộng ngoài bộ nhu cầu |
 | verification_risk | varchar(10)? | `Low·Medium·High` — cờ cho HR, **KHÔNG nhập vào điểm** |
 | verify_questions | jsonb? | `string[]` ≤3 — gợi ý riêng cho hồ sơ này; ⚠ **KHÔNG** đưa vào `campaign_questions` (bộ đó là bộ CHUNG, nền tảng để CAMP-10 so sánh được) |
-| last_screening_published_at | timestamptz? | cho `StuckScreeningRepublisher` |
+| last_screening_published_at | timestamptz? | **CMP4-B4 — mốc BẮT ĐẦU LƯỢT ĐÁNH GIÁ** (set ở đầu lượt: publish batch / rescreen / lần Filtered→Analyzing đầu của sweeper), KHÔNG dời khi `StuckScreeningRepublisher` đẩy lại (nhịp đẩy đọc `updated_at`). Trần bỏ cuộc neo `COALESCE(last_screening_published_at, created_at)`. `null` = Filtered chưa publish |
 | created_at / updated_at | timestamptz | `now()` |
 
 ### `candidate_criterion_scores` (⚠ **LEGACY** — chỉ còn ĐỌC dữ liệu cũ)
@@ -422,7 +422,7 @@ Analyzed ─(HR chọn top → invite: TÁCH EMAIL TỪ CV; null → skip + PATC
 - **Idempotent callback** (`/internal/campaign-candidates/{id}/cv-result`): xóa `candidate_criterion_scores` cũ rồi ghi lại → retry không nhân đôi; `criterion_id` **FK → `campaign_criteria`** chặn id Gemini bịa. Chỉ `Analyzing → Analyzed`.
 - **`Invited` hấp thụ (absorbing):** callback đến **muộn** sau khi đã `Invited` → **bỏ qua** (không hạ trạng thái) — như `answer` đã `Scored` thì bỏ `failed` ([interview.md](interview.md)).
 - **Recover ngoài thứ tự:** `cv-result` về khi đang `AnalysisFailed` (timeout rồi worker mới callback) → **vẫn ghi điểm + set `Analyzed`** (trừ khi đã `Invited`).
-- **Stuck** (`StuckScreeningRepublisher`, mẫu `StuckAnswerRepublisher`): `Filtered` quá hạn mà `last_screening_published_at=null` (publish hụt) **hoặc** `Analyzing` quá hạn không callback (worker mất tích) → đẩy lại job. **Trần bỏ cuộc** `Screening:GiveUpAfterHours` (mặc định 6h, neo `created_at`) → lật `AnalysisFailed`. **CMP4-B1 — kiểm `job_needs` TRƯỚC trần**: chưa chốt nhu cầu = lỗi cấu hình → `reject_reason` nói "chưa chốt job_needs", KHÔNG "worker không phản hồi".
+- **Stuck** (`StuckScreeningRepublisher`, mẫu `StuckAnswerRepublisher`): `Filtered` quá hạn mà `last_screening_published_at=null` (publish hụt) **hoặc** `Analyzing` mà `updated_at` quá 15' không callback (worker mất tích) → đẩy lại job (chỉ dời `updated_at`). **Trần bỏ cuộc** `Screening:GiveUpAfterHours` (mặc định 6h) → lật `AnalysisFailed`. **CMP4-B4 — trần neo `COALESCE(last_screening_published_at, created_at)` = mốc bắt đầu lượt**, KHÔNG `created_at` (rescreen hồ sơ cũ không bị lật oan). **CMP4-B1 — kiểm `job_needs` TRƯỚC trần**: chưa chốt nhu cầu = lỗi cấu hình → `reject_reason` nói "chưa chốt job_needs", KHÔNG "worker không phản hồi".
 - **Retry / Re-upload:** `AnalysisFailed` → HR retry → re-publish → `Analyzing`. `Rejected` do parse → HR upload file mới.
 - **Dedup:** `UNIQUE(campaign_id, email)` → trùng email → **bỏ qua + báo "đã tồn tại"** (không tạo row); `email` null (parse không ra) → cho qua, **không** dedup (rủi ro trùng người — chấp nhận phase 1).
 - **Guard campaign:** chỉ upload/sàng khi campaign **`Active`** (đã có `campaign_criteria`). `Closed`/`Archived` → **chặn upload mới**; job `Analyzing` in-flight **vẫn cho callback hoàn tất** (bảo vệ in-flight — như `payment.md` không văng người đang thi).
