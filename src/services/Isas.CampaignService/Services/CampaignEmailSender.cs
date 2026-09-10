@@ -103,6 +103,11 @@ namespace Isas.CampaignService.Services
             {
                 From = new MailAddress(from),
                 Subject = $"Chiến dịch đã mở sớm — {campaignTitle}",
+                // CMP4-B5 — encoding TƯỜNG MINH cho CẢ Body và Subject: nội dung tiếng Việt có dấu; thư
+                // 1-phần dùng MailMessage.Body nên mặc định .NET có thể chọn ASCII → hỏng dấu. (Thư mời
+                // đa-phần truyền Encoding.UTF8 cho từng AlternateView — xem BuildMailMessage.)
+                SubjectEncoding = Encoding.UTF8,
+                BodyEncoding = Encoding.UTF8,
                 IsBodyHtml = false,
                 Body = $"""
 Xin chào,

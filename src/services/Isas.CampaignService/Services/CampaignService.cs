@@ -1431,8 +1431,12 @@ namespace Isas.CampaignService.Services
             // CMP4-B3 — chỉ re-notify lời mời CÒN SỐNG: chưa revoke VÀ chưa hết hạn. Lời mời đã hết hạn
             // thì magic-link trong thư gốc redeem cũng ăn 409 (ParticipationService `inv.ExpiresAt < now`)
             // ⇒ gửi "mở sớm" cho nó chỉ là thư rác.
+            // CMP4-B5 — VÀ ĐÃ gửi được thư mời (`email_sent_at != null`): thư mở sớm bảo "dùng lại
+            // liên kết trong email mời trước đó" — nếu thư mời chưa từng tới (broker down lúc tạo lời
+            // mời) thì không có liên kết nào để dùng.
             var liveInvites = await _db.CampaignInvitations
-                .Where(iv => iv.CampaignId == id && iv.RevokedAt == null && iv.ExpiresAt > now)
+                .Where(iv => iv.CampaignId == id && iv.RevokedAt == null && iv.ExpiresAt > now
+                    && iv.EmailSentAt != null)
                 .Select(iv => new { iv.Id, iv.Email, iv.ExpiresAt })
                 .ToListAsync(ct);
             foreach (var iv in liveInvites)

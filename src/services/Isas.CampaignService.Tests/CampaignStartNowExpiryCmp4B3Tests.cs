@@ -53,14 +53,16 @@ public class CampaignStartNowExpiryCmp4B3Tests
         return camp.Id;
     }
 
+    // CMP4-B5 — `emailSent` mặc định true: thư mở sớm CHỈ gửi cho lời mời đã nhận thư mời.
     private static void AddInvitation(CampaignTestDb tdb, Guid campId, string email,
-        DateTime? expiresAt = null, DateTime? revokedAt = null)
+        DateTime? expiresAt = null, DateTime? revokedAt = null, bool emailSent = true)
         => tdb.Db.CampaignInvitations.Add(new CampaignInvitation
         {
             Id = Guid.NewGuid(), CampaignId = campId, TokenHash = Guid.NewGuid().ToString(),
             Email = email,
             ExpiresAt = expiresAt ?? DateTime.UtcNow.AddDays(1),
             CreatedAt = DateTime.UtcNow, RevokedAt = revokedAt,
+            EmailSentAt = emailSent ? DateTime.UtcNow.AddMinutes(-10) : null,
         });
 
     // ── (1) ExpiresAt quá khứ ⇒ start-now 409, KHÔNG audit, KHÔNG outbox, StartsAt không đổi ──────

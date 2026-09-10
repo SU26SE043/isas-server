@@ -55,12 +55,15 @@ public class CampaignStartNowCmp3B4Tests
         return camp.Id;
     }
 
-    private static void AddInvitation(CampaignTestDb tdb, Guid campId, string email, DateTime? revokedAt = null)
+    // CMP4-B5 — `emailSentAt` mặc định non-null: thư mở sớm CHỈ gửi cho lời mời đã nhận thư mời.
+    private static void AddInvitation(CampaignTestDb tdb, Guid campId, string email,
+        DateTime? revokedAt = null, bool emailSent = true)
         => tdb.Db.CampaignInvitations.Add(new CampaignInvitation
         {
             Id = Guid.NewGuid(), CampaignId = campId, TokenHash = Guid.NewGuid().ToString(),
             Email = email, ExpiresAt = DateTime.UtcNow.AddDays(1), CreatedAt = DateTime.UtcNow,
             RevokedAt = revokedAt,
+            EmailSentAt = emailSent ? DateTime.UtcNow.AddMinutes(-10) : null,
         });
 
     // ── (1) start_at tương lai ⇒ về ~now + ĐÚNG 1 audit StartEarly có MỐC CŨ trong summary ────

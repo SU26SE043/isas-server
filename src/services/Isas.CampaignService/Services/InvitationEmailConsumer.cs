@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -27,6 +28,16 @@ namespace Isas.CampaignService.Services
         {
             PropertyNameCaseInsensitive = true
         };
+
+        // CMP4-B5 — dedup + trần thất bại cho NHÁNH "mở sớm" (OpenedEarly), keyed by messageId của
+        // outbox row (= BasicProperties.MessageId). Route A — trong tiến trình, KHÔNG cột: cửa sổ
+        // hở duy nhất là consumer restart TRONG cửa sổ redeliver → tối đa 1 thư "dùng lại link cũ"
+        // trùng, vô hại (không nói về link nào chưa tới — nhánh này chỉ chạy cho lời mời đã gửi thư).
+        // Nhánh THƯ MỜI vẫn dedup bền vững qua email_sent_at (KHÔNG đụng).
+        private static readonly TimeSpan OpenedEarlySeenTtl = TimeSpan.FromHours(6);   // ≫ mọi cửa sổ redeliver thực tế
+        private const int DefaultOpenedEarlyMaxAttempts = 5;                            // sau N lần lỗi → thôi requeue (rơi khỏi hàng đợi)
+        private readonly ConcurrentDictionary<string, DateTime> _openedEarlySeen = new();
+        private readonly ConcurrentDictionary<string, int> _openedEarlyFailures = new();
 
         private readonly IConfiguration _config;
         private readonly IServiceScopeFactory _scopeFactory;
@@ -105,7 +116,8 @@ namespace Isas.CampaignService.Services
                     var sender = scope.ServiceProvider.GetRequiredService<ICampaignEmailSender>();
                     // DB2b — resolve DbContext để dedup (email_sent_at) + đánh dấu đã gửi TRƯỚC ack.
                     var db = scope.ServiceProvider.GetRequiredService<Models.CampaignDbContext>();
-                    await ProcessMessageAsync(ea.Body.ToArray(), sender, db, stoppingToken);
+                    // CMP4-B5 — messageId của outbox row (InvitationEmailPublisher set) = khoá dedup nhánh OpenedEarly.
+                    await ProcessMessageAsync(ea.Body.ToArray(), ea.BasicProperties?.MessageId, sender, db, stoppingToken);
 
                     await channel.BasicAckAsync(ea.DeliveryTag, multiple: false, cancellationToken: stoppingToken);
                 }
@@ -128,6 +140,11 @@ namespace Isas.CampaignService.Services
             await Task.Delay(Timeout.Infinite, stoppingToken);
         }
 
+        /// <summary>Overload không có messageId — giữ cho call-site cũ/test không cần dedup nhánh OpenedEarly.</summary>
+        public Task ProcessMessageAsync(
+            byte[] body, ICampaignEmailSender sender, Models.CampaignDbContext db, CancellationToken ct)
+            => ProcessMessageAsync(body, messageId: null, sender, db, ct);
+
         /// <summary>
         /// Logic 1 message: deserialize job → dedup (email_sent_at) → compose magic-link → gọi sender →
         /// đánh dấu <c>email_sent_at</c> (persist TRƯỚC ack ở caller). Tách ra để unit-test không cần
@@ -136,9 +153,16 @@ namespace Isas.CampaignService.Services
         /// DB2b — idempotent phía consumer: OutboxDispatcher at-least-once có thể redeliver → cùng
         /// invitation gửi 2 lần. Cờ <c>email_sent_at</c> chặn gửi trùng (deliver lần 2 → bỏ, vẫn ack).
         /// Invitation không tồn tại (đã xoá/campaign soft-delete) → cũng bỏ qua (ack, tránh nack loop).
+        ///
+        /// CMP4-B5 — nhánh "mở sớm" (OpenedEarly) nay có dedup + trần thất bại RIÊNG, keyed by
+        /// <paramref name="messageId"/> (messageId của outbox row): (a) đã gửi cho messageId này →
+        /// bỏ; (b) chỉ gửi khi lời mời ĐÃ gửi được thư mời (<c>email_sent_at != null</c>) — nếu chưa
+        /// thì "dùng lại link trong email mời trước" là nói về một liên kết chưa từng tới; (c) sender
+        /// ném quá N lần → thôi requeue, log Error (rơi khỏi hàng đợi thay vì poison-loop chặn cả
+        /// hàng đợi thư mời). Nhánh THƯ MỜI bên dưới KHÔNG đổi (vẫn throw → caller requeue).
         /// </summary>
         public async Task ProcessMessageAsync(
-            byte[] body, ICampaignEmailSender sender, Models.CampaignDbContext db, CancellationToken ct)
+            byte[] body, string? messageId, ICampaignEmailSender sender, Models.CampaignDbContext db, CancellationToken ct)
         {
             var job = JsonSerializer.Deserialize<InvitationEmailJob>(body, JsonOptions);
             if (job is null)
@@ -160,8 +184,8 @@ namespace Isas.CampaignService.Services
                 return;
             }
 
-            // CMP3-B4 — thư "mở sớm": KHÔNG kèm magic-link, KHÔNG dedup theo email_sent_at (đó là cờ
-            // của thư mời) và KHÔNG set nó. Lời mời đã revoke → bỏ (ứng viên đó không còn vào được).
+            // CMP3-B4 — thư "mở sớm": KHÔNG kèm magic-link, KHÔNG dùng/ghi email_sent_at (đó là cờ của
+            // THƯ MỜI). CMP4-B5 — dedup + trần thất bại riêng, keyed by messageId (xem <summary>).
             if (string.Equals(job.Kind, "OpenedEarly", StringComparison.OrdinalIgnoreCase))
             {
                 if (invitation.RevokedAt is not null)
@@ -171,9 +195,61 @@ namespace Isas.CampaignService.Services
                     return;
                 }
 
-                await sender.SendCampaignOpenedEarlyEmailAsync(
-                    job.Email, job.CampaignTitle, job.PreviousStartsAt, job.StartsAt ?? DateTime.UtcNow,
-                    job.OrgName, ct);
+                // (b) — chỉ gửi khi lời mời ĐÃ nhận thư mời. Chưa gửi (broker down lúc tạo lời mời) ⇒
+                // "dùng lại liên kết trong email mời trước đó" nói về một liên kết chưa từng tới.
+                // Producer đã lọc (StartEarlyAsync), guard này cho job cũ/lệch.
+                if (invitation.EmailSentAt is null)
+                {
+                    _logger.LogInformation(
+                        "Invitation {InvitationId} chưa gửi được thư mời (email_sent_at null) — bỏ thư 'mở sớm'",
+                        job.InvitationId);
+                    return;
+                }
+
+                // (a) — dedup theo messageId của outbox row. Đã gửi cho messageId này → bỏ (vẫn ack).
+                if (messageId is not null)
+                {
+                    PruneOpenedEarlySeen();
+                    if (_openedEarlySeen.ContainsKey(messageId))
+                    {
+                        _logger.LogInformation(
+                            "Thư 'mở sớm' messageId {MessageId} (Invitation {InvitationId}) đã gửi — bỏ trùng (dedup)",
+                            messageId, job.InvitationId);
+                        return;
+                    }
+                }
+
+                try
+                {
+                    await sender.SendCampaignOpenedEarlyEmailAsync(
+                        job.Email, job.CampaignTitle, job.PreviousStartsAt, job.StartsAt ?? DateTime.UtcNow,
+                        job.OrgName, ct);
+                }
+                catch (Exception ex)
+                {
+                    // (c) — trần thất bại CHỈ cho nhánh này. < N → rethrow (caller requeue, giữ hành vi
+                    // cũ). ≥ N → nuốt + log Error + return (caller ack ⇒ message rơi khỏi hàng đợi, KHÔNG
+                    // quay vòng nóng chặn cả hàng đợi thư mời). messageId null ⇒ không đếm được ⇒ luôn rethrow.
+                    if (messageId is null)
+                        throw;
+
+                    var attempts = _openedEarlyFailures.AddOrUpdate(messageId, 1, (_, c) => c + 1);
+                    if (attempts < OpenedEarlyMaxAttempts)
+                        throw;
+
+                    _openedEarlyFailures.TryRemove(messageId, out _);
+                    _logger.LogError(ex,
+                        "Thư 'mở sớm' messageId {MessageId} (Invitation {InvitationId}) thất bại {Attempts} lần — "
+                        + "THÔI requeue, bỏ message (queue không có DLX; xem log để xử tay).",
+                        messageId, job.InvitationId, attempts);
+                    return;
+                }
+
+                if (messageId is not null)
+                {
+                    _openedEarlySeen[messageId] = DateTime.UtcNow;
+                    _openedEarlyFailures.TryRemove(messageId, out _);
+                }
 
                 _logger.LogInformation(
                     "Đã gửi thư 'mở sớm' cho Invitation {InvitationId} ({Email})", job.InvitationId, job.Email);
@@ -212,6 +288,20 @@ namespace Isas.CampaignService.Services
             _logger.LogInformation(
                 "Đã gửi email mời cho Invitation {InvitationId} ({Email})",
                 job.InvitationId, job.Email);
+        }
+
+        // CMP4-B5 — trần thất bại nhánh OpenedEarly; override qua config, mặc định 5.
+        private int OpenedEarlyMaxAttempts =>
+            int.TryParse(_config["OpenedEarlyEmail:MaxAttempts"], out var n) && n > 0
+                ? n : DefaultOpenedEarlyMaxAttempts;
+
+        // Dọn entry dedup quá TTL — gọi mỗi lần xử OpenedEarly (nhánh này hiếm nên dict luôn nhỏ).
+        private void PruneOpenedEarlySeen()
+        {
+            var cutoff = DateTime.UtcNow - OpenedEarlySeenTtl;
+            foreach (var kv in _openedEarlySeen)
+                if (kv.Value < cutoff)
+                    _openedEarlySeen.TryRemove(kv.Key, out _);
         }
 
         /// <summary>
