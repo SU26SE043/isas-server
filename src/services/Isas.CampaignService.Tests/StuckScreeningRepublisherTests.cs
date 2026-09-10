@@ -309,4 +309,82 @@ public class StuckScreeningRepublisherTests
 
         pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    // ── CMP4-B1 — kiểm THƯỚC ĐO (job_needs) TRƯỚC trần bỏ cuộc ──────────────────────────────────────
+    //
+    // Bug đã đo trên dev: campaign CHƯA chốt job_needs (lỗi cấu hình) + row còn Filtered → trần bỏ
+    // cuộc chạy TRƯỚC phép kiểm job_needs ⇒ 6h sau row bị lật AnalysisFailed với lý do "worker sàng
+    // CV không phản hồi", đổ oan cho worker cho một chuyện worker không dính. "Lời nói dối 6 giờ" mà
+    // CMP3-B1 tuyên bố đã diệt VẪN tới được qua cửa này.
+
+    private static Campaign SeedActiveCampaignNoNeeds(CampaignTestDb tdb, Guid owner)
+    {
+        var camp = CampaignTestDb.NewCampaign(owner, CampaignStatus.Active);
+        camp.Domain = "BE";
+        camp.JDText = "JD: cần Backend .NET";
+        camp.JobNeeds = null;   // CHƯA chốt nhu cầu công việc — lỗi cấu hình
+        tdb.Db.Campaigns.Add(camp);
+        tdb.Db.SaveChanges();
+        return camp;
+    }
+
+    // job_needs rỗng + quá 6h ⇒ VẪN lật AnalysisFailed (HR nhìn thấy) NHƯNG lý do là "chưa chốt
+    // nhu cầu công việc", KHÔNG phải "worker không phản hồi". Không publish (không có thước để gửi).
+    [Fact]
+    public async Task JobNeedsRong_QuaTranBoCuoc_KHONG_DoOanWorker()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = SeedActiveCampaignNoNeeds(tdb, Guid.NewGuid());
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered,
+            createdAt: DateTime.UtcNow.AddHours(-7), lastPublished: null);
+
+        var (r, pub) = Build(tdb);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        var saved = await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id);
+        Assert.Equal(CvSubmissionStatus.AnalysisFailed, saved.Status);
+        Assert.NotNull(saved.RejectReason);
+        Assert.Contains("nhu cầu công việc", saved.RejectReason!);
+        Assert.DoesNotContain("worker", saved.RejectReason!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("không phản hồi", saved.RejectReason!);
+    }
+
+    // job_needs rỗng NHƯNG chưa quá trần ⇒ chỉ bỏ qua (log warning), KHÔNG lật trạng thái.
+    [Fact]
+    public async Task JobNeedsRong_ChuaQuaTran_ChiBoQua_KhongLat()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = SeedActiveCampaignNoNeeds(tdb, Guid.NewGuid());
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Filtered,
+            createdAt: DateTime.UtcNow.AddMinutes(-10), lastPublished: null);
+
+        var (r, pub) = Build(tdb);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(CvSubmissionStatus.Filtered,
+            (await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id)).Status);
+    }
+
+    // Regression: CÓ job_needs + quá trần ⇒ lý do vẫn là "worker sàng CV không phản hồi" (ca worker
+    // thật sự mất tích — phép kiểm job_needs đứng TRƯỚC nhưng không nuốt ca này).
+    [Fact]
+    public async Task CoJobNeeds_QuaTranBoCuoc_VanBao_WorkerKhongPhanHoi()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = SeedActiveCampaign(tdb, Guid.NewGuid());   // helper này LUÔN set job_needs
+        SeedCriteria(tdb, camp.Id);
+        var cand = SeedCandidate(tdb, camp.Id, CvSubmissionStatus.Analyzing,
+            createdAt: DateTime.UtcNow.AddHours(-7), lastPublished: DateTime.UtcNow.AddMinutes(-20));
+
+        var (r, pub) = Build(tdb);
+        await ScanOnce(r);
+
+        pub.Verify(p => p.PublishAsync(It.IsAny<CvScreeningJob>(), It.IsAny<CancellationToken>()), Times.Never);
+        var saved = await tdb.NewContext().CvSubmissions.AsNoTracking().FirstAsync(x => x.Id == cand.Id);
+        Assert.Equal(CvSubmissionStatus.AnalysisFailed, saved.Status);
+        Assert.Contains("worker sàng CV không phản hồi", saved.RejectReason!);
+    }
 }

@@ -17,9 +17,13 @@ namespace Isas.CampaignService.Tests;
 /// nhau rồi xếp chung một bảng — đúng thứ bất công CAMP-10 chặn ở đường phỏng vấn.
 ///
 /// "AI đề xuất, HR chốt" (mẫu D13/SEC-4): AI điền sẵn lúc publish. CMP1-B2 — cửa sửa KHÔNG khoá theo
-/// Draft/Active, mà theo bất biến "chưa ai được sàng": AI sinh job_needs LÚC PUBLISH (đúng lúc
-/// campaign vừa chuyển Active), nên "chỉ sửa khi Draft" sẽ không bao giờ chạm được nội dung AI vừa
-/// sinh — đó là bug đã sống trên dev tới trước bản vá này.
+/// Draft/Active, mà theo bất biến "chưa có người bị đo bằng thước cũ": AI sinh job_needs LÚC PUBLISH
+/// (đúng lúc campaign vừa chuyển Active), nên "chỉ sửa khi Draft" sẽ không bao giờ chạm được nội dung
+/// AI vừa sinh — đó là bug đã sống trên dev tới trước bản vá này.
+///
+/// CMP4-B1 — bất biến đó nay đo CÙNG MỘT THƯỚC với khối luật-lọc-cứng: "campaign đã có bất kỳ
+/// <c>cv_submission</c> nào chưa" (<c>AnyAsync</c>), không còn là "đã có ứng viên CÓ ĐIỂM"
+/// (<c>OverallMatchScore != null</c>) — Filtered/Analyzing giờ cũng khoá cửa.
 /// </summary>
 public class JobNeedsScreeningTests
 {
@@ -322,7 +326,9 @@ public class JobNeedsScreeningTests
     }
 
     // (5) Active + job_needs RỖNG NHƯNG đã có 1 ứng viên OverallMatchScore = 80 → 409 — đây MỚI là
-    // bất biến thật, và thông điệp phải nói đúng lý do "đã sàng", không nói "còn rỗng".
+    // bất biến thật, và thông điệp phải nói đúng lý do "đã có ứng viên / đã chốt", không nói "còn rỗng".
+    // CMP4-B1 — thước đổi từ "đã có điểm" sang "bất kỳ cv_submission nào" nên thông điệp không còn
+    // đếm số ("N ứng viên được sàng"); vẫn nêu "ứng viên" + "đã chốt".
     [Fact]
     public async Task B6_Active_needs_rong_nhung_da_co_ung_vien_duoc_sang_thi_409()
     {
@@ -335,7 +341,7 @@ public class JobNeedsScreeningTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             NewService(tdb.NewContext()).ReplaceJobNeedsAsync(owner, owner, camp.Id, OneInput(), default));
 
-        Assert.Contains("1 ứng viên được sàng", ex.Message);
+        Assert.Contains("ứng viên", ex.Message);
         Assert.Contains("đã chốt", ex.Message);
         Assert.DoesNotContain("RỖNG", ex.Message);
     }

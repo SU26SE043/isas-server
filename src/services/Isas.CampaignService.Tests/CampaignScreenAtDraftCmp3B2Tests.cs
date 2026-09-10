@@ -16,12 +16,14 @@ namespace Isas.CampaignService.Tests;
 /// "đã có campaign_criteria" — SAI từ CAMP-14: sàng CV đo bằng <c>job_needs</c>, hard-filter chỉ đọc
 /// RequiredSkills/KeywordsAny/MinYearsExperience, ba trường sửa được ở Draft).
 ///
-/// <para>Mở Draft phá giả định "Draft không thể có ứng viên" mà hai cửa dựa vào ⇒ siết cùng PR:</para>
+/// <para>Mở Draft phá giả định "Draft không thể có ứng viên" mà hai cửa dựa vào ⇒ siết cùng PR.
+/// CMP4-B1 hợp nhất: CẢ HAI cửa nay đo CÙNG MỘT THƯỚC — "campaign đã có bất kỳ <c>cv_submission</c>
+/// nào chưa" (<c>AnyAsync</c>), bất kể trạng thái. Closed/Archived vẫn 409.</para>
 /// <list type="bullet">
-///   <item><c>ReplaceJobNeedsAsync</c>: cửa sửa nay là "CHƯA có ứng viên nào được sàng"
-///     (<c>OverallMatchScore != null</c>), bất kể trạng thái. Closed/Archived vẫn 409.</item>
-///   <item>Khối luật lọc cứng trong <c>UpdateCampaignAsync</c>: cửa sửa nay là "CHƯA có
-///     <c>cv_submission</c> nào", bất kể trạng thái. Closed/Archived vẫn 409.</item>
+///   <item><c>ReplaceJobNeedsAsync</c>: trước CMP4-B1 đo <c>OverallMatchScore != null</c> (chỉ ứng
+///     viên đã có điểm) ⇒ Filtered/Analyzing lọt qua ⇒ HR đổi thước sau lưng batch đang chấm.</item>
+///   <item>Khối luật lọc cứng trong <c>UpdateCampaignAsync</c>: vốn đã đo "CHƯA có
+///     <c>cv_submission</c> nào" — CMP4-B1 là làm <c>ReplaceJobNeedsAsync</c> khớp với nó.</item>
 /// </list>
 /// </summary>
 public class CampaignScreenAtDraftCmp3B2Tests
@@ -122,6 +124,8 @@ public class CampaignScreenAtDraftCmp3B2Tests
     }
 
     // ── (3) Draft đã có 1 ứng viên ĐÃ SÀNG (OverallMatchScore != null) ⇒ PUT /job-needs 409 ──
+    // CMP4-B1 — thông điệp không còn nói "được sàng" (thước nay là "bất kỳ cv_submission nào"),
+    // nhưng vẫn nêu "đã chốt". Ca "chưa sàng" (Filtered/Analyzing) → 409 nằm ở CampaignJobNeedsMeasureCmp4B1Tests.
     [Fact]
     public async Task Draft_da_co_ung_vien_da_sang_thi_ReplaceJobNeeds_409()
     {
@@ -136,11 +140,11 @@ public class CampaignScreenAtDraftCmp3B2Tests
                 new() { Category = JobNeedCategories.Technical, Text = "Thạo Kafka" },
             }, default));
 
-        Assert.Contains("được sàng", ex.Message);
+        Assert.Contains("đã chốt", ex.Message);
     }
 
     // ── (4) Draft đã có cv_submission (CHƯA sàng, OverallMatchScore null) ⇒ PUT /campaign đổi
-    //        requiredSkills 409. Ngưỡng KHÁC (3): bất kỳ row CV nào, không đòi đã có điểm.
+    //        requiredSkills 409. CMP4-B1 — nay CÙNG NGƯỠNG với (3): bất kỳ row CV nào.
     [Fact]
     public async Task Draft_da_co_cv_submission_thi_UpdateCampaign_doi_requiredSkills_409()
     {

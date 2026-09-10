@@ -39,6 +39,10 @@ namespace Isas.CampaignService.Services
         // HR NHÌN THẤY: ⚠ hiện KHÔNG có endpoint nào cho HR retry `AnalysisFailed` (chỉ callback
         // `cv-result` đến muộn mới gỡ được — `CvScreeningService.cs:139`), nên để mặc định rộng tay
         // và chỉnh được bằng config.
+        //
+        // CMP4-B1 — trần bỏ cuộc xét SAU khi kiểm `job_needs` (xem ScanOnceAsync): campaign chưa
+        // chốt nhu cầu công việc là lỗi CẤU HÌNH, vẫn lật `AnalysisFailed` nhưng `reject_reason`
+        // chỉ đúng chỗ hỏng — KHÔNG dán nhãn "worker sàng CV không phản hồi".
         private static readonly TimeSpan DefaultGiveUpAfter = TimeSpan.FromHours(6);
 
         private readonly IServiceScopeFactory _scopeFactory;
@@ -128,8 +132,48 @@ namespace Isas.CampaignService.Services
 
             foreach (var c in stuck)
             {
-                // Quá trần → thôi đẩy lại, chuyển AnalysisFailed để HR NHÌN THẤY thay vì rò rỉ im lặng.
-                // Đặt TRƯỚC mọi thứ khác (kể cả nạp criteria) — đã bỏ cuộc thì không tốn thêm query nào.
+                // CMP4-B1 — kiểm THƯỚC ĐO (job_needs) TRƯỚC trần bỏ cuộc. KHÔNG có job_needs = lỗi
+                // CẤU HÌNH (campaign chưa chốt nhu cầu công việc), KHÔNG phải worker mất tích. Trước
+                // đây trần bỏ cuộc chạy trước ⇒ 6h sau row bị lật AnalysisFailed với lý do "worker
+                // sàng CV không phản hồi" — đổ oan cho worker cho một chuyện worker không dính.
+                // Dựng jobNeeds từ projection (c.JobNeeds đã nạp sẵn) — KHÔNG tốn thêm query.
+                var jobNeeds = (c.JobNeeds ?? new List<JobNeed>())
+                    .Where(n => !string.IsNullOrWhiteSpace(n.Text))
+                    .Select(n => new CvScreeningNeed(n.NeedId, n.Category, n.Text))
+                    .ToList();
+
+                if (jobNeeds.Count == 0)
+                {
+                    // Quá trần + KHÔNG có thước đo: vẫn lật AnalysisFailed để HR NHÌN THẤY (đúng mục
+                    // đích của trần bỏ cuộc — biến rò rỉ vô hình thành trạng thái nhìn thấy được),
+                    // NHƯNG lý do phải chỉ đúng chỗ hỏng: chưa chốt job_needs, không phải worker.
+                    if (giveUpCutoff is DateTime noNeedsCutoff && c.CreatedAt < noNeedsCutoff)
+                    {
+                        await db.CvSubmissions
+                            .Where(x => x.Id == c.Id)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(x => x.Status, CvSubmissionStatus.AnalysisFailed)
+                                .SetProperty(x => x.RejectReason,
+                                    "Campaign chưa chốt nhu cầu công việc (job_needs) — sàng CV không "
+                                    + "chạy được. Khai nhu cầu (PUT /job-needs) rồi đẩy lại (rescreen).")
+                                .SetProperty(x => x.UpdatedAt, now), ct);
+
+                        _logger.LogError(
+                            "Bỏ cuộc sàng CV candidate {CandidateId} (campaign {CampaignId}): campaign "
+                            + "CHƯA chốt job_needs → AnalysisFailed. Đây là lỗi CẤU HÌNH, KHÔNG phải "
+                            + "worker mất tích.",
+                            c.Id, c.CampaignId);
+                        continue;
+                    }
+
+                    _logger.LogWarning(
+                        "Campaign {CampaignId} chưa chốt nhu cầu công việc (job_needs), bỏ qua candidate {CandidateId}",
+                        c.CampaignId, c.Id);
+                    continue;
+                }
+
+                // Có thước đo → giờ mới xét trần bỏ cuộc: đây là worker THẬT SỰ mất tích (đã publish
+                // hoặc lẽ ra phải publish được nhưng quá lâu không có callback).
                 if (giveUpCutoff is DateTime cutoff && c.CreatedAt < cutoff)
                 {
                     await db.CvSubmissions
@@ -144,21 +188,6 @@ namespace Isas.CampaignService.Services
                         "Bỏ cuộc sàng CV candidate {CandidateId} (campaign {CampaignId}): quá {Hours} giờ "
                         + "không có callback → AnalysisFailed. Kiểm tra consumer cv_screening_queue.",
                         c.Id, c.CampaignId, giveUpAfter.TotalHours);
-                    continue;
-                }
-
-                // Thước đo gửi kèm job = bộ nhu cầu công việc của campaign (đã nạp sẵn trong projection,
-                // không cần cache: một campaign chỉ đọc một lần cho cả batch).
-                var jobNeeds = (c.JobNeeds ?? new List<JobNeed>())
-                    .Where(n => !string.IsNullOrWhiteSpace(n.Text))
-                    .Select(n => new CvScreeningNeed(n.NeedId, n.Category, n.Text))
-                    .ToList();
-
-                if (jobNeeds.Count == 0)
-                {
-                    _logger.LogWarning(
-                        "Campaign {CampaignId} chưa chốt nhu cầu công việc (job_needs), bỏ qua candidate {CandidateId}",
-                        c.CampaignId, c.Id);
                     continue;
                 }
 

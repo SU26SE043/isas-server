@@ -3405,14 +3405,20 @@ namespace Isas.CampaignService.Services
 
         /// <summary>
         /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12).
-        /// <para>CMP3-B2 — cửa sửa KHÔNG còn rẽ theo trạng thái: cho sửa khi campaign CHƯA có ứng
-        /// viên nào được sàng (điểm khớp CV) và chưa <c>Closed</c>/<c>Archived</c>. Trước đây Draft
-        /// được sửa VÔ ĐIỀU KIỆN vì Draft không thể có ứng viên — nay sàng CV chạy được ở Draft
-        /// (CMP3-B2 mục 1) nên giả định đó đổ, và bất biến "một thước đo" phải bịt luôn cả Draft.</para>
-        /// <para>Bất biến THẬT (GIỮ NGUYÊN, KHÔNG nới): không đổi thước đo khi đã có người được đo
-        /// bằng thước cũ — <c>job_needs</c> KHÔNG mang nhãn phiên bản như <c>rubric_version</c>, nên
-        /// sàng trước/sau sẽ không so sánh được mà không có gì báo. <c>Closed</c>/<c>Archived</c> →
-        /// 409 (chiến dịch đã đóng, thước đo là dữ liệu lịch sử).</para>
+        /// <para>CMP4-B1 — cửa sửa dùng CÙNG MỘT THƯỚC với khối luật-lọc-cứng trong
+        /// <see cref="UpdateCampaignAsync"/>: "campaign đã có bất kỳ <c>cv_submission</c> nào chưa"
+        /// (<c>AnyAsync</c>). Trước đây cửa này đo <c>OverallMatchScore != null</c> — chỉ đếm ứng
+        /// viên ĐÃ CÓ ĐIỂM — nên ứng viên vừa upload (Filtered/Analyzing) không tính ⇒ cửa mở ⇒ HR
+        /// sửa/xoá bộ nhu cầu sau lưng batch đang chạy, callback về sau dựng danh sách hợp lệ từ
+        /// <c>job_needs</c> MỚI, mọi needId cũ bị bỏ, assessments rỗng, điểm null, status Analyzed:
+        /// "đã phân tích xong" mà trống trơn, không exception, không log. Một bất biến chỉ được có
+        /// một thước.</para>
+        /// <para>Bất biến THẬT (GIỮ NGUYÊN, KHÔNG nới theo chiều "cho sửa khi đã có điểm"): không
+        /// đổi thước đo khi đã có người được đo bằng thước cũ — <c>job_needs</c> KHÔNG mang nhãn
+        /// phiên bản như <c>rubric_version</c>, nên sàng trước/sau sẽ không so sánh được mà không có
+        /// gì báo. <c>Closed</c>/<c>Archived</c> → 409 (chiến dịch đã đóng, thước đo là dữ liệu
+        /// lịch sử). Gửi <c>[]</c> (wipe) khi đã có <c>cv_submission</c> cũng 409 — <c>[]</c> là một
+        /// replace-all, đi qua đúng cửa này, KHÔNG có đường tắt riêng.</para>
         /// </summary>
         public async Task<CampaignResponse> ReplaceJobNeedsAsync(
             Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
@@ -3422,26 +3428,29 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            // CMP3-B2 — cửa sửa: KHÔNG rẽ theo trạng thái nữa. Chặn khi (a) đã Closed/Archived, HOẶC
-            // (b) đã có ứng viên được sàng. Trước đây Draft luôn qua vì Draft không thể có ứng viên;
-            // nay sàng CV chạy được ở Draft (mục 1) nên phải đo `screenedCount` bất kể trạng thái.
+            // CMP4-B1 — cửa sửa: KHÔNG rẽ theo trạng thái. Chặn khi (a) đã Closed/Archived, HOẶC
+            // (b) campaign đã có BẤT KỲ cv_submission nào — CÙNG MỘT THƯỚC với khối luật-lọc-cứng
+            // trong UpdateCampaignAsync (`AnyAsync(c => c.CampaignId == id)`). Trước CMP4-B1 cửa này
+            // đo `OverallMatchScore != null` (chỉ ứng viên đã có điểm) ⇒ ứng viên Filtered/Analyzing
+            // lọt qua ⇒ HR đổi thước sau lưng batch đang chấm. Wipe (`[]`) đi qua chính cửa này.
             //
-            // Bất biến THẬT là `!anyScreened`: không đổi thước đo khi đã có người được đo bằng thước
-            // cũ — job_needs KHÔNG mang nhãn phiên bản như rubric_version, nên sàng trước/sau sẽ
-            // không so sánh được mà không có gì báo. GIỮ NGUYÊN, không nới.
-            var screenedCount = await _db.CvSubmissions
-                .CountAsync(c => c.CampaignId == id && c.OverallMatchScore != null, ct);
+            // Bất biến THẬT: không đổi thước đo khi đã có người được đo bằng thước cũ — job_needs
+            // KHÔNG mang nhãn phiên bản như rubric_version, nên sàng trước/sau sẽ không so sánh được
+            // mà không có gì báo. GIỮ NGUYÊN, KHÔNG nới sang chiều "cho sửa khi đã có điểm".
+            var hasSubmissions = await _db.CvSubmissions
+                .AnyAsync(c => c.CampaignId == id, ct);
 
             var isTerminal = campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived;
-            if (isTerminal || screenedCount > 0)
+            if (isTerminal || hasSubmissions)
             {
                 var reason = isTerminal
                     ? $"campaign đã `{campaign.Status}`"
-                    : $"đã có {screenedCount} ứng viên được sàng nên bộ nhu cầu đã chốt " +
-                      "(đổi thước đo lúc này khiến ứng viên sàng trước/sau không so sánh được)";
+                    : "đã có ứng viên trong campaign nên bộ nhu cầu (thước sàng CV) đã chốt " +
+                      "(đổi thước đo lúc này khiến ứng viên sàng trước/sau không so sánh được — " +
+                      "job_needs KHÔNG mang nhãn phiên bản)";
                 throw new InvalidOperationException(
-                    "Chỉ sửa nhu cầu công việc khi campaign CHƯA có ứng viên nào được sàng (điểm khớp " +
-                    $"CV) và chưa `Closed`/`Archived`. Hiện: {reason}.");
+                    "Chỉ sửa nhu cầu công việc khi campaign CHƯA có ứng viên nào (đã upload/sàng CV) " +
+                    $"và chưa `Closed`/`Archived`. Hiện: {reason}.");
             }
 
             var cleaned = new List<JobNeed>();
