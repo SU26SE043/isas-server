@@ -135,14 +135,27 @@ public class CampaignEmailSenderMimeTests
     /// <para>Test dùng HAI mốc thời gian khác định dạng hiển thị RÕ RỆT (startsAt →
     /// <c>dd/MM/yyyy</c> giờ VN qua <c>FormatOpensAt</c>; expiresAt → <c>yyyy-MM-dd HH:mm UTC</c>
     /// qua <c>FormatExpiry</c>) để một lần hoán đổi tham số lộ ra ngay: nếu <c>startsAt</c> bị thay
-    /// bằng <c>expiresAt</c> thì dòng "Phỏng vấn mở từ" sẽ mất mốc <c>10/09/2026</c> — assertion đó
+    /// bằng <c>expiresAt</c> thì dòng "Phỏng vấn mở từ" sẽ mất mốc ngày-mở — assertion đó
     /// PHẢI đỏ khi mutation đó được áp lại.</para>
+    ///
+    /// <para>⚠ Hai mốc NEO THEO HIỆN TẠI, không ghim ngày cứng. Bản trước ghim
+    /// <c>2026-09-10</c> và tự đỏ đúng ngày 10/09/2026: production CỐ Ý bỏ dòng "Phỏng vấn mở
+    /// từ" khi <c>startsAt</c> đã qua (<c>CampaignEmailSender.cs:237</c>), nên một mốc ghim
+    /// cứng là bom hẹn giờ chứ không phải bất biến.</para>
     /// </summary>
     [Fact]
     public void Mime_BuildMailMessage_TruyenDungBienVaoDungBan_KhongLanLonStartsAtVoiExpiresAt()
     {
-        var expiresAt = new DateTime(2026, 12, 31, 23, 59, 0, DateTimeKind.Utc);
-        var startsAt = new DateTime(2026, 9, 10, 2, 0, 0, DateTimeKind.Utc);   // 09:00 giờ VN, 10/09/2026
+        var today = DateTime.UtcNow.Date;
+        var startsAt = DateTime.SpecifyKind(today.AddDays(30).AddHours(2), DateTimeKind.Utc);   // 09:00 giờ VN
+        var expiresAt = DateTime.SpecifyKind(today.AddDays(90).AddHours(23).AddMinutes(59), DateTimeKind.Utc);
+
+        // Suy chuỗi kỳ vọng TỪ CHÍNH hai mốc trên — hai định dạng khác hẳn nhau để một lần hoán
+        // đổi tham số lộ ra ngay (startsAt → dd/MM/yyyy giờ VN · expiresAt → yyyy-MM-dd HH:mm UTC).
+        var opensVnDate = startsAt.AddHours(7).ToString("dd/MM/yyyy");
+        var opensVnTime = startsAt.AddHours(7).ToString("HH:mm");
+        var expiryUtc = expiresAt.ToString("yyyy-MM-dd HH:mm") + " UTC";
+        var expiryVnDate = expiresAt.AddHours(7).ToString("dd/MM/yyyy");
 
         var parts = ParseParts(WriteEml(
             expiresAt: expiresAt, startsAt: startsAt, orgName: "Công ty Acme",
@@ -154,13 +167,13 @@ public class CampaignEmailSenderMimeTests
         foreach (var body in new[] { plain, html })
         {
             // Giờ MỞ (startsAt) — đúng vai, đúng mốc.
-            Assert.Contains("10/09/2026", body);
-            Assert.Contains("09:00", body);
+            Assert.Contains(opensVnDate, body);
+            Assert.Contains(opensVnTime, body);
             // Hạn CHÓT (expiresAt) — đúng vai, đúng mốc, ĐÚNG định dạng (UTC, không phải giờ VN).
-            Assert.Contains("2026-12-31 23:59 UTC", body);
+            Assert.Contains(expiryUtc, body);
             // Đối chứng ngược: mốc của bên kia KHÔNG được lọt vào — nếu hai tham số bị hoán, ngày
             // 31/12/2026 sẽ xuất hiện dưới định dạng dd/MM/yyyy (dòng "Phỏng vấn mở từ").
-            Assert.DoesNotContain("31/12/2026", body);
+            Assert.DoesNotContain(expiryVnDate, body);
         }
 
         // 3 trường B4 còn lại cũng phải TỚI ĐÚNG BẢN — cả hai, không chỉ một.
