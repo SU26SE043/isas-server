@@ -56,6 +56,71 @@ namespace Isas.CampaignService.Services
             await client.SendMailAsync(mailMessage, ct);
         }
 
+        // CMP3-B4 — thư "mở sớm". Bản plain-text 1 phần (KHÔNG multipart): không có magic-link nên
+        // không cần template HTML nút bấm, và giữ nguyên bất biến MIME của thư mời (khoá bởi
+        // CampaignEmailSenderMimeTests) — thư này không đụng BuildMailMessage.
+        public async Task SendCampaignOpenedEarlyEmailAsync(
+            string toEmail,
+            string campaignTitle,
+            DateTime? previousStartsAt,
+            DateTime newStartsAt,
+            string? orgName = null,
+            CancellationToken ct = default)
+        {
+            var host = _config["EmailSettings:Host"]
+                ?? throw new InvalidOperationException("SMTP server not configured");
+            var port = int.Parse(_config["EmailSettings:Port"]
+                ?? throw new InvalidOperationException("SMTP port not configured"));
+            var from = _config["EmailSettings:From"]
+                ?? throw new InvalidOperationException("SMTP username not configured");
+            var password = _config["EmailSettings:Password"]
+                ?? throw new InvalidOperationException("SMTP password not configured");
+
+            using var client = new SmtpClient(host, port)
+            {
+                Credentials = new NetworkCredential(from, password),
+                EnableSsl = true
+            };
+
+            using var mailMessage = BuildOpenedEarlyMessage(
+                from, toEmail, campaignTitle, previousStartsAt, newStartsAt, orgName);
+
+            await client.SendMailAsync(mailMessage, ct);
+        }
+
+        internal static MailMessage BuildOpenedEarlyMessage(
+            string from, string toEmail, string campaignTitle,
+            DateTime? previousStartsAt, DateTime newStartsAt, string? orgName)
+        {
+            var wasLine = previousStartsAt is DateTime p
+                ? $"(giờ mở trước đó: {FormatOpensAt(p)})"
+                : "(trước đó chưa hẹn giờ mở)";
+            var signature = string.IsNullOrWhiteSpace(orgName)
+                ? "Đội ngũ ISAS"
+                : $"{orgName}\n(Gửi qua nền tảng ISAS)";
+
+            var msg = new MailMessage
+            {
+                From = new MailAddress(from),
+                Subject = $"Chiến dịch đã mở sớm — {campaignTitle}",
+                IsBodyHtml = false,
+                Body = $"""
+Xin chào,
+
+Chiến dịch đánh giá bạn được mời — {campaignTitle} — đã MỞ SỚM.
+Bạn có thể vào làm bài ngay từ bây giờ: {FormatOpensAt(newStartsAt)}.
+{wasLine}
+
+Vui lòng dùng lại liên kết trong email mời trước đó để tham gia.
+
+Trân trọng,
+{signature}
+"""
+            };
+            msg.To.Add(toEmail);
+            return msg;
+        }
+
         /// <summary>
         /// Dựng <see cref="MailMessage"/> đa phần (plain text + HTML).
         /// <para>

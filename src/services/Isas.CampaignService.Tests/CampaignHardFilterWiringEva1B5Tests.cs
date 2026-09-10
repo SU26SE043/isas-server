@@ -51,6 +51,11 @@ public class CampaignHardFilterWiringEva1B5Tests
         using var c = tdb.NewContext();
         var camp = await c.Campaigns.FirstAsync(x => x.Id == campaignId);
         camp.Status = CampaignStatus.Active;
+        // CMP3-B1 — ScreenCandidatesAsync nay đòi job_needs đã chốt (đường vào chặn trước, không tạo row).
+        camp.JobNeeds = new List<JobNeed>
+        {
+            new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "Thạo BE", Source = JobNeedSources.HrEdited },
+        };
         await c.SaveChangesAsync();
     }
 

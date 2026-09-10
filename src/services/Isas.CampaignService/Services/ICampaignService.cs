@@ -72,7 +72,28 @@ namespace Isas.CampaignService.Services
         Task<CampaignResponse> PublishCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
         /// <summary>HR sửa bộ nhu cầu công việc dùng để sàng CV (replace-all, chỉ khi Draft — CAMP-2).</summary>
         Task<CampaignResponse> ReplaceJobNeedsAsync(Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct);
+
+        /// <summary>
+        /// CMP3-B3 — AI đọc JD của campaign, đề xuất bộ NHU CẦU CÔNG VIỆC để HR chốt (qua PUT
+        /// /job-needs) TRƯỚC khi sàng CV. <b>CHỈ ĐỌC: không ghi <c>campaigns.job_needs</c>.</b>
+        /// Mọi dòng: <c>source = "AiSuggested"</c>, <c>isMustHave = false</c>.
+        /// Ném: KeyNotFound (ngoài org) → 404 · ArgumentException (chưa có jdText) → 400 ·
+        /// DownstreamServiceException (AIService lỗi / không suy được) → 502. KHÔNG fallback bộ
+        /// mặc định khi AI hỏng (HR sẽ tin là do AI soạn rồi chốt).
+        /// </summary>
+        Task<SuggestJobNeedsResponse> SuggestJobNeedsAsync(Guid orgId, Guid id, CancellationToken ct);
         Task<CampaignResponse> TransitionStatusAsync(Guid orgId, Guid actorUserId, Guid id, CampaignStatus target, CancellationToken ct);
+
+        /// <summary>
+        /// CMP3-B4 — kéo <c>start_at</c> về hiện tại để ứng viên vào thi ngay (POST
+        /// /campaign/{id}/start-now). KHÔNG nhận body. CHỈ khi <c>Active</c> (≠ → 409); campaign có
+        /// khung giờ (ca thi) → 409 (nút này không mở cửa cho ai — ParticipationService vẫn chặn
+        /// theo ca). Idempotent: <c>start_at</c> đã ở quá khứ ⇒ no-op, KHÔNG ghi gì. KHÔNG bao giờ
+        /// đẩy <c>start_at</c> về tương lai; KHÔNG đụng <c>expires_at</c>. Ghi audit
+        /// <c>StartEarly</c> (summary mang mốc CŨ) + chèn outbox "mở sớm" cho mọi lời mời chưa revoke.
+        /// Ném: KeyNotFound → 404 · InvalidOperation → 409.
+        /// </summary>
+        Task<CampaignResponse> StartEarlyAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
         Task<IReadOnlyList<CampaignSlotResponse>> GetSlotsAsync(Guid orgId, Guid campaignId, CancellationToken ct);
         Task<CampaignSlotResponse> CreateSlotAsync(Guid orgId, Guid campaignId, CreateCampaignSlotRequest request, CancellationToken ct);
         Task<CampaignSlotResponse> UpdateSlotAsync(Guid orgId, Guid campaignId, Guid slotId, UpdateCampaignSlotRequest request, CancellationToken ct);

@@ -26,5 +26,18 @@ namespace Isas.CampaignService.Services
             bool faceVerifyEnabled = false,
             int? timeLimitMinutes = null,
             CancellationToken ct = default);
+
+        /// <summary>
+        /// CMP3-B4 — báo ứng viên đã được mời rằng chiến dịch MỞ SỚM hơn giờ ghi trong thư mời gốc.
+        /// KHÔNG kèm magic-link (DB chỉ giữ hash token) — thư dặn ứng viên dùng lại link trong thư
+        /// mời đã nhận. <paramref name="previousStartsAt"/> null ⇒ trước đó chưa đặt giờ mở.
+        /// </summary>
+        Task SendCampaignOpenedEarlyEmailAsync(
+            string toEmail,
+            string campaignTitle,
+            DateTime? previousStartsAt,
+            DateTime newStartsAt,
+            string? orgName = null,
+            CancellationToken ct = default);
     }
 }

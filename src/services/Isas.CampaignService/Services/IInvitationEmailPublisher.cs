@@ -24,7 +24,14 @@ namespace Isas.CampaignService.Services
         DateTime? StartsAt = null,
         string? OrgName = null,
         bool FaceVerifyEnabled = false,
-        int? TimeLimitMinutes = null);
+        int? TimeLimitMinutes = null,
+        // CMP3-B4 — phân loại. null/vắng ("Invitation") = thư mời magic-link (mọi row cũ deserialize
+        // vào đây, KHÔNG ném). "OpenedEarly" = thư báo chiến dịch mở sớm hơn giờ ghi trong thư mời
+        // gốc: KHÔNG có <c>Token</c> (DB chỉ giữ hash), consumer gửi thư trỏ ứng viên về link cũ và
+        // KHÔNG đụng cờ <c>email_sent_at</c> (đó là cờ của thư mời).
+        string? Kind = null,
+        // Mốc <c>start_at</c> CŨ (trước khi kéo về hiện tại) — để thư "mở sớm" nói được "đổi từ đâu".
+        DateTime? PreviousStartsAt = null);
 
     public interface IInvitationEmailPublisher
     {

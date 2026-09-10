@@ -137,6 +137,7 @@ public sealed class CampaignEntitlementTests
         using var tdb = new CampaignTestDb(); var db = tdb.NewContext(); var org = Guid.NewGuid();
         var campaignResponse = await Service(db, Business).CreateCampaignAsync(org, org, Request(200), default);
         var campaign = db.Campaigns.Single(c => c.Id == campaignResponse.Id); campaign.Status = CampaignStatus.Active;
+        campaign.JobNeeds = new List<JobNeed> { new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "Thạo .NET", Source = JobNeedSources.HrEdited } };   // CMP3-B1
         for (var i = 0; i < 25; i++) db.CampaignInvitations.Add(new CampaignInvitation { Id = Guid.NewGuid(), CampaignId = campaign.Id, TokenHash = Guid.NewGuid().ToString(), Email = $"{i}@x.test", ExpiresAt = DateTime.UtcNow.AddDays(1), CreatedAt = DateTime.UtcNow });
         await db.SaveChangesAsync();
         await Assert.ThrowsAsync<ArgumentException>(() => Service(db, CampaignEntitlement.Starter).CreateInvitationsAsync(org, org, campaign.Id, ["next@x.test"], default));

@@ -491,18 +491,19 @@ namespace Isas.CampaignService.Services
 
             // EVA1-B5 / HĐ-2 — 3 luật lọc CỨNG sàng CV. Merge-only-if-provided như AntiCheatEnabled/
             // FaceVerifyEnabled: null/vắng = KHÔNG ĐỔI · [] = XOÁ luật · minYears 0 = XOÁ luật.
-            // Cửa trạng thái (D19 — đổi thước sàng giữa chừng thì ứng viên sàng trước/sau không so được):
-            // Draft, HOẶC Active khi campaign CHƯA có ứng viên nào; Closed/Archived → 409.
+            // CMP3-B2 — cửa KHÔNG rẽ theo trạng thái nữa (D19 — đổi thước sàng giữa chừng thì ứng viên
+            // sàng trước/sau không so được): chặn khi đã Closed/Archived, HOẶC đã có cv_submission NÀO
+            // (hard-filter đã áp cho ai đó). Trước đây Draft qua vô điều kiện vì Draft không thể có CV;
+            // nay sàng CV chạy được ở Draft (mục 1) nên phải đo `AnyAsync` bất kể trạng thái.
             if (request.RequiredSkills is not null || request.KeywordsAny is not null
                 || request.MinYearsExperience.HasValue)
             {
                 if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
                     throw new InvalidOperationException(
-                        $"Không sửa được luật lọc CV khi campaign {campaign.Status} (chỉ Draft, hoặc Active chưa có ứng viên).");
-                if (campaign.Status == CampaignStatus.Active
-                    && await _db.CvSubmissions.AnyAsync(c => c.CampaignId == id, ct))
+                        $"Không sửa được luật lọc CV khi campaign {campaign.Status}.");
+                if (await _db.CvSubmissions.AnyAsync(c => c.CampaignId == id, ct))
                     throw new InvalidOperationException(
-                        "Không sửa được luật lọc CV khi campaign Active đã có ứng viên.");
+                        "Không sửa được luật lọc CV khi campaign đã có ứng viên (hard-filter đã áp cho họ).");
 
                 var (req, kw, my) = ValidateHardFilters(
                     request.RequiredSkills, request.KeywordsAny, request.MinYearsExperience);
@@ -1348,6 +1349,71 @@ namespace Isas.CampaignService.Services
             AddAudit(actorUserId, orgId, AuditAction.TransitionStatus, campaign.Id, $"{from} → {target}");
             await _db.SaveChangesAsync(ct);
 
+            return CampaignResponse.FromEntity(campaign);
+        }
+
+        // ── CMP3-B4: POST /campaign/{id}/start-now — kéo start_at về hiện tại ─────────────────
+        // Đường RIÊNG, KHÔNG dùng lại PUT /campaign: (a) nhánh không-criteria của UpdateCampaignAsync
+        // không ghi audit nào → thao tác mở cửa cho ứng viên (đụng credit + công bằng khung giờ) sẽ
+        // không để lại vết; (b) mẫu React hay PUT lại nguyên form kèm criteria ⇒ vân tay thước đo
+        // được tính ⇒ rubric_version nhảy + sinh audit EditCriteria SAI SỰ THẬT chỉ vì HR bấm
+        // "Bắt đầu sớm". Ở đây KHÔNG chạm criteria/rubric_version bao giờ.
+        public async Task<CampaignResponse> StartEarlyAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .Include(c => c.Questions)
+                .Include(c => c.Criteria)
+                    .ThenInclude(cr => cr.Levels)   // FromEntity trả kèm mốc điểm
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (campaign.Status != CampaignStatus.Active)
+                throw new InvalidOperationException(
+                    $"Chỉ mở phỏng vấn ngay khi campaign đang Active (hiện: {campaign.Status}).");
+
+            // Campaign có ca thi → nút này KHÔNG mở cửa cho ai: ParticipationService vẫn chặn
+            // `now < slot.StartsAt` cho từng ứng viên. Nói thẳng bằng 409, KHÔNG im lặng trả 200.
+            if (await _db.CampaignSlots.AnyAsync(s => s.CampaignId == id, ct))
+                throw new InvalidOperationException(
+                    "Campaign có khung giờ phỏng vấn (ca thi) — mỗi ứng viên vào thi theo ca đã phân, "
+                    + "kéo giờ mở chung không có tác dụng. Sửa từng ca trong phần khung giờ phỏng vấn.");
+
+            var now = DateTime.UtcNow;
+
+            // Idempotent: chỉ kéo về khi start_at CÒN Ở TƯƠNG LAI. start_at đã ở quá khứ ⇒ campaign
+            // đã mở ⇒ no-op, KHÔNG ghi gì (updated_at giữ nguyên, không audit, không outbox). KHÔNG
+            // bao giờ đẩy start_at về tương lai qua cửa này. (start_at là NOT NULL ở DB — IsRequired
+            // — nên nhánh `is not DateTime` chỉ là phòng thủ.)
+            if (campaign.StartsAt is not DateTime s || s <= now)
+                return CampaignResponse.FromEntity(campaign);
+
+            var previous = s;
+            campaign.StartsAt = now;
+            campaign.UpdatedAt = now;
+
+            // Vết: mốc CŨ phải nằm trong summary (không chỉ "đã bắt đầu sớm") — để đối chất được
+            // "giờ mở đã bị kéo từ đâu về đâu, lúc nào, ai".
+            var iso = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+            AddAudit(actorUserId, orgId, AuditAction.StartEarly, campaign.Id,
+                $"Bắt đầu sớm: start_at {previous.ToString(iso, CultureInfo.InvariantCulture)} → "
+                + $"{now.ToString(iso, CultureInfo.InvariantCulture)}");
+
+            // Re-notify: ứng viên đã nhận thư mời mang giờ CŨ cần biết. Outbox-row/lời-mời-chưa-revoke,
+            // chèn CÙNG SaveChanges (DB2b — không mất khi broker down). KHÔNG có token (DB chỉ giữ
+            // hash) ⇒ Kind="OpenedEarly", consumer gửi thư trỏ ứng viên về link trong thư mời gốc.
+            var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
+            var liveInvites = await _db.CampaignInvitations
+                .Where(iv => iv.CampaignId == id && iv.RevokedAt == null)
+                .Select(iv => new { iv.Id, iv.Email, iv.ExpiresAt })
+                .ToListAsync(ct);
+            foreach (var iv in liveInvites)
+                _db.OutboxMessages.Add(OutboxMessage.ForInvitation(new InvitationEmailJob(
+                    iv.Id, campaign.Id, iv.Email, string.Empty, campaign.Title, iv.ExpiresAt,
+                    StartsAt: now, OrgName: orgName,
+                    FaceVerifyEnabled: campaign.FaceVerifyEnabled, TimeLimitMinutes: campaign.TimeLimitMinutes,
+                    Kind: "OpenedEarly", PreviousStartsAt: previous)));
+
+            await _db.SaveChangesAsync(ct);
             return CampaignResponse.FromEntity(campaign);
         }
 
@@ -2323,9 +2389,32 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            // Guard: chỉ sàng khi Active (đã có campaign_criteria). Draft/Closed/Archived → 409.
-            if (campaign.Status != CampaignStatus.Active)
-                throw new InvalidOperationException($"Chỉ sàng CV khi campaign đang Active (hiện: {campaign.Status}).");
+            // CMP3-B2 — sàng CV được ở Draft (không chỉ Active). Lý do "cần Active vì đã có
+            // campaign_criteria" trong bản cũ SAI TỪ CAMP-14: sàng CV đo bằng job_needs, không đụng
+            // campaign_criteria; hard-filter chỉ đọc RequiredSkills/KeywordsAny/MinYearsExperience —
+            // ba trường đã sửa được ở Draft. Closed/Archived vẫn 409: chiến dịch đã đóng thì nhận
+            // thêm hồ sơ là dữ liệu lịch sử bị bồi.
+            if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
+                throw new InvalidOperationException($"Chỉ sàng CV khi campaign Draft hoặc Active (hiện: {campaign.Status}).");
+
+            // CMP3-B1 — CHẶN NGAY nếu campaign chưa chốt nhu cầu công việc (job_needs). Phải đứng TRƯỚC
+            // vòng lặp đọc file / ArchiveCvAsync bên dưới ⇒ không sinh row cv_submission nào, không đẩy
+            // object nào lên S3.
+            //
+            // Vì sao chặn ở ĐƯỜNG VÀO thay vì để republisher lo: sàng CV khi job_needs rỗng hiện đi TRỌN
+            // đường mà không ai kêu — controller nuốt lỗi publish-job (best-effort, đúng) rồi trả 202;
+            // row nằm Filtered với marker null; StuckScreeningRepublisher nhặt nhưng TRẦN BỎ CUỘC chạy
+            // TRƯỚC phép kiểm job_needs của nó, nên sau ~6 giờ mọi ứng viên lật AnalysisFailed kèm lý do
+            // "kiểm tra consumer cv_screening_queue" — trong khi consumer vẫn chạy — và HR không có đường
+            // retry AnalysisFailed. Thứ sai là chỗ này.
+            //
+            // Check KHÔNG rẽ theo Status: ở Active nó bịt lỗ "AI hụt lúc publish ⇒ campaign Active mà
+            // job_needs rỗng ⇒ cùng lời nói dối 6 giờ".
+            if (campaign.JobNeeds is null || !campaign.JobNeeds.Any(n => !string.IsNullOrWhiteSpace(n.Text)))
+                throw new InvalidOperationException(
+                    "Campaign chưa chốt nhu cầu công việc (job needs) — sàng CV không đối chiếu được với "
+                    + "gì. Khai nhu cầu qua PUT /campaign/{id}/job-needs, hoặc publish lại campaign để AI "
+                    + "đề xuất từ JD, rồi sàng CV lại.");
 
             if (files is null || files.Count == 0)
                 throw new ArgumentException("Cần ít nhất 1 file CV (PDF).");
@@ -3316,18 +3405,14 @@ namespace Isas.CampaignService.Services
 
         /// <summary>
         /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12).
-        /// <para>Cho sửa khi <c>Draft</c>, HOẶC khi <c>Active</c> mà CHƯA có ứng viên nào được sàng
-        /// (điểm khớp CV). <c>Closed</c>/<c>Archived</c> → 409.</para>
-        /// <para>CMP1-B2 — cửa <c>Active</c> nay KHÔNG còn đòi <c>job_needs</c> rỗng. Lý do: AI sinh
-        /// <c>job_needs</c> LÚC PUBLISH (<see cref="BuildJobNeedsAsync"/> qua <see cref="PublishCampaignAsync"/>),
-        /// nên khi HR muốn khai <c>isMustHave</c> (điều kiện loại — HĐ-6) thì danh sách đã có nội
-        /// dung do AI đề xuất và trạng thái đã là <c>Active</c>. Vế "còn rỗng" cũ khoá chết đúng
-        /// tính năng đó: Draft thì list rỗng (chưa có gì để đánh dấu), Active thì list có nội dung
-        /// ⇒ 409 vĩnh viễn. Bất biến THẬT chỉ là <c>!anyScreened</c>: không đổi thước đo khi đã có
-        /// người được đo bằng thước cũ (<c>job_needs</c> KHÔNG mang nhãn phiên bản như
-        /// <c>rubric_version</c>). Đường cứu "AIService hụt lúc publish ⇒ Active + job_needs rỗng,
-        /// máy trạng thái một chiều không về Draft được" vẫn được phục vụ — nó là tập con của
-        /// <c>Active &amp;&amp; !anyScreened</c>.</para>
+        /// <para>CMP3-B2 — cửa sửa KHÔNG còn rẽ theo trạng thái: cho sửa khi campaign CHƯA có ứng
+        /// viên nào được sàng (điểm khớp CV) và chưa <c>Closed</c>/<c>Archived</c>. Trước đây Draft
+        /// được sửa VÔ ĐIỀU KIỆN vì Draft không thể có ứng viên — nay sàng CV chạy được ở Draft
+        /// (CMP3-B2 mục 1) nên giả định đó đổ, và bất biến "một thước đo" phải bịt luôn cả Draft.</para>
+        /// <para>Bất biến THẬT (GIỮ NGUYÊN, KHÔNG nới): không đổi thước đo khi đã có người được đo
+        /// bằng thước cũ — <c>job_needs</c> KHÔNG mang nhãn phiên bản như <c>rubric_version</c>, nên
+        /// sàng trước/sau sẽ không so sánh được mà không có gì báo. <c>Closed</c>/<c>Archived</c> →
+        /// 409 (chiến dịch đã đóng, thước đo là dữ liệu lịch sử).</para>
         /// </summary>
         public async Task<CampaignResponse> ReplaceJobNeedsAsync(
             Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
@@ -3337,32 +3422,26 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            // CMP1-B2 — cửa sửa: `Draft` HOẶC `Active` mà CHƯA có người được sàng.
-            //
-            // ⚠ Vế `jobNeedsEmpty` cũ đã BỊ BỎ. Nó chỉ phục vụ một đường cứu hộ hẹp (AIService hụt
-            // lúc publish ⇒ Active + job_needs rỗng), KHÔNG phục vụ bất biến "một thước đo". Giữ nó
-            // lại thì HR không bao giờ khai được `isMustHave` (HĐ-6): job_needs do AI sinh LÚC
-            // PUBLISH nên tới khi HR muốn đánh dấu điều kiện loại thì list đã có nội dung + trạng
-            // thái đã Active ⇒ 409 vĩnh viễn (đã đo trên dev). Đường cứu hộ đó là tập con của
-            // `Active && !anyScreened` nên vẫn được phục vụ.
+            // CMP3-B2 — cửa sửa: KHÔNG rẽ theo trạng thái nữa. Chặn khi (a) đã Closed/Archived, HOẶC
+            // (b) đã có ứng viên được sàng. Trước đây Draft luôn qua vì Draft không thể có ứng viên;
+            // nay sàng CV chạy được ở Draft (mục 1) nên phải đo `screenedCount` bất kể trạng thái.
             //
             // Bất biến THẬT là `!anyScreened`: không đổi thước đo khi đã có người được đo bằng thước
             // cũ — job_needs KHÔNG mang nhãn phiên bản như rubric_version, nên sàng trước/sau sẽ
-            // không so sánh được mà không có gì báo. Vế này giữ nguyên.
+            // không so sánh được mà không có gì báo. GIỮ NGUYÊN, không nới.
             var screenedCount = await _db.CvSubmissions
                 .CountAsync(c => c.CampaignId == id && c.OverallMatchScore != null, ct);
 
-            var canEdit = campaign.Status == CampaignStatus.Draft
-                || (campaign.Status == CampaignStatus.Active && screenedCount == 0);
-            if (!canEdit)
+            var isTerminal = campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived;
+            if (isTerminal || screenedCount > 0)
             {
-                var reason = campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived
+                var reason = isTerminal
                     ? $"campaign đã `{campaign.Status}`"
                     : $"đã có {screenedCount} ứng viên được sàng nên bộ nhu cầu đã chốt " +
                       "(đổi thước đo lúc này khiến ứng viên sàng trước/sau không so sánh được)";
                 throw new InvalidOperationException(
-                    "Chỉ sửa nhu cầu công việc khi campaign `Draft`, HOẶC `Active` mà CHƯA có ứng " +
-                    $"viên nào được sàng (điểm khớp CV). Hiện: {reason}.");
+                    "Chỉ sửa nhu cầu công việc khi campaign CHƯA có ứng viên nào được sàng (điểm khớp " +
+                    $"CV) và chưa `Closed`/`Archived`. Hiện: {reason}.");
             }
 
             var cleaned = new List<JobNeed>();
@@ -3398,6 +3477,50 @@ namespace Isas.CampaignService.Services
             await _db.SaveChangesAsync(ct);
 
             return CampaignResponse.FromEntity(campaign);
+        }
+
+        // ── CMP3-B3: AI gợi ý nhu cầu công việc từ JD — CHỈ ĐỌC ─────────────────────────────
+        // Cùng bộ gợi ý mà publish dùng (BuildJobNeedsAsync). KHÔNG ghi campaigns.job_needs: HR lưu
+        // qua PUT /job-needs (một cửa ghi duy nhất — mẫu POST /questions/import, /criteria/levels/suggest).
+        // KHÔNG fallback bộ mặc định khi AI hỏng: HR sẽ tin đó là do AI soạn theo JD của họ rồi chốt
+        // luôn — "chưa có nhu cầu" là trạng thái hợp lệ, nên fail-loud (502) không chặn ai.
+        public async Task<SuggestJobNeedsResponse> SuggestJobNeedsAsync(Guid orgId, Guid id, CancellationToken ct)
+        {
+            var campaign = await _db.Campaigns
+                .AsNoTracking()   // CHỈ ĐỌC — không tracked, không đường nào SaveChanges ghi nhầm.
+                .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {id} not found.");
+
+            if (string.IsNullOrWhiteSpace(campaign.JDText))
+                throw new ArgumentException(
+                    "Campaign chưa có mô tả công việc (jdText) — không suy được nhu cầu. "
+                    + "Nhập JD qua PUT /campaign/{id} trước.");
+
+            if (_jobNeedsSuggester is null)
+                throw new DownstreamServiceException(
+                    "Dịch vụ gợi ý nhu cầu công việc chưa được cấu hình.");
+
+            var suggested = await _jobNeedsSuggester.SuggestAsync(
+                campaign.JDText, campaign.Domain, campaign.Language, ct);
+
+            // null ⇒ AIService lỗi/timeout/trả rác (SuggestAsync đã nuốt exception + non-2xx → null).
+            // KHÔNG bịa bộ mặc định (mẫu BuildJobNeedsAsync :3308 — "KHÔNG có fallback").
+            if (suggested is null)
+                throw new DownstreamServiceException(
+                    "AIService không suy được nhu cầu công việc từ JD. Thử lại, hoặc HR tự khai qua "
+                    + "PUT /campaign/{id}/job-needs.");
+
+            // Danh sách rỗng (AI 2xx nhưng 0 dòng hợp lệ) ⇒ 200 với jobNeeds: [] — không phải lỗi.
+            return new SuggestJobNeedsResponse
+            {
+                JobNeeds = suggested.Select(s => new SuggestedJobNeedItem
+                {
+                    Category = s.Category,
+                    Text = s.Text,
+                    Source = JobNeedSources.AiSuggested,   // server sở hữu nhãn nguồn (F10)
+                    IsMustHave = false,                    // AI không đề xuất điều kiện loại (HĐ-6)
+                }).ToList(),
+            };
         }
 
         /// <summary>
