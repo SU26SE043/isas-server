@@ -456,15 +456,11 @@ namespace Isas.CampaignService.Services
             if (request.Title is not null)
                 campaign.Title = request.Title;
 
-            if (request.Domain is not null)
-                campaign.Domain = request.Domain;
-
-            if (request.Language is not null)
-            {
-                if (campaign.Status != CampaignStatus.Draft)
-                    throw new InvalidOperationException("Chỉ được đổi language khi campaign ở Draft.");
-                campaign.Language = ValidateLanguage(request.Language);
-            }
+            // CMP4-B2 — Domain + Language KHÔNG còn gán ở đây: cả hai quyết định cách AI sinh câu hỏi /
+            // sàng / chấm CV, nên bị khoá bởi CÙNG điều kiện với ba luật lọc cứng (khối bên dưới ~40
+            // dòng). Trước đây Domain không có cửa nào (đổi được cả khi Active đã sàng xong); Language
+            // chỉ 409 khi ≠ Draft — mà CMP3-B2 cho Draft CÓ cv_submission nên giả định "Draft = chưa
+            // ai bị đo" đã đổ. Guard cũ của Language gỡ ở đây, gộp về khối chung (KHÔNG guard song song).
 
             // PR160 — `null` = KHÔNG đổi (giữ mức HR đã chọn), như AntiCheatEnabled (C3). Chuỗi RỖNG thì
             // KHÔNG rơi vào nhánh này: nó đi tiếp vào ValidateSeniority và ăn 400 — cố ý, vì coi ""
@@ -489,27 +485,38 @@ namespace Isas.CampaignService.Services
             if (request.FaceVerifyEnabled.HasValue)
                 campaign.FaceVerifyEnabled = request.FaceVerifyEnabled.Value;
 
-            // EVA1-B5 / HĐ-2 — 3 luật lọc CỨNG sàng CV. Merge-only-if-provided như AntiCheatEnabled/
-            // FaceVerifyEnabled: null/vắng = KHÔNG ĐỔI · [] = XOÁ luật · minYears 0 = XOÁ luật.
-            // CMP3-B2 — cửa KHÔNG rẽ theo trạng thái nữa (D19 — đổi thước sàng giữa chừng thì ứng viên
-            // sàng trước/sau không so được): chặn khi đã Closed/Archived, HOẶC đã có cv_submission NÀO
-            // (hard-filter đã áp cho ai đó). Trước đây Draft qua vô điều kiện vì Draft không thể có CV;
-            // nay sàng CV chạy được ở Draft (mục 1) nên phải đo `AnyAsync` bất kể trạng thái.
+            // CMP4-B2 + EVA1-B5 / HĐ-2 — MỌI trường quyết định cách AI sàng/chấm CV bị khoá bởi CÙNG
+            // MỘT điều kiện: 3 luật lọc CỨNG · Domain · Language. Merge-only-if-provided như
+            // AntiCheatEnabled/FaceVerifyEnabled: null/vắng = KHÔNG ĐỔI · [] = XOÁ luật · minYears 0 = XOÁ.
+            //   • Chặn khi đã Closed/Archived (thước đo là dữ liệu lịch sử).
+            //   • Chặn khi đã có cv_submission NÀO — thước cũ đã áp cho ai đó, mà hard-filter / domain /
+            //     language KHÔNG mang nhãn phiên bản như rubric_version ⇒ sàng trước/sau không so sánh
+            //     được và HR không có cách nào nhận ra. CÙNG `AnyAsync` với CMP4-B1 (`PUT /job-needs`).
+            //     Trước đây Draft qua vô điều kiện vì Draft không thể có CV; CMP3-B2 cho Draft sàng CV
+            //     được nên phải đo `AnyAsync` bất kể trạng thái. Domain trước CMP4-B2 KHÔNG có cửa nào;
+            //     Language chỉ 409 khi ≠ Draft (giả định "Draft = chưa ai bị đo" đã đổ) — gộp về đây.
             if (request.RequiredSkills is not null || request.KeywordsAny is not null
-                || request.MinYearsExperience.HasValue)
+                || request.MinYearsExperience.HasValue
+                || request.Domain is not null || request.Language is not null)
             {
                 if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
                     throw new InvalidOperationException(
-                        $"Không sửa được luật lọc CV khi campaign {campaign.Status}.");
+                        "Không sửa được trường quyết định cách AI sàng/chấm CV (luật lọc / domain / "
+                        + $"language) khi campaign {campaign.Status}.");
                 if (await _db.CvSubmissions.AnyAsync(c => c.CampaignId == id, ct))
                     throw new InvalidOperationException(
-                        "Không sửa được luật lọc CV khi campaign đã có ứng viên (hard-filter đã áp cho họ).");
+                        "Không sửa được trường quyết định cách AI sàng/chấm CV (luật lọc / domain / "
+                        + "language) khi campaign đã có ứng viên — thước đã áp cho họ, đổi lúc này thì "
+                        + "ứng viên sàng trước/sau không so sánh được (không có nhãn phiên bản).");
 
                 var (req, kw, my) = ValidateHardFilters(
                     request.RequiredSkills, request.KeywordsAny, request.MinYearsExperience);
                 if (request.RequiredSkills is not null) campaign.RequiredSkills = req;
                 if (request.KeywordsAny is not null) campaign.KeywordsAny = kw;
                 if (request.MinYearsExperience.HasValue) campaign.MinYearsExperience = my;
+
+                if (request.Domain is not null) campaign.Domain = request.Domain;
+                if (request.Language is not null) campaign.Language = ValidateLanguage(request.Language);
             }
 
             // E5: cập nhật ngưỡng pass/fail (chỉ khi gửi lên; validate ∈ [0,100]).
@@ -649,7 +656,16 @@ namespace Isas.CampaignService.Services
             }
 
             if (request.StartsAt.HasValue)
+            {
+                // CMP4-B3 — sau khi Active, đổi giờ mở CHỈ qua POST /campaign/{id}/start-now: đường đó
+                // kiểm ca thi + hạn campaign, ghi audit StartEarly, re-notify ứng viên. Nhánh không-
+                // criteria của PUT ở đây KHÔNG guard, KHÔNG audit — là cửa sau. Draft thì sửa bình thường.
+                if (campaign.Status != CampaignStatus.Draft)
+                    throw new InvalidOperationException(
+                        "Sau khi campaign Active, đổi giờ bắt đầu qua POST /campaign/{id}/start-now — "
+                        + "PUT /campaign chỉ đổi startsAt được khi campaign còn Draft.");
                 campaign.StartsAt = request.StartsAt;
+            }
 
             if (request.ExpiresAt.HasValue)
                 campaign.ExpiresAt = request.ExpiresAt;
@@ -1371,14 +1387,24 @@ namespace Isas.CampaignService.Services
                 throw new InvalidOperationException(
                     $"Chỉ mở phỏng vấn ngay khi campaign đang Active (hiện: {campaign.Status}).");
 
+            var now = DateTime.UtcNow;
+
+            // CMP4-B3 — campaign đã hết hạn ⇒ "mở phỏng vấn ngay" vô nghĩa: hạn của MỌI lời mời lấy từ
+            // chính campaign.ExpiresAt (ResolveInvitationExpiry) nên ExpiresAt quá khứ = 100% lời mời
+            // cũng đã chết, và ai bấm link cũng ăn 409 "đã hết hạn" ở ParticipationService ⇒ thư gửi ra
+            // toàn bộ vô nghĩa. 409 TRƯỚC khi ghi bất cứ gì (không audit, không outbox). start-now
+            // KHÔNG tự dời ExpiresAt để "cứu" campaign — đó là quyết định riêng của HR (PUT /campaign).
+            if (campaign.ExpiresAt is DateTime exp && exp < now)
+                throw new InvalidOperationException(
+                    "Campaign đã hết hạn phỏng vấn (expires_at đã qua) — mở phỏng vấn ngay không có tác "
+                    + "dụng, mọi lời mời cũng đã hết hạn. Gia hạn qua PUT /campaign (trường expiresAt) trước.");
+
             // Campaign có ca thi → nút này KHÔNG mở cửa cho ai: ParticipationService vẫn chặn
             // `now < slot.StartsAt` cho từng ứng viên. Nói thẳng bằng 409, KHÔNG im lặng trả 200.
             if (await _db.CampaignSlots.AnyAsync(s => s.CampaignId == id, ct))
                 throw new InvalidOperationException(
                     "Campaign có khung giờ phỏng vấn (ca thi) — mỗi ứng viên vào thi theo ca đã phân, "
                     + "kéo giờ mở chung không có tác dụng. Sửa từng ca trong phần khung giờ phỏng vấn.");
-
-            var now = DateTime.UtcNow;
 
             // Idempotent: chỉ kéo về khi start_at CÒN Ở TƯƠNG LAI. start_at đã ở quá khứ ⇒ campaign
             // đã mở ⇒ no-op, KHÔNG ghi gì (updated_at giữ nguyên, không audit, không outbox). KHÔNG
@@ -1402,8 +1428,15 @@ namespace Isas.CampaignService.Services
             // chèn CÙNG SaveChanges (DB2b — không mất khi broker down). KHÔNG có token (DB chỉ giữ
             // hash) ⇒ Kind="OpenedEarly", consumer gửi thư trỏ ứng viên về link trong thư mời gốc.
             var orgName = await ResolveOrgNameSafeAsync(campaign.OrgId, ct);
+            // CMP4-B3 — chỉ re-notify lời mời CÒN SỐNG: chưa revoke VÀ chưa hết hạn. Lời mời đã hết hạn
+            // thì magic-link trong thư gốc redeem cũng ăn 409 (ParticipationService `inv.ExpiresAt < now`)
+            // ⇒ gửi "mở sớm" cho nó chỉ là thư rác.
+            // CMP4-B5 — VÀ ĐÃ gửi được thư mời (`email_sent_at != null`): thư mở sớm bảo "dùng lại
+            // liên kết trong email mời trước đó" — nếu thư mời chưa từng tới (broker down lúc tạo lời
+            // mời) thì không có liên kết nào để dùng.
             var liveInvites = await _db.CampaignInvitations
-                .Where(iv => iv.CampaignId == id && iv.RevokedAt == null)
+                .Where(iv => iv.CampaignId == id && iv.RevokedAt == null && iv.ExpiresAt > now
+                    && iv.EmailSentAt != null)
                 .Select(iv => new { iv.Id, iv.Email, iv.ExpiresAt })
                 .ToListAsync(ct);
             foreach (var iv in liveInvites)
@@ -3405,14 +3438,20 @@ namespace Isas.CampaignService.Services
 
         /// <summary>
         /// HR xem/sửa bộ nhu cầu công việc (replace-all, mẫu C12).
-        /// <para>CMP3-B2 — cửa sửa KHÔNG còn rẽ theo trạng thái: cho sửa khi campaign CHƯA có ứng
-        /// viên nào được sàng (điểm khớp CV) và chưa <c>Closed</c>/<c>Archived</c>. Trước đây Draft
-        /// được sửa VÔ ĐIỀU KIỆN vì Draft không thể có ứng viên — nay sàng CV chạy được ở Draft
-        /// (CMP3-B2 mục 1) nên giả định đó đổ, và bất biến "một thước đo" phải bịt luôn cả Draft.</para>
-        /// <para>Bất biến THẬT (GIỮ NGUYÊN, KHÔNG nới): không đổi thước đo khi đã có người được đo
-        /// bằng thước cũ — <c>job_needs</c> KHÔNG mang nhãn phiên bản như <c>rubric_version</c>, nên
-        /// sàng trước/sau sẽ không so sánh được mà không có gì báo. <c>Closed</c>/<c>Archived</c> →
-        /// 409 (chiến dịch đã đóng, thước đo là dữ liệu lịch sử).</para>
+        /// <para>CMP4-B1 — cửa sửa dùng CÙNG MỘT THƯỚC với khối luật-lọc-cứng trong
+        /// <see cref="UpdateCampaignAsync"/>: "campaign đã có bất kỳ <c>cv_submission</c> nào chưa"
+        /// (<c>AnyAsync</c>). Trước đây cửa này đo <c>OverallMatchScore != null</c> — chỉ đếm ứng
+        /// viên ĐÃ CÓ ĐIỂM — nên ứng viên vừa upload (Filtered/Analyzing) không tính ⇒ cửa mở ⇒ HR
+        /// sửa/xoá bộ nhu cầu sau lưng batch đang chạy, callback về sau dựng danh sách hợp lệ từ
+        /// <c>job_needs</c> MỚI, mọi needId cũ bị bỏ, assessments rỗng, điểm null, status Analyzed:
+        /// "đã phân tích xong" mà trống trơn, không exception, không log. Một bất biến chỉ được có
+        /// một thước.</para>
+        /// <para>Bất biến THẬT (GIỮ NGUYÊN, KHÔNG nới theo chiều "cho sửa khi đã có điểm"): không
+        /// đổi thước đo khi đã có người được đo bằng thước cũ — <c>job_needs</c> KHÔNG mang nhãn
+        /// phiên bản như <c>rubric_version</c>, nên sàng trước/sau sẽ không so sánh được mà không có
+        /// gì báo. <c>Closed</c>/<c>Archived</c> → 409 (chiến dịch đã đóng, thước đo là dữ liệu
+        /// lịch sử). Gửi <c>[]</c> (wipe) khi đã có <c>cv_submission</c> cũng 409 — <c>[]</c> là một
+        /// replace-all, đi qua đúng cửa này, KHÔNG có đường tắt riêng.</para>
         /// </summary>
         public async Task<CampaignResponse> ReplaceJobNeedsAsync(
             Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct)
@@ -3422,26 +3461,29 @@ namespace Isas.CampaignService.Services
                 .FirstOrDefaultAsync(c => c.Id == id && c.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Campaign {id} not found.");
 
-            // CMP3-B2 — cửa sửa: KHÔNG rẽ theo trạng thái nữa. Chặn khi (a) đã Closed/Archived, HOẶC
-            // (b) đã có ứng viên được sàng. Trước đây Draft luôn qua vì Draft không thể có ứng viên;
-            // nay sàng CV chạy được ở Draft (mục 1) nên phải đo `screenedCount` bất kể trạng thái.
+            // CMP4-B1 — cửa sửa: KHÔNG rẽ theo trạng thái. Chặn khi (a) đã Closed/Archived, HOẶC
+            // (b) campaign đã có BẤT KỲ cv_submission nào — CÙNG MỘT THƯỚC với khối luật-lọc-cứng
+            // trong UpdateCampaignAsync (`AnyAsync(c => c.CampaignId == id)`). Trước CMP4-B1 cửa này
+            // đo `OverallMatchScore != null` (chỉ ứng viên đã có điểm) ⇒ ứng viên Filtered/Analyzing
+            // lọt qua ⇒ HR đổi thước sau lưng batch đang chấm. Wipe (`[]`) đi qua chính cửa này.
             //
-            // Bất biến THẬT là `!anyScreened`: không đổi thước đo khi đã có người được đo bằng thước
-            // cũ — job_needs KHÔNG mang nhãn phiên bản như rubric_version, nên sàng trước/sau sẽ
-            // không so sánh được mà không có gì báo. GIỮ NGUYÊN, không nới.
-            var screenedCount = await _db.CvSubmissions
-                .CountAsync(c => c.CampaignId == id && c.OverallMatchScore != null, ct);
+            // Bất biến THẬT: không đổi thước đo khi đã có người được đo bằng thước cũ — job_needs
+            // KHÔNG mang nhãn phiên bản như rubric_version, nên sàng trước/sau sẽ không so sánh được
+            // mà không có gì báo. GIỮ NGUYÊN, KHÔNG nới sang chiều "cho sửa khi đã có điểm".
+            var hasSubmissions = await _db.CvSubmissions
+                .AnyAsync(c => c.CampaignId == id, ct);
 
             var isTerminal = campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived;
-            if (isTerminal || screenedCount > 0)
+            if (isTerminal || hasSubmissions)
             {
                 var reason = isTerminal
                     ? $"campaign đã `{campaign.Status}`"
-                    : $"đã có {screenedCount} ứng viên được sàng nên bộ nhu cầu đã chốt " +
-                      "(đổi thước đo lúc này khiến ứng viên sàng trước/sau không so sánh được)";
+                    : "đã có ứng viên trong campaign nên bộ nhu cầu (thước sàng CV) đã chốt " +
+                      "(đổi thước đo lúc này khiến ứng viên sàng trước/sau không so sánh được — " +
+                      "job_needs KHÔNG mang nhãn phiên bản)";
                 throw new InvalidOperationException(
-                    "Chỉ sửa nhu cầu công việc khi campaign CHƯA có ứng viên nào được sàng (điểm khớp " +
-                    $"CV) và chưa `Closed`/`Archived`. Hiện: {reason}.");
+                    "Chỉ sửa nhu cầu công việc khi campaign CHƯA có ứng viên nào (đã upload/sàng CV) " +
+                    $"và chưa `Closed`/`Archived`. Hiện: {reason}.");
             }
 
             var cleaned = new List<JobNeed>();
