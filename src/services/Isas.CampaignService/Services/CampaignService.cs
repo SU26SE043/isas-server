@@ -456,15 +456,11 @@ namespace Isas.CampaignService.Services
             if (request.Title is not null)
                 campaign.Title = request.Title;
 
-            if (request.Domain is not null)
-                campaign.Domain = request.Domain;
-
-            if (request.Language is not null)
-            {
-                if (campaign.Status != CampaignStatus.Draft)
-                    throw new InvalidOperationException("Chỉ được đổi language khi campaign ở Draft.");
-                campaign.Language = ValidateLanguage(request.Language);
-            }
+            // CMP4-B2 — Domain + Language KHÔNG còn gán ở đây: cả hai quyết định cách AI sinh câu hỏi /
+            // sàng / chấm CV, nên bị khoá bởi CÙNG điều kiện với ba luật lọc cứng (khối bên dưới ~40
+            // dòng). Trước đây Domain không có cửa nào (đổi được cả khi Active đã sàng xong); Language
+            // chỉ 409 khi ≠ Draft — mà CMP3-B2 cho Draft CÓ cv_submission nên giả định "Draft = chưa
+            // ai bị đo" đã đổ. Guard cũ của Language gỡ ở đây, gộp về khối chung (KHÔNG guard song song).
 
             // PR160 — `null` = KHÔNG đổi (giữ mức HR đã chọn), như AntiCheatEnabled (C3). Chuỗi RỖNG thì
             // KHÔNG rơi vào nhánh này: nó đi tiếp vào ValidateSeniority và ăn 400 — cố ý, vì coi ""
@@ -489,27 +485,38 @@ namespace Isas.CampaignService.Services
             if (request.FaceVerifyEnabled.HasValue)
                 campaign.FaceVerifyEnabled = request.FaceVerifyEnabled.Value;
 
-            // EVA1-B5 / HĐ-2 — 3 luật lọc CỨNG sàng CV. Merge-only-if-provided như AntiCheatEnabled/
-            // FaceVerifyEnabled: null/vắng = KHÔNG ĐỔI · [] = XOÁ luật · minYears 0 = XOÁ luật.
-            // CMP3-B2 — cửa KHÔNG rẽ theo trạng thái nữa (D19 — đổi thước sàng giữa chừng thì ứng viên
-            // sàng trước/sau không so được): chặn khi đã Closed/Archived, HOẶC đã có cv_submission NÀO
-            // (hard-filter đã áp cho ai đó). Trước đây Draft qua vô điều kiện vì Draft không thể có CV;
-            // nay sàng CV chạy được ở Draft (mục 1) nên phải đo `AnyAsync` bất kể trạng thái.
+            // CMP4-B2 + EVA1-B5 / HĐ-2 — MỌI trường quyết định cách AI sàng/chấm CV bị khoá bởi CÙNG
+            // MỘT điều kiện: 3 luật lọc CỨNG · Domain · Language. Merge-only-if-provided như
+            // AntiCheatEnabled/FaceVerifyEnabled: null/vắng = KHÔNG ĐỔI · [] = XOÁ luật · minYears 0 = XOÁ.
+            //   • Chặn khi đã Closed/Archived (thước đo là dữ liệu lịch sử).
+            //   • Chặn khi đã có cv_submission NÀO — thước cũ đã áp cho ai đó, mà hard-filter / domain /
+            //     language KHÔNG mang nhãn phiên bản như rubric_version ⇒ sàng trước/sau không so sánh
+            //     được và HR không có cách nào nhận ra. CÙNG `AnyAsync` với CMP4-B1 (`PUT /job-needs`).
+            //     Trước đây Draft qua vô điều kiện vì Draft không thể có CV; CMP3-B2 cho Draft sàng CV
+            //     được nên phải đo `AnyAsync` bất kể trạng thái. Domain trước CMP4-B2 KHÔNG có cửa nào;
+            //     Language chỉ 409 khi ≠ Draft (giả định "Draft = chưa ai bị đo" đã đổ) — gộp về đây.
             if (request.RequiredSkills is not null || request.KeywordsAny is not null
-                || request.MinYearsExperience.HasValue)
+                || request.MinYearsExperience.HasValue
+                || request.Domain is not null || request.Language is not null)
             {
                 if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
                     throw new InvalidOperationException(
-                        $"Không sửa được luật lọc CV khi campaign {campaign.Status}.");
+                        "Không sửa được trường quyết định cách AI sàng/chấm CV (luật lọc / domain / "
+                        + $"language) khi campaign {campaign.Status}.");
                 if (await _db.CvSubmissions.AnyAsync(c => c.CampaignId == id, ct))
                     throw new InvalidOperationException(
-                        "Không sửa được luật lọc CV khi campaign đã có ứng viên (hard-filter đã áp cho họ).");
+                        "Không sửa được trường quyết định cách AI sàng/chấm CV (luật lọc / domain / "
+                        + "language) khi campaign đã có ứng viên — thước đã áp cho họ, đổi lúc này thì "
+                        + "ứng viên sàng trước/sau không so sánh được (không có nhãn phiên bản).");
 
                 var (req, kw, my) = ValidateHardFilters(
                     request.RequiredSkills, request.KeywordsAny, request.MinYearsExperience);
                 if (request.RequiredSkills is not null) campaign.RequiredSkills = req;
                 if (request.KeywordsAny is not null) campaign.KeywordsAny = kw;
                 if (request.MinYearsExperience.HasValue) campaign.MinYearsExperience = my;
+
+                if (request.Domain is not null) campaign.Domain = request.Domain;
+                if (request.Language is not null) campaign.Language = ValidateLanguage(request.Language);
             }
 
             // E5: cập nhật ngưỡng pass/fail (chỉ khi gửi lên; validate ∈ [0,100]).
