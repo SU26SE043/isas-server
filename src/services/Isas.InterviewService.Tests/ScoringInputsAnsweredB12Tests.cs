@@ -21,11 +21,12 @@ namespace Isas.InterviewService.Tests;
 public class ScoringInputsAnsweredB12Tests
 {
     // Buổi B2B (campaignId) để ghim chính sách đồng nhất. `questions` câu; `scoredWithAudio` câu đầu
-    // trả lời + chấm (Scored, có audio); `skippedWithAudio` câu kế = Skipped NHƯNG có audio (mô phỏng
-    // đường VAD im lặng / chốt sổ buổi kẹt AnswerService.cs:392/:1627/:1682); phần còn lại bỏ trống
-    // ⇒ SubmitSession tự tạo hàng Skipped KHÔNG audio (MarkUnansweredAsSkippedAsync).
+    // trả lời + chấm (Scored, có audio); `skippedWithAudio` câu kế = Skipped NHƯNG có audio, reason NULL
+    // (chốt sổ buổi kẹt — FinalizeStuckSessionAsync); `silentWithAudio` câu kế nữa = Skipped, có audio,
+    // reject_reason = 'no_speech' (VAD im lặng — CAMP-21); phần còn lại bỏ trống ⇒ SubmitSession tự tạo
+    // hàng Skipped KHÔNG audio (MarkUnansweredAsSkippedAsync).
     private static (TestDb T, Guid SessionId, Guid Candidate) Seed(
-        int questions, int scoredWithAudio, int skippedWithAudio = 0,
+        int questions, int scoredWithAudio, int skippedWithAudio = 0, int silentWithAudio = 0,
         string? policyExpr = null, decimal score = 4m)
     {
         var t = new TestDb();
@@ -65,8 +66,14 @@ public class ScoringInputsAnsweredB12Tests
             }
             else if (i < scoredWithAudio + skippedWithAudio)
             {
-                // Skipped NHƯNG có audio — ứng viên ĐÃ ghi âm, chỉ là bộ chấm/VAD của ta không dùng được.
+                // Skipped NHƯNG có audio, reason NULL — ứng viên ĐÃ ghi âm, bộ chấm của ta không chấm được.
                 t.Db.Add(TestDb.Answer(session.Id, q.Id, AnswerStatus.Skipped, now, now));
+            }
+            else if (i < scoredWithAudio + skippedWithAudio + silentWithAudio)
+            {
+                // CAMP-21: Skipped, có audio, VAD xác nhận im lặng — lỗi của ỨNG VIÊN, không tính là đã trả lời.
+                t.Db.Add(TestDb.Answer(session.Id, q.Id, AnswerStatus.Skipped, now, now,
+                    rejectReason: AnswerService.NoSpeechReason));
             }
             // else: bỏ trống → SubmitSession tạo Skipped KHÔNG audio.
         }
@@ -133,8 +140,10 @@ public class ScoringInputsAnsweredB12Tests
         Assert.Equal(80m, evt.TotalScore);              // 80 * 1
     }
 
-    // (d) buổi có 2 câu chấm được + 2 câu Skipped NHƯNG CÓ AUDIO (đường chốt sổ buổi kẹt
-    //     AnswerService.cs:1682) → 2 câu đó VẪN tính là "đã trả lời" ⇒ completeness KHÔNG bị hạ.
+    // (d) buổi có 2 câu chấm được + 2 câu Skipped NHƯNG CÓ AUDIO, reason NULL (đường chốt sổ buổi kẹt
+    //     FinalizeStuckSessionAsync) → 2 câu đó VẪN tính là "đã trả lời" ⇒ completeness KHÔNG bị hạ.
+    //     CAMP-21 thu hẹp tiền đề cũ: trước đây ca này gộp cả VAD im lặng; nay im lặng là ca (e) riêng và
+    //     ĐI NGƯỢC LẠI. Đây cũng chính là ca "dòng CŨ trước migration" (reason NULL) ⇒ không hồi tố.
     [Fact]
     public async Task Skipped_co_audio_khong_ha_completeness()
     {
@@ -147,5 +156,22 @@ public class ScoringInputsAnsweredB12Tests
         Assert.Equal(4, evt.ScoringInputs!.Answered);   // cả 4 câu đều có ghi âm
         Assert.Equal(4, evt.ScoringInputs.TotalQuestions);
         Assert.Equal(80m, evt.TotalScore);              // completeness = 1 ⇒ không phạt
+    }
+
+    // (e) CAMP-21 — 2 câu chấm được + 2 câu Skipped CÓ AUDIO nhưng VAD xác nhận IM LẶNG
+    //     (reject_reason = 'no_speech') → 2 câu đó KHÔNG tính ⇒ completeness = 0.5, điểm bị hạ.
+    //     Đối chứng trực tiếp với (d): cùng Status, cùng audio, khác đúng một cột — và điểm khác nhau.
+    [Fact]
+    public async Task Skipped_im_lang_co_audio_HA_completeness()
+    {
+        var (t, s, cand) = Seed(questions: 4, scoredWithAudio: 2, silentWithAudio: 2,
+            policyExpr: "weighted_avg_pct * completeness");
+        using var _ = t;
+
+        var evt = await Submit(t, s, cand);
+
+        Assert.Equal(2, evt.ScoringInputs!.Answered);   // 2 bài im lặng bị loại
+        Assert.Equal(4, evt.ScoringInputs.TotalQuestions);
+        Assert.Equal(40m, evt.TotalScore);              // 80 × 2/4
     }
 }

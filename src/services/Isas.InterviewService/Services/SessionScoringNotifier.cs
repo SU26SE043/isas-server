@@ -216,6 +216,17 @@ public class SessionScoringNotifier : ISessionScoringNotifier
     // SCP1 · B6 — nếu buổi ĐÃ GHIM chính sách (campaign_policy_expression), điểm = đánh giá biểu thức
     // đó trên bó biến RAW; lỗi lúc chạy ⇒ LÙI về công thức weighted mặc định + cờ scoreFallback.
     // `weighted_avg_pct` giữ NGUYÊN công thức hiện tại — nó chỉ trở thành MỘT BIẾN (B1), không bị thay.
+
+    /// <summary>
+    /// CAMP-21 — vị ngữ "câu này ĐÃ ĐƯỢC TRẢ LỜI" dùng CHUNG cho <c>answered</c> và <c>seedAnswered</c>:
+    /// có ghi âm, và không bị VAD kết luận là im lặng. <c>Expression</c> (không phải <c>Func</c>) để EF
+    /// dịch xuống SQL; vế <c>== null ||</c> viết tường minh cho ý đồ (xem chú thích tại nơi dùng).
+    /// <c>internal</c> để test đọc SQL thật qua <c>ToQueryString</c>.
+    /// </summary>
+    internal static readonly System.Linq.Expressions.Expression<Func<PracticeAnswer, bool>> AnsweredPredicate =
+        a => a.AudioObjectKey != null
+             && (a.RejectReason == null || a.RejectReason != AnswerService.NoSpeechReason);
+
     private async Task<(decimal Total, ScoringInputsSnapshot? Inputs, bool ScoreFallback)> ComputeScoreAndInputsAsync(
         PracticeSession session, CancellationToken ct)
     {
@@ -255,33 +266,50 @@ public class SessionScoringNotifier : ISessionScoringNotifier
 
         // SCP1/B12 — `answered` = số câu ứng viên THỰC SỰ TRẢ LỜI, đo bằng "có ghi âm"
         // (AudioObjectKey != null). Đường upload luôn gán AudioObjectKey (AnswerService.cs:120, :132),
-        // còn MarkUnansweredAsSkippedAsync (PracticeService.cs:1004) tạo hàng THẬT cho câu chưa trả lời
-        // với AudioObjectKey = NULL. Trước B12 chỗ này đếm MỌI hàng ⇒ answered == totalQuestions ở
-        // 100% buổi được chấm ⇒ biến `completeness` LUÔN = 1 ⇒ mẫu chính sách "phạt bỏ câu" vô hiệu.
+        // còn MarkUnansweredAsSkippedAsync (PracticeService) tạo hàng THẬT cho câu chưa trả lời với
+        // AudioObjectKey = NULL. Trước B12 chỗ này đếm MỌI hàng ⇒ answered == totalQuestions ở 100%
+        // buổi được chấm ⇒ biến `completeness` LUÔN = 1 ⇒ mẫu chính sách "phạt bỏ câu" vô hiệu.
         //
-        // KHÔNG lọc theo `Status != Skipped`: `Skipped` mang BA nghĩa và hai trong số đó là ghi âm
-        // THẬT — VAD không thấy tiếng nói (AnswerService.cs:392, :1627) và buổi kẹt bị chốt sổ khi
-        // không attempt nào chấm được (:1682). Lọc theo Status sẽ phạt ứng viên vì bộ chấm/VAD của ta,
-        // không phải vì họ bỏ câu. "Có ghi âm hay không" phân biệt đúng: chỉ nhóm hệ-thống-tự-đánh
-        // (không audio) mới rơi ra.
+        // KHÔNG lọc theo `Status != Skipped`: `Skipped` mang BA nghĩa — (a) VAD không thấy tiếng nói
+        // (AnswerService.cs nhánh thích ứng + callback worker noSpeech), (b) buổi kẹt bị chốt sổ khi
+        // không attempt nào chấm được (FinalizeStuckSessionAsync), (c) câu chưa từng ghi âm. (b) là lỗi
+        // của bộ chấm CỦA TA — lọc theo Status sẽ phạt ứng viên vì nó.
+        //
+        // CAMP-21 (2026-09-11) — nhưng "có ghi âm" cũng tính luôn (a): đo trên dev, trả lời 1/3 câu +
+        // nộp 1 bài 6 giây im lặng cho seed_answered = 2 ⇒ 49.33 điểm thay vì 24.67 — không biết thì
+        // bấm ghi im lặng CÓ LỢI HƠN bỏ qua. Nên loại đúng (a) bằng `reject_reason = 'no_speech'`
+        // (ghi ở ĐÚNG hai chỗ đó, KHÔNG ghi ở (b)); (b) và (c) không đổi. Đánh đổi nói thẳng: VAD báo
+        // nhầm thì người bị phạt là ứng viên — đó là thứ luật cũ tránh, ta đổi vì kẽ hở khai thác được.
+        //
+        // Vị ngữ SQL PHẢI có vế `reject_reason IS NULL OR`: `NULL <> 'no_speech'` là UNKNOWN ⇒ thiếu vế
+        // đó là lọc mất MỌI dòng cũ ⇒ đổi điểm hồi tố toàn bộ lịch sử. Đo thật (ToQueryString): EF Core
+        // mặc định tự bù null-semantics C# nên `!=` trần cũng ra `OR IS NULL` — viết tường minh để không
+        // phụ thuộc cấu hình (bật UseRelationalNulls / raw SQL là mất bù), và có test khoá chuỗi `IS NULL`
+        // trong SQL sinh ra. `null` = "không biết" (BK23) ⇒ vẫn tính là đã trả lời.
+        //
+        // `answered` và `seedAnswered` dùng CÙNG MỘT vị ngữ (AnsweredPredicate) — sửa một vế mà quên
+        // vế kia là `completeness` và `seed_completeness` đo hai thứ khác nhau mà không lỗi ở đâu cả.
         //
         // ĐỔI NGHĨA biến TẠI CHỖ (thay vì thêm biến mới) là ngoại lệ hợp lệ với luật append-only của
-        // ScoringVariableCatalog: `completeness` CHƯA TỪNG cho ra giá trị khác 1 trên bất kỳ môi
-        // trường nào, và prod CHƯA CÓ cột scoring_inputs ⇒ không có điểm lịch sử nào để phá. Giữ cả
-        // hai biến chỉ để lại một biến nói dối vĩnh viễn.
-        var answered = await _db.PracticeAnswers.CountAsync(
-            a => a.SessionId == sessionId && a.AudioObjectKey != null, ct);
+        // ScoringVariableCatalog (lý do ghi tại catalog): B12 — `completeness` chưa từng khác 1 và prod
+        // chưa có scoring_inputs; CAMP-21 — thêm `seed_answered_strict` chỉ bảo vệ chiến dịch tự soạn
+        // biểu thức (không ai soạn), kẽ hở vẫn mở cho toàn bộ chiến dịch đang chạy. Snapshot cũ đã đóng
+        // băng SeedAnswered nên preview/apply không đổi điểm lịch sử.
+        var answered = await _db.PracticeAnswers
+            .Where(a => a.SessionId == sessionId)
+            .Where(AnsweredPredicate)
+            .CountAsync(ct);
         var totalQuestions = await _db.PracticeQuestions.CountAsync(q => q.SessionId == sessionId, ct);
 
-        // RNK1 · HĐ-1 — câu GỐC (kind = Seed): tổng = K câu rút cho ứng viên này; "đã trả lời" đo bằng
-        // "có ghi âm" (AudioObjectKey != null), CÙNG tiêu chí với `answered` ở trên. FollowUp/Clarify/
-        // NewQuestion KHÔNG tính vào seed_* (chúng vẫn vào answered/totalQuestions). Đo bằng ghi âm,
-        // KHÔNG bằng Status != Skipped: `Skipped` mang ba nghĩa và hai trong số đó là ghi âm THẬT.
+        // RNK1 · HĐ-1 — câu GỐC (kind = Seed): tổng = K câu rút cho ứng viên này; "đã trả lời" theo
+        // CÙNG vị ngữ với `answered` ở trên. FollowUp/Clarify/NewQuestion KHÔNG tính vào seed_* (chúng
+        // vẫn vào answered/totalQuestions).
         var seedTotal = await _db.PracticeQuestions.CountAsync(
             q => q.SessionId == sessionId && q.Kind == QuestionKind.Seed, ct);
-        var seedAnswered = await _db.PracticeAnswers.CountAsync(
-            a => a.SessionId == sessionId && a.AudioObjectKey != null
-                 && a.Question.Kind == QuestionKind.Seed, ct);
+        var seedAnswered = await _db.PracticeAnswers
+            .Where(a => a.SessionId == sessionId && a.Question.Kind == QuestionKind.Seed)
+            .Where(AnsweredPredicate)
+            .CountAsync(ct);
 
         // E10 median mỗi (answer, criterion) → ADP1 gộp về CÂU GỐC → TB qua các câu gốc.
         // MỘT hàm dùng chung với SessionResultService (đường ghi breakdown B2C): điểm đi vào xếp hạng

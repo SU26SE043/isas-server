@@ -47,11 +47,13 @@ public sealed class ScoringContext
     /// <item><c>weighted_avg_pct</c> = Σ(pct × weight) / Σweight. Σweight ≤ 0 (không tiêu chí) → 0.</item>
     /// <item><c>avg_pct</c> = trung bình CỘNG pct các tiêu chí (equal-weight). Không tiêu chí → 0.</item>
     /// <item><c>min_pct</c> / <c>max_pct</c> = nhỏ nhất / lớn nhất trong các pct. Không tiêu chí → 0.</item>
-    /// <item><c>answered</c> = số câu đã trả lời; <c>total_questions</c> = tổng số câu của buổi.</item>
+    /// <item><c>answered</c> = số câu đã trả lời — Interview đo bằng "có ghi âm VÀ không bị VAD kết luận
+    ///       im lặng" (<c>practice_answers.reject_reason IS NULL OR &lt;&gt; 'no_speech'</c>, CAMP-21
+    ///       2026-09-11); <c>total_questions</c> = tổng số câu của buổi.</item>
     /// <item><c>completeness</c> = answered / total_questions (PHÂN SỐ 0..1, không nhân 100).
     ///       total_questions = 0 → 0.</item>
-    /// <item>RNK1 · HĐ-1 — <c>seed_answered</c>/<c>seed_total</c> = câu GỐC (kind = Seed) có ghi âm /
-    ///       tổng câu gốc; <c>seed_completeness</c> = seed_answered / seed_total (PHÂN SỐ 0..1;
+    /// <item>RNK1 · HĐ-1 — <c>seed_answered</c>/<c>seed_total</c> = câu GỐC (kind = Seed) đã trả lời
+    ///       (CÙNG vị ngữ với <c>answered</c>: có ghi âm, không phải VAD-im-lặng) / tổng câu gốc; <c>seed_completeness</c> = seed_answered / seed_total (PHÂN SỐ 0..1;
     ///       seed_total = 0 → 0). CHỈ đặt khi CẢ HAI <c>SeedAnswered</c> và <c>SeedTotal</c> non-null
     ///       (snapshot có từ RNK1 trở đi). Thiếu ⇒ ba khoá KHÔNG tồn tại ⇒ biểu thức tham chiếu →
     ///       <c>UNKNOWN_VARIABLE</c> → caller lùi an toàn (giống mọi biến chưa có context).</item>

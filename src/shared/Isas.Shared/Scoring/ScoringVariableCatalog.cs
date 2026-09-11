@@ -30,6 +30,14 @@ public static class ScoringVariableCatalog
         "avg_pct",
         "min_pct",
         "max_pct",
+        // ⚠ NGOẠI LỆ append-only, tường minh (2 lần, cùng một lý do):
+        //   • SCP1/B12: `answered`/`completeness` đổi nghĩa TẠI CHỖ (đếm "có ghi âm" thay vì mọi hàng) —
+        //     an toàn vì biến chưa từng ra giá trị khác 1 và prod chưa có scoring_inputs.
+        //   • CAMP-21 (2026-09-11): `answered`/`completeness` VÀ `seed_answered`/`seed_completeness` cùng
+        //     loại thêm bài VAD xác nhận IM LẶNG (`reject_reason = 'no_speech'`). Cân nhắc thêm
+        //     `seed_answered_strict`: tên mới chỉ bảo vệ chiến dịch TỰ SOẠN biểu thức — mặc định không ai
+        //     soạn — nên kẽ hở "+24,7 điểm nhờ nộp im lặng" vẫn mở cho toàn bộ chiến dịch đang chạy.
+        //     Không hồi tố: dòng cũ `reject_reason NULL` vẫn tính, snapshot cũ đã đóng băng.
         "answered",
         "total_questions",
         "completeness",

@@ -137,6 +137,9 @@ public class AnswerService : IAnswerService
             // một bản chép không còn tồn tại — và nó sẽ được đọc như thể mô tả bản chép MỚI (cùng lý
             // do bản vá F11 phải xoá cụm chỉ số ở ngay dưới).
             answer.TranscriptEngine = null;
+            // CAMP-21 — lý do từ chối bám bản ghi CŨ. Giữ lại thì bản thu MỚI (có tiếng nói) vẫn bị
+            // SessionScoringNotifier coi là im lặng ⇒ mất điểm oan ở đúng người vừa sửa sai.
+            answer.RejectReason = null;
             if (answer.Scores.Count > 0)
                 _db.AnswerScores.RemoveRange(answer.Scores);
             answer.NeedsReview = false;
@@ -229,7 +232,11 @@ public class AnswerService : IAnswerService
     // Lý do AIService từ chối bản chép (hợp đồng dây với `reject_reason` của /decide-next).
     // Chỉ "không có tiếng nói" mới chốt `Skipped` tại chỗ; bản chép RÁC ("junk_transcript") vẫn đi
     // đường thường để worker thử chép lại — rác là hỏng hóc kỹ thuật, không phải "người ta không nói".
-    private const string NoSpeechReason = "no_speech";
+    //
+    // CAMP-21 — cũng là giá trị DUY NHẤT được ghi vào `practice_answers.reject_reason`, và là chuỗi
+    // SessionScoringNotifier so để loại bài im lặng khỏi "đã trả lời". `internal` để notifier + test
+    // đọc CÙNG MỘT nguồn: gõ lại chuỗi ở chỗ khác là hai bản trôi xa nhau mà không lỗi ở đâu cả.
+    internal const string NoSpeechReason = "no_speech";
 
     // Chạy vòng thích ứng SAU khi answer đã lưu durable. Bọc toàn bộ trong try/catch → mọi lỗi (kể cả
     // đua unique index khi double-POST) chỉ log + trả None: upload LUÔN thành công, degrade về luồng tĩnh.
@@ -390,6 +397,9 @@ public class AnswerService : IAnswerService
             if (string.Equals(decision.RejectReason, NoSpeechReason, StringComparison.OrdinalIgnoreCase))
             {
                 answer.Status = AnswerStatus.Skipped;
+                // CAMP-21 — ghi LÝ DO (không phải chuỗi AIService gửi, mà hằng đã whitelist): đây là một
+                // trong hai nghĩa của `Skipped` mà SessionScoringNotifier phải LOẠI khỏi "đã trả lời".
+                answer.RejectReason = NoSpeechReason;
                 await _db.SaveChangesAsync(ct);
                 _logger.LogInformation(
                     "Answer {AnswerId} -> Skipped: bản ghi không có tiếng nói (VAD), không chấm",
@@ -1619,12 +1629,17 @@ public class AnswerService : IAnswerService
             return;
         }
 
-        // `noSpeech` = AIService xác nhận bản ghi KHÔNG có tiếng nói (VAD không thấy vùng nào) hoặc
-        // bản chép là rác máy sinh. Đó KHÔNG phải sự cố hệ thống nên không đánh `Failed`: người luyện
-        // đọc lịch sử phải thấy "câu này không có câu trả lời", không phải "hệ thống hỏng".
+        // `noSpeech` = AIService xác nhận bản ghi KHÔNG có tiếng nói (VAD không thấy vùng nào). Đó
+        // KHÔNG phải sự cố hệ thống nên không đánh `Failed`: người luyện đọc lịch sử phải thấy "câu này
+        // không có câu trả lời", không phải "hệ thống hỏng". (Bản chép RÁC máy sinh đi nhánh kia:
+        // worker.py chỉ đặt `noSpeech=true` cho `NoSpeechError`, còn `junk_transcript` là `PermanentError`
+        // → `Failed` — rác là lỗi của bộ chép, không phải của người trả lời.)
         // Về TIỀN hai nhánh như nhau — PAY-13 chỉ hỏi "có answer nào Scored không" — nên đổi nhãn ở
         // đây không đụng luật trừ/hoàn credit.
         answer.Status = noSpeech ? AnswerStatus.Skipped : AnswerStatus.Failed;
+        // CAMP-21 — im lặng có ghi âm vẫn là "chưa trả lời" khi tính hình phạt bỏ câu. Chỉ ghi ở nhánh
+        // noSpeech; `Failed` để null vì đó là lỗi của HỆ THỐNG và không được phạt ứng viên vì nó.
+        if (noSpeech) answer.RejectReason = NoSpeechReason;
         await _db.SaveChangesAsync(ct);
 
         if (noSpeech)
@@ -1679,6 +1694,8 @@ public class AnswerService : IAnswerService
                 && await FinalizeAnswerAsync(answer, session, rubricVersion, force: true, ct))
                 continue;
 
+            // CAMP-21 — CỐ Ý KHÔNG ghi `RejectReason`: đây là bộ chấm của TA hỏng, không phải ứng viên
+            // im lặng. Để null ⇒ SessionScoringNotifier vẫn tính là "đã trả lời" (có ghi âm), không phạt.
             answer.Status = AnswerStatus.Skipped;
             _logger.LogWarning(
                 "Answer {AnswerId} -> Skipped khi chốt sổ buổi kẹt {SessionId} (không có attempt nào chấm được)",

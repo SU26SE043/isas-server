@@ -290,6 +290,11 @@ public class PracticeAnswerConfiguration : IEntityTypeConfiguration<PracticeAnsw
             .HasMaxLength(32)
             .IsRequired();
 
+        // CAMP-21 — `reject_reason`: nullable `text`, KHÔNG HasMaxLength, KHÔNG CHECK (cùng quyết định
+        // với `transcript_engine` ở trên và lý do ghi trên entity). Đừng "siết cho chặt" ở đây: SQLite
+        // không ép độ dài/CHECK nên CI vẫn xanh trong khi Postgres nổ lúc chạy thật.
+        e.Property(x => x.RejectReason);
+
         e.Property(x => x.CreatedAt).IsRequired();
 
         // DB15 — bỏ UNIQUE(session_id, question_id) THỪA: quan hệ 1-1 với câu hỏi (HasForeignKey
