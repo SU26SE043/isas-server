@@ -44,6 +44,12 @@ namespace Isas.CampaignService.Controllers
         private Guid GetActorUserId()
             => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var g) ? g : Guid.Empty;
 
+        // E11c — email HR thao tác, snapshot vào lịch sử override (Campaign không có bảng user, GEN-3 cấm gọi Auth
+        // lúc chạy). Khoá claim là literal "email" vì service này đặt MapInboundClaims=false (tiền lệ
+        // ParticipationController). Thiếu claim → null → lịch sử hiện "không rõ", KHÔNG 500.
+        private string? GetActorEmail()
+            => User.FindFirstValue("email");
+
         // AUTH-4/AUTH-5: org_role trong JWT (đọc OFFLINE — GEN-3). Mẫu như ApiKeysController.
         private bool IsOrgAdmin()
             => User.HasClaim(c => c.Type == "org_role" && c.Value == "OrgAdmin");
@@ -950,12 +956,58 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                await _campaignService.OverrideResultAsync(orgId.Value, GetActorUserId(), id, sessionId, request, ct);
+                await _campaignService.OverrideResultAsync(orgId.Value, GetActorUserId(), GetActorEmail(), id, sessionId, request, ct);
                 return NoContent();
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
             catch (Exception ex) { return StatusCode(500, $"Failed to override result: {ex.Message}"); }
+        }
+
+        // E11c — lịch sử điều chỉnh của HR (mới-nhất-trước) cho 1 ứng viên. Org-scoped giống override/transcript
+        // (org sở hữu campaign + ranking row thuộc campaign) → ngoài org / chưa chấm = 404. Không có lần nào → items=[].
+        [HttpGet("{id:guid}/results/{sessionId:guid}/override-history")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<OverrideHistoryResponse>> GetOverrideHistory(
+            Guid id, Guid sessionId, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.GetOverrideHistoryAsync(orgId.Value, id, sessionId, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get override history: {ex.Message}"); }
+        }
+
+        // E11c — HR nghe bản ghi âm 1 câu trả lời của ứng viên (proxy Interview /internal/.../audio, GEN-5: object key
+        // không bao giờ ra ngoài). Org-scoped giống /transcript. Answer lạ / chưa có audio → 404; Interview lỗi → 502.
+        // Không range: FE tải blob rồi phát (file ≤ vài MB); Content-Type theo Interview trả (webm/m4a/wav…).
+        [HttpGet("{id:guid}/results/{sessionId:guid}/answers/{answerId:guid}/audio")]
+        [Authorize(Roles = "Employer")]
+        [ProducesResponseType(typeof(FileStreamResult), StatusCodes.Status200OK,
+            "audio/webm", "audio/ogg", "audio/mpeg", "audio/mp4", "video/mp4", "audio/flac", "audio/wav")]
+        public async Task<IActionResult> GetSessionAnswerAudio(
+            Guid id, Guid sessionId, Guid answerId, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                var audio = await _campaignService.GetSessionAnswerAudioAsync(orgId.Value, id, sessionId, answerId, ct);
+                return File(audio.Content, audio.ContentType);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(new { error = ex.Message }); }
+            catch (DownstreamServiceException ex)
+            {
+                return StatusCode(StatusCodes.Status502BadGateway, new { error = ex.Message });
+            }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get answer audio: {ex.Message}"); }
         }
 
         // AI4: HR xem chi tiết transcript + nhận xét AI per-criterion + cờ needs_review 1 buổi (đối chiếu điểm

@@ -20,6 +20,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
         public DbSet<CampaignSlot> CampaignSlots => Set<CampaignSlot>();
         public DbSet<CampaignRanking> CampaignRankings => Set<CampaignRanking>();
+        public DbSet<RankingOverride> RankingOverrides => Set<RankingOverride>();                  // E11c: lịch sử override của HR (append-only)
         public DbSet<CvSubmission> CvSubmissions => Set<CvSubmission>();                         // C13: sàng CV (DB16, ex campaign_candidates)
         public DbSet<CampaignMembership> CampaignMemberships => Set<CampaignMembership>();        // D2: membership ứng viên↔campaign (DB16)
         public DbSet<CandidateCriterionScore> CandidateCriterionScores => Set<CandidateCriterionScore>();
@@ -440,6 +441,35 @@ namespace Isas.CampaignService.Models
                 e.HasOne(x => x.Campaign)
                  .WithMany()
                  .HasForeignKey(x => x.CampaignId)
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
+
+            // ── RankingOverride (lịch sử điều chỉnh của HR — E11c) ────────────
+            modelBuilder.Entity<RankingOverride>(e =>
+            {
+                e.ToTable("ranking_overrides");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.Kind).HasMaxLength(8).IsRequired();          // "Set" | "Clear"
+                e.Property(x => x.Score).HasColumnType("numeric(5,2)");
+                e.Property(x => x.Result).HasMaxLength(10);
+                e.Property(x => x.Note).IsRequired();                          // text — không HasMaxLength (lý do tự do)
+                e.Property(x => x.ActorEmail).HasMaxLength(255);
+                e.Property(x => x.Source).HasMaxLength(16).IsRequired();       // "Live" | "AuditBackfill"
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // Đường đọc duy nhất: lịch sử của MỘT ranking, mới-nhất-trước.
+                e.HasIndex(x => new { x.RankingId, x.CreatedAt });
+
+                // DB13: chained qua Ranking→Campaign (soft-delete filter). Required nav tới bảng đã có filter
+                // ⇒ BẮT BUỘC khớp, nếu không EF phát PossibleIncorrectRequiredNavigation + đọc dòng mồ côi.
+                e.HasQueryFilter(x => x.Ranking.Campaign.DeletedAt == null);
+
+                // FK nội-service → campaign_rankings (Restrict: ranking là read-model, không bao giờ xoá vật lý).
+                // CampaignId/SessionId denorm — ref lỏng, KHÔNG FK thêm.
+                e.HasOne(x => x.Ranking)
+                 .WithMany()
+                 .HasForeignKey(x => x.RankingId)
                  .OnDelete(DeleteBehavior.Restrict);
             });
 

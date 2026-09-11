@@ -46,6 +46,12 @@ namespace Isas.CampaignService.Services
         Task<SessionTranscriptResponse> GetSessionTranscriptAsync(
             Guid sessionId, CancellationToken ct = default);
 
+        // E11c — HR nghe bản ghi âm 1 câu trả lời. Gọi Interview GET /internal/sessions/{sid}/answers/{aid}/audio
+        // (máy-máy, X-Internal-Token). Interview 404 (answer lạ / chưa có audio) → null (caller trả 404);
+        // lỗi hạ tầng / non-success khác → DownstreamServiceException (502). Không bao giờ lộ object key S3.
+        Task<AnswerAudioContent?> GetAnswerAudioAsync(
+            Guid sessionId, Guid answerId, CancellationToken ct = default);
+
         /// <summary>
         /// CAMP-20 — đọc BỘ CHUẨN B2C (admin soạn) để Employer chép về campaign.
         /// <c>GET /internal/rubrics/b2c?jobCategory=&amp;language=</c> (máy-máy, X-Internal-Token).
@@ -128,4 +134,7 @@ namespace Isas.CampaignService.Services
     public record CampaignSessionResult(Guid SessionId, IReadOnlyList<SessionQuestion> Questions);
 
     public record SessionQuestion(Guid Id, int OrderNo, string Content, int TimeLimitSec);
+
+    // E11c — bản ghi âm stream từ Interview (Content-Type suy từ đuôi object key phía Interview).
+    public record AnswerAudioContent(Stream Content, string ContentType);
 }

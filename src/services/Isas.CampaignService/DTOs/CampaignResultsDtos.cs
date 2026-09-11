@@ -153,6 +153,27 @@ namespace Isas.CampaignService.DTOs
         public string Note { get; set; } = null!;
     }
 
+    // E11c — lịch sử điều chỉnh của HR (`GET /campaign/{id}/results/{sessionId}/override-history`), MỚI-NHẤT-TRƯỚC.
+    // Nguồn: bảng append-only `ranking_overrides` (Live) + dòng dựng lại từ audit_logs (AuditBackfill, không có email).
+    public class OverrideHistoryResponse
+    {
+        public System.Guid SessionId { get; set; }
+        public List<OverrideHistoryItem> Items { get; set; } = new();
+    }
+
+    public class OverrideHistoryItem
+    {
+        public System.Guid Id { get; set; }
+        public string Kind { get; set; } = null!;        // "Set" | "Clear"
+        public decimal? Score { get; set; }
+        public string? Result { get; set; }              // "Pass" | "Fail" | null
+        public string Note { get; set; } = null!;
+        public System.Guid ActorUserId { get; set; }
+        public string? ActorEmail { get; set; }          // null = KHÔNG BIẾT (backfill) — FE hiện "không rõ", không đoán
+        public System.DateTime At { get; set; }
+        public string Source { get; set; } = null!;      // "Live" | "AuditBackfill"
+    }
+
     // E6 — kết quả xuất file (CSV/PDF) cho `GET /campaign/{id}/results/export`.
     // Controller trả `File(Content, ContentType, FileName)` (bám pattern DownloadCampaignFiles).
     public class CampaignResultExport
@@ -182,6 +203,28 @@ namespace Isas.CampaignService.DTOs
         // E10 — self-consistency spread vượt ngưỡng → HR nên soi lại (điểm AI = gợi ý, D13).
         public bool NeedsReview { get; set; }
         public List<TranscriptCriterionScore> Scores { get; set; } = new();
+
+        // E11c — phần Interview vốn đã trả nhưng trước đây bị VỨT khi map (HR chỉ thấy transcript + điểm).
+        // Tất cả ADDITIVE, null/false khi answer trống hoặc Interview bản cũ chưa gửi.
+        public System.Guid? AnswerId { get; set; }
+        public string Kind { get; set; } = "Seed";         // Seed | FollowUp | Clarify | NewQuestion (INT-17)
+        public string? AnswerStatus { get; set; }          // Uploaded | Scoring | Scored | Failed | Skipped
+        public string? RejectReason { get; set; }          // "no_speech" = im lặng (CAMP-21); null = không biết
+        public int? DurationSec { get; set; }
+        public bool HasAudio { get; set; }                 // = Interview trả AudioUrl (không lộ object key)
+        public string? SampleAnswer { get; set; }          // F13 — câu trả lời mẫu mức tối đa
+        public TranscriptDeliveryMetrics? DeliveryMetrics { get; set; }   // F11 — null = CHƯA ĐO, khác "đo ra 0"
+    }
+
+    // F11 — chỉ số cách nói đo từ audio. Mọi field nullable: null = chưa đo được (FE hiện "chưa đo", KHÔNG hiện 0).
+    public class TranscriptDeliveryMetrics
+    {
+        public double? SpeechRateWpm { get; set; }
+        public int? PauseCount { get; set; }
+        public double? LongestPauseSec { get; set; }
+        public double? SilenceRatio { get; set; }
+        public int? FillerCount { get; set; }
+        public Dictionary<string, int> FillerBreakdown { get; set; } = new();
     }
 
     // Điểm + nhận xét (reasoning, E11 trích dẫn transcript) của 1 tiêu chí. CriterionId = ref lỏng
@@ -197,6 +240,7 @@ namespace Isas.CampaignService.DTOs
         public decimal Score { get; set; }
         public int? MaxScore { get; set; }
         public string? Reasoning { get; set; }
+        public int? LevelMatched { get; set; }   // E9 — mức khớp khi neo theo mốc; null = không neo
     }
 
     // Log cờ chống gian lận THEO GIÂY cho 1 buổi (`GET /campaign/{id}/results/{sessionId}/flags`).

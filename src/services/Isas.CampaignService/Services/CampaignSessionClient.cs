@@ -148,15 +148,28 @@ namespace Isas.CampaignService.Services
 
         // AI4 — shape khớp Interview QuestionResponse/AnswerResponse (chỉ field HR cần: câu hỏi + transcript
         // + per-criterion score/reasoning + needsReview). Unknown field bị bỏ qua (case-insensitive).
+        // Shape khớp Interview QuestionResponse/AnswerResponse (DTOs/PracticeSession.cs). Field lạ bị bỏ qua.
+        // ⚠ E11c: tên field ở đây PHẢI trùng tên phía Interview — lệch một chữ là field rơi về default IM LẶNG
+        // (lớp bug đã cắn repo 4 lần: focusCriteria · metricsVersion · adaptiveMaxQuestions · ScoreFallback).
+        // Khoá bằng SessionTranscriptClientContractE11cTests (feed JSON thật + đọc thẳng file DTO Interview).
         private record TranscriptApiQuestion(
-            Guid Id, int OrderNo, string Content, int TimeLimitSec, TranscriptApiAnswer? Answer);
+            Guid Id, int OrderNo, string Content, int TimeLimitSec, TranscriptApiAnswer? Answer,
+            string Kind = "Seed");
         private record TranscriptApiAnswer(
             Guid Id, string Status, int DurationSec, string? Transcript,
-            List<TranscriptApiScore>? Scores, bool NeedsReview);
+            List<TranscriptApiScore>? Scores, bool NeedsReview,
+            string? SampleAnswer = null,
+            TranscriptApiDeliveryMetrics? DeliveryMetrics = null,
+            string? AudioUrl = null,          // chỉ dùng để suy HasAudio — URL này owner-scoped, HR không gọi được
+            string? RejectReason = null);
         // CriterionName/MaxScore: Interview trả kèm để HR đọc được tên tiêu chí (id không tra ngược được
         // sang campaign_criteria). Nullable — buổi chấm cũ không có.
         private record TranscriptApiScore(Guid CriterionId, decimal Score, string? Reasoning,
-            string? CriterionName = null, int? MaxScore = null);
+            string? CriterionName = null, int? MaxScore = null, int? LevelMatched = null);
+        // F11 — khớp Interview DeliveryMetricsDto (mọi field nullable: null = chưa đo, KHÔNG phải 0).
+        private record TranscriptApiDeliveryMetrics(
+            double? SpeechRateWpm, int? PauseCount, double? LongestPauseSec, double? SilenceRatio,
+            int? FillerCount, Dictionary<string, int>? FillerBreakdown);
 
         public async Task<SessionTranscriptResponse> GetSessionTranscriptAsync(
             Guid sessionId, CancellationToken ct = default)
@@ -209,13 +222,73 @@ namespace Isas.CampaignService.Services
                             CriterionName = s.CriterionName,
                             Score = s.Score,
                             MaxScore = s.MaxScore,
-                            Reasoning = s.Reasoning
+                            Reasoning = s.Reasoning,
+                            LevelMatched = s.LevelMatched
                         })
-                        .ToList()
+                        .ToList(),
+                    // E11c — phần trước đây bị vứt. Answer trống ⇒ null/false; HasAudio suy từ AudioUrl
+                    // (Interview chỉ đặt khi AudioObjectKey != null) — không mang URL owner-scoped ra ngoài.
+                    AnswerId = q.Answer?.Id,
+                    Kind = string.IsNullOrWhiteSpace(q.Kind) ? "Seed" : q.Kind,
+                    AnswerStatus = q.Answer?.Status,
+                    RejectReason = q.Answer?.RejectReason,
+                    DurationSec = q.Answer?.DurationSec,
+                    HasAudio = !string.IsNullOrWhiteSpace(q.Answer?.AudioUrl),
+                    SampleAnswer = q.Answer?.SampleAnswer,
+                    DeliveryMetrics = q.Answer?.DeliveryMetrics is { } dm
+                        ? new TranscriptDeliveryMetrics
+                        {
+                            SpeechRateWpm = dm.SpeechRateWpm,
+                            PauseCount = dm.PauseCount,
+                            LongestPauseSec = dm.LongestPauseSec,
+                            SilenceRatio = dm.SilenceRatio,
+                            FillerCount = dm.FillerCount,
+                            FillerBreakdown = dm.FillerBreakdown ?? new Dictionary<string, int>()
+                        }
+                        : null
                 })
                 .ToList();
 
             return new SessionTranscriptResponse { SessionId = sessionId, Questions = questions };
+        }
+
+        // E11c — stream bản ghi âm từ Interview về cho HR. Không buffer toàn bộ vào bộ nhớ: controller trả thẳng
+        // stream; response HttpResponseMessage giữ sống tới khi stream đóng (ASP.NET dispose FileStreamResult).
+        public async Task<AnswerAudioContent?> GetAnswerAudioAsync(
+            Guid sessionId, Guid answerId, CancellationToken ct = default)
+        {
+            using var msg = new HttpRequestMessage(
+                HttpMethod.Get, $"/internal/sessions/{sessionId}/answers/{answerId}/audio");
+            msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                _logger.LogError(ex, "Không gọi được InterviewService /internal/sessions/{SessionId}/answers/{AnswerId}/audio",
+                    sessionId, answerId);
+                throw new DownstreamServiceException("Không gọi được InterviewService (audio)", ex);
+            }
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                response.Dispose();
+                return null;   // answer lạ / chưa có audio → caller trả 404, KHÔNG phải 502
+            }
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync(ct);
+                response.Dispose();
+                _logger.LogError("InterviewService audio lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+                throw new DownstreamServiceException($"InterviewService audio trả {(int)response.StatusCode}");
+            }
+
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+            var stream = await response.Content.ReadAsStreamAsync(ct);
+            return new AnswerAudioContent(stream, contentType);
         }
 
         // CAMP-20 — shape khớp hợp đồng GET /internal/rubrics/b2c. KHÔNG có `id` (id Interview vô nghĩa

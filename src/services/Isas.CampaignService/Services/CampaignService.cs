@@ -2145,7 +2145,7 @@ namespace Isas.CampaignService.Services
         // Ghi cột override trên campaign_rankings (Campaign-owned read-model); TotalScore AI giữ nguyên.
         // Clear (Score=null & Result=null) → về AI. Org-scoped (ngoài org → 404); audit mọi lần.
         public async Task OverrideResultAsync(
-            Guid orgId, Guid actorUserId, Guid campaignId, Guid sessionId, OverrideResultRequest req, CancellationToken ct)
+            Guid orgId, Guid actorUserId, string? actorEmail, Guid campaignId, Guid sessionId, OverrideResultRequest req, CancellationToken ct)
         {
             var campaign = await _db.Campaigns
                 .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
@@ -2165,18 +2165,100 @@ namespace Isas.CampaignService.Services
             ValidateOverrideScore(req.Score);
 
             var isClear = req.Score is null && result is null;
+            var note = req.Note.Trim();
+            // MỘT mốc thời gian cho cả trạng thái hiện tại (ranking) lẫn dòng lịch sử — hai `UtcNow` riêng sẽ lệch
+            // vài ms và khiến "lần mới nhất" trong history không khớp OverriddenAt của ranking.
+            var now = DateTime.UtcNow;
 
             ranking.OverrideScore = req.Score;
             ranking.OverrideResult = result;
-            ranking.OverrideNote = isClear ? null : req.Note.Trim();
+            ranking.OverrideNote = isClear ? null : note;
             ranking.OverriddenBy = isClear ? null : actorUserId;
-            ranking.OverriddenAt = isClear ? null : DateTime.UtcNow;
+            ranking.OverriddenAt = isClear ? null : now;
+
+            // E11c — dòng lịch sử append-only, cùng SaveChanges với ranking + audit (nguyên tử). Ranking chỉ giữ trạng
+            // thái HIỆN TẠI (huỷ = null hết); bảng này giữ trail "ai · lúc nào · bao nhiêu · vì sao", kể cả lần huỷ.
+            _db.RankingOverrides.Add(new RankingOverride
+            {
+                Id = Guid.NewGuid(),
+                RankingId = ranking.Id,
+                CampaignId = campaignId,
+                SessionId = sessionId,
+                Kind = isClear ? "Clear" : "Set",
+                Score = req.Score,
+                Result = result,
+                Note = note,
+                ActorUserId = actorUserId,
+                ActorEmail = string.IsNullOrWhiteSpace(actorEmail) ? null : actorEmail.Trim(),
+                Source = "Live",
+                CreatedAt = now
+            });
 
             AddAudit(actorUserId, orgId, AuditAction.OverrideResult, campaignId,
                 isClear
-                    ? $"Huỷ override session {sessionId} (về điểm AI). Lý do: {req.Note.Trim()}"
-                    : $"Override session {sessionId}: score={req.Score?.ToString() ?? "—"}, result={result ?? "—"}. Lý do: {req.Note.Trim()}");
+                    ? $"Huỷ override session {sessionId} (về điểm AI). Lý do: {note}"
+                    : $"Override session {sessionId}: score={req.Score?.ToString() ?? "—"}, result={result ?? "—"}. Lý do: {note}");
             await _db.SaveChangesAsync(ct);
+        }
+
+        // E11c — lịch sử điều chỉnh của HR cho 1 buổi, MỚI-NHẤT-TRƯỚC. Gate y hệt OverrideResultAsync/transcript:
+        // campaign ngoài org → 404; session không có ranking (chưa chấm) → 404. Query filter DB13 (chained qua
+        // Ranking→Campaign) tự ẩn dòng của campaign đã soft-delete.
+        public async Task<OverrideHistoryResponse> GetOverrideHistoryAsync(
+            Guid orgId, Guid campaignId, Guid sessionId, CancellationToken ct)
+        {
+            _ = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            var ranking = await _db.CampaignRankings
+                .FirstOrDefaultAsync(r => r.SessionId == sessionId && r.CampaignId == campaignId, ct)
+                ?? throw new KeyNotFoundException($"Ranking cho session {sessionId} không tồn tại (ứng viên chưa được chấm).");
+
+            var rows = await _db.RankingOverrides
+                .AsNoTracking()
+                .Where(o => o.RankingId == ranking.Id)
+                .OrderByDescending(o => o.CreatedAt)
+                .ThenByDescending(o => o.Id)   // tie-break ổn định khi hai dòng cùng mốc (backfill cùng giây)
+                .ToListAsync(ct);
+
+            return new OverrideHistoryResponse
+            {
+                SessionId = sessionId,
+                Items = rows.Select(o => new OverrideHistoryItem
+                {
+                    Id = o.Id,
+                    Kind = o.Kind,
+                    Score = o.Score,
+                    Result = o.Result,
+                    Note = o.Note,
+                    ActorUserId = o.ActorUserId,
+                    ActorEmail = o.ActorEmail,
+                    At = o.CreatedAt,
+                    Source = o.Source
+                }).ToList()
+            };
+        }
+
+        // E11c — HR nghe bản ghi âm 1 câu trả lời. Gate y hệt GetSessionTranscriptAsync (org + ranking row): audio
+        // OWNED bởi Interview (GEN-5 — chỉ Interview giữ object key), đọc xuyên-service qua internal client, stream
+        // thẳng ra cho HR. Answer lạ / chưa có audio → 404 (KHÔNG phải 502 — đó không phải lỗi hạ tầng).
+        public async Task<AnswerAudioContent> GetSessionAnswerAudioAsync(
+            Guid orgId, Guid campaignId, Guid sessionId, Guid answerId, CancellationToken ct)
+        {
+            _ = await _db.Campaigns
+                .FirstOrDefaultAsync(c => c.Id == campaignId && c.OrgId == orgId, ct)
+                ?? throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+
+            _ = await _db.CampaignRankings
+                .FirstOrDefaultAsync(r => r.SessionId == sessionId && r.CampaignId == campaignId, ct)
+                ?? throw new KeyNotFoundException($"Ranking cho session {sessionId} không tồn tại (ứng viên chưa được chấm).");
+
+            if (_sessionClient is null)
+                throw new InvalidOperationException("ICampaignSessionClient chưa được cấu hình.");
+
+            return await _sessionClient.GetAnswerAudioAsync(sessionId, answerId, ct)
+                ?? throw new KeyNotFoundException($"Không tìm thấy bản ghi âm cho answer {answerId}.");
         }
 
         // AI4 — HR đọc chi tiết transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi để đối

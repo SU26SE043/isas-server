@@ -214,7 +214,7 @@ public class PublicApiF17Tests
         const string secretNote = "INTERNAL-HR-ONLY-SENTINEL";
         var ranking = await tdb.NewContext().CampaignRankings.SingleAsync();
         await NewCampaignService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, ranking.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, ranking.SessionId,
             new OverrideResultRequest { Score = 90m, Result = "Pass", Note = secretNote }, default);
 
         var result = await NewController(tdb.NewContext(), orgId)

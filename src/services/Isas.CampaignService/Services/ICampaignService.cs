@@ -119,7 +119,17 @@ namespace Isas.CampaignService.Services
         Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid orgId, Guid id, CancellationToken ct);
 
         // E11b: HR chốt/sửa điểm-kết-quả cuối 1 ứng viên (org-scoped, audit; clear = về AI).
-        Task OverrideResultAsync(Guid orgId, Guid actorUserId, Guid campaignId, Guid sessionId, OverrideResultRequest req, CancellationToken ct);
+        // E11c: actorEmail = snapshot claim `email` của JWT (GEN-3 — Campaign không tra Auth lúc chạy), null nếu
+        // token không mang claim → lịch sử hiện "không rõ" thay vì đoán.
+        Task OverrideResultAsync(Guid orgId, Guid actorUserId, string? actorEmail, Guid campaignId, Guid sessionId, OverrideResultRequest req, CancellationToken ct);
+
+        // E11c: lịch sử điều chỉnh của HR cho 1 buổi, MỚI-NHẤT-TRƯỚC. Gating GIỐNG OverrideResultAsync
+        // (org sở hữu campaign + ranking row thuộc campaign) → 404 nếu sai.
+        Task<OverrideHistoryResponse> GetOverrideHistoryAsync(Guid orgId, Guid campaignId, Guid sessionId, CancellationToken ct);
+
+        // E11c: HR nghe bản ghi âm 1 câu trả lời (proxy Interview /internal/.../audio). Gating GIỐNG
+        // GetSessionTranscriptAsync. Answer lạ / chưa có audio → KeyNotFoundException (404); Interview lỗi → 502.
+        Task<AnswerAudioContent> GetSessionAnswerAudioAsync(Guid orgId, Guid campaignId, Guid sessionId, Guid answerId, CancellationToken ct);
 
         // E6: xuất bảng kết quả (E5) ra file — format=csv (pdf 🔜). Ngoài org → KeyNotFoundException (404).
         Task<CampaignResultExport> ExportCampaignResultsAsync(Guid orgId, Guid id, string? format, CancellationToken ct);
