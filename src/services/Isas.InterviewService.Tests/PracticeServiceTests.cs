@@ -1034,6 +1034,35 @@ public class PracticeServiceTests
         Assert.True(Math.Abs((s.Deadline!.Value - expires).TotalSeconds) < 2);
     }
 
+    // Hạn chót phải ĐỌC LẠI ĐƯỢC, không chỉ có trong response một lần của lúc Start.
+    //
+    // Trước bản này `PracticeSessionResponse` không khai `Deadline`/`CampaignId`: ứng viên B2B đóng
+    // tab hoặc tải lại trang là mất luôn thông tin phải nộp trước lúc nào — mà với chiến dịch có ca
+    // thi, hạn đó là `min(campaign.expires_at, slot.ends_at)`, CHẶT HƠN hạn ghi trong thư mời.
+    [Fact]
+    public async Task GetSession_TraLaiHanChotVaCampaignId_KhongChiCoLucStart()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var campaignId = Guid.NewGuid();
+        var expires = DateTime.UtcNow.AddHours(3);
+
+        var svc = Build(t, new Mock<IAiServiceQuestionGenerator>());
+        var created = await svc.CreateCampaignSessionAsync(candidate, new CreateCampaignSessionRequest(
+            campaignId, Guid.NewGuid(), JobCategory.BE,
+            Questions: new[] { "Q1" },
+            Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) },
+            ExpiresAt: expires));
+
+        // Đọc LẠI qua đúng đường mà client dùng khi tải lại trang.
+        var reread = await svc.GetSessionAsync(candidate, created.Id);
+
+        Assert.NotNull(reread);
+        Assert.NotNull(reread!.Deadline);
+        Assert.True(Math.Abs((reread.Deadline!.Value - expires).TotalSeconds) < 2);
+        Assert.Equal(campaignId, reread.CampaignId);
+    }
+
     // I2: ExpiresAt null (không truyền) → Deadline null (B2C hoặc B2B chưa cấu hình hạn nhận bài).
     [Fact]
     public async Task CreateCampaignSession_NoExpiresAt_DeadlineNull()

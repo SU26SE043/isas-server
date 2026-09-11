@@ -194,7 +194,16 @@ public record PracticeSessionResponse(
     // học lộ trình / pool rỗng / buổi cũ trước cột này tồn tại — client cũ (không biết field) không
     // vỡ. Đặt CUỐI + có default (mẫu CriterionEvidence ngay trên): call site positional cũ không
     // phải sửa.
-    IReadOnlyList<SessionTopicResponse>? Topics = null
+    IReadOnlyList<SessionTopicResponse>? Topics = null,
+    // Hạn chót nhận bài của CHÍNH buổi này (I2). Trước đây con số này chỉ tồn tại trong response
+    // MỘT LẦN của `POST /campaign/{id}/start` (`deadlineAt`) — đóng tab hoặc tải lại trang là ứng
+    // viên B2B mất luôn thông tin mình phải nộp trước lúc nào, và không đường nào đọc lại được.
+    // Với B2B có ca thi, nó là `min(campaign.expires_at, slot.ends_at)` nên còn CHẶT HƠN hạn chiến
+    // dịch ghi trong thư mời. null = buổi B2C / không có hạn cứng.
+    DateTime? Deadline = null,
+    // Buổi thuộc chiến dịch nào (null = B2C). Client cần nó để biết đang ở luồng nào mà không phải
+    // nhớ từ lúc bấm Bắt đầu.
+    Guid? CampaignId = null
 );
 
 // Evidence state được trả dạng additive ở GET session để client khôi phục đúng ngữ cảnh đã dùng
