@@ -229,7 +229,7 @@ namespace Isas.CampaignService.Services
 
         public async Task<CampaignSlotResponse> CreateSlotAsync(Guid orgId, Guid campaignId, CreateCampaignSlotRequest request, CancellationToken ct)
         {
-            await RequireCampaignAsync(orgId, campaignId, ct); ValidateSlot(request.StartsAt, request.EndsAt, request.Capacity);
+            var campaign = await RequireCampaignAsync(orgId, campaignId, ct); ValidateSlot(request.StartsAt, request.EndsAt, request.Capacity, campaign);
             await EnsureNoSlotOverlapAsync(campaignId, request.StartsAt, request.EndsAt, null, ct);
             var slot = new CampaignSlot { Id = Guid.NewGuid(), CampaignId = campaignId, StartsAt = request.StartsAt, EndsAt = request.EndsAt, Capacity = request.Capacity };
             _db.CampaignSlots.Add(slot); await _db.SaveChangesAsync(ct); return ToSlotResponse(slot, 0, 0);
@@ -237,7 +237,7 @@ namespace Isas.CampaignService.Services
 
         public async Task<CampaignSlotResponse> UpdateSlotAsync(Guid orgId, Guid campaignId, Guid slotId, UpdateCampaignSlotRequest request, CancellationToken ct)
         {
-            await RequireCampaignAsync(orgId, campaignId, ct); ValidateSlot(request.StartsAt, request.EndsAt, request.Capacity);
+            var campaign = await RequireCampaignAsync(orgId, campaignId, ct); ValidateSlot(request.StartsAt, request.EndsAt, request.Capacity, campaign);
             var slot = await _db.CampaignSlots.FirstOrDefaultAsync(x => x.Id == slotId && x.CampaignId == campaignId, ct) ?? throw new KeyNotFoundException();
             var assigned = await _db.CampaignInvitations.CountAsync(i => i.SlotId == slotId && i.RevokedAt == null, ct);
             if (request.Capacity < assigned) throw new ArgumentException("Sức chứa không thể nhỏ hơn số lời mời đã gán.");
@@ -253,8 +253,28 @@ namespace Isas.CampaignService.Services
             _db.CampaignSlots.Remove(slot); await _db.SaveChangesAsync(ct);
         }
 
-        private async Task RequireCampaignAsync(Guid orgId, Guid campaignId, CancellationToken ct) => _ = await _db.Campaigns.FirstOrDefaultAsync(c=>c.Id==campaignId&&c.OrgId==orgId,ct) ?? throw new KeyNotFoundException();
-        private static void ValidateSlot(DateTime starts, DateTime ends, int capacity) { if(ends<=starts||capacity<=0) throw new ArgumentException("Khung giờ hoặc sức chứa không hợp lệ."); }
+        private async Task<Campaign> RequireCampaignAsync(Guid orgId, Guid campaignId, CancellationToken ct) => await _db.Campaigns.FirstOrDefaultAsync(c=>c.Id==campaignId&&c.OrgId==orgId,ct) ?? throw new KeyNotFoundException();
+
+        /// <summary>
+        /// Ca thi phải nằm TRONG cửa sổ mở của chiến dịch.
+        ///
+        /// <para><b>Vì sao cần, dù đã có chốt lúc ứng viên bấm Bắt đầu:</b> chốt kia
+        /// (<c>ParticipationService</c>) chặn bằng cửa sổ chiến dịch HOẶC cửa sổ ca, và câu báo
+        /// lỗi lúc đó nói về CA — không chỉ ra nguyên nhân là cửa sổ chiến dịch. Tạo ca ngoài cửa
+        /// sổ thì HR không thấy gì bất thường cho tới khi ứng viên đã được gán vào đó và không bao
+        /// giờ thi được. Chặn tại đầu vào để lỗi nổ đúng nơi sinh ra nó (mẫu <c>MaxCandidatesRule</c>).</para>
+        ///
+        /// <para><c>null</c> giữ nguyên nghĩa "không đặt mốc đó" ⇒ không ràng buộc phía đó. Chiến
+        /// dịch chưa khai lịch thì ca vẫn tạo được như trước — không phá dữ liệu đang chạy.</para>
+        /// </summary>
+        private static void ValidateSlot(DateTime starts, DateTime ends, int capacity, Campaign campaign)
+        {
+            if (ends <= starts || capacity <= 0) throw new ArgumentException("Khung giờ hoặc sức chứa không hợp lệ.");
+            if (campaign.StartsAt is DateTime open && starts < open)
+                throw new ArgumentException($"Khung giờ bắt đầu trước khi chiến dịch mở ({VietnamTime.From(open):HH:mm dd/MM/yyyy} giờ VN).");
+            if (campaign.ExpiresAt is DateTime close && ends > close)
+                throw new ArgumentException($"Khung giờ kết thúc sau khi chiến dịch đóng ({VietnamTime.From(close):HH:mm dd/MM/yyyy} giờ VN).");
+        }
         private async Task EnsureNoSlotOverlapAsync(Guid campaignId, DateTime starts, DateTime ends, Guid? exceptId, CancellationToken ct) { if(await _db.CampaignSlots.AnyAsync(s=>s.CampaignId==campaignId&&s.Id!=exceptId&&s.StartsAt<ends&&starts<s.EndsAt,ct)) throw new InvalidOperationException("Khung giờ bị chồng lấn."); }
         private static CampaignSlotResponse ToSlotResponse(CampaignSlot x,int assigned,int started)=>new(){Id=x.Id,StartsAt=x.StartsAt,EndsAt=x.EndsAt,Capacity=x.Capacity,AssignedCount=assigned,StartedCount=started};
 
