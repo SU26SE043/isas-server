@@ -247,7 +247,12 @@ public record AnswerResponse(
     // FE phải hiện "chưa có dữ liệu" chứ đừng hiện "0 từ đệm" như một lời khen.
     DeliveryMetricsDto? DeliveryMetrics = null,
     // URL API owner-scoped để phát/tải bản ghi âm; không bao giờ lộ AudioObjectKey của SeaweedFS.
-    string? AudioUrl = null
+    string? AudioUrl = null,
+    // CAMP-21/E11c — lý do bản ghi bị từ chối chấm: "no_speech" = VAD không thấy vùng tiếng nói (bài im lặng,
+    // Status=Skipped nhưng CÓ audio). null = không có lý do / dòng cũ không biết (BK23). Client dùng để phân
+    // biệt "im lặng" với "bỏ trống" (không audio) và "chốt sổ buổi kẹt" (Skipped, không lý do).
+    // Đặt CUỐI + default → client cũ không vỡ (tiền lệ SampleAnswer/DeliveryMetrics).
+    string? RejectReason = null
 );
 
 public record AnswerAudioContent(Stream Content, string ContentType);

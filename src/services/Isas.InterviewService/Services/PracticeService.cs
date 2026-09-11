@@ -1252,11 +1252,35 @@ public class PracticeService : IPracticeService
         if (answer.Session.CandidateId != candidateId)
             throw new UnauthorizedAccessException("Không phải buổi của bạn");
 
-        var content = await _storage.DownloadAsync(answer.AudioObjectKey, ct);
+        return await DownloadAnswerAudioAsync(answer.AudioObjectKey, ct);
+    }
+
+    // E11c — Campaign (HR) nghe bản ghi âm của ứng viên B2B qua đường máy-máy (X-Internal-Token, mẫu
+    // GetSessionAnswersInternalAsync/AI4). CỐ Ý KHÔNG check chủ session: Campaign đã gate org sở hữu campaign +
+    // ranking row thuộc campaign trước khi gọi sang đây; check chủ ở đây sẽ CHẶN đúng người cần nghe (HR không
+    // phải candidate). Null = answer không thuộc session / chưa có audio → controller trả 404.
+    public async Task<AnswerAudioContent?> GetAnswerAudioInternalAsync(
+        Guid sessionId, Guid answerId, CancellationToken ct = default)
+    {
+        var answer = await _db.PracticeAnswers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == answerId && a.SessionId == sessionId, ct);
+
+        if (answer is null || string.IsNullOrWhiteSpace(answer.AudioObjectKey))
+            return null;
+
+        return await DownloadAnswerAudioAsync(answer.AudioObjectKey, ct);
+    }
+
+    // Một chỗ tải + suy MIME cho CẢ đường owner (B2C) lẫn đường internal (HR B2B) — hai bản chép sẽ trôi khỏi
+    // nhau ở đúng chỗ đã từng sai (nhãn "audio/webm" cứng cho file m4a).
+    private async Task<AnswerAudioContent> DownloadAnswerAudioAsync(string audioObjectKey, CancellationToken ct)
+    {
+        var content = await _storage.DownloadAsync(audioObjectKey, ct);
         // MIME suy từ đuôi của object key — trước đây trả cứng "audio/webm" cho MỌI file, nên bản ghi âm từ
         // iPhone (m4a) được gắn nhãn webm và trình phát từ chối. Đuôi là nguồn duy nhất còn giữ được định dạng:
         // IStorageService.DownloadAsync chỉ trả Stream, không kèm content-type của S3.
-        return new AnswerAudioContent(content, AudioFormats.ContentTypeForKey(answer.AudioObjectKey));
+        return new AnswerAudioContent(content, AudioFormats.ContentTypeForKey(audioObjectKey));
     }
 
     // DB18 — Payment (internal) dò orphan reservation: trả TẬP CON sessionIds có row practice_sessions
@@ -1922,7 +1946,8 @@ public class PracticeService : IPracticeService
             DeliveryMetricsMapper.Read(a),   // F11 — chỉ số trôi chảy (null khi chưa đo được)
             string.IsNullOrWhiteSpace(a.AudioObjectKey)
                 ? null
-                : $"/api/v1/interview/practice/sessions/{sessionId}/answers/{a.Id}/audio");
+                : $"/api/v1/interview/practice/sessions/{sessionId}/answers/{a.Id}/audio",
+            a.RejectReason);   // CAMP-21/E11c — "no_speech" = VAD không thấy tiếng nói; null = không biết/không có lý do
     }
 
     private async Task ConsumeQuietlyAsync(Guid sessionId, CancellationToken ct)

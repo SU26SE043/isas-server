@@ -50,6 +50,11 @@ public interface IPracticeService
     Task<AnswerAudioContent?> GetAnswerAudioAsync(
         Guid candidateId, Guid sessionId, Guid answerId, CancellationToken ct = default);
 
+    // E11c — đường máy-máy cho Campaign (HR nghe bản ghi B2B). KHÔNG check chủ session (Campaign đã gate
+    // org + ranking). Null = answer không thuộc session hoặc chưa có audio.
+    Task<AnswerAudioContent?> GetAnswerAudioInternalAsync(
+        Guid sessionId, Guid answerId, CancellationToken ct = default);
+
     // DB31 — keyset-paged (mẫu DB8): cursor opaque + limit opt-in; body giữ mảng JSON,
     // next-cursor trả ở header X-Next-Cursor. cursor=null ⇒ trang đầu.
     // status/excludeCampaign/source đều OPT-IN — vắng cả ba ⇒ shape và tập kết quả y hệt hành vi cũ
