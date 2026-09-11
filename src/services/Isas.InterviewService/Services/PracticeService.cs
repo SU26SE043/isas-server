@@ -1825,7 +1825,9 @@ public class PracticeService : IPracticeService
                 ? s.Topics
                     .Select(t => new SessionTopicResponse(t.Key, t.Label, t.Source, t.CvLevel, t.CvEvidence))
                     .ToList()
-                : null);
+                : null,
+            s.Deadline,
+            s.CampaignId);
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.

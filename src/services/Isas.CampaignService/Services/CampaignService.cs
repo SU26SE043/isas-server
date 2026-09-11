@@ -1716,6 +1716,12 @@ namespace Isas.CampaignService.Services
                 .GroupBy(m => m.Email!.Trim(), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt), StringComparer.OrdinalIgnoreCase);
 
+            // Ca thi của từng lời mời. Nạp MỘT lượt theo campaign thay vì join từng dòng: số ca
+            // của một chiến dịch là hàng đơn vị, còn lời mời có thể tới hàng trăm.
+            var slotsById = await _db.CampaignSlots
+                .Where(s => s.CampaignId == id)
+                .ToDictionaryAsync(s => s.Id, ct);
+
             var items = invitations.Select(i =>
             {
                 var joined = joinedByInvitation.TryGetValue(i.Id, out var byInv)
@@ -1739,7 +1745,10 @@ namespace Isas.CampaignService.Services
                     RevokedAt = i.RevokedAt,
                     JoinedAt = joined.at,
                     CampaignCandidateId = i.CampaignCandidateId,
-                    CreatedAt = i.CreatedAt
+                    CreatedAt = i.CreatedAt,
+                    SlotId = i.SlotId,
+                    SlotStartsAt = i.SlotId is Guid sid && slotsById.TryGetValue(sid, out var slot) ? slot.StartsAt : null,
+                    SlotEndsAt = i.SlotId is Guid sid2 && slotsById.TryGetValue(sid2, out var slot2) ? slot2.EndsAt : null
                 };
             }).ToList();
 
