@@ -50,6 +50,7 @@ AnswerResponse {
 }
 
 **`GET /interview/practice/sessions/{sessionId}/answers/{answerId}/audio`** — Phát/tải audio câu trả lời của chính candidate. `AnswerResponse.audioUrl` trỏ tới route này; server xác minh chủ session từ JWT rồi stream audio, không lộ SeaweedFS object key. Không có audio/answer/session → **404**; session của người khác → **403**. **`Content-Type` theo định dạng thật của bản ghi** (suy từ đuôi object key — `audio/webm`, `audio/mp4`, …; đuôi lạ/dữ liệu cũ → `application/octet-stream`), không còn trả cứng `audio/webm` — BK27.
+- **`AnswerResponse.rejectReason`** (E11c, additive, đặt cuối): `"no_speech"` = VAD không thấy vùng tiếng nói (bài im lặng — CAMP-21; `status=Skipped` nhưng **có** audio) · `null` = không có lý do / dòng cũ không biết (BK23). Client dùng để phân biệt *im lặng* với *bỏ trống* (không audio) và *chốt sổ buổi kẹt* (`Skipped`, không lý do).
 
 AnswerScoreResponse {
   criterionId:  uuid
@@ -330,6 +331,8 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 
 **`POST /internal/answers/{answerId}/failed`** — đánh dấu `Failed` (lỗi chấm vĩnh viễn).
 - Req: `{ "reason": string }`. Nếu answer đã `Scored` → **bỏ qua** (không hạ `Failed`). Res **`200/204`**. Lỗi: **401** · **404**.
+
+**`GET /internal/sessions/{sessionId}/answers/{answerId}/audio`** (E11c) — CampaignService (HR) phát bản ghi âm câu trả lời B2B (máy-máy, `X-Internal-Token`, không qua gateway). **KHÔNG check chủ session** — Campaign đã gate org sở hữu campaign + ranking row (cùng gate với `/internal/sessions/{sessionId}/answers` AI4). Answer không thuộc session / chưa có audio → 404; `Content-Type` suy từ đuôi object key (dùng chung hàm với đường owner `GET /practice/sessions/{sid}/answers/{aid}/audio`). Token sai → 401.
 
 **`POST /internal/sessions/exists`** (DB18 · **R1**) — PaymentService dò chỗ giữ credit mồ côi / chưa settle.
 - Req: `{ "sessionIds": uuid[] }`. Res **200**: `{ "existingIds": uuid[], "states": [{ "sessionId": uuid, "status": string }] }`. Lỗi: **401** (sai token). Input null/rỗng → 200 với cả hai mảng rỗng (không chạm DB).
