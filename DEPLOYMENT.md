@@ -571,9 +571,22 @@ SELECT u.id, r.id
 FROM users u CROSS JOIN roles r
 WHERE u.normalized_email = 'ADMIN@ISAS.LOCAL' AND r.normalized_name = 'ADMIN'
   AND NOT EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id AND ur.role_id = r.id);
+
+-- Mô hình là 1 platform-role/user (ChangePlatformRoleAsync THAY THẾ, không cộng dồn). Bước (a) đã gán
+-- Candidate; để nguyên thì user mang 2 role. Từ 2026-09-12 BE chọn role theo mức đặc quyền
+-- (Admin > Employer > Candidate) nên /auth/me vẫn trả "Admin", nhưng dữ liệu vẫn nên đúng mô hình:
+DELETE FROM user_roles ur
+USING users u, roles r
+WHERE ur.user_id = u.id AND ur.role_id = r.id
+  AND u.normalized_email = 'ADMIN@ISAS.LOCAL' AND r.normalized_name = 'CANDIDATE';
 SQL
 ```
 > (c) **Login lại** sau khi nâng role → JWT mới mang `Admin` (role gắn vào token lúc login). Xong: `admin@` gọi được `POST/PUT/DELETE /payment/package…` (A5, `Roles="Admin"`) + `admin/invoices/close`.
+>
+> ⚠ **Vì sao phải DELETE Candidate:** trước 2026-09-12, `/auth/me`, `ListAllUsers`, `ToAdminUserResponse` lấy
+> `.FirstOrDefault()` theo thứ tự Postgres trả về — trên dev admin@ nhận `role: "Candidate"` và FE (`RequireRole`)
+> chặn admin khỏi **toàn bộ** trang admin dù JWT có claim Admin. BE nay chọn theo đặc quyền, nhưng một user hai
+> role vẫn là dữ liệu lệch mô hình (đổi role qua API admin sẽ xoá cả hai rồi gán một).
 >
 > ⚠ `scripts/seed-test-users.sql` **chỉ `UPDATE password_hash`** cho row **đã tồn tại** (`hr@`/`admin@`) — nó **KHÔNG tạo** user. Phải register (bước a) hoặc dùng `seed-admin.sql` riêng (không có trong repo — chứa hash prod) trước.
 
