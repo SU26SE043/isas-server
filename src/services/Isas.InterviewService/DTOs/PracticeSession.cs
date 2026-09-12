@@ -90,7 +90,13 @@ public record CampaignCriterionInput(
     // RNK1 · HĐ-5 — campaign_criteria.id (khoá JSON `criterionId`). Ghi vào
     // rubric_criteria.source_criterion_id lúc materialize ⇒ snapshot chấm khớp điểm sàn read-time
     // theo id. null = bản Campaign cũ chưa gửi. Optional ở CUỐI record.
-    Guid? CriterionId = null
+    Guid? CriterionId = null,
+    // SC2 (W4) — phạm vi chấm của tiêu chí (khoá JSON `scoringScope`): "Always" | "WhenTargeted",
+    // so KHÔNG phân biệt hoa/thường. Vắng (bản Campaign cũ) ⇒ Always = hành vi hôm nay; giá trị LẠ
+    // ⇒ Always + LogWarning (chiều mặc định an toàn là "chấm thừa", không phải "bỏ chấm" — xem
+    // Enums.ScoringScope). Là STRING chứ không phải enum để bản Campaign gửi chữ sai không làm
+    // request vỡ 400 ở tầng bind rồi chặn cả buổi thi. Optional ở CUỐI record.
+    string? ScoringScope = null
 );
 
 // I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).
@@ -98,7 +104,18 @@ public record CampaignCriterionInput(
 // Phỏng vấn THÍCH ỨNG (B2B): Adaptive*/MaxFollowUps/MaxQuestions do Campaign/HR bật (optional; null = tắt).
 // Seed = toàn bộ campaign questions (ai cũng nhận) → câu thích ứng thêm ở đuôi, chấm theo CÙNG tiêu chí.
 /// <summary>Một câu campaign kèm đáp án mẫu HR soạn (null = chưa soạn).</summary>
-public record CampaignQuestionInput(string Text, string? SampleAnswer = null);
+/// <param name="TargetCriterionIds">
+/// SC2 (W4) — nhãn tiêu chí NỘI DUNG câu này nhắm tới, là id <b>campaign_criteria</b> (phía Campaign),
+/// khoá JSON <c>targetCriterionIds</c>. Interview map sang <c>rubric_criteria.id</c> qua
+/// <c>source_criterion_id</c> lúc materialize. 🔑 GIỮ ĐÚNG 3 TRẠNG THÁI (xem
+/// <c>Entities.PracticeQuestion.TargetCriterionIds</c>): <c>null</c>/vắng = không nhãn ⇒ chấm đủ
+/// rubric (bản Campaign cũ) · <c>[]</c> = đã gắn, câu không nhắm tiêu chí nội dung nào ⇒ chỉ tiêu chí
+/// <c>Always</c> · non-empty = nhắm đúng những id đó. Optional ở CUỐI record.
+/// </param>
+public record CampaignQuestionInput(
+    string Text,
+    string? SampleAnswer = null,
+    IReadOnlyList<Guid>? TargetCriterionIds = null);
 
 public record CreateCampaignSessionRequest(
     Guid CampaignId,

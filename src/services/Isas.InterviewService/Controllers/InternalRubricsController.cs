@@ -31,9 +31,10 @@ public class InternalRubricsController(
     /// <para><b>KHÔNG trả <c>id</c></b>: id của Interview vô nghĩa với Campaign — nó chép nội dung về
     /// và mint id riêng, nên gửi id sang chỉ mời người ta lưu một tham chiếu chết.</para>
     ///
-    /// <para><b>KHÔNG trả <c>scoringScope</c></b>: Campaign không có cột tương ứng và đường chấm B2B
-    /// chấm MỌI tiêu chí ở mọi câu (INT-18 chỉ áp cho B2C). Thêm một cột mà đường chấm không đọc là
-    /// một cột nói dối.</para>
+    /// <para><b>Trả <c>scoringScope</c></b> (SC2 · W5, đảo quyết định cũ "không trả"): từ SC2 Campaign
+    /// CÓ cột tương ứng và gửi nó ngược lại lúc tạo buổi (W4) ⇒ bộ lọc INT-18 áp cho B2B thật sự thu
+    /// hẹp. Không trả nữa thì "Dùng bộ chuẩn" chép về 7 tiêu chí toàn <c>Always</c> — chính hình dạng
+    /// SC2 đang sửa. Chuỗi enum (<c>Always</c> | <c>WhenTargeted</c>), KHÔNG số.</para>
     /// </summary>
     [HttpGet("internal/rubrics/b2c")]
     [AllowAnonymous]
@@ -72,6 +73,8 @@ public class InternalRubricsController(
                 description = c.Description,
                 weight = c.Weight,
                 maxScore = c.MaxScore,
+                // SC2 · W5 — phạm vi chấm để Campaign chép về campaign_criteria.scoring_scope.
+                scoringScope = c.ScoringScope.ToString(),
                 // `.Include()` KHÔNG bảo đảm thứ tự — sắp ở đây thay vì tin vào DB, nếu không bên nhận
                 // sẽ thấy mốc lộn xộn trên Postgres mà đúng thứ tự trên SQLite.
                 levels = c.Levels.OrderBy(l => l.Score)
