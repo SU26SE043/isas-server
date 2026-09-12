@@ -50,14 +50,15 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 | PUT | `/campaign/{id}` | Sửa campaign (check ownership). Body có thể gồm **🔜 `jdText?`/`criteriaText?`** (text) và **🔜 `criteria?`** (`CriterionItem[]` structured) để cập nhật/ghi đè JD/Criteria. **CMP4-B2 — `domain` + `language` khoá bởi CÙNG thước với 3 luật lọc cứng + `PUT /job-needs` (CMP4-B1): có `cv_submission` NÀO / `Closed`/`Archived` → **409**. Trước đó `domain` không có cửa nào, `language` chỉ 409 khi `≠ Draft`. `language` sai thang → 400. `seniority` vẫn `≠ Draft → 409` riêng. **CMP4-B3 — `startsAt` chỉ đổi khi `Draft`; Active → **409** (đi qua `POST /campaign/{id}/start-now`). `expiresAt` KHÔNG bị khoá |
 | POST | `/campaign/{id}/start-now` | **CMP3-B4** kéo `start_at` về hiện tại (không body). Không Active / có ca thi → **409**. **CMP4-B3 — `expires_at` đã qua → **409** (start-now KHÔNG tự dời hạn). `start_at` quá khứ → no-op. Hợp lệ → 1 audit `StartEarly` (mốc cũ) + outbox `OpenedEarly` cho lời mời **chưa revoke · chưa hết hạn · `email_sent_at != null`** (CMP4-B5). Nhánh `OpenedEarly` của consumer: dedup theo messageId (in-process TTL 6h, route A) + trần thất bại `OpenedEarlyEmail:MaxAttempts` (5) → thôi requeue; nhánh thư mời KHÔNG đụng |
 | PUT | `/campaign/{id}/files` | Thay JD/Criteria (xóa file cũ) |
-| PUT | `/campaign/{id}/questions` | Thay toàn bộ câu hỏi. Body `List<QuestionItem>` |
+| PUT | `/campaign/{id}/questions` | Thay toàn bộ câu hỏi. Body `List<QuestionItem>`. Ngoài `Draft` → 409. **SC2 · W1 — `targetCriterionIds` BA trạng thái:** VẮNG ⇒ GIỮ · `[]` ⇒ XOÁ (lưu `[]` = "đã xét, không nhắm" ⇒ chỉ chấm `Always`; KHÔNG về `null`) · `[ids]` ⇒ THAY; id ∉ `campaign_criteria` ⇒ **400 nêu id**, 0 row ghi |
 | POST | `/campaign/{id}/questions/generate` | **✅ F9 (FR11)** AI sinh câu hỏi từ **JD của campaign** → lưu `source=AiGenerated`, trả `CampaignResponse`. Query `?count=` (1..20; bỏ trống = mặc định AIService). **Thay lượt AI trước đó, GIỮ câu `CustomHr` HR gõ tay** (bấm nhiều lần không cộng dồn). Gọi AIService `POST /api/v1/generate-questions` (JD là **DỮ LIỆU** — AIService bọc delimiter chống prompt-injection, AI-4; AIService không ghi DB, GEN-4). **400** chưa có `jdText` / JD > 20.000 ký tự (CAMP-5) / `count` ngoài 1..20 — guard **TRƯỚC** khi tốn 1 lời gọi AI · **404** ngoài org · **409** campaign không ở `Draft` (CAMP-2) · **502** AIService lỗi hoặc không sinh được câu nào (đề đang có **KHÔNG** bị xoá) |
 | DELETE | `/campaign/{id}` | **Soft delete** (set `deleted_at`) — giữ lịch sử/audit; file SeaweedFS purge sau 90 ngày bằng cronjob |
 | POST | `/campaign/{id}/publish` | **✅ C8** Draft→Active + sinh `campaign_criteria` (Σweight=1) + ghi `audit_logs`. **🔜 C12:** có `criteria[]` HR khai thẳng → dùng luôn (bỏ qua AI); không có → AI `/suggest-criteria` (Gemini + fallback). Sai trạng thái/thiếu câu hỏi → 409 |
 | PUT | `/campaign/{id}/status` | **✅ C7** transition Active→Closed→Archived (bước sai → 409). Body `{ status }` |
 
-`QuestionItem`: `{ questionText, source: "AiGenerated"|"CustomHr", isRequired }`.
-`CriterionItem` 🔜: `{ name: string, description?: string, weight: decimal(5,4), maxScore: int }` — tiêu chí **CÓ CẤU TRÚC** HR nhập thẳng (Σweight=1).
+`QuestionItem`: `{ id?, questionText, source: "AiGenerated"|"CustomHr" (server sở hữu, F10), isRequired, sampleAnswer?, questionGroup?, targetCriterionIds?: uuid[] (SC2 · W1 — 3 trạng thái: vắng = giữ · `[]` = xoá (lưu `[]`) · `[ids]` = thay; id lạ → 400) }`.
+`CriterionItem` 🔜: `{ id?, name: string, description?: string, weight: decimal(5,4), maxScore: int, minPct?, scoringScope?: "Always"|"WhenTargeted" (SC2 · W1 — vắng ⇒ Always; lạ → 400; VÀO vân tay ⇒ đổi khi Active bump `rubric_version`), levels? }` — tiêu chí **CÓ CẤU TRÚC** HR nhập thẳng (Σweight=1).
+> **SC2 · W1 (2026-09-13):** `GET /campaign/{id}` trả `criteria[].scoringScope` (hàng cũ `"Always"`) và **luôn** trả `questions[].targetCriterionIds` (`null` = chưa gắn ⇒ Interview chấm đủ bộ · `[]` = câu xã giao ⇒ chỉ `Always` · `[ids]` = nhắm) — FE echo NGUYÊN khi PUT, `null` ≠ `[]`. `PUT /campaign` xoá tiêu chí ⇒ nhãn trỏ tới nó bị **CẮT** (chỉ id chết, cùng transaction). `POST /criteria/from-system-default` chép `scoringScope` từ bộ chuẩn (W5) + xoá nhãn MỌI câu về `null` + audit **`ClearQuestionTargets`**.
 
 > **🔜 Nguồn JD & Criteria — nhập text/structured, KHÔNG bắt buộc PDF.** `*_text` là nguồn chung; AI sinh câu hỏi + đề xuất tiêu chí đọc `jd_text`/`criteria_text` **bất kể nguồn**.
 > - **JD** — 2 cách: (a) **text** `jdText` → `jd_text` (`jd_file_url=null`); (b) **PDF** `jdFile` → parse → `jd_text`.
@@ -282,14 +283,15 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | description | text? | mô tả mức điểm (optional) |
 | weight | numeric(5,4) | **0 < weight ≤ 1** — ✅ **DB15 CHECK `ck_campaign_criteria_weight_range` (`weight > 0 AND weight <= 1`)** enforce tầng DB; Σ/campaign **≈ 1** — **KHÔNG ép DB = 1** (làm tròn 4 chữ số khó khít, vd 0.3333×3 = 0.9999); điểm tổng **chuẩn hoá chia Σweight** ([interview.md](interview.md) §BC9) nên Σ lệch ±ε vẫn đúng. ⚠ follow-up: normalize làm tròn có thể ra `0.0000` (input tiêu chí lệch cực đoan) → vi phạm CHECK; hiện chưa có đường code tạo được |
 | max_score | int | **≥ 1** |
-| source | varchar(16) | enum: `AiSuggested` · `HrEdited` (HR khai `criteria[]` structured 🔜 = `HrEdited`) |
+| source | varchar(16) | enum: `AiSuggested` · `HrEdited` (HR khai `criteria[]` structured 🔜 = `HrEdited`) · `SystemDefault` (CAMP-20) |
+| scoring_scope | varchar(16) | ✅ **SC2 · W1** (migration `AddScoringScopeAndQuestionTargetsSc2`) — `Always` (chấm mọi câu) · `WhenTargeted` (chỉ khi `campaign_questions.target_criterion_ids` nhắm tới; không nhắm ⇒ loại khỏi điểm câu đó — INT-18). **NOT NULL DEFAULT 'Always'** + CHECK `ck_campaign_criteria_scoring_scope`; hàng cũ = Always, không backfill. VÀO vân tay `RubricFingerprint` (khoá `Scope`) |
 | created_at / updated_at | timestamptz | `now()` |
 
 → Khi tạo session, gửi sang Interview để materialize thành `rubric_criteria(campaign_id)` (id phía Interview **khác** id ở đây — ref lỏng, copy giá trị `name`/`weight`/`max_score`).
 
 **🔜 Lưu structured `criteria[]` — CẨN THẬN:**
 - **Khi nào ghi:** create/update lúc campaign còn `Draft`; sau `Active` **khóa** sửa tiêu chí (C7 → **409**).
-- **Replace-all atomic:** PUT `criteria[]` = **xóa hết** `campaign_criteria` của campaign rồi **insert lại** trong **1 transaction** (như PUT questions) → không trộn bộ cũ/mới, không nửa vời. `order_no` đánh lại theo thứ tự gửi lên.
+- **Merge theo id, KHÔNG "xoá hết rồi insert lại"** (RNK1 · HĐ-5): echo `id` ⇒ UPDATE tại chỗ, id GIỮ; không echo ⇒ xoá (Cascade mốc; **SC2: cắt nhãn `target_criterion_ids` trỏ tới nó — chỉ id chết**); không id ⇒ INSERT mới. `order_no` đánh lại theo thứ tự gửi lên. Vẫn 1 transaction. *(Câu "xoá hết rồi insert lại" lệch code từ RNK1 — sửa 2026-09-13.)*
 - **Validate trước khi ghi (400 nếu hỏng):** ≥ 1 tiêu chí · `name` non-empty + **không trùng** trong campaign · `0 < weight ≤ 1` · `max_score ≥ 1` · `Σweight ∈ [0.99, 1.01]` (ngoài khoảng → **400**; trong khoảng → **chuẩn hoá Σ→1** rồi lưu).
 - **Audit:** ghi `audit_logs(action=EditCriteria)` mỗi lần đổi.
 - **Nơi đọc/gộp điểm:** **luôn chia `Σweight`** (đừng giả định = 1 tuyệt đối) — phòng sai số làm tròn.
@@ -365,7 +367,7 @@ campaign_rankings · session_integrity_events · audit_logs   (theo session/org)
 | created_at | timestamptz | `now()` |
 
 ### `audit_logs` — vết thao tác HR
-`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`/**`CreateApiKey`**/**`RevokeApiKey`**…) · `entity` · `entity_id` · `summary`/`diff?` · `at`.
+`id` · `org_id` · `actor_user_id` · `action` (`CreateCampaign`/`EditQuestions`/`EditCriteria`/`Publish`/`Delete`/`Reissue`/`ScreenCandidates`/**`CreateApiKey`**/**`RevokeApiKey`**/`ApplyScoringPolicy`/`StartEarly`/**`ClearQuestionTargets`** (SC2)…) · `entity` · `entity_id` · `summary`/`diff?` · `at`. CHECK `ck_audit_logs_action` là danh sách ĐÓNG — thêm action = migration nới CHECK.
 
 ### `api_keys` — ✅ F17 (API key bên thứ ba, migration `AddApiKeysF17`)
 | Cột | Kiểu | Ghi chú |

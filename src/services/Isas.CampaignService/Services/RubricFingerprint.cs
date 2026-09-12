@@ -23,7 +23,8 @@ namespace Isas.CampaignService.Services
                 c.MaxScore,
                 (c.Levels ?? new List<CampaignCriterionLevel>())
                     .Select(l => new RubricLevelSnapshot(l.Score, l.Descriptor))
-                    .ToList()));
+                    .ToList(),
+                c.ScoringScope.ToString()));   // SC2 — scope vào vân tay (đổi khi Active ⇒ bump)
 
         /// <param name="includeLevels">
         /// <c>false</c> = chỉ phần LÕI (tên/mô tả/trọng số/thang). Dùng để phân biệt "HR chỉ sửa mốc"

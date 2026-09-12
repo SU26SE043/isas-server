@@ -15,7 +15,12 @@ public sealed record RubricCriterionSnapshot(
     string? Description,
     decimal Weight,
     int MaxScore,
-    IReadOnlyList<RubricLevelSnapshot> Levels);
+    IReadOnlyList<RubricLevelSnapshot> Levels,
+    // SC2 — phạm vi chấm ("Always" | "WhenTargeted"). Tham số CUỐI có mặc định để call-site 6-tham-số
+    // đang có (Interview admin B2C — admin KHÔNG sửa được scope, BC-8) vẫn biên dịch và vẫn băm ra
+    // cùng vân tay cho cùng bộ. Campaign truyền enum.ToString(). Thứ tự khoá JSON do CanonicalCriterion
+    // quyết (Scope đứng SAU MaxScore), không phải thứ tự param ở đây.
+    string Scope = "Always");
 
 /// <summary>Một mốc điểm: <paramref name="Score"/> và mô tả "thế nào là được ngần này điểm".</summary>
 public sealed record RubricLevelSnapshot(int Score, string Descriptor);
