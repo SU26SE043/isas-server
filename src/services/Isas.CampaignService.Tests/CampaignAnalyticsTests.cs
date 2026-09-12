@@ -258,6 +258,30 @@ public class CampaignAnalyticsTests
 
     // ── bất biến 1: org A không thấy org B ở MỌI khối ─────────────────────────────────────────────
 
+    // Supervisor mutation S1: `started` đếm theo `InterviewStatus != null` thay vì `SessionId != null` chạy qua
+    // XANH vì mọi fixture đặt cả hai cùng lúc. Hợp đồng định nghĩa started = session_id != null — khoá bằng
+    // hai dòng bất đối xứng: có session nhưng status null (dữ liệu cũ) PHẢI đếm; có status nhưng KHÔNG session
+    // (không thể xảy ra ở production, nhưng chính là ca phân biệt được hai định nghĩa) KHÔNG được đếm.
+    [Fact]
+    public async Task Started_DemTheoSessionId_KhongTheoInterviewStatus()
+    {
+        using var t = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var c = SeedCampaign(t.Db, org);
+        // Số đếm CỐ Ý bất đối xứng (2 session-không-status vs 1 status-không-session): fixture "1 và 1" cho
+        // hai định nghĩa ra cùng con số ⇒ mutation vẫn xanh (bẫy seed-trùng 2026-08-13, tự dính lượt đầu).
+        SeedMembership(t.Db, c.Id, sessionId: Guid.NewGuid(), interviewStatus: null);
+        SeedMembership(t.Db, c.Id, sessionId: Guid.NewGuid(), interviewStatus: null);
+        SeedMembership(t.Db, c.Id, sessionId: null, interviewStatus: InterviewProgressStatus.InProgress);
+
+        var res = await NewService(t.NewContext()).GetAsync(org, Period30d, default);
+
+        Assert.Equal(3, res.Interviews.Joined);
+        Assert.Equal(2, res.Interviews.Started);
+        var per = Assert.Single(res.PerCampaign);
+        Assert.Equal(2, per.Started);
+    }
+
     [Fact]
     public async Task OrgA_KhongThayOrgB_MoiKhoi()
     {
