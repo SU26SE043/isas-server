@@ -44,6 +44,7 @@ builder.Services.AddOpenApi(options =>
 });
 
 builder.Services.AddScoped<ICampaignService, CampaignService>();
+builder.Services.AddScoped<ICampaignAnalyticsService, CampaignAnalyticsService>();   // GET /campaign/analytics (employer, org-scoped)
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IFileService, FileService>();
 builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();   // DB17: shared PDF extractor

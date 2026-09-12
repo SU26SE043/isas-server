@@ -1695,26 +1695,11 @@ namespace Isas.CampaignService.Services
                 .Select(m => new { m.InvitationId, m.CvSubmissionId, m.Email, m.JoinedAt })
                 .ToListAsync(ct);
 
-            // FX1 — ghép CHÍNH XÁC theo quan hệ membership.invitation_id trước. Hai nhánh cũ (cv_submission_id
-            // rồi email) chỉ còn là FALLBACK cho membership LỊCH SỬ chưa có link (join trước FX1, và migration
-            // cố ý không backfill khi không chắc). Membership ĐÃ có link thì KHÔNG được ghép bằng email nữa —
-            // nếu không, lời mời thứ hai cùng email vẫn "thơm lây" trạng thái Joined của lời mời thứ nhất,
-            // tức là đúng cái suy đoán mà quan hệ này sinh ra để bỏ.
-            var joinedByInvitation = memberships
-                .Where(m => m.InvitationId is not null)
-                .GroupBy(m => m.InvitationId!.Value)
-                .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt));
-
-            // Email so case-insensitive vì đường-1 chỉ Trim() còn đường-2 đã lowercase từ C13.
-            var legacy = memberships.Where(m => m.InvitationId is null).ToList();
-            var joinedByCv = legacy
-                .Where(m => m.CvSubmissionId is not null)
-                .GroupBy(m => m.CvSubmissionId!.Value)
-                .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt));
-            var joinedByEmail = legacy
-                .Where(m => !string.IsNullOrWhiteSpace(m.Email))
-                .GroupBy(m => m.Email!.Trim(), StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(g => g.Key, g => g.Max(m => m.JoinedAt), StringComparer.OrdinalIgnoreCase);
+            // FX1 — ghép CHÍNH XÁC theo quan hệ membership.invitation_id trước; cv_submission_id rồi email chỉ là
+            // FALLBACK cho membership lịch sử chưa có link. Luật ghép sống ở CampaignResultRules.InvitationJoinIndex
+            // (dùng chung với analytics theo org) — đừng chép lại ở đây.
+            var joinIndex = new CampaignResultRules.InvitationJoinIndex(memberships.Select(m =>
+                new CampaignResultRules.MembershipJoinRow(m.InvitationId, m.CvSubmissionId, m.Email, m.JoinedAt)));
 
             // Ca thi của từng lời mời. Nạp MỘT lượt theo campaign thay vì join từng dòng: số ca
             // của một chiến dịch là hàng đơn vị, còn lời mời có thể tới hàng trăm.
@@ -1724,13 +1709,8 @@ namespace Isas.CampaignService.Services
 
             var items = invitations.Select(i =>
             {
-                var joined = joinedByInvitation.TryGetValue(i.Id, out var byInv)
-                    ? (found: true, at: byInv)
-                    : i.CampaignCandidateId is Guid ccid && joinedByCv.TryGetValue(ccid, out var byCv)
-                    ? (found: true, at: byCv)
-                    : joinedByEmail.TryGetValue(i.Email.Trim(), out var byEmail)
-                        ? (found: true, at: byEmail)
-                        : (found: false, at: (DateTime?)null);
+                var joinedFound = joinIndex.TryFind(i.Id, i.CampaignCandidateId, i.Email, out var joinedAt);
+                var joined = (found: joinedFound, at: joinedAt);
 
                 return new InvitationListItem
                 {
@@ -1777,15 +1757,10 @@ namespace Isas.CampaignService.Services
         }
 
         // Thứ tự ưu tiên có chủ ý (xem InvitationDeliveryStatus): Revoked đứng trước Joined để lời mời
-        // cũ sau reissue (D4) không hiện Joined nhờ lời mời MỚI cùng email.
+        // cũ sau reissue (D4) không hiện Joined nhờ lời mời MỚI cùng email. Luật sống ở CampaignResultRules
+        // (dùng chung với analytics theo org); đây chỉ là adapter nhận entity.
         private static string ResolveDeliveryStatus(CampaignInvitation i, bool joined, DateTime now)
-        {
-            if (i.RevokedAt is not null) return InvitationDeliveryStatus.Revoked;
-            if (joined) return InvitationDeliveryStatus.Joined;
-            if (i.ExpiresAt <= now) return InvitationDeliveryStatus.Expired;
-            if (i.EmailSentAt is not null) return InvitationDeliveryStatus.Sent;
-            return InvitationDeliveryStatus.Queued;
-        }
+            => CampaignResultRules.ResolveDeliveryStatus(i.RevokedAt, joined, i.ExpiresAt, i.EmailSentAt, now);
 
         // ── C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV ──────────────────
         // HR chọn top sau ranking (candidateIds) → mỗi ứng viên: TÁCH EMAIL TỪ CV
@@ -2031,6 +2006,9 @@ namespace Isas.CampaignService.Services
             var identityByCandidate = await GetIdentityByCandidateAsync(id, ct);
 
             var threshold = campaign.PassScorePct;
+            var cutoffCriteria = campaign.Criteria
+                .Select(c => new CampaignResultRules.CutoffCriterion(c.Id, c.Name, c.MinPct))
+                .ToList();
             var results = new List<CampaignResultRow>(ordered.Count);
             for (int i = 0; i < ordered.Count; i++)
             {
@@ -2048,7 +2026,7 @@ namespace Isas.CampaignService.Services
                 // RNK1 · HĐ-5 — điểm sàn theo tiêu chí, ĐỌC READ-TIME (không ghim vào snapshot ⇒ HR
                 // đổi min_pct là áp NGAY cho cả người đã thi). Rank KHÔNG đổi (sàn đổi KẾT LUẬN, không
                 // thứ tự). override thắng.
-                var belowCutoff = ComputeBelowCutoff(r.ScoringInputs, campaign.Criteria);
+                var belowCutoff = CampaignResultRules.ComputeBelowCutoff(r.ScoringInputs, cutoffCriteria);
 
                 results.Add(new CampaignResultRow
                 {
@@ -2059,11 +2037,9 @@ namespace Isas.CampaignService.Services
                     SessionId = r.SessionId,
                     TotalScore = effectiveScore,   // điểm effective (đã áp override); FE có AiScore để đối chiếu
                     // Pass/fail: HR override thắng; else rớt SÀN nào ⇒ Fail; else so ngưỡng Employer
-                    // (CAMP-11); ngưỡng null → null.
-                    Result = r.OverrideResult
-                        ?? (belowCutoff.Count > 0 ? "Fail"
-                            : threshold is null ? null
-                            : effectiveScore >= threshold.Value ? "Pass" : "Fail"),
+                    // (CAMP-11); ngưỡng null → null. Luật sống ở CampaignResultRules (dùng chung với analytics).
+                    Result = CampaignResultRules.ResolveResult(
+                        r.OverrideResult, belowCutoff.Count, threshold, effectiveScore),
                     ScoredAt = r.UpdatedAt,
                     RubricVersion = r.RubricVersion,   // CAMP-18: null = không biết (KHÔNG suy ra v1)
                     PolicyVersion = r.PolicyVersion,   // SCP1/HĐ-5 — chính sách chấm đã áp (null = mặc định)
@@ -2437,51 +2413,8 @@ namespace Isas.CampaignService.Services
                 });
         }
 
-        // RNK1 · HĐ-5 — điểm sàn theo tiêu chí, READ-TIME. Với mỗi tiêu chí trong bó biến (snapshot),
-        // khớp về campaign_criteria: có `criterionId` ⇒ khớp theo id (matchedBy "id"); snapshot GHI
-        // TRƯỚC RNK1 không có id ⇒ khớp theo TÊN (Trim / OrdinalIgnoreCase, matchedBy "name"). Tiêu chí
-        // khớp có `min_pct` và `pct < min_pct` ⇒ dòng đó rớt sàn.
-        //
-        // KHÔNG ghim sàn vào snapshot: `min_pct` phải đổi được lúc chạy (như pass_score_pct), nên phải
-        // đọc từ campaign_criteria HIỆN TẠI, không phải giá trị lúc buổi thi đóng.
-        private static List<BelowCutoffItem> ComputeBelowCutoff(
-            ScoringInputsSnapshot? snapshot, IEnumerable<CampaignCriterion> criteria)
-        {
-            var result = new List<BelowCutoffItem>();
-            if (snapshot?.Criteria is not { Count: > 0 } snapCriteria) return result;
-
-            var byId = criteria.ToDictionary(c => c.Id);
-            var byName = new Dictionary<string, CampaignCriterion>(StringComparer.OrdinalIgnoreCase);
-            foreach (var c in criteria) byName.TryAdd(c.Name.Trim(), c);
-
-            foreach (var sc in snapCriteria)
-            {
-                CampaignCriterion? match;
-                string matchedBy;
-                if (sc.CriterionId is Guid cid && byId.TryGetValue(cid, out var byIdMatch))
-                {
-                    match = byIdMatch;
-                    matchedBy = "id";
-                }
-                else if (byName.TryGetValue((sc.Name ?? string.Empty).Trim(), out var byNameMatch))
-                {
-                    match = byNameMatch;
-                    matchedBy = "name";
-                }
-                else continue;
-
-                if (match.MinPct is int minPct && sc.Pct < minPct)
-                    result.Add(new BelowCutoffItem
-                    {
-                        CriterionId = match.Id,
-                        Name = match.Name,
-                        Pct = sc.Pct,
-                        MinPct = minPct,
-                        MatchedBy = matchedBy,
-                    });
-            }
-            return result;
-        }
+        // RNK1 · HĐ-5 — điểm sàn theo tiêu chí: xem CampaignResultRules.ComputeBelowCutoff (dùng chung với
+        // analytics theo org — một nguồn sự thật cho luật kết luận).
 
         // ── E6: xuất bảng kết quả (E5) ra file ──────────────────────────────
         // Tái dùng NGUYÊN VẸN GetCampaignResultsAsync (E5) → thứ tự + rank + pass/fail y hệt bảng web,
