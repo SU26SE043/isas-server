@@ -327,10 +327,11 @@ def build_prompt(job_category: str, cv_text: str | None,
                  criteria_context: list[dict] | None = None) -> str:
     """Prompt SINH CÂU HỎI.
 
-    ``criteria`` (chấm-theo-phạm-vi) = tập tiêu chí NỘI DUNG ``[{criterionId, name}]``; có thì mỗi
-    câu hỏi phải kèm ``targetCriterionIds`` — tiêu chí mà câu ĐÓ thực sự đánh giá. Vắng/None ⇒
-    prompt GIỮ NGUYÊN XI (không thêm một chữ nào), đúng mẫu ``criteria`` của C14 ở
-    :func:`build_cv_analysis_prompt`.
+    ``criteria`` (chấm-theo-phạm-vi) = tập tiêu chí NỘI DUNG ``[{criterionId, name, description?}]``;
+    có thì mỗi câu hỏi phải kèm ``targetCriterionIds`` — tiêu chí mà câu ĐÓ thực sự đánh giá.
+    ``description`` (SC2, tuỳ chọn) kèm vào dòng liệt kê khi có (tên HR gõ cho B2B thường ngắn/mơ
+    hồ hơn tên B2C soạn sẵn). Vắng/None ⇒ prompt GIỮ NGUYÊN XI (không thêm một chữ nào), đúng mẫu
+    ``criteria`` của C14 ở :func:`build_cv_analysis_prompt`.
 
     ``lesson_context`` = ``{title, outline}`` của bài học lộ trình sinh ra buổi này. Vắng/None ⇒
     prompt GIỮ NGUYÊN XI (không thêm một chữ nào) — mọi caller cũ (luyện tự do, campaign B2B) không
@@ -583,11 +584,20 @@ def build_prompt(job_category: str, cv_text: str | None,
     # Tên tiêu chí là DỮ LIỆU chứ không phải chỉ thị (AI-4): B2C cho ứng viên tự CRUD rubric
     # (BC16) nên chính ứng viên đặt được chuỗi này — y hệt lý do khối focus_criteria ở trên
     # phải bọc delimiter.
+    #
+    # SC2 — B2B: tên HR gõ (vd "Xử lý lỗi") thường ngắn/mơ hồ hơn tên B2C soạn sẵn ⇒ kèm
+    # `description` khi có (mẫu `criteria_context_lines` ngay dưới: `- tên: mô tả`), CÙNG một
+    # dòng nên vẫn nằm trong đúng khối DỮ LIỆU đã bọc delimiter — không mở khe injection mới.
+    # Vắng ⇒ dòng giữ NGUYÊN XI như trước (chỉ criterionId+tên), không đổi một byte.
     if criteria:
-        lines = "\n".join(
-            f'- criterionId="{c.get("criterionId")}" | tiêu chí: {c.get("name")}'
-            for c in criteria
-        )
+        def _criterion_line(c: dict) -> str:
+            line = f'- criterionId="{c.get("criterionId")}" | tiêu chí: {c.get("name")}'
+            desc = str((c or {}).get("description") or "").strip()
+            if desc:
+                line += f": {desc}"
+            return line
+
+        lines = "\n".join(_criterion_line(c) for c in criteria)
         parts.append(
             "GẮN NHÃN PHẠM VI ĐÁNH GIÁ — với MỖI câu hỏi, liệt kê targetCriterionIds gồm các "
             "tiêu chí NỘI DUNG mà chính câu hỏi đó thực sự kiểm tra được:\n"

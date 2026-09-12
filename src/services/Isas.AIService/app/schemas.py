@@ -43,11 +43,20 @@ class CriterionRef(BaseModel):
     ``name`` để model hiểu tiêu chí nói về cái gì mà quyết định câu hỏi có nhắm tới nó không.
     KHÔNG mang ``maxScore``/``weight``: đây là bài toán GẮN NHÃN PHẠM VI, không phải chấm điểm.
 
+    ``description`` (SC2, tuỳ chọn) — B2B: tên tiêu chí do HR tự gõ (vd "Xử lý lỗi") thường ngắn
+    và mơ hồ hơn tên tiêu chí B2C do hệ thống soạn sẵn, nên khi có mô tả HR gõ thì IN VÀO PROMPT
+    kèm tên để model hiểu đúng phạm vi (mẫu ``description`` của :class:`CriterionContext` ngay
+    dưới — cùng dữ liệu, khác mục đích: ở đó là BỐI CẢNH không đòi nhãn, ở đây là chú thích thêm
+    cho một tiêu chí BẮT BUỘC phải gắn nhãn). Vắng/None ⇒ dòng liệt kê GIỮ NGUYÊN XI như trước
+    (chỉ ``criterionId``+``name``) — bất biến ``không criteria ⇒ không đổi một byte`` không đụng
+    tới trường mới này theo bất kỳ hướng nào.
+
     ⚠ 4 tiêu chí CÁCH NÓI (giao tiếp / trôi chảy / ngữ pháp / thuật ngữ) KHÔNG đi qua đây —
     chúng luôn chấm ở mọi câu nên .NET không gửi xuống, và model không có cửa nào loại chúng.
     """
     criterionId: str
     name: str
+    description: str | None = None
 
 
 class CriterionContext(BaseModel):
