@@ -210,6 +210,13 @@ namespace Isas.CampaignService.Services
                 AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id, $"Khai {campaign.Criteria.Count} tiêu chí (HrEdited)");
             }
 
+            // SC2 · W1 — nhãn tiêu chí của câu hỏi lúc TẠO: id tiêu chí được mint ngay trong request này
+            // nên client không thể biết trước ⇒ [ids] gần như chắc chắn 400 (id lạ); null/[] vẫn đi qua
+            // với đúng nghĩa (null = chưa gắn, [] = đã xét không nhắm). Cùng validator với PUT /questions.
+            var createdCriterionIds = (IReadOnlySet<Guid>)campaign.Criteria.Select(c => c.Id).ToHashSet();
+            foreach (var (q, item) in campaign.Questions.Zip(request.Questions))
+                q.TargetCriterionIds = NormalizeTargetCriterionIds(item.TargetCriterionIds, createdCriterionIds, campaign.Id);
+
             // ── 4. Persist campaign + audit (C10) ───────────────
             _db.Campaigns.Add(campaign);
             AddAudit(actorUserId, orgId, AuditAction.CreateCampaign, campaign.Id, $"Tạo campaign '{campaign.Title}'");
@@ -713,10 +720,16 @@ namespace Isas.CampaignService.Services
                 _db.CampaignCriteria.AddRange(added);
                 // tiêu chí id-cũ (giao của hai tập) đã tracked + đã mutate ⇒ EF tự UPDATE.
 
+                // SC2 · W1 — tiêu chí bị xoá ⇒ nhãn câu hỏi trỏ tới nó bị CẮT, cùng SaveChanges (không
+                // để lại id chết trong target_criterion_ids: Interview map hụt ⇒ bỏ + warning, còn FE
+                // hiện một tiêu chí không tồn tại). Chỉ cắt id KHÔNG còn trong bộ; id còn sống giữ nguyên.
+                var cutQuestions = TrimDanglingQuestionTargets(campaign.Questions, keptIds);
+
                 AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id,
-                    bumped
+                    (bumped
                         ? $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited) — thước đo v{campaign.RubricVersion - 1} → v{campaign.RubricVersion}"
-                        : $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited)");
+                        : $"Ghi đè {rebuiltCriteria.Count} tiêu chí (HrEdited)")
+                    + (cutQuestions > 0 ? $" — cắt nhãn tiêu chí đã xoá khỏi {cutQuestions} câu hỏi" : ""));
                 await _db.SaveChangesAsync(ct);
                 campaign.Criteria = rebuiltCriteria;                 // đồng bộ nav cho response
             }
@@ -811,9 +824,23 @@ namespace Isas.CampaignService.Services
             var fresh = new List<CampaignQuestion>();
             var now = DateTime.UtcNow;
 
+            // SC2 · W1 — tập id tiêu chí HIỆN TẠI để validate targetCriterionIds (id lạ → 400 nêu id).
+            // Truy vấn riêng chỉ id (không Include Criteria+Levels vào campaign) — response của PUT
+            // /questions giữ nguyên hình dạng như trước; chỉ chạy khi có câu gửi nhãn.
+            IReadOnlySet<Guid>? criterionIds = null;
+            async Task<IReadOnlySet<Guid>> CriterionIdsAsync()
+                => criterionIds ??= (await _db.CampaignCriteria
+                    .Where(c => c.CampaignId == id).Select(c => c.Id).ToListAsync(ct)).ToHashSet();
+
             foreach (var item in questions)
             {
                 var text = item.QuestionText.Trim();
+
+                // SC2 · W1 — BA trạng thái: null = KHÔNG ĐỔI (câu cũ) / chưa gắn (câu mới) · [] = xoá
+                // (lưu [] — "đã xét, không nhắm") · [ids] = thay. Validate TRƯỚC khi đụng row nào.
+                var targets = item.TargetCriterionIds is null
+                    ? null
+                    : NormalizeTargetCriterionIds(item.TargetCriterionIds, await CriterionIdsAsync(), id);
 
                 if (item.Id is Guid qid && qid != Guid.Empty)
                 {
@@ -856,6 +883,10 @@ namespace Isas.CampaignService.Services
                     row.IsRequired = item.IsRequired;
                     row.SampleAnswer = newAnswer;
                     row.QuestionGroup = newGroup;
+                    // SC2 · W1 — vắng (null) ⇒ GIỮ NGUYÊN nhãn đang có (FE cũ không biết field, không được
+                    // xoá hộ); [] hoặc [ids] ⇒ thay bằng đúng giá trị đã chuẩn hoá.
+                    if (item.TargetCriterionIds is not null)
+                        row.TargetCriterionIds = targets;
                     // KHÔNG gán row.Source: nguồn gốc là sự thật do server ghi lúc tạo (F9 = AiGenerated,
                     // HR gõ tay = CustomHr). Cho client ghi đè thì nhãn nguồn thành lời khai tự do.
                     // KHÔNG gán row.CreatedAt: thứ tự bài thi sắp theo (CreatedAt, Id) — xem ParticipationService.
@@ -872,6 +903,7 @@ namespace Isas.CampaignService.Services
                         IsRequired = item.IsRequired,
                         SampleAnswer = NormalizeOptionalText(item.SampleAnswer),
                         QuestionGroup = NormalizeOptionalText(item.QuestionGroup),
+                        TargetCriterionIds = targets,   // SC2: câu mới — null = chưa gắn, [] / [ids] giữ nguyên nghĩa
                         // Mỗi câu mới lệch nhau 1ms. Trước đây mọi row `fresh` nhận CÙNG một `now`, mà
                         // thứ tự đọc ra là (CreatedAt, Id) ⇒ tie-break rơi vào Guid.NewGuid() NGẪU NHIÊN.
                         // Thêm 1-2 câu thì không ai thấy; nhập 50 dòng từ file là thứ tự HR soạn bị TRỘN,
@@ -1247,6 +1279,8 @@ namespace Isas.CampaignService.Services
                     Description = c.Description,
                     Weight = c.Weight,
                     MaxScore = c.MaxScore,
+                    // SC2 · W5 — phạm vi chấm đi theo bộ chuẩn (client đã chuẩn hoá: vắng/lạ ⇒ Always).
+                    ScoringScope = c.ScoringScope,
                     // RNK1 · HĐ-5 — bộ chuẩn không mang điểm sàn (đó là luật kết luận của HR, không phải
                     // thước đo). from-system-default ⇒ MinPct null (HR đặt sau qua PUT nếu cần).
                     MinPct = null,
@@ -1292,13 +1326,29 @@ namespace Isas.CampaignService.Services
             _db.CampaignCriteria.RemoveRange(campaign.Criteria);
             _db.CampaignCriteria.AddRange(rebuilt);
 
+            // SC2 · W1 — bộ mới mint id mới ⇒ MỌI nhãn target_criterion_ids đang có đều trỏ vào id sắp
+            // chết. Về null ("chưa gắn nhãn" ⇒ Interview chấm đủ bộ), KHÔNG về [] ("đã xét, không nhắm"):
+            // HR chưa xét gì trên bộ mới cả. Cùng SaveChanges với replace-all; có audit riêng
+            // ClearQuestionTargets (chỉ ghi khi thật sự có nhãn bị xoá — audit là vết của thay đổi).
+            var clearedQuestions = 0;
+            foreach (var q in campaign.Questions)
+            {
+                if (q.TargetCriterionIds is null) continue;
+                q.TargetCriterionIds = null;
+                clearedQuestions++;
+            }
+
             campaign.UpdatedAt = DateTime.UtcNow;
-            // AuditAction.EditCriteria (không thêm action mới — CHECK ck_audit_logs_action là danh sách
-            // đóng). Summary nói ra ĐÃ CHÉP TỪ ĐÂU: "bản 3 của bộ chuẩn BE/vi" là thông tin duy nhất
-            // cho phép truy ngược vì sao thước đo của chiến dịch này trông như vậy.
+            // AuditAction.EditCriteria cho việc chép. Summary nói ra ĐÃ CHÉP TỪ ĐÂU: "bản 3 của bộ chuẩn
+            // BE/vi" là thông tin duy nhất cho phép truy ngược vì sao thước đo của chiến dịch này trông
+            // như vậy.
             AddAudit(actorUserId, orgId, AuditAction.EditCriteria, campaign.Id,
                 $"Chép {rebuilt.Count} tiêu chí từ bộ chuẩn {jobCategory}/{language} bản v{rubric.Version}" +
                 (bumped ? $" — thước đo v{campaign.RubricVersion - 1} → v{campaign.RubricVersion}" : ""));
+            if (clearedQuestions > 0)
+                AddAudit(actorUserId, orgId, AuditAction.ClearQuestionTargets, campaign.Id,
+                    $"Xoá nhãn tiêu chí (targetCriterionIds) của {clearedQuestions} câu hỏi — " +
+                    $"bộ chuẩn {jobCategory}/{language} chép về mint id tiêu chí mới");
 
             await _db.SaveChangesAsync(ct);
             campaign.Criteria = rebuilt;   // đồng bộ nav cho response (bộ cũ đã xoá)
@@ -3278,7 +3328,7 @@ namespace Isas.CampaignService.Services
             var existingById = existingList.ToDictionary(c => c.Id);
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var cleaned = new List<(Guid? Id, string Name, string? Description, decimal Weight, int MaxScore, int? MinPct, List<CriterionLevelItem>? Levels)>();
+            var cleaned = new List<(Guid? Id, string Name, string? Description, decimal Weight, int MaxScore, int? MinPct, CriterionScoringScope Scope, List<CriterionLevelItem>? Levels)>();
             foreach (var item in items)
             {
                 var name = item.Name?.Trim() ?? string.Empty;
@@ -3300,7 +3350,12 @@ namespace Isas.CampaignService.Services
 
                 cleaned.Add((item.Id, name,
                     string.IsNullOrWhiteSpace(item.Description) ? null : item.Description!.Trim(),
-                    item.Weight, item.MaxScore, item.MinPct, item.Levels));
+                    item.Weight, item.MaxScore, item.MinPct,
+                    // SC2 · W1 — vắng ⇒ Always (hành vi cũ), lạ ⇒ 400 nêu tên. KHÔNG carry-over theo tên như
+                    // levels: hợp đồng W1 chốt "vắng = Always", và phạm vi chấm không có ca "FE cũ xoá mất"
+                    // nguy hiểm như mốc — mặc định Always chỉ làm chấm THỪA, không bỏ chấm (INT-18).
+                    ParseScoringScope(item.ScoringScope, name),
+                    item.Levels));
             }
 
             var total = cleaned.Sum(c => c.Weight);
@@ -3326,6 +3381,7 @@ namespace Isas.CampaignService.Services
                     reuse.Weight = weight;
                     reuse.MaxScore = c.MaxScore;
                     reuse.MinPct = c.MinPct;
+                    reuse.ScoringScope = c.Scope;          // SC2 · W1
                     reuse.Source = source;
                     reuse.UpdatedAt = now;
                     criteria.Add(reuse);
@@ -3342,6 +3398,7 @@ namespace Isas.CampaignService.Services
                         Weight = weight,
                         MaxScore = c.MaxScore,
                         MinPct = c.MinPct,
+                        ScoringScope = c.Scope,               // SC2 · W1
                         Source = source,
                         CreatedAt = now,
                         UpdatedAt = now
@@ -3377,6 +3434,66 @@ namespace Isas.CampaignService.Services
             }
 
             return criteria;
+        }
+
+        /// <summary>
+        /// SC2 · W1 — parse <c>criteria[].scoringScope</c>. Vắng/rỗng ⇒ <see cref="CriterionScoringScope.Always"/>
+        /// (hành vi trước SC2). So theo TÊN (không phân biệt hoa/thường), KHÔNG nhận số ("1" là lạ, không
+        /// phải WhenTargeted) — ném <see cref="ArgumentException"/> (→400) kèm tên tiêu chí.
+        /// </summary>
+        internal static CriterionScoringScope ParseScoringScope(string? raw, string criterionName)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return CriterionScoringScope.Always;
+            var v = raw.Trim();
+            if (v.Equals(nameof(CriterionScoringScope.Always), StringComparison.OrdinalIgnoreCase))
+                return CriterionScoringScope.Always;
+            if (v.Equals(nameof(CriterionScoringScope.WhenTargeted), StringComparison.OrdinalIgnoreCase))
+                return CriterionScoringScope.WhenTargeted;
+            throw new ArgumentException(
+                $"scoringScope của '{criterionName}' phải là Always hoặc WhenTargeted (hiện: '{raw}').");
+        }
+
+        /// <summary>
+        /// SC2 · W1 — chuẩn hoá <c>questions[].targetCriterionIds</c> cho MỘT câu, GIỮ ba trạng thái:
+        /// <c>null</c> ⇒ <c>null</c> (caller quyết "giữ nguyên" hay "chưa gắn") · <c>[]</c> ⇒ <c>[]</c> (đã xét,
+        /// không nhắm — KHÔNG được gộp về null, I2) · <c>[ids]</c> ⇒ dedup giữ thứ tự; id không thuộc
+        /// <paramref name="criterionIds"/> ⇒ <see cref="ArgumentException"/> (→400) NÊU id — im lặng bỏ
+        /// id lạ thì HR không bao giờ biết nhãn mình vừa gắn đã rụng.
+        /// </summary>
+        internal static List<Guid>? NormalizeTargetCriterionIds(
+            List<Guid>? requested, IReadOnlySet<Guid> criterionIds, Guid campaignId)
+        {
+            if (requested is null) return null;
+            if (requested.Count == 0) return new List<Guid>();
+
+            var unknown = requested.Where(id => !criterionIds.Contains(id)).Distinct().ToList();
+            if (unknown.Count > 0)
+                throw new ArgumentException(
+                    $"targetCriterionIds chứa id không thuộc tiêu chí của campaign {campaignId}: " +
+                    string.Join(", ", unknown) + ".");
+
+            return requested.Distinct().ToList();
+        }
+
+        /// <summary>
+        /// SC2 · W1 — sau khi bộ tiêu chí đổi (PUT /campaign criteria[]): CẮT khỏi nhãn mọi câu những id
+        /// KHÔNG còn trong <paramref name="keptCriterionIds"/>. Id còn sống giữ nguyên thứ tự; câu <c>null</c>
+        /// giữ <c>null</c>; câu mà mọi id đều bị cắt còn lại <c>[]</c> (đã xét, không nhắm) — KHÔNG về null.
+        /// Gán list MỚI (comparer SequenceEqual ⇒ EF thấy Modified). Trả số câu bị cắt (cho audit).
+        /// </summary>
+        internal static int TrimDanglingQuestionTargets(
+            IEnumerable<CampaignQuestion> questions, IReadOnlySet<Guid> keptCriterionIds)
+        {
+            var cut = 0;
+            foreach (var q in questions)
+            {
+                if (q.TargetCriterionIds is null) continue;
+                var trimmed = q.TargetCriterionIds.Where(keptCriterionIds.Contains).ToList();
+                if (trimmed.Count == q.TargetCriterionIds.Count) continue;
+                q.TargetCriterionIds = trimmed;
+                cut++;
+            }
+            return cut;
         }
 
         /// <summary>
