@@ -44,6 +44,19 @@ namespace Isas.CampaignService.DTOs
         /// <c>null</c> = không đổi, <c>""</c> = gỡ khỏi nhóm.
         /// </summary>
         public string? QuestionGroup { get; set; }
+
+        /// <summary>
+        /// SC2 · W1 — id tiêu chí (<c>criteria[].id</c> của CHÍNH campaign này) mà câu hỏi nhắm tới.
+        /// Ba trạng thái, KHÔNG phải hai (mẫu <see cref="SampleAnswer"/>/<see cref="CriterionItem.Levels"/>):
+        /// <list type="bullet">
+        /// <item><c>null</c> / vắng mặt = <b>KHÔNG ĐỔI</b> (giữ nhãn đang có — FE cũ không biết field này)</item>
+        /// <item><c>[]</c> = <b>XOÁ</b> nhãn — nghĩa lưu xuống là "đã xét, câu này không nhắm tiêu chí nội
+        /// dung nào" (chỉ chấm <c>Always</c>), KHÔNG phải quay về "chưa gắn nhãn"</item>
+        /// <item><c>[ids]</c> = thay thế; id không thuộc <c>campaign_criteria</c> hiện tại → <b>400</b> nêu id</item>
+        /// </list>
+        /// ⚠ Với câu MỚI (không <c>id</c>): <c>null</c> ⇒ lưu <c>null</c> (chưa gắn) — không có gì để "giữ".
+        /// </summary>
+        public List<Guid>? TargetCriterionIds { get; set; }
     }
 
     // CAMP-16 — một mốc điểm khi GHI. Score nguyên ∈ [0, maxScore của tiêu chí], distinct trong cùng tiêu chí.
@@ -69,6 +82,13 @@ namespace Isas.CampaignService.DTOs
         // RNK1 · HĐ-5 — điểm sàn % (0..100; null = không sàn; PUT gửi thiếu = null = bỏ sàn). Là luật
         // KẾT LUẬN, KHÔNG bump rubric_version — xem CampaignCriterion.MinPct.
         public int? MinPct { get; set; }
+
+        /// <summary>
+        /// SC2 · W1 — <c>"Always"</c> | <c>"WhenTargeted"</c>. Vắng / <c>null</c> ⇒ <c>Always</c> (FE cũ không
+        /// biết field ⇒ hành vi cũ, không phải "xoá"); chuỗi lạ ⇒ <b>400</b> nêu tên tiêu chí. KHÁC
+        /// <see cref="MinPct"/>: đây là THƯỚC ĐO (vào vân tay ⇒ Active đổi là bump <c>rubric_version</c>).
+        /// </summary>
+        public string? ScoringScope { get; set; }
 
         /// <summary>
         /// CAMP-16 — mốc điểm. BA trạng thái, không phải hai (cùng hợp đồng với
@@ -243,6 +263,13 @@ namespace Isas.CampaignService.DTOs
 
         // Nhóm chủ đề (ngân hàng đề). null = chưa phân nhóm.
         public string? QuestionGroup { get; set; }
+
+        /// <summary>
+        /// SC2 · W1 — LUÔN có mặt trong JSON (<c>DefaultIgnoreCondition = Never</c>): <c>null</c> = chưa gắn
+        /// nhãn (Interview chấm đủ bộ) · <c>[]</c> = câu xã giao (chỉ <c>Always</c>) · <c>[ids]</c> = nhắm.
+        /// FE echo lại y nguyên khi PUT để không vô tình đổi trạng thái (null≠[]).
+        /// </summary>
+        public List<Guid>? TargetCriterionIds { get; set; }
     }
 
     // CAMP-16 — một mốc điểm khi ĐỌC.
@@ -264,6 +291,9 @@ namespace Isas.CampaignService.DTOs
         // RNK1 · HĐ-5 — điểm sàn %. null = không sàn. FE echo lại field này ở PUT (cùng với Id) khi sửa.
         public int? MinPct { get; set; }
         public string Source { get; set; } = null!;
+
+        /// <summary>SC2 · W1 — <c>"Always"</c> | <c>"WhenTargeted"</c>. Hàng cũ = <c>Always</c>.</summary>
+        public string ScoringScope { get; set; } = null!;
 
         /// <summary>
         /// CAMP-16 — mốc điểm, sắp tăng dần theo <c>score</c>. Rỗng = CHƯA khai mốc (Interview dùng dải
@@ -511,7 +541,10 @@ namespace Isas.CampaignService.DTOs
                 IsRequired = q.IsRequired,
                 HrEditedAt = q.HrEditedAt,   // R10
                 SampleAnswer = includeSampleAnswer ? q.SampleAnswer : null,
-                QuestionGroup = q.QuestionGroup
+                QuestionGroup = q.QuestionGroup,
+                // SC2 — chép NGUYÊN (null giữ null, [] giữ []); `?.ToList()` để response không chia sẻ
+                // list với entity đang tracked.
+                TargetCriterionIds = q.TargetCriterionIds?.ToList()
             }).ToList(),
             // RNK1 · HĐ-8 — tóm tắt ngân hàng đề (đọc từ CÙNG c.Questions đã nạp, không query thêm).
             QuestionBank = QuestionBankSummary.Build(
@@ -528,6 +561,7 @@ namespace Isas.CampaignService.DTOs
                     MaxScore = cr.MaxScore,
                     MinPct = cr.MinPct,                 // RNK1 · HĐ-5
                     Source = cr.Source.ToString(),
+                    ScoringScope = cr.ScoringScope.ToString(),   // SC2 · W1
                     Levels = (cr.Levels ?? new List<CampaignCriterionLevel>())
                         .OrderBy(l => l.Score)
                         .Select(l => new CriterionLevelResponse { Score = l.Score, Descriptor = l.Descriptor })

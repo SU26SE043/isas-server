@@ -43,6 +43,23 @@
         /// </summary>
         public string? QuestionGroup { get; set; }
 
+        /// <summary>
+        /// SC2 · W1 — id <c>campaign_criteria</c> (tiêu chí NỘI DUNG, <c>WhenTargeted</c>) mà câu này nhắm
+        /// tới. jsonb NULLABLE. ⚠ <c>null</c> ≠ <c>[]</c> — đây là điểm sống còn (INT-18 · I2):
+        /// <list type="bullet">
+        /// <item><c>null</c> = CHƯA ai gắn nhãn ⇒ Interview chấm NGUYÊN bộ (lùi an toàn, y như trước SC2).</item>
+        /// <item><c>[]</c> = ĐÃ xét và câu này không nhắm tiêu chí nội dung nào (câu xã giao) ⇒ chỉ chấm
+        /// tiêu chí <c>Always</c>.</item>
+        /// <item><c>[ids]</c> = chấm <c>Always</c> ∪ đúng các tiêu chí này.</item>
+        /// </list>
+        /// Gộp hai ca đầu làm tính năng vô hiệu đúng ở nhóm câu cần nó nhất.
+        ///
+        /// <para>Id tiêu chí bị xoá khỏi bộ (PUT /campaign criteria[]) ⇒ server CẮT khỏi mọi nhãn trong
+        /// cùng transaction; chép bộ chuẩn (from-system-default, mint id mới) ⇒ nhãn mọi câu về
+        /// <c>null</c> + audit <c>ClearQuestionTargets</c>. Hàng cũ giữ <c>null</c>, không backfill.</para>
+        /// </summary>
+        public List<Guid>? TargetCriterionIds { get; set; }
+
         // Navigation
         public Campaign Campaign { get; set; } = null!;
     }

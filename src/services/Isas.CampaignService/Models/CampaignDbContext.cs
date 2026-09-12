@@ -41,6 +41,19 @@ namespace Isas.CampaignService.Models
             v => v == null ? 0 : v.Aggregate(0, (h, s) => HashCode.Combine(h, s.GetHashCode())),
             v => v == null ? null : v.ToList());
 
+        // SC2 · W1 — Guid[] ↔ JSON cho campaign_questions.target_criterion_ids. Comparer phân biệt null
+        // với [] (null = chưa gắn nhãn, [] = đã xét không nhắm — I2): comparer nào coi hai thứ đó bằng
+        // nhau sẽ khiến EF bỏ qua lượt ghi "[] thay null" (không UPDATE, không lỗi) và nhãn "xã giao"
+        // không bao giờ tới DB.
+        private static readonly ValueConverter<List<Guid>?, string?> GuidListConverter = new(
+            v => v == null ? null : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => v == null ? null : JsonSerializer.Deserialize<List<Guid>>(v, (JsonSerializerOptions?)null));
+
+        private static readonly ValueComparer<List<Guid>?> GuidListComparer = new(
+            (a, b) => (a == null && b == null) || (a != null && b != null && a.SequenceEqual(b)),
+            v => v == null ? 0 : v.Aggregate(17, (h, g) => HashCode.Combine(h, g.GetHashCode())),
+            v => v == null ? null : v.ToList());
+
         // HR technical screener — list OBJECT ↔ JSON (jsonb Npgsql / text SQLite), cùng nguyên tắc
         // portable như StringListConverter: đọc/ghi cả cục trong C#, KHÔNG query vào trong JSON.
         //
@@ -201,6 +214,17 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.SampleAnswer);
                 e.Property(x => x.QuestionGroup).HasMaxLength(100);
 
+                // SC2 · W1 — nhãn tiêu chí câu hỏi nhắm tới: List<Guid>? ↔ JSON (jsonb Npgsql / text
+                // SQLite), cùng khuôn null-safe với practice_questions.target_criterion_ids bên Interview.
+                // NULLABLE và KHÔNG HasDefaultValue: (a) null có nghĩa riêng ("chưa gắn nhãn" ≠ [] "đã xét,
+                // không nhắm") — DB default sẽ xoá mất phân biệt đó; (b) HasDefaultValue trên jsonb làm EF
+                // scaffold `defaultValue: ""` → Postgres từ chối ngay ALTER TABLE (bug F15), SQLite thì
+                // bỏ qua migration nên test xanh 100%.
+                e.Property(x => x.TargetCriterionIds)
+                 .HasConversion(GuidListConverter, GuidListComparer);
+                if (Database.IsNpgsql())
+                    e.Property(x => x.TargetCriterionIds).HasColumnType("jsonb");
+
                 e.Property(x => x.Source)
                  .HasConversion<string>()
                  .HasMaxLength(20);
@@ -240,12 +264,21 @@ namespace Isas.CampaignService.Models
                     // nhưng nó dựng schema bằng EnsureCreated theo model NÀY — tức luôn là bản ĐÃ nới —
                     // nên không test nào bắt được thứ tự deploy sai; chỉ Postgres thật mới bắt.
                     t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited', 'SystemDefault')");
+                    // SC2 · W1 — phạm vi chấm là danh sách ĐÓNG. Cùng bẫy thứ tự deploy với `source`:
+                    // CHECK phải có trên DB trước khi code ghi 'WhenTargeted'.
+                    t.HasCheckConstraint("ck_campaign_criteria_scoring_scope", "scoring_scope IN ('Always', 'WhenTargeted')");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Name).IsRequired().HasMaxLength(255);
                 e.Property(x => x.Weight).HasColumnType("numeric(5,4)");
                 e.Property(x => x.Source).HasConversion<string>().HasMaxLength(20);
+                // SC2 · W1 — NOT NULL DEFAULT 'Always': hàng cũ nhận mặc định = hành vi trước SC2 (chấm
+                // mọi câu), không backfill. varchar(16) đủ cho 'WhenTargeted' (12) — CampaignEnumColumnLengthTests khoá.
+                e.Property(x => x.ScoringScope)
+                 .HasConversion<string>()
+                 .HasMaxLength(16)
+                 .HasDefaultValue(CriterionScoringScope.Always);
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");   // C12
 
@@ -338,7 +371,7 @@ namespace Isas.CampaignService.Models
             modelBuilder.Entity<AuditLog>(e =>
             {
                 e.ToTable("audit_logs", t => t.HasCheckConstraint(
-                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey', 'ApplyScoringPolicy', 'StartEarly')"));
+                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey', 'ApplyScoringPolicy', 'StartEarly', 'ClearQuestionTargets')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Entity).IsRequired().HasMaxLength(64);

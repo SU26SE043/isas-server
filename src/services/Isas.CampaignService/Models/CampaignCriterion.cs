@@ -22,6 +22,19 @@ namespace Isas.CampaignService.Models
         // thì HR chỉnh được lúc chạy.
         public int? MinPct { get; set; }
         public CriterionSource Source { get; set; }
+
+        /// <summary>
+        /// SC2 · W1 — tiêu chí này chấm ở MỌI câu (<see cref="CriterionScoringScope.Always"/>) hay CHỈ khi
+        /// câu hỏi nhắm tới nó (<see cref="CriterionScoringScope.WhenTargeted"/>, qua
+        /// <see cref="CampaignQuestion.TargetCriterionIds"/>). Mặc định <c>Always</c> = hành vi trước SC2
+        /// (mọi tiêu chí chấm mọi câu) ⇒ hàng cũ KHÔNG backfill, không đổi điểm ai (INT-18 chiều mặc
+        /// định là "chấm thừa", không phải "bỏ chấm").
+        ///
+        /// <para>Nằm TRONG vân tay thước đo (<c>RubricFingerprint</c>): đổi phạm vi chấm là đổi mẫu số
+        /// điểm của mọi ứng viên sau đó ⇒ Active phải bump <c>rubric_version</c> như đổi mốc (CAMP-18).</para>
+        /// </summary>
+        public CriterionScoringScope ScoringScope { get; set; } = CriterionScoringScope.Always;
+
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }     // C12
 
@@ -33,6 +46,20 @@ namespace Isas.CampaignService.Models
         /// như trước tính năng này (hành vi cũ giữ nguyên, không phải trạng thái lỗi).
         /// </summary>
         public ICollection<CampaignCriterionLevel> Levels { get; set; } = new List<CampaignCriterionLevel>();
+    }
+
+    /// <summary>
+    /// SC2 · W1 — phạm vi chấm của một tiêu chí. Lưu dạng CHUỖI (GEN-2), CHECK
+    /// <c>ck_campaign_criteria_scoring_scope</c> là danh sách đóng.
+    /// </summary>
+    public enum CriterionScoringScope
+    {
+        /// <summary>Chấm ở MỌI câu (mặc định; cách nói: giao tiếp, trôi chảy, thuật ngữ…).</summary>
+        Always = 0,
+
+        /// <summary>CHỈ chấm khi câu hỏi nhắm tới (nội dung: chiều sâu kỹ thuật, thiết kế…).
+        /// Câu không nhắm ⇒ tiêu chí bị LOẠI khỏi điểm câu đó, KHÔNG tính 0 (INT-18).</summary>
+        WhenTargeted = 1
     }
 
     /// <summary>

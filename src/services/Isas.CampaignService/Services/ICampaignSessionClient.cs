@@ -1,3 +1,4 @@
+using Isas.CampaignService.Models;
 using Isas.CampaignService.DTOs;
 
 namespace Isas.CampaignService.Services
@@ -60,10 +61,10 @@ namespace Isas.CampaignService.Services
         /// riêng nghĩa là hai chỗ cấu hình BaseUrl/token/timeout — lệch một chỗ thì hỏng một nửa số
         /// đường gọi mà nửa kia vẫn chạy, tức triệu chứng khó truy nhất.</para>
         ///
-        /// <para><b>Không có <c>id</c> và không có <c>scoringScope</c> trong hợp đồng.</b> Id là của
-        /// Interview, vô nghĩa với Campaign (đường ghi bên này replace-all mint id mới). ScoringScope
-        /// thì Campaign KHÔNG có cột tương ứng và đường chấm B2B không đọc — mang về chỉ để lưu là dựng
-        /// một cột nói dối.</para>
+        /// <para><b>Không có <c>id</c> trong hợp đồng.</b> Id là của Interview, vô nghĩa với Campaign
+        /// (đường ghi bên này replace-all mint id mới). <b>SC2 · W5 — <c>scoringScope</c> NAY có</b>
+        /// (<c>"Always"</c> | <c>"WhenTargeted"</c>): Campaign đã có cột <c>campaign_criteria.scoring_scope</c>
+        /// và gửi tiếp sang Interview lúc tạo session (W4). Interview bản cũ chưa trả ⇒ vắng ⇒ Always.</para>
         ///
         /// <para><c>levels</c> RỖNG = <b>chưa khai mốc</b> (admin chưa soạn), KHÔNG phải lỗi — Interview
         /// rơi về dải mặc định như trước CAMP-16.</para>
@@ -87,7 +88,15 @@ namespace Isas.CampaignService.Services
 
     public record B2CRubricCriterion(
         string Name, string? Description, decimal Weight, int MaxScore,
-        IReadOnlyList<B2CRubricLevel> Levels);
+        IReadOnlyList<B2CRubricLevel> Levels)
+    {
+        /// <summary>
+        /// SC2 · W5 — <c>"Always"</c> | <c>"WhenTargeted"</c>, ĐÃ CHUẨN HOÁ ở client (vắng/lạ ⇒ Always +
+        /// warning) nên đường chép có thể tin thẳng. Init-only có mặc định để call-site 5-tham-số cũ
+        /// (test fixture) vẫn biên dịch với nghĩa "chấm mọi câu".
+        /// </summary>
+        public string ScoringScope { get; init; } = nameof(CriterionScoringScope.Always);
+    }
 
     public record B2CRubricLevel(int Score, string Descriptor);
 

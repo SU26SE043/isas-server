@@ -1,3 +1,4 @@
+using Isas.CampaignService.Models;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Isas.CampaignService.DTOs;
@@ -292,12 +293,13 @@ namespace Isas.CampaignService.Services
         }
 
         // CAMP-20 — shape khớp hợp đồng GET /internal/rubrics/b2c. KHÔNG có `id` (id Interview vô nghĩa
-        // với Campaign) và KHÔNG có `scoringScope` (Campaign không có cột, đường chấm B2B không đọc).
-        // Field lạ bị bỏ qua (case-insensitive) ⇒ Interview thêm field mới không làm vỡ bên này.
+        // với Campaign). SC2 · W5 — `scoringScope` ("Always"|"WhenTargeted"): vắng (Interview bản cũ)
+        // ⇒ null ⇒ Always. Field lạ bị bỏ qua (case-insensitive) ⇒ Interview thêm field mới không làm vỡ bên này.
         private record B2CRubricApiResponse(
             string? JobCategory, string? Language, int Version, List<B2CRubricApiCriterion>? Criteria);
         private record B2CRubricApiCriterion(
-            string? Name, string? Description, decimal Weight, int MaxScore, List<B2CRubricApiLevel>? Levels);
+            string? Name, string? Description, decimal Weight, int MaxScore, List<B2CRubricApiLevel>? Levels,
+            string? ScoringScope);
         private record B2CRubricApiLevel(int Score, string? Descriptor);
 
         public async Task<B2CRubricResponse> GetB2CRubricAsync(
@@ -369,12 +371,32 @@ namespace Isas.CampaignService.Services
                         // order_no/hiển thị không phụ thuộc thứ tự Postgres trả về.
                         .OrderBy(l => l.Score)
                         .Select(l => new B2CRubricLevel(l.Score, l.Descriptor ?? string.Empty))
-                        .ToList()))
+                        .ToList())
+                {
+                    ScoringScope = NormalizeScoringScope(c.ScoringScope, c.Name, jobCategory, language)
+                })
                 .ToList();
 
             // Echo lại tham số đã HỎI, không lấy giá trị Interview trả về: nếu bên đó echo sai (hoặc
             // bản cũ chưa echo) thì audit/response sẽ ghi một tổ hợp khác với tổ hợp thật sự được chép.
             return new B2CRubricResponse(jobCategory, language, body.Version, criteria);
+        }
+
+        // SC2 · W5 — vắng ⇒ Always (Interview bản cũ chưa gửi). Giá trị LẠ cũng ⇒ Always + WARNING chứ
+        // không ném: chiều an toàn của INT-18 là "chấm THỪA" (Always) chứ không phải "bỏ chấm", và một
+        // chuỗi lạ từ Interview không phải lỗi nhập liệu của HR để trả 400/502 cho họ đi tìm.
+        private string NormalizeScoringScope(string? raw, string? criterionName, string jobCategory, string language)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return nameof(CriterionScoringScope.Always);
+            var v = raw.Trim();
+            if (v.Equals(nameof(CriterionScoringScope.Always), StringComparison.OrdinalIgnoreCase))
+                return nameof(CriterionScoringScope.Always);
+            if (v.Equals(nameof(CriterionScoringScope.WhenTargeted), StringComparison.OrdinalIgnoreCase))
+                return nameof(CriterionScoringScope.WhenTargeted);
+            _logger.LogWarning(
+                "Bộ chuẩn B2C ({JobCategory}, {Language}) tiêu chí '{Name}' trả scoringScope lạ '{Raw}' — coi là Always",
+                jobCategory, language, criterionName, raw);
+            return nameof(CriterionScoringScope.Always);
         }
     }
 }

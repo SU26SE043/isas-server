@@ -811,25 +811,23 @@ public class SystemDefaultCriteriaTests
         Assert.Equal(StatusCodes.Status502BadGateway, obj.StatusCode);
     }
 
-    // ── Hợp đồng: KHÔNG mang scoringScope ───────────────────────────────
+    // ── Hợp đồng: mang scoringScope (SC2 · W5), KHÔNG mang id ─────────────
 
-    // Bịt bằng CẤU TRÚC (mẫu CAMP-15): không kiểu nào trên đường chép có chỗ chứa `scoringScope`, nên
-    // "chép nhầm" là lỗi BIÊN DỊCH chứ không phải một cột lặng lẽ được thêm rồi không ai đọc.
-    // Campaign không có cột tương ứng và đường chấm B2B không đọc field đó ⇒ mang về chỉ để lưu là
-    // dựng một cột nói dối. (Cùng lý do với `id` — id của Interview vô nghĩa bên này.)
+    // ⚠ TIỀN ĐỀ ĐẢO CÓ CHỦ ĐÍCH (SC2, 2026-09-13). Bản trước khẳng định "KHÔNG kiểu nào trên đường chép
+    // có chỗ chứa scoringScope" vì Campaign không có cột và đường chấm B2B không đọc ⇒ mang về là dựng
+    // một cột nói dối. SC2 đổi cả hai tiền đề: `campaign_criteria.scoring_scope` có thật, được gửi tiếp
+    // sang Interview lúc tạo session (W4) và quyết định tiêu chí nào chấm ở câu nào (INT-18 cho B2B).
+    // Nay khoá CHIỀU NGƯỢC LẠI bằng cấu trúc: mọi kiểu trên đường chép PHẢI có chỗ chứa scope — thiếu ở
+    // một mắt xích là scope của bộ chuẩn rụng im lặng về Always (đúng lớp bug field-rụng-ở-biên đã cắn
+    // repo 4 lần). `id` vẫn cấm ở phía NHẬN: id của Interview vô nghĩa bên này (replace-all mint id mới).
     [Fact]
-    public void HopDong_KhongCoScoringScope_VaKhongCoId()
+    public void HopDong_CoScoringScope_VaKhongCoId()
     {
-        var cam = new[]
+        var mangScope = new[] { typeof(B2CRubricCriterion), typeof(CampaignCriterion), typeof(CriterionItem) };
+        foreach (var t in mangScope)
         {
-            typeof(B2CRubricCriterion), typeof(B2CRubricResponse), typeof(B2CRubricLevel),
-            typeof(CampaignCriterion), typeof(CriterionItem)
-        };
-
-        foreach (var t in cam)
-        {
-            Assert.DoesNotContain(t.GetProperties(),
-                p => p.Name.Contains("ScoringScope", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(t.GetProperties(),
+                p => p.Name.Equals("ScoringScope", StringComparison.Ordinal));
         }
 
         // `id` thì chỉ cấm ở phía NHẬN từ Interview — CampaignCriterion tất nhiên có Id của chính nó.
