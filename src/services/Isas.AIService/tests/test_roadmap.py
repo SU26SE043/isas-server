@@ -964,7 +964,8 @@ def test_endpoint_generate_roadmap_forwards_criteria_to_provider(monkeypatch):
     )
 
     assert res.status_code == 200
-    assert received["criteria"] == [{"criterionId": "id-1", "name": "Phân tích yêu cầu"}]
+    # SC2 T5 — CriterionRef nay có description tuỳ chọn (mặc định None); model_dump() luôn kèm khoá này.
+    assert received["criteria"] == [{"criterionId": "id-1", "name": "Phân tích yêu cầu", "description": None}]
 
 
 def test_endpoint_generate_roadmap_without_criteria_forwards_none(monkeypatch):

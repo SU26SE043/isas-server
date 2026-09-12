@@ -76,7 +76,7 @@ def test_hop_dong_ten_khoa_request_va_response():
     một dòng test có tên nói rõ hậu quả."""
     assert "criteria" in GenerateQuestionsRequest.model_fields
     assert "targetCriteria" in GenerateQuestionsResponse.model_fields
-    assert set(CriterionRef.model_fields) == {"criterionId", "name"}
+    assert set(CriterionRef.model_fields) == {"criterionId", "name", "description"}  # SC2 T5
 
 
 def test_request_nhan_criteria_khong_bi_pydantic_nuot():
@@ -317,7 +317,8 @@ def test_endpoint_co_criteria_tra_target_criteria(monkeypatch):
                             seniority=None, lesson_context=None, topics=None,
                             criteria_context=None):
         # criteria phải xuống tới provider (không bị pydantic nuốt, không bị quên truyền).
-        assert criteria == [{"criterionId": C1, "name": "Chiều sâu kỹ thuật"}]
+        # SC2 T5 — CriterionRef nay có description tuỳ chọn (mặc định None); model_dump() luôn kèm khoá này.
+        assert criteria == [{"criterionId": C1, "name": "Chiều sâu kỹ thuật", "description": None}]
         return QuestionGenerationResult(questions=["Q1", "Q2"], citations=None,
                                         target_criteria=[[C1], []])
 
