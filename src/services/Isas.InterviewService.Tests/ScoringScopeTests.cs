@@ -89,11 +89,13 @@ public class ScoringScopeTests
     public void NewCriterion_WithoutExplicitScope_DefaultsToAlwaysScored()
         => Assert.Equal(ScoringScope.Always, new RubricCriterion().ScoringScope);
 
-    // B2B: tiêu chí campaign materialize qua đường internal cũng phải là Always ⇒ chấm y như trước
-    // (Campaign không gửi nhãn nên câu B2B không có nhãn, nhưng nếu ai đó bật nhãn cho B2B sau này
-    // thì mặc định này vẫn giữ cho tiêu chí HR khai không bị bỏ chấm).
+    // B2B: tiêu chí campaign materialize qua đường internal theo ĐÚNG `scoringScope` Campaign gửi
+    // (SC2 · W4). Tiền đề cũ "luôn Always" đổi có chủ đích: trước SC2 Campaign chưa có cột nên mọi
+    // tiêu chí B2B rơi về Always và bộ lọc INT-18 không thu hẹp được gì (đo prod: 78/78 tiêu chí
+    // ngoài seed đều Always). VẮNG scope vẫn phải là Always = hành vi hôm nay (bản Campaign cũ) —
+    // vế đó giữ nguyên ở đây; chi tiết parse/map xem CampaignScoringScopeSc2Tests.
     [Fact]
-    public async Task CampaignCriteria_AreMaterializedAsAlwaysScored()
+    public async Task CampaignCriteria_AreMaterializedWithScopeFromCampaign_DefaultAlways()
     {
         using var t = new TestDb();
         var gen = new Mock<IAiServiceQuestionGenerator>();
@@ -101,14 +103,19 @@ public class ScoringScopeTests
         var req = new CreateCampaignSessionRequest(
             campaignId, Guid.NewGuid(), JobCategory.BE,
             Questions: new[] { "Q1" },
-            Criteria: new[] { new CampaignCriterionInput("Technical depth", null, 1.0m, 5) });
+            Criteria: new[]
+            {
+                new CampaignCriterionInput("Technical depth", null, 0.5m, 5, ScoringScope: "WhenTargeted"),
+                new CampaignCriterionInput("Communication", null, 0.5m, 5),   // vắng ⇒ Always
+            });
 
         await Practicing(t, gen).CreateCampaignSessionAsync(Guid.NewGuid(), req);
 
         var criteria = await t.Db.RubricCriteria.AsNoTracking()
             .Where(c => c.CampaignId == campaignId).ToListAsync();
-        Assert.NotEmpty(criteria);
-        Assert.All(criteria, c => Assert.Equal(ScoringScope.Always, c.ScoringScope));
+        Assert.Equal(2, criteria.Count);
+        Assert.Equal(ScoringScope.WhenTargeted, criteria.Single(c => c.Name == "Technical depth").ScoringScope);
+        Assert.Equal(ScoringScope.Always, criteria.Single(c => c.Name == "Communication").ScoringScope);
     }
 
     // ── (2) ScoringScopeFilter — 3 trạng thái nhãn ───────────────────────────────────
