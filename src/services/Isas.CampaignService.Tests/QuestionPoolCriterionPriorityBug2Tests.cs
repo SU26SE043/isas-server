@@ -205,6 +205,22 @@ public class QuestionPoolCriterionPriorityBug2Tests
         Assert.Contains("(2)", w); Assert.Contains("1 câu bắt buộc", w); Assert.Contains("(2)", w[w.IndexOf("chưa được", StringComparison.Ordinal)..]);
     }
 
+    /// <summary>
+    /// BUG-2b (L3 dev, đối chứng U3): campaign TRƯỚC SC2 — 20 câu bắt buộc, 0 nhãn, K=5 ⇒ warnings CHỈ có dòng
+    /// "bắt buộc nhiều hơn K" (CAMP-22), KHÔNG có K_BELOW_CRITERIA_GROUPS "−15 khe &lt; 0" (0 tiêu chí rơi ⇒ vô nghĩa,
+    /// trùng cảnh báo sẵn có). I5: campaign cũ không được đổi warning.
+    /// </summary>
+    [Fact]
+    public void KRule_RequiredNhieuHonK_KhongNhan_KhongBan_ChiCoCanhBaoCu()
+    {
+        var qs = Enumerable.Range(1, 20).Select(i => Q($"r{i}", null, required: true)).ToArray();
+        var s = QuestionBankSummary.Build(qs, 5, null, null);
+
+        Assert.False(HasKRule(s));
+        Assert.Single(s.Warnings);   // chỉ "alwaysAsked > K"
+        Assert.Contains(s.Warnings, w => w.Contains("bắt buộc") && !w.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode));
+    }
+
     [Fact]
     public void KRule_0Required_SuyBienVeCongThucCu()
     {

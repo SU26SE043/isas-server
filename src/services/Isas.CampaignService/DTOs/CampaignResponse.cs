@@ -485,7 +485,11 @@ namespace Isas.CampaignService.DTOs
                 .Where(id => !coveredByRequired.Contains(id))
                 .Distinct()
                 .Count();
-            if (questionsPerSession is int kRule && kRule - requiredCount < uncoveredPrimary)
+            //     BUG-2b — CHỈ bắn khi thật sự có tiêu chí chưa phủ (uncoveredPrimary > 0): 0 tiêu chí ⇒ không
+            //     tiêu chí nào rơi, không có gì để cảnh báo; ca "bắt buộc nhiều hơn K" (K − R < 0) đã có cảnh báo
+            //     riêng `alwaysAsked > K` (CAMP-22) — đo trên dev: campaign cũ 20 required/K=5/0 nhãn từng nhận
+            //     thêm dòng "−15 khe < 0" vô nghĩa và trùng (I5/U3: campaign trước SC2 không được đổi warning).
+            if (questionsPerSession is int kRule && uncoveredPrimary > 0 && kRule - requiredCount < uncoveredPrimary)
                 warnings.Add(
                     $"{KBelowCriteriaGroupsCode}: questions_per_session ({kRule}) trừ {requiredCount} câu bắt buộc " +
                     $"= {kRule - requiredCount} khe, nhỏ hơn số tiêu chí chính chưa được câu bắt buộc phủ " +
