@@ -474,15 +474,25 @@ namespace Isas.CampaignService.DTOs
             //     buộc mà chưa câu bắt buộc nào phủ. 0 câu bắt buộc ⇒ suy biến về "K < distinct nhãn[0]".
             //     Thiếu vế này thì ca đo trên dev (K=2, required [C], optional {[],[B],[C]}) qua sạch
             //     (distinct = {B,C} = 2 ≤ 2) trong khi selector chỉ còn 1 khe cho 2 rổ ⇒ B chết cả chiến dịch.
+            //     REV-BE R4 — "tiêu chí chính" CHỈ là id có ScoringScope == WhenTargeted. Nhãn có thể chứa id
+            //     Always (PUT nhận mọi id campaign; lật WT→Always ở PUT criteria không cắt nhãn) — Always chấm
+            //     mọi câu nên không bao giờ "rơi", đếm nó là chặn publish oan (HR lật hết về Always vẫn bị
+            //     chặn, picker không có chip để gỡ). Bộ `criteria` rỗng (overload cũ) ⇒ không biết scope ⇒
+            //     không đếm gì (I5: đường không nạp tiêu chí không bắn K-rule).
+            var whenTargetedIds = (criteria ?? Array.Empty<QuestionBankCriterion>())
+                .Where(c => c.ScoringScope == CriterionScoringScope.WhenTargeted)
+                .Select(c => c.Id)
+                .ToHashSet();
             var requiredCount = questions.Count(q => q.IsRequired);
             var coveredByRequired = questions
                 .Where(q => q.IsRequired && q.TargetCriterionIds is { Count: > 0 })
                 .Select(q => q.TargetCriterionIds![0])
+                .Where(whenTargetedIds.Contains)
                 .ToHashSet();
             var uncoveredPrimary = questions
                 .Where(q => !q.IsRequired && q.TargetCriterionIds is { Count: > 0 })
                 .Select(q => q.TargetCriterionIds![0])
-                .Where(id => !coveredByRequired.Contains(id))
+                .Where(id => whenTargetedIds.Contains(id) && !coveredByRequired.Contains(id))
                 .Distinct()
                 .Count();
             //     BUG-2b — CHỈ bắn khi thật sự có tiêu chí chưa phủ (uncoveredPrimary > 0): 0 tiêu chí ⇒ không

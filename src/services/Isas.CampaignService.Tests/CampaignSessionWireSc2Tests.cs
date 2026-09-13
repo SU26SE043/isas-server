@@ -133,6 +133,24 @@ public class CampaignSessionWireSc2Tests
         Assert.Contains("TargetCriterionIds", RecordBody(src, "CampaignQuestionInput"));
     }
 
+    /// <summary>
+    /// W5 (R10c) — hợp đồng chéo đường NHẬN: Interview <c>InternalRubricsController</c> phát khoá
+    /// <c>scoringScope</c> trong <c>criteria[]</c>; Campaign đọc bằng <c>B2CRubricApiCriterion.ScoringScope</c>.
+    /// Đọc thẳng cả hai file: Interview đổi tên khoá ⇒ Campaign bind hụt ⇒ mọi tiêu chí chép về Always im lặng.
+    /// </summary>
+    [Fact]
+    public void I9_W5_InterviewInternalRubrics_PhatKhoa_scoringScope_CampaignDocDungTen()
+    {
+        var controller = File.ReadAllText(Path.Combine(RepoRoot(), "src", "services", "Isas.InterviewService", "Controllers", "InternalRubricsController.cs"));
+        Assert.Matches(new Regex(@"scoringScope\s*=\s*c\.ScoringScope\.ToString\(\)"), controller);
+
+        var client = File.ReadAllText(Path.Combine(RepoRoot(), "src", "services", "Isas.CampaignService", "Services", "CampaignSessionClient.cs"));
+        var rec = client[client.IndexOf("record B2CRubricApiCriterion(", StringComparison.Ordinal)..];
+        rec = rec[..rec.IndexOf(");", StringComparison.Ordinal)];
+        Assert.Matches(new Regex(@"string\?\s+ScoringScope\b"), rec);
+        Assert.Equal("scoringScope", CamelCase("ScoringScope"));   // ReadFromJsonAsync Web defaults: khoá == camelCase(property)
+    }
+
     // ═══════════════ (2) I2 — 3 trạng thái trên dây + scope từ builder ═══════════════
 
     [Fact]

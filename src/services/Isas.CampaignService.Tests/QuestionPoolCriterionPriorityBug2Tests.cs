@@ -23,6 +23,7 @@ public class QuestionPoolCriterionPriorityBug2Tests
     private static readonly Guid CampaignId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid B = Guid.Parse("11111111-2222-3333-4444-555555555555");
     private static readonly Guid C = Guid.Parse("22222222-2222-3333-4444-555555555555");
+    private static readonly Guid D = Guid.Parse("33333333-2222-3333-4444-555555555555");
 
     private static PoolQuestion Pq(string text, List<Guid>? targets = null, bool required = false, string? group = null)
         => new(Guid.NewGuid(), text, null, required, group) { TargetCriterionIds = targets };
@@ -31,6 +32,12 @@ public class QuestionPoolCriterionPriorityBug2Tests
 
     private static CampaignQuestion Q(string text, List<Guid>? targets, bool required = false)
         => new() { Id = Guid.NewGuid(), QuestionText = text, IsRequired = required, TargetCriterionIds = targets, CreatedAt = DateTime.UtcNow };
+
+    /// <summary>REV-BE R4 — K-rule chỉ đếm id WhenTargeted ⇒ mọi lời gọi Build cấp bộ tiêu chí B/C/D scope WT.</summary>
+    private static readonly QuestionBankCriterion[] WtBCD =
+    {
+        new(B, "B", CriterionScoringScope.WhenTargeted), new(C, "C", CriterionScoringScope.WhenTargeted), new(D, "D", CriterionScoringScope.WhenTargeted),
+    };
 
     private static bool HasKRule(QuestionBankSummary s)
         => s.Warnings.Any(w => w.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode + ":", StringComparison.Ordinal));
@@ -120,7 +127,6 @@ public class QuestionPoolCriterionPriorityBug2Tests
 
     // ═══════════════ test-gap BUG-1/2 (Tester probe) ═══════════════
 
-    private static readonly Guid D = Guid.Parse("33333333-2222-3333-4444-555555555555");
 
     /// <summary>Required ĐA NHÃN [B,C]: "phủ" chỉ theo nhãn[0] = B ⇒ khe còn lại phải về C (không phải coi C đã phủ).</summary>
     [Fact]
@@ -181,7 +187,7 @@ public class QuestionPoolCriterionPriorityBug2Tests
     public void KRule_RequiredDaNhan_ChiPhuNhan0_Chan()
     {
         var qs = new[] { Q("r", new() { B, C }, required: true), Q("c1", new() { C }), Q("d1", new() { D }) };
-        Assert.True(HasKRule(QuestionBankSummary.Build(qs, 2, null, null)));
+        Assert.True(HasKRule(QuestionBankSummary.Build(qs, 2, null, null, WtBCD)));
     }
 
     // ═══════════════ (b) K-rule ═══════════════
@@ -191,7 +197,7 @@ public class QuestionPoolCriterionPriorityBug2Tests
     {
         // 2 − 1 = 1 khe ≥ 1 tiêu chí chưa phủ (B) ⇒ KHÔNG chặn (C đã được required phủ)
         var qs = new[] { Q("q4", new() { C }, required: true), Q("q1", new() { B }), Q("q2", new() { C }), Q("q3", new()) };
-        Assert.False(HasKRule(QuestionBankSummary.Build(qs, 2, null, null)));
+        Assert.False(HasKRule(QuestionBankSummary.Build(qs, 2, null, null, WtBCD)));
     }
 
     [Fact]
@@ -199,7 +205,7 @@ public class QuestionPoolCriterionPriorityBug2Tests
     {
         // 2 − 1 = 1 khe < 2 tiêu chí chưa phủ ({B, C}) ⇒ CHẶN
         var qs = new[] { Q("r", new(), required: true), Q("q1", new() { B }), Q("q2", new() { C }) };
-        var s = QuestionBankSummary.Build(qs, 2, null, null);
+        var s = QuestionBankSummary.Build(qs, 2, null, null, WtBCD);
         Assert.True(HasKRule(s));
         var w = s.Warnings.Single(x => x.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode));
         Assert.Contains("(2)", w); Assert.Contains("1 câu bắt buộc", w); Assert.Contains("(2)", w[w.IndexOf("chưa được", StringComparison.Ordinal)..]);
@@ -214,7 +220,7 @@ public class QuestionPoolCriterionPriorityBug2Tests
     public void KRule_RequiredNhieuHonK_KhongNhan_KhongBan_ChiCoCanhBaoCu()
     {
         var qs = Enumerable.Range(1, 20).Select(i => Q($"r{i}", null, required: true)).ToArray();
-        var s = QuestionBankSummary.Build(qs, 5, null, null);
+        var s = QuestionBankSummary.Build(qs, 5, null, null, WtBCD);
 
         Assert.False(HasKRule(s));
         Assert.Single(s.Warnings);   // chỉ "alwaysAsked > K"
@@ -225,8 +231,8 @@ public class QuestionPoolCriterionPriorityBug2Tests
     public void KRule_0Required_SuyBienVeCongThucCu()
     {
         var qs = new[] { Q("q1", new() { B }), Q("q2", new() { C }), Q("q3", new()) };
-        Assert.False(HasKRule(QuestionBankSummary.Build(qs, 2, null, null)));   // 2 ≥ 2
-        Assert.True(HasKRule(QuestionBankSummary.Build(qs, 1, null, null)));    // 1 < 2
-        Assert.False(HasKRule(QuestionBankSummary.Build(qs, null, null, null)));
+        Assert.False(HasKRule(QuestionBankSummary.Build(qs, 2, null, null, WtBCD)));   // 2 ≥ 2
+        Assert.True(HasKRule(QuestionBankSummary.Build(qs, 1, null, null, WtBCD)));    // 1 < 2
+        Assert.False(HasKRule(QuestionBankSummary.Build(qs, null, null, null, WtBCD)));
     }
 }
