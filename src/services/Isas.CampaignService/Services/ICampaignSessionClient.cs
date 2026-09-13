@@ -115,6 +115,15 @@ namespace Isas.CampaignService.Services
         /// chấm khớp về đúng tiêu chí khi tính điểm sàn read-time. Khoá JSON trên dây: <c>criterionId</c>.
         /// Init-only có mặc định null ⇒ call site cũ không phải sửa.</summary>
         public Guid? CriterionId { get; init; }
+
+        /// <summary>
+        /// SC2 · W4 — phạm vi chấm của tiêu chí: <c>"Always"</c> | <c>"WhenTargeted"</c>
+        /// (= <see cref="CriterionScoringScope"/>.ToString()). Khoá JSON trên dây: <c>scoringScope</c>
+        /// (khớp <c>CampaignCriterionInput.ScoringScope</c> phía Interview, T4). <c>null</c> ⇒ Interview coi
+        /// <c>Always</c> (= hành vi hôm nay; bản Interview cũ bỏ qua field). Init-only để call site cũ và
+        /// fixture 4-tham-số vẫn biên dịch. <see cref="ScoringCriteriaBuilder"/> LUÔN set từ entity.
+        /// </summary>
+        public string? ScoringScope { get; init; }
     }
 
     /// <summary>Một mốc điểm (E9 hard-anchor) — map 1-1 sang <c>rubric_levels</c> phía Interview.</summary>
@@ -138,7 +147,17 @@ namespace Isas.CampaignService.Services
     /// <c>questions</c>, và BỎ QUA nếu số lượng lệch (ghép theo chỉ số khi lệch sẽ gán đáp án của câu
     /// này cho câu kia — chấm sai mà không lỗi nào nổ).</para>
     /// </summary>
-    public record SessionQuestionInput(string Text, string? SampleAnswer);
+    public record SessionQuestionInput(string Text, string? SampleAnswer)
+    {
+        /// <summary>
+        /// SC2 · W4 — nhãn tiêu chí NỘI DUNG câu này nhắm tới (id <c>campaign_criteria</c>; Interview map
+        /// sang <c>rubric_criteria</c> qua <c>source_criterion_id</c>, id lạ bỏ). Khoá JSON: <c>targetCriterionIds</c>.
+        /// 🔑 GIỮ ĐÚNG 3 TRẠNG THÁI trên dây (I2): <c>null</c> ⇒ <c>null</c> (chưa gắn ⇒ chấm đủ bộ) ·
+        /// <c>[]</c> ⇒ <c>[]</c> (đã xét, không nhắm ⇒ chỉ <c>Always</c>) · <c>[ids]</c>. Phải là nhãn của ĐÚNG
+        /// câu đã rút (selector xáo thứ tự) — <see cref="ParticipationService"/> dựng từ <c>PoolQuestion</c>.
+        /// </summary>
+        public IReadOnlyList<Guid>? TargetCriterionIds { get; init; }
+    }
 
     public record CampaignSessionResult(Guid SessionId, IReadOnlyList<SessionQuestion> Questions);
 

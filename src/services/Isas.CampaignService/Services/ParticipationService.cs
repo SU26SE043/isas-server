@@ -322,8 +322,10 @@ namespace Isas.CampaignService.Services
 
             var questions = selected.Select(q => q.Text).ToList();
             // Cùng danh sách, cùng thứ tự — Interview ghép theo chỉ số và BỎ QUA nếu số lượng lệch.
+            // SC2 · W4 — nhãn lấy từ CHÍNH PoolQuestion đã rút (selector đã xáo/cắt), không tra lại pool gốc
+            // theo chỉ số: lệch một vị trí là câu này mang nhãn câu kia — chấm sai mà không lỗi nào nổ.
             var questionDetails = selected
-                .Select(q => new SessionQuestionInput(q.Text, q.SampleAnswer))
+                .Select(q => new SessionQuestionInput(q.Text, q.SampleAnswer) { TargetCriterionIds = q.TargetCriterionIds })
                 .ToList();
 
             // CAMP-16 — dựng qua ScoringCriteriaBuilder, KHÔNG map tay tại chỗ: đây là một trong hai
