@@ -39,6 +39,8 @@ public class QuestionPoolCriterionPriorityBug2Tests
         new(B, "B", CriterionScoringScope.WhenTargeted), new(C, "C", CriterionScoringScope.WhenTargeted), new(D, "D", CriterionScoringScope.WhenTargeted),
     };
 
+    private static bool HasKRuleLine(string w) => w.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode + ":", StringComparison.Ordinal);
+
     private static bool HasKRule(QuestionBankSummary s)
         => s.Warnings.Any(w => w.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode + ":", StringComparison.Ordinal));
 
@@ -208,7 +210,10 @@ public class QuestionPoolCriterionPriorityBug2Tests
         var s = QuestionBankSummary.Build(qs, 2, null, null, WtBCD);
         Assert.True(HasKRule(s));
         var w = s.Warnings.Single(x => x.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode));
-        Assert.Contains("(2)", w); Assert.Contains("1 câu bắt buộc", w); Assert.Contains("(2)", w[w.IndexOf("chưa được", StringComparison.Ordinal)..]);
+        // COPY-BE: tiền tố mã + 3 con số K/R/N có mặt trong thân câu viết cho HR (+ gợi ý tối thiểu R+N).
+        Assert.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode + ": ", w);
+        Assert.Contains("chỉ thi 2 câu", w); Assert.Contains("1 câu bắt buộc", w); Assert.Contains("nhắm tới 2 tiêu chí", w);
+        Assert.Contains("lên ít nhất 3", w);
     }
 
     /// <summary>
@@ -232,7 +237,9 @@ public class QuestionPoolCriterionPriorityBug2Tests
     {
         var qs = new[] { Q("q1", new() { B }), Q("q2", new() { C }), Q("q3", new()) };
         Assert.False(HasKRule(QuestionBankSummary.Build(qs, 2, null, null, WtBCD)));   // 2 ≥ 2
-        Assert.True(HasKRule(QuestionBankSummary.Build(qs, 1, null, null, WtBCD)));    // 1 < 2
+        var w0 = QuestionBankSummary.Build(qs, 1, null, null, WtBCD).Warnings.Single(HasKRuleLine);   // 1 < 2
+        Assert.DoesNotContain("bắt buộc đã chiếm chỗ", w0);   // R = 0 ⇒ bỏ vế
+        Assert.Contains("chỉ thi 1 câu", w0); Assert.Contains("nhắm tới 2 tiêu chí", w0); Assert.Contains("lên ít nhất 2", w0);
         Assert.False(HasKRule(QuestionBankSummary.Build(qs, null, null, null, WtBCD)));
     }
 }

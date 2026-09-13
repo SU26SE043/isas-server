@@ -453,7 +453,7 @@ namespace Isas.CampaignService.DTOs
             //     về "thi trọn bộ". Nhưng publish thì phải sạch.
             if (questionsPerSession is int kSet && kSet > total)
                 warnings.Add(
-                    $"questions_per_session ({kSet}) lớn hơn số câu trong bộ ({total}) — ứng viên sẽ thi trọn bộ.");
+                    $"Số câu mỗi buổi ({kSet}) lớn hơn số câu trong bộ ({total}) — ứng viên sẽ thi trọn bộ.");
             // (2) alwaysAsked > K: selector giữ HẾT câu bắt buộc ⇒ buổi dài hơn K, không còn khe cho câu rút.
             if (alwaysAsked > k)
                 warnings.Add(
@@ -499,11 +499,16 @@ namespace Isas.CampaignService.DTOs
             //     tiêu chí nào rơi, không có gì để cảnh báo; ca "bắt buộc nhiều hơn K" (K − R < 0) đã có cảnh báo
             //     riêng `alwaysAsked > K` (CAMP-22) — đo trên dev: campaign cũ 20 required/K=5/0 nhãn từng nhận
             //     thêm dòng "−15 khe < 0" vô nghĩa và trùng (I5/U3: campaign trước SC2 không được đổi warning).
+            //     COPY-BE — thân câu viết cho HR (FE bước 4/8 dùng đúng chữ này); TIỀN TỐ MÃ giữ nguyên vì FE
+            //     `splitQuestionBankWarnings` và publish 400 `{code, warnings}` nhận diện theo tiền tố.
             if (questionsPerSession is int kRule && uncoveredPrimary > 0 && kRule - requiredCount < uncoveredPrimary)
                 warnings.Add(
-                    $"{KBelowCriteriaGroupsCode}: questions_per_session ({kRule}) trừ {requiredCount} câu bắt buộc " +
-                    $"= {kRule - requiredCount} khe, nhỏ hơn số tiêu chí chính chưa được câu bắt buộc phủ " +
-                    $"({uncoveredPrimary}) — mỗi buổi sẽ có tiêu chí không câu nào hỏi tới.");
+                    $"{KBelowCriteriaGroupsCode}: Mỗi ứng viên chỉ thi {kRule} câu" +
+                    (requiredCount > 0 ? $", trong đó {requiredCount} câu bắt buộc đã chiếm chỗ" : string.Empty) +
+                    $", nhưng các câu hỏi đang nhắm tới {uncoveredPrimary} tiêu chí khác nhau — mỗi buổi thi sẽ bỏ qua " +
+                    "ít nhất một tiêu chí, và ứng viên khác nhau bị chấm bằng tiêu chí khác nhau. Cách sửa: tăng số câu " +
+                    $"mỗi buổi lên ít nhất {requiredCount + uncoveredPrimary}, đánh dấu bắt buộc một câu cho mỗi tiêu chí, " +
+                    "hoặc bớt tiêu chí mà câu hỏi nhắm tới.");
 
             // (5) SC2 · W1 — coverageWarnings: tiêu chí WhenTargeted không câu nào nhắm (bất kỳ vị trí).
             //     Tiêu chí Always KHÔNG BAO GIỜ vào đây (nó chấm mọi câu, không cần ai nhắm). Chỉ cảnh

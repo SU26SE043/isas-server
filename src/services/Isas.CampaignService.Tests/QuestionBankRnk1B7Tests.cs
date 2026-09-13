@@ -225,7 +225,7 @@ public class QuestionBankRnk1B7Tests
         var s = (await NewService(tdb.NewContext()).UpdateCampaignAsync(org, org, camp.Id,
             new UpdateCampaignRequest { Title = "x" }, default)).QuestionBank;
 
-        Assert.Contains(s.Warnings, w => w.Contains("questions_per_session (10)") && w.Contains("(2)"));
+        Assert.Contains(s.Warnings, w => w.Contains("Số câu mỗi buổi (10)") && w.Contains("(2)"));   // COPY-BE: giọng HR, giữ 2 con số
     }
 
     [Fact]
