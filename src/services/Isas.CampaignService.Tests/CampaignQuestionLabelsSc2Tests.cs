@@ -632,6 +632,22 @@ public class CampaignQuestionLabelsSc2Tests
         Assert.Equal(expectWarning, hit);
     }
 
+    /// <summary>
+    /// K-rule đếm TIÊU CHÍ CHÍNH ([0]) — KHÔNG đếm mọi nhãn. Fixture ở Theory trên có distinct(mọi nhãn) ==
+    /// distinct([0]) nên không phân biệt được hai định nghĩa (bẫy seed-trùng); ở đây 3 câu cùng chính A nhưng
+    /// nhãn phụ rải B/C ⇒ [0] = 1 rổ (K=2 đủ), mọi-nhãn = 3 (K=2 sẽ bắn oan — HR bị chặn publish vì nhãn phụ).
+    /// </summary>
+    [Fact]
+    public void KRule_DemTieuChiChinh_KhongDemNhanPhu()
+    {
+        var a = Guid.NewGuid(); var b = Guid.NewGuid(); var c = Guid.NewGuid();
+        var questions = new[] { Q("1", new() { a, b }), Q("2", new() { a, c }), Q("3", new() { a }) };
+
+        var s = QuestionBankSummary.Build(questions, 2, null, null);
+
+        Assert.DoesNotContain(s.Warnings, w => w.Contains(QuestionBankSummary.KBelowCriteriaGroupsCode));
+    }
+
     [Fact]
     public void KRule_KNull_HoacKhongNhan_KhongBan()
     {
