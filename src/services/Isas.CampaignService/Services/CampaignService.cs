@@ -322,7 +322,8 @@ namespace Isas.CampaignService.Services
             _db.Campaigns.Update(campaign);
             await _db.SaveChangesAsync(ct);
 
-            return CampaignResponse.FromEntity(campaign);
+            // SC2 correction — đường này không Include Criteria ⇒ cấp projection cho coverage.
+            return CampaignResponse.FromEntity(campaign, bankCriteria: await BankCriteriaAsync(campaign.Id, ct));
         }
          
         public async Task<Stream> DownloadCampaignFilesAsync(Guid orgId, Guid id, string fileType, CancellationToken ct)
@@ -807,7 +808,8 @@ namespace Isas.CampaignService.Services
             campaign.UpdatedAt = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
 
-            return CampaignResponse.FromEntity(campaign);
+            // SC2 correction — đường này không Include Criteria ⇒ cấp projection cho coverage.
+            return CampaignResponse.FromEntity(campaign, bankCriteria: await BankCriteriaAsync(campaign.Id, ct));
         }
 
         public async Task<CampaignResponse> UpdateCampaignQuestionsAsync(Guid orgId, Guid actorUserId, Guid id, List<QuestionItem> questions, CancellationToken ct)
@@ -842,12 +844,13 @@ namespace Isas.CampaignService.Services
             var now = DateTime.UtcNow;
 
             // SC2 · W1 — tập id tiêu chí HIỆN TẠI để validate targetCriterionIds (id lạ → 400 nêu id).
-            // Truy vấn riêng chỉ id (không Include Criteria+Levels vào campaign) — response của PUT
-            // /questions giữ nguyên hình dạng như trước; chỉ chạy khi có câu gửi nhãn.
-            IReadOnlySet<Guid>? criterionIds = null;
-            async Task<IReadOnlySet<Guid>> CriterionIdsAsync()
-                => criterionIds ??= (await _db.CampaignCriteria
-                    .Where(c => c.CampaignId == id).Select(c => c.Id).ToListAsync(ct)).ToHashSet();
+            // Truy vấn riêng (không Include Criteria+Levels vào campaign) — response của PUT /questions
+            // giữ nguyên hình dạng như trước. Correction T2: cùng MỘT projection {Id, Name, ScoringScope}
+            // nuôi cả validate lẫn `questionBank.coverageWarnings` của response — đây chính là đường HR
+            // gắn nhãn tay, FE đọc coverage từ response này; trả [] vì "chưa nạp" là nói dối.
+            var bankCriteria = await BankCriteriaAsync(id, ct);
+            IReadOnlySet<Guid> criterionIds = bankCriteria.Select(c => c.Id).ToHashSet();
+            Task<IReadOnlySet<Guid>> CriterionIdsAsync() => Task.FromResult(criterionIds);
 
             foreach (var item in questions)
             {
@@ -949,7 +952,7 @@ namespace Isas.CampaignService.Services
             AddAudit(actorUserId, orgId, AuditAction.EditQuestions, campaign.Id,
                 $"Sửa câu hỏi: giữ {keptIds.Count}, thêm {fresh.Count}, xoá {removed.Count}");
             await _db.SaveChangesAsync(ct);
-            return CampaignResponse.FromEntity(campaign);
+            return CampaignResponse.FromEntity(campaign, bankCriteria: bankCriteria);
         }
 
         // Nhập câu hỏi hàng loạt từ file CSV — CHỈ ĐỌC, KHÔNG ghi DB (xem QuestionCsvImporter).
@@ -1161,6 +1164,21 @@ namespace Isas.CampaignService.Services
         /// SC2 · W2 — lọc lớp 2 nhãn AI trả về theo tập id đã cấp. <c>null</c> ⇒ <c>null</c>; <c>[]</c> ⇒ <c>[]</c>;
         /// id ∉ <paramref name="allowed"/> ⇒ bỏ (đếm vào <paramref name="dropped"/> để log một lần).
         /// </summary>
+        /// <summary>
+        /// SC2 (correction T2) — projection RẺ <c>{Id, Name, ScoringScope}</c> cho
+        /// <c>questionBank.coverageWarnings</c> ở các đường trả <see cref="CampaignResponse"/> mà KHÔNG
+        /// Include <c>Criteria</c>. Không có nó, <c>Campaign.Criteria</c> khởi tạo <c>new List&lt;&gt;()</c> ⇒
+        /// coverage rơi về "phủ đủ" ⇒ <c>coverageWarnings: []</c> NÓI DỐI (Tester đo PUT=0 / GET=1).
+        /// Một truy vấn, không kéo Levels — hình dạng response giữ nguyên.
+        /// </summary>
+        private async Task<IReadOnlyList<QuestionBankCriterion>> BankCriteriaAsync(Guid campaignId, CancellationToken ct)
+            => await _db.CampaignCriteria
+                .AsNoTracking()
+                .Where(c => c.CampaignId == campaignId)
+                .OrderBy(c => c.OrderNo)
+                .Select(c => new QuestionBankCriterion(c.Id, c.Name, c.ScoringScope))
+                .ToListAsync(ct);
+
         internal static List<Guid>? KeepKnownTargets(
             IReadOnlyList<Guid>? requested, IReadOnlySet<Guid> allowed, ref int dropped)
         {
@@ -1495,7 +1513,8 @@ namespace Isas.CampaignService.Services
             AddAudit(actorUserId, orgId, AuditAction.TransitionStatus, campaign.Id, $"{from} → {target}");
             await _db.SaveChangesAsync(ct);
 
-            return CampaignResponse.FromEntity(campaign);
+            // SC2 correction — đường này không Include Criteria ⇒ cấp projection cho coverage.
+            return CampaignResponse.FromEntity(campaign, bankCriteria: await BankCriteriaAsync(campaign.Id, ct));
         }
 
         // ── CMP3-B4: POST /campaign/{id}/start-now — kéo start_at về hiện tại ─────────────────
@@ -3742,7 +3761,8 @@ namespace Isas.CampaignService.Services
                 $"Cập nhật nhu cầu công việc ({cleaned.Count} mục)");
             await _db.SaveChangesAsync(ct);
 
-            return CampaignResponse.FromEntity(campaign);
+            // SC2 correction — đường này không Include Criteria ⇒ cấp projection cho coverage.
+            return CampaignResponse.FromEntity(campaign, bankCriteria: await BankCriteriaAsync(campaign.Id, ct));
         }
 
         // ── CMP3-B3: AI gợi ý nhu cầu công việc từ JD — CHỈ ĐỌC ─────────────────────────────

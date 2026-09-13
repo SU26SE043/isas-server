@@ -108,6 +108,9 @@ public class ScoringCriteriaBuilderTests
                 c.Name, c.Description, c.Weight, c.MaxScore,
                 // RNK1 · HĐ-5 — khoá JSON "criterionId" (= campaign_criteria.id) đi giữa maxScore và levels.
                 criterionId = c.CriterionId,
+                // SC2 · W4 (tiền đề đổi có chủ đích 2026-09-13): hình dạng dây có thêm "scoringScope" giữa
+                // criterionId và levels — hợp đồng với CampaignCriterionInput.ScoringScope phía Interview.
+                scoringScope = c.ScoringScope,
                 levels = c.Levels.Select(l => new { l.Score, l.Descriptor })
             }),
             new JsonSerializerOptions(JsonSerializerDefaults.Web));

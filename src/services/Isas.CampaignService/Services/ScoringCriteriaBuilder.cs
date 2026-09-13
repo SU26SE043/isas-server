@@ -28,6 +28,9 @@ namespace Isas.CampaignService.Services
                     // RNK1 · HĐ-5 — khoá ỔN ĐỊNH để snapshot chấm khớp về campaign_criteria (điểm sàn
                     // read-time). Interview ghi vào rubric_criteria.source_criterion_id.
                     CriterionId = c.Id,
+                    // SC2 · W4 — phạm vi chấm đi kèm thước đo (Always = chấm mọi câu · WhenTargeted = chỉ
+                    // khi câu nhắm). Set TỪ ENTITY ở đây — nguồn duy nhất — chứ không map tay ở call site.
+                    ScoringScope = c.ScoringScope.ToString(),
                     Levels = (c.Levels ?? new List<CampaignCriterionLevel>())
                         .OrderBy(l => l.Score)
                         .Select(l => new SessionCriterionLevelInput(l.Score, l.Descriptor))

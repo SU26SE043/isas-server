@@ -340,6 +340,23 @@ public class CampaignQuestionLabelsSc2Tests
         Assert.Contains("lệch", log.Entries.Single(e => e.Level == LogLevel.Warning).Message);
     }
 
+    /// <summary>Lệch theo chiều DÀI HƠN cũng là lệch: 3 nhãn cho 2 câu ⇒ bỏ nhãn cả lô + 1 warning (không chỉ ca ngắn hơn).</summary>
+    [Fact]
+    public void Align_TargetCriteriaDaiHonQuestions_BoNhanCaLo_MotWarning()
+    {
+        var a = Guid.NewGuid();
+        var log = new CapturingLogger<AiServiceQuestionGenerator>();
+
+        var got = AiServiceQuestionGenerator.AlignTargets(
+            new() { "Q1", "Q2" },
+            new() { new() { a.ToString("D") }, new() { a.ToString("D") }, new() { a.ToString("D") } },   // 3 > 2
+            log);
+
+        Assert.Equal(2, got.Count);
+        Assert.All(got, q => Assert.Null(q.TargetCriterionIds));
+        Assert.Equal(1, log.Warnings);
+    }
+
     /// <summary>Zip TRƯỚC khi lọc câu trống: câu 2 trống bị bỏ, nhãn của câu 3 phải về ĐÚNG câu 3.</summary>
     [Fact]
     public void Align_CauTrongBiLoc_NhanKhongLechIndex()
@@ -440,6 +457,28 @@ public class CampaignQuestionLabelsSc2Tests
         Assert.Equal("X", QuestionPoolSelector.BucketKey(Pq("q", null, group: "X")));
         Assert.Equal("X", QuestionPoolSelector.BucketKey(Pq("q", new(), group: "X")));   // [] = chưa nhắm ⇒ nhóm
         Assert.Equal("", QuestionPoolSelector.BucketKey(Pq("q", null, group: null)));      // I5: y như trước
+        // NHÃN THẮNG NHÓM: câu vừa có nhãn vừa có question_group ⇒ khoá là nhãn, không phải "X".
+        Assert.Equal(a.ToString("D"), QuestionPoolSelector.BucketKey(Pq("q", new() { a }, group: "X")));
+    }
+
+    /// <summary>
+    /// Pool TRỘN: 3 câu nhãn A nhưng cùng group "X" + 3 câu không nhãn group "X". Nhãn thắng ⇒ 2 rổ (A, X) ⇒
+    /// K=2 rút mỗi rổ 1 trên mọi ứng viên. Nếu group thắng thì cả 6 chung một rổ "X" ⇒ có ứng viên nhận 2 câu A.
+    /// </summary>
+    [Fact]
+    public void Select_PoolTron_NhanThangNhom()
+    {
+        var a = Guid.NewGuid();
+        var pool = new List<PoolQuestion>();
+        for (var i = 0; i < 3; i++) pool.Add(Pq($"A{i}", new() { a }, group: "X"));
+        for (var i = 0; i < 3; i++) pool.Add(Pq($"X{i}", null, group: "X"));
+
+        for (var i = 1; i <= 40; i++)
+        {
+            var got = QuestionPoolSelector.Select(pool, 2, CampaignId, Guid.Parse($"00000000-0000-0000-0000-{i:D12}"));
+            Assert.Equal(1, got.Count(q => q.Text.StartsWith('A')));
+            Assert.Equal(1, got.Count(q => q.Text.StartsWith('X')));
+        }
     }
 
     /// <summary>AC-3: 2 chính A · 2 chính B · 2 không nhãn "X", K=3 ⇒ mỗi rổ đúng 1; tất định theo cặp id.</summary>
@@ -581,6 +620,97 @@ public class CampaignQuestionLabelsSc2Tests
             Assert.Equal(1, qs.Count(t => t.StartsWith('A')));
             Assert.Equal(1, qs.Count(t => t.StartsWith('B')));
         });
+    }
+
+    // ═══════════════════ (correction T2) coverage THẬT ở 5 đường KHÔNG Include Criteria ═══════════════════
+    // `Campaign.Criteria` khởi tạo `new List<>()` ⇒ FromEntity trần rơi về "phủ đủ" ⇒ `coverageWarnings: []`
+    // NÓI DỐI. Tester đo: PUT /questions = 0 trong khi GET = 1 trên cùng campaign. Đây là đường HR gắn nhãn
+    // tay và FE đọc coverage từ chính response này.
+
+    private static async Task<(CampaignTestDb tdb, Guid org, Campaign camp, CampaignCriterion untargeted)> SeedUntargetedAsync(
+        CampaignStatus status = CampaignStatus.Draft)
+    {
+        var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var wa = Crit("A", CriterionScoringScope.WhenTargeted, 0, 0.5m);
+        var wb = Crit("B chua ai nham", CriterionScoringScope.WhenTargeted, 1, 0.5m);
+        var camp = await SeedAsync(tdb, org, [wa, wb], [Q("1", new() { wa.Id })], status: status);
+        return (tdb, org, camp, wb);
+    }
+
+    [Fact]
+    public async Task PutQuestions_Response_CoverageWarnings_That_KhongPhaiRong()
+    {
+        var (tdb, org, camp, wb) = await SeedUntargetedAsync();
+        using var _ = tdb;
+        // Tester probe: PUT echo nguyên câu (vắng targetCriterionIds ⇒ giữ nhãn) ⇒ B vẫn không ai nhắm.
+        var existing = (await QuestionsAsync(tdb, camp.Id)).Single();
+
+        var put = await NewService(tdb.NewContext()).UpdateCampaignQuestionsAsync(org, org, camp.Id, new List<QuestionItem>
+        {
+            new() { Id = existing.Id, QuestionText = existing.QuestionText, IsRequired = true },
+        }, default);
+        var get = await NewService(tdb.NewContext()).GetCampaignAsync(org, camp.Id, default);
+
+        Assert.Equal(wb.Id, Assert.Single(put.QuestionBank.CoverageWarnings).CriterionId);
+        Assert.Equal(get.QuestionBank.CoverageWarnings.Select(w => w.CriterionId),
+            put.QuestionBank.CoverageWarnings.Select(w => w.CriterionId));   // PUT == GET, không còn 0 vs 1
+    }
+
+    [Fact]
+    public async Task PutQuestions_GanNhanChoB_CoverageVeRong()
+    {
+        var (tdb, org, camp, wb) = await SeedUntargetedAsync();
+        using var _ = tdb;
+        var existing = (await QuestionsAsync(tdb, camp.Id)).Single();
+
+        var put = await NewService(tdb.NewContext()).UpdateCampaignQuestionsAsync(org, org, camp.Id, new List<QuestionItem>
+        {
+            new() { Id = existing.Id, QuestionText = existing.QuestionText, IsRequired = true },
+            new() { QuestionText = "cau moi nham B", IsRequired = true, TargetCriterionIds = new() { wb.Id } },
+        }, default);
+
+        Assert.Empty(put.QuestionBank.CoverageWarnings);
+    }
+
+    [Fact]
+    public async Task UploadFiles_Response_CoverageWarnings_That()
+    {
+        var (tdb, org, camp, wb) = await SeedUntargetedAsync();
+        using var _ = tdb;
+        var res = await NewService(tdb.NewContext()).UploadCampaignFilesAsync(org, camp.Id, new UploadCampaignFilesRequest(), default);
+        Assert.Equal(wb.Id, Assert.Single(res.QuestionBank.CoverageWarnings).CriterionId);
+    }
+
+    [Fact]
+    public async Task UpdateFiles_Response_CoverageWarnings_That()
+    {
+        var (tdb, org, camp, wb) = await SeedUntargetedAsync();
+        using var _ = tdb;
+        // Seed đã có JDText ⇒ file JD bị lọc bỏ (HasDirectText, C11) ⇒ no-op nhưng vẫn trả FromEntity (mẫu Rnk1B7).
+        var res = await NewService(tdb.NewContext()).UpdateCampaignFilesAsync(org, camp.Id,
+            new UploadCampaignFilesRequest { JdFile = Mock.Of<Microsoft.AspNetCore.Http.IFormFile>() }, default);
+        Assert.Equal(wb.Id, Assert.Single(res.QuestionBank.CoverageWarnings).CriterionId);
+    }
+
+    [Fact]
+    public async Task TransitionStatus_Response_CoverageWarnings_That()
+    {
+        var (tdb, org, camp, wb) = await SeedUntargetedAsync(CampaignStatus.Active);
+        using var _ = tdb;
+        var res = await NewService(tdb.NewContext()).TransitionStatusAsync(org, org, camp.Id, CampaignStatus.Closed, default);
+        Assert.Equal("Closed", res.Status);
+        Assert.Equal(wb.Id, Assert.Single(res.QuestionBank.CoverageWarnings).CriterionId);
+    }
+
+    [Fact]
+    public async Task ReplaceJobNeeds_Response_CoverageWarnings_That()
+    {
+        var (tdb, org, camp, wb) = await SeedUntargetedAsync();
+        using var _ = tdb;
+        var res = await NewService(tdb.NewContext()).ReplaceJobNeedsAsync(org, org, camp.Id,
+            new List<JobNeedInput> { new() { Category = JobNeedCategories.Technical, Text = "Thao Kafka" } }, default);
+        Assert.Equal(wb.Id, Assert.Single(res.QuestionBank.CoverageWarnings).CriterionId);
     }
 
     // ═══════════════════ (4)(5) Summary — coverage + K-rule ═══════════════════

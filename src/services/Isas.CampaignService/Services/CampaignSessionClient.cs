@@ -61,6 +61,9 @@ namespace Isas.CampaignService.Services
                     // RNK1 · HĐ-5 — khoá JSON camelCase "criterionId" (= campaign_criteria.id). Bản
                     // Interview cũ chưa biết field ⇒ bỏ qua ⇒ source_criterion_id = null (khớp theo tên).
                     criterionId = c.CriterionId,
+                    // SC2 · W4 — khoá JSON camelCase "scoringScope" ("Always" | "WhenTargeted"); null ⇒
+                    // Interview coi Always. Bản Interview cũ chưa biết field ⇒ bỏ qua ⇒ chấm đủ bộ như hôm nay.
+                    scoringScope = c.ScoringScope,
                     levels = c.Levels.Select(l => new { l.Score, l.Descriptor })
                 }),
                 expiresAt,  // BK18 — Interview map → session.Deadline (I2); null = không hard-deadline
@@ -77,7 +80,9 @@ namespace Isas.CampaignService.Services
                 // Câu hỏi KÈM đáp án mẫu. Gửi SONG SONG với `questions` chứ không thay thế: hai service
                 // deploy không nguyên tử, nên bản Interview cũ (chưa biết field này) vẫn phải chạy được.
                 // Bản Interview mới ưu tiên field này và bỏ qua nếu số lượng lệch với `questions`.
-                questionDetails = questionDetails?.Select(q => new { q.Text, q.SampleAnswer }),
+                // SC2 · W4 — kèm nhãn "targetCriterionIds" của ĐÚNG câu đã rút; giữ 3 trạng thái (null ⇒ null,
+                // [] ⇒ [], [ids]) — anonymous type + Web defaults ghi null tường minh, KHÔNG bỏ khoá (I2).
+                questionDetails = questionDetails?.Select(q => new { q.Text, q.SampleAnswer, q.TargetCriterionIds }),
                 // SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức). Interview ghim CẢ 4 vào
                 // practice_sessions; null (campaign chưa áp chính sách) ⇒ bên đó dùng weighted mặc định.
                 campaignPolicyVersion = scoringPolicy?.Version,
