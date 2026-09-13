@@ -303,9 +303,14 @@ namespace Isas.CampaignService.Services
             // trạng thái của mọi chiến dịch có trước tính năng này) ⇒ lấy trọn bộ theo đúng thứ tự HR
             // soạn, y như trước. Rút deterministic theo (campaignId, candidateId): buổi thi là
             // create-or-get, ứng viên vào lại phải nhận ĐÚNG đề cũ.
+            // SC2 · W2 — mang theo nhãn tiêu chí để selector chia rổ theo TIÊU CHÍ CHÍNH; câu chưa gắn nhãn
+            // (null) rơi về question_group y như trước. (Gửi nhãn sang Interview là việc của T3.)
             var pool = campaign.Questions
                 .OrderBy(q => q.CreatedAt).ThenBy(q => q.Id)
-                .Select(q => new PoolQuestion(q.Id, q.QuestionText, q.SampleAnswer, q.IsRequired, q.QuestionGroup))
+                .Select(q => new PoolQuestion(q.Id, q.QuestionText, q.SampleAnswer, q.IsRequired, q.QuestionGroup)
+                {
+                    TargetCriterionIds = q.TargetCriterionIds,
+                })
                 .ToList();
             if (pool.Count == 0)
                 throw new InvalidOperationException("Chiến dịch chưa có câu hỏi.");

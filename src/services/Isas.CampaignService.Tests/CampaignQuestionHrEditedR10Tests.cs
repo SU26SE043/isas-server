@@ -68,6 +68,20 @@ public class CampaignQuestionHrEditedR10Tests
             LastCriteriaContext = criteriaContext;
             return GenerateAsync(jobCategory, jdText, count, seniority, ct);
         }
+
+        /// <summary>SC2 · W2 — tiêu chí WhenTargeted gửi để GẮN NHÃN; <c>null</c> = chưa lượt nào gọi.</summary>
+        public IReadOnlyList<QuestionCriterionRef>? LastCriteria { get; private set; }
+
+        // SC2 · W2 — thành viên BẮT BUỘC (không default), production nay gọi overload này.
+        public async Task<List<GeneratedQuestion>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority,
+            IReadOnlyList<QuestionCriterionContext> criteriaContext,
+            IReadOnlyList<QuestionCriterionRef> criteria, CancellationToken ct)
+        {
+            LastCriteria = criteria;
+            var texts = await GenerateAsync(jobCategory, jdText, count, seniority, criteriaContext, ct);
+            return texts.Select(t => new GeneratedQuestion(t, null)).ToList();
+        }
     }
 
     private static CampaignSvc NewService(CampaignDbContext db, IQuestionGenerator? gen = null) =>

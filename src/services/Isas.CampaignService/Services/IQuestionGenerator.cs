@@ -19,6 +19,31 @@ namespace Isas.CampaignService.Services
     public record QuestionCriterionContext(string Name, string? Description);
 
     /// <summary>
+    /// SC2 · W2 — một tiêu chí NỘI DUNG (<c>scoring_scope = WhenTargeted</c>) mà câu hỏi sinh ra
+    /// CÓ THỂ nhắm tới. Khác <see cref="QuestionCriterionContext"/> (bối cảnh một chiều, không id):
+    /// đây là đường GẮN NHÃN — AIService trả về <c>targetCriteria</c> theo đúng <see cref="CriterionId"/>
+    /// đã cấp (và DROP id lạ, mẫu <c>citedChunkId</c>). Chỉ tiêu chí <c>WhenTargeted</c> đi qua đây;
+    /// 4 tiêu chí cách nói (<c>Always</c>) luôn chấm ở mọi câu nên không có gì để nhắm.
+    /// </summary>
+    /// <param name="CriterionId"><c>campaign_criteria.id</c> — khoá JSON ra dây: <c>criterionId</c>.</param>
+    /// <param name="Name">Tên tiêu chí HR gõ — DỮ LIỆU, không phải lệnh (AI-4).</param>
+    /// <param name="Description">Mô tả HR gõ (tuỳ chọn) — B2B tên tiêu chí thường ngắn/mơ hồ hơn B2C.</param>
+    public record QuestionCriterionRef(Guid CriterionId, string Name, string? Description);
+
+    /// <summary>
+    /// SC2 · W2 — một câu hỏi AI sinh kèm nhãn tiêu chí (đã căn chỉnh theo TỪNG CÂU, không còn hai
+    /// mảng song song để lệch index ở tầng trên).
+    /// <list type="bullet">
+    /// <item><see cref="TargetCriterionIds"/> = <c>null</c>: lượt này KHÔNG có nhãn (AIService không trả
+    /// <c>targetCriteria</c>, hoặc mảng lệch độ dài ⇒ bỏ nhãn CẢ batch) ⇒ lưu <c>null</c> — chấm đủ bộ.</item>
+    /// <item><c>[]</c>: AI đã xét và câu này không nhắm tiêu chí nội dung nào ⇒ lưu <c>[]</c> (I2).</item>
+    /// <item><c>[ids]</c>: ⊆ tập <see cref="QuestionCriterionRef"/> đã cấp (client đã lọc chuỗi không phải
+    /// GUID; Campaign lọc lớp 2 theo tập campaign_criteria thật).</item>
+    /// </list>
+    /// </summary>
+    public sealed record GeneratedQuestion(string Text, IReadOnlyList<Guid>? TargetCriterionIds);
+
+    /// <summary>
     /// F9 (FR11) — sinh câu hỏi phỏng vấn B2B từ JD của campaign, gọi AIService POST /api/v1/generate-questions.
     ///
     /// Vì sao KHÔNG fallback null như <see cref="ICriteriaSuggester"/>: tiêu chí có bộ mặc định hợp lý để
@@ -90,5 +115,24 @@ namespace Isas.CampaignService.Services
         Task<List<string>> GenerateAsync(
             string jobCategory, string? jdText, int? count, string seniority,
             IReadOnlyList<QuestionCriterionContext> criteriaContext, CancellationToken ct);
+
+        /// <summary>
+        /// SC2 · W2 — overload GIÀU NHẤT: như trên, kèm <paramref name="criteria"/> = CHỈ những tiêu chí
+        /// <c>WhenTargeted</c> (có id) để AIService gắn nhãn <c>targetCriteria</c> cho từng câu. Trả về
+        /// từng câu kèm nhãn đã căn chỉnh (<see cref="GeneratedQuestion"/>).
+        /// </summary>
+        /// <param name="criteria">
+        /// Rỗng ⇒ KHÔNG gửi khoá <c>criteria</c> ra dây (y như hôm nay — AIService đi nhánh
+        /// <c>criteriaContext</c>, prompt nguyên xi) và mọi câu trả về có nhãn <c>null</c>.
+        /// </param>
+        /// <remarks>
+        /// ⚠ Thành viên BẮT BUỘC, KHÔNG default interface member (tiền lệ SEN1/CMP2-BE1): implementer
+        /// quên cài = vỡ BIÊN DỊCH, không phải đánh rơi nhãn trong im lặng. Ba overload cũ GIỮ chữ ký
+        /// (trả <c>List&lt;string&gt;</c>) cho mọi caller không cần nhãn.
+        /// </remarks>
+        Task<List<GeneratedQuestion>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority,
+            IReadOnlyList<QuestionCriterionContext> criteriaContext,
+            IReadOnlyList<QuestionCriterionRef> criteria, CancellationToken ct);
     }
 }
