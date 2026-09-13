@@ -403,6 +403,89 @@ public class RubricPreviewScopeSc2Tests
         Assert.Equal(RubricPreviewService.FreeRunsPerQuestion, history.Single(r => r.Id == b.Id).FreeRunsRemaining);
     }
 
+    // ═══════════════ test-gap T6 (Integrator K3/K6, Tester P6/P7) ═══════════════
+
+    /// <summary>
+    /// K3: truy vấn đếm Succeeded của history phải lọc `CampaignId`. Campaign B (org khác) có 1 Succeeded mang
+    /// ĐÚNG QuestionId của câu ở A (kịch bản rò chạm thật: cùng (version, questionId)) ⇒ history của A vẫn
+    /// freeRunsRemaining = 1 cho câu đó. Bỏ Where(CampaignId) ⇒ A về 0 sai ⇒ ĐỎ.
+    /// </summary>
+    [Fact]
+    public async Task History_KhongDemSucceeded_CuaCampaignKhac_CungQuestionId()
+    {
+        using var tdb = new CampaignTestDb();
+        var ownerA = Guid.NewGuid(); var ownerB = Guid.NewGuid();
+        var a = await SeedAsync(tdb, ownerA);
+        var b = await SeedAsync(tdb, ownerB);
+        RubricPreviewRun Run(Guid campaignId, Guid owner, Guid qid, RubricPreviewStatus st) => new()
+        {
+            Id = Guid.NewGuid(), CampaignId = campaignId, CreatedByUserId = owner, QuestionId = qid, QuestionText = "q",
+            Status = st, RubricSnapshot = "[]", RubricFingerprint = "fp", RubricVersion = 1, CreatedAt = DateTime.UtcNow,
+        };
+        var runA = Run(a.Camp.Id, ownerA, a.QWt1.Id, RubricPreviewStatus.Failed);          // A: chưa Succeeded ⇒ còn 1
+        var leak = Run(b.Camp.Id, ownerB, a.QWt1.Id, RubricPreviewStatus.Succeeded);      // B: Succeeded, cùng questionId của A
+        tdb.Db.RubricPreviewRuns.AddRange(runA, leak);
+        await tdb.Db.SaveChangesAsync();
+
+        var historyA = await NewService(tdb.NewContext(), Mock.Of<IRubricPreviewClient>()).GetHistoryAsync(ownerA, a.Camp.Id, default);
+
+        var only = Assert.Single(historyA);
+        Assert.Equal(runA.Id, only.Id);   // run của B không lọt vào lịch sử A
+        Assert.Equal(RubricPreviewService.FreeRunsPerQuestion, only.FreeRunsRemaining);
+    }
+
+    /// <summary>K6: POST không `questionId` ⇒ câu ĐẦU theo (CreatedAt, Id) — không phải câu cuối.</summary>
+    [Fact]
+    public async Task KhongGuiQuestionId_ChonCauDauTheoCreatedAt()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);   // 3 câu CreatedAt tăng dần: QNull(0s) · QEmpty(1s) · QWt1(2s)
+        var (ai, received) = AiEcho();
+
+        var res = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest(), default);
+
+        Assert.Equal(s.QNull.Id, res.QuestionId);
+        Assert.Equal(s.QNull.QuestionText, res.QuestionText);
+        Assert.Equal(3, Ids(received.Single()).Length);   // đúng phạm vi của câu đầu (chưa gắn nhãn ⇒ toàn bộ)
+    }
+
+    /// <summary>
+    /// P6: AI bỏ sót 1 tiêu chí ⇒ mẫu số ACTUAL chỉ gồm tiêu chí CÓ điểm (mirror notifier): câu nhắm W1 (Always 0.4,
+    /// W1 0.3), AI chỉ trả Always 5/5 ⇒ Actual = 100 (không phải 5/5×0.4/0.7 = 57.14); Expected vẫn chia đủ 0.7.
+    /// P7: AI trả 7/5 ⇒ kẹp 0..100 ⇒ 100 (không phải 140).
+    /// </summary>
+    [Theory]
+    [InlineData("skip", 100.0)]
+    [InlineData("over", 100.0)]
+    public async Task ActualWeightedPct_AIBoSot_ChiMauSoCoDiem_VaTran_Kẹp100(string ca, double expectedActual)
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        var ai = new Mock<IRubricPreviewClient>();
+        ai.Setup(x => x.RunAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int>(),
+                It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>()))
+            .Returns((string _, string _, string? _, string _, string? _, string? _, int _,
+                    IReadOnlyList<PreviewCriterionInput> crit, CancellationToken _) =>
+            {
+                var scores = ca == "skip"
+                    ? crit.Where(c => c.CriterionId == s.Always.Id).Select(c => new PreviewSampleScore(c.CriterionId, 5, 5, "vì")).ToList()   // bỏ sót W1
+                    : crit.Select(c => new PreviewSampleScore(c.CriterionId, 7, 5, "vì")).ToList();                                            // 7/5
+                return Task.FromResult(new RubricPreviewResult(
+                    new[] { "Weak", "Good", "Excellent" }.Select(b => new PreviewSample(b, $"bài {b}", 160, scores)).ToList(),
+                    PromptVersion: 4, LengthParityWarning: false));
+            });
+
+        var res = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
+
+        var ex = res.Samples.Single(x => x.Band == "Excellent");
+        Assert.Equal((decimal)expectedActual, ex.ActualWeightedPct);
+        Assert.Equal(2, ex.Scores.Count);   // bảng vẫn liệt kê đủ 2 tiêu chí trong phạm vi (W1 bỏ sót hiện 0 điểm)
+        if (ca == "skip") Assert.Equal(0m, ex.Scores.Single(x => x.CriterionId == s.Wt1.Id).ActualScore);
+    }
+
     // ═══════════════ I5 — row cũ trước T6 ═══════════════
 
     [Fact]
