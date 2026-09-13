@@ -701,6 +701,8 @@ namespace Isas.CampaignService.Controllers
                     orgId.Value, GetActorUserId(), id, request ?? new RubricPreviewRequest(), ct));
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // REV-BE R3 — lượt sẽ trừ credit mà client chưa xác nhận: 409 body có mã để FE hỏi rồi POST lại.
+            catch (PreviewBillingConfirmRequiredException ex) { return Conflict(ex.Body); }
             // Ví org hết credit = 402 (PAY-5), KHÔNG phải 502 — HR nạp thêm là chạy được.
             catch (InsufficientOrgCreditException ex)
             {

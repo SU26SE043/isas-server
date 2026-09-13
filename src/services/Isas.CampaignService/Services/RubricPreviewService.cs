@@ -102,6 +102,13 @@ namespace Isas.CampaignService.Services
                     $"Chưa khai mốc điểm cho tiêu chí: {string.Join(", ", thieuMoc)}. "
                     + "Chấm thử cần mốc để kiểm chứng, nếu không nó chỉ đang kiểm chứng dải mặc định.");
 
+            // ── 5b. SẼ tính phí mà client chưa xác nhận? (REV-BE R3 — I7 ở tầng tiền) ────
+            // Đếm quota KHÔNG cần row nên đặt được TRƯỚC bước 7 (insert Running) và trước ReserveAsync:
+            // 409 sạch — không row rác, không chạm Payment. Bước 8 vẫn đếm lại (thứ tự guard giữ nguyên).
+            if (await CountSucceededAsync(campaignId, campaign.RubricVersion, question.Id, ct) >= FreeRunsPerQuestion
+                && !request.ConfirmBilled)
+                throw new PreviewBillingConfirmRequiredException(question.Id);
+
             // ── 6. còn lượt nào đang chạy? (self-heal row mồ côi) ─────────
             await ResolveStaleRunningAsync(campaignId, ct);
             if (await _db.RubricPreviewRuns.AnyAsync(
