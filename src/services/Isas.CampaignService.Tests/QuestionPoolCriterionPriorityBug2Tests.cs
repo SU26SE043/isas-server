@@ -118,6 +118,72 @@ public class QuestionPoolCriterionPriorityBug2Tests
         }
     }
 
+    // ═══════════════ test-gap BUG-1/2 (Tester probe) ═══════════════
+
+    private static readonly Guid D = Guid.Parse("33333333-2222-3333-4444-555555555555");
+
+    /// <summary>Required ĐA NHÃN [B,C]: "phủ" chỉ theo nhãn[0] = B ⇒ khe còn lại phải về C (không phải coi C đã phủ).</summary>
+    [Fact]
+    public void RequiredDaNhan_PhuTheoNhan0_KheVeC()
+    {
+        var pool = new List<PoolQuestion>
+        {
+            Pq("rBC", new() { B, C }, required: true),
+            Pq("b1", new() { B }),
+            Pq("c1", new() { C }),
+        };
+        foreach (var cand in Candidates(30))
+        {
+            var got = QuestionPoolSelector.Select(pool, 2, CampaignId, cand);
+            Assert.Equal(2, got.Count);
+            Assert.Contains(got, q => q.Text == "rBC");
+            Assert.Contains(got, q => q.Text == "c1");   // C chưa được phủ (nhãn[0] của required là B)
+        }
+    }
+
+    /// <summary>Required KHÔNG nhãn không phủ tiêu chí nào ⇒ rổ B vẫn được ưu tiên trước rổ "".</summary>
+    [Fact]
+    public void RequiredKhongNhan_KhongPhuGi_RoTieuChiVanDuocUuTien()
+    {
+        var pool = new List<PoolQuestion>
+        {
+            Pq("r", new(), required: true),
+            Pq("b1", new() { B }),
+            Pq("x1", null),
+        };
+        foreach (var cand in Candidates(30))
+        {
+            var got = QuestionPoolSelector.Select(pool, 2, CampaignId, cand);
+            Assert.Equal(2, got.Count);
+            Assert.Contains(got, q => q.Text == "r");
+            Assert.Contains(got, q => q.Text == "b1");
+        }
+    }
+
+    /// <summary>Selector KHÔNG BAO GIỜ vượt K: 3 rổ tiêu chí chưa phủ, 0 required, K=2 ⇒ đúng 2 câu = 2 rổ ĐẦU theo tên khoá (B, C).</summary>
+    [Fact]
+    public void KhongVuotK_KheItHonRo_LayRoDauTheoTen()
+    {
+        var pool = new List<PoolQuestion>
+        {
+            Pq("b1", new() { B }), Pq("c1", new() { C }), Pq("d1", new() { D }),
+        };
+        foreach (var cand in Candidates(30))
+        {
+            var got = QuestionPoolSelector.Select(pool, 2, CampaignId, cand);
+            Assert.Equal(2, got.Count);
+            Assert.Equal(new[] { "b1", "c1" }, got.Select(q => q.Text).OrderBy(t => t));
+        }
+    }
+
+    /// <summary>K-rule: required [B,C] chỉ phủ B (nhãn[0]); optional {C, D} ⇒ uncovered {C,D} = 2 > K−1 = 1 ⇒ CHẶN.</summary>
+    [Fact]
+    public void KRule_RequiredDaNhan_ChiPhuNhan0_Chan()
+    {
+        var qs = new[] { Q("r", new() { B, C }, required: true), Q("c1", new() { C }), Q("d1", new() { D }) };
+        Assert.True(HasKRule(QuestionBankSummary.Build(qs, 2, null, null)));
+    }
+
     // ═══════════════ (b) K-rule ═══════════════
 
     [Fact]

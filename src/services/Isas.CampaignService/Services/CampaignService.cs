@@ -3399,8 +3399,9 @@ namespace Isas.CampaignService.Services
 
         /// <summary>
         /// BUG-1 — với tiêu chí đang tracked, mốc mới gán vào nav <c>Levels</c> mang Id gán sẵn bị EF coi là
-        /// Modified (khoá store-generated ≠ default). Đánh Added TƯỜNG MINH cho mốc còn Detached; mốc đã
-        /// tracked (không có ca này sau Clear(), nhưng phòng thủ) giữ nguyên.
+        /// Modified (khoá store-generated ≠ default). Đánh Added TƯỜNG MINH cho mốc còn Detached; ca
+        /// <c>Modified</c> xảy ra khi có DetectChanges chen giữa Build và MarkNewLevelsAdded (đo được) —
+        /// cũng đánh Added; mốc đã tracked ở trạng thái khác giữ nguyên.
         /// </summary>
         private void MarkNewLevelsAdded(IEnumerable<CampaignCriterion> reused)
         {
