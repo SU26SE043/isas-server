@@ -76,14 +76,25 @@ public class RubricPreviewTests
             CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
         };
 
+    // SC2 · T6 (D-4): quota nay theo (campaign, version, CÂU) ⇒ run seed phải mang questionId của
+    // đúng câu mới được đếm; null = run của "câu khác" (không ăn quota câu đang chấm).
     private static RubricPreviewRun SeedRun(
-        Guid campaignId, RubricPreviewStatus status, int rubricVersion = 1, DateTime? createdAt = null)
+        Guid campaignId, RubricPreviewStatus status, int rubricVersion = 1, DateTime? createdAt = null,
+        Guid? questionId = null)
         => new()
         {
             Id = Guid.NewGuid(), CampaignId = campaignId, CreatedByUserId = Guid.NewGuid(),
+            QuestionId = questionId,
             QuestionText = "q", Status = status, RubricSnapshot = "[]", RubricFingerprint = "fp",
             RubricVersion = rubricVersion, CreatedAt = createdAt ?? DateTime.UtcNow
         };
+
+    /// <summary>Id câu hỏi duy nhất của campaign do <see cref="SeedReadyAsync"/> tạo (câu mặc định khi POST không gửi questionId).</summary>
+    private static async Task<Guid> QuestionIdOf(CampaignTestDb tdb, Guid campaignId)
+    {
+        using var db = tdb.NewContext();
+        return (await db.CampaignQuestions.SingleAsync(q => q.CampaignId == campaignId)).Id;
+    }
 
     // ── TRẬT TỰ GUARD: mọi guard TRƯỚC ReserveAsync ──────────────────────
 
@@ -126,33 +137,34 @@ public class RubricPreviewTests
 
     // ── Quota ────────────────────────────────────────────────────────────
 
+    // SC2 · T6 (D-4) — TIỀN ĐỀ ĐỔI CÓ CHỦ ĐÍCH: trước là 3 lượt free/(campaign, version) dùng chung
+    // mọi câu; nay 1 lượt free/(campaign, version, CÂU). Lượt đầu của câu: free, còn 0.
     [Fact]
-    public async Task Ba_luot_dau_KHONG_tinh_phi()
+    public async Task Luot_dau_moi_cau_KHONG_tinh_phi()
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var (camp, cr) = await SeedReadyAsync(tdb, owner);
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
 
-        for (var i = 0; i < 3; i++)
-        {
-            var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
-            Assert.False(res.Billed);
-            Assert.Equal("Succeeded", res.Status);
-            Assert.Equal(2 - i, res.FreeRunsRemaining);
-        }
+        var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
+
+        Assert.False(res.Billed);
+        Assert.Equal("Succeeded", res.Status);
+        Assert.Equal(RubricPreviewService.FreeRunsPerQuestion - 1, res.FreeRunsRemaining);
         credits.VerifyNoOtherCalls();
     }
 
+    // SC2 · T6: lượt THỨ HAI của cùng câu (quota 1/câu) mới tính phí — trước là lượt thứ tư.
     [Fact]
-    public async Task Luot_thu_tu_reserve_dung_MOT_lan_voi_khoa_la_id_cua_luot()
+    public async Task Luot_thu_hai_cung_cau_reserve_dung_MOT_lan_voi_khoa_la_id_cua_luot()
     {
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var (camp, cr) = await SeedReadyAsync(tdb, owner);
-        for (var i = 0; i < 3; i++)
-            tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded));
+        var qid = await QuestionIdOf(tdb, camp.Id);
+        tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded, questionId: qid));
         await tdb.Db.SaveChangesAsync();
 
         Guid? reservedKey = null;
@@ -177,19 +189,18 @@ public class RubricPreviewTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var (camp, cr) = await SeedReadyAsync(tdb, owner);
+        var qid = await QuestionIdOf(tdb, camp.Id);
         tdb.Db.RubricPreviewRuns.AddRange(
-            SeedRun(camp.Id, RubricPreviewStatus.Succeeded),
-            SeedRun(camp.Id, RubricPreviewStatus.Succeeded),
-            SeedRun(camp.Id, RubricPreviewStatus.Failed),
-            SeedRun(camp.Id, RubricPreviewStatus.Failed),
-            SeedRun(camp.Id, RubricPreviewStatus.Failed));
+            SeedRun(camp.Id, RubricPreviewStatus.Failed, questionId: qid),
+            SeedRun(camp.Id, RubricPreviewStatus.Failed, questionId: qid),
+            SeedRun(camp.Id, RubricPreviewStatus.Failed, questionId: qid));
         await tdb.Db.SaveChangesAsync();
 
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
             .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
 
-        Assert.False(res.Billed);          // 2 Succeeded < 3 ⇒ vẫn free dù đã hỏng 3 lần
+        Assert.False(res.Billed);          // 0 Succeeded của câu này ⇒ vẫn free dù đã hỏng 3 lần (T6: 1 free/câu)
         Assert.Equal(0, res.FreeRunsRemaining);
         credits.VerifyNoOtherCalls();
     }
@@ -202,8 +213,9 @@ public class RubricPreviewTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var (camp, cr) = await SeedReadyAsync(tdb, owner);
-        for (var i = 0; i < 3; i++)
-            tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded, rubricVersion: 1));
+        var qid = await QuestionIdOf(tdb, camp.Id);
+        // T6: 1 Succeeded của ĐÚNG câu này ở v1 ⇒ ở v1 sẽ billed; bump v2 ⇒ free lại.
+        tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded, rubricVersion: 1, questionId: qid));
         camp.RubricVersion = 2;
         tdb.Db.Campaigns.Update(camp);
         await tdb.Db.SaveChangesAsync();
@@ -264,8 +276,8 @@ public class RubricPreviewTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var (camp, cr) = await SeedReadyAsync(tdb, owner);
-        for (var i = 0; i < 3; i++)
-            tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded));
+        var qid = await QuestionIdOf(tdb, camp.Id);
+        tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded, questionId: qid));   // T6: hết 1 lượt free của câu
         await tdb.Db.SaveChangesAsync();
 
         var ai = new Mock<IRubricPreviewClient>();
@@ -288,8 +300,8 @@ public class RubricPreviewTests
         Assert.Contains("AIService sập", run.ErrorReason);
         credits.Verify(x => x.ReleaseAsync(run.Id, It.IsAny<CancellationToken>()), Times.Once);
         credits.Verify(x => x.ConsumeAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
-        // Vẫn đúng 3 lượt Succeeded ⇒ HR không mất lượt free vì AI của ta hỏng.
-        Assert.Equal(3, await check.RubricPreviewRuns.CountAsync(r => r.Status == RubricPreviewStatus.Succeeded));
+        // Vẫn đúng 1 lượt Succeeded ⇒ HR không mất lượt free vì AI của ta hỏng.
+        Assert.Equal(1, await check.RubricPreviewRuns.CountAsync(r => r.Status == RubricPreviewStatus.Succeeded));
     }
 
     // Ví org hết credit ⇒ 402, và lượt đó đánh dấu Failed chứ không nằm Running khoá campaign.
@@ -299,8 +311,8 @@ public class RubricPreviewTests
         using var tdb = new CampaignTestDb();
         var owner = Guid.NewGuid();
         var (camp, cr) = await SeedReadyAsync(tdb, owner);
-        for (var i = 0; i < 3; i++)
-            tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded));
+        var qid = await QuestionIdOf(tdb, camp.Id);
+        tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded, questionId: qid));   // T6: hết 1 lượt free của câu
         await tdb.Db.SaveChangesAsync();
 
         var credits = new Mock<ICreditReservationClient>();

@@ -38,10 +38,18 @@ namespace Isas.CampaignService.DTOs
         public bool LengthParityWarning { get; set; }
 
         public bool Billed { get; set; }
+        /// <summary>SC2 · T6 (D-4) — theo (campaign, rubricVersion, questionId); <c>FreeRunsPerQuestion = 1</c>.</summary>
         public int FreeRunsRemaining { get; set; }
 
-        /// <summary>Bộ thước đo ĐÃ DÙNG (snapshot), không phải bộ hiện tại.</summary>
+        /// <summary>Bộ thước đo ĐÃ DÙNG (snapshot), không phải bộ hiện tại — ĐỦ bộ, FE lọc bằng <see cref="ScopedCriterionIds"/>.</summary>
         public List<RubricPreviewCriterion> Rubric { get; set; } = new();
+
+        /// <summary>
+        /// SC2 · T6 — tập tiêu chí ĐÃ CHẤM trong lượt này = phạm vi của câu (Always ∪ nhãn câu; câu chưa gắn
+        /// nhãn ⇒ toàn bộ). Lượt trước T6 (snapshot không có InScope) ⇒ toàn bộ. <c>samples[].scores</c> chỉ
+        /// chứa tiêu chí trong tập này.
+        /// </summary>
+        public List<Guid> ScopedCriterionIds { get; set; } = new();
 
         public List<RubricPreviewSample> Samples { get; set; } = new();
 
@@ -56,6 +64,13 @@ namespace Isas.CampaignService.DTOs
         public string Name { get; set; } = null!;
         public decimal Weight { get; set; }
         public int MaxScore { get; set; }
+        /// <summary>SC2 · T6 — "Always" | "WhenTargeted"; null = snapshot trước T6.</summary>
+        public string? ScoringScope { get; set; }
+        /// <summary>
+        /// SC2 · T6 — tiêu chí này có được CHẤM trong lượt không. <c>null</c> = snapshot trước T6 (không có
+        /// trường) ⇒ coi là in-scope (lượt cũ chấm toàn bộ — I5). KHÔNG migration: nằm trong jsonb snapshot.
+        /// </summary>
+        public bool? InScope { get; set; }
         public List<CriterionLevelResponse> Levels { get; set; } = new();
     }
 
