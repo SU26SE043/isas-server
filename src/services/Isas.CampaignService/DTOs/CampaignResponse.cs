@@ -469,15 +469,27 @@ namespace Isas.CampaignService.DTOs
             //     của người khác ⇒ hai thước đo trong một bảng xếp hạng (CAMP-10). CHẶN publish (D-5).
             //     K null (thi hết bộ) ⇒ mọi câu đều được hỏi ⇒ không ràng buộc. Chỉ tính từ NHÃN trên câu
             //     hỏi — không cần bộ tiêu chí — nên đường nào cũng đo được.
-            var primaryCriteria = questions
-                .Where(q => q.TargetCriterionIds is { Count: > 0 })
+            //     BUG-2 (D-5 mở rộng) — câu BẮT BUỘC luôn có mặt và PHỦ tiêu chí chính của nó, nên khe thật
+            //     cho selector là K − |required|, và tiêu chí cần khe là tiêu chí chính của câu KHÔNG bắt
+            //     buộc mà chưa câu bắt buộc nào phủ. 0 câu bắt buộc ⇒ suy biến về "K < distinct nhãn[0]".
+            //     Thiếu vế này thì ca đo trên dev (K=2, required [C], optional {[],[B],[C]}) qua sạch
+            //     (distinct = {B,C} = 2 ≤ 2) trong khi selector chỉ còn 1 khe cho 2 rổ ⇒ B chết cả chiến dịch.
+            var requiredCount = questions.Count(q => q.IsRequired);
+            var coveredByRequired = questions
+                .Where(q => q.IsRequired && q.TargetCriterionIds is { Count: > 0 })
                 .Select(q => q.TargetCriterionIds![0])
+                .ToHashSet();
+            var uncoveredPrimary = questions
+                .Where(q => !q.IsRequired && q.TargetCriterionIds is { Count: > 0 })
+                .Select(q => q.TargetCriterionIds![0])
+                .Where(id => !coveredByRequired.Contains(id))
                 .Distinct()
                 .Count();
-            if (questionsPerSession is int kRule && kRule < primaryCriteria)
+            if (questionsPerSession is int kRule && kRule - requiredCount < uncoveredPrimary)
                 warnings.Add(
-                    $"{KBelowCriteriaGroupsCode}: questions_per_session ({kRule}) nhỏ hơn số tiêu chí chính " +
-                    $"được câu hỏi nhắm tới ({primaryCriteria}) — mỗi buổi sẽ có tiêu chí không câu nào hỏi tới.");
+                    $"{KBelowCriteriaGroupsCode}: questions_per_session ({kRule}) trừ {requiredCount} câu bắt buộc " +
+                    $"= {kRule - requiredCount} khe, nhỏ hơn số tiêu chí chính chưa được câu bắt buộc phủ " +
+                    $"({uncoveredPrimary}) — mỗi buổi sẽ có tiêu chí không câu nào hỏi tới.");
 
             // (5) SC2 · W1 — coverageWarnings: tiêu chí WhenTargeted không câu nào nhắm (bất kỳ vị trí).
             //     Tiêu chí Always KHÔNG BAO GIỜ vào đây (nó chấm mọi câu, không cần ai nhắm). Chỉ cảnh

@@ -100,37 +100,45 @@ public static class QuestionPoolSelector
         if (groups.Count == 0)
             return Shuffle(selected, rng);
 
-        // Chia đều; phần dư rải cho các nhóm ĐẦU theo thứ tự tên (deterministic — không random phần chia,
-        // vì chỗ ngẫu nhiên duy nhất nên là "chọn câu nào", không phải "nhóm nào được ưu ái").
-        var quota = new int[groups.Count];
-        var baseQuota = slots / groups.Count;
-        var remainder = slots % groups.Count;
-        for (var i = 0; i < groups.Count; i++)
-            quota[i] = baseQuota + (i < remainder ? 1 : 0);
+        // BUG-2 (D-5 mở rộng) — RỔ TIÊU CHÍ đi trước, chia đều sau. Trước bản này, khi khe < số rổ, phần dư
+        // rải cho các rổ ĐẦU theo thứ tự tên khoá — mà "" (không nhãn) và tên nhóm HR luôn đứng trước GUID ⇒
+        // rổ không nhãn thắng, rổ tiêu chí bị bỏ theo thứ tự tên, và vì thứ tự rổ không phụ thuộc ứng viên,
+        // một tiêu chí CHẾT với MỌI ứng viên cả chiến dịch (đo trên dev: K=2, required [C], optional {[],
+        // [B], [C]} ⇒ B không bao giờ được hỏi) trong khi K-rule lẫn coverageWarnings đều im.
+        //
+        // Bước 1: mỗi rổ TIÊU CHÍ (khoá GUID = câu có nhãn) CHƯA được câu bắt buộc phủ (nhãn[0] của câu
+        //         required) nhận 1 khe trước, theo thứ tự tên khoá, khi còn khe. Rổ ""/nhóm HR KHÔNG được
+        //         ưu tiên — nó chỉ được phần chia đều ở bước 2.
+        // Bước 2: phần khe còn lại rót "đầy dần" (water-fill) trên MỌI rổ: mỗi lần cho rổ đang có quota
+        //         NHỎ NHẤT còn dư câu (hoà ⇒ thứ tự tên khoá). Khi khe ≥ số rổ, kết quả TRÙNG phép chia đều
+        //         cũ (base + dư cho rổ đầu); khi rổ ít câu hơn phần được chia thì khe tự chảy sang rổ còn
+        //         dư câu — thay cho vòng "leftover" cũ. Vẫn deterministic, không random phần chia.
+        var coveredByRequired = required
+            .Where(q => q.TargetCriterionIds is { Count: > 0 })
+            .Select(BucketKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // Nhóm nào ít câu hơn phần được chia thì lấy hết, khe thừa CHUYỂN sang nhóm còn dư câu. Không có
-        // vòng chuyển này thì buổi thi ra thiếu câu so với con số HR đặt mà chẳng có lỗi nào.
-        var leftover = 0;
-        for (var i = 0; i < groups.Count; i++)
+        var quota = new int[groups.Count];
+        var slotsLeft = slots;
+        for (var i = 0; i < groups.Count && slotsLeft > 0; i++)
         {
-            var available = groups[i].Items.Count;
-            if (quota[i] > available)
-            {
-                leftover += quota[i] - available;
-                quota[i] = available;
-            }
+            var isCriterionBucket = groups[i].Items.Any(q => q.TargetCriterionIds is { Count: > 0 });
+            if (!isCriterionBucket || coveredByRequired.Contains(groups[i].Key)) continue;
+            quota[i] = 1;
+            slotsLeft--;
         }
-        while (leftover > 0)
+
+        while (slotsLeft > 0)
         {
-            var moved = false;
-            for (var i = 0; i < groups.Count && leftover > 0; i++)
+            var pick = -1;
+            for (var i = 0; i < groups.Count; i++)
             {
-                if (quota[i] >= groups[i].Items.Count) continue;
-                quota[i]++;
-                leftover--;
-                moved = true;
+                if (quota[i] >= groups[i].Items.Count) continue;   // rổ đã cạn câu
+                if (pick < 0 || quota[i] < quota[pick]) pick = i;   // nhỏ nhất; hoà ⇒ rổ đứng trước (tên khoá)
             }
-            if (!moved) break;   // hết câu để bù ở mọi nhóm → chấp nhận thiếu, không lặp vô hạn
+            if (pick < 0) break;   // hết câu để rót ở mọi rổ → chấp nhận thiếu, không lặp vô hạn
+            quota[pick]++;
+            slotsLeft--;
         }
 
         for (var i = 0; i < groups.Count; i++)

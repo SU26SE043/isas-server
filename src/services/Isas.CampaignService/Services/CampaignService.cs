@@ -737,6 +737,15 @@ namespace Isas.CampaignService.Services
                 var added = rebuiltCriteria.Where(x => !oldIds.Contains(x.Id)).ToList();
                 _db.CampaignCriteria.AddRange(added);
                 // tiêu chí id-cũ (giao của hai tập) đã tracked + đã mutate ⇒ EF tự UPDATE.
+                //
+                // BUG-1 — MỐC MỚI của tiêu chí TÁI DÙNG phải được đánh Added TƯỜNG MINH. `Levels.Clear()` rồi
+                // `Levels.Add(mốc mới có Id gán sẵn)` trên một entity đang tracked khiến DetectChanges gặp mốc
+                // qua fixup navigation với khoá ≠ default của một khoá store-generated (`HasDefaultValueSql`)
+                // ⇒ coi là Modified (row có sẵn) ⇒ sinh UPDATE thay INSERT ⇒ 0 row ⇒ DbUpdateConcurrencyException
+                // (500 trên PUT mỗi khi FE echo id — đo 3 lần trên dev). Cùng bẫy F9 ở
+                // GenerateCampaignQuestionsAsync. Mốc của tiêu chí MỚI đã Added theo graph của AddRange trên;
+                // ở đây chỉ chạm mốc CHƯA tracked (Detached) nên không đụng gì đã đúng.
+                MarkNewLevelsAdded(rebuiltCriteria.Where(x => oldIds.Contains(x.Id)));
 
                 // SC2 · W1 — tiêu chí bị xoá ⇒ nhãn câu hỏi trỏ tới nó bị CẮT, cùng SaveChanges (không
                 // để lại id chết trong target_criterion_ids: Interview map hụt ⇒ bỏ + warning, còn FE
@@ -3387,6 +3396,22 @@ namespace Isas.CampaignService.Services
         // không bao giờ chấm ⇒ buổi không đóng ⇒ MẤT 1 CREDIT, im lặng. Ngoài ra model có scale
         // theo thang nên thang khác nhau làm campaign không so sánh được (CAMP-17).
         private const int MaxCriterionScore = 100;
+
+        /// <summary>
+        /// BUG-1 — với tiêu chí đang tracked, mốc mới gán vào nav <c>Levels</c> mang Id gán sẵn bị EF coi là
+        /// Modified (khoá store-generated ≠ default). Đánh Added TƯỜNG MINH cho mốc còn Detached; ca
+        /// <c>Modified</c> xảy ra khi có DetectChanges chen giữa Build và MarkNewLevelsAdded (đo được) —
+        /// cũng đánh Added; mốc đã tracked ở trạng thái khác giữ nguyên.
+        /// </summary>
+        private void MarkNewLevelsAdded(IEnumerable<CampaignCriterion> reused)
+        {
+            foreach (var l in reused.SelectMany(c => c.Levels ?? new List<CampaignCriterionLevel>()))
+            {
+                var entry = _db.Entry(l);
+                if (entry.State == EntityState.Detached || entry.State == EntityState.Modified)
+                    entry.State = EntityState.Added;
+            }
+        }
 
         private static List<CampaignCriterion> BuildStructuredCriteria(
             Guid campaignId, List<CriterionItem> items, CriterionSource source,
