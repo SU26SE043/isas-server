@@ -681,7 +681,9 @@ namespace Isas.CampaignService.Controllers
 
         // CAMP-19 — CHẤM THỬ: AI viết 3 bài mẫu cho một câu hỏi rồi chấm chính chúng bằng thước đo
         // ĐANG LƯU trong DB (không phải bản HR đang gõ dở) ⇒ FE phải khoá nút khi form còn dirty.
-        // 3 lượt THÀNH CÔNG đầu của mỗi phiên bản thước đo là miễn phí, sau đó trừ 1 credit ví Org.
+        // SC2 · T6 (D-4): 1 lượt THÀNH CÔNG miễn phí cho MỖI (campaign, phiên bản thước đo, CÂU), sau đó trừ 1
+        // credit ví Org — lượt tính phí cần `confirmBilled: true`, thiếu ⇒ 409 `PREVIEW_BILLING_CONFIRM_REQUIRED`
+        // (trước khi insert row / reserve — REV-BE R3).
         // 400 chưa có tiêu chí/mốc/câu hỏi · 402 org hết credit · 404 ngoài org · 409 chiến dịch đã
         // đóng hoặc đang có lượt chạy · 502 AIService lỗi.
         [HttpPost("{id:guid}/rubric-preview")]
@@ -701,6 +703,8 @@ namespace Isas.CampaignService.Controllers
                     orgId.Value, GetActorUserId(), id, request ?? new RubricPreviewRequest(), ct));
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // REV-BE R3 — lượt sẽ trừ credit mà client chưa xác nhận: 409 body có mã để FE hỏi rồi POST lại.
+            catch (PreviewBillingConfirmRequiredException ex) { return Conflict(ex.Body); }
             // Ví org hết credit = 402 (PAY-5), KHÔNG phải 502 — HR nạp thêm là chạy được.
             catch (InsufficientOrgCreditException ex)
             {

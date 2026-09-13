@@ -11,6 +11,15 @@ namespace Isas.CampaignService.DTOs
         /// đối chứng duy nhất cho độ chệch tự-khen-văn-mình.
         /// </summary>
         public string? CustomAnswer { get; set; }
+
+        /// <summary>
+        /// REV-BE R3 (hợp đồng W1, khoá JSON <c>confirmBilled</c>, mặc định <c>false</c>) — client XÁC NHẬN chấp
+        /// nhận trừ 1 credit tổ chức nếu quota free của (campaign, rubricVersion, câu) đã hết. Lượt SẼ tính
+        /// phí mà cờ này <c>false</c> ⇒ <b>409</b> <c>{ code: "PREVIEW_BILLING_CONFIRM_REQUIRED",
+        /// freeRunsRemaining: 0, questionId }</c> — ném TRƯỚC khi insert row và TRƯỚC ReserveAsync (I7).
+        /// Lượt free ⇒ cờ không cần.
+        /// </summary>
+        public bool ConfirmBilled { get; set; }
     }
 
     public class RubricPreviewRunResponse

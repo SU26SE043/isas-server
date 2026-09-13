@@ -102,6 +102,8 @@ public class RubricPreviewScopeSc2Tests
     }
 
     private static RubricPreviewRequest For(CampaignQuestion q) => new() { QuestionId = q.Id };
+    /// <summary>REV-BE R3 — lượt SẼ tính phí phải xác nhận, nếu không 409 trước khi insert/reserve.</summary>
+    private static RubricPreviewRequest ForBilled(CampaignQuestion q) => new() { QuestionId = q.Id, ConfirmBilled = true };
 
     private static Guid[] Ids(IReadOnlyList<PreviewCriterionInput> crit) => crit.Select(c => c.CriterionId).ToArray();
 
@@ -262,7 +264,7 @@ public class RubricPreviewScopeSc2Tests
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
 
         var a1 = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
-        var a2 = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
+        var a2 = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, ForBilled(s.QWt1), default);
         var b1 = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QEmpty), default);
 
         Assert.False(a1.Billed); Assert.Equal(0, a1.FreeRunsRemaining);
@@ -311,7 +313,7 @@ public class RubricPreviewScopeSc2Tests
         // v1: câu W1 ×2 (free rồi billed) · câu rỗng ×1 (free); bump v2: câu W1 ×1 (free lại)
         var svc = () => NewService(tdb.NewContext(), ai.Object, credits.Object);
         await svc().RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
-        await svc().RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
+        await svc().RunAsync(owner, owner, s.Camp.Id, ForBilled(s.QWt1), default);   // lượt 2 cùng câu ⇒ tính phí
         await svc().RunAsync(owner, owner, s.Camp.Id, For(s.QEmpty), default);
         using (var db = tdb.NewContext())
         {
@@ -484,6 +486,103 @@ public class RubricPreviewScopeSc2Tests
         Assert.Equal((decimal)expectedActual, ex.ActualWeightedPct);
         Assert.Equal(2, ex.Scores.Count);   // bảng vẫn liệt kê đủ 2 tiêu chí trong phạm vi (W1 bỏ sót hiện 0 điểm)
         if (ca == "skip") Assert.Equal(0m, ex.Scores.Single(x => x.CriterionId == s.Wt1.Id).ActualScore);
+    }
+
+    // ═══════════════ REV-BE R3 — confirmBilled (I7 ở tầng tiền) ═══════════════
+
+    /// <summary>Quota câu đã hết, POST không `confirmBilled` ⇒ 409 `PREVIEW_BILLING_CONFIRM_REQUIRED`, 0 row mới, Strict credits 0 call.</summary>
+    [Fact]
+    public async Task Billed_KhongConfirm_409_KhongRow_KhongChamPayment()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        var (ai, received) = AiEcho();
+        var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
+        await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);   // lượt free
+        using (var c = tdb.NewContext()) Assert.Equal(1, await c.RubricPreviewRuns.CountAsync());
+
+        var ex = await Assert.ThrowsAsync<PreviewBillingConfirmRequiredException>(() =>
+            NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default));
+
+        var body = JsonSerializer.SerializeToElement(ex.Body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.Equal("PREVIEW_BILLING_CONFIRM_REQUIRED", body.GetProperty("code").GetString());
+        Assert.Equal(0, body.GetProperty("freeRunsRemaining").GetInt32());
+        Assert.Equal(s.QWt1.Id, body.GetProperty("questionId").GetGuid());
+        using (var c = tdb.NewContext()) Assert.Equal(1, await c.RubricPreviewRuns.CountAsync());   // 0 row mới (không Failed rác)
+        Assert.Single(received);                                                                    // AI không bị gọi lượt hai
+        credits.VerifyNoOtherCalls();
+    }
+
+    /// <summary>POST không `questionId` (câu mặc định = câu đầu) sau 1 Succeeded của ĐÚNG câu đó ⇒ 409 — guard đọc câu ĐÃ RESOLVE, không đọc request.QuestionId (null).</summary>
+    [Fact]
+    public async Task Billed_CauMacDinh_KhongGuiQuestionId_VanBi409()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        var (ai, _) = AiEcho();
+        var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
+        var first = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest(), default);
+        Assert.Equal(s.QNull.Id, first.QuestionId);   // câu mặc định = QNull (CreatedAt sớm nhất)
+
+        var ex = await Assert.ThrowsAsync<PreviewBillingConfirmRequiredException>(() =>
+            NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest(), default));
+        Assert.Equal(s.QNull.Id, ex.QuestionId);
+        credits.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Billed_CoConfirm_ReserveDungMotLan_VaLuuKetQua()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        var (ai, _) = AiEcho();
+        var credits = new Mock<ICreditReservationClient>();
+        credits.Setup(x => x.ReserveAsync("Org", owner, It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+        await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
+
+        var res = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, ForBilled(s.QWt1), default);
+
+        Assert.True(res.Billed);
+        Assert.Equal("Succeeded", res.Status);
+        credits.Verify(x => x.ReserveAsync("Org", owner, res.Id, It.IsAny<CancellationToken>()), Times.Once);
+        credits.Verify(x => x.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>Lượt free ⇒ cờ không cần (false vẫn chạy, không 409).</summary>
+    [Fact]
+    public async Task Free_KhongCanConfirm()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        var (ai, _) = AiEcho();
+        var res = await NewService(tdb.NewContext(), ai.Object, new Mock<ICreditReservationClient>(MockBehavior.Strict).Object)
+            .RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest { QuestionId = s.QWt1.Id, ConfirmBilled = false }, default);
+        Assert.False(res.Billed);
+        Assert.Equal("Succeeded", res.Status);
+    }
+
+    /// <summary>W1 (R10b): response serialize bằng Web defaults như controller ⇒ đúng khoá camelCase FE dùng.</summary>
+    [Fact]
+    public async Task W1_ResponseJson_DungKhoa_scopedCriterionIds_freeRunsRemaining_questionId_billed()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        var (ai, _) = AiEcho();
+        var res = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
+
+        var json = JsonDocument.Parse(JsonSerializer.Serialize(res, new JsonSerializerOptions(JsonSerializerDefaults.Web))).RootElement;
+        Assert.Equal(2, json.GetProperty("scopedCriterionIds").GetArrayLength());
+        Assert.Equal(0, json.GetProperty("freeRunsRemaining").GetInt32());
+        Assert.Equal(s.QWt1.Id, json.GetProperty("questionId").GetGuid());
+        Assert.False(json.GetProperty("billed").GetBoolean());
+        Assert.True(json.GetProperty("rubric")[0].TryGetProperty("inScope", out _));
+        Assert.Contains("confirmBilled", JsonSerializer.Serialize(new RubricPreviewRequest(), new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     }
 
     // ═══════════════ I5 — row cũ trước T6 ═══════════════

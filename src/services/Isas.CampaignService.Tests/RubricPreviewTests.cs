@@ -186,7 +186,7 @@ public class RubricPreviewTests
             .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
 
         var res = await NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default);
+            .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default);
 
         Assert.True(res.Billed);
         credits.Verify(x => x.ReserveAsync("Org", owner, It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -304,7 +304,7 @@ public class RubricPreviewTests
 
         await Assert.ThrowsAsync<DownstreamServiceException>(() =>
             NewService(tdb.NewContext(), ai.Object, credits.Object)
-                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default));
+                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default));
 
         using var check = tdb.NewContext();
         var run = await check.RubricPreviewRuns.OrderByDescending(r => r.CreatedAt).FirstAsync();
@@ -333,7 +333,7 @@ public class RubricPreviewTests
 
         await Assert.ThrowsAsync<InsufficientOrgCreditException>(() =>
             NewService(tdb.NewContext(), AiThatWorks(cr.Id).Object, credits.Object)
-                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest(), default));
+                .RunAsync(owner, owner, camp.Id, new RubricPreviewRequest { ConfirmBilled = true }   /* REV-BE R3: lượt tính phí phải xác nhận */, default));
 
         using var check = tdb.NewContext();
         Assert.Empty(await check.RubricPreviewRuns.Where(r => r.Status == RubricPreviewStatus.Running).ToListAsync());

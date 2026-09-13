@@ -3237,7 +3237,7 @@ namespace Isas.CampaignService.Services
         // RNK1 · HĐ-8 — cảnh báo ngân hàng đề (NGUỒN DUY NHẤT = QuestionBankSummary.Build, cùng hàm
         // FromEntity dùng để trả read-time). Publish: không rỗng ⇒ QuestionBankInvalidException.
         // SC2 · W1 — truyền cả campaign.Criteria (PublishCampaignAsync đã Include) để cùng một
-        // hàm tính coverage; K_BELOW_CRITERIA_GROUPS chỉ đọc nhãn trên câu hỏi nên không cần Criteria.
+        // hàm tính coverage; K_BELOW_CRITERIA_GROUPS (R4) cũng cần Criteria — chỉ đếm nhãn[0] là WhenTargeted.
         private static IReadOnlyList<string> ComputeQuestionBankWarnings(Campaign campaign)
             => QuestionBankSummary.Build(
                 campaign.Questions, campaign.QuestionsPerSession,

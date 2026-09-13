@@ -268,6 +268,9 @@ public class CampaignQuestionLabelsSc2Tests
         var refBlock = py[refStart..refEnd];
         Assert.Contains("criterionId: str", refBlock);
         Assert.Contains("name: str", refBlock);
+        // R10a — W2 gửi description?; pydantic không khai là nuốt im lặng. Regex neo vào FIELD (đầu dòng), không
+        // phải docstring — Contains("description") thoả bởi docstring kể cả khi field đã bị xoá.
+        Assert.Matches(new System.Text.RegularExpressions.Regex(@"^\s+description:\s*str", System.Text.RegularExpressions.RegexOptions.Multiline), refBlock);
 
         var resStart = py.IndexOf("class GenerateQuestionsResponse(", StringComparison.Ordinal);
         var resEnd = py.IndexOf("\nclass ", resStart + 1, StringComparison.Ordinal);
@@ -880,7 +883,8 @@ public class CampaignQuestionLabelsSc2Tests
             Q("5", null), Q("6", new()),                      // không nhãn: không phải rổ chính
         };
 
-        var s = QuestionBankSummary.Build(questions, k, null, null);
+        // REV-BE R4: "tiêu chí chính" = nhãn[0] ∩ WhenTargeted ⇒ phải cấp bộ tiêu chí có scope.
+        var s = QuestionBankSummary.Build(questions, k, null, null, Wt(a, b, c));
         var hit = s.Warnings.Any(w => w.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode + ":", StringComparison.Ordinal));
         Assert.Equal(expectWarning, hit);
     }
@@ -896,9 +900,35 @@ public class CampaignQuestionLabelsSc2Tests
         var a = Guid.NewGuid(); var b = Guid.NewGuid(); var c = Guid.NewGuid();
         var questions = new[] { Q("1", new() { a, b }), Q("2", new() { a, c }), Q("3", new() { a }) };
 
-        var s = QuestionBankSummary.Build(questions, 2, null, null);
+        var s = QuestionBankSummary.Build(questions, 2, null, null, Wt(a, b, c));
 
         Assert.DoesNotContain(s.Warnings, w => w.Contains(QuestionBankSummary.KBelowCriteriaGroupsCode));
+        Assert.Contains(QuestionBankSummary.KBelowCriteriaGroupsCode, QuestionBankSummary.Build(questions, 0, null, null, Wt(a, b, c)).Warnings.Single(w => w.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode)));   // đối chứng: cùng bộ, K=0 ⇒ bắn
+    }
+
+    private static QuestionBankCriterion[] Wt(params Guid[] ids)
+        => ids.Select((id, i) => new QuestionBankCriterion(id, $"WT{i}", CriterionScoringScope.WhenTargeted)).ToArray();
+
+    /// <summary>
+    /// REV-BE R4: nhãn chứa id tiêu chí ALWAYS (PUT nhận mọi id; lật WT→Always không cắt nhãn) KHÔNG được đếm là
+    /// tiêu chí chính — Always chấm mọi câu, không bao giờ "rơi". A,B WT + q1[A] q2[B], K=1 ⇒ chặn; lật A,B về
+    /// Always (nhãn giữ nguyên) ⇒ KHÔNG chặn.
+    /// </summary>
+    [Fact]
+    public void KRule_ChiDemIdWhenTargeted_LatVeAlways_KhongChan()
+    {
+        var a = Guid.NewGuid(); var b = Guid.NewGuid();
+        var questions = new[] { Q("1", new() { a }), Q("2", new() { b }) };
+
+        Assert.Contains(QuestionBankSummary.Build(questions, 1, null, null, Wt(a, b)).Warnings,
+            w => w.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode));
+        var flipped = new[]
+        {
+            new QuestionBankCriterion(a, "A", CriterionScoringScope.Always),
+            new QuestionBankCriterion(b, "B", CriterionScoringScope.Always),
+        };
+        Assert.DoesNotContain(QuestionBankSummary.Build(questions, 1, null, null, flipped).Warnings,
+            w => w.StartsWith(QuestionBankSummary.KBelowCriteriaGroupsCode));
     }
 
     [Fact]
@@ -906,7 +936,7 @@ public class CampaignQuestionLabelsSc2Tests
     {
         var a = Guid.NewGuid(); var b = Guid.NewGuid(); var c = Guid.NewGuid();
         var labeled = new[] { Q("1", new() { a }), Q("2", new() { b }), Q("3", new() { c }) };
-        Assert.DoesNotContain(QuestionBankSummary.Build(labeled, null, null, null).Warnings,
+        Assert.DoesNotContain(QuestionBankSummary.Build(labeled, null, null, null, Wt(a, b, c)).Warnings,
             w => w.Contains(QuestionBankSummary.KBelowCriteriaGroupsCode));
 
         // I5: chiến dịch cũ 0 nhãn, K=1 với 3 nhóm tên — K-rule KHÔNG bắn (nhóm tên không phải rổ tiêu chí)

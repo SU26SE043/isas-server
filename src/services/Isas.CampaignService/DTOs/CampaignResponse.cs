@@ -409,8 +409,8 @@ namespace Isas.CampaignService.DTOs
 
         /// <param name="criteria">
         /// SC2 — bộ tiêu chí của campaign (chỉ cần Id/Name/ScoringScope). Rỗng ⇒ không có tiêu chí
-        /// <c>WhenTargeted</c> ⇒ <see cref="CoverageWarnings"/> rỗng. K-rule KHÔNG cần tham số này
-        /// (đếm từ nhãn trên câu hỏi).
+        /// <c>WhenTargeted</c> ⇒ <see cref="CoverageWarnings"/> rỗng. K-rule (REV-BE R4) CŨNG cần tham số này:
+        /// tiêu chí chính = nhãn[0] ∩ {id WhenTargeted} — overload không criteria ⇒ K-rule IM LẶNG.
         /// </param>
         public static QuestionBankSummary Build(
             IEnumerable<CampaignQuestion> questionsSource,
@@ -468,21 +468,31 @@ namespace Isas.CampaignService.DTOs
             //     một tiêu chí không câu nào hỏi ⇒ INT-18 loại nó khỏi điểm của người này mà không loại
             //     của người khác ⇒ hai thước đo trong một bảng xếp hạng (CAMP-10). CHẶN publish (D-5).
             //     K null (thi hết bộ) ⇒ mọi câu đều được hỏi ⇒ không ràng buộc. Chỉ tính từ NHÃN trên câu
-            //     hỏi — không cần bộ tiêu chí — nên đường nào cũng đo được.
+            //     hỏi GIAO với bộ tiêu chí WhenTargeted (R4) — đường không cấp `criteria` không bắn K-rule.
             //     BUG-2 (D-5 mở rộng) — câu BẮT BUỘC luôn có mặt và PHỦ tiêu chí chính của nó, nên khe thật
             //     cho selector là K − |required|, và tiêu chí cần khe là tiêu chí chính của câu KHÔNG bắt
             //     buộc mà chưa câu bắt buộc nào phủ. 0 câu bắt buộc ⇒ suy biến về "K < distinct nhãn[0]".
             //     Thiếu vế này thì ca đo trên dev (K=2, required [C], optional {[],[B],[C]}) qua sạch
             //     (distinct = {B,C} = 2 ≤ 2) trong khi selector chỉ còn 1 khe cho 2 rổ ⇒ B chết cả chiến dịch.
+            //     REV-BE R4 — "tiêu chí chính" CHỈ là id có ScoringScope == WhenTargeted. Nhãn có thể chứa id
+            //     Always (PUT nhận mọi id campaign; lật WT→Always ở PUT criteria không cắt nhãn) — Always chấm
+            //     mọi câu nên không bao giờ "rơi", đếm nó là chặn publish oan (HR lật hết về Always vẫn bị
+            //     chặn, picker không có chip để gỡ). Bộ `criteria` rỗng (overload cũ) ⇒ không biết scope ⇒
+            //     không đếm gì (I5: đường không nạp tiêu chí không bắn K-rule).
+            var whenTargetedIds = (criteria ?? Array.Empty<QuestionBankCriterion>())
+                .Where(c => c.ScoringScope == CriterionScoringScope.WhenTargeted)
+                .Select(c => c.Id)
+                .ToHashSet();
             var requiredCount = questions.Count(q => q.IsRequired);
             var coveredByRequired = questions
                 .Where(q => q.IsRequired && q.TargetCriterionIds is { Count: > 0 })
                 .Select(q => q.TargetCriterionIds![0])
+                .Where(whenTargetedIds.Contains)
                 .ToHashSet();
             var uncoveredPrimary = questions
                 .Where(q => !q.IsRequired && q.TargetCriterionIds is { Count: > 0 })
                 .Select(q => q.TargetCriterionIds![0])
-                .Where(id => !coveredByRequired.Contains(id))
+                .Where(id => whenTargetedIds.Contains(id) && !coveredByRequired.Contains(id))
                 .Distinct()
                 .Count();
             //     BUG-2b — CHỈ bắn khi thật sự có tiêu chí chưa phủ (uncoveredPrimary > 0): 0 tiêu chí ⇒ không
