@@ -71,6 +71,26 @@ public class CampaignGenerateQuestionsF9Tests
             return GenerateAsync(jobCategory, jdText, count, seniority, ct);
         }
 
+        /// <summary>
+        /// SC2 · W2 — tiêu chí WhenTargeted gửi để AI GẮN NHÃN (khác <see cref="LastCriteriaContext"/>
+        /// = bối cảnh đủ bộ). <c>null</c> = chưa lượt nào gọi; <c>[]</c> = có gọi, không tiêu chí nào.
+        /// </summary>
+        public IReadOnlyList<QuestionCriterionRef>? LastCriteria { get; private set; }
+
+        /// <summary>SC2 — nhãn giả lập AI trả về (song song theo chỉ số câu); null = AI không trả nhãn.</summary>
+        public Func<int, IReadOnlyList<Guid>?>? LabelsFor { get; set; }
+
+        // SC2 · W2 — thành viên BẮT BUỘC (không default), production nay gọi overload này.
+        public async Task<List<GeneratedQuestion>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority,
+            IReadOnlyList<QuestionCriterionContext> criteriaContext,
+            IReadOnlyList<QuestionCriterionRef> criteria, CancellationToken ct)
+        {
+            LastCriteria = criteria;
+            var texts = await GenerateAsync(jobCategory, jdText, count, seniority, criteriaContext, ct);
+            return texts.Select((t, i) => new GeneratedQuestion(t, LabelsFor?.Invoke(i))).ToList();
+        }
+
         public static FakeGenerator Throwing()
             => new(() => throw new DownstreamServiceException("AIService /generate-questions trả về 503."));
 

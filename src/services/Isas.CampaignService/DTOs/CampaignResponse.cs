@@ -342,6 +342,24 @@ namespace Isas.CampaignService.DTOs
     }
 
     /// <summary>
+    /// SC2 · W1 — tiêu chí NỘI DUNG (<c>WhenTargeted</c>) mà KHÔNG câu nào trong bộ nhắm tới. Chỉ
+    /// CẢNH BÁO (không vào <see cref="QuestionBankSummary.Warnings"/>, không chặn publish — D-5): INT-18
+    /// loại nó khỏi điểm ⇒ HR nên biết thước đo của mình có một cột không ai đo.
+    /// </summary>
+    public class QuestionBankCoverageWarning
+    {
+        public Guid CriterionId { get; set; }
+        public string Name { get; set; } = null!;
+    }
+
+    /// <summary>
+    /// SC2 — hình chiếu tối thiểu của một tiêu chí cho <see cref="QuestionBankSummary.Build"/>: đường
+    /// nào không nạp navigation <c>Campaign.Criteria</c> (danh sách campaign, sinh câu hỏi) vẫn cấp được
+    /// bằng một projection rẻ thay vì để coverage rỗng vì "chưa nạp".
+    /// </summary>
+    public sealed record QuestionBankCriterion(Guid Id, string Name, CriterionScoringScope ScoringScope);
+
+    /// <summary>
     /// RNK1 · HĐ-8 — tóm tắt NGÂN HÀNG ĐỀ, tính READ-TIME trên mọi <see cref="CampaignResponse"/>.
     /// <c>Warnings</c> KHÔNG rỗng ⇒ publish trả <b>400</b> <c>{ code: "QUESTION_BANK_INVALID", warnings }</c>.
     /// </summary>
@@ -359,12 +377,42 @@ namespace Isas.CampaignService.DTOs
         public List<string> Warnings { get; set; } = new();
 
         /// <summary>
+        /// SC2 · W1 — tiêu chí <c>WhenTargeted</c> không câu nào nhắm (ở BẤT KỲ vị trí nhãn). LUÔN có mặt
+        /// (<c>[]</c> khi sạch). KHÔNG chặn publish — khác <see cref="Warnings"/>.
+        /// </summary>
+        public List<QuestionBankCoverageWarning> CoverageWarnings { get; set; } = new();
+
+        /// <summary>Tiền tố cảnh báo K-rule (SC2 · W1, D-5) — FE/tester nhận diện bằng chuỗi này.</summary>
+        public const string KBelowCriteriaGroupsCode = "K_BELOW_CRITERIA_GROUPS";
+
+        /// <summary>
         /// NGUỒN DUY NHẤT: dùng chung cho <see cref="CampaignResponse.FromEntity"/> (read-time) và
         /// gate publish (đọc <see cref="Warnings"/>).
         /// </summary>
         public static QuestionBankSummary Build(
             IEnumerable<CampaignQuestion> questionsSource,
             int? questionsPerSession, int? maxDeepPerQuestion, int? maxQuestions)
+            => Build(questionsSource, questionsPerSession, maxDeepPerQuestion, maxQuestions,
+                Array.Empty<QuestionBankCriterion>());
+
+        /// <summary>Tiện lợi: nhận thẳng navigation <c>Campaign.Criteria</c> (đường có Include).</summary>
+        public static QuestionBankSummary Build(
+            IEnumerable<CampaignQuestion> questionsSource,
+            int? questionsPerSession, int? maxDeepPerQuestion, int? maxQuestions,
+            IEnumerable<CampaignCriterion> criteria)
+            => Build(questionsSource, questionsPerSession, maxDeepPerQuestion, maxQuestions,
+                (criteria ?? Array.Empty<CampaignCriterion>())
+                    .Select(c => new QuestionBankCriterion(c.Id, c.Name, c.ScoringScope)).ToList());
+
+        /// <param name="criteria">
+        /// SC2 — bộ tiêu chí của campaign (chỉ cần Id/Name/ScoringScope). Rỗng ⇒ không có tiêu chí
+        /// <c>WhenTargeted</c> ⇒ <see cref="CoverageWarnings"/> rỗng. K-rule KHÔNG cần tham số này
+        /// (đếm từ nhãn trên câu hỏi).
+        /// </param>
+        public static QuestionBankSummary Build(
+            IEnumerable<CampaignQuestion> questionsSource,
+            int? questionsPerSession, int? maxDeepPerQuestion, int? maxQuestions,
+            IReadOnlyList<QuestionBankCriterion> criteria)
         {
             // Sắp theo (CreatedAt, Id) TRƯỚC — như `FromEntity` sắp `Questions` — để:
             //   • casing hiển thị của nhóm = casing HR gõ ở câu SỚM NHẤT của nhóm đó (tất định);
@@ -412,6 +460,35 @@ namespace Isas.CampaignService.DTOs
                 warnings.Add(
                     $"Ngân sách buổi ({v.Have}) không đủ cho {v.Questions} câu × (1 + {v.Deep} đào sâu) = {v.Need} câu.");
 
+            // (4) SC2 · W1 — K_BELOW_CRITERIA_GROUPS: selector rút ĐỀU theo "tiêu chí CHÍNH" của câu
+            //     (= TargetCriterionIds[0]). K nhỏ hơn số tiêu chí chính distinct ⇒ mỗi buổi có ít nhất
+            //     một tiêu chí không câu nào hỏi ⇒ INT-18 loại nó khỏi điểm của người này mà không loại
+            //     của người khác ⇒ hai thước đo trong một bảng xếp hạng (CAMP-10). CHẶN publish (D-5).
+            //     K null (thi hết bộ) ⇒ mọi câu đều được hỏi ⇒ không ràng buộc. Chỉ tính từ NHÃN trên câu
+            //     hỏi — không cần bộ tiêu chí — nên đường nào cũng đo được.
+            var primaryCriteria = questions
+                .Where(q => q.TargetCriterionIds is { Count: > 0 })
+                .Select(q => q.TargetCriterionIds![0])
+                .Distinct()
+                .Count();
+            if (questionsPerSession is int kRule && kRule < primaryCriteria)
+                warnings.Add(
+                    $"{KBelowCriteriaGroupsCode}: questions_per_session ({kRule}) nhỏ hơn số tiêu chí chính " +
+                    $"được câu hỏi nhắm tới ({primaryCriteria}) — mỗi buổi sẽ có tiêu chí không câu nào hỏi tới.");
+
+            // (5) SC2 · W1 — coverageWarnings: tiêu chí WhenTargeted không câu nào nhắm (bất kỳ vị trí).
+            //     Tiêu chí Always KHÔNG BAO GIỜ vào đây (nó chấm mọi câu, không cần ai nhắm). Chỉ cảnh
+            //     báo, KHÔNG vào `warnings` — HR có thể publish với một cột thước đo không ai đo, nhưng
+            //     phải được nói cho biết.
+            var targeted = questions
+                .Where(q => q.TargetCriterionIds is { Count: > 0 })
+                .SelectMany(q => q.TargetCriterionIds!)
+                .ToHashSet();
+            var coverage = (criteria ?? Array.Empty<QuestionBankCriterion>())
+                .Where(c => c.ScoringScope == CriterionScoringScope.WhenTargeted && !targeted.Contains(c.Id))
+                .Select(c => new QuestionBankCoverageWarning { CriterionId = c.Id, Name = c.Name })
+                .ToList();
+
             return new QuestionBankSummary
             {
                 Total = total,
@@ -419,6 +496,7 @@ namespace Isas.CampaignService.DTOs
                 QuestionsPerSession = questionsPerSession,
                 Groups = groups,
                 Warnings = warnings,
+                CoverageWarnings = coverage,
             };
         }
     }
@@ -491,7 +569,12 @@ namespace Isas.CampaignService.DTOs
         /// <see cref="CampaignListItemResponse"/> (CMP1-B3). Tham số này giữ lại vì lịch sử để không
         /// đổi chữ ký công khai; hiện chỉ còn dùng ở test.
         /// </param>
-        public static CampaignResponse FromEntity(Campaign c, bool includeSampleAnswer = true) => new CampaignResponse
+        /// <param name="bankCriteria">
+        /// SC2 — bộ tiêu chí cho <c>questionBank.coverageWarnings</c> khi đường gọi KHÔNG nạp
+        /// <c>c.Criteria</c> (sinh câu hỏi / PUT questions). <c>null</c> ⇒ dùng <c>c.Criteria</c> (đường có Include).
+        /// </param>
+        public static CampaignResponse FromEntity(
+            Campaign c, bool includeSampleAnswer = true, IReadOnlyList<QuestionBankCriterion>? bankCriteria = null) => new CampaignResponse
         {
             Id = c.Id,
             OrgId = c.OrgId,
@@ -547,8 +630,12 @@ namespace Isas.CampaignService.DTOs
                 TargetCriterionIds = q.TargetCriterionIds?.ToList()
             }).ToList(),
             // RNK1 · HĐ-8 — tóm tắt ngân hàng đề (đọc từ CÙNG c.Questions đã nạp, không query thêm).
-            QuestionBank = QuestionBankSummary.Build(
-                c.Questions, c.QuestionsPerSession, c.MaxDeepPerQuestion, c.MaxQuestions),
+            // SC2 — coverage đọc bộ tiêu chí: projection caller cấp (đường không Include) hoặc nav c.Criteria.
+            QuestionBank = bankCriteria is not null
+                ? QuestionBankSummary.Build(
+                    c.Questions, c.QuestionsPerSession, c.MaxDeepPerQuestion, c.MaxQuestions, bankCriteria)
+                : QuestionBankSummary.Build(
+                    c.Questions, c.QuestionsPerSession, c.MaxDeepPerQuestion, c.MaxQuestions, c.Criteria),
             Criteria = c.Criteria
                 .OrderBy(cr => cr.OrderNo)
                 .Select(cr => new CampaignCriterionResponse
@@ -647,8 +734,13 @@ namespace Isas.CampaignService.DTOs
         /// <summary>Số ứng viên ĐÃ CÓ ĐIỂM (số dòng <c>campaign_rankings</c> — mỗi dòng = 1 buổi đã chấm).</summary>
         public int CompletedCount { get; set; }
 
+        /// <param name="bankCriteria">
+        /// SC2 — tiêu chí cho <c>questionBank.coverageWarnings</c> (danh sách KHÔNG Include Criteria —
+        /// CMP1-B3 — nên caller cấp projection theo trang; null ⇒ coi như không có tiêu chí WhenTargeted).
+        /// </param>
         public static CampaignListItemResponse FromEntity(
-            Campaign c, int cvCount, int invitedCount, int completedCount) => new()
+            Campaign c, int cvCount, int invitedCount, int completedCount,
+            IReadOnlyList<QuestionBankCriterion>? bankCriteria = null) => new()
         {
             Id = c.Id,
             OrgId = c.OrgId,
@@ -678,7 +770,8 @@ namespace Isas.CampaignService.DTOs
             StartsAt = c.StartsAt,
             ExpiresAt = c.ExpiresAt,
             QuestionBank = QuestionBankSummary.Build(
-                c.Questions, c.QuestionsPerSession, c.MaxDeepPerQuestion, c.MaxQuestions),
+                c.Questions, c.QuestionsPerSession, c.MaxDeepPerQuestion, c.MaxQuestions,
+                bankCriteria ?? Array.Empty<QuestionBankCriterion>()),
             JobNeeds = (c.JobNeeds ?? new List<JobNeed>())
                 .Select(n => new JobNeedResponse
                 {

@@ -412,11 +412,28 @@ namespace Isas.CampaignService.Services
                 .Select(g => new { CampaignId = g.Key, Count = g.Count() })
                 .ToDictionaryAsync(x => x.CampaignId, x => x.Count, ct);
 
+            // SC2 · W1 — questionBank.coverageWarnings cần biết tiêu chí WhenTargeted của từng campaign.
+            // Danh sách cố ý KHÔNG Include Criteria (CMP1-B3), nên nạp projection RẺ cho cả trang trong
+            // MỘT truy vấn (chỉ id/name/scope của tiêu chí WhenTargeted — Always không bao giờ vào
+            // coverage) thay vì trả `coverageWarnings: []` nói dối vì "chưa nạp".
+            var targetableByCampaign = (await _db.CampaignCriteria
+                    .Where(x => campaignIds.Contains(x.CampaignId)
+                        && x.ScoringScope == CriterionScoringScope.WhenTargeted)
+                    .Select(x => new { x.CampaignId, x.Id, x.Name })
+                    .ToListAsync(ct))
+                .GroupBy(x => x.CampaignId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => (IReadOnlyList<QuestionBankCriterion>)g
+                        .Select(x => new QuestionBankCriterion(x.Id, x.Name, CriterionScoringScope.WhenTargeted))
+                        .ToList());
+
             var items = rows.Select(c => CampaignListItemResponse.FromEntity(
                 c,
                 cvCounts.GetValueOrDefault(c.Id),
                 invitedCounts.GetValueOrDefault(c.Id),
-                completedCounts.GetValueOrDefault(c.Id))).ToList();
+                completedCounts.GetValueOrDefault(c.Id),
+                targetableByCampaign.GetValueOrDefault(c.Id))).ToList();
             var next = rows.Count == take
                 ? new KeysetCursor(rows[^1].CreatedAt, rows[^1].Id).Encode()
                 : null;
@@ -1041,19 +1058,32 @@ namespace Isas.CampaignService.Services
             //
             // Sắp theo `OrderNo` (thứ tự HR sắp, UNIQUE theo campaign) để prompt TẤT ĐỊNH: cùng một
             // chiến dịch luôn sinh cùng một chuỗi prompt, không phụ thuộc thứ tự DB trả về.
-            var criteriaContext = await _db.CampaignCriteria
+            var criteriaRows = await _db.CampaignCriteria
                 .AsNoTracking()
                 .Where(c => c.CampaignId == campaign.Id)
                 .OrderBy(c => c.OrderNo)
-                .Select(c => new QuestionCriterionContext(c.Name, c.Description))
+                .Select(c => new { c.Id, c.Name, c.Description, c.ScoringScope })
                 .ToListAsync(ct);
+            var criteriaContext = criteriaRows
+                .Select(c => new QuestionCriterionContext(c.Name, c.Description))
+                .ToList();
+
+            // SC2 · W2 — đường GẮN NHÃN: CHỈ tiêu chí NỘI DUNG (`WhenTargeted`) đi qua khoá `criteria`.
+            // Tiêu chí `Always` luôn chấm ở mọi câu nên không có gì để nhắm — gửi chúng vào đây là mời
+            // AI "nhắm" một thứ không thể loại, và làm nhãn mất nghĩa. 0 tiêu chí nhắm được ⇒ rỗng ⇒
+            // khoá không ra dây, prompt nguyên xi (hành vi hôm nay cho mọi campaign chưa phân loại).
+            var targetableRefs = criteriaRows
+                .Where(c => c.ScoringScope == CriterionScoringScope.WhenTargeted)
+                .Select(c => new QuestionCriterionRef(c.Id, c.Name, c.Description))
+                .ToList();
+            var targetableIds = targetableRefs.Select(c => c.CriterionId).ToHashSet();
 
             // Chiến dịch Draft chưa khai tiêu chí ⇒ danh sách rỗng ⇒ prompt AIService giữ nguyên xi.
             // Đây là trạng thái HỢP LỆ, KHÔNG phải lỗi: tiêu chí có thể được sinh lúc publish (C8),
             // HR gõ tay qua `PUT /campaign` (C12), hay chép từ bộ chuẩn (CAMP-20) — cả ba đều có thể
             // xảy ra SAU lúc HR bấm sinh câu hỏi.
             var generated = await _questionGenerator.GenerateAsync(
-                jobCategory, jdText, count, campaign.Seniority, criteriaContext, ct);
+                jobCategory, jdText, count, campaign.Seniority, criteriaContext, targetableRefs, ct);
 
             // AI trả rỗng = lượt sinh không dùng được. Trả 502 thay vì lặng lẽ xoá sạch đề cũ rồi
             // báo thành công — HR phải biết là AI hỏng, không phải "campaign của tôi mất hết câu hỏi".
@@ -1087,16 +1117,25 @@ namespace Isas.CampaignService.Services
                 campaign.Questions.Remove(q);   // để response phản ánh đúng đề sau khi sinh
 
             var now = DateTime.UtcNow;
-            var fresh = generated.Select(text => new CampaignQuestion
+            var droppedLabelIds = 0;
+            var fresh = generated.Select(g => new CampaignQuestion
             {
                 Id = Guid.NewGuid(),
                 CampaignId = campaign.Id,
                 OrgId = campaign.OrgId,
-                QuestionText = text,
+                QuestionText = g.Text,
                 Source = QuestionSource.AiGenerated,   // F9: dấu vết nguồn — phân biệt với câu HR gõ
                 IsRequired = true,
+                // SC2 · W2 — nhãn AI gắn, LỚP 2 sau `_keep_known_ids` của AIService: chỉ giữ id thuộc
+                // tập WhenTargeted vừa gửi (I1: nhãn chỉ thu hẹp, không được thêm tiêu chí lạ vào phạm vi
+                // chấm). null giữ null (không nhãn ⇒ chấm đủ bộ) · [] giữ [] (I2) · id lạ bị bỏ + đếm.
+                TargetCriterionIds = KeepKnownTargets(g.TargetCriterionIds, targetableIds, ref droppedLabelIds),
                 CreatedAt = now,
             }).ToList();
+            if (droppedLabelIds > 0)
+                _logger.LogWarning(
+                    "SC2/W2 — AIService trả {Dropped} id tiêu chí không thuộc tập WhenTargeted của campaign {CampaignId} → bỏ.",
+                    droppedLabelIds, campaign.Id);
 
             // Dùng DbSet.AddRange chứ KHÔNG campaign.Questions.Add(): Id của câu hỏi là store-generated,
             // nên entity mang Id khác default mà chỉ gắn vào navigation sẽ bị DetectChanges phân loại là
@@ -1111,7 +1150,28 @@ namespace Isas.CampaignService.Services
                 $"AI sinh {generated.Count} câu hỏi từ JD (thay {aiOld.Count} câu AI cũ, " +
                 $"giữ {aiKept} câu AI HR đã chỉnh)");
             await _db.SaveChangesAsync(ct);
-            return CampaignResponse.FromEntity(campaign);
+            // `campaign.Criteria` KHÔNG được nạp ở đường này (xem 5b) ⇒ đưa projection đã đọc vào để
+            // `questionBank.coverageWarnings` trong response nói đúng ngay sau lượt sinh, thay vì rỗng
+            // vì "chưa nạp" (lớp lỗi `milestones: []` nói dối).
+            return CampaignResponse.FromEntity(campaign, bankCriteria: criteriaRows
+                .Select(c => new QuestionBankCriterion(c.Id, c.Name, c.ScoringScope)).ToList());
+        }
+
+        /// <summary>
+        /// SC2 · W2 — lọc lớp 2 nhãn AI trả về theo tập id đã cấp. <c>null</c> ⇒ <c>null</c>; <c>[]</c> ⇒ <c>[]</c>;
+        /// id ∉ <paramref name="allowed"/> ⇒ bỏ (đếm vào <paramref name="dropped"/> để log một lần).
+        /// </summary>
+        internal static List<Guid>? KeepKnownTargets(
+            IReadOnlyList<Guid>? requested, IReadOnlySet<Guid> allowed, ref int dropped)
+        {
+            if (requested is null) return null;
+            var kept = new List<Guid>(requested.Count);
+            foreach (var id in requested)
+            {
+                if (!allowed.Contains(id)) { dropped++; continue; }
+                if (!kept.Contains(id)) kept.Add(id);
+            }
+            return kept;
         }
 
         public async Task<bool> DeleteCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct)
@@ -3148,10 +3208,13 @@ namespace Isas.CampaignService.Services
 
         // RNK1 · HĐ-8 — cảnh báo ngân hàng đề (NGUỒN DUY NHẤT = QuestionBankSummary.Build, cùng hàm
         // FromEntity dùng để trả read-time). Publish: không rỗng ⇒ QuestionBankInvalidException.
+        // SC2 · W1 — truyền cả campaign.Criteria (PublishCampaignAsync đã Include) để cùng một
+        // hàm tính coverage; K_BELOW_CRITERIA_GROUPS chỉ đọc nhãn trên câu hỏi nên không cần Criteria.
         private static IReadOnlyList<string> ComputeQuestionBankWarnings(Campaign campaign)
             => QuestionBankSummary.Build(
                 campaign.Questions, campaign.QuestionsPerSession,
-                campaign.MaxDeepPerQuestion, campaign.MaxQuestions).Warnings;
+                campaign.MaxDeepPerQuestion, campaign.MaxQuestions,
+                campaign.Criteria ?? new List<CampaignCriterion>()).Warnings;
 
         private async Task<CampaignEntitlement> ResolveEntitlementAsync(Guid orgId, CancellationToken ct)
             => _entitlements is null
