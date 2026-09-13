@@ -75,6 +75,15 @@
     Bước suy nhu cầu chỉ đọc JD nên nó là thuộc tính của vị trí; suy lại theo từng CV thì hai ứng
     viên cùng campaign bị đo bằng hai thước khác nhau rồi xếp chung bảng — đúng thứ bất công
     **CAMP-10** chặn ở đường phỏng vấn. `source` do **server sở hữu** (F10).
+  - ✅ **SCR1-B1 — HR chỉ dán JD → upload CV → có xếp hạng, KHÔNG phải soạn job_needs trước.**
+    AI rút nhu cầu từ JD **LAZY**: lúc publish (đã có sẵn) **HOẶC lần sàng CV ĐẦU TIÊN** khi
+    campaign chưa có `job_needs` (`ScreenCandidatesAsync` gọi lại đúng `BuildJobNeedsAsync` mà
+    publish dùng, TRƯỚC vòng lặp đọc file — thiếu JD/AI hỏng thì 409 nêu rõ lý do, không sinh
+    row `cv_submission` nào). **HR không soạn** nhu cầu trước khi upload; `PUT /campaign/{id}/
+    job-needs` (sửa tay) và `POST .../job-needs/suggest` (xem trước gợi ý) vẫn giữ nguyên cho
+    API/tích hợp khác, nhưng FE **không cần gọi** chúng trước khi sàng. `isMustHave` vẫn mặc
+    định `false` (AI không đề xuất — xem HĐ-6 dưới) ⇒ gate điều kiện loại **nằm im** cho tới khi
+    HR chủ động vào sửa và bật nó.
   - 🔴 **Điểm do CampaignService TÍNH, không nhận số nào của AI:**
     `100 × Σ(Strong=1 · Partial=0.5 · Weak=0) / số nhu cầu`. Model chỉ gán **mức** + **TRÍCH bằng
     chứng từ CV**. *Vì sao:* đo trên prod, bốn CV có bằng chứng **giống hệt nhau** nhận 70/70/55/55

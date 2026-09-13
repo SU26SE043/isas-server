@@ -2614,24 +2614,35 @@ namespace Isas.CampaignService.Services
             if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
                 throw new InvalidOperationException($"Chỉ sàng CV khi campaign Draft hoặc Active (hiện: {campaign.Status}).");
 
-            // CMP3-B1 — CHẶN NGAY nếu campaign chưa chốt nhu cầu công việc (job_needs). Phải đứng TRƯỚC
-            // vòng lặp đọc file / ArchiveCvAsync bên dưới ⇒ không sinh row cv_submission nào, không đẩy
-            // object nào lên S3.
-            //
-            // Vì sao chặn ở ĐƯỜNG VÀO thay vì để republisher lo: sàng CV khi job_needs rỗng hiện đi TRỌN
-            // đường mà không ai kêu — controller nuốt lỗi publish-job (best-effort, đúng) rồi trả 202;
-            // row nằm Filtered với marker null; StuckScreeningRepublisher nhặt nhưng TRẦN BỎ CUỘC chạy
-            // TRƯỚC phép kiểm job_needs của nó, nên sau ~6 giờ mọi ứng viên lật AnalysisFailed kèm lý do
-            // "kiểm tra consumer cv_screening_queue" — trong khi consumer vẫn chạy — và HR không có đường
-            // retry AnalysisFailed. Thứ sai là chỗ này.
+            var jobNeedsJustBuilt = false;
+
+            // SCR1-B1 — chủ sản phẩm chốt: HR chỉ dán JD → upload CV → có xếp hạng, KHÔNG phải soạn
+            // job_needs trước. Rỗng KHÔNG còn 409 ngay — LAZY-BUILD từ JD ngay tại đây, y hệt
+            // PublishCampaignAsync (~:1470-1473). Phải đứng TRƯỚC vòng lặp đọc file / ArchiveCvAsync
+            // bên dưới: lỗi ở đây (thiếu JD / AI hỏng) thì KHÔNG sinh row cv_submission nào, không đẩy
+            // object nào lên S3, đúng cam kết cũ của guard này.
             //
             // Check KHÔNG rẽ theo Status: ở Active nó bịt lỗ "AI hụt lúc publish ⇒ campaign Active mà
-            // job_needs rỗng ⇒ cùng lời nói dối 6 giờ".
-            if (campaign.JobNeeds is null || !campaign.JobNeeds.Any(n => !string.IsNullOrWhiteSpace(n.Text)))
-                throw new InvalidOperationException(
-                    "Campaign chưa chốt nhu cầu công việc (job needs) — sàng CV không đối chiếu được với "
-                    + "gì. Khai nhu cầu qua PUT /campaign/{id}/job-needs, hoặc publish lại campaign để AI "
-                    + "đề xuất từ JD, rồi sàng CV lại.");
+            // job_needs rỗng ⇒ cùng lời nói dối 6 giờ" (StuckScreeningRepublisher trần bỏ cuộc chạy
+            // TRƯỚC phép kiểm job_needs — xem RequireJobNeeds/PublishScreeningJobsAsync).
+            if (campaign.JobNeeds is not { Count: > 0 } || !campaign.JobNeeds.Any(n => !string.IsNullOrWhiteSpace(n.Text)))
+            {
+                if (string.IsNullOrWhiteSpace(campaign.JDText))
+                    throw new InvalidOperationException(
+                        "Chiến dịch chưa có mô tả công việc (JD) — sàng CV cần JD để rút nhu cầu tuyển dụng.");
+
+                campaign.JobNeeds = await BuildJobNeedsAsync(campaign, ct);
+
+                if (campaign.JobNeeds is not { Count: > 0 } || !campaign.JobNeeds.Any(n => !string.IsNullOrWhiteSpace(n.Text)))
+                    throw new InvalidOperationException(
+                        "Không rút được nhu cầu tuyển dụng từ JD (AI lỗi) — thử lại sau.");
+
+                // Đứng đây (SAU vòng lặp chưa chạy) → dù mọi file bị loại (created.Count == 0, ví dụ
+                // trùng email hết batch) thì nhu cầu vừa rút vẫn phải xuống DB — lần sàng KẾ TIẾP
+                // không được rút lại từ đầu (tốn thêm 1 lượt AI) hay lật lại 409 vì campaign "chưa có
+                // needs" trên bộ nhớ đã đổi nhưng chưa lưu.
+                jobNeedsJustBuilt = true;
+            }
 
             if (files is null || files.Count == 0)
                 throw new ArgumentException("Cần ít nhất 1 file CV (PDF).");
@@ -2730,8 +2741,13 @@ namespace Isas.CampaignService.Services
                 AddAudit(actorUserId, orgId, AuditAction.ScreenCandidates, campaign.Id,
                     $"Sàng {response.Received} CV: {created.Count(c => c.Status == CvSubmissionStatus.Filtered)} qua, " +
                     $"{created.Count(c => c.Status == CvSubmissionStatus.Rejected)} loại, {response.Skipped} trùng");
-                await _db.SaveChangesAsync(ct);
             }
+
+            // SCR1-B1: nhu cầu vừa rút (nếu có) phải xuống DB kể cả khi created.Count == 0 (mọi file
+            // đều bị loại trước khi tạo row, ví dụ trùng hết email trong batch) — không thì lần sàng
+            // kế tiếp lại thấy campaign "chưa có needs" và tốn thêm 1 lượt AI vô ích.
+            if (created.Count > 0 || jobNeedsJustBuilt)
+                await _db.SaveChangesAsync(ct);
 
             response.Rejected = created.Count(c => c.Status == CvSubmissionStatus.Rejected);
             response.Filtered = created.Count(c => c.Status == CvSubmissionStatus.Filtered);

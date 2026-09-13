@@ -151,6 +151,10 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 > campaign** (AI đề xuất lúc publish → HR sửa khi `Draft`), nên mọi ứng viên được đo bằng **cùng một
 > thước** — cùng lý do CAMP-10 bắt mọi người nhận cùng bộ câu hỏi.
 >
+> ✅ **SCR1-B1** — HR không cần soạn `job_needs` trước: `POST /campaign/{id}/candidates` tự
+> LAZY-BUILD từ JD ngay lần upload đầu nếu campaign chưa có (thiếu JD / AI hỏng → **409** nêu rõ lý
+> do, TRƯỚC khi đọc file). Chi tiết + 2 mã 409: [docs/services/campaign.md](../../../docs/services/campaign.md) mục sàng CV.
+>
 > 🔴 **`overall_match_score` do CampaignService TÍNH**, không nhận số nào của AI:
 > `100 × Σ(Strong=1 · Partial=0.5 · Weak=0) / số nhu cầu`. Đo trên prod trước bản này: bốn CV có
 > bằng chứng **giống hệt nhau** nhận 70/70/55/55 và ứng viên yếu hơn xếp trên ứng viên mạnh hơn.

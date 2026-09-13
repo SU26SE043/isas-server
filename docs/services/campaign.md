@@ -174,6 +174,13 @@ Code: `Services/CampaignService.cs` + `Controllers/CampaignController.cs`. Build
 
 > **Rule cứng** cấu hình trên campaign (set khi `Draft`, qua `POST`/`PUT /campaign`): `requiredSkills?` (phải có **ĐỦ**), `keywordsAny?` (có **≥1**), `minYearsExperience?` — lưu cột `required_skills`/`keywords_any`/`min_years_experience`. Chi tiết luồng ở §Business rules.
 
+> ✅ **SCR1-B1 — `POST /campaign/{id}/candidates` LAZY-BUILD `job_needs` từ JD** khi campaign chưa
+> có nhu cầu công việc, thay vì đòi HR chốt trước: guard đứng TRƯỚC vòng đọc file/archive S3 (không
+> sinh `cv_submission`, không gọi S3 nếu ném). Hai mã **409** mới, khác nhau về lý do (nêu trong
+> `message`, phân biệt được để client không hiển thị nhầm): **(a) chưa có JD** — `jdText` rỗng, chưa
+> có gì để rút; **(b) AI hỏng** — có JD nhưng suggester lỗi/trả rỗng. Campaign đã có `job_needs`
+> (`AiSuggested` từ publish, hoặc `HrEdited` do HR tự khai) → **KHÔNG** gọi lại AI, giữ nguyên.
+
 **Callback nội bộ** (worker → Campaign, **không qua gateway**, header `X-Internal-Token`):
 - `POST /internal/campaign-candidates/{candidateId}/cv-result` — body `{ fitSummary, assessments[]{needId,area,level,evidence}, bonusSignals[], verificationRisk, verifyQuestions[], fullName?, skills[], yearsExperience? }` → tách `strengths`(Strong/Partial)/`gaps`(Weak), **TÍNH** `overall_match_score` từ mức, đóng dấu `screening_version=2`; status `Analyzed`. **Idempotent** (replace-all). 🔴 **KHÔNG có field điểm trong body** — nhận số do AI phán là mở lại đúng đường đã bịt. Guard lớp hai: `needId` bịa → drop · mức lạ → `Weak` · mức cao không có evidence → hạ `Weak` + ghi `"Không thấy bằng chứng"` · `verifyQuestions` cắt còn 3.
 - `POST /internal/campaign-candidates/{candidateId}/cv-failed` — `{ reason }` → status `AnalysisFailed`.
@@ -212,7 +219,7 @@ GET  /campaign/{id}/candidates?sort=score&minScore=70
 | 400 | input sai · file không PDF · `Σweight` ngoài [0.99,1.01] · `jdText`/`criteriaText` **> 20.000 ký tự** |
 | 401/403 | thiếu/sai JWT · non-owner (lọc `employer_id`) · không phải `Employer` |
 | 404 | campaign/candidate không tồn tại (hoặc đã soft-delete) |
-| 409 | sửa câu hỏi/tiêu chí khi `Active` · publish khi thiếu câu hỏi · transition trạng thái sai |
+| 409 | sửa câu hỏi/tiêu chí khi `Active` · publish khi thiếu câu hỏi · transition trạng thái sai · sàng CV (SCR1-B1) khi thiếu JD hoặc AI rút nhu cầu hỏng |
 | 4xx | vượt cap CV/campaign (sàng CV) |
 
 ## Luồng (sequence)
