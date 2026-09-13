@@ -1302,6 +1302,8 @@ namespace Isas.CampaignService.Services
                         Description = c.Description,
                         Weight = c.Weight,
                         MaxScore = c.MaxScore,
+                        // SC2 · W5 — xem trước phải khớp cái sẽ chép: scope đi cùng.
+                        ScoringScope = c.ScoringScope,
                         LevelCount = c.Levels.Count,
                         // RNK1 · HĐ-4 — CÙNG nguồn c.Levels mà ApplySystemDefaultCriteriaAsync dùng
                         // (từ lời gọi GetB2CRubricAsync ngay trên — KHÔNG gọi Interview lần hai).

@@ -1,3 +1,5 @@
+using Isas.CampaignService.Models;
+
 namespace Isas.CampaignService.DTOs
 {
     /// <summary>
@@ -86,5 +88,13 @@ namespace Isas.CampaignService.DTOs
         /// nên "xem trước" khớp đúng "sẽ chép".</para>
         /// </summary>
         public List<CriterionLevelResponse> Levels { get; set; } = new();
+
+        /// <summary>
+        /// SC2 · W5 — <c>"Always"</c> | <c>"WhenTargeted"</c>, chép nguyên từ bộ chuẩn (client Interview đã
+        /// chuẩn hoá vắng/lạ ⇒ Always). Thiếu field này thì wizard "áp bộ chuẩn" (đường xem-trước → POST
+        /// /campaign với criteria[]) đúc mọi tiêu chí thành Always và SC2 thành no-op trên đúng bộ mặc định
+        /// — lộ ra khi demo 2026-09-13; đường CHÉP (<c>from-system-default</c>) đã mang scope, đường XEM thì chưa.
+        /// </summary>
+        public string ScoringScope { get; set; } = nameof(CriterionScoringScope.Always);
     }
 }

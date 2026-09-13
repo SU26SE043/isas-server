@@ -59,7 +59,7 @@ public class SystemDefaultCriteriaTests
             new("Chiều sâu kỹ thuật", "Hiểu bản chất", 0.30m, 5, new List<B2CRubricLevel>
             {
                 new(0, D0), new(3, D3), new(5, D5)
-            }),
+            }) { ScoringScope = "WhenTargeted" },
             new("Thiết kế hệ thống & CSDL", null, 0.20m, 5, Array.Empty<B2CRubricLevel>()),
             new("Giải quyết vấn đề & thuật toán", null, 0.15m, 5, Array.Empty<B2CRubricLevel>()),
             new("Trôi chảy", null, 0.10m, 5, Array.Empty<B2CRubricLevel>()),
@@ -576,6 +576,9 @@ public class SystemDefaultCriteriaTests
         Assert.Equal("Hiểu bản chất", res.Criteria[0].Description);
         Assert.Equal(0.30m, res.Criteria[0].Weight);
         Assert.Equal(5, res.Criteria[0].MaxScore);
+        // SC2 · W5 — scope của bộ chuẩn đi qua đường xem trước (WhenTargeted giữ nguyên, vắng ⇒ Always).
+        Assert.Equal("WhenTargeted", res.Criteria[0].ScoringScope);
+        Assert.Equal("Always", res.Criteria.Single(c => c.Name == "Giao tiếp & trình bày").ScoringScope);
 
         Assert.Equal(2, res.Criteria.Single(c => c.Name == "Giao tiếp & trình bày").LevelCount);
         // 0 = admin CHƯA khai mốc — trạng thái HỢP LỆ (Interview dùng dải mặc định), không phải lỗi.
@@ -823,7 +826,9 @@ public class SystemDefaultCriteriaTests
     [Fact]
     public void HopDong_CoScoringScope_VaKhongCoId()
     {
-        var mangScope = new[] { typeof(B2CRubricCriterion), typeof(CampaignCriterion), typeof(CriterionItem) };
+        // + SystemDefaultRubricCriterionPreview: đường XEM TRƯỚC là đường wizard dùng để đúc criteria[]
+        // cho POST /campaign — thiếu scope ở đây thì bộ chuẩn về tới employer toàn Always (đo 2026-09-13).
+        var mangScope = new[] { typeof(B2CRubricCriterion), typeof(CampaignCriterion), typeof(CriterionItem), typeof(SystemDefaultRubricCriterionPreview) };
         foreach (var t in mangScope)
         {
             Assert.Contains(t.GetProperties(),
