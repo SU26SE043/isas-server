@@ -514,6 +514,24 @@ public class RubricPreviewScopeSc2Tests
         credits.VerifyNoOtherCalls();
     }
 
+    /// <summary>POST không `questionId` (câu mặc định = câu đầu) sau 1 Succeeded của ĐÚNG câu đó ⇒ 409 — guard đọc câu ĐÃ RESOLVE, không đọc request.QuestionId (null).</summary>
+    [Fact]
+    public async Task Billed_CauMacDinh_KhongGuiQuestionId_VanBi409()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        var (ai, _) = AiEcho();
+        var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
+        var first = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest(), default);
+        Assert.Equal(s.QNull.Id, first.QuestionId);   // câu mặc định = QNull (CreatedAt sớm nhất)
+
+        var ex = await Assert.ThrowsAsync<PreviewBillingConfirmRequiredException>(() =>
+            NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, new RubricPreviewRequest(), default));
+        Assert.Equal(s.QNull.Id, ex.QuestionId);
+        credits.VerifyNoOtherCalls();
+    }
+
     [Fact]
     public async Task Billed_CoConfirm_ReserveDungMotLan_VaLuuKetQua()
     {

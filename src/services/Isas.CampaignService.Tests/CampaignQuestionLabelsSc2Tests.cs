@@ -268,7 +268,9 @@ public class CampaignQuestionLabelsSc2Tests
         var refBlock = py[refStart..refEnd];
         Assert.Contains("criterionId: str", refBlock);
         Assert.Contains("name: str", refBlock);
-        Assert.Contains("description", refBlock);   // R10a — W2 gửi description?; pydantic không khai là nuốt im lặng
+        // R10a — W2 gửi description?; pydantic không khai là nuốt im lặng. Regex neo vào FIELD (đầu dòng), không
+        // phải docstring — Contains("description") thoả bởi docstring kể cả khi field đã bị xoá.
+        Assert.Matches(new System.Text.RegularExpressions.Regex(@"^\s+description:\s*str", System.Text.RegularExpressions.RegexOptions.Multiline), refBlock);
 
         var resStart = py.IndexOf("class GenerateQuestionsResponse(", StringComparison.Ordinal);
         var resEnd = py.IndexOf("\nclass ", resStart + 1, StringComparison.Ordinal);

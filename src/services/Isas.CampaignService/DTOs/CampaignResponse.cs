@@ -409,8 +409,8 @@ namespace Isas.CampaignService.DTOs
 
         /// <param name="criteria">
         /// SC2 — bộ tiêu chí của campaign (chỉ cần Id/Name/ScoringScope). Rỗng ⇒ không có tiêu chí
-        /// <c>WhenTargeted</c> ⇒ <see cref="CoverageWarnings"/> rỗng. K-rule KHÔNG cần tham số này
-        /// (đếm từ nhãn trên câu hỏi).
+        /// <c>WhenTargeted</c> ⇒ <see cref="CoverageWarnings"/> rỗng. K-rule (REV-BE R4) CŨNG cần tham số này:
+        /// tiêu chí chính = nhãn[0] ∩ {id WhenTargeted} — overload không criteria ⇒ K-rule IM LẶNG.
         /// </param>
         public static QuestionBankSummary Build(
             IEnumerable<CampaignQuestion> questionsSource,
@@ -468,7 +468,7 @@ namespace Isas.CampaignService.DTOs
             //     một tiêu chí không câu nào hỏi ⇒ INT-18 loại nó khỏi điểm của người này mà không loại
             //     của người khác ⇒ hai thước đo trong một bảng xếp hạng (CAMP-10). CHẶN publish (D-5).
             //     K null (thi hết bộ) ⇒ mọi câu đều được hỏi ⇒ không ràng buộc. Chỉ tính từ NHÃN trên câu
-            //     hỏi — không cần bộ tiêu chí — nên đường nào cũng đo được.
+            //     hỏi GIAO với bộ tiêu chí WhenTargeted (R4) — đường không cấp `criteria` không bắn K-rule.
             //     BUG-2 (D-5 mở rộng) — câu BẮT BUỘC luôn có mặt và PHỦ tiêu chí chính của nó, nên khe thật
             //     cho selector là K − |required|, và tiêu chí cần khe là tiêu chí chính của câu KHÔNG bắt
             //     buộc mà chưa câu bắt buộc nào phủ. 0 câu bắt buộc ⇒ suy biến về "K < distinct nhãn[0]".
