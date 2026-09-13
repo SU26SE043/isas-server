@@ -56,10 +56,11 @@ public class CampaignScoringScopeTargetsSc2Tests
         };
 
     private static CriterionItem Echo(
-        CampaignCriterion c, string? scope = null, decimal? weight = null, string? description = null)
+        CampaignCriterion c, string? scope = null, decimal? weight = null, string? description = null,
+        string? name = null)
         => new()
         {
-            Id = c.Id, Name = c.Name, Weight = weight ?? c.Weight, MaxScore = c.MaxScore,
+            Id = c.Id, Name = name ?? c.Name, Weight = weight ?? c.Weight, MaxScore = c.MaxScore,
             Description = description ?? c.Description,
             ScoringScope = scope, Levels = new List<CriterionLevelItem>()
         };
@@ -451,7 +452,9 @@ public class CampaignScoringScopeTargetsSc2Tests
         Assert.Contains("2 câu hỏi", audit.Summary);   // AB + B; A và null không tính
     }
 
-    // Không tiêu chí nào bị xoá (chỉ sửa mô tả, echo đủ id) ⇒ nhãn KHÔNG nhúc nhích, audit không nói "cắt".
+    // Không tiêu chí nào bị xoá (sửa mô tả VÀ ĐỔI TÊN, echo đủ id) ⇒ nhãn KHÔNG nhúc nhích, audit không
+    // nói "cắt". Đổi tên là ca đáng test nhất: RNK1·HĐ-5 ghép theo ID chứ không theo tên — nếu ai đó
+    // "tối ưu" merge sang ghép theo tên thì đổi tên = tiêu chí mới ⇒ nhãn bị cắt im lặng. (T1 tester gap.)
     [Fact]
     public async Task SuaTieuChi_KhongXoa_NhanKhongDoi()
     {
@@ -466,13 +469,17 @@ public class CampaignScoringScopeTargetsSc2Tests
         {
             Criteria = new List<CriterionItem>
             {
-                Echo(a, "WhenTargeted", description: "mô tả mới"),
+                Echo(a, "WhenTargeted", description: "mô tả mới", name: "A đổi tên"),
                 Echo(b, "Always"),
             }
         }, default);
 
         var rows = await QuestionsAsync(tdb, camp.Id);
         Assert.Equal(new[] { a.Id, b.Id }, Assert.Single(rows).TargetCriterionIds);
+
+        using var renamed = tdb.NewContext();
+        var aRow = await renamed.CampaignCriteria.SingleAsync(x => x.Id == a.Id);
+        Assert.Equal("A đổi tên", aRow.Name);   // đổi tên đã thật sự chạm DB, giữ ĐÚNG id
 
         using var check = tdb.NewContext();
         var audit = await check.AuditLogs.Where(x => x.EntityId == camp.Id && x.Action == AuditAction.EditCriteria)
