@@ -366,6 +366,16 @@ namespace Isas.CampaignService.Services
             }).ToList();
         }
 
+        /// <summary>
+        /// Điểm tổng % của một bài mẫu — MIRROR công thức weighted của đường chấm thật
+        /// (<c>Isas.InterviewService/Services/SessionScoringNotifier.cs:325-354</c>): chuẩn % từng tiêu chí
+        /// (kẹp 0..100) rồi <c>Σ(pct×w) / Σw</c>, mẫu số chỉ gồm tiêu chí THỰC SỰ CÓ ĐIỂM (tiêu chí AI bỏ
+        /// không tính vào mẫu số — y như tiêu chí không ai hỏi rơi khỏi mẫu số ở INT-18).
+        /// <para>⚠ Correction T6: trước T6 tập gửi = toàn bộ và C12 ép Σw = 1 nên "Σ(pct×w×100)" tương đương;
+        /// sau T6 <paramref name="criteria"/> là PHẠM VI CÂU (Σw &lt; 1) ⇒ thiếu phép chia thì câu nhắm W1
+        /// (Σw = 0.7) chấm 5/5 mọi tiêu chí ra 70 trong khi ứng viên thật được 100 — FE so ngưỡng tuyệt đối
+        /// (DISCRIMINATION_RANGE_PCT / BIAS_DELTA_PCT / passScorePct) nên verdict oan cho MỌI lượt scoped.</para>
+        /// </summary>
         private static List<RubricPreviewSample> BuildSamples(
             List<CampaignCriterion> criteria, IReadOnlyList<PreviewSample> samples)
         {
@@ -374,7 +384,7 @@ namespace Isas.CampaignService.Services
             return samples.Select(s =>
             {
                 var scores = new List<RubricPreviewSampleScore>();
-                decimal expectedPct = 0, actualPct = 0;
+                decimal expectedSum = 0, expectedWeightSum = 0, actualSum = 0, actualWeightSum = 0;
 
                 foreach (var c in criteria)
                 {
@@ -388,8 +398,9 @@ namespace Isas.CampaignService.Services
                         _ => good   // bài HR tự dán: không có kỳ vọng riêng, neo ở mức giữa
                     };
 
-                    var actual = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id)?.Score ?? 0m;
-                    var matched = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id)?.LevelMatched;
+                    var aiScore = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id);
+                    var actual = aiScore?.Score ?? 0m;
+                    var matched = aiScore?.LevelMatched;
 
                     scores.Add(new RubricPreviewSampleScore
                     {
@@ -399,14 +410,19 @@ namespace Isas.CampaignService.Services
                         ExpectedLevel = expected,
                         ActualScore = actual,
                         LevelMatched = matched,
-                        Reasoning = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id)?.Reasoning
+                        Reasoning = aiScore?.Reasoning
                     });
 
-                    if (c.MaxScore > 0)
-                    {
-                        expectedPct += expected / (decimal)c.MaxScore * c.Weight * 100m;
-                        actualPct += actual / c.MaxScore * c.Weight * 100m;
-                    }
+                    if (c.MaxScore <= 0) continue;   // phòng chia 0 (ràng buộc maxScore ≥ 1)
+
+                    // Kỳ vọng do CODE chọn ⇒ luôn có ⇒ mọi tiêu chí trong phạm vi vào mẫu số.
+                    expectedSum += Math.Clamp(expected / (decimal)c.MaxScore * 100m, 0m, 100m) * c.Weight;
+                    expectedWeightSum += c.Weight;
+
+                    // Thật: chỉ tiêu chí AI CÓ trả điểm (mirror notifier `TryGetValue … continue`).
+                    if (aiScore is null) continue;
+                    actualSum += Math.Clamp(actual / c.MaxScore * 100m, 0m, 100m) * c.Weight;
+                    actualWeightSum += c.Weight;
                 }
 
                 return new RubricPreviewSample
@@ -414,8 +430,8 @@ namespace Isas.CampaignService.Services
                     Band = s.Band,
                     AnswerText = s.AnswerText,
                     WordCount = s.WordCount,
-                    ExpectedWeightedPct = Math.Round(expectedPct, 2),
-                    ActualWeightedPct = Math.Round(actualPct, 2),
+                    ExpectedWeightedPct = expectedWeightSum <= 0m ? 0m : Math.Round(expectedSum / expectedWeightSum, 2),
+                    ActualWeightedPct = actualWeightSum <= 0m ? 0m : Math.Round(actualSum / actualWeightSum, 2),
                     Scores = scores
                 };
             }).ToList();

@@ -31,7 +31,7 @@ public class RubricPreviewScopeSc2Tests
         => new(db, ai, Mock.Of<ILogger<RubricPreviewService>>(), credits);
 
     /// <summary>AI giả: ghi lại bộ tiêu chí nhận được, trả điểm cho ĐÚNG những tiêu chí đó.</summary>
-    private static (Mock<IRubricPreviewClient> mock, List<IReadOnlyList<PreviewCriterionInput>> received) AiEcho()
+    private static (Mock<IRubricPreviewClient> mock, List<IReadOnlyList<PreviewCriterionInput>> received) AiEcho(decimal score = 3)
     {
         var received = new List<IReadOnlyList<PreviewCriterionInput>>();
         var ai = new Mock<IRubricPreviewClient>();
@@ -45,7 +45,7 @@ public class RubricPreviewScopeSc2Tests
                 return Task.FromResult(new RubricPreviewResult(
                     new[] { "Weak", "Good", "Excellent" }.Select(b => new PreviewSample(
                         b, $"bài {b}", 160,
-                        crit.Select(c => new PreviewSampleScore(c.CriterionId, 3, 3, "vì")).ToList())).ToList(),
+                        crit.Select(c => new PreviewSampleScore(c.CriterionId, score, (int)score, "vì")).ToList())).ToList(),
                     PromptVersion: 4, LengthParityWarning: false));
             });
         return (ai, received);
@@ -67,20 +67,21 @@ public class RubricPreviewScopeSc2Tests
         camp.Domain = "BE";
         tdb.Db.Campaigns.Add(camp);
 
-        CampaignCriterion Crit(int order, string name, CriterionScoringScope scope, bool levels)
+        CampaignCriterion Crit(int order, string name, CriterionScoringScope scope, bool levels, decimal weight)
         {
             var c = new CampaignCriterion
             {
-                Id = Guid.NewGuid(), CampaignId = camp.Id, OrderNo = order, Name = name, Weight = 0.3m, MaxScore = 5,
+                Id = Guid.NewGuid(), CampaignId = camp.Id, OrderNo = order, Name = name, Weight = weight, MaxScore = 5,
                 Source = CriterionSource.HrEdited, ScoringScope = scope, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow
             };
             tdb.Db.CampaignCriteria.Add(c);
             if (levels) tdb.Db.CampaignCriterionLevels.AddRange(Level(c.Id, 0, D0), Level(c.Id, 5, DTop));
             return c;
         }
-        var always = Crit(0, "Cach noi", withAlways ? CriterionScoringScope.Always : CriterionScoringScope.WhenTargeted, true);
-        var wt1 = Crit(1, "Noi dung 1", CriterionScoringScope.WhenTargeted, true);
-        var wt2 = Crit(2, "Noi dung 2", CriterionScoringScope.WhenTargeted, wt2Levels);
+        // Σw = 1 (C12); phạm vi câu nhắm W1 = Always ∪ W1 ⇒ Σw = 0.7 — đúng seed probe P1 của Tester.
+        var always = Crit(0, "Cach noi", withAlways ? CriterionScoringScope.Always : CriterionScoringScope.WhenTargeted, true, 0.4m);
+        var wt1 = Crit(1, "Noi dung 1", CriterionScoringScope.WhenTargeted, true, 0.3m);
+        var wt2 = Crit(2, "Noi dung 2", CriterionScoringScope.WhenTargeted, wt2Levels, 0.3m);
 
         CampaignQuestion Q(string text, List<Guid>? targets, int i)
         {
@@ -208,13 +209,26 @@ public class RubricPreviewScopeSc2Tests
         var ok = await NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
         Assert.Equal("Succeeded", ok.Status);
 
+        // Correction T6 (Tester P4): quota câu QNull ĐÃ HẾT ⇒ nếu guard mốc đứng sau bước quota thì lượt
+        // này billed=true THẬT và chạm ReserveAsync ⇒ Strict credits ném. Ở billed=false test là vacuous.
+        using (var db = tdb.NewContext())
+        {
+            db.RubricPreviewRuns.Add(new RubricPreviewRun
+            {
+                Id = Guid.NewGuid(), CampaignId = s.Camp.Id, CreatedByUserId = owner, QuestionId = s.QNull.Id,
+                QuestionText = "q", Status = RubricPreviewStatus.Succeeded, RubricSnapshot = "[]", RubricFingerprint = "fp",
+                RubricVersion = 1, CreatedAt = DateTime.UtcNow.AddSeconds(-10),
+            });
+            await db.SaveChangesAsync();
+        }
+
         // câu chưa gắn nhãn: toàn bộ ⇒ W2 trong phạm vi ⇒ 400 nêu tên, KHÔNG chạm Payment, không để row Running
         var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
             NewService(tdb.NewContext(), ai.Object, credits.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QNull), default));
         Assert.Contains("Noi dung 2", ex.Message);
         credits.VerifyNoOtherCalls();
         using var check = tdb.NewContext();
-        Assert.Equal(1, await check.RubricPreviewRuns.CountAsync(r => r.CampaignId == s.Camp.Id));
+        Assert.Equal(2, await check.RubricPreviewRuns.CountAsync(r => r.CampaignId == s.Camp.Id));   // ok + seed, không row nửa vời
     }
 
     [Fact]
@@ -328,6 +342,65 @@ public class RubricPreviewScopeSc2Tests
         Assert.Equal(RubricPreviewService.FreeRunsPerQuestion, again[0].FreeRunsRemaining);   // (v3, W1): chưa Succeeded ⇒ còn 1
         Assert.All(again.Skip(1), r => Assert.Equal(0, r.FreeRunsRemaining));                 // các cặp khác vẫn 0 — không dùng chung runs[0]
         Assert.All(again, r => Assert.NotNull(r.QuestionId));
+    }
+
+    // ═══════════════ correction T6 — % tổng chia Σw của PHẠM VI (mirror SessionScoringNotifier) ═══════════════
+
+    /// <summary>
+    /// Tester probe P1: Always 0.4 · W1 0.3 · W2 0.3, AI 5/5 mọi tiêu chí. Câu nhắm W1 ⇒ phạm vi Σw = 0.7.
+    /// Đường chấm thật chia Σ(pct×w)/Σw (chỉ tiêu chí có điểm) ⇒ 100; thiếu phép chia ⇒ 70 ⇒ FE so ngưỡng
+    /// tuyệt đối ⇒ verdict oan. Kỳ vọng cũng chia Σw ⇒ = pct của mức kỳ vọng (hai tiêu chí cùng mốc).
+    /// </summary>
+    [Fact]
+    public async Task ScopedSumWeight07_AI5tren5_ActualWeightedPct_La100_KhongPhai70()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        var (ai, _) = AiEcho(score: 5);
+
+        var scoped = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QWt1), default);
+        var full = await NewService(tdb.NewContext(), ai.Object).RunAsync(owner, owner, s.Camp.Id, For(s.QNull), default);
+
+        var excellent = scoped.Samples.Single(x => x.Band == "Excellent");
+        Assert.Equal(100m, excellent.ActualWeightedPct);                                   // KHÔNG phải 70
+        Assert.Equal(full.Samples.Single(x => x.Band == "Excellent").ActualWeightedPct, excellent.ActualWeightedPct);
+
+        // Kỳ vọng: mọi tiêu chí trong phạm vi cùng mốc {0,5} ⇒ % tổng == % của mức kỳ vọng, bất kể Σw.
+        var (weak, good, exc) = RubricPreviewService.ExpectedLevels(
+            new List<CampaignCriterionLevel> { Level(s.Wt1.Id, 0, D0), Level(s.Wt1.Id, 5, DTop) });
+        Assert.Equal(Math.Round(exc / 5m * 100m, 2), excellent.ExpectedWeightedPct);
+        Assert.Equal(Math.Round(weak / 5m * 100m, 2), scoped.Samples.Single(x => x.Band == "Weak").ExpectedWeightedPct);
+        Assert.Equal(Math.Round(good / 5m * 100m, 2), scoped.Samples.Single(x => x.Band == "Good").ExpectedWeightedPct);
+        // Toàn bộ (Σw = 1) ⇒ số y như trước correction.
+        Assert.Equal(excellent.ExpectedWeightedPct, full.Samples.Single(x => x.Band == "Excellent").ExpectedWeightedPct);
+    }
+
+    /// <summary>
+    /// Test-gap 1: cùng version, câu A `Succeeded`, câu B chỉ `Failed` ⇒ A còn 0, B còn 1. GroupBy chỉ theo
+    /// RubricVersion (gộp hai câu) sẽ cho B = 0 ⇒ ĐỎ.
+    /// </summary>
+    [Fact]
+    public async Task History_CungVersion_CauA_Succeeded_CauB_ChiFailed_FreeTheoTungCau()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var s = await SeedAsync(tdb, owner);
+        RubricPreviewRun Run(Guid qid, RubricPreviewStatus st, int secs) => new()
+        {
+            Id = Guid.NewGuid(), CampaignId = s.Camp.Id, CreatedByUserId = owner, QuestionId = qid, QuestionText = "q",
+            Status = st, RubricSnapshot = "[]", RubricFingerprint = "fp", RubricVersion = 1,
+            CreatedAt = DateTime.UtcNow.AddSeconds(secs),
+        };
+        var a = Run(s.QWt1.Id, RubricPreviewStatus.Succeeded, 0);
+        var b = Run(s.QEmpty.Id, RubricPreviewStatus.Failed, 1);
+        tdb.Db.RubricPreviewRuns.AddRange(a, b);
+        await tdb.Db.SaveChangesAsync();
+
+        var history = await NewService(tdb.NewContext(), Mock.Of<IRubricPreviewClient>()).GetHistoryAsync(owner, s.Camp.Id, default);
+
+        Assert.Equal(0, history.Single(r => r.Id == a.Id).FreeRunsRemaining);
+        Assert.Equal(RubricPreviewService.FreeRunsPerQuestion, history.Single(r => r.Id == b.Id).FreeRunsRemaining);
     }
 
     // ═══════════════ I5 — row cũ trước T6 ═══════════════

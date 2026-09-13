@@ -120,6 +120,18 @@ public class RubricPreviewTests
             await tdb.Db.SaveChangesAsync();
         }
 
+        // Correction T6 (Tester P4): quota câu này PHẢI đã hết (1 Succeeded) để lượt kế — nếu guard bị dời
+        // xuống sau bước quota — sẽ là billed=true THẬT và chạm ReserveAsync. Ở billed=false, Strict
+        // credits không bao giờ được gọi dù guard đứng ở đâu ⇒ test vacuous.
+        var seeded = 0;
+        if (ca != "no-question")
+        {
+            tdb.Db.RubricPreviewRuns.Add(SeedRun(camp.Id, RubricPreviewStatus.Succeeded,
+                questionId: await QuestionIdOf(tdb, camp.Id)));
+            await tdb.Db.SaveChangesAsync();
+            seeded = 1;
+        }
+
         // Strict + VerifyNoOtherCalls: bất kỳ lần chạm Payment nào cũng làm test đỏ.
         var credits = new Mock<ICreditReservationClient>(MockBehavior.Strict);
         var caller = ca == "not-owner" ? Guid.NewGuid() : owner;
@@ -130,9 +142,9 @@ public class RubricPreviewTests
 
         credits.VerifyNoOtherCalls();
 
-        // Và không để lại row nửa vời.
+        // Và không để lại row nửa vời (chỉ còn đúng row seed).
         using var check = tdb.NewContext();
-        Assert.Empty(await check.RubricPreviewRuns.ToListAsync());
+        Assert.Equal(seeded, await check.RubricPreviewRuns.CountAsync());
     }
 
     // ── Quota ────────────────────────────────────────────────────────────
