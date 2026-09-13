@@ -402,6 +402,9 @@ namespace Isas.CampaignService.DTOs
             IEnumerable<CampaignCriterion> criteria)
             => Build(questionsSource, questionsPerSession, maxDeepPerQuestion, maxQuestions,
                 (criteria ?? Array.Empty<CampaignCriterion>())
+                    // OrderNo: đường Include (GET) và đường projection (PUT, BankCriteriaAsync OrderBy OrderNo)
+                    // phải cho CÙNG thứ tự coverageWarnings — nav collection không hứa thứ tự.
+                    .OrderBy(c => c.OrderNo)
                     .Select(c => new QuestionBankCriterion(c.Id, c.Name, c.ScoringScope)).ToList());
 
         /// <param name="criteria">
