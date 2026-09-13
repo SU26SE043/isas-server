@@ -25,8 +25,13 @@ namespace Isas.CampaignService.Services
         private readonly ICreditReservationClient? _credits;
         private readonly ILogger<RubricPreviewService> _logger;
 
-        /// <summary>Số lượt THÀNH CÔNG miễn phí cho MỖI phiên bản thước đo.</summary>
-        public const int FreeRunsPerRubricVersion = 3;
+        /// <summary>
+        /// SC2 · T6 (D-4) — số lượt THÀNH CÔNG miễn phí cho MỖI (campaign, phiên bản thước đo, CÂU HỎI).
+        /// Trước: 3 lượt/(campaign, version) dùng chung mọi câu — nay chấm thử chấm THEO PHẠM VI CÂU nên
+        /// mỗi câu là một bài toán riêng: HR kiểm được từng câu một lượt miễn phí, câu B không ăn quota
+        /// của câu A. Đổi hằng này = đổi D-4, không phải chuyện kỹ thuật.
+        /// </summary>
+        public const int FreeRunsPerQuestion = 1;
 
         /// <summary>Mục tiêu số từ chung cho cả 3 bài — khác biệt phải nằm ở CHẤT, không ở độ dài.</summary>
         private const int TargetWordCount = 160;
@@ -70,17 +75,32 @@ namespace Isas.CampaignService.Services
             if (criteria.Count == 0)
                 throw new ArgumentException("Chiến dịch chưa có tiêu chí chấm.");
 
-            // ── 4. mốc hợp lệ? ────────────────────────────────────────────
+            // ── 4. chọn được câu hỏi? ─────────────────────────────────────
+            // (SC2 · T6: đứng TRƯỚC guard mốc vì phạm vi tiêu chí phụ thuộc vào CÂU — cả hai vẫn là
+            // 400 và vẫn TRƯỚC ReserveAsync, trật tự guard-trước-tiền không đổi.)
+            var question = SelectQuestion(campaign, request.QuestionId);
+
+            // ── 4b. PHẠM VI CHẤM của câu (SC2 · T6, I6: chấm thử = chấm thật) ─────
+            // Ứng viên trả lời câu Q bị chấm trên: tiêu chí Always ∪ tiêu chí Q nhắm tới (INT-18). Chấm
+            // thử phải dùng ĐÚNG tập đó, nếu không HR kiểm chứng một thước mà ứng viên bị đo bằng thước
+            // khác. null = chưa gắn nhãn ⇒ TOÀN BỘ (I2: null ≠ [] — [] ⇒ chỉ Always).
+            var scopedIds = ScopeFor(criteria, question.TargetCriterionIds);
+            var scoped = criteria.Where(c => scopedIds.Contains(c.Id)).ToList();
+            if (scoped.Count == 0)
+                throw new ArgumentException(
+                    "Câu hỏi này không nhắm tiêu chí nội dung nào và chiến dịch không có tiêu chí "
+                    + "chấm-mọi-câu (Always) ⇒ không có tiêu chí nào để chấm thử. Gắn nhãn cho câu hoặc "
+                    + "đặt ít nhất một tiêu chí scoringScope = Always.");
+
+            // ── 5. mốc hợp lệ (TRONG phạm vi)? ────────────────────────────
             // Chấm thử là để kiểm chứng THANG ĐIỂM; không có mốc thì Interview dùng dải mặc định và
-            // lượt chấm thử chẳng kiểm chứng được gì ngoài chính dải mặc định đó.
-            var thieuMoc = criteria.Where(c => (c.Levels?.Count ?? 0) < 2).Select(c => c.Name).ToList();
+            // lượt chấm thử chẳng kiểm chứng được gì ngoài chính dải mặc định đó. Chỉ đòi mốc trên tiêu
+            // chí SẼ ĐƯỢC CHẤM cho câu này — tiêu chí ngoài phạm vi thiếu mốc không chặn lượt này.
+            var thieuMoc = scoped.Where(c => (c.Levels?.Count ?? 0) < 2).Select(c => c.Name).ToList();
             if (thieuMoc.Count > 0)
                 throw new ArgumentException(
                     $"Chưa khai mốc điểm cho tiêu chí: {string.Join(", ", thieuMoc)}. "
                     + "Chấm thử cần mốc để kiểm chứng, nếu không nó chỉ đang kiểm chứng dải mặc định.");
-
-            // ── 5. chọn được câu hỏi? ─────────────────────────────────────
-            var question = SelectQuestion(campaign, request.QuestionId);
 
             // ── 6. còn lượt nào đang chạy? (self-heal row mồ côi) ─────────
             await ResolveStaleRunningAsync(campaignId, ct);
@@ -101,7 +121,8 @@ namespace Isas.CampaignService.Services
                 QuestionText = question.QuestionText,
                 Status = RubricPreviewStatus.Running,
                 Billed = false,
-                RubricSnapshot = JsonSerializer.Serialize(BuildRubricView(criteria), Json),
+                // SC2 · T6 — snapshot ghi ĐỦ bộ (HR vẫn thấy thước đo) + đánh dấu InScope; không migration.
+                RubricSnapshot = JsonSerializer.Serialize(BuildRubricView(criteria, scopedIds), Json),
                 RubricFingerprint = RubricFingerprint.Compute(criteria),
                 RubricVersion = campaign.RubricVersion,
                 CreatedAt = DateTime.UtcNow
@@ -120,11 +141,12 @@ namespace Isas.CampaignService.Services
             }
 
             // ── 8. quota → reserve (LẦN ĐẦU chạm Payment) ─────────────────
-            // Chỉ đếm Succeeded: phạt HR vì AI của ta hỏng là sai. Theo (campaign, rubric_version) vì
-            // thước đo mới là bài toán mới — campaign chạy 6 tháng sửa thước 4 lần mà dùng chung quota
-            // sẽ hết lượt ngay lần hai rồi quay về sửa mù.
-            var succeeded = await CountSucceededAsync(campaignId, campaign.RubricVersion, ct);
-            var billed = succeeded >= FreeRunsPerRubricVersion;
+            // Chỉ đếm Succeeded: phạt HR vì AI của ta hỏng là sai. Theo (campaign, rubric_version,
+            // question) — SC2 · T6 / D-4: thước đo mới là bài toán mới, và từ khi chấm theo phạm vi câu
+            // thì mỗi câu cũng là một bài toán mới (tập tiêu chí khác). Lượt của câu A không ăn quota
+            // của câu B.
+            var succeeded = await CountSucceededAsync(campaignId, campaign.RubricVersion, question.Id, ct);
+            var billed = succeeded >= FreeRunsPerQuestion;
             if (billed)
             {
                 if (_credits is null)
@@ -148,9 +170,10 @@ namespace Isas.CampaignService.Services
                     string.IsNullOrWhiteSpace(campaign.Domain) ? "BE" : campaign.Domain!,
                     campaign.Language, campaign.Seniority,
                     question.QuestionText, question.SampleAnswer, request.CustomAnswer,
-                    TargetWordCount, BuildPreviewCriteria(criteria), ct);
+                    // I6 — CÙNG ScoringCriteriaBuilder.Build, chỉ khác TẬP tiêu chí gửi (= phạm vi câu).
+                    TargetWordCount, BuildPreviewCriteria(scoped), ct);
 
-                var samples = BuildSamples(criteria, result.Samples);
+                var samples = BuildSamples(scoped, result.Samples);
                 run.Samples = JsonSerializer.Serialize(samples, Json);
                 run.PromptVersion = result.PromptVersion;
                 run.LengthParityWarning = result.LengthParityWarning;
@@ -160,7 +183,7 @@ namespace Isas.CampaignService.Services
 
                 if (billed) await TryCreditOpAsync(() => _credits!.ConsumeAsync(run.Id, ct), "consume", run.Id);
 
-                return ToResponse(run, await FreeRemainingAsync(campaignId, run.RubricVersion, ct));
+                return ToResponse(run, await FreeRemainingAsync(campaignId, run.RubricVersion, run.QuestionId, ct));
             }
             catch (Exception ex)
             {
@@ -183,11 +206,20 @@ namespace Isas.CampaignService.Services
                 .Take(20)
                 .ToListAsync(ct);
 
-            var free = runs.Count == 0
-                ? FreeRunsPerRubricVersion
-                : await FreeRemainingAsync(campaignId, runs[0].RubricVersion, ct);
+            // SC2 · T6 — freeRunsRemaining tính theo ĐÚNG (RubricVersion, QuestionId) của TỪNG run, không
+            // dùng chung số của runs[0]: FE nhóm lịch sử theo câu và hiện "còn N lượt miễn phí" theo câu.
+            // Đếm Succeeded của cả campaign trong MỘT truy vấn rồi GroupBy trong bộ nhớ.
+            var succeededByKey = (await _db.RubricPreviewRuns
+                    .AsNoTracking()
+                    .Where(r => r.CampaignId == campaignId && r.Status == RubricPreviewStatus.Succeeded)
+                    .Select(r => new { r.RubricVersion, r.QuestionId })
+                    .ToListAsync(ct))
+                .GroupBy(x => (x.RubricVersion, x.QuestionId))
+                .ToDictionary(g => g.Key, g => g.Count());
 
-            return runs.Select(r => ToResponse(r, free)).ToList();
+            return runs.Select(r => ToResponse(r,
+                Math.Max(0, FreeRunsPerQuestion - succeededByKey.GetValueOrDefault((r.RubricVersion, r.QuestionId)))))
+                .ToList();
         }
 
         // ── helpers ───────────────────────────────────────────────────────
@@ -224,14 +256,33 @@ namespace Isas.CampaignService.Services
             _logger.LogWarning("Dọn {Count} lượt chấm thử mồ côi của campaign {CampaignId}", stale.Count, campaignId);
         }
 
-        private Task<int> CountSucceededAsync(Guid campaignId, int rubricVersion, CancellationToken ct)
+        /// <summary>
+        /// SC2 · T6 — phạm vi chấm của một câu: <c>Always</c> ∪ {id ∈ nhãn câu}. <c>null</c> (chưa gắn nhãn)
+        /// ⇒ TOÀN BỘ tiêu chí; <c>[]</c> (đã xét, không nhắm) ⇒ chỉ <c>Always</c>. Khớp luật INT-18 mà
+        /// Interview áp khi chấm ứng viên thật — I6.
+        /// </summary>
+        internal static HashSet<Guid> ScopeFor(IReadOnlyList<CampaignCriterion> criteria, IReadOnlyList<Guid>? targetCriterionIds)
+        {
+            if (targetCriterionIds is null)
+                return criteria.Select(c => c.Id).ToHashSet();
+            var targets = targetCriterionIds.ToHashSet();
+            return criteria
+                .Where(c => c.ScoringScope == CriterionScoringScope.Always || targets.Contains(c.Id))
+                .Select(c => c.Id)
+                .ToHashSet();
+        }
+
+        // SC2 · T6 — lọc thêm QuestionId: quota là của (campaign, version, CÂU). Row cũ trước T6 có
+        // QuestionId luôn resolved (từ CAMP-19) nên không có row nào rơi ra ngoài phép đếm.
+        private Task<int> CountSucceededAsync(Guid campaignId, int rubricVersion, Guid? questionId, CancellationToken ct)
             => _db.RubricPreviewRuns.CountAsync(
                 r => r.CampaignId == campaignId
                      && r.RubricVersion == rubricVersion
+                     && r.QuestionId == questionId
                      && r.Status == RubricPreviewStatus.Succeeded, ct);
 
-        private async Task<int> FreeRemainingAsync(Guid campaignId, int rubricVersion, CancellationToken ct)
-            => Math.Max(0, FreeRunsPerRubricVersion - await CountSucceededAsync(campaignId, rubricVersion, ct));
+        private async Task<int> FreeRemainingAsync(Guid campaignId, int rubricVersion, Guid? questionId, CancellationToken ct)
+            => Math.Max(0, FreeRunsPerQuestion - await CountSucceededAsync(campaignId, rubricVersion, questionId, ct));
 
         private async Task MarkFailedAsync(RubricPreviewRun run, string reason, CancellationToken ct)
         {
@@ -258,13 +309,20 @@ namespace Isas.CampaignService.Services
             catch (Exception ex) { _logger.LogError(ex, "Credit {Op} lỗi cho lượt chấm thử {RunId}", name, runId); }
         }
 
-        private static List<RubricPreviewCriterion> BuildRubricView(List<CampaignCriterion> criteria)
+        /// <summary>
+        /// Snapshot ĐỦ bộ tiêu chí (HR vẫn nhìn thấy cả thước đo) kèm <c>InScope</c> theo phạm vi câu
+        /// (SC2 · T6). Row cũ trước T6 không có hai trường mới ⇒ deserialize ra <c>ScoringScope = null</c>,
+        /// <c>InScope = null</c> ⇒ <see cref="ToResponse"/> coi là in-scope (I5: lượt cũ = chấm toàn bộ).
+        /// </summary>
+        private static List<RubricPreviewCriterion> BuildRubricView(List<CampaignCriterion> criteria, IReadOnlySet<Guid> scopedIds)
             => criteria.Select(c => new RubricPreviewCriterion
             {
                 CriterionId = c.Id,
                 Name = c.Name,
                 Weight = c.Weight,
                 MaxScore = c.MaxScore,
+                ScoringScope = c.ScoringScope.ToString(),
+                InScope = scopedIds.Contains(c.Id),
                 Levels = SortedLevels(c)
                     .Select(l => new CriterionLevelResponse { Score = l.Score, Descriptor = l.Descriptor })
                     .ToList()
@@ -308,6 +366,16 @@ namespace Isas.CampaignService.Services
             }).ToList();
         }
 
+        /// <summary>
+        /// Điểm tổng % của một bài mẫu — MIRROR công thức weighted của đường chấm thật
+        /// (<c>Isas.InterviewService/Services/SessionScoringNotifier.cs:325-354</c>): chuẩn % từng tiêu chí
+        /// (kẹp 0..100) rồi <c>Σ(pct×w) / Σw</c>, mẫu số chỉ gồm tiêu chí THỰC SỰ CÓ ĐIỂM (tiêu chí AI bỏ
+        /// không tính vào mẫu số — y như tiêu chí không ai hỏi rơi khỏi mẫu số ở INT-18).
+        /// <para>⚠ Correction T6: trước T6 tập gửi = toàn bộ và C12 ép Σw = 1 nên "Σ(pct×w×100)" tương đương;
+        /// sau T6 <paramref name="criteria"/> là PHẠM VI CÂU (Σw &lt; 1) ⇒ thiếu phép chia thì câu nhắm W1
+        /// (Σw = 0.7) chấm 5/5 mọi tiêu chí ra 70 trong khi ứng viên thật được 100 — FE so ngưỡng tuyệt đối
+        /// (DISCRIMINATION_RANGE_PCT / BIAS_DELTA_PCT / passScorePct) nên verdict oan cho MỌI lượt scoped.</para>
+        /// </summary>
         private static List<RubricPreviewSample> BuildSamples(
             List<CampaignCriterion> criteria, IReadOnlyList<PreviewSample> samples)
         {
@@ -316,7 +384,7 @@ namespace Isas.CampaignService.Services
             return samples.Select(s =>
             {
                 var scores = new List<RubricPreviewSampleScore>();
-                decimal expectedPct = 0, actualPct = 0;
+                decimal expectedSum = 0, expectedWeightSum = 0, actualSum = 0, actualWeightSum = 0;
 
                 foreach (var c in criteria)
                 {
@@ -330,8 +398,9 @@ namespace Isas.CampaignService.Services
                         _ => good   // bài HR tự dán: không có kỳ vọng riêng, neo ở mức giữa
                     };
 
-                    var actual = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id)?.Score ?? 0m;
-                    var matched = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id)?.LevelMatched;
+                    var aiScore = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id);
+                    var actual = aiScore?.Score ?? 0m;
+                    var matched = aiScore?.LevelMatched;
 
                     scores.Add(new RubricPreviewSampleScore
                     {
@@ -341,14 +410,19 @@ namespace Isas.CampaignService.Services
                         ExpectedLevel = expected,
                         ActualScore = actual,
                         LevelMatched = matched,
-                        Reasoning = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id)?.Reasoning
+                        Reasoning = aiScore?.Reasoning
                     });
 
-                    if (c.MaxScore > 0)
-                    {
-                        expectedPct += expected / (decimal)c.MaxScore * c.Weight * 100m;
-                        actualPct += actual / c.MaxScore * c.Weight * 100m;
-                    }
+                    if (c.MaxScore <= 0) continue;   // phòng chia 0 (ràng buộc maxScore ≥ 1)
+
+                    // Kỳ vọng do CODE chọn ⇒ luôn có ⇒ mọi tiêu chí trong phạm vi vào mẫu số.
+                    expectedSum += Math.Clamp(expected / (decimal)c.MaxScore * 100m, 0m, 100m) * c.Weight;
+                    expectedWeightSum += c.Weight;
+
+                    // Thật: chỉ tiêu chí AI CÓ trả điểm (mirror notifier `TryGetValue … continue`).
+                    if (aiScore is null) continue;
+                    actualSum += Math.Clamp(actual / c.MaxScore * 100m, 0m, 100m) * c.Weight;
+                    actualWeightSum += c.Weight;
                 }
 
                 return new RubricPreviewSample
@@ -356,15 +430,17 @@ namespace Isas.CampaignService.Services
                     Band = s.Band,
                     AnswerText = s.AnswerText,
                     WordCount = s.WordCount,
-                    ExpectedWeightedPct = Math.Round(expectedPct, 2),
-                    ActualWeightedPct = Math.Round(actualPct, 2),
+                    ExpectedWeightedPct = expectedWeightSum <= 0m ? 0m : Math.Round(expectedSum / expectedWeightSum, 2),
+                    ActualWeightedPct = actualWeightSum <= 0m ? 0m : Math.Round(actualSum / actualWeightSum, 2),
                     Scores = scores
                 };
             }).ToList();
         }
 
         private static RubricPreviewRunResponse ToResponse(RubricPreviewRun run, int freeRemaining)
-            => new()
+        {
+            var rubric = Deserialize<List<RubricPreviewCriterion>>(run.RubricSnapshot) ?? new();
+            return new()
             {
                 Id = run.Id,
                 Status = run.Status.ToString(),
@@ -378,12 +454,15 @@ namespace Isas.CampaignService.Services
                 LengthParityWarning = run.LengthParityWarning,
                 Billed = run.Billed,
                 FreeRunsRemaining = freeRemaining,
-                Rubric = Deserialize<List<RubricPreviewCriterion>>(run.RubricSnapshot) ?? new(),
+                Rubric = rubric,
+                // SC2 · T6 — tập ĐÃ CHẤM. InScope null (row trước T6) ⇒ in-scope: lượt cũ chấm toàn bộ (I5).
+                ScopedCriterionIds = rubric.Where(c => c.InScope != false).Select(c => c.CriterionId).ToList(),
                 Samples = Deserialize<List<RubricPreviewSample>>(run.Samples) ?? new(),
                 ErrorReason = run.ErrorReason,
                 CreatedAt = run.CreatedAt,
                 CompletedAt = run.CompletedAt
             };
+        }
 
         private static T? Deserialize<T>(string? json) where T : class
         {

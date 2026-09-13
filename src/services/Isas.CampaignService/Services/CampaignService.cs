@@ -1161,10 +1161,6 @@ namespace Isas.CampaignService.Services
         }
 
         /// <summary>
-        /// SC2 · W2 — lọc lớp 2 nhãn AI trả về theo tập id đã cấp. <c>null</c> ⇒ <c>null</c>; <c>[]</c> ⇒ <c>[]</c>;
-        /// id ∉ <paramref name="allowed"/> ⇒ bỏ (đếm vào <paramref name="dropped"/> để log một lần).
-        /// </summary>
-        /// <summary>
         /// SC2 (correction T2) — projection RẺ <c>{Id, Name, ScoringScope}</c> cho
         /// <c>questionBank.coverageWarnings</c> ở các đường trả <see cref="CampaignResponse"/> mà KHÔNG
         /// Include <c>Criteria</c>. Không có nó, <c>Campaign.Criteria</c> khởi tạo <c>new List&lt;&gt;()</c> ⇒
@@ -1179,6 +1175,10 @@ namespace Isas.CampaignService.Services
                 .Select(c => new QuestionBankCriterion(c.Id, c.Name, c.ScoringScope))
                 .ToListAsync(ct);
 
+        /// <summary>
+        /// SC2 · W2 — lọc lớp 2 nhãn AI trả về theo tập id đã cấp. <c>null</c> ⇒ <c>null</c>; <c>[]</c> ⇒ <c>[]</c>;
+        /// id ∉ <paramref name="allowed"/> ⇒ bỏ (đếm vào <paramref name="dropped"/> để log một lần).
+        /// </summary>
         internal static List<Guid>? KeepKnownTargets(
             IReadOnlyList<Guid>? requested, IReadOnlySet<Guid> allowed, ref int dropped)
         {

@@ -713,6 +713,129 @@ public class CampaignQuestionLabelsSc2Tests
         Assert.Equal(wb.Id, Assert.Single(res.QuestionBank.CoverageWarnings).CriterionId);
     }
 
+    // ═══════════════════ (test-gap T3) tenant · projection · AC4 trùng text ═══════════════════
+
+    /// <summary>
+    /// `BankCriteriaAsync` phải lọc `CampaignId`: PUT /questions campaign A gửi id tiêu chí của campaign B
+    /// (org khác) ⇒ 400 nêu id, 0 row ghi; coverage của A KHÔNG chứa tiêu chí của B. Bỏ `Where(CampaignId)`
+    /// là cross-tenant mà bộ test cũ vẫn xanh (mọi test đều một campaign).
+    /// </summary>
+    [Fact]
+    public async Task PutQuestions_IdTieuChiCampaignKhac_400_VaCoverageKhongLanTenant()
+    {
+        using var tdb = new CampaignTestDb();
+        var orgA = Guid.NewGuid(); var orgB = Guid.NewGuid();
+        var wa = Crit("A-wt", CriterionScoringScope.WhenTargeted, 0, 1.0m);
+        var wb = Crit("B-wt", CriterionScoringScope.WhenTargeted, 0, 1.0m);
+        var campA = await SeedAsync(tdb, orgA, [wa], [Q("a1", new() { wa.Id })]);
+        var campB = await SeedAsync(tdb, orgB, [wb], [Q("b1", null)]);
+        var a1 = (await QuestionsAsync(tdb, campA.Id)).Single();
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewService(tdb.NewContext()).UpdateCampaignQuestionsAsync(orgA, orgA, campA.Id, new List<QuestionItem>
+            {
+                new() { Id = a1.Id, QuestionText = a1.QuestionText, IsRequired = true, TargetCriterionIds = new() { wb.Id } },
+            }, default));
+        Assert.Contains(wb.Id.ToString(), ex.Message);
+        Assert.Equal(new[] { wa.Id }, (await QuestionsAsync(tdb, campA.Id)).Single().TargetCriterionIds);   // 0 row ghi
+
+        // coverage của B (câu chưa gắn nhãn ⇒ B-wt không ai nhắm) chỉ chứa tiêu chí CỦA B — không lẫn A-wt
+        var putB = await NewService(tdb.NewContext()).UpdateCampaignQuestionsAsync(orgB, orgB, campB.Id, new List<QuestionItem>
+        {
+            new() { Id = (await QuestionsAsync(tdb, campB.Id)).Single().Id, QuestionText = "b1", IsRequired = true },
+        }, default);
+        Assert.Equal(new[] { wb.Id }, putB.QuestionBank.CoverageWarnings.Select(w => w.CriterionId));
+        // và coverage của A (a1 nhắm A-wt) sạch — không có B-wt lẫn sang
+        var getA = await NewService(tdb.NewContext()).GetCampaignAsync(orgA, campA.Id, default);
+        Assert.Empty(getA.QuestionBank.CoverageWarnings);
+    }
+
+    /// <summary>
+    /// Projection list mang CẢ Always lẫn WhenTargeted với scope THẬT: coverage chỉ liệt kê WT không ai nhắm
+    /// (Always không ai nhắm KHÔNG vào). Ghim scope = WhenTargeted trong projection ⇒ Always lọt vào coverage ⇒ ĐỎ.
+    /// </summary>
+    [Fact]
+    public async Task List_Projection_AlwaysKhongVaoCoverage_ChiWhenTargeted()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var always = Crit("Always chua ai nham", CriterionScoringScope.Always, 0, 0.5m);
+        var wt = Crit("WT chua ai nham", CriterionScoringScope.WhenTargeted, 1, 0.5m);
+        var camp = await SeedAsync(tdb, org, [always, wt], [Q("1", new())]);   // [] ⇒ không nhắm ai
+
+        var page = await NewService(tdb.NewContext()).GetCampaignsAsync(org, null, null, default);
+        var put = await NewService(tdb.NewContext()).UpdateCampaignQuestionsAsync(org, org, camp.Id, new List<QuestionItem>
+        {
+            new() { Id = (await QuestionsAsync(tdb, camp.Id)).Single().Id, QuestionText = "1", IsRequired = true },
+        }, default);
+
+        Assert.Equal(new[] { wt.Id }, Assert.Single(page.Items, i => i.Id == camp.Id).QuestionBank.CoverageWarnings.Select(w => w.CriterionId));
+        Assert.Equal(new[] { wt.Id }, put.QuestionBank.CoverageWarnings.Select(w => w.CriterionId));
+    }
+
+    /// <summary>
+    /// AC4 với 2 câu TRÙNG text nhưng nhãn khác (`[wt]` vs `[]`): questionDetails phải mang nhãn của ĐÚNG object
+    /// đã rút — tra theo Text sẽ trộn hai câu và ĐỎ. K=2, cả hai luôn được rút (rổ wt vs rổ nhóm "").
+    /// </summary>
+    [Fact]
+    public async Task Start_HaiCauTrungText_NhanKhac_QuestionDetailsDungTungObject()
+    {
+        using var tdb = new CampaignTestDb();
+        var camp = CampaignTestDb.NewCampaign(Guid.NewGuid(), CampaignStatus.Active);
+        camp.Domain = "BE";
+        camp.QuestionsPerSession = 2;
+        var wt = Guid.NewGuid();
+        camp.Criteria.Add(new CampaignCriterion
+        {
+            Id = wt, CampaignId = camp.Id, OrderNo = 0, Name = "WT", Weight = 1.0m, MaxScore = 5,
+            Source = CriterionSource.HrEdited, ScoringScope = CriterionScoringScope.WhenTargeted,
+            CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        var labeled = new CampaignQuestion
+        {
+            Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = camp.OrgId, QuestionText = "TRUNG", Source = QuestionSource.CustomHr,
+            IsRequired = false, TargetCriterionIds = new() { wt }, CreatedAt = SeedEpoch,
+        };
+        var empty = new CampaignQuestion
+        {
+            Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = camp.OrgId, QuestionText = "TRUNG", Source = QuestionSource.CustomHr,
+            IsRequired = false, TargetCriterionIds = new(), CreatedAt = SeedEpoch.AddSeconds(1),
+        };
+        camp.Questions.Add(labeled); camp.Questions.Add(empty);
+        tdb.Db.Campaigns.Add(camp);
+        var candidates = Enumerable.Range(1, 12).Select(n => Guid.Parse($"00000000-0000-0000-0000-{n:D12}")).ToList();
+        foreach (var cand in candidates) tdb.Db.CampaignMemberships.Add(CampaignTestDb.NewMembership(camp.Id, cand));
+        await tdb.Db.SaveChangesAsync();
+
+        var sink = new List<IReadOnlyList<SessionQuestionInput>?>();
+        var session = new Mock<ICampaignSessionClient>();
+        session.Setup(x => x.CreateOrGetSessionAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+                It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+                It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
+                It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
+                It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .Callback((Guid _, Guid _, Guid _, string _, IReadOnlyList<string> _, IReadOnlyList<SessionCriterionInput> _,
+                    DateTime? _, bool? _, int? _, int? _, int? _, string _, int _, IReadOnlyList<SessionQuestionInput>? det,
+                    CampaignScoringPolicyInput? _, bool _, CancellationToken _) => sink.Add(det))
+            .ReturnsAsync(() => new CampaignSessionResult(Guid.NewGuid(), new List<SessionQuestion> { new(Guid.NewGuid(), 1, "Q", 120) }));
+
+        foreach (var cand in candidates)
+            await new ParticipationService(tdb.NewContext(), new Mock<IAuthProvisionClient>().Object, session.Object,
+                NullLogger<ParticipationService>.Instance).StartInterviewAsync(cand, camp.Id, default);
+
+        Assert.Equal(12, sink.Count);
+        foreach (var det in sink)
+        {
+            Assert.NotNull(det);
+            Assert.Equal(2, det!.Count);
+            Assert.All(det, d => Assert.Equal("TRUNG", d.Text));
+            // mỗi đề có ĐÚNG một câu [wt] và ĐÚNG một câu [] — tra theo Text sẽ ra cả hai giống nhau
+            Assert.Equal(1, det.Count(d => d.TargetCriterionIds is { Count: 1 } ids && ids[0] == wt));
+            Assert.Equal(1, det.Count(d => d.TargetCriterionIds is { Count: 0 }));
+        }
+    }
+
     // ═══════════════════ (4)(5) Summary — coverage + K-rule ═══════════════════
 
     [Fact]
