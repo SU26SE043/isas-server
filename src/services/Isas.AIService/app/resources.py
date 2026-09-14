@@ -64,11 +64,50 @@ ALLOWED_HOSTS: frozenset[str] = frozenset({
     "www.freecodecamp.org",
     "roadmap.sh",
     "refactoring.guru",
-    # Cộng đồng / chuẩn nghiệp vụ (BA)
-    "www.iiba.org",
-    "www.scrum.org",
-    "www.atlassian.com",
+    # Cộng đồng / chuẩn nghiệp vụ (BA). Khai CẢ dạng `www.` LẪN trần vì khớp host CHÍNH XÁC (không
+    # suffix — xem test typosquat): thiếu một dạng là link đúng nguồn vẫn bị loại. Nguyên tắc chọn
+    # (2026-09-15): host đã được admin curate vào kho RAG (knowledge_sources) đủ tin để làm link học
+    # thêm; trước đó chỉ có 3 host BA nên URL AI đề xuất cho bài BA bị loại 100% (đo prod 2026-09-14).
+    "www.iiba.org", "iiba.org",
+    "www.scrum.org", "scrum.org", "scrumguides.org", "www.scrumguides.org",
+    "www.atlassian.com", "atlassian.com",
+    "www.agilealliance.org", "agilealliance.org",
+    "camunda.com", "www.camunda.com", "docs.camunda.io",
+    "www.lucidchart.com", "lucidchart.com",
+    "www.productplan.com", "productplan.com",
+    "www.visual-paradigm.com", "visual-paradigm.com",
+    "www.mountaingoatsoftware.com", "mountaingoatsoftware.com",
+    "martinfowler.com", "www.martinfowler.com",
+    "www.nngroup.com", "nngroup.com",
+    "www.bpmn.org", "bpmn.org", "www.omg.org", "omg.org",
+    "www.ireb.org", "ireb.org",
+    "scaledagileframework.com", "www.scaledagileframework.com",
+    "www.pmi.org", "pmi.org",
 })
+
+# Host VÍ DỤ đưa vào prompt theo NGÀNH (F15). Trước 2026-09-15 prompt lấy 12 host ĐẦU THEO ABC của
+# ALLOWED_HOSTS — toàn dev-tool (angular.dev, dev.mysql.com, docs.docker.com…), nên bài BA chưa bao giờ
+# thấy một ví dụ host nào của ngành mình rồi bịa URL ngoài allowlist. Ngành lạ → GENERAL.
+RESOURCE_HOST_EXAMPLES: dict[str, tuple[str, ...]] = {
+    "BA": ("www.atlassian.com", "www.agilealliance.org", "www.scrum.org", "www.iiba.org",
+           "www.productplan.com", "camunda.com", "www.lucidchart.com", "www.nngroup.com",
+           "martinfowler.com", "www.mountaingoatsoftware.com"),
+    "BE": ("learn.microsoft.com", "docs.spring.io", "nodejs.org", "docs.python.org",
+           "www.postgresql.org", "dev.mysql.com", "redis.io", "www.rabbitmq.com",
+           "docs.docker.com", "kubernetes.io", "martinfowler.com", "refactoring.guru"),
+    "FE": ("developer.mozilla.org", "react.dev", "angular.dev", "vuejs.org", "web.dev",
+           "www.w3.org", "developer.chrome.com", "nodejs.org", "www.nngroup.com",
+           "www.freecodecamp.org"),
+}
+_GENERAL_HOST_EXAMPLES: tuple[str, ...] = (
+    "developer.mozilla.org", "learn.microsoft.com", "www.coursera.org", "www.edx.org",
+    "roadmap.sh", "martinfowler.com", "www.atlassian.com", "www.nngroup.com",
+)
+
+
+def resource_host_examples(job_category: str | None) -> tuple[str, ...]:
+    """Ví dụ host theo ngành cho prompt; mọi host trả về PHẢI nằm trong ALLOWED_HOSTS (test khoá)."""
+    return RESOURCE_HOST_EXAMPLES.get((job_category or "").strip().upper(), _GENERAL_HOST_EXAMPLES)
 
 # Loại tài liệu cho phép — giữ đóng để FE render icon/nhãn ổn định.
 ALLOWED_TYPES: frozenset[str] = frozenset({"Doc", "Course", "Book", "Video", "Article"})
@@ -137,7 +176,11 @@ def sanitize_resources(raw_items) -> list[dict]:
 
     - Bỏ mục không có ``title``.
     - ``type`` lạ → "Doc" (mặc định an toàn, FE luôn render được).
-    - ``url`` không qua allowlist → **bỏ cả mục**, để FE không nhận resource chết.
+    - ``url`` trống / host lạ / scheme nguy hiểm → **bỏ URL, GIỮ tên** (``url=None``) — đúng phương án
+      (c) ở docstring module: degrade về "chỉ tên" cho đúng mục đó, không mất cả mục. Trước 2026-09-15
+      hàm này bỏ CẢ MỤC, tự mâu thuẫn với chính prompt ("không chắc thì ĐỂ TRỐNG url — tài liệu chỉ
+      có tên vẫn hữu ích"): mô hình nghe lời để trống url thì mục bị vứt ⇒ bài BA 0 tài nguyên
+      (đo prod 2026-09-14: 0/3 bài). FE render mục không url dạng chữ thường, không link.
     - Cắt trần ``MAX_RESOURCES`` để 1 bài học không đổ ra danh sách dài vô tận.
     """
     if not isinstance(raw_items, list):
@@ -165,9 +208,7 @@ def sanitize_resources(raw_items) -> list[dict]:
 
         publisher = str(item.get("publisher") or "").strip() or None
 
-        url = _clean_url(item.get("url"))
-        if url is None:
-            continue
+        url = _clean_url(item.get("url"))   # None = không link, mục vẫn giữ
 
         out.append({
             "title": title,

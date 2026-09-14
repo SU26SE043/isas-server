@@ -362,3 +362,85 @@ def test_endpoint_generate_lesson_theory_ungrounded_omits_cited(monkeypatch):
     body = res.json()
     assert "citedChunkIds" not in body    # exclude_none → shape cũ giữ nguyên
     assert body["resources"] == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BK34 — provider.embed chia lô ≤100 (trần Gemini batchEmbedContents, đo thật 2026-09-15)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_provider_embed_chia_lo_toi_da_100_giu_thu_tu():
+    """Mutation: bỏ vòng chia lô → 1 lời gọi 250 text → ĐỎ; đảo thứ tự ghép → ĐỎ."""
+    from app.providers import gemini as gm
+    provider = GeminiProvider()
+    calls: list[list[str]] = []
+
+    async def fake_embed_content(*, model, contents, config):
+        calls.append(list(contents))
+        # vector = [số thứ tự của text] để kiểm thứ tự ghép
+        return SimpleNamespace(embeddings=[SimpleNamespace(values=[float(t.split("-")[1])]) for t in contents])
+
+    provider._client.aio.models.embed_content = fake_embed_content
+    texts = [f"t-{i}" for i in range(250)]
+
+    vectors = await provider.embed(texts, "RETRIEVAL_DOCUMENT")
+
+    assert [len(c) for c in calls] == [100, 100, 50]
+    assert all(len(c) <= gm.EMBED_BATCH_MAX for c in calls)
+    assert vectors == [[float(i)] for i in range(250)]
+
+
+@pytest.mark.asyncio
+async def test_provider_embed_lo_thieu_vector_thi_nem_khong_lech_thu_tu():
+    """Một lô trả thiếu vector → ném ngay (ghép tiếp là lệch chunk↔vector im lặng)."""
+    provider = GeminiProvider()
+
+    async def fake_embed_content(*, model, contents, config):
+        return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.1])])   # luôn 1 dù lô 2
+
+    provider._client.aio.models.embed_content = fake_embed_content
+    with pytest.raises(ValueError):
+        await provider.embed(["a", "b"], "RETRIEVAL_DOCUMENT")
+
+
+def test_embed_endpoint_loi_co_dong_log_warning(monkeypatch, caplog):
+    import logging
+
+    async def boom(texts, task_type):
+        raise RuntimeError("at most 100 requests can be in one batch")
+
+    monkeypatch.setattr(main_module.provider, "embed", boom)
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        res = client.post("/api/v1/embed", headers=_HEADERS,
+                          json={"texts": ["a", "b"], "taskType": "RETRIEVAL_DOCUMENT"})
+    assert res.status_code == 502
+    assert "at most 100 requests" in res.json()["detail"]
+    assert any("Lỗi sinh embedding (2 text" in r.getMessage() for r in caplog.records)
+
+
+def test_grounding_block_cite_true_bat_dung_tai_lieu_lien_quan_nhung_khong_ep_trich():
+    """2026-09-15 — dev đo: corpus BA đã khớp chủ đề mà model vẫn trả [] 5/8 bài vì lời dặn cũ chỉ
+    bảo cite KHI dùng. Nay: liên quan thì PHẢI dùng + cite; KHÔNG liên quan thì [] (D27: không trích
+    cho có). Mutation: bỏ vế "PHẢI dùng" → ĐỎ; bỏ vế "[] khi không liên quan" → ĐỎ."""
+    block = build_grounding_block(_GROUNDING, cite=True)
+    assert "LIÊN QUAN thì PHẢI dùng" in block
+    assert "rỗng [] khi KHÔNG tài liệu nào liên quan" in block
+    assert "KHÔNG bịa chunkId" in block
+
+
+@pytest.mark.asyncio
+async def test_lesson_grounded_thi_citedChunkIds_bat_buoc_co_mat(monkeypatch, lesson_theory_payload):
+    """Có grounding ⇒ `citedChunkIds` vào `required` (được phép rỗng) — để tuỳ chọn thì structured output
+    hay bỏ hẳn field. Không grounding ⇒ required giữ nguyên 3 phần."""
+    captured: dict = {}
+
+    async def fake_generate(self, operation, *, contents, config, model=None, defer_report=False):
+        captured["required"] = list(config.response_schema["required"])
+        return SimpleNamespace(text=json.dumps({**lesson_theory_payload(["A"]), "citedChunkIds": []}))
+
+    monkeypatch.setattr(GeminiProvider, "_generate", fake_generate)
+    await GeminiProvider().generate_lesson_theory("BE", "Junior", "Bài", ["A"], None, grounding=_GROUNDING)
+    assert "citedChunkIds" in captured["required"]
+
+    await GeminiProvider().generate_lesson_theory("BE", "Junior", "Bài", ["A"], None)
+    assert captured["required"] == ["sections", "example", "commonMistakes"]

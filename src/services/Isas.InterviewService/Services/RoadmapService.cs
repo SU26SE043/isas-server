@@ -32,6 +32,7 @@ public class RoadmapService : IRoadmapService
     // MIS1-B4 — ngưỡng CÙNG cấu hình mà RoadmapLessonService.cs dùng để tính weaknesses (BC9/E10);
     // RoadmapMistakeLoader (B5) lọc answer dưới ngưỡng NÀY, không phải một ngưỡng riêng.
     private readonly ScoringOptions _scoring;
+    private readonly LessonPrewarmQueue? _prewarm;   // sinh nền bài 1 ngay sau tạo (null = tắt/test cũ)
 
     public RoadmapService(
         InterviewDbContext db,
@@ -44,8 +45,10 @@ public class RoadmapService : IRoadmapService
         IEntitlementClient? entitlements = null,
         IConfiguration? config = null,
         IOptions<RoadmapOptions>? roadmapOptions = null,
-        IOptions<ScoringOptions>? scoringOptions = null)
+        IOptions<ScoringOptions>? scoringOptions = null,
+        LessonPrewarmQueue? prewarm = null)
     {
+        _prewarm = prewarm;
         _db = db;
         _storage = storage;
         _generator = generator;
@@ -438,6 +441,14 @@ public class RoadmapService : IRoadmapService
 
         _db.Set<Roadmap>().Add(roadmap);
         await _db.SaveChangesAsync(ct);
+
+        // Prewarm bài đầu tiên NGAY sau commit (LessonPrewarmOptions): người học đọc trang lộ trình là lúc
+        // rẻ nhất để sinh sẵn bài họ sắp mở — trước đây FE prefetch việc này (mất khi đóng tab, retry 3
+        // lần im lặng khi 502). Best-effort: TryEnqueue không ném; tắt/đầy → về hành vi cũ (sinh khi mở).
+        var firstLesson = roadmap.Milestones.OrderBy(m => m.OrderNo)
+            .SelectMany(m => m.Lessons.OrderBy(l => l.OrderNo)).FirstOrDefault();
+        if (firstLesson is not null)
+            _prewarm?.TryEnqueue(firstLesson.Id);
 
         _logger.LogInformation(
             "BC12: roadmap {Id} candidate {CandidateId} ({Cat}/{Level}/{Mode}) milestones={M} sources={S}",

@@ -43,8 +43,14 @@ public class AiServiceEmbedder(HttpClient client, IConfiguration config, ILogger
 
         if (!response.IsSuccessStatusCode)
         {
-            logger.LogError("AIService /embed trả {Status}", response.StatusCode);
-            throw new AiServiceException($"AIService /embed trả {(int)response.StatusCode}");
+            // BK34 — giữ NGUYÊN VĂN `detail` của AIService: trước đây chỉ còn "AIService /embed trả 502",
+            // nên trần "at most 100 requests can be in one batch" của Gemini bị chẩn đoán mù thành
+            // "chunk quá cỡ" suốt 5 tuần. Cắt 300 ký tự (detail có thể mang cả stack của Gemini).
+            var detail = await ReadDetailAsync(response, ct);
+            logger.LogError("AIService /embed trả {Status} ({Count} text): {Detail}",
+                (int)response.StatusCode, texts.Count, detail);
+            throw new AiServiceException(
+                $"AIService /embed trả {(int)response.StatusCode}" + (detail is null ? "" : $": {detail}"));
         }
 
         EmbedResponse? body;
@@ -63,5 +69,25 @@ public class AiServiceEmbedder(HttpClient client, IConfiguration config, ILogger
                 $"AIService /embed trả {body?.Vectors?.Count ?? 0} vector, cần {texts.Count}");
 
         return body.Vectors.Select(v => v.ToArray()).ToList();
+    }
+
+    /// <summary>FastAPI trả lỗi dạng <c>{"detail": "..."}</c>; body khác/không đọc được → nguyên văn cắt ngắn.</summary>
+    private static async Task<string?> ReadDetailAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        string raw;
+        try { raw = await response.Content.ReadAsStringAsync(ct); }
+        catch { return null; }
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("detail", out var d)
+                && d.ValueKind == JsonValueKind.String)
+                raw = d.GetString() ?? raw;
+        }
+        catch (JsonException) { /* body không phải JSON — giữ nguyên văn */ }
+        raw = raw.Trim();
+        return raw.Length <= 300 ? raw : raw[..300];
     }
 }

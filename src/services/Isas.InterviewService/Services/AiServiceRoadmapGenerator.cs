@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Isas.InterviewService.DTOs;
@@ -139,6 +140,9 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
                 : null,
         };
 
+        // Đo phía GỌI ở cả 4 nhánh (khuôn AiServiceInterviewDecider): dòng `[⏱]` của AIService chỉ
+        // tính thân handler; hiệu số với con số này là phần mạng nội bộ + serialize mà chưa ai thấy.
+        var sw = Stopwatch.StartNew();
         HttpResponseMessage response;
         try
         {
@@ -146,14 +150,15 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            _logger.LogError(ex, "Không gọi được AIService /generate-roadmap");
+            _logger.LogError(ex, "[⏱] roadmap-call outcome=transport elapsed={Elapsed}ms", sw.ElapsedMilliseconds);
             throw new AiServiceException("Không gọi được AIService /generate-roadmap", ex);
         }
 
         if (!response.IsSuccessStatusCode)
         {
             var error = await response.Content.ReadAsStringAsync(ct);
-            _logger.LogError("AIService /generate-roadmap lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+            _logger.LogError("[⏱] roadmap-call outcome=http{StatusCode} elapsed={Elapsed}ms error={Error}",
+                (int)response.StatusCode, sw.ElapsedMilliseconds, error);
             throw new AiServiceException($"AIService /generate-roadmap trả {(int)response.StatusCode}");
         }
 
@@ -164,12 +169,15 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         }
         catch (JsonException ex)
         {
-            _logger.LogError(ex, "AIService /generate-roadmap trả JSON không hợp lệ");
+            _logger.LogError(ex, "[⏱] roadmap-call outcome=badjson elapsed={Elapsed}ms", sw.ElapsedMilliseconds);
             throw new AiServiceException("AIService /generate-roadmap trả JSON không hợp lệ", ex);
         }
 
         if (body?.Milestones is null || body.Milestones.Count == 0)
             throw new AiServiceException("AIService /generate-roadmap trả rỗng");
+
+        _logger.LogInformation("[⏱] roadmap-call outcome=ok elapsed={Elapsed}ms milestones={Milestones}",
+            sw.ElapsedMilliseconds, body.Milestones.Count);
 
         // MIS1-B5 — MistakeIds đi THẲNG, CHƯA lọc theo id thật (CẤM: tin thẳng AI) — narrow là việc
         // của RoadmapService.CreateAsync (nó mới biết tập id ĐÃ CẤP thật sự cho lượt gọi này).
@@ -250,6 +258,9 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
                 : null,
         };
 
+        // Đo phía GỌI ở cả 4 nhánh — đây là thứ người học ngồi chờ khi mở bài (đo prod 2026-09-14:
+        // 38–52s/lượt). Ca hỏng thường là ca chậm (chạm trần 120s rồi ném) nên nhánh lỗi cũng phải có số.
+        var sw = Stopwatch.StartNew();
         HttpResponseMessage response;
         try
         {
@@ -257,14 +268,16 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
-            _logger.LogError(ex, "Không gọi được AIService /generate-lesson-theory");
+            _logger.LogError(ex, "[⏱] lesson-theory-call outcome=transport elapsed={Elapsed}ms lesson={LessonTitle}",
+                sw.ElapsedMilliseconds, lessonTitle);
             throw new AiServiceException("Không gọi được AIService /generate-lesson-theory", ex);
         }
 
         if (!response.IsSuccessStatusCode)
         {
             var error = await response.Content.ReadAsStringAsync(ct);
-            _logger.LogError("AIService /generate-lesson-theory lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+            _logger.LogError("[⏱] lesson-theory-call outcome=http{StatusCode} elapsed={Elapsed}ms lesson={LessonTitle} error={Error}",
+                (int)response.StatusCode, sw.ElapsedMilliseconds, lessonTitle, error);
             throw new AiServiceException($"AIService /generate-lesson-theory trả {(int)response.StatusCode}");
         }
 
@@ -275,12 +288,16 @@ public class AiServiceRoadmapGenerator : IAiServiceRoadmapGenerator
         }
         catch (JsonException ex)
         {
-            _logger.LogError(ex, "AIService /generate-lesson-theory trả JSON không hợp lệ");
+            _logger.LogError(ex, "[⏱] lesson-theory-call outcome=badjson elapsed={Elapsed}ms lesson={LessonTitle}",
+                sw.ElapsedMilliseconds, lessonTitle);
             throw new AiServiceException("AIService /generate-lesson-theory trả JSON không hợp lệ", ex);
         }
 
         if (body is null || string.IsNullOrWhiteSpace(body.TheoryMarkdown))
             throw new AiServiceException("AIService /generate-lesson-theory trả rỗng");
+
+        _logger.LogInformation("[⏱] lesson-theory-call outcome=ok elapsed={Elapsed}ms lesson={LessonTitle} chars={Chars}",
+            sw.ElapsedMilliseconds, lessonTitle, body.TheoryMarkdown.Length);
 
         // F15 — resources RỖNG KHÔNG phải lỗi (lý thuyết vẫn dùng được), khác theoryMarkdown rỗng.
         // Bỏ mục thiếu title; url giữ nguyên những gì AIService đã lọc qua allowlist tên miền.

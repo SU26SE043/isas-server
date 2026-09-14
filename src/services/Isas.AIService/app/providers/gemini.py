@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import unicodedata
 from difflib import SequenceMatcher
 from typing import NamedTuple
@@ -38,6 +39,9 @@ from app.schemas import (
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
+
+# BK34 — trần cứng của Gemini batchEmbedContents (đo thật, xem GeminiProvider.embed).
+EMBED_BATCH_MAX = 100
 
 logger = logging.getLogger(__name__)
 
@@ -325,9 +329,14 @@ def _generation_diagnostics(response) -> str:
         finish = getattr(candidates[0], "finish_reason", None) if candidates else None
         meta = getattr(response, "usage_metadata", None)
         out_tokens = getattr(meta, "candidates_token_count", None) if meta is not None else None
-        return f"finish_reason={finish!r} candidates_token_count={out_tokens!r}"
+        # Suy luận ẩn (Gemini 2.5) tính tiền theo giá OUTPUT và là phần độ trễ không nhìn thấy trong
+        # văn bản trả về — đo prod 2026-09-14: bài giảng 7,7–10,4k output token cho ~3,5–5k token
+        # chữ thật. Không có con số này thì "chậm vì viết dài" và "chậm vì nghĩ lâu" không tách được.
+        thoughts = getattr(meta, "thoughts_token_count", None) if meta is not None else None
+        return (f"finish_reason={finish!r} candidates_token_count={out_tokens!r} "
+                f"thoughts_token_count={thoughts!r}")
     except Exception:  # noqa: BLE001 — xem docstring: đo không được làm hỏng đường chính
-        return "finish_reason=? candidates_token_count=? (không đọc được)"
+        return "finish_reason=? candidates_token_count=? thoughts_token_count=? (không đọc được)"
 
 
 class ScoreOutcome(NamedTuple):
@@ -479,16 +488,31 @@ class GeminiProvider(QuestionProvider):
 
         Trả về list vector cùng thứ tự ``texts``; ``output_dimensionality`` cắt về 768 (Matryoshka)
         khớp collection Qdrant ``knowledge``.
+
+        BK34 — Gemini ``batchEmbedContents`` nhận **tối đa 100 request/lô** (đo thật trên aiapi-dev
+        2026-09-15: 90 → OK, 101 → ``400 INVALID_ARGUMENT "at most 100 requests can be in one
+        batch"``). Trước bản này cả nguồn đi trong MỘT lời gọi ⇒ mọi trang > 100 chunk (Atlassian,
+        Agile Alliance, Camunda BPMN — đúng những nguồn BA đang thiếu) nạp thất bại 502, và thông
+        điệp lỗi bị .NET vứt nên chẩn đoán cũ ("chunk quá cỡ") sai. Chia lô ở ĐÂY vì trần là của
+        Gemini, không phải của caller; gọi TUẦN TỰ để giữ thứ tự và không tự dội rate-limit.
         """
-        resp = await self._client.aio.models.embed_content(
-            model=settings.embed_model,
-            contents=texts,
-            config=types.EmbedContentConfig(
-                output_dimensionality=settings.embed_dim,
-                task_type=task_type,
-            ),
-        )
-        return [list(e.values or []) for e in (resp.embeddings or [])]
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), EMBED_BATCH_MAX):
+            batch = texts[start:start + EMBED_BATCH_MAX]
+            resp = await self._client.aio.models.embed_content(
+                model=settings.embed_model,
+                contents=batch,
+                config=types.EmbedContentConfig(
+                    output_dimensionality=settings.embed_dim,
+                    task_type=task_type,
+                ),
+            )
+            got = [list(e.values or []) for e in (resp.embeddings or [])]
+            if len(got) != len(batch):
+                raise ValueError(
+                    f"Gemini trả {len(got)} vector cho lô {len(batch)} text (offset {start})")
+            vectors.extend(got)
+        return vectors
 
     async def _verify_question_knowledge(self, questions: list[str], grounding: list[dict] | None,
                                          language: str = "vi") -> tuple[list[str], list[dict] | None]:
@@ -2110,34 +2134,44 @@ class GeminiProvider(QuestionProvider):
             milestone_properties["mistakeIds"] = {"type": "array", "items": {"type": "string"}}
             lesson_properties["mistakeIds"] = {"type": "array", "items": {"type": "string"}}
 
+        roadmap_cfg: dict = {
+            "temperature": 0.4,  # cấu trúc kế hoạch — nhất quán hơn sinh câu hỏi tự do
+            "response_mime_type": "application/json",
+            "response_schema": {
+                "type": "object",
+                "properties": {
+                    # REC1-B5 — khai TRƯỚC "milestones" trong properties, khớp thứ tự chỉ thị
+                    # prompt ("khai milestoneCount... TRƯỚC, rồi mới tạo..."). LUÔN required
+                    # (không điều kiện theo known_ids như mistakeIds) — mọi roadmap đều cần
+                    # model tự cam kết số cụm THẬT trước khi sinh mảng.
+                    "milestoneCount": {"type": "integer"},
+                    "milestoneCountReason": {"type": "string"},
+                    "milestones": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": milestone_properties,
+                            "required": ["title", "focusCriteria", "lessons"],
+                        },
+                    }
+                },
+                "required": ["milestoneCount", "milestoneCountReason", "milestones"],
+            },
+        }
+        # Trần suy luận ẩn — xem `config.roadmap_thinking_budget` (số đo A/B + lý do). `-1` = quay lui.
+        if settings.roadmap_thinking_budget >= 0:
+            roadmap_cfg["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.roadmap_thinking_budget)
+
+        started = time.perf_counter()
         response = await self._generate(
             "generate_roadmap",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.4,  # cấu trúc kế hoạch — nhất quán hơn sinh câu hỏi tự do
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "object",
-                    "properties": {
-                        # REC1-B5 — khai TRƯỚC "milestones" trong properties, khớp thứ tự chỉ thị
-                        # prompt ("khai milestoneCount... TRƯỚC, rồi mới tạo..."). LUÔN required
-                        # (không điều kiện theo known_ids như mistakeIds) — mọi roadmap đều cần
-                        # model tự cam kết số cụm THẬT trước khi sinh mảng.
-                        "milestoneCount": {"type": "integer"},
-                        "milestoneCountReason": {"type": "string"},
-                        "milestones": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": milestone_properties,
-                                "required": ["title", "focusCriteria", "lessons"],
-                            },
-                        }
-                    },
-                    "required": ["milestoneCount", "milestoneCountReason", "milestones"],
-                },
-            ),
+            config=types.GenerateContentConfig(**roadmap_cfg),
         )
+        logger.info("[⏱] roadmap attempt=%d elapsed=%.2fs %s job=%s level=%s",
+                    _attempt, time.perf_counter() - started, _generation_diagnostics(response),
+                    job_category, level)
 
         text = (response.text or "").strip()
         try:
@@ -2405,9 +2439,13 @@ class GeminiProvider(QuestionProvider):
                 },
             },
         }
+        required = ["sections", "example", "commonMistakes"]
         if grounded:
             response_properties["citedChunkIds"] = {
                 "type": "array", "items": {"type": "string"}}
+            # Bắt buộc CÓ MẶT (được phép rỗng []): để tuỳ chọn thì structured output hay bỏ hẳn
+            # field, và "bỏ field" với "xét rồi thấy không liên quan" không phân biệt được.
+            required.append("citedChunkIds")
         # MIS1-B3 — CÓ ĐIỀU KIỆN, đúng khuôn `if grounded:` ngay trên. KHÔNG thêm vào `required`
         # (mục 3 của task): phủ lỗi là ADVISORY, JSON schema không được bắt cứng field này.
         if known_ids:
@@ -2424,15 +2462,27 @@ class GeminiProvider(QuestionProvider):
                 },
             }
 
-        config = types.GenerateContentConfig(
-            temperature=0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
-            response_mime_type="application/json",
-            response_schema={
+        cfg: dict = {
+            "temperature": 0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
+            "response_mime_type": "application/json",
+            "response_schema": {
                 "type": "object",
                 "properties": response_properties,
-                "required": ["sections", "example", "commonMistakes"],
+                "required": required,
             },
-        )
+        }
+        # Trần suy luận ẩn — đường sinh bài giảng từng là một trong HAI đường (cùng generate_roadmap)
+        # để Gemini tự quyết thinking; số đo + lý do chọn trần: `config.lesson_theory_thinking_budget`.
+        # `-1` = quay lui. Cùng khuôn gate với suggest_jd_requirements / score / analyze_cv.
+        if settings.lesson_theory_thinking_budget >= 0:
+            cfg["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.lesson_theory_thinking_budget)
+        # Lưới an toàn: A/B 2026-09-15 bắt được một lượt phun 64.768 token trong 254s (không phải JSON)
+        # — không có trần thì request .NET (120s) chết trước khi AIService kịp thử lại. Cắt → not_json
+        # → vòng trả-lại phía dưới viết lại. Xem `config.lesson_theory_max_output_tokens`.
+        if settings.lesson_theory_max_output_tokens > 0:
+            cfg["max_output_tokens"] = settings.lesson_theory_max_output_tokens
+        config = types.GenerateContentConfig(**cfg)
 
         # Bài trượt rubric thì TRẢ LẠI kèm nhận xét và bắt viết lại, thay vì lưu một bài không dùng
         # được (lý thuyết chỉ sinh một lần rồi lưu ⇒ bài hỏng sống vĩnh viễn). Hỏi lại y hệt đề cũ
@@ -2441,7 +2491,7 @@ class GeminiProvider(QuestionProvider):
         feedback: str | None = None
         last_defects: list[str] = []
 
-        for _ in range(attempts):
+        for attempt_no in range(1, attempts + 1):
             prompt = build_lesson_theory_prompt(
                 job_category, level, lesson_title, focus_criteria, weaknesses,
                 grounding, retry_feedback=feedback, language=language, evidence=evidence,
@@ -2453,12 +2503,14 @@ class GeminiProvider(QuestionProvider):
             # không ai biết). Con số đó chỉ có SAU khi parse, nên phải hoãn.
             # try/finally BẮT BUỘC, và phải nằm TRONG vòng lặp: token của lượt bị trả lại vẫn đã
             # bị đốt: đó đúng là phần chi phí cần thấy nhất, gom ra ngoài là mất hẳn.
+            started = time.perf_counter()
             response = await self._generate(
                 "generate_lesson_theory",
                 defer_report=True,
                 contents=prompt,
                 config=config,
             )
+            elapsed = time.perf_counter() - started
 
             url_meta: dict | None = None
             try:
@@ -2469,6 +2521,13 @@ class GeminiProvider(QuestionProvider):
                     data = None
 
                 if not isinstance(data, dict):
+                    # Lượt chạy loạn (A/B + dev 2026-09-15: 64k rồi 15,5k token, MAX_TOKENS) chỉ lộ ra
+                    # dưới dạng "không phải JSON" — không có đầu/đuôi văn bản thì không biết model lặp
+                    # cái gì để chữa ở prompt. Cắt ngắn: đuôi mới là chỗ nhìn thấy vòng lặp.
+                    logger.warning(
+                        'Bài giảng "%s" lượt %d trả về không phải JSON (%d ký tự, %s) — đầu: %r … đuôi: %r',
+                        lesson_title, attempt_no, len(text), _generation_diagnostics(response),
+                        text[:200], text[-300:])
                     last_defects = [lesson_message("not_json", language,
                                                    raw=text[:200])]
                     feedback = "\n".join(f"- {d}" for d in last_defects)
@@ -2533,6 +2592,12 @@ class GeminiProvider(QuestionProvider):
                 return LessonTheoryResult(theory=theory, resources=resources,
                                           cited_chunk_ids=cited, mistake_review=mistake_review)
             finally:
+                # Một dòng cho MỌI lượt (đạt / bị trả lại / không phải JSON) — đặt trong `finally` để
+                # lượt hỏng cũng có số: đây là chỗ duy nhất đo được lượt Gemini ~50s này tốn bao nhiêu
+                # thời gian và bao nhiêu token suy luận ẩn, và tỉ lệ viết lại thật sự là bao nhiêu.
+                logger.info('[⏱] lesson-theory attempt=%d/%d elapsed=%.2fs %s defects=%d lesson="%s"',
+                            attempt_no, attempts, elapsed, _generation_diagnostics(response),
+                            len(last_defects), lesson_title)
                 await report_usage("generate_lesson_theory", settings.gemini_model,
                                    response, meta=url_meta)
 

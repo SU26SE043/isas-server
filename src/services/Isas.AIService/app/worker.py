@@ -7,7 +7,7 @@ import aiohttp
 import aio_pika
 
 from app.config import settings
-from app import threadpool
+from app import logging_setup, threadpool
 from app.cv_screening import maybe_start_cv_screening_consumer
 from app.multi_voice import maybe_report_multi_voice
 from app.providers.gemini import GeminiProvider
@@ -359,6 +359,8 @@ async def declare_topology(channel):
 
 
 async def main():
+    # Cùng lý do với api: không có dòng này thì mọi `logger.info` của app.* trong worker im lặng.
+    logging_setup.configure(settings.log_level)
     # Đối xứng với api. ⚠ Ở worker cần gạt này gần như vô hiệu: trần thật bên đây là
     # `scoring_prefetch` (10) + `cv_screening_prefetch` (4), không phải số thread.
     threadpool.apply(asyncio.get_running_loop(), settings.thread_pool_max_workers)

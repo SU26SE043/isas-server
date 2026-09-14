@@ -111,6 +111,17 @@ x-aiservice-env: &aiservice-env
   # 9,8–37,3s, JD tiếng Việt luôn vượt 20s timeout của FE ⇒ lượt bị vứt sau khi đã trả tiền.
   # 1024 ≈ 9s và vẫn giữ nhóm trách nhiệm JD (0/512 chỉ còn mục "Yêu cầu"). `-1` = quay lui.
   JD_REQUIREMENTS_THINKING_BUDGET: ${JD_REQUIREMENTS_THINKING_BUDGET:-1024}
+  # Trần suy luận ẩn cho BÀI GIẢNG roadmap (đồng bộ trong GET mở bài) + lời gọi sinh ROADMAP. Đo prod
+  # 2026-09-14: bài giảng 38–52s, ~nửa output token là thinking; A/B 2026-09-15: 1024 → p50 22s, độ dài
+  # bài/số mục/phủ lỗi không đổi. Roadmap do thinking chi phối (chỉ ~200 token JSON): 1024 → ~6s thay ~9s.
+  # `-1` = quay lui về model tự quyết. Trần OUTPUT bài giảng = lưới an toàn cho lượt chạy loạn (A/B bắt
+  # được 64.768 token/254s) — `0` = không cắt.
+  LESSON_THEORY_THINKING_BUDGET: ${LESSON_THEORY_THINKING_BUDGET:-1024}
+  LESSON_THEORY_MAX_OUTPUT_TOKENS: ${LESSON_THEORY_MAX_OUTPUT_TOKENS:-12288}
+  ROADMAP_THINKING_BUDGET: ${ROADMAP_THINKING_BUDGET:-1024}
+  # Mức log cho cây logger `app.*` — trước 2026-09-15 mọi logger.info của AIService bị nuốt (uvicorn
+  # không cấu hình logger ngoài `uvicorn.*`). WARNING = về mức im lặng cũ.
+  LOG_LEVEL: ${AI_LOG_LEVEL:-INFO}
   # Trần suy luận ẩn cho lượt CHẤM. `score` là đường Gemini CUỐI CÙNG chưa có trần, và đo trên prod
   # 2026-08-20 (`ai_usage_logs`) cho thấy nó tốn nhất: output p50 **3.570 token** trong khi
   # `decide_next` (đã đặt trần 0) chỉ **126**. `output_tokens = candidates + thoughts`, mà nội dung
@@ -288,6 +299,10 @@ services:
       - GitHub__Token=${GITHUB_TOKEN}
       # Grounding:Enabled mặc định TẮT (chuỗi rỗng không parse int/bool an toàn → dùng default). Bật khi có corpus.
       - Grounding__Enabled=${GROUNDING_ENABLED:-false}
+      # Prewarm lý thuyết bài học: sinh NỀN bài 1 ngay sau tạo roadmap + bài kế khi mở bài (đo prod
+      # 2026-09-14: mỗi bài sinh 38–52s đồng bộ trong GET). BẬT mặc định — vá hành vi đo được, không phải
+      # tính năng mới; chi phí ≤1 bài sinh thừa/phiên. Mọi lượt đi qua single-flight nên không sinh trùng.
+      - LessonPrewarm__Enabled=${LESSON_PREWARM_ENABLED:-true}
       # AI-CV1 — cap TỔNG toàn request; chọn round-robin giữa requirement, không phải 8 chunk
       # đầu của requirement đầu. 0 tắt grounding riêng cho CV analysis.
       - JdRequirements__MaxGroundingChunks=${CV_ANALYSIS_MAX_GROUNDING_CHUNKS:-8}

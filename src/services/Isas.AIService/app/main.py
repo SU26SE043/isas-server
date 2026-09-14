@@ -29,10 +29,13 @@ from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
 from app.face_verify import FaceVerifier
 from app.config import settings
-from app import storage, audio, threadpool, timing, tts
+from app import logging_setup, storage, audio, threadpool, timing, tts
 from app.tts_redis import TtsRedisCoordinator
 
 logger = logging.getLogger(__name__)
+# Bật INFO cho `app.*` TRƯỚC khi dựng app — uvicorn không cấu hình logger ngoài `uvicorn.*` (xem
+# app/logging_setup.py). Đặt ở mức module để lifespan/handler nào cũng đã có log.
+logging_setup.configure(settings.log_level)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -941,6 +944,9 @@ async def embed(
     try:
         vectors = await provider.embed(req.texts, req.taskType)
     except Exception as ex:
+        # BK34 — trước đây lỗi này KHÔNG có dòng log nào (và .NET cũng vứt `detail`), nên "nạp nguồn
+        # 502" chẩn đoán mù suốt 5 tuần. Log kèm cỡ lô để nhìn thấy đúng trần 100 request/lô của Gemini.
+        logger.warning("Lỗi sinh embedding (%d text, taskType=%s): %s", len(req.texts), req.taskType, ex)
         raise HTTPException(status_code=502, detail=f"Lỗi sinh embedding: {ex}")
     return EmbedResponse(vectors=vectors, dim=settings.embed_dim, model=settings.embed_model)
 

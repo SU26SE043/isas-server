@@ -1,5 +1,5 @@
 from app import prompt_registry
-from app.resources import ALLOWED_HOSTS as ALLOWED_RESOURCE_HOSTS
+from app.resources import resource_host_examples
 from app.language import EN, VI, field_lang, normalize, output_directive, per100_unit, rate_unit, speech_rate_reference
 # Alias tường minh: `normalize` ở trên đã là của NGÔN NGỮ. Hai khái niệm khác hẳn nhau, để trùng tên
 # là mở đường cho một lần import sau này ghi đè cái kia mà không lỗi gì.
@@ -154,13 +154,20 @@ def build_grounding_block(grounding: list[dict] | None, *, cite: bool = True) ->
     )
 
     if cite:
+        # 2026-09-15 — đổi từ "cite KHI dùng" sang "tài liệu LIÊN QUAN thì PHẢI dùng rồi cite": đo trên
+        # dev với corpus BA đã khớp chủ đề (top-1 0,68–0,74, đúng nguồn), model vẫn trả [] cho 5/8 bài —
+        # nó viết bằng kiến thức riêng vì lời dặn cũ cho phép. Vế "không liên quan → []" GIỮ NGUYÊN:
+        # D27 cấm citation giả, và tập đã cấp có thể lạc đề (kho mỏng).
         instr = (
-            "TRÍCH DẪN NGUỒN — BẮT BUỘC khi dùng tài liệu trên:\n"
-            "- Với mỗi mục sinh ra, nếu nội dung DỰA TRÊN tài liệu tham chiếu, liệt kê citedChunkIds "
-            "gồm ĐÚNG các chunkId đã dùng.\n"
+            "TRÍCH DẪN NGUỒN — BẮT BUỘC:\n"
+            "- Các tài liệu trên do hệ thống chọn cho ĐÚNG bài này. Với MỖI tài liệu, xét nó có liên "
+            "quan tới nội dung bài không. Tài liệu LIÊN QUAN thì PHẢI dùng làm căn cứ cho mục tương "
+            "ứng (định nghĩa, thuật ngữ, các bước, ví dụ lấy từ đó) và liệt kê chunkId của nó vào "
+            "citedChunkIds.\n"
             "- CHỈ được trích chunkId có trong danh sách trên. TUYỆT ĐỐI KHÔNG bịa chunkId, KHÔNG "
             "bịa nguồn/đường dẫn ngoài các tài liệu đã cấp.\n"
-            "- Mục không dựa tài liệu nào → citedChunkIds để rỗng []."
+            "- Chỉ để citedChunkIds rỗng [] khi KHÔNG tài liệu nào liên quan tới bài — nói thật, "
+            "không trích cho có."
         )
     else:
         instr = (
@@ -2004,7 +2011,9 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     # hướng bịa link trông rất thật. Prompt là lớp phòng thủ THỨ NHẤT (bảo mô hình
     # đừng đoán), allowlist tên miền trong app/resources.py là lớp THỨ HAI (không
     # tin lời hứa của mô hình). Có cả hai vì lớp 1 không đáng tin một mình.
-    allowed = ", ".join(sorted(ALLOWED_RESOURCE_HOSTS)[:12])
+    # Ví dụ host theo NGÀNH (app/resources.py): lấy 12 host đầu theo ABC như trước là bài BA chỉ thấy
+    # angular.dev/docs.docker.com… rồi bịa URL ngoài allowlist → bị loại 100% (đo prod 2026-09-14).
+    allowed = ", ".join(resource_host_examples(job_category))
     parts.append(
         "Kèm thêm 3-5 TÀI LIỆU HỌC cho bài này (resources), mỗi tài liệu gồm: "
         "title (tên tài liệu/khoá học/chương sách), type (một trong: Doc, Course, "

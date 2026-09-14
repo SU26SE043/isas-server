@@ -22,6 +22,8 @@ public class RoadmapLessonService : IRoadmapLessonService
 
     private readonly ScoringOptions _scoring;   // F6a — ngưỡng "điểm yếu" (dùng chung với BC9)
     private readonly RoadmapOptions _roadmap;   // số câu + adaptive cho buổi luyện trong bài học
+    private readonly LessonTheorySingleFlight? _singleFlight;   // null (test cũ) → sinh thẳng trên scope này
+    private readonly LessonPrewarmQueue? _prewarm;               // sinh nền bài KẾ khi mở bài (null = tắt)
 
     public RoadmapLessonService(
         InterviewDbContext db,
@@ -30,7 +32,9 @@ public class RoadmapLessonService : IRoadmapLessonService
         ILogger<RoadmapLessonService> logger,
         // Optional (default null) → test cũ dựng 4 tham số vẫn compile; DI inject bản thật.
         IOptions<ScoringOptions>? scoringOptions = null,
-        IOptions<RoadmapOptions>? roadmapOptions = null)
+        IOptions<RoadmapOptions>? roadmapOptions = null,
+        LessonTheorySingleFlight? singleFlight = null,
+        LessonPrewarmQueue? prewarm = null)
     {
         _db = db;
         _practiceService = practiceService;
@@ -38,6 +42,8 @@ public class RoadmapLessonService : IRoadmapLessonService
         _logger = logger;
         _scoring = scoringOptions?.Value ?? new ScoringOptions();
         _roadmap = roadmapOptions?.Value ?? new RoadmapOptions();
+        _singleFlight = singleFlight;
+        _prewarm = prewarm;
     }
 
     /// <summary>MIS1-B5 — ≤3 lỗi ĐÚNG bài này cho /generate-lesson-theory (6 trường, kể cả answer/
@@ -68,25 +74,99 @@ public class RoadmapLessonService : IRoadmapLessonService
     public async Task<LessonResponse> OpenLessonAsync(
         Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default)
     {
-        var lesson = await LoadOwnedLessonAsync(candidateId, roadmapId, lessonId, ct);
-        var roadmap = lesson.Milestone.Roadmap;
+        var lesson = await LoadOwnedLessonAsync(candidateId, roadmapId, lessonId, ct);   // 404/403 TRƯỚC mọi thứ
+        var milestone = lesson.Milestone;
+        var roadmap = milestone.Roadmap;
 
         // Số lần đã làm bài này — đọc 1 lần, dùng cho mọi nhánh trả về bên dưới (trạng thái lesson
         // không đổi trong lời gọi này: đường sinh lý thuyết không chạm `status`).
         var attemptCount = await _db.RoadmapLessonAttempts
             .CountAsync(a => a.LessonId == lessonId, ct);
 
-        // Đã có lý thuyết DÙNG ĐƯỢC → đọc DB, KHÔNG gọi AI lần 2 (lazy, idempotent).
-        // MIS1-B7 — đây là đường ĐỌC LẠI, phổ biến NHẤT (mở lại bài đã sinh); trước bản này nhánh
-        // này không nạp `mistakes` nên client luôn nhận null/rỗng dù DB có đủ dữ liệu.
-        if (HasUsableTheory(lesson.TheoryContent))
+        // Chưa có lý thuyết DÙNG ĐƯỢC → sinh (lazy, idempotent). Qua single-flight: hai GET đồng thời
+        // (kể cả prefetch FE / prewarm nền) chỉ tốn MỘT lượt Gemini; bên tới sau chờ chung rồi đọc lại
+        // DB. Request này KHÔNG giữ transaction nào trong lúc chờ (LoadOwnedLessonAsync là AsNoTracking).
+        // Lỗi AI → AiServiceException (502) → chưa lưu gì (mở lại được) — cho MỌI bên đang chờ.
+        if (!HasUsableTheory(lesson.TheoryContent))
         {
-            var refsForReread = ResolveLessonMistakes(lesson, lesson.Milestone);
-            var mistakesForReread = await LoadLessonMistakesAsync(roadmap.Id, refsForReread, ct);
-            return MapLesson(lesson, lesson.Milestone, attemptCount, mistakesForReread);
+            if (_singleFlight is not null)
+                await _singleFlight.RunAsync(lessonId, ct);
+            else
+                await GenerateAndPersistAsync(lessonId, ct);   // test cũ dựng không DI: đường sinh thẳng
+
+            // Đọc lại row đã lưu (một SELECT rẻ) thay vì tin kết quả trong bộ nhớ: bên thua đua cũng
+            // nhận đúng bản đã ghi. `.Milestone` không đổi giữa hai lần đọc (chỉ TheoryContent/Resources/
+            // GroundingRefs/MistakeReview bị ExecuteUpdate) nên dùng lại milestone ĐÃ Include là đúng.
+            lesson = await _db.RoadmapLessons.AsNoTracking().FirstAsync(l => l.Id == lessonId, ct);
         }
 
-        // Lazy-gen: gọi AIService (sync). Lỗi → AiServiceException (502) → chưa lưu gì (mở lại được).
+        // MIS1-B7 — nạp `mistakes` cho CẢ đường đọc lại (phổ biến nhất) lẫn đường vừa sinh; trước bản
+        // MIS1-B7 nhánh đọc lại không nạp nên client luôn nhận null/rỗng dù DB có đủ dữ liệu.
+        var refs = ResolveLessonMistakes(lesson, milestone);
+        var mistakes = await LoadLessonMistakesAsync(roadmap.Id, refs, ct);
+
+        // Người học đang đọc bài N là lúc rẻ nhất để sinh sẵn bài N+1 (chạy trên CẢ đường đọc lại lẫn
+        // đường vừa sinh). Best-effort — không được làm hỏng GET vì một việc tối ưu.
+        await EnqueueNextLessonPrewarmAsync(lesson, milestone, ct);
+        return MapLesson(lesson, milestone, attemptCount, mistakes);
+    }
+
+    /// <summary>
+    /// Bài KẾ TIẾP của <paramref name="lesson"/> (cùng chặng, OrderNo lớn hơn gần nhất; hết chặng thì bài
+    /// đầu của chặng kế) chưa có lý thuyết dùng được → xếp hàng prewarm. Chỉ SELECT id + vị ngữ usable —
+    /// KHÔNG kéo theory_content (10k+ ký tự) chỉ để kiểm; vị ngữ PHẢI khớp <see cref="HasUsableTheory"/>
+    /// và điều kiện ghi trong <see cref="GenerateAndPersistAsync"/>.
+    /// </summary>
+    private async Task EnqueueNextLessonPrewarmAsync(RoadmapLesson lesson, RoadmapMilestone milestone, CancellationToken ct)
+    {
+        if (_prewarm is not { Enabled: true }) return;
+        try
+        {
+            var next = await _db.RoadmapLessons.AsNoTracking()
+                .Where(l => l.Milestone.RoadmapId == milestone.RoadmapId
+                            && (l.Milestone.OrderNo > milestone.OrderNo
+                                || (l.MilestoneId == milestone.Id && l.OrderNo > lesson.OrderNo)))
+                .OrderBy(l => l.Milestone.OrderNo).ThenBy(l => l.OrderNo)
+                .Select(l => new
+                {
+                    l.Id,
+                    Usable = l.TheoryContent != null
+                             && (l.TheoryContent.Contains("\n") || l.TheoryContent.Contains("## ")),
+                })
+                .FirstOrDefaultAsync(ct);
+            if (next is { Usable: false })
+                _prewarm.TryEnqueue(next.Id);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Prewarm: không xếp được bài kế của lesson {LessonId} — bỏ qua", lesson.Id);
+        }
+    }
+
+    /// <summary>
+    /// Sinh lý thuyết cho <paramref name="lessonId"/> và ghi DB — thân hàm dùng chung cho GET của người
+    /// học (qua <see cref="LessonTheorySingleFlight"/>) và prewarm nền. KHÔNG kiểm chủ sở hữu: bên gọi
+    /// (request đã qua <see cref="LoadOwnedLessonAsync"/>, hoặc server tự khởi xướng) đã kiểm; hàm này
+    /// không được route ra controller. Miễn phí (không reserve credit).
+    /// </summary>
+    /// <returns><c>true</c> khi lượt này ghi bài mới; <c>false</c> khi bài đã dùng được (early-return,
+    /// không gọi AI), bài không tồn tại, hoặc thua đua ghi.</returns>
+    public async Task<bool> GenerateAndPersistAsync(Guid lessonId, CancellationToken ct = default)
+    {
+        var lesson = await _db.RoadmapLessons.AsNoTracking()
+            .Include(l => l.Milestone).ThenInclude(m => m.Roadmap)
+            .FirstOrDefaultAsync(l => l.Id == lessonId, ct);
+        if (lesson is null)
+        {
+            _logger.LogWarning("BC14: lesson {LessonId} không còn tồn tại — bỏ qua sinh lý thuyết", lessonId);
+            return false;
+        }
+
+        // Early-return là thứ làm bên nhập muộn vào single-flight và prewarm-bài-đã-sinh MIỄN PHÍ.
+        if (HasUsableTheory(lesson.TheoryContent))
+            return false;
+
+        var roadmap = lesson.Milestone.Roadmap;
         // RAG grounding (Cách 2) — feed snapshot precompute (lesson.GroundingRefs) → AI cite trong tập đó.
         var focus = lesson.Milestone.FocusCriteria ?? new List<string>();
         var weakCriteria = FilterWeakCriteria(roadmap, focus);
@@ -133,9 +213,10 @@ public class RoadmapLessonService : IRoadmapLessonService
 
         // Lưu idempotent: chỉ ghi khi CHƯA có bài dùng được. Vị ngữ phải khớp `HasUsableTheory` ở
         // nhánh đọc phía trên — lệch nhau thì bài hỏng gọi AI mỗi lần mở nhưng không bao giờ ghi
-        // được, đốt token trong im lặng.
-        // ⚠ Với bài hỏng cũ, 2 request đồng thời nay đều ghi được (điều kiện không còn là `== null`)
-        // → bản sau đè bản trước. Cả hai đều là bài đã qua rubric nên vô hại; không thêm khoá.
+        // được, đốt token trong im lặng. Đây là guard CUỐI (xuyên instance) — single-flight in-process
+        // mới là thứ chặn tiêu tiền hai lần; ExecuteUpdate chỉ chặn ghi đè.
+        // ⚠ Với bài hỏng cũ, 2 lượt đồng thời (chỉ xảy ra xuyên instance) đều ghi được (điều kiện
+        // không còn là `== null`) → bản sau đè bản trước. Cả hai đều là bài đã qua rubric nên vô hại.
         var updated = await _db.RoadmapLessons
             .Where(l => l.Id == lessonId
                         && (l.TheoryContent == null
@@ -149,22 +230,12 @@ public class RoadmapLessonService : IRoadmapLessonService
 
         if (updated == 0)
         {
-            // Request khác vừa sinh xong trước → trả bản đã lưu (không ghi đè). `.Milestone` không
-            // đổi giữa hai request (chỉ TheoryContent/Resources/GroundingRefs/MistakeReview bị
-            // ExecuteUpdate ở trên) nên dùng lại milestone ĐÃ Include từ đầu hàm là đúng.
-            var fresh = await _db.RoadmapLessons.AsNoTracking().FirstAsync(l => l.Id == lessonId, ct);
-            return MapLesson(fresh, lesson.Milestone, attemptCount, mistakesForLesson);
+            _logger.LogInformation("BC14: lesson {LessonId} thua đua ghi — đường khác đã lưu trước, bỏ bản này", lessonId);
+            return false;
         }
 
-        _logger.LogInformation("BC14: sinh lý thuyết lesson {LessonId} (roadmap {RoadmapId})", lessonId, roadmapId);
-
-        // Trả bản vừa sinh (khỏi round-trip). lesson đang detached (AsNoTracking) → set để dựng response.
-        lesson.TheoryContent = theory;
-        lesson.Resources = resources;
-        lesson.GroundingRefs = citedRefs;
-        lesson.TheoryGeneratedAt = now;
-        lesson.MistakeReview = mistakeReview;
-        return MapLesson(lesson, lesson.Milestone, attemptCount, mistakesForLesson);
+        _logger.LogInformation("BC14: sinh lý thuyết lesson {LessonId} (roadmap {RoadmapId})", lessonId, roadmap.Id);
+        return true;
     }
 
     /// <summary>
