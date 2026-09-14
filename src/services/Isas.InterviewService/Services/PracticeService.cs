@@ -178,6 +178,13 @@ public class PracticeService : IPracticeService
             defaultQuestionCount, presets, preview, selectableMinDeep, selectableMaxDeep);
     }
 
+    /// <summary>
+    /// Một nguồn tính DUY NHẤT cho "buổi này có ghi nhận mất tập trung không", dùng chung cho cả
+    /// ba đường tạo buổi B2C. `null` (client cũ) và `false` (từ chối tường minh) đều ra TẮT —
+    /// mặc định phải là tắt để buổi đang chạy và client cũ giữ nguyên hành vi từng byte.
+    /// </summary>
+    public static bool ResolveFocusTracking(bool? requested) => requested ?? false;
+
     // Lõi dùng chung cho CreateSessionAsync (sessionId ngẫu nhiên, không focus) và
     // CreateLessonSessionAsync (sessionId caller cấp + focusCriteria roadmap lesson).
     private async Task<PracticeSessionResponse> CreateSessionInternalAsync(
@@ -317,6 +324,8 @@ public class PracticeService : IPracticeService
                 B2CRubricOwnerId = b2cRubricOwnerId,
                 B2CRubricVersion = b2cRubricVersion,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
+                // Ghi nhận mất tập trung — ghim lựa chọn của người luyện; đổi sau KHÔNG hồi tố buổi này.
+                FocusTrackingEnabled = ResolveFocusTracking(request.FocusTrackingEnabled),
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
                 AdaptiveEnabled = adaptiveOn,
                 // F2b — adaptive BẬT: trần tổng số câu lấy theo lựa chọn của ứng viên (không chọn →

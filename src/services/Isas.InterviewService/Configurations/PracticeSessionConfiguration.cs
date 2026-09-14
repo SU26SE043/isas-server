@@ -86,6 +86,10 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // giá trị thật (campaigns.skip_penalty) qua CreateCampaignSessionInternalRequest.
         e.Property(x => x.SkipPenalty).IsRequired().HasDefaultValue(false);
 
+        // Ghi nhận mất tập trung (B2C, coaching). Required + default false ⇒ row cũ tự nhận "tắt"
+        // ngay lúc AddColumn, khỏi backfill riêng (cùng mẫu SkipPenalty ngay trên).
+        e.Property(x => x.FocusTrackingEnabled).IsRequired().HasDefaultValue(false);
+
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 

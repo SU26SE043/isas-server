@@ -13,6 +13,7 @@ namespace Isas.InterviewService.ApplicationDbContext
         public DbSet<AnswerScore> AnswerScores => Set<AnswerScore>();
         public DbSet<SessionCriterionScore> SessionCriterionScores => Set<SessionCriterionScore>();  // BC9
         public DbSet<SessionCriterionEvidence> SessionCriterionEvidence => Set<SessionCriterionEvidence>();
+        public DbSet<PracticeFocusEvent> PracticeFocusEvents => Set<PracticeFocusEvent>();  // B2C focus tracking
         public DbSet<RubricCriterion> RubricCriteria => Set<RubricCriterion>();
         public DbSet<AdminRubricPreviewRun> AdminRubricPreviewRuns => Set<AdminRubricPreviewRun>();
         public DbSet<RubricLevel> RubricLevels => Set<RubricLevel>();

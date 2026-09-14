@@ -42,7 +42,12 @@ public record CreatePracticeSessionRequest(
     // CHẾ ĐỘ (chế độ frontier cũ — vẫn có câu chèn, chỉ dồn ở đuôi buổi; xem PracticeSession.
     // MaxDeepPerQuestion). Muốn tắt phải gửi AdaptiveEnabled=false. Nhận 0 ở đây là mở đường cho
     // UI diễn đạt "tắt" bằng một giá trị đổi hẳn thuật toán mà không ai biết.
-    int? MaxDeepPerQuestion = null
+    int? MaxDeepPerQuestion = null,
+    // Ghi nhận mất tập trung cho buổi này (coaching — xem FocusSignals). null = client cũ không
+    // gửi ⇒ TẮT; false = từ chối tường minh ⇒ TẮT. Hai ca cho cùng kết quả nhưng giữ nullable để
+    // phân biệt được ở log/telemetry sau này, và để đặt CUỐI + có default (call site positional cũ
+    // không phải sửa — mẫu TimeLimitSec/JdText ngay trên).
+    bool? FocusTrackingEnabled = null
 );
 
 // SC3 — tất cả số liệu nghiệp vụ (đặc biệt SeedCount) do server tính bằng đúng luật tạo session.
