@@ -117,7 +117,7 @@ x-aiservice-env: &aiservice-env
   # `-1` = quay lui về model tự quyết. Trần OUTPUT bài giảng = lưới an toàn cho lượt chạy loạn (A/B bắt
   # được 64.768 token/254s) — `0` = không cắt.
   LESSON_THEORY_THINKING_BUDGET: ${LESSON_THEORY_THINKING_BUDGET:-1024}
-  LESSON_THEORY_MAX_OUTPUT_TOKENS: ${LESSON_THEORY_MAX_OUTPUT_TOKENS:-16384}
+  LESSON_THEORY_MAX_OUTPUT_TOKENS: ${LESSON_THEORY_MAX_OUTPUT_TOKENS:-12288}
   ROADMAP_THINKING_BUDGET: ${ROADMAP_THINKING_BUDGET:-1024}
   # Mức log cho cây logger `app.*` — trước 2026-09-15 mọi logger.info của AIService bị nuốt (uvicorn
   # không cấu hình logger ngoài `uvicorn.*`). WARNING = về mức im lặng cũ.

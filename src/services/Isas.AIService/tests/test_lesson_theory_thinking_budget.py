@@ -75,9 +75,10 @@ async def test_lesson_tran_duoc_gui_vao_gemini(monkeypatch, lesson_theory_payloa
     assert captured["config"].response_schema["required"] == ["sections", "example", "commonMistakes"]
 
 
-def test_mac_dinh_tran_output_bai_giang_16384():
-    """Lưới an toàn cho lượt chạy loạn (A/B 2026-09-15: 64.768 token/254s) — mặc định phải BẬT."""
-    assert Settings.model_fields["lesson_theory_max_output_tokens"].default == 16384
+def test_mac_dinh_tran_output_bai_giang_12288():
+    """Lưới an toàn cho lượt chạy loạn (A/B 2026-09-15: 64.768 token/254s; dev cùng ngày: lượt thứ hai
+    chạm trần sau 65s) — mặc định phải BẬT, và phải lớn hơn bài dài nhất + trần thinking (~6,5k)."""
+    assert Settings.model_fields["lesson_theory_max_output_tokens"].default == 12288
 
 
 @pytest.mark.asyncio

@@ -227,11 +227,13 @@ class Settings(BaseSettings):
     # (*) Lượt trượt của 1024 KHÔNG phải rubric: Gemini phun 64.768 token trong 254s (không phải
     # JSON) rồi lượt viết lại đạt sau 28s — chính là lý do có `lesson_theory_max_output_tokens`.
     lesson_theory_thinking_budget: int = 1024
-    # Trần output CỨNG cho bài giảng — lưới an toàn cho ca chạy loạn ở trên: bài dài nhất đo được
-    # 5.487 token chữ; 16.384 là ~3× đầu đó, cắt được lượt 64k (254s, ~$0,16) xuống ~60s/~$0,04 rồi
-    # rubric trả lại → viết lại. `0` = không cắt. ⚠ Với Gemini 2.5, phần suy luận có thể tính vào
-    # trần này — đừng hạ sát mức chữ + trần thinking.
-    lesson_theory_max_output_tokens: int = 16384
+    # Trần output CỨNG cho bài giảng — lưới an toàn cho ca chạy loạn ở trên. Chạy thật lần thứ hai
+    # trên dev 2026-09-15 (prewarm bài 1): lượt 1 chạm MAX_TOKENS ở 15.569 token chữ + 799 thoughts
+    # (= 16.368 ≈ trần 16.384 ⇒ với Gemini 2.5, SUY LUẬN TÍNH VÀO trần này) sau 65s, lượt viết lại
+    # đạt sau 27s. Hai lần chạy loạn trong ~37 lượt (~5%) ⇒ không phải sự cố hiếm. Bài dài nhất
+    # đo được 5.487 token chữ + trần thinking 1.024 ≈ 6.5k ⇒ 12.288 còn ~1,9× đầu, cắt lượt loạn ở
+    # ~48s thay vì 65s để cả hai lượt vẫn dưới timeout .NET 120s. `0` = không cắt.
+    lesson_theory_max_output_tokens: int = 12288
     # Roadmap: 1 lời gọi/lần tạo lộ trình (đo prod 2026-09-14: 10,6–13,1s). Khác bài giảng, đường này
     # do SUY LUẬN chi phối chứ không phải chữ — A/B cùng ngày, 1 input BA thật × 2 lượt: mặc định
     # 11,0s/7,1s (thoughts 1.931/1.138 cho chỉ ~150–200 token JSON) · 1024: 5,8s/6,1s (thoughts ~790),

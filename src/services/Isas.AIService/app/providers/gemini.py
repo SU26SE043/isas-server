@@ -2517,6 +2517,13 @@ class GeminiProvider(QuestionProvider):
                     data = None
 
                 if not isinstance(data, dict):
+                    # Lượt chạy loạn (A/B + dev 2026-09-15: 64k rồi 15,5k token, MAX_TOKENS) chỉ lộ ra
+                    # dưới dạng "không phải JSON" — không có đầu/đuôi văn bản thì không biết model lặp
+                    # cái gì để chữa ở prompt. Cắt ngắn: đuôi mới là chỗ nhìn thấy vòng lặp.
+                    logger.warning(
+                        'Bài giảng "%s" lượt %d trả về không phải JSON (%d ký tự, %s) — đầu: %r … đuôi: %r',
+                        lesson_title, attempt_no, len(text), _generation_diagnostics(response),
+                        text[:200], text[-300:])
                     last_defects = [lesson_message("not_json", language,
                                                    raw=text[:200])]
                     feedback = "\n".join(f"- {d}" for d in last_defects)
