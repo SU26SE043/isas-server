@@ -2116,34 +2116,40 @@ class GeminiProvider(QuestionProvider):
             milestone_properties["mistakeIds"] = {"type": "array", "items": {"type": "string"}}
             lesson_properties["mistakeIds"] = {"type": "array", "items": {"type": "string"}}
 
+        roadmap_cfg: dict = {
+            "temperature": 0.4,  # cấu trúc kế hoạch — nhất quán hơn sinh câu hỏi tự do
+            "response_mime_type": "application/json",
+            "response_schema": {
+                "type": "object",
+                "properties": {
+                    # REC1-B5 — khai TRƯỚC "milestones" trong properties, khớp thứ tự chỉ thị
+                    # prompt ("khai milestoneCount... TRƯỚC, rồi mới tạo..."). LUÔN required
+                    # (không điều kiện theo known_ids như mistakeIds) — mọi roadmap đều cần
+                    # model tự cam kết số cụm THẬT trước khi sinh mảng.
+                    "milestoneCount": {"type": "integer"},
+                    "milestoneCountReason": {"type": "string"},
+                    "milestones": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": milestone_properties,
+                            "required": ["title", "focusCriteria", "lessons"],
+                        },
+                    }
+                },
+                "required": ["milestoneCount", "milestoneCountReason", "milestones"],
+            },
+        }
+        # Trần suy luận ẩn — xem `config.roadmap_thinking_budget` (số đo A/B + lý do). `-1` = quay lui.
+        if settings.roadmap_thinking_budget >= 0:
+            roadmap_cfg["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.roadmap_thinking_budget)
+
         started = time.perf_counter()
         response = await self._generate(
             "generate_roadmap",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.4,  # cấu trúc kế hoạch — nhất quán hơn sinh câu hỏi tự do
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "object",
-                    "properties": {
-                        # REC1-B5 — khai TRƯỚC "milestones" trong properties, khớp thứ tự chỉ thị
-                        # prompt ("khai milestoneCount... TRƯỚC, rồi mới tạo..."). LUÔN required
-                        # (không điều kiện theo known_ids như mistakeIds) — mọi roadmap đều cần
-                        # model tự cam kết số cụm THẬT trước khi sinh mảng.
-                        "milestoneCount": {"type": "integer"},
-                        "milestoneCountReason": {"type": "string"},
-                        "milestones": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": milestone_properties,
-                                "required": ["title", "focusCriteria", "lessons"],
-                            },
-                        }
-                    },
-                    "required": ["milestoneCount", "milestoneCountReason", "milestones"],
-                },
-            ),
+            config=types.GenerateContentConfig(**roadmap_cfg),
         )
         logger.info("[⏱] roadmap attempt=%d elapsed=%.2fs %s job=%s level=%s",
                     _attempt, time.perf_counter() - started, _generation_diagnostics(response),
@@ -2434,15 +2440,27 @@ class GeminiProvider(QuestionProvider):
                 },
             }
 
-        config = types.GenerateContentConfig(
-            temperature=0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
-            response_mime_type="application/json",
-            response_schema={
+        cfg: dict = {
+            "temperature": 0.5,  # nội dung giảng dạy — có ví dụ, không quá tất định
+            "response_mime_type": "application/json",
+            "response_schema": {
                 "type": "object",
                 "properties": response_properties,
                 "required": ["sections", "example", "commonMistakes"],
             },
-        )
+        }
+        # Trần suy luận ẩn — đường sinh bài giảng từng là một trong HAI đường (cùng generate_roadmap)
+        # để Gemini tự quyết thinking; số đo + lý do chọn trần: `config.lesson_theory_thinking_budget`.
+        # `-1` = quay lui. Cùng khuôn gate với suggest_jd_requirements / score / analyze_cv.
+        if settings.lesson_theory_thinking_budget >= 0:
+            cfg["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.lesson_theory_thinking_budget)
+        # Lưới an toàn: A/B 2026-09-15 bắt được một lượt phun 64.768 token trong 254s (không phải JSON)
+        # — không có trần thì request .NET (120s) chết trước khi AIService kịp thử lại. Cắt → not_json
+        # → vòng trả-lại phía dưới viết lại. Xem `config.lesson_theory_max_output_tokens`.
+        if settings.lesson_theory_max_output_tokens > 0:
+            cfg["max_output_tokens"] = settings.lesson_theory_max_output_tokens
+        config = types.GenerateContentConfig(**cfg)
 
         # Bài trượt rubric thì TRẢ LẠI kèm nhận xét và bắt viết lại, thay vì lưu một bài không dùng
         # được (lý thuyết chỉ sinh một lần rồi lưu ⇒ bài hỏng sống vĩnh viễn). Hỏi lại y hệt đề cũ

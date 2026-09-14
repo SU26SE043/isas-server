@@ -209,6 +209,36 @@ class Settings(BaseSettings):
     # thứ báo cáo đối chiếu CV cần (CV có BRD/SRS/UAT không?). `0` = tắt · `-1` = quay lui.
     jd_requirements_thinking_budget: int = 1024
 
+    # ── NGÂN SÁCH /GENERATE-LESSON-THEORY + /GENERATE-ROADMAP (roadmap B2C) ──────
+    # Hai đường sinh CUỐI CÙNG còn để Gemini tự quyết thinking. Bài giảng chạy ĐỒNG BỘ trong GET
+    # mở bài của người học (timeout .NET 120s, gateway 100s): đo prod 2026-09-14 4 lượt 38–52s,
+    # output 7,7–10,4k token cho ~3,5–5k token chữ thật ⇒ nửa còn lại là suy luận ẩn, tính tiền
+    # theo giá OUTPUT. A/B trên aiapi-dev 2026-09-15 — 3 bài THẬT (BA-vi Middle 2 lỗi · BE-vi
+    # Senior 3 lỗi · BE-en Junior) × 2 lượt, đúng prompt production (scripts/benchmark-lesson-theory.py;
+    # p50 = thời gian LƯỢT GEMINI ĐẦU, thoughts = p50/max token suy luận, chữ = p50 ký tự bài):
+    #   mặc định  40,5s (max 54,7s) · thoughts 4.575/7.975 · chữ 11.136 · rubric lượt 1: 5/6 (1 viết lại → 90s)
+    #   2048      29,7s (max 32,3s) · thoughts 1.486/2.047 · chữ  9.661 · 6/6
+    #   1024      22,0s (max 29,9s) · thoughts   803/  889 · chữ 10.324 · 5/6 (*)
+    #   512       21,8s (max 27,9s) · thoughts   423/  509 · chữ 10.715 · 6/6
+    #   0         18,3s (max 20,9s) · thoughts     0        · chữ  9.714 · 6/6
+    # Độ dài bài, số mục, phủ lỗi (mistakeReview 10/10) KHÔNG đổi theo trần ⇒ thời gian còn lại là
+    # phần CHỮ (~3–5k token ở ~200 token/s), không phải suy luận. Chọn 1024 (tiền lệ JD: giữ một
+    # phần suy luận cho cấu trúc bài, thời gian gần bằng 512). `0` = tắt · `-1` = quay lui.
+    # (*) Lượt trượt của 1024 KHÔNG phải rubric: Gemini phun 64.768 token trong 254s (không phải
+    # JSON) rồi lượt viết lại đạt sau 28s — chính là lý do có `lesson_theory_max_output_tokens`.
+    lesson_theory_thinking_budget: int = 1024
+    # Trần output CỨNG cho bài giảng — lưới an toàn cho ca chạy loạn ở trên: bài dài nhất đo được
+    # 5.487 token chữ; 16.384 là ~3× đầu đó, cắt được lượt 64k (254s, ~$0,16) xuống ~60s/~$0,04 rồi
+    # rubric trả lại → viết lại. `0` = không cắt. ⚠ Với Gemini 2.5, phần suy luận có thể tính vào
+    # trần này — đừng hạ sát mức chữ + trần thinking.
+    lesson_theory_max_output_tokens: int = 16384
+    # Roadmap: 1 lời gọi/lần tạo lộ trình (đo prod 2026-09-14: 10,6–13,1s). Khác bài giảng, đường này
+    # do SUY LUẬN chi phối chứ không phải chữ — A/B cùng ngày, 1 input BA thật × 2 lượt: mặc định
+    # 11,0s/7,1s (thoughts 1.931/1.138 cho chỉ ~150–200 token JSON) · 1024: 5,8s/6,1s (thoughts ~790),
+    # cùng số chặng/bài. n nhỏ (4 lượt) nên chỉ đủ kết luận về HƯỚNG; `-1` quay lui nếu thấy cấu trúc
+    # lộ trình kém đi.
+    roadmap_thinking_budget: int = 1024
+
     # ── Q16: SỐ LƯỢT SINH CÂU ĐÀO SÂU ────────────────────────────
     # `/decide-next` TỪNG là đường DUY NHẤT của provider không có retry: output hỏng một lượt là
     # raise thẳng → 502. Với `score()` (`score_max_attempts=3`) và `generate_lesson_theory`
