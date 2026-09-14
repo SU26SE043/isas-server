@@ -192,6 +192,19 @@ class Settings(BaseSettings):
     # quay lui, không phải sửa code + deploy lại).
     score_thinking_budget: int = 512
 
+    # ── NGÂN SÁCH /SUGGEST-JD-REQUIREMENTS (B2C tách JD thành yêu cầu) ───────────
+    # Đây là đường Gemini ĐỒNG BỘ nằm trước bước phân tích CV, và là endpoint DUY NHẤT trong nhóm
+    # còn để model tự quyết thinking. Đo prod 2026-09-14 (8 lượt): 9,8–37,3s; ba lượt 35–37s là
+    # CÙNG một JD tiếng Việt (3.247 prompt / 8.900 output token, giống hệt nhau vì temp 0) mà
+    # FE huỷ ở 20s nên cả ba lượt đều bị vứt — người dùng thấy "tách yêu cầu quá lâu", còn tiền
+    # thì đã trả. A/B trên JD BA tiếng Việt thật (3.165 ký tự, không grounding):
+    #   mặc định 18,5s/13,7s · 2.529/2.143 thoughts · 20/12 yêu cầu (KHÔNG ổn định về số lượng)
+    #   1024     8,8s        ·   782 thoughts        · 13 yêu cầu (giữ cả nhóm trách nhiệm JD)
+    #   512/0    5,4s/3,2s   ·   438/0 thoughts      ·  7 yêu cầu (chỉ còn mục "Yêu cầu")
+    # Chọn 1024: trần thời gian ~10s kể cả có grounding, và không rơi nhóm trách nhiệm — chúng là
+    # thứ báo cáo đối chiếu CV cần (CV có BRD/SRS/UAT không?). `0` = tắt · `-1` = quay lui.
+    jd_requirements_thinking_budget: int = 1024
+
     # ── Q16: SỐ LƯỢT SINH CÂU ĐÀO SÂU ────────────────────────────
     # `/decide-next` TỪNG là đường DUY NHẤT của provider không có retry: output hỏng một lượt là
     # raise thẳng → 502. Với `score()` (`score_max_attempts=3`) và `generate_lesson_theory`

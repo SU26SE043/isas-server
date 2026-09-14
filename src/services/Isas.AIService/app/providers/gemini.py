@@ -1405,58 +1405,66 @@ class GeminiProvider(QuestionProvider):
         await prompt_registry.refresh_if_stale()
         prompt = build_jd_requirements_prompt(
             jd_text, job_category, grounding, language=language)
+        config: dict = {
+            "temperature": 0.0,
+            "response_mime_type": "application/json",
+            "response_schema": {
+                "type": "object",
+                "properties": {
+                    "mustHave": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            # Câu nguyên văn trong JD sinh ra requirement này. nullable vì JD
+                            # thật không phải lúc nào cũng có câu tương ứng — và vì server
+                            # loại quote không verify được (xem verify_jd_quote).
+                            "jdQuote": {"type": "string", "nullable": True},
+                            "citations": {"type": "array", "items": {
+                                "type": "object",
+                                "properties": {
+                                    "chunkId": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "sourceUrl": {"type": "string", "nullable": True},
+                                    "sourceTitle": {"type": "string", "nullable": True},
+                                },
+                                "required": ["chunkId", "content"],
+                            }},
+                        },
+                        "required": ["text", "citations"],
+                    }},
+                    "niceToHave": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "jdQuote": {"type": "string", "nullable": True},
+                            "citations": {"type": "array", "items": {
+                                "type": "object",
+                                "properties": {
+                                    "chunkId": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "sourceUrl": {"type": "string", "nullable": True},
+                                    "sourceTitle": {"type": "string", "nullable": True},
+                                },
+                                "required": ["chunkId", "content"],
+                            }},
+                        },
+                        "required": ["text", "citations"],
+                    }},
+                },
+                "required": ["mustHave", "niceToHave"],
+            },
+        }
+        # Tách JD là trích xuất có schema + hậu kiểm jdQuote (verify_jd_quote), không phải suy luận
+        # mở. Để model tự quyết thinking thì JD tiếng Việt chạy 25–37s trên prod và bị FE huỷ —
+        # số đo + lý do chọn trần: `config.jd_requirements_thinking_budget`. `-1` = quay lui.
+        if settings.jd_requirements_thinking_budget >= 0:
+            config["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=settings.jd_requirements_thinking_budget)
+
         response = await self._generate(
             "suggest_jd_requirements",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                response_mime_type="application/json",
-                response_schema={
-                    "type": "object",
-                    "properties": {
-                        "mustHave": {"type": "array", "items": {
-                            "type": "object",
-                            "properties": {
-                                "text": {"type": "string"},
-                                # Câu nguyên văn trong JD sinh ra requirement này. nullable vì JD
-                                # thật không phải lúc nào cũng có câu tương ứng — và vì server
-                                # loại quote không verify được (xem verify_jd_quote).
-                                "jdQuote": {"type": "string", "nullable": True},
-                                "citations": {"type": "array", "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "chunkId": {"type": "string"},
-                                        "content": {"type": "string"},
-                                        "sourceUrl": {"type": "string", "nullable": True},
-                                        "sourceTitle": {"type": "string", "nullable": True},
-                                    },
-                                    "required": ["chunkId", "content"],
-                                }},
-                            },
-                            "required": ["text", "citations"],
-                        }},
-                        "niceToHave": {"type": "array", "items": {
-                            "type": "object",
-                            "properties": {
-                                "text": {"type": "string"},
-                                "jdQuote": {"type": "string", "nullable": True},
-                                "citations": {"type": "array", "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "chunkId": {"type": "string"},
-                                        "content": {"type": "string"},
-                                        "sourceUrl": {"type": "string", "nullable": True},
-                                        "sourceTitle": {"type": "string", "nullable": True},
-                                    },
-                                    "required": ["chunkId", "content"],
-                                }},
-                            },
-                            "required": ["text", "citations"],
-                        }},
-                    },
-                    "required": ["mustHave", "niceToHave"],
-                },
-            ),
+            config=types.GenerateContentConfig(**config),
         )
         try:
             data = json.loads((response.text or "").strip())

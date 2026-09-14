@@ -107,6 +107,10 @@ x-aiservice-env: &aiservice-env
   # độ tuyệt đối, `-1` quay về mặc định Gemini; max grounding là lớp phòng thủ cuối.
   ANALYZE_CV_THINKING_BUDGET: ${ANALYZE_CV_THINKING_BUDGET:-512}
   ANALYZE_CV_MAX_GROUNDING_CHUNKS: ${ANALYZE_CV_MAX_GROUNDING_CHUNKS:-8}
+  # Trần suy luận ẩn cho lượt TÁCH JD → yêu cầu (B2C, đồng bộ). Đo prod 2026-09-14: mặc định
+  # 9,8–37,3s, JD tiếng Việt luôn vượt 20s timeout của FE ⇒ lượt bị vứt sau khi đã trả tiền.
+  # 1024 ≈ 9s và vẫn giữ nhóm trách nhiệm JD (0/512 chỉ còn mục "Yêu cầu"). `-1` = quay lui.
+  JD_REQUIREMENTS_THINKING_BUDGET: ${JD_REQUIREMENTS_THINKING_BUDGET:-1024}
   # Trần suy luận ẩn cho lượt CHẤM. `score` là đường Gemini CUỐI CÙNG chưa có trần, và đo trên prod
   # 2026-08-20 (`ai_usage_logs`) cho thấy nó tốn nhất: output p50 **3.570 token** trong khi
   # `decide_next` (đã đặt trần 0) chỉ **126**. `output_tokens = candidates + thoughts`, mà nội dung
