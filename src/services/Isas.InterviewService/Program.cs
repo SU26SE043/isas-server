@@ -108,6 +108,8 @@ builder.Services.AddScoped<IAdminB2CRubricService, AdminB2CRubricService>();   /
 builder.Services.AddScoped<IAdminRubricPreviewService, AdminRubricPreviewService>();   // chấm thử bộ chuẩn
 builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
+// Single-flight sinh lý thuyết theo lessonId — singleton: bảng in-flight phải là MỘT cho cả process.
+builder.Services.AddSingleton<LessonTheorySingleFlight>();
 builder.Services.AddScoped<IRoadmapThresholdService, RoadmapThresholdService>();   // BC15 — ngưỡng đạt admin chỉnh runtime
 builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
 builder.Services.AddScoped<PromptTemplateService>();   // F21 — prompt tuỳ biến (FR17)

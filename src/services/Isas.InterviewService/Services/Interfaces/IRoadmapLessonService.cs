@@ -12,6 +12,11 @@ public interface IRoadmapLessonService
     Task<LessonResponse> OpenLessonAsync(
         Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default);
 
+    // Thân hàm sinh + ghi lý thuyết cho MỘT bài, dùng chung cho GET (qua LessonTheorySingleFlight) và
+    // prewarm nền. KHÔNG kiểm chủ sở hữu (bên gọi đã kiểm) ⇒ KHÔNG route ra controller. Trả true khi
+    // lượt này ghi bài mới; false khi bài đã dùng được (không gọi AI) / không tồn tại / thua đua ghi.
+    Task<bool> GenerateAndPersistAsync(Guid lessonId, CancellationToken ct = default);
+
     // POST /roadmaps/{id}/lessons/{lessonId}/start — tạo practice session B2C (reserve 1 credit như BC2;
     // hết → 402 KHÔNG tạo session), câu hỏi bám focusCriteria; link lesson Theory→Practicing + mile
     // Pending→InProgress. Đang Practicing/Done → LessonAlreadyStartedException (409, không reserve thêm).
