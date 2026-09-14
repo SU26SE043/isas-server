@@ -1,5 +1,5 @@
 from app import prompt_registry
-from app.resources import ALLOWED_HOSTS as ALLOWED_RESOURCE_HOSTS
+from app.resources import resource_host_examples
 from app.language import EN, VI, field_lang, normalize, output_directive, per100_unit, rate_unit, speech_rate_reference
 # Alias tường minh: `normalize` ở trên đã là của NGÔN NGỮ. Hai khái niệm khác hẳn nhau, để trùng tên
 # là mở đường cho một lần import sau này ghi đè cái kia mà không lỗi gì.
@@ -2004,7 +2004,9 @@ def build_lesson_theory_prompt(job_category: str, level: str, lesson_title: str,
     # hướng bịa link trông rất thật. Prompt là lớp phòng thủ THỨ NHẤT (bảo mô hình
     # đừng đoán), allowlist tên miền trong app/resources.py là lớp THỨ HAI (không
     # tin lời hứa của mô hình). Có cả hai vì lớp 1 không đáng tin một mình.
-    allowed = ", ".join(sorted(ALLOWED_RESOURCE_HOSTS)[:12])
+    # Ví dụ host theo NGÀNH (app/resources.py): lấy 12 host đầu theo ABC như trước là bài BA chỉ thấy
+    # angular.dev/docs.docker.com… rồi bịa URL ngoài allowlist → bị loại 100% (đo prod 2026-09-14).
+    allowed = ", ".join(resource_host_examples(job_category))
     parts.append(
         "Kèm thêm 3-5 TÀI LIỆU HỌC cho bài này (resources), mỗi tài liệu gồm: "
         "title (tên tài liệu/khoá học/chương sách), type (một trong: Doc, Course, "

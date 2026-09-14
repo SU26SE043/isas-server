@@ -39,13 +39,16 @@ def test_keeps_url_from_allowlisted_host():
     assert out[0]["url"].startswith("https://developer.mozilla.org/")
 
 
-def test_drops_resource_from_unknown_host():
-    """🔑 Host ngoài allowlist không được tới FE dưới dạng resource chết."""
+def test_unknown_host_drops_url_but_keeps_title():
+    """🔑 Host ngoài allowlist: BỎ URL, GIỮ tên (phương án (c) ở docstring module — degrade về "chỉ tên"
+    cho đúng mục đó). ⚠ ĐỔI TIỀN ĐỀ 2026-09-15: bản cũ bỏ CẢ MỤC, tự mâu thuẫn với chính prompt
+    ("không chắc thì ĐỂ TRỐNG url — tài liệu chỉ có tên vẫn hữu ích") ⇒ bài BA 0 tài nguyên trên prod.
+    Mutation: trả lại `if url is None: continue` → ĐỎ."""
     out = sanitize_resources([
         {"title": "Sách hay về backend", "type": "Book",
          "url": "https://totally-real-backend-book.example.com/ch1"},
     ])
-    assert out == []
+    assert out == [{"title": "Sách hay về backend", "type": "Book", "publisher": None, "url": None}]
 
 
 @pytest.mark.parametrize("bad_url", [
@@ -66,8 +69,12 @@ def test_drops_resource_from_unknown_host():
     12345,
 ])
 def test_rejects_dangerous_or_malformed_urls(bad_url):
+    """URL nguy hiểm/lệch/trống: LINK bị bỏ (url=None), mục vẫn còn tên — cái cần chặn là cú click,
+    không phải cái tên tài liệu."""
     out = sanitize_resources([{"title": "X", "type": "Doc", "url": bad_url}])
-    assert out == []
+    assert len(out) == 1
+    assert out[0]["title"] == "X"
+    assert out[0]["url"] is None
 
 
 def test_unknown_type_falls_back_to_doc():
@@ -129,8 +136,10 @@ async def test_provider_sanitizes_resources_from_llm(lesson_theory_payload):
         "BE", "Junior", "Transaction", ["Thiết kế CSDL"], None)
 
     assert theory.startswith("# Transaction")
-    assert len(resources) == 1
-    assert resources[0]["url"] is not None          # host allowlist → giữ
+    assert len(resources) == 2
+    assert resources[0]["url"] is not None          # host allowlist → giữ link
+    assert resources[1]["url"] is None              # host bịa → bỏ link, giữ tên
+    assert resources[1]["title"] == "Khoá học bịa"
     assert cited is None                            # ungrounded → không citation
 
 
@@ -157,7 +166,45 @@ def test_lesson_theory_prompt_forbids_guessing_urls():
 
     assert "KHÔNG ĐƯỢC đoán" in prompt
     assert "ĐỂ TRỐNG url" in prompt
-    assert "developer.mozilla.org" in prompt      # có nêu ví dụ nguồn chính chủ
+    assert "docs.spring.io" in prompt             # có nêu ví dụ nguồn chính chủ của NGÀNH (BE)
+
+
+def test_lesson_theory_prompt_vi_du_host_theo_nganh():
+    """Bài BA phải thấy host BA, không phải 12 host đầu theo ABC (toàn dev-tool) — đó là lý do URL
+    bài BA bị allowlist loại 100% (đo prod 2026-09-14). Mutation: quay lại `sorted(...)[:12]` → ĐỎ."""
+    from app.prompts import build_lesson_theory_prompt
+
+    ba = build_lesson_theory_prompt("BA", "Junior", "Ưu tiên backlog", ["Phân tích yêu cầu"], None)
+    assert "www.atlassian.com" in ba and "www.agilealliance.org" in ba
+    assert "docs.docker.com" not in ba and "angular.dev" not in ba
+
+    fe = build_lesson_theory_prompt("FE", "Junior", "Hooks", ["React"], None)
+    assert "react.dev" in fe and "developer.mozilla.org" in fe
+    assert "www.agilealliance.org" not in fe
+
+
+def test_vi_du_host_theo_nganh_deu_nam_trong_allowlist():
+    """Ví dụ đưa cho model mà không qua được allowlist thì model làm đúng vẫn bị loại — hai bảng
+    phải nhất quán."""
+    from app.resources import ALLOWED_HOSTS, RESOURCE_HOST_EXAMPLES, resource_host_examples
+    for cat, hosts in RESOURCE_HOST_EXAMPLES.items():
+        for h in hosts:
+            assert h in ALLOWED_HOSTS, f"{cat}: {h}"
+    for h in resource_host_examples("NGÀNH-LẠ"):
+        assert h in ALLOWED_HOSTS
+    assert resource_host_examples("ba") == RESOURCE_HOST_EXAMPLES["BA"]
+
+
+def test_host_ba_khop_ca_dang_www_lan_tran():
+    """Khớp host CHÍNH XÁC (không suffix) nên cả hai dạng phải được khai — thiếu một là link đúng
+    nguồn vẫn bị bỏ."""
+    out = sanitize_resources([
+        {"title": "A", "type": "Doc", "url": "https://www.agilealliance.org/glossary/invest/"},
+        {"title": "B", "type": "Doc", "url": "https://agilealliance.org/glossary/invest/"},
+        {"title": "C", "type": "Doc", "url": "https://camunda.com/bpmn/reference/"},
+        {"title": "D", "type": "Doc", "url": "https://docs.camunda.io/docs/components/modeler/bpmn/"},
+    ])
+    assert all(r["url"] is not None for r in out), out
 
 
 # ── Endpoint ────────────────────────────────────────────────────────────────
