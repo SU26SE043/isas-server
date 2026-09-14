@@ -1159,6 +1159,66 @@ public class PracticeService : IPracticeService
         return MapToResponse(session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence);
     }
 
+    /// <summary>
+    /// Ghi một tín hiệu mất tập trung cho buổi luyện B2C (coaching).
+    ///
+    /// Ném: KeyNotFoundException (buổi không tồn tại) · UnauthorizedAccessException (không phải
+    /// buổi của mình) · InvalidOperationException (tín hiệu ngoài whitelist).
+    ///
+    /// Mọi ca "không áp dụng" còn lại đều NO-OP chứ không ném — tắt theo dõi, buổi B2B, buổi đã
+    /// kết thúc, chạm trần. Cùng lập luận với RecordFlagAsync của B2B: đây là số liệu coaching,
+    /// biến một lựa chọn hợp lệ thành lỗi đỏ trong console của người luyện là sai tỉ lệ.
+    /// </summary>
+    public async Task RecordFocusEventAsync(
+        Guid candidateId, Guid sessionId, RecordFocusEventRequest request, CancellationToken ct = default)
+    {
+        var signalType = request.SignalType?.Trim().ToLowerInvariant();
+
+        var session = await _db.PracticeSessions
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
+            ?? throw new KeyNotFoundException("Session không tồn tại");
+
+        if (session.CandidateId != candidateId)
+            throw new UnauthorizedAccessException("Không phải buổi của bạn");
+
+        if (!FocusSignals.IsAllowed(signalType))
+            throw new InvalidOperationException($"signalType không hợp lệ: '{request.SignalType}'.");
+
+        // Buổi B2B có đường giám sát riêng (CampaignService.session_flags) phục vụ HR.
+        if (session.CampaignId is not null) return;
+
+        // Người luyện không bật ⇒ không quan sát. No-op, không phải lỗi.
+        if (!session.FocusTrackingEnabled) return;
+
+        // Buổi đã đóng sổ ⇒ số liệu coaching đã chốt; nhận thêm chỉ làm bẩn màn kết quả.
+        // ⚠ Đánh đổi đã biết: tín hiệu gửi trễ (mạng chậm / client retry) sau lúc nộp bài sẽ MẤT.
+        // Chấp nhận có chủ đích — bù lại không phải định nghĩa một cửa sổ ân hạn mà không ai đo được.
+        if (session.Status is SessionStatus.Scored or SessionStatus.SessionAbandoned
+            or SessionStatus.Scoring or SessionStatus.Completed or SessionStatus.Failed) return;
+
+        var total = await _db.PracticeFocusEvents.CountAsync(e => e.SessionId == sessionId, ct);
+        if (total >= FocusSignals.MaxEventsPerSession)
+        {
+            _logger.LogDebug(
+                "Bỏ qua tín hiệu tập trung '{Signal}' (buổi {SessionId}): chạm trần {Max} dòng.",
+                signalType, sessionId, FocusSignals.MaxEventsPerSession);
+            return;
+        }
+
+        var note = string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim();
+        // Cắt ở C# vì SQLite không ép varchar(256) — không cắt thì test xanh mà Postgres nổ.
+        if (note is { Length: > 256 }) note = note[..256];
+
+        _db.PracticeFocusEvents.Add(new PracticeFocusEvent
+        {
+            SessionId = sessionId,
+            SignalType = signalType!,
+            Note = note,
+            OccurredAt = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync(ct);
+    }
+
     // ── HISTORY ───────────────────────────────────────────────────────────
     // DB31 — keyset-paged (mẫu DB8, dùng chung Isas.Shared/Pagination). Trước đây KHÔNG có
     // Skip/Take/cursor → trả TOÀN BỘ lịch sử phỏng vấn trọn đời của candidate trong 1 payload.

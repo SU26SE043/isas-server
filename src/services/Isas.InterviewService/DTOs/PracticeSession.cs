@@ -228,6 +228,15 @@ public record PracticeSessionResponse(
     Guid? CampaignId = null
 );
 
+/// <summary>
+/// Một tín hiệu mất tập trung do trình duyệt của chính người luyện báo về (coaching).
+/// Mốc thời gian CỐ Ý không nhận từ client — server tự đóng dấu `OccurredAt`; client tự khai
+/// được thì con số trên màn kết quả không còn nghĩa gì.
+/// </summary>
+public record RecordFocusEventRequest(
+    [Required] string SignalType,
+    string? Note = null);
+
 // Evidence state được trả dạng additive ở GET session để client khôi phục đúng ngữ cảnh đã dùng
 // cho lượt adaptive tiếp theo; null = session cũ/B2B chưa bật evidence tracking.
 public record CriterionEvidenceResponse(
