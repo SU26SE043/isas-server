@@ -1156,7 +1156,24 @@ public class PracticeService : IPracticeService
                 x.EvidenceFound, x.MissingEvidence, x.DeepCount, x.UpdatedAt))
             .ToListAsync(ct);
 
-        return MapToResponse(session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence);
+        // Gom ở SQL, KHÔNG nạp từng dòng về rồi gom trong RAM: một buổi có thể tới 500 dòng và
+        // đường này là đường đọc nóng (mở màn kết quả).
+        // null = buổi không theo dõi (khác hẳn [] = có theo dõi, không ghi nhận gì).
+        List<FocusEventSummaryResponse>? focusEvents = null;
+        if (session.FocusTrackingEnabled)
+        {
+            focusEvents = await _db.PracticeFocusEvents
+                .AsNoTracking()
+                .Where(e => e.SessionId == session.Id)
+                .GroupBy(e => e.SignalType)
+                .Select(g => new FocusEventSummaryResponse(
+                    g.Key, g.Count(), g.Min(e => e.OccurredAt), g.Max(e => e.OccurredAt)))
+                .ToListAsync(ct);
+        }
+
+        return MapToResponse(
+            session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence,
+            focusTrackingEnabled: session.FocusTrackingEnabled, focusEvents: focusEvents);
     }
 
     /// <summary>
@@ -2011,7 +2028,10 @@ public class PracticeService : IPracticeService
         IReadOnlyList<CriterionEvidenceResponse>? criterionEvidence = null,
         // EVA1-B4 — mặc định che nội bộ chấm điểm cho session B2B. CHỈ đường HR/nội bộ
         // (GetSessionAnswersInternalAsync, X-Internal-Token, AI4) truyền `true` để xem đủ.
-        bool revealCampaignScoring = false)
+        bool revealCampaignScoring = false,
+        // Ghi nhận mất tập trung (coaching). Đặt CUỐI + có default: mọi call site cũ không đổi.
+        bool focusTrackingEnabled = false,
+        IReadOnlyList<FocusEventSummaryResponse>? focusEvents = null)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
 
@@ -2046,7 +2066,9 @@ public class PracticeService : IPracticeService
                     .ToList()
                 : null,
             s.Deadline,
-            s.CampaignId);
+            s.CampaignId,
+            FocusTrackingEnabled: focusTrackingEnabled,
+            FocusEvents: focusEvents);
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.

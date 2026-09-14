@@ -296,4 +296,57 @@ public class FocusTrackingB2cTests
         var saved = await t.Db.PracticeFocusEvents.SingleAsync();
         Assert.Equal(256, saved.Note!.Length);
     }
+
+    // ── Phơi ra cho người luyện ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetSession_TraTongHopTheoLoaiKemMocDauCuoi()
+    {
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+        var s = await SeedSessionAsync(t, candidateId);
+        var t0 = new DateTime(2026, 9, 14, 10, 0, 0, DateTimeKind.Utc);
+        t.Db.PracticeFocusEvents.AddRange(
+            new PracticeFocusEvent { SessionId = s.Id, SignalType = FocusSignals.TabSwitch, OccurredAt = t0 },
+            new PracticeFocusEvent { SessionId = s.Id, SignalType = FocusSignals.TabSwitch, OccurredAt = t0.AddMinutes(5) },
+            new PracticeFocusEvent { SessionId = s.Id, SignalType = FocusSignals.Paste, OccurredAt = t0.AddMinutes(2) });
+        await t.Db.SaveChangesAsync();
+
+        var response = await FocusService(t.Db).GetSessionAsync(candidateId, s.Id, default);
+
+        Assert.True(response!.FocusTrackingEnabled);
+        var tab = Assert.Single(response.FocusEvents!, e => e.SignalType == FocusSignals.TabSwitch);
+        Assert.Equal(2, tab.Count);
+        Assert.Equal(t0, tab.FirstAt);
+        Assert.Equal(t0.AddMinutes(5), tab.LastAt);
+        Assert.Single(response.FocusEvents!, e => e.SignalType == FocusSignals.Paste && e.Count == 1);
+    }
+
+    [Fact]
+    public async Task GetSession_BuoiTatTheoDoi_KhongCoTongHop()
+    {
+        // null ≠ mảng rỗng: null = "buổi này không theo dõi", [] = "có theo dõi, không ghi nhận gì".
+        // Gộp hai ca này là để người luyện không phân biệt được "tôi tập trung" với "không ai đo".
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+        var s = await SeedSessionAsync(t, candidateId, tracking: false);
+
+        var response = await FocusService(t.Db).GetSessionAsync(candidateId, s.Id, default);
+
+        Assert.False(response!.FocusTrackingEnabled);
+        Assert.Null(response.FocusEvents);
+    }
+
+    [Fact]
+    public async Task GetSession_BatNhungChuaCoSuKien_TraMangRong()
+    {
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+        var s = await SeedSessionAsync(t, candidateId);
+
+        var response = await FocusService(t.Db).GetSessionAsync(candidateId, s.Id, default);
+
+        Assert.True(response!.FocusTrackingEnabled);
+        Assert.Empty(response.FocusEvents!);
+    }
 }

@@ -225,7 +225,14 @@ public record PracticeSessionResponse(
     DateTime? Deadline = null,
     // Buổi thuộc chiến dịch nào (null = B2C). Client cần nó để biết đang ở luồng nào mà không phải
     // nhớ từ lúc bấm Bắt đầu.
-    Guid? CampaignId = null
+    Guid? CampaignId = null,
+    // Buổi này có ghi nhận mất tập trung không (ghim lúc tạo). Phòng luyện đọc để biết có bật
+    // listener hay không mà không phải nhớ từ lúc bấm Bắt đầu.
+    bool FocusTrackingEnabled = false,
+    // Tổng hợp theo loại tín hiệu. ⚠ null ≠ mảng rỗng: null = buổi KHÔNG theo dõi; [] = có theo
+    // dõi và không ghi nhận gì. Gộp hai ca lại là để người luyện không phân biệt được "tôi tập
+    // trung" với "không ai đo" — cùng lập luận null/[] của INT-18 (target_criterion_ids).
+    IReadOnlyList<FocusEventSummaryResponse>? FocusEvents = null
 );
 
 /// <summary>
@@ -236,6 +243,17 @@ public record PracticeSessionResponse(
 public record RecordFocusEventRequest(
     [Required] string SignalType,
     string? Note = null);
+
+/// <summary>
+/// Tổng hợp tín hiệu mất tập trung theo LOẠI cho một buổi (coaching).
+/// Trả tổng hợp chứ không phải danh sách thô: một buổi có thể tới 500 dòng, mà người luyện cần
+/// "rời tab 12 lần, từ 14:03 đến 14:31" chứ không cần 12 dòng giống nhau.
+/// </summary>
+public record FocusEventSummaryResponse(
+    string SignalType,
+    int Count,
+    DateTime FirstAt,
+    DateTime LastAt);
 
 // Evidence state được trả dạng additive ở GET session để client khôi phục đúng ngữ cảnh đã dùng
 // cho lượt adaptive tiếp theo; null = session cũ/B2B chưa bật evidence tracking.
