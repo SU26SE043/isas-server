@@ -220,4 +220,94 @@ public class CampaignScoringInputsLockCmp4B2Tests
 
         Assert.Equal("Tiêu đề mới", res.Title);
     }
+
+    // ── (8) SCR1-review: ECHO giá trị Y HỆT ⇒ KHÔNG khoá — FE wizard gửi `domain` ở MỌI lần lưu ──────
+    // Đo trên dev 14/09: sau khi SCR1 cho Draft sàng CV, wizard PUT {title, domain:"Backend"} (không đổi
+    // gì) → 409 ⇒ HR sàng xong 1 CV là không bao giờ bấm Triển khai được nữa. Guard chỉ được chặn khi
+    // giá trị THẬT SỰ ĐỔI (cùng luật với PassScorePct trong chính method này).
+    [Fact]
+    public async Task Draft_da_co_cv_echo_domain_language_giong_het_thi_200()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var campId = Seed(tdb, owner, CampaignStatus.Draft);
+        await AddCvAsync(tdb, campId);
+
+        var res = await NewSvc(tdb.NewContext()).UpdateCampaignAsync(owner, owner, campId,
+            new UpdateCampaignRequest { Title = "Vẫn lưu được", Domain = "BE", Language = "vi" }, default);
+
+        Assert.Equal("Vẫn lưu được", res.Title);
+        var saved = tdb.NewContext().Campaigns.Single(c => c.Id == campId);
+        Assert.Equal("BE", saved.Domain);
+        Assert.Equal("vi", saved.Language);
+    }
+
+    // ── (9) Luật lọc echo lại BẢN ĐANG LƯU (kể cả khác thứ tự trắng/rỗng sau chuẩn hoá) ⇒ 200; đổi thật ⇒ 409 ─
+    [Fact]
+    public async Task Draft_da_co_cv_echo_luat_loc_giong_het_thi_200_doi_that_thi_409()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var campId = Seed(tdb, owner, CampaignStatus.Draft);
+        using (var c = tdb.NewContext())
+        {
+            var camp = c.Campaigns.Single(x => x.Id == campId);
+            camp.RequiredSkills = new List<string> { "Java", "Spring" };
+            camp.MinYearsExperience = null;
+            c.SaveChanges();
+        }
+        await AddCvAsync(tdb, campId);
+
+        // Echo: cùng danh sách (có khoảng trắng thừa — Clean() trim), keywords rỗng (= null đang lưu),
+        // minYears 0 (≡ null: hard-filter chỉ áp khi > 0).
+        var ok = await NewSvc(tdb.NewContext()).UpdateCampaignAsync(owner, owner, campId,
+            new UpdateCampaignRequest
+            {
+                Title = "Echo",
+                RequiredSkills = new List<string> { " Java", "Spring " },
+                KeywordsAny = new List<string>(),
+                MinYearsExperience = 0,
+            }, default);
+        Assert.Equal("Echo", ok.Title);
+
+        // Đổi THẬT một luật ⇒ vẫn 409 và không ghi.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NewSvc(tdb.NewContext()).UpdateCampaignAsync(owner, owner, campId,
+                new UpdateCampaignRequest { RequiredSkills = new List<string> { "Java", "Spring", "Kafka" } }, default));
+        Assert.Contains("đã có ứng viên", ex.Message);
+        Assert.Equal(new[] { "Java", "Spring" },
+            tdb.NewContext().Campaigns.Single(c => c.Id == campId).RequiredSkills);
+    }
+
+    // ── (10) Echo trên Closed cũng KHÔNG 409 (không có gì đổi) nhưng đổi thật thì 409 như cũ ──────
+    [Fact]
+    public async Task Closed_echo_domain_giong_het_thi_200_doi_that_thi_409()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var campId = Seed(tdb, owner, CampaignStatus.Closed);
+
+        var ok = await NewSvc(tdb.NewContext()).UpdateCampaignAsync(owner, owner, campId,
+            new UpdateCampaignRequest { Title = "Echo closed", Domain = "BE" }, default);
+        Assert.Equal("Echo closed", ok.Title);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            NewSvc(tdb.NewContext()).UpdateCampaignAsync(owner, owner, campId, DomainReq(), default));
+        Assert.Equal("BE", tdb.NewContext().Campaigns.Single(c => c.Id == campId).Domain);
+    }
+
+    // ── (11) Chuỗi rỗng vẫn 400 (BK35) kể cả khi campaign đã có ứng viên — validate chạy TRƯỚC khi so ─
+    [Fact]
+    public async Task Draft_da_co_cv_language_rong_thi_400_khong_phai_409()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var campId = Seed(tdb, owner, CampaignStatus.Draft);
+        await AddCvAsync(tdb, campId);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewSvc(tdb.NewContext()).UpdateCampaignAsync(owner, owner, campId,
+                new UpdateCampaignRequest { Language = "" }, default));
+        Assert.Equal("vi", tdb.NewContext().Campaigns.Single(c => c.Id == campId).Language);
+    }
 }

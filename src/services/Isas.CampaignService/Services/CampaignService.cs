@@ -544,24 +544,45 @@ namespace Isas.CampaignService.Services
                 || request.MinYearsExperience.HasValue
                 || request.Domain is not null || request.Language is not null)
             {
-                if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
-                    throw new InvalidOperationException(
-                        "Không sửa được trường quyết định cách AI sàng/chấm CV (luật lọc / domain / "
-                        + $"language) khi campaign {campaign.Status}.");
-                if (await _db.CvSubmissions.AnyAsync(c => c.CampaignId == id, ct))
-                    throw new InvalidOperationException(
-                        "Không sửa được trường quyết định cách AI sàng/chấm CV (luật lọc / domain / "
-                        + "language) khi campaign đã có ứng viên — thước đã áp cho họ, đổi lúc này thì "
-                        + "ứng viên sàng trước/sau không so sánh được (không có nhãn phiên bản).");
-
+                // Validate TRƯỚC khi so — chuỗi rỗng/ngoài dải vẫn phải 400 (BK35), kể cả khi campaign đã
+                // có ứng viên; và giá trị đem so là giá trị ĐÃ CHUẨN HOÁ (trim/dedupe), không phải bản thô.
                 var (req, kw, my) = ValidateHardFilters(
                     request.RequiredSkills, request.KeywordsAny, request.MinYearsExperience);
+                var language = request.Language is not null ? ValidateLanguage(request.Language) : null;
+
+                // SCR1-review (2026-09-14) — chỉ KHOÁ khi giá trị THỰC SỰ ĐỔI, cùng luật với PassScorePct
+                // bên dưới: FE echo lại cả form là chuyện thường (wizard gửi `domain` ở MỌI lần lưu, kể cả
+                // lúc bấm Triển khai). Trước đây chỉ cần trường CÓ MẶT là 409 ⇒ từ khi SCR1 cho Draft
+                // sàng CV, HR sàng xong 1 CV là KHÔNG BAO GIỜ triển khai được nữa từ wizard (đo trên dev:
+                // PUT {title, domain:"Backend"} trên campaign domain "Backend" → 409). Giá trị giống hệt
+                // thì thước đo không đổi ⇒ không có gì để bảo vệ.
+                var changesScreeningInputs =
+                    (request.RequiredSkills is not null && !SameList(req, campaign.RequiredSkills))
+                    || (request.KeywordsAny is not null && !SameList(kw, campaign.KeywordsAny))
+                    // `min > 0` mới là luật (hard-filter chỉ áp khi > 0) ⇒ 0 và null cùng nghĩa "không luật".
+                    || (request.MinYearsExperience.HasValue && (my ?? 0) != (campaign.MinYearsExperience ?? 0))
+                    || (request.Domain is not null && !string.Equals(request.Domain, campaign.Domain, StringComparison.Ordinal))
+                    || (language is not null && !string.Equals(language, campaign.Language, StringComparison.Ordinal));
+
+                if (changesScreeningInputs)
+                {
+                    if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
+                        throw new InvalidOperationException(
+                            "Không sửa được trường quyết định cách AI sàng/chấm CV (luật lọc / domain / "
+                            + $"language) khi campaign {campaign.Status}.");
+                    if (await _db.CvSubmissions.AnyAsync(c => c.CampaignId == id, ct))
+                        throw new InvalidOperationException(
+                            "Không sửa được trường quyết định cách AI sàng/chấm CV (luật lọc / domain / "
+                            + "language) khi campaign đã có ứng viên — thước đã áp cho họ, đổi lúc này thì "
+                            + "ứng viên sàng trước/sau không so sánh được (không có nhãn phiên bản).");
+                }
+
                 if (request.RequiredSkills is not null) campaign.RequiredSkills = req;
                 if (request.KeywordsAny is not null) campaign.KeywordsAny = kw;
                 if (request.MinYearsExperience.HasValue) campaign.MinYearsExperience = my;
 
                 if (request.Domain is not null) campaign.Domain = request.Domain;
-                if (request.Language is not null) campaign.Language = ValidateLanguage(request.Language);
+                if (language is not null) campaign.Language = language;
             }
 
             // E5: cập nhật ngưỡng pass/fail (chỉ khi gửi lên; validate ∈ [0,100]).
@@ -3196,6 +3217,15 @@ namespace Isas.CampaignService.Services
         /// </list>
         /// KHÔNG áp cửa trạng thái ở đây (caller lo): create luôn Draft; update kiểm Draft/Active-chưa-có-ứng-viên.
         /// </summary>
+        // So sánh luật lọc đã chuẩn hoá với bản đang lưu: null ≡ rỗng (Clean() trả null cho [] ⇒ XOÁ luật),
+        // thứ tự và hoa/thường ĐỀU có nghĩa vì đó chính là thứ đi vào job sàng CV.
+        private static bool SameList(List<string>? a, List<string>? b)
+        {
+            var left = a ?? new List<string>();
+            var right = b ?? new List<string>();
+            return left.SequenceEqual(right, StringComparer.Ordinal);
+        }
+
         private static (List<string>? RequiredSkills, List<string>? KeywordsAny, int? MinYears) ValidateHardFilters(
             List<string>? requiredSkills, List<string>? keywordsAny, int? minYears)
         {
