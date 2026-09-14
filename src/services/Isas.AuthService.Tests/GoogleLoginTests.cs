@@ -7,6 +7,11 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
 using Moq;
+using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Identity.UI.Services;
+using Microsoft.AspNetCore.Authentication.Google;
+using Isas.AuthService.Controllers;
 
 namespace Isas.AuthService.Tests;
 
@@ -179,6 +184,40 @@ public class GoogleLoginTests
     {
         Assert.Equal("https://api.isas.test/api/v1/auth/login-google-callback",
             Redirects().CallbackUrl(null));
+    }
+
+    // Không có `prompt` thì Google tự chọn tài khoản đang đăng nhập và bỏ qua màn chọn — người dùng
+    // có nhiều tài khoản không đổi được email (lỗi thật trên prod 2026-09-14). Khoá tham số đúng KHOÁ
+    // mà GoogleHandler đọc (`GoogleChallengeProperties.PromptParameterKey` = "prompt"), không khoá
+    // chuỗi tự đặt — đổi tên khoá là handler bỏ qua im lặng, y như bug đang chặn.
+    [Fact]
+    public void LoginWithGoogle_ChallengeEpMauChonTaiKhoan_promptSelectAccount()
+    {
+        var userManager = new Mock<UserManager<User>>(
+            Mock.Of<IUserStore<User>>(), null!, null!, null!, null!, null!, null!, null!, null!);
+        var signIn = MockSignInManager(userManager.Object);
+        // Production trả AuthenticationProperties thật (RedirectUri + LoginProvider); mock trả bản
+        // tương đương để tham số prompt được gắn lên đúng object đi vào Challenge.
+        signIn.Setup(m => m.ConfigureExternalAuthenticationProperties("Google", It.IsAny<string?>(), null))
+            .Returns<string, string?, string?>((provider, redirectUrl, _) =>
+                new AuthenticationProperties { RedirectUri = redirectUrl, Items = { ["LoginProvider"] = provider } });
+        var redirects = new Mock<IGoogleLoginRedirects>();
+        redirects.Setup(r => r.CallbackUrl(It.IsAny<string?>()))
+            .Returns("https://api.isas.test/api/v1/auth/login-google-callback");
+
+        var controller = new AuthController(
+            Mock.Of<IAuthService>(), userManager.Object, signIn.Object, Mock.Of<IEmailSender>(),
+            redirects.Object, Mock.Of<IGoogleAuthCodeStore>(), Mock.Of<IGoogleIdTokenVerifier>(),
+            Mock.Of<ILogger<AuthController>>());
+
+        var result = Assert.IsType<ChallengeResult>(controller.LoginWithGoogle(null));
+
+        Assert.Equal(["Google"], result.AuthenticationSchemes);
+        Assert.NotNull(result.Properties);
+        Assert.Equal("select_account",
+            result.Properties!.GetParameter<string>(GoogleChallengeProperties.PromptParameterKey));
+        // RedirectUri của vòng OAuth vẫn nguyên — thêm prompt không được làm rơi đích callback.
+        Assert.Equal("https://api.isas.test/api/v1/auth/login-google-callback", result.Properties.RedirectUri);
     }
 
     private static GoogleLoginRedirects Redirects() =>

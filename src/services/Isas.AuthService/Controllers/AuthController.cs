@@ -2,6 +2,7 @@
 using Isas.AuthService.Models;
 using Isas.AuthService.Services;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.UI.Services;
@@ -110,6 +111,11 @@ namespace Isas.AuthService.Controllers
         {
             var redirectUrl = _googleRedirects.CallbackUrl(returnUrl);
             var properties = _signInManager.ConfigureExternalAuthenticationProperties("Google", redirectUrl);
+            // Không có `prompt` thì Google tự lấy tài khoản đang đăng nhập / đã từng đồng ý và bỏ qua màn
+            // chọn ⇒ người dùng có nhiều tài khoản không đổi được email. `select_account` chỉ ép màn chọn
+            // tài khoản; KHÔNG dùng `consent` (bắt bấm "Cho phép" lại mỗi lần). GoogleHandler đọc khoá
+            // này trong BuildChallengeUrl và gắn `&prompt=` vào URL sang Google.
+            properties.SetParameter(GoogleChallengeProperties.PromptParameterKey, "select_account");
 
             return Challenge(properties, "Google");
         }
