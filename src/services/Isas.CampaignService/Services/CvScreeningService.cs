@@ -1,6 +1,7 @@
 using Isas.CampaignService.DTOs;
 using Isas.CampaignService.Models;
 using Isas.Shared.Pagination;
+using Isas.Shared.Scoring;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
@@ -78,6 +79,13 @@ namespace Isas.CampaignService.Services
             var now = DateTime.UtcNow;
             int published = 0;
 
+            // SCP1 · B5 — GHIM chính sách chấm CV cho LẦN ĐÁNH GIÁ này, TẠI ĐÂY (lúc đẩy job), không
+            // lúc upload. `??=` : chỉ set khi chưa có ⇒ chạy lại hàm này hoặc republisher đẩy lại
+            // KHÔNG đổi pin (retry = cùng một lần đánh giá). HR bấm rescreen mới re-pin
+            // (RescreenCandidateAsync). null (campaign chưa áp chính sách CV) ⇒ chấm mặc định.
+            foreach (var cand in candidates)
+                cand.ScoringPolicyVersion ??= campaign.CvPolicyVersion;
+
             foreach (var cand in candidates)
             {
                 try
@@ -102,8 +110,9 @@ namespace Isas.CampaignService.Services
                 }
             }
 
-            if (published > 0)
-                await _db.SaveChangesAsync(ct);
+            // LUÔN lưu (không chỉ khi published > 0): pin ScoringPolicyVersion đã set ở trên phải bền
+            // vững kể cả khi publish HỤT cho mọi CV — republisher đẩy lại sau đó GIỮ pin này (retry).
+            await _db.SaveChangesAsync(ct);
 
             return published;
         }
@@ -158,6 +167,9 @@ namespace Isas.CampaignService.Services
             var now = DateTime.UtcNow;
             candidate.Status = CvSubmissionStatus.Analyzing;
             candidate.LastScreeningPublishedAt = now;
+            // SCP1 · B5 — HR bấm rescreen = LẦN ĐÁNH GIÁ MỚI ⇒ RE-PIN theo chính sách chấm CV HIỆN
+            // HÀNH (kể cả về null nếu chính sách đã bị gỡ). Khác retry của republisher (giữ pin cũ).
+            candidate.ScoringPolicyVersion = campaign.CvPolicyVersion;
             candidate.UpdatedAt = now;
             await _db.SaveChangesAsync(ct);
 
@@ -230,11 +242,17 @@ namespace Isas.CampaignService.Services
             // Trung bình ĐỀU giữa các nhu cầu (không đặt trọng số giữa 4 nhóm): không có dữ liệu
             // nào nói technical đáng gấp mấy lần communication, mà bịa hằng số rồi trưng ra như
             // chuẩn ngành đúng thứ F14 đã từ chối làm. HR đọc breakdown 4 nhóm để tự nặng nhẹ.
-            int? jobFitScore = assessments.Count == 0
+            int? defaultScore = assessments.Count == 0
                 ? null
                 : (int)Math.Round(
                     100m * assessments.Sum(a => NeedLevels.Credit(a.Level)) / assessments.Count,
                     MidpointRounding.AwayFromZero);
+
+            // SCP1 · B7 — nếu LẦN ĐÁNH GIÁ này đã ghim chính sách (cv_submission.scoring_policy_version,
+            // B5) → điểm = đánh giá biểu thức ĐÃ GHIM. Đọc đúng bản đã ghim, KHÔNG con trỏ hiện hành
+            // (campaigns.cv_policy_version) — HR đổi policy giữa chừng KHÔNG hồi tố ứng viên đã sàng.
+            var (jobFitScore, scoreFallback) = await ResolvePolicyScoreAsync(
+                candidate, campaignNeeds, assessments, defaultScore, ct);
 
             candidate.Strengths = assessments.Where(a => a.Level != NeedLevels.Weak).ToList();
             candidate.Gaps = assessments.Where(a => a.Level == NeedLevels.Weak).ToList();
@@ -264,12 +282,92 @@ namespace Isas.CampaignService.Services
             candidate.YearsExperience = req.YearsExperience;
             candidate.Summary = req.FitSummary;
             candidate.OverallMatchScore = jobFitScore;
+            candidate.ScoreFallback = scoreFallback;   // SCP1 · B7 — cờ lùi an toàn (HĐ-5)
             candidate.RejectReason = null;   // xoá lý do AnalysisFailed cũ khi recover (retry thành công)
             candidate.Status = CvSubmissionStatus.Analyzed;   // recover cả từ Analyzing lẫn AnalysisFailed (doc)
             candidate.UpdatedAt = now;
 
             await _db.SaveChangesAsync(ct);
             return CvResultOutcome.Analyzed;
+        }
+
+        // ── SCP1 · B7 — điểm sàng CV = biểu thức chính sách ĐÃ GHIM (B5), lùi an toàn như B6 ─────────
+        private async Task<(int? Score, bool Fallback)> ResolvePolicyScoreAsync(
+            CvSubmission candidate, List<JobNeed> campaignNeeds, List<NeedAssessment> assessments,
+            int? defaultScore, CancellationToken ct)
+        {
+            // (5) Chưa ghim chính sách (campaign chưa áp / sàng trước SCP1) → công thức CAMP-14 mặc định.
+            if (candidate.ScoringPolicyVersion is not int pinnedVersion)
+                return (defaultScore, false);
+
+            // Đọc biểu thức của ĐÚNG bản đã ghim. Campaign SỞ HỮU bảng, dòng BẤT BIẾN (B2) ⇒ (campaign,
+            // CvScreening, version) resolve về một biểu thức cố định — KHÔNG đọc con trỏ cv_policy_version.
+            var expression = await _db.ScoringPolicies
+                .AsNoTracking()
+                .Where(p => p.CampaignId == candidate.CampaignId
+                    && p.Kind == ScoringExpressionKind.CvScreening
+                    && p.Version == pinnedVersion)
+                .Select(p => p.Expression)
+                .FirstOrDefaultAsync(ct);
+
+            if (string.IsNullOrWhiteSpace(expression))
+            {
+                _logger.LogWarning(
+                    "SCP1/B7: candidate {CandidateId} ghim policy CvScreening v{Ver} nhưng KHÔNG tìm thấy "
+                    + "dòng scoring_policies ⇒ lùi về CAMP-14, scoreFallback = true.", candidate.Id, pinnedVersion);
+                return (defaultScore, true);
+            }
+
+            // (1) 6 biến từ assessments đã qua guard + bộ nhu cầu campaign.
+            var strong = assessments.Count(a => a.Level == NeedLevels.Strong);
+            var partial = assessments.Count(a => a.Level == NeedLevels.Partial);
+            var weak = assessments.Count(a => a.Level == NeedLevels.Weak);
+            var needCount = campaignNeeds.Count;   // CAMP-14 "số nhu cầu" = bộ nhu cầu campaign đã chốt
+
+            // (4) need_count = 0 trong khi đã ghim chính sách = BẤT BIẾN HỆ THỐNG bị vi phạm (EVA1-B6:
+            // "Active + needs rỗng" KHÔNG thể bắt đầu sàng). BÁO LỖI ĐÁNH GIÁ — không lùi an toàn (nó
+            // che một trạng thái hỏng), không bịa điểm. Ném để có người điều tra.
+            if (needCount <= 0)
+            {
+                _logger.LogError(
+                    "SCP1/B7: candidate {CandidateId} (campaign {CampaignId}) đã ghim chính sách sàng CV "
+                    + "v{Ver} nhưng need_count = 0 — bất biến hệ thống bị vi phạm, KHÔNG tính điểm.",
+                    candidate.Id, candidate.CampaignId, pinnedVersion);
+                throw new InvalidOperationException(
+                    $"SCP1: candidate {candidate.Id} có need_count = 0 với chính sách sàng CV đã ghim.");
+            }
+
+            // RNK1 · HĐ-6 — must_have_* đếm CHỈ nhu cầu IsMustHave (bỏ "mọi nhu cầu coi là bắt buộc").
+            // NGUỒN TÍNH DUY NHẤT = CvMustHaveEvaluator, dùng chung với ScoringPolicyService.ScoreCv.
+            var mh = CvMustHaveEvaluator.Evaluate(
+                campaignNeeds,
+                assessments.Where(a => a.Level != NeedLevels.Weak),
+                assessments.Where(a => a.Level == NeedLevels.Weak));
+
+            var ctx = ScoringContext.ForCvScreening(new CvScreeningScoringInputs(
+                StrongCount: strong, PartialCount: partial, WeakCount: weak,
+                NeedCount: needCount, MustHaveTotal: mh.MustHaveTotal, MustHaveMet: mh.MustHaveMet));
+
+            // Parse + eval + phân loại lỗi đi qua ScoringPolicyRunner — CÙNG một hàm đường xem-trước/áp
+            // (B8) dùng. Lùi-an-toàn + log giữ ở đây (B7 làm tròn AwayFromZero khác B6).
+            var outcome = ScoringPolicyRunner.Evaluate(expression, ctx);
+            if (outcome.Exception is not null)
+                _logger.LogError(outcome.Exception, "SCP1/B7: bộ đánh giá ném cho candidate {CandidateId}", candidate.Id);
+
+            if (outcome.Value is decimal ps)
+            {
+                _logger.LogInformation(
+                    "SCP1/B7: candidate {CandidateId} chấm bằng chính sách sàng CV v{Ver} = {Score}",
+                    candidate.Id, pinnedVersion, ps);
+                return ((int)Math.Round(ps, MidpointRounding.AwayFromZero), false);
+            }
+
+            // (3) LÙI AN TOÀN + cờ (như B6). KHÔNG clamp (clamp che lỗi policy). KHÔNG nuốt lỗi.
+            _logger.LogWarning(
+                "SCP1/B7: candidate {CandidateId} — chính sách sàng CV v{Ver} LỖI [{Reason}] ⇒ lùi về "
+                + "CAMP-14 = {Default}, scoreFallback = true.",
+                candidate.Id, pinnedVersion, outcome.FailReason, defaultScore);
+            return (defaultScore, true);
         }
 
         // ── Callback cv-failed → AnalysisFailed (absorbing: đã Analyzed/Invited → no-op) ────────────
@@ -315,9 +413,15 @@ namespace Isas.CampaignService.Services
             string? search, string? cursor, int? limit, CancellationToken ct)
         {
             // Ownership: campaign phải của org (query filter loại soft-deleted) → không thấy = 404.
-            var owns = await _db.Campaigns.AnyAsync(c => c.Id == campaignId && c.OrgId == orgId, ct);
-            if (!owns)
+            // RNK1 · HĐ-6 — nạp job_needs CÙNG lượt (jsonb trên campaigns, không phải nav) để đánh giá
+            // điều kiện loại read-time cho từng dòng; KHÔNG query mới.
+            var campaignRow = await _db.Campaigns
+                .Where(c => c.Id == campaignId && c.OrgId == orgId)
+                .Select(c => new { c.JobNeeds })
+                .FirstOrDefaultAsync(ct);
+            if (campaignRow is null)
                 throw new KeyNotFoundException($"Campaign {campaignId} not found.");
+            var jobNeeds = campaignRow.JobNeeds ?? new List<JobNeed>();
 
             var take = KeysetPaging.ClampLimit(limit);
             var cur = SortKeysetCursor.Decode(cursor);
@@ -394,15 +498,42 @@ namespace Isas.CampaignService.Services
                     c.Skills.Any(s => s.Contains(needle, StringComparison.OrdinalIgnoreCase)));
             }
 
-            var items = page.Select(c => new CandidateListItem
+            var items = page.Select(c =>
             {
-                Id = c.Id,
-                FullName = c.FullName,
-                Email = c.Email,
-                Status = c.Status.ToString(),
-                OverallMatchScore = c.OverallMatchScore,
-                Skills = c.Skills
+                // RNK1 · HĐ-6 — điều kiện loại đánh giá READ-TIME trên dòng đã ở bộ nhớ (như
+                // VerificationRisk bên dưới — LINQ-to-Objects, KHÔNG query). job_needs cố định cho cả
+                // campaign nên eligible ổn định.
+                var mh = CvMustHaveEvaluator.Evaluate(jobNeeds, c.Strengths, c.Gaps);
+                return new CandidateListItem
+                {
+                    Id = c.Id,
+                    FullName = c.FullName,
+                    Email = c.Email,
+                    Status = c.Status.ToString(),
+                    OverallMatchScore = c.OverallMatchScore,
+                    Skills = c.Skills,
+                    // EVA1-B2 — cờ rủi ro + con dấu thang điểm phải ra tới màn DANH SÁCH, không chỉ
+                    // màn chi tiết: đó chính là chỗ HR đặt ứng viên cạnh nhau để so.
+                    VerificationRisk = c.VerificationRisk,
+                    ScreeningVersion = c.ScreeningVersion,
+                    ScoreFallback = c.ScoreFallback,   // SCP1 · B7 (HĐ-5)
+                    Eligible = mh.Eligible,            // RNK1 · HĐ-6
+                    MustHaveMet = mh.MustHaveMet,
+                    MustHaveTotal = mh.MustHaveTotal,
+                };
             }).ToList();
+
+            // RNK1 · HĐ-6 — sort mặc định "Eligible desc, rồi điểm". `eligible` KHÔNG phải cột nên
+            // KHÔNG vào được ORDER BY / khoá keyset của DB → chỉ đảo thứ tự TRONG TRANG đang xem, sau
+            // khi `next` cursor đã chốt từ dòng cuối theo thứ tự DB (score DESC, id DESC). Hệ quả:
+            // ứng viên không đủ điều kiện chìm xuống đáy TRANG HR đang xem, không xuyên trang — cùng
+            // lớp giới hạn đã ghi cho `?skill=`. Chỉ áp cho sort mặc định (score); `sort=name` không đụng.
+            if (normalizedSort != "name")
+                items = items
+                    .OrderByDescending(i => i.Eligible)
+                    .ThenByDescending(i => i.OverallMatchScore ?? -1)
+                    .ThenByDescending(i => i.Id)
+                    .ToList();
 
             return new KeysetPage<CandidateListItem>(items, next);
         }
@@ -441,6 +572,14 @@ namespace Isas.CampaignService.Services
                     c => c.Id == candidateId && c.CampaignId == campaignId && c.Campaign.OrgId == orgId, ct)
                 ?? throw new KeyNotFoundException($"Candidate {candidateId} not found.");
 
+            // RNK1 · HĐ-6 — job_needs (jsonb trên campaigns) cho điều kiện loại read-time. 1 projection
+            // scalar, không nạp cả entity campaign.
+            var jobNeeds = await _db.Campaigns
+                .Where(c => c.Id == campaignId)
+                .Select(c => c.JobNeeds)
+                .FirstOrDefaultAsync(ct) ?? new List<JobNeed>();
+            var mh = CvMustHaveEvaluator.Evaluate(jobNeeds, candidate.Strengths, candidate.Gaps);
+
             static List<NeedAssessmentItem> Map(List<NeedAssessment>? items) =>
                 (items ?? new List<NeedAssessment>())
                     .Select(a => new NeedAssessmentItem
@@ -464,6 +603,11 @@ namespace Isas.CampaignService.Services
                 RejectReason = candidate.RejectReason,
                 CvFileUrl = candidate.CvFileUrl,
                 ScreeningVersion = candidate.ScreeningVersion,
+                ScoreFallback = candidate.ScoreFallback,   // SCP1 · B7 (HĐ-5)
+                Eligible = mh.Eligible,                    // RNK1 · HĐ-6
+                MustHaveMet = mh.MustHaveMet,
+                MustHaveTotal = mh.MustHaveTotal,
+                MissingMustHave = mh.Missing.Select(n => n.Text).ToList(),
                 FitSummary = candidate.FitSummary,
                 // Strong trước Partial trong `strengths`: HR đọc từ trên xuống, thứ chắc chắn nhất
                 // phải nằm trên. `gaps` toàn Weak nên giữ nguyên thứ tự nhu cầu.

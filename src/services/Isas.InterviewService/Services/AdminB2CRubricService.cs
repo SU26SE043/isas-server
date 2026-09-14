@@ -125,7 +125,7 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
 
         var rows = await AppendVersionAsync(jobCategory, lang, current,
             proposed.Select(p => (p.Source.Name, p.Description, p.Source.Weight, p.Source.MaxScore,
-                                  p.Source.ScoringScope, p.Levels)).ToList(), ct);
+                                  p.Source.ScoringScope, p.Source.ScoringMethod, p.Levels)).ToList(), ct);
         return Respond(jobCategory, lang, rows, changed: true);
     }
 
@@ -157,7 +157,7 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
         // phiên bản mấy" luôn có đúng một câu trả lời, và giữ nguyên dấu vết ai từng dùng bản nào.
         var rows = await AppendVersionAsync(jobCategory, lang, current,
             seed.Select(c => (c.Name, c.Description, c.Weight, c.MaxScore, c.ScoringScope,
-                              (IReadOnlyList<RubricLevelSnapshot>)[])).ToList(), ct);
+                              c.ScoringMethod, (IReadOnlyList<RubricLevelSnapshot>)[])).ToList(), ct);
         return Respond(jobCategory, lang, rows, changed: true);
     }
 
@@ -212,7 +212,7 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
     private async Task<List<RubricCriterion>> AppendVersionAsync(
         JobCategory jobCategory, string language, List<RubricCriterion> current,
         List<(string Name, string? Description, decimal Weight, int MaxScore, ScoringScope Scope,
-              IReadOnlyList<RubricLevelSnapshot> Levels)> content,
+              CriterionScoringMethod Method, IReadOnlyList<RubricLevelSnapshot> Levels)> content,
         CancellationToken ct)
     {
         foreach (var c in current) c.IsActive = false;
@@ -231,6 +231,12 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
             Weight = x.Weight,
             MaxScore = x.MaxScore,
             ScoringScope = x.Scope,
+            // 🔴 PHẢI chép: thiếu dòng này thì phiên bản mới rơi về mặc định `Ai`, tức MỘT LẦN admin
+            // sửa mốc là tiêu chí chấm-bằng-SỐ-ĐO (Độ trôi chảy) âm thầm chuyển sang cho LLM chấm —
+            // trong khi mô tả của chính nó nói ngược lại, và LLM KHÔNG có tín hiệu nào (không cao độ,
+            // không số đo dừng trong prompt) nên nó sẽ bịa. Admin không được phép đổi cột này
+            // (BC-8 chỉ cho sửa mô tả + mốc), nên nó phải đi theo bản cũ chứ không nhận mặc định.
+            ScoringMethod = x.Method,
             IsActive = true,
             JobCategory = jobCategory,
             Language = language,

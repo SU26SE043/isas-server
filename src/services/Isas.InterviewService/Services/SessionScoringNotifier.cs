@@ -3,6 +3,7 @@ using Isas.InterviewService.DTOs;
 using Isas.InterviewService.Entities;
 using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Scoring;
 using Microsoft.EntityFrameworkCore;
 
 namespace Isas.InterviewService.Services;
@@ -42,7 +43,28 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
         if (session is null) return;
 
-        var totalScore = await ComputeWeightedTotalScoreAsync(session, ct);
+        var (totalScore, scoringInputs, scoreFallback) = await ComputeScoreAndInputsAsync(session, ct);
+
+        // ADP1 — ĐÓNG CON DẤU CÁCH GỘP ĐIỂM LÊN BUỔI, ngay tại chỗ điểm vừa được tính, bằng đúng
+        // bản code vừa tính nó. Đây là chokepoint DUY NHẤT của mọi buổi chuyển sang Scored (hai đường
+        // đóng: AnswerService.TryCompleteSessionAsync + PracticeService.SubmitSessionAsync, cả hai gọi
+        // hàm này rồi mới SaveChanges) ⇒ không buổi nào lọt, và con dấu commit CÙNG transaction với
+        // state-flip + outbox-row: không có trạng thái "đã Scored mà chưa có dấu".
+        //
+        // Đường B2C ghi breakdown (SessionResultService.ComputeAndStoreAsync) chạy SAU, ngoài transaction
+        // này, nhưng dùng CHUNG CriterionScoreAggregator trong CÙNG một binary ⇒ nó không thể gộp kiểu
+        // khác với con dấu vừa đóng. Đóng dấu ở cả hai chỗ là tạo ra hai nguồn sự thật phải cùng đúng mãi.
+        //
+        // ⚠ Phải ghi lên bản ĐANG ĐƯỢC THEO DÕI thì caller mới lưu được: `session` ở trên đọc bằng
+        // AsNoTracking (cố ý — đọc trạng thái đã commit, không lẫn thay đổi chưa lưu của caller) nên nó
+        // là một bản SAO rời, gán vào đó thì mất trắng, IM LẶNG. `FindAsync` lấy từ identity map (không
+        // sinh query khi caller đã nạp) ⇒ đúng instance caller sắp commit.
+        //
+        // ⚠ KHÔNG dùng ExecuteUpdate ở đây: practice_sessions mang concurrency token xmin (DB10),
+        // ExecuteUpdate đổi xmin ⇒ SaveChanges ngay sau của caller ném DbUpdateConcurrencyException.
+        var tracked = await _db.PracticeSessions.FindAsync(new object?[] { sessionId }, ct);
+        if (tracked is not null)
+            tracked.ScoreAggregationVersion = CriterionScoreAggregator.CurrentVersion;
 
         var evt = new SessionScoredEvent
         {
@@ -52,7 +74,23 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             TotalScore = totalScore,
             ScoredAt = DateTime.UtcNow,
             // Nhãn thước đo cho bảng xếp hạng (CAMP-10) — xem SessionScoredEvent.RubricVersion.
-            RubricVersion = session.CampaignRubricVersion
+            RubricVersion = session.CampaignRubricVersion,
+            // SCP1 · B5 — bó biến RAW để B8 tính lại điểm bằng chính sách biểu thức. null nếu chưa
+            // chấm được tiêu chí nào (session bỏ ngang đường này không phát SessionScored, nhưng
+            // giữ null-safe).
+            ScoringInputs = scoringInputs,
+            // SCP1 · B6 / HĐ-5 — cờ RIÊNG: true = biểu thức chính sách LỖI lúc chạy trên buổi này ⇒
+            // điểm tính bằng công thức mặc định. Bảng kết quả (HĐ-5) phải hiện được, nếu không đây lại
+            // là một thứ hỏng im lặng.
+            ScoreFallback = scoreFallback,
+            // SCP1 · B10 / HĐ-5 — nhãn chính sách cho campaign_rankings.policy_version. Đã ghim sẵn
+            // trên session (B5) ⇒ đọc thẳng, KHÔNG query thêm.
+            CampaignPolicyVersion = session.CampaignPolicyVersion,
+            // ADP1 — cùng HẰNG SỐ đã đóng lên buổi ở trên, KHÔNG đọc lại `tracked.ScoreAggregationVersion`:
+            // con dấu trên buổi và nhãn trên bảng xếp hạng phải nói về CÙNG một lượt tính, nên chúng
+            // lấy từ cùng một nguồn. Đọc lại còn để lọt ca `tracked is null` ⇒ event mang null trong
+            // khi điểm rõ ràng vừa được gộp theo câu gốc.
+            ScoreAggregationVersion = CriterionScoreAggregator.CurrentVersion
         };
 
         _db.OutboxMessages.Add(OutboxMessage.ForScored(evt));
@@ -169,7 +207,27 @@ public class SessionScoringNotifier : ISessionScoringNotifier
 
     // Điểm tổng có trọng số dùng cho event (ranking B2B — campaign.md §campaign_rankings:
     // "total_score = Σ pct×weight, chuẩn hoá chia Σweight — Interview tính"). Áp dụng chung cho cả B2C.
-    private async Task<decimal> ComputeWeightedTotalScoreAsync(
+    //
+    // SCP1 · B5 — trả kèm BÓ BIẾN THÔ per-criterion (name/pct/weight/maxScore) + answered/totalQuestions.
+    // Dựng từ CÙNG `criteria` + `scores` đang tính điểm ⇒ không thêm query nào ngoài 2 CountAsync.
+    // Lưu RAW, KHÔNG lưu scalar đã tính (weighted_avg_pct…) — CẤM #3: append thêm biến sau này thì
+    // hàng lịch sử vẫn tính lại được (B8).
+    //
+    // SCP1 · B6 — nếu buổi ĐÃ GHIM chính sách (campaign_policy_expression), điểm = đánh giá biểu thức
+    // đó trên bó biến RAW; lỗi lúc chạy ⇒ LÙI về công thức weighted mặc định + cờ scoreFallback.
+    // `weighted_avg_pct` giữ NGUYÊN công thức hiện tại — nó chỉ trở thành MỘT BIẾN (B1), không bị thay.
+
+    /// <summary>
+    /// CAMP-21 — vị ngữ "câu này ĐÃ ĐƯỢC TRẢ LỜI" dùng CHUNG cho <c>answered</c> và <c>seedAnswered</c>:
+    /// có ghi âm, và không bị VAD kết luận là im lặng. <c>Expression</c> (không phải <c>Func</c>) để EF
+    /// dịch xuống SQL; vế <c>== null ||</c> viết tường minh cho ý đồ (xem chú thích tại nơi dùng).
+    /// <c>internal</c> để test đọc SQL thật qua <c>ToQueryString</c>.
+    /// </summary>
+    internal static readonly System.Linq.Expressions.Expression<Func<PracticeAnswer, bool>> AnsweredPredicate =
+        a => a.AudioObjectKey != null
+             && (a.RejectReason == null || a.RejectReason != AnswerService.NoSpeechReason);
+
+    private async Task<(decimal Total, ScoringInputsSnapshot? Inputs, bool ScoreFallback)> ComputeScoreAndInputsAsync(
         PracticeSession session, CancellationToken ct)
     {
         var sessionId = session.Id;
@@ -191,28 +249,84 @@ public class SessionScoringNotifier : ISessionScoringNotifier
         // hẳn, giao ID rỗng, TotalScore = 0. Cả hai vế nay nằm trong loader dùng chung.
         var criteria = await RubricCriteriaLoader.LoadAsync(
             _db, RubricCriteriaLoader.KeyFor(session), ct, includeLevels: false);
-        if (criteria.Count == 0) return 0m;
+        if (criteria.Count == 0) return (0m, null, false);
 
+        // ADP1 — projection mang thêm CÂU GỐC HIỆU DỤNG (`RootQuestionId ?? QuestionId`); `??` render
+        // thành COALESCE trên Npgsql (đã soi bằng ToQueryString trên provider thật).
         var scores = await _db.AnswerScores
             .AsNoTracking()
             .Where(sc => sc.Answer.SessionId == sessionId)
-            .Select(sc => new { sc.AnswerId, sc.CriterionId, sc.Score })
+            .Select(sc => new AnswerCriterionScore(
+                sc.AnswerId,
+                sc.Answer.Question.RootQuestionId ?? sc.Answer.QuestionId,
+                sc.CriterionId,
+                sc.Score))
             .ToListAsync(ct);
-        if (scores.Count == 0) return 0m;
+        if (scores.Count == 0) return (0m, null, false);
 
-        // E10 — điểm chốt mỗi (answer, criterion) = MEDIAN qua các attempt (self-consistency).
-        var medianPerAnswerCriterion = scores
-            .GroupBy(s => (s.AnswerId, s.CriterionId))
-            .Select(g => new { g.Key.CriterionId, Score = ScoreStatistics.Median(g.Select(s => s.Score)) });
+        // SCP1/B12 — `answered` = số câu ứng viên THỰC SỰ TRẢ LỜI, đo bằng "có ghi âm"
+        // (AudioObjectKey != null). Đường upload luôn gán AudioObjectKey (AnswerService.cs:120, :132),
+        // còn MarkUnansweredAsSkippedAsync (PracticeService) tạo hàng THẬT cho câu chưa trả lời với
+        // AudioObjectKey = NULL. Trước B12 chỗ này đếm MỌI hàng ⇒ answered == totalQuestions ở 100%
+        // buổi được chấm ⇒ biến `completeness` LUÔN = 1 ⇒ mẫu chính sách "phạt bỏ câu" vô hiệu.
+        //
+        // KHÔNG lọc theo `Status != Skipped`: `Skipped` mang BA nghĩa — (a) VAD không thấy tiếng nói
+        // (AnswerService.cs nhánh thích ứng + callback worker noSpeech), (b) buổi kẹt bị chốt sổ khi
+        // không attempt nào chấm được (FinalizeStuckSessionAsync), (c) câu chưa từng ghi âm. (b) là lỗi
+        // của bộ chấm CỦA TA — lọc theo Status sẽ phạt ứng viên vì nó.
+        //
+        // CAMP-21 (2026-09-11) — nhưng "có ghi âm" cũng tính luôn (a): đo trên dev, trả lời 1/3 câu +
+        // nộp 1 bài 6 giây im lặng cho seed_answered = 2 ⇒ 49.33 điểm thay vì 24.67 — không biết thì
+        // bấm ghi im lặng CÓ LỢI HƠN bỏ qua. Nên loại đúng (a) bằng `reject_reason = 'no_speech'`
+        // (ghi ở ĐÚNG hai chỗ đó, KHÔNG ghi ở (b)); (b) và (c) không đổi. Đánh đổi nói thẳng: VAD báo
+        // nhầm thì người bị phạt là ứng viên — đó là thứ luật cũ tránh, ta đổi vì kẽ hở khai thác được.
+        //
+        // Vị ngữ SQL PHẢI có vế `reject_reason IS NULL OR`: `NULL <> 'no_speech'` là UNKNOWN ⇒ thiếu vế
+        // đó là lọc mất MỌI dòng cũ ⇒ đổi điểm hồi tố toàn bộ lịch sử. Đo thật (ToQueryString): EF Core
+        // mặc định tự bù null-semantics C# nên `!=` trần cũng ra `OR IS NULL` — viết tường minh để không
+        // phụ thuộc cấu hình (bật UseRelationalNulls / raw SQL là mất bù), và có test khoá chuỗi `IS NULL`
+        // trong SQL sinh ra. `null` = "không biết" (BK23) ⇒ vẫn tính là đã trả lời.
+        //
+        // `answered` và `seedAnswered` dùng CÙNG MỘT vị ngữ (AnsweredPredicate) — sửa một vế mà quên
+        // vế kia là `completeness` và `seed_completeness` đo hai thứ khác nhau mà không lỗi ở đâu cả.
+        //
+        // ĐỔI NGHĨA biến TẠI CHỖ (thay vì thêm biến mới) là ngoại lệ hợp lệ với luật append-only của
+        // ScoringVariableCatalog (lý do ghi tại catalog): B12 — `completeness` chưa từng khác 1 và prod
+        // chưa có scoring_inputs; CAMP-21 — thêm `seed_answered_strict` chỉ bảo vệ chiến dịch tự soạn
+        // biểu thức (không ai soạn), kẽ hở vẫn mở cho toàn bộ chiến dịch đang chạy. Snapshot cũ đã đóng
+        // băng SeedAnswered nên preview/apply không đổi điểm lịch sử.
+        var answered = await _db.PracticeAnswers
+            .Where(a => a.SessionId == sessionId)
+            .Where(AnsweredPredicate)
+            .CountAsync(ct);
+        var totalQuestions = await _db.PracticeQuestions.CountAsync(q => q.SessionId == sessionId, ct);
 
-        // Điểm TB mỗi tiêu chí qua các answer đã chấm (BC9 §Công thức bước 1, tái dùng cho B2B).
-        var avgByCriterion = medianPerAnswerCriterion
-            .GroupBy(s => s.CriterionId)
-            .ToDictionary(g => g.Key, g => g.Average(s => s.Score));
+        // RNK1 · HĐ-1 — câu GỐC (kind = Seed): tổng = K câu rút cho ứng viên này; "đã trả lời" theo
+        // CÙNG vị ngữ với `answered` ở trên. FollowUp/Clarify/NewQuestion KHÔNG tính vào seed_* (chúng
+        // vẫn vào answered/totalQuestions).
+        var seedTotal = await _db.PracticeQuestions.CountAsync(
+            q => q.SessionId == sessionId && q.Kind == QuestionKind.Seed, ct);
+        var seedAnswered = await _db.PracticeAnswers
+            .Where(a => a.SessionId == sessionId && a.Question.Kind == QuestionKind.Seed)
+            .Where(AnsweredPredicate)
+            .CountAsync(ct);
+
+        // E10 median mỗi (answer, criterion) → ADP1 gộp về CÂU GỐC → TB qua các câu gốc.
+        // MỘT hàm dùng chung với SessionResultService (đường ghi breakdown B2C): điểm đi vào xếp hạng
+        // B2B và điểm hiện trên màn kết quả phải là CÙNG một con số (mẫu SkipPenaltyRule.Apply).
+        //
+        // Bước gộp-về-câu-gốc là thứ sửa việc chuỗi đào sâu dài ăn nhiều phiếu hơn chuỗi ngắn — mà độ
+        // dài chuỗi do AI quyết lúc thi, không phải do thước đo. Với B2B nó còn nặng hơn B2C: điểm này
+        // đi thẳng vào `campaign_rankings`, nên hai ứng viên cùng chiến dịch đang được xếp cạnh nhau
+        // bằng hai cách phân bổ trọng số khác nhau.
+        var avgByCriterion = CriterionScoreAggregator.AverageByCriterion(scores);
 
         // maxScore khác nhau giữa các tiêu chí ⇒ chuẩn theo % trước khi gộp trọng số.
         decimal weightedSum = 0m;
         decimal weightSum = 0m;
+        // Bó biến THÔ per-criterion — chỉ những tiêu chí THỰC SỰ có điểm (giống mẫu số của công thức
+        // tổng: tiêu chí không ai hỏi/không có điểm rơi khỏi cả hai). B8 dựng ScoringContext từ đây.
+        var bag = new List<CriterionInputSnapshot>(criteria.Count);
         foreach (var c in criteria)
         {
             if (!avgByCriterion.TryGetValue(c.Id, out var avgScore)) continue;
@@ -220,9 +334,70 @@ public class SessionScoringNotifier : ISessionScoringNotifier
             var pct = Math.Clamp(avgScore / maxScore * 100m, 0m, 100m);
             weightedSum += pct * c.Weight;
             weightSum += c.Weight;
+            // RNK1 · HĐ-5 — CriterionId = campaign_criteria.id (ref lỏng, materialize lúc tạo buổi B2B).
+            // Đi vào event SessionScored ⇒ Campaign khớp điểm sàn read-time theo id (ổn định qua PUT).
+            // null cho: rubric B2C · buổi B2B tạo trước RNK1 · bản Campaign cũ chưa gửi criterionId
+            // ⇒ Campaign lùi về khớp theo TÊN.
+            bag.Add(new CriterionInputSnapshot(c.Name, Math.Round(pct, 4), c.Weight, c.MaxScore, CriterionId: c.SourceCriterionId));
         }
 
-        if (weightSum <= 0m) return 0m;
-        return Math.Clamp(Math.Round(weightedSum / weightSum, 2), 0m, 100m);
+        // RNK1 · HĐ-1 — snapshot mang seed_* + skip_penalty (ghim trên buổi). Đường preview/apply (B8)
+        // dựng lại InterviewScoringInputs từ đây ⇒ luật câu bỏ trống áp giống hệt đường chấm thường.
+        var inputs = new ScoringInputsSnapshot(
+            bag, answered, totalQuestions, seedAnswered, seedTotal, session.SkipPenalty);
+        var scoringInputs = inputs.ToInterviewInputs();
+
+        // Công thức MẶC ĐỊNH (weighted). Giữ NGUYÊN — nó là biến `weighted_avg_pct` (B1, append-only)
+        // và là đích LÙI AN TOÀN khi biểu thức chính sách lỗi.
+        var defaultTotal = weightSum <= 0m
+            ? 0m
+            : Math.Clamp(Math.Round(weightedSum / weightSum, 2), 0m, 100m);
+
+        // (5) Buổi CHƯA ghim chính sách (B2C, hoặc B2B chưa áp, hoặc dữ liệu trước SCP1) → công thức mặc định.
+        // RNK1 · HĐ-2 — luật câu bỏ trống áp NGAY trên đường mặc định: buổi B2B mới (skip_penalty=true)
+        // phạt cả khi campaign chưa áp chính sách biểu thức. B2C / campaign cũ ⇒ Apply trả nguyên.
+        if (string.IsNullOrWhiteSpace(session.CampaignPolicyExpression))
+            return (SkipPenaltyRule.Apply(defaultTotal, scoringInputs), inputs, ScoreFallback: false);
+
+        // (4) BÁO LỖI ĐÁNH GIÁ — KHÔNG lùi an toàn, KHÔNG bịa điểm. total_questions = 0 trong khi đã
+        // ghim chính sách là BẤT BIẾN HỆ THỐNG bị vi phạm (mọi buổi B2B tạo với ≥1 câu campaign), không
+        // phải một cấu hình hợp lệ mà biểu thức "không may" hỏng trên đó. Ném để có người điều tra.
+        if (totalQuestions <= 0)
+        {
+            _logger.LogError(
+                "SCP1/B6: session {SessionId} đã ghim chính sách chấm (v{Ver}) nhưng total_questions = 0 "
+                + "— bất biến hệ thống bị vi phạm, KHÔNG tính điểm.",
+                sessionId, session.CampaignPolicyVersion);
+            throw new InvalidOperationException(
+                $"SCP1: session {sessionId} có total_questions = 0 với chính sách chấm đã ghim.");
+        }
+
+        // (2)+(3) Đánh giá biểu thức đã ghim trên bó biến RAW CỦA CHÍNH BUỔI NÀY. Lỗi lúc chạy — chia 0,
+        // tràn số, bộ đánh giá ném, kết quả < 0 hoặc > 100 (Evaluate tự trả RESULT_OUT_OF_RANGE, KHÔNG
+        // clamp) — ⇒ LÙI về `defaultTotal` + cờ RIÊNG scoreFallback. KHÔNG dùng needs_review (cờ đó đã
+        // có ba nguồn khác, UI không phân biệt được lý do). KHÔNG nuốt lỗi: mọi lần lùi ghi log.
+        // Parse + eval + phân loại lỗi đi qua ScoringPolicyRunner — CÙNG một hàm đường xem-trước/áp (B8)
+        // dùng, để điểm preview = điểm apply = điểm một lần chấm mới. Lùi-an-toàn + log giữ ở đây.
+        var ctx = ScoringContext.ForInterview(scoringInputs);
+        var outcome = ScoringPolicyRunner.Evaluate(session.CampaignPolicyExpression, ctx);
+        if (outcome.Exception is not null)
+            _logger.LogError(outcome.Exception, "SCP1/B6: bộ đánh giá ném cho session {SessionId}", sessionId);
+
+        if (outcome.Value is decimal ps)
+        {
+            // RNK1 · HĐ-2 — điểm chính sách rồi mới nhân luật câu bỏ trống (CÙNG helper Shared với B8).
+            var withPenalty = SkipPenaltyRule.Apply(Math.Round(ps, 2), scoringInputs);
+            _logger.LogInformation(
+                "SCP1/B6: session {SessionId} chấm bằng chính sách v{Ver} = {Score} (sau luật câu bỏ trống = {Final})",
+                sessionId, session.CampaignPolicyVersion, ps, withPenalty);
+            return (withPenalty, inputs, ScoreFallback: false);
+        }
+
+        var fallbackWithPenalty = SkipPenaltyRule.Apply(defaultTotal, scoringInputs);
+        _logger.LogWarning(
+            "SCP1/B6: session {SessionId} — chính sách chấm v{Ver} LỖI [{Reason}] ⇒ lùi về công thức "
+            + "mặc định = {Default} (sau luật câu bỏ trống = {Final}), scoreFallback = true.",
+            sessionId, session.CampaignPolicyVersion, outcome.FailReason, defaultTotal, fallbackWithPenalty);
+        return (fallbackWithPenalty, inputs, ScoreFallback: true);
     }
 }

@@ -44,6 +44,7 @@ builder.Services.AddOpenApi(options =>
 });
 
 builder.Services.AddScoped<ICampaignService, CampaignService>();
+builder.Services.AddScoped<ICampaignAnalyticsService, CampaignAnalyticsService>();   // GET /campaign/analytics (employer, org-scoped)
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IFileService, FileService>();
 builder.Services.AddSingleton<IPdfTextExtractor, PdfTextExtractor>();   // DB17: shared PDF extractor
@@ -113,6 +114,14 @@ builder.Services.AddHttpClient<IAuthProvisionClient, AuthProvisionClient>(c =>
     c.BaseAddress = new Uri(
         string.IsNullOrWhiteSpace(builder.Configuration["Auth:BaseUrl"])
             ? "http://localhost:5001" : builder.Configuration["Auth:BaseUrl"]!));
+// CMP1-B1: resolve tên tổ chức cho trang lời mời (fail-soft → null; cùng Auth:BaseUrl với client trên).
+builder.Services.AddHttpClient<IOrgNameResolver, AuthOrgNameResolver>(c =>
+{
+    c.BaseAddress = new Uri(
+        string.IsNullOrWhiteSpace(builder.Configuration["Auth:BaseUrl"])
+            ? "http://localhost:5001" : builder.Configuration["Auth:BaseUrl"]!);
+    c.Timeout = TimeSpan.FromSeconds(3);   // đường đọc cho ứng viên ẩn danh — không chờ Auth lâu
+});
 builder.Services.AddHttpClient<ICampaignSessionClient, CampaignSessionClient>(c =>
     c.BaseAddress = new Uri(
         string.IsNullOrWhiteSpace(builder.Configuration["Interview:BaseUrl"])
@@ -147,6 +156,8 @@ builder.Services.AddHttpContextAccessor();
 // F17: vòng đời API key bên thứ ba (tạo/liệt kê/thu hồi) + xác thực key cho Public API.
 builder.Services.Configure<ApiKeySettings>(builder.Configuration.GetSection(ApiKeySettings.SectionName));
 builder.Services.AddScoped<IApiKeyService, ApiKeyService>();
+
+builder.Services.AddScoped<IScoringPolicyService, ScoringPolicyService>();   // SCP1 · HĐ-3
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     // F17 — scheme "ApiKey" ĐỨNG RIÊNG cạnh Bearer. Mặc định vẫn là Bearer nên API key KHÔNG mở

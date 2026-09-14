@@ -67,7 +67,12 @@ public class InternalSessionsController : ControllerBase
             req.AdaptiveEnabled, req.MaxFollowUps, req.MaxQuestions,
             req.MaxDeepPerQuestion, req.Language, req.Seniority,   // phỏng vấn THÍCH ỨNG (B2B) — INT-17b: trần đào sâu mỗi câu
             req.RubricVersion,
-            details);
+            details,
+            // SCP1 · B5 — chuyển tiếp hợp đồng chấm điểm (chính sách biểu thức) từ Campaign xuống session.
+            req.CampaignPolicyVersion, req.CampaignPolicyExpression,
+            req.CampaignPolicyPassScorePct, req.CampaignPolicyEngineVersion,
+            // RNK1 · HĐ-2 / CAMP-21 — chuyển tiếp luật câu bỏ trống.
+            req.SkipPenalty);
 
         try
         {
@@ -144,6 +149,30 @@ public class InternalSessionsController : ControllerBase
             return NotFound(new { error = $"Session {sessionId} không tồn tại" });
 
         return Ok(answers);
+    }
+
+    // E11c — Campaign (HR) phát bản ghi âm câu trả lời của ứng viên B2B (máy-máy, X-Internal-Token, KHÔNG qua
+    // gateway). KHÔNG check chủ session — Campaign đã gate org sở hữu campaign + ranking row thuộc campaign
+    // (cùng gate với /transcript AI4). Answer không thuộc session / chưa có audio → 404. Content-Type suy từ
+    // đuôi object key (webm/m4a/wav…), không lộ key SeaweedFS ra ngoài.
+    [HttpGet("internal/sessions/{sessionId:guid}/answers/{answerId:guid}/audio")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(FileStreamResult), StatusCodes.Status200OK,
+        "audio/webm", "audio/ogg", "audio/mpeg", "audio/mp4", "video/mp4", "audio/flac", "audio/wav")]
+    public async Task<IActionResult> GetSessionAnswerAudio(
+        Guid sessionId,
+        Guid answerId,
+        [FromHeader(Name = "X-Internal-Token")] string? token,
+        CancellationToken ct)
+    {
+        if (!IsValidInternalToken(token))
+            return Unauthorized(new { error = "Invalid internal token" });
+
+        var audio = await _practiceService.GetAnswerAudioInternalAsync(sessionId, answerId, ct);
+        if (audio is null)
+            return NotFound(new { error = "Không tìm thấy bản ghi âm câu trả lời này." });
+
+        return File(audio.Content, audio.ContentType, enableRangeProcessing: true);
     }
 
     private bool IsValidInternalToken(string? token)

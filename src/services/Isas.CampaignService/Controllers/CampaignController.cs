@@ -3,6 +3,7 @@ using Isas.CampaignService.Models;
 using Isas.CampaignService.Services;
 using Isas.CampaignService.Validation;
 using Isas.Shared.Pagination;
+using Isas.Shared.Scoring;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -17,18 +18,21 @@ namespace Isas.CampaignService.Controllers
         private readonly ICampaignService _campaignService;
         private readonly ICvScreeningService _screening;   // C14: sàng CV async (publish/shortlist/PATCH)
         private readonly IRubricPreviewService? _preview;   // CAMP-19: chấm thử thước đo
+        private readonly IScoringPolicyService? _policies;  // SCP1: chính sách chấm điểm (HĐ-3)
         private readonly ILogger<CampaignController> _logger;
 
         public CampaignController(
             ICampaignService campaignService,
             ICvScreeningService screening,
             ILogger<CampaignController> logger,
-            IRubricPreviewService? preview = null)
+            IRubricPreviewService? preview = null,
+            IScoringPolicyService? policies = null)
         {
             _campaignService = campaignService;
             _screening = screening;
             _logger = logger;
             _preview = preview;
+            _policies = policies;
         }
 
         // BK4: chủ sở hữu campaign = ORG (AUTH-8/D5 — billing/campaign gắn theo org). JWT mang `org_id`
@@ -40,12 +44,27 @@ namespace Isas.CampaignService.Controllers
         private Guid GetActorUserId()
             => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var g) ? g : Guid.Empty;
 
+        // E11c — email HR thao tác, snapshot vào lịch sử override (Campaign không có bảng user, GEN-3 cấm gọi Auth
+        // lúc chạy). Khoá claim là literal "email" vì service này đặt MapInboundClaims=false (tiền lệ
+        // ParticipationController). Thiếu claim → null → lịch sử hiện "không rõ", KHÔNG 500.
+        private string? GetActorEmail()
+            => User.FindFirstValue("email");
+
+        // AUTH-4/AUTH-5: org_role trong JWT (đọc OFFLINE — GEN-3). Mẫu như ApiKeysController.
+        private bool IsOrgAdmin()
+            => User.HasClaim(c => c.Type == "org_role" && c.Value == "OrgAdmin");
+
         // GET /campaign — campaign của org caller (mới nhất trước; keyset-paged DB31, mẫu DB8).
         // ?limit= (mặc định/tối đa 500) + ?cursor= (opaque) để phân trang; next-cursor trả ở header
         // X-Next-Cursor (vắng = hết trang). Body giữ nguyên mảng JSON → FE hiện tại không phải sửa gì.
         [HttpGet]
         [Authorize(Roles = "Employer")]
-        public async Task<ActionResult<List<CampaignResponse>>> GetAllCampaign(
+        // CMP1-B3 — kiểu khai PHẢI khớp kiểu thật trả về (CampaignListItemResponse, không
+        // CampaignResponse): OpenAPI/Scalar tự sinh từ chữ ký này, và `ActionResult<T>` có phép
+        // chuyển đổi ngầm từ `OkObjectResult` mà KHÔNG kiểm tra T ở compile-time — khai sai kiểu vẫn
+        // build xanh, nhưng tài liệu API sẽ nói dối hình dạng thật (đúng lớp lỗ đã vá ở vòng Scalar
+        // 2026-07-23: OpenAPI auto-gen chỉ đúng khi chữ ký controller đúng).
+        public async Task<ActionResult<List<CampaignListItemResponse>>> GetAllCampaign(
             [FromQuery] string? cursor = null, [FromQuery] int? limit = null, CancellationToken ct = default)
         {
             var orgId = GetOrgId();
@@ -124,9 +143,15 @@ namespace Isas.CampaignService.Controllers
             if (orgId is null)
                 return Forbid();
 
-            if (request.Questions == null || !request.Questions.Any())
-                return BadRequest("At least one question is required.");
-
+            // CMP-B1 — KHÔNG chặn "phải có ≥1 câu hỏi" khi TẠO. Bản nháp mới hợp lệ với 0 câu: FE
+            // dựng nháp trước rồi mới gọi endpoint sinh câu hỏi bằng AI, nên nháp lúc POST chưa có câu
+            // nào. Ràng buộc "≥1 câu hỏi" thuộc về lúc XUẤT BẢN và ĐÃ nằm ở đó —
+            // CampaignService.PublishCampaignAsync (CampaignService.cs:1285) ném InvalidOperationException
+            // → CampaignController:741 → 409 Conflict. Chiến dịch rỗng vẫn KHÔNG thể lên sóng.
+            // ĐỪNG "sửa lại cho chặt" ở đây (thêm chốt / [Required] / [MinLength] trên request):
+            // làm vậy tái tạo đúng bế tắc "sinh câu hỏi bằng AI cho chiến dịch mới" — bản nháp chưa
+            // soạn câu nào ⇒ POST /campaign 400. Khối dưới (câu nào CÓ thì không được rỗng chữ) GIỮ
+            // NGUYÊN: mảng rỗng đi qua bình thường, mảng có câu rỗng vẫn bị chặn.
             if (request.Questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 return BadRequest("All questions must have non-empty text.");
 
@@ -143,6 +168,10 @@ namespace Isas.CampaignService.Controllers
             {
                 var campaign = await _campaignService.CreateCampaignAsync(orgId.Value, GetActorUserId(), request, ct);
                 return Ok(campaign);
+            }
+            catch (AdaptiveBudgetTooSmallException ex)   // RNK1 · HĐ-7 — 400 body { code, need, have, questions, deep }
+            {
+                return BadRequest(ex.Body);
             }
             catch (ArgumentException ex)
             {
@@ -227,6 +256,7 @@ namespace Isas.CampaignService.Controllers
                 return Ok(updatedCampaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (AdaptiveBudgetTooSmallException ex) { return BadRequest(ex.Body); }   // RNK1 · HĐ-7
             catch (ArgumentException ex) { return BadRequest(ex.Message); }         // C12: criteria không hợp lệ → 400
             catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // C12: sửa criteria khi != Draft → 409
@@ -256,6 +286,35 @@ namespace Isas.CampaignService.Controllers
             catch (ArgumentException ex) { return BadRequest(ex.Message); }         // nhóm nhu cầu lạ → 400
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // sửa khi != Draft → 409 (CAMP-2)
             catch (Exception ex) { return StatusCode(500, $"Failed to update job needs: {ex.Message}"); }
+        }
+
+        // CMP3-B3 — AI đọc JD → đề xuất nhu cầu công việc để HR chốt (qua PUT /job-needs) TRƯỚC khi
+        // sàng CV. CHỈ ĐỌC: KHÔNG ghi campaigns.job_needs (một cửa ghi duy nhất — mẫu
+        // POST /questions/import, /criteria/levels/suggest). Không body.
+        // 400 chưa có jdText · 404 ngoài org · 502 AIService lỗi hoặc không suy được (KHÔNG fallback
+        // bộ mặc định — HR sẽ tin là do AI soạn rồi chốt).
+        [HttpPost("{id:guid}/job-needs/suggest")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<SuggestJobNeedsResponse>> SuggestJobNeeds(Guid id, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.SuggestJobNeedsAsync(orgId.Value, id, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // Lỗi upstream AIService = 502, request của HR hợp lệ (tiền lệ GenerateCampaignQuestions,
+            // SuggestCriterionLevels). Đặt TRƯỚC ArgumentException.
+            catch (DownstreamServiceException ex)
+            {
+                _logger.LogError(ex, "AI gợi ý nhu cầu công việc thất bại cho campaign {CampaignId}", id);
+                return StatusCode(StatusCodes.Status502BadGateway, ex.Message);
+            }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }   // chưa có jdText → 400
+            catch (Exception ex) { return StatusCode(500, $"Failed to suggest job needs: {ex.Message}"); }
         }
 
         [HttpPut("{id:guid}/files")]
@@ -410,6 +469,154 @@ namespace Isas.CampaignService.Controllers
         // KHÔNG nhận campaignId — bộ chuẩn không thuộc campaign nào. Vẫn gác Roles="Employer" để đây
         // không thành endpoint công khai đọc được toàn bộ thước đo của hệ thống.
         //
+        // SCP1 · HĐ-3 — danh sách MẪU chính sách chấm điểm hệ thống (seed). GLOBAL, không org-scoped:
+        // mọi Employer thấy cùng bộ mẫu. Route literal 2 đoạn ⇒ KHÔNG đụng [HttpGet("{id}")] (mẫu như
+        // "criteria/system-default/preview", "questions/template").
+        [HttpGet("scoring-policy-templates")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<IReadOnlyList<DTOs.ScoringPolicyResponse>>> GetScoringPolicyTemplates(
+            CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            return Ok(await _policies.GetTemplatesAsync(ct));
+        }
+
+        // SCP1 · B14 — LIỆT KÊ các version chính sách chấm ĐÃ TẠO cho campaign (KHÔNG gồm mẫu hệ thống).
+        // FE B14/F2 cần đúng danh sách này để so với con trỏ campaigns.{interview,cv}_policy_version
+        // (GET /campaign — B13) mà tô "Đang dùng". CHỈ ĐỌC.
+        //   · ?kind= (tuỳ chọn) "Interview" | "CvScreening"; giá trị khác → 400.
+        //   · campaign ngoài org → 404 (BK15 — không lộ campaign có tồn tại hay không).
+        //   · campaign chưa có policy nào → [] (KHÔNG 404).
+        [HttpGet("{id:guid}/scoring-policies")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<IReadOnlyList<DTOs.ScoringPolicyResponse>>> ListScoringPolicies(
+            Guid id, [FromQuery] string? kind, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            try
+            {
+                return Ok(await _policies.ListPoliciesAsync(orgId.Value, id, kind, ct));
+            }
+            catch (KeyNotFoundException) { return NotFound(); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+        }
+
+        // SCP1 · HĐ-2 — kiểm cú pháp/biến/kết-quả MỘT biểu thức chấm điểm. THUẦN kiểm tra:
+        //   · chạy trên BỘ MẪU cố định trong code (ScoringContext.Sample) — không đọc dữ liệu ứng viên,
+        //     endpoint dùng được cả khi campaign chưa có ai;
+        //   · KHÔNG ghi DB (chỉ 1 lần đọc campaigns để chặn dò campaign org khác → 404).
+        // Lỗi biểu thức trả MÃ + [start,end) ký tự (HĐ-2), FE map i18n. `kind` sai/thiếu → 400 (lỗi
+        // phong bì request, KHÔNG phải mã lỗi biểu thức).
+        [HttpPost("{id:guid}/scoring-policies/validate")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<DTOs.ScoringPolicyValidateResponse>> ValidateScoringPolicy(
+            Guid id, [FromBody] DTOs.ScoringPolicyValidateRequest req, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            var kind = req?.Kind switch
+            {
+                "Interview" => ScoringExpressionKind.Interview,
+                "CvScreening" => ScoringExpressionKind.CvScreening,
+                _ => (ScoringExpressionKind?)null,
+            };
+            if (kind is null) return BadRequest("kind phải là 'Interview' hoặc 'CvScreening'.");
+
+            try
+            {
+                return Ok(await _policies.ValidateExpressionAsync(
+                    orgId.Value, id, kind.Value, req!.Expression ?? string.Empty, ct));
+            }
+            catch (KeyNotFoundException) { return NotFound(); }
+        }
+
+        // SCP1 · HĐ-3/HĐ-6 — tạo VERSION MỚI chính sách chấm cho campaign, khởi từ mẫu
+        // (sourceTemplateId) hoặc biểu thức tự gõ. CHÉP giá trị, KHÔNG tham chiếu sống tới mẫu
+        // (CAMP-20). Con trỏ campaigns.{interview,cv}_policy_version chuyển sang version vừa tạo.
+        //   · HĐ-6: HrMember chỉ tạo khi campaign còn Draft; ngoài Draft cần OrgAdmin.
+        //   · CẤM B4: campaign đã có người được chấm → 409 (phải qua xem trước B8). Sửa policy đã tạo
+        //     KHÔNG có ở đây — tạo version mới.
+        [HttpPost("{id:guid}/scoring-policies")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<DTOs.ScoringPolicyResponse>> CreateScoringPolicy(
+            Guid id, [FromBody] DTOs.CreateScoringPolicyRequest req, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            try
+            {
+                var created = await _policies.CreatePolicyAsync(
+                    orgId.Value, GetActorUserId(), IsOrgAdmin(), id, req ?? new(), ct);
+                return Ok(created);
+            }
+            // ScoringExpressionInvalidException KHÔNG dẫn xuất InvalidOperationException → bắt riêng, trả
+            // body { errors: [{code,start,end}] } như HĐ-2 (FE dùng lại mã dịch của B3).
+            catch (ScoringExpressionInvalidException ex) { return BadRequest(new { errors = ex.Errors }); }
+            // EntitlementForbiddenException DẪN XUẤT InvalidOperationException → PHẢI đứng trước khối 409.
+            catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
+            catch (KeyNotFoundException) { return NotFound(); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }
+        }
+
+        // SCP1 · HĐ-4 — XEM TRƯỚC tác động của một biểu thức chấm lên TOÀN BỘ ứng viên đã chấm: điểm
+        // cũ↔mới, hạng cũ↔mới, cờ đổi hạng, + fingerprint để nối sang apply. KHÔNG ghi gì. Tính LOCAL
+        // từ campaign_rankings.scoring_inputs (B5) / cv_submission + job_needs — không gọi xuyên service.
+        //   · Hạng tính trên TOÀN BỘ tập; ?cursor=&limit= chỉ phân trang phần trả về (next ở body).
+        [HttpPost("{id:guid}/scoring-policies/preview")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<DTOs.ScoringPolicyPreviewResponse>> PreviewScoringPolicy(
+            Guid id, [FromBody] DTOs.ScoringPolicyPreviewRequest req,
+            [FromQuery] string? cursor, [FromQuery] int? limit, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            try
+            {
+                return Ok(await _policies.PreviewPolicyAsync(orgId.Value, id, req ?? new(), cursor, limit, ct));
+            }
+            catch (ScoringExpressionInvalidException ex) { return BadRequest(new { errors = ex.Errors }); }
+            catch (KeyNotFoundException) { return NotFound(); }
+            catch (ArgumentException ex) { return BadRequest(ex.Message); }
+        }
+
+        // SCP1 · HĐ-4/HĐ-6 — ÁP chính sách chấm: chỉ OrgAdmin. So fingerprint body với vân tay tính
+        // lại từ dòng chính sách đã lưu — lệch ⇒ 409 POLICY_CHANGED_AFTER_PREVIEW. Khớp ⇒ ghi đè điểm
+        // chính thức của MỌI ứng viên đã chấm (loại của policy) + audit điểm cũ + dời con trỏ version.
+        [HttpPost("{id:guid}/scoring-policies/{policyId:guid}/apply")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<DTOs.ApplyScoringPolicyResult>> ApplyScoringPolicy(
+            Guid id, Guid policyId, [FromBody] DTOs.ApplyScoringPolicyRequest req, CancellationToken ct)
+        {
+            if (_policies is null) return StatusCode(500, "ScoringPolicyService chưa được cấu hình.");
+            var orgId = GetOrgId();
+            if (orgId is null) return Forbid();
+
+            try
+            {
+                var result = await _policies.ApplyPolicyAsync(
+                    orgId.Value, GetActorUserId(), IsOrgAdmin(), id, policyId, req ?? new(), ct);
+                return Ok(result);
+            }
+            // ScoringPolicyChangedException KHÔNG dẫn xuất InvalidOperationException → bắt riêng cho 409.
+            catch (ScoringPolicyChangedException ex)
+            {
+                return Conflict(new { error = "POLICY_CHANGED_AFTER_PREVIEW", message = ex.Message });
+            }
+            catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
+            catch (KeyNotFoundException) { return NotFound(); }
+            catch (InvalidOperationException ex) { return BadRequest(new { error = ex.Message }); }
+        }
+
         // ⚠ Route 3 đoạn nên KHÔNG đụng [HttpGet("{id}")] (1 đoạn, không ràng buộc) ở trên.
         //
         // 400 thiếu/sai jobCategory|language · 404 admin CHƯA soạn bộ cho tổ hợp này · 502 Interview lỗi.
@@ -474,7 +681,9 @@ namespace Isas.CampaignService.Controllers
 
         // CAMP-19 — CHẤM THỬ: AI viết 3 bài mẫu cho một câu hỏi rồi chấm chính chúng bằng thước đo
         // ĐANG LƯU trong DB (không phải bản HR đang gõ dở) ⇒ FE phải khoá nút khi form còn dirty.
-        // 3 lượt THÀNH CÔNG đầu của mỗi phiên bản thước đo là miễn phí, sau đó trừ 1 credit ví Org.
+        // SC2 · T6 (D-4): 1 lượt THÀNH CÔNG miễn phí cho MỖI (campaign, phiên bản thước đo, CÂU), sau đó trừ 1
+        // credit ví Org — lượt tính phí cần `confirmBilled: true`, thiếu ⇒ 409 `PREVIEW_BILLING_CONFIRM_REQUIRED`
+        // (trước khi insert row / reserve — REV-BE R3).
         // 400 chưa có tiêu chí/mốc/câu hỏi · 402 org hết credit · 404 ngoài org · 409 chiến dịch đã
         // đóng hoặc đang có lượt chạy · 502 AIService lỗi.
         [HttpPost("{id:guid}/rubric-preview")]
@@ -494,6 +703,8 @@ namespace Isas.CampaignService.Controllers
                     orgId.Value, GetActorUserId(), id, request ?? new RubricPreviewRequest(), ct));
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            // REV-BE R3 — lượt sẽ trừ credit mà client chưa xác nhận: 409 body có mã để FE hỏi rồi POST lại.
+            catch (PreviewBillingConfirmRequiredException ex) { return Conflict(ex.Body); }
             // Ví org hết credit = 402 (PAY-5), KHÔNG phải 502 — HR nạp thêm là chạy được.
             catch (InsufficientOrgCreditException ex)
             {
@@ -570,6 +781,8 @@ namespace Isas.CampaignService.Controllers
                 return Ok(campaign);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (AdaptiveBudgetTooSmallException ex) { return BadRequest(ex.Body); }   // RNK1 · HĐ-7 — 3 số adaptive lệch → 400
+            catch (QuestionBankInvalidException ex) { return BadRequest(ex.Body); }      // RNK1 · HĐ-8 — ngân hàng đề có cảnh báo → 400
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // sai trạng thái / thiếu câu hỏi → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to publish campaign: {ex.Message}"); }
         }
@@ -591,6 +804,27 @@ namespace Isas.CampaignService.Controllers
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // transition không hợp lệ → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to transition campaign: {ex.Message}"); }
+        }
+
+        // CMP3-B4: kéo start_at về hiện tại để ứng viên vào thi ngay. KHÔNG NHẬN BODY (đường riêng —
+        // KHÔNG dùng PUT /campaign: nhánh không-criteria của PUT không ghi audit, và body React kèm
+        // criteria làm rubric_version nhảy oan). 409 chưa Active / có ca thi · 404 ngoài org.
+        // Idempotent: start_at đã ở quá khứ → no-op. Trả CampaignResponse (shape cũ).
+        [HttpPost("{id:guid}/start-now")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<CampaignResponse>> StartNow(Guid id, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.StartEarlyAsync(orgId.Value, GetActorUserId(), id, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // chưa Active / có ca thi → 409
+            catch (Exception ex) { return StatusCode(500, $"Failed to start campaign early: {ex.Message}"); }
         }
 
         // D1: Distribution đường 1 — mời thẳng qua danh sách email
@@ -684,7 +918,7 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                var result = await _campaignService.InviteShortlistedCandidatesAsync(orgId.Value, GetActorUserId(), id, request.CandidateIds, ct);
+                var result = await _campaignService.InviteShortlistedCandidatesAsync(orgId.Value, GetActorUserId(), id, request.CandidateIds, request.IncludeIneligible, ct);
                 return Ok(result);
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
@@ -726,12 +960,58 @@ namespace Isas.CampaignService.Controllers
 
             try
             {
-                await _campaignService.OverrideResultAsync(orgId.Value, GetActorUserId(), id, sessionId, request, ct);
+                await _campaignService.OverrideResultAsync(orgId.Value, GetActorUserId(), GetActorEmail(), id, sessionId, request, ct);
                 return NoContent();
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
             catch (Exception ex) { return StatusCode(500, $"Failed to override result: {ex.Message}"); }
+        }
+
+        // E11c — lịch sử điều chỉnh của HR (mới-nhất-trước) cho 1 ứng viên. Org-scoped giống override/transcript
+        // (org sở hữu campaign + ranking row thuộc campaign) → ngoài org / chưa chấm = 404. Không có lần nào → items=[].
+        [HttpGet("{id:guid}/results/{sessionId:guid}/override-history")]
+        [Authorize(Roles = "Employer")]
+        public async Task<ActionResult<OverrideHistoryResponse>> GetOverrideHistory(
+            Guid id, Guid sessionId, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                return Ok(await _campaignService.GetOverrideHistoryAsync(orgId.Value, id, sessionId, ct));
+            }
+            catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get override history: {ex.Message}"); }
+        }
+
+        // E11c — HR nghe bản ghi âm 1 câu trả lời của ứng viên (proxy Interview /internal/.../audio, GEN-5: object key
+        // không bao giờ ra ngoài). Org-scoped giống /transcript. Answer lạ / chưa có audio → 404; Interview lỗi → 502.
+        // Không range: FE tải blob rồi phát (file ≤ vài MB); Content-Type theo Interview trả (webm/m4a/wav…).
+        [HttpGet("{id:guid}/results/{sessionId:guid}/answers/{answerId:guid}/audio")]
+        [Authorize(Roles = "Employer")]
+        [ProducesResponseType(typeof(FileStreamResult), StatusCodes.Status200OK,
+            "audio/webm", "audio/ogg", "audio/mpeg", "audio/mp4", "video/mp4", "audio/flac", "audio/wav")]
+        public async Task<IActionResult> GetSessionAnswerAudio(
+            Guid id, Guid sessionId, Guid answerId, CancellationToken ct)
+        {
+            var orgId = GetOrgId();
+            if (orgId is null)
+                return Forbid();
+
+            try
+            {
+                var audio = await _campaignService.GetSessionAnswerAudioAsync(orgId.Value, id, sessionId, answerId, ct);
+                return File(audio.Content, audio.ContentType);
+            }
+            catch (KeyNotFoundException ex) { return NotFound(new { error = ex.Message }); }
+            catch (DownstreamServiceException ex)
+            {
+                return StatusCode(StatusCodes.Status502BadGateway, new { error = ex.Message });
+            }
+            catch (Exception ex) { return StatusCode(500, $"Failed to get answer audio: {ex.Message}"); }
         }
 
         // AI4: HR xem chi tiết transcript + nhận xét AI per-criterion + cờ needs_review 1 buổi (đối chiếu điểm

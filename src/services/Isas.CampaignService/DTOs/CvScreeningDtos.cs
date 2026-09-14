@@ -67,6 +67,18 @@ namespace Isas.CampaignService.DTOs
         /// <summary>1 = điểm cũ do LLM phán trên rubric phỏng vấn · 2 = tính từ bằng chứng. Hai
         /// thang KHÔNG so sánh được — có dấu để không bị trộn trong im lặng (tiền lệ BK23).</summary>
         public int? ScreeningVersion { get; set; }
+        /// <summary>SCP1 · HĐ-5 — true = biểu thức chính sách sàng CV lỗi lúc chạy ⇒ điểm này tính
+        /// bằng công thức CAMP-14 mặc định. Phải hiện ra UI (không thì lại là thứ hỏng im lặng).</summary>
+        public bool ScoreFallback { get; set; }
+
+        /// <summary>
+        /// RNK1 · HĐ-6 — đủ điều kiện qua vòng sàng: MỌI nhu cầu <c>isMustHave</c> có bằng chứng
+        /// Strong/Partial. false = thiếu ≥1 must-have ⇒ mặc định KHÔNG mời (trừ khi HR bấm
+        /// <c>includeIneligible</c>). Tính READ-TIME từ job_needs hiện tại — 0 must-have ⇒ luôn true.
+        /// </summary>
+        public bool Eligible { get; set; }
+        public int MustHaveMet { get; set; }
+        public int MustHaveTotal { get; set; }
     }
 
     /// <summary>
@@ -87,6 +99,17 @@ namespace Isas.CampaignService.DTOs
 
         // ── HR technical screener ─────────────────────────────────────────────
         public int? ScreeningVersion { get; set; }
+        /// <summary>SCP1 · HĐ-5 — xem <see cref="CandidateListItem.ScoreFallback"/>.</summary>
+        public bool ScoreFallback { get; set; }
+
+        /// <summary>RNK1 · HĐ-6 — xem <see cref="CandidateListItem.Eligible"/>.</summary>
+        public bool Eligible { get; set; }
+        public int MustHaveMet { get; set; }
+        public int MustHaveTotal { get; set; }
+        /// <summary>Text các nhu cầu <c>isMustHave</c> CHƯA đạt (gap hoặc chưa đánh giá) — HR đọc
+        /// "thiếu điều kiện loại nào". Rỗng khi <see cref="Eligible"/> = true.</summary>
+        public List<string> MissingMustHave { get; set; } = new();
+
         public string? FitSummary { get; set; }
         /// <summary>Nhu cầu ứng viên ĐÁP ỨNG (Strong/Partial), kèm trích dẫn từ CV.</summary>
         public List<NeedAssessmentItem> Strengths { get; set; } = new();

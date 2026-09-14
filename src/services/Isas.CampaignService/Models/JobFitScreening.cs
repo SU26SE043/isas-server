@@ -22,6 +22,20 @@ namespace Isas.CampaignService.Models
         /// cho client khai <c>source</c> thì HR tự dán nhãn "AI đề xuất" cho dòng mình gõ tay).
         /// </summary>
         public string Source { get; set; } = JobNeedSources.HrEdited;
+
+        /// <summary>
+        /// RNK1 · HĐ-6 — điều kiện LOẠI: thiếu bằng chứng Strong/Partial cho BẤT KỲ nhu cầu
+        /// <c>IsMustHave</c> nào ⇒ ứng viên KHÔNG đủ điều kiện (<c>eligible = false</c>) ngay lúc
+        /// sàng CV. Đánh giá READ-TIME từ (job_needs hiện tại ∩ strengths/gaps đã lưu) — KHÔNG cột,
+        /// KHÔNG ghim: <c>job_needs</c> bị khoá sau khi có người sàng (<c>ReplaceJobNeedsAsync</c>)
+        /// nên kết quả ổn định.
+        ///
+        /// ⚠ KHÁC <see cref="Source"/>: đây là quyết định NGHIỆP VỤ của HR (nhu cầu này bắt buộc
+        /// hay không), không phải nhãn nguồn gốc ⇒ giá trị client GIỮ NGUYÊN. AI KHÔNG đề xuất
+        /// (<c>BuildJobNeedsAsync</c> ép <c>false</c>). Vắng khoá trong jsonb (row trước RNK1) ⇒
+        /// <c>false</c> ⇒ không loại ai — KHÔNG migration.
+        /// </summary>
+        public bool IsMustHave { get; set; }
     }
 
     public static class JobNeedCategories

@@ -1,3 +1,5 @@
+using Isas.Shared.Scoring;
+
 namespace Isas.CampaignService.DTOs
 {
     /// <summary>
@@ -27,5 +29,42 @@ namespace Isas.CampaignService.DTOs
         // Interview cũ không gửi field này, và hai service deploy không nguyên tử ⇒ thiếu thì để
         // NULL ("không biết"), tuyệt đối không mặc định thành 1.
         public int? RubricVersion { get; set; }
+
+        // SCP1 · B5 — BÓ BIẾN ĐẦU VÀO THÔ (per-criterion pct/weight/maxScore/name + answered/
+        // totalQuestions). Ghim vào campaign_rankings.scoring_inputs lúc upsert. NULLABLE: bản
+        // Interview cũ / event cũ trong outbox không mang field này ⇒ để null, KHÔNG crash consumer.
+        public ScoringInputsSnapshot? ScoringInputs { get; set; }
+
+        // SCP1 · B6 / HĐ-5 — CỜ LÙI AN TOÀN: true = biểu thức chính sách LỖI lúc chạy trên buổi này ⇒
+        // TotalScore được tính bằng công thức weighted mặc định. Campaign ghi vào
+        // campaign_rankings.score_fallback → bảng kết quả + CSV hiện được "đây là điểm mặc định".
+        //
+        // ⚠ B10 — TRƯỚC bản này lớp SessionScoredMessage KHÔNG khai property này, mà Interview VẪN
+        // phát nó (SessionScoredEvent.cs:49) ⇒ System.Text.Json bỏ qua khoá lạ ⇒ cờ MẤT, không lỗi
+        // không log. bool (mặc định false): event cũ / bản Interview cũ không gửi ⇒ false = "không
+        // lùi an toàn", đúng nghĩa an toàn.
+        public bool ScoreFallback { get; set; }
+
+        // SCP1 · B10 / HĐ-5 — phiên bản chính sách chấm ĐÃ GHIM trên buổi (đến QUA event; Interview
+        // đọc thẳng từ practice_sessions.campaign_policy_version). Campaign ghi vào
+        // campaign_rankings.policy_version + tra tên (scoring_policies theo campaign_id + Kind +
+        // version NÀY) ghi policy_name ⇒ bảng kết quả gắn nhãn "điểm do chính sách v{N}" NGAY trên
+        // đường chấm thường, không đợi HR bấm "áp" (B8).
+        //
+        // ⚠ NULLABLE bắt buộc: field đến qua event ⇒ bản Interview cũ / event cũ trong outbox không
+        // mang nó ⇒ null = "buổi không ghim chính sách", KHÔNG suy thành v1 (BK23).
+        public int? CampaignPolicyVersion { get; set; }
+
+        // ADP1 — cách gộp điểm đã dùng để tính TotalScore (1 = theo answer · 2 = theo CÂU GỐC).
+        // Ghi vào campaign_rankings.score_aggregation_version → bảng xếp hạng phân biệt được hai thang.
+        //
+        // ⚠ B10 đã cắn ĐÚNG SỢI DÂY NÀY: Interview phát `ScoreFallback` mà lớp này không khai property
+        // ⇒ System.Text.Json bỏ qua khoá lạ ⇒ cờ MẤT, không lỗi không log. Thêm field ở đây là NỬA BẮT
+        // BUỘC của việc thêm nó ở SessionScoredEvent — thiếu nửa này thì con dấu chết im lặng đúng ở
+        // chỗ nó sinh ra để phục vụ.
+        //
+        // NULLABLE: bản Interview cũ / event cũ trong outbox không mang field ⇒ null = "không biết",
+        // KHÔNG mặc định thành 1.
+        public int? ScoreAggregationVersion { get; set; }
     }
 }

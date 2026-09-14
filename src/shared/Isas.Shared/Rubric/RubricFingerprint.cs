@@ -31,6 +31,12 @@ public static class RubricFingerprint
         string Description,
         string Weight,
         int MaxScore,
+        // SC2 — phạm vi chấm nằm TRONG vân tay: đổi Always↔WhenTargeted là đổi mẫu số điểm của mọi
+        // ứng viên sau đó (INT-18 loại tiêu chí không được hỏi khỏi điểm) ⇒ phải là "đã đổi thước đo"
+        // (CAMP-18 bump). ⚠ Thêm khoá này làm MỌI vân tay đã lưu (rubric_preview_runs) khác đi một lần —
+        // so trước/sau qua mốc deploy này sẽ báo "khác thước đo" dù không ai sửa gì; bump version thì
+        // KHÔNG oan vì before/after đều tính bằng cùng một bản code.
+        string Scope,
         IReadOnlyList<CanonicalLevel> Levels);
 
     public sealed record CanonicalLevel(int Score, string Descriptor);
@@ -59,6 +65,7 @@ public static class RubricFingerprint
                 // version dù không ai sửa gì. "F4" khớp đúng scale của cột.
                 c.Weight.ToString("F4", CultureInfo.InvariantCulture),
                 c.MaxScore,
+                c.Scope,
                 includeLevels
                     ? (c.Levels ?? [])
                         .OrderBy(l => l.Score)

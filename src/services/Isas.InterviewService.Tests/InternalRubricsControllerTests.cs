@@ -120,14 +120,14 @@ public class InternalRubricsControllerTests
     }
 
     /// <summary>
-    /// Hợp đồng CỐ Ý không mang <c>id</c> (vô nghĩa với Campaign — nó mint id riêng khi chép) và
-    /// không mang <c>scoringScope</c> (Campaign không có cột đó; đường chấm B2B chấm mọi tiêu chí ở
-    /// mọi câu, nên thêm cột mà không ai đọc là một cột nói dối).
+    /// Hợp đồng CỐ Ý không mang <c>id</c> (vô nghĩa với Campaign — nó mint id riêng khi chép).
+    /// <c>scoringScope</c> từng nằm trong danh sách này ("Campaign không có cột đó") — SC2 · W5 đảo lại:
+    /// Campaign nay có cột và gửi ngược lúc tạo buổi (W4), nên nó PHẢI có mặt; khoá ở
+    /// <c>CampaignScoringScopeSc2Tests.B2CRubricEndpoint_ReturnsScoringScope_AsEnumString</c>.
     /// </summary>
     [Theory]
     [InlineData("id")]
     [InlineData("criterionId")]
-    [InlineData("scoringScope")]
     public async Task Get_DoesNotLeakInternalOnlyFields(string field)
     {
         using var t = new TestDb();

@@ -731,60 +731,61 @@ public class PracticeService : IPracticeService
                 // Ghim DÙ CÓ materialize hay không: buổi thứ hai trở đi của cùng phiên bản không
                 // materialize gì cả, nhưng vẫn phải biết mình đang bị chấm bằng thước nào.
                 CampaignRubricVersion = pinnedRubricVersion,
+                // SCP1 · B5 — ghim hợp đồng chấm điểm (chính sách biểu thức) NHẬN từ Campaign. Cả 4
+                // null (Campaign chưa áp chính sách / bản cũ) ⇒ đường chấm dùng công thức weighted
+                // mặc định. Chép nguyên, KHÔNG hỏi lại Campaign lúc chấm (DB-per-service).
+                CampaignPolicyVersion = request.CampaignPolicyVersion,
+                CampaignPolicyExpression = request.CampaignPolicyExpression,
+                CampaignPolicyPassScorePct = request.CampaignPolicyPassScorePct,
+                CampaignPolicyEngineVersion = request.CampaignPolicyEngineVersion,
+                // RNK1 · HĐ-2 / CAMP-21 — ghim luật câu bỏ trống. null (bản Campaign cũ) ⇒ false.
+                SkipPenalty = request.SkipPenalty ?? false,
                 JobCategory = request.JobCategory,
                 Seniority = seniority,
                 Language = language,
                 Status = SessionStatus.Ready,   // câu hỏi cấp sẵn → không cần sinh AI
                 CreatedAt = DateTime.UtcNow,
                 Deadline = request.ExpiresAt,   // I2: hạn chót nhận bài (B2B); null → không hard-deadline
-                // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = TOÀN BỘ campaign questions (ai cũng
-                // nhận cùng bộ, công bằng), chấm theo cùng tiêu chí. null → tắt.
-                // INT-17b: `MaxDeepPerQuestion > 0` → mỗi câu campaign có chuỗi đào sâu XEN KẼ ngay sau nó
-                // (thay vì dồn ở đuôi buổi); vẫn công bằng vì mọi ứng viên nhận cùng bộ câu gốc và cùng trần.
+                // Phỏng vấn THÍCH ỨNG (B2B): Campaign/HR bật → seed = K câu (`request.Questions` —
+                // ParticipationService đã RÚT ĐỀU theo nhóm từ ngân hàng đề, RNK1 · HĐ-8), chấm theo
+                // cùng tiêu chí. null → tắt.
+                // ⚠ CÔNG BẰNG (CAMP-10) = mọi ứng viên nhận CÙNG K câu gốc + rút ĐỀU theo nhóm — KHÔNG
+                // phải "cùng đề": HR up 60 câu, mỗi người bốc K=20 khác nhau. Ràng buộc chéo `T ≥ K×(1+d)`
+                // (RNK1 · HĐ-7) bảo đảm mọi chuỗi đủ khe.
+                // INT-17b: `MaxDeepPerQuestion > 0` → mỗi câu gốc có chuỗi đào sâu XEN KẼ ngay sau nó
+                // (thay vì dồn ở đuôi buổi).
                 AdaptiveEnabled = request.AdaptiveEnabled ?? false,
                 MaxQuestions = ClampCampaignMaxQuestions(request.MaxQuestions, request.CampaignId),
                 // INT-17b — ĐỐI XỨNG đường B2C (:195-199): ở chế độ chuỗi, trần theo BUỔI phải để 0.
                 // Để nguyên giá trị HR khai thì nó bó chặt hơn trần theo CÂU, vì `AnswerService` đếm
-                // `followUpCount` trên MỌI câu non-Seed của cả buổi ⇒ ngân sách cạn giữa chuỗi. Đo được:
-                // campaign maxDeep=2 + maxFollowUps=3, 4 câu gốc → phân bố câu sâu 2/1/0/0 PHỤ THUỘC
-                // THỨ TỰ TRẢ LỜI ⇒ hai ứng viên cùng campaign nhận số câu và chủ đề khác nhau, trong khi
-                // điểm vẫn đem xếp hạng chung (CAMP-10). `MaxQuestions` mới là trần buổi.
+                // `followUpCount` trên MỌI câu non-Seed của cả buổi ⇒ ngân sách cạn giữa chuỗi ⇒ hai
+                // ứng viên cùng campaign nhận số câu và chủ đề khác nhau, trong khi điểm vẫn đem xếp
+                // hạng chung (CAMP-10). `MaxQuestions` mới là trần buổi.
+                // RNK1 · HĐ-7 — Campaign nay CŨNG ép `MaxFollowUps = 0` khi `d > 0` (create/update/
+                // publish) + chặn `T < K×(1+d)`; vế này là LƯỚI thứ hai (đường internal có thể được
+                // gọi bởi bản Campaign cũ hoặc test).
                 // Điều kiện MỘT vế, source-independent: đường B2B không đọc entitlement (Campaign chỉ
                 // CHẶN lúc HR bật, không CẤP giá trị; EntitlementSnapshot không có MaxDeepPerQuestion).
                 MaxFollowUps = maxDeepPerQuestion > 0 ? 0 : (request.MaxFollowUps ?? 0),
                 MaxDeepPerQuestion = maxDeepPerQuestion,
-                // B2B: câu hỏi do HR/Campaign cấp sẵn, KHÔNG đi qua đường gắn nhãn ⇒ chấm trên toàn bộ
-                // tiêu chí campaign, y như trước. Đóng dấu 1 ("đã biết: full rubric") chứ không để null:
-                // null nghĩa là "không biết", mà ở đây ta biết chắc. Quan trọng cho CAMP-10 — xếp hạng
-                // trộn ứng viên trước/sau mốc deploy này vẫn so sánh được, và có dữ liệu để chứng minh.
+                // Con dấu phạm vi chấm — giá trị TẠM, chốt lại bên dưới sau khi map nhãn câu hỏi
+                // (SC2 · W4): B2B nay CÓ THỂ nhận nhãn từ Campaign nên không còn hardcode 1 được.
                 ScoringScopeVersion = ScopeVersionFullRubric
             };
             _db.PracticeSessions.Add(session);
 
-            var seedStride = SeedOrderStride(session.MaxDeepPerQuestion);
-            var questions = request.Questions
-                .Select((content, idx) => new PracticeQuestion
-                {
-                    Id = Guid.NewGuid(),
-                    SessionId = session.Id,
-                    OrderNo = idx * seedStride + 1,   // INT-17b — chừa chỗ cho chuỗi đào sâu
-                    Content = content,
-                    // SNAPSHOT đáp án mẫu: chép xuống buổi thi, không đọc live từ Campaign lúc chấm —
-                    // đáp án là một phần THƯỚC ĐO, đọc live thì hai ứng viên cùng chiến dịch có thể bị
-                    // chấm theo hai bản khác nhau mà điểm vẫn xếp chung một bảng (CAMP-10).
-                    // Controller đã bảo đảm QuestionDetails khớp số lượng với Questions, hoặc là null.
-                    SampleAnswer = request.QuestionDetails?[idx].SampleAnswer,
-                    TimeLimitSec = DefaultTimeLimitSec,
-                    Kind = QuestionKind.Seed
-                })
-                .ToList();
-            _db.PracticeQuestions.AddRange(questions);
-
             // Materialize tiêu chí campaign → rubric_criteria(campaign_id), idempotent theo
             // (campaign, PHIÊN BẢN). HR sửa mốc ⇒ Campaign bump version ⇒ ứng viên kế tiếp Start sẽ
             // materialize bộ mới; buổi đang chạy dở giữ bộ cũ nhờ pin (xem RubricCriteriaLoader).
+            //
+            // SC2 · W4 — khối này đứng TRƯỚC khi dựng câu hỏi vì nhãn câu (targetCriterionIds) là id
+            // campaign_criteria phía Campaign, phải đổi sang rubric_criteria.id của ĐÚNG bộ buổi này
+            // ghim (qua source_criterion_id). Bộ đó hoặc vừa được tạo ngay dưới, hoặc đã có sẵn từ buổi
+            // trước cùng phiên bản — cả hai đường đều phải cho ra cùng một bảng tra.
             var alreadyMaterialized = await _db.RubricCriteria
                 .AnyAsync(c => c.CampaignId == request.CampaignId && c.Version == pinnedRubricVersion, ct);
+            // campaign_criteria.id → rubric_criteria.id của bộ (campaign, phiên bản) buổi này dùng.
+            var sourceToRubricId = new Dictionary<Guid, Guid>();
             if (!alreadyMaterialized)
             {
                 // Hạ cờ bộ cũ = "không dùng cho buổi thi MỚI nữa". KHÔNG hard-delete: answer_scores có
@@ -805,6 +806,14 @@ public class PracticeService : IPracticeService
                     IsActive = true,
                     JobCategory = request.JobCategory,   // cột bắt buộc; B2B chấm theo campaign_id
                     CampaignId = request.CampaignId,
+                    // RNK1 · HĐ-5 — id tiêu chí bên Campaign (ổn định qua PUT). null (bản Campaign cũ) ⇒
+                    // snapshot chấm khớp điểm sàn theo TÊN thay vì id.
+                    SourceCriterionId = c.CriterionId,
+                    // SC2 · W4 — phạm vi chấm do HR khai bên Campaign. Vắng/lạ ⇒ Always (= hành vi
+                    // trước SC2: mọi tiêu chí campaign chấm ở mọi câu). Đây là cột DUY NHẤT
+                    // ScoringScopeFilter đọc để tách "cách nói" khỏi "nội dung" — không set thì bộ
+                    // lọc INT-18 (đã áp cho B2B từ trước) không bao giờ thu hẹp được gì.
+                    ScoringScope = ParseCampaignScoringScope(c.ScoringScope, c.Name, request.CampaignId),
                     Language = language,
                     Version = pinnedRubricVersion,
                     // E9 — mốc điểm HR soạn. Rỗng/null ⇒ không tạo level nào ⇒ AIService rơi về dải
@@ -818,9 +827,64 @@ public class PracticeService : IPracticeService
                             ExampleAnswers = []   // anchor cố ý chưa dùng ở vòng này
                         })
                         .ToList()
-                });
+                }).ToList();   // ⚠ ToList() LOAD-BEARING: Select mint Guid.NewGuid() — enumerate 2 lần
+                               // (AddRange + vòng tra bên dưới) sẽ ra 2 bộ id khác nhau, nhãn trỏ vào id ma.
                 _db.RubricCriteria.AddRange(criteria);
+
+                foreach (var c in criteria)
+                    if (c.SourceCriterionId is { } sourceId)
+                        sourceToRubricId.TryAdd(sourceId, c.Id);
             }
+            else
+            {
+                // Đường idempotent: bộ đã materialize ở buổi trước cùng phiên bản ⇒ tra bảng ĐÃ CÓ theo
+                // đúng (campaign, phiên bản) buổi này ghim — KHÔNG lọc is_active (nghĩa của cờ đó ở B2B
+                // là "bộ cho buổi MỚI", xem CAMP-18). Bộ do bản Campaign cũ materialize (không có
+                // source_criterion_id) ⇒ bảng tra rỗng ⇒ mọi nhãn không map được ⇒ null = chấm đủ.
+                var existing = await _db.RubricCriteria.AsNoTracking()
+                    .Where(c => c.CampaignId == request.CampaignId
+                                && c.Version == pinnedRubricVersion
+                                && c.SourceCriterionId != null)
+                    .Select(c => new { c.SourceCriterionId, c.Id })
+                    .ToListAsync(ct);
+                foreach (var c in existing)
+                    sourceToRubricId.TryAdd(c.SourceCriterionId!.Value, c.Id);
+            }
+
+            var seedStride = SeedOrderStride(session.MaxDeepPerQuestion);
+            var questions = request.Questions
+                .Select((content, idx) => new PracticeQuestion
+                {
+                    Id = Guid.NewGuid(),
+                    SessionId = session.Id,
+                    OrderNo = idx * seedStride + 1,   // INT-17b — chừa chỗ cho chuỗi đào sâu
+                    Content = content,
+                    // SNAPSHOT đáp án mẫu: chép xuống buổi thi, không đọc live từ Campaign lúc chấm —
+                    // đáp án là một phần THƯỚC ĐO, đọc live thì hai ứng viên cùng chiến dịch có thể bị
+                    // chấm theo hai bản khác nhau mà điểm vẫn xếp chung một bảng (CAMP-10).
+                    // Controller đã bảo đảm QuestionDetails khớp số lượng với Questions, hoặc là null.
+                    SampleAnswer = request.QuestionDetails?[idx].SampleAnswer,
+                    TimeLimitSec = DefaultTimeLimitSec,
+                    Kind = QuestionKind.Seed,
+                    // SC2 · W4 — nhãn tiêu chí nội dung: id campaign_criteria → rubric_criteria.id qua
+                    // bảng tra ở trên. Giữ ĐÚNG 3 trạng thái (null / [] / non-empty) — xem
+                    // MapCampaignTargetCriterionIds. Câu đào sâu về sau THỪA KẾ nhãn câu gốc này
+                    // (AnswerService, không đụng ở đây).
+                    TargetCriterionIds = MapCampaignTargetCriterionIds(
+                        request.QuestionDetails?[idx].TargetCriterionIds, sourceToRubricId,
+                        request.CampaignId, idx)
+                })
+                .ToList();
+            _db.PracticeQuestions.AddRange(questions);
+
+            // Con dấu phạm vi chấm — CÙNG luật với đường B2C (xem khối tương ứng ở CreateSession):
+            // đóng theo SỰ THẬT quan sát được, `is not null` kể cả `[]` (nhãn rỗng cũng thu hẹp phạm vi
+            // ⇒ điểm buổi này đã khác thước đo cũ). Bản Campaign cũ không gửi nhãn ⇒ mọi câu null ⇒ 1
+            // = y hệt trước SC2, nên CAMP-10 trộn ứng viên trước/sau mốc deploy vẫn so sánh được.
+            session.ScoringScopeVersion =
+                questions.Any(q => q.TargetCriterionIds is not null)
+                    ? ScopeVersionPerQuestion
+                    : ScopeVersionFullRubric;
 
             await _db.SaveChangesAsync(ct);
 
@@ -1234,11 +1298,35 @@ public class PracticeService : IPracticeService
         if (answer.Session.CandidateId != candidateId)
             throw new UnauthorizedAccessException("Không phải buổi của bạn");
 
-        var content = await _storage.DownloadAsync(answer.AudioObjectKey, ct);
+        return await DownloadAnswerAudioAsync(answer.AudioObjectKey, ct);
+    }
+
+    // E11c — Campaign (HR) nghe bản ghi âm của ứng viên B2B qua đường máy-máy (X-Internal-Token, mẫu
+    // GetSessionAnswersInternalAsync/AI4). CỐ Ý KHÔNG check chủ session: Campaign đã gate org sở hữu campaign +
+    // ranking row thuộc campaign trước khi gọi sang đây; check chủ ở đây sẽ CHẶN đúng người cần nghe (HR không
+    // phải candidate). Null = answer không thuộc session / chưa có audio → controller trả 404.
+    public async Task<AnswerAudioContent?> GetAnswerAudioInternalAsync(
+        Guid sessionId, Guid answerId, CancellationToken ct = default)
+    {
+        var answer = await _db.PracticeAnswers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == answerId && a.SessionId == sessionId, ct);
+
+        if (answer is null || string.IsNullOrWhiteSpace(answer.AudioObjectKey))
+            return null;
+
+        return await DownloadAnswerAudioAsync(answer.AudioObjectKey, ct);
+    }
+
+    // Một chỗ tải + suy MIME cho CẢ đường owner (B2C) lẫn đường internal (HR B2B) — hai bản chép sẽ trôi khỏi
+    // nhau ở đúng chỗ đã từng sai (nhãn "audio/webm" cứng cho file m4a).
+    private async Task<AnswerAudioContent> DownloadAnswerAudioAsync(string audioObjectKey, CancellationToken ct)
+    {
+        var content = await _storage.DownloadAsync(audioObjectKey, ct);
         // MIME suy từ đuôi của object key — trước đây trả cứng "audio/webm" cho MỌI file, nên bản ghi âm từ
         // iPhone (m4a) được gắn nhãn webm và trình phát từ chối. Đuôi là nguồn duy nhất còn giữ được định dạng:
         // IStorageService.DownloadAsync chỉ trả Stream, không kèm content-type của S3.
-        return new AnswerAudioContent(content, AudioFormats.ContentTypeForKey(answer.AudioObjectKey));
+        return new AnswerAudioContent(content, AudioFormats.ContentTypeForKey(audioObjectKey));
     }
 
     // DB18 — Payment (internal) dò orphan reservation: trả TẬP CON sessionIds có row practice_sessions
@@ -1306,7 +1394,9 @@ public class PracticeService : IPracticeService
             .Where(a => a.SessionId == sessionId)
             .ToListAsync(ct);
 
-        return MapToResponse(session, questions, answers).Questions;
+        // EVA1-B4 — đây là đường HR/nội bộ (AI4): HR PHẢI xem đủ điểm + reasoning + needs_review.
+        // GetSessionAsync (đường ứng viên) KHÔNG truyền cờ này ⇒ B2B bị che theo CAMP-15.
+        return MapToResponse(session, questions, answers, revealCampaignScoring: true).Questions;
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
@@ -1414,6 +1504,86 @@ public class PracticeService : IPracticeService
     // từng giá trị và vì sao null KHÔNG được đọc là "khác phiên bản".
     private const int ScopeVersionFullRubric = 1;    // đã biết: chấm trên toàn bộ rubric
     private const int ScopeVersionPerQuestion = 2;   // đã biết: có câu chấm trên tập tiêu chí hẹp hơn
+
+    /// <summary>
+    /// SC2 · W4 — <c>criteria[].scoringScope</c> Campaign gửi lúc tạo buổi B2B → <see cref="ScoringScope"/>.
+    /// So CHUỖI tường minh (không <c>Enum.TryParse</c>: nó nhận cả "1"/"7" và trả về giá trị ngoài enum).
+    /// Vắng ⇒ <see cref="ScoringScope.Always"/> = hành vi trước SC2 (bản Campaign cũ). Giá trị LẠ ⇒
+    /// Always + LogWarning: chiều mặc định an toàn là "chấm thừa", lật sang WhenTargeted sẽ khiến tiêu
+    /// chí HR khai im lặng BIẾN MẤT khỏi mọi lượt chấm mà không endpoint nào báo lỗi.
+    /// </summary>
+    private ScoringScope ParseCampaignScoringScope(string? raw, string criterionName, Guid campaignId)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return ScoringScope.Always;
+        var value = raw.Trim();
+        if (value.Equals(nameof(ScoringScope.Always), StringComparison.OrdinalIgnoreCase))
+            return ScoringScope.Always;
+        if (value.Equals(nameof(ScoringScope.WhenTargeted), StringComparison.OrdinalIgnoreCase))
+            return ScoringScope.WhenTargeted;
+
+        _logger.LogWarning(
+            "Campaign {CampaignId}: tiêu chí '{Criterion}' khai scoringScope lạ '{Raw}' — coi là Always "
+            + "(chấm ở mọi câu). Hợp lệ: Always | WhenTargeted",
+            campaignId, criterionName, raw);
+        return ScoringScope.Always;
+    }
+
+    /// <summary>
+    /// SC2 · W4 — nhãn câu hỏi Campaign gửi (id <b>campaign_criteria</b>) → id <b>rubric_criteria</b>
+    /// của bộ buổi này ghim, qua bảng tra <paramref name="sourceToRubricId"/> (source_criterion_id → id).
+    ///
+    /// <para>🔑 GIỮ ĐÚNG 3 TRẠNG THÁI (xem <see cref="PracticeQuestion.TargetCriterionIds"/>) — cùng luật
+    /// với nhãn AIService gắn ở đường B2C (<c>AiServiceQuestionGenerator.ParseTargets</c>):</para>
+    /// <list type="bullet">
+    ///   <item><c>null</c> (vắng) ⇒ <c>null</c>: bản Campaign cũ / câu không nhãn ⇒ chấm đủ rubric.</item>
+    ///   <item><c>[]</c> ⇒ <c>[]</c>: Campaign khẳng định câu này không nhắm tiêu chí nội dung nào ⇒ chỉ
+    ///   tiêu chí <c>Always</c>. KHÔNG được quy về null — gộp là làm tính năng vô hiệu đúng ở nhóm câu
+    ///   cần nó nhất.</item>
+    ///   <item>id không map được (Campaign gửi id của bộ khác phiên bản, hoặc bộ này được materialize
+    ///   bởi bản Campaign cũ chưa gửi criterionId) ⇒ BỎ id đó + LogWarning, GIỮ phần còn lại. Không
+    ///   throw: một nhãn lệch không được phép chặn cả buổi thi sau khi đã reserve credit (PAY-5).</item>
+    ///   <item>Có id nhưng KHÔNG id nào map được ⇒ <c>null</c> chứ không phải <c>[]</c>: Campaign vừa
+    ///   khẳng định câu này CÓ nhắm tiêu chí, chỉ là ta không đối chiếu được ⇒ không có tín hiệu đáng
+    ///   tin nào để thu hẹp; "[]" ở đây sẽ bỏ chấm MỌI tiêu chí nội dung của câu — thu hẹp mà không ai
+    ///   khẳng định. Đúng lựa chọn <c>ParseTargets</c> đã chốt cho "toàn id lạ" từ AIService.</item>
+    /// </list>
+    /// </summary>
+    private List<Guid>? MapCampaignTargetCriterionIds(
+        IReadOnlyList<Guid>? campaignCriterionIds,
+        IReadOnlyDictionary<Guid, Guid> sourceToRubricId,
+        Guid campaignId, int questionIndex)
+    {
+        if (campaignCriterionIds is null) return null;
+        if (campaignCriterionIds.Count == 0) return [];
+
+        var mapped = new List<Guid>();
+        var unknown = new List<Guid>();
+        foreach (var sourceId in campaignCriterionIds)
+        {
+            if (!sourceToRubricId.TryGetValue(sourceId, out var rubricId))
+            {
+                unknown.Add(sourceId);
+                continue;
+            }
+            if (!mapped.Contains(rubricId)) mapped.Add(rubricId);
+        }
+
+        if (unknown.Count > 0)
+            _logger.LogWarning(
+                "Campaign {CampaignId}: câu {Index} gắn {Unknown} id tiêu chí không khớp source_criterion_id "
+                + "nào của bộ đã materialize ({Ids}) — bỏ các id đó, giữ {Kept} id còn lại",
+                campaignId, questionIndex, unknown.Count, string.Join(",", unknown), mapped.Count);
+
+        if (mapped.Count == 0)
+        {
+            _logger.LogWarning(
+                "Campaign {CampaignId}: câu {Index} có nhãn nhưng KHÔNG id nào map được ⇒ coi là không nhãn "
+                + "(chấm đủ rubric), không thu hẹp theo một nhãn không đối chiếu được",
+                campaignId, questionIndex);
+            return null;
+        }
+        return mapped;
+    }
 
     /// <summary>
     /// Tiêu chí NỘI DUNG (<see cref="ScoringScope.WhenTargeted"/>) của rubric B2C đang hiệu lực cho
@@ -1769,15 +1939,25 @@ public class PracticeService : IPracticeService
         IReadOnlyList<SessionCriterionScore>? criterionScores = null,
         IReadOnlyList<string>? cvStrengths = null,
         BenchmarkResponse? benchmark = null,   // F14
-        IReadOnlyList<CriterionEvidenceResponse>? criterionEvidence = null)
+        IReadOnlyList<CriterionEvidenceResponse>? criterionEvidence = null,
+        // EVA1-B4 — mặc định che nội bộ chấm điểm cho session B2B. CHỈ đường HR/nội bộ
+        // (GetSessionAnswersInternalAsync, X-Internal-Token, AI4) truyền `true` để xem đủ.
+        bool revealCampaignScoring = false)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
+
+        // CAMP-15 — ứng viên B2B là CHỦ session (Start trả về sessionId) nên đọc được qua
+        // GetSessionAsync; nhưng nội bộ chấm điểm phải che: lộ mốc điểm ⇒ họ viết bài "đánh trúng
+        // rubric" thay vì trả lời thật; và bộ câu campaign là bộ CHUNG ⇒ đáp án mẫu của người thi
+        // TRƯỚC = của người thi SAU. Che ở DỮ LIỆU chứ không chặn truy cập — họ cần chính endpoint
+        // này để lấy câu hỏi mà làm bài. Khối tổng kết (MapResult) đã chặn B2B tường minh từ trước.
+        var maskScoring = s.CampaignId is not null && !revealCampaignScoring;
 
         var qResponses = questions
             .OrderBy(q => q.OrderNo)
             .Select(q => new QuestionResponse(
                 q.Id, q.OrderNo, q.Content, q.TimeLimitSec,
-                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(s.Id, a) : null,
+                answerByQuestion.TryGetValue(q.Id, out var a) ? MapAnswer(s.Id, a, maskScoring) : null,
                 q.Kind.ToString(),   // phỏng vấn THÍCH ỨNG — Seed | FollowUp | Clarify | NewQuestion
                 q.GroundingRefs))    // RAG grounding — null (không grounding) / [] (ungrounded) / non-empty (grounded)
             .ToList();
@@ -1795,7 +1975,9 @@ public class PracticeService : IPracticeService
                 ? s.Topics
                     .Select(t => new SessionTopicResponse(t.Key, t.Label, t.Source, t.CvLevel, t.CvEvidence))
                     .ToList()
-                : null);
+                : null,
+            s.Deadline,
+            s.CampaignId);
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.
@@ -1853,34 +2035,45 @@ public class PracticeService : IPracticeService
         return merged;
     }
 
-    private static AnswerResponse MapAnswer(Guid sessionId, PracticeAnswer a)
+    private static AnswerResponse MapAnswer(Guid sessionId, PracticeAnswer a, bool maskScoring = false)
     {
+        // EVA1-B4 / CAMP-15 — `maskScoring` (session B2B, đường ứng viên): che ĐÚNG nội bộ chấm điểm
+        //   · perCriterion (điểm + reasoning + levelMatched) → rỗng
+        //   · needsReview → false
+        //   · sampleAnswer → null
+        // GIỮ transcript / status / durationSec / audioUrl / deliveryMetrics: đó là bài làm và dữ
+        // liệu trình bày của CHÍNH ứng viên, không phải rubric.
+        //
         // E10 — mỗi tiêu chí: điểm chốt = MEDIAN qua các attempt (self-consistency); reasoning/level
         // lấy từ attempt ĐẠI DIỆN (điểm gần median nhất, tie-break attempt mới nhất) để nhận xét khớp
         // điểm hiển thị. N=1 → median = giá trị attempt đó, đại diện = chính nó → giữ hiển thị cũ.
-        var perCriterion = a.Scores
-            .GroupBy(sc => sc.CriterionId)
-            .Select(g =>
-            {
-                var median = ScoreStatistics.Median(g.Select(s => s.Score));
-                var rep = g.OrderBy(s => Math.Abs(s.Score - median))
-                           .ThenByDescending(s => s.AttemptNo)
-                           .First();
-                // Criterion nạp qua .ThenInclude ở các site đọc; dùng `?.` để site nào lỡ quên Include
-                // thì ra null (client lùi về nhãn chung) thay vì ném NRE giữa luồng xem kết quả.
-                return new AnswerScoreResponse(
-                    g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched,
-                    rep.Criterion?.Name, rep.Criterion?.MaxScore);
-            })
-            .ToList();
+        IReadOnlyList<AnswerScoreResponse> perCriterion = maskScoring
+            ? Array.Empty<AnswerScoreResponse>()
+            : a.Scores
+                .GroupBy(sc => sc.CriterionId)
+                .Select(g =>
+                {
+                    var median = ScoreStatistics.Median(g.Select(s => s.Score));
+                    var rep = g.OrderBy(s => Math.Abs(s.Score - median))
+                               .ThenByDescending(s => s.AttemptNo)
+                               .First();
+                    // Criterion nạp qua .ThenInclude ở các site đọc; dùng `?.` để site nào lỡ quên Include
+                    // thì ra null (client lùi về nhãn chung) thay vì ném NRE giữa luồng xem kết quả.
+                    return new AnswerScoreResponse(
+                        g.Key, median, rep.Reasoning, rep.RubricVersion, rep.LevelMatched,
+                        rep.Criterion?.Name, rep.Criterion?.MaxScore);
+                })
+                .ToList();
 
         return new AnswerResponse(
-            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion, a.NeedsReview,
-            a.SampleAnswer,   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
+            a.Id, a.Status.ToString(), a.DurationSec, a.Transcript, perCriterion,
+            maskScoring ? false : a.NeedsReview,
+            maskScoring ? null : a.SampleAnswer,   // F13 — gợi ý câu trả lời mẫu (null khi chưa chấm / LLM không trả)
             DeliveryMetricsMapper.Read(a),   // F11 — chỉ số trôi chảy (null khi chưa đo được)
             string.IsNullOrWhiteSpace(a.AudioObjectKey)
                 ? null
-                : $"/api/v1/interview/practice/sessions/{sessionId}/answers/{a.Id}/audio");
+                : $"/api/v1/interview/practice/sessions/{sessionId}/answers/{a.Id}/audio",
+            a.RejectReason);   // CAMP-21/E11c — "no_speech" = VAD không thấy tiếng nói; null = không biết/không có lý do
     }
 
     private async Task ConsumeQuietlyAsync(Guid sessionId, CancellationToken ct)

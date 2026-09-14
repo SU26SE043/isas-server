@@ -1,3 +1,5 @@
+using Isas.Shared.Scoring;
+
 namespace Isas.CampaignService.Models
 {
     /// <summary>
@@ -22,6 +24,35 @@ namespace Isas.CampaignService.Models
         // Cần nhãn vì đổi mốc là đổi thước đo mạnh hơn cả thu hẹp phạm vi chấm — mà CAMP-10 (xếp hạng),
         // BC15 (đo cải thiện) và F14 (mốc peer) đang đem điểm so THẲNG với nhau.
         public int? RubricVersion { get; set; }
+
+        // ADP1 — CÁCH GỘP ĐIỂM ra con số TotalScore này (1 = theo answer · 2 = theo CÂU GỐC), đến QUA
+        // event SessionScored. Hai cách cho ra hai thang KHÔNG so sánh được, mà bảng này chính là chỗ
+        // CAMP-10 đem điểm của mọi ứng viên trong campaign so THẲNG với nhau — campaign đang tuyển vắt
+        // qua lần deploy ADP1 sẽ có ứng viên ở cả hai thang nằm chung một bảng.
+        //
+        // ⚠ NULL = KHÔNG BIẾT (dòng ghi trước bản này, hoặc bản Interview cũ chưa gửi field) — KHÔNG
+        // được vẽ thành 1 (BK23), y như RubricVersion ngay trên.
+        public int? ScoreAggregationVersion { get; set; }
+
+        // SCP1 · B5 — BÓ BIẾN ĐẦU VÀO THÔ của lượt chấm này, đến QUA event SessionScored, ghi lúc
+        // upsert ranking. Lưu RAW per-criterion ({name,pct,weight,maxScore} + answered/totalQuestions),
+        // KHÔNG lưu scalar đã tính — B8 (xem trước / áp chính sách) dựng lại ScoringContext từ đây và
+        // chạy biểu thức, kể cả cho hàng lịch sử khi HĐ-1 thêm biến mới.
+        //
+        // ⚠ NULLABLE bắt buộc (CẤM #4): field đến qua event ⇒ bản Interview cũ / event cũ trong outbox
+        // không mang nó ⇒ NOT NULL sẽ crash consumer trong cửa sổ rollout. jsonb (Npgsql) / text (SQLite).
+        public ScoringInputsSnapshot? ScoringInputs { get; set; }
+
+        // SCP1 · B8 / HĐ-5 — chính sách chấm ĐÃ ÁP cho dòng điểm này (apply ghi đè lại toàn bộ). NULL =
+        // dòng chấm bằng công thức mặc định / trước SCP1 ⇒ FE không hiện nhãn. Phải lộ ra bảng kết quả
+        // + CSV: bảng có thể trộn điểm của hai chính sách khác nhau (giống nhãn RubricVersion CAMP-18).
+        public int? PolicyVersion { get; set; }
+        public string? PolicyName { get; set; }
+
+        // SCP1 · B8 / HĐ-5 — CỜ LÙI AN TOÀN: true = biểu thức chính sách LỖI lúc chạy lại (chia 0 / tràn /
+        // ném / kết quả ngoài [0,100]) ⇒ điểm này = công thức weighted mặc định. NOT NULL default false
+        // (dòng trước B8 = false = "không lùi"). Phải hiện ra màn HR — không thì lại là thứ hỏng im lặng.
+        public bool ScoreFallback { get; set; }
 
         // E11b — HR chốt điểm cuối (điểm AI = gợi ý). Null = chưa override → dùng TotalScore/ngưỡng.
         // Điểm/kết-quả effective read-time = OverrideScore ?? TotalScore, OverrideResult ?? (theo ngưỡng).

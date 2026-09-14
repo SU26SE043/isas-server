@@ -144,7 +144,7 @@ namespace Isas.CampaignService.Migrations
 
                     b.ToTable("audit_logs", null, t =>
                         {
-                            t.HasCheckConstraint("ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey')");
+                            t.HasCheckConstraint("ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey', 'ApplyScoringPolicy', 'StartEarly', 'ClearQuestionTargets')");
                         });
                 });
 
@@ -182,6 +182,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("text")
                         .HasColumnName("criteria_text");
 
+                    b.Property<int?>("CvPolicyVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("cv_policy_version");
+
                     b.Property<DateTime?>("DeletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
@@ -206,6 +210,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false)
                         .HasColumnName("grounding_enabled");
+
+                    b.Property<int?>("InterviewPolicyVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("interview_policy_version");
 
                     b.Property<string>("JDFileUrl")
                         .HasColumnType("text")
@@ -291,6 +299,12 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("character varying(16)")
                         .HasDefaultValue("Junior")
                         .HasColumnName("seniority");
+
+                    b.Property<bool>("SkipPenalty")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("skip_penalty");
 
                     b.Property<DateTime>("StartsAt")
                         .HasColumnType("timestamp with time zone")
@@ -379,6 +393,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("max_score");
 
+                    b.Property<int?>("MinPct")
+                        .HasColumnType("integer")
+                        .HasColumnName("min_pct");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -388,6 +406,14 @@ namespace Isas.CampaignService.Migrations
                     b.Property<int>("OrderNo")
                         .HasColumnType("integer")
                         .HasColumnName("order_no");
+
+                    b.Property<string>("ScoringScope")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasDefaultValue("Always")
+                        .HasColumnName("scoring_scope");
 
                     b.Property<string>("Source")
                         .IsRequired()
@@ -418,6 +444,12 @@ namespace Isas.CampaignService.Migrations
 
                     b.ToTable("campaign_criteria", null, t =>
                         {
+                            t.HasCheckConstraint("ck_campaign_criteria_max_score_range", "max_score >= 1 AND max_score <= 100");
+
+                            t.HasCheckConstraint("ck_campaign_criteria_min_pct_range", "min_pct IS NULL OR (min_pct >= 0 AND min_pct <= 100)");
+
+                            t.HasCheckConstraint("ck_campaign_criteria_scoring_scope", "scoring_scope IN ('Always', 'WhenTargeted')");
+
                             t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited', 'SystemDefault')");
 
                             t.HasCheckConstraint("ck_campaign_criteria_weight_range", "weight > 0 AND weight <= 1");
@@ -719,6 +751,10 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("source");
 
+                    b.Property<string>("TargetCriterionIds")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("target_criterion_ids");
+
                     b.HasKey("Id")
                         .HasName("pk_campaign_questions");
 
@@ -768,9 +804,32 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("numeric(5,2)")
                         .HasColumnName("override_score");
 
+                    b.Property<string>("PolicyName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("policy_name");
+
+                    b.Property<int?>("PolicyVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("policy_version");
+
                     b.Property<int?>("RubricVersion")
                         .HasColumnType("integer")
                         .HasColumnName("rubric_version");
+
+                    b.Property<int?>("ScoreAggregationVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("score_aggregation_version");
+
+                    b.Property<bool>("ScoreFallback")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("score_fallback");
+
+                    b.Property<string>("ScoringInputs")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("scoring_inputs");
 
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
@@ -947,6 +1006,16 @@ namespace Isas.CampaignService.Migrations
                         .HasColumnType("text")
                         .HasColumnName("reject_reason");
 
+                    b.Property<bool>("ScoreFallback")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("score_fallback");
+
+                    b.Property<int?>("ScoringPolicyVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("scoring_policy_version");
+
                     b.Property<int?>("ScreeningVersion")
                         .HasColumnType("integer")
                         .HasColumnName("screening_version");
@@ -1114,6 +1183,76 @@ namespace Isas.CampaignService.Migrations
                     b.ToTable("outbox_messages", (string)null);
                 });
 
+            modelBuilder.Entity("Isas.CampaignService.Models.RankingOverride", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("ActorEmail")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("actor_email");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<Guid>("CampaignId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("campaign_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Note")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("note");
+
+                    b.Property<Guid>("RankingId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("ranking_id");
+
+                    b.Property<string>("Result")
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("result");
+
+                    b.Property<decimal?>("Score")
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("score");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("source");
+
+                    b.HasKey("Id")
+                        .HasName("pk_ranking_overrides");
+
+                    b.HasIndex("RankingId", "CreatedAt")
+                        .HasDatabaseName("ix_ranking_overrides_ranking_id_created_at");
+
+                    b.ToTable("ranking_overrides", (string)null);
+                });
+
             modelBuilder.Entity("Isas.CampaignService.Models.RubricPreviewRun", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1204,6 +1343,147 @@ namespace Isas.CampaignService.Migrations
                     b.ToTable("rubric_preview_runs", null, t =>
                         {
                             t.HasCheckConstraint("ck_rubric_preview_runs_status", "status IN ('Running', 'Succeeded', 'Failed')");
+                        });
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.ScoringPolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CampaignId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("campaign_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<string>("EngineVersion")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("engine_version");
+
+                    b.Property<string>("Expression")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("expression");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("name");
+
+                    b.Property<int?>("PassScorePct")
+                        .HasColumnType("integer")
+                        .HasColumnName("pass_score_pct");
+
+                    b.Property<Guid?>("SourceTemplateId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_template_id");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_scoring_policies");
+
+                    b.HasIndex("Kind", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ux_scoring_policies_template")
+                        .HasFilter("campaign_id IS NULL");
+
+                    b.HasIndex("CampaignId", "Kind", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("ux_scoring_policies_campaign")
+                        .HasFilter("campaign_id IS NOT NULL");
+
+                    b.ToTable("scoring_policies", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_scoring_policies_kind", "kind IN ('Interview', 'CvScreening')");
+
+                            t.HasCheckConstraint("ck_scoring_policies_pass_score_pct", "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)");
+
+                            t.HasCheckConstraint("ck_scoring_policies_version", "version >= 1");
+                        });
+
+                    b.HasData(
+                        new
+                        {
+                            Id = new Guid("5c900001-0000-0000-0000-000000000000"),
+                            CreatedAt = new DateTime(2026, 8, 13, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Điểm tổng có trọng số của các tiêu chí — đúng công thức hệ thống đang dùng.",
+                            EngineVersion = "1",
+                            Expression = "weighted_avg_pct",
+                            Kind = "Interview",
+                            Name = "Như hiện nay",
+                            PassScorePct = 60,
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("5c900002-0000-0000-0000-000000000000"),
+                            CreatedAt = new DateTime(2026, 8, 13, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Điểm tổng có trọng số nhân với tỷ lệ câu đã trả lời (0..1): bỏ càng nhiều câu điểm càng giảm.",
+                            EngineVersion = "1",
+                            Expression = "weighted_avg_pct * completeness",
+                            Kind = "Interview",
+                            Name = "Phạt bỏ câu",
+                            PassScorePct = 60,
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("5c900003-0000-0000-0000-000000000000"),
+                            CreatedAt = new DateTime(2026, 8, 13, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Có tiêu chí nào dưới 40 thì lấy đúng điểm tiêu chí thấp nhất (không cho điểm mạnh bù điểm yếu); ngược lại lấy điểm tổng có trọng số.",
+                            EngineVersion = "1",
+                            Expression = "if(min_pct < 40, min_pct, weighted_avg_pct)",
+                            Kind = "Interview",
+                            Name = "Không bù trừ",
+                            PassScorePct = 60,
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("5c900004-0000-0000-0000-000000000000"),
+                            CreatedAt = new DateTime(2026, 8, 13, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Tỷ lệ nhu cầu đạt: mỗi nhu cầu Strong tính 1, Partial tính 0.5, chia tổng số nhu cầu rồi nhân 100.",
+                            EngineVersion = "1",
+                            Expression = "100 * (strong_count + 0.5 * partial_count) / need_count",
+                            Kind = "CvScreening",
+                            Name = "Như hiện nay",
+                            Version = 1
+                        },
+                        new
+                        {
+                            Id = new Guid("5c900005-0000-0000-0000-000000000000"),
+                            CreatedAt = new DateTime(2026, 8, 13, 0, 0, 0, 0, DateTimeKind.Utc),
+                            Description = "Thiếu bất kỳ nhu cầu must-have nào → 0 điểm; đủ must-have thì tính như 'Như hiện nay'.",
+                            EngineVersion = "1",
+                            Expression = "if(must_have_met < must_have_total, 0, 100 * (strong_count + 0.5 * partial_count) / need_count)",
+                            Kind = "CvScreening",
+                            Name = "Bắt buộc must-have",
+                            Version = 1
                         });
                 });
 
@@ -1417,6 +1697,18 @@ namespace Isas.CampaignService.Migrations
                         .HasConstraintName("fk_cv_submission_campaigns_campaign_id");
 
                     b.Navigation("Campaign");
+                });
+
+            modelBuilder.Entity("Isas.CampaignService.Models.RankingOverride", b =>
+                {
+                    b.HasOne("Isas.CampaignService.Models.CampaignRanking", "Ranking")
+                        .WithMany()
+                        .HasForeignKey("RankingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_ranking_overrides_campaign_rankings_ranking_id");
+
+                    b.Navigation("Ranking");
                 });
 
             modelBuilder.Entity("Isas.CampaignService.Models.RubricPreviewRun", b =>

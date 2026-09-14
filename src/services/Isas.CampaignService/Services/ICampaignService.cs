@@ -10,7 +10,7 @@ namespace Isas.CampaignService.Services
     {
         Task<CampaignResponse> GetCampaignAsync(Guid orgId, Guid id, CancellationToken ct);
         // DB31 — keyset-paged (mẫu DB8): body vẫn là mảng, next-cursor ở header X-Next-Cursor.
-        Task<KeysetPage<CampaignResponse>> GetCampaignsAsync(Guid orgId, string? cursor, int? limit, CancellationToken ct);
+        Task<KeysetPage<CampaignListItemResponse>> GetCampaignsAsync(Guid orgId, string? cursor, int? limit, CancellationToken ct);
 
         // AUTH-7: PlatformAdmin oversight — MỌI campaign xuyên org (KHÔNG lọc org), read-only. Tôn trọng
         // soft-delete (D11). Optional lọc status/orgId. Cap 500, mới nhất trước.
@@ -72,7 +72,28 @@ namespace Isas.CampaignService.Services
         Task<CampaignResponse> PublishCampaignAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
         /// <summary>HR sửa bộ nhu cầu công việc dùng để sàng CV (replace-all, chỉ khi Draft — CAMP-2).</summary>
         Task<CampaignResponse> ReplaceJobNeedsAsync(Guid orgId, Guid actorUserId, Guid id, List<JobNeedInput> needs, CancellationToken ct);
+
+        /// <summary>
+        /// CMP3-B3 — AI đọc JD của campaign, đề xuất bộ NHU CẦU CÔNG VIỆC để HR chốt (qua PUT
+        /// /job-needs) TRƯỚC khi sàng CV. <b>CHỈ ĐỌC: không ghi <c>campaigns.job_needs</c>.</b>
+        /// Mọi dòng: <c>source = "AiSuggested"</c>, <c>isMustHave = false</c>.
+        /// Ném: KeyNotFound (ngoài org) → 404 · ArgumentException (chưa có jdText) → 400 ·
+        /// DownstreamServiceException (AIService lỗi / không suy được) → 502. KHÔNG fallback bộ
+        /// mặc định khi AI hỏng (HR sẽ tin là do AI soạn rồi chốt).
+        /// </summary>
+        Task<SuggestJobNeedsResponse> SuggestJobNeedsAsync(Guid orgId, Guid id, CancellationToken ct);
         Task<CampaignResponse> TransitionStatusAsync(Guid orgId, Guid actorUserId, Guid id, CampaignStatus target, CancellationToken ct);
+
+        /// <summary>
+        /// CMP3-B4 — kéo <c>start_at</c> về hiện tại để ứng viên vào thi ngay (POST
+        /// /campaign/{id}/start-now). KHÔNG nhận body. CHỈ khi <c>Active</c> (≠ → 409); campaign có
+        /// khung giờ (ca thi) → 409 (nút này không mở cửa cho ai — ParticipationService vẫn chặn
+        /// theo ca). Idempotent: <c>start_at</c> đã ở quá khứ ⇒ no-op, KHÔNG ghi gì. KHÔNG bao giờ
+        /// đẩy <c>start_at</c> về tương lai; KHÔNG đụng <c>expires_at</c>. Ghi audit
+        /// <c>StartEarly</c> (summary mang mốc CŨ) + chèn outbox "mở sớm" cho mọi lời mời chưa revoke.
+        /// Ném: KeyNotFound → 404 · InvalidOperation → 409.
+        /// </summary>
+        Task<CampaignResponse> StartEarlyAsync(Guid orgId, Guid actorUserId, Guid id, CancellationToken ct);
         Task<IReadOnlyList<CampaignSlotResponse>> GetSlotsAsync(Guid orgId, Guid campaignId, CancellationToken ct);
         Task<CampaignSlotResponse> CreateSlotAsync(Guid orgId, Guid campaignId, CreateCampaignSlotRequest request, CancellationToken ct);
         Task<CampaignSlotResponse> UpdateSlotAsync(Guid orgId, Guid campaignId, Guid slotId, UpdateCampaignSlotRequest request, CancellationToken ct);
@@ -89,7 +110,7 @@ namespace Isas.CampaignService.Services
             Guid orgId, Guid id, string? status, string? search, string? cursor, int? limit, CancellationToken ct);
 
         // C15: Distribution đường 2 — mời hàng loạt từ shortlist sàng CV (candidateIds → tách email từ CV).
-        Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, CancellationToken ct);
+        Task<InviteShortlistResponse> InviteShortlistedCandidatesAsync(Guid orgId, Guid actorUserId, Guid id, List<Guid> candidateIds, bool includeIneligible, CancellationToken ct);
 
         // D4: phát lại lời mời — vô hiệu token cũ (revoke → 410) + tạo invitation mới cùng email/candidate + resend.
         Task<InvitationItem> ReissueInvitationAsync(Guid orgId, Guid actorUserId, Guid id, Guid invitationId, CancellationToken ct);
@@ -98,7 +119,17 @@ namespace Isas.CampaignService.Services
         Task<CampaignResultsResponse> GetCampaignResultsAsync(Guid orgId, Guid id, CancellationToken ct);
 
         // E11b: HR chốt/sửa điểm-kết-quả cuối 1 ứng viên (org-scoped, audit; clear = về AI).
-        Task OverrideResultAsync(Guid orgId, Guid actorUserId, Guid campaignId, Guid sessionId, OverrideResultRequest req, CancellationToken ct);
+        // E11c: actorEmail = snapshot claim `email` của JWT (GEN-3 — Campaign không tra Auth lúc chạy), null nếu
+        // token không mang claim → lịch sử hiện "không rõ" thay vì đoán.
+        Task OverrideResultAsync(Guid orgId, Guid actorUserId, string? actorEmail, Guid campaignId, Guid sessionId, OverrideResultRequest req, CancellationToken ct);
+
+        // E11c: lịch sử điều chỉnh của HR cho 1 buổi, MỚI-NHẤT-TRƯỚC. Gating GIỐNG OverrideResultAsync
+        // (org sở hữu campaign + ranking row thuộc campaign) → 404 nếu sai.
+        Task<OverrideHistoryResponse> GetOverrideHistoryAsync(Guid orgId, Guid campaignId, Guid sessionId, CancellationToken ct);
+
+        // E11c: HR nghe bản ghi âm 1 câu trả lời (proxy Interview /internal/.../audio). Gating GIỐNG
+        // GetSessionTranscriptAsync. Answer lạ / chưa có audio → KeyNotFoundException (404); Interview lỗi → 502.
+        Task<AnswerAudioContent> GetSessionAnswerAudioAsync(Guid orgId, Guid campaignId, Guid sessionId, Guid answerId, CancellationToken ct);
 
         // E6: xuất bảng kết quả (E5) ra file — format=csv (pdf 🔜). Ngoài org → KeyNotFoundException (404).
         Task<CampaignResultExport> ExportCampaignResultsAsync(Guid orgId, Guid id, string? format, CancellationToken ct);

@@ -16,7 +16,16 @@ public class CampaignEmailSenderMimeTests
 {
     private static readonly DateTime Expires = new(2026, 8, 15, 9, 30, 0, DateTimeKind.Utc);
 
-    private static string WriteEml()
+    /// <param name="expiresAt">null ⇒ dùng <see cref="Expires"/> (giữ hành vi 4 test cũ nguyên vẹn).</param>
+    /// <param name="startsAt">CMP1-B4 — giờ campaign MỞ, khác hẳn <paramref name="expiresAt"/> (hạn lời
+    /// mời). Đây đúng là khe nối <c>BuildMailMessage</c> từng KHÔNG có test nào chạm tới: 4 tham số này
+    /// (+ orgName/faceVerifyEnabled/timeLimitMinutes) từng chỉ được gọi bằng chữ ký CŨ 7 tham số ở đây.</param>
+    private static string WriteEml(
+        DateTime? expiresAt = null,
+        DateTime? startsAt = null,
+        string? orgName = null,
+        bool faceVerifyEnabled = false,
+        int? timeLimitMinutes = null)
     {
         var pickup = Path.Combine(Path.GetTempPath(), "isas-mime-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(pickup);
@@ -28,7 +37,9 @@ public class CampaignEmailSenderMimeTests
                 PickupDirectoryLocation = pickup
             };
             using var message = CampaignEmailSender.BuildMailMessage(
-                "noreply@isas.test", "candidate@isas.test", "Backend Q3", "https://fe.test/invite/tok", Expires, null, null);
+                "noreply@isas.test", "candidate@isas.test", "Backend Q3", "https://fe.test/invite/tok",
+                expiresAt ?? Expires, null, null,
+                startsAt, orgName, faceVerifyEnabled, timeLimitMinutes);
             client.Send(message);
             return File.ReadAllText(Directory.GetFiles(pickup, "*.eml").Single());
         }
@@ -112,6 +123,145 @@ public class CampaignEmailSenderMimeTests
         var header = html.Split('\n').Single(l => l.Contains("linear-gradient", StringComparison.Ordinal));
         Assert.Contains("background-color:#132b5c", header, StringComparison.Ordinal);
         Assert.Contains("bgcolor=\"#132b5c\"", header, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// KHE NỐI <c>BuildMailMessage</c> — trước bản này, <c>BuildPlainTextBody</c>/<c>BuildHtmlBody</c>
+    /// đều được test GỌI THẲNG (không qua <c>BuildMailMessage</c>), nên không test nào chứng minh
+    /// <c>BuildMailMessage</c> truyền ĐÚNG biến vào ĐÚNG tham số. Mutation đã đo: đổi
+    /// <c>startsAt</c> thành <c>expiresAt</c> ở lời gọi <c>BuildPlainTextBody</c> bên trong
+    /// <c>BuildMailMessage</c> — 1162/1162 test cũ vẫn XANH.
+    ///
+    /// <para>Test dùng HAI mốc thời gian khác định dạng hiển thị RÕ RỆT (startsAt →
+    /// <c>dd/MM/yyyy</c> giờ VN qua <c>FormatOpensAt</c>; expiresAt → <c>yyyy-MM-dd HH:mm UTC</c>
+    /// qua <c>FormatExpiry</c>) để một lần hoán đổi tham số lộ ra ngay: nếu <c>startsAt</c> bị thay
+    /// bằng <c>expiresAt</c> thì dòng "Phỏng vấn mở từ" sẽ mất mốc ngày của startsAt — assertion đó
+    /// PHẢI đỏ khi mutation đó được áp lại.</para>
+    /// <para>⚠ Mốc là <b>tương đối</b> (<c>DateTime.UtcNow.AddDays(...)</c>), KHÔNG hardcode ngày:
+    /// <c>FormatOpensAt</c> chỉ render khi <c>startsAt &gt; DateTime.UtcNow</c> (CMP1-B4), nên một
+    /// ngày tuyệt đối làm test tự hỏng khi lịch vượt qua nó — đúng bẫy đã xảy ra. Chuỗi kỳ vọng
+    /// tính TỪ mốc bằng đúng cách production format (CurrentCulture cho giờ VN, InvariantCulture
+    /// cho <c>FormatExpiry</c>) nên khớp bất kể culture máy chạy.</para>
+    /// </summary>
+    [Fact]
+    public void Mime_BuildMailMessage_TruyenDungBienVaoDungBan_KhongLanLonStartsAtVoiExpiresAt()
+    {
+        // Mốc TƯƠNG ĐỐI — KHÔNG hardcode ngày (xem <summary>). startsAt ở 02:00 UTC = 09:00 giờ VN;
+        // expiresAt cách hẳn 90 ngày + 23:59 UTC → mốc & định dạng khác rõ rệt để một lần hoán vị
+        // tham số lộ ra ngay.
+        var startsAt = DateTime.UtcNow.Date.AddDays(30).AddHours(2);
+        var expiresAt = startsAt.Date.AddDays(90).AddHours(23).AddMinutes(59);
+        var startsAtVn = VietnamTime.From(startsAt);
+        var expiresAtVn = VietnamTime.From(expiresAt);
+
+        var parts = ParseParts(WriteEml(
+            expiresAt: expiresAt, startsAt: startsAt, orgName: "Công ty Acme",
+            faceVerifyEnabled: true, timeLimitMinutes: 45));
+
+        var plain = parts.Single(p => p.ContentType.Contains("text/plain", StringComparison.OrdinalIgnoreCase)).Body;
+        var html = parts.Single(p => p.ContentType.Contains("text/html", StringComparison.OrdinalIgnoreCase)).Body;
+
+        foreach (var body in new[] { plain, html })
+        {
+            // Giờ MỞ (startsAt) — đúng vai, đúng mốc, dd/MM/yyyy giờ VN qua FormatOpensAt (CurrentCulture).
+            Assert.Contains(startsAtVn.ToString("dd/MM/yyyy"), body);
+            Assert.Contains(startsAtVn.ToString("HH:mm"), body);
+            // Hạn CHÓT (expiresAt) — đúng vai, đúng mốc, ĐÚNG định dạng yyyy-MM-dd HH:mm UTC
+            // (InvariantCulture, không phải giờ VN) qua FormatExpiry.
+            Assert.Contains(expiresAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) + " UTC", body);
+            // Đối chứng ngược: nếu hai tham số bị hoán, ngày expiresAt sẽ xuất hiện dưới định dạng
+            // dd/MM/yyyy (dòng "Phỏng vấn mở từ") — phải VẮNG.
+            Assert.DoesNotContain(expiresAtVn.ToString("dd/MM/yyyy"), body);
+        }
+
+        // 3 trường B4 còn lại cũng phải TỚI ĐÚNG BẢN — cả hai, không chỉ một.
+        Assert.Contains("45 phút", plain);
+        Assert.Contains("cần camera và micro", plain);
+        Assert.Contains("Công ty Acme", plain);
+        Assert.Contains("45 phút", html);
+        Assert.Contains("cần camera và micro", html);
+        Assert.Contains(System.Text.Encodings.Web.HtmlEncoder.Default.Encode("Công ty Acme"), html);
+    }
+
+    /// <summary>
+    /// KHE NỐI — 4 tham số <c>DateTime?</c> của <c>BuildMailMessage</c> (<c>expiresAt</c>,
+    /// <c>slotStartsAt</c>, <c>slotEndsAt</c>, <c>startsAt</c>) CÙNG KIỂU nên trình biên dịch không
+    /// cản được một lần hoán vị giữa chúng — test trước chỉ cô lập <c>startsAt</c>↔<c>expiresAt</c>
+    /// (slot để null). Test này seed CẢ BA mốc campaign-wide/slot cùng lúc, mỗi mốc một giá trị phân
+    /// biệt được, để một hoán vị liên quan tới <c>slotStartsAt</c>/<c>slotEndsAt</c> cũng lộ ra.
+    /// </summary>
+    [Fact]
+    public void Mime_BuildMailMessage_KhungGioSlot_KhongLanLonVoiGioCampaignMo()
+    {
+        // Mốc TƯƠNG ĐỐI — KHÔNG hardcode ngày: campaignOpens phải > DateTime.UtcNow để opens card
+        // render (CMP1-B4), nên ngày tuyệt đối tự hỏng test khi lịch vượt qua. slot ở 01:00 UTC =
+        // 08:00 VN; campaignOpens ở 03:00 UTC = 10:00 VN; hai NGÀY khác nhau (10 ngày) để hoán vị lộ ra.
+        var slotStarts = DateTime.UtcNow.Date.AddDays(20).AddHours(1);
+        var slotEnds = slotStarts.AddHours(1);
+        var campaignOpens = DateTime.UtcNow.Date.AddDays(10).AddHours(3);
+        var slotStartsVn = VietnamTime.From(slotStarts);
+        var slotEndsVn = VietnamTime.From(slotEnds);
+        var campaignOpensVn = VietnamTime.From(campaignOpens);
+
+        var parts = ParseParts(WriteEmlWithSlot(slotStarts, slotEnds, campaignOpens));
+
+        var plain = parts.Single(p => p.ContentType.Contains("text/plain", StringComparison.OrdinalIgnoreCase)).Body;
+        var html = parts.Single(p => p.ContentType.Contains("text/html", StringComparison.OrdinalIgnoreCase)).Body;
+
+        foreach (var body in new[] { plain, html })
+        {
+            // Khung giờ SLOT (per-invitation) qua FormatSlot — đúng ngày, đúng khoảng giờ.
+            Assert.Contains($"{slotStartsVn:HH:mm}–{slotEndsVn:HH:mm}, {slotStartsVn:dd/MM/yyyy}", body);
+            // Giờ campaign MỞ — mốc RIÊNG (ngày khác slot), KHÔNG lẫn vào dòng slot.
+            Assert.Contains(campaignOpensVn.ToString("dd/MM/yyyy"), body);
+        }
+    }
+
+    // Overload seed đủ 3 mốc DateTime? cùng lúc (slot + campaign-open) — WriteEml() gốc không có
+    // slotStartsAt/slotEndsAt vì 4 test cũ không cần; thêm overload riêng thay vì đổi chữ ký gốc.
+    private static string WriteEmlWithSlot(DateTime slotStartsAt, DateTime slotEndsAt, DateTime startsAt)
+    {
+        var pickup = Path.Combine(Path.GetTempPath(), "isas-mime-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(pickup);
+        try
+        {
+            using var client = new SmtpClient
+            {
+                DeliveryMethod = SmtpDeliveryMethod.SpecifiedPickupDirectory,
+                PickupDirectoryLocation = pickup
+            };
+            using var message = CampaignEmailSender.BuildMailMessage(
+                "noreply@isas.test", "candidate@isas.test", "Backend Q3", "https://fe.test/invite/tok",
+                null, slotStartsAt, slotEndsAt, startsAt);
+            client.Send(message);
+            return File.ReadAllText(Directory.GetFiles(pickup, "*.eml").Single());
+        }
+        finally
+        {
+            Directory.Delete(pickup, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// KHE NỐI — <c>faceVerifyEnabled</c>/<c>timeLimitMinutes</c> khác KIỂU với 4 tham số
+    /// <c>DateTime?</c> nên không hoán vị được với chúng, nhưng vẫn có thể bị BỎ SÓT ở một trong hai
+    /// lời gọi (Plain hoặc Html) mà build vẫn xanh (tham số có default). Test cô lập: KHÔNG có
+    /// startsAt/slot/expiresAt/orgName — chỉ 2 trường này — để loại trừ khả năng chúng "vô tình" xuất
+    /// hiện nhờ card khác.
+    /// </summary>
+    [Fact]
+    public void Mime_BuildMailMessage_FaceVerifyVaThoiLuong_ToiCaHaiBan_DuKhiKhongCoMocThoiGianNao()
+    {
+        var parts = ParseParts(WriteEml(faceVerifyEnabled: true, timeLimitMinutes: 30));
+
+        var plain = parts.Single(p => p.ContentType.Contains("text/plain", StringComparison.OrdinalIgnoreCase)).Body;
+        var html = parts.Single(p => p.ContentType.Contains("text/html", StringComparison.OrdinalIgnoreCase)).Body;
+
+        Assert.Contains("30 phút · cần camera và micro", plain);
+        Assert.Contains("30 phút · cần camera và micro", html);
+        // Không seed startsAt/slot ⇒ không được lộ dòng "Phỏng vấn mở từ"/"Khung giờ phỏng vấn".
+        Assert.DoesNotContain("Phỏng vấn mở từ", plain);
+        Assert.DoesNotContain("Khung giờ phỏng vấn", plain);
     }
 
     [Theory]

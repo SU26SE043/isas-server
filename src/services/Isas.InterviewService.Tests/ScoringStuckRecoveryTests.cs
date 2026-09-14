@@ -236,6 +236,9 @@ public class ScoringStuckRecoveryTests
 
         var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(x => x.Id == a.Id);
         Assert.Equal(AnswerStatus.Skipped, saved.Status);
+        // CAMP-21: chốt sổ là lỗi của BỘ CHẤM ⇒ KHÔNG ghi reject_reason ⇒ SessionScoringNotifier vẫn
+        // tính bài này là "đã trả lời" (có audio). Ghi `no_speech` ở đây là phạt ứng viên vì lỗi của ta.
+        Assert.Null(saved.RejectReason);
 
         // PAY-13: không answer nào Scored ⇒ SessionAbandoned ⇒ Payment RELEASE credit (không trừ
         // tiền buổi hỏng). Đây là vế TIỀN của bản vá — trước đây credit treo `Reserved` vĩnh viễn.
@@ -338,8 +341,11 @@ public class ScoringStuckRecoveryTests
 
         await BuildAnswerService(t).MarkFailedAsync(a.Id, "Bản ghi không có tiếng nói (VAD)", noSpeech: true);
 
-        Assert.Equal(AnswerStatus.Skipped,
-            (await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(x => x.Id == a.Id)).Status);
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(x => x.Id == a.Id);
+        Assert.Equal(AnswerStatus.Skipped, saved.Status);
+        // CAMP-21: đây là một trong ĐÚNG HAI chỗ ghi lý do — thiếu nó thì bài im lặng đường tĩnh vẫn
+        // được SessionScoringNotifier tính là "đã trả lời" (kẽ hở +24,7 điểm còn nguyên ở đường worker).
+        Assert.Equal(AnswerService.NoSpeechReason, saved.RejectReason);
     }
 
     // ── Đường THÍCH ỨNG: im lặng bị chặn NGAY, không đi tới bộ chấm ──────────
@@ -378,6 +384,8 @@ public class ScoringStuckRecoveryTests
 
         var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(x => x.SessionId == session.Id);
         Assert.Equal(AnswerStatus.Skipped, saved.Status);
+        // CAMP-21: chỗ ghi lý do thứ hai (đường thích ứng = đường CHÍNH của prod).
+        Assert.Equal(AnswerService.NoSpeechReason, saved.RejectReason);
 
         // Vế đắt nhất: KHÔNG publish ⇒ không tốn lượt Gemini để chấm một câu do máy bịa ra.
         // Trên prod 2026-08-15, đúng ca này đã sinh ra 5 dòng điểm 0.0 kèm reasoning trích nguyên
@@ -437,7 +445,41 @@ public class ScoringStuckRecoveryTests
         // Worker bản CŨ không gửi cờ ⇒ hành vi y hệt trước bản vá.
         await BuildAnswerService(t).MarkFailedAsync(a.Id, "LLM output không hợp lệ");
 
-        Assert.Equal(AnswerStatus.Failed,
-            (await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(x => x.Id == a.Id)).Status);
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(x => x.Id == a.Id);
+        Assert.Equal(AnswerStatus.Failed, saved.Status);
+        // CAMP-21: Failed = lỗi hệ thống (bản chép rác / LLM hỏng) ⇒ KHÔNG ghi lý do, vẫn tính là đã trả lời.
+        Assert.Null(saved.RejectReason);
+    }
+
+    // ── CAMP-21 · INT-3: thu âm lại sau lượt im lặng ⇒ lý do từ chối phải RESET ──
+    [Fact]
+    public async Task UploadLai_SauLuotImLang_XoaRejectReason()
+    {
+        // Người vừa bị VAD chốt "im lặng" thu âm lại và nói thật. Giữ `no_speech` từ bản cũ là bản mới
+        // vẫn bị loại khỏi "đã trả lời" ⇒ mất điểm oan đúng ở người vừa sửa sai.
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.InProgress);
+        var q = TestDb.Question(session.Id);
+        var crit = TestDb.Criterion(session.JobCategory);
+        var answer = TestDb.Answer(session.Id, q.Id, AnswerStatus.Skipped, DateTime.UtcNow, DateTime.UtcNow,
+            rejectReason: AnswerService.NoSpeechReason);
+        t.Db.AddRange(session, q, crit, answer);
+        await t.Db.SaveChangesAsync();
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(s => s.UploadAsync(
+                It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(),
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("answer-audio/y.webm");
+        var svc = new AnswerService(t.Db, storage.Object, Mock.Of<IScoringJobPublisher>(),
+            Mock.Of<ISessionScoringNotifier>(), Options.Create(new ScoringOptions()),
+            NullLogger<AnswerService>.Instance);
+
+        await svc.UploadAnswerAsync(session.Id, q.Id, candidate, new MemoryStream([9]), "audio/webm", 30);
+
+        var saved = await t.Db.PracticeAnswers.AsNoTracking().FirstAsync(x => x.Id == answer.Id);
+        Assert.NotEqual(AnswerStatus.Skipped, saved.Status);   // đã vào lại đường chấm (Uploaded/Scoring)
+        Assert.Null(saved.RejectReason);
     }
 }

@@ -50,6 +50,38 @@ public class PracticeAnswer
 
     public AnswerStatus Status { get; set; } = AnswerStatus.Uploaded;
 
+    /// <summary>
+    /// CAMP-21 (2026-09-11) — LÝ DO bản chép bị từ chối, để phân biệt BA nghĩa của <see cref="AnswerStatus.Skipped"/>
+    /// lúc chấm. Giá trị duy nhất hôm nay: <c>"no_speech"</c> (<c>AnswerService.NoSpeechReason</c>) =
+    /// VAD xác nhận bản ghi KHÔNG có tiếng nói — ghi ở đúng hai chỗ, cả hai đều CÓ audio
+    /// (<c>AnswerService</c> nhánh thích ứng và callback worker <c>noSpeech=true</c>).
+    ///
+    /// <para><b>Vì sao cần:</b> <c>SessionScoringNotifier</c> đo "đã trả lời" bằng "có ghi âm"
+    /// (<see cref="AudioObjectKey"/> != null) — cố ý KHÔNG lọc theo <c>Status</c>, vì <c>Skipped</c> còn
+    /// mang hai nghĩa là lỗi của HỆ THỐNG (buổi kẹt bị chốt sổ · bản chép rác) và phạt ứng viên vì chúng
+    /// là sai. Nhưng "có ghi âm" cũng tính luôn bài <b>6 giây im lặng</b>: đo trên dev 2026-09-11, trả lời
+    /// 1/3 câu + 1 bài im lặng cho <c>seed_answered = 2</c> ⇒ điểm 49.33 thay vì 24.67 — tức không biết
+    /// thì bấm ghi im lặng <b>có lợi hơn</b> bỏ qua (+24,7 điểm). Cột này là thứ cho phép loại ĐÚNG MỘT
+    /// nghĩa (im lặng — lỗi của ứng viên) mà giữ nguyên hai nghĩa còn lại.</para>
+    ///
+    /// <para><b>Vị ngữ đọc:</b> <c>AudioObjectKey != null AND (reject_reason IS NULL OR reject_reason
+    /// &lt;&gt; 'no_speech')</c>. Vế <c>IS NULL OR</c> là bắt buộc ở tầng SQL: <c>NULL &lt;&gt; 'x'</c> là
+    /// UNKNOWN ⇒ thiếu nó là lọc mất <b>mọi dòng cũ</b> ⇒ đổi điểm hồi tố toàn bộ lịch sử. Đo thật: EF Core
+    /// mặc định (repo không bật <c>UseRelationalNulls</c>) tự bù null-semantics C# nên <c>!=</c> trần cũng
+    /// dịch ra có <c>IS NULL</c>; code vẫn viết tường minh để ý đồ đọc được và không phụ thuộc cấu hình đó,
+    /// còn test <c>ToQueryString</c> khoá chuỗi <c>IS NULL</c> trong SQL sinh ra.</para>
+    ///
+    /// <para><c>null</c> = "không biết" (BK23): dòng trước migration · Skipped do chốt sổ buổi kẹt
+    /// (<c>FinalizeStuckSessionAsync</c>, CỐ Ý không ghi) · câu chưa từng ghi âm (<c>AudioObjectKey</c>
+    /// đã NULL, không cần lý do). Không có dòng nào bị đổi điểm hồi tố vì cột này.</para>
+    ///
+    /// <para>Cột kiểu <c>text</c>, KHÔNG <c>HasMaxLength</c>, KHÔNG CHECK — cùng lý do với
+    /// <see cref="TranscriptEngine"/> ngay trên: .NET chỉ ghi hằng số đã whitelist, còn siết ở DB là
+    /// dựng lại bẫy <c>varchar(16)</c>/<c>ck_audit_logs_action</c> (SQLite xanh, Postgres nổ; <c>Down()</c>
+    /// thành cửa một chiều). Reset cùng transcript khi upload lại (INT-3).</para>
+    /// </summary>
+    public string? RejectReason { get; set; }
+
     // E10 — self-consistency: chấm N lần, nếu spread điểm giữa các attempt (mỗi tiêu chí) vượt
     // Scoring:VarianceThreshold → gắn cờ này để HR (B2B) / người luyện (B2C) xem lại. Điểm AI
     // = gợi ý (INT-14/15/16), KHÔNG auto coi là điểm cuối. Mặc định false (N=1 → luôn false).

@@ -129,10 +129,14 @@ public class RankingRubricVersionTests
             (await NewService(tdb.NewContext()).ExportCampaignResultsAsync(owner, camp.Id, "csv", default)).Content);
         var lines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
-        Assert.EndsWith("rubric_version", lines[0].TrimEnd('\r'));   // thêm ở ĐUÔI ⇒ script cũ không vỡ
-        Assert.EndsWith("2", lines[1].TrimEnd('\r'));
-        // null → ô RỖNG, không phải "1": bản xuất không được khẳng định thứ mình không biết.
-        Assert.EndsWith(",", lines[2].TrimEnd('\r'));
+        // SCP1/HĐ-5 thêm policy_version,policy_name,score_fallback ở SAU rubric_version (vẫn ở ĐUÔI).
+        // RNK1/HĐ-3 nối tiếp 9 cột số câu + CV + điểm sàn ở ĐUÔI (Index 13..21).
+        Assert.Contains(",rubric_version,policy_version,policy_name,score_fallback,answered,", lines[0].TrimEnd('\r'));
+        Assert.EndsWith(",below_cutoff", lines[0].TrimEnd('\r'));
+        // rubric_version=2 · 3 ô SCP1 rỗng/rỗng/False · 9 ô RNK1 rỗng (seed ranking không có ScoringInputs/CV).
+        Assert.EndsWith(",2,,,False,,,,,,,,,", lines[1].TrimEnd('\r'));
+        // rubric_version null → ô RỖNG, không phải "1": bản xuất không khẳng định thứ mình không biết.
+        Assert.EndsWith(",,,,False,,,,,,,,,", lines[2].TrimEnd('\r'));
     }
 
     // Thứ tự cột cũ phải giữ nguyên — HR/script đang đọc theo chỉ số.
@@ -149,7 +153,10 @@ public class RankingRubricVersionTests
             (await NewService(tdb.NewContext()).ExportCampaignResultsAsync(owner, camp.Id, "csv", default)).Content);
 
         Assert.Equal(
-            "rank,candidate_id,session_id,total_score,result,scored_at,flags,full_name,email,rubric_version",
+            "rank,candidate_id,session_id,total_score,result,scored_at,flags,full_name,email,rubric_version,"
+            + "policy_version,policy_name,score_fallback,"
+            + "answered,total_questions,seed_answered,seed_total,skip_penalty,"
+            + "cv_match_score,cv_verification_risk,cv_screening_version,below_cutoff",
             csv.Split('\n')[0].TrimEnd('\r'));
     }
 }

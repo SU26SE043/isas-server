@@ -1,3 +1,4 @@
+using Isas.CampaignService.Models;
 using Isas.CampaignService.DTOs;
 
 namespace Isas.CampaignService.Services
@@ -28,16 +29,29 @@ namespace Isas.CampaignService.Services
             // đánh số): materialize là lazy nên bên đó không thể suy ra đúng số HR đang nhìn thấy.
             int rubricVersion = 1,
             IReadOnlyList<SessionQuestionInput>? questionDetails = null,
+            // SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức) đang áp cho campaign. null =
+            // campaign chưa áp chính sách nào ⇒ buổi thi dùng công thức weighted mặc định.
+            CampaignScoringPolicyInput? scoringPolicy = null,
+            // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty (server-owned). Interview ghim
+            // practice_sessions.skip_penalty; true ⇒ điểm tổng = clamp(expr × seed_completeness, 0, 100).
+            // Default true = campaign tạo từ bản RNK1 trở đi (caller thực luôn truyền campaign.SkipPenalty).
+            bool skipPenalty = true,
             CancellationToken ct = default);
         // Overload đầy đủ: KHÔNG đặt default cho `language`/`seniority`/`ct` — caller duy nhất
         // (ParticipationService) truyền đủ, và để trống default thì hai overload không thể nhập nhằng.
-        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CancellationToken ct);
+        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, bool skipPenalty, CancellationToken ct);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
         // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).
         // Lỗi hạ tầng / non-success → DownstreamServiceException (502).
         Task<SessionTranscriptResponse> GetSessionTranscriptAsync(
             Guid sessionId, CancellationToken ct = default);
+
+        // E11c — HR nghe bản ghi âm 1 câu trả lời. Gọi Interview GET /internal/sessions/{sid}/answers/{aid}/audio
+        // (máy-máy, X-Internal-Token). Interview 404 (answer lạ / chưa có audio) → null (caller trả 404);
+        // lỗi hạ tầng / non-success khác → DownstreamServiceException (502). Không bao giờ lộ object key S3.
+        Task<AnswerAudioContent?> GetAnswerAudioAsync(
+            Guid sessionId, Guid answerId, CancellationToken ct = default);
 
         /// <summary>
         /// CAMP-20 — đọc BỘ CHUẨN B2C (admin soạn) để Employer chép về campaign.
@@ -47,10 +61,10 @@ namespace Isas.CampaignService.Services
         /// riêng nghĩa là hai chỗ cấu hình BaseUrl/token/timeout — lệch một chỗ thì hỏng một nửa số
         /// đường gọi mà nửa kia vẫn chạy, tức triệu chứng khó truy nhất.</para>
         ///
-        /// <para><b>Không có <c>id</c> và không có <c>scoringScope</c> trong hợp đồng.</b> Id là của
-        /// Interview, vô nghĩa với Campaign (đường ghi bên này replace-all mint id mới). ScoringScope
-        /// thì Campaign KHÔNG có cột tương ứng và đường chấm B2B không đọc — mang về chỉ để lưu là dựng
-        /// một cột nói dối.</para>
+        /// <para><b>Không có <c>id</c> trong hợp đồng.</b> Id là của Interview, vô nghĩa với Campaign
+        /// (đường ghi bên này replace-all mint id mới). <b>SC2 · W5 — <c>scoringScope</c> NAY có</b>
+        /// (<c>"Always"</c> | <c>"WhenTargeted"</c>): Campaign đã có cột <c>campaign_criteria.scoring_scope</c>
+        /// và gửi tiếp sang Interview lúc tạo session (W4). Interview bản cũ chưa trả ⇒ vắng ⇒ Always.</para>
         ///
         /// <para><c>levels</c> RỖNG = <b>chưa khai mốc</b> (admin chưa soạn), KHÔNG phải lỗi — Interview
         /// rơi về dải mặc định như trước CAMP-16.</para>
@@ -74,7 +88,15 @@ namespace Isas.CampaignService.Services
 
     public record B2CRubricCriterion(
         string Name, string? Description, decimal Weight, int MaxScore,
-        IReadOnlyList<B2CRubricLevel> Levels);
+        IReadOnlyList<B2CRubricLevel> Levels)
+    {
+        /// <summary>
+        /// SC2 · W5 — <c>"Always"</c> | <c>"WhenTargeted"</c>, ĐÃ CHUẨN HOÁ ở client (vắng/lạ ⇒ Always +
+        /// warning) nên đường chép có thể tin thẳng. Init-only có mặc định để call-site 5-tham-số cũ
+        /// (test fixture) vẫn biên dịch với nghĩa "chấm mọi câu".
+        /// </summary>
+        public string ScoringScope { get; init; } = nameof(CriterionScoringScope.Always);
+    }
 
     public record B2CRubricLevel(int Score, string Descriptor);
 
@@ -87,10 +109,34 @@ namespace Isas.CampaignService.Services
     {
         public IReadOnlyList<SessionCriterionLevelInput> Levels { get; init; }
             = Array.Empty<SessionCriterionLevelInput>();
+
+        /// <summary>RNK1 · HĐ-5 — <c>campaign_criteria.id</c>. Interview ghi vào
+        /// <c>rubric_criteria.source_criterion_id</c> (ref lỏng, không FK xuyên service) để snapshot
+        /// chấm khớp về đúng tiêu chí khi tính điểm sàn read-time. Khoá JSON trên dây: <c>criterionId</c>.
+        /// Init-only có mặc định null ⇒ call site cũ không phải sửa.</summary>
+        public Guid? CriterionId { get; init; }
+
+        /// <summary>
+        /// SC2 · W4 — phạm vi chấm của tiêu chí: <c>"Always"</c> | <c>"WhenTargeted"</c>
+        /// (= <see cref="CriterionScoringScope"/>.ToString()). Khoá JSON trên dây: <c>scoringScope</c>
+        /// (khớp <c>CampaignCriterionInput.ScoringScope</c> phía Interview, T4). <c>null</c> ⇒ Interview coi
+        /// <c>Always</c> (= hành vi hôm nay; bản Interview cũ bỏ qua field). Init-only để call site cũ và
+        /// fixture 4-tham-số vẫn biên dịch. <see cref="ScoringCriteriaBuilder"/> LUÔN set từ entity.
+        /// </summary>
+        public string? ScoringScope { get; init; }
     }
 
     /// <summary>Một mốc điểm (E9 hard-anchor) — map 1-1 sang <c>rubric_levels</c> phía Interview.</summary>
     public record SessionCriterionLevelInput(int Score, string Descriptor);
+
+    /// <summary>
+    /// SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức) của campaign, gửi sang Interview để ghim
+    /// vào <c>practice_sessions</c>. Ghim CẢ biểu thức: Interview không đọc được bảng
+    /// <c>scoring_policies</c> của Campaign lúc chấm/preview (DB-per-service). Chỉ tồn tại khi campaign
+    /// ĐÃ áp một chính sách (<c>campaigns.interview_policy_version != null</c>); null = dùng công thức
+    /// weighted mặc định.
+    /// </summary>
+    public record CampaignScoringPolicyInput(int Version, string Expression, int? PassScorePct, string EngineVersion);
 
     /// <summary>
     /// Một câu campaign kèm đáp án mẫu HR soạn (null = chưa soạn).
@@ -101,9 +147,22 @@ namespace Isas.CampaignService.Services
     /// <c>questions</c>, và BỎ QUA nếu số lượng lệch (ghép theo chỉ số khi lệch sẽ gán đáp án của câu
     /// này cho câu kia — chấm sai mà không lỗi nào nổ).</para>
     /// </summary>
-    public record SessionQuestionInput(string Text, string? SampleAnswer);
+    public record SessionQuestionInput(string Text, string? SampleAnswer)
+    {
+        /// <summary>
+        /// SC2 · W4 — nhãn tiêu chí NỘI DUNG câu này nhắm tới (id <c>campaign_criteria</c>; Interview map
+        /// sang <c>rubric_criteria</c> qua <c>source_criterion_id</c>, id lạ bỏ). Khoá JSON: <c>targetCriterionIds</c>.
+        /// 🔑 GIỮ ĐÚNG 3 TRẠNG THÁI trên dây (I2): <c>null</c> ⇒ <c>null</c> (chưa gắn ⇒ chấm đủ bộ) ·
+        /// <c>[]</c> ⇒ <c>[]</c> (đã xét, không nhắm ⇒ chỉ <c>Always</c>) · <c>[ids]</c>. Phải là nhãn của ĐÚNG
+        /// câu đã rút (selector xáo thứ tự) — <see cref="ParticipationService"/> dựng từ <c>PoolQuestion</c>.
+        /// </summary>
+        public IReadOnlyList<Guid>? TargetCriterionIds { get; init; }
+    }
 
     public record CampaignSessionResult(Guid SessionId, IReadOnlyList<SessionQuestion> Questions);
 
     public record SessionQuestion(Guid Id, int OrderNo, string Content, int TimeLimitSec);
+
+    // E11c — bản ghi âm stream từ Interview (Content-Type suy từ đuôi object key phía Interview).
+    public record AnswerAudioContent(Stream Content, string ContentType);
 }

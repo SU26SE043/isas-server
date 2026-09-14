@@ -247,7 +247,8 @@ _HEADERS = {"X-Internal-Token": settings.internal_token}
 def _capture_generate(bucket):
     async def fake_generate(job_category, cv_text, jd_text, count=None,
                             focus_criteria=None, grounding=None, criteria=None,
-                            seniority=None, lesson_context=None, topics=None):
+                            seniority=None, lesson_context=None, topics=None,
+                            criteria_context=None):
         bucket.append(topics)
         return QuestionGenerationResult(questions=["Q1"], citations=None)
     return fake_generate

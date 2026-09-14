@@ -77,6 +77,14 @@ namespace Isas.PaymentService.Services
                 OwnerId = ownerId,
                 Kind = OrderKind.CreditPack,
                 PackageId = package.Id,
+                // UX3-B1 — GÁN TƯỜNG MINH navigation, đừng dựa vào EF relationship fixup.
+                // ToResponse đọc order.Package?.InterviewCredits để dựng biên lai. Ở đường TẠO đơn,
+                // `order` là thực thể vừa dựng trong bộ nhớ nên navigation chỉ được điền nhờ fixup —
+                // và fixup chỉ chạy khi `package` tình cờ nạp CÓ tracking. Thêm `.AsNoTracking()` vào
+                // câu nạp gói (một tinh chỉnh hiệu năng rất thường gặp) là interviewCredits thành
+                // null IM LẶNG trên response tạo đơn. Đo được: trước dòng này, thêm AsNoTracking thì
+                // 608/608 test vẫn xanh. Gán thẳng ⇒ đúng do CẤU TRÚC, không do cơ chế ngầm.
+                Package = package,
                 AmountVnd = package.PriceVnd,
                 PayosOrderCode = orderCode,
                 ExpiredAt = DateTime.UtcNow.AddMinutes(30),
@@ -165,6 +173,14 @@ namespace Isas.PaymentService.Services
                 OwnerId = ownerId,
                 Kind = renewing ? OrderKind.SubscriptionRenewal : OrderKind.SubscriptionPurchase,
                 PackageId = package.Id,
+                // UX3-B1 — GÁN TƯỜNG MINH navigation, đừng dựa vào EF relationship fixup.
+                // ToResponse đọc order.Package?.InterviewCredits để dựng biên lai. Ở đường TẠO đơn,
+                // `order` là thực thể vừa dựng trong bộ nhớ nên navigation chỉ được điền nhờ fixup —
+                // và fixup chỉ chạy khi `package` tình cờ nạp CÓ tracking. Thêm `.AsNoTracking()` vào
+                // câu nạp gói (một tinh chỉnh hiệu năng rất thường gặp) là interviewCredits thành
+                // null IM LẶNG trên response tạo đơn. Đo được: trước dòng này, thêm AsNoTracking thì
+                // 608/608 test vẫn xanh. Gán thẳng ⇒ đúng do CẤU TRÚC, không do cơ chế ngầm.
+                Package = package,
                 AmountVnd = package.PriceVnd,
                 PayosOrderCode = orderCode,
                 ExpiredAt = DateTime.UtcNow.AddMinutes(30),

@@ -86,7 +86,17 @@ public record CampaignCriterionInput(
     // E9 — mốc điểm HR soạn (AI gợi ý rồi HR sửa). null/rỗng = không có mốc ⇒ AIService rơi về dải
     // mặc định 0..maxScore như trước, KHÔNG phải lỗi. Optional ở CUỐI record để bản Campaign cũ —
     // chưa biết field này — vẫn gọi được endpoint mà không vỡ (hai service deploy không nguyên tử).
-    IReadOnlyList<CampaignCriterionLevelInput>? Levels = null
+    IReadOnlyList<CampaignCriterionLevelInput>? Levels = null,
+    // RNK1 · HĐ-5 — campaign_criteria.id (khoá JSON `criterionId`). Ghi vào
+    // rubric_criteria.source_criterion_id lúc materialize ⇒ snapshot chấm khớp điểm sàn read-time
+    // theo id. null = bản Campaign cũ chưa gửi. Optional ở CUỐI record.
+    Guid? CriterionId = null,
+    // SC2 (W4) — phạm vi chấm của tiêu chí (khoá JSON `scoringScope`): "Always" | "WhenTargeted",
+    // so KHÔNG phân biệt hoa/thường. Vắng (bản Campaign cũ) ⇒ Always = hành vi hôm nay; giá trị LẠ
+    // ⇒ Always + LogWarning (chiều mặc định an toàn là "chấm thừa", không phải "bỏ chấm" — xem
+    // Enums.ScoringScope). Là STRING chứ không phải enum để bản Campaign gửi chữ sai không làm
+    // request vỡ 400 ở tầng bind rồi chặn cả buổi thi. Optional ở CUỐI record.
+    string? ScoringScope = null
 );
 
 // I1 (B2B): tạo session bài thi của 1 campaign. Câu hỏi + tiêu chí do Campaign cấp (không gọi AI sinh).
@@ -94,7 +104,18 @@ public record CampaignCriterionInput(
 // Phỏng vấn THÍCH ỨNG (B2B): Adaptive*/MaxFollowUps/MaxQuestions do Campaign/HR bật (optional; null = tắt).
 // Seed = toàn bộ campaign questions (ai cũng nhận) → câu thích ứng thêm ở đuôi, chấm theo CÙNG tiêu chí.
 /// <summary>Một câu campaign kèm đáp án mẫu HR soạn (null = chưa soạn).</summary>
-public record CampaignQuestionInput(string Text, string? SampleAnswer = null);
+/// <param name="TargetCriterionIds">
+/// SC2 (W4) — nhãn tiêu chí NỘI DUNG câu này nhắm tới, là id <b>campaign_criteria</b> (phía Campaign),
+/// khoá JSON <c>targetCriterionIds</c>. Interview map sang <c>rubric_criteria.id</c> qua
+/// <c>source_criterion_id</c> lúc materialize. 🔑 GIỮ ĐÚNG 3 TRẠNG THÁI (xem
+/// <c>Entities.PracticeQuestion.TargetCriterionIds</c>): <c>null</c>/vắng = không nhãn ⇒ chấm đủ
+/// rubric (bản Campaign cũ) · <c>[]</c> = đã gắn, câu không nhắm tiêu chí nội dung nào ⇒ chỉ tiêu chí
+/// <c>Always</c> · non-empty = nhắm đúng những id đó. Optional ở CUỐI record.
+/// </param>
+public record CampaignQuestionInput(
+    string Text,
+    string? SampleAnswer = null,
+    IReadOnlyList<Guid>? TargetCriterionIds = null);
 
 public record CreateCampaignSessionRequest(
     Guid CampaignId,
@@ -120,7 +141,16 @@ public record CreateCampaignSessionRequest(
     // chuyện được với bản Interview cũ và ngược lại. Campaign gửi CẢ HAI; Interview ưu tiên field này,
     // vắng thì rơi về `Questions`. Gỡ `Questions` là việc của một đợt sau, khi cả hai bên đã lên.
     // ⚠ Nếu có thì SỐ LƯỢNG và THỨ TỰ phải khớp `Questions` — Interview không tự ghép lại.
-    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null
+    IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null,
+    // SCP1 · B5 — hợp đồng chấm điểm (chính sách biểu thức) của campaign, ghim vào practice_sessions.
+    // Cả 4 nullable + CUỐI record. null = Campaign chưa áp chính sách (dùng weighted mặc định).
+    int? CampaignPolicyVersion = null,
+    string? CampaignPolicyExpression = null,
+    int? CampaignPolicyPassScorePct = null,
+    string? CampaignPolicyEngineVersion = null,
+    // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty. null (bản Campaign cũ chưa gửi) ⇒ session
+    // skip_penalty = false (không phạt). Optional ở CUỐI record.
+    bool? SkipPenalty = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -152,7 +182,18 @@ public record CreateCampaignSessionInternalRequest(
     IReadOnlyList<CampaignQuestionInput>? QuestionDetails = null,
     // Phiên bản bộ tiêu chí (campaigns.rubric_version). Khoá JSON trên dây: `rubricVersion`
     // (JsonSerializerDefaults.Web ⇒ camelCase). null = Campaign bản cũ ⇒ Interview coi là 1.
-    int? RubricVersion = null
+    int? RubricVersion = null,
+    // SCP1 · B5 — HỢP ĐỒNG CHẤM ĐIỂM (chính sách biểu thức) của campaign, ghim vào practice_sessions
+    // lúc tạo. Cả 4 nullable + ở CUỐI record: bản Campaign cũ chưa gửi ⇒ null ⇒ buổi dùng công thức
+    // weighted mặc định (hành vi trước SCP1). Ghim CẢ biểu thức — Interview không đọc được bảng
+    // scoring_policies của Campaign lúc chấm/preview.
+    int? CampaignPolicyVersion = null,
+    string? CampaignPolicyExpression = null,
+    int? CampaignPolicyPassScorePct = null,
+    string? CampaignPolicyEngineVersion = null,
+    // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty (khoá JSON trên dây: `skipPenalty`, camelCase
+    // Web). null (bản Campaign cũ) ⇒ session.skip_penalty = false ⇒ không phạt. Optional ở CUỐI record.
+    bool? SkipPenalty = null
 );
 public record PracticeSessionResponse(
     Guid Id,
@@ -170,7 +211,16 @@ public record PracticeSessionResponse(
     // học lộ trình / pool rỗng / buổi cũ trước cột này tồn tại — client cũ (không biết field) không
     // vỡ. Đặt CUỐI + có default (mẫu CriterionEvidence ngay trên): call site positional cũ không
     // phải sửa.
-    IReadOnlyList<SessionTopicResponse>? Topics = null
+    IReadOnlyList<SessionTopicResponse>? Topics = null,
+    // Hạn chót nhận bài của CHÍNH buổi này (I2). Trước đây con số này chỉ tồn tại trong response
+    // MỘT LẦN của `POST /campaign/{id}/start` (`deadlineAt`) — đóng tab hoặc tải lại trang là ứng
+    // viên B2B mất luôn thông tin mình phải nộp trước lúc nào, và không đường nào đọc lại được.
+    // Với B2B có ca thi, nó là `min(campaign.expires_at, slot.ends_at)` nên còn CHẶT HƠN hạn chiến
+    // dịch ghi trong thư mời. null = buổi B2C / không có hạn cứng.
+    DateTime? Deadline = null,
+    // Buổi thuộc chiến dịch nào (null = B2C). Client cần nó để biết đang ở luồng nào mà không phải
+    // nhớ từ lúc bấm Bắt đầu.
+    Guid? CampaignId = null
 );
 
 // Evidence state được trả dạng additive ở GET session để client khôi phục đúng ngữ cảnh đã dùng
@@ -214,7 +264,12 @@ public record AnswerResponse(
     // FE phải hiện "chưa có dữ liệu" chứ đừng hiện "0 từ đệm" như một lời khen.
     DeliveryMetricsDto? DeliveryMetrics = null,
     // URL API owner-scoped để phát/tải bản ghi âm; không bao giờ lộ AudioObjectKey của SeaweedFS.
-    string? AudioUrl = null
+    string? AudioUrl = null,
+    // CAMP-21/E11c — lý do bản ghi bị từ chối chấm: "no_speech" = VAD không thấy vùng tiếng nói (bài im lặng,
+    // Status=Skipped nhưng CÓ audio). null = không có lý do / dòng cũ không biết (BK23). Client dùng để phân
+    // biệt "im lặng" với "bỏ trống" (không audio) và "chốt sổ buổi kẹt" (Skipped, không lý do).
+    // Đặt CUỐI + default → client cũ không vỡ (tiền lệ SampleAnswer/DeliveryMetrics).
+    string? RejectReason = null
 );
 
 public record AnswerAudioContent(Stream Content, string ContentType);

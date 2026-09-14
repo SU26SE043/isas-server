@@ -32,6 +32,11 @@ namespace Isas.CampaignService.Models
         // mức bằng chứng, KHÔNG phải số AI phán (xem ScreeningVersion). Giữ nguyên tên cột để
         // sort/keyset/minScore và nhãn FE "Điểm khớp CV" chạy nguyên.
         public int? OverallMatchScore { get; set; }
+        // CMP4-B4 — mốc BẮT ĐẦU LƯỢT ĐÁNH GIÁ hiện tại (không phải "lần publish gần nhất"): set 1 lần
+        // ở đầu lượt (PublishScreeningJobsAsync / RescreenCandidateAsync / lần Filtered→Analyzing đầu
+        // của StuckScreeningRepublisher), KHÔNG dời khi republisher đẩy lại (nhịp đẩy-lại đọc UpdatedAt).
+        // StuckScreeningRepublisher neo TRẦN BỎ CUỘC 6h vào (LastScreeningPublishedAt ?? CreatedAt).
+        // null = Filtered chưa từng publish (publish hụt lúc sàng).
         public DateTime? LastScreeningPublishedAt { get; set; }   // cho StuckScreeningRepublisher (C15)
 
         // ── HR technical screener (bước 2-4) ──────────────────────────────────
@@ -39,6 +44,22 @@ namespace Isas.CampaignService.Models
         // phỏng vấn, 2 = jobFitScore tính từ bằng chứng. Hai thang KHÔNG so sánh được — có dấu để
         // chúng không bị trộn trong im lặng (tiền lệ scoring_scope_version/BK23).
         public int? ScreeningVersion { get; set; }
+
+        // SCP1 · B5 — GHIM chính sách chấm CV (scoring_policies, kind=CvScreening) mà LẦN ĐÁNH GIÁ này
+        // chạy dưới. Ghim TẠI LÚC ĐẨY JOB SÀNG (PublishScreeningJobsAsync), KHÔNG lúc upload.
+        //   · Republisher đẩy lại (retry) → GIỮ pin cũ (cùng một lần đánh giá).
+        //   · HR bấm rescreen                → PIN LẠI theo campaigns.cv_policy_version hiện hành
+        //                                      (lần đánh giá MỚI).
+        // Chỉ ghim SỐ VERSION (không ghim biểu thức): Campaign SỞ HỮU bảng scoring_policies và các dòng
+        // là BẤT BIẾN (B2) ⇒ (campaign_id, CvScreening, version) resolve về đúng một biểu thức cố định,
+        // KHÔNG cần gọi service khác. null = campaign chưa áp chính sách CV / sàng trước cột này.
+        public int? ScoringPolicyVersion { get; set; }
+
+        // SCP1 · B7 / HĐ-5 — CỜ LÙI AN TOÀN của OverallMatchScore. true = biểu thức chính sách sàng CV
+        // (đã ghim) LỖI lúc chạy (chia 0 / tràn số / ném / kết quả ngoài [0,100]) ⇒ điểm tính bằng
+        // công thức CAMP-14 mặc định. Ghi CÙNG transaction với hàng (SaveCvResultAsync) ⇒ NOT NULL
+        // default false: hàng sàng trước B7 = false = "không lùi an toàn". Phải hiện ra màn HR (HĐ-5).
+        public bool ScoreFallback { get; set; }
         public string? FitSummary { get; set; }                  // 2-3 câu: hợp/không hợp ở đâu
         public List<NeedAssessment>? Strengths { get; set; }      // jsonb — level Strong|Partial
         public List<NeedAssessment>? Gaps { get; set; }           // jsonb — level Weak

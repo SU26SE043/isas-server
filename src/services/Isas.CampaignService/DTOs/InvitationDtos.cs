@@ -48,6 +48,22 @@ namespace Isas.CampaignService.DTOs
         public DateTime? JoinedAt { get; set; }      // từ membership (D2), null = chưa tham gia
         public Guid? CampaignCandidateId { get; set; }   // đường-2: link về cv_submission đã sàng; đường-1 = null
         public DateTime CreatedAt { get; set; }
+
+        /// <summary>
+        /// Ca thi đã gán cho lời mời này (<c>AssignSlotsAsync</c> gán lúc tạo lời mời).
+        ///
+        /// <para><b>Vì sao phải lộ ra:</b> thư mời CÓ nói ca cho ứng viên
+        /// (<c>InvitationEmailConsumer</c> tra ca rồi truyền vào <c>CampaignEmailSender</c>), nhưng
+        /// phía HR thì không: danh sách lời mời chỉ cho biết ca nào còn bao nhiêu chỗ
+        /// (<c>assignedCount</c>), KHÔNG cho biết AI ở ca nào. Ứng viên kêu "giờ đó tôi bận" là HR
+        /// không tra được, cũng không đổi được.</para>
+        ///
+        /// <para><c>null</c> = chiến dịch không có ca thi ⇒ thi bất kỳ lúc nào trong cửa sổ. Đó là
+        /// trạng thái BÌNH THƯỜNG (ca thi là tuỳ chọn), không phải thiếu dữ liệu.</para>
+        /// </summary>
+        public Guid? SlotId { get; set; }
+        public DateTime? SlotStartsAt { get; set; }
+        public DateTime? SlotEndsAt { get; set; }
     }
 
     /// <summary>

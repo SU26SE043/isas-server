@@ -613,7 +613,7 @@ namespace Isas.AuthService.Services
             foreach (var u in users)
             {
                 // role đã lọc ở tầng query (push-down) — chỉ resolve để HIỂN THỊ (tập ≤ take, không N+1 lớn).
-                var userRole = (await _userManager.GetRolesAsync(u)).FirstOrDefault() ?? "No role";
+                var userRole = PrimaryRole(await _userManager.GetRolesAsync(u));
 
                 membershipByUser.TryGetValue(u.Id, out var m);
                 result.Add(new AdminUserResponse
@@ -722,6 +722,23 @@ namespace Isas.AuthService.Services
         /// </summary>
         private static readonly string[] PlatformRoles = ["Candidate", "Employer", "Admin"];
 
+        /// <summary>
+        /// Role platform "chính" để hiển thị/phân quyền phía client khi user có NHIỀU role. Mô hình là 1 role/user
+        /// (<see cref="ChangePlatformRoleAsync"/> THAY THẾ), nhưng dữ liệu thật vẫn có user 2 role: tài khoản admin
+        /// được tạo bằng register (nhận Candidate) rồi INSERT thêm Admin bằng SQL (DEPLOYMENT.md). Trước đây
+        /// <c>.FirstOrDefault()</c> lấy hàng đầu theo thứ tự DB trả về — đo trên dev, <c>/auth/me</c> trả
+        /// "Candidate" cho admin@ nên FE (<c>RequireRole</c>) chặn admin khỏi toàn bộ trang admin. Chọn theo mức
+        /// đặc quyền Admin &gt; Employer &gt; Candidate; role ngoài danh sách → phần tử đầu; rỗng → "No role".
+        /// </summary>
+        public static string PrimaryRole(IEnumerable<string> roles)
+        {
+            var list = roles as IList<string> ?? roles.ToList();
+            if (list.Count == 0) return "No role";
+            for (var i = PlatformRoles.Length - 1; i >= 0; i--)
+                if (list.Contains(PlatformRoles[i], StringComparer.Ordinal)) return PlatformRoles[i];
+            return list[0];
+        }
+
         // PlatformAdmin đổi platform-role của user (AUTH-3). Mô hình 1 role/user (ListAllUsersAsync đọc
         // .FirstOrDefault()) → THAY THẾ chứ không cộng dồn.
         //
@@ -819,7 +836,7 @@ namespace Isas.AuthService.Services
                 Id = user.Id,
                 Email = user.Email,
                 FullName = user.FullName,
-                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role",
+                Role = PrimaryRole(await _userManager.GetRolesAsync(user)),
                 OrgId = membership?.OrgId,
                 OrgName = membership?.Organization?.Name,
                 OrgRole = membership?.OrgRole.ToString(),
@@ -1110,7 +1127,7 @@ namespace Isas.AuthService.Services
                 Location = user.Location,
                 Title = user.Title,
                 CreatedAt = user.CreatedAt,
-                Role = (await _userManager.GetRolesAsync(user)).FirstOrDefault() ?? "No role",
+                Role = PrimaryRole(await _userManager.GetRolesAsync(user)),
                 OrgId = membership?.OrgId,
                 OrgName = membership?.Organization?.Name,
                 OrgRole = membership?.OrgRole.ToString()

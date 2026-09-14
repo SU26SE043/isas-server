@@ -142,6 +142,34 @@ public class PracticeSession : IHasUpdatedAt
     public Guid? B2CRubricOwnerId { get; set; }
     public int? B2CRubricVersion { get; set; }
 
+    // SCP1 · B5 — GHIM HỢP ĐỒNG CHẤM ĐIỂM (chính sách biểu thức) của buổi B2B này.
+    //
+    // InterviewService có 0 tham chiếu tới CampaignDbContext ⇒ lúc chấm nó KHÔNG đọc được bảng
+    // scoring_policies của Campaign. Nên phải NHẬN qua lời gọi tạo session (CreateCampaignSessionInternalRequest)
+    // và GHIM LẠI ở đây — y hệt mẫu CampaignRubricVersion ngay trên: "dùng cấu hình LÚC TẠO, không
+    // phải cấu hình đổi sau". HR đổi/tạo version chính sách mới CHỈ áp cho buổi thi SAU.
+    //
+    // ⚠ GHIM CẢ BIỂU THỨC, không chỉ số phiên bản: chỉ có số thì lúc chấm/preview lại phải gọi sang
+    // CampaignService để lấy biểu thức ⇒ phá DB-per-service + tạo phụ thuộc runtime ở đúng đường nóng.
+    // Biểu thức là bất biến bên Campaign (scoring_policies immutable) nên chép xuống là an toàn.
+    //
+    //   null (cả 4 cột) = buổi B2C · buổi B2B mà campaign chưa áp chính sách nào (dùng công thức
+    //          weighted mặc định) · buổi tạo TRƯỚC cột này. KHÔNG suy "có/không có chính sách" từ
+    //          một cột lẻ — 4 cột đi cùng nhau, set cùng lúc lúc tạo session.
+    public int? CampaignPolicyVersion { get; set; }
+    public string? CampaignPolicyExpression { get; set; }
+    public int? CampaignPolicyPassScorePct { get; set; }
+    public string? CampaignPolicyEngineVersion { get; set; }
+
+    // RNK1 · HĐ-2 / CAMP-21 — GHIM luật "câu HR khai mà ứng viên bỏ trống tính 0 điểm" của buổi B2B
+    // này. Nhận từ CreateCampaignSessionInternalRequest (campaigns.skip_penalty), ghim lại — cùng mẫu
+    // CampaignRubricVersion/CampaignPolicy*: dùng cấu hình LÚC TẠO, không phải cấu hình đổi sau.
+    //
+    //   false (default) = buổi B2C · buổi B2B của campaign có TRƯỚC RNK1 (backfill skip_penalty=false)
+    //          · buổi tạo trước cột này. true = campaign tạo từ RNK1 trở đi ⇒ điểm tổng =
+    //          clamp(expr × seed_completeness, 0, 100) (SessionScoringNotifier + ScoringPolicyService).
+    public bool SkipPenalty { get; set; }
+
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.
@@ -153,6 +181,26 @@ public class PracticeSession : IHasUpdatedAt
     // null = tính năng tắt (kill-switch Interview:Topics:Enabled) · buổi bài học lộ trình (bỏ qua
     // TopicSelector hẳn) · pool rỗng lúc tạo · buổi tạo trước cột này tồn tại.
     public List<SessionTopic>? Topics { get; set; }
+
+    // ADP1 — CON DẤU CÁCH GỘP ĐIỂM. Trả lời đúng một câu: "điểm buổi này gộp theo ANSWER hay theo
+    // CÂU GỐC?". Cần vì hai cách cho ra HAI THANG KHÔNG SO SÁNH ĐƯỢC (đo thật: cùng một buổi, chuỗi
+    // 4 answer @4đ + một gốc trần @1đ ⇒ cũ 34.00, mới 25.00), mà CAMP-10 (xếp hạng) đem điểm của mọi
+    // ứng viên trong campaign so THẲNG, còn BC15 (đo cải thiện) · F14 (mốc peer) so điểm qua thời gian.
+    // Tiền lệ cùng loại: scoring_scope_version (INT-18) · metrics_version (F11) · campaign_rubric_version
+    // (CAMP-18) · screening_version (CAMP-14) · policy_version (SCP1).
+    //
+    //   null = KHÔNG BIẾT — buổi chấm trước khi cột này tồn tại. ⚠ KHÔNG suy thành 1 (BK23: suy
+    //          "biết" từ "không biết" là bịa). Trên thực tế row null đều là cách cũ, nhưng đó là suy
+    //          đoán của người đọc chứ không phải điều dữ liệu khẳng định.
+    //      1 = ĐÃ BIẾT: gộp theo ANSWER (trước ADP1). Code hiện tại không ghi giá trị này.
+    //      2 = ĐÃ BIẾT: gộp về CÂU GỐC (ADP1) — xem CriterionScoreAggregator.
+    //
+    // ⚠ ĐÓNG LÚC CHẤM, KHÔNG phải lúc tạo buổi — khác hẳn CampaignRubricVersion/CampaignPolicy*/
+    // SkipPenalty ở trên. Ba cái đó ghim một LỜI HỨA về đầu vào bên ngoài ("bạn được chấm bằng thước
+    // đo lúc bạn bắt đầu"). Cái này ghi lại một SỰ THẬT về đoạn code đã tính ra con số: buổi tạo
+    // trước lúc deploy nhưng chấm sau lúc deploy thì được gộp bằng cách MỚI, vì code là code. Ghim
+    // lúc tạo sẽ nói dối đúng ở nhóm buổi vắt qua cửa sổ rollout — tức đúng nhóm dễ bị trộn thang nhất.
+    public int? ScoreAggregationVersion { get; set; }
 
     // Navigation
     public ICollection<PracticeQuestion> Questions { get; set; } = [];

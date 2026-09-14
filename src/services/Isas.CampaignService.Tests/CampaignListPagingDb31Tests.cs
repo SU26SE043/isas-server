@@ -12,7 +12,12 @@ namespace Isas.CampaignService.Tests;
 /// DB31 — list campaign của Employer (endpoint user thật sự gọi) nay keyset-paged, theo ĐÚNG
 /// convention DB8 của `ListAllCampaignsAsync`: cursor opaque `(CreatedAt DESC, Id DESC)`, limit mặc
 /// định = cap cũ (500 → hành vi cũ giữ nguyên), body vẫn mảng, next-cursor rời ra header.
-/// Vẫn phải giữ nguyên: lọc theo org + soft-delete (D11) + 2 Include (card hiện số câu hỏi/tiêu chí).
+/// Vẫn phải giữ nguyên: lọc theo org + soft-delete (D11).
+///
+/// CMP1-B3 — danh sách nay trả <c>CampaignListItemResponse</c> (KHÔNG <c>CampaignResponse</c>):
+/// bỏ hẳn <c>questions</c>/<c>criteria</c> khỏi JSON (còn <c>Include(Questions)</c> để tính
+/// <c>QuestionBank</c>, nhưng mảng câu hỏi thô không lộ ra nữa; <c>Criteria</c> không còn Include).
+/// Xem <c>ThreeCountsForListCmp1B3Tests</c> cho phần số đếm + hợp đồng shape.
 /// </summary>
 public class CampaignListPagingDb31Tests
 {
@@ -163,7 +168,10 @@ public class CampaignListPagingDb31Tests
 
         var only = Assert.Single(page.Items);
         Assert.Equal("cua-toi", only.Title);                    // org khác không lọt, soft-delete bị loại
-        Assert.Single(only.Questions);                          // Include Questions còn sống qua AsSplitQuery
-        Assert.Single(only.Criteria);                           // Include Criteria còn sống (C12 — card đếm tiêu chí)
+        // CMP1-B3: mảng câu hỏi thô KHÔNG còn trên item danh sách, nhưng Include(Questions) vẫn nạp
+        // để QuestionBank đếm đúng (1 câu vừa seed) — chứng minh Include chưa bị gỡ theo nhầm.
+        Assert.Equal(1, only.QuestionBank.Total);
+        // `criteria` bị bỏ hẳn khỏi danh sách (CMP1-B3) — CampaignListItemResponse không còn field
+        // này (khoá ở tầng biên dịch, xem ThreeCountsForListCmp1B3Tests.ListShape_...).
     }
 }

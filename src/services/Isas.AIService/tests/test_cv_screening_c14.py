@@ -26,7 +26,7 @@ from app.prompts import (
     build_cv_analysis_prompt, build_cv_screening_prompt, build_job_needs_prompt,
 )
 from app.providers.gemini import GeminiProvider
-from app.schemas import NO_EVIDENCE
+from app.schemas import NOT_ASSESSED, NO_EVIDENCE
 
 N1 = "11111111-1111-1111-1111-111111111111"
 N2 = "22222222-2222-2222-2222-222222222222"
@@ -237,14 +237,69 @@ async def test_screen_cv_bo_needid_lap():
 
 
 @pytest.mark.asyncio
-async def test_screen_cv_thieu_nhu_cau_thi_raise():
-    """🔴 Thiếu một nhu cầu ⇒ ứng viên bị đo trên tập HẸP HƠN người khác rồi xếp chung một bảng.
-    Ném để worker retry, hết retry thì cv-failed — HR thấy và bấm rescreen (BK30)."""
+async def test_screen_cv_thieu_nhu_cau_thi_dien_Weak_KHONG_raise():
+    """EVA1-B1 — ĐẢO TIỀN ĐỀ của test cũ (`..._thi_raise`).
+
+    Lý do cũ VẪN ĐÚNG: thiếu một nhu cầu ⇒ ứng viên bị đo trên tập HẸP HƠN người khác
+    rồi xếp chung một bảng. Nhưng CÁCH XỬ cũ (raise cả lượt) sai: temp=0 làm mọi retry
+    và mọi lần HR rescreen cho kết quả Y HỆT ⇒ hồ sơ CHẾT vĩnh viễn — ứng viên không
+    được đo trên tập NÀO cả, tệ hơn hẳn đo thiếu. Nay điền fail-safe Weak + NOT_ASSESSED
+    cho phần thiếu (repair một lượt đã thử trước đó): bảng luôn đủ N mục, HR đọc thấy
+    'chưa đo được' và bấm rescreen được."""
     provider = _provider_returning(_screen_payload(assessments=[
         {"needId": N1, "area": "a", "level": "Strong", "evidence": "thật"},
     ]))
-    with pytest.raises(ValueError):
-        await provider.screen_cv("cv", _job_needs(), "BE")
+    r = await provider.screen_cv("cv", _job_needs(), "BE")
+    assert [a["needId"] for a in r["assessments"]] == [N1, N2]
+    assert r["assessments"][1]["level"] == "Weak"
+    assert r["assessments"][1]["evidence"] == NOT_ASSESSED
+    assert r["assessments"][1]["evidence"] != NO_EVIDENCE   # 'chưa đo' ≠ 'đã tìm, không thấy'
+
+
+@pytest.mark.asyncio
+async def test_screen_cv_id_chep_lech_thi_dien_NOT_ASSESSED_khong_raise():
+    """EVA1-B1 — bug đo được: model đánh giá ĐỦ 9 mục nhưng chép SAI 1 ký tự trong 1 UUID
+    (35 thay vì 36). Allowlist coi là id bịa → drop → nhu cầu đó bị bỏ trống. Không được
+    ném; điền Weak + NOT_ASSESSED, giữ đúng thứ tự job_needs."""
+    provider = _provider_returning(_screen_payload(assessments=[
+        {"needId": N1, "area": "a", "level": "Strong", "evidence": "thật"},
+        {"needId": N2[:-1], "area": "b", "level": "Partial", "evidence": "gần đúng id"},
+    ]))
+    r = await provider.screen_cv("cv", _job_needs(), "BE")
+    assert len(r["assessments"]) == 2
+    assert [a["needId"] for a in r["assessments"]] == [N1, N2]
+    assert r["assessments"][1]["level"] == "Weak"
+    assert r["assessments"][1]["evidence"] == NOT_ASSESSED
+
+
+@pytest.mark.asyncio
+async def test_screen_cv_repair_nem_thi_van_khong_nem_ra_ngoai():
+    """EVA1-B1 — lượt repair (tầng B) là nỗ lực THÊM. Nó ném (mạng, JSON hỏng…) thì phải
+    bị nuốt + log, rơi xuống tầng C — KHÔNG được thoát ra ngoài làm chết cả lượt chính."""
+    provider = GeminiProvider()
+    provider._client.aio.models.generate_content = AsyncMock(side_effect=[
+        _fake_gemini_response(_screen_payload(assessments=[
+            {"needId": N1, "area": "a", "level": "Strong", "evidence": "thật"},
+        ])),
+        RuntimeError("lượt repair bùng nổ"),
+    ])
+    r = await provider.screen_cv("cv", _job_needs(), "BE")   # KHÔNG raise
+    assert [a["needId"] for a in r["assessments"]] == [N1, N2]
+    assert r["assessments"][1]["level"] == "Weak"
+    assert r["assessments"][1]["evidence"] == NOT_ASSESSED
+
+
+@pytest.mark.asyncio
+async def test_screen_cv_moi_needid_deu_thuoc_job_needs():
+    """EVA1-B1 — bất biến GIỮ cho guard .NET (`SaveCvResultAsync`) là no-op: mọi needId
+    trả về phải thuộc job_needs, không id lạ nào lọt (kể cả id model bịa/chép lệch)."""
+    provider = _provider_returning(_screen_payload(assessments=[
+        {"needId": N1, "area": "a", "level": "Strong", "evidence": "thật"},
+        {"needId": "khong-phai-uuid-nao-ca", "area": "b", "level": "Strong", "evidence": "BỊA"},
+    ]))
+    r = await provider.screen_cv("cv", _job_needs(), "BE")
+    assert {a["needId"] for a in r["assessments"]} == {N1, N2}
+    assert len(r["assessments"]) == len(_job_needs())
 
 
 @pytest.mark.asyncio

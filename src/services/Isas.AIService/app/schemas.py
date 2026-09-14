@@ -43,11 +43,47 @@ class CriterionRef(BaseModel):
     ``name`` để model hiểu tiêu chí nói về cái gì mà quyết định câu hỏi có nhắm tới nó không.
     KHÔNG mang ``maxScore``/``weight``: đây là bài toán GẮN NHÃN PHẠM VI, không phải chấm điểm.
 
+    ``description`` (SC2, tuỳ chọn) — B2B: tên tiêu chí do HR tự gõ (vd "Xử lý lỗi") thường ngắn
+    và mơ hồ hơn tên tiêu chí B2C do hệ thống soạn sẵn, nên khi có mô tả HR gõ thì IN VÀO PROMPT
+    kèm tên để model hiểu đúng phạm vi (mẫu ``description`` của :class:`CriterionContext` ngay
+    dưới — cùng dữ liệu, khác mục đích: ở đó là BỐI CẢNH không đòi nhãn, ở đây là chú thích thêm
+    cho một tiêu chí BẮT BUỘC phải gắn nhãn). Vắng/None ⇒ dòng liệt kê GIỮ NGUYÊN XI như trước
+    (chỉ ``criterionId``+``name``) — bất biến ``không criteria ⇒ không đổi một byte`` không đụng
+    tới trường mới này theo bất kỳ hướng nào.
+
     ⚠ 4 tiêu chí CÁCH NÓI (giao tiếp / trôi chảy / ngữ pháp / thuật ngữ) KHÔNG đi qua đây —
     chúng luôn chấm ở mọi câu nên .NET không gửi xuống, và model không có cửa nào loại chúng.
     """
     criterionId: str
     name: str
+    description: str | None = None
+
+
+class CriterionContext(BaseModel):
+    """CMP2-BE1 — 1 tiêu chí chấm của CHIẾN DỊCH B2B, gửi xuống làm **BỐI CẢNH** cho lượt sinh câu
+    hỏi: "buổi này sẽ được chấm bằng thước nào".
+
+    ⚠ **KHÁC hẳn** :class:`CriterionRef` ngay trên, đừng gộp hai cái làm một:
+
+    * :class:`CriterionRef` (khoá ``criteria``) là đường **GẮN NHÃN** — model phải trả
+      ``targetCriterionIds`` cho từng câu, và nó kéo theo ràng buộc PHÂN BỔ BẮT BUỘC (SC1).
+    * :class:`CriterionContext` (khoá ``criteriaContext``) chỉ **NÓI CHO MODEL BIẾT** thước đo,
+      không đòi nhãn nào về, không ép phủ đều.
+
+    Vì sao B2B chưa đi đường gắn nhãn: bảng ``campaign_criteria`` **không có cột
+    ``scoring_scope``** ⇒ Campaign không phân biệt được tiêu chí *cách nói* với tiêu chí *nội
+    dung*; ép phủ đều sẽ đẻ ra câu hỏi phỏng vấn cho *"Ngữ pháp & dùng từ"*. Mở lại ở task ``SC2``.
+
+    Mang ``description`` (khác ``CriterionRef``) vì đây là bài toán HIỂU NGHĨA tiêu chí, mà mô tả
+    HR gõ mới là chỗ nói rõ tiêu chí đó đo cái gì. Vẫn KHÔNG mang ``weight``/``maxScore``: chúng
+    thuộc bài toán TÍNH ĐIỂM, và đưa trọng số vào prompt là ngầm ra lệnh phân bổ số câu theo trọng
+    số — đúng ràng buộc phủ đều đang cố ý hoãn.
+
+    Không mang ``criterionId``: bối cảnh một chiều, không có nhãn nào để map ngược.
+    """
+
+    name: str
+    description: str | None = None
 
 
 class LessonContextDto(BaseModel):
@@ -134,6 +170,18 @@ class GenerateQuestionsRequest(BaseModel):
     # `extra='ignore'` chỉ đơn giản vứt field. Đúng lớp bug đã cắn repo 4 lần (`focusCriteria`/BC14
     # · `metricsVersion` · `adaptiveMaxQuestions` · `seniority`/SEN1).
     topics: list[SessionTopic] | None = None
+    # CMP2-BE1 — BỐI CẢNH thước đo cho campaign B2B (`CampaignService.GenerateCampaignQuestionsAsync`).
+    # Vắng/rỗng ⇒ prompt GIỮ NGUYÊN XI cho mọi caller cũ (B2C luyện tự do, bài học lộ trình).
+    #
+    # ⚠ Khai tường minh ở ĐÂY là nửa quyết định của tính năng — y hệt `topics`/`lessonContext`/
+    # `seniority` ngay trên: thiếu dòng này thì .NET vẫn gửi, HTTP vẫn 200, không lỗi, không log,
+    # và pydantic `extra='ignore'` chỉ đơn giản vứt field ⇒ prompt không đổi một chữ. Đúng lớp bug
+    # đã cắn repo 4 lần (`focusCriteria`/BC14 · `metricsVersion` · `adaptiveMaxQuestions` ·
+    # `seniority`/SEN1).
+    #
+    # ⚠ KHÔNG gộp vào `criteria` ở trên: `criteria` là đường GẮN NHÃN + PHÂN BỔ BẮT BUỘC (SC1) —
+    # xem docstring `CriterionContext` để biết vì sao B2B chưa đi đường đó.
+    criteriaContext: list[CriterionContext] | None = None
 
 
 class GenerateQuestionsResponse(BaseModel):
@@ -412,6 +460,13 @@ CV_CURRENT_LEVELS = ("Fresher", "Junior", "Middle", "Senior")
 # viết: nó phân biệt "đã tìm và không thấy" với "quên đánh giá", và HR đọc bảng thấy
 # đúng một câu duy nhất thay vì mười cách diễn đạt khác nhau.
 NO_EVIDENCE = "Không thấy bằng chứng"
+
+# Câu khi HỆ THỐNG không lấy được đánh giá cho một nhu cầu — model không giải được id
+# đã cấp và một lượt repair có giới hạn vẫn không lấp được. KHÁC HẲN NO_EVIDENCE ("đã
+# tìm và không thấy"): đây là "chưa đo được". CAMP-14 đòi phân biệt hai ca này. Chuỗi
+# khác rỗng nên guard .NET (`CvScreeningService.SaveCvResultAsync`) để nó đi thẳng qua
+# tới DB + UI — không cần sửa một dòng .cs nào.
+NOT_ASSESSED = "Không đánh giá được"
 
 
 class JobNeed(BaseModel):

@@ -496,6 +496,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("question_id");
 
+                    b.Property<string>("RejectReason")
+                        .HasColumnType("text")
+                        .HasColumnName("reject_reason");
+
                     b.Property<string>("SampleAnswer")
                         .HasColumnType("text")
                         .HasColumnName("sample_answer");
@@ -664,6 +668,23 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("campaign_id");
 
+                    b.Property<string>("CampaignPolicyEngineVersion")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("campaign_policy_engine_version");
+
+                    b.Property<string>("CampaignPolicyExpression")
+                        .HasColumnType("text")
+                        .HasColumnName("campaign_policy_expression");
+
+                    b.Property<int?>("CampaignPolicyPassScorePct")
+                        .HasColumnType("integer")
+                        .HasColumnName("campaign_policy_pass_score_pct");
+
+                    b.Property<int?>("CampaignPolicyVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("campaign_policy_version");
+
                     b.Property<int?>("CampaignRubricVersion")
                         .HasColumnType("integer")
                         .HasColumnName("campaign_rubric_version");
@@ -748,6 +769,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("roadmap_enabled");
 
+                    b.Property<int?>("ScoreAggregationVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("score_aggregation_version");
+
                     b.Property<int?>("ScoringScopeVersion")
                         .HasColumnType("integer")
                         .HasColumnName("scoring_scope_version");
@@ -763,6 +788,12 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("character varying(16)")
                         .HasDefaultValue("Junior")
                         .HasColumnName("seniority");
+
+                    b.Property<bool>("SkipPenalty")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("skip_penalty");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -4020,6 +4051,10 @@ namespace Isas.InterviewService.Migrations
                         .HasColumnType("character varying(24)")
                         .HasDefaultValue("Always")
                         .HasColumnName("scoring_scope");
+
+                    b.Property<Guid?>("SourceCriterionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_criterion_id");
 
                     b.Property<int>("Version")
                         .HasColumnType("integer")

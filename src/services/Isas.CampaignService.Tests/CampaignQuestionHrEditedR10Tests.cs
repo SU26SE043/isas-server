@@ -52,6 +52,36 @@ public class CampaignQuestionHrEditedR10Tests
             LastSeniority = seniority;
             return GenerateAsync(jobCategory, jdText, count, ct);
         }
+
+        /// <summary>
+        /// CMP2-BE1 — bộ tiêu chí chấm gửi làm BỐI CẢNH; <c>null</c> = chưa lượt nào gọi.
+        /// GHI LẠI chứ không chỉ ủy quyền: một double nuốt tham số rồi ủy quyền vẫn biên dịch được
+        /// và mọi test vẫn xanh trong khi <c>criteriaContext</c> rơi mất trên đường.
+        /// </summary>
+        public IReadOnlyList<QuestionCriterionContext>? LastCriteriaContext { get; private set; }
+
+        // CMP2-BE1 — thành viên BẮT BUỘC, cùng lý do SEN1 ở trên.
+        public Task<List<string>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority,
+            IReadOnlyList<QuestionCriterionContext> criteriaContext, CancellationToken ct)
+        {
+            LastCriteriaContext = criteriaContext;
+            return GenerateAsync(jobCategory, jdText, count, seniority, ct);
+        }
+
+        /// <summary>SC2 · W2 — tiêu chí WhenTargeted gửi để GẮN NHÃN; <c>null</c> = chưa lượt nào gọi.</summary>
+        public IReadOnlyList<QuestionCriterionRef>? LastCriteria { get; private set; }
+
+        // SC2 · W2 — thành viên BẮT BUỘC (không default), production nay gọi overload này.
+        public async Task<List<GeneratedQuestion>> GenerateAsync(
+            string jobCategory, string? jdText, int? count, string seniority,
+            IReadOnlyList<QuestionCriterionContext> criteriaContext,
+            IReadOnlyList<QuestionCriterionRef> criteria, CancellationToken ct)
+        {
+            LastCriteria = criteria;
+            var texts = await GenerateAsync(jobCategory, jdText, count, seniority, criteriaContext, ct);
+            return texts.Select(t => new GeneratedQuestion(t, null)).ToList();
+        }
     }
 
     private static CampaignSvc NewService(CampaignDbContext db, IQuestionGenerator? gen = null) =>

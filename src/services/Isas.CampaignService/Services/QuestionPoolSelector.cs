@@ -3,7 +3,16 @@ using System.Security.Cryptography;
 namespace Isas.CampaignService.Services;
 
 /// <summary>Một câu trong ngân hàng đề, rút gọn cho việc chọn (không kéo cả entity vào).</summary>
-public record PoolQuestion(Guid Id, string Text, string? SampleAnswer, bool IsRequired, string? Group);
+public record PoolQuestion(Guid Id, string Text, string? SampleAnswer, bool IsRequired, string? Group)
+{
+    /// <summary>
+    /// SC2 · W2 — nhãn tiêu chí NỘI DUNG câu này nhắm tới (<c>campaign_questions.target_criterion_ids</c>).
+    /// <c>null</c>/rỗng = câu chưa gắn nhãn ⇒ rơi về nhóm theo <see cref="Group"/> như trước SC2 (I5).
+    /// Phần tử ĐẦU = <b>tiêu chí chính</b> — khoá rổ khi chia đều (xem <see cref="QuestionPoolSelector"/>).
+    /// Khai init-only (không positional) để mọi chỗ dựng <c>new PoolQuestion(a,b,c,d,e)</c> cũ vẫn biên dịch.
+    /// </summary>
+    public IReadOnlyList<Guid>? TargetCriterionIds { get; init; }
+}
 
 /// <summary>
 /// NGÂN HÀNG ĐỀ — chọn bộ câu hỏi cho MỘT ứng viên từ bộ câu hỏi của chiến dịch.
@@ -19,6 +28,12 @@ public record PoolQuestion(Guid Id, string Text, string? SampleAnswer, bool IsRe
 /// không câu nào hỏi tới ra khỏi điểm, không tính 0. Rút mù thì ứng viên A bốc 4 câu thuật toán bị chấm
 /// gắt ở mảng đó, còn B bốc 0 câu thì mảng đó BIẾN MẤT khỏi điểm của B — rồi hai người xếp chung một
 /// bảng (CAMP-10). Đó là đo bằng hai thước khác nhau, không phải "đề khác nhau một chút".</para>
+///
+/// <para><b>SC2 · W2 — rổ chia = TIÊU CHÍ CHÍNH của câu</b> (<c>TargetCriterionIds[0]</c>), rơi về
+/// <c>question_group</c> khi câu chưa gắn nhãn. Nhãn là thứ INT-18 dùng để quyết định tiêu chí nào được
+/// chấm, nên chia đều theo nhãn mới thật sự bảo đảm "mỗi ứng viên được hỏi đủ các tiêu chí" — chia theo
+/// tên nhóm HR gõ chỉ là xấp xỉ. Rổ theo Guid và rổ theo tên nhóm là hai không gian khoá khác nhau nên
+/// KHÔNG trộn (chấp nhận: chiến dịch nửa gắn nhãn nửa không sẽ có rổ "Guid" cạnh rổ "tên").</para>
 /// </summary>
 public static class QuestionPoolSelector
 {
@@ -75,8 +90,9 @@ public static class QuestionPoolSelector
 
         // Chia khe theo nhóm. Nhóm null gom về một nhóm mặc định — chiến dịch chưa phân nhóm thì mọi câu
         // rơi vào đây, và phép chia bên dưới suy biến về "rút ngẫu nhiên từ một rổ", đúng như mong đợi.
+        // SC2: khoá rổ = tiêu chí chính (nhãn [0]) nếu có, không thì tên nhóm — xem BucketKey.
         var groups = optional
-            .GroupBy(q => q.Group ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(BucketKey, StringComparer.OrdinalIgnoreCase)
             .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)   // deterministic, không phụ thuộc thứ tự nạp
             .Select(g => new GroupBucket(g.Key, g.ToList()))
             .ToList();
@@ -84,37 +100,45 @@ public static class QuestionPoolSelector
         if (groups.Count == 0)
             return Shuffle(selected, rng);
 
-        // Chia đều; phần dư rải cho các nhóm ĐẦU theo thứ tự tên (deterministic — không random phần chia,
-        // vì chỗ ngẫu nhiên duy nhất nên là "chọn câu nào", không phải "nhóm nào được ưu ái").
-        var quota = new int[groups.Count];
-        var baseQuota = slots / groups.Count;
-        var remainder = slots % groups.Count;
-        for (var i = 0; i < groups.Count; i++)
-            quota[i] = baseQuota + (i < remainder ? 1 : 0);
+        // BUG-2 (D-5 mở rộng) — RỔ TIÊU CHÍ đi trước, chia đều sau. Trước bản này, khi khe < số rổ, phần dư
+        // rải cho các rổ ĐẦU theo thứ tự tên khoá — mà "" (không nhãn) và tên nhóm HR luôn đứng trước GUID ⇒
+        // rổ không nhãn thắng, rổ tiêu chí bị bỏ theo thứ tự tên, và vì thứ tự rổ không phụ thuộc ứng viên,
+        // một tiêu chí CHẾT với MỌI ứng viên cả chiến dịch (đo trên dev: K=2, required [C], optional {[],
+        // [B], [C]} ⇒ B không bao giờ được hỏi) trong khi K-rule lẫn coverageWarnings đều im.
+        //
+        // Bước 1: mỗi rổ TIÊU CHÍ (khoá GUID = câu có nhãn) CHƯA được câu bắt buộc phủ (nhãn[0] của câu
+        //         required) nhận 1 khe trước, theo thứ tự tên khoá, khi còn khe. Rổ ""/nhóm HR KHÔNG được
+        //         ưu tiên — nó chỉ được phần chia đều ở bước 2.
+        // Bước 2: phần khe còn lại rót "đầy dần" (water-fill) trên MỌI rổ: mỗi lần cho rổ đang có quota
+        //         NHỎ NHẤT còn dư câu (hoà ⇒ thứ tự tên khoá). Khi khe ≥ số rổ, kết quả TRÙNG phép chia đều
+        //         cũ (base + dư cho rổ đầu); khi rổ ít câu hơn phần được chia thì khe tự chảy sang rổ còn
+        //         dư câu — thay cho vòng "leftover" cũ. Vẫn deterministic, không random phần chia.
+        var coveredByRequired = required
+            .Where(q => q.TargetCriterionIds is { Count: > 0 })
+            .Select(BucketKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        // Nhóm nào ít câu hơn phần được chia thì lấy hết, khe thừa CHUYỂN sang nhóm còn dư câu. Không có
-        // vòng chuyển này thì buổi thi ra thiếu câu so với con số HR đặt mà chẳng có lỗi nào.
-        var leftover = 0;
-        for (var i = 0; i < groups.Count; i++)
+        var quota = new int[groups.Count];
+        var slotsLeft = slots;
+        for (var i = 0; i < groups.Count && slotsLeft > 0; i++)
         {
-            var available = groups[i].Items.Count;
-            if (quota[i] > available)
-            {
-                leftover += quota[i] - available;
-                quota[i] = available;
-            }
+            var isCriterionBucket = groups[i].Items.Any(q => q.TargetCriterionIds is { Count: > 0 });
+            if (!isCriterionBucket || coveredByRequired.Contains(groups[i].Key)) continue;
+            quota[i] = 1;
+            slotsLeft--;
         }
-        while (leftover > 0)
+
+        while (slotsLeft > 0)
         {
-            var moved = false;
-            for (var i = 0; i < groups.Count && leftover > 0; i++)
+            var pick = -1;
+            for (var i = 0; i < groups.Count; i++)
             {
-                if (quota[i] >= groups[i].Items.Count) continue;
-                quota[i]++;
-                leftover--;
-                moved = true;
+                if (quota[i] >= groups[i].Items.Count) continue;   // rổ đã cạn câu
+                if (pick < 0 || quota[i] < quota[pick]) pick = i;   // nhỏ nhất; hoà ⇒ rổ đứng trước (tên khoá)
             }
-            if (!moved) break;   // hết câu để bù ở mọi nhóm → chấp nhận thiếu, không lặp vô hạn
+            if (pick < 0) break;   // hết câu để rót ở mọi rổ → chấp nhận thiếu, không lặp vô hạn
+            quota[pick]++;
+            slotsLeft--;
         }
 
         for (var i = 0; i < groups.Count; i++)
@@ -126,6 +150,17 @@ public static class QuestionPoolSelector
     }
 
     private sealed record GroupBucket(string Key, List<PoolQuestion> Items);
+
+    /// <summary>
+    /// SC2 · W2 — khoá rổ của một câu: <b>tiêu chí chính</b> = phần tử ĐẦU của nhãn (không phải cuối,
+    /// không phải mọi phần tử — một câu chỉ được đếm vào MỘT rổ, nếu không phép chia đều mất nghĩa);
+    /// câu chưa gắn nhãn (<c>null</c> hoặc <c>[]</c>) ⇒ tên nhóm HR đặt, <c>null</c> ⇒ <c>""</c> (I5: chiến
+    /// dịch cũ không đổi). Guid in dạng "D" để so được với khoá chuỗi bằng cùng comparer.
+    /// </summary>
+    internal static string BucketKey(PoolQuestion q)
+        => q.TargetCriterionIds is { Count: > 0 } ids
+            ? ids[0].ToString("D")
+            : q.Group ?? string.Empty;
 
     /// <summary>
     /// Hạt giống = SHA-256 của hai Guid. Dùng băm chứ không XOR/cộng hai <c>GetHashCode()</c>: hash code

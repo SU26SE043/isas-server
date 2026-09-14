@@ -8,6 +8,12 @@ namespace Isas.CampaignService.DTOs
     public class InviteShortlistRequest
     {
         public List<Guid> CandidateIds { get; set; } = new();
+
+        /// <summary>
+        /// RNK1 · HĐ-6 — mặc định (false) BỎ QUA ứng viên không đủ điều kiện loại (thiếu bằng chứng
+        /// cho nhu cầu <c>isMustHave</c>) ⇒ vào <c>failed[]</c>. true = HR chủ động mời cả nhóm đó.
+        /// </summary>
+        public bool IncludeIneligible { get; set; }
     }
 
     /// <summary>1 ứng viên đã mời thành công (Analyzed → Invited).</summary>

@@ -33,7 +33,8 @@ from app.prompts import (
     build_verify_questions_prompt,
 )
 from app.schemas import (
-    CV_CURRENT_LEVELS, JOB_NEED_CATEGORIES, NEED_LEVELS, NO_EVIDENCE, VERIFICATION_RISKS,
+    CV_CURRENT_LEVELS, JOB_NEED_CATEGORIES, NEED_LEVELS, NOT_ASSESSED, NO_EVIDENCE,
+    VERIFICATION_RISKS,
 )
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
@@ -626,6 +627,7 @@ class GeminiProvider(QuestionProvider):
                        language: str = "vi", seniority: str | None = None,
                        lesson_context: dict | None = None,
                        topics: list[dict] | None = None,
+                       criteria_context: list[dict] | None = None,
                        _retry_feedback: list[str] | None = None,
                        _attempt: int = 1) -> QuestionGenerationResult:
         """Sinh câu hỏi. ``criteria`` = tiêu chí NỘI DUNG ``[{criterionId, name}]`` để gắn nhãn
@@ -637,7 +639,12 @@ class GeminiProvider(QuestionProvider):
 
         ``topics`` (TOP1-B4) = danh mục đề tài của buổi (chọn sẵn ở .NET, ``TopicSelector``);
         vắng ⇒ prompt không đổi một chữ. Có ``lesson_context`` ⇒ bài học thắng, khối đề tài
-        không xuất hiện (xem :func:`app.prompts.build_prompt`)."""
+        không xuất hiện (xem :func:`app.prompts.build_prompt`).
+
+        ``criteria_context`` (CMP2-BE1) = bộ tiêu chí chấm của chiến dịch B2B, chỉ làm BỐI CẢNH
+        ("buổi này chấm bằng thước nào") — KHÔNG đòi nhãn nào về, KHÔNG đổi schema/kết quả, KHÔNG
+        ép phủ đều. Vắng ⇒ prompt không đổi một chữ. Đây là đường KHÁC hẳn ``criteria`` (gắn nhãn
+        + PHÂN BỔ BẮT BUỘC của SC1); xem :class:`app.schemas.CriterionContext`."""
         # F2b — số câu do caller quyết định; settings.question_count chỉ còn là MẶC ĐỊNH khi không gửi.
         # F21 — nạp mảnh prompt admin đã tuỳ biến (no-op nếu cache còn hạn / registry tắt).
         await prompt_registry.refresh_if_stale()
@@ -647,7 +654,8 @@ class GeminiProvider(QuestionProvider):
         prompt = build_prompt(job_category, cv_text, jd_text, effective_count,
                               focus_criteria, prompt_grounding, criteria, _retry_feedback,
                               language=language, seniority=seniority,
-                              lesson_context=lesson_context, topics=topics)
+                              lesson_context=lesson_context, topics=topics,
+                              criteria_context=criteria_context)
 
         # RAG grounding — có grounding ⇒ mỗi câu hỏi kèm citedChunkIds (Contract CITATION).
         # Chấm-theo-phạm-vi — có criteria ⇒ kèm targetCriterionIds.
@@ -720,7 +728,7 @@ class GeminiProvider(QuestionProvider):
             return await self._finish(
                 result, criteria, grounding, language, effective_count,
                 job_category, cv_text, jd_text, count, focus_criteria, seniority,
-                lesson_context, topics, _attempt)
+                lesson_context, topics, _attempt, criteria_context=criteria_context)
 
         # Có grounding và/hoặc criteria — tách text + lọc id. DROP mọi id KHÔNG thuộc tập đã cấp
         # (chống bịa by-construction — không tin lời hứa của model): id lạ = model tự phịa.
@@ -767,7 +775,7 @@ class GeminiProvider(QuestionProvider):
         return await self._finish(
             result, criteria, grounding, language, effective_count,
             job_category, cv_text, jd_text, count, focus_criteria, seniority,
-            lesson_context, topics, _attempt)
+            lesson_context, topics, _attempt, criteria_context=criteria_context)
 
     async def _finish(self, result: QuestionGenerationResult, criteria: list[dict] | None,
                       grounding: list[dict] | None, language: str, effective_count: int,
@@ -775,12 +783,19 @@ class GeminiProvider(QuestionProvider):
                       count: int | None, focus_criteria: list[str] | None,
                       seniority: str | None, lesson_context: dict | None,
                       topics: list[dict] | None,
-                      _attempt: int) -> QuestionGenerationResult:
+                      _attempt: int, *,
+                      criteria_context: list[dict] | None) -> QuestionGenerationResult:
         """Vòng chất lượng (SC1c) + cổng kiểm chứng (QV1), CHUNG cho mọi nhánh của :meth:`generate`.
 
         Tách ra vì `generate` có hai đường về (chuỗi trần / object) và trước đây đường chuỗi trần
         return SỚM ⇒ buổi grounded bật QV1 (lượt sinh cố ý ungrounded, model trả chuỗi trần) nhảy
         qua cả kiểm chứng lẫn citations mà không lỗi gì.
+
+        ``criteria_context`` (CMP2-BE1) là KEYWORD BẮT BUỘC — cố ý không cho giá trị mặc định.
+        Hàm này chỉ dùng nó để CHUYỂN TIẾP sang lượt sinh lại (SC1c/QV1), nên nếu để mặc định
+        ``None`` thì một call-site quên truyền sẽ làm lượt viết lại âm thầm mất bối cảnh thước đo
+        trong khi lượt 1 vẫn có — đúng lớp bug đã cắn ``topics``/``lesson_context``. Bắt buộc
+        keyword ⇒ quên = ``TypeError`` ngay, và vị trí tham số không còn ảnh hưởng gì.
         """
         # SC1c fail-open: only retry the complete set once; remaining defects still deliver a session.
         # `effective_count` và `language` PHẢI truyền: thiếu count thì bản kiểm đòi phủ 100% ngay cả khi
@@ -814,6 +829,7 @@ class GeminiProvider(QuestionProvider):
             return await self.generate(job_category, cv_text, jd_text, count, focus_criteria,
                                        grounding, criteria, language, seniority,
                                        lesson_context=lesson_context, topics=topics,
+                                       criteria_context=criteria_context,
                                        _retry_feedback=defects, _attempt=_attempt + 1)
         return result
 
@@ -1551,7 +1567,8 @@ class GeminiProvider(QuestionProvider):
         return needs
 
     async def screen_cv(self, cv_text: str, job_needs: list[dict],
-                        job_category: str | None = None, language: str = "vi") -> dict:
+                        job_category: str | None = None, language: str = "vi",
+                        _repair_missing: bool = True) -> dict:
         """Bước 2-4 — đối chiếu CV với bộ nhu cầu của campaign.
 
         Trả dict: ``fitSummary``, ``assessments[{needId, area, level, evidence}]``,
@@ -1620,49 +1637,107 @@ class GeminiProvider(QuestionProvider):
                 return []
             return [str(i).strip() for i in items if str(i).strip()]
 
-        # ── Chống ảo giác (AI-3): id BỊA bị drop, id lặp bỏ, level lạ chuẩn hoá ────────
+        # ── Chống ảo giác (AI-3) + chịu được id lệch/thiếu (EVA1-B1) ──────────────────
+        # Trước đây: thiếu 1 nhu cầu ⇒ raise ⇒ worker retry ⇒ temp 0 cho kết quả Y HỆT ⇒
+        # hồ sơ CHẾT vĩnh viễn (mọi lần HR rescreen cũng cho cùng kết quả). Nay ba tầng,
+        # kết thúc bằng fail-safe KHÔNG ném: đo thiếu vẫn hơn không đo trên tập nào cả.
         allowed = {str(n.get("needId") or "").strip(): n for n in job_needs}
         allowed.pop("", None)
-        assessments: list[dict] = []
-        seen: set[str] = set()
-        for a in data.get("assessments") or []:
-            if not isinstance(a, dict):
-                continue
-            need_id = str(a.get("needId") or "").strip()
-            if need_id not in allowed or need_id in seen:
-                continue
-            seen.add(need_id)
 
+        # Bảng phụ tra theo dạng chuẩn hoá hoa/thường — UUID vốn không phân biệt hoa/thường,
+        # model đôi khi đổi case. ĐỤNG ĐỘ (hai needId khác nhau cùng dạng lower) ⇒ đánh dấu
+        # None ⇒ chỉ khớp CHÍNH XÁC cho hai id đó, KHÔNG đoán.
+        canon: dict[str, str | None] = {}
+        for nid in allowed:
+            k = nid.lower()
+            canon[k] = None if k in canon else nid
+
+        def _clean(a: dict, nid: str) -> dict:
+            """Chuẩn hoá level/evidence/area cho 1 đánh giá đã giải được needId. Trích nguyên
+            từ khối cũ — KHÔNG đổi luật: mức lạ ⇒ Weak · Weak thiếu evidence ⇒ NO_EVIDENCE ·
+            Strong/Partial thiếu evidence ⇒ hạ Weak."""
             level = str(a.get("level") or "").strip().capitalize()
-            # Mức lạ ⇒ `Weak`, KHÔNG phải `Partial`: mặc định an toàn ở đây là "chưa chứng minh
-            # được", vì mọi hướng khác đều là cho không ứng viên một phần điểm mà không ai đọc
-            # được bằng chứng nào. Cùng chiều với `NO_EVIDENCE` bên dưới.
             if level not in NEED_LEVELS:
                 level = "Weak"
-
             evidence = str(a.get("evidence") or "").strip()
-            # `Weak` mà bỏ trống evidence thì HR không phân biệt được "đã tìm và không thấy" với
-            # "model quên đánh giá" — điền đúng hằng số để bảng luôn đọc được.
             if not evidence:
                 evidence = NO_EVIDENCE if level == "Weak" else ""
             if level != "Weak" and not evidence:
-                # Strong/Partial mà không trích được gì trong CV thì chính là "không thấy bằng
-                # chứng" — hạ về Weak thay vì để một mức cao không ai kiểm chứng được.
                 level, evidence = "Weak", NO_EVIDENCE
-
-            assessments.append({
-                "needId": need_id,
-                "area": str(a.get("area") or "").strip() or allowed[need_id].get("text") or "",
+            return {
+                "needId": nid,
+                "area": str(a.get("area") or "").strip() or allowed[nid].get("text") or "",
                 "level": level,
                 "evidence": evidence,
-            })
+            }
 
-        if len(assessments) < len(allowed):
-            # Thiếu nhu cầu ⇒ ứng viên bị đo trên tập hẹp hơn người khác rồi xếp chung một bảng.
-            # Ném để worker retry (`score_max_attempts`), hết retry thì `cv-failed` — HR thấy và
-            # bấm rescreen (BK30). Thà lỗi thấy được còn hơn một bảng xếp hạng lệch âm thầm.
-            raise ValueError(
-                f"LLM chỉ đánh giá {len(assessments)}/{len(allowed)} nhu cầu công việc.")
+        # ── TẦNG A — khớp chính xác, rồi thử chuẩn hoá hoa/thường. Id không giải được để
+        #    riêng (cho log), CHƯA vứt — tầng B/C lo nhu cầu bị bỏ trống tương ứng.
+        by_id: dict[str, dict] = {}
+        unresolved: list[str] = []
+        for a in data.get("assessments") or []:
+            if not isinstance(a, dict):
+                continue
+            raw_id = str(a.get("needId") or "").strip()
+            if not raw_id:
+                continue
+            need_id = raw_id if raw_id in allowed else canon.get(raw_id.lower())
+            if need_id is None:
+                unresolved.append(raw_id)   # KHÔNG gán bừa: bằng chứng của A không rơi sang B
+                continue
+            if need_id in by_id:            # model trả trùng một nhu cầu → giữ lần đầu
+                continue
+            by_id[need_id] = _clean(a, need_id)
+
+        missing = [nid for nid in allowed if nid not in by_id]
+
+        # ── TẦNG B — repair MỘT lượt, CHỈ cho phần thiếu (mẫu: analyze_cv trong file này).
+        #    temp 0 ⇒ gọi lại với TOÀN BỘ nhu cầu ra output y hệt, vô ích; gọi hẹp thì model
+        #    buộc nhìn đúng các id còn trống. fitSummary/verificationRisk/fullName KHÔNG lấy
+        #    từ lượt này — chúng sinh từ tập nhu cầu hẹp và sẽ nói dối.
+        if missing and _repair_missing:
+            logger.warning(
+                "screen_cv: thiếu %d/%d nhu cầu (id không giải được: %s); repair một lượt giới hạn",
+                len(missing), len(allowed), unresolved or "-",
+            )
+            try:
+                repaired = await self.screen_cv(
+                    cv_text,
+                    [allowed[nid] for nid in missing],
+                    job_category,
+                    language,
+                    _repair_missing=False,
+                )
+                want = set(missing)
+                for a in repaired.get("assessments", []):
+                    nid = str(a.get("needId") or "")
+                    if nid in want and nid not in by_id:
+                        by_id[nid] = a
+            except Exception:  # noqa: BLE001 — repair là nỗ lực thêm; hỏng thì rơi xuống tầng C
+                logger.warning(
+                    "screen_cv: lượt repair ném; điền fail-safe cho phần còn thiếu",
+                    exc_info=True,
+                )
+            missing = [nid for nid in allowed if nid not in by_id]
+
+        # ── TẦNG C — fail-safe cho phần VẪN thiếu. KHÔNG NÉM: fail cả lượt = ứng viên không
+        #    được đo trên tập NÀO cả (tệ hơn hẳn đo thiếu). Weak + NOT_ASSESSED để HR đọc
+        #    bảng phân biệt "hệ thống chưa đo được" với "đã tìm và không thấy" (NO_EVIDENCE).
+        if missing:
+            logger.warning(
+                "screen_cv: sau repair vẫn thiếu %s; điền Weak + NOT_ASSESSED", missing,
+            )
+            for nid in missing:
+                by_id[nid] = {
+                    "needId": nid,
+                    "area": allowed[nid].get("text") or "",
+                    "level": "Weak",
+                    "evidence": NOT_ASSESSED,
+                }
+
+        # Kết xuất theo THỨ TỰ job_needs, KHÔNG theo thứ tự model trả. by_id nay có đủ mọi
+        # nid ∈ allowed (tầng C bảo đảm) ⇒ bất biến "mọi needId ∈ job_needs" cho guard .NET.
+        assessments = [by_id[nid] for nid in allowed]
 
         risk = str(data.get("verificationRisk") or "").strip().capitalize()
         if risk not in VERIFICATION_RISKS:

@@ -69,6 +69,23 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // (giá trị đã biết chắc, xem ghi chú ở entity), không phải bằng DB default.
         e.Property(x => x.CampaignRubricVersion);
 
+        // ADP1 — con dấu cách gộp điểm. NULLABLE, KHÔNG default: default sẽ khai rằng ta biết cách
+        // gộp của MỌI buổi cũ, kể cả buổi chưa chấm bao giờ. null phải giữ nguyên nghĩa "không biết".
+        e.Property(x => x.ScoreAggregationVersion);
+
+        // SCP1 · B5 — ghim hợp đồng chấm điểm (chính sách biểu thức) của buổi B2B. 4 cột NULLABLE,
+        // KHÔNG default: null = B2C / B2B chưa áp chính sách / buổi trước cột này (xem entity). Ghim
+        // CẢ biểu thức vì Interview không đọc được bảng scoring_policies của Campaign lúc chấm.
+        e.Property(x => x.CampaignPolicyVersion);
+        e.Property(x => x.CampaignPolicyExpression).HasColumnType("text");
+        e.Property(x => x.CampaignPolicyPassScorePct);
+        e.Property(x => x.CampaignPolicyEngineVersion).HasMaxLength(16);
+
+        // RNK1 · HĐ-2 / CAMP-21 — luật câu bỏ trống, ghim lúc tạo buổi. Required + default false ⇒
+        // row cũ + B2C tự nhận "không phạt" ngay lúc AddColumn (khỏi backfill riêng). Campaign gửi
+        // giá trị thật (campaigns.skip_penalty) qua CreateCampaignSessionInternalRequest.
+        e.Property(x => x.SkipPenalty).IsRequired().HasDefaultValue(false);
+
         // BC10 — nhận xét chung buổi (AI sinh, nullable; set best-effort khi Scored). text (không giới hạn).
         e.Property(x => x.OverallComment).HasColumnType("text");
 
@@ -272,6 +289,11 @@ public class PracticeAnswerConfiguration : IEntityTypeConfiguration<PracticeAnsw
             .HasConversion<string>()
             .HasMaxLength(32)
             .IsRequired();
+
+        // CAMP-21 — `reject_reason`: nullable `text`, KHÔNG HasMaxLength, KHÔNG CHECK (cùng quyết định
+        // với `transcript_engine` ở trên và lý do ghi trên entity). Đừng "siết cho chặt" ở đây: SQLite
+        // không ép độ dài/CHECK nên CI vẫn xanh trong khi Postgres nổ lúc chạy thật.
+        e.Property(x => x.RejectReason);
 
         e.Property(x => x.CreatedAt).IsRequired();
 

@@ -59,7 +59,7 @@ public class SystemDefaultCriteriaTests
             new("Chiều sâu kỹ thuật", "Hiểu bản chất", 0.30m, 5, new List<B2CRubricLevel>
             {
                 new(0, D0), new(3, D3), new(5, D5)
-            }),
+            }) { ScoringScope = "WhenTargeted" },
             new("Thiết kế hệ thống & CSDL", null, 0.20m, 5, Array.Empty<B2CRubricLevel>()),
             new("Giải quyết vấn đề & thuật toán", null, 0.15m, 5, Array.Empty<B2CRubricLevel>()),
             new("Trôi chảy", null, 0.10m, 5, Array.Empty<B2CRubricLevel>()),
@@ -576,6 +576,9 @@ public class SystemDefaultCriteriaTests
         Assert.Equal("Hiểu bản chất", res.Criteria[0].Description);
         Assert.Equal(0.30m, res.Criteria[0].Weight);
         Assert.Equal(5, res.Criteria[0].MaxScore);
+        // SC2 · W5 — scope của bộ chuẩn đi qua đường xem trước (WhenTargeted giữ nguyên, vắng ⇒ Always).
+        Assert.Equal("WhenTargeted", res.Criteria[0].ScoringScope);
+        Assert.Equal("Always", res.Criteria.Single(c => c.Name == "Giao tiếp & trình bày").ScoringScope);
 
         Assert.Equal(2, res.Criteria.Single(c => c.Name == "Giao tiếp & trình bày").LevelCount);
         // 0 = admin CHƯA khai mốc — trạng thái HỢP LỆ (Interview dùng dải mặc định), không phải lỗi.
@@ -584,6 +587,48 @@ public class SystemDefaultCriteriaTests
         // Thứ tự khớp đường chép: weight giảm dần.
         var weights = res.Criteria.Select(c => c.Weight).ToList();
         Assert.Equal(weights.OrderByDescending(w => w), weights);
+    }
+
+    // RNK1 · HĐ-4 — preview trả CẢ nội dung mốc (Score + Descriptor), sắp theo Score, LevelCount khớp.
+    [Fact]
+    public async Task XemTruoc_TraCaMocDiem_SapTheoScore()
+    {
+        using var tdb = new CampaignTestDb();
+        // Mốc CỐ Ý gửi ngược thứ tự để chứng minh preview tự sắp theo Score.
+        var rubric = new B2CRubricResponse("BE", "vi", 3, new List<B2CRubricCriterion>
+        {
+            new("Chiều sâu kỹ thuật", "Hiểu bản chất", 0.60m, 5, new List<B2CRubricLevel>
+            {
+                new(5, D5), new(0, D0), new(3, D3)
+            }),
+            new("Trôi chảy", null, 0.40m, 5, Array.Empty<B2CRubricLevel>()),
+        });
+        var svc = NewService(tdb.NewContext(), StubRubric(rubric).Object);
+
+        var res = await svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default);
+
+        var withLevels = res.Criteria.Single(c => c.Name == "Chiều sâu kỹ thuật");
+        Assert.Equal(new[] { 0, 3, 5 }, withLevels.Levels.Select(l => l.Score));   // đã sắp theo Score
+        Assert.Equal(new[] { D0, D3, D5 }, withLevels.Levels.Select(l => l.Descriptor));
+        Assert.Equal(withLevels.LevelCount, withLevels.Levels.Count);              // LevelCount khớp
+    }
+
+    // RNK1 · HĐ-4 — admin CHƯA soạn mốc ⇒ Levels = [] (KHÔNG null) + LevelCount = 0.
+    [Fact]
+    public async Task XemTruoc_KhongCoMoc_LevelsRong_KhongNull()
+    {
+        using var tdb = new CampaignTestDb();
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await svc.PreviewSystemDefaultCriteriaAsync("BE", "vi", default);
+
+        var noLevels = res.Criteria.Single(c => c.Name == "Trôi chảy");
+        Assert.NotNull(noLevels.Levels);
+        Assert.Empty(noLevels.Levels);
+        Assert.Equal(0, noLevels.LevelCount);
+
+        // Tiêu chí có mốc thì Levels đầy — không bị "rỗng hoá" nhầm.
+        Assert.Equal(3, res.Criteria.Single(c => c.Name == "Chiều sâu kỹ thuật").Levels.Count);
     }
 
     // 🔴 CHỈ ĐỌC: không một lượt SaveChanges nào. Endpoint xem trước mà lỡ ghi thì employer "chỉ nhìn"
@@ -769,29 +814,71 @@ public class SystemDefaultCriteriaTests
         Assert.Equal(StatusCodes.Status502BadGateway, obj.StatusCode);
     }
 
-    // ── Hợp đồng: KHÔNG mang scoringScope ───────────────────────────────
+    // ── Hợp đồng: mang scoringScope (SC2 · W5), KHÔNG mang id ─────────────
 
-    // Bịt bằng CẤU TRÚC (mẫu CAMP-15): không kiểu nào trên đường chép có chỗ chứa `scoringScope`, nên
-    // "chép nhầm" là lỗi BIÊN DỊCH chứ không phải một cột lặng lẽ được thêm rồi không ai đọc.
-    // Campaign không có cột tương ứng và đường chấm B2B không đọc field đó ⇒ mang về chỉ để lưu là
-    // dựng một cột nói dối. (Cùng lý do với `id` — id của Interview vô nghĩa bên này.)
+    // ⚠ TIỀN ĐỀ ĐẢO CÓ CHỦ ĐÍCH (SC2, 2026-09-13). Bản trước khẳng định "KHÔNG kiểu nào trên đường chép
+    // có chỗ chứa scoringScope" vì Campaign không có cột và đường chấm B2B không đọc ⇒ mang về là dựng
+    // một cột nói dối. SC2 đổi cả hai tiền đề: `campaign_criteria.scoring_scope` có thật, được gửi tiếp
+    // sang Interview lúc tạo session (W4) và quyết định tiêu chí nào chấm ở câu nào (INT-18 cho B2B).
+    // Nay khoá CHIỀU NGƯỢC LẠI bằng cấu trúc: mọi kiểu trên đường chép PHẢI có chỗ chứa scope — thiếu ở
+    // một mắt xích là scope của bộ chuẩn rụng im lặng về Always (đúng lớp bug field-rụng-ở-biên đã cắn
+    // repo 4 lần). `id` vẫn cấm ở phía NHẬN: id của Interview vô nghĩa bên này (replace-all mint id mới).
     [Fact]
-    public void HopDong_KhongCoScoringScope_VaKhongCoId()
+    public void HopDong_CoScoringScope_VaKhongCoId()
     {
-        var cam = new[]
+        // + SystemDefaultRubricCriterionPreview: đường XEM TRƯỚC là đường wizard dùng để đúc criteria[]
+        // cho POST /campaign — thiếu scope ở đây thì bộ chuẩn về tới employer toàn Always (đo 2026-09-13).
+        var mangScope = new[] { typeof(B2CRubricCriterion), typeof(CampaignCriterion), typeof(CriterionItem), typeof(SystemDefaultRubricCriterionPreview) };
+        foreach (var t in mangScope)
         {
-            typeof(B2CRubricCriterion), typeof(B2CRubricResponse), typeof(B2CRubricLevel),
-            typeof(CampaignCriterion), typeof(CriterionItem)
-        };
-
-        foreach (var t in cam)
-        {
-            Assert.DoesNotContain(t.GetProperties(),
-                p => p.Name.Contains("ScoringScope", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(t.GetProperties(),
+                p => p.Name.Equals("ScoringScope", StringComparison.Ordinal));
         }
 
         // `id` thì chỉ cấm ở phía NHẬN từ Interview — CampaignCriterion tất nhiên có Id của chính nó.
         Assert.DoesNotContain(typeof(B2CRubricCriterion).GetProperties(),
             p => p.Name.Equals("Id", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ── RNK1 · HĐ-5: from-system-default KHÔNG chép điểm sàn ─────────────
+
+    // Bộ chuẩn B2C không có khái niệm min_pct; chép về ⇒ MinPct = null trên MỌI tiêu chí (HR đặt sau
+    // qua PUT nếu cần). Chép một giá trị sàn "mặc định" nào đó là gán luật kết luận HR chưa từng khai.
+    [Fact]
+    public async Task ChepVe_MinPct_TatCaNull()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = await SeedAsync(tdb, org);
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        await svc.ApplySystemDefaultCriteriaAsync(org, org, camp.Id, Req(), default);
+
+        using var check = tdb.NewContext();
+        var rows = await check.CampaignCriteria.Where(c => c.CampaignId == camp.Id).ToListAsync();
+        Assert.Equal(7, rows.Count);
+        Assert.All(rows, r => Assert.Null(r.MinPct));
+    }
+
+    // ── RNK1 · HĐ-8: response của ApplySystemDefaultCriteriaAsync PHẢI mang questionBank ĐÚNG ─────
+    // Trước fix: load chỉ `.Include(Criteria)` ⇒ c.Questions rỗng ⇒ questionBank.total = 0 (chạy được
+    // trên Active theo CAMP-18). DTO khẳng định "tính read-time trên MỌI CampaignResponse".
+    [Fact]
+    public async Task Rnk1B7_ChepBoChuan_Response_QuestionBank_DemDungCau()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = await SeedAsync(tdb, org, CampaignStatus.Active);
+        tdb.Db.CampaignQuestions.AddRange(
+            new CampaignQuestion { Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = org, QuestionText = "Q1", Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow },
+            new CampaignQuestion { Id = Guid.NewGuid(), CampaignId = camp.Id, OrgId = org, QuestionText = "Q2", Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow.AddSeconds(1) });
+        await tdb.Db.SaveChangesAsync();
+        var svc = NewService(tdb.NewContext(), StubRubric(Rubric7()).Object);
+
+        var res = await svc.ApplySystemDefaultCriteriaAsync(org, org, camp.Id, Req(), default);
+
+        Assert.Equal(2, res.QuestionBank.Total);
+        Assert.Equal(2, res.QuestionBank.AlwaysAsked);
+        Assert.Empty(res.QuestionBank.Warnings);
     }
 }

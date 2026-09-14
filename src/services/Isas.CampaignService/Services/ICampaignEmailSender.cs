@@ -8,6 +8,12 @@ namespace Isas.CampaignService.Services
     /// </summary>
     public interface ICampaignEmailSender
     {
+        /// <param name="startsAt">CMP1-B4 — giờ campaign MỞ (campaign.StartsAt, KHÁC slotStartsAt/
+        /// expiresAt). null hoặc đã ở quá khứ ⇒ không in dòng "Phỏng vấn mở từ".</param>
+        /// <param name="orgName">Tên công ty mời — resolve TRƯỚC ở nơi tạo job (fail-soft, có thể
+        /// null). null ⇒ chữ ký giữ nguyên "Đội ngũ ISAS" (KHÔNG vỡ).</param>
+        /// <param name="faceVerifyEnabled">true ⇒ thư nói rõ buổi phỏng vấn cần camera + micro.</param>
+        /// <param name="timeLimitMinutes">Thời lượng buổi (phút) — null thì bỏ qua phần thời lượng.</param>
         Task SendInvitationEmailAsync(
             string toEmail,
             string campaignTitle,
@@ -15,6 +21,23 @@ namespace Isas.CampaignService.Services
             DateTime? expiresAt,
             DateTime? slotStartsAt,
             DateTime? slotEndsAt,
+            DateTime? startsAt = null,
+            string? orgName = null,
+            bool faceVerifyEnabled = false,
+            int? timeLimitMinutes = null,
+            CancellationToken ct = default);
+
+        /// <summary>
+        /// CMP3-B4 — báo ứng viên đã được mời rằng chiến dịch MỞ SỚM hơn giờ ghi trong thư mời gốc.
+        /// KHÔNG kèm magic-link (DB chỉ giữ hash token) — thư dặn ứng viên dùng lại link trong thư
+        /// mời đã nhận. <paramref name="previousStartsAt"/> null ⇒ trước đó chưa đặt giờ mở.
+        /// </summary>
+        Task SendCampaignOpenedEarlyEmailAsync(
+            string toEmail,
+            string campaignTitle,
+            DateTime? previousStartsAt,
+            DateTime newStartsAt,
+            string? orgName = null,
             CancellationToken ct = default);
     }
 }

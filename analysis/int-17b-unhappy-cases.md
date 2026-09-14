@@ -106,9 +106,8 @@ Gói `plus` (trả phí, rank 1) nhận trần buổi ≤ 10: 5 câu gốc + 5 k
 Campaign đã đặt `max_follow_ups = 3` từ trước, nay bật chuỗi qua API: sau 3 câu thích ứng của **toàn buổi**, mọi chuỗi còn lại dừng — chuỗi của 1–2 câu gốc đầu được đào sâu, phần còn lại không.
 
 **Severity** — High
-**Status** — Đã nhận diện nhưng chưa xử lý đầy đủ (luật viết trong `rules.md`, enforce ở B2C, bỏ trống ở B2B)
+**Status** — ✅ **ĐÃ SỬA 2026-09-03** (RNK1-B6, HĐ-7). `CampaignService` ép `MaxFollowUps = 0` khi `MaxDeepPerQuestion > 0` ở **create · update · publish** (đối xứng B2C ở `PracticeService`). Khoá bằng `AdaptiveBudgetRnk1B6Tests.Create_CheDoChuoi_EpMaxFollowUps0`.
 **Cross-agent confirmation** — LOG (`AnswerService.cs:242-243`), TEST-05 (không test nào phủ tổ hợp)
-**Recommended verification** — Unit test `CreateCampaignSessionAsync(MaxFollowUps: 3, MaxDeepPerQuestion: 3)`; hoặc chặn tổ hợp ở `ValidateAdaptiveCaps` (400).
 
 ---
 
@@ -125,9 +124,8 @@ Campaign đã đặt `max_follow_ups = 3` từ trước, nay bật chuỗi qua A
 Campaign 10 câu + `MaxQuestions = 20`: cần 30 khe đào sâu nhưng chỉ có 10, cấp cho chuỗi nào chạm trước. Hai ứng viên trả lời theo thứ tự khác nhau nhận số câu và chủ đề đào sâu khác nhau, trong khi điểm được xếp hạng chung (CAMP-10). Nhánh còn lại (`MaxQuestions` null → 0 = không trần) cho bài 40 câu — xem `PERF-02`.
 
 **Severity** — High
-**Status** — Đã nhận diện nhưng chưa xử lý đầy đủ (`progress.md` ghi "cần team chốt"; `rules.md:42` vẫn khẳng định công bằng)
+**Status** — ✅ **ĐÃ SỬA 2026-09-03** (RNK1-B6, HĐ-7). Ràng buộc chéo `T ≥ K×(1+d)` kiểm CỨNG ở **publish** (+ create/update): trần buổi phải đủ khe cho MỌI chuỗi đào sâu tối đa ⇒ không còn cảnh "cấp cho chuỗi nào chạm trước". Lệch ⇒ **400** `ADAPTIVE_BUDGET_TOO_SMALL`. `rules.md` INT-17b đã sửa câu chữ: fairness là luật, không còn "cần team chốt". Nhánh `MaxQuestions = 0` (không trần) vẫn thuộc `PERF-02`.
 **Cross-agent confirmation** — LOG, PERF-02
-**Recommended verification** — Integration test: 2 session cùng campaign, thứ tự trả lời khác nhau → so tổng số câu + phân bố độ sâu; và sửa câu chữ `rules.md` theo quyết định cuối.
 
 ---
 
@@ -679,9 +677,9 @@ Mặc định C# là thứ có hiệu lực khi cả env lẫn `appsettings.json
 | ~~2~~ | ~~**CFG-01**~~ | ✅ **Đã sửa 2026-08-02** — kill-switch nay là MỘT khoá; kèm `BUS-01` (số câu gốc chia theo ngân sách) và `CFG-03` phần repo. Mutation 4/4 ĐỎ, 1597 test xanh. Còn: đổi env trên server **sau** khi image mới lên. | |
 | 3 | **CFG-02** *(`TEST-01` ✅ đã sửa)* | AIService build tay ngoài CI + pydantic `extra='ignore'` + không test nào phủ mapping ⇒ deploy lệch nhịp làm chuỗi chết sớm, hoàn toàn im lặng | Hai lỗ hổng trên cùng một đường: lỗi xảy ra được **và** không có gì bắt được. Một contract test qua route + một test payload .NET là việc nhỏ, chặn cả lớp lỗi đã từng làm `focusCriteria` hỏng nhiều tuần. `DB-06` cho thấy deploy ở đây thật sự lệch nhịp được. |
 | 4 | **DB-01** | Backfill CTE nay đã chạy trên prod **và đúng** (verified), nhưng repo vẫn không có hạ tầng test migration Postgres | Lần này thoát nhờ dữ liệu nhỏ và kiểm tay. Migration sau sẽ không may như vậy: `EnsureCreated` trên SQLite không bao giờ chạy migration, nên mọi backfill/raw SQL vẫn ra production mà chưa từng được thực thi ở đâu. |
-| 5 | **BUS-03 + BUS-04** | B2B không ép `MaxFollowUps = 0` ⇒ chuỗi chết sau 3 câu; ngân sách buổi tiêu theo thứ tự trả lời ⇒ ứng viên cùng campaign nhận số câu khác nhau | Chỉ chặn nhánh **B2B** — B2C bật được trước. Nhưng `rules.md:42` đang khẳng định "vẫn công bằng" trong khi code không bảo đảm điều đó, và kết quả B2B thì đem đi xếp hạng. |
+| ~~5~~ | ~~**BUS-03 + BUS-04**~~ | ✅ **Đã sửa 2026-09-03** (RNK1-B6, HĐ-7) — `CampaignService` ép `MaxFollowUps = 0` khi `d > 0` (create/update/publish) + ràng buộc chéo `T ≥ K×(1+d)` kiểm cứng ở publish (400 `ADAPTIVE_BUDGET_TOO_SMALL`); `rules.md` INT-17b sửa câu chữ fairness. `AdaptiveBudgetRnk1B6Tests` (17). | Nhánh `MaxQuestions = 0` (không trần) vẫn thuộc `PERF-02`. |
 
-> **Còn lại ở mức High, không vào Top 5:** `BUS-01` (mặc định `questionCount = 5` ⇒ 0 câu đào sâu — hiện *chưa* cắn vì env server đặt `SeedCount = 1`, sẽ cắn ngay khi đổi sang 5 như thiết kế) · `CFG-03` (env production là "1 câu gốc × 3 tầng", không phải "5 × 3") · `PERF-02` (15 lời gọi AI đồng bộ/buổi) · `BUS-03` + `BUS-04` — hai mục này chỉ chặn nhánh **B2B**, có thể bật B2C trước.
+> **Còn lại ở mức High, không vào Top 5:** `BUS-01` (mặc định `questionCount = 5` ⇒ 0 câu đào sâu — hiện *chưa* cắn vì env server đặt `SeedCount = 1`, sẽ cắn ngay khi đổi sang 5 như thiết kế) · `CFG-03` (env production là "1 câu gốc × 3 tầng", không phải "5 × 3") · `PERF-02` (15 lời gọi AI đồng bộ/buổi). *(`BUS-03` + `BUS-04` ✅ đã sửa 2026-09-03 — RNK1-B6.)*
 
 ---
 

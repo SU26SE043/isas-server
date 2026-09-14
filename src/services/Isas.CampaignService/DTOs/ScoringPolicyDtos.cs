@@ -1,0 +1,124 @@
+using System.Text.Json.Serialization;
+using Isas.Shared.Scoring;
+
+namespace Isas.CampaignService.DTOs
+{
+    /// <summary>
+    /// SCP1 · HĐ-3 — hình dạng MỘT chính sách chấm điểm trên dây (camelCase qua JsonSerializerDefaults.Web).
+    /// Dùng cho cả mẫu hệ thống lẫn bản của campaign. <c>kind</c> là chuỗi "Interview" | "CvScreening".
+    /// <c>campaignId</c> KHÔNG có trong đối tượng HĐ-3 nên không trả (mẫu luôn null; bản campaign suy
+    /// được từ đường dẫn).
+    /// </summary>
+    public sealed record ScoringPolicyResponse(
+        Guid Id,
+        string Kind,
+        int Version,
+        string EngineVersion,
+        string Name,
+        string? Description,
+        string Expression,
+        int? PassScorePct,
+        Guid? SourceTemplateId,
+        DateTime CreatedAt,
+        Guid? CreatedBy);
+
+    /// <summary>
+    /// SCP1 · HĐ-2 — body của <c>POST /api/v1/campaign/{id}/scoring-policies/validate</c>.
+    /// </summary>
+    public sealed class ScoringPolicyValidateRequest
+    {
+        /// <summary>"Interview" | "CvScreening" (phân biệt hoa/thường). Sai/thiếu → <b>400</b> — đây là
+        /// lỗi phong bì request, KHÔNG phải mã lỗi biểu thức của HĐ-2.</summary>
+        public string? Kind { get; set; }
+
+        /// <summary>Biểu thức theo ngôn ngữ HĐ-1. <c>null</c>/rỗng ⇒ <c>valid: false</c> + <c>SYNTAX_ERROR</c>.</summary>
+        public string? Expression { get; set; }
+    }
+
+    /// <summary>
+    /// SCP1 · HĐ-2 — kết quả kiểm. <c>valid: true</c> ⇒ chỉ <c>sampleScore</c>; <c>valid: false</c> ⇒
+    /// chỉ <c>errors</c> (mảng <c>{ code, start, end }</c> — MÃ + khoảng ký tự nửa mở, KHÔNG câu chữ).
+    /// </summary>
+    public sealed record ScoringPolicyValidateResponse(
+        bool Valid,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        decimal? SampleScore,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        IReadOnlyList<ScoringError>? Errors);
+
+    /// <summary>
+    /// SCP1 · HĐ-3 — body của <c>POST /api/v1/campaign/{id}/scoring-policies</c> (tạo version MỚI).
+    /// Có thể khởi từ một mẫu (<see cref="SourceTemplateId"/>) hoặc từ biểu thức tự gõ — dù nguồn nào,
+    /// server lưu GIÁ TRỊ trong body thành một dòng độc lập (CHÉP, không tham chiếu sống — CAMP-20).
+    /// </summary>
+    public sealed class CreateScoringPolicyRequest
+    {
+        /// <summary>"Interview" | "CvScreening" (phân biệt hoa/thường). Sai/thiếu → 400.</summary>
+        public string? Kind { get; set; }
+
+        /// <summary>Bắt buộc.</summary>
+        public string? Name { get; set; }
+        public string? Description { get; set; }
+
+        /// <summary>Bắt buộc. Được <c>ScoringExpression.Validate</c> kiểm lại (đường B3) TRƯỚC khi lưu —
+        /// không tin dữ liệu vào. Không hợp lệ ⇒ 400 <c>{ "errors": [{code,start,end}] }</c>.</summary>
+        public string? Expression { get; set; }
+
+        /// <summary>Ngưỡng % Đạt/Không đạt. <c>null</c> = HR quyết tay.</summary>
+        public int? PassScorePct { get; set; }
+
+        /// <summary>PROVENANCE — id mẫu hệ thống mà bản này khởi từ. Nếu có: phải là mẫu
+        /// (<c>campaign_id = NULL</c>) CÙNG <see cref="Kind"/>. KHÔNG dùng để deref giá trị lúc chạy;
+        /// admin sửa mẫu KHÔNG đổi bản đã chép.</summary>
+        public Guid? SourceTemplateId { get; set; }
+    }
+
+    // ── SCP1 · HĐ-4 — XEM TRƯỚC + ÁP ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Body của <c>POST /api/v1/campaign/{id}/scoring-policies/preview</c>. Chạy biểu thức đề xuất
+    /// trên bó biến của MỌI ứng viên đã chấm (loại <see cref="Kind"/>), trả điểm/hạng cũ↔mới. KHÔNG
+    /// ghi gì. <c>passScorePct</c> vào vân tay + để tính Pass/Fail của bảng preview (chưa lưu).
+    /// </summary>
+    public sealed class ScoringPolicyPreviewRequest
+    {
+        /// <summary>"Interview" | "CvScreening" (phân biệt hoa/thường). Sai/thiếu → 400.</summary>
+        public string? Kind { get; set; }
+        public string? Expression { get; set; }
+        public int? PassScorePct { get; set; }
+    }
+
+    /// <summary>1 dòng bảng xem trước: điểm/hạng của ứng viên TRƯỚC ↔ SAU khi đổi công thức.</summary>
+    public sealed record ScoringPolicyPreviewRow(
+        Guid CandidateId,
+        string? FullName,
+        decimal? OldScore,
+        decimal? NewScore,
+        int OldRank,
+        int NewRank,
+        bool RankChanged);
+
+    /// <summary>
+    /// Kết quả xem trước. <c>fingerprint</c> nối sang <c>apply</c> (HĐ-4). <c>total</c> = tổng số ứng
+    /// viên đã chấm (KHÔNG phải số dòng trang này). Hạng ở mỗi dòng tính trên TOÀN BỘ tập, chỉ phân
+    /// trang phần TRẢ VỀ (<c>nextCursor</c> null = hết).
+    /// </summary>
+    public sealed record ScoringPolicyPreviewResponse(
+        string Fingerprint,
+        int Total,
+        IReadOnlyList<ScoringPolicyPreviewRow> Rows,
+        string? NextCursor);
+
+    /// <summary>
+    /// Body của <c>POST /api/v1/campaign/{id}/scoring-policies/{policyId}/apply</c>. Chỉ có
+    /// <c>fingerprint</c>: server tính LẠI vân tay từ dòng chính sách đã lưu và so — lệch ⇒
+    /// <c>409 POLICY_CHANGED_AFTER_PREVIEW</c>.
+    /// </summary>
+    public sealed class ApplyScoringPolicyRequest
+    {
+        public string? Fingerprint { get; set; }
+    }
+
+    /// <summary>Kết quả áp: số dòng đã ghi đè + số dòng đổi hạng + version chính sách nay là con trỏ.</summary>
+    public sealed record ApplyScoringPolicyResult(int Applied, int RankChanged, int Version);
+}

@@ -248,12 +248,17 @@ async def generate_questions(req: GenerateQuestionsRequest,
         # TOP1-B4 — danh mục đề tài (TopicSelector chọn sẵn ở .NET); vắng → None (KHÔNG []) cùng lý
         # do `lesson_context`: rẽ nhánh theo truthiness, một list rỗng vẫn phải coi là "không có".
         topics = [t.model_dump() for t in req.topics] if req.topics else None
+        # CMP2-BE1 — BỐI CẢNH thước đo (campaign B2B); vắng → None (KHÔNG []) cùng lý do `topics`:
+        # prompt rẽ nhánh theo truthiness, một list rỗng vẫn phải coi là "không có".
+        criteria_context = ([c.model_dump() for c in req.criteriaContext]
+                            if req.criteriaContext else None)
         # Truyền bằng TỪ KHOÁ như `seniority`/`topics`: `_call_with_language` chèn `language=` vào
         # kwargs nên mọi thứ sau `criteria` phải là keyword. Quên dòng này thì schema có khai,
         # .NET có gửi, HTTP vẫn 200 — prompt chỉ đơn giản không đổi một chữ.
         result = await _call_with_language(req.language, provider.generate,
             req.jobCategory, req.cvText, req.jdText, req.count, req.focusCriteria, grounding,
-            criteria, seniority=req.seniority, lesson_context=lesson_context, topics=topics)
+            criteria, seniority=req.seniority, lesson_context=lesson_context, topics=topics,
+            criteria_context=criteria_context)
         _schedule_tts_warmup(result.questions, req.language)
         # citations=None (ungrounded) → response_model_exclude_none bỏ field → shape cũ cho Campaign B2B.
         citations = ([QuestionCitation(**c) for c in result.citations]

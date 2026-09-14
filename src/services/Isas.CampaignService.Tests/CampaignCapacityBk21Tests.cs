@@ -227,7 +227,7 @@ public class CampaignCapacityBk21Tests
         // 2 CV = 2 suất = đúng cap. Mời chính 2 người đó phải QUA (0 suất mới).
         // Đếm row invitation như trước BK21 sẽ ra 0 + 2 > 2 → chặn oan.
         var result = await svc.InviteShortlistedCandidatesAsync(
-            owner, owner, camp.Id, new List<Guid> { a.Id, b.Id }, default);
+            owner, owner, camp.Id, new List<Guid> { a.Id, b.Id }, includeIneligible: false, default);
 
         Assert.Equal(2, result.Invited.Count);
         Assert.Empty(result.Failed);
@@ -274,6 +274,10 @@ public class CampaignCapacityBk21Tests
         var owner = Guid.NewGuid();
         var camp = CampaignTestDb.NewCampaign(owner, CampaignStatus.Active);
         camp.MaxCandidates = 1;
+        camp.JobNeeds = new List<JobNeed>   // CMP3-B1: sàng CV đòi job_needs đã chốt
+        {
+            new() { NeedId = "n1", Category = JobNeedCategories.Technical, Text = "Thạo .NET", Source = JobNeedSources.HrEdited },
+        };
         tdb.Db.Campaigns.Add(camp);
         tdb.Db.CampaignInvitations.Add(NewInvitation(camp.Id, "invited@example.com"));
         await tdb.Db.SaveChangesAsync();

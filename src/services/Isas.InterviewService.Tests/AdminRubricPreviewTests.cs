@@ -431,7 +431,17 @@ public class AdminRubricPreviewTests
         Assert.Equal(100m, excellent.ActualPct);
         Assert.Equal(60m, good.ActualPct);
         Assert.Equal(0m, weak.ActualPct);
-        Assert.Equal(7, excellent.Scores.Count);
+        // Tiền đề ĐẢO có chủ đích: seed có 7 tiêu chí, nhưng chấm thử chỉ chấm 6.
+        // Tiêu chí `Độ trôi chảy & tự tin` chấm bằng SỐ ĐO (DeliveryMetrics) nên hai đường publish
+        // thật không gửi nó cho LLM — chấm thử nay cũng vậy, đúng lời hứa "thứ admin kiểm chứng
+        // chính là thứ người luyện bị chấm".
+        //
+        // ⚠ Trước bản vá, test này xanh với 7 vì `ReplaceAsync` LÀM RƠI `ScoringMethod` (seed đi qua
+        // chính hàm đó), biến tiêu chí đo thành `Ai`. Tức con số 7 cũ là bằng chứng của BUG, không
+        // phải của hành vi đúng. Assert theo TÊN chứ không chỉ theo số, để lần sau nếu tiêu chí đo
+        // lọt vào lại thì biết ngay là cái nào.
+        Assert.Equal(6, excellent.Scores.Count);
+        Assert.DoesNotContain(excellent.Scores, s => s.CriterionName.Contains("trôi chảy"));
         // Mức kỳ vọng đi kèm để so "kỳ vọng vs thật" — số đo duy nhất phơi bày self-scoring bias.
         Assert.All(excellent.Scores, s => Assert.Equal(5, s.ExpectedLevel));
         Assert.All(weak.Scores, s => Assert.Equal(0, s.ExpectedLevel));

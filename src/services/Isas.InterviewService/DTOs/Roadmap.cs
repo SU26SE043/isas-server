@@ -246,8 +246,11 @@ public record RoadmapResponse(
 /// endpoint khác) ⇒ bỏ khỏi list không hỏng gì. Trả <c>[]</c> thì sẽ là nói dối ("roadmap này không
 /// có chặng nào"), nên chọn bỏ hẳn key.
 ///
-/// Cần hiển thị "N chặng" trên thẻ danh sách về sau → thêm <c>MilestoneCount</c> project bằng
-/// subquery scalar (<c>x.Milestones.Count</c>), KHÔNG quay lại Include cả cây.
+/// UX3-B2 — <c>MilestoneCount</c>/<c>MilestoneDoneCount</c> nay ĐÃ thêm (project bằng subquery
+/// scalar <c>x.Milestones.Count(...)</c>, KHÔNG quay lại Include cả cây): trang danh sách trước đây
+/// gọi <c>GET /roadmaps/{id}</c> cho TỪNG thẻ mỗi lần mở dashboard vì FE chờ
+/// <c>progressPercent</c>/<c>currentMilestoneId</c> — hai trường không tồn tại — nên nhánh làm giàu
+/// chạy 100% số lần (N+1 cố định). Hai con số đếm để FE tự tính % tiến độ mà khỏi vòng đó.
 /// </summary>
 public record RoadmapSummaryResponse(
     Guid Id,
@@ -280,7 +283,14 @@ public record RoadmapSummaryResponse(
     // mời một roadmap rồi để người dùng ăn 400 SAU KHI đã chờ 13–54s tạo roadmap.
     //
     // Cùng nguyên tắc với RoadmapSessionEligibility: picker phải mang ĐÚNG vị ngữ mà guard dùng.
-    bool HasFinalReport = false
+    bool HasFinalReport = false,
+
+    // UX3-B2 — số chặng của lộ trình + số chặng đã hoàn tất (MilestoneStatus.Completed). THAM SỐ
+    // CUỐI, có default → additive, không đụng call-site cũ. FE dùng cặp này để hiện "k/N chặng" +
+    // tự tính % tiến độ, thay cho việc gọi GET /roadmaps/{id} lấy cả cây milestone cho mỗi thẻ.
+    // Project bằng subquery scalar (RoadmapService.BuildSummaryQuery) — KHÔNG Include cây.
+    int MilestoneCount = 0,
+    int MilestoneDoneCount = 0
 );
 
 // BE-6 — PATCH /roadmaps/{id}: đổi tên lộ trình. Cho đổi ở MỌI trạng thái, kể cả Completed — tên là

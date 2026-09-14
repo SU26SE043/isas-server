@@ -57,7 +57,7 @@ public class ResultOverrideE11bTests
 
         // HR đẩy 'low' lên 95 + Pass → phải vượt 'high'.
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, actor, campaign.Id, low.SessionId,
+            orgId, actor, actorEmail: null, campaign.Id, low.SessionId,
             new OverrideResultRequest { Score = 95.00m, Result = "Pass", Note = "Phỏng vấn trực tiếp rất tốt" }, default);
 
         var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
@@ -85,7 +85,7 @@ public class ResultOverrideE11bTests
 
         // HR ép Fail dù điểm 80 ≥ 50.
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
             new OverrideResultRequest { Result = "Fail", Note = "Phát hiện gian lận" }, default);
 
         var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
@@ -102,11 +102,11 @@ public class ResultOverrideE11bTests
         var r = SeedRanking(tdb.Db, campaign.Id, 40.00m);
 
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
             new OverrideResultRequest { Score = 90m, Result = "Pass", Note = "tốt" }, default);
         // Clear
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
             new OverrideResultRequest { Score = null, Result = null, Note = "huỷ điều chỉnh" }, default);
 
         var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
@@ -124,7 +124,7 @@ public class ResultOverrideE11bTests
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
             NewService(tdb.NewContext()).OverrideResultAsync(
-                Guid.NewGuid() /* org khác */, Guid.NewGuid(), campaign.Id, r.SessionId,
+                Guid.NewGuid() /* org khác */, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
                 new OverrideResultRequest { Score = 90m, Note = "x" }, default));
     }
 
@@ -137,7 +137,7 @@ public class ResultOverrideE11bTests
 
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
             NewService(tdb.NewContext()).OverrideResultAsync(
-                orgId, Guid.NewGuid(), campaign.Id, Guid.NewGuid() /* session không có ranking */,
+                orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, Guid.NewGuid() /* session không có ranking */,
                 new OverrideResultRequest { Score = 90m, Note = "x" }, default));
     }
 
@@ -153,7 +153,7 @@ public class ResultOverrideE11bTests
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             NewService(tdb.NewContext()).OverrideResultAsync(
-                orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+                orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
                 new OverrideResultRequest { Score = 90m, Result = result, Note = note }, default));
     }
 
@@ -179,7 +179,7 @@ public class ResultOverrideE11bTests
         // Controller bắt ArgumentException → 400 (KHÔNG rơi xuống catch(Exception) → 500).
         await Assert.ThrowsAsync<ArgumentException>(() =>
             NewService(tdb.NewContext()).OverrideResultAsync(
-                orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+                orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
                 new OverrideResultRequest { Score = (decimal)score, Result = "Pass", Note = "lý do" }, default));
 
         // Chặn phải xảy ra TRƯỚC khi ghi: ranking giữ nguyên, không có override một-nửa.
@@ -201,7 +201,7 @@ public class ResultOverrideE11bTests
         var r = SeedRanking(tdb.Db, campaign.Id, 40.00m);
 
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
             new OverrideResultRequest { Score = (decimal)score, Note = "chốt tay" }, default);
 
         var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
@@ -220,7 +220,7 @@ public class ResultOverrideE11bTests
 
         // Score = null (huỷ override) không phải "ngoài dải" → guard phải bỏ qua, không ném.
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
             new OverrideResultRequest { Score = null, Result = null, Note = "huỷ" }, default);
 
         using var check = tdb.NewContext();
@@ -236,7 +236,7 @@ public class ResultOverrideE11bTests
         var r = SeedRanking(tdb.Db, campaign.Id, 40.00m);
 
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
             new OverrideResultRequest { Score = 8m, Note = "chốt tay" }, default);
 
         var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
@@ -277,7 +277,7 @@ public class ResultOverrideE11bTests
         // Hai test cùng khoá "OverrideResult THẮNG ngưỡng" ở CẢ HAI chiều (CAMP-11) — đảo thứ tự ưu tiên
         // trong GetCampaignResultsAsync sẽ làm ít nhất một trong hai đỏ dù seed nghiêng về phía nào.
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
             new OverrideResultRequest { Result = "Pass", Note = "Có kinh nghiệm thực tế bù lại" }, default);
 
         var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);
@@ -294,7 +294,7 @@ public class ResultOverrideE11bTests
         var r = SeedRanking(tdb.Db, campaign.Id, 40.00m);
 
         await NewService(tdb.NewContext()).OverrideResultAsync(
-            orgId, Guid.NewGuid(), campaign.Id, r.SessionId,
+            orgId, Guid.NewGuid(), actorEmail: null, campaign.Id, r.SessionId,
             new OverrideResultRequest { Score = 95m, Note = "chốt tay" }, default);
 
         var res = await NewService(tdb.NewContext()).GetCampaignResultsAsync(orgId, campaign.Id, default);

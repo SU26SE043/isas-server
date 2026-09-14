@@ -1,5 +1,7 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Isas.Shared.Scoring;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using System.Text.Json;
 
@@ -18,6 +20,7 @@ namespace Isas.CampaignService.Models
         public DbSet<CampaignInvitation> CampaignInvitations => Set<CampaignInvitation>();
         public DbSet<CampaignSlot> CampaignSlots => Set<CampaignSlot>();
         public DbSet<CampaignRanking> CampaignRankings => Set<CampaignRanking>();
+        public DbSet<RankingOverride> RankingOverrides => Set<RankingOverride>();                  // E11c: lịch sử override của HR (append-only)
         public DbSet<CvSubmission> CvSubmissions => Set<CvSubmission>();                         // C13: sàng CV (DB16, ex campaign_candidates)
         public DbSet<CampaignMembership> CampaignMemberships => Set<CampaignMembership>();        // D2: membership ứng viên↔campaign (DB16)
         public DbSet<CandidateCriterionScore> CandidateCriterionScores => Set<CandidateCriterionScore>();
@@ -25,6 +28,7 @@ namespace Isas.CampaignService.Models
         public DbSet<FaceImage> FaceImages => Set<FaceImage>();                                  // BK25: sổ theo dõi ảnh sinh trắc trong S3 (DATA-3)
         public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();                      // DB2b: transactional outbox (invitation-email)
         public DbSet<ApiKey> ApiKeys => Set<ApiKey>();                                           // F17: API key bên thứ ba (ATS), gắn theo org
+        public DbSet<ScoringPolicy> ScoringPolicies => Set<ScoringPolicy>();                     // SCP1: chính sách chấm điểm (biểu thức) + mẫu hệ thống
 
         // C13: string[] ↔ JSON (jsonb trên Npgsql; text trên SQLite test). Portable — filter đọc/ghi trong C#,
         // không query trong JSON. Comparer để EF theo dõi thay đổi phần tử đúng (list là mutable reference).
@@ -35,6 +39,19 @@ namespace Isas.CampaignService.Models
         private static readonly ValueComparer<List<string>?> StringListComparer = new(
             (a, b) => (a == null && b == null) || (a != null && b != null && a.SequenceEqual(b)),
             v => v == null ? 0 : v.Aggregate(0, (h, s) => HashCode.Combine(h, s.GetHashCode())),
+            v => v == null ? null : v.ToList());
+
+        // SC2 · W1 — Guid[] ↔ JSON cho campaign_questions.target_criterion_ids. Comparer phân biệt null
+        // với [] (null = chưa gắn nhãn, [] = đã xét không nhắm — I2): comparer nào coi hai thứ đó bằng
+        // nhau sẽ khiến EF bỏ qua lượt ghi "[] thay null" (không UPDATE, không lỗi) và nhãn "xã giao"
+        // không bao giờ tới DB.
+        private static readonly ValueConverter<List<Guid>?, string?> GuidListConverter = new(
+            v => v == null ? null : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => v == null ? null : JsonSerializer.Deserialize<List<Guid>>(v, (JsonSerializerOptions?)null));
+
+        private static readonly ValueComparer<List<Guid>?> GuidListComparer = new(
+            (a, b) => (a == null && b == null) || (a != null && b != null && a.SequenceEqual(b)),
+            v => v == null ? 0 : v.Aggregate(17, (h, g) => HashCode.Combine(h, g.GetHashCode())),
             v => v == null ? null : v.ToList());
 
         // HR technical screener — list OBJECT ↔ JSON (jsonb Npgsql / text SQLite), cùng nguyên tắc
@@ -52,6 +69,21 @@ namespace Isas.CampaignService.Models
                    == JsonSerializer.Serialize(b, (JsonSerializerOptions?)null),
             v => v == null ? 0 : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null).GetHashCode(),
             v => v == null ? null : JsonSerializer.Deserialize<List<T>>(
+                JsonSerializer.Serialize(v, (JsonSerializerOptions?)null), (JsonSerializerOptions?)null));
+
+        // SCP1 · B5 — cùng nguyên tắc JsonListConverter nhưng cho MỘT object (không phải List): dùng
+        // cho campaign_rankings.scoring_inputs (ScoringInputsSnapshot). So sánh bằng chuỗi JSON đã
+        // serialize (record snapshot bất biến sau khi ghi, nhưng vẫn giữ để EF không coi mọi lần load
+        // là "đã đổi").
+        private static ValueConverter<T?, string?> JsonObjectConverter<T>() where T : class => new(
+            v => v == null ? null : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+            v => v == null ? null : JsonSerializer.Deserialize<T>(v, (JsonSerializerOptions?)null));
+
+        private static ValueComparer<T?> JsonObjectComparer<T>() where T : class => new(
+            (a, b) => JsonSerializer.Serialize(a, (JsonSerializerOptions?)null)
+                   == JsonSerializer.Serialize(b, (JsonSerializerOptions?)null),
+            v => v == null ? 0 : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null).GetHashCode(),
+            v => v == null ? null : JsonSerializer.Deserialize<T>(
                 JsonSerializer.Serialize(v, (JsonSerializerOptions?)null), (JsonSerializerOptions?)null));
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -100,6 +132,10 @@ namespace Isas.CampaignService.Models
 
                 e.Property(x => x.AntiCheatEnabled).HasDefaultValue(true);
                 e.Property(x => x.FaceVerifyEnabled).HasDefaultValue(false);   // SEC-1: face-verify opt-in (B2B)
+                // RNK1 · HĐ-2 / CAMP-21 — LUẬT câu bỏ trống. DEFAULT true = campaign tạo TỪ bản này bị
+                // phạt. Campaign đã có TRƯỚC bản này: migration AddColumn(defaultValue: true) rồi
+                // UPDATE campaigns SET skip_penalty = false ⇒ chúng KHÔNG bị đổi thước đo giữa chừng.
+                e.Property(x => x.SkipPenalty).HasDefaultValue(true);
                 e.Property(x => x.AdaptiveEnabled).HasDefaultValue(false);     // INT-17: adaptive opt-in (B2B)
                 e.Property(x => x.GroundingEnabled).HasDefaultValue(false);    // T8: entitlement-gated snapshot
                 // CAMP-18 — DEFAULT 1 để campaign đã có trên prod nhận đúng v1 mà không cần backfill:
@@ -178,6 +214,17 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.SampleAnswer);
                 e.Property(x => x.QuestionGroup).HasMaxLength(100);
 
+                // SC2 · W1 — nhãn tiêu chí câu hỏi nhắm tới: List<Guid>? ↔ JSON (jsonb Npgsql / text
+                // SQLite), cùng khuôn null-safe với practice_questions.target_criterion_ids bên Interview.
+                // NULLABLE và KHÔNG HasDefaultValue: (a) null có nghĩa riêng ("chưa gắn nhãn" ≠ [] "đã xét,
+                // không nhắm") — DB default sẽ xoá mất phân biệt đó; (b) HasDefaultValue trên jsonb làm EF
+                // scaffold `defaultValue: ""` → Postgres từ chối ngay ALTER TABLE (bug F15), SQLite thì
+                // bỏ qua migration nên test xanh 100%.
+                e.Property(x => x.TargetCriterionIds)
+                 .HasConversion(GuidListConverter, GuidListComparer);
+                if (Database.IsNpgsql())
+                    e.Property(x => x.TargetCriterionIds).HasColumnType("jsonb");
+
                 e.Property(x => x.Source)
                  .HasConversion<string>()
                  .HasMaxLength(20);
@@ -201,18 +248,37 @@ namespace Isas.CampaignService.Models
                 e.ToTable("campaign_criteria", t =>
                 {
                     t.HasCheckConstraint("ck_campaign_criteria_weight_range", "weight > 0 AND weight <= 1");
+                    // EVA1-B3: max_score ∈ [1, 100] — khớp guard BuildStructuredCriteria. Không có
+                    // cận trên thì thang 2147483647 làm TRÀN INT ở ScoringCriteriaBuilder ⇒ answer
+                    // không bao giờ chấm ⇒ mất 1 credit im lặng (CAMP-17). Thang thật lớn nhất
+                    // từng dùng là 30.
+                    t.HasCheckConstraint("ck_campaign_criteria_max_score_range", "max_score >= 1 AND max_score <= 100");
+                    // RNK1 · HĐ-5 — điểm sàn %: null = không sàn, hoặc 0..100. Khớp guard code trong
+                    // BuildStructuredCriteria (ném ArgumentException → 400 kèm tên tiêu chí).
+                    t.HasCheckConstraint(
+                        "ck_campaign_criteria_min_pct_range",
+                        "min_pct IS NULL OR (min_pct >= 0 AND min_pct <= 100)");
                     // CAMP-20 — 'SystemDefault' là giá trị THỨ BA (bộ chuẩn chép về + bộ dự phòng khi AI
                     // lỗi). ⚠ CHECK này phải có trên DB TRƯỚC khi code ghi giá trị mới lên (xem docblock
                     // migration AddCriterionSourceSystemDefault). SQLite của test CÓ enforce CHECK (EF10)
                     // nhưng nó dựng schema bằng EnsureCreated theo model NÀY — tức luôn là bản ĐÃ nới —
                     // nên không test nào bắt được thứ tự deploy sai; chỉ Postgres thật mới bắt.
                     t.HasCheckConstraint("ck_campaign_criteria_source", "source IN ('AiSuggested', 'HrEdited', 'SystemDefault')");
+                    // SC2 · W1 — phạm vi chấm là danh sách ĐÓNG. Cùng bẫy thứ tự deploy với `source`:
+                    // CHECK phải có trên DB trước khi code ghi 'WhenTargeted'.
+                    t.HasCheckConstraint("ck_campaign_criteria_scoring_scope", "scoring_scope IN ('Always', 'WhenTargeted')");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Name).IsRequired().HasMaxLength(255);
                 e.Property(x => x.Weight).HasColumnType("numeric(5,4)");
                 e.Property(x => x.Source).HasConversion<string>().HasMaxLength(20);
+                // SC2 · W1 — NOT NULL DEFAULT 'Always': hàng cũ nhận mặc định = hành vi trước SC2 (chấm
+                // mọi câu), không backfill. varchar(16) đủ cho 'WhenTargeted' (12) — CampaignEnumColumnLengthTests khoá.
+                e.Property(x => x.ScoringScope)
+                 .HasConversion<string>()
+                 .HasMaxLength(16)
+                 .HasDefaultValue(CriterionScoringScope.Always);
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");   // C12
 
@@ -305,7 +371,7 @@ namespace Isas.CampaignService.Models
             modelBuilder.Entity<AuditLog>(e =>
             {
                 e.ToTable("audit_logs", t => t.HasCheckConstraint(
-                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey')"));
+                    "ck_audit_logs_action", "action IN ('CreateCampaign', 'EditQuestions', 'EditCriteria', 'Publish', 'Delete', 'TransitionStatus', 'Invite', 'ScreenCandidates', 'EditCandidate', 'ReissueInvitation', 'OverrideResult', 'CreateApiKey', 'RevokeApiKey', 'ApplyScoringPolicy', 'StartEarly', 'ClearQuestionTargets')"));
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.Entity).IsRequired().HasMaxLength(64);
@@ -372,6 +438,17 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.OverrideScore).HasColumnType("numeric(5,2)");
                 e.Property(x => x.OverrideResult).HasMaxLength(10);
 
+                // SCP1 · B5 — bó biến RAW đến qua event. NULLABLE (CẤM #4 — không NOT NULL cho cột
+                // đến qua event). jsonb (Npgsql) / text (SQLite) qua converter object đơn.
+                e.Property(x => x.ScoringInputs)
+                 .HasConversion(JsonObjectConverter<ScoringInputsSnapshot>(), JsonObjectComparer<ScoringInputsSnapshot>());
+                if (Database.IsNpgsql())
+                    e.Property(x => x.ScoringInputs).HasColumnType("jsonb");
+
+                // SCP1 · B8 / HĐ-5 — nhãn chính sách chấm đã áp + cờ lùi an toàn (xem CampaignRanking).
+                e.Property(x => x.PolicyName).HasMaxLength(255);
+                e.Property(x => x.ScoreFallback).HasDefaultValue(false);
+
                 // Idempotent upsert theo session_id: event tới 2 lần vẫn 1 row.
                 e.HasIndex(x => x.SessionId).IsUnique();
                 // DB26 — rút `total_score` khỏi đuôi index. `GetCampaignResultsAsync` (E5) chỉ
@@ -400,6 +477,35 @@ namespace Isas.CampaignService.Models
                  .OnDelete(DeleteBehavior.Restrict);
             });
 
+            // ── RankingOverride (lịch sử điều chỉnh của HR — E11c) ────────────
+            modelBuilder.Entity<RankingOverride>(e =>
+            {
+                e.ToTable("ranking_overrides");
+                e.HasKey(x => x.Id);
+                e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
+                e.Property(x => x.Kind).HasMaxLength(8).IsRequired();          // "Set" | "Clear"
+                e.Property(x => x.Score).HasColumnType("numeric(5,2)");
+                e.Property(x => x.Result).HasMaxLength(10);
+                e.Property(x => x.Note).IsRequired();                          // text — không HasMaxLength (lý do tự do)
+                e.Property(x => x.ActorEmail).HasMaxLength(255);
+                e.Property(x => x.Source).HasMaxLength(16).IsRequired();       // "Live" | "AuditBackfill"
+                e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
+
+                // Đường đọc duy nhất: lịch sử của MỘT ranking, mới-nhất-trước.
+                e.HasIndex(x => new { x.RankingId, x.CreatedAt });
+
+                // DB13: chained qua Ranking→Campaign (soft-delete filter). Required nav tới bảng đã có filter
+                // ⇒ BẮT BUỘC khớp, nếu không EF phát PossibleIncorrectRequiredNavigation + đọc dòng mồ côi.
+                e.HasQueryFilter(x => x.Ranking.Campaign.DeletedAt == null);
+
+                // FK nội-service → campaign_rankings (Restrict: ranking là read-model, không bao giờ xoá vật lý).
+                // CampaignId/SessionId denorm — ref lỏng, KHÔNG FK thêm.
+                e.HasOne(x => x.Ranking)
+                 .WithMany()
+                 .HasForeignKey(x => x.RankingId)
+                 .OnDelete(DeleteBehavior.Restrict);
+            });
+
             // ── CvSubmission (sàng CV B2B — C13/D18; DB16 ex campaign_candidates) ───
             modelBuilder.Entity<CvSubmission>(e =>
             {
@@ -412,6 +518,9 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
                 e.Property(x => x.FullName).HasMaxLength(255);
                 e.Property(x => x.Email).HasMaxLength(255);
+                // SCP1 · B7 — cờ lùi an toàn của điểm sàng CV. NOT NULL default false (ghi cùng
+                // transaction với hàng ⇒ hàng cũ = false = "không lùi an toàn").
+                e.Property(x => x.ScoreFallback).HasDefaultValue(false);
 
                 e.Property(x => x.ParseStatus).HasConversion<string>().HasMaxLength(16);
                 e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
@@ -695,6 +804,58 @@ namespace Isas.CampaignService.Models
 
                 // Liệt kê/đếm key active theo org.
                 e.HasIndex(x => new { x.OrgId, x.CreatedAt });
+            });
+
+            // ── ScoringPolicy (SCP1 · HĐ-3) ───────────────────────────────
+            modelBuilder.Entity<ScoringPolicy>(e =>
+            {
+                e.ToTable("scoring_policies", t =>
+                {
+                    t.HasCheckConstraint("ck_scoring_policies_kind", "kind IN ('Interview', 'CvScreening')");
+                    t.HasCheckConstraint("ck_scoring_policies_version", "version >= 1");
+                    t.HasCheckConstraint(
+                        "ck_scoring_policies_pass_score_pct",
+                        "pass_score_pct IS NULL OR (pass_score_pct >= 0 AND pass_score_pct <= 100)");
+                });
+                e.HasKey(x => x.Id);
+
+                e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+                e.Property(x => x.Version).IsRequired();
+                e.Property(x => x.EngineVersion).HasMaxLength(16).IsRequired();
+                e.Property(x => x.Name).HasMaxLength(255).IsRequired();
+                // text: trần độ dài biểu thức (ScoringLimits.MaxExpressionLength) ép lúc PHÂN TÍCH ở
+                // B1/B3, không ở DB — một câu 1001 ký tự phải ra lỗi TOO_LONG có vị trí, không phải
+                // bị Postgres cắt cụt.
+                e.Property(x => x.Expression).IsRequired();
+                e.Property(x => x.CreatedAt).IsRequired();
+
+                // 🔴 HĐ-3 — sau INSERT chỉ name/description sửa được. EF ném InvalidOperationException
+                // nếu SaveChanges thấy một trong các trường dưới bị đổi trên entity đã có trong DB.
+                // Chốt ở TẦNG MODEL (chạy cả trên SQLite test) — không dựa vào kỷ luật của service.
+                foreach (var p in new[]
+                {
+                    nameof(ScoringPolicy.CampaignId), nameof(ScoringPolicy.Kind), nameof(ScoringPolicy.Version),
+                    nameof(ScoringPolicy.EngineVersion), nameof(ScoringPolicy.Expression),
+                    nameof(ScoringPolicy.PassScorePct), nameof(ScoringPolicy.SourceTemplateId),
+                    nameof(ScoringPolicy.CreatedAt), nameof(ScoringPolicy.CreatedBy),
+                })
+                    e.Property(p).Metadata.SetAfterSaveBehavior(PropertySaveBehavior.Throw);
+
+                // HĐ-3 §2 — HAI partial unique RIÊNG. Postgres coi NULL là distinct ⇒ một UNIQUE chung
+                // (campaign_id, kind, version) KHÔNG chặn được hai MẪU trùng nhau (campaign_id = NULL).
+                //   · mẫu hệ thống : một bản / (kind, name)
+                //   · bản campaign : một bản / (campaign_id, kind, version)
+                e.HasIndex(x => new { x.Kind, x.Name })
+                 .HasDatabaseName("ux_scoring_policies_template")
+                 .HasFilter("campaign_id IS NULL")
+                 .IsUnique();
+                e.HasIndex(x => new { x.CampaignId, x.Kind, x.Version })
+                 .HasDatabaseName("ux_scoring_policies_campaign")
+                 .HasFilter("campaign_id IS NOT NULL")
+                 .IsUnique();
+
+                // HĐ-3 §4 — 5 mẫu hệ thống (campaign_id = NULL). Xem ScoringPolicySeed.
+                e.HasData(ScoringPolicySeed.Templates);
             });
         }
     }

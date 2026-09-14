@@ -201,18 +201,23 @@ public sealed class TestDb : IDisposable
             TimeLimitSec = 120
         };
 
+    // Mặc định LUÔN có audio (đường upload thật luôn gán AudioObjectKey). CAMP-21: hai tham số cuối cho
+    // phép dựng đúng từng NGHĨA của `Skipped` — im lặng có ghi âm (`rejectReason: "no_speech"`) khác
+    // hẳn câu chưa từng ghi âm (`audioObjectKey: null`) và khác bài bị chốt sổ (cả hai để mặc định).
     public static PracticeAnswer Answer(
         Guid sessionId, Guid questionId, AnswerStatus status,
-        DateTime createdAt, DateTime? lastPublished)
+        DateTime createdAt, DateTime? lastPublished,
+        string? audioObjectKey = "answer-audio/x.webm", string? rejectReason = null)
         => new()
         {
             Id = Guid.NewGuid(),
             SessionId = sessionId,
             QuestionId = questionId,
-            AudioObjectKey = "answer-audio/x.webm",
+            AudioObjectKey = audioObjectKey,
             Status = status,
             DurationSec = 30,
             CreatedAt = createdAt,
-            LastScoringPublishedAt = lastPublished
+            LastScoringPublishedAt = lastPublished,
+            RejectReason = rejectReason
         };
 }

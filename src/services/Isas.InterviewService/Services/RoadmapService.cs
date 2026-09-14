@@ -617,34 +617,7 @@ public class RoadmapService : IRoadmapService
         // `RoadmapNaming.Resolve` thẳng trong `.Select` được: EF phải dịch cây biểu thức sang SQL và
         // sẽ hoặc ném, hoặc âm thầm kéo cả bảng về client để đánh giá. Vẫn KHÔNG có `Include` cây
         // milestone→lesson — xem chú thích trên `RoadmapSummaryResponse` về lý do list bỏ nó.
-        var raw = await query
-            .OrderByDescending(x => x.CreatedAt)
-            .ThenByDescending(x => x.Id)
-            .Take(take)
-            .Select(x => new
-            {
-                x.Id,
-                x.Name,
-                x.JobCategory,
-                x.Level,
-                x.Mode,
-                x.Language,
-                x.CvId,
-                x.Status,
-                x.CreatedAt,
-                x.CompletedAt,
-                // Tính TRONG SQL, KHÔNG kéo cả `final_report` về: cột đó là jsonb chứa nguyên báo
-                // cáo tổng kết, kéo về chỉ để kiểm rỗng là phình payload của một endpoint DANH SÁCH.
-                //
-                // ⚠ CỐ Ý chỉ so `!= null`, KHÔNG thêm `&& != ""`: cột là jsonb, so với chuỗi rỗng
-                // trong SQL là chỗ Npgsql và SQLite hành xử khác nhau (SQLite lưu jsonb như TEXT nên
-                // test vẫn xanh trong khi Postgres vỡ) — đúng lớp bug đã cắn repo nhiều lần. Không
-                // cần vế đó: chỉ có HAI chỗ ghi cột này (RoadmapReportService đặt JSON khi hoàn tất,
-                // RoadmapLessonService.RetryLessonAsync đặt `null` khi làm lại), không đường nào sinh
-                // ra chuỗi rỗng — đo trên dev: 3/3 Completed non-null, 26/26 Active null, 0 rỗng.
-                HasFinalReport = x.FinalReport != null
-            })
-            .ToListAsync(ct);
+        var raw = await BuildSummaryQuery(query, take).ToListAsync(ct);
 
         var rows = raw
             .Select(x => new RoadmapSummaryResponse(
@@ -657,7 +630,9 @@ public class RoadmapService : IRoadmapService
                 x.Status.ToString(),
                 x.CreatedAt,
                 x.CompletedAt,
-                x.HasFinalReport))
+                x.HasFinalReport,
+                x.MilestoneCount,
+                x.MilestoneDoneCount))
             .ToList();
 
         var next = rows.Count == take
@@ -665,6 +640,40 @@ public class RoadmapService : IRoadmapService
             : null;
         return new KeysetPage<RoadmapSummaryResponse>(rows, next);
     }
+
+    /// <summary>
+    /// UX3-B2 — projection thực thi của <c>GET /roadmaps</c> (DANH SÁCH). Tách hàm để test khoá được
+    /// SQL sinh ra (<c>ToQueryString</c>): <see cref="RoadmapSummaryRow.MilestoneCount"/> +
+    /// <see cref="RoadmapSummaryRow.MilestoneDoneCount"/> PHẢI dịch thành subquery scalar
+    /// <c>COUNT(*)</c>, KHÔNG có <c>LEFT JOIN roadmap_milestones</c> kéo cả cây (docblock
+    /// <see cref="RoadmapSummaryResponse"/>). Đổi thân hàm sang <c>.Include(x =&gt; x.Milestones)</c>
+    /// rồi đếm trong bộ nhớ ⇒ test khoá SQL ĐỎ.
+    /// </summary>
+    internal static IQueryable<RoadmapSummaryRow> BuildSummaryQuery(IQueryable<Roadmap> filtered, int take) =>
+        filtered
+            .OrderByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .Take(take)
+            .Select(x => new RoadmapSummaryRow(
+                x.Id,
+                x.Name,
+                x.JobCategory,
+                x.Level,
+                x.Mode,
+                x.Language,
+                x.CvId,
+                x.Status,
+                x.CreatedAt,
+                x.CompletedAt,
+                // Tính TRONG SQL, KHÔNG kéo cả `final_report` về (jsonb, nguyên báo cáo tổng kết).
+                // ⚠ CỐ Ý chỉ so `!= null`, KHÔNG `&& != ""`: cột jsonb, so chuỗi rỗng trong SQL là
+                // chỗ Npgsql và SQLite hành xử khác nhau (SQLite lưu jsonb như TEXT nên test xanh giả)
+                // — đã cắn repo nhiều lần. Chỉ HAI chỗ ghi cột này (RoadmapReportService khi hoàn tất,
+                // RetryLessonAsync đặt null khi làm lại), không đường nào sinh chuỗi rỗng.
+                x.FinalReport != null,
+                // Subquery scalar COUNT trên navigation — KHÔNG Include cây milestone→lesson.
+                x.Milestones.Count,
+                x.Milestones.Count(m => m.Status == MilestoneStatus.Completed)));
 
     // BC17 — trần độ dài mô tả tự do (rẻ, chống prompt phình). `SummaryMaxChars` (từng cắt bối cảnh
     // CV/roadmap trước gửi AI) đã GỠ cùng REC1-B7 — hai nguồn đó không còn được chưng cất/gửi đi.
@@ -905,3 +914,21 @@ public class RoadmapService : IRoadmapService
             r.Baseline is not null,
             scope));
 }
+
+// UX3-B2 — hàng SQL của GET /roadmaps: các cột chiếu xuống Postgres rồi RoadmapNaming.Resolve /
+// .ToString() chạy trong bộ nhớ (không dịch được sang SQL). Named type (không phải anon) để
+// RoadmapService.BuildSummaryQuery test khoá được ToQueryString.
+internal sealed record RoadmapSummaryRow(
+    Guid Id,
+    string? Name,
+    JobCategory JobCategory,
+    RoadmapLevel Level,
+    RoadmapMode Mode,
+    string Language,
+    Guid? CvId,
+    RoadmapStatus Status,
+    DateTime CreatedAt,
+    DateTime? CompletedAt,
+    bool HasFinalReport,
+    int MilestoneCount,
+    int MilestoneDoneCount);
