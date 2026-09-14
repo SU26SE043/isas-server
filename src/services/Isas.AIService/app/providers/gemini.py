@@ -40,6 +40,9 @@ from app.schemas import (
 from app.providers.base import QuestionProvider
 from app.usage import report_usage
 
+# BK34 — trần cứng của Gemini batchEmbedContents (đo thật, xem GeminiProvider.embed).
+EMBED_BATCH_MAX = 100
+
 logger = logging.getLogger(__name__)
 
 
@@ -485,16 +488,31 @@ class GeminiProvider(QuestionProvider):
 
         Trả về list vector cùng thứ tự ``texts``; ``output_dimensionality`` cắt về 768 (Matryoshka)
         khớp collection Qdrant ``knowledge``.
+
+        BK34 — Gemini ``batchEmbedContents`` nhận **tối đa 100 request/lô** (đo thật trên aiapi-dev
+        2026-09-15: 90 → OK, 101 → ``400 INVALID_ARGUMENT "at most 100 requests can be in one
+        batch"``). Trước bản này cả nguồn đi trong MỘT lời gọi ⇒ mọi trang > 100 chunk (Atlassian,
+        Agile Alliance, Camunda BPMN — đúng những nguồn BA đang thiếu) nạp thất bại 502, và thông
+        điệp lỗi bị .NET vứt nên chẩn đoán cũ ("chunk quá cỡ") sai. Chia lô ở ĐÂY vì trần là của
+        Gemini, không phải của caller; gọi TUẦN TỰ để giữ thứ tự và không tự dội rate-limit.
         """
-        resp = await self._client.aio.models.embed_content(
-            model=settings.embed_model,
-            contents=texts,
-            config=types.EmbedContentConfig(
-                output_dimensionality=settings.embed_dim,
-                task_type=task_type,
-            ),
-        )
-        return [list(e.values or []) for e in (resp.embeddings or [])]
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), EMBED_BATCH_MAX):
+            batch = texts[start:start + EMBED_BATCH_MAX]
+            resp = await self._client.aio.models.embed_content(
+                model=settings.embed_model,
+                contents=batch,
+                config=types.EmbedContentConfig(
+                    output_dimensionality=settings.embed_dim,
+                    task_type=task_type,
+                ),
+            )
+            got = [list(e.values or []) for e in (resp.embeddings or [])]
+            if len(got) != len(batch):
+                raise ValueError(
+                    f"Gemini trả {len(got)} vector cho lô {len(batch)} text (offset {start})")
+            vectors.extend(got)
+        return vectors
 
     async def _verify_question_knowledge(self, questions: list[str], grounding: list[dict] | None,
                                          language: str = "vi") -> tuple[list[str], list[dict] | None]:

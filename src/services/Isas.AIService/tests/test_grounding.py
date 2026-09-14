@@ -362,3 +362,57 @@ def test_endpoint_generate_lesson_theory_ungrounded_omits_cited(monkeypatch):
     body = res.json()
     assert "citedChunkIds" not in body    # exclude_none → shape cũ giữ nguyên
     assert body["resources"] == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BK34 — provider.embed chia lô ≤100 (trần Gemini batchEmbedContents, đo thật 2026-09-15)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_provider_embed_chia_lo_toi_da_100_giu_thu_tu():
+    """Mutation: bỏ vòng chia lô → 1 lời gọi 250 text → ĐỎ; đảo thứ tự ghép → ĐỎ."""
+    from app.providers import gemini as gm
+    provider = GeminiProvider()
+    calls: list[list[str]] = []
+
+    async def fake_embed_content(*, model, contents, config):
+        calls.append(list(contents))
+        # vector = [số thứ tự của text] để kiểm thứ tự ghép
+        return SimpleNamespace(embeddings=[SimpleNamespace(values=[float(t.split("-")[1])]) for t in contents])
+
+    provider._client.aio.models.embed_content = fake_embed_content
+    texts = [f"t-{i}" for i in range(250)]
+
+    vectors = await provider.embed(texts, "RETRIEVAL_DOCUMENT")
+
+    assert [len(c) for c in calls] == [100, 100, 50]
+    assert all(len(c) <= gm.EMBED_BATCH_MAX for c in calls)
+    assert vectors == [[float(i)] for i in range(250)]
+
+
+@pytest.mark.asyncio
+async def test_provider_embed_lo_thieu_vector_thi_nem_khong_lech_thu_tu():
+    """Một lô trả thiếu vector → ném ngay (ghép tiếp là lệch chunk↔vector im lặng)."""
+    provider = GeminiProvider()
+
+    async def fake_embed_content(*, model, contents, config):
+        return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.1])])   # luôn 1 dù lô 2
+
+    provider._client.aio.models.embed_content = fake_embed_content
+    with pytest.raises(ValueError):
+        await provider.embed(["a", "b"], "RETRIEVAL_DOCUMENT")
+
+
+def test_embed_endpoint_loi_co_dong_log_warning(monkeypatch, caplog):
+    import logging
+
+    async def boom(texts, task_type):
+        raise RuntimeError("at most 100 requests can be in one batch")
+
+    monkeypatch.setattr(main_module.provider, "embed", boom)
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        res = client.post("/api/v1/embed", headers=_HEADERS,
+                          json={"texts": ["a", "b"], "taskType": "RETRIEVAL_DOCUMENT"})
+    assert res.status_code == 502
+    assert "at most 100 requests" in res.json()["detail"]
+    assert any("Lỗi sinh embedding (2 text" in r.getMessage() for r in caplog.records)
