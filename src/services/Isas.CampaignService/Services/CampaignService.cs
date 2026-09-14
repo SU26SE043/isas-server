@@ -2614,13 +2614,29 @@ namespace Isas.CampaignService.Services
             if (campaign.Status is CampaignStatus.Closed or CampaignStatus.Archived)
                 throw new InvalidOperationException($"Chỉ sàng CV khi campaign Draft hoặc Active (hiện: {campaign.Status}).");
 
+            if (files is null || files.Count == 0)
+                throw new ArgumentException("Cần ít nhất 1 file CV (PDF).");
+
+            // Cap số NGƯỜI/campaign (chặn đốt AI vì free) — vượt → 400, chặn CẢ batch (như invitations).
+            // BK21: `currentCount` nay là hợp email distinct (invitation + CV), không phải số row CV.
+            //
+            // `files.Count` được GIỮ làm cận trên có chủ đích: email chỉ biết được SAU khi parse
+            // (ExtractEmail ở dưới), mà ArchiveCvAsync đã đẩy file lên S3 TRƯỚC đó trong cùng vòng lặp
+            // ⇒ dời phép kiểm xuống sau parse sẽ để lại object S3 mồ côi mỗi lần từ chối batch, tức tái
+            // tạo đúng lớp rác mà BK29 đang phải đi dọn tay. Đánh đổi: upload CV của người đã được mời
+            // vẫn bị tính vào trần ở thời điểm kiểm (sau đó nó rơi vào nhánh Skipped, không tạo row).
+            var people = await LoadCampaignPeopleAsync(id, ct);
+            await EnsureCandidateCapacityAsync(orgId, campaign, OccupiedSeats(people), files.Count, "CV", ct);
+
             var jobNeedsJustBuilt = false;
 
             // SCR1-B1 — chủ sản phẩm chốt: HR chỉ dán JD → upload CV → có xếp hạng, KHÔNG phải soạn
             // job_needs trước. Rỗng KHÔNG còn 409 ngay — LAZY-BUILD từ JD ngay tại đây, y hệt
             // PublishCampaignAsync (~:1470-1473). Phải đứng TRƯỚC vòng lặp đọc file / ArchiveCvAsync
             // bên dưới: lỗi ở đây (thiếu JD / AI hỏng) thì KHÔNG sinh row cv_submission nào, không đẩy
-            // object nào lên S3, đúng cam kết cũ của guard này.
+            // object nào lên S3, đúng cam kết cũ của guard này. Và đứng SAU kiểm files/cap 400 ở trên
+            // (có chủ đích): request rỗng/vượt trần bị chặn TRƯỚC khi đốt một lượt Gemini — gọi AI rồi
+            // mới 400 thì lượt đó vừa tốn tiền vừa mất trắng (throw trước SaveChanges).
             //
             // Check KHÔNG rẽ theo Status: ở Active nó bịt lỗ "AI hụt lúc publish ⇒ campaign Active mà
             // job_needs rỗng ⇒ cùng lời nói dối 6 giờ" (StuckScreeningRepublisher trần bỏ cuộc chạy
@@ -2643,20 +2659,6 @@ namespace Isas.CampaignService.Services
                 // needs" trên bộ nhớ đã đổi nhưng chưa lưu.
                 jobNeedsJustBuilt = true;
             }
-
-            if (files is null || files.Count == 0)
-                throw new ArgumentException("Cần ít nhất 1 file CV (PDF).");
-
-            // Cap số NGƯỜI/campaign (chặn đốt AI vì free) — vượt → 400, chặn CẢ batch (như invitations).
-            // BK21: `currentCount` nay là hợp email distinct (invitation + CV), không phải số row CV.
-            //
-            // `files.Count` được GIỮ làm cận trên có chủ đích: email chỉ biết được SAU khi parse
-            // (ExtractEmail ở dưới), mà ArchiveCvAsync đã đẩy file lên S3 TRƯỚC đó trong cùng vòng lặp
-            // ⇒ dời phép kiểm xuống sau parse sẽ để lại object S3 mồ côi mỗi lần từ chối batch, tức tái
-            // tạo đúng lớp rác mà BK29 đang phải đi dọn tay. Đánh đổi: upload CV của người đã được mời
-            // vẫn bị tính vào trần ở thời điểm kiểm (sau đó nó rơi vào nhánh Skipped, không tạo row).
-            var people = await LoadCampaignPeopleAsync(id, ct);
-            await EnsureCandidateCapacityAsync(orgId, campaign, OccupiedSeats(people), files.Count, "CV", ct);
 
             // Dedup email: bộ đã có trong campaign + cộng dồn trong batch này (case-insensitive).
             var seenEmails = new HashSet<string>(

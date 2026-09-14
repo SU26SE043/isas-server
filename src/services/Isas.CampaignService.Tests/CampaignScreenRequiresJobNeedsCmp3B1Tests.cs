@@ -195,6 +195,29 @@ public class CampaignScreenRequiresJobNeedsCmp3B1Tests
             It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    // (3c) Review khi gộp SCR1-B1: kiểm files/cap 400 phải chạy TRƯỚC lazy-build. Request KHÔNG có
+    //     file nào ⇒ 400 ngay, suggester KHÔNG được gọi — nếu khối lazy đứng trước kiểm files thì
+    //     mỗi request rỗng đốt 1 lượt Gemini rồi vứt (throw ArgumentException trước SaveChanges ⇒
+    //     needs vừa rút cũng mất, lần sau lại gọi AI tiếp).
+    [Fact]
+    public async Task NeedsRong_CoJD_KhongCoFile_400_KhongGoiSuggester()
+    {
+        using var tdb = new CampaignTestDb();
+        var owner = Guid.NewGuid();
+        var campId = SeedActive(tdb, owner, jobNeeds: null, jdText: "Cần .NET + Postgres");
+
+        var suggester = new Mock<IJobNeedsSuggester>();
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            NewService(tdb.NewContext(), suggester: suggester.Object)
+                .ScreenCandidatesAsync(owner, owner, campId, Files(), default));
+
+        suggester.Verify(s => s.SuggestAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        var saved = await tdb.NewContext().Campaigns.SingleAsync(c => c.Id == campId);
+        Assert.True(saved.JobNeeds is null || saved.JobNeeds.Count == 0);
+    }
+
     // (3b) JD toàn khoảng trắng (KHÁC null, giống lỗi thường gặp khi HR paste rồi xoá) ⇒ vẫn coi
     //     là "chưa có JD" (khớp guard dùng IsNullOrWhiteSpace) — 409, không gọi suggester.
     [Fact]
