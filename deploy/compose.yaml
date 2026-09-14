@@ -288,6 +288,10 @@ services:
       - GitHub__Token=${GITHUB_TOKEN}
       # Grounding:Enabled mặc định TẮT (chuỗi rỗng không parse int/bool an toàn → dùng default). Bật khi có corpus.
       - Grounding__Enabled=${GROUNDING_ENABLED:-false}
+      # Prewarm lý thuyết bài học: sinh NỀN bài 1 ngay sau tạo roadmap + bài kế khi mở bài (đo prod
+      # 2026-09-14: mỗi bài sinh 38–52s đồng bộ trong GET). BẬT mặc định — vá hành vi đo được, không phải
+      # tính năng mới; chi phí ≤1 bài sinh thừa/phiên. Mọi lượt đi qua single-flight nên không sinh trùng.
+      - LessonPrewarm__Enabled=${LESSON_PREWARM_ENABLED:-true}
       # AI-CV1 — cap TỔNG toàn request; chọn round-robin giữa requirement, không phải 8 chunk
       # đầu của requirement đầu. 0 tắt grounding riêng cho CV analysis.
       - JdRequirements__MaxGroundingChunks=${CV_ANALYSIS_MAX_GROUNDING_CHUNKS:-8}

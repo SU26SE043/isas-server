@@ -110,6 +110,8 @@ builder.Services.AddScoped<IRoadmapService, RoadmapService>();   // BC12
 builder.Services.AddScoped<IRoadmapLessonService, RoadmapLessonService>();   // BC14
 // Single-flight sinh lý thuyết theo lessonId — singleton: bảng in-flight phải là MỘT cho cả process.
 builder.Services.AddSingleton<LessonTheorySingleFlight>();
+builder.Services.AddSingleton<LessonPrewarmQueue>();          // prewarm: hàng đợi in-memory (LessonPrewarmOptions)
+builder.Services.AddHostedService<LessonTheoryPrewarmer>();   // prewarm: sinh nền tuần tự qua single-flight
 builder.Services.AddScoped<IRoadmapThresholdService, RoadmapThresholdService>();   // BC15 — ngưỡng đạt admin chỉnh runtime
 builder.Services.AddScoped<IRoadmapReportService, RoadmapReportService>();   // BC15
 builder.Services.AddScoped<PromptTemplateService>();   // F21 — prompt tuỳ biến (FR17)
@@ -320,6 +322,8 @@ builder.Services.Configure<OutboxSettings>(
     builder.Configuration.GetSection(OutboxSettings.SectionName));   // DB2
 builder.Services.Configure<RepublisherSettings>(
     builder.Configuration.GetSection(RepublisherSettings.SectionName));   // DB29
+builder.Services.Configure<LessonPrewarmOptions>(
+    builder.Configuration.GetSection(LessonPrewarmOptions.SectionName));   // prewarm lý thuyết bài học
 builder.Services.Configure<GroundingOptions>(
     builder.Configuration.GetSection(GroundingOptions.SectionName));   // RAG grounding — Enabled/TopK/threshold
 builder.Services.Configure<TopicsOptions>(
