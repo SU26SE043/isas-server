@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import unicodedata
 from difflib import SequenceMatcher
 from typing import NamedTuple
@@ -325,9 +326,14 @@ def _generation_diagnostics(response) -> str:
         finish = getattr(candidates[0], "finish_reason", None) if candidates else None
         meta = getattr(response, "usage_metadata", None)
         out_tokens = getattr(meta, "candidates_token_count", None) if meta is not None else None
-        return f"finish_reason={finish!r} candidates_token_count={out_tokens!r}"
+        # Suy luận ẩn (Gemini 2.5) tính tiền theo giá OUTPUT và là phần độ trễ không nhìn thấy trong
+        # văn bản trả về — đo prod 2026-09-14: bài giảng 7,7–10,4k output token cho ~3,5–5k token
+        # chữ thật. Không có con số này thì "chậm vì viết dài" và "chậm vì nghĩ lâu" không tách được.
+        thoughts = getattr(meta, "thoughts_token_count", None) if meta is not None else None
+        return (f"finish_reason={finish!r} candidates_token_count={out_tokens!r} "
+                f"thoughts_token_count={thoughts!r}")
     except Exception:  # noqa: BLE001 — xem docstring: đo không được làm hỏng đường chính
-        return "finish_reason=? candidates_token_count=? (không đọc được)"
+        return "finish_reason=? candidates_token_count=? thoughts_token_count=? (không đọc được)"
 
 
 class ScoreOutcome(NamedTuple):
@@ -2110,6 +2116,7 @@ class GeminiProvider(QuestionProvider):
             milestone_properties["mistakeIds"] = {"type": "array", "items": {"type": "string"}}
             lesson_properties["mistakeIds"] = {"type": "array", "items": {"type": "string"}}
 
+        started = time.perf_counter()
         response = await self._generate(
             "generate_roadmap",
             contents=prompt,
@@ -2138,6 +2145,9 @@ class GeminiProvider(QuestionProvider):
                 },
             ),
         )
+        logger.info("[⏱] roadmap attempt=%d elapsed=%.2fs %s job=%s level=%s",
+                    _attempt, time.perf_counter() - started, _generation_diagnostics(response),
+                    job_category, level)
 
         text = (response.text or "").strip()
         try:
@@ -2441,7 +2451,7 @@ class GeminiProvider(QuestionProvider):
         feedback: str | None = None
         last_defects: list[str] = []
 
-        for _ in range(attempts):
+        for attempt_no in range(1, attempts + 1):
             prompt = build_lesson_theory_prompt(
                 job_category, level, lesson_title, focus_criteria, weaknesses,
                 grounding, retry_feedback=feedback, language=language, evidence=evidence,
@@ -2453,12 +2463,14 @@ class GeminiProvider(QuestionProvider):
             # không ai biết). Con số đó chỉ có SAU khi parse, nên phải hoãn.
             # try/finally BẮT BUỘC, và phải nằm TRONG vòng lặp: token của lượt bị trả lại vẫn đã
             # bị đốt: đó đúng là phần chi phí cần thấy nhất, gom ra ngoài là mất hẳn.
+            started = time.perf_counter()
             response = await self._generate(
                 "generate_lesson_theory",
                 defer_report=True,
                 contents=prompt,
                 config=config,
             )
+            elapsed = time.perf_counter() - started
 
             url_meta: dict | None = None
             try:
@@ -2533,6 +2545,12 @@ class GeminiProvider(QuestionProvider):
                 return LessonTheoryResult(theory=theory, resources=resources,
                                           cited_chunk_ids=cited, mistake_review=mistake_review)
             finally:
+                # Một dòng cho MỌI lượt (đạt / bị trả lại / không phải JSON) — đặt trong `finally` để
+                # lượt hỏng cũng có số: đây là chỗ duy nhất đo được lượt Gemini ~50s này tốn bao nhiêu
+                # thời gian và bao nhiêu token suy luận ẩn, và tỉ lệ viết lại thật sự là bao nhiêu.
+                logger.info('[⏱] lesson-theory attempt=%d/%d elapsed=%.2fs %s defects=%d lesson="%s"',
+                            attempt_no, attempts, elapsed, _generation_diagnostics(response),
+                            len(last_defects), lesson_title)
                 await report_usage("generate_lesson_theory", settings.gemini_model,
                                    response, meta=url_meta)
 

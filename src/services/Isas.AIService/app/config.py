@@ -6,6 +6,10 @@ class Settings(BaseSettings):
 
     gemini_api_key: str
     gemini_model: str = "gemini-2.5-flash"
+
+    # Mức log cho cây logger `app.*` (xem app/logging_setup.py — uvicorn/worker không tự bật INFO cho
+    # code của mình). `DEBUG` khi cần soi; `WARNING` để về đúng mức im lặng cũ.
+    log_level: str = "INFO"
     question_count: int = 5
 
     # ── RAG GROUNDING: EMBEDDING (Phase 1) ───────────────────────────

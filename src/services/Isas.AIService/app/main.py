@@ -29,10 +29,13 @@ from app.providers.gemini import GeminiProvider
 from app.transcriber import Transcriber
 from app.face_verify import FaceVerifier
 from app.config import settings
-from app import storage, audio, threadpool, timing, tts
+from app import logging_setup, storage, audio, threadpool, timing, tts
 from app.tts_redis import TtsRedisCoordinator
 
 logger = logging.getLogger(__name__)
+# Bật INFO cho `app.*` TRƯỚC khi dựng app — uvicorn không cấu hình logger ngoài `uvicorn.*` (xem
+# app/logging_setup.py). Đặt ở mức module để lifespan/handler nào cũng đã có log.
+logging_setup.configure(settings.log_level)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
