@@ -416,3 +416,31 @@ def test_embed_endpoint_loi_co_dong_log_warning(monkeypatch, caplog):
     assert res.status_code == 502
     assert "at most 100 requests" in res.json()["detail"]
     assert any("Lỗi sinh embedding (2 text" in r.getMessage() for r in caplog.records)
+
+
+def test_grounding_block_cite_true_bat_dung_tai_lieu_lien_quan_nhung_khong_ep_trich():
+    """2026-09-15 — dev đo: corpus BA đã khớp chủ đề mà model vẫn trả [] 5/8 bài vì lời dặn cũ chỉ
+    bảo cite KHI dùng. Nay: liên quan thì PHẢI dùng + cite; KHÔNG liên quan thì [] (D27: không trích
+    cho có). Mutation: bỏ vế "PHẢI dùng" → ĐỎ; bỏ vế "[] khi không liên quan" → ĐỎ."""
+    block = build_grounding_block(_GROUNDING, cite=True)
+    assert "LIÊN QUAN thì PHẢI dùng" in block
+    assert "rỗng [] khi KHÔNG tài liệu nào liên quan" in block
+    assert "KHÔNG bịa chunkId" in block
+
+
+@pytest.mark.asyncio
+async def test_lesson_grounded_thi_citedChunkIds_bat_buoc_co_mat(monkeypatch, lesson_theory_payload):
+    """Có grounding ⇒ `citedChunkIds` vào `required` (được phép rỗng) — để tuỳ chọn thì structured output
+    hay bỏ hẳn field. Không grounding ⇒ required giữ nguyên 3 phần."""
+    captured: dict = {}
+
+    async def fake_generate(self, operation, *, contents, config, model=None, defer_report=False):
+        captured["required"] = list(config.response_schema["required"])
+        return SimpleNamespace(text=json.dumps({**lesson_theory_payload(["A"]), "citedChunkIds": []}))
+
+    monkeypatch.setattr(GeminiProvider, "_generate", fake_generate)
+    await GeminiProvider().generate_lesson_theory("BE", "Junior", "Bài", ["A"], None, grounding=_GROUNDING)
+    assert "citedChunkIds" in captured["required"]
+
+    await GeminiProvider().generate_lesson_theory("BE", "Junior", "Bài", ["A"], None)
+    assert captured["required"] == ["sections", "example", "commonMistakes"]

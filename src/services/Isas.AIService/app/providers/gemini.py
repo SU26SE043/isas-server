@@ -2439,9 +2439,13 @@ class GeminiProvider(QuestionProvider):
                 },
             },
         }
+        required = ["sections", "example", "commonMistakes"]
         if grounded:
             response_properties["citedChunkIds"] = {
                 "type": "array", "items": {"type": "string"}}
+            # Bắt buộc CÓ MẶT (được phép rỗng []): để tuỳ chọn thì structured output hay bỏ hẳn
+            # field, và "bỏ field" với "xét rồi thấy không liên quan" không phân biệt được.
+            required.append("citedChunkIds")
         # MIS1-B3 — CÓ ĐIỀU KIỆN, đúng khuôn `if grounded:` ngay trên. KHÔNG thêm vào `required`
         # (mục 3 của task): phủ lỗi là ADVISORY, JSON schema không được bắt cứng field này.
         if known_ids:
@@ -2464,7 +2468,7 @@ class GeminiProvider(QuestionProvider):
             "response_schema": {
                 "type": "object",
                 "properties": response_properties,
-                "required": ["sections", "example", "commonMistakes"],
+                "required": required,
             },
         }
         # Trần suy luận ẩn — đường sinh bài giảng từng là một trong HAI đường (cùng generate_roadmap)
