@@ -38,5 +38,24 @@ namespace PaymentService.Models
         /// không bao giờ được consume. Hở nhỏ, nhưng reconciler PHẢI log rõ mỗi ca bị bỏ (không im lặng).
         /// </summary>
         public DateTime? ConsumeFromUtc { get; set; }
+
+        /// <summary>
+        /// Mốc RIÊNG cho nhánh consume chỗ giữ của session <c>Scored</c> (R1): chỉ consume chỗ giữ có
+        /// <c>created_at</c> ≥ mốc này. Thứ tự lấy: <c>ScoredConsumeFromUtc</c> → <see cref="ConsumeFromUtc"/>
+        /// → giờ khởi động dịch vụ.
+        ///
+        /// Vì sao tách khỏi <see cref="ConsumeFromUtc"/>: mốc kia đồng thời là CUTOVER PONR1 — cấu hình nó
+        /// là <see cref="CreditEventHandler"/> ngừng release chỗ giữ của session <c>SessionAbandoned</c> và
+        /// reconciler chuyển sang CONSUME chúng (PAY-13 "Ready là điểm không quay lại"). Trong khi Interview
+        /// vẫn <c>Billing:ConsumeAtQuestionGeneration=false</c> (thu tại Scored) thì bật vế đó bên Payment
+        /// là hai service nói hai luật khác nhau về cùng một đồng credit ⇒ người bỏ ngang bị trừ tiền.
+        ///
+        /// Còn mốc mặc định "giờ khởi động" thì TRÔI theo mỗi lần CI deploy (prod 2026-09-15: mốc
+        /// = 13:37:52Z = đúng lúc container lên) ⇒ session Scored có chỗ giữ tạo TRƯỚC lần deploy gần nhất
+        /// mà mất event settle sẽ không bao giờ được consume, chỉ log "cần đối soát tay" mỗi 2 phút.
+        /// Đặt mốc này tường minh (ví dụ ngày R1 lên prod) thì nhánh Scored hết phụ thuộc lịch deploy mà
+        /// KHÔNG đụng ngữ nghĩa PONR1. Chỗ giữ tồn đọng trước mốc vẫn SKIP (không trừ hồi tố — OPS2).
+        /// </summary>
+        public DateTime? ScoredConsumeFromUtc { get; set; }
     }
 }

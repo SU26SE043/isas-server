@@ -438,6 +438,13 @@ services:
       - RefundPayout__Enabled=${REFUND_PAYOUT_ENABLED:-false}
       - RefundPayout__MaxAutoPayoutVnd=${REFUND_PAYOUT_MAX_VND:-2000000}
       - Interview__BaseUrl=http://isas.interviewservice:8080   # DB18 — OrphanReservationReconciler gọi Interview /internal/sessions/exists (trống → reconciler safe-skip)
+      # R1 — mốc consume chỗ giữ của session ĐÃ Scored mà mất event settle. KHÔNG cấu hình thì mốc = giờ
+      # khởi động container ⇒ TRÔI theo mỗi lần CI deploy (đo prod 2026-09-15: mốc = đúng lúc container
+      # lên) ⇒ chỗ giữ tạo trước lần deploy gần nhất không bao giờ được consume, chỉ log mỗi 2'. Đặt tường
+      # minh = ngày R1 lên prod (2026-07-24); chỗ giữ cũ hơn vẫn SKIP (không trừ hồi tố — OPS2).
+      # ⚠ KHÔNG dùng `OrphanReconcile__ConsumeFromUtc` cho việc này — mốc đó là CUTOVER PONR1 (đặt là
+      # session bỏ ngang bị CONSUME thay vì release), chỉ bật cùng `Billing__ConsumeAtQuestionGeneration`.
+      - OrphanReconcile__ScoredConsumeFromUtc=${ORPHAN_SCORED_CONSUME_FROM_UTC:-2026-07-24T00:00:00Z}
       # BK24 — `InvoiceOverdueReconciler` đóng dấu hoá đơn postpaid Issued→Overdue quá hạn. Đó là cái
       # PHANH của BK17 (org có hoá đơn Overdue thì reserve → 402): không bật thì postpaid là "trả sau"
       # KHÔNG có phanh. Bật thật trên server 2026-07-23.

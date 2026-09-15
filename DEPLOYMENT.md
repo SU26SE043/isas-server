@@ -342,6 +342,10 @@ services:
       # DB18 — OrphanReservationReconciler gọi Interview /internal/sessions/exists để dọn chỗ giữ credit
       # mồ côi. Để TRỐNG → reconciler safe-skip mỗi vòng (không release mù), credit treo không ai dọn.
       - Interview__BaseUrl=http://isas.interviewservice:8080
+      # R1 — mốc consume chỗ giữ của session ĐÃ Scored mà mất event settle. Không đặt → mốc = giờ khởi
+      # động container, TRÔI theo mỗi lần CI deploy ⇒ chỗ giữ tạo trước lần deploy gần nhất không bao giờ
+      # được consume. ⚠ KHÔNG dùng OrphanReconcile__ConsumeFromUtc cho việc này — đó là cutover PONR1.
+      - OrphanReconcile__ScoredConsumeFromUtc=${ORPHAN_SCORED_CONSUME_FROM_UTC:-2026-07-24T00:00:00Z}
       # BK24 — `InvoiceOverdueReconciler` đóng dấu hoá đơn postpaid Issued→Overdue quá hạn. Đó là cái
       # PHANH của BK17 (org có hoá đơn Overdue thì reserve → 402): không bật thì postpaid là "trả sau"
       # KHÔNG có phanh. Bật thật trên server 2026-07-23.
@@ -472,6 +476,7 @@ PAYOS_CANCEL_URL=https://<your-frontend-or-tunnel>/payment/cancel
 
 # ===== Feature flag (mặc định AN TOÀN — bật tường minh sau khi verify) =====
 FREE_TRIAL_CREDITS=3           # F7 — credit tặng khi TẠO ví User. Bỏ trống = 3, đặt 0 = tắt.
+ORPHAN_SCORED_CONSUME_FROM_UTC=2026-07-24T00:00:00Z   # R1 — mốc consume Scored (KHÔNG phải cutover PONR1)
 TIERING_ENABLED=false          # D28 — gói phân tầng
 TIERING_ALLOW_UNLIMITED_PLANS=false
 CONTEXT7_API_KEY=...           # D27 — ingest corpus grounding
