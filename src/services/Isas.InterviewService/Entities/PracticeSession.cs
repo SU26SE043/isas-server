@@ -170,6 +170,16 @@ public class PracticeSession : IHasUpdatedAt
     //          clamp(expr × seed_completeness, 0, 100) (SessionScoringNotifier + ScoringPolicyService).
     public bool SkipPenalty { get; set; }
 
+    // Người luyện có bật ghi nhận mất tập trung cho buổi này không (coaching — xem FocusSignals).
+    // Ghim LÚC TẠO BUỔI, cùng mẫu AdaptiveEnabled/SkipPenalty/TimeLimitSec ngay trên: đổi lựa chọn
+    // sau đó KHÔNG hồi tố buổi đang chạy.
+    //
+    // false (default) = buổi B2B · buổi B2C người luyện không bật · buổi tạo trước cột này ⇒ hành vi
+    // y hệt trước khi có tính năng. ⚠ KHÔNG bật cho B2B ở đây: buổi thi có đường giám sát riêng
+    // (CampaignService.session_flags) phục vụ HR; hai đường ghi vào hai nơi cho cùng một buổi là
+    // cách chắc chắn nhất để hai con số lệch nhau mà không ai biết bên nào đúng.
+    public bool FocusTrackingEnabled { get; set; }
+
     // F2 — thời lượng cho MỖI câu của buổi này (giây), ứng viên chọn lúc tạo (60/120/240).
     // Vì sao lưu trên SESSION chứ không chỉ trên từng câu: câu THÍCH ỨNG được sinh SAU lúc tạo session
     // (AnswerService), lúc đó không còn đường nào biết ứng viên đã chọn gì nếu không đọc lại từ đây.

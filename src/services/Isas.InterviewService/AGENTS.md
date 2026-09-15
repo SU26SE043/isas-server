@@ -127,8 +127,10 @@ CvAnalysisResponse  🔜 {
 
 **`GET /sessions/{sessionId}/answers/{answerId}/audio`** — Stream audio câu trả lời của chính candidate; `AnswerResponse.audioUrl` trỏ tới route này. Không có audio/answer/session → **404**; session của người khác → **403**. Không trả SeaweedFS object key.
 
+**`POST /sessions/{sessionId}/focus-events`** — ✅ 2026-09-14 (coaching, BC-6 ngoại lệ). Ghi một tín hiệu mất tập trung. Body `{ signalType: "tab_switch"|"paste"|"focus_lost", note?: string }`. **204** kể cả khi không lưu gì (buổi tắt theo dõi / B2B / đã kết thúc / chạm trần 500 dòng — đều no-op, không lỗi). **400** tín hiệu ngoài whitelist · **403** không phải buổi của mình · **404** buổi không tồn tại.
+
 **`POST /sessions`** — Tạo session + sinh câu hỏi (gọi AI đồng bộ).
-- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE" }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc**.
+- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE", "focusTrackingEnabled": bool? }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc**. `focusTrackingEnabled` ✅ 2026-09-14: `null`/`false`/vắng = TẮT (hành vi cũ); `true` = ghim ghi nhận mất tập trung cho buổi này (coaching, không phải chống gian lận). ⚠ Fix 2026-09-15: response 201 nay trả đúng `focusTrackingEnabled`/`focusEvents:[]` khi bật (trước đó luôn báo tắt).
 - 🔜 *B2C:* trước khi gọi AI → **reserve 1 credit ví cá nhân**; hết → **402** (không tạo session).
 - Res **`201`** `PracticeSessionResponse` (`status="Ready"`, `questions` đã sinh):
 ```json
@@ -260,7 +262,18 @@ overall_score numeric(5,2)? 🔜 BC9 — điểm tổng 0–100, set khi `Scored
 answered_count int?         🔜 BC9 — số câu đã chấm lúc tính kết quả (snapshot)
 overall_comment text?       🔜 BC10 — nhận xét chung (AI sinh khi `Scored`, best-effort); null nếu chưa/AI lỗi/B2B
 scoring_scope_version int?  ✅ **Chấm theo phạm vi** (migration `AddScoringScopeAndQuestionTargets`) — con dấu thước đo. `null`=KHÔNG BIẾT (row có trước cột; ⚠ BK23: KHÔNG suy ra "khác phiên bản") · `1`=đã biết, chấm đủ rubric (B2B + buổi B2C không câu nào có nhãn) · `2`=đã biết, có ≥1 câu chấm trên tập HẸP HƠN (chỉ giá trị này chứng minh được "khác thước đo" cho BC15/F14/CAMP-10)
+focus_tracking_enabled bool ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c`) — NOT NULL DEFAULT false. Ghim lúc tạo buổi: người luyện B2C có bật ghi nhận mất tập trung không (coaching — BC-6 ngoại lệ, xem §Business rules). `false` = buổi B2B · B2C không bật · buổi cũ trước cột này
 ```
+
+### `practice_focus_events` — ✅ 2026-09-14 (coaching, KHÔNG phải chống gian lận — BC-6 ngoại lệ tường minh)
+```
+id           uuid          PK
+session_id   uuid          FK → practice_sessions (Cascade)
+signal_type  varchar(32)   CHECK IN ('tab_switch','paste','focus_lost') — whitelist ĐÓNG (không có camera_blocked/monitoring_gap, B2C không giám sát webcam)
+note         varchar(256)? tuỳ chọn, cắt ở C# (SQLite không ép varchar)
+occurred_at  timestamptz   server tự đóng dấu, KHÔNG nhận mốc từ client
+```
+> Chỉ B2C, chỉ khi `focus_tracking_enabled=true`. Người luyện tự bật, trình duyệt của chính họ báo, và **chỉ họ** đọc qua `GET /sessions/{id}` — không có dòng nào tới HR/admin. Buổi B2B đi đường riêng (`CampaignService.session_flags`, phục vụ HR).
 
 ### `practice_questions`
 ```

@@ -286,7 +286,8 @@ public class RoadmapLessonService : IRoadmapLessonService
     }
 
     public async Task<PracticeSessionResponse> StartLessonAsync(
-        Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default)
+        Guid candidateId, Guid roadmapId, Guid lessonId, bool focusTrackingEnabled = false,
+        CancellationToken ct = default)
     {
         var lesson = await LoadOwnedLessonAsync(candidateId, roadmapId, lessonId, ct);
 
@@ -299,7 +300,8 @@ public class RoadmapLessonService : IRoadmapLessonService
         if (lesson.Status == LessonStatus.Done)
             throw new LessonAlreadyStartedException("Lesson đã hoàn thành.", lesson.SessionId);
 
-        return await BeginSessionAsync(candidateId, lesson, LessonStatus.Theory, retry: false, ct);
+        return await BeginSessionAsync(
+            candidateId, lesson, LessonStatus.Theory, retry: false, focusTrackingEnabled, ct);
     }
 
     /// <summary>
@@ -316,7 +318,8 @@ public class RoadmapLessonService : IRoadmapLessonService
     /// nút bấm thành vô nghĩa. Khi bài đó xong lần nữa, BC15 tự đóng sổ lại với số MỚI.</para>
     /// </summary>
     public async Task<PracticeSessionResponse> RetryLessonAsync(
-        Guid candidateId, Guid roadmapId, Guid lessonId, CancellationToken ct = default)
+        Guid candidateId, Guid roadmapId, Guid lessonId, bool focusTrackingEnabled = false,
+        CancellationToken ct = default)
     {
         var lesson = await LoadOwnedLessonAsync(candidateId, roadmapId, lessonId, ct);
 
@@ -327,7 +330,8 @@ public class RoadmapLessonService : IRoadmapLessonService
             throw new LessonRetryNotAllowedException(
                 "Lesson đang luyện — tiếp tục buổi hiện tại.", lesson.SessionId);
 
-        return await BeginSessionAsync(candidateId, lesson, LessonStatus.Done, retry: true, ct);
+        return await BeginSessionAsync(
+            candidateId, lesson, LessonStatus.Done, retry: true, focusTrackingEnabled, ct);
     }
 
     /// <summary>
@@ -337,7 +341,8 @@ public class RoadmapLessonService : IRoadmapLessonService
     /// đây là thứ DUY NHẤT chặn hai request đồng thời mở hai buổi cho cùng một bài. Không được bỏ.
     /// </summary>
     private async Task<PracticeSessionResponse> BeginSessionAsync(
-        Guid candidateId, RoadmapLesson lesson, LessonStatus expectedStatus, bool retry, CancellationToken ct)
+        Guid candidateId, RoadmapLesson lesson, LessonStatus expectedStatus, bool retry,
+        bool focusTrackingEnabled, CancellationToken ct)
     {
         var roadmap = lesson.Milestone.Roadmap;
         var lessonId = lesson.Id;
@@ -413,7 +418,8 @@ public class RoadmapLessonService : IRoadmapLessonService
             CvId: null, JdId: null, roadmap.JobCategory,
             Language: roadmap.Language, Seniority: lessonSeniority.ToString(),
             QuestionCount: lessonQuestionCount,
-            AdaptiveEnabled: _roadmap.LessonAdaptiveEnabled);
+            AdaptiveEnabled: _roadmap.LessonAdaptiveEnabled,
+            FocusTrackingEnabled: focusTrackingEnabled);
 
         // MIS1-B5 — ≤4 lỗi ĐÚNG bài này cho /generate-questions (id/criterionName/question/
         // reasoning — 4 trường, KHÔNG answer/sampleAnswer nên project THẲNG trong query, đừng

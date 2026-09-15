@@ -45,6 +45,19 @@ public interface IPracticeService
     Task<PracticeSessionResponse?> GetSessionAsync(
         Guid candidateId, Guid sessionId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Ghi một tín hiệu mất tập trung cho buổi luyện B2C (coaching).
+    ///
+    /// Ném: KeyNotFoundException (buổi không tồn tại) · UnauthorizedAccessException (không phải
+    /// buổi của mình) · InvalidOperationException (tín hiệu ngoài whitelist).
+    ///
+    /// Mọi ca "không áp dụng" còn lại đều NO-OP chứ không ném — tắt theo dõi, buổi B2B, buổi đã
+    /// kết thúc, chạm trần. Cùng lập luận với RecordFlagAsync của B2B: đây là số liệu coaching,
+    /// biến một lựa chọn hợp lệ thành lỗi đỏ trong console của người luyện là sai tỉ lệ.
+    /// </summary>
+    Task RecordFocusEventAsync(
+        Guid candidateId, Guid sessionId, RecordFocusEventRequest request, CancellationToken ct = default);
+
     // Audio câu trả lời của chính candidate. Null = session/answer không tồn tại hoặc answer chưa có audio;
     // owner khác → UnauthorizedAccessException. Không trả SeaweedFS object key ra API.
     Task<AnswerAudioContent?> GetAnswerAudioAsync(
