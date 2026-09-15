@@ -5,6 +5,8 @@ using Isas.InterviewService.Enums;
 using Isas.InterviewService.Services;
 using Isas.InterviewService.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 
 namespace Isas.InterviewService.Tests;
 
@@ -142,6 +144,76 @@ public class FocusTrackingB2cTests
             Assert.True(p.HasDefaultValue);
             Assert.Equal(false, p.DefaultValue);
         }
+    }
+
+    // ── Response 201 lúc TẠO buổi phải nói đúng cờ vừa ghi ──────────────────
+
+    /// <summary>
+    /// Bug tái hiện ở L3 trên dev: <c>MapToResponse</c> nhận <c>focusTrackingEnabled</c> qua THAM SỐ
+    /// (mặc định <c>false</c>) thay vì đọc thẳng entity, và 3 call site đường tạo buổi không truyền
+    /// ⇒ response 201 luôn báo "tắt" dù DB đã ghi <c>true</c>. FE hydrate store từ chính response 201
+    /// này (không gọi lại GET) nên listener không bao giờ bật. Mock AI tối thiểu — cùng tinh thần
+    /// <see cref="PracticeServiceFactory.ForFocusTests"/> (mock no-op cho mọi phụ thuộc không liên
+    /// quan) nhưng phải cấu hình generator trả câu hỏi thật vì đường này ĐI QUA sinh câu hỏi.
+    /// </summary>
+    [Fact]
+    public async Task CreateSession_BatGhiNhanMatTapTrung_Response201TraDungCo()
+    {
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance);
+
+        var res = await svc.CreateSessionAsync(
+            candidateId,
+            new CreatePracticeSessionRequest(null, null, JobCategory.BE, FocusTrackingEnabled: true));
+
+        Assert.True(res.FocusTrackingEnabled);
+        Assert.NotNull(res.FocusEvents);
+        Assert.Empty(res.FocusEvents!);
+    }
+
+    [Fact]
+    public async Task CreateSession_KhongGuiCo_Response201TatVaFocusEventsNull()
+    {
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+
+        var gen = new Mock<IAiServiceQuestionGenerator>();
+        gen.Setup(g => g.GenerateQuestionsAsync(
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<GeneratedQuestion> { new() { Content = "Q1" } });
+
+        var reservation = new Mock<ICreditReservationClient>();
+        reservation
+            .Setup(r => r.ReserveAsync(It.IsAny<string>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CreditReservationResult(Guid.NewGuid(), 1));
+
+        var svc = new PracticeService(
+            t.Db, new Mock<IStorageService>().Object, gen.Object,
+            new Mock<ISessionScoringNotifier>().Object, reservation.Object,
+            NullLogger<PracticeService>.Instance);
+
+        var res = await svc.CreateSessionAsync(
+            candidateId, new CreatePracticeSessionRequest(null, null, JobCategory.BE));
+
+        Assert.False(res.FocusTrackingEnabled);
+        Assert.Null(res.FocusEvents);
     }
 
     // ── Endpoint nhận tín hiệu ──────────────────────────────────────────────

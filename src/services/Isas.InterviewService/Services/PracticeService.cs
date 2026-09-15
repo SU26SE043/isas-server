@@ -1173,7 +1173,7 @@ public class PracticeService : IPracticeService
 
         return MapToResponse(
             session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence,
-            focusTrackingEnabled: session.FocusTrackingEnabled, focusEvents: focusEvents);
+            focusEvents: focusEvents);
     }
 
     /// <summary>
@@ -2029,8 +2029,12 @@ public class PracticeService : IPracticeService
         // EVA1-B4 — mặc định che nội bộ chấm điểm cho session B2B. CHỈ đường HR/nội bộ
         // (GetSessionAnswersInternalAsync, X-Internal-Token, AI4) truyền `true` để xem đủ.
         bool revealCampaignScoring = false,
-        // Ghi nhận mất tập trung (coaching). Đặt CUỐI + có default: mọi call site cũ không đổi.
-        bool focusTrackingEnabled = false,
+        // Ghi nhận mất tập trung (coaching). `focusEvents` là tổng hợp ĐÃ GOM (GET) hoặc null
+        // (đường tạo buổi — chưa có sự kiện nào). KHÔNG có tham số bool riêng nữa: cờ bật/tắt
+        // đọc THẲNG từ entity `s.FocusTrackingEnabled` — trước đây tham số này có default `false`
+        // và 3 call site đường tạo buổi (create B2C/B2B + get-or-create) không truyền, nên response
+        // 201 luôn nói dối "tắt" dù DB đã ghi `true`; FE hydrate store từ chính response đó nên
+        // listener không bao giờ bật (INT-19-focus tắt câm).
         IReadOnlyList<FocusEventSummaryResponse>? focusEvents = null)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
@@ -2067,8 +2071,11 @@ public class PracticeService : IPracticeService
                 : null,
             s.Deadline,
             s.CampaignId,
-            FocusTrackingEnabled: focusTrackingEnabled,
-            FocusEvents: focusEvents);
+            FocusTrackingEnabled: s.FocusTrackingEnabled,
+            // null = buổi không theo dõi (khác [] = có theo dõi, chưa ghi nhận gì). Đường GET đã gom
+            // sẵn danh sách (rỗng hoặc có dữ liệu) khi bật; đường tạo buổi không truyền gì (buổi vừa
+            // sinh, chắc chắn 0 sự kiện) nên tự điền `[]` khi cờ bật, giữ `null` khi tắt.
+            FocusEvents: s.FocusTrackingEnabled ? focusEvents ?? Array.Empty<FocusEventSummaryResponse>() : null);
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.

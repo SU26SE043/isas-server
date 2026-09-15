@@ -130,7 +130,7 @@ CvAnalysisResponse  🔜 {
 **`POST /sessions/{sessionId}/focus-events`** — ✅ 2026-09-14 (coaching, BC-6 ngoại lệ). Ghi một tín hiệu mất tập trung. Body `{ signalType: "tab_switch"|"paste"|"focus_lost", note?: string }`. **204** kể cả khi không lưu gì (buổi tắt theo dõi / B2B / đã kết thúc / chạm trần 500 dòng — đều no-op, không lỗi). **400** tín hiệu ngoài whitelist · **403** không phải buổi của mình · **404** buổi không tồn tại.
 
 **`POST /sessions`** — Tạo session + sinh câu hỏi (gọi AI đồng bộ).
-- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE", "focusTrackingEnabled": bool? }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc**. `focusTrackingEnabled` ✅ 2026-09-14: `null`/`false`/vắng = TẮT (hành vi cũ); `true` = ghim ghi nhận mất tập trung cho buổi này (coaching, không phải chống gian lận).
+- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jobCategory": "BA"|"BE"|"FE", "focusTrackingEnabled": bool? }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc**. `focusTrackingEnabled` ✅ 2026-09-14: `null`/`false`/vắng = TẮT (hành vi cũ); `true` = ghim ghi nhận mất tập trung cho buổi này (coaching, không phải chống gian lận). ⚠ Fix 2026-09-15: response 201 nay trả đúng `focusTrackingEnabled`/`focusEvents:[]` khi bật (trước đó luôn báo tắt).
 - 🔜 *B2C:* trước khi gọi AI → **reserve 1 credit ví cá nhân**; hết → **402** (không tạo session).
 - Res **`201`** `PracticeSessionResponse` (`status="Ready"`, `questions` đã sinh):
 ```json
