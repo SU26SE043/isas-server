@@ -76,6 +76,95 @@ public class SessionAbandonSweeper : BackgroundService
         await ScanExpiredB2BAsync(ct);
         await ScanInactiveB2CAsync(ct);
         await ScanStuckScoringAsync(ct);
+        await ScanStuckGeneratingAsync(ct);
+    }
+
+    // Buổi kẹt `GeneratingQuestions` quá lâu (B2C — đã reserve credit, AI chưa trả câu hỏi). Vùng mù
+    // thứ hai sau `Scoring`: request bị huỷ giữa lúc sinh (client đóng tab / AI timeout) làm dòng
+    // `Status = Failed` không xuống DB (bản cũ ghi bằng `ct` đã cancel — xem PracticeService), tiến
+    // trình chết giữa chừng cũng vậy. Zombie đó không ai quét, OrphanReservationReconciler coi là
+    // in-flight nên chỗ giữ credit (nếu P1-2 chưa kịp hoàn) treo vĩnh viễn — đo prod 2026-09-15: 2 buổi.
+    //
+    // Chốt `Failed` + outbox SessionAbandoned(generation_failed) CÙNG transaction (mẫu BK12/DB2):
+    // Payment release idempotent (PAY-11) nên đã hoàn rồi thì no-op. Mốc `CreatedAt` đứng yên; mọi
+    // timeout gọi AI ≤ 180s nên trần 15' không quét nhầm buổi đang sinh thật.
+    private async Task ScanStuckGeneratingAsync(CancellationToken ct)
+    {
+        var stuckMinutes = _options.GenerationStuckMinutes;
+        if (stuckMinutes <= 0) return;   // 0 = tắt (giữ hành vi cũ: không quét)
+
+        List<ExpiredSession> stuck;
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<InterviewDbContext>();
+            var cutoff = DateTime.UtcNow.AddMinutes(-stuckMinutes);
+
+            stuck = await db.PracticeSessions
+                .Where(s => s.Status == SessionStatus.GeneratingQuestions && s.CreatedAt < cutoff)
+                .Select(s => new ExpiredSession(s.Id, s.CampaignId, s.CandidateId))
+                .ToListAsync(ct);
+        }
+
+        if (stuck.Count == 0) return;
+
+        _logger.LogWarning(
+            "Phát hiện {Count} buổi kẹt GeneratingQuestions > {Minutes} phút, chốt Failed + hoàn credit",
+            stuck.Count, stuckMinutes);
+
+        foreach (var s in stuck)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<InterviewDbContext>();
+            try
+            {
+                await FailStuckGeneratingAsync(db, s, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Chốt Failed buổi kẹt GeneratingQuestions {SessionId} thất bại", s.Id);
+            }
+        }
+    }
+
+    private async Task FailStuckGeneratingAsync(InterviewDbContext db, ExpiredSession s, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+
+        var failed = await DbRetry.RunAsync(db, async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+            // Guard WHERE status=GeneratingQuestions: request sinh câu hỏi vừa xong (Ready) hoặc vừa tự chốt
+            // Failed → 0 row → không đụng, không enqueue (tránh hoàn credit đôi / lật Ready thành Failed).
+            var updated = await db.PracticeSessions
+                .Where(x => x.Id == s.Id && x.Status == SessionStatus.GeneratingQuestions)
+                .ExecuteUpdateAsync(u => u
+                    .SetProperty(x => x.Status, SessionStatus.Failed)
+                    .SetProperty(x => x.UpdatedAt, now), ct);
+
+            if (updated == 0)
+            {
+                await tx.RollbackAsync(ct);
+                return false;
+            }
+
+            db.OutboxMessages.Add(OutboxMessage.ForAbandoned(new SessionAbandonedEvent
+            {
+                SessionId = s.Id,
+                CampaignId = s.CampaignId,
+                CandidateId = s.CandidateId,
+                Reason = "generation_failed",   // = BK12: Payment release bất kể cờ PONR1
+                AbandonedAt = now
+            }));
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return true;
+        });
+
+        if (failed)
+            _logger.LogWarning(
+                "Buổi {SessionId} kẹt GeneratingQuestions → chốt Failed + outbox SessionAbandoned(generation_failed)",
+                s.Id);
     }
 
     // Buổi ĐÃ NỘP nhưng kẹt `Scoring` quá lâu. Đây là vùng mù cũ: hai nhánh trên chỉ quét

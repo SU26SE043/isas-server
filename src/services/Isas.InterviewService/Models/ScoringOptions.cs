@@ -94,4 +94,14 @@ public class ScoringOptions
     // trong 20' đã phủ mọi trục trặc ngắn, và đường phục hồi thật cho lỗi tạm thời là retry ở worker,
     // không phải kéo dài đồng hồ chờ của người dùng.
     public int GiveUpAfterMinutes { get; set; } = 20;
+
+    // Trần cho buổi kẹt `GeneratingQuestions` (B2C: đã reserve credit, đang chờ AI sinh câu hỏi). Quá
+    // ngần này phút kể từ `created_at` mà vẫn chưa Ready/Failed → sweeper chốt `Failed` + outbox
+    // SessionAbandoned(generation_failed) để Payment hoàn credit (idempotent nếu P1-2 đã hoàn).
+    //
+    // Vì sao cần: trạng thái này KHÔNG sweeper nào quét, OrphanReservationReconciler coi là in-flight
+    // ⇒ một request bị huỷ giữa lúc sinh câu hỏi (hoặc tiến trình chết) để lại zombie vĩnh viễn —
+    // đo prod 2026-09-15: 2 buổi. Mốc đo là `created_at` (đứng yên). Mọi timeout AI ≤ 180s nên 15'
+    // không bao giờ quét nhầm buổi đang sinh. 0 = tắt (giữ hành vi cũ: không quét).
+    public int GenerationStuckMinutes { get; set; } = 15;
 }
