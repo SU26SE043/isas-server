@@ -30,6 +30,15 @@ PracticeSessionResponse {
   completedAt:  datetime?               // set khi submit
   questions:    QuestionResponse[]
   result:       SessionResultResponse?  // ✅ BC9 — chỉ khi status=Scored & campaign_id=null (B2C); null nếu chưa chấm xong
+  focusTrackingEnabled: bool             // ✅ 2026-09-14 — buổi này có ghi nhận mất tập trung không (ghim lúc tạo, BC-6 ngoại lệ). Mặc định false.
+  focusEvents:  FocusEventSummaryResponse[]? // ✅ tổng hợp theo LOẠI tín hiệu. null = buổi KHÔNG theo dõi; [] = có theo dõi, chưa ghi nhận gì (KHÁC NHAU — client không được gộp)
+}
+
+FocusEventSummaryResponse {  // ✅ 2026-09-14 — coaching, KHÔNG phải chống gian lận (xem BC-6)
+  signalType: enum(string)              // tab_switch·paste·focus_lost — CHỈ 3 giá trị này (không có camera_blocked/monitoring_gap — B2C không giám sát webcam)
+  count:      int
+  firstAt:    datetime
+  lastAt:     datetime
 }
 
 QuestionResponse {
@@ -51,6 +60,8 @@ AnswerResponse {
 
 **`GET /interview/practice/sessions/{sessionId}/answers/{answerId}/audio`** — Phát/tải audio câu trả lời của chính candidate. `AnswerResponse.audioUrl` trỏ tới route này; server xác minh chủ session từ JWT rồi stream audio, không lộ SeaweedFS object key. Không có audio/answer/session → **404**; session của người khác → **403**. **`Content-Type` theo định dạng thật của bản ghi** (suy từ đuôi object key — `audio/webm`, `audio/mp4`, …; đuôi lạ/dữ liệu cũ → `application/octet-stream`), không còn trả cứng `audio/webm` — BK27.
 - **`AnswerResponse.rejectReason`** (E11c, additive, đặt cuối): `"no_speech"` = VAD không thấy vùng tiếng nói (bài im lặng — CAMP-21; `status=Skipped` nhưng **có** audio) · `null` = không có lý do / dòng cũ không biết (BK23). Client dùng để phân biệt *im lặng* với *bỏ trống* (không audio) và *chốt sổ buổi kẹt* (`Skipped`, không lý do).
+
+**`POST /interview/practice/sessions/{sessionId}/focus-events`** ✅ (2026-09-14) — Ghi một tín hiệu mất tập trung của buổi luyện B2C (**coaching**, KHÔNG phải chống gian lận — BC-6 ngoại lệ). Body `{ signalType: string, note?: string }`. `signalType` chỉ nhận **`tab_switch` / `paste` / `focus_lost`** (whitelist tường minh, `camera_blocked`/`monitoring_gap` KHÔNG có — B2C không giám sát webcam). **204** kể cả khi không lưu gì — buổi tắt theo dõi / B2B (`campaign_id != null`) / đã kết thúc (Scored·SessionAbandoned·Scoring·Completed·Failed) / chạm trần 500 dòng/buổi đều là ca "không áp dụng", **no-op** chứ không lỗi. **400** tín hiệu ngoài whitelist · **403** không phải buổi của mình · **404** buổi không tồn tại. Mốc thời gian **server tự đóng dấu** (`OccurredAt`), không nhận từ client. `note` bị cắt còn tối đa 256 ký tự nếu dài hơn.
 
 AnswerScoreResponse {
   criterionId:  uuid
@@ -173,7 +184,7 @@ RoadmapReportResponse  ✅ {            // BC15 — interim (Active) tính read-
 ### Practice — `/api/v1/interview/practice/sessions` (JWT Candidate)
 
 **`POST /sessions`** — Tạo session + sinh câu hỏi (gọi AI đồng bộ).
-- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jdText": string?, "jobCategory": "BA"|"BE"|"FE", "seniority": "Fresher"|"Junior"|"Middle"|"Senior" }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc** (Đợt-1: DTO `[Required] JobCategory?` → **thiếu/null → 400**, guard TRƯỚC reserve nên không giữ credit oan; trước đây omit im lặng thành `BA`). `seniority` mặc định `Junior`, được snapshot trên session và dùng cho adaptive prompt.
+- Req `application/json`: `{ "cvId": uuid?, "jdId": uuid?, "jdText": string?, "jobCategory": "BA"|"BE"|"FE", "seniority": "Fresher"|"Junior"|"Middle"|"Senior", "focusTrackingEnabled": bool? }` — `cvId`/`jdId` optional (parse sẵn ở Files); `jobCategory` **bắt buộc** (Đợt-1: DTO `[Required] JobCategory?` → **thiếu/null → 400**, guard TRƯỚC reserve nên không giữ credit oan; trước đây omit im lặng thành `BA`). `seniority` mặc định `Junior`, được snapshot trên session và dùng cho adaptive prompt. `focusTrackingEnabled` ✅ (2026-09-14, coaching — BC-6 ngoại lệ): `null`/`false`/vắng = **TẮT** (hành vi cũ, mọi client cũ không đổi); `true` = ghim `focus_tracking_enabled=true` trên session, mở đường `POST …/focus-events` + tổng hợp ở `GET …/{sessionId}`.
 - ✅ **JD nhập TEXT** — `jdText` = JD dán thẳng, **không cần upload PDF**. Áp nguyên quy ước **C11** của B2B/Campaign: **text ưu tiên file** — gửi cả `jdText` lẫn `jdId` → dùng text, file **không parse** và `jd_id` **KHÔNG lưu** (row đừng "nhận vơ" file không góp gì vào câu hỏi). `jdText` rỗng/toàn khoảng trắng = coi như **không gửi** (rơi về `jdId`). **KHÔNG có cột `jd_text`** — JD text chỉ là input sinh câu hỏi, không ai đọc lại sau khi tạo (khác Campaign: `campaigns.jd_text` bị publish đọc lại nên buộc phải lưu).
 - ✅ **BC2** *B2C:* reserve **1 credit ví cá nhân** (owner=User, khoá idempotency = sessionId) **TRƯỚC** khi tạo row session; ví hết → **402** (KHÔNG tạo session — PAY-5). Reserve thành công rồi AI/DB lỗi → release best-effort (P1-2) + SessionAbandoned (BK12) hoàn credit.
 - Res **`201`** `PracticeSessionResponse` (`status="Ready"`, `questions` đã sinh):
@@ -312,7 +323,7 @@ Lỗi chung Files: **401** · **403** (không phải file của bạn) · **404*
 - ✅ **Single-flight theo `lessonId` (2026-09-15, `LessonTheorySingleFlight`, in-process):** mọi lời gọi đồng thời cho cùng bài (GET · prefetch FE · prewarm) chỉ tốn **một** lượt Gemini; bên tới sau chờ chung rồi đọc lại DB. Thân sinh chạy trên scope DI riêng với token `ApplicationStopping` — người mở bài đóng tab thì chỉ họ thoát, lượt sinh chung vẫn chạy tới cùng và LƯU. AI lỗi → mọi bên chờ nhận 502, bảng in-flight gỡ, lần sau sinh lại. Đo prod 2026-09-14: cùng bài bị sinh hai lần song song (~$0,025 vứt) — `ExecuteUpdate` điều kiện chỉ chặn ghi đè, không chặn tiêu tiền; nay vẫn giữ nó làm guard cuối xuyên instance (deploy 1 instance, 0 migration; scale-out → Redis lock như `TtsRedisCoordinator`). Thân dùng chung: `IRoadmapLessonService.GenerateAndPersistAsync(lessonId)` — **không kiểm chủ, không route ra controller**.
 - ✅ **Prewarm nền (`LessonPrewarm:Enabled`, mặc định BẬT; env `LESSON_PREWARM_ENABLED`):** `RoadmapService.CreateAsync` xếp hàng **bài đầu** ngay sau commit; `OpenLessonAsync` xếp hàng **bài kế** (cùng chặng `OrderNo` lớn hơn gần nhất, hết chặng → bài đầu chặng kế) nếu chưa có lý thuyết dùng được. `LessonPrewarmQueue` (Channel bounded + dedupe + bỏ bài đang in-flight; đầy → bỏ, không chặn) → `LessonTheoryPrewarmer` (BackgroundService, **tuần tự** = concurrency 1, mọi lượt qua single-flight; lỗi → warn + bỏ, KHÔNG retry, KHÔNG enqueue tiếp ⇒ không cascade; restart mất hàng đợi — GET sinh lại on-demand). Chi phí ≤ 1 bài sinh thừa/phiên duyệt. L3 dev 2026-09-15: bài 1 sinh sẵn trong lúc người học đọc lộ trình → mở **0,07s**; bài 2 prewarm 15,8s; mở bài 3 hai lần song song trong lúc prewarm → **1** lượt AI cho 3 bên. Log: `[⏱] lesson-prewarm lesson= generated= elapsed=`, `[⏱] lesson-theory-call outcome=ok|transport|http{code}|badjson elapsed=`.
 
-**`POST /roadmaps/{id}/lessons/{lessonId}/start`** — Bắt đầu luyện lesson.
+**`POST /roadmaps/{id}/lessons/{lessonId}/start`** — Bắt đầu luyện lesson. **`?focusTracking=true|false`** ✅ (2026-09-14, opt-in, mặc định `false`) — ghi nhận mất tập trung (coaching — BC-6 ngoại lệ) cho buổi sắp tạo; query param, **không** ở body (endpoint này vốn không có body). Cùng tham số áp cho **`POST …/retry`** (làm lại bài đã hoàn thành, cùng đường tạo session `BeginSessionAsync`).
 - Tạo **practice session B2C bình thường** (**reserve 1 credit** ví cá nhân như BC2 — hết → **402, KHÔNG tạo session**); set `roadmap_lessons.session_id`; lesson `Theory → Practicing`.
 - **Câu hỏi bám ĐÚNG BÀI, không chỉ bám chặng.** Ngoài `focusCriteria` (của **milestone**) nay còn gửi `lessonContext = { title, outline }` xuống `/generate-questions`: `title` = tên bài, `outline` = các đề mục `##` rút từ `theory_content` (trần 12 đề mục × 120 ký tự; `null` nếu người học chưa mở bài — lý thuyết sinh lazy). ⚠ Thiếu lớp này thì **mọi bài trong cùng một chặng cho AI đúng một đầu vào** (đo trên dev: 1 chặng/4 bài/cùng 3 tiêu chí; trung bình 2,8 bài/chặng trên 87 chặng) ⇒ bài "tối ưu truy vấn SQL" nhận câu hỏi về xử lý lỗi API. Chi tiết wire: [ai.md](ai.md) §generate-questions.
 - 🔴 **Buổi bài học KHÔNG gắn CV của lộ trình** (`CvId = null`) — cố ý. CV chọn MỘT LẦN lúc lập lộ trình từng được nhét vào prompt của MỌI bài; đo trên dev có 2 lộ trình `BE` dùng CV "Business Analyst" và câu hỏi sinh ra hỏi đúng nghề BA. Không chặn được bằng cách kiểm nghề: `file_records` **không có cột nghề nào**. Theo đúng tiền lệ đã đo của `RoadmapService.CreateAsync` (đã gỡ CV khỏi prompt sinh lộ trình). `roadmaps.cv_id` **vẫn giữ** (provenance + kiểm quyền lúc tạo). **Đánh đổi:** buổi bài học mất báo cáo đối chiếu CV↔câu trả lời (BC8, cần `session.cv_id`) — trên dev chỉ 1/17 buổi hội đủ điều kiện. Buổi luyện **tự do** không đổi (ở đó người dùng chọn CV cho đúng buổi đó).
@@ -420,8 +431,20 @@ answered_count int?         ✅ BC9 — số câu đã chấm lúc tính kết q
 overall_comment text?       ✅ BC10 (migration `AddSessionOverallComment`) — nhận xét chung, AI `/summarize-session` sinh trong `SessionScoringNotifier` khi B2C `Scored` (best-effort, sau BC9); null nếu AI lỗi/timeout/rỗng / criteria rỗng / B2B
 scoring_scope_version int?  ✅ **Chấm theo phạm vi** (migration `AddScoringScopeAndQuestionTargets`) — con dấu thước đo: điểm buổi này tính trên TOÀN BỘ rubric hay trên tập tiêu chí riêng từng câu. `null`=KHÔNG BIẾT (row có trước cột) · `1`=đã biết, chấm đủ rubric · `2`=đã biết, có ≥1 câu chấm trên tập HẸP HƠN. Xem §Chấm theo PHẠM VI câu hỏi
 skip_penalty  bool          ✅ **RNK1 · HĐ-2 / CAMP-21** (migration `AddSessionSkipPenaltyRnk1`) — NOT NULL DEFAULT false. Ghim luật "câu HR khai mà ứng viên bỏ trống tính 0 điểm" của buổi B2B: `true` ⇒ điểm tổng = `clamp(expr × seed_completeness, 0, 100)`. Nhận từ `CreateCampaignSessionInternalRequest.skipPenalty` (= `campaigns.skip_penalty`); B2C + campaign trước RNK1 = false
+focus_tracking_enabled bool ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c`) — NOT NULL DEFAULT false. Ghim lúc tạo buổi (cùng mẫu `adaptive_enabled`/`skip_penalty` ngay trên): người luyện B2C có bật ghi nhận mất tập trung không (coaching — BC-6 ngoại lệ). `false` = buổi B2B · B2C không bật · buổi cũ trước cột này
                             ⚠ cột `settlement_published_at` (Đợt-3b) đã **DROP** ở ✅ **DB2** (migration `AddOutboxMessages`) — thay bằng bảng `outbox_messages` (Transactional Outbox, xem dưới)
 ```
+
+### `practice_focus_events` — ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c`, coaching, BC-6 ngoại lệ)
+```
+id           uuid          PK
+session_id   uuid          FK → practice_sessions (Cascade) — xoá buổi là xoá sạch dấu vết
+signal_type  varchar(32)   CHECK IN ('tab_switch','paste','focus_lost') — whitelist ĐÓNG, KHÔNG có camera_blocked/monitoring_gap (B2C không giám sát webcam)
+note         varchar(256)? chi tiết ngắn client gửi kèm, cắt còn 256 ký tự ở tầng C# (SQLite không ép varchar)
+occurred_at  timestamptz   server tự đóng dấu khi nhận — KHÔNG nhận mốc thời gian từ client
+                           index (session_id, signal_type) — hình truy vấn duy nhất: gom theo buổi+loại cho GET /sessions/{id}
+```
+> Chỉ B2C (`campaign_id IS NULL` trên session) và chỉ khi buổi bật `focus_tracking_enabled`. Buổi B2B đi đường riêng ở CampaignService (`session_flags`, phục vụ HR) — hai bảng CỐ Ý tách rời: đối tượng đọc khác nhau (chính người luyện vs HR), và `session_flags.campaign_id` NOT NULL + FK không chứa nổi buổi không có campaign. Trần **500 dòng/buổi** (client lỗi/vòng lặp gửi liên tục không bơm được vô hạn) — chạm trần → no-op, vẫn `204`.
 
 ### `outbox_messages` — ✅ DB2 (Transactional Outbox, migration `AddOutboxMessages`)
 ```

@@ -201,6 +201,39 @@ public class PracticeController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Ghi một tín hiệu mất tập trung của buổi luyện (coaching — xem FocusSignals).
+    /// 204 kể cả khi không lưu gì (buổi tắt theo dõi / B2B / đã kết thúc / chạm trần): đó là các ca
+    /// "không áp dụng", không phải lỗi của client.
+    /// </summary>
+    [HttpPost("{sessionId:guid}/focus-events")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> RecordFocusEvent(
+        Guid sessionId, [FromBody] RecordFocusEventRequest request, CancellationToken ct)
+    {
+        try
+        {
+            await _practiceService.RecordFocusEventAsync(GetCandidateId(), sessionId, request, ct);
+            return NoContent();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { error = ex.Message });
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // 403 (không phải 404) — khớp mẫu GetSession/GetAnswerAudio ngay trong controller này.
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     /// <summary>Phát hoặc tải bản ghi âm câu trả lời của chính candidate.</summary>
     [HttpGet("{sessionId:guid}/answers/{answerId:guid}/audio")]
     // Content-Type thật phụ thuộc định dạng ứng viên đã thu (webm trên Chrome, m4a trên iPhone…) nên khai đủ

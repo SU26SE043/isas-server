@@ -234,14 +234,15 @@ public class RoadmapsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status502BadGateway)]
-    public async Task<IActionResult> StartLesson(Guid id, Guid lessonId, CancellationToken ct)
+    public async Task<IActionResult> StartLesson(
+        Guid id, Guid lessonId, CancellationToken ct, [FromQuery] bool focusTracking = false)
     {
         if (!TryGetCandidateId(out var candidateId))
             return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
 
         try
         {
-            var result = await _lessonService.StartLessonAsync(candidateId, id, lessonId, ct);
+            var result = await _lessonService.StartLessonAsync(candidateId, id, lessonId, focusTracking, ct);
             return Created($"/api/practice/sessions/{result.Id}", result);
         }
         catch (KeyNotFoundException ex)
@@ -298,14 +299,15 @@ public class RoadmapsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status502BadGateway)]
-    public async Task<IActionResult> RetryLesson(Guid id, Guid lessonId, CancellationToken ct)
+    public async Task<IActionResult> RetryLesson(
+        Guid id, Guid lessonId, CancellationToken ct, [FromQuery] bool focusTracking = false)
     {
         if (!TryGetCandidateId(out var candidateId))
             return Unauthorized(new { error = "Không xác định được danh tính người dùng." });
 
         try
         {
-            var result = await _lessonService.RetryLessonAsync(candidateId, id, lessonId, ct);
+            var result = await _lessonService.RetryLessonAsync(candidateId, id, lessonId, focusTracking, ct);
             return Ok(result);
         }
         catch (KeyNotFoundException ex)

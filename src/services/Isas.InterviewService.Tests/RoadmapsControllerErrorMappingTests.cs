@@ -48,7 +48,7 @@ public class RoadmapsControllerErrorMappingTests
         var lessonId = Guid.NewGuid();
         var lessonService = new Mock<IRoadmapLessonService>();
         lessonService
-            .Setup(s => s.StartLessonAsync(candidate, roadmapId, lessonId, It.IsAny<CancellationToken>()))
+            .Setup(s => s.StartLessonAsync(candidate, roadmapId, lessonId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-questions trả 503"));
         var controller = Build(lessonService, candidate);
 
@@ -67,7 +67,7 @@ public class RoadmapsControllerErrorMappingTests
         var lessonId = Guid.NewGuid();
         var lessonService = new Mock<IRoadmapLessonService>();
         lessonService
-            .Setup(s => s.RetryLessonAsync(candidate, roadmapId, lessonId, It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetryLessonAsync(candidate, roadmapId, lessonId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new AiServiceException("AIService /generate-questions timeout"));
         var controller = Build(lessonService, candidate);
 
@@ -87,7 +87,7 @@ public class RoadmapsControllerErrorMappingTests
         var lessonId = Guid.NewGuid();
         var lessonService = new Mock<IRoadmapLessonService>();
         lessonService
-            .Setup(s => s.StartLessonAsync(candidate, roadmapId, lessonId, It.IsAny<CancellationToken>()))
+            .Setup(s => s.StartLessonAsync(candidate, roadmapId, lessonId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("AIService không trả về câu hỏi nào"));
         var controller = Build(lessonService, candidate);
 
@@ -104,7 +104,7 @@ public class RoadmapsControllerErrorMappingTests
         var lessonId = Guid.NewGuid();
         var lessonService = new Mock<IRoadmapLessonService>();
         lessonService
-            .Setup(s => s.RetryLessonAsync(candidate, roadmapId, lessonId, It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetryLessonAsync(candidate, roadmapId, lessonId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("AIService không trả về câu hỏi nào"));
         var controller = Build(lessonService, candidate);
 
@@ -123,7 +123,7 @@ public class RoadmapsControllerErrorMappingTests
         var lessonId = Guid.NewGuid();
         var lessonService = new Mock<IRoadmapLessonService>();
         lessonService
-            .Setup(s => s.StartLessonAsync(candidate, roadmapId, lessonId, It.IsAny<CancellationToken>()))
+            .Setup(s => s.StartLessonAsync(candidate, roadmapId, lessonId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InsufficientCreditException("Không đủ credit"));
         var controller = Build(lessonService, candidate);
 
@@ -141,7 +141,7 @@ public class RoadmapsControllerErrorMappingTests
         var lessonId = Guid.NewGuid();
         var lessonService = new Mock<IRoadmapLessonService>();
         lessonService
-            .Setup(s => s.RetryLessonAsync(candidate, roadmapId, lessonId, It.IsAny<CancellationToken>()))
+            .Setup(s => s.RetryLessonAsync(candidate, roadmapId, lessonId, It.IsAny<bool>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InsufficientCreditException("Không đủ credit"));
         var controller = Build(lessonService, candidate);
 

@@ -178,6 +178,13 @@ public class PracticeService : IPracticeService
             defaultQuestionCount, presets, preview, selectableMinDeep, selectableMaxDeep);
     }
 
+    /// <summary>
+    /// Một nguồn tính DUY NHẤT cho "buổi này có ghi nhận mất tập trung không", dùng chung cho cả
+    /// ba đường tạo buổi B2C. `null` (client cũ) và `false` (từ chối tường minh) đều ra TẮT —
+    /// mặc định phải là tắt để buổi đang chạy và client cũ giữ nguyên hành vi từng byte.
+    /// </summary>
+    public static bool ResolveFocusTracking(bool? requested) => requested ?? false;
+
     // Lõi dùng chung cho CreateSessionAsync (sessionId ngẫu nhiên, không focus) và
     // CreateLessonSessionAsync (sessionId caller cấp + focusCriteria roadmap lesson).
     private async Task<PracticeSessionResponse> CreateSessionInternalAsync(
@@ -317,6 +324,8 @@ public class PracticeService : IPracticeService
                 B2CRubricOwnerId = b2cRubricOwnerId,
                 B2CRubricVersion = b2cRubricVersion,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
+                // Ghi nhận mất tập trung — ghim lựa chọn của người luyện; đổi sau KHÔNG hồi tố buổi này.
+                FocusTrackingEnabled = ResolveFocusTracking(request.FocusTrackingEnabled),
                 // Phỏng vấn THÍCH ỨNG (B2C): đóng dấu toggle/trần từ cấu hình. Tắt → luồng batch tĩnh cũ.
                 AdaptiveEnabled = adaptiveOn,
                 // F2b — adaptive BẬT: trần tổng số câu lấy theo lựa chọn của ứng viên (không chọn →
@@ -1147,7 +1156,84 @@ public class PracticeService : IPracticeService
                 x.EvidenceFound, x.MissingEvidence, x.DeepCount, x.UpdatedAt))
             .ToListAsync(ct);
 
-        return MapToResponse(session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence);
+        // Gom ở SQL, KHÔNG nạp từng dòng về rồi gom trong RAM: một buổi có thể tới 500 dòng và
+        // đường này là đường đọc nóng (mở màn kết quả).
+        // null = buổi không theo dõi (khác hẳn [] = có theo dõi, không ghi nhận gì).
+        List<FocusEventSummaryResponse>? focusEvents = null;
+        if (session.FocusTrackingEnabled)
+        {
+            focusEvents = await _db.PracticeFocusEvents
+                .AsNoTracking()
+                .Where(e => e.SessionId == session.Id)
+                .GroupBy(e => e.SignalType)
+                .Select(g => new FocusEventSummaryResponse(
+                    g.Key, g.Count(), g.Min(e => e.OccurredAt), g.Max(e => e.OccurredAt)))
+                .ToListAsync(ct);
+        }
+
+        return MapToResponse(
+            session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence,
+            focusTrackingEnabled: session.FocusTrackingEnabled, focusEvents: focusEvents);
+    }
+
+    /// <summary>
+    /// Ghi một tín hiệu mất tập trung cho buổi luyện B2C (coaching).
+    ///
+    /// Ném: KeyNotFoundException (buổi không tồn tại) · UnauthorizedAccessException (không phải
+    /// buổi của mình) · InvalidOperationException (tín hiệu ngoài whitelist).
+    ///
+    /// Mọi ca "không áp dụng" còn lại đều NO-OP chứ không ném — tắt theo dõi, buổi B2B, buổi đã
+    /// kết thúc, chạm trần. Cùng lập luận với RecordFlagAsync của B2B: đây là số liệu coaching,
+    /// biến một lựa chọn hợp lệ thành lỗi đỏ trong console của người luyện là sai tỉ lệ.
+    /// </summary>
+    public async Task RecordFocusEventAsync(
+        Guid candidateId, Guid sessionId, RecordFocusEventRequest request, CancellationToken ct = default)
+    {
+        var signalType = request.SignalType?.Trim().ToLowerInvariant();
+
+        var session = await _db.PracticeSessions
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
+            ?? throw new KeyNotFoundException("Session không tồn tại");
+
+        if (session.CandidateId != candidateId)
+            throw new UnauthorizedAccessException("Không phải buổi của bạn");
+
+        if (!FocusSignals.IsAllowed(signalType))
+            throw new InvalidOperationException($"signalType không hợp lệ: '{request.SignalType}'.");
+
+        // Buổi B2B có đường giám sát riêng (CampaignService.session_flags) phục vụ HR.
+        if (session.CampaignId is not null) return;
+
+        // Người luyện không bật ⇒ không quan sát. No-op, không phải lỗi.
+        if (!session.FocusTrackingEnabled) return;
+
+        // Buổi đã đóng sổ ⇒ số liệu coaching đã chốt; nhận thêm chỉ làm bẩn màn kết quả.
+        // ⚠ Đánh đổi đã biết: tín hiệu gửi trễ (mạng chậm / client retry) sau lúc nộp bài sẽ MẤT.
+        // Chấp nhận có chủ đích — bù lại không phải định nghĩa một cửa sổ ân hạn mà không ai đo được.
+        if (session.Status is SessionStatus.Scored or SessionStatus.SessionAbandoned
+            or SessionStatus.Scoring or SessionStatus.Completed or SessionStatus.Failed) return;
+
+        var total = await _db.PracticeFocusEvents.CountAsync(e => e.SessionId == sessionId, ct);
+        if (total >= FocusSignals.MaxEventsPerSession)
+        {
+            _logger.LogDebug(
+                "Bỏ qua tín hiệu tập trung '{Signal}' (buổi {SessionId}): chạm trần {Max} dòng.",
+                signalType, sessionId, FocusSignals.MaxEventsPerSession);
+            return;
+        }
+
+        var note = string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim();
+        // Cắt ở C# vì SQLite không ép varchar(256) — không cắt thì test xanh mà Postgres nổ.
+        if (note is { Length: > 256 }) note = note[..256];
+
+        _db.PracticeFocusEvents.Add(new PracticeFocusEvent
+        {
+            SessionId = sessionId,
+            SignalType = signalType!,
+            Note = note,
+            OccurredAt = DateTime.UtcNow
+        });
+        await _db.SaveChangesAsync(ct);
     }
 
     // ── HISTORY ───────────────────────────────────────────────────────────
@@ -1942,7 +2028,10 @@ public class PracticeService : IPracticeService
         IReadOnlyList<CriterionEvidenceResponse>? criterionEvidence = null,
         // EVA1-B4 — mặc định che nội bộ chấm điểm cho session B2B. CHỈ đường HR/nội bộ
         // (GetSessionAnswersInternalAsync, X-Internal-Token, AI4) truyền `true` để xem đủ.
-        bool revealCampaignScoring = false)
+        bool revealCampaignScoring = false,
+        // Ghi nhận mất tập trung (coaching). Đặt CUỐI + có default: mọi call site cũ không đổi.
+        bool focusTrackingEnabled = false,
+        IReadOnlyList<FocusEventSummaryResponse>? focusEvents = null)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
 
@@ -1977,7 +2066,9 @@ public class PracticeService : IPracticeService
                     .ToList()
                 : null,
             s.Deadline,
-            s.CampaignId);
+            s.CampaignId,
+            FocusTrackingEnabled: focusTrackingEnabled,
+            FocusEvents: focusEvents);
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.
