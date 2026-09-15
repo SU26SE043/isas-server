@@ -76,21 +76,67 @@ namespace Isas.PaymentService.Services
                     : new OrderStatusResult(applied.PayosOrderCode, applied.Status, applied.PaidAt);
             }
 
-            // PayOS ≠ Paid: chưa trả xong → giữ Pending. Lưu bằng chứng payload (append-only) nếu có để
-            // đối soát về sau — soi gương status PayOS, KHÔNG tự quyết orders.status (nguồn chân lý là order).
+            // PayOS ≠ Paid: lưu bằng chứng payload (append-only) để đối soát — nhưng CHỈ khi trạng thái PayOS
+            // ĐỔI so với dòng bằng chứng cuối của đơn. FE poll 2s/lần tới 45 lần; trước bản này mỗi lượt poll
+            // là một dòng `pending` y hệt nhau — đo prod: 404/427 dòng của bảng bằng-chứng-đối-soát là rác
+            // poll, một đơn 122 dòng. Bằng chứng có giá trị là CHUYỂN TIẾP (pending→underpaid…), không phải
+            // "vẫn đang chờ" lặp lại.
+            var evidenceStatus = info.Status.ToString().ToLowerInvariant();
             if (!string.IsNullOrEmpty(info.RawPayload))
             {
-                _db.PaymentTransactions.Add(new PaymentTransaction
+                var lastStatus = await _db.PaymentTransactions
+                    .AsNoTracking()
+                    .Where(t => t.OrderId == order.Id)
+                    .OrderByDescending(t => t.CreatedAt)
+                    .Select(t => t.Status)
+                    .FirstOrDefaultAsync(ct);
+
+                if (!string.Equals(lastStatus, evidenceStatus, StringComparison.Ordinal))
                 {
-                    Id = Guid.NewGuid(),
-                    OrderId = order.Id,
-                    Gateway = "payos",
-                    GatewayTxnId = info.GatewayTxnId,
-                    Status = info.Status.ToString().ToLowerInvariant(),
-                    RawWebhookPayload = info.RawPayload,
-                    CreatedAt = DateTime.UtcNow
-                });
-                await _db.SaveChangesAsync(ct);
+                    _db.PaymentTransactions.Add(new PaymentTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        Gateway = "payos",
+                        GatewayTxnId = info.GatewayTxnId,
+                        Status = evidenceStatus,
+                        RawWebhookPayload = info.RawPayload,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                    await _db.SaveChangesAsync(ct);
+                }
+            }
+
+            // PayOS `Cancelled` = link đã bị huỷ (user bấm Huỷ trên trang PayOS / merchant huỷ) — link chết,
+            // PayOS KHÔNG còn nhận tiền cho nó ⇒ đóng đơn `Cancelled` NGAY (PAY-10: user chủ động huỷ), thay vì
+            // để Pending tới lúc OrderExpiryReconciler quét (~45'). Trước bản này FE nhận Pending mãi nên poll
+            // hết 90s rồi mới báo "thất bại", mỗi lượt poll = 1 call PayOS.
+            // CHỈ Cancelled: Expired/Failed/Processing/Pending phía PayOS vẫn để sweeper xử sau ân hạn — ở đó
+            // còn phải hỏi lại PayOS trước khi đóng (đóng mù là mất tiền thật, xem OrderExpiryReconciler).
+            // Guard WHERE status=Pending: webhook Paid vừa lật thì 0 row → không ghi đè Paid (bất biến terminal).
+            if (info.Status == PayOsPaymentStatus.Cancelled)
+            {
+                var closed = await _db.Orders
+                    .Where(o => o.Id == order.Id && o.Status == OrderStatus.Pending)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(o => o.Status, OrderStatus.Cancelled)
+                        // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
+                        .SetProperty(o => o.UpdatedAt, _ => DateTime.UtcNow), ct);
+
+                if (closed == 1)
+                {
+                    _logger.LogInformation(
+                        "Đơn orderCode={OrderCode}: PayOS báo link Cancelled → đóng Cancelled tại poll.",
+                        order.PayosOrderCode);
+                    return new OrderStatusResult(order.PayosOrderCode, OrderStatus.Cancelled, null);
+                }
+
+                // 0 row = luồng khác đã chốt (webhook Paid / sweeper) → trả trạng thái hiện tại.
+                var current = await _db.Orders.AsNoTracking()
+                    .Where(o => o.Id == order.Id)
+                    .Select(o => new { o.Status, o.PaidAt })
+                    .FirstAsync(ct);
+                return new OrderStatusResult(order.PayosOrderCode, current.Status, current.PaidAt);
             }
 
             return new OrderStatusResult(order.PayosOrderCode, order.Status, order.PaidAt);
