@@ -19,5 +19,10 @@ public class FileRecordConfiguration : IEntityTypeConfiguration<FileRecord>
     {
         e.HasIndex(x => x.UserId)
             .HasDatabaseName("ix_file_records_user_id");
+
+        // Soft-delete: `deleted_at` NULL = còn sống. KHÔNG dùng HasQueryFilter toàn cục — buổi luyện đang
+        // chạy dở đọc CV/JD theo session.cv_id (AnswerService) phải vẫn thấy file đã xoá; lọc ở đúng các
+        // đường CỦA NGƯỜI DÙNG trong StorageService (list/get/download/parsed-text/dùng cho buổi mới).
+        e.Property(x => x.DeletedAt).HasColumnType("timestamp with time zone");
     }
 }

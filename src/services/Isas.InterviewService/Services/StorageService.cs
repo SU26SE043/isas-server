@@ -108,14 +108,24 @@ public class StorageService : IStorageService
         return fileRecord;
     }
 
+    /// <summary>
+    /// Metadata cho mọi đường NGƯỜI DÙNG (GET/download/parsed-text/PUT + kiểm cvId/jdId cho buổi/roadmap/
+    /// phân tích MỚI): file đã soft-delete ⇒ null, y như không tồn tại. Đường xoá dùng
+    /// <paramref name="includeDeleted"/> = true để xoá lần hai vẫn 204 (idempotent) thay vì 404.
+    /// </summary>
     public async Task<FileRecord?> GetMetadata(Guid fileId, CancellationToken ct = default)
+        => await GetMetadata(fileId, includeDeleted: false, ct);
+
+    public async Task<FileRecord?> GetMetadata(Guid fileId, bool includeDeleted, CancellationToken ct = default)
     {
-        return await _db.FileRecords.FirstOrDefaultAsync(f => f.Id == fileId, ct);
+        var file = await _db.FileRecords.FirstOrDefaultAsync(f => f.Id == fileId, ct);
+        if (file is null) return null;
+        return includeDeleted || file.DeletedAt is null ? file : null;
     }
 
     public async Task<string> GetParseTextAsync(Guid fileId, CancellationToken ct = default)
     {
-        var file = await _db.FileRecords.FirstOrDefaultAsync(f => f.Id == fileId, ct);
+        var file = await _db.FileRecords.FirstOrDefaultAsync(f => f.Id == fileId && f.DeletedAt == null, ct);
         return file?.ParsedText ?? string.Empty;
     }
 
@@ -130,8 +140,10 @@ public class StorageService : IStorageService
     /// </summary>
     public async Task<string> GetOwnedParsedTextAsync(Guid fileId, Guid ownerId, CancellationToken ct = default)
     {
+        // File đã soft-delete cũng trả rỗng: không được dùng cho BUỔI MỚI (buổi đang chạy đọc theo
+        // session.cv_id ở AnswerService, không qua đây).
         var file = await _db.FileRecords
-            .FirstOrDefaultAsync(f => f.Id == fileId && f.UserId == ownerId, ct);
+            .FirstOrDefaultAsync(f => f.Id == fileId && f.UserId == ownerId && f.DeletedAt == null, ct);
         return file?.ParsedText ?? string.Empty;
     }
 
@@ -156,7 +168,7 @@ public class StorageService : IStorageService
         var take = KeysetPaging.ClampLimit(limit);
         var cur = KeysetCursor.Decode(cursor);
 
-        var query = _db.FileRecords.AsNoTracking().Where(f => f.UserId == userId);
+        var query = _db.FileRecords.AsNoTracking().Where(f => f.UserId == userId && f.DeletedAt == null);
 
         if (!string.IsNullOrWhiteSpace(fileType))
         {
@@ -214,6 +226,19 @@ public class StorageService : IStorageService
         return fileRecord;
     }
 
+    /// <summary>
+    /// Xoá file = SOFT-DELETE: đóng dấu <c>deleted_at</c> TRƯỚC (DB), rồi mới xoá object S3 best-effort.
+    ///
+    /// Vì sao thứ tự này: bản cũ xoá S3 trước rồi <c>Remove</c> row; row bị 3 FK RESTRICT
+    /// (practice_sessions.cv_id/jd_id, roadmaps.cv_id) chặn ⇒ DB từ chối SAU KHI file đã mất ⇒ "zombie"
+    /// (đo prod 2026-09-15: 9/49 row — tải 500, xoá 500, không lối thoát). Đóng dấu trước thì dù S3
+    /// lỗi, row vẫn ẩn khỏi người dùng và object thừa là việc của sweep BK29 (chiều an toàn BK25:
+    /// object mồ côi rẻ hơn dòng trỏ vào object không có).
+    ///
+    /// Buổi luyện / roadmap / cv_analyses đang tham chiếu GIỮ NGUYÊN — lịch sử điểm và BC8 không đổi,
+    /// buổi đang chạy dở vẫn đọc được CV theo session.cv_id. Gọi lần hai (đã xoá) → true, không đụng gì.
+    /// Trả false chỉ khi row không tồn tại.
+    /// </summary>
     public async Task<bool> DeleteFileRecord(Guid fileId, CancellationToken ct = default)
     {
         var fileRecord = await _db.FileRecords.FirstOrDefaultAsync(f => f.Id == fileId, ct);
@@ -221,15 +246,30 @@ public class StorageService : IStorageService
         {
             return false;
         }
-
-        await _s3.DeleteObjectAsync(new DeleteObjectRequest
+        if (fileRecord.DeletedAt is not null)
         {
-            BucketName = fileRecord.StorageBucket,
-            Key = fileRecord.StoragePath
-        }, ct);
+            return true;   // idempotent — đã xoá từ trước
+        }
 
-        _db.FileRecords.Remove(fileRecord);
+        var now = DateTime.UtcNow;
+        fileRecord.DeletedAt = now;
+        fileRecord.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
+
+        try
+        {
+            await _s3.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = fileRecord.StorageBucket,
+                Key = fileRecord.StoragePath
+            }, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Đã đóng dấu DB ⇒ người dùng không còn thấy file; object thừa dọn sau (BK29), không ném về 500.
+            _logger.LogWarning(ex, "Soft-delete file {FileId}: DB đã đóng dấu nhưng xoá object S3 {Key} thất bại — để sweep dọn",
+                fileId, fileRecord.StoragePath);
+        }
         return true;
     }
 }
