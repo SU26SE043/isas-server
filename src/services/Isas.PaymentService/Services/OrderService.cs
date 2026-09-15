@@ -16,14 +16,16 @@ namespace Isas.PaymentService.Services
         private readonly PayOSClient _payos;
         private readonly IOptions<PayOSSettings> _settings;
         private readonly IOrderCodeGenerator _orderCodes;
+        private readonly IPayOsCancelClient _payosCancel;
 
         public OrderService(PaymentDbContext db, PayOSClient payos, IOptions<PayOSSettings> settings,
-            IOrderCodeGenerator orderCodes)
+            IOrderCodeGenerator orderCodes, IPayOsCancelClient payosCancel)
         {
             _db = db;
             _payos = payos;
             _settings = settings;
             _orderCodes = orderCodes;
+            _payosCancel = payosCancel;
         }
 
         public async Task<OrderResponse> CreateOrderAsync(OwnerType ownerType, Guid ownerId, CreateOrderRequest request, CancellationToken ct = default)
@@ -377,18 +379,45 @@ namespace Isas.PaymentService.Services
 
         public async Task CancelOrderAsync(Guid id, CancellationToken ct = default)
         {
-            var order = await _db.Orders.FindAsync(id, ct)
+            var order = await _db.Orders.AsNoTracking().FirstOrDefaultAsync(o => o.Id == id, ct)
                 ?? throw new KeyNotFoundException("Order not found.");
 
             if (order.Status != OrderStatus.Pending)
                 throw new InvalidOperationException($"Cannot cancel an order with status '{order.Status}'.");
 
-            await _payos.PaymentRequests.CancelAsync(order.PayosOrderCode, "Cancelled by user");
+            try
+            {
+                await _payosCancel.CancelPaymentLinkAsync(order.PayosOrderCode, "Cancelled by user", ct);
+            }
+            catch (PaymentGatewayException)
+            {
+                // PayOS từ chối huỷ. Lý do thường gặp nhất là link ĐÃ Paid — webhook có thể vừa chốt đơn
+                // trong lúc ta đang gọi PayOS. Hỏi lại DB: đơn đã rời Pending ⇒ 400 nêu đúng trạng thái
+                // (không phải 502 đổ lỗi cho cổng thanh toán); còn Pending thật ⇒ 502, đơn giữ nguyên.
+                var current = await _db.Orders.AsNoTracking()
+                    .Where(o => o.Id == id).Select(o => o.Status).FirstAsync(ct);
+                if (current != OrderStatus.Pending)
+                    throw new InvalidOperationException($"Cannot cancel an order with status '{current}'.");
+                throw;
+            }
 
             // PAY-10: user chủ động huỷ → Cancelled (KHÔNG phải Failed = thanh toán hỏng). Giữ đủ 4
             // trạng thái terminal để đối soát phân biệt được "user tự huỷ" với "cổng thanh toán lỗi".
-            order.Status = OrderStatus.Cancelled;
-            await _db.SaveChangesAsync(ct);
+            // Guard WHERE status=Pending (atomic): webhook Paid lật đơn giữa hai bước trên → 0 row → KHÔNG ghi
+            // đè Paid thành Cancelled (terminal bất biến). Bản cũ FindAsync+SaveChanges không có guard này.
+            var moved = await _db.Orders
+                .Where(o => o.Id == id && o.Status == OrderStatus.Pending)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(o => o.Status, OrderStatus.Cancelled)
+                    // DB14 — ExecuteUpdate bỏ qua SaveChanges override → stamp updated_at tường minh.
+                    .SetProperty(o => o.UpdatedAt, _ => DateTime.UtcNow), ct);
+
+            if (moved == 0)
+            {
+                var current = await _db.Orders.AsNoTracking()
+                    .Where(o => o.Id == id).Select(o => o.Status).FirstAsync(ct);
+                throw new InvalidOperationException($"Cannot cancel an order with status '{current}'.");
+            }
         }
     }
 }

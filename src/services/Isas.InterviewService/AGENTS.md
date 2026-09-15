@@ -419,6 +419,7 @@ GeneratingQuestions ──► Ready ──► InProgress ──► Scoring ─�
 - Đóng `Scored` khi đang `Scoring` **và** mọi answer ∈ {Scored, Skipped, Failed}.
 - `Completed` có trong enum nhưng **không dùng**.
 - **B2B — chống reservation treo:** session `InProgress` quá `expires_at`/time-limit → **auto-submit** (có ≥1 answer → đi `Scoring`→`Scored` → consume credit) hoặc **0 answer → `SessionAbandoned`** (release credit). **Resume**: mở lại token chỉ cho làm **các câu CHƯA nộp** (answer 1-per-question, câu đã nộp giữ nguyên).
+- ✅ **2026-09-15 — kẹt `GeneratingQuestions`:** lỗi sinh câu hỏi là huỷ request thì `Failed` ghi bằng `CancellationToken.None` (dùng `ct` đã cancel là zombie vĩnh viễn — đo prod 2 buổi); `SessionAbandonSweeper` quét `GeneratingQuestions` quá `Scoring:GenerationStuckMinutes` (mặc định 15, `0`=tắt) → `Failed` + outbox `SessionAbandoned(generation_failed)` (Payment release idempotent). Chi tiết `docs/services/interview.md` §Business rules.
 
 ### State machine — Answer
 ```

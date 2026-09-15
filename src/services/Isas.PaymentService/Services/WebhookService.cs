@@ -15,23 +15,32 @@ namespace Isas.PaymentService.Services
         private readonly ICreditAccountService _accounts;
         private readonly ILogger<WebhookService>? _logger;
         private readonly ISubscriptionService? _subscriptions;
+        private readonly IPayOsQueryClient? _payos;
 
         // DB20 — logger inject OPTIONAL (mẫu AI4): ctor 2-tham-số đang được dùng ở nhiều site test;
         // thêm dependency bắt buộc chỉ để log sẽ phải sửa hết mà không đem lại giá trị nào.
         // F8 — subscription service cũng OPTIONAL (cùng lý do). Null + đơn thuê bao → đơn vẫn Paid + log
         // lỗi, KHÔNG cộng credit; cấu hình thật luôn có (Program.cs đăng ký).
+        // Đối chiếu số tiền — PayOS query client cũng OPTIONAL: null thì webhook thiếu tiền KHÔNG hỏi
+        // lại được PayOS ⇒ fail-closed (giữ Pending), chứ không phải fail-open.
         public WebhookService(PaymentDbContext db, ICreditAccountService accounts,
             ILogger<WebhookService>? logger = null,
-            ISubscriptionService? subscriptions = null)
+            ISubscriptionService? subscriptions = null,
+            IPayOsQueryClient? payos = null)
         {
             _db = db;
             _accounts = accounts;
             _logger = logger;
             _subscriptions = subscriptions;
+            _payos = payos;
         }
 
-        public async Task<WebhookApplyOutcome> ApplyPaidWebhookAsync(
+        public Task<WebhookApplyOutcome> ApplyPaidWebhookAsync(
             long payosOrderCode, string? gatewayTxnId, string rawPayload, CancellationToken ct = default)
+            => ApplyPaidWebhookAsync(payosOrderCode, amountPaidVnd: null, gatewayTxnId, rawPayload, ct);
+
+        public async Task<WebhookApplyOutcome> ApplyPaidWebhookAsync(
+            long payosOrderCode, long? amountPaidVnd, string? gatewayTxnId, string rawPayload, CancellationToken ct = default)
         {
             // Đọc đơn + gói (interview_credits). AsNoTracking: transition/cộng credit làm bằng ExecuteUpdate
             // (atomic, không đọc-rồi-ghi) nên không cần entity tracked.
@@ -56,6 +65,48 @@ namespace Isas.PaymentService.Services
                 });
                 await _db.SaveChangesAsync(ct);
                 return WebhookApplyOutcome.OrderNotFound;
+            }
+
+            // ĐỐI CHIẾU SỐ TIỀN — chỉ đường webhook mới có số này. `data.amount` là tiền của MỘT giao
+            // dịch chuyển vào, không phải tiền của link; link PayOS nhận trả nhiều lần (amountPaid /
+            // amountRemaining, trạng thái UNDERPAID mà OrderExpiryReconciler đã xử riêng). Trước bản này
+            // webhook `success=true` là lật Paid + cộng ĐỦ credit bất kể chuyển bao nhiêu.
+            //
+            // Thiếu tiền ⇒ KHÔNG kết luận vội: khách có thể chuyển 2 lần (lần 2 mang amount = phần còn
+            // lại, cũng < amount_vnd). Hỏi lại PayOS: link đã Paid ⇒ đủ tiền thật ⇒ áp. Chưa Paid / hỏi
+            // không được ⇒ giữ Pending + ghi bằng chứng `underpaid` (fail-closed). Đường poll (P3) và
+            // sweeper (OrderExpiryReconciler) vẫn cứu được về sau — cả hai đều hỏi PayOS trước khi áp.
+            //
+            // Chỉ so với đơn CÒN Pending: đơn terminal đằng nào cũng no-op ở guard WHERE bên dưới, và
+            // KHÔNG được ghi thêm bằng chứng vào đơn đã chốt.
+            if (amountPaidVnd is long paid && paid < order.AmountVnd && order.Status == OrderStatus.Pending)
+            {
+                var confirmedPaid = await IsLinkFullyPaidAsync(payosOrderCode, ct);
+                if (!confirmedPaid)
+                {
+                    _db.PaymentTransactions.Add(new PaymentTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        Gateway = "payos",
+                        GatewayTxnId = gatewayTxnId,
+                        Status = "underpaid",
+                        RawWebhookPayload = rawPayload,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                    await _db.SaveChangesAsync(ct);
+
+                    _logger?.LogWarning(
+                        "Webhook PayOS orderCode={OrderCode} báo amount={Paid} < amount_vnd={Expected} và PayOS chưa xác " +
+                        "nhận link đủ tiền → GIỮ Pending, KHÔNG cộng credit (bằng chứng underpaid đã ghi, cần đối soát).",
+                        payosOrderCode, paid, order.AmountVnd);
+                    return WebhookApplyOutcome.Underpaid;
+                }
+
+                _logger?.LogInformation(
+                    "Webhook PayOS orderCode={OrderCode} amount={Paid} < amount_vnd={Expected} nhưng PayOS xác nhận link " +
+                    "đã Paid (trả nhiều lần gộp đủ) → áp bình thường.",
+                    payosOrderCode, paid, order.AmountVnd);
             }
 
             // DB25b — bọc IExecutionStrategy vì Npgsql bật EnableRetryOnFailure: chiến lược retry
@@ -265,6 +316,27 @@ namespace Isas.PaymentService.Services
         /// sách kiểu cứng đã sai đúng một lần khi F7 thêm entity thứ hai — thêm một vòng lặp nữa chỉ là
         /// dựng lại cùng cái bẫy cho lần thứ ba.</para>
         /// </summary>
+        /// <summary>
+        /// Hỏi PayOS xem link đã đủ tiền chưa. KHÔNG có client (test/không cấu hình) hoặc PayOS lỗi
+        /// ⇒ <c>false</c> (fail-closed): "không hỏi được" KHÔNG bao giờ được hiểu là "đã đủ tiền".
+        /// </summary>
+        private async Task<bool> IsLinkFullyPaidAsync(long payosOrderCode, CancellationToken ct)
+        {
+            if (_payos is null) return false;
+            try
+            {
+                var info = await _payos.GetPaymentInfoAsync(payosOrderCode, ct);
+                return info.Status == PayOsPaymentStatus.Paid;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex,
+                    "Không hỏi được PayOS để xác nhận link orderCode={OrderCode} đủ tiền — coi như CHƯA đủ.",
+                    payosOrderCode);
+                return false;
+            }
+        }
+
         private async Task EnsureWalletExistsAsync(Order order, CancellationToken ct)
         {
             if (await _accounts.GetAccountAsync(order.OwnerType, order.OwnerId, ct) is not null) return;

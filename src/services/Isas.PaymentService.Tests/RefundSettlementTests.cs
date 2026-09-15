@@ -25,7 +25,8 @@ public class RefundSettlementTests
         new(tdb.Db,
             new PayOSClient(new PayOSOptions { ClientId = "x", ApiKey = "x", ChecksumKey = "x" }),
             Options.Create(new PayOSSettings()),
-            new OrderCodeGenerator(tdb.Db));
+            new OrderCodeGenerator(tdb.Db),
+            null!);   // đường huỷ không chạy trong file này
 
     // Seed 1 đơn ở trạng thái tuỳ ý (refund/settled state tường minh) — settle không cần ví/ledger.
     private static async Task<Order> SeedOrderAsync(

@@ -76,7 +76,7 @@ public class MoneyLossGuardsDb20Db21Db22Tests
         using var tdb = new PaymentTestDb();
         var pkg = await SeedPackageAsync(tdb, PackageType.Subscription, credits: null, durationDays: 30);
 
-        var svc = new OrderService(tdb.Db, null!, Options.Create(NewPayosSettings()), new FakeOrderCodes());
+        var svc = new OrderService(tdb.Db, null!, Options.Create(NewPayosSettings()), new FakeOrderCodes(), null!);
 
         // PayOSClient = null! → ném khi gọi cổng thanh toán. Đơn được persist TRƯỚC bước đó (hành vi sẵn
         // có của CreateOrderAsync), nên vẫn kiểm được Kind đã ghi xuống DB.
@@ -106,7 +106,7 @@ public class MoneyLossGuardsDb20Db21Db22Tests
         using var tdb = new PaymentTestDb();
         var pkg = await SeedPackageAsync(tdb, PackageType.OneTime, credits: 0);
 
-        var svc = new OrderService(tdb.Db, null!, Options.Create(NewPayosSettings()), new FakeOrderCodes());
+        var svc = new OrderService(tdb.Db, null!, Options.Create(NewPayosSettings()), new FakeOrderCodes(), null!);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.CreateOrderAsync(OwnerType.User, Guid.NewGuid(),

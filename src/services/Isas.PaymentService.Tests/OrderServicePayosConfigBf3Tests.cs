@@ -19,7 +19,8 @@ public class OrderServicePayosConfigBf3Tests
         new(tdb.Db,
             new PayOSClient(new PayOSOptions { ClientId = "x", ApiKey = "x", ChecksumKey = "x" }),
             Options.Create(settings),
-            new OrderCodeGenerator(tdb.Db));
+            new OrderCodeGenerator(tdb.Db),
+            null!);   // đường huỷ không chạy trong file này
 
     private static async Task<ProductPackage> SeedActivePackageAsync(PaymentTestDb tdb)
     {

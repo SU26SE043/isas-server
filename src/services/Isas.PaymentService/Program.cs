@@ -192,6 +192,8 @@ builder.Services.AddScoped<IWebhookService, WebhookService>();
 // P3: active-polling đối soát. PayOsQueryClient bọc SDK getPaymentLinkInformation (mockable);
 // OrderStatusService reuse WebhookService để cộng credit khi PayOS Paid (một đường cộng credit).
 builder.Services.AddScoped<IPayOsQueryClient, PayOsQueryClient>();
+// Huỷ payment-link (OrderService.CancelOrderAsync) — bọc SDK để mock được đường huỷ + map ApiException → 502.
+builder.Services.AddScoped<IPayOsCancelClient, PayOsCancelClient>();
 builder.Services.AddScoped<IOrderStatusService, OrderStatusService>();
 // E7: Payment phản ứng event Interview — consume (SessionScored) / release (SessionAbandoned).
 // Handler scoped (dùng DbContext qua CreditAccountService); consumer là BackgroundService bind

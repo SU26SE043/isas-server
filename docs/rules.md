@@ -164,7 +164,7 @@
 - **PAY-5** Reserve trừ `remaining` ngay (atomic) chống double-spend; hết → **402**, không tạo session.
 - **PAY-6** Ai reserve: **InterviewService reserve cho CẢ HAI dòng** khi tạo session (reserve-first, tránh orphan); owner do caller truyền — **B2B = Org** (Campaign gửi `campaign.OrgId` qua `/internal/sessions/campaign`), **B2C = User** (candidateId). Hết credit → **402, không tạo session**. *(BK14 — trước đây B2B chưa wire; consume/release vẫn theo event, lấy owner từ reservation.)*
 - **PAY-7** `order_code` = time + random, ≤ 9.007.199.254.740.991 (trần PayOS, D12).
-- **PAY-8** Cộng credit/tất toán **chỉ khi** webhook Paid + verify HMAC; idempotent theo `payos_order_code`; + active-polling đối soát.
+- **PAY-8** Cộng credit/tất toán **chỉ khi** webhook Paid + verify HMAC; idempotent theo `payos_order_code`; + active-polling đối soát. ✅ **2026-09-15 — webhook còn phải ĐỦ TIỀN:** `data.amount` (tiền của MỘT giao dịch, PayOS cho trả nhiều lần) `< orders.amount_vnd` ⇒ hỏi lại PayOS, link chưa `Paid` ⇒ **giữ Pending + bằng chứng `underpaid`**, không cộng (fail-closed; poll/sweeper cứu về sau). Poll thấy PayOS `Cancelled` ⇒ đóng `Cancelled` ngay (**chỉ** Cancelled); bằng chứng poll ghi theo **chuyển tiếp trạng thái**, không ghi mỗi lượt.
 - **PAY-9** `description` PayOS ≤ 25 ký tự.
 - **PAY-10** Order terminal (Paid/Expired/Failed/Cancelled) **bất biến**; webhook muộn sau Expired → đối soát tay, không tự cộng.
 - **PAY-11** Reservation Consumed/Released = absorbing; event ra ngoài thứ tự → bỏ qua (không trừ/hoàn oan).

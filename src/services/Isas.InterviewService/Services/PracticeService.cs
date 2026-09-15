@@ -1494,10 +1494,20 @@ public class PracticeService : IPracticeService
     // DB2: ghi outbox-row CÙNG SaveChanges với state=Failed (atomic — broker chết vẫn còn row để gửi lại).
     // SettlementReconciler cũ BỎ SÓT site này (chỉ quét Scored/SessionAbandoned); outbox phủ cả nó. Chỉ
     // B2C dùng path này (CreateSessionAsync); B2B không reserve (PAY-6) và không có nhánh Failed-sau-reserve.
+    //
+    // ⚠ CỐ Ý KHÔNG dùng `ct` của request cho hai lệnh ghi bên dưới. Lỗi sinh câu hỏi hay là HUỶ (client
+    // đóng tab / AI timeout → OperationCanceledException) — lúc đó `ct` đã cancel, nên
+    // `SaveChangesAsync(ct)` ném NGAY, dòng `Status = Failed` không bao giờ xuống DB, catch ngoài (P1-2)
+    // hoàn credit bằng token không huỷ rồi ném lại ⇒ session nằm `GeneratingQuestions` VĨNH VIỄN (đo
+    // prod 2026-09-15: 2 buổi, reservation đều đã Released). Zombie đó không sweeper nào quét,
+    // OrphanReservationReconciler coi là in-flight (nếu release cũng hỏng thì credit treo mãi), và
+    // EnsureCapacityAsync đếm nó vào slot. Ghi trạng thái cuối là việc phải xong bất kể request còn
+    // sống hay không — cùng lý do release ở catch ngoài dùng CancellationToken.None.
     private async Task EnqueueGenerationFailedAbandonAsync(PracticeSession session, CancellationToken ct)
     {
-        await _scoringNotifier.EnqueueSessionAbandonedAsync(session.Id, GenerationFailedReason, ct);
-        await _db.SaveChangesAsync(ct);   // atomic: state=Failed + outbox-row
+        _ = ct;   // giữ chữ ký cho các call site; xem ghi chú ở trên vì sao không dùng
+        await _scoringNotifier.EnqueueSessionAbandonedAsync(session.Id, GenerationFailedReason, CancellationToken.None);
+        await _db.SaveChangesAsync(CancellationToken.None);   // atomic: state=Failed + outbox-row
         _logger.LogInformation(
             "BK12: ghi outbox SessionAbandoned(generation_failed) cho session {SessionId} để release credit ví User",
             session.Id);

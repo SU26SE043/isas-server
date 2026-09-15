@@ -76,7 +76,8 @@ namespace Isas.PaymentService.Services
             _scopeFactory = scopeFactory;
             _options = options.Value;
             _logger = logger;
-            _consumeFromUtc = _options.ConsumeFromUtc ?? DateTime.UtcNow;
+            // Nhánh Scored dùng mốc RIÊNG (không phải cutover PONR1) — xem OrphanReconcileSettings.ScoredConsumeFromUtc.
+            _consumeFromUtc = _options.ScoredConsumeFromUtc ?? _options.ConsumeFromUtc ?? DateTime.UtcNow;
         }
 
         protected override async Task ExecuteAsync(CancellationToken ct)
@@ -91,7 +92,9 @@ namespace Isas.PaymentService.Services
                 "Chỗ giữ Scored có created_at < mốc sẽ SKIP (đối soát tay, không trừ hồi tố).",
                 _options.ConsumeTerminalScored ? "BẬT" : "TẮT",
                 _consumeFromUtc,
-                _options.ConsumeFromUtc.HasValue ? "cấu hình tường minh" : "mốc khởi động dịch vụ");
+                _options.ScoredConsumeFromUtc.HasValue ? "ScoredConsumeFromUtc tường minh"
+                    : _options.ConsumeFromUtc.HasValue ? "ConsumeFromUtc (cutover PONR1) tường minh"
+                    : "mốc khởi động dịch vụ — TRÔI theo mỗi lần deploy, nên đặt ScoredConsumeFromUtc");
 
             var interval = TimeSpan.FromSeconds(_options.ScanIntervalSeconds > 0 ? _options.ScanIntervalSeconds : 120);
 

@@ -18,7 +18,8 @@ public class OrderPackageNameTests
             new(tdb.NewContext(),
             new PayOSClient(new PayOSOptions { ClientId = "x", ApiKey = "x", ChecksumKey = "x" }),
             Options.Create(new PayOSSettings()),
-            new OrderCodeGenerator(tdb.Db));
+            new OrderCodeGenerator(tdb.Db),
+            null!);   // đường huỷ không chạy trong file này
 
     private static async Task<(Guid OwnerId, ProductPackage Package, Order Order)> SeedPackageOrderAsync(
         PaymentTestDb tdb)

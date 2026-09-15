@@ -24,7 +24,8 @@ public class OrderInterviewCreditsUx3B1Tests
         new(tdb.NewContext(),
             new PayOSClient(new PayOSOptions { ClientId = "x", ApiKey = "x", ChecksumKey = "x" }),
             Options.Create(new PayOSSettings()),
-            new OrderCodeGenerator(tdb.Db));
+            new OrderCodeGenerator(tdb.Db),
+            null!);   // đường huỷ không chạy trong file này
 
     private const long PackPriceVnd = 149_000;
     private const int PackCredits = 10;
