@@ -78,7 +78,9 @@ namespace Isas.PaymentService.Controllers
             }
 
             // 3) Áp — idempotent theo payos_order_code (PAY-8). gateway_txn_id = reference giao dịch ngân hàng.
-            var outcome = await _webhooks.ApplyPaidWebhookAsync(data.OrderCode, data.Reference, raw, ct);
+            //    data.Amount = tiền của GIAO DỊCH này (không phải của link) → WebhookService đối chiếu với
+            //    orders.amount_vnd; thiếu → giữ Pending (Underpaid), không cộng credit.
+            var outcome = await _webhooks.ApplyPaidWebhookAsync(data.OrderCode, data.Amount, data.Reference, raw, ct);
             _logger.LogInformation(
                 "Webhook PayOS orderCode={OrderCode} → {Outcome}", data.OrderCode, outcome);
 
