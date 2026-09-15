@@ -431,7 +431,9 @@ payment_mode:  Prepaid ─(PlatformAdmin duyệt + MST)─► Postpaid   (thu h�
 
 ### Thanh toán — webhook + **active polling**
 - Cộng credit / tất toán hóa đơn **chỉ khi PayOS webhook `Paid`** (verify **chữ ký HMAC-SHA256** — §PayOS). **Không** kích hoạt theo return-url FE. Idempotent theo `payos_order_code`.
-- **Active polling:** FE gọi `GET /order/{id}/status`; nếu server **chưa** nhận webhook → server **chủ động gọi PayOS get-payment-info đối soát ngay** (cứu ca webhook delay/drop làm FE đứng hình). Lưu `raw_webhook_payload`.
+- ✅ **Webhook ĐỐI CHIẾU SỐ TIỀN (2026-09-15):** `data.amount` là tiền của MỘT giao dịch, không phải của link (PayOS cho trả nhiều lần, `UNDERPAID`). Thiếu tiền → hỏi lại PayOS: link `Paid` ⇒ áp; chưa ⇒ GIỮ Pending + bằng chứng `underpaid` (fail-closed; poll/sweeper cứu về sau). Overload không số tiền (poll/sweeper) đi thẳng.
+- **Active polling:** FE gọi `GET /order/{id}/status`; nếu server **chưa** nhận webhook → server **chủ động gọi PayOS get-payment-info đối soát ngay** (cứu ca webhook delay/drop làm FE đứng hình). ✅ Bằng chứng poll chỉ ghi khi trạng thái PayOS **đổi** (hết 45 dòng `pending`/lượt); PayOS `Cancelled` → đóng đơn `Cancelled` ngay (**chỉ** Cancelled — Expired/Failed/Underpaid để sweeper). Huỷ đơn: `IPayOsCancelClient` + `WHERE status=Pending` atomic, PayOS từ chối → 400 (đơn đã rời Pending) / 502.
+- ✅ **`OrphanReconcile:ScoredConsumeFromUtc`** — mốc RIÊNG cho nhánh consume Scored (R1); mốc mặc định "giờ khởi động" trôi theo mỗi lần deploy. 🛑 KHÔNG dùng `ConsumeFromUtc` cho việc này — đó là cutover PONR1 (bỏ ngang bị CONSUME). Chi tiết: `docs/services/payment.md` §State machine.
 
 ### PayOS — ràng buộc cổng (đã verify payos.vn — 2026-06-28)
 > Lấy từ tài liệu chính thức **payos.vn** (VietQR/VND). **Chốt cuối theo dashboard my.payos.vn** của tài khoản thật.
