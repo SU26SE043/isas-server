@@ -150,6 +150,8 @@ namespace Isas.PaymentService.Controllers
             }
             catch (KeyNotFoundException ex) { return NotFound(new { message = ex.Message }); }
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+            // PayOS từ chối huỷ link trong khi đơn vẫn Pending → 502 sạch (không phải 500 stack thô).
+            catch (PaymentGatewayException ex) { return StatusCode(StatusCodes.Status502BadGateway, new { message = ex.Message }); }
         }
     }
 }

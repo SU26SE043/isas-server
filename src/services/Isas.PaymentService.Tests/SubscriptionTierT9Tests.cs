@@ -39,7 +39,7 @@ public class SubscriptionTierT9Tests
     };
 
     private static OrderService Orders(PaymentTestDb db) =>
-        new(db.Db, null!, Options.Create(Payos), new FixedOrderCodes());
+        new(db.Db, null!, Options.Create(Payos), new FixedOrderCodes(), null!);
 
     [Theory]
     [InlineData(OwnerType.User, PlanAudience.B2B)]

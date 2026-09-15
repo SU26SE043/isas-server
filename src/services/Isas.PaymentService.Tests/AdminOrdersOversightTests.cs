@@ -17,7 +17,8 @@ public class AdminOrdersOversightTests
         new(tdb.Db,
             new PayOSClient(new PayOSOptions { ClientId = "x", ApiKey = "x", ChecksumKey = "x" }),
             Options.Create(new PayOSSettings()),
-            new OrderCodeGenerator(tdb.Db));
+            new OrderCodeGenerator(tdb.Db),
+            null!);   // đường huỷ không chạy trong file này
 
     private static async Task<Order> SeedOrderAsync(
         PaymentTestDb tdb, OwnerType ownerType, Guid ownerId, OrderStatus status, long orderCode)
