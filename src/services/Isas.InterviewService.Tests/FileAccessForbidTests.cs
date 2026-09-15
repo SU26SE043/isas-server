@@ -50,17 +50,20 @@ public class FileAccessForbidTests
     private static Mock<IStorageService> StorageWithFileOwnedBy(Guid ownerId)
     {
         var storage = new Mock<IStorageService>();
-        storage.Setup(s => s.GetMetadata(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new FileRecord
-            {
-                Id = Guid.NewGuid(),
-                UserId = ownerId,
-                OriginalName = "cv.pdf",
-                MimeType = "application/pdf",
-                StoragePath = "files/cv.pdf",
-                ParseStatus = "Parsed",
-                CreatedAt = DateTime.UtcNow,
-            });
+        var record = new FileRecord
+        {
+            Id = Guid.NewGuid(),
+            UserId = ownerId,
+            OriginalName = "cv.pdf",
+            MimeType = "application/pdf",
+            StoragePath = "files/cv.pdf",
+            ParseStatus = "Parsed",
+            CreatedAt = DateTime.UtcNow,
+        };
+        storage.Setup(s => s.GetMetadata(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(record);
+        // Đường XOÁ đọc overload includeDeleted (soft-delete 2026-09-15) — guard chủ sở hữu phải chạy TRƯỚC
+        // mọi thứ khác nên mock cả hai overload cùng một record.
+        storage.Setup(s => s.GetMetadata(It.IsAny<Guid>(), It.IsAny<bool>(), It.IsAny<CancellationToken>())).ReturnsAsync(record);
         return storage;
     }
 

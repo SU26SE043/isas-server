@@ -181,6 +181,14 @@ namespace Isas.InterviewService.Controllers
                 var fileStream = await _storage.DownloadAsync(fileRecord.StoragePath, ct);
                 return File(fileStream, fileRecord.MimeType, fileRecord.OriginalName);
             }
+            catch (Amazon.S3.AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound
+                                                       || string.Equals(ex.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase))
+            {
+                // Row còn mà object đã mất (di sản của đường xoá cũ: S3 xoá trước, DB từ chối sau) — lỗi
+                // VĨNH VIỄN, không phải "thử lại". 404 để FE nói đúng: file không còn trên hệ thống.
+                _logger.LogWarning("File {FileId} có row nhưng object S3 {Key} không tồn tại", id, fileRecord.StoragePath);
+                return NotFound("File không còn trên hệ thống lưu trữ. Vui lòng tải lên lại.");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error downloading file {FileId}", id);
@@ -276,10 +284,14 @@ namespace Isas.InterviewService.Controllers
             }
         }
 
+        /// <summary>
+        /// Xoá = soft-delete (xem <see cref="StorageService.DeleteFileRecord"/>): file biến mất khỏi mọi đường
+        /// đọc của người dùng, buổi luyện/roadmap đã dùng nó giữ nguyên. Xoá lần hai → 204 (idempotent).
+        /// </summary>
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> DeleteFile(Guid id, CancellationToken ct)
         {
-            var fileRecord = await _storage.GetMetadata(id, ct);
+            var fileRecord = await _storage.GetMetadata(id, includeDeleted: true, ct);
             if (fileRecord == null) return NotFound("File không tồn tại");
 
             var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;

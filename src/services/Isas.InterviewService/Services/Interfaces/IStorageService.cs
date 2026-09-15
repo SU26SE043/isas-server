@@ -14,6 +14,8 @@ public interface IStorageService
     // Toàn bộ tương tác DB dùng thuần Guid
     Task<FileRecord> SaveMetadata(Guid fileId, Guid userId, string fileType, string originalName, string storagePath, string storageBucket, string mimeType, long fileSize, CVParseResult? parsedCv, CancellationToken ct = default);
     Task<FileRecord?> GetMetadata(Guid fileId, CancellationToken ct = default);
+    /// <summary>includeDeleted=true: trả cả file đã soft-delete (chỉ đường XOÁ dùng — idempotent 204).</summary>
+    Task<FileRecord?> GetMetadata(Guid fileId, bool includeDeleted, CancellationToken ct = default);
     Task<string> GetParseTextAsync(Guid fileId, CancellationToken ct = default); // Đã đổi sang đuôi Async
 
     // Bản owner-scoped: dùng ở luồng tạo session B2C để không đọc file của người khác (xem StorageService).
