@@ -1,11 +1,12 @@
 using PaymentService.Models;
-
+using System.Text.Json.Serialization;
 namespace Isas.PaymentService.DTOs
 {
     public class InvoiceRequest
     {
         // POST /admin/invoices/close — chốt kỳ 1 org (PlatformAdmin). period_start/period_end tuỳ chọn
         // (mặc định: đầu tháng UTC → now) — chỉ để ghi mốc kỳ lên hóa đơn, không ảnh hưởng số tiền.
+        [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
         public class CloseBillingPeriodRequest
         {
             public Guid OrgId { get; set; }

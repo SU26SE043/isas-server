@@ -1,7 +1,7 @@
 namespace Isas.InterviewService.DTOs;
 
 using Isas.InterviewService.Enums;
-
+using System.Text.Json.Serialization;
 /// <param name="Question">
 /// Câu hỏi admin TỰ GÕ. Ưu tiên cao nhất; bỏ trống thì xét <paramref name="SampleQuestionId"/>.
 /// <para>⚠ CỐ Ý không cho chọn từ <c>practice_questions</c> thật: câu B2C sinh từ CV/JD của chính
@@ -14,6 +14,7 @@ using Isas.InterviewService.Enums;
 /// Bỏ trống cả hai → câu đầu trong bộ mẫu.
 /// </param>
 /// <param name="CustomAnswer">Bài thứ tư do admin tự dán — bài DUY NHẤT không do bộ chấm viết ra.</param>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record AdminRubricPreviewRequest(
     string? Question = null,
     string? CustomAnswer = null,

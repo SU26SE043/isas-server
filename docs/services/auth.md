@@ -127,6 +127,7 @@ UserResponse {
 - **`POST /auth/admin/users/{id}/unban`** — gỡ đình chỉ → **`200`**. Lỗi: **404**. *(Không khôi phục refresh token cũ — đăng nhập lại là có phiên mới.)*
 - **`POST /auth/admin/users/{id}/reset-password`** — đặt lại mật khẩu hộ. Req `{ newPassword: string }` → **`204`**. Lỗi: **400** mật khẩu không đạt policy Identity · **404**. Thu hồi **mọi refresh token** của user (không thì đổi mật khẩu KHÔNG đuổi được kẻ đang chiếm tài khoản).
 - **`GET /auth/admin/users`** nay trả kèm `bannedAt`/`banReason` (additive — FE cũ không vỡ).
+- 🔒 **B10 (2026-09-16):** `BanUserRequest` · `ChangePlatformRoleRequest` · `AdminResetPasswordRequest` mang `[JsonUnmappedMemberHandling(Disallow)]` — khoá JSON lạ ⇒ **400** (không nuốt im lặng). Chỉ DTO của action `Roles="Admin"` DUY NHẤT; `ChangePasswordRequest`/`UpdateProfileRequest`/`RefreshTokenRequest` (mở cho cả 3 role, có client mobile) **giữ mặc định**. Guard `AdminRequestDtoDisallowTests`.
 - **`GET /auth/admin/organizations`** và **`GET /auth/admin/users`**: `cursor` hỏng hoặc `limit <= 0` → **400** (không còn âm thầm quay về trang đầu); cursor vắng và cursor hợp lệ giữ keyset paging cũ.
 
 > ⚠⚠ **RANH GIỚI HIỆU LỰC CỦA BAN (AUTH-5 / GEN-3 — đọc trước khi "siết cho chặt hơn").**

@@ -1,10 +1,11 @@
 using System.ComponentModel.DataAnnotations;
 using Isas.PaymentService.Services;
 using PaymentService.Models;
-
+using System.Text.Json.Serialization;
 namespace Isas.PaymentService.DTOs
 {
     /// <summary>F20 — thân request `POST /payment/admin/credits/grant`.</summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class GrantCreditRequest
     {
         /// <summary>Ví nhận: Org (B2B) hay User (B2C).</summary>

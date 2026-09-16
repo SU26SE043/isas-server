@@ -157,6 +157,8 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 ### Admin (PlatformAdmin)
 
+> 🔒 **B10 (2026-09-16) — DTO body của endpoint admin-only mang `[JsonUnmappedMemberHandling(Disallow)]`** (`GrantCreditRequest` · `SetPaymentModeRequest` · `RefundOrderRequest` · `SettleRefundRequest` · `GrantSubscriptionRequest` · `CreatePackageRequest` · `UpdatePackageRequest` · `PlanRequest` · `CloseBillingPeriodRequest`): khoá JSON lạ ⇒ **400** thay vì bị nuốt im lặng (lớp lỗi "FE gửi sai tên trường, BE 200 no-op" đã cắn repo 5 lần). Chỉ áp admin — client duy nhất là FE nội bộ; webhook PayOS/endpoint người dùng giữ mặc định tha thứ. Guard `AdminRequestDtoDisallowTests` quét reflection mọi action `Roles="Admin"`.
+
 **`POST /payment/admin/subscriptions/grant`** — Admin cấp kỳ thuê bao không qua PayOS. Nhận owner, plan, `durationDays`, `activatedAt?`, `idempotencyKey`; User chỉ B2C, Org chỉ B2B. Row `source=AdminGrant`, không order, snapshot entitlement/hash và event `Activated`; activation tương lai chưa mở entitlement.
 
 **`/payment/admin/plans`** — CRUD catalog tier, chỉ `Admin`. `DELETE /{id}` soft-deactivate (`is_active=false`), không xoá row lịch sử đã được package/subscription tham chiếu. Validation: Metered cần quota dương; B2C không có B2B cap; Unlimited chỉ khi `Tiering:AllowUnlimitedPlans=true`. Sửa catalog không hồi tố subscription snapshot; chỉ activation/mua mới dùng catalog mới.

@@ -1,5 +1,5 @@
 using System.ComponentModel.DataAnnotations;
-
+using System.Text.Json.Serialization;
 namespace Isas.AuthService.DTOs
 {
     /// <summary>
@@ -33,6 +33,7 @@ namespace Isas.AuthService.DTOs
     }
 
     /// <summary>F20 — POST /auth/admin/users/{id}/ban. Lý do tuỳ chọn nhưng nên có (để đối chất).</summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class BanUserRequest
     {
         [MaxLength(500)]
@@ -43,6 +44,7 @@ namespace Isas.AuthService.DTOs
     /// F20 — POST /auth/admin/users/{id}/reset-password. Mật khẩu mới do admin đặt; vẫn phải qua
     /// validator mật khẩu của Identity (yếu → 400).
     /// </summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class AdminResetPasswordRequest
     {
         [Required]
@@ -57,6 +59,7 @@ namespace Isas.AuthService.DTOs
     /// kiểm tra vừa đẻ thêm một role rác. Chỉ 3 tên trong AUTH-3 được chấp nhận — xem
     /// <c>AuthService.PlatformRoles</c>.
     /// </summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class ChangePlatformRoleRequest
     {
         /// <summary>Một trong: <c>Candidate</c> | <c>Employer</c> | <c>Admin</c>. Phân biệt hoa thường.</summary>
