@@ -23,6 +23,10 @@ public sealed class PlanController(PlanService plans) : ControllerBase
     {
         try { return await plans.UpdateAsync(id, request, ct) is { } plan ? Ok(PlanResponse.From(plan)) : NotFound(); } catch (ArgumentException e) { return BadRequest(new { message = e.Message }); }
     }
-    [HttpDelete("{id:guid}")] public async Task<IActionResult> DeactivateAsync(Guid id, CancellationToken ct) =>
-        await plans.DeactivateAsync(id, ct) ? NoContent() : NotFound();
+    // BE-D2 — gói mặc định (`free`/`starter`) không ngừng bán được: PlanService ném ArgumentException; trước
+    // đây controller không catch ⇒ 500 (lộ stack trace vì prod chạy Development). Nay 400 kèm câu lý do.
+    [HttpDelete("{id:guid}")] public async Task<IActionResult> DeactivateAsync(Guid id, CancellationToken ct)
+    {
+        try { return await plans.DeactivateAsync(id, ct) ? NoContent() : NotFound(); } catch (ArgumentException e) { return BadRequest(new { message = e.Message }); }
+    }
 }
