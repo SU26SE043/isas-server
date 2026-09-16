@@ -335,26 +335,32 @@ public class AdminB2CRubricTests
 
     // ── (6) Ma trận + lịch sử ───────────────────────────────────────────────────────────────
 
-    /// <summary>Ma trận phải đếm ĐÚNG số tiêu chí ĐÃ CÓ MỐC — đó là con số duy nhất chỉ ra chỗ bỏ sót.</summary>
+    /// <summary>
+    /// Ma trận phải đếm ĐÚNG số tiêu chí CẦN MỐC đã có mốc — đó là con số duy nhất chỉ ra chỗ bỏ sót.
+    /// Mẫu số là 6 chứ không phải 7: tiêu chí đo bằng số đo (trôi chảy, F11) cố ý 0 mốc, đếm nó vào là
+    /// ô ma trận báo "thiếu mốc" vĩnh viễn cho một thứ không cần (prod 2026-09-16: bộ v2 36 mốc, trôi chảy 0).
+    /// </summary>
     [Fact]
-    public async Task Matrix_CountsCriteriaWithLevels_PerCategoryAndLanguage()
+    public async Task Matrix_CountsOnlyAiCriteria_MeasuredOneNeverCountsAsMissing()
     {
         using var t = new TestDb();
         SeedDefaults(t.Db);
         var svc = Service(t);
         var v1 = (await svc.GetAsync(JobCategory.BE, "vi"))!;
-        // Khai mốc cho ĐÚNG một tiêu chí.
-        var target = v1.Criteria[0].Id;
+        // Khai mốc cho ĐÚNG một tiêu chí AI chấm; tiêu chí ĐO nhận mốc theo — nhưng không được đếm.
+        var target = v1.Criteria.First(c => c.ScoringMethod == nameof(CriterionScoringMethod.Ai)).Id;
+        var measured = v1.Criteria.Single(c => c.ScoringMethod == nameof(CriterionScoringMethod.DeliveryMetrics)).Id;
         await svc.ReplaceAsync(JobCategory.BE,
-            Echo(v1, levels: c => c.Id == target ? ValidLevels() : []), "vi");
+            Echo(v1, levels: c => c.Id == target || c.Id == measured ? ValidLevels() : []), "vi");
 
         var matrix = await svc.GetMatrixAsync(null);
 
         Assert.Equal(6, matrix.Count);   // 3 nghề × 2 ngôn ngữ
         var beVi = matrix.Single(r => r.JobCategory == JobCategory.BE && r.Language == "vi");
-        Assert.Equal(7, beVi.CriteriaCount);
-        Assert.Equal(1, beVi.WithLevelsCount);
+        Assert.Equal(6, beVi.CriteriaCount);       // 7 tiêu chí − 1 đo
+        Assert.Equal(1, beVi.WithLevelsCount);     // mốc của tiêu chí đo KHÔNG được tính
         var beEn = matrix.Single(r => r.JobCategory == JobCategory.BE && r.Language == "en");
+        Assert.Equal(6, beEn.CriteriaCount);
         Assert.Equal(0, beEn.WithLevelsCount);
     }
 
@@ -373,7 +379,8 @@ public class AdminB2CRubricTests
         Assert.Equal([2, 1], history.Select(h => h.Version).ToArray());
         Assert.True(history[0].IsActive);
         Assert.False(history[1].IsActive);
-        Assert.Equal(7, history[0].WithLevelsCount);
+        Assert.Equal(6, history[0].CriteriaCount);      // cùng luật ma trận: chỉ tiêu chí cần mốc
+        Assert.Equal(6, history[0].WithLevelsCount);    // 7 nhận mốc, tiêu chí đo không đếm
         Assert.Equal(0, history[1].WithLevelsCount);
     }
 

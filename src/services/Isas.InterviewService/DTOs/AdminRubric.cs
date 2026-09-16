@@ -87,6 +87,11 @@ public record AdminRubricLevelItem(int Score, string Descriptor);
 /// <para>Rủi ro lớn nhất của màn này không phải "rối" mà là BỎ SÓT: khai xong (BE, vi) rồi quên 5 tổ
 /// hợp còn lại, và không có gì trên màn hình nói ra điều đó. <paramref name="WithLevelsCount"/> là
 /// con số duy nhất trả lời được câu "còn thiếu ở đâu".</para>
+///
+/// <para>⚠ Cả <paramref name="CriteriaCount"/> lẫn <paramref name="WithLevelsCount"/> chỉ đếm tiêu chí
+/// <b>CẦN mốc</b> (<c>ScoringMethod = Ai</c>). Tiêu chí đo bằng số đo giọng nói (F11) cố ý 0 mốc — đếm nó
+/// vào mẫu số là ô ma trận báo "thiếu mốc" vĩnh viễn cho một thứ không cần. Cùng luật ở
+/// <see cref="AdminRubricVersionItem"/>.</para>
 /// </summary>
 public record AdminRubricMatrixRow(
     JobCategory JobCategory,
