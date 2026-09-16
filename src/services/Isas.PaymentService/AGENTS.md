@@ -113,7 +113,7 @@ CreditOpRequest {                       // /internal/credits/reserve|consume|rel
 
 ### Public / Org / B2C (JWT)
 
-**`GET /payment/package`** · **`GET /payment/package/{id}`** — Gói prepaid đang bán. Public. → `ProductPackage[]` / `ProductPackage`.
+**`GET /payment/package`** · **`GET /payment/package/{id}`** — Gói prepaid đang bán. Public. → `ProductPackage[]` / `ProductPackage`. `?includeInactive=true` trả cả gói đã ẩn — chỉ khi caller là Admin (2026-09-17).
 
 **`POST /payment/order`** 🟡 — Mua pack credit. Auth `OrgAdmin` (B2B) / `User` (B2C).
 - Req: `{ packageId: uuid }` → Res **`201`** `CreateOrderResponse`. Lỗi: **400** (gói không bán) · **401**.
