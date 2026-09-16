@@ -301,7 +301,7 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
             SampleQuestions: AdminPreviewQuestionBank.For(jobCategory, language)
                 .Select(q => new AdminSampleQuestionItem(q.Id, q.Text)).ToList(),
             Criteria: criteria.OrderBy(c => c.Name, StringComparer.Ordinal).Select(c => new AdminRubricCriterionItem(
-                c.Id, c.Name, c.Description, c.Weight, c.MaxScore, c.ScoringScope.ToString(),
+                c.Id, c.Name, c.Description, c.Weight, c.MaxScore, c.ScoringScope.ToString(), c.ScoringMethod.ToString(),
                 // `.Include()` KHÔNG bảo đảm thứ tự — sắp ở đây thay vì tin vào DB, nếu không mốc hiện
                 // lộn xộn trên Postgres mà vẫn đúng thứ tự trên SQLite (test).
                 c.Levels.OrderBy(l => l.Score).Select(l => new AdminRubricLevelItem(l.Score, l.Descriptor)).ToList()))

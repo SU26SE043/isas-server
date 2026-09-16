@@ -429,4 +429,32 @@ public class AdminB2CRubricTests
         var stillActive = await t.Db.RubricCriteria.AsNoTracking().FirstAsync(c => c.Id == custom.Id);
         Assert.True(stillActive.IsActive);
     }
+
+    // ── scoringMethod lộ ra cho UI ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Admin phải biết tiêu chí nào chấm bằng SỐ ĐO (mốc chỉ là lời giải nghĩa, chấm thử không đòi) và
+    /// tiêu chí nào AI chấm (mốc là thước đo thật). Không có trường này, FE chỉ còn cách đoán theo TÊN —
+    /// mà tên đổi theo ngôn ngữ — và đã đoán sai: chặn cứng chấm thử vì "Độ trôi chảy" 0 mốc (dev 2026-09-16).
+    /// Giá trị là TÊN enum (chuỗi), cùng quy ước với <c>ScoringScope</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("vi")]
+    [InlineData("en")]
+    public async Task Get_ExposesScoringMethod_MeasuredCriterionMarkedDeliveryMetrics(string language)
+    {
+        using var t = new TestDb();
+        SeedDefaults(t.Db);
+        var res = (await Service(t).GetAsync(JobCategory.BE, language))!;
+
+        var measured = res.Criteria.Where(c => c.ScoringMethod == nameof(CriterionScoringMethod.DeliveryMetrics)).ToList();
+        var ai = res.Criteria.Where(c => c.ScoringMethod == nameof(CriterionScoringMethod.Ai)).ToList();
+
+        Assert.Single(measured);                                  // đúng 1 tiêu chí đo (trôi chảy — F11)
+        Assert.Equal(6, ai.Count);
+        Assert.Equal(res.Criteria.Count, measured.Count + ai.Count); // không giá trị thứ ba
+        // Phải khớp nguồn thật (entity), không phải chuỗi ghi cứng theo tên.
+        var entity = await t.Db.RubricCriteria.AsNoTracking().SingleAsync(c => c.Id == measured[0].Id);
+        Assert.Equal(CriterionScoringMethod.DeliveryMetrics, entity.ScoringMethod);
+    }
 }

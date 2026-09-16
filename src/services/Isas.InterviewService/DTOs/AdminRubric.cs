@@ -1,7 +1,7 @@
 namespace Isas.InterviewService.DTOs;
 
 using Isas.InterviewService.Enums;
-
+using System.Text.Json.Serialization;
 /// <summary>
 /// Một tiêu chí của BỘ CHUẨN hệ thống, ở dạng admin được phép GỬI LÊN.
 ///
@@ -20,6 +20,7 @@ using Isas.InterviewService.Enums;
 /// <c>B2CRubricSeedTests</c> đang khoá, và làm hỏng việc gắn nhãn câu hỏi (INT-18).</item>
 /// </list>
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record AdminRubricCriterionInput(
     Guid Id,
     string? Description,
@@ -27,9 +28,11 @@ public record AdminRubricCriterionInput(
     List<AdminRubricLevelInput>? Levels
 );
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record AdminRubricLevelInput(int Score, string Descriptor);
 
 /// <summary>Thay nội dung bộ chuẩn của MỘT (nghề, ngôn ngữ). Phải gửi ĐỦ mọi tiêu chí đang có.</summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record UpsertAdminRubricRequest(List<AdminRubricCriterionInput> Criteria);
 
 /// <param name="Changed">
@@ -62,6 +65,17 @@ public record AdminRubricCriterionItem(
     decimal Weight,
     int MaxScore,
     string ScoringScope,
+    /// <summary>
+    /// <c>Ai</c> (LLM chấm từ transcript — mốc là THƯỚC ĐO, AI phải chọn một mức) hay
+    /// <c>DeliveryMetrics</c> (tính từ số đo giọng nói F11 qua <see cref="Services.DeliveryFluencyScorer"/>,
+    /// KHÔNG gửi LLM — mốc chỉ là LỜI GIẢI NGHĨA bậc, không tham gia tính điểm, chấm thử cũng không đòi).
+    ///
+    /// <para>Vì sao lộ ra: FE từng chặn cứng chấm thử khi có tiêu chí &lt;2 mốc trong khi BE chỉ đòi mốc ở
+    /// tiêu chí AI chấm (<see cref="Services.MeasuredCriteriaSplit.ForAi"/>) — "Độ trôi chảy" cố ý 0 mốc
+    /// nên màn admin báo thiếu một thứ không cần (đo trên dev 2026-09-16). Không lộ trường này thì UI
+    /// chỉ còn cách đoán theo TÊN, mà tên đổi theo ngôn ngữ.</para>
+    /// </summary>
+    string ScoringMethod,
     IReadOnlyList<AdminRubricLevelItem> Levels
 );
 
