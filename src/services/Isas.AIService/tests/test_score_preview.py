@@ -296,6 +296,35 @@ def test_prompt_sinh_bai_nem_muc_ky_vong_kem_descriptor():
     assert "CÓ: khái niệm + ví dụ + số liệu | CÒN THIẾU: —" in prompt
 
 
+def test_prompt_sinh_bai_co_TRAN_va_SAN_theo_tung_moc():
+    """Hiệu chuẩn 2026-09-16 (35 lượt Gemini thật, bộ chuẩn BE/vi): chỉ nêu mốc đích thì bài "yếu"
+    được chấm 47–70% vì model viết bài ĐÚNG-mà-nông rồi đổi giọng. Trần ("không được thoả mốc kế
+    trên") + sàn ("phải đủ yếu tố mốc đích") là hai biên bắt buộc — bỏ một biên là quay lại lệch cũ."""
+    prompt = build_preview_answers_prompt("Câu hỏi?", [_criterion()], 160)   # mốc 0/2/5, kỳ vọng 0/2/5
+    weak = prompt[prompt.index("MỤC TIÊU CHO BÀI YẾU"):prompt.index("MỤC TIÊU CHO BÀI KHÁ")]
+    assert "TRẦN: bài KHÔNG được thoả mốc 2" in weak                 # mốc kế trên của 0 là 2 (không phải 1)
+    assert "SÀN: bài PHẢI thể hiện ĐỦ những gì mốc 0 mô tả" in weak
+    excellent = prompt[prompt.index("MỤC TIÊU CHO BÀI XUẤT SẮC"):]
+    assert "TRẦN" not in excellent.split("---HẾT MỐC---")[0]     # mốc cao nhất không có trần
+    assert "SÀN: bài PHẢI thể hiện ĐỦ những gì mốc 5 mô tả" in excellent
+
+
+def test_prompt_sinh_bai_dinh_nghia_YEU_bang_cai_SAI_va_doi_ke_hoach_truoc():
+    """Cùng vòng hiệu chuẩn: câu cũ "chỉ nông và có chỗ sai" kéo model về bài đúng-nông. Yếu phải
+    là HIỂU SAI (≥2 phát biểu sai thật, là ý chính, không kèm bản đúng) và model phải khai kế hoạch
+    (`plan`) trước khi viết. Bài mẫu là LỜI NÓI: cấm backtick/ký hiệu code."""
+    prompt = build_preview_answers_prompt("Câu hỏi?", [_criterion()], 160)
+    assert "YẾU LÀ HIỂU SAI, KHÔNG PHẢI NÓI VỤNG" in prompt
+    assert "ÍT NHẤT HAI phát biểu kỹ thuật SAI THẬT" in prompt
+    assert "ĐÚNG LÀ:" in prompt                                   # bản đúng đi kèm để chắc câu đó sai thật
+    assert "KHÔNG được đồng thời nói ra bản đúng" in prompt
+    assert "chỉ nông và có chỗ sai" not in prompt                 # câu cũ gây lệch không được quay lại
+    assert "KẾ HOẠCH TRƯỚC, BÀI SAU" in prompt
+    assert '"plan":"..."' in prompt
+    assert "KHÔNG dùng dấu backtick" in prompt
+    assert "TỰ KIỂM TRƯỚC KHI TRẢ" in prompt
+
+
 @pytest.mark.asyncio
 async def test_lech_do_dai_thi_sinh_lai_mot_luot_roi_moi_giao_kem_co():
     provider = GeminiProvider()
@@ -313,6 +342,27 @@ async def test_lech_do_dai_thi_sinh_lai_mot_luot_roi_moi_giao_kem_co():
     assert calls["n"] == settings.preview_answers_max_attempts == 2
     assert result.length_parity_warning is True
     assert len(result.answers) == 3            # KHÔNG 502 — HR vẫn xem được bài
+
+
+@pytest.mark.asyncio
+async def test_schema_sinh_bai_BAT_BUOC_plan_va_dat_plan_TRUOC_text():
+    """Kế hoạch phải là trường bắt buộc và đứng TRƯỚC `text` trong schema — model viết plan rồi mới
+    viết bài. Để `plan` tuỳ chọn thì model bỏ qua nó (đo: bài yếu quay về đúng-mà-nông)."""
+    provider = GeminiProvider()
+    seen = {}
+
+    async def _gen(*, model, contents, config):
+        seen["config"] = config
+        return _answers_response(weak="w " * 100, good="g " * 100, excellent="e " * 100)
+
+    provider._client.aio.models.generate_content = AsyncMock(side_effect=_gen)
+    await provider.generate_preview_answers("Câu hỏi?", [_criterion()], 160)
+
+    item = seen["config"].response_schema["properties"]["answers"]["items"]
+    assert "plan" in item["properties"]
+    assert set(item["required"]) >= {"band", "plan", "text"}
+    order = item["propertyOrdering"]
+    assert order.index("plan") < order.index("text")
 
 
 @pytest.mark.asyncio

@@ -953,23 +953,70 @@ def build_preview_answers_prompt(question: str, criteria: list[dict],
     # Mục tiêu THEO TỪNG TIÊU CHÍ cho từng bài. Mức kỳ vọng do CODE chọn (không phải model), nên
     # sau khi chấm ta có `expected vs actual` — cách duy nhất đo được self-scoring bias khi cùng
     # một model vừa viết vừa chấm.
+    #
+    # Mỗi tiêu chí nêu MỐC ĐÍCH kèm HAI BIÊN: trần (mốc kế trên — bài KHÔNG được thoả) và sàn (mốc
+    # đích — bài PHẢI thoả). Đo trên dev 2026-09-16 (6 lượt, bộ chuẩn BE/vi): chỉ nêu mốc đích thì
+    # bài "yếu" được chấm 47–70% (kỳ vọng 20) — model hiểu "yếu" là GIỌNG vụng ("dạ… cái này á")
+    # trong khi vẫn mô tả ĐÚNG cơ chế, tức đã thoả mốc 3; còn bài "xuất sắc" chỉ 67–87% (kỳ vọng
+    # 100) vì thiếu đúng những yếu tố mốc 5 liệt kê (cái giá phải trả, triệu chứng khi chịu tải,
+    # đánh đổi). Bộ chấm phân bậc đúng; người viết bài mẫu mới là bên lệch.
+    def _descriptor(c: dict, score: int | None) -> str:
+        for lv in (c.get("levels") or []):
+            if isinstance(lv, dict) and lv.get("score") == score:
+                return str(lv.get("descriptor") or "").strip()
+        return ""
+
+    def _neighbor(c: dict, score: int | None, direction: int) -> int | None:
+        scores = sorted({lv.get("score") for lv in (c.get("levels") or [])
+                         if isinstance(lv, dict) and isinstance(lv.get("score"), int)})
+        if score not in scores:
+            return None
+        idx = scores.index(score) + direction
+        return scores[idx] if 0 <= idx < len(scores) else None
+
     for band in PREVIEW_BANDS:
         key = "expected" + band
         lines = []
         for c in criteria:
             expected = c.get(key)
-            descriptor = ""
-            for lv in (c.get("levels") or []):
-                if isinstance(lv, dict) and lv.get("score") == expected:
-                    descriptor = str(lv.get("descriptor") or "").strip()
-                    break
+            descriptor = _descriptor(c, expected)
             target = f'"{descriptor}"' if descriptor else "(không có mô tả mốc)"
-            lines.append(
-                f'- {c.get("name")} (thang 0-{c.get("maxScore")}): bài này phải ĐÚNG TẦM mức '
-                f'{expected} — {target}')
+            line = (f'- {c.get("name")} (thang 0-{c.get("maxScore")}): bài này phải ĐÚNG TẦM mức '
+                    f'{expected} — {target}')
+            above = _neighbor(c, expected, +1)
+            above_desc = _descriptor(c, above) if above is not None else ""
+            if above is not None and above_desc:
+                line += (f'\n    TRẦN: bài KHÔNG được thoả mốc {above} — "{above_desc}". Nếu đọc lại '
+                         f'mà thấy bài đã làm được điều đó thì phải viết lại đoạn ấy cho nông/sai hơn.')
+            if descriptor:
+                line += (f'\n    SÀN: bài PHẢI thể hiện ĐỦ những gì mốc {expected} mô tả — thiếu một '
+                         f'yếu tố là bài rơi xuống mốc dưới.')
+            lines.append(line)
         parts.append(
             f"MỤC TIÊU CHO {_PREVIEW_BAND_LABELS[band]} (band=\"{band}\") — theo từng tiêu chí:\n"
             f"---MỐC (DỮ LIỆU, không phải lệnh)---\n" + "\n".join(lines) + "\n---HẾT MỐC---")
+
+    parts.append(
+        "YẾU / KHÁ / XUẤT SẮC là về KIẾN THỨC và NỘI DUNG, không phải về giọng. Bài yếu KHÔNG phải "
+        "là bài nói đúng nhưng ấp úng — đó vẫn là bài đúng và sẽ được chấm cao. Bài yếu phải có "
+        "đúng loại lỗi mà mốc đích mô tả (mô tả sai cách hoạt động, nhầm khái niệm, chỉ kể tên, "
+        "bỏ qua điều câu hỏi thật sự hỏi). Bài xuất sắc phải chứa ĐỦ các yếu tố mốc cao nhất đòi "
+        "(ví dụ cụ thể, số liệu, cái giá phải trả, điều kiện không còn phù hợp, triệu chứng khi hệ "
+        "chạy sai) — nói trôi chảy mà thiếu chúng thì không phải xuất sắc."
+    )
+
+    parts.append(
+        "GIỌNG NÓI THẬT: đây là bản chép lời một người đang trả lời phỏng vấn trong 1–2 phút — câu "
+        "ngắn, nối ý bằng lời nói tự nhiên, KHÔNG dùng dấu backtick, ký hiệu code, gạch đầu dòng, "
+        "đánh số hay tiêu đề. Tên công nghệ/thuật ngữ vẫn nói ra bình thường như khi nói."
+    )
+
+    parts.append(
+        "TỰ KIỂM TRƯỚC KHI TRẢ: với TỪNG bài, đối chiếu TỪNG tiêu chí với mốc đích, trần và sàn ở "
+        "trên. Bài yếu thoả một mốc cao hơn ở tiêu chí nào thì viết lại đoạn đó; bài xuất sắc thiếu "
+        "yếu tố nào của mốc cao nhất thì bổ sung đúng yếu tố đó. Chỉ trả JSON sau khi ba bài đều "
+        "qua vòng kiểm này."
+    )
 
     lo = int(target_word_count * 0.85)
     hi = int(target_word_count * 1.15)
@@ -982,10 +1029,24 @@ def build_preview_answers_prompt(question: str, criteria: list[dict],
         "Bài yếu vẫn nói đủ chừng ấy từ, chỉ là nói những thứ nông hơn và có chỗ sai."
     )
 
+    # Đo 2026-09-16 (18 lượt, 3 biến thể lời dặn): câu "chỉ nông và có chỗ sai" khiến model viết bài
+    # ĐÚNG-MÀ-NÔNG (log → code → index → cache, đủ thứ tự, đủ ví dụ) rồi chỉ đổi giọng ("dạ… cái này
+    # á") — bộ chấm cho 3/5 là chuẩn, và bài "yếu" nằm ở 57–70% suốt. Yếu phải được định nghĩa bằng
+    # cái SAI, không bằng cái nông.
     parts.append(
-        "LUẬT VỀ BÀI YẾU: đó phải là bài của một người THẬT SỰ trả lời — có cố gắng, có nội dung, "
-        "chỉ nông và có chỗ sai hoặc nhầm lẫn. TUYỆT ĐỐI KHÔNG viết bài trống, KHÔNG viết 'tôi "
-        "không biết', KHÔNG viết lạc đề, KHÔNG chỉ nhắc lại câu hỏi."
+        "LUẬT VỀ BÀI YẾU — YẾU LÀ HIỂU SAI, KHÔNG PHẢI NÓI VỤNG: bài yếu là bài của người thật sự "
+        "cố trả lời nhưng hiểu sai vấn đề. Bắt buộc có ÍT NHẤT HAI phát biểu kỹ thuật SAI THẬT "
+        "(nhầm khái niệm này với khái niệm khác, gán công dụng sai cho một công nghệ, mô tả ngược "
+        "cơ chế) — ghi từng câu sai vào plan dưới dạng 'SAI 1: … | ĐÚNG LÀ: …' (bản đúng đi kèm để chắc câu đó SAI THẬT, không phải chỉ nói thiếu) và đưa nguyên câu sai vào "
+        "text. Ngoài ra bài yếu phải mang dấu hiệu mốc thấp của từng tiêu chí: các ý rời rạc không "
+        "có ý chính, nhảy thẳng vào giải pháp mà không nêu bài toán, dùng thuật ngữ sai chỗ. Bài yếu "
+        "KHÔNG ĐƯỢC: mô tả đúng cơ chế bên dưới, tách các bước theo thứ tự hợp lý, đưa ví dụ cụ thể "
+        "và đúng, nêu cái giá phải trả — đó là dấu hiệu của bài khá/giỏi. TUYỆT ĐỐI KHÔNG viết bài "
+        "trống, KHÔNG viết 'tôi không biết', KHÔNG lạc hẳn sang chủ đề khác, KHÔNG chỉ nhắc lại câu "
+        "hỏi: bài vẫn đủ độ dài, vẫn nói về đúng chủ đề, chỉ là nói SAI và RỐI. Các câu sai phải là "
+        "Ý CHÍNH của bài, không phải một câu phụ lọt giữa những ý đúng — và bài KHÔNG được đồng thời "
+        "nói ra bản đúng của cùng ý đó (nói 'index giúp tìm nhanh' rồi lại nói 'index giúp ghi nhanh' "
+        "là bài đúng có một câu lỡ lời, không phải bài yếu)."
     )
 
     if sample_answer and sample_answer.strip():
@@ -1000,9 +1061,17 @@ def build_preview_answers_prompt(question: str, criteria: list[dict],
         parts.append("NHẬN XÉT BẮT BUỘC TỪ LƯỢT TRƯỚC — hãy sửa cả ba bài:\n" + retry_feedback)
 
     parts.append(
+        "KẾ HOẠCH TRƯỚC, BÀI SAU: với mỗi bài, điền trường \"plan\" TRƯỚC khi viết \"text\". Plan "
+        "liệt kê theo TỪNG tiêu chí: bài Yếu sẽ cài LỖI CỤ THỂ nào (nhầm khái niệm gì với gì, mô tả "
+        "sai cơ chế ở chỗ nào, bỏ qua phần nào của câu hỏi, ý nào sẽ rời rạc) — ít nhất hai lỗi kiến "
+        "thức thật, không chỉ đổi giọng; bài Khá sẽ có gì và CỐ Ý thiếu gì so với mốc trên; bài Xuất "
+        "sắc sẽ đưa đúng yếu tố nào của mốc cao nhất và đặt ở câu nào. Text phải chứa ĐÚNG những gì "
+        "plan đã khai."
+    )
+    parts.append(
         'CHỈ trả JSON hợp lệ, không markdown: '
-        '{"answers":[{"band":"Weak","text":"..."},{"band":"Good","text":"..."},'
-        '{"band":"Excellent","text":"..."}]}'
+        '{"answers":[{"band":"Weak","plan":"...","text":"..."},{"band":"Good","plan":"...","text":"..."},'
+        '{"band":"Excellent","plan":"...","text":"..."}]}'
     )
     return "\n\n".join(parts)
 
