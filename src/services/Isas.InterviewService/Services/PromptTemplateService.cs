@@ -9,7 +9,10 @@ namespace Isas.InterviewService.Services;
 /// <summary>
 /// F21 (FR17) — quản lý mảnh prompt do admin tuỳ biến. Append-only, soft-versioned (mẫu BC16).
 /// </summary>
-public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplateService> logger)
+public class PromptTemplateService(
+    InterviewDbContext db,
+    ILogger<PromptTemplateService> logger,
+    IPromptDefaultsProvider? defaults = null)
 {
     /// <summary>Trần độ dài một mảnh. Không phải con số thiêng — nó tồn tại vì mảnh prompt đi
     /// THẲNG vào mỗi lượt gọi Gemini, nên một lần dán nhầm cả quyển tài liệu vào đây là mọi lượt
@@ -40,15 +43,25 @@ public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplate
             .AsNoTracking()
             .ToDictionaryAsync(p => p.Key, ct);
 
+        // Bản mặc định kéo từ AIService (fail-open ⇒ null): admin phải THẤY câu đang chạy để biết mình
+        // sắp thay cái gì — trước đây body null ra ô trống câm (đo trên dev 2026-09-16).
+        var defaultMap = defaults is null ? null : await defaults.GetDefaultsAsync(ct);
+
         // Trả về MỌI khoá khai trong code, kể cả khoá chưa ai sửa. Chỉ trả những khoá có row
         // sẽ khiến màn quản trị trông như hệ thống chỉ có vài prompt — người dùng không thể biết
         // mình được sửa những gì. Khoá chưa tuỳ biến ⇒ body null = "đang dùng bản mặc định
         // trong code" (bản mặc định nằm ở prompts.py, cố ý KHÔNG chép sang .NET).
         return [.. PromptTemplateKeys.All
             .OrderBy(k => k, StringComparer.Ordinal)
-            .Select(k => active.TryGetValue(k, out var t)
-                ? new PromptTemplateResponse(k, t.Version, t.Body, t.UpdatedBy, t.ChangeNote, t.CreatedAt)
-                : new PromptTemplateResponse(k, 0, null, null, null, null))];
+            .Select(k =>
+            {
+                // Có bản đồ nhưng thiếu khoá ⇒ null (không phải ""): "" nghĩa là "mặc định trống", còn thiếu
+                // khoá là lệch hợp đồng — hai chuyện khác nhau, đừng gộp.
+                var def = defaultMap is not null && defaultMap.TryGetValue(k, out var d) ? d : null;
+                return active.TryGetValue(k, out var t)
+                    ? new PromptTemplateResponse(k, t.Version, t.Body, t.UpdatedBy, t.ChangeNote, t.CreatedAt, def)
+                    : new PromptTemplateResponse(k, 0, null, null, null, null, def);
+            })];
     }
 
     public async Task<IReadOnlyList<PromptTemplateResponse>> HistoryAsync(string key, CancellationToken ct) =>

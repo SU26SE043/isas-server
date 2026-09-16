@@ -92,15 +92,17 @@ public class PromptTemplateF21Tests
     }
 
     [Fact]
-    public void MoiNghe_DeuCoDu3Khoa()
+    public void MoiNghe_DeuCoDu2Khoa_KhongCoKhoaChet()
     {
         // Khoá nghề dựng bằng nội suy từ enum → thêm giá trị enum là tự có đủ khoá, không phải
         // nhớ sửa danh sách. Test này khoá đúng tính chất đó.
         foreach (var c in Enum.GetValues<JobCategory>())
         {
             Assert.Contains(PromptTemplateKeys.CategoryDisplayName(c), PromptTemplateKeys.All);
-            Assert.Contains(PromptTemplateKeys.CategoryDescription(c), PromptTemplateKeys.All);
             Assert.Contains(PromptTemplateKeys.CategoryGuidance(c), PromptTemplateKeys.All);
+            // `category.<nghề>.description` ĐÃ GỠ 2026-09-16: không builder nào đọc — khai mà không nối là
+            // để admin sửa một thứ không có tác dụng.
+            Assert.DoesNotContain($"category.{c}.description", PromptTemplateKeys.All);
         }
     }
 
@@ -210,9 +212,11 @@ public class PromptTemplateF21Tests
 
         // Chưa tuỳ biến ⇒ body null = "đang dùng bản mặc định trong code" (bản mặc định nằm ở
         // prompts.py, CỐ Ý không chép sang .NET để tránh hai nguồn sự thật cho cùng câu chữ).
-        var untouched = all.Single(x => x.Key == PromptTemplateKeys.RoadmapGuidance);
+        var untouched = all.Single(x => x.Key == PromptTemplateKeys.QuestionsGuidance);
         Assert.Null(untouched.Body);
         Assert.Equal(0, untouched.Version);
+        // Không truyền provider ⇒ không có bản mặc định ⇒ null (KHÔNG phải "" — "" là "mặc định trống").
+        Assert.Null(untouched.DefaultBody);
     }
 
     [Fact]

@@ -30,6 +30,7 @@
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/embed` | **Grounding/RAG (D27)** — sinh embedding `gemini-embedding-001`, stateless (xem §Grounding) |
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/face-verify` | **SEC-2/3** — đối chiếu ảnh live ↔ ảnh tham chiếu + đếm mặt (InsightFace) |
 | POST | — (nội bộ, **X-Internal-Token**) | `/api/v1/analyze-repo` | **BC18** — phân tích repo GitHub từ `repoDigest` |
+| GET | — (nội bộ, **X-Internal-Token**) | `/api/v1/prompt-defaults` | **F21 (2026-09-16)** — bản MẶC ĐỊNH của từng mảnh prompt admin sửa được (`{defaults: {key: text}, placeholders}`), **stateless**, đọc literal trong `prompt_defaults.py`; Interview kéo về cho màn admin hiện "bản đang chạy" (fail-open). Khe THÊM ⇒ `""`; khe THAY ⇒ chuỗi mẫu có `{role}`/`{job_category}`. Test `test_prompt_defaults.py` khoá ĐỒNG BỘ với builder thật |
 
 > ✅ **13/13 endpoint đều gate `X-Internal-Token`** (Q2, 2026-08-07); chỉ `GET /health` để trần. Các dòng `— (nội bộ)` ở cột gateway là những endpoint **chưa bao giờ** có route gateway; số còn lại đã bị gỡ khỏi gateway public từ GEN-7.
 

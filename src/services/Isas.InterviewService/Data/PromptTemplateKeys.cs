@@ -31,15 +31,17 @@ public static class PromptTemplateKeys
     // ── Prompt SINH — sai thì ra câu hỏi dở, KHÔNG sai điểm và KHÔNG mất credit ─────────────
     public const string QuestionsIntro = "questions.intro";
     public const string QuestionsGuidance = "questions.guidance";
-    public const string CriteriaGuidance = "criteria.guidance";
     public const string CvAnalysisGuidance = "cv_analysis.guidance";
     public const string CvRequirementsWorkflow = "cv_requirements.workflow";
     public const string CvRequirementsLevelRubric = "cv_requirements.level_rubric";
     public const string JdRequirementsGuidance = "jd_requirements.guidance";
-    public const string RoadmapGuidance = "roadmap.guidance";
-    public const string LessonTheoryGuidance = "lesson_theory.guidance";
-    public const string SummarizeSessionGuidance = "summarize_session.guidance";
-    public const string DecideNextGuidance = "decide_next.guidance";
+
+    // ⚠ ĐÃ GỠ 2026-09-16 (không phải quên): `criteria.guidance` · `roadmap.guidance` ·
+    // `lesson_theory.guidance` · `summarize_session.guidance` · `decide_next.guidance` và
+    // `category.<nghề>.description`. Chúng được khai ở đây nhưng KHÔNG builder Python nào đọc
+    // (`grep prompts.py` = 0 hit; `test_prompt_registry_f21.py` từng ghi rõ "5 key chết cũ"), tức
+    // admin sửa xong thấy "Đã tuỳ chỉnh" mà không đổi gì — đúng lớp lỗi khối chú thích ở đầu file
+    // cảnh báo. Muốn mở lại một khoá: NỐI builder Python TRƯỚC (xét AI-4), rồi mới khai ở đây.
 
     /// <summary>
     /// E9b — hướng dẫn bổ sung cho prompt sinh MỐC ĐIỂM của tiêu chí campaign (B2B).
@@ -55,9 +57,6 @@ public static class PromptTemplateKeys
 
     /// <summary>Tên hiển thị của nghề (vd "BE" → "Backend Engineer").</summary>
     public static string CategoryDisplayName(JobCategory c) => $"category.{c}.display_name";
-
-    /// <summary>Mô tả ngắn cho người dùng chọn nghề.</summary>
-    public static string CategoryDescription(JobCategory c) => $"category.{c}.description";
 
     /// <summary>Hướng dẫn riêng theo nghề, chèn vào prompt SINH CÂU HỎI và khe hướng dẫn của
     /// prompt CHẤM. Đây là chỗ "custom 3 ngành" thực sự đổi được hành vi AI.</summary>
@@ -81,7 +80,7 @@ public static class PromptTemplateKeys
 
     /// <summary>
     /// Mọi khoá hợp lệ. Nghề lấy từ <see cref="Enum.GetValues{TEnum}()"/> nên thêm giá trị enum
-    /// là tự có đủ 3 khoá — không phải nhớ sửa ở đây.
+    /// là tự có đủ khoá — không phải nhớ sửa ở đây.
     /// </summary>
     public static IReadOnlySet<string> All { get; } = BuildAll();
 
@@ -90,16 +89,14 @@ public static class PromptTemplateKeys
         var keys = new HashSet<string>(StringComparer.Ordinal)
         {
             ScoringPersona, ScoringExtraGuidance,
-            QuestionsIntro, QuestionsGuidance, CriteriaGuidance, CvAnalysisGuidance,
+            QuestionsIntro, QuestionsGuidance, CvAnalysisGuidance,
             CvRequirementsWorkflow, CvRequirementsLevelRubric, JdRequirementsGuidance,
-            RoadmapGuidance, LessonTheoryGuidance, SummarizeSessionGuidance, DecideNextGuidance,
             CriterionLevelsGuidance,
         };
 
         foreach (var c in Enum.GetValues<JobCategory>())
         {
             keys.Add(CategoryDisplayName(c));
-            keys.Add(CategoryDescription(c));
             keys.Add(CategoryGuidance(c));
         }
 

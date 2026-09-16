@@ -999,7 +999,7 @@ Khi session đóng, engine phát event để service khác phản ứng (event-d
 ### API
 | Method | Path | Ai gọi | Ghi chú |
 |---|---|---|---|
-| GET | `/api/admin/prompts` | Admin | Mọi khoá code khai, **kể cả khoá chưa ai sửa** (`body: null` = đang dùng bản mặc định trong `prompts.py`) |
+| GET | `/api/admin/prompts` | Admin | Mọi khoá code khai, **kể cả khoá chưa ai sửa** (`body: null` = đang dùng bản mặc định trong `prompts.py`). **2026-09-16: += `defaultBody`** — bản mặc định kéo từ AIService `GET /api/v1/prompt-defaults` (cache `PromptDefaults:CacheTtlSeconds`, mặc định 300s; **fail-open ⇒ `null` = "không lấy được", KHÔNG suy thành mặc định trống**). Cùng ngày **gỡ 8 khoá chết** khỏi `PromptTemplateKeys` (`criteria/roadmap/lesson_theory/summarize_session/decide_next.guidance` + `category.<nghề>.description` — không builder Python nào đọc); còn **35 khoá** |
 | GET | `/api/admin/prompts/{key}/history` | Admin | Append-only ⇒ đây là dấu vết đầy đủ ai đổi gì, khi nào, vì sao |
 | PUT | `/api/admin/prompts/{key}` | Admin | Tạo **version mới**; 400 khi khoá lạ / body rỗng / >8.000 ký tự / chứa delimiter khung |
 | DELETE | `/api/admin/prompts/{key}` | Admin | Về bản mặc định = deactivate; **giữ lịch sử** |

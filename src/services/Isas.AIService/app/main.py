@@ -228,6 +228,20 @@ router = APIRouter(prefix="/api/v1")
 async def health():
     return {"status": "ok"}
 
+
+@router.get("/prompt-defaults")
+async def prompt_defaults(
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    """F21 — bản mặc định của từng mảnh prompt admin sửa được, để màn quản trị hiện thứ đang chạy.
+
+    Stateless (đọc literal trong code, không DB — GEN-4 nguyên). Gate X-Internal-Token như mọi
+    endpoint nội bộ (GEN-7). Interview gọi, cache, fail-open về null khi endpoint này không tới được.
+    """
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="X-Internal-Token không hợp lệ.")
+    from app.prompt_defaults import PLACEHOLDERS, build_defaults
+    return {"defaults": build_defaults(), "placeholders": PLACEHOLDERS}
+
 @router.post("/generate-questions", response_model=GenerateQuestionsResponse,
              response_model_exclude_none=True)
 async def generate_questions(req: GenerateQuestionsRequest,

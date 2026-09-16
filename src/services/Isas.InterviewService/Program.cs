@@ -149,6 +149,12 @@ builder.Services.AddHttpClient<IRubricPreviewClient, AiServiceRubricPreviewClien
     // thử đều timeout mà không ai hiểu vì sao.
     c.Timeout = TimeSpan.FromSeconds(180);
 });
+builder.Services.AddHttpClient<IPromptDefaultsProvider, AiServicePromptDefaultsClient>(c =>   // F21 — bản mặc định prompt cho màn admin (fail-open)
+{
+    var baseUrl = builder.Configuration["AiService:BaseUrl"];
+    if (!string.IsNullOrWhiteSpace(baseUrl)) c.BaseAddress = new Uri(baseUrl);
+    c.Timeout = TimeSpan.FromSeconds(5);
+});
 builder.Services.AddHttpClient<IAiServiceLevelSuggester, AiServiceLevelSuggester>(c =>   // AI soạn mốc
 {
     c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
