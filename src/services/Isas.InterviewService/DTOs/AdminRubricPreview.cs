@@ -78,9 +78,11 @@ public record AdminPreviewSample(
     IReadOnlyList<AdminPreviewSampleScore> Scores,
     DeliveryMetricsDto? DeliveryMetrics = null);
 
+/// <param name="Measured"><c>true</c> = điểm ĐO từ bản ghi (DeliveryFluencyScorer), không do AI chấm — FE gắn nhãn, không đoán theo chữ.</param>
 public record AdminPreviewSampleScore(
     Guid CriterionId, string CriterionName, int MaxScore,
-    int ExpectedLevel, decimal ActualScore, int? LevelMatched, string? Reasoning);
+    int ExpectedLevel, decimal ActualScore, int? LevelMatched, string? Reasoning,
+    bool Measured = false);
 
 /// <summary>Mốc AI gợi ý cho một tiêu chí — trả về để admin xem/sửa, KHÔNG ghi DB.</summary>
 public record AdminSuggestLevelsResponse(

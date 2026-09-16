@@ -394,7 +394,7 @@ public class AdminRubricPreviewService(
                     if (measured is null) continue;   // không đo được ⇒ LOẠI, không phải 0 (INT-18)
                     var expected = c.Levels.Count >= 2 ? Expected(c).Good : (int)Math.Ceiling(c.MaxScore * 0.6);
                     scores.Add(new AdminPreviewSampleScore(
-                        c.Id, c.Name, c.MaxScore, expected, measured.Value.Score, null, measured.Value.Reasoning));
+                        c.Id, c.Name, c.MaxScore, expected, measured.Value.Score, null, measured.Value.Reasoning, Measured: true));
                     n++;
                     if (c.MaxScore > 0)
                     {

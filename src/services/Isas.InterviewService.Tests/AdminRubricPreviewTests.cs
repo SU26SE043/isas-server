@@ -604,6 +604,8 @@ public class AdminRubricPreviewTests
         var fluency = Assert.Single(custom.Scores, sc => sc.CriterionName == B2CRubricSeed.FluencyName);
         Assert.Equal(4m, fluency.ActualScore);
         Assert.Null(fluency.LevelMatched);                          // đo, không snap mốc
+        Assert.True(fluency.Measured);
+        Assert.All(custom.Scores.Where(sc => sc.CriterionName != B2CRubricSeed.FluencyName), sc => Assert.False(sc.Measured));
         Assert.Contains("SỐ ĐO", fluency.Reasoning!);              // lý do nói rõ nguồn
         Assert.NotNull(custom.DeliveryMetrics);
         Assert.Equal(0.12, custom.DeliveryMetrics!.SilenceRatio);
