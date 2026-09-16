@@ -149,6 +149,13 @@ builder.Services.AddHttpClient<IRubricPreviewClient, AiServiceRubricPreviewClien
     // thử đều timeout mà không ai hiểu vì sao.
     c.Timeout = TimeSpan.FromSeconds(180);
 });
+builder.Services.AddHttpClient<IAiServiceTranscriber, AiServiceTranscribeClient>(c =>   // màn tự thử thước đo: nói → chép lời
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    // whisper-1 ~3–10s cho 1–3 phút audio; dự phòng Whisper cục bộ chậm hơn nhiều lần. 120s để không
+    // cắt đúng lượt rơi về dự phòng — admin đang ngồi chờ, thà chậm còn hơn "lỗi" giả.
+    c.Timeout = TimeSpan.FromSeconds(120);
+});
 builder.Services.AddHttpClient<IPromptDefaultsProvider, AiServicePromptDefaultsClient>(c =>   // F21 — bản mặc định prompt cho màn admin (fail-open)
 {
     var baseUrl = builder.Configuration["AiService:BaseUrl"];

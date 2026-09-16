@@ -42,8 +42,13 @@ public class AdminRubricPreviewService(
     InterviewDbContext db,
     IRubricPreviewClient ai,
     IAiServiceLevelSuggester? levelSuggester,
-    ILogger<AdminRubricPreviewService> logger) : IAdminRubricPreviewService
+    ILogger<AdminRubricPreviewService> logger,
+    Microsoft.Extensions.Options.IOptions<Models.DeliveryScoringOptions>? deliveryScoring = null) : IAdminRubricPreviewService
 {
+    // Cùng bảng ngưỡng với đường chấm thật (`AnswerService.AddMeasuredScores`) — tiêu chí trôi chảy
+    // đo trên bản ghi của admin phải ra đúng con số mà người luyện thật sẽ nhận.
+    private readonly Models.DeliveryScoringOptions _deliveryScoring = deliveryScoring?.Value ?? new();
+
     /// <summary>Số lượt THÀNH CÔNG miễn phí cho MỖI (nghề, ngôn ngữ, phiên bản thước đo).</summary>
     public const int FreeRunsPerRubricVersion = 5;
 
@@ -96,6 +101,11 @@ public class AdminRubricPreviewService(
         // ── 3. chọn câu hỏi ───────────────────────────────────────────────────
         var question = SelectQuestion(jobCategory, lang, request.Question, request.SampleQuestionId);
 
+        // ── 3b. bỏ 3 bài AI thì phải còn bài của người dùng để chấm ───────────
+        if (!request.IncludeAiSamples && string.IsNullOrWhiteSpace(request.CustomAnswer))
+            throw new InvalidOperationException(
+                "Không bắt AI viết bài mẫu thì phải có bài của bạn (nói hoặc dán) để chấm.");
+
         // ── 4. còn lượt nào đang chạy? (self-heal row mồ côi trước) ────────────
         await ResolveStaleRunningAsync(jobCategory, lang, ct);
         if (await db.AdminRubricPreviewRuns.AnyAsync(
@@ -147,9 +157,10 @@ public class AdminRubricPreviewService(
             var result = await ai.RunAsync(
                 jobCategory.ToString(), lang, request.Seniority,
                 question, sampleAnswer: null, request.CustomAnswer,
-                TargetWordCount, BuildPreviewCriteria(aiCriteria), ct);
+                TargetWordCount, BuildPreviewCriteria(aiCriteria), ct,
+                request.IncludeAiSamples, request.DeliveryMetrics);
 
-            var samples = BuildSamples(aiCriteria, result.Samples);
+            var samples = BuildSamples(aiCriteria, criteria, result.Samples, request.DeliveryMetrics, lang);
             run.Samples = JsonSerializer.Serialize(samples, Json);
             run.PromptVersion = result.PromptVersion;
             run.LengthParityWarning = result.LengthParityWarning;
@@ -336,15 +347,24 @@ public class AdminRubricPreviewService(
         }).ToList();
     }
 
-    private static List<AdminPreviewSample> BuildSamples(
-        List<RubricCriterion> criteria, IReadOnlyList<PreviewSample> samples)
+    /// <summary>
+    /// Ghép điểm LLM (tiêu chí AI) và — CHỈ cho bài <c>Custom</c> có bản ghi âm — điểm ĐO của tiêu chí
+    /// trôi chảy qua <see cref="DeliveryFluencyScorer"/>, đúng hàm và đúng ngưỡng đường chấm thật dùng.
+    /// 3 bài AI là văn bản nên không bao giờ có hàng đo; bài dán tay cũng vậy (FE nói rõ "không chấm").
+    /// <c>Score</c> trả <c>null</c> (nói dưới sàn thời lượng, số đo hỏng) ⇒ không thêm hàng, KHÔNG cho 0.
+    /// </summary>
+    private List<AdminPreviewSample> BuildSamples(
+        List<RubricCriterion> aiCriteria, List<RubricCriterion> allCriteria,
+        IReadOnlyList<PreviewSample> samples, DeliveryMetricsDto? customDelivery, string lang)
         => samples.Select(s =>
         {
             var scores = new List<AdminPreviewSampleScore>();
             decimal expectedSum = 0, actualSum = 0;
+            var n = 0;
 
-            foreach (var c in criteria)
+            foreach (var c in aiCriteria)
             {
+                n++;
                 var (weak, good, excellent) = Expected(c);
                 var expected = s.Band switch
                 {
@@ -365,21 +385,44 @@ public class AdminRubricPreviewService(
                 }
             }
 
+            var isCustom = s.Band == "Custom";
+            if (isCustom && customDelivery is not null)
+            {
+                foreach (var c in allCriteria.Where(c => c.ScoringMethod == CriterionScoringMethod.DeliveryMetrics))
+                {
+                    var measured = DeliveryFluencyScorer.Score(customDelivery, c.MaxScore, lang, _deliveryScoring);
+                    if (measured is null) continue;   // không đo được ⇒ LOẠI, không phải 0 (INT-18)
+                    var expected = c.Levels.Count >= 2 ? Expected(c).Good : (int)Math.Ceiling(c.MaxScore * 0.6);
+                    scores.Add(new AdminPreviewSampleScore(
+                        c.Id, c.Name, c.MaxScore, expected, measured.Value.Score, null, measured.Value.Reasoning));
+                    n++;
+                    if (c.MaxScore > 0)
+                    {
+                        expectedSum += expected / (decimal)c.MaxScore * 100m;
+                        actualSum += measured.Value.Score / c.MaxScore * 100m;
+                    }
+                }
+            }
+
             // TRUNG BÌNH CỘNG, KHÔNG weighted — B2C tính điểm tổng bằng equal weight (INT-10). Dùng
             // công thức weighted của B2B ở đây thì báo cáo chấm thử đo một thang khác với thang người
-            // luyện thật nhận, mà cả hai đều ra số trông hợp lý.
-            var n = criteria.Count > 0 ? criteria.Count : 1;
+            // luyện thật nhận, mà cả hai đều ra số trông hợp lý. Mẫu số = số tiêu chí THẬT SỰ có điểm
+            // (bài có số đo thì nhiều hơn bài AI một tiêu chí) — cùng luật `sumPct / scoredCriteriaCount`.
+            n = n > 0 ? n : 1;
             return new AdminPreviewSample(
                 s.Band, s.AnswerText, s.WordCount,
-                Math.Round(expectedSum / n, 2), Math.Round(actualSum / n, 2), scores);
+                Math.Round(expectedSum / n, 2), Math.Round(actualSum / n, 2), scores,
+                isCustom ? customDelivery : null);
         }).ToList();
 
     private static AdminRubricPreviewRunResponse ToResponse(AdminRubricPreviewRun run, int freeRemaining)
         => new(
             run.Id, run.Status.ToString(), run.JobCategory, run.Language, run.RubricVersion,
             run.QuestionText, run.RubricFingerprint, run.PromptVersion,
-            // Bài mẫu là văn bản ⇒ không có số đo cách nói (F11). Băng cảnh báo trên FE đọc cờ này.
-            DeliveryMetricsAvailable: false,
+            // Có số đo khi bài Custom đi từ bản ghi âm (transcribe); 3 bài AI và bài dán tay thì không.
+            // FE dùng cờ để quyết định hiện băng "bài là văn bản" hay khối số đo cách nói.
+            DeliveryMetricsAvailable: (Deserialize<List<AdminPreviewSample>>(run.Samples) ?? [])
+                .Any(x => x.DeliveryMetrics is not null),
             run.LengthParityWarning,
             freeRemaining,
             Deserialize<List<AdminPreviewRubricCriterion>>(run.RubricSnapshot) ?? [],

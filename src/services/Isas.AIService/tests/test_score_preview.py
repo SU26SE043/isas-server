@@ -525,3 +525,74 @@ def test_endpoint_moi_field_request_toi_duoc_provider(monkeypatch):
         # sampleAnswer tới được lượt chấm (F13). Delimiter là bản EN vì `build_sample_answer_block`
         # rẽ nhánh theo NGÔN NGỮ — assert bản tiếng Việt ở đây sẽ đỏ vì lý do chẳng liên quan.
         assert "---REFERENCE ANSWER (DATA)---" in p
+
+
+# ── (6) Chấm BÀI CỦA CHÍNH NGƯỜI DÙNG (nói/dán) — includeAiSamples=false + customDelivery ─────
+
+def _delivery():
+    return {"metricsVersion": 2, "audioSec": 48.0, "speechSec": 42.0, "wordCount": 110,
+            "speechRateWpm": 157.0, "longestPauseSec": 1.8, "pauseCount": 3, "silenceRatio": 0.12,
+            "fillerCount": 1, "fillerPer100Words": 0.9}
+
+
+def test_includeAiSamples_false_KHONG_sinh_bai_mau_chi_cham_bai_nguoi_dung(monkeypatch):
+    """Người chỉ muốn xem hệ chấm MÌNH thế nào không cần 3 bài AI (1 lượt sinh + 3 lượt chấm,
+    30–60s). Cờ tắt ⇒ đúng MỘT lượt chấm, KHÔNG gọi sinh bài, band duy nhất là Custom."""
+    calls: list[dict] = []
+
+    async def _score(**kwargs):
+        calls.append(kwargs)
+        return ScoreOutcome(scores=[{"criterionId": "c1", "score": 3.0, "levelMatched": 2,
+                                     "reasoning": 'nói "dùng index" có ví dụ'}],
+                            sample_answer="mẫu", prompt_version=7)
+    monkeypatch.setattr(main_module.provider, "score", _score)
+    gen = AsyncMock(side_effect=AssertionError("KHÔNG được sinh 3 bài mẫu khi cờ tắt"))
+    monkeypatch.setattr(main_module.provider, "generate_preview_answers", gen)
+
+    res = client.post("/api/v1/score-preview", headers=_HEADERS,
+                      json=_payload(includeAiSamples=False, customAnswer="Em sẽ thêm index cho cột hay lọc."))
+
+    assert res.status_code == 200
+    body = res.json()
+    assert [s["band"] for s in body["samples"]] == ["Custom"]
+    assert len(calls) == 1 and calls[0]["transcript"] == "Em sẽ thêm index cho cột hay lọc."
+    assert gen.await_count == 0
+    assert body["lengthParityWarning"] is False        # không có 3 bài thì không có gì để lệch
+
+
+def test_includeAiSamples_false_ma_khong_co_customAnswer_400():
+    res = client.post("/api/v1/score-preview", headers=_HEADERS, json=_payload(includeAiSamples=False))
+    assert res.status_code == 400
+    assert "customAnswer" in res.json()["detail"]
+
+
+def test_customDelivery_CHI_gan_vao_bai_nguoi_dung_khong_gan_vao_3_bai_AI(monkeypatch):
+    """Số đo cách nói là của BẢN GHI người dùng; 3 bài AI là văn bản. Gắn nhầm là bịa bằng chứng
+    cho bài không có nó (F11: prompt bảo LLM tin chỉ số thời gian nhất)."""
+    seen: dict[str, dict | None] = {}
+
+    async def _score(**kwargs):
+        seen[kwargs["transcript"]] = kwargs["delivery"]
+        return ScoreOutcome(scores=[{"criterionId": "c1", "score": 2.0, "levelMatched": 2,
+                                     "reasoning": 'trích "x"'}], sample_answer="mẫu", prompt_version=7)
+    monkeypatch.setattr(main_module.provider, "score", _score)
+    monkeypatch.setattr(main_module.provider._client.aio.models, "generate_content",
+                        AsyncMock(return_value=_answers_response()))
+
+    res = client.post("/api/v1/score-preview", headers=_HEADERS,
+                      json=_payload(customAnswer="bài tôi nói", customDelivery=_delivery()))
+
+    assert res.status_code == 200
+    assert seen["bài tôi nói"]["silenceRatio"] == 0.12 and seen["bài tôi nói"]["pauseCount"] == 3
+    ai_texts = [t for t in seen if t != "bài tôi nói"]
+    assert len(ai_texts) == 3 and all(seen[t] is None for t in ai_texts)
+
+
+def test_mac_dinh_includeAiSamples_true_hop_dong_cu_khong_doi(monkeypatch):
+    """Employer/admin đang gọi KHÔNG kèm cờ — vẫn phải ra đúng 3 bài như trước."""
+    monkeypatch.setattr(main_module.provider, "score", _fake_score())
+    gen = AsyncMock(return_value=_answers_response())
+    monkeypatch.setattr(main_module.provider._client.aio.models, "generate_content", gen)
+    res = client.post("/api/v1/score-preview", headers=_HEADERS, json=_payload())
+    assert res.status_code == 200
+    assert [s["band"] for s in res.json()["samples"]] == ["Weak", "Good", "Excellent"]

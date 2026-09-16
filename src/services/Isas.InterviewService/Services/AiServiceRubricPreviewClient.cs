@@ -30,7 +30,8 @@ public interface IRubricPreviewClient
     Task<RubricPreviewResult> RunAsync(
         string jobCategory, string language, string? seniority,
         string question, string? sampleAnswer, string? customAnswer, int targetWordCount,
-        IReadOnlyList<PreviewCriterionInput> criteria, CancellationToken ct = default);
+        IReadOnlyList<PreviewCriterionInput> criteria, CancellationToken ct = default,
+        bool includeAiSamples = true, DeliveryMetricsDto? customDelivery = null);
 }
 
 /// <summary>
@@ -69,7 +70,8 @@ public class AiServiceRubricPreviewClient : IRubricPreviewClient
     public async Task<RubricPreviewResult> RunAsync(
         string jobCategory, string language, string? seniority,
         string question, string? sampleAnswer, string? customAnswer, int targetWordCount,
-        IReadOnlyList<PreviewCriterionInput> criteria, CancellationToken ct = default)
+        IReadOnlyList<PreviewCriterionInput> criteria, CancellationToken ct = default,
+        bool includeAiSamples = true, DeliveryMetricsDto? customDelivery = null)
     {
         using var msg = new HttpRequestMessage(HttpMethod.Post, "/api/v1/score-preview")
         {
@@ -81,6 +83,10 @@ public class AiServiceRubricPreviewClient : IRubricPreviewClient
                 question,
                 sampleAnswer,
                 customAnswer,
+                // Hai khoá dưới là HỢP ĐỒNG với `ScorePreviewRequest` (schemas.py): pydantic
+                // `extra='ignore'` ⇒ sai tên là bị nuốt im lặng — 3 bài AI vẫn sinh, số đo vẫn rơi.
+                includeAiSamples,
+                customDelivery,
                 targetWordCount,
                 criteria = criteria.Select(c => new
                 {
