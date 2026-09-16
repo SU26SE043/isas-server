@@ -315,7 +315,10 @@ class ScorePreviewRequest(BaseModel):
     # Số đo CÁCH NÓI của chính bản ghi âm người dùng (từ `/transcribe`) — khi có, bài của họ được chấm
     # với khối số đo THẬT (F11) thay vì "chưa đo được", và phía .NET đo được cả tiêu chí trôi chảy.
     # Chỉ áp cho bài của người dùng; 3 bài AI vẫn là văn bản (delivery=None).
-    customDelivery: DeliveryMetrics | None = None
+    # Forward-ref CHUỖI: `DeliveryMetrics` khai ở dưới file. Python 3.12 (image) đánh giá annotation
+    # ngay lúc dựng class ⇒ NameError, aiapi crash-loop lúc import (đã xảy ra trên dev 2026-09-16);
+    # Python 3.14 (venv local) hoãn đánh giá nên pytest xanh — test không bắt được, chỉ deploy mới lộ.
+    customDelivery: "DeliveryMetrics | None" = None
     # False ⇒ KHÔNG sinh 3 bài mẫu, chỉ chấm `customAnswer` (bắt buộc có). Mặc định True để hợp
     # đồng cũ (employer/admin đang gọi không kèm cờ) không đổi hành vi. Đây là cờ tiết kiệm THẬT:
     # 3 bài mẫu = 1 lượt sinh + 3 lượt chấm Gemini và 30–60s chờ — người chỉ muốn xem hệ chấm
