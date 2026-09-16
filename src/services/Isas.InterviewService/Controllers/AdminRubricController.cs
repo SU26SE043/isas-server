@@ -20,8 +20,12 @@ namespace Isas.InterviewService.Controllers;
 [Authorize(Roles = "Admin")]
 public class AdminRubricController(
     IAdminB2CRubricService service,
-    IAdminRubricPreviewService preview) : ControllerBase
+    IAdminRubricPreviewService preview,
+    IAiServiceTranscriber? transcriber = null) : ControllerBase
 {
+    /// <summary>Trần file ghi âm cho màn tự thử: ~3 phút webm/opus ≈ 2–3 MB; 15 MB là dư cho m4a.</summary>
+    public const long TranscribeMaxBytes = 15 * 1024 * 1024;
+
     private Guid ActorId =>
         Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"),
             out var id) ? id : Guid.Empty;
@@ -200,6 +204,47 @@ public class AdminRubricController(
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Chép lời một bản ghi âm rời cho màn "tự thử thước đo": admin nói vào mic → hệ chép lời + đo
+    /// cách nói → bản chép hiện ra để sửa → rồi mới chấm (POST …/preview với <c>customAnswer</c> +
+    /// <c>deliveryMetrics</c>). KHÔNG tốn lượt chấm thử, KHÔNG lưu gì (không buổi, không answer, không
+    /// S3). Không có tiếng nói → 200 với <c>noSpeech=true</c>, không phải lỗi — đó là chuyện của bản ghi.
+    /// </summary>
+    [HttpPost("{jobCategory}/preview/transcribe")]
+    [RequestSizeLimit(TranscribeMaxBytes)]
+    [ProducesResponseType(typeof(AdminPreviewTranscribeResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status502BadGateway)]
+    public async Task<IActionResult> TranscribeForPreview(
+        JobCategory jobCategory, IFormFile? file, [FromQuery] string? language, CancellationToken ct)
+    {
+        _ = jobCategory;   // giữ route đồng nhất với nhóm preview; chép lời không phụ thuộc nghề
+        if (transcriber is null)
+            return StatusCode(StatusCodes.Status502BadGateway, new { message = "Chưa cấu hình dịch vụ chép lời." });
+        if (file is null || file.Length == 0)
+            return BadRequest(new { message = "Thiếu file ghi âm." });
+        if (file.Length > TranscribeMaxBytes)
+            return BadRequest(new { message = $"File ghi âm quá lớn (trần {TranscribeMaxBytes / (1024 * 1024)} MB)." });
+        var lang = string.IsNullOrWhiteSpace(language) ? "vi" : language.Trim().ToLowerInvariant();
+        if (lang is not ("vi" or "en"))
+            return BadRequest(new { message = "language phải là 'vi' hoặc 'en'." });
+
+        try
+        {
+            await using var stream = file.OpenReadStream();
+            var result = await transcriber.TranscribeAsync(
+                stream, string.IsNullOrWhiteSpace(file.FileName) ? "answer.webm" : file.FileName,
+                file.ContentType, lang, ct);
+            return Ok(new AdminPreviewTranscribeResponse(
+                result.Text, result.DeliveryMetrics, result.TranscriptEngine,
+                NoSpeech: string.Equals(result.RejectReason, "no_speech", StringComparison.OrdinalIgnoreCase)));
+        }
+        catch (DownstreamServiceException ex)
+        {
+            return StatusCode(StatusCodes.Status502BadGateway, new { message = ex.Message });
         }
     }
 

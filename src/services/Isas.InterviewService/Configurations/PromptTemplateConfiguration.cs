@@ -20,6 +20,8 @@ public class PromptTemplateConfiguration : IEntityTypeConfiguration<PromptTempla
         e.Property(x => x.Version).IsRequired();
         e.Property(x => x.IsActive).IsRequired();
         e.Property(x => x.UpdatedBy).IsRequired();
+        // 256 = trần email hợp lệ (RFC 5321); cùng cỡ với `ranking_overrides.actor_email`.
+        e.Property(x => x.UpdatedByEmail).HasMaxLength(256);
         e.Property(x => x.ChangeNote).HasMaxLength(512);
 
         // Append-only: mỗi (key, version) chỉ tồn tại một lần. Đây là hàng rào ở tầng DB cho

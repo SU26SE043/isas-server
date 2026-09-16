@@ -1,5 +1,5 @@
 using System.ComponentModel.DataAnnotations;
-
+using System.Text.Json.Serialization;
 namespace Isas.InterviewService.DTOs;
 
 /// <summary>
@@ -31,6 +31,7 @@ public record RoadmapLevelThresholdResponse(
     DateTime? UpdatedAt,
     bool IsKnownLevel = true);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public class UpdateRoadmapLevelThresholdsRequest
 {
     /// <summary>

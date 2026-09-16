@@ -13,24 +13,29 @@ namespace Isas.PaymentService.Controllers
     {
         private readonly IPackageService _package;
 
+        /// <summary>Cờ xem gói đã ẩn chỉ được tôn trọng khi caller là Admin (role claim khớp A5).</summary>
+        private bool CanSeeInactive(bool requested) => requested && User.IsInRole("Admin");
+
         public PackageController(IPackageService package)
         {
             _package = package;
         }
 
         // A5 — catalog gói prepaid đang bán là PUBLIC (payment.md:104): không cần đăng nhập để xem giá.
+        // BE-D1 — `?includeInactive=true` CHỈ có hiệu lực với Admin (màn Gói & Tier cần thấy gói đã ẩn để
+        // "Bán lại"); người lạ/candidate truyền cờ này vẫn chỉ thấy gói đang bán — giá chưa công bố không lộ.
         [HttpGet]
         [AllowAnonymous]
-        public async Task<ActionResult<List<PackageResponse>>> GetAllPackageAsync(CancellationToken ct = default)
+        public async Task<ActionResult<List<PackageResponse>>> GetAllPackageAsync([FromQuery] bool includeInactive = false, CancellationToken ct = default)
         {
-            return await _package.GetAllPackagesAsync(ct);
+            return await _package.GetAllPackagesAsync(CanSeeInactive(includeInactive), ct);
         }
 
         [HttpGet("{id:guid}")]
         [AllowAnonymous]
-        public async Task<ActionResult<PackageResponse>> GetPackageAsync(Guid id, CancellationToken ct = default)
+        public async Task<ActionResult<PackageResponse>> GetPackageAsync(Guid id, [FromQuery] bool includeInactive = false, CancellationToken ct = default)
         {
-            var package = await _package.GetPackageAsync(id, ct);
+            var package = await _package.GetPackageAsync(id, CanSeeInactive(includeInactive), ct);
             if (package is null) return NotFound(new { message = "Package not found" });
 
             return package;

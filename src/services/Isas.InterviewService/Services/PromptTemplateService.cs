@@ -9,7 +9,10 @@ namespace Isas.InterviewService.Services;
 /// <summary>
 /// F21 (FR17) — quản lý mảnh prompt do admin tuỳ biến. Append-only, soft-versioned (mẫu BC16).
 /// </summary>
-public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplateService> logger)
+public class PromptTemplateService(
+    InterviewDbContext db,
+    ILogger<PromptTemplateService> logger,
+    IPromptDefaultsProvider? defaults = null)
 {
     /// <summary>Trần độ dài một mảnh. Không phải con số thiêng — nó tồn tại vì mảnh prompt đi
     /// THẲNG vào mỗi lượt gọi Gemini, nên một lần dán nhầm cả quyển tài liệu vào đây là mọi lượt
@@ -40,15 +43,25 @@ public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplate
             .AsNoTracking()
             .ToDictionaryAsync(p => p.Key, ct);
 
+        // Bản mặc định kéo từ AIService (fail-open ⇒ null): admin phải THẤY câu đang chạy để biết mình
+        // sắp thay cái gì — trước đây body null ra ô trống câm (đo trên dev 2026-09-16).
+        var defaultMap = defaults is null ? null : await defaults.GetDefaultsAsync(ct);
+
         // Trả về MỌI khoá khai trong code, kể cả khoá chưa ai sửa. Chỉ trả những khoá có row
         // sẽ khiến màn quản trị trông như hệ thống chỉ có vài prompt — người dùng không thể biết
         // mình được sửa những gì. Khoá chưa tuỳ biến ⇒ body null = "đang dùng bản mặc định
         // trong code" (bản mặc định nằm ở prompts.py, cố ý KHÔNG chép sang .NET).
         return [.. PromptTemplateKeys.All
             .OrderBy(k => k, StringComparer.Ordinal)
-            .Select(k => active.TryGetValue(k, out var t)
-                ? new PromptTemplateResponse(k, t.Version, t.Body, t.UpdatedBy, t.ChangeNote, t.CreatedAt)
-                : new PromptTemplateResponse(k, 0, null, null, null, null))];
+            .Select(k =>
+            {
+                // Có bản đồ nhưng thiếu khoá ⇒ null (không phải ""): "" nghĩa là "mặc định trống", còn thiếu
+                // khoá là lệch hợp đồng — hai chuyện khác nhau, đừng gộp.
+                var def = defaultMap is not null && defaultMap.TryGetValue(k, out var d) ? d : null;
+                return active.TryGetValue(k, out var t)
+                    ? new PromptTemplateResponse(k, t.Version, t.Body, t.UpdatedBy, t.ChangeNote, t.CreatedAt, def, t.UpdatedByEmail)
+                    : new PromptTemplateResponse(k, 0, null, null, null, null, def);
+            })];
     }
 
     public async Task<IReadOnlyList<PromptTemplateResponse>> HistoryAsync(string key, CancellationToken ct) =>
@@ -57,7 +70,7 @@ public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplate
             .OrderByDescending(p => p.Version)
             .AsNoTracking()
             .Select(p => new PromptTemplateResponse(
-                p.Key, p.Version, p.Body, p.UpdatedBy, p.ChangeNote, p.CreatedAt))
+                p.Key, p.Version, p.Body, p.UpdatedBy, p.ChangeNote, p.CreatedAt, null, p.UpdatedByEmail))
             .ToListAsync(ct);
 
     /// <summary>Bản đồ khoá→văn bản đang hiệu lực, cho AIService nạp (endpoint internal).</summary>
@@ -73,8 +86,10 @@ public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplate
     /// </summary>
     /// <exception cref="InvalidOperationException">Khoá lạ · body rỗng/quá dài · body chứa
     /// delimiter khung. Controller map sang 400.</exception>
+    /// <param name="actorEmail">Email admin lúc ghi (claim <c>email</c>) — snapshot vào bản ghi để lịch
+    /// sử đọc được bằng tên người. Trống ⇒ lưu null, không chặn (thiếu claim không phải lỗi của admin).</param>
     public async Task<PromptTemplateResponse> UpsertAsync(
-        string key, string body, Guid actor, string? changeNote, CancellationToken ct)
+        string key, string body, Guid actor, string? actorEmail, string? changeNote, CancellationToken ct)
     {
         if (!PromptTemplateKeys.All.Contains(key))
             throw new InvalidOperationException(
@@ -109,15 +124,20 @@ public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplate
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct);
 
-            var current = await db.PromptTemplates
-                .Where(p => p.Key == key && p.IsActive)
+            // Đọc MỌI bản của khoá, không chỉ bản đang hiệu lực: số version phải tính trên cả lịch sử
+            // đã hạ cờ. Bản trước tính trên bản active nên sau "Về mặc định" (0 bản active) lần lưu kế
+            // ra `next = 1` — trùng bản v1 đang nằm trong lịch sử ⇒ UNIQUE (key, version) nổ 500, admin
+            // không bao giờ lưu lại được sau khi đã reset một lần (đo trên dev 2026-09-16). Version là
+            // định danh, có lỗ số là bình thường (tiền lệ CAMP-18).
+            var all = await db.PromptTemplates
+                .Where(p => p.Key == key)
                 .ToListAsync(ct);
 
-            foreach (var c in current) c.IsActive = false;
+            foreach (var c in all.Where(c => c.IsActive)) c.IsActive = false;
 
-            var next = current.Count == 0
+            var next = all.Count == 0
                 ? 1
-                : current.Max(c => c.Version) + 1;
+                : all.Max(c => c.Version) + 1;
 
             var row = new PromptTemplate
             {
@@ -126,6 +146,7 @@ public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplate
                 Body = body,
                 IsActive = true,
                 UpdatedBy = actor,
+                UpdatedByEmail = string.IsNullOrWhiteSpace(actorEmail) ? null : actorEmail.Trim(),
                 ChangeNote = changeNote,
             };
 
@@ -140,7 +161,7 @@ public class PromptTemplateService(InterviewDbContext db, ILogger<PromptTemplate
 
         return new PromptTemplateResponse(
             created.Key, created.Version, created.Body,
-            created.UpdatedBy, created.ChangeNote, created.CreatedAt);
+            created.UpdatedBy, created.ChangeNote, created.CreatedAt, null, created.UpdatedByEmail);
     }
 
     /// <summary>

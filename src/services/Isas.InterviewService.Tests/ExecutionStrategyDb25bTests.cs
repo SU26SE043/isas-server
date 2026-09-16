@@ -39,7 +39,7 @@ public class ExecutionStrategyDb25bTests
         var svc = new PromptTemplateService(db, NullLogger<PromptTemplateService>.Instance);
 
         var res = await svc.UpsertAsync(
-            PromptTemplateKeys.ScoringPersona, "bản một", Guid.NewGuid(), null, default);
+            PromptTemplateKeys.ScoringPersona, "bản một", Guid.NewGuid(), null, null, default);
 
         Assert.Equal(1, res.Version);
         using var verify = t.NewContext();
@@ -90,7 +90,7 @@ public class ExecutionStrategyDb25bTests
         using var db = t.NewContext(deps => new RetryOnTestFaultStrategy(deps), new[] { fault });
         var svc = new PromptTemplateService(db, NullLogger<PromptTemplateService>.Instance);
 
-        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản một", Guid.NewGuid(), null, default);
+        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản một", Guid.NewGuid(), null, null, default);
 
         Assert.True(fault.Fired, "Interceptor chưa hề kích hoạt ⇒ phép thử không chứng minh được gì.");
         using var verify = t.NewContext();

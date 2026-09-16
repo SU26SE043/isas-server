@@ -228,6 +228,20 @@ router = APIRouter(prefix="/api/v1")
 async def health():
     return {"status": "ok"}
 
+
+@router.get("/prompt-defaults")
+async def prompt_defaults(
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token")):
+    """F21 — bản mặc định của từng mảnh prompt admin sửa được, để màn quản trị hiện thứ đang chạy.
+
+    Stateless (đọc literal trong code, không DB — GEN-4 nguyên). Gate X-Internal-Token như mọi
+    endpoint nội bộ (GEN-7). Interview gọi, cache, fail-open về null khi endpoint này không tới được.
+    """
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="X-Internal-Token không hợp lệ.")
+    from app.prompt_defaults import PLACEHOLDERS, build_defaults
+    return {"defaults": build_defaults(), "placeholders": PLACEHOLDERS}
+
 @router.post("/generate-questions", response_model=GenerateQuestionsResponse,
              response_model_exclude_none=True)
 async def generate_questions(req: GenerateQuestionsRequest,
@@ -365,6 +379,11 @@ async def score_preview(req: ScorePreviewRequest,
         raise HTTPException(status_code=400, detail="question không được rỗng")
     if not req.criteria:
         raise HTTPException(status_code=400, detail="criteria không được rỗng")
+    custom = (req.customAnswer or "").strip()
+    if not req.includeAiSamples and not custom:
+        raise HTTPException(
+            status_code=400,
+            detail="includeAiSamples=false thì phải có customAnswer — không còn bài nào để chấm.")
 
     for c in req.criteria:
         scores = {lv.score for lv in c.levels}
@@ -385,19 +404,26 @@ async def score_preview(req: ScorePreviewRequest,
                            f"trong thang {sorted(scores)}.")
 
     try:
-        generated = await provider.generate_preview_answers(
-            req.question, [c.model_dump() for c in req.criteria],
-            req.targetWordCount, req.sampleAnswer,
-            language=req.language, seniority=req.seniority)
+        length_parity_warning = False
+        pending: list[tuple[str, str, int]] = []
+        if req.includeAiSamples:
+            generated = await provider.generate_preview_answers(
+                req.question, [c.model_dump() for c in req.criteria],
+                req.targetWordCount, req.sampleAnswer,
+                language=req.language, seniority=req.seniority)
+            pending = [(a.band, a.text, a.word_count) for a in generated.answers]
+            length_parity_warning = generated.length_parity_warning
 
         scoring_criteria = build_preview_scoring_criteria(req.criteria)
 
-        pending = [(a.band, a.text, a.word_count) for a in generated.answers]
-        if req.customAnswer and req.customAnswer.strip():
-            # Bài thứ 4 do HR tự dán — bài DUY NHẤT trong bộ này không do chính bộ chấm viết ra,
-            # nên là đối chứng duy nhất không dính self-scoring bias.
-            custom = req.customAnswer.strip()
+        if custom:
+            # Bài do người dùng tự nói/dán — bài DUY NHẤT trong bộ này không do chính bộ chấm viết
+            # ra, nên là đối chứng duy nhất không dính self-scoring bias.
             pending.append(("Custom", custom, gemini_module.preview_word_count(custom)))
+
+        # Số đo cách nói CHỈ gắn cho bài của người dùng: 3 bài AI là văn bản, không có bản ghi nào
+        # để đo. Gắn số đo của người dùng vào bài AI là bịa bằng chứng cho bài không có nó.
+        custom_delivery = req.customDelivery.model_dump() if req.customDelivery else None
 
         # Song song: 3-4 lượt chấm tuần tự sẽ kéo request đồng bộ này lên gấp mấy lần, mà HR đang
         # ngồi chờ. Mỗi lượt vẫn là một lời gọi ĐỘC LẬP — xem ràng buộc 2 ở docstring.
@@ -408,11 +434,11 @@ async def score_preview(req: ScorePreviewRequest,
                 job_category=req.jobCategory,
                 criteria=scoring_criteria,
                 temperature=0.0,          # ĐÚNG attempt-1 của production (E10)
-                delivery=None,            # bài là văn bản → không có số đo cách nói (F11)
+                delivery=custom_delivery if band == "Custom" else None,
                 language=req.language,
                 sample_answer=req.sampleAnswer,
             )
-            for _, text, _ in pending
+            for band, text, _ in pending
         ])
     except HTTPException:
         raise
@@ -433,7 +459,7 @@ async def score_preview(req: ScorePreviewRequest,
         # tại chỗ). Thiếu nó, HR so hai lần chấm thử rồi quy mọi thay đổi cho việc mình sửa mốc,
         # trong khi admin có thể vừa sửa prompt F21 ở giữa.
         promptVersion=outcomes[0].prompt_version if outcomes else None,
-        lengthParityWarning=generated.length_parity_warning,
+        lengthParityWarning=length_parity_warning,
     )
 
 
@@ -755,6 +781,9 @@ async def transcribe(file: UploadFile = File(...), language: str = "vi",
             "text": result.text,
             "deliveryMetrics": result.metrics.to_dict() if result.metrics else None,
             "transcriptEngine": result.engine,
+            # Cổng im lặng (VAD) trả `no_speech` với text rỗng — caller phải phân biệt "không có
+            # tiếng nói" với "chép ra rỗng vì lỗi": một bên là chuyện của người nói, một bên là của ta.
+            "rejectReason": result.reject_reason,
         }
     except Exception as ex:
         raise HTTPException(status_code=502, detail=f"Lỗi transcribe: {ex}")

@@ -296,6 +296,35 @@ def test_prompt_sinh_bai_nem_muc_ky_vong_kem_descriptor():
     assert "CÓ: khái niệm + ví dụ + số liệu | CÒN THIẾU: —" in prompt
 
 
+def test_prompt_sinh_bai_co_TRAN_va_SAN_theo_tung_moc():
+    """Hiệu chuẩn 2026-09-16 (35 lượt Gemini thật, bộ chuẩn BE/vi): chỉ nêu mốc đích thì bài "yếu"
+    được chấm 47–70% vì model viết bài ĐÚNG-mà-nông rồi đổi giọng. Trần ("không được thoả mốc kế
+    trên") + sàn ("phải đủ yếu tố mốc đích") là hai biên bắt buộc — bỏ một biên là quay lại lệch cũ."""
+    prompt = build_preview_answers_prompt("Câu hỏi?", [_criterion()], 160)   # mốc 0/2/5, kỳ vọng 0/2/5
+    weak = prompt[prompt.index("MỤC TIÊU CHO BÀI YẾU"):prompt.index("MỤC TIÊU CHO BÀI KHÁ")]
+    assert "TRẦN: bài KHÔNG được thoả mốc 2" in weak                 # mốc kế trên của 0 là 2 (không phải 1)
+    assert "SÀN: bài PHẢI thể hiện ĐỦ những gì mốc 0 mô tả" in weak
+    excellent = prompt[prompt.index("MỤC TIÊU CHO BÀI XUẤT SẮC"):]
+    assert "TRẦN" not in excellent.split("---HẾT MỐC---")[0]     # mốc cao nhất không có trần
+    assert "SÀN: bài PHẢI thể hiện ĐỦ những gì mốc 5 mô tả" in excellent
+
+
+def test_prompt_sinh_bai_dinh_nghia_YEU_bang_cai_SAI_va_doi_ke_hoach_truoc():
+    """Cùng vòng hiệu chuẩn: câu cũ "chỉ nông và có chỗ sai" kéo model về bài đúng-nông. Yếu phải
+    là HIỂU SAI (≥2 phát biểu sai thật, là ý chính, không kèm bản đúng) và model phải khai kế hoạch
+    (`plan`) trước khi viết. Bài mẫu là LỜI NÓI: cấm backtick/ký hiệu code."""
+    prompt = build_preview_answers_prompt("Câu hỏi?", [_criterion()], 160)
+    assert "YẾU LÀ HIỂU SAI, KHÔNG PHẢI NÓI VỤNG" in prompt
+    assert "ÍT NHẤT HAI phát biểu kỹ thuật SAI THẬT" in prompt
+    assert "ĐÚNG LÀ:" in prompt                                   # bản đúng đi kèm để chắc câu đó sai thật
+    assert "KHÔNG được đồng thời nói ra bản đúng" in prompt
+    assert "chỉ nông và có chỗ sai" not in prompt                 # câu cũ gây lệch không được quay lại
+    assert "KẾ HOẠCH TRƯỚC, BÀI SAU" in prompt
+    assert '"plan":"..."' in prompt
+    assert "KHÔNG dùng dấu backtick" in prompt
+    assert "TỰ KIỂM TRƯỚC KHI TRẢ" in prompt
+
+
 @pytest.mark.asyncio
 async def test_lech_do_dai_thi_sinh_lai_mot_luot_roi_moi_giao_kem_co():
     provider = GeminiProvider()
@@ -313,6 +342,27 @@ async def test_lech_do_dai_thi_sinh_lai_mot_luot_roi_moi_giao_kem_co():
     assert calls["n"] == settings.preview_answers_max_attempts == 2
     assert result.length_parity_warning is True
     assert len(result.answers) == 3            # KHÔNG 502 — HR vẫn xem được bài
+
+
+@pytest.mark.asyncio
+async def test_schema_sinh_bai_BAT_BUOC_plan_va_dat_plan_TRUOC_text():
+    """Kế hoạch phải là trường bắt buộc và đứng TRƯỚC `text` trong schema — model viết plan rồi mới
+    viết bài. Để `plan` tuỳ chọn thì model bỏ qua nó (đo: bài yếu quay về đúng-mà-nông)."""
+    provider = GeminiProvider()
+    seen = {}
+
+    async def _gen(*, model, contents, config):
+        seen["config"] = config
+        return _answers_response(weak="w " * 100, good="g " * 100, excellent="e " * 100)
+
+    provider._client.aio.models.generate_content = AsyncMock(side_effect=_gen)
+    await provider.generate_preview_answers("Câu hỏi?", [_criterion()], 160)
+
+    item = seen["config"].response_schema["properties"]["answers"]["items"]
+    assert "plan" in item["properties"]
+    assert set(item["required"]) >= {"band", "plan", "text"}
+    order = item["propertyOrdering"]
+    assert order.index("plan") < order.index("text")
 
 
 @pytest.mark.asyncio
@@ -475,3 +525,74 @@ def test_endpoint_moi_field_request_toi_duoc_provider(monkeypatch):
         # sampleAnswer tới được lượt chấm (F13). Delimiter là bản EN vì `build_sample_answer_block`
         # rẽ nhánh theo NGÔN NGỮ — assert bản tiếng Việt ở đây sẽ đỏ vì lý do chẳng liên quan.
         assert "---REFERENCE ANSWER (DATA)---" in p
+
+
+# ── (6) Chấm BÀI CỦA CHÍNH NGƯỜI DÙNG (nói/dán) — includeAiSamples=false + customDelivery ─────
+
+def _delivery():
+    return {"metricsVersion": 2, "audioSec": 48.0, "speechSec": 42.0, "wordCount": 110,
+            "speechRateWpm": 157.0, "longestPauseSec": 1.8, "pauseCount": 3, "silenceRatio": 0.12,
+            "fillerCount": 1, "fillerPer100Words": 0.9}
+
+
+def test_includeAiSamples_false_KHONG_sinh_bai_mau_chi_cham_bai_nguoi_dung(monkeypatch):
+    """Người chỉ muốn xem hệ chấm MÌNH thế nào không cần 3 bài AI (1 lượt sinh + 3 lượt chấm,
+    30–60s). Cờ tắt ⇒ đúng MỘT lượt chấm, KHÔNG gọi sinh bài, band duy nhất là Custom."""
+    calls: list[dict] = []
+
+    async def _score(**kwargs):
+        calls.append(kwargs)
+        return ScoreOutcome(scores=[{"criterionId": "c1", "score": 3.0, "levelMatched": 2,
+                                     "reasoning": 'nói "dùng index" có ví dụ'}],
+                            sample_answer="mẫu", prompt_version=7)
+    monkeypatch.setattr(main_module.provider, "score", _score)
+    gen = AsyncMock(side_effect=AssertionError("KHÔNG được sinh 3 bài mẫu khi cờ tắt"))
+    monkeypatch.setattr(main_module.provider, "generate_preview_answers", gen)
+
+    res = client.post("/api/v1/score-preview", headers=_HEADERS,
+                      json=_payload(includeAiSamples=False, customAnswer="Em sẽ thêm index cho cột hay lọc."))
+
+    assert res.status_code == 200
+    body = res.json()
+    assert [s["band"] for s in body["samples"]] == ["Custom"]
+    assert len(calls) == 1 and calls[0]["transcript"] == "Em sẽ thêm index cho cột hay lọc."
+    assert gen.await_count == 0
+    assert body["lengthParityWarning"] is False        # không có 3 bài thì không có gì để lệch
+
+
+def test_includeAiSamples_false_ma_khong_co_customAnswer_400():
+    res = client.post("/api/v1/score-preview", headers=_HEADERS, json=_payload(includeAiSamples=False))
+    assert res.status_code == 400
+    assert "customAnswer" in res.json()["detail"]
+
+
+def test_customDelivery_CHI_gan_vao_bai_nguoi_dung_khong_gan_vao_3_bai_AI(monkeypatch):
+    """Số đo cách nói là của BẢN GHI người dùng; 3 bài AI là văn bản. Gắn nhầm là bịa bằng chứng
+    cho bài không có nó (F11: prompt bảo LLM tin chỉ số thời gian nhất)."""
+    seen: dict[str, dict | None] = {}
+
+    async def _score(**kwargs):
+        seen[kwargs["transcript"]] = kwargs["delivery"]
+        return ScoreOutcome(scores=[{"criterionId": "c1", "score": 2.0, "levelMatched": 2,
+                                     "reasoning": 'trích "x"'}], sample_answer="mẫu", prompt_version=7)
+    monkeypatch.setattr(main_module.provider, "score", _score)
+    monkeypatch.setattr(main_module.provider._client.aio.models, "generate_content",
+                        AsyncMock(return_value=_answers_response()))
+
+    res = client.post("/api/v1/score-preview", headers=_HEADERS,
+                      json=_payload(customAnswer="bài tôi nói", customDelivery=_delivery()))
+
+    assert res.status_code == 200
+    assert seen["bài tôi nói"]["silenceRatio"] == 0.12 and seen["bài tôi nói"]["pauseCount"] == 3
+    ai_texts = [t for t in seen if t != "bài tôi nói"]
+    assert len(ai_texts) == 3 and all(seen[t] is None for t in ai_texts)
+
+
+def test_mac_dinh_includeAiSamples_true_hop_dong_cu_khong_doi(monkeypatch):
+    """Employer/admin đang gọi KHÔNG kèm cờ — vẫn phải ra đúng 3 bài như trước."""
+    monkeypatch.setattr(main_module.provider, "score", _fake_score())
+    gen = AsyncMock(return_value=_answers_response())
+    monkeypatch.setattr(main_module.provider._client.aio.models, "generate_content", gen)
+    res = client.post("/api/v1/score-preview", headers=_HEADERS, json=_payload())
+    assert res.status_code == 200
+    assert [s["band"] for s in res.json()["samples"]] == ["Weak", "Good", "Excellent"]

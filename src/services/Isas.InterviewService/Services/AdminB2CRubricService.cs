@@ -59,11 +59,14 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
             foreach (var cat in AllCategories)
             {
                 var criteria = await ActiveSetQuery(cat, lang).Include(c => c.Levels).ToListAsync(ct);
+                // Chỉ đếm tiêu chí CẦN mốc (AI chấm). Tiêu chí đo bằng số đo (F11) cố ý 0 mốc — đếm nó
+                // vào mẫu số là ma trận báo "6/7 · thiếu mốc" vĩnh viễn cho một thứ không cần (prod 2026-09-16).
+                var needLevels = criteria.Where(c => c.ScoringMethod == CriterionScoringMethod.Ai).ToList();
                 rows.Add(new AdminRubricMatrixRow(
                     cat, lang,
                     Version: criteria.Count > 0 ? criteria[0].Version : 0,
-                    CriteriaCount: criteria.Count,
-                    WithLevelsCount: criteria.Count(c => c.Levels.Count > 0)));
+                    CriteriaCount: needLevels.Count,
+                    WithLevelsCount: needLevels.Count(c => c.Levels.Count > 0)));
             }
         }
         return rows;
@@ -176,8 +179,9 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
             .Select(g => new AdminRubricVersionItem(
                 g.Key,
                 IsActive: g.Any(c => c.IsActive),
-                CriteriaCount: g.Count(),
-                WithLevelsCount: g.Count(c => c.Levels.Count > 0)))
+                // Cùng luật với ma trận: chỉ tiêu chí AI chấm mới CẦN mốc.
+                CriteriaCount: g.Count(c => c.ScoringMethod == CriterionScoringMethod.Ai),
+                WithLevelsCount: g.Count(c => c.ScoringMethod == CriterionScoringMethod.Ai && c.Levels.Count > 0)))
             .ToList();
     }
 
@@ -301,7 +305,7 @@ public class AdminB2CRubricService(InterviewDbContext db) : IAdminB2CRubricServi
             SampleQuestions: AdminPreviewQuestionBank.For(jobCategory, language)
                 .Select(q => new AdminSampleQuestionItem(q.Id, q.Text)).ToList(),
             Criteria: criteria.OrderBy(c => c.Name, StringComparer.Ordinal).Select(c => new AdminRubricCriterionItem(
-                c.Id, c.Name, c.Description, c.Weight, c.MaxScore, c.ScoringScope.ToString(),
+                c.Id, c.Name, c.Description, c.Weight, c.MaxScore, c.ScoringScope.ToString(), c.ScoringMethod.ToString(),
                 // `.Include()` KHÔNG bảo đảm thứ tự — sắp ở đây thay vì tin vào DB, nếu không mốc hiện
                 // lộn xộn trên Postgres mà vẫn đúng thứ tự trên SQLite (test).
                 c.Levels.OrderBy(l => l.Score).Select(l => new AdminRubricLevelItem(l.Score, l.Descriptor)).ToList()))

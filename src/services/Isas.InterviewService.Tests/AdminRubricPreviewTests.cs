@@ -46,16 +46,21 @@ public class AdminRubricPreviewTests
         mock.Setup(m => m.RunAsync(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int>(),
-                It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string _, string _, string? _, string _, string? _, string? _, int _,
-                IReadOnlyList<PreviewCriterionInput> criteria, CancellationToken _) =>
-                new RubricPreviewResult(
-                    [
-                        Sample("Weak", criteria, weak),
-                        Sample("Good", criteria, good),
-                        Sample("Excellent", criteria, top)
-                    ],
-                    PromptVersion: 7, LengthParityWarning: false));
+                It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>(),
+                It.IsAny<bool>(), It.IsAny<DeliveryMetricsDto?>()))
+            .ReturnsAsync((string _, string _, string? _, string _, string? _, string? customAnswer, int _,
+                IReadOnlyList<PreviewCriterionInput> criteria, CancellationToken _,
+                bool includeAiSamples, DeliveryMetricsDto? _) =>
+            {
+                // Mirror hợp đồng AIService: cờ tắt ⇒ không có 3 bài AI; có customAnswer ⇒ thêm bài Custom.
+                var samples = new List<PreviewSample>();
+                if (includeAiSamples)
+                    samples.AddRange([Sample("Weak", criteria, weak), Sample("Good", criteria, good), Sample("Excellent", criteria, top)]);
+                if (!string.IsNullOrWhiteSpace(customAnswer))
+                    samples.Add(new PreviewSample("Custom", customAnswer, 120,
+                        criteria.Select(c => new PreviewSampleScore(c.CriterionId, good, (int)good, "trích \"…\"")).ToList()));
+                return new RubricPreviewResult(samples, PromptVersion: 7, LengthParityWarning: false);
+            });
         return mock;
     }
 
@@ -157,7 +162,8 @@ public class AdminRubricPreviewTests
         var broken = new Mock<IRubricPreviewClient>();
         broken.Setup(m => m.RunAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int>(),
-                It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>(),
+                It.IsAny<bool>(), It.IsAny<DeliveryMetricsDto?>()))
             .ThrowsAsync(new DownstreamServiceException("AIService sập"));
 
         var failing = Service(t, broken.Object);
@@ -207,7 +213,8 @@ public class AdminRubricPreviewTests
         var broken = new Mock<IRubricPreviewClient>();
         broken.Setup(m => m.RunAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
                 It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int>(),
-                It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>(),
+                It.IsAny<bool>(), It.IsAny<DeliveryMetricsDto?>()))
             .ThrowsAsync(new DownstreamServiceException("AIService sập"));
 
         await Assert.ThrowsAsync<DownstreamServiceException>(
@@ -535,5 +542,118 @@ public class AdminRubricPreviewTests
         await Assert.ThrowsAsync<DownstreamServiceException>(
             () => Service(t, suggester: suggester.Object).SuggestLevelsAsync(JobCategory.BE, "vi", null));
         Assert.Empty(await t.Db.RubricLevels.ToListAsync());
+    }
+
+    // ── (7) TỰ THỬ THƯỚC ĐO — bài của chính người dùng (nói / dán) ─────────────────────────────
+
+    private static DeliveryMetricsDto Metrics(double silence = 0.12, int pauses = 3, double speechSec = 42) => new()
+    {
+        AudioSec = 48, SpeechSec = speechSec, WordCount = 110, SpeechRateWpm = 157,
+        LongestPauseSec = 1.8, PauseCount = pauses, SilenceRatio = silence, MetricsVersion = 2,
+    };
+
+    [Fact]
+    public async Task IncludeAiSamplesFalse_ChiChamBaiNguoiDung_VaChuyenCoXuongClient()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+        var mock = AiMock();
+
+        var run = await Service(t, mock.Object).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
+            new AdminRubricPreviewRequest(CustomAnswer: "Em sẽ thêm index cho cột hay lọc.", IncludeAiSamples: false));
+
+        Assert.Equal(["Custom"], run.Samples.Select(x => x.Band).ToArray());
+        Assert.Equal("Succeeded", run.Status);
+        mock.Verify(m => m.RunAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string>(),
+            It.IsAny<string?>(), "Em sẽ thêm index cho cột hay lọc.", It.IsAny<int>(),
+            It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>(),
+            false, null), Times.Once);
+    }
+
+    [Fact]
+    public async Task IncludeAiSamplesFalse_MaKhongCoBaiNguoiDung_400_KhongGoiAI_KhongTonLuot()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+        var mock = AiMock();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Service(t, mock.Object).RunAsync(
+            Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest(IncludeAiSamples: false)));
+
+        mock.VerifyNoOtherCalls();
+        Assert.Empty(await t.Db.AdminRubricPreviewRuns.ToListAsync());   // không có row Running/Failed mồ côi
+    }
+
+    /// <summary>
+    /// Có bản ghi âm ⇒ bài Custom mang thêm HÀNG ĐO cho tiêu chí trôi chảy (đúng hàm/ngưỡng đường chấm
+    /// thật), số đo được lưu vào lượt, cờ <c>DeliveryMetricsAvailable</c> bật, mẫu số điểm gộp tăng 1.
+    /// 3 bài AI KHÔNG có hàng đó — chúng là văn bản.
+    /// </summary>
+    [Fact]
+    public async Task CoBanGhiAm_BaiCustomDuocDoTroiChay_BaiAIThiKhong()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+        var metrics = Metrics(silence: 0.12, pauses: 3);   // ≤0,144 ⇒ bậc 4/5 theo bảng ngưỡng mặc định
+
+        var run = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
+            new AdminRubricPreviewRequest(CustomAnswer: "bài tôi nói", DeliveryMetrics: metrics));
+
+        Assert.True(run.DeliveryMetricsAvailable);
+        var custom = run.Samples.Single(x => x.Band == "Custom");
+        var fluency = Assert.Single(custom.Scores, sc => sc.CriterionName == B2CRubricSeed.FluencyName);
+        Assert.Equal(4m, fluency.ActualScore);
+        Assert.Null(fluency.LevelMatched);                          // đo, không snap mốc
+        Assert.True(fluency.Measured);
+        Assert.All(custom.Scores.Where(sc => sc.CriterionName != B2CRubricSeed.FluencyName), sc => Assert.False(sc.Measured));
+        Assert.Contains("SỐ ĐO", fluency.Reasoning!);              // lý do nói rõ nguồn
+        Assert.NotNull(custom.DeliveryMetrics);
+        Assert.Equal(0.12, custom.DeliveryMetrics!.SilenceRatio);
+        // 6 tiêu chí AI + 1 tiêu chí đo ⇒ 7 hàng; bài AI chỉ 6 và không có số đo
+        Assert.Equal(7, custom.Scores.Count);
+        foreach (var ai in run.Samples.Where(x => x.Band != "Custom"))
+        {
+            Assert.Equal(6, ai.Scores.Count);
+            Assert.Null(ai.DeliveryMetrics);
+            Assert.DoesNotContain(ai.Scores, sc => sc.CriterionName == B2CRubricSeed.FluencyName);
+        }
+        // Điểm gộp = TB 7 tiêu chí: 6 × 3/5 (60%) + 1 × 4/5 (80%) = 62,86%
+        Assert.Equal(62.86m, custom.ActualPct);
+        // Lịch sử đọc lại từ jsonb vẫn còn số đo + cờ
+        var history = await Service(t).HistoryAsync(JobCategory.BE, "vi");
+        Assert.True(history[0].DeliveryMetricsAvailable);
+        Assert.NotNull(history[0].Samples.Single(x => x.Band == "Custom").DeliveryMetrics);
+    }
+
+    [Fact]
+    public async Task DanTay_KhongCoBanGhi_KhongCoHangDo_CoTat()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+
+        var run = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
+            new AdminRubricPreviewRequest(CustomAnswer: "bài tôi dán"));
+
+        Assert.False(run.DeliveryMetricsAvailable);
+        var custom = run.Samples.Single(x => x.Band == "Custom");
+        Assert.Equal(6, custom.Scores.Count);
+        Assert.DoesNotContain(custom.Scores, sc => sc.CriterionName == B2CRubricSeed.FluencyName);
+        Assert.Null(custom.DeliveryMetrics);
+    }
+
+    /// <summary>Nói dưới sàn thời lượng ⇒ không đo được ⇒ LOẠI tiêu chí (không thêm hàng), KHÔNG cho 0.</summary>
+    [Fact]
+    public async Task NoiQuaNgan_KhongDoDuoc_LoaiTieuChiThayVi0()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+
+        var run = await Service(t).RunAsync(Guid.NewGuid(), JobCategory.BE, "vi",
+            new AdminRubricPreviewRequest(CustomAnswer: "ngắn", DeliveryMetrics: Metrics(speechSec: 4)));
+
+        var custom = run.Samples.Single(x => x.Band == "Custom");
+        Assert.DoesNotContain(custom.Scores, sc => sc.CriterionName == B2CRubricSeed.FluencyName);
+        Assert.Equal(6, custom.Scores.Count);
+        Assert.True(run.DeliveryMetricsAvailable);   // có số đo (đã gửi), chỉ là không đủ để chấm
     }
 }

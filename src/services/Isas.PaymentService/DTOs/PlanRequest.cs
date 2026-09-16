@@ -1,7 +1,8 @@
 using PaymentService.Models;
-
+using System.Text.Json.Serialization;
 namespace Isas.PaymentService.DTOs;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public class PlanRequest
 {
     public PlanAudience Audience { get; set; }
