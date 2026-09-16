@@ -122,15 +122,20 @@ public class PromptTemplateService(
         {
             await using var tx = await db.Database.BeginTransactionAsync(ct);
 
-            var current = await db.PromptTemplates
-                .Where(p => p.Key == key && p.IsActive)
+            // Đọc MỌI bản của khoá, không chỉ bản đang hiệu lực: số version phải tính trên cả lịch sử
+            // đã hạ cờ. Bản trước tính trên bản active nên sau "Về mặc định" (0 bản active) lần lưu kế
+            // ra `next = 1` — trùng bản v1 đang nằm trong lịch sử ⇒ UNIQUE (key, version) nổ 500, admin
+            // không bao giờ lưu lại được sau khi đã reset một lần (đo trên dev 2026-09-16). Version là
+            // định danh, có lỗ số là bình thường (tiền lệ CAMP-18).
+            var all = await db.PromptTemplates
+                .Where(p => p.Key == key)
                 .ToListAsync(ct);
 
-            foreach (var c in current) c.IsActive = false;
+            foreach (var c in all.Where(c => c.IsActive)) c.IsActive = false;
 
-            var next = current.Count == 0
+            var next = all.Count == 0
                 ? 1
-                : current.Max(c => c.Version) + 1;
+                : all.Max(c => c.Version) + 1;
 
             var row = new PromptTemplate
             {

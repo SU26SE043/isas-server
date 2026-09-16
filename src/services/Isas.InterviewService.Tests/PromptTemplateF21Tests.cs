@@ -75,6 +75,31 @@ public class PromptTemplateF21Tests
         Assert.Single(await svc.HistoryAsync(PromptTemplateKeys.ScoringPersona, default));
     }
 
+    [Fact]
+    public async Task LuuLai_SauKhiVeMacDinh_KhongTrungVersionVoiLichSu()
+    {
+        // Bug thật đo trên dev 2026-09-16: lưu v1 → "Về mặc định" → lưu lại ⇒ 500 (UNIQUE key+version)
+        // vì `next` tính trên bản ACTIVE (0 bản) ra 1, trùng v1 đang nằm trong lịch sử.
+        using var t = new TestDb();
+        var svc = Svc(t);
+        var actor = Guid.NewGuid();
+        await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, "bản 1", actor, "lần 1", default);
+        // Mỗi request production là MỘT DbContext mới. Dùng chung context trong test thì hàng v1 còn
+        // nằm trong tracker với IsActive=true cũ; EF trả bản tracked thay bản DB ⇒ bug bị che, test xanh
+        // kể cả khi dựng lại bug (đo 2026-09-16). Clear để đọc đúng những gì DB có.
+        t.Db.ChangeTracker.Clear();
+        Assert.True(await svc.ResetAsync(PromptTemplateKeys.QuestionsIntro, default));
+        t.Db.ChangeTracker.Clear();
+
+        var again = await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, "bản 2", actor, "lần 2", default);
+
+        Assert.Equal(2, again.Version);                                          // nhảy qua v1 trong lịch sử
+        var rows = await t.Db.PromptTemplates.Where(p => p.Key == PromptTemplateKeys.QuestionsIntro).ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Single(rows, r => r.IsActive && r.Version == 2);                  // chỉ bản mới hiệu lực
+        Assert.Equal("bản 2", (await svc.GetActiveMapAsync(default))[PromptTemplateKeys.QuestionsIntro]);
+    }
+
     // ── (2) Danh sách khoá ĐÓNG ────────────────────────────────────────────────────────────
 
     [Fact]
