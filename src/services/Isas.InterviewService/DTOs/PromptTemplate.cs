@@ -1,5 +1,5 @@
 using System.ComponentModel.DataAnnotations;
-
+using System.Text.Json.Serialization;
 namespace Isas.InterviewService.DTOs;
 
 /// <summary>
@@ -22,8 +22,12 @@ public record PromptTemplateResponse(
     /// (fail-open) — client phải nói "chưa hiện được", không suy thành "mặc định trống". Vẫn chỉ
     /// có MỘT nguồn sự thật (Python); Interview chỉ chuyển tiếp, không chép.
     /// </summary>
-    string? DefaultBody = null);
+    string? DefaultBody = null,
+    /// <summary>Email admin đã lưu bản này (snapshot lúc ghi). <c>null</c> = không rõ (bản cũ / token
+    /// thiếu claim) — client hiện "không rõ người sửa", KHÔNG hiện Guid.</summary>
+    string? UpdatedByEmail = null);
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public class UpdatePromptTemplateRequest
 {
     [Required(ErrorMessage = "Nội dung prompt là bắt buộc.")]

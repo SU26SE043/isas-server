@@ -59,7 +59,7 @@ public class PromptTemplateService(
                 // khoá là lệch hợp đồng — hai chuyện khác nhau, đừng gộp.
                 var def = defaultMap is not null && defaultMap.TryGetValue(k, out var d) ? d : null;
                 return active.TryGetValue(k, out var t)
-                    ? new PromptTemplateResponse(k, t.Version, t.Body, t.UpdatedBy, t.ChangeNote, t.CreatedAt, def)
+                    ? new PromptTemplateResponse(k, t.Version, t.Body, t.UpdatedBy, t.ChangeNote, t.CreatedAt, def, t.UpdatedByEmail)
                     : new PromptTemplateResponse(k, 0, null, null, null, null, def);
             })];
     }
@@ -70,7 +70,7 @@ public class PromptTemplateService(
             .OrderByDescending(p => p.Version)
             .AsNoTracking()
             .Select(p => new PromptTemplateResponse(
-                p.Key, p.Version, p.Body, p.UpdatedBy, p.ChangeNote, p.CreatedAt))
+                p.Key, p.Version, p.Body, p.UpdatedBy, p.ChangeNote, p.CreatedAt, null, p.UpdatedByEmail))
             .ToListAsync(ct);
 
     /// <summary>Bản đồ khoá→văn bản đang hiệu lực, cho AIService nạp (endpoint internal).</summary>
@@ -86,8 +86,10 @@ public class PromptTemplateService(
     /// </summary>
     /// <exception cref="InvalidOperationException">Khoá lạ · body rỗng/quá dài · body chứa
     /// delimiter khung. Controller map sang 400.</exception>
+    /// <param name="actorEmail">Email admin lúc ghi (claim <c>email</c>) — snapshot vào bản ghi để lịch
+    /// sử đọc được bằng tên người. Trống ⇒ lưu null, không chặn (thiếu claim không phải lỗi của admin).</param>
     public async Task<PromptTemplateResponse> UpsertAsync(
-        string key, string body, Guid actor, string? changeNote, CancellationToken ct)
+        string key, string body, Guid actor, string? actorEmail, string? changeNote, CancellationToken ct)
     {
         if (!PromptTemplateKeys.All.Contains(key))
             throw new InvalidOperationException(
@@ -144,6 +146,7 @@ public class PromptTemplateService(
                 Body = body,
                 IsActive = true,
                 UpdatedBy = actor,
+                UpdatedByEmail = string.IsNullOrWhiteSpace(actorEmail) ? null : actorEmail.Trim(),
                 ChangeNote = changeNote,
             };
 
@@ -158,7 +161,7 @@ public class PromptTemplateService(
 
         return new PromptTemplateResponse(
             created.Key, created.Version, created.Body,
-            created.UpdatedBy, created.ChangeNote, created.CreatedAt);
+            created.UpdatedBy, created.ChangeNote, created.CreatedAt, null, created.UpdatedByEmail);
     }
 
     /// <summary>

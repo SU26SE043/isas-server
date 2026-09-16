@@ -28,8 +28,8 @@ public class PromptTemplateF21Tests
         var svc = Svc(t);
         var actor = Guid.NewGuid();
 
-        var v1 = await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản một", actor, "lần đầu", default);
-        var v2 = await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản hai", actor, "sửa giọng", default);
+        var v1 = await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản một", actor, null, "lần đầu", default);
+        var v2 = await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản hai", actor, null, "sửa giọng", default);
 
         Assert.Equal(1, v1.Version);
         Assert.Equal(2, v2.Version);
@@ -51,7 +51,7 @@ public class PromptTemplateF21Tests
         var svc = Svc(t);
 
         for (var i = 0; i < 4; i++)
-            await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, $"bản {i}", Guid.NewGuid(), null, default);
+            await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, $"bản {i}", Guid.NewGuid(), null, null, default);
 
         var active = await t.Db.PromptTemplates
             .Where(p => p.Key == PromptTemplateKeys.QuestionsIntro && p.IsActive).ToListAsync();
@@ -66,7 +66,7 @@ public class PromptTemplateF21Tests
         // Hard-delete sẽ làm prompt_version của điểm cũ trỏ vào hư không.
         using var t = new TestDb();
         var svc = Svc(t);
-        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản tuỳ biến", Guid.NewGuid(), null, default);
+        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản tuỳ biến", Guid.NewGuid(), null, null, default);
 
         Assert.True(await svc.ResetAsync(PromptTemplateKeys.ScoringPersona, default));
 
@@ -83,7 +83,7 @@ public class PromptTemplateF21Tests
         using var t = new TestDb();
         var svc = Svc(t);
         var actor = Guid.NewGuid();
-        await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, "bản 1", actor, "lần 1", default);
+        await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, "bản 1", actor, null, "lần 1", default);
         // Mỗi request production là MỘT DbContext mới. Dùng chung context trong test thì hàng v1 còn
         // nằm trong tracker với IsActive=true cũ; EF trả bản tracked thay bản DB ⇒ bug bị che, test xanh
         // kể cả khi dựng lại bug (đo 2026-09-16). Clear để đọc đúng những gì DB có.
@@ -91,7 +91,7 @@ public class PromptTemplateF21Tests
         Assert.True(await svc.ResetAsync(PromptTemplateKeys.QuestionsIntro, default));
         t.Db.ChangeTracker.Clear();
 
-        var again = await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, "bản 2", actor, "lần 2", default);
+        var again = await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, "bản 2", actor, null, "lần 2", default);
 
         Assert.Equal(2, again.Version);                                          // nhảy qua v1 trong lịch sử
         var rows = await t.Db.PromptTemplates.Where(p => p.Key == PromptTemplateKeys.QuestionsIntro).ToListAsync();
@@ -110,7 +110,7 @@ public class PromptTemplateF21Tests
         using var t = new TestDb();
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Svc(t).UpsertAsync("scoring.persona.typo", "nội dung", Guid.NewGuid(), null, default));
+            Svc(t).UpsertAsync("scoring.persona.typo", "nội dung", Guid.NewGuid(), null, null, default));
 
         Assert.Contains("không hợp lệ", ex.Message);
         Assert.Empty(await t.Db.PromptTemplates.ToListAsync());
@@ -194,7 +194,7 @@ public class PromptTemplateF21Tests
         using var t = new TestDb();
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Svc(t).UpsertAsync(PromptTemplateKeys.ScoringExtraGuidance, body, Guid.NewGuid(), null, default));
+            Svc(t).UpsertAsync(PromptTemplateKeys.ScoringExtraGuidance, body, Guid.NewGuid(), null, null, default));
 
         Assert.Contains("delimiter", ex.Message);
         Assert.Empty(await t.Db.PromptTemplates.ToListAsync());
@@ -207,13 +207,13 @@ public class PromptTemplateF21Tests
         var svc = Svc(t);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "   ", Guid.NewGuid(), null, default));
+            svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "   ", Guid.NewGuid(), null, null, default));
 
         // Trần tồn tại vì mảnh này đi THẲNG vào mỗi lượt gọi Gemini: dán nhầm cả quyển tài liệu
         // vào đây làm mọi lượt chấm sau đó đắt hơn và chậm hơn, âm thầm.
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             svc.UpsertAsync(PromptTemplateKeys.ScoringPersona,
-                new string('x', PromptTemplateService.MaxBodyChars + 1), Guid.NewGuid(), null, default));
+                new string('x', PromptTemplateService.MaxBodyChars + 1), Guid.NewGuid(), null, null, default));
     }
 
     // ── (4) Màn quản trị phải thấy CẢ khoá chưa ai sửa ─────────────────────────────────────
@@ -225,7 +225,7 @@ public class PromptTemplateF21Tests
         // người dùng không có cách nào biết mình được sửa những gì.
         using var t = new TestDb();
         var svc = Svc(t);
-        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "đã sửa", Guid.NewGuid(), null, default);
+        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "đã sửa", Guid.NewGuid(), null, null, default);
 
         var all = await svc.ListAsync(default);
 
@@ -252,7 +252,7 @@ public class PromptTemplateF21Tests
 
         Assert.Empty(await svc.GetActiveMapAsync(default));   // bảng rỗng ⇒ chạy y như trước F21
 
-        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "đã sửa", Guid.NewGuid(), null, default);
+        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "đã sửa", Guid.NewGuid(), null, null, default);
         var map = await svc.GetActiveMapAsync(default);
 
         Assert.Single(map);
@@ -272,10 +272,10 @@ public class PromptTemplateF21Tests
 
         Assert.Equal(0, await svc.GetPromptVersionStampAsync(default));   // thuần mặc định
 
-        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản một", Guid.NewGuid(), null, default);
+        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản một", Guid.NewGuid(), null, null, default);
         var sau1 = await svc.GetPromptVersionStampAsync(default);
 
-        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản hai", Guid.NewGuid(), null, default);
+        await svc.UpsertAsync(PromptTemplateKeys.ScoringPersona, "bản hai", Guid.NewGuid(), null, null, default);
         var sau2 = await svc.GetPromptVersionStampAsync(default);
 
         Assert.True(sau1 > 0);
@@ -331,5 +331,49 @@ public class PromptTemplateF21Tests
 
         var saved = await t.Db.AnswerScores.AsNoTracking().FirstAsync(s => s.AnswerId == answer.Id);
         Assert.Null(saved.PromptVersion);
+    }
+
+    // ───────────────────────── B4 — snapshot email người sửa ─────────────────────────
+
+    /// <summary>
+    /// Lịch sử prompt phải đọc được bằng TÊN NGƯỜI: Guid `UpdatedBy` vô nghĩa với admin sau này. Email
+    /// snapshot lúc ghi (GEN-3: không tra Auth lúc chạy) và đi ra ở CẢ ba đường đọc — response của
+    /// Upsert, danh sách, lịch sử — thiếu một đường là màn hình lại hiện "không rõ" trong khi DB có.
+    /// </summary>
+    [Fact]
+    public async Task Sua_SnapshotEmailNguoiSua_RaCaBaDuongDoc()
+    {
+        using var t = new TestDb();
+        var svc = Svc(t);
+
+        var res = await svc.UpsertAsync(
+            PromptTemplateKeys.ScoringPersona, "bản một", Guid.NewGuid(), "  admin@isas.local ", "vì sao", default);
+
+        Assert.Equal("admin@isas.local", res.UpdatedByEmail);            // đã Trim
+        var row = await t.Db.PromptTemplates.SingleAsync(p => p.Key == PromptTemplateKeys.ScoringPersona);
+        Assert.Equal("admin@isas.local", row.UpdatedByEmail);
+
+        var listed = (await svc.ListAsync(default)).Single(p => p.Key == PromptTemplateKeys.ScoringPersona);
+        Assert.Equal("admin@isas.local", listed.UpdatedByEmail);
+
+        var history = await svc.HistoryAsync(PromptTemplateKeys.ScoringPersona, default);
+        Assert.Equal("admin@isas.local", Assert.Single(history).UpdatedByEmail);
+    }
+
+    /// <summary>Token thiếu claim email (hoặc rỗng) ⇒ lưu <c>null</c> và KHÔNG chặn lưu — thiếu claim
+    /// không phải lỗi của admin. UI đọc null thành "không rõ người sửa".</summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Sua_ThieuEmail_LuuNull_KhongChan(string? email)
+    {
+        using var t = new TestDb();
+        var res = await Svc(t).UpsertAsync(
+            PromptTemplateKeys.ScoringPersona, "bản một", Guid.NewGuid(), email, null, default);
+
+        Assert.Equal(1, res.Version);
+        Assert.Null(res.UpdatedByEmail);
+        Assert.Null((await t.Db.PromptTemplates.SingleAsync()).UpdatedByEmail);
     }
 }

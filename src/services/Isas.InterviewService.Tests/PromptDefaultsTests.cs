@@ -31,7 +31,7 @@ public class PromptDefaultsTests
             [PromptTemplateKeys.QuestionsGuidance] = "",
         });
         var svc = new PromptTemplateService(t.Db, NullLogger<PromptTemplateService>.Instance, provider);
-        await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, "Bạn là người hỏi.", Guid.NewGuid(), null, default);
+        await svc.UpsertAsync(PromptTemplateKeys.QuestionsIntro, "Bạn là người hỏi.", Guid.NewGuid(), null, null, default);
 
         var all = await svc.ListAsync(default);
 
