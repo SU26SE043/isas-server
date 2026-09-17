@@ -63,6 +63,8 @@ AnswerResponse {
 
 **`POST /interview/practice/sessions/{sessionId}/focus-events`** ✅ (2026-09-14) — Ghi một tín hiệu mất tập trung của buổi luyện B2C (**coaching**, KHÔNG phải chống gian lận — BC-6 ngoại lệ). Body `{ signalType: string, note?: string }`. `signalType` chỉ nhận **`tab_switch` / `paste` / `focus_lost`** (whitelist tường minh, `camera_blocked`/`monitoring_gap` KHÔNG có — B2C không giám sát webcam). **204** kể cả khi không lưu gì — buổi tắt theo dõi / B2B (`campaign_id != null`) / đã kết thúc (Scored·SessionAbandoned·Scoring·Completed·Failed) / chạm trần 500 dòng/buổi đều là ca "không áp dụng", **no-op** chứ không lỗi. **400** tín hiệu ngoài whitelist · **403** không phải buổi của mình · **404** buổi không tồn tại. Mốc thời gian **server tự đóng dấu** (`OccurredAt`), không nhận từ client. `note` bị cắt còn tối đa 256 ký tự nếu dài hơn.
 
+**`POST /interview/practice/sessions/{sessionId}/face-check`** ✅ (2026-09-17) — Kiểm mặt định kỳ của buổi luyện B2C, **detect-only** (đếm mặt, KHÔNG so khớp danh tính — BC-6 ngoại lệ mở rộng). `multipart/form-data`, field `image` (JPEG, ≤2MB). Guard theo ĐÚNG thứ tự `focus-events`: không tồn tại → **404** · không phải buổi của mình → **403** (trước mọi no-op) · B2B (`campaign_id != null`) → **204 no-op** · tắt theo dõi → **204 no-op, KHÔNG upload KHÔNG gọi AI** · đã kết thúc → **204 no-op** · ảnh rỗng/quá 2MB/không phải JPEG (3 byte đầu ≠ `FF D8 FF`) → **400**. Đường thật: ghi sổ `practice_face_images` (S3 key) **TRƯỚC** rồi mới upload → hỏi AIService `POST /face-detect` → lọc tín hiệu chỉ giữ `no_face`/`multiple_faces` → ghi vào **cùng bảng** `practice_focus_events` (chạm trần 500 dòng/buổi thì bỏ qua, không lỗi) → trả **200** `{ faceCount: int, signals: string[] }`. AIService lỗi/hết giờ → **502**/**504** (ảnh + dòng sổ đã ghi, không mồ côi). `GET /practice/sessions/{id}` gom cả hai loại tín hiệu (hành vi + mặt) vào cùng `focusEvents[]` — client không cần đường đọc riêng.
+
 AnswerScoreResponse {
   criterionId:  uuid
   score:        decimal(5,2)
@@ -437,16 +439,32 @@ focus_tracking_enabled bool ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c
                             ⚠ cột `settlement_published_at` (Đợt-3b) đã **DROP** ở ✅ **DB2** (migration `AddOutboxMessages`) — thay bằng bảng `outbox_messages` (Transactional Outbox, xem dưới)
 ```
 
-### `practice_focus_events` — ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c`, coaching, BC-6 ngoại lệ)
+### `practice_focus_events` — ✅ 2026-09-14 (migration `AddPracticeFocusEventsB2c`, coaching, BC-6 ngoại lệ); nới CHECK ✅ 2026-09-17 (migration `AddPracticeFaceCheckB2c`)
 ```
 id           uuid          PK
 session_id   uuid          FK → practice_sessions (Cascade) — xoá buổi là xoá sạch dấu vết
-signal_type  varchar(32)   CHECK IN ('tab_switch','paste','focus_lost') — whitelist ĐÓNG, KHÔNG có camera_blocked/monitoring_gap (B2C không giám sát webcam)
-note         varchar(256)? chi tiết ngắn client gửi kèm, cắt còn 256 ký tự ở tầng C# (SQLite không ép varchar)
+signal_type  varchar(32)   CHECK IN ('tab_switch','paste','focus_lost','no_face','multiple_faces') — whitelist ĐÓNG.
+                           `tab_switch`/`paste`/`focus_lost` = client tự khai (FocusSignals.Allowed); `no_face`/`multiple_faces` =
+                           SERVER-ONLY (FocusSignals.ServerOnly), chỉ ghi được sau khi PracticeFaceCheckService hỏi AIService thật.
+                           camera_blocked/monitoring_gap KHÔNG có — B2C không giám sát webcam liên tục.
+note         varchar(256)? chi tiết ngắn (client gửi kèm cho 3 tín hiệu hành vi; server tự sinh cho 2 tín hiệu mặt — cắt còn 256
+                           ký tự ở tầng C#, SQLite không ép varchar)
 occurred_at  timestamptz   server tự đóng dấu khi nhận — KHÔNG nhận mốc thời gian từ client
                            index (session_id, signal_type) — hình truy vấn duy nhất: gom theo buổi+loại cho GET /sessions/{id}
 ```
-> Chỉ B2C (`campaign_id IS NULL` trên session) và chỉ khi buổi bật `focus_tracking_enabled`. Buổi B2B đi đường riêng ở CampaignService (`session_flags`, phục vụ HR) — hai bảng CỐ Ý tách rời: đối tượng đọc khác nhau (chính người luyện vs HR), và `session_flags.campaign_id` NOT NULL + FK không chứa nổi buổi không có campaign. Trần **500 dòng/buổi** (client lỗi/vòng lặp gửi liên tục không bơm được vô hạn) — chạm trần → no-op, vẫn `204`.
+> Chỉ B2C (`campaign_id IS NULL` trên session) và chỉ khi buổi bật `focus_tracking_enabled`. Buổi B2B đi đường riêng ở CampaignService (`session_flags`, phục vụ HR) — hai bảng CỐ Ý tách rời: đối tượng đọc khác nhau (chính người luyện vs HR), và `session_flags.campaign_id` NOT NULL + FK không chứa nổi buổi không có campaign. Trần **500 dòng/buổi** DÙNG CHUNG cho cả hành vi lẫn mặt (client lỗi/vòng lặp gửi liên tục không bơm được vô hạn) — chạm trần → no-op, vẫn `204`/`200`.
+
+### `practice_face_images` — ✅ 2026-09-17 (migration `AddPracticeFaceCheckB2c`) — sổ ảnh webcam B2C
+```
+id           uuid          PK
+session_id   uuid          Guid LỎNG (GEN-2, KHÔNG FK — mẫu FaceImage bên CampaignService: sổ retention độc lập vòng đời buổi,
+                            FK Cascade sẽ tái tạo "object mồ côi trong S3" mà bảng này sinh ra để chặn)
+candidate_id uuid          Guid lỏng
+storage_key  varchar(512)  S3 KEY (GEN-5, không lưu URL) — UNIQUE, 1 object = 1 dòng
+captured_at  timestamptz   thời điểm server nhận — mốc DUY NHẤT job purge dùng để tính quá hạn
+                            index (captured_at), index (session_id), UNIQUE index (storage_key)
+```
+> Bất biến: **ghi sổ TRƯỚC rồi mới upload** (chết giữa chừng → dòng trỏ object vắng mặt, vô hại — purger tự lành); **xoá thì S3 TRƯỚC rồi mới xoá dòng** (ngược lại = object mồ côi trong S3). `PracticeFaceImagePurger` (BackgroundService, mirror BK25 `FaceImagePurger`) quét theo `FaceImageRetentionSettings` (section `FaceImageRetention`, **mặc định `Enabled=false`**, `RetentionDays=90`, `BatchSize=200`, `ScanIntervalSeconds=3600`) — DATA-3 áp dụng vì đây là dữ liệu sinh trắc học (ảnh khuôn mặt), dù chỉ dùng để đếm chứ không so khớp danh tính.
 
 ### `outbox_messages` — ✅ DB2 (Transactional Outbox, migration `AddOutboxMessages`)
 ```

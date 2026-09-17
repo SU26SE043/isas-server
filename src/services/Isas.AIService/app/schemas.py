@@ -858,6 +858,16 @@ class FaceVerifyResponse(BaseModel):
     signals: list[str]            # ⊂ no_face / multiple_faces / face_mismatch (cờ cho HR)
 
 
+# ── /face-detect — B2C coaching: ĐẾM MẶT, KHÔNG so khớp danh tính (BC-6 ngoại lệ) ──────
+class FaceDetectRequest(BaseModel):
+    imageKey: str                 # S3 key ảnh chụp từ webcam B2C
+
+
+class FaceDetectResponse(BaseModel):
+    faceCount: int                # số mặt phát hiện trên ảnh
+    signals: list[str]            # ⊂ no_face / multiple_faces (KHÔNG face_mismatch — detect-only)
+
+
 # ── TTS: đọc câu hỏi thành tiếng — sync HTTP, InterviewService gọi (máy-máy) ────────
 class TtsRequest(BaseModel):
     text: str                     # NỘI DUNG câu hỏi cần đọc (dữ liệu, không phải lệnh — AI-4)

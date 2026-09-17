@@ -99,6 +99,7 @@ builder.Services.AddMemoryCache();
 builder.Services.AddScoped<ICriterionBenchmarkService, CriterionBenchmarkService>();   // F14
 builder.Services.AddScoped<ISessionScoringNotifier, SessionScoringNotifier>();
 builder.Services.AddScoped<IPracticeService, PracticeService>();
+builder.Services.AddScoped<IPracticeFaceCheckService, PracticeFaceCheckService>();   // B2C coaching — đếm mặt
 builder.Services.AddScoped<IQuestionSpeechService, QuestionSpeechService>();   // TTS đọc câu hỏi
 builder.Services.AddScoped<ICvAnalysisService, CvAnalysisService>();   // BC7
 builder.Services.AddScoped<IJdRequirementService, JdRequirementService>();
@@ -217,6 +218,14 @@ builder.Services.AddHttpClient<IAiServiceSpeechSynthesizer, AiServiceSpeechSynth
     c.Timeout = TimeSpan.FromSeconds(60);
 });
 
+builder.Services.AddHttpClient<IAiServiceFaceDetector, AiServiceFaceDetector>(c =>   // B2C coaching — đếm mặt
+{
+    c.BaseAddress = new Uri(builder.Configuration["AiService:BaseUrl"]!);
+    // 30s: chỉ 1 ảnh, detect-only (không nhúng/so khớp) — rẻ hơn nhiều /face-verify. Lần nạp
+    // FaceAnalysis đầu tiên (lazy, dùng chung model với /face-verify) có thể mất vài giây.
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+
 builder.Services.AddHttpClient<ICreditReservationClient, CreditReservationClient>(c =>   // BC2
 {
     // Nội bộ (KHÔNG qua gateway) → gọi thẳng PaymentService. X-Internal-Token gắn trong client.
@@ -282,6 +291,7 @@ builder.Services.AddHostedService<StuckAnswerRepublisher>();
 builder.Services.AddHostedService<SessionAbandonSweeper>();
 builder.Services.AddHostedService<OutboxDispatcher>();   // DB2: transactional outbox → phát settlement-event
 builder.Services.AddHostedService<OutboxPurger>();       // DB28: retention outbox đã phát (mặc định 30 ngày)
+builder.Services.AddHostedService<PracticeFaceImagePurger>();   // B2C coaching — retention ảnh webcam (mặc định TẮT)
 
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -341,6 +351,8 @@ builder.Services.Configure<GroundingOptions>(
     builder.Configuration.GetSection(GroundingOptions.SectionName));   // RAG grounding — Enabled/TopK/threshold
 builder.Services.Configure<TopicsOptions>(
     builder.Configuration.GetSection(TopicsOptions.SectionName));   // TOP1-B5 — kill-switch danh mục đề tài
+builder.Services.Configure<FaceImageRetentionSettings>(
+    builder.Configuration.GetSection(FaceImageRetentionSettings.SectionName));   // B2C coaching — retention ảnh webcam
 // Thuần hàm, không giữ state ngoài Random.Shared (thread-safe) → singleton an toàn (mẫu TopicSelector B3).
 builder.Services.AddSingleton<TopicSelector>();
 

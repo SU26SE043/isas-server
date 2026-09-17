@@ -20,6 +20,7 @@ from app.schemas import (
     SummarizeRoadmapRequest, SummarizeRoadmapResponse,
     SummarizeSessionRequest, SummarizeSessionResponse,
     FaceVerifyRequest, FaceVerifyResponse,
+    FaceDetectRequest, FaceDetectResponse,
     DecideNextRequest, DecideNextResponse, DeliveryMetrics,
     TtsRequest,
     EmbedRequest, EmbedResponse,
@@ -757,6 +758,46 @@ async def face_verify(
         score=round(float(score), 4),
         signals=signals,
     )
+
+
+@router.post("/face-detect", response_model=FaceDetectResponse)
+async def face_detect(
+    req: FaceDetectRequest,
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+):
+    """B2C coaching — ĐẾM MẶT trên 1 ảnh, KHÔNG so khớp danh tính (BC-6 ngoại lệ 2026-09-17).
+
+    Khác /face-verify: chỉ 1 ảnh, không ảnh tham chiếu, không cosine similarity, không
+    `face_mismatch`. Chỉ `no_face`/`multiple_faces` — người luyện tự bật, chỉ chính họ đọc kết
+    quả, không HR/admin. Gate X-Internal-Token fail-closed (GEN-7), như /face-verify/-decide-next.
+    """
+    if not _valid_internal_token(x_internal_token):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
+    if not req.imageKey or not req.imageKey.strip():
+        raise HTTPException(status_code=400, detail="imageKey không được rỗng")
+
+    try:
+        img_bytes = await asyncio.to_thread(storage.get_object_bytes, req.imageKey)
+    except Exception as ex:
+        if storage._is_not_found(ex):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Không tìm thấy object '{req.imageKey}' trong bucket '{settings.s3_bucket}'",
+            )
+        raise HTTPException(status_code=502, detail=f"Lỗi tải ảnh: {ex}")
+
+    try:
+        face_count = await asyncio.to_thread(face_verifier.count_faces, img_bytes)
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"Lỗi đếm khuôn mặt: {ex}")
+
+    signals: list[str] = []
+    if face_count == 0:
+        signals.append("no_face")
+    elif face_count > 1:
+        signals.append("multiple_faces")
+
+    return FaceDetectResponse(faceCount=face_count, signals=signals)
 
 
 @router.post("/transcribe")

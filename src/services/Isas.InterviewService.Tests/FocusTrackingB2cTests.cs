@@ -94,13 +94,38 @@ public class FocusTrackingB2cTests
     public void Whitelist_ChiCoBaTinHieuHanhVi()
     {
         // camera_blocked / monitoring_gap CỐ Ý không có: chúng chỉ có nghĩa khi giám sát webcam,
-        // mà B2C đã chốt "chỉ cờ hành vi" ⇒ thêm vào là tạo cờ ma ngay từ ngày đầu.
+        // mà B2C đã chốt "chỉ cờ hành vi". no_face/multiple_faces (2026-09-17) cũng KHÔNG nằm trong
+        // `Allowed` dù giờ đã hợp lệ ở tầng DB (Persistable) — client HTTP không được tự khai chúng,
+        // chỉ PracticeFaceCheckService mới ghi được sau khi hỏi AIService thật.
         Assert.Equal(
             new[] { "focus_lost", "paste", "tab_switch" },
             FocusSignals.Allowed.OrderBy(x => x, StringComparer.Ordinal).ToArray());
         Assert.False(FocusSignals.IsAllowed("camera_blocked"));
         Assert.False(FocusSignals.IsAllowed("monitoring_gap"));
         Assert.False(FocusSignals.IsAllowed(null));
+        Assert.False(FocusSignals.IsAllowed(FocusSignals.NoFace));
+        Assert.False(FocusSignals.IsAllowed(FocusSignals.MultipleFaces));
+    }
+
+    [Fact]
+    public void ServerOnly_ChiCoHaiTinHieuMat_VaKhongGiaoVoiAllowed()
+    {
+        Assert.Equal(
+            new[] { "multiple_faces", "no_face" },
+            FocusSignals.ServerOnly.OrderBy(x => x, StringComparer.Ordinal).ToArray());
+        Assert.Empty(FocusSignals.Allowed.Intersect(FocusSignals.ServerOnly));
+        Assert.True(FocusSignals.IsServerOnly(FocusSignals.NoFace));
+        Assert.True(FocusSignals.IsServerOnly(FocusSignals.MultipleFaces));
+        Assert.False(FocusSignals.IsServerOnly(FocusSignals.TabSwitch));
+        Assert.False(FocusSignals.IsServerOnly(null));
+    }
+
+    [Fact]
+    public void Persistable_HopCuaAllowedVaServerOnly_KhopCheckDb()
+    {
+        Assert.Equal(
+            new[] { "focus_lost", "multiple_faces", "no_face", "paste", "tab_switch" },
+            FocusSignals.Persistable.OrderBy(x => x, StringComparer.Ordinal).ToArray());
     }
 
     // ── Ghim toggle lúc tạo buổi ────────────────────────────────────────────

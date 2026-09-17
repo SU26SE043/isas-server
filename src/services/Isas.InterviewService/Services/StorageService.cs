@@ -47,6 +47,34 @@ public class StorageService : IStorageService
     {
         var key = BuildKey(fileType, userId, fileId, ext);
 
+        var metadata = new Dictionary<string, string>
+        {
+            ["x-amz-meta-uploaded-by"] = userId.ToString(),
+            ["x-amz-meta-file-type"] = fileType,
+        };
+        await PutObjectFromStreamAsync(key, fileStream, contentType, metadata, ct);
+
+        return key;
+    }
+
+    // B2C coaching (2026-09-17) — upload theo key ĐÃ DỰNG SẴN (không qua BuildKey/SaveMetadata),
+    // không mang metadata uploaded-by/file-type vì không có FileRecord tương ứng.
+    public async Task UploadObjectAsync(string key, Stream stream, string contentType, CancellationToken ct = default)
+        => await PutObjectFromStreamAsync(key, stream, contentType, metadata: null, ct);
+
+    public async Task DeleteObjectAsync(string key, CancellationToken ct = default)
+    {
+        await _s3.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = _opts.BucketName,
+            Key = key
+        }, ct);
+    }
+
+    private async Task PutObjectFromStreamAsync(
+        string key, Stream fileStream, string contentType, IDictionary<string, string>? metadata,
+        CancellationToken ct)
+    {
         // SeaweedFS (HTTP) KHÔNG hỗ trợ AWS chunked/streaming payload signature mà SDK v4 dùng khi
         // stream KHÔNG rõ length (upload từ browser) → "signature does not match". DisablePayloadSigning
         // không dùng được (SeaweedFS chạy HTTP, SDK bắt buộc HTTPS). Fix: buffer vào MemoryStream
@@ -70,18 +98,17 @@ public class StorageService : IStorageService
             AutoCloseStream = false,
         };
 
-        request.Metadata.Add("x-amz-meta-uploaded-by", userId.ToString());
-        request.Metadata.Add("x-amz-meta-file-type", fileType);
-        
+        if (metadata is not null)
+            foreach (var (k, v) in metadata)
+                request.Metadata.Add(k, v);
+
         var response = await _s3.PutObjectAsync(request, ct);
 
         _logger.LogInformation("Uploaded {Key} to bucket {Bucket}. HttpStatus={Status}", key, _opts.BucketName, response.HttpStatusCode);
-
-        return key;
     }
 
     // Tự động convert Guid sang string khi nối chuỗi làm S3 Key Path
-    private static string BuildKey(string fileType, Guid userId, Guid fileId, string ext) 
+    private static string BuildKey(string fileType, Guid userId, Guid fileId, string ext)
         => $"{fileType.ToLower()}/{userId}/{fileId}.{ext.TrimStart('.').ToLower()}";
 
     public async Task<FileRecord> SaveMetadata(Guid fileId, Guid userId, string fileType, string originalName, string storagePath, string storageBucket, string mimeType, long fileSize, CVParseResult? parsedCv, CancellationToken ct = default)
