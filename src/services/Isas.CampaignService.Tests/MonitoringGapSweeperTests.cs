@@ -139,7 +139,7 @@ public class MonitoringGapSweeperTests
         Assert.Equal(cid, flag.CandidateId);
         Assert.NotNull(flag.Note);
         Assert.Contains("5 phút", flag.Note!);
-        Assert.Contains("nhịp bình thường 30 giây", flag.Note!);
+        Assert.Contains("nhịp bình thường 15 giây", flag.Note!);
         Assert.Contains($"[gap#{t0.Ticks}]", flag.Note!);         // marker ổn định = mốc bắt đầu gap
         // CAMP-12: mô tả phép đo, KHÔNG phán xét.
         Assert.DoesNotContain("gian lận", flag.Note!);
@@ -274,16 +274,22 @@ public class MonitoringGapSweeperTests
         Assert.Equal(0, await t.NewContext().SessionFlags.CountAsync());
     }
 
-    // ── mặc định: chế độ bóng, ngưỡng 90, quét 120, nhìn lại 48 (TEST-09: default chưa test = trôi) ─
+    // ── mặc định: chế độ bóng, ngưỡng 60, quét 120, nhìn lại 48 (TEST-09: default chưa test = trôi) ─
+    // 2026-09-17: nhịp FE 30s→15s ⇒ ngưỡng 90→60, sàn thời lượng 120→60 (đều ~4× nhịp). Khoá cả
+    // hai vì đây đúng lớp "hai con số neo vào nhau ở hai repo": đổi nhịp FE mà quên đây là sweeper
+    // gắn cờ oan ngay khi bật.
     [Fact]
-    public void MacDinh_CheDoBong_Nguong90_Lookback48()
+    public void MacDinh_CheDoBong_Nguong60_Lookback48()
     {
         var d = new MonitoringGapSettings();
         Assert.False(d.Enabled);
-        Assert.Equal(90, d.GapThresholdSeconds);
+        Assert.Equal(60, d.GapThresholdSeconds);
         Assert.Equal(120, d.ScanIntervalSeconds);
         Assert.Equal(48, d.LookbackHours);
-        Assert.Equal(120, d.MinDurationSeconds);   // MON1-B3
+        Assert.Equal(60, d.MinDurationSeconds);   // MON1-B3
+        // Ngưỡng phải rộng hơn (nhịp 15s + jitter 3s + defer upload ≤21s) — nếu không, một lượt
+        // upload câu trả lời bình thường đã đủ thành "khoảng trống".
+        Assert.True(d.GapThresholdSeconds > 15 + 3 + 21);
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════════════════

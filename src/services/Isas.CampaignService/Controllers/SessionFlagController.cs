@@ -41,7 +41,7 @@ namespace Isas.CampaignService.Controllers
         // chưa từng bật". Đây là cờ MÔI TRƯỜNG (thiết bị), KHÔNG phải tín hiệu danh tính → CỐ Ý không thêm
         // vào IdentitySignals: làm vậy sẽ đổi điều kiện lưu (lưu cả khi chỉ bật face_verify_enabled).
         //
-        // AC1 — `monitoring_gap`: nhịp giám sát 30s bị đứt (tab ngủ / máy sleep / mạng rớt) nên KHÔNG CÓ
+        // AC1 — `monitoring_gap`: nhịp giám sát 15s bị đứt (tab ngủ / máy sleep / mạng rớt) nên KHÔNG CÓ
         // ảnh nào để so trong khoảng đó. Cùng lập luận F4 và CỐ Ý cũng KHÔNG vào IdentitySignals: nó nói
         // "không quan sát được", KHÔNG nói "sai người" — thêm vào danh tính là đổi điều kiện lưu sang cả
         // nhánh chỉ-bật-face_verify, tức bắt đầu ghi cờ ở campaign mà HR đã tắt anti-cheat.
@@ -145,7 +145,7 @@ namespace Isas.CampaignService.Controllers
             // Note của detector là DETERMINISTIC (answerId + giây làm tròn) ⇒ trùng note = trùng sự kiện.
             //
             // 🔴 CỐ Ý KHÔNG nới ra mọi cờ AI. `FaceVerifyController.RecordFlagsAsync` (hàm RIÊNG, guard này
-            // không chạm tới) ghi note gần như TĨNH mỗi lượt check 30s — đường phát hiện thường truyền
+            // không chạm tới) ghi note gần như TĨNH mỗi lượt check 15s — đường phát hiện thường truyền
             // `note: null`. Dedup rộng sẽ nén "rời khung 5 lần trong buổi" thành `no_face: 1`, tức xoá đúng
             // tín hiệu "vắng mặt THƯỜNG XUYÊN" mà HR cần: với nhóm cờ đó, số LẦN chính là bằng chứng.
             // Ở `multi_voice` thì ngược lại — số lần chỉ phản ánh số lượt chấm lại, không phản ánh sự kiện.
