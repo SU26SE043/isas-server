@@ -8,11 +8,15 @@ public sealed record PlanResponse(
     int? MonthlyQuota, bool AdaptiveEnabled, int? AdaptiveMaxQuestions, int? AdaptiveMaxFollowups,
     bool GroundingEnabled, int SelfConsistencyN, bool CvAnalysisIncluded, bool RepoAnalysisIncluded,
     bool RoadmapEnabled, int? MaxQuestionsCap, int? MaxActiveCampaigns, int? MaxCandidatesCap,
-    bool PostpaidEligible, int? SeatCount, int EntitlementsVersion, bool IsActive)
+    bool PostpaidEligible, int? SeatCount, int EntitlementsVersion, bool IsActive,
+    // BE-D3 — trả lại để FE echo khi PUT: `PlanRequest.ApplyTo` luôn ghi đè EntitlementsJson/Version, không có
+    // gì để echo thì mỗi lần Sửa là reset JSON về "[]" + version về 1 im lặng.
+    string EntitlementsJson = "[]")
 {
     public static PlanResponse From(Plan plan) => new(plan.Id, plan.Audience, plan.Code, plan.Name, plan.Rank,
         plan.InterviewFunding, plan.MonthlyQuota, plan.AdaptiveEnabled, plan.AdaptiveMaxQuestions,
         plan.AdaptiveMaxFollowups, plan.GroundingEnabled, plan.SelfConsistencyN, plan.CvAnalysisIncluded,
         plan.RepoAnalysisIncluded, plan.RoadmapEnabled, plan.MaxQuestionsCap, plan.MaxActiveCampaigns,
-        plan.MaxCandidatesCap, plan.PostpaidEligible, plan.SeatCount, plan.EntitlementsVersion, plan.IsActive);
+        plan.MaxCandidatesCap, plan.PostpaidEligible, plan.SeatCount, plan.EntitlementsVersion, plan.IsActive,
+        plan.EntitlementsJson);
 }

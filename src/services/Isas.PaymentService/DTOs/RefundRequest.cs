@@ -1,9 +1,10 @@
 using System.ComponentModel.DataAnnotations;
 using Isas.PaymentService.Services;
-
+using System.Text.Json.Serialization;
 namespace Isas.PaymentService.DTOs
 {
     /// <summary>F18 — thân request `POST /payment/admin/orders/{id}/refund`.</summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class RefundOrderRequest
     {
         /// <summary>Lý do hoàn (bắt buộc — hoàn tiền không có lý do thì không đối soát được).</summary>
@@ -33,6 +34,7 @@ namespace Isas.PaymentService.DTOs
     }
 
     /// <summary>F18 — thân request `POST /payment/admin/orders/{id}/refund/settle` (xác nhận đã chuyển tiền).</summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class SettleRefundRequest
     {
         /// <summary>Mã giao dịch hoàn của PayOS (nếu có). Bỏ trống nếu chuyển khoản tay không mã.</summary>

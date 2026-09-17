@@ -42,6 +42,15 @@ public class PromptTemplate
     /// <summary>User id của admin đã tạo bản này (JWT sub). Không FK — Auth là service khác (GEN-2).</summary>
     public Guid UpdatedBy { get; set; }
 
+    /// <summary>
+    /// Email của admin lúc ghi — SNAPSHOT từ claim <c>email</c> của JWT, không tra Auth (GEN-3: service
+    /// không gọi Auth lúc chạy; GEN-2: không FK xuyên service). Mẫu <c>ranking_overrides.actor_email</c>
+    /// (E11c). <c>null</c> = bản ghi trước khi có cột, hoặc token thiếu claim — UI hiện "không rõ",
+    /// KHÔNG suy ra từ <see cref="UpdatedBy"/>. Vì sao cần: Guid thô vô nghĩa với người đọc lịch sử —
+    /// câu "ai đổi cách chấm" phải trả lời được bằng tên người, sáu tháng sau.
+    /// </summary>
+    public string? UpdatedByEmail { get; set; }
+
     /// <summary>Vì sao sửa. Bắt buộc: sáu tháng sau, "vì sao đổi cách chấm" là câu không ai
     /// trả lời được nếu lúc sửa không ai ghi.</summary>
     public string? ChangeNote { get; set; }

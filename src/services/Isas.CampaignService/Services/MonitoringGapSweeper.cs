@@ -7,7 +7,7 @@ namespace Isas.CampaignService.Services
     /// <summary>
     /// MON1-B2/B3 — phép đo ĐỘC LẬP phía server: giám sát khuôn mặt có bị ĐỨT trong buổi thi không.
     ///
-    /// Đọc <see cref="FaceImage"/> kind=Live (server ghi mỗi ~30s khi lượt kiểm mặt đến nơi — client
+    /// Đọc <see cref="FaceImage"/> kind=Live (server ghi mỗi ~15s khi lượt kiểm mặt đến nơi — client
     /// không xoá/không làm giả được dòng đó). Hai luật, đều ghi cờ <c>session_flags</c>
     /// (<c>signal_type = "monitoring_gap"</c>, <c>source = 'Server'</c>):
     ///
@@ -29,8 +29,9 @@ namespace Isas.CampaignService.Services
     /// </summary>
     public class MonitoringGapSweeper : BackgroundService
     {
-        // Nhịp kiểm mặt phía FE = 30s (dùng trong câu mô tả phép đo cho HR).
-        private const int NormalCadenceSeconds = 30;
+        // Nhịp kiểm mặt phía FE = 15s ± 3s jitter (`FACE_CHECK_INTERVAL_MS`, 2026-09-17; trước là 30s).
+        // Chỉ dùng trong câu mô tả phép đo cho HR — ngưỡng thật nằm ở MonitoringGapSettings.
+        private const int NormalCadenceSeconds = 15;
 
         // LUẬT 2 — mỗi session tối đa 1 cờ loại này; marker CỐ ĐỊNH trong note (session_id đã nằm
         // trong vị ngữ hậu kiểm). Khác marker LUẬT 1 (`[gap#<ticks>]`) nên hai luật dedup độc lập.
@@ -86,9 +87,9 @@ namespace Isas.CampaignService.Services
 
             var now = DateTime.UtcNow;
             var threshold = TimeSpan.FromSeconds(
-                _options.GapThresholdSeconds > 0 ? _options.GapThresholdSeconds : 90);
+                _options.GapThresholdSeconds > 0 ? _options.GapThresholdSeconds : 60);
             var minDuration = TimeSpan.FromSeconds(
-                _options.MinDurationSeconds > 0 ? _options.MinDurationSeconds : 120);
+                _options.MinDurationSeconds > 0 ? _options.MinDurationSeconds : 60);
             var lookback = TimeSpan.FromHours(
                 _options.LookbackHours > 0 ? _options.LookbackHours : 48);
             var since = now - lookback;
@@ -302,7 +303,7 @@ namespace Isas.CampaignService.Services
         }
 
         // LUẬT 2 — "suốt buổi thi (X phút)": thang phút cho toàn buổi. Làm tròn, sàn 1 (buổi qua được
-        // MinDurationSeconds mặc định 120 luôn ≥ 2 phút; sàn 1 chỉ phòng khi hạ config).
+        // MinDurationSeconds mặc định 60 = đúng 1 phút; sàn 1 chỉ phòng khi hạ config).
         private static string FormatMinutes(TimeSpan g)
             => $"{Math.Max(1, (int)Math.Round(g.TotalMinutes))} phút";
     }

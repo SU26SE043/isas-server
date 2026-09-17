@@ -19,6 +19,11 @@ public class AdminPromptController(PromptTemplateService service) : ControllerBa
         Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"),
             out var id) ? id : Guid.Empty;
 
+    // B4 — email admin thao tác, snapshot vào lịch sử (mẫu E11c `ranking_overrides.actor_email`). Khoá
+    // claim là literal "email" vì Program.cs đặt MapInboundClaims=false. Thiếu claim → null → lịch sử
+    // hiện "không rõ người sửa", KHÔNG 500 và KHÔNG chặn lưu.
+    private string? ActorEmail => User.FindFirstValue("email");
+
     /// <summary>Mọi mảnh sửa được (kể cả mảnh chưa ai sửa — body null = đang dùng bản mặc định).</summary>
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<PromptTemplateResponse>>> ListAsync(
@@ -37,7 +42,7 @@ public class AdminPromptController(PromptTemplateService service) : ControllerBa
     {
         try
         {
-            return Ok(await service.UpsertAsync(key, req.Body, ActorId, req.ChangeNote, ct));
+            return Ok(await service.UpsertAsync(key, req.Body, ActorId, ActorEmail, req.ChangeNote, ct));
         }
         catch (InvalidOperationException ex)
         {

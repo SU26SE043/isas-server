@@ -1,10 +1,11 @@
 ﻿using Isas.PaymentService.Services;
 using PaymentService.Models;
 using System.ComponentModel.DataAnnotations;
-
+using System.Text.Json.Serialization;
 namespace Isas.PaymentService.DTOs
 {
     /// <summary>F23/BK24 — thân request `POST /payment/admin/credits/payment-mode`.</summary>
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class SetPaymentModeRequest
     {
         [Required]

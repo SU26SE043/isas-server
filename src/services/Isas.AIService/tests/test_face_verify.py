@@ -235,3 +235,85 @@ def test_endpoint_requires_internal_token(monkeypatch):
     assert res_wrong.status_code == 401
 
     assert called["io"] is False  # bị chặn trước khi kéo ảnh S3
+
+
+# ---------------------------------------------------------------------------------------------
+# Cache vector ảnh mốc (2026-09-17, hạ nhịp kiểm mặt 30s→15s). Khoá theo NỘI DUNG ảnh, không theo
+# S3 key — enroll lại ghi đè cùng key nên khoá theo key sẽ đem ảnh mốc mới so bằng vector cũ.
+
+
+def test_anh_moc_cung_noi_dung_chi_detect_mot_lan(monkeypatch):
+    v, seen = _verifier_with(monkeypatch, ref_faces=[_FakeFace([1.0, 0.0])],
+                             live_faces=[_FakeFace([1.0, 0.0])])
+    r1 = v.compare(b"ref", b"live")
+    r2 = v.compare(b"ref", b"live")
+    r3 = v.compare(b"ref", b"live")
+    assert (r1.score, r2.score, r3.score) == (pytest.approx(1.0),) * 3
+    assert (r1.reference_face_count, r3.reference_face_count) == (1, 1)
+    # 3 lượt live + đúng 1 lượt mốc — lượt 2/3 lấy từ cache.
+    assert seen.count(b"ref") == 1
+    assert seen.count(b"live") == 3
+
+
+def test_anh_moc_doi_noi_dung_thi_detect_lai(monkeypatch):
+    """Enroll lại (cùng key S3, khác byte) phải cho vector MỚI — đây là lý do khoá theo nội dung."""
+    from app.face_verify import FaceVerifier
+
+    v = FaceVerifier()
+    seen: list[bytes] = []
+
+    def fake_detect(img_bytes):
+        seen.append(img_bytes)
+        if img_bytes == b"live":
+            return [_FakeFace([1.0, 0.0])]
+        if img_bytes == b"ref-dark":
+            return []  # mốc đen: 0 mặt
+        return [_FakeFace([1.0, 0.0])]  # b"ref-good"
+
+    monkeypatch.setattr(v, "_detect", fake_detect)
+    bad = v.compare(b"ref-dark", b"live")
+    good = v.compare(b"ref-good", b"live")
+    assert bad.reference_face_count == 0 and bad.score == 0.0
+    assert good.reference_face_count == 1 and good.score == pytest.approx(1.0)
+    assert seen.count(b"ref-dark") == 1 and seen.count(b"ref-good") == 1
+
+
+def test_anh_moc_hong_cung_duoc_nho(monkeypatch):
+    """Mốc 0 mặt bị hỏi lại mỗi 10s (nhịp báo động) — không detect lại, vẫn báo đúng 0."""
+    v, seen = _verifier_with(monkeypatch, ref_faces=[], live_faces=[_FakeFace([1.0, 0.0])])
+    for _ in range(3):
+        r = v.compare(b"ref", b"live")
+        assert r.reference_face_count == 0 and r.score == 0.0
+    assert seen.count(b"ref") == 1
+
+
+def test_detect_nem_thi_khong_cache(monkeypatch):
+    from app.face_verify import FaceVerifier
+
+    v = FaceVerifier()
+    calls = {"n": 0}
+
+    def fake_detect(img_bytes):
+        if img_bytes == b"live":
+            return [_FakeFace([1.0, 0.0])]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("model tạm hỏng")
+        return [_FakeFace([1.0, 0.0])]
+
+    monkeypatch.setattr(v, "_detect", fake_detect)
+    with pytest.raises(RuntimeError):
+        v.compare(b"ref", b"live")
+    assert v.compare(b"ref", b"live").score == pytest.approx(1.0)
+    assert calls["n"] == 2
+
+
+def test_cache_co_tran(monkeypatch):
+    from app.face_verify import FaceVerifier
+
+    v = FaceVerifier()
+    monkeypatch.setattr(v, "_REF_CACHE_MAX", 2)
+    monkeypatch.setattr(v, "_detect", lambda b: [_FakeFace([1.0, 0.0])])
+    for k in (b"r1", b"r2", b"r3"):
+        v.compare(k, b"live")
+    assert len(v._ref_cache) == 2

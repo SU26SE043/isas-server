@@ -1072,9 +1072,16 @@ class GeminiProvider(QuestionProvider):
                             "type": "object",
                             "properties": {
                                 "band": {"type": "string"},
+                                # Kế hoạch ĐI TRƯỚC bài: model phải khai, theo từng tiêu chí, bài sẽ
+                                # cài lỗi gì (Weak) / thiếu gì (Good) / có đủ yếu tố nào (Excellent)
+                                # rồi mới viết. Đo trên dev 2026-09-16: chỉ dặn bằng lời thì bài
+                                # "yếu" vẫn mô tả ĐÚNG cơ chế (chỉ đổi giọng) ⇒ được chấm 3–4/5.
+                                # .NET không đọc trường này — chỉ để ép model tự ràng buộc.
+                                "plan": {"type": "string"},
                                 "text": {"type": "string"},
                             },
-                            "required": ["band", "text"],
+                            "required": ["band", "plan", "text"],
+                            "propertyOrdering": ["band", "plan", "text"],
                         },
                     }
                 },
@@ -1110,6 +1117,10 @@ class GeminiProvider(QuestionProvider):
                     body = str(item.get("text") or "").strip()
                     if body:
                         by_band[band] = body
+                        # Plan không đi ra ngoài (.NET không đọc) — log để đối chiếu được "model
+                        # định cài lỗi gì" với "bộ chấm có thấy lỗi đó không" khi hiệu chuẩn.
+                        logger.info("Chấm thử: plan %s: %s", band,
+                                    str(item.get("plan") or "")[:400].replace("\n", " "))
 
                 missing = [b for b in PREVIEW_BANDS if b not in by_band]
                 if missing:

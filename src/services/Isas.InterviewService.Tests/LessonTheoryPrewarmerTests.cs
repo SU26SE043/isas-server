@@ -103,7 +103,23 @@ public class LessonTheoryPrewarmerTests : IDisposable
         return (gate, titles);
     }
 
-    private void VerifyAiCalls(Times times) => _gen.Verify(g => g.GenerateLessonTheoryAsync(
+    /// <summary>
+    /// <paramref name="title"/> = chỉ đếm lời gọi cho ĐÚNG bài đó. Cần vì mở bài N theo thiết kế sẽ xếp hàng
+    /// prewarm bài N+1 (<c>EnqueueNextLessonPrewarmAsync</c>), và vòng drain đang chạy có thể rút bài đó ra
+    /// sinh luôn — đếm MỌI lời gọi thì test đua với chính tính năng (CI 2026-09-17: "once but was 2 times",
+    /// hai lời gọi là L1 và L2). Đo single-flight thì phải đo theo bài.
+    /// </summary>
+    private void VerifyAiCalls(Times times, string? title = null)
+    {
+        if (title is null) { VerifyAiCallsAnyTitle(times); return; }
+        _gen.Verify(g => g.GenerateLessonTheoryAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.Is<string>(t => t == title),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(),
+            It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>(),
+            It.IsAny<IReadOnlyList<RoadmapMistake>?>()), times);
+    }
+
+    private void VerifyAiCallsAnyTitle(Times times) => _gen.Verify(g => g.GenerateLessonTheoryAsync(
         It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
         It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<string>?>(), It.IsAny<IReadOnlyList<GroundingChunk>?>(),
         It.IsAny<IReadOnlyList<CriterionEvidence>?>(), It.IsAny<RoadmapMode>(), It.IsAny<CancellationToken>(),
@@ -323,7 +339,10 @@ public class LessonTheoryPrewarmerTests : IDisposable
         gate.SetResult(new LessonTheoryResult(Theory, []));
         await prewarm;
         Assert.Equal(Theory, (await user).TheoryContent);
-        VerifyAiCalls(Times.Once());
+        // Chỉ đếm L1: người học mở L1 xong sẽ xếp hàng L2 (thiết kế) và drain có thể sinh L2 ngay — đó KHÔNG phải
+        // lời gọi trùng. Bất biến cần khoá là "L1 chỉ được sinh một lần dù prewarm và người học tới cùng lúc".
+        VerifyAiCalls(Times.Once(), "L1");
+        VerifyAiCalls(Times.AtMostOnce(), "L2");
     }
 
     [Fact]

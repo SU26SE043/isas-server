@@ -27,11 +27,14 @@ namespace Isas.CampaignService.Models
 
         /// <summary>
         /// Khoảng cách (giây) giữa 2 lượt kiểm mặt liên tiếp mà VƯỢT thì coi là một khoảng trống
-        /// giám sát. ĐIỂM KHỞI ĐẦU — sẽ hiệu chuẩn ở B5. Vì sao 90: nhịp kiểm 30s, sau bất thường
-        /// 10s, cộng defer lúc FE đang upload câu trả lời (đo được 7–21s) ⇒ 3× nhịp là biên an toàn
-        /// để không gắn cờ oan lúc hệ thống chỉ đang chậm.
+        /// giám sát. ĐIỂM KHỞI ĐẦU — sẽ hiệu chuẩn ở B5. Vì sao 60 (2026-09-17, nhịp FE 30s→15s):
+        /// nhịp 15s + jitter 3s + defer lúc FE đang upload câu trả lời (đo được 7–21s) ≈ 39s tối đa
+        /// ⇒ 60 = ~4× nhịp, còn biên cho một lượt bị chậm mạng, không gắn cờ oan lúc hệ thống chỉ
+        /// đang chậm. Trước đó 90 = 3× nhịp 30s cùng lập luận. ⚠ Neo theo nhịp FE
+        /// (<c>FACE_CHECK_INTERVAL_MS</c> trong <c>useCampaignFaceCheck.ts</c>) — đổi một bên phải
+        /// đổi bên kia.
         /// </summary>
-        public int GapThresholdSeconds { get; set; } = 90;
+        public int GapThresholdSeconds { get; set; } = 60;
 
         /// <summary>Nhịp quét (giây). Mặc định 120 — như <c>StuckScreeningRepublisher</c>.</summary>
         public int ScanIntervalSeconds { get; set; } = 120;
@@ -39,9 +42,9 @@ namespace Isas.CampaignService.Models
         /// <summary>
         /// LUẬT 2 (B3) — buổi thi phải dài hơn ngần này (giây) mới xét "0 ảnh giám sát nào". Buổi ngắn
         /// hơn thì chưa tới nhịp kiểm mặt đầu tiên nên 0 ảnh là bình thường, không phải tín hiệu.
-        /// Mặc định 120 (= 4× nhịp kiểm 30s).
+        /// Mặc định 60 (= 4× nhịp kiểm 15s; trước 2026-09-17 là 120 = 4× nhịp 30s).
         /// </summary>
-        public int MinDurationSeconds { get; set; } = 120;
+        public int MinDurationSeconds { get; set; } = 60;
 
         /// <summary>
         /// Chỉ xét ảnh Live có <c>captured_at</c> trong ngần này giờ trở lại. Cận trên cho vòng quét:

@@ -1,7 +1,9 @@
+using System.Text.Json.Serialization;
 ﻿using PaymentService.Models;
 
 namespace Isas.PaymentService.DTOs
 {
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class CreatePackageRequest
     {
         public string Name { get; set; } = null!;
@@ -13,6 +15,7 @@ namespace Isas.PaymentService.DTOs
         public PlanAudience? Audience { get; set; } // B2C/B2B wall for subscription SKU
     }
 
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public class UpdatePackageRequest
     {
         public string? Name { get; set; }

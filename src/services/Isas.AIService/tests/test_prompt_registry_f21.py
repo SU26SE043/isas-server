@@ -144,13 +144,14 @@ def test_khoa_python_va_dotnet_khong_duoc_lech_hai_chieu():
     py_text = (root / "src" / "services" / "Isas.AIService" / "app" / "prompts.py").read_text()
     cs_text = keys_cs.read_text()
     # Enumerate từ C# để thêm key mới mà quên đấu dây Python thì test đỏ ngay.
-    # Ngoại lệ chỉ ghi nhận 5 key chết cũ; danh sách này chỉ được CO LẠI, không được nở ra.
-    dead_keys = {
-        "criteria.guidance", "roadmap.guidance", "lesson_theory.guidance",
-        "summarize_session.guidance", "decide_next.guidance",
-    }
+    # 2026-09-16: 5 khoá chết cũ (criteria/roadmap/lesson_theory/summarize_session/decide_next
+    # .guidance) ĐÃ GỠ khỏi C# — danh sách ngoại lệ về RỖNG và phải GIỮ rỗng: mọi khoá C# khai đều
+    # phải có builder Python đọc, không có "khai trước nối sau".
+    dead_keys: set[str] = set()
     cs_keys = set(re.findall(r'"([a-z_]+\.[a-z_]+)"', cs_text))
-    assert dead_keys <= cs_keys
+    for dead in ("criteria.guidance", "roadmap.guidance", "lesson_theory.guidance",
+                 "summarize_session.guidance", "decide_next.guidance"):
+        assert dead not in cs_keys, f"khoá chết '{dead}' quay lại C# mà chưa nối Python"
     for key in sorted(cs_keys - dead_keys):
         assert f'"{key}"' in py_text, f"khoá '{key}' thiếu phía Python"
 
@@ -262,6 +263,8 @@ def test_khoa_python_va_dotnet_khong_duoc_lech():
                 "criterion_levels.guidance"]:
         assert f'"{key}"' in text, f"khoá '{key}' phía Python không có bên .NET"
 
-    # Khoá theo nghề dựng bằng nội suy ở cả 2 phía → khớp phần hậu tố là đủ.
-    for suffix in ["display_name", "description", "guidance"]:
+    # Khoá theo nghề dựng bằng nội suy ở cả 2 phía → khớp phần hậu tố là đủ. `description` ĐÃ GỠ
+    # 2026-09-16 (không builder Python nào đọc `_category_key(.., "description")`) — và phải GIỮ gỡ.
+    for suffix in ["display_name", "guidance"]:
         assert f'.{suffix}"' in text, f"hậu tố khoá nghề '{suffix}' không có bên .NET"
+    assert '.description"' not in text, "khoá nghề 'description' quay lại .NET mà Python không đọc"

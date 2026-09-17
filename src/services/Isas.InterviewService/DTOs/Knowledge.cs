@@ -1,7 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using Isas.InterviewService.Enums;
-
+using System.Text.Json.Serialization;
 namespace Isas.InterviewService.DTOs;
 
 // RAG grounding — hợp đồng chung với AIService (W1) + FE (W3). Xem grounding-contracts.md.
@@ -37,6 +37,7 @@ public record KnowledgeSourceResponse(
     DateTime CreatedAt);
 
 // POST /api/admin/knowledge — nạp nguồn dán tay (Manual) hoặc URL (Url).
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record CreateKnowledgeRequest(
     [Required] string? Title,
     [Required] JobCategory? JobCategory,
@@ -52,6 +53,7 @@ public record Context7SearchResult(
     int Snippets);
 
 // POST /api/admin/knowledge/context7/ingest — nạp N chủ đề của 1 thư viện Context7.
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record Context7IngestRequest(
     [Required] string? LibraryId,
     [Required] List<string>? Topics,

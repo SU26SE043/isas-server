@@ -50,10 +50,14 @@ namespace Isas.PaymentService.Services
             return true;
         }
 
-        public async Task<List<PackageResponse>> GetAllPackagesAsync(CancellationToken ct)
+        public Task<List<PackageResponse>> GetAllPackagesAsync(CancellationToken ct) => GetAllPackagesAsync(false, ct);
+
+        // BE-D1 (đợt D admin, 2026-09-16): includeInactive chỉ cho Admin (controller gác) — gói đã ẩn cần
+        // được thấy lại để "Bán lại", còn catalog public vẫn lọc IsActive như trước.
+        public async Task<List<PackageResponse>> GetAllPackagesAsync(bool includeInactive, CancellationToken ct)
         {
             return await _db.ProductPackages
-                .Where(p => p.IsActive)
+                .Where(p => includeInactive || p.IsActive)
                 .OrderBy(p => p.CreatedAt)
                 .Select(p => PackageResponse.ToResponse(p))
                 .ToListAsync(ct);
@@ -61,10 +65,12 @@ namespace Isas.PaymentService.Services
 
         // payment.md:109 — endpoint Public, phục vụ gói "đang bán" → lọc IsActive như GET catalog.
         // Không tìm thấy (id lạ HOẶC gói đã ngừng bán) → null → controller trả 404, không lộ gói đã rút.
-        public async Task<PackageResponse?> GetPackageAsync(Guid id, CancellationToken ct)
+        public Task<PackageResponse?> GetPackageAsync(Guid id, CancellationToken ct) => GetPackageAsync(id, false, ct);
+
+        public async Task<PackageResponse?> GetPackageAsync(Guid id, bool includeInactive, CancellationToken ct)
         {
             var package = await _db.ProductPackages
-                .FirstOrDefaultAsync(p => p.Id == id && p.IsActive, ct);
+                .FirstOrDefaultAsync(p => p.Id == id && (includeInactive || p.IsActive), ct);
 
             return package is null ? null : PackageResponse.ToResponse(package);
         }
