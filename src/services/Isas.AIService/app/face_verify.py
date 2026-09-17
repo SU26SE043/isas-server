@@ -2,8 +2,10 @@
 #
 # insightface FaceAnalysis nạp LƯỜI — dựng ở lần dùng đầu, không phải lúc import (như Transcriber).
 # Model detect+embed nặng, vẫn chỉ nạp 1 lần rồi dùng lại. CPU-only (onnxruntime CPUExecutionProvider).
+import hashlib
 import logging
 import threading
+from collections import OrderedDict
 from typing import NamedTuple
 
 from insightface.app import FaceAnalysis
@@ -38,6 +40,39 @@ class FaceVerifier:
         # ngày không ai gọi.
         self._model_lock = threading.Lock()
         self._model_instance: FaceAnalysis | None = None
+        # Cache vector nhúng của ẢNH MỐC, khoá = sha256(nội dung ảnh) — xem `_reference_faces`.
+        self._ref_cache: OrderedDict[str, tuple[int, object]] = OrderedDict()
+        self._ref_cache_lock = threading.Lock()
+
+    # Ảnh mốc của một ứng viên không đổi suốt buổi thi, nhưng trước bản này nó bị detect + nhúng
+    # lại ở MỌI lượt kiểm mặt (30s/lần). Đo trên box 8 core (2026-09-17): detect ~96ms/ảnh,
+    # nhúng ArcFace ~270ms/ảnh ⇒ `compare(ref, live)` ~730ms, trong đó ~370ms là làm lại việc
+    # đã làm cho ảnh mốc. Nhớ kết quả theo NỘI DUNG ảnh (không theo S3 key): enroll lại ghi đè
+    # cùng key `face-reference.jpg`, khoá theo key thì ảnh mốc mới vẫn ăn vector của ảnh cũ —
+    # đúng ca "mốc đen do webcam chưa phơi sáng" mà bước enroll-lại sinh ra để cứu. Băm 19KB
+    # tốn micro-giây, nhỏ hơn hẳn 24ms tải S3 vốn vẫn phải làm.
+    _REF_CACHE_MAX = 256
+
+    def _reference_faces(self, ref_bytes: bytes) -> tuple[int, object]:
+        """(số mặt trên ảnh mốc, vector nhúng nếu đúng 1 mặt else None) — có cache theo nội dung.
+
+        Cache cả ca mốc hỏng (0 / nhiều mặt): kết luận đó cũng chỉ phụ thuộc nội dung ảnh, và
+        mốc hỏng bị hỏi lại mỗi 10s (nhịp báo động) nên càng đáng nhớ. Không cache khi detect ném
+        (lỗi tạm thời không phải thuộc tính của ảnh)."""
+        key = hashlib.sha256(ref_bytes).hexdigest()
+        with self._ref_cache_lock:
+            hit = self._ref_cache.get(key)
+            if hit is not None:
+                self._ref_cache.move_to_end(key)
+                return hit
+        faces = self._detect(ref_bytes)
+        entry = (len(faces), faces[0].normed_embedding if len(faces) == 1 else None)
+        with self._ref_cache_lock:
+            self._ref_cache[key] = entry
+            self._ref_cache.move_to_end(key)
+            while len(self._ref_cache) > self._REF_CACHE_MAX:
+                self._ref_cache.popitem(last=False)
+        return entry
 
     @property
     def _model(self) -> FaceAnalysis:
@@ -108,13 +143,11 @@ class FaceVerifier:
         # Ảnh reference cũng cần đúng 1 mặt. Nếu enroll kém (0 hoặc nhiều mặt) → KHÔNG raise
         # (tránh 502 chặn cả face-check), trả score 0.0 KÈM số mặt đọc được trên ảnh mốc để
         # caller phân biệt "mốc hỏng" (→ identity_unverified) với "người khác" (→ face_mismatch).
-        ref_faces = self._detect(ref_bytes)
-        ref_face_count = len(ref_faces)
-        if ref_face_count != 1:
+        ref_face_count, ref_emb = self._reference_faces(ref_bytes)
+        if ref_face_count != 1 or ref_emb is None:
             return FaceCompareResult(0.0, face_count, ref_face_count)
 
         live_emb = live_faces[0].normed_embedding
-        ref_emb = ref_faces[0].normed_embedding
         return FaceCompareResult(self._cosine(ref_emb, live_emb), face_count, ref_face_count)
 
     @staticmethod
