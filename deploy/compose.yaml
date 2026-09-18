@@ -339,10 +339,9 @@ services:
       # Đánh đổi đã biết: broker chết quá 20' nay chốt sổ sớm hơn trước (60') — tiền vẫn hoàn theo
       # PAY-13, nhưng bài làm thì không chấm nữa. 0 = tắt = quay lại hành vi kẹt vô hạn.
       - Scoring__GiveUpAfterMinutes=${SCORING_GIVE_UP_AFTER_MINUTES:-20}
-      # B2C coaching (2026-09-17, BC-6 ngoại lệ) — retention ảnh webcam kiểm mặt (đếm mặt, KHÔNG
-      # so khớp danh tính). TẮT tường minh, mirror BK25 bên campaignservice ngay dưới: đây là JOB
-      # XOÁ DỮ LIỆU SINH TRẮC HỌC, bật lần đầu phải quan sát 1 chu kỳ và đối chiếu log
-      # "PracticeFaceImagePurger: đã xoá N ảnh".
+      # B2C coaching (2026-09-17, BC-6 ngoại lệ) — dọn phần SÓT ảnh webcam kiểm mặt (ảnh bình thường
+      # xoá ngay sau detect; chỉ AI lỗi/chết giữa chừng mới để lại dòng). TẮT tường minh theo tiền lệ
+      # BK25 ngay dưới; khi bật nên đặt FaceImageRetention__RetentionDays=1 (không ai đọc lại ảnh).
       - FaceImageRetention__Enabled=false
     ports:
       - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet

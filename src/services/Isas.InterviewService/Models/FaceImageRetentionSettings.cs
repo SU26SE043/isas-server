@@ -4,9 +4,10 @@ namespace Isas.InterviewService.Models
     /// B2C coaching (2026-09-17) — cấu hình job dọn ảnh webcam quá hạn (<see cref="Entities.PracticeFaceImage"/>).
     /// Mirror <c>CampaignService.Models.FaceImageRetentionSettings</c> (BK25).
     ///
-    /// 🔴 Mặc định TẮT: xoá nhầm là mất bằng chứng không dựng lại được. Tiền lệ trong repo (3 job
-    /// purge của S8 P1 + BK25) là bật lần đầu phải quan sát một chu kỳ rồi mới mở tường minh bằng
-    /// <c>FaceImageRetention__Enabled=true</c>.
+    /// Ảnh bình thường được xoá NGAY sau detect (xem <c>PracticeFaceCheckService</c>); job này chỉ
+    /// dọn phần SÓT (AI lỗi/hết giờ, chết giữa chừng, xoá S3 hụt). Mặc định TẮT theo tiền lệ mọi
+    /// job purge của repo (S8 P1 + BK25: bật lần đầu phải quan sát một chu kỳ) — nhưng vì đây là
+    /// dữ liệu sinh trắc học không ai đọc lại, nên bật với <c>RetentionDays</c> NGẮN (1) là hợp lý.
     /// </summary>
     public class FaceImageRetentionSettings
     {

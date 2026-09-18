@@ -280,13 +280,74 @@ public class PracticeFaceCheckB2cTests
         await Assert.ThrowsAsync<AiServiceException>(() =>
             svc.RecordFaceCheckAsync(candidateId, s.Id, Jpeg(), JpegBytes.Length, default));
 
+        // AI chưa trả lời ⇒ ảnh chưa xong việc ⇒ KHÔNG xoá, dòng sổ giữ nguyên cho purger dọn về sau.
         Assert.Single(await t.Db.PracticeFaceImages.ToListAsync());
+    }
+
+    // ── Ảnh là vật trung gian: detect xong là xoá (S3 TRƯỚC, dòng sổ SAU) ───────
+
+    [Fact]
+    public async Task DetectXong_XoaS3Truoc_RoiMoiGoDongSo_KhongDeAnhLai()
+    {
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+        var s = await SeedSessionAsync(t, candidateId);
+
+        var detector = new Mock<IAiServiceFaceDetector>();
+        detector.Setup(x => x.DetectAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new FaceDetectResult(1, new List<string>()));
+
+        string? uploadedKey = null;
+        var rowsWhenS3Deleted = -1;
+        var storage = new Mock<IStorageService>();
+        storage.Setup(x => x.UploadObjectAsync(
+                It.IsAny<string>(), It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<string, Stream, string, CancellationToken>((k, _, _, _) => uploadedKey = k)
+            .Returns(Task.CompletedTask);
+        storage.Setup(x => x.DeleteObjectAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            // Đo THỨ TỰ: lúc S3 bị xoá, dòng sổ PHẢI còn (xoá dòng trước = object mồ côi nếu chết ở đây).
+            .Callback<string, CancellationToken>((_, _) =>
+                rowsWhenS3Deleted = t.Db.PracticeFaceImages.AsNoTracking().Count())
+            .Returns(Task.CompletedTask);
+
+        var svc = Service(t.Db, storage, detector);
+        var res = await svc.RecordFaceCheckAsync(candidateId, s.Id, Jpeg(), JpegBytes.Length, default);
+
+        Assert.NotNull(res);
+        Assert.NotNull(uploadedKey);
+        storage.Verify(x => x.DeleteObjectAsync(uploadedKey!, It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(1, rowsWhenS3Deleted);                                   // S3 trước
+        Assert.Empty(await t.Db.PracticeFaceImages.ToListAsync());            // dòng sổ sau
+    }
+
+    [Fact]
+    public async Task XoaS3Loi_GiuDongSoChoPurger_VanGhiCoVaTraKetQua()
+    {
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+        var s = await SeedSessionAsync(t, candidateId);
+
+        var detector = new Mock<IAiServiceFaceDetector>();
+        detector.Setup(x => x.DetectAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new FaceDetectResult(0, new List<string> { "no_face" }));
+
+        var storage = new Mock<IStorageService>();
+        storage.Setup(x => x.DeleteObjectAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("SeaweedFS down"));
+
+        var svc = Service(t.Db, storage, detector);
+        var res = await svc.RecordFaceCheckAsync(candidateId, s.Id, Jpeg(), JpegBytes.Length, default);
+
+        Assert.NotNull(res);                                                  // xoá hụt KHÔNG làm hỏng lượt
+        Assert.Equal(new[] { "no_face" }, res!.Signals);
+        Assert.Single(await t.Db.PracticeFocusEvents.ToListAsync());         // cờ vẫn ghi
+        Assert.Single(await t.Db.PracticeFaceImages.ToListAsync());          // dòng sổ giữ → purger thử lại
     }
 
     // ── Trần dòng dùng chung với FocusSignals.MaxEventsPerSession ───────────
 
     [Fact]
-    public async Task ChamTran500_KhongGhiFocusEvent_VanGhiSoAnh()
+    public async Task ChamTran500_KhongGhiFocusEvent_AnhVanDuocDonSauDetect()
     {
         using var t = new TestDb();
         var candidateId = Guid.NewGuid();
@@ -309,7 +370,7 @@ public class PracticeFaceCheckB2cTests
         Assert.Equal(
             FocusSignals.MaxEventsPerSession,
             await t.Db.PracticeFocusEvents.CountAsync(e => e.SessionId == s.Id));   // không phình thêm
-        Assert.Single(await t.Db.PracticeFaceImages.ToListAsync());   // ảnh vẫn được ghi sổ
+        Assert.Empty(await t.Db.PracticeFaceImages.ToListAsync());    // detect xong ⇒ ảnh + dòng sổ đã dọn
     }
 
     // ── Cổng định dạng/độ lớn ────────────────────────────────────────────────
