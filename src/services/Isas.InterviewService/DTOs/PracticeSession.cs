@@ -255,6 +255,12 @@ public record FocusEventSummaryResponse(
     DateTime FirstAt,
     DateTime LastAt);
 
+/// <summary>
+/// Kết quả MỘT lượt kiểm mặt B2C (coaching, detect-only). `signals` ⊂ no_face/multiple_faces —
+/// KHÔNG BAO GIỜ chứa face_mismatch (không có ảnh tham chiếu để so khớp).
+/// </summary>
+public record FaceCheckResultResponse(int FaceCount, IReadOnlyList<string> Signals);
+
 // Evidence state được trả dạng additive ở GET session để client khôi phục đúng ngữ cảnh đã dùng
 // cho lượt adaptive tiếp theo; null = session cũ/B2B chưa bật evidence tracking.
 public record CriterionEvidenceResponse(

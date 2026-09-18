@@ -18,6 +18,19 @@
 
 > **E2E API toàn hệ 2026-08-07 (6 agent song song + PayOS tiền thật + lần đầu bật song ngữ):** ~450 lượt kiểm → sinh **§S12 `Q1`–`Q15`** (mục ngay dưới §Tiền/chính sách). Deploy sạch khi test: 6/6 image ở đúng tip `main` (`5673257`, label OPS1 dùng được lần đầu) + 4/4 migration head khớp code. **Tiền thật khép trọn vòng:** mua 2.000₫ → `Paid` → ledger `Purchase` cách **11ms cùng transaction** → hoàn → **lệnh chi payOS thật 7,27s** → tiền về đúng người trả; idempotent chứng minh bằng replay nguyên payload + chữ ký thật; **không sinh ví lệch mới**. **Đã xác nhận chạy đúng:** INT-17b (`BUS-01` là công thức thật, bẫy "giục nộp bài sớm" chặn được live) · song ngữ EN **không bị âm thầm hạ về VI** · bản vá bài giảng chạy đúng trên ca thật đã hỏng (51 → 7.040 ký tự) · `R2` rate-limit per-key · `F10` provenance kín 4 chiều · `F17` PII gating (chứng minh bằng `email`, xem `BK28`) · `F16` PDF tiếng Việt đủ dấu + `InvariantCulture` · `DB23` hash token · `AI-4` chống injection trên 2 bề mặt · outbox 0 pending, 8/8 queue có consumer, 3 DLQ rỗng. Chi tiết: [progress.md](progress.md) §2026-08-07.
 
+### 🎥 B2C face-check coaching — đếm mặt detect-only (2026-09-17, BC-6 ngoại lệ mở rộng)
+> Mở rộng ghi nhận mất tập trung B2C (đã có 3 tín hiệu hành vi từ 2026-09-14) thêm **đếm mặt**
+> (`no_face`/`multiple_faces`), KHÔNG so khớp danh tính, cùng công tắc `focus_tracking_enabled`.
+> **BE (Interview + AIService): done, build 0 error, `dotnet test` 1830 pass, pytest 11 pass** —
+> `POST /api/v1/face-detect` (AIService, mirror `/face-verify` nhưng detect-only) · migration
+> `AddPracticeFaceCheckB2c` (nới CHECK `practice_focus_events` + bảng `practice_face_images`) ·
+> `PracticeFaceCheckService`/`PracticeFaceCheckController` (`POST /practice/sessions/{id}/face-check`,
+> multipart JPEG ≤2MB) · `PracticeFaceImagePurger` retention (mặc định TẮT). **Migration CHƯA apply
+> DB thật** — apply TRƯỚC/CÙNG lúc deploy (sự cố `42703` "code đi trước migration" đã xảy ra 4 lần).
+> **FE (Bước 3 của plan): chưa làm** — hook `useB2cFaceCheck`, toast coaching, kết thúc sớm là việc kế.
+> Chi tiết: [rules.md](rules.md) BC-6 · [services/ai.md](services/ai.md) `/face-detect` ·
+> [services/interview.md](services/interview.md) §Practice + `practice_face_images`.
+
 ### 🧱 Tiered subscription — B2C/B2B boundary (D28, Track A) — ✅ **ĐÃ XONG, bảng theo dõi đã gỡ**
 > 🛑 **T1–T13 + VB1 KHÔNG còn là việc phải làm. Đừng code lại.** Bảng theo dõi 13 dòng ở đây từng ghi
 > `not_started`/`active` cho **toàn bộ** hạng mục, trong khi chúng đã ship trọn trong **PR #124** và

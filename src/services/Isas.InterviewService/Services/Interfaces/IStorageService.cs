@@ -28,4 +28,9 @@ public interface IStorageService
         CancellationToken ct = default);
     Task<FileRecord> UpdateFileRecord(Guid fileId, Stream stream, string originalName, long fileSize, string contentType, CVParseResult? parsedCv, CancellationToken ct = default);
     Task<bool> DeleteFileRecord(Guid fileId, CancellationToken ct = default);
+
+    // B2C coaching (2026-09-17) — upload/xoá theo KEY tự dựng, không qua BuildKey/SaveMetadata (không
+    // có FileRecord tương ứng). Sổ (PracticeFaceImage) phải ghi TRƯỚC khi gọi UploadObjectAsync.
+    Task UploadObjectAsync(string key, Stream stream, string contentType, CancellationToken ct = default);
+    Task DeleteObjectAsync(string key, CancellationToken ct = default);
 }

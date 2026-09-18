@@ -257,6 +257,9 @@ services:
       - Adaptive__MaxFollowUps=${ADAPTIVE_MAX_FOLLOW_UPS:-3}
       - Adaptive__MaxDeepPerQuestion=${ADAPTIVE_MAX_DEEP_PER_QUESTION:-3}
       - Adaptive__MaxFailuresPerSession=${ADAPTIVE_MAX_FAILURES_PER_SESSION:-3}
+      # B2C coaching (2026-09-17, BC-6 ngoại lệ) — dọn phần SÓT ảnh webcam kiểm mặt (ảnh bình thường
+      # xoá ngay sau detect). TẮT tường minh theo tiền lệ BK25; khi bật nên đặt RetentionDays=1.
+      - FaceImageRetention__Enabled=false
     ports:
       - "5246:8080"     # publish để Mac gọi callback /internal/... qua tailnet
     depends_on: [postgres, seaweedfs, rabbitmq, qdrant]
