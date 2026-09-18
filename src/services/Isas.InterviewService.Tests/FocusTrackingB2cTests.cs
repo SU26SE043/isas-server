@@ -311,6 +311,25 @@ public class FocusTrackingB2cTests
         Assert.Empty(await t.Db.PracticeFocusEvents.ToListAsync());
     }
 
+    [Theory]
+    [InlineData(FocusSignals.NoFace)]
+    [InlineData(FocusSignals.MultipleFaces)]
+    public async Task TinHieuMat_ClientTuKhai_400_VaKhongGhiGi(string signal)
+    {
+        // Khoá ở CHỖ GỌI, không chỉ ở FocusSignals.IsAllowed: mutation đổi RecordFocusEventAsync sang
+        // kiểm `Persistable` inline (hai giá trị này hợp lệ ở DB) từng XANH toàn bộ 1830 test —
+        // tức ai cũng tự khai "0 mặt/nhiều mặt" mà không cần gửi ảnh, phá đúng mục đích detect-only.
+        using var t = new TestDb();
+        var candidateId = Guid.NewGuid();
+        var s = await SeedSessionAsync(t, candidateId);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            FocusService(t.Db).RecordFocusEventAsync(
+                candidateId, s.Id, new RecordFocusEventRequest(signal), default));
+
+        Assert.Empty(await t.Db.PracticeFocusEvents.ToListAsync());
+    }
+
     [Fact]
     public async Task BuoiTatTheoDoi_NoOp_KhongNem()
     {
