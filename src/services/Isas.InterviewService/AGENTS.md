@@ -84,7 +84,7 @@ CriterionScoreResponse  🔜 {           // BC9 — điểm "mỗi trường ti�
   averageScore: decimal(5,2)           // điểm ĐẠT ĐƯỢC của tiêu chí (TB qua các câu đã chấm)
   maxScore:     int                    // điểm TỐI ĐA của tiêu chí → hiển thị "averageScore/maxScore"
   percentage:   decimal(5,2)           // averageScore / maxScore × 100 (0–100)
-  weight:       decimal(5,4)           // trọng số rubric — B2C KHÔNG dùng cho overall (lấy trung bình cộng), chỉ hiển thị; B2B mới gộp có trọng số
+  weight:       decimal(5,4)           // trọng số rubric — B2C KHÔNG dùng cho overall (lấy trung bình cộng), chỉ hiển thị; B2B mới gộp có trọng số. Cả hai dòng đều nhân hình phạt bỏ câu gốc (CAMP-21, `practice_sessions.skip_penalty` — B2C ghim true từ 2026-09-21) SAU bước gộp
 }
 
 PracticeSessionSummary {

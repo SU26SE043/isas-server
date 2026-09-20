@@ -152,6 +152,34 @@ public class B2cSkipPenaltyTests
         Assert.Equal(80m, s.OverallScore);
     }
 
+    // Câu đào sâu ĐÃ TRẢ LỜI cũng không được đếm vào tử số: 2 câu gốc (1 trả lời, 1 bỏ) + 1 đào sâu
+    // đã trả lời dưới câu gốc 1 ⇒ seed 1/2 ⇒ ×1/2. Đếm nhầm cả đào sâu ra 2/2 = xoá mất hình phạt
+    // — chuỗi đào sâu dài (do AI quyết) sẽ "bù" cho câu gốc bỏ trống.
+    [Fact]
+    public async Task Compute_B2C_CauDaoSauDaTraLoi_KhongVaoTuSo()
+    {
+        using var t = new TestDb();
+        var session = TestDb.Session(Guid.NewGuid(), SessionStatus.Scored, JobCategory.BE);
+        session.SkipPenalty = true;
+        var crit = Crit(JobCategory.BE, "Clarity", maxScore: 5);
+        var seed1 = TestDb.Question(session.Id, 1);
+        var deep = TestDb.Question(session.Id, 2);
+        deep.Kind = QuestionKind.FollowUp;
+        deep.Depth = 1;
+        deep.RootQuestionId = seed1.Id;
+        var seed2 = TestDb.Question(session.Id, 3);   // bỏ trống
+        var a1 = TestDb.Answer(session.Id, seed1.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        var aDeep = TestDb.Answer(session.Id, deep.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, crit, seed1, deep, seed2, a1, aDeep,
+            Score(a1.Id, crit.Id, 4m), Score(aDeep.Id, crit.Id, 4m));   // đều 80%
+        await t.Db.SaveChangesAsync();
+
+        await TestDb.ResultService(t.Db).ComputeAndStoreAsync(session.Id);
+
+        var s = await t.Db.PracticeSessions.AsNoTracking().FirstAsync(x => x.Id == session.Id);
+        Assert.Equal(40m, s.OverallScore);   // 80 × 1/2
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────────────────
 
     private static PracticeService BuildPractice(TestDb t)
