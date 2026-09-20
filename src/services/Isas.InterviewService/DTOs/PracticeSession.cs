@@ -383,7 +383,17 @@ public record SessionResultResponse(
     /// bao giờ được vẽ thành <c>SystemDefault</c> (BK23).</para>
     /// </summary>
     string? RubricSource = null,
-    int? RubricVersion = null
+    int? RubricVersion = null,
+    // CAMP-21 áp cả B2C (2026-09-21) — để màn kết quả NÓI RA vì sao điểm thấp thay vì để người luyện
+    // đoán. `SkipPenalty` = buổi có ghim luật (buổi cũ = false ⇒ 3 field dưới null). `SeedAnswered`/
+    // `SeedTotal` đếm CÂU GỐC theo đúng vị ngữ đường chấm (có ghi âm, không `no_speech`) — KHÁC
+    // `AnsweredCount`/`TotalQuestions` ở trên (đếm mọi câu kể cả đào sâu, và đếm "đã CHẤM"). `ScoreBeforePenalty`
+    // = trung bình cộng pct các tiêu chí TRƯỚC khi nhân ⇒ `OverallScore = ScoreBeforePenalty × SeedAnswered/SeedTotal`.
+    // Additive, đặt CUỐI: client cũ không vỡ.
+    bool SkipPenalty = false,
+    int? SeedAnswered = null,
+    int? SeedTotal = null,
+    decimal? ScoreBeforePenalty = null
 );
 
 // F14 (FR08) — mốc đối chiếu vẽ chồng lên radar năng lực.

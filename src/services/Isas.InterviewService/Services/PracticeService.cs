@@ -2074,7 +2074,7 @@ public class PracticeService : IPracticeService
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
             s.Language,
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
-            MapResult(s, questions.Count, criterionScores, cvStrengths, benchmark),
+            MapResult(s, questions, answers, criterionScores, cvStrengths, benchmark),
             s.Seniority,
             criterionEvidence is { Count: > 0 } ? criterionEvidence : null,
             // TOP1-B5 — đọc THẲNG s.Topics (snapshot lúc tạo, xem entity) → cả POST lẫn GET (cùng hàm
@@ -2094,14 +2094,36 @@ public class PracticeService : IPracticeService
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.
+    // CAMP-21/B2C — CÙNG vị ngữ với đường chấm (SessionScoringNotifier.AnsweredPredicate), compile
+    // một lần để đếm trên danh sách đã nạp. Hai vị ngữ riêng cho "tính điểm" và "giải thích điểm"
+    // là cách chắc nhất để màn hình nói một đằng, điểm ra một nẻo.
+    private static readonly Func<PracticeAnswer, bool> AnsweredInMemory =
+        SessionScoringNotifier.AnsweredPredicate.Compile();
+
     private static SessionResultResponse? MapResult(
-        PracticeSession s, int totalQuestions, IReadOnlyList<SessionCriterionScore>? criterionScores,
+        PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
+        IReadOnlyList<SessionCriterionScore>? criterionScores,
         IReadOnlyList<string>? cvStrengths = null,
         BenchmarkResponse? benchmark = null)   // F14
     {
         if (s.Status != SessionStatus.Scored || s.CampaignId is not null
             || criterionScores is not { Count: > 0 })
             return null;
+
+        var totalQuestions = questions.Count;
+
+        // CAMP-21/B2C — số câu GỐC + điểm TRƯỚC phạt, chỉ khi buổi ghim luật. Buổi cũ (false) ⇒ null cả
+        // ba: KHÔNG bịa "0/0" hay "chưa phạt" cho buổi không hề có luật (BK23: null = không biết).
+        int? seedTotal = null, seedAnswered = null;
+        decimal? scoreBeforePenalty = null;
+        if (s.SkipPenalty)
+        {
+            var seedIds = questions.Where(q => q.Kind == QuestionKind.Seed).Select(q => q.Id).ToHashSet();
+            seedTotal = seedIds.Count;
+            seedAnswered = answers.Count(a => seedIds.Contains(a.QuestionId) && AnsweredInMemory(a));
+            // = `average` của SessionResultService (pct từng tiêu chí đã round 2 khi ghi).
+            scoreBeforePenalty = Math.Round(criterionScores.Average(cs => cs.Percentage), 2);
+        }
 
         var criteria = criterionScores
             .Select(cs => new CriterionScoreResponse(
@@ -2131,7 +2153,11 @@ public class PracticeService : IPracticeService
             RubricSource: s.B2CRubricVersion is null
                 ? null
                 : s.B2CRubricOwnerId is null ? "SystemDefault" : "Custom",
-            RubricVersion: s.B2CRubricVersion);
+            RubricVersion: s.B2CRubricVersion,
+            SkipPenalty: s.SkipPenalty,
+            SeedAnswered: seedAnswered,
+            SeedTotal: seedTotal,
+            ScoreBeforePenalty: scoreBeforePenalty);
     }
 
     // BC8: gộp tín hiệu "CV mạnh" = strengths + matched skills (nếu có JD match), khử trùng giữ thứ tự.

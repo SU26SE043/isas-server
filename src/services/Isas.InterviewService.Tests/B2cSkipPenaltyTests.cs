@@ -180,6 +180,73 @@ public class B2cSkipPenaltyTests
         Assert.Equal(40m, s.OverallScore);   // 80 × 1/2
     }
 
+    // ── Vế 3: GET trả đủ dữ liệu để màn kết quả GIẢI THÍCH phép nhân ───────────────────────
+
+    // Buổi ghim luật: GET trả skipPenalty=true + seed 2/3 + điểm trước phạt 80 ⇒ client dựng được
+    // "80 × 2/3 = 53.33" từ chính response, không phải tự suy từ answeredCount (đếm cả đào sâu).
+    [Fact]
+    public async Task GetSession_B2C_TraSeedVaDiemTruocPhat_KhopVoiPhepNhan()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scored, JobCategory.BE);
+        session.SkipPenalty = true;
+        var crit = Crit(JobCategory.BE, "Clarity", maxScore: 5);
+        var q1 = TestDb.Question(session.Id, 1);
+        var deep = TestDb.Question(session.Id, 2);            // đào sâu ĐÃ trả lời — không vào seed_*
+        deep.Kind = QuestionKind.FollowUp; deep.Depth = 1; deep.RootQuestionId = q1.Id;
+        var q2 = TestDb.Question(session.Id, 3);
+        var q3 = TestDb.Question(session.Id, 4);              // bỏ trống
+        var a1 = TestDb.Answer(session.Id, q1.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        var aD = TestDb.Answer(session.Id, deep.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        var a2 = TestDb.Answer(session.Id, q2.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, crit, q1, deep, q2, q3, a1, aD, a2,
+            Score(a1.Id, crit.Id, 4m), Score(aD.Id, crit.Id, 4m), Score(a2.Id, crit.Id, 4m));
+        await t.Db.SaveChangesAsync();
+        await TestDb.ResultService(t.Db).ComputeAndStoreAsync(session.Id);
+
+        var resp = await BuildPracticeForGet(t).GetSessionAsync(candidate, session.Id);
+
+        var r = resp!.Result!;
+        Assert.True(r.SkipPenalty);
+        Assert.Equal(3, r.SeedTotal);            // q1, q2, q3 — KHÔNG đếm deep
+        Assert.Equal(2, r.SeedAnswered);         // q1, q2 — deep đã trả lời KHÔNG đếm
+        Assert.Equal(80m, r.ScoreBeforePenalty);
+        Assert.Equal(53.33m, r.OverallScore);
+        // Đối chứng: answeredCount/totalQuestions đếm CẢ đào sâu (3/4) ⇒ không dùng được để giải thích ×2/3.
+        Assert.Equal(3, r.AnsweredCount);
+        Assert.Equal(4, r.TotalQuestions);
+    }
+
+    // Buổi cũ (false) ⇒ ba field null — không bịa "0/0" cho buổi không có luật (BK23).
+    [Fact]
+    public async Task GetSession_B2C_BuoiCuKhongGhimLuat_BaFieldNull()
+    {
+        using var t = new TestDb();
+        var candidate = Guid.NewGuid();
+        var session = TestDb.Session(candidate, SessionStatus.Scored, JobCategory.BE);
+        session.SkipPenalty = false;
+        var crit = Crit(JobCategory.BE, "Clarity", maxScore: 5);
+        var q1 = TestDb.Question(session.Id, 1);
+        var a1 = TestDb.Answer(session.Id, q1.Id, AnswerStatus.Scored, DateTime.UtcNow, DateTime.UtcNow);
+        t.Db.AddRange(session, crit, q1, a1, Score(a1.Id, crit.Id, 4m));
+        await t.Db.SaveChangesAsync();
+        await TestDb.ResultService(t.Db).ComputeAndStoreAsync(session.Id);
+
+        var resp = await BuildPracticeForGet(t).GetSessionAsync(candidate, session.Id);
+
+        var r = resp!.Result!;
+        Assert.False(r.SkipPenalty);
+        Assert.Null(r.SeedTotal);
+        Assert.Null(r.SeedAnswered);
+        Assert.Null(r.ScoreBeforePenalty);
+    }
+
+    private static PracticeService BuildPracticeForGet(TestDb t)
+        => new(t.Db, new Mock<IStorageService>().Object,
+            new Mock<IAiServiceQuestionGenerator>().Object, new Mock<ISessionScoringNotifier>().Object,
+            new Mock<ICreditReservationClient>().Object, NullLogger<PracticeService>.Instance);
+
     // ── helpers ───────────────────────────────────────────────────────────────────────────
 
     private static PracticeService BuildPractice(TestDb t)
