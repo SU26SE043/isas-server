@@ -323,6 +323,11 @@ public class PracticeService : IPracticeService
                 CreatedAt = DateTime.UtcNow,
                 B2CRubricOwnerId = b2cRubricOwnerId,
                 B2CRubricVersion = b2cRubricVersion,
+                // CAMP-21 nay áp CẢ B2C: câu gốc bỏ trống = mất điểm (điểm × câu gốc đã trả lời / tổng
+                // câu gốc), ghi âm im lặng không tính là trả lời. Ghim `true` cho MỌI buổi luyện mới
+                // (kể cả lesson — cùng đường này); buổi cũ giữ `false` ⇒ không hồi tố. SessionResultService
+                // đọc cờ này qua SkipPenaltyRule.Apply — cùng hàm với đường B2B.
+                SkipPenalty = true,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Ghi nhận mất tập trung — ghim lựa chọn của người luyện; đổi sau KHÔNG hồi tố buổi này.
                 FocusTrackingEnabled = ResolveFocusTracking(request.FocusTrackingEnabled),
@@ -2069,7 +2074,7 @@ public class PracticeService : IPracticeService
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
             s.Language,
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
-            MapResult(s, questions.Count, criterionScores, cvStrengths, benchmark),
+            MapResult(s, questions, answers, criterionScores, cvStrengths, benchmark),
             s.Seniority,
             criterionEvidence is { Count: > 0 } ? criterionEvidence : null,
             // TOP1-B5 — đọc THẲNG s.Topics (snapshot lúc tạo, xem entity) → cả POST lẫn GET (cùng hàm
@@ -2089,14 +2094,36 @@ public class PracticeService : IPracticeService
     }
 
     // BC9: dựng tổng kết buổi từ DB. Chỉ trả khi B2C đã Scored & có breakdown; ngược lại null.
+    // CAMP-21/B2C — CÙNG vị ngữ với đường chấm (SessionScoringNotifier.AnsweredPredicate), compile
+    // một lần để đếm trên danh sách đã nạp. Hai vị ngữ riêng cho "tính điểm" và "giải thích điểm"
+    // là cách chắc nhất để màn hình nói một đằng, điểm ra một nẻo.
+    private static readonly Func<PracticeAnswer, bool> AnsweredInMemory =
+        SessionScoringNotifier.AnsweredPredicate.Compile();
+
     private static SessionResultResponse? MapResult(
-        PracticeSession s, int totalQuestions, IReadOnlyList<SessionCriterionScore>? criterionScores,
+        PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
+        IReadOnlyList<SessionCriterionScore>? criterionScores,
         IReadOnlyList<string>? cvStrengths = null,
         BenchmarkResponse? benchmark = null)   // F14
     {
         if (s.Status != SessionStatus.Scored || s.CampaignId is not null
             || criterionScores is not { Count: > 0 })
             return null;
+
+        var totalQuestions = questions.Count;
+
+        // CAMP-21/B2C — số câu GỐC + điểm TRƯỚC phạt, chỉ khi buổi ghim luật. Buổi cũ (false) ⇒ null cả
+        // ba: KHÔNG bịa "0/0" hay "chưa phạt" cho buổi không hề có luật (BK23: null = không biết).
+        int? seedTotal = null, seedAnswered = null;
+        decimal? scoreBeforePenalty = null;
+        if (s.SkipPenalty)
+        {
+            var seedIds = questions.Where(q => q.Kind == QuestionKind.Seed).Select(q => q.Id).ToHashSet();
+            seedTotal = seedIds.Count;
+            seedAnswered = answers.Count(a => seedIds.Contains(a.QuestionId) && AnsweredInMemory(a));
+            // = `average` của SessionResultService (pct từng tiêu chí đã round 2 khi ghi).
+            scoreBeforePenalty = Math.Round(criterionScores.Average(cs => cs.Percentage), 2);
+        }
 
         var criteria = criterionScores
             .Select(cs => new CriterionScoreResponse(
@@ -2126,7 +2153,11 @@ public class PracticeService : IPracticeService
             RubricSource: s.B2CRubricVersion is null
                 ? null
                 : s.B2CRubricOwnerId is null ? "SystemDefault" : "Custom",
-            RubricVersion: s.B2CRubricVersion);
+            RubricVersion: s.B2CRubricVersion,
+            SkipPenalty: s.SkipPenalty,
+            SeedAnswered: seedAnswered,
+            SeedTotal: seedTotal,
+            ScoreBeforePenalty: scoreBeforePenalty);
     }
 
     // BC8: gộp tín hiệu "CV mạnh" = strengths + matched skills (nếu có JD match), khử trùng giữ thứ tự.
