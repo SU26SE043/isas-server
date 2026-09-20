@@ -323,6 +323,11 @@ public class PracticeService : IPracticeService
                 CreatedAt = DateTime.UtcNow,
                 B2CRubricOwnerId = b2cRubricOwnerId,
                 B2CRubricVersion = b2cRubricVersion,
+                // CAMP-21 nay áp CẢ B2C: câu gốc bỏ trống = mất điểm (điểm × câu gốc đã trả lời / tổng
+                // câu gốc), ghi âm im lặng không tính là trả lời. Ghim `true` cho MỌI buổi luyện mới
+                // (kể cả lesson — cùng đường này); buổi cũ giữ `false` ⇒ không hồi tố. SessionResultService
+                // đọc cờ này qua SkipPenaltyRule.Apply — cùng hàm với đường B2B.
+                SkipPenalty = true,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Ghi nhận mất tập trung — ghim lựa chọn của người luyện; đổi sau KHÔNG hồi tố buổi này.
                 FocusTrackingEnabled = ResolveFocusTracking(request.FocusTrackingEnabled),

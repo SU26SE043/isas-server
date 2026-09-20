@@ -1,7 +1,9 @@
 using Isas.InterviewService.ApplicationDbContext;
 using Isas.InterviewService.Entities;
+using Isas.InterviewService.Enums;
 using Isas.InterviewService.Models;
 using Isas.InterviewService.Services.Interfaces;
+using Isas.Shared.Scoring;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -131,7 +133,7 @@ public class SessionResultService : ISessionResultService
         }
 
         // B2C = TRUNG BÌNH CỘNG pct các tiêu chí (equal weight — INT-10, KHÔNG dùng weight). K=0 → 0.
-        var overall = scoredCriteriaCount > 0
+        var average = scoredCriteriaCount > 0
             ? Math.Round(Math.Clamp(sumPct / scoredCriteriaCount, 0m, 100m), 2)
             : 0m;
 
@@ -139,6 +141,30 @@ public class SessionResultService : ISessionResultService
             _logger.LogWarning(
                 "BC9: session {SessionId} không có tiêu chí nào được chấm (answered={Answered}) → overall=0",
                 sessionId, answeredCount);
+
+        // CAMP-21 áp CẢ B2C (từ bản này): câu GỐC bỏ trống = mất điểm. Đếm bằng ĐÚNG vị ngữ
+        // `SessionScoringNotifier.AnsweredPredicate` (có ghi âm VÀ không bị VAD kết luận im lặng) và
+        // nhân bằng ĐÚNG hàm `SkipPenaltyRule.Apply` — cùng vị ngữ + cùng hàm với đường B2B, để hai
+        // dòng không bao giờ trôi thành hai luật. Buổi ghim `skip_penalty = false` (tạo trước bản
+        // này) ⇒ Apply trả nguyên `average` ⇒ không hồi tố điểm cũ.
+        var seedTotal = await _db.PracticeQuestions.CountAsync(
+            q => q.SessionId == sessionId && q.Kind == QuestionKind.Seed, ct);
+        var seedAnswered = await _db.PracticeAnswers
+            .Where(a => a.SessionId == sessionId && a.Question.Kind == QuestionKind.Seed)
+            .Where(SessionScoringNotifier.AnsweredPredicate)
+            .CountAsync(ct);
+        var overall = SkipPenaltyRule.Apply(average, new InterviewScoringInputs(
+            Criteria: Array.Empty<CriterionScore>(),
+            Answered: answeredCount,
+            TotalQuestions: seedTotal,
+            SeedAnswered: seedAnswered,
+            SeedTotal: seedTotal,
+            SkipPenalty: session.SkipPenalty));
+
+        if (overall != average)
+            _logger.LogInformation(
+                "CAMP-21/B2C: session {SessionId} phạt bỏ câu gốc {Answered}/{Total}: {Average} -> {Overall}",
+                sessionId, seedAnswered, seedTotal, average, overall);
 
         session.OverallScore = overall;
         session.AnsweredCount = answeredCount;
