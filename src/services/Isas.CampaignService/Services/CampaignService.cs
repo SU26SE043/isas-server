@@ -2758,19 +2758,11 @@ namespace Isas.CampaignService.Services
                 });
             }
 
-            if (created.Count > 0)
-            {
-                _db.CvSubmissions.AddRange(created);
-                AddAudit(actorUserId, orgId, AuditAction.ScreenCandidates, campaign.Id,
-                    $"Sàng {response.Received} CV: {created.Count(c => c.Status == CvSubmissionStatus.Filtered)} qua, " +
-                    $"{created.Count(c => c.Status == CvSubmissionStatus.Rejected)} loại, {response.Skipped} trùng");
-            }
-
             // SCR1-B1: nhu cầu vừa rút (nếu có) phải xuống DB kể cả khi created.Count == 0 (mọi file
             // đều bị loại trước khi tạo row, ví dụ trùng hết email trong batch) — không thì lần sàng
             // kế tiếp lại thấy campaign "chưa có needs" và tốn thêm 1 lượt AI vô ích.
             if (created.Count > 0 || jobNeedsJustBuilt)
-                await _db.SaveChangesAsync(ct);
+                await PersistScreenedBatchAsync(created, campaign, actorUserId, orgId, response, now, ct);
 
             response.Rejected = created.Count(c => c.Status == CvSubmissionStatus.Rejected);
             response.Filtered = created.Count(c => c.Status == CvSubmissionStatus.Filtered);
@@ -2784,6 +2776,85 @@ namespace Isas.CampaignService.Services
             }).ToList();
 
             return response;
+        }
+
+        /// <summary>
+        /// Lưu lô CV vừa sàng. Đường thường = MỘT SaveChanges (CV + audit + job_needs vừa rút).
+        ///
+        /// <para>Đường lùi: DB từ chối cả lô vì MỘT dòng (đo trên prod 21/09: PdfPig trả <c>\0</c> cho một
+        /// glyph ⇒ Postgres <c>22021</c> ở INSERT ⇒ 4 CV đổ theo, FE chỉ còn "Không thể phân tích CV", và
+        /// <c>job_needs</c> vừa tốn một lượt AI cũng bị rollback). Nay: gỡ mọi dòng CV + audit khỏi tracker
+        /// → lưu <c>job_needs</c> trước → lưu TỪNG dòng; dòng nào DB còn từ chối thì thay bằng dòng
+        /// <c>Rejected</c> tối giản (giữ <c>cv_file_url</c> để HR tải file gốc, bỏ text/email đã parse —
+        /// chính chúng là thứ DB không nhận), rồi ghi audit với số cuối. Dòng tối giản mà DB vẫn từ chối
+        /// là lỗi khác hẳn ⇒ ném, không nuốt.</para>
+        ///
+        /// <para>Sanitizer ở <c>PdfTextExtractor</c> đã chặn <c>\0</c> tại nguồn; đường lùi này là lưới
+        /// thứ hai cho mọi lý do DB từ chối một dòng (độ dài cột, ràng buộc thêm về sau).</para>
+        /// </summary>
+        private async Task PersistScreenedBatchAsync(
+            List<CvSubmission> created, Campaign campaign, Guid actorUserId, Guid orgId,
+            ScreenCandidatesResponse response, DateTime now, CancellationToken ct)
+        {
+            string AuditSummary(string suffix = "") =>
+                $"Sàng {response.Received} CV: {created.Count(c => c.Status == CvSubmissionStatus.Filtered)} qua, " +
+                $"{created.Count(c => c.Status == CvSubmissionStatus.Rejected)} loại, {response.Skipped} trùng{suffix}";
+
+            if (created.Count > 0)
+            {
+                _db.CvSubmissions.AddRange(created);
+                AddAudit(actorUserId, orgId, AuditAction.ScreenCandidates, campaign.Id, AuditSummary());
+            }
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                return;
+            }
+            catch (DbUpdateException ex) when (created.Count > 0)
+            {
+                _logger.LogWarning(ex,
+                    "Sàng CV campaign {CampaignId}: DB từ chối lô {Count} dòng cv_submission — lưu lại từng dòng, dòng hỏng → Rejected.",
+                    campaign.Id, created.Count);
+            }
+
+            foreach (var entry in _db.ChangeTracker.Entries()
+                         .Where(e => e.State == EntityState.Added && e.Entity is CvSubmission or AuditLog)
+                         .ToList())
+                entry.State = EntityState.Detached;
+
+            // job_needs (campaign Modified, nếu vừa rút) xuống DB TRƯỚC — một lượt AI đã trả tiền.
+            await _db.SaveChangesAsync(ct);
+
+            var fallbackCount = 0;
+            for (var i = 0; i < created.Count; i++)
+            {
+                var row = created[i];
+                _db.CvSubmissions.Add(row);
+                try
+                {
+                    await _db.SaveChangesAsync(ct);
+                    continue;
+                }
+                catch (DbUpdateException rowEx)
+                {
+                    _db.Entry(row).State = EntityState.Detached;
+                    _logger.LogWarning(rowEx,
+                        "Sàng CV campaign {CampaignId}: DB từ chối dòng {CandidateId} — thay bằng Rejected \"CV không đọc được\".",
+                        campaign.Id, row.Id);
+                }
+
+                var fallback = NewRejectedCandidate(row.Id, row.CampaignId, row.CvFileUrl, email: null, parsedText: null,
+                    "CV không đọc được — upload lại.", CvParseStatus.Failed, now);
+                _db.CvSubmissions.Add(fallback);
+                await _db.SaveChangesAsync(ct);   // vẫn hỏng ⇒ ném: dòng tối giản bị từ chối là lỗi khác, không nuốt
+                created[i] = fallback;
+                fallbackCount++;
+            }
+
+            AddAudit(actorUserId, orgId, AuditAction.ScreenCandidates, campaign.Id,
+                AuditSummary($" ({fallbackCount} dòng bị DB từ chối, đã ghi Rejected)"));
+            await _db.SaveChangesAsync(ct);
         }
 
         // C13: serve CV gốc (PDF) cho HR. Ownership qua campaign.org_id (join) → ngoài org = 404.

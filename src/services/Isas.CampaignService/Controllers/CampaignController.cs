@@ -155,9 +155,13 @@ namespace Isas.CampaignService.Controllers
             if (request.Questions.Any(q => string.IsNullOrWhiteSpace(q.QuestionText)))
                 return BadRequest("All questions must have non-empty text.");
 
-            if (request.StartsAt.HasValue && request.StartsAt < DateTime.UtcNow)
-                return BadRequest("StartsAt cannot be in the past.");
-
+            // KHÔNG chặn giờ mở ở QUÁ KHỨ khi tạo nháp. Giờ mở đã qua là trạng thái hợp lệ ở mọi chỗ
+            // khác của hệ thống: PUT /campaign nhận nguyên (CampaignService.UpdateCampaignAsync), còn
+            // start-now (StartEarlyAsync) coi "start_at đã ở quá khứ" là no-op = "mở ngay". Chốt cũ ở
+            // đây là chốt DUY NHẤT nói khác, và nó cắn đúng đường thật: FE tạo nháp LƯỜI ở bước 2 (lúc
+            // tải JD) với giờ mở mặc định = lúc mở wizard + 1 phút ⇒ HR điền bước 1 quá 1 phút là
+            // POST 400 (đo trên prod 21/09). Giữ hai chốt dưới: hết hạn ở quá khứ và mở ≥ hết hạn vẫn
+            // là dữ liệu vô nghĩa.
             if (request.ExpiresAt.HasValue && request.ExpiresAt < DateTime.UtcNow)
                 return BadRequest("ExpiresAt cannot be in the past.");
 
