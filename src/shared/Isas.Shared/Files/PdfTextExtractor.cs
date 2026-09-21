@@ -42,7 +42,11 @@ public sealed class PdfTextExtractor : IPdfTextExtractor
             rawBuilder.AppendLine(pageText);
         }
 
-        var rawText = rawBuilder.ToString();
+        // Lọc \0 + ký tự điều khiển TRƯỚC khi text rời khỏi bộ trích — xem ExtractedTextSanitizer
+        // (Postgres 22021 làm hỏng cả lô CV vì một glyph không có bảng Unicode).
+        var rawText = ExtractedTextSanitizer.Strip(rawBuilder.ToString(), out var removed);
+        if (removed > 0)
+            _logger?.LogWarning("PdfPig text chứa {Removed} ký tự điều khiển (\\0/C0/C1) — đã lọc trước khi lưu.", removed);
 
         _logger?.LogDebug("PdfPig extracted {CharCount} chars from {Pages} pages.", rawText.Length, pageCount);
 
