@@ -136,10 +136,12 @@ def test_jd_requirement_guidance_duoc_chen_sau_schema():
 
 
 def test_khoa_python_va_dotnet_khong_duoc_lech_hai_chieu():
-    root = pathlib.Path(__file__).resolve().parents[3]
+    # parents[4] = gốc repo (tests → Isas.AIService → services → src → repo). Từ c03c093 tới
+    # 2026-09-24 dòng này là parents[3] (= src) nên đường dẫn thành src/src/... và test SKIP ở
+    # mọi lần chạy. Đường dẫn sai phải ĐỎ, không được skip — skip im lặng là tắt lưới kiểm.
+    root = pathlib.Path(__file__).resolve().parents[4]
     keys_cs = root / "src" / "services" / "Isas.InterviewService" / "Data" / "PromptTemplateKeys.cs"
-    if not keys_cs.exists():
-        pytest.skip("không thấy cây .NET")
+    assert keys_cs.exists(), f"không thấy {keys_cs} — đường dẫn test sai hoặc file .NET đã đổi chỗ"
 
     py_text = (root / "src" / "services" / "Isas.AIService" / "app" / "prompts.py").read_text()
     cs_text = keys_cs.read_text()
