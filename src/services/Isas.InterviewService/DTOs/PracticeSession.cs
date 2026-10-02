@@ -367,7 +367,7 @@ public record PracticeSessionSummary(
 
 // BC9 — tổng kết cả buổi luyện B2C (số liệu), đọc từ practice_sessions + session_criterion_scores.
 public record SessionResultResponse(
-    decimal OverallScore,          // 0–100, trung bình cộng pct các tiêu chí (equal weight)
+    decimal OverallScore,          // 0–100, gộp theo ScoreFormula (Weighted | Average) rồi nhân phạt bỏ câu
     int AnsweredCount,             // số câu đã chấm (có điểm)
     int TotalQuestions,            // tổng số câu của buổi
     IReadOnlyList<CriterionScoreResponse> CriteriaScores,
@@ -399,7 +399,22 @@ public record SessionResultResponse(
     bool SkipPenalty = false,
     int? SeedAnswered = null,
     int? SeedTotal = null,
-    decimal? ScoreBeforePenalty = null
+    decimal? ScoreBeforePenalty = null,
+    // RUB1 · INT-10 — công thức gộp điểm của ĐÚNG buổi này (đọc thẳng con dấu `b2c_score_formula`):
+    // "Average" | "Weighted" | null = buổi trước RUB1 / không biết (KHÔNG vẽ null thành "Average" hay
+    // "Weighted" — BK23). Weighted ⇒ Σ contribution ≈ ScoreBeforePenalty (lệch làm tròn ≤ 0.05).
+    string? ScoreFormula = null,
+    // RUB1 — tiêu chí của bộ ĐÃ GHIM mà buổi KHÔNG chấm (không câu nào nhắm tới / tiêu chí đo mà nói dưới
+    // sàn). Chúng rơi khỏi CẢ tử lẫn mẫu, không phải bị tính 0 — màn hình nói ra để người luyện không
+    // tưởng mình bị chấm 0. null = buổi trước RUB1 (không dựng lại được một cách trung thực).
+    IReadOnlyList<UnassessedCriterionResponse>? UnassessedCriteria = null
+);
+
+// RUB1 — một tiêu chí của bộ đã ghim mà buổi không chấm. `Weight` = trọng số trong bộ (trước khi chia lại).
+public record UnassessedCriterionResponse(
+    Guid CriterionId,
+    string Name,
+    decimal Weight
 );
 
 // F14 (FR08) — mốc đối chiếu vẽ chồng lên radar năng lực.
@@ -446,5 +461,12 @@ public record CriterionScoreResponse(
     decimal AverageScore,   // điểm đạt được (TB qua các câu đã chấm)
     int MaxScore,           // điểm tối đa tiêu chí → hiển thị "averageScore/maxScore"
     decimal Percentage,     // averageScore / maxScore × 100 (0–100)
-    decimal Weight          // trọng số rubric (B2C chỉ hiển thị, không dùng cho overall)
+    decimal Weight,         // trọng số rubric của bộ đã ghim (buổi Weighted dùng để tính điểm tổng)
+    // RUB1 — chỉ có ở buổi `Weighted`, null ở buổi Average/cũ:
+    //   EffectiveWeight = w / Σw các tiêu chí CÓ điểm (0..1, làm tròn 4) — trọng số SAU khi chia lại
+    //                     vì tiêu chí không được hỏi rơi khỏi mẫu số.
+    //   Contribution    = Percentage × EffectiveWeight (làm tròn 2) — số điểm tiêu chí này đóng góp vào
+    //                     điểm trước phạt; Σ Contribution ≈ ScoreBeforePenalty.
+    decimal? EffectiveWeight = null,
+    decimal? Contribution = null
 );

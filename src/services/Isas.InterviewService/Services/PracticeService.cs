@@ -328,6 +328,9 @@ public class PracticeService : IPracticeService
                 // (kể cả lesson — cùng đường này); buổi cũ giữ `false` ⇒ không hồi tố. SessionResultService
                 // đọc cờ này qua SkipPenaltyRule.Apply — cùng hàm với đường B2B.
                 SkipPenalty = true,
+                // RUB1 · INT-10 — buổi luyện MỚI tính điểm tổng CÓ TRỌNG SỐ theo bộ tiêu chí đã ghim ngay
+                // trên. Ghim lúc tạo (kể cả lesson — cùng đường): buổi cũ giữ null ⇒ trung bình cộng.
+                B2CScoreFormula = B2CScoreFormula.Weighted,
                 TimeLimitSec = timeLimitSec,   // F2 — đóng dấu lựa chọn để câu THÍCH ỨNG sinh sau đọc lại
                 // Ghi nhận mất tập trung — ghim lựa chọn của người luyện; đổi sau KHÔNG hồi tố buổi này.
                 FocusTrackingEnabled = ResolveFocusTracking(request.FocusTrackingEnabled),
@@ -1134,6 +1137,14 @@ public class PracticeService : IPracticeService
                 .ToListAsync(ct)
             : new List<SessionCriterionScore>();
 
+        // RUB1 — bộ tiêu chí ĐÃ GHIM của buổi, CHỈ để liệt kê tiêu chí không được chấm. Nạp qua NGUỒN DUY
+        // NHẤT RubricCriteriaLoader (nhánh ghim cố ý không lọc is_active — bộ đã hạ cờ vẫn phải đọc được).
+        // Buổi trước RUB1 (formula null) không nạp: hợp đồng trả null cho chúng, khỏi tốn thêm truy vấn.
+        IReadOnlyList<RubricCriterion>? pinnedCriteria = isB2CScored && session.B2CScoreFormula is not null
+            ? await RubricCriteriaLoader.LoadAsync(
+                _db, RubricCriteriaLoader.KeyFor(session), ct, includeLevels: false)
+            : null;
+
         // BC8: đối chiếu CV↔trả lời — chỉ B2C đã Scored & có CV đã phân tích (BC7). ĐỌC dữ liệu sẵn
         // có (không AI): lấy phân tích CV mới nhất cho đúng CvId của buổi (join lỏng qua CvId+chủ).
         IReadOnlyList<string> cvStrengths = Array.Empty<string>();
@@ -1178,7 +1189,7 @@ public class PracticeService : IPracticeService
 
         return MapToResponse(
             session, questions, answers, criterionScores, cvStrengths, benchmark, criterionEvidence,
-            focusEvents: focusEvents);
+            focusEvents: focusEvents, pinnedCriteria: pinnedCriteria);
     }
 
     /// <summary>
@@ -2050,7 +2061,9 @@ public class PracticeService : IPracticeService
         // và 3 call site đường tạo buổi (create B2C/B2B + get-or-create) không truyền, nên response
         // 201 luôn nói dối "tắt" dù DB đã ghi `true`; FE hydrate store từ chính response đó nên
         // listener không bao giờ bật (INT-19-focus tắt câm).
-        IReadOnlyList<FocusEventSummaryResponse>? focusEvents = null)
+        IReadOnlyList<FocusEventSummaryResponse>? focusEvents = null,
+        // RUB1 — bộ tiêu chí đã ghim (chỉ đường GET kết quả nạp) để liệt kê tiêu chí không được chấm.
+        IReadOnlyList<RubricCriterion>? pinnedCriteria = null)
     {
         var answerByQuestion = answers.ToDictionary(a => a.QuestionId);
 
@@ -2074,7 +2087,7 @@ public class PracticeService : IPracticeService
             s.Id, s.Status.ToString(), s.JobCategory.ToString(),
             s.Language,
             s.CvId, s.JdId, s.CreatedAt, s.CompletedAt, qResponses,
-            MapResult(s, questions, answers, criterionScores, cvStrengths, benchmark),
+            MapResult(s, questions, answers, criterionScores, cvStrengths, benchmark, pinnedCriteria),
             s.Seniority,
             criterionEvidence is { Count: > 0 } ? criterionEvidence : null,
             // TOP1-B5 — đọc THẲNG s.Topics (snapshot lúc tạo, xem entity) → cả POST lẫn GET (cùng hàm
@@ -2104,11 +2117,22 @@ public class PracticeService : IPracticeService
         PracticeSession s, List<PracticeQuestion> questions, List<PracticeAnswer> answers,
         IReadOnlyList<SessionCriterionScore>? criterionScores,
         IReadOnlyList<string>? cvStrengths = null,
-        BenchmarkResponse? benchmark = null)   // F14
+        BenchmarkResponse? benchmark = null,   // F14
+        IReadOnlyList<RubricCriterion>? pinnedCriteria = null)   // RUB1
     {
         if (s.Status != SessionStatus.Scored || s.CampaignId is not null
             || criterionScores is not { Count: > 0 })
             return null;
+
+        // RUB1 · INT-10 — CÙNG hàm gộp với đường ghi (SessionResultService) để `scoreBeforePenalty`
+        // không nói khác `overall_score`. Đầu vào là % + trọng số ĐÃ LƯU của chính buổi
+        // (session_criterion_scores chụp lại lúc chấm) — không tra lại rubric hôm nay.
+        var formula = s.B2CScoreFormula;
+        var parts = criterionScores
+            .Select(cs => new B2CScoreFormulaRule.Part(cs.Percentage, cs.Weight))
+            .ToList();
+        var weightSum = criterionScores.Sum(cs => cs.Weight);
+        var weighted = formula == B2CScoreFormula.Weighted && weightSum > 0m;
 
         var totalQuestions = questions.Count;
 
@@ -2121,14 +2145,35 @@ public class PracticeService : IPracticeService
             var seedIds = questions.Where(q => q.Kind == QuestionKind.Seed).Select(q => q.Id).ToHashSet();
             seedTotal = seedIds.Count;
             seedAnswered = answers.Count(a => seedIds.Contains(a.QuestionId) && AnsweredInMemory(a));
-            // = `average` của SessionResultService (pct từng tiêu chí đã round 2 khi ghi).
-            scoreBeforePenalty = Math.Round(criterionScores.Average(cs => cs.Percentage), 2);
+            // = `average` của SessionResultService (pct từng tiêu chí đã round 2 khi ghi), cùng công thức.
+            scoreBeforePenalty = B2CScoreFormulaRule.Combine(parts, formula);
         }
 
         var criteria = criterionScores
-            .Select(cs => new CriterionScoreResponse(
-                cs.CriterionId, cs.CriterionName, cs.AverageScore, cs.MaxScore, cs.Percentage, cs.Weight))
+            .Select(cs =>
+            {
+                // Trọng số SAU khi chia lại trên tiêu chí CÓ điểm. Tính contribution từ tỉ lệ CHƯA làm
+                // tròn rồi mới làm tròn 2 ⇒ Σ contribution lệch ScoreBeforePenalty chỉ do làm tròn.
+                var ratio = weighted ? cs.Weight / weightSum : (decimal?)null;
+                return new CriterionScoreResponse(
+                    cs.CriterionId, cs.CriterionName, cs.AverageScore, cs.MaxScore, cs.Percentage, cs.Weight,
+                    EffectiveWeight: ratio is decimal r ? Math.Round(r, 4) : null,
+                    Contribution: ratio is decimal r2 ? Math.Round(cs.Percentage * r2, 2) : null);
+            })
             .ToList();
+
+        // RUB1 — tiêu chí của bộ ĐÃ GHIM không có dòng điểm nào trong buổi. Chỉ cho buổi có con dấu
+        // formula (buổi cũ ⇒ null: không dựng lại được bộ đã chấm một cách trung thực cho mọi buổi cũ).
+        IReadOnlyList<UnassessedCriterionResponse>? unassessed = null;
+        if (formula is not null && pinnedCriteria is not null)
+        {
+            var scoredIds = criterionScores.Select(cs => cs.CriterionId).ToHashSet();
+            unassessed = pinnedCriteria
+                .Where(c => !scoredIds.Contains(c.Id))
+                .OrderBy(c => c.Name, StringComparer.Ordinal)
+                .Select(c => new UnassessedCriterionResponse(c.Id, c.Name, c.Weight))
+                .ToList();
+        }
 
         var needsImprovement = criterionScores
             .Where(cs => cs.NeedsImprovement)
@@ -2157,7 +2202,9 @@ public class PracticeService : IPracticeService
             SkipPenalty: s.SkipPenalty,
             SeedAnswered: seedAnswered,
             SeedTotal: seedTotal,
-            ScoreBeforePenalty: scoreBeforePenalty);
+            ScoreBeforePenalty: scoreBeforePenalty,
+            ScoreFormula: formula?.ToString(),
+            UnassessedCriteria: unassessed);
     }
 
     // BC8: gộp tín hiệu "CV mạnh" = strengths + matched skills (nếu có JD match), khử trùng giữ thứ tự.

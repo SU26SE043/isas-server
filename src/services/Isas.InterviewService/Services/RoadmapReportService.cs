@@ -292,19 +292,33 @@ public class RoadmapReportService : IRoadmapReportService
         var sessionProgress = sessions
             .Select((s, i) =>
             {
-                var perCriterion = s.Scores
+                var perCriterionRows = s.Scores
                     .GroupBy(sc => sc.CriterionName)
-                    .Select(cg => new RoadmapProgressCriterionResponse(
-                        cg.Key, Math.Round(cg.Average(x => x.Percentage), 2)))
+                    .Select(cg => new
+                    {
+                        Name = cg.Key,
+                        Pct = Math.Round(cg.Average(x => x.Percentage), 2),
+                        // Một buổi = một dòng/tiêu chí (UNIQUE(session_id, criterion_id)); First() chỉ là
+                        // chốt chặn cho ca hai tiêu chí cùng tên ở hai id — không xảy ra với bộ chuẩn.
+                        cg.First().Weight
+                    })
                     .OrderBy(c => c.Name, StringComparer.Ordinal)
+                    .ToList();
+                var perCriterion = perCriterionRows
+                    .Select(c => new RoadmapProgressCriterionResponse(c.Name, c.Pct))
                     .ToList();
 
                 return new RoadmapSessionProgressResponse(
                     i + 1,
                     s.LessonTitle,
                     s.ScoredAt,
-                    // Trung bình cộng các tiêu chí CỦA CHÍNH buổi đó (equal weight, như INT-10 B2C).
-                    Math.Round(perCriterion.Average(c => c.Percentage), 2),
+                    // RUB1 · INT-10 — điểm của CHÍNH buổi đó gộp bằng CÙNG hàm với màn kết quả
+                    // (B2CScoreFormulaRule) theo con dấu của buổi: Weighted ⇒ có trọng số, buổi cũ ⇒ trung
+                    // bình cộng như trước. Đây là điểm TRƯỚC phạt bỏ câu (= scoreBeforePenalty) — đường
+                    // xu hướng đo năng lực theo tiêu chí, không đo việc bỏ câu (giữ nguyên ngữ nghĩa cũ).
+                    B2CScoreFormulaRule.Combine(
+                        perCriterionRows.Select(c => new B2CScoreFormulaRule.Part(c.Pct, c.Weight)).ToList(),
+                        s.Formula),
                     perCriterion);
             })
             .ToList();
@@ -541,7 +555,8 @@ public class RoadmapReportService : IRoadmapReportService
 
     // Điểm của 1 buổi luyện thuộc roadmap, kèm mốc thời gian + tên bài học để dựng đường xu hướng.
     private sealed record RoadmapSessionScores(
-        Guid SessionId, string LessonTitle, DateTime ScoredAt, List<SessionCriterionScore> Scores);
+        Guid SessionId, string LessonTitle, DateTime ScoredAt, List<SessionCriterionScore> Scores,
+        B2CScoreFormula? Formula = null);
 
     // Các buổi (đã có breakdown điểm) gắn lesson của roadmap, XẾP THEO THỜI GIAN CHẤM (cũ → mới).
     //
@@ -587,6 +602,12 @@ public class RoadmapReportService : IRoadmapReportService
             .ToListAsync(ct);
         if (scores.Count == 0) return [];
 
+        // RUB1 — con dấu công thức gộp điểm của từng buổi (null = buổi trước RUB1 ⇒ trung bình cộng).
+        var formulaBySession = await _db.PracticeSessions.AsNoTracking()
+            .Where(s => sessionIds.Contains(s.Id))
+            .Select(s => new { s.Id, s.B2CScoreFormula })
+            .ToDictionaryAsync(x => x.Id, x => x.B2CScoreFormula, ct);
+
         // 1 buổi ↔ 1 LẦN LÀM (UNIQUE(session_id) trên roadmap_lesson_attempts), nhưng một bài có
         // nhiều lần làm ⇒ nhiều buổi cùng mang MỘT tên bài — đó là ý đồ: đường xu hướng hiện nhiều
         // điểm cùng tên, cho thấy chính bài đó đã khá lên. Vẫn chốt deterministic (dòng đầu tiên)
@@ -601,7 +622,8 @@ public class RoadmapReportService : IRoadmapReportService
                 g.Key,
                 titleBySession.TryGetValue(g.Key, out var title) ? title : string.Empty,
                 g.Max(sc => sc.CreatedAt),
-                g.ToList()))
+                g.ToList(),
+                formulaBySession.TryGetValue(g.Key, out var formula) ? formula : null))
             // Tiebreak bằng SessionId: hai buổi chấm xong trong cùng một tick sẽ làm "3 buổi gần
             // nhất" thành không xác định nếu chỉ so mốc thời gian.
             .OrderBy(s => s.ScoredAt).ThenBy(s => s.SessionId)
