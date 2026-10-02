@@ -84,6 +84,10 @@ public class RubricCriterionConfiguration : IEntityTypeConfiguration<RubricCrite
         // rubric B2C + buổi B2B trước RNK1 = null. `AddColumn` nullable ⇒ row cũ nhận NULL, không backfill.
         e.Property(x => x.SourceCriterionId);
 
+        // RUB1 — bộ chuẩn version mấy lúc rubric riêng được lưu. Nullable, KHÔNG default, KHÔNG
+        // backfill: null = "không biết" cho mọi rubric riêng có trước cột này (BK23).
+        e.Property(x => x.BasedOnDefaultVersion);
+
         e.HasIndex(x => new { x.JobCategory, x.Version, x.IsActive });
 
         // B2B: đọc/materialize tiêu chí theo campaign. Non-unique, nullable.

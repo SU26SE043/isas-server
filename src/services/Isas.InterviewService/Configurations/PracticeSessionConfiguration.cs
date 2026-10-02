@@ -45,6 +45,10 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
             t.HasCheckConstraint("ck_practice_sessions_language", "language IN ('vi', 'en')");
             t.HasCheckConstraint("ck_practice_sessions_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
             t.HasCheckConstraint("ck_practice_sessions_status", "status IN ('GeneratingQuestions', 'Ready', 'InProgress', 'Completed', 'Scoring', 'Scored', 'Failed', 'SessionAbandoned')");
+            // RUB1 — công thức gộp điểm B2C lưu string (GEN-2). NULL = buổi cũ / B2B ⇒ `IN` cho NULL ra
+            // UNKNOWN nên CHECK vẫn thoả; ghi tường minh `IS NULL OR` cho người đọc khỏi phải nhớ điều đó.
+            t.HasCheckConstraint("ck_practice_sessions_b2c_score_formula",
+                "b2c_score_formula IS NULL OR b2c_score_formula IN ('Average', 'Weighted')");
         });
 
         // INT-17b — trần đào sâu MỖI câu gốc + bộ đếm lỗi decide-next. default 0 ⇒ row CŨ tự nhận
@@ -85,6 +89,12 @@ public class PracticeSessionConfiguration : IEntityTypeConfiguration<PracticeSes
         // row cũ + B2C tự nhận "không phạt" ngay lúc AddColumn (khỏi backfill riêng). Campaign gửi
         // giá trị thật (campaigns.skip_penalty) qua CreateCampaignSessionInternalRequest.
         e.Property(x => x.SkipPenalty).IsRequired().HasDefaultValue(false);
+
+        // RUB1 — công thức gộp điểm B2C. NULLABLE, KHÔNG default, KHÔNG backfill: null = "buổi trước
+        // RUB1 ⇒ trung bình cộng" — default 'Weighted' sẽ đổi điểm của mọi buổi cũ lần chấm lại kế
+        // tiếp (vd republisher), tức hồi tố. Chuỗi dài nhất 'Weighted' = 8 ký tự; 16 chừa gấp đôi
+        // (bài học S11 `funded_by` varchar(16) gặp enum 19 ký tự: SQLite không enforce độ dài).
+        e.Property(x => x.B2CScoreFormula).HasConversion<string>().HasMaxLength(16);
 
         // Ghi nhận mất tập trung (B2C, coaching). Required + default false ⇒ row cũ tự nhận "tắt"
         // ngay lúc AddColumn, khỏi backfill riêng (cùng mẫu SkipPenalty ngay trên).

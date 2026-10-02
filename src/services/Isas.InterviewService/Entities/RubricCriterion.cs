@@ -63,6 +63,13 @@ public class RubricCriterion
     // Scoring B2C ưu tiên rubric riêng (nếu có active), else fallback seed mặc định.
     public Guid? CandidateId { get; set; }
 
+    // RUB1 — CHỈ có nghĩa với rubric RIÊNG (CandidateId != null): phiên bản BỘ CHUẨN đang hiệu lực của
+    // (nghề, ngôn ngữ) LÚC ứng viên lưu bộ này. So với version bộ chuẩn hiện tại ⇒ trang "Tiêu chí của
+    // tôi" biết bộ chuẩn đã cập nhật sau khi họ tuỳ chỉnh.
+    //   null = bộ chuẩn / tiêu chí campaign (không áp dụng) · rubric riêng lưu TRƯỚC RUB1 (KHÔNG BIẾT —
+    //          không suy thành v1, BK23) · lúc lưu không có bộ chuẩn active nào.
+    public int? BasedOnDefaultVersion { get; set; }
+
     // Navigation
     public ICollection<RubricLevel> Levels { get; set; } = [];
 }
