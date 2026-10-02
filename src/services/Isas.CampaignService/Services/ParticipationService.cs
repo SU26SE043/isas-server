@@ -269,6 +269,34 @@ namespace Isas.CampaignService.Services
             var isResume = membership.SessionId is not null
                 && membership.InterviewStatus == InterviewProgressStatus.InProgress;
 
+            // ATT1 R1 — membership "InProgress" chỉ là điều Campaign BIẾT LẦN CUỐI: sự kiện kết thúc buổi
+            // (SessionScored / SessionAbandoned) đi qua outbox → broker nên có thể chưa tới (~15s, broker
+            // chết thì lâu hơn). Tin mù vào đó thì guard lượt bị bỏ qua, Interview thấy buổi cũ đã đóng ⇒
+            // tạo buổi MỚI + giữ credit ⇒ vượt trần lượt, và buổi mới rút đề lượt cũ. Nên khi tưởng là
+            // "vào lại", HỎI trạng thái thật bên Interview. CHỈ hỏi ở nhánh này: Start lần đầu / lượt sau bỏ
+            // ngang không thêm round-trip. Lỗi gọi ⇒ DownstreamServiceException (502) — fail-closed, không đoán.
+            // ⚠ Còn cửa sổ đua CỰC HẸP giữa lúc hỏi và lúc create-or-get (buổi đóng đúng khoảng giữa) —
+            // chấp nhận: khi đó vẫn đếm đúng buổi mới (isNewSession), chỉ có thể vượt trần một lượt.
+            if (isResume)
+            {
+                var live = await _sessionClient.GetSessionStateAsync(membership.SessionId!.Value, ct);
+                switch (ClassifyLiveSession(live))
+                {
+                    case LiveSessionVerdict.Submitted:
+                        // Bài đã nộp/chấm bên Interview ⇒ đối xử như guard Completed ở trên (không làm lại
+                        // bài đã nộp, kể cả khi còn lượt — guard Completed đứng trước guard lượt).
+                        throw new InvalidOperationException("Bạn đã hoàn thành phỏng vấn của chiến dịch này.");
+                    case LiveSessionVerdict.Ended:
+                        // Buổi đã bỏ ngang / hỏng / không tồn tại ⇒ KHÔNG phải vào lại: guard lượt áp, còn
+                        // lượt thì là lượt mới (attemptNo = count + 1, đề mới).
+                        _logger.LogInformation(
+                            "ATT1: membership {MembershipId} còn InProgress nhưng Interview báo session {SessionId} {Status} — coi là KHÔNG vào lại.",
+                            membership.Id, membership.SessionId, live?.Exists == false ? "không tồn tại" : live?.Status);
+                        isResume = false;
+                        break;
+                }
+            }
+
             // ATT1 [C8] — hết lượt làm bài (và không phải đang làm dở) ⇒ 409 ATTEMPT_LIMIT_REACHED. Đứng
             // TRƯỚC khung giờ / sức chứa / gọi Interview: hết lượt mà vẫn đi tiếp là Interview giữ 1
             // credit tổ chức rồi mới 409 (PAY-5). Vào lại buổi đang dở KHÔNG bị chặn (không tạo lượt mới).
@@ -426,7 +454,9 @@ namespace Isas.CampaignService.Services
                 // INT-17: FE dùng cờ này để biết bài có đuôi thích ứng (append nextQuestion sau seed cuối).
                 AdaptiveEnabled = campaign.AdaptiveEnabled,
                 // ATT1 [C7] — lượt của buổi này (sau khi đếm) + thời lượng cả buổi (null = không tính giờ).
-                AttemptNo = membership.AttemptCount,
+                // R3 — tối thiểu 1: buổi bắt đầu trong cửa sổ "đã migrate, chưa deploy code" mang
+                // attempt_count 0 (dữ liệu sửa bằng chạy lại backfill); hạt giống KHÔNG đổi (≤ 1 vẫn 32 byte).
+                AttemptNo = Math.Max(1, membership.AttemptCount),
                 TimeLimitMinutes = campaign.TimeLimitMinutes,
                 // ATT1 [C7] — đề chỉ lộ sau "vào phòng" (begin bên Interview). Start KHÔNG trả nội dung câu;
                 // giữ id/orderNo/timeLimitSec để FE dựng marker phòng thi.
@@ -439,6 +469,28 @@ namespace Isas.CampaignService.Services
                         Content = string.Empty,
                         TimeLimitSec = q.TimeLimitSec
                     }).ToList()
+            };
+        }
+
+        // ATT1 R1 — phân loại trạng thái THẬT của buổi đang giữ (tên enum SessionStatus phía Interview).
+        private enum LiveSessionVerdict { Resume, Submitted, Ended }
+
+        private static LiveSessionVerdict ClassifyLiveSession(CampaignSessionState? live)
+        {
+            // Client thật không bao giờ trả null (lỗi ⇒ ném). null chỉ đến từ test double ⇒ giữ hành vi cũ.
+            if (live is null)
+                return LiveSessionVerdict.Resume;
+            if (!live.Exists)
+                return LiveSessionVerdict.Ended;
+            return live.Status switch
+            {
+                var st when string.Equals(st, "Scored", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(st, "Completed", StringComparison.OrdinalIgnoreCase) => LiveSessionVerdict.Submitted,
+                var st when string.Equals(st, "SessionAbandoned", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(st, "Failed", StringComparison.OrdinalIgnoreCase) => LiveSessionVerdict.Ended,
+                // GeneratingQuestions / Ready / InProgress / Scoring / không rõ (Interview cũ không trả states)
+                // ⇒ vào lại như trước.
+                _ => LiveSessionVerdict.Resume,
             };
         }
 

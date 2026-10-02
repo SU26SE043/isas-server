@@ -156,6 +156,17 @@ namespace Isas.CampaignService.Services
             if (membership is null || membership.InterviewStatus == InterviewProgressStatus.Completed)
                 return;
 
+            // ATT1 R2 — đối xứng nhánh SessionAbandoned: membership đã trỏ sang buổi KHÁC (lượt mới) ⇒ sự
+            // kiện chấm xong này của buổi CŨ đến muộn, KHÔNG được đánh Completed lượt đang chạy. Dòng
+            // ranking của buổi cũ vẫn upsert như thường (đường ranking không đụng).
+            if (membership.SessionId is Guid current && current != evt.SessionId)
+            {
+                _logger.LogInformation(
+                    "ATT1: bỏ qua đánh Completed từ SessionScored của session {EventSessionId} — membership {MembershipId} đã trỏ sang session {CurrentSessionId} (lượt mới).",
+                    evt.SessionId, membership.Id, current);
+                return;
+            }
+
             membership.InterviewStatus = InterviewProgressStatus.Completed;
             membership.SessionId ??= evt.SessionId;
             membership.UpdatedAt = DateTime.UtcNow;

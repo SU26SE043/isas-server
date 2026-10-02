@@ -45,6 +45,19 @@ namespace Isas.CampaignService.Services
         // (ParticipationService) truyền đủ, và để trống default thì hai overload không thể nhập nhằng.
         Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, bool skipPenalty, int? durationMinutes, CancellationToken ct);
 
+        /// <summary>
+        /// ATT1 R1 — hỏi TRẠNG THÁI THẬT của một buổi bên Interview qua endpoint nội bộ ĐÃ CÓ
+        /// <c>POST /internal/sessions/exists</c> (body <c>{ "sessionIds": [id] }</c>, X-Internal-Token).
+        /// Dùng ở Start khi membership tưởng "đang làm dở" (InProgress + SessionId): sự kiện kết thúc buổi đi
+        /// qua outbox nên có thể chưa tới Campaign.
+        /// <para><c>Exists</c> lấy từ <c>existingIds</c> (nguồn chân lý duy nhất cho "có tồn tại không" — xem
+        /// DTO phía Interview); <c>Status</c> = tên enum SessionStatus của Interview (null nếu không tồn tại
+        /// hoặc Interview bản cũ không trả <c>states</c>).</para>
+        /// <para>FAIL-CLOSED: mạng lỗi / timeout / non-success / JSON hỏng ⇒ <see cref="DownstreamServiceException"/>
+        /// (502) — KHÔNG đoán trạng thái.</para>
+        /// </summary>
+        Task<CampaignSessionState> GetSessionStateAsync(Guid sessionId, CancellationToken ct = default);
+
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
         // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).
         // Lỗi hạ tầng / non-success → DownstreamServiceException (502).
@@ -164,6 +177,9 @@ namespace Isas.CampaignService.Services
     }
 
     public record CampaignSessionResult(Guid SessionId, IReadOnlyList<SessionQuestion> Questions);
+
+    /// <summary>ATT1 R1 — trạng thái thật của một buổi bên Interview (xem <see cref="ICampaignSessionClient.GetSessionStateAsync"/>).</summary>
+    public record CampaignSessionState(bool Exists, string? Status);
 
     public record SessionQuestion(Guid Id, int OrderNo, string Content, int TimeLimitSec);
 

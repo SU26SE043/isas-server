@@ -157,6 +157,58 @@ namespace Isas.CampaignService.Services
             return new CampaignSessionResult(body.Id, mapped);
         }
 
+        // ATT1 R1 — shape khớp Interview SessionExistsResponse (DTOs/SessionExists.cs): existingIds + states.
+        private record SessionExistsApiResponse(List<Guid>? ExistingIds, List<SessionStateApi>? States);
+        private record SessionStateApi(Guid SessionId, string? Status);
+
+        public async Task<CampaignSessionState> GetSessionStateAsync(Guid sessionId, CancellationToken ct = default)
+        {
+            using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/exists")
+            {
+                // Khoá JSON "sessionIds" khớp SessionExistsRequest phía Interview (Web defaults ⇒ camelCase).
+                Content = JsonContent.Create(new { sessionIds = new[] { sessionId } })
+            };
+            msg.Headers.TryAddWithoutValidation("X-Internal-Token", _internalToken);
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _http.SendAsync(msg, ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                _logger.LogError(ex, "Không gọi được InterviewService /internal/sessions/exists cho session {SessionId}", sessionId);
+                throw new DownstreamServiceException("Không gọi được InterviewService (trạng thái buổi thi)", ex);
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogError("InterviewService /internal/sessions/exists lỗi: {StatusCode} - {Error}", response.StatusCode, error);
+                throw new DownstreamServiceException($"InterviewService trạng thái buổi thi trả {(int)response.StatusCode}");
+            }
+
+            SessionExistsApiResponse? body;
+            try
+            {
+                body = await response.Content.ReadFromJsonAsync<SessionExistsApiResponse>(Json, ct);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "InterviewService /internal/sessions/exists trả JSON không hợp lệ");
+                throw new DownstreamServiceException("InterviewService trạng thái buổi thi trả JSON không hợp lệ", ex);
+            }
+
+            // existingIds là nguồn chân lý cho "có tồn tại không" — thiếu hẳn trường này là phản hồi hỏng,
+            // KHÔNG đoán là "không tồn tại" (đoán sai là cho ứng viên một lượt mới oan).
+            if (body?.ExistingIds is null)
+                throw new DownstreamServiceException("InterviewService trạng thái buổi thi trả thiếu existingIds");
+
+            var exists = body.ExistingIds.Contains(sessionId);
+            var status = exists ? body.States?.FirstOrDefault(s => s.SessionId == sessionId)?.Status : null;
+            return new CampaignSessionState(exists, status);
+        }
+
         // AI4 — shape khớp Interview QuestionResponse/AnswerResponse (chỉ field HR cần: câu hỏi + transcript
         // + per-criterion score/reasoning + needsReview). Unknown field bị bỏ qua (case-insensitive).
         // Shape khớp Interview QuestionResponse/AnswerResponse (DTOs/PracticeSession.cs). Field lạ bị bỏ qua.

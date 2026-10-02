@@ -512,6 +512,356 @@ public class ParticipationAttemptAtt1B2Tests
         Assert.All(res.Questions, q => Assert.Equal(string.Empty, q.Content));
     }
 
+    // ══ fix(att1-b2) — mục KIỂM B2 ══════════════════════════════════════════════════════════════
+
+    // ── A1 (K6/K7): thời lượng null là JSON null ở response Start VÀ chi tiết my-campaigns ─────────
+    [Fact]
+    public async Task Controller_TimeLimitNull_LaJsonNull_StartVaChiTietVaDanhSach()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 1, timeLimit: null);
+        SeedMembership(tdb, camp.Id, cand);
+        var controller = Controller(NewService(tdb.NewContext(), SessionMock(Guid.NewGuid, new SessionCalls()).Object), cand);
+
+        var start = Json(Assert.IsType<OkObjectResult>(await controller.StartInterview(camp.Id, default)));
+        var detail = Json(await controller.GetMyCampaign(camp.Id, default));
+        var item = Json(await controller.GetMyCampaigns(null, null, default)).EnumerateArray().Single();
+
+        Assert.Equal(JsonValueKind.Null, start.GetProperty("timeLimitMinutes").ValueKind);
+        Assert.Equal(JsonValueKind.Null, detail.GetProperty("timeLimitMinutes").ValueKind);
+        Assert.Equal(JsonValueKind.Null, item.GetProperty("timeLimitMinutes").ValueKind);
+    }
+
+    // ── A2 (K12/K4): fixture giá trị KHÁC NHAU — maxAttempts 2 ≠ K 3; attempt_count 3 > max 2 ──────
+    [Fact]
+    public async Task Controller_MaxAttemptsKhacK_DanhSachVaChiTietDungNguon()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2, k: 3);
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: Guid.NewGuid(), status: InterviewProgressStatus.Abandoned);
+        var controller = Controller(NewService(tdb.NewContext(), SessionMock(Guid.NewGuid, new SessionCalls()).Object), cand);
+
+        var item = Json(await controller.GetMyCampaigns(null, null, default)).EnumerateArray().Single();
+        var detail = Json(await controller.GetMyCampaign(camp.Id, default));
+
+        Assert.Equal(2, item.GetProperty("maxAttempts").GetInt32());
+        Assert.Equal(2, detail.GetProperty("maxAttempts").GetInt32());
+    }
+
+    [Fact]
+    public async Task Controller_HetLuot_AttemptsUsedVuotMax_BaoDungTungNguon()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2);
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 3, sessionId: Guid.NewGuid(), status: InterviewProgressStatus.Abandoned);
+
+        var r = await Controller(NewService(tdb.NewContext(), SessionMock(Guid.NewGuid, new SessionCalls()).Object), cand)
+            .StartInterview(camp.Id, default);
+
+        var body = Json(Assert.IsType<ConflictObjectResult>(r));
+        Assert.Equal("ATTEMPT_LIMIT_REACHED", body.GetProperty("code").GetString());
+        Assert.Equal(3, body.GetProperty("attemptsUsed").GetInt32());
+        Assert.Equal(2, body.GetProperty("maxAttempts").GetInt32());
+    }
+
+    // ── A3 (K1/K2): khoá danh sách id lượt 2 và lượt 3 (đo trên selector hiện tại, khớp số người kiểm đo).
+    //    Đổi endianness 4 byte lượt hay để 4 byte = 0 ở lượt 2 là đổi đề của MỌI người đang làm lượt 2.
+    [Fact]
+    public void Selector_Luot2VaLuot3_KhoaDanhSachId()
+    {
+        Assert.Equal(new[] { G(34), G(31), G(37) },
+            QuestionPoolSelector.Select(Plain10(), 3, PoolCampaign, PoolCandidate, attemptNo: 2).Select(q => q.Id));
+        Assert.Equal(new[] { G(36), G(39), G(40) },
+            QuestionPoolSelector.Select(Plain10(), 3, PoolCampaign, PoolCandidate, attemptNo: 3).Select(q => q.Id));
+    }
+
+    // ── B (R1): membership InProgress nhưng Interview đã đóng buổi (sự kiện chưa tới) ─────────────
+
+    private static Mock<ICampaignSessionClient> WithState(Mock<ICampaignSessionClient> m, CampaignSessionState state)
+    {
+        m.Setup(x => x.GetSessionStateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>())).ReturnsAsync(state);
+        return m;
+    }
+
+    private static void VerifyCreateOrGet(Mock<ICampaignSessionClient> m, Times times) =>
+        m.Verify(x => x.CreateOrGetSessionAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<string>>(), It.IsAny<IReadOnlyList<SessionCriterionInput>>(),
+            It.IsAny<DateTime?>(), It.IsAny<bool?>(), It.IsAny<int?>(), It.IsAny<int?>(), It.IsAny<int?>(),
+            It.IsAny<string>(), It.IsAny<int>(), It.IsAny<IReadOnlyList<SessionQuestionInput>?>(),
+            It.IsAny<CampaignScoringPolicyInput?>(), It.IsAny<bool>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            times);
+
+    public static IEnumerable<object[]> EndedStates() => new[]
+    {
+        new object[] { true, "SessionAbandoned" },
+        new object[] { true, "Failed" },
+        new object[] { false, null! },   // không có trong existingIds ⇒ coi như không vào lại
+    };
+
+    [Theory]
+    [MemberData(nameof(EndedStates))]
+    public async Task Start_TuongVaoLai_NhungBuoiDaDong_HetLuot_409_KhongGoiCreateOrGet(bool exists, string? status)
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 1);
+        var s1 = Guid.NewGuid();
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: s1, status: InterviewProgressStatus.InProgress);
+        var mock = WithState(SessionMock(Guid.NewGuid, new SessionCalls()), new CampaignSessionState(exists, status));
+
+        var ex = await Assert.ThrowsAsync<AttemptLimitReachedException>(() =>
+            NewService(tdb.NewContext(), mock.Object).StartInterviewAsync(cand, camp.Id, default));
+
+        Assert.Equal(1, ex.AttemptsUsed);
+        VerifyCreateOrGet(mock, Times.Never());
+        mock.Verify(x => x.GetSessionStateAsync(s1, It.IsAny<CancellationToken>()), Times.Once);
+        var after = Reload(tdb, camp.Id, cand);
+        Assert.Equal(1, after.AttemptCount);
+        Assert.Equal(s1, after.SessionId);
+    }
+
+    [Fact]
+    public async Task Start_TuongVaoLai_NhungBuoiDaBoNgang_ConLuot_LuotMoi_DeLuot2()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = PoolCandidate;
+        var camp = SeedCampaign(tdb, maxAttempts: 2, k: 3, id: PoolCampaign);
+        var s1 = Guid.NewGuid();
+        var s2 = Guid.NewGuid();
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: s1, status: InterviewProgressStatus.InProgress);
+        var calls = new SessionCalls();
+        var mock = WithState(SessionMock(() => s2, calls), new CampaignSessionState(true, "SessionAbandoned"));
+
+        var res = await NewService(tdb.NewContext(), mock.Object).StartInterviewAsync(cand, camp.Id, default);
+
+        Assert.Equal(2, res.AttemptNo);
+        var after = Reload(tdb, camp.Id, cand);
+        Assert.Equal(2, after.AttemptCount);
+        Assert.Equal(s2, after.SessionId);
+        var pool = tdb.NewContext().CampaignQuestions.AsNoTracking().Where(q => q.CampaignId == camp.Id)
+            .OrderBy(q => q.CreatedAt).ThenBy(q => q.Id)
+            .Select(q => new PoolQuestion(q.Id, q.QuestionText, q.SampleAnswer, q.IsRequired, q.QuestionGroup)).ToList();
+        var l1 = QuestionPoolSelector.Select(pool, 3, camp.Id, cand, attemptNo: 1).Select(q => q.Text);
+        var l2 = QuestionPoolSelector.Select(pool, 3, camp.Id, cand, attemptNo: 2).Select(q => q.Text);
+        Assert.Equal(l2, calls.Questions.Single());   // lượt MỚI ⇒ đề lượt 2
+        Assert.NotEqual(l1, calls.Questions.Single());
+    }
+
+    [Theory]
+    [InlineData("Scored")]
+    [InlineData("Completed")]
+    public async Task Start_TuongVaoLai_NhungBuoiDaNop_409KhongCode_KhongGoiCreateOrGet(string status)
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2);   // còn lượt nhưng bài ĐÃ NỘP ⇒ không cho làm lại
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: Guid.NewGuid(), status: InterviewProgressStatus.InProgress);
+        var mock = WithState(SessionMock(Guid.NewGuid, new SessionCalls()), new CampaignSessionState(true, status));
+
+        var r = await Controller(NewService(tdb.NewContext(), mock.Object), cand).StartInterview(camp.Id, default);
+
+        var body = Json(Assert.IsType<ConflictObjectResult>(r));
+        Assert.False(body.TryGetProperty("code", out _));
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("error").GetString()));
+        VerifyCreateOrGet(mock, Times.Never());
+        Assert.Equal(1, Reload(tdb, camp.Id, cand).AttemptCount);
+    }
+
+    [Theory]
+    [InlineData("InProgress")]
+    [InlineData("Ready")]
+    [InlineData("GeneratingQuestions")]
+    [InlineData("Scoring")]
+    public async Task Start_BuoiVanDangChay_VaoLai_KhongTang(string status)
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 1);
+        var s1 = Guid.NewGuid();
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: s1, status: InterviewProgressStatus.InProgress);
+        var mock = WithState(SessionMock(() => s1, new SessionCalls()), new CampaignSessionState(true, status));
+
+        var res = await NewService(tdb.NewContext(), mock.Object).StartInterviewAsync(cand, camp.Id, default);
+
+        Assert.Equal(s1, res.SessionId);
+        Assert.Equal(1, res.AttemptNo);
+        Assert.Equal(1, Reload(tdb, camp.Id, cand).AttemptCount);
+        VerifyCreateOrGet(mock, Times.Once());
+    }
+
+    [Fact]
+    public async Task Start_HoiTrangThaiLoi_502_FailClosed_KhongGoiCreateOrGet()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 1);
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: Guid.NewGuid(), status: InterviewProgressStatus.InProgress);
+        var mock = SessionMock(Guid.NewGuid, new SessionCalls());
+        mock.Setup(x => x.GetSessionStateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new DownstreamServiceException("Interview chết"));
+
+        var r = await Controller(NewService(tdb.NewContext(), mock.Object), cand).StartInterview(camp.Id, default);
+
+        Assert.Equal(StatusCodes.Status502BadGateway, Assert.IsAssignableFrom<ObjectResult>(r).StatusCode);
+        VerifyCreateOrGet(mock, Times.Never());
+        Assert.Equal(1, Reload(tdb, camp.Id, cand).AttemptCount);
+    }
+
+    // CHỈ hỏi trạng thái khi membership tưởng đang làm dở: Start lần đầu và membership Abandoned không thêm
+    // round-trip.
+    [Theory]
+    [InlineData(false)]   // lần đầu: SessionId null
+    [InlineData(true)]    // lượt trước bỏ ngang: SessionId có, Abandoned
+    public async Task Start_KhongPhaiVaoLai_KhongHoiTrangThai(bool abandoned)
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2);
+        if (abandoned)
+            SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: Guid.NewGuid(), status: InterviewProgressStatus.Abandoned);
+        else
+            SeedMembership(tdb, camp.Id, cand);
+        var mock = WithState(SessionMock(Guid.NewGuid, new SessionCalls()), new CampaignSessionState(true, "InProgress"));
+
+        await NewService(tdb.NewContext(), mock.Object).StartInterviewAsync(cand, camp.Id, default);
+
+        mock.Verify(x => x.GetSessionStateAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ── B: client thật — body JSON thật + phân tích phản hồi + fail-closed ───────────────────────
+
+    private sealed class ExistsHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _code;
+        private readonly string _json;
+        public string? Path { get; private set; }
+        public string? Body { get; private set; }
+        public string? Token { get; private set; }
+
+        public ExistsHandler(HttpStatusCode code, string json) { _code = code; _json = json; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Path = request.RequestUri!.AbsolutePath;
+            Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
+            Token = request.Headers.TryGetValues("X-Internal-Token", out var v) ? v.Single() : null;
+            return new HttpResponseMessage(_code) { Content = new StringContent(_json, Encoding.UTF8, "application/json") };
+        }
+    }
+
+    private static CampaignSessionClient ExistsClient(ExistsHandler h)
+    {
+        var http = new HttpClient(h) { BaseAddress = new Uri("http://interview.test") };
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Internal:Token"] = "tkn" }).Build();
+        return new CampaignSessionClient(http, config, NullLogger<CampaignSessionClient>.Instance);
+    }
+
+    [Fact]
+    public async Task Client_GetSessionState_BodyCoSessionIds_DocExistsVaStatus()
+    {
+        var sid = Guid.NewGuid();
+        var h = new ExistsHandler(HttpStatusCode.OK,
+            $$"""{"existingIds":["{{sid}}"],"states":[{"sessionId":"{{sid}}","status":"SessionAbandoned"}]}""");
+
+        var state = await ExistsClient(h).GetSessionStateAsync(sid);
+
+        Assert.Equal("/internal/sessions/exists", h.Path);
+        Assert.Equal("tkn", h.Token);
+        var body = JsonDocument.Parse(h.Body!).RootElement;
+        Assert.Equal(sid, body.GetProperty("sessionIds").EnumerateArray().Single().GetGuid());
+        Assert.True(state.Exists);
+        Assert.Equal("SessionAbandoned", state.Status);
+    }
+
+    [Fact]
+    public async Task Client_GetSessionState_KhongTrongExistingIds_ExistsFalse()
+    {
+        var h = new ExistsHandler(HttpStatusCode.OK, """{"existingIds":[],"states":[]}""");
+
+        var state = await ExistsClient(h).GetSessionStateAsync(Guid.NewGuid());
+
+        Assert.False(state.Exists);
+        Assert.Null(state.Status);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.InternalServerError, """{"error":"x"}""")]
+    [InlineData(HttpStatusCode.Unauthorized, """{"error":"Invalid internal token"}""")]
+    [InlineData(HttpStatusCode.OK, "khong-phai-json")]
+    [InlineData(HttpStatusCode.OK, """{"states":[]}""")]   // thiếu existingIds ⇒ không đoán "không tồn tại"
+    public async Task Client_GetSessionState_LoiHoacPhanHoiHong_FailClosed(HttpStatusCode code, string json)
+    {
+        var h = new ExistsHandler(code, json);
+
+        await Assert.ThrowsAsync<DownstreamServiceException>(() => ExistsClient(h).GetSessionStateAsync(Guid.NewGuid()));
+    }
+
+    // ── C (R2): SessionScored của lượt CŨ tới muộn khi membership đã sang lượt mới ───────────────
+    [Fact]
+    public async Task Scored_CuaSessionCu_KhiMembershipDaTroSessionMoi_KhongDanhCompleted_VanUpsertRanking()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2);
+        var s1 = Guid.NewGuid();
+        var s2 = Guid.NewGuid();
+        var m = SeedMembership(tdb, camp.Id, cand, attemptCount: 2, sessionId: s2, status: InterviewProgressStatus.InProgress);
+        m.InterviewDeadlineAt = DateTime.UtcNow.AddDays(1);
+        tdb.Db.SaveChanges();
+
+        await new RankingEventHandler(tdb.NewContext(), NullLogger<RankingEventHandler>.Instance)
+            .HandleSessionScoredAsync(new SessionScoredMessage
+            {
+                SessionId = s1, CampaignId = camp.Id, CandidateId = cand, TotalScore = 40m, ScoredAt = DateTime.UtcNow,
+            });
+
+        var after = Reload(tdb, camp.Id, cand);
+        Assert.Equal(InterviewProgressStatus.InProgress, after.InterviewStatus);
+        Assert.Equal(s2, after.SessionId);
+        // Đường ranking GIỮ NGUYÊN: buổi s1 đã chấm vẫn có dòng xếp hạng của nó.
+        Assert.Contains(tdb.NewContext().CampaignRankings.AsNoTracking(), r => r.SessionId == s1);
+    }
+
+    [Fact]
+    public async Task Scored_CuaChinhSessionDangGiu_VanDanhCompleted()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 2);
+        var s1 = Guid.NewGuid();
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 1, sessionId: s1, status: InterviewProgressStatus.InProgress);
+
+        await new RankingEventHandler(tdb.NewContext(), NullLogger<RankingEventHandler>.Instance)
+            .HandleSessionScoredAsync(new SessionScoredMessage
+            {
+                SessionId = s1, CampaignId = camp.Id, CandidateId = cand, TotalScore = 40m, ScoredAt = DateTime.UtcNow,
+            });
+
+        Assert.Equal(InterviewProgressStatus.Completed, Reload(tdb, camp.Id, cand).InterviewStatus);
+    }
+
+    // ── D (R3): buổi bắt đầu trong cửa sổ "đã migrate, chưa deploy code" mang attempt_count 0 ─────
+    [Fact]
+    public async Task Start_VaoLai_AttemptCount0_ResponseAttemptNoToiThieu1()
+    {
+        using var tdb = new CampaignTestDb();
+        var cand = Guid.NewGuid();
+        var camp = SeedCampaign(tdb, maxAttempts: 1);
+        var s1 = Guid.NewGuid();
+        SeedMembership(tdb, camp.Id, cand, attemptCount: 0, sessionId: s1, status: InterviewProgressStatus.InProgress);
+        var mock = WithState(SessionMock(() => s1, new SessionCalls()), new CampaignSessionState(true, "InProgress"));
+
+        var res = await NewService(tdb.NewContext(), mock.Object).StartInterviewAsync(cand, camp.Id, default);
+
+        Assert.Equal(1, res.AttemptNo);
+        Assert.Equal(0, Reload(tdb, camp.Id, cand).AttemptCount);   // dữ liệu xử lý bằng backfill, không ở đây
+    }
+
     // ── CHECK DB: attempt_count >= 0 (SQLite CÓ enforce CHECK khai ở model) ─────────────────────
 
     [Fact]
