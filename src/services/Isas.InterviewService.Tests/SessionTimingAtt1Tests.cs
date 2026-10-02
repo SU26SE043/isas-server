@@ -567,6 +567,25 @@ public class SessionTimingAtt1Tests
         Assert.IsType<FileContentResult>(open);
     }
 
+    // Người KHÁC gọi speech của buổi tính giờ CHƯA vào phòng ⇒ 403, không phải 409 SESSION_NOT_BEGUN:
+    // kiểm chủ buổi TRƯỚC khoá giờ, không lộ trạng thái buổi của người khác (cùng loại R10 của begin —
+    // supervisor S2: đảo hai guard này thì 1941 test cũ vẫn XANH).
+    [Fact]
+    public async Task Speech_NguoiKhac_BuoiTinhGioChuaBegin_403_KhongLoTrangThai()
+    {
+        using var t = new TestDb();
+        var (s, q1, _) = SeedSession(t, Guid.NewGuid(), Guid.NewGuid(), Duration, DateTime.UtcNow.AddDays(7));
+        var tts = new Mock<IAiServiceSpeechSynthesizer>();
+
+        var r = await PracticeCtl(t.NewContext(), Guid.NewGuid(),
+            new QuestionSpeechService(t.NewContext(), tts.Object)).GetQuestionSpeech(s.Id, q1.Id, default);
+
+        var obj = Assert.IsAssignableFrom<ObjectResult>(r);
+        Assert.Equal(StatusCodes.Status403Forbidden, obj.StatusCode);
+        tts.Verify(x => x.SynthesizeAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     // ══ [I5] Sweeper ══════════════════════════════════════════════════════════════════════════
 
     private static async Task ScanOnce(SessionAbandonSweeper sweeper)
