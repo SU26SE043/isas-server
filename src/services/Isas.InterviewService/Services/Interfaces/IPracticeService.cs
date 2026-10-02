@@ -46,6 +46,14 @@ public interface IPracticeService
         Guid candidateId, Guid sessionId, CancellationToken ct = default);
 
     /// <summary>
+    /// ATT1 · [I1] — vào phòng thi: đồng hồ cả buổi bắt đầu chạy (chỉ buổi tính giờ). Gọi lại trả CÙNG
+    /// beganAt/deadline. Ném KeyNotFoundException (404) · UnauthorizedAccessException (403) ·
+    /// SessionEndedException (409 SESSION_ENDED).
+    /// </summary>
+    Task<BeginSessionResponse> BeginSessionAsync(
+        Guid candidateId, Guid sessionId, CancellationToken ct = default);
+
+    /// <summary>
     /// Ghi một tín hiệu mất tập trung cho buổi luyện B2C (coaching).
     ///
     /// Ném: KeyNotFoundException (buổi không tồn tại) · UnauthorizedAccessException (không phải

@@ -155,7 +155,10 @@ public record CreateCampaignSessionRequest(
     string? CampaignPolicyEngineVersion = null,
     // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty. null (bản Campaign cũ chưa gửi) ⇒ session
     // skip_penalty = false (không phạt). Optional ở CUỐI record.
-    bool? SkipPenalty = null
+    bool? SkipPenalty = null,
+    // ATT1 — thời lượng cả buổi (phút) = campaigns.time_limit_minutes. null ⇒ buổi KHÔNG tính giờ
+    // (bản Campaign cũ / chiến dịch không khai). Optional ở CUỐI record.
+    int? DurationMinutes = null
 );
 
 // D2: request cho endpoint internal create-or-get session B2B (CampaignService gọi khi ứng viên bấm
@@ -198,7 +201,12 @@ public record CreateCampaignSessionInternalRequest(
     string? CampaignPolicyEngineVersion = null,
     // RNK1 · HĐ-2 / CAMP-21 — campaigns.skip_penalty (khoá JSON trên dây: `skipPenalty`, camelCase
     // Web). null (bản Campaign cũ) ⇒ session.skip_penalty = false ⇒ không phạt. Optional ở CUỐI record.
-    bool? SkipPenalty = null
+    bool? SkipPenalty = null,
+    // ATT1 · hợp đồng — khoá JSON trên dây: `durationMinutes` (camelCase Web) = campaigns.time_limit_minutes.
+    // null (bản Campaign cũ chưa gửi / chiến dịch không khai thời lượng) ⇒ buổi KHÔNG tính giờ, y hệt
+    // trước ATT1. ⚠ Đổi tên khoá ở một phía không ném lỗi gì — chỉ làm đồng hồ tắt câm (đã khoá bằng test
+    // JSON thật: SessionTimingAtt1Tests).
+    int? DurationMinutes = null
 );
 public record PracticeSessionResponse(
     Guid Id,
@@ -232,8 +240,27 @@ public record PracticeSessionResponse(
     // Tổng hợp theo loại tín hiệu. ⚠ null ≠ mảng rỗng: null = buổi KHÔNG theo dõi; [] = có theo
     // dõi và không ghi nhận gì. Gộp hai ca lại là để người luyện không phân biệt được "tôi tập
     // trung" với "không ai đo" — cùng lập luận null/[] của INT-18 (target_criterion_ids).
-    IReadOnlyList<FocusEventSummaryResponse>? FocusEvents = null
+    IReadOnlyList<FocusEventSummaryResponse>? FocusEvents = null,
+    // ATT1 · [I2] — đồng hồ cả buổi. `durationMinutes` null = buổi không tính giờ (B2C / B2B trước
+    // ATT1). `beganAt` null = chưa vào phòng (hoặc không tính giờ). `serverNow` = giờ server lúc dựng
+    // response — client tính thời gian còn lại bằng (deadline − serverNow), KHÔNG dùng đồng hồ máy mình.
+    // `questionsLocked` = true ⇒ mọi questions[].content = "" (đề chỉ lộ sau begin).
+    int? DurationMinutes = null,
+    DateTime? BeganAt = null,
+    DateTime? ServerNow = null,
+    bool QuestionsLocked = false
 );
+
+/// <summary>
+/// ATT1 · [I1] — kết quả POST /practice/sessions/{id}/begin. Gọi lại trả CÙNG beganAt/deadline.
+/// Buổi không tính giờ: beganAt = null, durationMinutes = null, deadline = giá trị đang có.
+/// </summary>
+public record BeginSessionResponse(
+    Guid SessionId,
+    DateTime? BeganAt,
+    DateTime? Deadline,
+    DateTime ServerNow,
+    int? DurationMinutes);
 
 /// <summary>
 /// Một tín hiệu mất tập trung do trình duyệt của chính người luyện báo về (coaching).

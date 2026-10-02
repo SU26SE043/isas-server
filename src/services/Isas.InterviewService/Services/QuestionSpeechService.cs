@@ -36,6 +36,13 @@ public class QuestionSpeechService : IQuestionSpeechService
         if (session.CandidateId != candidateId)
             throw new UnauthorizedAccessException("Không phải buổi của bạn");
 
+        // ATT1 · [I4] — buổi tính giờ chưa vào phòng ⇒ không đọc đề thành tiếng (lộ đề trước begin,
+        // trong lúc đồng hồ chưa chạy). Đặt TRƯỚC khi tra câu hỏi: buổi bị khoá thì không trả lời
+        // luôn câu "câu hỏi này có tồn tại không". Ném loại có mã — KHÔNG InvalidOperationException
+        // (PracticeController không bắt loại đó ở đường speech ⇒ 500).
+        if (SessionTiming.IsLocked(session))
+            throw new SessionNotBegunException();
+
         // Lọc theo CẢ SessionId: questionId của buổi khác → không tìm thấy → 404 (không đọc
         // trộm đề của buổi khác chỉ vì đoán đúng GUID).
         var question = await _db.PracticeQuestions

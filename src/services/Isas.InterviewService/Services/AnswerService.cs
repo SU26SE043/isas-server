@@ -22,6 +22,8 @@ public class AnswerService : IAnswerService
     // TU1 — sinh CÂU GỐC BÙ khi chuỗi hết sớm mà ngân sách buổi còn. Cùng client `PracticeService` dùng
     // để sinh câu gốc lúc tạo buổi (null = không đăng ký / test cũ ⇒ không bù, hành vi y như trước).
     private readonly IAiServiceQuestionGenerator? _questionGenerator;
+    // ATT1 — ân hạn sau hạn chót. DÙNG CHUNG option với SessionAbandonSweeper (một con số cho hai đầu).
+    private readonly SessionDeadlineOptions _sessionDeadline;
     private readonly ILogger<AnswerService> _logger;
 
     public AnswerService(
@@ -43,7 +45,10 @@ public class AnswerService : IAnswerService
         IAiServiceQuestionGenerator? questionGenerator = null,
         // Optional cùng lý do như hai tham số trên: thiếu nó → dùng mặc định trong code (bảng ngưỡng
         // phân vị + kill-switch BẬT), đúng hành vi production. DI có đăng ký ở Program.cs.
-        IOptions<DeliveryScoringOptions>? deliveryScoringOptions = null)
+        IOptions<DeliveryScoringOptions>? deliveryScoringOptions = null,
+        // ATT1 — optional cùng lý do: thiếu ⇒ mặc định trong code (30 giây), đúng hành vi production.
+        // DI có đăng ký (Configure<SessionDeadlineOptions>) ở Program.cs.
+        IOptions<SessionDeadlineOptions>? sessionDeadlineOptions = null)
     {
         _db = db;
         _storage = storage;
@@ -54,6 +59,7 @@ public class AnswerService : IAnswerService
         _decider = decider;
         _adaptive = adaptiveOptions?.Value ?? new AdaptiveOptions();
         _questionGenerator = questionGenerator;
+        _sessionDeadline = sessionDeadlineOptions?.Value ?? new SessionDeadlineOptions();
         _logger = logger;
     }
 
@@ -79,6 +85,21 @@ public class AnswerService : IAnswerService
         if (session.Status is SessionStatus.Completed
             or SessionStatus.Scoring or SessionStatus.Scored or SessionStatus.SessionAbandoned)
             throw new InvalidOperationException("Buổi đã kết thúc");
+
+        // 2b. ATT1 · [I3] — đồng hồ cả buổi, CHỈ buổi tính giờ. Đặt TRƯỚC khi tải audio lên S3: câu trả
+        // lời bị từ chối thì không để lại object mồ côi. Hai lỗi có MÃ (SESSION_NOT_BEGUN /
+        // SESSION_TIME_UP) — cố ý KHÔNG phải InvalidOperationException (AnswersController map loại đó
+        // thành 409 không mã).
+        //   • Buổi tính giờ chưa vào phòng ⇒ chưa được nộp (đề còn che, đồng hồ chưa chạy).
+        //   • Buổi tính giờ quá hạn chót + ân hạn ⇒ ngừng nhận. Ân hạn = CÙNG option với sweeper — sweeper
+        //     chốt buổi đúng ở deadline + grace, nên upload còn trong ân hạn không đụng "Buổi đã kết thúc".
+        // ⚠ Buổi KHÔNG tính giờ (B2C · B2B tạo trước ATT1) KHÔNG bị chặn theo Deadline: luật đã chốt
+        // "hành vi giữ nguyên" cho chúng — hôm nay upload chỉ chặn theo Status, sweeper lo phần hạn chót.
+        if (SessionTiming.IsLocked(session))
+            throw new SessionNotBegunException();
+        if (SessionTiming.IsTimed(session)
+            && SessionTiming.IsPastGrace(session.Deadline, DateTime.UtcNow, _sessionDeadline.Grace))
+            throw new SessionTimeUpException();
 
         // 3. Câu hỏi thuộc đúng buổi
         var question = await _db.PracticeQuestions
