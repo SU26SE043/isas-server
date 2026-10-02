@@ -6,6 +6,7 @@
 > - **Chỉ các mục gắn "✅ Chấm theo phạm vi" + §Chấm theo PHẠM VI câu hỏi là đã đồng bộ** (2026-08-08). Mọi mục khác: **tin `docs/`, đừng tin file này**.
 > - ✅ **SC2 · W4/W5 (2026-09-13, đồng bộ):** `POST /internal/sessions/campaign` nay nhận `criteria[].scoringScope` (vắng ⇒ Always) + `questionDetails[].targetCriterionIds` (id campaign, `null`/`[]`/`[ids]`; lệch độ dài ⇒ bỏ cả details) ⇒ map qua `rubric_criteria.source_criterion_id` → `practice_questions.target_criterion_ids` (id RUBRIC), stamp `scoring_scope_version = 2` khi có nhãn; `GET /internal/rubrics/b2c` NAY TRẢ `criteria[].scoringScope`. Chi tiết: `docs/services/interview.md` §Nguồn tiêu chí tùy mode + §Bộ chuẩn B2C.
 > - ✅ **Đợt B admin (2026-09-16):** `api/admin/rubrics` trả `criteria[].scoringMethod` (`Ai`|`DeliveryMetrics` — mốc của tiêu chí đo chỉ là lời giải nghĩa, chấm thử không đòi) · `api/admin/prompts` trả `updatedByEmail` (snapshot claim `email`, cột `prompt_templates.updated_by_email`) · mọi DTO body admin-only mang `[JsonUnmappedMemberHandling(Disallow)]` ⇒ khoá lạ 400 (guard `AdminRequestDtoDisallowTests`). Chi tiết: `docs/services/interview.md` §Bộ chuẩn B2C + §F21.
+> - ✅ **RUB1 (2026-10-02):** `PUT api/admin/rubrics/{cat}` sửa ĐỦ bộ chuẩn (`id: null` = tiêu chí mới Ai/thang 5 · `name`/`weight`/`scoringScope: null` = giữ nguyên · vắng khỏi body = xoá · Σweight ±0.0001 sau khi làm tròn 4 chữ số, KHÔNG tự chuẩn hoá · `DeliveryMetrics` không đổi tên/phạm vi). Buổi B2C mới ghim `practice_sessions.b2c_score_formula='Weighted'` ⇒ điểm tổng **có trọng số** trên tiêu chí có điểm (`B2CScoreFormulaRule`, INT-10); buổi cũ null = trung bình cộng. GET kết quả += `scoreFormula`/`unassessedCriteria` + `effectiveWeight`/`contribution`. Rubric riêng đóng dấu `rubric_criteria.based_on_default_version`; `GET rubrics/{cat}` += `defaultVersion`/`basedOnDefaultVersion`; mới `GET rubrics/{cat}/default`. Chi tiết: `docs/services/interview.md` §Rubric cá nhân + §Bộ chuẩn B2C + §Điểm tổng.
 > - **§Kho tri thức / Grounding (RAG — D27) KHÔNG hề tồn tại trong bản copy này** ⇒ nhãn trích dẫn + điểm uy tín Context7 chỉ có ở [`docs/services/interview.md`](../../../docs/services/interview.md) §Kho tri thức. Đừng kết luận "chưa build" vì không thấy ở đây.
 > - Đây đúng là bẫy *"bản copy lệch"* mà [`/AGENTS.md`](../../../AGENTS.md) cảnh báo. Đồng bộ trọn vẹn = task riêng (WIP=1), **không** làm kèm trong vòng sửa tính năng.
 
@@ -70,7 +71,8 @@ AnswerScoreResponse {
 }
 
 SessionResultResponse  🔜 {           // BC9 (số liệu) + BC10 (nhận xét) — tổng kết cả buổi (B2C), lưu DB khi Scored
-  overallScore:    decimal(5,2)        // BC9 — 0–100, B2C = TRUNG BÌNH CỘNG pct các tiêu chí (equal weight, KHÔNG dùng weight); B2B ranking mới weighted (E4)
+  overallScore:    decimal(5,2)        // BC9 — 0–100. B2C gộp theo b2c_score_formula (RUB1: 'Weighted' = Σpct×w/Σw trên tiêu chí CÓ điểm; null = buổi cũ ⇒ trung bình cộng); B2B ranking weighted (E4)
+  b2cScoreFormula: varchar(16)?        // RUB1 — 'Average'|'Weighted'|null, ghim lúc tạo buổi B2C (null = trước RUB1 / B2B)
   answeredCount:   int                 // BC9 — số câu đã chấm (có scores) — kết quả tính trên bấy nhiêu câu
   totalQuestions:  int                 // BC9 — tổng số câu của buổi (vd 5)
   criteriaScores:  CriterionScoreResponse[]   // BC9 — mỗi tiêu chí được bao nhiêu điểm
@@ -84,7 +86,7 @@ CriterionScoreResponse  🔜 {           // BC9 — điểm "mỗi trường ti�
   averageScore: decimal(5,2)           // điểm ĐẠT ĐƯỢC của tiêu chí (TB qua các câu đã chấm)
   maxScore:     int                    // điểm TỐI ĐA của tiêu chí → hiển thị "averageScore/maxScore"
   percentage:   decimal(5,2)           // averageScore / maxScore × 100 (0–100)
-  weight:       decimal(5,4)           // trọng số rubric — B2C KHÔNG dùng cho overall (lấy trung bình cộng), chỉ hiển thị; B2B mới gộp có trọng số. Cả hai dòng đều nhân hình phạt bỏ câu gốc (CAMP-21, `practice_sessions.skip_penalty` — B2C ghim true từ 2026-09-21) SAU bước gộp
+  weight:       decimal(5,4)           // trọng số rubric — B2B gộp có trọng số; B2C buổi RUB1 trở đi cũng gộp có trọng số (buổi cũ trung bình cộng). Cả hai dòng đều nhân hình phạt bỏ câu gốc (CAMP-21, `practice_sessions.skip_penalty` — B2C ghim true từ 2026-09-21) SAU bước gộp
 }
 
 PracticeSessionSummary {
@@ -461,7 +463,7 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - **Nguồn tiêu chí tùy mode:** B2C dùng **rubric theo `JobCategory`** (`version` + `is_active`; 1 nghề chung 1 version); **B2B dùng tiêu chí campaign CÓ CẤU TRÚC** — Campaign gửi kèm khi tạo session, Interview materialize thành `rubric_criteria(campaign_id)`. **Pipeline chấm + `answer_scores` giữ NGUYÊN**, chỉ đổi *nguồn tiêu chí* (không chấm trên `criteria_text` thô). **✅ I1:** `PracticeService.CreateCampaignSessionAsync(candidateId, { campaignId, jobCategory, questions[], criteria[] })` → session gắn `campaign_id` + materialize criteria → `rubric_criteria(campaign_id)`, **idempotent theo `campaign_id`** (dùng chung mọi session của campaign). HTTP entry (magic-link/internal) chờ **D2**.
   - **✅ E1 (chọn tiêu chí khi build job chấm):** branch theo `campaign_id` của session — B2B (`campaign_id` có) → tiêu chí `rubric_criteria(campaign_id)`; B2C (`campaign_id` null) → rubric theo `job_category` **VÀ `campaign_id IS NULL`** (criteria campaign cũng mang `job_category` nên phải lọc thêm để không rò sang chấm B2C). Áp ở **cả** publish (`AnswerService.TryPublishScoringJobAsync`) lẫn republish (`StuckAnswerRepublisher`). Message shape + worker Python **KHÔNG đổi** (D9). Kết quả: session B2B `Scored` → `answer_scores.criterion_id` trỏ tiêu chí campaign.
 - Worker chấm đủ **mọi** tiêu chí; thiếu → lỗi vĩnh viễn. Điểm **kẹp** `[0, maxScore]`. Bỏ tiêu chí Gemini bịa; chống trùng. `answer_scores` gắn `rubric_version` lúc chấm. Hiển thị: mỗi tiêu chí lấy **attempt mới nhất**.
-- **Điểm tổng/session** (khi `Scored`): **B2C = TRUNG BÌNH CỘNG** pct tiêu chí (equal weight — BC9); **B2B = `Σ điểm×weight`** chuẩn hoá (có trọng số — dùng cho ranking E4).
+- **Điểm tổng/session** (khi `Scored`): **B2C** = theo `b2c_score_formula` — buổi RUB1 trở đi **CÓ TRỌNG SỐ** trên tiêu chí có điểm, buổi cũ **trung bình cộng** (BC9/INT-10); **B2B = `Σ điểm×weight`** chuẩn hoá (có trọng số — dùng cho ranking E4).
 - **🔜 Tổng kết điểm B2C (BC9):** spec đầy đủ ở **§Tổng kết điểm buổi luyện B2C (BC9)** ngay dưới.
 - **🔜 Chất lượng & độ nhất quán khi chấm (E9–E11):** neo theo mức (đúng) + đo/chặn chênh lệch (nhất quán) + chuẩn nhận xét — spec ở **§Chất lượng & độ nhất quán khi chấm** dưới. *(⚠ marker `🔜` lỗi thời — E9–E11 đã ship, xem `docs/`.)*
 - **✅ Chấm theo PHẠM VI câu hỏi:** không phải câu nào cũng chấm đủ rubric — tiêu chí NỘI DUNG chỉ được chấm khi câu hỏi thực sự nhắm tới (`rubric_criteria.scoring_scope` + `practice_questions.target_criterion_ids`). Spec ở **§Chấm theo PHẠM VI câu hỏi** dưới.
@@ -473,7 +475,7 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 - Nguồn tiêu chí đúng mode (E1): B2B theo `campaign_id`, B2C theo `job_category` + `campaign_id IS NULL`.
 
 **⚠ Điểm cần lưu ý / gap** (biết trước khi làm BC9/BC10/E4):
-1. **`weight` hiện CHƯA được dùng ở đâu.** Lưu trên `rubric_criteria`, gửi xuống worker — nhưng **worker chỉ dùng `maxScore`**, KHÔNG dùng `weight`; và **không có code nào tính điểm tổng**. Điểm tổng mới là **thiết kế**: **B2C = trung bình cộng** (BC9, **KHÔNG** dùng `weight`) · **B2B = Σ điểm×weight** (ranking E4 — **chỉ B2B** mới dùng `weight`). → đừng tưởng đã có điểm tổng.
+1. **`weight` không đi tới worker** (worker chỉ dùng `maxScore`); điểm tổng tính ở .NET: **B2B = Σ điểm×weight** (ranking E4) · **B2C** gộp theo con dấu `b2c_score_formula` — buổi RUB1 trở đi **có trọng số**, buổi cũ trung bình cộng (BC9/INT-10).
 2. **`maxScore` khác nhau giữa các tiêu chí** ⇒ **KHÔNG cộng điểm thô** (tiêu chí thang cao sẽ lấn). Phải chuẩn theo `maxScore` (percentage) như BC9. `answer_scores.score` là điểm **theo thang riêng** từng tiêu chí.
 3. **B2C chưa có nguồn `rubric_criteria` theo `JobCategory`**: repo **không** seed/migration, cũng **không** có endpoint tạo rubric B2C. ⇒ DB trống rubric thì `AnswerService` thấy "không có tiêu chí active" → **bỏ publish → answer không được chấm**. Hiện phải **insert tay**. → **task BC11** (seed/CRUD rubric B2C). *(B2B ổn vì I1 materialize từ campaign.)*
 4. **C# callback tin worker 100%** — `SaveResultAsync` lưu nguyên điểm worker gửi, **không tự kẹp / không kiểm đủ tiêu chí** (chỉ FK chặn id lạ). Mà **AIService deploy ephemeral** (docker cp, image có thể lệch — [ai.md](ai.md)) ⇒ nên cân nhắc **guard phía C#** (kẹp `[0,maxScore]`, bỏ criterion ngoài rubric) cho chắc. → **task E8**.
@@ -543,14 +545,14 @@ Quét mỗi **2 phút**, chỉ session `InProgress`/`Scoring`, answer có audio:
 
 **Công thức.**
 1. Với mỗi tiêu chí `c`: `averageScore_c` = trung bình điểm `c` qua các **answer đã chấm**; `percentage_c = averageScore_c / max_score_c × 100`.
-2. **B2C — TRUNG BÌNH CỘNG (equal weight):** `overallScore = ( Σ_c percentage_c ) / K` (K = số tiêu chí đã chấm), **kẹp `[0,100]`**. **KHÔNG** dùng `weight` rubric — mỗi tiêu chí cân bằng (đây là luyện tập, không phải xếp hạng). *(B2B khác: điểm cho ranking = `Σ percentage_c × weight_c` **CÓ trọng số** — E4, xem §Sự kiện phát ra; B2C **không** áp.)*
+2. **B2C — theo `b2c_score_formula` (RUB1):** `Weighted` (buổi mới, cả lesson) ⇒ `Σ_c percentage_c × w_c / Σ_c w_c` **chỉ trên tiêu chí CÓ điểm** (không được hỏi ⇒ rơi khỏi cả tử lẫn mẫu), `w_c` từ bộ **đã ghim**; `null`/`Average` (buổi cũ) ⇒ `( Σ_c percentage_c ) / K` — không hồi tố. Kẹp `[0,100]`, làm tròn 2, rồi nhân phạt bỏ câu (CAMP-21). Nguồn duy nhất `B2CScoreFormulaRule.Combine` (dùng chung GET kết quả + báo cáo lộ trình).
 3. `needs_improvement_c` = `percentage_c < ngưỡng` (mặc định **50%**, cấu hình `Scoring:ImprovementThresholdPct`) — lưu cột `session_criterion_scores.needs_improvement`; API `needsImprovement[]` = các row `= true`. Ngưỡng **chốt lúc tính** (đổi ngưỡng sau **không** hồi tố kết quả đã lưu).
 4. `answeredCount` / `totalQuestions`: câu `Skipped`/`Failed`/chưa trả lời **không có** `answer_scores` → **loại khỏi trung bình**; trả 2 con số để biết kết quả tính trên bao nhiêu câu (vd `4/5`).
 
 **Edge cases.**
 - `status ≠ Scored` → `result = null` (buổi chưa chốt).
 - `answeredCount = 0` (mọi câu Failed/Skipped) → `overallScore = 0`, mỗi `criteriaScores[].percentage = 0`, `needsImprovement` = **tất cả** tiêu chí.
-- `K = 0` (không tiêu chí nào được chấm) → `overallScore = 0`, log warning. *(B2C đã dùng equal weight nên không có ca chia `Σweight`.)*
+- `K = 0` (không tiêu chí nào được chấm) → `overallScore = 0`, log warning. *(Weighted với `Σw = 0` không tới được — CHECK `weight > 0`; nếu tới thì lùi về trung bình cộng.)*
 - Điểm đã **kẹp `[0, maxScore]`** ở callback chấm → không âm/vượt trần.
 - Session B2B (`campaign_id` có) → **không** tính/ghi (không áp BC9); `result = null`.
 - **Chấm lại sau khi đã `Scored`** (callback đến muộn — hiếm): kết quả đã lưu **không tự cập nhật** (đóng session chỉ chạy 1 lần). Ngoài phạm vi BC9; cần thì backfill/recompute thủ công.
