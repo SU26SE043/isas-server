@@ -11,7 +11,7 @@ namespace Isas.InterviewService.Services;
 /// <summary>
 /// BC16 — Rubric CÁ NHÂN B2C: candidate tự quản bộ tiêu chí luyện tập theo <see cref="JobCategory"/>
 /// (không admin). Chưa khai → dùng seed mặc định (BC11). Scoring resolve ưu-tiên-riêng-else-mặc-định
-/// qua <see cref="B2CRubricScope"/>. Điểm tổng vẫn TB cộng (INT-10) — weight chỉ để hiển thị.
+/// qua <see cref="B2CRubricScope"/>. RUB1: buổi B2C mới tính điểm CÓ TRỌNG SỐ (INT-10) theo weight của bộ đã ghim.
 ///
 /// <para><b>Q9</b> — đơn vị của rubric là <b>(candidate, nghề, NGÔN NGỮ)</b>, không phải (candidate, nghề).
 /// Trước Q9 service này mù ngôn ngữ: mọi truy vấn gộp cả hai ngôn ngữ và <c>ReplaceAsync</c> không set
@@ -33,6 +33,14 @@ public interface IRubricLibraryService
     /// <summary>Rubric HIỆU LỰC cho 1 (nghề, ngôn ngữ): rubric riêng nếu có active, else seed mặc định (template).</summary>
     Task<RubricResponse> GetEffectiveAsync(
         Guid candidateId, JobCategory jobCategory, string? language = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// RUB1 — BỘ CHUẨN đang hiệu lực của (nghề, ngôn ngữ), luôn <c>IsCustom = false</c> — để FE so khác
+    /// biệt với rubric riêng. Chưa có bộ chuẩn ⇒ danh sách rỗng, <c>DefaultVersion = 0</c> (không 404,
+    /// cùng hành vi <see cref="GetEffectiveAsync"/>).
+    /// </summary>
+    Task<RubricResponse> GetDefaultAsync(
+        JobCategory jobCategory, string? language = null, CancellationToken ct = default);
 
     /// <summary>Thay TOÀN BỘ rubric riêng của 1 (nghề, ngôn ngữ) (replace-all, soft-versioned, FK-safe).</summary>
     Task<RubricResponse> ReplaceAsync(
@@ -73,7 +81,11 @@ public class RubricLibraryService : IRubricLibraryService
                         && c.Language == lang && c.IsActive)
                 .OrderByDescending(c => c.Weight).ThenBy(c => c.Name)
                 .ToListAsync(ct);
-            return new RubricResponse(jobCategory, IsCustom: true, custom.Select(Map).ToList());
+            // RUB1 — cả bộ riêng ghi trong MỘT SaveChanges nên mọi dòng mang cùng một số; Max() chỉ là
+            // cách đọc an toàn (null = không biết nếu mọi dòng null — rubric lưu trước RUB1).
+            return new RubricResponse(jobCategory, IsCustom: true, custom.Select(Map).ToList(),
+                DefaultVersion: await ActiveDefaultVersionAsync(jobCategory, lang, ct),
+                BasedOnDefaultVersion: custom.Max(c => c.BasedOnDefaultVersion));
         }
 
         // Chưa có rubric riêng → seed mặc định làm template (FE clone rồi sửa).
@@ -82,13 +94,35 @@ public class RubricLibraryService : IRubricLibraryService
         // chứng Q9 (14 tiêu chí Σ=2.0) vẫn còn nguyên với gần như mọi ứng viên.
         // `.Include(Levels)` ở ĐÂY là vế đóng nghịch lý: mốc do admin soạn đi theo template sang form
         // sửa, nên ứng viên bấm "tuỳ chỉnh" là đã có sẵn thang để chỉnh, không phải trang trắng.
+        return await LoadDefaultResponseAsync(jobCategory, lang, ct);
+    }
+
+    public async Task<RubricResponse> GetDefaultAsync(
+        JobCategory jobCategory, string? language = null, CancellationToken ct = default)
+        => await LoadDefaultResponseAsync(jobCategory, ValidateLanguage(language), ct);
+
+    // Bộ chuẩn đang hiệu lực làm RubricResponse — MỘT truy vấn dùng chung cho template của GET hiệu lực
+    // và endpoint `/default`, để hai đường không bao giờ trả hai bộ khác nhau cho cùng (nghề, ngôn ngữ).
+    private async Task<RubricResponse> LoadDefaultResponseAsync(
+        JobCategory jobCategory, string lang, CancellationToken ct)
+    {
         var seed = await _db.RubricCriteria.AsNoTracking().Include(c => c.Levels)
             .Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory
                         && c.Language == lang && c.IsActive)
             .OrderByDescending(c => c.Weight).ThenBy(c => c.Name)
             .ToListAsync(ct);
-        return new RubricResponse(jobCategory, IsCustom: false, seed.Select(Map).ToList());
+        return new RubricResponse(jobCategory, IsCustom: false, seed.Select(Map).ToList(),
+            DefaultVersion: seed.Count > 0 ? seed.Max(c => c.Version) : 0,
+            BasedOnDefaultVersion: null);
     }
+
+    // RUB1 — version bộ chuẩn đang hiệu lực (0 = chưa có). Bộ active của một (nghề, ngôn ngữ) luôn cùng
+    // một Version (admin ghi cả bộ trong MỘT SaveChanges); Max() là cách đọc an toàn khi tập rỗng.
+    private async Task<int> ActiveDefaultVersionAsync(JobCategory jobCategory, string lang, CancellationToken ct)
+        => await _db.RubricCriteria.AsNoTracking()
+            .Where(c => c.CampaignId == null && c.CandidateId == null && c.JobCategory == jobCategory
+                        && c.Language == lang && c.IsActive)
+            .Select(c => (int?)c.Version).MaxAsync(ct) ?? 0;
 
     public async Task<RubricResponse> ReplaceAsync(
         Guid candidateId, JobCategory jobCategory, UpsertRubricRequest request,
@@ -162,8 +196,12 @@ public class RubricLibraryService : IRubricLibraryService
         var seedScopes = await _db.RubricCriteria.AsNoTracking()
             .Where(c => c.CampaignId == null && c.CandidateId == null
                         && c.JobCategory == jobCategory && c.Language == lang && c.IsActive)
-            .Select(c => new { c.Name, c.ScoringScope, c.ScoringMethod })
+            .Select(c => new { c.Name, c.ScoringScope, c.ScoringMethod, c.Version })
             .ToListAsync(ct);
+
+        // RUB1 — ĐÓNG DẤU bộ chuẩn version mấy lúc lưu (cùng truy vấn trên, không thêm vòng). null = lúc
+        // này không có bộ chuẩn active nào — nói đúng "không có gì để dựa vào", không bịa 0.
+        int? basedOnDefaultVersion = seedScopes.Count > 0 ? seedScopes.Max(x => x.Version) : null;
 
         // `TryAdd` chứ không `ToDictionary`: unique index ux_rubric_criteria_b2c_default_version_name
         // đã cấm trùng tên trong một (nghề, ngôn ngữ, version), nhưng bộ chuẩn CÓ nhiều version và câu
@@ -191,6 +229,7 @@ public class RubricLibraryService : IRubricLibraryService
             CampaignId = null,
             CandidateId = candidateId,
             Version = newVersion,
+            BasedOnDefaultVersion = basedOnDefaultVersion,
             // Trượt khớp ⇒ `Always` = ĐÚNG default cũ ⇒ ứng viên tự thêm tiêu chí lạ không bị đổi hành vi.
             ScoringScope = scopeByName.TryGetValue(i.Name, out var scope) ? scope : ScoringScope.Always,
             // Trượt khớp ⇒ `Ai` = ĐÚNG hành vi cũ ⇒ tiêu chí ứng viên tự nghĩ ra KHÔNG bị thay điểm
@@ -228,7 +267,9 @@ public class RubricLibraryService : IRubricLibraryService
         // 1 SaveChanges = 1 transaction: deactivate cũ + add mới atomic.
         await _db.SaveChangesAsync(ct);
 
-        return new RubricResponse(jobCategory, IsCustom: true, rows.Select(Map).ToList());
+        return new RubricResponse(jobCategory, IsCustom: true, rows.Select(Map).ToList(),
+            DefaultVersion: basedOnDefaultVersion ?? 0,
+            BasedOnDefaultVersion: basedOnDefaultVersion);
     }
 
     public async Task ResetAsync(

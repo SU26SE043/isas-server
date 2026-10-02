@@ -63,6 +63,26 @@ public class RubricController : ControllerBase
     }
 
     /// <summary>
+    /// RUB1 — BỘ CHUẨN đang hiệu lực của (nghề, ngôn ngữ) (<c>isCustom = false</c>), để FE so khác biệt với
+    /// rubric riêng. Chưa có bộ chuẩn ⇒ 200 với danh sách rỗng và <c>defaultVersion = 0</c>.
+    /// </summary>
+    [HttpGet("{jobCategory}/default")]
+    [ProducesResponseType(typeof(RubricResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetDefault(
+        JobCategory jobCategory, [FromQuery] string? language, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await _service.GetDefaultAsync(jobCategory, language, ct));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+    }
+
+    /// <summary>
     /// Thay toàn bộ rubric riêng cho 1 (nghề, ngôn ngữ). Σweight ngoài [0.99,1.01] / rỗng → 400.
     /// Lưu rubric ngôn ngữ này KHÔNG đụng rubric ngôn ngữ kia của cùng ứng viên.
     /// </summary>
