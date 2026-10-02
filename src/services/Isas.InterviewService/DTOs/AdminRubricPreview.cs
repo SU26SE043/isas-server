@@ -49,9 +49,8 @@ public record AdminRubricPreviewRunResponse(
     string RubricFingerprint,
     int? PromptVersion,
     /// <summary>
-    /// Luôn <c>false</c> ở bản này: bài mẫu là VĂN BẢN nên không có số đo cách nói (F11). Cờ cấu trúc,
-    /// KHÔNG loại tiêu chí "trôi chảy" khỏi lượt chấm — bỏ một tiêu chí sẽ đổi điểm các tiêu chí còn
-    /// lại và đổi mẫu số trung bình cộng (INT-10), tức đo một thước đo khác với thước thật.
+    /// <c>true</c> chỉ khi bài <c>Custom</c> đi từ bản ghi âm (có số đo cách nói F11); 3 bài AI và bài
+    /// dán tay là VĂN BẢN nên không có. Cờ cấu trúc để FE chọn hiện băng "bài là văn bản" hay khối số đo.
     /// </summary>
     bool DeliveryMetricsAvailable,
     bool LengthParityWarning,
@@ -68,16 +67,25 @@ public record AdminPreviewRubricCriterion(
     IReadOnlyList<AdminRubricLevelItem> Levels);
 
 /// <param name="ExpectedPct">
-/// Điểm KỲ VỌNG quy về %, tính bằng TRUNG BÌNH CỘNG các tiêu chí — đúng công thức B2C (INT-10), KHÔNG
-/// dùng weight như B2B. Dùng nhầm công thức weighted ở đây thì báo cáo chấm thử đo một thang khác với
-/// thang người luyện thật nhận, mà cả hai đều ra số trông hợp lý.
+/// Điểm KỲ VỌNG quy về %, gộp bằng ĐÚNG công thức của buổi B2C thật (<c>B2CScoreFormulaRule</c>, xem
+/// <paramref name="ScoreFormula"/>) trên CÙNG tập tiêu chí với <paramref name="ActualPct"/>.
+/// </param>
+/// <param name="ActualPct">
+/// Điểm AI chấm quy về % — RUB1: Σ(pct×w)/Σw trên tiêu chí CÓ điểm, trọng số của bộ đang chấm thử.
+/// Lượt chấm thử trước RUB1 (đã lưu) giữ con số trung bình cộng lúc đó, KHÔNG hồi tố.
 /// </param>
 /// <param name="DeliveryMetrics">Chỉ bài <c>Custom</c> có bản ghi âm mới mang số đo; 3 bài AI luôn <c>null</c>.</param>
+/// <param name="ScoreFormula">
+/// Con dấu công thức đã gộp <paramref name="ExpectedPct"/>/<paramref name="ActualPct"/>: <c>"Weighted"</c>
+/// cho mọi lượt từ RUB1. <c>null</c> = lượt lưu trước RUB1 ⇒ trung bình cộng. Có nó thì so hai lượt
+/// không nhầm "nhiễu model" với "đổi công thức" (tiền lệ <c>RubricFingerprint</c>/<c>PromptVersion</c>).
+/// </param>
 public record AdminPreviewSample(
     string Band, string AnswerText, int WordCount,
     decimal ExpectedPct, decimal ActualPct,
     IReadOnlyList<AdminPreviewSampleScore> Scores,
-    DeliveryMetricsDto? DeliveryMetrics = null);
+    DeliveryMetricsDto? DeliveryMetrics = null,
+    string? ScoreFormula = null);
 
 /// <param name="Measured"><c>true</c> = điểm ĐO từ bản ghi (DeliveryFluencyScorer), không do AI chấm — FE gắn nhãn, không đoán theo chữ.</param>
 public record AdminPreviewSampleScore(

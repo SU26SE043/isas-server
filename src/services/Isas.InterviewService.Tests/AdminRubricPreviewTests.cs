@@ -415,14 +415,13 @@ public class AdminRubricPreviewTests
     // ── (5) Báo cáo — công thức phải khớp cách người luyện thật được chấm ────────────────────
 
     /// <summary>
-    /// Điểm quy % dùng TRUNG BÌNH CỘNG (INT-10), KHÔNG weighted như B2B.
-    ///
     /// Seed B2C có 7 tiêu chí weight khác nhau (0.22 … 0.09) nhưng cùng <c>maxScore = 5</c>, nên bài
-    /// được 5/5 mọi tiêu chí phải ra đúng 100%, và bài 3/5 ra 60% — con số này bằng nhau ở cả hai công
-    /// thức khi điểm đồng đều, nên phép phân biệt thật nằm ở bài lệch điểm dưới đây.
+    /// được 5/5 mọi tiêu chí phải ra đúng 100%, và bài 3/5 ra 60% — điểm ĐỒNG ĐỀU thì trung bình cộng
+    /// và có trọng số trùng nhau, nên phép phân biệt công thức nằm ở
+    /// <see cref="Run_UnequalScores_WeightedNotAverage"/>. Ở đây khoá thang % + con dấu "Weighted".
     /// </summary>
     [Fact]
-    public async Task Run_ReportUsesEqualWeightAverage_NotWeighted()
+    public async Task Run_ReportPct_UniformScores_AndStampsWeighted()
     {
         using var t = new TestDb();
         await SeedRubricWithLevelsAsync(t);
@@ -438,6 +437,7 @@ public class AdminRubricPreviewTests
         Assert.Equal(100m, excellent.ActualPct);
         Assert.Equal(60m, good.ActualPct);
         Assert.Equal(0m, weak.ActualPct);
+        Assert.All(run.Samples, x => Assert.Equal("Weighted", x.ScoreFormula));
         // Tiền đề ĐẢO có chủ đích: seed có 7 tiêu chí, nhưng chấm thử chỉ chấm 6.
         // Tiêu chí `Độ trôi chảy & tự tin` chấm bằng SỐ ĐO (DeliveryMetrics) nên hai đường publish
         // thật không gửi nó cho LLM — chấm thử nay cũng vậy, đúng lời hứa "thứ admin kiểm chứng
@@ -452,6 +452,110 @@ public class AdminRubricPreviewTests
         // Mức kỳ vọng đi kèm để so "kỳ vọng vs thật" — số đo duy nhất phơi bày self-scoring bias.
         Assert.All(excellent.Scores, s => Assert.Equal(5, s.ExpectedLevel));
         Assert.All(weak.Scores, s => Assert.Equal(0, s.ExpectedLevel));
+    }
+
+    /// <summary>
+    /// AI trả điểm theo TỪNG tiêu chí (cùng điểm ở mọi bài); <paramref name="omit"/> = tiêu chí AI
+    /// không trả điểm (giả lập hợp đồng gãy).
+    /// </summary>
+    private static Mock<IRubricPreviewClient> AiMockBy(
+        Func<PreviewCriterionInput, decimal> scoreFor, string? omit = null)
+    {
+        var mock = new Mock<IRubricPreviewClient>();
+        mock.Setup(m => m.RunAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int>(),
+                It.IsAny<IReadOnlyList<PreviewCriterionInput>>(), It.IsAny<CancellationToken>(),
+                It.IsAny<bool>(), It.IsAny<DeliveryMetricsDto?>()))
+            .ReturnsAsync((string _, string _, string? _, string _, string? _, string? _, int _,
+                IReadOnlyList<PreviewCriterionInput> criteria, CancellationToken _, bool _, DeliveryMetricsDto? _) =>
+            {
+                List<PreviewSampleScore> Scores() => criteria
+                    .Where(c => c.Name != omit)
+                    .Select(c => new PreviewSampleScore(c.CriterionId, scoreFor(c), (int)scoreFor(c), "vì thế"))
+                    .ToList();
+                return new RubricPreviewResult(
+                    [new("Weak", "bài Weak", 160, Scores()), new("Good", "bài Good", 160, Scores()),
+                     new("Excellent", "bài Excellent", 160, Scores())],
+                    PromptVersion: 7, LengthParityWarning: false);
+            });
+        return mock;
+    }
+
+    /// <summary>
+    /// RUB1 — chấm thử dùng CÙNG công thức với buổi B2C mới (Σ(pct×w)/Σw), không phải trung bình cộng.
+    /// Chỉ "Chiều sâu kỹ thuật" (w 0,22) được 5/5, 5 tiêu chí AI còn lại 0/5; Σw tiêu chí AI = 0,90
+    /// (trôi chảy chấm bằng số đo, không gửi LLM) ⇒ 100 × 0,22/0,90 = 24,44. Trung bình cộng ra 16,67;
+    /// chia cho Σw cả bộ (1,00) ra 22,00 — ba con số khác nhau, nên test bắt được cả hai kiểu sai.
+    /// Admin đổi trọng số thì con số này PHẢI đổi — đó là lý do tính năng tồn tại.
+    /// </summary>
+    [Fact]
+    public async Task Run_UnequalScores_WeightedNotAverage()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+
+        var run = await Service(t, AiMockBy(c => c.Name == "Chiều sâu kỹ thuật" ? 5m : 0m).Object)
+            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+
+        var good = run.Samples.Single(s => s.Band == "Good");
+        Assert.Equal(24.44m, good.ActualPct);
+        // Kỳ vọng Good = mốc 3/5 ở mọi tiêu chí ⇒ 60% dưới mọi công thức (đồng đều).
+        Assert.Equal(60m, good.ExpectedPct);
+        Assert.All(run.Samples, s => Assert.Equal(24.44m, s.ActualPct));
+    }
+
+    /// <summary>
+    /// Tiêu chí AI KHÔNG trả điểm ⇒ rơi khỏi CẢ tử lẫn mẫu (INT-18) và không có hàng "0 điểm". 5 tiêu
+    /// chí còn lại đều 3/5 ⇒ 60%. Tính nó là 0 thì ra 60 × 0,81/0,90 = 54 — phạt bài mẫu vì AI không
+    /// chấm, đúng thứ buổi thật không làm.
+    /// </summary>
+    [Fact]
+    public async Task Run_CriterionWithoutScore_DropsFromNumeratorAndDenominator()
+    {
+        using var t = new TestDb();
+        await SeedRubricWithLevelsAsync(t);
+
+        var run = await Service(t, AiMockBy(_ => 3m, omit: B2CRubricSeed.TerminologyName).Object)
+            .RunAsync(Guid.NewGuid(), JobCategory.BE, "vi", new AdminRubricPreviewRequest());
+
+        var good = run.Samples.Single(s => s.Band == "Good");
+        Assert.Equal(60m, good.ActualPct);
+        Assert.Equal(60m, good.ExpectedPct);               // kỳ vọng gộp trên CÙNG tập tiêu chí
+        Assert.Equal(5, good.Scores.Count);
+        Assert.DoesNotContain(good.Scores, x => x.CriterionName == B2CRubricSeed.TerminologyName);
+    }
+
+    /// <summary>
+    /// Lượt chấm thử lưu TRƯỚC RUB1 (jsonb không có <c>scoreFormula</c>) vẫn đọc được: con dấu ra
+    /// <c>null</c> (= trung bình cộng lúc đó) và con số đã lưu giữ nguyên — KHÔNG hồi tố.
+    /// </summary>
+    [Fact]
+    public async Task History_LegacyRunWithoutScoreFormula_ReadsAsNull_KeepsStoredPct()
+    {
+        using var t = new TestDb();
+        var version = await SeedRubricWithLevelsAsync(t);
+        t.Db.AdminRubricPreviewRuns.Add(new AdminRubricPreviewRun
+        {
+            JobCategory = JobCategory.BE,
+            Language = "vi",
+            RubricVersion = version,
+            CreatedByUserId = Guid.NewGuid(),
+            QuestionText = "câu cũ",
+            Status = AdminRubricPreviewStatus.Succeeded,
+            RubricSnapshot = "[]",
+            RubricFingerprint = "fp-cu",
+            Samples = """[{"band":"Custom","answerText":"bài cũ","wordCount":120,"expectedPct":60,"actualPct":62.86,"scores":[],"deliveryMetrics":null}]""",
+            CreatedAt = DateTime.UtcNow.AddDays(-3),
+            CompletedAt = DateTime.UtcNow.AddDays(-3)
+        });
+        await t.Db.SaveChangesAsync();
+
+        var history = await Service(t).HistoryAsync(JobCategory.BE, "vi");
+
+        var sample = Assert.Single(Assert.Single(history).Samples);
+        Assert.Null(sample.ScoreFormula);
+        Assert.Equal(62.86m, sample.ActualPct);
     }
 
     /// <summary>Bài mẫu là văn bản ⇒ không có số đo cách nói (F11). Cờ cấu trúc, không giấu được.</summary>
@@ -617,12 +721,16 @@ public class AdminRubricPreviewTests
             Assert.Null(ai.DeliveryMetrics);
             Assert.DoesNotContain(ai.Scores, sc => sc.CriterionName == B2CRubricSeed.FluencyName);
         }
-        // Điểm gộp = TB 7 tiêu chí: 6 × 3/5 (60%) + 1 × 4/5 (80%) = 62,86%
-        Assert.Equal(62.86m, custom.ActualPct);
+        // Điểm gộp CÓ TRỌNG SỐ trên 7 tiêu chí (Σw = 1): 6 tiêu chí AI (Σw 0,90) × 60% + trôi chảy
+        // (w 0,10) × 80% = 62,00%. Trung bình cộng cũ ra 62,86 — tiêu chí đo góp theo TRỌNG SỐ của
+        // nó (0,10), không phải 1/7 như một phiếu ngang hàng.
+        Assert.Equal(62.00m, custom.ActualPct);
+        Assert.Equal("Weighted", custom.ScoreFormula);
         // Lịch sử đọc lại từ jsonb vẫn còn số đo + cờ
         var history = await Service(t).HistoryAsync(JobCategory.BE, "vi");
         Assert.True(history[0].DeliveryMetricsAvailable);
         Assert.NotNull(history[0].Samples.Single(x => x.Band == "Custom").DeliveryMetrics);
+        Assert.Equal("Weighted", history[0].Samples.Single(x => x.Band == "Custom").ScoreFormula);   // con dấu đi qua jsonb
     }
 
     [Fact]

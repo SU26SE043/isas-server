@@ -11,7 +11,7 @@ using Isas.InterviewService.Enums;
 public record RubricCriterionInput(
     string Name,
     string? Description,
-    decimal Weight,    // chuẩn hoá Σ→1 khi lưu; B2C điểm tổng = TB cộng (INT-10) nên weight chỉ để hiển thị
+    decimal Weight,    // chuẩn hoá Σ→1 khi lưu; RUB1: buổi B2C mới tính điểm CÓ TRỌNG SỐ (INT-10) theo đúng số này
     int MaxScore,
     /// <summary>
     /// Mốc điểm (E9). <c>null</c>/rỗng = chưa khai ⇒ chấm theo dải mặc định <c>0..maxScore</c> — hợp
@@ -32,7 +32,13 @@ public record UpsertRubricRequest(
 public record RubricResponse(
     JobCategory JobCategory,
     bool IsCustom,          // true = rubric riêng của candidate; false = seed mặc định (template để clone)
-    IReadOnlyList<RubricCriterionItem> Criteria
+    IReadOnlyList<RubricCriterionItem> Criteria,
+    // RUB1 — version BỘ CHUẨN đang hiệu lực của (nghề, ngôn ngữ); 0 = chưa có bộ chuẩn nào.
+    int DefaultVersion = 0,
+    // RUB1 — bộ chuẩn version mấy lúc người dùng lưu rubric riêng này. null khi IsCustom = false, hoặc
+    // KHÔNG BIẾT (rubric riêng lưu trước RUB1 — không suy thành v1, BK23). DefaultVersion >
+    // BasedOnDefaultVersion ⇒ bộ chuẩn đã cập nhật sau khi họ tuỳ chỉnh.
+    int? BasedOnDefaultVersion = null
 );
 
 public record RubricCriterionItem(

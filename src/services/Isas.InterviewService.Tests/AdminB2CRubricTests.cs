@@ -141,21 +141,17 @@ public class AdminB2CRubricTests
                      enAfter.Criteria.Select(c => c.Id).OrderBy(x => x));
     }
 
-    // ── (3) Biên độ quyền — bốn trường ngoài tầm với ─────────────────────────────────────────
+    // ── (3) Biên độ quyền — hai trường vẫn ngoài tầm với ─────────────────────────────────────
 
     /// <summary>
-    /// Bốn trường <c>Name</c>/<c>Weight</c>/<c>MaxScore</c>/<c>ScoringScope</c> KHÔNG được có mặt trên
-    /// DTO admin. Bịt bằng cấu trúc (gán nhầm = lỗi biên dịch) chỉ đứng vững chừng nào không ai "tiện
-    /// tay" thêm chúng vào — test này là thứ làm việc thêm đó chuyển thành ĐỎ.
-    ///
-    /// <para>Hậu quả nếu thêm <c>Name</c>: BC12/BC15/F14 gom nhóm theo TÊN ⇒ đổi tên cắt đôi chuỗi
-    /// thời gian của mọi người dùng, im lặng.</para>
+    /// RUB1 (đổi tiền đề có chủ đích): trước RUB1 test này khoá BỐN trường (Name/Weight/MaxScore/
+    /// ScoringScope). Nay admin được đổi tên/trọng số/phạm vi — thang 0–5 và nguồn điểm vẫn khoá bằng
+    /// CẤU TRÚC: <c>MaxScore</c> (đổi thang = mốc phải khai lại + percentage lịch sử hết so sánh được) và
+    /// <c>ScoringMethod</c> (tiêu chí mới luôn Ai; tiêu chí đo bằng số đo không được đổi sang LLM chấm).
     /// </summary>
     [Theory]
-    [InlineData("Name")]
-    [InlineData("Weight")]
     [InlineData("MaxScore")]
-    [InlineData("ScoringScope")]
+    [InlineData("ScoringMethod")]
     public void AdminInputDto_DoesNotExposeProtectedFields(string property)
         => Assert.Null(typeof(AdminRubricCriterionInput).GetProperty(property));
 
@@ -262,9 +258,13 @@ public class AdminB2CRubricTests
         Assert.All(v3.Criteria, c => Assert.Empty(c.Levels));
     }
 
-    /// <summary>Payload thiếu một tiêu chí ⇒ 400, không âm thầm giữ nội dung cũ của tiêu chí đó.</summary>
+    /// <summary>
+    /// RUB1 (đổi tiền đề có chủ đích): trước RUB1, payload thiếu một tiêu chí ⇒ 400. Nay tiêu chí vắng
+    /// = XOÁ — nhưng Σweight KHÔNG tự chuẩn hoá, nên bỏ một tiêu chí mà không cân lại trọng số vẫn 400
+    /// (lần này vì tổng trọng số, không âm thầm giữ nội dung cũ của tiêu chí đó).
+    /// </summary>
     [Fact]
-    public async Task Replace_MissingCriterion_Throws()
+    public async Task Replace_MissingCriterion_WithoutRebalance_Throws()
     {
         using var t = new TestDb();
         SeedDefaults(t.Db);
@@ -273,8 +273,9 @@ public class AdminB2CRubricTests
         var partial = new UpsertAdminRubricRequest(
             Echo(v1).Criteria.Take(v1.Criteria.Count - 1).ToList());
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => svc.ReplaceAsync(JobCategory.BE, partial, "vi"));
+        Assert.Contains("Tổng trọng số", ex.Message);
     }
 
     /// <summary>Id không thuộc bộ chuẩn (vd id rubric riêng của một ứng viên) ⇒ 400.</summary>

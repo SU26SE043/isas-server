@@ -90,8 +90,10 @@ public class SessionResultService : ISessionResultService
         if (existing.Count > 0)
             _db.SessionCriterionScores.RemoveRange(existing);
 
-        decimal sumPct = 0m;
-        int scoredCriteriaCount = 0;   // K = số tiêu chí đã chấm (có điểm)
+        // RUB1 — % + trọng số của tiêu chí CÓ điểm, gộp bằng B2CScoreFormulaRule (nguồn duy nhất).
+        // Trọng số lấy từ `criteria` = bộ ĐÃ GHIM của buổi (RubricCriteriaLoader ở trên), KHÔNG tra bộ
+        // đang hiệu lực: admin đổi trọng số giữa buổi không được đổi điểm buổi đã bắt đầu.
+        var parts = new List<B2CScoreFormulaRule.Part>(criteria.Count);
         foreach (var c in criteria)
         {
             // Tiêu chí KHÔNG có answer_scores nào trong buổi ⇒ KHÔNG ghi dòng.
@@ -114,8 +116,7 @@ public class SessionResultService : ISessionResultService
             // Điểm đã kẹp [0,maxScore] ở callback chấm (E8) → percentage nằm [0,100].
             var pct = Math.Round(Math.Clamp(avgRaw / maxScore * 100m, 0m, 100m), 2);
 
-            sumPct += pct;
-            scoredCriteriaCount++;
+            parts.Add(new B2CScoreFormulaRule.Part(pct, c.Weight));
 
             _db.SessionCriterionScores.Add(new SessionCriterionScore
             {
@@ -132,12 +133,11 @@ public class SessionResultService : ISessionResultService
             });
         }
 
-        // B2C = TRUNG BÌNH CỘNG pct các tiêu chí (equal weight — INT-10, KHÔNG dùng weight). K=0 → 0.
-        var average = scoredCriteriaCount > 0
-            ? Math.Round(Math.Clamp(sumPct / scoredCriteriaCount, 0m, 100m), 2)
-            : 0m;
+        // INT-10 (RUB1): buổi ghim `Weighted` ⇒ Σ(pct×w)/Σw trên tiêu chí CÓ điểm; buổi cũ (null) ⇒
+        // trung bình cộng như trước — KHÔNG hồi tố. Không tiêu chí nào có điểm ⇒ 0.
+        var average = B2CScoreFormulaRule.Combine(parts, session.B2CScoreFormula);
 
-        if (scoredCriteriaCount == 0)
+        if (parts.Count == 0)
             _logger.LogWarning(
                 "BC9: session {SessionId} không có tiêu chí nào được chấm (answered={Answered}) → overall=0",
                 sessionId, answeredCount);

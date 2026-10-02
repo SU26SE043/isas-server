@@ -170,6 +170,14 @@ public class PracticeSession : IHasUpdatedAt
     //          clamp(expr × seed_completeness, 0, 100) (SessionScoringNotifier + ScoringPolicyService).
     public bool SkipPenalty { get; set; }
 
+    // RUB1 — GHIM công thức gộp điểm tổng B2C (INT-10) lúc TẠO buổi. Buổi B2C mới = Weighted
+    // (Σ pct×w / Σw trên tiêu chí CÓ điểm); trọng số đọc từ bộ tiêu chí ĐÃ GHIM (B2CRubric*).
+    //
+    //   null = buổi B2C tạo TRƯỚC RUB1 (giữ trung bình cộng — không hồi tố) · buổi B2B (điểm tổng B2B
+    //          tính ở SessionScoringNotifier/CampaignService, không đọc cột này). ⚠ null KHÔNG được vẽ
+    //          thành "Weighted" ở API (BK23: suy "biết" từ "không biết" là bịa).
+    public B2CScoreFormula? B2CScoreFormula { get; set; }
+
     // Người luyện có bật ghi nhận mất tập trung cho buổi này không (coaching — xem FocusSignals).
     // Ghim LÚC TẠO BUỔI, cùng mẫu AdaptiveEnabled/SkipPenalty/TimeLimitSec ngay trên: đổi lựa chọn
     // sau đó KHÔNG hồi tố buổi đang chạy.

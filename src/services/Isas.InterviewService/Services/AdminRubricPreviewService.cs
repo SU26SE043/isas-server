@@ -348,6 +348,13 @@ public class AdminRubricPreviewService(
     }
 
     /// <summary>
+    /// Công thức gộp mà mọi lượt chấm thử MỚI dùng — đúng con dấu buổi B2C mới ghim lúc tạo
+    /// (<c>PracticeService</c> đặt <see cref="B2CScoreFormula.Weighted"/>). Một hằng số, để "chấm thử"
+    /// và "buổi thật" không thể lệch nhau mà không ai sửa chỗ này.
+    /// </summary>
+    private const B2CScoreFormula PreviewScoreFormula = B2CScoreFormula.Weighted;
+
+    /// <summary>
     /// Ghép điểm LLM (tiêu chí AI) và — CHỈ cho bài <c>Custom</c> có bản ghi âm — điểm ĐO của tiêu chí
     /// trôi chảy qua <see cref="DeliveryFluencyScorer"/>, đúng hàm và đúng ngưỡng đường chấm thật dùng.
     /// 3 bài AI là văn bản nên không bao giờ có hàng đo; bài dán tay cũng vậy (FE nói rõ "không chấm").
@@ -359,12 +366,25 @@ public class AdminRubricPreviewService(
         => samples.Select(s =>
         {
             var scores = new List<AdminPreviewSampleScore>();
-            decimal expectedSum = 0, actualSum = 0;
-            var n = 0;
+            // Hai tập phần CÙNG một tập tiêu chí: kỳ vọng và thực tế phải gộp trên cùng mẫu số, nếu
+            // không Δ "kỳ vọng vs thật" so hai thứ khác nhau mà vẫn trông như một con số.
+            var expectedParts = new List<B2CScoreFormulaRule.Part>();
+            var actualParts = new List<B2CScoreFormulaRule.Part>();
 
             foreach (var c in aiCriteria)
             {
-                n++;
+                var hit = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id);
+                if (hit is null)
+                {
+                    // AIService đòi đủ mọi tiêu chí (INT-9) nên ca này chỉ tới được khi hợp đồng gãy.
+                    // Không có điểm ⇒ LOẠI khỏi cả tử lẫn mẫu (INT-18) và không ghi hàng — ghi hàng 0 là
+                    // nói "AI chấm 0" cho thứ AI không hề chấm (cùng luật SessionResultService).
+                    logger.LogWarning(
+                        "Chấm thử: AI không trả điểm cho tiêu chí {CriterionId} ({Name}) ở bài {Band} — loại khỏi điểm gộp",
+                        c.Id, c.Name, s.Band);
+                    continue;
+                }
+
                 var (weak, good, excellent) = Expected(c);
                 var expected = s.Band switch
                 {
@@ -374,15 +394,10 @@ public class AdminRubricPreviewService(
                     _ => good   // bài admin tự dán: không có kỳ vọng riêng, neo ở mức giữa
                 };
 
-                var hit = s.Scores.FirstOrDefault(x => x.CriterionId == c.Id);
                 scores.Add(new AdminPreviewSampleScore(
-                    c.Id, c.Name, c.MaxScore, expected, hit?.Score ?? 0m, hit?.LevelMatched, hit?.Reasoning));
-
-                if (c.MaxScore > 0)
-                {
-                    expectedSum += expected / (decimal)c.MaxScore * 100m;
-                    actualSum += (hit?.Score ?? 0m) / c.MaxScore * 100m;
-                }
+                    c.Id, c.Name, c.MaxScore, expected, hit.Score, hit.LevelMatched, hit.Reasoning));
+                expectedParts.Add(new(Pct(expected, c.MaxScore), c.Weight));
+                actualParts.Add(new(Pct(hit.Score, c.MaxScore), c.Weight));
             }
 
             var isCustom = s.Band == "Custom";
@@ -395,25 +410,34 @@ public class AdminRubricPreviewService(
                     var expected = c.Levels.Count >= 2 ? Expected(c).Good : (int)Math.Ceiling(c.MaxScore * 0.6);
                     scores.Add(new AdminPreviewSampleScore(
                         c.Id, c.Name, c.MaxScore, expected, measured.Value.Score, null, measured.Value.Reasoning, Measured: true));
-                    n++;
-                    if (c.MaxScore > 0)
-                    {
-                        expectedSum += expected / (decimal)c.MaxScore * 100m;
-                        actualSum += measured.Value.Score / c.MaxScore * 100m;
-                    }
+                    // Tiêu chí ĐO góp theo trọng số CỦA NÓ — đúng như buổi thật, nơi điểm đo cũng thành
+                    // một dòng session_criterion_scores mang weight của tiêu chí.
+                    expectedParts.Add(new(Pct(expected, c.MaxScore), c.Weight));
+                    actualParts.Add(new(Pct(measured.Value.Score, c.MaxScore), c.Weight));
                 }
             }
 
-            // TRUNG BÌNH CỘNG, KHÔNG weighted — B2C tính điểm tổng bằng equal weight (INT-10). Dùng
-            // công thức weighted của B2B ở đây thì báo cáo chấm thử đo một thang khác với thang người
-            // luyện thật nhận, mà cả hai đều ra số trông hợp lý. Mẫu số = số tiêu chí THẬT SỰ có điểm
-            // (bài có số đo thì nhiều hơn bài AI một tiêu chí) — cùng luật `sumPct / scoredCriteriaCount`.
-            n = n > 0 ? n : 1;
+            // RUB1 · INT-10 — CÙNG công thức với buổi B2C thật: Σ(pct×w)/Σw trên tiêu chí CÓ điểm, gộp
+            // qua `B2CScoreFormulaRule` (nguồn duy nhất), trọng số của chính bộ đang chấm thử. Trước RUB1
+            // chỗ này dùng trung bình cộng "để khớp thang người luyện thật nhận"; buổi mới nay tính có
+            // trọng số nên giữ trung bình cộng thì admin đổi trọng số rồi chấm thử sẽ thấy con số KHÔNG
+            // đổi, trong khi người luyện thật bị chấm khác. Mẫu số chỉ gồm tiêu chí có điểm: bài Custom
+            // có số đo nhiều hơn bài AI một tiêu chí; tiêu chí không có điểm rơi khỏi cả tử lẫn mẫu.
             return new AdminPreviewSample(
                 s.Band, s.AnswerText, s.WordCount,
-                Math.Round(expectedSum / n, 2), Math.Round(actualSum / n, 2), scores,
-                isCustom ? customDelivery : null);
+                B2CScoreFormulaRule.Combine(expectedParts, PreviewScoreFormula),
+                B2CScoreFormulaRule.Combine(actualParts, PreviewScoreFormula),
+                scores,
+                isCustom ? customDelivery : null,
+                ScoreFormula: PreviewScoreFormula.ToString());
         }).ToList();
+
+    /// <summary>
+    /// % làm tròn 2 — đúng giá trị <c>SessionResultService</c> ghi vào <c>session_criterion_scores</c>
+    /// trước khi gộp, để chấm thử và buổi thật làm tròn ở cùng một chỗ.
+    /// </summary>
+    private static decimal Pct(decimal score, int maxScore)
+        => Math.Round(Math.Clamp(score / (maxScore > 0 ? maxScore : 1) * 100m, 0m, 100m), 2);
 
     private static AdminRubricPreviewRunResponse ToResponse(AdminRubricPreviewRun run, int freeRemaining)
         => new(
