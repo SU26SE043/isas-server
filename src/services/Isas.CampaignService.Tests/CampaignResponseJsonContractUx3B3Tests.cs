@@ -74,6 +74,7 @@ public class CampaignResponseJsonContractUx3B3Tests
         "jobNeeds",
         "keywordsAny",
         "language",
+        "maxAttempts",   // ATT1 [C5]
         "maxCandidates",
         "maxConcurrentInterviews",
         "maxDeepPerQuestion",
@@ -120,6 +121,7 @@ public class CampaignResponseJsonContractUx3B3Tests
         "jobNeeds",
         "keywordsAny",
         "language",
+        "maxAttempts",   // ATT1 [C5]
         "maxCandidates",
         "maxConcurrentInterviews",
         "maxDeepPerQuestion",

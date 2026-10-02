@@ -113,6 +113,11 @@ namespace Isas.CampaignService.Models
                     // có đường ghi nào đó đang đặt bừa, mà nhãn thước đo sai thì bảng xếp hạng trộn
                     // hai nhóm điểm không so sánh được (CAMP-10) mà không ai thấy.
                     t.HasCheckConstraint("ck_campaigns_rubric_version_positive", "rubric_version >= 1");
+                    // ATT1 — số lượt làm bài mỗi ứng viên ∈ [1, 3]. Khớp guard code ValidateMaxAttempts
+                    // (CampaignService.cs). 0 = không ai làm được lượt nào ⇒ chiến dịch chết câm.
+                    // ⚠ CỐ Ý KHÔNG có CHECK cho time_limit_minutes: dev còn nháp 0/−30/100000 ⇒ migration
+                    // sẽ nổ trên dev. Luật [5, 180] chỉ ở tầng ứng dụng (create/update/publish).
+                    t.HasCheckConstraint("ck_campaigns_max_attempts_range", "max_attempts BETWEEN 1 AND 3");
                     t.HasCheckConstraint("ck_campaigns_status", "status IN ('Draft', 'Active', 'Closed', 'Archived')");
                     t.HasCheckConstraint("ck_campaigns_language", "language IN ('vi', 'en')");
                     t.HasCheckConstraint("ck_campaigns_seniority", "seniority IN ('Fresher', 'Junior', 'Middle', 'Senior')");
@@ -141,6 +146,9 @@ namespace Isas.CampaignService.Models
                 // CAMP-18 — DEFAULT 1 để campaign đã có trên prod nhận đúng v1 mà không cần backfill:
                 // mọi lượt materialize từng chạy đều ghi Version = 1 phía Interview.
                 e.Property(x => x.RubricVersion).HasDefaultValue(1);
+                // ATT1 — DEFAULT 1 = hành vi trước ATT1 (mỗi ứng viên một lượt) cho mọi campaign đã có,
+                // không cần backfill; cũng là điều kiện để CHECK [1, 3] không nổ trên dòng cũ.
+                e.Property(x => x.MaxAttempts).HasDefaultValue(1);
 
                 e.Property(x => x.StartsAt).IsRequired();
 

@@ -179,7 +179,9 @@ namespace Isas.CampaignService.Controllers
             }
             catch (ArgumentException ex)
             {
-                return BadRequest(ex.Message);
+                // ATT1 [C1] — body { error } (trước đây chuỗi trần). FE đọc được cả hai dạng
+                // (getApiErrorMessage: string → dùng thẳng, object → message ?? error).
+                return BadRequest(new { error = ex.Message });
             }
             catch (EntitlementForbiddenException ex)
             {
@@ -261,9 +263,13 @@ namespace Isas.CampaignService.Controllers
             }
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (AdaptiveBudgetTooSmallException ex) { return BadRequest(ex.Body); }   // RNK1 · HĐ-7
-            catch (ArgumentException ex) { return BadRequest(ex.Message); }         // C12: criteria không hợp lệ → 400
+            // ATT1 [C2]/[C3] — 409 CÓ code (MAX_ATTEMPTS_DECREASE / TIME_LIMIT_LOCKED). Bắt TRƯỚC
+            // InvalidOperationException; loại này không dẫn xuất từ nó, nhưng giữ thứ tự cho rõ ý.
+            catch (CampaignSettingLockedException ex) { return Conflict(ex.Body); }
+            // ATT1 — 400/409 generic nay body { error } (trước đây chuỗi trần), khớp hợp đồng [C1]/[C2].
+            catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }   // C12: criteria không hợp lệ → 400
             catch (EntitlementForbiddenException ex) { return StatusCode(StatusCodes.Status403Forbidden, ex.Message); }
-            catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // C12: sửa criteria khi != Draft → 409
+            catch (InvalidOperationException ex) { return Conflict(new { error = ex.Message }); }   // C12: sửa criteria khi != Draft → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to update campaign: {ex.Message}"); }
         }
 
@@ -787,6 +793,9 @@ namespace Isas.CampaignService.Controllers
             catch (KeyNotFoundException ex) { return NotFound(ex.Message); }
             catch (AdaptiveBudgetTooSmallException ex) { return BadRequest(ex.Body); }   // RNK1 · HĐ-7 — 3 số adaptive lệch → 400
             catch (QuestionBankInvalidException ex) { return BadRequest(ex.Body); }      // RNK1 · HĐ-8 — ngân hàng đề có cảnh báo → 400
+            // ATT1 [C4] — thời lượng null / ngoài [5, 180] → 400 { error }. Trước ATT1 publish không ném
+            // ArgumentException nào nên action này chưa có nhánh 400 generic (rơi xuống 500).
+            catch (ArgumentException ex) { return BadRequest(new { error = ex.Message }); }
             catch (InvalidOperationException ex) { return Conflict(ex.Message); }   // sai trạng thái / thiếu câu hỏi → 409
             catch (Exception ex) { return StatusCode(500, $"Failed to publish campaign: {ex.Message}"); }
         }
