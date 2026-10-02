@@ -112,6 +112,17 @@ namespace Isas.CampaignService.Controllers
                 return Ok(result);
             }
             catch (UnauthorizedAccessException ex) { return StatusCode(StatusCodes.Status403Forbidden, new { error = ex.Message }); }
+            // ATT1 [C8] — hết lượt làm bài: 409 CÓ code + số lượt để FE hiện đúng câu, không đoán từ chữ.
+            catch (AttemptLimitReachedException ex)
+            {
+                return Conflict(new
+                {
+                    code = AttemptLimitReachedException.Code,
+                    error = ex.Message,
+                    attemptsUsed = ex.AttemptsUsed,
+                    maxAttempts = ex.MaxAttempts
+                });
+            }
             catch (OutsideSlotWindowException ex)
             {
                 return Conflict(new

@@ -217,7 +217,7 @@ public class ScoringCriteriaBuilderTests
         await NewClient(handler).CreateOrGetSessionAsync(
             Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "BE",
             new[] { "Q1" }, ScoringCriteriaBuilder.Build(SampleRubric()),
-            null, null, null, null, null, "en", "Senior", 3, null, null, true, default);
+            null, null, null, null, null, "en", "Senior", 3, null, null, true, null, default);
 
         using var doc = JsonDocument.Parse(handler.CapturedBody!);
         Assert.Equal(3, doc.RootElement.GetProperty("rubricVersion").GetInt32());

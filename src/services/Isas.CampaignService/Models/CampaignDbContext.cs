@@ -586,6 +586,8 @@ namespace Isas.CampaignService.Models
                 {
                     t.HasCheckConstraint("ck_campaign_membership_status", "status IN ('Joined')");
                     t.HasCheckConstraint("ck_campaign_membership_interview_status", "interview_status IS NULL OR interview_status IN ('NotStarted', 'InProgress', 'Abandoned', 'Completed')");
+                    // ATT1 — bộ đếm lượt làm bài không âm (guard Start so với campaigns.max_attempts).
+                    t.HasCheckConstraint("ck_campaign_membership_attempt_count_non_negative", "attempt_count >= 0");
                 });
                 e.HasKey(x => x.Id);
                 e.Property(x => x.Id).HasDefaultValueSql("gen_random_uuid()");
@@ -593,6 +595,9 @@ namespace Isas.CampaignService.Models
                 e.Property(x => x.Status).HasConversion<string>().HasMaxLength(20).HasDefaultValue(MembershipStatus.Joined);
                 // interview_status enum string (nullable = NotStarted).
                 e.Property(x => x.InterviewStatus).HasConversion<string>().HasMaxLength(16);
+                // ATT1 — DEFAULT 0 cho dòng mới; dòng đã có được backfill trong migration
+                // AddMembershipAttemptCountAtt1 (đã có buổi InProgress/Completed ⇒ 1).
+                e.Property(x => x.AttemptCount).HasDefaultValue(0);
                 e.Property(x => x.CreatedAt).HasDefaultValueSql("now()");
                 e.Property(x => x.UpdatedAt).HasDefaultValueSql("now()");
 

@@ -41,10 +41,11 @@ namespace Isas.CampaignService.Services
             bool? adaptiveEnabled = null, int? maxFollowUps = null, int? maxQuestions = null,
             int? maxDeepPerQuestion = null, string seniority = "Junior", int rubricVersion = 1,
             IReadOnlyList<SessionQuestionInput>? questionDetails = null,
-            CampaignScoringPolicyInput? scoringPolicy = null, bool skipPenalty = true, CancellationToken ct = default)
-            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", seniority, rubricVersion, questionDetails, scoringPolicy, skipPenalty, ct);
+            CampaignScoringPolicyInput? scoringPolicy = null, bool skipPenalty = true, int? durationMinutes = null,
+            CancellationToken ct = default)
+            => await CreateOrGetSessionAsync(candidateId, campaignId, orgId, jobCategory, questions, criteria, expiresAt, adaptiveEnabled, maxFollowUps, maxQuestions, maxDeepPerQuestion, "vi", seniority, rubricVersion, questionDetails, scoringPolicy, skipPenalty, durationMinutes, ct);
 
-        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, bool skipPenalty, CancellationToken ct)
+        public async Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, bool skipPenalty, int? durationMinutes, CancellationToken ct)
         {
             var payload = new
             {
@@ -92,7 +93,11 @@ namespace Isas.CampaignService.Services
                 // RNK1 · HĐ-2 / CAMP-21 — luật câu bỏ trống (khoá JSON camelCase "skipPenalty" —
                 // hợp đồng HĐ-1). Interview ghim practice_sessions.skip_penalty; bản Interview cũ
                 // (chưa biết field) bỏ qua ⇒ session.skip_penalty = false (không phạt).
-                skipPenalty
+                skipPenalty,
+                // ATT1 [I1] — thời lượng cả buổi (phút), khoá JSON camelCase "durationMinutes" (anonymous
+                // type + JsonContent.Create = JsonSerializerDefaults.Web). null GHI TƯỜNG MINH (không bỏ
+                // khoá) = buổi không tính giờ. Bản Interview cũ chưa biết field ⇒ bỏ qua ⇒ không tính giờ.
+                durationMinutes
             };
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/sessions/campaign")

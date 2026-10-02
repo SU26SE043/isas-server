@@ -36,10 +36,14 @@ namespace Isas.CampaignService.Services
             // practice_sessions.skip_penalty; true ⇒ điểm tổng = clamp(expr × seed_completeness, 0, 100).
             // Default true = campaign tạo từ bản RNK1 trở đi (caller thực luôn truyền campaign.SkipPenalty).
             bool skipPenalty = true,
+            // ATT1 — thời lượng CẢ BUỔI (phút) = campaigns.time_limit_minutes, khoá JSON "durationMinutes".
+            // Interview ghim lên buổi thi; đồng hồ chạy từ lúc ứng viên VÀO PHÒNG (begin). null = buổi
+            // KHÔNG tính giờ (caller truyền NGUYÊN giá trị campaign, không bịa số khi campaign null).
+            int? durationMinutes = null,
             CancellationToken ct = default);
         // Overload đầy đủ: KHÔNG đặt default cho `language`/`seniority`/`ct` — caller duy nhất
         // (ParticipationService) truyền đủ, và để trống default thì hai overload không thể nhập nhằng.
-        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, bool skipPenalty, CancellationToken ct);
+        Task<CampaignSessionResult> CreateOrGetSessionAsync(Guid candidateId, Guid campaignId, Guid orgId, string jobCategory, IReadOnlyList<string> questions, IReadOnlyList<SessionCriterionInput> criteria, DateTime? expiresAt, bool? adaptiveEnabled, int? maxFollowUps, int? maxQuestions, int? maxDeepPerQuestion, string language, string seniority, int rubricVersion, IReadOnlyList<SessionQuestionInput>? questionDetails, CampaignScoringPolicyInput? scoringPolicy, bool skipPenalty, int? durationMinutes, CancellationToken ct);
 
         // AI4 — HR đọc transcript + nhận xét AI per-criterion + cờ needs_review của 1 buổi (đối chiếu điểm
         // ranking). Gọi Interview GET /internal/sessions/{sessionId}/answers (máy-máy, X-Internal-Token).
