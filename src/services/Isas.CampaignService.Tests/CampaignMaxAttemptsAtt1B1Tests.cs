@@ -34,10 +34,11 @@ public class CampaignMaxAttemptsAtt1B1Tests
         return m.Object;
     }
 
-    private static CampaignSvc NewService(CampaignDbContext db, ICriteriaSuggester? suggester = null) =>
+    private static CampaignSvc NewService(CampaignDbContext db, ICriteriaSuggester? suggester = null,
+        IJobNeedsSuggester? jobNeeds = null) =>
         new(db, Mock.Of<IFileService>(), Mock.Of<ILogger<CampaignSvc>>(), Mock.Of<IParserService>(),
             suggester ?? Mock.Of<ICriteriaSuggester>(), Mock.Of<IInvitationEmailPublisher>(),
-            entitlements: Entitlements());
+            entitlements: Entitlements(), jobNeedsSuggester: jobNeeds);
 
     private static CampaignController NewController(CampaignSvc svc, Guid orgId)
     {
@@ -471,6 +472,132 @@ public class CampaignMaxAttemptsAtt1B1Tests
         var page = await NewService(tdb.NewContext()).GetCampaignsAsync(org, null, null, default);
         var item = JsonSerializer.SerializeToElement(page.Items.Single(), Web);
         Assert.Equal(3, item.GetProperty("maxAttempts").GetInt32());
+    }
+
+    // ── fix(att1-b1) — lỗ test do KIỂM B1 tìm ra (6 nhóm, 12 ca). Mỗi nhóm khoá một phép mutation
+    //    mà bộ test cũ để XANH; nhãn K* là mã phép của người kiểm (scratchpad att1/kiem-b1/spec.json).
+
+    // K1 — ngoài Draft, maxAttempts ngoài [1, 3] vẫn 400 { error } KHÔNG code và không lưu. Nếu chỉ kiểm
+    // dải khi Draft thì Active 1→4 lọt tầng app rồi nổ CHECK DB ⇒ 500 thay vì 400.
+    [Theory]
+    [InlineData(CampaignStatus.Active, 1, 4)]
+    [InlineData(CampaignStatus.Active, 2, 0)]
+    [InlineData(CampaignStatus.Closed, 1, 4)]
+    [InlineData(CampaignStatus.Archived, 2, 0)]
+    public async Task Update_KhongPhaiDraft_MaxAttemptsNgoaiDai_400_KhongCode_KhongLuu(
+        CampaignStatus status, int stored, int sent)
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = Seed(tdb.Db, org, status, maxAttempts: stored, timeLimit: 30);
+
+        var res = await NewController(NewService(tdb.NewContext()), org).UpdateCampaign(
+            camp.Id, new UpdateCampaignRequest { Title = camp.Title, MaxAttempts = sent }, default);
+
+        Assert.IsType<BadRequestObjectResult>(res.Result);
+        AssertErrorBody(Body(res), expectedCode: null);
+        Assert.Equal(stored, StoredMaxAttempts(tdb, camp.Id));
+    }
+
+    // K2 — vắng maxAttempts = KHÔNG ĐỔI ở MỌI trạng thái, kể cả khi giá trị đang lưu ≠ 1 (JSON thật chỉ có
+    // title). Các ca "vắng" cũ đều seed 1 nên phép "vắng hiểu là 1" chạy qua XANH.
+    [Theory]
+    [InlineData(CampaignStatus.Draft)]
+    [InlineData(CampaignStatus.Active)]
+    [InlineData(CampaignStatus.Closed)]
+    [InlineData(CampaignStatus.Archived)]
+    public async Task Update_VangMaxAttempts_GiuNguyen3_MoiTrangThai(CampaignStatus status)
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = Seed(tdb.Db, org, status, maxAttempts: 3, timeLimit: 30);
+        var req = JsonSerializer.Deserialize<UpdateCampaignRequest>("""{"title":"Đổi tên"}""", Web)!;
+        Assert.Null(req.MaxAttempts);
+
+        var res = await NewController(NewService(tdb.NewContext()), org).UpdateCampaign(camp.Id, req, default);
+
+        Assert.IsType<OkObjectResult>(res.Result);
+        Assert.Equal(3, Body(res).GetProperty("maxAttempts").GetInt32());
+        Assert.Equal(3, StoredMaxAttempts(tdb, camp.Id));
+    }
+
+    // K3 — Archived đổi thời lượng ⇒ 409 TIME_LIMIT_LOCKED (khoá phải phủ MỌI trạng thái khác Draft).
+    [Fact]
+    public async Task Update_Archived_DoiTimeLimit_409_TIME_LIMIT_LOCKED_KhongLuu()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = Seed(tdb.Db, org, CampaignStatus.Archived, maxAttempts: 1, timeLimit: 30);
+
+        var res = await NewController(NewService(tdb.NewContext()), org).UpdateCampaign(
+            camp.Id, new UpdateCampaignRequest { Title = camp.Title, TimeLimitMinutes = 45 }, default);
+
+        Assert.IsType<ConflictObjectResult>(res.Result);
+        AssertErrorBody(Body(res), "TIME_LIMIT_LOCKED");
+        Assert.Equal(30, StoredTimeLimit(tdb, camp.Id));
+    }
+
+    // K4 — Archived gửi lại ĐÚNG maxAttempts + thời lượng đang lưu ⇒ 200 (wizard echo cả form).
+    [Fact]
+    public async Task Update_Archived_GuiLaiDungGiaTri_200()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = Seed(tdb.Db, org, CampaignStatus.Archived, maxAttempts: 2, timeLimit: 30);
+
+        var res = await NewController(NewService(tdb.NewContext()), org).UpdateCampaign(
+            camp.Id, new UpdateCampaignRequest { Title = camp.Title, MaxAttempts = 2, TimeLimitMinutes = 30 }, default);
+
+        Assert.IsType<OkObjectResult>(res.Result);
+    }
+
+    // K5 — nháp cũ đang lưu thời lượng null: PUT 30 phải LƯU 30. Đây là đường cứu DUY NHẤT cho nháp mà
+    // publish [C4] đang chặn; coi null là "bằng" thì PUT thành no-op câm, nháp kẹt vĩnh viễn.
+    [Fact]
+    public async Task Update_Draft_TimeLimitNull_Put30_Luu30()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var camp = Seed(tdb.Db, org, CampaignStatus.Draft, maxAttempts: 1, timeLimit: null);
+
+        var res = await NewController(NewService(tdb.NewContext()), org).UpdateCampaign(
+            camp.Id, new UpdateCampaignRequest { Title = camp.Title, TimeLimitMinutes = 30 }, default);
+
+        Assert.IsType<OkObjectResult>(res.Result);
+        Assert.Equal(30, StoredTimeLimit(tdb, camp.Id));
+    }
+
+    // K10 — publish thời lượng null, campaign ĐÃ có tiêu chí HR + JD nhưng chưa có job needs ⇒ 400 và
+    // KHÔNG gọi AI job-needs. Ca publish cũ không truyền IJobNeedsSuggester nên không phủ được lời gọi này
+    // (và đã có tiêu chí thì criteria suggester cũng không được gọi — VerifyNoOtherCalls trên nó vô nghĩa).
+    [Fact]
+    public async Task Publish_TimeLimitNull_CoSanTieuChiVaJd_400_KhongGoiAiJobNeeds()
+    {
+        using var tdb = new CampaignTestDb();
+        var org = Guid.NewGuid();
+        var c = CampaignTestDb.NewCampaign(org, CampaignStatus.Draft);
+        c.Domain = "BE";
+        c.TimeLimitMinutes = null;
+        c.JDText = "Backend developer .NET, PostgreSQL, 3 năm kinh nghiệm.";
+        c.Questions.Add(new CampaignQuestion
+        {
+            Id = Guid.NewGuid(), CampaignId = c.Id, OrgId = org, QuestionText = "Q1",
+            Source = QuestionSource.CustomHr, IsRequired = true, CreatedAt = DateTime.UtcNow,
+        });
+        c.Criteria.Add(new CampaignCriterion
+        {
+            Id = Guid.NewGuid(), CampaignId = c.Id, OrderNo = 1, Name = "Kỹ thuật", Weight = 1m, MaxScore = 10,
+            Source = CriterionSource.HrEdited, CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow,
+        });
+        tdb.Db.Campaigns.Add(c);
+        tdb.Db.SaveChanges();
+        var jobNeeds = new Mock<IJobNeedsSuggester>();
+
+        var res = await NewController(NewService(tdb.NewContext(), jobNeeds: jobNeeds.Object), org)
+            .PublishCampaign(c.Id, default);
+
+        Assert.IsType<BadRequestObjectResult>(res.Result);
+        jobNeeds.VerifyNoOtherCalls();
     }
 
     // ── CHECK DB: max_attempts ∈ [1, 3] (SQLite CÓ enforce CHECK khai ở model) ──────────────────
