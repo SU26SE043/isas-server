@@ -10,6 +10,8 @@ namespace Isas.InterviewService.Services;
 /// <item><c>PracticeService.MapResult</c> — <c>scoreBeforePenalty</c> trên màn kết quả;</item>
 /// <item><see cref="RoadmapReportService"/> — điểm từng buổi trên báo cáo lộ trình.</item>
 /// </list>
+/// Nơi gọi thứ tư — <see cref="AdminRubricPreviewService"/> (admin "Tự thử thước đo") — gộp bài mẫu
+/// bằng <see cref="B2CScoreFormula.Weighted"/> để con số admin thấy là con số người luyện mới nhận.
 /// Hai bản công thức ở hai chỗ là cách chắc nhất để màn kết quả nói 72 còn màn lộ trình nói 68 cho
 /// cùng một buổi (tiền lệ <c>SkipPenaltyRule.Apply</c> / <c>AnsweredPredicate</c>).
 ///
