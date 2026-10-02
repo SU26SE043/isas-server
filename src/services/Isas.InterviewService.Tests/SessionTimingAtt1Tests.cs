@@ -58,9 +58,9 @@ public class SessionTimingAtt1Tests
 
     private static (PracticeSession S, PracticeQuestion Q1, PracticeQuestion Q2) SeedSession(
         TestDb t, Guid candidate, Guid? campaignId, int? duration, DateTime? deadline,
-        SessionStatus status = SessionStatus.Ready, DateTime? begunAt = null)
+        SessionStatus status = SessionStatus.Ready, DateTime? begunAt = null, DateTime? createdAt = null)
     {
-        var s = TestDb.Session(candidate, status, campaignId: campaignId, deadline: deadline);
+        var s = TestDb.Session(candidate, status, campaignId: campaignId, createdAt: createdAt, deadline: deadline);
         s.DurationMinutes = duration;
         s.BegunAt = begunAt;
         var q1 = TestDb.Question(s.Id, 1);
@@ -729,6 +729,169 @@ public class SessionTimingAtt1Tests
         var saved = await PostInternal(t, InternalJsonBase + $$""","durationMinutes":{{sent}}}""");
 
         Assert.Equal(expected, saved.DurationMinutes);
+    }
+
+    // ══ KIỂM B3 — 6 lỗ test (mutation XANH) do người kiểm chỉ ra; assert giữ nguyên probe ═════════
+
+    // [I1] "Gọi lại = trả CÙNG beganAt/deadline" — kể cả khi buổi đã InProgress (tải lại trang GIỮA bài).
+    // Khoá: IsEnded không được nuốt InProgress (KIỂM R2).
+    [Fact]
+    public async Task Begin_GoiLaiGiuaBai_BuoiInProgressDaVaoPhong_200_CungMoc()
+    {
+        using var t = new TestDb();
+        var c = Guid.NewGuid();
+        var begun = DateTime.UtcNow.AddMinutes(-5);
+        var deadline = begun.AddMinutes(15);
+        var (s, _, _) = SeedSession(t, c, Guid.NewGuid(), Duration, deadline, SessionStatus.InProgress, begun);
+
+        var r = await PracticeCtl(t.NewContext(), c).BeginSession(s.Id, default);
+
+        var ok = Assert.IsType<OkObjectResult>(r);
+        var body = Assert.IsType<BeginSessionResponse>(ok.Value);
+        Assert.Equal(begun, body.BeganAt);
+        Assert.Equal(deadline, body.Deadline);
+    }
+
+    // CẤM vượt hạn cứng — kể cả khi hạn cứng ĐÃ QUA (sweeper chưa kịp chạy) lúc ứng viên mới vào phòng:
+    // Deadline giữ hạn cứng, không thành now + thời lượng (KIỂM R3).
+    [Fact]
+    public async Task Begin_HanCungDaQua_DeadlineGiuHanCung()
+    {
+        using var t = new TestDb();
+        var c = Guid.NewGuid();
+        var hard = DateTime.UtcNow.AddMinutes(-10);
+        var (s, _, _) = SeedSession(t, c, Guid.NewGuid(), Duration, hard, SessionStatus.Ready, begunAt: null);
+
+        await Practice(t.NewContext()).BeginSessionAsync(c, s.Id);
+
+        Assert.Equal(hard, Reload(t, s.Id).Deadline);
+    }
+
+    // [I2] serverNow = giờ server LÚC TRẢ LỜI (client tính còn lại = deadline − serverNow), không phải
+    // một mốc lưu trong DB (KIỂM R6).
+    [Fact]
+    public async Task Get_ServerNow_LaGioServerLucTraLoi()
+    {
+        using var t = new TestDb();
+        var c = Guid.NewGuid();
+        var (s, _, _) = SeedSession(t, c, Guid.NewGuid(), Duration, DateTime.UtcNow.AddDays(1),
+            SessionStatus.Ready, begunAt: null, createdAt: DateTime.UtcNow.AddDays(-2));
+
+        var before = DateTime.UtcNow;
+        var r = await Practice(t.NewContext()).GetSessionAsync(c, s.Id);
+        var after = DateTime.UtcNow;
+
+        Assert.NotNull(r!.ServerNow);
+        Assert.InRange(r.ServerNow!.Value, before, after);
+    }
+
+    // Begin thua đua với SWEEPER: buổi vừa bị chốt SessionAbandoned giữa lúc đọc và UPDATE ⇒ 409
+    // SESSION_ENDED và KHÔNG ghi BegunAt. Nhận diện "đã kết thúc" phải theo ĐỦ tập IsEnded, không chỉ
+    // Scored (KIỂM R7).
+    [Fact]
+    public async Task Begin_ThuaDuaVoiSweeper_BuoiVuaAbandoned_409SessionEnded_KhongGhiBegunAt()
+    {
+        using var t = new TestDb();
+        var c = Guid.NewGuid();
+        var (s, _, _) = SeedSession(t, c, Guid.NewGuid(), Duration, DateTime.UtcNow.AddDays(1));
+        var icp = new WinnerFirstInterceptor(async () =>
+        {
+            using var other = t.NewContext();
+            await other.PracticeSessions.Where(x => x.Id == s.Id)
+                .ExecuteUpdateAsync(set => set.SetProperty(x => x.Status, SessionStatus.SessionAbandoned));
+        });
+        using var db = t.NewContext(null, [icp]);
+
+        var ex = await Assert.ThrowsAsync<SessionEndedException>(() => Practice(db).BeginSessionAsync(c, s.Id));
+        Assert.True(icp.Fired);
+        Assert.Equal("SESSION_ENDED", ex.Code);
+        Assert.Null(Reload(t, s.Id).BegunAt);
+    }
+
+    // DB14 — ExecuteUpdate bỏ qua override SaveChanges ⇒ begin phải tự đóng dấu updated_at (KIỂM R8b).
+    [Fact]
+    public async Task Begin_DongDauUpdatedAt_Db14()
+    {
+        using var t = new TestDb();
+        var c = Guid.NewGuid();
+        var (s, _, _) = SeedSession(t, c, Guid.NewGuid(), Duration, DateTime.UtcNow.AddDays(1));
+        await Task.Delay(20);
+        var before = DateTime.UtcNow;
+
+        await Practice(t.NewContext()).BeginSessionAsync(c, s.Id);
+
+        var saved = Reload(t, s.Id);
+        Assert.True(saved.UpdatedAt >= before, $"updated_at={saved.UpdatedAt:O} < before={before:O}");
+        Assert.Equal(saved.BegunAt, saved.UpdatedAt);
+    }
+
+    // Người KHÁC gọi begin một buổi đã kết thúc ⇒ vẫn 403: kiểm chủ buổi TRƯỚC trạng thái, không lộ
+    // trạng thái buổi của người khác qua 409 (KIỂM R10).
+    [Fact]
+    public async Task Begin_NguoiKhac_BuoiDaKetThuc_403_KhongLoTrangThai()
+    {
+        using var t = new TestDb();
+        var (s, _, _) = SeedSession(t, Guid.NewGuid(), Guid.NewGuid(), Duration, DateTime.UtcNow.AddDays(1),
+            SessionStatus.Scored);
+
+        var r = await PracticeCtl(t.NewContext(), Guid.NewGuid()).BeginSession(s.Id, default);
+
+        var obj = Assert.IsAssignableFrom<ObjectResult>(r);
+        Assert.Equal(StatusCodes.Status403Forbidden, obj.StatusCode);
+    }
+
+    // ══ KIỂM B3 quan sát 3 — SessionDeadline:GraceSeconds đi qua DI tới CẢ HAI đầu ══════════════════
+    //
+    // Đăng ký y như Program.cs: Configure<SessionDeadlineOptions>(section) + AddScoped<IAnswerService,
+    // AnswerService>() + hosted SessionAbandonSweeper (container DI chọn constructor có tham số optional).
+    // Ân hạn 90 giây, hạn chót đã qua 60 giây: nếu MỘT trong hai đầu bỏ qua option (rơi về 30 mặc định)
+    // thì upload bị 409 hoặc sweeper chốt buổi ⇒ test đỏ.
+    [Fact]
+    public async Task DI_SessionDeadlineGraceSeconds90_CaUploadLanSweeperDeuDocDung()
+    {
+        using var t = new TestDb();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["SessionDeadline:GraceSeconds"] = "90"
+        }).Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDbContext<InterviewDbContext>(o => o.UseSqlite(t.Connection).UseSnakeCaseNamingConvention());
+        services.Configure<ScoringOptions>(_ => { });
+        services.Configure<SessionDeadlineOptions>(config.GetSection(SessionDeadlineOptions.SectionName));
+        var storage = new Mock<IStorageService>();
+        storage.Setup(x => x.UploadAsync(
+                It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<Guid>(),
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("answer-audio/x.webm");
+        services.AddSingleton(storage.Object);
+        services.AddSingleton(new Mock<IScoringJobPublisher>().Object);
+        services.AddSingleton(new Mock<ISessionScoringNotifier>().Object);
+        services.AddSingleton(new Mock<IAiServiceQuestionGenerator>().Object);
+        services.AddSingleton(new Mock<ICreditReservationClient>().Object);
+        services.AddScoped<IPracticeService, PracticeService>();
+        services.AddScoped<IAnswerService, AnswerService>();
+        services.AddSingleton<SessionAbandonSweeper>();
+        using var provider = services.BuildServiceProvider();
+
+        var past60 = DateTime.UtcNow.AddSeconds(-60);
+        var begun = DateTime.UtcNow.AddMinutes(-Duration);
+        var (up, upQ1, _) = SeedSession(t, Guid.NewGuid(), Guid.NewGuid(), Duration, past60,
+            SessionStatus.InProgress, begun);
+        var (sw, _, _) = SeedSession(t, Guid.NewGuid(), Guid.NewGuid(), Duration, past60,
+            SessionStatus.Ready, begun);
+
+        using (var scope = provider.CreateScope())
+        {
+            var answers = scope.ServiceProvider.GetRequiredService<IAnswerService>();
+            await answers.UploadAnswerAsync(up.Id, upQ1.Id, up.CandidateId,
+                new MemoryStream(new byte[] { 1, 2, 3 }), "audio/webm", 20);
+        }
+        await ScanOnce(provider.GetRequiredService<SessionAbandonSweeper>());
+
+        Assert.Single(t.NewContext().PracticeAnswers.Where(a => a.SessionId == up.Id));   // upload: 90 > 60 ⇒ nhận
+        Assert.Equal(SessionStatus.Ready, Reload(t, sw.Id).Status);                        // sweeper: chưa chốt
     }
 
     // ══ Ví dụ JSON thật (in ra test output cho báo cáo) ════════════════════════════════════════
